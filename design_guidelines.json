@@ -1,0 +1,132 @@
+{
+  "project_name": "NOC Alert Command Center",
+  "theme_strategy": {
+    "default_theme": "dark",
+    "rationale": "Designed for 24/7 IT monitoring. Uses the 'Tactical Command Center' archetype (Archetype 2 adapted for NOC). Deep obsidian bases prevent eye strain while high-visibility signal colors instantly draw attention to critical network faults."
+  },
+  "typography": {
+    "fonts": [
+      {
+        "role": "Headings & Key Metrics",
+        "family": "Chivo",
+        "class": "font-sans",
+        "instruction": "Use for top-level headers, metric numbers, and dashboard section titles. Apply 'tracking-tight' to make it feel dense and engineered. NEVER use Inter for headings."
+      },
+      {
+        "role": "Body & UI",
+        "family": "IBM Plex Sans",
+        "class": "font-sans",
+        "instruction": "Clean, technical, and objective. Use for standard table rows, labels, and forms."
+      },
+      {
+        "role": "Data & Logs",
+        "family": "JetBrains Mono",
+        "class": "font-mono",
+        "instruction": "CRITICAL: Use for all IP addresses, Syslog raw data, SNMP payloads, timestamps, and device IDs. It reinforces the 'terminal' NOC aesthetic."
+      }
+    ]
+  },
+  "colors": {
+    "background": {
+      "app": "#050505",
+      "panel": "#0A0A0A",
+      "border": "#27272A"
+    },
+    "text": {
+      "primary": "#FAFAFA",
+      "secondary": "#A1A1AA",
+      "muted": "#71717A"
+    },
+    "severities": {
+      "critical": {
+        "text": "#F87171",
+        "bg": "rgba(248, 113, 113, 0.1)",
+        "border": "rgba(248, 113, 113, 0.2)"
+      },
+      "high": {
+        "text": "#FBBF24",
+        "bg": "rgba(251, 191, 36, 0.1)",
+        "border": "rgba(251, 191, 36, 0.2)"
+      },
+      "medium": {
+        "text": "#60A5FA",
+        "bg": "rgba(96, 165, 250, 0.1)",
+        "border": "rgba(96, 165, 250, 0.2)"
+      },
+      "low": {
+        "text": "#4ADE80",
+        "bg": "rgba(74, 222, 128, 0.1)",
+        "border": "rgba(74, 222, 128, 0.2)"
+      }
+    },
+    "forbidden_colors": ["#1B93A4", "#7351B7", "Teal Green", "Teal Blue", "Generic Purple"]
+  },
+  "layouts": {
+    "spacing_philosophy": "High Density Grid (Dashboard Mode). Tight gaps (gap-4 or gap-6). Every pixel must be utilized. No jagged bottoms in grid rows.",
+    "container_style": "Grid Borders ('The Technical Look'). Use border-collapse style layouts with 1px solid borders (border-zinc-800). Expose the skeleton. No heavy drop-shadows. Flat, tactical minimalism.",
+    "border_radius": "Sharp edges. Use 'rounded-none' or maximum 'rounded-sm' (2px to 4px). No pill-shaped buttons in the main dashboard workspace to maintain rigid engineering alignment."
+  },
+  "pages": {
+    "login": {
+      "layout": "Split screen. Left: Dark atmospheric server rack image. Right: Sharp, boxy login form with mono-spaced branding ('NOC // COMMAND').",
+      "interactions": "Subtle hover states on the input fields (border glow). 'Enter' button should feel like a hardware terminal key."
+    },
+    "main_dashboard": {
+      "layout": "Bento-style High Density Grid.",
+      "sections": [
+        "Top Row: 4 Metric widgets (col-span-1 each) showing alert counts by severity.",
+        "Middle: Alert Trends Chart (col-span-3) + Live Syslog Stream (col-span-1, scrolling vertically).",
+        "Bottom: High-priority unacknowledged alerts table (col-span-full)."
+      ]
+    },
+    "alert_list": {
+      "layout": "Full width data-dense table.",
+      "features": "Sticky header. Monospaced columns for Time, IP, Device. Left sidebar or top filter bar for Client, Severity, Device Type. 'Acknowledge' quick-action buttons on hover."
+    },
+    "alert_detail": {
+      "layout": "Two-pane view. Left: Structured metadata (Client, Status, Timeline). Right: Terminal-styled block containing the full raw Syslog/SNMP trap data with syntax highlighting."
+    }
+  },
+  "components": {
+    "strategy": "Use Shadcn UI extensively but strip 'Vercel-look'. Force sharp corners, flat backgrounds, and 1px borders.",
+    "cards": "DO NOT use standard Shadcn cards with soft shadows. Build custom 'Panel' divs with sharp borders.",
+    "buttons": "Square or slightly rounded (rounded-sm). Interactive states must increase contrast. Explicit hover text colors required.",
+    "charts": "Use Shadcn charts (recharts). Style lines/bars with the severity color palette. Grid lines should be very subtle (#27272A).",
+    "icons": "Use @phosphor-icons/react for dense, technical dashboard iconography. Example: 'ShieldWarning', 'HardDrives', 'Activity'."
+  },
+  "visual_enhancers": {
+    "glassmorphism": "Avoid in the main data views. Can be used ONLY for sticky top navigation or critical modal overlays (backdrop-blur-xl with a sharp 1px border).",
+    "motion": "Minimalist. No bouncing or spring physics. Use fast, linear, or ease-out transitions (150ms) for hover states to feel responsive and instantaneous."
+  },
+  "accessibility": {
+    "contrast": "Ensure all text meets at least 4.5:1 APCA. Tinted greys (zinc) are used over pure black. Focus states must have higher contrast (e.g., focus:ring-1 focus:ring-white).",
+    "testing": "All interactive and key informational elements MUST include a 'data-testid' attribute (e.g., data-testid='login-submit-btn', data-testid='alert-row-critical')."
+  },
+  "image_urls": [
+    {
+      "url": "https://images.unsplash.com/photo-1762163516269-3c143e04175c?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA0MTJ8MHwxfHNlYXJjaHwxfHxzZXJ2ZXIlMjByYWNrJTIwZGFyayUyMGxpZ2h0c3xlbnwwfHx8fDE3NzQwODIxODJ8MA&ixlib=rb-4.1.0&q=85",
+      "category": "Login Background",
+      "description": "Dark atmospheric server rack with subtle lighting. Perfect for the NOC login screen left pane."
+    }
+  ],
+  "instructions_to_main_agent": [
+    "Read this JSON fully and apply the exact fonts, colors, and layout strategies specified.",
+    "Install standard dependencies: @phosphor-icons/react, recharts, sonner, date-fns, lucide-react.",
+    "Configure Tailwind with the specified font families (Chivo, IBM Plex Sans, JetBrains Mono) and the zinc color palette.",
+    "DO NOT use Inter for any headings.",
+    "CRITICAL: The user has .js files, NOT .tsx. All React components MUST be written in standard JavaScript (.js / .jsx), DO NOT generate TypeScript.",
+    "Implement the UI using Shadcn components (adapted for JS), but strip their default rounded corners and soft shadows to match the 'Grid Borders / Technical Look'.",
+    "Create a real-time feel by simulating WebSocket data or using aggressive intervals if mocking data.",
+    "For the Syslog raw view in the Alert Details, wrap the text in <pre><code> blocks and style it like a terminal (dark bg, JetBrains Mono font, green/white text)."
+  ],
+  "universal_guidelines_for_main_agent": [
+    "Do not converge toward generic AI slop. Make it look like a highly engineered, professional NOC command center.",
+    "Dark colors look good when used independently without gradients. DO NOT use dark colors as gradients.",
+    "DO NOT center align the app container (.App { text-align: center; } is banned).",
+    "Use 2-3x more spacing (padding/margins) than typical designs, but inside the 'High Density Grid', ensure components are tightly packed (gap-4) while maintaining generous internal padding (p-4 or p-6).",
+    "NEVER use emojis as icons. Always use Phosphor or Lucide icons.",
+    "Always use 'sonner' for toast notifications.",
+    "Export components as named exports, and pages as default exports.",
+    "All interactive elements MUST have 'data-testid' attributes."
+  ]
+}
