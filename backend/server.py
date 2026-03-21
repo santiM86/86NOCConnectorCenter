@@ -28,6 +28,10 @@ from security import security_manager
 from audit import AuditLogger, AuditAction
 from notifications import NotificationService, NotificationChannel, NotificationPriority
 from redfish import RedfishPoller
+from correlation import AlertCorrelationManager
+from maintenance import MaintenanceManager
+from sla import SLAManager
+from security_hardening import SecurityHardening
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -49,6 +53,10 @@ audit_logger = AuditLogger(db)
 notification_service = NotificationService(db)
 redfish_poller = RedfishPoller(db, notification_service)
 redfish_poller.set_security_manager(security_manager)
+correlation_manager = AlertCorrelationManager(db)
+maintenance_manager = MaintenanceManager(db)
+sla_manager = SLAManager(db, notification_service)
+security_hardening = SecurityHardening(db)
 
 # Create the main app
 app = FastAPI(
@@ -724,7 +732,41 @@ async def create_alert(alert: AlertCreate, current_user: dict = Depends(get_curr
         "resolved_at": None,
         "created_at": datetime.now(timezone.utc).isoformat()
     }
+    
+    # Check for maintenance window
+    in_maintenance, maint_window = await maintenance_manager.is_in_maintenance(
+        alert.client_id, alert.device_id, alert.severity
+    )
+    if in_maintenance:
+        alert_doc["suppressed_by_maintenance"] = True
+        alert_doc["maintenance_window_id"] = maint_window["id"]
+    
+    # Prepare alert with deduplication key
+    alert_doc = await correlation_manager.prepare_alert_for_storage(alert_doc)
+    
+    # Check for duplicate
+    is_duplicate, original_id = await correlation_manager.check_duplicate(alert_doc)
+    if is_duplicate:
+        return AlertResponse(
+            **alert_doc,
+            id=original_id,
+            client_name=client["name"] if client else "",
+            device_name=device["name"] if device else "",
+            device_type=device["device_type"] if device else "",
+            ip_address=device["ip_address"] if device else ""
+        )
+    
+    # Check for alert storm
+    is_storm, storm_count = await correlation_manager.check_alert_storm(alert.client_id, alert.device_id)
+    if is_storm:
+        alert_doc["in_storm"] = True
+    
     await db.alerts.insert_one(alert_doc)
+    
+    # Check for correlation
+    correlation_id = await correlation_manager.correlate_alerts(alert_doc)
+    if correlation_id:
+        alert_doc["correlation_group_id"] = correlation_id
     
     response = AlertResponse(
         **alert_doc,
@@ -736,8 +778,8 @@ async def create_alert(alert: AlertCreate, current_user: dict = Depends(get_curr
     
     await manager.broadcast({"type": "new_alert", "alert": response.model_dump()})
     
-    # Send notifications for high-priority alerts
-    if alert.severity in ["critical", "high"]:
+    # Send notifications for high-priority alerts (unless in maintenance)
+    if alert.severity in ["critical", "high"] and not in_maintenance:
         await notification_service.send_notification(
             channels=[NotificationChannel.EMAIL, NotificationChannel.PUSH],
             title=alert.title,
@@ -1175,6 +1217,11 @@ async def health():
 
 # Include router
 app.include_router(api_router)
+
+# Include enterprise routes
+from enterprise_routes import create_enterprise_router
+enterprise_router = create_enterprise_router(db, get_current_user, audit_logger)
+app.include_router(enterprise_router)
 
 app.add_middleware(
     CORSMiddleware,
