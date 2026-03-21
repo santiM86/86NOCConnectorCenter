@@ -119,6 +119,8 @@ class MaintenanceManager:
         await self.db.maintenance_windows.insert_one(window_doc)
         logger.info(f"Maintenance window created: {window.name}")
         
+        # Remove MongoDB _id before returning
+        window_doc.pop("_id", None)
         return window_doc
     
     async def get_windows(

@@ -14,6 +14,7 @@ import ClientsPage from "@/pages/ClientsPage";
 import DevicesPage from "@/pages/DevicesPage";
 import SettingsPage from "@/pages/SettingsPage";
 import TwoFactorPage from "@/pages/TwoFactorPage";
+import EnterprisePage from "@/pages/EnterprisePage";
 import Layout from "@/components/Layout";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -130,6 +131,7 @@ function App() {
               <Route path="alerts/:id" element={<AlertDetailPage />} />
               <Route path="clients" element={<ClientsPage />} />
               <Route path="devices" element={<DevicesPage />} />
+              <Route path="enterprise" element={<EnterprisePage />} />
               <Route path="settings" element={<SettingsPage />} />
             </Route>
             <Route path="/2fa" element={<TwoFactorPage />} />

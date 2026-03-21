@@ -11,7 +11,9 @@ import {
   List,
   X,
   User,
-  Gear
+  Gear,
+  FileText,
+  Wrench
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import {
@@ -36,12 +38,12 @@ export default function Layout() {
     { path: "/alerts", icon: Bell, label: "Alert" },
     { path: "/clients", icon: Buildings, label: "Clienti" },
     { path: "/devices", icon: HardDrives, label: "Dispositivi" },
+    { path: "/enterprise", icon: Wrench, label: "Enterprise" },
     { path: "/settings", icon: Gear, label: "Impostazioni" },
   ];
 
   return (
     <div className="main-layout" data-testid="main-layout">
-      {/* Mobile Overlay */}
       {sidebarOpen && (
         <div 
           className="sidebar-overlay md:hidden"
@@ -49,29 +51,27 @@ export default function Layout() {
         />
       )}
 
-      {/* Sidebar */}
       <aside className={`sidebar ${sidebarOpen ? "open" : ""}`}>
-        {/* Logo */}
-        <div className="p-4 border-b border-zinc-800">
+        <div className="p-3 border-b border-[var(--bg-border)]">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <ShieldWarning size={24} weight="fill" className="text-zinc-100" />
-              <span className="font-heading text-lg font-bold tracking-tight text-zinc-100">
-                NOC
+              <div className="w-7 h-7 rounded-md bg-indigo-600/20 flex items-center justify-center">
+                <ShieldWarning size={16} weight="fill" className="text-indigo-400" />
+              </div>
+              <span className="font-heading text-sm font-bold tracking-tight text-[var(--text-primary)]">
+                NOC Center
               </span>
             </div>
             <button
-              className="md:hidden text-zinc-400 hover:text-zinc-100"
+              className="md:hidden text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
               onClick={() => setSidebarOpen(false)}
             >
-              <X size={20} />
+              <X size={18} />
             </button>
           </div>
-          <p className="text-zinc-600 text-xs font-mono mt-1">COMMAND CENTER</p>
         </div>
 
-        {/* Navigation */}
-        <nav className="flex-1 py-4">
+        <nav className="flex-1 py-2">
           {navItems.map((item) => (
             <NavLink
               key={item.path}
@@ -81,39 +81,38 @@ export default function Layout() {
               className={({ isActive }) => `nav-item ${isActive ? "active" : ""}`}
               data-testid={`nav-${item.label.toLowerCase()}`}
             >
-              <item.icon size={20} />
+              <item.icon size={18} />
               <span>{item.label}</span>
             </NavLink>
           ))}
         </nav>
 
-        {/* User Menu */}
-        <div className="p-4 border-t border-zinc-800">
+        <div className="p-3 border-t border-[var(--bg-border)]">
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <button 
-                className="w-full flex items-center gap-3 p-2 rounded-sm hover:bg-zinc-800 transition-fast"
+                className="w-full flex items-center gap-2 p-2 rounded-md hover:bg-[var(--bg-hover)] transition-all duration-150"
                 data-testid="user-menu-btn"
               >
-                <div className="w-8 h-8 rounded-sm bg-zinc-700 flex items-center justify-center">
-                  <User size={16} className="text-zinc-300" />
+                <div className="w-7 h-7 rounded-md bg-indigo-600/20 flex items-center justify-center">
+                  <User size={14} className="text-indigo-400" />
                 </div>
-                <div className="flex-1 text-left">
-                  <p className="text-sm text-zinc-200 truncate">{user?.name}</p>
-                  <p className="text-xs text-zinc-500 uppercase tracking-wider">{user?.role}</p>
+                <div className="flex-1 text-left min-w-0">
+                  <p className="text-xs text-[var(--text-primary)] truncate">{user?.name}</p>
+                  <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider">{user?.role}</p>
                 </div>
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent 
               align="end" 
-              className="w-48 bg-zinc-900 border-zinc-800 rounded-sm"
+              className="w-44 bg-[var(--bg-panel)] border-[var(--bg-border)] rounded-lg"
             >
               <DropdownMenuItem 
                 onClick={handleLogout}
-                className="text-red-400 focus:text-red-300 focus:bg-red-900/20 rounded-sm cursor-pointer"
+                className="text-red-400 focus:text-red-300 focus:bg-red-900/20 rounded-md cursor-pointer text-xs"
                 data-testid="logout-btn"
               >
-                <SignOut size={16} className="mr-2" />
+                <SignOut size={14} className="mr-2" />
                 Logout
               </DropdownMenuItem>
             </DropdownMenuContent>
@@ -121,27 +120,23 @@ export default function Layout() {
         </div>
       </aside>
 
-      {/* Main Content */}
       <main className="main-content">
-        {/* Mobile Header */}
-        <header className="md:hidden sticky top-0 z-30 bg-[#050505] border-b border-zinc-800 p-4 flex items-center justify-between">
+        <header className="md:hidden sticky top-0 z-30 bg-[var(--bg-app)] border-b border-[var(--bg-border)] p-3 flex items-center justify-between">
           <Button
             variant="ghost"
             size="icon"
             onClick={() => setSidebarOpen(true)}
-            className="text-zinc-400"
+            className="text-[var(--text-secondary)] h-8 w-8"
             data-testid="mobile-menu-btn"
           >
-            <List size={24} />
+            <List size={20} />
           </Button>
           <div className="flex items-center gap-2">
-            <ShieldWarning size={20} weight="fill" className="text-zinc-100" />
-            <span className="font-heading font-bold text-zinc-100">NOC</span>
+            <ShieldWarning size={18} weight="fill" className="text-indigo-400" />
+            <span className="font-heading font-bold text-sm text-[var(--text-primary)]">NOC</span>
           </div>
-          <div className="w-10" /> {/* Spacer */}
+          <div className="w-8" />
         </header>
-
-        {/* Page Content */}
         <Outlet />
       </main>
     </div>

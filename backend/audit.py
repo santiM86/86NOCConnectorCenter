@@ -52,6 +52,15 @@ class AuditAction(str, Enum):
     NOTIFICATION_SENT = "notification_sent"
     WEBHOOK_TRIGGERED = "webhook_triggered"
     
+    # Maintenance
+    MAINTENANCE_CREATE = "maintenance_create"
+    MAINTENANCE_UPDATE = "maintenance_update"
+    MAINTENANCE_DELETE = "maintenance_delete"
+    
+    # User Management
+    USER_UPDATE = "user_update"
+    USER_DELETE = "user_delete"
+    
     # Security Events
     RATE_LIMIT_EXCEEDED = "rate_limit_exceeded"
     SUSPICIOUS_ACTIVITY = "suspicious_activity"

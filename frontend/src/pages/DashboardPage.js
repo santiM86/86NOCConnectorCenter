@@ -6,42 +6,33 @@ import { toast } from "sonner";
 import { 
   Warning, 
   ShieldWarning, 
-  Info, 
   CheckCircle,
-  Pulse,
   HardDrives,
   Users,
-  Clock
+  Lightning,
+  ArrowRight,
+  Clock,
+  CaretRight
 } from "@phosphor-icons/react";
-import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
+import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, AreaChart, Area } from "recharts";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
 
 export default function DashboardPage() {
   const [stats, setStats] = useState({
-    critical: 0,
-    high: 0,
-    medium: 0,
-    low: 0,
-    total_active: 0,
-    total_clients: 0,
-    total_devices: 0
+    critical: 0, high: 0, medium: 0, low: 0,
+    total_active: 0, total_clients: 0, total_devices: 0
   });
   const [trends, setTrends] = useState([]);
   const [recentAlerts, setRecentAlerts] = useState([]);
-  const [syslogStream, setSyslogStream] = useState([]);
+  const [liveStream, setLiveStream] = useState([]);
   const wsRef = useRef(null);
   const navigate = useNavigate();
 
   useEffect(() => {
     fetchData();
     connectWebSocket();
-
-    return () => {
-      if (wsRef.current) {
-        wsRef.current.close();
-      }
-    };
+    return () => { if (wsRef.current) wsRef.current.close(); };
   }, []);
 
   const fetchData = async () => {
@@ -51,23 +42,13 @@ export default function DashboardPage() {
         axios.get(`${API}/stats/trends?hours=24`),
         axios.get(`${API}/alerts?limit=20&status=active`)
       ]);
-      
       setStats(statsRes.data);
       setTrends(trendsRes.data);
       setRecentAlerts(alertsRes.data);
-      
-      // Extract syslog-like entries from recent alerts
-      const syslogEntries = alertsRes.data
-        .filter(a => a.source_type === "syslog" || a.source_type === "snmp")
-        .slice(0, 50)
-        .map(a => ({
-          id: a.id,
-          timestamp: new Date(a.created_at).toLocaleTimeString(),
-          ip: a.ip_address,
-          message: a.message,
-          severity: a.severity
-        }));
-      setSyslogStream(syslogEntries);
+      setLiveStream(alertsRes.data.slice(0, 30).map(a => ({
+        id: a.id, time: new Date(a.created_at).toLocaleTimeString("it-IT", {hour:"2-digit",minute:"2-digit",second:"2-digit"}),
+        ip: a.ip_address, msg: a.message?.substring(0, 60), severity: a.severity, device: a.device_name
+      })));
     } catch (error) {
       console.error("Error fetching data:", error);
     }
@@ -76,7 +57,6 @@ export default function DashboardPage() {
   const connectWebSocket = () => {
     const wsUrl = process.env.REACT_APP_BACKEND_URL.replace("https://", "wss://").replace("http://", "ws://");
     wsRef.current = new WebSocket(`${wsUrl}/ws/alerts`);
-
     wsRef.current.onmessage = (event) => {
       const data = JSON.parse(event.data);
       if (data.type === "new_alert") {
@@ -86,193 +66,134 @@ export default function DashboardPage() {
           [data.alert.severity]: prev[data.alert.severity] + 1,
           total_active: prev.total_active + 1
         }));
-        
-        if (data.alert.source_type === "syslog" || data.alert.source_type === "snmp") {
-          setSyslogStream(prev => [{
-            id: data.alert.id,
-            timestamp: new Date(data.alert.created_at).toLocaleTimeString(),
-            ip: data.alert.ip_address,
-            message: data.alert.message,
-            severity: data.alert.severity
-          }, ...prev.slice(0, 49)]);
-        }
-        
+        setLiveStream(prev => [{
+          id: data.alert.id, time: new Date(data.alert.created_at).toLocaleTimeString("it-IT",{hour:"2-digit",minute:"2-digit",second:"2-digit"}),
+          ip: data.alert.ip_address, msg: data.alert.message?.substring(0, 60), severity: data.alert.severity, device: data.alert.device_name
+        }, ...prev.slice(0, 29)]);
         if (data.alert.severity === "critical") {
-          toast.error(`CRITICAL: ${data.alert.title}`, {
-            description: `${data.alert.device_name} - ${data.alert.client_name}`
-          });
+          toast.error(`CRITICO: ${data.alert.title}`, { description: `${data.alert.device_name} - ${data.alert.client_name}` });
         }
       }
     };
-
-    wsRef.current.onclose = () => {
-      setTimeout(connectWebSocket, 5000);
-    };
+    wsRef.current.onclose = () => { setTimeout(connectWebSocket, 5000); };
   };
 
-  const handleAcknowledge = async (alertId) => {
+  const handleAck = async (alertId) => {
     try {
       await axios.patch(`${API}/alerts/${alertId}`, { status: "acknowledged" });
       setRecentAlerts(prev => prev.filter(a => a.id !== alertId));
       fetchData();
-      toast.success("Alert acknowledged");
-    } catch (error) {
-      toast.error("Error acknowledging alert");
-    }
+      toast.success("Alert confermato");
+    } catch { toast.error("Errore"); }
   };
 
-  const getSeverityColor = (severity) => {
-    const colors = {
-      critical: "#F87171",
-      high: "#FBBF24",
-      medium: "#60A5FA",
-      low: "#4ADE80"
-    };
-    return colors[severity] || "#71717A";
-  };
+  const getSevColor = (s) => ({ critical: "var(--critical)", high: "var(--high)", medium: "var(--medium)", low: "var(--low)" }[s] || "var(--text-muted)");
+  const formatHour = (h) => h ? h.split("T")[1]?.substring(0, 5) || "" : "";
 
-  const formatTrendHour = (hour) => {
-    if (!hour) return "";
-    return hour.split("T")[1]?.substring(0, 5) || "";
-  };
+  const urgentCount = stats.critical + stats.high;
 
   return (
-    <div className="p-4 md:p-6 space-y-6" data-testid="dashboard-page">
-      {/* Header */}
+    <div className="p-4 md:p-5 space-y-4 animate-fade-in" data-testid="dashboard-page">
+      {/* Top Bar */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="font-heading text-2xl font-bold text-zinc-100 tracking-tight">
-            Dashboard
+          <h1 className="font-heading text-xl font-bold text-[var(--text-primary)] tracking-tight">
+            Panoramica
           </h1>
-          <p className="text-zinc-500 text-sm mt-1">
-            Monitoraggio alert in tempo reale
+          <p className="text-[var(--text-muted)] text-xs mt-0.5">
+            Monitoraggio in tempo reale
           </p>
         </div>
-        <div className="live-indicator">
-          <span className="live-dot"></span>
-          <span className="font-mono uppercase tracking-wider">Live</span>
+        <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-[var(--low)]/10 border border-[var(--low)]/20">
+          <span className="live-dot" style={{width:6,height:6}}></span>
+          <span className="font-mono text-[10px] uppercase tracking-wider text-[var(--ok)]">Live</span>
         </div>
       </div>
 
-      {/* Metric Cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <MetricCard
-          label="Critici"
-          value={stats.critical}
-          icon={<ShieldWarning size={20} weight="fill" />}
-          color="critical"
-          testId="metric-critical"
-        />
-        <MetricCard
-          label="Alti"
-          value={stats.high}
-          icon={<Warning size={20} weight="fill" />}
-          color="high"
-          testId="metric-high"
-        />
-        <MetricCard
-          label="Medi"
-          value={stats.medium}
-          icon={<Info size={20} weight="fill" />}
-          color="medium"
-          testId="metric-medium"
-        />
-        <MetricCard
-          label="Bassi"
-          value={stats.low}
-          icon={<CheckCircle size={20} weight="fill" />}
-          color="low"
-          testId="metric-low"
-        />
+      {/* Urgent Banner - only if problems exist */}
+      {urgentCount > 0 && (
+        <div 
+          className="flex items-center justify-between p-3 rounded-lg border cursor-pointer hover:opacity-90 transition-opacity"
+          style={{ background: "var(--critical-bg)", borderColor: "var(--critical-border)" }}
+          onClick={() => navigate("/alerts?severity=critical")}
+          data-testid="urgent-banner"
+        >
+          <div className="flex items-center gap-3">
+            <Lightning size={20} weight="fill" className="text-[var(--critical)]" />
+            <div>
+              <p className="text-[var(--critical)] font-heading font-bold text-sm">
+                {urgentCount} alert urgenti richiedono attenzione
+              </p>
+              <p className="text-[var(--text-muted)] text-xs">
+                {stats.critical} critici, {stats.high} alti
+              </p>
+            </div>
+          </div>
+          <ArrowRight size={18} className="text-[var(--critical)]" />
+        </div>
+      )}
+
+      {/* Severity Cards */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <SeverityCard label="Critici" value={stats.critical} color="critical" testId="metric-critical" />
+        <SeverityCard label="Alti" value={stats.high} color="high" testId="metric-high" />
+        <SeverityCard label="Medi" value={stats.medium} color="medium" testId="metric-medium" />
+        <SeverityCard label="Bassi" value={stats.low} color="low" testId="metric-low" />
       </div>
 
-      {/* Secondary Stats */}
-      <div className="grid grid-cols-3 gap-4">
-        <div className="noc-panel p-4 flex items-center gap-3">
-          <Pulse size={24} className="text-zinc-500" />
-          <div>
-            <p className="text-zinc-500 text-xs uppercase tracking-wider">Alert Attivi</p>
-            <p className="font-heading text-xl font-bold text-zinc-100">{stats.total_active}</p>
-          </div>
-        </div>
-        <div className="noc-panel p-4 flex items-center gap-3">
-          <Users size={24} className="text-zinc-500" />
-          <div>
-            <p className="text-zinc-500 text-xs uppercase tracking-wider">Clienti</p>
-            <p className="font-heading text-xl font-bold text-zinc-100">{stats.total_clients}</p>
-          </div>
-        </div>
-        <div className="noc-panel p-4 flex items-center gap-3">
-          <HardDrives size={24} className="text-zinc-500" />
-          <div>
-            <p className="text-zinc-500 text-xs uppercase tracking-wider">Dispositivi</p>
-            <p className="font-heading text-xl font-bold text-zinc-100">{stats.total_devices}</p>
-          </div>
-        </div>
+      {/* Stats Row */}
+      <div className="grid grid-cols-3 gap-3">
+        <StatCard icon={<Lightning size={18} />} label="Alert Attivi" value={stats.total_active} />
+        <StatCard icon={<Users size={18} />} label="Clienti" value={stats.total_clients} />
+        <StatCard icon={<HardDrives size={18} />} label="Dispositivi" value={stats.total_devices} />
       </div>
 
-      {/* Charts Row */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        {/* Alert Trends Chart */}
-        <div className="lg:col-span-2 noc-panel p-4">
-          <h3 className="font-heading text-sm font-medium text-zinc-400 uppercase tracking-wider mb-4">
-            Trend Alert (24h)
+      {/* Chart + Live Stream */}
+      <div className="grid grid-cols-1 lg:grid-cols-5 gap-3">
+        <div className="lg:col-span-3 noc-panel p-4">
+          <h3 className="text-[var(--text-muted)] text-[10px] font-medium uppercase tracking-widest mb-3">
+            Trend 24h
           </h3>
-          <div className="h-64">
+          <div className="h-48">
             <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={trends}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#27272A" />
-                <XAxis 
-                  dataKey="hour" 
-                  tickFormatter={formatTrendHour}
-                  stroke="#71717A"
-                  fontSize={10}
-                  fontFamily="JetBrains Mono"
-                />
-                <YAxis 
-                  stroke="#71717A"
-                  fontSize={10}
-                  fontFamily="JetBrains Mono"
-                />
-                <Tooltip 
-                  contentStyle={{
-                    backgroundColor: "#0A0A0A",
-                    border: "1px solid #27272A",
-                    borderRadius: "2px",
-                    fontFamily: "JetBrains Mono",
-                    fontSize: "12px"
-                  }}
-                />
-                <Line type="monotone" dataKey="critical" stroke="#F87171" strokeWidth={2} dot={false} />
-                <Line type="monotone" dataKey="high" stroke="#FBBF24" strokeWidth={2} dot={false} />
-                <Line type="monotone" dataKey="medium" stroke="#60A5FA" strokeWidth={2} dot={false} />
-                <Line type="monotone" dataKey="low" stroke="#4ADE80" strokeWidth={2} dot={false} />
-              </LineChart>
+              <AreaChart data={trends}>
+                <defs>
+                  <linearGradient id="critGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="var(--critical)" stopOpacity={0.2}/>
+                    <stop offset="95%" stopColor="var(--critical)" stopOpacity={0}/>
+                  </linearGradient>
+                  <linearGradient id="highGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="var(--high)" stopOpacity={0.2}/>
+                    <stop offset="95%" stopColor="var(--high)" stopOpacity={0}/>
+                  </linearGradient>
+                </defs>
+                <XAxis dataKey="hour" tickFormatter={formatHour} stroke="var(--text-muted)" fontSize={9} fontFamily="JetBrains Mono" tickLine={false} axisLine={false} />
+                <YAxis stroke="var(--text-muted)" fontSize={9} fontFamily="JetBrains Mono" tickLine={false} axisLine={false} width={25} />
+                <Tooltip contentStyle={{ backgroundColor: "var(--bg-panel)", border: "1px solid var(--bg-border)", borderRadius: "0.5rem", fontFamily: "JetBrains Mono", fontSize: "11px" }} />
+                <Area type="monotone" dataKey="critical" stroke="var(--critical)" strokeWidth={2} fill="url(#critGrad)" dot={false} />
+                <Area type="monotone" dataKey="high" stroke="var(--high)" strokeWidth={1.5} fill="url(#highGrad)" dot={false} />
+                <Line type="monotone" dataKey="medium" stroke="var(--medium)" strokeWidth={1} dot={false} opacity={0.6} />
+                <Line type="monotone" dataKey="low" stroke="var(--low)" strokeWidth={1} dot={false} opacity={0.4} />
+              </AreaChart>
             </ResponsiveContainer>
           </div>
         </div>
 
-        {/* Syslog Stream */}
-        <div className="noc-panel p-4">
-          <h3 className="font-heading text-sm font-medium text-zinc-400 uppercase tracking-wider mb-4">
+        <div className="lg:col-span-2 noc-panel p-4">
+          <h3 className="text-[var(--text-muted)] text-[10px] font-medium uppercase tracking-widest mb-3">
             Live Stream
           </h3>
-          <ScrollArea className="h-64">
-            <div className="syslog-stream h-full">
-              {syslogStream.length === 0 ? (
-                <p className="text-zinc-600 text-center py-8">
-                  In attesa di messaggi...
-                </p>
+          <ScrollArea className="h-48">
+            <div className="syslog-stream h-full" style={{border:"none",background:"transparent"}}>
+              {liveStream.length === 0 ? (
+                <p className="text-[var(--text-muted)] text-center py-6 text-xs">In attesa...</p>
               ) : (
-                syslogStream.map((entry, idx) => (
-                  <div key={entry.id + idx} className="syslog-line">
-                    <span className="syslog-timestamp">{entry.timestamp}</span>
-                    {" "}
-                    <span className="syslog-ip">{entry.ip}</span>
-                    {" "}
-                    <span style={{ color: getSeverityColor(entry.severity) }}>
-                      {entry.message.substring(0, 80)}
-                    </span>
+                liveStream.map((e, i) => (
+                  <div key={e.id + i} className="syslog-line flex items-center gap-1.5">
+                    <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{backgroundColor: getSevColor(e.severity)}}></span>
+                    <span className="syslog-timestamp">{e.time}</span>
+                    <span className="text-[var(--text-secondary)] truncate">{e.device || e.ip}</span>
+                    <span className="text-[var(--text-muted)] truncate">{e.msg}</span>
                   </div>
                 ))
               )}
@@ -281,74 +202,56 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* Recent Active Alerts */}
+      {/* Recent Alerts Table */}
       <div className="noc-panel">
-        <div className="p-4 border-b border-zinc-800 flex items-center justify-between">
-          <h3 className="font-heading text-sm font-medium text-zinc-400 uppercase tracking-wider">
-            Alert Attivi Non Confermati
+        <div className="p-3 border-b border-[var(--bg-border)] flex items-center justify-between">
+          <h3 className="text-[var(--text-muted)] text-[10px] font-medium uppercase tracking-widest">
+            Alert Attivi
           </h3>
           <Button 
-            variant="ghost" 
-            size="sm" 
+            variant="ghost" size="sm" 
             onClick={() => navigate("/alerts")}
-            className="text-zinc-400 hover:text-zinc-100 rounded-sm"
+            className="text-[var(--text-secondary)] hover:text-[var(--text-primary)] rounded-md text-xs h-7 gap-1"
             data-testid="view-all-alerts-btn"
           >
-            Vedi Tutti
+            Tutti <CaretRight size={12} />
           </Button>
         </div>
         <div className="overflow-x-auto">
           <table className="alert-table" data-testid="recent-alerts-table">
             <thead>
               <tr>
-                <th>Severità</th>
+                <th>Sev.</th>
                 <th>Titolo</th>
                 <th>Dispositivo</th>
                 <th>Cliente</th>
-                <th>IP</th>
                 <th>Ora</th>
-                <th>Azioni</th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
               {recentAlerts.length === 0 ? (
-                <tr>
-                  <td colSpan={7} className="text-center text-zinc-500 py-8">
-                    Nessun alert attivo
-                  </td>
-                </tr>
+                <tr><td colSpan={6} className="text-center text-[var(--text-muted)] py-6 text-xs">Nessun alert attivo</td></tr>
               ) : (
-                recentAlerts.slice(0, 10).map((alert) => (
-                  <tr 
-                    key={alert.id} 
-                    className={alert.severity === "critical" ? "pulse-critical" : ""}
-                    data-testid={`alert-row-${alert.severity}`}
-                  >
+                recentAlerts.slice(0, 8).map((alert) => (
+                  <tr key={alert.id} className={alert.severity === "critical" ? "pulse-critical" : ""} data-testid={`alert-row-${alert.severity}`}>
                     <td>
                       <span className={`severity-badge severity-${alert.severity}`}>
-                        {alert.severity}
+                        {alert.severity === "critical" ? "CRIT" : alert.severity === "high" ? "HIGH" : alert.severity === "medium" ? "MED" : "LOW"}
                       </span>
                     </td>
-                    <td 
-                      className="cursor-pointer hover:text-zinc-100 transition-fast"
-                      onClick={() => navigate(`/alerts/${alert.id}`)}
-                    >
+                    <td className="cursor-pointer hover:text-[var(--text-primary)] transition-colors text-[var(--text-secondary)]" onClick={() => navigate(`/alerts/${alert.id}`)}>
                       {alert.title}
                     </td>
-                    <td className="font-mono text-zinc-400">{alert.device_name}</td>
-                    <td>{alert.client_name}</td>
-                    <td className="font-mono text-blue-400">{alert.ip_address}</td>
-                    <td className="font-mono text-zinc-500 text-xs">
-                      {new Date(alert.created_at).toLocaleTimeString()}
+                    <td className="font-mono text-[var(--text-muted)] text-xs">{alert.device_name}</td>
+                    <td className="text-[var(--text-secondary)] text-xs">{alert.client_name}</td>
+                    <td className="font-mono text-[var(--text-muted)] text-[11px]">
+                      {new Date(alert.created_at).toLocaleTimeString("it-IT",{hour:"2-digit",minute:"2-digit"})}
                     </td>
                     <td>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => handleAcknowledge(alert.id)}
-                        className="rounded-sm text-xs h-7 border-zinc-700 hover:bg-zinc-800 hover:text-zinc-100"
-                        data-testid={`ack-btn-${alert.id}`}
-                      >
+                      <Button size="sm" variant="outline" onClick={() => handleAck(alert.id)}
+                        className="rounded-md text-[10px] h-6 px-2 border-[var(--bg-border)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+                        data-testid={`ack-btn-${alert.id}`}>
                         ACK
                       </Button>
                     </td>
@@ -363,30 +266,36 @@ export default function DashboardPage() {
   );
 }
 
-const MetricCard = ({ label, value, icon, color, testId }) => {
-  const colors = {
-    critical: { text: "#F87171", bg: "rgba(248, 113, 113, 0.1)", border: "rgba(248, 113, 113, 0.2)" },
-    high: { text: "#FBBF24", bg: "rgba(251, 191, 36, 0.1)", border: "rgba(251, 191, 36, 0.2)" },
-    medium: { text: "#60A5FA", bg: "rgba(96, 165, 250, 0.1)", border: "rgba(96, 165, 250, 0.2)" },
-    low: { text: "#4ADE80", bg: "rgba(74, 222, 128, 0.1)", border: "rgba(74, 222, 128, 0.2)" }
+function SeverityCard({ label, value, color, testId }) {
+  const colorMap = {
+    critical: { text: "var(--critical)", bg: "var(--critical-bg)", border: "var(--critical-border)" },
+    high: { text: "var(--high)", bg: "var(--high-bg)", border: "var(--high-border)" },
+    medium: { text: "var(--medium)", bg: "var(--medium-bg)", border: "var(--medium-border)" },
+    low: { text: "var(--low)", bg: "var(--low-bg)", border: "var(--low-border)" }
   };
-
-  const colorSet = colors[color] || colors.low;
-
+  const c = colorMap[color];
   return (
-    <div 
-      className="metric-card transition-fast hover:border-zinc-700"
-      style={{ borderColor: colorSet.border }}
-      data-testid={testId}
-    >
-      <div className="flex items-center justify-between mb-2">
-        <span style={{ color: colorSet.text }}>{icon}</span>
-        {value > 0 && color === "critical" && (
-          <span className="live-dot" style={{ backgroundColor: colorSet.text }}></span>
-        )}
+    <div className="rounded-lg p-3 border transition-all duration-150 hover:scale-[1.01]"
+      style={{ background: c.bg, borderColor: c.border }}
+      data-testid={testId}>
+      <div className="flex items-center justify-between mb-1">
+        {value > 0 && color === "critical" && <span className="live-dot" style={{width:5,height:5,backgroundColor:c.text}}></span>}
+        {!(value > 0 && color === "critical") && <span></span>}
       </div>
-      <p className="metric-value" style={{ color: colorSet.text }}>{value}</p>
-      <p className="metric-label">{label}</p>
+      <p className="font-heading text-3xl font-bold leading-none" style={{color:c.text}}>{value}</p>
+      <p className="text-[10px] uppercase tracking-widest mt-1" style={{color:c.text,opacity:0.7}}>{label}</p>
     </div>
   );
-};
+}
+
+function StatCard({ icon, label, value }) {
+  return (
+    <div className="noc-panel p-3 flex items-center gap-3">
+      <div className="text-[var(--text-muted)]">{icon}</div>
+      <div>
+        <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-widest">{label}</p>
+        <p className="font-heading text-lg font-bold text-[var(--text-primary)]">{value}</p>
+      </div>
+    </div>
+  );
+}
