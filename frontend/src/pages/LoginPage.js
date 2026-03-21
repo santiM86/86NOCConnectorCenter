@@ -32,7 +32,12 @@ export default function LoginPage() {
 
     try {
       if (isLogin) {
-        await login(email, password);
+        const result = await login(email, password);
+        if (result?.requires_2fa) {
+          toast.info("Verifica 2FA richiesta");
+          navigate("/2fa", { state: { from: location.state?.from } });
+          return;
+        }
         toast.success("Login effettuato");
       } else {
         await register(email, password, name);

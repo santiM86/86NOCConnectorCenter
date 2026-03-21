@@ -10,7 +10,8 @@ import {
   SignOut,
   List,
   X,
-  User
+  User,
+  Gear
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import {
@@ -35,6 +36,7 @@ export default function Layout() {
     { path: "/alerts", icon: Bell, label: "Alert" },
     { path: "/clients", icon: Buildings, label: "Clienti" },
     { path: "/devices", icon: HardDrives, label: "Dispositivi" },
+    { path: "/settings", icon: Gear, label: "Impostazioni" },
   ];
 
   return (

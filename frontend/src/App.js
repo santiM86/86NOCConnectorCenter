@@ -12,6 +12,8 @@ import AlertsPage from "@/pages/AlertsPage";
 import AlertDetailPage from "@/pages/AlertDetailPage";
 import ClientsPage from "@/pages/ClientsPage";
 import DevicesPage from "@/pages/DevicesPage";
+import SettingsPage from "@/pages/SettingsPage";
+import TwoFactorPage from "@/pages/TwoFactorPage";
 import Layout from "@/components/Layout";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -50,11 +52,17 @@ const AuthProvider = ({ children }) => {
 
   const login = async (email, password) => {
     const response = await axios.post(`${API}/auth/login`, { email, password });
-    const { token: newToken, user: userData } = response.data;
+    const { token: newToken, user: userData, requires_2fa } = response.data;
     localStorage.setItem("noc_token", newToken);
     setToken(newToken);
-    setUser(userData);
     axios.defaults.headers.common["Authorization"] = `Bearer ${newToken}`;
+    
+    if (requires_2fa) {
+      // Return special flag for 2FA requirement
+      return { requires_2fa: true };
+    }
+    
+    setUser(userData);
     return userData;
   };
 
@@ -122,7 +130,9 @@ function App() {
               <Route path="alerts/:id" element={<AlertDetailPage />} />
               <Route path="clients" element={<ClientsPage />} />
               <Route path="devices" element={<DevicesPage />} />
+              <Route path="settings" element={<SettingsPage />} />
             </Route>
+            <Route path="/2fa" element={<TwoFactorPage />} />
           </Routes>
         </BrowserRouter>
         <Toaster position="top-right" theme="dark" />

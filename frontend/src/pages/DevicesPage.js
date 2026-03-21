@@ -9,11 +9,16 @@ import {
   Shield, 
   Database, 
   Cpu,
-  ArrowsClockwise
+  ArrowsClockwise,
+  Key,
+  CheckCircle,
+  Warning,
+  Plugs
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import {
   Dialog,
   DialogContent,
@@ -59,15 +64,25 @@ export default function DevicesPage() {
   const [clients, setClients] = useState([]);
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [credDialogOpen, setCredDialogOpen] = useState(false);
+  const [selectedDevice, setSelectedDevice] = useState(null);
   const [filterClient, setFilterClient] = useState("all");
   const [filterType, setFilterType] = useState("all");
+  const [testingConnection, setTestingConnection] = useState(false);
+  
   const [newDevice, setNewDevice] = useState({
     client_id: "",
     name: "",
     device_type: "",
     ip_address: "",
     hostname: "",
-    location: ""
+    location: "",
+    redfish_enabled: false
+  });
+  
+  const [credentials, setCredentials] = useState({
+    username: "",
+    password: ""
   });
 
   useEffect(() => {
@@ -101,7 +116,8 @@ export default function DevicesPage() {
         device_type: "",
         ip_address: "",
         hostname: "",
-        location: ""
+        location: "",
+        redfish_enabled: false
       });
       fetchData();
     } catch (error) {
@@ -116,6 +132,45 @@ export default function DevicesPage() {
       fetchData();
     } catch (error) {
       toast.error("Errore nell'eliminazione");
+    }
+  };
+
+  const handleSaveCredentials = async (e) => {
+    e.preventDefault();
+    try {
+      await axios.post(`${API}/devices/${selectedDevice.id}/credentials`, credentials);
+      toast.success("Credenziali salvate con crittografia AES-256");
+      setCredDialogOpen(false);
+      setCredentials({ username: "", password: "" });
+      fetchData();
+    } catch (error) {
+      toast.error("Errore nel salvataggio credenziali");
+    }
+  };
+
+  const handleTestRedfish = async (deviceId) => {
+    setTestingConnection(deviceId);
+    try {
+      const response = await axios.post(`${API}/devices/${deviceId}/test-redfish`);
+      if (response.data.success) {
+        toast.success(`Connesso! ${response.data.product} - Redfish v${response.data.version}`);
+      } else {
+        toast.error(`Errore: ${response.data.error}`);
+      }
+    } catch (error) {
+      toast.error(error.response?.data?.detail || "Test connessione fallito");
+    } finally {
+      setTestingConnection(false);
+    }
+  };
+
+  const handleDeleteCredentials = async (deviceId) => {
+    try {
+      await axios.delete(`${API}/devices/${deviceId}/credentials`);
+      toast.success("Credenziali eliminate");
+      fetchData();
+    } catch (error) {
+      toast.error("Errore");
     }
   };
 
@@ -134,7 +189,7 @@ export default function DevicesPage() {
             Dispositivi
           </h1>
           <p className="text-zinc-500 text-sm mt-1">
-            Gestione dispositivi monitorati
+            Gestione dispositivi monitorati con supporto Redfish/iLO
           </p>
         </div>
 
@@ -225,7 +280,6 @@ export default function DevicesPage() {
                   onChange={(e) => setNewDevice(d => ({ ...d, ip_address: e.target.value }))}
                   placeholder="192.168.1.100"
                   required
-                  pattern="^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$"
                   className="bg-zinc-800 border-zinc-700 text-zinc-100 rounded-sm font-mono"
                   data-testid="device-ip-input"
                 />
@@ -257,6 +311,19 @@ export default function DevicesPage() {
                 />
               </div>
 
+              {newDevice.device_type === "ilo" && (
+                <div className="flex items-center justify-between p-3 bg-zinc-800/50 rounded-sm border border-zinc-700">
+                  <div>
+                    <Label className="text-zinc-300">Abilita Redfish Polling</Label>
+                    <p className="text-zinc-500 text-xs mt-1">Interroga automaticamente iLO per stato hardware</p>
+                  </div>
+                  <Switch
+                    checked={newDevice.redfish_enabled}
+                    onCheckedChange={(checked) => setNewDevice(d => ({ ...d, redfish_enabled: checked }))}
+                  />
+                </div>
+              )}
+
               <div className="flex justify-end gap-2 pt-4">
                 <Button
                   type="button"
@@ -278,6 +345,70 @@ export default function DevicesPage() {
           </DialogContent>
         </Dialog>
       </div>
+
+      {/* Credentials Dialog */}
+      <Dialog open={credDialogOpen} onOpenChange={setCredDialogOpen}>
+        <DialogContent className="bg-zinc-900 border-zinc-800 rounded-sm max-w-md">
+          <DialogHeader>
+            <DialogTitle className="font-heading text-zinc-100 flex items-center gap-2">
+              <Key size={20} />
+              Credenziali {selectedDevice?.name}
+            </DialogTitle>
+          </DialogHeader>
+          <form onSubmit={handleSaveCredentials} className="space-y-4 mt-4">
+            <div className="p-3 bg-green-900/20 border border-green-800/50 rounded-sm">
+              <p className="text-green-400 text-xs flex items-center gap-2">
+                <Shield size={14} />
+                Le credenziali saranno crittografate con AES-256-GCM
+              </p>
+            </div>
+            
+            <div className="space-y-2">
+              <Label className="text-zinc-400 text-xs uppercase tracking-wider">
+                Username iLO/iDRAC *
+              </Label>
+              <Input
+                value={credentials.username}
+                onChange={(e) => setCredentials(c => ({ ...c, username: e.target.value }))}
+                placeholder="Administrator"
+                required
+                className="bg-zinc-800 border-zinc-700 text-zinc-100 rounded-sm"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label className="text-zinc-400 text-xs uppercase tracking-wider">
+                Password *
+              </Label>
+              <Input
+                type="password"
+                value={credentials.password}
+                onChange={(e) => setCredentials(c => ({ ...c, password: e.target.value }))}
+                placeholder="••••••••"
+                required
+                className="bg-zinc-800 border-zinc-700 text-zinc-100 rounded-sm"
+              />
+            </div>
+
+            <div className="flex justify-end gap-2 pt-4">
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => setCredDialogOpen(false)}
+                className="rounded-sm text-zinc-400"
+              >
+                Annulla
+              </Button>
+              <Button
+                type="submit"
+                className="rounded-sm bg-zinc-100 text-zinc-900 hover:bg-white"
+              >
+                Salva Crittografate
+              </Button>
+            </div>
+          </form>
+        </DialogContent>
+      </Dialog>
 
       {/* Filters */}
       <div className="filter-bar mb-4">
@@ -368,7 +499,7 @@ export default function DevicesPage() {
                           Eliminare {device.name}?
                         </AlertDialogTitle>
                         <AlertDialogDescription className="text-zinc-400">
-                          Questa azione non può essere annullata.
+                          Questa azione eliminerà anche le credenziali associate.
                         </AlertDialogDescription>
                       </AlertDialogHeader>
                       <AlertDialogFooter>
@@ -401,18 +532,64 @@ export default function DevicesPage() {
                     <span className="text-zinc-500">Cliente:</span>
                     <span className="text-zinc-300">{device.client_name}</span>
                   </div>
-                  {device.location && (
+                  {device.health_status && (
                     <div className="flex justify-between">
-                      <span className="text-zinc-500">Location:</span>
-                      <span className="text-zinc-400 text-xs">{device.location}</span>
+                      <span className="text-zinc-500">Health:</span>
+                      <span className={`text-xs uppercase ${device.health_status === "OK" ? "text-green-400" : "text-red-400"}`}>
+                        {device.health_status}
+                      </span>
                     </div>
                   )}
                 </div>
 
-                <div className="mt-3 pt-3 border-t border-zinc-800 flex items-center justify-between">
-                  <span className={`text-xs uppercase tracking-wider ${device.status === "active" ? "text-green-400" : "text-zinc-500"}`}>
-                    {device.status}
-                  </span>
+                {/* Device Actions */}
+                <div className="mt-3 pt-3 border-t border-zinc-800 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className={`text-xs uppercase tracking-wider ${device.status === "active" ? "text-green-400" : "text-zinc-500"}`}>
+                      {device.status}
+                    </span>
+                    {device.redfish_enabled && (
+                      <span className="text-xs text-blue-400 flex items-center gap-1">
+                        <Plugs size={12} />
+                        Redfish
+                      </span>
+                    )}
+                  </div>
+                  
+                  {device.device_type === "ilo" && (
+                    <div className="flex gap-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => {
+                          setSelectedDevice(device);
+                          setCredDialogOpen(true);
+                        }}
+                        className="flex-1 rounded-sm text-xs h-8 border-zinc-700 hover:bg-zinc-800 gap-1"
+                      >
+                        <Key size={12} />
+                        {device.has_credentials ? "Aggiorna" : "Credenziali"}
+                      </Button>
+                      {device.has_credentials && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handleTestRedfish(device.id)}
+                          disabled={testingConnection === device.id}
+                          className="flex-1 rounded-sm text-xs h-8 border-zinc-700 hover:bg-zinc-800 gap-1"
+                        >
+                          {testingConnection === device.id ? (
+                            "..."
+                          ) : (
+                            <>
+                              <Plugs size={12} />
+                              Test
+                            </>
+                          )}
+                        </Button>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
             );
