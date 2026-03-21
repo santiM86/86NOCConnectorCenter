@@ -263,12 +263,16 @@ async def register(request: Request, user: UserCreate):
         )
         raise HTTPException(status_code=400, detail="Email already registered")
     
+    # First user becomes admin
+    user_count = await db.users.count_documents({})
+    role = "admin" if user_count == 0 else "operator"
+    
     user_doc = {
         "id": str(uuid.uuid4()),
         "email": user.email,
         "name": user.name,
         "password_hash": security_manager.hash_password(user.password),
-        "role": "operator",
+        "role": role,
         "two_factor_enabled": False,
         "totp_secret": None,
         "created_at": datetime.now(timezone.utc).isoformat()

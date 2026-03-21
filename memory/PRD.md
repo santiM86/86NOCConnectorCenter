@@ -1,89 +1,64 @@
-# NOC Alert Command Center - PRD v2.0
+# NOC Alert Command Center - PRD
 
-## Original Problem Statement
-Console NOC per raccolta alert da dispositivi IT (backup, firewall, switch, server ILO) con supporto SNMP Traps, Syslog e Redfish API. Console live in tempo reale su mobile e PC con sicurezza enterprise-grade.
+## Problema Originale
+Società IT necessita di un raccoglitore di alert per tutti i dispositivi nelle reti dei clienti: backup falliti, firewall, switch, server ILO. Console live in tempo reale su mobile e PC.
 
-## User Personas
-- **IT System Administrator**: Gestisce infrastrutture multi-cliente
-- **NOC Operator**: Monitora alert 24/7, conferma e risolve problemi
-- **Security Officer**: Verifica audit log e compliance
+## Utenti
+- Operatori NOC: monitorano alert in tempo reale
+- Admin IT: gestiscono clienti, dispositivi, ruoli, SLA
+- Tecnici sul campo: ricevono notifiche su mobile
 
-## Core Requirements (Static)
-1. Raccolta alert multi-sorgente (SNMP Traps, Syslog, API/Webhook, Redfish)
-2. Dashboard real-time con WebSocket
-3. Gestione clienti e dispositivi
-4. Sistema di priorità alert (Critico, Alto, Medio, Basso)
-5. Workflow acknowledge/resolve
-6. Sicurezza enterprise-grade (AES-256-GCM, Argon2id, 2FA, Rate Limiting)
-7. Notifiche multi-canale (Email, Push, Webhook)
-8. App mobile nativa (React Native)
+## Stack Tecnologico
+- Backend: FastAPI + MongoDB (Motor) + WebSockets + APScheduler
+- Frontend: React + TailwindCSS + Shadcn UI + Recharts
+- Mobile: React Native (Expo) - scaffolded
+- Sicurezza: Argon2id, AES-256-GCM, JWT, TOTP 2FA
 
-## What's Been Implemented
+## Funzionalità Implementate
 
-### Phase 1 (21 Jan 2026) - MVP
-- ✅ Auth JWT con bcrypt
-- ✅ CRUD Clienti/Dispositivi/Alert
-- ✅ Dashboard con metriche live
-- ✅ WebSocket real-time
-- ✅ Endpoint SNMP/Syslog ingestion
-- ✅ UI responsive dark theme
+### Phase 1 - MVP (DONE)
+- [x] Auth JWT con registrazione/login
+- [x] 2FA con TOTP
+- [x] Dashboard tempo reale con WebSocket
+- [x] Gestione clienti CRUD
+- [x] Gestione dispositivi CRUD
+- [x] Alert con severità (critical, high, medium, low)
+- [x] Ingestione SNMP Traps
+- [x] Ingestione Syslog
+- [x] Polling Redfish API (APScheduler)
+- [x] Crittografia AES-256-GCM per credenziali dispositivi
 
-### Phase 2 (21 Jan 2026) - Enterprise Security + Mobile
-- ✅ **Sicurezza Enterprise:**
-  - AES-256-GCM encryption per credenziali iLO
-  - Argon2id password hashing
-  - Rate limiting (slowapi)
-  - Audit logging completo
-  - 2FA TOTP (Google Authenticator)
+### Phase 2 - Enterprise (DONE)
+- [x] RBAC con 5 ruoli (admin, manager, operator, viewer, api_client)
+- [x] SLA tracking con compliance e breach detection
+- [x] Finestre di manutenzione (crea, elimina, soppressione alert)
+- [x] Correlazione alert e deduplicazione
+- [x] Report automatici (PDF SLA, CSV alert, CSV dispositivi)
+- [x] Audit logging
 
-- ✅ **Redfish API Polling:**
-  - Scheduler configurabile (APScheduler)
-  - Auto-discovery health status
-  - Gestione credenziali crittografate
-  - Test connessione iLO
+### Phase 3 - UI Redesign (DONE - 21 Mar 2026)
+- [x] Dashboard intuitiva con banner urgenze, card severità, trend 24h, live stream
+- [x] Design dark theme NOC professionale
+- [x] Pagina Enterprise con tabs (SLA, RBAC, Manutenzione, Report)
+- [x] Filtri avanzati nella pagina alert
+- [x] Dettaglio alert con dati grezzi
+- [x] Sidebar navigazione con gestione utente
+- [x] Primo utente registrato diventa admin automaticamente
+- [x] Localizzazione completa in italiano
 
-- ✅ **Notifiche Multi-canale (MOCK):**
-  - Email via SendGrid (mock)
-  - Push via Firebase FCM (mock)
-  - Webhook: Teams, Slack, Telegram, Generico
-  
-- ✅ **React Native Mobile App:**
-  - Login/Register con 2FA
-  - Dashboard live con WebSocket
-  - Alert list con filtri
-  - Alert detail con azioni
-  - Device list
-  - Settings con logout
+## Test Credentials
+- Admin: admin@test.it / TestAdmin123! (role: admin)
 
-## P0 (Done)
-- [x] Core alert management
-- [x] Real-time WebSocket
-- [x] Multi-tenant structure
-- [x] Enterprise security (AES-256, Argon2id, 2FA)
-- [x] Redfish polling
-- [x] Mobile app structure
+## Backlog P1
+- [ ] App mobile React Native (login, dashboard, alert list)
+- [ ] Notifiche push Firebase (richiede API key utente)
+- [ ] Notifiche email SendGrid (richiede API key utente)
 
-## P1 (Backlog - Requires API Keys)
-- [ ] SendGrid email integration (richiede API key)
-- [ ] Firebase push notifications (richiede credentials)
-- [ ] Build e publish app su App Store/Play Store
+## Backlog P2
+- [ ] Integrazione LDAP
+- [ ] Refactoring server.py in moduli separati (auth, alerts, devices, ingestion)
+- [ ] Dashboard analytics avanzata
 
-## P2 (Future)
-- [ ] SNMP trap receiver nativo (porta 162)
-- [ ] Syslog server nativo (porta 514)
-- [ ] Machine learning correlazione alert
-- [ ] Integrazione ticketing (ServiceNow, Jira)
-- [ ] Report PDF automatici
-
-## Tech Stack
-- **Backend:** FastAPI + MongoDB + Motor
-- **Security:** cryptography (AES-256-GCM), argon2-cffi, pyotp, slowapi
-- **Polling:** APScheduler, httpx
-- **Frontend Web:** React + Shadcn UI + Recharts
-- **Frontend Mobile:** React Native + Expo
-
-## Next Tasks
-1. Fornire API keys SendGrid/Firebase per notifiche reali
-2. Build e deploy app mobile su store
-3. Configurare dispositivi per inviare trap/syslog
-4. Aggiungere ruoli utente (admin, operator, viewer)
+## API Mocked
+- Firebase Cloud Messaging: MOCKED (nessuna API key fornita)
+- SendGrid Email: MOCKED (nessuna API key fornita)
