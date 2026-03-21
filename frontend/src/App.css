@@ -1,34 +1,268 @@
-.App-logo {
-    height: 40vmin;
-    pointer-events: none;
+/* NOC Command Center - Main App Styles */
+
+.App {
+  min-height: 100vh;
+  background-color: var(--bg-app);
 }
 
-@media (prefers-reduced-motion: no-preference) {
-    .App-logo {
-        animation: App-logo-spin infinite 20s linear;
-    }
+/* Layout */
+.main-layout {
+  display: flex;
+  min-height: 100vh;
 }
 
-.App-header {
-    background-color: #0f0f10;
-    min-height: 100vh;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    font-size: calc(10px + 2vmin);
-    color: white;
+.sidebar {
+  width: 240px;
+  background-color: var(--bg-panel);
+  border-right: 1px solid var(--bg-border);
+  display: flex;
+  flex-direction: column;
 }
 
-.App-link {
-    color: #61dafb;
+.main-content {
+  flex: 1;
+  overflow-x: hidden;
 }
 
-@keyframes App-logo-spin {
-    from {
-        transform: rotate(0deg);
-    }
-    to {
-        transform: rotate(360deg);
-    }
+/* Login Page */
+.login-container {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  min-height: 100vh;
+}
+
+@media (max-width: 768px) {
+  .login-container {
+    grid-template-columns: 1fr;
+  }
+  .login-image {
+    display: none;
+  }
+}
+
+.login-image {
+  background-size: cover;
+  background-position: center;
+  position: relative;
+}
+
+.login-image::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(to right, transparent 0%, rgba(5, 5, 5, 0.8) 100%);
+}
+
+.login-form-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+  background-color: var(--bg-app);
+}
+
+/* Dashboard Grid */
+.dashboard-grid {
+  display: grid;
+  gap: 1rem;
+  padding: 1.5rem;
+}
+
+@media (min-width: 1024px) {
+  .dashboard-grid {
+    grid-template-columns: repeat(4, 1fr);
+  }
+}
+
+@media (max-width: 1023px) {
+  .dashboard-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 640px) {
+  .dashboard-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Metric Cards */
+.metric-card {
+  background-color: var(--bg-panel);
+  border: 1px solid var(--bg-border);
+  padding: 1.25rem;
+}
+
+.metric-card:hover {
+  border-color: #3f3f46;
+}
+
+.metric-value {
+  font-family: 'Chivo', sans-serif;
+  font-size: 2.5rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1;
+}
+
+.metric-label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin-top: 0.5rem;
+}
+
+/* Alert Table */
+.alert-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.alert-table th {
+  background-color: var(--bg-panel);
+  border-bottom: 1px solid var(--bg-border);
+  padding: 0.75rem 1rem;
+  text-align: left;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  font-weight: 500;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.alert-table td {
+  border-bottom: 1px solid var(--bg-border);
+  padding: 0.75rem 1rem;
+  font-size: 0.875rem;
+}
+
+.alert-table tr:hover td {
+  background-color: rgba(255, 255, 255, 0.02);
+}
+
+/* Severity Badge */
+.severity-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border: 1px solid;
+}
+
+/* Live Indicator */
+.live-indicator {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.75rem;
+  color: var(--low-text);
+}
+
+.live-dot {
+  width: 6px;
+  height: 6px;
+  background-color: var(--low-text);
+  border-radius: 50%;
+  animation: pulse-critical 2s ease-in-out infinite;
+}
+
+/* Syslog Stream */
+.syslog-stream {
+  background-color: #000;
+  border: 1px solid #1a1a1a;
+  height: 300px;
+  overflow-y: auto;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.75rem;
+  padding: 0.5rem;
+}
+
+.syslog-line {
+  padding: 0.25rem 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.syslog-timestamp {
+  color: var(--text-muted);
+}
+
+.syslog-ip {
+  color: var(--medium-text);
+}
+
+/* Mobile Navigation */
+@media (max-width: 768px) {
+  .sidebar {
+    position: fixed;
+    left: -240px;
+    top: 0;
+    bottom: 0;
+    z-index: 50;
+    transition: left 0.2s ease-out;
+  }
+  
+  .sidebar.open {
+    left: 0;
+  }
+  
+  .sidebar-overlay {
+    position: fixed;
+    inset: 0;
+    background-color: rgba(0, 0, 0, 0.5);
+    z-index: 40;
+  }
+}
+
+/* Nav Items */
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  color: var(--text-secondary);
+  text-decoration: none;
+  font-size: 0.875rem;
+  transition: all 0.15s ease-out;
+  border-left: 2px solid transparent;
+}
+
+.nav-item:hover {
+  background-color: rgba(255, 255, 255, 0.02);
+  color: var(--text-primary);
+}
+
+.nav-item.active {
+  background-color: rgba(255, 255, 255, 0.05);
+  color: var(--text-primary);
+  border-left-color: var(--text-primary);
+}
+
+/* Filter Bar */
+.filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  padding: 1rem;
+  background-color: var(--bg-panel);
+  border-bottom: 1px solid var(--bg-border);
+}
+
+/* Status Pills */
+.status-active {
+  color: var(--critical-text);
+}
+
+.status-acknowledged {
+  color: var(--high-text);
+}
+
+.status-resolved {
+  color: var(--low-text);
 }
