@@ -1401,6 +1401,120 @@ async def get_connector_update_info(current_user: dict = Depends(get_current_use
         update_info["pending_connectors"] = total_connectors - updated
     return update_info or {"version": "1.0.0", "total_connectors": total_connectors, "updated_connectors": 0, "pending_connectors": 0}
 
+# ==================== CONNECTOR DEVICE MANAGEMENT ====================
+
+class DeviceStatusReport(BaseModel):
+    device_ip: str
+    device_name: str
+    community: str = "public"
+    reachable: bool
+    ports: Optional[list] = []
+    sys_descr: Optional[str] = ""
+    sys_uptime: Optional[str] = ""
+    poll_timestamp: str
+
+class PollingReport(BaseModel):
+    devices: list[DeviceStatusReport]
+
+class ManagedDevice(BaseModel):
+    ip: str
+    community: str = "public"
+    name: str
+
+@api_router.post("/connector/device-report")
+async def connector_device_report(request: Request):
+    """Connector sends full device status report after each polling cycle."""
+    api_key = request.headers.get("X-API-Key")
+    if not api_key:
+        raise HTTPException(status_code=401, detail="API key required")
+    client_data = await db.clients.find_one({"api_key": api_key}, {"_id": 0})
+    if not client_data:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+    body = await request.json()
+    client_id = client_data["id"]
+    hostname = body.get("hostname", "unknown")
+    devices = body.get("devices", [])
+
+    for dev in devices:
+        doc = {
+            "client_id": client_id,
+            "connector_hostname": hostname,
+            "device_ip": dev["device_ip"],
+            "device_name": dev["device_name"],
+            "reachable": dev["reachable"],
+            "ports": dev.get("ports", []),
+            "sys_descr": dev.get("sys_descr", ""),
+            "sys_uptime": dev.get("sys_uptime", ""),
+            "last_poll": dev.get("poll_timestamp", datetime.now(timezone.utc).isoformat()),
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        }
+        await db.device_poll_status.update_one(
+            {"client_id": client_id, "device_ip": dev["device_ip"]},
+            {"$set": doc},
+            upsert=True
+        )
+
+    return {"status": "ok", "devices_updated": len(devices)}
+
+@api_router.get("/connector/device-poll-status")
+async def get_device_poll_status(current_user: dict = Depends(get_current_user)):
+    """Get latest polling status for all monitored devices."""
+    statuses = await db.device_poll_status.find({}, {"_id": 0}).to_list(500)
+    return statuses
+
+@api_router.get("/connector/{client_id}/managed-devices")
+async def get_managed_devices(client_id: str, request: Request):
+    """Get device list for a connector (called by connector or admin)."""
+    # Allow both API key auth and JWT auth
+    api_key = request.headers.get("X-API-Key")
+    if api_key:
+        client_data = await db.clients.find_one({"api_key": api_key}, {"_id": 0})
+        if not client_data:
+            raise HTTPException(status_code=401, detail="Invalid API key")
+        client_id = client_data["id"]
+
+    devices = await db.managed_devices.find({"client_id": client_id}, {"_id": 0}).to_list(200)
+    return devices
+
+@api_router.post("/connector/{client_id}/managed-devices")
+async def add_managed_device(client_id: str, device: ManagedDevice, current_user: dict = Depends(get_current_user)):
+    """Add a device to monitor for a specific connector/client."""
+    doc = {
+        "id": str(uuid.uuid4()),
+        "client_id": client_id,
+        "ip": device.ip,
+        "community": device.community,
+        "name": device.name,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_by": current_user.get("name", "admin")
+    }
+    await db.managed_devices.insert_one(doc)
+    return {"status": "ok", "device": {k: v for k, v in doc.items() if k != "_id"}}
+
+@api_router.delete("/connector/{client_id}/managed-devices/{device_id}")
+async def remove_managed_device(client_id: str, device_id: str, current_user: dict = Depends(get_current_user)):
+    """Remove a monitored device."""
+    result = await db.managed_devices.delete_one({"id": device_id, "client_id": client_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Device not found")
+    # Also remove poll status
+    await db.device_poll_status.delete_one({"client_id": client_id, "device_ip": device_id})
+    return {"status": "ok"}
+
+@api_router.get("/connector/fetch-devices")
+async def connector_fetch_devices(request: Request):
+    """Connector fetches its device list from the NOC (for centralized management)."""
+    api_key = request.headers.get("X-API-Key")
+    if not api_key:
+        raise HTTPException(status_code=401, detail="API key required")
+    client_data = await db.clients.find_one({"api_key": api_key}, {"_id": 0})
+    if not client_data:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+    devices = await db.managed_devices.find({"client_id": client_data["id"]}, {"_id": 0}).to_list(200)
+    return [{"ip": d["ip"], "community": d["community"], "name": d["name"]} for d in devices]
+
 @api_router.post("/clients/{client_id}/regenerate-key")
 async def regenerate_client_api_key(client_id: str, current_user: dict = Depends(get_current_user)):
     """Regenerate API key for a client."""

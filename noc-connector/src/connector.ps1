@@ -245,11 +245,97 @@ if (Test-Path $pollerPath) {
     . $pollerPath
 }
 
+function Send-DeviceReport($config, $devices) {
+    $reportDevices = @()
+    foreach ($dev in $devices) {
+        $ip = $dev.ip
+        $devName = if ($dev.name) { $dev.name } else { $ip }
+        $community = if ($dev.community) { $dev.community } else { "public" }
+        
+        $reachable = $script:DeviceUp.ContainsKey($ip) -and $script:DeviceUp[$ip]
+        $ports = @()
+        
+        if ($script:PortStates.ContainsKey($ip)) {
+            foreach ($idx in $script:PortStates[$ip].Keys) {
+                $operStatus = $script:PortStates[$ip][$idx]
+                $statusName = if ($script:IfStatusMap.ContainsKey($operStatus)) { $script:IfStatusMap[$operStatus] } else { "unknown" }
+                $ports += @{
+                    index = $idx
+                    status = $statusName
+                    status_code = $operStatus
+                }
+            }
+        }
+        
+        $sysDescr = ""
+        $sysUptime = ""
+        if ($reachable) {
+            try {
+                $sysDescr = Get-SnmpValue $ip $community "1.3.6.1.2.1.1.1.0"
+                $uptimeTicks = Get-SnmpValue $ip $community "1.3.6.1.2.1.1.3.0"
+                if ($uptimeTicks) {
+                    $secs = [math]::Floor($uptimeTicks / 100)
+                    $d = [math]::Floor($secs / 86400)
+                    $h = [math]::Floor(($secs % 86400) / 3600)
+                    $m = [math]::Floor(($secs % 3600) / 60)
+                    $sysUptime = "${d}g ${h}h ${m}m"
+                }
+            } catch {}
+        }
+        
+        $reportDevices += @{
+            device_ip = $ip
+            device_name = $devName
+            reachable = $reachable
+            ports = $ports
+            sys_descr = "$sysDescr"
+            sys_uptime = $sysUptime
+            poll_timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+        }
+    }
+    
+    $payload = @{
+        hostname = $env:COMPUTERNAME
+        devices = $reportDevices
+    }
+    Send-ToNOC $config "connector/device-report" $payload | Out-Null
+    Write-Log "Report stato dispositivi inviato ($($reportDevices.Count) dispositivi)"
+}
+
+function Fetch-DevicesFromNOC($config) {
+    try {
+        $headers = @{ "X-API-Key" = $config.api_key }
+        $url = "$($config.noc_center_url)/api/connector/fetch-devices"
+        $response = Invoke-RestMethod -Uri $url -Headers $headers -TimeoutSec 15 -ErrorAction Stop
+        if ($response -and $response.Count -gt 0) {
+            Write-Log "Dispositivi ricevuti dal NOC: $($response.Count)"
+            return @($response)
+        }
+    } catch {
+        Write-Log "Errore fetch dispositivi dal NOC: $($_.Exception.Message)" "WARN"
+    }
+    return $null
+}
+
 function Start-PollingLoop($config) {
     $devices = @()
     if ($config.devices) {
         $devices = @($config.devices)
     }
+    
+    # Also fetch from NOC (centralized management)
+    $nocDevices = Fetch-DevicesFromNOC $config
+    if ($nocDevices) {
+        # Merge: NOC devices take priority, add local-only devices
+        $nocIPs = $nocDevices | ForEach-Object { $_.ip }
+        foreach ($localDev in $devices) {
+            if ($localDev.ip -notin $nocIPs) {
+                $nocDevices += $localDev
+            }
+        }
+        $devices = $nocDevices
+    }
+    
     if ($devices.Count -eq 0) {
         Write-Log "Nessun dispositivo configurato per polling SNMP"
         return
@@ -261,10 +347,13 @@ function Start-PollingLoop($config) {
         Write-Log "  - $($dev.name) ($($dev.ip)) community=$($dev.community)"
     }
 
-    # First poll - initialize states without generating alerts
+    # First poll - initialize states and send initial report
     Write-Log "Prima scansione porte in corso..."
     $null = Poll-AllDevices $devices $config
-    Write-Log "Stato iniziale porte acquisito."
+    Write-Log "Stato iniziale porte acquisito. Invio report al NOC..."
+    Send-DeviceReport $config $devices
+    
+    $refreshCounter = 0
 
     while ($global:Running) {
         try {
@@ -272,6 +361,26 @@ function Start-PollingLoop($config) {
             foreach ($alert in $alerts) {
                 Write-Log "[POLL] $($alert.trap_type): $($alert.value)" "WARN"
                 Send-SNMPToNOC $config $alert
+            }
+            # Send full status report after every poll
+            Send-DeviceReport $config $devices
+            
+            # Refresh device list from NOC every 10 cycles
+            $refreshCounter++
+            if ($refreshCounter -ge 10) {
+                $refreshCounter = 0
+                $nocDevices = Fetch-DevicesFromNOC $config
+                if ($nocDevices) {
+                    $nocIPs = $nocDevices | ForEach-Object { $_.ip }
+                    $localOnly = @()
+                    if ($config.devices) {
+                        foreach ($localDev in @($config.devices)) {
+                            if ($localDev.ip -notin $nocIPs) { $localOnly += $localDev }
+                        }
+                    }
+                    $devices = @($nocDevices) + $localOnly
+                    Write-Log "Lista dispositivi aggiornata dal NOC: $($devices.Count) totali"
+                }
             }
         } catch {
             Write-Log "Errore polling: $($_.Exception.Message)" "ERROR"

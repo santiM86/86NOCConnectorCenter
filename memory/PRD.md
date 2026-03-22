@@ -12,65 +12,39 @@ Societa' IT necessita di un raccoglitore di alert per tutti i dispositivi nelle 
 
 ## Funzionalita' Implementate
 
-### Phase 1 - MVP (DONE)
-- [x] Auth JWT con registrazione/login + 2FA TOTP
-- [x] Dashboard tempo reale con WebSocket
-- [x] Gestione clienti CRUD con API key per ogni cliente
-- [x] Gestione dispositivi CRUD
-- [x] Alert con severita' (critical, high, medium, low)
-- [x] Ingestione SNMP Traps + Syslog (con auth API Key)
-- [x] Polling Redfish API (APScheduler)
-- [x] Crittografia AES-256-GCM
-
-### Phase 2 - Enterprise (DONE)
-- [x] RBAC con 5 ruoli
-- [x] SLA tracking + compliance + breach detection
-- [x] Finestre di manutenzione
-- [x] Correlazione alert e deduplicazione
-- [x] Report automatici (PDF/CSV)
-- [x] Audit logging
-
-### Phase 3 - UI Redesign (DONE)
-- [x] Dashboard intuitiva (banner urgenze, card severita', trend, live stream)
-- [x] Pagina Enterprise (SLA, RBAC, Manutenzione, Report)
-- [x] Design dark theme NOC professionale
-- [x] Localizzazione italiana
+### Phase 1-3 (DONE)
+- Auth JWT + 2FA TOTP, Dashboard tempo reale WebSocket, CRUD clienti/dispositivi/alert
+- Enterprise: RBAC, SLA, manutenzione, correlazione, report PDF/CSV, audit
+- UI: Dark theme NOC, localizzazione italiana, responsive
 
 ### Phase 4 - 86NocConnector (DONE)
-- [x] 100% PowerShell nativo
-- [x] Wizard installazione GUI con pagina Dispositivi da Monitorare
-- [x] Icona system tray
-- [x] SNMP Trap listener + Syslog listener
-- [x] Inoltro automatico al NOC Center via HTTPS + API Key
-- [x] Heartbeat connector
-- [x] Avvio automatico con Windows
-- [x] Fix finestra nera + launcher VBS
-- [x] Pacchetto ZIP scaricabile dal web
+- 100% PowerShell nativo, wizard GUI, system tray, SNMP/Syslog listener
+- Auto-start Windows, disinstallazione pulita, fix finestra nera, launcher VBS
 
 ### Phase 5 - Mobile PWA + Connectors Page (DONE)
-- [x] PWA manifest.json + service worker
-- [x] Bottom navigation bar per mobile
-- [x] Meta tags Apple per iOS
-- [x] Pagina Connettori con stato real-time
-- [x] Sezione Download con guida installazione 3 step
+- PWA manifest + service worker, bottom nav mobile, Apple meta tags
+- Pagina Connettori con download, guida installazione 3 step
 
-### Phase 6 - SNMP Polling + Auto-Update (DONE - 22 Mar 2026)
-- [x] Client SNMP v2c nativo (raw UDP, BER encoding/decoding)
-- [x] Polling attivo stato porte switch (ifOperStatus)
-- [x] Rilevamento cambiamenti porte (up→down = critical, down→up = low)
-- [x] Rilevamento dispositivo non raggiungibile
-- [x] Pagina installer "Dispositivi da Monitorare" con aggiungi/rimuovi
-- [x] Intervallo polling configurabile (default 60s)
-- [x] Sistema auto-update centralizzato per 300+ connector
-- [x] Backend: upload ZIP, check versione, download endpoint
-- [x] Connector: check aggiornamenti ogni 6 ore, download, backup, aggiornamento, riavvio
-- [x] Frontend: sezione "Aggiornamento Automatico" con upload, versione, changelog, contatore aggiornati
-- [x] Alert con titoli leggibili (es. "Porta DOWN - HPE 1820 48G")
+### Phase 6 - SNMP Polling + Auto-Update (DONE)
+- Client SNMP v2c nativo raw UDP + BER encoding
+- Polling attivo porte switch, rilevamento cambiamenti, alert automatici
+- Auto-update centralizzato: upload ZIP dal NOC, connector si aggiorna ogni 6h
+
+### Phase 7 - Stato Dispositivi + Gestione Centralizzata (DONE - 22 Mar 2026)
+- Report completo stato dispositivi dopo ogni ciclo di polling
+- Mappa visuale 48 porte con colori (UP verde, DOWN rosso) nella dashboard NOC
+- Badge stato OK/NON RAGGIUNGIBILE con ora ultimo check
+- Info switch: sysDescr, uptime, contatori porte up/down
+- Gestione centralizzata dispositivi dal NOC: aggiungi/rimuovi switch senza accesso al server
+- Connector scarica lista dispositivi dal backend ogni 10 cicli di polling
+- Aggiornamento automatico in tempo reale ogni 15 secondi
 
 ## Architettura
 ```
-[Switch HPE 1820] ←SNMP polling→ [86NocConnector su Windows] →HTTPS→ [NOC Center Cloud]
-                                  ↑ Auto-update ogni 6h ↑
+[Admin NOC] --gestione dispositivi--> [Backend] --fetch devices--> [Connector]
+[Connector] --polling SNMP--> [Switch HPE] 
+[Connector] --device report--> [Backend] --websocket--> [Dashboard NOC]
+[Connector] --check update ogni 6h--> [Backend] --download ZIP--> [Auto-update]
 ```
 
 ## Test Credentials
@@ -85,5 +59,5 @@ Societa' IT necessita di un raccoglitore di alert per tutti i dispositivi nelle 
 - [ ] SNMP v3 nel connector
 - [ ] Auto-discovery dispositivi rete
 - [ ] Refactoring server.py in moduli
-- [ ] Integrazione AI per SOC (correlazione intelligente alert)
-- [ ] Telefonate automatiche Twilio per alert critici
+- [ ] AI per SOC (correlazione intelligente, auto-triage)
+- [ ] Telefonate Twilio per alert critici

@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import axios from "axios";
 import { API } from "@/App";
+import DevicePollStatus from "@/components/DevicePollStatus";
 import { 
   HardDrive, 
   ArrowClockwise,
@@ -327,6 +328,9 @@ export default function ConnectorsPage() {
           )}
         </div>
       </div>
+
+      {/* Device Polling Status */}
+      <DevicePollStatus />
 
       {/* Connector list */}
       {loading ? (
