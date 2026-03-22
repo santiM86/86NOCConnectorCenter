@@ -1,0 +1,15 @@
+============================================================
+  86NocConnector - Verifica Integrita' File
+  Algoritmo: SHA-256
+  Data: 2026-03-22 18:31 UTC
+============================================================
+
+7b936bbdfc3d02ee98fbbc4fd0eb8eafd029c47b6f11d78dab16495e41b58da4  src/connector.py
+2579c80d8289fa7f316ac0961acb6cd56f0d27b2ecf1655aee51179ec3476b5f  src/tray_app.py
+dcae96e656374290f3e78d93669aab3d7f5b1b42a6c4900fc94e9106b561a331  src/installer_gui.py
+6e34a0fbc8c68bb76058d5c414410757000691e9214af6786fa70d6ec22d9dc5  setup.bat
+797652954fcfd713950ce5e0a5bd59f29339a6eb8655b016935f846749dac426  install.bat
+3afbaa86ebb37b353dfa008d8e039259537a5f6557a2490e58076125a9d48bad  uninstall.bat
+e402b27aab31a9224b0b55e881360ebaf31afe892571c76acd0ea28d17639261  86NocConnector.bat
+
+Per verificare: certutil -hashfile <file> SHA256
