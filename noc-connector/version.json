@@ -1,4 +1,4 @@
 {
-  "version": "1.4.2",
-  "changelog": "Fix: versione ora letta da version.json invece di essere hardcodata. Fix Send-ToNOC per force update. Menu Start."
+  "version": "1.4.3",
+  "changelog": "Fix critico auto-update: gestione corretta struttura ZIP piatta. Versione dinamica da version.json. Fix force update. Menu Start."
 }

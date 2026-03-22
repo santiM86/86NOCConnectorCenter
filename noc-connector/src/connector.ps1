@@ -453,16 +453,21 @@ function Install-Update($config, $updateInfo) {
         Add-Type -AssemblyName System.IO.Compression.FileSystem
         [System.IO.Compression.ZipFile]::ExtractToDirectory($tempZip, $tempExtract)
         
-        # Find the extracted connector folder
-        $extractedDir = Get-ChildItem $tempExtract -Directory | Select-Object -First 1
-        if (-not $extractedDir) {
-            Write-Log "Errore: nessuna cartella trovata nello ZIP" "ERROR"
-            return $false
+        # Find the source directory - handle both flat and nested ZIP structures
+        $extractedDir = $tempExtract
+        $srcDir = Join-Path $tempExtract "src"
+        
+        # Check if ZIP has a wrapper folder (e.g., 86NocConnector/src/)
+        if (-not (Test-Path $srcDir)) {
+            $subDir = Get-ChildItem $tempExtract -Directory | Select-Object -First 1
+            if ($subDir) {
+                $extractedDir = $subDir.FullName
+                $srcDir = Join-Path $extractedDir "src"
+            }
         }
         
-        $srcDir = Join-Path $extractedDir.FullName "src"
         if (-not (Test-Path $srcDir)) {
-            Write-Log "Errore: cartella src non trovata" "ERROR"
+            Write-Log "Errore: cartella src non trovata nello ZIP" "ERROR"
             return $false
         }
         
@@ -482,8 +487,8 @@ function Install-Update($config, $updateInfo) {
             Write-Log "  Aggiornato: $($_.Name)" "INFO"
         }
         
-        # Copy root files (bat files, etc) except config
-        Get-ChildItem $extractedDir.FullName -File | ForEach-Object {
+        # Copy root files (version.json, bat files, etc) except config
+        Get-ChildItem $extractedDir -File | ForEach-Object {
             $destFile = Join-Path $currentDir $_.Name
             Copy-Item $_.FullName $destFile -Force
             Write-Log "  Aggiornato: $($_.Name)" "INFO"
