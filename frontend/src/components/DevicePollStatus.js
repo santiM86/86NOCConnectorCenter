@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import axios from "axios";
 import { API } from "@/App";
 import { 
@@ -11,7 +11,10 @@ import {
   Trash,
   CircleDashed,
   ArrowUp,
-  ArrowDown
+  ArrowDown,
+  Buildings,
+  CaretDown,
+  CaretRight
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
@@ -24,6 +27,7 @@ export default function DevicePollStatus() {
   const [newDevice, setNewDevice] = useState({ ip: "", community: "public", name: "" });
   const [selectedClient, setSelectedClient] = useState("");
   const [expandedDevice, setExpandedDevice] = useState(null);
+  const [collapsedClients, setCollapsedClients] = useState({});
 
   const fetchData = useCallback(async () => {
     try {
@@ -107,6 +111,36 @@ export default function DevicePollStatus() {
     const down = ports.filter(p => p.status === "down").length;
     const other = ports.length - up - down;
     return { up, down, other, total: ports.length };
+  };
+
+  // Group devices by client
+  const clientMap = useMemo(() => {
+    const map = {};
+    clients.forEach(c => { map[c.id] = c.name; });
+    return map;
+  }, [clients]);
+
+  const groupedDevices = useMemo(() => {
+    const groups = {};
+    devices.forEach(dev => {
+      const clientId = dev.client_id || "unknown";
+      const clientName = clientMap[clientId] || "Sconosciuto";
+      if (!groups[clientId]) {
+        groups[clientId] = { clientName, clientId, devices: [] };
+      }
+      groups[clientId].devices.push(dev);
+    });
+    return Object.values(groups).sort((a, b) => a.clientName.localeCompare(b.clientName));
+  }, [devices, clientMap]);
+
+  const toggleClient = (clientId) => {
+    setCollapsedClients(prev => ({ ...prev, [clientId]: !prev[clientId] }));
+  };
+
+  const clientStats = (devs) => {
+    const ok = devs.filter(d => d.reachable && isRecent(d.last_poll)).length;
+    const ko = devs.length - ok;
+    return { ok, ko, total: devs.length };
   };
 
   return (
@@ -211,7 +245,7 @@ export default function DevicePollStatus() {
         </div>
       )}
 
-      {/* Device list */}
+      {/* Device list grouped by client */}
       {loading ? (
         <div className="noc-panel p-6 text-center text-[var(--text-muted)] text-sm">Caricamento...</div>
       ) : devices.length === 0 ? (
@@ -223,131 +257,166 @@ export default function DevicePollStatus() {
           </p>
         </div>
       ) : (
-        <div className="grid gap-2">
-          {devices.map((dev, i) => {
-            const recent = isRecent(dev.last_poll);
-            const portStats = portsByStatus(dev.ports || []);
-            const expanded = expandedDevice === i;
-
+        <div className="space-y-3">
+          {groupedDevices.map((group) => {
+            const collapsed = collapsedClients[group.clientId];
+            const stats = clientStats(group.devices);
             return (
-              <div key={i} className="noc-panel overflow-hidden" data-testid={`polled-device-${i}`}>
+              <div key={group.clientId} className="noc-panel overflow-hidden" data-testid={`client-group-${group.clientId}`}>
+                {/* Client header */}
                 <div 
-                  className="p-3 flex items-center gap-3 cursor-pointer hover:bg-[var(--bg-hover)] transition-colors"
-                  onClick={() => setExpandedDevice(expanded ? null : i)}
+                  className="p-3 flex items-center gap-3 cursor-pointer hover:bg-[var(--bg-hover)] transition-colors border-b border-[var(--bg-border)]"
+                  onClick={() => toggleClient(group.clientId)}
                 >
-                  {/* Status indicator */}
-                  <div className={`w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0 ${
-                    dev.reachable && recent
-                      ? "bg-[var(--low-bg)] border border-[var(--low-border)]"
-                      : "bg-[var(--critical-bg)] border border-[var(--critical-border)]"
-                  }`}>
-                    {dev.reachable && recent
-                      ? <WifiHigh size={18} weight="fill" className="text-[var(--ok)]" />
-                      : <WifiSlash size={18} weight="fill" className="text-[var(--critical)]" />
-                    }
+                  {collapsed 
+                    ? <CaretRight size={14} className="text-[var(--text-muted)]" />
+                    : <CaretDown size={14} className="text-[var(--text-muted)]" />
+                  }
+                  <div className="w-8 h-8 rounded-lg bg-indigo-600/10 flex items-center justify-center flex-shrink-0">
+                    <Buildings size={16} className="text-indigo-400" />
                   </div>
-
-                  {/* Device info */}
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <p className="font-heading font-bold text-sm text-[var(--text-primary)] truncate">
-                        {dev.device_name}
-                      </p>
-                      <span className={`text-[10px] px-1.5 py-0.5 rounded border ${
-                        dev.reachable && recent
-                          ? "text-[var(--ok)] bg-[var(--low-bg)] border-[var(--low-border)]"
-                          : "text-[var(--critical)] bg-[var(--critical-bg)] border-[var(--critical-border)]"
-                      }`}>
-                        {dev.reachable && recent ? "OK" : "NON RAGGIUNGIBILE"}
-                      </span>
-                    </div>
-                    <p className="font-mono text-xs text-[var(--text-muted)]">{dev.device_ip}</p>
+                    <p className="font-heading font-bold text-sm text-[var(--text-primary)]">{group.clientName}</p>
                   </div>
-
-                  {/* Port summary */}
-                  {portStats.total > 0 && (
-                    <div className="hidden md:flex items-center gap-3">
-                      <div className="flex items-center gap-1">
-                        <ArrowUp size={12} className="text-[var(--ok)]" />
-                        <span className="text-xs font-mono text-[var(--ok)]">{portStats.up}</span>
-                      </div>
-                      <div className="flex items-center gap-1">
-                        <ArrowDown size={12} className="text-[var(--critical)]" />
-                        <span className="text-xs font-mono text-[var(--critical)]">{portStats.down}</span>
-                      </div>
-                      <span className="text-[10px] text-[var(--text-muted)]">
-                        {portStats.total} porte
+                  <div className="flex items-center gap-3">
+                    <span className="text-[10px] font-mono text-[var(--text-muted)]">{stats.total} dispositivi</span>
+                    {stats.ok > 0 && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded border text-[var(--ok)] bg-[var(--low-bg)] border-[var(--low-border)]">
+                        {stats.ok} OK
                       </span>
-                    </div>
-                  )}
-
-                  {/* Last check */}
-                  <div className="text-right flex-shrink-0">
-                    <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider flex items-center gap-1 justify-end">
-                      <Clock size={10} />
-                      Ultimo check
-                    </p>
-                    <p className={`text-xs font-mono ${recent ? "text-[var(--ok)]" : "text-[var(--critical)]"}`}>
-                      {formatTime(dev.last_poll)}
-                    </p>
+                    )}
+                    {stats.ko > 0 && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded border text-[var(--critical)] bg-[var(--critical-bg)] border-[var(--critical-border)]">
+                        {stats.ko} KO
+                      </span>
+                    )}
                   </div>
-
-                  {/* Delete button */}
-                  <button
-                    onClick={(e) => { e.stopPropagation(); removePolledDevice(dev.device_ip); }}
-                    className="flex-shrink-0 w-8 h-8 rounded-md flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--critical)] hover:bg-[var(--critical-bg)] transition-colors"
-                    title="Elimina dispositivo"
-                    data-testid={`delete-polled-device-${i}`}
-                  >
-                    <Trash size={15} />
-                  </button>
                 </div>
 
-                {/* Expanded port details */}
-                {expanded && (
-                  <div className="border-t border-[var(--bg-border)] p-3 bg-[var(--bg-card)]/50 animate-fade-in">
-                    {dev.sys_descr && (
-                      <p className="text-[11px] text-[var(--text-muted)] mb-2 truncate" title={dev.sys_descr}>
-                        {dev.sys_descr}
-                      </p>
-                    )}
-                    {dev.sys_uptime && (
-                      <p className="text-[11px] text-[var(--text-muted)] mb-3">
-                        Uptime switch: {dev.sys_uptime}
-                      </p>
-                    )}
-                    {(dev.ports || []).length > 0 ? (
-                      <div className="grid grid-cols-6 sm:grid-cols-8 md:grid-cols-12 gap-1.5">
-                        {(dev.ports || []).sort((a,b) => parseInt(a.index) - parseInt(b.index)).map((port, pi) => (
-                          <div
-                            key={pi}
-                            title={`Porta ${port.index}: ${port.status}`}
-                            className={`h-7 rounded flex items-center justify-center text-[9px] font-mono border ${
-                              port.status === "up"
-                                ? "bg-[var(--low-bg)] border-[var(--low-border)] text-[var(--ok)]"
-                                : port.status === "down"
-                                ? "bg-[var(--critical-bg)] border-[var(--critical-border)] text-[var(--critical)]"
-                                : "bg-[var(--bg-hover)] border-[var(--bg-border)] text-[var(--text-muted)]"
-                            }`}
+                {/* Device list for this client */}
+                {!collapsed && (
+                  <div className="divide-y divide-[var(--bg-border)]">
+                    {group.devices.map((dev, i) => {
+                      const devKey = `${group.clientId}-${dev.device_ip}`;
+                      const recent = isRecent(dev.last_poll);
+                      const portStats = portsByStatus(dev.ports || []);
+                      const expanded = expandedDevice === devKey;
+
+                      return (
+                        <div key={devKey} data-testid={`polled-device-${devKey}`}>
+                          <div 
+                            className="p-3 pl-12 flex items-center gap-3 cursor-pointer hover:bg-[var(--bg-hover)] transition-colors"
+                            onClick={() => setExpandedDevice(expanded ? null : devKey)}
                           >
-                            {port.index}
+                            <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${
+                              dev.reachable && recent
+                                ? "bg-[var(--low-bg)] border border-[var(--low-border)]"
+                                : "bg-[var(--critical-bg)] border border-[var(--critical-border)]"
+                            }`}>
+                              {dev.reachable && recent
+                                ? <WifiHigh size={16} weight="fill" className="text-[var(--ok)]" />
+                                : <WifiSlash size={16} weight="fill" className="text-[var(--critical)]" />
+                              }
+                            </div>
+
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2">
+                                <p className="font-heading font-bold text-xs text-[var(--text-primary)] truncate">
+                                  {dev.device_name}
+                                </p>
+                                <span className={`text-[10px] px-1.5 py-0.5 rounded border ${
+                                  dev.reachable && recent
+                                    ? "text-[var(--ok)] bg-[var(--low-bg)] border-[var(--low-border)]"
+                                    : "text-[var(--critical)] bg-[var(--critical-bg)] border-[var(--critical-border)]"
+                                }`}>
+                                  {dev.reachable && recent ? "OK" : "NON RAGGIUNGIBILE"}
+                                </span>
+                              </div>
+                              <p className="font-mono text-[11px] text-[var(--text-muted)]">{dev.device_ip}</p>
+                            </div>
+
+                            {portStats.total > 0 && (
+                              <div className="hidden md:flex items-center gap-3">
+                                <div className="flex items-center gap-1">
+                                  <ArrowUp size={12} className="text-[var(--ok)]" />
+                                  <span className="text-xs font-mono text-[var(--ok)]">{portStats.up}</span>
+                                </div>
+                                <div className="flex items-center gap-1">
+                                  <ArrowDown size={12} className="text-[var(--critical)]" />
+                                  <span className="text-xs font-mono text-[var(--critical)]">{portStats.down}</span>
+                                </div>
+                                <span className="text-[10px] text-[var(--text-muted)]">{portStats.total} porte</span>
+                              </div>
+                            )}
+
+                            <div className="text-right flex-shrink-0">
+                              <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider flex items-center gap-1 justify-end">
+                                <Clock size={10} /> Ultimo check
+                              </p>
+                              <p className={`text-xs font-mono ${recent ? "text-[var(--ok)]" : "text-[var(--critical)]"}`}>
+                                {formatTime(dev.last_poll)}
+                              </p>
+                            </div>
+
+                            <button
+                              onClick={(e) => { e.stopPropagation(); removePolledDevice(dev.device_ip); }}
+                              className="flex-shrink-0 w-7 h-7 rounded-md flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--critical)] hover:bg-[var(--critical-bg)] transition-colors"
+                              title="Elimina dispositivo"
+                              data-testid={`delete-polled-device-${devKey}`}
+                            >
+                              <Trash size={14} />
+                            </button>
                           </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <p className="text-xs text-[var(--text-muted)]">Nessun dato porte disponibile</p>
-                    )}
-                    <div className="flex items-center gap-2 mt-3">
-                      <span className="flex items-center gap-1 text-[10px] text-[var(--text-muted)]">
-                        <div className="w-3 h-3 rounded bg-[var(--low-bg)] border border-[var(--low-border)]"></div> UP
-                      </span>
-                      <span className="flex items-center gap-1 text-[10px] text-[var(--text-muted)]">
-                        <div className="w-3 h-3 rounded bg-[var(--critical-bg)] border border-[var(--critical-border)]"></div> DOWN
-                      </span>
-                      <span className="flex items-center gap-1 text-[10px] text-[var(--text-muted)]">
-                        <div className="w-3 h-3 rounded bg-[var(--bg-hover)] border border-[var(--bg-border)]"></div> Altro
-                      </span>
-                    </div>
+
+                          {expanded && (
+                            <div className="border-t border-[var(--bg-border)] p-3 pl-12 bg-[var(--bg-card)]/50 animate-fade-in">
+                              {dev.sys_descr && (
+                                <p className="text-[11px] text-[var(--text-muted)] mb-2 truncate" title={dev.sys_descr}>
+                                  {dev.sys_descr}
+                                </p>
+                              )}
+                              {dev.sys_uptime && (
+                                <p className="text-[11px] text-[var(--text-muted)] mb-3">
+                                  Uptime switch: {dev.sys_uptime}
+                                </p>
+                              )}
+                              {(dev.ports || []).length > 0 ? (
+                                <div className="grid grid-cols-6 sm:grid-cols-8 md:grid-cols-12 gap-1.5">
+                                  {(dev.ports || []).sort((a,b) => parseInt(a.index) - parseInt(b.index)).map((port, pi) => (
+                                    <div
+                                      key={pi}
+                                      title={`Porta ${port.index}: ${port.status}`}
+                                      className={`h-7 rounded flex items-center justify-center text-[9px] font-mono border ${
+                                        port.status === "up"
+                                          ? "bg-[var(--low-bg)] border-[var(--low-border)] text-[var(--ok)]"
+                                          : port.status === "down"
+                                          ? "bg-[var(--critical-bg)] border-[var(--critical-border)] text-[var(--critical)]"
+                                          : "bg-[var(--bg-hover)] border-[var(--bg-border)] text-[var(--text-muted)]"
+                                      }`}
+                                    >
+                                      {port.index}
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : (
+                                <p className="text-xs text-[var(--text-muted)]">Nessun dato porte disponibile</p>
+                              )}
+                              <div className="flex items-center gap-2 mt-3">
+                                <span className="flex items-center gap-1 text-[10px] text-[var(--text-muted)]">
+                                  <div className="w-3 h-3 rounded bg-[var(--low-bg)] border border-[var(--low-border)]"></div> UP
+                                </span>
+                                <span className="flex items-center gap-1 text-[10px] text-[var(--text-muted)]">
+                                  <div className="w-3 h-3 rounded bg-[var(--critical-bg)] border border-[var(--critical-border)]"></div> DOWN
+                                </span>
+                                <span className="flex items-center gap-1 text-[10px] text-[var(--text-muted)]">
+                                  <div className="w-3 h-3 rounded bg-[var(--bg-hover)] border border-[var(--bg-border)]"></div> Altro
+                                </span>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
               </div>

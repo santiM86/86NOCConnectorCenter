@@ -20,7 +20,10 @@ import {
   UploadSimple,
   ArrowsClockwise,
   CloudArrowUp,
-  Trash
+  Trash,
+  Buildings,
+  CaretDown,
+  CaretRight
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
@@ -344,7 +347,7 @@ export default function ConnectorsPage() {
       {/* Device Polling Status */}
       <DevicePollStatus />
 
-      {/* Connector list */}
+      {/* Connector list grouped by client */}
       {loading ? (
         <div className="noc-panel p-8 text-center text-[var(--text-muted)] text-sm">
           Caricamento...
@@ -358,62 +361,88 @@ export default function ConnectorsPage() {
           </p>
         </div>
       ) : (
-        <div className="grid gap-3">
-          {connectors.map((c, i) => {
-            const online = isOnline(c.last_seen);
-            return (
-              <div key={i} className="noc-panel p-4" data-testid={`connector-card-${i}`}>
-                <div className="flex items-start gap-3">
-                  <div className={`w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0 ${
-                    online ? "bg-[var(--low-bg)] border border-[var(--low-border)]" : "bg-[var(--critical-bg)] border border-[var(--critical-border)]"
-                  }`}>
-                    {online 
-                      ? <SealCheck size={20} weight="fill" className="text-[var(--ok)]" />
-                      : <Warning size={20} weight="fill" className="text-[var(--critical)]" />
-                    }
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-1">
-                      <p className="font-heading font-bold text-sm text-[var(--text-primary)] truncate">
-                        {c.client_name || "Sconosciuto"}
-                      </p>
-                      <span className={`text-[10px] px-1.5 py-0.5 rounded border ${
-                        online 
-                          ? "text-[var(--ok)] bg-[var(--low-bg)] border-[var(--low-border)]" 
-                          : "text-[var(--critical)] bg-[var(--critical-bg)] border-[var(--critical-border)]"
-                      }`}>
-                        {online ? "ONLINE" : "OFFLINE"}
-                      </span>
-                    </div>
-                    <p className="font-mono text-xs text-[var(--text-muted)] mb-2">{c.hostname}</p>
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-x-4 gap-y-1.5">
-                      <InfoItem label="Versione" value={`v${c.connector_version || "?"}`} />
-                      <InfoItem label="Uptime" value={formatUptime(c.uptime_seconds)} />
-                      <InfoItem label="SNMP Traps" value={c.traps_received || 0} />
-                      <InfoItem label="Syslog" value={c.syslogs_received || 0} />
-                    </div>
-                  </div>
-                  <div className="text-right flex-shrink-0">
-                    <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider flex items-center gap-1 justify-end">
-                      <Clock size={10} />
-                      Visto
-                    </p>
-                    <p className="text-xs font-mono text-[var(--text-secondary)]">
-                      {formatLastSeen(c.last_seen)}
-                    </p>
-                  </div>
-                  <button
-                    onClick={() => deleteConnector(c.hostname || c.client_name)}
-                    className="flex-shrink-0 w-8 h-8 rounded-md flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--critical)] hover:bg-[var(--critical-bg)] transition-colors"
-                    title="Elimina connettore"
-                    data-testid={`delete-connector-${i}`}
-                  >
-                    <Trash size={15} />
-                  </button>
+        <div className="space-y-3">
+          {Object.entries(
+            connectors.reduce((groups, c) => {
+              const key = c.client_name || "Sconosciuto";
+              if (!groups[key]) groups[key] = [];
+              groups[key].push(c);
+              return groups;
+            }, {})
+          ).sort(([a],[b]) => a.localeCompare(b)).map(([clientName, clientConnectors]) => (
+            <div key={clientName} className="noc-panel overflow-hidden" data-testid={`connector-group-${clientName}`}>
+              <div className="p-3 flex items-center gap-3 border-b border-[var(--bg-border)]">
+                <div className="w-8 h-8 rounded-lg bg-indigo-600/10 flex items-center justify-center flex-shrink-0">
+                  <Buildings size={16} className="text-indigo-400" />
                 </div>
+                <p className="font-heading font-bold text-sm text-[var(--text-primary)] flex-1">{clientName}</p>
+                <span className="text-[10px] font-mono text-[var(--text-muted)]">{clientConnectors.length} connector</span>
+                {clientConnectors.some(c => isOnline(c.last_seen)) && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded border text-[var(--ok)] bg-[var(--low-bg)] border-[var(--low-border)]">
+                    {clientConnectors.filter(c => isOnline(c.last_seen)).length} ONLINE
+                  </span>
+                )}
+                {clientConnectors.some(c => !isOnline(c.last_seen)) && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded border text-[var(--critical)] bg-[var(--critical-bg)] border-[var(--critical-border)]">
+                    {clientConnectors.filter(c => !isOnline(c.last_seen)).length} OFFLINE
+                  </span>
+                )}
               </div>
-            );
-          })}
+              <div className="divide-y divide-[var(--bg-border)]">
+                {clientConnectors.map((c, i) => {
+                  const online = isOnline(c.last_seen);
+                  return (
+                    <div key={i} className="p-3 pl-6 flex items-start gap-3">
+                      <div className={`w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0 ${
+                        online ? "bg-[var(--low-bg)] border border-[var(--low-border)]" : "bg-[var(--critical-bg)] border border-[var(--critical-border)]"
+                      }`}>
+                        {online 
+                          ? <SealCheck size={18} weight="fill" className="text-[var(--ok)]" />
+                          : <Warning size={18} weight="fill" className="text-[var(--critical)]" />
+                        }
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-1">
+                          <p className="font-heading font-bold text-xs text-[var(--text-primary)] truncate">
+                            {c.hostname || "Server"}
+                          </p>
+                          <span className={`text-[10px] px-1.5 py-0.5 rounded border ${
+                            online 
+                              ? "text-[var(--ok)] bg-[var(--low-bg)] border-[var(--low-border)]" 
+                              : "text-[var(--critical)] bg-[var(--critical-bg)] border-[var(--critical-border)]"
+                          }`}>
+                            {online ? "ONLINE" : "OFFLINE"}
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-x-4 gap-y-1">
+                          <InfoItem label="Versione" value={`v${c.connector_version || "?"}`} />
+                          <InfoItem label="Uptime" value={formatUptime(c.uptime_seconds)} />
+                          <InfoItem label="SNMP Traps" value={c.traps_received || 0} />
+                          <InfoItem label="Syslog" value={c.syslogs_received || 0} />
+                        </div>
+                      </div>
+                      <div className="text-right flex-shrink-0">
+                        <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider flex items-center gap-1 justify-end">
+                          <Clock size={10} /> Visto
+                        </p>
+                        <p className="text-xs font-mono text-[var(--text-secondary)]">
+                          {formatLastSeen(c.last_seen)}
+                        </p>
+                      </div>
+                      <button
+                        onClick={() => deleteConnector(c.hostname || c.client_name)}
+                        className="flex-shrink-0 w-7 h-7 rounded-md flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--critical)] hover:bg-[var(--critical-bg)] transition-colors"
+                        title="Elimina connettore"
+                        data-testid={`delete-connector-${clientName}-${i}`}
+                      >
+                        <Trash size={14} />
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
         </div>
       )}
     </div>
