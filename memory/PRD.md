@@ -46,7 +46,7 @@ Societa' IT necessita di un raccoglitore di alert per tutti i dispositivi nelle 
 - [x] Avvio automatico con Windows
 - [x] Disinstallazione pulita (uninstall.bat)
 - [x] Fix finestra nera console (install.bat usa -WindowStyle Hidden + exit)
-- [x] Launcher VBS per installazione senza alcun flash di console
+- [x] Launcher VBS per installazione senza flash di console
 - [x] Pacchetto ZIP scaricabile dal web
 
 ### Phase 5 - Mobile PWA + Connectors Page (DONE - 22 Mar 2026)
@@ -57,6 +57,12 @@ Societa' IT necessita di un raccoglitore di alert per tutti i dispositivi nelle 
 - [x] Pagina "Connettori" con stato real-time dei 86NocConnector installati
 - [x] Card sommario (Totale, Online, Offline) + dettagli per connector
 - [x] Refresh automatico ogni 15 secondi
+- [x] Sezione Download Connector con guida installazione in 3 step
+- [x] Download ZIP diretto dalla pagina Connettori
+
+## Installazione Mobile
+### Android (Chrome): Menu > "Installa app" o "Aggiungi alla schermata Home"
+### iOS (Safari): Condividi > "Aggiungi alla schermata Home"
 
 ## Architettura Connessione
 ```

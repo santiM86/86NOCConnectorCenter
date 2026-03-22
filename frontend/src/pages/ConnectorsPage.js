@@ -8,7 +8,14 @@ import {
   Warning,
   Clock,
   WifiHigh,
-  WifiSlash
+  WifiSlash,
+  DownloadSimple,
+  Copy,
+  CheckCircle,
+  Terminal,
+  NumberCircleOne,
+  NumberCircleTwo,
+  NumberCircleThree
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
@@ -16,6 +23,8 @@ import { toast } from "sonner";
 export default function ConnectorsPage() {
   const [connectors, setConnectors] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [showInstall, setShowInstall] = useState(false);
+  const [copied, setCopied] = useState(false);
   const intervalRef = useRef(null);
 
   useEffect(() => {
@@ -111,6 +120,89 @@ export default function ConnectorsPage() {
         </div>
       </div>
 
+      {/* Download & Install Section */}
+      <div className="noc-panel overflow-hidden" data-testid="download-connector-section">
+        <div className="p-4 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-lg bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center flex-shrink-0">
+              <DownloadSimple size={20} weight="bold" className="text-indigo-400" />
+            </div>
+            <div>
+              <p className="font-heading font-bold text-sm text-[var(--text-primary)]">
+                86NocConnector
+              </p>
+              <p className="text-[var(--text-muted)] text-xs">
+                Pacchetto Windows nativo — nessuna installazione richiesta
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setShowInstall(!showInstall)}
+              className="rounded-md text-xs h-8 text-[var(--text-secondary)]"
+              data-testid="toggle-install-guide-btn"
+            >
+              {showInstall ? "Nascondi guida" : "Guida installazione"}
+            </Button>
+            <a href="/86NocConnector.zip" download>
+              <Button
+                size="sm"
+                className="rounded-md text-xs h-8 bg-indigo-600 hover:bg-indigo-700 text-white"
+                data-testid="download-connector-btn"
+              >
+                <DownloadSimple size={14} className="mr-1.5" />
+                Scarica ZIP
+              </Button>
+            </a>
+          </div>
+        </div>
+
+        {showInstall && (
+          <div className="border-t border-[var(--bg-border)] p-4 space-y-4 bg-[var(--bg-card)]/50 animate-fade-in">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <StepCard
+                number={1}
+                title="Scarica e decomprimi"
+                desc="Scarica il file ZIP e decomprimilo su un server Windows del cliente."
+              />
+              <StepCard
+                number={2}
+                title="Esegui l'installer"
+                desc={<>Doppio click su <code className="text-indigo-400 bg-indigo-500/10 px-1 rounded text-[11px]">Installa 86NocConnector.vbs</code> e segui il wizard.</>}
+              />
+              <StepCard
+                number={3}
+                title="Configura connessione"
+                desc="Inserisci l'URL del NOC Center e la API Key del cliente. Testa la connessione."
+              />
+            </div>
+
+            <div className="noc-panel p-3">
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-widest">
+                  API Key — Come trovarla
+                </p>
+              </div>
+              <p className="text-xs text-[var(--text-secondary)] leading-relaxed">
+                Vai nella pagina <strong className="text-[var(--text-primary)]">Clienti</strong>, seleziona il cliente e copia la <strong className="text-[var(--text-primary)]">API Key</strong> generata automaticamente. Questa chiave autentica il connector per inviare alert al NOC Center.
+              </p>
+            </div>
+
+            <div className="flex items-start gap-2 p-3 rounded-lg border border-[var(--medium-border)] bg-[var(--medium-bg)]">
+              <Terminal size={16} className="text-[var(--medium)] mt-0.5 flex-shrink-0" />
+              <div>
+                <p className="text-xs text-[var(--medium)] font-medium mb-0.5">Requisiti</p>
+                <p className="text-[11px] text-[var(--text-secondary)]">
+                  Windows Server 2016+ o Windows 10/11 — PowerShell 5.1 (preinstallato) — Porte UDP 162 (SNMP) e 514 (Syslog) libere
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
       {/* Connector list */}
       {loading ? (
         <div className="noc-panel p-8 text-center text-[var(--text-muted)] text-sm">
@@ -184,6 +276,20 @@ function InfoItem({ label, value }) {
     <div>
       <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider">{label}</p>
       <p className="text-xs font-mono text-[var(--text-secondary)]">{value}</p>
+    </div>
+  );
+}
+
+function StepCard({ number, title, desc }) {
+  return (
+    <div className="flex gap-3 p-3 rounded-lg bg-[var(--bg-panel)] border border-[var(--bg-border)]">
+      <div className="w-7 h-7 rounded-full bg-indigo-500/15 border border-indigo-500/25 flex items-center justify-center flex-shrink-0">
+        <span className="text-indigo-400 font-heading font-bold text-xs">{number}</span>
+      </div>
+      <div>
+        <p className="text-xs font-medium text-[var(--text-primary)] mb-0.5">{title}</p>
+        <p className="text-[11px] text-[var(--text-muted)] leading-relaxed">{desc}</p>
+      </div>
     </div>
   );
 }
