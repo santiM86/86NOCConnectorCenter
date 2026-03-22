@@ -237,6 +237,49 @@ function Send-Heartbeat($config) {
     Send-ToNOC $config "connector/heartbeat" $payload | Out-Null
 }
 
+# ==================== SNMP POLLING ====================
+
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$pollerPath = Join-Path $ScriptDir "snmp_poller.ps1"
+if (Test-Path $pollerPath) {
+    . $pollerPath
+}
+
+function Start-PollingLoop($config) {
+    $devices = @()
+    if ($config.devices) {
+        $devices = @($config.devices)
+    }
+    if ($devices.Count -eq 0) {
+        Write-Log "Nessun dispositivo configurato per polling SNMP"
+        return
+    }
+
+    $interval = if ($config.poll_interval_seconds) { $config.poll_interval_seconds } else { 60 }
+    Write-Log "Polling SNMP attivo per $($devices.Count) dispositivi ogni ${interval}s"
+    foreach ($dev in $devices) {
+        Write-Log "  - $($dev.name) ($($dev.ip)) community=$($dev.community)"
+    }
+
+    # First poll - initialize states without generating alerts
+    Write-Log "Prima scansione porte in corso..."
+    $null = Poll-AllDevices $devices $config
+    Write-Log "Stato iniziale porte acquisito."
+
+    while ($global:Running) {
+        try {
+            $alerts = Poll-AllDevices $devices $config
+            foreach ($alert in $alerts) {
+                Write-Log "[POLL] $($alert.trap_type): $($alert.value)" "WARN"
+                Send-SNMPToNOC $config $alert
+            }
+        } catch {
+            Write-Log "Errore polling: $($_.Exception.Message)" "ERROR"
+        }
+        Start-Sleep -Seconds $interval
+    }
+}
+
 # ==================== LISTENERS ====================
 
 function Start-SNMPListener($config) {
@@ -347,6 +390,21 @@ function Start-Connector {
         Start-SyslogListener (Read-Config)
     } -ArgumentList $PSCommandPath, (Get-ConfigPath)
     
+    # Start SNMP polling job
+    $pollingJob = $null
+    if ($config.devices -and $config.devices.Count -gt 0) {
+        $pollingJob = Start-Job -ScriptBlock {
+            param($scriptPath, $configPath)
+            . $scriptPath -ConfigPath $configPath
+            $pollerFile = Join-Path (Split-Path -Parent $scriptPath) "snmp_poller.ps1"
+            if (Test-Path $pollerFile) { . $pollerFile }
+            $cfg = Read-Config
+            $global:Running = $true
+            Start-PollingLoop $cfg
+        } -ArgumentList $PSCommandPath, (Get-ConfigPath)
+        Write-Log "Polling SNMP avviato in background"
+    }
+    
     # Heartbeat in current thread loop
     Write-Log "$global:AppName avviato. Premi Ctrl+C per fermare."
     
@@ -363,6 +421,10 @@ function Start-Connector {
         Stop-Job $syslogJob -ErrorAction SilentlyContinue
         Remove-Job $snmpJob -ErrorAction SilentlyContinue
         Remove-Job $syslogJob -ErrorAction SilentlyContinue
+        if ($pollingJob) {
+            Stop-Job $pollingJob -ErrorAction SilentlyContinue
+            Remove-Job $pollingJob -ErrorAction SilentlyContinue
+        }
         Write-Log "$global:AppName fermato."
     }
 }

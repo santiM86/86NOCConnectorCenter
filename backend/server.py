@@ -1051,6 +1051,8 @@ class SNMPTrap(BaseModel):
     oid: str
     value: str
     trap_type: Optional[str] = "generic"
+    device_name: Optional[str] = None
+    severity: Optional[str] = None
 
 class ConnectorHeartbeat(BaseModel):
     connector_version: str
@@ -1188,7 +1190,7 @@ async def ingest_snmp(request: Request, trap: SNMPTrap):
         device = {
             "id": str(uuid.uuid4()),
             "client_id": client_id,
-            "name": f"Auto-{trap.device_ip}",
+            "name": trap.device_name if trap.device_name else f"Auto-{trap.device_ip}",
             "device_type": "switch",
             "ip_address": trap.device_ip,
             "hostname": "",
@@ -1199,7 +1201,17 @@ async def ingest_snmp(request: Request, trap: SNMPTrap):
         }
         await db.devices.insert_one(device)
     
-    severity = map_snmp_severity(trap.trap_type, trap.oid)
+    severity = trap.severity if trap.severity else map_snmp_severity(trap.trap_type, trap.oid)
+    
+    # Better title for polling events
+    title_map = {
+        "linkDown": "Porta DOWN",
+        "linkUp": "Porta UP (ripristinata)",
+        "deviceDown": "Dispositivo NON RAGGIUNGIBILE",
+        "deviceUp": "Dispositivo ONLINE",
+    }
+    title = title_map.get(trap.trap_type, f"SNMP: {trap.trap_type}")
+    device_label = trap.device_name if trap.device_name else device["name"]
     
     alert_doc = {
         "id": str(uuid.uuid4()),
@@ -1207,8 +1219,8 @@ async def ingest_snmp(request: Request, trap: SNMPTrap):
         "device_id": device["id"],
         "severity": severity,
         "source_type": "snmp",
-        "title": f"SNMP Trap: {trap.trap_type}",
-        "message": f"OID: {trap.oid} | Value: {trap.value}",
+        "title": f"{title} - {device_label}",
+        "message": trap.value,
         "raw_data": json.dumps({
             "oid": trap.oid,
             "value": trap.value,

@@ -164,6 +164,11 @@ function Show-InstallerWizard {
     $chkAutostart = New-Object System.Windows.Forms.CheckBox
     $txtStatus = New-Object System.Windows.Forms.TextBox
     $progressBar = New-Object System.Windows.Forms.ProgressBar
+    $txtDeviceIP = New-Object System.Windows.Forms.TextBox
+    $txtDeviceCommunity = New-Object System.Windows.Forms.TextBox
+    $txtDeviceName = New-Object System.Windows.Forms.TextBox
+    $txtPollInterval = New-Object System.Windows.Forms.TextBox
+    $deviceList = New-Object System.Windows.Forms.ListView
     
     $currentPage = 0
     
@@ -176,8 +181,9 @@ function Show-InstallerWizard {
         switch ($page) {
             0 { Show-Welcome }
             1 { Show-Config }
-            2 { Show-Installing }
-            3 { Show-Complete }
+            2 { Show-Devices }
+            3 { Show-Installing }
+            4 { Show-Complete }
         }
     }
     
@@ -240,7 +246,7 @@ function Show-InstallerWizard {
     
     # ==================== PAGE 1: CONFIG ====================
     function Show-Config {
-        $btnNext.Text = "Installa >"
+        $btnNext.Text = "Avanti >"
         $btnNext.Enabled = $true
         
         $title = New-Object System.Windows.Forms.Label
@@ -372,7 +378,154 @@ function Show-InstallerWizard {
         $contentPanel.Controls.Add($btnTest)
     }
     
-    # ==================== PAGE 2: INSTALLING ====================
+    # ==================== PAGE 2: DEVICES ====================
+    function Show-Devices {
+        $btnNext.Text = "Installa >"
+        $btnNext.Enabled = $true
+
+        $title = New-Object System.Windows.Forms.Label
+        $title.Text = "Dispositivi da Monitorare"
+        $title.Font = New-Object System.Drawing.Font("Segoe UI", 18, [System.Drawing.FontStyle]::Bold)
+        $title.ForeColor = [System.Drawing.Color]::FromArgb(30, 30, 40)
+        $title.Location = New-Object System.Drawing.Point(28, 15)
+        $title.AutoSize = $true
+        $contentPanel.Controls.Add($title)
+
+        $desc = New-Object System.Windows.Forms.Label
+        $desc.Text = "Aggiungi switch, firewall o server da monitorare via SNMP polling."
+        $desc.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+        $desc.ForeColor = [System.Drawing.Color]::FromArgb(60, 60, 80)
+        $desc.Location = New-Object System.Drawing.Point(28, 48)
+        $desc.AutoSize = $true
+        $contentPanel.Controls.Add($desc)
+
+        # Device input row
+        $lblIP = New-Object System.Windows.Forms.Label
+        $lblIP.Text = "IP Address"
+        $lblIP.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+        $lblIP.ForeColor = [System.Drawing.Color]::FromArgb(40, 40, 55)
+        $lblIP.Location = New-Object System.Drawing.Point(28, 80)
+        $lblIP.AutoSize = $true
+        $contentPanel.Controls.Add($lblIP)
+
+        $txtDeviceIP.Location = New-Object System.Drawing.Point(28, 97)
+        $txtDeviceIP.Size = New-Object System.Drawing.Size(125, 24)
+        $txtDeviceIP.Font = New-Object System.Drawing.Font("Consolas", 9)
+        if (-not $txtDeviceIP.Text) { $txtDeviceIP.Text = "" }
+        $contentPanel.Controls.Add($txtDeviceIP)
+
+        $lblComm = New-Object System.Windows.Forms.Label
+        $lblComm.Text = "Community"
+        $lblComm.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+        $lblComm.ForeColor = [System.Drawing.Color]::FromArgb(40, 40, 55)
+        $lblComm.Location = New-Object System.Drawing.Point(160, 80)
+        $lblComm.AutoSize = $true
+        $contentPanel.Controls.Add($lblComm)
+
+        $txtDeviceCommunity.Location = New-Object System.Drawing.Point(160, 97)
+        $txtDeviceCommunity.Size = New-Object System.Drawing.Size(90, 24)
+        $txtDeviceCommunity.Font = New-Object System.Drawing.Font("Consolas", 9)
+        if (-not $txtDeviceCommunity.Text) { $txtDeviceCommunity.Text = "public" }
+        $contentPanel.Controls.Add($txtDeviceCommunity)
+
+        $lblName = New-Object System.Windows.Forms.Label
+        $lblName.Text = "Nome"
+        $lblName.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+        $lblName.ForeColor = [System.Drawing.Color]::FromArgb(40, 40, 55)
+        $lblName.Location = New-Object System.Drawing.Point(258, 80)
+        $lblName.AutoSize = $true
+        $contentPanel.Controls.Add($lblName)
+
+        $txtDeviceName.Location = New-Object System.Drawing.Point(258, 97)
+        $txtDeviceName.Size = New-Object System.Drawing.Size(120, 24)
+        $txtDeviceName.Font = New-Object System.Drawing.Font("Consolas", 9)
+        if (-not $txtDeviceName.Text) { $txtDeviceName.Text = "" }
+        $contentPanel.Controls.Add($txtDeviceName)
+
+        $btnAddDev = New-Object System.Windows.Forms.Button
+        $btnAddDev.Text = "+ Aggiungi"
+        $btnAddDev.Size = New-Object System.Drawing.Size(80, 24)
+        $btnAddDev.Location = New-Object System.Drawing.Point(385, 97)
+        $btnAddDev.FlatStyle = "Flat"
+        $btnAddDev.BackColor = [System.Drawing.Color]::FromArgb(99, 102, 241)
+        $btnAddDev.ForeColor = [System.Drawing.Color]::White
+        $btnAddDev.Font = New-Object System.Drawing.Font("Segoe UI", 8, [System.Drawing.FontStyle]::Bold)
+        $btnAddDev.Cursor = [System.Windows.Forms.Cursors]::Hand
+        $contentPanel.Controls.Add($btnAddDev)
+
+        # ListView for devices
+        $deviceList.Location = New-Object System.Drawing.Point(28, 135)
+        $deviceList.Size = New-Object System.Drawing.Size(437, 220)
+        $deviceList.View = [System.Windows.Forms.View]::Details
+        $deviceList.FullRowSelect = $true
+        $deviceList.GridLines = $true
+        $deviceList.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+        $deviceList.BackColor = [System.Drawing.Color]::White
+        $deviceList.Columns.Clear()
+        $null = $deviceList.Columns.Add("IP", 140)
+        $null = $deviceList.Columns.Add("Community", 100)
+        $null = $deviceList.Columns.Add("Nome", 190)
+        $contentPanel.Controls.Add($deviceList)
+
+        $btnRemoveDev = New-Object System.Windows.Forms.Button
+        $btnRemoveDev.Text = "Rimuovi selezionato"
+        $btnRemoveDev.Size = New-Object System.Drawing.Size(130, 28)
+        $btnRemoveDev.Location = New-Object System.Drawing.Point(28, 362)
+        $btnRemoveDev.FlatStyle = "Flat"
+        $btnRemoveDev.BackColor = [System.Drawing.Color]::White
+        $btnRemoveDev.ForeColor = [System.Drawing.Color]::FromArgb(220, 50, 50)
+        $btnRemoveDev.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+        $btnRemoveDev.Cursor = [System.Windows.Forms.Cursors]::Hand
+        $contentPanel.Controls.Add($btnRemoveDev)
+
+        # Poll interval
+        $lblPoll = New-Object System.Windows.Forms.Label
+        $lblPoll.Text = "Intervallo polling (sec):"
+        $lblPoll.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+        $lblPoll.ForeColor = [System.Drawing.Color]::FromArgb(40, 40, 55)
+        $lblPoll.Location = New-Object System.Drawing.Point(250, 366)
+        $lblPoll.AutoSize = $true
+        $contentPanel.Controls.Add($lblPoll)
+
+        $txtPollInterval.Location = New-Object System.Drawing.Point(400, 363)
+        $txtPollInterval.Size = New-Object System.Drawing.Size(65, 24)
+        $txtPollInterval.Font = New-Object System.Drawing.Font("Consolas", 9)
+        if (-not $txtPollInterval.Text) { $txtPollInterval.Text = "60" }
+        $contentPanel.Controls.Add($txtPollInterval)
+
+        $hint = New-Object System.Windows.Forms.Label
+        $hint.Text = "Lo switch HPE 1820 non invia trap. Il polling SNMP interroga le porte ogni X secondi."
+        $hint.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+        $hint.ForeColor = [System.Drawing.Color]::FromArgb(140, 140, 155)
+        $hint.Location = New-Object System.Drawing.Point(28, 430)
+        $hint.Size = New-Object System.Drawing.Size(440, 40)
+        $contentPanel.Controls.Add($hint)
+
+        # Button handlers
+        $btnAddDev.Add_Click({
+            $ip = $txtDeviceIP.Text.Trim()
+            if (-not $ip) {
+                [System.Windows.Forms.MessageBox]::Show("Inserisci l'indirizzo IP.", $AppName, "OK", "Warning")
+                return
+            }
+            $comm = if ($txtDeviceCommunity.Text.Trim()) { $txtDeviceCommunity.Text.Trim() } else { "public" }
+            $devName = if ($txtDeviceName.Text.Trim()) { $txtDeviceName.Text.Trim() } else { $ip }
+            $item = New-Object System.Windows.Forms.ListViewItem($ip)
+            $null = $item.SubItems.Add($comm)
+            $null = $item.SubItems.Add($devName)
+            $deviceList.Items.Add($item)
+            $txtDeviceIP.Text = ""
+            $txtDeviceName.Text = ""
+        })
+
+        $btnRemoveDev.Add_Click({
+            if ($deviceList.SelectedItems.Count -gt 0) {
+                $deviceList.Items.Remove($deviceList.SelectedItems[0])
+            }
+        })
+    }
+
+    # ==================== PAGE 3: INSTALLING ====================
     function Show-Installing {
         $url = $txtUrl.Text.Trim().TrimEnd("/")
         $key = $txtApiKey.Text.Trim()
@@ -415,11 +568,24 @@ function Show-InstallerWizard {
         
         # Step 1: Config
         $txtStatus.AppendText("> Salvataggio configurazione...`r`n")
-        $progressBar.Value = 20
+        $progressBar.Value = 15
         $form.Refresh()
         if (!(Test-Path $ConfigDir)) { New-Item -ItemType Directory -Path $ConfigDir -Force | Out-Null }
         $logsDir = Join-Path $ConfigDir "logs"
         if (!(Test-Path $logsDir)) { New-Item -ItemType Directory -Path $logsDir -Force | Out-Null }
+
+        # Build devices array from ListView
+        $devicesArray = @()
+        foreach ($item in $deviceList.Items) {
+            $devicesArray += @{
+                ip = $item.Text
+                community = $item.SubItems[1].Text
+                name = $item.SubItems[2].Text
+            }
+        }
+        $pollInterval = 60
+        try { $pollInterval = [int]$txtPollInterval.Text } catch {}
+
         $config = @{
             noc_center_url = $url
             api_key = $key
@@ -427,9 +593,20 @@ function Show-InstallerWizard {
             syslog_port = [int]$txtSyslog.Text
             heartbeat_interval_seconds = 60
             batch_interval_seconds = 3
+            poll_interval_seconds = $pollInterval
+            devices = $devicesArray
         }
         $config | ConvertTo-Json -Depth 5 | Set-Content $ConfigPath -Encoding UTF8
         $txtStatus.AppendText("  Salvato in: $ConfigPath`r`n")
+        if ($devicesArray.Count -gt 0) {
+            $txtStatus.AppendText("  Dispositivi da monitorare: $($devicesArray.Count)`r`n")
+            foreach ($d in $devicesArray) {
+                $txtStatus.AppendText("    - $($d.name) ($($d.ip))`r`n")
+            }
+            $txtStatus.AppendText("  Polling ogni ${pollInterval}s`r`n")
+        } else {
+            $txtStatus.AppendText("  Nessun dispositivo configurato per polling`r`n")
+        }
         $form.Refresh()
         Start-Sleep -Milliseconds 500
         
@@ -526,7 +703,7 @@ function Show-InstallerWizard {
         $contentPanel.Controls.Add($title)
         
         $desc = New-Object System.Windows.Forms.Label
-        $desc.Text = "$AppName e' stato installato e avviato.`n`nOra configura i dispositivi per inviare SNMP Traps`ne Syslog all'indirizzo IP di questo server."
+        $desc.Text = "$AppName e' stato installato e avviato.`n`nOra lo switch HPE verra' monitorato automaticamente.`nSe una porta cambia stato, riceverai un alert nel NOC."
         $desc.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
         $desc.ForeColor = [System.Drawing.Color]::FromArgb(60, 60, 80)
         $desc.Location = New-Object System.Drawing.Point(28, 60)
@@ -538,7 +715,7 @@ function Show-InstallerWizard {
         $infoBox.Font = New-Object System.Drawing.Font("Segoe UI", 9)
         $infoBox.ForeColor = [System.Drawing.Color]::FromArgb(60, 60, 80)
         $infoBox.Location = New-Object System.Drawing.Point(28, 140)
-        $infoBox.Size = New-Object System.Drawing.Size(450, 168)
+        $infoBox.Size = New-Object System.Drawing.Size(450, 190)
         $contentPanel.Controls.Add($infoBox)
         
         $items = @(
@@ -548,6 +725,7 @@ function Show-InstallerWizard {
             [char]0x2713 + "   NOC Center: $($txtUrl.Text.Trim().Substring(0, [Math]::Min(42, $txtUrl.Text.Trim().Length)))"
             [char]0x2713 + "   Icona system tray: Attiva"
             [char]0x2713 + "   Avvio automatico: $(if($chkAutostart.Checked){'Abilitato'}else{'Disabilitato'})"
+            [char]0x2713 + "   Polling SNMP: $($deviceList.Items.Count) dispositivi ogni $($txtPollInterval.Text)s"
         )
         $y = 26
         foreach ($item in $items) {
@@ -565,19 +743,19 @@ function Show-InstallerWizard {
         $tip.Text = "Trovi l'icona di $AppName vicino all'orologio`nnella barra delle applicazioni (system tray).`nClicca con il tasto destro per le opzioni."
         $tip.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
         $tip.ForeColor = [System.Drawing.Color]::FromArgb(99, 102, 241)
-        $tip.Location = New-Object System.Drawing.Point(28, 330)
+        $tip.Location = New-Object System.Drawing.Point(28, 350)
         $tip.Size = New-Object System.Drawing.Size(450, 55)
         $contentPanel.Controls.Add($tip)
     }
     
     # ==================== NAVIGATION ====================
     $btnNext.Add_Click({
-        if ($script:currentPage -eq 3) { $form.Close(); return }
+        if ($script:currentPage -eq 4) { $form.Close(); return }
         Show-Page ($script:currentPage + 1)
     })
     
     $btnBack.Add_Click({
-        if ($script:currentPage -gt 0) { Show-Page ($script:currentPage - 1) }
+        if ($script:currentPage -gt 0 -and $script:currentPage -lt 3) { Show-Page ($script:currentPage - 1) }
     })
     
     Show-Page 0
