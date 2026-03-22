@@ -1,4 +1,4 @@
 {
-  "version": "1.4.0",
-  "changelog": "Aggiunto collegamento nel Menu Start di Windows per avvio rapido"
+  "version": "1.4.1",
+  "changelog": "Fix critico: il connector ora riceve correttamente il comando di aggiornamento forzato dal NOC. Aggiunto Menu Start."
 }

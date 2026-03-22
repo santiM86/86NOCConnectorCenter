@@ -189,12 +189,12 @@ function Send-ToNOC($config, $endpoint, $payload) {
         $url = "$($config.noc_center_url)/api/$endpoint"
         
         $response = Invoke-RestMethod -Uri $url -Method Post -Headers $headers -Body $body -TimeoutSec 15 -ErrorAction Stop
-        return $true
+        return $response
     } catch {
         $global:Stats.errors++
         $global:Stats.last_error = $_.Exception.Message
         Write-Log "Errore invio a NOC: $($_.Exception.Message)" "ERROR"
-        return $false
+        return $null
     }
 }
 
