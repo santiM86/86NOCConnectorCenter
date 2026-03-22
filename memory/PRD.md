@@ -5,9 +5,9 @@ Societa' IT necessita di un raccoglitore di alert per tutti i dispositivi nelle 
 
 ## Stack Tecnologico
 - Backend: FastAPI + MongoDB + WebSockets + APScheduler
-- Frontend: React + TailwindCSS + Shadcn UI + Recharts
-- Connector: Python standalone (86NocConnector) con GUI wizard + system tray
-- Mobile: React Native (Expo) - scaffolded
+- Frontend: React + TailwindCSS + Shadcn UI + Recharts (PWA)
+- Connector: PowerShell nativo (86NocConnector) con GUI wizard + system tray
+- Mobile: PWA (Progressive Web App) con bottom navigation
 - Sicurezza: Argon2id, AES-256-GCM, JWT, TOTP 2FA
 
 ## Funzionalita' Implementate
@@ -45,8 +45,18 @@ Societa' IT necessita di un raccoglitore di alert per tutti i dispositivi nelle 
 - [x] Heartbeat connector visibile nella dashboard NOC
 - [x] Avvio automatico con Windows
 - [x] Disinstallazione pulita (uninstall.bat)
-- [x] Riutilizzabile su tutti i server clienti senza modifiche
-- [x] Pacchetto solo 16KB
+- [x] Fix finestra nera console (install.bat usa -WindowStyle Hidden + exit)
+- [x] Launcher VBS per installazione senza alcun flash di console
+- [x] Pacchetto ZIP scaricabile dal web
+
+### Phase 5 - Mobile PWA + Connectors Page (DONE - 22 Mar 2026)
+- [x] PWA manifest.json + service worker per installazione su home screen
+- [x] Bottom navigation bar per mobile (Home, Alert, Clienti, Dispositivi, Altro)
+- [x] Meta tags Apple per iOS (standalone, status bar, touch icon)
+- [x] Touch-friendly targets (min 44px) e safe area support
+- [x] Pagina "Connettori" con stato real-time dei 86NocConnector installati
+- [x] Card sommario (Totale, Online, Offline) + dettagli per connector
+- [x] Refresh automatico ogni 15 secondi
 
 ## Architettura Connessione
 ```
@@ -60,11 +70,13 @@ Societa' IT necessita di un raccoglitore di alert per tutti i dispositivi nelle 
 - `/app/noc-connector/` - Pacchetto 86NocConnector completo
 - `/app/backend/server.py` - Backend principale
 - `/app/frontend/src/pages/` - Pagine frontend
+- `/app/frontend/src/components/Layout.js` - Layout con mobile nav
+- `/app/frontend/public/manifest.json` - PWA manifest
+- `/app/frontend/public/sw.js` - Service Worker
 
 ## Backlog P1
-- [ ] App mobile React Native
-- [ ] Notifiche push Firebase (richiede API key)
-- [ ] Notifiche email SendGrid (richiede API key)
+- [ ] Notifiche push Firebase (richiede API key utente)
+- [ ] Notifiche email SendGrid (richiede API key utente)
 
 ## Backlog P2
 - [ ] LDAP integration
