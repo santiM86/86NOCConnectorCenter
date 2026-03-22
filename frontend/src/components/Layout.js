@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Outlet, NavLink, useNavigate } from "react-router-dom";
 import { useAuth } from "@/App";
 import { 
@@ -13,7 +13,8 @@ import {
   User,
   Gear,
   FileText,
-  Wrench
+  Wrench,
+  PlugsConnected
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import {
@@ -25,8 +26,15 @@ import {
 
 export default function Layout() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
   const { user, logout } = useAuth();
   const navigate = useNavigate();
+
+  useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth < 768);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
 
   const handleLogout = () => {
     logout();
@@ -38,12 +46,21 @@ export default function Layout() {
     { path: "/alerts", icon: Bell, label: "Alert" },
     { path: "/clients", icon: Buildings, label: "Clienti" },
     { path: "/devices", icon: HardDrives, label: "Dispositivi" },
+    { path: "/connectors", icon: PlugsConnected, label: "Connettori" },
     { path: "/enterprise", icon: Wrench, label: "Enterprise" },
     { path: "/settings", icon: Gear, label: "Impostazioni" },
   ];
 
+  const mobileNavItems = [
+    { path: "/", icon: ChartLineUp, label: "Home" },
+    { path: "/alerts", icon: Bell, label: "Alert" },
+    { path: "/clients", icon: Buildings, label: "Clienti" },
+    { path: "/devices", icon: HardDrives, label: "Dispositivi" },
+    { path: "/settings", icon: Gear, label: "Altro" },
+  ];
+
   return (
-    <div className="main-layout" data-testid="main-layout">
+    <div className={`main-layout ${isMobile ? "has-bottom-nav" : ""}`} data-testid="main-layout">
       {sidebarOpen && (
         <div 
           className="sidebar-overlay md:hidden"
@@ -139,6 +156,23 @@ export default function Layout() {
         </header>
         <Outlet />
       </main>
+
+      {isMobile && (
+        <nav className="mobile-bottom-nav" data-testid="mobile-bottom-nav">
+          {mobileNavItems.map((item) => (
+            <NavLink
+              key={item.path}
+              to={item.path}
+              end={item.path === "/"}
+              className={({ isActive }) => isActive ? "active" : ""}
+              data-testid={`mobile-nav-${item.label.toLowerCase()}`}
+            >
+              <item.icon size={20} weight="regular" />
+              <span>{item.label}</span>
+            </NavLink>
+          ))}
+        </nav>
+      )}
     </div>
   );
 }
