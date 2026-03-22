@@ -76,6 +76,17 @@ export default function DevicePollStatus() {
     }
   };
 
+  const removePolledDevice = async (deviceIp) => {
+    if (!window.confirm(`Eliminare il dispositivo ${deviceIp} dal monitoraggio?`)) return;
+    try {
+      await axios.delete(`${API}/connector/device-poll-status/${encodeURIComponent(deviceIp)}`);
+      toast.success("Dispositivo rimosso");
+      fetchData();
+    } catch (e) {
+      toast.error("Errore: " + (e.response?.data?.detail || e.message));
+    }
+  };
+
   const formatTime = (ts) => {
     if (!ts) return "Mai";
     const d = new Date(ts);
@@ -280,6 +291,16 @@ export default function DevicePollStatus() {
                       {formatTime(dev.last_poll)}
                     </p>
                   </div>
+
+                  {/* Delete button */}
+                  <button
+                    onClick={(e) => { e.stopPropagation(); removePolledDevice(dev.device_ip); }}
+                    className="flex-shrink-0 w-8 h-8 rounded-md flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--critical)] hover:bg-[var(--critical-bg)] transition-colors"
+                    title="Elimina dispositivo"
+                    data-testid={`delete-polled-device-${i}`}
+                  >
+                    <Trash size={15} />
+                  </button>
                 </div>
 
                 {/* Expanded port details */}

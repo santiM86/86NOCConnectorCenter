@@ -1288,6 +1288,17 @@ async def get_connector_status(current_user: dict = Depends(get_current_user)):
     connectors = await db.connector_status.find({}, {"_id": 0}).to_list(100)
     return connectors
 
+@api_router.delete("/connector/status/{hostname}")
+async def delete_connector_status(hostname: str, current_user: dict = Depends(get_current_user)):
+    """Delete a connector from the status list."""
+    result = await db.connector_status.delete_one({"hostname": hostname})
+    if result.deleted_count == 0:
+        # Try by client_name
+        result = await db.connector_status.delete_one({"client_name": hostname})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Connector not found")
+    return {"status": "ok"}
+
 # ==================== CONNECTOR AUTO-UPDATE ====================
 
 CONNECTOR_STORAGE = Path("/app/connector_updates")
@@ -1462,6 +1473,14 @@ async def get_device_poll_status(current_user: dict = Depends(get_current_user))
     """Get latest polling status for all monitored devices."""
     statuses = await db.device_poll_status.find({}, {"_id": 0}).to_list(500)
     return statuses
+
+@api_router.delete("/connector/device-poll-status/{device_ip}")
+async def delete_device_poll_status(device_ip: str, current_user: dict = Depends(get_current_user)):
+    """Delete a monitored device from poll status."""
+    result = await db.device_poll_status.delete_one({"device_ip": device_ip})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Device not found")
+    return {"status": "ok"}
 
 @api_router.get("/connector/{client_id}/managed-devices")
 async def get_managed_devices(client_id: str, request: Request):

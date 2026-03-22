@@ -19,7 +19,8 @@ import {
   NumberCircleThree,
   UploadSimple,
   ArrowsClockwise,
-  CloudArrowUp
+  CloudArrowUp,
+  Trash
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
@@ -87,6 +88,17 @@ export default function ConnectorsPage() {
       toast.error("Errore upload: " + (error.response?.data?.detail || error.message));
     } finally {
       setUploading(false);
+    }
+  };
+
+  const deleteConnector = async (hostname) => {
+    if (!window.confirm(`Eliminare il connettore "${hostname}"?`)) return;
+    try {
+      await axios.delete(`${API}/connector/status/${encodeURIComponent(hostname)}`);
+      toast.success("Connettore eliminato");
+      fetchConnectors();
+    } catch (e) {
+      toast.error("Errore: " + (e.response?.data?.detail || e.message));
     }
   };
 
@@ -390,6 +402,14 @@ export default function ConnectorsPage() {
                       {formatLastSeen(c.last_seen)}
                     </p>
                   </div>
+                  <button
+                    onClick={() => deleteConnector(c.hostname || c.client_name)}
+                    className="flex-shrink-0 w-8 h-8 rounded-md flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--critical)] hover:bg-[var(--critical-bg)] transition-colors"
+                    title="Elimina connettore"
+                    data-testid={`delete-connector-${i}`}
+                  >
+                    <Trash size={15} />
+                  </button>
                 </div>
               </div>
             );
