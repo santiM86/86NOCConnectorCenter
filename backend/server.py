@@ -1460,6 +1460,7 @@ async def connector_heartbeat(request: Request, heartbeat: ConnectorHeartbeat):
             "client_name": client_data["name"],
             "connector_version": heartbeat.connector_version,
             "hostname": heartbeat.hostname,
+            "connector_ip": request.client.host if request.client else "unknown",
             "uptime_seconds": heartbeat.uptime_seconds,
             "traps_received": heartbeat.traps_received,
             "syslogs_received": heartbeat.syslogs_received,

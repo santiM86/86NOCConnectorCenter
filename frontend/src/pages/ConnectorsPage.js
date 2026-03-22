@@ -547,8 +547,16 @@ export default function ConnectorsPage() {
                       const online = isOnline(c.last_seen);
                       return (
                         <div key={`conn-${i}`} className="p-3 pl-8 flex items-center gap-3">
-                          <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${online ? "bg-[var(--low-bg)] border border-[var(--low-border)]" : "bg-[var(--critical-bg)] border border-[var(--critical-border)]"}`}>
+                          <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 relative group ${online ? "bg-[var(--low-bg)] border border-[var(--low-border)]" : "bg-[var(--critical-bg)] border border-[var(--critical-border)]"}`}>
                             {online ? <SealCheck size={16} weight="fill" className="text-[var(--ok)]" /> : <Warning size={16} weight="fill" className="text-[var(--critical)]" />}
+                            <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block z-50 pointer-events-none">
+                              <div className="bg-[#111] border border-[var(--bg-border)] rounded-md px-3 py-2 shadow-xl whitespace-nowrap">
+                                <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-widest mb-1">Connector Info</p>
+                                <p className="text-xs text-[var(--text-primary)] font-mono">v{c.connector_version || "?"}</p>
+                                <p className="text-xs text-[var(--text-secondary)] font-mono">{c.connector_ip || c.hostname || "N/A"}</p>
+                              </div>
+                              <div className="w-2 h-2 bg-[#111] border-r border-b border-[var(--bg-border)] rotate-45 absolute left-1/2 -translate-x-1/2 -bottom-1"></div>
+                            </div>
                           </div>
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center gap-2">
