@@ -23,7 +23,7 @@ function Show-InstallerWizard {
     
     $form = New-Object System.Windows.Forms.Form
     $form.Text = "$AppName - Installazione"
-    $form.Size = New-Object System.Drawing.Size(700, 520)
+    $form.Size = New-Object System.Drawing.Size(750, 580)
     $form.StartPosition = "CenterScreen"
     $form.FormBorderStyle = "FixedDialog"
     $form.MaximizeBox = $false
@@ -35,15 +35,17 @@ function Show-InstallerWizard {
     # ==================== LEFT PANEL ====================
     $leftPanel = New-Object System.Windows.Forms.Panel
     $leftPanel.Location = New-Object System.Drawing.Point(0, 0)
-    $leftPanel.Size = New-Object System.Drawing.Size(210, 520)
+    $leftPanel.Size = New-Object System.Drawing.Size(220, 580)
     $leftPanel.BackColor = [System.Drawing.Color]::FromArgb(15, 15, 22)
+    $leftPanel.Dock = [System.Windows.Forms.DockStyle]::Left
+    $leftPanel.Width = 220
     $form.Controls.Add($leftPanel)
     
     # Logo
     $logoPath = Join-Path $ScriptDir "86bit_logo.jpg"
     if (Test-Path $logoPath) {
         $logoPic = New-Object System.Windows.Forms.PictureBox
-        $logoPic.Location = New-Object System.Drawing.Point(40, 100)
+        $logoPic.Location = New-Object System.Drawing.Point(45, 80)
         $logoPic.Size = New-Object System.Drawing.Size(130, 130)
         $logoPic.SizeMode = [System.Windows.Forms.PictureBoxSizeMode]::Zoom
         $logoPic.BackColor = [System.Drawing.Color]::Transparent
@@ -57,8 +59,8 @@ function Show-InstallerWizard {
     $lblApp.ForeColor = [System.Drawing.Color]::FromArgb(120, 120, 255)
     $lblApp.BackColor = [System.Drawing.Color]::Transparent
     $lblApp.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
-    $lblApp.Location = New-Object System.Drawing.Point(15, 242)
-    $lblApp.Size = New-Object System.Drawing.Size(180, 22)
+    $lblApp.Location = New-Object System.Drawing.Point(15, 222)
+    $lblApp.Size = New-Object System.Drawing.Size(190, 24)
     $leftPanel.Controls.Add($lblApp)
     
     $lblVer = New-Object System.Windows.Forms.Label
@@ -67,28 +69,62 @@ function Show-InstallerWizard {
     $lblVer.ForeColor = [System.Drawing.Color]::FromArgb(80, 80, 100)
     $lblVer.BackColor = [System.Drawing.Color]::Transparent
     $lblVer.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
-    $lblVer.Location = New-Object System.Drawing.Point(15, 264)
-    $lblVer.Size = New-Object System.Drawing.Size(180, 16)
+    $lblVer.Location = New-Object System.Drawing.Point(15, 246)
+    $lblVer.Size = New-Object System.Drawing.Size(190, 18)
     $leftPanel.Controls.Add($lblVer)
+
+    # Company info at bottom of left panel
+    $lblCompany = New-Object System.Windows.Forms.Label
+    $lblCompany.Text = "86bit S.r.l."
+    $lblCompany.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+    $lblCompany.ForeColor = [System.Drawing.Color]::FromArgb(120, 120, 255)
+    $lblCompany.BackColor = [System.Drawing.Color]::Transparent
+    $lblCompany.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
+    $lblCompany.Anchor = [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
+    $lblCompany.Location = New-Object System.Drawing.Point(10, 440)
+    $lblCompany.Size = New-Object System.Drawing.Size(200, 20)
+    $leftPanel.Controls.Add($lblCompany)
+
+    $lblWeb = New-Object System.Windows.Forms.Label
+    $lblWeb.Text = "www.86bit.it"
+    $lblWeb.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+    $lblWeb.ForeColor = [System.Drawing.Color]::FromArgb(90, 90, 120)
+    $lblWeb.BackColor = [System.Drawing.Color]::Transparent
+    $lblWeb.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
+    $lblWeb.Anchor = [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
+    $lblWeb.Location = New-Object System.Drawing.Point(10, 460)
+    $lblWeb.Size = New-Object System.Drawing.Size(200, 18)
+    $leftPanel.Controls.Add($lblWeb)
+
+    $lblCopy = New-Object System.Windows.Forms.Label
+    $lblCopy.Text = [char]0x00A9 + " 2026 Tutti i diritti riservati"
+    $lblCopy.Font = New-Object System.Drawing.Font("Segoe UI", 7)
+    $lblCopy.ForeColor = [System.Drawing.Color]::FromArgb(60, 60, 80)
+    $lblCopy.BackColor = [System.Drawing.Color]::Transparent
+    $lblCopy.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
+    $lblCopy.Anchor = [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
+    $lblCopy.Location = New-Object System.Drawing.Point(10, 478)
+    $lblCopy.Size = New-Object System.Drawing.Size(200, 16)
+    $leftPanel.Controls.Add($lblCopy)
     
     # ==================== CONTENT PANEL ====================
     $contentPanel = New-Object System.Windows.Forms.Panel
-    $contentPanel.Location = New-Object System.Drawing.Point(210, 0)
-    $contentPanel.Size = New-Object System.Drawing.Size(490, 435)
+    $contentPanel.Location = New-Object System.Drawing.Point(220, 0)
+    $contentPanel.Size = New-Object System.Drawing.Size(510, 490)
     $contentPanel.BackColor = [System.Drawing.Color]::FromArgb(245, 245, 248)
     $form.Controls.Add($contentPanel)
     
     # ==================== BUTTON BAR ====================
     $btnBar = New-Object System.Windows.Forms.Panel
-    $btnBar.Location = New-Object System.Drawing.Point(210, 435)
-    $btnBar.Size = New-Object System.Drawing.Size(490, 52)
+    $btnBar.Location = New-Object System.Drawing.Point(220, 490)
+    $btnBar.Size = New-Object System.Drawing.Size(510, 52)
     $btnBar.BackColor = [System.Drawing.Color]::FromArgb(230, 230, 235)
     $form.Controls.Add($btnBar)
     
     $btnCancel = New-Object System.Windows.Forms.Button
     $btnCancel.Text = "Annulla"
-    $btnCancel.Size = New-Object System.Drawing.Size(85, 32)
-    $btnCancel.Location = New-Object System.Drawing.Point(392, 10)
+    $btnCancel.Size = New-Object System.Drawing.Size(95, 32)
+    $btnCancel.Location = New-Object System.Drawing.Point(402, 10)
     $btnCancel.FlatStyle = "Flat"
     $btnCancel.BackColor = [System.Drawing.Color]::White
     $btnCancel.ForeColor = [System.Drawing.Color]::FromArgb(60, 60, 70)
@@ -100,7 +136,7 @@ function Show-InstallerWizard {
     $btnNext = New-Object System.Windows.Forms.Button
     $btnNext.Text = "Avanti >"
     $btnNext.Size = New-Object System.Drawing.Size(95, 32)
-    $btnNext.Location = New-Object System.Drawing.Point(291, 10)
+    $btnNext.Location = New-Object System.Drawing.Point(301, 10)
     $btnNext.FlatStyle = "Flat"
     $btnNext.BackColor = [System.Drawing.Color]::FromArgb(99, 102, 241)
     $btnNext.ForeColor = [System.Drawing.Color]::White
@@ -111,7 +147,7 @@ function Show-InstallerWizard {
     $btnBack = New-Object System.Windows.Forms.Button
     $btnBack.Text = "< Indietro"
     $btnBack.Size = New-Object System.Drawing.Size(95, 32)
-    $btnBack.Location = New-Object System.Drawing.Point(190, 10)
+    $btnBack.Location = New-Object System.Drawing.Point(200, 10)
     $btnBack.FlatStyle = "Flat"
     $btnBack.BackColor = [System.Drawing.Color]::White
     $btnBack.ForeColor = [System.Drawing.Color]::FromArgb(60, 60, 70)
@@ -163,15 +199,15 @@ function Show-InstallerWizard {
         $desc.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
         $desc.ForeColor = [System.Drawing.Color]::FromArgb(60, 60, 80)
         $desc.Location = New-Object System.Drawing.Point(28, 60)
-        $desc.Size = New-Object System.Drawing.Size(430, 75)
+        $desc.Size = New-Object System.Drawing.Size(450, 100)
         $contentPanel.Controls.Add($desc)
         
         $infoBox = New-Object System.Windows.Forms.GroupBox
         $infoBox.Text = "Cosa verra' installato"
         $infoBox.Font = New-Object System.Drawing.Font("Segoe UI", 9)
         $infoBox.ForeColor = [System.Drawing.Color]::FromArgb(60, 60, 80)
-        $infoBox.Location = New-Object System.Drawing.Point(28, 145)
-        $infoBox.Size = New-Object System.Drawing.Size(430, 170)
+        $infoBox.Location = New-Object System.Drawing.Point(28, 170)
+        $infoBox.Size = New-Object System.Drawing.Size(450, 180)
         $contentPanel.Controls.Add($infoBox)
         
         $items = @(
@@ -197,7 +233,7 @@ function Show-InstallerWizard {
         $footer.Text = "Clicca 'Avanti' per continuare."
         $footer.Font = New-Object System.Drawing.Font("Segoe UI", 9)
         $footer.ForeColor = [System.Drawing.Color]::FromArgb(140, 140, 155)
-        $footer.Location = New-Object System.Drawing.Point(28, 390)
+        $footer.Location = New-Object System.Drawing.Point(28, 450)
         $footer.AutoSize = $true
         $contentPanel.Controls.Add($footer)
     }
@@ -233,7 +269,7 @@ function Show-InstallerWizard {
         $contentPanel.Controls.Add($lblUrl)
         
         $txtUrl.Location = New-Object System.Drawing.Point(28, 118)
-        $txtUrl.Size = New-Object System.Drawing.Size(430, 28)
+        $txtUrl.Size = New-Object System.Drawing.Size(450, 28)
         $txtUrl.Font = New-Object System.Drawing.Font("Consolas", 10)
         $contentPanel.Controls.Add($txtUrl)
         
@@ -255,7 +291,7 @@ function Show-InstallerWizard {
         $contentPanel.Controls.Add($lblKey)
         
         $txtApiKey.Location = New-Object System.Drawing.Point(28, 198)
-        $txtApiKey.Size = New-Object System.Drawing.Size(430, 28)
+        $txtApiKey.Size = New-Object System.Drawing.Size(450, 28)
         $txtApiKey.Font = New-Object System.Drawing.Font("Consolas", 10)
         $contentPanel.Controls.Add($txtApiKey)
         
@@ -360,7 +396,7 @@ function Show-InstallerWizard {
         $contentPanel.Controls.Add($title)
         
         $progressBar.Location = New-Object System.Drawing.Point(28, 60)
-        $progressBar.Size = New-Object System.Drawing.Size(430, 22)
+        $progressBar.Size = New-Object System.Drawing.Size(450, 22)
         $progressBar.Minimum = 0
         $progressBar.Maximum = 100
         $contentPanel.Controls.Add($progressBar)
@@ -369,7 +405,7 @@ function Show-InstallerWizard {
         $txtStatus.ScrollBars = "Vertical"
         $txtStatus.ReadOnly = $true
         $txtStatus.Location = New-Object System.Drawing.Point(28, 95)
-        $txtStatus.Size = New-Object System.Drawing.Size(430, 320)
+        $txtStatus.Size = New-Object System.Drawing.Size(450, 370)
         $txtStatus.Font = New-Object System.Drawing.Font("Consolas", 9)
         $txtStatus.BackColor = [System.Drawing.Color]::FromArgb(20, 20, 35)
         $txtStatus.ForeColor = [System.Drawing.Color]::FromArgb(34, 197, 94)
@@ -494,7 +530,7 @@ function Show-InstallerWizard {
         $desc.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
         $desc.ForeColor = [System.Drawing.Color]::FromArgb(60, 60, 80)
         $desc.Location = New-Object System.Drawing.Point(28, 60)
-        $desc.Size = New-Object System.Drawing.Size(430, 70)
+        $desc.Size = New-Object System.Drawing.Size(450, 70)
         $contentPanel.Controls.Add($desc)
         
         $infoBox = New-Object System.Windows.Forms.GroupBox
@@ -502,7 +538,7 @@ function Show-InstallerWizard {
         $infoBox.Font = New-Object System.Drawing.Font("Segoe UI", 9)
         $infoBox.ForeColor = [System.Drawing.Color]::FromArgb(60, 60, 80)
         $infoBox.Location = New-Object System.Drawing.Point(28, 140)
-        $infoBox.Size = New-Object System.Drawing.Size(430, 168)
+        $infoBox.Size = New-Object System.Drawing.Size(450, 168)
         $contentPanel.Controls.Add($infoBox)
         
         $items = @(
@@ -530,7 +566,7 @@ function Show-InstallerWizard {
         $tip.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
         $tip.ForeColor = [System.Drawing.Color]::FromArgb(99, 102, 241)
         $tip.Location = New-Object System.Drawing.Point(28, 330)
-        $tip.Size = New-Object System.Drawing.Size(430, 55)
+        $tip.Size = New-Object System.Drawing.Size(450, 55)
         $contentPanel.Controls.Add($tip)
     }
     
