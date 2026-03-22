@@ -15,7 +15,10 @@ import {
   Terminal,
   NumberCircleOne,
   NumberCircleTwo,
-  NumberCircleThree
+  NumberCircleThree,
+  UploadSimple,
+  ArrowsClockwise,
+  CloudArrowUp
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
@@ -25,10 +28,16 @@ export default function ConnectorsPage() {
   const [loading, setLoading] = useState(true);
   const [showInstall, setShowInstall] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [updateInfo, setUpdateInfo] = useState(null);
+  const [uploading, setUploading] = useState(false);
+  const [newVersion, setNewVersion] = useState("");
+  const [changelog, setChangelog] = useState("");
   const intervalRef = useRef(null);
+  const fileInputRef = useRef(null);
 
   useEffect(() => {
     fetchConnectors();
+    fetchUpdateInfo();
     intervalRef.current = setInterval(fetchConnectors, 15000);
     return () => clearInterval(intervalRef.current);
   }, []);
@@ -41,6 +50,42 @@ export default function ConnectorsPage() {
       console.error("Error fetching connectors:", error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchUpdateInfo = async () => {
+    try {
+      const res = await axios.get(`${API}/connector/update-info`);
+      setUpdateInfo(res.data);
+    } catch (error) {
+      console.error("Error fetching update info:", error);
+    }
+  };
+
+  const handleUploadUpdate = async () => {
+    const file = fileInputRef.current?.files?.[0];
+    if (!file || !newVersion) {
+      toast.error("Seleziona un file ZIP e inserisci la versione");
+      return;
+    }
+    setUploading(true);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("version", newVersion);
+      formData.append("changelog", changelog);
+      await axios.post(`${API}/connector/upload-update`, formData, {
+        headers: { "Content-Type": "multipart/form-data" }
+      });
+      toast.success(`Aggiornamento v${newVersion} pubblicato! I connector si aggiorneranno entro 6 ore.`);
+      setNewVersion("");
+      setChangelog("");
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      fetchUpdateInfo();
+    } catch (error) {
+      toast.error("Errore upload: " + (error.response?.data?.detail || error.message));
+    } finally {
+      setUploading(false);
     }
   };
 
@@ -201,6 +246,86 @@ export default function ConnectorsPage() {
             </div>
           </div>
         )}
+      </div>
+
+      {/* Auto-Update Management */}
+      <div className="noc-panel overflow-hidden" data-testid="update-management-section">
+        <div className="p-4">
+          <div className="flex items-center gap-3 mb-4">
+            <div className="w-10 h-10 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center flex-shrink-0">
+              <ArrowsClockwise size={20} weight="bold" className="text-emerald-400" />
+            </div>
+            <div className="flex-1">
+              <p className="font-heading font-bold text-sm text-[var(--text-primary)]">
+                Aggiornamento Automatico
+              </p>
+              <p className="text-[var(--text-muted)] text-xs">
+                {updateInfo?.version 
+                  ? `Versione attuale: v${updateInfo.version} — ${updateInfo.updated_connectors || 0}/${updateInfo.total_connectors || 0} aggiornati`
+                  : "Nessun aggiornamento pubblicato"
+                }
+              </p>
+            </div>
+            {updateInfo?.pending_connectors > 0 && (
+              <span className="text-[10px] px-2 py-1 rounded border text-[var(--medium)] bg-[var(--medium-bg)] border-[var(--medium-border)]">
+                {updateInfo.pending_connectors} in attesa
+              </span>
+            )}
+          </div>
+
+          {/* Upload new version */}
+          <div className="grid grid-cols-1 md:grid-cols-[1fr_1fr_auto] gap-3 items-end">
+            <div>
+              <label className="text-[10px] text-[var(--text-muted)] uppercase tracking-widest block mb-1">Versione *</label>
+              <input
+                type="text"
+                placeholder="es. 1.1.0"
+                value={newVersion}
+                onChange={(e) => setNewVersion(e.target.value)}
+                className="w-full h-9 px-3 rounded-md border border-[var(--bg-border)] bg-[var(--bg-card)] text-[var(--text-primary)] text-xs font-mono focus:outline-none focus:border-indigo-500"
+                data-testid="update-version-input"
+              />
+            </div>
+            <div>
+              <label className="text-[10px] text-[var(--text-muted)] uppercase tracking-widest block mb-1">File ZIP</label>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".zip"
+                className="w-full h-9 text-xs text-[var(--text-secondary)] file:mr-2 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:text-xs file:bg-[var(--bg-hover)] file:text-[var(--text-primary)] file:cursor-pointer"
+                data-testid="update-file-input"
+              />
+            </div>
+            <Button
+              onClick={handleUploadUpdate}
+              disabled={uploading || !newVersion}
+              size="sm"
+              className="rounded-md text-xs h-9 bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-50"
+              data-testid="publish-update-btn"
+            >
+              <CloudArrowUp size={14} className="mr-1.5" />
+              {uploading ? "Caricamento..." : "Pubblica"}
+            </Button>
+          </div>
+
+          <div className="mt-3">
+            <input
+              type="text"
+              placeholder="Changelog (opzionale) — es. Fix polling HPE 1820, miglioramenti stabilita'"
+              value={changelog}
+              onChange={(e) => setChangelog(e.target.value)}
+              className="w-full h-8 px-3 rounded-md border border-[var(--bg-border)] bg-[var(--bg-card)] text-[var(--text-secondary)] text-xs focus:outline-none focus:border-indigo-500"
+              data-testid="update-changelog-input"
+            />
+          </div>
+
+          {updateInfo?.published_at && (
+            <p className="text-[10px] text-[var(--text-muted)] mt-2">
+              Ultimo aggiornamento: v{updateInfo.version} pubblicato il {new Date(updateInfo.published_at).toLocaleDateString("it-IT", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })}
+              {updateInfo.changelog && ` — ${updateInfo.changelog}`}
+            </p>
+          )}
+        </div>
       </div>
 
       {/* Connector list */}

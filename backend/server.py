@@ -2,9 +2,9 @@
 NOC Alert Command Center - Main Server
 Enterprise-grade security with AES-256-GCM, Argon2id, 2FA, Rate Limiting, and Audit Logging
 """
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, WebSocket, WebSocketDisconnect, status, Request, Response
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, WebSocket, WebSocketDisconnect, status, Request, Response, UploadFile, File
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -13,6 +13,7 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 import os
 import logging
+import shutil
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict, EmailStr
 from typing import List, Optional, Dict, Any
@@ -1286,6 +1287,119 @@ async def get_connector_status(current_user: dict = Depends(get_current_user)):
     """Get status of all connected NOC Connectors."""
     connectors = await db.connector_status.find({}, {"_id": 0}).to_list(100)
     return connectors
+
+# ==================== CONNECTOR AUTO-UPDATE ====================
+
+CONNECTOR_STORAGE = Path("/app/connector_updates")
+CONNECTOR_STORAGE.mkdir(exist_ok=True)
+
+@api_router.get("/connector/update-check")
+async def connector_update_check(request: Request):
+    """Check if a new connector version is available. Called by connectors via API key."""
+    api_key = request.headers.get("X-API-Key")
+    if api_key:
+        client_data = await db.clients.find_one({"api_key": api_key}, {"_id": 0})
+        if not client_data:
+            raise HTTPException(status_code=401, detail="Invalid API key")
+
+    update_info = await db.connector_updates.find_one({"active": True}, {"_id": 0})
+    if not update_info:
+        return {"update_available": False, "latest_version": "1.0.0"}
+
+    return {
+        "update_available": True,
+        "latest_version": update_info["version"],
+        "download_url": f"/api/connector/download/{update_info['filename']}",
+        "changelog": update_info.get("changelog", ""),
+        "published_at": update_info.get("published_at", ""),
+        "file_size": update_info.get("file_size", 0)
+    }
+
+@api_router.get("/connector/download/{filename}")
+async def connector_download(filename: str, request: Request):
+    """Download the latest connector ZIP. Authenticated via API key."""
+    api_key = request.headers.get("X-API-Key")
+    if api_key:
+        client_data = await db.clients.find_one({"api_key": api_key}, {"_id": 0})
+        if not client_data:
+            raise HTTPException(status_code=401, detail="Invalid API key")
+
+    filepath = CONNECTOR_STORAGE / filename
+    if not filepath.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    return FileResponse(
+        path=str(filepath),
+        filename=filename,
+        media_type="application/zip"
+    )
+
+@api_router.post("/connector/upload-update")
+async def upload_connector_update(
+    request: Request,
+    file: UploadFile = File(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """Upload a new connector version (admin only)."""
+    if current_user.get("role") not in ["admin", "security_admin"]:
+        raise HTTPException(status_code=403, detail="Admin role required")
+
+    if not file.filename.endswith(".zip"):
+        raise HTTPException(status_code=400, detail="Only ZIP files accepted")
+
+    # Read version from form or generate
+    body = await request.form()
+    version = body.get("version", "")
+    changelog = body.get("changelog", "")
+
+    if not version:
+        raise HTTPException(status_code=400, detail="Version is required")
+
+    # Save file
+    safe_filename = f"86NocConnector_v{version}.zip"
+    filepath = CONNECTOR_STORAGE / safe_filename
+    content = await file.read()
+    with open(filepath, "wb") as f:
+        f.write(content)
+
+    # Deactivate previous updates
+    await db.connector_updates.update_many({}, {"$set": {"active": False}})
+
+    # Save update record
+    update_doc = {
+        "version": version,
+        "filename": safe_filename,
+        "changelog": changelog,
+        "file_size": len(content),
+        "active": True,
+        "published_at": datetime.now(timezone.utc).isoformat(),
+        "uploaded_by": current_user.get("name", "admin")
+    }
+    await db.connector_updates.insert_one(update_doc)
+
+    # Also copy to frontend public for web download
+    public_path = Path("/app/frontend/public/86NocConnector.zip")
+    shutil.copy2(filepath, public_path)
+
+    return {
+        "status": "ok",
+        "version": version,
+        "filename": safe_filename,
+        "connectors_will_update": "I connettori si aggiorneranno automaticamente entro 6 ore"
+    }
+
+@api_router.get("/connector/update-info")
+async def get_connector_update_info(current_user: dict = Depends(get_current_user)):
+    """Get current update info for admin dashboard."""
+    update_info = await db.connector_updates.find_one({"active": True}, {"_id": 0})
+    total_connectors = await db.connector_status.count_documents({})
+    if update_info:
+        # Count connectors already on latest version
+        updated = await db.connector_status.count_documents({"connector_version": update_info["version"]})
+        update_info["total_connectors"] = total_connectors
+        update_info["updated_connectors"] = updated
+        update_info["pending_connectors"] = total_connectors - updated
+    return update_info or {"version": "1.0.0", "total_connectors": total_connectors, "updated_connectors": 0, "pending_connectors": 0}
 
 @api_router.post("/clients/{client_id}/regenerate-key")
 async def regenerate_client_api_key(client_id: str, current_user: dict = Depends(get_current_user)):

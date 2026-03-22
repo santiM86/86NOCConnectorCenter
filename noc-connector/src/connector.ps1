@@ -280,6 +280,119 @@ function Start-PollingLoop($config) {
     }
 }
 
+# ==================== AUTO-UPDATE ====================
+
+function Check-ForUpdate($config) {
+    try {
+        $headers = @{ "X-API-Key" = $config.api_key }
+        $url = "$($config.noc_center_url)/api/connector/update-check"
+        $response = Invoke-RestMethod -Uri $url -Headers $headers -TimeoutSec 15 -ErrorAction Stop
+        
+        if ($response.update_available -and $response.latest_version -ne $global:Version) {
+            Write-Log "Aggiornamento disponibile: v$($global:Version) -> v$($response.latest_version)" "INFO"
+            return $response
+        }
+    } catch {
+        Write-Log "Errore check aggiornamento: $($_.Exception.Message)" "WARN"
+    }
+    return $null
+}
+
+function Install-Update($config, $updateInfo) {
+    try {
+        Write-Log "Download aggiornamento v$($updateInfo.latest_version)..." "INFO"
+        $headers = @{ "X-API-Key" = $config.api_key }
+        $downloadUrl = "$($config.noc_center_url)$($updateInfo.download_url)"
+        $tempZip = Join-Path $env:TEMP "86NocConnector_update.zip"
+        $tempExtract = Join-Path $env:TEMP "86NocConnector_update"
+        
+        # Download
+        Invoke-WebRequest -Uri $downloadUrl -Headers $headers -OutFile $tempZip -TimeoutSec 120 -ErrorAction Stop
+        Write-Log "Download completato: $tempZip" "INFO"
+        
+        # Extract to temp
+        if (Test-Path $tempExtract) { Remove-Item $tempExtract -Recurse -Force }
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        [System.IO.Compression.ZipFile]::ExtractToDirectory($tempZip, $tempExtract)
+        
+        # Find the extracted connector folder
+        $extractedDir = Get-ChildItem $tempExtract -Directory | Select-Object -First 1
+        if (-not $extractedDir) {
+            Write-Log "Errore: nessuna cartella trovata nello ZIP" "ERROR"
+            return $false
+        }
+        
+        $srcDir = Join-Path $extractedDir.FullName "src"
+        if (-not (Test-Path $srcDir)) {
+            Write-Log "Errore: cartella src non trovata" "ERROR"
+            return $false
+        }
+        
+        # Copy new files to current installation
+        $currentDir = Split-Path -Parent $PSScriptRoot
+        $currentSrc = Join-Path $currentDir "src"
+        
+        # Backup current files
+        $backupDir = Join-Path $env:TEMP "86NocConnector_backup_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+        Copy-Item $currentSrc $backupDir -Recurse -Force
+        Write-Log "Backup creato: $backupDir" "INFO"
+        
+        # Copy new src files (preserving config)
+        Get-ChildItem $srcDir -File | ForEach-Object {
+            $destFile = Join-Path $currentSrc $_.Name
+            Copy-Item $_.FullName $destFile -Force
+            Write-Log "  Aggiornato: $($_.Name)" "INFO"
+        }
+        
+        # Copy root files (bat files, etc) except config
+        Get-ChildItem $extractedDir.FullName -File | ForEach-Object {
+            $destFile = Join-Path $currentDir $_.Name
+            Copy-Item $_.FullName $destFile -Force
+            Write-Log "  Aggiornato: $($_.Name)" "INFO"
+        }
+        
+        # Cleanup
+        Remove-Item $tempZip -Force -ErrorAction SilentlyContinue
+        Remove-Item $tempExtract -Recurse -Force -ErrorAction SilentlyContinue
+        
+        Write-Log "Aggiornamento a v$($updateInfo.latest_version) completato!" "INFO"
+        Write-Log "Il connector si riavviera' al prossimo ciclo." "INFO"
+        
+        return $true
+    } catch {
+        Write-Log "Errore aggiornamento: $($_.Exception.Message)" "ERROR"
+        return $false
+    }
+}
+
+function Start-UpdateCheckLoop($config) {
+    $checkInterval = 21600  # 6 ore in secondi
+    $lastCheck = [datetime]::MinValue
+    
+    while ($global:Running) {
+        $elapsed = ((Get-Date) - $lastCheck).TotalSeconds
+        if ($elapsed -ge $checkInterval) {
+            $updateInfo = Check-ForUpdate $config
+            if ($updateInfo) {
+                $success = Install-Update $config $updateInfo
+                if ($success) {
+                    Write-Log "Riavvio connector per applicare aggiornamento..." "INFO"
+                    # Restart by launching new instance and exiting
+                    $batPath = Join-Path (Split-Path -Parent $PSScriptRoot) "86NocConnector.bat"
+                    if (Test-Path $batPath) {
+                        Start-Process "cmd.exe" -ArgumentList "/c `"$batPath`"" -WindowStyle Hidden
+                        Start-Sleep -Seconds 2
+                        $global:Running = $false
+                        return
+                    }
+                }
+            }
+            $lastCheck = Get-Date
+        }
+        Start-Sleep -Seconds 60
+    }
+}
+
 # ==================== LISTENERS ====================
 
 function Start-SNMPListener($config) {
@@ -405,6 +518,16 @@ function Start-Connector {
         Write-Log "Polling SNMP avviato in background"
     }
     
+    # Start auto-update checker job
+    $updateJob = Start-Job -ScriptBlock {
+        param($scriptPath, $configPath)
+        . $scriptPath -ConfigPath $configPath
+        $cfg = Read-Config
+        $global:Running = $true
+        Start-UpdateCheckLoop $cfg
+    } -ArgumentList $PSCommandPath, (Get-ConfigPath)
+    Write-Log "Auto-update checker avviato (ogni 6 ore)"
+    
     # Heartbeat in current thread loop
     Write-Log "$global:AppName avviato. Premi Ctrl+C per fermare."
     
@@ -425,6 +548,8 @@ function Start-Connector {
             Stop-Job $pollingJob -ErrorAction SilentlyContinue
             Remove-Job $pollingJob -ErrorAction SilentlyContinue
         }
+        Stop-Job $updateJob -ErrorAction SilentlyContinue
+        Remove-Job $updateJob -ErrorAction SilentlyContinue
         Write-Log "$global:AppName fermato."
     }
 }

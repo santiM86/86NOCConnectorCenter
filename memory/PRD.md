@@ -36,56 +36,54 @@ Societa' IT necessita di un raccoglitore di alert per tutti i dispositivi nelle 
 - [x] Design dark theme NOC professionale
 - [x] Localizzazione italiana
 
-### Phase 4 - 86NocConnector (DONE - 22 Mar 2026)
-- [x] 100% PowerShell nativo - ZERO installazioni sul server del cliente
-- [x] Wizard installazione GUI (Windows Forms nativo)
-- [x] Icona system tray vicino all'orologio con menu tasto destro
-- [x] SNMP Trap listener (porta 162) + Syslog listener (porta 514)
+### Phase 4 - 86NocConnector (DONE)
+- [x] 100% PowerShell nativo
+- [x] Wizard installazione GUI con pagina Dispositivi da Monitorare
+- [x] Icona system tray
+- [x] SNMP Trap listener + Syslog listener
 - [x] Inoltro automatico al NOC Center via HTTPS + API Key
-- [x] Heartbeat connector visibile nella dashboard NOC
+- [x] Heartbeat connector
 - [x] Avvio automatico con Windows
-- [x] Disinstallazione pulita (uninstall.bat)
-- [x] Fix finestra nera console (install.bat usa -WindowStyle Hidden + exit)
-- [x] Launcher VBS per installazione senza flash di console
+- [x] Fix finestra nera + launcher VBS
 - [x] Pacchetto ZIP scaricabile dal web
 
-### Phase 5 - Mobile PWA + Connectors Page (DONE - 22 Mar 2026)
-- [x] PWA manifest.json + service worker per installazione su home screen
-- [x] Bottom navigation bar per mobile (Home, Alert, Clienti, Dispositivi, Altro)
-- [x] Meta tags Apple per iOS (standalone, status bar, touch icon)
-- [x] Touch-friendly targets (min 44px) e safe area support
-- [x] Pagina "Connettori" con stato real-time dei 86NocConnector installati
-- [x] Card sommario (Totale, Online, Offline) + dettagli per connector
-- [x] Refresh automatico ogni 15 secondi
-- [x] Sezione Download Connector con guida installazione in 3 step
-- [x] Download ZIP diretto dalla pagina Connettori
+### Phase 5 - Mobile PWA + Connectors Page (DONE)
+- [x] PWA manifest.json + service worker
+- [x] Bottom navigation bar per mobile
+- [x] Meta tags Apple per iOS
+- [x] Pagina Connettori con stato real-time
+- [x] Sezione Download con guida installazione 3 step
 
-## Installazione Mobile
-### Android (Chrome): Menu > "Installa app" o "Aggiungi alla schermata Home"
-### iOS (Safari): Condividi > "Aggiungi alla schermata Home"
+### Phase 6 - SNMP Polling + Auto-Update (DONE - 22 Mar 2026)
+- [x] Client SNMP v2c nativo (raw UDP, BER encoding/decoding)
+- [x] Polling attivo stato porte switch (ifOperStatus)
+- [x] Rilevamento cambiamenti porte (up→down = critical, down→up = low)
+- [x] Rilevamento dispositivo non raggiungibile
+- [x] Pagina installer "Dispositivi da Monitorare" con aggiungi/rimuovi
+- [x] Intervallo polling configurabile (default 60s)
+- [x] Sistema auto-update centralizzato per 300+ connector
+- [x] Backend: upload ZIP, check versione, download endpoint
+- [x] Connector: check aggiornamenti ogni 6 ore, download, backup, aggiornamento, riavvio
+- [x] Frontend: sezione "Aggiornamento Automatico" con upload, versione, changelog, contatore aggiornati
+- [x] Alert con titoli leggibili (es. "Porta DOWN - HPE 1820 48G")
 
-## Architettura Connessione
+## Architettura
 ```
-[HPE 5130 / Firewall / ILO] --SNMP/Syslog--> [86NocConnector su Windows] --HTTPS--> [NOC Center Cloud]
+[Switch HPE 1820] ←SNMP polling→ [86NocConnector su Windows] →HTTPS→ [NOC Center Cloud]
+                                  ↑ Auto-update ogni 6h ↑
 ```
 
 ## Test Credentials
-- Admin: admin@test.it / TestAdmin123! (role: admin)
-
-## Files Chiave
-- `/app/noc-connector/` - Pacchetto 86NocConnector completo
-- `/app/backend/server.py` - Backend principale
-- `/app/frontend/src/pages/` - Pagine frontend
-- `/app/frontend/src/components/Layout.js` - Layout con mobile nav
-- `/app/frontend/public/manifest.json` - PWA manifest
-- `/app/frontend/public/sw.js` - Service Worker
+- Admin: admin@test.it / TestAdmin123!
 
 ## Backlog P1
-- [ ] Notifiche push Firebase (richiede API key utente)
-- [ ] Notifiche email SendGrid (richiede API key utente)
+- [ ] Notifiche push Firebase (richiede API key)
+- [ ] Notifiche email SendGrid (richiede API key)
 
 ## Backlog P2
 - [ ] LDAP integration
 - [ ] SNMP v3 nel connector
 - [ ] Auto-discovery dispositivi rete
 - [ ] Refactoring server.py in moduli
+- [ ] Integrazione AI per SOC (correlazione intelligente alert)
+- [ ] Telefonate automatiche Twilio per alert critici
