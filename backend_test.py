@@ -5,7 +5,7 @@ from datetime import datetime
 import uuid
 
 class NOCAPITester:
-    def __init__(self, base_url="https://device-guardian-28.preview.emergentagent.com"):
+    def __init__(self, base_url="https://noc-center-live.preview.emergentagent.com"):
         self.base_url = base_url
         self.api_url = f"{base_url}/api"
         self.token = None
