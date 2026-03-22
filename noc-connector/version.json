@@ -1,4 +1,4 @@
 {
-  "version": "1.1.0",
-  "changelog": "SNMP polling attivo per HPE 1820, auto-update, gestione dispositivi via system tray, vista unificata per cliente"
+  "version": "1.4.0",
+  "changelog": "Aggiunto collegamento nel Menu Start di Windows per avvio rapido"
 }

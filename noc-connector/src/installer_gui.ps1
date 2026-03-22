@@ -220,6 +220,7 @@ function Show-InstallerWizard {
             "Servizio SNMP Trap listener (porta UDP 162)"
             "Servizio Syslog listener (porta UDP 514)"
             "Icona nella system tray per monitoraggio"
+            "Collegamento nel Menu Start di Windows"
             "Regole firewall Windows"
             "Avvio automatico con Windows"
         )
@@ -627,7 +628,7 @@ function Show-InstallerWizard {
         $form.Refresh()
         Start-Sleep -Milliseconds 500
         
-        # Step 3: Autostart + Programs
+        # Step 3: Autostart + Programs + Start Menu
         $txtStatus.AppendText("> Registrazione sistema...`r`n")
         $progressBar.Value = 60
         $form.Refresh()
@@ -638,6 +639,31 @@ function Show-InstallerWizard {
                 & reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v $AppName /t REG_SZ /d "`"$batPath`"" /f 2>$null
                 $txtStatus.AppendText("  Avvio automatico: OK`r`n")
             } catch {}
+        }
+        # Start Menu shortcut
+        try {
+            $startMenuDir = Join-Path ([Environment]::GetFolderPath("CommonStartMenu")) "Programs\86NocConnector"
+            if (!(Test-Path $startMenuDir)) { New-Item -ItemType Directory -Path $startMenuDir -Force | Out-Null }
+            $shell = New-Object -ComObject WScript.Shell
+            # Main shortcut - Avvia 86NocConnector
+            $shortcut = $shell.CreateShortcut("$startMenuDir\86NocConnector.lnk")
+            $shortcut.TargetPath = $batPath
+            $shortcut.WorkingDirectory = $BaseDir
+            $shortcut.Description = "Avvia 86NocConnector - Collector SNMP e Syslog"
+            $shortcut.IconLocation = "shell32.dll,13"
+            $shortcut.WindowStyle = 7
+            $shortcut.Save()
+            # Uninstall shortcut
+            $unShortcut = $shell.CreateShortcut("$startMenuDir\Disinstalla 86NocConnector.lnk")
+            $unShortcut.TargetPath = $uninstallBat
+            $unShortcut.WorkingDirectory = $BaseDir
+            $unShortcut.Description = "Disinstalla 86NocConnector"
+            $unShortcut.IconLocation = "shell32.dll,31"
+            $unShortcut.Save()
+            [System.Runtime.InteropServices.Marshal]::ReleaseComObject($shell) | Out-Null
+            $txtStatus.AppendText("  Menu Start: OK`r`n")
+        } catch {
+            $txtStatus.AppendText("  Menu Start: $($_.Exception.Message)`r`n")
         }
         try {
             $regPath = "HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\$AppName"
@@ -724,6 +750,7 @@ function Show-InstallerWizard {
             [char]0x2713 + "   Syslog: porta UDP $($txtSyslog.Text)"
             [char]0x2713 + "   NOC Center: $($txtUrl.Text.Trim().Substring(0, [Math]::Min(42, $txtUrl.Text.Trim().Length)))"
             [char]0x2713 + "   Icona system tray: Attiva"
+            [char]0x2713 + "   Menu Start: Collegamento creato"
             [char]0x2713 + "   Avvio automatico: $(if($chkAutostart.Checked){'Abilitato'}else{'Disabilitato'})"
             [char]0x2713 + "   Polling SNMP: $($deviceList.Items.Count) dispositivi ogni $($txtPollInterval.Text)s"
         )
