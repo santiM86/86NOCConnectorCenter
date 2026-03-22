@@ -36,32 +36,38 @@ function Show-InstallerWizard {
     $leftPanel.BackColor = [System.Drawing.Color]::FromArgb(10, 10, 15)
     $form.Controls.Add($leftPanel)
     
-    $lbl86 = New-Object System.Windows.Forms.Label
-    $lbl86.Text = "86"
-    $lbl86.Font = New-Object System.Drawing.Font("Arial", 48, [System.Drawing.FontStyle]::Bold)
-    $lbl86.ForeColor = [System.Drawing.Color]::White
-    $lbl86.BackColor = [System.Drawing.Color]::Transparent
-    $lbl86.Location = New-Object System.Drawing.Point(45, 120)
-    $lbl86.AutoSize = $true
-    $leftPanel.Controls.Add($lbl86)
-    
-    $lblBIT = New-Object System.Windows.Forms.Label
-    $lblBIT.Text = "BIT"
-    $lblBIT.Font = New-Object System.Drawing.Font("Arial", 32, [System.Drawing.FontStyle]::Bold)
-    $lblBIT.ForeColor = [System.Drawing.Color]::White
-    $lblBIT.BackColor = [System.Drawing.Color]::Transparent
-    $lblBIT.Location = New-Object System.Drawing.Point(48, 185)
-    $lblBIT.AutoSize = $true
-    $leftPanel.Controls.Add($lblBIT)
+    # Logo image
+    $logoPath = Join-Path $ScriptDir "86bit_logo.jpg"
+    if (Test-Path $logoPath) {
+        $logoPic = New-Object System.Windows.Forms.PictureBox
+        $logoPic.Location = New-Object System.Drawing.Point(35, 80)
+        $logoPic.Size = New-Object System.Drawing.Size(130, 130)
+        $logoPic.SizeMode = [System.Windows.Forms.PictureBoxSizeMode]::Zoom
+        $logoPic.BackColor = [System.Drawing.Color]::Transparent
+        $logoPic.Image = [System.Drawing.Image]::FromFile($logoPath)
+        $leftPanel.Controls.Add($logoPic)
+    }
     
     $lblApp = New-Object System.Windows.Forms.Label
     $lblApp.Text = "NocConnector"
-    $lblApp.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Bold)
+    $lblApp.Font = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
     $lblApp.ForeColor = [System.Drawing.Color]::FromArgb(99, 102, 241)
     $lblApp.BackColor = [System.Drawing.Color]::Transparent
-    $lblApp.Location = New-Object System.Drawing.Point(35, 400)
-    $lblApp.AutoSize = $true
+    $lblApp.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
+    $lblApp.Location = New-Object System.Drawing.Point(20, 220)
+    $lblApp.Size = New-Object System.Drawing.Size(160, 20)
     $leftPanel.Controls.Add($lblApp)
+    
+    # Company info at bottom of left panel
+    $lblCompany = New-Object System.Windows.Forms.Label
+    $lblCompany.Text = "86BIT srl Unipersonale`nP.Iva 04353030168`nScanzorosciate (BG)`nTel. +39 035 310 900`ninfo@86bit.it"
+    $lblCompany.Font = New-Object System.Drawing.Font("Segoe UI", 7)
+    $lblCompany.ForeColor = [System.Drawing.Color]::FromArgb(120, 120, 140)
+    $lblCompany.BackColor = [System.Drawing.Color]::Transparent
+    $lblCompany.TextAlign = [System.Drawing.ContentAlignment]::BottomCenter
+    $lblCompany.Location = New-Object System.Drawing.Point(5, 360)
+    $lblCompany.Size = New-Object System.Drawing.Size(190, 75)
+    $leftPanel.Controls.Add($lblCompany)
     
     # Content panel
     $contentPanel = New-Object System.Windows.Forms.Panel
@@ -179,9 +185,18 @@ function Show-InstallerWizard {
         $footer.Text = "Clicca 'Avanti' per continuare."
         $footer.Font = New-Object System.Drawing.Font("Segoe UI", 9)
         $footer.ForeColor = [System.Drawing.Color]::Gray
-        $footer.Location = New-Object System.Drawing.Point(20, 330)
+        $footer.Location = New-Object System.Drawing.Point(20, 325)
         $footer.AutoSize = $true
         $contentPanel.Controls.Add($footer)
+        
+        # Company legal footer
+        $legalFooter = New-Object System.Windows.Forms.Label
+        $legalFooter.Text = "86BIT srl Unipersonale - C.F. e P.Iva 04353030168 - Cap. soc. `u{20AC} 30.000,00 i.v. - Reg. Imprese BG 04353030168`r`nREA n. BG456578 - Piazza Papa Giovanni XXIII - 24020 Scanzorosciate (BG) - Tel. +39 035 310 900 - info@86bit.it"
+        $legalFooter.Font = New-Object System.Drawing.Font("Segoe UI", 6.5)
+        $legalFooter.ForeColor = [System.Drawing.Color]::FromArgb(160, 160, 170)
+        $legalFooter.Location = New-Object System.Drawing.Point(20, 360)
+        $legalFooter.Size = New-Object System.Drawing.Size(400, 30)
+        $contentPanel.Controls.Add($legalFooter)
     }
     
     function Show-Config {
@@ -400,7 +415,10 @@ function Show-InstallerWizard {
             $regPath = "HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\$AppName"
             & reg add $regPath /v "DisplayName" /t REG_SZ /d "$AppName" /f 2>$null
             & reg add $regPath /v "DisplayVersion" /t REG_SZ /d "$Version" /f 2>$null
-            & reg add $regPath /v "Publisher" /t REG_SZ /d "86BIT" /f 2>$null
+            & reg add $regPath /v "Publisher" /t REG_SZ /d "86BIT srl Unipersonale" /f 2>$null
+            & reg add $regPath /v "URLInfoAbout" /t REG_SZ /d "https://www.86bit.it" /f 2>$null
+            & reg add $regPath /v "HelpLink" /t REG_SZ /d "mailto:info@86bit.it" /f 2>$null
+            & reg add $regPath /v "Contact" /t REG_SZ /d "info@86bit.it" /f 2>$null
             & reg add $regPath /v "UninstallString" /t REG_SZ /d "`"$uninstallBat`"" /f 2>$null
             & reg add $regPath /v "InstallLocation" /t REG_SZ /d "$BaseDir" /f 2>$null
             & reg add $regPath /v "NoModify" /t REG_DWORD /d 1 /f 2>$null
@@ -493,9 +511,18 @@ function Show-InstallerWizard {
         $tip.Text = "Trovi l'icona di $AppName vicino all'orologio`nnella barra delle applicazioni (system tray).`nCliccaci con il tasto destro per le opzioni."
         $tip.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
         $tip.ForeColor = [System.Drawing.Color]::FromArgb(99, 102, 241)
-        $tip.Location = New-Object System.Drawing.Point(20, 310)
-        $tip.Size = New-Object System.Drawing.Size(400, 60)
+        $tip.Location = New-Object System.Drawing.Point(20, 305)
+        $tip.Size = New-Object System.Drawing.Size(400, 50)
         $contentPanel.Controls.Add($tip)
+        
+        # Company legal footer on complete page
+        $legalComplete = New-Object System.Windows.Forms.Label
+        $legalComplete.Text = "86BIT srl Unipersonale - C.F. e P.Iva 04353030168 - Cap. soc. `u{20AC} 30.000,00 i.v. - Reg. Imprese BG 04353030168`r`nREA n. BG456578 - Piazza Papa Giovanni XXIII - 24020 Scanzorosciate (BG) - Tel. +39 035 310 900 - info@86bit.it"
+        $legalComplete.Font = New-Object System.Drawing.Font("Segoe UI", 6.5)
+        $legalComplete.ForeColor = [System.Drawing.Color]::FromArgb(160, 160, 170)
+        $legalComplete.Location = New-Object System.Drawing.Point(20, 365)
+        $legalComplete.Size = New-Object System.Drawing.Size(400, 30)
+        $contentPanel.Controls.Add($legalComplete)
     }
     
     # Navigation
