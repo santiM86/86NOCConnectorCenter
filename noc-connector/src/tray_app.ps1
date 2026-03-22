@@ -114,6 +114,238 @@ function Get-StatusText {
     return "$AppName v$Version`nStato: FERMO"
 }
 
+# ==================== DEVICE MANAGER ====================
+
+function Show-DeviceManager {
+    $form = New-Object System.Windows.Forms.Form
+    $form.Text = "$AppName - Gestisci Dispositivi"
+    $form.Size = New-Object System.Drawing.Size(580, 480)
+    $form.StartPosition = "CenterScreen"
+    $form.FormBorderStyle = "FixedDialog"
+    $form.MaximizeBox = $false
+    $form.BackColor = [System.Drawing.Color]::FromArgb(245, 245, 248)
+    $form.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+
+    # Title
+    $lblTitle = New-Object System.Windows.Forms.Label
+    $lblTitle.Text = "Dispositivi Monitorati (SNMP Polling)"
+    $lblTitle.Font = New-Object System.Drawing.Font("Segoe UI", 13, [System.Drawing.FontStyle]::Bold)
+    $lblTitle.ForeColor = [System.Drawing.Color]::FromArgb(30, 30, 40)
+    $lblTitle.Location = New-Object System.Drawing.Point(20, 15)
+    $lblTitle.AutoSize = $true
+    $form.Controls.Add($lblTitle)
+
+    $lblDesc = New-Object System.Windows.Forms.Label
+    $lblDesc.Text = "Aggiungi o rimuovi switch, firewall e server da monitorare via SNMP."
+    $lblDesc.Font = New-Object System.Drawing.Font("Segoe UI", 8.5)
+    $lblDesc.ForeColor = [System.Drawing.Color]::FromArgb(100, 100, 115)
+    $lblDesc.Location = New-Object System.Drawing.Point(20, 42)
+    $lblDesc.AutoSize = $true
+    $form.Controls.Add($lblDesc)
+
+    # Input row
+    $lblIP = New-Object System.Windows.Forms.Label
+    $lblIP.Text = "IP Address"
+    $lblIP.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+    $lblIP.ForeColor = [System.Drawing.Color]::FromArgb(50, 50, 65)
+    $lblIP.Location = New-Object System.Drawing.Point(20, 72)
+    $lblIP.AutoSize = $true
+    $form.Controls.Add($lblIP)
+
+    $txtIP = New-Object System.Windows.Forms.TextBox
+    $txtIP.Location = New-Object System.Drawing.Point(20, 90)
+    $txtIP.Size = New-Object System.Drawing.Size(130, 26)
+    $txtIP.Font = New-Object System.Drawing.Font("Consolas", 9.5)
+    $form.Controls.Add($txtIP)
+
+    $lblComm = New-Object System.Windows.Forms.Label
+    $lblComm.Text = "Community"
+    $lblComm.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+    $lblComm.ForeColor = [System.Drawing.Color]::FromArgb(50, 50, 65)
+    $lblComm.Location = New-Object System.Drawing.Point(160, 72)
+    $lblComm.AutoSize = $true
+    $form.Controls.Add($lblComm)
+
+    $txtComm = New-Object System.Windows.Forms.TextBox
+    $txtComm.Location = New-Object System.Drawing.Point(160, 90)
+    $txtComm.Size = New-Object System.Drawing.Size(100, 26)
+    $txtComm.Font = New-Object System.Drawing.Font("Consolas", 9.5)
+    $txtComm.Text = "public"
+    $form.Controls.Add($txtComm)
+
+    $lblName = New-Object System.Windows.Forms.Label
+    $lblName.Text = "Nome dispositivo"
+    $lblName.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+    $lblName.ForeColor = [System.Drawing.Color]::FromArgb(50, 50, 65)
+    $lblName.Location = New-Object System.Drawing.Point(270, 72)
+    $lblName.AutoSize = $true
+    $form.Controls.Add($lblName)
+
+    $txtName = New-Object System.Windows.Forms.TextBox
+    $txtName.Location = New-Object System.Drawing.Point(270, 90)
+    $txtName.Size = New-Object System.Drawing.Size(180, 26)
+    $txtName.Font = New-Object System.Drawing.Font("Consolas", 9.5)
+    $form.Controls.Add($txtName)
+
+    $btnAdd = New-Object System.Windows.Forms.Button
+    $btnAdd.Text = "Aggiungi"
+    $btnAdd.Size = New-Object System.Drawing.Size(80, 26)
+    $btnAdd.Location = New-Object System.Drawing.Point(458, 90)
+    $btnAdd.FlatStyle = "Flat"
+    $btnAdd.BackColor = [System.Drawing.Color]::FromArgb(99, 102, 241)
+    $btnAdd.ForeColor = [System.Drawing.Color]::White
+    $btnAdd.Font = New-Object System.Drawing.Font("Segoe UI", 8.5, [System.Drawing.FontStyle]::Bold)
+    $btnAdd.Cursor = [System.Windows.Forms.Cursors]::Hand
+    $form.Controls.Add($btnAdd)
+
+    # ListView
+    $listView = New-Object System.Windows.Forms.ListView
+    $listView.Location = New-Object System.Drawing.Point(20, 130)
+    $listView.Size = New-Object System.Drawing.Size(518, 240)
+    $listView.View = [System.Windows.Forms.View]::Details
+    $listView.FullRowSelect = $true
+    $listView.GridLines = $true
+    $listView.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+    $listView.BackColor = [System.Drawing.Color]::White
+    $null = $listView.Columns.Add("IP Address", 150)
+    $null = $listView.Columns.Add("Community", 100)
+    $null = $listView.Columns.Add("Nome", 260)
+    $form.Controls.Add($listView)
+
+    # Load current devices from config
+    if (Test-Path $ConfigPath) {
+        $config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+        if ($config.devices) {
+            foreach ($dev in $config.devices) {
+                $item = New-Object System.Windows.Forms.ListViewItem($dev.ip)
+                $null = $item.SubItems.Add($dev.community)
+                $null = $item.SubItems.Add($dev.name)
+                $listView.Items.Add($item)
+            }
+        }
+    }
+
+    # Bottom buttons
+    $btnRemove = New-Object System.Windows.Forms.Button
+    $btnRemove.Text = "Rimuovi selezionato"
+    $btnRemove.Size = New-Object System.Drawing.Size(135, 30)
+    $btnRemove.Location = New-Object System.Drawing.Point(20, 380)
+    $btnRemove.FlatStyle = "Flat"
+    $btnRemove.BackColor = [System.Drawing.Color]::White
+    $btnRemove.ForeColor = [System.Drawing.Color]::FromArgb(220, 50, 50)
+    $btnRemove.Font = New-Object System.Drawing.Font("Segoe UI", 8.5)
+    $btnRemove.Cursor = [System.Windows.Forms.Cursors]::Hand
+    $form.Controls.Add($btnRemove)
+
+    $btnSave = New-Object System.Windows.Forms.Button
+    $btnSave.Text = "Salva e Riavvia"
+    $btnSave.Size = New-Object System.Drawing.Size(135, 30)
+    $btnSave.Location = New-Object System.Drawing.Point(403, 380)
+    $btnSave.FlatStyle = "Flat"
+    $btnSave.BackColor = [System.Drawing.Color]::FromArgb(34, 197, 94)
+    $btnSave.ForeColor = [System.Drawing.Color]::White
+    $btnSave.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+    $btnSave.Cursor = [System.Windows.Forms.Cursors]::Hand
+    $form.Controls.Add($btnSave)
+
+    $lblHint = New-Object System.Windows.Forms.Label
+    $lblHint.Text = "Il connector verra' riavviato per applicare le modifiche."
+    $lblHint.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+    $lblHint.ForeColor = [System.Drawing.Color]::FromArgb(140, 140, 155)
+    $lblHint.Location = New-Object System.Drawing.Point(20, 420)
+    $lblHint.AutoSize = $true
+    $form.Controls.Add($lblHint)
+
+    # Add button handler
+    $btnAdd.Add_Click({
+        $ip = $txtIP.Text.Trim()
+        if (-not $ip) {
+            [System.Windows.Forms.MessageBox]::Show("Inserisci un indirizzo IP.", $AppName, "OK", "Warning")
+            return
+        }
+        $comm = if ($txtComm.Text.Trim()) { $txtComm.Text.Trim() } else { "public" }
+        $devName = if ($txtName.Text.Trim()) { $txtName.Text.Trim() } else { $ip }
+
+        # Check duplicate
+        foreach ($existing in $listView.Items) {
+            if ($existing.Text -eq $ip) {
+                [System.Windows.Forms.MessageBox]::Show("IP gia' presente nella lista.", $AppName, "OK", "Warning")
+                return
+            }
+        }
+
+        $item = New-Object System.Windows.Forms.ListViewItem($ip)
+        $null = $item.SubItems.Add($comm)
+        $null = $item.SubItems.Add($devName)
+        $listView.Items.Add($item)
+        $txtIP.Text = ""
+        $txtName.Text = ""
+    })
+
+    # Remove button handler
+    $btnRemove.Add_Click({
+        if ($listView.SelectedItems.Count -gt 0) {
+            $listView.Items.Remove($listView.SelectedItems[0])
+        } else {
+            [System.Windows.Forms.MessageBox]::Show("Seleziona un dispositivo dalla lista.", $AppName, "OK", "Information")
+        }
+    })
+
+    # Save button handler
+    $btnSave.Add_Click({
+        if (Test-Path $ConfigPath) {
+            $config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+        } else {
+            [System.Windows.Forms.MessageBox]::Show("Nessuna configurazione trovata. Esegui prima l'installer.", $AppName, "OK", "Error")
+            return
+        }
+
+        # Build devices array
+        $devicesArray = @()
+        foreach ($item in $listView.Items) {
+            $devicesArray += @{
+                ip = $item.Text
+                community = $item.SubItems[1].Text
+                name = $item.SubItems[2].Text
+            }
+        }
+
+        # Update config - preserve existing settings, update devices
+        $configHash = @{}
+        foreach ($prop in $config.PSObject.Properties) {
+            $configHash[$prop.Name] = $prop.Value
+        }
+        $configHash["devices"] = $devicesArray
+        $configHash | ConvertTo-Json -Depth 5 | Set-Content $ConfigPath -Encoding UTF8
+
+        $result = [System.Windows.Forms.MessageBox]::Show(
+            "Configurazione salvata con $($devicesArray.Count) dispositivi.`n`nVuoi riavviare il connector per applicare le modifiche?",
+            $AppName,
+            [System.Windows.Forms.MessageBoxButtons]::YesNo,
+            [System.Windows.Forms.MessageBoxIcon]::Question
+        )
+
+        if ($result -eq [System.Windows.Forms.DialogResult]::Yes) {
+            # Signal to restart - set a flag file
+            $restartFlag = Join-Path $ConfigDir "restart_requested"
+            "1" | Set-Content $restartFlag
+            $form.Close()
+        } else {
+            $form.Close()
+        }
+    })
+
+    $form.ShowDialog()
+
+    # Check if restart was requested
+    $restartFlag = Join-Path $ConfigDir "restart_requested"
+    if (Test-Path $restartFlag) {
+        Remove-Item $restartFlag -Force -ErrorAction SilentlyContinue
+        return $true  # Signal caller to restart connector
+    }
+    return $false
+}
+
 # ==================== TRAY APPLICATION ====================
 
 function Start-TrayApp {
@@ -224,6 +456,23 @@ function Start-TrayApp {
             Start-Process "notepad.exe" -ArgumentList $ConfigPath
         } else {
             [System.Windows.Forms.MessageBox]::Show("Nessuna configurazione. Esegui install.bat", $AppName)
+        }
+    })
+
+    # Manage Devices
+    $devicesItem = $contextMenu.Items.Add("Gestisci Dispositivi")
+    $devicesItem.ForeColor = [System.Drawing.Color]::FromArgb(96, 165, 250)
+    $devicesItem.Add_Click({
+        $shouldRestart = Show-DeviceManager
+        if ($shouldRestart) {
+            # Restart connector process
+            Stop-ConnectorProcess
+            Start-Sleep -Seconds 1
+            if (Start-ConnectorProcess) {
+                $notifyIcon.Icon = New-TrayIcon "running"
+                $notifyIcon.Text = "$AppName - Attivo (riavviato)"
+                $notifyIcon.ShowBalloonTip(3000, $AppName, "Connector riavviato con nuovi dispositivi", [System.Windows.Forms.ToolTipIcon]::Info)
+            }
         }
     })
     
