@@ -234,7 +234,28 @@ function Send-Heartbeat($config) {
         traps_received = $global:Stats.snmp_received
         syslogs_received = $global:Stats.syslog_received
     }
-    Send-ToNOC $config "connector/heartbeat" $payload | Out-Null
+    $response = Send-ToNOC $config "connector/heartbeat" $payload
+    
+    # Check if server is requesting a forced update
+    if ($response -and $response.force_update) {
+        Write-Log "FORCE UPDATE ricevuto dal NOC! Aggiornamento a v$($response.latest_version)..." "INFO"
+        $updateInfo = @{
+            update_available = $true
+            latest_version = $response.latest_version
+            download_url = $response.download_url
+            changelog = $response.changelog
+        }
+        $success = Install-Update $config $updateInfo
+        if ($success) {
+            Write-Log "Riavvio connector per applicare aggiornamento forzato..." "INFO"
+            $batPath = Join-Path (Split-Path -Parent $PSScriptRoot) "86NocConnector.bat"
+            if (Test-Path $batPath) {
+                Start-Process "cmd.exe" -ArgumentList "/c `"$batPath`"" -WindowStyle Hidden
+                Start-Sleep -Seconds 2
+                $global:Running = $false
+            }
+        }
+    }
 }
 
 # ==================== SNMP POLLING ====================

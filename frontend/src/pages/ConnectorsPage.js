@@ -138,6 +138,15 @@ export default function ConnectorsPage() {
     }
   };
 
+  const forceUpdate = async (clientId, hostname) => {
+    try {
+      const res = await axios.post(`${API}/connector/${clientId}/force-update`);
+      toast.success(res.data.message);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Errore invio aggiornamento forzato");
+    }
+  };
+
   const deleteDevice = async (deviceIp) => {
     if (!window.confirm(`Eliminare il dispositivo ${deviceIp} dal monitoraggio?`)) return;
     try {
@@ -576,6 +585,14 @@ export default function ConnectorsPage() {
                             <p className="text-[10px] text-[var(--text-muted)] flex items-center gap-1 justify-end"><Clock size={10} /> Visto</p>
                             <p className="text-xs font-mono text-[var(--text-secondary)]">{formatLastSeen(c.last_seen)}</p>
                           </div>
+                          {updateInfo?.version && c.connector_version !== updateInfo.version && (
+                            <button onClick={() => forceUpdate(c.client_id, c.hostname)}
+                              className="flex-shrink-0 h-7 px-2 rounded-md flex items-center gap-1 text-[10px] font-medium text-amber-400 bg-amber-500/10 border border-amber-500/20 hover:bg-amber-500/20 transition-colors"
+                              title={`Forza aggiornamento a v${updateInfo.version}`}
+                              data-testid={`force-update-btn-${c.client_id}`}>
+                              <ArrowsClockwise size={12} /> Aggiorna
+                            </button>
+                          )}
                           <button onClick={() => deleteConnector(c.hostname || c.client_name)}
                             className="flex-shrink-0 w-7 h-7 rounded-md flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--critical)] hover:bg-[var(--critical-bg)] transition-colors" title="Elimina">
                             <Trash size={14} />

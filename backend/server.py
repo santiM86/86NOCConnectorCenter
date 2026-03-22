@@ -1453,6 +1453,11 @@ async def ingest_snmp(request: Request, trap: SNMPTrap):
 async def connector_heartbeat(request: Request, heartbeat: ConnectorHeartbeat):
     """Receive heartbeat from NOC Connector agents."""
     client_data = await validate_api_key(request)
+    
+    # Check if force_update flag is set for this connector
+    existing = await db.connector_status.find_one({"client_id": client_data["id"]}, {"_id": 0})
+    force_update = existing.get("force_update", False) if existing else False
+    
     await db.connector_status.update_one(
         {"client_id": client_data["id"]},
         {"$set": {
@@ -1468,7 +1473,24 @@ async def connector_heartbeat(request: Request, heartbeat: ConnectorHeartbeat):
         }},
         upsert=True
     )
-    return {"status": "ok"}
+    
+    response = {"status": "ok"}
+    
+    # If force_update is flagged, include update info and clear the flag
+    if force_update:
+        update_info = await db.connector_updates.find_one({"active": True}, {"_id": 0})
+        if update_info and update_info["version"] != heartbeat.connector_version:
+            response["force_update"] = True
+            response["latest_version"] = update_info["version"]
+            response["download_url"] = f"/api/connector/download/{update_info['filename']}"
+            response["changelog"] = update_info.get("changelog", "")
+            # Clear force_update flag
+            await db.connector_status.update_one(
+                {"client_id": client_data["id"]},
+                {"$set": {"force_update": False}}
+            )
+    
+    return response
 
 @api_router.get("/connector/status")
 async def get_connector_status(current_user: dict = Depends(get_current_user)):
@@ -1486,6 +1508,31 @@ async def delete_connector_status(hostname: str, current_user: dict = Depends(ge
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Connector not found")
     return {"status": "ok"}
+
+@api_router.post("/connector/{client_id}/force-update")
+async def force_connector_update(client_id: str, current_user: dict = Depends(get_current_user)):
+    """Flag a connector for immediate update at next heartbeat."""
+    connector = await db.connector_status.find_one({"client_id": client_id}, {"_id": 0})
+    if not connector:
+        raise HTTPException(status_code=404, detail="Connector non trovato")
+    
+    update_info = await db.connector_updates.find_one({"active": True}, {"_id": 0})
+    if not update_info:
+        raise HTTPException(status_code=400, detail="Nessun aggiornamento disponibile")
+    
+    if connector.get("connector_version") == update_info["version"]:
+        raise HTTPException(status_code=400, detail="Il connector e' gia' alla versione piu' recente")
+    
+    await db.connector_status.update_one(
+        {"client_id": client_id},
+        {"$set": {"force_update": True}}
+    )
+    
+    return {
+        "status": "ok",
+        "message": f"Aggiornamento forzato per {connector.get('hostname', client_id)}. Verra' applicato al prossimo heartbeat (~60s).",
+        "target_version": update_info["version"]
+    }
 
 # ==================== CONNECTOR AUTO-UPDATE ====================
 
