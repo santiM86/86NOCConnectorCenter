@@ -133,6 +133,7 @@ class ClientResponse(BaseModel):
     name: str
     description: str
     contact_email: str
+    api_key: Optional[str] = ""
     created_at: str
 
 class DeviceCreate(BaseModel):
@@ -487,11 +488,13 @@ async def get_me(current_user: dict = Depends(get_current_user)):
 
 @api_router.post("/clients", response_model=ClientResponse)
 async def create_client(client: ClientCreate, current_user: dict = Depends(get_current_user)):
+    api_key = f"noc_{uuid.uuid4().hex}"
     client_doc = {
         "id": str(uuid.uuid4()),
         "name": client.name,
         "description": client.description or "",
         "contact_email": client.contact_email or "",
+        "api_key": api_key,
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     await db.clients.insert_one(client_doc)
@@ -1026,8 +1029,17 @@ async def update_redfish_settings(
 
 # ==================== WEBHOOK/SYSLOG/SNMP INGESTION ====================
 
+async def validate_api_key(request: Request) -> dict:
+    """Validate API key from X-API-Key header and return the client."""
+    api_key = request.headers.get("X-API-Key")
+    if not api_key:
+        raise HTTPException(status_code=401, detail="X-API-Key header required")
+    client = await db.clients.find_one({"api_key": api_key}, {"_id": 0})
+    if not client:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+    return client
+
 class SyslogMessage(BaseModel):
-    client_id: str
     device_ip: str
     facility: Optional[int] = 1
     severity_level: Optional[int] = 5
@@ -1035,11 +1047,17 @@ class SyslogMessage(BaseModel):
     timestamp: Optional[str] = None
 
 class SNMPTrap(BaseModel):
-    client_id: str
     device_ip: str
     oid: str
     value: str
     trap_type: Optional[str] = "generic"
+
+class ConnectorHeartbeat(BaseModel):
+    connector_version: str
+    hostname: str
+    uptime_seconds: int
+    traps_received: int
+    syslogs_received: int
 
 def map_syslog_severity(level: int) -> str:
     if level <= 2:
@@ -1061,12 +1079,30 @@ def map_snmp_severity(trap_type: str, oid: str) -> str:
 @api_router.post("/ingest/syslog")
 @limiter.limit("100/minute")
 async def ingest_syslog(request: Request, msg: SyslogMessage):
-    device = await db.devices.find_one({"ip_address": msg.device_ip, "client_id": msg.client_id}, {"_id": 0})
+    # Support both API key auth (connector) and JWT auth
+    client_data = None
+    api_key = request.headers.get("X-API-Key")
+    if api_key:
+        client_data = await db.clients.find_one({"api_key": api_key}, {"_id": 0})
+        if not client_data:
+            raise HTTPException(status_code=401, detail="Invalid API key")
+    else:
+        # Fallback: require client_id in body for backwards compat
+        body = await request.json()
+        cid = body.get("client_id")
+        if cid:
+            client_data = await db.clients.find_one({"id": cid}, {"_id": 0})
+    
+    if not client_data:
+        raise HTTPException(status_code=400, detail="Valid API key or client_id required")
+    
+    client_id = client_data["id"]
+    device = await db.devices.find_one({"ip_address": msg.device_ip, "client_id": client_id}, {"_id": 0})
     
     if not device:
         device = {
             "id": str(uuid.uuid4()),
-            "client_id": msg.client_id,
+            "client_id": client_id,
             "name": f"Auto-{msg.device_ip}",
             "device_type": "unknown",
             "ip_address": msg.device_ip,
@@ -1082,7 +1118,7 @@ async def ingest_syslog(request: Request, msg: SyslogMessage):
     
     alert_doc = {
         "id": str(uuid.uuid4()),
-        "client_id": msg.client_id,
+        "client_id": client_id,
         "device_id": device["id"],
         "severity": severity,
         "source_type": "syslog",
@@ -1102,7 +1138,7 @@ async def ingest_syslog(request: Request, msg: SyslogMessage):
     }
     await db.alerts.insert_one(alert_doc)
     
-    client = await db.clients.find_one({"id": msg.client_id}, {"_id": 0})
+    client = await db.clients.find_one({"id": client_id}, {"_id": 0})
     
     response = AlertResponse(
         **alert_doc,
@@ -1129,12 +1165,29 @@ async def ingest_syslog(request: Request, msg: SyslogMessage):
 @api_router.post("/ingest/snmp")
 @limiter.limit("100/minute")
 async def ingest_snmp(request: Request, trap: SNMPTrap):
-    device = await db.devices.find_one({"ip_address": trap.device_ip, "client_id": trap.client_id}, {"_id": 0})
+    # Support both API key auth (connector) and JWT auth
+    client_data = None
+    api_key = request.headers.get("X-API-Key")
+    if api_key:
+        client_data = await db.clients.find_one({"api_key": api_key}, {"_id": 0})
+        if not client_data:
+            raise HTTPException(status_code=401, detail="Invalid API key")
+    else:
+        body = await request.json()
+        cid = body.get("client_id")
+        if cid:
+            client_data = await db.clients.find_one({"id": cid}, {"_id": 0})
+    
+    if not client_data:
+        raise HTTPException(status_code=400, detail="Valid API key or client_id required")
+    
+    client_id = client_data["id"]
+    device = await db.devices.find_one({"ip_address": trap.device_ip, "client_id": client_id}, {"_id": 0})
     
     if not device:
         device = {
             "id": str(uuid.uuid4()),
-            "client_id": trap.client_id,
+            "client_id": client_id,
             "name": f"Auto-{trap.device_ip}",
             "device_type": "switch",
             "ip_address": trap.device_ip,
@@ -1150,7 +1203,7 @@ async def ingest_snmp(request: Request, trap: SNMPTrap):
     
     alert_doc = {
         "id": str(uuid.uuid4()),
-        "client_id": trap.client_id,
+        "client_id": client_id,
         "device_id": device["id"],
         "severity": severity,
         "source_type": "snmp",
@@ -1171,7 +1224,7 @@ async def ingest_snmp(request: Request, trap: SNMPTrap):
     }
     await db.alerts.insert_one(alert_doc)
     
-    client = await db.clients.find_one({"id": trap.client_id}, {"_id": 0})
+    client = await db.clients.find_one({"id": client_id}, {"_id": 0})
     
     response = AlertResponse(
         **alert_doc,
@@ -1193,6 +1246,43 @@ async def ingest_snmp(request: Request, trap: SNMPTrap):
         )
     
     return {"status": "ok", "alert_id": alert_doc["id"]}
+
+# ==================== CONNECTOR ENDPOINTS ====================
+
+@api_router.post("/connector/heartbeat")
+async def connector_heartbeat(request: Request, heartbeat: ConnectorHeartbeat):
+    """Receive heartbeat from NOC Connector agents."""
+    client_data = await validate_api_key(request)
+    await db.connector_status.update_one(
+        {"client_id": client_data["id"]},
+        {"$set": {
+            "client_id": client_data["id"],
+            "client_name": client_data["name"],
+            "connector_version": heartbeat.connector_version,
+            "hostname": heartbeat.hostname,
+            "uptime_seconds": heartbeat.uptime_seconds,
+            "traps_received": heartbeat.traps_received,
+            "syslogs_received": heartbeat.syslogs_received,
+            "last_seen": datetime.now(timezone.utc).isoformat()
+        }},
+        upsert=True
+    )
+    return {"status": "ok"}
+
+@api_router.get("/connector/status")
+async def get_connector_status(current_user: dict = Depends(get_current_user)):
+    """Get status of all connected NOC Connectors."""
+    connectors = await db.connector_status.find({}, {"_id": 0}).to_list(100)
+    return connectors
+
+@api_router.post("/clients/{client_id}/regenerate-key")
+async def regenerate_client_api_key(client_id: str, current_user: dict = Depends(get_current_user)):
+    """Regenerate API key for a client."""
+    new_key = f"noc_{uuid.uuid4().hex}"
+    result = await db.clients.update_one({"id": client_id}, {"$set": {"api_key": new_key}})
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Client not found")
+    return {"api_key": new_key}
 
 # ==================== WEBSOCKET ====================
 

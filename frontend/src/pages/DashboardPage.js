@@ -26,6 +26,7 @@ export default function DashboardPage() {
   const [trends, setTrends] = useState([]);
   const [recentAlerts, setRecentAlerts] = useState([]);
   const [liveStream, setLiveStream] = useState([]);
+  const [connectors, setConnectors] = useState([]);
   const wsRef = useRef(null);
   const navigate = useNavigate();
 
@@ -37,14 +38,16 @@ export default function DashboardPage() {
 
   const fetchData = async () => {
     try {
-      const [statsRes, trendsRes, alertsRes] = await Promise.all([
+      const [statsRes, trendsRes, alertsRes, connectorsRes] = await Promise.all([
         axios.get(`${API}/stats/summary`),
         axios.get(`${API}/stats/trends?hours=24`),
-        axios.get(`${API}/alerts?limit=20&status=active`)
+        axios.get(`${API}/alerts?limit=20&status=active`),
+        axios.get(`${API}/connector/status`).catch(() => ({ data: [] }))
       ]);
       setStats(statsRes.data);
       setTrends(trendsRes.data);
       setRecentAlerts(alertsRes.data);
+      setConnectors(connectorsRes.data);
       setLiveStream(alertsRes.data.slice(0, 30).map(a => ({
         id: a.id, time: new Date(a.created_at).toLocaleTimeString("it-IT", {hour:"2-digit",minute:"2-digit",second:"2-digit"}),
         ip: a.ip_address, msg: a.message?.substring(0, 60), severity: a.severity, device: a.device_name
@@ -201,6 +204,35 @@ export default function DashboardPage() {
           </ScrollArea>
         </div>
       </div>
+
+      {/* Connector Status */}
+      {connectors.length > 0 && (
+        <div className="noc-panel p-4">
+          <h3 className="text-[var(--text-muted)] text-[10px] font-medium uppercase tracking-widest mb-3">
+            Connettori Attivi
+          </h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
+            {connectors.map((c, i) => {
+              const lastSeen = c.last_seen ? new Date(c.last_seen) : null;
+              const isOnline = lastSeen && (Date.now() - lastSeen.getTime()) < 120000;
+              return (
+                <div key={i} className="flex items-center gap-3 p-2.5 rounded-md bg-[var(--bg-card)] border border-[var(--bg-border)]">
+                  <span className={`w-2 h-2 rounded-full flex-shrink-0 ${isOnline ? "bg-[var(--ok)]" : "bg-[var(--critical)]"}`}></span>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-medium text-[var(--text-primary)] truncate">{c.client_name || c.hostname}</p>
+                    <p className="text-[10px] text-[var(--text-muted)] font-mono">
+                      {c.hostname} | v{c.connector_version} | {c.traps_received} trap, {c.syslogs_received} syslog
+                    </p>
+                  </div>
+                  <span className={`text-[10px] ${isOnline ? "text-[var(--ok)]" : "text-[var(--critical)]"}`}>
+                    {isOnline ? "Online" : "Offline"}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Recent Alerts Table */}
       <div className="noc-panel">

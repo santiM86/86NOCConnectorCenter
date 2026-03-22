@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import axios from "axios";
 import { API } from "@/App";
 import { toast } from "sonner";
-import { Plus, Trash, Buildings, EnvelopeSimple } from "@phosphor-icons/react";
+import { Plus, Trash, Buildings, EnvelopeSimple, Key, Copy, ArrowsClockwise } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -128,6 +128,29 @@ export default function ClientsPage() {
               {client.contact_email && (
                 <div className="flex items-center gap-1.5 text-[var(--text-muted)] text-[11px]">
                   <EnvelopeSimple size={12} /><span className="font-mono">{client.contact_email}</span>
+                </div>
+              )}
+              {client.api_key && (
+                <div className="mt-2 p-2 rounded-md bg-[var(--bg-card)] border border-[var(--bg-border)]">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-[var(--text-muted)] text-[10px] uppercase tracking-widest flex items-center gap-1"><Key size={10} /> API Key</span>
+                    <div className="flex items-center gap-1">
+                      <button onClick={() => { navigator.clipboard.writeText(client.api_key); toast.success("API Key copiata"); }}
+                        className="text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors p-0.5" title="Copia"
+                        data-testid={`copy-key-${client.id}`}>
+                        <Copy size={12} />
+                      </button>
+                      <button onClick={async () => { 
+                        try { const r = await axios.post(`${API}/clients/${client.id}/regenerate-key`); toast.success("Nuova API Key generata"); fetchClients(); }
+                        catch { toast.error("Errore"); }
+                      }}
+                        className="text-[var(--text-muted)] hover:text-[var(--high)] transition-colors p-0.5" title="Rigenera"
+                        data-testid={`regen-key-${client.id}`}>
+                        <ArrowsClockwise size={12} />
+                      </button>
+                    </div>
+                  </div>
+                  <p className="font-mono text-[10px] text-[var(--text-secondary)] break-all select-all">{client.api_key}</p>
                 </div>
               )}
               <div className="mt-3 pt-3 border-t border-[var(--bg-border)]">
