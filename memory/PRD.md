@@ -37,16 +37,16 @@ Societa' IT necessita di un raccoglitore di alert per tutti i dispositivi nelle 
 - [x] Localizzazione italiana
 
 ### Phase 4 - 86NocConnector (DONE - 22 Mar 2026)
-- [x] Applicazione standalone Windows con Python embedded (zero installazioni)
-- [x] Wizard installazione GUI (4 pagine: Benvenuto, Config, Installazione, Completamento)
-- [x] Icona system tray (vicino all'orologio) con menu: Stato, Avvia/Ferma, Log, Config
+- [x] 100% PowerShell nativo - ZERO installazioni sul server del cliente
+- [x] Wizard installazione GUI (Windows Forms nativo)
+- [x] Icona system tray vicino all'orologio con menu tasto destro
 - [x] SNMP Trap listener (porta 162) + Syslog listener (porta 514)
 - [x] Inoltro automatico al NOC Center via HTTPS + API Key
-- [x] Heartbeat connector → stato visibile nella dashboard NOC
+- [x] Heartbeat connector visibile nella dashboard NOC
 - [x] Avvio automatico con Windows
-- [x] Guida configurazione HPE 5130 JG941A
-- [x] Riutilizzabile per qualsiasi dispositivo
 - [x] Disinstallazione pulita (uninstall.bat)
+- [x] Riutilizzabile su tutti i server clienti senza modifiche
+- [x] Pacchetto solo 16KB
 
 ## Architettura Connessione
 ```

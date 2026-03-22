@@ -1,4 +1,2 @@
 @echo off
-set "BASE_DIR=%~dp0"
-set "PYTHON_EXE=%BASE_DIR%python\python.exe"
-start "" "%PYTHON_EXE%" "%BASE_DIR%src\tray_app.py"
+start "" powershell -ExecutionPolicy Bypass -WindowStyle Hidden -File "%~dp0src\tray_app.ps1"
