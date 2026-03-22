@@ -382,17 +382,32 @@ function Show-InstallerWizard {
         $form.Refresh()
         Start-Sleep -Milliseconds 500
         
-        # Step 3: Autostart
-        $txtStatus.AppendText("> Avvio automatico...`r`n")
+        # Step 3: Autostart + Registrazione in Programmi e Funzionalita'
+        $txtStatus.AppendText("> Avvio automatico e registrazione...`r`n")
         $progressBar.Value = 60
+        $batPath = Join-Path $BaseDir "86NocConnector.bat"
+        $uninstallBat = Join-Path $BaseDir "uninstall.bat"
         if ($chkAutostart.Checked) {
-            $batPath = Join-Path $BaseDir "86NocConnector.bat"
             try {
                 & reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v $AppName /t REG_SZ /d "`"$batPath`"" /f 2>$null
                 $txtStatus.AppendText("  Registrato avvio automatico`r`n")
             } catch {
                 $txtStatus.AppendText("  Errore registro: $($_.Exception.Message)`r`n")
             }
+        }
+        # Registra in Installazione applicazioni / Programmi e Funzionalita'
+        try {
+            $regPath = "HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\$AppName"
+            & reg add $regPath /v "DisplayName" /t REG_SZ /d "$AppName" /f 2>$null
+            & reg add $regPath /v "DisplayVersion" /t REG_SZ /d "$Version" /f 2>$null
+            & reg add $regPath /v "Publisher" /t REG_SZ /d "86BIT" /f 2>$null
+            & reg add $regPath /v "UninstallString" /t REG_SZ /d "`"$uninstallBat`"" /f 2>$null
+            & reg add $regPath /v "InstallLocation" /t REG_SZ /d "$BaseDir" /f 2>$null
+            & reg add $regPath /v "NoModify" /t REG_DWORD /d 1 /f 2>$null
+            & reg add $regPath /v "NoRepair" /t REG_DWORD /d 1 /f 2>$null
+            $txtStatus.AppendText("  Registrato in Programmi e Funzionalita'`r`n")
+        } catch {
+            $txtStatus.AppendText("  Registro programmi: serve Amministratore`r`n")
         }
         $form.Refresh()
         Start-Sleep -Milliseconds 500
