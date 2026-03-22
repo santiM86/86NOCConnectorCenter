@@ -1,4 +1,4 @@
 {
-  "version": "1.4.1",
-  "changelog": "Fix critico: il connector ora riceve correttamente il comando di aggiornamento forzato dal NOC. Aggiunto Menu Start."
+  "version": "1.4.2",
+  "changelog": "Fix: versione ora letta da version.json invece di essere hardcodata. Fix Send-ToNOC per force update. Menu Start."
 }

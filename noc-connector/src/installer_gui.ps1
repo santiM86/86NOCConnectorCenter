@@ -10,9 +10,15 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
 $AppName = "86NocConnector"
-$Version = "1.0.0"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $BaseDir = Split-Path -Parent $ScriptDir
+$VersionFile = Join-Path $BaseDir "version.json"
+if (Test-Path $VersionFile) {
+    $vInfo = Get-Content $VersionFile -Raw | ConvertFrom-Json
+    $Version = $vInfo.version
+} else {
+    $Version = "1.0.0"
+}
 $ConfigDir = Join-Path $env:ProgramData $AppName
 $ConfigPath = Join-Path $ConfigDir "config.json"
 

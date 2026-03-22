@@ -11,7 +11,15 @@ param(
 )
 
 $global:AppName = "86NocConnector"
-$global:Version = "1.0.0"
+$global:ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$global:BaseDir = Split-Path -Parent $global:ScriptDir
+$versionFile = Join-Path $global:BaseDir "version.json"
+if (Test-Path $versionFile) {
+    $vInfo = Get-Content $versionFile -Raw | ConvertFrom-Json
+    $global:Version = $vInfo.version
+} else {
+    $global:Version = "1.0.0"
+}
 
 # ==================== CONFIGURAZIONE ====================
 
