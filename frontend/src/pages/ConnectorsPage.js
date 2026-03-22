@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import axios from "axios";
+import JSZip from "jszip";
 import { API } from "@/App";
 import { 
   HardDrive, 
@@ -78,6 +79,24 @@ export default function ConnectorsPage() {
       setUpdateInfo(res.data);
     } catch (error) {
       console.error("Error fetching update info:", error);
+    }
+  };
+
+  const handleFileSelect = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const zip = await JSZip.loadAsync(file);
+      const versionFile = zip.file("version.json");
+      if (versionFile) {
+        const content = await versionFile.async("string");
+        const meta = JSON.parse(content);
+        if (meta.version) setNewVersion(meta.version);
+        if (meta.changelog) setChangelog(meta.changelog);
+        toast.success(`Rilevato version.json: v${meta.version}`);
+      }
+    } catch (err) {
+      console.warn("Impossibile leggere version.json dal zip:", err);
     }
   };
 
@@ -391,6 +410,7 @@ export default function ConnectorsPage() {
                 ref={fileInputRef}
                 type="file"
                 accept=".zip"
+                onChange={handleFileSelect}
                 className="w-full h-9 text-xs text-[var(--text-secondary)] file:mr-2 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:text-xs file:bg-[var(--bg-hover)] file:text-[var(--text-primary)] file:cursor-pointer"
                 data-testid="update-file-input"
               />
