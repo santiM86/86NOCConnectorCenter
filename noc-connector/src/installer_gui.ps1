@@ -167,11 +167,11 @@ function Show-InstallerWizard {
     
     $currentPage = 0
     
-    function Clear-Content { $contentPanel.Controls.Clear() }
+    function Reset-ContentPanel { $contentPanel.Controls.Clear() }
     
     function Show-Page($page) {
         $script:currentPage = $page
-        Clear-Content
+        Reset-ContentPanel
         $btnBack.Enabled = ($page -gt 0)
         switch ($page) {
             0 { Show-Welcome }
@@ -572,12 +572,12 @@ function Show-InstallerWizard {
     
     # ==================== NAVIGATION ====================
     $btnNext.Add_Click({
-        if ($currentPage -eq 3) { $form.Close(); return }
-        Show-Page ($currentPage + 1)
+        if ($script:currentPage -eq 3) { $form.Close(); return }
+        Show-Page ($script:currentPage + 1)
     })
     
     $btnBack.Add_Click({
-        if ($currentPage -gt 0) { Show-Page ($currentPage - 1) }
+        if ($script:currentPage -gt 0) { Show-Page ($script:currentPage - 1) }
     })
     
     Show-Page 0
