@@ -9,49 +9,44 @@ Creare un raccoglitore di alert (NOC) per dispositivi nelle reti dei clienti (sw
 - **Connector Windows**: PowerShell 5.1+ nativo (.bat/.ps1)
 - **Auth**: JWT + MFA (TOTP via Microsoft Authenticator)
 
-## Utenti
-- **Admin**: Gestione completa (utenti, clienti, connettori, aggiornamenti)
-- **Operator**: Monitoraggio e gestione alert
-- **Viewer**: Sola lettura
-
 ## Funzionalita' Implementate
 
 ### Core Platform (DONE)
 - Dashboard panoramica con alert live, trend 24h, connettori attivi
 - Gestione alert SNMP Trap + Syslog con livelli di severita'
 - Gestione clienti con API Key dedicate
-- Gestione dispositivi monitorati con polling SNMP attivo
-- WebSocket per alert in tempo reale
-- PWA per accesso mobile
+- WebSocket per alert in tempo reale, PWA per accesso mobile
+
+### Gestione Dispositivi (DONE)
+- Monitoraggio SNMP: polling porte, sysDescr, uptime, trap
+- **Monitoraggio Ping+HTTP** (NUOVO v1.7.2): per switch smart managed e dispositivi senza SNMP
+  - Ping periodico con latenza (ms)
+  - Verifica porta HTTP/HTTPS management
+  - Alert su device up/down
+  - Badge visivo SNMP/PING nel frontend
+  - Form aggiunta dispositivo con selezione tipo (SNMP o Ping+HTTP)
+  - Sezione espansa con metriche Ping/HTTP (latenza, stato HTTP, raggiungibilita')
 
 ### Gestione Utenti (DONE)
 - CRUD utenti con ruoli (admin/operator/viewer)
 - MFA (TOTP) con QR code per Microsoft Authenticator
-- Setup/Reset 2FA per utente
 
-### Windows Connector v1.7.1 (DONE)
-- Raccolta SNMP Trap (UDP/162) e Syslog (UDP/514)
-- Polling SNMP attivo con report stato dispositivi
-- Heartbeat periodico (60s) con versione e statistiche
-- Auto-aggiornamento (ogni 6 ore) + force update dal SOC
-- System tray con icona, menu, gestione dispositivi
+### Windows Connector v1.7.2 (DONE)
+- Raccolta SNMP Trap + Syslog (UDP 162/514)
+- Polling SNMP attivo + Ping/HTTP per dispositivi non-SNMP
+- Heartbeat periodico, auto-aggiornamento, force update
+- System tray con menu, diagnostica SNMP, info aziendali
 - Esportazione/Importazione CSV dispositivi
-- Diagnostica SNMP (Ping + Get) dalla tray
-- Finestra "Informazioni" con dati aziendali 86BIT
-- Script diagnostica.ps1 per troubleshooting connettivita'
-- updater.ps1 per aggiornamento unificato senza doppia icona
-- Versioning dinamico da version.json
+- Script diagnostica.ps1 per troubleshooting
+- updater.ps1 per aggiornamento unificato
 
 ### Enterprise Security (DONE)
-- Rate limiting su endpoint sensibili
-- Audit logging
-- RBAC (Role-Based Access Control)
+- Rate limiting, Audit logging, RBAC
 
-## Problema P0 Risolto (24 mar 2026)
-**Issue**: Il connettore sul server del cliente era OFFLINE e il SOC mostrava v1.6.1 invece di v1.7.0.
-**Root Cause**: Il pacchetto ZIP v1.7.0 conteneva ancora il vecchio file .bat complesso (591 bytes) che poteva causare errori di avvio, invece del .bat semplificato (104 bytes).
-**Fix**: Ricostruito il ZIP come v1.7.1 con il .bat corretto e aggiunto script diagnostica.ps1. L'utente deve scaricare la nuova versione e installarla sul server.
-**Status**: Fix deployato, attesa test dell'utente sul server Windows.
+## Problemi Risolti (24 mar 2026)
+- **P0 Connettore OFFLINE**: Il config.json sul server del cliente aveva l'API Key nel campo noc_center_url. Corretto dall'utente. Connettore ora ONLINE v1.7.1.
+- **P0 ZIP errato**: Il ZIP v1.7.0 conteneva il vecchio .bat complesso. Ricostruito con .bat semplificato nella v1.7.1.
+- **Ping+HTTP monitoring**: Implementato supporto completo per monitorare dispositivi senza SNMP (switch smart managed).
 
 ## Credenziali Test
 - Admin: admin@86bit.it / admin123
@@ -66,7 +61,7 @@ Creare un raccoglitore di alert (NOC) per dispositivi nelle reti dei clienti (sw
 ### P1 - Prossime
 - Notifiche Push via Firebase (richiede API Key)
 - Notifiche Email via SendGrid (richiede API Key)
-- Feedback utente su connettore v1.7.1 e dispositivi SNMP
+- Aggiornamento connettore a v1.7.2 sul server del cliente
 
 ### P2 - Future
 - SOC AI Transformation (correlazione, auto-triage, anomaly detection via LLM)
@@ -76,10 +71,4 @@ Creare un raccoglitore di alert (NOC) per dispositivi nelle reti dei clienti (sw
 - Supporto SNMP v3
 
 ### P3 - Backlog
-- Refactoring server.py in route modulari (>1800 righe)
-
-## File Principali
-- `/app/backend/server.py` - API backend monolite
-- `/app/frontend/src/pages/ConnectorsPage.js` - Pagina connettori
-- `/app/noc-connector/` - Pacchetto connector Windows
-- `/app/noc-connector/version.json` - Single source of truth versione
+- Refactoring server.py in route modulari (>1900 righe)
