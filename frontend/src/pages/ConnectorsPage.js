@@ -132,9 +132,10 @@ export default function ConnectorsPage() {
   };
 
   const deleteConnector = async (hostname) => {
-    if (!window.confirm(`Eliminare il connettore "${hostname}"?`)) return;
+    const confirmed = window.confirm(`Eliminare il connettore "${hostname}"?`);
+    if (!confirmed) return;
     try {
-      await axios.delete(`${API}/connector/status/${encodeURIComponent(hostname)}`);
+      const res = await axios.delete(`${API}/connector/status/${encodeURIComponent(hostname)}`);
       toast.success("Connettore eliminato");
       fetchAll();
     } catch (e) {
@@ -640,8 +641,9 @@ export default function ConnectorsPage() {
                                 <ArrowsClockwise size={12} /> Aggiorna
                               </button>
                             )}
-                            <button onClick={() => deleteConnector(c.hostname || c.client_name)}
-                              className="flex-shrink-0 w-7 h-7 rounded-md flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--critical)] hover:bg-[var(--critical-bg)] transition-colors" title="Elimina">
+                            <button onClick={(e) => { e.stopPropagation(); deleteConnector(c.hostname || c.client_name); }}
+                              className="flex-shrink-0 w-7 h-7 rounded-md flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--critical)] hover:bg-[var(--critical-bg)] transition-colors" title="Elimina connettore"
+                              data-testid={`delete-connector-${c.client_id}`}>
                               <Trash size={14} />
                             </button>
                           </div>
