@@ -734,7 +734,8 @@ export default function ConnectorsPage() {
                               <p className={`text-xs font-mono ${recent ? "text-[var(--ok)]" : "text-[var(--critical)]"}`}>{formatLastSeen(dev.last_poll)}</p>
                             </div>
                             <button onClick={(e) => { e.stopPropagation(); deleteDevice(dev.device_ip); }}
-                              className="flex-shrink-0 w-7 h-7 rounded-md flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--critical)] hover:bg-[var(--critical-bg)] transition-colors" title="Elimina">
+                              className="flex-shrink-0 w-7 h-7 rounded-md flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--critical)] hover:bg-[var(--critical-bg)] transition-colors" title="Elimina dispositivo"
+                              data-testid={`delete-device-${dev.device_ip}`}>
                               <Trash size={14} />
                             </button>
                           </div>

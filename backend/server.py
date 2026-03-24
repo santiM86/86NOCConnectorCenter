@@ -1730,10 +1730,13 @@ async def get_device_poll_status(current_user: dict = Depends(get_current_user))
 
 @api_router.delete("/connector/device-poll-status/{device_ip}")
 async def delete_device_poll_status(device_ip: str, current_user: dict = Depends(get_current_user)):
-    """Delete a monitored device from poll status."""
-    result = await db.device_poll_status.delete_one({"device_ip": device_ip})
-    if result.deleted_count == 0:
-        raise HTTPException(status_code=404, detail="Device not found")
+    """Delete a monitored device from poll status AND managed devices list."""
+    # Delete from poll status
+    await db.device_poll_status.delete_many({"device_ip": device_ip})
+    
+    # Delete from managed_devices by IP (so connector won't re-add it)
+    await db.managed_devices.delete_many({"ip": device_ip})
+    
     return {"status": "ok"}
 
 @api_router.get("/connector/{client_id}/managed-devices")
