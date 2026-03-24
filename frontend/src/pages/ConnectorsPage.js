@@ -27,7 +27,12 @@ import {
   ArrowUp,
   ArrowDown,
   Export,
-  FileArrowUp
+  FileArrowUp,
+  MagnifyingGlass,
+  Globe,
+  Desktop,
+  WifiHigh as WifiIcon,
+  Plus
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
@@ -52,6 +57,13 @@ export default function ConnectorsPage() {
   const fileInputRef = useRef(null);
   const importFileRef = useRef(null);
   const [importClientId, setImportClientId] = useState(null);
+  const [showDiscovery, setShowDiscovery] = useState(false);
+  const [discoveryClientId, setDiscoveryClientId] = useState("");
+  const [discoverySubnet, setDiscoverySubnet] = useState("");
+  const [discoveryStatus, setDiscoveryStatus] = useState("none");
+  const [discoveryResults, setDiscoveryResults] = useState(null);
+  const [scanning, setScanning] = useState(false);
+  const discoveryPollRef = useRef(null);
 
   useEffect(() => {
     fetchAll();
@@ -238,6 +250,77 @@ export default function ConnectorsPage() {
   };
 
   const toggleClient = (id) => setCollapsedClients(prev => ({ ...prev, [id]: !prev[id] }));
+
+  // ==================== DISCOVERY ====================
+  const startDiscovery = async () => {
+    if (!discoveryClientId) {
+      toast.error("Seleziona un cliente");
+      return;
+    }
+    setScanning(true);
+    setDiscoveryStatus("pending");
+    try {
+      await axios.post(`${API}/connector/start-discovery`, {
+        client_id: discoveryClientId,
+        subnet: discoverySubnet || ""
+      });
+      toast.success("Scansione rete avviata! Il connettore la eseguira' entro 2 minuti.");
+      // Poll for results
+      if (discoveryPollRef.current) clearInterval(discoveryPollRef.current);
+      discoveryPollRef.current = setInterval(async () => {
+        try {
+          const statusRes = await axios.get(`${API}/connector/discovery-status/${discoveryClientId}`);
+          setDiscoveryStatus(statusRes.data.status);
+          if (statusRes.data.status === "completed") {
+            const res = await axios.get(`${API}/connector/discovery-results/${discoveryClientId}`);
+            setDiscoveryResults(res.data);
+            setScanning(false);
+            clearInterval(discoveryPollRef.current);
+            toast.success(`Scansione completata: ${res.data.device_count || 0} dispositivi trovati`);
+          }
+        } catch {}
+      }, 5000);
+    } catch (e) {
+      toast.error("Errore: " + (e.response?.data?.detail || e.message));
+      setScanning(false);
+    }
+  };
+
+  // Load existing results when client is selected
+  const onDiscoveryClientChange = async (clientId) => {
+    setDiscoveryClientId(clientId);
+    if (!clientId) { setDiscoveryResults(null); return; }
+    try {
+      const res = await axios.get(`${API}/connector/discovery-results/${clientId}`);
+      if (res.data && res.data.devices && res.data.devices.length > 0) {
+        setDiscoveryResults(res.data);
+      }
+    } catch {}
+  };
+
+  const addDiscoveredDevice = async (dev) => {
+    if (!discoveryClientId) return;
+    try {
+      await axios.post(`${API}/connector/${discoveryClientId}/managed-devices`, {
+        ip: dev.ip,
+        name: dev.hostname || dev.ip,
+        community: dev.suggested_type === "snmp" ? "public" : "",
+        monitor_type: dev.suggested_type || "ping",
+        http_port: dev.http_port || 80
+      });
+      toast.success(`${dev.hostname || dev.ip} aggiunto al monitoraggio`);
+      // Refresh discovery results to update managed_ips
+      const res = await axios.get(`${API}/connector/discovery-results/${discoveryClientId}`);
+      setDiscoveryResults(res.data);
+      fetchAll();
+    } catch (e) {
+      toast.error("Errore: " + (e.response?.data?.detail || e.message));
+    }
+  };
+
+  useEffect(() => {
+    return () => { if (discoveryPollRef.current) clearInterval(discoveryPollRef.current); };
+  }, []);
 
   const isOnline = (lastSeen) => {
     if (!lastSeen) return false;
@@ -598,12 +681,116 @@ export default function ConnectorsPage() {
         <h2 className="font-heading text-sm font-bold text-[var(--text-primary)]">
           Stato per Cliente
         </h2>
-        <Button variant="outline" size="sm" onClick={() => setShowAddDevice(!showAddDevice)}
-          className="rounded-md text-xs h-8 border-[var(--bg-border)] text-[var(--text-secondary)]" data-testid="add-device-btn">
-          <HardDrive size={14} className="mr-1.5" />
-          {showAddDevice ? "Chiudi" : "+ Dispositivo"}
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" onClick={() => setShowDiscovery(!showDiscovery)}
+            className="rounded-md text-xs h-8 border-[var(--bg-border)] text-[var(--text-secondary)]" data-testid="discovery-toggle-btn">
+            <MagnifyingGlass size={14} className="mr-1.5" />
+            {showDiscovery ? "Chiudi Scansione" : "Scansione Rete"}
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => setShowAddDevice(!showAddDevice)}
+            className="rounded-md text-xs h-8 border-[var(--bg-border)] text-[var(--text-secondary)]" data-testid="add-device-btn">
+            <HardDrive size={14} className="mr-1.5" />
+            {showAddDevice ? "Chiudi" : "+ Dispositivo"}
+          </Button>
+        </div>
       </div>
+
+      {/* Network Discovery Panel */}
+      {showDiscovery && (
+        <div className="noc-panel p-4 space-y-3 animate-fade-in" data-testid="discovery-panel">
+          <p className="text-xs font-medium text-[var(--text-primary)]">Auto-Discovery Rete</p>
+          <p className="text-[11px] text-[var(--text-muted)]">
+            Scansiona la rete del cliente per trovare automaticamente tutti i dispositivi attivi. Il connettore esegue ping sweep + port scan.
+          </p>
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-2 items-end">
+            <div>
+              <label className="text-[10px] text-[var(--text-muted)] uppercase tracking-widest block mb-1">Cliente *</label>
+              <select value={discoveryClientId} onChange={(e) => onDiscoveryClientChange(e.target.value)}
+                className="w-full h-8 px-2 rounded-md border border-[var(--bg-border)] bg-[var(--bg-card)] text-[var(--text-primary)] text-xs" data-testid="discovery-client-select">
+                <option value="">Seleziona...</option>
+                {clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="text-[10px] text-[var(--text-muted)] uppercase tracking-widest block mb-1">Subnet (opzionale)</label>
+              <input type="text" value={discoverySubnet} onChange={(e) => setDiscoverySubnet(e.target.value)}
+                placeholder="auto-detect" className="w-full h-8 px-2 rounded-md border border-[var(--bg-border)] bg-[var(--bg-card)] text-[var(--text-primary)] text-xs font-mono" data-testid="discovery-subnet-input" />
+            </div>
+            <Button onClick={startDiscovery} disabled={scanning || !discoveryClientId} size="sm" 
+              className="rounded-md text-xs h-8 bg-indigo-600 hover:bg-indigo-700 text-white disabled:opacity-50" data-testid="start-discovery-btn">
+              <MagnifyingGlass size={14} className="mr-1.5" />
+              {scanning ? "Scansione in corso..." : "Avvia Scansione"}
+            </Button>
+            {scanning && (
+              <div className="flex items-center gap-2">
+                <div className="w-4 h-4 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
+                <span className="text-[11px] text-indigo-400">In attesa del connettore...</span>
+              </div>
+            )}
+          </div>
+
+          {/* Discovery Results */}
+          {discoveryResults && discoveryResults.devices && discoveryResults.devices.length > 0 && (
+            <div className="mt-3 space-y-1" data-testid="discovery-results">
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-xs font-medium text-[var(--text-primary)]">
+                  {discoveryResults.devices.length} dispositivi trovati
+                  {discoveryResults.scanned_at && <span className="text-[var(--text-muted)] font-normal ml-2">({formatLastSeen(discoveryResults.scanned_at)})</span>}
+                </p>
+              </div>
+              <div className="max-h-64 overflow-y-auto space-y-1 pr-1">
+                {discoveryResults.devices.map((dev, i) => {
+                  const isManaged = discoveryResults.managed_ips?.includes(dev.ip);
+                  const typeIcon = dev.device_type === "server-windows" ? <Desktop size={14} /> 
+                    : dev.device_type === "server-linux" ? <Desktop size={14} />
+                    : dev.device_type === "switch/router" || dev.device_type === "network-device" ? <WifiIcon size={14} />
+                    : <Globe size={14} />;
+                  return (
+                    <div key={i} className={`flex items-center gap-3 p-2 rounded-lg border ${isManaged ? "border-[var(--low-border)] bg-[var(--low-bg)]" : "border-[var(--bg-border)] bg-[var(--bg-panel)] hover:bg-[var(--bg-hover)]"} transition-colors`}
+                      data-testid={`discovery-device-${dev.ip}`}>
+                      <div className={`w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 ${isManaged ? "text-[var(--ok)]" : "text-[var(--text-muted)]"}`}>
+                        {typeIcon}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <p className="font-mono text-xs font-bold text-[var(--text-primary)]">{dev.ip}</p>
+                          {dev.hostname && <p className="text-[11px] text-[var(--text-secondary)] truncate">{dev.hostname}</p>}
+                          <span className="text-[10px] px-1.5 py-0.5 rounded border text-[var(--text-muted)] border-[var(--bg-border)]">{dev.ping_ms}ms</span>
+                        </div>
+                        <div className="flex items-center gap-1.5 mt-0.5">
+                          {(dev.open_ports || []).map((p, pi) => (
+                            <span key={pi} className="text-[9px] px-1 py-0.5 rounded bg-[var(--bg-hover)] text-[var(--text-muted)] font-mono">
+                              {p.service || p.port}
+                            </span>
+                          ))}
+                          <span className={`text-[9px] px-1.5 py-0.5 rounded font-medium ${dev.suggested_type === "snmp" ? "text-blue-400 bg-blue-500/10" : "text-indigo-400 bg-indigo-500/10"}`}>
+                            {dev.suggested_type === "snmp" ? "SNMP" : "PING"}
+                          </span>
+                        </div>
+                      </div>
+                      {isManaged ? (
+                        <span className="text-[10px] text-[var(--ok)] flex items-center gap-1 flex-shrink-0">
+                          <CheckCircle size={12} weight="fill" /> Monitorato
+                        </span>
+                      ) : (
+                        <Button onClick={() => addDiscoveredDevice(dev)} size="sm" variant="outline"
+                          className="rounded-md text-[10px] h-7 px-2 border-indigo-500/30 text-indigo-400 hover:bg-indigo-500/10 flex-shrink-0"
+                          data-testid={`add-discovered-${dev.ip}`}>
+                          <Plus size={12} className="mr-1" /> Aggiungi
+                        </Button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {discoveryResults && discoveryResults.devices && discoveryResults.devices.length === 0 && (
+            <p className="text-xs text-[var(--text-muted)] text-center py-4">Nessun dispositivo trovato nella rete</p>
+          )}
+        </div>
+      )}
 
       {loading ? (
         <div className="noc-panel p-8 text-center text-[var(--text-muted)] text-sm">Caricamento...</div>

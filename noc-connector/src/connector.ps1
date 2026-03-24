@@ -731,6 +731,200 @@ function Start-HeartbeatLoop($config) {
     }
 }
 
+# ==================== NETWORK DISCOVERY ====================
+
+function Get-LocalSubnet {
+    try {
+        $adapters = [System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces() | 
+            Where-Object { $_.OperationalStatus -eq "Up" -and $_.NetworkInterfaceType -ne "Loopback" }
+        foreach ($adapter in $adapters) {
+            $props = $adapter.GetIPProperties()
+            foreach ($unicast in $props.UnicastAddresses) {
+                if ($unicast.Address.AddressFamily -eq "InterNetwork") {
+                    $ip = $unicast.Address.ToString()
+                    $mask = $unicast.IPv4Mask.ToString()
+                    if ($ip -notmatch "^169\.254\." -and $ip -ne "127.0.0.1") {
+                        # Calculate network address
+                        $ipBytes = $unicast.Address.GetAddressBytes()
+                        $maskBytes = $unicast.IPv4Mask.GetAddressBytes()
+                        $prefix = 0
+                        foreach ($b in $maskBytes) {
+                            $bits = [Convert]::ToString($b, 2)
+                            $prefix += ($bits.ToCharArray() | Where-Object { $_ -eq '1' }).Count
+                        }
+                        $networkBytes = @()
+                        for ($i = 0; $i -lt 4; $i++) {
+                            $networkBytes += ($ipBytes[$i] -band $maskBytes[$i])
+                        }
+                        $network = ($networkBytes -join ".")
+                        return @{ network = $network; prefix = $prefix; mask = $mask; local_ip = $ip }
+                    }
+                }
+            }
+        }
+    } catch {}
+    return $null
+}
+
+function Start-NetworkDiscovery($config, $subnetOverride) {
+    Write-Log "=== AVVIO SCANSIONE RETE ==="
+    
+    $subnet = $null
+    if ($subnetOverride) {
+        $subnet = @{ network = $subnetOverride; prefix = 24; local_ip = "" }
+        Write-Log "Subnet specificata: $subnetOverride/24"
+    } else {
+        $subnet = Get-LocalSubnet
+        if (-not $subnet) {
+            Write-Log "Impossibile rilevare subnet locale" "ERROR"
+            return
+        }
+        Write-Log "Subnet rilevata: $($subnet.network)/$($subnet.prefix) (IP locale: $($subnet.local_ip))"
+    }
+    
+    # Calculate IP range (support /24 only for safety)
+    $baseParts = $subnet.network.Split(".")
+    $baseNet = "$($baseParts[0]).$($baseParts[1]).$($baseParts[2])"
+    
+    Write-Log "Scansione $baseNet.1 - $baseNet.254..."
+    
+    $discoveredDevices = @()
+    $ping = New-Object System.Net.NetworkInformation.Ping
+    
+    # Phase 1: Ping sweep (fast, parallel using runspaces)
+    $runspacePool = [RunspaceFactory]::CreateRunspacePool(1, 50)
+    $runspacePool.Open()
+    $jobs = @()
+    
+    $scriptBlock = {
+        param($ip)
+        try {
+            $p = New-Object System.Net.NetworkInformation.Ping
+            $reply = $p.Send($ip, 1500)
+            $p.Dispose()
+            if ($reply.Status -eq "Success") {
+                return @{ ip = $ip; ms = $reply.RoundtripTime; alive = $true }
+            }
+        } catch {}
+        return @{ ip = $ip; alive = $false }
+    }
+    
+    for ($i = 1; $i -le 254; $i++) {
+        $targetIP = "$baseNet.$i"
+        $ps = [PowerShell]::Create().AddScript($scriptBlock).AddArgument($targetIP)
+        $ps.RunspacePool = $runspacePool
+        $jobs += @{ ps = $ps; handle = $ps.BeginInvoke(); ip = $targetIP }
+    }
+    
+    # Collect ping results
+    $aliveHosts = @()
+    foreach ($job in $jobs) {
+        try {
+            $result = $job.ps.EndInvoke($job.handle)
+            if ($result -and $result.alive) {
+                $aliveHosts += $result
+            }
+        } catch {}
+        $job.ps.Dispose()
+    }
+    $runspacePool.Close()
+    $runspacePool.Dispose()
+    
+    Write-Log "Ping sweep completato: $($aliveHosts.Count) host attivi su 254"
+    
+    # Phase 2: Port scan on alive hosts
+    $commonPorts = @(
+        @{ port = 80;  name = "HTTP" },
+        @{ port = 443; name = "HTTPS" },
+        @{ port = 161; name = "SNMP" },
+        @{ port = 22;  name = "SSH" },
+        @{ port = 23;  name = "Telnet" },
+        @{ port = 3389; name = "RDP" },
+        @{ port = 8080; name = "HTTP-Alt" },
+        @{ port = 8443; name = "HTTPS-Alt" }
+    )
+    
+    foreach ($host_ in $aliveHosts) {
+        $ip = $host_.ip
+        $openPorts = @()
+        
+        foreach ($portInfo in $commonPorts) {
+            try {
+                $tcp = New-Object System.Net.Sockets.TcpClient
+                $asyncResult = $tcp.BeginConnect($ip, $portInfo.port, $null, $null)
+                $waitResult = $asyncResult.AsyncWaitHandle.WaitOne(800, $false)
+                if ($waitResult -and $tcp.Connected) {
+                    $openPorts += @{ port = $portInfo.port; service = $portInfo.name }
+                }
+                $tcp.Close()
+            } catch {
+                try { $tcp.Close() } catch {}
+            }
+        }
+        
+        # Resolve hostname
+        $hostname = ""
+        try {
+            $dns = [System.Net.Dns]::GetHostEntry($ip)
+            if ($dns.HostName -ne $ip) { $hostname = $dns.HostName }
+        } catch {}
+        
+        # Suggest monitor type
+        $hasSnmp = ($openPorts | Where-Object { $_.port -eq 161 }).Count -gt 0
+        $hasHttp = ($openPorts | Where-Object { $_.port -eq 80 -or $_.port -eq 443 -or $_.port -eq 8080 }).Count -gt 0
+        $suggestedType = if ($hasSnmp) { "snmp" } else { "ping" }
+        $httpPort = if ($hasHttp) { ($openPorts | Where-Object { $_.port -eq 80 -or $_.port -eq 443 -or $_.port -eq 8080 } | Select-Object -First 1).port } else { 0 }
+        
+        # Determine device type guess
+        $deviceType = "unknown"
+        if ($hasSnmp -and $hasHttp) { $deviceType = "switch/router" }
+        elseif ($hasSnmp) { $deviceType = "network-device" }
+        elseif ($hasHttp -and ($openPorts | Where-Object { $_.port -eq 3389 }).Count -gt 0) { $deviceType = "server-windows" }
+        elseif ($hasHttp -and ($openPorts | Where-Object { $_.port -eq 22 }).Count -gt 0) { $deviceType = "server-linux" }
+        elseif ($hasHttp) { $deviceType = "web-device" }
+        elseif (($openPorts | Where-Object { $_.port -eq 22 }).Count -gt 0) { $deviceType = "server-linux" }
+        elseif (($openPorts | Where-Object { $_.port -eq 3389 }).Count -gt 0) { $deviceType = "server-windows" }
+        
+        $discoveredDevices += @{
+            ip = $ip
+            hostname = $hostname
+            ping_ms = $host_.ms
+            open_ports = $openPorts
+            device_type = $deviceType
+            suggested_type = $suggestedType
+            http_port = $httpPort
+        }
+        
+        Write-Log "  $ip ($hostname) - $($openPorts.Count) porte aperte - tipo: $deviceType"
+    }
+    
+    Write-Log "Scansione completata: $($discoveredDevices.Count) dispositivi trovati"
+    
+    # Send results to NOC
+    $payload = @{
+        hostname = $env:COMPUTERNAME
+        devices = $discoveredDevices
+    }
+    $result = Send-ToNOC $config "connector/discovery-results" $payload
+    if ($result) {
+        Write-Log "Risultati discovery inviati al NOC"
+    }
+    
+    Write-Log "=== SCANSIONE RETE COMPLETATA ==="
+}
+
+function Check-DiscoveryRequest($config) {
+    try {
+        $headers = @{ "X-API-Key" = $config.api_key }
+        $url = "$($config.noc_center_url)/api/connector/discovery-check"
+        $response = Invoke-RestMethod -Uri $url -Method Get -Headers $headers -TimeoutSec 10 -ErrorAction Stop
+        if ($response.scan_requested) {
+            Write-Log "Richiesta di discovery ricevuta dal NOC"
+            Start-NetworkDiscovery $config $response.subnet
+        }
+    } catch {}
+}
+
 # ==================== MAIN ====================
 
 function Start-Connector {
@@ -787,12 +981,21 @@ function Start-Connector {
     } -ArgumentList $PSCommandPath, (Get-ConfigPath)
     Write-Log "Auto-update checker avviato (ogni 6 ore)"
     
-    # Heartbeat in current thread loop
+    # Heartbeat in current thread loop + discovery check
     Write-Log "$global:AppName avviato. Premi Ctrl+C per fermare."
     
+    $discoveryCheckCounter = 0
     try {
         while ($global:Running) {
             Send-Heartbeat $config
+            
+            # Check for discovery request every 2 heartbeats (2 min)
+            $discoveryCheckCounter++
+            if ($discoveryCheckCounter -ge 2) {
+                $discoveryCheckCounter = 0
+                Check-DiscoveryRequest $config
+            }
+            
             Start-Sleep -Seconds 60
         }
     } catch {

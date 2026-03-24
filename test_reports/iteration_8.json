@@ -1,0 +1,102 @@
+{
+  "summary": "Auto-Discovery Network Scanning Feature - All tests passed. Backend: 12/12 tests passed (100%). Frontend: All UI features verified working. Discovery panel shows 5 devices, 'Monitorato' badge appears after adding device, managed_ips list updates correctly.",
+  
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  
+  "passed_tests": {
+    "backend_api_tests": [
+      "POST /api/auth/login with admin@86bit.it / admin123 succeeds",
+      "POST /api/connector/start-discovery accepts client_id and subnet, creates request with status pending",
+      "GET /api/connector/discovery-status/{client_id} returns current scan status (pending/in_progress/completed/none)",
+      "GET /api/connector/discovery-check with X-API-Key returns scan_requested=true when pending",
+      "POST /api/connector/discovery-results with X-API-Key accepts device list and sets status to completed",
+      "GET /api/connector/discovery-results/{client_id} returns discovered devices with managed_ips",
+      "Discovery status shows 'completed' after results submitted",
+      "Adding discovered device via POST /api/connector/{client_id}/managed-devices works",
+      "Added device appears in managed_ips when getting discovery results",
+      "Discovery check requires API key (401 without)",
+      "Discovery results submission requires API key (401 without)",
+      "Invalid API key is rejected (401)"
+    ],
+    "frontend_ui_tests": [
+      "Login with admin@86bit.it / admin123 succeeds",
+      "Connettori page loads with 'Scansione Rete' button visible",
+      "Discovery panel opens with client selector, subnet input, and 'Avvia Scansione' button",
+      "When client selected (86BIT_Office), existing discovery results auto-load",
+      "5 discovered devices shown with IP, hostname, open ports, ping latency, suggested type (SNMP/PING)",
+      "Non-monitored devices show 'Aggiungi' button",
+      "Clicking 'Aggiungi' adds device to monitoring",
+      "After adding, device shows 'Monitorato' badge instead of 'Aggiungi' button",
+      "Toast notification confirms device added: 'router.local aggiunto al monitoraggio'"
+    ]
+  },
+  
+  "test_report_links": [
+    "/app/backend/tests/test_auto_discovery.py",
+    "/app/test_reports/pytest/pytest_auto_discovery.xml"
+  ],
+  
+  "action_items": [],
+  
+  "critical_code_review_comments": [],
+  
+  "updated_files": [
+    "/app/backend/tests/test_auto_discovery.py"
+  ],
+  
+  "success_rate": {
+    "backend": "100% (12/12 tests passed)",
+    "frontend": "100% (All UI features working)"
+  },
+  
+  "test_credentials": {
+    "admin_user": {
+      "email": "admin@86bit.it",
+      "password": "admin123",
+      "role": "admin"
+    },
+    "api_key": {
+      "client": "86BIT_Office",
+      "key": "noc_35cf39b4d68740b1a981aedef2ee293d"
+    },
+    "client_id": "da3d6e40-b3e5-4d46-9787-dde328a3aa36"
+  },
+  
+  "seed_data_creation": "Discovery results pre-loaded via backend tests: 5 devices (192.168.1.1 router.local, 192.168.1.2 switch.local, 192.168.1.3 server.local, 192.168.1.10 workstation1.local, 192.168.1.20 printer.local). Test device 192.168.1.1 was added during frontend testing and cleaned up after.",
+  
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  
+  "context_for_next_testing_agent": "Auto-Discovery feature fully verified. Backend endpoints: start-discovery (creates pending request), discovery-check (connector polls for requests), discovery-results (connector submits found devices), discovery-results/{client_id} (get results with managed_ips), discovery-status/{client_id} (get scan status). Frontend: Connettori page has 'Scansione Rete' button that opens discovery panel with client selector, subnet input, and scan button. When client selected, existing results auto-load. Discovered devices show IP, hostname, ports, latency, suggested type. 'Aggiungi' button adds device to monitoring, then shows 'Monitorato' badge.",
+  
+  "mocked_apis": {
+    "Firebase Cloud Messaging": "MOCKED - no real API keys",
+    "SendGrid Email": "MOCKED - no real API keys"
+  },
+  
+  "feature_verification": {
+    "feature": "Auto-Discovery Network Scanning",
+    "verification_results": {
+      "start_discovery_endpoint": "POST /api/connector/start-discovery accepts client_id and subnet, creates pending request - VERIFIED",
+      "discovery_check_endpoint": "GET /api/connector/discovery-check with X-API-Key returns scan_requested when pending - VERIFIED",
+      "discovery_results_endpoint": "POST /api/connector/discovery-results with X-API-Key accepts device list - VERIFIED",
+      "get_results_endpoint": "GET /api/connector/discovery-results/{client_id} returns devices with managed_ips - VERIFIED",
+      "discovery_status_endpoint": "GET /api/connector/discovery-status/{client_id} returns scan status - VERIFIED",
+      "frontend_discovery_button": "Connettori page shows 'Scansione Rete' button - VERIFIED",
+      "frontend_discovery_panel": "Panel shows client selector, subnet input, scan button - VERIFIED",
+      "frontend_auto_load_results": "Selecting client auto-loads existing discovery results - VERIFIED",
+      "frontend_device_display": "Discovered devices show IP, hostname, ports, latency, suggested type - VERIFIED",
+      "frontend_monitorato_badge": "Already monitored devices show 'Monitorato' badge - VERIFIED",
+      "frontend_add_device": "Clicking 'Aggiungi' adds device and updates to 'Monitorato' badge - VERIFIED"
+    }
+  }
+}
