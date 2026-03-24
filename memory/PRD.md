@@ -19,13 +19,15 @@ Creare un raccoglitore di alert (NOC) per dispositivi nelle reti dei clienti (sw
 
 ### Gestione Dispositivi (DONE)
 - Monitoraggio SNMP: polling porte, sysDescr, uptime, trap
-- **Monitoraggio Ping+HTTP** (NUOVO v1.7.2): per switch smart managed e dispositivi senza SNMP
-  - Ping periodico con latenza (ms)
-  - Verifica porta HTTP/HTTPS management
-  - Alert su device up/down
-  - Badge visivo SNMP/PING nel frontend
-  - Form aggiunta dispositivo con selezione tipo (SNMP o Ping+HTTP)
-  - Sezione espansa con metriche Ping/HTTP (latenza, stato HTTP, raggiungibilita')
+- Monitoraggio Ping+HTTP: per switch smart managed e dispositivi senza SNMP
+- **Auto-Discovery Rete (NUOVO v1.7.2)**: scansione automatica della subnet
+  - Ping sweep parallelo (50 thread) per trovare host attivi
+  - Port scan (HTTP, HTTPS, SNMP, SSH, Telnet, RDP, HTTP-Alt, HTTPS-Alt)
+  - Risoluzione hostname DNS
+  - Suggerimento automatico tipo monitoraggio (SNMP/Ping)
+  - Classificazione dispositivi (switch/router, server-windows, server-linux, web-device)
+  - Aggiunta one-click dal pannello discovery al monitoraggio
+  - Badge "Monitorato" per dispositivi gia' aggiunti
 
 ### Gestione Utenti (DONE)
 - CRUD utenti con ruoli (admin/operator/viewer)
@@ -34,19 +36,14 @@ Creare un raccoglitore di alert (NOC) per dispositivi nelle reti dei clienti (sw
 ### Windows Connector v1.7.2 (DONE)
 - Raccolta SNMP Trap + Syslog (UDP 162/514)
 - Polling SNMP attivo + Ping/HTTP per dispositivi non-SNMP
+- Auto-Discovery rete con ping sweep + port scan
 - Heartbeat periodico, auto-aggiornamento, force update
-- System tray con menu, diagnostica SNMP, info aziendali
-- Esportazione/Importazione CSV dispositivi
+- System tray, diagnostica SNMP, info aziendali, esportazione/importazione CSV
 - Script diagnostica.ps1 per troubleshooting
 - updater.ps1 per aggiornamento unificato
 
 ### Enterprise Security (DONE)
 - Rate limiting, Audit logging, RBAC
-
-## Problemi Risolti (24 mar 2026)
-- **P0 Connettore OFFLINE**: Il config.json sul server del cliente aveva l'API Key nel campo noc_center_url. Corretto dall'utente. Connettore ora ONLINE v1.7.1.
-- **P0 ZIP errato**: Il ZIP v1.7.0 conteneva il vecchio .bat complesso. Ricostruito con .bat semplificato nella v1.7.1.
-- **Ping+HTTP monitoring**: Implementato supporto completo per monitorare dispositivi senza SNMP (switch smart managed).
 
 ## Credenziali Test
 - Admin: admin@86bit.it / admin123
@@ -59,14 +56,13 @@ Creare un raccoglitore di alert (NOC) per dispositivi nelle reti dei clienti (sw
 ## Backlog Prioritizzato
 
 ### P1 - Prossime
+- Aggiornare connettore a v1.7.2 sul server del cliente (scarica ZIP dal SOC)
 - Notifiche Push via Firebase (richiede API Key)
 - Notifiche Email via SendGrid (richiede API Key)
-- Aggiornamento connettore a v1.7.2 sul server del cliente
 
 ### P2 - Future
 - SOC AI Transformation (correlazione, auto-triage, anomaly detection via LLM)
 - Integrazione Twilio Voice/SMS per alert critici
-- Auto-discovery nel connettore
 - Integrazione LDAP
 - Supporto SNMP v3
 
