@@ -126,7 +126,7 @@ function Get-StatusText {
 function Show-DeviceManager {
     $form = New-Object System.Windows.Forms.Form
     $form.Text = "$AppName - Gestisci Dispositivi"
-    $form.Size = New-Object System.Drawing.Size(580, 480)
+    $form.Size = New-Object System.Drawing.Size(580, 520)
     $form.StartPosition = "CenterScreen"
     $form.FormBorderStyle = "FixedDialog"
     $form.MaximizeBox = $false
@@ -232,11 +232,34 @@ function Show-DeviceManager {
         }
     }
 
-    # Bottom buttons
+    # Export/Import row
+    $btnExport = New-Object System.Windows.Forms.Button
+    $btnExport.Text = "Esporta CSV"
+    $btnExport.Size = New-Object System.Drawing.Size(110, 28)
+    $btnExport.Location = New-Object System.Drawing.Point(20, 378)
+    $btnExport.FlatStyle = "Flat"
+    $btnExport.BackColor = [System.Drawing.Color]::FromArgb(99, 102, 241)
+    $btnExport.ForeColor = [System.Drawing.Color]::White
+    $btnExport.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+    $btnExport.Cursor = [System.Windows.Forms.Cursors]::Hand
+    $form.Controls.Add($btnExport)
+
+    $btnImport = New-Object System.Windows.Forms.Button
+    $btnImport.Text = "Importa CSV"
+    $btnImport.Size = New-Object System.Drawing.Size(110, 28)
+    $btnImport.Location = New-Object System.Drawing.Point(140, 378)
+    $btnImport.FlatStyle = "Flat"
+    $btnImport.BackColor = [System.Drawing.Color]::FromArgb(99, 102, 241)
+    $btnImport.ForeColor = [System.Drawing.Color]::White
+    $btnImport.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+    $btnImport.Cursor = [System.Windows.Forms.Cursors]::Hand
+    $form.Controls.Add($btnImport)
+
+    # Bottom buttons row
     $btnRemove = New-Object System.Windows.Forms.Button
     $btnRemove.Text = "Rimuovi selezionato"
     $btnRemove.Size = New-Object System.Drawing.Size(125, 30)
-    $btnRemove.Location = New-Object System.Drawing.Point(20, 380)
+    $btnRemove.Location = New-Object System.Drawing.Point(20, 415)
     $btnRemove.FlatStyle = "Flat"
     $btnRemove.BackColor = [System.Drawing.Color]::White
     $btnRemove.ForeColor = [System.Drawing.Color]::FromArgb(220, 50, 50)
@@ -247,7 +270,7 @@ function Show-DeviceManager {
     $btnTestSnmp = New-Object System.Windows.Forms.Button
     $btnTestSnmp.Text = "Test SNMP"
     $btnTestSnmp.Size = New-Object System.Drawing.Size(110, 30)
-    $btnTestSnmp.Location = New-Object System.Drawing.Point(225, 380)
+    $btnTestSnmp.Location = New-Object System.Drawing.Point(225, 415)
     $btnTestSnmp.FlatStyle = "Flat"
     $btnTestSnmp.BackColor = [System.Drawing.Color]::FromArgb(59, 130, 246)
     $btnTestSnmp.ForeColor = [System.Drawing.Color]::White
@@ -258,7 +281,7 @@ function Show-DeviceManager {
     $btnSave = New-Object System.Windows.Forms.Button
     $btnSave.Text = "Salva e Riavvia"
     $btnSave.Size = New-Object System.Drawing.Size(135, 30)
-    $btnSave.Location = New-Object System.Drawing.Point(403, 380)
+    $btnSave.Location = New-Object System.Drawing.Point(403, 415)
     $btnSave.FlatStyle = "Flat"
     $btnSave.BackColor = [System.Drawing.Color]::FromArgb(34, 197, 94)
     $btnSave.ForeColor = [System.Drawing.Color]::White
@@ -270,7 +293,7 @@ function Show-DeviceManager {
     $lblHint.Text = "Il connector verra' riavviato per applicare le modifiche."
     $lblHint.Font = New-Object System.Drawing.Font("Segoe UI", 8)
     $lblHint.ForeColor = [System.Drawing.Color]::FromArgb(140, 140, 155)
-    $lblHint.Location = New-Object System.Drawing.Point(20, 420)
+    $lblHint.Location = New-Object System.Drawing.Point(20, 455)
     $lblHint.AutoSize = $true
     $form.Controls.Add($lblHint)
 
@@ -298,6 +321,57 @@ function Show-DeviceManager {
         $listView.Items.Add($item)
         $txtIP.Text = ""
         $txtName.Text = ""
+    })
+
+    # Export CSV handler
+    $btnExport.Add_Click({
+        if ($listView.Items.Count -eq 0) {
+            [System.Windows.Forms.MessageBox]::Show("Nessun dispositivo da esportare.", $AppName, "OK", "Warning")
+            return
+        }
+        $saveDialog = New-Object System.Windows.Forms.SaveFileDialog
+        $saveDialog.Filter = "CSV (*.csv)|*.csv"
+        $saveDialog.FileName = "dispositivi_86NocConnector.csv"
+        $saveDialog.Title = "Esporta dispositivi"
+        if ($saveDialog.ShowDialog() -eq "OK") {
+            $lines = @("IP,Community,Nome")
+            foreach ($item in $listView.Items) {
+                $lines += "$($item.Text),$($item.SubItems[1].Text),$($item.SubItems[2].Text)"
+            }
+            $lines -join "`r`n" | Set-Content $saveDialog.FileName -Encoding UTF8
+            [System.Windows.Forms.MessageBox]::Show("$($listView.Items.Count) dispositivi esportati in:`n$($saveDialog.FileName)", $AppName, "OK", "Information")
+        }
+    })
+
+    # Import CSV handler
+    $btnImport.Add_Click({
+        $openDialog = New-Object System.Windows.Forms.OpenFileDialog
+        $openDialog.Filter = "CSV (*.csv)|*.csv|Tutti i file (*.*)|*.*"
+        $openDialog.Title = "Importa dispositivi"
+        if ($openDialog.ShowDialog() -eq "OK") {
+            $lines = Get-Content $openDialog.FileName -Encoding UTF8 | Where-Object { $_.Trim() -ne "" }
+            $imported = 0
+            foreach ($line in $lines) {
+                if ($line.Trim().ToLower().StartsWith("ip")) { continue }
+                $parts = $line.Split(",")
+                $ip = $parts[0].Trim()
+                $comm = if ($parts.Length -gt 1 -and $parts[1].Trim()) { $parts[1].Trim() } else { "public" }
+                $devName = if ($parts.Length -gt 2 -and $parts[2].Trim()) { $parts[2].Trim() } else { $ip }
+                if (-not $ip) { continue }
+                # Check duplicate
+                $duplicate = $false
+                foreach ($existing in $listView.Items) {
+                    if ($existing.Text -eq $ip) { $duplicate = $true; break }
+                }
+                if ($duplicate) { continue }
+                $item = New-Object System.Windows.Forms.ListViewItem($ip)
+                $null = $item.SubItems.Add($comm)
+                $null = $item.SubItems.Add($devName)
+                $listView.Items.Add($item)
+                $imported++
+            }
+            [System.Windows.Forms.MessageBox]::Show("$imported dispositivi importati.", $AppName, "OK", "Information")
+        }
     })
 
     # Remove button handler

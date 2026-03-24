@@ -1,4 +1,4 @@
 {
-  "version": "1.4.4",
-  "changelog": "Aggiunto pulsante Test SNMP nella gestione dispositivi. Versione dinamica da version.json. Fix auto-update e force update."
+  "version": "1.5.0",
+  "changelog": "Esporta/Importa dispositivi via CSV (SOC web e system tray). Test SNMP. Fix auto-update. Versione dinamica."
 }

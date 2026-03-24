@@ -25,7 +25,9 @@ import {
   CaretDown,
   CaretRight,
   ArrowUp,
-  ArrowDown
+  ArrowDown,
+  Export,
+  FileArrowUp
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
@@ -48,6 +50,8 @@ export default function ConnectorsPage() {
   const [addDeviceClientId, setAddDeviceClientId] = useState("");
   const intervalRef = useRef(null);
   const fileInputRef = useRef(null);
+  const importFileRef = useRef(null);
+  const [importClientId, setImportClientId] = useState(null);
 
   useEffect(() => {
     fetchAll();
@@ -156,6 +160,48 @@ export default function ConnectorsPage() {
     } catch (e) {
       toast.error("Errore: " + (e.response?.data?.detail || e.message));
     }
+  };
+
+  const exportDevices = (clientName, clientDevices) => {
+    const csvHeader = "IP,Community,Nome";
+    const csvRows = clientDevices.map(d => `${d.device_ip},${d.community || "public"},${d.device_name || d.device_ip}`);
+    const csvContent = [csvHeader, ...csvRows].join("\n");
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `dispositivi_${clientName.replace(/\s+/g, "_")}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast.success(`${clientDevices.length} dispositivi esportati`);
+  };
+
+  const handleImportDevices = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file || !importClientId) return;
+    try {
+      const text = await file.text();
+      const lines = text.split("\n").map(l => l.trim()).filter(l => l && !l.toLowerCase().startsWith("ip"));
+      let imported = 0;
+      for (const line of lines) {
+        const [ip, community, ...nameParts] = line.split(",");
+        if (!ip?.trim()) continue;
+        try {
+          await axios.post(`${API}/connector/${importClientId}/managed-devices`, {
+            ip: ip.trim(),
+            community: (community || "public").trim(),
+            name: (nameParts.join(",") || ip).trim()
+          });
+          imported++;
+        } catch {}
+      }
+      toast.success(`${imported} dispositivi importati`);
+      fetchAll();
+    } catch (err) {
+      toast.error("Errore importazione: " + err.message);
+    }
+    e.target.value = "";
+    setImportClientId(null);
   };
 
   const addDevice = async () => {
@@ -603,8 +649,26 @@ export default function ConnectorsPage() {
 
                     {/* Devices */}
                     {group.devices.length > 0 && (
-                      <div className="px-3 pt-2 pb-1">
-                        <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-widest mb-1 pl-3">Dispositivi Monitorati</p>
+                      <div className="px-3 pt-2 pb-1 flex items-center justify-between">
+                        <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-widest pl-3">Dispositivi Monitorati</p>
+                        <div className="flex items-center gap-1">
+                          <button
+                            onClick={() => exportDevices(group.clientName, group.devices)}
+                            className="h-6 px-2 rounded flex items-center gap-1 text-[10px] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors"
+                            title="Esporta CSV"
+                            data-testid={`export-devices-${group.clientId}`}
+                          >
+                            <Export size={11} /> Esporta
+                          </button>
+                          <button
+                            onClick={() => { setImportClientId(group.clientId); importFileRef.current?.click(); }}
+                            className="h-6 px-2 rounded flex items-center gap-1 text-[10px] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors"
+                            title="Importa CSV"
+                            data-testid={`import-devices-${group.clientId}`}
+                          >
+                            <FileArrowUp size={11} /> Importa
+                          </button>
+                        </div>
                       </div>
                     )}
                     {group.devices.map((dev, i) => {
@@ -678,6 +742,14 @@ export default function ConnectorsPage() {
           })}
         </div>
       )}
+      <input
+        ref={importFileRef}
+        type="file"
+        accept=".csv,.txt"
+        onChange={handleImportDevices}
+        className="hidden"
+        data-testid="import-devices-file-input"
+      />
     </div>
   );
 }
