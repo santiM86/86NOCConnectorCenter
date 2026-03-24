@@ -1557,6 +1557,7 @@ CONNECTOR_STORAGE.mkdir(exist_ok=True)
 async def connector_update_check(request: Request):
     """Check if a new connector version is available. Called by connectors via API key."""
     api_key = request.headers.get("X-API-Key")
+    client_data = None
     if api_key:
         client_data = await db.clients.find_one({"api_key": api_key}, {"_id": 0})
         if not client_data:
@@ -1566,9 +1567,19 @@ async def connector_update_check(request: Request):
     if not update_info:
         return {"update_available": False, "latest_version": "1.0.0"}
 
+    # Check connector's current version to avoid downgrade
+    current_version = "0.0.0"
+    if client_data:
+        connector = await db.connector_status.find_one({"client_id": client_data["id"]}, {"_id": 0})
+        if connector:
+            current_version = connector.get("connector_version", "0.0.0")
+
+    published_version = update_info["version"]
+    update_needed = is_newer_version(published_version, current_version)
+
     return {
-        "update_available": True,
-        "latest_version": update_info["version"],
+        "update_available": update_needed,
+        "latest_version": published_version,
         "download_url": f"/api/connector/download/{update_info['filename']}",
         "changelog": update_info.get("changelog", ""),
         "published_at": update_info.get("published_at", ""),
