@@ -1,4 +1,4 @@
 {
-  "version": "1.6.1",
-  "changelog": "Fix doppia icona tray dopo aggiornamento. Kill processi duplicati all'avvio. Fix perdita connessione dispositivi."
+  "version": "1.7.0",
+  "changelog": "Flusso aggiornamento unificato: updater.ps1 gestisce stop vecchia versione, copia file, riavvio pulito. No doppia icona."
 }

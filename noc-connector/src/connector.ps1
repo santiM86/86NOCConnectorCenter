@@ -10,19 +10,6 @@ param(
     [string]$ConfigPath = ""
 )
 
-# Kill any existing connector.ps1 instances (prevents duplicates on update restart)
-$currentPid = $PID
-Get-Process -Name powershell -ErrorAction SilentlyContinue | ForEach-Object {
-    if ($_.Id -ne $currentPid) {
-        try {
-            $cmdLine = (Get-CimInstance Win32_Process -Filter "ProcessId = $($_.Id)" -ErrorAction SilentlyContinue).CommandLine
-            if ($cmdLine -match "connector\.ps1") {
-                Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
-            }
-        } catch {}
-    }
-}
-
 $global:AppName = "86NocConnector"
 $global:ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $global:BaseDir = Split-Path -Parent $global:ScriptDir
@@ -268,13 +255,9 @@ function Send-Heartbeat($config) {
         }
         $success = Install-Update $config $updateInfo
         if ($success) {
-            Write-Log "Riavvio connector per applicare aggiornamento forzato..." "INFO"
-            $batPath = Join-Path (Split-Path -Parent $PSScriptRoot) "86NocConnector.bat"
-            if (Test-Path $batPath) {
-                Start-Process "cmd.exe" -ArgumentList "/c `"$batPath`"" -WindowStyle Hidden
-                Start-Sleep -Seconds 2
-                $global:Running = $false
-            }
+            Write-Log "Updater avviato. Connector in chiusura..." "INFO"
+            # L'updater gestisce: stop -> copia file -> riavvio
+            # Non serve fare nient'altro qui
         }
     }
 }
@@ -475,67 +458,37 @@ function Install-Update($config, $updateInfo) {
         Send-UpdateProgress $config 10 "downloading" "Download in corso..."
         Invoke-WebRequest -Uri $downloadUrl -Headers $headers -OutFile $tempZip -TimeoutSec 120 -ErrorAction Stop
         Write-Log "Download completato: $tempZip" "INFO"
-        Send-UpdateProgress $config 40 "downloading" "Download completato"
+        Send-UpdateProgress $config 30 "downloading" "Download completato"
         
         # Extract to temp
-        Send-UpdateProgress $config 50 "extracting" "Estrazione file..."
+        Send-UpdateProgress $config 35 "extracting" "Estrazione file..."
         if (Test-Path $tempExtract) { Remove-Item $tempExtract -Recurse -Force }
         Add-Type -AssemblyName System.IO.Compression.FileSystem
         [System.IO.Compression.ZipFile]::ExtractToDirectory($tempZip, $tempExtract)
-        Send-UpdateProgress $config 60 "extracting" "File estratti"
+        Write-Log "File estratti in: $tempExtract" "INFO"
+        Send-UpdateProgress $config 45 "extracting" "File estratti. Avvio updater..."
         
-        # Find the source directory - handle both flat and nested ZIP structures
-        $extractedDir = $tempExtract
-        $srcDir = Join-Path $tempExtract "src"
+        # Launch updater as independent process and EXIT
+        $installDir = Split-Path -Parent $PSScriptRoot
+        $updaterPath = Join-Path $PSScriptRoot "updater.ps1"
         
-        # Check if ZIP has a wrapper folder (e.g., 86NocConnector/src/)
-        if (-not (Test-Path $srcDir)) {
-            $subDir = Get-ChildItem $tempExtract -Directory | Select-Object -First 1
-            if ($subDir) {
-                $extractedDir = $subDir.FullName
-                $srcDir = Join-Path $extractedDir "src"
-            }
+        # If updater.ps1 was just extracted, use the new one
+        $newUpdater = Join-Path $tempExtract "src\updater.ps1"
+        if (Test-Path $newUpdater) {
+            $updaterPath = $newUpdater
         }
         
-        if (-not (Test-Path $srcDir)) {
-            Write-Log "Errore: cartella src non trovata nello ZIP" "ERROR"
-            Send-UpdateProgress $config 0 "error" "Errore: cartella src non trovata"
-            return $false
-        }
+        $args = "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$updaterPath`" -ExtractPath `"$tempExtract`" -InstallDir `"$installDir`" -ApiUrl `"$($config.noc_center_url)`" -ApiKey `"$($config.api_key)`""
         
-        # Copy new files to current installation
-        $currentDir = Split-Path -Parent $PSScriptRoot
-        $currentSrc = Join-Path $currentDir "src"
+        Write-Log "Lancio updater: $updaterPath" "INFO"
+        Start-Process "powershell.exe" -ArgumentList $args -WindowStyle Hidden
         
-        # Backup current files
-        Send-UpdateProgress $config 65 "installing" "Backup file correnti..."
-        $backupDir = Join-Path $env:TEMP "86NocConnector_backup_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
-        Copy-Item $currentSrc $backupDir -Recurse -Force
-        Write-Log "Backup creato: $backupDir" "INFO"
+        # Give updater time to start before we exit
+        Start-Sleep -Seconds 2
         
-        # Copy new src files (preserving config)
-        Send-UpdateProgress $config 75 "installing" "Installazione file src..."
-        Get-ChildItem $srcDir -File | ForEach-Object {
-            $destFile = Join-Path $currentSrc $_.Name
-            Copy-Item $_.FullName $destFile -Force
-            Write-Log "  Aggiornato: $($_.Name)" "INFO"
-        }
-        
-        # Copy root files (version.json, bat files, etc) except config
-        Send-UpdateProgress $config 85 "installing" "Installazione file radice..."
-        Get-ChildItem $extractedDir -File | ForEach-Object {
-            $destFile = Join-Path $currentDir $_.Name
-            Copy-Item $_.FullName $destFile -Force
-            Write-Log "  Aggiornato: $($_.Name)" "INFO"
-        }
-        
-        # Cleanup
-        Send-UpdateProgress $config 95 "finalizing" "Pulizia file temporanei..."
-        Remove-Item $tempZip -Force -ErrorAction SilentlyContinue
-        Remove-Item $tempExtract -Recurse -Force -ErrorAction SilentlyContinue
-        
-        Write-Log "Aggiornamento a v$($updateInfo.latest_version) completato!" "INFO"
-        Send-UpdateProgress $config 100 "completed" "Aggiornamento completato!"
+        # Signal to stop the main loop - updater will kill us if needed
+        $global:Running = $false
+        Write-Log "Connector in chiusura per aggiornamento..." "INFO"
         
         return $true
     } catch {
