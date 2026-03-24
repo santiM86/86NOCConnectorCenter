@@ -98,6 +98,20 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
+# ==================== VERSION COMPARISON ====================
+
+def parse_version(version_str: str):
+    """Parse version string like '1.7.0' into tuple (1, 7, 0) for comparison."""
+    try:
+        parts = version_str.strip().lstrip("v").split(".")
+        return tuple(int(p) for p in parts)
+    except:
+        return (0, 0, 0)
+
+def is_newer_version(published: str, current: str) -> bool:
+    """Returns True if published version is strictly newer than current."""
+    return parse_version(published) > parse_version(current)
+
 # ==================== MODELS ====================
 
 class UserCreate(BaseModel):
@@ -1479,7 +1493,7 @@ async def connector_heartbeat(request: Request, heartbeat: ConnectorHeartbeat):
     # If force_update is flagged, include update info and clear the flag
     if force_update:
         update_info = await db.connector_updates.find_one({"active": True}, {"_id": 0})
-        if update_info and update_info["version"] != heartbeat.connector_version:
+        if update_info and is_newer_version(update_info["version"], heartbeat.connector_version):
             response["force_update"] = True
             response["latest_version"] = update_info["version"]
             response["download_url"] = f"/api/connector/download/{update_info['filename']}"
@@ -1520,7 +1534,7 @@ async def force_connector_update(client_id: str, current_user: dict = Depends(ge
     if not update_info:
         raise HTTPException(status_code=400, detail="Nessun aggiornamento disponibile")
     
-    if connector.get("connector_version") == update_info["version"]:
+    if not is_newer_version(update_info["version"], connector.get("connector_version", "0.0.0")):
         raise HTTPException(status_code=400, detail="Il connector e' gia' alla versione piu' recente")
     
     await db.connector_status.update_one(
@@ -1640,8 +1654,9 @@ async def get_connector_update_info(current_user: dict = Depends(get_current_use
     update_info = await db.connector_updates.find_one({"active": True}, {"_id": 0})
     total_connectors = await db.connector_status.count_documents({})
     if update_info:
-        # Count connectors already on latest version
-        updated = await db.connector_status.count_documents({"connector_version": update_info["version"]})
+        # Count connectors already on latest version or newer
+        all_connectors = await db.connector_status.find({}, {"_id": 0, "connector_version": 1}).to_list(500)
+        updated = sum(1 for c in all_connectors if not is_newer_version(update_info["version"], c.get("connector_version", "0.0.0")))
         update_info["total_connectors"] = total_connectors
         update_info["updated_connectors"] = updated
         update_info["pending_connectors"] = total_connectors - updated

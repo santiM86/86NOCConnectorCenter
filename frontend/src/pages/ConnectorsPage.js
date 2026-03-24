@@ -60,6 +60,16 @@ export default function ConnectorsPage() {
     return () => clearInterval(intervalRef.current);
   }, []);
 
+  const isNewerVersion = (published, current) => {
+    const p = (published || "0.0.0").split(".").map(Number);
+    const c = (current || "0.0.0").split(".").map(Number);
+    for (let i = 0; i < 3; i++) {
+      if ((p[i] || 0) > (c[i] || 0)) return true;
+      if ((p[i] || 0) < (c[i] || 0)) return false;
+    }
+    return false;
+  };
+
   const fetchAll = async () => {
     try {
       const [connRes, devRes, clientRes] = await Promise.all([
@@ -633,7 +643,7 @@ export default function ConnectorsPage() {
                               <p className="text-[10px] text-[var(--text-muted)] flex items-center gap-1 justify-end"><Clock size={10} /> Visto</p>
                               <p className="text-xs font-mono text-[var(--text-secondary)]">{formatLastSeen(c.last_seen)}</p>
                             </div>
-                            {updateInfo?.version && c.connector_version !== updateInfo.version && (
+                            {updateInfo?.version && isNewerVersion(updateInfo.version, c.connector_version) && (
                               <button onClick={() => forceUpdate(c.client_id, c.hostname)}
                                 className="flex-shrink-0 h-7 px-2 rounded-md flex items-center gap-1 text-[10px] font-medium text-amber-400 bg-amber-500/10 border border-amber-500/20 hover:bg-amber-500/20 transition-colors"
                                 title={`Forza aggiornamento a v${updateInfo.version}`}
