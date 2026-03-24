@@ -348,10 +348,59 @@ $script:IfStatusMap = @{
 function Poll-Device([string]$ip, [string]$community, [string]$name) {
     $alerts = @()
 
-    # 1. Check reachability
-    $sysDescr = Get-SnmpValue $ip $community $script:OID_sysDescr
-    if (-not $sysDescr) {
-        # Device unreachable
+    # 1. Check reachability with raw UDP probe (more reliable than parsing)
+    $reachable = $false
+    $sysDescr = $null
+    try {
+        $probeResult = Send-SnmpGet $ip $community $script:OID_sysDescr
+        if ($probeResult -and $probeResult.Count -gt 0) {
+            $sysDescr = $probeResult.Values | Select-Object -First 1
+            $reachable = $true
+        }
+    } catch {}
+    
+    # Fallback: raw UDP reachability check if parser failed
+    if (-not $reachable) {
+        try {
+            $udp = New-Object System.Net.Sockets.UdpClient
+            $udp.Client.ReceiveTimeout = 3000
+            # Build simple SNMP GET for sysDescr
+            $oidBytes = @(0x06, 0x08, 0x2B, 0x06, 0x01, 0x02, 0x01, 0x01, 0x01, 0x00)
+            $varbind = @(0x30) + @([byte]($oidBytes.Length + 2)) + $oidBytes + @(0x05, 0x00)
+            $varbindList = @(0x30) + @([byte]$varbind.Length) + $varbind
+            $reqId = @(0x02, 0x01, 0x01)
+            $errStat = @(0x02, 0x01, 0x00)
+            $errIdx = @(0x02, 0x01, 0x00)
+            $pduContent = $reqId + $errStat + $errIdx + $varbindList
+            $pdu = @([byte]0xA0) + @([byte]$pduContent.Length) + $pduContent
+            $commBytes = [System.Text.Encoding]::ASCII.GetBytes($community)
+            $commTlv = @(0x04, [byte]$commBytes.Length) + $commBytes
+            $version = @(0x02, 0x01, 0x01)
+            $msgContent = $version + $commTlv + $pdu
+            $packet = [byte[]](@(0x30) + @([byte]$msgContent.Length) + $msgContent)
+            
+            $ep = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Parse($ip), 161)
+            $null = $udp.Send($packet, $packet.Length, $ep)
+            $remoteEP = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Any, 0)
+            $response = $udp.Receive([ref]$remoteEP)
+            $udp.Close()
+            
+            if ($response.Length -gt 10) {
+                $reachable = $true
+                # Try to extract sysDescr from raw response
+                try {
+                    $parsed = Parse-SnmpResponse $response
+                    if ($parsed -and $parsed.Count -gt 0) {
+                        $sysDescr = $parsed.Values | Select-Object -First 1
+                    }
+                } catch {}
+            }
+        } catch {
+            try { $udp.Close() } catch {}
+        }
+    }
+
+    if (-not $reachable) {
         if ($script:DeviceUp.ContainsKey($ip) -and $script:DeviceUp[$ip]) {
             $alerts += @{
                 device_ip  = $ip

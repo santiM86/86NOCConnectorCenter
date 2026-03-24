@@ -1,4 +1,4 @@
 {
-  "version": "1.5.0",
-  "changelog": "Esporta/Importa dispositivi via CSV (SOC web e system tray). Test SNMP. Fix auto-update. Versione dinamica."
+  "version": "1.5.1",
+  "changelog": "Fix critico: dispositivi mostrati come NON RAGGIUNGIBILI nonostante rispondano a SNMP. Aggiunto fallback reachability check con raw UDP."
 }
