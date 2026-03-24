@@ -135,7 +135,10 @@ export default function ClientsPage() {
                   <div className="flex items-center justify-between mb-1">
                     <span className="text-[var(--text-muted)] text-[10px] uppercase tracking-widest flex items-center gap-1"><Key size={10} /> API Key</span>
                     <div className="flex items-center gap-1">
-                      <button onClick={() => { navigator.clipboard.writeText(client.api_key); toast.success("API Key copiata"); }}
+                      <button onClick={() => { 
+                        try { navigator.clipboard.writeText(client.api_key).then(() => toast.success("API Key copiata")).catch(() => { const t=document.createElement("textarea"); t.value=client.api_key; document.body.appendChild(t); t.select(); document.execCommand("copy"); document.body.removeChild(t); toast.success("API Key copiata"); }); } 
+                        catch { const t=document.createElement("textarea"); t.value=client.api_key; document.body.appendChild(t); t.select(); document.execCommand("copy"); document.body.removeChild(t); toast.success("API Key copiata"); }
+                      }}
                         className="text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors p-0.5" title="Copia"
                         data-testid={`copy-key-${client.id}`}>
                         <Copy size={12} />
