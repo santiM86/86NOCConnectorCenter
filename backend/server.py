@@ -1711,6 +1711,8 @@ class ManagedDevice(BaseModel):
     ip: str
     community: str = "public"
     name: str
+    monitor_type: str = "snmp"  # snmp, ping, http
+    http_port: Optional[int] = 80
 
 @api_router.post("/connector/device-report")
 async def connector_device_report(request: Request):
@@ -1734,9 +1736,12 @@ async def connector_device_report(request: Request):
             "device_ip": dev["device_ip"],
             "device_name": dev["device_name"],
             "reachable": dev["reachable"],
+            "monitor_type": dev.get("monitor_type", "snmp"),
             "ports": dev.get("ports", []),
             "sys_descr": dev.get("sys_descr", ""),
             "sys_uptime": dev.get("sys_uptime", ""),
+            "http_status": dev.get("http_status", None),
+            "ping_ms": dev.get("ping_ms", None),
             "last_poll": dev.get("poll_timestamp", datetime.now(timezone.utc).isoformat()),
             "updated_at": datetime.now(timezone.utc).isoformat()
         }
@@ -1788,6 +1793,8 @@ async def add_managed_device(client_id: str, device: ManagedDevice, current_user
         "ip": device.ip,
         "community": device.community,
         "name": device.name,
+        "monitor_type": device.monitor_type,
+        "http_port": device.http_port,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "created_by": current_user.get("name", "admin")
     }
@@ -1815,7 +1822,7 @@ async def connector_fetch_devices(request: Request):
         raise HTTPException(status_code=401, detail="Invalid API key")
 
     devices = await db.managed_devices.find({"client_id": client_data["id"]}, {"_id": 0}).to_list(200)
-    return [{"ip": d["ip"], "community": d["community"], "name": d["name"]} for d in devices]
+    return [{"ip": d["ip"], "community": d.get("community", "public"), "name": d["name"], "monitor_type": d.get("monitor_type", "snmp"), "http_port": d.get("http_port", 80)} for d in devices]
 
 @api_router.post("/clients/{client_id}/regenerate-key")
 async def regenerate_client_api_key(client_id: str, current_user: dict = Depends(get_current_user)):

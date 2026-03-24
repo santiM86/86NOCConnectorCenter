@@ -46,7 +46,7 @@ export default function ConnectorsPage() {
   const [expandedDevice, setExpandedDevice] = useState(null);
   const [collapsedClients, setCollapsedClients] = useState({});
   const [showAddDevice, setShowAddDevice] = useState(false);
-  const [newDevice, setNewDevice] = useState({ ip: "", community: "public", name: "" });
+  const [newDevice, setNewDevice] = useState({ ip: "", community: "public", name: "", monitor_type: "snmp", http_port: 80 });
   const [addDeviceClientId, setAddDeviceClientId] = useState("");
   const intervalRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -224,10 +224,12 @@ export default function ConnectorsPage() {
       await axios.post(`${API}/connector/${addDeviceClientId}/managed-devices`, {
         ip: newDevice.ip,
         community: newDevice.community || "public",
-        name: newDevice.name || newDevice.ip
+        name: newDevice.name || newDevice.ip,
+        monitor_type: newDevice.monitor_type || "snmp",
+        http_port: newDevice.http_port || 80
       });
       toast.success(`Dispositivo ${newDevice.name || newDevice.ip} aggiunto`);
-      setNewDevice({ ip: "", community: "public", name: "" });
+      setNewDevice({ ip: "", community: "public", name: "", monitor_type: "snmp", http_port: 80 });
       setShowAddDevice(false);
       fetchAll();
     } catch (e) {
@@ -544,7 +546,7 @@ export default function ConnectorsPage() {
       {showAddDevice && (
         <div className="noc-panel p-4 space-y-3 animate-fade-in" data-testid="add-device-form">
           <p className="text-xs font-medium text-[var(--text-primary)]">Aggiungi dispositivo da monitorare</p>
-          <div className="grid grid-cols-1 md:grid-cols-5 gap-2 items-end">
+          <div className="grid grid-cols-1 md:grid-cols-6 gap-2 items-end">
             <div>
               <label className="text-[10px] text-[var(--text-muted)] uppercase tracking-widest block mb-1">Cliente *</label>
               <select value={addDeviceClientId} onChange={(e) => setAddDeviceClientId(e.target.value)}
@@ -556,17 +558,33 @@ export default function ConnectorsPage() {
             <div>
               <label className="text-[10px] text-[var(--text-muted)] uppercase tracking-widest block mb-1">IP Address *</label>
               <input type="text" value={newDevice.ip} onChange={(e) => setNewDevice({...newDevice, ip: e.target.value})}
-                placeholder="192.168.1.2" className="w-full h-8 px-2 rounded-md border border-[var(--bg-border)] bg-[var(--bg-card)] text-[var(--text-primary)] text-xs font-mono" data-testid="device-ip-input" />
+                placeholder="192.168.1.3" className="w-full h-8 px-2 rounded-md border border-[var(--bg-border)] bg-[var(--bg-card)] text-[var(--text-primary)] text-xs font-mono" data-testid="device-ip-input" />
             </div>
             <div>
-              <label className="text-[10px] text-[var(--text-muted)] uppercase tracking-widest block mb-1">Community</label>
-              <input type="text" value={newDevice.community} onChange={(e) => setNewDevice({...newDevice, community: e.target.value})}
-                className="w-full h-8 px-2 rounded-md border border-[var(--bg-border)] bg-[var(--bg-card)] text-[var(--text-primary)] text-xs font-mono" data-testid="device-community-input" />
+              <label className="text-[10px] text-[var(--text-muted)] uppercase tracking-widest block mb-1">Tipo *</label>
+              <select value={newDevice.monitor_type} onChange={(e) => setNewDevice({...newDevice, monitor_type: e.target.value, community: e.target.value === "snmp" ? "public" : ""})}
+                className="w-full h-8 px-2 rounded-md border border-[var(--bg-border)] bg-[var(--bg-card)] text-[var(--text-primary)] text-xs" data-testid="device-type-select">
+                <option value="snmp">SNMP</option>
+                <option value="ping">Ping + HTTP</option>
+              </select>
             </div>
+            {newDevice.monitor_type === "snmp" ? (
+              <div>
+                <label className="text-[10px] text-[var(--text-muted)] uppercase tracking-widest block mb-1">Community</label>
+                <input type="text" value={newDevice.community} onChange={(e) => setNewDevice({...newDevice, community: e.target.value})}
+                  className="w-full h-8 px-2 rounded-md border border-[var(--bg-border)] bg-[var(--bg-card)] text-[var(--text-primary)] text-xs font-mono" data-testid="device-community-input" />
+              </div>
+            ) : (
+              <div>
+                <label className="text-[10px] text-[var(--text-muted)] uppercase tracking-widest block mb-1">Porta HTTP</label>
+                <input type="number" value={newDevice.http_port} onChange={(e) => setNewDevice({...newDevice, http_port: parseInt(e.target.value) || 80})}
+                  className="w-full h-8 px-2 rounded-md border border-[var(--bg-border)] bg-[var(--bg-card)] text-[var(--text-primary)] text-xs font-mono" data-testid="device-http-port-input" />
+              </div>
+            )}
             <div>
               <label className="text-[10px] text-[var(--text-muted)] uppercase tracking-widest block mb-1">Nome</label>
               <input type="text" value={newDevice.name} onChange={(e) => setNewDevice({...newDevice, name: e.target.value})}
-                placeholder="HPE 1820 48G" className="w-full h-8 px-2 rounded-md border border-[var(--bg-border)] bg-[var(--bg-card)] text-[var(--text-primary)] text-xs font-mono" data-testid="device-name-input" />
+                placeholder="Switch Reception" className="w-full h-8 px-2 rounded-md border border-[var(--bg-border)] bg-[var(--bg-card)] text-[var(--text-primary)] text-xs font-mono" data-testid="device-name-input" />
             </div>
             <Button onClick={addDevice} size="sm" className="rounded-md text-xs h-8 bg-blue-600 hover:bg-blue-700 text-white" data-testid="confirm-add-device-btn">
               Conferma
@@ -745,6 +763,7 @@ export default function ConnectorsPage() {
                       const recent = isRecentPoll(dev.last_poll);
                       const portStats = portsByStatus(dev.ports);
                       const expanded = expandedDevice === devKey;
+                      const isPing = dev.monitor_type === "ping" || dev.monitor_type === "http";
                       return (
                         <div key={devKey}>
                           <div className="p-3 pl-8 flex items-center gap-3 cursor-pointer hover:bg-[var(--bg-hover)] transition-colors"
@@ -755,17 +774,28 @@ export default function ConnectorsPage() {
                             <div className="flex-1 min-w-0">
                               <div className="flex items-center gap-2">
                                 <p className="font-heading font-bold text-xs text-[var(--text-primary)] truncate">{dev.device_name}</p>
+                                <span className={`text-[10px] px-1.5 py-0.5 rounded border ${isPing ? "text-indigo-400 bg-indigo-500/10 border-indigo-500/20" : "text-blue-400 bg-blue-500/10 border-blue-500/20"}`}>
+                                  {isPing ? "PING" : "SNMP"}
+                                </span>
                                 <span className={`text-[10px] px-1.5 py-0.5 rounded border ${dev.reachable && recent ? "text-[var(--ok)] bg-[var(--low-bg)] border-[var(--low-border)]" : "text-[var(--critical)] bg-[var(--critical-bg)] border-[var(--critical-border)]"}`}>
                                   {dev.reachable && recent ? "OK" : "NON RAGGIUNGIBILE"}
                                 </span>
                               </div>
                               <p className="font-mono text-[11px] text-[var(--text-muted)]">{dev.device_ip}</p>
                             </div>
-                            {portStats.total > 0 && (
+                            {!isPing && portStats.total > 0 && (
                               <div className="hidden md:flex items-center gap-2">
                                 <span className="text-xs font-mono text-[var(--ok)]">{portStats.up}<ArrowUp size={10} className="inline ml-0.5" /></span>
                                 <span className="text-xs font-mono text-[var(--critical)]">{portStats.down}<ArrowDown size={10} className="inline ml-0.5" /></span>
                                 <span className="text-[10px] text-[var(--text-muted)]">{portStats.total}p</span>
+                              </div>
+                            )}
+                            {isPing && dev.ping_ms != null && (
+                              <div className="hidden md:flex items-center gap-2">
+                                <span className="text-xs font-mono text-[var(--ok)]">{dev.ping_ms}ms</span>
+                                {dev.http_status != null && dev.http_status > 0 && (
+                                  <span className="text-xs font-mono text-indigo-400">HTTP {dev.http_status}</span>
+                                )}
                               </div>
                             )}
                             <div className="text-right flex-shrink-0">
@@ -782,24 +812,53 @@ export default function ConnectorsPage() {
                             <div className="border-t border-[var(--bg-border)] p-3 pl-8 bg-[var(--bg-card)]/50 animate-fade-in">
                               {dev.sys_descr && <p className="text-[11px] text-[var(--text-muted)] mb-1 truncate">{dev.sys_descr}</p>}
                               {dev.sys_uptime && <p className="text-[11px] text-[var(--text-muted)] mb-2">Uptime: {dev.sys_uptime}</p>}
-                              {(dev.ports || []).length > 0 ? (
+                              {isPing ? (
+                                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                                  <div className="p-2 rounded-lg bg-[var(--bg-panel)] border border-[var(--bg-border)]">
+                                    <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider">Ping</p>
+                                    <p className={`text-sm font-mono font-bold ${dev.reachable ? "text-[var(--ok)]" : "text-[var(--critical)]"}`}>
+                                      {dev.ping_ms != null ? `${dev.ping_ms}ms` : "N/A"}
+                                    </p>
+                                  </div>
+                                  <div className="p-2 rounded-lg bg-[var(--bg-panel)] border border-[var(--bg-border)]">
+                                    <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider">HTTP</p>
+                                    <p className={`text-sm font-mono font-bold ${dev.http_status && dev.http_status >= 200 && dev.http_status < 400 ? "text-[var(--ok)]" : dev.http_status ? "text-[var(--medium)]" : "text-[var(--text-muted)]"}`}>
+                                      {dev.http_status ? `${dev.http_status}` : "N/A"}
+                                    </p>
+                                  </div>
+                                  <div className="p-2 rounded-lg bg-[var(--bg-panel)] border border-[var(--bg-border)]">
+                                    <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider">Stato</p>
+                                    <p className={`text-sm font-bold ${dev.reachable ? "text-[var(--ok)]" : "text-[var(--critical)]"}`}>
+                                      {dev.reachable ? "Raggiungibile" : "Offline"}
+                                    </p>
+                                  </div>
+                                  <div className="p-2 rounded-lg bg-[var(--bg-panel)] border border-[var(--bg-border)]">
+                                    <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider">Monitoraggio</p>
+                                    <p className="text-sm font-mono font-bold text-indigo-400">Ping + HTTP</p>
+                                  </div>
+                                </div>
+                              ) : (
                                 <>
-                                  <div className="grid grid-cols-6 sm:grid-cols-8 md:grid-cols-12 gap-1.5">
-                                    {(dev.ports || []).sort((a,b) => parseInt(a.index) - parseInt(b.index)).map((port, pi) => (
-                                      <div key={pi} title={`Porta ${port.index}: ${port.status}`}
-                                        className={`h-6 rounded flex items-center justify-center text-[9px] font-mono border ${
-                                          port.status === "up" ? "bg-[var(--low-bg)] border-[var(--low-border)] text-[var(--ok)]"
-                                          : port.status === "down" ? "bg-[var(--critical-bg)] border-[var(--critical-border)] text-[var(--critical)]"
-                                          : "bg-[var(--bg-hover)] border-[var(--bg-border)] text-[var(--text-muted)]"
-                                        }`}>{port.index}</div>
-                                    ))}
-                                  </div>
-                                  <div className="flex items-center gap-2 mt-2">
-                                    <span className="flex items-center gap-1 text-[10px] text-[var(--text-muted)]"><div className="w-3 h-3 rounded bg-[var(--low-bg)] border border-[var(--low-border)]"></div>UP</span>
-                                    <span className="flex items-center gap-1 text-[10px] text-[var(--text-muted)]"><div className="w-3 h-3 rounded bg-[var(--critical-bg)] border border-[var(--critical-border)]"></div>DOWN</span>
-                                  </div>
+                                  {(dev.ports || []).length > 0 ? (
+                                    <>
+                                      <div className="grid grid-cols-6 sm:grid-cols-8 md:grid-cols-12 gap-1.5">
+                                        {(dev.ports || []).sort((a,b) => parseInt(a.index) - parseInt(b.index)).map((port, pi) => (
+                                          <div key={pi} title={`Porta ${port.index}: ${port.status}`}
+                                            className={`h-6 rounded flex items-center justify-center text-[9px] font-mono border ${
+                                              port.status === "up" ? "bg-[var(--low-bg)] border-[var(--low-border)] text-[var(--ok)]"
+                                              : port.status === "down" ? "bg-[var(--critical-bg)] border-[var(--critical-border)] text-[var(--critical)]"
+                                              : "bg-[var(--bg-hover)] border-[var(--bg-border)] text-[var(--text-muted)]"
+                                            }`}>{port.index}</div>
+                                        ))}
+                                      </div>
+                                      <div className="flex items-center gap-2 mt-2">
+                                        <span className="flex items-center gap-1 text-[10px] text-[var(--text-muted)]"><div className="w-3 h-3 rounded bg-[var(--low-bg)] border border-[var(--low-border)]"></div>UP</span>
+                                        <span className="flex items-center gap-1 text-[10px] text-[var(--text-muted)]"><div className="w-3 h-3 rounded bg-[var(--critical-bg)] border border-[var(--critical-border)]"></div>DOWN</span>
+                                      </div>
+                                    </>
+                                  ) : <p className="text-xs text-[var(--text-muted)]">Nessun dato porte</p>}
                                 </>
-                              ) : <p className="text-xs text-[var(--text-muted)]">Nessun dato porte</p>}
+                              )}
                             </div>
                           )}
                         </div>

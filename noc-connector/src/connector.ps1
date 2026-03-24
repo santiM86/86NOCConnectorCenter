@@ -262,6 +262,79 @@ function Send-Heartbeat($config) {
     }
 }
 
+# ==================== PING/HTTP MONITORING ====================
+
+function Poll-PingDevice($ip, $name, $httpPort) {
+    $alerts = @()
+    $reachable = $false
+    $pingMs = $null
+    $httpStatus = $null
+    
+    # 1. Ping test
+    try {
+        $ping = New-Object System.Net.NetworkInformation.Ping
+        $reply = $ping.Send($ip, 3000)
+        if ($reply.Status -eq "Success") {
+            $reachable = $true
+            $pingMs = $reply.RoundtripTime
+        }
+        $ping.Dispose()
+    } catch {}
+    
+    # 2. HTTP test (if reachable)
+    if ($reachable -and $httpPort) {
+        try {
+            $url = "http://${ip}:${httpPort}/"
+            $req = [System.Net.HttpWebRequest]::Create($url)
+            $req.Timeout = 5000
+            $req.Method = "HEAD"
+            $resp = $req.GetResponse()
+            $httpStatus = [int]$resp.StatusCode
+            $resp.Close()
+        } catch [System.Net.WebException] {
+            if ($_.Exception.Response) {
+                $httpStatus = [int]$_.Exception.Response.StatusCode
+            } else {
+                $httpStatus = 0
+            }
+        } catch {
+            $httpStatus = 0
+        }
+    }
+    
+    # 3. State change alerts
+    $wasUp = $script:DeviceUp.ContainsKey($ip) -and $script:DeviceUp[$ip]
+    
+    if (-not $reachable -and $wasUp) {
+        $alerts += @{
+            device_ip  = $ip
+            oid        = "ping.monitor"
+            value      = "Dispositivo $name ($ip) NON RAGGIUNGIBILE - ping fallito"
+            trap_type  = "deviceDown"
+            severity   = "critical"
+            device_name = $name
+        }
+    }
+    if ($reachable -and $script:DeviceUp.ContainsKey($ip) -and -not $wasUp) {
+        $alerts += @{
+            device_ip  = $ip
+            oid        = "ping.monitor"
+            value      = "Dispositivo $name ($ip) di nuovo RAGGIUNGIBILE"
+            trap_type  = "deviceUp"
+            severity   = "low"
+            device_name = $name
+        }
+    }
+    $script:DeviceUp[$ip] = $reachable
+    
+    return @{
+        alerts = $alerts
+        reachable = $reachable
+        ping_ms = $pingMs
+        http_status = $httpStatus
+    }
+}
+
 # ==================== SNMP POLLING ====================
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -275,47 +348,70 @@ function Send-DeviceReport($config, $devices) {
     foreach ($dev in $devices) {
         $ip = $dev.ip
         $devName = if ($dev.name) { $dev.name } else { $ip }
+        $monitorType = if ($dev.monitor_type) { $dev.monitor_type } else { "snmp" }
         $community = if ($dev.community) { $dev.community } else { "public" }
         
-        $reachable = $script:DeviceUp.ContainsKey($ip) -and $script:DeviceUp[$ip]
-        $ports = @()
-        
-        if ($script:PortStates.ContainsKey($ip)) {
-            foreach ($idx in $script:PortStates[$ip].Keys) {
-                $operStatus = $script:PortStates[$ip][$idx]
-                $statusName = if ($script:IfStatusMap.ContainsKey($operStatus)) { $script:IfStatusMap[$operStatus] } else { "unknown" }
-                $ports += @{
-                    index = $idx
-                    status = $statusName
-                    status_code = $operStatus
+        if ($monitorType -eq "ping" -or $monitorType -eq "http") {
+            # Ping/HTTP device - use cached poll results
+            $reachable = $script:DeviceUp.ContainsKey($ip) -and $script:DeviceUp[$ip]
+            $pingMs = if ($script:PingResults.ContainsKey($ip)) { $script:PingResults[$ip].ping_ms } else { $null }
+            $httpStatus = if ($script:PingResults.ContainsKey($ip)) { $script:PingResults[$ip].http_status } else { $null }
+            
+            $reportDevices += @{
+                device_ip = $ip
+                device_name = $devName
+                monitor_type = $monitorType
+                reachable = $reachable
+                ping_ms = $pingMs
+                http_status = $httpStatus
+                ports = @()
+                sys_descr = if ($httpStatus -and $httpStatus -gt 0) { "Web management attivo (HTTP $httpStatus)" } else { "Smart managed switch" }
+                sys_uptime = ""
+                poll_timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+            }
+        } else {
+            # SNMP device - original logic
+            $reachable = $script:DeviceUp.ContainsKey($ip) -and $script:DeviceUp[$ip]
+            $ports = @()
+            
+            if ($script:PortStates.ContainsKey($ip)) {
+                foreach ($idx in $script:PortStates[$ip].Keys) {
+                    $operStatus = $script:PortStates[$ip][$idx]
+                    $statusName = if ($script:IfStatusMap.ContainsKey($operStatus)) { $script:IfStatusMap[$operStatus] } else { "unknown" }
+                    $ports += @{
+                        index = $idx
+                        status = $statusName
+                        status_code = $operStatus
+                    }
                 }
             }
-        }
-        
-        $sysDescr = ""
-        $sysUptime = ""
-        if ($reachable) {
-            try {
-                $sysDescr = Get-SnmpValue $ip $community "1.3.6.1.2.1.1.1.0"
-                $uptimeTicks = Get-SnmpValue $ip $community "1.3.6.1.2.1.1.3.0"
-                if ($uptimeTicks) {
-                    $secs = [math]::Floor($uptimeTicks / 100)
-                    $d = [math]::Floor($secs / 86400)
-                    $h = [math]::Floor(($secs % 86400) / 3600)
-                    $m = [math]::Floor(($secs % 3600) / 60)
-                    $sysUptime = "${d}g ${h}h ${m}m"
-                }
-            } catch {}
-        }
-        
-        $reportDevices += @{
-            device_ip = $ip
-            device_name = $devName
-            reachable = $reachable
-            ports = $ports
-            sys_descr = "$sysDescr"
-            sys_uptime = $sysUptime
-            poll_timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+            
+            $sysDescr = ""
+            $sysUptime = ""
+            if ($reachable) {
+                try {
+                    $sysDescr = Get-SnmpValue $ip $community "1.3.6.1.2.1.1.1.0"
+                    $uptimeTicks = Get-SnmpValue $ip $community "1.3.6.1.2.1.1.3.0"
+                    if ($uptimeTicks) {
+                        $secs = [math]::Floor($uptimeTicks / 100)
+                        $d = [math]::Floor($secs / 86400)
+                        $h = [math]::Floor(($secs % 86400) / 3600)
+                        $m = [math]::Floor(($secs % 3600) / 60)
+                        $sysUptime = "${d}g ${h}h ${m}m"
+                    }
+                } catch {}
+            }
+            
+            $reportDevices += @{
+                device_ip = $ip
+                device_name = $devName
+                monitor_type = "snmp"
+                reachable = $reachable
+                ports = $ports
+                sys_descr = "$sysDescr"
+                sys_uptime = $sysUptime
+                poll_timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+            }
         }
     }
     
@@ -362,31 +458,59 @@ function Start-PollingLoop($config) {
     }
     
     if ($devices.Count -eq 0) {
-        Write-Log "Nessun dispositivo configurato per polling SNMP"
+        Write-Log "Nessun dispositivo configurato per polling"
         return
     }
 
+    # Separate SNMP and Ping/HTTP devices
+    $snmpDevices = @($devices | Where-Object { -not $_.monitor_type -or $_.monitor_type -eq "snmp" })
+    $pingDevices = @($devices | Where-Object { $_.monitor_type -eq "ping" -or $_.monitor_type -eq "http" })
+    
+    # Initialize ping results cache
+    if (-not $script:PingResults) { $script:PingResults = @{} }
+
     $interval = if ($config.poll_interval_seconds) { $config.poll_interval_seconds } else { 60 }
-    Write-Log "Polling SNMP attivo per $($devices.Count) dispositivi ogni ${interval}s"
+    Write-Log "Polling attivo per $($devices.Count) dispositivi ogni ${interval}s (SNMP: $($snmpDevices.Count), Ping/HTTP: $($pingDevices.Count))"
     foreach ($dev in $devices) {
-        Write-Log "  - $($dev.name) ($($dev.ip)) community=$($dev.community)"
+        $mType = if ($dev.monitor_type) { $dev.monitor_type } else { "snmp" }
+        Write-Log "  - $($dev.name) ($($dev.ip)) tipo=$mType"
     }
 
     # First poll - initialize states and send initial report
-    Write-Log "Prima scansione porte in corso..."
-    $null = Poll-AllDevices $devices $config
-    Write-Log "Stato iniziale porte acquisito. Invio report al NOC..."
+    Write-Log "Prima scansione in corso..."
+    if ($snmpDevices.Count -gt 0) { $null = Poll-AllDevices $snmpDevices $config }
+    foreach ($pd in $pingDevices) {
+        $httpPort = if ($pd.http_port) { $pd.http_port } else { 80 }
+        $result = Poll-PingDevice $pd.ip $pd.name $httpPort
+        $script:PingResults[$pd.ip] = $result
+    }
+    Write-Log "Stato iniziale acquisito. Invio report al NOC..."
     Send-DeviceReport $config $devices
     
     $refreshCounter = 0
 
     while ($global:Running) {
         try {
-            $alerts = Poll-AllDevices $devices $config
-            foreach ($alert in $alerts) {
-                Write-Log "[POLL] $($alert.trap_type): $($alert.value)" "WARN"
-                Send-SNMPToNOC $config $alert
+            # Poll SNMP devices
+            if ($snmpDevices.Count -gt 0) {
+                $alerts = Poll-AllDevices $snmpDevices $config
+                foreach ($alert in $alerts) {
+                    Write-Log "[POLL] $($alert.trap_type): $($alert.value)" "WARN"
+                    Send-SNMPToNOC $config $alert
+                }
             }
+            
+            # Poll Ping/HTTP devices
+            foreach ($pd in $pingDevices) {
+                $httpPort = if ($pd.http_port) { $pd.http_port } else { 80 }
+                $result = Poll-PingDevice $pd.ip $pd.name $httpPort
+                $script:PingResults[$pd.ip] = $result
+                foreach ($alert in $result.alerts) {
+                    Write-Log "[PING] $($alert.trap_type): $($alert.value)" "WARN"
+                    Send-SNMPToNOC $config $alert
+                }
+            }
+            
             # Send full status report after every poll
             Send-DeviceReport $config $devices
             
@@ -404,7 +528,9 @@ function Start-PollingLoop($config) {
                         }
                     }
                     $devices = @($nocDevices) + $localOnly
-                    Write-Log "Lista dispositivi aggiornata dal NOC: $($devices.Count) totali"
+                    $snmpDevices = @($devices | Where-Object { -not $_.monitor_type -or $_.monitor_type -eq "snmp" })
+                    $pingDevices = @($devices | Where-Object { $_.monitor_type -eq "ping" -or $_.monitor_type -eq "http" })
+                    Write-Log "Lista dispositivi aggiornata dal NOC: $($devices.Count) totali (SNMP: $($snmpDevices.Count), Ping: $($pingDevices.Count))"
                 }
             }
         } catch {

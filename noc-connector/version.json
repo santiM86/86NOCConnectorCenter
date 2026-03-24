@@ -1,4 +1,4 @@
 {
-  "version": "1.7.1",
-  "changelog": "Fix critico: BAT semplificato per avvio affidabile. Aggiunto script diagnostica.ps1 per test connettivita'."
+  "version": "1.7.2",
+  "changelog": "Aggiunto monitoraggio Ping+HTTP per dispositivi senza SNMP. Fix BAT semplificato. Script diagnostica."
 }
