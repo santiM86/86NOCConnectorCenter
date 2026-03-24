@@ -1,4 +1,4 @@
 {
-  "version": "1.6.0",
-  "changelog": "Informazioni 86BIT nella system tray. Barra progresso aggiornamento nel SOC. Fix raggiungibilita SNMP. Esporta/Importa CSV."
+  "version": "1.6.1",
+  "changelog": "Fix doppia icona tray dopo aggiornamento. Kill processi duplicati all'avvio. Fix perdita connessione dispositivi."
 }

@@ -10,6 +10,19 @@ param(
     [string]$ConfigPath = ""
 )
 
+# Kill any existing connector.ps1 instances (prevents duplicates on update restart)
+$currentPid = $PID
+Get-Process -Name powershell -ErrorAction SilentlyContinue | ForEach-Object {
+    if ($_.Id -ne $currentPid) {
+        try {
+            $cmdLine = (Get-CimInstance Win32_Process -Filter "ProcessId = $($_.Id)" -ErrorAction SilentlyContinue).CommandLine
+            if ($cmdLine -match "connector\.ps1") {
+                Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+            }
+        } catch {}
+    }
+}
+
 $global:AppName = "86NocConnector"
 $global:ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $global:BaseDir = Split-Path -Parent $global:ScriptDir
