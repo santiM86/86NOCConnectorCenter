@@ -235,7 +235,7 @@ function Show-DeviceManager {
     # Bottom buttons
     $btnRemove = New-Object System.Windows.Forms.Button
     $btnRemove.Text = "Rimuovi selezionato"
-    $btnRemove.Size = New-Object System.Drawing.Size(135, 30)
+    $btnRemove.Size = New-Object System.Drawing.Size(125, 30)
     $btnRemove.Location = New-Object System.Drawing.Point(20, 380)
     $btnRemove.FlatStyle = "Flat"
     $btnRemove.BackColor = [System.Drawing.Color]::White
@@ -243,6 +243,17 @@ function Show-DeviceManager {
     $btnRemove.Font = New-Object System.Drawing.Font("Segoe UI", 8.5)
     $btnRemove.Cursor = [System.Windows.Forms.Cursors]::Hand
     $form.Controls.Add($btnRemove)
+
+    $btnTestSnmp = New-Object System.Windows.Forms.Button
+    $btnTestSnmp.Text = "Test SNMP"
+    $btnTestSnmp.Size = New-Object System.Drawing.Size(110, 30)
+    $btnTestSnmp.Location = New-Object System.Drawing.Point(225, 380)
+    $btnTestSnmp.FlatStyle = "Flat"
+    $btnTestSnmp.BackColor = [System.Drawing.Color]::FromArgb(59, 130, 246)
+    $btnTestSnmp.ForeColor = [System.Drawing.Color]::White
+    $btnTestSnmp.Font = New-Object System.Drawing.Font("Segoe UI", 8.5, [System.Drawing.FontStyle]::Bold)
+    $btnTestSnmp.Cursor = [System.Windows.Forms.Cursors]::Hand
+    $form.Controls.Add($btnTestSnmp)
 
     $btnSave = New-Object System.Windows.Forms.Button
     $btnSave.Text = "Salva e Riavvia"
@@ -296,6 +307,109 @@ function Show-DeviceManager {
         } else {
             [System.Windows.Forms.MessageBox]::Show("Seleziona un dispositivo dalla lista.", $AppName, "OK", "Information")
         }
+    })
+
+    # Test SNMP button handler
+    $btnTestSnmp.Add_Click({
+        if ($listView.Items.Count -eq 0) {
+            [System.Windows.Forms.MessageBox]::Show("Nessun dispositivo nella lista.", $AppName, "OK", "Warning")
+            return
+        }
+        $btnTestSnmp.Enabled = $false
+        $btnTestSnmp.Text = "Testing..."
+        $form.Refresh()
+        
+        $results = ""
+        foreach ($item in $listView.Items) {
+            $ip = $item.Text
+            $community = $item.SubItems[1].Text
+            $devName = $item.SubItems[2].Text
+            $results += "== $devName ($ip) ==`r`n"
+            
+            # Test 1: Ping
+            $pingOk = $false
+            try {
+                $ping = New-Object System.Net.NetworkInformation.Ping
+                $reply = $ping.Send($ip, 2000)
+                if ($reply.Status -eq "Success") {
+                    $results += "  PING: OK ($($reply.RoundtripTime)ms)`r`n"
+                    $pingOk = $true
+                } else {
+                    $results += "  PING: FALLITO ($($reply.Status))`r`n"
+                }
+                $ping.Dispose()
+            } catch {
+                $results += "  PING: ERRORE - $($_.Exception.Message)`r`n"
+            }
+            
+            # Test 2: SNMP GET sysDescr
+            try {
+                $udp = New-Object System.Net.Sockets.UdpClient
+                $udp.Client.ReceiveTimeout = 3000
+                
+                # Build simple SNMP v2c GET for sysDescr (1.3.6.1.2.1.1.1.0)
+                $oid = @(0x06, 0x08, 0x2B, 0x06, 0x01, 0x02, 0x01, 0x01, 0x01, 0x00)
+                $varbind = @(0x30) + @([byte]($oid.Length + 2)) + $oid + @(0x05, 0x00)
+                $varbindList = @(0x30) + @([byte]$varbind.Length) + $varbind
+                $reqId = @(0x02, 0x01, 0x01)
+                $errStat = @(0x02, 0x01, 0x00)
+                $errIdx = @(0x02, 0x01, 0x00)
+                $pduContent = $reqId + $errStat + $errIdx + $varbindList
+                $pdu = @([byte]0xA0) + @([byte]$pduContent.Length) + $pduContent
+                $commBytes = [System.Text.Encoding]::ASCII.GetBytes($community)
+                $commTlv = @(0x04, [byte]$commBytes.Length) + $commBytes
+                $version = @(0x02, 0x01, 0x01)
+                $msgContent = $version + $commTlv + $pdu
+                $packet = @(0x30) + @([byte]$msgContent.Length) + $msgContent
+                
+                $ep = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Parse($ip), 161)
+                $null = $udp.Send([byte[]]$packet, $packet.Length, $ep)
+                $remoteEP = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Any, 0)
+                $response = $udp.Receive([ref]$remoteEP)
+                $udp.Close()
+                
+                if ($response.Length -gt 20) {
+                    $results += "  SNMP: OK (risposta $($response.Length) bytes)`r`n"
+                } else {
+                    $results += "  SNMP: RISPOSTA ANOMALA ($($response.Length) bytes)`r`n"
+                }
+            } catch [System.Net.Sockets.SocketException] {
+                $udp.Close()
+                if ($_.Exception.SocketErrorCode -eq "TimedOut") {
+                    $results += "  SNMP: TIMEOUT - nessuna risposta UDP 161`r`n"
+                    $results += "         Verifica: SNMP abilitato? Community '$community' corretta? Firewall?`r`n"
+                } else {
+                    $results += "  SNMP: ERRORE SOCKET - $($_.Exception.Message)`r`n"
+                }
+            } catch {
+                try { $udp.Close() } catch {}
+                $results += "  SNMP: ERRORE - $($_.Exception.Message)`r`n"
+            }
+            $results += "`r`n"
+        }
+        
+        # Show results
+        $resultForm = New-Object System.Windows.Forms.Form
+        $resultForm.Text = "$AppName - Risultati Test SNMP"
+        $resultForm.Size = New-Object System.Drawing.Size(520, 350)
+        $resultForm.StartPosition = "CenterScreen"
+        $resultForm.FormBorderStyle = "FixedDialog"
+        $resultForm.MaximizeBox = $false
+        
+        $txtResult = New-Object System.Windows.Forms.TextBox
+        $txtResult.Multiline = $true
+        $txtResult.ScrollBars = "Vertical"
+        $txtResult.ReadOnly = $true
+        $txtResult.Font = New-Object System.Drawing.Font("Consolas", 9.5)
+        $txtResult.Location = New-Object System.Drawing.Point(10, 10)
+        $txtResult.Size = New-Object System.Drawing.Size(490, 290)
+        $txtResult.Text = $results
+        $resultForm.Controls.Add($txtResult)
+        
+        $resultForm.ShowDialog()
+        
+        $btnTestSnmp.Enabled = $true
+        $btnTestSnmp.Text = "Test SNMP"
     })
 
     # Save button handler

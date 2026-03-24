@@ -1,4 +1,4 @@
 {
-  "version": "1.4.3",
-  "changelog": "Fix critico auto-update: gestione corretta struttura ZIP piatta. Versione dinamica da version.json. Fix force update. Menu Start."
+  "version": "1.4.4",
+  "changelog": "Aggiunto pulsante Test SNMP nella gestione dispositivi. Versione dinamica da version.json. Fix auto-update e force update."
 }
