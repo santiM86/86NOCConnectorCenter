@@ -672,6 +672,96 @@ function Start-TrayApp {
     })
     
     $contextMenu.Items.Add("-") | Out-Null
+
+    # Informazioni / About
+    $aboutItem = $contextMenu.Items.Add("Informazioni")
+    $aboutItem.Add_Click({
+        $aboutForm = New-Object System.Windows.Forms.Form
+        $aboutForm.Text = "$AppName - Informazioni"
+        $aboutForm.Size = New-Object System.Drawing.Size(420, 340)
+        $aboutForm.StartPosition = "CenterScreen"
+        $aboutForm.FormBorderStyle = "FixedDialog"
+        $aboutForm.MaximizeBox = $false
+        $aboutForm.MinimizeBox = $false
+        $aboutForm.BackColor = [System.Drawing.Color]::White
+
+        # Logo
+        $logoPath = Join-Path $ScriptDir "86bit_logo.jpg"
+        if (Test-Path $logoPath) {
+            $picBox = New-Object System.Windows.Forms.PictureBox
+            $picBox.Location = New-Object System.Drawing.Point(20, 15)
+            $picBox.Size = New-Object System.Drawing.Size(80, 80)
+            $picBox.SizeMode = "Zoom"
+            $picBox.Image = [System.Drawing.Image]::FromFile($logoPath)
+            $aboutForm.Controls.Add($picBox)
+        }
+
+        # App Name + Version
+        $lblName = New-Object System.Windows.Forms.Label
+        $lblName.Text = "$AppName  v$Version"
+        $lblName.Font = New-Object System.Drawing.Font("Segoe UI", 14, [System.Drawing.FontStyle]::Bold)
+        $lblName.ForeColor = [System.Drawing.Color]::FromArgb(30, 30, 50)
+        $lblName.Location = New-Object System.Drawing.Point(110, 20)
+        $lblName.AutoSize = $true
+        $aboutForm.Controls.Add($lblName)
+
+        $lblDesc = New-Object System.Windows.Forms.Label
+        $lblDesc.Text = "NOC Collector - SNMP Trap, Syslog, Active Polling"
+        $lblDesc.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+        $lblDesc.ForeColor = [System.Drawing.Color]::FromArgb(100, 100, 120)
+        $lblDesc.Location = New-Object System.Drawing.Point(110, 52)
+        $lblDesc.AutoSize = $true
+        $aboutForm.Controls.Add($lblDesc)
+
+        # Separator
+        $sep = New-Object System.Windows.Forms.Label
+        $sep.BorderStyle = "Fixed3D"
+        $sep.Location = New-Object System.Drawing.Point(20, 105)
+        $sep.Size = New-Object System.Drawing.Size(370, 2)
+        $aboutForm.Controls.Add($sep)
+
+        # Company info
+        $companyInfo = @"
+86BIT srl Unipersonale
+
+Codice Fiscale e P.Iva 04353030168
+Capitale sociale EUR 30.000,00 i.v.
+Reg. Imprese di Bergamo 04353030168
+REA n. BG456578
+
+Sede Operativa:
+Piazza Papa Giovanni XXIII
+24020 Scanzorosciate (BG)
+
+Tel. +39 035 310 900
+info@86bit.it
+"@
+
+        $lblCompany = New-Object System.Windows.Forms.Label
+        $lblCompany.Text = $companyInfo
+        $lblCompany.Font = New-Object System.Drawing.Font("Segoe UI", 8.5)
+        $lblCompany.ForeColor = [System.Drawing.Color]::FromArgb(60, 60, 80)
+        $lblCompany.Location = New-Object System.Drawing.Point(20, 115)
+        $lblCompany.Size = New-Object System.Drawing.Size(370, 170)
+        $aboutForm.Controls.Add($lblCompany)
+
+        # OK button
+        $btnOk = New-Object System.Windows.Forms.Button
+        $btnOk.Text = "OK"
+        $btnOk.Size = New-Object System.Drawing.Size(80, 30)
+        $btnOk.Location = New-Object System.Drawing.Point(310, 270)
+        $btnOk.FlatStyle = "Flat"
+        $btnOk.BackColor = [System.Drawing.Color]::FromArgb(99, 102, 241)
+        $btnOk.ForeColor = [System.Drawing.Color]::White
+        $btnOk.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+        $btnOk.Add_Click({ $aboutForm.Close() })
+        $aboutForm.Controls.Add($btnOk)
+        $aboutForm.AcceptButton = $btnOk
+
+        $aboutForm.ShowDialog()
+    })
+    
+    $contextMenu.Items.Add("-") | Out-Null
     
     # Exit
     $exitItem = $contextMenu.Items.Add("Esci")

@@ -436,22 +436,40 @@ function Check-ForUpdate($config) {
     return $null
 }
 
+function Send-UpdateProgress($config, $progress, $status, $message) {
+    try {
+        $headers = @{
+            "X-API-Key" = $config.api_key
+            "Content-Type" = "application/json"
+        }
+        $body = @{ progress = $progress; status = $status; message = $message } | ConvertTo-Json -Compress
+        $url = "$($config.noc_center_url)/api/connector/update-progress"
+        Invoke-RestMethod -Uri $url -Method Post -Headers $headers -Body $body -TimeoutSec 10 -ErrorAction SilentlyContinue | Out-Null
+    } catch {}
+}
+
+
 function Install-Update($config, $updateInfo) {
     try {
         Write-Log "Download aggiornamento v$($updateInfo.latest_version)..." "INFO"
+        Send-UpdateProgress $config 5 "downloading" "Inizio download v$($updateInfo.latest_version)..."
         $headers = @{ "X-API-Key" = $config.api_key }
         $downloadUrl = "$($config.noc_center_url)$($updateInfo.download_url)"
         $tempZip = Join-Path $env:TEMP "86NocConnector_update.zip"
         $tempExtract = Join-Path $env:TEMP "86NocConnector_update"
         
         # Download
+        Send-UpdateProgress $config 10 "downloading" "Download in corso..."
         Invoke-WebRequest -Uri $downloadUrl -Headers $headers -OutFile $tempZip -TimeoutSec 120 -ErrorAction Stop
         Write-Log "Download completato: $tempZip" "INFO"
+        Send-UpdateProgress $config 40 "downloading" "Download completato"
         
         # Extract to temp
+        Send-UpdateProgress $config 50 "extracting" "Estrazione file..."
         if (Test-Path $tempExtract) { Remove-Item $tempExtract -Recurse -Force }
         Add-Type -AssemblyName System.IO.Compression.FileSystem
         [System.IO.Compression.ZipFile]::ExtractToDirectory($tempZip, $tempExtract)
+        Send-UpdateProgress $config 60 "extracting" "File estratti"
         
         # Find the source directory - handle both flat and nested ZIP structures
         $extractedDir = $tempExtract
@@ -468,6 +486,7 @@ function Install-Update($config, $updateInfo) {
         
         if (-not (Test-Path $srcDir)) {
             Write-Log "Errore: cartella src non trovata nello ZIP" "ERROR"
+            Send-UpdateProgress $config 0 "error" "Errore: cartella src non trovata"
             return $false
         }
         
@@ -476,11 +495,13 @@ function Install-Update($config, $updateInfo) {
         $currentSrc = Join-Path $currentDir "src"
         
         # Backup current files
+        Send-UpdateProgress $config 65 "installing" "Backup file correnti..."
         $backupDir = Join-Path $env:TEMP "86NocConnector_backup_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
         Copy-Item $currentSrc $backupDir -Recurse -Force
         Write-Log "Backup creato: $backupDir" "INFO"
         
         # Copy new src files (preserving config)
+        Send-UpdateProgress $config 75 "installing" "Installazione file src..."
         Get-ChildItem $srcDir -File | ForEach-Object {
             $destFile = Join-Path $currentSrc $_.Name
             Copy-Item $_.FullName $destFile -Force
@@ -488,6 +509,7 @@ function Install-Update($config, $updateInfo) {
         }
         
         # Copy root files (version.json, bat files, etc) except config
+        Send-UpdateProgress $config 85 "installing" "Installazione file radice..."
         Get-ChildItem $extractedDir -File | ForEach-Object {
             $destFile = Join-Path $currentDir $_.Name
             Copy-Item $_.FullName $destFile -Force
@@ -495,15 +517,17 @@ function Install-Update($config, $updateInfo) {
         }
         
         # Cleanup
+        Send-UpdateProgress $config 95 "finalizing" "Pulizia file temporanei..."
         Remove-Item $tempZip -Force -ErrorAction SilentlyContinue
         Remove-Item $tempExtract -Recurse -Force -ErrorAction SilentlyContinue
         
         Write-Log "Aggiornamento a v$($updateInfo.latest_version) completato!" "INFO"
-        Write-Log "Il connector si riavviera' al prossimo ciclo." "INFO"
+        Send-UpdateProgress $config 100 "completed" "Aggiornamento completato!"
         
         return $true
     } catch {
         Write-Log "Errore aggiornamento: $($_.Exception.Message)" "ERROR"
+        Send-UpdateProgress $config 0 "error" "Errore: $($_.Exception.Message)"
         return $false
     }
 }

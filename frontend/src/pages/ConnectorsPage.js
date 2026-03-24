@@ -601,48 +601,78 @@ export default function ConnectorsPage() {
                     {group.connectors.map((c, i) => {
                       const online = isOnline(c.last_seen);
                       return (
-                        <div key={`conn-${i}`} className="p-3 pl-8 flex items-center gap-3">
-                          <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 relative group ${online ? "bg-[var(--low-bg)] border border-[var(--low-border)]" : "bg-[var(--critical-bg)] border border-[var(--critical-border)]"}`}>
-                            {online ? <SealCheck size={16} weight="fill" className="text-[var(--ok)]" /> : <Warning size={16} weight="fill" className="text-[var(--critical)]" />}
-                            <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block z-50 pointer-events-none">
-                              <div className="bg-[#111] border border-[var(--bg-border)] rounded-md px-3 py-2 shadow-xl whitespace-nowrap">
-                                <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-widest mb-1">Connector Info</p>
-                                <p className="text-xs text-[var(--text-primary)] font-mono">v{c.connector_version || "?"}</p>
-                                <p className="text-xs text-[var(--text-secondary)] font-mono">{c.connector_ip || c.hostname || "N/A"}</p>
+                        <div key={`conn-${i}`}>
+                          <div className="p-3 pl-8 flex items-center gap-3">
+                            <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 relative group ${online ? "bg-[var(--low-bg)] border border-[var(--low-border)]" : "bg-[var(--critical-bg)] border border-[var(--critical-border)]"}`}>
+                              {online ? <SealCheck size={16} weight="fill" className="text-[var(--ok)]" /> : <Warning size={16} weight="fill" className="text-[var(--critical)]" />}
+                              <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block z-50 pointer-events-none">
+                                <div className="bg-[#111] border border-[var(--bg-border)] rounded-md px-3 py-2 shadow-xl whitespace-nowrap">
+                                  <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-widest mb-1">Connector Info</p>
+                                  <p className="text-xs text-[var(--text-primary)] font-mono">v{c.connector_version || "?"}</p>
+                                  <p className="text-xs text-[var(--text-secondary)] font-mono">{c.connector_ip || c.hostname || "N/A"}</p>
+                                </div>
+                                <div className="w-2 h-2 bg-[#111] border-r border-b border-[var(--bg-border)] rotate-45 absolute left-1/2 -translate-x-1/2 -bottom-1"></div>
                               </div>
-                              <div className="w-2 h-2 bg-[#111] border-r border-b border-[var(--bg-border)] rotate-45 absolute left-1/2 -translate-x-1/2 -bottom-1"></div>
                             </div>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2">
+                                <p className="font-heading font-bold text-xs text-[var(--text-primary)] truncate">{c.hostname || "Server"}</p>
+                                <span className={`text-[10px] px-1.5 py-0.5 rounded border ${online ? "text-[var(--ok)] bg-[var(--low-bg)] border-[var(--low-border)]" : "text-[var(--critical)] bg-[var(--critical-bg)] border-[var(--critical-border)]"}`}>
+                                  {online ? "ONLINE" : "OFFLINE"}
+                                </span>
+                              </div>
+                              <div className="grid grid-cols-2 md:grid-cols-4 gap-x-3 gap-y-0.5 mt-1">
+                                <InfoItem label="Versione" value={`v${c.connector_version || "?"}`} />
+                                <InfoItem label="Uptime" value={formatUptime(c.uptime_seconds)} />
+                                <InfoItem label="SNMP" value={c.traps_received || 0} />
+                                <InfoItem label="Syslog" value={c.syslogs_received || 0} />
+                              </div>
+                            </div>
+                            <div className="text-right flex-shrink-0">
+                              <p className="text-[10px] text-[var(--text-muted)] flex items-center gap-1 justify-end"><Clock size={10} /> Visto</p>
+                              <p className="text-xs font-mono text-[var(--text-secondary)]">{formatLastSeen(c.last_seen)}</p>
+                            </div>
+                            {updateInfo?.version && c.connector_version !== updateInfo.version && (
+                              <button onClick={() => forceUpdate(c.client_id, c.hostname)}
+                                className="flex-shrink-0 h-7 px-2 rounded-md flex items-center gap-1 text-[10px] font-medium text-amber-400 bg-amber-500/10 border border-amber-500/20 hover:bg-amber-500/20 transition-colors"
+                                title={`Forza aggiornamento a v${updateInfo.version}`}
+                                data-testid={`force-update-btn-${c.client_id}`}>
+                                <ArrowsClockwise size={12} /> Aggiorna
+                              </button>
+                            )}
+                            <button onClick={() => deleteConnector(c.hostname || c.client_name)}
+                              className="flex-shrink-0 w-7 h-7 rounded-md flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--critical)] hover:bg-[var(--critical-bg)] transition-colors" title="Elimina">
+                              <Trash size={14} />
+                            </button>
                           </div>
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2">
-                              <p className="font-heading font-bold text-xs text-[var(--text-primary)] truncate">{c.hostname || "Server"}</p>
-                              <span className={`text-[10px] px-1.5 py-0.5 rounded border ${online ? "text-[var(--ok)] bg-[var(--low-bg)] border-[var(--low-border)]" : "text-[var(--critical)] bg-[var(--critical-bg)] border-[var(--critical-border)]"}`}>
-                                {online ? "ONLINE" : "OFFLINE"}
+                          {c.update_status && c.update_status !== "completed" && c.update_progress > 0 && (
+                            <div className="mx-8 mb-2 -mt-1" data-testid={`update-progress-${c.client_id}`}>
+                              <div className="flex items-center justify-between mb-1">
+                                <span className="text-[10px] text-amber-400 font-medium flex items-center gap-1">
+                                  <ArrowsClockwise size={10} className="animate-spin" />
+                                  {c.update_message || "Aggiornamento..."}
+                                </span>
+                                <span className="text-[10px] font-mono text-amber-400">{c.update_progress}%</span>
+                              </div>
+                              <div className="w-full h-1.5 rounded-full bg-[var(--bg-hover)] overflow-hidden">
+                                <div className="h-full rounded-full bg-amber-500 transition-all duration-500" style={{ width: `${c.update_progress}%` }} />
+                              </div>
+                            </div>
+                          )}
+                          {c.update_status === "completed" && (
+                            <div className="mx-8 mb-2 -mt-1">
+                              <span className="text-[10px] text-emerald-400 font-medium flex items-center gap-1">
+                                <CheckCircle size={10} /> Aggiornamento completato! Riavvio in corso...
                               </span>
                             </div>
-                            <div className="grid grid-cols-2 md:grid-cols-4 gap-x-3 gap-y-0.5 mt-1">
-                              <InfoItem label="Versione" value={`v${c.connector_version || "?"}`} />
-                              <InfoItem label="Uptime" value={formatUptime(c.uptime_seconds)} />
-                              <InfoItem label="SNMP" value={c.traps_received || 0} />
-                              <InfoItem label="Syslog" value={c.syslogs_received || 0} />
-                            </div>
-                          </div>
-                          <div className="text-right flex-shrink-0">
-                            <p className="text-[10px] text-[var(--text-muted)] flex items-center gap-1 justify-end"><Clock size={10} /> Visto</p>
-                            <p className="text-xs font-mono text-[var(--text-secondary)]">{formatLastSeen(c.last_seen)}</p>
-                          </div>
-                          {updateInfo?.version && c.connector_version !== updateInfo.version && (
-                            <button onClick={() => forceUpdate(c.client_id, c.hostname)}
-                              className="flex-shrink-0 h-7 px-2 rounded-md flex items-center gap-1 text-[10px] font-medium text-amber-400 bg-amber-500/10 border border-amber-500/20 hover:bg-amber-500/20 transition-colors"
-                              title={`Forza aggiornamento a v${updateInfo.version}`}
-                              data-testid={`force-update-btn-${c.client_id}`}>
-                              <ArrowsClockwise size={12} /> Aggiorna
-                            </button>
                           )}
-                          <button onClick={() => deleteConnector(c.hostname || c.client_name)}
-                            className="flex-shrink-0 w-7 h-7 rounded-md flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--critical)] hover:bg-[var(--critical-bg)] transition-colors" title="Elimina">
-                            <Trash size={14} />
-                          </button>
+                          {c.update_status === "error" && (
+                            <div className="mx-8 mb-2 -mt-1">
+                              <span className="text-[10px] text-red-400 font-medium flex items-center gap-1">
+                                <Warning size={10} /> {c.update_message || "Errore aggiornamento"}
+                              </span>
+                            </div>
+                          )}
                         </div>
                       );
                     })}

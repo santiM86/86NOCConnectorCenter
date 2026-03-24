@@ -1,4 +1,4 @@
 {
-  "version": "1.5.1",
-  "changelog": "Fix critico: dispositivi mostrati come NON RAGGIUNGIBILI nonostante rispondano a SNMP. Aggiunto fallback reachability check con raw UDP."
+  "version": "1.6.0",
+  "changelog": "Informazioni 86BIT nella system tray. Barra progresso aggiornamento nel SOC. Fix raggiungibilita SNMP. Esporta/Importa CSV."
 }

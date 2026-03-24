@@ -1647,6 +1647,25 @@ async def get_connector_update_info(current_user: dict = Depends(get_current_use
         update_info["pending_connectors"] = total_connectors - updated
     return update_info or {"version": "1.0.0", "total_connectors": total_connectors, "updated_connectors": 0, "pending_connectors": 0}
 
+@api_router.post("/connector/update-progress")
+async def connector_update_progress(request: Request):
+    """Connector reports its update progress (downloading, installing, etc.)."""
+    client_data = await validate_api_key(request)
+    body = await request.json()
+    progress = body.get("progress", 0)
+    status = body.get("status", "unknown")
+    message = body.get("message", "")
+    
+    await db.connector_status.update_one(
+        {"client_id": client_data["id"]},
+        {"$set": {
+            "update_progress": progress,
+            "update_status": status,
+            "update_message": message
+        }}
+    )
+    return {"status": "ok"}
+
 # ==================== CONNECTOR DEVICE MANAGEMENT ====================
 
 class DeviceStatusReport(BaseModel):
