@@ -349,6 +349,22 @@ export default function ConnectorsPage() {
         </div>
       </div>
 
+      {/* Offline Alert Banner */}
+      {offlineCount > 0 && (
+        <div className="flex items-start gap-3 p-3 rounded-lg border border-[var(--critical-border)] bg-[var(--critical-bg)]" data-testid="offline-alert-banner">
+          <Warning size={18} weight="fill" className="text-[var(--critical)] mt-0.5 flex-shrink-0" />
+          <div>
+            <p className="text-sm text-[var(--critical)] font-semibold">
+              {offlineCount} connettore{offlineCount > 1 ? "i" : ""} offline
+            </p>
+            <p className="text-xs text-[var(--text-secondary)] mt-0.5">
+              Scarica l'ultima versione del connettore (v{updateInfo?.version || "?"}) e installala sul server.
+              Usa lo script <code className="text-indigo-400 bg-indigo-500/10 px-1 rounded text-[10px]">diagnostica.ps1</code> per verificare la connettivita'.
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Download & Install Section */}
       <div className="noc-panel overflow-hidden" data-testid="download-connector-section">
         <div className="p-4 flex items-center justify-between">
@@ -361,7 +377,7 @@ export default function ConnectorsPage() {
                 86NocConnector
               </p>
               <p className="text-[var(--text-muted)] text-xs">
-                Pacchetto Windows nativo — nessuna installazione richiesta
+                Pacchetto Windows nativo {updateInfo?.version && <span className="text-indigo-400 font-mono">v{updateInfo.version}</span>} — nessuna installazione richiesta
               </p>
             </div>
           </div>
@@ -425,6 +441,17 @@ export default function ConnectorsPage() {
                 <p className="text-xs text-[var(--medium)] font-medium mb-0.5">Requisiti</p>
                 <p className="text-[11px] text-[var(--text-secondary)]">
                   Windows Server 2016+ o Windows 10/11 — PowerShell 5.1 (preinstallato) — Porte UDP 162 (SNMP) e 514 (Syslog) libere
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-start gap-2 p-3 rounded-lg border border-indigo-500/20 bg-indigo-500/5">
+              <Warning size={16} className="text-indigo-400 mt-0.5 flex-shrink-0" />
+              <div>
+                <p className="text-xs text-indigo-400 font-medium mb-0.5">Problemi di connessione?</p>
+                <p className="text-[11px] text-[var(--text-secondary)]">
+                  Esegui lo script <code className="text-indigo-400 bg-indigo-500/10 px-1 rounded text-[10px]">src\diagnostica.ps1</code> dalla cartella del connettore.
+                  Tasto destro &rarr; "Esegui con PowerShell". Lo script testa DNS, connessione HTTPS, API Key e porte UDP.
                 </p>
               </div>
             </div>

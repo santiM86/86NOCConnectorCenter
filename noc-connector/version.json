@@ -1,4 +1,4 @@
 {
-  "version": "1.7.0",
-  "changelog": "Flusso aggiornamento unificato: updater.ps1 gestisce stop vecchia versione, copia file, riavvio pulito. No doppia icona."
+  "version": "1.7.1",
+  "changelog": "Fix critico: BAT semplificato per avvio affidabile. Aggiunto script diagnostica.ps1 per test connettivita'."
 }
