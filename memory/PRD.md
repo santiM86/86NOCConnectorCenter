@@ -44,8 +44,17 @@ Creare un raccoglitore di alert (NOC) per dispositivi nelle reti dei clienti. Co
 - System tray con Mutex (fix doppie icone), diagnostica, import/export CSV
 - Metriche estese HPE 5130 e ILO
 
-### Enterprise Security (DONE)
-- Rate limiting, Audit logging, RBAC
+### Enterprise Security Hardening (DONE - 27 mar 2026)
+- **Security Headers**: X-Frame-Options DENY, CSP con frame-ancestors none, HSTS 1 anno, X-Content-Type-Options nosniff, X-XSS-Protection, Referrer-Policy strict-origin-when-cross-origin, Permissions-Policy (camera/mic/geo/payment disabilitati)
+- **CORS restrittivo**: Metodi e header specifici (non piu' wildcard *)
+- **Refresh Token**: Login restituisce access token + refresh token. Rotazione automatica (vecchio revocato, nuovo emesso). Interceptor Axios per rinnovo trasparente
+- **Logout sicuro**: Revoca server-side di tutti i refresh token
+- **Account Lockout**: Blocco dopo 5 tentativi falliti (30 min). Sblocco automatico
+- **Protezione NoSQL Injection**: Blocco operatori $ nei body delle richieste
+- **Sanitizzazione input**: Validazione su endpoint di ingest (device-report)
+- **WebSocket autenticato**: Token JWT via query parameter
+- **Cache-Control**: no-store su endpoint sensibili (auth, admin)
+- Rate limiting, Audit logging, RBAC, MFA TOTP (gia' esistenti)
 
 ## Credenziali Test
 - Admin: admin@86bit.it / admin123
