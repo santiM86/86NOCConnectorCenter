@@ -44,7 +44,15 @@ Creare un raccoglitore di alert (NOC) per dispositivi nelle reti dei clienti. Co
 - System tray con Mutex (fix doppie icone), diagnostica, import/export CSV
 - Metriche estese HPE 5130 e ILO
 
-### Enterprise Security Hardening (DONE - 27 mar 2026)
+### Security Audit Dashboard (DONE - 27 mar 2026)
+- Pannello in tempo reale nella pagina Enterprise con auto-refresh ogni 15s
+- 7 stat card: Login Falliti, Login OK, Account Bloccati, Sessioni Attive, Token Revocati, Eventi Critici, Copertura 2FA
+- Timeline attivita' 7 giorni con grafico a barre
+- Lista IP sospetti con conteggio tentativi e email bersaglio
+- Lista ultimi login falliti con email, IP e orario
+- Lista eventi critici e warning
+- Pannello account bloccati (visibile solo quando presenti)
+- Accesso riservato solo a ruolo admin (403 per altri ruoli)
 - **Security Headers**: X-Frame-Options DENY, CSP con frame-ancestors none, HSTS 1 anno, X-Content-Type-Options nosniff, X-XSS-Protection, Referrer-Policy strict-origin-when-cross-origin, Permissions-Policy (camera/mic/geo/payment disabilitati)
 - **CORS restrittivo**: Metodi e header specifici (non piu' wildcard *)
 - **Refresh Token**: Login restituisce access token + refresh token. Rotazione automatica (vecchio revocato, nuovo emesso). Interceptor Axios per rinnovo trasparente
