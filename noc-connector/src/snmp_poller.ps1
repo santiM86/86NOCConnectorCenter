@@ -356,6 +356,19 @@ $script:OID_cpqPsuStatus    = "1.3.6.1.4.1.232.6.2.9.3.1.1.5"     # cpqHeFltTolP
 $script:OID_cpqDiskStatus   = "1.3.6.1.4.1.232.3.2.5.1.1.6"       # cpqDaPhyDrvStatus
 $script:OID_cpqDiskModel    = "1.3.6.1.4.1.232.3.2.5.1.1.3"       # cpqDaPhyDrvModel
 
+# Zyxel USG / ATP / VPN Firewall OIDs (Enterprise .1.3.6.1.4.1.890)
+$script:OID_zyxelCpuCurrent    = "1.3.6.1.4.1.890.1.6.22.1.1.0"   # CPU usage current %
+$script:OID_zyxelCpu5sec       = "1.3.6.1.4.1.890.1.6.22.1.3.0"   # CPU usage 5 sec avg
+$script:OID_zyxelCpu1min       = "1.3.6.1.4.1.890.1.6.22.1.4.0"   # CPU usage 1 min avg
+$script:OID_zyxelCpu5min       = "1.3.6.1.4.1.890.1.6.22.1.5.0"   # CPU usage 5 min avg
+$script:OID_zyxelRamUsage      = "1.3.6.1.4.1.890.1.6.22.1.2.0"   # RAM usage current %
+$script:OID_zyxelSessions      = "1.3.6.1.4.1.890.1.6.22.1.6.0"   # Active sessions count
+$script:OID_zyxelFlashUsage    = "1.3.6.1.4.1.890.1.6.22.1.7.0"   # Flash usage %
+$script:OID_zyxelVpnThroughput = "1.3.6.1.4.1.890.1.6.22.2.1.0"   # IPSec VPN total throughput
+$script:OID_zyxelFirmware      = "1.3.6.1.4.1.890.1.15.3.1.6.0"   # Firmware version
+$script:OID_zyxelProduct       = "1.3.6.1.4.1.890.1.15.3.1.11.0"  # Product name
+$script:OID_zyxelSerial        = "1.3.6.1.4.1.890.1.15.3.1.12.0"  # Serial number
+
 # Port status memory per device
 $script:PortStates = @{}
 $script:DeviceUp = @{}
@@ -416,9 +429,11 @@ function Poll-ExtendedMetrics([string]$ip, [string]$community) {
     $sysDescr = Get-SnmpValue $ip $community $script:OID_sysDescr
     $isComware = $false
     $isILO = $false
+    $isZyxel = $false
     if ($sysDescr) {
         if ($sysDescr -match "Comware|H3C|HPE.*Switch|5130|5500|5900|FlexNetwork") { $isComware = $true }
         if ($sysDescr -match "iLO|Integrated Lights-Out|ProLiant") { $isILO = $true }
+        if ($sysDescr -match "ZyXEL|Zyxel|ZyWALL|USG|ATP|VPN.*Series|FLEX") { $isZyxel = $true }
     }
     
     # --- HPE Comware / H3C Metrics (5130, 5500, etc.) ---
@@ -532,8 +547,95 @@ function Poll-ExtendedMetrics([string]$ip, [string]$community) {
         } catch {}
     }
     
+    # --- Zyxel USG / ATP / VPN Firewall Metrics ---
+    if ($isZyxel) {
+        $metrics.device_class = "zyxel-usg"
+        try {
+            # CPU usage (5 min average is the most stable)
+            $cpu5min = Get-SnmpValue $ip $community $script:OID_zyxelCpu5min
+            if ($cpu5min -ne $null -and $cpu5min -ge 0 -and $cpu5min -le 100) {
+                $metrics.cpu_usage = [int]$cpu5min
+            } else {
+                # Fallback to current CPU
+                $cpuCurrent = Get-SnmpValue $ip $community $script:OID_zyxelCpuCurrent
+                if ($cpuCurrent -ne $null -and $cpuCurrent -ge 0 -and $cpuCurrent -le 100) {
+                    $metrics.cpu_usage = [int]$cpuCurrent
+                }
+            }
+        } catch {}
+        try {
+            # RAM usage
+            $ram = Get-SnmpValue $ip $community $script:OID_zyxelRamUsage
+            if ($ram -ne $null -and $ram -ge 0 -and $ram -le 100) {
+                $metrics.memory_usage = [int]$ram
+            }
+        } catch {}
+        try {
+            # Active sessions
+            $sessions = Get-SnmpValue $ip $community $script:OID_zyxelSessions
+            if ($sessions -ne $null) {
+                $metrics.firewall = @{
+                    active_sessions = [int]$sessions
+                }
+            }
+        } catch {}
+        try {
+            # Flash usage
+            $flash = Get-SnmpValue $ip $community $script:OID_zyxelFlashUsage
+            if ($flash -ne $null -and $flash -ge 0 -and $flash -le 100) {
+                if (-not $metrics.firewall) { $metrics.firewall = @{} }
+                $metrics.firewall.flash_usage = [int]$flash
+            }
+        } catch {}
+        try {
+            # IPSec VPN throughput
+            $vpn = Get-SnmpValue $ip $community $script:OID_zyxelVpnThroughput
+            if ($vpn -ne $null) {
+                if (-not $metrics.firewall) { $metrics.firewall = @{} }
+                $metrics.firewall.vpn_throughput = [long]$vpn
+            }
+        } catch {}
+        try {
+            # CPU detail (all intervals)
+            $cpuCurrent = Get-SnmpValue $ip $community $script:OID_zyxelCpuCurrent
+            $cpu5sec = Get-SnmpValue $ip $community $script:OID_zyxelCpu5sec
+            $cpu1min = Get-SnmpValue $ip $community $script:OID_zyxelCpu1min
+            if (-not $metrics.firewall) { $metrics.firewall = @{} }
+            $metrics.firewall.cpu_detail = @{
+                current = if ($cpuCurrent -ne $null) { [int]$cpuCurrent } else { $null }
+                avg_5sec = if ($cpu5sec -ne $null) { [int]$cpu5sec } else { $null }
+                avg_1min = if ($cpu1min -ne $null) { [int]$cpu1min } else { $null }
+                avg_5min = $metrics.cpu_usage
+            }
+        } catch {}
+        try {
+            # Firmware version
+            $fw = Get-SnmpValue $ip $community $script:OID_zyxelFirmware
+            if ($fw) {
+                if (-not $metrics.firewall) { $metrics.firewall = @{} }
+                $metrics.firewall.firmware = "$fw"
+            }
+        } catch {}
+        try {
+            # Product name
+            $product = Get-SnmpValue $ip $community $script:OID_zyxelProduct
+            if ($product) {
+                if (-not $metrics.firewall) { $metrics.firewall = @{} }
+                $metrics.firewall.product_name = "$product"
+            }
+        } catch {}
+        try {
+            # Serial number
+            $serial = Get-SnmpValue $ip $community $script:OID_zyxelSerial
+            if ($serial) {
+                if (-not $metrics.firewall) { $metrics.firewall = @{} }
+                $metrics.firewall.serial_number = "$serial"
+            }
+        } catch {}
+    }
+    
     # --- Generic fallback: Try standard HOST-RESOURCES-MIB for CPU/Memory ---
-    if (-not $isComware -and -not $isILO) {
+    if (-not $isComware -and -not $isILO -and -not $isZyxel) {
         try {
             # hrProcessorLoad (1.3.6.1.2.1.25.3.3.1.2) - works on many devices
             $cpuTable = Get-SnmpTable $ip $community "1.3.6.1.2.1.25.3.3.1.2"
@@ -855,6 +957,30 @@ function Poll-Device([string]$ip, [string]$community, [string]$name) {
                 oid        = "hpe.ilo.fan"
                 value      = "Ventola $($fan.locale) in stato $($fan.condition) su $name ($ip)"
                 trap_type  = "fanFailure"
+                severity   = "high"
+                device_name = $name
+            }
+        }
+    }
+    # Zyxel firewall-specific alerts
+    if ($extMetrics.firewall) {
+        $fw = $extMetrics.firewall
+        if ($fw.active_sessions -ne $null -and $fw.active_sessions -gt 50000) {
+            $alerts += @{
+                device_ip  = $ip
+                oid        = "zyxel.sessions.high"
+                value      = "Sessioni attive: $($fw.active_sessions) su $name ($ip)"
+                trap_type  = "sessionsHigh"
+                severity   = "high"
+                device_name = $name
+            }
+        }
+        if ($fw.flash_usage -ne $null -and $fw.flash_usage -gt 90) {
+            $alerts += @{
+                device_ip  = $ip
+                oid        = "zyxel.flash.high"
+                value      = "Flash al $($fw.flash_usage)% su $name ($ip)"
+                trap_type  = "flashHigh"
                 severity   = "high"
                 device_name = $name
             }

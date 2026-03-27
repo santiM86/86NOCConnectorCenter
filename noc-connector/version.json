@@ -1,4 +1,4 @@
 {
-  "version": "1.8.0",
-  "changelog": "Metriche estese: CPU, RAM, Temperatura per HPE 5130. Salute hardware per ILO (ventole, PSU, dischi, temperature). Traffico interfacce con bandwidth IN/OUT, velocita e errori. Alert automatici su soglie critiche (CPU>90%, Temp>75C, disco guasto)."
+  "version": "1.9.0",
+  "changelog": "Metriche Zyxel USG Firewall: CPU (current/5s/1m/5m), RAM, sessioni attive, VPN IPSec throughput, flash usage, firmware, seriale. Alert automatici su sessioni >50k e flash >90%. Supporto device class zyxel-usg."
 }

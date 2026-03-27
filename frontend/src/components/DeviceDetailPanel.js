@@ -3,7 +3,8 @@ import axios from "axios";
 import { API } from "@/App";
 import {
   ArrowUp, ArrowDown, Warning, CheckCircle, Lightning, Thermometer,
-  Cpu, HardDrive, Fan, BatteryFull, WifiHigh, WifiSlash
+  Cpu, HardDrive, Fan, BatteryFull, WifiHigh, WifiSlash,
+  ShieldCheck, Globe, ArrowsClockwise, FloppyDisk
 } from "@phosphor-icons/react";
 
 const formatBps = (bps) => {
@@ -101,18 +102,25 @@ export function DeviceDetailPanel({ dev, isPing }) {
   }, [dev.device_ip, dev.cpu_usage, dev.temperature]);
 
   const hw = dev.hardware || {};
+  const fw = dev.firewall || {};
   const hasExtended = dev.cpu_usage != null || dev.memory_usage != null || dev.temperature != null;
   const hasHardware = (hw.fans?.length > 0) || (hw.power_supplies?.length > 0) || (hw.temperatures?.length > 0) || (hw.disks?.length > 0) || hw.health_status;
+  const hasFirewall = dev.device_class === "zyxel-usg" || fw.active_sessions != null || fw.vpn_throughput != null;
   const ports = (dev.ports || []).sort((a, b) => parseInt(a.index) - parseInt(b.index));
   const hasTrafficData = ports.some(p => p.in_bps != null || p.speed_bps != null);
-  const classLabel = dev.device_class === "hpe-comware" ? "HPE Comware Switch" : dev.device_class === "hpe-ilo" ? "HPE iLO Server" : null;
+  const classLabel = dev.device_class === "hpe-comware" ? "HPE Comware Switch" 
+    : dev.device_class === "hpe-ilo" ? "HPE iLO Server" 
+    : dev.device_class === "zyxel-usg" ? "Zyxel USG Firewall" 
+    : null;
 
   return (
     <div className="border-t border-[var(--bg-border)] p-3 pl-8 bg-[var(--bg-card)]/50 animate-fade-in space-y-3" data-testid={`device-detail-${dev.device_ip}`}>
       {/* Header info */}
       <div className="flex flex-wrap items-center gap-2">
         {dev.sys_descr && <p className="text-[11px] text-[var(--text-muted)] truncate flex-1">{dev.sys_descr}</p>}
-        {classLabel && <span className="text-[9px] px-1.5 py-0.5 rounded bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 font-medium">{classLabel}</span>}
+        {classLabel && <span className={`text-[9px] px-1.5 py-0.5 rounded font-medium ${
+          dev.device_class === "zyxel-usg" ? "bg-amber-500/10 border border-amber-500/20 text-amber-400" : "bg-indigo-500/10 border border-indigo-500/20 text-indigo-400"
+        }`}>{classLabel}</span>}
       </div>
       {dev.sys_uptime && <p className="text-[11px] text-[var(--text-muted)]">Uptime: {dev.sys_uptime}</p>}
 
@@ -221,6 +229,86 @@ export function DeviceDetailPanel({ dev, isPing }) {
                     {hw.disks.map((d, i) => (
                       <HwStatusBadge key={i} condition={d.status} label={d.name} />
                     ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Zyxel Firewall Metrics */}
+          {hasFirewall && (
+            <div className="space-y-2" data-testid="firewall-metrics">
+              <div className="flex items-center gap-2">
+                <ShieldCheck size={14} className="text-amber-400" />
+                <span className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider font-medium">Firewall Status</span>
+                {fw.product_name && <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/10 border border-amber-500/20 text-amber-400 font-mono">{fw.product_name}</span>}
+                {fw.firmware && <span className="text-[9px] text-[var(--text-muted)] font-mono">FW: {fw.firmware}</span>}
+                {fw.serial_number && <span className="text-[9px] text-[var(--text-muted)] font-mono">S/N: {fw.serial_number}</span>}
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                {/* Active Sessions */}
+                {fw.active_sessions != null && (
+                  <div className="p-2.5 rounded-lg bg-[var(--bg-panel)] border border-[var(--bg-border)]" data-testid="fw-sessions">
+                    <div className="flex items-center justify-between mb-1">
+                      <div className="flex items-center gap-1.5">
+                        <Globe size={12} className="text-cyan-400" />
+                        <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider font-medium">Sessioni</p>
+                      </div>
+                      <p className={`text-sm font-mono font-bold ${
+                        fw.active_sessions > 50000 ? "text-[var(--critical)]" : fw.active_sessions > 30000 ? "text-[var(--medium)]" : "text-[var(--ok)]"
+                      }`}>{fw.active_sessions.toLocaleString()}</p>
+                    </div>
+                    <div className="w-full h-1.5 rounded-full bg-[var(--bg-hover)] overflow-hidden">
+                      <div className="h-full rounded-full transition-all duration-700" style={{ 
+                        width: `${Math.min((fw.active_sessions / 100000) * 100, 100)}%`,
+                        backgroundColor: fw.active_sessions > 50000 ? "var(--critical)" : fw.active_sessions > 30000 ? "var(--medium)" : "var(--ok)"
+                      }} />
+                    </div>
+                  </div>
+                )}
+                {/* VPN Throughput */}
+                {fw.vpn_throughput != null && (
+                  <div className="p-2.5 rounded-lg bg-[var(--bg-panel)] border border-[var(--bg-border)]" data-testid="fw-vpn">
+                    <div className="flex items-center gap-1.5 mb-1">
+                      <ArrowsClockwise size={12} className="text-emerald-400" />
+                      <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider font-medium">VPN IPSec</p>
+                    </div>
+                    <p className="text-sm font-mono font-bold text-emerald-400">{formatBps(fw.vpn_throughput)}</p>
+                  </div>
+                )}
+                {/* Flash Usage */}
+                {fw.flash_usage != null && (
+                  <div className="p-2.5 rounded-lg bg-[var(--bg-panel)] border border-[var(--bg-border)]" data-testid="fw-flash">
+                    <div className="flex items-center justify-between mb-1">
+                      <div className="flex items-center gap-1.5">
+                        <FloppyDisk size={12} className="text-purple-400" />
+                        <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider font-medium">Flash</p>
+                      </div>
+                      <p className={`text-sm font-mono font-bold ${
+                        fw.flash_usage > 90 ? "text-[var(--critical)]" : fw.flash_usage > 70 ? "text-[var(--medium)]" : "text-[var(--ok)]"
+                      }`}>{fw.flash_usage}%</p>
+                    </div>
+                    <div className="w-full h-1.5 rounded-full bg-[var(--bg-hover)] overflow-hidden">
+                      <div className="h-full rounded-full transition-all duration-700" style={{ 
+                        width: `${fw.flash_usage}%`,
+                        backgroundColor: fw.flash_usage > 90 ? "var(--critical)" : fw.flash_usage > 70 ? "var(--medium)" : "var(--ok)"
+                      }} />
+                    </div>
+                  </div>
+                )}
+                {/* CPU Detail */}
+                {fw.cpu_detail && (
+                  <div className="p-2.5 rounded-lg bg-[var(--bg-panel)] border border-[var(--bg-border)]" data-testid="fw-cpu-detail">
+                    <div className="flex items-center gap-1.5 mb-1.5">
+                      <Cpu size={12} className="text-blue-400" />
+                      <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider font-medium">CPU Detail</p>
+                    </div>
+                    <div className="grid grid-cols-2 gap-1 text-[9px] font-mono">
+                      {fw.cpu_detail.current != null && <div className="flex justify-between"><span className="text-[var(--text-muted)]">Now</span><span className="text-[var(--text-primary)]">{fw.cpu_detail.current}%</span></div>}
+                      {fw.cpu_detail.avg_5sec != null && <div className="flex justify-between"><span className="text-[var(--text-muted)]">5s</span><span className="text-[var(--text-primary)]">{fw.cpu_detail.avg_5sec}%</span></div>}
+                      {fw.cpu_detail.avg_1min != null && <div className="flex justify-between"><span className="text-[var(--text-muted)]">1m</span><span className="text-[var(--text-primary)]">{fw.cpu_detail.avg_1min}%</span></div>}
+                      {fw.cpu_detail.avg_5min != null && <div className="flex justify-between"><span className="text-[var(--text-muted)]">5m</span><span className="text-[var(--text-primary)]">{fw.cpu_detail.avg_5min}%</span></div>}
+                    </div>
                   </div>
                 )}
               </div>

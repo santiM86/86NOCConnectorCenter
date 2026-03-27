@@ -443,6 +443,9 @@ function Send-DeviceReport($config, $devices) {
                 $deviceReport.temperature = $extMetrics.temperature
                 $deviceReport.device_class = $extMetrics.device_class
                 $deviceReport.hardware = $extMetrics.hardware
+                if ($extMetrics.firewall) {
+                    $deviceReport.firewall = $extMetrics.firewall
+                }
             }
             
             $reportDevices += $deviceReport
