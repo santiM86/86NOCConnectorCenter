@@ -6,7 +6,7 @@ Creare un raccoglitore di alert (NOC) per dispositivi nelle reti dei clienti. Co
 ## Architettura
 - **Frontend**: React + TailwindCSS + Shadcn UI (porta 3000)
 - **Backend**: FastAPI + MongoDB (porta 8001)
-- **Connector Windows**: PowerShell 5.1+ nativo (v2.1.0)
+- **Connector Windows**: PowerShell 5.1+ nativo (v2.2.0)
 - **Auth**: JWT + MFA (TOTP)
 - **Cifratura**: AES-256-GCM con ENCRYPTION_KEY persistente in .env
 - **Redfish Engine**: Polling diretto iLO + failover automatico + power control
@@ -16,42 +16,36 @@ Creare un raccoglitore di alert (NOC) per dispositivi nelle reti dei clienti. Co
 ### Core (DONE)
 - Dashboard, alert SNMP/Syslog, gestione clienti, WebSocket, PWA
 
-### Metriche Estese (DONE)
+### Metriche SNMP Estese (DONE)
 - HPE 5130, HPE iLO, Zyxel USG, Generico HOST-RESOURCES-MIB
+
+### Metriche PING Avanzate v2.2.0 (DONE - 27 mar 2026)
+- **5 Probe Ping**: min/avg/max/jitter/packet_loss%
+- **TTL**: Con rilevamento OS (Linux <64, Windows <128, Router >128)
+- **TCP Port Scan**: 15 porte comuni (SSH, HTTP, HTTPS, RDP, SMB, MySQL, MSSQL, VNC, FTP, SMTP, DNS, Telnet, SNMP, 8080, 8443)
+- **HTTP Deep Check**: Response time, server header, content-type, page title
+- **SSL Certificate**: Scadenza con alert automatico se <30 giorni, emittente
+- **DNS Resolution**: Tempo di risoluzione DNS
+- **Alert automatici**: Latenza alta (>200ms), packet loss (>0%), SSL in scadenza
+- **Storico metriche**: ping_avg, ping_jitter, packet_loss salvati per trending
 
 ### Vault Credenziali AES-256-GCM (DONE)
 - CRUD cifrato, solo admin, URL esterna per iLO, audit log
 
 ### Redfish iLO Direct Polling & Failover (DONE)
-- Polling diretto dal backend quando iLO esposta via NAT/VPN
-- Failover automatico quando connettore offline >2 min
-- Multi-connettore supportato
-- Metriche: power, BIOS, serial, UUID, firmware, licenza, DIMM, NIC, storage
+- Polling diretto, failover automatico, multi-connettore
 
-### Power Control & Wake-on-LAN (DONE - 27 mar 2026)
-- **Power Control via Redfish**: Accendi (On), Spegni (GracefulShutdown), Riavvia (ForceRestart), Spegnimento forzato (ForceOff) direttamente via API iLO
-- **Power State**: Lettura stato corrente (On/Off) via Redfish
-- **Wake-on-LAN classico**: Il SOC accoda il comando WoL, il connettore invia il magic packet UDP sulla LAN
-- **Flusso WoL**: SOC -> pending_commands DB -> heartbeat response -> connettore -> UDP broadcast
-- **Frontend**: PowerControlPanel con pulsanti Accendi/Riavvia/Spegni, badge stato Power On/Off
-- **Audit**: Ogni azione di power control viene loggata
+### Power Control & Wake-on-LAN (DONE)
+- Accendi/Spegni/Riavvia via iLO Redfish, WoL classico via connettore
+
+### Fix Aggiornamento Connettore (DONE - 27 mar 2026)
+- Timeout 5 min per update bloccati
+- Pulsante "Reset Stato" per aggiornamenti bloccati nel SOC
+- Endpoint: POST /api/connector/{id}/reset-update-status
+- Cartella Menu Start rinominata in "86BIT Connector"
 
 ### Security Enterprise (DONE)
-- Headers, CORS, Rate limiting, Refresh Tokens, WS Auth
-- Audit Dashboard, IP Auto-Ban, Account Lockout, Argon2id, TOTP 2FA
-
-### Gestione Utenti (DONE)
-- CRUD con ruoli (admin/operator/viewer), MFA TOTP
-
-## Key API Endpoints (nuovi)
-- `POST /api/devices/{ip}/power-action` - Power control via Redfish
-- `GET /api/devices/{ip}/power-state` - Stato power via Redfish
-- `POST /api/devices/{ip}/wake-on-lan` - Accoda WoL per il connettore
-- `GET /api/connector/pending-commands` - Connettore recupera comandi pendenti
-- `PUT /api/vault/credentials/{id}/direct-poll` - Toggle polling diretto
-- `GET /api/redfish/failover-status` - Stato failover tutti i dispositivi iLO
-- `POST /api/redfish/test-connection` - Test connessione Redfish
-- `POST /api/redfish/poll-now` - Polling manuale
+- Headers, CORS, Rate limiting, Refresh Tokens, Audit, IP Auto-Ban, Argon2id, TOTP 2FA
 
 ## Credenziali Test
 - Admin: admin@86bit.it / admin123
@@ -62,7 +56,7 @@ Creare un raccoglitore di alert (NOC) per dispositivi nelle reti dei clienti. Co
 ### P1
 - Notifiche Push Firebase (serve API Key utente)
 - Notifiche Email SendGrid (serve API Key utente)
-- Test connettore v2.1.0 sul server del cliente
+- Test connettore v2.2.0 sul server del cliente
 
 ### P2
 - SOC AI (correlazione, auto-triage, anomaly detection)
@@ -70,4 +64,4 @@ Creare un raccoglitore di alert (NOC) per dispositivi nelle reti dei clienti. Co
 - LDAP integration, SNMP v3
 
 ### P3
-- Refactoring server.py (~3100 righe) in moduli route separati
+- Refactoring server.py (~3200 righe) in moduli route separati
