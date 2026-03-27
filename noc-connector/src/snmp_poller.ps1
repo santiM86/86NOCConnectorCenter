@@ -1044,8 +1044,9 @@ function Poll-RedfishMetrics([string]$ip, [hashtable]$cred) {
     
     $username = $cred.username
     $password = $cred.password
-    $port = if ($cred.port) { $cred.port } else { 443 }
-    $baseUrl = "https://${ip}:${port}"
+    $portNum = 443
+    if ($cred.port) { $portNum = $cred.port }
+    $baseUrl = "https://${ip}:${portNum}"
     
     # Bypass SSL certificate validation (self-signed certs on iLO)
     try {

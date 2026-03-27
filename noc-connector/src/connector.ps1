@@ -356,6 +356,8 @@ function Poll-PingDevice($ip, $name, $httpPort) {
     $openPorts = @()
     $httpDetails = $null
     
+  try {
+    
     # ========== 1. DNS Resolution Time ==========
     try {
         $dnsStart = [System.Diagnostics.Stopwatch]::StartNew()
@@ -428,12 +430,20 @@ function Poll-PingDevice($ip, $name, $httpPort) {
             try {
                 $tcp = New-Object System.Net.Sockets.TcpClient
                 $asyncResult = $tcp.BeginConnect($ip, $p.port, $null, $null)
-                $wait = $asyncResult.AsyncWaitHandle.WaitOne(800, $false)
-                if ($wait -and $tcp.Connected) {
-                    $openPorts += @{ port = $p.port; name = $p.name; open = $true }
+                $wait = $asyncResult.AsyncWaitHandle.WaitOne(500, $false)
+                if ($wait) {
+                    try {
+                        $tcp.EndConnect($asyncResult)
+                        if ($tcp.Connected) {
+                            $openPorts += @{ port = $p.port; name = $p.name; open = $true }
+                        }
+                    } catch {}
                 }
                 $tcp.Close()
-            } catch {}
+                $tcp.Dispose()
+            } catch {
+                # Silently skip unreachable ports
+            }
         }
     }
     
@@ -466,16 +476,18 @@ function Poll-PingDevice($ip, $name, $httpPort) {
             $url = "${protocol}://${ip}:${httpCheckPort}/"
             
             try {
-                # Bypass SSL errors
-                [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
-                [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
+                # Bypass SSL errors safely
+                try {
+                    [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { param($s,$c,$ch,$e) return $true }
+                    [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12 -bor [System.Net.SecurityProtocolType]::Tls11
+                } catch {}
                 
                 $httpStart = [System.Diagnostics.Stopwatch]::StartNew()
                 $req = [System.Net.HttpWebRequest]::Create($url)
                 $req.Timeout = 5000
                 $req.Method = "GET"
                 $req.AllowAutoRedirect = $true
-                $req.UserAgent = "86NocConnector/2.1.0"
+                $req.UserAgent = "86NocConnector/2.2.0"
                 $resp = $req.GetResponse()
                 $httpStart.Stop()
                 
@@ -486,10 +498,13 @@ function Poll-PingDevice($ip, $name, $httpPort) {
                 
                 # Try to read page title
                 try {
-                    $reader = New-Object System.IO.StreamReader($resp.GetResponseStream())
-                    $body = $reader.ReadToEnd().Substring(0, [Math]::Min(4000, $reader.ReadToEnd().Length + 1))
+                    $stream = $resp.GetResponseStream()
+                    $reader = New-Object System.IO.StreamReader($stream)
+                    $bodyText = $reader.ReadToEnd()
                     $reader.Close()
-                    if ($body -match '<title[^>]*>([^<]+)</title>') {
+                    $stream.Close()
+                    if ($bodyText.Length -gt 4000) { $bodyText = $bodyText.Substring(0, 4000) }
+                    if ($bodyText -match '<title[^>]*>([^<]+)</title>') {
                         $httpDetails.title = $Matches[1].Trim()
                     }
                 } catch {}
@@ -575,18 +590,28 @@ function Poll-PingDevice($ip, $name, $httpPort) {
     
     # Alert on packet loss
     if ($packetLoss -gt 0 -and $packetLoss -lt 100) {
+        $plSeverity = "medium"
+        if ($packetLoss -ge 40) { $plSeverity = "high" }
         $alerts += @{
             device_ip  = $ip
             oid        = "ping.packetloss"
             value      = "Packet loss su $name ($ip): ${packetLoss}% ($totalReceived/$totalSent)"
             trap_type  = "packetLoss"
-            severity   = if ($packetLoss -ge 40) { "high" } else { "medium" }
+            severity   = $plSeverity
             device_name = $name
         }
     }
     
     $script:DeviceUp[$ip] = $reachable
     
+  } catch {
+    Write-Log "Errore critico in Poll-PingDevice per $name ($ip): $($_.Exception.Message)" "ERROR"
+    $script:DeviceUp[$ip] = $false
+  }
+
+    $httpStatusVal = $null
+    if ($httpDetails -and $httpDetails.status_code) { $httpStatusVal = $httpDetails.status_code }
+
     return @{
         alerts      = $alerts
         reachable   = $reachable
@@ -600,7 +625,7 @@ function Poll-PingDevice($ip, $name, $httpPort) {
         dns_ms      = $dnsMs
         open_ports  = $openPorts
         http_details = $httpDetails
-        http_status = if ($httpDetails) { $httpDetails.status_code } else { $null }
+        http_status = $httpStatusVal
     }
 }
 
