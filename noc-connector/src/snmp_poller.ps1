@@ -348,7 +348,16 @@ $script:IfStatusMap = @{
 function Poll-Device([string]$ip, [string]$community, [string]$name) {
     $alerts = @()
 
-    # 1. Check reachability with raw UDP probe (more reliable than parsing)
+    # 0. Quick ping check first (most reliable reachability test)
+    $pingOk = $false
+    try {
+        $ping = New-Object System.Net.NetworkInformation.Ping
+        $reply = $ping.Send($ip, 2000)
+        $pingOk = ($reply.Status -eq "Success")
+        $ping.Dispose()
+    } catch {}
+
+    # 1. Check reachability with SNMP
     $reachable = $false
     $sysDescr = $null
     try {
@@ -397,6 +406,14 @@ function Poll-Device([string]$ip, [string]$community, [string]$name) {
             }
         } catch {
             try { $udp.Close() } catch {}
+        }
+    }
+
+    if (-not $reachable) {
+        # Last resort: if SNMP failed but ping succeeded, still mark as reachable
+        if ($pingOk) {
+            $reachable = $true
+            if (-not $sysDescr) { $sysDescr = "Dispositivo raggiungibile (ping OK, SNMP non disponibile)" }
         }
     }
 

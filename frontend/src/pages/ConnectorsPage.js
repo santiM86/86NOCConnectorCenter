@@ -416,7 +416,7 @@ export default function ConnectorsPage() {
 
   const isRecentPoll = (ts) => {
     if (!ts) return false;
-    return (Date.now() - new Date(ts).getTime()) < 180000;
+    return (Date.now() - new Date(ts).getTime()) < 600000; // 10 minutes
   };
 
   const formatUptime = (seconds) => {
@@ -893,7 +893,7 @@ export default function ConnectorsPage() {
             const collapsed = collapsedClients[group.clientId];
             const connOnline = group.connectors.filter(c => isOnline(c.last_seen)).length;
             const connOffline = group.connectors.length - connOnline;
-            const devOk = group.devices.filter(d => d.reachable && isRecentPoll(d.last_poll)).length;
+            const devOk = group.devices.filter(d => d.reachable).length;
             const devKo = group.devices.length - devOk;
 
             return (
@@ -1042,8 +1042,8 @@ export default function ConnectorsPage() {
                         <div key={devKey}>
                           <div className="p-3 pl-8 flex items-center gap-3 cursor-pointer hover:bg-[var(--bg-hover)] transition-colors"
                             onClick={() => setExpandedDevice(expanded ? null : devKey)}>
-                            <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${dev.reachable && recent ? "bg-[var(--low-bg)] border border-[var(--low-border)]" : "bg-[var(--critical-bg)] border border-[var(--critical-border)]"}`}>
-                              {dev.reachable && recent ? <WifiHigh size={16} weight="fill" className="text-[var(--ok)]" /> : <WifiSlash size={16} weight="fill" className="text-[var(--critical)]" />}
+                            <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${dev.reachable ? "bg-[var(--low-bg)] border border-[var(--low-border)]" : "bg-[var(--critical-bg)] border border-[var(--critical-border)]"}`}>
+                              {dev.reachable ? <WifiHigh size={16} weight="fill" className="text-[var(--ok)]" /> : <WifiSlash size={16} weight="fill" className="text-[var(--critical)]" />}
                             </div>
                             <div className="flex-1 min-w-0">
                               <div className="flex items-center gap-2">
@@ -1054,8 +1054,8 @@ export default function ConnectorsPage() {
                                   data-testid={`switch-type-${dev.device_ip}`}>
                                   {isPing ? "PING" : "SNMP"}
                                 </span>
-                                <span className={`text-[10px] px-1.5 py-0.5 rounded border ${dev.reachable && recent ? "text-[var(--ok)] bg-[var(--low-bg)] border-[var(--low-border)]" : "text-[var(--critical)] bg-[var(--critical-bg)] border-[var(--critical-border)]"}`}>
-                                  {dev.reachable && recent ? "OK" : "NON RAGGIUNGIBILE"}
+                                <span className={`text-[10px] px-1.5 py-0.5 rounded border ${dev.reachable ? "text-[var(--ok)] bg-[var(--low-bg)] border-[var(--low-border)]" : "text-[var(--critical)] bg-[var(--critical-bg)] border-[var(--critical-border)]"}`}>
+                                  {dev.reachable ? "OK" : "NON RAGGIUNGIBILE"}
                                 </span>
                               </div>
                               <p className="font-mono text-[11px] text-[var(--text-muted)]">{dev.device_ip}</p>
@@ -1077,7 +1077,7 @@ export default function ConnectorsPage() {
                             )}
                             <div className="text-right flex-shrink-0">
                               <p className="text-[10px] text-[var(--text-muted)] flex items-center gap-1 justify-end"><Clock size={10} /> Check</p>
-                              <p className={`text-xs font-mono ${recent ? "text-[var(--ok)]" : "text-[var(--critical)]"}`}>{formatLastSeen(dev.last_poll)}</p>
+                              <p className={`text-xs font-mono ${dev.reachable ? "text-[var(--ok)]" : "text-[var(--critical)]"}`}>{formatLastSeen(dev.last_poll)}</p>
                             </div>
                             <button onClick={(e) => { e.stopPropagation(); openWebConsole(group.clientId, dev.device_ip, dev.http_port || 80); }}
                               className="flex-shrink-0 w-7 h-7 rounded-md flex items-center justify-center text-[var(--text-muted)] hover:text-indigo-400 hover:bg-indigo-500/10 transition-colors" title="Web Console"

@@ -1,4 +1,4 @@
 {
-  "version": "1.7.3",
-  "changelog": "Web Console Proxy: accedi alla web interface dei dispositivi direttamente dal SOC senza VPN. Auto-Discovery rete. Monitoraggio Ping+HTTP."
+  "version": "1.7.4",
+  "changelog": "Fix polling SNMP: aggiunto ping di verifica per evitare falsi 'non raggiungibile'. Web Console Proxy. Auto-Discovery."
 }
