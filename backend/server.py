@@ -170,6 +170,113 @@ async def store_refresh_token(user_id: str, token: str, ip: str = "unknown"):
         "expires_at": {"$lt": datetime.now(timezone.utc).isoformat()}
     })
 
+# ==================== IP BLOCKING SYSTEM ====================
+
+# In-memory cache for blocked IPs (refreshed from DB periodically)
+_blocked_ips_cache = {"ips": set(), "whitelist": set(), "last_refresh": None}
+_ip_block_config_cache = {"config": None, "last_refresh": None}
+
+async def get_ip_block_config():
+    """Get IP blocking configuration from DB with caching."""
+    now = datetime.now(timezone.utc)
+    if _ip_block_config_cache["config"] and _ip_block_config_cache["last_refresh"]:
+        elapsed = (now - _ip_block_config_cache["last_refresh"]).total_seconds()
+        if elapsed < 60:  # Cache for 60 seconds
+            return _ip_block_config_cache["config"]
+    
+    setting = await db.settings.find_one({"key": "ip_block_config"}, {"_id": 0})
+    config = setting.get("value", {}) if setting else {}
+    defaults = {
+        "enabled": True,
+        "max_attempts": 10,
+        "window_minutes": 30,
+        "block_duration_hours": 6,
+        "auto_ban_enabled": True,
+    }
+    merged = {**defaults, **config}
+    _ip_block_config_cache["config"] = merged
+    _ip_block_config_cache["last_refresh"] = now
+    return merged
+
+async def refresh_blocked_ips_cache():
+    """Refresh the in-memory blocked IPs cache from DB."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    # Get currently blocked IPs (not expired, not unblocked)
+    blocked = await db.blocked_ips.find(
+        {"unblocked": {"$ne": True}, "$or": [{"expires_at": {"$gt": now_iso}}, {"permanent": True}]},
+        {"_id": 0, "ip": 1}
+    ).to_list(10000)
+    _blocked_ips_cache["ips"] = {b["ip"] for b in blocked}
+    
+    # Get whitelist
+    setting = await db.settings.find_one({"key": "ip_whitelist"}, {"_id": 0})
+    _blocked_ips_cache["whitelist"] = set(setting.get("value", [])) if setting else set()
+    _blocked_ips_cache["last_refresh"] = datetime.now(timezone.utc)
+
+async def is_ip_blocked(ip: str) -> bool:
+    """Check if an IP is currently blocked."""
+    if not ip:
+        return False
+    now = datetime.now(timezone.utc)
+    # Refresh cache every 30 seconds
+    if not _blocked_ips_cache["last_refresh"] or (now - _blocked_ips_cache["last_refresh"]).total_seconds() > 30:
+        await refresh_blocked_ips_cache()
+    if ip in _blocked_ips_cache["whitelist"]:
+        return False
+    return ip in _blocked_ips_cache["ips"]
+
+async def auto_ban_check(ip: str):
+    """Check if IP should be auto-banned based on failed login count."""
+    config = await get_ip_block_config()
+    if not config.get("auto_ban_enabled") or not config.get("enabled"):
+        return
+    if ip in _blocked_ips_cache.get("whitelist", set()):
+        return
+    
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=config["window_minutes"])).isoformat()
+    failed_count = await db.audit_logs.count_documents({
+        "action": "login_failed",
+        "ip_address": ip,
+        "timestamp": {"$gte": cutoff}
+    })
+    
+    if failed_count >= config["max_attempts"]:
+        # Check if already blocked
+        existing = await db.blocked_ips.find_one({"ip": ip, "unblocked": {"$ne": True}})
+        if existing:
+            return
+        
+        expires_at = (datetime.now(timezone.utc) + timedelta(hours=config["block_duration_hours"])).isoformat()
+        await db.blocked_ips.insert_one({
+            "ip": ip,
+            "reason": f"Auto-ban: {failed_count} tentativi falliti in {config['window_minutes']} min",
+            "blocked_at": datetime.now(timezone.utc).isoformat(),
+            "expires_at": expires_at,
+            "permanent": False,
+            "unblocked": False,
+            "blocked_by": "system"
+        })
+        _blocked_ips_cache["ips"].add(ip)
+        
+        await audit_logger.log(
+            AuditAction.IP_BLOCKED,
+            ip_address=ip,
+            details={"reason": "auto_ban", "failed_attempts": failed_count, "duration_hours": config["block_duration_hours"]},
+            severity="critical"
+        )
+
+class IPBlockMiddleware(BaseHTTPMiddleware):
+    """Middleware to block requests from banned IPs."""
+    async def dispatch(self, request: Request, call_next):
+        client_ip = request.client.host if request.client else None
+        if client_ip and await is_ip_blocked(client_ip):
+            return Response(
+                content='{"detail":"IP address blocked. Contact administrator."}',
+                status_code=403,
+                media_type="application/json"
+            )
+        return await call_next(request)
+
 # ==================== WEBSOCKET MANAGER ====================
 
 class ConnectionManager:
@@ -451,6 +558,11 @@ async def login(request: Request, credentials: UserLogin):
             await security_hardening.record_failed_login(credentials.email, client_ip)
         except Exception:
             pass
+        # Check auto-ban
+        try:
+            await auto_ban_check(client_ip)
+        except Exception:
+            pass
         raise HTTPException(status_code=401, detail="Invalid credentials")
     
     if not security_manager.verify_password(credentials.password, user["password_hash"]):
@@ -466,6 +578,11 @@ async def login(request: Request, credentials: UserLogin):
         # Record failed attempt for lockout
         try:
             await security_hardening.record_failed_login(credentials.email, client_ip)
+        except Exception:
+            pass
+        # Check auto-ban
+        try:
+            await auto_ban_check(client_ip)
         except Exception:
             pass
         raise HTTPException(status_code=401, detail="Invalid credentials")
@@ -1458,6 +1575,12 @@ async def get_security_dashboard(current_user: dict = Depends(get_current_user))
     twofa_enabled = await db.users.count_documents({"two_factor_enabled": True})
     twofa_total = await db.users.count_documents({})
     
+    # Blocked IPs count
+    now_iso_check = datetime.now(timezone.utc).isoformat()
+    blocked_ips_count = await db.blocked_ips.count_documents(
+        {"unblocked": {"$ne": True}, "$or": [{"expires_at": {"$gt": now_iso_check}}, {"permanent": True}]}
+    )
+    
     return {
         "stats": {
             "failed_logins_24h": len(failed_logins_24h),
@@ -1467,6 +1590,7 @@ async def get_security_dashboard(current_user: dict = Depends(get_current_user))
             "revoked_tokens_24h": revoked_tokens_24h,
             "critical_events_24h": len([e for e in critical_events if e.get("severity") == "critical"]),
             "twofa_coverage": f"{twofa_enabled}/{twofa_total}",
+            "blocked_ips": blocked_ips_count,
         },
         "failed_logins": failed_logins_24h[:30],
         "locked_accounts": locked_accounts,
@@ -1474,6 +1598,175 @@ async def get_security_dashboard(current_user: dict = Depends(get_current_user))
         "timeline": timeline,
         "critical_events": critical_events[:30],
     }
+
+
+# ==================== IP BLOCKING MANAGEMENT ====================
+
+@api_router.get("/security/blocked-ips")
+async def get_blocked_ips(current_user: dict = Depends(get_current_user)):
+    """Get list of currently blocked IPs."""
+    if current_user.get("role") not in ["admin", "security_admin"]:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    now_iso = datetime.now(timezone.utc).isoformat()
+    blocked = await db.blocked_ips.find(
+        {"unblocked": {"$ne": True}, "$or": [{"expires_at": {"$gt": now_iso}}, {"permanent": True}]},
+        {"_id": 0}
+    ).sort("blocked_at", -1).to_list(200)
+    
+    # Also get expired/unblocked history (last 50)
+    history = await db.blocked_ips.find(
+        {"$or": [{"unblocked": True}, {"expires_at": {"$lte": now_iso}, "permanent": {"$ne": True}}]},
+        {"_id": 0}
+    ).sort("blocked_at", -1).to_list(50)
+    
+    return {"active": blocked, "history": history}
+
+@api_router.post("/security/block-ip")
+async def block_ip(request: Request, current_user: dict = Depends(get_current_user)):
+    """Manually block an IP address."""
+    if current_user.get("role") not in ["admin", "security_admin"]:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    body = await request.json()
+    check_nosql_injection(body)
+    ip = sanitize_string(body.get("ip", ""), 45)
+    reason = sanitize_string(body.get("reason", "Blocco manuale"), 500)
+    duration_hours = body.get("duration_hours", 6)
+    permanent = body.get("permanent", False)
+    
+    if not ip:
+        raise HTTPException(status_code=400, detail="IP address required")
+    
+    # Check whitelist
+    config = await get_ip_block_config()
+    whitelist_setting = await db.settings.find_one({"key": "ip_whitelist"}, {"_id": 0})
+    whitelist = whitelist_setting.get("value", []) if whitelist_setting else []
+    if ip in whitelist:
+        raise HTTPException(status_code=400, detail="IP is in whitelist and cannot be blocked")
+    
+    expires_at = None if permanent else (datetime.now(timezone.utc) + timedelta(hours=duration_hours)).isoformat()
+    
+    # Upsert: if already blocked, update
+    await db.blocked_ips.update_one(
+        {"ip": ip, "unblocked": {"$ne": True}},
+        {"$set": {
+            "ip": ip,
+            "reason": reason,
+            "blocked_at": datetime.now(timezone.utc).isoformat(),
+            "expires_at": expires_at,
+            "permanent": permanent,
+            "unblocked": False,
+            "blocked_by": current_user.get("email", "admin")
+        }},
+        upsert=True
+    )
+    
+    _blocked_ips_cache["ips"].add(ip)
+    
+    await audit_logger.log(
+        AuditAction.IP_BLOCKED,
+        user_id=current_user.get("id"),
+        user_email=current_user.get("email"),
+        ip_address=ip,
+        details={"reason": reason, "permanent": permanent, "duration_hours": duration_hours},
+        severity="critical"
+    )
+    
+    return {"status": "ok", "message": f"IP {ip} bloccato"}
+
+@api_router.post("/security/unblock-ip")
+async def unblock_ip(request: Request, current_user: dict = Depends(get_current_user)):
+    """Unblock an IP address."""
+    if current_user.get("role") not in ["admin", "security_admin"]:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    body = await request.json()
+    ip = body.get("ip", "")
+    
+    if not ip:
+        raise HTTPException(status_code=400, detail="IP address required")
+    
+    result = await db.blocked_ips.update_many(
+        {"ip": ip, "unblocked": {"$ne": True}},
+        {"$set": {
+            "unblocked": True,
+            "unblocked_at": datetime.now(timezone.utc).isoformat(),
+            "unblocked_by": current_user.get("email", "admin")
+        }}
+    )
+    
+    _blocked_ips_cache["ips"].discard(ip)
+    
+    await audit_logger.log(
+        AuditAction.IP_BLOCKED,
+        user_id=current_user.get("id"),
+        user_email=current_user.get("email"),
+        ip_address=ip,
+        details={"action": "unblock"},
+        severity="info"
+    )
+    
+    return {"status": "ok", "message": f"IP {ip} sbloccato", "modified": result.modified_count}
+
+@api_router.get("/security/ip-block-config")
+async def get_ip_block_config_endpoint(current_user: dict = Depends(get_current_user)):
+    """Get IP blocking configuration."""
+    if current_user.get("role") not in ["admin", "security_admin"]:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    config = await get_ip_block_config()
+    whitelist_setting = await db.settings.find_one({"key": "ip_whitelist"}, {"_id": 0})
+    whitelist = whitelist_setting.get("value", []) if whitelist_setting else []
+    
+    return {**config, "whitelist": whitelist}
+
+@api_router.post("/security/ip-block-config")
+async def update_ip_block_config(request: Request, current_user: dict = Depends(get_current_user)):
+    """Update IP blocking configuration."""
+    if current_user.get("role") not in ["admin", "security_admin"]:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    body = await request.json()
+    check_nosql_injection(body)
+    
+    config = {
+        "enabled": body.get("enabled", True),
+        "max_attempts": max(1, min(100, int(body.get("max_attempts", 10)))),
+        "window_minutes": max(1, min(1440, int(body.get("window_minutes", 30)))),
+        "block_duration_hours": max(1, min(8760, int(body.get("block_duration_hours", 6)))),
+        "auto_ban_enabled": body.get("auto_ban_enabled", True),
+    }
+    
+    await db.settings.update_one(
+        {"key": "ip_block_config"},
+        {"$set": {"key": "ip_block_config", "value": config}},
+        upsert=True
+    )
+    
+    # Update whitelist
+    if "whitelist" in body:
+        whitelist = [sanitize_string(ip.strip(), 45) for ip in body["whitelist"] if ip.strip()]
+        await db.settings.update_one(
+            {"key": "ip_whitelist"},
+            {"$set": {"key": "ip_whitelist", "value": whitelist}},
+            upsert=True
+        )
+        _blocked_ips_cache["whitelist"] = set(whitelist)
+    
+    # Invalidate cache
+    _ip_block_config_cache["config"] = None
+    _ip_block_config_cache["last_refresh"] = None
+    
+    await audit_logger.log(
+        AuditAction.SUSPICIOUS_ACTIVITY,
+        user_id=current_user.get("id"),
+        user_email=current_user.get("email"),
+        details={"action": "ip_block_config_updated", "config": config},
+        severity="info"
+    )
+    
+    return {"status": "ok", "config": config}
 
 
 # ==================== SETTINGS ROUTES ====================
@@ -2473,6 +2766,9 @@ app.add_middleware(
 
 # Security Headers - MUST be added AFTER CORS middleware (Starlette processes bottom-up)
 app.add_middleware(SecurityHeadersMiddleware)
+
+# IP Blocking Middleware
+app.add_middleware(IPBlockMiddleware)
 
 # Configure logging
 logging.basicConfig(
