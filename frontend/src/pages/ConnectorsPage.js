@@ -977,7 +977,7 @@ export default function ConnectorsPage() {
                               <Trash size={14} />
                             </button>
                           </div>
-                          {c.update_status && c.update_status !== "completed" && c.update_progress > 0 && (
+                          {c.update_status && c.update_status !== "completed" && c.update_status !== "error" && c.update_progress > 0 && (
                             <div className="mx-8 mb-2 -mt-1" data-testid={`update-progress-${c.client_id}`}>
                               <div className="flex items-center justify-between mb-1">
                                 <span className="text-[10px] text-amber-400 font-medium flex items-center gap-1">
@@ -992,17 +992,68 @@ export default function ConnectorsPage() {
                             </div>
                           )}
                           {c.update_status === "completed" && (
-                            <div className="mx-8 mb-2 -mt-1">
+                            <div className="mx-8 mb-2 -mt-1 flex items-center justify-between">
                               <span className="text-[10px] text-emerald-400 font-medium flex items-center gap-1">
                                 <CheckCircle size={10} /> Aggiornamento completato! Riavvio in corso...
                               </span>
+                              <button
+                                onClick={async (e) => {
+                                  e.stopPropagation();
+                                  try {
+                                    await axios.post(`${API}/connector/${c.client_id}/reset-update-status`);
+                                    toast.success("Stato aggiornamento resettato");
+                                    fetchAll();
+                                  } catch { toast.error("Errore nel reset"); }
+                                }}
+                                className="text-[9px] px-2 py-0.5 rounded bg-[var(--bg-hover)] text-[var(--text-muted)] hover:text-amber-400 hover:bg-amber-500/10 border border-[var(--bg-border)] transition-colors"
+                                data-testid={`reset-update-${c.client_id}`}
+                                title="Resetta lo stato se l'aggiornamento e' bloccato"
+                              >
+                                Reset Stato
+                              </button>
+                            </div>
+                          )}
+                          {c.update_status === "restarting" && (
+                            <div className="mx-8 mb-2 -mt-1 flex items-center justify-between">
+                              <span className="text-[10px] text-amber-400 font-medium flex items-center gap-1">
+                                <ArrowsClockwise size={10} className="animate-spin" /> Riavvio in corso... attendere max 2 minuti
+                              </span>
+                              <button
+                                onClick={async (e) => {
+                                  e.stopPropagation();
+                                  try {
+                                    await axios.post(`${API}/connector/${c.client_id}/reset-update-status`);
+                                    toast.success("Stato aggiornamento resettato");
+                                    fetchAll();
+                                  } catch { toast.error("Errore nel reset"); }
+                                }}
+                                className="text-[9px] px-2 py-0.5 rounded bg-[var(--bg-hover)] text-[var(--text-muted)] hover:text-amber-400 hover:bg-amber-500/10 border border-[var(--bg-border)] transition-colors"
+                                data-testid={`reset-update-restart-${c.client_id}`}
+                                title="Resetta stato bloccato"
+                              >
+                                Reset Stato
+                              </button>
                             </div>
                           )}
                           {c.update_status === "error" && (
-                            <div className="mx-8 mb-2 -mt-1">
+                            <div className="mx-8 mb-2 -mt-1 flex items-center justify-between">
                               <span className="text-[10px] text-red-400 font-medium flex items-center gap-1">
                                 <Warning size={10} /> {c.update_message || "Errore aggiornamento"}
                               </span>
+                              <button
+                                onClick={async (e) => {
+                                  e.stopPropagation();
+                                  try {
+                                    await axios.post(`${API}/connector/${c.client_id}/reset-update-status`);
+                                    toast.success("Stato errore resettato");
+                                    fetchAll();
+                                  } catch { toast.error("Errore nel reset"); }
+                                }}
+                                className="text-[9px] px-2 py-0.5 rounded bg-red-500/10 text-red-400 hover:bg-red-500/20 border border-red-500/20 transition-colors"
+                                data-testid={`reset-error-${c.client_id}`}
+                              >
+                                Chiudi
+                              </button>
                             </div>
                           )}
                         </div>

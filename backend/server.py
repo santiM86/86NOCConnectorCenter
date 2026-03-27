@@ -2446,15 +2446,34 @@ async def connector_heartbeat(request: Request, heartbeat: ConnectorHeartbeat):
     )
     
     # Clear update_status if update is completed and connector restarted with new version
+    # OR if update has been stuck for more than 5 minutes (timeout)
     if existing and existing.get("update_status"):
         update_info = await db.connector_updates.find_one({"active": True}, {"_id": 0})
+        should_clear = False
+        
         if update_info:
             # If connector version matches or exceeds the published version, update is done
             if not is_newer_version(update_info["version"], heartbeat.connector_version):
-                await db.connector_status.update_one(
-                    {"client_id": client_data["id"]},
-                    {"$unset": {"update_status": "", "force_update": ""}}
-                )
+                should_clear = True
+        
+        # Timeout: if update_status has been set for > 5 minutes, clear it
+        # This prevents "stuck" updates from blocking the UI forever
+        update_timestamp = existing.get("update_timestamp")
+        if update_timestamp:
+            try:
+                ts = datetime.fromisoformat(update_timestamp.replace("Z", "+00:00"))
+                elapsed = (datetime.now(timezone.utc) - ts).total_seconds()
+                if elapsed > 300:  # 5 minutes
+                    should_clear = True
+                    logger.warning(f"Update status timeout for {client_data.get('name')}: {elapsed:.0f}s elapsed, clearing")
+            except Exception:
+                should_clear = True
+        
+        if should_clear:
+            await db.connector_status.update_one(
+                {"client_id": client_data["id"]},
+                {"$unset": {"update_status": "", "force_update": "", "update_progress": "", "update_message": "", "update_timestamp": ""}}
+            )
     
     response = {"status": "ok"}
     
@@ -2702,10 +2721,24 @@ async def connector_update_progress(request: Request):
         {"$set": {
             "update_progress": progress,
             "update_status": status,
-            "update_message": message
+            "update_message": message,
+            "update_timestamp": datetime.now(timezone.utc).isoformat()
         }}
     )
     return {"status": "ok"}
+
+@api_router.post("/connector/{connector_id}/reset-update-status")
+async def reset_connector_update_status(connector_id: str, current_user: dict = Depends(get_current_user)):
+    """Manually reset a stuck update status (admin only)."""
+    if current_user.get("role") not in ["admin"]:
+        raise HTTPException(status_code=403, detail="Solo admin")
+    result = await db.connector_status.update_one(
+        {"client_id": connector_id},
+        {"$unset": {"update_status": "", "force_update": "", "update_progress": "", "update_message": "", "update_timestamp": ""}}
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Connettore non trovato")
+    return {"status": "ok", "message": "Stato aggiornamento resettato"}
 
 # ==================== CONNECTOR DEVICE MANAGEMENT ====================
 
