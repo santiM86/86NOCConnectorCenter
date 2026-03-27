@@ -1783,6 +1783,7 @@ class CredentialCreate(BaseModel):
     port: Optional[int] = None
     notes: Optional[str] = None
     tags: Optional[List[str]] = []
+    external_url: Optional[str] = None
 
 class CredentialUpdate(BaseModel):
     device_name: Optional[str] = None
@@ -1793,6 +1794,7 @@ class CredentialUpdate(BaseModel):
     port: Optional[int] = None
     notes: Optional[str] = None
     tags: Optional[List[str]] = None
+    external_url: Optional[str] = None
 
 @api_router.get("/vault/credentials")
 async def list_credentials(current_user: dict = Depends(get_current_user)):
@@ -1866,6 +1868,8 @@ async def create_credential(cred: CredentialCreate, current_user: dict = Depends
         "port": cred.port,
         "notes": cred.notes,
         "tags": cred.tags or [],
+        "external_url": getattr(cred, 'external_url', None) or "",
+        "direct_poll": False,
         "created_by": current_user.get("email"),
         "created_at": datetime.now(timezone.utc).isoformat(),
         "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -1910,6 +1914,8 @@ async def update_credential(cred_id: str, cred: CredentialUpdate, current_user: 
         update_data["notes"] = cred.notes
     if cred.tags is not None:
         update_data["tags"] = cred.tags
+    if cred.external_url is not None:
+        update_data["external_url"] = cred.external_url
     
     await db.device_credentials.update_one({"id": cred_id}, {"$set": update_data})
     
@@ -1942,6 +1948,65 @@ async def delete_credential(cred_id: str, current_user: dict = Depends(get_curre
     )
     
     return {"status": "ok", "message": "Credenziale eliminata"}
+
+# ==================== REDFISH DIRECT POLLING & FAILOVER ====================
+
+@api_router.post("/redfish/test-connection")
+async def redfish_test_connection(request: Request, current_user: dict = Depends(get_current_user)):
+    """Test Redfish connection from the SOC backend to an iLO device."""
+    if current_user.get("role") not in ["admin"]:
+        raise HTTPException(status_code=403, detail="Solo admin")
+    body = await request.json()
+    url = body.get("url", "").rstrip("/")
+    username = body.get("username", "")
+    password = body.get("password", "")
+    if not url or not username:
+        raise HTTPException(status_code=400, detail="URL e username obbligatori")
+    result = await redfish_poller.test_connection(url, username, password)
+    return result
+
+@api_router.put("/vault/credentials/{cred_id}/direct-poll")
+async def set_direct_poll(cred_id: str, request: Request, current_user: dict = Depends(get_current_user)):
+    """Enable/disable direct Redfish polling and set external URL for a vault credential."""
+    if current_user.get("role") not in ["admin"]:
+        raise HTTPException(status_code=403, detail="Solo admin")
+    body = await request.json()
+    update = {}
+    if "direct_poll" in body:
+        update["direct_poll"] = bool(body["direct_poll"])
+    if "external_url" in body:
+        update["external_url"] = body["external_url"]
+    if not update:
+        raise HTTPException(status_code=400, detail="Nessun campo da aggiornare")
+    result = await db.device_credentials.update_one({"id": cred_id}, {"$set": update})
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Credenziale non trovata")
+    
+    await audit_logger.log(
+        AuditAction.SUSPICIOUS_ACTIVITY,
+        user_id=current_user.get("id"),
+        user_email=current_user.get("email"),
+        details={"action": "direct_poll_config", "cred_id": cred_id, **update},
+        severity="info"
+    )
+    return {"status": "ok"}
+
+@api_router.get("/redfish/failover-status")
+async def get_failover_status(current_user: dict = Depends(get_current_user)):
+    """Get the failover status for all iLO devices with vault credentials."""
+    if current_user.get("role") not in ["admin"]:
+        raise HTTPException(status_code=403, detail="Solo admin")
+    return await redfish_poller.get_failover_status()
+
+@api_router.post("/redfish/poll-now")
+async def trigger_direct_poll(request: Request, current_user: dict = Depends(get_current_user)):
+    """Manually trigger a direct Redfish poll cycle."""
+    if current_user.get("role") not in ["admin"]:
+        raise HTTPException(status_code=403, detail="Solo admin")
+    asyncio.create_task(redfish_poller.poll_cycle())
+    return {"status": "ok", "message": "Polling Redfish avviato"}
+
+
 
 # ==================== SETTINGS ROUTES ====================
 

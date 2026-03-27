@@ -1,0 +1,169 @@
+{
+  "summary": "Redfish Direct Polling & Failover Features - All 27 backend tests passed (100%). Frontend UI fully functional with failover panel, iLO-specific controls (Test, Diretto ON/OFF), and external URL field.",
+
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+
+  "passed_tests": {
+    "vault_credentials_with_external_url": [
+      "GET /api/vault/credentials returns credentials with masked passwords",
+      "GET /api/vault/credentials/{id} returns decrypted credentials for existing ILO",
+      "POST /api/vault/credentials creates credential with external_url field",
+      "GET /api/vault/credentials/{id} returns 404 for non-existent credential"
+    ],
+    "direct_poll_toggle": [
+      "PUT /api/vault/credentials/{id}/direct-poll enables direct polling",
+      "PUT /api/vault/credentials/{id}/direct-poll disables direct polling",
+      "PUT /api/vault/credentials/{id}/direct-poll can set external_url",
+      "PUT /api/vault/credentials/{id}/direct-poll returns 404 for non-existent credential",
+      "PUT /api/vault/credentials/{id}/direct-poll returns 400 for empty body"
+    ],
+    "redfish_failover_status": [
+      "GET /api/redfish/failover-status returns polling mode for iLO devices",
+      "GET /api/redfish/failover-status returns 403 for non-admin"
+    ],
+    "redfish_test_connection": [
+      "POST /api/redfish/test-connection returns error gracefully for unreachable iLO",
+      "POST /api/redfish/test-connection returns 400 for missing URL",
+      "POST /api/redfish/test-connection returns 403 for non-admin"
+    ],
+    "redfish_poll_now": [
+      "POST /api/redfish/poll-now triggers manual poll cycle",
+      "POST /api/redfish/poll-now returns 403 for non-admin"
+    ],
+    "connector_vault_credentials": [
+      "GET /api/connector/vault/credentials returns decrypted credentials with valid API key",
+      "GET /api/connector/vault/credentials returns 401 without API key",
+      "GET /api/connector/vault/credentials returns 401 for invalid API key"
+    ],
+    "role_based_access": [
+      "GET /api/vault/credentials returns 403 for non-admin",
+      "GET /api/vault/credentials/{id} returns 403 for non-admin",
+      "POST /api/vault/credentials returns 403 for non-admin",
+      "PUT /api/vault/credentials/{id} returns 403 for non-admin",
+      "DELETE /api/vault/credentials/{id} returns 403 for non-admin",
+      "PUT /api/vault/credentials/{id}/direct-poll returns 403 for non-admin"
+    ],
+    "encryption_key_persistence": [
+      "Existing ILO credential decrypts correctly (username: administrator)",
+      "Existing SNMP credential decrypts correctly"
+    ],
+    "frontend_ui_tests": [
+      "Vault page loads at /vault route",
+      "Failover panel shows 'Stato Polling iLO Diretto / Failover'",
+      "Failover panel shows polling mode (Via Connector / Polling Diretto)",
+      "Polling Manuale button triggers manual poll",
+      "Add Credential button opens dialog",
+      "Add Credential dialog shows external URL field for iLO type",
+      "Test Connection button works (returns 'Connessione rifiutata' for unreachable iLO)",
+      "Toggle Direct Poll button toggles between 'Diretto' and 'Diretto ON'",
+      "POLLING DIRETTO badge appears when direct poll is enabled",
+      "Reveal (Mostra) button decrypts and shows password",
+      "Edit dialog shows external URL field with current value",
+      "Search and filter functionality works"
+    ]
+  },
+
+  "test_report_links": [
+    "/app/backend/tests/test_redfish_failover.py",
+    "/app/test_reports/pytest/pytest_redfish_failover.xml"
+  ],
+
+  "action_items": [],
+
+  "critical_code_review_comments": [
+    "redfish.py correctly implements direct polling with failover logic",
+    "Failover threshold is 120 seconds (2 minutes) without connector heartbeat",
+    "test_connection endpoint returns error gracefully (success=False with error message)",
+    "poll_cycle runs as async task when triggered manually",
+    "VaultPage.js correctly shows failover panel with polling status badges",
+    "External URL field only appears for iLO credential type in add/edit dialog"
+  ],
+
+  "updated_files": [
+    "/app/backend/tests/test_redfish_failover.py (new test file for Redfish failover features)"
+  ],
+
+  "success_rate": {
+    "backend": "100% (27/27 tests passed)",
+    "frontend": "100% (All UI components and interactions working)"
+  },
+
+  "test_credentials": {
+    "admin_user": {
+      "email": "admin@86bit.it",
+      "password": "admin123",
+      "role": "admin"
+    },
+    "operator_user": {
+      "email": "operator@test.com",
+      "password": "operator123",
+      "role": "operator"
+    },
+    "connector_api_key": "noc_35cf39b4d68740b1a981aedef2ee293d"
+  },
+
+  "existing_vault_credentials": [
+    {
+      "id": "6d272a2c-f7ea-4628-b9fd-ed0a12f44ba5",
+      "device_name": "ILO - SRV-DC01 (ML350 Gen9)",
+      "device_ip": "192.168.1.8",
+      "credential_type": "ilo",
+      "username": "administrator",
+      "external_url": "https://ilo.86bit.internal:443",
+      "direct_poll": false
+    },
+    {
+      "id": "2bf9db52-ecb2-45a8-a1cb-6aeb102777a4",
+      "device_name": "HPE 5130 - Switch Armadio",
+      "device_ip": "192.168.1.2",
+      "credential_type": "snmp",
+      "username": "admin"
+    }
+  ],
+
+  "seed_data_creation": "No new seed data created. Existing credentials verified working.",
+
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+
+  "context_for_next_testing_agent": "Redfish Direct Polling & Failover features fully tested and working. All 27 backend tests pass. Frontend vault page shows failover panel with polling status (Via Connector / Polling Diretto / Failover Attivo / Offline). iLO credentials have Test and Diretto ON/OFF buttons. External URL field appears in add/edit dialog for iLO type. Test-connection endpoint returns 'Connessione rifiutata' for unreachable iLO (expected behavior since no real iLO is accessible from this environment). ENCRYPTION_KEY persistence verified - credentials survive backend restart.",
+
+  "mocked_apis": {
+    "Firebase Cloud Messaging": "MOCKED - no real API keys",
+    "SendGrid Email": "MOCKED - no real API keys",
+    "Redfish test-connection": "Returns 'Connessione rifiutata' since no real iLO is reachable from this environment"
+  },
+
+  "feature_verification": {
+    "feature": "Redfish Direct Polling & Failover for iLO devices",
+    "new_endpoints_tested": [
+      "PUT /api/vault/credentials/{id}/direct-poll - enable/disable direct polling with external_url",
+      "GET /api/redfish/failover-status - returns polling mode for each iLO device",
+      "POST /api/redfish/test-connection - test Redfish connection from backend",
+      "POST /api/redfish/poll-now - trigger manual poll"
+    ],
+    "polling_modes": {
+      "direct": "Always-on direct polling (when direct_poll=true and external_url configured)",
+      "failover": "Automatic failover when connector offline >2min and external_url available",
+      "connector": "Normal polling via Windows connector",
+      "offline": "Connector offline and no external_url configured"
+    },
+    "frontend_features": [
+      "Failover status panel with device polling mode",
+      "Test Connection button for iLO credentials",
+      "Toggle Direct Poll button (Diretto / Diretto ON)",
+      "POLLING DIRETTO badge when direct poll enabled",
+      "External URL field in add/edit credential dialog for iLO type",
+      "Polling Manuale button to trigger manual poll cycle"
+    ]
+  }
+}
