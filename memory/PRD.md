@@ -18,24 +18,31 @@ Creare un raccoglitore di alert (NOC) per dispositivi nelle reti dei clienti. Co
 - SNMP polling (porte, sysDescr, uptime, trap)
 - Ping+HTTP per dispositivi senza SNMP (switch smart managed)
 - Auto-Discovery rete (ping sweep + port scan)
-- **Cambio tipo monitoraggio** cliccando badge SNMP/PING
+- Cambio tipo monitoraggio cliccando badge SNMP/PING
 
-### Web Console Proxy (NUOVO v1.7.3) (DONE)
+### Metriche Estese SNMP v1.8.0 (DONE - 27 mar 2026)
+- **HPE 5130 (Comware)**: CPU, Memoria, Temperatura tramite OID H3C
+- **HPE ILO (ProLiant)**: Salute generale, temperature sensori, ventole, alimentatori, dischi fisici
+- **Generico**: CPU tramite HOST-RESOURCES-MIB (hrProcessorLoad)
+- **Traffico interfacce**: Bandwidth IN/OUT (bps), velocita negoziata, errori IN/OUT per porta
+- **Alert automatici**: CPU>90%, Memoria>90%, Temperatura>75C, disco guasto, ventola guasta, salute ILO degradata
+- **Storico metriche**: Ultimi 24h salvati in MongoDB per trend
+- **Frontend**: Gauge widgets (CPU/RAM/Temp), pannello hardware health (ventole/PSU/dischi/temperature), tabella traffico porte con bandwidth e errori, mini-chart trend 24h
+- Device class auto-detection: `hpe-comware`, `hpe-ilo`, `generic`
+
+### Web Console Proxy v1.7.3 (DONE)
 - Accesso alla web interface dei dispositivi direttamente dal SOC
-- Nessuna VPN necessaria: SOC → Backend → Connettore → Dispositivo
-- Sicurezza: solo admin/operator, whitelist dispositivi gestiti, audit log
-- CSS e immagini inlined per rendering completo
-- Navigazione intercettata per proxy trasparente
-- Loop veloce (3s) per bassa latenza
+- Nessuna VPN necessaria: SOC -> Backend -> Connettore -> Dispositivo
 
 ### Gestione Utenti (DONE)
 - CRUD con ruoli (admin/operator/viewer), MFA TOTP
 
-### Connector v1.7.3 (DONE)
-- SNMP Trap + Syslog, Polling SNMP + Ping/HTTP
+### Connector v1.8.0 (DONE)
+- SNMP Trap + Syslog, Polling SNMP esteso + Ping/HTTP
 - Auto-Discovery, Web Console Proxy
 - Heartbeat, auto-update, force update
-- System tray, diagnostica, import/export CSV
+- System tray con Mutex (fix doppie icone), diagnostica, import/export CSV
+- Metriche estese HPE 5130 e ILO
 
 ### Enterprise Security (DONE)
 - Rate limiting, Audit logging, RBAC
@@ -47,13 +54,15 @@ Creare un raccoglitore di alert (NOC) per dispositivi nelle reti dei clienti. Co
 ## Backlog
 
 ### P1
-- Aggiornare connettore a v1.7.3 sul server
-- Notifiche Push Firebase (serve API Key)
-- Notifiche Email SendGrid (serve API Key)
+- Aggiornare connettore a v1.8.0 sul server del cliente
+- Notifiche Push Firebase (serve API Key utente)
+- Notifiche Email SendGrid (serve API Key utente)
 
 ### P2
 - SOC AI (correlazione, auto-triage, anomaly detection)
-- Twilio Voice/SMS, LDAP, SNMP v3
+- Twilio Voice/SMS per alert critici
+- LDAP integration
+- SNMP v3
 
 ### P3
-- Refactoring server.py (>2000 righe)
+- Refactoring server.py (>2100 righe) in moduli route separati
