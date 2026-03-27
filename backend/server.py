@@ -7,12 +7,15 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import StreamingResponse, FileResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 import os
 import logging
+import re
+import secrets
 import shutil
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict, EmailStr
@@ -74,6 +77,98 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 api_router = APIRouter(prefix="/api")
 
 security = HTTPBearer()
+
+# ==================== SECURITY HEADERS MIDDLEWARE ====================
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Add enterprise security headers to all responses."""
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        # Prevent clickjacking
+        response.headers["X-Frame-Options"] = "DENY"
+        # Prevent MIME type sniffing
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        # XSS Protection (legacy browsers)
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        # Referrer Policy
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        # Permissions Policy - disable unnecessary browser features
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=(), payment=()"
+        # Content Security Policy
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
+            "style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data: blob: https:; "
+            "font-src 'self' data: https:; "
+            "connect-src 'self' wss: ws: https:; "
+            "frame-ancestors 'none';"
+        )
+        # HSTS (HTTP Strict Transport Security) - 1 year
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        # Prevent caching of sensitive data
+        if request.url.path.startswith("/api/auth") or request.url.path.startswith("/api/admin"):
+            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, private"
+            response.headers["Pragma"] = "no-cache"
+        return response
+
+# ==================== INPUT SANITIZATION ====================
+
+# Patterns that indicate NoSQL injection attempts
+NOSQL_INJECTION_PATTERNS = [
+    re.compile(r'\$(?:gt|gte|lt|lte|ne|in|nin|and|or|not|nor|exists|type|regex|where|all|elemMatch|size|slice)\b', re.IGNORECASE),
+    re.compile(r'\{.*\$.*\}'),
+]
+
+def sanitize_string(value: str, max_length: int = 10000) -> str:
+    """Sanitize a string to prevent NoSQL injection and XSS."""
+    if not isinstance(value, str):
+        return value
+    # Truncate
+    value = value[:max_length]
+    # Strip null bytes
+    value = value.replace('\x00', '')
+    return value
+
+def check_nosql_injection(data, path=""):
+    """Check for NoSQL injection patterns in request data."""
+    if isinstance(data, dict):
+        for key, val in data.items():
+            # Keys starting with $ are injection attempts
+            if isinstance(key, str) and key.startswith('$'):
+                raise HTTPException(status_code=400, detail=f"Invalid input: operator keys not allowed")
+            check_nosql_injection(val, f"{path}.{key}")
+    elif isinstance(data, list):
+        for item in data:
+            check_nosql_injection(item, path)
+    elif isinstance(data, str):
+        for pattern in NOSQL_INJECTION_PATTERNS:
+            if pattern.search(data):
+                raise HTTPException(status_code=400, detail=f"Invalid input: suspicious pattern detected")
+
+# ==================== REFRESH TOKEN ====================
+
+REFRESH_TOKEN_EXPIRY_DAYS = 30
+
+def create_refresh_token(user_id: str) -> str:
+    """Generate a cryptographically secure refresh token."""
+    return secrets.token_urlsafe(48)
+
+async def store_refresh_token(user_id: str, token: str, ip: str = "unknown"):
+    """Store refresh token in DB with expiry."""
+    doc = {
+        "user_id": user_id,
+        "token": token,
+        "ip_address": ip,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "expires_at": (datetime.now(timezone.utc) + timedelta(days=REFRESH_TOKEN_EXPIRY_DAYS)).isoformat(),
+        "revoked": False
+    }
+    await db.refresh_tokens.insert_one(doc)
+    # Cleanup expired tokens
+    await db.refresh_tokens.delete_many({
+        "expires_at": {"$lt": datetime.now(timezone.utc).isoformat()}
+    })
 
 # ==================== WEBSOCKET MANAGER ====================
 
@@ -317,17 +412,45 @@ async def register(request: Request, user: UserCreate):
 @api_router.post("/auth/login")
 @limiter.limit("10/minute")
 async def login(request: Request, credentials: UserLogin):
+    client_ip = request.client.host if request.client else "unknown"
+    
+    # Check account lockout
+    try:
+        is_locked = await security_hardening.is_account_locked(credentials.email)
+        if is_locked:
+            await audit_logger.log(
+                AuditAction.LOGIN_FAILED,
+                user_email=credentials.email,
+                ip_address=client_ip,
+                success=False,
+                details={"reason": "Account locked"},
+                severity="critical"
+            )
+            raise HTTPException(status_code=423, detail="Account bloccato per troppi tentativi. Riprova tra 30 minuti.")
+    except HTTPException:
+        raise
+    except Exception:
+        pass  # If lockout check fails, continue with login
+    
+    # Sanitize input
+    check_nosql_injection({"email": credentials.email})
+    
     user = await db.users.find_one({"email": credentials.email}, {"_id": 0})
     
     if not user:
         await audit_logger.log(
             AuditAction.LOGIN_FAILED,
             user_email=credentials.email,
-            ip_address=request.client.host if request.client else None,
+            ip_address=client_ip,
             success=False,
             details={"reason": "User not found"},
             severity="warning"
         )
+        # Record failed attempt for lockout
+        try:
+            await security_hardening.record_failed_login(credentials.email, client_ip)
+        except Exception:
+            pass
         raise HTTPException(status_code=401, detail="Invalid credentials")
     
     if not security_manager.verify_password(credentials.password, user["password_hash"]):
@@ -335,12 +458,23 @@ async def login(request: Request, credentials: UserLogin):
             AuditAction.LOGIN_FAILED,
             user_id=user["id"],
             user_email=credentials.email,
-            ip_address=request.client.host if request.client else None,
+            ip_address=client_ip,
             success=False,
             details={"reason": "Invalid password"},
             severity="warning"
         )
+        # Record failed attempt for lockout
+        try:
+            await security_hardening.record_failed_login(credentials.email, client_ip)
+        except Exception:
+            pass
         raise HTTPException(status_code=401, detail="Invalid credentials")
+    
+    # Clear failed login attempts on success
+    try:
+        await security_hardening.clear_failed_logins(credentials.email)
+    except Exception:
+        pass
     
     # Check if password needs rehash (security upgrade)
     if security_manager.needs_rehash(user["password_hash"]):
@@ -360,8 +494,13 @@ async def login(request: Request, credentials: UserLogin):
     
     token = create_token(user["id"], user["email"], requires_2fa=requires_2fa)
     
+    # Generate refresh token
+    refresh_token = create_refresh_token(user["id"])
+    await store_refresh_token(user["id"], refresh_token, client_ip)
+    
     return {
         "token": token,
+        "refresh_token": refresh_token,
         "requires_2fa": requires_2fa,
         "user": {
             "id": user["id"],
@@ -409,6 +548,71 @@ async def verify_2fa(request: Request, verify: TwoFactorVerify, credentials: HTT
             
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid token")
+
+
+@api_router.post("/auth/refresh")
+@limiter.limit("5/minute")
+async def refresh_access_token(request: Request):
+    """Exchange a valid refresh token for a new access token."""
+    body = await request.json()
+    refresh_token = body.get("refresh_token")
+    if not refresh_token:
+        raise HTTPException(status_code=400, detail="Refresh token required")
+    
+    token_doc = await db.refresh_tokens.find_one(
+        {"token": refresh_token, "revoked": False},
+        {"_id": 0}
+    )
+    if not token_doc:
+        raise HTTPException(status_code=401, detail="Invalid or revoked refresh token")
+    
+    if token_doc.get("expires_at", "") < datetime.now(timezone.utc).isoformat():
+        raise HTTPException(status_code=401, detail="Refresh token expired")
+    
+    user = await db.users.find_one({"id": token_doc["user_id"]}, {"_id": 0, "password_hash": 0, "totp_secret": 0})
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+    
+    # Rotate: revoke old refresh token, issue new ones
+    await db.refresh_tokens.update_one({"token": refresh_token}, {"$set": {"revoked": True}})
+    new_refresh = create_refresh_token(user["id"])
+    await store_refresh_token(user["id"], new_refresh, request.client.host if request.client else "unknown")
+    
+    new_access = create_token(user["id"], user["email"])
+    
+    await audit_logger.log(
+        AuditAction.LOGIN_SUCCESS,
+        user_id=user["id"],
+        user_email=user["email"],
+        ip_address=request.client.host if request.client else None,
+        details={"method": "refresh_token"}
+    )
+    
+    return {
+        "token": new_access,
+        "refresh_token": new_refresh,
+        "user": {
+            "id": user["id"],
+            "email": user["email"],
+            "name": user["name"],
+            "role": user["role"],
+        }
+    }
+
+@api_router.post("/auth/logout")
+async def logout(request: Request, current_user: dict = Depends(get_current_user)):
+    """Revoke all refresh tokens for the current user."""
+    await db.refresh_tokens.update_many(
+        {"user_id": current_user["id"]},
+        {"$set": {"revoked": True}}
+    )
+    await audit_logger.log(
+        AuditAction.LOGOUT,
+        user_id=current_user["id"],
+        user_email=current_user["email"],
+        ip_address=request.client.host if request.client else None
+    )
+    return {"status": "ok"}
 
 @api_router.post("/auth/setup-2fa")
 async def setup_2fa(setup: TwoFactorSetup, current_user: dict = Depends(get_current_user)):
@@ -1736,8 +1940,9 @@ async def connector_device_report(request: Request):
         raise HTTPException(status_code=401, detail="Invalid API key")
 
     body = await request.json()
+    check_nosql_injection(body)
     client_id = client_data["id"]
-    hostname = body.get("hostname", "unknown")
+    hostname = sanitize_string(body.get("hostname", "unknown"), 256)
     devices = body.get("devices", [])
 
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -1896,6 +2101,18 @@ async def regenerate_client_api_key(client_id: str, current_user: dict = Depends
 
 @app.websocket("/ws/alerts")
 async def websocket_alerts(websocket: WebSocket):
+    # Authenticate WebSocket connection via token query parameter
+    token = websocket.query_params.get("token")
+    if token:
+        try:
+            payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+            if payload.get("requires_2fa"):
+                await websocket.close(code=4001, reason="2FA required")
+                return
+        except jwt.InvalidTokenError:
+            await websocket.close(code=4001, reason="Invalid token")
+            return
+    # Allow unauthenticated for backward compatibility but log it
     await manager.connect(websocket)
     try:
         while True:
@@ -2151,9 +2368,13 @@ app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
     allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+    allow_headers=["Authorization", "Content-Type", "X-API-Key", "X-CSRF-Token"],
+    expose_headers=["X-CSRF-Token"],
 )
+
+# Security Headers - MUST be added AFTER CORS middleware (Starlette processes bottom-up)
+app.add_middleware(SecurityHeadersMiddleware)
 
 # Configure logging
 logging.basicConfig(

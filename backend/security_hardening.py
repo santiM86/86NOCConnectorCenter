@@ -140,8 +140,43 @@ class SecurityHardening:
     
     # ==================== ACCOUNT LOCKOUT ====================
     
-    async def record_failed_login(self, user_id: str, ip_address: str):
-        """Record a failed login attempt."""
+    async def is_account_locked(self, email: str) -> bool:
+        """Check if account is locked by email."""
+        user = await self.db.users.find_one({"email": email}, {"_id": 0, "id": 1, "locked": 1, "unlock_at": 1})
+        if not user or not user.get("locked"):
+            return False
+        unlock_at = user.get("unlock_at")
+        if unlock_at:
+            try:
+                unlock_time = datetime.fromisoformat(unlock_at.replace("Z", "+00:00"))
+                if datetime.now(timezone.utc) > unlock_time:
+                    await self.db.users.update_one(
+                        {"email": email},
+                        {"$set": {"locked": False}, "$unset": {"locked_at": "", "unlock_at": ""}}
+                    )
+                    return False
+            except Exception:
+                pass
+        return True
+    
+    async def clear_failed_logins(self, email: str):
+        """Clear failed login attempts for a user by email."""
+        user = await self.db.users.find_one({"email": email}, {"_id": 0, "id": 1})
+        if user:
+            await self.db.login_attempts.delete_many({"user_id": user["id"], "success": False})
+            await self.db.users.update_one(
+                {"email": email},
+                {"$set": {"locked": False}, "$unset": {"locked_at": "", "unlock_at": ""}}
+            )
+
+    async def record_failed_login(self, user_id_or_email: str, ip_address: str):
+        """Record a failed login attempt. Accepts user_id or email."""
+        # Resolve email to user_id if needed
+        user_id = user_id_or_email
+        if "@" in user_id_or_email:
+            user = await self.db.users.find_one({"email": user_id_or_email}, {"_id": 0, "id": 1})
+            user_id = user["id"] if user else user_id_or_email
+        
         await self.db.login_attempts.insert_one({
             "user_id": user_id,
             "ip_address": ip_address,

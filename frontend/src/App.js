@@ -55,13 +55,13 @@ const AuthProvider = ({ children }) => {
 
   const login = async (email, password) => {
     const response = await axios.post(`${API}/auth/login`, { email, password });
-    const { token: newToken, user: userData, requires_2fa } = response.data;
+    const { token: newToken, refresh_token, user: userData, requires_2fa } = response.data;
     localStorage.setItem("noc_token", newToken);
+    if (refresh_token) localStorage.setItem("noc_refresh_token", refresh_token);
     setToken(newToken);
     axios.defaults.headers.common["Authorization"] = `Bearer ${newToken}`;
     
     if (requires_2fa) {
-      // Return special flag for 2FA requirement
       return { requires_2fa: true };
     }
     
@@ -79,12 +79,48 @@ const AuthProvider = ({ children }) => {
     return userData;
   };
 
-  const logout = () => {
+  const logout = async () => {
+    try {
+      await axios.post(`${API}/auth/logout`);
+    } catch {}
     localStorage.removeItem("noc_token");
+    localStorage.removeItem("noc_refresh_token");
     setToken(null);
     setUser(null);
     delete axios.defaults.headers.common["Authorization"];
   };
+
+  // Axios interceptor for automatic token refresh
+  useEffect(() => {
+    const interceptor = axios.interceptors.response.use(
+      (res) => res,
+      async (error) => {
+        const originalRequest = error.config;
+        if (error.response?.status === 401 && !originalRequest._retry && !originalRequest.url?.includes("/auth/")) {
+          originalRequest._retry = true;
+          const refreshToken = localStorage.getItem("noc_refresh_token");
+          if (refreshToken) {
+            try {
+              const res = await axios.post(`${API}/auth/refresh`, { refresh_token: refreshToken });
+              const { token: newToken, refresh_token: newRefresh } = res.data;
+              localStorage.setItem("noc_token", newToken);
+              if (newRefresh) localStorage.setItem("noc_refresh_token", newRefresh);
+              setToken(newToken);
+              axios.defaults.headers.common["Authorization"] = `Bearer ${newToken}`;
+              originalRequest.headers["Authorization"] = `Bearer ${newToken}`;
+              return axios(originalRequest);
+            } catch {
+              logout();
+            }
+          } else {
+            logout();
+          }
+        }
+        return Promise.reject(error);
+      }
+    );
+    return () => axios.interceptors.response.eject(interceptor);
+  }, []);
 
   return (
     <AuthContext.Provider value={{ user, token, loading, login, register, logout }}>

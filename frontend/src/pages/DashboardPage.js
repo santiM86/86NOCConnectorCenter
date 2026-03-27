@@ -59,7 +59,9 @@ export default function DashboardPage() {
 
   const connectWebSocket = () => {
     const wsUrl = process.env.REACT_APP_BACKEND_URL.replace("https://", "wss://").replace("http://", "ws://");
-    wsRef.current = new WebSocket(`${wsUrl}/ws/alerts`);
+    const wsToken = localStorage.getItem("noc_token");
+    const wsUrlWithAuth = wsToken ? `${wsUrl}/ws/alerts?token=${wsToken}` : `${wsUrl}/ws/alerts`;
+    wsRef.current = new WebSocket(wsUrlWithAuth);
     wsRef.current.onmessage = (event) => {
       const data = JSON.parse(event.data);
       if (data.type === "new_alert") {
