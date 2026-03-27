@@ -44,6 +44,17 @@ Creare un raccoglitore di alert (NOC) per dispositivi nelle reti dei clienti. Co
 - System tray con Mutex (fix doppie icone), diagnostica, import/export CSV
 - Metriche estese HPE 5130 e ILO
 
+### IP Auto-Ban System (DONE - 27 mar 2026)
+- Auto-ban: IP con 10+ tentativi falliti in 30 min bloccato automaticamente (configurabile)
+- Blocco/sblocco manuale IP dal pannello Security Audit
+- IP Whitelist configurabile (IP che non vengono mai bloccati)
+- Durata blocco configurabile (1h-permanente), default 6h
+- Middleware che blocca ogni richiesta da IP bannati con cache in-memory (30s refresh)
+- Storico blocchi IP con motivo, chi ha bloccato/sbloccato e quando
+- Configurazione completa dal dialog: soglie, finestra temporale, durata, whitelist
+- Pulsanti "Blocca" accanto a ogni IP sospetto nel pannello
+- 15 endpoint testati al 100%
+
 ### Security Audit Dashboard (DONE - 27 mar 2026)
 - Pannello in tempo reale nella pagina Enterprise con auto-refresh ogni 15s
 - 7 stat card: Login Falliti, Login OK, Account Bloccati, Sessioni Attive, Token Revocati, Eventi Critici, Copertura 2FA
