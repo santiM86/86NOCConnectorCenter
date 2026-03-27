@@ -4,7 +4,8 @@ import { API } from "@/App";
 import {
   ArrowUp, ArrowDown, Warning, CheckCircle, Lightning, Thermometer,
   Cpu, HardDrive, Fan, BatteryFull, WifiHigh, WifiSlash,
-  ShieldCheck, Globe, ArrowsClockwise, FloppyDisk
+  ShieldCheck, Globe, ArrowsClockwise, FloppyDisk,
+  DesktopTower, PlugCharging, Memory, WifiMedium, Database
 } from "@phosphor-icons/react";
 
 const formatBps = (bps) => {
@@ -103,9 +104,11 @@ export function DeviceDetailPanel({ dev, isPing }) {
 
   const hw = dev.hardware || {};
   const fw = dev.firewall || {};
+  const rf = dev.redfish || {};
   const hasExtended = dev.cpu_usage != null || dev.memory_usage != null || dev.temperature != null;
   const hasHardware = (hw.fans?.length > 0) || (hw.power_supplies?.length > 0) || (hw.temperatures?.length > 0) || (hw.disks?.length > 0) || hw.health_status;
   const hasFirewall = dev.device_class === "zyxel-usg" || fw.active_sessions != null || fw.vpn_throughput != null;
+  const hasRedfish = rf.server_model || rf.power_watts != null || rf.ilo_firmware;
   const ports = (dev.ports || []).sort((a, b) => parseInt(a.index) - parseInt(b.index));
   const hasTrafficData = ports.some(p => p.in_bps != null || p.speed_bps != null);
   const classLabel = dev.device_class === "hpe-comware" ? "HPE Comware Switch" 
@@ -232,6 +235,114 @@ export function DeviceDetailPanel({ dev, isPing }) {
                   </div>
                 )}
               </div>
+            </div>
+          )}
+
+
+          {/* Redfish / iLO Deep Metrics */}
+          {hasRedfish && (
+            <div className="space-y-2" data-testid="redfish-metrics">
+              <div className="flex items-center gap-2 flex-wrap">
+                <DesktopTower size={14} className="text-teal-400" />
+                <span className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider font-medium">Redfish iLO</span>
+                {rf.server_model && <span className="text-[9px] px-1.5 py-0.5 rounded bg-teal-500/10 border border-teal-500/20 text-teal-400 font-mono">{rf.server_model}</span>}
+                {rf.ilo_firmware && <span className="text-[9px] text-[var(--text-muted)] font-mono">iLO FW: {rf.ilo_firmware}</span>}
+                {rf.serial_number && <span className="text-[9px] text-[var(--text-muted)] font-mono">S/N: {rf.serial_number}</span>}
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                {rf.power_watts != null && (
+                  <div className="p-2.5 rounded-lg bg-[var(--bg-panel)] border border-[var(--bg-border)]" data-testid="rf-power">
+                    <div className="flex items-center gap-1.5 mb-1">
+                      <PlugCharging size={12} className="text-yellow-400" />
+                      <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider font-medium">Consumo</p>
+                    </div>
+                    <p className="text-sm font-mono font-bold text-yellow-400">{rf.power_watts}W</p>
+                  </div>
+                )}
+                {rf.total_memory_gb != null && (
+                  <div className="p-2.5 rounded-lg bg-[var(--bg-panel)] border border-[var(--bg-border)]" data-testid="rf-memory">
+                    <div className="flex items-center gap-1.5 mb-1">
+                      <Memory size={12} className="text-purple-400" />
+                      <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider font-medium">RAM Totale</p>
+                    </div>
+                    <p className="text-sm font-mono font-bold text-purple-400">{rf.total_memory_gb} GB</p>
+                  </div>
+                )}
+                {rf.bios_version && (
+                  <div className="p-2.5 rounded-lg bg-[var(--bg-panel)] border border-[var(--bg-border)]" data-testid="rf-bios">
+                    <div className="flex items-center gap-1.5 mb-1">
+                      <Cpu size={12} className="text-blue-400" />
+                      <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider font-medium">BIOS</p>
+                    </div>
+                    <p className="text-xs font-mono text-[var(--text-primary)]">{rf.bios_version}</p>
+                  </div>
+                )}
+                {rf.ilo_license && (
+                  <div className="p-2.5 rounded-lg bg-[var(--bg-panel)] border border-[var(--bg-border)]" data-testid="rf-license">
+                    <div className="flex items-center gap-1.5 mb-1">
+                      <ShieldCheck size={12} className="text-emerald-400" />
+                      <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider font-medium">Licenza</p>
+                    </div>
+                    <p className="text-xs font-mono text-emerald-400">{rf.ilo_license}</p>
+                  </div>
+                )}
+              </div>
+              {rf.memory_dimms?.length > 0 && (
+                <div className="space-y-1" data-testid="rf-dimms">
+                  <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider font-medium flex items-center gap-1"><Memory size={10} /> Moduli RAM ({rf.memory_dimms.length})</p>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-1">
+                    {rf.memory_dimms.map((d, i) => (
+                      <div key={i} className="px-2 py-1 rounded-md border bg-[var(--low-bg)] border-[var(--low-border)] flex items-center justify-between gap-1">
+                        <span className="text-[9px] text-[var(--text-muted)] truncate">{d.name}</span>
+                        <span className="text-[9px] font-mono font-bold text-[var(--text-primary)]">{d.size_gb}GB {d.speed_mhz}MHz</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {rf.network_adapters?.length > 0 && (
+                <div className="space-y-1" data-testid="rf-nics">
+                  <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider font-medium flex items-center gap-1"><WifiMedium size={10} /> NIC ({rf.network_adapters.length})</p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-1">
+                    {rf.network_adapters.map((n, i) => (
+                      <div key={i} className="px-2 py-1 rounded-md border bg-[var(--bg-panel)] border-[var(--bg-border)] flex items-center justify-between gap-2">
+                        <span className="text-[9px] text-[var(--text-muted)] truncate">{n.name}</span>
+                        <div className="flex items-center gap-2 text-[9px] font-mono">
+                          {n.ipv4 && <span className="text-teal-400">{n.ipv4}</span>}
+                          {n.mac && <span className="text-[var(--text-muted)]">{n.mac}</span>}
+                          {n.speed_mbps && <span className="text-[var(--text-primary)]">{n.speed_mbps >= 1000 ? `${n.speed_mbps/1000}G` : `${n.speed_mbps}M`}</span>}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {rf.storage_controllers?.length > 0 && (
+                <div className="space-y-1" data-testid="rf-storage">
+                  <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider font-medium flex items-center gap-1"><Database size={10} /> Storage</p>
+                  {rf.storage_controllers.map((c, ci) => (
+                    <div key={ci} className="space-y-1">
+                      <div className="px-2 py-1 rounded-md border bg-[var(--bg-panel)] border-[var(--bg-border)] flex items-center justify-between">
+                        <span className="text-[9px] font-mono text-[var(--text-primary)]">{c.name || `Controller ${ci+1}`}</span>
+                        <HwStatusBadge condition={c.status?.toLowerCase() || "ok"} label="" />
+                      </div>
+                      {c.logical_drives?.length > 0 && (
+                        <div className="grid grid-cols-2 sm:grid-cols-3 gap-1 pl-2">
+                          {c.logical_drives.map((ld, li) => (
+                            <div key={li} className="px-2 py-1 rounded-md border bg-[var(--low-bg)] border-[var(--low-border)] flex items-center justify-between gap-1">
+                              <span className="text-[9px] text-[var(--text-muted)] truncate">{ld.name || `LUN ${li}`}</span>
+                              <div className="flex items-center gap-1 text-[9px] font-mono">
+                                {ld.raid && <span className="text-indigo-400">{ld.raid}</span>}
+                                {ld.capacity_gb && <span className="text-[var(--text-primary)]">{ld.capacity_gb}GB</span>}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
 

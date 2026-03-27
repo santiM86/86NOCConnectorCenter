@@ -16,9 +16,10 @@ import io
 from datetime import datetime, timezone
 from typing import Optional, Tuple
 
-# AES-256-GCM Encryption Key (must be 32 bytes)
-# In production, this should come from a secure key management system (AWS KMS, HashiCorp Vault, etc.)
-ENCRYPTION_KEY = os.environ.get('ENCRYPTION_KEY', secrets.token_hex(32))
+# AES-256-GCM Encryption Key (must be 32 bytes hex)
+ENCRYPTION_KEY = os.environ.get('ENCRYPTION_KEY')
+if not ENCRYPTION_KEY:
+    raise RuntimeError("ENCRYPTION_KEY non configurata in .env - il vault non puo' funzionare senza una chiave persistente")
 
 class SecurityManager:
     """Enterprise-grade security manager for credential encryption and password hashing."""

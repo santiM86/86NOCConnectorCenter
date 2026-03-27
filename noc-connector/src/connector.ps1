@@ -448,6 +448,35 @@ function Send-DeviceReport($config, $devices) {
                 }
             }
             
+            # Redfish/iLO deep polling (if credentials available in Vault)
+            if ($extMetrics -and $extMetrics.device_class -eq "hpe-ilo" -and $vaultCreds.ContainsKey($ip)) {
+                try {
+                    $cred = $vaultCreds[$ip]
+                    Write-Log "  Redfish polling $devName ($ip) con credenziali dal Vault..."
+                    $rfMetrics = Poll-RedfishMetrics $ip $cred
+                    if ($rfMetrics.redfish_ok) {
+                        $deviceReport.redfish = @{
+                            power_watts = $rfMetrics.power_watts
+                            bios_version = $rfMetrics.bios_version
+                            server_model = $rfMetrics.server_model
+                            serial_number = $rfMetrics.serial_number
+                            uuid = $rfMetrics.uuid
+                            ilo_firmware = $rfMetrics.ilo_firmware
+                            ilo_license = $rfMetrics.ilo_license
+                            total_memory_gb = $rfMetrics.total_memory_gb
+                            memory_dimms = $rfMetrics.memory_dimms
+                            network_adapters = $rfMetrics.network_adapters
+                            storage_controllers = $rfMetrics.storage_controllers
+                        }
+                        Write-Log "  Redfish OK: $($rfMetrics.server_model) | Power: $($rfMetrics.power_watts)W | BIOS: $($rfMetrics.bios_version)"
+                    } else {
+                        Write-Log "  Redfish non disponibile per $ip: $($rfMetrics.error)" "WARN"
+                    }
+                } catch {
+                    Write-Log "  Errore Redfish $ip : $($_.Exception.Message)" "WARN"
+                }
+            }
+            
             $reportDevices += $deviceReport
         }
     }
@@ -475,6 +504,37 @@ function Fetch-DevicesFromNOC($config) {
     return $null
 }
 
+function Fetch-VaultCredentials($config) {
+    <#
+    .SYNOPSIS
+        Recupera le credenziali cifrate dal Vault del SOC per interrogare iLO via Redfish.
+    #>
+    try {
+        $headers = @{ "X-API-Key" = $config.api_key }
+        $url = "$($config.noc_center_url)/api/connector/vault/credentials"
+        $response = Invoke-RestMethod -Uri $url -Headers $headers -Method Get -TimeoutSec 15 -ErrorAction Stop
+        if ($response -and $response.Count -gt 0) {
+            Write-Log "Credenziali Vault ricevute: $($response.Count)"
+            # Build lookup table by device IP
+            $credMap = @{}
+            foreach ($c in $response) {
+                if ($c.device_ip) {
+                    $credMap[$c.device_ip] = @{
+                        username = $c.username
+                        password = $c.password
+                        port = $c.port
+                        credential_type = $c.credential_type
+                    }
+                }
+            }
+            return $credMap
+        }
+    } catch {
+        Write-Log "Errore fetch credenziali Vault: $($_.Exception.Message)" "WARN"
+    }
+    return @{}
+}
+
 function Start-PollingLoop($config) {
     $devices = @()
     if ($config.devices) {
@@ -497,6 +557,12 @@ function Start-PollingLoop($config) {
     if ($devices.Count -eq 0) {
         Write-Log "Nessun dispositivo configurato per polling"
         return
+    }
+
+    # Fetch Vault credentials for Redfish/iLO polling
+    $vaultCreds = Fetch-VaultCredentials $config
+    if ($vaultCreds.Count -gt 0) {
+        Write-Log "Credenziali Vault disponibili per $($vaultCreds.Count) dispositivi"
     }
 
     # Separate SNMP and Ping/HTTP devices

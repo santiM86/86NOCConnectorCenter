@@ -1,4 +1,4 @@
 {
-  "version": "1.9.0",
-  "changelog": "Metriche Zyxel USG Firewall: CPU (current/5s/1m/5m), RAM, sessioni attive, VPN IPSec throughput, flash usage, firmware, seriale. Alert automatici su sessioni >50k e flash >90%. Supporto device class zyxel-usg."
+  "version": "2.0.0",
+  "changelog": "Integrazione Redfish iLO: il connettore ora recupera credenziali dal Vault cifrato del SOC e interroga automaticamente i server HPE iLO via API REST. Metriche profonde: consumo energetico (Watt), BIOS, modello, seriale, UUID, firmware iLO, licenza, DIMM RAM (size/speed), NIC, storage controller e logical drive."
 }

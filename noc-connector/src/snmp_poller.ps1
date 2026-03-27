@@ -1006,3 +1006,191 @@ function Poll-AllDevices($devices, $config) {
     }
     return $allAlerts
 }
+
+
+# ==================== REDFISH / iLO REST API ====================
+
+function Poll-RedfishMetrics([string]$ip, [hashtable]$cred) {
+    <#
+    .SYNOPSIS
+        Interroga un server HPE iLO tramite API Redfish (REST/HTTPS).
+        Richiede credenziali (username/password) dal Vault.
+    .DESCRIPTION
+        Supporta iLO 4, 5 e 6. Estrae metriche profonde non disponibili via SNMP:
+        - Power consumption (Watt)
+        - BIOS version
+        - Server model, serial number, UUID
+        - Memory DIMM details (size, speed, status)
+        - Storage controllers & logical drives
+        - Network adapters
+        - iLO firmware version
+        - License type
+    #>
+    $result = @{
+        redfish_ok = $false
+        power_watts = $null
+        bios_version = $null
+        server_model = $null
+        serial_number = $null
+        uuid = $null
+        ilo_firmware = $null
+        ilo_license = $null
+        memory_dimms = @()
+        total_memory_gb = $null
+        network_adapters = @()
+        storage_controllers = @()
+        error = $null
+    }
+    
+    $username = $cred.username
+    $password = $cred.password
+    $port = if ($cred.port) { $cred.port } else { 443 }
+    $baseUrl = "https://${ip}:${port}"
+    
+    # Bypass SSL certificate validation (self-signed certs on iLO)
+    try {
+        if (-not ([System.Management.Automation.PSTypeName]'TrustAllCertsPolicy').Type) {
+            Add-Type @"
+using System.Net;
+using System.Security.Cryptography.X509Certificates;
+public class TrustAllCertsPolicy : ICertificatePolicy {
+    public bool CheckValidationResult(
+        ServicePoint srvPoint, X509Certificate certificate,
+        WebRequest request, int certificateProblem) { return true; }
+}
+"@
+        }
+        [System.Net.ServicePointManager]::CertificatePolicy = New-Object TrustAllCertsPolicy
+        [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
+    } catch {}
+    
+    # Basic Auth header
+    $pair = "${username}:${password}"
+    $bytes = [System.Text.Encoding]::ASCII.GetBytes($pair)
+    $base64 = [System.Convert]::ToBase64String($bytes)
+    $headers = @{
+        "Authorization" = "Basic $base64"
+        "Content-Type" = "application/json"
+        "OData-Version" = "4.0"
+    }
+    
+    function Invoke-RedfishGet([string]$path) {
+        try {
+            $url = "${baseUrl}${path}"
+            $response = Invoke-RestMethod -Uri $url -Headers $headers -Method Get -TimeoutSec 10 -ErrorAction Stop
+            return $response
+        } catch {
+            return $null
+        }
+    }
+    
+    try {
+        # 1. System info (/redfish/v1/Systems/1/)
+        $system = Invoke-RedfishGet "/redfish/v1/Systems/1/"
+        if ($system) {
+            $result.redfish_ok = $true
+            $result.server_model = $system.Model
+            $result.serial_number = $system.SerialNumber
+            $result.uuid = $system.UUID
+            $result.bios_version = $system.BiosVersion
+            
+            # Memory summary
+            if ($system.MemorySummary) {
+                $result.total_memory_gb = $system.MemorySummary.TotalSystemMemoryGiB
+            }
+        }
+        
+        # 2. Power info (/redfish/v1/Chassis/1/Power/)
+        $power = Invoke-RedfishGet "/redfish/v1/Chassis/1/Power/"
+        if ($power -and $power.PowerControl -and $power.PowerControl.Count -gt 0) {
+            $pc = $power.PowerControl[0]
+            $result.power_watts = $pc.PowerConsumedWatts
+        }
+        
+        # 3. iLO firmware info (/redfish/v1/Managers/1/)
+        $manager = Invoke-RedfishGet "/redfish/v1/Managers/1/"
+        if ($manager) {
+            $result.ilo_firmware = $manager.FirmwareVersion
+            if ($manager.Oem -and $manager.Oem.Hpe -and $manager.Oem.Hpe.License) {
+                $result.ilo_license = $manager.Oem.Hpe.License.LicenseString
+            } elseif ($manager.Oem -and $manager.Oem.Hp -and $manager.Oem.Hp.License) {
+                $result.ilo_license = $manager.Oem.Hp.License.LicenseString
+            }
+        }
+        
+        # 4. Memory DIMMs (/redfish/v1/Systems/1/Memory/)
+        $memCollection = Invoke-RedfishGet "/redfish/v1/Systems/1/Memory/"
+        if ($memCollection -and $memCollection.Members) {
+            foreach ($memRef in $memCollection.Members) {
+                $dimm = Invoke-RedfishGet $memRef.'@odata.id'
+                if ($dimm -and $dimm.Status.State -eq "Enabled") {
+                    $result.memory_dimms += @{
+                        name = $dimm.DeviceLocator
+                        size_gb = $dimm.CapacityMiB / 1024
+                        speed_mhz = $dimm.OperatingSpeedMhz
+                        type = $dimm.MemoryDeviceType
+                        status = $dimm.Status.Health
+                    }
+                }
+            }
+        }
+        
+        # 5. Network Adapters (/redfish/v1/Systems/1/EthernetInterfaces/)
+        $nics = Invoke-RedfishGet "/redfish/v1/Systems/1/EthernetInterfaces/"
+        if ($nics -and $nics.Members) {
+            foreach ($nicRef in $nics.Members) {
+                $nic = Invoke-RedfishGet $nicRef.'@odata.id'
+                if ($nic) {
+                    $result.network_adapters += @{
+                        name = $nic.Name
+                        mac = $nic.MACAddress
+                        speed_mbps = $nic.SpeedMbps
+                        status = if ($nic.Status) { $nic.Status.Health } else { "N/A" }
+                        ipv4 = if ($nic.IPv4Addresses -and $nic.IPv4Addresses.Count -gt 0) { $nic.IPv4Addresses[0].Address } else { $null }
+                    }
+                }
+            }
+        }
+        
+        # 6. Storage (/redfish/v1/Systems/1/SmartStorage/ArrayControllers/) - HPE specific
+        $storage = Invoke-RedfishGet "/redfish/v1/Systems/1/SmartStorage/ArrayControllers/"
+        if (-not $storage) {
+            # Try standard Redfish storage path
+            $storage = Invoke-RedfishGet "/redfish/v1/Systems/1/Storage/"
+        }
+        if ($storage -and $storage.Members) {
+            foreach ($ctrlRef in $storage.Members) {
+                $ctrl = Invoke-RedfishGet $ctrlRef.'@odata.id'
+                if ($ctrl) {
+                    $ctrlInfo = @{
+                        name = $ctrl.Model
+                        status = if ($ctrl.Status) { $ctrl.Status.Health } else { "N/A" }
+                        logical_drives = @()
+                    }
+                    # Try to get logical drives
+                    $ldPath = $ctrlRef.'@odata.id' + "/LogicalDrives/"
+                    $lds = Invoke-RedfishGet $ldPath
+                    if ($lds -and $lds.Members) {
+                        foreach ($ldRef in $lds.Members) {
+                            $ld = Invoke-RedfishGet $ldRef.'@odata.id'
+                            if ($ld) {
+                                $ctrlInfo.logical_drives += @{
+                                    name = $ld.LogicalDriveName
+                                    capacity_gb = if ($ld.CapacityMiB) { [math]::Round($ld.CapacityMiB / 1024, 1) } else { $null }
+                                    raid = $ld.Raid
+                                    status = if ($ld.Status) { $ld.Status.Health } else { "N/A" }
+                                }
+                            }
+                        }
+                    }
+                    $result.storage_controllers += $ctrlInfo
+                }
+            }
+        }
+        
+    } catch {
+        $result.error = $_.Exception.Message
+    }
+    
+    return $result
+}

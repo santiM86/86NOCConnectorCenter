@@ -27,6 +27,10 @@ import asyncio
 import json
 import base64
 
+# Load .env BEFORE local imports (security.py needs ENCRYPTION_KEY)
+ROOT_DIR = Path(__file__).parent
+load_dotenv(ROOT_DIR / '.env')
+
 # Local imports
 from security import security_manager
 from audit import AuditLogger, AuditAction
@@ -36,9 +40,6 @@ from correlation import AlertCorrelationManager
 from maintenance import MaintenanceManager
 from sla import SLAManager
 from security_hardening import SecurityHardening
-
-ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
 
 # MongoDB connection
 mongo_url = os.environ['MONGO_URL']
@@ -2285,6 +2286,41 @@ async def connector_heartbeat(request: Request, heartbeat: ConnectorHeartbeat):
     
     return response
 
+
+@api_router.get("/connector/vault/credentials")
+async def connector_get_vault_credentials(request: Request):
+    """Return decrypted credentials for the connector to use when polling iLO/Redfish devices.
+    Authenticated by the connector's API key."""
+    client_data = await validate_api_key(request)
+    
+    creds = await db.device_credentials.find({}, {"_id": 0}).to_list(500)
+    
+    result = []
+    for c in creds:
+        try:
+            decrypted = {
+                "device_ip": c.get("device_ip"),
+                "device_name": c.get("device_name"),
+                "credential_type": c.get("credential_type"),
+                "username": security_manager.decrypt_credential(c["username_enc"]),
+                "password": security_manager.decrypt_credential(c["password_enc"]),
+                "url": c.get("url"),
+                "port": c.get("port"),
+            }
+            result.append(decrypted)
+        except Exception:
+            continue
+    
+    await audit_logger.log(
+        AuditAction.SUSPICIOUS_ACTIVITY,
+        user_email=f"connector:{client_data.get('name', 'unknown')}",
+        details={"action": "connector_vault_fetch", "client_id": client_data.get("id"), "count": len(result)},
+        severity="info"
+    )
+    
+    return result
+
+
 @api_router.get("/connector/status")
 async def get_connector_status(current_user: dict = Depends(get_current_user)):
     """Get status of all connected NOC Connectors."""
@@ -2529,6 +2565,7 @@ async def connector_device_report(request: Request):
             "device_class": dev.get("device_class", "generic"),
             "hardware": dev.get("hardware", None),
             "firewall": dev.get("firewall", None),
+            "redfish": dev.get("redfish", None),
             "last_poll": dev.get("poll_timestamp", now_iso),
             "updated_at": now_iso
         }
