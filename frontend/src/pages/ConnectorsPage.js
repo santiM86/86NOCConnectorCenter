@@ -322,6 +322,20 @@ export default function ConnectorsPage() {
     return () => { if (discoveryPollRef.current) clearInterval(discoveryPollRef.current); };
   }, []);
 
+  const switchMonitorType = async (deviceIp, currentType) => {
+    const newType = currentType === "snmp" ? "ping" : "snmp";
+    try {
+      await axios.put(`${API}/connector/device-poll-status/${encodeURIComponent(deviceIp)}/monitor-type`, {
+        monitor_type: newType,
+        http_port: 80
+      });
+      toast.success(`${deviceIp} cambiato a ${newType === "snmp" ? "SNMP" : "Ping+HTTP"}`);
+      fetchAll();
+    } catch (e) {
+      toast.error("Errore: " + (e.response?.data?.detail || e.message));
+    }
+  };
+
   const isOnline = (lastSeen) => {
     if (!lastSeen) return false;
     return (Date.now() - new Date(lastSeen).getTime()) < 120000;
@@ -961,7 +975,10 @@ export default function ConnectorsPage() {
                             <div className="flex-1 min-w-0">
                               <div className="flex items-center gap-2">
                                 <p className="font-heading font-bold text-xs text-[var(--text-primary)] truncate">{dev.device_name}</p>
-                                <span className={`text-[10px] px-1.5 py-0.5 rounded border ${isPing ? "text-indigo-400 bg-indigo-500/10 border-indigo-500/20" : "text-blue-400 bg-blue-500/10 border-blue-500/20"}`}>
+                                <span className={`text-[10px] px-1.5 py-0.5 rounded border cursor-pointer transition-colors ${isPing ? "text-indigo-400 bg-indigo-500/10 border-indigo-500/20 hover:bg-indigo-500/20" : "text-blue-400 bg-blue-500/10 border-blue-500/20 hover:bg-blue-500/20"}`}
+                                  onClick={(e) => { e.stopPropagation(); switchMonitorType(dev.device_ip, isPing ? "ping" : "snmp"); }}
+                                  title={`Clicca per cambiare a ${isPing ? "SNMP" : "Ping+HTTP"}`}
+                                  data-testid={`switch-type-${dev.device_ip}`}>
                                   {isPing ? "PING" : "SNMP"}
                                 </span>
                                 <span className={`text-[10px] px-1.5 py-0.5 rounded border ${dev.reachable && recent ? "text-[var(--ok)] bg-[var(--low-bg)] border-[var(--low-border)]" : "text-[var(--critical)] bg-[var(--critical-bg)] border-[var(--critical-border)]"}`}>
