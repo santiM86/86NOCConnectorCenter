@@ -1740,6 +1740,7 @@ async def connector_device_report(request: Request):
     hostname = body.get("hostname", "unknown")
     devices = body.get("devices", [])
 
+    now_iso = datetime.now(timezone.utc).isoformat()
     for dev in devices:
         doc = {
             "client_id": client_id,
@@ -1753,14 +1754,38 @@ async def connector_device_report(request: Request):
             "sys_uptime": dev.get("sys_uptime", ""),
             "http_status": dev.get("http_status", None),
             "ping_ms": dev.get("ping_ms", None),
-            "last_poll": dev.get("poll_timestamp", datetime.now(timezone.utc).isoformat()),
-            "updated_at": datetime.now(timezone.utc).isoformat()
+            "cpu_usage": dev.get("cpu_usage", None),
+            "memory_usage": dev.get("memory_usage", None),
+            "temperature": dev.get("temperature", None),
+            "device_class": dev.get("device_class", "generic"),
+            "hardware": dev.get("hardware", None),
+            "last_poll": dev.get("poll_timestamp", now_iso),
+            "updated_at": now_iso
         }
         await db.device_poll_status.update_one(
             {"client_id": client_id, "device_ip": dev["device_ip"]},
             {"$set": doc},
             upsert=True
         )
+
+        # Store historical metrics for trending (keep last 288 = 24h at 5min intervals)
+        if dev.get("cpu_usage") is not None or dev.get("temperature") is not None:
+            metric_doc = {
+                "client_id": client_id,
+                "device_ip": dev["device_ip"],
+                "timestamp": now_iso,
+                "cpu_usage": dev.get("cpu_usage"),
+                "memory_usage": dev.get("memory_usage"),
+                "temperature": dev.get("temperature"),
+            }
+            await db.device_metrics_history.insert_one(metric_doc)
+            # Cleanup old metrics (keep last 24h)
+            cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+            await db.device_metrics_history.delete_many({
+                "client_id": client_id,
+                "device_ip": dev["device_ip"],
+                "timestamp": {"$lt": cutoff}
+            })
 
     return {"status": "ok", "devices_updated": len(devices)}
 
@@ -1769,6 +1794,16 @@ async def get_device_poll_status(current_user: dict = Depends(get_current_user))
     """Get latest polling status for all monitored devices."""
     statuses = await db.device_poll_status.find({}, {"_id": 0}).to_list(500)
     return statuses
+
+@api_router.get("/connector/device-metrics/{device_ip}")
+async def get_device_metrics_history(device_ip: str, current_user: dict = Depends(get_current_user)):
+    """Get historical metrics (CPU, Memory, Temperature) for a device - last 24h."""
+    metrics = await db.device_metrics_history.find(
+        {"device_ip": device_ip},
+        {"_id": 0, "timestamp": 1, "cpu_usage": 1, "memory_usage": 1, "temperature": 1}
+    ).sort("timestamp", 1).to_list(500)
+    return metrics
+
 
 @api_router.delete("/connector/device-poll-status/{device_ip}")
 async def delete_device_poll_status(device_ip: str, current_user: dict = Depends(get_current_user)):

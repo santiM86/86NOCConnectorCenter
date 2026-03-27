@@ -370,7 +370,7 @@ function Send-DeviceReport($config, $devices) {
                 poll_timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
             }
         } else {
-            # SNMP device - original logic
+            # SNMP device - full extended metrics
             $reachable = $script:DeviceUp.ContainsKey($ip) -and $script:DeviceUp[$ip]
             $ports = @()
             
@@ -388,6 +388,8 @@ function Send-DeviceReport($config, $devices) {
             
             $sysDescr = ""
             $sysUptime = ""
+            $extMetrics = $null
+            $trafficData = $null
             if ($reachable) {
                 try {
                     $sysDescr = Get-SnmpValue $ip $community "1.3.6.1.2.1.1.1.0"
@@ -400,9 +402,30 @@ function Send-DeviceReport($config, $devices) {
                         $sysUptime = "${d}g ${h}h ${m}m"
                     }
                 } catch {}
+                
+                # Extended metrics (CPU, Memory, Temperature, Hardware health)
+                try { $extMetrics = Poll-ExtendedMetrics $ip $community } catch {}
+                
+                # Interface traffic (bandwidth, speed, errors)
+                try { $trafficData = Poll-InterfaceTraffic $ip $community } catch {}
             }
             
-            $reportDevices += @{
+            # Enrich ports with traffic data
+            if ($trafficData) {
+                foreach ($p in $ports) {
+                    $idx = $p.index
+                    if ($trafficData.ContainsKey($idx)) {
+                        $t = $trafficData[$idx]
+                        $p.speed_bps = $t.speed_bps
+                        $p.in_bps = $t.in_bps
+                        $p.out_bps = $t.out_bps
+                        $p.in_errors = $t.in_errors
+                        $p.out_errors = $t.out_errors
+                    }
+                }
+            }
+            
+            $deviceReport = @{
                 device_ip = $ip
                 device_name = $devName
                 monitor_type = "snmp"
@@ -412,6 +435,17 @@ function Send-DeviceReport($config, $devices) {
                 sys_uptime = $sysUptime
                 poll_timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
             }
+            
+            # Add extended metrics if available
+            if ($extMetrics) {
+                $deviceReport.cpu_usage = $extMetrics.cpu_usage
+                $deviceReport.memory_usage = $extMetrics.memory_usage
+                $deviceReport.temperature = $extMetrics.temperature
+                $deviceReport.device_class = $extMetrics.device_class
+                $deviceReport.hardware = $extMetrics.hardware
+            }
+            
+            $reportDevices += $deviceReport
         }
     }
     

@@ -321,7 +321,7 @@ function Get-SnmpTable([string]$target, [string]$community, [string]$baseOid) {
 
 # ==================== DEVICE POLLING ====================
 
-# OID definitions
+# OID definitions - Standard MIB-II
 $script:OID_sysDescr    = "1.3.6.1.2.1.1.1.0"
 $script:OID_sysUpTime   = "1.3.6.1.2.1.1.3.0"
 $script:OID_sysName     = "1.3.6.1.2.1.1.5.0"
@@ -330,10 +330,37 @@ $script:OID_ifAdminStat = "1.3.6.1.2.1.2.2.1.7"
 $script:OID_ifOperStat  = "1.3.6.1.2.1.2.2.1.8"
 $script:OID_ifInErrors  = "1.3.6.1.2.1.2.2.1.14"
 $script:OID_ifOutErrors = "1.3.6.1.2.1.2.2.1.20"
+$script:OID_ifSpeed     = "1.3.6.1.2.1.2.2.1.5"
+$script:OID_ifInOctets  = "1.3.6.1.2.1.2.2.1.10"
+$script:OID_ifOutOctets = "1.3.6.1.2.1.2.2.1.16"
+$script:OID_ifAlias     = "1.3.6.1.2.1.31.1.1.1.18"
+$script:OID_ifHCInOctets  = "1.3.6.1.2.1.31.1.1.1.6"
+$script:OID_ifHCOutOctets = "1.3.6.1.2.1.31.1.1.1.10"
+
+# HPE Comware / H3C OIDs (HPE 5130, 5500, 5900, etc.)
+$script:OID_hh3cCpuUsage   = "1.3.6.1.4.1.25506.2.6.1.1.1.1.6"
+$script:OID_hh3cMemUsage    = "1.3.6.1.4.1.25506.2.6.1.1.1.1.8"
+$script:OID_hh3cTemperature = "1.3.6.1.4.1.25506.2.6.1.1.1.1.12"
+
+# HPE ILO / ProLiant OIDs (CPQHLTH-MIB)
+$script:OID_cpqHealth       = "1.3.6.1.4.1.232.6.1.3.0"           # cpqHeMibCondition (2=ok,3=degraded,4=failed)
+$script:OID_cpqTempTable    = "1.3.6.1.4.1.232.6.2.6.8.1"         # cpqHeTemperatureTable
+$script:OID_cpqTempValue    = "1.3.6.1.4.1.232.6.2.6.8.1.4"       # cpqHeTemperatureCelsius
+$script:OID_cpqTempLocale   = "1.3.6.1.4.1.232.6.2.6.8.1.3"       # cpqHeTemperatureLocale
+$script:OID_cpqTempCondition= "1.3.6.1.4.1.232.6.2.6.8.1.6"       # cpqHeTemperatureCondition
+$script:OID_cpqFanCondition = "1.3.6.1.4.1.232.6.2.6.7.1.1.9"     # cpqHeFltTolFanCondition
+$script:OID_cpqFanLocale    = "1.3.6.1.4.1.232.6.2.6.7.1.1.3"     # cpqHeFltTolFanLocale
+$script:OID_cpqFanSpeed     = "1.3.6.1.4.1.232.6.2.6.7.1.1.6"     # cpqHeFltTolFanCurrentSpeed
+$script:OID_cpqPsuCondition = "1.3.6.1.4.1.232.6.2.9.3.1.1.4"     # cpqHeFltTolPowerSupplyCondition
+$script:OID_cpqPsuStatus    = "1.3.6.1.4.1.232.6.2.9.3.1.1.5"     # cpqHeFltTolPowerSupplyStatus
+$script:OID_cpqDiskStatus   = "1.3.6.1.4.1.232.3.2.5.1.1.6"       # cpqDaPhyDrvStatus
+$script:OID_cpqDiskModel    = "1.3.6.1.4.1.232.3.2.5.1.1.3"       # cpqDaPhyDrvModel
 
 # Port status memory per device
 $script:PortStates = @{}
 $script:DeviceUp = @{}
+$script:TrafficCounters = @{}  # Stores previous octet counters for bandwidth calc
+$script:LastPollTime = @{}     # Timestamp of last poll per device
 
 $script:IfStatusMap = @{
     1 = "up"
@@ -345,15 +372,256 @@ $script:IfStatusMap = @{
     7 = "lowerLayerDown"
 }
 
+$script:CpqConditionMap = @{
+    1 = "other"
+    2 = "ok"
+    3 = "degraded"
+    4 = "failed"
+}
+
+$script:CpqTempLocaleMap = @{
+    1 = "other"; 2 = "unknown"; 3 = "system"; 4 = "systemBoard"
+    5 = "ioBoard"; 6 = "cpu"; 7 = "memory"; 8 = "storage"
+    9 = "removableMedia"; 10 = "powerSupply"; 11 = "ambient"
+    12 = "chassis"; 13 = "bridgeCard"
+}
+
+$script:CpqFanLocaleMap = @{
+    1 = "other"; 2 = "unknown"; 3 = "system"; 4 = "systemBoard"
+    5 = "ioBoard"; 6 = "cpu"; 7 = "memory"; 8 = "storage"
+    9 = "removableMedia"; 10 = "powerSupply"; 11 = "ambient"
+}
+
+$script:CpqDiskStatusMap = @{
+    1 = "other"; 2 = "ok"; 3 = "failed"; 4 = "predictiveFailure"
+    5 = "erasing"; 6 = "eraseDone"; 7 = "eraseQueued"; 8 = "ssdWearOut"
+}
+
+function Poll-ExtendedMetrics([string]$ip, [string]$community) {
+    $metrics = @{
+        cpu_usage = $null
+        memory_usage = $null
+        temperature = $null
+        device_class = "generic"  # generic, hpe-comware, hpe-ilo
+        hardware = @{
+            fans = @()
+            power_supplies = @()
+            temperatures = @()
+            disks = @()
+            health_status = $null
+        }
+    }
+    
+    # --- Detect device type from sysDescr ---
+    $sysDescr = Get-SnmpValue $ip $community $script:OID_sysDescr
+    $isComware = $false
+    $isILO = $false
+    if ($sysDescr) {
+        if ($sysDescr -match "Comware|H3C|HPE.*Switch|5130|5500|5900|FlexNetwork") { $isComware = $true }
+        if ($sysDescr -match "iLO|Integrated Lights-Out|ProLiant") { $isILO = $true }
+    }
+    
+    # --- HPE Comware / H3C Metrics (5130, 5500, etc.) ---
+    if ($isComware) {
+        $metrics.device_class = "hpe-comware"
+        try {
+            # CPU usage - walk the table and take the first valid value
+            $cpuTable = Get-SnmpTable $ip $community $script:OID_hh3cCpuUsage
+            if ($cpuTable -and $cpuTable.Count -gt 0) {
+                $cpuVals = @($cpuTable.Values | Where-Object { $_ -is [long] -or $_ -is [int] } | Where-Object { $_ -ge 0 -and $_ -le 100 })
+                if ($cpuVals.Count -gt 0) { $metrics.cpu_usage = [int]$cpuVals[0] }
+            }
+        } catch {}
+        try {
+            # Memory usage
+            $memTable = Get-SnmpTable $ip $community $script:OID_hh3cMemUsage
+            if ($memTable -and $memTable.Count -gt 0) {
+                $memVals = @($memTable.Values | Where-Object { $_ -is [long] -or $_ -is [int] } | Where-Object { $_ -ge 0 -and $_ -le 100 })
+                if ($memVals.Count -gt 0) { $metrics.memory_usage = [int]$memVals[0] }
+            }
+        } catch {}
+        try {
+            # Temperature
+            $tempTable = Get-SnmpTable $ip $community $script:OID_hh3cTemperature
+            if ($tempTable -and $tempTable.Count -gt 0) {
+                $tempVals = @($tempTable.Values | Where-Object { $_ -is [long] -or $_ -is [int] } | Where-Object { $_ -gt 0 -and $_ -lt 150 })
+                if ($tempVals.Count -gt 0) { $metrics.temperature = [int]$tempVals[0] }
+                # Store all temperature readings
+                $idx = 1
+                foreach ($v in $tempVals) {
+                    $metrics.hardware.temperatures += @{ locale = "sensor-$idx"; value = [int]$v; condition = "ok" }
+                    $idx++
+                }
+            }
+        } catch {}
+    }
+    
+    # --- HPE ILO Metrics ---
+    if ($isILO) {
+        $metrics.device_class = "hpe-ilo"
+        try {
+            # Overall health condition
+            $health = Get-SnmpValue $ip $community $script:OID_cpqHealth
+            if ($health -ne $null) {
+                $metrics.hardware.health_status = if ($script:CpqConditionMap.ContainsKey([int]$health)) { $script:CpqConditionMap[[int]$health] } else { "unknown" }
+            }
+        } catch {}
+        try {
+            # Temperature sensors
+            $tempValues = Get-SnmpTable $ip $community $script:OID_cpqTempValue
+            $tempLocales = Get-SnmpTable $ip $community $script:OID_cpqTempLocale
+            $tempConditions = Get-SnmpTable $ip $community $script:OID_cpqTempCondition
+            if ($tempValues -and $tempValues.Count -gt 0) {
+                foreach ($key in $tempValues.Keys) {
+                    $idx = $key.Split('.')[-1]
+                    $val = [int]$tempValues[$key]
+                    if ($val -le 0 -or $val -ge 200) { continue }
+                    $localeKey = ($tempLocales.Keys | Where-Object { $_.EndsWith(".$idx") } | Select-Object -First 1)
+                    $condKey = ($tempConditions.Keys | Where-Object { $_.EndsWith(".$idx") } | Select-Object -First 1)
+                    $locale = if ($localeKey -and $script:CpqTempLocaleMap.ContainsKey([int]$tempLocales[$localeKey])) { $script:CpqTempLocaleMap[[int]$tempLocales[$localeKey]] } else { "sensor-$idx" }
+                    $cond = if ($condKey -and $script:CpqConditionMap.ContainsKey([int]$tempConditions[$condKey])) { $script:CpqConditionMap[[int]$tempConditions[$condKey]] } else { "ok" }
+                    $metrics.hardware.temperatures += @{ locale = $locale; value = $val; condition = $cond }
+                    # Use first CPU or ambient temp as main temperature
+                    if ($metrics.temperature -eq $null) { $metrics.temperature = $val }
+                }
+            }
+        } catch {}
+        try {
+            # Fans
+            $fanConditions = Get-SnmpTable $ip $community $script:OID_cpqFanCondition
+            $fanLocales = Get-SnmpTable $ip $community $script:OID_cpqFanLocale
+            $fanSpeeds = Get-SnmpTable $ip $community $script:OID_cpqFanSpeed
+            if ($fanConditions -and $fanConditions.Count -gt 0) {
+                foreach ($key in $fanConditions.Keys) {
+                    $idx = $key.Split('.')[-1]
+                    $cond = if ($script:CpqConditionMap.ContainsKey([int]$fanConditions[$key])) { $script:CpqConditionMap[[int]$fanConditions[$key]] } else { "unknown" }
+                    $localeKey = ($fanLocales.Keys | Where-Object { $_.EndsWith(".$idx") } | Select-Object -First 1)
+                    $locale = if ($localeKey -and $script:CpqFanLocaleMap.ContainsKey([int]$fanLocales[$localeKey])) { $script:CpqFanLocaleMap[[int]$fanLocales[$localeKey]] } else { "fan-$idx" }
+                    $speedKey = ($fanSpeeds.Keys | Where-Object { $_.EndsWith(".$idx") } | Select-Object -First 1)
+                    $speed = if ($speedKey) { [int]$fanSpeeds[$speedKey] } else { $null }
+                    $metrics.hardware.fans += @{ locale = $locale; condition = $cond; speed = $speed }
+                }
+            }
+        } catch {}
+        try {
+            # Power Supplies
+            $psuConditions = Get-SnmpTable $ip $community $script:OID_cpqPsuCondition
+            $psuStatuses = Get-SnmpTable $ip $community $script:OID_cpqPsuStatus
+            if ($psuConditions -and $psuConditions.Count -gt 0) {
+                $idx = 1
+                foreach ($key in $psuConditions.Keys) {
+                    $cond = if ($script:CpqConditionMap.ContainsKey([int]$psuConditions[$key])) { $script:CpqConditionMap[[int]$psuConditions[$key]] } else { "unknown" }
+                    $metrics.hardware.power_supplies += @{ name = "PSU-$idx"; condition = $cond }
+                    $idx++
+                }
+            }
+        } catch {}
+        try {
+            # Physical Disks
+            $diskStatuses = Get-SnmpTable $ip $community $script:OID_cpqDiskStatus
+            $diskModels = Get-SnmpTable $ip $community $script:OID_cpqDiskModel
+            if ($diskStatuses -and $diskStatuses.Count -gt 0) {
+                foreach ($key in $diskStatuses.Keys) {
+                    $idx = $key.Split('.')[-1]
+                    $status = if ($script:CpqDiskStatusMap.ContainsKey([int]$diskStatuses[$key])) { $script:CpqDiskStatusMap[[int]$diskStatuses[$key]] } else { "unknown" }
+                    $modelKey = ($diskModels.Keys | Where-Object { $_.EndsWith(".$idx") } | Select-Object -First 1)
+                    $model = if ($modelKey) { "$($diskModels[$modelKey])" } else { "Disk-$idx" }
+                    $metrics.hardware.disks += @{ name = $model; status = $status }
+                }
+            }
+        } catch {}
+    }
+    
+    # --- Generic fallback: Try standard HOST-RESOURCES-MIB for CPU/Memory ---
+    if (-not $isComware -and -not $isILO) {
+        try {
+            # hrProcessorLoad (1.3.6.1.2.1.25.3.3.1.2) - works on many devices
+            $cpuTable = Get-SnmpTable $ip $community "1.3.6.1.2.1.25.3.3.1.2"
+            if ($cpuTable -and $cpuTable.Count -gt 0) {
+                $cpuVals = @($cpuTable.Values | Where-Object { $_ -is [long] -or $_ -is [int] })
+                if ($cpuVals.Count -gt 0) {
+                    $avg = ($cpuVals | Measure-Object -Average).Average
+                    $metrics.cpu_usage = [int]$avg
+                }
+            }
+        } catch {}
+    }
+    
+    return $metrics
+}
+
+function Poll-InterfaceTraffic([string]$ip, [string]$community) {
+    $traffic = @{}
+    $now = Get-Date
+    
+    # Get interface octets
+    $inOctets = Get-SnmpTable $ip $community $script:OID_ifInOctets
+    $outOctets = Get-SnmpTable $ip $community $script:OID_ifOutOctets
+    $ifSpeeds = Get-SnmpTable $ip $community $script:OID_ifSpeed
+    $ifErrors = Get-SnmpTable $ip $community $script:OID_ifInErrors
+    $ifOutErrors = Get-SnmpTable $ip $community $script:OID_ifOutErrors
+    
+    # Calculate bandwidth if we have previous counters
+    $prevCounters = if ($script:TrafficCounters.ContainsKey($ip)) { $script:TrafficCounters[$ip] } else { $null }
+    $prevTime = if ($script:LastPollTime.ContainsKey($ip)) { $script:LastPollTime[$ip] } else { $null }
+    $newCounters = @{}
+    
+    if ($inOctets) {
+        foreach ($key in $inOctets.Keys) {
+            $idx = $key.Split('.')[-1]
+            $inVal = [long]$inOctets[$key]
+            $outKey = ($outOctets.Keys | Where-Object { $_.EndsWith(".$idx") } | Select-Object -First 1)
+            $outVal = if ($outKey) { [long]$outOctets[$outKey] } else { 0 }
+            $speedKey = ($ifSpeeds.Keys | Where-Object { $_.EndsWith(".$idx") } | Select-Object -First 1)
+            $speed = if ($speedKey) { [long]$ifSpeeds[$speedKey] } else { 0 }
+            $errInKey = ($ifErrors.Keys | Where-Object { $_.EndsWith(".$idx") } | Select-Object -First 1)
+            $errIn = if ($errInKey) { [long]$ifErrors[$errInKey] } else { 0 }
+            $errOutKey = ($ifOutErrors.Keys | Where-Object { $_.EndsWith(".$idx") } | Select-Object -First 1)
+            $errOut = if ($errOutKey) { [long]$ifOutErrors[$errOutKey] } else { 0 }
+            
+            $newCounters[$idx] = @{ in = $inVal; out = $outVal }
+            
+            $bpsIn = 0; $bpsOut = 0
+            if ($prevCounters -and $prevTime -and $prevCounters.ContainsKey($idx)) {
+                $elapsed = ($now - $prevTime).TotalSeconds
+                if ($elapsed -gt 0) {
+                    $deltaIn = $inVal - $prevCounters[$idx].in
+                    $deltaOut = $outVal - $prevCounters[$idx].out
+                    # Handle counter wrap (32-bit)
+                    if ($deltaIn -lt 0) { $deltaIn += [math]::Pow(2, 32) }
+                    if ($deltaOut -lt 0) { $deltaOut += [math]::Pow(2, 32) }
+                    $bpsIn = [math]::Round(($deltaIn * 8) / $elapsed)
+                    $bpsOut = [math]::Round(($deltaOut * 8) / $elapsed)
+                }
+            }
+            
+            $traffic[$idx] = @{
+                speed_bps = $speed
+                in_bps = $bpsIn
+                out_bps = $bpsOut
+                in_errors = $errIn
+                out_errors = $errOut
+            }
+        }
+    }
+    
+    $script:TrafficCounters[$ip] = $newCounters
+    $script:LastPollTime[$ip] = $now
+    
+    return $traffic
+}
+
 function Poll-Device([string]$ip, [string]$community, [string]$name) {
     $alerts = @()
 
     # 0. Quick ping check first (most reliable reachability test)
     $pingOk = $false
+    $pingMs = $null
     try {
         $ping = New-Object System.Net.NetworkInformation.Ping
         $reply = $ping.Send($ip, 2000)
         $pingOk = ($reply.Status -eq "Success")
+        if ($pingOk) { $pingMs = $reply.RoundtripTime }
         $ping.Dispose()
     } catch {}
 
@@ -373,7 +641,6 @@ function Poll-Device([string]$ip, [string]$community, [string]$name) {
         try {
             $udp = New-Object System.Net.Sockets.UdpClient
             $udp.Client.ReceiveTimeout = 3000
-            # Build simple SNMP GET for sysDescr
             $oidBytes = @(0x06, 0x08, 0x2B, 0x06, 0x01, 0x02, 0x01, 0x01, 0x01, 0x00)
             $varbind = @(0x30) + @([byte]($oidBytes.Length + 2)) + $oidBytes + @(0x05, 0x00)
             $varbindList = @(0x30) + @([byte]$varbind.Length) + $varbind
@@ -396,7 +663,6 @@ function Poll-Device([string]$ip, [string]$community, [string]$name) {
             
             if ($response.Length -gt 10) {
                 $reachable = $true
-                # Try to extract sysDescr from raw response
                 try {
                     $parsed = Parse-SnmpResponse $response
                     if ($parsed -and $parsed.Count -gt 0) {
@@ -410,7 +676,6 @@ function Poll-Device([string]$ip, [string]$community, [string]$name) {
     }
 
     if (-not $reachable) {
-        # Last resort: if SNMP failed but ping succeeded, still mark as reachable
         if ($pingOk) {
             $reachable = $true
             if (-not $sysDescr) { $sysDescr = "Dispositivo raggiungibile (ping OK, SNMP non disponibile)" }
@@ -527,6 +792,74 @@ function Poll-Device([string]$ip, [string]$community, [string]$name) {
         $prevStates[$idx] = $operStatus
     }
     $script:PortStates[$ip] = $prevStates
+
+    # 6. Extended metrics alerts (threshold-based)
+    $extMetrics = Poll-ExtendedMetrics $ip $community
+    if ($extMetrics.cpu_usage -ne $null -and $extMetrics.cpu_usage -gt 90) {
+        $alerts += @{
+            device_ip  = $ip
+            oid        = "hpe.cpu.high"
+            value      = "CPU al $($extMetrics.cpu_usage)% su $name ($ip)"
+            trap_type  = "cpuHigh"
+            severity   = "high"
+            device_name = $name
+        }
+    }
+    if ($extMetrics.memory_usage -ne $null -and $extMetrics.memory_usage -gt 90) {
+        $alerts += @{
+            device_ip  = $ip
+            oid        = "hpe.memory.high"
+            value      = "Memoria al $($extMetrics.memory_usage)% su $name ($ip)"
+            trap_type  = "memoryHigh"
+            severity   = "high"
+            device_name = $name
+        }
+    }
+    if ($extMetrics.temperature -ne $null -and $extMetrics.temperature -gt 75) {
+        $alerts += @{
+            device_ip  = $ip
+            oid        = "hpe.temperature.high"
+            value      = "Temperatura $($extMetrics.temperature)C su $name ($ip)"
+            trap_type  = "temperatureHigh"
+            severity   = "critical"
+            device_name = $name
+        }
+    }
+    # ILO hardware alerts
+    if ($extMetrics.hardware.health_status -and $extMetrics.hardware.health_status -ne "ok" -and $extMetrics.hardware.health_status -ne "other") {
+        $alerts += @{
+            device_ip  = $ip
+            oid        = "hpe.ilo.health"
+            value      = "Stato salute ILO: $($extMetrics.hardware.health_status) su $name ($ip)"
+            trap_type  = "healthDegraded"
+            severity   = "critical"
+            device_name = $name
+        }
+    }
+    foreach ($disk in $extMetrics.hardware.disks) {
+        if ($disk.status -ne "ok" -and $disk.status -ne "other") {
+            $alerts += @{
+                device_ip  = $ip
+                oid        = "hpe.ilo.disk"
+                value      = "Disco $($disk.name) in stato $($disk.status) su $name ($ip)"
+                trap_type  = "diskFailure"
+                severity   = "critical"
+                device_name = $name
+            }
+        }
+    }
+    foreach ($fan in $extMetrics.hardware.fans) {
+        if ($fan.condition -ne "ok" -and $fan.condition -ne "other") {
+            $alerts += @{
+                device_ip  = $ip
+                oid        = "hpe.ilo.fan"
+                value      = "Ventola $($fan.locale) in stato $($fan.condition) su $name ($ip)"
+                trap_type  = "fanFailure"
+                severity   = "high"
+                device_name = $name
+            }
+        }
+    }
 
     return $alerts
 }

@@ -1,4 +1,4 @@
 {
-  "version": "1.7.5",
-  "changelog": "Fix doppia icona tray: singola istanza con pulizia icone fantasma. Fix ping verifica SNMP. Web Console Proxy."
+  "version": "1.8.0",
+  "changelog": "Metriche estese: CPU, RAM, Temperatura per HPE 5130. Salute hardware per ILO (ventole, PSU, dischi, temperature). Traffico interfacce con bandwidth IN/OUT, velocita e errori. Alert automatici su soglie critiche (CPU>90%, Temp>75C, disco guasto)."
 }

@@ -40,6 +40,7 @@ import {
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
+import { DeviceDetailPanel } from "@/components/DeviceDetailPanel";
 
 export default function ConnectorsPage() {
   const [connectors, setConnectors] = useState([]);
@@ -1091,57 +1092,7 @@ export default function ConnectorsPage() {
                             </button>
                           </div>
                           {expanded && (
-                            <div className="border-t border-[var(--bg-border)] p-3 pl-8 bg-[var(--bg-card)]/50 animate-fade-in">
-                              {dev.sys_descr && <p className="text-[11px] text-[var(--text-muted)] mb-1 truncate">{dev.sys_descr}</p>}
-                              {dev.sys_uptime && <p className="text-[11px] text-[var(--text-muted)] mb-2">Uptime: {dev.sys_uptime}</p>}
-                              {isPing ? (
-                                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                                  <div className="p-2 rounded-lg bg-[var(--bg-panel)] border border-[var(--bg-border)]">
-                                    <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider">Ping</p>
-                                    <p className={`text-sm font-mono font-bold ${dev.reachable ? "text-[var(--ok)]" : "text-[var(--critical)]"}`}>
-                                      {dev.ping_ms != null ? `${dev.ping_ms}ms` : "N/A"}
-                                    </p>
-                                  </div>
-                                  <div className="p-2 rounded-lg bg-[var(--bg-panel)] border border-[var(--bg-border)]">
-                                    <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider">HTTP</p>
-                                    <p className={`text-sm font-mono font-bold ${dev.http_status && dev.http_status >= 200 && dev.http_status < 400 ? "text-[var(--ok)]" : dev.http_status ? "text-[var(--medium)]" : "text-[var(--text-muted)]"}`}>
-                                      {dev.http_status ? `${dev.http_status}` : "N/A"}
-                                    </p>
-                                  </div>
-                                  <div className="p-2 rounded-lg bg-[var(--bg-panel)] border border-[var(--bg-border)]">
-                                    <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider">Stato</p>
-                                    <p className={`text-sm font-bold ${dev.reachable ? "text-[var(--ok)]" : "text-[var(--critical)]"}`}>
-                                      {dev.reachable ? "Raggiungibile" : "Offline"}
-                                    </p>
-                                  </div>
-                                  <div className="p-2 rounded-lg bg-[var(--bg-panel)] border border-[var(--bg-border)]">
-                                    <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider">Monitoraggio</p>
-                                    <p className="text-sm font-mono font-bold text-indigo-400">Ping + HTTP</p>
-                                  </div>
-                                </div>
-                              ) : (
-                                <>
-                                  {(dev.ports || []).length > 0 ? (
-                                    <>
-                                      <div className="grid grid-cols-6 sm:grid-cols-8 md:grid-cols-12 gap-1.5">
-                                        {(dev.ports || []).sort((a,b) => parseInt(a.index) - parseInt(b.index)).map((port, pi) => (
-                                          <div key={pi} title={`Porta ${port.index}: ${port.status}`}
-                                            className={`h-6 rounded flex items-center justify-center text-[9px] font-mono border ${
-                                              port.status === "up" ? "bg-[var(--low-bg)] border-[var(--low-border)] text-[var(--ok)]"
-                                              : port.status === "down" ? "bg-[var(--critical-bg)] border-[var(--critical-border)] text-[var(--critical)]"
-                                              : "bg-[var(--bg-hover)] border-[var(--bg-border)] text-[var(--text-muted)]"
-                                            }`}>{port.index}</div>
-                                        ))}
-                                      </div>
-                                      <div className="flex items-center gap-2 mt-2">
-                                        <span className="flex items-center gap-1 text-[10px] text-[var(--text-muted)]"><div className="w-3 h-3 rounded bg-[var(--low-bg)] border border-[var(--low-border)]"></div>UP</span>
-                                        <span className="flex items-center gap-1 text-[10px] text-[var(--text-muted)]"><div className="w-3 h-3 rounded bg-[var(--critical-bg)] border border-[var(--critical-border)]"></div>DOWN</span>
-                                      </div>
-                                    </>
-                                  ) : <p className="text-xs text-[var(--text-muted)]">Nessun dato porte</p>}
-                                </>
-                              )}
-                            </div>
+                            <DeviceDetailPanel dev={dev} isPing={isPing} />
                           )}
                         </div>
                       );
