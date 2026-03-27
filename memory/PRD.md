@@ -20,6 +20,17 @@ Creare un raccoglitore di alert (NOC) per dispositivi nelle reti dei clienti. Co
 - Auto-Discovery rete (ping sweep + port scan)
 - Cambio tipo monitoraggio cliccando badge SNMP/PING
 
+### Metriche Zyxel USG Firewall v1.9.0 (DONE - 27 mar 2026)
+- **CPU**: current, 5sec avg, 1min avg, 5min avg tramite OID Zyxel .890
+- **RAM**: utilizzo percentuale
+- **Sessioni attive**: conteggio connessioni con alert >50k
+- **VPN IPSec**: throughput totale in bps
+- **Flash**: utilizzo percentuale con alert >90%
+- **Info dispositivo**: firmware, product name, serial number
+- **Frontend**: pannello Firewall Status con sessioni, VPN throughput, flash, CPU detail 4 intervalli
+- **Badge**: "Zyxel USG Firewall" in ambra, device_class zyxel-usg auto-detection
+- **Storico**: sessioni e VPN throughput salvati per trend 24h
+
 ### Metriche Estese SNMP v1.8.0 (DONE - 27 mar 2026)
 - **HPE 5130 (Comware)**: CPU, Memoria, Temperatura tramite OID H3C
 - **HPE ILO (ProLiant)**: Salute generale, temperature sensori, ventole, alimentatori, dischi fisici
