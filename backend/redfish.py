@@ -493,3 +493,90 @@ class RedfishPoller:
             })
 
         return result
+
+
+    # ==================== POWER CONTROL ====================
+
+    async def power_action(self, url: str, username: str, password: str, action: str) -> dict:
+        """
+        Execute a power action on a server via iLO Redfish.
+        Actions: On, ForceOff, GracefulShutdown, ForceRestart, PushPowerButton
+        """
+        valid_actions = ["On", "ForceOff", "GracefulShutdown", "ForceRestart", "PushPowerButton"]
+        if action not in valid_actions:
+            return {"success": False, "error": f"Azione non valida. Valide: {valid_actions}"}
+
+        try:
+            async with httpx.AsyncClient(verify=False, timeout=15.0) as client:
+                # First get current power state
+                sys_r = await client.get(
+                    f"{url}/redfish/v1/Systems/1/",
+                    auth=(username, password)
+                )
+                power_state = "Unknown"
+                if sys_r.status_code == 200:
+                    power_state = sys_r.json().get("PowerState", "Unknown")
+
+                # Execute the reset action
+                r = await client.post(
+                    f"{url}/redfish/v1/Systems/1/Actions/ComputerSystem.Reset/",
+                    auth=(username, password),
+                    json={"ResetType": action},
+                    headers={"Content-Type": "application/json"}
+                )
+
+                if r.status_code in (200, 204):
+                    return {
+                        "success": True,
+                        "action": action,
+                        "previous_state": power_state,
+                        "message": f"Comando '{action}' inviato con successo",
+                    }
+                elif r.status_code == 400:
+                    # iLO returns 400 if the action is not applicable (e.g., PowerOn when already On)
+                    error_body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+                    msg = error_body.get("error", {}).get("@Message.ExtendedInfo", [{}])
+                    detail = msg[0].get("MessageId", "") if msg else str(error_body)
+                    return {
+                        "success": False,
+                        "error": f"Azione non applicabile (stato attuale: {power_state}): {detail}",
+                        "power_state": power_state,
+                    }
+                elif r.status_code == 401:
+                    return {"success": False, "error": "Credenziali non valide"}
+                else:
+                    return {"success": False, "error": f"HTTP {r.status_code}"}
+
+        except httpx.TimeoutException:
+            return {"success": False, "error": "Timeout connessione iLO"}
+        except httpx.ConnectError:
+            return {"success": False, "error": "Connessione rifiutata - iLO non raggiungibile"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def get_power_state(self, url: str, username: str, password: str) -> dict:
+        """Get the current power state of a server via iLO Redfish."""
+        try:
+            async with httpx.AsyncClient(verify=False, timeout=10.0) as client:
+                r = await client.get(
+                    f"{url}/redfish/v1/Systems/1/",
+                    auth=(username, password)
+                )
+                if r.status_code == 200:
+                    data = r.json()
+                    return {
+                        "success": True,
+                        "power_state": data.get("PowerState", "Unknown"),
+                        "health": data.get("Status", {}).get("Health", "Unknown"),
+                        "model": data.get("Model"),
+                    }
+                elif r.status_code == 401:
+                    return {"success": False, "error": "Credenziali non valide"}
+                else:
+                    return {"success": False, "error": f"HTTP {r.status_code}"}
+        except httpx.TimeoutException:
+            return {"success": False, "error": "Timeout"}
+        except httpx.ConnectError:
+            return {"success": False, "error": "Connessione rifiutata"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}

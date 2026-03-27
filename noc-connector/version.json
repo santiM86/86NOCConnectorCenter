@@ -1,4 +1,4 @@
 {
-  "version": "2.0.0",
-  "changelog": "Integrazione Redfish iLO: il connettore ora recupera credenziali dal Vault cifrato del SOC e interroga automaticamente i server HPE iLO via API REST. Metriche profonde: consumo energetico (Watt), BIOS, modello, seriale, UUID, firmware iLO, licenza, DIMM RAM (size/speed), NIC, storage controller e logical drive."
+  "version": "2.1.0",
+  "changelog": "Wake-on-LAN: il connettore riceve comandi WoL dal SOC ed invia magic packet sulla LAN per accendere server spenti. Integrazione Redfish iLO con credenziali dal Vault cifrato. Power Control remoto (Accendi/Spegni/Riavvia) direttamente via iLO."
 }

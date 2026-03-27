@@ -187,6 +187,67 @@ $global:Stats = @{
     start_time = Get-Date
 }
 
+
+function Send-WakeOnLAN([string]$macAddress, [string]$targetIP) {
+    <#
+    .SYNOPSIS
+        Invia un Magic Packet Wake-on-LAN sulla rete locale per accendere un server spento.
+    .DESCRIPTION
+        Il Magic Packet e' un pacchetto UDP broadcast (porta 9) che contiene:
+        - 6 byte di FF (preamble)
+        - 16 ripetizioni del MAC address del target (96 byte)
+        Totale: 102 byte
+    #>
+    try {
+        # Pulisci il MAC address (rimuovi : e -)
+        $macClean = $macAddress -replace '[:\-]', ''
+        if ($macClean.Length -ne 12) {
+            Write-Log "MAC address non valido per WoL: $macAddress" "ERROR"
+            return
+        }
+        
+        # Costruisci il Magic Packet
+        $macBytes = [byte[]]@()
+        for ($i = 0; $i -lt 12; $i += 2) {
+            $macBytes += [byte]("0x" + $macClean.Substring($i, 2))
+        }
+        
+        # Preamble: 6 byte di FF
+        $magicPacket = [byte[]](@(0xFF) * 6)
+        
+        # 16 ripetizioni del MAC
+        for ($r = 0; $r -lt 16; $r++) {
+            $magicPacket += $macBytes
+        }
+        
+        # Invia via UDP broadcast sulla porta 9
+        $udpClient = New-Object System.Net.Sockets.UdpClient
+        $udpClient.EnableBroadcast = $true
+        
+        # Broadcast su 255.255.255.255
+        $endpoint = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Broadcast, 9)
+        $udpClient.Send($magicPacket, $magicPacket.Length, $endpoint) | Out-Null
+        
+        # Invia anche sulla subnet specifica se abbiamo l'IP target
+        if ($targetIP) {
+            try {
+                $ipParts = $targetIP.Split('.')
+                if ($ipParts.Count -eq 4) {
+                    $broadcastIP = "$($ipParts[0]).$($ipParts[1]).$($ipParts[2]).255"
+                    $subnetEndpoint = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Parse($broadcastIP), 9)
+                    $udpClient.Send($magicPacket, $magicPacket.Length, $subnetEndpoint) | Out-Null
+                }
+            } catch {}
+        }
+        
+        $udpClient.Close()
+        Write-Log "WoL Magic Packet inviato a $macAddress (target: $targetIP) - broadcast 255.255.255.255 e subnet" "INFO"
+    } catch {
+        Write-Log "Errore invio WoL a $macAddress : $($_.Exception.Message)" "ERROR"
+    }
+}
+
+
 function Send-ToNOC($config, $endpoint, $payload) {
     try {
         $headers = @{
@@ -243,6 +304,21 @@ function Send-Heartbeat($config) {
         syslogs_received = $global:Stats.syslog_received
     }
     $response = Send-ToNOC $config "connector/heartbeat" $payload
+    
+    # Process pending commands (Wake-on-LAN, etc.)
+    if ($response -and $response.pending_commands) {
+        foreach ($cmd in $response.pending_commands) {
+            Write-Log "Comando ricevuto dal NOC: $($cmd.type) - target=$($cmd.target_ip)" "INFO"
+            switch ($cmd.type) {
+                "wake_on_lan" {
+                    Send-WakeOnLAN $cmd.mac_address $cmd.target_ip
+                }
+                default {
+                    Write-Log "Comando sconosciuto: $($cmd.type)" "WARN"
+                }
+            }
+        }
+    }
     
     # Check if server is requesting a forced update
     if ($response -and $response.force_update) {

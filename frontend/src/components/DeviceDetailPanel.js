@@ -5,8 +5,80 @@ import {
   ArrowUp, ArrowDown, Warning, CheckCircle, Lightning, Thermometer,
   Cpu, HardDrive, Fan, BatteryFull, WifiHigh, WifiSlash,
   ShieldCheck, Globe, ArrowsClockwise, FloppyDisk,
-  DesktopTower, PlugCharging, Memory, WifiMedium, Database
+  DesktopTower, PlugCharging, Memory, WifiMedium, Database,
+  Power, ArrowCounterClockwise
 } from "@phosphor-icons/react";
+
+import { Button } from "@/components/ui/button";
+import { toast } from "sonner";
+
+function PowerControlPanel({ deviceIp }) {
+  const [loading, setLoading] = useState(null);
+  const [powerState, setPowerState] = useState(null);
+
+  const fetchPowerState = async () => {
+    try {
+      const res = await axios.get(`${API}/devices/${deviceIp}/power-state`);
+      if (res.data.success) setPowerState(res.data);
+    } catch {}
+  };
+
+  useEffect(() => { fetchPowerState(); }, [deviceIp]);
+
+  const handlePowerAction = async (action, label) => {
+    if (!window.confirm(`Sei sicuro di voler eseguire "${label}" su ${deviceIp}?`)) return;
+    setLoading(action);
+    try {
+      const res = await axios.post(`${API}/devices/${deviceIp}/power-action`, { action });
+      if (res.data.success) {
+        toast.success(res.data.message);
+        setTimeout(fetchPowerState, 3000);
+      } else {
+        toast.error(res.data.error);
+      }
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Errore");
+    } finally {
+      setLoading(null);
+    }
+  };
+
+  const stateColors = {
+    On: "text-[var(--ok)]",
+    Off: "text-[var(--critical)]",
+    Unknown: "text-[var(--text-muted)]",
+  };
+
+  return (
+    <div className="flex items-center gap-2 flex-wrap" data-testid="power-control">
+      {powerState?.success && (
+        <span className={`text-[9px] px-1.5 py-0.5 rounded border font-bold ${powerState.power_state === "On" ? "bg-[var(--low-bg)] border-[var(--low-border)] text-[var(--ok)]" : "bg-[var(--critical-bg)] border-[var(--critical-border)] text-[var(--critical)]"}`}>
+          <Power size={8} className="inline mr-0.5" weight="bold" />
+          {powerState.power_state}
+        </span>
+      )}
+      <Button size="sm" variant="ghost" disabled={!!loading}
+        onClick={() => handlePowerAction("On", "Accendi Server")}
+        className="h-6 text-[9px] gap-0.5 text-[var(--ok)] hover:bg-[var(--low-bg)]"
+        data-testid="power-on-btn">
+        <Power size={10} /> {loading === "On" ? "..." : "Accendi"}
+      </Button>
+      <Button size="sm" variant="ghost" disabled={!!loading}
+        onClick={() => handlePowerAction("ForceRestart", "Riavvio Forzato")}
+        className="h-6 text-[9px] gap-0.5 text-amber-400 hover:bg-amber-500/10"
+        data-testid="power-restart-btn">
+        <ArrowCounterClockwise size={10} /> {loading === "ForceRestart" ? "..." : "Riavvia"}
+      </Button>
+      <Button size="sm" variant="ghost" disabled={!!loading}
+        onClick={() => handlePowerAction("GracefulShutdown", "Spegnimento Controllato")}
+        className="h-6 text-[9px] gap-0.5 text-[var(--critical)] hover:bg-[var(--critical-bg)]"
+        data-testid="power-off-btn">
+        <Power size={10} /> {loading === "GracefulShutdown" ? "..." : "Spegni"}
+      </Button>
+    </div>
+  );
+}
+
 
 const formatBps = (bps) => {
   if (!bps && bps !== 0) return "N/A";
@@ -249,6 +321,8 @@ export function DeviceDetailPanel({ dev, isPing }) {
                 {rf.ilo_firmware && <span className="text-[9px] text-[var(--text-muted)] font-mono">iLO FW: {rf.ilo_firmware}</span>}
                 {rf.serial_number && <span className="text-[9px] text-[var(--text-muted)] font-mono">S/N: {rf.serial_number}</span>}
               </div>
+              {/* Power Control Panel */}
+              <PowerControlPanel deviceIp={dev.device_ip} />
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                 {rf.power_watts != null && (
                   <div className="p-2.5 rounded-lg bg-[var(--bg-panel)] border border-[var(--bg-border)]" data-testid="rf-power">

@@ -2007,6 +2007,129 @@ async def trigger_direct_poll(request: Request, current_user: dict = Depends(get
     return {"status": "ok", "message": "Polling Redfish avviato"}
 
 
+# ==================== POWER CONTROL & WAKE-ON-LAN ====================
+
+@api_router.post("/devices/{device_ip}/power-action")
+async def device_power_action(device_ip: str, request: Request, current_user: dict = Depends(get_current_user)):
+    """Execute a power action on a server via iLO Redfish (Power On, Off, Restart).
+    Requires iLO credentials in the vault with external_url configured."""
+    if current_user.get("role") not in ["admin"]:
+        raise HTTPException(status_code=403, detail="Solo admin")
+    
+    body = await request.json()
+    action = body.get("action")  # On, ForceOff, GracefulShutdown, ForceRestart
+    if not action:
+        raise HTTPException(status_code=400, detail="Campo 'action' obbligatorio")
+    
+    # Find iLO credentials for this device
+    cred = await db.device_credentials.find_one(
+        {"device_ip": device_ip, "credential_type": "ilo"}, {"_id": 0}
+    )
+    if not cred:
+        raise HTTPException(status_code=404, detail="Nessuna credenziale iLO trovata per questo dispositivo")
+    
+    external_url = cred.get("external_url")
+    if not external_url:
+        raise HTTPException(status_code=400, detail="URL esterna iLO non configurata. Configurala nel Vault per il polling diretto.")
+    
+    # Decrypt credentials
+    try:
+        username = security_manager.decrypt_credential(cred["username_enc"])
+        password = security_manager.decrypt_credential(cred["password_enc"])
+    except Exception:
+        raise HTTPException(status_code=500, detail="Errore decifratura credenziali")
+    
+    result = await redfish_poller.power_action(external_url.rstrip("/"), username, password, action)
+    
+    # Audit log
+    await audit_logger.log(
+        AuditAction.SUSPICIOUS_ACTIVITY,
+        user_id=current_user.get("id"),
+        user_email=current_user.get("email"),
+        details={"action": "power_control", "device_ip": device_ip, "power_action": action, "result": result.get("success")},
+        severity="critical"
+    )
+    
+    return result
+
+@api_router.get("/devices/{device_ip}/power-state")
+async def device_power_state(device_ip: str, current_user: dict = Depends(get_current_user)):
+    """Get current power state of a server via iLO Redfish."""
+    if current_user.get("role") not in ["admin"]:
+        raise HTTPException(status_code=403, detail="Solo admin")
+    
+    cred = await db.device_credentials.find_one(
+        {"device_ip": device_ip, "credential_type": "ilo"}, {"_id": 0}
+    )
+    if not cred:
+        raise HTTPException(status_code=404, detail="Nessuna credenziale iLO")
+    
+    external_url = cred.get("external_url")
+    if not external_url:
+        raise HTTPException(status_code=400, detail="URL esterna iLO non configurata")
+    
+    try:
+        username = security_manager.decrypt_credential(cred["username_enc"])
+        password = security_manager.decrypt_credential(cred["password_enc"])
+    except Exception:
+        raise HTTPException(status_code=500, detail="Errore decifratura credenziali")
+    
+    return await redfish_poller.get_power_state(external_url.rstrip("/"), username, password)
+
+@api_router.post("/devices/{device_ip}/wake-on-lan")
+async def device_wake_on_lan(device_ip: str, request: Request, current_user: dict = Depends(get_current_user)):
+    """Queue a Wake-on-LAN command for the connector to execute.
+    The connector will send the magic packet on the LAN at next heartbeat."""
+    if current_user.get("role") not in ["admin"]:
+        raise HTTPException(status_code=403, detail="Solo admin")
+    
+    body = await request.json()
+    mac_address = body.get("mac_address", "").strip().upper()
+    if not mac_address or len(mac_address.replace(":", "").replace("-", "")) != 12:
+        raise HTTPException(status_code=400, detail="Indirizzo MAC non valido (formato: AA:BB:CC:DD:EE:FF)")
+    
+    # Store the WoL command as a pending command for the connector
+    await db.pending_commands.insert_one({
+        "id": str(uuid.uuid4()),
+        "type": "wake_on_lan",
+        "target_ip": device_ip,
+        "mac_address": mac_address,
+        "requested_by": current_user.get("email"),
+        "status": "pending",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    
+    await audit_logger.log(
+        AuditAction.SUSPICIOUS_ACTIVITY,
+        user_id=current_user.get("id"),
+        user_email=current_user.get("email"),
+        details={"action": "wake_on_lan", "device_ip": device_ip, "mac": mac_address},
+        severity="warning"
+    )
+    
+    return {"status": "ok", "message": f"Comando WoL per {mac_address} accodato. Verra' eseguito dal connettore al prossimo heartbeat (~60s)."}
+
+@api_router.get("/connector/pending-commands")
+async def connector_get_pending_commands(request: Request):
+    """Return pending commands for the connector to execute."""
+    await validate_api_key(request)
+    
+    commands = await db.pending_commands.find(
+        {"status": "pending"}, {"_id": 0}
+    ).sort("created_at", 1).to_list(50)
+    
+    # Mark as dispatched
+    if commands:
+        cmd_ids = [c["id"] for c in commands]
+        await db.pending_commands.update_many(
+            {"id": {"$in": cmd_ids}},
+            {"$set": {"status": "dispatched", "dispatched_at": datetime.now(timezone.utc).isoformat()}}
+        )
+    
+    return commands
+
+
+
 
 # ==================== SETTINGS ROUTES ====================
 
@@ -2334,6 +2457,18 @@ async def connector_heartbeat(request: Request, heartbeat: ConnectorHeartbeat):
                 )
     
     response = {"status": "ok"}
+    
+    # Include pending commands (WoL, etc.)
+    pending_cmds = await db.pending_commands.find(
+        {"status": "pending"}, {"_id": 0}
+    ).sort("created_at", 1).to_list(10)
+    if pending_cmds:
+        response["pending_commands"] = pending_cmds
+        cmd_ids = [c["id"] for c in pending_cmds]
+        await db.pending_commands.update_many(
+            {"id": {"$in": cmd_ids}},
+            {"$set": {"status": "dispatched", "dispatched_at": datetime.now(timezone.utc).isoformat()}}
+        )
     
     # If force_update is flagged, include update info and clear the flag
     if force_update:
