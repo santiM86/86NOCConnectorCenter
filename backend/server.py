@@ -1488,6 +1488,17 @@ async def connector_heartbeat(request: Request, heartbeat: ConnectorHeartbeat):
         upsert=True
     )
     
+    # Clear update_status if update is completed and connector restarted with new version
+    if existing and existing.get("update_status"):
+        update_info = await db.connector_updates.find_one({"active": True}, {"_id": 0})
+        if update_info:
+            # If connector version matches or exceeds the published version, update is done
+            if not is_newer_version(update_info["version"], heartbeat.connector_version):
+                await db.connector_status.update_one(
+                    {"client_id": client_data["id"]},
+                    {"$unset": {"update_status": "", "force_update": ""}}
+                )
+    
     response = {"status": "ok"}
     
     # If force_update is flagged, include update info and clear the flag
