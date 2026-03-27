@@ -1,4 +1,4 @@
 {
-  "version": "1.7.2",
-  "changelog": "Aggiunto monitoraggio Ping+HTTP per dispositivi senza SNMP. Fix BAT semplificato. Script diagnostica."
+  "version": "1.7.3",
+  "changelog": "Web Console Proxy: accedi alla web interface dei dispositivi direttamente dal SOC senza VPN. Auto-Discovery rete. Monitoraggio Ping+HTTP."
 }

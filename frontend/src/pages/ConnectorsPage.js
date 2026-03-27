@@ -32,7 +32,11 @@ import {
   Globe,
   Desktop,
   WifiHigh as WifiIcon,
-  Plus
+  Plus,
+  Monitor,
+  X,
+  ArrowSquareOut,
+  SpinnerGap
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
@@ -64,6 +68,8 @@ export default function ConnectorsPage() {
   const [discoveryResults, setDiscoveryResults] = useState(null);
   const [scanning, setScanning] = useState(false);
   const discoveryPollRef = useRef(null);
+  const [webConsole, setWebConsole] = useState(null); // {clientId, deviceIp, port, path, loading, html, title}
+  const webConsolePollRef = useRef(null);
 
   useEffect(() => {
     fetchAll();
@@ -335,6 +341,73 @@ export default function ConnectorsPage() {
       toast.error("Errore: " + (e.response?.data?.detail || e.message));
     }
   };
+
+  // ==================== WEB CONSOLE PROXY ====================
+  const openWebConsole = async (clientId, deviceIp, port, path = "/") => {
+    setWebConsole({ clientId, deviceIp, port, path, loading: true, html: null, title: `${deviceIp}:${port}` });
+    try {
+      const res = await axios.post(`${API}/connector/web-proxy/request`, {
+        client_id: clientId,
+        device_ip: deviceIp,
+        port: port || 80,
+        path: path,
+        method: "GET"
+      });
+      const requestId = res.data.request_id;
+      
+      // Poll for response
+      if (webConsolePollRef.current) clearInterval(webConsolePollRef.current);
+      let attempts = 0;
+      webConsolePollRef.current = setInterval(async () => {
+        attempts++;
+        if (attempts > 30) { // 30 * 2s = 60s timeout
+          clearInterval(webConsolePollRef.current);
+          setWebConsole(prev => prev ? { ...prev, loading: false, html: '<div style="padding:40px;text-align:center;font-family:sans-serif"><h2>Timeout</h2><p>Il connettore non ha risposto entro 60 secondi. Verifica che sia online e aggiornato alla v1.7.2+</p></div>' } : null);
+          return;
+        }
+        try {
+          const resp = await axios.get(`${API}/connector/web-proxy/response/${requestId}`);
+          if (resp.data.status === "completed" && resp.data.response) {
+            clearInterval(webConsolePollRef.current);
+            setWebConsole(prev => prev ? {
+              ...prev,
+              loading: false,
+              html: resp.data.response.body,
+              title: resp.data.response.title || `${deviceIp}:${port}${path}`,
+              error: resp.data.response.error
+            } : null);
+          }
+        } catch {}
+      }, 2000);
+    } catch (e) {
+      setWebConsole(prev => prev ? { ...prev, loading: false, html: `<div style="padding:40px;text-align:center;font-family:sans-serif"><h2>Errore</h2><p>${e.response?.data?.detail || e.message}</p></div>` } : null);
+    }
+  };
+
+  const closeWebConsole = () => {
+    if (webConsolePollRef.current) clearInterval(webConsolePollRef.current);
+    setWebConsole(null);
+  };
+
+  // Listen for proxy navigation messages from iframe
+  useEffect(() => {
+    const handleMessage = (event) => {
+      if (event.data && event.data.type === 'proxy-navigate' && webConsole) {
+        let path = event.data.path;
+        // Convert absolute URLs to relative paths
+        if (event.data.baseUrl && path.startsWith(event.data.baseUrl)) {
+          path = path.replace(event.data.baseUrl, '');
+        }
+        if (!path.startsWith('/')) path = '/' + path;
+        openWebConsole(webConsole.clientId, webConsole.deviceIp, webConsole.port, path);
+      }
+    };
+    window.addEventListener('message', handleMessage);
+    return () => {
+      window.removeEventListener('message', handleMessage);
+      if (webConsolePollRef.current) clearInterval(webConsolePollRef.current);
+    };
+  }, [webConsole]);
 
   const isOnline = (lastSeen) => {
     if (!lastSeen) return false;
@@ -1006,6 +1079,11 @@ export default function ConnectorsPage() {
                               <p className="text-[10px] text-[var(--text-muted)] flex items-center gap-1 justify-end"><Clock size={10} /> Check</p>
                               <p className={`text-xs font-mono ${recent ? "text-[var(--ok)]" : "text-[var(--critical)]"}`}>{formatLastSeen(dev.last_poll)}</p>
                             </div>
+                            <button onClick={(e) => { e.stopPropagation(); openWebConsole(group.clientId, dev.device_ip, dev.http_port || 80); }}
+                              className="flex-shrink-0 w-7 h-7 rounded-md flex items-center justify-center text-[var(--text-muted)] hover:text-indigo-400 hover:bg-indigo-500/10 transition-colors" title="Web Console"
+                              data-testid={`web-console-${dev.device_ip}`}>
+                              <Monitor size={14} />
+                            </button>
                             <button onClick={(e) => { e.stopPropagation(); deleteDevice(dev.device_ip); }}
                               className="flex-shrink-0 w-7 h-7 rounded-md flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--critical)] hover:bg-[var(--critical-bg)] transition-colors" title="Elimina dispositivo"
                               data-testid={`delete-device-${dev.device_ip}`}>
@@ -1083,6 +1161,64 @@ export default function ConnectorsPage() {
         className="hidden"
         data-testid="import-devices-file-input"
       />
+
+      {/* Web Console Modal */}
+      {webConsole && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" data-testid="web-console-modal">
+          <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={closeWebConsole}></div>
+          <div className="relative w-full max-w-6xl h-[85vh] bg-[var(--bg-card)] rounded-xl border border-[var(--bg-border)] shadow-2xl flex flex-col overflow-hidden">
+            {/* Header */}
+            <div className="flex items-center justify-between px-4 py-2.5 border-b border-[var(--bg-border)] bg-[var(--bg-panel)]">
+              <div className="flex items-center gap-3">
+                <Monitor size={18} className="text-indigo-400" />
+                <div>
+                  <p className="text-xs font-heading font-bold text-[var(--text-primary)]">
+                    Web Console — {webConsole.deviceIp}:{webConsole.port}
+                  </p>
+                  <p className="text-[10px] text-[var(--text-muted)]">
+                    {webConsole.title || "Caricamento..."} {webConsole.path && webConsole.path !== "/" && <span className="font-mono ml-1">{webConsole.path}</span>}
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                {webConsole.loading && (
+                  <div className="flex items-center gap-1.5 text-indigo-400">
+                    <SpinnerGap size={14} className="animate-spin" />
+                    <span className="text-[10px]">In attesa del connettore...</span>
+                  </div>
+                )}
+                <div className="flex items-center gap-1 text-[10px] text-[var(--text-muted)] bg-[var(--bg-hover)] px-2 py-1 rounded">
+                  <SealCheck size={12} className="text-[var(--ok)]" />
+                  Proxy sicuro
+                </div>
+                <button onClick={closeWebConsole}
+                  className="w-8 h-8 rounded-lg flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--critical)] hover:bg-[var(--critical-bg)] transition-colors"
+                  data-testid="close-web-console">
+                  <X size={18} />
+                </button>
+              </div>
+            </div>
+            {/* Content */}
+            <div className="flex-1 overflow-hidden bg-white">
+              {webConsole.loading && !webConsole.html ? (
+                <div className="flex flex-col items-center justify-center h-full gap-3 bg-[var(--bg-panel)]">
+                  <div className="w-10 h-10 border-3 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
+                  <p className="text-sm text-[var(--text-secondary)]">Connessione al dispositivo tramite connettore...</p>
+                  <p className="text-xs text-[var(--text-muted)]">SOC → Backend → Connettore → {webConsole.deviceIp}:{webConsole.port}</p>
+                </div>
+              ) : webConsole.html ? (
+                <iframe
+                  srcDoc={webConsole.html}
+                  className="w-full h-full border-0"
+                  sandbox="allow-scripts allow-same-origin allow-forms"
+                  title={`Web Console - ${webConsole.deviceIp}`}
+                  data-testid="web-console-iframe"
+                />
+              ) : null}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

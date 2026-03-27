@@ -1,0 +1,120 @@
+{
+  "summary": "Web Console Proxy and Monitor Type Switching - All tests passed. Backend: 13/13 tests passed (100%). Frontend: All UI features verified working. Web console modal opens with loading state, title bar, security badge, and close button. Monitor type switching works with toast notifications.",
+  
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "/api/connector/web-proxy/request",
+        "issue": "Fixed: audit_logger.info() was incorrect - AuditLogger doesn't have info method. Changed to logging.getLogger('audit').info()",
+        "priority": "LOW"
+      }
+    ]
+  },
+  
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  
+  "passed_tests": {
+    "backend_api_tests": [
+      "POST /api/auth/login with admin@86bit.it / admin123 succeeds",
+      "POST /api/connector/web-proxy/request creates proxy request for managed device (192.168.1.3)",
+      "POST /api/connector/web-proxy/request returns 403 for non-managed device IP (10.99.99.99)",
+      "GET /api/connector/web-proxy/pending with X-API-Key returns pending requests",
+      "GET /api/connector/web-proxy/pending without API key returns 401",
+      "POST /api/connector/web-proxy/response with X-API-Key accepts HTML response",
+      "GET /api/connector/web-proxy/response/{request_id} returns completed response with HTML body",
+      "Viewer role cannot create web proxy request (403 Insufficient permissions)",
+      "Operator role can create web proxy request (200 OK)",
+      "PUT /api/connector/device-poll-status/{ip}/monitor-type changes to ping",
+      "PUT /api/connector/device-poll-status/{ip}/monitor-type changes to snmp",
+      "Monitor type change persists in device poll status",
+      "Test user cleanup completed"
+    ],
+    "frontend_ui_tests": [
+      "Login with admin@86bit.it / admin123 succeeds",
+      "Connettori page loads with client groups",
+      "Monitor icon (web console button) visible next to each device",
+      "Clicking monitor icon opens web console modal",
+      "Web console modal has title bar with device info (WebConsole — 192.168.1.2:80)",
+      "Web console modal shows security badge 'Proxy sicuro'",
+      "Web console modal has close button (X)",
+      "Web console modal shows loading state 'In attesa del connettore...'",
+      "Web console modal shows connection path 'SOC → Backend → Connettore → IP:port'",
+      "Monitor type badge (SNMP/PING) visible next to each device",
+      "Clicking monitor type badge switches between SNMP and Ping+HTTP",
+      "Toast notification confirms monitor type change '192.168.1.2 cambiato a Ping+HTTP'"
+    ]
+  },
+  
+  "test_report_links": [
+    "/app/backend/tests/test_web_proxy.py",
+    "/app/test_reports/pytest/pytest_web_proxy.xml"
+  ],
+  
+  "action_items": [],
+  
+  "critical_code_review_comments": [],
+  
+  "updated_files": [
+    "/app/backend/server.py (fixed audit_logger.info bug)",
+    "/app/backend/tests/test_web_proxy.py (new test file)"
+  ],
+  
+  "success_rate": {
+    "backend": "100% (13/13 tests passed)",
+    "frontend": "100% (All UI features working)"
+  },
+  
+  "test_credentials": {
+    "admin_user": {
+      "email": "admin@86bit.it",
+      "password": "admin123",
+      "role": "admin"
+    },
+    "api_key": {
+      "client": "86BIT_Office",
+      "key": "noc_35cf39b4d68740b1a981aedef2ee293d"
+    },
+    "client_id": "da3d6e40-b3e5-4d46-9787-dde328a3aa36"
+  },
+  
+  "seed_data_creation": "Used existing devices from previous iterations: 192.168.1.2 (HPEOfficeConnect Switch), 192.168.1.3 (NETGEAR GS110EMX). Test users (viewer, operator) created and cleaned up during tests.",
+  
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  
+  "context_for_next_testing_agent": "Web Console Proxy feature fully verified. Backend endpoints: web-proxy/request (creates pending request, requires admin/operator role, validates device is managed), web-proxy/pending (connector polls with API key), web-proxy/response (connector submits HTML), web-proxy/response/{id} (frontend gets completed response). Monitor type switching: PUT /api/connector/device-poll-status/{ip}/monitor-type changes between snmp and ping. Frontend: Connettori page shows monitor icon next to each device, clicking opens modal with loading state, title bar, security badge, close button. Monitor type badge is clickable to switch types.",
+  
+  "mocked_apis": {
+    "Firebase Cloud Messaging": "MOCKED - no real API keys",
+    "SendGrid Email": "MOCKED - no real API keys"
+  },
+  
+  "feature_verification": {
+    "feature": "Web Console Proxy and Monitor Type Switching",
+    "verification_results": {
+      "web_proxy_request_endpoint": "POST /api/connector/web-proxy/request creates pending request with security checks - VERIFIED",
+      "web_proxy_pending_endpoint": "GET /api/connector/web-proxy/pending returns pending requests with API key - VERIFIED",
+      "web_proxy_response_endpoint": "POST /api/connector/web-proxy/response accepts HTML response - VERIFIED",
+      "web_proxy_get_response_endpoint": "GET /api/connector/web-proxy/response/{id} returns completed response - VERIFIED",
+      "monitor_type_endpoint": "PUT /api/connector/device-poll-status/{ip}/monitor-type changes device monitor type - VERIFIED",
+      "security_viewer_blocked": "Viewer role cannot create web proxy requests (403) - VERIFIED",
+      "security_non_managed_blocked": "Non-managed device IPs rejected (403) - VERIFIED",
+      "frontend_monitor_icon": "Monitor icon visible next to each device - VERIFIED",
+      "frontend_web_console_modal": "Modal opens with title bar, device info, security badge, close button - VERIFIED",
+      "frontend_loading_state": "Loading state shows 'In attesa del connettore...' - VERIFIED",
+      "frontend_monitor_type_switch": "Clicking type badge switches between SNMP and Ping+HTTP - VERIFIED"
+    }
+  },
+  
+  "bug_fixed": {
+    "file": "/app/backend/server.py",
+    "line": "2007",
+    "issue": "audit_logger.info() was called but AuditLogger class doesn't have an info method",
+    "fix": "Changed to logging.getLogger('audit').info() to use Python's standard logging module"
+  }
+}

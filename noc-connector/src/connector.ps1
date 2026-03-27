@@ -925,6 +925,188 @@ function Check-DiscoveryRequest($config) {
     } catch {}
 }
 
+# ==================== WEB CONSOLE PROXY ====================
+
+function Check-WebProxyRequests($config) {
+    try {
+        $headers = @{ "X-API-Key" = $config.api_key }
+        $url = "$($config.noc_center_url)/api/connector/web-proxy/pending"
+        $response = Invoke-RestMethod -Uri $url -Method Get -Headers $headers -TimeoutSec 10 -ErrorAction Stop
+        
+        if ($response.requests -and $response.requests.Count -gt 0) {
+            foreach ($req in $response.requests) {
+                Process-WebProxyRequest $config $req
+            }
+        }
+    } catch {}
+}
+
+function Process-WebProxyRequest($config, $req) {
+    $deviceIp = $req.device_ip
+    $port = if ($req.port) { $req.port } else { 80 }
+    $path = if ($req.path) { $req.path } else { "/" }
+    $requestId = $req.request_id
+    
+    Write-Log "[WEB-PROXY] Richiesta per $deviceIp`:$port$path (ID: $requestId)"
+    
+    $responseBody = ""
+    $statusCode = 0
+    $contentType = "text/html"
+    $title = ""
+    $error = $null
+    
+    try {
+        $targetUrl = "http://${deviceIp}:${port}${path}"
+        
+        # Security: only allow HTTP/HTTPS on known ports
+        if ($port -notin @(80, 443, 8080, 8443, 8000, 8888, 4443)) {
+            throw "Porta $port non consentita per motivi di sicurezza"
+        }
+        
+        # Use TLS 1.2 for HTTPS
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        
+        # Fetch the page
+        $webClient = New-Object System.Net.WebClient
+        $webClient.Encoding = [System.Text.Encoding]::UTF8
+        $webClient.Headers.Add("User-Agent", "86NocConnector/WebProxy")
+        
+        $htmlContent = $webClient.DownloadString($targetUrl)
+        $contentType = $webClient.ResponseHeaders["Content-Type"]
+        if (-not $contentType) { $contentType = "text/html" }
+        
+        # Extract title
+        if ($htmlContent -match '<title[^>]*>(.*?)</title>') {
+            $title = $Matches[1]
+        }
+        
+        # Rewrite relative URLs to absolute
+        $baseUrl = "http://${deviceIp}:${port}"
+        
+        # Rewrite src and href attributes
+        $htmlContent = $htmlContent -replace '(src|href|action)="/', "`$1=`"__PROXY_BASE__/"
+        $htmlContent = $htmlContent -replace '(src|href|action)=''/', "`$1='__PROXY_BASE__/"
+        
+        # Try to inline CSS files
+        $cssPattern = '<link[^>]*href="([^"]*\.css[^"]*)"[^>]*/?\s*>'
+        $cssMatches = [regex]::Matches($htmlContent, $cssPattern)
+        foreach ($cssMatch in $cssMatches) {
+            $cssUrl = $cssMatch.Groups[1].Value
+            if ($cssUrl.StartsWith("__PROXY_BASE__")) {
+                $cssUrl = $cssUrl.Replace("__PROXY_BASE__", $baseUrl)
+            } elseif (-not $cssUrl.StartsWith("http")) {
+                $cssUrl = "$baseUrl/$cssUrl"
+            }
+            try {
+                $cssContent = $webClient.DownloadString($cssUrl)
+                $styleTag = "<style>/* Inlined from $($cssMatch.Groups[1].Value) */" + "`n" + $cssContent + "`n</style>"
+                $htmlContent = $htmlContent.Replace($cssMatch.Value, $styleTag)
+            } catch {
+                Write-Log "[WEB-PROXY] CSS inline fallito per $cssUrl" "WARN"
+            }
+        }
+        
+        # Convert small images to base64 (inline)
+        $imgPattern = '<img[^>]*src="([^"]+)"[^>]*/?\s*>'
+        $imgMatches = [regex]::Matches($htmlContent, $imgPattern)
+        foreach ($imgMatch in $imgMatches) {
+            $imgUrl = $imgMatch.Groups[1].Value
+            if ($imgUrl.StartsWith("data:")) { continue }
+            if ($imgUrl.StartsWith("__PROXY_BASE__")) {
+                $imgUrl = $imgUrl.Replace("__PROXY_BASE__", $baseUrl)
+            } elseif (-not $imgUrl.StartsWith("http")) {
+                $imgUrl = "$baseUrl/$imgUrl"
+            }
+            try {
+                $imgBytes = $webClient.DownloadData($imgUrl)
+                if ($imgBytes.Length -lt 500000) { # Max 500KB per image
+                    $b64 = [Convert]::ToBase64String($imgBytes)
+                    $ext = [System.IO.Path]::GetExtension($imgUrl).TrimStart('.').Split('?')[0]
+                    if (-not $ext -or $ext -eq "") { $ext = "png" }
+                    $mimeMap = @{ "png"="image/png"; "jpg"="image/jpeg"; "jpeg"="image/jpeg"; "gif"="image/gif"; "svg"="image/svg+xml"; "ico"="image/x-icon"; "webp"="image/webp" }
+                    $mime = if ($mimeMap.ContainsKey($ext)) { $mimeMap[$ext] } else { "image/png" }
+                    $dataUri = "data:$mime;base64,$b64"
+                    $newImgTag = $imgMatch.Value.Replace($imgMatch.Groups[1].Value, $dataUri)
+                    $htmlContent = $htmlContent.Replace($imgMatch.Value, $newImgTag)
+                }
+            } catch {}
+        }
+        
+        # Replace proxy base markers with proxy endpoint info
+        $htmlContent = $htmlContent.Replace("__PROXY_BASE__", $baseUrl)
+        
+        # Inject navigation interceptor script
+        $interceptScript = @"
+<script>
+(function(){
+  // Intercept all link clicks for proxy navigation
+  document.addEventListener('click', function(e) {
+    var link = e.target.closest('a');
+    if (link && link.href) {
+      var href = link.getAttribute('href');
+      if (href && !href.startsWith('javascript:') && !href.startsWith('#') && !href.startsWith('data:')) {
+        e.preventDefault();
+        window.parent.postMessage({type:'proxy-navigate', path: href, baseUrl: '$baseUrl'}, '*');
+      }
+    }
+  }, true);
+  // Intercept form submissions
+  document.addEventListener('submit', function(e) {
+    e.preventDefault();
+    var form = e.target;
+    var action = form.getAttribute('action') || window.location.pathname;
+    var formData = new FormData(form);
+    var params = new URLSearchParams(formData).toString();
+    window.parent.postMessage({type:'proxy-navigate', path: action + '?' + params, baseUrl: '$baseUrl'}, '*');
+  }, true);
+})();
+</script>
+"@
+        
+        # Insert interceptor before </body> or at end
+        if ($htmlContent -match '</body>') {
+            $htmlContent = $htmlContent.Replace('</body>', "$interceptScript</body>")
+        } else {
+            $htmlContent += $interceptScript
+        }
+        
+        $statusCode = 200
+        $responseBody = $htmlContent
+        $webClient.Dispose()
+        
+        Write-Log "[WEB-PROXY] Pagina recuperata: $title ($($responseBody.Length) chars)"
+        
+    } catch {
+        $error = $_.Exception.Message
+        $statusCode = 500
+        $responseBody = "<html><body><h2>Errore connessione</h2><p>$error</p><p>Dispositivo: ${deviceIp}:${port}${path}</p></body></html>"
+        Write-Log "[WEB-PROXY] Errore: $error" "ERROR"
+    }
+    
+    # Send response back to NOC
+    $payload = @{
+        request_id = $requestId
+        status_code = $statusCode
+        content_type = $contentType
+        body = $responseBody
+        title = $title
+        error = $error
+    }
+    
+    $headers = @{
+        "X-API-Key" = $config.api_key
+        "Content-Type" = "application/json"
+    }
+    
+    try {
+        $jsonPayload = $payload | ConvertTo-Json -Depth 5 -Compress
+        $url = "$($config.noc_center_url)/api/connector/web-proxy/response"
+        Invoke-RestMethod -Uri $url -Method Post -Headers $headers -Body $jsonPayload -TimeoutSec 30 -ErrorAction Stop | Out-Null
+    } catch {
+        Write-Log "[WEB-PROXY] Errore invio risposta: $($_.Exception.Message)" "ERROR"
+    }
+}
+
 # ==================== MAIN ====================
 
 function Start-Connector {
@@ -981,22 +1163,40 @@ function Start-Connector {
     } -ArgumentList $PSCommandPath, (Get-ConfigPath)
     Write-Log "Auto-update checker avviato (ogni 6 ore)"
     
-    # Heartbeat in current thread loop + discovery check
+    # Heartbeat in current thread loop + discovery check + web proxy
     Write-Log "$global:AppName avviato. Premi Ctrl+C per fermare."
     
+    $heartbeatCounter = 0
     $discoveryCheckCounter = 0
+    $heartbeatInterval = 60   # seconds
+    $loopInterval = 3         # seconds (fast loop for web proxy)
+    $heartbeatTicks = [math]::Floor($heartbeatInterval / $loopInterval)
+    $discoveryTicks = $heartbeatTicks * 2  # every 2 heartbeats
+    
+    # Send first heartbeat immediately
+    Send-Heartbeat $config
+    
     try {
         while ($global:Running) {
-            Send-Heartbeat $config
+            # Check for web proxy requests (fast, every 3s)
+            Check-WebProxyRequests $config
             
-            # Check for discovery request every 2 heartbeats (2 min)
+            $heartbeatCounter++
             $discoveryCheckCounter++
-            if ($discoveryCheckCounter -ge 2) {
+            
+            # Send heartbeat every 60s
+            if ($heartbeatCounter -ge $heartbeatTicks) {
+                $heartbeatCounter = 0
+                Send-Heartbeat $config
+            }
+            
+            # Check for discovery every 2 min
+            if ($discoveryCheckCounter -ge $discoveryTicks) {
                 $discoveryCheckCounter = 0
                 Check-DiscoveryRequest $config
             }
             
-            Start-Sleep -Seconds 60
+            Start-Sleep -Seconds $loopInterval
         }
     } catch {
         Write-Log "Arresto..."
