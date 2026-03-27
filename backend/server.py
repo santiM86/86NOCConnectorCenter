@@ -1769,6 +1769,179 @@ async def update_ip_block_config(request: Request, current_user: dict = Depends(
     return {"status": "ok", "config": config}
 
 
+
+# ==================== CREDENTIALS VAULT (AES-256-GCM) ====================
+
+class CredentialCreate(BaseModel):
+    device_ip: Optional[str] = None
+    device_name: Optional[str] = None
+    credential_type: str  # ilo, ssh, snmp, web, vpn, other
+    username: str
+    password: str
+    url: Optional[str] = None
+    port: Optional[int] = None
+    notes: Optional[str] = None
+    tags: Optional[List[str]] = []
+
+class CredentialUpdate(BaseModel):
+    device_name: Optional[str] = None
+    credential_type: Optional[str] = None
+    username: Optional[str] = None
+    password: Optional[str] = None
+    url: Optional[str] = None
+    port: Optional[int] = None
+    notes: Optional[str] = None
+    tags: Optional[List[str]] = None
+
+@api_router.get("/vault/credentials")
+async def list_credentials(current_user: dict = Depends(get_current_user)):
+    """List all stored credentials (passwords masked)."""
+    if current_user.get("role") not in ["admin"]:
+        raise HTTPException(status_code=403, detail="Solo gli admin possono accedere al vault")
+    
+    creds = await db.device_credentials.find({}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    
+    # Mask passwords - return metadata only
+    for c in creds:
+        c["password"] = "********"
+        # Decrypt username for display
+        try:
+            c["username"] = security_manager.decrypt_credential(c["username_enc"])
+        except Exception:
+            c["username"] = "[errore decifratura]"
+        c.pop("username_enc", None)
+        c.pop("password_enc", None)
+    
+    return creds
+
+@api_router.get("/vault/credentials/{cred_id}")
+async def get_credential(cred_id: str, current_user: dict = Depends(get_current_user)):
+    """Get a single credential with decrypted password (admin only)."""
+    if current_user.get("role") not in ["admin"]:
+        raise HTTPException(status_code=403, detail="Solo gli admin possono accedere al vault")
+    
+    cred = await db.device_credentials.find_one({"id": cred_id}, {"_id": 0})
+    if not cred:
+        raise HTTPException(status_code=404, detail="Credenziale non trovata")
+    
+    # Decrypt sensitive fields
+    try:
+        cred["username"] = security_manager.decrypt_credential(cred["username_enc"])
+        cred["password"] = security_manager.decrypt_credential(cred["password_enc"])
+    except Exception:
+        raise HTTPException(status_code=500, detail="Errore nella decifratura delle credenziali")
+    
+    cred.pop("username_enc", None)
+    cred.pop("password_enc", None)
+    
+    # Audit log - credential access
+    await audit_logger.log(
+        AuditAction.SUSPICIOUS_ACTIVITY,
+        user_id=current_user.get("id"),
+        user_email=current_user.get("email"),
+        details={"action": "credential_decrypted", "cred_id": cred_id, "device_ip": cred.get("device_ip")},
+        severity="info"
+    )
+    
+    return cred
+
+@api_router.post("/vault/credentials")
+async def create_credential(cred: CredentialCreate, current_user: dict = Depends(get_current_user)):
+    """Store a new encrypted credential."""
+    if current_user.get("role") not in ["admin"]:
+        raise HTTPException(status_code=403, detail="Solo gli admin possono gestire il vault")
+    
+    check_nosql_injection(cred.model_dump())
+    
+    cred_id = str(uuid.uuid4())
+    doc = {
+        "id": cred_id,
+        "device_ip": cred.device_ip,
+        "device_name": cred.device_name or cred.device_ip,
+        "credential_type": cred.credential_type,
+        "username_enc": security_manager.encrypt_credential(cred.username),
+        "password_enc": security_manager.encrypt_credential(cred.password),
+        "url": cred.url,
+        "port": cred.port,
+        "notes": cred.notes,
+        "tags": cred.tags or [],
+        "created_by": current_user.get("email"),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.device_credentials.insert_one(doc)
+    
+    await audit_logger.log(
+        AuditAction.SUSPICIOUS_ACTIVITY,
+        user_id=current_user.get("id"),
+        user_email=current_user.get("email"),
+        details={"action": "credential_created", "cred_id": cred_id, "device_ip": cred.device_ip, "type": cred.credential_type},
+        severity="info"
+    )
+    
+    return {"status": "ok", "id": cred_id, "message": "Credenziale salvata e cifrata con AES-256-GCM"}
+
+@api_router.put("/vault/credentials/{cred_id}")
+async def update_credential(cred_id: str, cred: CredentialUpdate, current_user: dict = Depends(get_current_user)):
+    """Update an existing credential."""
+    if current_user.get("role") not in ["admin"]:
+        raise HTTPException(status_code=403, detail="Solo gli admin possono gestire il vault")
+    
+    existing = await db.device_credentials.find_one({"id": cred_id})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Credenziale non trovata")
+    
+    update_data = {"updated_at": datetime.now(timezone.utc).isoformat()}
+    
+    if cred.device_name is not None:
+        update_data["device_name"] = cred.device_name
+    if cred.credential_type is not None:
+        update_data["credential_type"] = cred.credential_type
+    if cred.username is not None:
+        update_data["username_enc"] = security_manager.encrypt_credential(cred.username)
+    if cred.password is not None:
+        update_data["password_enc"] = security_manager.encrypt_credential(cred.password)
+    if cred.url is not None:
+        update_data["url"] = cred.url
+    if cred.port is not None:
+        update_data["port"] = cred.port
+    if cred.notes is not None:
+        update_data["notes"] = cred.notes
+    if cred.tags is not None:
+        update_data["tags"] = cred.tags
+    
+    await db.device_credentials.update_one({"id": cred_id}, {"$set": update_data})
+    
+    await audit_logger.log(
+        AuditAction.SUSPICIOUS_ACTIVITY,
+        user_id=current_user.get("id"),
+        user_email=current_user.get("email"),
+        details={"action": "credential_updated", "cred_id": cred_id},
+        severity="info"
+    )
+    
+    return {"status": "ok", "message": "Credenziale aggiornata"}
+
+@api_router.delete("/vault/credentials/{cred_id}")
+async def delete_credential(cred_id: str, current_user: dict = Depends(get_current_user)):
+    """Delete a credential from the vault."""
+    if current_user.get("role") not in ["admin"]:
+        raise HTTPException(status_code=403, detail="Solo gli admin possono gestire il vault")
+    
+    result = await db.device_credentials.delete_one({"id": cred_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Credenziale non trovata")
+    
+    await audit_logger.log(
+        AuditAction.SUSPICIOUS_ACTIVITY,
+        user_id=current_user.get("id"),
+        user_email=current_user.get("email"),
+        details={"action": "credential_deleted", "cred_id": cred_id},
+        severity="warning"
+    )
+    
+    return {"status": "ok", "message": "Credenziale eliminata"}
+
 # ==================== SETTINGS ROUTES ====================
 
 @api_router.get("/settings/notifications")

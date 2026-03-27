@@ -15,7 +15,8 @@ import {
   FileText,
   Wrench,
   PlugsConnected,
-  Users
+  Users,
+  Lock
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import {
@@ -50,6 +51,7 @@ export default function Layout() {
     { path: "/connectors", icon: PlugsConnected, label: "Connettori" },
     { path: "/users", icon: Users, label: "Utenti" },
     { path: "/enterprise", icon: Wrench, label: "Enterprise" },
+    { path: "/vault", icon: Lock, label: "Vault" },
     { path: "/settings", icon: Gear, label: "Impostazioni" },
   ];
 
