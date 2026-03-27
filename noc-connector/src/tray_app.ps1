@@ -546,6 +546,51 @@ function Show-DeviceManager {
 function Start-TrayApp {
     [System.Windows.Forms.Application]::EnableVisualStyles()
     
+    # ===== Single Instance Check: kill any previous tray_app.ps1 =====
+    $currentPid = $PID
+    Get-Process -Name powershell, pwsh -ErrorAction SilentlyContinue | ForEach-Object {
+        if ($_.Id -ne $currentPid) {
+            try {
+                $cmdLine = (Get-CimInstance Win32_Process -Filter "ProcessId = $($_.Id)" -ErrorAction SilentlyContinue).CommandLine
+                if ($cmdLine -match "tray_app\.ps1") {
+                    Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+                }
+            } catch {}
+        }
+    }
+    # Brief wait for old icons to clear
+    Start-Sleep -Milliseconds 500
+    
+    # Force Windows to refresh the tray area (clears ghost icons)
+    try {
+        $shellTray = [System.IntPtr]::Zero
+        Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class TrayRefresh {
+    [DllImport("user32.dll")] public static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
+    [DllImport("user32.dll")] public static extern IntPtr FindWindowEx(IntPtr hwndParent, IntPtr hwndChildAfter, string lpszClass, string lpszWindow);
+    [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr hWnd, out RECT lpRect);
+    [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+    [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
+    public static void Refresh() {
+        IntPtr tray = FindWindow("Shell_TrayWnd", null);
+        IntPtr notify = FindWindowEx(tray, IntPtr.Zero, "TrayNotifyWnd", null);
+        IntPtr pager = FindWindowEx(notify, IntPtr.Zero, "SysPager", null);
+        IntPtr toolbar = FindWindowEx(pager, IntPtr.Zero, "ToolbarWindow32", null);
+        if (toolbar == IntPtr.Zero) toolbar = FindWindowEx(notify, IntPtr.Zero, "ToolbarWindow32", null);
+        if (toolbar != IntPtr.Zero) {
+            RECT r; GetClientRect(toolbar, out r);
+            for (int x = 0; x < r.Right; x += 10)
+                for (int y = 0; y < r.Bottom; y += 10)
+                    SendMessage(toolbar, 0x0200, IntPtr.Zero, (IntPtr)((y << 16) | x));
+        }
+    }
+}
+"@ -ErrorAction SilentlyContinue
+        [TrayRefresh]::Refresh()
+    } catch {}
+    
     $notifyIcon = New-Object System.Windows.Forms.NotifyIcon
     $notifyIcon.Icon = New-TrayIcon "stopped"
     $notifyIcon.Text = "$AppName - Avvio..."
@@ -769,7 +814,9 @@ info@86bit.it
     $exitItem.Add_Click({
         Stop-ConnectorProcess
         $notifyIcon.Visible = $false
+        $notifyIcon.Icon = $null
         $notifyIcon.Dispose()
+        try { [TrayRefresh]::Refresh() } catch {}
         [System.Windows.Forms.Application]::Exit()
     })
     

@@ -1,4 +1,4 @@
 {
-  "version": "1.7.4",
-  "changelog": "Fix polling SNMP: aggiunto ping di verifica per evitare falsi 'non raggiungibile'. Web Console Proxy. Auto-Discovery."
+  "version": "1.7.5",
+  "changelog": "Fix doppia icona tray: singola istanza con pulizia icone fantasma. Fix ping verifica SNMP. Web Console Proxy."
 }

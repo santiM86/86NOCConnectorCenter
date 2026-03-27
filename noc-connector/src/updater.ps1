@@ -56,6 +56,38 @@ Get-Process -Name powershell, pwsh -ErrorAction SilentlyContinue | ForEach-Objec
 # Wait for processes to fully terminate
 Write-UpdateLog "Attesa chiusura processi..."
 Start-Sleep -Seconds 4
+
+# Refresh Windows tray to clear ghost icons
+Write-UpdateLog "Pulizia icone fantasma dalla tray..."
+try {
+    Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class TrayClean {
+    [DllImport("user32.dll")] public static extern IntPtr FindWindow(string c, string w);
+    [DllImport("user32.dll")] public static extern IntPtr FindWindowEx(IntPtr p, IntPtr a, string c, string w);
+    [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h, out RECT r);
+    [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr h, uint m, IntPtr w, IntPtr l);
+    [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
+    public static void Clean() {
+        var t = FindWindow("Shell_TrayWnd", null);
+        var n = FindWindowEx(t, IntPtr.Zero, "TrayNotifyWnd", null);
+        var p = FindWindowEx(n, IntPtr.Zero, "SysPager", null);
+        var b = FindWindowEx(p, IntPtr.Zero, "ToolbarWindow32", null);
+        if (b == IntPtr.Zero) b = FindWindowEx(n, IntPtr.Zero, "ToolbarWindow32", null);
+        if (b != IntPtr.Zero) { RECT r; GetClientRect(b, out r);
+            for (int x=0;x<r.R;x+=10) for (int y=0;y<r.B;y+=10)
+                SendMessage(b, 0x0200, IntPtr.Zero, (IntPtr)((y<<16)|x));
+        }
+    }
+}
+"@
+    [TrayClean]::Clean()
+    Write-UpdateLog "Icone fantasma rimosse"
+} catch {
+    Write-UpdateLog "Nota: pulizia tray non riuscita (non critico)"
+}
+
 Send-Progress 60 "installing" "Installazione file aggiornati..."
 
 # ===== STEP 2: Copy new files =====
