@@ -338,54 +338,213 @@ function Send-Heartbeat($config) {
     }
 }
 
-# ==================== PING/HTTP MONITORING ====================
+# ==================== PING/HTTP ADVANCED MONITORING ====================
 
 function Poll-PingDevice($ip, $name, $httpPort) {
     $alerts = @()
     $reachable = $false
     $pingMs = $null
-    $httpStatus = $null
     
-    # 1. Ping test
+    # Advanced ping metrics
+    $pingMin = $null
+    $pingMax = $null
+    $pingAvg = $null
+    $pingJitter = $null
+    $packetLoss = 0
+    $ttl = $null
+    $dnsMs = $null
+    $openPorts = @()
+    $httpDetails = $null
+    
+    # ========== 1. DNS Resolution Time ==========
     try {
-        $ping = New-Object System.Net.NetworkInformation.Ping
-        $reply = $ping.Send($ip, 3000)
-        if ($reply.Status -eq "Success") {
-            $reachable = $true
-            $pingMs = $reply.RoundtripTime
-        }
-        $ping.Dispose()
-    } catch {}
+        $dnsStart = [System.Diagnostics.Stopwatch]::StartNew()
+        $dnsResult = [System.Net.Dns]::GetHostEntry($ip)
+        $dnsStart.Stop()
+        $dnsMs = $dnsStart.ElapsedMilliseconds
+    } catch {
+        $dnsMs = -1
+    }
     
-    # 2. HTTP test (if reachable)
-    if ($reachable -and $httpPort) {
+    # ========== 2. Multi-Ping (5 probes) ==========
+    $pingResults = @()
+    $pingObj = New-Object System.Net.NetworkInformation.Ping
+    for ($i = 0; $i -lt 5; $i++) {
         try {
-            $url = "http://${ip}:${httpPort}/"
-            $req = [System.Net.HttpWebRequest]::Create($url)
-            $req.Timeout = 5000
-            $req.Method = "HEAD"
-            $resp = $req.GetResponse()
-            $httpStatus = [int]$resp.StatusCode
-            $resp.Close()
-        } catch [System.Net.WebException] {
-            if ($_.Exception.Response) {
-                $httpStatus = [int]$_.Exception.Response.StatusCode
-            } else {
-                $httpStatus = 0
+            $reply = $pingObj.Send($ip, 3000)
+            if ($reply.Status -eq "Success") {
+                $pingResults += $reply.RoundtripTime
+                if ($null -eq $ttl) { $ttl = $reply.Options.Ttl }
             }
-        } catch {
-            $httpStatus = 0
+        } catch {}
+        if ($i -lt 4) { Start-Sleep -Milliseconds 200 }
+    }
+    $pingObj.Dispose()
+    
+    $totalSent = 5
+    $totalReceived = $pingResults.Count
+    $packetLoss = [math]::Round((($totalSent - $totalReceived) / $totalSent) * 100, 1)
+    
+    if ($totalReceived -gt 0) {
+        $reachable = $true
+        $pingMin = ($pingResults | Measure-Object -Minimum).Minimum
+        $pingMax = ($pingResults | Measure-Object -Maximum).Maximum
+        $pingAvg = [math]::Round(($pingResults | Measure-Object -Average).Average, 1)
+        $pingMs = $pingAvg
+        
+        # Jitter: average deviation between consecutive pings
+        if ($pingResults.Count -gt 1) {
+            $diffs = @()
+            for ($j = 1; $j -lt $pingResults.Count; $j++) {
+                $diffs += [math]::Abs($pingResults[$j] - $pingResults[$j-1])
+            }
+            $pingJitter = [math]::Round(($diffs | Measure-Object -Average).Average, 1)
+        } else {
+            $pingJitter = 0
         }
     }
     
-    # 3. State change alerts
+    # ========== 3. TCP Port Scan (common services) ==========
+    $portsToScan = @(
+        @{port=22;  name="SSH"},
+        @{port=23;  name="Telnet"},
+        @{port=80;  name="HTTP"},
+        @{port=443; name="HTTPS"},
+        @{port=3389;name="RDP"},
+        @{port=8080;name="HTTP-Alt"},
+        @{port=8443;name="HTTPS-Alt"},
+        @{port=161; name="SNMP"},
+        @{port=53;  name="DNS"},
+        @{port=21;  name="FTP"},
+        @{port=25;  name="SMTP"},
+        @{port=5900;name="VNC"},
+        @{port=3306;name="MySQL"},
+        @{port=1433;name="MSSQL"},
+        @{port=445; name="SMB"}
+    )
+    
+    if ($reachable) {
+        foreach ($p in $portsToScan) {
+            try {
+                $tcp = New-Object System.Net.Sockets.TcpClient
+                $asyncResult = $tcp.BeginConnect($ip, $p.port, $null, $null)
+                $wait = $asyncResult.AsyncWaitHandle.WaitOne(800, $false)
+                if ($wait -and $tcp.Connected) {
+                    $openPorts += @{ port = $p.port; name = $p.name; open = $true }
+                }
+                $tcp.Close()
+            } catch {}
+        }
+    }
+    
+    # ========== 4. HTTP/HTTPS Deep Check ==========
+    if ($reachable) {
+        $httpCheckPort = $httpPort
+        # Auto-detect: if port 80 or 443 is open, use it
+        if (-not $httpCheckPort) {
+            $has443 = $openPorts | Where-Object { $_.port -eq 443 }
+            $has80 = $openPorts | Where-Object { $_.port -eq 80 }
+            $has8080 = $openPorts | Where-Object { $_.port -eq 8080 }
+            if ($has443) { $httpCheckPort = 443 }
+            elseif ($has80) { $httpCheckPort = 80 }
+            elseif ($has8080) { $httpCheckPort = 8080 }
+        }
+        
+        if ($httpCheckPort) {
+            $httpDetails = @{
+                port = $httpCheckPort
+                status_code = $null
+                response_ms = $null
+                server_header = $null
+                content_type = $null
+                ssl_expiry = $null
+                ssl_issuer = $null
+                title = $null
+            }
+            
+            $protocol = if ($httpCheckPort -eq 443 -or $httpCheckPort -eq 8443) { "https" } else { "http" }
+            $url = "${protocol}://${ip}:${httpCheckPort}/"
+            
+            try {
+                # Bypass SSL errors
+                [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+                [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
+                
+                $httpStart = [System.Diagnostics.Stopwatch]::StartNew()
+                $req = [System.Net.HttpWebRequest]::Create($url)
+                $req.Timeout = 5000
+                $req.Method = "GET"
+                $req.AllowAutoRedirect = $true
+                $req.UserAgent = "86NocConnector/2.1.0"
+                $resp = $req.GetResponse()
+                $httpStart.Stop()
+                
+                $httpDetails.status_code = [int]$resp.StatusCode
+                $httpDetails.response_ms = $httpStart.ElapsedMilliseconds
+                $httpDetails.server_header = $resp.Headers["Server"]
+                $httpDetails.content_type = $resp.ContentType
+                
+                # Try to read page title
+                try {
+                    $reader = New-Object System.IO.StreamReader($resp.GetResponseStream())
+                    $body = $reader.ReadToEnd().Substring(0, [Math]::Min(4000, $reader.ReadToEnd().Length + 1))
+                    $reader.Close()
+                    if ($body -match '<title[^>]*>([^<]+)</title>') {
+                        $httpDetails.title = $Matches[1].Trim()
+                    }
+                } catch {}
+                
+                $resp.Close()
+                
+                # SSL Certificate check
+                if ($protocol -eq "https") {
+                    try {
+                        $cert = $req.ServicePoint.Certificate
+                        if ($cert) {
+                            $cert2 = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($cert)
+                            $httpDetails.ssl_expiry = $cert2.NotAfter.ToString("yyyy-MM-dd")
+                            $httpDetails.ssl_issuer = $cert2.Issuer
+                            
+                            # Alert if SSL expires within 30 days
+                            $daysLeft = ($cert2.NotAfter - (Get-Date)).Days
+                            if ($daysLeft -lt 30 -and $daysLeft -gt 0) {
+                                $alerts += @{
+                                    device_ip   = $ip
+                                    oid         = "ssl.expiry"
+                                    value       = "Certificato SSL di $name ($ip) scade tra $daysLeft giorni ($($cert2.NotAfter.ToString('dd/MM/yyyy')))"
+                                    trap_type   = "sslExpiring"
+                                    severity    = "high"
+                                    device_name = $name
+                                }
+                            }
+                        }
+                    } catch {}
+                }
+            } catch [System.Net.WebException] {
+                $httpStart.Stop()
+                $httpDetails.response_ms = $httpStart.ElapsedMilliseconds
+                if ($_.Exception.Response) {
+                    $httpDetails.status_code = [int]$_.Exception.Response.StatusCode
+                    $httpDetails.server_header = $_.Exception.Response.Headers["Server"]
+                } else {
+                    $httpDetails.status_code = 0
+                }
+            } catch {
+                $httpDetails.status_code = 0
+            }
+            
+            [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $null
+        }
+    }
+    
+    # ========== 5. State change alerts ==========
     $wasUp = $script:DeviceUp.ContainsKey($ip) -and $script:DeviceUp[$ip]
     
     if (-not $reachable -and $wasUp) {
         $alerts += @{
             device_ip  = $ip
             oid        = "ping.monitor"
-            value      = "Dispositivo $name ($ip) NON RAGGIUNGIBILE - ping fallito"
+            value      = "Dispositivo $name ($ip) NON RAGGIUNGIBILE - ping fallito (packet loss: ${packetLoss}%)"
             trap_type  = "deviceDown"
             severity   = "critical"
             device_name = $name
@@ -395,19 +554,53 @@ function Poll-PingDevice($ip, $name, $httpPort) {
         $alerts += @{
             device_ip  = $ip
             oid        = "ping.monitor"
-            value      = "Dispositivo $name ($ip) di nuovo RAGGIUNGIBILE"
+            value      = "Dispositivo $name ($ip) di nuovo RAGGIUNGIBILE (latenza: ${pingAvg}ms)"
             trap_type  = "deviceUp"
             severity   = "low"
             device_name = $name
         }
     }
+    
+    # Alert on high latency
+    if ($pingAvg -and $pingAvg -gt 200) {
+        $alerts += @{
+            device_ip  = $ip
+            oid        = "ping.latency"
+            value      = "Latenza alta su $name ($ip): ${pingAvg}ms (jitter: ${pingJitter}ms)"
+            trap_type  = "highLatency"
+            severity   = "high"
+            device_name = $name
+        }
+    }
+    
+    # Alert on packet loss
+    if ($packetLoss -gt 0 -and $packetLoss -lt 100) {
+        $alerts += @{
+            device_ip  = $ip
+            oid        = "ping.packetloss"
+            value      = "Packet loss su $name ($ip): ${packetLoss}% ($totalReceived/$totalSent)"
+            trap_type  = "packetLoss"
+            severity   = if ($packetLoss -ge 40) { "high" } else { "medium" }
+            device_name = $name
+        }
+    }
+    
     $script:DeviceUp[$ip] = $reachable
     
     return @{
-        alerts = $alerts
-        reachable = $reachable
-        ping_ms = $pingMs
-        http_status = $httpStatus
+        alerts      = $alerts
+        reachable   = $reachable
+        ping_ms     = $pingAvg
+        ping_min    = $pingMin
+        ping_max    = $pingMax
+        ping_avg    = $pingAvg
+        ping_jitter = $pingJitter
+        packet_loss = $packetLoss
+        ttl         = $ttl
+        dns_ms      = $dnsMs
+        open_ports  = $openPorts
+        http_details = $httpDetails
+        http_status = if ($httpDetails) { $httpDetails.status_code } else { $null }
     }
 }
 
@@ -428,23 +621,60 @@ function Send-DeviceReport($config, $devices) {
         $community = if ($dev.community) { $dev.community } else { "public" }
         
         if ($monitorType -eq "ping" -or $monitorType -eq "http") {
-            # Ping/HTTP device - use cached poll results
+            # Ping/HTTP device - use cached poll results with advanced metrics
             $reachable = $script:DeviceUp.ContainsKey($ip) -and $script:DeviceUp[$ip]
-            $pingMs = if ($script:PingResults.ContainsKey($ip)) { $script:PingResults[$ip].ping_ms } else { $null }
-            $httpStatus = if ($script:PingResults.ContainsKey($ip)) { $script:PingResults[$ip].http_status } else { $null }
+            $pingData = if ($script:PingResults.ContainsKey($ip)) { $script:PingResults[$ip] } else { $null }
             
-            $reportDevices += @{
+            $deviceReport = @{
                 device_ip = $ip
                 device_name = $devName
                 monitor_type = $monitorType
                 reachable = $reachable
-                ping_ms = $pingMs
-                http_status = $httpStatus
+                ping_ms = if ($pingData) { $pingData.ping_ms } else { $null }
+                http_status = if ($pingData) { $pingData.http_status } else { $null }
                 ports = @()
-                sys_descr = if ($httpStatus -and $httpStatus -gt 0) { "Web management attivo (HTTP $httpStatus)" } else { "Smart managed switch" }
+                sys_descr = ""
                 sys_uptime = ""
                 poll_timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+                # Advanced ping metrics
+                ping_stats = $null
+                open_ports = $null
+                http_details = $null
             }
+            
+            if ($pingData) {
+                $deviceReport.ping_stats = @{
+                    min = $pingData.ping_min
+                    max = $pingData.ping_max
+                    avg = $pingData.ping_avg
+                    jitter = $pingData.ping_jitter
+                    packet_loss = $pingData.packet_loss
+                    ttl = $pingData.ttl
+                    dns_ms = $pingData.dns_ms
+                }
+                $deviceReport.open_ports = $pingData.open_ports
+                $deviceReport.http_details = $pingData.http_details
+                
+                # Build sys_descr from collected info
+                $descParts = @()
+                if ($pingData.http_details -and $pingData.http_details.server_header) {
+                    $descParts += $pingData.http_details.server_header
+                }
+                if ($pingData.http_details -and $pingData.http_details.title) {
+                    $descParts += $pingData.http_details.title
+                }
+                if ($pingData.open_ports -and $pingData.open_ports.Count -gt 0) {
+                    $portNames = ($pingData.open_ports | ForEach-Object { $_.name }) -join ", "
+                    $descParts += "Servizi: $portNames"
+                }
+                if ($descParts.Count -gt 0) {
+                    $deviceReport.sys_descr = $descParts -join " | "
+                } else {
+                    $deviceReport.sys_descr = if ($reachable) { "Raggiungibile (ping OK)" } else { "Non raggiungibile" }
+                }
+            }
+            
+            $reportDevices += $deviceReport
         } else {
             # SNMP device - full extended metrics
             $reachable = $script:DeviceUp.ContainsKey($ip) -and $script:DeviceUp[$ip]

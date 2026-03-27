@@ -166,17 +166,24 @@ export function DeviceDetailPanel({ dev, isPing }) {
   const [metricsHistory, setMetricsHistory] = useState(null);
   const [showAllPorts, setShowAllPorts] = useState(false);
 
+  // Define derived values BEFORE useEffect to avoid temporal dead zone
+  const hw = dev.hardware || {};
+  const fw = dev.firewall || {};
+  const rf = dev.redfish || {};
+  const ps = dev.ping_stats || {};
+  const op = dev.open_ports || [];
+  const hd = dev.http_details || {};
+  const hasPingStats = ps.avg != null || ps.min != null;
+
   useEffect(() => {
-    if (dev.cpu_usage != null || dev.temperature != null) {
+    if (dev.cpu_usage != null || dev.temperature != null || hasPingStats) {
       axios.get(`${API}/connector/device-metrics/${dev.device_ip}`)
         .then(r => setMetricsHistory(r.data))
         .catch(() => {});
     }
-  }, [dev.device_ip, dev.cpu_usage, dev.temperature]);
-
-  const hw = dev.hardware || {};
-  const fw = dev.firewall || {};
-  const rf = dev.redfish || {};
+  }, [dev.device_ip, dev.cpu_usage, dev.temperature, hasPingStats]);
+  const hasOpenPorts = op.length > 0;
+  const hasHttpDetails = hd.status_code != null && hd.status_code > 0;
   const hasExtended = dev.cpu_usage != null || dev.memory_usage != null || dev.temperature != null;
   const hasHardware = (hw.fans?.length > 0) || (hw.power_supplies?.length > 0) || (hw.temperatures?.length > 0) || (hw.disks?.length > 0) || hw.health_status;
   const hasFirewall = dev.device_class === "zyxel-usg" || fw.active_sessions != null || fw.vpn_throughput != null;
@@ -200,29 +207,146 @@ export function DeviceDetailPanel({ dev, isPing }) {
       {dev.sys_uptime && <p className="text-[11px] text-[var(--text-muted)]">Uptime: {dev.sys_uptime}</p>}
 
       {isPing ? (
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          <div className="p-2 rounded-lg bg-[var(--bg-panel)] border border-[var(--bg-border)]">
-            <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider">Ping</p>
-            <p className={`text-sm font-mono font-bold ${dev.reachable ? "text-[var(--ok)]" : "text-[var(--critical)]"}`}>
-              {dev.ping_ms != null ? `${dev.ping_ms}ms` : "N/A"}
-            </p>
+        <div className="space-y-3" data-testid="ping-advanced-metrics">
+          {/* Ping Statistics */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2">
+            <div className="p-2.5 rounded-lg bg-[var(--bg-panel)] border border-[var(--bg-border)]" data-testid="ping-avg">
+              <div className="flex items-center gap-1 mb-1">
+                <WifiHigh size={10} className="text-teal-400" />
+                <p className="text-[9px] text-[var(--text-muted)] uppercase tracking-wider font-medium">Latenza</p>
+              </div>
+              <p className={`text-sm font-mono font-bold ${dev.ping_ms != null && dev.ping_ms <= 50 ? "text-[var(--ok)]" : dev.ping_ms <= 150 ? "text-amber-400" : "text-[var(--critical)]"}`}>
+                {dev.ping_ms != null ? `${dev.ping_ms}ms` : "N/A"}
+              </p>
+              {hasPingStats && <p className="text-[8px] text-[var(--text-muted)] font-mono mt-0.5">{ps.min}ms / {ps.avg}ms / {ps.max}ms</p>}
+            </div>
+            <div className="p-2.5 rounded-lg bg-[var(--bg-panel)] border border-[var(--bg-border)]" data-testid="ping-jitter">
+              <div className="flex items-center gap-1 mb-1">
+                <Lightning size={10} className="text-purple-400" />
+                <p className="text-[9px] text-[var(--text-muted)] uppercase tracking-wider font-medium">Jitter</p>
+              </div>
+              <p className={`text-sm font-mono font-bold ${ps.jitter != null && ps.jitter <= 5 ? "text-[var(--ok)]" : ps.jitter <= 20 ? "text-amber-400" : "text-[var(--critical)]"}`}>
+                {ps.jitter != null ? `${ps.jitter}ms` : "N/A"}
+              </p>
+            </div>
+            <div className="p-2.5 rounded-lg bg-[var(--bg-panel)] border border-[var(--bg-border)]" data-testid="ping-loss">
+              <div className="flex items-center gap-1 mb-1">
+                <Warning size={10} className="text-red-400" />
+                <p className="text-[9px] text-[var(--text-muted)] uppercase tracking-wider font-medium">Packet Loss</p>
+              </div>
+              <p className={`text-sm font-mono font-bold ${ps.packet_loss === 0 ? "text-[var(--ok)]" : ps.packet_loss <= 20 ? "text-amber-400" : "text-[var(--critical)]"}`}>
+                {ps.packet_loss != null ? `${ps.packet_loss}%` : "N/A"}
+              </p>
+            </div>
+            <div className="p-2.5 rounded-lg bg-[var(--bg-panel)] border border-[var(--bg-border)]" data-testid="ping-ttl">
+              <div className="flex items-center gap-1 mb-1">
+                <Globe size={10} className="text-blue-400" />
+                <p className="text-[9px] text-[var(--text-muted)] uppercase tracking-wider font-medium">TTL</p>
+              </div>
+              <p className="text-sm font-mono font-bold text-blue-400">{ps.ttl || "N/A"}</p>
+              {ps.ttl && <p className="text-[8px] text-[var(--text-muted)]">{ps.ttl <= 64 ? "Linux/Mac" : ps.ttl <= 128 ? "Windows" : "Router"}</p>}
+            </div>
+            <div className="p-2.5 rounded-lg bg-[var(--bg-panel)] border border-[var(--bg-border)]" data-testid="ping-dns">
+              <div className="flex items-center gap-1 mb-1">
+                <Globe size={10} className="text-cyan-400" />
+                <p className="text-[9px] text-[var(--text-muted)] uppercase tracking-wider font-medium">DNS</p>
+              </div>
+              <p className={`text-sm font-mono font-bold ${ps.dns_ms != null && ps.dns_ms >= 0 && ps.dns_ms < 50 ? "text-[var(--ok)]" : ps.dns_ms < 200 ? "text-amber-400" : "text-[var(--critical)]"}`}>
+                {ps.dns_ms != null && ps.dns_ms >= 0 ? `${ps.dns_ms}ms` : "N/A"}
+              </p>
+            </div>
+            <div className="p-2.5 rounded-lg bg-[var(--bg-panel)] border border-[var(--bg-border)]" data-testid="ping-http">
+              <div className="flex items-center gap-1 mb-1">
+                <Globe size={10} className="text-emerald-400" />
+                <p className="text-[9px] text-[var(--text-muted)] uppercase tracking-wider font-medium">HTTP</p>
+              </div>
+              <p className={`text-sm font-mono font-bold ${dev.http_status >= 200 && dev.http_status < 400 ? "text-[var(--ok)]" : dev.http_status ? "text-[var(--medium)]" : "text-[var(--text-muted)]"}`}>
+                {dev.http_status ? `${dev.http_status}` : "N/A"}
+              </p>
+              {hasHttpDetails && hd.response_ms && <p className="text-[8px] text-[var(--text-muted)] font-mono">{hd.response_ms}ms</p>}
+            </div>
+            <div className="p-2.5 rounded-lg bg-[var(--bg-panel)] border border-[var(--bg-border)]" data-testid="ping-state">
+              <div className="flex items-center gap-1 mb-1">
+                {dev.reachable ? <CheckCircle size={10} className="text-[var(--ok)]" /> : <WifiSlash size={10} className="text-[var(--critical)]" />}
+                <p className="text-[9px] text-[var(--text-muted)] uppercase tracking-wider font-medium">Stato</p>
+              </div>
+              <p className={`text-sm font-bold ${dev.reachable ? "text-[var(--ok)]" : "text-[var(--critical)]"}`}>
+                {dev.reachable ? "Online" : "Offline"}
+              </p>
+            </div>
           </div>
-          <div className="p-2 rounded-lg bg-[var(--bg-panel)] border border-[var(--bg-border)]">
-            <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider">HTTP</p>
-            <p className={`text-sm font-mono font-bold ${dev.http_status && dev.http_status >= 200 && dev.http_status < 400 ? "text-[var(--ok)]" : dev.http_status ? "text-[var(--medium)]" : "text-[var(--text-muted)]"}`}>
-              {dev.http_status ? `${dev.http_status}` : "N/A"}
-            </p>
-          </div>
-          <div className="p-2 rounded-lg bg-[var(--bg-panel)] border border-[var(--bg-border)]">
-            <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider">Stato</p>
-            <p className={`text-sm font-bold ${dev.reachable ? "text-[var(--ok)]" : "text-[var(--critical)]"}`}>
-              {dev.reachable ? "Raggiungibile" : "Offline"}
-            </p>
-          </div>
-          <div className="p-2 rounded-lg bg-[var(--bg-panel)] border border-[var(--bg-border)]">
-            <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider">Monitoraggio</p>
-            <p className="text-sm font-mono font-bold text-indigo-400">Ping + HTTP</p>
-          </div>
+
+          {/* HTTP Details */}
+          {hasHttpDetails && (
+            <div className="space-y-1" data-testid="http-details-section">
+              <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider font-medium flex items-center gap-1"><Globe size={10} /> Dettagli HTTP</p>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                {hd.server_header && (
+                  <div className="px-2 py-1.5 rounded-md bg-[var(--bg-panel)] border border-[var(--bg-border)]">
+                    <p className="text-[8px] text-[var(--text-muted)]">Server</p>
+                    <p className="text-[10px] font-mono text-[var(--text-primary)]">{hd.server_header}</p>
+                  </div>
+                )}
+                {hd.title && (
+                  <div className="px-2 py-1.5 rounded-md bg-[var(--bg-panel)] border border-[var(--bg-border)]">
+                    <p className="text-[8px] text-[var(--text-muted)]">Titolo Pagina</p>
+                    <p className="text-[10px] text-[var(--text-primary)] truncate">{hd.title}</p>
+                  </div>
+                )}
+                {hd.content_type && (
+                  <div className="px-2 py-1.5 rounded-md bg-[var(--bg-panel)] border border-[var(--bg-border)]">
+                    <p className="text-[8px] text-[var(--text-muted)]">Content-Type</p>
+                    <p className="text-[10px] font-mono text-[var(--text-primary)] truncate">{hd.content_type}</p>
+                  </div>
+                )}
+                {hd.response_ms && (
+                  <div className="px-2 py-1.5 rounded-md bg-[var(--bg-panel)] border border-[var(--bg-border)]">
+                    <p className="text-[8px] text-[var(--text-muted)]">Tempo Risposta</p>
+                    <p className="text-[10px] font-mono font-bold text-teal-400">{hd.response_ms}ms</p>
+                  </div>
+                )}
+              </div>
+              {/* SSL Certificate */}
+              {(hd.ssl_expiry || hd.ssl_issuer) && (
+                <div className="grid grid-cols-2 gap-2 mt-1">
+                  {hd.ssl_expiry && (
+                    <div className={`px-2 py-1.5 rounded-md border ${
+                      new Date(hd.ssl_expiry) < new Date(Date.now() + 30*24*60*60*1000)
+                        ? "bg-[var(--critical-bg)] border-[var(--critical-border)]"
+                        : "bg-[var(--low-bg)] border-[var(--low-border)]"
+                    }`} data-testid="ssl-expiry">
+                      <p className="text-[8px] text-[var(--text-muted)]">Certificato SSL</p>
+                      <p className={`text-[10px] font-mono font-bold ${
+                        new Date(hd.ssl_expiry) < new Date(Date.now() + 30*24*60*60*1000) ? "text-[var(--critical)]" : "text-[var(--ok)]"
+                      }`}>
+                        Scade: {new Date(hd.ssl_expiry).toLocaleDateString("it-IT")}
+                      </p>
+                    </div>
+                  )}
+                  {hd.ssl_issuer && (
+                    <div className="px-2 py-1.5 rounded-md bg-[var(--bg-panel)] border border-[var(--bg-border)]">
+                      <p className="text-[8px] text-[var(--text-muted)]">Emittente SSL</p>
+                      <p className="text-[10px] font-mono text-[var(--text-primary)] truncate">{hd.ssl_issuer}</p>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Open Ports */}
+          {hasOpenPorts && (
+            <div className="space-y-1" data-testid="open-ports-section">
+              <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider font-medium flex items-center gap-1"><ShieldCheck size={10} /> Porte Aperte ({op.length})</p>
+              <div className="flex flex-wrap gap-1">
+                {op.map((p, i) => (
+                  <span key={i} className="text-[9px] px-2 py-1 rounded-md bg-[var(--low-bg)] border border-[var(--low-border)] text-[var(--ok)] font-mono" data-testid={`port-${p.port}`}>
+                    {p.port}/{p.name}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       ) : (
         <>

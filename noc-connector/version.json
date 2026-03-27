@@ -1,4 +1,4 @@
 {
-  "version": "2.1.0",
-  "changelog": "Wake-on-LAN: il connettore riceve comandi WoL dal SOC ed invia magic packet sulla LAN per accendere server spenti. Integrazione Redfish iLO con credenziali dal Vault cifrato. Power Control remoto (Accendi/Spegni/Riavvia) direttamente via iLO."
+  "version": "2.2.0",
+  "changelog": "Metriche PING avanzate: 5 probe con min/avg/max/jitter/packet_loss, TTL, TCP port scan (15 porte), HTTP deep check (response time, server header, SSL cert expiry, page title), DNS resolution time. Alert automatici su latenza alta, packet loss e certificati SSL in scadenza. Menu Start come 86BIT Connector."
 }

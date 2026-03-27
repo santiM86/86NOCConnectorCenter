@@ -2799,6 +2799,9 @@ async def connector_device_report(request: Request):
             "hardware": dev.get("hardware", None),
             "firewall": dev.get("firewall", None),
             "redfish": dev.get("redfish", None),
+            "ping_stats": dev.get("ping_stats", None),
+            "open_ports": dev.get("open_ports", None),
+            "http_details": dev.get("http_details", None),
             "last_poll": dev.get("poll_timestamp", now_iso),
             "updated_at": now_iso
         }
@@ -2809,7 +2812,7 @@ async def connector_device_report(request: Request):
         )
 
         # Store historical metrics for trending (keep last 288 = 24h at 5min intervals)
-        if dev.get("cpu_usage") is not None or dev.get("temperature") is not None or dev.get("firewall"):
+        if dev.get("cpu_usage") is not None or dev.get("temperature") is not None or dev.get("firewall") or dev.get("ping_stats"):
             metric_doc = {
                 "client_id": client_id,
                 "device_ip": dev["device_ip"],
@@ -2819,6 +2822,9 @@ async def connector_device_report(request: Request):
                 "temperature": dev.get("temperature"),
                 "active_sessions": dev.get("firewall", {}).get("active_sessions") if dev.get("firewall") else None,
                 "vpn_throughput": dev.get("firewall", {}).get("vpn_throughput") if dev.get("firewall") else None,
+                "ping_avg": dev.get("ping_stats", {}).get("avg") if dev.get("ping_stats") else dev.get("ping_ms"),
+                "ping_jitter": dev.get("ping_stats", {}).get("jitter") if dev.get("ping_stats") else None,
+                "packet_loss": dev.get("ping_stats", {}).get("packet_loss") if dev.get("ping_stats") else None,
             }
             await db.device_metrics_history.insert_one(metric_doc)
             # Cleanup old metrics (keep last 24h)
@@ -2839,10 +2845,10 @@ async def get_device_poll_status(current_user: dict = Depends(get_current_user))
 
 @api_router.get("/connector/device-metrics/{device_ip}")
 async def get_device_metrics_history(device_ip: str, current_user: dict = Depends(get_current_user)):
-    """Get historical metrics (CPU, Memory, Temperature, active_sessions, vpn_throughput) for a device - last 24h."""
+    """Get historical metrics (CPU, Memory, Temperature, active_sessions, vpn_throughput, ping_avg, ping_jitter, packet_loss) for a device - last 24h."""
     metrics = await db.device_metrics_history.find(
         {"device_ip": device_ip},
-        {"_id": 0, "timestamp": 1, "cpu_usage": 1, "memory_usage": 1, "temperature": 1, "active_sessions": 1, "vpn_throughput": 1}
+        {"_id": 0, "timestamp": 1, "cpu_usage": 1, "memory_usage": 1, "temperature": 1, "active_sessions": 1, "vpn_throughput": 1, "ping_avg": 1, "ping_jitter": 1, "packet_loss": 1}
     ).sort("timestamp", 1).to_list(500)
     return metrics
 
