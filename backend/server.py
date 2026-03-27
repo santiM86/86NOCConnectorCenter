@@ -1378,6 +1378,104 @@ async def get_security_events(hours: int = 24, current_user: dict = Depends(get_
     events = await audit_logger.get_security_events(hours=hours)
     return events
 
+@api_router.get("/audit/security-dashboard")
+async def get_security_dashboard(current_user: dict = Depends(get_current_user)):
+    """Get aggregated security dashboard data for the Security Audit panel."""
+    if current_user.get("role") not in ["admin", "security_admin"]:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    now = datetime.now(timezone.utc)
+    cutoff_24h = (now - timedelta(hours=24)).isoformat()
+    cutoff_7d = (now - timedelta(days=7)).isoformat()
+    
+    # Failed logins last 24h
+    failed_logins_24h = await db.audit_logs.find(
+        {"action": "login_failed", "timestamp": {"$gte": cutoff_24h}},
+        {"_id": 0}
+    ).sort("timestamp", -1).to_list(100)
+    
+    # Successful logins last 24h
+    success_logins_24h = await db.audit_logs.count_documents(
+        {"action": "login_success", "timestamp": {"$gte": cutoff_24h}}
+    )
+    
+    # Locked accounts
+    locked_accounts = await db.users.find(
+        {"locked": True},
+        {"_id": 0, "email": 1, "locked_at": 1, "unlock_at": 1}
+    ).to_list(50)
+    
+    # Active refresh tokens count
+    active_tokens = await db.refresh_tokens.count_documents({"revoked": False})
+    revoked_tokens_24h = await db.refresh_tokens.count_documents(
+        {"revoked": True, "created_at": {"$gte": cutoff_24h}}
+    )
+    
+    # IP frequency for failed logins (top attackers)
+    ip_stats = {}
+    for log in failed_logins_24h:
+        ip = log.get("ip_address", "unknown")
+        if ip not in ip_stats:
+            ip_stats[ip] = {"count": 0, "last_attempt": "", "emails": set()}
+        ip_stats[ip]["count"] += 1
+        ip_stats[ip]["last_attempt"] = log.get("timestamp", "")
+        if log.get("user_email"):
+            ip_stats[ip]["emails"].add(log["user_email"])
+    
+    suspicious_ips = [
+        {"ip": ip, "attempts": data["count"], "last_attempt": data["last_attempt"], "targeted_emails": list(data["emails"])}
+        for ip, data in sorted(ip_stats.items(), key=lambda x: x[1]["count"], reverse=True)
+    ][:20]
+    
+    # Security events timeline (last 7 days, grouped by hour)
+    security_actions = ["login_failed", "login_success", "logout", "2fa_verified", "2fa_failed", "rate_limit_exceeded", "suspicious_activity", "ip_blocked"]
+    timeline_logs = await db.audit_logs.find(
+        {"action": {"$in": security_actions}, "timestamp": {"$gte": cutoff_7d}},
+        {"_id": 0, "timestamp": 1, "action": 1, "severity": 1}
+    ).sort("timestamp", -1).to_list(5000)
+    
+    # Count by day
+    daily_counts = {}
+    for log in timeline_logs:
+        day = log["timestamp"][:10]
+        if day not in daily_counts:
+            daily_counts[day] = {"date": day, "failed": 0, "success": 0, "total": 0}
+        daily_counts[day]["total"] += 1
+        if log["action"] == "login_failed":
+            daily_counts[day]["failed"] += 1
+        elif log["action"] == "login_success":
+            daily_counts[day]["success"] += 1
+    
+    timeline = sorted(daily_counts.values(), key=lambda x: x["date"])
+    
+    # Recent critical/warning events
+    critical_events = await db.audit_logs.find(
+        {"severity": {"$in": ["critical", "warning"]}, "timestamp": {"$gte": cutoff_24h}},
+        {"_id": 0}
+    ).sort("timestamp", -1).to_list(50)
+    
+    # 2FA stats
+    twofa_enabled = await db.users.count_documents({"two_factor_enabled": True})
+    twofa_total = await db.users.count_documents({})
+    
+    return {
+        "stats": {
+            "failed_logins_24h": len(failed_logins_24h),
+            "success_logins_24h": success_logins_24h,
+            "locked_accounts": len(locked_accounts),
+            "active_sessions": active_tokens,
+            "revoked_tokens_24h": revoked_tokens_24h,
+            "critical_events_24h": len([e for e in critical_events if e.get("severity") == "critical"]),
+            "twofa_coverage": f"{twofa_enabled}/{twofa_total}",
+        },
+        "failed_logins": failed_logins_24h[:30],
+        "locked_accounts": locked_accounts,
+        "suspicious_ips": suspicious_ips,
+        "timeline": timeline,
+        "critical_events": critical_events[:30],
+    }
+
+
 # ==================== SETTINGS ROUTES ====================
 
 @api_router.get("/settings/notifications")

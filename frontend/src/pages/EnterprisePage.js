@@ -5,7 +5,8 @@ import { toast } from "sonner";
 import {
   ShieldCheck, Users, Clock, Wrench, FileText,
   Plus, Trash, Download, CaretDown, Check,
-  Timer, Warning, Lightning
+  Timer, Warning, Lightning, Eye, Lock, 
+  ArrowClockwise, XCircle, UserCircle, Globe
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -18,6 +19,7 @@ import {
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
+import { SecurityAuditTab } from "@/components/SecurityAuditTab";
 
 export default function EnterprisePage() {
   const { user } = useAuth();
@@ -47,12 +49,16 @@ export default function EnterprisePage() {
           <TabsTrigger value="reports" className="rounded-md data-[state=active]:bg-indigo-600/20 data-[state=active]:text-indigo-300 text-xs gap-1.5 h-8">
             <FileText size={14} /> Report
           </TabsTrigger>
+          <TabsTrigger value="security" className="rounded-md data-[state=active]:bg-red-600/20 data-[state=active]:text-red-300 text-xs gap-1.5 h-8">
+            <Eye size={14} /> Security Audit
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="sla"><SLATab /></TabsContent>
         <TabsContent value="rbac"><RBACTab /></TabsContent>
         <TabsContent value="maintenance"><MaintenanceTab /></TabsContent>
         <TabsContent value="reports"><ReportsTab /></TabsContent>
+        <TabsContent value="security"><SecurityAuditTab /></TabsContent>
       </Tabs>
     </div>
   );
