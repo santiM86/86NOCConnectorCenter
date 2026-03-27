@@ -646,28 +646,41 @@ function Show-InstallerWizard {
                 $txtStatus.AppendText("  Avvio automatico: OK`r`n")
             } catch {}
         }
-        # Start Menu shortcut
+        # Start Menu shortcut - Cartella "86BIT Connector"
         try {
-            $startMenuDir = Join-Path ([Environment]::GetFolderPath("CommonStartMenu")) "Programs\86NocConnector"
+            $startMenuDir = Join-Path ([Environment]::GetFolderPath("CommonStartMenu")) "Programs\86BIT Connector"
             if (!(Test-Path $startMenuDir)) { New-Item -ItemType Directory -Path $startMenuDir -Force | Out-Null }
+            # Rimuovi vecchia cartella con nome diverso
+            $oldDir = Join-Path ([Environment]::GetFolderPath("CommonStartMenu")) "Programs\86NocConnector"
+            if (Test-Path $oldDir) { Remove-Item $oldDir -Recurse -Force -ErrorAction SilentlyContinue }
+            
             $shell = New-Object -ComObject WScript.Shell
-            # Main shortcut - Avvia 86NocConnector
-            $shortcut = $shell.CreateShortcut("$startMenuDir\86NocConnector.lnk")
+            # Collegamento Avvia
+            $shortcut = $shell.CreateShortcut("$startMenuDir\Avvia 86NocConnector.lnk")
             $shortcut.TargetPath = $batPath
             $shortcut.WorkingDirectory = $BaseDir
-            $shortcut.Description = "Avvia 86NocConnector - Collector SNMP e Syslog"
+            $shortcut.Description = "Avvia 86NocConnector - Collector SNMP, Syslog e Redfish iLO"
             $shortcut.IconLocation = "shell32.dll,13"
             $shortcut.WindowStyle = 7
             $shortcut.Save()
-            # Uninstall shortcut
+            # Collegamento Disinstalla
             $unShortcut = $shell.CreateShortcut("$startMenuDir\Disinstalla 86NocConnector.lnk")
             $unShortcut.TargetPath = $uninstallBat
             $unShortcut.WorkingDirectory = $BaseDir
             $unShortcut.Description = "Disinstalla 86NocConnector"
             $unShortcut.IconLocation = "shell32.dll,31"
             $unShortcut.Save()
+            # Collegamento Apri Cartella Log
+            $logDir = Join-Path $env:ProgramData "86NocConnector\logs"
+            if (!(Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
+            $logShortcut = $shell.CreateShortcut("$startMenuDir\Apri Cartella Log.lnk")
+            $logShortcut.TargetPath = "explorer.exe"
+            $logShortcut.Arguments = $logDir
+            $logShortcut.Description = "Apri la cartella dei log del connettore"
+            $logShortcut.IconLocation = "shell32.dll,3"
+            $logShortcut.Save()
             [System.Runtime.InteropServices.Marshal]::ReleaseComObject($shell) | Out-Null
-            $txtStatus.AppendText("  Menu Start: OK`r`n")
+            $txtStatus.AppendText("  Menu Start: OK (86BIT Connector)`r`n")
         } catch {
             $txtStatus.AppendText("  Menu Start: $($_.Exception.Message)`r`n")
         }
@@ -756,7 +769,7 @@ function Show-InstallerWizard {
             [char]0x2713 + "   Syslog: porta UDP $($txtSyslog.Text)"
             [char]0x2713 + "   NOC Center: $($txtUrl.Text.Trim().Substring(0, [Math]::Min(42, $txtUrl.Text.Trim().Length)))"
             [char]0x2713 + "   Icona system tray: Attiva"
-            [char]0x2713 + "   Menu Start: Collegamento creato"
+            [char]0x2713 + "   Menu Start: 86BIT Connector (Avvia, Disinstalla, Log)"
             [char]0x2713 + "   Avvio automatico: $(if($chkAutostart.Checked){'Abilitato'}else{'Disabilitato'})"
             [char]0x2713 + "   Polling SNMP: $($deviceList.Items.Count) dispositivi ogni $($txtPollInterval.Text)s"
         )

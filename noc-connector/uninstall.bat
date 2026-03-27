@@ -17,10 +17,15 @@ echo [3/6] Rimozione avvio automatico...
 reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "86NocConnector" /f >nul 2>&1
 
 echo [4/6] Rimozione collegamento Menu Start...
-set "STARTMENU=%ProgramData%\Microsoft\Windows\Start Menu\Programs\86NocConnector"
+set "STARTMENU=%ProgramData%\Microsoft\Windows\Start Menu\Programs\86BIT Connector"
 if exist "%STARTMENU%" (
     rmdir /s /q "%STARTMENU%"
-    echo   Menu Start rimosso.
+    echo   Menu Start (86BIT Connector) rimosso.
+)
+set "STARTMENU_OLD=%ProgramData%\Microsoft\Windows\Start Menu\Programs\86NocConnector"
+if exist "%STARTMENU_OLD%" (
+    rmdir /s /q "%STARTMENU_OLD%"
+    echo   Menu Start (vecchio) rimosso.
 )
 
 echo [5/6] Rimozione da Programmi e Funzionalita'...
