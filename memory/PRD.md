@@ -7,7 +7,6 @@ Piattaforma NOC enterprise-grade per il monitoraggio in tempo reale di dispositi
 - **Backend**: Python 3.11, FastAPI, MongoDB, AES-256-GCM encryption
 - **Frontend**: React, TailwindCSS, Shadcn UI, PWA
 - **Windows Connector**: PowerShell 5.1+, Raw UDP/BER per SNMP, Redfish API
-- **Database**: MongoDB
 
 ### Struttura Backend (Post-Refactoring v2.3.0)
 ```
@@ -16,79 +15,36 @@ Piattaforma NOC enterprise-grade per il monitoraggio in tempo reale di dispositi
 ├── database.py (connessione MongoDB)
 ├── deps.py (dipendenze condivise: auth, JWT, services, IP blocking)
 ├── models.py (modelli Pydantic)
-├── security.py (AES-256-GCM, Argon2id, TOTP)
-├── audit.py (audit logging)
-├── notifications.py (notifiche)
-├── redfish.py (polling iLO diretto)
-├── correlation.py (correlazione alert)
-├── maintenance.py (finestre di manutenzione)
-├── sla.py (SLA management)
-├── security_hardening.py (account lockout)
-├── enterprise_routes.py (route enterprise)
+├── security.py / audit.py / notifications.py / redfish.py
 ├── routes/
-│   ├── auth.py (autenticazione, 2FA, refresh tokens)
-│   ├── admin.py (gestione utenti admin)
-│   ├── clients.py (CRUD clienti)
-│   ├── devices.py (CRUD dispositivi + credenziali)
-│   ├── alerts.py (CRUD alert + statistiche + trend)
-│   ├── audit_routes.py (audit logs, security dashboard, IP blocking)
-│   ├── vault.py (Credential Vault AES-256-GCM)
-│   ├── redfish_routes.py (Redfish/iLO + Power Control + WoL)
-│   ├── settings.py (impostazioni notifiche/Redfish)
-│   ├── ingestion.py (ingestione SNMP/Syslog)
-│   ├── connector.py (heartbeat, auto-update, gestione dispositivi)
-│   ├── discovery.py (network discovery)
-│   └── web_proxy.py (web console proxy)
+│   ├── auth.py, admin.py, clients.py, devices.py
+│   ├── alerts.py, audit_routes.py, vault.py
+│   ├── redfish_routes.py, settings.py, ingestion.py
+│   ├── connector.py, discovery.py, web_proxy.py
 ```
 
-## Funzionalita Implementate
+### Navigazione Frontend (Ristrutturata)
+```
+MONITORAGGIO      → Dashboard, Alert (con badge), Dispositivi
+INFRASTRUTTURA    → Clienti, Connettori
+SICUREZZA         → Vault Credenziali, Audit & Compliance, Gestione Utenti
+SISTEMA           → Impostazioni
+```
+Gruppi collassabili, visibilita basata sul ruolo, badge alert live, indicatore attivo indigo.
 
-### Core Platform
+## Funzionalita Implementate
 - [x] Autenticazione JWT con 2FA (TOTP/Microsoft Authenticator)
 - [x] Gestione utenti con ruoli (admin/operator/viewer)
 - [x] Gestione clienti con API key
 - [x] Gestione dispositivi SNMP/Ping/Redfish
 - [x] Alert management con correlazione intelligente
-- [x] Dashboard statistiche in tempo reale
-- [x] WebSocket per alert live
-- [x] Audit logging completo
-- [x] Security Dashboard con IP blocking
-- [x] Rate limiting enterprise
-- [x] Security headers middleware
-
-### Credential Vault (AES-256-GCM)
-- [x] Cifratura militare delle credenziali
-- [x] CRUD credenziali dal SOC
-- [x] Accesso sicuro dal connettore via API key
-
-### Metriche Avanzate
-- [x] PING: min/avg/max/jitter, packet loss, TTL
-- [x] TCP port scan (15 porte)
-- [x] HTTP deep check (response time, SSL cert, server header)
-- [x] DNS resolution time
-- [x] SNMP: CPU, memoria, temperatura, porte
-- [x] Redfish iLO: stato hardware, temperature, alimentatori
-
-### Power Control
-- [x] Redfish iLO: power on/off/reset/graceful shutdown
-- [x] Wake-on-LAN per dispositivi generici
-
-### Windows Connector (v2.3.0)
-- [x] Auto-update con updater.ps1 dedicato
-- [x] Force update dal SOC con barra progresso
-- [x] Export/Import dispositivi CSV
-- [x] Diagnostica SNMP dalla system tray
-- [x] Finestra Informazioni con logo 86BIT
-- [x] Menu Start Windows "86BIT Connector"
-- [x] Versioning dinamico da version.json
-- [x] Fix compatibilita PowerShell 5.1
-
-### Sicurezza Enterprise
-- [x] AES-256-GCM per credenziali
-- [x] Argon2id per password hashing
-- [x] IP auto-banning su login falliti
-- [x] Account lockout temporaneo
-- [x] Security headers (HSTS, CSP, X-Frame-Options)
+- [x] Dashboard statistiche in tempo reale + WebSocket
+- [x] Audit logging + Security Dashboard + IP blocking
+- [x] Credential Vault AES-256-GCM
+- [x] Metriche PING avanzate (jitter, packet loss, TCP scan, HTTP check)
+- [x] Power Control Redfish iLO + Wake-on-LAN
+- [x] Windows Connector v2.3.0 con auto-update
+- [x] Menu ristrutturato con 4 gruppi logici
 
 ## Backlog
 
@@ -99,17 +55,8 @@ Piattaforma NOC enterprise-grade per il monitoraggio in tempo reale di dispositi
 ### P2 - Futuri
 - [ ] SOC AI: correlazione intelligente, auto-triage, anomaly detection via LLM
 - [ ] Twilio Voice/SMS per alert critici
-- [ ] Auto-discovery rete
-- [ ] LDAP integration
-- [ ] SNMP v3
+- [ ] Auto-discovery rete, LDAP, SNMP v3
 
 ## Test Reports
-- iteration_16.json: Vault Connector Integration
-- iteration_17.json: Direct iLO Backend Polling & Failover
-- iteration_18.json: Power Control & WoL
-- iteration_19.json: Advanced PING Metrics
-- iteration_20.json: Server.py Refactoring Validation (100% pass)
-
-## Credenziali Test
-- Admin: admin@86bit.it
-- Test: test_refactor@86bit.it / Test1234!
+- iteration_20.json: Server.py Refactoring Validation (100%)
+- iteration_21.json: Navigation Menu Restructuring (100%)
