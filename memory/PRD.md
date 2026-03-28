@@ -1,67 +1,115 @@
 # NOC Alert Command Center - PRD
 
-## Problema Originale
-Creare un raccoglitore di alert (NOC) per dispositivi nelle reti dei clienti. Console live su PC e cellulare. Integrazione SNMP e Syslog. Sicurezza Enterprise. Connector Windows nativo (PowerShell).
+## Descrizione Prodotto
+Piattaforma NOC enterprise-grade per il monitoraggio in tempo reale di dispositivi di rete (switch, firewall, server) tramite SNMP, Syslog e Redfish. Include un connettore Windows nativo (PowerShell) per l'installazione sui server dei clienti.
 
 ## Architettura
-- **Frontend**: React + TailwindCSS + Shadcn UI (porta 3000)
-- **Backend**: FastAPI + MongoDB (porta 8001)
-- **Connector Windows**: PowerShell 5.1+ nativo (v2.2.0)
-- **Auth**: JWT + MFA (TOTP)
-- **Cifratura**: AES-256-GCM con ENCRYPTION_KEY persistente in .env
-- **Redfish Engine**: Polling diretto iLO + failover automatico + power control
+- **Backend**: Python 3.11, FastAPI, MongoDB, AES-256-GCM encryption
+- **Frontend**: React, TailwindCSS, Shadcn UI, PWA
+- **Windows Connector**: PowerShell 5.1+, Raw UDP/BER per SNMP, Redfish API
+- **Database**: MongoDB
+
+### Struttura Backend (Post-Refactoring v2.3.0)
+```
+/app/backend/
+├── server.py (193 righe - app init, middleware, router includes)
+├── database.py (connessione MongoDB)
+├── deps.py (dipendenze condivise: auth, JWT, services, IP blocking)
+├── models.py (modelli Pydantic)
+├── security.py (AES-256-GCM, Argon2id, TOTP)
+├── audit.py (audit logging)
+├── notifications.py (notifiche)
+├── redfish.py (polling iLO diretto)
+├── correlation.py (correlazione alert)
+├── maintenance.py (finestre di manutenzione)
+├── sla.py (SLA management)
+├── security_hardening.py (account lockout)
+├── enterprise_routes.py (route enterprise)
+├── routes/
+│   ├── auth.py (autenticazione, 2FA, refresh tokens)
+│   ├── admin.py (gestione utenti admin)
+│   ├── clients.py (CRUD clienti)
+│   ├── devices.py (CRUD dispositivi + credenziali)
+│   ├── alerts.py (CRUD alert + statistiche + trend)
+│   ├── audit_routes.py (audit logs, security dashboard, IP blocking)
+│   ├── vault.py (Credential Vault AES-256-GCM)
+│   ├── redfish_routes.py (Redfish/iLO + Power Control + WoL)
+│   ├── settings.py (impostazioni notifiche/Redfish)
+│   ├── ingestion.py (ingestione SNMP/Syslog)
+│   ├── connector.py (heartbeat, auto-update, gestione dispositivi)
+│   ├── discovery.py (network discovery)
+│   └── web_proxy.py (web console proxy)
+```
 
 ## Funzionalita Implementate
 
-### Core (DONE)
-- Dashboard, alert SNMP/Syslog, gestione clienti, WebSocket, PWA
+### Core Platform
+- [x] Autenticazione JWT con 2FA (TOTP/Microsoft Authenticator)
+- [x] Gestione utenti con ruoli (admin/operator/viewer)
+- [x] Gestione clienti con API key
+- [x] Gestione dispositivi SNMP/Ping/Redfish
+- [x] Alert management con correlazione intelligente
+- [x] Dashboard statistiche in tempo reale
+- [x] WebSocket per alert live
+- [x] Audit logging completo
+- [x] Security Dashboard con IP blocking
+- [x] Rate limiting enterprise
+- [x] Security headers middleware
 
-### Metriche SNMP Estese (DONE)
-- HPE 5130, HPE iLO, Zyxel USG, Generico HOST-RESOURCES-MIB
+### Credential Vault (AES-256-GCM)
+- [x] Cifratura militare delle credenziali
+- [x] CRUD credenziali dal SOC
+- [x] Accesso sicuro dal connettore via API key
 
-### Metriche PING Avanzate v2.2.0 (DONE - 27 mar 2026)
-- **5 Probe Ping**: min/avg/max/jitter/packet_loss%
-- **TTL**: Con rilevamento OS (Linux <64, Windows <128, Router >128)
-- **TCP Port Scan**: 15 porte comuni (SSH, HTTP, HTTPS, RDP, SMB, MySQL, MSSQL, VNC, FTP, SMTP, DNS, Telnet, SNMP, 8080, 8443)
-- **HTTP Deep Check**: Response time, server header, content-type, page title
-- **SSL Certificate**: Scadenza con alert automatico se <30 giorni, emittente
-- **DNS Resolution**: Tempo di risoluzione DNS
-- **Alert automatici**: Latenza alta (>200ms), packet loss (>0%), SSL in scadenza
-- **Storico metriche**: ping_avg, ping_jitter, packet_loss salvati per trending
+### Metriche Avanzate
+- [x] PING: min/avg/max/jitter, packet loss, TTL
+- [x] TCP port scan (15 porte)
+- [x] HTTP deep check (response time, SSL cert, server header)
+- [x] DNS resolution time
+- [x] SNMP: CPU, memoria, temperatura, porte
+- [x] Redfish iLO: stato hardware, temperature, alimentatori
 
-### Vault Credenziali AES-256-GCM (DONE)
-- CRUD cifrato, solo admin, URL esterna per iLO, audit log
+### Power Control
+- [x] Redfish iLO: power on/off/reset/graceful shutdown
+- [x] Wake-on-LAN per dispositivi generici
 
-### Redfish iLO Direct Polling & Failover (DONE)
-- Polling diretto, failover automatico, multi-connettore
+### Windows Connector (v2.3.0)
+- [x] Auto-update con updater.ps1 dedicato
+- [x] Force update dal SOC con barra progresso
+- [x] Export/Import dispositivi CSV
+- [x] Diagnostica SNMP dalla system tray
+- [x] Finestra Informazioni con logo 86BIT
+- [x] Menu Start Windows "86BIT Connector"
+- [x] Versioning dinamico da version.json
+- [x] Fix compatibilita PowerShell 5.1
 
-### Power Control & Wake-on-LAN (DONE)
-- Accendi/Spegni/Riavvia via iLO Redfish, WoL classico via connettore
-
-### Fix Aggiornamento Connettore (DONE - 27 mar 2026)
-- Timeout 5 min per update bloccati
-- Pulsante "Reset Stato" per aggiornamenti bloccati nel SOC
-- Endpoint: POST /api/connector/{id}/reset-update-status
-- Cartella Menu Start rinominata in "86BIT Connector"
-
-### Security Enterprise (DONE)
-- Headers, CORS, Rate limiting, Refresh Tokens, Audit, IP Auto-Ban, Argon2id, TOTP 2FA
-
-## Credenziali Test
-- Admin: admin@86bit.it / admin123
-- API Key: noc_35cf39b4d68740b1a981aedef2ee293d
+### Sicurezza Enterprise
+- [x] AES-256-GCM per credenziali
+- [x] Argon2id per password hashing
+- [x] IP auto-banning su login falliti
+- [x] Account lockout temporaneo
+- [x] Security headers (HSTS, CSP, X-Frame-Options)
 
 ## Backlog
 
-### P1
-- Notifiche Push Firebase (serve API Key utente)
-- Notifiche Email SendGrid (serve API Key utente)
-- Test connettore v2.2.0 sul server del cliente
+### P1 - Prossimi
+- [ ] Notifiche Push Firebase (MOCKED - serve API Key utente)
+- [ ] Notifiche Email SendGrid (MOCKED - serve API Key utente)
 
-### P2
-- SOC AI (correlazione, auto-triage, anomaly detection)
-- Twilio Voice/SMS per alert critici
-- LDAP integration, SNMP v3
+### P2 - Futuri
+- [ ] SOC AI: correlazione intelligente, auto-triage, anomaly detection via LLM
+- [ ] Twilio Voice/SMS per alert critici
+- [ ] Auto-discovery rete
+- [ ] LDAP integration
+- [ ] SNMP v3
 
-### P3
-- Refactoring server.py (~3200 righe) in moduli route separati
+## Test Reports
+- iteration_16.json: Vault Connector Integration
+- iteration_17.json: Direct iLO Backend Polling & Failover
+- iteration_18.json: Power Control & WoL
+- iteration_19.json: Advanced PING Metrics
+- iteration_20.json: Server.py Refactoring Validation (100% pass)
+
+## Credenziali Test
+- Admin: admin@86bit.it
+- Test: test_refactor@86bit.it / Test1234!
