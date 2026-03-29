@@ -1,62 +1,51 @@
 # NOC Alert Command Center - PRD
 
-## Descrizione Prodotto
-Piattaforma NOC enterprise-grade per il monitoraggio in tempo reale di dispositivi di rete (switch, firewall, server) tramite SNMP, Syslog e Redfish. Include un connettore Windows nativo (PowerShell) per l'installazione sui server dei clienti.
+## Descrizione
+Piattaforma NOC enterprise-grade per monitoraggio dispositivi di rete (switch, firewall, server) tramite SNMP, Syslog e Redfish. Connettore Windows nativo (PowerShell).
 
 ## Architettura
-- **Backend**: Python 3.11, FastAPI, MongoDB, AES-256-GCM encryption
-- **Frontend**: React, TailwindCSS, Shadcn UI, PWA
-- **Windows Connector**: PowerShell 5.1+, Raw UDP/BER per SNMP, Redfish API
+- Backend: Python 3.11, FastAPI, MongoDB, AES-256-GCM
+- Frontend: React, TailwindCSS, Shadcn UI, PWA
+- Connector: PowerShell 5.1+, SNMP, Redfish API
 
-### Struttura Backend (Post-Refactoring v2.3.0)
+### Backend modulare (17 file)
+server.py (193 righe), database.py, deps.py, models.py, routes/{auth, admin, clients, devices, alerts, audit_routes, vault, redfish_routes, settings, ingestion, connector, discovery, web_proxy}.py
+
+### Navigazione Frontend (4 gruppi + 2 pagine separate)
 ```
-/app/backend/
-├── server.py (193 righe - app init, middleware, router includes)
-├── database.py (connessione MongoDB)
-├── deps.py (dipendenze condivise: auth, JWT, services, IP blocking)
-├── models.py (modelli Pydantic)
-├── security.py / audit.py / notifications.py / redfish.py
-├── routes/
-│   ├── auth.py, admin.py, clients.py, devices.py
-│   ├── alerts.py, audit_routes.py, vault.py
-│   ├── redfish_routes.py, settings.py, ingestion.py
-│   ├── connector.py, discovery.py, web_proxy.py
+MONITORAGGIO    -> Dashboard, Alert (badge), Stato Rete (NUOVO), Dispositivi
+INFRASTRUTTURA  -> Clienti, Connettori (solo agent management)
+SICUREZZA       -> Vault Credenziali, Audit & Compliance, Gestione Utenti
+SISTEMA         -> Impostazioni
 ```
 
-### Navigazione Frontend (Ristrutturata)
-```
-MONITORAGGIO      → Dashboard, Alert (con badge), Dispositivi
-INFRASTRUTTURA    → Clienti, Connettori
-SICUREZZA         → Vault Credenziali, Audit & Compliance, Gestione Utenti
-SISTEMA           → Impostazioni
-```
-Gruppi collassabili, visibilita basata sul ruolo, badge alert live, indicatore attivo indigo.
+### Pagine separate
+- **Stato Rete** (/network-status): Monitoraggio dispositivi per cliente, discovery, export/import CSV, web console
+- **Connettori** (/connectors): Gestione agent 86NocConnector, download, auto-update, force update
 
 ## Funzionalita Implementate
-- [x] Autenticazione JWT con 2FA (TOTP/Microsoft Authenticator)
-- [x] Gestione utenti con ruoli (admin/operator/viewer)
+- [x] Auth JWT + 2FA TOTP + Refresh tokens
+- [x] Gestione utenti (admin/operator/viewer)
 - [x] Gestione clienti con API key
-- [x] Gestione dispositivi SNMP/Ping/Redfish
-- [x] Alert management con correlazione intelligente
-- [x] Dashboard statistiche in tempo reale + WebSocket
-- [x] Audit logging + Security Dashboard + IP blocking
+- [x] SNMP/Ping/Redfish device monitoring
+- [x] Alert management + correlazione + WebSocket live
+- [x] Security Dashboard + IP blocking + audit logs
 - [x] Credential Vault AES-256-GCM
 - [x] Metriche PING avanzate (jitter, packet loss, TCP scan, HTTP check)
 - [x] Power Control Redfish iLO + Wake-on-LAN
-- [x] Windows Connector v2.3.0 con auto-update
-- [x] Menu ristrutturato con 4 gruppi logici
+- [x] Connector v2.3.0 con auto-update
+- [x] Menu ristrutturato 4 gruppi + pagine separate Stato Rete/Connettori
 
 ## Backlog
-
-### P1 - Prossimi
-- [ ] Notifiche Push Firebase (MOCKED - serve API Key utente)
-- [ ] Notifiche Email SendGrid (MOCKED - serve API Key utente)
-
-### P2 - Futuri
-- [ ] SOC AI: correlazione intelligente, auto-triage, anomaly detection via LLM
-- [ ] Twilio Voice/SMS per alert critici
-- [ ] Auto-discovery rete, LDAP, SNMP v3
+### P1
+- [ ] Notifiche Push Firebase (MOCKED)
+- [ ] Notifiche Email SendGrid (MOCKED)
+### P2
+- [ ] SOC AI: correlazione, auto-triage, anomaly detection via LLM
+- [ ] Twilio Voice/SMS
+- [ ] Auto-discovery, LDAP, SNMP v3
 
 ## Test Reports
-- iteration_20.json: Server.py Refactoring Validation (100%)
-- iteration_21.json: Navigation Menu Restructuring (100%)
+- iteration_20: Backend refactoring (100%)
+- iteration_21: Menu restructuring (100%)
+- iteration_22: Page split Stato Rete/Connettori (100%)
