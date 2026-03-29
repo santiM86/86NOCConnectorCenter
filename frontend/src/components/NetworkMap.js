@@ -1,145 +1,93 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import axios from "axios";
+import { API } from "@/App";
 
-const DEVICE_ICONS = {
-  switch: { path: "M4 8h16M4 16h16M8 4v16M16 4v16", color: "#818cf8" },
-  firewall: { path: "M12 2L3 7v6c0 5.25 3.83 10.16 9 11.38C17.17 23.16 21 18.25 21 13V7l-9-5z", color: "#f59e0b" },
-  server: { path: "M2 6h20v4H2zM2 14h20v4H2zM6 8h.01M6 16h.01", color: "#10b981" },
-  ilo: { path: "M2 6h20v4H2zM2 14h20v4H2zM6 8h.01M6 16h.01M18 8h.01M18 16h.01", color: "#ef4444" },
-  router: { path: "M12 2a10 10 0 100 20 10 10 0 000-20zM2 12h20M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10A15.3 15.3 0 0112 2z", color: "#06b6d4" },
-  generic: { path: "M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5", color: "#8b5cf6" },
+const TYPE_STYLES = {
+  internet: { color: "#06b6d4", icon: "M12 2a10 10 0 100 20 10 10 0 000-20zM2 12h20M12 2c2.7 0 4 4.5 4 10s-1.3 10-4 10-4-4.5-4-10S9.3 2 12 2z", label: "Internet" },
+  firewall: { color: "#f59e0b", icon: "M12 2L3 7v6c0 5.25 3.83 10.16 9 11.38C17.17 23.16 21 18.25 21 13V7l-9-5z", label: "Firewall" },
+  router:   { color: "#06b6d4", icon: "M12 2a10 10 0 100 20 10 10 0 000-20zM2 12h20M12 2a15 15 0 014 10 15 15 0 01-4 10 15 15 0 01-4-10A15 15 0 0112 2z", label: "Router" },
+  switch:   { color: "#818cf8", icon: "M4 8h16M4 16h16M8 4v16M16 4v16", label: "Switch" },
+  server:   { color: "#10b981", icon: "M2 6h20v4H2zM2 14h20v4H2zM6 8h.01M6 16h.01", label: "Server" },
+  ilo:      { color: "#ef4444", icon: "M2 6h20v4H2zM2 14h20v4H2zM6 8h.01M6 16h.01M18 8h.01M18 16h.01", label: "iLO" },
+  ap:       { color: "#a78bfa", icon: "M12 20h.01M8.5 16.4a5 5 0 017 0M5 12.8a9 9 0 0114 0M1.5 9.1a13 13 0 0121 0", label: "AP WiFi" },
+  printer:  { color: "#78716c", icon: "M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5h20v5a2 2 0 01-2 2h-2M6 14h12v8H6z", label: "Stampante" },
+  camera:   { color: "#ec4899", icon: "M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2zM12 17a5 5 0 100-10 5 5 0 000 10z", label: "Telecamera" },
+  nas:      { color: "#14b8a6", icon: "M2 4h20v16H2zM2 12h20M7 8h.01M7 16h.01", label: "NAS" },
+  generic:  { color: "#64748b", icon: "M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5", label: "Dispositivo" },
 };
 
-function getDeviceType(dev) {
-  const name = (dev.device_name || "").toLowerCase();
-  const descr = (dev.sys_descr || "").toLowerCase();
-  const combined = name + " " + descr;
-  if (combined.includes("ilo") || combined.includes("redfish")) return "ilo";
-  if (combined.includes("firewall") || combined.includes("usg") || combined.includes("zyxel")) return "firewall";
-  if (combined.includes("switch") || combined.includes("hpe") || combined.includes("netgear") || combined.includes("officeconnect")) return "switch";
-  if (combined.includes("server") || combined.includes("srv")) return "server";
-  if (combined.includes("router") || combined.includes("gateway")) return "router";
-  return "generic";
-}
+const EDGE_STYLES = {
+  wan:    { color: "#06b6d4", dash: "none", width: 2.5 },
+  trunk:  { color: "#818cf8", dash: "none", width: 2 },
+  access: { color: "#64748b", dash: "none", width: 1.2 },
+  server: { color: "#10b981", dash: "4 2", width: 1.2 },
+  mgmt:   { color: "#f59e0b", dash: "6 3", width: 1 },
+};
 
-function DeviceNode({ x, y, dev, selected, onSelect, onHover, onLeave }) {
-  const type = getDeviceType(dev);
-  const icon = DEVICE_ICONS[type] || DEVICE_ICONS.generic;
-  const isReachable = dev.reachable;
-  const isPing = dev.monitor_type === "ping" || dev.monitor_type === "http";
-  const nodeRadius = 28;
+function HealthGauge({ score, x, y }) {
+  const r = 22;
+  const circumference = 2 * Math.PI * r;
+  const pct = score / 100;
+  const offset = circumference * (1 - pct);
+  const color = score >= 80 ? "#10b981" : score >= 50 ? "#f59e0b" : "#ef4444";
 
   return (
-    <g
-      transform={`translate(${x}, ${y})`}
-      onClick={() => onSelect(dev)}
-      onMouseEnter={() => onHover(dev, x, y)}
-      onMouseLeave={onLeave}
-      style={{ cursor: "pointer" }}
-      data-testid={`map-node-${dev.device_ip}`}
-    >
-      {/* Glow effect */}
-      <circle
-        r={nodeRadius + 6}
-        fill={isReachable ? "rgba(16, 185, 129, 0.08)" : "rgba(239, 68, 68, 0.08)"}
-        stroke="none"
-      />
-      {/* Status ring */}
-      <circle
-        r={nodeRadius + 2}
-        fill="none"
-        stroke={isReachable ? "#10b981" : "#ef4444"}
-        strokeWidth={selected ? 3 : 1.5}
-        strokeDasharray={isReachable ? "none" : "4 2"}
-        opacity={0.6}
-      />
-      {/* Main circle */}
-      <circle
-        r={nodeRadius}
-        fill="var(--bg-card, #1a1a2e)"
-        stroke="var(--bg-border, #2a2a4a)"
-        strokeWidth={1}
-      />
-      {/* Icon */}
-      <svg x={-10} y={-10} width={20} height={20} viewBox="0 0 24 24">
-        <path d={icon.path} fill="none" stroke={icon.color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
-      </svg>
-      {/* Status dot */}
-      <circle
-        cx={nodeRadius - 4}
-        cy={-nodeRadius + 4}
-        r={5}
-        fill={isReachable ? "#10b981" : "#ef4444"}
-        stroke="var(--bg-card, #1a1a2e)"
-        strokeWidth={2}
-      />
-      {/* Monitor type badge */}
-      <rect
-        x={-12} y={nodeRadius - 2}
-        width={24} height={12}
-        rx={6} fill={isPing ? "rgba(99, 102, 241, 0.2)" : "rgba(59, 130, 246, 0.2)"}
-        stroke={isPing ? "rgba(99, 102, 241, 0.3)" : "rgba(59, 130, 246, 0.3)"}
-        strokeWidth={0.5}
-      />
-      <text
-        x={0} y={nodeRadius + 8}
-        textAnchor="middle" fontSize={7} fontWeight={600}
-        fill={isPing ? "#818cf8" : "#60a5fa"}
-        fontFamily="monospace"
-      >
-        {isPing ? "PING" : "SNMP"}
-      </text>
-      {/* Label below */}
-      <text
-        x={0} y={nodeRadius + 22}
-        textAnchor="middle" fontSize={9} fontWeight={600}
-        fill="var(--text-primary, #e0e0f0)"
-        style={{ userSelect: "none" }}
-      >
-        {(dev.device_name || dev.device_ip).length > 16
-          ? (dev.device_name || dev.device_ip).substring(0, 14) + "..."
-          : (dev.device_name || dev.device_ip)
-        }
-      </text>
-      <text
-        x={0} y={nodeRadius + 34}
-        textAnchor="middle" fontSize={8}
-        fill="var(--text-muted, #888)"
-        fontFamily="monospace"
-        style={{ userSelect: "none" }}
-      >
-        {dev.device_ip}
-      </text>
+    <g transform={`translate(${x}, ${y})`}>
+      <circle r={r + 2} fill="var(--bg-panel, #111)" stroke="var(--bg-border, #333)" strokeWidth={0.5} />
+      <circle r={r} fill="none" stroke="var(--bg-hover, #222)" strokeWidth={4} />
+      <circle r={r} fill="none" stroke={color} strokeWidth={4}
+        strokeDasharray={circumference} strokeDashoffset={offset}
+        strokeLinecap="round" transform="rotate(-90)" />
+      <text x={0} y={2} textAnchor="middle" fontSize={14} fontWeight={800} fill={color} fontFamily="monospace">{score}</text>
+      <text x={0} y={12} textAnchor="middle" fontSize={6} fill="var(--text-muted, #888)">HEALTH</text>
     </g>
   );
 }
 
-function ConnectionLine({ x1, y1, x2, y2, reachable, pingMs }) {
-  const midX = (x1 + x2) / 2;
-  const midY = (y1 + y2) / 2;
+function TopoNode({ x, y, node, selected, onSelect, onHover, onLeave }) {
+  const style = TYPE_STYLES[node.type] || TYPE_STYLES.generic;
+  const isVirtual = node.virtual;
+  const isReachable = node.reachable;
+  const nr = isVirtual ? 22 : 26;
 
   return (
-    <g>
-      <line
-        x1={x1} y1={y1} x2={x2} y2={y2}
-        stroke={reachable ? "rgba(16, 185, 129, 0.25)" : "rgba(239, 68, 68, 0.25)"}
-        strokeWidth={reachable ? 1.5 : 1}
-        strokeDasharray={reachable ? "none" : "6 4"}
-      />
-      {/* Animated pulse on active connections */}
-      {reachable && (
-        <circle r={2.5} fill="#10b981" opacity={0.6}>
-          <animateMotion
-            dur="3s" repeatCount="indefinite"
-            path={`M${x1},${y1} L${x2},${y2}`}
-          />
-        </circle>
+    <g transform={`translate(${x}, ${y})`}
+      onClick={() => !isVirtual && onSelect(node)}
+      onMouseEnter={() => !isVirtual && onHover(node, x, y)}
+      onMouseLeave={onLeave}
+      style={{ cursor: isVirtual ? "default" : "pointer" }}
+      data-testid={`topo-node-${node.id}`}
+    >
+      {!isVirtual && (
+        <circle r={nr + 5} fill={isReachable ? "rgba(16,185,129,0.06)" : "rgba(239,68,68,0.06)"} />
       )}
-      {/* Latency label */}
-      {pingMs != null && (
-        <g transform={`translate(${midX}, ${midY})`}>
-          <rect x={-14} y={-7} width={28} height={14} rx={7} fill="var(--bg-panel, #111)" stroke="var(--bg-border, #333)" strokeWidth={0.5} />
-          <text x={0} y={3} textAnchor="middle" fontSize={7} fontFamily="monospace" fill={pingMs > 100 ? "#f59e0b" : "#10b981"}>
-            {pingMs}ms
+      {!isVirtual && (
+        <circle r={nr + 1.5} fill="none"
+          stroke={isReachable ? "#10b981" : "#ef4444"}
+          strokeWidth={selected ? 2.5 : 1}
+          strokeDasharray={isReachable ? "none" : "4 2"}
+          opacity={0.5} />
+      )}
+      <circle r={nr} fill="var(--bg-card, #1a1a2e)" stroke={isVirtual ? "rgba(6,182,212,0.3)" : "var(--bg-border, #2a2a4a)"} strokeWidth={isVirtual ? 1.5 : 1} />
+      <svg x={-9} y={-9} width={18} height={18} viewBox="0 0 24 24">
+        <path d={style.icon} fill="none" stroke={style.color} strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+      {!isVirtual && (
+        <circle cx={nr - 3} cy={-nr + 3} r={4} fill={isReachable ? "#10b981" : "#ef4444"} stroke="var(--bg-card, #1a1a2e)" strokeWidth={1.5} />
+      )}
+      <text x={0} y={nr + 16} textAnchor="middle" fontSize={9} fontWeight={600} fill="var(--text-primary, #eee)" style={{ userSelect: "none" }}>
+        {(node.name || node.id).length > 18 ? (node.name || node.id).substring(0, 16) + "..." : (node.name || node.id)}
+      </text>
+      {!isVirtual && (
+        <text x={0} y={nr + 27} textAnchor="middle" fontSize={7.5} fontFamily="monospace" fill="var(--text-muted, #888)" style={{ userSelect: "none" }}>
+          {node.ip || node.id}
+        </text>
+      )}
+      {!isVirtual && node.role && (
+        <g>
+          <rect x={-18} y={-nr - 12} width={36} height={11} rx={5.5} fill={`${style.color}15`} stroke={`${style.color}30`} strokeWidth={0.5} />
+          <text x={0} y={-nr - 4} textAnchor="middle" fontSize={6.5} fontWeight={600} fill={style.color} fontFamily="monospace">
+            {style.label}
           </text>
         </g>
       )}
@@ -147,38 +95,57 @@ function ConnectionLine({ x1, y1, x2, y2, reachable, pingMs }) {
   );
 }
 
-function Tooltip({ dev, x, y }) {
-  if (!dev) return null;
-  const type = getDeviceType(dev);
-  const isPing = dev.monitor_type === "ping" || dev.monitor_type === "http";
-  const portStats = (dev.ports || []);
-  const upPorts = portStats.filter(p => p.status === "up").length;
-  const downPorts = portStats.filter(p => p.status === "down").length;
+function TopoEdge({ x1, y1, x2, y2, edge }) {
+  const style = EDGE_STYLES[edge.type] || EDGE_STYLES.access;
+  const midX = (x1 + x2) / 2;
+  const midY = (y1 + y2) / 2;
 
   return (
-    <g transform={`translate(${x + 40}, ${y - 60})`}>
-      <rect x={0} y={0} width={200} height={90} rx={8} fill="var(--bg-panel, #111)" stroke="var(--bg-border, #333)" strokeWidth={1} filter="url(#shadow)" />
-      <text x={10} y={18} fontSize={11} fontWeight={700} fill="var(--text-primary, #eee)">{dev.device_name || dev.device_ip}</text>
-      <text x={10} y={32} fontSize={9} fontFamily="monospace" fill="var(--text-muted, #888)">{dev.device_ip}</text>
-      <text x={10} y={46} fontSize={9} fill="var(--text-secondary, #aaa)">
-        Tipo: {type.toUpperCase()} ({isPing ? "Ping+HTTP" : "SNMP"})
-      </text>
-      <text x={10} y={60} fontSize={9} fill={dev.reachable ? "#10b981" : "#ef4444"}>
-        Stato: {dev.reachable ? "RAGGIUNGIBILE" : "NON RAGGIUNGIBILE"}
-      </text>
-      {!isPing && portStats.length > 0 && (
-        <text x={10} y={74} fontSize={9} fill="var(--text-secondary, #aaa)">
-          Porte: {upPorts} UP / {downPorts} DOWN
-        </text>
+    <g>
+      <line x1={x1} y1={y1} x2={x2} y2={y2}
+        stroke={style.color} strokeWidth={style.width}
+        strokeDasharray={style.dash} opacity={0.5} />
+      {edge.type !== "access" && (
+        <circle r={2} fill={style.color} opacity={0.7}>
+          <animateMotion dur={edge.type === "wan" ? "2s" : "3s"} repeatCount="indefinite"
+            path={`M${x1},${y1} L${x2},${y2}`} />
+        </circle>
       )}
-      {isPing && dev.ping_ms != null && (
-        <text x={10} y={74} fontSize={9} fill="var(--text-secondary, #aaa)">
-          Ping: {dev.ping_ms}ms {dev.http_status ? `| HTTP ${dev.http_status}` : ""}
-        </text>
+      {edge.label && (
+        <g transform={`translate(${midX}, ${midY})`}>
+          <rect x={-20} y={-6} width={40} height={12} rx={6} fill="var(--bg-panel, #111)" stroke="var(--bg-border, #333)" strokeWidth={0.4} opacity={0.9} />
+          <text x={0} y={3} textAnchor="middle" fontSize={6.5} fontFamily="monospace" fill={style.color}>
+            {edge.label}
+          </text>
+        </g>
       )}
-      {dev.sys_descr && (
-        <text x={10} y={86} fontSize={8} fill="var(--text-muted, #666)">
-          {dev.sys_descr.substring(0, 35)}{dev.sys_descr.length > 35 ? "..." : ""}
+    </g>
+  );
+}
+
+function TopoTooltip({ node, x, y }) {
+  if (!node) return null;
+  const style = TYPE_STYLES[node.type] || TYPE_STYLES.generic;
+  const isPing = node.monitor_type === "ping";
+  const ports = node.ports || [];
+  const upPorts = ports.filter(p => p.status === "up").length;
+
+  return (
+    <g transform={`translate(${Math.min(x + 45, 700)}, ${Math.max(y - 50, 10)})`}>
+      <rect x={0} y={0} width={210} height={82} rx={8} fill="var(--bg-panel, #111)" stroke={`${style.color}50`} strokeWidth={1} filter="url(#topoShadow)" />
+      <rect x={0} y={0} width={4} height={82} rx={2} fill={style.color} />
+      <text x={14} y={17} fontSize={11} fontWeight={700} fill="var(--text-primary, #eee)">{node.name || node.ip}</text>
+      <text x={14} y={31} fontSize={9} fontFamily="monospace" fill="var(--text-muted, #888)">{node.ip} ({style.label})</text>
+      <text x={14} y={45} fontSize={9} fill={node.reachable ? "#10b981" : "#ef4444"}>
+        {node.reachable ? "RAGGIUNGIBILE" : "NON RAGGIUNGIBILE"}
+        {node.ping_ms != null && ` (${node.ping_ms}ms)`}
+      </text>
+      <text x={14} y={59} fontSize={8.5} fill="var(--text-secondary, #aaa)">
+        Monitor: {isPing ? "Ping+HTTP" : "SNMP"} | Ruolo: {node.role || "?"}
+      </text>
+      {ports.length > 0 && (
+        <text x={14} y={73} fontSize={8.5} fill="var(--text-secondary, #aaa)">
+          Porte: {upPorts}/{ports.length} attive
         </text>
       )}
     </g>
@@ -186,158 +153,202 @@ function Tooltip({ dev, x, y }) {
 }
 
 export default function NetworkMap({ clientGroups, onDeviceSelect }) {
-  const [selectedDevice, setSelectedDevice] = useState(null);
-  const [hoveredDevice, setHoveredDevice] = useState(null);
+  const [topologies, setTopologies] = useState({});
+  const [selectedNode, setSelectedNode] = useState(null);
+  const [hoveredNode, setHoveredNode] = useState(null);
   const [hoverPos, setHoverPos] = useState({ x: 0, y: 0 });
+  const [loading, setLoading] = useState(true);
   const containerRef = useRef(null);
-  const [dimensions, setDimensions] = useState({ width: 900, height: 500 });
+  const [width, setWidth] = useState(900);
 
   useEffect(() => {
-    const updateDimensions = () => {
-      if (containerRef.current) {
-        const rect = containerRef.current.getBoundingClientRect();
-        setDimensions({ width: Math.max(rect.width, 600), height: Math.max(400, Math.min(600, rect.width * 0.55)) });
-      }
+    const updateWidth = () => {
+      if (containerRef.current) setWidth(Math.max(containerRef.current.getBoundingClientRect().width, 600));
     };
-    updateDimensions();
-    window.addEventListener("resize", updateDimensions);
-    return () => window.removeEventListener("resize", updateDimensions);
+    updateWidth();
+    window.addEventListener("resize", updateWidth);
+    return () => window.removeEventListener("resize", updateWidth);
   }, []);
 
-  const handleSelect = useCallback((dev) => {
-    setSelectedDevice(prev => prev?.device_ip === dev.device_ip ? null : dev);
-    if (onDeviceSelect) onDeviceSelect(dev);
-  }, [onDeviceSelect]);
+  useEffect(() => {
+    const fetchTopologies = async () => {
+      setLoading(true);
+      const results = {};
+      for (const group of clientGroups) {
+        try {
+          const res = await axios.get(`${API}/network/topology/${group.clientId}`);
+          results[group.clientId] = res.data;
+        } catch (err) {
+          console.error("Topology fetch error:", err);
+        }
+      }
+      setTopologies(results);
+      setLoading(false);
+    };
+    if (clientGroups.length > 0) fetchTopologies();
+  }, [clientGroups]);
 
-  const handleHover = useCallback((dev, x, y) => {
-    setHoveredDevice(dev);
-    setHoverPos({ x, y });
-  }, []);
+  const layoutNodes = useCallback((topo) => {
+    if (!topo?.nodes?.length) return { positions: {}, h: 200 };
+    const layers = topo.layers || [];
+    const nodeMap = {};
+    topo.nodes.forEach(n => { nodeMap[n.id] = n; });
 
-  const handleLeave = useCallback(() => {
-    setHoveredDevice(null);
-  }, []);
+    const layerSpacing = 110;
+    const positions = {};
+    let maxY = 0;
+
+    layers.forEach((layer, li) => {
+      const nodesInLayer = layer.nodes;
+      const count = nodesInLayer.length;
+      const totalW = count * 130;
+      const startX = (width - totalW) / 2 + 65;
+      const y = 60 + li * layerSpacing;
+
+      nodesInLayer.forEach((nodeId, ni) => {
+        positions[nodeId] = {
+          x: count === 1 ? width / 2 : startX + ni * (totalW / count),
+          y: y,
+        };
+      });
+      maxY = Math.max(maxY, y);
+    });
+
+    return { positions, h: maxY + 120 };
+  }, [width]);
+
+  if (loading) {
+    return (
+      <div className="noc-panel p-8 text-center" data-testid="network-map-loading">
+        <div className="w-6 h-6 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
+        <p className="text-[var(--text-muted)] text-sm">Analisi topologia di rete...</p>
+      </div>
+    );
+  }
 
   return (
     <div ref={containerRef} className="space-y-4" data-testid="network-map">
       {clientGroups.map((group) => {
-        const devices = group.devices;
-        const count = devices.length;
-        if (count === 0) return null;
-
-        const w = dimensions.width;
-        const h = dimensions.height;
-        const centerX = w / 2;
-        const centerY = h / 2;
-        const radius = Math.min(w, h) * 0.32;
-        const reachableCount = devices.filter(d => d.reachable).length;
+        const topo = topologies[group.clientId];
+        if (!topo || !topo.nodes?.length) return null;
+        const { positions, h } = layoutNodes(topo);
+        const health = topo.health || {};
+        const svgH = Math.max(h, 300);
 
         return (
-          <div key={group.clientId} className="noc-panel overflow-hidden" data-testid={`map-client-${group.clientId}`}>
+          <div key={group.clientId} className="noc-panel overflow-hidden" data-testid={`topo-client-${group.clientId}`}>
+            {/* Header */}
             <div className="p-3 border-b border-[var(--bg-border)] flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <div className="w-3 h-3 rounded-full" style={{ background: reachableCount === count ? "#10b981" : reachableCount === 0 ? "#ef4444" : "#f59e0b" }} />
-                <span className="font-heading font-bold text-sm text-[var(--text-primary)]">{group.clientName}</span>
+              <div className="flex items-center gap-3">
+                <div className={`w-3 h-3 rounded-full ${health.score >= 80 ? "bg-emerald-500" : health.score >= 50 ? "bg-amber-500" : "bg-red-500"}`} />
+                <span className="font-heading font-bold text-sm text-[var(--text-primary)]">{topo.client_name}</span>
                 <span className="text-[10px] text-[var(--text-muted)] font-mono">
-                  {reachableCount}/{count} raggiungibili
+                  {health.devices_online}/{health.devices_total} online
                 </span>
+                {health.avg_ping_ms && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded border text-[var(--text-muted)] border-[var(--bg-border)] font-mono">
+                    avg {health.avg_ping_ms}ms
+                  </span>
+                )}
               </div>
-              {group.connectorOnline && (
-                <span className="text-[10px] px-2 py-0.5 rounded border text-[var(--ok)] bg-[var(--low-bg)] border-[var(--low-border)]">
-                  Connettore Online
-                </span>
-              )}
+              <div className="flex items-center gap-3">
+                {health.ports_total > 0 && (
+                  <span className="text-[10px] text-[var(--text-muted)]">
+                    Porte: {health.ports_up}/{health.ports_total}
+                  </span>
+                )}
+                <div className="flex items-center gap-1.5">
+                  <span className={`font-heading text-lg font-black ${health.score >= 80 ? "text-emerald-400" : health.score >= 50 ? "text-amber-400" : "text-red-400"}`} data-testid={`health-score-${group.clientId}`}>
+                    {health.score}%
+                  </span>
+                  <span className="text-[9px] text-[var(--text-muted)] uppercase">health</span>
+                </div>
+              </div>
             </div>
 
-            <svg
-              width={w} height={h}
-              viewBox={`0 0 ${w} ${h}`}
-              className="bg-[var(--bg-app)]"
-              style={{ display: "block" }}
-            >
+            {/* SVG Topology */}
+            <svg width={width} height={svgH} viewBox={`0 0 ${width} ${svgH}`} className="bg-[var(--bg-app)]" style={{ display: "block" }}>
               <defs>
-                <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
-                  <feDropShadow dx="0" dy="4" stdDeviation="8" floodOpacity="0.3" />
+                <filter id="topoShadow" x="-20%" y="-20%" width="140%" height="140%">
+                  <feDropShadow dx="0" dy="4" stdDeviation="8" floodOpacity="0.4" />
                 </filter>
-                <radialGradient id="gridGradient" cx="50%" cy="50%" r="50%">
-                  <stop offset="0%" stopColor="rgba(99, 102, 241, 0.04)" />
-                  <stop offset="100%" stopColor="rgba(0, 0, 0, 0)" />
+                <radialGradient id="topoGrad" cx="50%" cy="30%" r="60%">
+                  <stop offset="0%" stopColor="rgba(99,102,241,0.03)" />
+                  <stop offset="100%" stopColor="rgba(0,0,0,0)" />
                 </radialGradient>
               </defs>
 
-              {/* Background grid */}
-              <rect width={w} height={h} fill="url(#gridGradient)" />
-              {Array.from({ length: Math.ceil(w / 40) }).map((_, i) => (
-                <line key={`vg${i}`} x1={i * 40} y1={0} x2={i * 40} y2={h} stroke="var(--bg-border, #222)" strokeWidth={0.3} opacity={0.3} />
+              <rect width={width} height={svgH} fill="url(#topoGrad)" />
+
+              {/* Grid */}
+              {Array.from({ length: Math.ceil(width / 50) }).map((_, i) => (
+                <line key={`vg${i}`} x1={i * 50} y1={0} x2={i * 50} y2={svgH} stroke="var(--bg-border,#222)" strokeWidth={0.2} opacity={0.3} />
               ))}
-              {Array.from({ length: Math.ceil(h / 40) }).map((_, i) => (
-                <line key={`hg${i}`} x1={0} y1={i * 40} x2={w} y2={i * 40} stroke="var(--bg-border, #222)" strokeWidth={0.3} opacity={0.3} />
+              {Array.from({ length: Math.ceil(svgH / 50) }).map((_, i) => (
+                <line key={`hg${i}`} x1={0} y1={i * 50} x2={width} y2={i * 50} stroke="var(--bg-border,#222)" strokeWidth={0.2} opacity={0.3} />
               ))}
 
-              {/* Connection lines */}
-              {devices.map((dev, i) => {
-                const angle = (2 * Math.PI * i) / count - Math.PI / 2;
-                const dx = centerX + radius * Math.cos(angle);
-                const dy = centerY + radius * Math.sin(angle);
+              {/* Layer labels */}
+              {(topo.layers || []).map((layer, li) => {
+                const firstNodeId = layer.nodes[0];
+                const pos = positions[firstNodeId];
+                if (!pos) return null;
                 return (
-                  <ConnectionLine
-                    key={`line-${dev.device_ip}`}
-                    x1={centerX} y1={centerY}
-                    x2={dx} y2={dy}
-                    reachable={dev.reachable}
-                    pingMs={dev.ping_ms}
-                  />
+                  <g key={`layer-${li}`}>
+                    <line x1={10} y1={pos.y} x2={width - 10} y2={pos.y} stroke="var(--bg-border, #222)" strokeWidth={0.5} strokeDasharray="8 4" opacity={0.3} />
+                    <text x={12} y={pos.y - 8} fontSize={8} fill="var(--text-muted, #555)" fontWeight={600} style={{ textTransform: "uppercase" }} letterSpacing="0.08em">
+                      {layer.name}
+                    </text>
+                  </g>
                 );
               })}
 
-              {/* Center node (Client/Gateway) */}
-              <g transform={`translate(${centerX}, ${centerY})`}>
-                <circle r={38} fill="var(--bg-card, #1a1a2e)" stroke="rgba(99, 102, 241, 0.4)" strokeWidth={2} />
-                <circle r={34} fill="rgba(99, 102, 241, 0.08)" stroke="none" />
-                <svg x={-14} y={-14} width={28} height={28} viewBox="0 0 24 24">
-                  <path d="M12 2a10 10 0 100 20 10 10 0 000-20zM2 12h20M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10A15.3 15.3 0 0112 2z" fill="none" stroke="#818cf8" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-                <text x={0} y={52} textAnchor="middle" fontSize={10} fontWeight={700} fill="var(--text-primary, #eee)">
-                  {group.clientName.length > 18 ? group.clientName.substring(0, 16) + "..." : group.clientName}
-                </text>
-                <text x={0} y={64} textAnchor="middle" fontSize={8} fill="var(--text-muted, #888)">
-                  {count} dispositivi
-                </text>
-              </g>
+              {/* Edges */}
+              {(topo.edges || []).map((edge, i) => {
+                const from = positions[edge.from];
+                const to = positions[edge.to];
+                if (!from || !to) return null;
+                return <TopoEdge key={`e${i}`} x1={from.x} y1={from.y} x2={to.x} y2={to.y} edge={edge} />;
+              })}
 
-              {/* Device nodes */}
-              {devices.map((dev, i) => {
-                const angle = (2 * Math.PI * i) / count - Math.PI / 2;
-                const dx = centerX + radius * Math.cos(angle);
-                const dy = centerY + radius * Math.sin(angle);
+              {/* Nodes */}
+              {(topo.nodes || []).map((node) => {
+                const pos = positions[node.id];
+                if (!pos) return null;
                 return (
-                  <DeviceNode
-                    key={dev.device_ip}
-                    x={dx} y={dy}
-                    dev={dev}
-                    selected={selectedDevice?.device_ip === dev.device_ip}
-                    onSelect={handleSelect}
-                    onHover={handleHover}
-                    onLeave={handleLeave}
+                  <TopoNode
+                    key={node.id} x={pos.x} y={pos.y} node={node}
+                    selected={selectedNode?.id === node.id}
+                    onSelect={(n) => { setSelectedNode(prev => prev?.id === n.id ? null : n); if (onDeviceSelect && !n.virtual) onDeviceSelect(n); }}
+                    onHover={(n, nx, ny) => { setHoveredNode(n); setHoverPos({ x: nx, y: ny }); }}
+                    onLeave={() => setHoveredNode(null)}
                   />
                 );
               })}
 
               {/* Tooltip */}
-              {hoveredDevice && (
-                <Tooltip dev={hoveredDevice} x={hoverPos.x} y={hoverPos.y} />
+              {hoveredNode && !hoveredNode.virtual && (
+                <TopoTooltip node={hoveredNode} x={hoverPos.x} y={hoverPos.y} />
               )}
 
+              {/* Health gauge */}
+              <HealthGauge score={health.score} x={width - 50} y={svgH - 40} />
+
               {/* Legend */}
-              <g transform={`translate(${w - 150}, 15)`}>
-                <rect x={0} y={0} width={140} height={70} rx={6} fill="var(--bg-panel, #111)" stroke="var(--bg-border, #333)" strokeWidth={0.5} opacity={0.9} />
-                <text x={10} y={16} fontSize={8} fontWeight={700} fill="var(--text-muted, #888)" style={{ textTransform: "uppercase" }} letterSpacing="0.05em">Legenda</text>
-                <circle cx={18} cy={30} r={4} fill="#10b981" />
-                <text x={28} y={33} fontSize={8} fill="var(--text-secondary, #aaa)">Raggiungibile</text>
-                <circle cx={18} cy={46} r={4} fill="#ef4444" />
-                <text x={28} y={49} fontSize={8} fill="var(--text-secondary, #aaa)">Non raggiungibile</text>
-                <line x1={10} y1={60} x2={26} y2={60} stroke="rgba(16, 185, 129, 0.4)" strokeWidth={1.5} />
-                <text x={28} y={63} fontSize={8} fill="var(--text-secondary, #aaa)">Connessione attiva</text>
+              <g transform={`translate(12, ${svgH - 80})`}>
+                <rect x={0} y={0} width={150} height={72} rx={6} fill="var(--bg-panel, #111)" stroke="var(--bg-border, #333)" strokeWidth={0.5} opacity={0.9} />
+                <text x={10} y={14} fontSize={7.5} fontWeight={700} fill="var(--text-muted, #888)" style={{ textTransform: "uppercase" }} letterSpacing="0.08em">Tipo collegamento</text>
+                {[
+                  { label: "WAN", ...EDGE_STYLES.wan },
+                  { label: "Trunk", ...EDGE_STYLES.trunk },
+                  { label: "Accesso", ...EDGE_STYLES.access },
+                  { label: "Management", ...EDGE_STYLES.mgmt },
+                ].map((item, i) => (
+                  <g key={i} transform={`translate(10, ${24 + i * 12})`}>
+                    <line x1={0} y1={0} x2={20} y2={0} stroke={item.color} strokeWidth={item.width} strokeDasharray={item.dash} />
+                    <text x={26} y={3} fontSize={8} fill="var(--text-secondary, #aaa)">{item.label}</text>
+                  </g>
+                ))}
               </g>
             </svg>
           </div>
