@@ -815,7 +815,7 @@ function Send-DeviceReport($config, $devices) {
                         }
                         Write-Log "  Redfish OK: $($rfMetrics.server_model) | Power: $($rfMetrics.power_watts)W | BIOS: $($rfMetrics.bios_version)"
                     } else {
-                        Write-Log "  Redfish non disponibile per $ip: $($rfMetrics.error)" "WARN"
+                        Write-Log "  Redfish non disponibile per ${ip}: $($rfMetrics.error)" "WARN"
                     }
                 } catch {
                     Write-Log "  Errore Redfish $ip : $($_.Exception.Message)" "WARN"
