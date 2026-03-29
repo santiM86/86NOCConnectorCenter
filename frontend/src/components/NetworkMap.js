@@ -331,7 +331,7 @@ export default function NetworkMap({ clientGroups, onDeviceSelect }) {
               {/* Legend */}
               <g transform={`translate(${w - 150}, 15)`}>
                 <rect x={0} y={0} width={140} height={70} rx={6} fill="var(--bg-panel, #111)" stroke="var(--bg-border, #333)" strokeWidth={0.5} opacity={0.9} />
-                <text x={10} y={16} fontSize={8} fontWeight={700} fill="var(--text-muted, #888)" textTransform="uppercase" letterSpacing="0.05em">Legenda</text>
+                <text x={10} y={16} fontSize={8} fontWeight={700} fill="var(--text-muted, #888)" style={{ textTransform: "uppercase" }} letterSpacing="0.05em">Legenda</text>
                 <circle cx={18} cy={30} r={4} fill="#10b981" />
                 <text x={28} y={33} fontSize={8} fill="var(--text-secondary, #aaa)">Raggiungibile</text>
                 <circle cx={18} cy={46} r={4} fill="#ef4444" />
