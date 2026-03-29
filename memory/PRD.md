@@ -6,7 +6,7 @@ Piattaforma NOC enterprise-grade per monitoraggio dispositivi di rete tramite SN
 ## Architettura
 - Backend: FastAPI modulare (18 file route in `/app/backend/routes/`), MongoDB, AES-256-GCM
 - Frontend: React, TailwindCSS, Shadcn UI, PWA, React Flow v12 (@xyflow/react)
-- Connector: PowerShell 5.1+, SNMP, Redfish API
+- Connector: PowerShell 5.1+, SNMP, Redfish API, LLDP Discovery
 
 ### Navigazione (4 gruppi)
 ```
@@ -28,39 +28,51 @@ SISTEMA         -> Impostazioni
 - [x] Menu 4 gruppi + Stato Rete / Connettori separati
 - [x] Backend Refactoring: server.py da 3247 a 193 righe, 17 route modulari
 - [x] **Mappa Topologica Enterprise con React Flow v12**:
-  - Drag-and-drop libero dei nodi (i tecnici posizionano i dispositivi a piacimento)
-  - Creazione/eliminazione manuale dei collegamenti tra dispositivi
+  - Drag-and-drop libero dei nodi
+  - Creazione/eliminazione manuale dei collegamenti
   - Salvataggio layout personalizzato per cliente (MongoDB: topology_layouts)
-  - Reset al layout auto-generato (inferenza automatica come proposta iniziale)
-  - Auto-layout gerarchico: Internet -> Firewall -> Core Switch -> Access/Server/Mgmt
-  - Minimap per navigazione rapida, zoom/pan, snap-to-grid
-  - Legenda tipi collegamento: WAN, Trunk, Accesso, Server, MGMT, Manuale
-  - Health Score 0-100% per cliente (reachability 50% + latency 25% + port health 25%)
-  - Badge "Layout personalizzato" quando il tecnico ha salvato una mappa custom
-  - Toolbar: Modifica (toggle mode), Auto (ricalcola), Reset, Salva Layout
+  - Reset al layout auto-generato
+  - Auto-layout gerarchico, Minimap, zoom/pan, snap-to-grid
+  - Health Score 0-100% per cliente
+- [x] **LLDP Discovery (Link Layer Discovery Protocol)**:
+  - Polling LLDP-MIB (1.0.8802.1.1.2) su tutti gli switch SNMP managed
+  - Raccolta neighbor table con: sistema remoto, porte locali/remote, chassis ID, IP management
+  - Invio dati al backend via POST /api/connector/lldp-neighbors
+  - Sostituzione intelligente: edge LLDP (reali) sostituiscono edge inferiti dove si sovrappongono
+  - Etichette porta-per-porta sugli edge LLDP (es. "GigabitEthernet 48 <-> GigabitEthernet 1")
+  - Badge "LLDP: X connessioni" nella mappa quando dati LLDP sono disponibili
+  - Edge LLDP animati in cyan nella mappa, distinti visivamente dagli altri tipi
+  - Esecuzione ogni 10 cicli di polling (insieme al refresh dispositivi)
 
-## Key API Endpoints (Topology)
-- GET `/api/network/topology/{client_id}` - Restituisce nodi/edges + health. Se esiste un layout salvato, lo restituisce con i dati live dei dispositivi.
-- POST `/api/network/topology/{client_id}/layout` - Salva il layout personalizzato (posizioni nodi + edges custom)
-- DELETE `/api/network/topology/{client_id}/layout` - Elimina il layout personalizzato, torna all'inferenza automatica
+## Key API Endpoints (Topology + LLDP)
+- GET `/api/network/topology/{client_id}` - Nodi/edges + health + LLDP
+- POST `/api/network/topology/{client_id}/layout` - Salva layout personalizzato
+- DELETE `/api/network/topology/{client_id}/layout` - Reset layout
+- POST `/api/connector/lldp-neighbors` - Riceve dati LLDP dal connettore (auth: X-API-Key)
+- GET `/api/network/lldp/{client_id}` - Dati LLDP raw (auth: JWT)
 
-## DB Collections (Topology)
-- `topology_layouts`: {client_id, nodes: [{id, position: {x,y}, name, type, ...}], edges: [{from, to, type, label}], updated_at, updated_by}
+## DB Collections (LLDP)
+- `lldp_neighbors`: {client_id, local_ip, local_port_id, local_port_desc, remote_ip, remote_sys_name, remote_port_id, remote_port_desc, remote_sys_desc, remote_chassis_id, updated_at}
+
+## LLDP OID Reference
+- lldpRemSysName: 1.0.8802.1.1.2.1.4.1.1.9
+- lldpRemPortId: 1.0.8802.1.1.2.1.4.1.1.7
+- lldpRemPortDesc: 1.0.8802.1.1.2.1.4.1.1.8
+- lldpRemSysDesc: 1.0.8802.1.1.2.1.4.1.1.10
+- lldpRemChassisId: 1.0.8802.1.1.2.1.4.1.1.5
+- lldpRemManAddr: 1.0.8802.1.1.2.1.4.2.1.4
+- lldpLocPortId: 1.0.8802.1.1.2.1.3.7.1.3
+- lldpLocPortDesc: 1.0.8802.1.1.2.1.3.7.1.4
 
 ## Backlog
 ### P1
 - [ ] Notifiche Push Firebase (MOCKED - richiede API Key utente)
 - [ ] Notifiche Email SendGrid (MOCKED - richiede API Key utente)
 ### P2
-- [ ] LLDP/CDP neighbor discovery per topologia reale automatica (interrogazione SNMP LLDP-MIB OID 1.0.8802.1.1.2)
 - [ ] SOC AI: correlazione, auto-triage, anomaly detection via LLM
 - [ ] Twilio Voice/SMS
 - [ ] Auto-discovery rete, LDAP, SNMP v3
 
 ## Test Reports
-- iteration_20: Backend refactoring (100%)
-- iteration_21: Menu restructuring (100%)
-- iteration_22: Page split Stato Rete/Connettori (100%)
-- iteration_23: Network Map basic (100%)
-- iteration_24: Hierarchical Topology + Health Score (100%)
 - iteration_25: React Flow Enterprise Map + Layout Save/Reset (100%)
+- iteration_26: LLDP Discovery Feature - Backend + Frontend (100%)
