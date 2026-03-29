@@ -4,11 +4,20 @@
 .DESCRIPTION
     Raccoglie SNMP Traps e Syslog da dispositivi di rete e li inoltra al NOC Center.
     Nessuna dipendenza esterna. Funziona con PowerShell nativo di Windows.
+    Puo' girare come Scheduled Task sotto SYSTEM (sopravvive a disconnessione RDP).
 #>
 
 param(
     [string]$ConfigPath = ""
 )
+
+# ==================== TLS & ENCODING ====================
+# Critico: forza TLS 1.2 (SYSTEM potrebbe avere solo SSL3/TLS1.0 abilitati)
+try {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
+} catch {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+}
 
 $global:AppName = "86NocConnector"
 $global:ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -250,6 +259,9 @@ function Send-WakeOnLAN([string]$macAddress, [string]$targetIP) {
 
 function Send-ToNOC($config, $endpoint, $payload) {
     try {
+        # Assicura TLS 1.2 ad ogni chiamata (il SYSTEM potrebbe resettarlo)
+        try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13 } catch { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 }
+        
         $headers = @{
             "X-API-Key" = $config.api_key
             "Content-Type" = "application/json"
@@ -261,8 +273,10 @@ function Send-ToNOC($config, $endpoint, $payload) {
         return $response
     } catch {
         $global:Stats.errors++
-        $global:Stats.last_error = $_.Exception.Message
-        Write-Log "Errore invio a NOC: $($_.Exception.Message)" "ERROR"
+        $errMsg = $_.Exception.Message
+        if ($_.Exception.InnerException) { $errMsg += " | Inner: $($_.Exception.InnerException.Message)" }
+        $global:Stats.last_error = $errMsg
+        Write-Log "Errore invio a NOC ($endpoint): $errMsg" "ERROR"
         return $null
     }
 }
@@ -1600,7 +1614,24 @@ function Start-Connector {
     Write-Log "  $global:AppName v$global:Version"
     Write-Log "  NOC: $($config.noc_center_url)"
     Write-Log "  SNMP: UDP/$($config.snmp_trap_port)  Syslog: UDP/$($config.syslog_port)"
+    Write-Log "  Utente: $([System.Security.Principal.WindowsIdentity]::GetCurrent().Name)"
+    Write-Log "  Sessione: $(if ($env:SESSIONNAME) { $env:SESSIONNAME } else { 'SYSTEM/Background' })"
+    Write-Log "  TLS: $([Net.ServicePointManager]::SecurityProtocol)"
+    Write-Log "  Config: $(Get-ConfigPath)"
     Write-Log "=================================================="
+    
+    # Test connettivita' NOC all'avvio
+    Write-Log "Test connettivita' verso il NOC..."
+    try {
+        $testUrl = "$($config.noc_center_url)/api/health"
+        $testResult = Invoke-RestMethod -Uri $testUrl -Method Get -TimeoutSec 10 -ErrorAction Stop
+        Write-Log "  NOC raggiungibile! Stato: $($testResult.status)" "INFO"
+    } catch {
+        $errDetail = $_.Exception.Message
+        if ($_.Exception.InnerException) { $errDetail += " | Inner: $($_.Exception.InnerException.Message)" }
+        Write-Log "  ERRORE: NOC non raggiungibile: $errDetail" "ERROR"
+        Write-Log "  Il connettore continuera' a tentare..." "WARN"
+    }
     
     # Start listeners in background jobs
     $snmpJob = Start-Job -ScriptBlock {
