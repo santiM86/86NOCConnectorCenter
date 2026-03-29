@@ -966,6 +966,16 @@ function Start-PollingLoop($config) {
                     $pingDevices = @($devices | Where-Object { $_.monitor_type -eq "ping" -or $_.monitor_type -eq "http" })
                     Write-Log "Lista dispositivi aggiornata dal NOC: $($devices.Count) totali (SNMP: $($snmpDevices.Count), Ping: $($pingDevices.Count))"
                 }
+                
+                # LLDP Discovery - ogni 10 cicli (insieme al refresh dispositivi)
+                if ($snmpDevices.Count -gt 0) {
+                    try {
+                        Write-Log "Avvio LLDP Discovery..." "INFO"
+                        Run-LldpDiscovery $config $snmpDevices
+                    } catch {
+                        Write-Log "Errore LLDP Discovery: $($_.Exception.Message)" "WARN"
+                    }
+                }
             }
         } catch {
             Write-Log "Errore polling: $($_.Exception.Message)" "ERROR"

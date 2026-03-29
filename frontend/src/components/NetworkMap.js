@@ -118,6 +118,7 @@ const EDGE_COLORS = {
   access: "#475569",
   server: "#10b981",
   mgmt: "#f59e0b",
+  lldp: "#22d3ee",
   custom: "#8b5cf6",
 };
 
@@ -151,7 +152,7 @@ function topoToFlowEdges(topoEdges) {
     source: e.from,
     target: e.to,
     type: "default",
-    animated: e.type === "wan" || e.type === "trunk",
+    animated: e.type === "wan" || e.type === "trunk" || e.type === "lldp",
     label: e.label || "",
     style: {
       stroke: EDGE_COLORS[e.type] || EDGE_COLORS.custom,
@@ -476,6 +477,11 @@ function NetworkMapInner({ clientGroups, onDeviceSelect }) {
                 Layout personalizzato
               </span>
             )}
+            {activeTopo.lldp_count > 0 && (
+              <span className="text-[9px] px-2 py-0.5 rounded-full bg-cyan-600/15 text-cyan-400 border border-cyan-500/30 font-medium" data-testid="lldp-badge">
+                LLDP: {activeTopo.lldp_count} connessioni
+              </span>
+            )}
             <span
               className={`font-heading text-lg font-black ${
                 health.score >= 80 ? "text-emerald-400" : health.score >= 50 ? "text-amber-400" : "text-red-400"
@@ -542,6 +548,7 @@ function NetworkMapInner({ clientGroups, onDeviceSelect }) {
                 { label: "Accesso", color: EDGE_COLORS.access },
                 { label: "Server", color: EDGE_COLORS.server },
                 { label: "MGMT", color: EDGE_COLORS.mgmt },
+                { label: "LLDP", color: EDGE_COLORS.lldp },
                 { label: "Manuale", color: EDGE_COLORS.custom },
               ].map((item) => (
                 <div key={item.label} className="flex items-center gap-2">

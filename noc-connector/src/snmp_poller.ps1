@@ -1195,3 +1195,186 @@ public class TrustAllCertsPolicy : ICertificatePolicy {
     
     return $result
 }
+
+
+# ==================== LLDP NEIGHBOR DISCOVERY ====================
+
+<#
+.SYNOPSIS
+    Interroga la tabella LLDP-MIB di uno switch managed per ottenere i neighbor
+    collegati porta-per-porta.
+    
+    OID base: 1.0.8802.1.1.2.1 (lldpMIB)
+    - lldpLocPortId:     1.0.8802.1.1.2.1.3.7.1.3  (ID porta locale)
+    - lldpLocPortDesc:   1.0.8802.1.1.2.1.3.7.1.4  (Descrizione porta locale)
+    - lldpRemSysName:    1.0.8802.1.1.2.1.4.1.1.9  (Nome sistema remoto)
+    - lldpRemPortId:     1.0.8802.1.1.2.1.4.1.1.7  (ID porta remota)
+    - lldpRemPortDesc:   1.0.8802.1.1.2.1.4.1.1.8  (Descrizione porta remota)
+    - lldpRemSysDesc:    1.0.8802.1.1.2.1.4.1.1.10 (Descrizione sistema remoto)
+    - lldpRemChassisId:  1.0.8802.1.1.2.1.4.1.1.5  (Chassis ID remoto)
+    - lldpRemManAddr:    1.0.8802.1.1.2.1.4.2.1.4  (Indirizzo management remoto)
+    
+    La tabella remota e' indicizzata per: timeMark.localPortNum.index
+#>
+function Poll-LldpNeighbors($ip, $community) {
+    $neighbors = @()
+    
+    try {
+        # Walk lldpRemSysName (1.0.8802.1.1.2.1.4.1.1.9)
+        $sysNames = Walk-SnmpTable $ip $community "1.0.8802.1.1.2.1.4.1.1.9"
+        if (-not $sysNames -or $sysNames.Count -eq 0) {
+            Write-Log "  LLDP: Nessun neighbor trovato su $ip (tabella vuota)" "DEBUG"
+            return $neighbors
+        }
+        
+        # Walk additional tables
+        $portIds    = Walk-SnmpTable $ip $community "1.0.8802.1.1.2.1.4.1.1.7"
+        $portDescs  = Walk-SnmpTable $ip $community "1.0.8802.1.1.2.1.4.1.1.8"
+        $sysDescs   = Walk-SnmpTable $ip $community "1.0.8802.1.1.2.1.4.1.1.10"
+        $chassisIds = Walk-SnmpTable $ip $community "1.0.8802.1.1.2.1.4.1.1.5"
+        $manAddrs   = Walk-SnmpTable $ip $community "1.0.8802.1.1.2.1.4.2.1.4"
+        
+        # Walk local port descriptions
+        $locPortIds  = Walk-SnmpTable $ip $community "1.0.8802.1.1.2.1.3.7.1.3"
+        $locPortDesc = Walk-SnmpTable $ip $community "1.0.8802.1.1.2.1.3.7.1.4"
+        
+        # Build a lookup: local port number -> description
+        $localPortMap = @{}
+        if ($locPortIds) {
+            foreach ($entry in $locPortIds) {
+                # OID suffix is the port number
+                $portNum = ($entry.oid -split '\.')[-1]
+                $localPortMap[$portNum] = @{
+                    id = $entry.value
+                    desc = ""
+                }
+            }
+        }
+        if ($locPortDesc) {
+            foreach ($entry in $locPortDesc) {
+                $portNum = ($entry.oid -split '\.')[-1]
+                if ($localPortMap.ContainsKey($portNum)) {
+                    $localPortMap[$portNum].desc = $entry.value
+                }
+            }
+        }
+        
+        # Parse sysNames entries — index pattern: .timeMark.localPortNum.remIndex
+        foreach ($entry in $sysNames) {
+            # Extract the 3-part index from the OID
+            $baseSuffix = $entry.oid.Replace("1.0.8802.1.1.2.1.4.1.1.9.", "")
+            $indexParts = $baseSuffix -split '\.'
+            if ($indexParts.Count -lt 3) { continue }
+            
+            $timeMark = $indexParts[0]
+            $localPortNum = $indexParts[1]
+            $remIndex = $indexParts[2]
+            $fullIndex = "$timeMark.$localPortNum.$remIndex"
+            
+            $remoteSysName = $entry.value
+            $remotePortId = ""
+            $remotePortDesc = ""
+            $remoteSysDesc = ""
+            $remoteChassisId = ""
+            $remoteManAddr = ""
+            
+            # Look up corresponding entries by matching index suffix
+            if ($portIds) {
+                $match = $portIds | Where-Object { $_.oid.EndsWith(".$fullIndex") }
+                if ($match) { $remotePortId = $match.value }
+            }
+            if ($portDescs) {
+                $match = $portDescs | Where-Object { $_.oid.EndsWith(".$fullIndex") }
+                if ($match) { $remotePortDesc = $match.value }
+            }
+            if ($sysDescs) {
+                $match = $sysDescs | Where-Object { $_.oid.EndsWith(".$fullIndex") }
+                if ($match) { $remoteSysDesc = $match.value }
+            }
+            if ($chassisIds) {
+                $match = $chassisIds | Where-Object { $_.oid.EndsWith(".$fullIndex") }
+                if ($match) { $remoteChassisId = $match.value }
+            }
+            
+            # Try to extract management IP from lldpRemManAddr
+            # The OID index for manAddr table is different: timeMark.localPortNum.remIndex.addrSubtype.addr
+            if ($manAddrs) {
+                $prefix = ".$timeMark.$localPortNum.$remIndex."
+                $addrMatch = $manAddrs | Where-Object { $_.oid -match [regex]::Escape($prefix) } | Select-Object -First 1
+                if ($addrMatch) {
+                    # Try to extract IPv4 from OID suffix (subtype=1, then 4 octets)
+                    $addrSuffix = $addrMatch.oid.Substring($addrMatch.oid.IndexOf($prefix) + $prefix.Length)
+                    $addrParts = $addrSuffix -split '\.'
+                    if ($addrParts.Count -ge 5 -and $addrParts[0] -eq "1") {
+                        # IPv4 address
+                        $remoteManAddr = "$($addrParts[1]).$($addrParts[2]).$($addrParts[3]).$($addrParts[4])"
+                    }
+                }
+            }
+            
+            # Get local port info
+            $localPortId = ""
+            $localPortDesc = ""
+            if ($localPortMap.ContainsKey($localPortNum)) {
+                $localPortId = $localPortMap[$localPortNum].id
+                $localPortDesc = $localPortMap[$localPortNum].desc
+            }
+            
+            $neighbor = @{
+                local_ip = $ip
+                local_port_num = [int]$localPortNum
+                local_port_id = "$localPortId"
+                local_port_desc = "$localPortDesc"
+                remote_sys_name = "$remoteSysName"
+                remote_port_id = "$remotePortId"
+                remote_port_desc = "$remotePortDesc"
+                remote_sys_desc = "$remoteSysDesc"
+                remote_chassis_id = "$remoteChassisId"
+                remote_ip = "$remoteManAddr"
+            }
+            
+            $neighbors += $neighbor
+            Write-Log "  LLDP: $ip porta $localPortNum -> $remoteSysName ($remoteManAddr) porta $remotePortId" "INFO"
+        }
+        
+        Write-Log "  LLDP: $($neighbors.Count) neighbor trovati su $ip" "INFO"
+        
+    } catch {
+        Write-Log "  LLDP: Errore polling $ip - $($_.Exception.Message)" "WARN"
+    }
+    
+    return $neighbors
+}
+
+<#
+.SYNOPSIS
+    Esegue il discovery LLDP su tutti i dispositivi SNMP managed e invia i risultati al NOC.
+    Viene chiamata dal main loop del connettore.
+#>
+function Run-LldpDiscovery($config, $devices) {
+    $allNeighbors = @()
+    
+    foreach ($dev in $devices) {
+        if ($dev.monitor_type -ne "snmp") { continue }
+        
+        $ip = $dev.ip
+        $community = if ($dev.community) { $dev.community } else { "public" }
+        
+        Write-Log "LLDP Discovery su $($dev.name) ($ip)..."
+        $neighbors = Poll-LldpNeighbors $ip $community
+        
+        if ($neighbors -and $neighbors.Count -gt 0) {
+            $allNeighbors += $neighbors
+        }
+    }
+    
+    if ($allNeighbors.Count -gt 0) {
+        $payload = @{
+            neighbors = $allNeighbors
+        }
+        Send-ToNOC $config "connector/lldp-neighbors" $payload | Out-Null
+        Write-Log "LLDP: $($allNeighbors.Count) neighbor totali inviati al NOC" "INFO"
+    } else {
+        Write-Log "LLDP: Nessun neighbor LLDP trovato su nessun dispositivo" "INFO"
+    }
+}

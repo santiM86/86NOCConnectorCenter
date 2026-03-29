@@ -405,3 +405,43 @@ async def connector_fetch_devices(request: Request):
         raise HTTPException(status_code=401, detail="Invalid API key")
     devices = await db.managed_devices.find({"client_id": client_data["id"]}, {"_id": 0}).to_list(200)
     return [{"ip": d["ip"], "community": d.get("community", "public"), "name": d["name"], "monitor_type": d.get("monitor_type", "snmp"), "http_port": d.get("http_port", 80)} for d in devices]
+
+
+@router.post("/connector/lldp-neighbors")
+async def connector_lldp_report(request: Request):
+    """Receive LLDP neighbor data from the connector."""
+    api_key = request.headers.get("X-API-Key")
+    if not api_key:
+        raise HTTPException(status_code=401, detail="API key required")
+    client_data = await db.clients.find_one({"api_key": api_key}, {"_id": 0})
+    if not client_data:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+    body = await request.json()
+    check_nosql_injection(body)
+    client_id = client_data["id"]
+    neighbors = body.get("neighbors", [])
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    # Clear old LLDP data for this client and re-insert fresh
+    await db.lldp_neighbors.delete_many({"client_id": client_id})
+
+    if neighbors:
+        docs = []
+        for n in neighbors:
+            docs.append({
+                "client_id": client_id,
+                "local_ip": sanitize_string(n.get("local_ip", ""), 64),
+                "local_port_id": sanitize_string(n.get("local_port_id", ""), 128),
+                "local_port_desc": sanitize_string(n.get("local_port_desc", ""), 256),
+                "remote_ip": sanitize_string(n.get("remote_ip", ""), 64),
+                "remote_sys_name": sanitize_string(n.get("remote_sys_name", ""), 256),
+                "remote_port_id": sanitize_string(n.get("remote_port_id", ""), 128),
+                "remote_port_desc": sanitize_string(n.get("remote_port_desc", ""), 256),
+                "remote_sys_desc": sanitize_string(n.get("remote_sys_desc", ""), 512),
+                "remote_chassis_id": sanitize_string(n.get("remote_chassis_id", ""), 128),
+                "updated_at": now_iso,
+            })
+        await db.lldp_neighbors.insert_many(docs)
+
+    logger.info(f"LLDP neighbors updated for {client_id}: {len(neighbors)} entries")
+    return {"status": "ok", "neighbors_stored": len(neighbors)}

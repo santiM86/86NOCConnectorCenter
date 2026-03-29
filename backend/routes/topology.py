@@ -335,6 +335,54 @@ def calculate_health_score(devices):
     }
 
 
+def build_lldp_edges(lldp_neighbors, device_ips):
+    """Build edges from LLDP neighbor data (real physical connections)."""
+    edges = []
+    seen = set()
+    ip_set = set(device_ips)
+
+    for neighbor in lldp_neighbors:
+        local_ip = neighbor.get("local_ip", "")
+        remote_ip = neighbor.get("remote_ip", "")
+        remote_name = neighbor.get("remote_sys_name", "")
+
+        # Try to match remote to a known device IP
+        target = remote_ip if remote_ip in ip_set else None
+        if not target and remote_name:
+            # Fuzzy match by name
+            for dip in ip_set:
+                pass  # Could match by sysName later
+        if not target:
+            continue
+
+        # Avoid duplicate edges (A->B == B->A)
+        key = tuple(sorted([local_ip, target]))
+        if key in seen:
+            continue
+        seen.add(key)
+
+        local_port = neighbor.get("local_port_desc", neighbor.get("local_port_id", ""))
+        remote_port = neighbor.get("remote_port_desc", neighbor.get("remote_port_id", ""))
+        label_parts = []
+        if local_port:
+            label_parts.append(local_port)
+        if remote_port:
+            label_parts.append(remote_port)
+        label = " <-> ".join(label_parts) if label_parts else ""
+
+        edges.append({
+            "from": local_ip,
+            "to": target,
+            "type": "lldp",
+            "label": label,
+            "source": "lldp",
+            "local_port": local_port,
+            "remote_port": remote_port,
+        })
+
+    return edges
+
+
 @router.get("/network/topology/{client_id}")
 async def get_network_topology(client_id: str, current_user: dict = Depends(get_current_user)):
     """Get network topology for a client. Returns saved layout if available, otherwise inferred."""
@@ -347,6 +395,11 @@ async def get_network_topology(client_id: str, current_user: dict = Depends(get_
     
     # Calculate health from real device data
     health = calculate_health_score(devices)
+    
+    # Fetch LLDP neighbor data (if available)
+    lldp_neighbors = await db.lldp_neighbors.find(
+        {"client_id": client_id}, {"_id": 0}
+    ).to_list(1000)
     
     # Check if a custom layout exists
     saved_layout = await db.topology_layouts.find_one(
@@ -385,16 +438,43 @@ async def get_network_topology(client_id: str, current_user: dict = Depends(get_
             "client_id": client_id,
             "client_name": client_name,
             "has_custom_layout": True,
+            "lldp_count": len(lldp_neighbors),
         }
     
-    # No saved layout — return inferred topology
+    # No saved layout — return inferred topology, enriched with LLDP if available
     topology = infer_topology(devices)
+    
+    if lldp_neighbors:
+        device_ips = [d.get("device_ip", "") for d in devices]
+        lldp_edges = build_lldp_edges(lldp_neighbors, device_ips)
+        if lldp_edges:
+            # Replace inferred edges with LLDP edges where available
+            lldp_pairs = set()
+            for le in lldp_edges:
+                lldp_pairs.add(tuple(sorted([le["from"], le["to"]])))
+            # Keep inferred edges that don't overlap with LLDP
+            kept_inferred = [
+                e for e in topology["edges"]
+                if tuple(sorted([e["from"], e["to"]])) not in lldp_pairs
+            ]
+            topology["edges"] = lldp_edges + kept_inferred
+    
     topology["health"] = health
     topology["client_id"] = client_id
     topology["client_name"] = client_name
     topology["has_custom_layout"] = False
+    topology["lldp_count"] = len(lldp_neighbors)
     
     return topology
+
+
+@router.get("/network/lldp/{client_id}")
+async def get_lldp_neighbors(client_id: str, current_user: dict = Depends(get_current_user)):
+    """Get raw LLDP neighbor data for a client."""
+    neighbors = await db.lldp_neighbors.find(
+        {"client_id": client_id}, {"_id": 0}
+    ).to_list(1000)
+    return {"client_id": client_id, "neighbors": neighbors, "count": len(neighbors)}
 
 
 @router.post("/network/topology/{client_id}/layout")
