@@ -6,11 +6,12 @@ import {
   CaretDown, CaretRight, ArrowUp, ArrowDown, Export,
   FileArrowUp, MagnifyingGlass, Globe, Desktop, Plus,
   Monitor, X, Trash, CheckCircle, HardDrive, SpinnerGap,
-  WifiHigh as WifiIcon, Pulse
+  WifiHigh as WifiIcon, Pulse, ListBullets, Graph
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import { DeviceDetailPanel } from "@/components/DeviceDetailPanel";
+import NetworkMap from "@/components/NetworkMap";
 
 export default function ClientStatusPage() {
   const [devices, setDevices] = useState([]);
@@ -34,6 +35,7 @@ export default function ClientStatusPage() {
   const discoveryPollRef = useRef(null);
   const [webConsole, setWebConsole] = useState(null);
   const webConsolePollRef = useRef(null);
+  const [viewMode, setViewMode] = useState("list");
 
   useEffect(() => {
     fetchAll();
@@ -314,7 +316,25 @@ export default function ClientStatusPage() {
 
       {/* Toolbar */}
       <div className="flex items-center justify-between">
-        <h2 className="font-heading text-sm font-bold text-[var(--text-primary)]">Dispositivi per Cliente</h2>
+        <div className="flex items-center gap-3">
+          <h2 className="font-heading text-sm font-bold text-[var(--text-primary)]">Dispositivi per Cliente</h2>
+          <div className="flex items-center rounded-md border border-[var(--bg-border)] overflow-hidden" data-testid="view-mode-toggle">
+            <button
+              onClick={() => setViewMode("list")}
+              className={`h-7 px-2.5 flex items-center gap-1 text-[10px] font-medium transition-colors ${viewMode === "list" ? "bg-indigo-600/20 text-indigo-400" : "text-[var(--text-muted)] hover:bg-[var(--bg-hover)]"}`}
+              data-testid="view-mode-list"
+            >
+              <ListBullets size={13} /> Lista
+            </button>
+            <button
+              onClick={() => setViewMode("map")}
+              className={`h-7 px-2.5 flex items-center gap-1 text-[10px] font-medium transition-colors ${viewMode === "map" ? "bg-indigo-600/20 text-indigo-400" : "text-[var(--text-muted)] hover:bg-[var(--bg-hover)]"}`}
+              data-testid="view-mode-map"
+            >
+              <Graph size={13} /> Mappa
+            </button>
+          </div>
+        </div>
         <div className="flex items-center gap-2">
           <Button variant="outline" size="sm" onClick={() => setShowDiscovery(!showDiscovery)}
             className="rounded-md text-xs h-8 border-[var(--bg-border)] text-[var(--text-secondary)]" data-testid="discovery-toggle-btn">
@@ -461,6 +481,11 @@ export default function ClientStatusPage() {
           <p className="text-[var(--text-secondary)] text-sm mb-1">Nessun dispositivo monitorato</p>
           <p className="text-[var(--text-muted)] text-xs">Aggiungi dispositivi o installa un connettore</p>
         </div>
+      ) : viewMode === "map" ? (
+        <NetworkMap
+          clientGroups={clientGroups}
+          onDeviceSelect={(dev) => setExpandedDevice(expandedDevice === `map-${dev.device_ip}` ? null : `map-${dev.device_ip}`)}
+        />
       ) : (
         <div className="space-y-3">
           {clientGroups.map((group) => {
