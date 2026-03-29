@@ -5,7 +5,12 @@ echo   86NocConnector - Disinstallazione
 echo ============================================================
 echo.
 
-echo [1/7] Arresto Scheduled Task e processi...
+echo [1/7] Arresto Servizio Windows e processi...
+if exist "%~dp0nssm.exe" (
+    "%~dp0nssm.exe" stop 86NocConnectorService >nul 2>&1
+    "%~dp0nssm.exe" remove 86NocConnectorService confirm >nul 2>&1
+    echo   Servizio NSSM rimosso.
+)
 schtasks /end /tn "86NocConnectorService" >nul 2>&1
 schtasks /delete /tn "86NocConnectorService" /f >nul 2>&1
 echo   Scheduled Task rimosso.
