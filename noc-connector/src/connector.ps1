@@ -1551,6 +1551,38 @@ function Process-WebProxyRequest($config, $req) {
     }
 }
 
+# ==================== STATUS FILE ====================
+# Scrive lo stato del connettore su un file JSON leggibile dalla tray app.
+# Questo permette alla tray app di monitorare il connettore anche quando
+# gira come Scheduled Task (fuori dalla sessione utente).
+
+function Write-StatusFile($status = "running") {
+    try {
+        $statusPath = Join-Path (Get-ConfigDir) "status.json"
+        $statusData = @{
+            pid = $PID
+            status = $status
+            version = $global:Version
+            hostname = $env:COMPUTERNAME
+            start_time = if ($global:Stats.start_time) { $global:Stats.start_time.ToString("yyyy-MM-ddTHH:mm:ss") } else { "" }
+            uptime_seconds = if ($global:Stats.start_time) { [int]((Get-Date) - $global:Stats.start_time).TotalSeconds } else { 0 }
+            snmp_received = $global:Stats.snmp_received
+            syslog_received = $global:Stats.syslog_received
+            errors = $global:Stats.errors
+            last_error = $global:Stats.last_error
+            last_update = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ss")
+        }
+        $statusData | ConvertTo-Json -Compress | Set-Content $statusPath -Encoding UTF8 -Force -ErrorAction SilentlyContinue
+    } catch {}
+}
+
+function Remove-StatusFile {
+    try {
+        $statusPath = Join-Path (Get-ConfigDir) "status.json"
+        if (Test-Path $statusPath) { Remove-Item $statusPath -Force -ErrorAction SilentlyContinue }
+    } catch {}
+}
+
 # ==================== MAIN ====================
 
 function Start-Connector {
@@ -1562,6 +1594,7 @@ function Start-Connector {
     
     $global:Running = $true
     $global:Stats.start_time = Get-Date
+    Write-StatusFile "starting"
     
     Write-Log "=================================================="
     Write-Log "  $global:AppName v$global:Version"
@@ -1619,6 +1652,7 @@ function Start-Connector {
     
     # Send first heartbeat immediately
     Send-Heartbeat $config
+    Write-StatusFile "running"
     
     try {
         while ($global:Running) {
@@ -1632,6 +1666,7 @@ function Start-Connector {
             if ($heartbeatCounter -ge $heartbeatTicks) {
                 $heartbeatCounter = 0
                 Send-Heartbeat $config
+                Write-StatusFile "running"
             }
             
             # Check for discovery every 2 min
@@ -1646,6 +1681,7 @@ function Start-Connector {
         Write-Log "Arresto..."
     } finally {
         $global:Running = $false
+        Write-StatusFile "stopped"
         Stop-Job $snmpJob -ErrorAction SilentlyContinue
         Stop-Job $syslogJob -ErrorAction SilentlyContinue
         Remove-Job $snmpJob -ErrorAction SilentlyContinue

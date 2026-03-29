@@ -634,17 +634,61 @@ function Show-InstallerWizard {
         $form.Refresh()
         Start-Sleep -Milliseconds 500
         
-        # Step 3: Autostart + Programs + Start Menu
-        $txtStatus.AppendText("> Registrazione sistema...`r`n")
+        # Step 3: Autostart via Scheduled Task (sopravvive a disconnessione RDP)
+        $txtStatus.AppendText("> Registrazione servizio Windows...`r`n")
         $progressBar.Value = 60
         $form.Refresh()
         $batPath = Join-Path $BaseDir "86NocConnector.bat"
         $uninstallBat = Join-Path $BaseDir "uninstall.bat"
+        $connectorScript = Join-Path $ScriptDir "connector.ps1"
+        
         if ($chkAutostart.Checked) {
             try {
-                & reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v $AppName /t REG_SZ /d "`"$batPath`"" /f 2>$null
-                $txtStatus.AppendText("  Avvio automatico: OK`r`n")
-            } catch {}
+                # Registra come Scheduled Task (gira come SYSTEM, indipendente da RDP)
+                $taskName = "86NocConnectorService"
+                Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+                
+                $action = New-ScheduledTaskAction `
+                    -Execute "powershell.exe" `
+                    -Argument "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$connectorScript`"" `
+                    -WorkingDirectory $ScriptDir
+                
+                $triggerBoot = New-ScheduledTaskTrigger -AtStartup
+                
+                $settings = New-ScheduledTaskSettingsSet `
+                    -AllowStartIfOnBatteries `
+                    -DontStopIfGoingOnBatteries `
+                    -StartWhenAvailable `
+                    -RestartCount 3 `
+                    -RestartInterval (New-TimeSpan -Minutes 1) `
+                    -ExecutionTimeLimit (New-TimeSpan -Days 365)
+                
+                Register-ScheduledTask `
+                    -TaskName $taskName `
+                    -Action $action `
+                    -Trigger $triggerBoot `
+                    -Settings $settings `
+                    -RunLevel Highest `
+                    -User "SYSTEM" `
+                    -Description "86NocConnector - Servizio di raccolta SNMP/Syslog per il NOC Center" `
+                    -ErrorAction Stop | Out-Null
+                
+                $txtStatus.AppendText("  Scheduled Task registrato: '$taskName'`r`n")
+                $txtStatus.AppendText("  Modalita': SYSTEM (sopravvive a disconnessione RDP)`r`n")
+                $txtStatus.AppendText("  Trigger: All'avvio del sistema`r`n")
+                $txtStatus.AppendText("  Riavvio automatico su errore: 3 tentativi`r`n")
+                
+                # Rimuovi vecchio autostart da registro (se presente)
+                & reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v $AppName /f 2>$null
+                
+            } catch {
+                $txtStatus.AppendText("  Task Scheduler: $($_.Exception.Message)`r`n")
+                $txtStatus.AppendText("  Fallback: avvio automatico via registro...`r`n")
+                try {
+                    & reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v $AppName /t REG_SZ /d "`"$batPath`"" /f 2>$null
+                    $txtStatus.AppendText("  Avvio automatico (registro): OK`r`n")
+                } catch {}
+            }
         }
         # Start Menu shortcut - Cartella "86BIT Connector"
         try {
@@ -714,16 +758,35 @@ function Show-InstallerWizard {
         $form.Refresh()
         Start-Sleep -Milliseconds 500
         
-        # Step 5: Start tray
+        # Step 5: Start connector service + tray
         $txtStatus.AppendText("> Avvio $AppName...`r`n")
         $progressBar.Value = 100
         $form.Refresh()
+        
+        # Avvia il connettore via Scheduled Task
+        $taskName = "86NocConnectorService"
+        try {
+            $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+            if ($task) {
+                Start-ScheduledTask -TaskName $taskName -ErrorAction Stop
+                $txtStatus.AppendText("  Servizio connettore: AVVIATO (Task Scheduler)`r`n")
+            } else {
+                # Fallback: avvia direttamente
+                Start-Process "powershell.exe" -ArgumentList "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$(Join-Path $ScriptDir 'connector.ps1')`"" -WindowStyle Hidden
+                $txtStatus.AppendText("  Connettore: AVVIATO (processo diretto)`r`n")
+            }
+        } catch {
+            Start-Process "powershell.exe" -ArgumentList "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$(Join-Path $ScriptDir 'connector.ps1')`"" -WindowStyle Hidden
+            $txtStatus.AppendText("  Connettore: AVVIATO (fallback)`r`n")
+        }
+        
+        # Avvia la tray app per monitoraggio
         $trayScript = Join-Path $ScriptDir "tray_app.ps1"
         try {
             Start-Process "powershell.exe" -ArgumentList "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$trayScript`"" -WindowStyle Hidden
             $txtStatus.AppendText("  Icona system tray: ATTIVA`r`n")
         } catch {
-            $txtStatus.AppendText("  Errore: $($_.Exception.Message)`r`n")
+            $txtStatus.AppendText("  Tray: $($_.Exception.Message)`r`n")
         }
         
         $txtStatus.AppendText("`r`n> Installazione completata con successo!`r`n")
@@ -768,9 +831,9 @@ function Show-InstallerWizard {
             [char]0x2713 + "   SNMP Trap: porta UDP $($txtSNMP.Text)"
             [char]0x2713 + "   Syslog: porta UDP $($txtSyslog.Text)"
             [char]0x2713 + "   NOC Center: $($txtUrl.Text.Trim().Substring(0, [Math]::Min(42, $txtUrl.Text.Trim().Length)))"
-            [char]0x2713 + "   Icona system tray: Attiva"
+            [char]0x2713 + "   Servizio: Task Scheduler (sopravvive a disconnessione RDP)"
             [char]0x2713 + "   Menu Start: 86BIT Connector (Avvia, Disinstalla, Log)"
-            [char]0x2713 + "   Avvio automatico: $(if($chkAutostart.Checked){'Abilitato'}else{'Disabilitato'})"
+            [char]0x2713 + "   Avvio automatico: $(if($chkAutostart.Checked){'All avvio del sistema'}else{'Disabilitato'})"
             [char]0x2713 + "   Polling SNMP: $($deviceList.Items.Count) dispositivi ogni $($txtPollInterval.Text)s"
         )
         $y = 26

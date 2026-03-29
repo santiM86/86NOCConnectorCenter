@@ -1,4 +1,4 @@
 {
-  "version": "2.3.0",
-  "changelog": "v2.3.0: Backend refactoring (stabilita migliorata), fix PS 5.1 compatibility, metriche PING avanzate con jitter/packet_loss/TCP scan/HTTP check, Power Control iLO e Wake-on-LAN, Vault credenziali AES-256-GCM."
+  "version": "2.4.0",
+  "changelog": "v2.4.0: FIX CRITICO - Il connettore ora gira come Windows Scheduled Task (SYSTEM) e sopravvive alla disconnessione RDP. Aggiunto LLDP Discovery per mappatura automatica connessioni porta-per-porta. Status file condiviso tra engine e tray app. Migliorato il monitoring della tray."
 }

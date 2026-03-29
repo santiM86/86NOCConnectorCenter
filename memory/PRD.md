@@ -6,7 +6,14 @@ Piattaforma NOC enterprise-grade per monitoraggio dispositivi di rete tramite SN
 ## Architettura
 - Backend: FastAPI modulare (18 file route in `/app/backend/routes/`), MongoDB, AES-256-GCM
 - Frontend: React, TailwindCSS, Shadcn UI, PWA, React Flow v12 (@xyflow/react)
-- Connector: PowerShell 5.1+, SNMP, Redfish API, LLDP Discovery
+- Connector: PowerShell 5.1+, SNMP, Redfish API, LLDP Discovery, **Windows Scheduled Task**
+
+### Architettura Connector (v2.4.0 - NUOVA)
+```
+Windows Task Scheduler -> connector.ps1 (gira come SYSTEM, sopravvive a disconnessione RDP)
+                          |-> scrive status.json ogni 60s
+RDP Session (opzionale) -> tray_app.ps1 (legge status.json, controlla via Task Scheduler)
+```
 
 ### Navigazione (4 gruppi)
 ```
@@ -24,45 +31,26 @@ SISTEMA         -> Impostazioni
 - [x] Credential Vault AES-256-GCM
 - [x] Metriche PING avanzate (jitter, packet loss, TCP scan, HTTP check)
 - [x] Power Control Redfish iLO + Wake-on-LAN
-- [x] Connector v2.3.0 con auto-update
 - [x] Menu 4 gruppi + Stato Rete / Connettori separati
 - [x] Backend Refactoring: server.py da 3247 a 193 righe, 17 route modulari
-- [x] **Mappa Topologica Enterprise con React Flow v12**:
-  - Drag-and-drop libero dei nodi
-  - Creazione/eliminazione manuale dei collegamenti
-  - Salvataggio layout personalizzato per cliente (MongoDB: topology_layouts)
-  - Reset al layout auto-generato
-  - Auto-layout gerarchico, Minimap, zoom/pan, snap-to-grid
-  - Health Score 0-100% per cliente
-- [x] **LLDP Discovery (Link Layer Discovery Protocol)**:
-  - Polling LLDP-MIB (1.0.8802.1.1.2) su tutti gli switch SNMP managed
-  - Raccolta neighbor table con: sistema remoto, porte locali/remote, chassis ID, IP management
-  - Invio dati al backend via POST /api/connector/lldp-neighbors
-  - Sostituzione intelligente: edge LLDP (reali) sostituiscono edge inferiti dove si sovrappongono
-  - Etichette porta-per-porta sugli edge LLDP (es. "GigabitEthernet 48 <-> GigabitEthernet 1")
-  - Badge "LLDP: X connessioni" nella mappa quando dati LLDP sono disponibili
-  - Edge LLDP animati in cyan nella mappa, distinti visivamente dagli altri tipi
-  - Esecuzione ogni 10 cicli di polling (insieme al refresh dispositivi)
+- [x] **Mappa Topologica Enterprise con React Flow v12**
+- [x] **LLDP Discovery (Link Layer Discovery Protocol)**
+- [x] **FIX: Connettore sopravvive a disconnessione RDP (v2.4.0)**:
+  - connector.ps1 ora gira come Windows Scheduled Task (utente SYSTEM)
+  - Non dipende piu dalla sessione RDP interattiva
+  - Status file condiviso (status.json) per comunicazione engine <-> tray app
+  - Tray app diventa puro tool di monitoraggio/controllo (opzionale)
+  - Installer aggiornato per registrare Scheduled Task
+  - Uninstaller aggiornato per rimuovere Scheduled Task
+  - Fallback a processo diretto se Task Scheduler non disponibile
+  - Riavvio automatico su crash (3 tentativi, intervallo 1 minuto)
 
-## Key API Endpoints (Topology + LLDP)
-- GET `/api/network/topology/{client_id}` - Nodi/edges + health + LLDP
-- POST `/api/network/topology/{client_id}/layout` - Salva layout personalizzato
-- DELETE `/api/network/topology/{client_id}/layout` - Reset layout
-- POST `/api/connector/lldp-neighbors` - Riceve dati LLDP dal connettore (auth: X-API-Key)
-- GET `/api/network/lldp/{client_id}` - Dati LLDP raw (auth: JWT)
-
-## DB Collections (LLDP)
-- `lldp_neighbors`: {client_id, local_ip, local_port_id, local_port_desc, remote_ip, remote_sys_name, remote_port_id, remote_port_desc, remote_sys_desc, remote_chassis_id, updated_at}
-
-## LLDP OID Reference
-- lldpRemSysName: 1.0.8802.1.1.2.1.4.1.1.9
-- lldpRemPortId: 1.0.8802.1.1.2.1.4.1.1.7
-- lldpRemPortDesc: 1.0.8802.1.1.2.1.4.1.1.8
-- lldpRemSysDesc: 1.0.8802.1.1.2.1.4.1.1.10
-- lldpRemChassisId: 1.0.8802.1.1.2.1.4.1.1.5
-- lldpRemManAddr: 1.0.8802.1.1.2.1.4.2.1.4
-- lldpLocPortId: 1.0.8802.1.1.2.1.3.7.1.3
-- lldpLocPortDesc: 1.0.8802.1.1.2.1.3.7.1.4
+## Files Modificati (v2.4.0)
+- `/app/noc-connector/src/connector.ps1`: Aggiunto Write-StatusFile/Remove-StatusFile
+- `/app/noc-connector/src/tray_app.ps1`: Riscritto gestione processi via Scheduled Task + status file
+- `/app/noc-connector/src/installer_gui.ps1`: Registra Scheduled Task invece di HKCU\Run
+- `/app/noc-connector/uninstall.bat`: Rimuove Scheduled Task
+- `/app/noc-connector/version.json`: v2.4.0
 
 ## Backlog
 ### P1

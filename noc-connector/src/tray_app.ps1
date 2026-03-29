@@ -74,23 +74,122 @@ function New-TrayIcon([string]$status = "running") {
     return $icon
 }
 
-# ==================== CONNECTOR PROCESS ====================
+# ==================== CONNECTOR PROCESS (via Scheduled Task) ====================
 
 $global:ConnectorProcess = $null
 $global:IsRunning = $false
+$global:TaskName = "86NocConnectorService"
 
-function Start-ConnectorProcess {
-    if ($global:ConnectorProcess -and !$global:ConnectorProcess.HasExited) {
-        return
+<#
+.SYNOPSIS
+    Legge lo status file scritto dal connector engine.
+    Ritorna $null se il file non esiste o e' vecchio (>120s).
+#>
+function Read-ConnectorStatus {
+    $statusPath = Join-Path $ConfigDir "status.json"
+    if (-not (Test-Path $statusPath)) { return $null }
+    try {
+        $data = Get-Content $statusPath -Raw | ConvertFrom-Json
+        # Se l'ultimo aggiornamento e' piu' vecchio di 120s, il connettore e' morto
+        $lastUpdate = [datetime]::ParseExact($data.last_update, "yyyy-MM-ddTHH:mm:ss", $null)
+        $age = (Get-Date) - $lastUpdate
+        if ($age.TotalSeconds -gt 120) { return $null }
+        return $data
+    } catch { return $null }
+}
+
+<#
+.SYNOPSIS
+    Verifica se il Scheduled Task del connettore esiste ed e' in esecuzione.
+#>
+function Test-ConnectorTask {
+    try {
+        $task = Get-ScheduledTask -TaskName $global:TaskName -ErrorAction SilentlyContinue
+        return ($task -and $task.State -eq "Running")
+    } catch { return $false }
+}
+
+<#
+.SYNOPSIS
+    Registra il connettore come Windows Scheduled Task.
+    Gira come SYSTEM, sopravvive a disconnessioni RDP.
+#>
+function Register-ConnectorTask {
+    try {
+        # Rimuovi vecchio task se esiste
+        Unregister-ScheduledTask -TaskName $global:TaskName -Confirm:$false -ErrorAction SilentlyContinue
+        
+        $action = New-ScheduledTaskAction `
+            -Execute "powershell.exe" `
+            -Argument "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$ConnectorScript`"" `
+            -WorkingDirectory (Split-Path $ConnectorScript)
+        
+        # Trigger: all'avvio del sistema
+        $triggerBoot = New-ScheduledTaskTrigger -AtStartup
+        
+        # Settings: riavvio automatico se fallisce, no scadenza, puo' girare su batteria
+        $settings = New-ScheduledTaskSettingsSet `
+            -AllowStartIfOnBatteries `
+            -DontStopIfGoingOnBatteries `
+            -StartWhenAvailable `
+            -RestartCount 3 `
+            -RestartInterval (New-TimeSpan -Minutes 1) `
+            -ExecutionTimeLimit (New-TimeSpan -Days 365)
+        
+        Register-ScheduledTask `
+            -TaskName $global:TaskName `
+            -Action $action `
+            -Trigger $triggerBoot `
+            -Settings $settings `
+            -RunLevel Highest `
+            -User "SYSTEM" `
+            -Description "86NocConnector - Servizio di raccolta SNMP/Syslog per il NOC Center. Gira in background indipendentemente dalla sessione utente." `
+            -ErrorAction Stop
+        
+        return $true
+    } catch {
+        Write-Host "Errore registrazione task: $($_.Exception.Message)"
+        return $false
     }
-    
+}
+
+function Start-ConnectorViaTask {
+    try {
+        # Prima prova via Scheduled Task
+        $task = Get-ScheduledTask -TaskName $global:TaskName -ErrorAction SilentlyContinue
+        if ($task) {
+            Start-ScheduledTask -TaskName $global:TaskName -ErrorAction Stop
+            Start-Sleep -Seconds 2
+            $global:IsRunning = $true
+            return $true
+        }
+        
+        # Fallback: registra il task e avvialo
+        if (Register-ConnectorTask) {
+            Start-ScheduledTask -TaskName $global:TaskName -ErrorAction Stop
+            Start-Sleep -Seconds 2
+            $global:IsRunning = $true
+            return $true
+        }
+        
+        # Ultimo fallback: avvia direttamente (vecchio metodo, per retrocompatibilita')
+        return Start-ConnectorDirect
+    } catch {
+        # Se non abbiamo i permessi per Task Scheduler, avvia direttamente
+        return Start-ConnectorDirect
+    }
+}
+
+function Start-ConnectorDirect {
+    if ($global:ConnectorProcess -and !$global:ConnectorProcess.HasExited) {
+        return $true
+    }
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = "powershell.exe"
     $psi.Arguments = "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$ConnectorScript`""
     $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
     $psi.CreateNoWindow = $true
     $psi.UseShellExecute = $false
-    
     try {
         $global:ConnectorProcess = [System.Diagnostics.Process]::Start($psi)
         $global:IsRunning = $true
@@ -102,21 +201,43 @@ function Start-ConnectorProcess {
 }
 
 function Stop-ConnectorProcess {
+    # Ferma via Scheduled Task
+    try {
+        Stop-ScheduledTask -TaskName $global:TaskName -ErrorAction SilentlyContinue
+    } catch {}
+    
+    # Ferma anche eventuali processi diretti
     if ($global:ConnectorProcess -and !$global:ConnectorProcess.HasExited) {
         try {
             $global:ConnectorProcess.Kill()
             $global:ConnectorProcess.WaitForExit(5000)
         } catch {}
     }
+    
+    # Kill qualsiasi processo connector.ps1 orfano
+    Get-Process -Name powershell, pwsh -ErrorAction SilentlyContinue | ForEach-Object {
+        if ($_.Id -ne $PID) {
+            try {
+                $cmdLine = (Get-CimInstance Win32_Process -Filter "ProcessId = $($_.Id)" -ErrorAction SilentlyContinue).CommandLine
+                if ($cmdLine -match "connector\.ps1") {
+                    Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+                }
+            } catch {}
+        }
+    }
     $global:IsRunning = $false
 }
 
 function Get-StatusText {
-    if ($global:IsRunning -and $global:ConnectorProcess -and !$global:ConnectorProcess.HasExited) {
-        $uptime = ((Get-Date) - $global:ConnectorProcess.StartTime).ToString("hh\:mm\:ss")
+    $status = Read-ConnectorStatus
+    if ($status -and $status.status -eq "running") {
+        $upH = [math]::Floor($status.uptime_seconds / 3600)
+        $upM = [math]::Floor(($status.uptime_seconds % 3600) / 60)
         $config = if (Test-Path $ConfigPath) { Get-Content $ConfigPath -Raw | ConvertFrom-Json } else { $null }
         $nocUrl = if ($config) { $config.noc_center_url } else { "N/D" }
-        return "$AppName v$Version`nStato: ATTIVO`nUptime: $uptime`nNOC: $nocUrl"
+        $taskRunning = Test-ConnectorTask
+        $mode = if ($taskRunning) { "Servizio Windows (Task)" } else { "Processo diretto" }
+        return "$AppName v$($status.version)`nStato: ATTIVO ($mode)`nUptime: ${upH}h ${upM}m`nNOC: $nocUrl`nSNMP: $($status.snmp_received) | Syslog: $($status.syslog_received)"
     }
     return "$AppName v$Version`nStato: FERMO"
 }
@@ -636,7 +757,7 @@ public class TrayRefresh {
     $startItem = $contextMenu.Items.Add("Avvia")
     $startItem.ForeColor = [System.Drawing.Color]::FromArgb(34, 197, 94)
     $startItem.Add_Click({
-        if (Start-ConnectorProcess) {
+        if (Start-ConnectorViaTask) {
             $notifyIcon.Icon = New-TrayIcon "running"
             $notifyIcon.Text = "$AppName - Attivo"
             $notifyIcon.ShowBalloonTip(3000, $AppName, "Connector avviato e in ascolto", [System.Windows.Forms.ToolTipIcon]::Info)
@@ -669,7 +790,7 @@ public class TrayRefresh {
     $restartItem.Add_Click({
         Stop-ConnectorProcess
         Start-Sleep -Seconds 1
-        if (Start-ConnectorProcess) {
+        if (Start-ConnectorViaTask) {
             $notifyIcon.Icon = New-TrayIcon "running"
             $notifyIcon.Text = "$AppName - Attivo"
             $notifyIcon.ShowBalloonTip(2000, $AppName, "Connector riavviato", [System.Windows.Forms.ToolTipIcon]::Info)
@@ -708,7 +829,7 @@ public class TrayRefresh {
             # Restart connector process
             Stop-ConnectorProcess
             Start-Sleep -Seconds 1
-            if (Start-ConnectorProcess) {
+            if (Start-ConnectorViaTask) {
                 $notifyIcon.Icon = New-TrayIcon "running"
                 $notifyIcon.Text = "$AppName - Attivo (riavviato)"
                 $notifyIcon.ShowBalloonTip(3000, $AppName, "Connector riavviato con nuovi dispositivi", [System.Windows.Forms.ToolTipIcon]::Info)
@@ -830,11 +951,21 @@ info@86bit.it
             [System.Windows.Forms.MessageBoxIcon]::Information)
     })
     
-    # Auto-start connector
-    if (Test-Path $ConfigPath) {
+    # Auto-start: controlla se il connettore gira gia' come Scheduled Task
+    $existingStatus = Read-ConnectorStatus
+    if ($existingStatus -and $existingStatus.status -eq "running") {
+        # Il connettore gira gia' (via Task Scheduler o avvio precedente)
+        $global:IsRunning = $true
+        $notifyIcon.Icon = New-TrayIcon "running"
+        $notifyIcon.Text = "$AppName - Attivo (Servizio)"
+        $startItem.Visible = $false
+        $stopItem.Visible = $true
+        $restartItem.Visible = $true
+        $notifyIcon.ShowBalloonTip(3000, $AppName, "Connector attivo come servizio di sistema", [System.Windows.Forms.ToolTipIcon]::Info)
+    } elseif (Test-Path $ConfigPath) {
         $config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
         if ($config.noc_center_url -and $config.api_key) {
-            if (Start-ConnectorProcess) {
+            if (Start-ConnectorViaTask) {
                 $notifyIcon.Icon = New-TrayIcon "running"
                 $notifyIcon.Text = "$AppName - Attivo"
                 $startItem.Visible = $false
@@ -849,19 +980,32 @@ info@86bit.it
         $notifyIcon.ShowBalloonTip(5000, $AppName, "Prima installazione. Esegui install.bat", [System.Windows.Forms.ToolTipIcon]::Warning)
     }
     
-    # Timer for tooltip update
+    # Timer for tooltip update and connector health monitoring
     $timer = New-Object System.Windows.Forms.Timer
     $timer.Interval = 15000  # 15 seconds
     $timer.Add_Tick({
-        if ($global:IsRunning -and $global:ConnectorProcess -and $global:ConnectorProcess.HasExited) {
+        $status = Read-ConnectorStatus
+        $connectorAlive = ($status -ne $null -and $status.status -eq "running")
+        
+        if ($global:IsRunning -and -not $connectorAlive) {
+            # Connettore era attivo ma ora non risponde piu'
             $global:IsRunning = $false
             $notifyIcon.Icon = New-TrayIcon "error"
-            $notifyIcon.Text = "$AppName - ERRORE"
-            $notifyIcon.ShowBalloonTip(5000, $AppName, "Il connector si e' fermato inaspettatamente!", [System.Windows.Forms.ToolTipIcon]::Error)
+            $notifyIcon.Text = "$AppName - NON RISPONDE"
+            $notifyIcon.ShowBalloonTip(5000, $AppName, "Il connector non risponde! Verificare i log.", [System.Windows.Forms.ToolTipIcon]::Error)
             $startItem.Visible = $true
             $stopItem.Visible = $false
             $restartItem.Visible = $false
-        } elseif ($global:IsRunning) {
+        } elseif (-not $global:IsRunning -and $connectorAlive) {
+            # Connettore avviato dal Task Scheduler senza passare dalla tray
+            $global:IsRunning = $true
+            $notifyIcon.Icon = New-TrayIcon "running"
+            $notifyIcon.Text = (Get-StatusText).Replace("`n", " | ").Substring(0, [Math]::Min(127, (Get-StatusText).Length))
+            $startItem.Visible = $false
+            $stopItem.Visible = $true
+            $restartItem.Visible = $true
+        } elseif ($global:IsRunning -and $connectorAlive) {
+            # Aggiorna tooltip
             $notifyIcon.Text = (Get-StatusText).Replace("`n", " | ").Substring(0, [Math]::Min(127, (Get-StatusText).Length))
         }
     })
