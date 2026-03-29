@@ -19,10 +19,11 @@ import {
   Lock,
   CaretDown,
   CaretRight,
-  Activity,
+  Pulse,
   Shield,
   House,
-  DotsThreeOutline
+  DotsThreeOutline,
+  WifiHigh
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import {
@@ -77,6 +78,7 @@ export default function Layout() {
       items: [
         { path: "/", icon: ChartLineUp, label: "Dashboard", roles: ["admin", "operator", "viewer"] },
         { path: "/alerts", icon: Bell, label: "Alert", badge: alertCount, roles: ["admin", "operator", "viewer"] },
+        { path: "/network-status", icon: WifiHigh, label: "Stato Rete", roles: ["admin", "operator", "viewer"] },
         { path: "/devices", icon: HardDrives, label: "Dispositivi", roles: ["admin", "operator", "viewer"] },
       ]
     },
@@ -113,7 +115,7 @@ export default function Layout() {
   const mobileNavItems = [
     { path: "/", icon: House, label: "Home" },
     { path: "/alerts", icon: Bell, label: "Alert", badge: alertCount },
-    { path: "/devices", icon: HardDrives, label: "Dispositivi" },
+    { path: "/network-status", icon: WifiHigh, label: "Rete" },
     { path: "/clients", icon: Buildings, label: "Clienti" },
     { path: "more", icon: DotsThreeOutline, label: "Menu" },
   ];

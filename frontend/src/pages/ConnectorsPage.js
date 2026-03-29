@@ -2,75 +2,25 @@ import { useState, useEffect, useRef } from "react";
 import axios from "axios";
 import JSZip from "jszip";
 import { API } from "@/App";
-import { 
-  HardDrive, 
-  ArrowClockwise,
-  SealCheck,
-  Warning,
-  Clock,
-  WifiHigh,
-  WifiSlash,
-  DownloadSimple,
-  Copy,
-  CheckCircle,
-  Terminal,
-  NumberCircleOne,
-  NumberCircleTwo,
-  NumberCircleThree,
-  UploadSimple,
-  ArrowsClockwise,
-  CloudArrowUp,
-  Trash,
-  Buildings,
-  CaretDown,
-  CaretRight,
-  ArrowUp,
-  ArrowDown,
-  Export,
-  FileArrowUp,
-  MagnifyingGlass,
-  Globe,
-  Desktop,
-  WifiHigh as WifiIcon,
-  Plus,
-  Monitor,
-  X,
-  ArrowSquareOut,
-  SpinnerGap
+import {
+  HardDrive, ArrowClockwise, SealCheck, Warning, Clock,
+  WifiHigh, WifiSlash, DownloadSimple, Terminal,
+  ArrowsClockwise, CloudArrowUp, Trash, CheckCircle, SpinnerGap
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
-import { DeviceDetailPanel } from "@/components/DeviceDetailPanel";
 
 export default function ConnectorsPage() {
   const [connectors, setConnectors] = useState([]);
-  const [devices, setDevices] = useState([]);
   const [clients, setClients] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showInstall, setShowInstall] = useState(false);
-  const [copied, setCopied] = useState(false);
   const [updateInfo, setUpdateInfo] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [newVersion, setNewVersion] = useState("");
   const [changelog, setChangelog] = useState("");
-  const [expandedDevice, setExpandedDevice] = useState(null);
-  const [collapsedClients, setCollapsedClients] = useState({});
-  const [showAddDevice, setShowAddDevice] = useState(false);
-  const [newDevice, setNewDevice] = useState({ ip: "", community: "public", name: "", monitor_type: "snmp", http_port: 80 });
-  const [addDeviceClientId, setAddDeviceClientId] = useState("");
   const intervalRef = useRef(null);
   const fileInputRef = useRef(null);
-  const importFileRef = useRef(null);
-  const [importClientId, setImportClientId] = useState(null);
-  const [showDiscovery, setShowDiscovery] = useState(false);
-  const [discoveryClientId, setDiscoveryClientId] = useState("");
-  const [discoverySubnet, setDiscoverySubnet] = useState("");
-  const [discoveryStatus, setDiscoveryStatus] = useState("none");
-  const [discoveryResults, setDiscoveryResults] = useState(null);
-  const [scanning, setScanning] = useState(false);
-  const discoveryPollRef = useRef(null);
-  const [webConsole, setWebConsole] = useState(null); // {clientId, deviceIp, port, path, loading, html, title}
-  const webConsolePollRef = useRef(null);
 
   useEffect(() => {
     fetchAll();
@@ -91,16 +41,14 @@ export default function ConnectorsPage() {
 
   const fetchAll = async () => {
     try {
-      const [connRes, devRes, clientRes] = await Promise.all([
+      const [connRes, clientRes] = await Promise.all([
         axios.get(`${API}/connector/status`),
-        axios.get(`${API}/connector/device-poll-status`),
         axios.get(`${API}/clients`)
       ]);
       setConnectors(connRes.data);
-      setDevices(devRes.data);
       setClients(clientRes.data);
     } catch (error) {
-      console.error("Error fetching data:", error);
+      console.error("Error:", error);
     } finally {
       setLoading(false);
     }
@@ -110,9 +58,7 @@ export default function ConnectorsPage() {
     try {
       const res = await axios.get(`${API}/connector/update-info`);
       setUpdateInfo(res.data);
-    } catch (error) {
-      console.error("Error fetching update info:", error);
-    }
+    } catch {}
   };
 
   const handleFileSelect = async (e) => {
@@ -129,28 +75,22 @@ export default function ConnectorsPage() {
         toast.success(`Rilevato version.json: v${meta.version}`);
       }
     } catch (err) {
-      console.warn("Impossibile leggere version.json dal zip:", err);
+      console.warn("Impossibile leggere version.json:", err);
     }
   };
 
   const handleUploadUpdate = async () => {
     const file = fileInputRef.current?.files?.[0];
-    if (!file || !newVersion) {
-      toast.error("Seleziona un file ZIP e inserisci la versione");
-      return;
-    }
+    if (!file || !newVersion) { toast.error("Seleziona un file ZIP e inserisci la versione"); return; }
     setUploading(true);
     try {
       const formData = new FormData();
       formData.append("file", file);
       formData.append("version", newVersion);
       formData.append("changelog", changelog);
-      await axios.post(`${API}/connector/upload-update`, formData, {
-        headers: { "Content-Type": "multipart/form-data" }
-      });
-      toast.success(`Aggiornamento v${newVersion} pubblicato! I connector si aggiorneranno entro 6 ore.`);
-      setNewVersion("");
-      setChangelog("");
+      await axios.post(`${API}/connector/upload-update`, formData, { headers: { "Content-Type": "multipart/form-data" } });
+      toast.success(`Aggiornamento v${newVersion} pubblicato!`);
+      setNewVersion(""); setChangelog("");
       if (fileInputRef.current) fileInputRef.current.value = "";
       fetchUpdateInfo();
     } catch (error) {
@@ -161,10 +101,9 @@ export default function ConnectorsPage() {
   };
 
   const deleteConnector = async (hostname) => {
-    const confirmed = window.confirm(`Eliminare il connettore "${hostname}"?`);
-    if (!confirmed) return;
+    if (!window.confirm(`Eliminare il connettore "${hostname}"?`)) return;
     try {
-      const res = await axios.delete(`${API}/connector/status/${encodeURIComponent(hostname)}`);
+      await axios.delete(`${API}/connector/status/${encodeURIComponent(hostname)}`);
       toast.success("Connettore eliminato");
       fetchAll();
     } catch (e) {
@@ -172,7 +111,7 @@ export default function ConnectorsPage() {
     }
   };
 
-  const forceUpdate = async (clientId, hostname) => {
+  const forceUpdate = async (clientId) => {
     try {
       const res = await axios.post(`${API}/connector/${clientId}/force-update`);
       toast.success(res.data.message);
@@ -181,244 +120,15 @@ export default function ConnectorsPage() {
     }
   };
 
-  const deleteDevice = async (deviceIp) => {
-    if (!window.confirm(`Eliminare il dispositivo ${deviceIp} dal monitoraggio?`)) return;
+  const resetUpdateStatus = async (clientId) => {
     try {
-      await axios.delete(`${API}/connector/device-poll-status/${encodeURIComponent(deviceIp)}`);
-      toast.success("Dispositivo rimosso");
+      await axios.post(`${API}/connector/${clientId}/reset-update-status`);
+      toast.success("Stato aggiornamento resettato");
       fetchAll();
-    } catch (e) {
-      toast.error("Errore: " + (e.response?.data?.detail || e.message));
-    }
+    } catch { toast.error("Errore nel reset"); }
   };
 
-  const exportDevices = (clientName, clientDevices) => {
-    const csvHeader = "IP,Community,Nome";
-    const csvRows = clientDevices.map(d => `${d.device_ip},${d.community || "public"},${d.device_name || d.device_ip}`);
-    const csvContent = [csvHeader, ...csvRows].join("\n");
-    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `dispositivi_${clientName.replace(/\s+/g, "_")}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-    toast.success(`${clientDevices.length} dispositivi esportati`);
-  };
-
-  const handleImportDevices = async (e) => {
-    const file = e.target.files?.[0];
-    if (!file || !importClientId) return;
-    try {
-      const text = await file.text();
-      const lines = text.split("\n").map(l => l.trim()).filter(l => l && !l.toLowerCase().startsWith("ip"));
-      let imported = 0;
-      for (const line of lines) {
-        const [ip, community, ...nameParts] = line.split(",");
-        if (!ip?.trim()) continue;
-        try {
-          await axios.post(`${API}/connector/${importClientId}/managed-devices`, {
-            ip: ip.trim(),
-            community: (community || "public").trim(),
-            name: (nameParts.join(",") || ip).trim()
-          });
-          imported++;
-        } catch {}
-      }
-      toast.success(`${imported} dispositivi importati`);
-      fetchAll();
-    } catch (err) {
-      toast.error("Errore importazione: " + err.message);
-    }
-    e.target.value = "";
-    setImportClientId(null);
-  };
-
-  const addDevice = async () => {
-    if (!newDevice.ip || !addDeviceClientId) {
-      toast.error("Seleziona un cliente e inserisci l'IP");
-      return;
-    }
-    try {
-      await axios.post(`${API}/connector/${addDeviceClientId}/managed-devices`, {
-        ip: newDevice.ip,
-        community: newDevice.community || "public",
-        name: newDevice.name || newDevice.ip,
-        monitor_type: newDevice.monitor_type || "snmp",
-        http_port: newDevice.http_port || 80
-      });
-      toast.success(`Dispositivo ${newDevice.name || newDevice.ip} aggiunto`);
-      setNewDevice({ ip: "", community: "public", name: "", monitor_type: "snmp", http_port: 80 });
-      setShowAddDevice(false);
-      fetchAll();
-    } catch (e) {
-      toast.error("Errore: " + (e.response?.data?.detail || e.message));
-    }
-  };
-
-  const toggleClient = (id) => setCollapsedClients(prev => ({ ...prev, [id]: !prev[id] }));
-
-  // ==================== DISCOVERY ====================
-  const startDiscovery = async () => {
-    if (!discoveryClientId) {
-      toast.error("Seleziona un cliente");
-      return;
-    }
-    setScanning(true);
-    setDiscoveryStatus("pending");
-    try {
-      await axios.post(`${API}/connector/start-discovery`, {
-        client_id: discoveryClientId,
-        subnet: discoverySubnet || ""
-      });
-      toast.success("Scansione rete avviata! Il connettore la eseguira' entro 2 minuti.");
-      // Poll for results
-      if (discoveryPollRef.current) clearInterval(discoveryPollRef.current);
-      discoveryPollRef.current = setInterval(async () => {
-        try {
-          const statusRes = await axios.get(`${API}/connector/discovery-status/${discoveryClientId}`);
-          setDiscoveryStatus(statusRes.data.status);
-          if (statusRes.data.status === "completed") {
-            const res = await axios.get(`${API}/connector/discovery-results/${discoveryClientId}`);
-            setDiscoveryResults(res.data);
-            setScanning(false);
-            clearInterval(discoveryPollRef.current);
-            toast.success(`Scansione completata: ${res.data.device_count || 0} dispositivi trovati`);
-          }
-        } catch {}
-      }, 5000);
-    } catch (e) {
-      toast.error("Errore: " + (e.response?.data?.detail || e.message));
-      setScanning(false);
-    }
-  };
-
-  // Load existing results when client is selected
-  const onDiscoveryClientChange = async (clientId) => {
-    setDiscoveryClientId(clientId);
-    if (!clientId) { setDiscoveryResults(null); return; }
-    try {
-      const res = await axios.get(`${API}/connector/discovery-results/${clientId}`);
-      if (res.data && res.data.devices && res.data.devices.length > 0) {
-        setDiscoveryResults(res.data);
-      }
-    } catch {}
-  };
-
-  const addDiscoveredDevice = async (dev) => {
-    if (!discoveryClientId) return;
-    try {
-      await axios.post(`${API}/connector/${discoveryClientId}/managed-devices`, {
-        ip: dev.ip,
-        name: dev.hostname || dev.ip,
-        community: dev.suggested_type === "snmp" ? "public" : "",
-        monitor_type: dev.suggested_type || "ping",
-        http_port: dev.http_port || 80
-      });
-      toast.success(`${dev.hostname || dev.ip} aggiunto al monitoraggio`);
-      // Refresh discovery results to update managed_ips
-      const res = await axios.get(`${API}/connector/discovery-results/${discoveryClientId}`);
-      setDiscoveryResults(res.data);
-      fetchAll();
-    } catch (e) {
-      toast.error("Errore: " + (e.response?.data?.detail || e.message));
-    }
-  };
-
-  useEffect(() => {
-    return () => { if (discoveryPollRef.current) clearInterval(discoveryPollRef.current); };
-  }, []);
-
-  const switchMonitorType = async (deviceIp, currentType) => {
-    const newType = currentType === "snmp" ? "ping" : "snmp";
-    try {
-      await axios.put(`${API}/connector/device-poll-status/${encodeURIComponent(deviceIp)}/monitor-type`, {
-        monitor_type: newType,
-        http_port: 80
-      });
-      toast.success(`${deviceIp} cambiato a ${newType === "snmp" ? "SNMP" : "Ping+HTTP"}`);
-      fetchAll();
-    } catch (e) {
-      toast.error("Errore: " + (e.response?.data?.detail || e.message));
-    }
-  };
-
-  // ==================== WEB CONSOLE PROXY ====================
-  const openWebConsole = async (clientId, deviceIp, port, path = "/") => {
-    setWebConsole({ clientId, deviceIp, port, path, loading: true, html: null, title: `${deviceIp}:${port}` });
-    try {
-      const res = await axios.post(`${API}/connector/web-proxy/request`, {
-        client_id: clientId,
-        device_ip: deviceIp,
-        port: port || 80,
-        path: path,
-        method: "GET"
-      });
-      const requestId = res.data.request_id;
-      
-      // Poll for response
-      if (webConsolePollRef.current) clearInterval(webConsolePollRef.current);
-      let attempts = 0;
-      webConsolePollRef.current = setInterval(async () => {
-        attempts++;
-        if (attempts > 30) { // 30 * 2s = 60s timeout
-          clearInterval(webConsolePollRef.current);
-          setWebConsole(prev => prev ? { ...prev, loading: false, html: '<div style="padding:40px;text-align:center;font-family:sans-serif"><h2>Timeout</h2><p>Il connettore non ha risposto entro 60 secondi. Verifica che sia online e aggiornato alla v1.7.2+</p></div>' } : null);
-          return;
-        }
-        try {
-          const resp = await axios.get(`${API}/connector/web-proxy/response/${requestId}`);
-          if (resp.data.status === "completed" && resp.data.response) {
-            clearInterval(webConsolePollRef.current);
-            setWebConsole(prev => prev ? {
-              ...prev,
-              loading: false,
-              html: resp.data.response.body,
-              title: resp.data.response.title || `${deviceIp}:${port}${path}`,
-              error: resp.data.response.error
-            } : null);
-          }
-        } catch {}
-      }, 2000);
-    } catch (e) {
-      setWebConsole(prev => prev ? { ...prev, loading: false, html: `<div style="padding:40px;text-align:center;font-family:sans-serif"><h2>Errore</h2><p>${e.response?.data?.detail || e.message}</p></div>` } : null);
-    }
-  };
-
-  const closeWebConsole = () => {
-    if (webConsolePollRef.current) clearInterval(webConsolePollRef.current);
-    setWebConsole(null);
-  };
-
-  // Listen for proxy navigation messages from iframe
-  useEffect(() => {
-    const handleMessage = (event) => {
-      if (event.data && event.data.type === 'proxy-navigate' && webConsole) {
-        let path = event.data.path;
-        // Convert absolute URLs to relative paths
-        if (event.data.baseUrl && path.startsWith(event.data.baseUrl)) {
-          path = path.replace(event.data.baseUrl, '');
-        }
-        if (!path.startsWith('/')) path = '/' + path;
-        openWebConsole(webConsole.clientId, webConsole.deviceIp, webConsole.port, path);
-      }
-    };
-    window.addEventListener('message', handleMessage);
-    return () => {
-      window.removeEventListener('message', handleMessage);
-      if (webConsolePollRef.current) clearInterval(webConsolePollRef.current);
-    };
-  }, [webConsole]);
-
-  const isOnline = (lastSeen) => {
-    if (!lastSeen) return false;
-    return (Date.now() - new Date(lastSeen).getTime()) < 120000;
-  };
-
-  const isRecentPoll = (ts) => {
-    if (!ts) return false;
-    return (Date.now() - new Date(ts).getTime()) < 600000; // 10 minutes
-  };
+  const isOnline = (lastSeen) => lastSeen && (Date.now() - new Date(lastSeen).getTime()) < 120000;
 
   const formatUptime = (seconds) => {
     if (!seconds) return "N/A";
@@ -443,61 +153,24 @@ export default function ConnectorsPage() {
   const onlineCount = connectors.filter(c => isOnline(c.last_seen)).length;
   const offlineCount = connectors.length - onlineCount;
 
-  // Build unified client groups
-  const clientGroups = (() => {
-    const groups = {};
-    // Add clients from list
-    clients.forEach(c => {
-      groups[c.id] = { clientId: c.id, clientName: c.name, connectors: [], devices: [] };
-    });
-    // Add connectors
-    connectors.forEach(c => {
-      const cid = c.client_id || "unknown";
-      if (!groups[cid]) groups[cid] = { clientId: cid, clientName: c.client_name || "Sconosciuto", connectors: [], devices: [] };
-      groups[cid].connectors.push(c);
-    });
-    // Add devices
-    devices.forEach(d => {
-      const cid = d.client_id || "unknown";
-      if (!groups[cid]) groups[cid] = { clientId: cid, clientName: cid, connectors: [], devices: [] };
-      groups[cid].devices.push(d);
-    });
-    // Only return groups that have connectors or devices
-    return Object.values(groups)
-      .filter(g => g.connectors.length > 0 || g.devices.length > 0)
-      .sort((a, b) => a.clientName.localeCompare(b.clientName));
-  })();
-
-  const portsByStatus = (ports) => {
-    const up = (ports || []).filter(p => p.status === "up").length;
-    const down = (ports || []).filter(p => p.status === "down").length;
-    return { up, down, total: (ports || []).length };
-  };
+  // Group connectors by client
+  const clientMap = {};
+  clients.forEach(c => { clientMap[c.id] = c.name; });
 
   return (
     <div className="p-4 md:p-5 space-y-4 animate-fade-in" data-testid="connectors-page">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="font-heading text-xl font-bold text-[var(--text-primary)] tracking-tight">
-            Connettori
-          </h1>
-          <p className="text-[var(--text-muted)] text-xs mt-0.5">
-            Stato degli agent 86NocConnector installati
-          </p>
+          <h1 className="font-heading text-xl font-bold text-[var(--text-primary)] tracking-tight">Connettori</h1>
+          <p className="text-[var(--text-muted)] text-xs mt-0.5">Gestione agent 86NocConnector installati</p>
         </div>
-        <Button 
-          variant="outline" 
-          size="sm" 
-          onClick={() => { fetchAll(); toast.success("Aggiornato"); }}
-          className="rounded-md text-xs h-8 border-[var(--bg-border)] text-[var(--text-secondary)]"
-          data-testid="refresh-connectors-btn"
-        >
-          <ArrowClockwise size={14} className="mr-1.5" />
-          Aggiorna
+        <Button variant="outline" size="sm" onClick={() => { fetchAll(); toast.success("Aggiornato"); }}
+          className="rounded-md text-xs h-8 border-[var(--bg-border)] text-[var(--text-secondary)]" data-testid="refresh-connectors-btn">
+          <ArrowClockwise size={14} className="mr-1.5" /> Aggiorna
         </Button>
       </div>
 
-      {/* Summary cards */}
+      {/* Summary */}
       <div className="grid grid-cols-3 gap-3">
         <div className="noc-panel p-3 flex items-center gap-3">
           <HardDrive size={18} className="text-[var(--text-muted)]" />
@@ -522,56 +195,42 @@ export default function ConnectorsPage() {
         </div>
       </div>
 
-      {/* Offline Alert Banner */}
+      {/* Offline Alert */}
       {offlineCount > 0 && (
         <div className="flex items-start gap-3 p-3 rounded-lg border border-[var(--critical-border)] bg-[var(--critical-bg)]" data-testid="offline-alert-banner">
           <Warning size={18} weight="fill" className="text-[var(--critical)] mt-0.5 flex-shrink-0" />
           <div>
-            <p className="text-sm text-[var(--critical)] font-semibold">
-              {offlineCount} connettore{offlineCount > 1 ? "i" : ""} offline
-            </p>
+            <p className="text-sm text-[var(--critical)] font-semibold">{offlineCount} connettore{offlineCount > 1 ? "i" : ""} offline</p>
             <p className="text-xs text-[var(--text-secondary)] mt-0.5">
-              Scarica l'ultima versione del connettore (v{updateInfo?.version || "?"}) e installala sul server.
-              Usa lo script <code className="text-indigo-400 bg-indigo-500/10 px-1 rounded text-[10px]">diagnostica.ps1</code> per verificare la connettivita'.
+              Scarica l'ultima versione (v{updateInfo?.version || "?"}) e installala sul server.
+              Usa <code className="text-indigo-400 bg-indigo-500/10 px-1 rounded text-[10px]">diagnostica.ps1</code> per verificare.
             </p>
           </div>
         </div>
       )}
 
-      {/* Download & Install Section */}
+      {/* Download */}
       <div className="noc-panel overflow-hidden" data-testid="download-connector-section">
         <div className="p-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-lg bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center flex-shrink-0">
-              <DownloadSimple size={20} weight="bold" className="text-indigo-400" />
+              <HardDrive size={20} weight="bold" className="text-indigo-400" />
             </div>
             <div>
-              <p className="font-heading font-bold text-sm text-[var(--text-primary)]">
-                86NocConnector
-              </p>
+              <p className="font-heading font-bold text-sm text-[var(--text-primary)]">86NocConnector</p>
               <p className="text-[var(--text-muted)] text-xs">
-                Pacchetto Windows nativo {updateInfo?.version && <span className="text-indigo-400 font-mono">v{updateInfo.version}</span>} — nessuna installazione richiesta
+                Pacchetto Windows nativo {updateInfo?.version && <span className="text-indigo-400 font-mono">v{updateInfo.version}</span>}
               </p>
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setShowInstall(!showInstall)}
-              className="rounded-md text-xs h-8 text-[var(--text-secondary)]"
-              data-testid="toggle-install-guide-btn"
-            >
+            <Button variant="ghost" size="sm" onClick={() => setShowInstall(!showInstall)}
+              className="rounded-md text-xs h-8 text-[var(--text-secondary)]" data-testid="toggle-install-guide-btn">
               {showInstall ? "Nascondi guida" : "Guida installazione"}
             </Button>
             <a href="/86NocConnector.zip" download>
-              <Button
-                size="sm"
-                className="rounded-md text-xs h-8 bg-indigo-600 hover:bg-indigo-700 text-white"
-                data-testid="download-connector-btn"
-              >
-                <DownloadSimple size={14} className="mr-1.5" />
-                Scarica ZIP
+              <Button size="sm" className="rounded-md text-xs h-8 bg-indigo-600 hover:bg-indigo-700 text-white" data-testid="download-connector-btn">
+                <HardDrive size={14} className="mr-1.5" /> Scarica ZIP
               </Button>
             </a>
           </div>
@@ -580,59 +239,31 @@ export default function ConnectorsPage() {
         {showInstall && (
           <div className="border-t border-[var(--bg-border)] p-4 space-y-4 bg-[var(--bg-card)]/50 animate-fade-in">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <StepCard
-                number={1}
-                title="Scarica e decomprimi"
-                desc="Scarica il file ZIP e decomprimilo su un server Windows del cliente."
-              />
-              <StepCard
-                number={2}
-                title="Esegui l'installer"
-                desc={<>Doppio click su <code className="text-indigo-400 bg-indigo-500/10 px-1 rounded text-[11px]">Installa 86NocConnector.vbs</code> e segui il wizard.</>}
-              />
-              <StepCard
-                number={3}
-                title="Configura connessione"
-                desc="Inserisci l'URL del NOC Center e la API Key del cliente. Testa la connessione."
-              />
+              {[
+                { n: 1, t: "Scarica e decomprimi", d: "Scarica il file ZIP e decomprimilo su un server Windows del cliente." },
+                { n: 2, t: "Esegui l'installer", d: <>Doppio click su <code className="text-indigo-400 bg-indigo-500/10 px-1 rounded text-[11px]">Installa 86NocConnector.vbs</code></> },
+                { n: 3, t: "Configura connessione", d: "Inserisci l'URL del NOC Center e la API Key del cliente." },
+              ].map(s => (
+                <div key={s.n} className="noc-panel p-3">
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="w-6 h-6 rounded-full bg-indigo-600/20 flex items-center justify-center text-indigo-400 text-xs font-bold">{s.n}</span>
+                    <p className="text-xs font-medium text-[var(--text-primary)]">{s.t}</p>
+                  </div>
+                  <p className="text-[11px] text-[var(--text-secondary)] leading-relaxed">{s.d}</p>
+                </div>
+              ))}
             </div>
-
-            <div className="noc-panel p-3">
-              <div className="flex items-center justify-between mb-2">
-                <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-widest">
-                  API Key — Come trovarla
-                </p>
-              </div>
-              <p className="text-xs text-[var(--text-secondary)] leading-relaxed">
-                Vai nella pagina <strong className="text-[var(--text-primary)]">Clienti</strong>, seleziona il cliente e copia la <strong className="text-[var(--text-primary)]">API Key</strong> generata automaticamente. Questa chiave autentica il connector per inviare alert al NOC Center.
-              </p>
-            </div>
-
             <div className="flex items-start gap-2 p-3 rounded-lg border border-[var(--medium-border)] bg-[var(--medium-bg)]">
               <Terminal size={16} className="text-[var(--medium)] mt-0.5 flex-shrink-0" />
-              <div>
-                <p className="text-xs text-[var(--medium)] font-medium mb-0.5">Requisiti</p>
-                <p className="text-[11px] text-[var(--text-secondary)]">
-                  Windows Server 2016+ o Windows 10/11 — PowerShell 5.1 (preinstallato) — Porte UDP 162 (SNMP) e 514 (Syslog) libere
-                </p>
-              </div>
-            </div>
-
-            <div className="flex items-start gap-2 p-3 rounded-lg border border-indigo-500/20 bg-indigo-500/5">
-              <Warning size={16} className="text-indigo-400 mt-0.5 flex-shrink-0" />
-              <div>
-                <p className="text-xs text-indigo-400 font-medium mb-0.5">Problemi di connessione?</p>
-                <p className="text-[11px] text-[var(--text-secondary)]">
-                  Esegui lo script <code className="text-indigo-400 bg-indigo-500/10 px-1 rounded text-[10px]">src\diagnostica.ps1</code> dalla cartella del connettore.
-                  Tasto destro &rarr; "Esegui con PowerShell". Lo script testa DNS, connessione HTTPS, API Key e porte UDP.
-                </p>
-              </div>
+              <p className="text-[11px] text-[var(--text-secondary)]">
+                <strong className="text-[var(--medium)]">Requisiti:</strong> Windows Server 2016+ o Windows 10/11 — PowerShell 5.1 — Porte UDP 162 (SNMP) e 514 (Syslog) libere
+              </p>
             </div>
           </div>
         )}
       </div>
 
-      {/* Auto-Update Management */}
+      {/* Auto-Update */}
       <div className="noc-panel overflow-hidden" data-testid="update-management-section">
         <div className="p-4">
           <div className="flex items-center gap-3 mb-4">
@@ -640,14 +271,9 @@ export default function ConnectorsPage() {
               <ArrowsClockwise size={20} weight="bold" className="text-emerald-400" />
             </div>
             <div className="flex-1">
-              <p className="font-heading font-bold text-sm text-[var(--text-primary)]">
-                Aggiornamento Automatico
-              </p>
+              <p className="font-heading font-bold text-sm text-[var(--text-primary)]">Aggiornamento Automatico</p>
               <p className="text-[var(--text-muted)] text-xs">
-                {updateInfo?.version 
-                  ? `Versione attuale: v${updateInfo.version} — ${updateInfo.updated_connectors || 0}/${updateInfo.total_connectors || 0} aggiornati`
-                  : "Nessun aggiornamento pubblicato"
-                }
+                {updateInfo?.version ? `v${updateInfo.version} — ${updateInfo.updated_connectors || 0}/${updateInfo.total_connectors || 0} aggiornati` : "Nessun aggiornamento"}
               </p>
             </div>
             {updateInfo?.pending_connectors > 0 && (
@@ -657,568 +283,133 @@ export default function ConnectorsPage() {
             )}
           </div>
 
-          {/* Upload new version */}
           <div className="grid grid-cols-1 md:grid-cols-[1fr_1fr_auto] gap-3 items-end">
             <div>
               <label className="text-[10px] text-[var(--text-muted)] uppercase tracking-widest block mb-1">Versione *</label>
-              <input
-                type="text"
-                placeholder="es. 1.1.0"
-                value={newVersion}
-                onChange={(e) => setNewVersion(e.target.value)}
-                className="w-full h-9 px-3 rounded-md border border-[var(--bg-border)] bg-[var(--bg-card)] text-[var(--text-primary)] text-xs font-mono focus:outline-none focus:border-indigo-500"
-                data-testid="update-version-input"
-              />
+              <input type="text" placeholder="es. 2.4.0" value={newVersion} onChange={(e) => setNewVersion(e.target.value)}
+                className="w-full h-9 px-3 rounded-md border border-[var(--bg-border)] bg-[var(--bg-card)] text-[var(--text-primary)] text-xs font-mono focus:outline-none focus:border-indigo-500" data-testid="update-version-input" />
             </div>
             <div>
               <label className="text-[10px] text-[var(--text-muted)] uppercase tracking-widest block mb-1">File ZIP</label>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept=".zip"
-                onChange={handleFileSelect}
-                className="w-full h-9 text-xs text-[var(--text-secondary)] file:mr-2 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:text-xs file:bg-[var(--bg-hover)] file:text-[var(--text-primary)] file:cursor-pointer"
-                data-testid="update-file-input"
-              />
+              <input ref={fileInputRef} type="file" accept=".zip" onChange={handleFileSelect}
+                className="w-full h-9 text-xs text-[var(--text-secondary)] file:mr-2 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:text-xs file:bg-[var(--bg-hover)] file:text-[var(--text-primary)] file:cursor-pointer" data-testid="update-file-input" />
             </div>
-            <Button
-              onClick={handleUploadUpdate}
-              disabled={uploading || !newVersion}
-              size="sm"
-              className="rounded-md text-xs h-9 bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-50"
-              data-testid="publish-update-btn"
-            >
-              <CloudArrowUp size={14} className="mr-1.5" />
-              {uploading ? "Caricamento..." : "Pubblica"}
+            <Button onClick={handleUploadUpdate} disabled={uploading || !newVersion} size="sm"
+              className="rounded-md text-xs h-9 bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-50" data-testid="publish-update-btn">
+              <CloudArrowUp size={14} className="mr-1.5" /> {uploading ? "Caricamento..." : "Pubblica"}
             </Button>
           </div>
-
-          <div className="mt-3">
-            <input
-              type="text"
-              placeholder="Changelog (opzionale) — es. Fix polling HPE 1820, miglioramenti stabilita'"
-              value={changelog}
-              onChange={(e) => setChangelog(e.target.value)}
-              className="w-full h-8 px-3 rounded-md border border-[var(--bg-border)] bg-[var(--bg-card)] text-[var(--text-secondary)] text-xs focus:outline-none focus:border-indigo-500"
-              data-testid="update-changelog-input"
-            />
-          </div>
-
+          <input type="text" placeholder="Changelog (opzionale)" value={changelog} onChange={(e) => setChangelog(e.target.value)}
+            className="w-full h-8 px-3 mt-3 rounded-md border border-[var(--bg-border)] bg-[var(--bg-card)] text-[var(--text-secondary)] text-xs focus:outline-none focus:border-indigo-500" data-testid="update-changelog-input" />
           {updateInfo?.published_at && (
             <p className="text-[10px] text-[var(--text-muted)] mt-2">
-              Ultimo aggiornamento: v{updateInfo.version} pubblicato il {new Date(updateInfo.published_at).toLocaleDateString("it-IT", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })}
+              Ultimo: v{updateInfo.version} — {new Date(updateInfo.published_at).toLocaleDateString("it-IT", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })}
               {updateInfo.changelog && ` — ${updateInfo.changelog}`}
             </p>
           )}
         </div>
       </div>
 
-      {/* Add Device Form */}
-      {showAddDevice && (
-        <div className="noc-panel p-4 space-y-3 animate-fade-in" data-testid="add-device-form">
-          <p className="text-xs font-medium text-[var(--text-primary)]">Aggiungi dispositivo da monitorare</p>
-          <div className="grid grid-cols-1 md:grid-cols-6 gap-2 items-end">
-            <div>
-              <label className="text-[10px] text-[var(--text-muted)] uppercase tracking-widest block mb-1">Cliente *</label>
-              <select value={addDeviceClientId} onChange={(e) => setAddDeviceClientId(e.target.value)}
-                className="w-full h-8 px-2 rounded-md border border-[var(--bg-border)] bg-[var(--bg-card)] text-[var(--text-primary)] text-xs" data-testid="select-client">
-                <option value="">Seleziona...</option>
-                {clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-              </select>
-            </div>
-            <div>
-              <label className="text-[10px] text-[var(--text-muted)] uppercase tracking-widest block mb-1">IP Address *</label>
-              <input type="text" value={newDevice.ip} onChange={(e) => setNewDevice({...newDevice, ip: e.target.value})}
-                placeholder="192.168.1.3" className="w-full h-8 px-2 rounded-md border border-[var(--bg-border)] bg-[var(--bg-card)] text-[var(--text-primary)] text-xs font-mono" data-testid="device-ip-input" />
-            </div>
-            <div>
-              <label className="text-[10px] text-[var(--text-muted)] uppercase tracking-widest block mb-1">Tipo *</label>
-              <select value={newDevice.monitor_type} onChange={(e) => setNewDevice({...newDevice, monitor_type: e.target.value, community: e.target.value === "snmp" ? "public" : ""})}
-                className="w-full h-8 px-2 rounded-md border border-[var(--bg-border)] bg-[var(--bg-card)] text-[var(--text-primary)] text-xs" data-testid="device-type-select">
-                <option value="snmp">SNMP</option>
-                <option value="ping">Ping + HTTP</option>
-              </select>
-            </div>
-            {newDevice.monitor_type === "snmp" ? (
-              <div>
-                <label className="text-[10px] text-[var(--text-muted)] uppercase tracking-widest block mb-1">Community</label>
-                <input type="text" value={newDevice.community} onChange={(e) => setNewDevice({...newDevice, community: e.target.value})}
-                  className="w-full h-8 px-2 rounded-md border border-[var(--bg-border)] bg-[var(--bg-card)] text-[var(--text-primary)] text-xs font-mono" data-testid="device-community-input" />
-              </div>
-            ) : (
-              <div>
-                <label className="text-[10px] text-[var(--text-muted)] uppercase tracking-widest block mb-1">Porta HTTP</label>
-                <input type="number" value={newDevice.http_port} onChange={(e) => setNewDevice({...newDevice, http_port: parseInt(e.target.value) || 80})}
-                  className="w-full h-8 px-2 rounded-md border border-[var(--bg-border)] bg-[var(--bg-card)] text-[var(--text-primary)] text-xs font-mono" data-testid="device-http-port-input" />
-              </div>
-            )}
-            <div>
-              <label className="text-[10px] text-[var(--text-muted)] uppercase tracking-widest block mb-1">Nome</label>
-              <input type="text" value={newDevice.name} onChange={(e) => setNewDevice({...newDevice, name: e.target.value})}
-                placeholder="Switch Reception" className="w-full h-8 px-2 rounded-md border border-[var(--bg-border)] bg-[var(--bg-card)] text-[var(--text-primary)] text-xs font-mono" data-testid="device-name-input" />
-            </div>
-            <Button onClick={addDevice} size="sm" className="rounded-md text-xs h-8 bg-blue-600 hover:bg-blue-700 text-white" data-testid="confirm-add-device-btn">
-              Conferma
-            </Button>
-          </div>
-        </div>
-      )}
-
-      {/* Unified Client Groups: Connectors + Devices together */}
-      <div className="flex items-center justify-between">
-        <h2 className="font-heading text-sm font-bold text-[var(--text-primary)]">
-          Stato per Cliente
-        </h2>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={() => setShowDiscovery(!showDiscovery)}
-            className="rounded-md text-xs h-8 border-[var(--bg-border)] text-[var(--text-secondary)]" data-testid="discovery-toggle-btn">
-            <MagnifyingGlass size={14} className="mr-1.5" />
-            {showDiscovery ? "Chiudi Scansione" : "Scansione Rete"}
-          </Button>
-          <Button variant="outline" size="sm" onClick={() => setShowAddDevice(!showAddDevice)}
-            className="rounded-md text-xs h-8 border-[var(--bg-border)] text-[var(--text-secondary)]" data-testid="add-device-btn">
-            <HardDrive size={14} className="mr-1.5" />
-            {showAddDevice ? "Chiudi" : "+ Dispositivo"}
-          </Button>
-        </div>
-      </div>
-
-      {/* Network Discovery Panel */}
-      {showDiscovery && (
-        <div className="noc-panel p-4 space-y-3 animate-fade-in" data-testid="discovery-panel">
-          <p className="text-xs font-medium text-[var(--text-primary)]">Auto-Discovery Rete</p>
-          <p className="text-[11px] text-[var(--text-muted)]">
-            Scansiona la rete del cliente per trovare automaticamente tutti i dispositivi attivi. Il connettore esegue ping sweep + port scan.
-          </p>
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-2 items-end">
-            <div>
-              <label className="text-[10px] text-[var(--text-muted)] uppercase tracking-widest block mb-1">Cliente *</label>
-              <select value={discoveryClientId} onChange={(e) => onDiscoveryClientChange(e.target.value)}
-                className="w-full h-8 px-2 rounded-md border border-[var(--bg-border)] bg-[var(--bg-card)] text-[var(--text-primary)] text-xs" data-testid="discovery-client-select">
-                <option value="">Seleziona...</option>
-                {clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-              </select>
-            </div>
-            <div>
-              <label className="text-[10px] text-[var(--text-muted)] uppercase tracking-widest block mb-1">Subnet (opzionale)</label>
-              <input type="text" value={discoverySubnet} onChange={(e) => setDiscoverySubnet(e.target.value)}
-                placeholder="auto-detect" className="w-full h-8 px-2 rounded-md border border-[var(--bg-border)] bg-[var(--bg-card)] text-[var(--text-primary)] text-xs font-mono" data-testid="discovery-subnet-input" />
-            </div>
-            <Button onClick={startDiscovery} disabled={scanning || !discoveryClientId} size="sm" 
-              className="rounded-md text-xs h-8 bg-indigo-600 hover:bg-indigo-700 text-white disabled:opacity-50" data-testid="start-discovery-btn">
-              <MagnifyingGlass size={14} className="mr-1.5" />
-              {scanning ? "Scansione in corso..." : "Avvia Scansione"}
-            </Button>
-            {scanning && (
-              <div className="flex items-center gap-2">
-                <div className="w-4 h-4 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
-                <span className="text-[11px] text-indigo-400">In attesa del connettore...</span>
-              </div>
-            )}
-          </div>
-
-          {/* Discovery Results */}
-          {discoveryResults && discoveryResults.devices && discoveryResults.devices.length > 0 && (
-            <div className="mt-3 space-y-1" data-testid="discovery-results">
-              <div className="flex items-center justify-between mb-2">
-                <p className="text-xs font-medium text-[var(--text-primary)]">
-                  {discoveryResults.devices.length} dispositivi trovati
-                  {discoveryResults.scanned_at && <span className="text-[var(--text-muted)] font-normal ml-2">({formatLastSeen(discoveryResults.scanned_at)})</span>}
-                </p>
-              </div>
-              <div className="max-h-64 overflow-y-auto space-y-1 pr-1">
-                {discoveryResults.devices.map((dev, i) => {
-                  const isManaged = discoveryResults.managed_ips?.includes(dev.ip);
-                  const typeIcon = dev.device_type === "server-windows" ? <Desktop size={14} /> 
-                    : dev.device_type === "server-linux" ? <Desktop size={14} />
-                    : dev.device_type === "switch/router" || dev.device_type === "network-device" ? <WifiIcon size={14} />
-                    : <Globe size={14} />;
-                  return (
-                    <div key={i} className={`flex items-center gap-3 p-2 rounded-lg border ${isManaged ? "border-[var(--low-border)] bg-[var(--low-bg)]" : "border-[var(--bg-border)] bg-[var(--bg-panel)] hover:bg-[var(--bg-hover)]"} transition-colors`}
-                      data-testid={`discovery-device-${dev.ip}`}>
-                      <div className={`w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 ${isManaged ? "text-[var(--ok)]" : "text-[var(--text-muted)]"}`}>
-                        {typeIcon}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <p className="font-mono text-xs font-bold text-[var(--text-primary)]">{dev.ip}</p>
-                          {dev.hostname && <p className="text-[11px] text-[var(--text-secondary)] truncate">{dev.hostname}</p>}
-                          <span className="text-[10px] px-1.5 py-0.5 rounded border text-[var(--text-muted)] border-[var(--bg-border)]">{dev.ping_ms}ms</span>
-                        </div>
-                        <div className="flex items-center gap-1.5 mt-0.5">
-                          {(dev.open_ports || []).map((p, pi) => (
-                            <span key={pi} className="text-[9px] px-1 py-0.5 rounded bg-[var(--bg-hover)] text-[var(--text-muted)] font-mono">
-                              {p.service || p.port}
-                            </span>
-                          ))}
-                          <span className={`text-[9px] px-1.5 py-0.5 rounded font-medium ${dev.suggested_type === "snmp" ? "text-blue-400 bg-blue-500/10" : "text-indigo-400 bg-indigo-500/10"}`}>
-                            {dev.suggested_type === "snmp" ? "SNMP" : "PING"}
-                          </span>
-                        </div>
-                      </div>
-                      {isManaged ? (
-                        <span className="text-[10px] text-[var(--ok)] flex items-center gap-1 flex-shrink-0">
-                          <CheckCircle size={12} weight="fill" /> Monitorato
-                        </span>
-                      ) : (
-                        <Button onClick={() => addDiscoveredDevice(dev)} size="sm" variant="outline"
-                          className="rounded-md text-[10px] h-7 px-2 border-indigo-500/30 text-indigo-400 hover:bg-indigo-500/10 flex-shrink-0"
-                          data-testid={`add-discovered-${dev.ip}`}>
-                          <Plus size={12} className="mr-1" /> Aggiungi
-                        </Button>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          {discoveryResults && discoveryResults.devices && discoveryResults.devices.length === 0 && (
-            <p className="text-xs text-[var(--text-muted)] text-center py-4">Nessun dispositivo trovato nella rete</p>
-          )}
-        </div>
-      )}
+      {/* Connector List */}
+      <h2 className="font-heading text-sm font-bold text-[var(--text-primary)]">Connettori Installati</h2>
 
       {loading ? (
         <div className="noc-panel p-8 text-center text-[var(--text-muted)] text-sm">Caricamento...</div>
-      ) : clientGroups.length === 0 ? (
-        <div className="noc-panel p-8 text-center" data-testid="no-data">
+      ) : connectors.length === 0 ? (
+        <div className="noc-panel p-8 text-center" data-testid="no-connectors">
           <HardDrive size={32} className="mx-auto mb-3 text-[var(--text-muted)]" />
-          <p className="text-[var(--text-secondary)] text-sm mb-1">Nessun connettore o dispositivo</p>
-          <p className="text-[var(--text-muted)] text-xs">Installa 86NocConnector o aggiungi dispositivi</p>
+          <p className="text-[var(--text-secondary)] text-sm mb-1">Nessun connettore installato</p>
+          <p className="text-[var(--text-muted)] text-xs">Scarica e installa 86NocConnector su un server</p>
         </div>
       ) : (
-        <div className="space-y-3">
-          {clientGroups.map((group) => {
-            const collapsed = collapsedClients[group.clientId];
-            const connOnline = group.connectors.filter(c => isOnline(c.last_seen)).length;
-            const connOffline = group.connectors.length - connOnline;
-            const devOk = group.devices.filter(d => d.reachable).length;
-            const devKo = group.devices.length - devOk;
-
+        <div className="space-y-2">
+          {connectors.map((c, i) => {
+            const online = isOnline(c.last_seen);
             return (
-              <div key={group.clientId} className="noc-panel overflow-hidden" data-testid={`client-group-${group.clientId}`}>
-                {/* Client Header */}
-                <div className="p-3 flex items-center gap-3 cursor-pointer hover:bg-[var(--bg-hover)] transition-colors border-b border-[var(--bg-border)]"
-                  onClick={() => toggleClient(group.clientId)}>
-                  {collapsed ? <CaretRight size={14} className="text-[var(--text-muted)]" /> : <CaretDown size={14} className="text-[var(--text-muted)]" />}
-                  <div className="w-8 h-8 rounded-lg bg-indigo-600/10 flex items-center justify-center flex-shrink-0">
-                    <Buildings size={16} className="text-indigo-400" />
+              <div key={i} className="noc-panel overflow-hidden" data-testid={`connector-${c.client_id}`}>
+                <div className="p-3 flex items-center gap-3">
+                  <div className={`w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0 relative group ${online ? "bg-[var(--low-bg)] border border-[var(--low-border)]" : "bg-[var(--critical-bg)] border border-[var(--critical-border)]"}`}>
+                    {online ? <SealCheck size={18} weight="fill" className="text-[var(--ok)]" /> : <Warning size={18} weight="fill" className="text-[var(--critical)]" />}
+                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block z-50 pointer-events-none">
+                      <div className="bg-[#111] border border-[var(--bg-border)] rounded-md px-3 py-2 shadow-xl whitespace-nowrap">
+                        <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-widest mb-1">Connector Info</p>
+                        <p className="text-xs text-[var(--text-primary)] font-mono">v{c.connector_version || "?"}</p>
+                        <p className="text-xs text-[var(--text-secondary)] font-mono">{c.connector_ip || c.hostname || "N/A"}</p>
+                      </div>
+                      <div className="w-2 h-2 bg-[#111] border-r border-b border-[var(--bg-border)] rotate-45 absolute left-1/2 -translate-x-1/2 -bottom-1"></div>
+                    </div>
                   </div>
-                  <p className="font-heading font-bold text-sm text-[var(--text-primary)] flex-1">{group.clientName}</p>
-                  <div className="flex items-center gap-2 text-[10px]">
-                    {group.connectors.length > 0 && (
-                      <span className="font-mono text-[var(--text-muted)]">{group.connectors.length} conn</span>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <p className="font-heading font-bold text-sm text-[var(--text-primary)] truncate">{c.hostname || "Server"}</p>
+                      <span className="text-[10px] text-[var(--text-muted)] font-mono">{clientMap[c.client_id] || ""}</span>
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded border ${online ? "text-[var(--ok)] bg-[var(--low-bg)] border-[var(--low-border)]" : "text-[var(--critical)] bg-[var(--critical-bg)] border-[var(--critical-border)]"}`}>
+                        {online ? "ONLINE" : "OFFLINE"}
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-2 md:grid-cols-5 gap-x-4 gap-y-0.5 mt-1">
+                      <InfoItem label="Versione" value={`v${c.connector_version || "?"}`} />
+                      <InfoItem label="Uptime" value={formatUptime(c.uptime_seconds)} />
+                      <InfoItem label="SNMP" value={c.traps_received || 0} />
+                      <InfoItem label="Syslog" value={c.syslogs_received || 0} />
+                      <InfoItem label="Ultimo" value={formatLastSeen(c.last_seen)} />
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5 flex-shrink-0">
+                    {updateInfo?.version && isNewerVersion(updateInfo.version, c.connector_version) && (
+                      <button onClick={() => forceUpdate(c.client_id)}
+                        className="h-7 px-2 rounded-md flex items-center gap-1 text-[10px] font-medium text-amber-400 bg-amber-500/10 border border-amber-500/20 hover:bg-amber-500/20 transition-colors"
+                        data-testid={`force-update-btn-${c.client_id}`}>
+                        <ArrowsClockwise size={12} /> Aggiorna
+                      </button>
                     )}
-                    {group.devices.length > 0 && (
-                      <span className="font-mono text-[var(--text-muted)]">{group.devices.length} disp</span>
-                    )}
-                    {connOnline > 0 && <span className="px-1.5 py-0.5 rounded border text-[var(--ok)] bg-[var(--low-bg)] border-[var(--low-border)]">{connOnline} ON</span>}
-                    {connOffline > 0 && <span className="px-1.5 py-0.5 rounded border text-[var(--critical)] bg-[var(--critical-bg)] border-[var(--critical-border)]">{connOffline} OFF</span>}
-                    {devOk > 0 && <span className="px-1.5 py-0.5 rounded border text-[var(--ok)] bg-[var(--low-bg)] border-[var(--low-border)]">{devOk} OK</span>}
-                    {devKo > 0 && <span className="px-1.5 py-0.5 rounded border text-[var(--medium)] bg-[var(--medium-bg)] border-[var(--medium-border)]">{devKo} KO</span>}
+                    <button onClick={() => deleteConnector(c.hostname || c.client_name)}
+                      className="w-7 h-7 rounded-md flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--critical)] hover:bg-[var(--critical-bg)] transition-colors"
+                      data-testid={`delete-connector-${c.client_id}`}>
+                      <Trash size={14} />
+                    </button>
                   </div>
                 </div>
 
-                {!collapsed && (
-                  <div className="divide-y divide-[var(--bg-border)]">
-                    {/* Connectors */}
-                    {group.connectors.length > 0 && (
-                      <div className="px-3 pt-2 pb-1">
-                        <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-widest mb-1 pl-3">Connettori</p>
-                      </div>
-                    )}
-                    {group.connectors.map((c, i) => {
-                      const online = isOnline(c.last_seen);
-                      return (
-                        <div key={`conn-${i}`}>
-                          <div className="p-3 pl-8 flex items-center gap-3">
-                            <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 relative group ${online ? "bg-[var(--low-bg)] border border-[var(--low-border)]" : "bg-[var(--critical-bg)] border border-[var(--critical-border)]"}`}>
-                              {online ? <SealCheck size={16} weight="fill" className="text-[var(--ok)]" /> : <Warning size={16} weight="fill" className="text-[var(--critical)]" />}
-                              <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block z-50 pointer-events-none">
-                                <div className="bg-[#111] border border-[var(--bg-border)] rounded-md px-3 py-2 shadow-xl whitespace-nowrap">
-                                  <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-widest mb-1">Connector Info</p>
-                                  <p className="text-xs text-[var(--text-primary)] font-mono">v{c.connector_version || "?"}</p>
-                                  <p className="text-xs text-[var(--text-secondary)] font-mono">{c.connector_ip || c.hostname || "N/A"}</p>
-                                </div>
-                                <div className="w-2 h-2 bg-[#111] border-r border-b border-[var(--bg-border)] rotate-45 absolute left-1/2 -translate-x-1/2 -bottom-1"></div>
-                              </div>
-                            </div>
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-2">
-                                <p className="font-heading font-bold text-xs text-[var(--text-primary)] truncate">{c.hostname || "Server"}</p>
-                                <span className={`text-[10px] px-1.5 py-0.5 rounded border ${online ? "text-[var(--ok)] bg-[var(--low-bg)] border-[var(--low-border)]" : "text-[var(--critical)] bg-[var(--critical-bg)] border-[var(--critical-border)]"}`}>
-                                  {online ? "ONLINE" : "OFFLINE"}
-                                </span>
-                              </div>
-                              <div className="grid grid-cols-2 md:grid-cols-4 gap-x-3 gap-y-0.5 mt-1">
-                                <InfoItem label="Versione" value={`v${c.connector_version || "?"}`} />
-                                <InfoItem label="Uptime" value={formatUptime(c.uptime_seconds)} />
-                                <InfoItem label="SNMP" value={c.traps_received || 0} />
-                                <InfoItem label="Syslog" value={c.syslogs_received || 0} />
-                              </div>
-                            </div>
-                            <div className="text-right flex-shrink-0">
-                              <p className="text-[10px] text-[var(--text-muted)] flex items-center gap-1 justify-end"><Clock size={10} /> Visto</p>
-                              <p className="text-xs font-mono text-[var(--text-secondary)]">{formatLastSeen(c.last_seen)}</p>
-                            </div>
-                            {updateInfo?.version && isNewerVersion(updateInfo.version, c.connector_version) && (
-                              <button onClick={() => forceUpdate(c.client_id, c.hostname)}
-                                className="flex-shrink-0 h-7 px-2 rounded-md flex items-center gap-1 text-[10px] font-medium text-amber-400 bg-amber-500/10 border border-amber-500/20 hover:bg-amber-500/20 transition-colors"
-                                title={`Forza aggiornamento a v${updateInfo.version}`}
-                                data-testid={`force-update-btn-${c.client_id}`}>
-                                <ArrowsClockwise size={12} /> Aggiorna
-                              </button>
-                            )}
-                            <button onClick={(e) => { e.stopPropagation(); deleteConnector(c.hostname || c.client_name); }}
-                              className="flex-shrink-0 w-7 h-7 rounded-md flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--critical)] hover:bg-[var(--critical-bg)] transition-colors" title="Elimina connettore"
-                              data-testid={`delete-connector-${c.client_id}`}>
-                              <Trash size={14} />
-                            </button>
-                          </div>
-                          {c.update_status && c.update_status !== "completed" && c.update_status !== "error" && c.update_progress > 0 && (
-                            <div className="mx-8 mb-2 -mt-1" data-testid={`update-progress-${c.client_id}`}>
-                              <div className="flex items-center justify-between mb-1">
-                                <span className="text-[10px] text-amber-400 font-medium flex items-center gap-1">
-                                  <ArrowsClockwise size={10} className="animate-spin" />
-                                  {c.update_message || "Aggiornamento..."}
-                                </span>
-                                <span className="text-[10px] font-mono text-amber-400">{c.update_progress}%</span>
-                              </div>
-                              <div className="w-full h-1.5 rounded-full bg-[var(--bg-hover)] overflow-hidden">
-                                <div className="h-full rounded-full bg-amber-500 transition-all duration-500" style={{ width: `${c.update_progress}%` }} />
-                              </div>
-                            </div>
-                          )}
-                          {c.update_status === "completed" && (
-                            <div className="mx-8 mb-2 -mt-1 flex items-center justify-between">
-                              <span className="text-[10px] text-emerald-400 font-medium flex items-center gap-1">
-                                <CheckCircle size={10} /> Aggiornamento completato! Riavvio in corso...
-                              </span>
-                              <button
-                                onClick={async (e) => {
-                                  e.stopPropagation();
-                                  try {
-                                    await axios.post(`${API}/connector/${c.client_id}/reset-update-status`);
-                                    toast.success("Stato aggiornamento resettato");
-                                    fetchAll();
-                                  } catch { toast.error("Errore nel reset"); }
-                                }}
-                                className="text-[9px] px-2 py-0.5 rounded bg-[var(--bg-hover)] text-[var(--text-muted)] hover:text-amber-400 hover:bg-amber-500/10 border border-[var(--bg-border)] transition-colors"
-                                data-testid={`reset-update-${c.client_id}`}
-                                title="Resetta lo stato se l'aggiornamento e' bloccato"
-                              >
-                                Reset Stato
-                              </button>
-                            </div>
-                          )}
-                          {c.update_status === "restarting" && (
-                            <div className="mx-8 mb-2 -mt-1 flex items-center justify-between">
-                              <span className="text-[10px] text-amber-400 font-medium flex items-center gap-1">
-                                <ArrowsClockwise size={10} className="animate-spin" /> Riavvio in corso... attendere max 2 minuti
-                              </span>
-                              <button
-                                onClick={async (e) => {
-                                  e.stopPropagation();
-                                  try {
-                                    await axios.post(`${API}/connector/${c.client_id}/reset-update-status`);
-                                    toast.success("Stato aggiornamento resettato");
-                                    fetchAll();
-                                  } catch { toast.error("Errore nel reset"); }
-                                }}
-                                className="text-[9px] px-2 py-0.5 rounded bg-[var(--bg-hover)] text-[var(--text-muted)] hover:text-amber-400 hover:bg-amber-500/10 border border-[var(--bg-border)] transition-colors"
-                                data-testid={`reset-update-restart-${c.client_id}`}
-                                title="Resetta stato bloccato"
-                              >
-                                Reset Stato
-                              </button>
-                            </div>
-                          )}
-                          {c.update_status === "error" && (
-                            <div className="mx-8 mb-2 -mt-1 flex items-center justify-between">
-                              <span className="text-[10px] text-red-400 font-medium flex items-center gap-1">
-                                <Warning size={10} /> {c.update_message || "Errore aggiornamento"}
-                              </span>
-                              <button
-                                onClick={async (e) => {
-                                  e.stopPropagation();
-                                  try {
-                                    await axios.post(`${API}/connector/${c.client_id}/reset-update-status`);
-                                    toast.success("Stato errore resettato");
-                                    fetchAll();
-                                  } catch { toast.error("Errore nel reset"); }
-                                }}
-                                className="text-[9px] px-2 py-0.5 rounded bg-red-500/10 text-red-400 hover:bg-red-500/20 border border-red-500/20 transition-colors"
-                                data-testid={`reset-error-${c.client_id}`}
-                              >
-                                Chiudi
-                              </button>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-
-                    {/* Devices */}
-                    {group.devices.length > 0 && (
-                      <div className="px-3 pt-2 pb-1 flex items-center justify-between">
-                        <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-widest pl-3">Dispositivi Monitorati</p>
-                        <div className="flex items-center gap-1">
-                          <button
-                            onClick={() => exportDevices(group.clientName, group.devices)}
-                            className="h-6 px-2 rounded flex items-center gap-1 text-[10px] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors"
-                            title="Esporta CSV"
-                            data-testid={`export-devices-${group.clientId}`}
-                          >
-                            <Export size={11} /> Esporta
-                          </button>
-                          <button
-                            onClick={() => { setImportClientId(group.clientId); importFileRef.current?.click(); }}
-                            className="h-6 px-2 rounded flex items-center gap-1 text-[10px] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors"
-                            title="Importa CSV"
-                            data-testid={`import-devices-${group.clientId}`}
-                          >
-                            <FileArrowUp size={11} /> Importa
-                          </button>
-                        </div>
-                      </div>
-                    )}
-                    {group.devices.map((dev, i) => {
-                      const devKey = `${group.clientId}-${dev.device_ip}`;
-                      const recent = isRecentPoll(dev.last_poll);
-                      const portStats = portsByStatus(dev.ports);
-                      const expanded = expandedDevice === devKey;
-                      const isPing = dev.monitor_type === "ping" || dev.monitor_type === "http";
-                      return (
-                        <div key={devKey}>
-                          <div className="p-3 pl-8 flex items-center gap-3 cursor-pointer hover:bg-[var(--bg-hover)] transition-colors"
-                            onClick={() => setExpandedDevice(expanded ? null : devKey)}>
-                            <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${dev.reachable ? "bg-[var(--low-bg)] border border-[var(--low-border)]" : "bg-[var(--critical-bg)] border border-[var(--critical-border)]"}`}>
-                              {dev.reachable ? <WifiHigh size={16} weight="fill" className="text-[var(--ok)]" /> : <WifiSlash size={16} weight="fill" className="text-[var(--critical)]" />}
-                            </div>
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-2">
-                                <p className="font-heading font-bold text-xs text-[var(--text-primary)] truncate">{dev.device_name}</p>
-                                <span className={`text-[10px] px-1.5 py-0.5 rounded border cursor-pointer transition-colors ${isPing ? "text-indigo-400 bg-indigo-500/10 border-indigo-500/20 hover:bg-indigo-500/20" : "text-blue-400 bg-blue-500/10 border-blue-500/20 hover:bg-blue-500/20"}`}
-                                  onClick={(e) => { e.stopPropagation(); switchMonitorType(dev.device_ip, isPing ? "ping" : "snmp"); }}
-                                  title={`Clicca per cambiare a ${isPing ? "SNMP" : "Ping+HTTP"}`}
-                                  data-testid={`switch-type-${dev.device_ip}`}>
-                                  {isPing ? "PING" : "SNMP"}
-                                </span>
-                                <span className={`text-[10px] px-1.5 py-0.5 rounded border ${dev.reachable ? "text-[var(--ok)] bg-[var(--low-bg)] border-[var(--low-border)]" : "text-[var(--critical)] bg-[var(--critical-bg)] border-[var(--critical-border)]"}`}>
-                                  {dev.reachable ? "OK" : "NON RAGGIUNGIBILE"}
-                                </span>
-                              </div>
-                              <p className="font-mono text-[11px] text-[var(--text-muted)]">{dev.device_ip}</p>
-                            </div>
-                            {!isPing && portStats.total > 0 && (
-                              <div className="hidden md:flex items-center gap-2">
-                                <span className="text-xs font-mono text-[var(--ok)]">{portStats.up}<ArrowUp size={10} className="inline ml-0.5" /></span>
-                                <span className="text-xs font-mono text-[var(--critical)]">{portStats.down}<ArrowDown size={10} className="inline ml-0.5" /></span>
-                                <span className="text-[10px] text-[var(--text-muted)]">{portStats.total}p</span>
-                              </div>
-                            )}
-                            {isPing && dev.ping_ms != null && (
-                              <div className="hidden md:flex items-center gap-2">
-                                <span className="text-xs font-mono text-[var(--ok)]">{dev.ping_ms}ms</span>
-                                {dev.http_status != null && dev.http_status > 0 && (
-                                  <span className="text-xs font-mono text-indigo-400">HTTP {dev.http_status}</span>
-                                )}
-                              </div>
-                            )}
-                            <div className="text-right flex-shrink-0">
-                              <p className="text-[10px] text-[var(--text-muted)] flex items-center gap-1 justify-end"><Clock size={10} /> Check</p>
-                              <p className={`text-xs font-mono ${dev.reachable ? "text-[var(--ok)]" : "text-[var(--critical)]"}`}>{formatLastSeen(dev.last_poll)}</p>
-                            </div>
-                            <button onClick={(e) => { e.stopPropagation(); openWebConsole(group.clientId, dev.device_ip, dev.http_port || 80); }}
-                              className="flex-shrink-0 w-7 h-7 rounded-md flex items-center justify-center text-[var(--text-muted)] hover:text-indigo-400 hover:bg-indigo-500/10 transition-colors" title="Web Console"
-                              data-testid={`web-console-${dev.device_ip}`}>
-                              <Monitor size={14} />
-                            </button>
-                            <button onClick={(e) => { e.stopPropagation(); deleteDevice(dev.device_ip); }}
-                              className="flex-shrink-0 w-7 h-7 rounded-md flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--critical)] hover:bg-[var(--critical-bg)] transition-colors" title="Elimina dispositivo"
-                              data-testid={`delete-device-${dev.device_ip}`}>
-                              <Trash size={14} />
-                            </button>
-                          </div>
-                          {expanded && (
-                            <DeviceDetailPanel dev={dev} isPing={isPing} />
-                          )}
-                        </div>
-                      );
-                    })}
+                {/* Update progress */}
+                {c.update_status && c.update_status !== "completed" && c.update_status !== "error" && c.update_progress > 0 && (
+                  <div className="mx-4 mb-3" data-testid={`update-progress-${c.client_id}`}>
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-[10px] text-amber-400 font-medium flex items-center gap-1">
+                        <ArrowsClockwise size={10} className="animate-spin" /> {c.update_message || "Aggiornamento..."}
+                      </span>
+                      <span className="text-[10px] font-mono text-amber-400">{c.update_progress}%</span>
+                    </div>
+                    <div className="w-full h-1.5 rounded-full bg-[var(--bg-hover)] overflow-hidden">
+                      <div className="h-full rounded-full bg-amber-500 transition-all duration-500" style={{ width: `${c.update_progress}%` }} />
+                    </div>
+                  </div>
+                )}
+                {c.update_status === "completed" && (
+                  <div className="mx-4 mb-3 flex items-center justify-between">
+                    <span className="text-[10px] text-emerald-400 font-medium flex items-center gap-1"><CheckCircle size={10} /> Aggiornamento completato!</span>
+                    <button onClick={() => resetUpdateStatus(c.client_id)}
+                      className="text-[9px] px-2 py-0.5 rounded bg-[var(--bg-hover)] text-[var(--text-muted)] hover:text-amber-400 hover:bg-amber-500/10 border border-[var(--bg-border)] transition-colors"
+                      data-testid={`reset-update-${c.client_id}`}>Reset Stato</button>
+                  </div>
+                )}
+                {c.update_status === "restarting" && (
+                  <div className="mx-4 mb-3 flex items-center justify-between">
+                    <span className="text-[10px] text-amber-400 font-medium flex items-center gap-1"><ArrowsClockwise size={10} className="animate-spin" /> Riavvio in corso...</span>
+                    <button onClick={() => resetUpdateStatus(c.client_id)}
+                      className="text-[9px] px-2 py-0.5 rounded bg-[var(--bg-hover)] text-[var(--text-muted)] hover:text-amber-400 hover:bg-amber-500/10 border border-[var(--bg-border)] transition-colors">Reset</button>
+                  </div>
+                )}
+                {c.update_status === "error" && (
+                  <div className="mx-4 mb-3 flex items-center justify-between">
+                    <span className="text-[10px] text-red-400 font-medium flex items-center gap-1"><Warning size={10} /> {c.update_message || "Errore"}</span>
+                    <button onClick={() => resetUpdateStatus(c.client_id)}
+                      className="text-[9px] px-2 py-0.5 rounded bg-red-500/10 text-red-400 hover:bg-red-500/20 border border-red-500/20 transition-colors">Chiudi</button>
                   </div>
                 )}
               </div>
             );
           })}
-        </div>
-      )}
-      <input
-        ref={importFileRef}
-        type="file"
-        accept=".csv,.txt"
-        onChange={handleImportDevices}
-        className="hidden"
-        data-testid="import-devices-file-input"
-      />
-
-      {/* Web Console Modal */}
-      {webConsole && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" data-testid="web-console-modal">
-          <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={closeWebConsole}></div>
-          <div className="relative w-full max-w-6xl h-[85vh] bg-[var(--bg-card)] rounded-xl border border-[var(--bg-border)] shadow-2xl flex flex-col overflow-hidden">
-            {/* Header */}
-            <div className="flex items-center justify-between px-4 py-2.5 border-b border-[var(--bg-border)] bg-[var(--bg-panel)]">
-              <div className="flex items-center gap-3">
-                <Monitor size={18} className="text-indigo-400" />
-                <div>
-                  <p className="text-xs font-heading font-bold text-[var(--text-primary)]">
-                    Web Console — {webConsole.deviceIp}:{webConsole.port}
-                  </p>
-                  <p className="text-[10px] text-[var(--text-muted)]">
-                    {webConsole.title || "Caricamento..."} {webConsole.path && webConsole.path !== "/" && <span className="font-mono ml-1">{webConsole.path}</span>}
-                  </p>
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                {webConsole.loading && (
-                  <div className="flex items-center gap-1.5 text-indigo-400">
-                    <SpinnerGap size={14} className="animate-spin" />
-                    <span className="text-[10px]">In attesa del connettore...</span>
-                  </div>
-                )}
-                <div className="flex items-center gap-1 text-[10px] text-[var(--text-muted)] bg-[var(--bg-hover)] px-2 py-1 rounded">
-                  <SealCheck size={12} className="text-[var(--ok)]" />
-                  Proxy sicuro
-                </div>
-                <button onClick={closeWebConsole}
-                  className="w-8 h-8 rounded-lg flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--critical)] hover:bg-[var(--critical-bg)] transition-colors"
-                  data-testid="close-web-console">
-                  <X size={18} />
-                </button>
-              </div>
-            </div>
-            {/* Content */}
-            <div className="flex-1 overflow-hidden bg-white">
-              {webConsole.loading && !webConsole.html ? (
-                <div className="flex flex-col items-center justify-center h-full gap-3 bg-[var(--bg-panel)]">
-                  <div className="w-10 h-10 border-3 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
-                  <p className="text-sm text-[var(--text-secondary)]">Connessione al dispositivo tramite connettore...</p>
-                  <p className="text-xs text-[var(--text-muted)]">SOC → Backend → Connettore → {webConsole.deviceIp}:{webConsole.port}</p>
-                </div>
-              ) : webConsole.html ? (
-                <iframe
-                  srcDoc={webConsole.html}
-                  className="w-full h-full border-0"
-                  sandbox="allow-scripts allow-same-origin allow-forms"
-                  title={`Web Console - ${webConsole.deviceIp}`}
-                  data-testid="web-console-iframe"
-                />
-              ) : null}
-            </div>
-          </div>
         </div>
       )}
     </div>
@@ -1227,23 +418,9 @@ export default function ConnectorsPage() {
 
 function InfoItem({ label, value }) {
   return (
-    <div>
-      <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider">{label}</p>
-      <p className="text-xs font-mono text-[var(--text-secondary)]">{value}</p>
-    </div>
-  );
-}
-
-function StepCard({ number, title, desc }) {
-  return (
-    <div className="flex gap-3 p-3 rounded-lg bg-[var(--bg-panel)] border border-[var(--bg-border)]">
-      <div className="w-7 h-7 rounded-full bg-indigo-500/15 border border-indigo-500/25 flex items-center justify-center flex-shrink-0">
-        <span className="text-indigo-400 font-heading font-bold text-xs">{number}</span>
-      </div>
-      <div>
-        <p className="text-xs font-medium text-[var(--text-primary)] mb-0.5">{title}</p>
-        <p className="text-[11px] text-[var(--text-muted)] leading-relaxed">{desc}</p>
-      </div>
+    <div className="flex items-center gap-1">
+      <span className="text-[10px] text-[var(--text-muted)]">{label}:</span>
+      <span className="text-[11px] font-mono text-[var(--text-secondary)]">{value}</span>
     </div>
   );
 }
