@@ -4,13 +4,13 @@
 Piattaforma NOC enterprise-grade per monitoraggio dispositivi di rete tramite SNMP, Syslog e Redfish. Connettore Windows nativo (PowerShell).
 
 ## Architettura
-- Backend: FastAPI modulare (17 file route), MongoDB, AES-256-GCM
+- Backend: FastAPI modulare (18 file route), MongoDB, AES-256-GCM
 - Frontend: React, TailwindCSS, Shadcn UI, PWA
 - Connector: PowerShell 5.1+, SNMP, Redfish API
 
 ### Navigazione (4 gruppi)
 ```
-MONITORAGGIO    -> Dashboard, Alert (badge), Stato Rete (mappa+lista), Dispositivi
+MONITORAGGIO    -> Dashboard, Alert (badge), Stato Rete (mappa topologica + lista), Dispositivi
 INFRASTRUTTURA  -> Clienti, Connettori (solo agent)
 SICUREZZA       -> Vault Credenziali, Audit & Compliance, Gestione Utenti
 SISTEMA         -> Impostazioni
@@ -26,7 +26,13 @@ SISTEMA         -> Impostazioni
 - [x] Power Control Redfish iLO + Wake-on-LAN
 - [x] Connector v2.3.0 con auto-update
 - [x] Menu 4 gruppi + Stato Rete / Connettori separati
-- [x] **Mappa Rete visuale** (topologia radiale SVG, animazioni pulse, legenda, tooltip, toggle Lista/Mappa)
+- [x] **Mappa Topologica Gerarchica** con inferenza automatica dei collegamenti:
+  - Engine backend: classifica dispositivi (firewall/switch/server/iLO) e inferisce topologia
+  - Layout: Internet -> Firewall -> Core Switch -> Access/Server/Management
+  - 4 tipi collegamento: WAN, Trunk, Accesso, Management (MGMT)
+  - Health Score 0-100% per cliente (reachability 50% + latency 25% + port health 25%)
+  - Animazioni pulse sulle connessioni attive
+  - Legenda tipi collegamento + gauge health score
 
 ## Backlog
 ### P1
@@ -35,10 +41,12 @@ SISTEMA         -> Impostazioni
 ### P2
 - [ ] SOC AI: correlazione, auto-triage, anomaly detection via LLM
 - [ ] Twilio Voice/SMS
-- [ ] Auto-discovery, LDAP, SNMP v3
+- [ ] LLDP/CDP neighbor discovery per topologia reale (attualmente inferita)
+- [ ] Auto-discovery rete, LDAP, SNMP v3
 
 ## Test Reports
 - iteration_20: Backend refactoring (100%)
 - iteration_21: Menu restructuring (100%)
 - iteration_22: Page split Stato Rete/Connettori (100%)
-- iteration_23: Network Map visualization (100%)
+- iteration_23: Network Map basic (100%)
+- iteration_24: Hierarchical Topology + Health Score (100%)
