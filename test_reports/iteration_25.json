@@ -1,0 +1,114 @@
+{
+  "summary": "Iteration 25 - React Flow Interactive Network Map Feature Validation. Both backend and frontend testing completed successfully. Backend topology layout save/reset endpoints work correctly. Frontend React Flow map renders with 9 nodes, drag-and-drop works, save/reset layout functionality works, and 'Layout personalizzato' badge appears/disappears correctly.",
+
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+
+  "passed_tests": {
+    "backend_topology_layout_api": [
+      "GET /api/network/topology/{client_id} returns 200 OK",
+      "Response has required fields: nodes, edges, health, has_custom_layout, client_id, client_name",
+      "Health score calculated correctly (88%)",
+      "POST /api/network/topology/{client_id}/layout saves layout and returns 200",
+      "After save, GET returns has_custom_layout=True",
+      "DELETE /api/network/topology/{client_id}/layout resets layout and returns 200",
+      "After reset, GET returns has_custom_layout=False",
+      "All endpoints require authentication (return 401/403 without token)",
+      "Full save/reset cycle works correctly"
+    ],
+    "frontend_react_flow_map": [
+      "Login with admin@86bit.it / password works",
+      "Navigate to /network-status page works",
+      "View mode toggle (Lista/Mappa) visible and functional",
+      "Click Mappa switches to React Flow map view",
+      "Network map container visible with data-testid='network-map'",
+      "React Flow canvas renders with 9 nodes (Internet + 8 devices)",
+      "Toolbar buttons visible: Modifica, Auto, Reset, Salva Layout",
+      "Health score 88% displayed correctly",
+      "Client selector shows '86BIT_Office' with 8/8 online",
+      "Drag-and-drop nodes works (node position changes)",
+      "Save Layout button enables after dragging (green color)",
+      "Click Save Layout shows 'Layout salvato con successo!' toast",
+      "'Layout personalizzato' badge appears after save",
+      "Click Reset shows 'Layout resettato' toast",
+      "'Layout personalizzato' badge disappears after reset",
+      "Legend shows connection types: WAN, Trunk, Accesso, Server, MGMT, Manuale"
+    ]
+  },
+
+  "test_report_links": [
+    "/app/backend/tests/test_topology_layout.py",
+    "/app/test_reports/pytest/pytest_topology_layout.xml"
+  ],
+
+  "action_items": [],
+
+  "critical_code_review_comments": [
+    "React Flow v12 (@xyflow/react) implementation is correct with proper node types and edge styling",
+    "Custom DeviceNode component renders device info with status indicators and handles",
+    "Layout save/reset uses MongoDB collection 'topology_layouts' correctly",
+    "Auto-layout algorithm uses layer-based positioning for hierarchical display",
+    "Connection mode toggle allows adding/removing edges manually",
+    "All interactive elements have proper data-testid attributes for testing"
+  ],
+
+  "updated_files": [
+    "/app/backend/tests/test_topology_layout.py"
+  ],
+
+  "success_rate": {
+    "backend": "100% (9/9 tests passed)",
+    "frontend": "100% (all React Flow map features working)"
+  },
+
+  "test_credentials": {
+    "admin_user": {
+      "email": "admin@86bit.it",
+      "password": "password",
+      "role": "admin"
+    },
+    "client_id": "da3d6e40-b3e5-4d46-9787-dde328a3aa36"
+  },
+
+  "seed_data_creation": "No new seed data created - used existing 86BIT_Office client with 8 devices",
+
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+
+  "context_for_next_testing_agent": "React Flow interactive network map feature fully validated. Backend endpoints: GET /api/network/topology/{client_id} returns graph with has_custom_layout flag, POST .../layout saves custom positions, DELETE .../layout resets to auto-inferred. Frontend uses @xyflow/react v12 with custom DeviceNode component. Map shows 9 nodes (Internet + 8 devices) with hierarchical layout. Drag-and-drop, save, reset all work. 'Layout personalizzato' badge indicates custom layout state.",
+
+  "mocked_apis": {
+    "Firebase Cloud Messaging": "MOCKED - no real API keys",
+    "SendGrid Email": "MOCKED - no real API keys"
+  },
+
+  "topology_layout_validation": {
+    "backend_endpoints": {
+      "get_topology": "GET /api/network/topology/{client_id}",
+      "save_layout": "POST /api/network/topology/{client_id}/layout",
+      "reset_layout": "DELETE /api/network/topology/{client_id}/layout"
+    },
+    "frontend_features": {
+      "react_flow_version": "@xyflow/react v12",
+      "nodes_count": 9,
+      "toolbar_buttons": ["Modifica", "Auto", "Reset", "Salva Layout"],
+      "drag_and_drop": "working",
+      "save_layout": "working",
+      "reset_layout": "working",
+      "custom_layout_badge": "working"
+    },
+    "health": {
+      "score": 88,
+      "devices_total": 8,
+      "devices_online": 8
+    }
+  }
+}

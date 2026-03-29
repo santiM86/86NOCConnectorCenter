@@ -337,21 +337,92 @@ def calculate_health_score(devices):
 
 @router.get("/network/topology/{client_id}")
 async def get_network_topology(client_id: str, current_user: dict = Depends(get_current_user)):
-    """Get inferred network topology for a client."""
+    """Get network topology for a client. Returns saved layout if available, otherwise inferred."""
     devices = await db.device_poll_status.find(
         {"client_id": client_id}, {"_id": 0}
     ).to_list(500)
     
     if not devices:
-        return {"nodes": [], "edges": [], "layers": [], "health": {"score": 0}}
+        return {"nodes": [], "edges": [], "layers": [], "health": {"score": 0}, "has_custom_layout": False}
     
-    topology = infer_topology(devices)
+    # Calculate health from real device data
     health = calculate_health_score(devices)
-    topology["health"] = health
-    topology["client_id"] = client_id
+    
+    # Check if a custom layout exists
+    saved_layout = await db.topology_layouts.find_one(
+        {"client_id": client_id}, {"_id": 0}
+    )
     
     # Get client name
     client = await db.clients.find_one({"id": client_id}, {"_id": 0, "name": 1})
-    topology["client_name"] = client.get("name", client_id) if client else client_id
+    client_name = client.get("name", client_id) if client else client_id
+    
+    if saved_layout and saved_layout.get("nodes"):
+        # Merge saved positions with live device data (reachable, ports, ping_ms, etc.)
+        dev_map = {}
+        for d in devices:
+            dev_map[d.get("device_ip", "")] = d
+        
+        enriched_nodes = []
+        for sn in saved_layout["nodes"]:
+            node_id = sn.get("id", "")
+            live = dev_map.get(node_id, {})
+            enriched_nodes.append({
+                **sn,
+                "reachable": live.get("reachable", sn.get("reachable", False)),
+                "ping_ms": live.get("ping_ms", sn.get("ping_ms")),
+                "ports": live.get("ports", sn.get("ports", [])),
+                "monitor_type": live.get("monitor_type", sn.get("monitor_type", "snmp")),
+                "sys_descr": live.get("sys_descr", sn.get("sys_descr", "")),
+                "http_status": live.get("http_status", sn.get("http_status")),
+            })
+        
+        return {
+            "nodes": enriched_nodes,
+            "edges": saved_layout.get("edges", []),
+            "layers": saved_layout.get("layers", []),
+            "health": health,
+            "client_id": client_id,
+            "client_name": client_name,
+            "has_custom_layout": True,
+        }
+    
+    # No saved layout — return inferred topology
+    topology = infer_topology(devices)
+    topology["health"] = health
+    topology["client_id"] = client_id
+    topology["client_name"] = client_name
+    topology["has_custom_layout"] = False
     
     return topology
+
+
+@router.post("/network/topology/{client_id}/layout")
+async def save_topology_layout(client_id: str, payload: dict, current_user: dict = Depends(get_current_user)):
+    """Save custom topology layout (node positions and edges) for a client."""
+    nodes = payload.get("nodes", [])
+    edges = payload.get("edges", [])
+    
+    layout_doc = {
+        "client_id": client_id,
+        "nodes": nodes,
+        "edges": edges,
+        "layers": payload.get("layers", []),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "updated_by": current_user.get("email", "unknown"),
+    }
+    
+    await db.topology_layouts.update_one(
+        {"client_id": client_id},
+        {"$set": layout_doc},
+        upsert=True
+    )
+    
+    return {"status": "ok", "message": "Layout salvato"}
+
+
+@router.delete("/network/topology/{client_id}/layout")
+async def reset_topology_layout(client_id: str, current_user: dict = Depends(get_current_user)):
+    """Delete custom layout and revert to auto-inferred topology."""
+    await db.topology_layouts.delete_one({"client_id": client_id})
+    return {"status": "ok", "message": "Layout resettato"}
