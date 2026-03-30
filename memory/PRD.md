@@ -63,6 +63,16 @@ Piattaforma NOC enterprise-grade per monitoraggio dispositivi di rete tramite SN
 - [x] Canali: Email, SMS, Push, Webhook HTTP, Microsoft Teams
 - [x] Regole di escalation configurabili
 
+### TV Dashboard NOC (30/03/2026 - NUOVA)
+- [x] Pagina fullscreen a /tv accessibile SENZA login per monitor a parete
+- [x] Header con logo NOC, titolo 86BIT, orologio in tempo reale, badge stato globale
+- [x] 8 stat block grandi: Dispositivi, Online, Offline, Alert Critici, Alert Totali, Incidenti, Stampanti, Toner Basso
+- [x] Card clienti con ring gauge salute %, contatori online/offline/alert, stato connettore
+- [x] Pannello alert attivi con auto-scroll, colori per severita, badge conteggio
+- [x] Sezione consumabili bassi con barre toner colorate
+- [x] Auto-refresh ogni 15 secondi, dark theme ottimizzato per TV
+- [x] Layout responsivo (1080p/4K), nessun sidebar
+
 ### Gestione Stampanti SNMP (30/03/2026 - NUOVA)
 - [x] Dashboard stampanti con statistiche (online/offline/toner basso/pagine totali)
 - [x] Card stampante espandibile con dettagli consumabili, vassoi carta, contatori
@@ -92,6 +102,7 @@ Piattaforma NOC enterprise-grade per monitoraggio dispositivi di rete tramite SN
 - GET/POST/DELETE `/api/port-monitor/services` - Monitor servizi TCP
 - GET `/api/public/dashboard/{token}` - Dashboard pubblica (NO AUTH)
 - GET/POST/PUT/DELETE `/api/notifications/templates` - Template notifiche
+- **GET `/api/tv/dashboard`** - Dashboard TV aggregata (NO AUTH)
 - **GET `/api/printers/dashboard/{client_id}`** - Dashboard stampanti
 - **GET `/api/printers/{client_id}`** - Lista stampanti
 - **GET `/api/printers/{client_id}/{device_ip}`** - Dettaglio stampante con storico
@@ -115,3 +126,4 @@ Piattaforma NOC enterprise-grade per monitoraggio dispositivi di rete tramite SN
 - iteration_25-30: Topologia mappa enterprise (100%)
 - iteration_31: Report PDF + Inventario + Incidenti + Port Monitor + Dashboard Pubblica + Notifiche + Widget Zabbix (100%)
 - iteration_32: Gestione Stampanti SNMP (100% - Backend 14/14, Frontend 100%)
+- iteration_33: TV Dashboard NOC (100% - Backend 8/8, Frontend 11/11)
