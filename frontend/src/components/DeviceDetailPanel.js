@@ -1,7 +1,8 @@
 import { useState, useEffect } from "react";
 import axios from "axios";
 import { API } from "@/App";
-import { X, Warning, WifiHigh, WifiSlash, CircleNotch } from "@phosphor-icons/react";
+import { X, Warning, WifiHigh, WifiSlash, CircleNotch, Globe, PlusCircle, ArrowSquareOut } from "@phosphor-icons/react";
+import { toast } from "sonner";
 
 const SEVERITY_COLORS = {
   critical: { bg: "bg-red-500/20", text: "text-red-400", border: "border-red-500/30" },
@@ -10,9 +11,12 @@ const SEVERITY_COLORS = {
   low: { bg: "bg-blue-500/20", text: "text-blue-400", border: "border-blue-500/30" },
 };
 
-export function DeviceDetailPanel({ clientId, deviceIp, deviceData, onClose }) {
+export function DeviceDetailPanel({ clientId, deviceIp, deviceData, onClose, onDeviceAdded }) {
   const [detail, setDetail] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [adding, setAdding] = useState(false);
+  const [monitorType, setMonitorType] = useState("ping");
+  const [community, setCommunity] = useState("public");
 
   useEffect(() => {
     if (!clientId || !deviceIp) return;
@@ -26,6 +30,35 @@ export function DeviceDetailPanel({ clientId, deviceIp, deviceData, onClose }) {
   if (!deviceIp) return null;
 
   const isEndpoint = deviceData?.role === "discovered_endpoint";
+  const hasIp = deviceIp && !deviceIp.startsWith("mac-");
+
+  const openWebPage = () => {
+    const ip = deviceData?.ip || deviceIp;
+    if (ip && !ip.startsWith("mac-")) {
+      window.open(`http://${ip}`, "_blank");
+    }
+  };
+
+  const addToMonitoring = async () => {
+    setAdding(true);
+    try {
+      const res = await axios.post(`${API}/network/add-to-monitoring`, {
+        client_id: clientId,
+        ip: deviceData?.ip || deviceIp,
+        name: deviceData?.hostname || deviceData?.label || deviceIp,
+        mac: deviceData?.mac || "",
+        monitor_type: monitorType,
+        community: monitorType === "snmp" ? community : "",
+      });
+      toast.success(res.data.message || "Dispositivo aggiunto!");
+      if (onDeviceAdded) onDeviceAdded();
+    } catch (err) {
+      const msg = err.response?.data?.detail || err.message;
+      toast.error("Errore: " + msg);
+    } finally {
+      setAdding(false);
+    }
+  };
 
   return (
     <div
@@ -38,15 +71,69 @@ export function DeviceDetailPanel({ clientId, deviceIp, deviceData, onClose }) {
           <h3 className="text-sm font-semibold text-[var(--text-primary)] truncate" data-testid="detail-device-name">
             {deviceData?.label || deviceIp}
           </h3>
-          <span className="text-xs font-mono text-[var(--text-muted)]">{deviceIp}</span>
-          {deviceData?.mac && (
-            <span className="text-[10px] font-mono text-[var(--text-muted)] ml-2">{deviceData.mac}</span>
-          )}
+          <div className="flex items-center gap-2 mt-0.5">
+            {hasIp && <span className="text-xs font-mono text-[var(--text-muted)]">{deviceData?.ip || deviceIp}</span>}
+            {deviceData?.mac && (
+              <span className="text-[10px] font-mono text-[var(--text-muted)] bg-[var(--bg-deep)] px-1.5 py-0.5 rounded">{deviceData.mac}</span>
+            )}
+          </div>
         </div>
         <button onClick={onClose} className="p-1.5 rounded hover:bg-white/10 transition-colors" data-testid="detail-close-btn">
           <X size={18} className="text-[var(--text-muted)]" />
         </button>
       </div>
+
+      {/* Action Buttons */}
+      <div className="p-3 border-b border-[var(--border-subtle)] flex gap-2">
+        {hasIp && (
+          <button
+            onClick={openWebPage}
+            className="flex-1 h-8 rounded-lg bg-indigo-600/15 text-indigo-400 border border-indigo-500/30 text-xs font-medium flex items-center justify-center gap-1.5 hover:bg-indigo-600/25 transition-all"
+            data-testid="open-web-btn"
+          >
+            <Globe size={14} /> Apri Pagina Web
+          </button>
+        )}
+        {isEndpoint && hasIp && (
+          <button
+            onClick={addToMonitoring}
+            disabled={adding}
+            className="flex-1 h-8 rounded-lg bg-emerald-600/15 text-emerald-400 border border-emerald-500/30 text-xs font-medium flex items-center justify-center gap-1.5 hover:bg-emerald-600/25 transition-all disabled:opacity-50"
+            data-testid="add-to-monitoring-btn"
+          >
+            <PlusCircle size={14} /> {adding ? "Aggiunta..." : "Aggiungi al Monitoraggio"}
+          </button>
+        )}
+      </div>
+
+      {/* Monitor type selector (only for endpoints being added) */}
+      {isEndpoint && hasIp && (
+        <div className="px-3 py-2 border-b border-[var(--border-subtle)] flex items-center gap-2 text-[10px]">
+          <span className="text-[var(--text-muted)]">Tipo:</span>
+          {["ping", "snmp"].map(t => (
+            <button
+              key={t}
+              onClick={() => setMonitorType(t)}
+              className={`px-2 py-0.5 rounded text-[10px] font-medium transition-all ${
+                monitorType === t
+                  ? "bg-indigo-600/20 text-indigo-400 border border-indigo-500/40"
+                  : "text-[var(--text-muted)] hover:bg-[var(--bg-hover)] border border-transparent"
+              }`}
+            >
+              {t.toUpperCase()}
+            </button>
+          ))}
+          {monitorType === "snmp" && (
+            <input
+              type="text"
+              value={community}
+              onChange={e => setCommunity(e.target.value)}
+              placeholder="community"
+              className="ml-1 h-5 px-1.5 w-20 rounded bg-[var(--bg-deep)] border border-[var(--border-subtle)] text-[10px] text-[var(--text-primary)] font-mono"
+            />
+          )}
+        </div>
+      )}
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
@@ -270,10 +357,6 @@ function EndpointInfo({ data }) {
       </div>
     </div>
   );
-}
-
-function SectionTitle2({ children }) {
-  return <h4 className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-2">{children}</h4>;
 }
 
 function formatTime(iso) {

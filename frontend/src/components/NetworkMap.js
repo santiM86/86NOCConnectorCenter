@@ -869,6 +869,10 @@ function NetworkMapInner({ clientGroups, onDeviceSelect }) {
             deviceIp={selectedDevice.ip}
             deviceData={selectedDevice.data}
             onClose={() => setSelectedDevice(null)}
+            onDeviceAdded={() => {
+              setSelectedDevice(null);
+              fetchTopologies(true);
+            }}
           />
         )}
       </div>

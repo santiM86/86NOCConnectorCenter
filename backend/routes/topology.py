@@ -125,9 +125,11 @@ def infer_topology(devices):
     for dev in devices:
         dev_type = classify_device(dev)
         ip = dev.get("device_ip", "")
+        full_name = dev.get("device_name") or ip
         classified.append({
             "ip": ip,
-            "name": dev.get("device_name") or ip,
+            "name": _clean_device_name(full_name),
+            "full_name": full_name,
             "type": dev_type,
             "reachable": dev.get("reachable", False),
             "monitor_type": dev.get("monitor_type", "snmp"),
@@ -348,6 +350,22 @@ def _guess_endpoint_type(hostname, mac):
     return "generic"
 
 
+def _clean_device_name(name):
+    """Shorten overly long device names for display (keep model + location)."""
+    if not name or len(name) < 50:
+        return name
+    # Pattern: "BRAND MODEL - long description - Location"
+    # Extract brand+model and location
+    parts = name.split(" - ", 2)
+    if len(parts) >= 3:
+        brand_model = parts[0].strip()
+        location = parts[-1].strip()
+        return f"{brand_model} - {location}"
+    if len(parts) == 2:
+        return name[:60]
+    return name[:50]
+
+
 def calculate_health_score(devices):
     """Calculate a 0-100 health score for a set of devices."""
     if not devices:
@@ -550,6 +568,21 @@ async def get_network_topology(client_id: str, current_user: dict = Depends(get_
     
     # No saved layout — return inferred topology, enriched with LLDP/MAC if available
     topology = infer_topology(devices)
+    
+    # Enrich managed device nodes with MAC addresses from discovery data
+    nd = await db.network_discovery.find_one({"client_id": client_id}, {"_id": 0, "device_macs": 1})
+    device_macs_map = {}
+    if nd and nd.get("device_macs"):
+        for dm in nd["device_macs"]:
+            ip = dm.get("ip", "")
+            macs = dm.get("macs", [])
+            if ip and macs:
+                device_macs_map[ip] = macs[0]  # primary MAC
+    
+    for node in topology["nodes"]:
+        nip = node.get("ip", node.get("id", ""))
+        if nip in device_macs_map:
+            node["mac"] = device_macs_map[nip]
     
     device_ips = [d.get("device_ip", "") for d in devices]
     discovered_edges = []
@@ -798,3 +831,69 @@ async def get_topology_alerts_summary(client_id: str, current_user: dict = Depen
         }
 
     return {"client_id": client_id, "alerts": alert_map}
+
+
+
+@router.post("/network/add-to-monitoring")
+async def add_endpoint_to_monitoring(body: dict, current_user: dict = Depends(get_current_user)):
+    """Promote a discovered endpoint to a monitored device."""
+    client_id = body.get("client_id")
+    ip = body.get("ip", "").strip()
+    name = body.get("name", "").strip()
+    mac = body.get("mac", "").strip()
+    monitor_type = body.get("monitor_type", "ping")
+    community = body.get("community", "public")
+
+    if not client_id or not ip:
+        raise HTTPException(status_code=400, detail="client_id e ip sono obbligatori")
+
+    # Check if already monitored
+    existing = await db.managed_devices.find_one({"client_id": client_id, "ip": ip})
+    if existing:
+        raise HTTPException(status_code=409, detail=f"Il dispositivo {ip} e' gia' monitorato")
+
+    import uuid
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+
+    device_doc = {
+        "id": str(uuid.uuid4()),
+        "client_id": client_id,
+        "ip": ip,
+        "name": name or ip,
+        "mac": mac,
+        "community": community if monitor_type == "snmp" else "",
+        "monitor_type": monitor_type,
+        "http_port": 80,
+        "created_at": now,
+        "created_by": current_user.get("name", "Admin"),
+    }
+    await db.managed_devices.insert_one(device_doc)
+
+    # Also create initial poll status
+    await db.device_poll_status.update_one(
+        {"client_id": client_id, "device_ip": ip},
+        {"$set": {
+            "client_id": client_id,
+            "device_ip": ip,
+            "device_name": name or ip,
+            "monitor_type": monitor_type,
+            "reachable": False,
+            "last_seen": now,
+        }},
+        upsert=True,
+    )
+
+    # Mark discovered endpoint as managed
+    await db.discovered_endpoints.update_many(
+        {"client_id": client_id, "ip": ip},
+        {"$set": {"is_managed": True}},
+    )
+    if mac:
+        await db.discovered_endpoints.update_many(
+            {"client_id": client_id, "mac": mac},
+            {"$set": {"is_managed": True}},
+        )
+
+    device_doc.pop("_id", None)
+    return {"status": "ok", "message": f"Dispositivo {ip} aggiunto al monitoraggio", "device": device_doc}
