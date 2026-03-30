@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef, createContext, useContext } from "react";
 import {
   ReactFlow,
   Background,
@@ -18,7 +18,9 @@ import "@xyflow/react/dist/style.css";
 import axios from "axios";
 import { API } from "@/App";
 import { toast } from "sonner";
-import { FloppyDisk, ArrowsClockwise, Plugs, Trash, MagicWand, ArrowsOutSimple } from "@phosphor-icons/react";
+import { toPng } from "html-to-image";
+import { FloppyDisk, ArrowsClockwise, Plugs, Trash, MagicWand, ArrowsOutSimple, MagnifyingGlass, Funnel, Export, Warning, ArrowCounterClockwise, X } from "@phosphor-icons/react";
+import { DeviceDetailPanel } from "./DeviceDetailPanel";
 
 /* ─── Device type styles ─── */
 const TYPE_CONFIG = {
@@ -35,15 +37,37 @@ const TYPE_CONFIG = {
   generic:   { color: "#64748b", bg: "rgba(100,116,139,0.12)", border: "rgba(100,116,139,0.35)", label: "Dispositivo", icon: "M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" },
 };
 
+/* ─── Overlay Context (alerts, filters, impact — avoids infinite loops) ─── */
+const OverlayContext = createContext({});
+
 /* ─── Custom Node Component ─── */
 function DeviceNode({ data }) {
   const cfg = TYPE_CONFIG[data.deviceType] || TYPE_CONFIG.generic;
   const isVirtual = data.virtual;
   const isReachable = data.reachable !== false;
+  const overlay = useContext(OverlayContext);
+
+  // Compute visual state from overlay context (not from node.data — avoids setNodes loop)
+  const alertCount = overlay.alertsMap?.[data.ip]?.total || 0;
+  const isImpacted = overlay.impactedSet?.has(data.nodeId);
+  const q = (overlay.searchQuery || "").toLowerCase();
+  const fType = overlay.filterType || "all";
+  const fStatus = overlay.filterStatus || "all";
+  const matchesSearch = !q || [data.label, data.ip, data.mac, data.hostname, data.nodeId].some(v => (v || "").toLowerCase().includes(q));
+  const matchesType = fType === "all" || data.deviceType === fType || (fType === "endpoint" && data.role === "discovered_endpoint");
+  const matchesStatus = fStatus === "all"
+    || (fStatus === "online" && data.reachable !== false)
+    || (fStatus === "offline" && data.reachable === false)
+    || (fStatus === "alert" && alertCount > 0);
+  const hasFilter = q || fType !== "all" || fStatus !== "all";
+  const show = matchesSearch && matchesType && matchesStatus;
+  const isDimmed = hasFilter && !show;
+  const isHighlighted = hasFilter && show;
+  const isSelected = data.selected;
 
   return (
     <div
-      className="relative group"
+      className={`relative group transition-opacity duration-300 ${isDimmed ? "opacity-30" : "opacity-100"}`}
       data-testid={`flow-node-${data.nodeId}`}
       style={{ minWidth: 110 }}
     >
@@ -53,24 +77,44 @@ function DeviceNode({ data }) {
       <Handle type="target" position={Position.Left} id="left" className="!w-2 !h-2 !bg-indigo-500 !border-[var(--bg-panel)] !border-2 opacity-0 group-hover:opacity-100 transition-opacity" />
       <Handle type="source" position={Position.Right} id="right" className="!w-2 !h-2 !bg-indigo-500 !border-[var(--bg-panel)] !border-2 opacity-0 group-hover:opacity-100 transition-opacity" />
 
+      {/* Alert badge */}
+      {alertCount > 0 && (
+        <div
+          className="absolute -top-2 -left-2 z-10 min-w-[18px] h-[18px] rounded-full flex items-center justify-center text-[9px] font-bold text-white animate-pulse"
+          style={{ backgroundColor: "#ef4444", boxShadow: "0 0 8px rgba(239,68,68,0.6)" }}
+          data-testid={`alert-badge-${data.nodeId}`}
+        >
+          {alertCount}
+        </div>
+      )}
+
       {/* Node Card */}
       <div
-        className="rounded-xl border-2 px-3 py-2.5 text-center cursor-grab active:cursor-grabbing transition-all duration-200 hover:scale-105"
+        className={`rounded-xl border-2 px-3 py-2.5 text-center cursor-pointer active:cursor-grabbing transition-all duration-200 hover:scale-105 ${
+          !isReachable && !isVirtual ? "animate-[blink_2s_ease-in-out_infinite]" : ""
+        } ${isHighlighted ? "ring-2 ring-yellow-400 ring-offset-2 ring-offset-[var(--bg-app)]" : ""}`}
         style={{
-          background: `linear-gradient(135deg, var(--bg-card) 0%, ${cfg.bg} 100%)`,
-          borderColor: data.selected ? "#818cf8" : cfg.border,
-          boxShadow: data.selected ? `0 0 16px ${cfg.color}40` : `0 2px 8px rgba(0,0,0,0.3)`,
+          background: isImpacted
+            ? "linear-gradient(135deg, rgba(239,68,68,0.08) 0%, rgba(239,68,68,0.15) 100%)"
+            : `linear-gradient(135deg, var(--bg-card) 0%, ${cfg.bg} 100%)`,
+          borderColor: isImpacted ? "#ef444480" : isSelected ? "#818cf8" : cfg.border,
+          boxShadow: isSelected ? `0 0 16px ${cfg.color}40` : isImpacted ? "0 0 12px rgba(239,68,68,0.3)" : `0 2px 8px rgba(0,0,0,0.3)`,
         }}
       >
         {/* Status indicator */}
         {!isVirtual && (
           <div
-            className="absolute -top-1 -right-1 w-3 h-3 rounded-full border-2"
+            className={`absolute -top-1 -right-1 w-3 h-3 rounded-full border-2 ${!isReachable ? "animate-pulse" : ""}`}
             style={{
-              backgroundColor: isReachable ? "#22c55e" : "#ef4444",
+              backgroundColor: isImpacted ? "#f59e0b" : isReachable ? "#22c55e" : "#ef4444",
               borderColor: "var(--bg-card)",
             }}
           />
+        )}
+
+        {/* Impacted badge */}
+        {isImpacted && (
+          <div className="text-[7px] font-bold text-amber-400 uppercase tracking-wider mb-0.5">Impattato</div>
         )}
 
         {/* Icon */}
@@ -254,32 +298,82 @@ function NetworkMapInner({ clientGroups, onDeviceSelect }) {
   const [saving, setSaving] = useState(false);
   const [connectMode, setConnectMode] = useState(false);
   const containerRef = useRef(null);
+  const flowRef = useRef(null);
   const { fitView } = useReactFlow();
 
-  // Fetch topologies for all clients
-  useEffect(() => {
-    const fetchTopologies = async () => {
-      setLoading(true);
-      const results = {};
-      for (const group of clientGroups) {
-        try {
-          const res = await axios.get(`${API}/network/topology/${group.clientId}`);
-          results[group.clientId] = res.data;
-        } catch (err) {
-          console.error("Topology fetch error:", err);
-        }
-      }
-      setTopologies(results);
-      setLoading(false);
+  // NEW: Search, filters, detail panel, alerts, real-time
+  const [searchQuery, setSearchQuery] = useState("");
+  const [filterType, setFilterType] = useState("all");
+  const [filterStatus, setFilterStatus] = useState("all");
+  const [selectedDevice, setSelectedDevice] = useState(null);
+  const [alertsMap, setAlertsMap] = useState({});
+  const [lastRefresh, setLastRefresh] = useState(null);
+  const [exporting, setExporting] = useState(false);
 
-      // Auto-select first client with data
-      const firstKey = Object.keys(results).find((k) => results[k]?.nodes?.length > 0);
-      if (firstKey && !activeClient) setActiveClient(firstKey);
-    };
+  // Fetch topologies for all clients
+  const fetchTopologies = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
+    const results = {};
+    for (const group of clientGroups) {
+      try {
+        const res = await axios.get(`${API}/network/topology/${group.clientId}`);
+        results[group.clientId] = res.data;
+      } catch (err) {
+        console.error("Topology fetch error:", err);
+      }
+    }
+    setTopologies(results);
+    if (!silent) setLoading(false);
+    setLastRefresh(new Date());
+
+    const firstKey = Object.keys(results).find((k) => results[k]?.nodes?.length > 0);
+    if (firstKey && !activeClient) setActiveClient(firstKey);
+  }, [clientGroups, activeClient]);
+
+  useEffect(() => {
     if (clientGroups.length > 0) fetchTopologies();
   }, [clientGroups]);
 
-  // When active client changes, load its nodes/edges into React Flow
+  // Auto-refresh every 30 seconds
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (clientGroups.length > 0 && !hasChanges) fetchTopologies(true);
+    }, 30000);
+    return () => clearInterval(interval);
+  }, [clientGroups, hasChanges, fetchTopologies]);
+
+  // Fetch alerts summary for active client
+  useEffect(() => {
+    if (!activeClient) return;
+    axios.get(`${API}/network/alerts-summary/${activeClient}`)
+      .then(res => setAlertsMap(res.data?.alerts || {}))
+      .catch(() => setAlertsMap({}));
+  }, [activeClient, lastRefresh]);
+
+  // Build edge map for impact analysis (from topology data, not React Flow nodes)
+  const impactedSet = useMemo(() => {
+    if (!activeClient || !topologies[activeClient]) return new Set();
+    const topo = topologies[activeClient];
+    const edgeMap = {};
+    (topo.edges || []).forEach(e => {
+      if (!edgeMap[e.from]) edgeMap[e.from] = [];
+      edgeMap[e.from].push(e.to);
+    });
+    const offlineIps = (topo.nodes || []).filter(n => n.reachable === false && !n.virtual).map(n => n.id || n.ip);
+    const impacted = new Set();
+    function propagate(nodeId) {
+      (edgeMap[nodeId] || []).forEach(child => {
+        if (!impacted.has(child)) {
+          impacted.add(child);
+          propagate(child);
+        }
+      });
+    }
+    offlineIps.forEach(ip => propagate(ip));
+    return impacted;
+  }, [activeClient, topologies]);
+
+  // When active client changes, load nodes/edges into React Flow
   useEffect(() => {
     if (!activeClient || !topologies[activeClient]) return;
     const topo = topologies[activeClient];
@@ -299,9 +393,7 @@ function NetworkMapInner({ clientGroups, onDeviceSelect }) {
   }, [activeClient, topologies]);
 
   // Track changes
-  const onNodeDragStop = useCallback(() => {
-    setHasChanges(true);
-  }, []);
+  const onNodeDragStop = useCallback(() => setHasChanges(true), []);
 
   const onConnect = useCallback(
     (params) => {
@@ -335,9 +427,12 @@ function NetworkMapInner({ clientGroups, onDeviceSelect }) {
 
   const onNodeClick = useCallback(
     (event, node) => {
-      if (onDeviceSelect && !node.data.virtual) {
-        onDeviceSelect(node.data);
-      }
+      if (node.data.virtual) return;
+      setSelectedDevice({
+        ip: node.data.ip || node.id,
+        data: node.data,
+      });
+      if (onDeviceSelect) onDeviceSelect(node.data);
     },
     [onDeviceSelect]
   );
@@ -395,7 +490,7 @@ function NetworkMapInner({ clientGroups, onDeviceSelect }) {
     }
   };
 
-  // Auto-layout (re-apply layer-based positions)
+  // Auto-layout
   const autoLayout = () => {
     const topo = topologies[activeClient];
     if (!topo?.layers?.length) {
@@ -410,8 +505,62 @@ function NetworkMapInner({ clientGroups, onDeviceSelect }) {
     toast.success("Auto-layout applicato");
   };
 
+  // Export as PNG
+  const exportPng = async () => {
+    const el = containerRef.current?.querySelector(".react-flow");
+    if (!el) return;
+    setExporting(true);
+    try {
+      const dataUrl = await toPng(el, {
+        backgroundColor: "#0a0a0f",
+        quality: 0.95,
+        pixelRatio: 2,
+      });
+      const link = document.createElement("a");
+      link.download = `topologia-${activeTopo?.client_name || "rete"}-${new Date().toISOString().split("T")[0]}.png`;
+      link.href = dataUrl;
+      link.click();
+      toast.success("Mappa esportata come PNG!");
+    } catch (err) {
+      toast.error("Errore nell'export: " + err.message);
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  // Manual refresh
+  const manualRefresh = () => {
+    fetchTopologies(true);
+    toast.success("Aggiornamento in corso...");
+  };
+
+  // Filter options
+  const typeFilters = [
+    { value: "all", label: "Tutti" },
+    { value: "switch", label: "Switch" },
+    { value: "firewall", label: "Firewall" },
+    { value: "server", label: "Server" },
+    { value: "endpoint", label: "Endpoint" },
+    { value: "ap", label: "AP WiFi" },
+  ];
+  const statusFilters = [
+    { value: "all", label: "Tutti" },
+    { value: "online", label: "Online" },
+    { value: "offline", label: "Offline" },
+    { value: "alert", label: "Con Alert" },
+  ];
+
   const activeTopo = activeClient ? topologies[activeClient] : null;
   const health = activeTopo?.health || {};
+
+  // Overlay context value (computed once, consumed by all DeviceNode instances)
+  const overlayValue = useMemo(() => ({
+    alertsMap,
+    impactedSet,
+    searchQuery,
+    filterType,
+    filterStatus,
+  }), [alertsMap, impactedSet, searchQuery, filterType, filterStatus]);
 
   if (loading) {
     return (
@@ -432,6 +581,66 @@ function NetworkMapInner({ clientGroups, onDeviceSelect }) {
 
   return (
     <div className="space-y-3" data-testid="network-map">
+      {/* Search & Filter Bar */}
+      <div className="noc-panel p-3 flex flex-wrap items-center gap-3" data-testid="search-filter-bar">
+        <div className="relative flex-1 min-w-[200px] max-w-[350px]">
+          <MagnifyingGlass size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--text-muted)]" />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={e => setSearchQuery(e.target.value)}
+            placeholder="Cerca dispositivo, IP, MAC..."
+            className="w-full h-8 pl-8 pr-3 rounded-lg bg-[var(--bg-deep)] border border-[var(--border-subtle)] text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:border-indigo-500/50"
+            data-testid="search-input"
+          />
+        </div>
+        <div className="flex items-center gap-1">
+          <Funnel size={13} className="text-[var(--text-muted)] mr-1" />
+          {typeFilters.map(f => (
+            <button
+              key={f.value}
+              onClick={() => setFilterType(f.value)}
+              className={`h-7 px-2 rounded-md text-[10px] font-medium transition-all ${
+                filterType === f.value
+                  ? "bg-indigo-600/20 text-indigo-400 border border-indigo-500/40"
+                  : "text-[var(--text-muted)] hover:bg-[var(--bg-hover)] border border-transparent"
+              }`}
+              data-testid={`filter-type-${f.value}`}
+            >
+              {f.label}
+            </button>
+          ))}
+        </div>
+        <div className="flex items-center gap-1 ml-2">
+          {statusFilters.map(f => (
+            <button
+              key={f.value}
+              onClick={() => setFilterStatus(f.value)}
+              className={`h-7 px-2 rounded-md text-[10px] font-medium transition-all ${
+                filterStatus === f.value
+                  ? f.value === "offline" ? "bg-red-600/20 text-red-400 border border-red-500/40"
+                  : f.value === "alert" ? "bg-amber-600/20 text-amber-400 border border-amber-500/40"
+                  : "bg-indigo-600/20 text-indigo-400 border border-indigo-500/40"
+                  : "text-[var(--text-muted)] hover:bg-[var(--bg-hover)] border border-transparent"
+              }`}
+              data-testid={`filter-status-${f.value}`}
+            >
+              {f.value === "alert" && <Warning size={11} className="inline mr-1" />}
+              {f.label}
+            </button>
+          ))}
+        </div>
+        {(searchQuery || filterType !== "all" || filterStatus !== "all") && (
+          <button
+            onClick={() => { setSearchQuery(""); setFilterType("all"); setFilterStatus("all"); }}
+            className="h-7 px-2 rounded-md text-[10px] text-red-400 hover:bg-red-500/10 flex items-center gap-1"
+            data-testid="clear-filters-btn"
+          >
+            <X size={12} /> Reset
+          </button>
+        )}
+      </div>
+
       {/* Client selector + Toolbar */}
       <div className="noc-panel p-3 flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2 flex-wrap">
@@ -459,13 +668,30 @@ function NetworkMapInner({ clientGroups, onDeviceSelect }) {
 
         <div className="flex items-center gap-1.5">
           <button
+            onClick={manualRefresh}
+            className="h-7 px-2.5 rounded-md text-[10px] font-medium text-[var(--text-muted)] hover:bg-[var(--bg-hover)] border border-[var(--bg-border)] flex items-center gap-1.5 transition-all"
+            title="Aggiorna dati"
+            data-testid="refresh-btn"
+          >
+            <ArrowCounterClockwise size={13} /> Aggiorna
+          </button>
+          <button
+            onClick={exportPng}
+            disabled={exporting}
+            className="h-7 px-2.5 rounded-md text-[10px] font-medium text-[var(--text-muted)] hover:bg-[var(--bg-hover)] border border-[var(--bg-border)] flex items-center gap-1.5 transition-all"
+            title="Esporta mappa come PNG"
+            data-testid="export-png-btn"
+          >
+            <Export size={13} /> {exporting ? "Esporto..." : "PNG"}
+          </button>
+          <div className="w-px h-5 bg-[var(--border-subtle)] mx-1" />
+          <button
             onClick={() => setConnectMode(!connectMode)}
             className={`h-7 px-2.5 rounded-md text-[10px] font-medium flex items-center gap-1.5 transition-all ${
               connectMode
                 ? "bg-purple-600/20 text-purple-400 border border-purple-500/40"
                 : "text-[var(--text-muted)] hover:bg-[var(--bg-hover)] border border-[var(--bg-border)]"
             }`}
-            title={connectMode ? "Clicca su un collegamento per rimuoverlo" : "Attiva modalita' modifica collegamenti"}
             data-testid="toggle-connect-mode"
           >
             <Plugs size={13} /> {connectMode ? "Modifica ON" : "Modifica"}
@@ -473,7 +699,6 @@ function NetworkMapInner({ clientGroups, onDeviceSelect }) {
           <button
             onClick={autoLayout}
             className="h-7 px-2.5 rounded-md text-[10px] font-medium text-[var(--text-muted)] hover:bg-[var(--bg-hover)] border border-[var(--bg-border)] flex items-center gap-1.5 transition-all"
-            title="Ricalcola layout automatico"
             data-testid="auto-layout-btn"
           >
             <MagicWand size={13} /> Auto
@@ -481,7 +706,6 @@ function NetworkMapInner({ clientGroups, onDeviceSelect }) {
           <button
             onClick={resetLayout}
             className="h-7 px-2.5 rounded-md text-[10px] font-medium text-[var(--text-muted)] hover:bg-[var(--bg-hover)] border border-[var(--bg-border)] flex items-center gap-1.5 transition-all"
-            title="Resetta il layout personalizzato"
             data-testid="reset-layout-btn"
           >
             <ArrowsClockwise size={13} /> Reset
@@ -494,7 +718,6 @@ function NetworkMapInner({ clientGroups, onDeviceSelect }) {
                 ? "bg-emerald-600 hover:bg-emerald-700 text-white"
                 : "bg-[var(--bg-hover)] text-[var(--text-muted)] opacity-50 cursor-not-allowed"
             }`}
-            title="Salva il layout personalizzato"
             data-testid="save-layout-btn"
           >
             <FloppyDisk size={13} /> {saving ? "Salvataggio..." : "Salva Layout"}
@@ -520,8 +743,18 @@ function NetworkMapInner({ clientGroups, onDeviceSelect }) {
                 Porte: {health.ports_up}/{health.ports_total}
               </span>
             )}
+            {activeTopo.discovered_endpoints_count > 0 && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded border text-teal-400 border-teal-500/30 font-mono">
+                Endpoint: {activeTopo.discovered_endpoints_count}
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-2">
+            {lastRefresh && (
+              <span className="text-[9px] text-[var(--text-muted)] font-mono" data-testid="last-refresh">
+                Agg: {lastRefresh.toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+              </span>
+            )}
             {activeTopo.has_custom_layout && (
               <span className="text-[9px] px-2 py-0.5 rounded-full bg-purple-600/15 text-purple-400 border border-purple-500/30 font-medium">
                 Layout personalizzato
@@ -549,81 +782,104 @@ function NetworkMapInner({ clientGroups, onDeviceSelect }) {
         </div>
       )}
 
-      {/* React Flow Canvas */}
-      <div
-        ref={containerRef}
-        className="noc-panel overflow-hidden"
-        style={{ height: "calc(100vh - 340px)", minHeight: 420 }}
-        data-testid="network-map-canvas"
-      >
-        <ReactFlow
-          nodes={nodes}
-          edges={edges}
-          onNodesChange={onNodesChange}
-          onEdgesChange={onEdgesChange}
-          onConnect={onConnect}
-          onNodeDragStop={onNodeDragStop}
-          onEdgeClick={onEdgeClick}
-          onNodeClick={onNodeClick}
-          nodeTypes={nodeTypes}
-          fitView
-          fitViewOptions={{ padding: 0.15 }}
-          connectionLineStyle={{ stroke: "#8b5cf6", strokeWidth: 2 }}
-          defaultEdgeOptions={{
-            style: { strokeWidth: 1.5 },
-            markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14 },
-          }}
-          proOptions={{ hideAttribution: true }}
-          minZoom={0.2}
-          maxZoom={3}
-          snapToGrid
-          snapGrid={[15, 15]}
-          style={{ background: "var(--bg-app)" }}
+      {/* React Flow Canvas + Detail Panel */}
+      <div className="relative">
+        <div
+          ref={containerRef}
+          className="noc-panel overflow-hidden"
+          style={{ height: "calc(100vh - 400px)", minHeight: 420 }}
+          data-testid="network-map-canvas"
         >
-          <Background color="var(--bg-border)" gap={30} size={1} />
-          <Controls
-            showInteractive={false}
-            className="!bg-[var(--bg-panel)] !border-[var(--bg-border)] !rounded-lg !shadow-lg [&>button]:!bg-[var(--bg-card)] [&>button]:!border-[var(--bg-border)] [&>button]:!fill-[var(--text-muted)] [&>button:hover]:!bg-[var(--bg-hover)]"
-          />
-          <MiniMap
-            nodeColor={(n) => {
-              const cfg = TYPE_CONFIG[n.data?.deviceType] || TYPE_CONFIG.generic;
-              return cfg.color;
+        <OverlayContext.Provider value={overlayValue}>
+          <ReactFlow
+            ref={flowRef}
+            nodes={nodes}
+            edges={edges}
+            onNodesChange={onNodesChange}
+            onEdgesChange={onEdgesChange}
+            onConnect={onConnect}
+            onNodeDragStop={onNodeDragStop}
+            onEdgeClick={onEdgeClick}
+            onNodeClick={onNodeClick}
+            nodeTypes={nodeTypes}
+            fitView
+            fitViewOptions={{ padding: 0.15 }}
+            connectionLineStyle={{ stroke: "#8b5cf6", strokeWidth: 2 }}
+            defaultEdgeOptions={{
+              style: { strokeWidth: 1.5 },
+              markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14 },
             }}
-            maskColor="rgba(10,10,15,0.85)"
-            className="!bg-[var(--bg-panel)] !border-[var(--bg-border)] !rounded-lg"
-          />
-          {/* Legend overlay */}
-          <Panel position="bottom-left" className="!m-2">
-            <div className="bg-[var(--bg-panel)] border border-[var(--bg-border)] rounded-lg p-2.5 space-y-1">
-              <p className="text-[8px] font-bold uppercase tracking-widest text-[var(--text-muted)] mb-1.5">Collegamento</p>
-              {[
-                { label: "WAN", color: EDGE_COLORS.wan },
-                { label: "10G", color: "#f97316" },
-                { label: "Trunk", color: EDGE_COLORS.trunk },
-                { label: "Accesso (1G)", color: EDGE_COLORS.access },
-                { label: "Server", color: EDGE_COLORS.server },
-                { label: "MGMT", color: EDGE_COLORS.mgmt },
-                { label: "LLDP", color: EDGE_COLORS.lldp },
-                { label: "Manuale", color: EDGE_COLORS.custom },
-              ].map((item) => (
-                <div key={item.label} className="flex items-center gap-2">
-                  <div className="w-4 h-0.5 rounded" style={{ backgroundColor: item.color }} />
-                  <span className="text-[9px] text-[var(--text-secondary)]">{item.label}</span>
-                </div>
-              ))}
-            </div>
-          </Panel>
-          {/* Connect mode indicator */}
-          {connectMode && (
-            <Panel position="top-center" className="!m-2">
-              <div className="bg-purple-600/20 border border-purple-500/40 rounded-lg px-4 py-1.5 text-[11px] text-purple-300 font-medium flex items-center gap-2">
-                <Plugs size={14} /> Trascina da un nodo all'altro per collegare. Clicca su un collegamento per rimuoverlo.
+            proOptions={{ hideAttribution: true }}
+            minZoom={0.2}
+            maxZoom={3}
+            snapToGrid
+            snapGrid={[15, 15]}
+            style={{ background: "var(--bg-app)" }}
+          >
+            <Background color="var(--bg-border)" gap={30} size={1} />
+            <Controls
+              showInteractive={false}
+              className="!bg-[var(--bg-panel)] !border-[var(--bg-border)] !rounded-lg !shadow-lg [&>button]:!bg-[var(--bg-card)] [&>button]:!border-[var(--bg-border)] [&>button]:!fill-[var(--text-muted)] [&>button:hover]:!bg-[var(--bg-hover)]"
+            />
+            <MiniMap
+              nodeColor={(n) => {
+                const cfg = TYPE_CONFIG[n.data?.deviceType] || TYPE_CONFIG.generic;
+                return cfg.color;
+              }}
+              maskColor="rgba(10,10,15,0.85)"
+              className="!bg-[var(--bg-panel)] !border-[var(--bg-border)] !rounded-lg"
+            />
+            {/* Legend overlay */}
+            <Panel position="bottom-left" className="!m-2">
+              <div className="bg-[var(--bg-panel)] border border-[var(--bg-border)] rounded-lg p-2.5 space-y-1">
+                <p className="text-[8px] font-bold uppercase tracking-widest text-[var(--text-muted)] mb-1.5">Collegamento</p>
+                {[
+                  { label: "WAN", color: EDGE_COLORS.wan },
+                  { label: "10G", color: "#f97316" },
+                  { label: "Trunk", color: EDGE_COLORS.trunk },
+                  { label: "Accesso (1G)", color: EDGE_COLORS.access },
+                  { label: "Server", color: EDGE_COLORS.server },
+                  { label: "MGMT", color: EDGE_COLORS.mgmt },
+                  { label: "LLDP", color: EDGE_COLORS.lldp },
+                  { label: "Manuale", color: EDGE_COLORS.custom },
+                ].map((item) => (
+                  <div key={item.label} className="flex items-center gap-2">
+                    <div className="w-4 h-0.5 rounded" style={{ backgroundColor: item.color }} />
+                    <span className="text-[9px] text-[var(--text-secondary)]">{item.label}</span>
+                  </div>
+                ))}
               </div>
             </Panel>
-          )}
-        </ReactFlow>
+            {/* Connect mode indicator */}
+            {connectMode && (
+              <Panel position="top-center" className="!m-2">
+                <div className="bg-purple-600/20 border border-purple-500/40 rounded-lg px-4 py-1.5 text-[11px] text-purple-300 font-medium flex items-center gap-2">
+                  <Plugs size={14} /> Trascina da un nodo all'altro per collegare. Clicca su un collegamento per rimuoverlo.
+                </div>
+              </Panel>
+            )}
+          </ReactFlow>
+        </OverlayContext.Provider>
+        </div>
+
+        {/* Device Detail Panel (slide-in) */}
+        {selectedDevice && (
+          <DeviceDetailPanel
+            clientId={activeClient}
+            deviceIp={selectedDevice.ip}
+            deviceData={selectedDevice.data}
+            onClose={() => setSelectedDevice(null)}
+          />
+        )}
       </div>
+
+      {/* Blink animation */}
+      <style>{`
+        @keyframes blink {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.5; }
+        }
+      `}</style>
     </div>
   );
 }

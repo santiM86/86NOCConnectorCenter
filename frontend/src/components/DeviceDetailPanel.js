@@ -1,696 +1,287 @@
 import { useState, useEffect } from "react";
 import axios from "axios";
 import { API } from "@/App";
-import {
-  ArrowUp, ArrowDown, Warning, CheckCircle, Lightning, Thermometer,
-  Cpu, HardDrive, Fan, BatteryFull, WifiHigh, WifiSlash,
-  ShieldCheck, Globe, ArrowsClockwise, FloppyDisk,
-  DesktopTower, PlugCharging, Memory, WifiMedium, Database,
-  Power, ArrowCounterClockwise
-} from "@phosphor-icons/react";
+import { X, Warning, WifiHigh, WifiSlash, CircleNotch } from "@phosphor-icons/react";
 
-import { Button } from "@/components/ui/button";
-import { toast } from "sonner";
+const SEVERITY_COLORS = {
+  critical: { bg: "bg-red-500/20", text: "text-red-400", border: "border-red-500/30" },
+  high: { bg: "bg-orange-500/20", text: "text-orange-400", border: "border-orange-500/30" },
+  medium: { bg: "bg-yellow-500/20", text: "text-yellow-400", border: "border-yellow-500/30" },
+  low: { bg: "bg-blue-500/20", text: "text-blue-400", border: "border-blue-500/30" },
+};
 
-function PowerControlPanel({ deviceIp }) {
-  const [loading, setLoading] = useState(null);
-  const [powerState, setPowerState] = useState(null);
+export function DeviceDetailPanel({ clientId, deviceIp, deviceData, onClose }) {
+  const [detail, setDetail] = useState(null);
+  const [loading, setLoading] = useState(true);
 
-  const fetchPowerState = async () => {
-    try {
-      const res = await axios.get(`${API}/devices/${deviceIp}/power-state`);
-      if (res.data.success) setPowerState(res.data);
-    } catch {}
-  };
+  useEffect(() => {
+    if (!clientId || !deviceIp) return;
+    setLoading(true);
+    axios.get(`${API}/network/device-detail/${clientId}/${deviceIp}`)
+      .then(res => setDetail(res.data))
+      .catch(() => setDetail(null))
+      .finally(() => setLoading(false));
+  }, [clientId, deviceIp]);
 
-  useEffect(() => { fetchPowerState(); }, [deviceIp]);
+  if (!deviceIp) return null;
 
-  const handlePowerAction = async (action, label) => {
-    if (!window.confirm(`Sei sicuro di voler eseguire "${label}" su ${deviceIp}?`)) return;
-    setLoading(action);
-    try {
-      const res = await axios.post(`${API}/devices/${deviceIp}/power-action`, { action });
-      if (res.data.success) {
-        toast.success(res.data.message);
-        setTimeout(fetchPowerState, 3000);
-      } else {
-        toast.error(res.data.error);
-      }
-    } catch (e) {
-      toast.error(e.response?.data?.detail || "Errore");
-    } finally {
-      setLoading(null);
-    }
-  };
-
-  const stateColors = {
-    On: "text-[var(--ok)]",
-    Off: "text-[var(--critical)]",
-    Unknown: "text-[var(--text-muted)]",
-  };
+  const isEndpoint = deviceData?.role === "discovered_endpoint";
 
   return (
-    <div className="flex items-center gap-2 flex-wrap" data-testid="power-control">
-      {powerState?.success && (
-        <span className={`text-[9px] px-1.5 py-0.5 rounded border font-bold ${powerState.power_state === "On" ? "bg-[var(--low-bg)] border-[var(--low-border)] text-[var(--ok)]" : "bg-[var(--critical-bg)] border-[var(--critical-border)] text-[var(--critical)]"}`}>
-          <Power size={8} className="inline mr-0.5" weight="bold" />
-          {powerState.power_state}
-        </span>
-      )}
-      <Button size="sm" variant="ghost" disabled={!!loading}
-        onClick={() => handlePowerAction("On", "Accendi Server")}
-        className="h-6 text-[9px] gap-0.5 text-[var(--ok)] hover:bg-[var(--low-bg)]"
-        data-testid="power-on-btn">
-        <Power size={10} /> {loading === "On" ? "..." : "Accendi"}
-      </Button>
-      <Button size="sm" variant="ghost" disabled={!!loading}
-        onClick={() => handlePowerAction("ForceRestart", "Riavvio Forzato")}
-        className="h-6 text-[9px] gap-0.5 text-amber-400 hover:bg-amber-500/10"
-        data-testid="power-restart-btn">
-        <ArrowCounterClockwise size={10} /> {loading === "ForceRestart" ? "..." : "Riavvia"}
-      </Button>
-      <Button size="sm" variant="ghost" disabled={!!loading}
-        onClick={() => handlePowerAction("GracefulShutdown", "Spegnimento Controllato")}
-        className="h-6 text-[9px] gap-0.5 text-[var(--critical)] hover:bg-[var(--critical-bg)]"
-        data-testid="power-off-btn">
-        <Power size={10} /> {loading === "GracefulShutdown" ? "..." : "Spegni"}
-      </Button>
+    <div
+      data-testid="device-detail-panel"
+      className="absolute right-0 top-0 bottom-0 w-[380px] bg-[var(--bg-panel)] border-l border-[var(--border-subtle)] shadow-2xl z-50 flex flex-col overflow-hidden animate-in slide-in-from-right duration-200"
+    >
+      {/* Header */}
+      <div className="flex items-center justify-between p-4 border-b border-[var(--border-subtle)]">
+        <div className="flex-1 min-w-0">
+          <h3 className="text-sm font-semibold text-[var(--text-primary)] truncate" data-testid="detail-device-name">
+            {deviceData?.label || deviceIp}
+          </h3>
+          <span className="text-xs font-mono text-[var(--text-muted)]">{deviceIp}</span>
+          {deviceData?.mac && (
+            <span className="text-[10px] font-mono text-[var(--text-muted)] ml-2">{deviceData.mac}</span>
+          )}
+        </div>
+        <button onClick={onClose} className="p-1.5 rounded hover:bg-white/10 transition-colors" data-testid="detail-close-btn">
+          <X size={18} className="text-[var(--text-muted)]" />
+        </button>
+      </div>
+
+      {/* Content */}
+      <div className="flex-1 overflow-y-auto p-4 space-y-4">
+        {loading && !isEndpoint ? (
+          <div className="flex items-center justify-center py-8">
+            <CircleNotch size={24} className="animate-spin text-indigo-400" />
+          </div>
+        ) : isEndpoint ? (
+          <EndpointInfo data={deviceData} />
+        ) : detail ? (
+          <>
+            <DeviceInfo device={detail.device} />
+            <AlertsSection alerts={detail.alerts} activeCount={detail.active_alerts} />
+            <PortSpeedsSection speeds={detail.port_speeds} />
+            <ConnectedEndpoints endpoints={detail.connected_endpoints} />
+            <LldpSection neighbors={detail.lldp_neighbors} />
+            <MacConnections connections={detail.mac_connections} />
+          </>
+        ) : (
+          <p className="text-sm text-[var(--text-muted)] text-center py-8">Nessun dato disponibile</p>
+        )}
+      </div>
     </div>
   );
 }
 
-
-const formatBps = (bps) => {
-  if (!bps && bps !== 0) return "N/A";
-  if (bps >= 1e9) return `${(bps / 1e9).toFixed(1)} Gbps`;
-  if (bps >= 1e6) return `${(bps / 1e6).toFixed(1)} Mbps`;
-  if (bps >= 1e3) return `${(bps / 1e3).toFixed(0)} Kbps`;
-  return `${bps} bps`;
-};
-
-const formatSpeed = (bps) => {
-  if (!bps) return "";
-  if (bps >= 1e9) return `${bps / 1e9}G`;
-  if (bps >= 1e8) return `${bps / 1e6}M`;
-  if (bps >= 1e6) return `${bps / 1e6}M`;
-  return `${bps / 1e3}K`;
-};
-
-const GaugeWidget = ({ label, value, max = 100, unit = "%", icon, thresholds = { warn: 70, crit: 90 } }) => {
-  if (value == null) return null;
-  const pct = Math.min((value / max) * 100, 100);
-  const color = value >= thresholds.crit ? "var(--critical)" : value >= thresholds.warn ? "var(--medium)" : "var(--ok)";
-  const bgColor = value >= thresholds.crit ? "var(--critical-bg)" : value >= thresholds.warn ? "rgba(234,179,8,0.1)" : "var(--low-bg)";
+function SectionTitle({ children, count }) {
   return (
-    <div className="p-2.5 rounded-lg bg-[var(--bg-panel)] border border-[var(--bg-border)]" data-testid={`gauge-${label.toLowerCase()}`}>
-      <div className="flex items-center justify-between mb-1.5">
-        <div className="flex items-center gap-1.5">
-          {icon}
-          <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider font-medium">{label}</p>
-        </div>
-        <p className="text-sm font-mono font-bold" style={{ color }}>{value}{unit}</p>
-      </div>
-      <div className="w-full h-2 rounded-full bg-[var(--bg-hover)] overflow-hidden">
-        <div className="h-full rounded-full transition-all duration-700" style={{ width: `${pct}%`, backgroundColor: color }} />
-      </div>
-    </div>
-  );
-};
-
-const HwStatusBadge = ({ condition, label }) => {
-  const map = {
-    ok: { color: "text-[var(--ok)]", bg: "bg-[var(--low-bg)] border-[var(--low-border)]", text: "OK" },
-    degraded: { color: "text-[var(--medium)]", bg: "bg-yellow-500/10 border-yellow-500/20", text: "DEGRADATO" },
-    failed: { color: "text-[var(--critical)]", bg: "bg-[var(--critical-bg)] border-[var(--critical-border)]", text: "GUASTO" },
-    other: { color: "text-[var(--text-muted)]", bg: "bg-[var(--bg-hover)] border-[var(--bg-border)]", text: "N/D" },
-    unknown: { color: "text-[var(--text-muted)]", bg: "bg-[var(--bg-hover)] border-[var(--bg-border)]", text: "N/D" },
-    predictiveFailure: { color: "text-[var(--medium)]", bg: "bg-yellow-500/10 border-yellow-500/20", text: "PRE-GUASTO" },
-  };
-  const s = map[condition] || map.unknown;
-  return (
-    <div className={`px-2 py-1.5 rounded-md border ${s.bg} flex items-center justify-between gap-2`}>
-      <span className="text-[10px] text-[var(--text-muted)] truncate">{label}</span>
-      <span className={`text-[10px] font-bold ${s.color}`}>{s.text}</span>
-    </div>
-  );
-};
-
-const PortTrafficRow = ({ port }) => {
-  const hasTraffic = port.in_bps != null || port.out_bps != null;
-  const hasErrors = (port.in_errors || 0) > 0 || (port.out_errors || 0) > 0;
-  return (
-    <div className={`grid grid-cols-12 gap-1 items-center px-2 py-1 text-[10px] font-mono rounded ${
-      port.status === "up" ? "bg-[var(--low-bg)]/30" : port.status === "down" ? "bg-[var(--critical-bg)]/30" : "bg-[var(--bg-hover)]/30"
-    }`}>
-      <div className="col-span-1 flex items-center">
-        <div className={`w-2 h-2 rounded-full ${port.status === "up" ? "bg-[var(--ok)]" : port.status === "down" ? "bg-[var(--critical)]" : "bg-[var(--text-muted)]"}`} />
-      </div>
-      <div className="col-span-2 text-[var(--text-primary)] truncate">{port.index}</div>
-      <div className="col-span-2 text-[var(--text-muted)]">
-        {port.speed_bps ? formatSpeed(port.speed_bps) : ""}
-      </div>
-      <div className="col-span-2 text-emerald-400 flex items-center gap-0.5">
-        {hasTraffic && <><ArrowDown size={8} className="inline" />{formatBps(port.in_bps)}</>}
-      </div>
-      <div className="col-span-2 text-blue-400 flex items-center gap-0.5">
-        {hasTraffic && <><ArrowUp size={8} className="inline" />{formatBps(port.out_bps)}</>}
-      </div>
-      <div className={`col-span-3 text-right ${hasErrors ? "text-[var(--medium)]" : "text-[var(--text-muted)]"}`}>
-        {hasErrors ? `Err: ${port.in_errors || 0}/${port.out_errors || 0}` : ""}
-      </div>
-    </div>
-  );
-};
-
-export function DeviceDetailPanel({ dev, isPing }) {
-  const [metricsHistory, setMetricsHistory] = useState(null);
-  const [showAllPorts, setShowAllPorts] = useState(false);
-
-  // Define derived values BEFORE useEffect to avoid temporal dead zone
-  const hw = dev.hardware || {};
-  const fw = dev.firewall || {};
-  const rf = dev.redfish || {};
-  const ps = dev.ping_stats || {};
-  const op = dev.open_ports || [];
-  const hd = dev.http_details || {};
-  const hasPingStats = ps.avg != null || ps.min != null;
-
-  useEffect(() => {
-    if (dev.cpu_usage != null || dev.temperature != null || hasPingStats) {
-      axios.get(`${API}/connector/device-metrics/${dev.device_ip}`)
-        .then(r => setMetricsHistory(r.data))
-        .catch(() => {});
-    }
-  }, [dev.device_ip, dev.cpu_usage, dev.temperature, hasPingStats]);
-  const hasOpenPorts = op.length > 0;
-  const hasHttpDetails = hd.status_code != null && hd.status_code > 0;
-  const hasExtended = dev.cpu_usage != null || dev.memory_usage != null || dev.temperature != null;
-  const hasHardware = (hw.fans?.length > 0) || (hw.power_supplies?.length > 0) || (hw.temperatures?.length > 0) || (hw.disks?.length > 0) || hw.health_status;
-  const hasFirewall = dev.device_class === "zyxel-usg" || fw.active_sessions != null || fw.vpn_throughput != null;
-  const hasRedfish = rf.server_model || rf.power_watts != null || rf.ilo_firmware;
-  const ports = (dev.ports || []).sort((a, b) => parseInt(a.index) - parseInt(b.index));
-  const hasTrafficData = ports.some(p => p.in_bps != null || p.speed_bps != null);
-  const classLabel = dev.device_class === "hpe-comware" ? "HPE Comware Switch" 
-    : dev.device_class === "hpe-ilo" ? "HPE iLO Server" 
-    : dev.device_class === "zyxel-usg" ? "Zyxel USG Firewall" 
-    : null;
-
-  return (
-    <div className="border-t border-[var(--bg-border)] p-3 pl-8 bg-[var(--bg-card)]/50 animate-fade-in space-y-3" data-testid={`device-detail-${dev.device_ip}`}>
-      {/* Header info */}
-      <div className="flex flex-wrap items-center gap-2">
-        {dev.sys_descr && <p className="text-[11px] text-[var(--text-muted)] truncate flex-1">{dev.sys_descr}</p>}
-        {classLabel && <span className={`text-[9px] px-1.5 py-0.5 rounded font-medium ${
-          dev.device_class === "zyxel-usg" ? "bg-amber-500/10 border border-amber-500/20 text-amber-400" : "bg-indigo-500/10 border border-indigo-500/20 text-indigo-400"
-        }`}>{classLabel}</span>}
-      </div>
-      {dev.sys_uptime && <p className="text-[11px] text-[var(--text-muted)]">Uptime: {dev.sys_uptime}</p>}
-
-      {isPing ? (
-        <div className="space-y-3" data-testid="ping-advanced-metrics">
-          {/* Ping Statistics */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2">
-            <div className="p-2.5 rounded-lg bg-[var(--bg-panel)] border border-[var(--bg-border)]" data-testid="ping-avg">
-              <div className="flex items-center gap-1 mb-1">
-                <WifiHigh size={10} className="text-teal-400" />
-                <p className="text-[9px] text-[var(--text-muted)] uppercase tracking-wider font-medium">Latenza</p>
-              </div>
-              <p className={`text-sm font-mono font-bold ${dev.ping_ms != null && dev.ping_ms <= 50 ? "text-[var(--ok)]" : dev.ping_ms <= 150 ? "text-amber-400" : "text-[var(--critical)]"}`}>
-                {dev.ping_ms != null ? `${dev.ping_ms}ms` : "N/A"}
-              </p>
-              {hasPingStats && <p className="text-[8px] text-[var(--text-muted)] font-mono mt-0.5">{ps.min}ms / {ps.avg}ms / {ps.max}ms</p>}
-            </div>
-            <div className="p-2.5 rounded-lg bg-[var(--bg-panel)] border border-[var(--bg-border)]" data-testid="ping-jitter">
-              <div className="flex items-center gap-1 mb-1">
-                <Lightning size={10} className="text-purple-400" />
-                <p className="text-[9px] text-[var(--text-muted)] uppercase tracking-wider font-medium">Jitter</p>
-              </div>
-              <p className={`text-sm font-mono font-bold ${ps.jitter != null && ps.jitter <= 5 ? "text-[var(--ok)]" : ps.jitter <= 20 ? "text-amber-400" : "text-[var(--critical)]"}`}>
-                {ps.jitter != null ? `${ps.jitter}ms` : "N/A"}
-              </p>
-            </div>
-            <div className="p-2.5 rounded-lg bg-[var(--bg-panel)] border border-[var(--bg-border)]" data-testid="ping-loss">
-              <div className="flex items-center gap-1 mb-1">
-                <Warning size={10} className="text-red-400" />
-                <p className="text-[9px] text-[var(--text-muted)] uppercase tracking-wider font-medium">Packet Loss</p>
-              </div>
-              <p className={`text-sm font-mono font-bold ${ps.packet_loss === 0 ? "text-[var(--ok)]" : ps.packet_loss <= 20 ? "text-amber-400" : "text-[var(--critical)]"}`}>
-                {ps.packet_loss != null ? `${ps.packet_loss}%` : "N/A"}
-              </p>
-            </div>
-            <div className="p-2.5 rounded-lg bg-[var(--bg-panel)] border border-[var(--bg-border)]" data-testid="ping-ttl">
-              <div className="flex items-center gap-1 mb-1">
-                <Globe size={10} className="text-blue-400" />
-                <p className="text-[9px] text-[var(--text-muted)] uppercase tracking-wider font-medium">TTL</p>
-              </div>
-              <p className="text-sm font-mono font-bold text-blue-400">{ps.ttl || "N/A"}</p>
-              {ps.ttl && <p className="text-[8px] text-[var(--text-muted)]">{ps.ttl <= 64 ? "Linux/Mac" : ps.ttl <= 128 ? "Windows" : "Router"}</p>}
-            </div>
-            <div className="p-2.5 rounded-lg bg-[var(--bg-panel)] border border-[var(--bg-border)]" data-testid="ping-dns">
-              <div className="flex items-center gap-1 mb-1">
-                <Globe size={10} className="text-cyan-400" />
-                <p className="text-[9px] text-[var(--text-muted)] uppercase tracking-wider font-medium">DNS</p>
-              </div>
-              <p className={`text-sm font-mono font-bold ${ps.dns_ms != null && ps.dns_ms >= 0 && ps.dns_ms < 50 ? "text-[var(--ok)]" : ps.dns_ms < 200 ? "text-amber-400" : "text-[var(--critical)]"}`}>
-                {ps.dns_ms != null && ps.dns_ms >= 0 ? `${ps.dns_ms}ms` : "N/A"}
-              </p>
-            </div>
-            <div className="p-2.5 rounded-lg bg-[var(--bg-panel)] border border-[var(--bg-border)]" data-testid="ping-http">
-              <div className="flex items-center gap-1 mb-1">
-                <Globe size={10} className="text-emerald-400" />
-                <p className="text-[9px] text-[var(--text-muted)] uppercase tracking-wider font-medium">HTTP</p>
-              </div>
-              <p className={`text-sm font-mono font-bold ${dev.http_status >= 200 && dev.http_status < 400 ? "text-[var(--ok)]" : dev.http_status ? "text-[var(--medium)]" : "text-[var(--text-muted)]"}`}>
-                {dev.http_status ? `${dev.http_status}` : "N/A"}
-              </p>
-              {hasHttpDetails && hd.response_ms && <p className="text-[8px] text-[var(--text-muted)] font-mono">{hd.response_ms}ms</p>}
-            </div>
-            <div className="p-2.5 rounded-lg bg-[var(--bg-panel)] border border-[var(--bg-border)]" data-testid="ping-state">
-              <div className="flex items-center gap-1 mb-1">
-                {dev.reachable ? <CheckCircle size={10} className="text-[var(--ok)]" /> : <WifiSlash size={10} className="text-[var(--critical)]" />}
-                <p className="text-[9px] text-[var(--text-muted)] uppercase tracking-wider font-medium">Stato</p>
-              </div>
-              <p className={`text-sm font-bold ${dev.reachable ? "text-[var(--ok)]" : "text-[var(--critical)]"}`}>
-                {dev.reachable ? "Online" : "Offline"}
-              </p>
-            </div>
-          </div>
-
-          {/* HTTP Details */}
-          {hasHttpDetails && (
-            <div className="space-y-1" data-testid="http-details-section">
-              <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider font-medium flex items-center gap-1"><Globe size={10} /> Dettagli HTTP</p>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                {hd.server_header && (
-                  <div className="px-2 py-1.5 rounded-md bg-[var(--bg-panel)] border border-[var(--bg-border)]">
-                    <p className="text-[8px] text-[var(--text-muted)]">Server</p>
-                    <p className="text-[10px] font-mono text-[var(--text-primary)]">{hd.server_header}</p>
-                  </div>
-                )}
-                {hd.title && (
-                  <div className="px-2 py-1.5 rounded-md bg-[var(--bg-panel)] border border-[var(--bg-border)]">
-                    <p className="text-[8px] text-[var(--text-muted)]">Titolo Pagina</p>
-                    <p className="text-[10px] text-[var(--text-primary)] truncate">{hd.title}</p>
-                  </div>
-                )}
-                {hd.content_type && (
-                  <div className="px-2 py-1.5 rounded-md bg-[var(--bg-panel)] border border-[var(--bg-border)]">
-                    <p className="text-[8px] text-[var(--text-muted)]">Content-Type</p>
-                    <p className="text-[10px] font-mono text-[var(--text-primary)] truncate">{hd.content_type}</p>
-                  </div>
-                )}
-                {hd.response_ms && (
-                  <div className="px-2 py-1.5 rounded-md bg-[var(--bg-panel)] border border-[var(--bg-border)]">
-                    <p className="text-[8px] text-[var(--text-muted)]">Tempo Risposta</p>
-                    <p className="text-[10px] font-mono font-bold text-teal-400">{hd.response_ms}ms</p>
-                  </div>
-                )}
-              </div>
-              {/* SSL Certificate */}
-              {(hd.ssl_expiry || hd.ssl_issuer) && (
-                <div className="grid grid-cols-2 gap-2 mt-1">
-                  {hd.ssl_expiry && (
-                    <div className={`px-2 py-1.5 rounded-md border ${
-                      new Date(hd.ssl_expiry) < new Date(Date.now() + 30*24*60*60*1000)
-                        ? "bg-[var(--critical-bg)] border-[var(--critical-border)]"
-                        : "bg-[var(--low-bg)] border-[var(--low-border)]"
-                    }`} data-testid="ssl-expiry">
-                      <p className="text-[8px] text-[var(--text-muted)]">Certificato SSL</p>
-                      <p className={`text-[10px] font-mono font-bold ${
-                        new Date(hd.ssl_expiry) < new Date(Date.now() + 30*24*60*60*1000) ? "text-[var(--critical)]" : "text-[var(--ok)]"
-                      }`}>
-                        Scade: {new Date(hd.ssl_expiry).toLocaleDateString("it-IT")}
-                      </p>
-                    </div>
-                  )}
-                  {hd.ssl_issuer && (
-                    <div className="px-2 py-1.5 rounded-md bg-[var(--bg-panel)] border border-[var(--bg-border)]">
-                      <p className="text-[8px] text-[var(--text-muted)]">Emittente SSL</p>
-                      <p className="text-[10px] font-mono text-[var(--text-primary)] truncate">{hd.ssl_issuer}</p>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Open Ports */}
-          {hasOpenPorts && (
-            <div className="space-y-1" data-testid="open-ports-section">
-              <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider font-medium flex items-center gap-1"><ShieldCheck size={10} /> Porte Aperte ({op.length})</p>
-              <div className="flex flex-wrap gap-1">
-                {op.map((p, i) => (
-                  <span key={i} className="text-[9px] px-2 py-1 rounded-md bg-[var(--low-bg)] border border-[var(--low-border)] text-[var(--ok)] font-mono" data-testid={`port-${p.port}`}>
-                    {p.port}/{p.name}
-                  </span>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-      ) : (
-        <>
-          {/* Extended Metrics Gauges */}
-          {hasExtended && (
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2" data-testid="extended-metrics">
-              <GaugeWidget
-                label="CPU" value={dev.cpu_usage} unit="%" 
-                icon={<Cpu size={12} className="text-blue-400" />}
-                thresholds={{ warn: 70, crit: 90 }}
-              />
-              <GaugeWidget
-                label="RAM" value={dev.memory_usage} unit="%"
-                icon={<HardDrive size={12} className="text-purple-400" />}
-                thresholds={{ warn: 80, crit: 95 }}
-              />
-              <GaugeWidget
-                label="Temp" value={dev.temperature} max={100} unit="C"
-                icon={<Thermometer size={12} className="text-orange-400" />}
-                thresholds={{ warn: 60, crit: 75 }}
-              />
-            </div>
-          )}
-
-          {/* Hardware Health (ILO) */}
-          {hasHardware && (
-            <div className="space-y-2" data-testid="hardware-health">
-              {hw.health_status && (
-                <div className="flex items-center gap-2">
-                  <span className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider font-medium">Salute Server:</span>
-                  <span className={`text-xs font-bold px-2 py-0.5 rounded ${
-                    hw.health_status === "ok" ? "text-[var(--ok)] bg-[var(--low-bg)]" :
-                    hw.health_status === "degraded" ? "text-[var(--medium)] bg-yellow-500/10" :
-                    "text-[var(--critical)] bg-[var(--critical-bg)]"
-                  }`}>
-                    {hw.health_status === "ok" ? "OK" : hw.health_status === "degraded" ? "DEGRADATO" : hw.health_status === "failed" ? "GUASTO" : hw.health_status?.toUpperCase()}
-                  </span>
-                </div>
-              )}
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
-                {/* Temperature Sensors */}
-                {hw.temperatures?.length > 0 && (
-                  <div className="space-y-1" data-testid="hw-temperatures">
-                    <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider font-medium flex items-center gap-1"><Thermometer size={10} /> Temperature</p>
-                    {hw.temperatures.map((t, i) => (
-                      <div key={i} className={`px-2 py-1 rounded-md border ${
-                        t.condition === "ok" ? "bg-[var(--low-bg)] border-[var(--low-border)]" : "bg-[var(--critical-bg)] border-[var(--critical-border)]"
-                      } flex items-center justify-between`}>
-                        <span className="text-[10px] text-[var(--text-muted)] truncate">{t.locale}</span>
-                        <span className={`text-[10px] font-mono font-bold ${
-                          t.value > 75 ? "text-[var(--critical)]" : t.value > 60 ? "text-[var(--medium)]" : "text-[var(--ok)]"
-                        }`}>{t.value}C</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                {/* Fans */}
-                {hw.fans?.length > 0 && (
-                  <div className="space-y-1" data-testid="hw-fans">
-                    <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider font-medium flex items-center gap-1"><Fan size={10} /> Ventole</p>
-                    {hw.fans.map((f, i) => (
-                      <HwStatusBadge key={i} condition={f.condition} label={`${f.locale}${f.speed ? ` (${f.speed}%)` : ""}`} />
-                    ))}
-                  </div>
-                )}
-                {/* Power Supplies */}
-                {hw.power_supplies?.length > 0 && (
-                  <div className="space-y-1" data-testid="hw-psu">
-                    <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider font-medium flex items-center gap-1"><BatteryFull size={10} /> Alimentatori</p>
-                    {hw.power_supplies.map((p, i) => (
-                      <HwStatusBadge key={i} condition={p.condition} label={p.name} />
-                    ))}
-                  </div>
-                )}
-                {/* Disks */}
-                {hw.disks?.length > 0 && (
-                  <div className="space-y-1" data-testid="hw-disks">
-                    <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider font-medium flex items-center gap-1"><HardDrive size={10} /> Dischi</p>
-                    {hw.disks.map((d, i) => (
-                      <HwStatusBadge key={i} condition={d.status} label={d.name} />
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
-
-          {/* Redfish / iLO Deep Metrics */}
-          {hasRedfish && (
-            <div className="space-y-2" data-testid="redfish-metrics">
-              <div className="flex items-center gap-2 flex-wrap">
-                <DesktopTower size={14} className="text-teal-400" />
-                <span className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider font-medium">Redfish iLO</span>
-                {rf.server_model && <span className="text-[9px] px-1.5 py-0.5 rounded bg-teal-500/10 border border-teal-500/20 text-teal-400 font-mono">{rf.server_model}</span>}
-                {rf.ilo_firmware && <span className="text-[9px] text-[var(--text-muted)] font-mono">iLO FW: {rf.ilo_firmware}</span>}
-                {rf.serial_number && <span className="text-[9px] text-[var(--text-muted)] font-mono">S/N: {rf.serial_number}</span>}
-              </div>
-              {/* Power Control Panel */}
-              <PowerControlPanel deviceIp={dev.device_ip} />
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                {rf.power_watts != null && (
-                  <div className="p-2.5 rounded-lg bg-[var(--bg-panel)] border border-[var(--bg-border)]" data-testid="rf-power">
-                    <div className="flex items-center gap-1.5 mb-1">
-                      <PlugCharging size={12} className="text-yellow-400" />
-                      <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider font-medium">Consumo</p>
-                    </div>
-                    <p className="text-sm font-mono font-bold text-yellow-400">{rf.power_watts}W</p>
-                  </div>
-                )}
-                {rf.total_memory_gb != null && (
-                  <div className="p-2.5 rounded-lg bg-[var(--bg-panel)] border border-[var(--bg-border)]" data-testid="rf-memory">
-                    <div className="flex items-center gap-1.5 mb-1">
-                      <Memory size={12} className="text-purple-400" />
-                      <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider font-medium">RAM Totale</p>
-                    </div>
-                    <p className="text-sm font-mono font-bold text-purple-400">{rf.total_memory_gb} GB</p>
-                  </div>
-                )}
-                {rf.bios_version && (
-                  <div className="p-2.5 rounded-lg bg-[var(--bg-panel)] border border-[var(--bg-border)]" data-testid="rf-bios">
-                    <div className="flex items-center gap-1.5 mb-1">
-                      <Cpu size={12} className="text-blue-400" />
-                      <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider font-medium">BIOS</p>
-                    </div>
-                    <p className="text-xs font-mono text-[var(--text-primary)]">{rf.bios_version}</p>
-                  </div>
-                )}
-                {rf.ilo_license && (
-                  <div className="p-2.5 rounded-lg bg-[var(--bg-panel)] border border-[var(--bg-border)]" data-testid="rf-license">
-                    <div className="flex items-center gap-1.5 mb-1">
-                      <ShieldCheck size={12} className="text-emerald-400" />
-                      <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider font-medium">Licenza</p>
-                    </div>
-                    <p className="text-xs font-mono text-emerald-400">{rf.ilo_license}</p>
-                  </div>
-                )}
-              </div>
-              {rf.memory_dimms?.length > 0 && (
-                <div className="space-y-1" data-testid="rf-dimms">
-                  <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider font-medium flex items-center gap-1"><Memory size={10} /> Moduli RAM ({rf.memory_dimms.length})</p>
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-1">
-                    {rf.memory_dimms.map((d, i) => (
-                      <div key={i} className="px-2 py-1 rounded-md border bg-[var(--low-bg)] border-[var(--low-border)] flex items-center justify-between gap-1">
-                        <span className="text-[9px] text-[var(--text-muted)] truncate">{d.name}</span>
-                        <span className="text-[9px] font-mono font-bold text-[var(--text-primary)]">{d.size_gb}GB {d.speed_mhz}MHz</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-              {rf.network_adapters?.length > 0 && (
-                <div className="space-y-1" data-testid="rf-nics">
-                  <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider font-medium flex items-center gap-1"><WifiMedium size={10} /> NIC ({rf.network_adapters.length})</p>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-1">
-                    {rf.network_adapters.map((n, i) => (
-                      <div key={i} className="px-2 py-1 rounded-md border bg-[var(--bg-panel)] border-[var(--bg-border)] flex items-center justify-between gap-2">
-                        <span className="text-[9px] text-[var(--text-muted)] truncate">{n.name}</span>
-                        <div className="flex items-center gap-2 text-[9px] font-mono">
-                          {n.ipv4 && <span className="text-teal-400">{n.ipv4}</span>}
-                          {n.mac && <span className="text-[var(--text-muted)]">{n.mac}</span>}
-                          {n.speed_mbps && <span className="text-[var(--text-primary)]">{n.speed_mbps >= 1000 ? `${n.speed_mbps/1000}G` : `${n.speed_mbps}M`}</span>}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-              {rf.storage_controllers?.length > 0 && (
-                <div className="space-y-1" data-testid="rf-storage">
-                  <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider font-medium flex items-center gap-1"><Database size={10} /> Storage</p>
-                  {rf.storage_controllers.map((c, ci) => (
-                    <div key={ci} className="space-y-1">
-                      <div className="px-2 py-1 rounded-md border bg-[var(--bg-panel)] border-[var(--bg-border)] flex items-center justify-between">
-                        <span className="text-[9px] font-mono text-[var(--text-primary)]">{c.name || `Controller ${ci+1}`}</span>
-                        <HwStatusBadge condition={c.status?.toLowerCase() || "ok"} label="" />
-                      </div>
-                      {c.logical_drives?.length > 0 && (
-                        <div className="grid grid-cols-2 sm:grid-cols-3 gap-1 pl-2">
-                          {c.logical_drives.map((ld, li) => (
-                            <div key={li} className="px-2 py-1 rounded-md border bg-[var(--low-bg)] border-[var(--low-border)] flex items-center justify-between gap-1">
-                              <span className="text-[9px] text-[var(--text-muted)] truncate">{ld.name || `LUN ${li}`}</span>
-                              <div className="flex items-center gap-1 text-[9px] font-mono">
-                                {ld.raid && <span className="text-indigo-400">{ld.raid}</span>}
-                                {ld.capacity_gb && <span className="text-[var(--text-primary)]">{ld.capacity_gb}GB</span>}
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Zyxel Firewall Metrics */}
-          {hasFirewall && (
-            <div className="space-y-2" data-testid="firewall-metrics">
-              <div className="flex items-center gap-2">
-                <ShieldCheck size={14} className="text-amber-400" />
-                <span className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider font-medium">Firewall Status</span>
-                {fw.product_name && <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/10 border border-amber-500/20 text-amber-400 font-mono">{fw.product_name}</span>}
-                {fw.firmware && <span className="text-[9px] text-[var(--text-muted)] font-mono">FW: {fw.firmware}</span>}
-                {fw.serial_number && <span className="text-[9px] text-[var(--text-muted)] font-mono">S/N: {fw.serial_number}</span>}
-              </div>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                {/* Active Sessions */}
-                {fw.active_sessions != null && (
-                  <div className="p-2.5 rounded-lg bg-[var(--bg-panel)] border border-[var(--bg-border)]" data-testid="fw-sessions">
-                    <div className="flex items-center justify-between mb-1">
-                      <div className="flex items-center gap-1.5">
-                        <Globe size={12} className="text-cyan-400" />
-                        <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider font-medium">Sessioni</p>
-                      </div>
-                      <p className={`text-sm font-mono font-bold ${
-                        fw.active_sessions > 50000 ? "text-[var(--critical)]" : fw.active_sessions > 30000 ? "text-[var(--medium)]" : "text-[var(--ok)]"
-                      }`}>{fw.active_sessions.toLocaleString()}</p>
-                    </div>
-                    <div className="w-full h-1.5 rounded-full bg-[var(--bg-hover)] overflow-hidden">
-                      <div className="h-full rounded-full transition-all duration-700" style={{ 
-                        width: `${Math.min((fw.active_sessions / 100000) * 100, 100)}%`,
-                        backgroundColor: fw.active_sessions > 50000 ? "var(--critical)" : fw.active_sessions > 30000 ? "var(--medium)" : "var(--ok)"
-                      }} />
-                    </div>
-                  </div>
-                )}
-                {/* VPN Throughput */}
-                {fw.vpn_throughput != null && (
-                  <div className="p-2.5 rounded-lg bg-[var(--bg-panel)] border border-[var(--bg-border)]" data-testid="fw-vpn">
-                    <div className="flex items-center gap-1.5 mb-1">
-                      <ArrowsClockwise size={12} className="text-emerald-400" />
-                      <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider font-medium">VPN IPSec</p>
-                    </div>
-                    <p className="text-sm font-mono font-bold text-emerald-400">{formatBps(fw.vpn_throughput)}</p>
-                  </div>
-                )}
-                {/* Flash Usage */}
-                {fw.flash_usage != null && (
-                  <div className="p-2.5 rounded-lg bg-[var(--bg-panel)] border border-[var(--bg-border)]" data-testid="fw-flash">
-                    <div className="flex items-center justify-between mb-1">
-                      <div className="flex items-center gap-1.5">
-                        <FloppyDisk size={12} className="text-purple-400" />
-                        <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider font-medium">Flash</p>
-                      </div>
-                      <p className={`text-sm font-mono font-bold ${
-                        fw.flash_usage > 90 ? "text-[var(--critical)]" : fw.flash_usage > 70 ? "text-[var(--medium)]" : "text-[var(--ok)]"
-                      }`}>{fw.flash_usage}%</p>
-                    </div>
-                    <div className="w-full h-1.5 rounded-full bg-[var(--bg-hover)] overflow-hidden">
-                      <div className="h-full rounded-full transition-all duration-700" style={{ 
-                        width: `${fw.flash_usage}%`,
-                        backgroundColor: fw.flash_usage > 90 ? "var(--critical)" : fw.flash_usage > 70 ? "var(--medium)" : "var(--ok)"
-                      }} />
-                    </div>
-                  </div>
-                )}
-                {/* CPU Detail */}
-                {fw.cpu_detail && (
-                  <div className="p-2.5 rounded-lg bg-[var(--bg-panel)] border border-[var(--bg-border)]" data-testid="fw-cpu-detail">
-                    <div className="flex items-center gap-1.5 mb-1.5">
-                      <Cpu size={12} className="text-blue-400" />
-                      <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider font-medium">CPU Detail</p>
-                    </div>
-                    <div className="grid grid-cols-2 gap-1 text-[9px] font-mono">
-                      {fw.cpu_detail.current != null && <div className="flex justify-between"><span className="text-[var(--text-muted)]">Now</span><span className="text-[var(--text-primary)]">{fw.cpu_detail.current}%</span></div>}
-                      {fw.cpu_detail.avg_5sec != null && <div className="flex justify-between"><span className="text-[var(--text-muted)]">5s</span><span className="text-[var(--text-primary)]">{fw.cpu_detail.avg_5sec}%</span></div>}
-                      {fw.cpu_detail.avg_1min != null && <div className="flex justify-between"><span className="text-[var(--text-muted)]">1m</span><span className="text-[var(--text-primary)]">{fw.cpu_detail.avg_1min}%</span></div>}
-                      {fw.cpu_detail.avg_5min != null && <div className="flex justify-between"><span className="text-[var(--text-muted)]">5m</span><span className="text-[var(--text-primary)]">{fw.cpu_detail.avg_5min}%</span></div>}
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* Metrics History Mini-Chart */}
-          {metricsHistory && metricsHistory.length > 1 && (
-            <div className="space-y-1" data-testid="metrics-history">
-              <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider font-medium">Trend ultime 24h</p>
-              <div className="h-16 rounded-lg bg-[var(--bg-panel)] border border-[var(--bg-border)] p-1 flex items-end gap-px overflow-hidden">
-                {metricsHistory.slice(-60).map((m, i) => {
-                  const val = m.cpu_usage ?? m.temperature ?? 0;
-                  const h = Math.max(2, (val / 100) * 100);
-                  const color = val > 90 ? "var(--critical)" : val > 70 ? "var(--medium)" : "var(--ok)";
-                  return <div key={i} className="flex-1 rounded-t-sm transition-all" style={{ height: `${h}%`, backgroundColor: color, minWidth: 2, opacity: 0.8 }} title={`${m.timestamp?.split("T")[1]?.substring(0,5) || ""}: CPU ${m.cpu_usage ?? "-"}% | Temp ${m.temperature ?? "-"}C`} />;
-                })}
-              </div>
-              <div className="flex justify-between text-[9px] text-[var(--text-muted)]">
-                <span>24h fa</span>
-                <span className="flex items-center gap-2">
-                  <span className="flex items-center gap-0.5"><div className="w-2 h-2 rounded-sm" style={{ backgroundColor: "var(--ok)" }} />CPU</span>
-                </span>
-                <span>ora</span>
-              </div>
-            </div>
-          )}
-
-          {/* Port Status Grid + Traffic Table */}
-          {ports.length > 0 ? (
-            <div className="space-y-2">
-              {/* Visual port grid */}
-              <div className="grid grid-cols-6 sm:grid-cols-8 md:grid-cols-12 gap-1.5">
-                {ports.map((port, pi) => (
-                  <div key={pi} 
-                    title={`Porta ${port.index}: ${port.status}${port.speed_bps ? ` | ${formatSpeed(port.speed_bps)}` : ""}${port.in_bps != null ? ` | IN:${formatBps(port.in_bps)} OUT:${formatBps(port.out_bps)}` : ""}${(port.in_errors||0)+(port.out_errors||0) > 0 ? ` | Errori: ${port.in_errors||0}/${port.out_errors||0}` : ""}`}
-                    className={`h-6 rounded flex items-center justify-center text-[9px] font-mono border cursor-default ${
-                      port.status === "up" ? "bg-[var(--low-bg)] border-[var(--low-border)] text-[var(--ok)]"
-                      : port.status === "down" ? "bg-[var(--critical-bg)] border-[var(--critical-border)] text-[var(--critical)]"
-                      : "bg-[var(--bg-hover)] border-[var(--bg-border)] text-[var(--text-muted)]"
-                    }`}>{port.index}</div>
-                ))}
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="flex items-center gap-1 text-[10px] text-[var(--text-muted)]"><div className="w-3 h-3 rounded bg-[var(--low-bg)] border border-[var(--low-border)]"></div>UP</span>
-                <span className="flex items-center gap-1 text-[10px] text-[var(--text-muted)]"><div className="w-3 h-3 rounded bg-[var(--critical-bg)] border border-[var(--critical-border)]"></div>DOWN</span>
-                {hasTrafficData && (
-                  <button onClick={() => setShowAllPorts(!showAllPorts)} className="ml-auto text-[10px] text-indigo-400 hover:text-indigo-300 transition-colors" data-testid="toggle-traffic-table">
-                    {showAllPorts ? "Nascondi traffico" : "Mostra traffico"}
-                  </button>
-                )}
-              </div>
-
-              {/* Traffic detail table */}
-              {showAllPorts && hasTrafficData && (
-                <div className="space-y-0.5 mt-1" data-testid="traffic-table">
-                  <div className="grid grid-cols-12 gap-1 items-center px-2 py-1 text-[9px] font-bold text-[var(--text-muted)] uppercase tracking-wider">
-                    <div className="col-span-1"></div>
-                    <div className="col-span-2">Porta</div>
-                    <div className="col-span-2">Speed</div>
-                    <div className="col-span-2">IN</div>
-                    <div className="col-span-2">OUT</div>
-                    <div className="col-span-3 text-right">Errori I/O</div>
-                  </div>
-                  {ports.filter(p => p.status === "up").map((port, pi) => (
-                    <PortTrafficRow key={pi} port={port} />
-                  ))}
-                </div>
-              )}
-            </div>
-          ) : <p className="text-xs text-[var(--text-muted)]">Nessun dato porte</p>}
-        </>
+    <div className="flex items-center justify-between mb-2">
+      <h4 className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">{children}</h4>
+      {count !== undefined && (
+        <span className="text-[10px] bg-indigo-500/20 text-indigo-300 px-1.5 py-0.5 rounded-full">{count}</span>
       )}
     </div>
   );
+}
+
+function DeviceInfo({ device }) {
+  if (!device) return null;
+  const reachable = device.reachable;
+  return (
+    <div className="space-y-2" data-testid="device-info-section">
+      <SectionTitle>Informazioni Dispositivo</SectionTitle>
+      <div className="bg-[var(--bg-deep)]/50 rounded-lg p-3 space-y-1.5 text-xs">
+        <div className="flex justify-between">
+          <span className="text-[var(--text-muted)]">Stato</span>
+          <span className={`flex items-center gap-1 ${reachable ? "text-emerald-400" : "text-red-400"}`}>
+            {reachable ? <WifiHigh size={12} /> : <WifiSlash size={12} />}
+            {reachable ? "Online" : "Offline"}
+          </span>
+        </div>
+        {device.device_name && (
+          <div className="flex justify-between">
+            <span className="text-[var(--text-muted)]">Nome</span>
+            <span className="text-[var(--text-primary)] text-right max-w-[200px] truncate">{device.device_name}</span>
+          </div>
+        )}
+        {device.monitor_type && (
+          <div className="flex justify-between">
+            <span className="text-[var(--text-muted)]">Tipo Monitor</span>
+            <span className="text-[var(--text-primary)] uppercase">{device.monitor_type}</span>
+          </div>
+        )}
+        {device.ping_ms !== undefined && device.ping_ms !== null && (
+          <div className="flex justify-between">
+            <span className="text-[var(--text-muted)]">Latenza</span>
+            <span className="text-[var(--text-primary)]">{device.ping_ms} ms</span>
+          </div>
+        )}
+        {device.sys_descr && (
+          <div className="mt-2 pt-2 border-t border-[var(--border-subtle)]">
+            <span className="text-[var(--text-muted)] block mb-1">System Description</span>
+            <span className="text-[var(--text-primary)] text-[10px] break-words">{device.sys_descr}</span>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function AlertsSection({ alerts, activeCount }) {
+  if (!alerts?.length) return (
+    <div data-testid="alerts-section">
+      <SectionTitle count={0}>Alert</SectionTitle>
+      <p className="text-xs text-[var(--text-muted)] text-center py-2">Nessun alert</p>
+    </div>
+  );
+  return (
+    <div data-testid="alerts-section">
+      <SectionTitle count={activeCount}>Alert Attivi</SectionTitle>
+      <div className="space-y-1.5 max-h-40 overflow-y-auto">
+        {alerts.slice(0, 10).map((a, i) => {
+          const sev = SEVERITY_COLORS[a.severity] || SEVERITY_COLORS.low;
+          return (
+            <div key={i} className={`${sev.bg} ${sev.border} border rounded-md px-2.5 py-1.5 text-xs`}>
+              <div className="flex items-center gap-1.5">
+                <Warning size={12} className={sev.text} weight="fill" />
+                <span className={`${sev.text} font-medium uppercase text-[10px]`}>{a.severity}</span>
+                <span className="text-[var(--text-muted)] text-[10px] ml-auto">{formatTime(a.created_at)}</span>
+              </div>
+              <p className="text-[var(--text-primary)] mt-0.5 text-[11px]">{a.message}</p>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function PortSpeedsSection({ speeds }) {
+  if (!speeds?.length) return null;
+  return (
+    <div data-testid="port-speeds-section">
+      <SectionTitle count={speeds.length}>Porte High-Speed</SectionTitle>
+      <div className="grid grid-cols-2 gap-1.5">
+        {speeds.map((p, i) => (
+          <div key={i} className="bg-orange-500/10 border border-orange-500/20 rounded px-2 py-1 text-xs">
+            <span className="text-orange-400 font-mono">Port {p.port}</span>
+            <span className="text-[var(--text-muted)] ml-1">{p.speed_mbps >= 10000 ? "10G" : `${p.speed_mbps / 1000}G`}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ConnectedEndpoints({ endpoints }) {
+  if (!endpoints?.length) return null;
+  return (
+    <div data-testid="connected-endpoints-section">
+      <SectionTitle count={endpoints.length}>Endpoint Connessi</SectionTitle>
+      <div className="space-y-1 max-h-48 overflow-y-auto">
+        {endpoints.map((ep, i) => (
+          <div key={i} className="bg-[var(--bg-deep)]/50 rounded px-2.5 py-1.5 text-xs flex items-center gap-2">
+            <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 flex-shrink-0" />
+            <div className="flex-1 min-w-0">
+              <div className="text-[var(--text-primary)] truncate">{ep.hostname || ep.ip || ep.mac}</div>
+              <div className="text-[10px] text-[var(--text-muted)] font-mono">{ep.mac} | Port {ep.port}</div>
+            </div>
+            {ep.ip && <span className="text-[10px] text-indigo-400 font-mono flex-shrink-0">{ep.ip}</span>}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function LldpSection({ neighbors }) {
+  if (!neighbors?.length) return null;
+  return (
+    <div data-testid="lldp-section">
+      <SectionTitle count={neighbors.length}>LLDP Neighbors</SectionTitle>
+      <div className="space-y-1">
+        {neighbors.map((n, i) => (
+          <div key={i} className="bg-cyan-500/10 border border-cyan-500/20 rounded px-2.5 py-1.5 text-xs">
+            <div className="text-cyan-300 font-medium">{n.remote_name || n.remote_ip}</div>
+            <div className="text-[10px] text-[var(--text-muted)]">
+              Port {n.local_port} &rarr; Port {n.remote_port}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function MacConnections({ connections }) {
+  if (!connections?.length) return null;
+  return (
+    <div data-testid="mac-connections-section">
+      <SectionTitle count={connections.length}>Connessioni MAC</SectionTitle>
+      <div className="space-y-1">
+        {connections.map((c, i) => (
+          <div key={i} className="bg-indigo-500/10 border border-indigo-500/20 rounded px-2.5 py-1.5 text-xs">
+            <span className="text-indigo-300 font-mono">Port {c.from_port}</span>
+            <span className="text-[var(--text-muted)] mx-1">&rarr;</span>
+            <span className="text-[var(--text-primary)]">{c.to_ip}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function EndpointInfo({ data }) {
+  if (!data) return null;
+  return (
+    <div className="space-y-2" data-testid="endpoint-info-section">
+      <SectionTitle>Endpoint Scoperto</SectionTitle>
+      <div className="bg-[var(--bg-deep)]/50 rounded-lg p-3 space-y-1.5 text-xs">
+        {data.hostname && (
+          <div className="flex justify-between">
+            <span className="text-[var(--text-muted)]">Hostname</span>
+            <span className="text-[var(--text-primary)]">{data.hostname}</span>
+          </div>
+        )}
+        {data.ip && (
+          <div className="flex justify-between">
+            <span className="text-[var(--text-muted)]">IP</span>
+            <span className="text-[var(--text-primary)] font-mono">{data.ip}</span>
+          </div>
+        )}
+        {data.mac && (
+          <div className="flex justify-between">
+            <span className="text-[var(--text-muted)]">MAC Address</span>
+            <span className="text-[var(--text-primary)] font-mono text-[10px]">{data.mac}</span>
+          </div>
+        )}
+        {data.switch_port && (
+          <div className="flex justify-between">
+            <span className="text-[var(--text-muted)]">Porta Switch</span>
+            <span className="text-[var(--text-primary)]">Port {data.switch_port}</span>
+          </div>
+        )}
+        {data.vlan && (
+          <div className="flex justify-between">
+            <span className="text-[var(--text-muted)]">VLAN</span>
+            <span className="text-[var(--text-primary)]">{data.vlan}</span>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SectionTitle2({ children }) {
+  return <h4 className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-2">{children}</h4>;
+}
+
+function formatTime(iso) {
+  if (!iso) return "";
+  try {
+    const d = new Date(iso);
+    return d.toLocaleString("it-IT", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+  } catch {
+    return iso;
+  }
 }

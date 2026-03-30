@@ -712,3 +712,89 @@ async def reset_topology_layout(client_id: str, current_user: dict = Depends(get
     """Delete custom layout and revert to auto-inferred topology."""
     await db.topology_layouts.delete_one({"client_id": client_id})
     return {"status": "ok", "message": "Layout resettato"}
+
+
+
+@router.get("/network/device-detail/{client_id}/{device_ip}")
+async def get_device_detail(client_id: str, device_ip: str, current_user: dict = Depends(get_current_user)):
+    """Get detailed info for a specific device: alerts, connected endpoints, LLDP neighbors."""
+    # Device info
+    device = await db.device_poll_status.find_one(
+        {"client_id": client_id, "device_ip": device_ip}, {"_id": 0}
+    )
+    if not device:
+        raise HTTPException(status_code=404, detail="Dispositivo non trovato")
+
+    # Alerts for this device
+    alerts = await db.alerts.find(
+        {"device_ip": device_ip},
+        {"_id": 0, "severity": 1, "message": 1, "created_at": 1, "acknowledged": 1, "source": 1}
+    ).sort("created_at", -1).to_list(20)
+
+    # Connected endpoints (MAC discovery)
+    connected = await db.discovered_endpoints.find(
+        {"client_id": client_id, "switch_ip": device_ip}, {"_id": 0}
+    ).to_list(100)
+
+    # LLDP neighbors for this device
+    lldp = await db.lldp_neighbors.find(
+        {"client_id": client_id, "local_ip": device_ip}, {"_id": 0}
+    ).to_list(50)
+
+    # Port speeds
+    port_speeds = await db.port_speeds.find_one(
+        {"client_id": client_id, "switch_ip": device_ip}, {"_id": 0}
+    )
+
+    # MAC connections from this device
+    mac_conns = await db.mac_connections.find(
+        {"client_id": client_id, "from_ip": device_ip}, {"_id": 0}
+    ).to_list(50)
+
+    return {
+        "device": device,
+        "alerts": alerts,
+        "alerts_count": len(alerts),
+        "active_alerts": sum(1 for a in alerts if not a.get("acknowledged")),
+        "connected_endpoints": connected,
+        "connected_count": len(connected),
+        "lldp_neighbors": lldp,
+        "port_speeds": port_speeds.get("high_speed_ports", []) if port_speeds else [],
+        "mac_connections": mac_conns,
+    }
+
+
+@router.get("/network/alerts-summary/{client_id}")
+async def get_topology_alerts_summary(client_id: str, current_user: dict = Depends(get_current_user)):
+    """Get alert counts per device IP for topology overlay."""
+    # Get all device IPs for this client
+    devices = await db.device_poll_status.find(
+        {"client_id": client_id}, {"_id": 0, "device_ip": 1}
+    ).to_list(500)
+    device_ips = [d["device_ip"] for d in devices]
+
+    # Get alerts for these devices
+    pipeline = [
+        {"$match": {"device_ip": {"$in": device_ips}, "acknowledged": {"$ne": True}}},
+        {"$group": {
+            "_id": "$device_ip",
+            "total": {"$sum": 1},
+            "critical": {"$sum": {"$cond": [{"$eq": ["$severity", "critical"]}, 1, 0]}},
+            "high": {"$sum": {"$cond": [{"$eq": ["$severity", "high"]}, 1, 0]}},
+            "medium": {"$sum": {"$cond": [{"$eq": ["$severity", "medium"]}, 1, 0]}},
+            "low": {"$sum": {"$cond": [{"$eq": ["$severity", "low"]}, 1, 0]}},
+        }}
+    ]
+    results = await db.alerts.aggregate(pipeline).to_list(500)
+
+    alert_map = {}
+    for r in results:
+        alert_map[r["_id"]] = {
+            "total": r["total"],
+            "critical": r["critical"],
+            "high": r["high"],
+            "medium": r["medium"],
+            "low": r["low"],
+        }
+
+    return {"client_id": client_id, "alerts": alert_map}
