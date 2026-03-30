@@ -130,7 +130,7 @@ export default function InventoryPage() {
       </div>
 
       {/* Table */}
-      <div className="relative">
+      <div className="relative min-h-[600px]">
         <div className={`noc-panel overflow-x-auto transition-all ${selectedDevice ? "mr-[390px]" : ""}`}>
           <table className="alert-table w-full" data-testid="inventory-table">
           <thead>

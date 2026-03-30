@@ -76,7 +76,7 @@ export default function DevicesPage() {
         </Button>
       </div>
 
-      <div className="relative">
+      <div className="relative min-h-[600px]">
         <div className={`noc-panel overflow-hidden transition-all ${selectedDevice ? "mr-[390px]" : ""}`}>
           <table className="alert-table" data-testid="devices-table">
             <thead>
