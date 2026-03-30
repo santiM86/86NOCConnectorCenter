@@ -90,15 +90,15 @@ async def get_alerts(
     if severity: query["severity"] = severity
     if client_id: query["client_id"] = client_id
     alerts = await db.alerts.find(query, {"_id": 0}).sort("created_at", -1).to_list(limit)
-    device_ids = list(set(a["device_id"] for a in alerts))
-    client_ids = list(set(a["client_id"] for a in alerts))
+    device_ids = list(set(a.get("device_id", "") for a in alerts if a.get("device_id")))
+    client_ids = list(set(a.get("client_id", "") for a in alerts if a.get("client_id")))
     devices = await db.devices.find({"id": {"$in": device_ids}}, {"_id": 0}).to_list(1000)
     clients = await db.clients.find({"id": {"$in": client_ids}}, {"_id": 0}).to_list(1000)
     device_map = {d["id"]: d for d in devices}
     client_map = {c["id"]: c["name"] for c in clients}
     result = []
     for a in alerts:
-        device = device_map.get(a["device_id"], {})
+        device = device_map.get(a.get("device_id", ""), {})
         if device_type and device.get("device_type") != device_type:
             continue
         a["client_name"] = client_map.get(a["client_id"], "")
@@ -114,8 +114,8 @@ async def get_alert(alert_id: str, current_user: dict = Depends(get_current_user
     alert = await db.alerts.find_one({"id": alert_id}, {"_id": 0})
     if not alert:
         raise HTTPException(status_code=404, detail="Alert not found")
-    device = await db.devices.find_one({"id": alert["device_id"]}, {"_id": 0})
-    client = await db.clients.find_one({"id": alert["client_id"]}, {"_id": 0})
+    device = await db.devices.find_one({"id": alert.get("device_id", "")}, {"_id": 0})
+    client = await db.clients.find_one({"id": alert.get("client_id", "")}, {"_id": 0})
     alert["client_name"] = client["name"] if client else ""
     alert["device_name"] = device["name"] if device else ""
     alert["device_type"] = device["device_type"] if device else ""
