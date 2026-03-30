@@ -36,13 +36,20 @@ RDP Session (opzionale) -> tray_app.ps1 (monitoring/controllo)
   - Sopravvive a disconnessione RDP
   - Riavvio automatico su crash
   - Integrato nell'installer GUI
-  - installa_servizio.bat per installazione standalone
+- [x] **Topologia Enterprise 6-Layer** (Verificata 30/03/2026):
+  - Internet -> Firewall -> Core Switch -> Distribution -> Access -> iLO/Management
+  - Edge LLDP con etichette porta-per-porta
+  - Edge MAC Table con etichette velocita (10G)
+  - Edge inferiti con label 10G Uplink
+  - Health score (reachability, latency, port health)
 
 ## Key API Endpoints (Discovery)
 - POST `/api/connector/lldp-neighbors` - Dati LLDP dal connettore
 - POST `/api/connector/network-discovery` - MAC tables + port speeds
 - GET `/api/network/lldp/{client_id}` - LLDP raw data
 - GET `/api/network/topology/{client_id}` - Topologia (LLDP + MAC + inferred)
+- POST `/api/network/topology/{client_id}/layout` - Salva layout
+- DELETE `/api/network/topology/{client_id}/layout` - Reset layout
 
 ## DB Collections (Discovery)
 - `lldp_neighbors`: neighbor LLDP per cliente
@@ -63,3 +70,4 @@ RDP Session (opzionale) -> tray_app.ps1 (monitoring/controllo)
 ## Test Reports
 - iteration_25: React Flow Enterprise Map (100%)
 - iteration_26: LLDP Discovery Backend + Frontend (100%)
+- iteration_27: Enterprise Topology 6-Layer + LLDP/MAC/Inferred Edges (100% - 21/21 backend, all frontend)
