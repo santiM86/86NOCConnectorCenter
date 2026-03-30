@@ -19,6 +19,11 @@ import ConnectorsPage from "@/pages/ConnectorsPage";
 import ClientStatusPage from "@/pages/ClientStatusPage";
 import UsersPage from "@/pages/UsersPage";
 import VaultPage from "@/pages/VaultPage";
+import ReportsPage from "@/pages/ReportsPage";
+import InventoryPage from "@/pages/InventoryPage";
+import IncidentsPage from "@/pages/IncidentsPage";
+import PortMonitorPage from "@/pages/PortMonitorPage";
+import PublicDashboard from "@/pages/PublicDashboard";
 import Layout from "@/components/Layout";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -177,7 +182,12 @@ function App() {
               <Route path="users" element={<UsersPage />} />
               <Route path="settings" element={<SettingsPage />} />
               <Route path="vault" element={<VaultPage />} />
+              <Route path="reports" element={<ReportsPage />} />
+              <Route path="inventory" element={<InventoryPage />} />
+              <Route path="incidents" element={<IncidentsPage />} />
+              <Route path="port-monitor" element={<PortMonitorPage />} />
             </Route>
+            <Route path="/public/:token" element={<PublicDashboard />} />
             <Route path="/2fa" element={<TwoFactorPage />} />
           </Routes>
         </BrowserRouter>

@@ -131,6 +131,12 @@ from routes.discovery import router as discovery_router
 from routes.web_proxy import router as web_proxy_router
 from routes.topology import router as topology_router
 from routes.metrics import router as metrics_router
+from routes.reports import router as reports_router
+from routes.inventory import router as inventory_router
+from routes.incidents import router as incidents_router
+from routes.port_monitor import router as port_monitor_router
+from routes.public_dashboard import router as public_dashboard_router
+from routes.notification_config import router as notification_config_router
 
 app.include_router(auth_router)
 app.include_router(admin_router)
@@ -147,6 +153,12 @@ app.include_router(discovery_router)
 app.include_router(web_proxy_router)
 app.include_router(topology_router)
 app.include_router(metrics_router)
+app.include_router(reports_router)
+app.include_router(inventory_router)
+app.include_router(incidents_router)
+app.include_router(port_monitor_router)
+app.include_router(public_dashboard_router)
+app.include_router(notification_config_router)
 
 # Include enterprise routes
 from enterprise_routes import create_enterprise_router

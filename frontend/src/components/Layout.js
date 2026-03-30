@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { Outlet, NavLink, useNavigate, useLocation } from "react-router-dom";
 import { useAuth, API } from "@/App";
 import axios from "axios";
-import { 
+import {
   ShieldWarning, 
   ChartLineUp, 
   Bell,
@@ -23,7 +23,12 @@ import {
   Shield,
   House,
   DotsThreeOutline,
-  WifiHigh
+  WifiHigh,
+  FileText,
+  ListChecks,
+  Ticket,
+  Plug,
+  Database
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import {
@@ -80,6 +85,16 @@ export default function Layout() {
         { path: "/alerts", icon: Bell, label: "Alert", badge: alertCount, roles: ["admin", "operator", "viewer"] },
         { path: "/network-status", icon: WifiHigh, label: "Stato Rete", roles: ["admin", "operator", "viewer"] },
         { path: "/devices", icon: HardDrives, label: "Dispositivi", roles: ["admin", "operator", "viewer"] },
+        { path: "/inventory", icon: Database, label: "Inventario", roles: ["admin", "operator", "viewer"] },
+        { path: "/port-monitor", icon: Plug, label: "Monitor Servizi", roles: ["admin", "operator"] },
+      ]
+    },
+    {
+      id: "operations",
+      label: "Operazioni",
+      items: [
+        { path: "/incidents", icon: Ticket, label: "Incidenti", roles: ["admin", "operator"] },
+        { path: "/reports", icon: FileText, label: "Report PDF", roles: ["admin", "operator"] },
       ]
     },
     {
