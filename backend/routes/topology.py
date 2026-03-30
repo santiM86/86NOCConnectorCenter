@@ -57,16 +57,64 @@ def is_gateway_ip(ip_str):
         return False
 
 
+def classify_switch_role(dev, all_switches):
+    """
+    Classifica il ruolo di uno switch nella rete enterprise:
+    - core: switch ad alta capacità nel rack principale (molte porte, location "armadio")
+    - distribution: switch con uplink ad alta velocità che collega access switch
+    - access: switch periferico (sotto scrivanie, sale, ecc.)
+    """
+    name = (dev.get("name") or "").lower()
+    descr = (dev.get("sys_descr") or "").lower()
+    combined = name + " " + descr
+    ports = dev.get("ports", [])
+    port_count = len(ports)
+    
+    # Location hints
+    is_rack = any(k in combined for k in ["armadio", "rack", "mdf", "idf", "closet", "sala server", "server room"])
+    is_peripheral = any(k in combined for k in ["under counter", "under desk", "piano", "sala", "boiler", "reception", "ufficio", "office", "room"])
+    
+    # Capacity hints
+    is_high_capacity = port_count >= 24 or any(k in combined for k in ["48g", "24g", "48p", "24p"])
+    has_10g = any(k in combined for k in ["10g", "multi-gig", "sfp+", "10gbase"])
+    
+    # Core: high capacity in rack location (e.g., HPE 48G in Armadio)
+    if is_high_capacity and (is_rack or not is_peripheral):
+        return "core"
+    
+    # Distribution: in rack with 10G uplinks (e.g., Netgear GS110EMX in Armadio)
+    if is_rack and has_10g:
+        return "distribution"
+    
+    # Distribution: has 10G and not peripheral
+    if has_10g and not is_peripheral:
+        return "distribution"
+    
+    # Access: peripheral location or small switch
+    if is_peripheral:
+        return "access"
+    
+    # Default: if it has 10G uplinks, it's probably distribution
+    if has_10g:
+        return "distribution"
+    
+    # Default based on port count
+    if port_count >= 24:
+        return "core"
+    
+    return "access"
+
+
 def infer_topology(devices):
     """
-    Infer network topology from device data.
-    Returns nodes and edges for a hierarchical layout.
+    Enterprise-grade network topology inference engine.
     
-    Hierarchy:
-    1. Internet (virtual node)
-    2. Firewall/Router (gateway)
-    3. Core switches (main distribution)
-    4. Access switches / Servers / End devices
+    Hierarchy (5 layers):
+    0. Internet (virtual WAN)
+    1. Firewall / Router (gateway)
+    2. Core Switch (alta capacità, armadio rete)
+    3. Distribution Switch (uplink 10G, armadio → periferia)
+    4. Access Switch (periferici) + Server + End devices
     5. Management (iLO, IPMI)
     """
     nodes = []
@@ -89,158 +137,158 @@ def infer_topology(devices):
             "subnet": get_subnet(ip),
             "is_gateway_ip": is_gateway_ip(ip),
             "http_status": dev.get("http_status"),
-            "device_class": dev.get("device_class", "generic"),
         })
     
     if not classified:
         return {"nodes": [], "edges": [], "layers": []}
     
-    # Step 1: Identify gateway(s) - firewall or router
+    # === Step 1: Identify gateway(s) ===
     gateways = [d for d in classified if d["type"] in ("firewall", "router")]
     if not gateways:
-        # Fallback: device with gateway IP that has most ports
         candidates = [d for d in classified if d["is_gateway_ip"]]
         if candidates:
             gateways = [max(candidates, key=lambda d: len(d.get("ports", [])))]
     
-    # Step 2: Identify switches
-    switches = [d for d in classified if d["type"] == "switch"]
+    # === Step 2: Classify switches into core/distribution/access ===
+    all_switches = [d for d in classified if d["type"] == "switch"]
     
-    # Step 3: Sort switches by port count (more ports = more central/core)
-    switches.sort(key=lambda d: len(d.get("ports", [])), reverse=True)
-    core_switches = switches[:2] if len(switches) > 2 else switches
-    access_switches = switches[2:] if len(switches) > 2 else []
+    core_switches = []
+    distrib_switches = []
+    access_switches = []
     
-    # Step 4: Identify management devices (iLO)
+    for sw in all_switches:
+        role = classify_switch_role(sw, all_switches)
+        if role == "core":
+            core_switches.append(sw)
+        elif role == "distribution":
+            distrib_switches.append(sw)
+        else:
+            access_switches.append(sw)
+    
+    # If no distribution switches found but multiple switches exist,
+    # promote the first access switch in rack location to distribution
+    if not distrib_switches and len(access_switches) > 2:
+        for i, sw in enumerate(access_switches):
+            name_lower = (sw.get("name") or "").lower()
+            if any(k in name_lower for k in ["armadio", "rack", "mdf"]):
+                distrib_switches.append(access_switches.pop(i))
+                break
+    
+    # === Step 3: Identify other device types ===
     management = [d for d in classified if d["type"] == "ilo"]
-    
-    # Step 5: Everything else
     servers = [d for d in classified if d["type"] == "server"]
     end_devices = [d for d in classified if d["type"] in ("ap", "printer", "camera", "nas", "generic")]
-    # Exclude already categorized
+    
     categorized_ips = set()
-    for group in [gateways, core_switches, access_switches, management, servers, end_devices]:
+    for group in [gateways, core_switches, distrib_switches, access_switches, management, servers, end_devices]:
         for d in group:
             categorized_ips.add(d["ip"])
     uncategorized = [d for d in classified if d["ip"] not in categorized_ips]
     end_devices.extend(uncategorized)
     
-    # Step 6: Build topology layers
+    # === Step 4: Build topology layers ===
     layers = []
     
-    # Layer 0: Internet (virtual)
+    # Layer 0: Internet
     internet_node = {
-        "id": "internet",
-        "name": "Internet / WAN",
-        "type": "internet",
-        "layer": 0,
-        "reachable": True,
-        "virtual": True,
+        "id": "internet", "name": "Internet / WAN", "type": "internet",
+        "layer": 0, "reachable": True, "virtual": True,
     }
     nodes.append(internet_node)
     layers.append({"name": "WAN", "nodes": ["internet"]})
     
-    # Layer 1: Gateway(s)
-    gateway_layer_nodes = []
+    # Layer 1: Gateways
+    gw_layer = []
     for gw in gateways:
         node = {**gw, "id": gw["ip"], "layer": 1, "role": "gateway"}
         nodes.append(node)
-        gateway_layer_nodes.append(gw["ip"])
-        edges.append({
-            "from": "internet",
-            "to": gw["ip"],
-            "type": "wan",
-            "label": "WAN",
-        })
-    if gateway_layer_nodes:
-        layers.append({"name": "Firewall / Router", "nodes": gateway_layer_nodes})
+        gw_layer.append(gw["ip"])
+        edges.append({"from": "internet", "to": gw["ip"], "type": "wan", "label": "WAN"})
+    if gw_layer:
+        layers.append({"name": "Firewall / Router", "nodes": gw_layer})
     
     # Layer 2: Core switches
-    core_layer_nodes = []
+    core_layer = []
     for sw in core_switches:
         node = {**sw, "id": sw["ip"], "layer": 2, "role": "core_switch"}
         nodes.append(node)
-        core_layer_nodes.append(sw["ip"])
-        # Connect to gateway or internet
+        core_layer.append(sw["ip"])
         parent = gateways[0]["ip"] if gateways else "internet"
         up_ports = [p for p in sw.get("ports", []) if p.get("status") == "up"]
         edges.append({
-            "from": parent,
-            "to": sw["ip"],
-            "type": "trunk",
-            "label": f"{len(up_ports)} porte attive" if up_ports else "",
-            "bandwidth": "trunk",
+            "from": parent, "to": sw["ip"], "type": "trunk",
+            "label": f"{len(up_ports)} porte" if up_ports else "",
         })
-    if core_layer_nodes:
-        layers.append({"name": "Switch Core / Distribuzione", "nodes": core_layer_nodes})
+    if core_layer:
+        layers.append({"name": "Core Switch", "nodes": core_layer})
     
-    # Layer 3: Access switches, servers, management
-    access_layer_nodes = []
+    # Layer 3: Distribution switches
+    distrib_layer = []
+    for sw in distrib_switches:
+        node = {**sw, "id": sw["ip"], "layer": 3, "role": "distribution_switch"}
+        nodes.append(node)
+        distrib_layer.append(sw["ip"])
+        # Distribution connects to core (or gateway if no core)
+        parent = _find_best_parent(sw, core_switches, gateways)
+        # Check for 10G hint
+        name_lower = (sw.get("name") or "").lower() + " " + (sw.get("sys_descr") or "").lower()
+        has_10g = any(k in name_lower for k in ["10g", "multi-gig", "sfp+"])
+        edges.append({
+            "from": parent, "to": sw["ip"], "type": "trunk",
+            "label": "10G Uplink" if has_10g else "Trunk",
+        })
+    if distrib_layer:
+        layers.append({"name": "Distribuzione", "nodes": distrib_layer})
+    
+    # Layer 4: Access switches — connect to distribution (or core)
+    access_layer = []
+    preferred_parents = distrib_switches if distrib_switches else core_switches
     
     for sw in access_switches:
-        node = {**sw, "id": sw["ip"], "layer": 3, "role": "access_switch"}
+        node = {**sw, "id": sw["ip"], "layer": 4, "role": "access_switch"}
         nodes.append(node)
-        access_layer_nodes.append(sw["ip"])
-        # Connect to closest core switch (by subnet or first core)
-        parent = _find_best_parent(sw, core_switches, gateways)
+        access_layer.append(sw["ip"])
+        parent = _find_best_parent(sw, preferred_parents, core_switches + gateways)
+        # Detect 10G uplink from name
+        name_lower = (sw.get("name") or "").lower() + " " + (sw.get("sys_descr") or "").lower()
+        has_10g = any(k in name_lower for k in ["10g", "multi-gig", "sfp+"])
         edges.append({
-            "from": parent,
-            "to": sw["ip"],
-            "type": "access",
-            "label": "",
+            "from": parent, "to": sw["ip"], "type": "trunk" if has_10g else "access",
+            "label": "10G Uplink" if has_10g else "",
         })
     
+    # Servers — connect to nearest access/distribution switch
     for srv in servers:
-        node = {**srv, "id": srv["ip"], "layer": 3, "role": "server"}
+        node = {**srv, "id": srv["ip"], "layer": 4, "role": "server"}
         nodes.append(node)
-        access_layer_nodes.append(srv["ip"])
-        parent = _find_best_parent(srv, core_switches, gateways)
-        edges.append({
-            "from": parent,
-            "to": srv["ip"],
-            "type": "server",
-            "label": "",
-        })
+        access_layer.append(srv["ip"])
+        parent = _find_best_parent(srv, access_switches + distrib_switches, core_switches + gateways)
+        edges.append({"from": parent, "to": srv["ip"], "type": "server", "label": ""})
     
-    for ilo in management:
-        node = {**ilo, "id": ilo["ip"], "layer": 3, "role": "management"}
-        nodes.append(node)
-        access_layer_nodes.append(ilo["ip"])
-        # iLO connects to management port of closest server or switch
-        parent = _find_ilo_parent(ilo, servers, core_switches, gateways)
-        edges.append({
-            "from": parent,
-            "to": ilo["ip"],
-            "type": "mgmt",
-            "label": "MGMT",
-        })
-    
-    if access_layer_nodes:
-        layers.append({"name": "Accesso / Server / Mgmt", "nodes": access_layer_nodes})
-    
-    # Layer 4: End devices
-    end_layer_nodes = []
+    # End devices — connect to nearest access switch
     for dev in end_devices:
         node = {**dev, "id": dev["ip"], "layer": 4, "role": "endpoint"}
         nodes.append(node)
-        end_layer_nodes.append(dev["ip"])
-        # Connect to closest access switch, or core switch, or gateway
-        parent = _find_best_parent(dev, access_switches + core_switches, gateways)
-        edges.append({
-            "from": parent,
-            "to": dev["ip"],
-            "type": "access",
-            "label": "",
-        })
+        access_layer.append(dev["ip"])
+        parent = _find_best_parent(dev, access_switches + distrib_switches, core_switches + gateways)
+        edges.append({"from": parent, "to": dev["ip"], "type": "access", "label": ""})
     
-    if end_layer_nodes:
-        layers.append({"name": "Dispositivi", "nodes": end_layer_nodes})
+    if access_layer:
+        layers.append({"name": "Accesso / Server", "nodes": access_layer})
     
-    return {
-        "nodes": nodes,
-        "edges": edges,
-        "layers": layers,
-    }
+    # Layer 5: Management (iLO)
+    mgmt_layer = []
+    for ilo in management:
+        node = {**ilo, "id": ilo["ip"], "layer": 5, "role": "management"}
+        nodes.append(node)
+        mgmt_layer.append(ilo["ip"])
+        parent = _find_ilo_parent(ilo, servers, core_switches + distrib_switches, gateways)
+        edges.append({"from": parent, "to": ilo["ip"], "type": "mgmt", "label": "iLO/MGMT"})
+    
+    if mgmt_layer:
+        layers.append({"name": "Management", "nodes": mgmt_layer})
+    
+    return {"nodes": nodes, "edges": edges, "layers": layers}
 
 
 def _find_best_parent(device, preferred_parents, fallback_parents):
