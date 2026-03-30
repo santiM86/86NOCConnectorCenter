@@ -344,18 +344,11 @@ def build_lldp_edges(lldp_neighbors, device_ips):
     for neighbor in lldp_neighbors:
         local_ip = neighbor.get("local_ip", "")
         remote_ip = neighbor.get("remote_ip", "")
-        remote_name = neighbor.get("remote_sys_name", "")
 
-        # Try to match remote to a known device IP
         target = remote_ip if remote_ip in ip_set else None
-        if not target and remote_name:
-            # Fuzzy match by name
-            for dip in ip_set:
-                pass  # Could match by sysName later
         if not target:
             continue
 
-        # Avoid duplicate edges (A->B == B->A)
         key = tuple(sorted([local_ip, target]))
         if key in seen:
             continue
@@ -378,6 +371,57 @@ def build_lldp_edges(lldp_neighbors, device_ips):
             "source": "lldp",
             "local_port": local_port,
             "remote_port": remote_port,
+        })
+
+    return edges
+
+
+def build_mac_edges(mac_connections, device_ips, port_speeds_data):
+    """Build edges from MAC address table analysis."""
+    edges = []
+    seen = set()
+    ip_set = set(device_ips)
+
+    # Build port speed lookup: {switch_ip: {port: speed_mbps}}
+    speed_map = {}
+    for ps in port_speeds_data:
+        sw_ip = ps.get("switch_ip", "")
+        for hp in ps.get("high_speed_ports", []):
+            if sw_ip not in speed_map:
+                speed_map[sw_ip] = {}
+            speed_map[sw_ip][str(hp.get("port", ""))] = hp.get("speed_mbps", 0)
+
+    for conn in mac_connections:
+        from_ip = conn.get("from_ip", "")
+        to_ip = conn.get("to_ip", "")
+
+        if from_ip not in ip_set or to_ip not in ip_set:
+            continue
+
+        key = tuple(sorted([from_ip, to_ip]))
+        if key in seen:
+            continue
+        seen.add(key)
+
+        port = str(conn.get("from_port", ""))
+        speed = speed_map.get(from_ip, {}).get(port, 0)
+
+        label = f"Port {port}"
+        if speed >= 10000:
+            label += f" (10G)"
+            edge_type = "trunk"
+        elif speed >= 1000:
+            label += f" ({speed // 1000}G)"
+            edge_type = "trunk"
+        else:
+            edge_type = "access"
+
+        edges.append({
+            "from": from_ip,
+            "to": to_ip,
+            "type": edge_type,
+            "label": label,
+            "source": "mac_table",
         })
 
     return edges
@@ -441,29 +485,49 @@ async def get_network_topology(client_id: str, current_user: dict = Depends(get_
             "lldp_count": len(lldp_neighbors),
         }
     
-    # No saved layout — return inferred topology, enriched with LLDP if available
+    # No saved layout — return inferred topology, enriched with LLDP/MAC if available
     topology = infer_topology(devices)
     
+    device_ips = [d.get("device_ip", "") for d in devices]
+    discovered_edges = []
+    
     if lldp_neighbors:
-        device_ips = [d.get("device_ip", "") for d in devices]
         lldp_edges = build_lldp_edges(lldp_neighbors, device_ips)
-        if lldp_edges:
-            # Replace inferred edges with LLDP edges where available
-            lldp_pairs = set()
-            for le in lldp_edges:
-                lldp_pairs.add(tuple(sorted([le["from"], le["to"]])))
-            # Keep inferred edges that don't overlap with LLDP
-            kept_inferred = [
-                e for e in topology["edges"]
-                if tuple(sorted([e["from"], e["to"]])) not in lldp_pairs
-            ]
-            topology["edges"] = lldp_edges + kept_inferred
+        discovered_edges.extend(lldp_edges)
+    
+    # Also check MAC-based connections
+    mac_connections = await db.mac_connections.find(
+        {"client_id": client_id}, {"_id": 0}
+    ).to_list(1000)
+    port_speeds_data = await db.port_speeds.find(
+        {"client_id": client_id}, {"_id": 0}
+    ).to_list(100)
+    
+    if mac_connections:
+        mac_edges = build_mac_edges(mac_connections, device_ips, port_speeds_data)
+        # Only add MAC edges that don't overlap with LLDP
+        lldp_pairs = set(tuple(sorted([e["from"], e["to"]])) for e in discovered_edges)
+        for me in mac_edges:
+            key = tuple(sorted([me["from"], me["to"]]))
+            if key not in lldp_pairs:
+                discovered_edges.append(me)
+                lldp_pairs.add(key)
+    
+    if discovered_edges:
+        # Replace inferred edges with discovered edges where available
+        discovered_pairs = set(tuple(sorted([e["from"], e["to"]])) for e in discovered_edges)
+        kept_inferred = [
+            e for e in topology["edges"]
+            if tuple(sorted([e["from"], e["to"]])) not in discovered_pairs
+        ]
+        topology["edges"] = discovered_edges + kept_inferred
     
     topology["health"] = health
     topology["client_id"] = client_id
     topology["client_name"] = client_name
     topology["has_custom_layout"] = False
     topology["lldp_count"] = len(lldp_neighbors)
+    topology["mac_connections_count"] = len(mac_connections)
     
     return topology
 

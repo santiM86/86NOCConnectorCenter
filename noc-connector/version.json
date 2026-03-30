@@ -1,4 +1,4 @@
 {
-  "version": "2.4.0",
-  "changelog": "v2.4.0: FIX CRITICO - Il connettore ora gira come Windows Scheduled Task (SYSTEM) e sopravvive alla disconnessione RDP. Aggiunto LLDP Discovery per mappatura automatica connessioni porta-per-porta. Status file condiviso tra engine e tray app. Migliorato il monitoring della tray."
+  "version": "2.5.0",
+  "changelog": "v2.5.0: Network Discovery potenziato - aggiunto polling MAC Address Table e Port Speed per rilevare connessioni fisiche reali tra switch (inclusi uplink 10G). LLDP + MAC + Speed combinati per ricostruzione topologia automatica. Servizio Windows NSSM integrato nell'installer."
 }

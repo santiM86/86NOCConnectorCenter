@@ -1378,3 +1378,201 @@ function Run-LldpDiscovery($config, $devices) {
         Write-Log "LLDP: Nessun neighbor LLDP trovato su nessun dispositivo" "INFO"
     }
 }
+
+
+# ==================== MAC ADDRESS TABLE + PORT SPEED DISCOVERY ====================
+
+<#
+.SYNOPSIS
+    Interroga la tabella MAC address (Bridge-MIB) di uno switch per scoprire
+    quali dispositivi sono collegati a quale porta.
+    
+    OID: 1.3.6.1.2.1.17.4.3.1.1 (dot1dTpFdbAddress - MAC address)
+    OID: 1.3.6.1.2.1.17.4.3.1.2 (dot1dTpFdbPort - porta su cui il MAC e' visto)
+    OID: 1.3.6.1.2.1.2.2.1.6    (ifPhysAddress - MAC dell'interfaccia dello switch)
+    OID: 1.3.6.1.2.1.2.2.1.5    (ifSpeed - velocita' interfaccia in bps)
+    OID: 1.3.6.1.2.1.31.1.1.1.15 (ifHighSpeed - velocita' in Mbps per 10G+)
+    
+    Confrontando la MAC table con la ARP table e gli indirizzi delle interfacce
+    degli altri switch, possiamo ricostruire le connessioni fisiche.
+#>
+function Poll-MacTable($ip, $community) {
+    $macEntries = @()
+    
+    try {
+        # Walk dot1dTpFdbPort (MAC -> bridge port number)
+        $fdbPorts = Walk-SnmpTable $ip $community "1.3.6.1.2.1.17.4.3.1.2"
+        if (-not $fdbPorts -or $fdbPorts.Count -eq 0) { return $macEntries }
+        
+        # Walk dot1dTpFdbAddress (MAC address in tabella)
+        $fdbAddrs = Walk-SnmpTable $ip $community "1.3.6.1.2.1.17.4.3.1.1"
+        
+        foreach ($entry in $fdbPorts) {
+            $portNum = $entry.value
+            # Estrai il MAC dall'OID suffix (6 ottetti decimali)
+            $suffix = $entry.oid.Replace("1.3.6.1.2.1.17.4.3.1.2.", "")
+            $macOctets = $suffix -split '\.'
+            if ($macOctets.Count -eq 6) {
+                $mac = ($macOctets | ForEach-Object { "{0:X2}" -f [int]$_ }) -join ":"
+                $macEntries += @{
+                    mac = $mac
+                    port = [int]$portNum
+                }
+            }
+        }
+        
+        Write-Log "  MAC Table: $($macEntries.Count) entries su $ip" "DEBUG"
+    } catch {
+        Write-Log "  MAC Table: Errore polling ${ip}: $($_.Exception.Message)" "WARN"
+    }
+    
+    return $macEntries
+}
+
+function Poll-InterfaceMacs($ip, $community) {
+    $ifMacs = @{}
+    
+    try {
+        # Walk ifPhysAddress (MAC dell'interfaccia di ogni porta dello switch)
+        $results = Walk-SnmpTable $ip $community "1.3.6.1.2.1.2.2.1.6"
+        foreach ($entry in $results) {
+            $ifIndex = ($entry.oid -split '\.')[-1]
+            $rawMac = $entry.value
+            if ($rawMac -and $rawMac.Length -ge 12) {
+                # Prova a parsare come hex string
+                $mac = ""
+                if ($rawMac -match '^[0-9A-Fa-f:.\-]+$') {
+                    $mac = ($rawMac -replace '[:\.\-]','').ToUpper()
+                    if ($mac.Length -eq 12) {
+                        $mac = ($mac -replace '(.{2})','$1:').TrimEnd(':')
+                    }
+                }
+                if ($mac) { $ifMacs[$ifIndex] = $mac }
+            }
+        }
+    } catch {
+        Write-Log "  InterfaceMACs: Errore ${ip}: $($_.Exception.Message)" "WARN"
+    }
+    
+    return $ifMacs
+}
+
+function Poll-PortSpeeds($ip, $community) {
+    $speeds = @{}
+    
+    try {
+        # Walk ifHighSpeed (Mbps - per porte 10G+)
+        $results = Walk-SnmpTable $ip $community "1.3.6.1.2.1.31.1.1.1.15"
+        foreach ($entry in $results) {
+            $ifIndex = ($entry.oid -split '\.')[-1]
+            $speedMbps = [int]$entry.value
+            if ($speedMbps -gt 0) {
+                $speeds[$ifIndex] = $speedMbps
+            }
+        }
+        
+        # Se non abbiamo ifHighSpeed, usa ifSpeed (bps)
+        if ($speeds.Count -eq 0) {
+            $results = Walk-SnmpTable $ip $community "1.3.6.1.2.1.2.2.1.5"
+            foreach ($entry in $results) {
+                $ifIndex = ($entry.oid -split '\.')[-1]
+                $speedBps = [long]$entry.value
+                if ($speedBps -gt 0) {
+                    $speeds[$ifIndex] = [int]($speedBps / 1000000)
+                }
+            }
+        }
+    } catch {
+        Write-Log "  PortSpeeds: Errore ${ip}: $($_.Exception.Message)" "WARN"
+    }
+    
+    return $speeds
+}
+
+<#
+.SYNOPSIS
+    Esegue il discovery completo della rete:
+    1. LLDP neighbors (connessioni dirette porta-per-porta)
+    2. MAC address table (quali dispositivi su quale porta)
+    3. Port speeds (identifica uplink 10G)
+    4. Interface MACs (identifica i MAC di ogni switch per cross-reference)
+    
+    Combina tutti i dati per ricostruire la topologia fisica reale.
+#>
+function Run-FullDiscovery($config, $devices) {
+    $allNeighbors = @()
+    $allMacTables = @()
+    $allPortSpeeds = @()
+    $deviceMacs = @()  # MAC di ogni dispositivo managed
+    
+    foreach ($dev in $devices) {
+        if ($dev.monitor_type -ne "snmp") { continue }
+        
+        $ip = $dev.ip
+        $community = if ($dev.community) { $dev.community } else { "public" }
+        
+        Write-Log "Discovery su $($dev.name) ($ip)..."
+        
+        # 1. LLDP
+        $neighbors = Poll-LldpNeighbors $ip $community
+        if ($neighbors -and $neighbors.Count -gt 0) {
+            $allNeighbors += $neighbors
+        }
+        
+        # 2. MAC Table (solo per switch)
+        $macTable = Poll-MacTable $ip $community
+        if ($macTable -and $macTable.Count -gt 0) {
+            $allMacTables += @{
+                switch_ip = $ip
+                entries = $macTable
+            }
+        }
+        
+        # 3. Port Speeds
+        $portSpeeds = Poll-PortSpeeds $ip $community
+        if ($portSpeeds -and $portSpeeds.Count -gt 0) {
+            $highSpeedPorts = @()
+            foreach ($key in $portSpeeds.Keys) {
+                $speed = $portSpeeds[$key]
+                if ($speed -ge 1000) {  # 1Gbps+
+                    $highSpeedPorts += @{ port = $key; speed_mbps = $speed }
+                }
+            }
+            if ($highSpeedPorts.Count -gt 0) {
+                $allPortSpeeds += @{
+                    switch_ip = $ip
+                    high_speed_ports = $highSpeedPorts
+                }
+            }
+        }
+        
+        # 4. Interface MACs dello switch
+        $ifMacs = Poll-InterfaceMacs $ip $community
+        if ($ifMacs -and $ifMacs.Count -gt 0) {
+            $macList = @()
+            foreach ($key in $ifMacs.Keys) {
+                $macList += $ifMacs[$key]
+            }
+            $deviceMacs += @{
+                ip = $ip
+                name = $dev.name
+                macs = $macList
+            }
+        }
+    }
+    
+    # Invia dati LLDP
+    if ($allNeighbors.Count -gt 0) {
+        Send-ToNOC $config "connector/lldp-neighbors" @{ neighbors = $allNeighbors } | Out-Null
+        Write-Log "Discovery: $($allNeighbors.Count) LLDP neighbors inviati" "INFO"
+    }
+    
+    # Invia dati MAC/Speed per la ricostruzione topologica
+    $discoveryPayload = @{
+        mac_tables = $allMacTables
+        port_speeds = $allPortSpeeds
+        device_macs = $deviceMacs
+    }
+    Send-ToNOC $config "connector/network-discovery" $discoveryPayload | Out-Null
+    Write-Log "Discovery: $($allMacTables.Count) MAC tables, $($allPortSpeeds.Count) port speed reports inviati" "INFO"
+}

@@ -479,7 +479,12 @@ function NetworkMapInner({ clientGroups, onDeviceSelect }) {
             )}
             {activeTopo.lldp_count > 0 && (
               <span className="text-[9px] px-2 py-0.5 rounded-full bg-cyan-600/15 text-cyan-400 border border-cyan-500/30 font-medium" data-testid="lldp-badge">
-                LLDP: {activeTopo.lldp_count} connessioni
+                LLDP: {activeTopo.lldp_count}
+              </span>
+            )}
+            {activeTopo.mac_connections_count > 0 && (
+              <span className="text-[9px] px-2 py-0.5 rounded-full bg-emerald-600/15 text-emerald-400 border border-emerald-500/30 font-medium" data-testid="mac-badge">
+                MAC: {activeTopo.mac_connections_count}
               </span>
             )}
             <span

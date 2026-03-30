@@ -981,13 +981,13 @@ function Start-PollingLoop($config) {
                     Write-Log "Lista dispositivi aggiornata dal NOC: $($devices.Count) totali (SNMP: $($snmpDevices.Count), Ping: $($pingDevices.Count))"
                 }
                 
-                # LLDP Discovery - ogni 10 cicli (insieme al refresh dispositivi)
+                # Full Network Discovery - ogni 10 cicli
                 if ($snmpDevices.Count -gt 0) {
                     try {
-                        Write-Log "Avvio LLDP Discovery..." "INFO"
-                        Run-LldpDiscovery $config $snmpDevices
+                        Write-Log "Avvio Full Network Discovery (LLDP + MAC + Speed)..." "INFO"
+                        Run-FullDiscovery $config $snmpDevices
                     } catch {
-                        Write-Log "Errore LLDP Discovery: $($_.Exception.Message)" "WARN"
+                        Write-Log "Errore Network Discovery: $($_.Exception.Message)" "WARN"
                     }
                 }
             }

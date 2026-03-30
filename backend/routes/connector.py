@@ -445,3 +445,83 @@ async def connector_lldp_report(request: Request):
 
     logger.info(f"LLDP neighbors updated for {client_id}: {len(neighbors)} entries")
     return {"status": "ok", "neighbors_stored": len(neighbors)}
+
+
+@router.post("/connector/network-discovery")
+async def connector_network_discovery(request: Request):
+    """Receive MAC tables, port speeds and device MACs for topology reconstruction."""
+    api_key = request.headers.get("X-API-Key")
+    if not api_key:
+        raise HTTPException(status_code=401, detail="API key required")
+    client_data = await db.clients.find_one({"api_key": api_key}, {"_id": 0})
+    if not client_data:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+    body = await request.json()
+    check_nosql_injection(body)
+    client_id = client_data["id"]
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    mac_tables = body.get("mac_tables", [])
+    port_speeds = body.get("port_speeds", [])
+    device_macs = body.get("device_macs", [])
+
+    # Store discovery data (replace old data for this client)
+    await db.network_discovery.delete_many({"client_id": client_id})
+    if mac_tables or port_speeds or device_macs:
+        await db.network_discovery.insert_one({
+            "client_id": client_id,
+            "mac_tables": mac_tables,
+            "port_speeds": port_speeds,
+            "device_macs": device_macs,
+            "updated_at": now_iso,
+        })
+
+    # Build inferred connections from MAC tables
+    # If switch A's MAC table shows switch B's MAC on port X,
+    # then switch A port X is connected to switch B
+    inferred_connections = []
+    device_mac_map = {}  # MAC -> IP mapping
+    for dm in device_macs:
+        for mac in dm.get("macs", []):
+            if mac:
+                device_mac_map[mac.upper()] = dm.get("ip", "")
+
+    for mt in mac_tables:
+        switch_ip = mt.get("switch_ip", "")
+        for entry in mt.get("entries", []):
+            mac = entry.get("mac", "").upper()
+            port = entry.get("port", 0)
+            if mac in device_mac_map:
+                remote_ip = device_mac_map[mac]
+                if remote_ip and remote_ip != switch_ip:
+                    inferred_connections.append({
+                        "from_ip": switch_ip,
+                        "from_port": port,
+                        "to_ip": remote_ip,
+                        "source": "mac_table",
+                    })
+
+    # Store inferred connections
+    await db.mac_connections.delete_many({"client_id": client_id})
+    if inferred_connections:
+        for conn in inferred_connections:
+            conn["client_id"] = client_id
+            conn["updated_at"] = now_iso
+        await db.mac_connections.insert_many(inferred_connections)
+
+    # Store high-speed port info
+    await db.port_speeds.delete_many({"client_id": client_id})
+    if port_speeds:
+        for ps in port_speeds:
+            ps["client_id"] = client_id
+            ps["updated_at"] = now_iso
+        await db.port_speeds.insert_many(port_speeds)
+
+    total_mac = sum(len(mt.get("entries", [])) for mt in mac_tables)
+    logger.info(f"Network discovery for {client_id}: {total_mac} MAC entries, {len(inferred_connections)} connections, {len(port_speeds)} speed reports")
+    return {
+        "status": "ok",
+        "mac_entries": total_mac,
+        "inferred_connections": len(inferred_connections),
+        "port_speed_reports": len(port_speeds),
+    }
