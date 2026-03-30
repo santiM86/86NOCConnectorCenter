@@ -64,7 +64,7 @@ export default function InventoryPage() {
         <div className="flex items-center justify-between">
           <div>
             <h1 className="font-heading text-xl font-bold text-[var(--text-primary)] tracking-tight">Inventario Dispositivi</h1>
-            <p className="text-[var(--text-muted)] text-xs mt-0.5">Vista completa di tutti i dispositivi in rete — <span className="text-indigo-400">doppio click per dettagli</span></p>
+            <p className="text-[var(--text-muted)] text-xs mt-0.5">Vista completa di tutti i dispositivi in rete — <span className="text-indigo-400">clicca per dettagli</span></p>
           </div>
         </div>
       </div>
@@ -145,9 +145,10 @@ export default function InventoryPage() {
                 { key: "ping_ms", label: "Ping" },
                 { key: "ports_up", label: "Porte" },
                 { key: "last_seen", label: "Ultimo Contatto" },
+                { key: "_actions", label: "", w: "40px" },
               ].map(col => (
-                <th key={col.key} className="cursor-pointer select-none" style={col.w ? {width: col.w} : {}}
-                  onClick={() => toggleSort(col.key)}>
+                <th key={col.key} className={col.key !== "_actions" ? "cursor-pointer select-none" : ""} style={col.w ? {width: col.w} : {}}
+                  onClick={() => col.key !== "_actions" && toggleSort(col.key)}>
                   <div className="flex items-center gap-1">
                     {col.label} <SortIcon field={col.key} />
                   </div>
@@ -157,14 +158,14 @@ export default function InventoryPage() {
           </thead>
           <tbody>
             {!data ? (
-              <tr><td colSpan={9} className="text-center text-[var(--text-muted)] py-8 text-xs">Caricamento...</td></tr>
+              <tr><td colSpan={10} className="text-center text-[var(--text-muted)] py-8 text-xs">Caricamento...</td></tr>
             ) : data.devices.length === 0 ? (
-              <tr><td colSpan={9} className="text-center text-[var(--text-muted)] py-8 text-xs">Nessun dispositivo trovato</td></tr>
+              <tr><td colSpan={10} className="text-center text-[var(--text-muted)] py-8 text-xs">Nessun dispositivo trovato</td></tr>
             ) : (
               data.devices.map((d, i) => (
                 <tr key={d.device_ip + i} data-testid={`inv-row-${d.device_ip}`}
-                  className={`cursor-pointer transition-colors ${selectedDevice?.device_ip === d.device_ip ? "bg-indigo-500/10" : ""}`}
-                  onDoubleClick={() => setSelectedDevice(d)}
+                  className={`cursor-pointer transition-colors hover:bg-indigo-500/5 ${selectedDevice?.device_ip === d.device_ip ? "!bg-indigo-500/10" : ""}`}
+                  onClick={() => setSelectedDevice(d)}
                 >
                   <td>
                     <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium ${
@@ -193,6 +194,15 @@ export default function InventoryPage() {
                   </td>
                   <td className="text-[var(--text-secondary)]">{d.ports_total > 0 ? `${d.ports_up}/${d.ports_total}` : "-"}</td>
                   <td className="text-[10px] text-[var(--text-muted)]">{d.uptime_display || "-"}</td>
+                  <td>
+                    <button
+                      className="w-7 h-7 rounded-md flex items-center justify-center text-indigo-400 hover:text-indigo-300 hover:bg-indigo-500/10 transition-colors"
+                      onClick={(e) => { e.stopPropagation(); setSelectedDevice(d); }}
+                      data-testid={`inv-detail-btn-${d.device_ip}`}
+                    >
+                      <MagnifyingGlass size={14} />
+                    </button>
+                  </td>
                 </tr>
               ))
             )}

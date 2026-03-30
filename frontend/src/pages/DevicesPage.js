@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import axios from "axios";
 import { API } from "@/App";
 import { toast } from "sonner";
-import { Plus, Trash, HardDrives, WifiHigh, WifiSlash } from "@phosphor-icons/react";
+import { Plus, Trash, HardDrives, WifiHigh, WifiSlash, MagnifyingGlass } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -69,7 +69,7 @@ export default function DevicesPage() {
       <div className="flex items-center justify-between mb-5">
         <div>
           <h1 className="font-heading text-xl font-bold text-[var(--text-primary)] tracking-tight">Dispositivi</h1>
-          <p className="text-[var(--text-muted)] text-xs mt-0.5">Monitoraggio dispositivi di rete — <span className="text-indigo-400">doppio click per dettagli</span></p>
+          <p className="text-[var(--text-muted)] text-xs mt-0.5">Monitoraggio dispositivi di rete — <span className="text-indigo-400">clicca per dettagli</span></p>
         </div>
         <Button onClick={() => setDialogOpen(true)} className="rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white gap-1.5 text-xs h-8" data-testid="add-device-btn">
           <Plus size={14} /> Nuovo
@@ -86,7 +86,7 @@ export default function DevicesPage() {
                 <th>IP</th>
                 <th>Cliente</th>
                 <th>Stato</th>
-                <th></th>
+                <th>Azioni</th>
               </tr>
             </thead>
             <tbody>
@@ -104,8 +104,8 @@ export default function DevicesPage() {
                   return (
                     <tr key={device.id}
                       data-testid={`device-row-${device.id}`}
-                      className={`cursor-pointer transition-colors ${isSelected ? "bg-indigo-500/10 border-l-2 border-l-indigo-500" : ""}`}
-                      onDoubleClick={() => setSelectedDevice(device)}
+                      className={`cursor-pointer transition-colors hover:bg-indigo-500/5 ${isSelected ? "!bg-indigo-500/10" : ""}`}
+                      onClick={() => setSelectedDevice(device)}
                     >
                       <td className="text-[var(--text-primary)] text-xs font-medium">{device.name}</td>
                     <td>
@@ -123,7 +123,15 @@ export default function DevicesPage() {
                       )}
                     </td>
                     <td>
-                      <AlertDialog>
+                      <div className="flex items-center gap-1">
+                        <Button variant="ghost" size="icon"
+                          className="h-7 w-7 text-indigo-400 hover:text-indigo-300 hover:bg-indigo-500/10 rounded-md"
+                          onClick={(e) => { e.stopPropagation(); setSelectedDevice(device); }}
+                          data-testid={`detail-btn-${device.id}`}
+                        >
+                          <MagnifyingGlass size={14} />
+                        </Button>
+                        <AlertDialog>
                         <AlertDialogTrigger asChild>
                           <Button variant="ghost" size="icon" className="h-7 w-7 text-[var(--text-muted)] hover:text-[var(--critical)] rounded-md" data-testid={`delete-device-${device.id}`}>
                             <Trash size={14} />
@@ -140,6 +148,7 @@ export default function DevicesPage() {
                           </AlertDialogFooter>
                         </AlertDialogContent>
                       </AlertDialog>
+                      </div>
                     </td>
                   </tr>
                 );
