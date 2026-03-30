@@ -17,6 +17,7 @@ import {
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, AreaChart, Area } from "recharts";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
+import { SlaGaugeWidget, ChangeTimelineWidget, UptimeHeatmapWidget, LatencyChartWidget } from "@/components/DashboardWidgets";
 
 export default function DashboardPage() {
   const [stats, setStats] = useState({
@@ -27,12 +28,18 @@ export default function DashboardPage() {
   const [recentAlerts, setRecentAlerts] = useState([]);
   const [liveStream, setLiveStream] = useState([]);
   const [connectors, setConnectors] = useState([]);
+  const [clientId, setClientId] = useState(null);
   const wsRef = useRef(null);
   const navigate = useNavigate();
 
   useEffect(() => {
     fetchData();
     connectWebSocket();
+    // Fetch first client for widgets
+    axios.get(`${API}/clients`).then(r => {
+      const clients = r.data?.clients || r.data || [];
+      if (clients.length > 0) setClientId(clients[0].id);
+    }).catch(() => {});
     return () => { if (wsRef.current) wsRef.current.close(); };
   }, []);
 
@@ -234,6 +241,23 @@ export default function DashboardPage() {
             })}
           </div>
         </div>
+      )}
+
+      {/* === NEW: Enterprise Widgets === */}
+      {clientId && (
+        <>
+          {/* SLA + Change Timeline */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+            <SlaGaugeWidget clientId={clientId} />
+            <ChangeTimelineWidget clientId={clientId} />
+          </div>
+
+          {/* Heatmap + Latency */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+            <UptimeHeatmapWidget clientId={clientId} />
+            <LatencyChartWidget clientId={clientId} />
+          </div>
+        </>
       )}
 
       {/* Recent Alerts Table */}

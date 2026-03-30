@@ -130,6 +130,7 @@ from routes.connector import router as connector_router
 from routes.discovery import router as discovery_router
 from routes.web_proxy import router as web_proxy_router
 from routes.topology import router as topology_router
+from routes.metrics import router as metrics_router
 
 app.include_router(auth_router)
 app.include_router(admin_router)
@@ -145,6 +146,7 @@ app.include_router(connector_router)
 app.include_router(discovery_router)
 app.include_router(web_proxy_router)
 app.include_router(topology_router)
+app.include_router(metrics_router)
 
 # Include enterprise routes
 from enterprise_routes import create_enterprise_router
