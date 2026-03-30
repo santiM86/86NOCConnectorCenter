@@ -138,6 +138,7 @@ from routes.port_monitor import router as port_monitor_router
 from routes.public_dashboard import router as public_dashboard_router
 from routes.notification_config import router as notification_config_router
 from routes.printers import router as printers_router
+from routes.tv_dashboard import router as tv_dashboard_router
 
 app.include_router(auth_router)
 app.include_router(admin_router)
@@ -161,6 +162,7 @@ app.include_router(port_monitor_router)
 app.include_router(public_dashboard_router)
 app.include_router(notification_config_router)
 app.include_router(printers_router)
+app.include_router(tv_dashboard_router)
 
 # Include enterprise routes
 from enterprise_routes import create_enterprise_router
