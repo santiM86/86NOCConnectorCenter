@@ -29,7 +29,8 @@ import {
   Ticket,
   Plug,
   Database,
-  Printer
+  Printer,
+  Monitor
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import {
@@ -120,6 +121,7 @@ export default function Layout() {
       id: "system",
       label: "Sistema",
       items: [
+        { path: "/tv", icon: Monitor, label: "TV Dashboard", roles: ["admin", "operator", "viewer"], external: true },
         { path: "/settings", icon: Gear, label: "Impostazioni", roles: ["admin", "operator"] },
       ]
     },
@@ -187,6 +189,22 @@ export default function Layout() {
                 {!isCollapsed && (
                   <div className="nav-group-items">
                     {group.items.map((item) => (
+                      item.external ? (
+                        <a
+                          key={item.path}
+                          href={item.path}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="nav-item"
+                          data-testid={`nav-${item.label.toLowerCase().replace(/\s+/g, '-')}`}
+                        >
+                          <item.icon size={16} weight="regular" />
+                          <span className="nav-item-label">{item.label}</span>
+                          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ marginLeft: "auto", opacity: 0.4 }}>
+                            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14L21 3" />
+                          </svg>
+                        </a>
+                      ) : (
                       <NavLink
                         key={item.path}
                         to={item.path}
@@ -203,6 +221,7 @@ export default function Layout() {
                           </span>
                         )}
                       </NavLink>
+                      )
                     ))}
                   </div>
                 )}
