@@ -19,28 +19,28 @@ Piattaforma NOC enterprise-grade per monitoraggio dispositivi di rete tramite SN
 ### Mappa Enterprise React Flow
 - [x] Drag-and-drop interattivo con salvataggio layout
 - [x] Topologia 6-Layer: Internet -> Firewall -> Core -> Distribution -> Access -> Endpoint
-- [x] LLDP Discovery (connessioni porta-per-porta)
-- [x] MAC Address Table Discovery (connessioni fisiche, 10G)
-- [x] Port Speed Detection (ifHighSpeed)
-- [x] **Albero completo con endpoint scoperti** (MAC -> IP -> hostname su ogni switch)
-- [x] **Bug fix 10G**: Solo connessioni confermate da MAC Table mostrano 10G
+- [x] LLDP Discovery + MAC Table Discovery + Port Speed Detection
+- [x] Albero completo con endpoint scoperti (MAC -> IP -> hostname)
+- [x] Bug fix 10G: Solo connessioni confermate da MAC Table
+- [x] **Nomi dispositivi abbreviati** (es. "NETGEAR GS110EMX - Under Counter 5m")
+- [x] **MAC address visibili** sui nodi gestiti (enrichment da device_macs)
 
-### Enterprise Features (Aggiunto 30/03/2026)
-- [x] **Pannello Dettagli Dispositivo**: Click su nodo -> pannello laterale con:
-  - Info dispositivo (stato, nome, monitor type, latenza, sys description)
-  - Alert (count + lista con severity e timestamp)
-  - Porte High-Speed (10G ports)
-  - Endpoint connessi (MAC discovered)
-  - LLDP Neighbors
-  - Connessioni MAC
-- [x] **Aggiornamento Real-time**: Auto-refresh ogni 30s + timestamp visibile
-- [x] **Barra di Ricerca**: Cerca per nome, IP, MAC con highlight/dim
-- [x] **Filtri Tipo**: Tutti, Switch, Firewall, Server, Endpoint, AP WiFi
-- [x] **Filtri Stato**: Tutti, Online, Offline, Con Alert
-- [x] **Export PNG**: Esporta mappa come immagine ad alta risoluzione
-- [x] **Alert Badge sui Nodi**: Numero alert con colore rosso animato
-- [x] **Correlazione Impatto**: Nodi figli di device offline marcati "Impattato" (amber)
+### Enterprise Features
+- [x] **Pannello Dettagli**: Click su nodo -> info, alert, porte 10G, endpoint, LLDP, MAC
+- [x] **Aggiornamento Real-time**: Auto-refresh 30s + timestamp + pulsante manuale
+- [x] **Ricerca**: Cerca per nome/IP/MAC con highlight/dim
+- [x] **Filtri Tipo/Stato**: Switch, Firewall, Server, Endpoint, AP WiFi / Online, Offline, Con Alert
+- [x] **Export PNG**: Esporta mappa come immagine
+- [x] **Alert Badge/Correlazione Impatto**: Badge rosso + figli offline marcati "Impattato"
 - [x] **Animazione Blinking**: Nodi offline lampeggiano
+
+### Azioni Endpoint (Aggiunto 30/03/2026)
+- [x] **Apri Pagina Web**: Pulsante per aprire http://{ip} in nuova tab (per tutti i dispositivi con IP)
+- [x] **Aggiungi al Monitoraggio**: Promuovi discovered endpoint a dispositivo monitorato
+  - Selettore tipo PING/SNMP con campo community
+  - Protezione duplicati (HTTP 409)
+  - Aggiornamento automatico: endpoint marcato is_managed, scompare dai discovered
+  - Refresh mappa dopo aggiunta
 
 ### Connettore Windows (v2.5.0)
 - [x] Servizio NSSM (sopravvive disconnessione RDP)
@@ -48,29 +48,23 @@ Piattaforma NOC enterprise-grade per monitoraggio dispositivi di rete tramite SN
 - [x] Auto-aggiornamento robusto
 
 ## Key API Endpoints
-- GET `/api/network/topology/{client_id}` - Topologia completa
+- GET `/api/network/topology/{client_id}` - Topologia completa con MAC enrichment
 - GET `/api/network/device-detail/{client_id}/{device_ip}` - Dettagli dispositivo
 - GET `/api/network/alerts-summary/{client_id}` - Alert per device IP
-- POST `/api/network/topology/{client_id}/layout` - Salva layout
-- DELETE `/api/network/topology/{client_id}/layout` - Reset layout
-- POST `/api/connector/network-discovery` - Dati MAC/Speed dal connettore
+- POST `/api/network/add-to-monitoring` - Promuovi endpoint a monitorato
+- POST/DELETE `/api/network/topology/{client_id}/layout` - Salva/Reset layout
 
 ## Backlog
 ### P1
 - [ ] Notifiche Push Firebase (MOCKED)
 - [ ] Notifiche Email SendGrid (MOCKED)
-- [ ] Polling ARP Table nel connettore per risolvere MAC->IP
+- [ ] Polling ARP Table per MAC->IP
 ### P2
-- [ ] SOC AI: correlazione, auto-triage, anomaly detection
+- [ ] SOC AI: correlazione, auto-triage
 - [ ] Twilio Voice/SMS
 - [ ] SNMP v3, LDAP, Auto-discovery
-- [ ] Vista Multi-Sito (mappa generale con tutti i clienti)
-- [ ] Storico Topologia (confronto nel tempo, notifiche cambiamenti)
-- [ ] Monitoring traffico sugli edge (ifInOctets/ifOutOctets con colori saturazione)
+- [ ] Vista Multi-Sito, Storico Topologia, Traffic monitoring
 
 ## Test Reports
-- iteration_25: React Flow Enterprise Map (100%)
-- iteration_26: LLDP Discovery Backend + Frontend (100%)
-- iteration_27: Enterprise Topology 6-Layer (100%)
-- iteration_28: Discovered Endpoints + 10G Bug Fix (100%)
-- iteration_29: Enterprise Features (Search/Filter/Detail/Real-time/Export) (100%)
+- iteration_25-29: Tutte passate (100%)
+- iteration_30: Nomi abbreviati + MAC enrichment + Azioni Endpoint (100% - 12/12 backend)
