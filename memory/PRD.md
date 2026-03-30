@@ -4,80 +4,73 @@
 Piattaforma NOC enterprise-grade per monitoraggio dispositivi di rete tramite SNMP, Syslog e Redfish. Connettore Windows nativo (PowerShell) con servizio NSSM.
 
 ## Architettura
-- Backend: FastAPI modulare (18 file route), MongoDB, AES-256-GCM
-- Frontend: React, TailwindCSS, Shadcn UI, PWA, React Flow v12
+- Backend: FastAPI modulare, MongoDB, AES-256-GCM
+- Frontend: React, TailwindCSS, Shadcn UI, PWA, React Flow v12, html-to-image
 - Connector: PowerShell 5.1+, SNMP, Redfish, LLDP, MAC Table, Port Speed, NSSM Service
 
-### Architettura Connector (v2.5.0)
-```
-NSSM Windows Service -> connector.ps1 (LocalSystem, Session 0)
-                        |-> SNMP Trap listener (UDP 162)
-                        |-> Syslog listener (UDP 514)
-                        |-> SNMP Polling (60s interval)
-                        |-> Network Discovery (LLDP + MAC + Speed, ogni 10 cicli)
-                        |-> scrive status.json
-RDP Session (opzionale) -> tray_app.ps1 (monitoring/controllo)
-```
-
 ## Funzionalita Implementate
-- [x] Auth JWT + 2FA TOTP + Ruoli
+
+### Core
+- [x] Auth JWT + 2FA TOTP + Ruoli (admin/operator/viewer)
 - [x] SNMP/Ping/Redfish monitoring
 - [x] Alert + correlazione + WebSocket
 - [x] Credential Vault AES-256-GCM
-- [x] Mappa Enterprise React Flow (drag-drop, save/reset layout)
-- [x] **Network Discovery Potenziato (v2.5.0)**:
-  - LLDP neighbor discovery (connessioni porta-per-porta)
-  - MAC Address Table polling (Bridge-MIB) per rilevare connessioni fisiche
-  - Port Speed detection (ifHighSpeed) per identificare uplink 10G
-  - Combinazione LLDP + MAC + Speed per ricostruzione topologia reale
-  - Badge LLDP e MAC sulla mappa
-- [x] **Servizio Windows NSSM**:
-  - Il connettore gira come vero Servizio Windows (LocalSystem)
-  - Sopravvive a disconnessione RDP
-  - Riavvio automatico su crash
-  - Integrato nell'installer GUI
-- [x] **Topologia Enterprise 6-Layer** (Verificata 30/03/2026):
-  - Internet -> Firewall -> Core Switch -> Distribution -> Access -> Endpoints
-  - Edge LLDP con etichette porta-per-porta
-  - Edge MAC Table con etichette velocita (10G) - SOLO su connessioni confermate
-  - Edge inferiti generici (senza falsi 10G)
-  - Health score (reachability, latency, port health)
-- [x] **Albero Completo con Endpoint Scoperti** (Aggiunto 30/03/2026):
-  - Tutti i MAC address trovati nelle MAC Table vengono mostrati come nodi foglia
-  - Ogni endpoint mostra: hostname, IP, MAC address, porta dello switch, VLAN
-  - Classificazione automatica tipo endpoint (server, stampante, camera, AP, NAS, generico)
-  - Edge da switch a endpoint con label porta e velocita
-  - Collection MongoDB: discovered_endpoints
-- [x] **Bug Fix 10G Labels** (Corretto 30/03/2026):
-  - Le etichette 10G ora appaiono SOLO su connessioni confermate dalla MAC Table
-  - Connessioni inferite usano label generiche (non piu basate sul nome del modello)
-  - Stile visivo: 10G = arancione spesso animato, 1G = grigio sottile
+
+### Mappa Enterprise React Flow
+- [x] Drag-and-drop interattivo con salvataggio layout
+- [x] Topologia 6-Layer: Internet -> Firewall -> Core -> Distribution -> Access -> Endpoint
+- [x] LLDP Discovery (connessioni porta-per-porta)
+- [x] MAC Address Table Discovery (connessioni fisiche, 10G)
+- [x] Port Speed Detection (ifHighSpeed)
+- [x] **Albero completo con endpoint scoperti** (MAC -> IP -> hostname su ogni switch)
+- [x] **Bug fix 10G**: Solo connessioni confermate da MAC Table mostrano 10G
+
+### Enterprise Features (Aggiunto 30/03/2026)
+- [x] **Pannello Dettagli Dispositivo**: Click su nodo -> pannello laterale con:
+  - Info dispositivo (stato, nome, monitor type, latenza, sys description)
+  - Alert (count + lista con severity e timestamp)
+  - Porte High-Speed (10G ports)
+  - Endpoint connessi (MAC discovered)
+  - LLDP Neighbors
+  - Connessioni MAC
+- [x] **Aggiornamento Real-time**: Auto-refresh ogni 30s + timestamp visibile
+- [x] **Barra di Ricerca**: Cerca per nome, IP, MAC con highlight/dim
+- [x] **Filtri Tipo**: Tutti, Switch, Firewall, Server, Endpoint, AP WiFi
+- [x] **Filtri Stato**: Tutti, Online, Offline, Con Alert
+- [x] **Export PNG**: Esporta mappa come immagine ad alta risoluzione
+- [x] **Alert Badge sui Nodi**: Numero alert con colore rosso animato
+- [x] **Correlazione Impatto**: Nodi figli di device offline marcati "Impattato" (amber)
+- [x] **Animazione Blinking**: Nodi offline lampeggiano
+
+### Connettore Windows (v2.5.0)
+- [x] Servizio NSSM (sopravvive disconnessione RDP)
+- [x] Network Discovery (LLDP + MAC + Speed)
+- [x] Auto-aggiornamento robusto
 
 ## Key API Endpoints
-- POST `/api/connector/network-discovery` - MAC tables + port speeds + device MACs + discovered_endpoints
-- GET `/api/network/topology/{client_id}` - Topologia completa con endpoint scoperti
+- GET `/api/network/topology/{client_id}` - Topologia completa
+- GET `/api/network/device-detail/{client_id}/{device_ip}` - Dettagli dispositivo
+- GET `/api/network/alerts-summary/{client_id}` - Alert per device IP
 - POST `/api/network/topology/{client_id}/layout` - Salva layout
 - DELETE `/api/network/topology/{client_id}/layout` - Reset layout
-
-## DB Collections
-- `discovered_endpoints`: Tutti i MAC trovati per switch/porta (NEW)
-- `lldp_neighbors`: neighbor LLDP per cliente
-- `mac_connections`: connessioni inferite da MAC table
-- `port_speeds`: porte high-speed per switch
-- `topology_layouts`: layout personalizzati per cliente
+- POST `/api/connector/network-discovery` - Dati MAC/Speed dal connettore
 
 ## Backlog
 ### P1
 - [ ] Notifiche Push Firebase (MOCKED)
 - [ ] Notifiche Email SendGrid (MOCKED)
-- [ ] Polling ARP Table nel connettore per risolvere MAC->IP di endpoint sconosciuti
+- [ ] Polling ARP Table nel connettore per risolvere MAC->IP
 ### P2
 - [ ] SOC AI: correlazione, auto-triage, anomaly detection
 - [ ] Twilio Voice/SMS
 - [ ] SNMP v3, LDAP, Auto-discovery
+- [ ] Vista Multi-Sito (mappa generale con tutti i clienti)
+- [ ] Storico Topologia (confronto nel tempo, notifiche cambiamenti)
+- [ ] Monitoring traffico sugli edge (ifInOctets/ifOutOctets con colori saturazione)
 
 ## Test Reports
 - iteration_25: React Flow Enterprise Map (100%)
 - iteration_26: LLDP Discovery Backend + Frontend (100%)
-- iteration_27: Enterprise Topology 6-Layer (100% - 21/21 backend)
-- iteration_28: Discovered Endpoints + 10G Bug Fix (100% - 18/18 backend)
+- iteration_27: Enterprise Topology 6-Layer (100%)
+- iteration_28: Discovered Endpoints + 10G Bug Fix (100%)
+- iteration_29: Enterprise Features (Search/Filter/Detail/Real-time/Export) (100%)
