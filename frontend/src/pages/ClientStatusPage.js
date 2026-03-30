@@ -582,7 +582,15 @@ export default function ClientStatusPage() {
                               <Trash size={14} />
                             </button>
                           </div>
-                          {expanded && <DeviceDetailPanel dev={dev} isPing={isPing} />}
+                          {expanded && (
+                            <InlineDeviceDetail
+                              clientId={group.clientId}
+                              deviceIp={dev.device_ip}
+                              deviceName={dev.device_name}
+                              isPing={isPing}
+                              onClose={() => setExpandedDevice(null)}
+                            />
+                          )}
                         </div>
                       );
                     })}
@@ -625,6 +633,174 @@ export default function ClientStatusPage() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+
+function InlineDeviceDetail({ clientId, deviceIp, deviceName, isPing, onClose }) {
+  const [detail, setDetail] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!clientId || !deviceIp) return;
+    setLoading(true);
+    axios.get(`${API}/network/device-detail/${clientId}/${deviceIp}`)
+      .then(res => setDetail(res.data))
+      .catch(() => setDetail(null))
+      .finally(() => setLoading(false));
+  }, [clientId, deviceIp]);
+
+  if (loading) {
+    return (
+      <div className="bg-[var(--bg-card)] border-t border-[var(--bg-border)] px-8 py-4 animate-pulse">
+        <div className="flex items-center gap-2 text-xs text-[var(--text-muted)]">
+          <SpinnerGap size={14} className="animate-spin" /> Caricamento dettagli...
+        </div>
+      </div>
+    );
+  }
+
+  if (!detail) {
+    return (
+      <div className="bg-[var(--bg-card)] border-t border-[var(--bg-border)] px-8 py-4">
+        <p className="text-xs text-[var(--text-muted)]">Nessun dato disponibile</p>
+      </div>
+    );
+  }
+
+  const dev = detail.device || {};
+  const alerts = detail.alerts || [];
+  const portSpeeds = detail.port_speeds || [];
+  const endpoints = detail.connected_endpoints || [];
+  const lldp = detail.lldp_neighbors || [];
+  const macs = detail.mac_connections || [];
+  const highSpeedPorts = portSpeeds.filter(p => p.speed_mbps >= 10000);
+
+  return (
+    <div className="bg-[var(--bg-deep)] border-t border-[var(--bg-border)] px-8 py-4 animate-fade-in" data-testid={`inline-detail-${deviceIp}`}>
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+        {/* Info */}
+        <div className="space-y-2">
+          <h4 className="text-[10px] text-indigo-400 uppercase tracking-widest font-semibold">Informazioni</h4>
+          <div className="space-y-1.5 text-xs">
+            <div className="flex justify-between">
+              <span className="text-[var(--text-muted)]">Stato</span>
+              <span className={dev.reachable ? "text-emerald-400" : "text-red-400"}>{dev.reachable ? "Online" : "Offline"}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-[var(--text-muted)]">Monitor</span>
+              <span className="text-[var(--text-primary)] font-mono">{dev.monitor_type?.toUpperCase() || (isPing ? "PING" : "SNMP")}</span>
+            </div>
+            {dev.ping_ms != null && (
+              <div className="flex justify-between">
+                <span className="text-[var(--text-muted)]">Latenza</span>
+                <span className={`font-mono ${dev.ping_ms < 10 ? "text-emerald-400" : dev.ping_ms < 50 ? "text-amber-400" : "text-red-400"}`}>{dev.ping_ms} ms</span>
+              </div>
+            )}
+            {dev.sys_descr && (
+              <div>
+                <span className="text-[var(--text-muted)] text-[10px]">System</span>
+                <p className="text-[var(--text-secondary)] text-[10px] mt-0.5 break-all">{dev.sys_descr}</p>
+              </div>
+            )}
+          </div>
+          <button onClick={() => window.open(`http://${deviceIp}`, "_blank")}
+            className="mt-2 w-full h-7 rounded-md text-[10px] font-medium bg-emerald-600/20 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-600/30 transition-colors flex items-center justify-center gap-1"
+            data-testid={`open-web-${deviceIp}`}>
+            <Globe size={12} /> Apri Pagina Web
+          </button>
+        </div>
+
+        {/* Alert + Porte */}
+        <div className="space-y-2">
+          <h4 className="text-[10px] text-indigo-400 uppercase tracking-widest font-semibold">
+            Alert <span className="ml-1 text-[var(--text-muted)]">({alerts.length})</span>
+          </h4>
+          {alerts.length === 0 ? (
+            <p className="text-[10px] text-[var(--text-muted)]">Nessun alert</p>
+          ) : (
+            <div className="space-y-1 max-h-[120px] overflow-y-auto">
+              {alerts.slice(0, 5).map((a, i) => (
+                <div key={i} className="flex items-center gap-1.5 text-[10px]">
+                  <span className={`w-1.5 h-1.5 rounded-full ${a.severity === "critical" ? "bg-red-400" : a.severity === "high" ? "bg-orange-400" : "bg-amber-400"}`} />
+                  <span className="text-[var(--text-secondary)] truncate">{a.title}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {highSpeedPorts.length > 0 && (
+            <div className="mt-2">
+              <h4 className="text-[10px] text-indigo-400 uppercase tracking-widest font-semibold">
+                Porte High-Speed <span className="ml-1 text-[var(--text-muted)]">({highSpeedPorts.length})</span>
+              </h4>
+              <div className="flex flex-wrap gap-1 mt-1">
+                {highSpeedPorts.map((p, i) => (
+                  <span key={i} className="text-[9px] px-1.5 py-0.5 rounded bg-orange-500/15 text-orange-400 border border-orange-500/20 font-mono">
+                    Port {p.port || p.port_name || p.port_id || i+1} {Math.round(p.speed_mbps / 1000)}G
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Endpoint Connessi */}
+        <div className="space-y-2">
+          <h4 className="text-[10px] text-indigo-400 uppercase tracking-widest font-semibold">
+            Endpoint Connessi <span className="ml-1 text-[var(--text-muted)]">({endpoints.length})</span>
+          </h4>
+          {endpoints.length === 0 ? (
+            <p className="text-[10px] text-[var(--text-muted)]">Nessun endpoint</p>
+          ) : (
+            <div className="space-y-1 max-h-[150px] overflow-y-auto">
+              {endpoints.map((ep, i) => (
+                <div key={i} className="flex items-center justify-between text-[10px] py-0.5">
+                  <div className="flex items-center gap-1.5">
+                    <span className={`w-1.5 h-1.5 rounded-full ${ep.reachable !== false ? "bg-emerald-400" : "bg-zinc-500"}`} />
+                    <span className="text-[var(--text-primary)]">{ep.hostname || ep.name || "?"}</span>
+                  </div>
+                  <span className="text-[var(--text-muted)] font-mono">{ep.ip || ""}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* LLDP + MAC */}
+        <div className="space-y-2">
+          {lldp.length > 0 && (
+            <div>
+              <h4 className="text-[10px] text-indigo-400 uppercase tracking-widest font-semibold">
+                LLDP Neighbors <span className="ml-1 text-[var(--text-muted)]">({lldp.length})</span>
+              </h4>
+              <div className="space-y-1 mt-1">
+                {lldp.map((l, i) => (
+                  <div key={i} className="text-[10px] text-[var(--text-secondary)]">
+                    {l.remote_sys_name || l.remote_port_desc || l.remote_mgmt_ip || "N/A"}
+                    {l.local_port && <span className="text-[var(--text-muted)] ml-1">via {l.local_port}</span>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {macs.length > 0 && (
+            <div>
+              <h4 className="text-[10px] text-indigo-400 uppercase tracking-widest font-semibold">
+                Connessioni MAC <span className="ml-1 text-[var(--text-muted)]">({macs.length})</span>
+              </h4>
+              <div className="space-y-1 mt-1 max-h-[120px] overflow-y-auto">
+                {macs.map((m, i) => (
+                  <div key={i} className="flex items-center justify-between text-[10px]">
+                    <span className="font-mono text-[var(--text-muted)]">{m.mac}</span>
+                    <span className="text-[var(--text-secondary)]">{m.port || ""}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
