@@ -96,6 +96,18 @@ Piattaforma NOC enterprise-grade per monitoraggio dispositivi di rete tramite SN
 - [x] Connettore PowerShell aggiornato con Poll-PrinterData e Poll-AllPrinters (OID Printer-MIB)
 - [x] Indici MongoDB ottimizzati per printer_status e printer_history
 
+### Vulnerability Assessment (30/03/2026 - NUOVA, ispirata a Nethesis VA)
+- [x] Dashboard VA con Security Score (0-100) per dispositivo e per cliente
+- [x] Knowledge base di 18+ porte pericolose con severita e remediation
+- [x] Rilevamento automatico: porte pericolose (Telnet, FTP, RDP, SMB, VNC), SNMP community di default, HTTP senza HTTPS, SNMPv1/v2c
+- [x] Barra distribuzione severita colorata (Critico/Alto/Medio/Basso)
+- [x] 3 tab: Dispositivi (con score individuale), Vulnerabilita (lista ordinata), Piano di Remediation (azioni numerate)
+- [x] Dettaglio vulnerabilita per dispositivo con espansione inline
+- [x] Pulsante "Avvia Scansione" per registrare assessment
+- [x] Storico scansioni con trend temporale
+- [x] Remediation Summary con azioni raggruppate per priorita e dispositivi interessati
+- [x] Navigazione sotto SICUREZZA con icona ShieldCheck
+
 ### Connettore Windows (v2.5.0+)
 - [x] Servizio NSSM (sopravvive disconnessione RDP)
 - [x] Network Discovery (LLDP + MAC + Speed)
@@ -111,6 +123,10 @@ Piattaforma NOC enterprise-grade per monitoraggio dispositivi di rete tramite SN
 - GET/POST/DELETE `/api/port-monitor/services` - Monitor servizi TCP
 - GET `/api/public/dashboard/{token}` - Dashboard pubblica (NO AUTH)
 - GET/POST/PUT/DELETE `/api/notifications/templates` - Template notifiche
+- **GET `/api/vulnerability/dashboard/{client_id}`** - Dashboard VA con score, vulnerabilita, remediation
+- **GET `/api/vulnerability/device/{client_id}/{device_ip}`** - Dettaglio VA per dispositivo
+- **POST `/api/vulnerability/run-scan/{client_id}`** - Registra scansione VA
+- **GET `/api/vulnerability/history/{client_id}`** - Storico scansioni VA
 - **GET `/api/tv/dashboard`** - Dashboard TV aggregata (NO AUTH)
 - **GET `/api/printers/dashboard/{client_id}`** - Dashboard stampanti
 - **GET `/api/printers/{client_id}`** - Lista stampanti
@@ -138,3 +154,4 @@ Piattaforma NOC enterprise-grade per monitoraggio dispositivi di rete tramite SN
 - iteration_33: TV Dashboard NOC (100% - Backend 8/8, Frontend 11/11)
 - iteration_34: Sidebar link TV + Utente TV (100% - Backend 3/3, Frontend 10/10)
 - iteration_35: TV Dashboard Migliorata 3-colonne (100% - Backend 17/17, Frontend 13/13)
+- iteration_36: Vulnerability Assessment (100% - Backend 24/24, Frontend 95%)
