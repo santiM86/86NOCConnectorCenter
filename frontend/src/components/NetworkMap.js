@@ -98,6 +98,18 @@ function DeviceNode({ data }) {
           <div className="text-[9px] font-mono text-[var(--text-muted)] mt-0.5">{data.ip}</div>
         )}
 
+        {/* MAC Address */}
+        {data.mac && (
+          <div className="text-[8px] font-mono text-[var(--text-muted)] mt-0.5 opacity-70" title={data.mac}>{data.mac}</div>
+        )}
+
+        {/* Switch port info (for discovered endpoints) */}
+        {data.switch_port && (
+          <div className="text-[8px] font-mono text-cyan-400/70 mt-0.5">
+            Port {data.switch_port}{data.vlan ? ` | VLAN ${data.vlan}` : ""}
+          </div>
+        )}
+
         {/* Ping */}
         {!isVirtual && data.ping_ms != null && (
           <div className={`text-[9px] font-mono mt-0.5 ${isReachable ? "text-emerald-400" : "text-red-400"}`}>
@@ -141,6 +153,11 @@ function topoToFlowNodes(topoNodes, hasCustomLayout) {
         ports: n.ports,
         monitor_type: n.monitor_type,
         role: n.role,
+        mac: n.mac,
+        switch_port: n.switch_port,
+        vlan: n.vlan,
+        hostname: n.hostname,
+        subtitle: n.subtitle,
       },
     };
   });

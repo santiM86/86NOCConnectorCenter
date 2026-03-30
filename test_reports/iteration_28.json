@@ -1,0 +1,145 @@
+{
+  "summary": "Iteration 28 - Discovered Endpoints Feature + 10G Bug Fix. All backend (18/18) and frontend tests passed. Topology now shows 20 nodes (9 managed + 11 discovered endpoints). Bug fix confirmed: inferred edges to .6 and .7 no longer have '10G Uplink' labels - only MAC table edges have 10G labels.",
+
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+
+  "passed_tests": {
+    "backend_discovered_endpoints_count": [
+      "GET /api/network/topology/{client_id} returns 20 nodes (9 managed + 11 discovered)",
+      "11 discovered endpoints with role=discovered_endpoint",
+      "discovered_endpoints_count=11 in response"
+    ],
+    "backend_endpoint_attributes": [
+      "All endpoints have: role=discovered_endpoint, mac, ip, switch_ip, switch_port, layer=5",
+      "Endpoint types correctly inferred: server, printer, camera, ap, nas, generic"
+    ],
+    "backend_endpoints_per_switch": [
+      "Switch .4 (192.168.1.4): PC-RECEPTION, PC-ADMIN01, PRN-LASERJET-01",
+      "Switch .5 (192.168.1.5): SRV-DC01, SRV-FILE01",
+      "Switch .6 (192.168.1.6): PC-UFFICIO03, PC-UFFICIO04",
+      "Switch .7 (192.168.1.7): IPCAM-BOILER, NAS-BACKUP01",
+      "HPE Core .2 (192.168.1.2): SRV-ESXI01",
+      "Netgear .3 (192.168.1.3): AP-WIFI-ARMADIO"
+    ],
+    "backend_10g_bug_fix": [
+      "Edges to .6 have type='access' with empty label (no 10G)",
+      "Edges to .7 have type='access' with empty label (no 10G)",
+      "No inferred edges have '10G' in label",
+      "Only MAC table edges have 10G labels"
+    ],
+    "backend_mac_table_edges": [
+      "MAC edge to .4: 'Port 9 (10G)' with type=trunk, source=mac_table",
+      "MAC edge to .5: 'Port 10 (10G)' with type=trunk, source=mac_table"
+    ],
+    "backend_mac_discovery_edges": [
+      "11 mac_discovery edges with 'Port X' labels",
+      "All edges from switch to endpoint have port number in label"
+    ],
+    "backend_layout_management": [
+      "POST /api/network/topology/{client_id}/layout works (status=ok)",
+      "DELETE /api/network/topology/{client_id}/layout works (status=ok)"
+    ],
+    "frontend_network_map": [
+      "Login with admin@86bit.it / password works",
+      "Navigate to Stato Rete -> Mappa tab works",
+      "Network map displays 20 nodes",
+      "11 discovered endpoint nodes visible (mac- prefix)",
+      "11 MAC addresses displayed on endpoint nodes",
+      "LLDP badge shows 'LLDP: 2'",
+      "MAC badge shows 'MAC: 2'",
+      "Health score displays 100%"
+    ],
+    "frontend_edge_labels": [
+      "Edge labels include 'Port 9 (10G)' and 'Port 10 (10G)' for MAC table edges",
+      "Edge labels include '1G' for access edges",
+      "Edge labels include 'Port X' for mac_discovery edges"
+    ],
+    "frontend_legend": [
+      "Legend shows: WAN (cyan), 10G (orange), Trunk (purple), Accesso (1G) (gray), Server (green), MGMT (amber), LLDP (cyan), Manuale (purple)"
+    ]
+  },
+
+  "test_report_links": [
+    "/app/backend/tests/test_discovered_endpoints.py",
+    "/app/test_reports/pytest/pytest_discovered_endpoints.xml"
+  ],
+
+  "action_items": [],
+
+  "critical_code_review_comments": [
+    "connector.py correctly saves ALL MAC entries to discovered_endpoints collection (not just managed devices)",
+    "topology.py _guess_endpoint_type function correctly classifies endpoints by hostname patterns",
+    "topology.py adds discovered_endpoints as layer 5 nodes with role=discovered_endpoint",
+    "Bug fix: inferred edges no longer have '10G Uplink' labels - only MAC table edges with confirmed 10G port speeds get 10G labels",
+    "NetworkMap.js correctly displays MAC address, port, and VLAN on endpoint nodes",
+    "Edge styling: 10G edges are orange (#f97316) and thick (strokeWidth=3), access edges are gray"
+  ],
+
+  "updated_files": [
+    "/app/backend/tests/test_discovered_endpoints.py"
+  ],
+
+  "success_rate": {
+    "backend": "100% (18/18 tests passed)",
+    "frontend": "100% (all discovered endpoints features working)"
+  },
+
+  "test_credentials": {
+    "admin_user": {
+      "email": "admin@86bit.it",
+      "password": "password",
+      "role": "admin"
+    },
+    "client_id": "da3d6e40-b3e5-4d46-9787-dde328a3aa36"
+  },
+
+  "seed_data_creation": "Used existing seed data with 8 managed devices + 11 discovered_endpoints in test_database",
+
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+
+  "context_for_next_testing_agent": "Discovered endpoints feature fully validated. Backend: GET /api/network/topology/{client_id} returns 20 nodes (9 managed + 11 discovered endpoints at layer 5). Each endpoint has: role=discovered_endpoint, mac, ip, switch_ip, switch_port, layer=5. Bug fix confirmed: edges to .6 and .7 have type='access' with no 10G label. Only MAC table edges (to .4 and .5) have 10G labels. Frontend: React Flow map shows all 20 nodes with MAC addresses visible on endpoints, port labels on edges, and correct legend with 10G in orange.",
+
+  "mocked_apis": {
+    "Firebase Cloud Messaging": "MOCKED - no real API keys",
+    "SendGrid Email": "MOCKED - no real API keys"
+  },
+
+  "topology_validation": {
+    "total_nodes": 20,
+    "managed_nodes": 9,
+    "discovered_endpoints": 11,
+    "hierarchy": {
+      "layer_0": "Internet (virtual WAN)",
+      "layer_1": "Zyxel Firewall (192.168.1.254)",
+      "layer_2": "HPE Core Switch (192.168.1.2)",
+      "layer_3": "Netgear Distribution (192.168.1.3)",
+      "layer_4": "4 Access Switches (192.168.1.4, .5, .6, .7) + iLO",
+      "layer_5": "11 Discovered Endpoints"
+    },
+    "endpoints_by_switch": {
+      "192.168.1.2": ["SRV-ESXI01"],
+      "192.168.1.3": ["AP-WIFI-ARMADIO"],
+      "192.168.1.4": ["PC-RECEPTION", "PC-ADMIN01", "PRN-LASERJET-01"],
+      "192.168.1.5": ["SRV-DC01", "SRV-FILE01"],
+      "192.168.1.6": ["PC-UFFICIO03", "PC-UFFICIO04"],
+      "192.168.1.7": ["IPCAM-BOILER", "NAS-BACKUP01"]
+    },
+    "edge_sources": {
+      "lldp": ["Zyxel->HPE (LAN1 <-> Port 1)", "HPE->Netgear (Port 1 <-> Port 24)"],
+      "mac_table": ["Netgear->Access .4 (Port 9 10G)", "Netgear->Access .5 (Port 10 10G)"],
+      "inferred": ["Netgear->Access .6 (type=access, no 10G)", "Netgear->Access .7 (type=access, no 10G)"],
+      "mac_discovery": ["11 edges from switches to discovered endpoints with Port X labels"]
+    },
+    "bug_fix_verified": "Edges to .6 and .7 no longer have '10G Uplink' label - only MAC table edges can have 10G"
+  }
+}

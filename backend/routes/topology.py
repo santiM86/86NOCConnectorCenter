@@ -328,6 +328,26 @@ def _find_ilo_parent(ilo, servers, switches, gateways):
     return _find_best_parent(ilo, switches, gateways)
 
 
+def _guess_endpoint_type(hostname, mac):
+    """Guess endpoint type from hostname or MAC OUI prefix."""
+    h = (hostname or "").lower()
+    if any(k in h for k in ["srv", "server", "esxi", "vmware", "proxmox", "dc-", "ad-"]):
+        return "server"
+    if any(k in h for k in ["printer", "mfp", "laserjet", "epson", "prn"]):
+        return "printer"
+    if any(k in h for k in ["camera", "nvr", "dvr", "hikvision", "ipcam"]):
+        return "camera"
+    if any(k in h for k in ["ap-", "wifi", "unifi", "access point"]):
+        return "ap"
+    if any(k in h for k in ["nas", "synology", "qnap"]):
+        return "nas"
+    if any(k in h for k in ["phone", "voip", "sip"]):
+        return "generic"
+    if any(k in h for k in ["pc-", "desktop", "laptop", "workstation", "nb-"]):
+        return "generic"
+    return "generic"
+
+
 def calculate_health_score(devices):
     """Calculate a 0-100 health score for a set of devices."""
     if not devices:
@@ -565,12 +585,91 @@ async def get_network_topology(client_id: str, current_user: dict = Depends(get_
         ]
         topology["edges"] = discovered_edges + kept_inferred
     
+    # === Add discovered endpoints (MAC-based leaf nodes) ===
+    endpoints = await db.discovered_endpoints.find(
+        {"client_id": client_id, "is_managed": False}, {"_id": 0}
+    ).to_list(500)
+    
+    if endpoints:
+        existing_node_ids = set(n.get("id") for n in topology["nodes"])
+        endpoint_layer_nodes = []
+        
+        for ep in endpoints:
+            mac = ep.get("mac", "")
+            ip = ep.get("ip", "")
+            switch_ip = ep.get("switch_ip", "")
+            port = ep.get("port", "")
+            hostname = ep.get("hostname", "")
+            vlan = ep.get("vlan", "")
+            
+            # Use MAC as node ID (unique per endpoint)
+            node_id = f"mac-{mac.replace(':', '')}" if mac else f"ep-{switch_ip}-{port}"
+            if node_id in existing_node_ids:
+                continue
+            existing_node_ids.add(node_id)
+            
+            # Build display name
+            display_name = hostname or ip or mac
+            subtitle = mac
+            if ip and ip != display_name:
+                subtitle = f"{ip} | {mac}"
+            
+            # Determine endpoint type from MAC OUI or hostname
+            ep_type = _guess_endpoint_type(hostname, mac)
+            
+            # Create endpoint node
+            ep_node = {
+                "id": node_id,
+                "name": display_name,
+                "type": ep_type,
+                "layer": 5,
+                "role": "discovered_endpoint",
+                "reachable": True,
+                "ip": ip,
+                "mac": mac,
+                "switch_ip": switch_ip,
+                "switch_port": port,
+                "vlan": vlan,
+                "hostname": hostname,
+                "subtitle": subtitle,
+            }
+            topology["nodes"].append(ep_node)
+            endpoint_layer_nodes.append(node_id)
+            
+            # Create edge: parent switch -> endpoint
+            speed_label = ""
+            for ps in port_speeds_data:
+                if ps.get("switch_ip") == switch_ip:
+                    for hp in ps.get("high_speed_ports", []):
+                        if str(hp.get("port", "")) == str(port):
+                            speed_mbps = hp.get("speed_mbps", 0)
+                            if speed_mbps >= 10000:
+                                speed_label = " (10G)"
+                            elif speed_mbps >= 1000:
+                                speed_label = f" ({speed_mbps // 1000}G)"
+            
+            edge_label = f"Port {port}{speed_label}" if port else ""
+            if vlan:
+                edge_label += f" VLAN {vlan}"
+            
+            topology["edges"].append({
+                "from": switch_ip,
+                "to": node_id,
+                "type": "access",
+                "label": edge_label,
+                "source": "mac_discovery",
+            })
+        
+        if endpoint_layer_nodes:
+            topology["layers"].append({"name": "Endpoint Scoperti", "nodes": endpoint_layer_nodes})
+    
     topology["health"] = health
     topology["client_id"] = client_id
     topology["client_name"] = client_name
     topology["has_custom_layout"] = False
     topology["lldp_count"] = len(lldp_neighbors)
     topology["mac_connections_count"] = len(mac_connections)
+    topology["discovered_endpoints_count"] = len(endpoints) if endpoints else 0
     
     return topology
 

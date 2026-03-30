@@ -476,30 +476,56 @@ async def connector_network_discovery(request: Request):
             "updated_at": now_iso,
         })
 
-    # Build inferred connections from MAC tables
-    # If switch A's MAC table shows switch B's MAC on port X,
-    # then switch A port X is connected to switch B
-    inferred_connections = []
+    # Build MAC -> IP mapping from device_macs and managed devices
     device_mac_map = {}  # MAC -> IP mapping
+    managed_ips = set()
     for dm in device_macs:
+        ip = dm.get("ip", "")
+        if ip:
+            managed_ips.add(ip)
         for mac in dm.get("macs", []):
             if mac:
-                device_mac_map[mac.upper()] = dm.get("ip", "")
+                device_mac_map[mac.upper()] = ip
+
+    # Also build IP -> name mapping from managed devices
+    managed_devices = await db.device_poll_status.find(
+        {"client_id": client_id}, {"_id": 0, "device_ip": 1, "device_name": 1}
+    ).to_list(500)
+    managed_ip_names = {d["device_ip"]: d.get("device_name", "") for d in managed_devices}
+    managed_ips.update(managed_ip_names.keys())
+
+    # Build inferred connections AND discovered endpoints from MAC tables
+    inferred_connections = []
+    discovered_endpoints = []
 
     for mt in mac_tables:
         switch_ip = mt.get("switch_ip", "")
         for entry in mt.get("entries", []):
             mac = entry.get("mac", "").upper()
             port = entry.get("port", 0)
-            if mac in device_mac_map:
-                remote_ip = device_mac_map[mac]
-                if remote_ip and remote_ip != switch_ip:
-                    inferred_connections.append({
-                        "from_ip": switch_ip,
-                        "from_port": port,
-                        "to_ip": remote_ip,
-                        "source": "mac_table",
-                    })
+            resolved_ip = device_mac_map.get(mac, "")
+            vlan = entry.get("vlan", "")
+
+            if resolved_ip and resolved_ip != switch_ip:
+                # Known device: create connection
+                inferred_connections.append({
+                    "from_ip": switch_ip,
+                    "from_port": port,
+                    "to_ip": resolved_ip,
+                    "source": "mac_table",
+                })
+            # Store ALL MAC entries as discovered endpoints
+            discovered_endpoints.append({
+                "client_id": client_id,
+                "switch_ip": switch_ip,
+                "port": port,
+                "mac": mac,
+                "ip": resolved_ip or entry.get("ip", ""),
+                "vlan": vlan,
+                "hostname": entry.get("hostname", ""),
+                "is_managed": resolved_ip in managed_ips,
+                "updated_at": now_iso,
+            })
 
     # Store inferred connections
     await db.mac_connections.delete_many({"client_id": client_id})
@@ -508,6 +534,11 @@ async def connector_network_discovery(request: Request):
             conn["client_id"] = client_id
             conn["updated_at"] = now_iso
         await db.mac_connections.insert_many(inferred_connections)
+
+    # Store ALL discovered endpoints (for full tree view)
+    await db.discovered_endpoints.delete_many({"client_id": client_id})
+    if discovered_endpoints:
+        await db.discovered_endpoints.insert_many(discovered_endpoints)
 
     # Store high-speed port info
     await db.port_speeds.delete_many({"client_id": client_id})
@@ -518,10 +549,11 @@ async def connector_network_discovery(request: Request):
         await db.port_speeds.insert_many(port_speeds)
 
     total_mac = sum(len(mt.get("entries", [])) for mt in mac_tables)
-    logger.info(f"Network discovery for {client_id}: {total_mac} MAC entries, {len(inferred_connections)} connections, {len(port_speeds)} speed reports")
+    logger.info(f"Network discovery for {client_id}: {total_mac} MAC entries, {len(inferred_connections)} connections, {len(discovered_endpoints)} endpoints, {len(port_speeds)} speed reports")
     return {
         "status": "ok",
         "mac_entries": total_mac,
         "inferred_connections": len(inferred_connections),
+        "discovered_endpoints": len(discovered_endpoints),
         "port_speed_reports": len(port_speeds),
     }
