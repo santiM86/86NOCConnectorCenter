@@ -72,6 +72,8 @@ Piattaforma NOC enterprise-grade per monitoraggio dispositivi di rete tramite SN
 - [x] Sezione consumabili bassi con barre toner colorate
 - [x] Auto-refresh ogni 15 secondi, dark theme ottimizzato per TV
 - [x] Layout responsivo (1080p/4K), nessun sidebar
+- [x] Link "TV Dashboard" nel menu laterale sotto SISTEMA con icona Monitor e apertura in nuova tab
+- [x] Utente TV dedicato (tv@86bit.it / Tv86bit!2026, ruolo viewer)
 
 ### Gestione Stampanti SNMP (30/03/2026 - NUOVA)
 - [x] Dashboard stampanti con statistiche (online/offline/toner basso/pagine totali)
@@ -127,3 +129,4 @@ Piattaforma NOC enterprise-grade per monitoraggio dispositivi di rete tramite SN
 - iteration_31: Report PDF + Inventario + Incidenti + Port Monitor + Dashboard Pubblica + Notifiche + Widget Zabbix (100%)
 - iteration_32: Gestione Stampanti SNMP (100% - Backend 14/14, Frontend 100%)
 - iteration_33: TV Dashboard NOC (100% - Backend 8/8, Frontend 11/11)
+- iteration_34: Sidebar link TV + Utente TV (100% - Backend 3/3, Frontend 10/10)
