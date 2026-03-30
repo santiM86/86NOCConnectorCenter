@@ -53,6 +53,7 @@ Piattaforma NOC enterprise-grade per monitoraggio dispositivi di rete tramite SN
 - [x] **PowerShell Run-VAScan**: Scansione porte pericolose TCP + check SNMP community di default
 - [x] **Sicurezza**: pending_commands filtrati per client_id (fix cross-client leakage)
 - [x] Storico scansioni con trend temporale
+- [x] **Report PDF Esaustivo (11 pagine)**: Riepilogo esecutivo, distribuzione severita, analisi per dispositivo, vulnerabilita critiche/alte, elenco completo, analisi dettagliata con remediation, piano azioni, storico, raccomandazioni, metodologia, knowledge base porte
 
 ### Connettore Windows (v2.5.0+)
 - [x] Servizio NSSM
@@ -70,6 +71,7 @@ Piattaforma NOC enterprise-grade per monitoraggio dispositivi di rete tramite SN
 - POST `/api/vulnerability/process-scan-results` - Ricevi risultati (da connettore)
 - POST `/api/vulnerability/run-scan/{client_id}` - Scansione locale
 - GET `/api/vulnerability/history/{client_id}` - Storico
+- GET `/api/vulnerability/report/{client_id}` - Report PDF esaustivo (11 sezioni)
 - POST `/api/connector/managed-devices` - Lista dispositivi (per connettore)
 - POST `/api/connector/heartbeat` - Heartbeat con pending_commands filtrati per client_id
 
@@ -87,3 +89,4 @@ Piattaforma NOC enterprise-grade per monitoraggio dispositivi di rete tramite SN
 ## Test Reports
 - iteration_36: Vulnerability Assessment base (100%)
 - iteration_37: Remote VA Scan (100% - Backend 17/17, Frontend 100%)
+- iteration_38: VA PDF Report (100% - Backend 11/11, Frontend 100%)
