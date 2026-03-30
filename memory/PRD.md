@@ -63,17 +63,21 @@ Piattaforma NOC enterprise-grade per monitoraggio dispositivi di rete tramite SN
 - [x] Canali: Email, SMS, Push, Webhook HTTP, Microsoft Teams
 - [x] Regole di escalation configurabili
 
-### TV Dashboard NOC (30/03/2026 - NUOVA)
+### TV Dashboard NOC (30/03/2026 - NUOVA, MIGLIORATA)
 - [x] Pagina fullscreen a /tv accessibile SENZA login per monitor a parete
-- [x] Header con logo NOC, titolo 86BIT, orologio in tempo reale, badge stato globale
-- [x] 8 stat block grandi: Dispositivi, Online, Offline, Alert Critici, Alert Totali, Incidenti, Stampanti, Toner Basso
-- [x] Card clienti con ring gauge salute %, contatori online/offline/alert, stato connettore
-- [x] Pannello alert attivi con auto-scroll, colori per severita, badge conteggio
-- [x] Sezione consumabili bassi con barre toner colorate
-- [x] Auto-refresh ogni 15 secondi, dark theme ottimizzato per TV
-- [x] Layout responsivo (1080p/4K), nessun sidebar
+- [x] Header con logo NOC, titolo 86BIT, orologio in tempo reale, badge stato globale (TUTTI OPERATIVI/ATTENZIONE)
+- [x] 8 stat block grandi: Dispositivi, Online, Offline, Critici, Alert, Incidenti, Stampanti, Toner
+- [x] **Layout 3 colonne**: Clienti+Connettori | Offline+Incidenti | Alert+Toner
+- [x] **Dispositivi Offline**: pallino rosso pulsante, nome, IP, cliente, "da Xh Ym fa"
+- [x] **Incidenti Aperti**: badge priorita P1-P4 colorati, stato APERTO/IN CORSO
+- [x] **Alert Arricchiti**: nome dispositivo, IP, nome cliente, messaggio, time_ago
+- [x] **Stato Connettori**: chip con hostname, versione, stato online/offline, ultimo heartbeat
+- [x] **Consumabili Bassi**: barre toner con colori reali e percentuali
+- [x] **Ticker Scorrevole**: badge LIVE rosso + ultimi eventi che scorrono in basso
 - [x] Link "TV Dashboard" nel menu laterale sotto SISTEMA con icona Monitor e apertura in nuova tab
 - [x] Utente TV dedicato (tv@86bit.it / Tv86bit!2026, ruolo viewer)
+- [x] Auto-refresh ogni 15 secondi, dark theme ottimizzato per TV
+- [x] Layout responsivo (1080p/4K), nessun sidebar
 
 ### Gestione Stampanti SNMP (30/03/2026 - NUOVA)
 - [x] Dashboard stampanti con statistiche (online/offline/toner basso/pagine totali)
@@ -130,3 +134,4 @@ Piattaforma NOC enterprise-grade per monitoraggio dispositivi di rete tramite SN
 - iteration_32: Gestione Stampanti SNMP (100% - Backend 14/14, Frontend 100%)
 - iteration_33: TV Dashboard NOC (100% - Backend 8/8, Frontend 11/11)
 - iteration_34: Sidebar link TV + Utente TV (100% - Backend 3/3, Frontend 10/10)
+- iteration_35: TV Dashboard Migliorata 3-colonne (100% - Backend 17/17, Frontend 13/13)
