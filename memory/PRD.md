@@ -37,24 +37,32 @@ RDP Session (opzionale) -> tray_app.ps1 (monitoring/controllo)
   - Riavvio automatico su crash
   - Integrato nell'installer GUI
 - [x] **Topologia Enterprise 6-Layer** (Verificata 30/03/2026):
-  - Internet -> Firewall -> Core Switch -> Distribution -> Access -> iLO/Management
+  - Internet -> Firewall -> Core Switch -> Distribution -> Access -> Endpoints
   - Edge LLDP con etichette porta-per-porta
-  - Edge MAC Table con etichette velocita (10G)
-  - Edge inferiti con label 10G Uplink
+  - Edge MAC Table con etichette velocita (10G) - SOLO su connessioni confermate
+  - Edge inferiti generici (senza falsi 10G)
   - Health score (reachability, latency, port health)
+- [x] **Albero Completo con Endpoint Scoperti** (Aggiunto 30/03/2026):
+  - Tutti i MAC address trovati nelle MAC Table vengono mostrati come nodi foglia
+  - Ogni endpoint mostra: hostname, IP, MAC address, porta dello switch, VLAN
+  - Classificazione automatica tipo endpoint (server, stampante, camera, AP, NAS, generico)
+  - Edge da switch a endpoint con label porta e velocita
+  - Collection MongoDB: discovered_endpoints
+- [x] **Bug Fix 10G Labels** (Corretto 30/03/2026):
+  - Le etichette 10G ora appaiono SOLO su connessioni confermate dalla MAC Table
+  - Connessioni inferite usano label generiche (non piu basate sul nome del modello)
+  - Stile visivo: 10G = arancione spesso animato, 1G = grigio sottile
 
-## Key API Endpoints (Discovery)
-- POST `/api/connector/lldp-neighbors` - Dati LLDP dal connettore
-- POST `/api/connector/network-discovery` - MAC tables + port speeds
-- GET `/api/network/lldp/{client_id}` - LLDP raw data
-- GET `/api/network/topology/{client_id}` - Topologia (LLDP + MAC + inferred)
+## Key API Endpoints
+- POST `/api/connector/network-discovery` - MAC tables + port speeds + device MACs + discovered_endpoints
+- GET `/api/network/topology/{client_id}` - Topologia completa con endpoint scoperti
 - POST `/api/network/topology/{client_id}/layout` - Salva layout
 - DELETE `/api/network/topology/{client_id}/layout` - Reset layout
 
-## DB Collections (Discovery)
+## DB Collections
+- `discovered_endpoints`: Tutti i MAC trovati per switch/porta (NEW)
 - `lldp_neighbors`: neighbor LLDP per cliente
-- `network_discovery`: MAC tables + port speeds raw
-- `mac_connections`: connessioni inferite da MAC table (from_ip, from_port, to_ip)
+- `mac_connections`: connessioni inferite da MAC table
 - `port_speeds`: porte high-speed per switch
 - `topology_layouts`: layout personalizzati per cliente
 
@@ -62,6 +70,7 @@ RDP Session (opzionale) -> tray_app.ps1 (monitoring/controllo)
 ### P1
 - [ ] Notifiche Push Firebase (MOCKED)
 - [ ] Notifiche Email SendGrid (MOCKED)
+- [ ] Polling ARP Table nel connettore per risolvere MAC->IP di endpoint sconosciuti
 ### P2
 - [ ] SOC AI: correlazione, auto-triage, anomaly detection
 - [ ] Twilio Voice/SMS
@@ -70,4 +79,5 @@ RDP Session (opzionale) -> tray_app.ps1 (monitoring/controllo)
 ## Test Reports
 - iteration_25: React Flow Enterprise Map (100%)
 - iteration_26: LLDP Discovery Backend + Frontend (100%)
-- iteration_27: Enterprise Topology 6-Layer + LLDP/MAC/Inferred Edges (100% - 21/21 backend, all frontend)
+- iteration_27: Enterprise Topology 6-Layer (100% - 21/21 backend)
+- iteration_28: Discovered Endpoints + 10G Bug Fix (100% - 18/18 backend)
