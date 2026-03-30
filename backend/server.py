@@ -230,6 +230,7 @@ async def startup_event():
         await db.port_speeds.create_index([("client_id", 1), ("device_ip", 1)])
 
         await db.port_monitors.create_index([("client_id", 1)])
+        await db.deleted_devices.create_index([("client_id", 1), ("device_ip", 1)], unique=True)
         await db.notification_templates.create_index([("id", 1)], unique=True)
         await db.public_dashboards.create_index([("token", 1)], unique=True)
         await db.public_dashboards.create_index([("client_id", 1)], unique=True)

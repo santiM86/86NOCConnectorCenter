@@ -281,6 +281,13 @@ async def connector_device_report(request: Request):
     devices = body.get("devices", [])
     now_iso = datetime.now(timezone.utc).isoformat()
     for dev in devices:
+        # Skip devices that were deleted by the user
+        is_deleted = await db.deleted_devices.find_one({
+            "client_id": client_id, "device_ip": dev["device_ip"]
+        })
+        if is_deleted:
+            continue
+
         doc = {
             "client_id": client_id, "connector_hostname": hostname,
             "device_ip": dev["device_ip"], "device_name": dev["device_name"],
@@ -342,8 +349,35 @@ async def get_device_metrics_history(device_ip: str, current_user: dict = Depend
 
 @router.delete("/connector/device-poll-status/{device_ip}")
 async def delete_device_poll_status(device_ip: str, current_user: dict = Depends(get_current_user)):
+    # Get client_id before deleting
+    poll_doc = await db.device_poll_status.find_one({"device_ip": device_ip})
+    client_id = poll_doc.get("client_id") if poll_doc else None
+
+    # Remove from ALL collections
     await db.device_poll_status.delete_many({"device_ip": device_ip})
     await db.managed_devices.delete_many({"ip": device_ip})
+    await db.discovered_endpoints.delete_many({"ip": device_ip})
+    await db.metrics_history.delete_many({"device_ip": device_ip})
+    await db.device_metrics_history.delete_many({"device_ip": device_ip})
+    await db.port_monitors.delete_many({"device_ip": device_ip})
+    await db.lldp_neighbors.delete_many({"local_device_ip": device_ip})
+    await db.mac_connections.delete_many({"switch_ip": device_ip})
+    await db.port_speeds.delete_many({"device_ip": device_ip})
+
+    # Mark as deleted so the connector won't re-sync it
+    if client_id:
+        await db.deleted_devices.update_one(
+            {"client_id": client_id, "device_ip": device_ip},
+            {"$set": {
+                "client_id": client_id,
+                "device_ip": device_ip,
+                "deleted_at": datetime.now(timezone.utc).isoformat(),
+                "deleted_by": current_user.get("email", "admin"),
+            }},
+            upsert=True,
+        )
+
+    logger.info(f"Device {device_ip} completely removed from all collections")
     return {"status": "ok"}
 
 
@@ -369,6 +403,14 @@ async def get_managed_devices(client_id: str, request: Request):
             raise HTTPException(status_code=401, detail="Invalid API key")
         client_id = client_data["id"]
     devices = await db.managed_devices.find({"client_id": client_id}, {"_id": 0}).to_list(200)
+
+    # Filter out devices that were deleted from the web NOC
+    deleted = await db.deleted_devices.find(
+        {"client_id": client_id}, {"device_ip": 1, "_id": 0}
+    ).to_list(500)
+    deleted_ips = {d["device_ip"] for d in deleted}
+    devices = [d for d in devices if d.get("ip") not in deleted_ips]
+
     return devices
 
 
@@ -386,6 +428,8 @@ async def add_managed_device(client_id: str, device: ManagedDevice, current_user
         "created_by": current_user.get("name", "admin")
     }
     await db.managed_devices.insert_one(doc)
+    # Remove from blacklist if it was previously deleted
+    await db.deleted_devices.delete_many({"client_id": client_id, "device_ip": device.ip})
     return {"status": "ok", "device": {k: v for k, v in doc.items() if k != "_id"}}
 
 
