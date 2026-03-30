@@ -76,6 +76,9 @@ Piattaforma NOC enterprise-grade per monitoraggio dispositivi di rete tramite SN
 - [x] **Ticker Scorrevole**: badge LIVE rosso + ultimi eventi che scorrono in basso
 - [x] Link "TV Dashboard" nel menu laterale sotto SISTEMA con icona Monitor e apertura in nuova tab
 - [x] Utente TV dedicato (tv@86bit.it / Tv86bit!2026, ruolo viewer)
+- [x] **Sistema allarme sonoro**: beep tramite Web Audio API quando un nuovo dispositivo va offline (triplo beep) o arriva un alert critico (doppio beep)
+- [x] **Pulsante Audio ON/OFF**: nell'header, click per abilitare/disabilitare i suoni (rispetta la policy autoplay del browser)
+- [x] **Banner allarme**: notifica visiva con animazione slide-in quando scatta l'allarme, scompare dopo 30s
 - [x] Auto-refresh ogni 15 secondi, dark theme ottimizzato per TV
 - [x] Layout responsivo (1080p/4K), nessun sidebar
 

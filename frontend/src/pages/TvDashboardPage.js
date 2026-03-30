@@ -1,14 +1,78 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import axios from "axios";
 import "./TvDashboard.css";
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 const REFRESH_INTERVAL = 15000;
 
+// Web Audio API alarm system
+function useAlarmSystem() {
+  const audioCtxRef = useRef(null);
+  const prevStateRef = useRef({ offlineIPs: new Set(), alertIDs: new Set() });
+  const [soundEnabled, setSoundEnabled] = useState(false);
+  const [lastAlarm, setLastAlarm] = useState(null);
+
+  const initAudio = useCallback(() => {
+    if (!audioCtxRef.current) {
+      audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    if (audioCtxRef.current.state === "suspended") {
+      audioCtxRef.current.resume();
+    }
+    setSoundEnabled(true);
+  }, []);
+
+  const playTone = useCallback((freq, duration, count = 1, type = "square") => {
+    const ctx = audioCtxRef.current;
+    if (!ctx || ctx.state === "suspended") return;
+    const now = ctx.currentTime;
+    for (let i = 0; i < count; i++) {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = type;
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.15, now + i * (duration + 0.1));
+      gain.gain.exponentialRampToValueAtTime(0.001, now + i * (duration + 0.1) + duration);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now + i * (duration + 0.1));
+      osc.stop(now + i * (duration + 0.1) + duration);
+    }
+  }, []);
+
+  const checkAlarms = useCallback((data) => {
+    if (!soundEnabled || !data) return;
+    const prev = prevStateRef.current;
+    const currentOfflineIPs = new Set(data.offline_devices.map(d => d.ip));
+    const currentAlertIDs = new Set(data.alerts.map(a => a.id));
+
+    // New offline devices
+    const newOffline = [...currentOfflineIPs].filter(ip => !prev.offlineIPs.has(ip));
+    // New critical alerts
+    const newCritical = data.alerts.filter(a => a.severity === "critical" && !prev.alertIDs.has(a.id));
+
+    if (prev.offlineIPs.size > 0 || prev.alertIDs.size > 0) {
+      if (newOffline.length > 0) {
+        playTone(880, 0.2, 3, "square"); // triple beep urgente
+        const names = data.offline_devices.filter(d => newOffline.includes(d.ip)).map(d => d.name);
+        setLastAlarm({ type: "offline", message: `OFFLINE: ${names.join(", ")}`, time: new Date() });
+      } else if (newCritical.length > 0) {
+        playTone(660, 0.3, 2, "sawtooth"); // double beep critico
+        setLastAlarm({ type: "critical", message: `CRITICO: ${newCritical[0].device_name || newCritical[0].title}`, time: new Date() });
+      }
+    }
+
+    prevStateRef.current = { offlineIPs: currentOfflineIPs, alertIDs: currentAlertIDs };
+  }, [soundEnabled, playTone]);
+
+  return { soundEnabled, initAudio, checkAlarms, lastAlarm };
+}
+
 export default function TvDashboardPage() {
   const [data, setData] = useState(null);
   const [clock, setClock] = useState(new Date());
   const [tickerOffset, setTickerOffset] = useState(0);
+  const { soundEnabled, initAudio, checkAlarms, lastAlarm } = useAlarmSystem();
 
   useEffect(() => {
     fetchData();
@@ -16,6 +80,11 @@ export default function TvDashboardPage() {
     const clockInterval = setInterval(() => setClock(new Date()), 1000);
     return () => { clearInterval(dataInterval); clearInterval(clockInterval); };
   }, []);
+
+  // Check alarms when data changes
+  useEffect(() => {
+    if (data) checkAlarms(data);
+  }, [data, checkAlarms]);
 
   // Ticker auto-scroll
   useEffect(() => {
@@ -31,7 +100,7 @@ export default function TvDashboardPage() {
   };
 
   if (!data) return (
-    <div className="tv-loading">
+    <div className="tv-loading" onClick={initAudio}>
       <div className="tv-loading-pulse" />
       <p>Connessione al NOC...</p>
     </div>
@@ -43,6 +112,16 @@ export default function TvDashboardPage() {
 
   return (
     <div className="tv-root" data-testid="tv-dashboard">
+      {/* ALARM BANNER */}
+      {lastAlarm && (Date.now() - lastAlarm.time.getTime() < 30000) && (
+        <div className={`tv-alarm-banner tv-alarm-${lastAlarm.type}`} data-testid="tv-alarm-banner">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+            <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 0 1-3.46 0"/>
+          </svg>
+          <span>{lastAlarm.message}</span>
+        </div>
+      )}
+
       {/* HEADER */}
       <header className="tv-header">
         <div className="tv-header-left">
@@ -53,6 +132,25 @@ export default function TvDashboardPage() {
           </div>
         </div>
         <div className="tv-header-right">
+          <button
+            className={`tv-sound-btn ${soundEnabled ? "tv-sound-on" : ""}`}
+            onClick={initAudio}
+            data-testid="tv-sound-toggle"
+            title={soundEnabled ? "Audio attivo" : "Clicca per abilitare l'audio"}
+          >
+            {soundEnabled ? (
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+                <path d="M15.54 8.46a5 5 0 0 1 0 7.07M19.07 4.93a10 10 0 0 1 0 14.14"/>
+              </svg>
+            ) : (
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+                <line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/>
+              </svg>
+            )}
+            <span className="tv-sound-label">{soundEnabled ? "AUDIO ON" : "AUDIO OFF"}</span>
+          </button>
           <div className={`tv-global-status ${allGood ? "tv-status-ok" : hasProblems ? "tv-status-critical" : "tv-status-warn"}`}>
             <span className="tv-status-dot" />
             {allGood ? "TUTTI OPERATIVI" : hasProblems ? "ATTENZIONE" : "IN MONITORAGGIO"}

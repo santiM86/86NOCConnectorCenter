@@ -277,6 +277,42 @@
 @keyframes tv-spin { to { transform: rotate(360deg); } }
 .tv-empty { grid-column: 1 / -1; text-align: center; padding: 20px; color: var(--tv-text-dim); font-size: 14px; }
 
+/* =================== SOUND BUTTON =================== */
+.tv-sound-btn {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 12px; border-radius: 16px;
+  border: 1px solid var(--tv-border); background: rgba(255,255,255,0.04);
+  color: var(--tv-text-dim); cursor: pointer;
+  font-family: inherit; font-size: 9px; font-weight: 700;
+  letter-spacing: 1px; text-transform: uppercase;
+  transition: all 0.3s;
+}
+.tv-sound-btn:hover { background: rgba(255,255,255,0.08); color: var(--tv-text); }
+.tv-sound-on {
+  border-color: rgba(16,185,129,0.3); color: var(--tv-green);
+  background: rgba(16,185,129,0.08);
+}
+.tv-sound-label { white-space: nowrap; }
+
+/* =================== ALARM BANNER =================== */
+.tv-alarm-banner {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 24px; font-size: 13px; font-weight: 700;
+  animation: tv-alarm-slide 0.4s ease-out, tv-alarm-flash 1s ease-in-out 3;
+  flex-shrink: 0; letter-spacing: 0.5px;
+}
+.tv-alarm-offline {
+  background: linear-gradient(90deg, rgba(239,68,68,0.2), rgba(239,68,68,0.08));
+  color: var(--tv-red); border-bottom: 2px solid var(--tv-red);
+}
+.tv-alarm-critical {
+  background: linear-gradient(90deg, rgba(249,115,22,0.2), rgba(249,115,22,0.08));
+  color: var(--tv-orange); border-bottom: 2px solid var(--tv-orange);
+}
+@keyframes tv-alarm-slide { from { transform: translateY(-100%); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+@keyframes tv-alarm-flash { 0%,100% { opacity: 1; } 50% { opacity: 0.6; } }
+
+
 /* =================== RESPONSIVE =================== */
 @media (max-width: 1400px) {
   .tv-main { grid-template-columns: 1fr 1fr 280px; }
