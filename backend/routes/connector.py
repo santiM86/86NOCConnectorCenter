@@ -423,6 +423,7 @@ async def add_managed_device(client_id: str, device: ManagedDevice, current_user
         "id": str(uuid.uuid4()), "client_id": client_id,
         "ip": device.ip, "community": device.community,
         "name": device.name, "monitor_type": device.monitor_type,
+        "device_type": device.device_type,
         "http_port": device.http_port,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "created_by": current_user.get("name", "admin")
@@ -451,7 +452,7 @@ async def connector_fetch_devices(request: Request):
     if not client_data:
         raise HTTPException(status_code=401, detail="Invalid API key")
     devices = await db.managed_devices.find({"client_id": client_data["id"]}, {"_id": 0}).to_list(200)
-    return [{"ip": d["ip"], "community": d.get("community", "public"), "name": d["name"], "monitor_type": d.get("monitor_type", "snmp"), "http_port": d.get("http_port", 80)} for d in devices]
+    return [{"ip": d["ip"], "community": d.get("community", "public"), "name": d["name"], "monitor_type": d.get("monitor_type", "snmp"), "device_type": d.get("device_type", "network"), "http_port": d.get("http_port", 80)} for d in devices]
 
 
 @router.post("/connector/lldp-neighbors")

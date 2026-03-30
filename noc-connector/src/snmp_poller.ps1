@@ -1576,3 +1576,207 @@ function Run-FullDiscovery($config, $devices) {
     Send-ToNOC $config "connector/network-discovery" $discoveryPayload | Out-Null
     Write-Log "Discovery: $($allMacTables.Count) MAC tables, $($allPortSpeeds.Count) port speed reports inviati" "INFO"
 }
+
+
+# ==================== PRINTER SNMP POLLING ====================
+# Printer-MIB OIDs for toner, page count, and status monitoring
+
+function Poll-PrinterData([string]$ip, [string]$community, [string]$name) {
+    <#
+    .SYNOPSIS
+        Polls a network printer via SNMP Printer-MIB OIDs.
+        Extracts toner levels, page counts, printer status, model, serial.
+    .DESCRIPTION
+        Standard OIDs used:
+        - hrPrinterStatus:          .1.3.6.1.2.1.25.3.5.1.1 (printer status)
+        - prtMarkerSuppliesDesc:    .1.3.6.1.2.1.43.11.1.1.6 (supply description/name)
+        - prtMarkerSuppliesMaxCap:  .1.3.6.1.2.1.43.11.1.1.8 (max capacity)
+        - prtMarkerSuppliesLevel:   .1.3.6.1.2.1.43.11.1.1.9 (current level)
+        - prtMarkerSuppliesType:    .1.3.6.1.2.1.43.11.1.1.4 (supply type code)
+        - prtMarkerLifeCount:       .1.3.6.1.2.1.43.10.2.1.4 (total page count)
+        - prtInputDescription:      .1.3.6.1.2.1.43.8.2.1.18 (tray description)
+        - prtInputMaxCapacity:      .1.3.6.1.2.1.43.8.2.1.9  (tray max capacity)
+        - prtInputCurrentLevel:     .1.3.6.1.2.1.43.8.2.1.10 (tray current level)
+        - prtInputStatus:           .1.3.6.1.2.1.43.8.2.1.11 (tray status)
+        - sysDescr:                 .1.3.6.1.2.1.1.1.0       (device description/model)
+        - prtGeneralSerialNumber:   .1.3.6.1.2.1.43.5.1.1.17 (serial number)
+        - prtAlertDescription:      .1.3.6.1.2.1.43.18.1.1.8 (alert messages)
+    #>
+    
+    $result = @{
+        device_ip = $ip
+        device_name = $name
+        model = ""
+        serial = ""
+        reachable = $false
+        printer_status_code = $null
+        printer_status = ""
+        page_count = 0
+        color_page_count = 0
+        duplex_count = 0
+        supplies = @()
+        trays = @()
+        alert_messages = @()
+    }
+
+    # 1. Check reachability
+    $sysDescr = Get-SnmpValue $ip $community "1.3.6.1.2.1.1.1.0"
+    if (-not $sysDescr) {
+        # Try ping as fallback
+        try {
+            $ping = New-Object System.Net.NetworkInformation.Ping
+            $reply = $ping.Send($ip, 2000)
+            $ping.Dispose()
+            if ($reply.Status -ne "Success") { return $result }
+        } catch { return $result }
+    }
+    $result.reachable = $true
+    if ($sysDescr) { $result.model = [string]$sysDescr }
+
+    # 2. Serial Number
+    $serial = Get-SnmpValue $ip $community "1.3.6.1.2.1.43.5.1.1.17.1"
+    if ($serial) { $result.serial = [string]$serial }
+
+    # 3. Printer Status (hrPrinterStatus)
+    $status = Get-SnmpValue $ip $community "1.3.6.1.2.1.25.3.5.1.1.1"
+    if ($status) {
+        $statusCode = [int]$status
+        $result.printer_status_code = $statusCode
+        $statusNames = @{ 1 = "Altro"; 2 = "Sconosciuto"; 3 = "Idle"; 4 = "In Stampa"; 5 = "Riscaldamento" }
+        $result.printer_status = if ($statusNames.ContainsKey($statusCode)) { $statusNames[$statusCode] } else { "Stato $statusCode" }
+    }
+
+    # 4. Page Count (prtMarkerLifeCount)
+    $pageCountTable = Get-SnmpTable $ip $community "1.3.6.1.2.1.43.10.2.1.4"
+    if ($pageCountTable -and $pageCountTable.Count -gt 0) {
+        $pageCounts = @($pageCountTable.Values | ForEach-Object { try { [int]$_ } catch { 0 } })
+        if ($pageCounts.Count -gt 0) {
+            $result.page_count = ($pageCounts | Measure-Object -Maximum).Maximum
+        }
+    }
+
+    # 5. Supplies (Toner, Drum, etc.)
+    $supplyDescs = Get-SnmpTable $ip $community "1.3.6.1.2.1.43.11.1.1.6"
+    $supplyMaxCap = Get-SnmpTable $ip $community "1.3.6.1.2.1.43.11.1.1.8"
+    $supplyLevels = Get-SnmpTable $ip $community "1.3.6.1.2.1.43.11.1.1.9"
+    $supplyTypes  = Get-SnmpTable $ip $community "1.3.6.1.2.1.43.11.1.1.4"
+    
+    $supplyTypeNames = @{
+        1 = "altro"; 3 = "toner"; 4 = "inchiostro"; 5 = "cartuccia_inchiostro"
+        6 = "cartuccia_toner"; 7 = "drum"; 8 = "nastro_trasferimento"
+        9 = "waste_toner"; 12 = "fuser"; 13 = "opc_drum"
+    }
+
+    if ($supplyDescs -and $supplyDescs.Count -gt 0) {
+        foreach ($key in $supplyDescs.Keys) {
+            $idx = $key.Split('.')[-1]
+            $supplyName = [string]$supplyDescs[$key]
+            
+            $maxCap = 0
+            $currentLevel = 0
+            $typeCode = 3  # default toner
+            
+            # Find matching max capacity
+            foreach ($mk in $supplyMaxCap.Keys) {
+                if ($mk.Split('.')[-1] -eq $idx) { 
+                    try { $maxCap = [int]$supplyMaxCap[$mk] } catch {} 
+                    break 
+                }
+            }
+            # Find matching current level
+            foreach ($lk in $supplyLevels.Keys) {
+                if ($lk.Split('.')[-1] -eq $idx) { 
+                    try { $currentLevel = [int]$supplyLevels[$lk] } catch {} 
+                    break 
+                }
+            }
+            # Find matching type
+            foreach ($tk in $supplyTypes.Keys) {
+                if ($tk.Split('.')[-1] -eq $idx) { 
+                    try { $typeCode = [int]$supplyTypes[$tk] } catch {} 
+                    break 
+                }
+            }
+            
+            $typeName = if ($supplyTypeNames.ContainsKey($typeCode)) { $supplyTypeNames[$typeCode] } else { "altro" }
+            
+            $result.supplies += @{
+                name = $supplyName
+                type = $typeName
+                max_capacity = $maxCap
+                current_level = $currentLevel
+            }
+        }
+    }
+
+    # 6. Paper Trays
+    $trayDescs   = Get-SnmpTable $ip $community "1.3.6.1.2.1.43.8.2.1.18"
+    $trayMaxCap  = Get-SnmpTable $ip $community "1.3.6.1.2.1.43.8.2.1.9"
+    $trayLevels  = Get-SnmpTable $ip $community "1.3.6.1.2.1.43.8.2.1.10"
+    
+    if ($trayDescs -and $trayDescs.Count -gt 0) {
+        foreach ($key in $trayDescs.Keys) {
+            $idx = $key.Split('.')[-1]
+            $trayName = [string]$trayDescs[$key]
+            if (-not $trayName) { $trayName = "Vassoio $idx" }
+            
+            $tMaxCap = 0
+            $tLevel = 0
+            foreach ($mk in $trayMaxCap.Keys) {
+                if ($mk.Split('.')[-1] -eq $idx) { try { $tMaxCap = [int]$trayMaxCap[$mk] } catch {}; break }
+            }
+            foreach ($lk in $trayLevels.Keys) {
+                if ($lk.Split('.')[-1] -eq $idx) { try { $tLevel = [int]$trayLevels[$lk] } catch {}; break }
+            }
+            
+            $tStatus = "ok"
+            if ($tLevel -le 0) { $tStatus = "empty" }
+            elseif ($tMaxCap -gt 0 -and ($tLevel / $tMaxCap) -lt 0.15) { $tStatus = "low" }
+            
+            $result.trays += @{
+                name = $trayName
+                status = $tStatus
+                capacity = $tMaxCap
+                level = $tLevel
+            }
+        }
+    }
+
+    # 7. Alert Messages
+    $alertDescs = Get-SnmpTable $ip $community "1.3.6.1.2.1.43.18.1.1.8"
+    if ($alertDescs -and $alertDescs.Count -gt 0) {
+        foreach ($key in $alertDescs.Keys) {
+            $msg = [string]$alertDescs[$key]
+            if ($msg -and $msg.Trim()) {
+                $result.alert_messages += $msg.Trim()
+            }
+        }
+    }
+
+    Write-Host "[Printer Poll] $name ($ip): Stato=$($result.printer_status), Pagine=$($result.page_count), Supplies=$($result.supplies.Count)"
+    return $result
+}
+
+function Poll-AllPrinters($printerDevices, $config) {
+    <#
+    .SYNOPSIS
+        Polls all printer devices and sends data to the NOC backend.
+        The backend derives client_id from the API key, so no separate lookup needed.
+    #>
+    foreach ($dev in $printerDevices) {
+        $ip = $dev.ip
+        $community = if ($dev.community) { $dev.community } else { "public" }
+        $devName = if ($dev.name) { $dev.name } else { $ip }
+
+        try {
+            $printerData = Poll-PrinterData $ip $community $devName
+            # client_id will be derived by backend from API key
+            $printerData.client_id = "auto"
+            
+            Send-ToNOC $config "printers/process-poll" $printerData | Out-Null
+            Write-Host "[Printer] Dati stampante $devName ($ip) inviati al NOC"
+        } catch {
+            Write-Host "[Printer Poll] Errore polling stampante $devName ($ip): $($_.Exception.Message)"
+        }
+    }
+}

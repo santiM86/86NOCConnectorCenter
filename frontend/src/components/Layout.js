@@ -28,7 +28,8 @@ import {
   ListChecks,
   Ticket,
   Plug,
-  Database
+  Database,
+  Printer
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import {
@@ -87,6 +88,7 @@ export default function Layout() {
         { path: "/devices", icon: HardDrives, label: "Dispositivi", roles: ["admin", "operator", "viewer"] },
         { path: "/inventory", icon: Database, label: "Inventario", roles: ["admin", "operator", "viewer"] },
         { path: "/port-monitor", icon: Plug, label: "Monitor Servizi", roles: ["admin", "operator"] },
+        { path: "/printers", icon: Printer, label: "Stampanti", roles: ["admin", "operator", "viewer"] },
       ]
     },
     {

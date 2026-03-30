@@ -189,4 +189,5 @@ class ManagedDevice(BaseModel):
     community: str = "public"
     name: str
     monitor_type: str = "snmp"
+    device_type: str = "network"
     http_port: Optional[int] = 80

@@ -137,6 +137,7 @@ from routes.incidents import router as incidents_router
 from routes.port_monitor import router as port_monitor_router
 from routes.public_dashboard import router as public_dashboard_router
 from routes.notification_config import router as notification_config_router
+from routes.printers import router as printers_router
 
 app.include_router(auth_router)
 app.include_router(admin_router)
@@ -159,6 +160,7 @@ app.include_router(incidents_router)
 app.include_router(port_monitor_router)
 app.include_router(public_dashboard_router)
 app.include_router(notification_config_router)
+app.include_router(printers_router)
 
 # Include enterprise routes
 from enterprise_routes import create_enterprise_router
@@ -234,6 +236,12 @@ async def startup_event():
         await db.notification_templates.create_index([("id", 1)], unique=True)
         await db.public_dashboards.create_index([("token", 1)], unique=True)
         await db.public_dashboards.create_index([("client_id", 1)], unique=True)
+
+        # Printer indexes
+        await db.printer_status.create_index([("client_id", 1)])
+        await db.printer_status.create_index([("client_id", 1), ("device_ip", 1)], unique=True)
+        await db.printer_history.create_index([("client_id", 1), ("device_ip", 1), ("timestamp", -1)])
+        await db.printer_history.create_index("timestamp", expireAfterSeconds=86400 * 90)  # TTL 90 giorni
 
         await db.audit_logs.create_index([("timestamp", -1)])
         await db.audit_logs.create_index([("user", 1), ("timestamp", -1)])

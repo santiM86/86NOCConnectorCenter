@@ -23,6 +23,7 @@ import ReportsPage from "@/pages/ReportsPage";
 import InventoryPage from "@/pages/InventoryPage";
 import IncidentsPage from "@/pages/IncidentsPage";
 import PortMonitorPage from "@/pages/PortMonitorPage";
+import PrintersPage from "@/pages/PrintersPage";
 import PublicDashboard from "@/pages/PublicDashboard";
 import Layout from "@/components/Layout";
 
@@ -186,6 +187,7 @@ function App() {
               <Route path="inventory" element={<InventoryPage />} />
               <Route path="incidents" element={<IncidentsPage />} />
               <Route path="port-monitor" element={<PortMonitorPage />} />
+              <Route path="printers" element={<PrintersPage />} />
             </Route>
             <Route path="/public/:token" element={<PublicDashboard />} />
             <Route path="/2fa" element={<TwoFactorPage />} />

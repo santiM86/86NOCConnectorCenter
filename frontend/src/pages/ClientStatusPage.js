@@ -22,7 +22,7 @@ export default function ClientStatusPage() {
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [collapsedClients, setCollapsedClients] = useState({});
   const [showAddDevice, setShowAddDevice] = useState(false);
-  const [newDevice, setNewDevice] = useState({ ip: "", community: "public", name: "", monitor_type: "snmp", http_port: 80 });
+  const [newDevice, setNewDevice] = useState({ ip: "", community: "public", name: "", monitor_type: "snmp", device_type: "network", http_port: 80 });
   const [addDeviceClientId, setAddDeviceClientId] = useState("");
   const intervalRef = useRef(null);
   const importFileRef = useRef(null);
@@ -130,10 +130,11 @@ export default function ClientStatusPage() {
     try {
       await axios.post(`${API}/connector/${addDeviceClientId}/managed-devices`, {
         ip: newDevice.ip, community: newDevice.community || "public",
-        name: newDevice.name || newDevice.ip, monitor_type: newDevice.monitor_type || "snmp", http_port: newDevice.http_port || 80
+        name: newDevice.name || newDevice.ip, monitor_type: newDevice.monitor_type || "snmp",
+        device_type: newDevice.device_type || "network", http_port: newDevice.http_port || 80
       });
       toast.success(`Dispositivo ${newDevice.name || newDevice.ip} aggiunto`);
-      setNewDevice({ ip: "", community: "public", name: "", monitor_type: "snmp", http_port: 80 });
+      setNewDevice({ ip: "", community: "public", name: "", monitor_type: "snmp", device_type: "network", http_port: 80 });
       setShowAddDevice(false);
       fetchAll();
     } catch (e) {
@@ -368,13 +369,18 @@ export default function ClientStatusPage() {
             </div>
             <div>
               <label className="text-[10px] text-[var(--text-muted)] uppercase tracking-widest block mb-1">Tipo</label>
-              <select value={newDevice.monitor_type} onChange={(e) => setNewDevice({ ...newDevice, monitor_type: e.target.value, community: e.target.value === "snmp" ? "public" : "" })}
+              <select value={newDevice.monitor_type} onChange={(e) => {
+                  const mt = e.target.value;
+                  const isPrinter = mt === "printer";
+                  setNewDevice({ ...newDevice, monitor_type: isPrinter ? "snmp" : mt, device_type: isPrinter ? "printer" : "network", community: (mt === "snmp" || isPrinter) ? "public" : "" });
+                }}
                 className="w-full h-8 px-2 rounded-md border border-[var(--bg-border)] bg-[var(--bg-card)] text-[var(--text-primary)] text-xs" data-testid="device-type-select">
                 <option value="snmp">SNMP</option>
                 <option value="ping">Ping + HTTP</option>
+                <option value="printer">Stampante SNMP</option>
               </select>
             </div>
-            {newDevice.monitor_type === "snmp" ? (
+            {(newDevice.monitor_type === "snmp" || newDevice.device_type === "printer") ? (
               <div>
                 <label className="text-[10px] text-[var(--text-muted)] uppercase tracking-widest block mb-1">Community</label>
                 <input type="text" value={newDevice.community} onChange={(e) => setNewDevice({ ...newDevice, community: e.target.value })}

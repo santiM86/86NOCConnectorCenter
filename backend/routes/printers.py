@@ -2,7 +2,7 @@
 import logging
 import uuid
 from datetime import datetime, timezone, timedelta
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from database import db
 from deps import get_current_user
 
@@ -121,10 +121,21 @@ async def get_printer_detail(client_id: str, device_ip: str, current_user: dict 
 
 
 @router.post("/process-poll")
-async def process_printer_poll(body: dict):
+async def process_printer_poll(request: Request):
     """Process printer SNMP poll data from the connector.
     Called by the connector after querying printer OIDs."""
-    client_id = body.get("client_id", "")
+    # Validate API key from connector and get client_id
+    api_key = request.headers.get("X-API-Key")
+    client_id = None
+    if api_key:
+        client_data = await db.clients.find_one({"api_key": api_key}, {"_id": 0})
+        if client_data:
+            client_id = client_data["id"]
+    
+    body = await request.json()
+    # Allow client_id from body (for seed/test) or from API key
+    if not client_id:
+        client_id = body.get("client_id", "")
     device_ip = body.get("device_ip", "")
     if not client_id or not device_ip:
         raise HTTPException(status_code=400, detail="client_id and device_ip required")

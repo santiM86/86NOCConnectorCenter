@@ -910,23 +910,26 @@ function Start-PollingLoop($config) {
         Write-Log "Credenziali Vault disponibili per $($vaultCreds.Count) dispositivi"
     }
 
-    # Separate SNMP and Ping/HTTP devices
-    $snmpDevices = @($devices | Where-Object { -not $_.monitor_type -or $_.monitor_type -eq "snmp" })
+    # Separate SNMP, Ping/HTTP, and Printer devices
+    $snmpDevices = @($devices | Where-Object { (-not $_.monitor_type -or $_.monitor_type -eq "snmp") -and $_.device_type -ne "printer" })
     $pingDevices = @($devices | Where-Object { $_.monitor_type -eq "ping" -or $_.monitor_type -eq "http" })
+    $printerDevices = @($devices | Where-Object { $_.device_type -eq "printer" })
     
     # Initialize ping results cache
     if (-not $script:PingResults) { $script:PingResults = @{} }
 
     $interval = if ($config.poll_interval_seconds) { $config.poll_interval_seconds } else { 60 }
-    Write-Log "Polling attivo per $($devices.Count) dispositivi ogni ${interval}s (SNMP: $($snmpDevices.Count), Ping/HTTP: $($pingDevices.Count))"
+    Write-Log "Polling attivo per $($devices.Count) dispositivi ogni ${interval}s (SNMP: $($snmpDevices.Count), Ping/HTTP: $($pingDevices.Count), Stampanti: $($printerDevices.Count))"
     foreach ($dev in $devices) {
         $mType = if ($dev.monitor_type) { $dev.monitor_type } else { "snmp" }
-        Write-Log "  - $($dev.name) ($($dev.ip)) tipo=$mType"
+        $dType = if ($dev.device_type) { $dev.device_type } else { "network" }
+        Write-Log "  - $($dev.name) ($($dev.ip)) tipo=$mType device_type=$dType"
     }
 
     # First poll - initialize states and send initial report
     Write-Log "Prima scansione in corso..."
     if ($snmpDevices.Count -gt 0) { $null = Poll-AllDevices $snmpDevices $config }
+    if ($printerDevices.Count -gt 0) { Poll-AllPrinters $printerDevices $config }
     foreach ($pd in $pingDevices) {
         $httpPort = if ($pd.http_port) { $pd.http_port } else { 80 }
         $result = Poll-PingDevice $pd.ip $pd.name $httpPort
@@ -958,6 +961,11 @@ function Start-PollingLoop($config) {
                     Send-SNMPToNOC $config $alert
                 }
             }
+
+            # Poll Printer devices (SNMP Printer-MIB)
+            if ($printerDevices.Count -gt 0) {
+                Poll-AllPrinters $printerDevices $config
+            }
             
             # Send full status report after every poll
             Send-DeviceReport $config $devices
@@ -976,9 +984,10 @@ function Start-PollingLoop($config) {
                         }
                     }
                     $devices = @($nocDevices) + $localOnly
-                    $snmpDevices = @($devices | Where-Object { -not $_.monitor_type -or $_.monitor_type -eq "snmp" })
+                    $snmpDevices = @($devices | Where-Object { (-not $_.monitor_type -or $_.monitor_type -eq "snmp") -and $_.device_type -ne "printer" })
                     $pingDevices = @($devices | Where-Object { $_.monitor_type -eq "ping" -or $_.monitor_type -eq "http" })
-                    Write-Log "Lista dispositivi aggiornata dal NOC: $($devices.Count) totali (SNMP: $($snmpDevices.Count), Ping: $($pingDevices.Count))"
+                    $printerDevices = @($devices | Where-Object { $_.device_type -eq "printer" })
+                    Write-Log "Lista dispositivi aggiornata dal NOC: $($devices.Count) totali (SNMP: $($snmpDevices.Count), Ping: $($pingDevices.Count), Stampanti: $($printerDevices.Count))"
                 }
                 
                 # Full Network Discovery - ogni 10 cicli
