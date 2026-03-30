@@ -11,12 +11,13 @@ const SEVERITY_COLORS = {
   low: { bg: "bg-blue-500/20", text: "text-blue-400", border: "border-blue-500/30" },
 };
 
-export function DeviceDetailPanel({ clientId, deviceIp, deviceData, onClose, onDeviceAdded }) {
+export function DeviceDetailPanel({ clientId, deviceIp, deviceData, onClose, onDeviceAdded, openWebConsole }) {
   const [detail, setDetail] = useState(null);
   const [loading, setLoading] = useState(true);
   const [adding, setAdding] = useState(false);
   const [monitorType, setMonitorType] = useState("ping");
   const [community, setCommunity] = useState("public");
+  const [proxyLoading, setProxyLoading] = useState(false);
 
   useEffect(() => {
     if (!clientId || !deviceIp) return;
@@ -32,10 +33,47 @@ export function DeviceDetailPanel({ clientId, deviceIp, deviceData, onClose, onD
   const isEndpoint = deviceData?.role === "discovered_endpoint";
   const hasIp = deviceIp && !deviceIp.startsWith("mac-");
 
-  const openWebPage = () => {
+  const openWebPage = async () => {
     const ip = deviceData?.ip || deviceIp;
-    if (ip && !ip.startsWith("mac-")) {
-      window.open(`http://${ip}`, "_blank");
+    if (!ip || ip.startsWith("mac-")) return;
+
+    if (openWebConsole) {
+      openWebConsole(clientId, ip, 80);
+      return;
+    }
+
+    setProxyLoading(true);
+    try {
+      const res = await axios.post(`${API}/connector/web-proxy/request`, {
+        client_id: clientId, device_ip: ip, port: 80, path: "/", method: "GET"
+      });
+      const requestId = res.data.request_id;
+      let attempts = 0;
+      const poll = setInterval(async () => {
+        attempts++;
+        if (attempts > 30) {
+          clearInterval(poll);
+          setProxyLoading(false);
+          toast.error("Timeout: il connettore non ha risposto entro 60s");
+          return;
+        }
+        try {
+          const resp = await axios.get(`${API}/connector/web-proxy/response/${requestId}`);
+          if (resp.data.status === "completed" && resp.data.response) {
+            clearInterval(poll);
+            setProxyLoading(false);
+            const html = resp.data.response.body;
+            const win = window.open("", "_blank");
+            if (win) {
+              win.document.write(html);
+              win.document.title = resp.data.response.title || `${ip} - Web Console`;
+            }
+          }
+        } catch {}
+      }, 2000);
+    } catch (e) {
+      setProxyLoading(false);
+      toast.error("Errore nella richiesta proxy: " + (e.response?.data?.detail || e.message));
     }
   };
 
@@ -88,10 +126,11 @@ export function DeviceDetailPanel({ clientId, deviceIp, deviceData, onClose, onD
         {hasIp && (
           <button
             onClick={openWebPage}
-            className="flex-1 h-8 rounded-lg bg-indigo-600/15 text-indigo-400 border border-indigo-500/30 text-xs font-medium flex items-center justify-center gap-1.5 hover:bg-indigo-600/25 transition-all"
+            disabled={proxyLoading}
+            className="flex-1 h-8 rounded-lg bg-indigo-600/15 text-indigo-400 border border-indigo-500/30 text-xs font-medium flex items-center justify-center gap-1.5 hover:bg-indigo-600/25 transition-all disabled:opacity-50"
             data-testid="open-web-btn"
           >
-            <Globe size={14} /> Apri Pagina Web
+            <Globe size={14} /> {proxyLoading ? "Caricamento via Connettore..." : "Apri Pagina Web"}
           </button>
         )}
         {isEndpoint && hasIp && (

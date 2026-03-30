@@ -589,6 +589,7 @@ export default function ClientStatusPage() {
                               deviceName={dev.device_name}
                               isPing={isPing}
                               onClose={() => setExpandedDevice(null)}
+                              openWebConsole={openWebConsole}
                             />
                           )}
                         </div>
@@ -638,7 +639,7 @@ export default function ClientStatusPage() {
 }
 
 
-function InlineDeviceDetail({ clientId, deviceIp, deviceName, isPing, onClose }) {
+function InlineDeviceDetail({ clientId, deviceIp, deviceName, isPing, onClose, openWebConsole }) {
   const [detail, setDetail] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -705,10 +706,10 @@ function InlineDeviceDetail({ clientId, deviceIp, deviceName, isPing, onClose })
               </div>
             )}
           </div>
-          <button onClick={() => window.open(`http://${deviceIp}`, "_blank")}
+          <button onClick={() => openWebConsole ? openWebConsole(clientId, deviceIp, 80) : window.open(`http://${deviceIp}`, "_blank")}
             className="mt-2 w-full h-7 rounded-md text-[10px] font-medium bg-emerald-600/20 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-600/30 transition-colors flex items-center justify-center gap-1"
             data-testid={`open-web-${deviceIp}`}>
-            <Globe size={12} /> Apri Pagina Web
+            <Globe size={12} /> Apri Pagina Web (via Connettore)
           </button>
         </div>
 
