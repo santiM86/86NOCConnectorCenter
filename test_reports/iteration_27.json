@@ -1,0 +1,140 @@
+{
+  "summary": "Iteration 27 - Enterprise Network Topology with LLDP/MAC Integration. All backend (21/21) and frontend tests passed. Topology correctly shows 6-layer hierarchy: Internet -> Zyxel Firewall -> HPE Core -> Netgear Distribution -> 4 Access Switches -> iLO. LLDP edges connect Zyxel->HPE and HPE->Netgear with port labels. MAC edges show 10G connections on Port 9 and Port 10. Inferred edges for .6 and .7 have '10G Uplink' labels.",
+
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+
+  "passed_tests": {
+    "backend_topology_hierarchy": [
+      "GET /api/network/topology/{client_id} returns 6 layers",
+      "Internet node at layer 0 (virtual=true)",
+      "Zyxel Firewall at layer 1 (role=gateway, type=firewall)",
+      "HPE Core Switch at layer 2 (role=core_switch, name contains 'Armadio')",
+      "Netgear Distribution at layer 3 (role=distribution_switch, name contains 'Armadio')",
+      "4 Access Switches at layer 4 (role=access_switch)",
+      "iLO Management at layer 5 (role=management, type=ilo)"
+    ],
+    "backend_lldp_edges": [
+      "lldp_count=2 in topology response",
+      "LLDP edge Zyxel->HPE with label 'LAN1 <-> Port 1' (source=lldp)",
+      "LLDP edge HPE->Netgear with label 'Port 1 <-> Port 24' (source=lldp)",
+      "GET /api/network/lldp/{client_id} returns 2 neighbors"
+    ],
+    "backend_mac_edges": [
+      "mac_connections_count=2 in topology response",
+      "MAC edge Port 9 with '10G' label (from=192.168.1.3, to=192.168.1.4, type=trunk)",
+      "MAC edge Port 10 with '10G' label (from=192.168.1.3, to=192.168.1.5, type=trunk)"
+    ],
+    "backend_inferred_edges": [
+      "Inferred edge to 192.168.1.6 with label '10G Uplink' (type=trunk)",
+      "Inferred edge to 192.168.1.7 with label '10G Uplink' (type=trunk)"
+    ],
+    "backend_layout_management": [
+      "POST /api/network/topology/{client_id}/layout saves layout (status=ok)",
+      "has_custom_layout=true after save",
+      "DELETE /api/network/topology/{client_id}/layout resets layout (status=ok)",
+      "has_custom_layout=false after reset"
+    ],
+    "backend_health_score": [
+      "Health score present (88%)",
+      "devices_total=8, devices_online=8"
+    ],
+    "frontend_network_map": [
+      "Login with admin@86bit.it / password works",
+      "Navigate to Stato Rete -> Mappa tab works",
+      "Network map container visible (data-testid='network-map')",
+      "React Flow canvas renders with 9 nodes",
+      "LLDP badge shows 'LLDP: 2'",
+      "MAC badge shows 'MAC: 2'",
+      "Health score displays (88-100%)",
+      "Hierarchical layout visible: Internet -> Firewall -> Core -> Distribution -> Access -> iLO"
+    ],
+    "frontend_toolbar_buttons": [
+      "Modifica button toggles connect mode (shows 'Modifica ON')",
+      "Auto button applies auto-layout (toast: 'Auto-layout applicato')",
+      "Reset button resets layout (toast: 'Layout resettato')",
+      "Salva Layout button saves layout (toast: 'Layout salvato con successo!')",
+      "Connect mode shows instruction panel"
+    ],
+    "frontend_legend": [
+      "Legend shows: WAN, Trunk, Accesso, Server, MGMT, LLDP, Manuale"
+    ]
+  },
+
+  "test_report_links": [
+    "/app/backend/tests/test_topology_enterprise.py",
+    "/app/test_reports/pytest/pytest_topology_enterprise.xml"
+  ],
+
+  "action_items": [],
+
+  "critical_code_review_comments": [
+    "Topology inference engine correctly classifies devices by type and role",
+    "LLDP edges properly replace inferred edges using set-based overlap detection",
+    "MAC edges include 10G speed labels from port_speeds collection",
+    "Inferred edges for 10G switches correctly labeled based on device name hints",
+    "Frontend React Flow v12 implementation renders hierarchical layout correctly",
+    "All interactive elements have proper data-testid attributes"
+  ],
+
+  "updated_files": [
+    "/app/backend/tests/test_topology_enterprise.py"
+  ],
+
+  "success_rate": {
+    "backend": "100% (21/21 tests passed)",
+    "frontend": "100% (all topology map features working)"
+  },
+
+  "test_credentials": {
+    "admin_user": {
+      "email": "admin@86bit.it",
+      "password": "password",
+      "role": "admin"
+    },
+    "client_id": "da3d6e40-b3e5-4d46-9787-dde328a3aa36"
+  },
+
+  "seed_data_creation": "No new seed data - used existing 86BIT_Office client with 8 devices, 2 LLDP neighbors, 2 MAC connections",
+
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+
+  "context_for_next_testing_agent": "Enterprise topology feature fully validated. Backend: GET /api/network/topology/{client_id} returns 6-layer hierarchy with LLDP edges (source=lldp), MAC edges (source=mac_table with 10G labels), and inferred edges (10G Uplink for switches with 10G in name). Frontend: React Flow map shows 9 nodes with hierarchical layout, LLDP/MAC badges, toolbar buttons (Modifica, Auto, Reset, Salva Layout) all functional.",
+
+  "mocked_apis": {
+    "Firebase Cloud Messaging": "MOCKED - no real API keys",
+    "SendGrid Email": "MOCKED - no real API keys"
+  },
+
+  "topology_validation": {
+    "hierarchy": {
+      "layer_0": "Internet (virtual WAN)",
+      "layer_1": "Zyxel Firewall (192.168.1.254)",
+      "layer_2": "HPE Core Switch (192.168.1.2)",
+      "layer_3": "Netgear Distribution (192.168.1.3)",
+      "layer_4": "4 Access Switches (192.168.1.4, .5, .6, .7)",
+      "layer_5": "iLO Management (192.168.1.8)"
+    },
+    "edge_sources": {
+      "lldp": ["Zyxel->HPE (LAN1 <-> Port 1)", "HPE->Netgear (Port 1 <-> Port 24)"],
+      "mac_table": ["Netgear->Access .4 (Port 9 10G)", "Netgear->Access .5 (Port 10 10G)"],
+      "inferred": ["Netgear->Access .6 (10G Uplink)", "Netgear->Access .7 (10G Uplink)"]
+    },
+    "frontend_features": {
+      "nodes_count": 9,
+      "lldp_badge": "LLDP: 2",
+      "mac_badge": "MAC: 2",
+      "health_score": "88-100%",
+      "toolbar": ["Modifica", "Auto", "Reset", "Salva Layout"]
+    }
+  }
+}
