@@ -230,12 +230,9 @@ def infer_topology(devices):
         distrib_layer.append(sw["ip"])
         # Distribution connects to core (or gateway if no core)
         parent = _find_best_parent(sw, core_switches, gateways)
-        # Check for 10G hint
-        name_lower = (sw.get("name") or "").lower() + " " + (sw.get("sys_descr") or "").lower()
-        has_10g = any(k in name_lower for k in ["10g", "multi-gig", "sfp+"])
         edges.append({
             "from": parent, "to": sw["ip"], "type": "trunk",
-            "label": "10G Uplink" if has_10g else "Trunk",
+            "label": "Trunk",
         })
     if distrib_layer:
         layers.append({"name": "Distribuzione", "nodes": distrib_layer})
@@ -249,12 +246,10 @@ def infer_topology(devices):
         nodes.append(node)
         access_layer.append(sw["ip"])
         parent = _find_best_parent(sw, preferred_parents, core_switches + gateways)
-        # Detect 10G uplink from name
-        name_lower = (sw.get("name") or "").lower() + " " + (sw.get("sys_descr") or "").lower()
-        has_10g = any(k in name_lower for k in ["10g", "multi-gig", "sfp+"])
+        # Inferred edges use generic labels — real speeds come from MAC/LLDP discovery
         edges.append({
-            "from": parent, "to": sw["ip"], "type": "trunk" if has_10g else "access",
-            "label": "10G Uplink" if has_10g else "",
+            "from": parent, "to": sw["ip"], "type": "access",
+            "label": "",
         })
     
     # Servers — connect to nearest access/distribution switch

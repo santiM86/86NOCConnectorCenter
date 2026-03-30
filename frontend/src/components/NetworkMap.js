@@ -147,24 +147,57 @@ function topoToFlowNodes(topoNodes, hasCustomLayout) {
 }
 
 function topoToFlowEdges(topoEdges) {
-  return (topoEdges || []).map((e, i) => ({
-    id: e.id || `e-${e.from}-${e.to}-${i}`,
-    source: e.from,
-    target: e.to,
-    type: "default",
-    animated: e.type === "wan" || e.type === "trunk" || e.type === "lldp",
-    label: e.label || "",
-    style: {
-      stroke: EDGE_COLORS[e.type] || EDGE_COLORS.custom,
-      strokeWidth: e.type === "wan" ? 2.5 : e.type === "trunk" ? 2 : 1.5,
-    },
-    markerEnd: { type: MarkerType.ArrowClosed, color: EDGE_COLORS[e.type] || EDGE_COLORS.custom, width: 14, height: 14 },
-    data: { edgeType: e.type || "custom" },
-    labelStyle: { fill: "var(--text-muted)", fontSize: 10, fontFamily: "monospace" },
-    labelBgStyle: { fill: "var(--bg-panel)", fillOpacity: 0.85 },
-    labelBgPadding: [6, 3],
-    labelBgBorderRadius: 4,
-  }));
+  return (topoEdges || []).map((e, i) => {
+    const is10G = (e.label || "").includes("10G");
+    const isLldp = e.source === "lldp" || e.type === "lldp";
+    const isMac = e.source === "mac_table";
+    const isHighSpeed = is10G || e.type === "trunk";
+
+    // Determine stroke width: 10G edges are very prominent
+    let strokeWidth = 1.5;
+    if (e.type === "wan") strokeWidth = 2.5;
+    else if (is10G) strokeWidth = 3;
+    else if (e.type === "trunk" || isLldp) strokeWidth = 2;
+
+    // Determine color: 10G gets bright orange, LLDP gets cyan
+    let color = EDGE_COLORS[e.type] || EDGE_COLORS.custom;
+    if (is10G) color = "#f97316"; // bright orange for 10G
+    else if (isLldp) color = "#22d3ee";
+    else if (isMac) color = "#818cf8";
+
+    // Label: show speed info when available
+    let label = e.label || "";
+    if (!label && e.type === "access") label = "1G";
+
+    // Label style: bigger for important edges
+    const fontSize = is10G ? 12 : (isLldp || isMac) ? 11 : 10;
+
+    return {
+      id: e.id || `e-${e.from}-${e.to}-${i}`,
+      source: e.from,
+      target: e.to,
+      type: "default",
+      animated: e.type === "wan" || isHighSpeed || isLldp,
+      label,
+      style: { stroke: color, strokeWidth },
+      markerEnd: { type: MarkerType.ArrowClosed, color, width: 14, height: 14 },
+      data: { edgeType: e.type || "custom", source: e.source || "inferred" },
+      labelStyle: {
+        fill: is10G ? "#f97316" : "var(--text-muted)",
+        fontSize,
+        fontFamily: "monospace",
+        fontWeight: is10G ? 700 : 400,
+      },
+      labelBgStyle: {
+        fill: is10G ? "rgba(249,115,22,0.12)" : "var(--bg-panel)",
+        fillOpacity: 0.9,
+        stroke: is10G ? "#f9731640" : "transparent",
+        strokeWidth: is10G ? 1 : 0,
+      },
+      labelBgPadding: [6, 4],
+      labelBgBorderRadius: 4,
+    };
+  });
 }
 
 /* ─── Auto-layout using layer-based positioning ─── */
@@ -549,8 +582,9 @@ function NetworkMapInner({ clientGroups, onDeviceSelect }) {
               <p className="text-[8px] font-bold uppercase tracking-widest text-[var(--text-muted)] mb-1.5">Collegamento</p>
               {[
                 { label: "WAN", color: EDGE_COLORS.wan },
+                { label: "10G", color: "#f97316" },
                 { label: "Trunk", color: EDGE_COLORS.trunk },
-                { label: "Accesso", color: EDGE_COLORS.access },
+                { label: "Accesso (1G)", color: EDGE_COLORS.access },
                 { label: "Server", color: EDGE_COLORS.server },
                 { label: "MGMT", color: EDGE_COLORS.mgmt },
                 { label: "LLDP", color: EDGE_COLORS.lldp },
