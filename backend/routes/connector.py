@@ -374,6 +374,9 @@ async def get_managed_devices(client_id: str, request: Request):
 
 @router.post("/connector/{client_id}/managed-devices")
 async def add_managed_device(client_id: str, device: ManagedDevice, current_user: dict = Depends(get_current_user)):
+    existing = await db.managed_devices.find_one({"client_id": client_id, "ip": device.ip})
+    if existing:
+        raise HTTPException(status_code=409, detail=f"Dispositivo {device.ip} gia' presente per questo cliente")
     doc = {
         "id": str(uuid.uuid4()), "client_id": client_id,
         "ip": device.ip, "community": device.community,
