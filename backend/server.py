@@ -194,7 +194,61 @@ logger = logging.getLogger(__name__)
 
 @app.on_event("startup")
 async def startup_event():
-    """Start background services on application startup."""
+    """Start background services and ensure DB indexes on application startup."""
+    # Create MongoDB indexes for performance
+    try:
+        await db.alerts.create_index([("client_id", 1), ("created_at", -1)])
+        await db.alerts.create_index([("client_id", 1), ("status", 1)])
+        await db.alerts.create_index([("device_ip", 1)])
+
+        await db.device_poll_status.create_index([("client_id", 1)])
+        await db.device_poll_status.create_index([("client_id", 1), ("device_ip", 1)], unique=True)
+
+        await db.managed_devices.create_index([("client_id", 1)])
+        await db.managed_devices.create_index([("client_id", 1), ("ip", 1)], unique=True)
+
+        await db.metrics_history.create_index([("client_id", 1), ("timestamp", -1)])
+        await db.metrics_history.create_index([("client_id", 1), ("device_ip", 1), ("timestamp", -1)])
+        await db.metrics_history.create_index([("device_ip", 1), ("timestamp", -1)])
+
+        await db.device_metrics_history.create_index([("client_id", 1), ("device_ip", 1), ("timestamp", -1)])
+
+        await db.network_changes.create_index([("client_id", 1), ("timestamp", -1)])
+
+        await db.incidents.create_index([("client_id", 1), ("status", 1)])
+        await db.incidents.create_index([("status", 1), ("priority", 1)])
+        await db.incidents.create_index([("created_at", -1)])
+
+        await db.connector_status.create_index([("client_id", 1)], unique=True)
+        await db.connector_status.create_index([("hostname", 1)])
+
+        await db.discovered_endpoints.create_index([("client_id", 1)])
+        await db.discovered_endpoints.create_index([("client_id", 1), ("ip", 1)])
+
+        await db.lldp_neighbors.create_index([("client_id", 1), ("local_device_ip", 1)])
+        await db.mac_connections.create_index([("client_id", 1), ("switch_ip", 1)])
+        await db.port_speeds.create_index([("client_id", 1), ("device_ip", 1)])
+
+        await db.port_monitors.create_index([("client_id", 1)])
+        await db.notification_templates.create_index([("id", 1)], unique=True)
+        await db.public_dashboards.create_index([("token", 1)], unique=True)
+        await db.public_dashboards.create_index([("client_id", 1)], unique=True)
+
+        await db.audit_logs.create_index([("timestamp", -1)])
+        await db.audit_logs.create_index([("user", 1), ("timestamp", -1)])
+
+        await db.users.create_index([("email", 1)], unique=True)
+        await db.clients.create_index([("id", 1)], unique=True)
+
+        # TTL indexes for auto-cleanup
+        from pymongo import ASCENDING
+        await db.refresh_tokens.create_index("created_at", expireAfterSeconds=86400 * 30)
+        await db.web_proxy_requests.create_index("created_at", expireAfterSeconds=300)
+
+        logger.info("MongoDB indexes created/verified successfully")
+    except Exception as e:
+        logger.warning(f"Index creation warning (non-fatal): {e}")
+
     try:
         setting = await db.settings.find_one({"key": "redfish_poll_interval"})
         interval = setting.get("value", 5) if setting else 5
