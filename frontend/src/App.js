@@ -26,6 +26,7 @@ import PortMonitorPage from "@/pages/PortMonitorPage";
 import PrintersPage from "@/pages/PrintersPage";
 import PublicDashboard from "@/pages/PublicDashboard";
 import TvDashboardPage from "@/pages/TvDashboardPage";
+import VulnerabilityPage from "@/pages/VulnerabilityPage";
 import Layout from "@/components/Layout";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -189,6 +190,7 @@ function App() {
               <Route path="incidents" element={<IncidentsPage />} />
               <Route path="port-monitor" element={<PortMonitorPage />} />
               <Route path="printers" element={<PrintersPage />} />
+              <Route path="vulnerability" element={<VulnerabilityPage />} />
             </Route>
             <Route path="/public/:token" element={<PublicDashboard />} />
             <Route path="/tv" element={<TvDashboardPage />} />

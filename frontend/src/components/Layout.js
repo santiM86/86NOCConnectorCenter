@@ -30,7 +30,8 @@ import {
   Plug,
   Database,
   Printer,
-  Monitor
+  Monitor,
+  ShieldCheck
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import {
@@ -112,6 +113,7 @@ export default function Layout() {
       id: "security",
       label: "Sicurezza",
       items: [
+        { path: "/vulnerability", icon: ShieldCheck, label: "Vulnerability Assessment", roles: ["admin", "operator"] },
         { path: "/vault", icon: Lock, label: "Vault Credenziali", roles: ["admin"] },
         { path: "/enterprise", icon: Shield, label: "Audit & Compliance", roles: ["admin"] },
         { path: "/users", icon: Users, label: "Gestione Utenti", roles: ["admin"] },

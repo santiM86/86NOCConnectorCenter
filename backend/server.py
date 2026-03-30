@@ -139,6 +139,7 @@ from routes.public_dashboard import router as public_dashboard_router
 from routes.notification_config import router as notification_config_router
 from routes.printers import router as printers_router
 from routes.tv_dashboard import router as tv_dashboard_router
+from routes.vulnerability import router as vulnerability_router
 
 app.include_router(auth_router)
 app.include_router(admin_router)
@@ -163,6 +164,7 @@ app.include_router(public_dashboard_router)
 app.include_router(notification_config_router)
 app.include_router(printers_router)
 app.include_router(tv_dashboard_router)
+app.include_router(vulnerability_router)
 
 # Include enterprise routes
 from enterprise_routes import create_enterprise_router
@@ -244,6 +246,10 @@ async def startup_event():
         await db.printer_status.create_index([("client_id", 1), ("device_ip", 1)], unique=True)
         await db.printer_history.create_index([("client_id", 1), ("device_ip", 1), ("timestamp", -1)])
         await db.printer_history.create_index("timestamp", expireAfterSeconds=86400 * 90)  # TTL 90 giorni
+
+        # Vulnerability Assessment indexes
+        await db.vulnerability_scans.create_index([("client_id", 1), ("timestamp", -1)])
+        await db.vulnerability_scans.create_index("timestamp", expireAfterSeconds=86400 * 365)  # TTL 1 anno
 
         await db.audit_logs.create_index([("timestamp", -1)])
         await db.audit_logs.create_index([("user", 1), ("timestamp", -1)])
