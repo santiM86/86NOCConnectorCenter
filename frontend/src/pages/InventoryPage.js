@@ -8,6 +8,7 @@ import {
 } from "@phosphor-icons/react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
+import { DeviceDetailPanel } from "@/components/DeviceDetailPanel";
 
 const TYPE_ICONS = {
   switch: <Database size={14} className="text-cyan-400" />,
@@ -26,6 +27,7 @@ export default function InventoryPage() {
   const [statusFilter, setStatusFilter] = useState("");
   const [sortBy, setSortBy] = useState("device_ip");
   const [sortDir, setSortDir] = useState("asc");
+  const [selectedDevice, setSelectedDevice] = useState(null);
 
   useEffect(() => {
     axios.get(`${API}/clients`).then(r => {
@@ -58,10 +60,12 @@ export default function InventoryPage() {
 
   return (
     <div className="p-4 md:p-5 space-y-4 animate-fade-in" data-testid="inventory-page">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="font-heading text-xl font-bold text-[var(--text-primary)] tracking-tight">Inventario Dispositivi</h1>
-          <p className="text-[var(--text-muted)] text-xs mt-0.5">Vista completa di tutti i dispositivi in rete</p>
+      <div>
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="font-heading text-xl font-bold text-[var(--text-primary)] tracking-tight">Inventario Dispositivi</h1>
+            <p className="text-[var(--text-muted)] text-xs mt-0.5">Vista completa di tutti i dispositivi in rete — <span className="text-indigo-400">doppio click per dettagli</span></p>
+          </div>
         </div>
       </div>
 
@@ -126,8 +130,9 @@ export default function InventoryPage() {
       </div>
 
       {/* Table */}
-      <div className="noc-panel overflow-x-auto">
-        <table className="alert-table w-full" data-testid="inventory-table">
+      <div className="relative">
+        <div className={`noc-panel overflow-x-auto transition-all ${selectedDevice ? "mr-[390px]" : ""}`}>
+          <table className="alert-table w-full" data-testid="inventory-table">
           <thead>
             <tr>
               {[
@@ -157,7 +162,10 @@ export default function InventoryPage() {
               <tr><td colSpan={9} className="text-center text-[var(--text-muted)] py-8 text-xs">Nessun dispositivo trovato</td></tr>
             ) : (
               data.devices.map((d, i) => (
-                <tr key={d.device_ip + i} data-testid={`inv-row-${d.device_ip}`}>
+                <tr key={d.device_ip + i} data-testid={`inv-row-${d.device_ip}`}
+                  className={`cursor-pointer transition-colors ${selectedDevice?.device_ip === d.device_ip ? "bg-indigo-500/10" : ""}`}
+                  onDoubleClick={() => setSelectedDevice(d)}
+                >
                   <td>
                     <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium ${
                       d.reachable ? "bg-emerald-500/15 text-emerald-400" : "bg-red-500/15 text-red-400"
@@ -190,6 +198,23 @@ export default function InventoryPage() {
             )}
           </tbody>
         </table>
+      </div>
+
+        {/* Detail Panel */}
+        {selectedDevice && (
+          <DeviceDetailPanel
+            clientId={clientId}
+            deviceIp={selectedDevice.device_ip}
+            deviceData={{
+              label: selectedDevice.device_name || selectedDevice.device_ip,
+              ip: selectedDevice.device_ip,
+              mac: selectedDevice.mac,
+              role: selectedDevice.device_type,
+            }}
+            onClose={() => setSelectedDevice(null)}
+            onDeviceAdded={() => {}}
+          />
+        )}
       </div>
     </div>
   );

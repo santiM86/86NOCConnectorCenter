@@ -86,6 +86,12 @@ Piattaforma NOC enterprise-grade per monitoraggio dispositivi di rete tramite SN
 - [x] Network Discovery (LLDP + MAC + Speed)
 - [x] Auto-aggiornamento robusto
 
+### Pannello Dettagli su Doppio Click (30/03/2026)
+- [x] Doppio click su riga dispositivo in DevicesPage apre pannello laterale con dettagli completi
+- [x] Doppio click su riga dispositivo in InventoryPage apre pannello laterale con dettagli completi
+- [x] Pannello mostra: info dispositivo, alert, porte high-speed, endpoint connessi, LLDP, MAC
+- [x] Pulsanti azione: Apri Pagina Web, Aggiungi al Monitoraggio
+
 ## Key API Endpoints
 - GET `/api/network/topology/{client_id}` - Topologia completa con MAC enrichment
 - GET `/api/network/device-detail/{client_id}/{device_ip}` - Dettagli dispositivo

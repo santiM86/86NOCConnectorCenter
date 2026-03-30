@@ -16,6 +16,7 @@ import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
+import { DeviceDetailPanel } from "@/components/DeviceDetailPanel";
 
 export default function DevicesPage() {
   const [devices, setDevices] = useState([]);
@@ -23,6 +24,7 @@ export default function DevicesPage() {
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [form, setForm] = useState({ name: "", ip_address: "", client_id: "", type: "switch", description: "" });
+  const [selectedDevice, setSelectedDevice] = useState(null);
 
   useEffect(() => { fetchAll(); }, []);
 
@@ -67,39 +69,45 @@ export default function DevicesPage() {
       <div className="flex items-center justify-between mb-5">
         <div>
           <h1 className="font-heading text-xl font-bold text-[var(--text-primary)] tracking-tight">Dispositivi</h1>
-          <p className="text-[var(--text-muted)] text-xs mt-0.5">Monitoraggio dispositivi di rete</p>
+          <p className="text-[var(--text-muted)] text-xs mt-0.5">Monitoraggio dispositivi di rete — <span className="text-indigo-400">doppio click per dettagli</span></p>
         </div>
         <Button onClick={() => setDialogOpen(true)} className="rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white gap-1.5 text-xs h-8" data-testid="add-device-btn">
           <Plus size={14} /> Nuovo
         </Button>
       </div>
 
-      <div className="noc-panel overflow-hidden">
-        <table className="alert-table" data-testid="devices-table">
-          <thead>
-            <tr>
-              <th>Nome</th>
-              <th>Tipo</th>
-              <th>IP</th>
-              <th>Cliente</th>
-              <th>Stato</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {loading ? (
-              <tr><td colSpan={6} className="text-center text-[var(--text-muted)] py-8 text-xs">Caricamento...</td></tr>
-            ) : devices.length === 0 ? (
-              <tr><td colSpan={6} className="text-center py-8">
-                <HardDrives size={32} className="mx-auto text-[var(--text-muted)] mb-2" />
-                <p className="text-[var(--text-muted)] text-xs">Nessun dispositivo</p>
-              </td></tr>
-            ) : (
-              devices.map(device => {
-                const typeInfo = typeIcons[device.type] || { label: device.type, color: "var(--text-muted)" };
-                return (
-                  <tr key={device.id} data-testid={`device-row-${device.id}`}>
-                    <td className="text-[var(--text-primary)] text-xs font-medium">{device.name}</td>
+      <div className="relative">
+        <div className={`noc-panel overflow-hidden transition-all ${selectedDevice ? "mr-[390px]" : ""}`}>
+          <table className="alert-table" data-testid="devices-table">
+            <thead>
+              <tr>
+                <th>Nome</th>
+                <th>Tipo</th>
+                <th>IP</th>
+                <th>Cliente</th>
+                <th>Stato</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {loading ? (
+                <tr><td colSpan={6} className="text-center text-[var(--text-muted)] py-8 text-xs">Caricamento...</td></tr>
+              ) : devices.length === 0 ? (
+                <tr><td colSpan={6} className="text-center py-8">
+                  <HardDrives size={32} className="mx-auto text-[var(--text-muted)] mb-2" />
+                  <p className="text-[var(--text-muted)] text-xs">Nessun dispositivo</p>
+                </td></tr>
+              ) : (
+                devices.map(device => {
+                  const typeInfo = typeIcons[device.type] || { label: device.type, color: "var(--text-muted)" };
+                  const isSelected = selectedDevice?.ip_address === device.ip_address;
+                  return (
+                    <tr key={device.id}
+                      data-testid={`device-row-${device.id}`}
+                      className={`cursor-pointer transition-colors ${isSelected ? "bg-indigo-500/10 border-l-2 border-l-indigo-500" : ""}`}
+                      onDoubleClick={() => setSelectedDevice(device)}
+                    >
+                      <td className="text-[var(--text-primary)] text-xs font-medium">{device.name}</td>
                     <td>
                       <span className="inline-flex items-center gap-1.5 text-[10px] px-2 py-0.5 rounded-md border border-[var(--bg-border)] bg-[var(--bg-card)]" style={{ color: typeInfo.color }}>
                         {typeInfo.label}
@@ -139,6 +147,22 @@ export default function DevicesPage() {
             )}
           </tbody>
         </table>
+      </div>
+
+        {/* Detail Panel */}
+        {selectedDevice && (
+          <DeviceDetailPanel
+            clientId={selectedDevice.client_id}
+            deviceIp={selectedDevice.ip_address}
+            deviceData={{
+              label: selectedDevice.name,
+              ip: selectedDevice.ip_address,
+              role: selectedDevice.type,
+            }}
+            onClose={() => setSelectedDevice(null)}
+            onDeviceAdded={fetchAll}
+          />
+        )}
       </div>
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
