@@ -19,6 +19,7 @@ export default function ClientStatusPage() {
   const [connectors, setConnectors] = useState([]);
   const [loading, setLoading] = useState(true);
   const [expandedDevice, setExpandedDevice] = useState(null);
+  const [deleteTarget, setDeleteTarget] = useState(null);
   const [collapsedClients, setCollapsedClients] = useState({});
   const [showAddDevice, setShowAddDevice] = useState(false);
   const [newDevice, setNewDevice] = useState({ ip: "", community: "public", name: "", monitor_type: "snmp", http_port: 80 });
@@ -74,10 +75,10 @@ export default function ClientStatusPage() {
   };
 
   const deleteDevice = async (deviceIp) => {
-    if (!window.confirm(`Eliminare il dispositivo ${deviceIp} dal monitoraggio?`)) return;
     try {
       await axios.delete(`${API}/connector/device-poll-status/${encodeURIComponent(deviceIp)}`);
-      toast.success("Dispositivo rimosso");
+      toast.success(`Dispositivo ${deviceIp} rimosso`);
+      setDeleteTarget(null);
       fetchAll();
     } catch (e) {
       toast.error("Errore: " + (e.response?.data?.detail || e.message));
@@ -576,12 +577,28 @@ export default function ClientStatusPage() {
                               data-testid={`web-console-${dev.device_ip}`}>
                               <Monitor size={14} />
                             </button>
-                            <button onClick={(e) => { e.stopPropagation(); deleteDevice(dev.device_ip); }}
+                            <button onClick={(e) => { e.stopPropagation(); setDeleteTarget(dev.device_ip); }}
                               className="flex-shrink-0 w-7 h-7 rounded-md flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--critical)] hover:bg-[var(--critical-bg)] transition-colors" title="Elimina"
                               data-testid={`delete-device-${dev.device_ip}`}>
                               <Trash size={14} />
                             </button>
                           </div>
+                          {/* Conferma eliminazione */}
+                          {deleteTarget === dev.device_ip && (
+                            <div className="flex items-center gap-2 px-8 py-2 bg-red-500/10 border-t border-red-500/20 animate-fade-in" onClick={e => e.stopPropagation()}>
+                              <span className="text-xs text-red-400">Eliminare {dev.device_name || dev.device_ip}?</span>
+                              <button onClick={() => deleteDevice(dev.device_ip)}
+                                className="px-3 py-1 rounded text-[10px] font-bold bg-red-600 text-white hover:bg-red-700 transition-colors"
+                                data-testid={`confirm-delete-${dev.device_ip}`}>
+                                Elimina
+                              </button>
+                              <button onClick={() => setDeleteTarget(null)}
+                                className="px-3 py-1 rounded text-[10px] font-medium bg-zinc-700 text-zinc-300 hover:bg-zinc-600 transition-colors"
+                                data-testid={`cancel-delete-${dev.device_ip}`}>
+                                Annulla
+                              </button>
+                            </div>
+                          )}
                           {expanded && (
                             <InlineDeviceDetail
                               clientId={group.clientId}
