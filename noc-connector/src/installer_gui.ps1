@@ -634,56 +634,57 @@ function Show-InstallerWizard {
         $form.Refresh()
         Start-Sleep -Milliseconds 500
         
-        # Step 3: Autostart via Scheduled Task (sopravvive a disconnessione RDP)
-        $txtStatus.AppendText("> Registrazione servizio Windows...`r`n")
+        # Step 3: Registra come Servizio Windows (NSSM)
+        $txtStatus.AppendText("> Registrazione Servizio Windows (NSSM)...`r`n")
         $progressBar.Value = 60
         $form.Refresh()
         $batPath = Join-Path $BaseDir "86NocConnector.bat"
         $uninstallBat = Join-Path $BaseDir "uninstall.bat"
         $connectorScript = Join-Path $ScriptDir "connector.ps1"
+        $nssmPath = Join-Path $BaseDir "nssm.exe"
+        $svcName = "86NocConnectorService"
         
         if ($chkAutostart.Checked) {
-            try {
-                # Registra come Scheduled Task (gira come SYSTEM, indipendente da RDP)
-                $taskName = "86NocConnectorService"
-                Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
-                
-                $action = New-ScheduledTaskAction `
-                    -Execute "powershell.exe" `
-                    -Argument "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$connectorScript`"" `
-                    -WorkingDirectory $ScriptDir
-                
-                $triggerBoot = New-ScheduledTaskTrigger -AtStartup
-                
-                $settings = New-ScheduledTaskSettingsSet `
-                    -AllowStartIfOnBatteries `
-                    -DontStopIfGoingOnBatteries `
-                    -StartWhenAvailable `
-                    -RestartCount 3 `
-                    -RestartInterval (New-TimeSpan -Minutes 1) `
-                    -ExecutionTimeLimit (New-TimeSpan -Days 365)
-                
-                Register-ScheduledTask `
-                    -TaskName $taskName `
-                    -Action $action `
-                    -Trigger $triggerBoot `
-                    -Settings $settings `
-                    -RunLevel Highest `
-                    -User "SYSTEM" `
-                    -Description "86NocConnector - Servizio di raccolta SNMP/Syslog per il NOC Center" `
-                    -ErrorAction Stop | Out-Null
-                
-                $txtStatus.AppendText("  Scheduled Task registrato: '$taskName'`r`n")
-                $txtStatus.AppendText("  Modalita': SYSTEM (sopravvive a disconnessione RDP)`r`n")
-                $txtStatus.AppendText("  Trigger: All'avvio del sistema`r`n")
-                $txtStatus.AppendText("  Riavvio automatico su errore: 3 tentativi`r`n")
-                
-                # Rimuovi vecchio autostart da registro (se presente)
-                & reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v $AppName /f 2>$null
-                
-            } catch {
-                $txtStatus.AppendText("  Task Scheduler: $($_.Exception.Message)`r`n")
-                $txtStatus.AppendText("  Fallback: avvio automatico via registro...`r`n")
+            if (Test-Path $nssmPath) {
+                try {
+                    # Rimuovi servizio precedente se esiste
+                    & $nssmPath stop $svcName 2>$null
+                    & $nssmPath remove $svcName confirm 2>$null
+                    
+                    # Registra il servizio con NSSM
+                    & $nssmPath install $svcName "powershell.exe" "-ExecutionPolicy Bypass -NonInteractive -WindowStyle Hidden -File `"$connectorScript`""
+                    & $nssmPath set $svcName AppDirectory $ScriptDir
+                    & $nssmPath set $svcName DisplayName "86NocConnector Service"
+                    & $nssmPath set $svcName Description "86NocConnector - Raccolta SNMP/Syslog per NOC Center"
+                    & $nssmPath set $svcName Start SERVICE_AUTO_START
+                    & $nssmPath set $svcName ObjectName LocalSystem
+                    & $nssmPath set $svcName AppStdout (Join-Path $ConfigDir "logs\service_stdout.log")
+                    & $nssmPath set $svcName AppStderr (Join-Path $ConfigDir "logs\service_stderr.log")
+                    & $nssmPath set $svcName AppRotateFiles 1
+                    & $nssmPath set $svcName AppRotateBytes 5242880
+                    & $nssmPath set $svcName AppRestartDelay 30000
+                    & $nssmPath set $svcName AppThrottle 30000
+                    & $nssmPath set $svcName AppExit Default Restart
+                    
+                    $txtStatus.AppendText("  Servizio Windows registrato (NSSM)`r`n")
+                    $txtStatus.AppendText("  Modalita': LocalSystem (sopravvive a disconnessione RDP)`r`n")
+                    $txtStatus.AppendText("  Riavvio automatico su crash: SI`r`n")
+                    $txtStatus.AppendText("  Avvio automatico all'accensione: SI`r`n")
+                    
+                    # Rimuovi vecchi metodi di autostart
+                    & reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v $AppName /f 2>$null
+                    Unregister-ScheduledTask -TaskName $svcName -Confirm:$false -ErrorAction SilentlyContinue
+                    
+                } catch {
+                    $txtStatus.AppendText("  NSSM: $($_.Exception.Message)`r`n")
+                    $txtStatus.AppendText("  Fallback: avvio automatico via registro...`r`n")
+                    try {
+                        & reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v $AppName /t REG_SZ /d "`"$batPath`"" /f 2>$null
+                        $txtStatus.AppendText("  Avvio automatico (registro): OK`r`n")
+                    } catch {}
+                }
+            } else {
+                $txtStatus.AppendText("  nssm.exe non trovato, uso registro di sistema...`r`n")
                 try {
                     & reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v $AppName /t REG_SZ /d "`"$batPath`"" /f 2>$null
                     $txtStatus.AppendText("  Avvio automatico (registro): OK`r`n")
@@ -763,28 +764,33 @@ function Show-InstallerWizard {
         $progressBar.Value = 100
         $form.Refresh()
         
-        # Avvia il connettore via Scheduled Task
-        $taskName = "86NocConnectorService"
-        try {
-            $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
-            if ($task) {
-                Start-ScheduledTask -TaskName $taskName -ErrorAction Stop
-                $txtStatus.AppendText("  Servizio connettore: AVVIATO (Task Scheduler)`r`n")
-            } else {
-                # Fallback: avvia direttamente
-                Start-Process "powershell.exe" -ArgumentList "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$(Join-Path $ScriptDir 'connector.ps1')`"" -WindowStyle Hidden
-                $txtStatus.AppendText("  Connettore: AVVIATO (processo diretto)`r`n")
+        $nssmPath = Join-Path $BaseDir "nssm.exe"
+        $svcName = "86NocConnectorService"
+        
+        # Avvia il servizio NSSM
+        if (Test-Path $nssmPath) {
+            try {
+                & $nssmPath start $svcName 2>$null
+                Start-Sleep -Seconds 3
+                $svcStatus = & $nssmPath status $svcName 2>$null
+                $txtStatus.AppendText("  Servizio connettore: $svcStatus`r`n")
+                if ($svcStatus -match "RUNNING|START_PENDING") {
+                    $txtStatus.AppendText("  Il connettore gira come Servizio Windows (sopravvive a disconnessione RDP)`r`n")
+                }
+            } catch {
+                $txtStatus.AppendText("  Errore avvio servizio: $($_.Exception.Message)`r`n")
             }
-        } catch {
+        } else {
+            # Fallback: avvia direttamente
             Start-Process "powershell.exe" -ArgumentList "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$(Join-Path $ScriptDir 'connector.ps1')`"" -WindowStyle Hidden
-            $txtStatus.AppendText("  Connettore: AVVIATO (fallback)`r`n")
+            $txtStatus.AppendText("  Connettore: AVVIATO (processo diretto)`r`n")
         }
         
-        # Avvia la tray app per monitoraggio
+        # Avvia la tray app per monitoraggio (opzionale, solo se in sessione interattiva)
         $trayScript = Join-Path $ScriptDir "tray_app.ps1"
         try {
             Start-Process "powershell.exe" -ArgumentList "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$trayScript`"" -WindowStyle Hidden
-            $txtStatus.AppendText("  Icona system tray: ATTIVA`r`n")
+            $txtStatus.AppendText("  Icona system tray: ATTIVA (solo monitoraggio)`r`n")
         } catch {
             $txtStatus.AppendText("  Tray: $($_.Exception.Message)`r`n")
         }
@@ -831,9 +837,9 @@ function Show-InstallerWizard {
             [char]0x2713 + "   SNMP Trap: porta UDP $($txtSNMP.Text)"
             [char]0x2713 + "   Syslog: porta UDP $($txtSyslog.Text)"
             [char]0x2713 + "   NOC Center: $($txtUrl.Text.Trim().Substring(0, [Math]::Min(42, $txtUrl.Text.Trim().Length)))"
-            [char]0x2713 + "   Servizio: Task Scheduler (sopravvive a disconnessione RDP)"
+            [char]0x2713 + "   Servizio: Windows Service (NSSM - sopravvive a disconnessione RDP)"
             [char]0x2713 + "   Menu Start: 86BIT Connector (Avvia, Disinstalla, Log)"
-            [char]0x2713 + "   Avvio automatico: $(if($chkAutostart.Checked){'All avvio del sistema'}else{'Disabilitato'})"
+            [char]0x2713 + "   Avvio automatico: $(if($chkAutostart.Checked){'All avvio del server'}else{'Disabilitato'})"
             [char]0x2713 + "   Polling SNMP: $($deviceList.Items.Count) dispositivi ogni $($txtPollInterval.Text)s"
         )
         $y = 26
