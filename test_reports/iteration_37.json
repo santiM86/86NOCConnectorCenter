@@ -1,0 +1,148 @@
+{
+  "summary": "Iteration 37 - Remote VA Scan functionality testing complete. Backend: 17/17 tests passed (100%). Frontend: VA page with remote scan button, progress bar, and all components working correctly. All new endpoints (request-scan, scan-status, update-scan-status, process-scan-results, connector/managed-devices) are functional.",
+
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+
+  "passed_tests": {
+    "backend_api": [
+      "POST /api/vulnerability/request-scan/{client_id} - Endpoint exists and returns 200/400/409 appropriately",
+      "POST /api/vulnerability/request-scan/{client_id} - Returns scan_id when connector online",
+      "POST /api/vulnerability/request-scan/{client_id} - Returns 404 for invalid client",
+      "POST /api/vulnerability/request-scan/{client_id} - Requires authentication (401 without token)",
+      "GET /api/vulnerability/scan-status/{client_id} - Returns 200 with valid status",
+      "GET /api/vulnerability/scan-status/{client_id} - Returns status: idle/pending/in_progress/completed/error",
+      "GET /api/vulnerability/scan-status/{client_id} - Requires authentication",
+      "POST /api/vulnerability/update-scan-status - Endpoint exists and returns 200",
+      "POST /api/vulnerability/update-scan-status - Requires scan_id (400 without)",
+      "POST /api/vulnerability/update-scan-status - Accepts progress percentage",
+      "POST /api/vulnerability/process-scan-results - Endpoint exists and returns 200",
+      "POST /api/vulnerability/process-scan-results - Requires client_id (400 without)",
+      "POST /api/vulnerability/process-scan-results - Returns devices_updated count",
+      "POST /api/connector/managed-devices - Returns devices array with API key auth",
+      "POST /api/connector/managed-devices - Requires API key (401 without)",
+      "POST /api/connector/heartbeat - Returns pending_commands filtered by client_id",
+      "Full remote scan flow: request -> status -> update -> results works end-to-end"
+    ],
+    "frontend_ui": [
+      "VA page accessible at /vulnerability",
+      "VA page container [data-testid='vulnerability-page'] present",
+      "Score gauge [data-testid='va-score-gauge'] displays 81/100",
+      "Stats section [data-testid='va-stats'] shows 13 devices, 22 vulns, 8 critical, 2 high",
+      "Client select dropdown [data-testid='va-client-select'] present",
+      "'Avvia Scansione Remota' button [data-testid='va-run-scan-btn'] present and clickable",
+      "Button correctly calls /api/vulnerability/request-scan endpoint",
+      "409 response shows toast 'Una scansione VA è già in corso'",
+      "Tab 'Dispositivi' [data-testid='va-tab-overview'] works",
+      "Tab 'Vulnerabilità (22)' [data-testid='va-tab-vulns'] works",
+      "Tab 'Piano di Remediation' [data-testid='va-tab-remediation'] works",
+      "Device cards [data-testid='va-device-*'] show score, name, IP, status, vuln counts",
+      "Device expansion shows detailed vulnerabilities with severity, title, description, remediation"
+    ]
+  },
+
+  "test_report_links": [
+    "/app/backend/tests/test_remote_va_scan.py",
+    "/app/test_reports/pytest/pytest_remote_va_scan.xml"
+  ],
+
+  "action_items": [],
+
+  "critical_code_review_comments": [
+    "vulnerability.py: Request import correctly added at line 5",
+    "vulnerability.py: request-scan endpoint correctly checks connector online status (last_seen < 5 min)",
+    "vulnerability.py: request-scan correctly prevents duplicate scans (409 if pending/dispatched)",
+    "vulnerability.py: update-scan-status correctly updates connector_status.va_scan_status",
+    "vulnerability.py: process-scan-results correctly updates device_poll_status with open_ports",
+    "connector.py: pending_commands query correctly filters by client_id for security",
+    "connector.py: managed-devices endpoint correctly validates API key",
+    "VulnerabilityPage.js: Token key correctly uses 'noc_token' (line 16)",
+    "VulnerabilityPage.js: Remote scan button calls request-scan endpoint",
+    "VulnerabilityPage.js: Scan progress bar [data-testid='va-scan-progress'] shows during scanning",
+    "VulnerabilityPage.js: Polls scan-status every 3 seconds during scan"
+  ],
+
+  "updated_files": [
+    "/app/backend/tests/test_remote_va_scan.py"
+  ],
+
+  "success_rate": {
+    "backend": "100% (17/17 tests passed)",
+    "frontend": "100% (all UI components verified)"
+  },
+
+  "test_credentials": {
+    "email": "admin@86bit.it",
+    "password": "password"
+  },
+
+  "seed_data_creation": "No new seed data created. Using existing demo data.",
+
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+
+  "context_for_next_testing_agent": "Iteration 37 verified the NEW remote VA scan functionality. All endpoints working: request-scan (creates pending command for connector), scan-status (returns current scan state), update-scan-status (connector updates progress), process-scan-results (connector sends results). Frontend 'Avvia Scansione Remota' button works and shows progress bar during scanning. The connector heartbeat pending_commands are now correctly filtered by client_id for security. Note: When testing request-scan, if connector is offline you get 400, if scan already in progress you get 409.",
+
+  "mocked_apis": {
+    "has_mocked_apis": false,
+    "mocked_apis_list": []
+  },
+
+  "features_verified": {
+    "request_scan": {
+      "endpoint": "POST /api/vulnerability/request-scan/{client_id}",
+      "returns": ["scan_id", "status", "message"],
+      "error_cases": ["404 invalid client", "400 connector offline", "409 scan in progress"],
+      "status": "WORKING"
+    },
+    "scan_status": {
+      "endpoint": "GET /api/vulnerability/scan-status/{client_id}",
+      "returns": ["status", "scan_id", "progress", "message"],
+      "valid_statuses": ["idle", "no_connector", "pending", "in_progress", "completed", "error"],
+      "status": "WORKING"
+    },
+    "update_scan_status": {
+      "endpoint": "POST /api/vulnerability/update-scan-status",
+      "accepts": ["scan_id", "status", "progress", "message"],
+      "called_by": "connector",
+      "status": "WORKING"
+    },
+    "process_scan_results": {
+      "endpoint": "POST /api/vulnerability/process-scan-results",
+      "accepts": ["client_id", "scan_id", "results"],
+      "returns": ["status", "devices_updated", "overall_score", "total_vulnerabilities"],
+      "status": "WORKING"
+    },
+    "connector_managed_devices": {
+      "endpoint": "POST /api/connector/managed-devices",
+      "auth": "X-API-Key header",
+      "returns": ["devices array"],
+      "status": "WORKING"
+    },
+    "heartbeat_pending_commands": {
+      "endpoint": "POST /api/connector/heartbeat",
+      "security_fix": "pending_commands now filtered by client_id",
+      "status": "WORKING"
+    },
+    "frontend_remote_scan_button": {
+      "selector": "[data-testid='va-run-scan-btn']",
+      "text": "Avvia Scansione Remota",
+      "calls": "/api/vulnerability/request-scan/{client_id}",
+      "status": "WORKING"
+    },
+    "frontend_scan_progress_bar": {
+      "selector": "[data-testid='va-scan-progress']",
+      "shows": "During active scan",
+      "displays": ["progress percentage", "status message"],
+      "status": "WORKING"
+    }
+  }
+}

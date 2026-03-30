@@ -319,13 +319,87 @@ function Send-Heartbeat($config) {
     }
     $response = Send-ToNOC $config "connector/heartbeat" $payload
     
-    # Process pending commands (Wake-on-LAN, etc.)
+    # Process pending commands (Wake-on-LAN, VA Scan, etc.)
     if ($response -and $response.pending_commands) {
         foreach ($cmd in $response.pending_commands) {
-            Write-Log "Comando ricevuto dal NOC: $($cmd.type) - target=$($cmd.target_ip)" "INFO"
+            Write-Log "Comando ricevuto dal NOC: $($cmd.type)" "INFO"
             switch ($cmd.type) {
                 "wake_on_lan" {
                     Send-WakeOnLAN $cmd.mac_address $cmd.target_ip
+                }
+                "va_scan" {
+                    Write-Log "Avvio scansione Vulnerability Assessment (scan_id=$($cmd.id))..." "INFO"
+                    try {
+                        $scanId = $cmd.id
+                        $riskyPorts = $cmd.risky_ports
+                        if (-not $riskyPorts) {
+                            $riskyPorts = @(21,23,25,53,69,80,135,139,161,445,1433,1521,3306,3389,5432,5900,5985,8080,8443)
+                        }
+                        # Update scan status to in_progress
+                        Send-ToNOC $config "vulnerability/update-scan-status" @{
+                            scan_id = $scanId
+                            status = "in_progress"
+                            progress = 5
+                            message = "Scansione avviata..."
+                        } | Out-Null
+
+                        # Get managed devices for this connector
+                        $managedDevices = @()
+                        try {
+                            $devResponse = Send-ToNOC $config "connector/managed-devices" @{}
+                            if ($devResponse -and $devResponse.devices) {
+                                $managedDevices = $devResponse.devices
+                            }
+                        } catch {
+                            Write-Log "Impossibile recuperare lista dispositivi: $($_.Exception.Message)" "WARN"
+                        }
+
+                        if ($managedDevices.Count -eq 0) {
+                            Write-Log "Nessun dispositivo da scansionare" "WARN"
+                            Send-ToNOC $config "vulnerability/process-scan-results" @{
+                                scan_id = $scanId
+                                results = @()
+                            } | Out-Null
+                        } else {
+                            $results = @()
+                            $total = $managedDevices.Count
+                            $idx = 0
+                            foreach ($dev in $managedDevices) {
+                                $idx++
+                                $pct = [math]::Floor(5 + (90 * $idx / $total))
+                                $ip = $dev.ip
+                                $community = if ($dev.community) { $dev.community } else { "public" }
+                                $devName = if ($dev.name) { $dev.name } else { $ip }
+
+                                Send-ToNOC $config "vulnerability/update-scan-status" @{
+                                    scan_id = $scanId
+                                    status = "in_progress"
+                                    progress = $pct
+                                    message = "Scansione $devName ($ip) [$idx/$total]..."
+                                } | Out-Null
+
+                                $devResult = Run-VAScan $ip $community $devName $riskyPorts
+                                $results += $devResult
+                            }
+
+                            # Send results to backend
+                            Send-ToNOC $config "vulnerability/process-scan-results" @{
+                                scan_id = $scanId
+                                results = $results
+                            } | Out-Null
+                            Write-Log "Scansione VA completata: $($results.Count) dispositivi analizzati" "INFO"
+                        }
+                    } catch {
+                        Write-Log "Errore scansione VA: $($_.Exception.Message)" "ERROR"
+                        try {
+                            Send-ToNOC $config "vulnerability/update-scan-status" @{
+                                scan_id = $scanId
+                                status = "error"
+                                progress = 0
+                                message = "Errore: $($_.Exception.Message)"
+                            } | Out-Null
+                        } catch {}
+                    }
                 }
                 default {
                     Write-Log "Comando sconosciuto: $($cmd.type)" "WARN"

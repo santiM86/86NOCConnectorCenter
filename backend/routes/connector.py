@@ -62,7 +62,7 @@ async def connector_heartbeat(request: Request, heartbeat: ConnectorHeartbeat):
                 {"$unset": {"update_status": "", "force_update": "", "update_progress": "", "update_message": "", "update_timestamp": ""}}
             )
     response = {"status": "ok"}
-    pending_cmds = await db.pending_commands.find({"status": "pending"}, {"_id": 0}).sort("created_at", 1).to_list(10)
+    pending_cmds = await db.pending_commands.find({"client_id": client_data["id"], "status": "pending"}, {"_id": 0}).sort("created_at", 1).to_list(10)
     if pending_cmds:
         response["pending_commands"] = pending_cmds
         cmd_ids = [c["id"] for c in pending_cmds]
@@ -81,6 +81,18 @@ async def connector_heartbeat(request: Request, heartbeat: ConnectorHeartbeat):
                 {"client_id": client_data["id"]}, {"$set": {"force_update": False}}
             )
     return response
+
+
+
+@router.post("/connector/managed-devices")
+async def connector_managed_devices(request: Request):
+    """Return the list of managed devices for this connector's client."""
+    client_data = await validate_api_key(request)
+    devices = await db.managed_devices.find(
+        {"client_id": client_data["id"]}, {"_id": 0}
+    ).to_list(500)
+    return {"devices": devices}
+
 
 
 # ==================== VAULT CREDENTIALS FOR CONNECTOR ====================

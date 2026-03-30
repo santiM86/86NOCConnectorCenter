@@ -1780,3 +1780,93 @@ function Poll-AllPrinters($printerDevices, $config) {
         }
     }
 }
+
+
+function Run-VAScan($ip, $community, $deviceName, $riskyPorts) {
+    <#
+    .SYNOPSIS
+        Esegue una scansione di Vulnerability Assessment su un singolo dispositivo.
+        Controlla porte pericolose aperte e community SNMP di default.
+        Restituisce i risultati nel formato atteso dal backend.
+    #>
+    $result = @{
+        device_ip = $ip
+        device_name = $deviceName
+        open_ports = @()
+        scan_time = (Get-Date -Format "yyyy-MM-ddTHH:mm:ssZ")
+    }
+
+    Write-Host "[VA Scan] Scansione $deviceName ($ip) - $($riskyPorts.Count) porte da controllare..."
+
+    # 1. TCP Port Scan - Check each risky port
+    foreach ($port in $riskyPorts) {
+        try {
+            $tcp = New-Object System.Net.Sockets.TcpClient
+            $asyncResult = $tcp.BeginConnect($ip, $port, $null, $null)
+            $waited = $asyncResult.AsyncWaitHandle.WaitOne(1500, $false)
+            if ($waited -and $tcp.Connected) {
+                $result.open_ports += @{
+                    port = [int]$port
+                    open = $true
+                    service = ""
+                }
+                Write-Host "[VA Scan]   Porta $port APERTA su $ip"
+            }
+            $tcp.Close()
+        } catch {
+            # Port is closed or unreachable - skip
+        }
+    }
+
+    # 2. SNMP community string check (probe UDP 161)
+    $defaultCommunities = @("public", "private", "community", "default", "admin", "snmp", "monitor")
+    $weakCommunityFound = $false
+    
+    # Check if the configured community is a known weak one
+    if ($community -and ($defaultCommunities -contains $community.ToLower())) {
+        $weakCommunityFound = $true
+        Write-Host "[VA Scan]   Community SNMP debole rilevata: '$community' su $ip"
+    }
+
+    # If SNMP port (161) is not already in open_ports but device responds to SNMP, add it
+    $snmpAlreadyFound = $result.open_ports | Where-Object { $_.port -eq 161 }
+    if (-not $snmpAlreadyFound) {
+        try {
+            # Quick SNMP GET test using raw UDP
+            $udpClient = New-Object System.Net.Sockets.UdpClient
+            $udpClient.Client.ReceiveTimeout = 2000
+            $udpClient.Connect($ip, 161)
+            
+            $communityBytes = [System.Text.Encoding]::ASCII.GetBytes($community)
+            $communityLen = $communityBytes.Length
+            
+            # SNMP GET request for sysDescr.0 (1.3.6.1.2.1.1.1.0)
+            $oid = @(0x06, 0x08, 0x2B, 0x06, 0x01, 0x02, 0x01, 0x01, 0x01, 0x00)
+            $varbind = @(0x30) + @([byte]($oid.Length + 4)) + $oid + @(0x05, 0x00)
+            $varbindList = @(0x30) + @([byte]$varbind.Length) + $varbind
+            $pdu = @(0xA0) + @([byte]($varbindList.Length + 12)) + @(0x02, 0x04, 0x00, 0x00, 0x00, 0x01, 0x02, 0x01, 0x00, 0x02, 0x01, 0x00) + $varbindList
+            $communityTlv = @(0x04, [byte]$communityLen) + $communityBytes
+            $innerLen = 3 + $communityTlv.Length + $pdu.Length
+            $snmpPacket = @(0x30, [byte]$innerLen, 0x02, 0x01, 0x01) + $communityTlv + $pdu
+            
+            $udpClient.Send($snmpPacket, $snmpPacket.Length) | Out-Null
+            $remoteEP = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Any, 0)
+            $responseBytes = $udpClient.Receive([ref]$remoteEP)
+            
+            if ($responseBytes -and $responseBytes.Length -gt 0) {
+                $result.open_ports += @{
+                    port = 161
+                    open = $true
+                    service = "SNMP"
+                }
+                Write-Host "[VA Scan]   Porta 161 (SNMP) APERTA su $ip"
+            }
+            $udpClient.Close()
+        } catch {
+            # SNMP not responding - that's fine
+        }
+    }
+
+    Write-Host "[VA Scan] Completato $deviceName ($ip): $($result.open_ports.Count) porte aperte trovate"
+    return $result
+}
