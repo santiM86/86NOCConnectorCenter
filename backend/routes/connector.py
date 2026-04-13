@@ -437,6 +437,13 @@ async def add_managed_device(client_id: str, device: ManagedDevice, current_user
         "name": device.name, "monitor_type": device.monitor_type,
         "device_type": device.device_type,
         "http_port": device.http_port,
+        "snmp_version": device.snmp_version,
+        "snmpv3_username": device.snmpv3_username,
+        "snmpv3_auth_protocol": device.snmpv3_auth_protocol,
+        "snmpv3_auth_password": device.snmpv3_auth_password,
+        "snmpv3_priv_protocol": device.snmpv3_priv_protocol,
+        "snmpv3_priv_password": device.snmpv3_priv_password,
+        "snmpv3_security_level": device.snmpv3_security_level,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "created_by": current_user.get("name", "admin")
     }
@@ -453,6 +460,43 @@ async def remove_managed_device(client_id: str, device_id: str, current_user: di
         raise HTTPException(status_code=404, detail="Device not found")
     await db.device_poll_status.delete_one({"client_id": client_id, "device_ip": device_id})
     return {"status": "ok"}
+
+
+@router.put("/connector/{client_id}/managed-devices/{device_id}/snmp")
+async def update_device_snmp_config(client_id: str, device_id: str, request: Request, current_user: dict = Depends(get_current_user)):
+    """Aggiorna la configurazione SNMP (v1/v2c/v3) di un dispositivo."""
+    body = await request.json()
+    check_nosql_injection(body)
+    update = {}
+    snmp_version = body.get("snmp_version", "v2c")
+    update["snmp_version"] = snmp_version
+    if snmp_version in ("v1", "v2c"):
+        update["community"] = sanitize_string(body.get("community", "public"), 128)
+        # Clear v3 fields
+        for f in ("snmpv3_username", "snmpv3_auth_protocol", "snmpv3_auth_password", "snmpv3_priv_protocol", "snmpv3_priv_password", "snmpv3_security_level"):
+            update[f] = None
+    elif snmp_version == "v3":
+        update["community"] = ""
+        update["snmpv3_username"] = sanitize_string(body.get("snmpv3_username", ""), 128)
+        update["snmpv3_auth_protocol"] = body.get("snmpv3_auth_protocol")  # MD5, SHA, SHA256
+        update["snmpv3_auth_password"] = sanitize_string(body.get("snmpv3_auth_password", ""), 256)
+        update["snmpv3_priv_protocol"] = body.get("snmpv3_priv_protocol")  # DES, AES, AES256
+        update["snmpv3_priv_password"] = sanitize_string(body.get("snmpv3_priv_password", ""), 256)
+        update["snmpv3_security_level"] = body.get("snmpv3_security_level", "authPriv")
+    result = await db.managed_devices.update_one(
+        {"id": device_id, "client_id": client_id},
+        {"$set": update}
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Device not found")
+    await audit_logger.log(
+        AuditAction.UPDATE_DEVICE,
+        user_id=current_user["id"], user_email=current_user["email"],
+        resource_type="device", resource_id=device_id,
+        details={"action": "snmp_config_updated", "version": snmp_version},
+    )
+    return {"status": "ok", "snmp_version": snmp_version}
+
 
 
 @router.get("/connector/fetch-devices")

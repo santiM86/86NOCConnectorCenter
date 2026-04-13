@@ -1,9 +1,15 @@
 <#
 .SYNOPSIS
-    86NocConnector - SNMP v2c Poller
+    86NocConnector - SNMP v1/v2c/v3 Poller
 .DESCRIPTION
-    Client SNMP v2c nativo per polling attivo di switch e dispositivi di rete.
+    Client SNMP nativo per polling attivo di switch e dispositivi di rete.
     Usa raw UDP sockets con encoding BER/ASN.1 - ZERO dipendenze esterne.
+    
+    Supporta:
+    - SNMP v1/v2c (community string)
+    - SNMP v3 (USM: noAuthNoPriv, authNoPriv, authPriv)
+      - Auth: MD5, SHA
+      - Privacy: DES, AES128
 #>
 
 # ==================== BER / ASN.1 ENCODING ====================
@@ -91,6 +97,557 @@ function ConvertTo-BerSequence([byte[]]$content) {
     $result.AddRange($content)
     return [byte[]]$result.ToArray()
 }
+
+# ==================== SNMP v3 USM ENGINE ====================
+
+$script:SnmpV3MsgId = 1
+$script:EngineCache = @{}  # IP -> @{ engine_id, boots, time }
+
+function Get-HMACMD5([byte[]]$key, [byte[]]$data) {
+    $hmac = New-Object System.Security.Cryptography.HMACMD5
+    $hmac.Key = $key
+    return $hmac.ComputeHash($data)
+}
+
+function Get-HMACSHA1([byte[]]$key, [byte[]]$data) {
+    $hmac = New-Object System.Security.Cryptography.HMACSHA1
+    $hmac.Key = $key
+    return $hmac.ComputeHash($data)
+}
+
+function Get-MD5Hash([byte[]]$data) {
+    $md5 = [System.Security.Cryptography.MD5]::Create()
+    return $md5.ComputeHash($data)
+}
+
+function Get-SHA1Hash([byte[]]$data) {
+    $sha = [System.Security.Cryptography.SHA1]::Create()
+    return $sha.ComputeHash($data)
+}
+
+function Get-PasswordToKey([string]$password, [byte[]]$engineId, [string]$authProto = "MD5") {
+    <#
+    .SYNOPSIS
+        RFC 3414 password-to-key localization.
+        Expands password to 1MB, hashes, then localizes with engineId.
+    #>
+    $pwBytes = [System.Text.Encoding]::UTF8.GetBytes($password)
+    if ($pwBytes.Length -eq 0) { return [byte[]]::new(0) }
+    
+    # Step 1: Generate Ku (master key) - hash 1MB of repeated password
+    $count = 1048576  # 1 MB
+    $buf = [byte[]]::new(64)
+    $pwLen = $pwBytes.Length
+    
+    if ($authProto -eq "SHA") {
+        $hasher = [System.Security.Cryptography.SHA1]::Create()
+    } else {
+        $hasher = [System.Security.Cryptography.MD5]::Create()
+    }
+    
+    $hashStream = New-Object System.IO.MemoryStream
+    $written = 0
+    while ($written -lt $count) {
+        $idx = 0
+        for ($i = 0; $i -lt 64; $i++) {
+            $buf[$i] = $pwBytes[$idx % $pwLen]
+            $idx++
+        }
+        $hashStream.Write($buf, 0, 64)
+        $written += 64
+    }
+    $hashStream.Position = 0
+    $ku = $hasher.ComputeHash($hashStream)
+    $hashStream.Dispose()
+    
+    # Step 2: Localize Ku with engineId -> Kul
+    $localInput = [System.Collections.Generic.List[byte]]::new()
+    $localInput.AddRange($ku)
+    $localInput.AddRange($engineId)
+    $localInput.AddRange($ku)
+    $kul = $hasher.ComputeHash($localInput.ToArray())
+    $hasher.Dispose()
+    
+    return $kul
+}
+
+function Encrypt-SnmpV3DES([byte[]]$data, [byte[]]$privKey, [byte[]]$engineBoots, [byte[]]$salt) {
+    <#
+    .SYNOPSIS
+        DES-CBC encryption per SNMP v3 privacy (RFC 3414).
+    #>
+    # DES key is first 8 bytes of privKey
+    $desKey = $privKey[0..7]
+    
+    # IV = pre-IV XOR salt (pre-IV = privKey bytes 8-15)
+    $preIV = $privKey[8..15]
+    $iv = [byte[]]::new(8)
+    for ($i = 0; $i -lt 8; $i++) {
+        $iv[$i] = $preIV[$i] -bxor $salt[$i]
+    }
+    
+    # Pad data to 8-byte boundary
+    $padLen = 8 - ($data.Length % 8)
+    if ($padLen -eq 8) { $padLen = 0 }
+    $padded = [byte[]]::new($data.Length + $padLen)
+    [Array]::Copy($data, $padded, $data.Length)
+    
+    $des = [System.Security.Cryptography.DESCryptoServiceProvider]::new()
+    $des.Mode = [System.Security.Cryptography.CipherMode]::CBC
+    $des.Padding = [System.Security.Cryptography.PaddingMode]::None
+    $des.Key = $desKey
+    $des.IV = $iv
+    $enc = $des.CreateEncryptor()
+    $result = $enc.TransformFinalBlock($padded, 0, $padded.Length)
+    $des.Dispose()
+    return $result
+}
+
+function Decrypt-SnmpV3DES([byte[]]$data, [byte[]]$privKey, [byte[]]$salt) {
+    $desKey = $privKey[0..7]
+    $preIV = $privKey[8..15]
+    $iv = [byte[]]::new(8)
+    for ($i = 0; $i -lt 8; $i++) {
+        $iv[$i] = $preIV[$i] -bxor $salt[$i]
+    }
+    $des = [System.Security.Cryptography.DESCryptoServiceProvider]::new()
+    $des.Mode = [System.Security.Cryptography.CipherMode]::CBC
+    $des.Padding = [System.Security.Cryptography.PaddingMode]::None
+    $des.Key = $desKey
+    $des.IV = $iv
+    $dec = $des.CreateDecryptor()
+    $result = $dec.TransformFinalBlock($data, 0, $data.Length)
+    $des.Dispose()
+    return $result
+}
+
+function Encrypt-SnmpV3AES([byte[]]$data, [byte[]]$privKey, [int]$engineBoots, [int]$engineTime, [byte[]]$salt) {
+    <#
+    .SYNOPSIS
+        AES-128-CFB encryption per SNMP v3 privacy (RFC 3826).
+    #>
+    $aesKey = $privKey[0..15]
+    
+    # IV = engineBoots (4 bytes BE) + engineTime (4 bytes BE) + salt (8 bytes)
+    $iv = [byte[]]::new(16)
+    $iv[0] = [byte](($engineBoots -shr 24) -band 0xFF)
+    $iv[1] = [byte](($engineBoots -shr 16) -band 0xFF)
+    $iv[2] = [byte](($engineBoots -shr 8) -band 0xFF)
+    $iv[3] = [byte]($engineBoots -band 0xFF)
+    $iv[4] = [byte](($engineTime -shr 24) -band 0xFF)
+    $iv[5] = [byte](($engineTime -shr 16) -band 0xFF)
+    $iv[6] = [byte](($engineTime -shr 8) -band 0xFF)
+    $iv[7] = [byte]($engineTime -band 0xFF)
+    [Array]::Copy($salt, 0, $iv, 8, 8)
+    
+    $aes = [System.Security.Cryptography.Aes]::Create()
+    $aes.Mode = [System.Security.Cryptography.CipherMode]::CFB
+    $aes.FeedbackSize = 128
+    $aes.Padding = [System.Security.Cryptography.PaddingMode]::None
+    $aes.Key = $aesKey
+    $aes.IV = $iv
+    
+    # Pad to 16-byte boundary for AES
+    $padLen = 16 - ($data.Length % 16)
+    if ($padLen -eq 16) { $padLen = 0 }
+    $padded = [byte[]]::new($data.Length + $padLen)
+    [Array]::Copy($data, $padded, $data.Length)
+    
+    $enc = $aes.CreateEncryptor()
+    $result = $enc.TransformFinalBlock($padded, 0, $padded.Length)
+    $aes.Dispose()
+    return $result
+}
+
+function Build-SnmpV3EngineDiscovery {
+    <#
+    .SYNOPSIS
+        Builds an SNMP v3 engine discovery message (empty user, no auth).
+    #>
+    $script:SnmpV3MsgId++
+    
+    # msgVersion = 3
+    $version = ConvertTo-BerInteger 3
+    
+    # msgGlobalData: SEQUENCE { msgID, msgMaxSize, msgFlags, msgSecurityModel }
+    $msgId = ConvertTo-BerInteger $script:SnmpV3MsgId
+    $msgMaxSize = ConvertTo-BerInteger 65507
+    $msgFlags = ConvertTo-BerOctetString ([char]0x04)  # reportable, noAuth, noPriv
+    # Fix: msgFlags is a single-byte octet string
+    $msgFlagsRaw = [byte[]]@(0x04, 0x01, 0x04)  # OCTET STRING, len 1, value 0x04 (reportable)
+    $msgSecModel = ConvertTo-BerInteger 3  # USM
+    $globalData = ConvertTo-BerSequence ([byte[]]($msgId + $msgMaxSize + $msgFlagsRaw + $msgSecModel))
+    
+    # USM Security Parameters (empty for discovery)
+    $usmEngineId = ConvertTo-BerOctetString ""
+    $usmBoots = ConvertTo-BerInteger 0
+    $usmTime = ConvertTo-BerInteger 0
+    $usmUser = ConvertTo-BerOctetString ""
+    $usmAuthParams = ConvertTo-BerOctetString ""
+    $usmPrivParams = ConvertTo-BerOctetString ""
+    $usmSeq = ConvertTo-BerSequence ([byte[]]($usmEngineId + $usmBoots + $usmTime + $usmUser + $usmAuthParams + $usmPrivParams))
+    $secParams = ConvertTo-BerOctetString ""
+    # Wrap USM sequence as an OCTET STRING
+    $usmLen = ConvertTo-BerLength $usmSeq.Length
+    $secParamsBytes = [System.Collections.Generic.List[byte]]::new()
+    $secParamsBytes.Add(0x04)
+    $secParamsBytes.AddRange($usmLen)
+    $secParamsBytes.AddRange($usmSeq)
+    
+    # ScopedPDU: contextEngineID="" contextName="" GET PDU (empty varbind)
+    $ctxEngineId = ConvertTo-BerOctetString ""
+    $ctxName = ConvertTo-BerOctetString ""
+    # Empty GET request
+    $reqId = ConvertTo-BerInteger $script:SnmpV3MsgId
+    $errStat = ConvertTo-BerInteger 0
+    $errIdx = ConvertTo-BerInteger 0
+    $varbindList = ConvertTo-BerSequence ([byte[]]@())
+    $pduContent = [byte[]]($reqId + $errStat + $errIdx + $varbindList)
+    $pdu = [System.Collections.Generic.List[byte]]::new()
+    $pdu.Add(0xA0)  # GET
+    $pdu.AddRange((ConvertTo-BerLength $pduContent.Length))
+    $pdu.AddRange($pduContent)
+    $scopedPdu = ConvertTo-BerSequence ([byte[]]($ctxEngineId + $ctxName + $pdu.ToArray()))
+    
+    # Build message
+    $msgContent = [byte[]]($version + $globalData + $secParamsBytes.ToArray() + $scopedPdu)
+    return ConvertTo-BerSequence $msgContent
+}
+
+function Parse-SnmpV3Response([byte[]]$data) {
+    <#
+    .SYNOPSIS
+        Parsa una risposta SNMPv3 e restituisce engineId, boots, time e i varbind.
+    #>
+    $result = @{
+        engine_id = [byte[]]@()
+        engine_boots = 0
+        engine_time = 0
+        varbinds = @{}
+        error = $null
+    }
+    
+    try {
+        $off = [ref]0
+        # Outer SEQUENCE
+        if ($data[$off.Value] -ne 0x30) { $result.error = "Not a SEQUENCE"; return $result }
+        $off.Value++; $null = Read-BerLength $data $off
+        
+        # Version
+        $off.Value++; $vLen = Read-BerLength $data $off
+        $version = Read-BerInteger $data $off.Value $vLen
+        $off.Value += $vLen
+        
+        # HeaderData SEQUENCE
+        if ($data[$off.Value] -ne 0x30) { $result.error = "Expected HeaderData SEQUENCE"; return $result }
+        $off.Value++; $hLen = Read-BerLength $data $off
+        $hEnd = $off.Value + $hLen
+        $off.Value = $hEnd  # Skip header for now
+        
+        # Security Parameters OCTET STRING (contains USM SEQUENCE)
+        if ($data[$off.Value] -ne 0x04) { $result.error = "Expected secParams OCTET STRING"; return $result }
+        $off.Value++; $spLen = Read-BerLength $data $off
+        $spStart = $off.Value
+        
+        # Parse USM SEQUENCE inside
+        if ($data[$off.Value] -ne 0x30) { $off.Value = $spStart + $spLen } else {
+            $off.Value++; $null = Read-BerLength $data $off
+            
+            # Engine ID (OCTET STRING)
+            if ($data[$off.Value] -eq 0x04) {
+                $off.Value++; $eidLen = Read-BerLength $data $off
+                if ($eidLen -gt 0) {
+                    $result.engine_id = $data[$off.Value..($off.Value + $eidLen - 1)]
+                }
+                $off.Value += $eidLen
+            }
+            # Engine Boots (INTEGER)
+            if ($data[$off.Value] -eq 0x02) {
+                $off.Value++; $bLen = Read-BerLength $data $off
+                $result.engine_boots = Read-BerInteger $data $off.Value $bLen
+                $off.Value += $bLen
+            }
+            # Engine Time (INTEGER)
+            if ($data[$off.Value] -eq 0x02) {
+                $off.Value++; $tLen = Read-BerLength $data $off
+                $result.engine_time = Read-BerInteger $data $off.Value $tLen
+                $off.Value += $tLen
+            }
+        }
+        $off.Value = $spStart + $spLen
+        
+        # ScopedPDU (may be SEQUENCE or encrypted OCTET STRING)
+        if ($data[$off.Value] -eq 0x30) {
+            # Unencrypted scopedPDU
+            $off.Value++; $null = Read-BerLength $data $off
+            # contextEngineID
+            if ($data[$off.Value] -eq 0x04) { $off.Value++; $cLen = Read-BerLength $data $off; $off.Value += $cLen }
+            # contextName
+            if ($data[$off.Value] -eq 0x04) { $off.Value++; $cLen = Read-BerLength $data $off; $off.Value += $cLen }
+            # PDU (GetResponse = 0xA2, Report = 0xA8)
+            $pduTag = $data[$off.Value]
+            if ($pduTag -eq 0xA2 -or $pduTag -eq 0xA8) {
+                $off.Value++; $null = Read-BerLength $data $off
+                # Request ID
+                $off.Value++; $ridLen = Read-BerLength $data $off; $off.Value += $ridLen
+                # Error Status
+                $off.Value++; $esLen = Read-BerLength $data $off; $off.Value += $esLen
+                # Error Index
+                $off.Value++; $eiLen = Read-BerLength $data $off; $off.Value += $eiLen
+                # Varbind list
+                if ($off.Value -lt $data.Length -and $data[$off.Value] -eq 0x30) {
+                    $off.Value++; $null = Read-BerLength $data $off
+                    while ($off.Value -lt $data.Length - 2) {
+                        if ($data[$off.Value] -ne 0x30) { break }
+                        $off.Value++; $vbLen = Read-BerLength $data $off
+                        $vbEnd = $off.Value + $vbLen
+                        if ($data[$off.Value] -eq 0x06) {
+                            $off.Value++; $oidLen = Read-BerLength $data $off
+                            $oid = Read-BerOID $data $off.Value $oidLen
+                            $off.Value += $oidLen
+                            $valTag = $data[$off.Value]; $off.Value++
+                            $valLen = Read-BerLength $data $off
+                            $valStart = $off.Value
+                            switch ($valTag) {
+                                0x02 { $result.varbinds[$oid] = Read-BerInteger $data $valStart $valLen }
+                                0x04 { $result.varbinds[$oid] = [System.Text.Encoding]::UTF8.GetString($data, $valStart, $valLen) }
+                                0x41 { $result.varbinds[$oid] = Read-BerInteger $data $valStart $valLen }
+                                0x42 { $result.varbinds[$oid] = Read-BerInteger $data $valStart $valLen }
+                                0x43 { $result.varbinds[$oid] = Read-BerInteger $data $valStart $valLen }
+                                0x06 { $result.varbinds[$oid] = Read-BerOID $data $valStart $valLen }
+                                default {
+                                    if ($valLen -gt 0) { $result.varbinds[$oid] = [System.Text.Encoding]::UTF8.GetString($data, $valStart, [Math]::Min($valLen, $data.Length - $valStart)) }
+                                }
+                            }
+                        }
+                        $off.Value = $vbEnd
+                    }
+                }
+            }
+        }
+    } catch {
+        $result.error = $_.Exception.Message
+    }
+    return $result
+}
+
+function Discover-SnmpV3Engine([string]$target, [int]$port = 161) {
+    <#
+    .SYNOPSIS
+        Esegue engine discovery SNMPv3 per ottenere engineId, boots e time.
+    #>
+    if ($script:EngineCache.ContainsKey($target)) {
+        return $script:EngineCache[$target]
+    }
+    
+    $packet = Build-SnmpV3EngineDiscovery
+    try {
+        $udp = New-Object System.Net.Sockets.UdpClient
+        $udp.Client.ReceiveTimeout = 4000
+        $ep = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Parse($target), $port)
+        $null = $udp.Send($packet, $packet.Length, $ep)
+        $remoteEP = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Any, 0)
+        $response = $udp.Receive([ref]$remoteEP)
+        $udp.Close()
+        
+        $parsed = Parse-SnmpV3Response $response
+        if ($parsed.engine_id -and $parsed.engine_id.Length -gt 0) {
+            $engineInfo = @{
+                engine_id = $parsed.engine_id
+                boots = [int]$parsed.engine_boots
+                time = [int]$parsed.engine_time
+            }
+            $script:EngineCache[$target] = $engineInfo
+            return $engineInfo
+        }
+    } catch {
+        if ($udp) { $udp.Close() }
+    }
+    return $null
+}
+
+function Send-SnmpV3Get([string]$target, [hashtable]$v3cred, [string]$oid, [int]$port = 161, [bool]$getNext = $false) {
+    <#
+    .SYNOPSIS
+        Invia una richiesta SNMP v3 GET o GET-NEXT con autenticazione e privacy opzionali.
+    .PARAMETER v3cred
+        @{ username; auth_protocol (MD5/SHA); auth_password; priv_protocol (DES/AES); priv_password; security_level (noAuthNoPriv/authNoPriv/authPriv) }
+    #>
+    # 1. Engine discovery
+    $engine = Discover-SnmpV3Engine $target $port
+    if (-not $engine) {
+        Write-Host "[SNMPv3] Engine discovery fallito per $target"
+        return $null
+    }
+    
+    $script:SnmpV3MsgId++
+    $secLevel = $v3cred.security_level
+    $useAuth = $secLevel -in @("authNoPriv", "authPriv")
+    $usePriv = $secLevel -eq "authPriv"
+    
+    # msgFlags byte: bit0=auth, bit1=priv, bit2=reportable
+    $flagByte = 0x04  # reportable
+    if ($useAuth) { $flagByte = $flagByte -bor 0x01 }
+    if ($usePriv) { $flagByte = $flagByte -bor 0x02 }
+    
+    # Derive keys
+    $authKey = $null
+    $privKey = $null
+    if ($useAuth -and $v3cred.auth_password) {
+        $authKey = Get-PasswordToKey $v3cred.auth_password $engine.engine_id $v3cred.auth_protocol
+    }
+    if ($usePriv -and $v3cred.priv_password) {
+        $privKey = Get-PasswordToKey $v3cred.priv_password $engine.engine_id $v3cred.auth_protocol
+    }
+    
+    # Build PDU
+    $oidBytes = ConvertTo-BerOID $oid
+    $nullBytes = ConvertTo-BerNull
+    $varbind = ConvertTo-BerSequence ([byte[]]($oidBytes + $nullBytes))
+    $varbindList = ConvertTo-BerSequence $varbind
+    $reqId = ConvertTo-BerInteger $script:SnmpV3MsgId
+    $errStat = ConvertTo-BerInteger 0
+    $errIdx = ConvertTo-BerInteger 0
+    $pduContent = [byte[]]($reqId + $errStat + $errIdx + $varbindList)
+    $pduTag = if ($getNext) { [byte]0xA1 } else { [byte]0xA0 }
+    $pdu = [System.Collections.Generic.List[byte]]::new()
+    $pdu.Add($pduTag)
+    $pdu.AddRange((ConvertTo-BerLength $pduContent.Length))
+    $pdu.AddRange($pduContent)
+    
+    # Build ScopedPDU
+    $eidOctet = [byte[]]@(0x04) + (ConvertTo-BerLength $engine.engine_id.Length) + $engine.engine_id
+    $ctxName = ConvertTo-BerOctetString ""
+    $scopedPdu = ConvertTo-BerSequence ([byte[]]($eidOctet + $ctxName + $pdu.ToArray()))
+    
+    # Generate salt for privacy
+    $salt = [byte[]]::new(8)
+    [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($salt)
+    
+    # Encrypt ScopedPDU if needed
+    $scopedPduFinal = $scopedPdu
+    if ($usePriv -and $privKey) {
+        $encrypted = $null
+        if ($v3cred.priv_protocol -eq "AES") {
+            $encrypted = Encrypt-SnmpV3AES $scopedPdu $privKey $engine.boots $engine.time $salt
+        } else {
+            $encrypted = Encrypt-SnmpV3DES $scopedPdu $privKey $engine.boots $salt
+        }
+        # Wrap encrypted data as OCTET STRING
+        $encLen = ConvertTo-BerLength $encrypted.Length
+        $scopedPduFinal = [System.Collections.Generic.List[byte]]::new()
+        $scopedPduFinal.Add(0x04)
+        $scopedPduFinal.AddRange($encLen)
+        $scopedPduFinal.AddRange($encrypted)
+        $scopedPduFinal = [byte[]]$scopedPduFinal.ToArray()
+    }
+    
+    # Build USM Security Parameters
+    $usmEngineId = [byte[]]@(0x04) + (ConvertTo-BerLength $engine.engine_id.Length) + $engine.engine_id
+    $usmBoots = ConvertTo-BerInteger $engine.boots
+    $usmTime = ConvertTo-BerInteger $engine.time
+    $userBytes = [System.Text.Encoding]::UTF8.GetBytes($v3cred.username)
+    $usmUser = [byte[]]@(0x04) + (ConvertTo-BerLength $userBytes.Length) + $userBytes
+    
+    # Auth params placeholder (12 zero bytes for HMAC, filled after signing)
+    $authPlaceholder = if ($useAuth) { [byte[]]@(0x04, 0x0C) + [byte[]]::new(12) } else { [byte[]]@(0x04, 0x00) }
+    
+    # Privacy params
+    $privParams = if ($usePriv) { [byte[]]@(0x04, 0x08) + $salt } else { [byte[]]@(0x04, 0x00) }
+    
+    $usmSeq = ConvertTo-BerSequence ([byte[]]($usmEngineId + $usmBoots + $usmTime + $usmUser + $authPlaceholder + $privParams))
+    $secParamsLen = ConvertTo-BerLength $usmSeq.Length
+    $secParamsBytes = [byte[]]@(0x04) + $secParamsLen + $usmSeq
+    
+    # Build header
+    $version = ConvertTo-BerInteger 3
+    $msgId = ConvertTo-BerInteger $script:SnmpV3MsgId
+    $msgMaxSize = ConvertTo-BerInteger 65507
+    $msgFlags = [byte[]]@(0x04, 0x01, $flagByte)
+    $msgSecModel = ConvertTo-BerInteger 3
+    $globalData = ConvertTo-BerSequence ([byte[]]($msgId + $msgMaxSize + $msgFlags + $msgSecModel))
+    
+    # Assemble full message
+    $msgContent = [byte[]]($version + $globalData + $secParamsBytes + $scopedPduFinal)
+    $fullMsg = ConvertTo-BerSequence $msgContent
+    
+    # Sign if auth enabled
+    if ($useAuth -and $authKey) {
+        # Find auth params placeholder position (12 zero bytes after 0x04 0x0C)
+        $authOffset = -1
+        for ($i = 0; $i -lt $fullMsg.Length - 13; $i++) {
+            if ($fullMsg[$i] -eq 0x04 -and $fullMsg[$i+1] -eq 0x0C) {
+                $allZero = $true
+                for ($j = 2; $j -lt 14; $j++) {
+                    if ($fullMsg[$i+$j] -ne 0) { $allZero = $false; break }
+                }
+                if ($allZero) { $authOffset = $i + 2; break }
+            }
+        }
+        
+        if ($authOffset -gt 0) {
+            # Compute HMAC over entire message (with zeroed auth params)
+            $hmac = $null
+            if ($v3cred.auth_protocol -eq "SHA") {
+                $hmac = Get-HMACSHA1 $authKey $fullMsg
+            } else {
+                $hmac = Get-HMACMD5 $authKey $fullMsg
+            }
+            # Copy first 12 bytes of HMAC into auth params
+            [Array]::Copy($hmac, 0, $fullMsg, $authOffset, 12)
+        }
+    }
+    
+    # Send via UDP
+    try {
+        $udp = New-Object System.Net.Sockets.UdpClient
+        $udp.Client.ReceiveTimeout = 4000
+        $ep = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Parse($target), $port)
+        $null = $udp.Send($fullMsg, $fullMsg.Length, $ep)
+        $remoteEP = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Any, 0)
+        $response = $udp.Receive([ref]$remoteEP)
+        $udp.Close()
+        
+        $parsed = Parse-SnmpV3Response $response
+        # Update engine cache
+        if ($parsed.engine_id -and $parsed.engine_id.Length -gt 0) {
+            $script:EngineCache[$target] = @{
+                engine_id = $parsed.engine_id
+                boots = [int]$parsed.engine_boots
+                time = [int]$parsed.engine_time
+            }
+        }
+        return $parsed.varbinds
+    } catch {
+        if ($udp) { $udp.Close() }
+        return $null
+    }
+}
+
+function Get-SnmpV3Value([string]$target, [hashtable]$v3cred, [string]$oid) {
+    $result = Send-SnmpV3Get $target $v3cred $oid
+    if ($result -and $result.Count -gt 0) {
+        return $result.Values | Select-Object -First 1
+    }
+    return $null
+}
+
+function Get-SnmpV3Table([string]$target, [hashtable]$v3cred, [string]$baseOid) {
+    $results = @{}
+    $currentOid = $baseOid
+    $maxIter = 200
+    for ($i = 0; $i -lt $maxIter; $i++) {
+        $response = Send-SnmpV3Get $target $v3cred $currentOid -getNext $true
+        if (-not $response -or $response.Count -eq 0) { break }
+        $respOid = $response.Keys | Select-Object -First 1
+        $respVal = $response[$respOid]
+        if (-not $respOid.StartsWith($baseOid)) { break }
+        $results[$respOid] = $respVal
+        $currentOid = $respOid
+    }
+    return $results
+}
+
 
 # ==================== BER DECODING ====================
 
@@ -994,17 +1551,156 @@ function Poll-AllDevices($devices, $config) {
     $allAlerts = @()
     foreach ($dev in $devices) {
         $ip = $dev.ip
-        $community = if ($dev.community) { $dev.community } else { "public" }
         $devName = if ($dev.name) { $dev.name } else { $ip }
+        $snmpVersion = if ($dev.snmp_version) { $dev.snmp_version } else { "v2c" }
 
         try {
-            $alerts = Poll-Device $ip $community $devName
-            $allAlerts += $alerts
+            if ($snmpVersion -eq "v3") {
+                # SNMPv3 - usa credenziali USM
+                $v3cred = @{
+                    username = if ($dev.snmpv3_username) { $dev.snmpv3_username } else { "" }
+                    auth_protocol = if ($dev.snmpv3_auth_protocol) { $dev.snmpv3_auth_protocol } else { "MD5" }
+                    auth_password = if ($dev.snmpv3_auth_password) { $dev.snmpv3_auth_password } else { "" }
+                    priv_protocol = if ($dev.snmpv3_priv_protocol) { $dev.snmpv3_priv_protocol } else { "DES" }
+                    priv_password = if ($dev.snmpv3_priv_password) { $dev.snmpv3_priv_password } else { "" }
+                    security_level = if ($dev.snmpv3_security_level) { $dev.snmpv3_security_level } else { "authPriv" }
+                }
+                Write-Host "[SNMPv3] Polling $devName ($ip) con utente $($v3cred.username), livello: $($v3cred.security_level)"
+                $alerts = Poll-DeviceV3 $ip $v3cred $devName
+                $allAlerts += $alerts
+            } else {
+                # SNMPv1/v2c - usa community string
+                $community = if ($dev.community) { $dev.community } else { "public" }
+                $alerts = Poll-Device $ip $community $devName
+                $allAlerts += $alerts
+            }
         } catch {
             Write-Host "[SNMP Poll] Errore polling $devName ($ip): $($_.Exception.Message)"
         }
     }
     return $allAlerts
+}
+
+function Poll-DeviceV3([string]$ip, [hashtable]$v3cred, [string]$name) {
+    <#
+    .SYNOPSIS
+        Polling SNMPv3 di un dispositivo. Stessa logica di Poll-Device ma usa Send-SnmpV3Get.
+    #>
+    $alerts = @()
+
+    # Quick ping
+    $pingOk = $false
+    $pingMs = $null
+    try {
+        $ping = New-Object System.Net.NetworkInformation.Ping
+        $reply = $ping.Send($ip, 2000)
+        $pingOk = ($reply.Status -eq "Success")
+        if ($pingOk) { $pingMs = $reply.RoundtripTime }
+        $ping.Dispose()
+    } catch {}
+
+    # SNMP v3 reachability check
+    $reachable = $false
+    $sysDescr = $null
+    try {
+        $probeResult = Send-SnmpV3Get $ip $v3cred $script:OID_sysDescr
+        if ($probeResult -and $probeResult.Count -gt 0) {
+            $sysDescr = $probeResult.Values | Select-Object -First 1
+            $reachable = $true
+        }
+    } catch {}
+
+    if (-not $reachable -and $pingOk) {
+        $reachable = $true
+        if (-not $sysDescr) { $sysDescr = "Dispositivo raggiungibile (ping OK, SNMPv3 non disponibile)" }
+    }
+
+    if (-not $reachable) {
+        if ($script:DeviceUp.ContainsKey($ip) -and $script:DeviceUp[$ip]) {
+            $alerts += @{
+                device_ip = $ip; oid = "1.3.6.1.2.1.1.1.0"
+                value = "Dispositivo $name ($ip) NON RAGGIUNGIBILE - nessuna risposta SNMPv3"
+                trap_type = "deviceDown"; severity = "critical"; device_name = $name
+            }
+        }
+        $script:DeviceUp[$ip] = $false
+        return $alerts
+    }
+
+    if ($script:DeviceUp.ContainsKey($ip) -and -not $script:DeviceUp[$ip]) {
+        $alerts += @{
+            device_ip = $ip; oid = "1.3.6.1.2.1.1.1.0"
+            value = "Dispositivo $name ($ip) di nuovo RAGGIUNGIBILE (SNMPv3)"
+            trap_type = "deviceUp"; severity = "low"; device_name = $name
+        }
+    }
+    $script:DeviceUp[$ip] = $true
+
+    # Interface status via v3
+    $ifDescrTable = Get-SnmpV3Table $ip $v3cred $script:OID_ifDescr
+    $ifOperTable = Get-SnmpV3Table $ip $v3cred $script:OID_ifOperStat
+    $ifAdminTable = Get-SnmpV3Table $ip $v3cred $script:OID_ifAdminStat
+
+    $portMap = @{}
+    foreach ($key in $ifDescrTable.Keys) {
+        $idx = $key.Split('.')[-1]
+        $portMap[$idx] = @{ name = $ifDescrTable[$key]; oper = $null; admin = $null }
+    }
+    foreach ($key in $ifOperTable.Keys) {
+        $idx = $key.Split('.')[-1]
+        if ($portMap.ContainsKey($idx)) { $portMap[$idx].oper = [int]$ifOperTable[$key] }
+    }
+    foreach ($key in $ifAdminTable.Keys) {
+        $idx = $key.Split('.')[-1]
+        if ($portMap.ContainsKey($idx)) { $portMap[$idx].admin = [int]$ifAdminTable[$key] }
+    }
+
+    if (-not $script:PortStates.ContainsKey($ip)) { $script:PortStates[$ip] = @{} }
+    $prevStates = $script:PortStates[$ip]
+
+    foreach ($idx in $portMap.Keys) {
+        $port = $portMap[$idx]
+        if ($port.admin -eq 2) { continue }
+        $prevOper = if ($prevStates.ContainsKey($idx)) { $prevStates[$idx] } else { $null }
+        if ($prevOper -ne $null -and $prevOper -ne $port.oper) {
+            $statusName = if ($script:IfStatusMap.ContainsKey($port.oper)) { $script:IfStatusMap[$port.oper] } else { "unknown" }
+            if ($port.oper -eq 2 -and $prevOper -eq 1) {
+                $alerts += @{
+                    device_ip = $ip; oid = "1.3.6.1.2.1.2.2.1.8.$idx"
+                    value = "Porta $($port.name) DOWN su $name ($ip)"; trap_type = "linkDown"
+                    severity = "critical"; device_name = $name
+                }
+            } elseif ($port.oper -eq 1 -and $prevOper -eq 2) {
+                $alerts += @{
+                    device_ip = $ip; oid = "1.3.6.1.2.1.2.2.1.8.$idx"
+                    value = "Porta $($port.name) UP su $name ($ip)"; trap_type = "linkUp"
+                    severity = "low"; device_name = $name
+                }
+            }
+        }
+        $prevStates[$idx] = $port.oper
+    }
+    $script:PortStates[$ip] = $prevStates
+
+    # Extended metrics via v3 (CPU/Memory/Temperature)
+    try {
+        $cpuTable = Get-SnmpV3Table $ip $v3cred "1.3.6.1.2.1.25.3.3.1.2"
+        if ($cpuTable -and $cpuTable.Count -gt 0) {
+            $cpuVals = @($cpuTable.Values | Where-Object { $_ -is [long] -or $_ -is [int] })
+            if ($cpuVals.Count -gt 0) {
+                $cpuAvg = [int](($cpuVals | Measure-Object -Average).Average)
+                if ($cpuAvg -gt 90) {
+                    $alerts += @{
+                        device_ip = $ip; oid = "host.cpu.high"
+                        value = "CPU al $cpuAvg% su $name ($ip) [SNMPv3]"
+                        trap_type = "cpuHigh"; severity = "high"; device_name = $name
+                    }
+                }
+            }
+        }
+    } catch {}
+
+    return $alerts
 }
 
 

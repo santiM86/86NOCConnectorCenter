@@ -3,6 +3,7 @@ import axios from "axios";
 import { API } from "@/App";
 import { X, Warning, WifiHigh, WifiSlash, CircleNotch, Globe, PlusCircle, ArrowSquareOut } from "@phosphor-icons/react";
 import { toast } from "sonner";
+import { SnmpConfigPanel } from "@/components/SnmpConfigPanel";
 
 const SEVERITY_COLORS = {
   critical: { bg: "bg-red-500/20", text: "text-red-400", border: "border-red-500/30" },
@@ -394,6 +395,17 @@ function EndpointInfo({ data }) {
           </div>
         )}
       </div>
+
+      {/* SNMP Configuration Panel */}
+      {detail?.managed && clientId && detail?.device_id && (
+        <div className="mt-3 border-t border-[var(--bg-border)] pt-3">
+          <SnmpConfigPanel
+            clientId={clientId}
+            deviceId={detail.device_id}
+            device={detail}
+          />
+        </div>
+      )}
     </div>
   );
 }

@@ -191,3 +191,11 @@ class ManagedDevice(BaseModel):
     monitor_type: str = "snmp"
     device_type: str = "network"
     http_port: Optional[int] = 80
+    snmp_version: str = "v2c"  # "v1", "v2c", "v3"
+    # SNMPv3 fields
+    snmpv3_username: Optional[str] = None
+    snmpv3_auth_protocol: Optional[str] = None   # "MD5", "SHA", "SHA256", None
+    snmpv3_auth_password: Optional[str] = None
+    snmpv3_priv_protocol: Optional[str] = None   # "DES", "AES", "AES256", None
+    snmpv3_priv_password: Optional[str] = None
+    snmpv3_security_level: Optional[str] = "authPriv"  # "noAuthNoPriv", "authNoPriv", "authPriv"
