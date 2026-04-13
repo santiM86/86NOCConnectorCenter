@@ -1,6 +1,6 @@
 """
 Security Status API - Endpoint per la dashboard di sicurezza frontend.
-Espone lo stato di tutte le 11 protezioni attive.
+Espone lo stato di tutte le 21 protezioni attive.
 """
 from fastapi import APIRouter, Depends
 from datetime import datetime, timezone, timedelta
@@ -8,8 +8,11 @@ from database import db
 from deps import get_current_user, require_admin
 from middleware.session_cache import session_cache
 from middleware.global_rate_limiter import _global_limiter, GLOBAL_MAX_REQUESTS, WINDOW_SECONDS
+from security_hardening import SecurityHardening
 
 router = APIRouter(prefix="/api/security", tags=["security-status"])
+
+_sh = SecurityHardening(db)
 
 
 @router.get("/status")
@@ -62,12 +65,41 @@ async def get_security_status(current_user: dict = Depends(get_current_user)):
     # Session cache stats
     session_stats = session_cache.get_stats()
 
+    # IP Whitelist status
+    wl_enabled = await _sh.is_ip_whitelist_enabled()
+    wl_ips = await _sh.get_ip_whitelist()
+
+    # Password policy
+    policy = await _sh.get_password_policy()
+
+    # Suspicious logins (new IP) nelle ultime 24h
+    suspicious_logins_24h = await db.audit_logs.count_documents({
+        "action": "login_success",
+        "details.new_ip_detected": True,
+        "timestamp": {"$gte": cutoff_24h}
+    })
+
+    # Honeypot hits nelle ultime 24h
+    honeypot_hits_24h = await db.audit_logs.count_documents({
+        "details.reason": "honeypot_hit",
+        "timestamp": {"$gte": cutoff_24h}
+    })
+
+    # Active sessions in DB
+    active_sessions_db = await db.sessions.count_documents({"active": True})
+
+    # API keys with expiration
+    expired_api_keys = await db.clients.count_documents({
+        "api_key_expires_at": {"$lt": now_iso, "$exists": True}
+    })
+
     protections = [
         {
             "id": "brute_force",
             "name": "Brute Force Protection",
             "description": "Max 10 tentativi in 5 min per IP → 429 + audit log severity: critical",
             "status": "active",
+            "category": "autenticazione",
             "details": {
                 "failed_logins_24h": failed_logins_24h,
                 "locked_accounts": locked_accounts,
@@ -78,6 +110,7 @@ async def get_security_status(current_user: dict = Depends(get_current_user)):
             "name": "Rate Limiting Globale",
             "description": f"Sliding Window: max {GLOBAL_MAX_REQUESTS} req/min per IP ({GLOBAL_MAX_REQUESTS // WINDOW_SECONDS}/sec)",
             "status": "active",
+            "category": "rete",
             "details": {
                 "max_requests_per_minute": GLOBAL_MAX_REQUESTS,
                 "window_seconds": WINDOW_SECONDS,
@@ -89,6 +122,7 @@ async def get_security_status(current_user: dict = Depends(get_current_user)):
             "name": "Autenticazione a Due Fattori (2FA/TOTP)",
             "description": "TOTP con Google Authenticator/Authy, valid_window=1 (30s tolleranza)",
             "status": "active",
+            "category": "autenticazione",
             "details": {
                 "users_with_2fa": users_with_2fa,
                 "total_users": total_users,
@@ -100,6 +134,7 @@ async def get_security_status(current_user: dict = Depends(get_current_user)):
             "name": "Password Security",
             "description": "Argon2id hashing (3 iterazioni, 64MB memoria, parallelismo 4)",
             "status": "active",
+            "category": "autenticazione",
             "details": {
                 "algorithm": "Argon2id",
                 "time_cost": 3,
@@ -112,6 +147,7 @@ async def get_security_status(current_user: dict = Depends(get_current_user)):
             "name": "Session Management",
             "description": "Token crittografici (secrets.token_hex), TTL 5 min, max 500 sessioni",
             "status": "active",
+            "category": "autenticazione",
             "details": session_stats,
         },
         {
@@ -119,6 +155,7 @@ async def get_security_status(current_user: dict = Depends(get_current_user)):
             "name": "Crittografia Dati Sensibili",
             "description": "AES-256-GCM per credenziali a riposo in MongoDB",
             "status": "active",
+            "category": "dati",
             "details": {
                 "algorithm": "AES-256-GCM",
                 "key_derivation": "PBKDF2-SHA256 (100k iterazioni)",
@@ -130,6 +167,7 @@ async def get_security_status(current_user: dict = Depends(get_current_user)):
             "name": "Security Headers",
             "description": "HSTS, X-Frame-Options, CSP, XSS Protection, Permissions-Policy",
             "status": "active",
+            "category": "rete",
             "details": {
                 "headers": [
                     "X-Content-Type-Options: nosniff",
@@ -148,6 +186,7 @@ async def get_security_status(current_user: dict = Depends(get_current_user)):
             "name": "CORS Configurato",
             "description": "Origin specifico (mai wildcard *), preflight cache 600s",
             "status": "active",
+            "category": "rete",
             "details": {
                 "credentials": True,
                 "preflight_cache": 600,
@@ -158,6 +197,7 @@ async def get_security_status(current_user: dict = Depends(get_current_user)):
             "name": "Request Timeout",
             "description": "20s standard, 45s connector, 120s AI, 180s sync → 504",
             "status": "active",
+            "category": "rete",
             "details": {
                 "standard": "20s",
                 "connector": "45s",
@@ -170,6 +210,7 @@ async def get_security_status(current_user: dict = Depends(get_current_user)):
             "name": "Audit Logging",
             "description": "Log in MongoDB con pulizia automatica >90 giorni",
             "status": "active",
+            "category": "monitoraggio",
             "details": {
                 "total_logs": total_audit_logs,
                 "retention_days": 90,
@@ -180,9 +221,121 @@ async def get_security_status(current_user: dict = Depends(get_current_user)):
             "name": "Cache Control Headers",
             "description": "no-store su auth, private max-age=0 su tutti gli altri",
             "status": "active",
+            "category": "rete",
             "details": {
                 "auth_endpoints": "no-store, no-cache",
                 "other_endpoints": "private, max-age=0",
+            }
+        },
+        # ==================== NUOVE 10 PROTEZIONI ====================
+        {
+            "id": "ip_whitelist",
+            "name": "IP Whitelist Admin",
+            "description": "Solo IP autorizzati possono accedere al pannello admin",
+            "status": "active",
+            "category": "accesso",
+            "details": {
+                "enabled": wl_enabled,
+                "whitelisted_ips": len(wl_ips),
+            }
+        },
+        {
+            "id": "session_invalidation",
+            "name": "Session Invalidation Remota",
+            "description": "Disconnessione sessioni sospette da remoto con un click",
+            "status": "active",
+            "category": "autenticazione",
+            "details": {
+                "active_sessions_db": active_sessions_db,
+                "cache_sessions": session_stats.get("active_sessions", 0),
+            }
+        },
+        {
+            "id": "suspicious_login",
+            "name": "Notifiche Login Sospetti",
+            "description": "Alert quando login da IP nuovo o non riconosciuto",
+            "status": "active",
+            "category": "monitoraggio",
+            "details": {
+                "new_ip_logins_24h": suspicious_logins_24h,
+            }
+        },
+        {
+            "id": "password_policy",
+            "name": "Password Policy Enforcement",
+            "description": f"Min {policy.min_length} char, maiuscole, numeri, simboli, scadenza {policy.max_age_days}gg",
+            "status": "active",
+            "category": "autenticazione",
+            "details": {
+                "min_length": policy.min_length,
+                "require_uppercase": policy.require_uppercase,
+                "require_special": policy.require_special,
+                "max_age_days": policy.max_age_days,
+            }
+        },
+        {
+            "id": "csrf_protection",
+            "name": "CSRF / Origin Verification",
+            "description": "Verifica Origin/Referer su operazioni mutanti (POST/PUT/DELETE)",
+            "status": "active",
+            "category": "rete",
+            "details": {
+                "method": "Origin header verification",
+                "protected_methods": "POST, PUT, DELETE, PATCH",
+            }
+        },
+        {
+            "id": "api_key_rotation",
+            "name": "API Key Rotation",
+            "description": "Scadenza automatica API key connettori ogni 90 giorni",
+            "status": "active",
+            "category": "accesso",
+            "details": {
+                "rotation_days": 90,
+                "expired_keys": expired_api_keys,
+            }
+        },
+        {
+            "id": "geo_ip_detection",
+            "name": "Rilevamento IP Anomali",
+            "description": "Traccia IP noti per utente, flag su IP nuovi al login",
+            "status": "active",
+            "category": "monitoraggio",
+            "details": {
+                "suspicious_logins_24h": suspicious_logins_24h,
+            }
+        },
+        {
+            "id": "honeypot",
+            "name": "Honeypot Endpoints",
+            "description": "Endpoint fake (/wp-admin, /phpmyadmin) che bannano automaticamente l'IP",
+            "status": "active",
+            "category": "difesa_attiva",
+            "details": {
+                "honeypot_paths": 20,
+                "hits_24h": honeypot_hits_24h,
+            }
+        },
+        {
+            "id": "body_size_limit",
+            "name": "Request Body Size Limit",
+            "description": "Max 10MB standard, 50MB upload — previene DoS",
+            "status": "active",
+            "category": "rete",
+            "details": {
+                "standard_limit_mb": 10,
+                "upload_limit_mb": 50,
+            }
+        },
+        {
+            "id": "siem_export",
+            "name": "SIEM Log Export",
+            "description": "Esportazione audit log in JSON/CSV per Splunk/ELK",
+            "status": "active",
+            "category": "monitoraggio",
+            "details": {
+                "formats": ["JSON", "CSV"],
+                "max_export_days": 365,
             }
         },
     ]

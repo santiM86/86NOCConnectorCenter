@@ -150,6 +150,7 @@ from routes.advanced_features import router as advanced_features_router
 from routes.backup import router as backup_router
 from routes.soc_ai import router as soc_ai_router
 from routes.security_status import router as security_status_router
+from routes.security_advanced import router as security_advanced_router
 
 app.include_router(auth_router)
 app.include_router(admin_router)
@@ -179,6 +180,7 @@ app.include_router(advanced_features_router)
 app.include_router(backup_router)
 app.include_router(soc_ai_router)
 app.include_router(security_status_router)
+app.include_router(security_advanced_router)
 
 # Include enterprise routes
 from enterprise_routes import create_enterprise_router
@@ -191,6 +193,9 @@ app.include_router(enterprise_router)
 
 from middleware.global_rate_limiter import GlobalRateLimitMiddleware
 from middleware.request_timeout import RequestTimeoutMiddleware
+from middleware.honeypot import HoneypotMiddleware
+from middleware.body_size_limit import BodySizeLimitMiddleware
+from middleware.origin_verify import OriginVerifyMiddleware
 
 # Build CORS origins - mai wildcard quando credentials=True
 _cors_raw = os.environ.get('CORS_ORIGINS', '')
@@ -211,6 +216,9 @@ app.add_middleware(
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(GlobalRateLimitMiddleware)
 app.add_middleware(RequestTimeoutMiddleware)
+app.add_middleware(BodySizeLimitMiddleware)
+app.add_middleware(OriginVerifyMiddleware)
+app.add_middleware(HoneypotMiddleware)
 app.add_middleware(IPBlockMiddleware)
 
 

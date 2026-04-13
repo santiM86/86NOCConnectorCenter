@@ -9,6 +9,7 @@ from database import db
 from models import UserCreate, UserLogin, TwoFactorSetup, TwoFactorVerify
 from security import security_manager
 from audit import AuditAction
+from security_hardening import SecurityHardening
 from deps import (
     security, limiter, audit_logger, security_hardening,
     JWT_SECRET, JWT_ALGORITHM,
@@ -18,6 +19,31 @@ from deps import (
 import uuid
 
 router = APIRouter(prefix="/api", tags=["auth"])
+
+_sh = SecurityHardening(db)
+
+
+async def _check_suspicious_ip(user: dict, client_ip: str):
+    """Controlla se l'IP di login e' nuovo per l'utente e logga se sospetto."""
+    known_ips = user.get("known_ips", [])
+    is_new = client_ip not in known_ips
+    if is_new:
+        await db.users.update_one(
+            {"id": user["id"]},
+            {"$addToSet": {"known_ips": client_ip}}
+        )
+        if known_ips:  # Solo se ha gia' IP noti (non il primo login)
+            await audit_logger.log(
+                AuditAction.LOGIN_SUCCESS,
+                user_id=user["id"], user_email=user["email"],
+                ip_address=client_ip,
+                details={
+                    "new_ip_detected": True,
+                    "previous_ips_count": len(known_ips),
+                },
+                severity="warning",
+            )
+    return is_new
 
 
 @router.post("/auth/register")
@@ -32,19 +58,28 @@ async def register(request: Request, user: UserCreate):
         )
         raise HTTPException(status_code=400, detail="Email already registered")
 
+    # Password policy enforcement
+    policy = await _sh.get_password_policy()
+    is_valid, errors = _sh.validate_password(user.password, policy)
+    if not is_valid:
+        raise HTTPException(status_code=400, detail=f"Password non conforme: {'; '.join(errors)}")
+
     user_count = await db.users.count_documents({})
     role = "admin" if user_count == 0 else "operator"
+    client_ip = request.client.host if request.client else "unknown"
 
     user_doc = {
         "id": str(uuid.uuid4()), "email": user.email, "name": user.name,
         "password_hash": security_manager.hash_password(user.password),
         "role": role, "two_factor_enabled": False, "totp_secret": None,
-        "created_at": datetime.now(timezone.utc).isoformat()
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "password_changed_at": datetime.now(timezone.utc).isoformat(),
+        "known_ips": [client_ip],
     }
     await db.users.insert_one(user_doc)
     await audit_logger.log(
         AuditAction.REGISTER, user_id=user_doc["id"], user_email=user_doc["email"],
-        ip_address=request.client.host if request.client else None
+        ip_address=client_ip,
     )
     token = create_token(user_doc["id"], user_doc["email"])
     return {
@@ -107,10 +142,17 @@ async def login(request: Request, credentials: UserLogin):
         await db.users.update_one({"id": user["id"]}, {"$set": {"password_hash": new_hash}})
 
     requires_2fa = user.get("two_factor_enabled", False)
+
+    # Rilevamento IP sospetto
+    new_ip = await _check_suspicious_ip(user, client_ip)
+    login_details = {"requires_2fa": requires_2fa}
+    if new_ip and user.get("known_ips"):
+        login_details["new_ip_detected"] = True
+
     await audit_logger.log(
         AuditAction.LOGIN_SUCCESS, user_id=user["id"], user_email=user["email"],
         ip_address=request.client.host if request.client else None,
-        details={"requires_2fa": requires_2fa}
+        details=login_details,
     )
 
     token = create_token(user["id"], user["email"], requires_2fa=requires_2fa)
