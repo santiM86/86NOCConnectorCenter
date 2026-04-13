@@ -13,6 +13,7 @@ from slowapi import _rate_limit_exceeded_handler
 import os
 import logging
 import jwt
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 # Load .env BEFORE local imports (security.py needs ENCRYPTION_KEY)
@@ -44,6 +45,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """Add enterprise security headers to all responses."""
     async def dispatch(self, request: Request, call_next):
         response = await call_next(request)
+        # Security headers
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-XSS-Protection"] = "1; mode=block"
@@ -59,9 +61,13 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "frame-ancestors 'none';"
         )
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        response.headers["X-Permitted-Cross-Domain-Policies"] = "none"
+        # Cache Control differenziato
         if request.url.path.startswith("/api/auth") or request.url.path.startswith("/api/admin"):
             response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, private"
             response.headers["Pragma"] = "no-cache"
+        elif request.url.path.startswith("/api"):
+            response.headers["Cache-Control"] = "private, max-age=0"
         return response
 
 
@@ -143,6 +149,7 @@ from routes.vulnerability import router as vulnerability_router
 from routes.advanced_features import router as advanced_features_router
 from routes.backup import router as backup_router
 from routes.soc_ai import router as soc_ai_router
+from routes.security_status import router as security_status_router
 
 app.include_router(auth_router)
 app.include_router(admin_router)
@@ -171,6 +178,7 @@ app.include_router(vulnerability_router)
 app.include_router(advanced_features_router)
 app.include_router(backup_router)
 app.include_router(soc_ai_router)
+app.include_router(security_status_router)
 
 # Include enterprise routes
 from enterprise_routes import create_enterprise_router
@@ -181,15 +189,28 @@ app.include_router(enterprise_router)
 
 # ==================== MIDDLEWARE (order matters: bottom-up in Starlette) ====================
 
+from middleware.global_rate_limiter import GlobalRateLimitMiddleware
+from middleware.request_timeout import RequestTimeoutMiddleware
+
+# Build CORS origins - mai wildcard quando credentials=True
+_cors_raw = os.environ.get('CORS_ORIGINS', '')
+_cors_origins = [o.strip() for o in _cors_raw.split(',') if o.strip() and o.strip() != '*']
+if not _cors_origins:
+    _cors_origins = ["https://*.emergentagent.com", "http://localhost:3000"]
+
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
+    allow_origins=_cors_origins,
+    allow_origin_regex=r"https://.*\.emergentagent\.com",
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["Authorization", "Content-Type", "X-API-Key", "X-CSRF-Token"],
-    expose_headers=["X-CSRF-Token"],
+    expose_headers=["X-CSRF-Token", "X-RateLimit-Limit", "X-RateLimit-Remaining"],
+    max_age=600,
 )
 app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(GlobalRateLimitMiddleware)
+app.add_middleware(RequestTimeoutMiddleware)
 app.add_middleware(IPBlockMiddleware)
 
 
@@ -269,6 +290,13 @@ async def startup_event():
         await db.web_proxy_requests.create_index("created_at", expireAfterSeconds=300)
 
         logger.info("MongoDB indexes created/verified successfully")
+
+        # Auto-cleanup audit logs >90 giorni
+        cutoff_90d = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
+        cleanup_result = await db.audit_logs.delete_many({"timestamp": {"$lt": cutoff_90d}})
+        if cleanup_result.deleted_count > 0:
+            logger.info(f"Audit log cleanup: rimossi {cleanup_result.deleted_count} record >90 giorni")
+
     except Exception as e:
         logger.warning(f"Index creation warning (non-fatal): {e}")
 

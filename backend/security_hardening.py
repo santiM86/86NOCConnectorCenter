@@ -21,8 +21,8 @@ class PasswordPolicy(BaseModel):
     require_special: bool = True
     max_age_days: int = 90  # Force password change after 90 days
     password_history: int = 5  # Cannot reuse last 5 passwords
-    lockout_attempts: int = 5  # Lock after 5 failed attempts
-    lockout_duration_minutes: int = 30
+    lockout_attempts: int = 10  # Lock after 10 failed attempts
+    lockout_duration_minutes: int = 5
 
 DEFAULT_PASSWORD_POLICY = PasswordPolicy()
 
@@ -449,8 +449,8 @@ class PasswordPolicyUpdate(BaseModel):
     require_special: bool = True
     max_age_days: int = 90
     password_history: int = 5
-    lockout_attempts: int = 5
-    lockout_duration_minutes: int = 30
+    lockout_attempts: int = 10
+    lockout_duration_minutes: int = 5
 
 class RetentionPolicyUpdate(BaseModel):
     alerts: int = 365

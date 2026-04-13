@@ -127,6 +127,7 @@ export default function Layout() {
         { path: "/vulnerability", icon: ShieldCheck, label: "Vulnerability Assessment", roles: ["admin", "operator"] },
         { path: "/correlation", icon: Lightning, label: "SOC AI Correlation", roles: ["admin", "operator"] },
         { path: "/vault", icon: Lock, label: "Vault Credenziali", roles: ["admin"] },
+        { path: "/security-dashboard", icon: ShieldCheck, label: "Security Dashboard", roles: ["admin"] },
         { path: "/enterprise", icon: Shield, label: "Audit & Compliance", roles: ["admin"] },
         { path: "/users", icon: Users, label: "Gestione Utenti", roles: ["admin"] },
       ]

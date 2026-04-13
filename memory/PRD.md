@@ -69,11 +69,14 @@ Piattaforma NOC enterprise-grade per monitoraggio dispositivi di rete tramite SN
 - [x] Backend: raccolta ifInOctets/ifOutOctets, retention 7 giorni
 
 ### SOC AI Correlation (NUOVO - 13/04/2026)
-- [x] Pagina /correlation con analisi intelligente rule-based
-- [x] 5 pattern di correlazione: guasto upstream, degradazione performance, flapping, WAN failure, cluster sicurezza
-- [x] Indicatore di confidenza (%) per ogni correlazione
-- [x] Azione consigliata per ogni pattern rilevato
-- [x] Banner manutenzione attiva
+- [x] Pagina /correlation con analisi intelligente rule-based (5 pattern)
+- [x] **Integrazione Gemini AI** (gemini-2.5-flash via emergentintegrations)
+- [x] Pulsante "Analisi Gemini AI" che analizza: dispositivi, alert, backup, manutenzione
+- [x] Risposta strutturata: overall_status, risk_score, correlazioni, raccomandazioni, pattern
+- [x] Campo domanda libera per interrogare l'AI sulla rete
+- [x] Storico analisi AI con persistenza MongoDB
+- [x] Persona SOC analyst in italiano con raccomandazioni operative
+- [x] Pannello risultati con badge severita, confidenza %, azioni consigliate
 
 ### Portale Cliente Multi-tenant (NUOVO - 13/04/2026)
 - [x] Pagina pubblica /portal (no auth)
@@ -116,7 +119,7 @@ Piattaforma NOC enterprise-grade per monitoraggio dispositivi di rete tramite SN
 - [ ] Notifiche Email SendGrid (MOCKED, serve API key)
 - [ ] Notifiche Telegram (quando utente fornira bot token)
 ### P2
-- [ ] SOC AI con LLM (GPT/Claude/Gemini) per correlazione avanzata
+- [ ] SOC AI con LLM avanzato (fine-tuning su dati specifici del cliente)
 - [ ] Twilio Voice/SMS per alert critici
 - [ ] SNMP v3, LDAP
 - [ ] App Mobile React Native collegata al backend
@@ -126,3 +129,4 @@ Piattaforma NOC enterprise-grade per monitoraggio dispositivi di rete tramite SN
 - iteration_38: VA PDF Report (100%)
 - iteration_39: 7 nuove feature (100% - Backend 24/24, Frontend 7/7)
 - iteration_40: Backup Monitoring (100% - Backend 13/13, Frontend completo)
+- iteration_41: SOC AI Gemini (100% - Backend 10/10, Frontend verificato)

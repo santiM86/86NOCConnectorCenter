@@ -35,6 +35,7 @@ import ThresholdsPage from "@/pages/ThresholdsPage";
 import BandwidthPage from "@/pages/BandwidthPage";
 import BackupPage from "@/pages/BackupPage";
 import ClientPortalPage from "@/pages/ClientPortalPage";
+import SecurityDashboardPage from "@/pages/SecurityDashboardPage";
 import Layout from "@/components/Layout";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -206,6 +207,7 @@ function App() {
               <Route path="thresholds" element={<ThresholdsPage />} />
               <Route path="bandwidth" element={<BandwidthPage />} />
               <Route path="backup" element={<BackupPage />} />
+              <Route path="security-dashboard" element={<SecurityDashboardPage />} />
             </Route>
             <Route path="/public/:token" element={<PublicDashboard />} />
             <Route path="/tv" element={<TvDashboardPage />} />

@@ -54,7 +54,7 @@ async def register(request: Request, user: UserCreate):
 
 
 @router.post("/auth/login")
-@limiter.limit("10/minute")
+@limiter.limit("10/5minutes")
 async def login(request: Request, credentials: UserLogin):
     client_ip = request.client.host if request.client else "unknown"
 
@@ -66,7 +66,7 @@ async def login(request: Request, credentials: UserLogin):
                 ip_address=client_ip, success=False,
                 details={"reason": "Account locked"}, severity="critical"
             )
-            raise HTTPException(status_code=423, detail="Account bloccato per troppi tentativi. Riprova tra 30 minuti.")
+            raise HTTPException(status_code=423, detail="Account bloccato per troppi tentativi. Riprova tra 5 minuti.")
     except HTTPException:
         raise
     except Exception:
