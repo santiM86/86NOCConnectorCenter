@@ -4,6 +4,8 @@ import { BrowserRouter, Routes, Route, Navigate, useNavigate, useLocation } from
 import axios from "axios";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
+import { PwaProvider } from "@/components/PwaProvider";
+import { PwaInstallBanner, NotificationPermissionBanner, OfflineIndicator } from "@/components/PwaBanners";
 
 // Pages
 import LoginPage from "@/pages/LoginPage";
@@ -172,7 +174,9 @@ function App() {
   return (
     <div className="App">
       <AuthProvider>
+        <PwaProvider>
         <BrowserRouter>
+          <OfflineIndicator />
           <Routes>
             <Route path="/login" element={<LoginPage />} />
             <Route
@@ -214,8 +218,11 @@ function App() {
             <Route path="/portal" element={<ClientPortalPage />} />
             <Route path="/2fa" element={<TwoFactorPage />} />
           </Routes>
+          <PwaInstallBanner />
+          <NotificationPermissionBanner />
         </BrowserRouter>
         <Toaster position="top-right" theme="dark" />
+        </PwaProvider>
       </AuthProvider>
     </div>
   );
