@@ -149,6 +149,17 @@ Piattaforma NOC enterprise-grade per monitoraggio dispositivi di rete tramite SN
 - [x] Frontend SnmpConfigPanel con selector v1/v2c/v3 e campi USM condizionali
 - [x] Pannello integrato nel DeviceDetailPanel per dispositivi managed
 
+### Navigazione Sidebar Redesign (COMPLETATO - 13/04/2026)
+- [x] Framer Motion per animazioni smooth collapsible groups (height 0→auto)
+- [x] Active state blue (#007AFF) con indicatore 2px left border
+- [x] Icon opacity transitions (0.6→1 su active)
+- [x] Badge pulse animation per alert critici (>10)
+- [x] Auto-open del gruppo contenente la pagina attiva
+- [x] Touch target ottimizzati mobile (min 44px)
+- [x] Overlay mobile con blur 8px e animazione fade
+- [x] Scrollbar custom sottile nella nav
+- [x] data-testid su tutti gli elementi interattivi
+
 ### PWA Migliorata (COMPLETATO - 13/04/2026)
 - [x] Icona professionale NOC (radar/shield) per 192x192, 512x512, apple-touch-icon, favicon
 - [x] Service Worker v3: Push notifications handler, stale-while-revalidate, offline fallback
@@ -181,3 +192,4 @@ Piattaforma NOC enterprise-grade per monitoraggio dispositivi di rete tramite SN
 - iteration_43: Security Hardening 21 protezioni totali (100% - Backend 25/25, Frontend verificato)
 - iteration_44: SNMP v3 Support (100% - Backend 12/12, Frontend componente verificato)
 - iteration_45: PWA Migliorata (100% - Tutti gli asset e componenti verificati)
+- iteration_46: Sidebar Navigation Redesign (100% - Framer Motion, active states, badges verificati)
