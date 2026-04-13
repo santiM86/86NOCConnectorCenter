@@ -149,6 +149,16 @@ Piattaforma NOC enterprise-grade per monitoraggio dispositivi di rete tramite SN
 - [x] Frontend SnmpConfigPanel con selector v1/v2c/v3 e campi USM condizionali
 - [x] Pannello integrato nel DeviceDetailPanel per dispositivi managed
 
+### TV Dashboard Redesign "Control Room" (COMPLETATO - 13/04/2026)
+- [x] Layout "Control Room Grid": sidebar offline critica + griglia clienti
+- [x] Pannello Offline rosso con glow pulsante, massima visibilita'
+- [x] Card clienti con health ring, metriche ON/OFF/ALERT/PRINT
+- [x] Header: status globale (OPERATIVO/ATTENZIONE), barra refresh 15s, orologio
+- [x] Stats bar: 6 KPI con numeri grandi font-variant-numeric tabular
+- [x] Ticker LIVE footer con eventi scorrevoli
+- [x] Audio alarm per nuovi offline e alert critici
+- [x] JetBrains Mono, sharp edges, dark #0A0A0A - estetica terminale NOC
+
 ### Navigazione Sidebar Redesign (COMPLETATO - 13/04/2026)
 - [x] Framer Motion per animazioni smooth collapsible groups (height 0→auto)
 - [x] Active state blue (#007AFF) con indicatore 2px left border
@@ -193,3 +203,4 @@ Piattaforma NOC enterprise-grade per monitoraggio dispositivi di rete tramite SN
 - iteration_44: SNMP v3 Support (100% - Backend 12/12, Frontend componente verificato)
 - iteration_45: PWA Migliorata (100% - Tutti gli asset e componenti verificati)
 - iteration_46: Sidebar Navigation Redesign (100% - Framer Motion, active states, badges verificati)
+- iteration_47: TV Dashboard Control Room (100% - Backend + Frontend 100% verificati)
