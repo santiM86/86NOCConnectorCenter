@@ -113,19 +113,31 @@ Piattaforma NOC enterprise-grade per monitoraggio dispositivi di rete tramite SN
 - POST `/api/discovery/dismiss` - Ignora dispositivo scoperto
 - GET `/api/portal/{client_id}` - Portale cliente (pubblico)
 
-### Security Hardening (COMPLETATO - 13/04/2026)
-- [x] Brute Force Protection (10 tentativi in 5 min per IP → 429, account lockout 5 min → 423)
-- [x] Rate Limiting Globale (Sliding Window 600 req/min per IP, pulizia auto ogni 2 min)
-- [x] 2FA/TOTP (pyotp, Google Authenticator, valid_window=1)
-- [x] Password Security (Argon2id, 64MB, 3 iterazioni, parallelismo 4)
-- [x] Session Management (secrets.token_hex, TTL 5 min, max 500 sessioni in-memory)
-- [x] Crittografia Dati Sensibili (AES-256-GCM, PBKDF2-SHA256 100k iterazioni)
-- [x] Security Headers (HSTS, X-Frame-Options: DENY, CSP, XSS, X-Permitted-Cross-Domain-Policies)
-- [x] CORS Configurato (no wildcard *, origin specifico, preflight cache 600s)
-- [x] Request Timeout (20s standard, 45s connector, 120s AI, 180s sync → 504)
-- [x] Audit Logging (MongoDB, pulizia automatica >90 giorni)
-- [x] Cache Control Headers (no-store su auth, private max-age=0 su tutti gli altri)
-- [x] Security Dashboard frontend (/security-dashboard) con visualizzazione 11 protezioni
+### Security Hardening - 21 Protezioni (COMPLETATO - 13/04/2026)
+**Fase 1 - 11 Protezioni Base:**
+- [x] Brute Force Protection (10 tentativi/5min per IP → 429, lockout 5 min → 423)
+- [x] Rate Limiting Globale (Sliding Window 600 req/min per IP)
+- [x] 2FA/TOTP (pyotp, Google Authenticator)
+- [x] Password Security (Argon2id, 64MB, parallelismo 4)
+- [x] Session Management (TTL 5 min, max 500 sessioni in-memory)
+- [x] Crittografia Dati Sensibili (AES-256-GCM)
+- [x] Security Headers (HSTS, CSP, X-Frame-Options, X-Permitted-Cross-Domain-Policies)
+- [x] CORS (no wildcard *, preflight cache 600s)
+- [x] Request Timeout (20s/45s/120s/180s → 504)
+- [x] Audit Logging (pulizia auto >90 giorni)
+- [x] Cache Control Headers (no-store auth, private max-age=0 altri)
+**Fase 2 - 10 Protezioni Avanzate:**
+- [x] IP Whitelist Admin (configurabile da UI)
+- [x] Session Invalidation Remota (kill sessioni con un click)
+- [x] Notifiche Login Sospetti (alert su IP nuovi)
+- [x] Password Policy Enforcement (min 12 char, scadenza 90gg)
+- [x] CSRF / Origin Verification (POST/PUT/DELETE)
+- [x] API Key Rotation (scadenza 90gg, rotazione da dashboard)
+- [x] Rilevamento IP Anomali (traccia IP noti per utente)
+- [x] Honeypot Endpoints (20+ percorsi fake → auto-ban 24h)
+- [x] Request Body Size Limit (10MB/50MB → 413)
+- [x] SIEM Log Export (JSON/CSV per Splunk/ELK)
+- [x] Security Dashboard frontend con gestione IP Whitelist e Sessioni
 
 ## Backlog
 ### P1
@@ -145,3 +157,4 @@ Piattaforma NOC enterprise-grade per monitoraggio dispositivi di rete tramite SN
 - iteration_40: Backup Monitoring (100% - Backend 13/13, Frontend completo)
 - iteration_41: SOC AI Gemini (100% - Backend 10/10, Frontend verificato)
 - iteration_42: Security Hardening 11 protezioni (100% - Backend 11/11, Frontend verificato)
+- iteration_43: Security Hardening 21 protezioni totali (100% - Backend 25/25, Frontend verificato)
