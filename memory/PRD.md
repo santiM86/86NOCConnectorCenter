@@ -149,6 +149,17 @@ Piattaforma NOC enterprise-grade per monitoraggio dispositivi di rete tramite SN
 - [x] Frontend SnmpConfigPanel con selector v1/v2c/v3 e campi USM condizionali
 - [x] Pannello integrato nel DeviceDetailPanel per dispositivi managed
 
+### PWA Migliorata (COMPLETATO - 13/04/2026)
+- [x] Icona professionale NOC (radar/shield) per 192x192, 512x512, apple-touch-icon, favicon
+- [x] Service Worker v3: Push notifications handler, stale-while-revalidate, offline fallback
+- [x] Pagina offline dedicata con auto-reload su riconnessione
+- [x] Manifest con shortcuts (Dashboard, Alert, Stato Rete) e display standalone
+- [x] PwaProvider context (install, notifiche, online/offline detection)
+- [x] Banner installazione PWA interattivo
+- [x] Banner richiesta permesso notifiche
+- [x] Indicatore offline visivo (barra ambra fissa)
+- [x] Background sync per azioni pendenti offline
+
 ## Backlog
 ### P1
 - [ ] Notifiche Push Firebase (MOCKED, serve API key)
@@ -169,3 +180,4 @@ Piattaforma NOC enterprise-grade per monitoraggio dispositivi di rete tramite SN
 - iteration_42: Security Hardening 11 protezioni (100% - Backend 11/11, Frontend verificato)
 - iteration_43: Security Hardening 21 protezioni totali (100% - Backend 25/25, Frontend verificato)
 - iteration_44: SNMP v3 Support (100% - Backend 12/12, Frontend componente verificato)
+- iteration_45: PWA Migliorata (100% - Tutti gli asset e componenti verificati)
