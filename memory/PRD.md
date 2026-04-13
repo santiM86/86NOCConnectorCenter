@@ -151,13 +151,14 @@ Piattaforma NOC enterprise-grade per monitoraggio dispositivi di rete tramite SN
 
 ### TV Dashboard Redesign "Control Room" (COMPLETATO - 13/04/2026)
 - [x] Layout "Control Room Grid": sidebar offline critica + griglia clienti
-- [x] Pannello Offline rosso con glow pulsante, massima visibilita'
-- [x] Card clienti con health ring, metriche ON/OFF/ALERT/PRINT
-- [x] Header: status globale (OPERATIVO/ATTENZIONE), barra refresh 15s, orologio
-- [x] Stats bar: 6 KPI con numeri grandi font-variant-numeric tabular
-- [x] Ticker LIVE footer con eventi scorrevoli
-- [x] Audio alarm per nuovi offline e alert critici
-- [x] JetBrains Mono, sharp edges, dark #0A0A0A - estetica terminale NOC
+- [x] Card clienti ADATTIVE (si allargano con pochi clienti, 4 livelli di griglia)
+- [x] Semaforo visivo (radial gradient glow verde/ambra/rosso) su ogni card
+- [x] Health ring 64px con metriche ONLINE/OFFLINE/ALERT/STAMPE grandi (22px)
+- [x] Pannello Consumabili Bassi con barre toner colorate e percentuali
+- [x] Fix enrichment alert: lookup device_id per nomi dispositivi
+- [x] Header: status globale, barra refresh 15s, orologio
+- [x] Stats bar: 6 KPI, ticker LIVE footer, audio alarm
+- [x] Estetica: JetBrains Mono, sharp edges, dark #0A0A0A
 
 ### Navigazione Sidebar Redesign (COMPLETATO - 13/04/2026)
 - [x] Framer Motion per animazioni smooth collapsible groups (height 0→auto)
@@ -204,3 +205,4 @@ Piattaforma NOC enterprise-grade per monitoraggio dispositivi di rete tramite SN
 - iteration_45: PWA Migliorata (100% - Tutti gli asset e componenti verificati)
 - iteration_46: Sidebar Navigation Redesign (100% - Framer Motion, active states, badges verificati)
 - iteration_47: TV Dashboard Control Room (100% - Backend + Frontend 100% verificati)
+- iteration_48: TV Dashboard v3 migliorato (100% - Card adattive, semaforo, toner, alert fix)
