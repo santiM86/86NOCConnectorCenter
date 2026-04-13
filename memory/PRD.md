@@ -81,6 +81,18 @@ Piattaforma NOC enterprise-grade per monitoraggio dispositivi di rete tramite SN
 - [x] Accesso tramite ID cliente
 - [x] Vista dispositivi + alert recenti
 
+### Monitoraggio Backup (NUOVO - 13/04/2026)
+- [x] Integrazione Hornetsecurity VM Backup (ex Altaro) v9.1 via REST API locale
+- [x] PowerShell `backup_monitor.ps1`: Auth API, lista VM, stato backup, fallback Event Log
+- [x] Hyper-V info: stato VM, CPU, RAM, uptime, checkpoint, replica
+- [x] Dashboard `/backup`: card riepilogative (5 VM, OK/Warning/Falliti/Mancanti)
+- [x] Lista VM con stato backup, dimensione, date, stato Hyper-V
+- [x] Modal dettaglio VM con storico alert
+- [x] Grafico storico backup (stacked BarChart 7gg)
+- [x] Alert automatici su backup falliti (critical) o mancanti (high)
+- [x] Auto-resolve alert quando backup torna OK
+- [x] Endpoint `/api/backup/summary-all` per integrazione TV Dashboard
+
 ### Connettore Windows (v2.5.0+)
 - [x] Servizio NSSM + Network Discovery + Auto-aggiornamento
 - [x] Polling stampanti + Esecuzione remota VA Scan
@@ -113,3 +125,4 @@ Piattaforma NOC enterprise-grade per monitoraggio dispositivi di rete tramite SN
 - iteration_37: Remote VA Scan (100%)
 - iteration_38: VA PDF Report (100%)
 - iteration_39: 7 nuove feature (100% - Backend 24/24, Frontend 7/7)
+- iteration_40: Backup Monitoring (100% - Backend 13/13, Frontend completo)
