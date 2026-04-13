@@ -163,6 +163,14 @@ async def tv_dashboard_data():
                 problem_devices.append(offline_dev)
                 all_offline_devices.append(offline_dev)
 
+        # Online devices list for this client
+        online_devices = []
+        for d in client_devices:
+            if d.get("reachable"):
+                dev_ip = d.get("device_ip", "")
+                dev_name = managed_name_map.get(f"{cid}:{dev_ip}", dev_ip)
+                online_devices.append({"ip": dev_ip, "name": dev_name})
+
         health = round((online / max(len(client_devices), 1)) * 100)
 
         client_summaries.append({
@@ -178,7 +186,8 @@ async def tv_dashboard_data():
             "connector_online": connector_online,
             "connector_version": connector_version,
             "last_heartbeat": last_heartbeat,
-            "problem_devices": problem_devices[:5],
+            "problem_devices": problem_devices[:8],
+            "online_devices": online_devices[:20],
             "printer_count": sum(1 for p in all_printers if p.get("client_id") == cid),
         })
 

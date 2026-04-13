@@ -7,302 +7,254 @@ const REFRESH_INTERVAL = 15000;
 
 function useAlarmSystem() {
   const audioCtxRef = useRef(null);
-  const prevStateRef = useRef({ offlineIPs: new Set(), alertIDs: new Set() });
-  const [soundEnabled, setSoundEnabled] = useState(false);
-  const [lastAlarm, setLastAlarm] = useState(null);
-  const initAudio = useCallback(() => {
+  const prevRef = useRef({ offIPs: new Set(), altIDs: new Set() });
+  const [soundOn, setSoundOn] = useState(false);
+  const [alarm, setAlarm] = useState(null);
+  const init = useCallback(() => {
     if (!audioCtxRef.current) audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)();
     if (audioCtxRef.current.state === "suspended") audioCtxRef.current.resume();
-    setSoundEnabled(true);
+    setSoundOn(true);
   }, []);
-  const playTone = useCallback((freq, dur, count = 1, type = "square") => {
-    const ctx = audioCtxRef.current;
-    if (!ctx || ctx.state === "suspended") return;
+  const beep = useCallback((f, d, n = 1, t = "square") => {
+    const ctx = audioCtxRef.current; if (!ctx || ctx.state === "suspended") return;
     const now = ctx.currentTime;
-    for (let i = 0; i < count; i++) {
-      const osc = ctx.createOscillator(), gain = ctx.createGain();
-      osc.type = type; osc.frequency.value = freq;
-      gain.gain.setValueAtTime(0.15, now + i * (dur + 0.1));
-      gain.gain.exponentialRampToValueAtTime(0.001, now + i * (dur + 0.1) + dur);
-      osc.connect(gain); gain.connect(ctx.destination);
-      osc.start(now + i * (dur + 0.1)); osc.stop(now + i * (dur + 0.1) + dur);
+    for (let i = 0; i < n; i++) {
+      const o = ctx.createOscillator(), g = ctx.createGain();
+      o.type = t; o.frequency.value = f;
+      g.gain.setValueAtTime(0.12, now + i * (d + 0.1));
+      g.gain.exponentialRampToValueAtTime(0.001, now + i * (d + 0.1) + d);
+      o.connect(g); g.connect(ctx.destination);
+      o.start(now + i * (d + 0.1)); o.stop(now + i * (d + 0.1) + d);
     }
   }, []);
-  const checkAlarms = useCallback((data) => {
-    if (!soundEnabled || !data) return;
-    const prev = prevStateRef.current;
-    const cOff = new Set(data.offline_devices.map(d => d.ip));
-    const cAlt = new Set(data.alerts.map(a => a.id));
-    const newOff = [...cOff].filter(ip => !prev.offlineIPs.has(ip));
-    const newCrit = data.alerts.filter(a => a.severity === "critical" && !prev.alertIDs.has(a.id));
-    if (prev.offlineIPs.size > 0 || prev.alertIDs.size > 0) {
-      if (newOff.length > 0) { playTone(880, 0.2, 3); setLastAlarm({ type: "offline", message: `OFFLINE: ${data.offline_devices.filter(d => newOff.includes(d.ip)).map(d => d.name).join(", ")}`, time: new Date() }); }
-      else if (newCrit.length > 0) { playTone(660, 0.3, 2, "sawtooth"); setLastAlarm({ type: "critical", message: `CRITICO: ${newCrit[0].device_name || newCrit[0].title}`, time: new Date() }); }
+  const check = useCallback((data) => {
+    if (!soundOn || !data) return;
+    const p = prevRef.current;
+    const cO = new Set(data.offline_devices.map(d => d.ip));
+    const cA = new Set(data.alerts.map(a => a.id));
+    const nO = [...cO].filter(ip => !p.offIPs.has(ip));
+    const nC = data.alerts.filter(a => a.severity === "critical" && !p.altIDs.has(a.id));
+    if (p.offIPs.size > 0 || p.altIDs.size > 0) {
+      if (nO.length > 0) { beep(880, 0.2, 3); setAlarm({ t: "off", m: `OFFLINE: ${data.offline_devices.filter(d => nO.includes(d.ip)).map(d => d.name).join(", ")}`, ts: Date.now() }); }
+      else if (nC.length > 0) { beep(660, 0.3, 2, "sawtooth"); setAlarm({ t: "crit", m: `CRITICO: ${nC[0].device_name || nC[0].title}`, ts: Date.now() }); }
     }
-    prevStateRef.current = { offlineIPs: cOff, alertIDs: cAlt };
-  }, [soundEnabled, playTone]);
-  return { soundEnabled, initAudio, checkAlarms, lastAlarm };
+    prevRef.current = { offIPs: cO, altIDs: cA };
+  }, [soundOn, beep]);
+  return { soundOn, init, check, alarm };
 }
 
 export default function TvDashboardPage() {
   const [data, setData] = useState(null);
   const [clock, setClock] = useState(new Date());
-  const [tickerOffset, setTickerOffset] = useState(0);
-  const [refreshPct, setRefreshPct] = useState(0);
-  const { soundEnabled, initAudio, checkAlarms, lastAlarm } = useAlarmSystem();
+  const [tickerX, setTickerX] = useState(0);
+  const { soundOn, init, check, alarm } = useAlarmSystem();
 
   useEffect(() => {
-    fetchData();
-    const d = setInterval(fetchData, REFRESH_INTERVAL);
-    const c = setInterval(() => setClock(new Date()), 1000);
-    const r = setInterval(() => setRefreshPct(p => { const n = p + (100 / (REFRESH_INTERVAL / 1000)); return n >= 100 ? 0 : n; }), 1000);
-    return () => { clearInterval(d); clearInterval(c); clearInterval(r); };
+    load();
+    const a = setInterval(load, REFRESH_INTERVAL);
+    const b = setInterval(() => setClock(new Date()), 1000);
+    return () => { clearInterval(a); clearInterval(b); };
   }, []);
-
-  useEffect(() => { if (data) checkAlarms(data); }, [data, checkAlarms]);
+  useEffect(() => { if (data) check(data); }, [data, check]);
   useEffect(() => {
     if (!data?.ticker?.length) return;
-    const i = setInterval(() => setTickerOffset(p => p - 1), 40);
+    const i = setInterval(() => setTickerX(p => p - 1), 40);
     return () => clearInterval(i);
   }, [data?.ticker?.length]);
 
-  const fetchData = () => { axios.get(`${API}/tv/dashboard`).then(r => { setData(r.data); setRefreshPct(0); }).catch(() => {}); };
+  const load = () => axios.get(`${API}/tv/dashboard`).then(r => setData(r.data)).catch(() => {});
 
-  if (!data) return (
-    <div className="tv-loading" onClick={initAudio}><div className="tv-loading-pulse" /><p>CONNESSIONE AL NOC...</p></div>
-  );
+  if (!data) return <div className="tv-boot" onClick={init}><div className="tv-boot-spin" /><p>CONNESSIONE AL NOC...</p></div>;
 
   const g = data.global_stats;
-  const hasProblems = g.total_offline > 0 || g.critical_alerts > 0;
-  const allGood = g.total_offline === 0 && g.total_alerts === 0;
-  const clientCount = data.clients.length;
-  // Grid sizing: fewer clients = larger cards
-  const gridClass = clientCount <= 2 ? "tv-grid-xl" : clientCount <= 4 ? "tv-grid-lg" : clientCount <= 8 ? "tv-grid-md" : "tv-grid-sm";
+  const critical = g.total_offline > 0 || g.critical_alerts > 0;
+  const ok = g.total_offline === 0 && g.total_alerts === 0;
+  const clients = data.clients;
+  // Build per-client alert/toner maps
+  const alertsByClient = {};
+  data.alerts.forEach(a => {
+    const cid = a.client_id || "";
+    if (!alertsByClient[cid]) alertsByClient[cid] = [];
+    alertsByClient[cid].push(a);
+  });
+  const tonerByClient = {};
+  data.low_toner.forEach(t => {
+    const cn = t.client_name || "";
+    if (!tonerByClient[cn]) tonerByClient[cn] = [];
+    tonerByClient[cn].push(t);
+  });
+  const offlineByClient = {};
+  data.offline_devices.forEach(d => {
+    const cn = d.client_name || "";
+    if (!offlineByClient[cn]) offlineByClient[cn] = [];
+    offlineByClient[cn].push(d);
+  });
 
   return (
-    <div className="tv-root" data-testid="tv-dashboard" onClick={!soundEnabled ? initAudio : undefined}>
-      {/* ALARM BANNER */}
-      {lastAlarm && (Date.now() - lastAlarm.time.getTime() < 30000) && (
-        <div className={`tv-alarm-banner tv-alarm-${lastAlarm.type}`} data-testid="tv-alarm-banner">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 0 1-3.46 0"/></svg>
-          <span>{lastAlarm.message}</span>
-        </div>
+    <div className="tv" data-testid="tv-dashboard" onClick={!soundOn ? init : undefined}>
+      {/* Alarm flash */}
+      {alarm && (Date.now() - alarm.ts < 20000) && (
+        <div className={`tv-alarm ${alarm.t === "off" ? "tv-alarm-red" : "tv-alarm-orange"}`} data-testid="tv-alarm-banner">{alarm.m}</div>
       )}
 
-      {/* HEADER */}
-      <header className="tv-header" data-testid="tv-header">
-        <div className="tv-header-left">
-          <div className="tv-logo">NOC</div>
-          <div>
-            <h1 className="tv-title">86BIT NOC CENTER</h1>
-            <p className="tv-subtitle">Network Operations</p>
-          </div>
+      {/* === TOP BAR === */}
+      <div className="tv-top" data-testid="tv-header">
+        <div className="tv-top-l">
+          <div className="tv-brand">NOC</div>
+          <span className="tv-brand-name">86BIT</span>
         </div>
-        <div className="tv-header-right">
-          <button className={`tv-sound-btn ${soundEnabled ? "tv-sound-on" : ""}`} onClick={initAudio} data-testid="tv-sound-toggle">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
-              {soundEnabled ? <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/> : <><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></>}
-            </svg>
-            <span className="tv-sound-label">{soundEnabled ? "ON" : "OFF"}</span>
-          </button>
-          <div className={`tv-global-status ${allGood ? "tv-status-ok" : hasProblems ? "tv-status-critical" : "tv-status-warn"}`} data-testid="tv-global-status">
+        <div className="tv-top-c">
+          <Pill label="DISPOSITIVI" value={g.total_devices} />
+          <Pill label="ONLINE" value={g.total_online} color="#34C759" />
+          <Pill label="OFFLINE" value={g.total_offline} color={g.total_offline > 0 ? "#FF3B30" : "#333"} pulse={g.total_offline > 0} />
+          <Pill label="ALERT" value={g.total_alerts} color={g.total_alerts > 0 ? "#FFCC00" : "#333"} />
+          <Pill label="CRITICI" value={g.critical_alerts} color={g.critical_alerts > 0 ? "#FF3B30" : "#333"} pulse={g.critical_alerts > 0} />
+        </div>
+        <div className="tv-top-r">
+          <div className={`tv-status ${ok ? "tv-status-ok" : critical ? "tv-status-crit" : "tv-status-warn"}`} data-testid="tv-global-status">
             <span className="tv-status-dot" />
-            {allGood ? "OPERATIVO" : hasProblems ? "ATTENZIONE" : "MONITORAGGIO"}
+            {ok ? "OK" : critical ? "ATTENZIONE" : "MONITOR"}
           </div>
-          <div className="tv-refresh-bar"><div className="tv-refresh-progress" style={{ width: `${refreshPct}%` }} /></div>
-          <div className="tv-clock" data-testid="tv-clock">
-            <span className="tv-clock-time">{clock.toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>
-            <span className="tv-clock-date">{clock.toLocaleDateString("it-IT", { weekday: "short", day: "2-digit", month: "short" })}</span>
+          <button className={`tv-snd ${soundOn ? "tv-snd-on" : ""}`} onClick={init} data-testid="tv-sound-toggle">
+            {soundOn ? "AUDIO ON" : "AUDIO OFF"}
+          </button>
+          <div className="tv-time" data-testid="tv-clock">
+            <span className="tv-time-h">{clock.toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>
+            <span className="tv-time-d">{clock.toLocaleDateString("it-IT", { weekday: "short", day: "2-digit", month: "short" })}</span>
           </div>
-        </div>
-      </header>
-
-      {/* STATS BAR */}
-      <div className="tv-stats-bar" data-testid="tv-stats-bar">
-        <StatBlock label="Dispositivi" value={g.total_devices} color="white" />
-        <StatBlock label="Online" value={g.total_online} color="var(--tv-green)" />
-        <StatBlock label="Offline" value={g.total_offline} color={g.total_offline > 0 ? "var(--tv-red)" : "var(--tv-dim)"} pulse={g.total_offline > 0} />
-        <StatBlock label="Critici" value={g.critical_alerts} color={g.critical_alerts > 0 ? "var(--tv-red)" : "var(--tv-dim)"} pulse={g.critical_alerts > 0} />
-        <StatBlock label="Alert" value={g.total_alerts} color={g.total_alerts > 0 ? "var(--tv-amber)" : "var(--tv-dim)"} />
-        <StatBlock label="Incidenti" value={g.open_incidents} color={g.open_incidents > 0 ? "var(--tv-orange)" : "var(--tv-dim)"} />
-      </div>
-
-      {/* MAIN CONTENT */}
-      <div className="tv-main" data-testid="tv-main-content">
-        {/* LEFT: Offline + Alerts */}
-        <div className="tv-col-left">
-          <div className={`tv-offline-panel ${data.offline_devices.length === 0 ? "tv-offline-clear" : ""}`} data-testid="tv-offline-panel">
-            <div className="tv-offline-header">
-              <span className="tv-offline-title">{data.offline_devices.length === 0 ? "Tutti Operativi" : "Dispositivi Offline"}</span>
-              <span className="tv-offline-count">{data.offline_devices.length === 0 ? "\u2713" : data.offline_devices.length}</span>
-            </div>
-            <div className="tv-offline-list" data-testid="tv-offline-devices">
-              {data.offline_devices.length === 0 ? (
-                <div className="tv-all-ok">
-                  <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--tv-green)" strokeWidth="1.5"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
-                  <p className="tv-all-ok-text">Nessun dispositivo offline</p>
-                </div>
-              ) : data.offline_devices.map((d, i) => (
-                <div key={i} className="tv-offline-row" data-testid={`tv-offline-${d.ip}`}>
-                  <span className="tv-offline-pulse" />
-                  <div className="tv-offline-info">
-                    <span className="tv-offline-name">{d.name}</span>
-                    <span className="tv-offline-ip">{d.ip}</span>
-                  </div>
-                  <div className="tv-offline-meta">
-                    <span className="tv-offline-client">{d.client_name}</span>
-                    {d.down_since && <span className="tv-offline-since">da {d.down_since}</span>}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Alerts */}
-          {data.alerts.length > 0 && (
-            <div className="tv-alerts-panel" data-testid="tv-alerts-panel">
-              <div className="tv-alerts-header">
-                <span className="tv-alerts-title">Alert Attivi</span>
-                <span className="tv-alerts-count">{data.alerts.length}</span>
-              </div>
-              <div className="tv-alerts-list">
-                {data.alerts.map((a, i) => <AlertRow key={a.id || i} alert={a} />)}
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* RIGHT: Client Cards + Toner */}
-        <div className="tv-col-right-wrap">
-          <div className={`tv-clients-grid ${gridClass}`} data-testid="tv-clients-grid">
-            {data.clients.map(client => <ClientCard key={client.id} client={client} />)}
-          </div>
-
-          {/* Low Toner Section */}
-          {data.low_toner.length > 0 && (
-            <div className="tv-toner-panel" data-testid="tv-toner-panel">
-              <div className="tv-toner-header">
-                <span className="tv-toner-title">Consumabili Bassi</span>
-                <span className="tv-toner-count">{data.low_toner.length}</span>
-              </div>
-              <div className="tv-toner-list">
-                {data.low_toner.map((t, i) => (
-                  <div key={i} className="tv-toner-row" data-testid={`tv-toner-${i}`}>
-                    <div className="tv-toner-bar-bg">
-                      <div className="tv-toner-bar" style={{ width: `${t.level_pct}%`, background: t.level_pct <= 5 ? "var(--tv-red)" : t.color_hex || "var(--tv-amber)" }} />
-                    </div>
-                    <span className="tv-toner-pct" style={{ color: t.level_pct <= 5 ? "var(--tv-red)" : "var(--tv-amber)" }}>{t.level_pct}%</span>
-                    <span className="tv-toner-name">{t.supply_name}</span>
-                    <span className="tv-toner-printer">{t.printer_name}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
         </div>
       </div>
 
-      {/* TICKER FOOTER */}
-      <footer className="tv-footer" data-testid="tv-ticker">
-        <div className="tv-footer-left">
-          <span className="tv-footer-live">LIVE</span>
-          <span className="tv-footer-info">{g.total_clients} clienti &middot; {g.total_devices} disp. &middot; {new Date(data.timestamp).toLocaleTimeString("it-IT")}</span>
-        </div>
+      {/* === CLIENT TILES - THE ENTIRE SCREEN === */}
+      <div className={`tv-grid tv-grid-${Math.min(clients.length, 6)}`} data-testid="tv-clients-grid">
+        {clients.map(c => (
+          <ClientTile
+            key={c.id}
+            client={c}
+            alerts={alertsByClient[c.id] || []}
+            toner={tonerByClient[c.name] || []}
+            offline={offlineByClient[c.name] || []}
+          />
+        ))}
+        {clients.length === 0 && <div className="tv-empty">NESSUN CLIENTE CONFIGURATO</div>}
+      </div>
+
+      {/* === FOOTER TICKER === */}
+      <div className="tv-foot" data-testid="tv-ticker">
+        <span className="tv-live">LIVE</span>
+        <span className="tv-foot-info">{g.total_clients} clienti &middot; {g.total_devices} dispositivi &middot; {new Date(data.timestamp).toLocaleTimeString("it-IT")}</span>
         {data.ticker.length > 0 && (
-          <div className="tv-ticker-wrap">
-            <div className="tv-ticker" style={{ transform: `translateX(${tickerOffset}px)` }}>
+          <div className="tv-marquee">
+            <div className="tv-marquee-track" style={{ transform: `translateX(${tickerX}px)` }}>
               {data.ticker.concat(data.ticker).map((ev, i) => (
-                <span key={i} className="tv-ticker-item">
-                  <span className={`tv-ticker-sev tv-sev-${ev.severity}`}>&#9679;</span>
-                  <span className="tv-ticker-msg">{ev.client_name} &mdash; {ev.message}</span>
-                  <span className="tv-ticker-time">{ev.time_ago}</span>
+                <span key={i} className="tv-marquee-item">
+                  <span className={`tv-dot tv-dot-${ev.severity}`} />
+                  {ev.client_name} — {ev.message}
+                  <span className="tv-marquee-time">{ev.time_ago}</span>
                 </span>
               ))}
             </div>
           </div>
         )}
-      </footer>
+      </div>
     </div>
   );
 }
 
-function StatBlock({ label, value, color, pulse }) {
+/* === Pill stat in top bar === */
+function Pill({ label, value, color = "#fff", pulse }) {
   return (
-    <div className={`tv-stat ${pulse ? "tv-pulse" : ""}`} data-testid={`tv-stat-${label.toLowerCase()}`}>
-      <span className="tv-stat-value" style={{ color }}>{value}</span>
-      <span className="tv-stat-label">{label}</span>
+    <div className={`tv-pill ${pulse ? "tv-pill-pulse" : ""}`} data-testid={`tv-stat-${label.toLowerCase()}`}>
+      <span className="tv-pill-v" style={{ color }}>{value}</span>
+      <span className="tv-pill-l">{label}</span>
     </div>
   );
 }
 
-function ClientCard({ client }) {
+/* === THE BIG CLIENT TILE === */
+function ClientTile({ client, alerts, toner, offline }) {
   const c = client;
-  const hasIssues = c.offline > 0 || c.critical_alerts > 0;
-  const healthColor = c.health_pct >= 90 ? "var(--tv-green)" : c.health_pct >= 50 ? "var(--tv-amber)" : "var(--tv-red)";
-  // Semaforo: green/yellow/red based on health
-  const semaforoClass = c.health_pct >= 90 ? "tv-semaforo-green" : c.health_pct >= 50 ? "tv-semaforo-amber" : "tv-semaforo-red";
+  const hp = c.health_pct;
+  const hColor = hp >= 90 ? "#34C759" : hp >= 70 ? "#FFCC00" : hp >= 50 ? "#FF9500" : "#FF3B30";
+  const hasIssue = c.offline > 0 || c.critical_alerts > 0;
+  const critAlerts = alerts.filter(a => a.severity === "critical" || a.severity === "high");
+  const sevColors = { critical: "#FF3B30", high: "#FF9500", medium: "#FFCC00", low: "#007AFF" };
+  const onlineDevices = c.online_devices || [];
+  const offlineDevices = c.problem_devices || offline;
 
   return (
-    <div className={`tv-client-card ${hasIssues ? "tv-client-problem" : ""}`} data-testid={`tv-client-${c.id}`}>
-      {/* Semaforo visivo grande */}
-      <div className={`tv-semaforo ${semaforoClass}`} data-testid={`tv-semaforo-${c.id}`} />
-
-      <div className="tv-client-top">
-        <h3 className="tv-client-name">{c.name}</h3>
-        <div className="tv-client-connector" style={{ color: c.connector_online ? "var(--tv-green)" : "var(--tv-red)" }}>
-          <span className="tv-conn-dot-sm" style={{ background: c.connector_online ? "var(--tv-green)" : "var(--tv-red)" }} />
-          {c.connector_online ? "CONN" : "OFF"}
+    <div className={`tv-tile ${hasIssue ? "tv-tile-bad" : ""}`} data-testid={`tv-client-${c.id}`}>
+      <div className="tv-tile-head">
+        <div className="tv-tile-name-row">
+          <h2 className="tv-tile-name">{c.name}</h2>
+          <span className={`tv-tile-conn ${c.connector_online ? "tv-tile-conn-on" : "tv-tile-conn-off"}`}>
+            <span className="tv-tile-conn-dot" /> {c.connector_online ? "CONNESSO" : "OFFLINE"}
+          </span>
         </div>
-      </div>
-
-      <div className="tv-client-body">
-        <div className="tv-client-health">
-          <svg viewBox="0 0 36 36" className="tv-health-ring">
-            <path d="M18 2.0845a 15.9155 15.9155 0 0 1 0 31.831a 15.9155 15.9155 0 0 1 0 -31.831" fill="none" stroke="#2A2A2A" strokeWidth="3" />
-            <path d="M18 2.0845a 15.9155 15.9155 0 0 1 0 31.831a 15.9155 15.9155 0 0 1 0 -31.831" fill="none" stroke={healthColor} strokeWidth="3" strokeDasharray={`${c.health_pct}, 100`} strokeLinecap="round" />
+        <div className="tv-tile-health" style={{ color: hColor }}>
+          <svg viewBox="0 0 36 36" className="tv-tile-ring">
+            <circle cx="18" cy="18" r="15.9" fill="none" stroke="#222" strokeWidth="3" />
+            <circle cx="18" cy="18" r="15.9" fill="none" stroke={hColor} strokeWidth="3"
+              strokeDasharray={`${hp}, 100`} strokeLinecap="round"
+              style={{ transform: "rotate(-90deg)", transformOrigin: "50% 50%" }} />
           </svg>
-          <span className="tv-health-value" style={{ color: healthColor }}>{c.health_pct}%</span>
-        </div>
-        <div className="tv-client-metrics">
-          <MetricCell value={c.online} label="ONLINE" color="var(--tv-green)" />
-          <MetricCell value={c.offline} label="OFFLINE" color={c.offline > 0 ? "var(--tv-red)" : "var(--tv-dim)"} />
-          <MetricCell value={c.alert_count} label="ALERT" color={c.critical_alerts > 0 ? "var(--tv-red)" : c.alert_count > 0 ? "var(--tv-amber)" : "var(--tv-dim)"} />
-          <MetricCell value={c.printer_count} label="STAMPE" color={c.printer_count > 0 ? "var(--tv-purple)" : "var(--tv-dim)"} />
+          <span className="tv-tile-hp">{hp}<small>%</small></span>
         </div>
       </div>
 
-      {c.last_heartbeat && (
-        <div className="tv-client-hb">HB: {c.last_heartbeat} {c.connector_version && `v${c.connector_version}`}</div>
+      <div className="tv-tile-stats">
+        <div className="tv-tile-stat"><span className="tv-tile-stat-v" style={{ color: "#34C759" }}>{c.online}</span><span className="tv-tile-stat-l">ONLINE</span></div>
+        <div className="tv-tile-stat"><span className="tv-tile-stat-v" style={{ color: c.offline > 0 ? "#FF3B30" : "#333" }}>{c.offline}</span><span className="tv-tile-stat-l">OFFLINE</span></div>
+        <div className="tv-tile-stat"><span className="tv-tile-stat-v" style={{ color: c.alert_count > 0 ? "#FFCC00" : "#333" }}>{c.alert_count}</span><span className="tv-tile-stat-l">ALERT</span></div>
+        <div className="tv-tile-stat"><span className="tv-tile-stat-v" style={{ color: c.printer_count > 0 ? "#AF52DE" : "#333" }}>{c.printer_count}</span><span className="tv-tile-stat-l">STAMP.</span></div>
+      </div>
+
+      {/* DEVICE MAP: every single device */}
+      <div className="tv-tile-devices" data-testid={`tv-tile-devices-${c.id}`}>
+        <div className="tv-tile-sec-label">DISPOSITIVI ({c.total_devices})</div>
+        <div className="tv-tile-dev-list">
+          {offlineDevices.map((d, i) => (
+            <div key={`off-${i}`} className="tv-tile-dev tv-tile-dev-off">
+              <span className="tv-tile-dev-dot-off" /><span className="tv-tile-dev-name">{d.name}</span><span className="tv-tile-dev-ip">{d.ip}</span>
+              {d.down_since && <span className="tv-tile-dev-since">{d.down_since}</span>}
+            </div>
+          ))}
+          {onlineDevices.map((d, i) => (
+            <div key={`on-${i}`} className="tv-tile-dev">
+              <span className="tv-tile-dev-dot-on" /><span className="tv-tile-dev-name">{d.name}</span><span className="tv-tile-dev-ip">{d.ip}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Critical alerts */}
+      {critAlerts.length > 0 && (
+        <div className="tv-tile-alerts" data-testid={`tv-tile-alerts-${c.id}`}>
+          <div className="tv-tile-sec-label">ALERT CRITICI ({critAlerts.length})</div>
+          {critAlerts.slice(0, 5).map((a, i) => (
+            <div key={i} className="tv-tile-alert-row" style={{ borderLeftColor: sevColors[a.severity] || "#FFCC00" }}>
+              <span className="tv-tile-alert-sev" style={{ color: sevColors[a.severity] }}>{a.severity === "critical" ? "CRIT" : "HIGH"}</span>
+              <span className="tv-tile-alert-msg">{a.title}{a.message ? `: ${a.message}` : ""}</span>
+            </div>
+          ))}
+          {critAlerts.length > 5 && <div className="tv-tile-alert-more">+{critAlerts.length - 5} altri</div>}
+        </div>
       )}
-    </div>
-  );
-}
 
-function MetricCell({ value, label, color }) {
-  return (
-    <div className="tv-metric-cell">
-      <span className="tv-metric-val" style={{ color }}>{value}</span>
-      <span className="tv-metric-lbl">{label}</span>
-    </div>
-  );
-}
-
-function AlertRow({ alert }) {
-  const colors = { critical: { c: "var(--tv-red)", l: "CRIT" }, high: { c: "var(--tv-orange)", l: "HIGH" }, medium: { c: "var(--tv-amber)", l: "MED" }, low: { c: "var(--tv-blue)", l: "LOW" } };
-  const cfg = colors[alert.severity] || colors.low;
-  const deviceLabel = alert.device_name || alert.device_ip || "---";
-  return (
-    <div className="tv-alert-row" style={{ borderLeftColor: cfg.c, background: `${cfg.c}08` }} data-testid={`tv-alert-${alert.id}`}>
-      <span className="tv-alert-sev" style={{ color: cfg.c }}>{cfg.l}</span>
-      <div className="tv-alert-body">
-        <span className="tv-alert-device">{deviceLabel}</span>
-        <div className="tv-alert-msg">{alert.title}{alert.message ? `: ${alert.message}` : ""}</div>
-      </div>
-      <div className="tv-alert-meta">
-        {alert.client_name && <div style={{ color: "var(--tv-blue)", fontSize: "9px", fontWeight: 700 }}>{alert.client_name}</div>}
-        <div>{alert.time_ago}</div>
-      </div>
+      {/* Toner */}
+      {toner.length > 0 && (
+        <div className="tv-tile-toner" data-testid={`tv-tile-toner-${c.id}`}>
+          <div className="tv-tile-sec-label">CONSUMABILI ({toner.length})</div>
+          {toner.map((t, i) => (
+            <div key={i} className="tv-tile-toner-row">
+              <div className="tv-tile-toner-bar-bg"><div className="tv-tile-toner-bar" style={{ width: `${t.level_pct}%`, background: t.level_pct <= 5 ? "#FF3B30" : t.color_hex || "#FFCC00" }} /></div>
+              <span className="tv-tile-toner-pct" style={{ color: t.level_pct <= 5 ? "#FF3B30" : "#FFCC00" }}>{t.level_pct}%</span>
+              <span className="tv-tile-toner-name">{t.supply_name}</span>
+              <span className="tv-tile-toner-printer">{t.printer_name}</span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

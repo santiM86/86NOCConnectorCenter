@@ -205,4 +205,4 @@ Piattaforma NOC enterprise-grade per monitoraggio dispositivi di rete tramite SN
 - iteration_45: PWA Migliorata (100% - Tutti gli asset e componenti verificati)
 - iteration_46: Sidebar Navigation Redesign (100% - Framer Motion, active states, badges verificati)
 - iteration_47: TV Dashboard Control Room (100% - Backend + Frontend 100% verificati)
-- iteration_48: TV Dashboard v3 migliorato (100% - Card adattive, semaforo, toner, alert fix)
+- iteration_48: TV Dashboard v4 client-centric (100% - Ogni dispositivo visibile per cliente)
