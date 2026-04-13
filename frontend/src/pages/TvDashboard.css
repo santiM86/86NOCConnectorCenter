@@ -105,7 +105,7 @@
 .tv-main {
   flex: 1; min-height: 0;
   display: grid;
-  grid-template-columns: 320px 1fr;
+  grid-template-columns: 300px 1fr;
   gap: 0;
   overflow: hidden;
   padding: 16px;
@@ -213,23 +213,28 @@
 .tv-alert-msg { font-size: 9px; color: var(--tv-text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tv-alert-meta { font-size: 8px; color: var(--tv-text-dim); text-align: right; flex-shrink: 0; white-space: nowrap; }
 
-/* =================== RIGHT: CLIENT CARDS GRID =================== */
-.tv-col-right {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: 12px;
-  overflow-y: auto;
-  align-content: start;
-  padding: 0 0 16px 0;
+/* =================== RIGHT: CLIENT CARDS + TONER =================== */
+.tv-col-right-wrap {
+  display: flex; flex-direction: column; gap: 12px;
+  height: 100%; overflow-y: auto;
   scrollbar-width: thin; scrollbar-color: #333 transparent;
 }
-.tv-col-right::-webkit-scrollbar { width: 3px; }
-.tv-col-right::-webkit-scrollbar-thumb { background: #333; }
+.tv-col-right-wrap::-webkit-scrollbar { width: 3px; }
+.tv-col-right-wrap::-webkit-scrollbar-thumb { background: #333; }
+
+.tv-clients-grid {
+  display: grid; gap: 12px; align-content: start;
+}
+/* Adaptive grid sizing based on client count */
+.tv-grid-xl { grid-template-columns: repeat(auto-fill, minmax(480px, 1fr)); }
+.tv-grid-lg { grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); }
+.tv-grid-md { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
+.tv-grid-sm { grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
 
 /* Client health card */
 .tv-client-card {
   background: var(--tv-surface); border: 1px solid var(--tv-border);
-  padding: 14px; display: flex; flex-direction: column; gap: 10px;
+  padding: 16px; display: flex; flex-direction: column; gap: 12px;
   position: relative; overflow: hidden;
   transition: border-color 0.3s;
 }
@@ -237,11 +242,23 @@
   border-color: rgba(255,59,48,0.4);
   box-shadow: 0 0 15px rgba(255,59,48,0.1);
 }
-.tv-client-header { display: flex; justify-content: space-between; align-items: flex-start; }
+
+/* SEMAFORO VISIVO - grande indicatore colore */
+.tv-semaforo {
+  position: absolute; top: 0; right: 0;
+  width: 48px; height: 48px;
+  opacity: 0.2; transition: opacity 0.3s;
+}
+.tv-semaforo-green { background: radial-gradient(circle at 70% 30%, var(--tv-green), transparent 70%); }
+.tv-semaforo-amber { background: radial-gradient(circle at 70% 30%, var(--tv-amber), transparent 70%); }
+.tv-semaforo-red { background: radial-gradient(circle at 70% 30%, var(--tv-red), transparent 70%); animation: tv-semaforo-flash 2s ease-in-out infinite; }
+@keyframes tv-semaforo-flash { 0%,100% { opacity: 0.2; } 50% { opacity: 0.5; } }
+
+.tv-client-top { display: flex; justify-content: space-between; align-items: flex-start; }
 .tv-client-name {
-  font-size: 13px; font-weight: 900; color: white; margin: 0; line-height: 1.2;
+  font-size: 14px; font-weight: 900; color: white; margin: 0; line-height: 1.2;
   text-transform: uppercase; letter-spacing: 0.5px;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 180px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px;
 }
 .tv-client-connector {
   display: flex; align-items: center; gap: 4px;
@@ -249,21 +266,45 @@
 }
 .tv-conn-dot-sm { width: 6px; height: 6px; border-radius: 50%; animation: tv-blink 1.5s ease-in-out infinite; flex-shrink: 0; }
 
-/* Client metrics row */
-.tv-client-body { display: flex; align-items: center; gap: 14px; }
-.tv-client-health { position: relative; width: 52px; height: 52px; flex-shrink: 0; }
+.tv-client-body { display: flex; align-items: center; gap: 16px; }
+.tv-client-health { position: relative; width: 64px; height: 64px; flex-shrink: 0; }
 .tv-health-ring { width: 100%; height: 100%; transform: rotate(-90deg); }
 .tv-health-value {
   position: absolute; inset: 0;
   display: flex; align-items: center; justify-content: center;
-  font-size: 14px; font-weight: 900;
+  font-size: 16px; font-weight: 900;
 }
-.tv-client-metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 12px; flex: 1; }
-.tv-metric {
-  display: flex; align-items: baseline; gap: 4px;
+.tv-client-metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 16px; flex: 1; }
+.tv-metric-cell { display: flex; flex-direction: column; }
+.tv-metric-val { font-size: 22px; font-weight: 900; font-variant-numeric: tabular-nums; line-height: 1; }
+.tv-metric-lbl { font-size: 8px; color: var(--tv-text-dim); text-transform: uppercase; letter-spacing: 1.5px; margin-top: 1px; }
+.tv-client-hb {
+  padding-top: 8px; border-top: 1px solid var(--tv-border);
+  font-size: 9px; color: var(--tv-text-dim); letter-spacing: 0.5px;
 }
-.tv-metric-val { font-size: 18px; font-weight: 900; font-variant-numeric: tabular-nums; line-height: 1; }
-.tv-metric-label { font-size: 8px; color: var(--tv-text-dim); text-transform: uppercase; letter-spacing: 1px; }
+
+/* =================== TONER PANEL =================== */
+.tv-toner-panel {
+  border: 1px solid var(--tv-border); background: var(--tv-surface);
+  overflow: hidden; flex-shrink: 0;
+}
+.tv-toner-header {
+  padding: 8px 14px; border-bottom: 1px solid var(--tv-border);
+  background: rgba(255,204,0,0.04);
+  display: flex; justify-content: space-between; align-items: center;
+}
+.tv-toner-title { font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: 2px; color: var(--tv-amber); }
+.tv-toner-count { font-size: 14px; font-weight: 900; color: var(--tv-amber); }
+.tv-toner-list { padding: 8px 14px; display: flex; flex-direction: column; gap: 5px; }
+.tv-toner-row {
+  display: grid; grid-template-columns: 60px 36px 1fr auto;
+  gap: 8px; align-items: center; font-size: 11px;
+}
+.tv-toner-bar-bg { height: 6px; background: rgba(255,255,255,0.06); overflow: hidden; }
+.tv-toner-bar { height: 100%; transition: width 1s ease; }
+.tv-toner-pct { font-weight: 900; font-variant-numeric: tabular-nums; }
+.tv-toner-name { color: var(--tv-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tv-toner-printer { color: var(--tv-text-dim); font-size: 9px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
 
 /* =================== TICKER FOOTER =================== */
 .tv-footer {
@@ -336,10 +377,12 @@
 
 /* =================== RESPONSIVE =================== */
 @media (max-width: 1200px) {
-  .tv-main { grid-template-columns: 280px 1fr; }
+  .tv-main { grid-template-columns: 260px 1fr; }
+  .tv-grid-xl { grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); }
 }
 @media (max-width: 900px) {
   .tv-main { grid-template-columns: 1fr; }
   .tv-col-left { max-height: 40vh; }
   .tv-stats-bar { grid-template-columns: repeat(3, 1fr); }
+  .tv-grid-xl, .tv-grid-lg, .tv-grid-md, .tv-grid-sm { grid-template-columns: 1fr; }
 }

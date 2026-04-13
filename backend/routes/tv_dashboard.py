@@ -64,13 +64,25 @@ async def tv_dashboard_data():
     ).sort("created_at", -1).to_list(50)
     active_alerts_raw.sort(key=lambda a: severity_order.get(a.get("severity", "low"), 4))
 
+    # Build device_id -> info map for enrichment
+    device_id_map = {}
+    for m in managed:
+        device_id_map[m.get("id", "")] = {"name": m.get("name", ""), "ip": m.get("ip", "")}
+
     enriched_alerts = []
     for a in active_alerts_raw:
         cid = a.get("client_id", "")
         dev_ip = a.get("device_ip", a.get("source_ip", ""))
         dev_name = a.get("device_name", "")
+        # Resolve from device_id if name/ip missing
+        did = a.get("device_id", "")
+        if did and did in device_id_map:
+            if not dev_name:
+                dev_name = device_id_map[did]["name"]
+            if not dev_ip:
+                dev_ip = device_id_map[did]["ip"]
         if not dev_name:
-            dev_name = managed_name_map.get(f"{cid}:{dev_ip}", dev_ip)
+            dev_name = managed_name_map.get(f"{cid}:{dev_ip}", dev_ip or "Sconosciuto")
         enriched_alerts.append({
             "id": a.get("id", ""),
             "severity": a.get("severity", "low"),
@@ -78,7 +90,7 @@ async def tv_dashboard_data():
             "message": a.get("value", a.get("message", a.get("description", ""))),
             "device_name": dev_name,
             "device_ip": dev_ip,
-            "client_name": client_name_map.get(cid, cid),
+            "client_name": client_name_map.get(cid, ""),
             "client_id": cid,
             "created_at": a.get("created_at", ""),
             "time_ago": _time_ago(a.get("created_at", "")),
