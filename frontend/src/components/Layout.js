@@ -98,6 +98,7 @@ export default function Layout() {
         { path: "/port-monitor", icon: Plug, label: "Monitor Servizi", roles: ["admin", "operator"] },
         { path: "/printers", icon: Printer, label: "Stampanti", roles: ["admin", "operator", "viewer"] },
         { path: "/bandwidth", icon: ArrowsDownUp, label: "Bandwidth", roles: ["admin", "operator", "viewer"] },
+        { path: "/backup", icon: Database, label: "Backup", roles: ["admin", "operator", "viewer"] },
         { path: "/trends", icon: ChartLine, label: "Grafici Trend", roles: ["admin", "operator", "viewer"] },
       ]
     },

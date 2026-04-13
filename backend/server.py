@@ -141,6 +141,7 @@ from routes.printers import router as printers_router
 from routes.tv_dashboard import router as tv_dashboard_router
 from routes.vulnerability import router as vulnerability_router
 from routes.advanced_features import router as advanced_features_router
+from routes.backup import router as backup_router
 
 app.include_router(auth_router)
 app.include_router(admin_router)
@@ -167,6 +168,7 @@ app.include_router(printers_router)
 app.include_router(tv_dashboard_router)
 app.include_router(vulnerability_router)
 app.include_router(advanced_features_router)
+app.include_router(backup_router)
 
 # Include enterprise routes
 from enterprise_routes import create_enterprise_router

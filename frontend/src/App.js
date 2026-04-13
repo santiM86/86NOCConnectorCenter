@@ -33,6 +33,7 @@ import MaintenancePage from "@/pages/MaintenancePage";
 import CorrelationPage from "@/pages/CorrelationPage";
 import ThresholdsPage from "@/pages/ThresholdsPage";
 import BandwidthPage from "@/pages/BandwidthPage";
+import BackupPage from "@/pages/BackupPage";
 import ClientPortalPage from "@/pages/ClientPortalPage";
 import Layout from "@/components/Layout";
 
@@ -204,6 +205,7 @@ function App() {
               <Route path="correlation" element={<CorrelationPage />} />
               <Route path="thresholds" element={<ThresholdsPage />} />
               <Route path="bandwidth" element={<BandwidthPage />} />
+              <Route path="backup" element={<BackupPage />} />
             </Route>
             <Route path="/public/:token" element={<PublicDashboard />} />
             <Route path="/tv" element={<TvDashboardPage />} />
