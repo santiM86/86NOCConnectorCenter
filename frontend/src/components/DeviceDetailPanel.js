@@ -191,6 +191,16 @@ export function DeviceDetailPanel({ clientId, deviceIp, deviceData, onClose, onD
             <ConnectedEndpoints endpoints={detail.connected_endpoints} />
             <LldpSection neighbors={detail.lldp_neighbors} />
             <MacConnections connections={detail.mac_connections} />
+            {/* SNMP Configuration for managed devices */}
+            {clientId && detail.device?.device_ip && (
+              <div className="border-t border-[var(--border-subtle)] pt-3">
+                <SnmpConfigPanel
+                  clientId={clientId}
+                  deviceId={detail.device?.id || detail.device?.device_id}
+                  device={detail.device}
+                />
+              </div>
+            )}
           </>
         ) : (
           <p className="text-sm text-[var(--text-muted)] text-center py-8">Nessun dato disponibile</p>

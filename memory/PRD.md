@@ -139,6 +139,16 @@ Piattaforma NOC enterprise-grade per monitoraggio dispositivi di rete tramite SN
 - [x] SIEM Log Export (JSON/CSV per Splunk/ELK)
 - [x] Security Dashboard frontend con gestione IP Whitelist e Sessioni
 
+### SNMP v3 Support (COMPLETATO - 13/04/2026)
+- [x] Modello ManagedDevice esteso con campi SNMPv3 (snmp_version, USM credentials)
+- [x] API PUT /connector/{client_id}/managed-devices/{device_id}/snmp per switch v1/v2c/v3
+- [x] Connettore PowerShell: Engine Discovery, Key Localization (RFC 3414)
+- [x] Auth: HMAC-MD5, HMAC-SHA1 con password-to-key 1MB expansion
+- [x] Privacy: DES-CBC (RFC 3414), AES-128-CFB (RFC 3826)
+- [x] Poll-DeviceV3 con supporto completo interfacce e metriche
+- [x] Frontend SnmpConfigPanel con selector v1/v2c/v3 e campi USM condizionali
+- [x] Pannello integrato nel DeviceDetailPanel per dispositivi managed
+
 ## Backlog
 ### P1
 - [ ] Notifiche Push Firebase (MOCKED, serve API key)
@@ -158,3 +168,4 @@ Piattaforma NOC enterprise-grade per monitoraggio dispositivi di rete tramite SN
 - iteration_41: SOC AI Gemini (100% - Backend 10/10, Frontend verificato)
 - iteration_42: Security Hardening 11 protezioni (100% - Backend 11/11, Frontend verificato)
 - iteration_43: Security Hardening 21 protezioni totali (100% - Backend 25/25, Frontend verificato)
+- iteration_44: SNMP v3 Support (100% - Backend 12/12, Frontend componente verificato)
