@@ -27,6 +27,13 @@ import PrintersPage from "@/pages/PrintersPage";
 import PublicDashboard from "@/pages/PublicDashboard";
 import TvDashboardPage from "@/pages/TvDashboardPage";
 import VulnerabilityPage from "@/pages/VulnerabilityPage";
+import TrendPage from "@/pages/TrendPage";
+import DiscoveryPage from "@/pages/DiscoveryPage";
+import MaintenancePage from "@/pages/MaintenancePage";
+import CorrelationPage from "@/pages/CorrelationPage";
+import ThresholdsPage from "@/pages/ThresholdsPage";
+import BandwidthPage from "@/pages/BandwidthPage";
+import ClientPortalPage from "@/pages/ClientPortalPage";
 import Layout from "@/components/Layout";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -191,9 +198,16 @@ function App() {
               <Route path="port-monitor" element={<PortMonitorPage />} />
               <Route path="printers" element={<PrintersPage />} />
               <Route path="vulnerability" element={<VulnerabilityPage />} />
+              <Route path="trends" element={<TrendPage />} />
+              <Route path="discovery" element={<DiscoveryPage />} />
+              <Route path="maintenance" element={<MaintenancePage />} />
+              <Route path="correlation" element={<CorrelationPage />} />
+              <Route path="thresholds" element={<ThresholdsPage />} />
+              <Route path="bandwidth" element={<BandwidthPage />} />
             </Route>
             <Route path="/public/:token" element={<PublicDashboard />} />
             <Route path="/tv" element={<TvDashboardPage />} />
+            <Route path="/portal" element={<ClientPortalPage />} />
             <Route path="/2fa" element={<TwoFactorPage />} />
           </Routes>
         </BrowserRouter>

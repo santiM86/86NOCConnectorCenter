@@ -31,7 +31,13 @@ import {
   Database,
   Printer,
   Monitor,
-  ShieldCheck
+  ShieldCheck,
+  ChartLine,
+  MagnifyingGlass,
+  CalendarBlank,
+  Lightning,
+  Sliders,
+  ArrowsDownUp
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import {
@@ -91,6 +97,8 @@ export default function Layout() {
         { path: "/inventory", icon: Database, label: "Inventario", roles: ["admin", "operator", "viewer"] },
         { path: "/port-monitor", icon: Plug, label: "Monitor Servizi", roles: ["admin", "operator"] },
         { path: "/printers", icon: Printer, label: "Stampanti", roles: ["admin", "operator", "viewer"] },
+        { path: "/bandwidth", icon: ArrowsDownUp, label: "Bandwidth", roles: ["admin", "operator", "viewer"] },
+        { path: "/trends", icon: ChartLine, label: "Grafici Trend", roles: ["admin", "operator", "viewer"] },
       ]
     },
     {
@@ -98,6 +106,7 @@ export default function Layout() {
       label: "Operazioni",
       items: [
         { path: "/incidents", icon: Ticket, label: "Incidenti", roles: ["admin", "operator"] },
+        { path: "/maintenance", icon: CalendarBlank, label: "Manutenzione", roles: ["admin", "operator"] },
         { path: "/reports", icon: FileText, label: "Report PDF", roles: ["admin", "operator"] },
       ]
     },
@@ -107,6 +116,7 @@ export default function Layout() {
       items: [
         { path: "/clients", icon: Buildings, label: "Clienti", roles: ["admin", "operator", "viewer"] },
         { path: "/connectors", icon: PlugsConnected, label: "Connettori", roles: ["admin", "operator"] },
+        { path: "/discovery", icon: MagnifyingGlass, label: "Auto-Discovery", roles: ["admin", "operator"] },
       ]
     },
     {
@@ -114,6 +124,7 @@ export default function Layout() {
       label: "Sicurezza",
       items: [
         { path: "/vulnerability", icon: ShieldCheck, label: "Vulnerability Assessment", roles: ["admin", "operator"] },
+        { path: "/correlation", icon: Lightning, label: "SOC AI Correlation", roles: ["admin", "operator"] },
         { path: "/vault", icon: Lock, label: "Vault Credenziali", roles: ["admin"] },
         { path: "/enterprise", icon: Shield, label: "Audit & Compliance", roles: ["admin"] },
         { path: "/users", icon: Users, label: "Gestione Utenti", roles: ["admin"] },
@@ -125,6 +136,7 @@ export default function Layout() {
       items: [
         { path: "/tv", icon: Monitor, label: "TV Dashboard", roles: ["admin", "operator", "viewer"], external: true },
         { path: "/settings", icon: Gear, label: "Impostazioni", roles: ["admin", "operator"] },
+        { path: "/thresholds", icon: Sliders, label: "Soglie Alert", roles: ["admin"] },
       ]
     },
   ];
