@@ -113,6 +113,20 @@ Piattaforma NOC enterprise-grade per monitoraggio dispositivi di rete tramite SN
 - POST `/api/discovery/dismiss` - Ignora dispositivo scoperto
 - GET `/api/portal/{client_id}` - Portale cliente (pubblico)
 
+### Security Hardening (COMPLETATO - 13/04/2026)
+- [x] Brute Force Protection (10 tentativi in 5 min per IP → 429, account lockout 5 min → 423)
+- [x] Rate Limiting Globale (Sliding Window 600 req/min per IP, pulizia auto ogni 2 min)
+- [x] 2FA/TOTP (pyotp, Google Authenticator, valid_window=1)
+- [x] Password Security (Argon2id, 64MB, 3 iterazioni, parallelismo 4)
+- [x] Session Management (secrets.token_hex, TTL 5 min, max 500 sessioni in-memory)
+- [x] Crittografia Dati Sensibili (AES-256-GCM, PBKDF2-SHA256 100k iterazioni)
+- [x] Security Headers (HSTS, X-Frame-Options: DENY, CSP, XSS, X-Permitted-Cross-Domain-Policies)
+- [x] CORS Configurato (no wildcard *, origin specifico, preflight cache 600s)
+- [x] Request Timeout (20s standard, 45s connector, 120s AI, 180s sync → 504)
+- [x] Audit Logging (MongoDB, pulizia automatica >90 giorni)
+- [x] Cache Control Headers (no-store su auth, private max-age=0 su tutti gli altri)
+- [x] Security Dashboard frontend (/security-dashboard) con visualizzazione 11 protezioni
+
 ## Backlog
 ### P1
 - [ ] Notifiche Push Firebase (MOCKED, serve API key)
@@ -130,3 +144,4 @@ Piattaforma NOC enterprise-grade per monitoraggio dispositivi di rete tramite SN
 - iteration_39: 7 nuove feature (100% - Backend 24/24, Frontend 7/7)
 - iteration_40: Backup Monitoring (100% - Backend 13/13, Frontend completo)
 - iteration_41: SOC AI Gemini (100% - Backend 10/10, Frontend verificato)
+- iteration_42: Security Hardening 11 protezioni (100% - Backend 11/11, Frontend verificato)
