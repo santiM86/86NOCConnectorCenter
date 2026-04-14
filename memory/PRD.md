@@ -149,6 +149,15 @@ Piattaforma NOC enterprise-grade per monitoraggio dispositivi di rete tramite SN
 - [x] Frontend SnmpConfigPanel con selector v1/v2c/v3 e campi USM condizionali
 - [x] Pannello integrato nel DeviceDetailPanel per dispositivi managed
 
+### Connector Hardening (COMPLETATO - 14/04/2026)
+- [x] Log rotation automatica (max 5MB, rotazione con 3 archivi)
+- [x] Service wrapper log rotation (max 2MB, 2 archivi)
+- [x] Memory cleanup periodico (GC.Collect ogni 5 min)
+- [x] Job health check (ogni 3 min: riavvia SNMP/Syslog/Polling se morti)
+- [x] Drain job output per prevenire memory accumulation
+- [x] Timer differenziati (heartbeat 60s, discovery 120s, web proxy 3s, GC 300s, job check 180s)
+- [x] Status file con metriche processo (memory_mb, cpu_seconds)
+
 ### Scalabilita' Infrastruttura (COMPLETATO - 14/04/2026)
 - [x] MongoDB connection pooling ottimizzato (25 max, 3 min, retry, idle 30s)
 - [x] 65 indici + 12 TTL auto-cleanup (da 36 a 65)

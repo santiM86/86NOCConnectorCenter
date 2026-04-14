@@ -19,6 +19,21 @@ if (!(Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | 
 function Write-ServiceLog($msg) {
     $ts = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     "[$ts] $msg" | Out-File -FilePath $serviceLog -Append -Encoding UTF8
+    # Log rotation: max 2MB per service.log
+    try {
+        if (Test-Path $serviceLog) {
+            $size = (Get-Item $serviceLog -ErrorAction SilentlyContinue).Length
+            if ($size -and $size -gt 2097152) {
+                $archive = $serviceLog -replace '\.log$', "_$(Get-Date -Format 'yyyyMMdd').log"
+                Move-Item $serviceLog $archive -Force -ErrorAction SilentlyContinue
+                # Tieni solo ultimi 2 archivi
+                Get-ChildItem $logDir -Filter "service_*.log" -ErrorAction SilentlyContinue |
+                    Sort-Object LastWriteTime -Descending |
+                    Select-Object -Skip 2 |
+                    Remove-Item -Force -ErrorAction SilentlyContinue
+            }
+        }
+    } catch {}
 }
 
 Write-ServiceLog "=== SERVICE WRAPPER AVVIATO ==="

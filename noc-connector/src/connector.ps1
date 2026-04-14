@@ -72,6 +72,22 @@ function Write-Log($Message, $Level = "INFO") {
     Write-Host $line
     try {
         $logPath = Get-LogPath
+        # Log rotation: se il file supera 5MB, ruota
+        if (Test-Path $logPath) {
+            $logSize = (Get-Item $logPath -ErrorAction SilentlyContinue).Length
+            if ($logSize -and $logSize -gt 5242880) {  # 5 MB
+                $archivePath = $logPath -replace '\.log$', "_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
+                try {
+                    Move-Item $logPath $archivePath -Force -ErrorAction SilentlyContinue
+                    # Tieni solo gli ultimi 3 file archiviati
+                    $logDir = Split-Path $logPath
+                    $archives = Get-ChildItem $logDir -Filter "connector_*.log" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending
+                    if ($archives.Count -gt 3) {
+                        $archives | Select-Object -Skip 3 | Remove-Item -Force -ErrorAction SilentlyContinue
+                    }
+                } catch {}
+            }
+        }
         Add-Content -Path $logPath -Value $line -Encoding UTF8 -ErrorAction SilentlyContinue
     } catch {}
 }
@@ -1656,6 +1672,10 @@ function Process-WebProxyRequest($config, $req) {
 function Write-StatusFile($status = "running") {
     try {
         $statusPath = Join-Path (Get-ConfigDir) "status.json"
+        # Raccogli metriche processo
+        $proc = Get-Process -Id $PID -ErrorAction SilentlyContinue
+        $memMB = if ($proc) { [math]::Round($proc.WorkingSet64 / 1048576, 1) } else { 0 }
+        $cpuTime = if ($proc) { $proc.TotalProcessorTime.TotalSeconds } else { 0 }
         $statusData = @{
             pid = $PID
             status = $status
@@ -1668,6 +1688,8 @@ function Write-StatusFile($status = "running") {
             errors = $global:Stats.errors
             last_error = $global:Stats.last_error
             last_update = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ss")
+            memory_mb = $memMB
+            cpu_seconds = [math]::Round($cpuTime, 1)
         }
         $statusData | ConvertTo-Json -Compress | Set-Content $statusPath -Encoding UTF8 -Force -ErrorAction SilentlyContinue
     } catch {}
@@ -1754,42 +1776,108 @@ function Start-Connector {
     } -ArgumentList $PSCommandPath, (Get-ConfigPath)
     Write-Log "Auto-update checker avviato (ogni 6 ore)"
     
-    # Heartbeat in current thread loop + discovery check + web proxy
+    # Heartbeat in current thread loop + discovery check + web proxy + memory management
     Write-Log "$global:AppName avviato. Premi Ctrl+C per fermare."
     
-    $heartbeatCounter = 0
-    $discoveryCheckCounter = 0
-    $heartbeatInterval = 60   # seconds
-    $loopInterval = 3         # seconds (fast loop for web proxy)
-    $heartbeatTicks = [math]::Floor($heartbeatInterval / $loopInterval)
-    $discoveryTicks = $heartbeatTicks * 2  # every 2 heartbeats
+    $lastHeartbeat = [datetime]::MinValue
+    $lastDiscovery = [datetime]::MinValue
+    $lastMemoryCleanup = [datetime]::MinValue
+    $lastJobHealthCheck = [datetime]::MinValue
+    $heartbeatIntervalSec = 60
+    $discoveryIntervalSec = 120
+    $memoryCleanupIntervalSec = 300    # Ogni 5 minuti
+    $jobHealthCheckIntervalSec = 180   # Ogni 3 minuti
+    $webProxyIntervalSec = 3
     
     # Send first heartbeat immediately
     Send-Heartbeat $config
     Write-StatusFile "running"
+    $lastHeartbeat = Get-Date
     
     try {
         while ($global:Running) {
+            $now = Get-Date
+            
             # Check for web proxy requests (fast, every 3s)
             Check-WebProxyRequests $config
             
-            $heartbeatCounter++
-            $discoveryCheckCounter++
-            
-            # Send heartbeat every 60s
-            if ($heartbeatCounter -ge $heartbeatTicks) {
-                $heartbeatCounter = 0
+            # Send heartbeat (every 60s)
+            if (($now - $lastHeartbeat).TotalSeconds -ge $heartbeatIntervalSec) {
                 Send-Heartbeat $config
                 Write-StatusFile "running"
+                $lastHeartbeat = $now
             }
             
-            # Check for discovery every 2 min
-            if ($discoveryCheckCounter -ge $discoveryTicks) {
-                $discoveryCheckCounter = 0
+            # Check for discovery (every 2 min)
+            if (($now - $lastDiscovery).TotalSeconds -ge $discoveryIntervalSec) {
                 Check-DiscoveryRequest $config
+                $lastDiscovery = $now
             }
             
-            Start-Sleep -Seconds $loopInterval
+            # Memory cleanup (every 5 min) - previene memory leak nei job
+            if (($now - $lastMemoryCleanup).TotalSeconds -ge $memoryCleanupIntervalSec) {
+                try {
+                    [System.GC]::Collect()
+                    [System.GC]::WaitForPendingFinalizers()
+                } catch {}
+                $lastMemoryCleanup = $now
+            }
+            
+            # Job health check (every 3 min) - riavvia job morti
+            if (($now - $lastJobHealthCheck).TotalSeconds -ge $jobHealthCheckIntervalSec) {
+                # Check SNMP listener job
+                if ($snmpJob -and $snmpJob.State -ne "Running") {
+                    Write-Log "SNMP Listener job morto (stato: $($snmpJob.State)), riavvio..." "WARN"
+                    try {
+                        Remove-Job $snmpJob -Force -ErrorAction SilentlyContinue
+                        $snmpJob = Start-Job -ScriptBlock {
+                            param($scriptPath, $configPath)
+                            . $scriptPath -ConfigPath $configPath
+                            Start-SNMPListener (Read-Config)
+                        } -ArgumentList $PSCommandPath, (Get-ConfigPath)
+                        Write-Log "SNMP Listener riavviato" "INFO"
+                    } catch { Write-Log "Errore riavvio SNMP Listener: $($_.Exception.Message)" "ERROR" }
+                }
+                # Check Syslog listener job
+                if ($syslogJob -and $syslogJob.State -ne "Running") {
+                    Write-Log "Syslog Listener job morto (stato: $($syslogJob.State)), riavvio..." "WARN"
+                    try {
+                        Remove-Job $syslogJob -Force -ErrorAction SilentlyContinue
+                        $syslogJob = Start-Job -ScriptBlock {
+                            param($scriptPath, $configPath)
+                            . $scriptPath -ConfigPath $configPath
+                            Start-SyslogListener (Read-Config)
+                        } -ArgumentList $PSCommandPath, (Get-ConfigPath)
+                        Write-Log "Syslog Listener riavviato" "INFO"
+                    } catch { Write-Log "Errore riavvio Syslog Listener: $($_.Exception.Message)" "ERROR" }
+                }
+                # Check Polling job
+                if ($pollingJob -and $pollingJob.State -ne "Running") {
+                    Write-Log "Polling job morto (stato: $($pollingJob.State)), riavvio..." "WARN"
+                    try {
+                        Remove-Job $pollingJob -Force -ErrorAction SilentlyContinue
+                        $pollingJob = Start-Job -ScriptBlock {
+                            param($scriptPath, $configPath)
+                            . $scriptPath -ConfigPath $configPath
+                            $pollerFile = Join-Path (Split-Path -Parent $scriptPath) "snmp_poller.ps1"
+                            if (Test-Path $pollerFile) { . $pollerFile }
+                            $cfg = Read-Config
+                            $global:Running = $true
+                            Start-PollingLoop $cfg
+                        } -ArgumentList $PSCommandPath, (Get-ConfigPath)
+                        Write-Log "Polling riavviato" "INFO"
+                    } catch { Write-Log "Errore riavvio Polling: $($_.Exception.Message)" "ERROR" }
+                }
+                # Drain completed/failed job output to prevent memory accumulation
+                foreach ($j in @($snmpJob, $syslogJob, $pollingJob, $updateJob)) {
+                    if ($j) {
+                        try { Receive-Job $j -ErrorAction SilentlyContinue | Out-Null } catch {}
+                    }
+                }
+                $lastJobHealthCheck = $now
+            }
+            
+            Start-Sleep -Seconds $webProxyIntervalSec
         }
     } catch {
         Write-Log "Arresto..."
