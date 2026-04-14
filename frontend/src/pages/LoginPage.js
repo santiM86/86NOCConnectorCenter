@@ -5,13 +5,14 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
-import { ShieldWarning, Eye, EyeSlash } from "@phosphor-icons/react";
+import { Eye, EyeSlash, Info } from "@phosphor-icons/react";
 
 export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [showEaster, setShowEaster] = useState(false);
   const { login, user } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
@@ -45,55 +46,103 @@ export default function LoginPage() {
       </div>
 
       <div className="login-form-container">
-        <div className="w-full max-w-sm">
-          <div className="mb-8">
-            <div className="flex items-center gap-3 mb-3">
-              <img src="/icon-192.png" alt="Argus" className="w-11 h-11 rounded-lg" />
-              <span className="font-heading text-2xl tracking-tight text-[var(--text-primary)]">
-                <b>ARGUS</b> Center
+        <div className="w-full max-w-sm flex flex-col" style={{ minHeight: "calc(100vh - 40px)" }}>
+          {/* Spacer top */}
+          <div className="flex-1" />
+
+          {/* Logo + Title */}
+          <div className="text-center mb-2">
+            <div className="flex items-center justify-center gap-3 mb-2">
+              <img src="/icon-192.png" alt="ARGUS" className="w-10 h-10 rounded-lg" />
+              <span className="text-2xl tracking-tight text-[var(--text-primary)]">
+                <b className="font-black">ARGUS</b> <span className="font-light">Center</span>
               </span>
             </div>
-            <p className="text-[var(--text-muted)] text-sm leading-relaxed tracking-wide" style={{ fontFamily: "'Playfair Display', 'Georgia', 'Times New Roman', serif", fontStyle: "italic", lineHeight: "1.7" }}>
-              Argo Panoptes nella mitologia greca era il guardiano con 100 occhi che non dormiva mai — esattamente quello che fa il vostro NOC!
+            <p className="text-indigo-400/70 text-sm tracking-wide">
+              Alert Management System
             </p>
           </div>
 
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div className="space-y-1.5">
-              <Label htmlFor="email" className="text-[var(--text-muted)] text-[10px] uppercase tracking-widest">Email</Label>
-              <Input id="email" type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="operatore@azienda.it" required
-                data-testid="login-email-input"
-                className="bg-[var(--bg-card)] border-[var(--bg-border)] text-[var(--text-primary)] placeholder:text-[var(--text-muted)] rounded-lg h-10 focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/30" />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="password" className="text-[var(--text-muted)] text-[10px] uppercase tracking-widest">Password</Label>
-              <div className="relative">
-                <Input id="password" type={showPassword ? "text" : "password"} value={password} onChange={e => setPassword(e.target.value)} placeholder="........" required
-                  data-testid="login-password-input"
-                  className="bg-[var(--bg-card)] border-[var(--bg-border)] text-[var(--text-primary)] placeholder:text-[var(--text-muted)] rounded-lg h-10 pr-10 focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/30" />
-                <button type="button" onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition-colors"
-                  data-testid="toggle-password-btn">
-                  {showPassword ? <EyeSlash size={16} /> : <Eye size={16} />}
-                </button>
-              </div>
-            </div>
-            <Button type="submit" disabled={loading} data-testid="login-submit-btn"
-              className="w-full h-10 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-medium text-sm transition-colors">
-              {loading ? "..." : "Accedi"}
-            </Button>
-          </form>
+          {/* Login Card */}
+          <div className="mt-8 rounded-xl border border-[var(--bg-border)] bg-[var(--bg-panel)] p-6">
+            <h2 className="text-lg font-bold text-[var(--text-primary)] mb-1">Accedi</h2>
+            <p className="text-xs text-[var(--text-muted)] mb-5">Inserisci le tue credenziali</p>
 
-          {/* Footer societario */}
-          <div className="mt-8 pt-4 border-t border-[var(--bg-border)]">
-            <p className="text-[8px] text-[var(--text-muted)]/50 leading-relaxed text-center">
-              &copy; Copyright 2026 | 86BIT srl Unipersonale &mdash; Codice Fiscale e P.Iva 04353030168 &mdash; Capitale sociale &euro; 50.000,00 i.v. &mdash; Reg. Imprese di Bergamo 04353030168
+            <form onSubmit={handleSubmit} className="space-y-4">
+              <div className="space-y-1.5">
+                <Label htmlFor="email" className="text-[var(--text-secondary)] text-xs font-medium">Email</Label>
+                <Input id="email" type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="info@86bit.it" required
+                  data-testid="login-email-input"
+                  className="bg-[var(--bg-card)] border-[var(--bg-border)] text-[var(--text-primary)] placeholder:text-[var(--text-muted)] rounded-lg h-11 focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/30" />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="password" className="text-[var(--text-secondary)] text-xs font-medium">Password</Label>
+                <div className="relative">
+                  <Input id="password" type={showPassword ? "text" : "password"} value={password} onChange={e => setPassword(e.target.value)} placeholder="............" required
+                    data-testid="login-password-input"
+                    className="bg-[var(--bg-card)] border-[var(--bg-border)] text-[var(--text-primary)] placeholder:text-[var(--text-muted)] rounded-lg h-11 pr-10 focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/30" />
+                  <button type="button" onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition-colors"
+                    data-testid="toggle-password-btn">
+                    {showPassword ? <EyeSlash size={16} /> : <Eye size={16} />}
+                  </button>
+                </div>
+              </div>
+              <Button type="submit" disabled={loading} data-testid="login-submit-btn"
+                className="w-full h-11 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-sm transition-colors">
+                {loading ? "..." : "Accedi"}
+              </Button>
+            </form>
+          </div>
+
+          {/* Spacer bottom */}
+          <div className="flex-1" />
+
+          {/* Footer societario - stile come immagine di riferimento */}
+          <div className="border-t border-[var(--bg-border)] pt-4 pb-4 relative">
+            <p className="text-[9px] text-[var(--text-muted)]/40 leading-relaxed text-center">
+              &copy; Copyright 2026 | <b>86BIT</b> srl Unipersonale &mdash; Codice Fiscale e P.Iva{" "}
+              <span className="text-indigo-400/50">04353030168</span> &mdash; Capitale sociale &euro; 50.000,00 i.v. &mdash; Reg. Imprese di Bergamo{" "}
+              <span className="text-indigo-400/50">04353030168</span>
               <br />
-              REA n. BG456578 &mdash; Sede Operativa: Piazza Papa Giovanni XXIII &mdash; 24020 Scanzorosciate (BG) &mdash; Tel. +39 035 310 900 &mdash; info@86bit.it
+              REA n. BG456578 &mdash; Sede Operativa: Piazza Papa Giovanni XXIII &mdash; 24020 Scanzorosciate (BG) &mdash; Tel.{" "}
+              <span className="text-indigo-400/50">+39 035 310 900</span> &mdash;{" "}
+              <span className="text-indigo-400/50">info@86bit.it</span>
             </p>
+
+            {/* Easter egg ! */}
+            <div className="absolute bottom-3 right-0"
+              onMouseEnter={() => setShowEaster(true)}
+              onMouseLeave={() => setShowEaster(false)}
+              onClick={() => setShowEaster(!showEaster)}
+            >
+              <div className="w-7 h-7 rounded-full bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center cursor-pointer hover:bg-indigo-500/20 hover:border-indigo-500/40 transition-all hover:scale-110"
+                data-testid="easter-egg-btn">
+                <span className="text-indigo-400 text-sm font-bold select-none">!</span>
+              </div>
+
+              {/* Tooltip */}
+              {showEaster && (
+                <div className="absolute bottom-10 right-0 w-72 p-3 rounded-lg bg-[var(--bg-panel)] border border-indigo-500/30 shadow-2xl shadow-indigo-500/10 z-50"
+                  style={{ animation: "fadeInUp 0.25s ease-out" }}
+                  data-testid="easter-egg-tooltip">
+                  <p className="text-xs text-[var(--text-secondary)] leading-relaxed"
+                    style={{ fontFamily: "'Playfair Display', 'Georgia', serif", fontStyle: "italic" }}>
+                    Argo Panoptes nella mitologia greca era il guardiano con 100 occhi che non dormiva mai — esattamente quello che fa il vostro NOC!
+                  </p>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </div>
+
+      <style>{`
+        @keyframes fadeInUp {
+          from { opacity: 0; transform: translateY(8px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+      `}</style>
     </div>
   );
 }
