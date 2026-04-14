@@ -38,221 +38,91 @@ Piattaforma NOC enterprise-grade per monitoraggio dispositivi di rete tramite SN
 - [x] Report PDF esaustivo 11 pagine
 - [x] Progresso real-time con barra animata
 
-### Grafici Trend (NUOVO - 13/04/2026)
+### Grafici Trend
 - [x] Pagina /trends con 4 grafici Recharts
-- [x] Disponibilita Rete (AreaChart), Latenza Media (LineChart)
-- [x] Score VA nel tempo (AreaChart), Alert per giorno (BarChart)
+- [x] Disponibilita Rete, Latenza Media, Score VA, Alert per giorno
 - [x] Selettore periodo: 24h, 3gg, 7gg, 30gg
 
-### Auto-Discovery Rete (NUOVO - 13/04/2026)
+### Auto-Discovery Rete
 - [x] Pagina /discovery con scansione rete da connettore
 - [x] Approvazione/Ignora dispositivi scoperti
-- [x] Polling automatico stato durante scansione
-- [x] Visualizzazione dispositivi gia gestiti
 
-### Soglie Alert Personalizzabili (NUOVO - 13/04/2026)
-- [x] Pagina /thresholds con 4 gruppi (Connettivita, Hardware, Bandwidth, Stampanti)
-- [x] Soglie configurabili per cliente: ping, packetloss, CPU, RAM, toner, bandwidth
-- [x] Pulsante Salva con feedback visivo
+### Soglie Alert Personalizzabili
+- [x] Pagina /thresholds con 4 gruppi configurabili per cliente
 
-### Manutenzione Programmata (NUOVO - 13/04/2026)
+### Manutenzione Programmata
 - [x] Pagina /maintenance con CRUD completo
-- [x] Creazione finestre con titolo, date, dispositivi coinvolti
 - [x] Soppressione automatica alert durante manutenzione
-- [x] Stato visivo: In Corso (amber), Programmata (blue), Completata (gray)
-- [x] API /api/maintenance/active/{client_id} per alert engine
 
-### Monitoraggio Bandwidth (NUOVO - 13/04/2026)
+### Monitoraggio Bandwidth
 - [x] Pagina /bandwidth con riepilogo interfacce per dispositivo
-- [x] Metriche: IN/OUT bps, utilizzo %, velocita interfaccia
-- [x] Grafici storici AreaChart per interfaccia
-- [x] Backend: raccolta ifInOctets/ifOutOctets, retention 7 giorni
 
-### SOC AI Correlation (NUOVO - 13/04/2026)
-- [x] Pagina /correlation con analisi intelligente rule-based (5 pattern)
-- [x] **Integrazione Gemini AI** (gemini-2.5-flash via emergentintegrations)
-- [x] Pulsante "Analisi Gemini AI" che analizza: dispositivi, alert, backup, manutenzione
-- [x] Risposta strutturata: overall_status, risk_score, correlazioni, raccomandazioni, pattern
-- [x] Campo domanda libera per interrogare l'AI sulla rete
-- [x] Storico analisi AI con persistenza MongoDB
-- [x] Persona SOC analyst in italiano con raccomandazioni operative
-- [x] Pannello risultati con badge severita, confidenza %, azioni consigliate
+### SOC AI Correlation
+- [x] Integrazione Gemini AI (gemini-2.5-flash)
+- [x] Analisi strutturata con risk_score, correlazioni, raccomandazioni
 
-### Portale Cliente Multi-tenant (NUOVO - 13/04/2026)
+### Portale Cliente Multi-tenant
 - [x] Pagina pubblica /portal (no auth)
-- [x] Dashboard dedicata con SLA 30gg, dispositivi, alert
-- [x] Accesso tramite ID cliente
-- [x] Vista dispositivi + alert recenti
 
-### Monitoraggio Backup (NUOVO - 13/04/2026)
-- [x] Integrazione Hornetsecurity VM Backup (ex Altaro) v9.1 via REST API locale
-- [x] PowerShell `backup_monitor.ps1`: Auth API, lista VM, stato backup, fallback Event Log
-- [x] Hyper-V info: stato VM, CPU, RAM, uptime, checkpoint, replica
-- [x] Dashboard `/backup`: card riepilogative (5 VM, OK/Warning/Falliti/Mancanti)
-- [x] Lista VM con stato backup, dimensione, date, stato Hyper-V
-- [x] Modal dettaglio VM con storico alert
-- [x] Grafico storico backup (stacked BarChart 7gg)
-- [x] Alert automatici su backup falliti (critical) o mancanti (high)
-- [x] Auto-resolve alert quando backup torna OK
-- [x] Endpoint `/api/backup/summary-all` per integrazione TV Dashboard
+### Monitoraggio Backup
+- [x] Integrazione Hornetsecurity VM Backup + Hyper-V
+- [x] Dashboard /backup con card riepilogative e grafici storici
 
-### Connettore Windows (v2.5.0+)
-- [x] Servizio NSSM + Network Discovery + Auto-aggiornamento
-- [x] Polling stampanti + Esecuzione remota VA Scan
+### Security Hardening - 21 Protezioni
+- [x] Brute Force, Rate Limiting, 2FA/TOTP, Argon2id, Session Management
+- [x] AES-256-GCM, Security Headers, CORS, Request Timeout, Audit Logging
+- [x] IP Whitelist, Session Invalidation, Login Sospetti, Password Policy
+- [x] CSRF, API Key Rotation, IP Anomali, Honeypot, Body Size Limit, SIEM Export
 
-## Key API Endpoints
-- GET `/api/trends/{client_id}` - Trend storici
-- GET/POST `/api/thresholds/{client_id}` - Soglie personalizzabili
-- CRUD `/api/maintenance/{client_id}` - Finestre manutenzione
-- GET `/api/maintenance/active/{client_id}` - Check manutenzione attiva
-- GET `/api/correlation/{client_id}` - Analisi correlazione
-- GET `/api/bandwidth/summary/{client_id}` - Riepilogo bandwidth
-- GET `/api/bandwidth/{client_id}/{device_ip}` - Storico bandwidth
-- POST `/api/bandwidth/process-poll` - Ricezione dati dal connettore
-- POST `/api/discovery/approve` - Approva dispositivo scoperto
-- POST `/api/discovery/dismiss` - Ignora dispositivo scoperto
-- GET `/api/portal/{client_id}` - Portale cliente (pubblico)
+### SNMP v3 Support
+- [x] USM credentials, Auth HMAC-MD5/SHA1, Privacy DES-CBC/AES-128-CFB
 
-### Security Hardening - 21 Protezioni (COMPLETATO - 13/04/2026)
-**Fase 1 - 11 Protezioni Base:**
-- [x] Brute Force Protection (10 tentativi/5min per IP → 429, lockout 5 min → 423)
-- [x] Rate Limiting Globale (Sliding Window 600 req/min per IP)
-- [x] 2FA/TOTP (pyotp, Google Authenticator)
-- [x] Password Security (Argon2id, 64MB, parallelismo 4)
-- [x] Session Management (TTL 5 min, max 500 sessioni in-memory)
-- [x] Crittografia Dati Sensibili (AES-256-GCM)
-- [x] Security Headers (HSTS, CSP, X-Frame-Options, X-Permitted-Cross-Domain-Policies)
-- [x] CORS (no wildcard *, preflight cache 600s)
-- [x] Request Timeout (20s/45s/120s/180s → 504)
-- [x] Audit Logging (pulizia auto >90 giorni)
-- [x] Cache Control Headers (no-store auth, private max-age=0 altri)
-**Fase 2 - 10 Protezioni Avanzate:**
-- [x] IP Whitelist Admin (configurabile da UI)
-- [x] Session Invalidation Remota (kill sessioni con un click)
-- [x] Notifiche Login Sospetti (alert su IP nuovi)
-- [x] Password Policy Enforcement (min 12 char, scadenza 90gg)
-- [x] CSRF / Origin Verification (POST/PUT/DELETE)
-- [x] API Key Rotation (scadenza 90gg, rotazione da dashboard)
-- [x] Rilevamento IP Anomali (traccia IP noti per utente)
-- [x] Honeypot Endpoints (20+ percorsi fake → auto-ban 24h)
-- [x] Request Body Size Limit (10MB/50MB → 413)
-- [x] SIEM Log Export (JSON/CSV per Splunk/ELK)
-- [x] Security Dashboard frontend con gestione IP Whitelist e Sessioni
+### Connector Hardening
+- [x] Log rotation, Memory cleanup, Job health check, Timer differenziati
 
-### SNMP v3 Support (COMPLETATO - 13/04/2026)
-- [x] Modello ManagedDevice esteso con campi SNMPv3 (snmp_version, USM credentials)
-- [x] API PUT /connector/{client_id}/managed-devices/{device_id}/snmp per switch v1/v2c/v3
-- [x] Connettore PowerShell: Engine Discovery, Key Localization (RFC 3414)
-- [x] Auth: HMAC-MD5, HMAC-SHA1 con password-to-key 1MB expansion
-- [x] Privacy: DES-CBC (RFC 3414), AES-128-CFB (RFC 3826)
-- [x] Poll-DeviceV3 con supporto completo interfacce e metriche
-- [x] Frontend SnmpConfigPanel con selector v1/v2c/v3 e campi USM condizionali
-- [x] Pannello integrato nel DeviceDetailPanel per dispositivi managed
+### Scalabilita' Infrastruttura
+- [x] 65 indici MongoDB + 12 TTL, GZip, Connection pooling, Task Coordinator
 
-### Connector Hardening (COMPLETATO - 14/04/2026)
-- [x] Log rotation automatica (max 5MB, rotazione con 3 archivi)
-- [x] Service wrapper log rotation (max 2MB, 2 archivi)
-- [x] Memory cleanup periodico (GC.Collect ogni 5 min)
-- [x] Job health check (ogni 3 min: riavvia SNMP/Syslog/Polling se morti)
-- [x] Drain job output per prevenire memory accumulation
-- [x] Timer differenziati (heartbeat 60s, discovery 120s, web proxy 3s, GC 300s, job check 180s)
-- [x] Status file con metriche processo (memory_mb, cpu_seconds)
+### Mobile Dashboard
+- [x] Vista client-centrica per telefono con health ring e metriche
 
-### Scalabilita' Infrastruttura (COMPLETATO - 14/04/2026)
-- [x] MongoDB connection pooling ottimizzato (25 max, 3 min, retry, idle 30s)
-- [x] 65 indici + 12 TTL auto-cleanup (da 36 a 65)
-- [x] GZip compression (75% risparmio banda)
-- [x] Rate limiter MongoDB-backed (funziona con multi-worker)
-- [x] Task Coordinator con lock distribuito (evita duplicazione probe WAN)
-- [x] Health check avanzato (/api/health/detailed) con CPU, RAM, disco, MongoDB latency
-- [x] Guida deploy produzione completa (Gunicorn multi-worker, Nginx, SSL, backup, sizing)
-- [x] Sizing guide: da 10 a 100+ clienti
+### Monitoraggio WAN Esterno
+- [x] Probe Ping/TCP dal cloud, diagnosi automatica, alert su status change
 
-### Ottimizzazione Performance & Risorse (COMPLETATO - 14/04/2026)
-- [x] MongoDB connection pooling (25 max, 3 min, retry automatico, idle 30s)
-- [x] 65 indici MongoDB (da 36 a 65, +14 mancanti critici)
-- [x] 12 TTL auto-cleanup (probe 7gg, login 7gg, bandwidth 30gg, audit/metrics 90gg)
-- [x] GZip compression (75% risparmio banda su risposte JSON)
-- [x] Eliminata pulizia manuale audit logs (gestita da MongoDB TTL nativo)
+### TV Dashboard "Control Room"
+- [x] Layout griglia adattiva client-centrica, semaforo visivo
 
-### Mobile Dashboard (COMPLETATO - 14/04/2026)
-- [x] MobileDashboard component: vista client-centrica per telefono
-- [x] Status globale (TUTTO OPERATIVO / ATTENZIONE)
-- [x] Quick stats: Dispositivi, Online, Offline, Alert
-- [x] Card cliente con: health ring, metriche ON/OFF/ALERT/STAMP, tag CONN/WAN
-- [x] Dispositivi offline inline per cliente con dot pulsante
-- [x] WAN status inline per cliente con latenza
-- [x] Sezione consumabili bassi
-- [x] Auto-switch desktop/mobile via matchMedia
-- [x] CSS mobile-first ottimizzato touch target 44px
+### Navigazione Sidebar
+- [x] Framer Motion, active states, badges, touch target mobile
 
-### Monitoraggio WAN Esterno (COMPLETATO - 14/04/2026)
-- [x] Backend probe system: Ping ICMP + TCP Port Check ogni 60 secondi
-- [x] Diagnosi automatica: ISP down vs Firewall down vs Router down
-- [x] Alert automatici su status change (offline/degraded/online)
-- [x] API CRUD per WAN targets (IP pubblici firewall/router)
-- [x] Storico latenza e packet loss per ogni target
-- [x] Integrato nella TV Dashboard (sezione CONNETTIVITA' WAN per cliente)
-- [x] Pagina dedicata /wan-monitor con gestione target e probe on-demand
-- [x] Sidebar link "Monitor WAN" sotto Monitoraggio
+### PWA
+- [x] Service Worker v3, offline fallback, push handler, install banner
 
-### TV Dashboard Redesign "Control Room" (COMPLETATO - 13/04/2026)
-- [x] Layout "Control Room Grid": sidebar offline critica + griglia clienti
-- [x] Card clienti ADATTIVE (si allargano con pochi clienti, 4 livelli di griglia)
-- [x] Semaforo visivo (radial gradient glow verde/ambra/rosso) su ogni card
-- [x] Health ring 64px con metriche ONLINE/OFFLINE/ALERT/STAMPE grandi (22px)
-- [x] Pannello Consumabili Bassi con barre toner colorate e percentuali
-- [x] Fix enrichment alert: lookup device_id per nomi dispositivi
-- [x] Header: status globale, barra refresh 15s, orologio
-- [x] Stats bar: 6 KPI, ticker LIVE footer, audio alarm
-- [x] Estetica: JetBrains Mono, sharp edges, dark #0A0A0A
-
-### Navigazione Sidebar Redesign (COMPLETATO - 13/04/2026)
-- [x] Framer Motion per animazioni smooth collapsible groups (height 0→auto)
-- [x] Active state blue (#007AFF) con indicatore 2px left border
-- [x] Icon opacity transitions (0.6→1 su active)
-- [x] Badge pulse animation per alert critici (>10)
-- [x] Auto-open del gruppo contenente la pagina attiva
-- [x] Touch target ottimizzati mobile (min 44px)
-- [x] Overlay mobile con blur 8px e animazione fade
-- [x] Scrollbar custom sottile nella nav
-- [x] data-testid su tutti gli elementi interattivi
-
-### PWA Migliorata (COMPLETATO - 13/04/2026)
-- [x] Icona professionale NOC (radar/shield) per 192x192, 512x512, apple-touch-icon, favicon
-- [x] Service Worker v3: Push notifications handler, stale-while-revalidate, offline fallback
-- [x] Pagina offline dedicata con auto-reload su riconnessione
-- [x] Manifest con shortcuts (Dashboard, Alert, Stato Rete) e display standalone
-- [x] PwaProvider context (install, notifiche, online/offline detection)
-- [x] Banner installazione PWA interattivo
-- [x] Banner richiesta permesso notifiche
-- [x] Indicatore offline visivo (barra ambra fissa)
-- [x] Background sync per azioni pendenti offline
+### Login Page Branding (COMPLETATO - 14/04/2026)
+- [x] Icona ARGUS: scudo con punto esclamativo (!) in indaco/cyan
+- [x] Footer Verdana full-width con dati fiscali 86BIT centrati
+- [x] "Alert Management System" allineato sotto "ARGUS Center"
+- [x] Rimosso overlay "SYSTEM // OPERATIONAL" dal background
+- [x] Easter egg (!) con font Verdana maiuscoletto
 
 ## Backlog
 ### P1
+- [ ] Notifiche Telegram (quando utente fornira bot token)
 - [ ] Notifiche Push Firebase (MOCKED, serve API key)
 - [ ] Notifiche Email SendGrid (MOCKED, serve API key)
-- [ ] Notifiche Telegram (quando utente fornira bot token)
 ### P2
-- [ ] SOC AI con LLM avanzato (fine-tuning su dati specifici del cliente)
+- [ ] Multi-tenant e White-labeling (SaaS per rivendita MSP)
+- [ ] Integrazione LDAP/Active Directory
+- [ ] SOC AI con LLM avanzato (fine-tuning)
+### P3
+- [ ] Zyxel Nebula Cloud API
+- [ ] App Mobile React Native
 - [ ] Twilio Voice/SMS per alert critici
-- [ ] SNMP v3, LDAP
-- [ ] App Mobile React Native collegata al backend
 
 ## Test Reports
-- iteration_37: Remote VA Scan (100%)
-- iteration_38: VA PDF Report (100%)
-- iteration_39: 7 nuove feature (100% - Backend 24/24, Frontend 7/7)
-- iteration_40: Backup Monitoring (100% - Backend 13/13, Frontend completo)
-- iteration_41: SOC AI Gemini (100% - Backend 10/10, Frontend verificato)
-- iteration_42: Security Hardening 11 protezioni (100% - Backend 11/11, Frontend verificato)
-- iteration_43: Security Hardening 21 protezioni totali (100% - Backend 25/25, Frontend verificato)
-- iteration_44: SNMP v3 Support (100% - Backend 12/12, Frontend componente verificato)
-- iteration_45: PWA Migliorata (100% - Tutti gli asset e componenti verificati)
-- iteration_46: Sidebar Navigation Redesign (100% - Framer Motion, active states, badges verificati)
-- iteration_47: TV Dashboard Control Room (100% - Backend + Frontend 100% verificati)
-- iteration_48: TV Dashboard v4 client-centric (100% - Ogni dispositivo visibile per cliente)
-- iteration_49: Monitoraggio WAN Esterno (100% - Backend 8/8, Frontend + TV verificati)
-- iteration_50: Ottimizzazione Performance (65 indici, 12 TTL, GZip 75%, connection pooling)
-- iteration_51: Scalabilita' Infrastruttura (rate limiter MongoDB, task coordinator, health detailed, guida deploy)
+- iteration_37-51: Tutte le major features passate con successo
+- Login Page: Verificato via screenshot + curl (login funzionante)
+
+## Credenziali Test
+- Admin: admin@86bit.it / password
+- TV Viewer: tv@86bit.it / Tv86bit!2026
