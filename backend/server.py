@@ -261,7 +261,7 @@ from middleware.origin_verify import OriginVerifyMiddleware
 
 # Build CORS origins - mai wildcard quando credentials=True
 _cors_raw = os.environ.get('CORS_ORIGINS', '')
-_cors_origins = [o.strip() for o in _cors_raw.split(',') if o.strip() and o.strip() != '*']
+_cors_origins = [o.strip() for o in _cors_raw.split(',') if o.strip()]
 if not _cors_origins:
     _cors_origins = ["https://*.emergentagent.com", "http://localhost:3000"]
 
