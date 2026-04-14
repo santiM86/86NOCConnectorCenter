@@ -53,7 +53,7 @@ export default function LoginPage() {
                 Argus
               </span>
             </div>
-            <p className="text-[var(--text-muted)]/60 text-[11px] leading-relaxed" style={{ fontFamily: "'Georgia', 'Times New Roman', serif", fontStyle: "italic" }}>
+            <p className="text-[var(--text-muted)] text-sm leading-relaxed tracking-wide" style={{ fontFamily: "'Playfair Display', 'Georgia', 'Times New Roman', serif", fontStyle: "italic", lineHeight: "1.7" }}>
               Argo Panoptes nella mitologia greca era il guardiano con 100 occhi che non dormiva mai — esattamente quello che fa il vostro NOC!
             </p>
           </div>
