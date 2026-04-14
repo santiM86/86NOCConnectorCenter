@@ -18,8 +18,10 @@ import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, AreaChart,
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
 import { SlaGaugeWidget, ChangeTimelineWidget, UptimeHeatmapWidget, LatencyChartWidget } from "@/components/DashboardWidgets";
+import MobileDashboard from "@/components/MobileDashboard";
 
 export default function DashboardPage() {
+  const [isMobile, setIsMobile] = useState(() => typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches);
   const [stats, setStats] = useState({
     critical: 0, high: 0, medium: 0, low: 0,
     total_active: 0, total_clients: 0, total_devices: 0
@@ -35,12 +37,15 @@ export default function DashboardPage() {
   useEffect(() => {
     fetchData();
     connectWebSocket();
+    const onResize = () => setIsMobile(window.matchMedia("(max-width: 767px)").matches);
+    window.addEventListener("resize", onResize);
+    onResize();
     // Fetch first client for widgets
     axios.get(`${API}/clients`).then(r => {
       const clients = r.data?.clients || r.data || [];
       if (clients.length > 0) setClientId(clients[0].id);
     }).catch(() => {});
-    return () => { if (wsRef.current) wsRef.current.close(); };
+    return () => { if (wsRef.current) wsRef.current.close(); window.removeEventListener("resize", onResize); };
   }, []);
 
   const fetchData = async () => {
@@ -103,6 +108,9 @@ export default function DashboardPage() {
   const formatHour = (h) => h ? h.split("T")[1]?.substring(0, 5) || "" : "";
 
   const urgentCount = stats.critical + stats.high;
+
+  // Mobile: show compact client-centric view
+  if (isMobile) return <MobileDashboard />;
 
   return (
     <div className="p-4 md:p-5 space-y-4 animate-fade-in" data-testid="dashboard-page">

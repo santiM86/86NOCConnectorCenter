@@ -149,6 +149,17 @@ Piattaforma NOC enterprise-grade per monitoraggio dispositivi di rete tramite SN
 - [x] Frontend SnmpConfigPanel con selector v1/v2c/v3 e campi USM condizionali
 - [x] Pannello integrato nel DeviceDetailPanel per dispositivi managed
 
+### Mobile Dashboard (COMPLETATO - 14/04/2026)
+- [x] MobileDashboard component: vista client-centrica per telefono
+- [x] Status globale (TUTTO OPERATIVO / ATTENZIONE)
+- [x] Quick stats: Dispositivi, Online, Offline, Alert
+- [x] Card cliente con: health ring, metriche ON/OFF/ALERT/STAMP, tag CONN/WAN
+- [x] Dispositivi offline inline per cliente con dot pulsante
+- [x] WAN status inline per cliente con latenza
+- [x] Sezione consumabili bassi
+- [x] Auto-switch desktop/mobile via matchMedia
+- [x] CSS mobile-first ottimizzato touch target 44px
+
 ### Monitoraggio WAN Esterno (COMPLETATO - 14/04/2026)
 - [x] Backend probe system: Ping ICMP + TCP Port Check ogni 60 secondi
 - [x] Diagnosi automatica: ISP down vs Firewall down vs Router down

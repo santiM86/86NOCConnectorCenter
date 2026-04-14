@@ -223,7 +223,12 @@ function NavGroup({ group, role, isOpen, onToggle, alertCount, onNavigate }) {
 // ==================== MAIN LAYOUT ====================
 export default function Layout() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
+  const [isMobile, setIsMobile] = useState(() => {
+    if (typeof window !== "undefined") {
+      return window.innerWidth < 768 || window.matchMedia("(max-width: 767px)").matches;
+    }
+    return false;
+  });
   const [openGroups, setOpenGroups] = useState(() => {
     // All groups open by default
     const map = {};
@@ -236,9 +241,11 @@ export default function Layout() {
   const location = useLocation();
 
   useEffect(() => {
-    const onResize = () => setIsMobile(window.innerWidth < 768);
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
+    const mq = window.matchMedia("(max-width: 767px)");
+    const handler = (e) => setIsMobile(e.matches);
+    mq.addEventListener("change", handler);
+    setIsMobile(mq.matches);
+    return () => mq.removeEventListener("change", handler);
   }, []);
 
   useEffect(() => {
