@@ -1,7 +1,7 @@
 # NOC Alert Command Center - PRD
 
 ## Descrizione
-Piattaforma NOC enterprise-grade per monitoraggio dispositivi di rete tramite SNMP, Syslog e Redfish. Connettore Windows nativo (PowerShell) con servizio NSSM.
+Piattaforma NOC enterprise-grade "ARGUS Center" per monitoraggio dispositivi di rete tramite SNMP, Syslog e Redfish. Connettore Windows nativo (PowerShell) con servizio NSSM.
 
 ## Architettura
 - Backend: Python 3.11, FastAPI, MongoDB (Motor), AES-256-GCM
@@ -16,6 +16,16 @@ Piattaforma NOC enterprise-grade per monitoraggio dispositivi di rete tramite SN
 - [x] Alert + correlazione + WebSocket
 - [x] Credential Vault AES-256-GCM
 
+### Gestione Utenti (AGGIORNATO - 14/04/2026)
+- [x] CRUD utenti completo (crea, modifica ruolo, elimina)
+- [x] Toggle attivo/disattivato (is_active)
+- [x] Sblocca utente (brute force unlock)
+- [x] Setup/Reset 2FA (TOTP)
+- [x] Check is_active al login (403 se disattivato)
+- [x] Stats: Totale, Attivi, MFA Attivo, Admin
+- [x] Ricerca per nome/email
+- [x] Utenti registrati: 4 (Marco Santinelli admin, Admin admin, TV Monitor viewer, TV Dashboard Test viewer)
+
 ### Mappa Enterprise React Flow
 - [x] Drag-and-drop interattivo con salvataggio layout
 - [x] Topologia 6-Layer + LLDP/MAC Discovery + Port Speed
@@ -27,46 +37,37 @@ Piattaforma NOC enterprise-grade per monitoraggio dispositivi di rete tramite SN
 - [x] Report professionale per cliente
 
 ### TV Dashboard NOC
-- [x] Pagina fullscreen /tv, layout 3 colonne, allarmi sonori
+- [x] Pagina fullscreen /tv, layout Control Room, allarmi sonori
 
 ### Gestione Stampanti SNMP
 - [x] Dashboard stampanti, barre toner, avvisi automatici
 
-### Vulnerability Assessment (COMPLETATO)
-- [x] Dashboard VA con Security Score, Knowledge Base, Remediation
-- [x] Scansione Remota via heartbeat pending_commands
-- [x] Report PDF esaustivo 11 pagine
-- [x] Progresso real-time con barra animata
+### Vulnerability Assessment
+- [x] Dashboard VA, Scansione Remota, Report PDF, Progresso real-time
 
 ### Grafici Trend
-- [x] Pagina /trends con 4 grafici Recharts
-- [x] Disponibilita Rete, Latenza Media, Score VA, Alert per giorno
-- [x] Selettore periodo: 24h, 3gg, 7gg, 30gg
+- [x] Pagina /trends con 4 grafici Recharts, selettore periodo
 
 ### Auto-Discovery Rete
-- [x] Pagina /discovery con scansione rete da connettore
-- [x] Approvazione/Ignora dispositivi scoperti
+- [x] Pagina /discovery con scansione e approvazione
 
 ### Soglie Alert Personalizzabili
-- [x] Pagina /thresholds con 4 gruppi configurabili per cliente
+- [x] Pagina /thresholds con 4 gruppi configurabili
 
 ### Manutenzione Programmata
-- [x] Pagina /maintenance con CRUD completo
-- [x] Soppressione automatica alert durante manutenzione
+- [x] Pagina /maintenance con CRUD e soppressione alert
 
 ### Monitoraggio Bandwidth
-- [x] Pagina /bandwidth con riepilogo interfacce per dispositivo
+- [x] Pagina /bandwidth con riepilogo interfacce
 
 ### SOC AI Correlation
 - [x] Integrazione Gemini AI (gemini-2.5-flash)
-- [x] Analisi strutturata con risk_score, correlazioni, raccomandazioni
 
 ### Portale Cliente Multi-tenant
 - [x] Pagina pubblica /portal (no auth)
 
 ### Monitoraggio Backup
 - [x] Integrazione Hornetsecurity VM Backup + Hyper-V
-- [x] Dashboard /backup con card riepilogative e grafici storici
 
 ### Security Hardening - 21 Protezioni
 - [x] Brute Force, Rate Limiting, 2FA/TOTP, Argon2id, Session Management
@@ -78,32 +79,35 @@ Piattaforma NOC enterprise-grade per monitoraggio dispositivi di rete tramite SN
 - [x] USM credentials, Auth HMAC-MD5/SHA1, Privacy DES-CBC/AES-128-CFB
 
 ### Connector Hardening
-- [x] Log rotation, Memory cleanup, Job health check, Timer differenziati
+- [x] Log rotation, Memory cleanup, Job health check
 
 ### Scalabilita' Infrastruttura
 - [x] 65 indici MongoDB + 12 TTL, GZip, Connection pooling, Task Coordinator
 
 ### Mobile Dashboard
-- [x] Vista client-centrica per telefono con health ring e metriche
+- [x] Vista client-centrica per telefono
 
 ### Monitoraggio WAN Esterno
-- [x] Probe Ping/TCP dal cloud, diagnosi automatica, alert su status change
+- [x] Probe Ping/TCP dal cloud
 
-### TV Dashboard "Control Room"
-- [x] Layout griglia adattiva client-centrica, semaforo visivo
-
-### Navigazione Sidebar
-- [x] Framer Motion, active states, badges, touch target mobile
-
-### PWA
-- [x] Service Worker v3, offline fallback, push handler, install banner
+### Navigazione Sidebar + PWA
+- [x] Framer Motion, Service Worker v3, offline fallback
 
 ### Login Page Branding (COMPLETATO - 14/04/2026)
-- [x] Icona ARGUS: scudo con punto esclamativo (!) in indaco/cyan
-- [x] Footer Verdana full-width con dati fiscali 86BIT centrati
-- [x] "Alert Management System" allineato sotto "ARGUS Center"
-- [x] Rimosso overlay "SYSTEM // OPERATIONAL" dal background
-- [x] Easter egg (!) con font Verdana maiuscoletto
+- [x] Icona ARGUS scudo con punto esclamativo
+- [x] Footer Verdana full-width dati fiscali
+- [x] Layout responsive senza scroll (100vh)
+- [x] Footer mobile compatto
+
+## Key API Endpoints
+- GET/POST `/api/admin/users` - Lista/Crea utenti
+- PUT `/api/admin/users/{id}` - Aggiorna utente
+- PUT `/api/admin/users/{id}/toggle-active` - Attiva/Disattiva
+- PUT `/api/admin/users/{id}/unlock` - Sblocca brute force
+- DELETE `/api/admin/users/{id}` - Elimina utente
+- POST `/api/admin/users/{id}/reset-2fa` - Reset 2FA
+- POST `/api/admin/users/{id}/force-2fa` - Setup 2FA
+- POST `/api/admin/users/{id}/confirm-2fa` - Conferma 2FA
 
 ## Backlog
 ### P1
@@ -113,16 +117,12 @@ Piattaforma NOC enterprise-grade per monitoraggio dispositivi di rete tramite SN
 ### P2
 - [ ] Multi-tenant e White-labeling (SaaS per rivendita MSP)
 - [ ] Integrazione LDAP/Active Directory
-- [ ] SOC AI con LLM avanzato (fine-tuning)
 ### P3
 - [ ] Zyxel Nebula Cloud API
 - [ ] App Mobile React Native
-- [ ] Twilio Voice/SMS per alert critici
-
-## Test Reports
-- iteration_37-51: Tutte le major features passate con successo
-- Login Page: Verificato via screenshot + curl (login funzionante)
 
 ## Credenziali Test
 - Admin: admin@86bit.it / password
-- TV Viewer: tv@86bit.it / Tv86bit!2026
+- Admin: info@86bit.it / password (Marco Santinelli)
+- TV Monitor: tv@86bit.it / Tv86bit!2026
+- TV Dashboard Test: tvdash@86bit.it / Tv86bit!2026

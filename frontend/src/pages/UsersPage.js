@@ -17,7 +17,9 @@ import {
   WarningCircle,
   Crown,
   UserCircle,
-  MagnifyingGlass
+  MagnifyingGlass,
+  Power,
+  LockOpen
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -110,6 +112,28 @@ export default function UsersPage() {
     }
   };
 
+  const handleToggleActive = async (u) => {
+    const action = u.is_active !== false ? "disattivare" : "riattivare";
+    if (!window.confirm(`Vuoi ${action} l'utente ${u.email}?`)) return;
+    try {
+      const res = await axios.put(`${API}/admin/users/${u.id}/toggle-active`);
+      toast.success(`Utente ${res.data.is_active ? "attivato" : "disattivato"}`);
+      fetchUsers();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Errore cambio stato");
+    }
+  };
+
+  const handleUnlock = async (u) => {
+    try {
+      await axios.put(`${API}/admin/users/${u.id}/unlock`);
+      toast.success(`Utente ${u.email} sbloccato`);
+      fetchUsers();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Errore sblocco");
+    }
+  };
+
   const handleSetup2FA = async (u) => {
     try {
       const res = await axios.post(`${API}/admin/users/${u.id}/force-2fa`);
@@ -168,14 +192,18 @@ export default function UsersPage() {
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-3 gap-3 mb-5">
+      <div className="grid grid-cols-4 gap-3 mb-5">
         <div className="noc-panel p-3">
           <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-widest">Totale</p>
           <p className="text-xl font-bold text-[var(--text-primary)] mt-1" data-testid="users-total">{users.length}</p>
         </div>
         <div className="noc-panel p-3">
+          <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-widest">Attivi</p>
+          <p className="text-xl font-bold text-emerald-400 mt-1" data-testid="users-active-count">{users.filter(u => u.is_active !== false).length}</p>
+        </div>
+        <div className="noc-panel p-3">
           <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-widest">MFA Attivo</p>
-          <p className="text-xl font-bold text-emerald-400 mt-1" data-testid="users-mfa-count">{users.filter(u => u.two_factor_enabled).length}</p>
+          <p className="text-xl font-bold text-blue-400 mt-1" data-testid="users-mfa-count">{users.filter(u => u.two_factor_enabled).length}</p>
         </div>
         <div className="noc-panel p-3">
           <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-widest">Admin</p>
@@ -214,6 +242,8 @@ export default function UsersPage() {
               onDelete={handleDelete}
               onReset2FA={handleReset2FA}
               onSetup2FA={handleSetup2FA}
+              onToggleActive={handleToggleActive}
+              onUnlock={handleUnlock}
             />
           ))
         )}
@@ -365,12 +395,13 @@ export default function UsersPage() {
   );
 }
 
-function UserRow({ user: u, currentUserId, editingUser, onEdit, onUpdateRole, onDelete, onReset2FA, onSetup2FA }) {
+function UserRow({ user: u, currentUserId, editingUser, onEdit, onUpdateRole, onDelete, onReset2FA, onSetup2FA, onToggleActive, onUnlock }) {
   const roleStyle = getRoleStyle(u.role);
   const isCurrentUser = u.id === currentUserId;
+  const isActive = u.is_active !== false;
 
   return (
-    <div className="noc-panel p-3 flex items-center gap-3" data-testid={`user-row-${u.id}`}>
+    <div className={`noc-panel p-3 flex items-center gap-3 ${!isActive ? "opacity-50" : ""}`} data-testid={`user-row-${u.id}`}>
       <div className="w-9 h-9 rounded-md bg-[var(--bg-hover)] flex items-center justify-center flex-shrink-0">
         {u.role === "admin" ? (
           <Crown size={16} weight="fill" className="text-amber-400" />
@@ -418,15 +449,28 @@ function UserRow({ user: u, currentUserId, editingUser, onEdit, onUpdateRole, on
         )}
       </div>
 
-      {/* 2FA Status */}
-      <div className="flex-shrink-0" data-testid={`user-2fa-status-${u.id}`}>
-        {u.two_factor_enabled ? (
+      {/* Stato */}
+      <div className="flex-shrink-0" data-testid={`user-status-${u.id}`}>
+        {isActive ? (
           <span className="flex items-center gap-1 text-[10px] px-2 py-1 rounded bg-emerald-500/10 border border-emerald-500/20 text-emerald-400">
-            <ShieldCheck size={12} weight="fill" /> MFA
+            <CheckCircle size={12} weight="fill" /> Attivo
           </span>
         ) : (
           <span className="flex items-center gap-1 text-[10px] px-2 py-1 rounded bg-red-500/10 border border-red-500/20 text-red-400">
-            <WarningCircle size={12} /> No MFA
+            <WarningCircle size={12} /> Disattivato
+          </span>
+        )}
+      </div>
+
+      {/* 2FA Status */}
+      <div className="flex-shrink-0" data-testid={`user-2fa-status-${u.id}`}>
+        {u.two_factor_enabled ? (
+          <span className="flex items-center gap-1 text-[10px] px-2 py-1 rounded bg-blue-500/10 border border-blue-500/20 text-blue-400">
+            <ShieldCheck size={12} weight="fill" /> MFA
+          </span>
+        ) : (
+          <span className="flex items-center gap-1 text-[10px] px-2 py-1 rounded bg-zinc-500/10 border border-zinc-500/20 text-zinc-500">
+            No MFA
           </span>
         )}
       </div>
@@ -441,6 +485,22 @@ function UserRow({ user: u, currentUserId, editingUser, onEdit, onUpdateRole, on
             data-testid={`edit-user-btn-${u.id}`}
           >
             <PencilSimple size={13} />
+          </button>
+          <button
+            onClick={() => onToggleActive(u)}
+            className={`p-1.5 rounded hover:bg-[var(--bg-hover)] transition-all ${isActive ? "text-[var(--text-muted)] hover:text-amber-400" : "text-amber-400 hover:text-emerald-400"}`}
+            title={isActive ? "Disattiva utente" : "Riattiva utente"}
+            data-testid={`toggle-active-btn-${u.id}`}
+          >
+            <Power size={13} />
+          </button>
+          <button
+            onClick={() => onUnlock(u)}
+            className="p-1.5 rounded hover:bg-[var(--bg-hover)] text-[var(--text-muted)] hover:text-blue-400 transition-all"
+            title="Sblocca utente (brute force)"
+            data-testid={`unlock-user-btn-${u.id}`}
+          >
+            <LockOpen size={13} />
           </button>
           {u.two_factor_enabled ? (
             <button

@@ -17,6 +17,10 @@ router = APIRouter(prefix="/api", tags=["admin"])
 async def list_users(current_user: dict = Depends(get_current_user)):
     require_admin(current_user)
     users = await db.users.find({}, {"_id": 0, "password_hash": 0, "totp_secret": 0, "totp_secret_pending": 0}).to_list(500)
+    # Ensure is_active field exists
+    for u in users:
+        if "is_active" not in u:
+            u["is_active"] = True
     return users
 
 
@@ -32,6 +36,7 @@ async def admin_create_user(user: AdminUserCreate, current_user: dict = Depends(
         "id": str(uuid.uuid4()), "email": user.email, "name": user.name,
         "password_hash": security_manager.hash_password(user.password),
         "role": user.role, "two_factor_enabled": False, "totp_secret": None,
+        "is_active": True,
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     await db.users.insert_one(user_doc)
@@ -86,6 +91,40 @@ async def admin_delete_user(user_id: str, current_user: dict = Depends(get_curre
         details={"deleted_user": target["email"]}
     )
     return {"deleted": True}
+
+
+@router.put("/admin/users/{user_id}/toggle-active")
+async def admin_toggle_active(user_id: str, current_user: dict = Depends(get_current_user)):
+    require_admin(current_user)
+    if user_id == current_user["id"]:
+        raise HTTPException(status_code=400, detail="Non puoi disattivare te stesso")
+    target = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if not target:
+        raise HTTPException(status_code=404, detail="Utente non trovato")
+    new_status = not target.get("is_active", True)
+    await db.users.update_one({"id": user_id}, {"$set": {"is_active": new_status}})
+    await audit_logger.log(
+        AuditAction.REGISTER, user_id=current_user["id"], user_email=current_user["email"],
+        ip_address=current_user.get("_request_ip"),
+        details={"toggled_active": target["email"], "new_status": new_status}
+    )
+    return {"is_active": new_status, "email": target["email"]}
+
+
+@router.put("/admin/users/{user_id}/unlock")
+async def admin_unlock_user(user_id: str, current_user: dict = Depends(get_current_user)):
+    require_admin(current_user)
+    target = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if not target:
+        raise HTTPException(status_code=404, detail="Utente non trovato")
+    # Clear brute force lockout
+    await db.failed_logins.delete_many({"email": target["email"]})
+    await audit_logger.log(
+        AuditAction.REGISTER, user_id=current_user["id"], user_email=current_user["email"],
+        ip_address=current_user.get("_request_ip"),
+        details={"unlocked_user": target["email"]}
+    )
+    return {"unlocked": True, "email": target["email"]}
 
 
 @router.post("/admin/users/{user_id}/reset-2fa")

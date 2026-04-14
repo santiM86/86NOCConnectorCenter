@@ -122,6 +122,14 @@ async def login(request: Request, credentials: UserLogin):
         except Exception: pass
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
+    if not user.get("is_active", True):
+        await audit_logger.log(
+            AuditAction.LOGIN_FAILED, user_id=user["id"], user_email=credentials.email,
+            ip_address=client_ip, success=False,
+            details={"reason": "Account disabled"}, severity="warning"
+        )
+        raise HTTPException(status_code=403, detail="Account disattivato. Contatta l'amministratore.")
+
     if not security_manager.verify_password(credentials.password, user["password_hash"]):
         await audit_logger.log(
             AuditAction.LOGIN_FAILED, user_id=user["id"], user_email=credentials.email,
