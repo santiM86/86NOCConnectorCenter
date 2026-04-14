@@ -26,7 +26,7 @@ CONNECTOR_PREFIX = "/api/connector/"
 INGESTION_PREFIX = "/api/ingestion/"
 
 ALLOWED_ORIGIN_RE = re.compile(
-    r"^https?://(localhost(:\d+)?|.*\.emergentagent\.com|.*\.86bit\.it)$"
+    r"^https?://(localhost(:\d+)?|.*\.emergentagent\.com|.*\.emergentcf\.cloud|.*\.86bit\.it)$"
 )
 
 

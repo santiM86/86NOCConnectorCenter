@@ -149,6 +149,16 @@ Piattaforma NOC enterprise-grade per monitoraggio dispositivi di rete tramite SN
 - [x] Frontend SnmpConfigPanel con selector v1/v2c/v3 e campi USM condizionali
 - [x] Pannello integrato nel DeviceDetailPanel per dispositivi managed
 
+### Monitoraggio WAN Esterno (COMPLETATO - 14/04/2026)
+- [x] Backend probe system: Ping ICMP + TCP Port Check ogni 60 secondi
+- [x] Diagnosi automatica: ISP down vs Firewall down vs Router down
+- [x] Alert automatici su status change (offline/degraded/online)
+- [x] API CRUD per WAN targets (IP pubblici firewall/router)
+- [x] Storico latenza e packet loss per ogni target
+- [x] Integrato nella TV Dashboard (sezione CONNETTIVITA' WAN per cliente)
+- [x] Pagina dedicata /wan-monitor con gestione target e probe on-demand
+- [x] Sidebar link "Monitor WAN" sotto Monitoraggio
+
 ### TV Dashboard Redesign "Control Room" (COMPLETATO - 13/04/2026)
 - [x] Layout "Control Room Grid": sidebar offline critica + griglia clienti
 - [x] Card clienti ADATTIVE (si allargano con pochi clienti, 4 livelli di griglia)
@@ -206,3 +216,4 @@ Piattaforma NOC enterprise-grade per monitoraggio dispositivi di rete tramite SN
 - iteration_46: Sidebar Navigation Redesign (100% - Framer Motion, active states, badges verificati)
 - iteration_47: TV Dashboard Control Room (100% - Backend + Frontend 100% verificati)
 - iteration_48: TV Dashboard v4 client-centric (100% - Ogni dispositivo visibile per cliente)
+- iteration_49: Monitoraggio WAN Esterno (100% - Backend 8/8, Frontend + TV verificati)
