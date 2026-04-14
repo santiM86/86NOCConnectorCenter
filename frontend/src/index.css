@@ -246,7 +246,8 @@ h1, h2, h3, h4, h5, h6, .font-heading {
 .login-container {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
 }
 @media (max-width: 768px) {
   .login-container { grid-template-columns: 1fr; }
@@ -267,8 +268,9 @@ h1, h2, h3, h4, h5, h6, .font-heading {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 2rem;
+  padding: 1.5rem;
   background-color: var(--bg-app);
+  overflow: hidden;
 }
 
 /* Layout */

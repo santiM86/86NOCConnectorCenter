@@ -41,9 +41,9 @@ export default function LoginPage() {
       </div>
 
       <div className="login-form-container">
-        <div className="w-full flex flex-col" style={{ minHeight: "100vh" }}>
+        <div className="w-full flex flex-col h-full">
           {/* Spacer top */}
-          <div className="flex-1" />
+          <div className="flex-1 min-h-0" />
 
           {/* Logo + Title */}
           <div className="text-center mb-2 max-w-sm mx-auto w-full px-4">
@@ -61,23 +61,23 @@ export default function LoginPage() {
           </div>
 
           {/* Login Card */}
-          <div className="mt-8 rounded-xl border border-[var(--bg-border)] bg-[var(--bg-panel)] p-6 max-w-sm mx-auto w-full">
+          <div className="mt-6 rounded-xl border border-[var(--bg-border)] bg-[var(--bg-panel)] p-5 max-w-sm mx-auto w-full">
             <h2 className="text-lg font-bold text-[var(--text-primary)] mb-1">Accedi</h2>
-            <p className="text-xs text-[var(--text-muted)] mb-5">Inserisci le tue credenziali</p>
+            <p className="text-xs text-[var(--text-muted)] mb-4">Inserisci le tue credenziali</p>
 
-            <form onSubmit={handleSubmit} className="space-y-4">
-              <div className="space-y-1.5">
+            <form onSubmit={handleSubmit} className="space-y-3">
+              <div className="space-y-1">
                 <Label htmlFor="email" className="text-[var(--text-secondary)] text-xs font-medium">Email</Label>
                 <Input id="email" type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="info@86bit.it" required
                   data-testid="login-email-input"
-                  className="bg-[var(--bg-card)] border-[var(--bg-border)] text-[var(--text-primary)] placeholder:text-[var(--text-muted)] rounded-lg h-11 focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/30" />
+                  className="bg-[var(--bg-card)] border-[var(--bg-border)] text-[var(--text-primary)] placeholder:text-[var(--text-muted)] rounded-lg h-10 focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/30" />
               </div>
-              <div className="space-y-1.5">
+              <div className="space-y-1">
                 <Label htmlFor="password" className="text-[var(--text-secondary)] text-xs font-medium">Password</Label>
                 <div className="relative">
                   <Input id="password" type={showPassword ? "text" : "password"} value={password} onChange={e => setPassword(e.target.value)} placeholder="............" required
                     data-testid="login-password-input"
-                    className="bg-[var(--bg-card)] border-[var(--bg-border)] text-[var(--text-primary)] placeholder:text-[var(--text-muted)] rounded-lg h-11 pr-10 focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/30" />
+                    className="bg-[var(--bg-card)] border-[var(--bg-border)] text-[var(--text-primary)] placeholder:text-[var(--text-muted)] rounded-lg h-10 pr-10 focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/30" />
                   <button type="button" onClick={() => setShowPassword(!showPassword)}
                     className="absolute right-3 top-1/2 -translate-y-1/2 text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition-colors"
                     data-testid="toggle-password-btn">
@@ -86,17 +86,17 @@ export default function LoginPage() {
                 </div>
               </div>
               <Button type="submit" disabled={loading} data-testid="login-submit-btn"
-                className="w-full h-11 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-sm transition-colors">
+                className="w-full h-10 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-sm transition-colors">
                 {loading ? "..." : "Accedi"}
               </Button>
             </form>
           </div>
 
           {/* Spacer bottom */}
-          <div className="flex-1" />
+          <div className="flex-1 min-h-0" />
 
           {/* Footer societario - full width, font Verdana */}
-          <div className="w-full border-t border-[var(--bg-border)] pt-4 pb-5 px-8 relative" data-testid="login-footer">
+          <div className="w-full border-t border-[var(--bg-border)] pt-3 pb-3 px-6 relative flex-shrink-0" data-testid="login-footer">
             <div className="text-center" style={{ fontFamily: "'Verdana', Geneva, sans-serif" }}>
               <p className="text-[11px] text-[var(--text-muted)] opacity-70 leading-[1.9]">
                 &copy; Copyright 2026 &nbsp;|&nbsp; <b>86BIT</b> srl Unipersonale &nbsp;&mdash;&nbsp; Codice Fiscale e P.Iva <span className="text-indigo-400/70">04353030168</span> &nbsp;&mdash;&nbsp; Capitale sociale &euro; 50.000,00 i.v. &nbsp;&mdash;&nbsp; Reg. Imprese di Bergamo <span className="text-indigo-400/70">04353030168</span>
