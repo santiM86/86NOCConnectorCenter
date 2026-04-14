@@ -8,13 +8,11 @@ import { toast } from "sonner";
 import { ShieldWarning, Eye, EyeSlash } from "@phosphor-icons/react";
 
 export default function LoginPage() {
-  const [isLogin, setIsLogin] = useState(true);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [name, setName] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
-  const { login, register, user } = useAuth();
+  const { login, user } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const from = location.state?.from?.pathname || "/";
@@ -25,14 +23,9 @@ export default function LoginPage() {
     e.preventDefault();
     setLoading(true);
     try {
-      if (isLogin) {
-        const result = await login(email, password);
-        if (result?.requires_2fa) { toast.info("Verifica 2FA richiesta"); navigate("/2fa", { state: { from: location.state?.from } }); return; }
-        toast.success("Login effettuato");
-      } else {
-        await register(email, password, name);
-        toast.success("Registrazione completata");
-      }
+      const result = await login(email, password);
+      if (result?.requires_2fa) { toast.info("Verifica 2FA richiesta"); navigate("/2fa", { state: { from: location.state?.from } }); return; }
+      toast.success("Login effettuato");
       navigate(from, { replace: true });
     } catch (error) {
       toast.error(error.response?.data?.detail || "Errore di autenticazione");
@@ -59,23 +52,15 @@ export default function LoginPage() {
                 <ShieldWarning size={22} weight="fill" className="text-indigo-400" />
               </div>
               <span className="font-heading text-xl font-bold tracking-tight text-[var(--text-primary)]">
-                NOC Center
+                86BIT NOC
               </span>
             </div>
             <p className="text-[var(--text-muted)] text-xs font-mono">
-              Alert Management System
+              Network Operations Center
             </p>
           </div>
 
           <form onSubmit={handleSubmit} className="space-y-4">
-            {!isLogin && (
-              <div className="space-y-1.5">
-                <Label htmlFor="name" className="text-[var(--text-muted)] text-[10px] uppercase tracking-widest">Nome</Label>
-                <Input id="name" type="text" value={name} onChange={e => setName(e.target.value)} placeholder="Mario Rossi" required={!isLogin}
-                  data-testid="register-name-input"
-                  className="bg-[var(--bg-card)] border-[var(--bg-border)] text-[var(--text-primary)] placeholder:text-[var(--text-muted)] rounded-lg h-10 focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/30" />
-              </div>
-            )}
             <div className="space-y-1.5">
               <Label htmlFor="email" className="text-[var(--text-muted)] text-[10px] uppercase tracking-widest">Email</Label>
               <Input id="email" type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="operatore@azienda.it" required
@@ -97,15 +82,17 @@ export default function LoginPage() {
             </div>
             <Button type="submit" disabled={loading} data-testid="login-submit-btn"
               className="w-full h-10 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-medium text-sm transition-colors">
-              {loading ? "..." : isLogin ? "Accedi" : "Registrati"}
+              {loading ? "..." : "Accedi"}
             </Button>
           </form>
 
-          <div className="mt-5 text-center">
-            <button type="button" onClick={() => setIsLogin(!isLogin)} data-testid="toggle-auth-mode-btn"
-              className="text-[var(--text-muted)] hover:text-[var(--text-secondary)] text-xs transition-colors">
-              {isLogin ? "Non hai un account? Registrati" : "Hai gia un account? Accedi"}
-            </button>
+          {/* Footer societario */}
+          <div className="mt-8 pt-4 border-t border-[var(--bg-border)]">
+            <p className="text-[8px] text-[var(--text-muted)]/50 leading-relaxed text-center">
+              &copy; Copyright 2026 | 86BIT srl Unipersonale &mdash; Codice Fiscale e P.Iva 04353030168 &mdash; Capitale sociale &euro; 50.000,00 i.v. &mdash; Reg. Imprese di Bergamo 04353030168
+              <br />
+              REA n. BG456578 &mdash; Sede Operativa: Piazza Papa Giovanni XXIII &mdash; 24020 Scanzorosciate (BG) &mdash; Tel. +39 035 310 900 &mdash; info@86bit.it
+            </p>
           </div>
         </div>
       </div>

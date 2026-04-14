@@ -1,6 +1,6 @@
 {
-  "short_name": "NOC Center",
-  "name": "86BIT NOC Command Center",
+  "short_name": "86BIT NOC",
+  "name": "86BIT NOC - Network Operations Center",
   "description": "Console di monitoraggio alert in tempo reale per dispositivi di rete",
   "icons": [
     {

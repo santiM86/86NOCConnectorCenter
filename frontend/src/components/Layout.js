@@ -307,10 +307,10 @@ export default function Layout() {
             </div>
             <div className="flex flex-col">
               <span className="text-[13px] font-bold tracking-tight text-[var(--text-primary)] leading-tight">
-                NOC Center
+                86BIT NOC
               </span>
               <span className="text-[9px] text-[var(--text-muted)] uppercase tracking-[0.12em] leading-tight font-mono">
-                86BIT Command
+                Network Operations
               </span>
             </div>
           </div>
@@ -384,7 +384,7 @@ export default function Layout() {
           </Button>
           <div className="flex items-center gap-2">
             <ShieldWarning size={18} weight="fill" className="text-indigo-400" />
-            <span className="font-bold text-sm text-[var(--text-primary)]">NOC</span>
+            <span className="font-bold text-sm text-[var(--text-primary)]">86BIT NOC</span>
           </div>
           <div className="w-8" />
         </header>

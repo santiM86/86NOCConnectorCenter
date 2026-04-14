@@ -5,8 +5,10 @@ import { DownloadSimple, Bell, WifiSlash, X, Check } from "@phosphor-icons/react
 export function PwaInstallBanner() {
   const pwa = usePwa();
   const [dismissed, setDismissed] = useState(false);
+  const location = window.location.pathname;
 
-  if (!pwa?.installPrompt || pwa.isInstalled || dismissed) return null;
+  // Non mostrare sulla pagina di login
+  if (!pwa?.installPrompt || pwa.isInstalled || dismissed || location === "/login") return null;
 
   return (
     <div
@@ -18,7 +20,7 @@ export function PwaInstallBanner() {
           <DownloadSimple size={20} className="text-indigo-400" weight="bold" />
         </div>
         <div className="flex-1 min-w-0">
-          <p className="text-xs font-semibold text-[var(--text-primary)]">Installa NOC Center</p>
+          <p className="text-xs font-semibold text-[var(--text-primary)]">Installa 86BIT NOC</p>
           <p className="text-[10px] text-[var(--text-muted)] mt-0.5">
             Aggiungi alla Home per accesso rapido e notifiche push
           </p>
