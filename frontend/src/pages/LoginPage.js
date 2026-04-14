@@ -37,12 +37,7 @@ export default function LoginPage() {
     <div className="login-container">
       <div className="login-image"
         style={{ backgroundImage: `url('https://images.unsplash.com/photo-1762163516269-3c143e04175c?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA0MTJ8MHwxfHNlYXJjaHwxfHxzZXJ2ZXIlMjByYWNrJTIwZGFyayUyMGxpZ2h0c3xlbnwwfHx8fDE3NzQwODIxODJ8MA&ixlib=rb-4.1.0&q=85')` }}>
-        <div className="absolute inset-0 flex items-end p-8 z-10">
-          <div className="text-white/40 text-xs font-mono">
-            <p>SYSTEM // OPERATIONAL</p>
-            <p>NODES // MONITORING</p>
-          </div>
-        </div>
+        <div className="absolute inset-0" />
       </div>
 
       <div className="login-form-container">
@@ -117,7 +112,7 @@ export default function LoginPage() {
             >
               <div className="w-7 h-7 rounded-full bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center cursor-pointer hover:bg-indigo-500/20 hover:border-indigo-500/40 transition-all hover:scale-110"
                 data-testid="easter-egg-btn">
-                <span className="text-indigo-400 text-sm font-bold select-none">!</span>
+                <span className="text-indigo-400 text-sm font-bold select-none" style={{ fontFamily: "'Verdana', Geneva, sans-serif", fontVariant: "small-caps" }}>!</span>
               </div>
 
               {/* Tooltip */}
