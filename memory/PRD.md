@@ -149,6 +149,13 @@ Piattaforma NOC enterprise-grade per monitoraggio dispositivi di rete tramite SN
 - [x] Frontend SnmpConfigPanel con selector v1/v2c/v3 e campi USM condizionali
 - [x] Pannello integrato nel DeviceDetailPanel per dispositivi managed
 
+### Ottimizzazione Performance & Risorse (COMPLETATO - 14/04/2026)
+- [x] MongoDB connection pooling (25 max, 3 min, retry automatico, idle 30s)
+- [x] 65 indici MongoDB (da 36 a 65, +14 mancanti critici)
+- [x] 12 TTL auto-cleanup (probe 7gg, login 7gg, bandwidth 30gg, audit/metrics 90gg)
+- [x] GZip compression (75% risparmio banda su risposte JSON)
+- [x] Eliminata pulizia manuale audit logs (gestita da MongoDB TTL nativo)
+
 ### Mobile Dashboard (COMPLETATO - 14/04/2026)
 - [x] MobileDashboard component: vista client-centrica per telefono
 - [x] Status globale (TUTTO OPERATIVO / ATTENZIONE)
@@ -228,3 +235,4 @@ Piattaforma NOC enterprise-grade per monitoraggio dispositivi di rete tramite SN
 - iteration_47: TV Dashboard Control Room (100% - Backend + Frontend 100% verificati)
 - iteration_48: TV Dashboard v4 client-centric (100% - Ogni dispositivo visibile per cliente)
 - iteration_49: Monitoraggio WAN Esterno (100% - Backend 8/8, Frontend + TV verificati)
+- iteration_50: Ottimizzazione Performance (65 indici, 12 TTL, GZip 75%, connection pooling)

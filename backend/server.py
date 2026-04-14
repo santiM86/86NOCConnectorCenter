@@ -8,6 +8,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Response
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.gzip import GZipMiddleware
 from slowapi.errors import RateLimitExceeded
 from slowapi import _rate_limit_exceeded_handler
 import os
@@ -222,6 +223,7 @@ app.add_middleware(BodySizeLimitMiddleware)
 app.add_middleware(OriginVerifyMiddleware)
 app.add_middleware(HoneypotMiddleware)
 app.add_middleware(IPBlockMiddleware)
+app.add_middleware(GZipMiddleware, minimum_size=500)  # Comprimi risposte >500 bytes
 
 
 # ==================== LOGGING ====================
@@ -299,13 +301,47 @@ async def startup_event():
         await db.refresh_tokens.create_index("created_at", expireAfterSeconds=86400 * 30)
         await db.web_proxy_requests.create_index("created_at", expireAfterSeconds=300)
 
-        logger.info("MongoDB indexes created/verified successfully")
+        # === NEW: Missing indexes for performance ===
 
-        # Auto-cleanup audit logs >90 giorni
-        cutoff_90d = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
-        cleanup_result = await db.audit_logs.delete_many({"timestamp": {"$lt": cutoff_90d}})
-        if cleanup_result.deleted_count > 0:
-            logger.info(f"Audit log cleanup: rimossi {cleanup_result.deleted_count} record >90 giorni")
+        # WAN monitoring indexes + TTL
+        await db.wan_targets.create_index([("client_id", 1)])
+        await db.wan_probe_results.create_index([("target_id", 1)], unique=True)
+        await db.wan_probe_results.create_index([("client_id", 1)])
+        await db.wan_probe_history.create_index([("target_id", 1), ("timestamp", -1)])
+        await db.wan_probe_history.create_index([("client_id", 1), ("timestamp", -1)])
+        await db.wan_probe_history.create_index("timestamp", expireAfterSeconds=86400 * 7)  # TTL 7 giorni
+        await db.wan_client_diagnosis.create_index([("client_id", 1)], unique=True)
+
+        # Security indexes
+        await db.login_attempts.create_index([("ip_address", 1), ("timestamp", -1)])
+        await db.login_attempts.create_index([("email", 1), ("timestamp", -1)])
+        await db.login_attempts.create_index("timestamp", expireAfterSeconds=86400 * 7)  # TTL 7 giorni
+        await db.blocked_ips.create_index([("ip", 1)])
+        await db.blocked_ips.create_index([("expires_at", 1)])
+
+        # Session / Token indexes
+        await db.refresh_tokens.create_index([("user_id", 1)])
+        await db.sessions.create_index([("user_id", 1)])
+        await db.sessions.create_index("last_activity", expireAfterSeconds=86400)  # TTL 1 giorno
+
+        # Operational indexes
+        await db.bandwidth_history.create_index([("device_ip", 1), ("timestamp", -1)])
+        await db.bandwidth_history.create_index("timestamp", expireAfterSeconds=86400 * 30)  # TTL 30 giorni
+        await db.maintenance_windows.create_index([("client_id", 1), ("end_time", -1)])
+        await db.settings.create_index([("key", 1)], unique=True)
+        await db.pending_commands.create_index([("client_id", 1), ("status", 1)])
+        await db.connector_updates.create_index([("version", 1)])
+        await db.escalation_rules.create_index([("client_id", 1)])
+        await db.notification_logs.create_index("timestamp", expireAfterSeconds=86400 * 30)  # TTL 30 giorni
+
+        # Audit logs TTL (auto-cleanup via MongoDB instead of manual delete)
+        await db.audit_logs.create_index("timestamp", expireAfterSeconds=86400 * 90)  # TTL 90 giorni
+
+        # Device metrics TTL
+        await db.device_metrics_history.create_index("timestamp", expireAfterSeconds=86400 * 90)  # TTL 90 giorni
+        await db.metrics_history.create_index("timestamp", expireAfterSeconds=86400 * 90)  # TTL 90 giorni
+
+        logger.info("MongoDB indexes created/verified successfully")
 
     except Exception as e:
         logger.warning(f"Index creation warning (non-fatal): {e}")
