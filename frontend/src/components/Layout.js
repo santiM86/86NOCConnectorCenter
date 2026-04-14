@@ -304,8 +304,8 @@ export default function Layout() {
           <div className="flex items-center gap-2.5">
             <img src="/icon-192.png" alt="Argus" className="w-7 h-7 rounded-md" />
             <div className="flex flex-col">
-              <span className="text-[13px] font-bold tracking-tight text-[var(--text-primary)] leading-tight">
-                Argus
+              <span className="text-[13px] tracking-tight text-[var(--text-primary)] leading-tight">
+                <b>ARGUS</b> Center
               </span>
               <span className="text-[9px] text-[var(--text-muted)] uppercase tracking-[0.12em] leading-tight font-mono">
                 by 86BIT
@@ -382,7 +382,7 @@ export default function Layout() {
           </Button>
           <div className="flex items-center gap-2">
             <img src="/icon-192.png" alt="Argus" className="w-6 h-6 rounded" />
-            <span className="font-bold text-sm text-[var(--text-primary)]">Argus</span>
+            <span className="font-bold text-sm text-[var(--text-primary)]"><b>ARGUS</b> Center</span>
           </div>
           <div className="w-8" />
         </header>

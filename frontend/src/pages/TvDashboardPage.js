@@ -101,7 +101,7 @@ export default function TvDashboardPage() {
       <div className="tv-top" data-testid="tv-header">
         <div className="tv-top-l">
           <div className="tv-brand">A</div>
-          <span className="tv-brand-name">Argus</span>
+          <span className="tv-brand-name"><b>ARGUS</b> Center</span>
         </div>
         <div className="tv-top-c">
           <Pill label="DISPOSITIVI" value={g.total_devices} />

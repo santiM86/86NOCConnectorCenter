@@ -49,8 +49,8 @@ export default function LoginPage() {
           <div className="mb-8">
             <div className="flex items-center gap-3 mb-3">
               <img src="/icon-192.png" alt="Argus" className="w-11 h-11 rounded-lg" />
-              <span className="font-heading text-2xl font-bold tracking-tight text-[var(--text-primary)]">
-                Argus
+              <span className="font-heading text-2xl tracking-tight text-[var(--text-primary)]">
+                <b>ARGUS</b> Center
               </span>
             </div>
             <p className="text-[var(--text-muted)] text-sm leading-relaxed tracking-wide" style={{ fontFamily: "'Playfair Display', 'Georgia', 'Times New Roman', serif", fontStyle: "italic", lineHeight: "1.7" }}>
