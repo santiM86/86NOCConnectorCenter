@@ -47,15 +47,17 @@ export default function LoginPage() {
 
           {/* Logo + Title */}
           <div className="text-center mb-2 max-w-sm mx-auto w-full px-4">
-            <div className="flex items-center justify-center gap-3 mb-2">
+            <div className="flex items-center justify-center gap-3 mb-1">
               <img src="/icon-192.png" alt="ARGUS" className="w-10 h-10 rounded-lg" data-testid="login-argus-icon" />
-              <span className="text-2xl tracking-tight text-[var(--text-primary)]">
-                <b className="font-black">ARGUS</b> <span className="font-light">Center</span>
-              </span>
+              <div>
+                <span className="text-2xl tracking-tight text-[var(--text-primary)]">
+                  <b className="font-black">ARGUS</b> <span className="font-light">Center</span>
+                </span>
+                <p className="text-indigo-400/70 text-sm tracking-wide text-left">
+                  Alert Management System
+                </p>
+              </div>
             </div>
-            <p className="text-indigo-400/70 text-sm tracking-wide">
-              Alert Management System
-            </p>
           </div>
 
           {/* Login Card */}
