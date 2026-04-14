@@ -98,11 +98,19 @@ export default function LoginPage() {
           {/* Footer societario - full width, font Verdana */}
           <div className="w-full border-t border-[var(--bg-border)] pt-3 pb-3 px-6 relative flex-shrink-0" data-testid="login-footer">
             <div className="text-center" style={{ fontFamily: "'Verdana', Geneva, sans-serif" }}>
-              <p className="text-[11px] text-[var(--text-muted)] opacity-70 leading-[1.9]">
-                &copy; Copyright 2026 &nbsp;|&nbsp; <b>86BIT</b> srl Unipersonale &nbsp;&mdash;&nbsp; Codice Fiscale e P.Iva <span className="text-indigo-400/70">04353030168</span> &nbsp;&mdash;&nbsp; Capitale sociale &euro; 50.000,00 i.v. &nbsp;&mdash;&nbsp; Reg. Imprese di Bergamo <span className="text-indigo-400/70">04353030168</span>
-              </p>
-              <p className="text-[11px] text-[var(--text-muted)] opacity-70 leading-[1.9] mt-0.5">
-                REA n. BG456578 &nbsp;&mdash;&nbsp; Sede Operativa: Piazza Papa Giovanni XXIII &nbsp;&mdash;&nbsp; 24020 Scanzorosciate (BG) &nbsp;&mdash;&nbsp; Tel. <span className="text-indigo-400/70">+39 035 310 900</span> &nbsp;&mdash;&nbsp; <span className="text-indigo-400/70">info@86bit.it</span>
+              {/* Desktop: dati completi */}
+              <div className="hidden md:block">
+                <p className="text-[11px] text-[var(--text-muted)] opacity-70 leading-[1.9]">
+                  &copy; Copyright 2026 &nbsp;|&nbsp; <b>86BIT</b> srl Unipersonale &nbsp;&mdash;&nbsp; Codice Fiscale e P.Iva <span className="text-indigo-400/70">04353030168</span> &nbsp;&mdash;&nbsp; Capitale sociale &euro; 50.000,00 i.v. &nbsp;&mdash;&nbsp; Reg. Imprese di Bergamo <span className="text-indigo-400/70">04353030168</span>
+                </p>
+                <p className="text-[11px] text-[var(--text-muted)] opacity-70 leading-[1.9] mt-0.5">
+                  REA n. BG456578 &nbsp;&mdash;&nbsp; Sede Operativa: Piazza Papa Giovanni XXIII &nbsp;&mdash;&nbsp; 24020 Scanzorosciate (BG) &nbsp;&mdash;&nbsp; Tel. <span className="text-indigo-400/70">+39 035 310 900</span> &nbsp;&mdash;&nbsp; <span className="text-indigo-400/70">info@86bit.it</span>
+                </p>
+              </div>
+              {/* Mobile: solo essenziale */}
+              <p className="md:hidden text-[10px] text-[var(--text-muted)] opacity-60 leading-relaxed">
+                &copy; 2026 <b>86BIT</b> srl &mdash; P.Iva <span className="text-indigo-400/60">04353030168</span><br />
+                Tel. <span className="text-indigo-400/60">+39 035 310 900</span> &mdash; <span className="text-indigo-400/60">info@86bit.it</span>
               </p>
             </div>
 
