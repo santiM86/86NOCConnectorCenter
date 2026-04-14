@@ -64,7 +64,7 @@ export default function TvDashboardPage() {
 
   const load = () => axios.get(`${API}/tv/dashboard`).then(r => setData(r.data)).catch(() => {});
 
-  if (!data) return <div className="tv-boot" onClick={init}><div className="tv-boot-spin" /><p>CONNESSIONE AL NOC...</p></div>;
+  if (!data) return <div className="tv-boot" onClick={init}><div className="tv-boot-spin" /><p>CONNESSIONE AD ARGUS...</p></div>;
 
   const g = data.global_stats;
   const critical = g.total_offline > 0 || g.critical_alerts > 0;
@@ -100,8 +100,8 @@ export default function TvDashboardPage() {
       {/* === TOP BAR === */}
       <div className="tv-top" data-testid="tv-header">
         <div className="tv-top-l">
-          <div className="tv-brand">NOC</div>
-          <span className="tv-brand-name">86BIT</span>
+          <div className="tv-brand">A</div>
+          <span className="tv-brand-name">Argus</span>
         </div>
         <div className="tv-top-c">
           <Pill label="DISPOSITIVI" value={g.total_devices} />

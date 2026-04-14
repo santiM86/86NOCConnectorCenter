@@ -52,11 +52,11 @@ export default function LoginPage() {
                 <ShieldWarning size={22} weight="fill" className="text-indigo-400" />
               </div>
               <span className="font-heading text-xl font-bold tracking-tight text-[var(--text-primary)]">
-                86BIT NOC
+                Argus
               </span>
             </div>
             <p className="text-[var(--text-muted)] text-xs font-mono">
-              Network Operations Center
+              Vediamo tutto. Sempre!
             </p>
           </div>
 
