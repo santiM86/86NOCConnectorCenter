@@ -15,8 +15,8 @@ import AlertDetailScreen from './screens/AlertDetailScreen';
 import DevicesScreen from './screens/DevicesScreen';
 import SettingsScreen from './screens/SettingsScreen';
 
-// API Configuration - Change this to your production URL
-const API_BASE_URL = 'https://your-api-url.com/api';
+// API Configuration - reads from environment variable
+const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:8001/api';
 
 // Auth Context
 const AuthContext = createContext(null);
