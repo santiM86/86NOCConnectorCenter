@@ -47,16 +47,14 @@ export default function LoginPage() {
       <div className="login-form-container">
         <div className="w-full max-w-sm">
           <div className="mb-8">
-            <div className="flex items-center gap-2.5 mb-2">
-              <div className="w-9 h-9 rounded-lg bg-indigo-600/20 flex items-center justify-center">
-                <ShieldWarning size={22} weight="fill" className="text-indigo-400" />
-              </div>
-              <span className="font-heading text-xl font-bold tracking-tight text-[var(--text-primary)]">
+            <div className="flex items-center gap-3 mb-3">
+              <img src="/icon-192.png" alt="Argus" className="w-11 h-11 rounded-lg" />
+              <span className="font-heading text-2xl font-bold tracking-tight text-[var(--text-primary)]">
                 Argus
               </span>
             </div>
-            <p className="text-[var(--text-muted)] text-xs font-mono">
-              Vediamo tutto. Sempre!
+            <p className="text-[var(--text-muted)]/60 text-[11px] leading-relaxed" style={{ fontFamily: "'Georgia', 'Times New Roman', serif", fontStyle: "italic" }}>
+              Argo Panoptes nella mitologia greca era il guardiano con 100 occhi che non dormiva mai — esattamente quello che fa il vostro NOC!
             </p>
           </div>
 
