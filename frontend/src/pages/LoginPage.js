@@ -46,14 +46,14 @@ export default function LoginPage() {
       </div>
 
       <div className="login-form-container">
-        <div className="w-full max-w-sm flex flex-col" style={{ minHeight: "calc(100vh - 40px)" }}>
+        <div className="w-full flex flex-col" style={{ minHeight: "100vh" }}>
           {/* Spacer top */}
           <div className="flex-1" />
 
           {/* Logo + Title */}
-          <div className="text-center mb-2">
+          <div className="text-center mb-2 max-w-sm mx-auto w-full px-4">
             <div className="flex items-center justify-center gap-3 mb-2">
-              <img src="/icon-192.png" alt="ARGUS" className="w-10 h-10 rounded-lg" />
+              <img src="/icon-192.png" alt="ARGUS" className="w-10 h-10 rounded-lg" data-testid="login-argus-icon" />
               <span className="text-2xl tracking-tight text-[var(--text-primary)]">
                 <b className="font-black">ARGUS</b> <span className="font-light">Center</span>
               </span>
@@ -64,7 +64,7 @@ export default function LoginPage() {
           </div>
 
           {/* Login Card */}
-          <div className="mt-8 rounded-xl border border-[var(--bg-border)] bg-[var(--bg-panel)] p-6">
+          <div className="mt-8 rounded-xl border border-[var(--bg-border)] bg-[var(--bg-panel)] p-6 max-w-sm mx-auto w-full">
             <h2 className="text-lg font-bold text-[var(--text-primary)] mb-1">Accedi</h2>
             <p className="text-xs text-[var(--text-muted)] mb-5">Inserisci le tue credenziali</p>
 
@@ -98,20 +98,19 @@ export default function LoginPage() {
           {/* Spacer bottom */}
           <div className="flex-1" />
 
-          {/* Footer societario - stile come immagine di riferimento */}
-          <div className="border-t border-[var(--bg-border)] pt-4 pb-4 relative">
-            <p className="text-[9px] text-[var(--text-muted)]/40 leading-relaxed text-center">
-              &copy; Copyright 2026 | <b>86BIT</b> srl Unipersonale &mdash; Codice Fiscale e P.Iva{" "}
-              <span className="text-indigo-400/50">04353030168</span> &mdash; Capitale sociale &euro; 50.000,00 i.v. &mdash; Reg. Imprese di Bergamo{" "}
-              <span className="text-indigo-400/50">04353030168</span>
-              <br />
-              REA n. BG456578 &mdash; Sede Operativa: Piazza Papa Giovanni XXIII &mdash; 24020 Scanzorosciate (BG) &mdash; Tel.{" "}
-              <span className="text-indigo-400/50">+39 035 310 900</span> &mdash;{" "}
-              <span className="text-indigo-400/50">info@86bit.it</span>
-            </p>
+          {/* Footer societario - full width, font Verdana */}
+          <div className="w-full border-t border-[var(--bg-border)] pt-4 pb-5 px-8 relative" data-testid="login-footer">
+            <div className="text-center" style={{ fontFamily: "'Verdana', Geneva, sans-serif" }}>
+              <p className="text-[11px] text-[var(--text-muted)] opacity-70 leading-[1.9]">
+                &copy; Copyright 2026 &nbsp;|&nbsp; <b>86BIT</b> srl Unipersonale &nbsp;&mdash;&nbsp; Codice Fiscale e P.Iva <span className="text-indigo-400/70">04353030168</span> &nbsp;&mdash;&nbsp; Capitale sociale &euro; 50.000,00 i.v. &nbsp;&mdash;&nbsp; Reg. Imprese di Bergamo <span className="text-indigo-400/70">04353030168</span>
+              </p>
+              <p className="text-[11px] text-[var(--text-muted)] opacity-70 leading-[1.9] mt-0.5">
+                REA n. BG456578 &nbsp;&mdash;&nbsp; Sede Operativa: Piazza Papa Giovanni XXIII &nbsp;&mdash;&nbsp; 24020 Scanzorosciate (BG) &nbsp;&mdash;&nbsp; Tel. <span className="text-indigo-400/70">+39 035 310 900</span> &nbsp;&mdash;&nbsp; <span className="text-indigo-400/70">info@86bit.it</span>
+              </p>
+            </div>
 
             {/* Easter egg ! */}
-            <div className="absolute bottom-3 right-0"
+            <div className="absolute bottom-3 right-3"
               onMouseEnter={() => setShowEaster(true)}
               onMouseLeave={() => setShowEaster(false)}
               onClick={() => setShowEaster(!showEaster)}
