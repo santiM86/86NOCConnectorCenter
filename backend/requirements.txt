@@ -80,6 +80,7 @@ pluggy==1.6.0
 propcache==0.4.1
 proto-plus==1.27.1
 protobuf==5.29.6
+psutil==7.2.2
 pyasn1==0.6.2
 pyasn1_modules==0.4.2
 pycodestyle==2.14.0
@@ -92,12 +93,15 @@ PyJWT==2.11.0
 pymongo==4.5.0
 pyotp==2.9.0
 pyparsing==3.3.2
+PyPDF2==3.0.1
 pysnmp==7.1.22
+pystray==0.19.5
 pytest==9.0.2
 python-dateutil==2.9.0.post0
 python-dotenv==1.2.1
 python-jose==3.5.0
 python-multipart==0.0.22
+python-xlib==0.33
 pytokens==0.4.1
 PyYAML==6.0.3
 qrcode==8.2

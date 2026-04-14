@@ -7,7 +7,7 @@ from datetime import datetime, timezone, timedelta
 from database import db
 from deps import get_current_user, require_admin
 from middleware.session_cache import session_cache
-from middleware.global_rate_limiter import _global_limiter, GLOBAL_MAX_REQUESTS, WINDOW_SECONDS
+from middleware.global_rate_limiter import GLOBAL_MAX_REQUESTS, WINDOW_SECONDS
 from security_hardening import SecurityHardening
 
 router = APIRouter(prefix="/api/security", tags=["security-status"])

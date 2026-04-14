@@ -288,18 +288,10 @@ async def run_probe_cycle():
 
 
 async def start_probe_scheduler():
-    """Avvia il ciclo di probe ogni 60 secondi."""
-    global _probe_task
-    if _probe_task:
-        return
-
-    async def loop():
-        while True:
-            await run_probe_cycle()
-            await asyncio.sleep(60)
-
-    _probe_task = asyncio.create_task(loop())
-    logger.info("External WAN probe scheduler started (interval: 60s)")
+    """Avvia il ciclo di probe ogni 60 secondi con lock distribuito."""
+    from middleware.task_coordinator import coordinator
+    coordinator.schedule("wan_probe", run_probe_cycle, 60)
+    logger.info("External WAN probe scheduler registered (interval: 60s)")
 
 
 # ==================== API ENDPOINTS ====================

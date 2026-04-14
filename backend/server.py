@@ -121,6 +121,65 @@ async def health():
     return {"status": "healthy"}
 
 
+@app.get("/api/health/detailed")
+async def health_detailed():
+    """Health check avanzato con metriche sistema per monitoring infrastruttura."""
+    import psutil
+    import time
+
+    start = time.monotonic()
+
+    # MongoDB check
+    mongo_ok = False
+    mongo_latency = None
+    try:
+        t0 = time.monotonic()
+        await db.command("ping")
+        mongo_latency = round((time.monotonic() - t0) * 1000, 1)
+        mongo_ok = True
+    except Exception:
+        pass
+
+    # System metrics
+    cpu_pct = psutil.cpu_percent(interval=0.1)
+    mem = psutil.virtual_memory()
+    disk = psutil.disk_usage("/")
+
+    # Collection stats
+    try:
+        col_count = len(await db.list_collection_names())
+    except Exception:
+        col_count = 0
+
+    # Worker info
+    import os
+    worker_pid = os.getpid()
+
+    elapsed = round((time.monotonic() - start) * 1000, 1)
+
+    return {
+        "status": "healthy" if mongo_ok else "degraded",
+        "response_ms": elapsed,
+        "mongodb": {
+            "connected": mongo_ok,
+            "latency_ms": mongo_latency,
+            "collections": col_count,
+        },
+        "system": {
+            "cpu_percent": cpu_pct,
+            "memory_used_mb": round(mem.used / 1024 / 1024),
+            "memory_total_mb": round(mem.total / 1024 / 1024),
+            "memory_percent": mem.percent,
+            "disk_used_gb": round(disk.used / 1024 / 1024 / 1024, 1),
+            "disk_total_gb": round(disk.total / 1024 / 1024 / 1024, 1),
+            "disk_percent": round(disk.percent, 1),
+        },
+        "worker": {
+            "pid": worker_pid,
+        },
+    }
+
+
 # ==================== INCLUDE ALL ROUTE MODULES ====================
 
 from routes.auth import router as auth_router
