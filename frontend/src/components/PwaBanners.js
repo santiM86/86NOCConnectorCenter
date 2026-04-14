@@ -55,13 +55,14 @@ export function NotificationPermissionBanner() {
   const pwa = usePwa();
   const [dismissed, setDismissed] = useState(false);
   const [enabled, setEnabled] = useState(false);
+  const location = window.location.pathname;
 
   useEffect(() => {
     const d = localStorage.getItem("noc_notif_dismissed");
     if (d) setDismissed(true);
   }, []);
 
-  if (!pwa || pwa.notificationPermission !== "default" || dismissed) return null;
+  if (!pwa || pwa.notificationPermission !== "default" || dismissed || location === "/login" || location === "/2fa") return null;
 
   const handleEnable = async () => {
     const perm = await pwa.requestNotificationPermission();
