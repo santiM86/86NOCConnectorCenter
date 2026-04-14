@@ -151,6 +151,7 @@ from routes.backup import router as backup_router
 from routes.soc_ai import router as soc_ai_router
 from routes.security_status import router as security_status_router
 from routes.security_advanced import router as security_advanced_router
+from routes.external_monitor import router as external_monitor_router
 
 app.include_router(auth_router)
 app.include_router(admin_router)
@@ -181,6 +182,7 @@ app.include_router(backup_router)
 app.include_router(soc_ai_router)
 app.include_router(security_status_router)
 app.include_router(security_advanced_router)
+app.include_router(external_monitor_router)
 
 # Include enterprise routes
 from enterprise_routes import create_enterprise_router

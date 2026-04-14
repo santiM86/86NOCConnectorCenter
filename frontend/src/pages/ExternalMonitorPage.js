@@ -1,0 +1,231 @@
+import { useState, useEffect, useCallback } from "react";
+import { API } from "@/App";
+import axios from "axios";
+import { toast } from "sonner";
+import {
+  Globe, WifiHigh, WifiSlash, Plus, Trash, ArrowClockwise,
+  Lightning, ShieldCheck, HardDrives, Warning, CheckCircle, Clock,
+} from "@phosphor-icons/react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+
+const STATUS_CONFIG = {
+  online: { color: "#34C759", label: "ONLINE", icon: WifiHigh },
+  degraded: { color: "#FFCC00", label: "DEGRADATO", icon: Warning },
+  offline: { color: "#FF3B30", label: "OFFLINE", icon: WifiSlash },
+  unknown: { color: "#555", label: "---", icon: Clock },
+  not_configured: { color: "#555", label: "NON CONFIG.", icon: Clock },
+};
+
+const DIAG_CONFIG = {
+  ok: { color: "#34C759", icon: CheckCircle },
+  isp_down: { color: "#FF3B30", icon: WifiSlash },
+  firewall_down: { color: "#FF3B30", icon: ShieldCheck },
+  router_down: { color: "#FF3B30", icon: HardDrives },
+  firewall_degraded: { color: "#FFCC00", icon: Warning },
+  router_degraded: { color: "#FFCC00", icon: Warning },
+  unknown: { color: "#555", icon: Clock },
+  not_configured: { color: "#555", icon: Clock },
+};
+
+export default function ExternalMonitorPage() {
+  const [targets, setTargets] = useState([]);
+  const [status, setStatus] = useState({ results: [], diagnoses: [] });
+  const [clients, setClients] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showAdd, setShowAdd] = useState(false);
+  const [form, setForm] = useState({ client_id: "", label: "", device_type: "firewall", public_ip: "", check_ports: "443" });
+
+  const fetchAll = useCallback(async () => {
+    try {
+      const [t, s, c] = await Promise.all([
+        axios.get(`${API}/external-monitor/targets`),
+        axios.get(`${API}/external-monitor/status`),
+        axios.get(`${API}/clients`),
+      ]);
+      setTargets(t.data.targets || []);
+      setStatus(s.data || { results: [], diagnoses: [] });
+      setClients(c.data || []);
+    } catch {} finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => { fetchAll(); const i = setInterval(fetchAll, 30000); return () => clearInterval(i); }, [fetchAll]);
+
+  const addTarget = async () => {
+    try {
+      const ports = form.check_ports.split(",").map(p => parseInt(p.trim())).filter(p => !isNaN(p) && p > 0);
+      await axios.post(`${API}/external-monitor/targets`, { ...form, check_ports: ports.length ? ports : [443] });
+      toast.success("Target aggiunto");
+      setShowAdd(false);
+      setForm({ client_id: "", label: "", device_type: "firewall", public_ip: "", check_ports: "443" });
+      fetchAll();
+    } catch (e) { toast.error(e.response?.data?.detail || "Errore"); }
+  };
+
+  const deleteTarget = async (id) => {
+    if (!window.confirm("Eliminare questo target?")) return;
+    try {
+      await axios.delete(`${API}/external-monitor/targets/${id}`);
+      toast.success("Target eliminato");
+      fetchAll();
+    } catch { toast.error("Errore"); }
+  };
+
+  const probeNow = async () => {
+    try {
+      await axios.post(`${API}/external-monitor/probe-now`);
+      toast.success("Probe avviato, risultati tra pochi secondi");
+      setTimeout(fetchAll, 5000);
+    } catch { toast.error("Errore"); }
+  };
+
+  const resultMap = {};
+  (status.results || []).forEach(r => { resultMap[r.target_id] = r; });
+  const diagMap = {};
+  (status.diagnoses || []).forEach(d => { diagMap[d.client_id] = d; });
+  const clientMap = {};
+  clients.forEach(c => { clientMap[c.id] = c.name; });
+
+  // Group targets by client
+  const byClient = {};
+  targets.forEach(t => {
+    if (!byClient[t.client_id]) byClient[t.client_id] = [];
+    byClient[t.client_id].push(t);
+  });
+
+  if (loading) return <div className="p-6 text-[var(--text-muted)]">Caricamento...</div>;
+
+  return (
+    <div className="p-4 md:p-6 space-y-5 max-w-6xl" data-testid="external-monitor-page">
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div>
+          <h1 className="text-lg font-bold text-[var(--text-primary)] flex items-center gap-2">
+            <Globe size={22} weight="bold" className="text-blue-400" />
+            Monitoraggio WAN Esterno
+          </h1>
+          <p className="text-xs text-[var(--text-muted)] mt-0.5">Connettivita' internet clienti — Ping + TCP dall'esterno</p>
+        </div>
+        <div className="flex gap-2">
+          <Button size="sm" className="h-7 text-xs gap-1" onClick={probeNow} data-testid="probe-now-btn">
+            <Lightning size={12} /> Probe Ora
+          </Button>
+          <Button size="sm" className="h-7 text-xs gap-1" onClick={() => setShowAdd(!showAdd)} data-testid="add-target-btn">
+            <Plus size={12} /> Aggiungi Target
+          </Button>
+          <Button variant="ghost" size="sm" className="h-7 text-xs gap-1" onClick={fetchAll}>
+            <ArrowClockwise size={12} /> Aggiorna
+          </Button>
+        </div>
+      </div>
+
+      {/* Add form */}
+      {showAdd && (
+        <div className="rounded-lg bg-[var(--bg-panel)] border border-[var(--bg-border)] p-4 space-y-3" data-testid="add-target-form">
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+            <div className="space-y-1">
+              <Label className="text-[9px] uppercase tracking-widest text-[var(--text-muted)]">Cliente *</Label>
+              <Select value={form.client_id} onValueChange={v => setForm(p => ({ ...p, client_id: v }))}>
+                <SelectTrigger className="h-7 text-xs bg-[var(--bg-card)] border-[var(--bg-border)] text-[var(--text-primary)]" data-testid="target-client-select">
+                  <SelectValue placeholder="Seleziona..." />
+                </SelectTrigger>
+                <SelectContent className="bg-[var(--bg-panel)] border-[var(--bg-border)]">
+                  {clients.map(c => <SelectItem key={c.id} value={c.id} className="text-xs">{c.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <Label className="text-[9px] uppercase tracking-widest text-[var(--text-muted)]">Tipo *</Label>
+              <Select value={form.device_type} onValueChange={v => setForm(p => ({ ...p, device_type: v }))}>
+                <SelectTrigger className="h-7 text-xs bg-[var(--bg-card)] border-[var(--bg-border)] text-[var(--text-primary)]" data-testid="target-type-select">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="bg-[var(--bg-panel)] border-[var(--bg-border)]">
+                  <SelectItem value="firewall" className="text-xs">Firewall</SelectItem>
+                  <SelectItem value="router" className="text-xs">Router</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <Label className="text-[9px] uppercase tracking-widest text-[var(--text-muted)]">Label *</Label>
+              <Input value={form.label} onChange={e => setForm(p => ({ ...p, label: e.target.value }))} placeholder="Zyxel USG FLEX 200" className="h-7 text-xs bg-[var(--bg-card)] border-[var(--bg-border)] text-[var(--text-primary)]" data-testid="target-label-input" />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-[9px] uppercase tracking-widest text-[var(--text-muted)]">IP Pubblico *</Label>
+              <Input value={form.public_ip} onChange={e => setForm(p => ({ ...p, public_ip: e.target.value }))} placeholder="85.42.xxx.xxx" className="h-7 text-xs bg-[var(--bg-card)] border-[var(--bg-border)] text-[var(--text-primary)]" data-testid="target-ip-input" />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-[9px] uppercase tracking-widest text-[var(--text-muted)]">Porte TCP</Label>
+              <Input value={form.check_ports} onChange={e => setForm(p => ({ ...p, check_ports: e.target.value }))} placeholder="443,500,4500" className="h-7 text-xs bg-[var(--bg-card)] border-[var(--bg-border)] text-[var(--text-primary)]" data-testid="target-ports-input" />
+            </div>
+            <div className="flex items-end">
+              <Button size="sm" className="h-7 text-xs w-full" onClick={addTarget} disabled={!form.client_id || !form.public_ip || !form.label} data-testid="save-target-btn">Salva</Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Per-client diagnosis cards */}
+      {Object.entries(byClient).map(([cid, cTargets]) => {
+        const diag = diagMap[cid];
+        const diagCode = diag?.diagnosis || "not_configured";
+        const dc = DIAG_CONFIG[diagCode] || DIAG_CONFIG.unknown;
+        const DiagIcon = dc.icon;
+
+        return (
+          <div key={cid} className="rounded-lg bg-[var(--bg-panel)] border border-[var(--bg-border)] overflow-hidden" data-testid={`wan-client-${cid}`}>
+            <div className="flex items-center gap-3 p-3 border-b border-[var(--bg-border)]">
+              <DiagIcon size={18} weight="bold" style={{ color: dc.color }} />
+              <div className="flex-1">
+                <span className="text-sm font-bold text-[var(--text-primary)]">{clientMap[cid] || cid}</span>
+                <span className="ml-3 text-xs" style={{ color: dc.color }}>{diag?.diagnosis_text || "Non configurato"}</span>
+              </div>
+            </div>
+            <div className="divide-y divide-[var(--bg-border)]">
+              {cTargets.map(t => {
+                const r = resultMap[t.id];
+                const st = STATUS_CONFIG[r?.status] || STATUS_CONFIG.unknown;
+                const StIcon = st.icon;
+                return (
+                  <div key={t.id} className="flex items-center gap-3 p-3 hover:bg-[var(--bg-app)]/50" data-testid={`wan-target-${t.id}`}>
+                    <StIcon size={16} weight="bold" style={{ color: st.color }} />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-semibold text-[var(--text-primary)]">{t.label}</span>
+                        <span className="text-[9px] px-1.5 py-0.5 rounded font-bold uppercase" style={{ color: st.color, background: `${st.color}15` }}>{st.label}</span>
+                        <span className="text-[10px] text-[var(--text-muted)] font-mono">{t.public_ip}</span>
+                        <span className="text-[9px] text-[var(--text-muted)] uppercase">{t.device_type}</span>
+                      </div>
+                      {r && (
+                        <div className="flex items-center gap-4 mt-1 text-[10px] text-[var(--text-muted)]">
+                          <span>Latenza: <b style={{ color: r.ping?.latency_ms > 100 ? "#FF3B30" : r.ping?.latency_ms > 50 ? "#FFCC00" : "#34C759" }}>{r.ping?.latency_ms ?? "—"}ms</b></span>
+                          <span>Loss: <b style={{ color: r.ping?.packet_loss_pct > 5 ? "#FF3B30" : "#34C759" }}>{r.ping?.packet_loss_pct ?? "—"}%</b></span>
+                          {r.ports?.map((p, i) => (
+                            <span key={i}>TCP {p.port}: <b style={{ color: p.open ? "#34C759" : "#FF3B30" }}>{p.open ? "OPEN" : "CLOSED"}</b>{p.response_ms ? ` (${p.response_ms}ms)` : ""}</span>
+                          ))}
+                          <span className="ml-auto">{r.checked_at ? new Date(r.checked_at).toLocaleTimeString("it-IT") : ""}</span>
+                        </div>
+                      )}
+                    </div>
+                    <Button variant="ghost" size="sm" className="h-6 w-6 p-0 text-[var(--text-muted)] hover:text-red-400" onClick={() => deleteTarget(t.id)}>
+                      <Trash size={12} />
+                    </Button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })}
+
+      {targets.length === 0 && (
+        <div className="text-center py-12 text-[var(--text-muted)]">
+          <Globe size={40} className="mx-auto mb-3 opacity-30" />
+          <p className="text-sm">Nessun target WAN configurato</p>
+          <p className="text-xs mt-1">Aggiungi gli IP pubblici dei firewall e router dei clienti per iniziare il monitoraggio</p>
+        </div>
+      )}
+    </div>
+  );
+}

@@ -227,6 +227,34 @@ function ClientTile({ client, alerts, toner, offline }) {
         </div>
       </div>
 
+      {/* WAN Status for this client */}
+      {c.wan_targets && c.wan_targets.length > 0 && (
+        <div className="tv-tile-wan" data-testid={`tv-tile-wan-${c.id}`}>
+          <div className="tv-tile-sec-label">
+            CONNETTIVITA' WAN
+            {c.wan_diagnosis && c.wan_diagnosis !== "not_configured" && (
+              <span className={`tv-tile-wan-diag tv-tile-wan-${c.wan_diagnosis}`}>{c.wan_diagnosis === "ok" ? "OK" : c.wan_diagnosis_text}</span>
+            )}
+          </div>
+          <div className="tv-tile-wan-list">
+            {c.wan_targets.map((w, i) => (
+              <div key={i} className={`tv-tile-wan-row tv-tile-wan-${w.status}`}>
+                <span className={`tv-tile-wan-dot tv-tile-wan-dot-${w.status}`} />
+                <span className="tv-tile-wan-label">{w.label}</span>
+                <span className="tv-tile-wan-type">{w.device_type === "firewall" ? "FW" : "RT"}</span>
+                <span className="tv-tile-wan-ip">{w.public_ip}</span>
+                {w.latency_ms !== null && w.latency_ms !== undefined && (
+                  <span className="tv-tile-wan-lat" style={{ color: w.latency_ms > 100 ? "#FF3B30" : w.latency_ms > 50 ? "#FFCC00" : "#34C759" }}>
+                    {w.latency_ms}ms
+                  </span>
+                )}
+                {w.status === "offline" && <span className="tv-tile-wan-down">DOWN</span>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Critical alerts */}
       {critAlerts.length > 0 && (
         <div className="tv-tile-alerts" data-testid={`tv-tile-alerts-${c.id}`}>

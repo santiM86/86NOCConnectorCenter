@@ -98,7 +98,26 @@
 .tv-tile-toner { padding:6px 12px;background:rgba(255,204,0,.02); }
 
 /* Section labels */
-.tv-tile-sec-label { font-size:9px;font-weight:800;color:#444;text-transform:uppercase;letter-spacing:2px;padding:6px 0 4px; }
+.tv-tile-sec-label { font-size:9px;font-weight:800;color:#444;text-transform:uppercase;letter-spacing:2px;padding:6px 0 4px;display:flex;align-items:center;gap:8px; }
+
+/* WAN status inside tile */
+.tv-tile-wan { padding:6px 12px;border-bottom:1px solid #1a1a1a;background:rgba(0,122,255,.02); }
+.tv-tile-wan-diag { font-size:9px;font-weight:800;padding:1px 6px; }
+.tv-tile-wan-ok .tv-tile-wan-diag, .tv-tile-wan-diag.tv-tile-wan-ok { color:#34C759;background:rgba(52,199,89,.1); }
+.tv-tile-wan-isp_down .tv-tile-wan-diag, .tv-tile-wan-diag.tv-tile-wan-isp_down { color:#FF3B30;background:rgba(255,59,48,.15);animation:blink 1s ease-in-out infinite; }
+.tv-tile-wan-firewall_down .tv-tile-wan-diag { color:#FF3B30;background:rgba(255,59,48,.1); }
+.tv-tile-wan-router_down .tv-tile-wan-diag { color:#FF3B30;background:rgba(255,59,48,.1); }
+.tv-tile-wan-list { display:flex;flex-direction:column;gap:2px; }
+.tv-tile-wan-row { display:flex;align-items:center;gap:8px;padding:3px 0;font-size:12px; }
+.tv-tile-wan-dot { width:8px;height:8px;border-radius:50%;flex-shrink:0; }
+.tv-tile-wan-dot-online { background:#34C759; }
+.tv-tile-wan-dot-degraded { background:#FFCC00;animation:blink 1.5s ease-in-out infinite; }
+.tv-tile-wan-dot-offline { background:#FF3B30;animation:blink 1s ease-in-out infinite;box-shadow:0 0 6px rgba(255,59,48,.5); }
+.tv-tile-wan-label { font-weight:700;color:#ddd;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
+.tv-tile-wan-type { font-size:9px;color:#555;font-weight:800;letter-spacing:1px; }
+.tv-tile-wan-ip { font-size:10px;color:#555;font-variant-numeric:tabular-nums; }
+.tv-tile-wan-lat { font-size:11px;font-weight:800;font-variant-numeric:tabular-nums; }
+.tv-tile-wan-down { font-size:9px;font-weight:900;color:#FF3B30;letter-spacing:1px;animation:blink 1s ease-in-out infinite; }
 
 /* Device map inside tile */
 .tv-tile-devices { padding:4px 12px;flex:1;overflow-y:auto;scrollbar-width:thin;scrollbar-color:#222 transparent;border-bottom:1px solid #1a1a1a; }

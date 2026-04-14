@@ -38,6 +38,7 @@ import {
   Lightning,
   Sliders,
   ArrowsDownUp,
+  Globe,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import {
@@ -63,6 +64,7 @@ const navConfig = [
       { path: "/bandwidth", icon: ArrowsDownUp, label: "Bandwidth", roles: ["admin", "operator", "viewer"] },
       { path: "/backup", icon: Database, label: "Backup", roles: ["admin", "operator", "viewer"] },
       { path: "/trends", icon: ChartLine, label: "Grafici Trend", roles: ["admin", "operator", "viewer"] },
+      { path: "/wan-monitor", icon: Globe, label: "Monitor WAN", roles: ["admin", "operator"] },
     ],
   },
   {

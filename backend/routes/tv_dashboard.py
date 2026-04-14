@@ -240,6 +240,34 @@ async def tv_dashboard_data():
             "time_ago": _time_ago(ev.get("created_at", "")),
         })
 
+    # 11. WAN monitoring data (external probe results)
+    wan_diagnoses = await db.wan_client_diagnosis.find({}, {"_id": 0}).to_list(100)
+    wan_diag_map = {d["client_id"]: d for d in wan_diagnoses}
+    wan_results = await db.wan_probe_results.find({}, {"_id": 0}).to_list(500)
+    wan_by_client = {}
+    for wr in wan_results:
+        cid = wr.get("client_id", "")
+        if cid not in wan_by_client:
+            wan_by_client[cid] = []
+        wan_by_client[cid].append({
+            "label": wr.get("label", ""),
+            "device_type": wr.get("device_type", ""),
+            "public_ip": wr.get("public_ip", ""),
+            "status": wr.get("status", "unknown"),
+            "latency_ms": wr.get("ping", {}).get("latency_ms"),
+            "packet_loss_pct": wr.get("ping", {}).get("packet_loss_pct"),
+            "ports": wr.get("ports", []),
+            "checked_at": wr.get("checked_at", ""),
+        })
+
+    # Enrich client summaries with WAN data
+    for cs in client_summaries:
+        cid = cs["id"]
+        cs["wan_targets"] = wan_by_client.get(cid, [])
+        diag = wan_diag_map.get(cid)
+        cs["wan_diagnosis"] = diag.get("diagnosis", "not_configured") if diag else "not_configured"
+        cs["wan_diagnosis_text"] = diag.get("diagnosis_text", "Non configurato") if diag else "Non configurato"
+
     return {
         "timestamp": now_iso,
         "global_stats": {
