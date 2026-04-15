@@ -51,20 +51,35 @@ import {
 // ==================== NAV CONFIG ====================
 const navConfig = [
   {
-    id: "monitoring",
-    label: "Monitoraggio",
+    id: "overview",
+    label: "Panoramica",
     items: [
       { path: "/", icon: ChartLineUp, label: "Dashboard", roles: ["admin", "operator", "viewer"] },
       { path: "/alerts", icon: Bell, label: "Alert", hasBadge: true, roles: ["admin", "operator", "viewer"] },
       { path: "/network-status", icon: WifiHigh, label: "Stato Rete", roles: ["admin", "operator", "viewer"] },
+    ],
+  },
+  {
+    id: "monitoring",
+    label: "Monitoraggio",
+    items: [
       { path: "/devices", icon: HardDrives, label: "Dispositivi", roles: ["admin", "operator", "viewer"] },
-      { path: "/inventory", icon: Database, label: "Inventario", roles: ["admin", "operator", "viewer"] },
-      { path: "/port-monitor", icon: Plug, label: "Monitor Servizi", roles: ["admin", "operator"] },
       { path: "/printers", icon: Printer, label: "Stampanti", roles: ["admin", "operator", "viewer"] },
+      { path: "/port-monitor", icon: Plug, label: "Monitor Servizi", roles: ["admin", "operator"] },
       { path: "/bandwidth", icon: ArrowsDownUp, label: "Bandwidth", roles: ["admin", "operator", "viewer"] },
+      { path: "/wan-monitor", icon: Globe, label: "Monitor WAN", roles: ["admin", "operator"] },
       { path: "/backup", icon: Database, label: "Backup", roles: ["admin", "operator", "viewer"] },
       { path: "/trends", icon: ChartLine, label: "Grafici Trend", roles: ["admin", "operator", "viewer"] },
-      { path: "/wan-monitor", icon: Globe, label: "Monitor WAN", roles: ["admin", "operator"] },
+    ],
+  },
+  {
+    id: "infrastructure",
+    label: "Clienti & Rete",
+    items: [
+      { path: "/clients", icon: Buildings, label: "Clienti", roles: ["admin", "operator", "viewer"] },
+      { path: "/inventory", icon: Database, label: "Inventario", roles: ["admin", "operator", "viewer"] },
+      { path: "/connectors", icon: PlugsConnected, label: "Connettori", roles: ["admin", "operator"] },
+      { path: "/discovery", icon: MagnifyingGlass, label: "Auto-Discovery", roles: ["admin", "operator"] },
     ],
   },
   {
@@ -77,33 +92,24 @@ const navConfig = [
     ],
   },
   {
-    id: "infrastructure",
-    label: "Infrastruttura",
-    items: [
-      { path: "/clients", icon: Buildings, label: "Clienti", roles: ["admin", "operator", "viewer"] },
-      { path: "/connectors", icon: PlugsConnected, label: "Connettori", roles: ["admin", "operator"] },
-      { path: "/discovery", icon: MagnifyingGlass, label: "Auto-Discovery", roles: ["admin", "operator"] },
-    ],
-  },
-  {
     id: "security",
     label: "Sicurezza",
     items: [
+      { path: "/correlation", icon: Lightning, label: "SOC AI", roles: ["admin", "operator"] },
       { path: "/vulnerability", icon: ShieldCheck, label: "Vulnerability Assessment", roles: ["admin", "operator"] },
-      { path: "/correlation", icon: Lightning, label: "SOC AI Correlation", roles: ["admin", "operator"] },
-      { path: "/vault", icon: Lock, label: "Vault Credenziali", roles: ["admin"] },
       { path: "/security-dashboard", icon: ShieldCheck, label: "Security Dashboard", roles: ["admin"] },
+      { path: "/vault", icon: Lock, label: "Vault Credenziali", roles: ["admin"] },
       { path: "/enterprise", icon: Shield, label: "Audit & Compliance", roles: ["admin"] },
-      { path: "/users", icon: Users, label: "Gestione Utenti", roles: ["admin"] },
     ],
   },
   {
-    id: "system",
-    label: "Sistema",
+    id: "admin",
+    label: "Amministrazione",
     items: [
-      { path: "/tv", icon: Monitor, label: "TV Dashboard", roles: ["admin", "operator", "viewer"], external: true },
-      { path: "/settings", icon: Gear, label: "Impostazioni", roles: ["admin", "operator"] },
+      { path: "/users", icon: Users, label: "Gestione Utenti", roles: ["admin"] },
       { path: "/thresholds", icon: Sliders, label: "Soglie Alert", roles: ["admin"] },
+      { path: "/settings", icon: Gear, label: "Impostazioni", roles: ["admin", "operator"] },
+      { path: "/tv", icon: Monitor, label: "TV Dashboard", roles: ["admin", "operator", "viewer"], external: true },
     ],
   },
 ];
