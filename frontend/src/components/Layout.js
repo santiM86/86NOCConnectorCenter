@@ -47,6 +47,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { VersionBadge } from "@/components/AppVersion";
 
 // ==================== NAV CONFIG ====================
 const navConfig = [
@@ -318,13 +319,16 @@ export default function Layout() {
               </span>
             </div>
           </div>
-          <button
-            className="md:hidden text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors p-1"
-            onClick={closeSidebar}
-            data-testid="sidebar-close-btn"
-          >
-            <X size={18} />
-          </button>
+          <div className="flex items-center gap-2">
+            <VersionBadge />
+            <button
+              className="md:hidden text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors p-1"
+              onClick={closeSidebar}
+              data-testid="sidebar-close-btn"
+            >
+              <X size={18} />
+            </button>
+          </div>
         </div>
 
         {/* Navigation */}

@@ -6,6 +6,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 import { PwaProvider } from "@/components/PwaProvider";
 import { PwaInstallBanner, NotificationPermissionBanner, OfflineIndicator } from "@/components/PwaBanners";
+import { UpdateBanner, VersionProvider } from "@/components/AppVersion";
 
 // Pages
 import LoginPage from "@/pages/LoginPage";
@@ -175,9 +176,11 @@ function App() {
   return (
     <div className="App">
       <AuthProvider>
+        <VersionProvider>
         <PwaProvider>
         <BrowserRouter>
           <OfflineIndicator />
+          <UpdateBanner />
           <Routes>
             <Route path="/login" element={<LoginPage />} />
             <Route
@@ -225,6 +228,7 @@ function App() {
         </BrowserRouter>
         <Toaster position="top-right" theme="dark" />
         </PwaProvider>
+        </VersionProvider>
       </AuthProvider>
     </div>
   );
