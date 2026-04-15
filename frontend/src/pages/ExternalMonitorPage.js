@@ -36,7 +36,7 @@ export default function ExternalMonitorPage() {
   const [clients, setClients] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
-  const [form, setForm] = useState({ client_id: "", label: "", device_type: "firewall", public_ip: "", check_ports: "443" });
+  const [form, setForm] = useState({ client_id: "", label: "", device_type: "firewall", public_ip: "", gateway_ip: "", check_ports: "443" });
   const [testResult, setTestResult] = useState(null);
   const [testing, setTesting] = useState(false);
 
@@ -58,10 +58,10 @@ export default function ExternalMonitorPage() {
   const addTarget = async () => {
     try {
       const ports = form.check_ports.split(",").map(p => parseInt(p.trim())).filter(p => !isNaN(p) && p > 0);
-      await axios.post(`${API}/external-monitor/targets`, { ...form, check_ports: ports.length ? ports : [443] });
+      await axios.post(`${API}/external-monitor/targets`, { ...form, check_ports: ports.length ? ports : [443], gateway_ip: form.gateway_ip || null });
       toast.success("Target aggiunto");
       setShowAdd(false);
-      setForm({ client_id: "", label: "", device_type: "firewall", public_ip: "", check_ports: "443" });
+      setForm({ client_id: "", label: "", device_type: "firewall", public_ip: "", gateway_ip: "", check_ports: "443" });
       fetchAll();
     } catch (e) { toast.error(e.response?.data?.detail || "Errore"); }
   };
@@ -91,6 +91,7 @@ export default function ExternalMonitorPage() {
       const ports = form.check_ports.split(",").map(p => parseInt(p.trim())).filter(p => !isNaN(p) && p > 0);
       const res = await axios.post(`${API}/external-monitor/test-connection`, {
         public_ip: form.public_ip,
+        gateway_ip: form.gateway_ip || null,
         check_ports: ports.length ? ports : [443],
       });
       setTestResult(res.data);
@@ -146,7 +147,7 @@ export default function ExternalMonitorPage() {
       {/* Add form */}
       {showAdd && (
         <div className="rounded-lg bg-[var(--bg-panel)] border border-[var(--bg-border)] p-4 space-y-3" data-testid="add-target-form">
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             <div className="space-y-1">
               <Label className="text-[9px] uppercase tracking-widest text-[var(--text-muted)]">Cliente *</Label>
               <Select value={form.client_id} onValueChange={v => setForm(p => ({ ...p, client_id: v }))}>
@@ -179,6 +180,10 @@ export default function ExternalMonitorPage() {
               <Input value={form.public_ip} onChange={e => setForm(p => ({ ...p, public_ip: e.target.value }))} placeholder="85.42.xxx.xxx" className="h-7 text-xs bg-[var(--bg-card)] border-[var(--bg-border)] text-[var(--text-primary)]" data-testid="target-ip-input" />
             </div>
             <div className="space-y-1">
+              <Label className="text-[9px] uppercase tracking-widest text-[var(--text-muted)]">Gateway ISP</Label>
+              <Input value={form.gateway_ip} onChange={e => setForm(p => ({ ...p, gateway_ip: e.target.value }))} placeholder="85.42.xxx.1 (opzionale)" className="h-7 text-xs bg-[var(--bg-card)] border-[var(--bg-border)] text-[var(--text-primary)]" data-testid="target-gateway-input" />
+            </div>
+            <div className="space-y-1">
               <Label className="text-[9px] uppercase tracking-widest text-[var(--text-muted)]">Porte TCP</Label>
               <Input value={form.check_ports} onChange={e => setForm(p => ({ ...p, check_ports: e.target.value }))} placeholder="443,500,4500" className="h-7 text-xs bg-[var(--bg-card)] border-[var(--bg-border)] text-[var(--text-primary)]" data-testid="target-ports-input" />
             </div>
@@ -199,7 +204,13 @@ export default function ExternalMonitorPage() {
                 <span className={`font-semibold ${testResult.reachable ? "text-emerald-400" : "text-red-400"}`}>{testResult.summary}</span>
                 <span className="text-[var(--text-muted)] ml-auto font-mono">{testResult.ip}</span>
               </div>
-              <div className="flex gap-4">
+              <div className="flex gap-4 flex-wrap">
+                {testResult.gateway && (
+                  <span className="text-[var(--text-muted)]">
+                    Gateway ISP ({testResult.gateway.ip}): <b style={{ color: testResult.gateway.reachable ? "#34C759" : "#FF3B30" }}>{testResult.gateway.reachable ? "ONLINE" : "OFFLINE"}</b>
+                    {testResult.gateway.latency_ms != null && <span> ({testResult.gateway.latency_ms}ms)</span>}
+                  </span>
+                )}
                 {testResult.ports?.map((p, i) => (
                   <span key={i} className="text-[var(--text-muted)]">
                     TCP {p.port}: <b style={{ color: p.open ? "#34C759" : "#FF3B30" }}>{p.open ? "OPEN" : "CLOSED"}</b>
@@ -226,6 +237,11 @@ export default function ExternalMonitorPage() {
               <div className="flex-1">
                 <span className="text-sm font-bold text-[var(--text-primary)]">{clientMap[cid] || cid}</span>
                 <span className="ml-3 text-xs" style={{ color: dc.color }}>{diag?.diagnosis_text || "Non configurato"}</span>
+                {diag?.gateway_status && (
+                  <span className={`ml-3 text-[10px] px-1.5 py-0.5 rounded font-mono ${diag.gateway_status === "online" ? "bg-emerald-500/10 text-emerald-400" : "bg-red-500/10 text-red-400"}`}>
+                    GW {diag.gateway_ip}: {diag.gateway_status === "online" ? "OK" : "DOWN"}
+                  </span>
+                )}
               </div>
             </div>
             <div className="divide-y divide-[var(--bg-border)]">
@@ -244,9 +260,12 @@ export default function ExternalMonitorPage() {
                         <span className="text-[9px] text-[var(--text-muted)] uppercase">{t.device_type}</span>
                       </div>
                       {r && (
-                        <div className="flex items-center gap-4 mt-1 text-[10px] text-[var(--text-muted)]">
+                        <div className="flex items-center gap-4 mt-1 text-[10px] text-[var(--text-muted)] flex-wrap">
                           <span>Latenza: <b style={{ color: r.ping?.latency_ms > 100 ? "#FF3B30" : r.ping?.latency_ms > 50 ? "#FFCC00" : "#34C759" }}>{r.ping?.latency_ms ?? "—"}ms</b></span>
                           <span>Loss: <b style={{ color: r.ping?.packet_loss_pct > 5 ? "#FF3B30" : "#34C759" }}>{r.ping?.packet_loss_pct ?? "—"}%</b></span>
+                          {r.gateway_ping && (
+                            <span>GW {r.gateway_ip}: <b style={{ color: r.gateway_ping.reachable ? "#34C759" : "#FF3B30" }}>{r.gateway_ping.reachable ? "OK" : "DOWN"}</b>{r.gateway_ping.latency_ms != null && ` (${r.gateway_ping.latency_ms}ms)`}</span>
+                          )}
                           {r.ports?.map((p, i) => (
                             <span key={i}>TCP {p.port}: <b style={{ color: p.open ? "#34C759" : "#FF3B30" }}>{p.open ? "OPEN" : "CLOSED"}</b>{p.response_ms ? ` (${p.response_ms}ms)` : ""}</span>
                           ))}

@@ -16,55 +16,51 @@ Piattaforma NOC enterprise-grade "ARGUS Center" per monitoraggio dispositivi di 
 - [x] Alert + correlazione + WebSocket
 - [x] Credential Vault AES-256-GCM
 
+### Monitor WAN con Gateway ISP (AGGIORNATO - 15/04/2026)
+- [x] Probe Ping ICMP + TCP Port Check verso IP pubblici
+- [x] Campo Gateway ISP opzionale per diagnosi avanzata linea
+- [x] Diagnosi 3 livelli: Gateway ISP → Router → Firewall
+- [x] Test Connection pre-salvataggio (TCP + Gateway Ping)
+- [x] Risultato test dettagliato: porte OPEN/CLOSED, Gateway ONLINE/OFFLINE
+- [x] Diagnosi automatica: ISP down vs Router down vs Firewall down
+- [x] Alert automatici su status change
+
 ### Sistema Auto-Update (NUOVO - 15/04/2026)
-- [x] Endpoint GET /api/app-version: hash SHA256 di tutti i file Python, versione 2.0.XXXX
-- [x] Frontend polling ogni 60 secondi per confronto versione/hash
-- [x] Banner "Nuova versione disponibile" con pulsante Aggiorna
-- [x] Auto-reload per frontend stale (localStorage hash mismatch)
-- [x] Cache-busting: caches.delete + localStorage clear + hard reload
-- [x] VersionBadge nell'header sidebar (V.2.0.XXXX)
-- [x] VersionProvider context condiviso
+- [x] Endpoint GET /api/app-version con hash SHA256 codice
+- [x] Frontend polling ogni 60s, banner aggiornamento
+- [x] Auto-reload frontend stale, cache-busting completo
+- [x] VersionBadge V.2.0.XXXX nell'header sidebar
 
-### Navigazione Sidebar Riorganizzata (AGGIORNATO - 15/04/2026)
-- [x] 6 sezioni logiche: Panoramica, Monitoraggio, Clienti & Rete, Operazioni, Sicurezza, Amministrazione
-- [x] Panoramica: Dashboard, Alert, Stato Rete (3)
-- [x] Monitoraggio: Dispositivi, Stampanti, Monitor Servizi, Bandwidth, Monitor WAN, Backup, Grafici Trend (7)
-- [x] Clienti & Rete: Clienti, Inventario, Connettori, Auto-Discovery (4)
-- [x] Operazioni: Incidenti, Manutenzione, Report PDF (3)
-- [x] Sicurezza: SOC AI, VA, Security Dashboard, Vault, Audit (5)
-- [x] Amministrazione: Gestione Utenti, Soglie Alert, Impostazioni, TV Dashboard (4)
+### Navigazione Sidebar (AGGIORNATO - 15/04/2026)
+- [x] 6 sezioni: Panoramica, Monitoraggio, Clienti & Rete, Operazioni, Sicurezza, Amministrazione
 
-### Gestione Utenti (AGGIORNATO - 14/04/2026)
-- [x] CRUD completo + Toggle attivo/disattivato + Sblocca brute force
-- [x] Stats: Totale, Attivi, MFA, Admin
-- [x] 4 utenti registrati
+### Gestione Utenti
+- [x] CRUD + Toggle attivo/disattivato + Sblocca brute force
+- [x] 4 utenti registrati, stats Totale/Attivi/MFA/Admin
 
-### Login Page Branding (COMPLETATO - 14/04/2026)
-- [x] Icona ARGUS scudo con punto esclamativo
-- [x] Footer Verdana full-width dati fiscali
-- [x] Layout responsive 100vh senza scroll
-- [x] Footer mobile compatto
-- [x] Banner notifiche nascosto su login/2fa
+### Login Page Branding
+- [x] Icona ARGUS scudo, Footer Verdana, layout 100vh responsive
+- [x] Banner notifiche nascosto su login/2fa, footer mobile compatto
 
 ### Tutto il resto (COMPLETATO)
-- [x] Mappa Enterprise, Dashboard Metriche, Report PDF, TV Dashboard
+- [x] Mappa Enterprise, Dashboard, Report PDF, TV Dashboard
 - [x] Stampanti SNMP, VA, Trend, Discovery, Soglie, Manutenzione
-- [x] Bandwidth, SOC AI Gemini, Portale Cliente, Backup Monitoring
+- [x] Bandwidth, SOC AI Gemini, Portale Cliente, Backup
 - [x] Security 21 protezioni, SNMP v3, Connector Hardening
-- [x] Scalabilita' (65 indici, 12 TTL, GZip, Task Coordinator)
-- [x] Mobile Dashboard, WAN Esterno, PWA
+- [x] Scalabilita (65 indici, 12 TTL, GZip, Task Coordinator)
+- [x] Mobile Dashboard, PWA
 
 ## Key API Endpoints
-- GET `/api/app-version` - Versione app e hash codice
-- GET/POST `/api/admin/users` - CRUD utenti
-- PUT `/api/admin/users/{id}/toggle-active` - Attiva/Disattiva
-- PUT `/api/admin/users/{id}/unlock` - Sblocca brute force
+- GET `/api/app-version` - Versione e hash codice
+- POST `/api/external-monitor/test-connection` - Test TCP + Gateway pre-salvataggio
+- POST `/api/external-monitor/targets` - Crea target WAN (con gateway_ip)
+- GET `/api/external-monitor/status` - Stato con diagnosi gateway
 
 ## Backlog
 ### P1
+- [ ] Template SNMP specifici Zyxel (VPN, sessioni, temperatura)
 - [ ] Notifiche Telegram (quando utente fornira bot token)
-- [ ] Notifiche Push Firebase (MOCKED)
-- [ ] Notifiche Email SendGrid (MOCKED)
+- [ ] Notifiche Push Firebase / Email SendGrid (sostituzione mock)
 ### P2
 - [ ] Multi-tenant e White-labeling (SaaS)
 - [ ] LDAP/Active Directory

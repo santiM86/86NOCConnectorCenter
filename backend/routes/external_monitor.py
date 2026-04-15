@@ -27,6 +27,7 @@ class WanTarget(BaseModel):
     label: str  # "Firewall Zyxel", "Router Vodafone", etc.
     device_type: str  # "firewall" or "router"
     public_ip: str
+    gateway_ip: Optional[str] = None  # Gateway ISP per diagnosi linea
     check_ports: list = [443]  # TCP ports to check
     enabled: bool = True
 
@@ -34,12 +35,14 @@ class WanTarget(BaseModel):
 class WanTargetUpdate(BaseModel):
     label: Optional[str] = None
     public_ip: Optional[str] = None
+    gateway_ip: Optional[str] = None
     check_ports: Optional[list] = None
     enabled: Optional[bool] = None
 
 
 class TestConnectionRequest(BaseModel):
     public_ip: str
+    gateway_ip: Optional[str] = None
     check_ports: list = [443]
 
 
@@ -109,9 +112,18 @@ async def probe_target(target: dict) -> dict:
     """Esegue tutti i check su un target WAN."""
     ip = target["public_ip"]
     ports = target.get("check_ports", [443])
+    gateway_ip = target.get("gateway_ip")
 
-    # Ping
-    ping_result = await ping_host(ip)
+    # Ping target + gateway in parallel
+    tasks = [ping_host(ip)]
+    if gateway_ip:
+        tasks.append(ping_host(gateway_ip))
+
+    ping_results = await asyncio.gather(*tasks, return_exceptions=True)
+    ping_result = ping_results[0] if isinstance(ping_results[0], dict) else {"reachable": False, "latency_ms": None, "packet_loss_pct": 100}
+    gateway_ping = None
+    if gateway_ip and len(ping_results) > 1:
+        gateway_ping = ping_results[1] if isinstance(ping_results[1], dict) else {"reachable": False, "latency_ms": None, "packet_loss_pct": 100}
 
     # TCP port checks (in parallel)
     port_tasks = [check_tcp_port(ip, p) for p in ports]
@@ -134,7 +146,7 @@ async def probe_target(target: dict) -> dict:
     else:
         status = "offline"
 
-    return {
+    result = {
         "target_id": target["id"],
         "client_id": target["client_id"],
         "label": target["label"],
@@ -145,6 +157,10 @@ async def probe_target(target: dict) -> dict:
         "ports": port_checks,
         "checked_at": datetime.now(timezone.utc).isoformat(),
     }
+    if gateway_ip:
+        result["gateway_ip"] = gateway_ip
+        result["gateway_ping"] = gateway_ping
+    return result
 
 
 async def diagnose_client(client_id: str, results: list) -> dict:
@@ -157,7 +173,20 @@ async def diagnose_client(client_id: str, results: list) -> dict:
     fw_reachable = any(r["ping"]["reachable"] or any(p.get("open") for p in r.get("ports", [])) for r in fw_results) if fw_results else None
     rt_reachable = any(r["ping"]["reachable"] or any(p.get("open") for p in r.get("ports", [])) for r in rt_results) if rt_results else None
 
-    # Diagnosi
+    # Check gateway ISP status (from any target that has it)
+    gateway_reachable = None
+    gateway_ip = None
+    for r in results:
+        gw = r.get("gateway_ping")
+        if gw is not None:
+            gateway_ip = r.get("gateway_ip")
+            if gw.get("reachable"):
+                gateway_reachable = True
+                break
+            else:
+                gateway_reachable = False
+
+    # Diagnosi avanzata con gateway
     if fw_online and rt_online:
         diagnosis = "ok"
         diagnosis_text = "Connettivita' OK — Firewall e Router raggiungibili"
@@ -168,8 +197,15 @@ async def diagnose_client(client_id: str, results: list) -> dict:
         diagnosis = "ok"
         diagnosis_text = "Connettivita' OK — Firewall raggiungibile"
     elif not fw_reachable and not rt_reachable:
-        diagnosis = "isp_down"
-        diagnosis_text = "LINEA INTERNET GIU' — Né Firewall né Router raggiungibili. Probabile problema ISP"
+        if gateway_reachable is True:
+            diagnosis = "router_down"
+            diagnosis_text = f"ROUTER/FIREWALL DOWN — Linea ISP OK (gateway {gateway_ip} risponde) ma dispositivi non raggiungibili"
+        elif gateway_reachable is False:
+            diagnosis = "isp_down"
+            diagnosis_text = f"LINEA ISP GIU' — Gateway ISP {gateway_ip} non risponde. Problema del provider"
+        else:
+            diagnosis = "isp_down"
+            diagnosis_text = "LINEA INTERNET GIU' — Ne' Firewall ne' Router raggiungibili. Probabile problema ISP"
     elif not fw_reachable and rt_reachable:
         diagnosis = "firewall_down"
         diagnosis_text = "FIREWALL NON RAGGIUNGIBILE — Router OK. Problema sul Firewall"
@@ -186,13 +222,17 @@ async def diagnose_client(client_id: str, results: list) -> dict:
         diagnosis = "unknown"
         diagnosis_text = "Stato indeterminato — Controllare manualmente"
 
-    return {
+    result = {
         "client_id": client_id,
         "diagnosis": diagnosis,
         "diagnosis_text": diagnosis_text,
         "firewall_status": fw_results[0]["status"] if fw_results else "not_configured",
         "router_status": rt_results[0]["status"] if rt_results else "not_configured",
     }
+    if gateway_reachable is not None:
+        result["gateway_status"] = "online" if gateway_reachable else "offline"
+        result["gateway_ip"] = gateway_ip
+    return result
 
 
 # ==================== BACKGROUND PROBE TASK ====================
@@ -389,28 +429,62 @@ async def probe_now(current_user: dict = Depends(get_current_user)):
 
 @router.post("/test-connection")
 async def test_connection(req: TestConnectionRequest, current_user: dict = Depends(get_current_user)):
-    """Test rapido TCP su IP e porte, senza salvare. Per verificare raggiungibilita' prima di aggiungere un target."""
+    """Test rapido TCP + Ping su IP, porte e gateway ISP, senza salvare."""
     ip = req.public_ip.strip()
     ports = req.check_ports if req.check_ports else [443]
+    gateway_ip = req.gateway_ip.strip() if req.gateway_ip else None
 
-    # TCP port checks (in parallel)
-    port_tasks = [check_tcp_port(ip, p, timeout=5) for p in ports]
-    port_results = await asyncio.gather(*port_tasks, return_exceptions=True)
+    # TCP port checks + gateway ping in parallel
+    tasks = [check_tcp_port(ip, p, timeout=5) for p in ports]
+    if gateway_ip:
+        tasks.append(ping_host(gateway_ip, count=2, timeout=3))
+
+    all_results = await asyncio.gather(*tasks, return_exceptions=True)
+
     port_checks = []
-    for r in port_results:
+    for i, r in enumerate(all_results[:len(ports)]):
         if isinstance(r, dict):
             port_checks.append(r)
         else:
-            port_checks.append({"port": 0, "open": False, "response_ms": None})
+            port_checks.append({"port": ports[i] if i < len(ports) else 0, "open": False, "response_ms": None})
+
+    gateway_result = None
+    if gateway_ip:
+        gw_r = all_results[len(ports)]
+        gateway_result = gw_r if isinstance(gw_r, dict) else {"reachable": False, "latency_ms": None, "packet_loss_pct": 100}
 
     any_open = any(p["open"] for p in port_checks)
+    gw_ok = gateway_result["reachable"] if gateway_result else None
 
-    return {
+    # Build summary
+    parts = []
+    if gateway_result:
+        parts.append(f"Gateway ISP: {'OK' if gw_ok else 'NON RAGGIUNGIBILE'}")
+    parts.append(f"Porte: {sum(1 for p in port_checks if p['open'])}/{len(port_checks)} aperte")
+
+    if not any_open and gw_ok:
+        summary = "Linea OK ma dispositivo non raggiungibile — Controllare router/firewall"
+    elif not any_open and gw_ok is False:
+        summary = "Linea ISP down — Gateway non risponde"
+    elif any_open:
+        summary = "Raggiungibile — " + ", ".join(parts)
+    else:
+        summary = "Non raggiungibile — " + ", ".join(parts)
+
+    result = {
         "ip": ip,
         "ports": port_checks,
         "reachable": any_open,
-        "summary": f"{'Raggiungibile' if any_open else 'Non raggiungibile'} — {sum(1 for p in port_checks if p['open'])}/{len(port_checks)} porte aperte",
+        "summary": summary,
     }
+    if gateway_result:
+        result["gateway"] = {
+            "ip": gateway_ip,
+            "reachable": gw_ok,
+            "latency_ms": gateway_result.get("latency_ms"),
+            "packet_loss_pct": gateway_result.get("packet_loss_pct"),
+        }
+    return result
 
 
 @router.get("/history/{target_id}")
