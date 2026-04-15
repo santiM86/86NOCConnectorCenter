@@ -38,6 +38,11 @@ class WanTargetUpdate(BaseModel):
     enabled: Optional[bool] = None
 
 
+class TestConnectionRequest(BaseModel):
+    public_ip: str
+    check_ports: list = [443]
+
+
 # ==================== PROBE FUNCTIONS ====================
 
 async def ping_host(ip: str, count: int = 3, timeout: int = 3) -> dict:
@@ -380,6 +385,32 @@ async def probe_now(current_user: dict = Depends(get_current_user)):
     require_admin(current_user)
     asyncio.create_task(run_probe_cycle())
     return {"status": "ok", "message": "Probe avviato"}
+
+
+@router.post("/test-connection")
+async def test_connection(req: TestConnectionRequest, current_user: dict = Depends(get_current_user)):
+    """Test rapido TCP su IP e porte, senza salvare. Per verificare raggiungibilita' prima di aggiungere un target."""
+    ip = req.public_ip.strip()
+    ports = req.check_ports if req.check_ports else [443]
+
+    # TCP port checks (in parallel)
+    port_tasks = [check_tcp_port(ip, p, timeout=5) for p in ports]
+    port_results = await asyncio.gather(*port_tasks, return_exceptions=True)
+    port_checks = []
+    for r in port_results:
+        if isinstance(r, dict):
+            port_checks.append(r)
+        else:
+            port_checks.append({"port": 0, "open": False, "response_ms": None})
+
+    any_open = any(p["open"] for p in port_checks)
+
+    return {
+        "ip": ip,
+        "ports": port_checks,
+        "reachable": any_open,
+        "summary": f"{'Raggiungibile' if any_open else 'Non raggiungibile'} — {sum(1 for p in port_checks if p['open'])}/{len(port_checks)} porte aperte",
+    }
 
 
 @router.get("/history/{target_id}")

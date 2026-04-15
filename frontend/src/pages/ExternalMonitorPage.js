@@ -37,6 +37,8 @@ export default function ExternalMonitorPage() {
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
   const [form, setForm] = useState({ client_id: "", label: "", device_type: "firewall", public_ip: "", check_ports: "443" });
+  const [testResult, setTestResult] = useState(null);
+  const [testing, setTesting] = useState(false);
 
   const fetchAll = useCallback(async () => {
     try {
@@ -79,6 +81,27 @@ export default function ExternalMonitorPage() {
       toast.success("Probe avviato, risultati tra pochi secondi");
       setTimeout(fetchAll, 5000);
     } catch { toast.error("Errore"); }
+  };
+
+  const testConnection = async () => {
+    if (!form.public_ip) { toast.error("Inserisci un IP pubblico"); return; }
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const ports = form.check_ports.split(",").map(p => parseInt(p.trim())).filter(p => !isNaN(p) && p > 0);
+      const res = await axios.post(`${API}/external-monitor/test-connection`, {
+        public_ip: form.public_ip,
+        check_ports: ports.length ? ports : [443],
+      });
+      setTestResult(res.data);
+      if (res.data.reachable) {
+        toast.success("Connessione OK — Porte raggiungibili");
+      } else {
+        toast.error("Non raggiungibile — Verifica IP e porte");
+      }
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Errore test connessione");
+    } finally { setTesting(false); }
   };
 
   const resultMap = {};
@@ -159,10 +182,33 @@ export default function ExternalMonitorPage() {
               <Label className="text-[9px] uppercase tracking-widest text-[var(--text-muted)]">Porte TCP</Label>
               <Input value={form.check_ports} onChange={e => setForm(p => ({ ...p, check_ports: e.target.value }))} placeholder="443,500,4500" className="h-7 text-xs bg-[var(--bg-card)] border-[var(--bg-border)] text-[var(--text-primary)]" data-testid="target-ports-input" />
             </div>
-            <div className="flex items-end">
-              <Button size="sm" className="h-7 text-xs w-full" onClick={addTarget} disabled={!form.client_id || !form.public_ip || !form.label} data-testid="save-target-btn">Salva</Button>
+            <div className="flex items-end gap-2">
+              <Button size="sm" variant="outline" className="h-7 text-xs flex-1 gap-1 border-blue-500/30 text-blue-400 hover:bg-blue-500/10" onClick={testConnection} disabled={!form.public_ip || testing} data-testid="test-connection-btn">
+                {testing ? <ArrowClockwise size={12} className="animate-spin" /> : <Lightning size={12} />}
+                {testing ? "Testing..." : "Test"}
+              </Button>
+              <Button size="sm" className="h-7 text-xs flex-1" onClick={addTarget} disabled={!form.client_id || !form.public_ip || !form.label} data-testid="save-target-btn">Salva</Button>
             </div>
           </div>
+
+          {/* Test result */}
+          {testResult && (
+            <div className={`rounded-md p-3 border text-xs ${testResult.reachable ? "bg-emerald-500/10 border-emerald-500/30" : "bg-red-500/10 border-red-500/30"}`} data-testid="test-result">
+              <div className="flex items-center gap-2 mb-1.5">
+                {testResult.reachable ? <CheckCircle size={14} weight="bold" className="text-emerald-400" /> : <Warning size={14} weight="bold" className="text-red-400" />}
+                <span className={`font-semibold ${testResult.reachable ? "text-emerald-400" : "text-red-400"}`}>{testResult.summary}</span>
+                <span className="text-[var(--text-muted)] ml-auto font-mono">{testResult.ip}</span>
+              </div>
+              <div className="flex gap-4">
+                {testResult.ports?.map((p, i) => (
+                  <span key={i} className="text-[var(--text-muted)]">
+                    TCP {p.port}: <b style={{ color: p.open ? "#34C759" : "#FF3B30" }}>{p.open ? "OPEN" : "CLOSED"}</b>
+                    {p.response_ms ? <span className="text-[var(--text-muted)]"> ({p.response_ms}ms)</span> : ""}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
