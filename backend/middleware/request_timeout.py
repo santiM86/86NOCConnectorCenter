@@ -15,7 +15,7 @@ from starlette.responses import Response
 logger = logging.getLogger("request_timeout")
 
 TIMEOUT_RULES = [
-    (("/api/soc/", "/api/vulnerability/report/pdf"), 120),
+    (("/api/soc/", "/api/ai/", "/api/vulnerability/report/pdf"), 120),
     (("/api/connector/", "/api/backup/"), 45),
     (("/api/discovery/run",), 180),
 ]

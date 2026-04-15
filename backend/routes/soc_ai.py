@@ -3,6 +3,7 @@ import os
 import json
 import logging
 import uuid
+import asyncio
 from datetime import datetime, timezone, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Request
 from database import db
@@ -146,18 +147,26 @@ ALERT ATTIVI:
         user_text += "\n\nAnalizza la situazione attuale della rete e fornisci correlazioni, raccomandazioni e pattern rilevati."
 
     try:
-        from emergentintegrations.llm.chat import LlmChat, UserMessage
+        import google.generativeai as genai
 
-        session_id = f"soc-{client_id}-{uuid.uuid4().hex[:8]}"
-        chat = LlmChat(
-            api_key=GEMINI_KEY,
-            session_id=session_id,
-            system_message=system_message
+        genai.configure(api_key=GEMINI_KEY)
+        model = genai.GenerativeModel(
+            "gemini-2.5-flash",
+            system_instruction=system_message,
+            generation_config=genai.types.GenerationConfig(
+                temperature=0.3,
+                max_output_tokens=2048,
+            )
         )
-        chat.with_model("gemini", "gemini-2.5-flash")
 
-        user_message = UserMessage(text=user_text)
-        response_text = await chat.send_message(user_message)
+        response = await asyncio.wait_for(
+            asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: model.generate_content(user_text)
+            ),
+            timeout=60
+        )
+        response_text = response.text
 
         # Parse JSON response
         try:
