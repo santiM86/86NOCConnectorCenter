@@ -52,45 +52,81 @@ class TestConnectionRequest(BaseModel):
 # ==================== PROBE FUNCTIONS ====================
 
 async def ping_host(ip: str, count: int = 3, timeout: int = 3) -> dict:
-    """Ping ICMP verso un host. Restituisce latenza media, packet loss, raggiungibilità."""
+    """Ping ICMP verso un host usando SOCK_DGRAM (non richiede root/capabilities)."""
+    import struct as _struct
+    import os as _os
+
+    successes = 0
+    total_latency = 0.0
+
+    for seq in range(count):
+        try:
+            loop = asyncio.get_event_loop()
+            ok, latency = await asyncio.wait_for(
+                loop.run_in_executor(None, _ping_once, ip, seq + 1, timeout),
+                timeout=timeout + 1,
+            )
+            if ok:
+                successes += 1
+                total_latency += latency
+        except (asyncio.TimeoutError, Exception):
+            pass
+
+    reachable = successes > 0
+    packet_loss = round(((count - successes) / count) * 100, 1)
+    avg_latency = round(total_latency / successes, 1) if successes > 0 else None
+
+    return {
+        "reachable": reachable,
+        "latency_ms": avg_latency,
+        "packet_loss_pct": packet_loss,
+    }
+
+
+def _ping_once(ip: str, seq: int, timeout: int = 3):
+    """Single ICMP Echo Request using SOCK_DGRAM (unprivileged)."""
+    import struct as _struct
+    import os as _os
+
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "ping", "-c", str(count), "-W", str(timeout), ip,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout * count + 5)
-        output = stdout.decode("utf-8", errors="ignore")
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_ICMP)
+        s.settimeout(timeout)
+        icmp_id = _os.getpid() & 0xFFFF
 
-        # Parse ping output
-        reachable = proc.returncode == 0
-        latency_avg = None
-        packet_loss = 100.0
+        # Build ICMP Echo Request: type=8, code=0
+        header = _struct.pack('!BBHHH', 8, 0, 0, icmp_id, seq)
+        data = b'ARGUS-NOC-PING!!'  # 16 bytes payload
 
-        for line in output.split("\n"):
-            if "packet loss" in line:
-                try:
-                    loss_str = line.split("%")[0].split()[-1]
-                    packet_loss = float(loss_str)
-                except (ValueError, IndexError):
-                    pass
-            if "avg" in line and "/" in line:
-                try:
-                    parts = line.split("=")[1].strip().split("/")
-                    latency_avg = float(parts[1])  # avg is second value
-                except (ValueError, IndexError):
-                    pass
+        # Calculate checksum
+        packet = header + data
+        chk = 0
+        for i in range(0, len(packet), 2):
+            w = packet[i] + (packet[i + 1] << 8) if i + 1 < len(packet) else packet[i]
+            chk += w
+        chk = (chk >> 16) + (chk & 0xFFFF)
+        chk = ~chk & 0xFFFF
 
-        return {
-            "reachable": reachable,
-            "latency_ms": round(latency_avg, 1) if latency_avg else None,
-            "packet_loss_pct": packet_loss,
-        }
-    except asyncio.TimeoutError:
-        return {"reachable": False, "latency_ms": None, "packet_loss_pct": 100.0}
-    except Exception as e:
-        logger.error(f"Ping error for {ip}: {e}")
-        return {"reachable": False, "latency_ms": None, "packet_loss_pct": 100.0}
+        header = _struct.pack('!BBHHH', 8, 0, chk, icmp_id, seq)
+        packet = header + data
+
+        start = time.monotonic()
+        s.sendto(packet, (ip, 0))
+        s.recvfrom(1024)
+        elapsed = round((time.monotonic() - start) * 1000, 1)
+        s.close()
+        return True, elapsed
+    except socket.timeout:
+        try:
+            s.close()
+        except Exception:
+            pass
+        return False, 0
+    except Exception:
+        try:
+            s.close()
+        except Exception:
+            pass
+        return False, 0
 
 
 async def check_tcp_port(ip: str, port: int, timeout: int = 3) -> dict:
