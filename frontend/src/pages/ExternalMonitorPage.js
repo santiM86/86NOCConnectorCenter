@@ -36,7 +36,7 @@ export default function ExternalMonitorPage() {
   const [clients, setClients] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
-  const [form, setForm] = useState({ client_id: "", label: "", device_type: "firewall", public_ip: "", gateway_ip: "", check_ports: "443" });
+  const [form, setForm] = useState({ client_id: "", label: "", device_type: "firewall", public_ip: "", gateway_ip: "", check_ports: "443", check_ping: false });
   const [testResult, setTestResult] = useState(null);
   const [testing, setTesting] = useState(false);
 
@@ -58,10 +58,10 @@ export default function ExternalMonitorPage() {
   const addTarget = async () => {
     try {
       const ports = form.check_ports.split(",").map(p => parseInt(p.trim())).filter(p => !isNaN(p) && p > 0);
-      await axios.post(`${API}/external-monitor/targets`, { ...form, check_ports: ports.length ? ports : [443], gateway_ip: form.gateway_ip || null });
+      await axios.post(`${API}/external-monitor/targets`, { ...form, check_ports: ports, check_ping: form.check_ping, gateway_ip: form.gateway_ip || null });
       toast.success("Target aggiunto");
       setShowAdd(false);
-      setForm({ client_id: "", label: "", device_type: "firewall", public_ip: "", gateway_ip: "", check_ports: "443" });
+      setForm({ client_id: "", label: "", device_type: "firewall", public_ip: "", gateway_ip: "", check_ports: "443", check_ping: false });
       fetchAll();
     } catch (e) { toast.error(e.response?.data?.detail || "Errore"); }
   };
@@ -92,13 +92,14 @@ export default function ExternalMonitorPage() {
       const res = await axios.post(`${API}/external-monitor/test-connection`, {
         public_ip: form.public_ip,
         gateway_ip: form.gateway_ip || null,
-        check_ports: ports.length ? ports : [443],
+        check_ports: ports,
+        check_ping: form.check_ping,
       });
       setTestResult(res.data);
       if (res.data.reachable) {
-        toast.success("Connessione OK — Porte raggiungibili");
+        toast.success("Connessione OK — Dispositivo raggiungibile");
       } else {
-        toast.error("Non raggiungibile — Verifica IP e porte");
+        toast.error("Non raggiungibile — Verifica IP e configurazione");
       }
     } catch (e) {
       toast.error(e.response?.data?.detail || "Errore test connessione");
@@ -185,7 +186,18 @@ export default function ExternalMonitorPage() {
             </div>
             <div className="space-y-1">
               <Label className="text-[9px] uppercase tracking-widest text-[var(--text-muted)]">Porte TCP</Label>
-              <Input value={form.check_ports} onChange={e => setForm(p => ({ ...p, check_ports: e.target.value }))} placeholder="443,500,4500" className="h-7 text-xs bg-[var(--bg-card)] border-[var(--bg-border)] text-[var(--text-primary)]" data-testid="target-ports-input" />
+              <Input value={form.check_ports} onChange={e => setForm(p => ({ ...p, check_ports: e.target.value }))} placeholder="443, vuoto se solo ping" className="h-7 text-xs bg-[var(--bg-card)] border-[var(--bg-border)] text-[var(--text-primary)]" data-testid="target-ports-input" />
+            </div>
+            <div className="flex items-end pb-0.5">
+              <label className="flex items-center gap-2 cursor-pointer select-none" data-testid="check-ping-toggle">
+                <div
+                  onClick={() => setForm(p => ({ ...p, check_ping: !p.check_ping }))}
+                  className={`w-9 h-5 rounded-full transition-colors flex items-center px-0.5 cursor-pointer ${form.check_ping ? "bg-emerald-500" : "bg-[var(--bg-border)]"}`}
+                >
+                  <div className={`w-4 h-4 rounded-full bg-white shadow transition-transform ${form.check_ping ? "translate-x-4" : "translate-x-0"}`} />
+                </div>
+                <span className="text-[10px] text-[var(--text-secondary)] whitespace-nowrap">Ping ICMP</span>
+              </label>
             </div>
             <div className="flex items-end gap-2">
               <Button size="sm" variant="outline" className="h-7 text-xs flex-1 gap-1 border-blue-500/30 text-blue-400 hover:bg-blue-500/10" onClick={testConnection} disabled={!form.public_ip || testing} data-testid="test-connection-btn">
@@ -205,6 +217,12 @@ export default function ExternalMonitorPage() {
                 <span className="text-[var(--text-muted)] ml-auto font-mono">{testResult.ip}</span>
               </div>
               <div className="flex gap-4 flex-wrap">
+                {testResult.ping && (
+                  <span className="text-[var(--text-muted)]">
+                    Ping ICMP: <b style={{ color: testResult.ping.reachable ? "#34C759" : "#FF3B30" }}>{testResult.ping.reachable ? "OK" : "NON RISPONDE"}</b>
+                    {testResult.ping.latency_ms != null && <span> ({testResult.ping.latency_ms}ms, loss {testResult.ping.packet_loss_pct}%)</span>}
+                  </span>
+                )}
                 {testResult.gateway && (
                   <span className="text-[var(--text-muted)]">
                     Gateway ISP ({testResult.gateway.ip}): <b style={{ color: testResult.gateway.reachable ? "#34C759" : "#FF3B30" }}>{testResult.gateway.reachable ? "ONLINE" : "OFFLINE"}</b>
@@ -258,6 +276,7 @@ export default function ExternalMonitorPage() {
                         <span className="text-[9px] px-1.5 py-0.5 rounded font-bold uppercase" style={{ color: st.color, background: `${st.color}15` }}>{st.label}</span>
                         <span className="text-[10px] text-[var(--text-muted)] font-mono">{t.public_ip}</span>
                         <span className="text-[9px] text-[var(--text-muted)] uppercase">{t.device_type}</span>
+                        {t.check_ping && <span className="text-[9px] px-1 py-0.5 rounded bg-blue-500/10 text-blue-400 font-bold">ICMP</span>}
                       </div>
                       {r && (
                         <div className="flex items-center gap-4 mt-1 text-[10px] text-[var(--text-muted)] flex-wrap">

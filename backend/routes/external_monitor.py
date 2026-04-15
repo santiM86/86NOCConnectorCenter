@@ -29,6 +29,7 @@ class WanTarget(BaseModel):
     public_ip: str
     gateway_ip: Optional[str] = None  # Gateway ISP per diagnosi linea
     check_ports: list = [443]  # TCP ports to check
+    check_ping: bool = False  # ICMP Echo (ping) check
     enabled: bool = True
 
 
@@ -37,6 +38,7 @@ class WanTargetUpdate(BaseModel):
     public_ip: Optional[str] = None
     gateway_ip: Optional[str] = None
     check_ports: Optional[list] = None
+    check_ping: Optional[bool] = None
     enabled: Optional[bool] = None
 
 
@@ -44,6 +46,7 @@ class TestConnectionRequest(BaseModel):
     public_ip: str
     gateway_ip: Optional[str] = None
     check_ports: list = [443]
+    check_ping: bool = False
 
 
 # ==================== PROBE FUNCTIONS ====================
@@ -113,6 +116,10 @@ async def probe_target(target: dict) -> dict:
     ip = target["public_ip"]
     ports = target.get("check_ports", [443])
     gateway_ip = target.get("gateway_ip")
+    use_ping = target.get("check_ping", False)
+
+    # Filter out non-numeric ports (legacy "icmp" entries)
+    ports = [p for p in ports if isinstance(p, int) and p > 0]
 
     # Ping target + gateway in parallel
     tasks = [ping_host(ip)]
@@ -125,24 +132,29 @@ async def probe_target(target: dict) -> dict:
     if gateway_ip and len(ping_results) > 1:
         gateway_ping = ping_results[1] if isinstance(ping_results[1], dict) else {"reachable": False, "latency_ms": None, "packet_loss_pct": 100}
 
-    # TCP port checks (in parallel)
-    port_tasks = [check_tcp_port(ip, p) for p in ports]
-    port_results = await asyncio.gather(*port_tasks, return_exceptions=True)
+    # TCP port checks (in parallel) — skip if no ports configured
     port_checks = []
-    for r in port_results:
-        if isinstance(r, dict):
-            port_checks.append(r)
-        else:
-            port_checks.append({"port": 0, "open": False, "response_ms": None})
+    if ports:
+        port_tasks = [check_tcp_port(ip, p) for p in ports]
+        port_results = await asyncio.gather(*port_tasks, return_exceptions=True)
+        for r in port_results:
+            if isinstance(r, dict):
+                port_checks.append(r)
+            else:
+                port_checks.append({"port": 0, "open": False, "response_ms": None})
 
     # Determine status
-    any_port_open = any(p["open"] for p in port_checks)
-    if ping_result["reachable"] and any_port_open:
+    any_port_open = any(p["open"] for p in port_checks) if port_checks else False
+
+    if use_ping and not ports:
+        # Ping-only mode: status depends entirely on ping
+        status = "online" if ping_result["reachable"] else "offline"
+    elif ping_result["reachable"] and (any_port_open or not ports):
         status = "online"
-    elif ping_result["reachable"] and not any_port_open:
+    elif ping_result["reachable"] and ports and not any_port_open:
         status = "degraded"  # Ping OK but services down
     elif not ping_result["reachable"] and any_port_open:
-        status = "online"  # ICMP blocked but TCP works (common in cloud/containers)
+        status = "online"  # ICMP blocked but TCP works
     else:
         status = "offline"
 
@@ -155,6 +167,7 @@ async def probe_target(target: dict) -> dict:
         "status": status,
         "ping": ping_result,
         "ports": port_checks,
+        "check_ping": use_ping,
         "checked_at": datetime.now(timezone.utc).isoformat(),
     }
     if gateway_ip:
@@ -431,52 +444,73 @@ async def probe_now(current_user: dict = Depends(get_current_user)):
 async def test_connection(req: TestConnectionRequest, current_user: dict = Depends(get_current_user)):
     """Test rapido TCP + Ping su IP, porte e gateway ISP, senza salvare."""
     ip = req.public_ip.strip()
-    ports = req.check_ports if req.check_ports else [443]
+    ports = [p for p in req.check_ports if isinstance(p, int) and p > 0] if req.check_ports else []
     gateway_ip = req.gateway_ip.strip() if req.gateway_ip else None
+    use_ping = req.check_ping
 
-    # TCP port checks + gateway ping in parallel
-    tasks = [check_tcp_port(ip, p, timeout=5) for p in ports]
+    # Build parallel tasks
+    tasks = []
+    # Ping target if check_ping enabled
+    if use_ping:
+        tasks.append(("ping", ping_host(ip, count=3, timeout=3)))
+    # TCP port checks
+    for p in ports:
+        tasks.append(("tcp", check_tcp_port(ip, p, timeout=5)))
+    # Gateway ping
     if gateway_ip:
-        tasks.append(ping_host(gateway_ip, count=2, timeout=3))
+        tasks.append(("gateway", ping_host(gateway_ip, count=2, timeout=3)))
 
-    all_results = await asyncio.gather(*tasks, return_exceptions=True)
+    task_results = await asyncio.gather(*[t[1] for t in tasks], return_exceptions=True)
 
+    ping_result = None
     port_checks = []
-    for i, r in enumerate(all_results[:len(ports)]):
-        if isinstance(r, dict):
-            port_checks.append(r)
-        else:
-            port_checks.append({"port": ports[i] if i < len(ports) else 0, "open": False, "response_ms": None})
-
     gateway_result = None
-    if gateway_ip:
-        gw_r = all_results[len(ports)]
-        gateway_result = gw_r if isinstance(gw_r, dict) else {"reachable": False, "latency_ms": None, "packet_loss_pct": 100}
 
-    any_open = any(p["open"] for p in port_checks)
+    for i, (task_type, _) in enumerate(tasks):
+        r = task_results[i]
+        if task_type == "ping":
+            ping_result = r if isinstance(r, dict) else {"reachable": False, "latency_ms": None, "packet_loss_pct": 100}
+        elif task_type == "tcp":
+            if isinstance(r, dict):
+                port_checks.append(r)
+            else:
+                port_checks.append({"port": 0, "open": False, "response_ms": None})
+        elif task_type == "gateway":
+            gateway_result = r if isinstance(r, dict) else {"reachable": False, "latency_ms": None, "packet_loss_pct": 100}
+
+    any_open = any(p["open"] for p in port_checks) if port_checks else False
+    ping_ok = ping_result["reachable"] if ping_result else None
     gw_ok = gateway_result["reachable"] if gateway_result else None
+
+    # Determine reachability
+    reachable = any_open or (ping_ok is True)
 
     # Build summary
     parts = []
+    if ping_result:
+        parts.append(f"Ping ICMP: {'OK ({0}ms)'.format(ping_result.get('latency_ms', '?')) if ping_ok else 'NON RISPONDE'}")
     if gateway_result:
         parts.append(f"Gateway ISP: {'OK' if gw_ok else 'NON RAGGIUNGIBILE'}")
-    parts.append(f"Porte: {sum(1 for p in port_checks if p['open'])}/{len(port_checks)} aperte")
+    if port_checks:
+        parts.append(f"Porte: {sum(1 for p in port_checks if p['open'])}/{len(port_checks)} aperte")
 
-    if not any_open and gw_ok:
-        summary = "Linea OK ma dispositivo non raggiungibile — Controllare router/firewall"
-    elif not any_open and gw_ok is False:
-        summary = "Linea ISP down — Gateway non risponde"
-    elif any_open:
+    if reachable:
         summary = "Raggiungibile — " + ", ".join(parts)
+    elif not reachable and gw_ok:
+        summary = "Linea OK ma dispositivo non raggiungibile — " + ", ".join(parts)
+    elif not reachable and gw_ok is False:
+        summary = "Linea ISP down — " + ", ".join(parts)
     else:
         summary = "Non raggiungibile — " + ", ".join(parts)
 
     result = {
         "ip": ip,
         "ports": port_checks,
-        "reachable": any_open,
+        "reachable": reachable,
         "summary": summary,
     }
+    if ping_result:
+        result["ping"] = ping_result
     if gateway_result:
         result["gateway"] = {
             "ip": gateway_ip,
