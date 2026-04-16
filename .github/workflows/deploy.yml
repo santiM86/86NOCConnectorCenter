@@ -38,7 +38,7 @@ jobs:
             echo "Installing backend dependencies..."
             cd backend
             # Use the existing virtual environment pip
-            /home/arslan/86NOCConnectorCenter/backend/venv/bin/pip install -r requirements.txt
+            pip install -r requirements.txt
             cd ..
 
             # 5. Restart Backend Server
