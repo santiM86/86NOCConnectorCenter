@@ -10,40 +10,8 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Deploy to Server
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          script: |
-            set -e # Stop the script immediately if any command fails
-
-            # 1. Go to project directory
-            cd /home/arslan/86NOCConnectorCenter
-
-            # 2. Pull latest changes (hard reset to match remote)
-            echo "Pulling latest code from main branch..."
-            git fetch origin main
-            git reset --hard origin/main
-
-            # 3. Build Frontend
-            echo "Building frontend..."
-            cd frontend
-            npm install
-            npm run build
-            cd ..
-
-            # 4. Update Backend
-            echo "Installing backend dependencies..."
-            cd backend
-            # Use the existing virtual environment pip
-            pip install -r requirements.txt
-            cd ..
-
-            # 5. Restart Backend Server
-            echo "Restarting backend service..."
-            # Assuming you will set up a systemd service named 'noc-backend' as described in the deployment guide
-            sudo systemctl restart noc-backend
-            
-            echo "Deployment Complete!"
+      - name: Trigger Server Webhook
+        run: |
+          echo "Triggering deployment webhook on NOC server..."
+          curl -X POST "https://monitoring.86bit.it/api/webhooks/github-deploy?token=${{ secrets.WEBHOOK_SECRET }}" -H "Content-Length: 0"
+          echo "Webhook triggered! Deployment is running in the background."
