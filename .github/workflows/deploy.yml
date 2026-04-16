@@ -13,5 +13,5 @@ jobs:
       - name: Trigger Server Webhook
         run: |
           echo "Triggering deployment webhook on NOC server..."
-          curl -X POST "https://monitoring.86bit.it/api/webhooks/github-deploy?token=${{ secrets.WEBHOOK_SECRET }}" -H "Content-Length: 0"
+          curl -X POST "https://argus.86bit.it/api/webhooks/github-deploy?token=${{ secrets.WEBHOOK_SECRET }}" -H "Content-Length: 0"
           echo "Webhook triggered! Deployment is running in the background."
