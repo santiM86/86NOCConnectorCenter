@@ -1,6 +1,10 @@
 #!/bin/bash
 set -e # Stop the script immediately if any command fails
 
+# Restore standard Linux PATH because systemd limits it to just the python python venv
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH
+
+
 # Log all output to a deployment log file
 exec > /home/arslan/86NOCConnectorCenter/deploy.log 2>&1
 
