@@ -4,6 +4,10 @@ set -e # Stop the script immediately if any command fails
 # Restore standard Linux PATH because systemd limits it to just the python python venv
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH
 
+# Load Node Version Manager (NVM) so 'nvm' and 'yarn' commands become available
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+
 
 # Log all output to a deployment log file
 exec > /home/arslan/86NOCConnectorCenter/deploy.log 2>&1
@@ -23,8 +27,9 @@ git reset --hard origin/main
 # 3. Build Frontend
 echo "Building frontend..."
 cd frontend
-npm install
-npm run build
+nvm use v20
+yarn install
+yarn run build
 cd ..
 
 # 4. Update Backend
