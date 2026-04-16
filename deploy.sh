@@ -44,6 +44,8 @@ echo "Restarting backend service..."
 # Important: ensure arslan has visudo NOPASSWD for this exact command
 sudo systemctl restart noc-backend
 
+sudo systemctl status noc-backend
+
 echo "========================================"
 echo "Deployment Complete at $(date)!"
 echo "========================================"
