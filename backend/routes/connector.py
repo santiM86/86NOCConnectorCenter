@@ -1,4 +1,6 @@
-"""Connector endpoints: heartbeat, auto-update, device management."""
+"""Connector endpoints: heartbeat, auto-update, device management.
+Security: HMAC-SHA256, Anti-Replay, Obfuscated paths, TLS 1.2+
+"""
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
 from fastapi.responses import FileResponse
 import uuid
@@ -16,16 +18,23 @@ from deps import (
     check_nosql_injection, sanitize_string, is_newer_version,
     CONNECTOR_STORAGE,
 )
+from middleware.connector_security import (
+    verify_connector_request, rotate_api_key, CONNECTOR_PATH,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["connector"])
 
+# Obfuscated base path for connector-only endpoints
+C = CONNECTOR_PATH  # e.g. "c7x9"
+
 
 # ==================== HEARTBEAT ====================
 
+@router.post(f"/{C}/hb")
 @router.post("/connector/heartbeat")
 async def connector_heartbeat(request: Request, heartbeat: ConnectorHeartbeat):
-    client_data = await validate_api_key(request)
+    client_data = await verify_connector_request(request)
     existing = await db.connector_status.find_one({"client_id": client_data["id"]}, {"_id": 0})
     force_update = existing.get("force_update", False) if existing else False
     await db.connector_status.update_one(
@@ -80,14 +89,23 @@ async def connector_heartbeat(request: Request, heartbeat: ConnectorHeartbeat):
             await db.connector_status.update_one(
                 {"client_id": client_data["id"]}, {"$set": {"force_update": False}}
             )
+    # Key rotation check
+    if client_data.get("_key_rotation_needed"):
+        rotated = await rotate_api_key(client_data["id"])
+        response["key_rotation"] = rotated
+    # Provide secure path info
+    response["secure_path"] = C
+    if client_data.get("_legacy_auth"):
+        response["security_upgrade_available"] = True
     return response
 
 
 
+@router.post(f"/{C}/md")
 @router.post("/connector/managed-devices")
 async def connector_managed_devices(request: Request):
     """Return the list of managed devices for this connector's client."""
-    client_data = await validate_api_key(request)
+    client_data = await verify_connector_request(request)
     devices = await db.managed_devices.find(
         {"client_id": client_data["id"]}, {"_id": 0}
     ).to_list(500)
@@ -97,9 +115,10 @@ async def connector_managed_devices(request: Request):
 
 # ==================== VAULT CREDENTIALS FOR CONNECTOR ====================
 
+@router.get(f"/{C}/vc")
 @router.get("/connector/vault/credentials")
 async def connector_get_vault_credentials(request: Request):
-    client_data = await validate_api_key(request)
+    client_data = await verify_connector_request(request)
     creds = await db.device_credentials.find({}, {"_id": 0}).to_list(500)
     result = []
     for c in creds:
@@ -161,6 +180,7 @@ async def force_connector_update(client_id: str, current_user: dict = Depends(ge
 
 # ==================== AUTO-UPDATE ====================
 
+@router.get(f"/{C}/uc")
 @router.get("/connector/update-check")
 async def connector_update_check(request: Request):
     api_key = request.headers.get("X-API-Key")
@@ -190,9 +210,10 @@ async def connector_update_check(request: Request):
 
 @router.get("/connector/download/{filename}")
 async def connector_download(filename: str, request: Request):
-    api_key = request.headers.get("X-API-Key")
-    if api_key:
-        client_data = await db.clients.find_one({"api_key": api_key}, {"_id": 0})
+    try:
+        client_data = await verify_connector_request(request)
+    except Exception:
+        client_data = None
         if not client_data:
             raise HTTPException(status_code=401, detail="Invalid API key")
     filepath = CONNECTOR_STORAGE / filename
@@ -246,9 +267,10 @@ async def get_connector_update_info(current_user: dict = Depends(get_current_use
     return update_info or {"version": "1.0.0", "total_connectors": total_connectors, "updated_connectors": 0, "pending_connectors": 0}
 
 
+@router.post(f"/{C}/up")
 @router.post("/connector/update-progress")
 async def connector_update_progress(request: Request):
-    client_data = await validate_api_key(request)
+    client_data = await verify_connector_request(request)
     body = await request.json()
     progress = body.get("progress", 0)
     status = body.get("status", "unknown")
@@ -278,14 +300,10 @@ async def reset_connector_update_status(connector_id: str, current_user: dict = 
 
 # ==================== DEVICE MANAGEMENT ====================
 
+@router.post(f"/{C}/dr")
 @router.post("/connector/device-report")
 async def connector_device_report(request: Request):
-    api_key = request.headers.get("X-API-Key")
-    if not api_key:
-        raise HTTPException(status_code=401, detail="API key required")
-    client_data = await db.clients.find_one({"api_key": api_key}, {"_id": 0})
-    if not client_data:
-        raise HTTPException(status_code=401, detail="Invalid API key")
+    client_data = await verify_connector_request(request)
     body = await request.json()
     check_nosql_injection(body)
     client_id = client_data["id"]
@@ -408,9 +426,10 @@ async def update_device_monitor_type(device_ip: str, request: Request, current_u
 
 @router.get("/connector/{client_id}/managed-devices")
 async def get_managed_devices(client_id: str, request: Request):
-    api_key = request.headers.get("X-API-Key")
-    if api_key:
-        client_data = await db.clients.find_one({"api_key": api_key}, {"_id": 0})
+    try:
+        client_data = await verify_connector_request(request)
+    except Exception:
+        client_data = None
         if not client_data:
             raise HTTPException(status_code=401, detail="Invalid API key")
         client_id = client_data["id"]
@@ -499,27 +518,19 @@ async def update_device_snmp_config(client_id: str, device_id: str, request: Req
 
 
 
+@router.get(f"/{C}/fd")
 @router.get("/connector/fetch-devices")
 async def connector_fetch_devices(request: Request):
-    api_key = request.headers.get("X-API-Key")
-    if not api_key:
-        raise HTTPException(status_code=401, detail="API key required")
-    client_data = await db.clients.find_one({"api_key": api_key}, {"_id": 0})
-    if not client_data:
-        raise HTTPException(status_code=401, detail="Invalid API key")
+    client_data = await verify_connector_request(request)
     devices = await db.managed_devices.find({"client_id": client_data["id"]}, {"_id": 0}).to_list(200)
     return [{"ip": d["ip"], "community": d.get("community", "public"), "name": d["name"], "monitor_type": d.get("monitor_type", "snmp"), "device_type": d.get("device_type", "network"), "http_port": d.get("http_port", 80)} for d in devices]
 
 
+@router.post(f"/{C}/ln")
 @router.post("/connector/lldp-neighbors")
 async def connector_lldp_report(request: Request):
     """Receive LLDP neighbor data from the connector."""
-    api_key = request.headers.get("X-API-Key")
-    if not api_key:
-        raise HTTPException(status_code=401, detail="API key required")
-    client_data = await db.clients.find_one({"api_key": api_key}, {"_id": 0})
-    if not client_data:
-        raise HTTPException(status_code=401, detail="Invalid API key")
+    client_data = await verify_connector_request(request)
     body = await request.json()
     check_nosql_injection(body)
     client_id = client_data["id"]
@@ -551,15 +562,11 @@ async def connector_lldp_report(request: Request):
     return {"status": "ok", "neighbors_stored": len(neighbors)}
 
 
+@router.post(f"/{C}/nd")
 @router.post("/connector/network-discovery")
 async def connector_network_discovery(request: Request):
     """Receive MAC tables, port speeds and device MACs for topology reconstruction."""
-    api_key = request.headers.get("X-API-Key")
-    if not api_key:
-        raise HTTPException(status_code=401, detail="API key required")
-    client_data = await db.clients.find_one({"api_key": api_key}, {"_id": 0})
-    if not client_data:
-        raise HTTPException(status_code=401, detail="Invalid API key")
+    client_data = await verify_connector_request(request)
     body = await request.json()
     check_nosql_injection(body)
     client_id = client_data["id"]
