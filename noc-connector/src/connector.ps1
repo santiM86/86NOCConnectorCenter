@@ -273,19 +273,81 @@ function Send-WakeOnLAN([string]$macAddress, [string]$targetIP) {
 }
 
 
+function Invoke-SecureGet($config, $endpoint) {
+    # Secure GET with HMAC-SHA256 + Anti-Replay
+    try {
+        try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13 } catch { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 }
+        $url = "$($config.noc_center_url)/api/$endpoint"
+        $timestamp = [math]::Floor(([DateTimeOffset]::UtcNow).ToUnixTimeSeconds())
+        $nonce = [guid]::NewGuid().ToString("N")
+        $hmacSecret = "argus-hmac-k3y-2026!" + $config.api_key
+        $message = "$($config.api_key)$timestamp$nonce"
+        $hmac = New-Object System.Security.Cryptography.HMACSHA256
+        $hmac.Key = [Text.Encoding]::UTF8.GetBytes($hmacSecret)
+        $signature = [BitConverter]::ToString($hmac.ComputeHash([Text.Encoding]::UTF8.GetBytes($message))).Replace("-","").ToLower()
+        $headers = @{
+            "X-API-Key"        = $config.api_key
+            "X-HMAC-Signature" = $signature
+            "X-Timestamp"      = $timestamp.ToString()
+            "X-Nonce"          = $nonce
+        }
+        return Invoke-RestMethod -Uri $url -Method Get -Headers $headers -TimeoutSec 15 -ErrorAction Stop
+    } catch {
+        Write-Log "Errore secure GET ($endpoint): $($_.Exception.Message)" "ERROR"
+        return $null
+    }
+}
+
+
 function Send-ToNOC($config, $endpoint, $payload) {
     try {
-        # Assicura TLS 1.2 ad ogni chiamata (il SYSTEM potrebbe resettarlo)
+        # === TLS 1.2/1.3 enforcement ===
         try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13 } catch { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 }
         
-        $headers = @{
-            "X-API-Key" = $config.api_key
-            "Content-Type" = "application/json"
-        }
         $body = $payload | ConvertTo-Json -Depth 5 -Compress
         $url = "$($config.noc_center_url)/api/$endpoint"
         
+        # === HMAC-SHA256 Signature + Anti-Replay ===
+        $timestamp = [math]::Floor(([DateTimeOffset]::UtcNow).ToUnixTimeSeconds())
+        $nonce = [guid]::NewGuid().ToString("N")
+        $hmacSecret = "argus-hmac-k3y-2026!" + $config.api_key
+        
+        # Body hash
+        $sha256 = [System.Security.Cryptography.SHA256]::Create()
+        $bodyHash = if ($body) { [BitConverter]::ToString($sha256.ComputeHash([Text.Encoding]::UTF8.GetBytes($body))).Replace("-","").ToLower() } else { "" }
+        
+        # HMAC message = api_key + timestamp + nonce + body_hash
+        $message = "$($config.api_key)$timestamp$nonce$bodyHash"
+        $hmac = New-Object System.Security.Cryptography.HMACSHA256
+        $hmac.Key = [Text.Encoding]::UTF8.GetBytes($hmacSecret)
+        $signature = [BitConverter]::ToString($hmac.ComputeHash([Text.Encoding]::UTF8.GetBytes($message))).Replace("-","").ToLower()
+        
+        $headers = @{
+            "X-API-Key"        = $config.api_key
+            "X-HMAC-Signature" = $signature
+            "X-Timestamp"      = $timestamp.ToString()
+            "X-Nonce"          = $nonce
+            "Content-Type"     = "application/json"
+        }
+        
         $response = Invoke-RestMethod -Uri $url -Method Post -Headers $headers -Body $body -TimeoutSec 15 -ErrorAction Stop
+        
+        # Handle key rotation from server
+        if ($response.key_rotation -and $response.key_rotation.new_api_key) {
+            Write-Log "API Key ruotata dal server. Aggiornamento config..." "WARN"
+            $config.api_key = $response.key_rotation.new_api_key
+            # Save new key to config file
+            try {
+                $configPath = Join-Path $PSScriptRoot "config.json"
+                if (Test-Path $configPath) {
+                    $savedConfig = Get-Content $configPath -Raw | ConvertFrom-Json
+                    $savedConfig.api_key = $response.key_rotation.new_api_key
+                    $savedConfig | ConvertTo-Json -Depth 3 | Set-Content $configPath -Encoding UTF8
+                    Write-Log "Nuova API Key salvata nel config" "INFO"
+                }
+            } catch { Write-Log "Errore salvataggio nuova API key: $($_.Exception.Message)" "ERROR" }
+        }
+        
         return $response
     } catch {
         $global:Stats.errors++
@@ -926,9 +988,7 @@ function Send-DeviceReport($config, $devices) {
 
 function Fetch-DevicesFromNOC($config) {
     try {
-        $headers = @{ "X-API-Key" = $config.api_key }
-        $url = "$($config.noc_center_url)/api/connector/fetch-devices"
-        $response = Invoke-RestMethod -Uri $url -Headers $headers -TimeoutSec 15 -ErrorAction Stop
+        $response = Invoke-SecureGet $config "connector/fetch-devices"
         if ($response -and $response.Count -gt 0) {
             Write-Log "Dispositivi ricevuti dal NOC: $($response.Count)"
             return @($response)
@@ -945,8 +1005,7 @@ function Fetch-VaultCredentials($config) {
         Recupera le credenziali cifrate dal Vault del SOC per interrogare iLO via Redfish.
     #>
     try {
-        $headers = @{ "X-API-Key" = $config.api_key }
-        $url = "$($config.noc_center_url)/api/connector/vault/credentials"
+        $response = Invoke-SecureGet $config "connector/vault/credentials"
         $response = Invoke-RestMethod -Uri $url -Headers $headers -Method Get -TimeoutSec 15 -ErrorAction Stop
         if ($response -and $response.Count -gt 0) {
             Write-Log "Credenziali Vault ricevute: $($response.Count)"
@@ -1101,9 +1160,7 @@ function Start-PollingLoop($config) {
 
 function Check-ForUpdate($config) {
     try {
-        $headers = @{ "X-API-Key" = $config.api_key }
-        $url = "$($config.noc_center_url)/api/connector/update-check"
-        $response = Invoke-RestMethod -Uri $url -Headers $headers -TimeoutSec 15 -ErrorAction Stop
+        $response = Invoke-SecureGet $config "connector/update-check"
         
         if ($response.update_available -and $response.latest_version -ne $global:Version) {
             Write-Log "Aggiornamento disponibile: v$($global:Version) -> v$($response.latest_version)" "INFO"
@@ -1117,13 +1174,7 @@ function Check-ForUpdate($config) {
 
 function Send-UpdateProgress($config, $progress, $status, $message) {
     try {
-        $headers = @{
-            "X-API-Key" = $config.api_key
-            "Content-Type" = "application/json"
-        }
-        $body = @{ progress = $progress; status = $status; message = $message } | ConvertTo-Json -Compress
-        $url = "$($config.noc_center_url)/api/connector/update-progress"
-        Invoke-RestMethod -Uri $url -Method Post -Headers $headers -Body $body -TimeoutSec 10 -ErrorAction SilentlyContinue | Out-Null
+        Send-ToNOC $config "connector/update-progress" @{ progress = $progress; status = $status; message = $message } | Out-Null
     } catch {}
 }
 
@@ -1472,9 +1523,7 @@ function Start-NetworkDiscovery($config, $subnetOverride) {
 
 function Check-DiscoveryRequest($config) {
     try {
-        $headers = @{ "X-API-Key" = $config.api_key }
-        $url = "$($config.noc_center_url)/api/connector/discovery-check"
-        $response = Invoke-RestMethod -Uri $url -Method Get -Headers $headers -TimeoutSec 10 -ErrorAction Stop
+        $response = Invoke-SecureGet $config "connector/discovery-check"
         if ($response.scan_requested) {
             Write-Log "Richiesta di discovery ricevuta dal NOC"
             Start-NetworkDiscovery $config $response.subnet
@@ -1486,9 +1535,7 @@ function Check-DiscoveryRequest($config) {
 
 function Check-WebProxyRequests($config) {
     try {
-        $headers = @{ "X-API-Key" = $config.api_key }
-        $url = "$($config.noc_center_url)/api/connector/web-proxy/pending"
-        $response = Invoke-RestMethod -Uri $url -Method Get -Headers $headers -TimeoutSec 10 -ErrorAction Stop
+        $response = Invoke-SecureGet $config "connector/web-proxy/pending"
         
         if ($response.requests -and $response.requests.Count -gt 0) {
             foreach ($req in $response.requests) {

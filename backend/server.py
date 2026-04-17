@@ -452,6 +452,14 @@ async def startup_event():
     except Exception:
         pass
 
+    # === Connector security: nonce TTL index ===
+    try:
+        from middleware.connector_security import setup_nonce_ttl_index
+        await setup_nonce_ttl_index()
+        logger.info("Connector nonce TTL index created")
+    except Exception as e:
+        logger.warning(f"Nonce TTL index warning: {e}")
+
     try:
         setting = await db.settings.find_one({"key": "redfish_poll_interval"})
         interval = setting.get("value", 5) if setting else 5
