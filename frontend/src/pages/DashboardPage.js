@@ -1,95 +1,101 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import axios from "axios";
 import { API } from "@/App";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
-import { 
-  Warning, 
-  ShieldWarning, 
+import {
+  Warning,
   CheckCircle,
   HardDrives,
-  Users,
   Lightning,
   ArrowRight,
+  CaretRight,
+  Globe,
+  WifiHigh,
+  WifiSlash,
+  ShieldCheck,
+  Database,
+  Printer,
+  PlugsConnected,
+  MagnifyingGlass,
+  ArrowClockwise,
+  Funnel,
   Clock,
-  CaretRight
+  XCircle,
 } from "@phosphor-icons/react";
-import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, AreaChart, Area } from "recharts";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
-import { SlaGaugeWidget, ChangeTimelineWidget, UptimeHeatmapWidget, LatencyChartWidget } from "@/components/DashboardWidgets";
+import { Input } from "@/components/ui/input";
 import MobileDashboard from "@/components/MobileDashboard";
+
+const HEALTH_CONFIG = {
+  critical: { color: "#FF3B30", bg: "#FF3B3012", border: "#FF3B3030", label: "CRITICO" },
+  warning:  { color: "#FF9500", bg: "#FF950012", border: "#FF950030", label: "ATTENZIONE" },
+  attention:{ color: "#FFCC00", bg: "#FFCC0012", border: "#FFCC0030", label: "INFO" },
+  ok:       { color: "#34C759", bg: "#34C75912", border: "#34C75930", label: "OK" },
+};
+
+const WAN_LABELS = {
+  ok: "OK", isp_down: "ISP DOWN", firewall_down: "FW DOWN", router_down: "RT DOWN",
+  firewall_degraded: "FW DEGR.", router_degraded: "RT DEGR.", pending: "...", not_configured: "N/C", unknown: "---",
+};
+
+const WAN_COLORS = {
+  ok: "#34C759", isp_down: "#FF3B30", firewall_down: "#FF3B30", router_down: "#FF3B30",
+  firewall_degraded: "#FF9500", router_degraded: "#FF9500", pending: "#555", not_configured: "#555", unknown: "#555",
+};
 
 export default function DashboardPage() {
   const [isMobile, setIsMobile] = useState(() => typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches);
-  const [stats, setStats] = useState({
-    critical: 0, high: 0, medium: 0, low: 0,
-    total_active: 0, total_clients: 0, total_devices: 0
-  });
-  const [trends, setTrends] = useState([]);
+  const [overview, setOverview] = useState({ clients: [], global: {} });
   const [recentAlerts, setRecentAlerts] = useState([]);
   const [liveStream, setLiveStream] = useState([]);
-  const [connectors, setConnectors] = useState([]);
-  const [clientId, setClientId] = useState(null);
+  const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState("all"); // all, problems, ok
+  const [loading, setLoading] = useState(true);
   const wsRef = useRef(null);
   const navigate = useNavigate();
 
+  const fetchData = useCallback(async () => {
+    try {
+      const overviewRes = await axios.get(`${API}/overview/clients`);
+      setOverview(overviewRes.data);
+    } catch (e) { console.error("overview error:", e); }
+    try {
+      const alertsRes = await axios.get(`${API}/alerts?limit=20&status=active`);
+      const alerts = alertsRes.data || [];
+      setRecentAlerts(alerts);
+      setLiveStream(alerts.slice(0, 30).map(a => ({
+        id: a.id, time: new Date(a.created_at).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+        ip: a.ip_address, msg: a.message?.substring(0, 60), severity: a.severity, device: a.device_name
+      })));
+    } catch (e) { console.error("alerts error:", e); }
+    setLoading(false);
+  }, []);
+
   useEffect(() => {
     fetchData();
+    const interval = setInterval(fetchData, 30000);
     connectWebSocket();
     const onResize = () => setIsMobile(window.matchMedia("(max-width: 767px)").matches);
     window.addEventListener("resize", onResize);
-    onResize();
-    // Fetch first client for widgets
-    axios.get(`${API}/clients`).then(r => {
-      const clients = r.data?.clients || r.data || [];
-      if (clients.length > 0) setClientId(clients[0].id);
-    }).catch(() => {});
-    return () => { if (wsRef.current) wsRef.current.close(); window.removeEventListener("resize", onResize); };
-  }, []);
-
-  const fetchData = async () => {
-    try {
-      const [statsRes, trendsRes, alertsRes, connectorsRes] = await Promise.all([
-        axios.get(`${API}/stats/summary`),
-        axios.get(`${API}/stats/trends?hours=24`),
-        axios.get(`${API}/alerts?limit=20&status=active`),
-        axios.get(`${API}/connector/status`).catch(() => ({ data: [] }))
-      ]);
-      setStats(statsRes.data);
-      setTrends(trendsRes.data);
-      setRecentAlerts(alertsRes.data);
-      setConnectors(connectorsRes.data);
-      setLiveStream(alertsRes.data.slice(0, 30).map(a => ({
-        id: a.id, time: new Date(a.created_at).toLocaleTimeString("it-IT", {hour:"2-digit",minute:"2-digit",second:"2-digit"}),
-        ip: a.ip_address, msg: a.message?.substring(0, 60), severity: a.severity, device: a.device_name
-      })));
-    } catch (error) {
-      console.error("Error fetching data:", error);
-    }
-  };
+    return () => { clearInterval(interval); if (wsRef.current) wsRef.current.close(); window.removeEventListener("resize", onResize); };
+  }, [fetchData]);
 
   const connectWebSocket = () => {
     const wsUrl = process.env.REACT_APP_BACKEND_URL.replace("https://", "wss://").replace("http://", "ws://");
     const wsToken = localStorage.getItem("noc_token");
-    const wsUrlWithAuth = wsToken ? `${wsUrl}/ws/alerts?token=${wsToken}` : `${wsUrl}/ws/alerts`;
-    wsRef.current = new WebSocket(wsUrlWithAuth);
+    wsRef.current = new WebSocket(wsToken ? `${wsUrl}/ws/alerts?token=${wsToken}` : `${wsUrl}/ws/alerts`);
     wsRef.current.onmessage = (event) => {
       const data = JSON.parse(event.data);
       if (data.type === "new_alert") {
         setRecentAlerts(prev => [data.alert, ...prev.slice(0, 19)]);
-        setStats(prev => ({
-          ...prev,
-          [data.alert.severity]: prev[data.alert.severity] + 1,
-          total_active: prev.total_active + 1
-        }));
         setLiveStream(prev => [{
-          id: data.alert.id, time: new Date(data.alert.created_at).toLocaleTimeString("it-IT",{hour:"2-digit",minute:"2-digit",second:"2-digit"}),
+          id: data.alert.id, time: new Date(data.alert.created_at).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
           ip: data.alert.ip_address, msg: data.alert.message?.substring(0, 60), severity: data.alert.severity, device: data.alert.device_name
         }, ...prev.slice(0, 29)]);
-        if (data.alert.severity === "critical") {
-          toast.error(`CRITICO: ${data.alert.title}`, { description: `${data.alert.device_name} - ${data.alert.client_name}` });
-        }
+        if (data.alert.severity === "critical") toast.error(`CRITICO: ${data.alert.title}`, { description: `${data.alert.device_name} - ${data.alert.client_name}` });
+        fetchData();
       }
     };
     wsRef.current.onclose = () => { setTimeout(connectWebSocket, 5000); };
@@ -105,263 +111,225 @@ export default function DashboardPage() {
   };
 
   const getSevColor = (s) => ({ critical: "var(--critical)", high: "var(--high)", medium: "var(--medium)", low: "var(--low)" }[s] || "var(--text-muted)");
-  const formatHour = (h) => h ? h.split("T")[1]?.substring(0, 5) || "" : "";
 
-  const urgentCount = stats.critical + stats.high;
-
-  // Mobile: show compact client-centric view
   if (isMobile) return <MobileDashboard />;
+
+  const g = overview.global || {};
+  const clients = overview.clients || [];
+
+  // Filter & search
+  const filtered = clients.filter(c => {
+    if (search && !c.name.toLowerCase().includes(search.toLowerCase())) return false;
+    if (filter === "problems" && c.health === "ok") return false;
+    if (filter === "ok" && c.health !== "ok") return false;
+    return true;
+  });
+
+  const urgentCount = g.critical_alerts || 0;
 
   return (
     <div className="p-4 md:p-5 space-y-4 animate-fade-in" data-testid="dashboard-page">
       {/* Top Bar */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="font-heading text-xl font-bold text-[var(--text-primary)] tracking-tight">
-            Panoramica
-          </h1>
-          <p className="text-[var(--text-muted)] text-xs mt-0.5">
-            Monitoraggio in tempo reale
-          </p>
+          <h1 className="font-heading text-xl font-bold text-[var(--text-primary)] tracking-tight">Panoramica</h1>
+          <p className="text-[var(--text-muted)] text-xs mt-0.5">Monitoraggio in tempo reale — {clients.length} clienti</p>
         </div>
-        <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-[var(--low)]/10 border border-[var(--low)]/20">
-          <span className="live-dot" style={{width:6,height:6}}></span>
-          <span className="font-mono text-[10px] uppercase tracking-wider text-[var(--ok)]">Live</span>
+        <div className="flex items-center gap-3">
+          <button onClick={fetchData} className="p-1.5 rounded-md hover:bg-[var(--bg-hover)] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-all" title="Aggiorna">
+            <ArrowClockwise size={16} />
+          </button>
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-[var(--low)]/10 border border-[var(--low)]/20">
+            <span className="live-dot" style={{ width: 6, height: 6 }}></span>
+            <span className="font-mono text-[10px] uppercase tracking-wider text-[var(--ok)]">Live</span>
+          </div>
         </div>
       </div>
 
-      {/* Urgent Banner - only if problems exist */}
+      {/* Urgent Banner */}
       {urgentCount > 0 && (
-        <div 
-          className="flex items-center justify-between p-3 rounded-lg border cursor-pointer hover:opacity-90 transition-opacity"
+        <div className="flex items-center justify-between p-3 rounded-lg border cursor-pointer hover:opacity-90 transition-opacity"
           style={{ background: "var(--critical-bg)", borderColor: "var(--critical-border)" }}
-          onClick={() => navigate("/alerts?severity=critical")}
-          data-testid="urgent-banner"
-        >
+          onClick={() => navigate("/alerts?severity=critical")} data-testid="urgent-banner">
           <div className="flex items-center gap-3">
             <Lightning size={20} weight="fill" className="text-[var(--critical)]" />
             <div>
-              <p className="text-[var(--critical)] font-heading font-bold text-sm">
-                {urgentCount} alert urgenti richiedono attenzione
-              </p>
-              <p className="text-[var(--text-muted)] text-xs">
-                {stats.critical} critici, {stats.high} alti
-              </p>
+              <p className="text-[var(--critical)] font-heading font-bold text-sm">{urgentCount} alert critici richiedono attenzione</p>
             </div>
           </div>
           <ArrowRight size={18} className="text-[var(--critical)]" />
         </div>
       )}
 
-      {/* Severity Cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <SeverityCard label="Critici" value={stats.critical} color="critical" testId="metric-critical" />
-        <SeverityCard label="Alti" value={stats.high} color="high" testId="metric-high" />
-        <SeverityCard label="Medi" value={stats.medium} color="medium" testId="metric-medium" />
-        <SeverityCard label="Bassi" value={stats.low} color="low" testId="metric-low" />
-      </div>
-
-      {/* Stats Row */}
-      <div className="grid grid-cols-3 gap-3">
-        <StatCard icon={<Lightning size={18} />} label="Alert Attivi" value={stats.total_active} />
-        <StatCard icon={<Users size={18} />} label="Clienti" value={stats.total_clients} />
-        <StatCard icon={<HardDrives size={18} />} label="Dispositivi" value={stats.total_devices} />
-      </div>
-
-      {/* Chart + Live Stream */}
-      <div className="grid grid-cols-1 lg:grid-cols-5 gap-3">
-        <div className="lg:col-span-3 noc-panel p-4">
-          <h3 className="text-[var(--text-muted)] text-[10px] font-medium uppercase tracking-widest mb-3">
-            Trend 24h
-          </h3>
-          <div className="h-48">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={trends}>
-                <defs>
-                  <linearGradient id="critGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="var(--critical)" stopOpacity={0.2}/>
-                    <stop offset="95%" stopColor="var(--critical)" stopOpacity={0}/>
-                  </linearGradient>
-                  <linearGradient id="highGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="var(--high)" stopOpacity={0.2}/>
-                    <stop offset="95%" stopColor="var(--high)" stopOpacity={0}/>
-                  </linearGradient>
-                </defs>
-                <XAxis dataKey="hour" tickFormatter={formatHour} stroke="var(--text-muted)" fontSize={9} fontFamily="JetBrains Mono" tickLine={false} axisLine={false} />
-                <YAxis stroke="var(--text-muted)" fontSize={9} fontFamily="JetBrains Mono" tickLine={false} axisLine={false} width={25} />
-                <Tooltip contentStyle={{ backgroundColor: "var(--bg-panel)", border: "1px solid var(--bg-border)", borderRadius: "0.5rem", fontFamily: "JetBrains Mono", fontSize: "11px" }} />
-                <Area type="monotone" dataKey="critical" stroke="var(--critical)" strokeWidth={2} fill="url(#critGrad)" dot={false} />
-                <Area type="monotone" dataKey="high" stroke="var(--high)" strokeWidth={1.5} fill="url(#highGrad)" dot={false} />
-                <Line type="monotone" dataKey="medium" stroke="var(--medium)" strokeWidth={1} dot={false} opacity={0.6} />
-                <Line type="monotone" dataKey="low" stroke="var(--low)" strokeWidth={1} dot={false} opacity={0.4} />
-              </AreaChart>
-            </ResponsiveContainer>
+      {/* Global KPI Bar */}
+      <div className="grid grid-cols-2 lg:grid-cols-6 gap-3">
+        <KpiCard label="Clienti" value={g.total_clients || 0} sub={`${g.clients_ok || 0} OK`} color="#34C759" testId="kpi-clients" />
+        <KpiCard label="Problemi" value={(g.clients_warning || 0) + (g.clients_critical || 0)} sub={`${g.clients_critical || 0} critici`} color={g.clients_critical > 0 ? "#FF3B30" : "#FF9500"} testId="kpi-problems" />
+        <KpiCard label="Alert Attivi" value={g.total_alerts || 0} sub={`${g.critical_alerts || 0} critici`} color={g.critical_alerts > 0 ? "#FF3B30" : "#34C759"} testId="kpi-alerts" />
+        <KpiCard label="Dispositivi" value={g.total_devices || 0} sub={`${g.devices_online || 0} online`} color="#6366F1" testId="kpi-devices" />
+        <div className="noc-panel p-3 lg:col-span-2">
+          <div className="flex items-center gap-2">
+            <MagnifyingGlass size={14} className="text-[var(--text-muted)]" />
+            <Input value={search} onChange={e => setSearch(e.target.value)} placeholder="Cerca cliente..."
+              className="h-6 text-xs bg-transparent border-none shadow-none focus-visible:ring-0 text-[var(--text-primary)] placeholder:text-[var(--text-muted)]" data-testid="search-client" />
+          </div>
+          <div className="flex gap-1 mt-2">
+            {[["all", "Tutti"], ["problems", "Problemi"], ["ok", "OK"]].map(([v, l]) => (
+              <button key={v} onClick={() => setFilter(v)}
+                className={`text-[9px] px-2 py-0.5 rounded-md font-semibold transition-all ${filter === v ? "bg-indigo-500/20 text-indigo-400 border border-indigo-500/30" : "text-[var(--text-muted)] hover:text-[var(--text-primary)]"}`}
+                data-testid={`filter-${v}`}>{l}</button>
+            ))}
           </div>
         </div>
+      </div>
 
+      {/* Client Grid */}
+      <div className={`grid gap-3 ${filtered.length > 20 ? "grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5" : filtered.length > 8 ? "grid-cols-2 md:grid-cols-3 lg:grid-cols-4" : "grid-cols-1 md:grid-cols-2 lg:grid-cols-3"}`}>
+        {filtered.map(c => <ClientCard key={c.id} client={c} navigate={navigate} />)}
+      </div>
+
+      {filtered.length === 0 && !loading && (
+        <div className="text-center py-12 text-[var(--text-muted)]">
+          <Globe size={40} className="mx-auto mb-3 opacity-30" />
+          <p className="text-sm">{search ? "Nessun cliente trovato" : "Nessun cliente configurato"}</p>
+        </div>
+      )}
+
+      {/* Live Stream + Recent Alerts */}
+      <div className="grid grid-cols-1 lg:grid-cols-5 gap-3">
         <div className="lg:col-span-2 noc-panel p-4">
-          <h3 className="text-[var(--text-muted)] text-[10px] font-medium uppercase tracking-widest mb-3">
-            Live Stream
-          </h3>
+          <h3 className="text-[var(--text-muted)] text-[10px] font-medium uppercase tracking-widest mb-3">Live Stream</h3>
           <ScrollArea className="h-48">
-            <div className="syslog-stream h-full" style={{border:"none",background:"transparent"}}>
+            <div className="syslog-stream h-full" style={{ border: "none", background: "transparent" }}>
               {liveStream.length === 0 ? (
-                <p className="text-[var(--text-muted)] text-center py-6 text-xs">In attesa...</p>
-              ) : (
-                liveStream.map((e, i) => (
-                  <div key={e.id + i} className="syslog-line flex items-center gap-1.5">
-                    <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{backgroundColor: getSevColor(e.severity)}}></span>
-                    <span className="syslog-timestamp">{e.time}</span>
-                    <span className="text-[var(--text-secondary)] truncate">{e.device || e.ip}</span>
-                    <span className="text-[var(--text-muted)] truncate">{e.msg}</span>
-                  </div>
-                ))
-              )}
+                <p className="text-[var(--text-muted)] text-center py-6 text-xs">In attesa di eventi...</p>
+              ) : liveStream.map((e, i) => (
+                <div key={e.id + i} className="syslog-line flex items-center gap-1.5">
+                  <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: getSevColor(e.severity) }}></span>
+                  <span className="syslog-timestamp">{e.time}</span>
+                  <span className="text-[var(--text-secondary)] truncate">{e.device || e.ip}</span>
+                  <span className="text-[var(--text-muted)] truncate">{e.msg}</span>
+                </div>
+              ))}
             </div>
           </ScrollArea>
         </div>
-      </div>
 
-      {/* Connector Status */}
-      {connectors.length > 0 && (
-        <div className="noc-panel p-4">
-          <h3 className="text-[var(--text-muted)] text-[10px] font-medium uppercase tracking-widest mb-3">
-            Connettori Attivi
-          </h3>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
-            {connectors.map((c, i) => {
-              const lastSeen = c.last_seen ? new Date(c.last_seen) : null;
-              const isOnline = lastSeen && (Date.now() - lastSeen.getTime()) < 120000;
-              return (
-                <div key={i} className="flex items-center gap-3 p-2.5 rounded-md bg-[var(--bg-card)] border border-[var(--bg-border)]">
-                  <span className={`w-2 h-2 rounded-full flex-shrink-0 ${isOnline ? "bg-[var(--ok)]" : "bg-[var(--critical)]"}`}></span>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-xs font-medium text-[var(--text-primary)] truncate">{c.client_name || c.hostname}</p>
-                    <p className="text-[10px] text-[var(--text-muted)] font-mono">
-                      {c.hostname} | v{c.connector_version} | {c.traps_received} trap, {c.syslogs_received} syslog
-                    </p>
-                  </div>
-                  <span className={`text-[10px] ${isOnline ? "text-[var(--ok)]" : "text-[var(--critical)]"}`}>
-                    {isOnline ? "Online" : "Offline"}
-                  </span>
-                </div>
-              );
-            })}
+        <div className="lg:col-span-3 noc-panel">
+          <div className="p-3 border-b border-[var(--bg-border)] flex items-center justify-between">
+            <h3 className="text-[var(--text-muted)] text-[10px] font-medium uppercase tracking-widest">Alert Attivi</h3>
+            <Button variant="ghost" size="sm" onClick={() => navigate("/alerts")}
+              className="text-[var(--text-secondary)] hover:text-[var(--text-primary)] rounded-md text-xs h-7 gap-1" data-testid="view-all-alerts-btn">
+              Tutti <CaretRight size={12} />
+            </Button>
           </div>
-        </div>
-      )}
-
-      {/* === NEW: Enterprise Widgets === */}
-      {clientId && (
-        <>
-          {/* SLA + Change Timeline */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-            <SlaGaugeWidget clientId={clientId} />
-            <ChangeTimelineWidget clientId={clientId} />
-          </div>
-
-          {/* Heatmap + Latency */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-            <UptimeHeatmapWidget clientId={clientId} />
-            <LatencyChartWidget clientId={clientId} />
-          </div>
-        </>
-      )}
-
-      {/* Recent Alerts Table */}
-      <div className="noc-panel">
-        <div className="p-3 border-b border-[var(--bg-border)] flex items-center justify-between">
-          <h3 className="text-[var(--text-muted)] text-[10px] font-medium uppercase tracking-widest">
-            Alert Attivi
-          </h3>
-          <Button 
-            variant="ghost" size="sm" 
-            onClick={() => navigate("/alerts")}
-            className="text-[var(--text-secondary)] hover:text-[var(--text-primary)] rounded-md text-xs h-7 gap-1"
-            data-testid="view-all-alerts-btn"
-          >
-            Tutti <CaretRight size={12} />
-          </Button>
-        </div>
-        <div className="overflow-x-auto">
-          <table className="alert-table" data-testid="recent-alerts-table">
-            <thead>
-              <tr>
-                <th>Sev.</th>
-                <th>Titolo</th>
-                <th>Dispositivo</th>
-                <th>Cliente</th>
-                <th>Ora</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {recentAlerts.length === 0 ? (
-                <tr><td colSpan={6} className="text-center text-[var(--text-muted)] py-6 text-xs">Nessun alert attivo</td></tr>
-              ) : (
-                recentAlerts.slice(0, 8).map((alert) => (
+          <div className="overflow-x-auto">
+            <table className="alert-table" data-testid="recent-alerts-table">
+              <thead>
+                <tr><th>Sev.</th><th>Titolo</th><th>Dispositivo</th><th>Cliente</th><th>Ora</th><th></th></tr>
+              </thead>
+              <tbody>
+                {recentAlerts.length === 0 ? (
+                  <tr><td colSpan={6} className="text-center text-[var(--text-muted)] py-6 text-xs">Nessun alert attivo</td></tr>
+                ) : recentAlerts.slice(0, 6).map(alert => (
                   <tr key={alert.id} className={alert.severity === "critical" ? "pulse-critical" : ""} data-testid={`alert-row-${alert.severity}`}>
-                    <td>
-                      <span className={`severity-badge severity-${alert.severity}`}>
-                        {alert.severity === "critical" ? "CRIT" : alert.severity === "high" ? "HIGH" : alert.severity === "medium" ? "MED" : "LOW"}
-                      </span>
-                    </td>
-                    <td className="cursor-pointer hover:text-[var(--text-primary)] transition-colors text-[var(--text-secondary)]" onClick={() => navigate(`/alerts/${alert.id}`)}>
-                      {alert.title}
-                    </td>
+                    <td><span className={`severity-badge severity-${alert.severity}`}>{alert.severity === "critical" ? "CRIT" : alert.severity === "high" ? "HIGH" : alert.severity === "medium" ? "MED" : "LOW"}</span></td>
+                    <td className="cursor-pointer hover:text-[var(--text-primary)] transition-colors text-[var(--text-secondary)]" onClick={() => navigate(`/alerts/${alert.id}`)}>{alert.title}</td>
                     <td className="font-mono text-[var(--text-muted)] text-xs">{alert.device_name}</td>
                     <td className="text-[var(--text-secondary)] text-xs">{alert.client_name}</td>
-                    <td className="font-mono text-[var(--text-muted)] text-[11px]">
-                      {new Date(alert.created_at).toLocaleTimeString("it-IT",{hour:"2-digit",minute:"2-digit"})}
-                    </td>
-                    <td>
-                      <Button size="sm" variant="outline" onClick={() => handleAck(alert.id)}
-                        className="rounded-md text-[10px] h-6 px-2 border-[var(--bg-border)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
-                        data-testid={`ack-btn-${alert.id}`}>
-                        ACK
-                      </Button>
-                    </td>
+                    <td className="font-mono text-[var(--text-muted)] text-[11px]">{new Date(alert.created_at).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" })}</td>
+                    <td><Button size="sm" variant="outline" onClick={() => handleAck(alert.id)}
+                      className="rounded-md text-[10px] h-6 px-2 border-[var(--bg-border)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]" data-testid={`ack-btn-${alert.id}`}>ACK</Button></td>
                   </tr>
-                ))
-              )}
-            </tbody>
-          </table>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
     </div>
   );
 }
 
-function SeverityCard({ label, value, color, testId }) {
-  const colorMap = {
-    critical: { text: "var(--critical)", bg: "var(--critical-bg)", border: "var(--critical-border)" },
-    high: { text: "var(--high)", bg: "var(--high-bg)", border: "var(--high-border)" },
-    medium: { text: "var(--medium)", bg: "var(--medium-bg)", border: "var(--medium-border)" },
-    low: { text: "var(--low)", bg: "var(--low-bg)", border: "var(--low-border)" }
-  };
-  const c = colorMap[color];
+/* ==================== CLIENT CARD ==================== */
+function ClientCard({ client: c, navigate }) {
+  const h = HEALTH_CONFIG[c.health] || HEALTH_CONFIG.ok;
+  const wanColor = WAN_COLORS[c.wan?.status] || "#555";
+  const wanLabel = WAN_LABELS[c.wan?.status] || "---";
+  const hasAlerts = c.alerts?.total > 0;
+  const hasCritical = c.alerts?.critical > 0;
+
   return (
-    <div className="rounded-lg p-3 border transition-all duration-150 hover:scale-[1.01]"
-      style={{ background: c.bg, borderColor: c.border }}
-      data-testid={testId}>
-      <div className="flex items-center justify-between mb-1">
-        {value > 0 && color === "critical" && <span className="live-dot" style={{width:5,height:5,backgroundColor:c.text}}></span>}
-        {!(value > 0 && color === "critical") && <span></span>}
+    <div className="rounded-xl overflow-hidden border transition-all duration-200 hover:scale-[1.01] hover:shadow-lg cursor-pointer group"
+      style={{ borderColor: h.border, background: "var(--bg-panel)" }}
+      onClick={() => navigate(`/clients`)}
+      data-testid={`client-card-${c.id}`}>
+
+      {/* Header */}
+      <div className="px-3 py-2.5 flex items-center justify-between" style={{ borderBottom: `2px solid ${h.color}25` }}>
+        <div className="flex items-center gap-2 min-w-0">
+          <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: h.color, boxShadow: `0 0 6px ${h.color}60` }}></div>
+          <h3 className="text-xs font-bold text-[var(--text-primary)] truncate">{c.name}</h3>
+        </div>
+        {hasAlerts && (
+          <span className="text-[9px] px-1.5 py-0.5 rounded-md font-bold flex-shrink-0" style={{ color: hasCritical ? "#FF3B30" : "#FF9500", background: hasCritical ? "#FF3B3015" : "#FF950015" }}>
+            {c.alerts.total} ALERT{c.alerts.total > 1 ? "S" : ""}
+          </span>
+        )}
       </div>
-      <p className="font-heading text-3xl font-bold leading-none" style={{color:c.text}}>{value}</p>
-      <p className="text-[10px] uppercase tracking-widest mt-1" style={{color:c.text,opacity:0.7}}>{label}</p>
+
+      {/* Services Grid */}
+      <div className="px-3 py-2 grid grid-cols-3 gap-x-2 gap-y-1.5">
+        {/* WAN */}
+        <ServicePill icon={Globe} label="WAN" value={wanLabel} color={wanColor} sub={c.wan?.latency_ms ? `${c.wan.latency_ms}ms` : null} />
+        {/* Devices */}
+        <ServicePill icon={HardDrives} label="Dispositivi"
+          value={c.devices?.total > 0 ? `${c.devices.online}/${c.devices.total}` : "—"}
+          color={c.devices?.offline > 0 ? "#FF9500" : c.devices?.total > 0 ? "#34C759" : "#555"} />
+        {/* Connector */}
+        <ServicePill icon={PlugsConnected} label="Connettore"
+          value={c.connector_online === true ? "ON" : c.connector_online === false ? "OFF" : "—"}
+          color={c.connector_online === true ? "#34C759" : c.connector_online === false ? "#FF3B30" : "#555"} />
+        {/* Backup */}
+        <ServicePill icon={Database} label="Backup"
+          value={c.backup?.total > 0 ? (c.backup.error > 0 ? `${c.backup.error} ERR` : "OK") : "—"}
+          color={c.backup?.error > 0 ? "#FF3B30" : c.backup?.warning > 0 ? "#FF9500" : c.backup?.total > 0 ? "#34C759" : "#555"} />
+        {/* Printers */}
+        <ServicePill icon={Printer} label="Stampanti"
+          value={c.printers?.total > 0 ? (c.printers.low_toner > 0 ? `${c.printers.low_toner} LOW` : "OK") : "—"}
+          color={c.printers?.low_toner > 0 ? "#FF9500" : c.printers?.total > 0 ? "#34C759" : "#555"} />
+        {/* Gateway ISP */}
+        <ServicePill icon={WifiHigh} label="ISP"
+          value={c.wan?.gateway === "online" ? "OK" : c.wan?.gateway === "offline" ? "DOWN" : "—"}
+          color={c.wan?.gateway === "online" ? "#34C759" : c.wan?.gateway === "offline" ? "#FF3B30" : "#555"} />
+      </div>
     </div>
   );
 }
 
-function StatCard({ icon, label, value }) {
+/* ==================== SERVICE PILL ==================== */
+function ServicePill({ icon: Icon, label, value, color, sub }) {
   return (
-    <div className="noc-panel p-3 flex items-center gap-3">
-      <div className="text-[var(--text-muted)]">{icon}</div>
-      <div>
-        <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-widest">{label}</p>
-        <p className="font-heading text-lg font-bold text-[var(--text-primary)]">{value}</p>
+    <div className="flex items-center gap-1.5 py-0.5">
+      <Icon size={11} weight="bold" style={{ color, opacity: 0.7 }} className="flex-shrink-0" />
+      <div className="min-w-0">
+        <p className="text-[8px] text-[var(--text-muted)] uppercase tracking-widest leading-none">{label}</p>
+        <p className="text-[10px] font-bold font-mono leading-tight" style={{ color }}>
+          {value}
+          {sub && <span className="text-[8px] font-normal opacity-60 ml-0.5">{sub}</span>}
+        </p>
       </div>
+    </div>
+  );
+}
+
+/* ==================== KPI CARD ==================== */
+function KpiCard({ label, value, sub, color, testId }) {
+  return (
+    <div className="noc-panel p-3" data-testid={testId}>
+      <p className="text-[9px] text-[var(--text-muted)] uppercase tracking-widest">{label}</p>
+      <p className="font-heading text-2xl font-bold leading-none mt-1" style={{ color }}>{value}</p>
+      {sub && <p className="text-[9px] text-[var(--text-muted)] mt-1">{sub}</p>}
     </div>
   );
 }

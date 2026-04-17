@@ -247,54 +247,103 @@ export default function ExternalMonitorPage() {
         const diagCode = diag?.diagnosis || "not_configured";
         const dc = DIAG_CONFIG[diagCode] || DIAG_CONFIG.unknown;
         const DiagIcon = dc.icon;
+        const isOk = diagCode === "ok";
 
         return (
-          <div key={cid} className="rounded-lg bg-[var(--bg-panel)] border border-[var(--bg-border)] overflow-hidden" data-testid={`wan-client-${cid}`}>
-            <div className="flex items-center gap-3 p-3 border-b border-[var(--bg-border)]">
-              <DiagIcon size={18} weight="bold" style={{ color: dc.color }} />
-              <div className="flex-1">
-                <span className="text-sm font-bold text-[var(--text-primary)]">{clientMap[cid] || cid}</span>
-                <span className="ml-3 text-xs" style={{ color: dc.color }}>{diag?.diagnosis_text || "Non configurato"}</span>
+          <div key={cid} className="rounded-xl bg-[var(--bg-panel)] border border-[var(--bg-border)] overflow-hidden" data-testid={`wan-client-${cid}`}>
+            {/* Client Header */}
+            <div className="px-4 py-3 border-b border-[var(--bg-border)]" style={{ borderLeft: `3px solid ${dc.color}` }}>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: `${dc.color}15` }}>
+                    <DiagIcon size={16} weight="bold" style={{ color: dc.color }} />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-bold text-[var(--text-primary)] tracking-tight">{clientMap[cid] || cid}</h3>
+                    <p className="text-[10px] mt-0.5" style={{ color: dc.color }}>{diag?.diagnosis_text || "In attesa del primo probe..."}</p>
+                  </div>
+                </div>
                 {diag?.gateway_status && (
-                  <span className={`ml-3 text-[10px] px-1.5 py-0.5 rounded font-mono ${diag.gateway_status === "online" ? "bg-emerald-500/10 text-emerald-400" : "bg-red-500/10 text-red-400"}`}>
-                    GW {diag.gateway_ip}: {diag.gateway_status === "online" ? "OK" : "DOWN"}
-                  </span>
+                  <div className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[10px] font-semibold ${diag.gateway_status === "online" ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20" : "bg-red-500/10 text-red-400 border border-red-500/20"}`}>
+                    <Globe size={12} weight="bold" />
+                    <span>ISP {diag.gateway_ip}</span>
+                    <span className="font-bold">{diag.gateway_status === "online" ? "OK" : "DOWN"}</span>
+                  </div>
                 )}
               </div>
             </div>
-            <div className="divide-y divide-[var(--bg-border)]">
+
+            {/* Targets */}
+            <div className="divide-y divide-[var(--bg-border)]/50">
               {cTargets.map(t => {
                 const r = resultMap[t.id];
                 const st = STATUS_CONFIG[r?.status] || STATUS_CONFIG.unknown;
                 const StIcon = st.icon;
+                const latency = r?.ping?.latency_ms;
+                const loss = r?.ping?.packet_loss_pct;
+
                 return (
-                  <div key={t.id} className="flex items-center gap-3 p-3 hover:bg-[var(--bg-app)]/50" data-testid={`wan-target-${t.id}`}>
-                    <StIcon size={16} weight="bold" style={{ color: st.color }} />
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs font-semibold text-[var(--text-primary)]">{t.label}</span>
-                        <span className="text-[9px] px-1.5 py-0.5 rounded font-bold uppercase" style={{ color: st.color, background: `${st.color}15` }}>{st.label}</span>
-                        <span className="text-[10px] text-[var(--text-muted)] font-mono">{t.public_ip}</span>
-                        <span className="text-[9px] text-[var(--text-muted)] uppercase">{t.device_type}</span>
-                        {t.check_ping && <span className="text-[9px] px-1 py-0.5 rounded bg-blue-500/10 text-blue-400 font-bold">ICMP</span>}
+                  <div key={t.id} className="px-4 py-3 hover:bg-[var(--bg-hover)]/30 transition-colors" data-testid={`wan-target-${t.id}`}>
+                    <div className="flex items-center gap-3">
+                      {/* Status icon */}
+                      <div className="w-7 h-7 rounded-md flex items-center justify-center flex-shrink-0" style={{ background: `${st.color}12` }}>
+                        <StIcon size={14} weight="bold" style={{ color: st.color }} />
                       </div>
+
+                      {/* Device info */}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-xs font-bold text-[var(--text-primary)]">{t.label}</span>
+                          <span className="text-[9px] px-1.5 py-0.5 rounded-md font-bold uppercase tracking-wide" style={{ color: st.color, background: `${st.color}15`, border: `1px solid ${st.color}30` }}>{st.label}</span>
+                          <span className="text-[10px] text-[var(--text-muted)] font-mono opacity-70">{t.public_ip}</span>
+                          <span className="text-[9px] text-[var(--text-muted)] uppercase opacity-50">{t.device_type}</span>
+                          {t.check_ping && <span className="text-[9px] px-1.5 py-0.5 rounded-md bg-blue-500/10 text-blue-400 border border-blue-500/20 font-bold">ICMP</span>}
+                        </div>
+                      </div>
+
+                      {/* Metrics */}
                       {r && (
-                        <div className="flex items-center gap-4 mt-1 text-[10px] text-[var(--text-muted)] flex-wrap">
-                          <span>Latenza: <b style={{ color: r.ping?.latency_ms > 100 ? "#FF3B30" : r.ping?.latency_ms > 50 ? "#FFCC00" : "#34C759" }}>{r.ping?.latency_ms ?? "—"}ms</b></span>
-                          <span>Loss: <b style={{ color: r.ping?.packet_loss_pct > 5 ? "#FF3B30" : "#34C759" }}>{r.ping?.packet_loss_pct ?? "—"}%</b></span>
+                        <div className="flex items-center gap-3 flex-shrink-0">
+                          {/* Latency pill */}
+                          <div className="text-center px-2.5 py-1 rounded-md bg-[var(--bg-card)] border border-[var(--bg-border)]">
+                            <p className="text-[8px] text-[var(--text-muted)] uppercase tracking-widest">Latenza</p>
+                            <p className="text-xs font-bold font-mono" style={{ color: latency > 100 ? "#FF3B30" : latency > 50 ? "#FFCC00" : "#34C759" }}>{latency ?? "—"}<span className="text-[8px] font-normal">ms</span></p>
+                          </div>
+                          {/* Loss pill */}
+                          <div className="text-center px-2.5 py-1 rounded-md bg-[var(--bg-card)] border border-[var(--bg-border)]">
+                            <p className="text-[8px] text-[var(--text-muted)] uppercase tracking-widest">Loss</p>
+                            <p className="text-xs font-bold font-mono" style={{ color: loss > 5 ? "#FF3B30" : "#34C759" }}>{loss ?? "—"}<span className="text-[8px] font-normal">%</span></p>
+                          </div>
+                          {/* Gateway pill */}
                           {r.gateway_ping && (
-                            <span>GW {r.gateway_ip}: <b style={{ color: r.gateway_ping.reachable ? "#34C759" : "#FF3B30" }}>{r.gateway_ping.reachable ? "OK" : "DOWN"}</b>{r.gateway_ping.latency_ms != null && ` (${r.gateway_ping.latency_ms}ms)`}</span>
+                            <div className="text-center px-2.5 py-1 rounded-md bg-[var(--bg-card)] border border-[var(--bg-border)]">
+                              <p className="text-[8px] text-[var(--text-muted)] uppercase tracking-widest">Gateway</p>
+                              <p className="text-xs font-bold font-mono" style={{ color: r.gateway_ping.reachable ? "#34C759" : "#FF3B30" }}>
+                                {r.gateway_ping.reachable ? "OK" : "DOWN"}
+                                {r.gateway_ping.latency_ms != null && <span className="text-[8px] font-normal opacity-60"> {r.gateway_ping.latency_ms}ms</span>}
+                              </p>
+                            </div>
                           )}
+                          {/* TCP ports */}
                           {r.ports?.map((p, i) => (
-                            <span key={i}>TCP {p.port}: <b style={{ color: p.open ? "#34C759" : "#FF3B30" }}>{p.open ? "OPEN" : "CLOSED"}</b>{p.response_ms ? ` (${p.response_ms}ms)` : ""}</span>
+                            <div key={i} className="text-center px-2.5 py-1 rounded-md bg-[var(--bg-card)] border border-[var(--bg-border)]">
+                              <p className="text-[8px] text-[var(--text-muted)] uppercase tracking-widest">TCP {p.port}</p>
+                              <p className="text-xs font-bold font-mono" style={{ color: p.open ? "#34C759" : "#FF3B30" }}>
+                                {p.open ? "OPEN" : "CLOSED"}
+                                {p.response_ms && <span className="text-[8px] font-normal opacity-60"> {p.response_ms}ms</span>}
+                              </p>
+                            </div>
                           ))}
-                          <span className="ml-auto">{r.checked_at ? new Date(r.checked_at).toLocaleTimeString("it-IT") : ""}</span>
+                          {/* Timestamp */}
+                          <span className="text-[9px] text-[var(--text-muted)] opacity-40 font-mono ml-1">{r.checked_at ? new Date(r.checked_at).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" }) : ""}</span>
                         </div>
                       )}
+
+                      {/* Delete */}
+                      <button onClick={() => deleteTarget(t.id)} className="p-1.5 rounded-md hover:bg-red-500/10 text-[var(--text-muted)] hover:text-red-400 transition-all opacity-30 hover:opacity-100" title="Elimina target">
+                        <Trash size={13} />
+                      </button>
                     </div>
-                    <Button variant="ghost" size="sm" className="h-6 w-6 p-0 text-[var(--text-muted)] hover:text-red-400" onClick={() => deleteTarget(t.id)}>
-                      <Trash size={12} />
-                    </Button>
                   </div>
                 );
               })}

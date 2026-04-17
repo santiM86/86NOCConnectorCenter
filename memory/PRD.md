@@ -1,75 +1,63 @@
-# NOC Alert Command Center - PRD
+# ARGUS Center - PRD
 
 ## Descrizione
-Piattaforma NOC enterprise-grade "ARGUS Center" per monitoraggio dispositivi di rete tramite SNMP, Syslog e Redfish. Connettore Windows nativo (PowerShell) con servizio NSSM.
+Piattaforma NOC enterprise "ARGUS Center" per monitoraggio dispositivi di rete. Connettore Windows nativo PowerShell.
 
 ## Architettura
-- Backend: Python 3.11, FastAPI, MongoDB (Motor), AES-256-GCM
+- Backend: Python 3.11, FastAPI, MongoDB, google-generativeai (Gemini)
 - Frontend: React, TailwindCSS, Shadcn UI, Recharts, PWA
-- Connector: PowerShell 5.1+, SNMP, Redfish, LLDP, MAC Table
+- Connector: PowerShell 5.1+, SNMP, Redfish
 
 ## Funzionalita Implementate
 
-### Core
-- [x] Auth JWT + 2FA TOTP + Ruoli (admin/operator/viewer)
-- [x] SNMP/Ping/Redfish monitoring
-- [x] Alert + correlazione + WebSocket
-- [x] Credential Vault AES-256-GCM
+### Dashboard NOC Control Room (NUOVO - 17/04/2026)
+- [x] Griglia clienti con card compatte: WAN, Dispositivi, Connettore, Backup, Stampanti, ISP
+- [x] KPI globali: Clienti, Problemi, Alert, Dispositivi
+- [x] Banner alert critici urgenti
+- [x] Ricerca + filtri (Tutti/Problemi/OK)
+- [x] Auto-refresh 30s, griglia adattiva (1-5 colonne), problemi in cima
+- [x] Endpoint GET /api/overview/clients aggregato
 
-### Monitor WAN con Gateway ISP (AGGIORNATO - 15/04/2026)
-- [x] Probe Ping ICMP + TCP Port Check verso IP pubblici
-- [x] Campo Gateway ISP opzionale per diagnosi avanzata linea
-- [x] Diagnosi 3 livelli: Gateway ISP → Router → Firewall
-- [x] Test Connection pre-salvataggio (TCP + Gateway Ping)
-- [x] Risultato test dettagliato: porte OPEN/CLOSED, Gateway ONLINE/OFFLINE
-- [x] Diagnosi automatica: ISP down vs Router down vs Firewall down
-- [x] Alert automatici su status change
+### Monitor WAN con Gateway ISP
+- [x] Ping ICMP (SOCK_DGRAM unprivileged) + TCP Port Check
+- [x] Gateway ISP per diagnosi linea
+- [x] Test Connection pre-salvataggio
+- [x] Card ridisegnate con metriche in pill
 
-### Sistema Auto-Update (NUOVO - 15/04/2026)
-- [x] Endpoint GET /api/app-version con hash SHA256 codice
-- [x] Frontend polling ogni 60s, banner aggiornamento
-- [x] Auto-reload frontend stale, cache-busting completo
-- [x] VersionBadge V.2.0.XXXX nell'header sidebar
-
-### Navigazione Sidebar (AGGIORNATO - 15/04/2026)
-- [x] 6 sezioni: Panoramica, Monitoraggio, Clienti & Rete, Operazioni, Sicurezza, Amministrazione
+### Sistema Auto-Update
+- [x] Versioning V.2.0.XXXX, polling 60s, banner aggiornamento
+- [x] Badge versione su Login Page e Sidebar
 
 ### Gestione Utenti
 - [x] CRUD + Toggle attivo/disattivato + Sblocca brute force
-- [x] 4 utenti registrati, stats Totale/Attivi/MFA/Admin
+- [x] Seed automatico 4 utenti all'avvio
 
-### Login Page Branding
-- [x] Icona ARGUS scudo, Footer Verdana, layout 100vh responsive
-- [x] Banner notifiche nascosto su login/2fa, footer mobile compatto
+### Security (senza IP banning)
+- [x] Brute Force (per email), Rate Limiting, 2FA/TOTP, Argon2id
+- [x] AES-256-GCM, Security Headers, CORS, Audit Logging
+- [x] Rimosso: IP Ban, Honeypot, IPBlockMiddleware
 
 ### Tutto il resto (COMPLETATO)
-- [x] Mappa Enterprise, Dashboard, Report PDF, TV Dashboard
-- [x] Stampanti SNMP, VA, Trend, Discovery, Soglie, Manutenzione
-- [x] Bandwidth, SOC AI Gemini, Portale Cliente, Backup
-- [x] Security 21 protezioni, SNMP v3, Connector Hardening
-- [x] Scalabilita (65 indici, 12 TTL, GZip, Task Coordinator)
-- [x] Mobile Dashboard, PWA
+- [x] SNMP v3, Mappa Enterprise, Report PDF, TV Dashboard
+- [x] VA, SOC AI Gemini (google-generativeai diretto), Backup Monitoring
+- [x] PWA, Mobile Dashboard, Sidebar Framer Motion
 
-## Key API Endpoints
-- GET `/api/app-version` - Versione e hash codice
-- POST `/api/external-monitor/test-connection` - Test TCP + Gateway pre-salvataggio
-- POST `/api/external-monitor/targets` - Crea target WAN (con gateway_ip)
-- GET `/api/external-monitor/status` - Stato con diagnosi gateway
+## Zero dipendenze Emergent
+- emergentintegrations RIMOSSO
+- Usa google-generativeai diretto con GEMINI_API_KEY
+
+## Credenziali
+- admin@86bit.it / password
+- info@86bit.it / password (Marco Santinelli)
+- tv@86bit.it / Tv86bit!2026
+- tvdash@86bit.it / Tv86bit!2026
 
 ## Backlog
 ### P1
-- [ ] Template SNMP specifici Zyxel (VPN, sessioni, temperatura)
-- [ ] Notifiche Telegram (quando utente fornira bot token)
-- [ ] Notifiche Push Firebase / Email SendGrid (sostituzione mock)
+- [ ] Template SNMP Zyxel (VPN, sessioni, temperatura)
+- [ ] Notifiche Telegram
 ### P2
-- [ ] Multi-tenant e White-labeling (SaaS)
+- [ ] Multi-tenant / SaaS
 - [ ] LDAP/Active Directory
 ### P3
 - [ ] Zyxel Nebula Cloud API
-- [ ] App Mobile React Native
-
-## Credenziali Test
-- Admin: admin@86bit.it / password
-- Admin: info@86bit.it / password (Marco Santinelli)
-- TV Monitor: tv@86bit.it / Tv86bit!2026
-- TV Dashboard Test: tvdash@86bit.it / Tv86bit!2026

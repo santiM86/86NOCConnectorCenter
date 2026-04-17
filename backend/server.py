@@ -221,6 +221,7 @@ from routes.security_status import router as security_status_router
 from routes.security_advanced import router as security_advanced_router
 from routes.external_monitor import router as external_monitor_router
 from routes.app_version import router as app_version_router
+from routes.overview import router as overview_router
 
 app.include_router(auth_router)
 app.include_router(admin_router)
@@ -253,6 +254,7 @@ app.include_router(security_status_router)
 app.include_router(security_advanced_router)
 app.include_router(external_monitor_router)
 app.include_router(app_version_router)
+app.include_router(overview_router)
 
 # Include enterprise routes
 from enterprise_routes import create_enterprise_router
