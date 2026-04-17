@@ -407,6 +407,49 @@ async def startup_event():
     except Exception as e:
         logger.warning(f"Index creation warning (non-fatal): {e}")
 
+    # === AUTO-SEED: Create default admin users if they don't exist ===
+    try:
+        from security import security_manager
+        import uuid as _uuid
+
+        seed_users = [
+            {"email": "admin@86bit.it", "name": "Admin", "role": "admin", "password": "password"},
+            {"email": "info@86bit.it", "name": "Marco Santinelli", "role": "admin", "password": "password"},
+            {"email": "tv@86bit.it", "name": "TV Monitor", "role": "viewer", "password": "Tv86bit!2026"},
+            {"email": "tvdash@86bit.it", "name": "TV Dashboard Test", "role": "viewer", "password": "Tv86bit!2026"},
+        ]
+        for su in seed_users:
+            existing = await db.users.find_one({"email": su["email"]})
+            if not existing:
+                from datetime import datetime as _dt, timezone as _tz
+                user_doc = {
+                    "id": str(_uuid.uuid4()),
+                    "email": su["email"],
+                    "name": su["name"],
+                    "password_hash": security_manager.hash_password(su["password"]),
+                    "role": su["role"],
+                    "two_factor_enabled": False,
+                    "totp_secret": None,
+                    "is_active": True,
+                    "created_at": _dt.now(_tz.utc).isoformat(),
+                }
+                await db.users.insert_one(user_doc)
+                logger.info(f"Seed user created: {su['email']} ({su['role']})")
+    except Exception as e:
+        logger.warning(f"Seed users warning (non-fatal): {e}")
+
+    # === UNBAN whitelisted IPs ===
+    try:
+        whitelist_ips = ["79.9.88.52"]
+        for ip in whitelist_ips:
+            await db.banned_ips.delete_many({"ip": ip})
+            await db.honeypot_bans.delete_many({"ip": ip})
+            await db.blocked_ips.delete_many({"ip": ip})
+            await db.failed_logins.delete_many({"ip": ip})
+        logger.info(f"Whitelisted IPs cleared from bans: {whitelist_ips}")
+    except Exception as e:
+        logger.warning(f"IP unban warning (non-fatal): {e}")
+
     try:
         setting = await db.settings.find_one({"key": "redfish_poll_interval"})
         interval = setting.get("value", 5) if setting else 5
