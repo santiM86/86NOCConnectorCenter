@@ -16,7 +16,6 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
     # Pre-fetch all data in parallel-ish
     wan_targets = await db.wan_targets.find({"enabled": True}, {"_id": 0}).to_list(1000)
     wan_results_raw = await db.wan_probe_results.find({}, {"_id": 0}).to_list(5000)
-    wan_diagnoses_raw = await db.wan_diagnoses.find({}, {"_id": 0}).to_list(500)
 
     active_alerts = await db.alerts.find(
         {"status": "active"}, {"_id": 0, "client_id": 1, "severity": 1}
@@ -37,10 +36,6 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
     wan_results_map = {}
     for r in wan_results_raw:
         wan_results_map[r.get("target_id")] = r
-
-    wan_diag_map = {}
-    for d in wan_diagnoses_raw:
-        wan_diag_map[d.get("client_id")] = d
 
     wan_targets_by_client = {}
     for t in wan_targets:
@@ -120,24 +115,54 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
         devices_info = devices_by_client.get(cid, {"total": 0, "online": 0, "offline": 0})
         backup_info = backup_by_client.get(cid, {"ok": 0, "warning": 0, "error": 0, "total": 0})
         printer_info = printer_by_client.get(cid, {"total": 0, "low_toner": 0, "ok": 0})
-        wan_diag = wan_diag_map.get(cid)
         wan_tgts = wan_targets_by_client.get(cid, [])
         connector_online = connector_by_client.get(cid)
 
-        # WAN summary
+        # WAN summary — compute from probe results directly
         wan_status = "not_configured"
         wan_latency = None
         wan_gateway = None
-        if wan_diag:
-            wan_status = wan_diag.get("diagnosis", "unknown")
-            wan_gateway = wan_diag.get("gateway_status")
-        elif wan_tgts:
-            wan_status = "pending"
-        for t in wan_tgts:
-            r = wan_results_map.get(t.get("id"))
-            if r and r.get("ping", {}).get("latency_ms"):
-                wan_latency = r["ping"]["latency_ms"]
-                break
+        if wan_tgts:
+            all_online = True
+            any_online = False
+            best_latency = None
+            has_gateway = False
+            gw_online = None
+            for t in wan_tgts:
+                r = wan_results_map.get(t.get("id"))
+                if not r:
+                    continue
+                st = r.get("status", "unknown")
+                if st in ("online", "degraded"):
+                    any_online = True
+                else:
+                    all_online = False
+                lat = r.get("ping", {}).get("latency_ms")
+                if lat and (best_latency is None or lat < best_latency):
+                    best_latency = lat
+                # Check gateway
+                gw = r.get("gateway_ping")
+                if gw:
+                    has_gateway = True
+                    if gw.get("reachable"):
+                        gw_online = "online"
+                    elif gw_online is None:
+                        gw_online = "offline"
+
+            wan_latency = best_latency
+            wan_gateway = gw_online
+            if any_online and all_online:
+                wan_status = "ok"
+            elif any_online:
+                wan_status = "degraded"
+            elif has_gateway and gw_online == "online":
+                wan_status = "router_down"
+            elif has_gateway and gw_online == "offline":
+                wan_status = "isp_down"
+            elif not any_online and len([t for t in wan_tgts if wan_results_map.get(t.get("id"))]) > 0:
+                wan_status = "offline"
+            else:
+                wan_status = "pending"
 
         # Overall health score
         health = "ok"
