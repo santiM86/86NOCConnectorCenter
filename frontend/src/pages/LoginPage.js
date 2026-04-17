@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import { Eye, EyeSlash, Info } from "@phosphor-icons/react";
+import { useAppVersion } from "@/components/AppVersion";
 
 export default function LoginPage() {
   const [email, setEmail] = useState("");
@@ -14,6 +15,7 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [showEaster, setShowEaster] = useState(false);
   const { login, user } = useAuth();
+  const { version } = useAppVersion();
   const navigate = useNavigate();
   const location = useLocation();
   const from = location.state?.from?.pathname || "/";
@@ -113,6 +115,13 @@ export default function LoginPage() {
                 Tel. <span className="text-indigo-400/60">+39 035 310 900</span> &mdash; <span className="text-indigo-400/60">info@86bit.it</span>
               </p>
             </div>
+
+            {/* Versione in basso a sinistra */}
+            {version && (
+              <div className="absolute bottom-3 left-3" data-testid="login-version-badge">
+                <span className="text-[9px] font-mono text-[var(--text-muted)] opacity-40 select-none">V.{version}</span>
+              </div>
+            )}
 
             {/* Easter egg ! */}
             <div className="absolute bottom-3 right-3"
