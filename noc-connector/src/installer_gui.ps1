@@ -691,28 +691,41 @@ function Show-InstallerWizard {
                 } catch {}
             }
         }
-        # Start Menu shortcut - Cartella "86BIT Connector"
+        # Start Menu shortcut - Cartella "86BIT ArgusCenter"
         try {
-            $startMenuDir = Join-Path ([Environment]::GetFolderPath("CommonStartMenu")) "Programs\86BIT Connector"
+            $startMenuDir = Join-Path ([Environment]::GetFolderPath("CommonStartMenu")) "Programs\86BIT ArgusCenter"
             if (!(Test-Path $startMenuDir)) { New-Item -ItemType Directory -Path $startMenuDir -Force | Out-Null }
-            # Rimuovi vecchia cartella con nome diverso
+            # Rimuovi vecchie cartelle con nomi diversi
             $oldDir = Join-Path ([Environment]::GetFolderPath("CommonStartMenu")) "Programs\86NocConnector"
             if (Test-Path $oldDir) { Remove-Item $oldDir -Recurse -Force -ErrorAction SilentlyContinue }
+            $oldDir2 = Join-Path ([Environment]::GetFolderPath("CommonStartMenu")) "Programs\86BIT Connector"
+            if (Test-Path $oldDir2) { Remove-Item $oldDir2 -Recurse -Force -ErrorAction SilentlyContinue }
             
             $shell = New-Object -ComObject WScript.Shell
-            # Collegamento Avvia
-            $shortcut = $shell.CreateShortcut("$startMenuDir\Avvia 86NocConnector.lnk")
+            # Collegamento Avvia ARGUS Center Connector
+            $shortcut = $shell.CreateShortcut("$startMenuDir\ARGUS Center Connector.lnk")
             $shortcut.TargetPath = $batPath
             $shortcut.WorkingDirectory = $BaseDir
-            $shortcut.Description = "Avvia 86NocConnector - Collector SNMP, Syslog e Redfish iLO"
+            $shortcut.Description = "Avvia ARGUS Center Connector - Monitoring SNMP, Syslog e Redfish"
             $shortcut.IconLocation = "shell32.dll,13"
             $shortcut.WindowStyle = 7
             $shortcut.Save()
+            # Collegamento Diagnostica
+            $diagScript = Join-Path $BaseDir "diagnostica_connessione.ps1"
+            if (Test-Path $diagScript) {
+                $diagShortcut = $shell.CreateShortcut("$startMenuDir\Diagnostica Connessione.lnk")
+                $diagShortcut.TargetPath = "powershell.exe"
+                $diagShortcut.Arguments = "-ExecutionPolicy Bypass -File `"$diagScript`""
+                $diagShortcut.WorkingDirectory = $BaseDir
+                $diagShortcut.Description = "Diagnostica connessione ARGUS Center"
+                $diagShortcut.IconLocation = "shell32.dll,22"
+                $diagShortcut.Save()
+            }
             # Collegamento Disinstalla
-            $unShortcut = $shell.CreateShortcut("$startMenuDir\Disinstalla 86NocConnector.lnk")
+            $unShortcut = $shell.CreateShortcut("$startMenuDir\Disinstalla ARGUS Connector.lnk")
             $unShortcut.TargetPath = $uninstallBat
             $unShortcut.WorkingDirectory = $BaseDir
-            $unShortcut.Description = "Disinstalla 86NocConnector"
+            $unShortcut.Description = "Disinstalla ARGUS Center Connector"
             $unShortcut.IconLocation = "shell32.dll,31"
             $unShortcut.Save()
             # Collegamento Apri Cartella Log
@@ -725,13 +738,15 @@ function Show-InstallerWizard {
             $logShortcut.IconLocation = "shell32.dll,3"
             $logShortcut.Save()
             [System.Runtime.InteropServices.Marshal]::ReleaseComObject($shell) | Out-Null
-            $txtStatus.AppendText("  Menu Start: OK (86BIT Connector)`r`n")
+            $txtStatus.AppendText("  Menu Start: OK (86BIT ArgusCenter)`r`n")
         } catch {
             $txtStatus.AppendText("  Menu Start: $($_.Exception.Message)`r`n")
         }
         try {
-            $regPath = "HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\$AppName"
-            & reg add $regPath /v "DisplayName" /t REG_SZ /d "$AppName" /f 2>$null
+            $regPath = "HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\86BIT_ArgusCenter_Connector"
+            # Rimuovi vecchia chiave con nome diverso
+            & reg delete "HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\$AppName" /f 2>$null
+            & reg add $regPath /v "DisplayName" /t REG_SZ /d "86BIT ARGUS Center Connector" /f 2>$null
             & reg add $regPath /v "DisplayVersion" /t REG_SZ /d "$Version" /f 2>$null
             & reg add $regPath /v "Publisher" /t REG_SZ /d "86BIT srl Unipersonale" /f 2>$null
             & reg add $regPath /v "URLInfoAbout" /t REG_SZ /d "https://www.86bit.it" /f 2>$null
@@ -739,9 +754,11 @@ function Show-InstallerWizard {
             & reg add $regPath /v "Contact" /t REG_SZ /d "info@86bit.it" /f 2>$null
             & reg add $regPath /v "UninstallString" /t REG_SZ /d "`"$uninstallBat`"" /f 2>$null
             & reg add $regPath /v "InstallLocation" /t REG_SZ /d "$BaseDir" /f 2>$null
+            & reg add $regPath /v "InstallDate" /t REG_SZ /d "$(Get-Date -Format 'yyyyMMdd')" /f 2>$null
+            & reg add $regPath /v "EstimatedSize" /t REG_DWORD /d 1024 /f 2>$null
             & reg add $regPath /v "NoModify" /t REG_DWORD /d 1 /f 2>$null
             & reg add $regPath /v "NoRepair" /t REG_DWORD /d 1 /f 2>$null
-            $txtStatus.AppendText("  Programmi e Funzionalita': OK`r`n")
+            $txtStatus.AppendText("  Programmi e Funzionalita': OK (86BIT ARGUS Center Connector)`r`n")
         } catch {}
         $form.Refresh()
         Start-Sleep -Milliseconds 500
