@@ -1,4 +1,4 @@
 {
-  "version": "2.5.0",
-  "changelog": "v2.5.0: Network Discovery potenziato - aggiunto polling MAC Address Table e Port Speed per rilevare connessioni fisiche reali tra switch (inclusi uplink 10G). LLDP + MAC + Speed combinati per ricostruzione topologia automatica. Servizio Windows NSSM integrato nell'installer."
+  "version": "3.0.0",
+  "changelog": "v3.0.0: SICUREZZA AVANZATA - HMAC-SHA256 su ogni richiesta, Anti-Replay con nonce univoco, API Key Rotation automatica ogni 30 giorni, Endpoint offuscati, TLS 1.2/1.3 forzato. Tutte le chiamate GET/POST firmate digitalmente. Backup monitor, Memory cleanup, Job health check, Log rotation."
 }
