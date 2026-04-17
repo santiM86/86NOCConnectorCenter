@@ -37,12 +37,14 @@ const HEALTH_CONFIG = {
 
 const WAN_LABELS = {
   ok: "OK", isp_down: "ISP DOWN", firewall_down: "FW DOWN", router_down: "RT DOWN",
-  firewall_degraded: "FW DEGR.", router_degraded: "RT DEGR.", pending: "...", not_configured: "N/C", unknown: "---",
+  firewall_degraded: "FW DEGR.", router_degraded: "RT DEGR.", degraded: "PARZIALE",
+  offline: "OFFLINE", pending: "...", not_configured: "N/C", unknown: "---",
 };
 
 const WAN_COLORS = {
   ok: "#34C759", isp_down: "#FF3B30", firewall_down: "#FF3B30", router_down: "#FF3B30",
-  firewall_degraded: "#FF9500", router_degraded: "#FF9500", pending: "#555", not_configured: "#555", unknown: "#555",
+  firewall_degraded: "#FF9500", router_degraded: "#FF9500", degraded: "#FF9500",
+  offline: "#FF3B30", pending: "#555", not_configured: "#555", unknown: "#555",
 };
 
 export default function DashboardPage() {
