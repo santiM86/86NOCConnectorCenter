@@ -94,6 +94,26 @@ async def websocket_alerts(websocket: WebSocket):
         manager.disconnect(websocket)
 
 
+# ==================== WEBHOOK ROUTES ====================
+
+import subprocess
+
+@app.post("/api/webhooks/github-deploy")
+async def github_webhook_deploy(request: Request):
+    token = request.query_params.get("token")
+    secret = os.environ.get("WEBHOOK_SECRET", "NOC-deploy-token-2026")
+    if token != secret:
+        return Response(content='{"detail":"Invalid or missing webhook token"}', status_code=403, media_type="application/json")
+    
+    # Run the deployment bash script in a detached background process so it doesn't block
+    script_path = "/home/arslan/86NOCConnectorCenter/deploy.sh"
+    try:
+        subprocess.Popen(["/bin/bash", script_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return {"message": "Deployment script started in the background"}
+    except Exception as e:
+        logger.error(f"Failed to start deploy script: {e}")
+        return Response(content='{"detail":"Internal Server Error starting script"}', status_code=500, media_type="application/json")
+
 # ==================== ROOT ROUTES ====================
 
 @app.get("/api/")
