@@ -13,7 +13,7 @@ from security_hardening import SecurityHardening
 from deps import (
     security, limiter, audit_logger, security_hardening,
     JWT_SECRET, JWT_ALGORITHM,
-    create_token, get_current_user, auto_ban_check,
+    create_token, get_current_user,
     create_refresh_token, store_refresh_token, check_nosql_injection,
 )
 import uuid
@@ -118,8 +118,6 @@ async def login(request: Request, credentials: UserLogin):
         )
         try: await security_hardening.record_failed_login(credentials.email, client_ip)
         except Exception: pass
-        try: await auto_ban_check(client_ip)
-        except Exception: pass
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     if not user.get("is_active", True):
@@ -137,8 +135,6 @@ async def login(request: Request, credentials: UserLogin):
             details={"reason": "Invalid password"}, severity="warning"
         )
         try: await security_hardening.record_failed_login(credentials.email, client_ip)
-        except Exception: pass
-        try: await auto_ban_check(client_ip)
         except Exception: pass
         raise HTTPException(status_code=401, detail="Invalid credentials")
 

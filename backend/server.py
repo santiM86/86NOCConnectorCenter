@@ -24,7 +24,7 @@ load_dotenv(ROOT_DIR / '.env')
 # Core dependencies
 from database import db, mongo_client
 from deps import (
-    limiter, manager, redfish_poller, is_ip_blocked,
+    limiter, manager, redfish_poller,
     JWT_SECRET, JWT_ALGORITHM
 )
 
@@ -70,18 +70,6 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         elif request.url.path.startswith("/api"):
             response.headers["Cache-Control"] = "private, max-age=0"
         return response
-
-
-class IPBlockMiddleware(BaseHTTPMiddleware):
-    """Middleware to block requests from banned IPs."""
-    async def dispatch(self, request: Request, call_next):
-        client_ip = request.client.host if request.client else None
-        if client_ip and await is_ip_blocked(client_ip):
-            return Response(
-                content='{"detail":"IP address blocked. Contact administrator."}',
-                status_code=403, media_type="application/json"
-            )
-        return await call_next(request)
 
 
 # ==================== WEBSOCKET ====================
@@ -257,7 +245,6 @@ app.include_router(enterprise_router)
 
 from middleware.global_rate_limiter import GlobalRateLimitMiddleware
 from middleware.request_timeout import RequestTimeoutMiddleware
-from middleware.honeypot import HoneypotMiddleware
 from middleware.body_size_limit import BodySizeLimitMiddleware
 from middleware.origin_verify import OriginVerifyMiddleware
 
@@ -282,8 +269,6 @@ app.add_middleware(GlobalRateLimitMiddleware)
 app.add_middleware(RequestTimeoutMiddleware)
 app.add_middleware(BodySizeLimitMiddleware)
 app.add_middleware(OriginVerifyMiddleware)
-app.add_middleware(HoneypotMiddleware)
-app.add_middleware(IPBlockMiddleware)
 app.add_middleware(GZipMiddleware, minimum_size=500)  # Comprimi risposte >500 bytes
 
 
@@ -377,8 +362,6 @@ async def startup_event():
         await db.login_attempts.create_index([("ip_address", 1), ("timestamp", -1)])
         await db.login_attempts.create_index([("email", 1), ("timestamp", -1)])
         await db.login_attempts.create_index("timestamp", expireAfterSeconds=86400 * 7)  # TTL 7 giorni
-        await db.blocked_ips.create_index([("ip", 1)])
-        await db.blocked_ips.create_index([("expires_at", 1)])
 
         # Session / Token indexes
         await db.refresh_tokens.create_index([("user_id", 1)])
@@ -438,17 +421,14 @@ async def startup_event():
     except Exception as e:
         logger.warning(f"Seed users warning (non-fatal): {e}")
 
-    # === UNBAN whitelisted IPs ===
+    # === UNBAN whitelisted IPs (legacy cleanup) ===
     try:
-        whitelist_ips = ["79.9.88.52"]
-        for ip in whitelist_ips:
-            await db.banned_ips.delete_many({"ip": ip})
-            await db.honeypot_bans.delete_many({"ip": ip})
-            await db.blocked_ips.delete_many({"ip": ip})
-            await db.failed_logins.delete_many({"ip": ip})
-        logger.info(f"Whitelisted IPs cleared from bans: {whitelist_ips}")
-    except Exception as e:
-        logger.warning(f"IP unban warning (non-fatal): {e}")
+        await db.banned_ips.drop()
+        await db.honeypot_bans.drop()
+        await db.blocked_ips.drop()
+        logger.info("IP ban collections removed (feature disabled)")
+    except Exception:
+        pass
 
     try:
         setting = await db.settings.find_one({"key": "redfish_poll_interval"})
