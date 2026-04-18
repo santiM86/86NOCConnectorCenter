@@ -190,3 +190,18 @@ async def get_alert_trends(hours: int = 24, current_user: dict = Depends(get_cur
         hourly_data[hour][alert["severity"]] += 1
     sorted_hours = sorted(hourly_data.keys())
     return [{"hour": h, **hourly_data[h]} for h in sorted_hours]
+
+
+@router.get("/alerts/{alert_id}/notification-log")
+async def get_alert_notification_log(
+    alert_id: str, current_user: dict = Depends(get_current_user)
+):
+    """Admin-only: restituisce il log delle notifiche inviate per un alert.
+    Utile in postmortem per verificare chi è stato notificato e con che esito."""
+    if current_user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Solo admin")
+
+    entries = await db.notification_delivery_log.find(
+        {"alert_id": alert_id}, {"_id": 0}
+    ).sort("created_at", 1).to_list(length=500)
+    return entries

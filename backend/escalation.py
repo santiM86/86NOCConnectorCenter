@@ -106,7 +106,10 @@ async def _run_once(db) -> int:
         )
         payload["tag"] = f"escalation-{alert.get('id','')}"
         try:
-            await wp.send_to_roles(db, roles, payload)
+            await wp.send_to_roles(
+                db, roles, payload,
+                log_context={"alert_id": alert.get("id"), "type": "escalation"},
+            )
             escalated += 1
             logger.info(
                 f"[escalation] Alert {alert.get('id')} ({alert.get('severity')}) "

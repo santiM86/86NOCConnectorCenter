@@ -105,31 +105,47 @@ async def _send_one(subscription: Dict[str, Any], payload: Dict[str, Any]) -> Di
         return {"success": False, "error": str(exc), "expired": False}
 
 
-async def send_to_user(db, user_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+async def send_to_user(
+    db,
+    user_id: str,
+    payload: Dict[str, Any],
+    log_context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """Send web push to all active subscriptions of a user.
     Automatically deletes expired/invalid subscriptions (404/410).
-    Respects the user's Quiet Hours preferences."""
+    Respects the user's Quiet Hours preferences.
+    Writes per-delivery rows in `notification_delivery_log` when log_context is given
+    (expected keys: alert_id, type in {initial|escalation}).
+    """
     if not is_configured():
+        await _log_delivery(db, log_context, user_id, None, "vapid_not_configured")
         return {"success": False, "reason": "vapid_not_configured"}
 
     # Quiet hours check
     prefs = await get_user_prefs(db, user_id)
     severity = (payload.get("severity") or "").lower()
     if is_in_quiet_hours(prefs, severity):
+        await _log_delivery(db, log_context, user_id, None, "skipped_quiet_hours")
         return {"success": True, "sent": 0, "skipped": "quiet_hours"}
 
     subs = await db.push_subscriptions.find({"user_id": user_id}, {"_id": 0}).to_list(length=50)
     if not subs:
+        await _log_delivery(db, log_context, user_id, None, "no_subscriptions")
         return {"success": True, "sent": 0}
 
     sent = 0
     expired_endpoints: List[str] = []
     for s in subs:
+        endpoint = s["subscription"].get("endpoint", "")
         result = await _send_one(s["subscription"], payload)
         if result.get("success"):
             sent += 1
+            await _log_delivery(db, log_context, user_id, endpoint, "delivered")
         elif result.get("expired"):
-            expired_endpoints.append(s["subscription"].get("endpoint"))
+            expired_endpoints.append(endpoint)
+            await _log_delivery(db, log_context, user_id, endpoint, "expired", error=result.get("error"))
+        else:
+            await _log_delivery(db, log_context, user_id, endpoint, "failed", error=result.get("error"))
 
     if expired_endpoints:
         await db.push_subscriptions.delete_many({"subscription.endpoint": {"$in": expired_endpoints}})
@@ -138,7 +154,41 @@ async def send_to_user(db, user_id: str, payload: Dict[str, Any]) -> Dict[str, A
     return {"success": True, "sent": sent, "pruned": len(expired_endpoints)}
 
 
-async def send_to_roles(db, roles: List[str], payload: Dict[str, Any]) -> Dict[str, Any]:
+async def _log_delivery(
+    db,
+    log_context: Optional[Dict[str, Any]],
+    user_id: str,
+    endpoint: Optional[str],
+    outcome: str,
+    error: Optional[str] = None,
+) -> None:
+    """Write a row to notification_delivery_log (best-effort)."""
+    if not log_context or not log_context.get("alert_id"):
+        return
+    try:
+        # Resolve email (cheap cache-less lookup; usually 1-2 users)
+        user_doc = await db.users.find_one({"id": user_id}, {"_id": 0, "email": 1, "name": 1})
+        user_email = (user_doc or {}).get("email", "")
+        user_name = (user_doc or {}).get("name", "")
+        await db.notification_delivery_log.insert_one(
+            {
+                "alert_id": log_context.get("alert_id"),
+                "type": log_context.get("type", "initial"),
+                "user_id": user_id,
+                "user_email": user_email,
+                "user_name": user_name,
+                "channel": "web_push",
+                "endpoint": (endpoint[-40:] if endpoint else ""),
+                "outcome": outcome,
+                "error": (error or "")[:300],
+                "created_at": datetime.now().isoformat(),
+            }
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"[webpush] _log_delivery failed: {exc}")
+
+
+async def send_to_roles(db, roles: List[str], payload: Dict[str, Any], log_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Send web push to all users with any of the given roles."""
     if not is_configured():
         return {"success": False, "reason": "vapid_not_configured"}
@@ -147,7 +197,7 @@ async def send_to_roles(db, roles: List[str], payload: Dict[str, Any]) -> Dict[s
     total_sent = 0
     total_pruned = 0
     for u in users:
-        res = await send_to_user(db, u["id"], payload)
+        res = await send_to_user(db, u["id"], payload, log_context=log_context)
         total_sent += res.get("sent", 0)
         total_pruned += res.get("pruned", 0)
 
@@ -206,6 +256,7 @@ async def notify_new_alert(db, alert_doc: Dict[str, Any]) -> None:
             return
 
         payload = build_alert_payload(alert_doc)
+        log_ctx = {"alert_id": alert_doc.get("id"), "type": "initial"}
 
         # On-call rotation: if a schedule is active, only notify those users
         try:
@@ -216,10 +267,10 @@ async def notify_new_alert(db, alert_doc: Dict[str, Any]) -> None:
 
         if oncall_user_ids:
             for uid in oncall_user_ids:
-                await send_to_user(db, uid, payload)
+                await send_to_user(db, uid, payload, log_context=log_ctx)
             return
 
         # Fallback: all admins + operators
-        await send_to_roles(db, ["admin", "operator"], payload)
+        await send_to_roles(db, ["admin", "operator"], payload, log_context=log_ctx)
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"[webpush] notify_new_alert failed: {exc}")
