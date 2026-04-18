@@ -413,6 +413,42 @@ async def _check_device_thresholds(client_id: str, dev: dict, prev_status: Optio
                 "source_type": "threshold_port_down",
             })
 
+    # --- Device identity change detection (sysDescr / sysName / MACs)
+    # If the sysDescr or sysName of a known IP changes significantly, it may mean
+    # the device was replaced, is a rogue device (ARP spoofing) or swapped hardware.
+    if prev_status and prev_status.get("reachable") and reachable:
+        prev_descr = (prev_status.get("sys_descr") or "").strip()
+        curr_descr = (dev.get("sys_descr") or "").strip()
+        prev_name = (prev_status.get("sys_name") or "").strip()
+        curr_name = (dev.get("sys_name") or "").strip()
+
+        # Alert only if both old and new values are non-empty (first population is ignored)
+        if prev_descr and curr_descr and prev_descr != curr_descr:
+            alerts_to_create.append({
+                "severity": "critical",
+                "title": f"Identità dispositivo CAMBIATA: {device_name}",
+                "message": f"L'IP {device_ip} risponde con un sysDescr diverso. Prima: '{prev_descr[:100]}'. Ora: '{curr_descr[:100]}'. Possibile sostituzione HW, rogue device o ARP spoofing.",
+                "source_type": "security_identity_change",
+            })
+        elif prev_name and curr_name and prev_name != curr_name:
+            alerts_to_create.append({
+                "severity": "high",
+                "title": f"Hostname SNMP cambiato: {device_name}",
+                "message": f"L'IP {device_ip} ha cambiato sysName da '{prev_name}' a '{curr_name}'.",
+                "source_type": "security_identity_change",
+            })
+
+        # MAC address fingerprint check (from device_macs if provided)
+        prev_macs = set(m.upper() for m in (prev_status.get("device_macs") or []) if m)
+        curr_macs = set(m.upper() for m in (dev.get("device_macs") or []) if m)
+        if prev_macs and curr_macs and not prev_macs.intersection(curr_macs):
+            alerts_to_create.append({
+                "severity": "critical",
+                "title": f"MAC address cambiato: {device_name}",
+                "message": f"Tutti i MAC address su {device_ip} sono cambiati. Prima: {', '.join(sorted(prev_macs))[:120]}. Ora: {', '.join(sorted(curr_macs))[:120]}. Possibile sostituzione dispositivo o spoofing.",
+                "source_type": "security_mac_change",
+            })
+
     # Insert alerts (dedup by title + device + status=active)
     for a in alerts_to_create:
         existing = await db.alerts.find_one({
@@ -466,7 +502,9 @@ async def connector_device_report(request: Request):
             "device_ip": dev["device_ip"], "device_name": dev["device_name"],
             "reachable": dev["reachable"], "monitor_type": dev.get("monitor_type", "snmp"),
             "ports": dev.get("ports", []), "sys_descr": dev.get("sys_descr", ""),
+            "sys_name": dev.get("sys_name", ""),
             "sys_uptime": dev.get("sys_uptime", ""),
+            "device_macs": dev.get("device_macs", []),
             "http_status": dev.get("http_status", None),
             "ping_ms": dev.get("ping_ms", None),
             "cpu_usage": dev.get("cpu_usage", None),
@@ -829,9 +867,78 @@ async def connector_network_discovery(request: Request):
         await db.mac_connections.insert_many(inferred_connections)
 
     # Store ALL discovered endpoints (for full tree view)
+    # BEFORE replacing, capture previous IP<->MAC bindings so we can detect changes.
+    prev_endpoints = await db.discovered_endpoints.find(
+        {"client_id": client_id}, {"_id": 0, "ip": 1, "mac": 1, "switch_ip": 1, "port": 1}
+    ).to_list(10000)
+    prev_ip_mac = {}  # ip -> set(mac)
+    prev_mac_ip = {}  # mac -> ip
+    for p in prev_endpoints:
+        if p.get("ip") and p.get("mac"):
+            prev_ip_mac.setdefault(p["ip"], set()).add(p["mac"].upper())
+            prev_mac_ip[p["mac"].upper()] = p["ip"]
+
     await db.discovered_endpoints.delete_many({"client_id": client_id})
     if discovered_endpoints:
         await db.discovered_endpoints.insert_many(discovered_endpoints)
+
+    # Detect IP/MAC binding changes (possible spoofing / device replacement / roaming)
+    curr_ip_mac = {}
+    curr_mac_ip = {}
+    for e in discovered_endpoints:
+        if e.get("ip") and e.get("mac"):
+            curr_ip_mac.setdefault(e["ip"], set()).add(e["mac"].upper())
+            curr_mac_ip[e["mac"].upper()] = e["ip"]
+
+    identity_alerts = []
+    now_iso_alerts = datetime.now(timezone.utc).isoformat()
+
+    # Case A: same IP, different MAC(s) (ARP spoofing, device replaced)
+    for ip, new_macs in curr_ip_mac.items():
+        old_macs = prev_ip_mac.get(ip, set())
+        if old_macs and not old_macs.intersection(new_macs):
+            identity_alerts.append({
+                "severity": "critical",
+                "title": f"IP con MAC CAMBIATO: {ip}",
+                "message": f"L'IP {ip} ora risponde con un MAC diverso. Prima: {', '.join(sorted(old_macs))[:80]}. Ora: {', '.join(sorted(new_macs))[:80]}. Possibile ARP spoofing o sostituzione HW.",
+                "device_ip": ip,
+                "source_type": "security_ip_mac_change",
+            })
+
+    # Case B: same MAC, different IP (DHCP reassignment or device moved, lower severity)
+    for mac, new_ip in curr_mac_ip.items():
+        old_ip = prev_mac_ip.get(mac)
+        if old_ip and old_ip != new_ip:
+            # Only alert for managed/known devices to avoid spam from dynamic clients
+            if old_ip in managed_ips or new_ip in managed_ips:
+                identity_alerts.append({
+                    "severity": "high",
+                    "title": f"Dispositivo {mac} cambiato IP: {old_ip} → {new_ip}",
+                    "message": f"Il MAC {mac} è stato visto prima su {old_ip} e ora su {new_ip}. DHCP lease cambiato o dispositivo spostato.",
+                    "device_ip": new_ip,
+                    "source_type": "security_mac_ip_roam",
+                })
+
+    # Insert identity alerts (dedup)
+    for a in identity_alerts:
+        existing = await db.alerts.find_one({
+            "client_id": client_id, "title": a["title"], "status": "active"
+        })
+        if not existing:
+            await db.alerts.insert_one({
+                "id": str(uuid.uuid4()),
+                "client_id": client_id,
+                "device_ip": a["device_ip"],
+                "device_name": managed_ip_names.get(a["device_ip"], a["device_ip"]),
+                "device_type": "network",
+                "severity": a["severity"],
+                "source_type": a["source_type"],
+                "title": a["title"],
+                "message": a["message"],
+                "status": "active",
+                "acknowledged_by": None, "acknowledged_at": None, "resolved_at": None,
+                "created_at": now_iso_alerts,
+            })
 
     # Store high-speed port info
     await db.port_speeds.delete_many({"client_id": client_id})
