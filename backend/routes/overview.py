@@ -18,10 +18,10 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
     wan_results_raw = await db.wan_probe_results.find({}, {"_id": 0}).to_list(5000)
 
     active_alerts = await db.alerts.find(
-        {"status": "active"}, {"_id": 0, "client_id": 1, "severity": 1}
+        {"status": "active"}, {"_id": 0, "client_id": 1, "severity": 1, "title": 1, "device_name": 1, "created_at": 1, "id": 1}
     ).to_list(10000)
 
-    devices = await db.devices.find({}, {"_id": 0, "client_id": 1, "status": 1, "ip_address": 1}).to_list(10000)
+    devices = await db.devices.find({}, {"_id": 0, "client_id": 1, "status": 1, "ip_address": 1, "name": 1, "device_type": 1}).to_list(10000)
 
     # Backup status
     backup_data = await db.backup_status.find({}, {"_id": 0, "client_id": 1, "status": 1, "last_success": 1}).to_list(5000)
@@ -45,23 +45,36 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
         wan_targets_by_client[cid].append(t)
 
     alerts_by_client = {}
+    alerts_detail_by_client = {}
     for a in active_alerts:
         cid = a.get("client_id")
         if cid not in alerts_by_client:
             alerts_by_client[cid] = {"critical": 0, "high": 0, "medium": 0, "low": 0, "total": 0}
+            alerts_detail_by_client[cid] = []
         alerts_by_client[cid][a.get("severity", "low")] += 1
         alerts_by_client[cid]["total"] += 1
+        if len(alerts_detail_by_client[cid]) < 5:
+            alerts_detail_by_client[cid].append({
+                "id": a.get("id"), "severity": a.get("severity"), "title": a.get("title", ""),
+                "device_name": a.get("device_name", ""), "created_at": a.get("created_at", ""),
+            })
 
     devices_by_client = {}
+    devices_detail_by_client = {}
     for d in devices:
         cid = d.get("client_id")
         if cid not in devices_by_client:
             devices_by_client[cid] = {"total": 0, "online": 0, "offline": 0}
+            devices_detail_by_client[cid] = []
         devices_by_client[cid]["total"] += 1
         if d.get("status") == "online":
             devices_by_client[cid]["online"] += 1
         else:
             devices_by_client[cid]["offline"] += 1
+        devices_detail_by_client[cid].append({
+            "name": d.get("name", "?"), "ip": d.get("ip_address", ""), "status": d.get("status", "unknown"),
+            "type": d.get("device_type", ""),
+        })
 
     backup_by_client = {}
     for b in backup_data:
@@ -173,6 +186,23 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
         elif alerts_info["total"] > 0 or printer_info.get("low_toner", 0) > 0:
             health = "attention"
 
+        # WAN targets detail for expansion
+        wan_detail = []
+        for t in wan_tgts:
+            r = wan_results_map.get(t.get("id"))
+            wan_detail.append({
+                "label": t.get("label", "?"), "device_type": t.get("device_type", "?"),
+                "ip": t.get("public_ip", ""), "gateway_ip": t.get("gateway_ip"),
+                "check_ping": t.get("check_ping", False),
+                "status": r.get("status", "unknown") if r else "pending",
+                "latency_ms": r.get("ping", {}).get("latency_ms") if r else None,
+                "loss_pct": r.get("ping", {}).get("packet_loss_pct") if r else None,
+                "gateway_ok": r.get("gateway_ping", {}).get("reachable") if r and r.get("gateway_ping") else None,
+                "gateway_latency": r.get("gateway_ping", {}).get("latency_ms") if r and r.get("gateway_ping") else None,
+                "ports": r.get("ports", []) if r else [],
+                "checked_at": r.get("checked_at") if r else None,
+            })
+
         result.append({
             "id": cid,
             "name": c.get("name", "?"),
@@ -187,6 +217,11 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
             "backup": backup_info,
             "printers": printer_info,
             "connector_online": connector_online,
+            "detail": {
+                "wan_targets": wan_detail,
+                "devices_list": devices_detail_by_client.get(cid, []),
+                "recent_alerts": alerts_detail_by_client.get(cid, []),
+            },
         })
 
     # Sort: critical first, then warning, then ok
