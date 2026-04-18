@@ -85,8 +85,8 @@ export default function DevicesPage() {
       </div>
 
       <div className="relative min-h-[600px]">
-        <div className={`noc-panel overflow-hidden transition-all ${selectedDevice ? "mr-[390px]" : ""}`}>
-          <table className="alert-table" data-testid="devices-table">
+        <div className={`noc-panel overflow-x-auto transition-all ${selectedDevice ? "md:mr-[390px]" : ""}`}>
+          <table className="alert-table min-w-[640px]" data-testid="devices-table">
             <thead>
               <tr>
                 <th>Nome</th>

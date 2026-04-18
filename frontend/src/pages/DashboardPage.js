@@ -228,7 +228,7 @@ export default function DashboardPage() {
             </Button>
           </div>
           <div className="overflow-x-auto">
-            <table className="alert-table" data-testid="recent-alerts-table">
+            <table className="alert-table min-w-[640px]" data-testid="recent-alerts-table">
               <thead>
                 <tr><th>Sev.</th><th>Titolo</th><th>Dispositivo</th><th>Cliente</th><th>Ora</th><th></th></tr>
               </thead>

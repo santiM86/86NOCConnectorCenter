@@ -48,6 +48,8 @@ Società IT che necessita di un raccoglitore di alert (NOC) per tutti i disposit
     - Backend: `client_id` in `CredentialCreate/Update`, filtro `?client_id=` in GET, validazione 404 se client non esiste, endpoint connector `/{C}/vc` filtra per client HMAC-authed + credenziali globali.
     - Frontend: `VaultPage` riutilizzabile con prop `scopedClientId`, nuova tab "Credenziali" in `ClientOverviewPage`, dropdown filtro "Cliente" nella vista globale, badge "Globale" sulle credenziali senza client_id.
     - 12/12 test backend passati (iteration_50.json).
+- 2026-02-18 (fork):
+  - **Mobile Responsive iPhone**: tabelle wrappate in `overflow-x-auto` con `min-width` su mobile (AlertsPage, ClientOverviewPage devices/alerts, DevicesPage, InventoryPage, EnterprisePage users, PortMonitorPage, DashboardPage recent alerts). DeviceDetailPanel full-screen su mobile (`fixed inset-0`), drawer solo da `md:` in su. Smoke test Playwright a 390x844 (iPhone) su Dashboard, Alerts, Clients, ClientOverview, Sidebar + tab Devices — tutti correttamente scrollabili e senza overflow laterale.
 
 ## Pending / In Progress
 ### P1 — Notifiche Telegram

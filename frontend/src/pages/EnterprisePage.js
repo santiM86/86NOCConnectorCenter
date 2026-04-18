@@ -232,7 +232,8 @@ function RBACTab() {
           <h3 className="text-[var(--text-muted)] text-[10px] font-medium uppercase tracking-widest">Utenti</h3>
         </div>
         <ScrollArea className="max-h-[400px]">
-          <table className="alert-table">
+          <div className="overflow-x-auto">
+          <table className="alert-table min-w-[640px]">
             <thead>
               <tr>
                 <th>Nome</th>
@@ -269,6 +270,7 @@ function RBACTab() {
               ))}
             </tbody>
           </table>
+          </div>
         </ScrollArea>
       </div>
 

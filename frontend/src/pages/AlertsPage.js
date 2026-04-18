@@ -112,7 +112,8 @@ export default function AlertsPage() {
 
       <div className="noc-panel overflow-hidden">
         <ScrollArea className="h-[calc(100vh-280px)]">
-          <table className="alert-table" data-testid="alerts-table">
+          <div className="overflow-x-auto">
+          <table className="alert-table min-w-[900px]" data-testid="alerts-table">
             <thead>
               <tr>
                 <th className="w-20">Sev.</th>
@@ -163,6 +164,7 @@ export default function AlertsPage() {
               )}
             </tbody>
           </table>
+          </div>
         </ScrollArea>
       </div>
     </div>

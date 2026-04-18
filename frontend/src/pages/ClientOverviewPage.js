@@ -629,8 +629,8 @@ function DevicesTab({ devices, clientId, onRefresh }) {
         </Button>
       </div>
 
-      <div className="noc-panel overflow-hidden">
-        <table className="alert-table" data-testid="client-devices-table">
+      <div className="noc-panel overflow-x-auto">
+        <table className="alert-table min-w-[780px]" data-testid="client-devices-table">
           <thead>
             <tr><th>Nome</th><th>Tipo</th><th>IP</th><th>Metodo</th><th>SNMP</th><th>Community</th><th>Stato</th><th>Fonte</th><th>Ultimo Poll</th><th></th></tr>
           </thead>
@@ -1059,8 +1059,8 @@ function WanTab({ targets, clientId, clientName, onRefresh }) {
 /* ==================== ALERTS TAB ==================== */
 function AlertsTab({ alerts, navigate }) {
   return (
-    <div className="noc-panel overflow-hidden">
-      <table className="alert-table">
+    <div className="noc-panel overflow-x-auto">
+      <table className="alert-table min-w-[560px]">
         <thead><tr><th>Sev.</th><th>Titolo</th><th>Dispositivo</th><th>Data</th></tr></thead>
         <tbody>
           {alerts.length === 0 ? (
