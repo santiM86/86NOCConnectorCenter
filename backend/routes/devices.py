@@ -51,23 +51,52 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
     poll_query = query.copy()
     poll_devices = await db.device_poll_status.find(poll_query, {"_id": 0}).to_list(5000)
 
+    # Fetch managed devices for community/snmp info
+    managed_query = query.copy()
+    managed_devices_raw = await db.managed_devices.find(managed_query, {"_id": 0}).to_list(5000)
+    managed_by_ip = {}
+    for md in managed_devices_raw:
+        md_ip = md.get("ip") or md.get("ip_address", "")
+        if md_ip:
+            managed_by_ip[md_ip] = md
+
     # Merge: add connector devices that aren't already in manual list
     for pd in poll_devices:
         ip = pd.get("device_ip", "")
         if ip and ip not in manual_ips:
             manual_ips.add(ip)
-            # Determine device type from poll data
+            # Determine device type from poll data, class, and name
             dev_type = pd.get("device_type", "")
-            if not dev_type:
+            if not dev_type or dev_type == "?":
+                dev_class = (pd.get("device_class") or "").lower()
+                dev_name = (pd.get("device_name") or "").lower()
                 sys_descr = (pd.get("sys_descr") or "").lower()
-                if "switch" in sys_descr or "hp" in sys_descr or "aruba" in sys_descr:
-                    dev_type = "switch"
-                elif "firewall" in sys_descr or "zyxel" in sys_descr or "fortigate" in sys_descr:
+                combined = f"{dev_name} {sys_descr} {dev_class}"
+
+                if any(k in combined for k in ["firewall", "zyxel", "usg", "fortigate", "pfsense", "sonicwall"]):
                     dev_type = "firewall"
-                elif "printer" in sys_descr or "laser" in sys_descr:
+                elif any(k in combined for k in ["ilo", "idrac", "ipmi", "bmc"]):
+                    dev_type = "ilo"
+                elif any(k in combined for k in ["ups", "xanto", "apc", "eaton", "liebert"]):
+                    dev_type = "ups"
+                elif any(k in combined for k in ["nas", "synology", "qnap"]):
+                    dev_type = "nas"
+                elif any(k in combined for k in ["printer", "laser", "stampante", "mfp", "laserjet", "officejet"]):
                     dev_type = "printer"
+                elif any(k in combined for k in ["tvcc", "camera", "telecamera", "hikvision", "dahua", "nvr", "dvr"]):
+                    dev_type = "tvcc"
+                elif any(k in combined for k in ["ap ", "wifi", "ubiquiti", "unifi", "access point"]):
+                    dev_type = "access-point"
+                elif any(k in combined for k in ["router", "mikrotik", "draytek", "fritzbox", "vodafone station"]):
+                    dev_type = "router"
+                elif any(k in combined for k in ["switch", "hp 5130", "hp 5120", "officeconnect", "aruba", "netgear gs", "cisco catalyst", "gs110"]):
+                    dev_type = "switch"
+                elif any(k in combined for k in ["srv", "server", "proliant", "poweredge", "esxi", "vmware", "backup", "veeam"]):
+                    dev_type = "server"
                 else:
-                    dev_type = pd.get("device_class", "server")
+                    dev_type = dev_class if dev_class and dev_class != "generic" else "server"
+            # Get managed device config (community, snmp version, etc.)
+            md = managed_by_ip.get(ip, {})
             devices.append({
                 "id": f"poll_{ip.replace('.','_')}",
                 "client_id": pd.get("client_id", ""),
@@ -79,11 +108,19 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
                 "status": "online" if pd.get("reachable") else "offline",
                 "redfish_enabled": False,
                 "source": "connector",
+                "connector_hostname": pd.get("connector_hostname", ""),
                 "last_poll": pd.get("last_poll"),
                 "sys_descr": pd.get("sys_descr", ""),
                 "cpu_usage": pd.get("cpu_usage"),
-                "uptime": pd.get("uptime"),
+                "memory_usage": pd.get("memory_usage"),
+                "temperature": pd.get("temperature"),
+                "uptime": pd.get("sys_uptime") or pd.get("uptime", ""),
                 "ports": pd.get("ports"),
+                "monitor_type": md.get("monitor_type") or pd.get("monitor_type", ""),
+                "snmp_community": md.get("community", ""),
+                "snmp_version": md.get("snmp_version", ""),
+                "http_port": md.get("http_port"),
+                "ping_ms": pd.get("ping_ms"),
             })
 
     client_ids = list(set(d["client_id"] for d in devices if d.get("client_id")))
@@ -99,14 +136,18 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
         try:
             result.append(DeviceResponse(**d))
         except Exception:
-            # Connector devices may have extra fields, use dict directly
             result.append({
                 "id": d["id"], "client_id": d.get("client_id", ""), "client_name": d.get("client_name", ""),
                 "name": d.get("name", "?"), "device_type": d.get("device_type", ""), "ip_address": d.get("ip_address", ""),
                 "hostname": d.get("hostname", ""), "location": d.get("location", ""), "status": d.get("status", "unknown"),
                 "redfish_enabled": d.get("redfish_enabled", False), "has_credentials": d.get("has_credentials", False),
                 "source": d.get("source", "manual"), "sys_descr": d.get("sys_descr", ""),
-                "cpu_usage": d.get("cpu_usage"), "uptime": d.get("uptime"),
+                "cpu_usage": d.get("cpu_usage"), "memory_usage": d.get("memory_usage"),
+                "temperature": d.get("temperature"), "uptime": d.get("uptime", ""),
+                "connector_hostname": d.get("connector_hostname", ""),
+                "monitor_type": d.get("monitor_type", ""), "snmp_community": d.get("snmp_community", ""),
+                "snmp_version": d.get("snmp_version", ""), "http_port": d.get("http_port"),
+                "ping_ms": d.get("ping_ms"), "last_poll": d.get("last_poll"),
             })
     return result
 

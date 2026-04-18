@@ -59,9 +59,19 @@ function CredentialRow({ cred, onReveal, onEdit, onDelete, revealed, failoverInf
             <Icon size={16} className={tc.color} />
           </div>
           <div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <span className="text-sm font-medium text-[var(--text-primary)]">{cred.device_name || cred.device_ip || "N/D"}</span>
               <span className={`text-[9px] px-1.5 py-0.5 rounded border font-medium ${tc.bg} ${tc.color}`}>{tc.label}</span>
+              {cred.client_name && (
+                <span className="text-[9px] px-1.5 py-0.5 rounded border font-medium bg-indigo-500/10 border-indigo-500/20 text-indigo-400">
+                  {cred.client_name}
+                </span>
+              )}
+              {!cred.client_id && (
+                <span className="text-[9px] px-1.5 py-0.5 rounded border font-medium bg-[var(--bg-hover)] border-[var(--bg-border)] text-[var(--text-muted)]">
+                  Globale
+                </span>
+              )}
               {isILO && fi.polling_mode && pollingBadge[fi.polling_mode] && (
                 <span className={`text-[8px] px-1.5 py-0.5 rounded border font-bold ${pollingBadge[fi.polling_mode].bg} ${pollingBadge[fi.polling_mode].color}`}>
                   {fi.polling_mode === "failover" && <Warning size={8} className="inline mr-0.5" />}
@@ -145,33 +155,46 @@ function CredentialRow({ cred, onReveal, onEdit, onDelete, revealed, failoverInf
   );
 }
 
-export default function VaultPage() {
+export default function VaultPage({ scopedClientId = null, scopedClientName = "" }) {
   const [credentials, setCredentials] = useState([]);
+  const [clients, setClients] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
   const [editCred, setEditCred] = useState(null);
   const [revealed, setRevealed] = useState({});
   const [search, setSearch] = useState("");
   const [filterType, setFilterType] = useState("all");
+  const [filterClient, setFilterClient] = useState("all");
   const [failoverStatus, setFailoverStatus] = useState([]);
   const [testingConn, setTestingConn] = useState(null);
 
   const [form, setForm] = useState({
     device_ip: "", device_name: "", credential_type: "ilo",
     username: "", password: "", url: "", port: "", notes: "", tags: "",
-    external_url: ""
+    external_url: "", client_id: scopedClientId || "",
   });
 
   const fetchCreds = useCallback(async () => {
     try {
-      const res = await axios.get(`${API}/vault/credentials`);
+      const url = scopedClientId
+        ? `${API}/vault/credentials?client_id=${scopedClientId}`
+        : `${API}/vault/credentials`;
+      const res = await axios.get(url);
       setCredentials(res.data);
     } catch (e) {
       if (e.response?.status === 403) toast.error("Accesso riservato agli admin");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [scopedClientId]);
+
+  const fetchClients = useCallback(async () => {
+    if (scopedClientId) return; // skip if scoped
+    try {
+      const res = await axios.get(`${API}/clients`);
+      setClients(res.data || []);
+    } catch {}
+  }, [scopedClientId]);
 
   const fetchFailover = useCallback(async () => {
     try {
@@ -180,7 +203,7 @@ export default function VaultPage() {
     } catch {}
   }, []);
 
-  useEffect(() => { fetchCreds(); fetchFailover(); }, [fetchCreds, fetchFailover]);
+  useEffect(() => { fetchCreds(); fetchClients(); fetchFailover(); }, [fetchCreds, fetchClients, fetchFailover]);
   useEffect(() => {
     const interval = setInterval(fetchFailover, 30000);
     return () => clearInterval(interval);
@@ -209,6 +232,7 @@ export default function VaultPage() {
         ...form,
         port: form.port ? parseInt(form.port) : null,
         tags: form.tags ? form.tags.split(",").map(s => s.trim()).filter(Boolean) : [],
+        client_id: form.client_id || scopedClientId || null,
       };
       if (editCred) {
         await axios.put(`${API}/vault/credentials/${editCred.id}`, payload);
@@ -228,7 +252,7 @@ export default function VaultPage() {
       }
       setShowAdd(false);
       setEditCred(null);
-      setForm({ device_ip: "", device_name: "", credential_type: "ilo", username: "", password: "", url: "", port: "", notes: "", tags: "", external_url: "" });
+      setForm({ device_ip: "", device_name: "", credential_type: "ilo", username: "", password: "", url: "", port: "", notes: "", tags: "", external_url: "", client_id: scopedClientId || "" });
       fetchCreds();
       fetchFailover();
     } catch (e) {
@@ -252,6 +276,7 @@ export default function VaultPage() {
         notes: d.notes || "",
         tags: (d.tags || []).join(", "),
         external_url: fi.external_url || d.external_url || "",
+        client_id: d.client_id || "",
       });
       setEditCred(d);
       setShowAdd(true);
@@ -326,9 +351,12 @@ export default function VaultPage() {
       (c.device_name || "").toLowerCase().includes(search.toLowerCase()) ||
       (c.device_ip || "").toLowerCase().includes(search.toLowerCase()) ||
       (c.username || "").toLowerCase().includes(search.toLowerCase()) ||
-      (c.notes || "").toLowerCase().includes(search.toLowerCase());
+      (c.notes || "").toLowerCase().includes(search.toLowerCase()) ||
+      (c.client_name || "").toLowerCase().includes(search.toLowerCase());
     const matchType = filterType === "all" || c.credential_type === filterType;
-    return matchSearch && matchType;
+    const matchClient = filterClient === "all" ||
+      (filterClient === "__none__" ? !c.client_id : c.client_id === filterClient);
+    return matchSearch && matchType && matchClient;
   });
 
   if (loading) {
@@ -340,24 +368,36 @@ export default function VaultPage() {
   }
 
   return (
-    <div className="space-y-4 p-4 max-w-7xl mx-auto" data-testid="vault-page">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="p-2 rounded-lg bg-amber-500/10 border border-amber-500/20">
-            <Lock size={20} className="text-amber-400" />
+    <div className={scopedClientId ? "space-y-4" : "space-y-4 p-4 max-w-7xl mx-auto"} data-testid="vault-page">
+      {/* Header (hide if scoped to client) */}
+      {!scopedClientId && (
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="p-2 rounded-lg bg-amber-500/10 border border-amber-500/20">
+              <Lock size={20} className="text-amber-400" />
+            </div>
+            <div>
+              <h1 className="text-base font-bold text-[var(--text-primary)]">Vault Credenziali</h1>
+              <p className="text-[10px] text-[var(--text-muted)] flex items-center gap-1">
+                <ShieldCheck size={10} className="text-[var(--ok)]" /> Cifrate con AES-256-GCM | Solo admin
+              </p>
+            </div>
           </div>
-          <div>
-            <h1 className="text-base font-bold text-[var(--text-primary)]">Vault Credenziali</h1>
-            <p className="text-[10px] text-[var(--text-muted)] flex items-center gap-1">
-              <ShieldCheck size={10} className="text-[var(--ok)]" /> Cifrate con AES-256-GCM | Solo admin
-            </p>
-          </div>
+          <Button onClick={() => { setEditCred(null); setForm({ device_ip: "", device_name: "", credential_type: "ilo", username: "", password: "", url: "", port: "", notes: "", tags: "", external_url: "", client_id: scopedClientId || "" }); setShowAdd(true); }} className="bg-amber-600 hover:bg-amber-700 text-white h-8 text-xs gap-1" data-testid="add-credential-btn">
+            <Plus size={14} /> Aggiungi Credenziale
+          </Button>
         </div>
-        <Button onClick={() => { setEditCred(null); setForm({ device_ip: "", device_name: "", credential_type: "ilo", username: "", password: "", url: "", port: "", notes: "", tags: "", external_url: "" }); setShowAdd(true); }} className="bg-amber-600 hover:bg-amber-700 text-white h-8 text-xs gap-1" data-testid="add-credential-btn">
-          <Plus size={14} /> Aggiungi Credenziale
-        </Button>
-      </div>
+      )}
+      {scopedClientId && (
+        <div className="flex items-center justify-between">
+          <p className="text-[10px] text-[var(--text-muted)] flex items-center gap-1">
+            <ShieldCheck size={10} className="text-[var(--ok)]" /> Credenziali del cliente — cifrate AES-256-GCM, visibili solo al suo Connector
+          </p>
+          <Button onClick={() => { setEditCred(null); setForm({ device_ip: "", device_name: "", credential_type: "ilo", username: "", password: "", url: "", port: "", notes: "", tags: "", external_url: "", client_id: scopedClientId }); setShowAdd(true); }} className="bg-amber-600 hover:bg-amber-700 text-white h-8 text-xs gap-1" data-testid="add-credential-btn">
+            <Plus size={14} /> Aggiungi Credenziale
+          </Button>
+        </div>
+      )}
 
       {/* Failover Status Panel */}
       {failoverStatus.length > 0 && (
@@ -404,12 +444,12 @@ export default function VaultPage() {
       )}
 
       {/* Filters */}
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-3 flex-wrap">
         <div className="relative flex-1 max-w-xs">
           <MagnifyingGlass size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--text-muted)]" />
-          <Input value={search} onChange={e => setSearch(e.target.value)} placeholder="Cerca per IP, nome, utente..." className="pl-8 h-8 text-xs bg-[var(--bg-panel)] border-[var(--bg-border)] text-[var(--text-primary)]" data-testid="vault-search" />
+          <Input value={search} onChange={e => setSearch(e.target.value)} placeholder="Cerca per IP, nome, utente, cliente..." className="pl-8 h-8 text-xs bg-[var(--bg-panel)] border-[var(--bg-border)] text-[var(--text-primary)]" data-testid="vault-search" />
         </div>
-        <div className="flex gap-1">
+        <div className="flex gap-1 flex-wrap">
           {[{ key: "all", label: "Tutti" }, ...Object.entries(typeConfig).map(([k, v]) => ({ key: k, label: v.label }))].map(t => (
             <button key={t.key} onClick={() => setFilterType(t.key)}
               className={`text-[9px] px-2 py-1 rounded-md border transition-colors ${filterType === t.key ? "bg-amber-500/10 border-amber-500/20 text-amber-400" : "bg-[var(--bg-hover)] border-[var(--bg-border)] text-[var(--text-muted)] hover:text-[var(--text-primary)]"}`}
@@ -417,7 +457,21 @@ export default function VaultPage() {
             >{t.label}</button>
           ))}
         </div>
-        <span className="text-[10px] text-[var(--text-muted)]">{filtered.length} credenziali</span>
+        {!scopedClientId && clients.length > 0 && (
+          <Select value={filterClient} onValueChange={setFilterClient}>
+            <SelectTrigger className="h-8 text-xs bg-[var(--bg-panel)] border-[var(--bg-border)] w-48" data-testid="filter-client-select">
+              <SelectValue placeholder="Cliente" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Tutti i clienti</SelectItem>
+              <SelectItem value="__none__">Solo Globali (nessun cliente)</SelectItem>
+              {clients.map(c => (
+                <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
+        <span className="text-[10px] text-[var(--text-muted)] ml-auto">{filtered.length} credenziali</span>
       </div>
 
       {/* Credentials List */}
@@ -474,6 +528,28 @@ export default function VaultPage() {
                 <Input value={form.device_ip} onChange={e => setForm({ ...form, device_ip: e.target.value })} placeholder="192.168.1.10" className="bg-[var(--bg-panel)] border-[var(--bg-border)] text-[var(--text-primary)] h-8 text-xs" data-testid="cred-device-ip" />
               </div>
             </div>
+            {!scopedClientId && (
+              <div>
+                <Label className="text-[var(--text-muted)] text-[10px]">Cliente</Label>
+                <Select value={form.client_id || "__none__"} onValueChange={v => setForm({ ...form, client_id: v === "__none__" ? "" : v })}>
+                  <SelectTrigger className="bg-[var(--bg-panel)] border-[var(--bg-border)] text-[var(--text-primary)] h-8 text-xs" data-testid="cred-client-select">
+                    <SelectValue placeholder="Seleziona cliente (opzionale)" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none__">Nessuno (credenziale globale)</SelectItem>
+                    {clients.map(c => (
+                      <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-[8px] text-[var(--text-muted)] mt-0.5">Le credenziali assegnate a un cliente sono visibili solo dal suo Connector.</p>
+              </div>
+            )}
+            {scopedClientId && (
+              <div className="p-2 rounded-md bg-indigo-500/10 border border-indigo-500/20 text-[10px] text-indigo-400">
+                <ShieldCheck size={10} className="inline mr-1" /> Credenziale associata al cliente <b>{scopedClientName}</b>
+              </div>
+            )}
             <div>
               <Label className="text-[var(--text-muted)] text-[10px]">Nome Dispositivo</Label>
               <Input value={form.device_name} onChange={e => setForm({ ...form, device_name: e.target.value })} placeholder="ILO - SRV-DC01" className="bg-[var(--bg-panel)] border-[var(--bg-border)] text-[var(--text-primary)] h-8 text-xs" />

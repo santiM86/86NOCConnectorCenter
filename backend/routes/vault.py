@@ -1,5 +1,6 @@
 """Credential Vault routes (AES-256-GCM)."""
 from fastapi import APIRouter, Depends, HTTPException
+from typing import Optional
 import uuid
 from datetime import datetime, timezone
 
@@ -12,17 +13,33 @@ from deps import get_current_user, audit_logger, check_nosql_injection
 router = APIRouter(prefix="/api", tags=["vault"])
 
 
+async def _enrich_client_names(creds):
+    """Attach client_name to each credential by resolving client_id against db.clients."""
+    client_ids = list({c.get("client_id") for c in creds if c.get("client_id")})
+    client_map = {}
+    if client_ids:
+        clients = await db.clients.find({"id": {"$in": client_ids}}, {"_id": 0, "id": 1, "name": 1}).to_list(500)
+        client_map = {c["id"]: c["name"] for c in clients}
+    for c in creds:
+        c["client_name"] = client_map.get(c.get("client_id"), "")
+    return creds
+
+
 @router.get("/vault/credentials")
-async def list_credentials(current_user: dict = Depends(get_current_user)):
+async def list_credentials(client_id: Optional[str] = None, current_user: dict = Depends(get_current_user)):
     if current_user.get("role") not in ["admin"]:
         raise HTTPException(status_code=403, detail="Solo gli admin possono accedere al vault")
-    creds = await db.device_credentials.find({}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    query = {}
+    if client_id:
+        query["client_id"] = client_id
+    creds = await db.device_credentials.find(query, {"_id": 0}).sort("created_at", -1).to_list(500)
     for c in creds:
         c["password"] = "********"
         try: c["username"] = security_manager.decrypt_credential(c["username_enc"])
         except Exception: c["username"] = "[errore decifratura]"
         c.pop("username_enc", None)
         c.pop("password_enc", None)
+    await _enrich_client_names(creds)
     return creds
 
 
@@ -53,11 +70,17 @@ async def create_credential(cred: CredentialCreate, current_user: dict = Depends
     if current_user.get("role") not in ["admin"]:
         raise HTTPException(status_code=403, detail="Solo gli admin possono gestire il vault")
     check_nosql_injection(cred.model_dump())
+    # Validate client_id if provided
+    if cred.client_id:
+        client = await db.clients.find_one({"id": cred.client_id}, {"_id": 0, "id": 1})
+        if not client:
+            raise HTTPException(status_code=404, detail="Cliente non trovato")
     cred_id = str(uuid.uuid4())
     doc = {
         "id": cred_id, "device_ip": cred.device_ip,
         "device_name": cred.device_name or cred.device_ip,
         "credential_type": cred.credential_type,
+        "client_id": cred.client_id or None,
         "username_enc": security_manager.encrypt_credential(cred.username),
         "password_enc": security_manager.encrypt_credential(cred.password),
         "url": cred.url, "port": cred.port, "notes": cred.notes,
@@ -71,7 +94,7 @@ async def create_credential(cred: CredentialCreate, current_user: dict = Depends
     await db.device_credentials.insert_one(doc)
     await audit_logger.log(
         AuditAction.SUSPICIOUS_ACTIVITY, user_id=current_user.get("id"), user_email=current_user.get("email"),
-        details={"action": "credential_created", "cred_id": cred_id, "device_ip": cred.device_ip, "type": cred.credential_type},
+        details={"action": "credential_created", "cred_id": cred_id, "device_ip": cred.device_ip, "type": cred.credential_type, "client_id": cred.client_id},
         severity="info"
     )
     return {"status": "ok", "id": cred_id, "message": "Credenziale salvata e cifrata con AES-256-GCM"}
@@ -94,6 +117,12 @@ async def update_credential(cred_id: str, cred: CredentialUpdate, current_user: 
     if cred.notes is not None: update_data["notes"] = cred.notes
     if cred.tags is not None: update_data["tags"] = cred.tags
     if cred.external_url is not None: update_data["external_url"] = cred.external_url
+    if cred.client_id is not None:
+        if cred.client_id:  # non-empty -> validate
+            client = await db.clients.find_one({"id": cred.client_id}, {"_id": 0, "id": 1})
+            if not client:
+                raise HTTPException(status_code=404, detail="Cliente non trovato")
+        update_data["client_id"] = cred.client_id or None
     await db.device_credentials.update_one({"id": cred_id}, {"$set": update_data})
     await audit_logger.log(
         AuditAction.SUSPICIOUS_ACTIVITY, user_id=current_user.get("id"), user_email=current_user.get("email"),

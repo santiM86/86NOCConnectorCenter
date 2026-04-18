@@ -1,63 +1,84 @@
-# ARGUS Center - PRD
+# ARGUS Center — NOC Platform (86bit)
 
-## Descrizione
-Piattaforma NOC enterprise "ARGUS Center" per monitoraggio dispositivi di rete. Connettore Windows nativo PowerShell.
+## Original problem statement
+Società IT che necessita di un raccoglitore di alert (NOC) per tutti i dispositivi nelle reti dei clienti (switch, firewall, ecc.). Console live su PC e cellulare. Integrazione SNMP e Syslog. L'applicazione Windows (`86NocConnector`) deve essere nativa senza richiedere Python. Funzionalità stile Zabbix/PRTG/CloudFire. Dashboard TV, monitoraggio stampanti/backup, SOC AI, vulnerability assessment, WAN monitoring, multi-tenant SaaS.
 
-## Architettura
-- Backend: Python 3.11, FastAPI, MongoDB, google-generativeai (Gemini)
-- Frontend: React, TailwindCSS, Shadcn UI, Recharts, PWA
-- Connector: PowerShell 5.1+, SNMP, Redfish
+## Stack
+- Frontend: React + Tailwind + Shadcn/UI (Phosphor icons)
+- Backend: FastAPI + Motor (MongoDB) + Pydantic
+- Connector: PowerShell 5.1+ nativo con HMAC-SHA256, Nonce Anti-Replay, AES-256-GCM
+- AI: `google-generativeai==0.8.6` (no emergentintegrations)
 
-## Funzionalita Implementate
+## Key architecture
+```
+/app/backend/routes/
+  connector.py     → endpoints HMAC-secured + managed-devices CRUD per client
+  devices.py       → device CRUD + Redfish test
+  redfish_routes.py→ direct iLO polling/failover
+  vault.py         → AES-256-GCM credential vault (admin only) — ora con client_id support
+  overview.py      → Control Room aggregation
+/app/frontend/src/pages/
+  ClientOverviewPage.js → vista unificata per singolo cliente (tabs incluso Credenziali scoped)
+  VaultPage.js          → vault globale + riusabile con scopedClientId prop
+/app/noc-connector/src/
+  connector.ps1    → main loop, HMAC auth, Redfish integration (v3.0.1)
+  snmp_poller.ps1  → SNMP v1/v2c/v3 + Redfish REST
+```
 
-### Dashboard NOC Control Room (NUOVO - 17/04/2026)
-- [x] Griglia clienti con card compatte: WAN, Dispositivi, Connettore, Backup, Stampanti, ISP
-- [x] KPI globali: Clienti, Problemi, Alert, Dispositivi
-- [x] Banner alert critici urgenti
-- [x] Ricerca + filtri (Tutti/Problemi/OK)
-- [x] Auto-refresh 30s, griglia adattiva (1-5 colonne), problemi in cima
-- [x] Endpoint GET /api/overview/clients aggregato
+## Completed (session log)
+- 2026-01-15: Login redesign + responsiveness
+- 2026-01-18: Client-centric navigation & Unified Client Overview Page
+- 2026-01-22: Auto-Update Polling System with Cache Busting
+- 2026-01-28: Extended WAN Monitor (Gateway ISP Ping, ICMP toggle, Schematic UI)
+- 2026-02-05: SOC AI migrated to direct google-generativeai SDK
+- 2026-02-10: IP Ban / Honeypot / Rate Limit middlewares rimossi per richiesta utente
+- 2026-02-15: Connector v3.0.0 — HMAC-SHA256, Nonce Anti-Replay, Obfuscated paths
+- 2026-02-20: Installer GUI + uninstall.bat + version.json auto-read
+- 2026-02-25: Device merging (managed_devices + device_poll_status)
+- 2026-03-01: Web Proxy Console Enterprise UI
+- 2026-04-18 (pomeriggio):
+  - **Add Device from Client Page**: pulsante "+ Aggiungi Dispositivo" e eliminazione device dentro la tab Dispositivi del `ClientOverviewPage`, supporto SNMP v1/v2c/v3 + Ping + HTTP. POST su `/api/connector/{client_id}/managed-devices`.
+  - **Bug fix fetch-devices**: l'endpoint `GET /api/connector/fetch-devices` e `/{C}/fd` (HMAC) ora restituisce tutti i campi SNMPv3 (snmp_version, snmpv3_username, snmpv3_auth_*, snmpv3_priv_*, snmpv3_security_level). Prima venivano ignorati.
+  - **Connector v3.0.1 (FIX REDFISH)**:
+    - FIX bug critico in `Fetch-VaultCredentials`: rimossa chiamata `Invoke-RestMethod` duplicata con variabili non definite (`$url`, `$headers`) che sovrascriveva la risposta.
+    - Esteso trigger Redfish: parte anche quando SNMP fallisce ma ci sono credenziali Vault di tipo `ilo`/`redfish` per l'IP target o `device_type=ilo` manualmente.
+    - Log diagnostici più espliciti.
+    - ZIP pubblicato via `/api/connector/upload-update`.
+  - **Vault per Cliente (Opzione B)**:
+    - Backend: `client_id` in `CredentialCreate/Update`, filtro `?client_id=` in GET, validazione 404 se client non esiste, endpoint connector `/{C}/vc` filtra per client HMAC-authed + credenziali globali.
+    - Frontend: `VaultPage` riutilizzabile con prop `scopedClientId`, nuova tab "Credenziali" in `ClientOverviewPage`, dropdown filtro "Cliente" nella vista globale, badge "Globale" sulle credenziali senza client_id.
+    - 12/12 test backend passati (iteration_50.json).
 
-### Monitor WAN con Gateway ISP
-- [x] Ping ICMP (SOCK_DGRAM unprivileged) + TCP Port Check
-- [x] Gateway ISP per diagnosi linea
-- [x] Test Connection pre-salvataggio
-- [x] Card ridisegnate con metriche in pill
+## Pending / In Progress
+### P1 — Notifiche Telegram
+In attesa di bot token dall'utente.
 
-### Sistema Auto-Update
-- [x] Versioning V.2.0.XXXX, polling 60s, banner aggiornamento
-- [x] Badge versione su Login Page e Sidebar
+### P1 — Sostituire mock Push/Email con integrazioni reali
 
-### Gestione Utenti
-- [x] CRUD + Toggle attivo/disattivato + Sblocca brute force
-- [x] Seed automatico 4 utenti all'avvio
+### Verifica utente post-deploy
+- Testare fix Redfish: dopo re-deploy e auto-update del connector a v3.0.1, confermare che l'iLO `10.100.61.35` sia monitorato (redfish_ok=true nei log del connector).
+- Testare Vault per cliente: editare credenziale `ILO - SRV-DC01 (ML350 Gen9)` assegnandola a un cliente specifico.
 
-### Security (senza IP banning)
-- [x] Brute Force (per email), Rate Limiting, 2FA/TOTP, Argon2id
-- [x] AES-256-GCM, Security Headers, CORS, Audit Logging
-- [x] Rimosso: IP Ban, Honeypot, IPBlockMiddleware
+## Backlog / Future
+- P2: Multi-tenant + White-label SaaS (workspace isolation)
+- P2: LDAP/Active Directory integration
+- P3: Zyxel Nebula Cloud API
 
-### Tutto il resto (COMPLETATO)
-- [x] SNMP v3, Mappa Enterprise, Report PDF, TV Dashboard
-- [x] VA, SOC AI Gemini (google-generativeai diretto), Backup Monitoring
-- [x] PWA, Mobile Dashboard, Sidebar Framer Motion
+## Constraints
+- NON re-introdurre IP Ban/Honeypot middlewares (richiesta esplicita utente)
+- NON usare `emergentintegrations` per AI
+- Linguaggio: rispondere SEMPRE in Italiano
+- Utente fa deploy in produzione via "Save to GitHub" + "Re-deploy"
 
-## Zero dipendenze Emergent
-- emergentintegrations RIMOSSO
-- Usa google-generativeai diretto con GEMINI_API_KEY
+## Key credentials (test)
+- Admin: `admin@86bit.it` / `password`
+- Admin: `info@86bit.it` / `password`
+- TV Viewer: `tv@86bit.it` / `Tv86bit!2026`
 
-## Credenziali
-- admin@86bit.it / password
-- info@86bit.it / password (Marco Santinelli)
-- tv@86bit.it / Tv86bit!2026
-- tvdash@86bit.it / Tv86bit!2026
-
-## Backlog
-### P1
-- [ ] Template SNMP Zyxel (VPN, sessioni, temperatura)
-- [ ] Notifiche Telegram
-### P2
-- [ ] Multi-tenant / SaaS
-- [ ] LDAP/Active Directory
-### P3
-- [ ] Zyxel Nebula Cloud API
+## Key DB collections
+- `managed_devices` — device manuali per cliente (con `community`, `snmp_version`, `snmpv3_*`)
+- `device_poll_status` — device scoperti via heartbeat connector
+- `device_credentials` — Vault AES-256-GCM (iLO/SSH/SNMP/Web/VPN), campo `client_id` (nullable=globale)
+- `wan_probe_results` — Ping/TCP WAN
+- `connector_updates` — ZIP rilasci connector (active=true per il corrente)
+- `clients`, `devices`, `alerts`, `users`, `audit_logs`

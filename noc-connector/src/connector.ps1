@@ -945,12 +945,26 @@ function Send-DeviceReport($config, $devices) {
                 }
             }
             
-            # Redfish/iLO deep polling (if credentials available in Vault)
-            if ($extMetrics -and $extMetrics.device_class -eq "hpe-ilo" -and $vaultCreds.ContainsKey($ip)) {
+            # Redfish/iLO deep polling
+            # Trigger when EITHER:
+            #  - SNMP classified the device as hpe-ilo, OR
+            #  - Device is manually tagged as ilo/server_type, OR
+            #  - Vault contains credentials of type "ilo" for this IP (even without SNMP)
+            $credEntry = $null
+            if ($vaultCreds.ContainsKey($ip)) { $credEntry = $vaultCreds[$ip] }
+            $redfishTrigger = $false
+            if ($credEntry -and ($credEntry.credential_type -eq "ilo" -or $credEntry.credential_type -eq "redfish")) {
+                $redfishTrigger = $true
+            } elseif ($extMetrics -and $extMetrics.device_class -eq "hpe-ilo" -and $credEntry) {
+                $redfishTrigger = $true
+            } elseif ($dev.device_type -eq "ilo" -and $credEntry) {
+                $redfishTrigger = $true
+            }
+
+            if ($redfishTrigger) {
                 try {
-                    $cred = $vaultCreds[$ip]
-                    Write-Log "  Redfish polling $devName ($ip) con credenziali dal Vault..."
-                    $rfMetrics = Poll-RedfishMetrics $ip $cred
+                    Write-Log "  Redfish polling $devName ($ip) con credenziali dal Vault (type=$($credEntry.credential_type))..."
+                    $rfMetrics = Poll-RedfishMetrics $ip $credEntry
                     if ($rfMetrics.redfish_ok) {
                         $deviceReport.redfish = @{
                             power_watts = $rfMetrics.power_watts
@@ -965,6 +979,8 @@ function Send-DeviceReport($config, $devices) {
                             network_adapters = $rfMetrics.network_adapters
                             storage_controllers = $rfMetrics.storage_controllers
                         }
+                        # Ensure device_class is set so backend/UI recognises it as iLO
+                        if (-not $deviceReport.device_class) { $deviceReport.device_class = "hpe-ilo" }
                         Write-Log "  Redfish OK: $($rfMetrics.server_model) | Power: $($rfMetrics.power_watts)W | BIOS: $($rfMetrics.bios_version)"
                     } else {
                         Write-Log "  Redfish non disponibile per ${ip}: $($rfMetrics.error)" "WARN"
@@ -972,6 +988,8 @@ function Send-DeviceReport($config, $devices) {
                 } catch {
                     Write-Log "  Errore Redfish $ip : $($_.Exception.Message)" "WARN"
                 }
+            } elseif ($credEntry -and -not $extMetrics) {
+                Write-Log "  $devName ($ip): SNMP non disponibile e credenziali Vault type=$($credEntry.credential_type) non compatibili con Redfish" "INFO"
             }
             
             $reportDevices += $deviceReport
@@ -1006,7 +1024,6 @@ function Fetch-VaultCredentials($config) {
     #>
     try {
         $response = Invoke-SecureGet $config "connector/vault/credentials"
-        $response = Invoke-RestMethod -Uri $url -Headers $headers -Method Get -TimeoutSec 15 -ErrorAction Stop
         if ($response -and $response.Count -gt 0) {
             Write-Log "Credenziali Vault ricevute: $($response.Count)"
             # Build lookup table by device IP
@@ -1022,6 +1039,8 @@ function Fetch-VaultCredentials($config) {
                 }
             }
             return $credMap
+        } else {
+            Write-Log "Vault: nessuna credenziale presente" "INFO"
         }
     } catch {
         Write-Log "Errore fetch credenziali Vault: $($_.Exception.Message)" "WARN"
