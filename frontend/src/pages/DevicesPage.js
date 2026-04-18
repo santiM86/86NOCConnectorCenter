@@ -46,7 +46,7 @@ export default function DevicesPage() {
       await axios.post(`${API}/devices`, form);
       toast.success("Dispositivo aggiunto");
       setDialogOpen(false);
-      setForm({ name: "", ip_address: "", client_id: "", type: "switch", description: "" });
+      setForm({ name: "", ip_address: "", client_id: "", device_type: "switch", description: "" });
       fetchAll();
     } catch (e) { toast.error(e.response?.data?.detail || "Errore"); }
   };
@@ -99,7 +99,7 @@ export default function DevicesPage() {
                 </td></tr>
               ) : (
                 devices.map(device => {
-                  const typeInfo = typeIcons[device.type] || { label: device.type, color: "var(--text-muted)" };
+                  const typeInfo = typeIcons[device.device_type || device.type] || { label: device.device_type || device.type || "?", color: "var(--text-muted)" };
                   const isSelected = selectedDevice?.ip_address === device.ip_address;
                   return (
                     <tr key={device.id}
@@ -191,7 +191,7 @@ export default function DevicesPage() {
               </div>
               <div className="space-y-1.5">
                 <Label className="text-[var(--text-muted)] text-[10px] uppercase tracking-widest">Tipo</Label>
-                <Select value={form.type} onValueChange={v => setForm(f => ({...f, type: v}))}>
+                <Select value={form.device_type} onValueChange={v => setForm(f => ({...f, device_type: v}))}>
                   <SelectTrigger className="bg-[var(--bg-card)] border-[var(--bg-border)] text-[var(--text-primary)] rounded-md text-xs h-8" data-testid="device-type-select">
                     <SelectValue />
                   </SelectTrigger>
