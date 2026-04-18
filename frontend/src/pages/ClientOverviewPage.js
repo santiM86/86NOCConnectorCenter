@@ -249,6 +249,7 @@ function DeviceGroup({ label, icon: Icon, devices, color }) {
               <div className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: sc }}></div>
               <span className="font-medium text-[var(--text-primary)] truncate">{d.name}</span>
               <span className="font-mono text-[var(--text-muted)]">{d.ip_address}</span>
+              {d.snmp_community && <span className="text-[8px] px-1 rounded bg-[var(--bg-card)] text-[var(--text-muted)]">{d.snmp_version || "snmp"}: {d.snmp_community}</span>}
               <span className="ml-auto font-bold text-[8px] uppercase" style={{ color: sc }}>{d.status}</span>
               {d.source === "connector" && <span className="text-[7px] px-1 rounded bg-indigo-500/10 text-indigo-400">C</span>}
             </div>
@@ -265,11 +266,11 @@ function DevicesTab({ devices }) {
     <div className="noc-panel overflow-hidden">
       <table className="alert-table" data-testid="client-devices-table">
         <thead>
-          <tr><th>Nome</th><th>Tipo</th><th>IP</th><th>Stato</th><th>Fonte</th><th>Info</th></tr>
+          <tr><th>Nome</th><th>Tipo</th><th>IP</th><th>SNMP</th><th>Community</th><th>Stato</th><th>Fonte</th><th>Ultimo Poll</th></tr>
         </thead>
         <tbody>
           {devices.length === 0 ? (
-            <tr><td colSpan={6} className="text-center text-[var(--text-muted)] py-8 text-xs">Nessun dispositivo</td></tr>
+            <tr><td colSpan={8} className="text-center text-[var(--text-muted)] py-8 text-xs">Nessun dispositivo</td></tr>
           ) : devices.map((d, i) => {
             const sc = STATUS_COLOR[d.status] || "#555";
             return (
@@ -277,9 +278,17 @@ function DevicesTab({ devices }) {
                 <td className="text-[var(--text-primary)] text-xs font-medium">{d.name}</td>
                 <td><span className="text-[10px] px-1.5 py-0.5 rounded border border-[var(--bg-border)]">{d.device_type}</span></td>
                 <td className="font-mono text-[var(--text-muted)] text-xs">{d.ip_address}</td>
-                <td><span className="inline-flex items-center gap-1 text-[10px] font-bold" style={{ color: sc }}>{d.status === "online" ? <WifiHigh size={12} /> : <WifiSlash size={12} />} {d.status?.toUpperCase()}</span></td>
+                <td className="text-[10px] text-[var(--text-muted)]">{d.snmp_version || d.monitor_type || "—"}</td>
+                <td className="text-[10px] font-mono text-[var(--text-muted)]">{d.snmp_community || "—"}</td>
+                <td>
+                  <span className="inline-flex items-center gap-1 text-[10px] font-bold" style={{ color: sc }}>
+                    {d.status === "online" || d.status === "active" ? <WifiHigh size={12} /> : <WifiSlash size={12} />}
+                    {d.status?.toUpperCase()}
+                  </span>
+                  {d.ping_ms && <span className="ml-1 text-[9px] text-[var(--text-muted)]">{d.ping_ms}ms</span>}
+                </td>
                 <td>{d.source === "connector" ? <span className="text-[8px] px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 font-bold">CONNECTOR</span> : <span className="text-[8px] text-[var(--text-muted)]">Manuale</span>}</td>
-                <td className="text-[9px] text-[var(--text-muted)]">{d.sys_descr?.substring(0, 60) || d.hostname || ""}</td>
+                <td className="text-[9px] text-[var(--text-muted)]">{d.last_poll ? new Date(d.last_poll).toLocaleString("it-IT", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "—"}</td>
               </tr>
             );
           })}
