@@ -3,10 +3,11 @@ import axios from "axios";
 import { API, useAuth } from "@/App";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
-import { Gear, ShieldCheck, Bell, Key, BellRinging, BellSlash } from "@phosphor-icons/react";
+import { Gear, ShieldCheck, Bell, Key, BellRinging, BellSlash, Moon } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import { Input } from "@/components/ui/input";
 import { usePwa } from "@/components/PwaProvider";
 
 export default function SettingsPage() {
@@ -15,9 +16,18 @@ export default function SettingsPage() {
   const pwa = usePwa();
   const [pushStatus, setPushStatus] = useState({ configured: false, active_subscriptions: 0 });
   const [pushBusy, setPushBusy] = useState(false);
+  const [prefs, setPrefs] = useState({
+    quiet_hours_enabled: false,
+    quiet_start: "22:00",
+    quiet_end: "07:00",
+    quiet_timezone: "Europe/Rome",
+    quiet_exclude_critical: true,
+  });
+  const [prefsBusy, setPrefsBusy] = useState(false);
 
   useEffect(() => {
     axios.get(`${API}/push/status`).then(r => setPushStatus(r.data)).catch(() => {});
+    axios.get(`${API}/push/preferences`).then(r => setPrefs(p => ({ ...p, ...r.data }))).catch(() => {});
   }, []);
 
   const refreshPush = async () => {
@@ -76,6 +86,24 @@ export default function SettingsPage() {
       }
     } finally {
       setPushBusy(false);
+    }
+  };
+
+  const savePrefs = async (next) => {
+    setPrefsBusy(true);
+    try {
+      const body = next || prefs;
+      const r = await axios.put(`${API}/push/preferences`, body);
+      if (r.data?.success) {
+        setPrefs(body);
+        toast.success("Preferenze salvate");
+      } else {
+        toast.error("Errore nel salvataggio");
+      }
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Errore nel salvataggio");
+    } finally {
+      setPrefsBusy(false);
     }
   };
 
@@ -173,6 +201,62 @@ export default function SettingsPage() {
               )}
             </div>
           )}
+        </div>
+
+        <div className="noc-panel p-5" data-testid="quiet-hours-card">
+          <h3 className="text-[var(--text-muted)] text-[10px] font-medium uppercase tracking-widest mb-3 flex items-center gap-1.5">
+            <Moon size={13} /> Notte silenziosa (Quiet Hours)
+          </h3>
+          <p className="text-[var(--text-muted)] text-[10px] mb-3">
+            Durante la finestra impostata non riceverai notifiche push (utile per evitare sveglie notturne). I CRITICAL possono bypassare la quiet window.
+          </p>
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <Label htmlFor="qh-enabled" className="text-[var(--text-primary)] text-xs font-medium">Attiva Quiet Hours</Label>
+              <Switch
+                id="qh-enabled"
+                checked={prefs.quiet_hours_enabled}
+                disabled={prefsBusy}
+                onCheckedChange={(v) => savePrefs({ ...prefs, quiet_hours_enabled: v })}
+                data-testid="quiet-hours-toggle"
+              />
+            </div>
+            <div className={`grid grid-cols-2 gap-3 ${prefs.quiet_hours_enabled ? "" : "opacity-50 pointer-events-none"}`}>
+              <div className="space-y-1.5">
+                <Label className="text-[var(--text-muted)] text-[10px] uppercase tracking-widest">Dalle</Label>
+                <Input type="time" value={prefs.quiet_start}
+                  onChange={(e) => setPrefs(p => ({ ...p, quiet_start: e.target.value }))}
+                  onBlur={() => savePrefs()}
+                  className="bg-[var(--bg-card)] border-[var(--bg-border)] text-[var(--text-primary)] rounded-md text-xs h-8"
+                  data-testid="quiet-start-input" />
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-[var(--text-muted)] text-[10px] uppercase tracking-widest">Alle</Label>
+                <Input type="time" value={prefs.quiet_end}
+                  onChange={(e) => setPrefs(p => ({ ...p, quiet_end: e.target.value }))}
+                  onBlur={() => savePrefs()}
+                  className="bg-[var(--bg-card)] border-[var(--bg-border)] text-[var(--text-primary)] rounded-md text-xs h-8"
+                  data-testid="quiet-end-input" />
+              </div>
+            </div>
+            <div className={`flex items-center justify-between ${prefs.quiet_hours_enabled ? "" : "opacity-50 pointer-events-none"}`}>
+              <div>
+                <p className="text-[var(--text-primary)] text-xs font-medium">Bypass per CRITICAL</p>
+                <p className="text-[var(--text-muted)] text-[10px] mt-0.5">
+                  Ricevi comunque gli alert critici durante la notte silenziosa
+                </p>
+              </div>
+              <Switch
+                checked={prefs.quiet_exclude_critical}
+                disabled={prefsBusy}
+                onCheckedChange={(v) => savePrefs({ ...prefs, quiet_exclude_critical: v })}
+                data-testid="quiet-exclude-critical-toggle"
+              />
+            </div>
+            <p className="text-[var(--text-muted)] text-[9px] pt-1 border-t border-[var(--bg-border)]">
+              Fuso orario: <span className="font-mono">{prefs.quiet_timezone}</span>
+            </p>
+          </div>
         </div>
 
         <div className="noc-panel p-5">

@@ -5,7 +5,13 @@ Delivers real push notifications to subscribed browsers / installed PWAs.
 import os
 import json
 import logging
+from datetime import datetime, time as dtime
 from typing import Optional, Dict, List, Any
+
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:  # pragma: no cover
+    ZoneInfo = None  # type: ignore
 
 from pywebpush import webpush, WebPushException
 
@@ -17,9 +23,63 @@ VAPID_SUBJECT = os.environ.get("VAPID_SUBJECT", "mailto:info@86bit.it")
 
 VAPID_CLAIMS = {"sub": VAPID_SUBJECT}
 
+DEFAULT_PREFS = {
+    "quiet_hours_enabled": False,
+    "quiet_start": "22:00",
+    "quiet_end": "07:00",
+    "quiet_timezone": "Europe/Rome",
+    "quiet_exclude_critical": True,
+}
+
 
 def is_configured() -> bool:
     return bool(VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY)
+
+
+def _parse_hhmm(s: str) -> Optional[dtime]:
+    try:
+        h, m = s.split(":")
+        return dtime(int(h), int(m))
+    except Exception:
+        return None
+
+
+def is_in_quiet_hours(prefs: Dict[str, Any], severity: str, now: Optional[datetime] = None) -> bool:
+    """Return True if notifications should be suppressed for this user right now."""
+    if not prefs or not prefs.get("quiet_hours_enabled"):
+        return False
+    if prefs.get("quiet_exclude_critical", True) and (severity or "").lower() == "critical":
+        return False
+
+    start = _parse_hhmm(prefs.get("quiet_start", "22:00"))
+    end = _parse_hhmm(prefs.get("quiet_end", "07:00"))
+    if not start or not end:
+        return False
+
+    tz_name = prefs.get("quiet_timezone") or "Europe/Rome"
+    try:
+        tz = ZoneInfo(tz_name) if ZoneInfo else None
+    except Exception:
+        tz = None
+
+    ref = now or datetime.now(tz) if tz else datetime.now()
+    current = ref.time().replace(second=0, microsecond=0)
+
+    if start <= end:
+        # same-day window, e.g. 13:00 -> 17:00
+        return start <= current < end
+    # overnight window, e.g. 22:00 -> 07:00
+    return current >= start or current < end
+
+
+async def get_user_prefs(db, user_id: str) -> Dict[str, Any]:
+    doc = await db.user_notification_prefs.find_one({"user_id": user_id}, {"_id": 0})
+    prefs = dict(DEFAULT_PREFS)
+    if doc:
+        for k in DEFAULT_PREFS:
+            if k in doc:
+                prefs[k] = doc[k]
+    return prefs
 
 
 async def _send_one(subscription: Dict[str, Any], payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -47,9 +107,16 @@ async def _send_one(subscription: Dict[str, Any], payload: Dict[str, Any]) -> Di
 
 async def send_to_user(db, user_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     """Send web push to all active subscriptions of a user.
-    Automatically deletes expired/invalid subscriptions (404/410)."""
+    Automatically deletes expired/invalid subscriptions (404/410).
+    Respects the user's Quiet Hours preferences."""
     if not is_configured():
         return {"success": False, "reason": "vapid_not_configured"}
+
+    # Quiet hours check
+    prefs = await get_user_prefs(db, user_id)
+    severity = (payload.get("severity") or "").lower()
+    if is_in_quiet_hours(prefs, severity):
+        return {"success": True, "sent": 0, "skipped": "quiet_hours"}
 
     subs = await db.push_subscriptions.find({"user_id": user_id}, {"_id": 0}).to_list(length=50)
     if not subs:
