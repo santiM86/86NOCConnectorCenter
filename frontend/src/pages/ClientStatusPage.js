@@ -6,7 +6,8 @@ import {
   CaretDown, CaretRight, ArrowUp, ArrowDown, Export,
   FileArrowUp, MagnifyingGlass, Globe, Desktop, Plus,
   Monitor, X, Trash, CheckCircle, HardDrive, SpinnerGap,
-  WifiHigh as WifiIcon, Pulse, ListBullets, Graph
+  WifiHigh as WifiIcon, Pulse, ListBullets, Graph,
+  CircleNotch, ShieldCheck, Warning,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
@@ -209,7 +210,7 @@ export default function ClientStatusPage() {
 
   // Web Console
   const openWebConsole = async (clientId, deviceIp, port, path = "/") => {
-    setWebConsole({ clientId, deviceIp, port, path, loading: true, html: null, title: `${deviceIp}:${port}` });
+    setWebConsole({ clientId, deviceIp, port, path, loading: true, html: null, title: `${deviceIp}:${port}`, progress: 0, startTime: Date.now() });
     try {
       const res = await axios.post(`${API}/connector/web-proxy/request`, {
         client_id: clientId, device_ip: deviceIp, port: port || 80, path, method: "GET"
@@ -217,23 +218,34 @@ export default function ClientStatusPage() {
       const requestId = res.data.request_id;
       if (webConsolePollRef.current) clearInterval(webConsolePollRef.current);
       let attempts = 0;
-      webConsolePollRef.current = setInterval(async () => {
+      const pollFn = async () => {
         attempts++;
-        if (attempts > 30) {
+        const elapsed = Math.min((attempts / 20) * 100, 95);
+        setWebConsole(prev => prev ? { ...prev, progress: elapsed } : null);
+        if (attempts > 40) {
           clearInterval(webConsolePollRef.current);
-          setWebConsole(prev => prev ? { ...prev, loading: false, html: '<div style="padding:40px;text-align:center"><h2>Timeout</h2><p>Il connettore non ha risposto entro 60s.</p></div>' } : null);
+          setWebConsole(prev => prev ? { ...prev, loading: false, progress: 100, html: '<div style="padding:40px;text-align:center;font-family:system-ui"><h2 style="color:#FF3B30;margin-bottom:12px">Timeout</h2><p style="color:#888">Il connettore non ha risposto entro 30 secondi.<br>Verifica che il connettore sia attivo e il dispositivo raggiungibile.</p></div>' } : null);
           return;
         }
         try {
           const resp = await axios.get(`${API}/connector/web-proxy/response/${requestId}`);
           if (resp.data.status === "completed" && resp.data.response) {
             clearInterval(webConsolePollRef.current);
-            setWebConsole(prev => prev ? { ...prev, loading: false, html: resp.data.response.body, title: resp.data.response.title || `${deviceIp}:${port}${path}`, error: resp.data.response.error } : null);
+            const loadTime = Date.now() - (webConsolePollRef._startTime || Date.now());
+            setWebConsole(prev => prev ? { ...prev, loading: false, progress: 100, html: resp.data.response.body, title: resp.data.response.title || `${deviceIp}:${port}${path}`, error: resp.data.response.error, loadTime } : null);
           }
         } catch {}
-      }, 2000);
+      };
+      webConsolePollRef._startTime = Date.now();
+      // Aggressive polling: 500ms for first 5s, then 1.5s
+      let fastPoll = setInterval(pollFn, 500);
+      setTimeout(() => {
+        clearInterval(fastPoll);
+        webConsolePollRef.current = setInterval(pollFn, 1500);
+      }, 5000);
+      webConsolePollRef.current = fastPoll;
     } catch (e) {
-      setWebConsole(prev => prev ? { ...prev, loading: false, html: `<div style="padding:40px;text-align:center"><h2>Errore</h2><p>${e.response?.data?.detail || e.message}</p></div>` } : null);
+      setWebConsole(prev => prev ? { ...prev, loading: false, progress: 100, html: `<div style="padding:40px;text-align:center;font-family:system-ui"><h2 style="color:#FF3B30;margin-bottom:12px">Errore</h2><p style="color:#888">${e.response?.data?.detail || e.message}</p></div>` } : null);
     }
   };
 
@@ -628,31 +640,104 @@ export default function ClientStatusPage() {
 
       <input ref={importFileRef} type="file" accept=".csv,.txt" onChange={handleImportDevices} className="hidden" data-testid="import-devices-file-input" />
 
-      {/* Web Console Modal */}
+      {/* Web Console Modal — Enterprise */}
       {webConsole && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" data-testid="web-console-modal">
-          <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={closeWebConsole}></div>
-          <div className="relative w-full max-w-6xl h-[85vh] bg-[var(--bg-card)] rounded-xl border border-[var(--bg-border)] shadow-2xl flex flex-col overflow-hidden">
-            <div className="flex items-center justify-between px-4 py-2.5 border-b border-[var(--bg-border)] bg-[var(--bg-panel)]">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3" data-testid="web-console-modal">
+          <div className="absolute inset-0 bg-black/80 backdrop-blur-md" onClick={closeWebConsole}></div>
+          <div className="relative w-full max-w-7xl h-[90vh] bg-[#0d0d12] rounded-xl border border-[#1e1e2e] shadow-2xl shadow-black/50 flex flex-col overflow-hidden">
+
+            {/* Title Bar */}
+            <div className="flex items-center justify-between px-4 py-2 border-b border-[#1e1e2e] bg-[#12121a] flex-shrink-0">
               <div className="flex items-center gap-3">
-                <Monitor size={18} className="text-indigo-400" />
-                <div>
-                  <p className="text-xs font-heading font-bold text-[var(--text-primary)]">Web Console — {webConsole.deviceIp}:{webConsole.port}</p>
-                  <p className="text-[10px] text-[var(--text-muted)]">{webConsole.title || "Caricamento..."} {webConsole.path !== "/" && <span className="font-mono ml-1">{webConsole.path}</span>}</p>
+                <div className="flex gap-1.5">
+                  <div className="w-3 h-3 rounded-full bg-red-500/80 cursor-pointer hover:bg-red-500" onClick={closeWebConsole}></div>
+                  <div className="w-3 h-3 rounded-full bg-yellow-500/80"></div>
+                  <div className="w-3 h-3 rounded-full bg-green-500/80"></div>
                 </div>
+                <Monitor size={15} className="text-indigo-400 ml-2" />
+                <span className="text-[11px] font-bold text-white/90">Web Console</span>
               </div>
-              <button onClick={closeWebConsole} className="w-8 h-8 rounded-lg flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors">
-                <X size={18} />
-              </button>
+              <div className="flex items-center gap-2">
+                {!webConsole.loading && webConsole.loadTime && (
+                  <span className="text-[9px] text-white/30 font-mono">{(webConsole.loadTime / 1000).toFixed(1)}s</span>
+                )}
+                <button onClick={closeWebConsole} className="w-7 h-7 rounded-md flex items-center justify-center text-white/40 hover:text-white hover:bg-white/10 transition-colors">
+                  <X size={14} />
+                </button>
+              </div>
             </div>
+
+            {/* URL Bar */}
+            <div className="flex items-center gap-2 px-3 py-1.5 border-b border-[#1e1e2e] bg-[#0f0f17] flex-shrink-0">
+              <button onClick={() => openWebConsole(webConsole.clientId, webConsole.deviceIp, webConsole.port, webConsole.path)}
+                className="w-7 h-7 rounded-md flex items-center justify-center text-white/40 hover:text-white hover:bg-white/10 transition-colors" title="Ricarica">
+                <ArrowClockwise size={13} />
+              </button>
+              <div className="flex-1 flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#1a1a26] border border-[#2a2a3e]">
+                <Globe size={12} className="text-white/30 flex-shrink-0" />
+                <span className="text-[11px] text-white/60 font-mono truncate">
+                  http://{webConsole.deviceIp}:{webConsole.port}{webConsole.path}
+                </span>
+                {webConsole.loading && <CircleNotch size={12} className="text-indigo-400 animate-spin ml-auto flex-shrink-0" />}
+                {!webConsole.loading && !webConsole.error && <ShieldCheck size={12} className="text-emerald-400 ml-auto flex-shrink-0" />}
+              </div>
+              <span className="text-[9px] px-2 py-1 rounded-md bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 font-bold whitespace-nowrap">
+                via Connector
+              </span>
+            </div>
+
+            {/* Progress Bar */}
+            {webConsole.loading && (
+              <div className="h-0.5 bg-[#1e1e2e] flex-shrink-0">
+                <div className="h-full bg-indigo-500 transition-all duration-500 ease-out" style={{ width: `${webConsole.progress || 0}%` }}></div>
+              </div>
+            )}
+
+            {/* Content Area */}
             <div className="flex-1 bg-white overflow-auto">
               {webConsole.loading ? (
-                <div className="flex items-center justify-center h-full gap-3"><SpinnerGap size={24} className="text-indigo-500 animate-spin" /><span className="text-gray-500 text-sm">Connessione tramite proxy...</span></div>
+                <div className="flex flex-col items-center justify-center h-full gap-4 bg-[#0d0d12]">
+                  <div className="relative">
+                    <div className="w-12 h-12 rounded-full border-2 border-indigo-500/20 border-t-indigo-500 animate-spin"></div>
+                    <Monitor size={20} className="text-indigo-400 absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2" />
+                  </div>
+                  <div className="text-center">
+                    <p className="text-white/70 text-sm font-medium">Connessione in corso...</p>
+                    <p className="text-white/30 text-xs mt-1">{webConsole.deviceIp}:{webConsole.port}{webConsole.path}</p>
+                    <p className="text-white/20 text-[10px] mt-2 font-mono">Proxy tramite 86NocConnector</p>
+                  </div>
+                </div>
               ) : webConsole.error ? (
-                <div className="flex items-center justify-center h-full p-8"><div className="text-center"><p className="text-red-500 font-medium mb-2">Errore</p><p className="text-gray-500 text-sm">{webConsole.error}</p></div></div>
+                <div className="flex items-center justify-center h-full bg-[#0d0d12] p-8">
+                  <div className="text-center max-w-md">
+                    <div className="w-14 h-14 rounded-full bg-red-500/10 flex items-center justify-center mx-auto mb-4">
+                      <Warning size={28} className="text-red-400" />
+                    </div>
+                    <p className="text-red-400 font-bold text-lg mb-2">Connessione Fallita</p>
+                    <p className="text-white/40 text-sm">{webConsole.error}</p>
+                    <button onClick={() => openWebConsole(webConsole.clientId, webConsole.deviceIp, webConsole.port, webConsole.path)}
+                      className="mt-4 px-4 py-2 rounded-lg bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 text-xs font-bold hover:bg-indigo-500/20 transition-colors">
+                      Riprova
+                    </button>
+                  </div>
+                </div>
               ) : (
                 <iframe srcDoc={webConsole.html} className="w-full h-full border-0" title="Web Console" sandbox="allow-same-origin" />
               )}
+            </div>
+
+            {/* Status Bar */}
+            <div className="flex items-center justify-between px-3 py-1 border-t border-[#1e1e2e] bg-[#0f0f17] flex-shrink-0">
+              <div className="flex items-center gap-3">
+                <span className="text-[9px] text-white/30 font-mono">{webConsole.deviceIp}</span>
+                {webConsole.title && webConsole.title !== `${webConsole.deviceIp}:${webConsole.port}` && (
+                  <span className="text-[9px] text-white/20">{webConsole.title}</span>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <span className={`w-1.5 h-1.5 rounded-full ${webConsole.loading ? "bg-amber-400 animate-pulse" : webConsole.error ? "bg-red-400" : "bg-emerald-400"}`}></span>
+                <span className="text-[9px] text-white/30">{webConsole.loading ? "Caricamento..." : webConsole.error ? "Errore" : "Connesso"}</span>
+              </div>
             </div>
           </div>
         </div>

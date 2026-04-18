@@ -241,112 +241,82 @@ export default function ExternalMonitorPage() {
         </div>
       )}
 
-      {/* Per-client diagnosis cards */}
+      {/* Per-client cards — schematic layout */}
       {Object.entries(byClient).map(([cid, cTargets]) => {
         const diag = diagMap[cid];
         const diagCode = diag?.diagnosis || "not_configured";
         const dc = DIAG_CONFIG[diagCode] || DIAG_CONFIG.unknown;
         const DiagIcon = dc.icon;
-        const isOk = diagCode === "ok";
+
+        // Split by device type
+        const firewalls = cTargets.filter(t => t.device_type === "firewall");
+        const routers = cTargets.filter(t => t.device_type === "router");
+        const others = cTargets.filter(t => t.device_type !== "firewall" && t.device_type !== "router");
 
         return (
           <div key={cid} className="rounded-xl bg-[var(--bg-panel)] border border-[var(--bg-border)] overflow-hidden" data-testid={`wan-client-${cid}`}>
             {/* Client Header */}
-            <div className="px-4 py-3 border-b border-[var(--bg-border)]" style={{ borderLeft: `3px solid ${dc.color}` }}>
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: `${dc.color}15` }}>
-                    <DiagIcon size={16} weight="bold" style={{ color: dc.color }} />
-                  </div>
-                  <div>
-                    <h3 className="text-sm font-bold text-[var(--text-primary)] tracking-tight">{clientMap[cid] || cid}</h3>
-                    <p className="text-[10px] mt-0.5" style={{ color: dc.color }}>{diag?.diagnosis_text || "In attesa del primo probe..."}</p>
-                  </div>
+            <div className="px-5 py-3 border-b border-[var(--bg-border)] flex items-center justify-between" style={{ borderLeft: `3px solid ${dc.color}` }}>
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-lg flex items-center justify-center" style={{ background: `${dc.color}12` }}>
+                  <DiagIcon size={18} weight="bold" style={{ color: dc.color }} />
                 </div>
-                {diag?.gateway_status && (
-                  <div className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[10px] font-semibold ${diag.gateway_status === "online" ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20" : "bg-red-500/10 text-red-400 border border-red-500/20"}`}>
-                    <Globe size={12} weight="bold" />
-                    <span>ISP {diag.gateway_ip}</span>
-                    <span className="font-bold">{diag.gateway_status === "online" ? "OK" : "DOWN"}</span>
-                  </div>
-                )}
+                <div>
+                  <h3 className="text-base font-bold text-[var(--text-primary)] tracking-tight">{clientMap[cid] || cid}</h3>
+                  <p className="text-[10px] mt-0.5" style={{ color: dc.color }}>{diag?.diagnosis_text || "In attesa del primo probe..."}</p>
+                </div>
               </div>
-            </div>
-
-            {/* Targets */}
-            <div className="divide-y divide-[var(--bg-border)]/50">
-              {cTargets.map(t => {
-                const r = resultMap[t.id];
-                const st = STATUS_CONFIG[r?.status] || STATUS_CONFIG.unknown;
-                const StIcon = st.icon;
-                const latency = r?.ping?.latency_ms;
-                const loss = r?.ping?.packet_loss_pct;
-
+              {/* ISP badge from gateway */}
+              {(() => {
+                const gwTarget = cTargets.find(t => {
+                  const r = resultMap[t.id];
+                  return r?.gateway_ping;
+                });
+                const gwResult = gwTarget ? resultMap[gwTarget.id] : null;
+                if (!gwResult?.gateway_ping) return null;
+                const gwOk = gwResult.gateway_ping.reachable;
                 return (
-                  <div key={t.id} className="px-4 py-3 hover:bg-[var(--bg-hover)]/30 transition-colors" data-testid={`wan-target-${t.id}`}>
-                    <div className="flex items-center gap-3">
-                      {/* Status icon */}
-                      <div className="w-7 h-7 rounded-md flex items-center justify-center flex-shrink-0" style={{ background: `${st.color}12` }}>
-                        <StIcon size={14} weight="bold" style={{ color: st.color }} />
-                      </div>
-
-                      {/* Device info */}
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="text-xs font-bold text-[var(--text-primary)]">{t.label}</span>
-                          <span className="text-[9px] px-1.5 py-0.5 rounded-md font-bold uppercase tracking-wide" style={{ color: st.color, background: `${st.color}15`, border: `1px solid ${st.color}30` }}>{st.label}</span>
-                          <span className="text-[10px] text-[var(--text-muted)] font-mono opacity-70">{t.public_ip}</span>
-                          <span className="text-[9px] text-[var(--text-muted)] uppercase opacity-50">{t.device_type}</span>
-                          {t.check_ping && <span className="text-[9px] px-1.5 py-0.5 rounded-md bg-blue-500/10 text-blue-400 border border-blue-500/20 font-bold">ICMP</span>}
-                        </div>
-                      </div>
-
-                      {/* Metrics */}
-                      {r && (
-                        <div className="flex items-center gap-3 flex-shrink-0">
-                          {/* Latency pill */}
-                          <div className="text-center px-2.5 py-1 rounded-md bg-[var(--bg-card)] border border-[var(--bg-border)]">
-                            <p className="text-[8px] text-[var(--text-muted)] uppercase tracking-widest">Latenza</p>
-                            <p className="text-xs font-bold font-mono" style={{ color: latency > 100 ? "#FF3B30" : latency > 50 ? "#FFCC00" : "#34C759" }}>{latency ?? "—"}<span className="text-[8px] font-normal">ms</span></p>
-                          </div>
-                          {/* Loss pill */}
-                          <div className="text-center px-2.5 py-1 rounded-md bg-[var(--bg-card)] border border-[var(--bg-border)]">
-                            <p className="text-[8px] text-[var(--text-muted)] uppercase tracking-widest">Loss</p>
-                            <p className="text-xs font-bold font-mono" style={{ color: loss > 5 ? "#FF3B30" : "#34C759" }}>{loss ?? "—"}<span className="text-[8px] font-normal">%</span></p>
-                          </div>
-                          {/* Gateway pill */}
-                          {r.gateway_ping && (
-                            <div className="text-center px-2.5 py-1 rounded-md bg-[var(--bg-card)] border border-[var(--bg-border)]">
-                              <p className="text-[8px] text-[var(--text-muted)] uppercase tracking-widest">Gateway</p>
-                              <p className="text-xs font-bold font-mono" style={{ color: r.gateway_ping.reachable ? "#34C759" : "#FF3B30" }}>
-                                {r.gateway_ping.reachable ? "OK" : "DOWN"}
-                                {r.gateway_ping.latency_ms != null && <span className="text-[8px] font-normal opacity-60"> {r.gateway_ping.latency_ms}ms</span>}
-                              </p>
-                            </div>
-                          )}
-                          {/* TCP ports */}
-                          {r.ports?.map((p, i) => (
-                            <div key={i} className="text-center px-2.5 py-1 rounded-md bg-[var(--bg-card)] border border-[var(--bg-border)]">
-                              <p className="text-[8px] text-[var(--text-muted)] uppercase tracking-widest">TCP {p.port}</p>
-                              <p className="text-xs font-bold font-mono" style={{ color: p.open ? "#34C759" : "#FF3B30" }}>
-                                {p.open ? "OPEN" : "CLOSED"}
-                                {p.response_ms && <span className="text-[8px] font-normal opacity-60"> {p.response_ms}ms</span>}
-                              </p>
-                            </div>
-                          ))}
-                          {/* Timestamp */}
-                          <span className="text-[9px] text-[var(--text-muted)] opacity-40 font-mono ml-1">{r.checked_at ? new Date(r.checked_at).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" }) : ""}</span>
-                        </div>
-                      )}
-
-                      {/* Delete */}
-                      <button onClick={() => deleteTarget(t.id)} className="p-1.5 rounded-md hover:bg-red-500/10 text-[var(--text-muted)] hover:text-red-400 transition-all opacity-30 hover:opacity-100" title="Elimina target">
-                        <Trash size={13} />
-                      </button>
+                  <div className={`flex items-center gap-2 px-3 py-2 rounded-lg text-[10px] font-semibold border ${gwOk ? "bg-emerald-500/8 text-emerald-400 border-emerald-500/20" : "bg-red-500/8 text-red-400 border-red-500/20"}`}>
+                    <Globe size={14} weight="bold" />
+                    <div>
+                      <span className="block font-bold text-[11px]">ISP {gwOk ? "ONLINE" : "DOWN"}</span>
+                      <span className="block opacity-60 font-mono">{gwResult.gateway_ip} {gwResult.gateway_ping.latency_ms != null ? `${gwResult.gateway_ping.latency_ms}ms` : ""}</span>
                     </div>
                   </div>
                 );
-              })}
+              })()}
+            </div>
+
+            {/* Schema rete: INTERNET → ROUTER → FIREWALL → LAN */}
+            <div className="px-5 py-4">
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                {/* FIREWALL Column */}
+                {firewalls.length > 0 && (
+                  <div>
+                    <div className="flex items-center gap-2 mb-2">
+                      <ShieldCheck size={13} weight="bold" className="text-indigo-400" />
+                      <span className="text-[9px] font-bold uppercase tracking-[0.15em] text-indigo-400">Firewall</span>
+                      <div className="flex-1 h-px bg-indigo-500/20"></div>
+                    </div>
+                    {firewalls.map(t => <DeviceCard key={t.id} target={t} result={resultMap[t.id]} onDelete={deleteTarget} />)}
+                  </div>
+                )}
+
+                {/* ROUTER Column */}
+                {routers.length > 0 && (
+                  <div>
+                    <div className="flex items-center gap-2 mb-2">
+                      <HardDrives size={13} weight="bold" className="text-cyan-400" />
+                      <span className="text-[9px] font-bold uppercase tracking-[0.15em] text-cyan-400">Router</span>
+                      <div className="flex-1 h-px bg-cyan-500/20"></div>
+                    </div>
+                    {routers.map(t => <DeviceCard key={t.id} target={t} result={resultMap[t.id]} onDelete={deleteTarget} />)}
+                  </div>
+                )}
+
+                {/* Others */}
+                {others.map(t => <DeviceCard key={t.id} target={t} result={resultMap[t.id]} onDelete={deleteTarget} />)}
+              </div>
             </div>
           </div>
         );
@@ -359,6 +329,117 @@ export default function ExternalMonitorPage() {
           <p className="text-xs mt-1">Aggiungi gli IP pubblici dei firewall e router dei clienti per iniziare il monitoraggio</p>
         </div>
       )}
+    </div>
+  );
+}
+
+
+/* ==================== DEVICE CARD (Expandable) ==================== */
+function DeviceCard({ target: t, result: r, onDelete }) {
+  const [expanded, setExpanded] = useState(false);
+  const st = STATUS_CONFIG[r?.status] || STATUS_CONFIG.unknown;
+  const StIcon = st.icon;
+  const latency = r?.ping?.latency_ms;
+  const loss = r?.ping?.packet_loss_pct;
+  const isFirewall = t.device_type === "firewall";
+
+  return (
+    <div
+      className="rounded-lg border transition-all duration-200 cursor-pointer hover:shadow-md group"
+      style={{ borderColor: `${st.color}30`, background: `${st.color}04` }}
+      onClick={() => setExpanded(!expanded)}
+      data-testid={`wan-target-${t.id}`}
+    >
+      {/* Main row */}
+      <div className="px-3 py-2.5 flex items-center gap-3">
+        {/* Status dot + device icon */}
+        <div className="relative flex-shrink-0">
+          <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: `${st.color}12` }}>
+            {isFirewall ? <ShieldCheck size={15} weight="bold" style={{ color: st.color }} /> : <HardDrives size={15} weight="bold" style={{ color: st.color }} />}
+          </div>
+          <div className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-[var(--bg-panel)]" style={{ backgroundColor: st.color }}></div>
+        </div>
+
+        {/* Info */}
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-bold text-[var(--text-primary)] truncate">{t.label}</span>
+            <span className="text-[8px] px-1.5 py-0.5 rounded font-bold uppercase" style={{ color: st.color, background: `${st.color}15` }}>{st.label}</span>
+          </div>
+          <span className="text-[10px] text-[var(--text-muted)] font-mono">{t.public_ip}</span>
+        </div>
+
+        {/* Quick metrics */}
+        <div className="flex items-center gap-2 flex-shrink-0">
+          {latency != null && (
+            <span className="text-xs font-bold font-mono" style={{ color: latency > 100 ? "#FF3B30" : latency > 50 ? "#FFCC00" : "#34C759" }}>{latency}<span className="text-[8px] opacity-50">ms</span></span>
+          )}
+          {loss != null && loss > 0 && (
+            <span className="text-[10px] font-bold font-mono text-red-400">{loss}%</span>
+          )}
+          {t.check_ping && <span className="text-[8px] px-1 py-0.5 rounded bg-blue-500/10 text-blue-400 font-bold">ICMP</span>}
+          <button
+            onClick={(e) => { e.stopPropagation(); onDelete(t.id); }}
+            className="p-1 rounded hover:bg-red-500/10 text-[var(--text-muted)] hover:text-red-400 transition-all opacity-0 group-hover:opacity-100"
+            title="Elimina"
+          >
+            <Trash size={12} />
+          </button>
+        </div>
+      </div>
+
+      {/* Expanded metrics panel */}
+      {expanded && r && (
+        <div className="px-3 pb-3 pt-0 border-t border-[var(--bg-border)]/30 mt-0" onClick={(e) => e.stopPropagation()}>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-2">
+            {/* Ping ICMP */}
+            <MetricBox label="Ping ICMP" value={r.ping?.reachable ? "OK" : "FAIL"} sub={latency != null ? `${latency}ms` : null}
+              color={r.ping?.reachable ? "#34C759" : "#FF3B30"} />
+            {/* Packet Loss */}
+            <MetricBox label="Packet Loss" value={loss != null ? `${loss}%` : "—"} sub={loss === 0 ? "Nessuna perdita" : loss > 5 ? "Critico" : "Accettabile"}
+              color={loss > 5 ? "#FF3B30" : loss > 0 ? "#FF9500" : "#34C759"} />
+            {/* Uptime stimato */}
+            <MetricBox label="Stato" value={st.label} sub={r.checked_at ? new Date(r.checked_at).toLocaleString("it-IT", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "—"}
+              color={st.color} />
+            {/* Gateway */}
+            {r.gateway_ping ? (
+              <MetricBox label="Gateway ISP" value={r.gateway_ping.reachable ? "ONLINE" : "DOWN"} sub={`${r.gateway_ip || "?"} ${r.gateway_ping.latency_ms != null ? `${r.gateway_ping.latency_ms}ms` : ""}`}
+                color={r.gateway_ping.reachable ? "#34C759" : "#FF3B30"} />
+            ) : (
+              <MetricBox label="Gateway ISP" value="N/C" sub="Non configurato" color="#555" />
+            )}
+          </div>
+
+          {/* TCP Ports detail */}
+          {r.ports?.length > 0 && (
+            <div className="mt-2">
+              <p className="text-[8px] uppercase tracking-widest text-[var(--text-muted)] mb-1">Porte TCP</p>
+              <div className="flex gap-2 flex-wrap">
+                {r.ports.map((p, i) => (
+                  <div key={i} className="flex items-center gap-1.5 px-2 py-1 rounded-md border text-[10px] font-mono"
+                    style={{ borderColor: p.open ? "#34C75930" : "#FF3B3030", background: p.open ? "#34C75908" : "#FF3B3008" }}>
+                    <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: p.open ? "#34C759" : "#FF3B30" }}></div>
+                    <span className="text-[var(--text-primary)] font-bold">{p.port}</span>
+                    <span style={{ color: p.open ? "#34C759" : "#FF3B30" }}>{p.open ? "OPEN" : "CLOSED"}</span>
+                    {p.response_ms && <span className="text-[var(--text-muted)] opacity-60">{p.response_ms}ms</span>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ==================== METRIC BOX ==================== */
+function MetricBox({ label, value, sub, color }) {
+  return (
+    <div className="rounded-md px-2.5 py-2 bg-[var(--bg-card)] border border-[var(--bg-border)]">
+      <p className="text-[7px] uppercase tracking-[0.15em] text-[var(--text-muted)] mb-0.5">{label}</p>
+      <p className="text-sm font-bold font-mono leading-none" style={{ color }}>{value}</p>
+      {sub && <p className="text-[9px] text-[var(--text-muted)] mt-0.5 opacity-60">{sub}</p>}
     </div>
   );
 }

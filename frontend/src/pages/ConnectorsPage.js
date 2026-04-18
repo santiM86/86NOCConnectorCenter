@@ -66,13 +66,21 @@ export default function ConnectorsPage() {
     if (!file) return;
     try {
       const zip = await JSZip.loadAsync(file);
-      const versionFile = zip.file("version.json");
+      // Cerca version.json nella root o in qualsiasi sottocartella
+      let versionFile = zip.file("version.json");
+      if (!versionFile) {
+        const allFiles = Object.keys(zip.files);
+        const match = allFiles.find(f => f.endsWith("version.json"));
+        if (match) versionFile = zip.file(match);
+      }
       if (versionFile) {
         const content = await versionFile.async("string");
-        const meta = JSON.parse(content);
+        const meta = JSON.parse(content.replace(/^\uFEFF/, "")); // Remove BOM if present
         if (meta.version) setNewVersion(meta.version);
         if (meta.changelog) setChangelog(meta.changelog);
-        toast.success(`Rilevato version.json: v${meta.version}`);
+        toast.success(`Rilevato: v${meta.version}`);
+      } else {
+        toast.info("version.json non trovato nello ZIP — inserisci la versione manualmente");
       }
     } catch (err) {
       console.warn("Impossibile leggere version.json:", err);
