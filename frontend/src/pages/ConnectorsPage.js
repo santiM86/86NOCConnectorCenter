@@ -386,8 +386,15 @@ export default function ConnectorsPage() {
                   </div>
                   <div className="flex items-center gap-1.5 flex-shrink-0">
                     {updateInfo?.version && isNewerVersion(updateInfo.version, c.connector_version) && (
-                      <button onClick={() => forceUpdate(c.client_id)}
-                        className="h-7 px-2 rounded-md flex items-center gap-1 text-[10px] font-medium text-amber-400 bg-amber-500/10 border border-amber-500/20 hover:bg-amber-500/20 transition-colors"
+                      <button
+                        onClick={() => forceUpdate(c.client_id)}
+                        disabled={!online}
+                        title={online ? "Forza aggiornamento immediato" : "Connector offline — impossibile aggiornare da remoto"}
+                        className={`h-7 px-2 rounded-md flex items-center gap-1 text-[10px] font-medium border transition-colors ${
+                          online
+                            ? "text-amber-400 bg-amber-500/10 border-amber-500/20 hover:bg-amber-500/20 cursor-pointer"
+                            : "text-[var(--text-muted)] bg-[var(--bg-hover)] border-[var(--bg-border)] opacity-50 cursor-not-allowed"
+                        }`}
                         data-testid={`force-update-btn-${c.client_id}`}>
                         <ArrowsClockwise size={12} /> Aggiorna
                       </button>
@@ -408,7 +415,15 @@ export default function ConnectorsPage() {
                         <ArrowsClockwise size={12} className="animate-spin" />
                         {c.update_message || "Aggiornamento in corso..."}
                       </span>
-                      <span className="text-[11px] font-mono font-bold text-amber-400">{c.update_progress || 0}%</span>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[11px] font-mono font-bold text-amber-400">{c.update_progress || 0}%</span>
+                        <button
+                          onClick={() => resetUpdateStatus(c.client_id)}
+                          className="text-[9px] px-2 py-0.5 rounded bg-red-500/10 text-red-400 hover:bg-red-500/20 border border-red-500/20 transition-colors"
+                          title="Annulla aggiornamento">
+                          Annulla
+                        </button>
+                      </div>
                     </div>
                     <div className="w-full h-2.5 rounded-full bg-[var(--bg-panel)] overflow-hidden relative">
                       <div
@@ -421,6 +436,11 @@ export default function ConnectorsPage() {
                     <p className="text-[9px] text-[var(--text-muted)] mt-1.5 font-mono uppercase tracking-wider">
                       Stato: {c.update_status}
                     </p>
+                    {c.update_status === "queued" && !online && (
+                      <p className="text-[9px] text-red-400 mt-1 flex items-center gap-1">
+                        <Warning size={9} /> Connector OFFLINE — l'ordine verra' ricevuto solo al prossimo ritorno online. Timeout automatico dopo 10 minuti.
+                      </p>
+                    )}
                   </div>
                 )}
                 {c.update_status === "completed" && (
