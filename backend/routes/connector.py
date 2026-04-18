@@ -523,7 +523,27 @@ async def update_device_snmp_config(client_id: str, device_id: str, request: Req
 async def connector_fetch_devices(request: Request):
     client_data = await verify_connector_request(request)
     devices = await db.managed_devices.find({"client_id": client_data["id"]}, {"_id": 0}).to_list(200)
-    return [{"ip": d["ip"], "community": d.get("community", "public"), "name": d["name"], "monitor_type": d.get("monitor_type", "snmp"), "device_type": d.get("device_type", "network"), "http_port": d.get("http_port", 80)} for d in devices]
+    # Filter out devices that were deleted from the web NOC
+    deleted = await db.deleted_devices.find(
+        {"client_id": client_data["id"]}, {"device_ip": 1, "_id": 0}
+    ).to_list(500)
+    deleted_ips = {d["device_ip"] for d in deleted}
+    devices = [d for d in devices if d.get("ip") not in deleted_ips]
+    return [{
+        "ip": d["ip"],
+        "community": d.get("community", "public"),
+        "name": d["name"],
+        "monitor_type": d.get("monitor_type", "snmp"),
+        "device_type": d.get("device_type", "network"),
+        "http_port": d.get("http_port", 80),
+        "snmp_version": d.get("snmp_version", "v2c"),
+        "snmpv3_username": d.get("snmpv3_username"),
+        "snmpv3_auth_protocol": d.get("snmpv3_auth_protocol"),
+        "snmpv3_auth_password": d.get("snmpv3_auth_password"),
+        "snmpv3_priv_protocol": d.get("snmpv3_priv_protocol"),
+        "snmpv3_priv_password": d.get("snmpv3_priv_password"),
+        "snmpv3_security_level": d.get("snmpv3_security_level", "authPriv"),
+    } for d in devices]
 
 
 @router.post(f"/{C}/ln")
