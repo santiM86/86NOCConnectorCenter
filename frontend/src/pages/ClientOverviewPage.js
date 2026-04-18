@@ -15,6 +15,7 @@ import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import VaultPage from "./VaultPage";
+import { useWebConsole, WebConsoleModal, canOpenWebConsole, defaultWebPort } from "@/components/WebConsole";
 import DiscoveryPage from "./DiscoveryPage";
 import VulnerabilityPage from "./VulnerabilityPage";
 
@@ -551,6 +552,7 @@ function DeviceGroup({ label, icon: Icon, devices, color }) {
 function DevicesTab({ devices, clientId, onRefresh }) {
   const [showAdd, setShowAdd] = useState(false);
   const [saving, setSaving] = useState(false);
+  const webConsole = useWebConsole();
   const emptyForm = {
     name: "", ip: "", device_type: "generic", monitor_type: "snmp",
     snmp_version: "v2c", community: "public", http_port: "80",
@@ -671,14 +673,26 @@ function DevicesTab({ devices, clientId, onRefresh }) {
                   <td>{d.source === "connector" ? <span className="text-[8px] px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 font-bold">CONNECTOR</span> : <span className="text-[8px] text-[var(--text-muted)]">Manuale</span>}</td>
                   <td className="text-[9px] text-[var(--text-muted)]">{d.last_poll ? new Date(d.last_poll).toLocaleString("it-IT", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "—"}</td>
                   <td>
-                    <button
-                      onClick={() => handleDelete(d)}
-                      className="p-1 rounded hover:bg-[var(--critical-bg)] text-[var(--critical)] transition-colors"
-                      title="Rimuovi"
-                      data-testid={`delete-device-${d.ip_address}`}
-                    >
-                      <Trash size={12} />
-                    </button>
+                    <div className="flex items-center gap-1">
+                      {canOpenWebConsole(d) && (
+                        <button
+                          onClick={() => webConsole.open(clientId, d.ip_address, defaultWebPort(d))}
+                          className="p-1 rounded hover:bg-indigo-500/10 text-indigo-400 transition-colors"
+                          title={`Apri Web Console (porta ${defaultWebPort(d)})`}
+                          data-testid={`web-console-btn-${d.ip_address}`}
+                        >
+                          <Monitor size={13} />
+                        </button>
+                      )}
+                      <button
+                        onClick={() => handleDelete(d)}
+                        className="p-1 rounded hover:bg-[var(--critical-bg)] text-[var(--critical)] transition-colors"
+                        title="Rimuovi"
+                        data-testid={`delete-device-${d.ip_address}`}
+                      >
+                        <Trash size={12} />
+                      </button>
+                    </div>
                   </td>
                 </tr>
               );
@@ -837,6 +851,12 @@ function DevicesTab({ devices, clientId, onRefresh }) {
           </div>
         </DialogContent>
       </Dialog>
+
+      <WebConsoleModal
+        state={webConsole.state}
+        onClose={webConsole.close}
+        onReload={() => webConsole.state && webConsole.open(webConsole.state.clientId, webConsole.state.deviceIp, webConsole.state.port, webConsole.state.path)}
+      />
     </div>
   );
 }
