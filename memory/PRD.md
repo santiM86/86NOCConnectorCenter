@@ -50,12 +50,14 @@ Società IT che necessita di un raccoglitore di alert (NOC) per tutti i disposit
     - 12/12 test backend passati (iteration_50.json).
 - 2026-02-18 (fork):
   - **Mobile Responsive iPhone**: tabelle wrappate in `overflow-x-auto` con `min-width` su mobile (AlertsPage, ClientOverviewPage devices/alerts, DevicesPage, InventoryPage, EnterprisePage users, PortMonitorPage, DashboardPage recent alerts). DeviceDetailPanel full-screen su mobile (`fixed inset-0`), drawer solo da `md:` in su. Smoke test Playwright a 390x844 (iPhone) su Dashboard, Alerts, Clients, ClientOverview, Sidebar + tab Devices — tutti correttamente scrollabili e senza overflow laterale.
+  - **Web Push Notifications (VAPID)**: implementazione reale al posto del mock precedente. Backend: `pywebpush==2.3.0`, chiavi VAPID generate (in `backend/.env`: VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, VAPID_SUBJECT). Nuovo modulo `/app/backend/webpush.py` con `send_to_user`, `send_to_roles`, `notify_new_alert` (fire-and-forget, auto-prune di subscription scadute 404/410). Nuove route `/api/push/*`: `vapid-public-key`, `subscribe`, `unsubscribe`, `status`, `test`. Hook `notify_new_alert(db, alert_doc)` aggiunto in alerts.py, ingestion.py (syslog + snmp), external_monitor.py, connector.py (2 posizioni), connector_watchdog.py, redfish.py, printers.py, backup.py. Inviate solo per severity=critical/high (configurabile via `notification_rules.push_enabled`). Frontend: `PwaProvider` aggiornato con `subscribeToPush`, `unsubscribeFromPush`, `sendTestPush` che fetchano la chiave VAPID dal backend. Nuovo pannello "Notifiche Push" in `SettingsPage` con stato, Attiva/Disattiva e pulsante Test. SW (`sw.js`) già gestiva correttamente l'evento `push` e `notificationclick`. Bug fix collaterale: `alerts.py` non passa più `id` doppio ad `AlertResponse` su duplicati. **21/21 test backend passati** (iteration_51.json).
 
 ## Pending / In Progress
 ### P1 — Notifiche Telegram
 In attesa di bot token dall'utente.
 
-### P1 — Sostituire mock Push/Email con integrazioni reali
+### P1 — Sostituire mock Email con integrazione reale (Resend / SendGrid / SMTP)
+In attesa di scelta provider e credenziali. **Push notifications: DONE (Web Push VAPID).**
 
 ### Verifica utente post-deploy
 - Testare fix Redfish: dopo re-deploy e auto-update del connector a v3.0.1, confermare che l'iLO `10.100.61.35` sia monitorato (redfish_ok=true nei log del connector).
