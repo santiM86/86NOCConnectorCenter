@@ -15,13 +15,13 @@ Società IT che necessita di un raccoglitore di alert (NOC) per tutti i disposit
   connector.py     → endpoints HMAC-secured + managed-devices CRUD per client
   devices.py       → device CRUD + Redfish test
   redfish_routes.py→ direct iLO polling/failover
-  vault.py         → AES-256-GCM credential vault (admin only)
+  vault.py         → AES-256-GCM credential vault (admin only) — ora con client_id support
   overview.py      → Control Room aggregation
 /app/frontend/src/pages/
-  ClientOverviewPage.js → vista unificata per singolo cliente (tabs)
-  VaultPage.js          → vault globale
+  ClientOverviewPage.js → vista unificata per singolo cliente (tabs incluso Credenziali scoped)
+  VaultPage.js          → vault globale + riusabile con scopedClientId prop
 /app/noc-connector/src/
-  connector.ps1    → main loop, HMAC auth, Redfish integration
+  connector.ps1    → main loop, HMAC auth, Redfish integration (v3.0.1)
   snmp_poller.ps1  → SNMP v1/v2c/v3 + Redfish REST
 ```
 
@@ -36,24 +36,28 @@ Società IT che necessita di un raccoglitore di alert (NOC) per tutti i disposit
 - 2026-02-20: Installer GUI + uninstall.bat + version.json auto-read
 - 2026-02-25: Device merging (managed_devices + device_poll_status)
 - 2026-03-01: Web Proxy Console Enterprise UI
-- 2026-04-18: **Add Device from Client Page** — pulsante "+ Aggiungi Dispositivo" e eliminazione dispositivo dentro la tab Dispositivi del ClientOverviewPage. Supporto completo SNMP v1/v2c/v3 (auth/priv), Ping, HTTP. POST su `/api/connector/{client_id}/managed-devices`. Cestino rimozione chiama `DELETE /api/connector/{client_id}/managed-devices/{id}` o `DELETE /api/connector/device-poll-status/{ip}` per connector-discovered.
+- 2026-04-18 (pomeriggio):
+  - **Add Device from Client Page**: pulsante "+ Aggiungi Dispositivo" e eliminazione device dentro la tab Dispositivi del `ClientOverviewPage`, supporto SNMP v1/v2c/v3 + Ping + HTTP. POST su `/api/connector/{client_id}/managed-devices`.
+  - **Bug fix fetch-devices**: l'endpoint `GET /api/connector/fetch-devices` e `/{C}/fd` (HMAC) ora restituisce tutti i campi SNMPv3 (snmp_version, snmpv3_username, snmpv3_auth_*, snmpv3_priv_*, snmpv3_security_level). Prima venivano ignorati.
+  - **Connector v3.0.1 (FIX REDFISH)**:
+    - FIX bug critico in `Fetch-VaultCredentials`: rimossa chiamata `Invoke-RestMethod` duplicata con variabili non definite (`$url`, `$headers`) che sovrascriveva la risposta.
+    - Esteso trigger Redfish: parte anche quando SNMP fallisce ma ci sono credenziali Vault di tipo `ilo`/`redfish` per l'IP target o `device_type=ilo` manualmente.
+    - Log diagnostici più espliciti.
+    - ZIP pubblicato via `/api/connector/upload-update`.
+  - **Vault per Cliente (Opzione B)**:
+    - Backend: `client_id` in `CredentialCreate/Update`, filtro `?client_id=` in GET, validazione 404 se client non esiste, endpoint connector `/{C}/vc` filtra per client HMAC-authed + credenziali globali.
+    - Frontend: `VaultPage` riutilizzabile con prop `scopedClientId`, nuova tab "Credenziali" in `ClientOverviewPage`, dropdown filtro "Cliente" nella vista globale, badge "Globale" sulle credenziali senza client_id.
+    - 12/12 test backend passati (iteration_50.json).
 
 ## Pending / In Progress
-### P0 — Redfish polling non funzionante
-L'utente ha inserito credenziali iLO nel Vault per `10.100.61.35` ma il connector non sta facendo polling Redfish. Sospetti principali:
-1. **Gating SNMP**: in `connector.ps1` il Redfish parte solo se `device_class == "hpe-ilo"` via SNMP. Se l'iLO non ha SNMP abilitato, il polling Redfish non viene mai attivato.
-2. **Versione connector**: utente potrebbe avere versione pre-v3.0.0 in produzione.
-3. **Device censito?**: l'iLO deve essere presente in `managed_devices` o discovered via polling.
-
-Next step: modificare il connector per forzare il polling Redfish quando esistono credenziali Vault di tipo `ilo`/`redfish` per quell'IP, indipendentemente dalla classificazione SNMP.
-
-### P1 — Vault per cliente
-Utente ha richiesto di spostare tutta la pagina "Vault Credenziali" (incluso Stato Polling iLO Diretto/Failover) dentro la pagina del singolo cliente come nuova tab. Domande aperte: mantenere vista globale per super-admin? Migrazione credenziali esistenti?
-
 ### P1 — Notifiche Telegram
 In attesa di bot token dall'utente.
 
 ### P1 — Sostituire mock Push/Email con integrazioni reali
+
+### Verifica utente post-deploy
+- Testare fix Redfish: dopo re-deploy e auto-update del connector a v3.0.1, confermare che l'iLO `10.100.61.35` sia monitorato (redfish_ok=true nei log del connector).
+- Testare Vault per cliente: editare credenziale `ILO - SRV-DC01 (ML350 Gen9)` assegnandola a un cliente specifico.
 
 ## Backlog / Future
 - P2: Multi-tenant + White-label SaaS (workspace isolation)
@@ -74,6 +78,7 @@ In attesa di bot token dall'utente.
 ## Key DB collections
 - `managed_devices` — device manuali per cliente (con `community`, `snmp_version`, `snmpv3_*`)
 - `device_poll_status` — device scoperti via heartbeat connector
-- `device_credentials` — Vault AES-256-GCM (iLO/SSH/SNMP/Web/VPN)
+- `device_credentials` — Vault AES-256-GCM (iLO/SSH/SNMP/Web/VPN), campo `client_id` (nullable=globale)
 - `wan_probe_results` — Ping/TCP WAN
+- `connector_updates` — ZIP rilasci connector (active=true per il corrente)
 - `clients`, `devices`, `alerts`, `users`, `audit_logs`
