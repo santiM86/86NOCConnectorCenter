@@ -241,9 +241,15 @@ async def upload_connector_update(request: Request, file: UploadFile = File(...)
         raise HTTPException(status_code=400, detail="Version is required")
     safe_filename = f"86NocConnector_v{version}.zip"
     filepath = CONNECTOR_STORAGE / safe_filename
-    content = await file.read()
-    with open(filepath, "wb") as f:
-        f.write(content)
+    try:
+        content = await file.read()
+        with open(filepath, "wb") as f:
+            f.write(content)
+    except Exception as e:
+        import logging
+        logging.error(f"Errore scrittura ZIP {filepath}: {e}")
+        raise HTTPException(status_code=500, detail=f"Errore scrittura ZIP: {e}")
+
     await db.connector_updates.update_many({}, {"$set": {"active": False}})
     update_doc = {
         "version": version, "filename": safe_filename, "changelog": changelog,
@@ -252,8 +258,23 @@ async def upload_connector_update(request: Request, file: UploadFile = File(...)
         "uploaded_by": current_user.get("name", "admin")
     }
     await db.connector_updates.insert_one(update_doc)
-    public_path = Path("/app/frontend/public/86NocConnector.zip")
-    shutil.copy2(filepath, public_path)
+
+    # Copy ZIP to public downloads folder(s) so it can be downloaded via HTTPS
+    # Some environments (build-time minified React) don't keep /app/frontend/public,
+    # so we try multiple locations and ignore failures (non-fatal for the upload itself).
+    import logging
+    for dest in [
+        Path("/app/frontend/public/86NocConnector.zip"),
+        Path("/app/frontend/public/downloads") / safe_filename,
+        Path("/app/frontend/build/86NocConnector.zip"),
+        Path("/app/frontend/build/downloads") / safe_filename,
+    ]:
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(filepath, dest)
+        except Exception as e:
+            logging.warning(f"Public copy skipped for {dest}: {e}")
+
     return {
         "status": "ok", "version": version, "filename": safe_filename,
         "connectors_will_update": "I connettori si aggiorneranno automaticamente entro 6 ore"
