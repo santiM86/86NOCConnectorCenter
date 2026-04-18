@@ -294,3 +294,14 @@ credentials.json
 *.pem
 *.key
 .credentials
+frontend/node_modules/.cache/default-development/27.pack
+-e 
+# Environment and credential files
+.env
+.env.*
+*.env
+credentials.json
+*.pem
+*.key
+.credentials
+frontend/node_modules/.cache/default-development/28.pack

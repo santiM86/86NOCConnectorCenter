@@ -4,9 +4,9 @@ import { toast } from "sonner";
 
 const API = process.env.REACT_APP_BACKEND_URL;
 
-export default function DiscoveryPage() {
+export default function DiscoveryPage({ scopedClientId = null, scopedClientName = "" }) {
   const [clients, setClients] = useState([]);
-  const [selectedClient, setSelectedClient] = useState("");
+  const [selectedClient, setSelectedClient] = useState(scopedClientId || "");
   const [subnet, setSubnet] = useState("");
   const [results, setResults] = useState(null);
   const [status, setStatus] = useState("none");
@@ -15,12 +15,16 @@ export default function DiscoveryPage() {
   const headers = { Authorization: `Bearer ${token}` };
 
   useEffect(() => {
+    if (scopedClientId) {
+      setSelectedClient(scopedClientId);
+      return;
+    }
     axios.get(`${API}/api/clients`, { headers }).then(r => {
       const cl = Array.isArray(r.data) ? r.data : r.data.clients || [];
       setClients(cl);
       if (cl.length > 0) setSelectedClient(cl[0].id);
     }).catch(() => {});
-  }, []);
+  }, [scopedClientId]);
 
   const fetchResults = useCallback(() => {
     if (!selectedClient) return;
@@ -88,20 +92,24 @@ export default function DiscoveryPage() {
     <div className="space-y-6" data-testid="discovery-page">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-[var(--text-primary)]">Auto-Discovery Rete</h1>
-          <p className="text-sm text-[var(--text-secondary)]">Scansiona la rete per trovare nuovi dispositivi</p>
+          {!scopedClientId && <h1 className="text-2xl font-bold text-[var(--text-primary)]">Auto-Discovery Rete</h1>}
+          <p className="text-sm text-[var(--text-secondary)]">
+            {scopedClientId ? `Scansiona la rete di ${scopedClientName} per trovare nuovi dispositivi` : "Scansiona la rete per trovare nuovi dispositivi"}
+          </p>
         </div>
         <div className="flex items-center gap-2">
-          <select value={selectedClient} onChange={e => setSelectedClient(e.target.value)}
-            className="h-8 px-3 text-xs rounded-md border border-[var(--bg-border)] bg-[var(--bg-card)] text-[var(--text-primary)]"
-            data-testid="discovery-client-select">
-            {clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-          </select>
+          {!scopedClientId && (
+            <select value={selectedClient} onChange={e => setSelectedClient(e.target.value)}
+              className="h-8 px-3 text-xs rounded-md border border-[var(--bg-border)] bg-[var(--bg-card)] text-[var(--text-primary)]"
+              data-testid="discovery-client-select">
+              {clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          )}
           <input type="text" value={subnet} onChange={e => setSubnet(e.target.value)}
             placeholder="Subnet (es. 192.168.1.0/24)"
             className="h-8 px-3 text-xs rounded-md border border-[var(--bg-border)] bg-[var(--bg-card)] text-[var(--text-primary)] w-52"
             data-testid="discovery-subnet-input" />
-          <button onClick={startScan} disabled={scanning}
+          <button onClick={startScan} disabled={scanning || !selectedClient}
             className="h-8 px-4 text-xs font-semibold rounded-md bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
             data-testid="discovery-scan-btn">
             {scanning ? "Scansione in corso..." : "Avvia Discovery"}

@@ -237,3 +237,54 @@ async def delete_device(device_id: str, current_user: dict = Depends(get_current
         resource_type="device", resource_id=device_id
     )
     return {"message": "Device deleted"}
+
+
+
+@router.get("/clients/{client_id}/ilo-health")
+async def get_client_ilo_health(client_id: str, current_user: dict = Depends(get_current_user)):
+    """Return Redfish/iLO hardware telemetry for all iLO servers of a client."""
+    # Fetch poll_status docs that contain actual Redfish data (not null/empty)
+    docs = await db.device_poll_status.find(
+        {
+            "client_id": client_id,
+            "$or": [
+                {"device_class": "hpe-ilo"},
+                {"redfish.server_model": {"$nin": [None, ""]}},
+                {"redfish.bios_version": {"$nin": [None, ""]}},
+                {"monitor_type": "redfish_direct"},
+            ],
+        },
+        {"_id": 0}
+    ).to_list(100)
+    # Resolve managed_device names for display
+    managed = await db.managed_devices.find(
+        {"client_id": client_id}, {"_id": 0, "ip": 1, "name": 1}
+    ).to_list(200)
+    name_map = {m["ip"]: m.get("name") for m in managed}
+    result = []
+    for d in docs:
+        ip = d.get("device_ip")
+        rf = d.get("redfish", {}) or {}
+        hw = d.get("hardware", {}) or {}
+        result.append({
+            "device_ip": ip,
+            "device_name": name_map.get(ip) or d.get("device_name") or ip,
+            "polling_mode": d.get("monitor_type", "unknown"),
+            "last_poll": d.get("last_poll"),
+            "reachable": d.get("reachable", False),
+            "server_model": rf.get("server_model"),
+            "serial_number": rf.get("serial_number"),
+            "bios_version": rf.get("bios_version"),
+            "ilo_firmware": rf.get("ilo_firmware"),
+            "ilo_license": rf.get("ilo_license"),
+            "power_watts": rf.get("power_watts"),
+            "total_memory_gb": rf.get("total_memory_gb"),
+            "memory_dimms": rf.get("memory_dimms", []),
+            "network_adapters": rf.get("network_adapters", []),
+            "storage_controllers": rf.get("storage_controllers", []),
+            "health_status": hw.get("health_status"),
+            "temperatures": hw.get("temperatures", []),
+            "fans": hw.get("fans", []),
+            "power_supplies": hw.get("power_supplies", []),
+        })
+    return result

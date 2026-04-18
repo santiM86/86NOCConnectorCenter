@@ -7,7 +7,7 @@ import {
   ArrowLeft, HardDrives, Globe, Printer, Database, ShieldCheck,
   Lightning, WifiHigh, WifiSlash, PlugsConnected, CaretDown,
   CheckCircle, Warning, ArrowClockwise, Bell, ChartLine, Monitor,
-  Plus, Trash, Lock,
+  Plus, Trash, Lock, MagnifyingGlass,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -15,6 +15,8 @@ import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import VaultPage from "./VaultPage";
+import DiscoveryPage from "./DiscoveryPage";
+import VulnerabilityPage from "./VulnerabilityPage";
 
 const STATUS_COLOR = { online: "#34C759", offline: "#FF3B30", active: "#FFCC00", degraded: "#FF9500", unknown: "#555" };
 
@@ -28,6 +30,7 @@ export default function ClientOverviewPage() {
   const [printers, setPrinters] = useState([]);
   const [backups, setBackups] = useState([]);
   const [connector, setConnector] = useState(null);
+  const [iloHealth, setIloHealth] = useState([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState("overview");
 
@@ -64,6 +67,10 @@ export default function ClientOverviewPage() {
       const bkpRes = await axios.get(`${API}/backup/status?client_id=${clientId}`);
       setBackups(bkpRes.data || []);
     } catch {}
+    try {
+      const iloRes = await axios.get(`${API}/clients/${clientId}/ilo-health`);
+      setIloHealth(iloRes.data || []);
+    } catch {}
     setLoading(false);
   }, [clientId]);
 
@@ -77,7 +84,14 @@ export default function ClientOverviewPage() {
   const criticalAlerts = alerts.filter(a => a.severity === "critical").length;
   const firewalls = devices.filter(d => ["firewall", "zyxel-usg"].includes(d.device_type));
   const switches = devices.filter(d => d.device_type === "switch");
-  const servers = devices.filter(d => ["server", "ilo", "generic"].includes(d.device_type));
+  const servers = devices.filter(d => ["server", "ilo"].includes(d.device_type));
+  const upsList = devices.filter(d => d.device_type === "ups");
+  const nasList = devices.filter(d => ["nas", "storage"].includes(d.device_type));
+  const apList = devices.filter(d => ["ap", "access-point"].includes(d.device_type));
+  const tvccList = devices.filter(d => ["tvcc", "camera", "nvr", "dvr"].includes(d.device_type));
+  const printersList = devices.filter(d => d.device_type === "printer");
+  const knownTypes = new Set(["firewall", "zyxel-usg", "switch", "server", "ilo", "ups", "nas", "storage", "ap", "access-point", "tvcc", "camera", "nvr", "dvr", "printer"]);
+  const others = devices.filter(d => !knownTypes.has(d.device_type));
 
   const tabs = [
     { id: "overview", label: "Panoramica", icon: Monitor },
@@ -86,6 +100,8 @@ export default function ClientOverviewPage() {
     { id: "alerts", label: `Alert (${alerts.length})`, icon: Bell },
     { id: "printers", label: `Stampanti (${printers.length})`, icon: Printer },
     { id: "backup", label: `Backup (${backups.length})`, icon: Database },
+    { id: "discovery", label: "Auto-Discovery", icon: MagnifyingGlass },
+    { id: "vulnerability", label: "Vulnerability", icon: ShieldCheck },
     { id: "credentials", label: "Credenziali", icon: Lock },
   ];
 
@@ -129,22 +145,28 @@ export default function ClientOverviewPage() {
 
       {/* Tab Content */}
       <div className="min-h-[400px]">
-        {activeTab === "overview" && <OverviewTab devices={devices} wanTargets={wanTargets} alerts={alerts} connector={connector} printers={printers} backups={backups} firewalls={firewalls} switches={switches} servers={servers} />}
+        {activeTab === "overview" && <OverviewTab devices={devices} wanTargets={wanTargets} alerts={alerts} connector={connector} printers={printers} backups={backups} firewalls={firewalls} switches={switches} servers={servers} upsList={upsList} nasList={nasList} apList={apList} tvccList={tvccList} printersList={printersList} others={others} iloHealth={iloHealth} />}
         {activeTab === "devices" && <DevicesTab devices={devices} clientId={clientId} onRefresh={fetchAll} />}
-        {activeTab === "wan" && <WanTab targets={wanTargets} />}
+        {activeTab === "wan" && <WanTab targets={wanTargets} clientId={clientId} clientName={client.name} onRefresh={fetchAll} />}
         {activeTab === "alerts" && <AlertsTab alerts={alerts} navigate={navigate} />}
         {activeTab === "printers" && <PrintersTab printers={printers} />}
         {activeTab === "backup" && <BackupTab backups={backups} />}
         {activeTab === "credentials" && <VaultPage scopedClientId={clientId} scopedClientName={client.name} />}
+        {activeTab === "discovery" && <DiscoveryPage scopedClientId={clientId} scopedClientName={client.name} />}
+        {activeTab === "vulnerability" && <VulnerabilityPage scopedClientId={clientId} scopedClientName={client.name} />}
       </div>
     </div>
   );
 }
 
 /* ==================== OVERVIEW TAB ==================== */
-function OverviewTab({ devices, wanTargets, alerts, connector, printers, backups, firewalls, switches, servers }) {
+function OverviewTab({ devices, wanTargets, alerts, connector, printers, backups, firewalls, switches, servers, upsList, nasList, apList, tvccList, printersList, others, iloHealth }) {
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+    <div className="space-y-4">
+      {/* iLO Hardware Health Panel (only shown when we have iLO data) */}
+      {iloHealth && iloHealth.length > 0 && <IloHealthPanel iloHealth={iloHealth} />}
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
       {/* Network Map */}
       <div className="noc-panel p-4">
         <h3 className="text-[9px] font-bold uppercase tracking-[0.15em] text-indigo-400 mb-3">Infrastruttura di Rete</h3>
@@ -177,8 +199,20 @@ function OverviewTab({ devices, wanTargets, alerts, connector, printers, backups
           {firewalls.length > 0 && <DeviceGroup label="Firewall" icon={ShieldCheck} devices={firewalls} color="#FF3B30" />}
           {/* Switches */}
           {switches.length > 0 && <DeviceGroup label="Switch" icon={HardDrives} devices={switches} color="#6366F1" />}
-          {/* Servers */}
-          {servers.length > 0 && <DeviceGroup label="Server / Altro" icon={Monitor} devices={servers} color="#06B6D4" />}
+          {/* Servers / iLO */}
+          {servers.length > 0 && <DeviceGroup label="Server / iLO" icon={Monitor} devices={servers} color="#06B6D4" />}
+          {/* NAS / Storage */}
+          {nasList.length > 0 && <DeviceGroup label="NAS / Storage" icon={Database} devices={nasList} color="#14B8A6" />}
+          {/* UPS */}
+          {upsList.length > 0 && <DeviceGroup label="UPS" icon={Lightning} devices={upsList} color="#EAB308" />}
+          {/* Access Point */}
+          {apList.length > 0 && <DeviceGroup label="Access Point / WiFi" icon={WifiHigh} devices={apList} color="#8B5CF6" />}
+          {/* TVCC */}
+          {tvccList.length > 0 && <DeviceGroup label="TVCC / Videosorveglianza" icon={Monitor} devices={tvccList} color="#F97316" />}
+          {/* Printers */}
+          {printersList.length > 0 && <DeviceGroup label="Stampanti" icon={Printer} devices={printersList} color="#EC4899" />}
+          {/* Others / Generic */}
+          {others.length > 0 && <DeviceGroup label="Altri Dispositivi" icon={HardDrives} devices={others} color="#64748B" />}
         </div>
       </div>
 
@@ -237,6 +271,100 @@ function OverviewTab({ devices, wanTargets, alerts, connector, printers, backups
           </div>
         )}
       </div>
+      </div>
+    </div>
+  );
+}
+
+/* ==================== ILO HEALTH PANEL ==================== */
+function IloHealthPanel({ iloHealth }) {
+  const healthColor = (h) => ({ ok: "#34C759", warning: "#FFCC00", critical: "#FF3B30" }[(h || "").toLowerCase()] || "#64748B");
+  return (
+    <div className="noc-panel p-4" data-testid="ilo-health-panel">
+      <div className="flex items-center gap-2 mb-3">
+        <Monitor size={14} weight="bold" className="text-cyan-400" />
+        <h3 className="text-[10px] font-bold uppercase tracking-[0.15em] text-cyan-400">Hardware iLO (Redfish) — {iloHealth.length} server</h3>
+      </div>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+        {iloHealth.map((s, idx) => {
+          const hc = healthColor(s.health_status);
+          const mainTemp = s.temperatures?.[0];
+          const okPsus = (s.power_supplies || []).filter(p => p.health === "ok" || p.condition === "ok").length;
+          const totPsus = (s.power_supplies || []).length;
+          const okFans = (s.fans || []).filter(f => f.condition === "ok").length;
+          const totFans = (s.fans || []).length;
+          return (
+            <div key={idx} className="rounded-lg border p-3" style={{ borderColor: `${hc}30`, background: `${hc}04` }}>
+              <div className="flex items-center justify-between mb-2">
+                <div>
+                  <p className="text-sm font-bold text-[var(--text-primary)]">{s.device_name}</p>
+                  <p className="text-[10px] text-[var(--text-muted)] font-mono">{s.device_ip} — {s.server_model || "?"}</p>
+                </div>
+                <span className="text-[9px] px-2 py-1 rounded font-bold uppercase" style={{ color: hc, background: `${hc}18` }}>
+                  {s.health_status || "?"}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-4 gap-2 mb-3">
+                <MiniMetric label="Alimentazione" value={s.power_watts ? `${s.power_watts}W` : "—"} color="#F59E0B" />
+                <MiniMetric label="Temperatura" value={mainTemp ? `${mainTemp.value}°C` : "—"} sub={mainTemp?.locale?.substring(0, 10)} color={mainTemp?.value > 75 ? "#FF3B30" : "#34C759"} />
+                <MiniMetric label="RAM Totale" value={s.total_memory_gb ? `${s.total_memory_gb}GB` : "—"} color="#8B5CF6" />
+                <MiniMetric label="Ventole" value={totFans > 0 ? `${okFans}/${totFans}` : "—"} color={okFans === totFans ? "#34C759" : "#FF3B30"} />
+              </div>
+
+              <div className="grid grid-cols-2 gap-2 text-[9px]">
+                <div className="p-1.5 rounded bg-[var(--bg-panel)] border border-[var(--bg-border)]">
+                  <span className="text-[var(--text-muted)] uppercase">BIOS</span>{" "}
+                  <span className="text-[var(--text-primary)] font-mono">{s.bios_version || "?"}</span>
+                </div>
+                <div className="p-1.5 rounded bg-[var(--bg-panel)] border border-[var(--bg-border)]">
+                  <span className="text-[var(--text-muted)] uppercase">iLO FW</span>{" "}
+                  <span className="text-[var(--text-primary)] font-mono">{s.ilo_firmware || "?"}</span>
+                </div>
+                <div className="p-1.5 rounded bg-[var(--bg-panel)] border border-[var(--bg-border)]">
+                  <span className="text-[var(--text-muted)] uppercase">S/N</span>{" "}
+                  <span className="text-[var(--text-primary)] font-mono">{s.serial_number || "?"}</span>
+                </div>
+                <div className="p-1.5 rounded bg-[var(--bg-panel)] border border-[var(--bg-border)]">
+                  <span className="text-[var(--text-muted)] uppercase">PSU</span>{" "}
+                  <span className="text-[var(--text-primary)] font-mono">{totPsus > 0 ? `${okPsus}/${totPsus}` : "—"}</span>
+                </div>
+                <div className="p-1.5 rounded bg-[var(--bg-panel)] border border-[var(--bg-border)] col-span-2">
+                  <span className="text-[var(--text-muted)] uppercase">Modalità</span>{" "}
+                  <span className="text-[var(--text-primary)] font-mono uppercase">{s.polling_mode?.replace("_", " ") || "?"}</span>
+                  {s.last_poll && <span className="ml-2 text-[var(--text-muted)]">· {new Date(s.last_poll).toLocaleString("it-IT", { hour: "2-digit", minute: "2-digit", day: "2-digit", month: "short" })}</span>}
+                </div>
+              </div>
+
+              {s.storage_controllers?.length > 0 && (
+                <div className="mt-2 p-2 rounded bg-[var(--bg-panel)] border border-[var(--bg-border)]">
+                  <p className="text-[9px] uppercase tracking-wider text-[var(--text-muted)] mb-1">Storage</p>
+                  {s.storage_controllers.flatMap((c, ci) => (c.drives || []).map((dr, di) => (
+                    <div key={`${ci}-${di}`} className="flex items-center gap-2 text-[10px]">
+                      <Database size={10} className="text-indigo-400" />
+                      <span className="font-mono text-[var(--text-muted)]">{dr.model || "?"}</span>
+                      <span className="text-[var(--text-primary)]">{dr.capacity_gb ? `${dr.capacity_gb}GB` : ""}</span>
+                      <span className="ml-auto text-[9px] px-1 rounded font-bold" style={{ color: dr.health === "ok" ? "#34C759" : "#FF3B30" }}>
+                        {dr.health?.toUpperCase() || "?"}
+                      </span>
+                    </div>
+                  )))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function MiniMetric({ label, value, sub, color }) {
+  return (
+    <div className="px-2 py-1.5 rounded bg-[var(--bg-panel)] border border-[var(--bg-border)] text-center">
+      <p className="text-[7px] uppercase tracking-widest text-[var(--text-muted)] mb-0.5 truncate">{label}</p>
+      <p className="text-[11px] font-bold" style={{ color: color || "var(--text-primary)" }}>{value}</p>
+      {sub && <p className="text-[7px] text-[var(--text-muted)] truncate">{sub}</p>}
     </div>
   );
 }
@@ -353,20 +481,35 @@ function DevicesTab({ devices, clientId, onRefresh }) {
       <div className="noc-panel overflow-hidden">
         <table className="alert-table" data-testid="client-devices-table">
           <thead>
-            <tr><th>Nome</th><th>Tipo</th><th>IP</th><th>SNMP</th><th>Community</th><th>Stato</th><th>Fonte</th><th>Ultimo Poll</th><th></th></tr>
+            <tr><th>Nome</th><th>Tipo</th><th>IP</th><th>Metodo</th><th>SNMP</th><th>Community</th><th>Stato</th><th>Fonte</th><th>Ultimo Poll</th><th></th></tr>
           </thead>
           <tbody>
             {devices.length === 0 ? (
-              <tr><td colSpan={9} className="text-center text-[var(--text-muted)] py-8 text-xs">Nessun dispositivo — clicca "Aggiungi Dispositivo" per iniziare</td></tr>
+              <tr><td colSpan={10} className="text-center text-[var(--text-muted)] py-8 text-xs">Nessun dispositivo — clicca "Aggiungi Dispositivo" per iniziare</td></tr>
             ) : devices.map((d, i) => {
               const sc = STATUS_COLOR[d.status] || "#555";
+              const monitorType = (d.monitor_type || "snmp").toLowerCase();
+              const methodBadge = {
+                snmp: { label: "SNMP", color: "text-purple-400", bg: "bg-purple-500/10 border-purple-500/20" },
+                ping: { label: "PING", color: "text-cyan-400", bg: "bg-cyan-500/10 border-cyan-500/20" },
+                http: { label: "HTTP", color: "text-amber-400", bg: "bg-amber-500/10 border-amber-500/20" },
+              }[monitorType] || { label: monitorType.toUpperCase(), color: "text-[var(--text-muted)]", bg: "bg-[var(--bg-hover)] border-[var(--bg-border)]" };
               return (
                 <tr key={i}>
                   <td className="text-[var(--text-primary)] text-xs font-medium">{d.name}</td>
                   <td><span className="text-[10px] px-1.5 py-0.5 rounded border border-[var(--bg-border)]">{d.device_type}</span></td>
                   <td className="font-mono text-[var(--text-muted)] text-xs">{d.ip_address}</td>
-                  <td className="text-[10px] text-[var(--text-muted)]">{d.snmp_version || d.monitor_type || "—"}</td>
-                  <td className="text-[10px] font-mono text-[var(--text-muted)]">{d.snmp_community || "—"}</td>
+                  <td>
+                    <span className={`text-[9px] px-1.5 py-0.5 rounded border font-bold ${methodBadge.bg} ${methodBadge.color}`}>
+                      {methodBadge.label}
+                    </span>
+                  </td>
+                  <td className="text-[10px] text-[var(--text-muted)]">
+                    {monitorType === "snmp" ? (d.snmp_version || "v2c") : "—"}
+                  </td>
+                  <td className="text-[10px] font-mono text-[var(--text-muted)]">
+                    {monitorType === "snmp" && d.snmp_version !== "v3" ? (d.snmp_community || "—") : "—"}
+                  </td>
                   <td>
                     <span className="inline-flex items-center gap-1 text-[10px] font-bold" style={{ color: sc }}>
                       {d.status === "online" || d.status === "active" ? <WifiHigh size={12} /> : <WifiSlash size={12} />}
@@ -548,11 +691,95 @@ function DevicesTab({ devices, clientId, onRefresh }) {
 }
 
 /* ==================== WAN TAB ==================== */
-function WanTab({ targets }) {
+function WanTab({ targets, clientId, clientName, onRefresh }) {
+  const [showAdd, setShowAdd] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState(null);
+  const emptyForm = {
+    label: "", device_type: "firewall", public_ip: "", gateway_ip: "",
+    check_ports: "443", check_ping: true,
+  };
+  const [form, setForm] = useState(emptyForm);
+
+  const testConnection = async () => {
+    if (!form.public_ip) { toast.error("Inserisci un IP pubblico"); return; }
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const ports = form.check_ports.split(",").map(p => parseInt(p.trim())).filter(p => !isNaN(p) && p > 0);
+      const res = await axios.post(`${API}/external-monitor/test-connection`, {
+        public_ip: form.public_ip,
+        gateway_ip: form.gateway_ip || null,
+        check_ports: ports,
+        check_ping: form.check_ping,
+      });
+      setTestResult(res.data);
+      if (res.data.reachable) toast.success("Dispositivo raggiungibile");
+      else toast.error("Dispositivo NON raggiungibile");
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Errore test");
+    } finally { setTesting(false); }
+  };
+
+  const handleSave = async () => {
+    if (!form.label || !form.public_ip) { toast.error("Label e IP pubblico obbligatori"); return; }
+    setSaving(true);
+    try {
+      const ports = form.check_ports.split(",").map(p => parseInt(p.trim())).filter(p => !isNaN(p) && p > 0);
+      await axios.post(`${API}/external-monitor/targets`, {
+        client_id: clientId,
+        label: form.label,
+        device_type: form.device_type,
+        public_ip: form.public_ip,
+        gateway_ip: form.gateway_ip || null,
+        check_ports: ports,
+        check_ping: form.check_ping,
+      });
+      toast.success(`Target WAN "${form.label}" aggiunto`);
+      setForm(emptyForm);
+      setTestResult(null);
+      setShowAdd(false);
+      onRefresh?.();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Errore");
+    } finally { setSaving(false); }
+  };
+
+  const handleDelete = async (t) => {
+    if (!window.confirm(`Eliminare il target "${t.label}" (${t.public_ip})?`)) return;
+    try {
+      await axios.delete(`${API}/external-monitor/targets/${t.id}`);
+      toast.success("Target eliminato");
+      onRefresh?.();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Errore");
+    }
+  };
+
   return (
     <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <p className="text-[10px] text-[var(--text-muted)]">
+          {targets.length === 0
+            ? "Nessun target WAN configurato — aggiungi firewall/router pubblici per monitorare la connettività esterna"
+            : `${targets.length} target WAN monitorati — Ping ICMP + TCP port check + Gateway ISP diagnostics`}
+        </p>
+        <Button
+          onClick={() => { setForm(emptyForm); setTestResult(null); setShowAdd(true); }}
+          className="bg-indigo-600 hover:bg-indigo-700 text-white h-8 text-xs gap-1"
+          data-testid="add-wan-target-btn"
+        >
+          <Plus size={14} weight="bold" /> Aggiungi Target WAN
+        </Button>
+      </div>
+
       {targets.length === 0 ? (
-        <div className="text-center py-8 text-[var(--text-muted)] text-xs">Nessun target WAN configurato per questo cliente</div>
+        <div className="text-center py-12 text-[var(--text-muted)] text-xs noc-panel">
+          <Globe size={28} className="mx-auto mb-2 opacity-30" />
+          <p>Nessun target WAN configurato per {clientName}</p>
+          <p className="text-[9px] mt-1">Clicca "Aggiungi Target WAN" per iniziare il monitoraggio</p>
+        </div>
       ) : targets.map(t => {
         const r = t.result;
         const sc = STATUS_COLOR[r?.status] || "#555";
@@ -560,11 +787,14 @@ function WanTab({ targets }) {
           <div key={t.id} className="noc-panel p-4">
             <div className="flex items-center gap-3 mb-3">
               {t.device_type === "firewall" ? <ShieldCheck size={16} weight="bold" style={{ color: sc }} /> : <HardDrives size={16} weight="bold" style={{ color: sc }} />}
-              <div>
+              <div className="flex-1">
                 <span className="text-sm font-bold text-[var(--text-primary)]">{t.label}</span>
                 <span className="ml-2 text-[8px] px-1.5 py-0.5 rounded font-bold uppercase" style={{ color: sc, background: `${sc}15` }}>{r?.status?.toUpperCase() || "PENDING"}</span>
               </div>
-              <span className="ml-auto font-mono text-[var(--text-muted)] text-xs">{t.public_ip}</span>
+              <span className="font-mono text-[var(--text-muted)] text-xs">{t.public_ip}</span>
+              <button onClick={() => handleDelete(t)} className="p-1 rounded hover:bg-[var(--critical-bg)] text-[var(--critical)] transition-colors" title="Rimuovi">
+                <Trash size={13} />
+              </button>
             </div>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               <MetricBox label="Ping ICMP" value={r?.ping?.reachable ? "OK" : "FAIL"} sub={r?.ping?.latency_ms != null ? `${r.ping.latency_ms}ms` : null} color={r?.ping?.reachable ? "#34C759" : "#FF3B30"} />
@@ -584,6 +814,93 @@ function WanTab({ targets }) {
           </div>
         );
       })}
+
+      {/* Add WAN Target Dialog */}
+      <Dialog open={showAdd} onOpenChange={setShowAdd}>
+        <DialogContent className="bg-[var(--bg-card)] border-[var(--bg-border)] max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="text-[var(--text-primary)] flex items-center gap-2">
+              <Globe size={18} className="text-indigo-400" /> Aggiungi Target WAN per {clientName}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-[var(--text-muted)] text-[10px]">Label *</Label>
+                <Input value={form.label} onChange={e => setForm({ ...form, label: e.target.value })} placeholder="Firewall Sede Principale" className="bg-[var(--bg-panel)] border-[var(--bg-border)] text-[var(--text-primary)] h-8 text-xs" data-testid="wan-label-input" />
+              </div>
+              <div>
+                <Label className="text-[var(--text-muted)] text-[10px]">Tipo Dispositivo</Label>
+                <Select value={form.device_type} onValueChange={v => setForm({ ...form, device_type: v })}>
+                  <SelectTrigger className="bg-[var(--bg-panel)] border-[var(--bg-border)] text-[var(--text-primary)] h-8 text-xs"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="firewall">Firewall</SelectItem>
+                    <SelectItem value="router">Router</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-[var(--text-muted)] text-[10px]">IP Pubblico *</Label>
+                <Input value={form.public_ip} onChange={e => setForm({ ...form, public_ip: e.target.value })} placeholder="82.121.33.10" className="bg-[var(--bg-panel)] border-[var(--bg-border)] text-[var(--text-primary)] h-8 text-xs font-mono" data-testid="wan-public-ip-input" />
+              </div>
+              <div>
+                <Label className="text-[var(--text-muted)] text-[10px]">IP Gateway ISP (opzionale)</Label>
+                <Input value={form.gateway_ip} onChange={e => setForm({ ...form, gateway_ip: e.target.value })} placeholder="82.121.33.1" className="bg-[var(--bg-panel)] border-[var(--bg-border)] text-[var(--text-primary)] h-8 text-xs font-mono" />
+              </div>
+            </div>
+            <div>
+              <Label className="text-[var(--text-muted)] text-[10px]">Porte TCP da controllare (separate da virgola)</Label>
+              <Input value={form.check_ports} onChange={e => setForm({ ...form, check_ports: e.target.value })} placeholder="443, 80, 8443" className="bg-[var(--bg-panel)] border-[var(--bg-border)] text-[var(--text-primary)] h-8 text-xs font-mono" />
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                id="check_ping_wan"
+                checked={form.check_ping}
+                onChange={e => setForm({ ...form, check_ping: e.target.checked })}
+                className="rounded accent-indigo-500"
+              />
+              <Label htmlFor="check_ping_wan" className="text-[var(--text-primary)] text-[10px] cursor-pointer">
+                Abilita Ping ICMP (alcuni firewall bloccano ICMP)
+              </Label>
+            </div>
+
+            {testResult && (
+              <div className={`p-2 rounded text-[10px] ${testResult.reachable ? "bg-emerald-500/10 border border-emerald-500/20 text-emerald-400" : "bg-red-500/10 border border-red-500/20 text-red-400"}`}>
+                Test: {testResult.reachable ? "RAGGIUNGIBILE" : "NON RAGGIUNGIBILE"}
+                {testResult.ping?.latency_ms != null && ` | Ping: ${testResult.ping.latency_ms}ms`}
+                {testResult.ports?.length > 0 && (
+                  <div className="mt-1">Porte: {testResult.ports.map(p => `:${p.port}=${p.open ? "OPEN" : "CLOSED"}`).join(", ")}</div>
+                )}
+              </div>
+            )}
+
+            <div className="flex gap-2">
+              <Button
+                onClick={testConnection}
+                disabled={testing || !form.public_ip}
+                variant="outline"
+                className="flex-1 h-9 text-xs"
+                data-testid="wan-test-btn"
+              >
+                {testing ? <ArrowClockwise size={13} className="animate-spin mr-1" /> : <Lightning size={13} className="mr-1" />}
+                {testing ? "Test in corso..." : "Test Connessione"}
+              </Button>
+              <Button
+                onClick={handleSave}
+                disabled={saving}
+                className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white h-9 text-xs"
+                data-testid="save-wan-target-btn"
+              >
+                {saving ? <ArrowClockwise size={13} className="animate-spin mr-1" /> : <Plus size={13} className="mr-1" />}
+                {saving ? "Salvataggio..." : "Aggiungi Target"}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
