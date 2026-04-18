@@ -187,8 +187,8 @@ def build_alert_payload(alert: Dict[str, Any]) -> Dict[str, Any]:
 
 
 async def notify_new_alert(db, alert_doc: Dict[str, Any]) -> None:
-    """Fire-and-forget: notify all admins + operators about a new alert.
-    Respects per-severity notification rules if configured.
+    """Fire-and-forget: notify on-call operator(s) OR all admins+operators about a new alert.
+    Respects per-severity notification rules and on-call rotation if enabled.
     Errors are swallowed (logged) to avoid blocking alert ingestion."""
     try:
         if not is_configured():
@@ -206,6 +206,20 @@ async def notify_new_alert(db, alert_doc: Dict[str, Any]) -> None:
             return
 
         payload = build_alert_payload(alert_doc)
+
+        # On-call rotation: if a schedule is active, only notify those users
+        try:
+            import oncall as _oncall
+            oncall_user_ids = await _oncall.get_on_call_user_ids(db)
+        except Exception:
+            oncall_user_ids = []
+
+        if oncall_user_ids:
+            for uid in oncall_user_ids:
+                await send_to_user(db, uid, payload)
+            return
+
+        # Fallback: all admins + operators
         await send_to_roles(db, ["admin", "operator"], payload)
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"[webpush] notify_new_alert failed: {exc}")

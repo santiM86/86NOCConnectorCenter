@@ -39,6 +39,7 @@ import BandwidthPage from "@/pages/BandwidthPage";
 import BackupPage from "@/pages/BackupPage";
 import ClientPortalPage from "@/pages/ClientPortalPage";
 import ClientOverviewPage from "@/pages/ClientOverviewPage";
+import OnCallPage from "@/pages/OnCallPage";
 import SecurityDashboardPage from "@/pages/SecurityDashboardPage";
 import ExternalMonitorPage from "@/pages/ExternalMonitorPage";
 import Layout from "@/components/Layout";
@@ -203,6 +204,7 @@ function App() {
               <Route path="network-status" element={<ClientStatusPage />} />
               <Route path="users" element={<UsersPage />} />
               <Route path="settings" element={<SettingsPage />} />
+              <Route path="oncall" element={<OnCallPage />} />
               <Route path="vault" element={<VaultPage />} />
               <Route path="reports" element={<ReportsPage />} />
               <Route path="inventory" element={<InventoryPage />} />
