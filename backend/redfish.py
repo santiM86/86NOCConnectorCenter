@@ -201,18 +201,38 @@ class RedfishPoller:
                     health = sys_data.get("Status", {}).get("Health", "Unknown")
                     result["health_status"] = health.lower() if health else "unknown"
 
-                # 2. Power
-                power_data = await self._get(client, f"{base_url}/redfish/v1/Chassis/1/Power/", auth)
+                # 2. Power (try multiple URIs as HP/HPE changes them across iLO versions)
+                power_data = None
+                for power_uri in [
+                    f"{base_url}/redfish/v1/Chassis/1/Power/",
+                    f"{base_url}/redfish/v1/Chassis/1/Power",
+                    f"{base_url}/redfish/v1/Chassis/Self/Power/",
+                ]:
+                    power_data = await self._get(client, power_uri, auth)
+                    if power_data:
+                        break
                 if power_data and power_data.get("PowerControl"):
-                    pc = power_data["PowerControl"][0] if power_data["PowerControl"] else {}
-                    result["power_watts"] = pc.get("PowerConsumedWatts")
+                    pc_list = power_data.get("PowerControl", [])
+                    pc = pc_list[0] if pc_list else {}
+                    # HP iLO sometimes uses PowerConsumedWatts, sometimes PowerMetrics.AverageConsumedWatts
+                    result["power_watts"] = (
+                        pc.get("PowerConsumedWatts")
+                        or (pc.get("PowerMetrics") or {}).get("AverageConsumedWatts")
+                        or pc.get("PowerRequestedWatts")
+                    )
                     # Power supplies
                     for ps in power_data.get("PowerSupplies", []):
                         result["power_supplies"].append({
-                            "name": ps.get("Name", "PSU"),
-                            "condition": (ps.get("Status", {}).get("Health", "OK")).lower(),
-                            "watts": ps.get("PowerCapacityWatts"),
+                            "name": ps.get("Name") or ps.get("Model") or "PSU",
+                            "condition": (ps.get("Status", {}).get("Health") or "Unknown").lower(),
+                            "state": (ps.get("Status", {}).get("State") or "Unknown"),
+                            "watts": ps.get("PowerCapacityWatts") or ps.get("PowerOutputWatts"),
+                            "model": ps.get("Model"),
+                            "firmware": ps.get("FirmwareVersion"),
+                            "serial": ps.get("SerialNumber"),
                         })
+                else:
+                    logger.warning(f"Redfish {device_ip}: PowerControl not found at any URI")
 
                 # 3. Thermal
                 thermal = await self._get(client, f"{base_url}/redfish/v1/Chassis/1/Thermal/", auth)
@@ -231,14 +251,28 @@ class RedfishPoller:
                             "condition": (f.get("Status", {}).get("Health", "OK")).lower(),
                         })
 
-                # 4. iLO Manager info
-                mgr = await self._get(client, f"{base_url}/redfish/v1/Managers/1/", auth)
+                # 4. iLO Manager info (try multiple URIs)
+                mgr = None
+                for mgr_uri in [
+                    f"{base_url}/redfish/v1/Managers/1/",
+                    f"{base_url}/redfish/v1/Managers/1",
+                    f"{base_url}/redfish/v1/Managers/Self/",
+                ]:
+                    mgr = await self._get(client, mgr_uri, auth)
+                    if mgr:
+                        break
                 if mgr:
-                    result["ilo_firmware"] = mgr.get("FirmwareVersion")
+                    result["ilo_firmware"] = (
+                        mgr.get("FirmwareVersion")
+                        or mgr.get("firmwareVersion")
+                        or (mgr.get("Oem", {}).get("Hpe") or mgr.get("Oem", {}).get("Hp") or {}).get("FirmwareVersion")
+                    )
                     oem = mgr.get("Oem", {})
                     hpe = oem.get("Hpe") or oem.get("Hp") or {}
-                    lic = hpe.get("License", {})
-                    result["ilo_license"] = lic.get("LicenseString")
+                    lic = hpe.get("License", {}) or {}
+                    result["ilo_license"] = lic.get("LicenseString") or lic.get("LicenseType") or lic.get("Name")
+                else:
+                    logger.warning(f"Redfish {device_ip}: Manager info not found")
 
                 # 5. Memory DIMMs
                 mem_col = await self._get(client, f"{base_url}/redfish/v1/Systems/1/Memory/", auth)
@@ -268,32 +302,67 @@ class RedfishPoller:
                                 "ipv4": (nic.get("IPv4Addresses", [{}])[0].get("Address") if nic.get("IPv4Addresses") else None),
                             })
 
-                # 7. Storage
-                storage = await self._get(client, f"{base_url}/redfish/v1/Systems/1/SmartStorage/ArrayControllers/", auth)
-                if not storage:
-                    storage = await self._get(client, f"{base_url}/redfish/v1/Systems/1/Storage/", auth)
-                if storage and storage.get("Members"):
+                # 7. Storage (SmartStorage + Storage DMTF + physical drives)
+                storage_uris = [
+                    f"{base_url}/redfish/v1/Systems/1/SmartStorage/ArrayControllers/",
+                    f"{base_url}/redfish/v1/Systems/1/Storage/",
+                    f"{base_url}/redfish/v1/Chassis/1/Storage/",
+                ]
+                for st_uri in storage_uris:
+                    storage = await self._get(client, st_uri, auth)
+                    if not (storage and storage.get("Members")):
+                        continue
                     for ref in storage["Members"][:8]:
                         ctrl = await self._get(client, f"{base_url}{ref['@odata.id']}", auth)
-                        if ctrl:
-                            ctrl_info = {
-                                "name": ctrl.get("Model") or ctrl.get("Name", "Controller"),
-                                "status": (ctrl.get("Status", {}).get("Health") or "OK"),
-                                "logical_drives": [],
-                            }
-                            ld_path = ref['@odata.id'].rstrip('/') + "/LogicalDrives/"
+                        if not ctrl:
+                            continue
+                        ctrl_info = {
+                            "name": ctrl.get("Model") or ctrl.get("Name") or "Controller",
+                            "firmware": (ctrl.get("FirmwareVersion") or {}).get("Current", {}).get("VersionString") if isinstance(ctrl.get("FirmwareVersion"), dict) else ctrl.get("FirmwareVersion"),
+                            "status": (ctrl.get("Status", {}).get("Health") or "OK"),
+                            "health": (ctrl.get("Status", {}).get("Health") or "OK").lower(),
+                            "logical_drives": [],
+                            "drives": [],
+                        }
+                        # Logical drives (HP SmartStorage)
+                        for ld_sub in ["LogicalDrives/", "Volumes/"]:
+                            ld_path = ref['@odata.id'].rstrip('/') + '/' + ld_sub
                             lds = await self._get(client, f"{base_url}{ld_path}", auth)
                             if lds and lds.get("Members"):
                                 for ldref in lds["Members"]:
                                     ld = await self._get(client, f"{base_url}{ldref['@odata.id']}", auth)
                                     if ld:
+                                        cap_mib = ld.get("CapacityMiB")
+                                        cap_bytes = ld.get("CapacityBytes")
+                                        cap_gb = round(cap_mib / 1024, 1) if cap_mib else (round(cap_bytes / (1024**3), 1) if cap_bytes else None)
                                         ctrl_info["logical_drives"].append({
-                                            "name": ld.get("LogicalDriveName", "LUN"),
-                                            "capacity_gb": round(ld.get("CapacityMiB", 0) / 1024, 1) if ld.get("CapacityMiB") else None,
-                                            "raid": ld.get("Raid"),
+                                            "name": ld.get("LogicalDriveName") or ld.get("Name") or "LUN",
+                                            "capacity_gb": cap_gb,
+                                            "raid": ld.get("Raid") or ld.get("RAIDType"),
                                             "status": (ld.get("Status", {}).get("Health") or "OK"),
                                         })
-                            result["storage_controllers"].append(ctrl_info)
+                        # Physical drives
+                        for dr_sub in ["DiskDrives/", "Drives/"]:
+                            dr_path = ref['@odata.id'].rstrip('/') + '/' + dr_sub
+                            drives = await self._get(client, f"{base_url}{dr_path}", auth)
+                            if drives and drives.get("Members"):
+                                for drref in drives["Members"][:32]:
+                                    dr = await self._get(client, f"{base_url}{drref['@odata.id']}", auth)
+                                    if not dr:
+                                        continue
+                                    cap_gb = dr.get("CapacityGB") or (round(dr.get("CapacityBytes", 0) / (1024**3), 1) if dr.get("CapacityBytes") else None) or (round(dr.get("CapacityMiB", 0) / 1024, 1) if dr.get("CapacityMiB") else None)
+                                    ctrl_info["drives"].append({
+                                        "slot": dr.get("Location") or dr.get("PhysicalLocation", {}).get("PartLocation", {}).get("LocationOrdinalValue") or dr.get("Id"),
+                                        "model": dr.get("Model"),
+                                        "serial": dr.get("SerialNumber"),
+                                        "capacity_gb": cap_gb,
+                                        "media_type": dr.get("MediaType"),
+                                        "interface_type": dr.get("InterfaceType") or dr.get("Protocol"),
+                                        "health": (dr.get("Status", {}).get("Health") or "ok").lower(),
+                                        "state": dr.get("Status", {}).get("State"),
+                                        "failure_predicted": dr.get("FailurePredicted", False),
+                                    })
+                        result["storage_controllers"].append(ctrl_info)
 
         except httpx.TimeoutException:
             logger.warning(f"Timeout polling {device_ip}")

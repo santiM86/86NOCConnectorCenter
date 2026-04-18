@@ -285,75 +285,226 @@ function IloHealthPanel({ iloHealth }) {
         <Monitor size={14} weight="bold" className="text-cyan-400" />
         <h3 className="text-[10px] font-bold uppercase tracking-[0.15em] text-cyan-400">Hardware iLO (Redfish) — {iloHealth.length} server</h3>
       </div>
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-        {iloHealth.map((s, idx) => {
-          const hc = healthColor(s.health_status);
-          const mainTemp = s.temperatures?.[0];
-          const okPsus = (s.power_supplies || []).filter(p => p.health === "ok" || p.condition === "ok").length;
-          const totPsus = (s.power_supplies || []).length;
-          const okFans = (s.fans || []).filter(f => f.condition === "ok").length;
-          const totFans = (s.fans || []).length;
-          return (
-            <div key={idx} className="rounded-lg border p-3" style={{ borderColor: `${hc}30`, background: `${hc}04` }}>
-              <div className="flex items-center justify-between mb-2">
-                <div>
-                  <p className="text-sm font-bold text-[var(--text-primary)]">{s.device_name}</p>
-                  <p className="text-[10px] text-[var(--text-muted)] font-mono">{s.device_ip} — {s.server_model || "?"}</p>
-                </div>
-                <span className="text-[9px] px-2 py-1 rounded font-bold uppercase" style={{ color: hc, background: `${hc}18` }}>
-                  {s.health_status || "?"}
-                </span>
-              </div>
+      <div className="space-y-3">
+        {iloHealth.map((s, idx) => <IloServerCard key={idx} s={s} healthColor={healthColor} />)}
+      </div>
+    </div>
+  );
+}
 
-              <div className="grid grid-cols-4 gap-2 mb-3">
-                <MiniMetric label="Alimentazione" value={s.power_watts ? `${s.power_watts}W` : "—"} color="#F59E0B" />
-                <MiniMetric label="Temperatura" value={mainTemp ? `${mainTemp.value}°C` : "—"} sub={mainTemp?.locale?.substring(0, 10)} color={mainTemp?.value > 75 ? "#FF3B30" : "#34C759"} />
-                <MiniMetric label="RAM Totale" value={s.total_memory_gb ? `${s.total_memory_gb}GB` : "—"} color="#8B5CF6" />
-                <MiniMetric label="Ventole" value={totFans > 0 ? `${okFans}/${totFans}` : "—"} color={okFans === totFans ? "#34C759" : "#FF3B30"} />
-              </div>
+function IloServerCard({ s, healthColor }) {
+  const [expanded, setExpanded] = useState(false);
+  const hc = healthColor(s.health_status);
 
-              <div className="grid grid-cols-2 gap-2 text-[9px]">
-                <div className="p-1.5 rounded bg-[var(--bg-panel)] border border-[var(--bg-border)]">
-                  <span className="text-[var(--text-muted)] uppercase">BIOS</span>{" "}
-                  <span className="text-[var(--text-primary)] font-mono">{s.bios_version || "?"}</span>
-                </div>
-                <div className="p-1.5 rounded bg-[var(--bg-panel)] border border-[var(--bg-border)]">
-                  <span className="text-[var(--text-muted)] uppercase">iLO FW</span>{" "}
-                  <span className="text-[var(--text-primary)] font-mono">{s.ilo_firmware || "?"}</span>
-                </div>
-                <div className="p-1.5 rounded bg-[var(--bg-panel)] border border-[var(--bg-border)]">
-                  <span className="text-[var(--text-muted)] uppercase">S/N</span>{" "}
-                  <span className="text-[var(--text-primary)] font-mono">{s.serial_number || "?"}</span>
-                </div>
-                <div className="p-1.5 rounded bg-[var(--bg-panel)] border border-[var(--bg-border)]">
-                  <span className="text-[var(--text-muted)] uppercase">PSU</span>{" "}
-                  <span className="text-[var(--text-primary)] font-mono">{totPsus > 0 ? `${okPsus}/${totPsus}` : "—"}</span>
-                </div>
-                <div className="p-1.5 rounded bg-[var(--bg-panel)] border border-[var(--bg-border)] col-span-2">
-                  <span className="text-[var(--text-muted)] uppercase">Modalità</span>{" "}
-                  <span className="text-[var(--text-primary)] font-mono uppercase">{s.polling_mode?.replace("_", " ") || "?"}</span>
-                  {s.last_poll && <span className="ml-2 text-[var(--text-muted)]">· {new Date(s.last_poll).toLocaleString("it-IT", { hour: "2-digit", minute: "2-digit", day: "2-digit", month: "short" })}</span>}
-                </div>
-              </div>
+  // Compute real telemetry (NOT just first sensor!)
+  const temps = (s.temperatures || []).filter(t => t.value != null && t.value > 0);
+  const maxTemp = temps.length ? temps.reduce((a, b) => a.value > b.value ? a : b) : null;
+  const critTemps = temps.filter(t => t.value > 75);
+  const warnTemps = temps.filter(t => t.value > 65 && t.value <= 75);
+  const tempColor = critTemps.length ? "#FF3B30" : warnTemps.length ? "#FFCC00" : "#34C759";
 
-              {s.storage_controllers?.length > 0 && (
-                <div className="mt-2 p-2 rounded bg-[var(--bg-panel)] border border-[var(--bg-border)]">
-                  <p className="text-[9px] uppercase tracking-wider text-[var(--text-muted)] mb-1">Storage</p>
-                  {s.storage_controllers.flatMap((c, ci) => (c.drives || []).map((dr, di) => (
-                    <div key={`${ci}-${di}`} className="flex items-center gap-2 text-[10px]">
-                      <Database size={10} className="text-indigo-400" />
-                      <span className="font-mono text-[var(--text-muted)]">{dr.model || "?"}</span>
-                      <span className="text-[var(--text-primary)]">{dr.capacity_gb ? `${dr.capacity_gb}GB` : ""}</span>
-                      <span className="ml-auto text-[9px] px-1 rounded font-bold" style={{ color: dr.health === "ok" ? "#34C759" : "#FF3B30" }}>
-                        {dr.health?.toUpperCase() || "?"}
-                      </span>
-                    </div>
-                  )))}
-                </div>
-              )}
-            </div>
-          );
-        })}
+  const fans = s.fans || [];
+  const okFans = fans.filter(f => (f.condition || "").toLowerCase() === "ok").length;
+  const fansColor = okFans === fans.length ? "#34C759" : "#FF3B30";
+
+  const psus = s.power_supplies || [];
+  const okPsus = psus.filter(p => ["ok"].includes((p.condition || p.health || "").toLowerCase())).length;
+  const psuColor = okPsus === psus.length && psus.length > 0 ? "#34C759" : psus.length === 0 ? "#64748B" : "#FF3B30";
+
+  const dimms = (s.memory_dimms || []).filter(d => (d.size_gb || d.capacity_mb) > 0);
+  const okDimms = dimms.filter(d => ["ok", ""].includes((d.health || d.status || "ok").toLowerCase())).length;
+
+  const drives = (s.storage_controllers || []).flatMap(c => c.drives || []);
+  const okDrives = drives.filter(d => ["ok"].includes((d.health || "").toLowerCase())).length;
+  const drivesColor = drives.length === 0 ? "#64748B" : okDrives === drives.length ? "#34C759" : "#FF3B30";
+
+  const nics = s.network_adapters || [];
+
+  return (
+    <div className="rounded-lg border" style={{ borderColor: `${hc}30`, background: `${hc}04` }}>
+      <div className="p-3">
+        <div className="flex items-center justify-between mb-3">
+          <div>
+            <p className="text-sm font-bold text-[var(--text-primary)]">{s.device_name}</p>
+            <p className="text-[10px] text-[var(--text-muted)] font-mono">
+              {s.device_ip} — {s.server_model || "?"} {s.serial_number ? `· S/N ${s.serial_number}` : ""}
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-[9px] px-2 py-1 rounded font-bold uppercase" style={{ color: hc, background: `${hc}18` }}>
+              {s.health_status || "?"}
+            </span>
+            <button
+              onClick={() => setExpanded(!expanded)}
+              className="text-[9px] px-2 py-1 rounded border border-[var(--bg-border)] text-[var(--text-muted)] hover:text-cyan-400 hover:border-cyan-500/30 transition-colors"
+            >
+              {expanded ? "Nascondi dettagli" : "Mostra dettagli"}
+            </button>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 md:grid-cols-6 gap-2 mb-3">
+          <MiniMetric
+            label="Alimentazione"
+            value={s.power_watts ? `${s.power_watts}W` : "N/D"}
+            color={s.power_watts ? "#F59E0B" : "#64748B"}
+          />
+          <MiniMetric
+            label={`Temp Max ${critTemps.length ? `(${critTemps.length} crit)` : warnTemps.length ? `(${warnTemps.length} warn)` : ""}`}
+            value={maxTemp ? `${maxTemp.value}°C` : "N/D"}
+            sub={maxTemp?.locale?.substring(0, 14)}
+            color={tempColor}
+          />
+          <MiniMetric
+            label={`Sensori`}
+            value={temps.length || "N/D"}
+            sub={`${critTemps.length + warnTemps.length} anom.`}
+            color={critTemps.length ? "#FF3B30" : warnTemps.length ? "#FFCC00" : "#34C759"}
+          />
+          <MiniMetric label="RAM" value={s.total_memory_gb ? `${s.total_memory_gb}GB` : "N/D"} sub={dimms.length ? `${okDimms}/${dimms.length} DIMM` : null} color="#8B5CF6" />
+          <MiniMetric label="Ventole" value={fans.length ? `${okFans}/${fans.length}` : "N/D"} color={fansColor} />
+          <MiniMetric label="PSU" value={psus.length ? `${okPsus}/${psus.length}` : "N/D"} color={psuColor} />
+        </div>
+
+        <div className="grid grid-cols-2 gap-2 text-[9px]">
+          <InfoBadge label="BIOS" value={s.bios_version} />
+          <InfoBadge label="iLO FW" value={s.ilo_firmware} />
+          <InfoBadge label="iLO License" value={s.ilo_license} />
+          <InfoBadge label="Storage" value={drives.length ? `${okDrives}/${drives.length} drive OK` : "Nessun controller"} color={drivesColor} />
+        </div>
+
+        <div className="mt-2 text-[9px] text-[var(--text-muted)] flex items-center gap-2">
+          <span>Modalità: <span className="font-mono uppercase text-[var(--text-primary)]">{s.polling_mode?.replace("_", " ") || "?"}</span></span>
+          {s.last_poll && <span>· {new Date(s.last_poll).toLocaleString("it-IT", { hour: "2-digit", minute: "2-digit", day: "2-digit", month: "short" })}</span>}
+        </div>
+      </div>
+
+      {expanded && (
+        <div className="border-t border-[var(--bg-border)] p-3 space-y-3 bg-[var(--bg-panel)]">
+          {/* Temperature sensors detail */}
+          {temps.length > 0 && (
+            <SensorTable
+              title={`Temperature — ${temps.length} sensori`}
+              headers={["Sensore", "Valore", "Stato"]}
+              rows={temps.sort((a, b) => b.value - a.value).map(t => {
+                const sev = t.value > 75 ? "critical" : t.value > 65 ? "warning" : "ok";
+                const color = sev === "critical" ? "#FF3B30" : sev === "warning" ? "#FFCC00" : "#34C759";
+                return [t.locale, `${t.value}°C`, { text: sev.toUpperCase(), color }];
+              })}
+            />
+          )}
+          {/* Fans detail */}
+          {fans.length > 0 && (
+            <SensorTable
+              title={`Ventole — ${fans.length}`}
+              headers={["Ventola", "RPM/%", "Stato"]}
+              rows={fans.map(f => [f.locale, f.speed != null ? String(f.speed) : "—", {
+                text: (f.condition || "?").toUpperCase(),
+                color: (f.condition || "").toLowerCase() === "ok" ? "#34C759" : "#FF3B30"
+              }])}
+            />
+          )}
+          {/* PSUs detail */}
+          {psus.length > 0 && (
+            <SensorTable
+              title={`Alimentatori — ${psus.length}`}
+              headers={["Nome", "Capacità", "Stato"]}
+              rows={psus.map(p => [p.name || "PSU", p.watts ? `${p.watts}W` : "—", {
+                text: ((p.condition || p.health || "?").toUpperCase()),
+                color: ["ok"].includes((p.condition || p.health || "").toLowerCase()) ? "#34C759" : "#FF3B30"
+              }])}
+            />
+          )}
+          {/* Storage drives */}
+          {drives.length > 0 && (
+            <SensorTable
+              title={`Dischi — ${drives.length}`}
+              headers={["Slot", "Modello", "Capacità", "Health", "Stato"]}
+              rows={drives.map(d => [
+                d.slot != null ? `#${d.slot}` : "—",
+                d.model || d.name || "?",
+                d.capacity_gb ? `${d.capacity_gb}GB` : "—",
+                { text: (d.health || "?").toUpperCase(), color: (d.health || "").toLowerCase() === "ok" ? "#34C759" : "#FF3B30" },
+                d.state || "?",
+              ])}
+            />
+          )}
+          {/* DIMMs */}
+          {dimms.length > 0 && (
+            <SensorTable
+              title={`Memoria DIMM — ${dimms.length}`}
+              headers={["Slot", "Capacità", "Velocità", "Tipo", "Stato"]}
+              rows={dimms.map(d => [
+                d.name || "?",
+                d.size_gb ? `${d.size_gb}GB` : (d.capacity_mb ? `${d.capacity_mb}MB` : "?"),
+                d.speed_mhz ? `${d.speed_mhz}MHz` : "—",
+                d.type || "—",
+                { text: (d.health || d.status || "?").toUpperCase(), color: ["ok"].includes((d.health || d.status || "").toLowerCase()) ? "#34C759" : "#FF3B30" },
+              ])}
+            />
+          )}
+          {/* NICs */}
+          {nics.length > 0 && (
+            <SensorTable
+              title={`Interfacce di Rete — ${nics.length}`}
+              headers={["Nome", "MAC", "Speed", "Link", "Stato"]}
+              rows={nics.map(n => [
+                n.name || n.id || "NIC",
+                n.mac || "—",
+                n.speed_mbps ? `${n.speed_mbps}Mbps` : "—",
+                { text: (n.link_status || "?").toUpperCase(), color: (n.link_status || "").toLowerCase() === "linkup" ? "#34C759" : "#FF3B30" },
+                (n.health || "?"),
+              ])}
+            />
+          )}
+          {temps.length === 0 && fans.length === 0 && psus.length === 0 && drives.length === 0 && (
+            <p className="text-[10px] text-amber-400">
+              ⚠ Nessun sensore hardware dettagliato disponibile. Verifica che la iLO risponda a /redfish/v1/Chassis/1/Thermal e Power.
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function InfoBadge({ label, value, color }) {
+  return (
+    <div className="p-1.5 rounded bg-[var(--bg-panel)] border border-[var(--bg-border)]">
+      <span className="text-[var(--text-muted)] uppercase text-[8px]">{label}</span>{" "}
+      <span className="font-mono" style={{ color: color || "var(--text-primary)" }}>{value || "N/D"}</span>
+    </div>
+  );
+}
+
+function SensorTable({ title, headers, rows }) {
+  if (!rows || rows.length === 0) return null;
+  return (
+    <div>
+      <p className="text-[9px] font-bold uppercase tracking-widest text-[var(--text-muted)] mb-1">{title}</p>
+      <div className="rounded border border-[var(--bg-border)] overflow-hidden">
+        <table className="w-full text-[10px]">
+          <thead>
+            <tr className="bg-[var(--bg-hover)]">
+              {headers.map((h, i) => <th key={i} className="px-2 py-1 text-left text-[9px] font-bold text-[var(--text-muted)] uppercase">{h}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r, i) => (
+              <tr key={i} className="border-t border-[var(--bg-border)] hover:bg-[var(--bg-hover)]">
+                {r.map((cell, j) => (
+                  <td key={j} className="px-2 py-1 font-mono">
+                    {typeof cell === "object" && cell !== null && cell.text ? (
+                      <span style={{ color: cell.color }} className="font-bold">{cell.text}</span>
+                    ) : (
+                      <span className="text-[var(--text-primary)]">{cell}</span>
+                    )}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </div>
   );
@@ -362,7 +513,7 @@ function IloHealthPanel({ iloHealth }) {
 function MiniMetric({ label, value, sub, color }) {
   return (
     <div className="px-2 py-1.5 rounded bg-[var(--bg-panel)] border border-[var(--bg-border)] text-center">
-      <p className="text-[7px] uppercase tracking-widest text-[var(--text-muted)] mb-0.5 truncate">{label}</p>
+      <p className="text-[7px] uppercase tracking-widest text-[var(--text-muted)] mb-0.5 truncate" title={label}>{label}</p>
       <p className="text-[11px] font-bold" style={{ color: color || "var(--text-primary)" }}>{value}</p>
       {sub && <p className="text-[7px] text-[var(--text-muted)] truncate">{sub}</p>}
     </div>
