@@ -1,4 +1,4 @@
 {
-  "version": "3.0.1",
-  "changelog": "v3.0.1: FIX REDFISH POLLING - Risolto bug critico che impediva il recupero delle credenziali Vault (duplicazione chiamata Invoke-RestMethod con variabili non definite). Trigger polling Redfish esteso: ora parte anche senza classificazione SNMP hpe-ilo quando esistono credenziali Vault di tipo 'ilo'/'redfish' per l'IP target. Log diagnostici piu' espliciti per Redfish. fetch-devices API ora include snmp_version e credenziali SNMPv3 complete."
+  "version": "3.0.2",
+  "changelog": "v3.0.2: AGGIORNAMENTO RAPIDO - Controllo nuove versioni ogni 5 minuti (prima ogni 6 ore). Inviato sys_name + device_macs per rilevamento cambio identita' dispositivo. Log update-check piu' espliciti."
 }

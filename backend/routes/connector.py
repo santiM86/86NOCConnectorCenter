@@ -277,7 +277,7 @@ async def upload_connector_update(request: Request, file: UploadFile = File(...)
 
     return {
         "status": "ok", "version": version, "filename": safe_filename,
-        "connectors_will_update": "I connettori si aggiorneranno automaticamente entro 6 ore"
+        "connectors_will_update": "I connettori si aggiorneranno automaticamente entro 5 minuti (oppure immediatamente cliccando Aggiorna)"
     }
 
 
