@@ -335,10 +335,12 @@ class RedfishPoller:
                 "updated_at": now_iso,
             }
 
-            # Find client_id for this device
+            # Find client_id for this device (3-layer lookup + smart fallback)
             # 1) Prefer client_id from the vault credential (most reliable for new devices)
             # 2) Fallback to existing device_poll_status client_id
             # 3) Fallback to managed_devices client_id
+            # 4) Fallback to discovered_endpoints (LLDP/MAC table from any connector)
+            # 5) Last resort: if only one client exists in the system, use that one
             client_id_to_set = cred.get("client_id")
             if not client_id_to_set:
                 existing = await self.db.device_poll_status.find_one(
@@ -352,9 +354,34 @@ class RedfishPoller:
                 )
                 if md and md.get("client_id"):
                     client_id_to_set = md["client_id"]
+            if not client_id_to_set:
+                # Look in discovered endpoints (LLDP/MAC table from any connector's topology)
+                ep = await self.db.discovered_endpoints.find_one(
+                    {"ip": device_ip}, {"_id": 0, "client_id": 1}
+                )
+                if ep and ep.get("client_id"):
+                    client_id_to_set = ep["client_id"]
+            if not client_id_to_set:
+                # Last resort: single-client installation -> auto-assign
+                all_clients = await self.db.clients.find({}, {"_id": 0, "id": 1}).to_list(10)
+                if len(all_clients) == 1:
+                    client_id_to_set = all_clients[0]["id"]
+                    logger.info(f"Redfish {device_ip}: auto-assigned to single client {client_id_to_set}")
             if client_id_to_set:
                 update_doc["client_id"] = client_id_to_set
                 update_doc["device_type"] = "ilo"
+                # Auto-heal: also update the Vault credential so next polls don't need fallback logic
+                if not cred.get("client_id"):
+                    try:
+                        await self.db.device_credentials.update_one(
+                            {"device_ip": device_ip, "credential_type": "ilo"},
+                            {"$set": {"client_id": client_id_to_set}}
+                        )
+                        logger.info(f"Vault cred for {device_ip} auto-assigned to client {client_id_to_set}")
+                    except Exception as e:
+                        logger.warning(f"Vault cred auto-heal failed: {e}")
+            else:
+                logger.warning(f"Redfish {device_ip}: could not determine client_id — alerts will be orphan")
 
             await self.db.device_poll_status.update_one(
                 {"device_ip": device_ip},

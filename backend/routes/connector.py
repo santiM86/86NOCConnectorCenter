@@ -1002,3 +1002,58 @@ async def connector_network_discovery(request: Request):
         "discovered_endpoints": len(discovered_endpoints),
         "port_speed_reports": len(port_speeds),
     }
+
+
+@router.post("/maintenance/backfill-client-id")
+async def backfill_orphan_records(current_user: dict = Depends(get_current_user)):
+    """
+    Find records without client_id (alerts, device_poll_status, vault credentials)
+    and assign them to the correct client by resolving their device_ip.
+    Safe idempotent operation for admins.
+    """
+    if current_user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Solo admin")
+
+    # Build an IP -> client_id mapping from all authoritative sources
+    ip_to_client = {}
+    async for md in db.managed_devices.find({}, {"_id": 0, "ip": 1, "client_id": 1}):
+        if md.get("ip") and md.get("client_id"):
+            ip_to_client[md["ip"]] = md["client_id"]
+    async for ps in db.device_poll_status.find({"client_id": {"$ne": None}}, {"_id": 0, "device_ip": 1, "client_id": 1}):
+        if ps.get("device_ip") and ps.get("client_id") and ps["device_ip"] not in ip_to_client:
+            ip_to_client[ps["device_ip"]] = ps["client_id"]
+    async for ep in db.discovered_endpoints.find({}, {"_id": 0, "ip": 1, "client_id": 1}):
+        if ep.get("ip") and ep.get("client_id") and ep["ip"] not in ip_to_client:
+            ip_to_client[ep["ip"]] = ep["client_id"]
+
+    # If single-client installation, fall back to that client for everything
+    all_clients = await db.clients.find({}, {"_id": 0, "id": 1}).to_list(50)
+    single_client_id = all_clients[0]["id"] if len(all_clients) == 1 else None
+
+    stats = {"alerts_fixed": 0, "poll_status_fixed": 0, "credentials_fixed": 0, "orphans_remaining": 0}
+
+    async for a in db.alerts.find({"$or": [{"client_id": None}, {"client_id": ""}, {"client_id": {"$exists": False}}]}, {"_id": 0, "id": 1, "device_ip": 1}):
+        new_cid = ip_to_client.get(a.get("device_ip")) or single_client_id
+        if new_cid:
+            await db.alerts.update_one({"id": a["id"]}, {"$set": {"client_id": new_cid}})
+            stats["alerts_fixed"] += 1
+        else:
+            stats["orphans_remaining"] += 1
+
+    async for ps in db.device_poll_status.find({"$or": [{"client_id": None}, {"client_id": ""}, {"client_id": {"$exists": False}}]}, {"_id": 0, "device_ip": 1}):
+        new_cid = ip_to_client.get(ps.get("device_ip")) or single_client_id
+        if new_cid:
+            await db.device_poll_status.update_one({"device_ip": ps["device_ip"]}, {"$set": {"client_id": new_cid}})
+            stats["poll_status_fixed"] += 1
+
+    async for c in db.device_credentials.find({"$or": [{"client_id": None}, {"client_id": ""}, {"client_id": {"$exists": False}}]}, {"_id": 0, "id": 1, "device_ip": 1}):
+        new_cid = ip_to_client.get(c.get("device_ip")) or single_client_id
+        if new_cid:
+            await db.device_credentials.update_one({"id": c["id"]}, {"$set": {"client_id": new_cid}})
+            stats["credentials_fixed"] += 1
+
+    return {
+        "status": "ok",
+        "message": f"Backfill completato: {stats['alerts_fixed']} alert, {stats['poll_status_fixed']} device, {stats['credentials_fixed']} credenziali aggiornate.",
+        **stats,
+    }
