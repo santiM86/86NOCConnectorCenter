@@ -448,7 +448,23 @@ async def startup_event():
     except Exception as e:
         logger.error(f"Failed to start Redfish scheduler: {e}")
 
+    # === Connector watchdog: alert when connectors stop heartbeating ===
+    try:
+        from connector_watchdog import ConnectorWatchdog
+        from deps import notification_service
+        global connector_watchdog
+        connector_watchdog = ConnectorWatchdog(db, notification_service=notification_service)
+        await connector_watchdog.start(interval_seconds=60)
+        logger.info("Connector watchdog started")
+    except Exception as e:
+        logger.error(f"Failed to start connector watchdog: {e}")
+
 @app.on_event("shutdown")
 async def shutdown_db_client():
     redfish_poller.stop_scheduler()
+    try:
+        if 'connector_watchdog' in globals() and connector_watchdog:
+            connector_watchdog.stop()
+    except Exception:
+        pass
     mongo_client.close()
