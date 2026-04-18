@@ -58,13 +58,18 @@ export default function DevicesPage() {
 
   const typeIcons = {
     firewall: { label: "Firewall", color: "var(--critical)" },
-    switch: { label: "Switch", color: "var(--medium)" },
-    ilo: { label: "ILO/iDRAC", color: "var(--high)" },
+    switch: { label: "Switch", color: "#6366F1" },
+    ilo: { label: "iLO/iDRAC", color: "var(--high)" },
     backup: { label: "Backup", color: "var(--low)" },
-    server: { label: "Server", color: "var(--accent)" },
+    server: { label: "Server", color: "#06B6D4" },
     printer: { label: "Stampante", color: "#FF9500" },
     generic: { label: "Generico", color: "var(--text-muted)" },
     "zyxel-usg": { label: "Firewall", color: "var(--critical)" },
+    nas: { label: "NAS", color: "#10B981" },
+    ups: { label: "UPS", color: "#F59E0B" },
+    "access-point": { label: "WiFi AP", color: "#8B5CF6" },
+    router: { label: "Router", color: "#06B6D4" },
+    tvcc: { label: "TVCC", color: "#EC4899" },
   };
 
   return (

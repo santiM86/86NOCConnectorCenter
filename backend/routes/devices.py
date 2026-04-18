@@ -56,18 +56,36 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
         ip = pd.get("device_ip", "")
         if ip and ip not in manual_ips:
             manual_ips.add(ip)
-            # Determine device type from poll data
+            # Determine device type from poll data, class, and name
             dev_type = pd.get("device_type", "")
-            if not dev_type:
+            if not dev_type or dev_type == "?":
+                dev_class = (pd.get("device_class") or "").lower()
+                dev_name = (pd.get("device_name") or "").lower()
                 sys_descr = (pd.get("sys_descr") or "").lower()
-                if "switch" in sys_descr or "hp" in sys_descr or "aruba" in sys_descr:
-                    dev_type = "switch"
-                elif "firewall" in sys_descr or "zyxel" in sys_descr or "fortigate" in sys_descr:
+                combined = f"{dev_name} {sys_descr} {dev_class}"
+
+                if any(k in combined for k in ["firewall", "zyxel", "usg", "fortigate", "pfsense", "sonicwall"]):
                     dev_type = "firewall"
-                elif "printer" in sys_descr or "laser" in sys_descr:
+                elif any(k in combined for k in ["ilo", "idrac", "ipmi", "bmc"]):
+                    dev_type = "ilo"
+                elif any(k in combined for k in ["ups", "xanto", "apc", "eaton", "liebert"]):
+                    dev_type = "ups"
+                elif any(k in combined for k in ["nas", "synology", "qnap"]):
+                    dev_type = "nas"
+                elif any(k in combined for k in ["printer", "laser", "stampante", "mfp", "laserjet", "officejet"]):
                     dev_type = "printer"
+                elif any(k in combined for k in ["tvcc", "camera", "telecamera", "hikvision", "dahua", "nvr", "dvr"]):
+                    dev_type = "tvcc"
+                elif any(k in combined for k in ["ap ", "wifi", "ubiquiti", "unifi", "access point"]):
+                    dev_type = "access-point"
+                elif any(k in combined for k in ["router", "mikrotik", "draytek", "fritzbox", "vodafone station"]):
+                    dev_type = "router"
+                elif any(k in combined for k in ["switch", "hp 5130", "hp 5120", "officeconnect", "aruba", "netgear gs", "cisco catalyst", "gs110"]):
+                    dev_type = "switch"
+                elif any(k in combined for k in ["srv", "server", "proliant", "poweredge", "esxi", "vmware", "backup", "veeam"]):
+                    dev_type = "server"
                 else:
-                    dev_type = pd.get("device_class", "server")
+                    dev_type = dev_class if dev_class and dev_class != "generic" else "server"
             devices.append({
                 "id": f"poll_{ip.replace('.','_')}",
                 "client_id": pd.get("client_id", ""),
