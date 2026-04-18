@@ -65,7 +65,6 @@ const navConfig = [
     items: [
       { path: "/clients", icon: Buildings, label: "Gestione Clienti", roles: ["admin", "operator", "viewer"] },
       { path: "/connectors", icon: PlugsConnected, label: "Connettori", roles: ["admin", "operator"] },
-      { path: "/discovery", icon: MagnifyingGlass, label: "Auto-Discovery", roles: ["admin", "operator"] },
       { path: "/wan-monitor", icon: Globe, label: "Monitor WAN", roles: ["admin", "operator"] },
     ],
   },
@@ -83,7 +82,6 @@ const navConfig = [
     label: "Sicurezza",
     items: [
       { path: "/correlation", icon: Lightning, label: "SOC AI", roles: ["admin", "operator"] },
-      { path: "/vulnerability", icon: ShieldCheck, label: "Vulnerability Assessment", roles: ["admin", "operator"] },
       { path: "/security-dashboard", icon: ShieldCheck, label: "Security Dashboard", roles: ["admin"] },
       { path: "/vault", icon: Lock, label: "Vault Credenziali", roles: ["admin"] },
       { path: "/enterprise", icon: Shield, label: "Audit & Compliance", roles: ["admin"] },

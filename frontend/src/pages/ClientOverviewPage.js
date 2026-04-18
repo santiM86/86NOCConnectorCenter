@@ -7,7 +7,7 @@ import {
   ArrowLeft, HardDrives, Globe, Printer, Database, ShieldCheck,
   Lightning, WifiHigh, WifiSlash, PlugsConnected, CaretDown,
   CheckCircle, Warning, ArrowClockwise, Bell, ChartLine, Monitor,
-  Plus, Trash, Lock,
+  Plus, Trash, Lock, MagnifyingGlass,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -15,6 +15,8 @@ import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import VaultPage from "./VaultPage";
+import DiscoveryPage from "./DiscoveryPage";
+import VulnerabilityPage from "./VulnerabilityPage";
 
 const STATUS_COLOR = { online: "#34C759", offline: "#FF3B30", active: "#FFCC00", degraded: "#FF9500", unknown: "#555" };
 
@@ -93,6 +95,8 @@ export default function ClientOverviewPage() {
     { id: "alerts", label: `Alert (${alerts.length})`, icon: Bell },
     { id: "printers", label: `Stampanti (${printers.length})`, icon: Printer },
     { id: "backup", label: `Backup (${backups.length})`, icon: Database },
+    { id: "discovery", label: "Auto-Discovery", icon: MagnifyingGlass },
+    { id: "vulnerability", label: "Vulnerability", icon: ShieldCheck },
     { id: "credentials", label: "Credenziali", icon: Lock },
   ];
 
@@ -143,6 +147,8 @@ export default function ClientOverviewPage() {
         {activeTab === "printers" && <PrintersTab printers={printers} />}
         {activeTab === "backup" && <BackupTab backups={backups} />}
         {activeTab === "credentials" && <VaultPage scopedClientId={clientId} scopedClientName={client.name} />}
+        {activeTab === "discovery" && <DiscoveryPage scopedClientId={clientId} scopedClientName={client.name} />}
+        {activeTab === "vulnerability" && <VulnerabilityPage scopedClientId={clientId} scopedClientName={client.name} />}
       </div>
     </div>
   );
