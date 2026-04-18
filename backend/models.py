@@ -82,17 +82,18 @@ class AlertCreate(BaseModel):
 class AlertResponse(BaseModel):
     model_config = ConfigDict(extra="ignore")
     id: str
-    client_id: str
+    client_id: Optional[str] = ""
     client_name: Optional[str] = ""
-    device_id: str
+    device_id: Optional[str] = ""
     device_name: Optional[str] = ""
     device_type: Optional[str] = ""
+    device_ip: Optional[str] = ""
     ip_address: Optional[str] = ""
     severity: str
     source_type: str
     title: str
     message: str
-    raw_data: str
+    raw_data: Optional[str] = ""
     status: str = "active"
     acknowledged_by: Optional[str] = None
     acknowledged_at: Optional[str] = None

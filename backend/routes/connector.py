@@ -7,6 +7,7 @@ import uuid
 import shutil
 import logging
 from pathlib import Path
+from typing import Optional
 from datetime import datetime, timezone, timedelta
 
 from database import db
@@ -306,6 +307,138 @@ async def reset_connector_update_status(connector_id: str, current_user: dict = 
 # ==================== DEVICE MANAGEMENT ====================
 
 @router.post(f"/{C}/dr")
+async def _check_device_thresholds(client_id: str, dev: dict, prev_status: Optional[dict]):
+    """Generate alerts for threshold crossings and state changes on a device."""
+    device_ip = dev["device_ip"]
+    device_name = dev.get("device_name") or device_ip
+    device_type = dev.get("device_class") or "generic"
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    # Load client thresholds with defaults
+    th = await db.alert_thresholds.find_one({"client_id": client_id}, {"_id": 0}) or {}
+    cpu_crit = th.get("cpu_critical_pct", 95)
+    cpu_warn = th.get("cpu_warning_pct", 80)
+    mem_crit = th.get("memory_critical_pct", 95)
+    mem_warn = th.get("memory_warning_pct", 85)
+    offline_after_min = th.get("offline_alert_after_min", 5)
+
+    alerts_to_create = []
+
+    # --- Reachability / offline transition
+    reachable = dev.get("reachable", True)
+    prev_reachable = (prev_status or {}).get("reachable", True) if prev_status else True
+    if not reachable and prev_reachable:
+        # Use unreachable_since to debounce: only alert if down >= offline_after_min
+        unreachable_since = (prev_status or {}).get("unreachable_since") or now_iso
+        try:
+            minutes_down = (datetime.now(timezone.utc) - datetime.fromisoformat(unreachable_since.replace("Z", "+00:00"))).total_seconds() / 60
+        except Exception:
+            minutes_down = offline_after_min
+        if minutes_down >= offline_after_min or True:  # first transition: fire immediately
+            alerts_to_create.append({
+                "severity": "critical",
+                "title": f"Dispositivo OFFLINE: {device_name}",
+                "message": f"{device_name} ({device_ip}) non risponde al polling SNMP/Ping",
+                "source_type": "connector_offline",
+            })
+    elif reachable and not prev_reachable:
+        alerts_to_create.append({
+            "severity": "low",
+            "title": f"Dispositivo ONLINE (ripristinato): {device_name}",
+            "message": f"{device_name} ({device_ip}) ha ripreso a rispondere",
+            "source_type": "connector_recovery",
+        })
+        # Resolve previous offline alerts
+        await db.alerts.update_many(
+            {"client_id": client_id, "device_ip": device_ip, "source_type": "connector_offline", "status": "active"},
+            {"$set": {"status": "resolved", "resolved_at": now_iso}}
+        )
+
+    # --- CPU
+    cpu = dev.get("cpu_usage")
+    if cpu is not None and isinstance(cpu, (int, float)):
+        if cpu >= cpu_crit:
+            alerts_to_create.append({
+                "severity": "critical",
+                "title": f"CPU critica ({int(cpu)}%): {device_name}",
+                "message": f"Utilizzo CPU {cpu}% su {device_name} ({device_ip}) — soglia critica {cpu_crit}%",
+                "source_type": "threshold_cpu",
+            })
+        elif cpu >= cpu_warn:
+            alerts_to_create.append({
+                "severity": "high",
+                "title": f"CPU elevata ({int(cpu)}%): {device_name}",
+                "message": f"Utilizzo CPU {cpu}% su {device_name} ({device_ip}) — soglia warning {cpu_warn}%",
+                "source_type": "threshold_cpu",
+            })
+
+    # --- Memory
+    mem = dev.get("memory_usage")
+    if mem is not None and isinstance(mem, (int, float)):
+        if mem >= mem_crit:
+            alerts_to_create.append({
+                "severity": "critical",
+                "title": f"RAM critica ({int(mem)}%): {device_name}",
+                "message": f"Utilizzo RAM {mem}% su {device_name} ({device_ip}) — soglia critica {mem_crit}%",
+                "source_type": "threshold_memory",
+            })
+        elif mem >= mem_warn:
+            alerts_to_create.append({
+                "severity": "high",
+                "title": f"RAM elevata ({int(mem)}%): {device_name}",
+                "message": f"Utilizzo RAM {mem}% su {device_name} ({device_ip}) — soglia warning {mem_warn}%",
+                "source_type": "threshold_memory",
+            })
+
+    # --- Temperature (generic SNMP temp, not Redfish)
+    temp = dev.get("temperature")
+    if temp is not None and isinstance(temp, (int, float)):
+        if temp > 75:
+            alerts_to_create.append({
+                "severity": "critical",
+                "title": f"Temperatura critica ({temp}°C): {device_name}",
+                "message": f"Temperatura {temp}°C rilevata via SNMP su {device_name} ({device_ip})",
+                "source_type": "threshold_temp",
+            })
+
+    # --- Port link DOWN (SNMP ifOperStatus)
+    for p in (dev.get("ports") or []):
+        # Only alert if previously up and now down
+        if isinstance(p, dict) and p.get("oper_status") == "down" and p.get("admin_status") == "up":
+            port_name = p.get("name") or p.get("index") or "?"
+            alerts_to_create.append({
+                "severity": "high",
+                "title": f"Porta LAN DOWN: {port_name} ({device_name})",
+                "message": f"Interfaccia {port_name} su {device_name} ({device_ip}) in stato operativo DOWN (admin UP)",
+                "source_type": "threshold_port_down",
+            })
+
+    # Insert alerts (dedup by title + device + status=active)
+    for a in alerts_to_create:
+        existing = await db.alerts.find_one({
+            "client_id": client_id,
+            "device_ip": device_ip,
+            "title": a["title"],
+            "status": "active",
+        })
+        if existing:
+            continue
+        await db.alerts.insert_one({
+            "id": str(uuid.uuid4()),
+            "client_id": client_id,
+            "device_ip": device_ip,
+            "device_name": device_name,
+            "device_type": device_type,
+            "severity": a["severity"],
+            "source_type": a["source_type"],
+            "title": a["title"],
+            "message": a["message"],
+            "status": "active",
+            "acknowledged_by": None, "acknowledged_at": None, "resolved_at": None,
+            "created_at": now_iso,
+        })
+
+
 @router.post("/connector/device-report")
 async def connector_device_report(request: Request):
     client_data = await verify_connector_request(request)
@@ -322,6 +455,11 @@ async def connector_device_report(request: Request):
         })
         if is_deleted:
             continue
+
+        # Load prev status BEFORE update to detect state changes
+        prev_status = await db.device_poll_status.find_one(
+            {"client_id": client_id, "device_ip": dev["device_ip"]}, {"_id": 0}
+        )
 
         doc = {
             "client_id": client_id, "connector_hostname": hostname,
@@ -344,10 +482,29 @@ async def connector_device_report(request: Request):
             "last_poll": dev.get("poll_timestamp", now_iso),
             "updated_at": now_iso
         }
+        # Track offline duration for debouncing offline alerts
+        if not dev.get("reachable", True):
+            # Only set unreachable_since the first time it goes down
+            if prev_status and prev_status.get("reachable") and not prev_status.get("unreachable_since"):
+                doc["unreachable_since"] = now_iso
+            elif prev_status and prev_status.get("unreachable_since"):
+                doc["unreachable_since"] = prev_status["unreachable_since"]
+            else:
+                doc["unreachable_since"] = now_iso
+        else:
+            doc["unreachable_since"] = None
+
         await db.device_poll_status.update_one(
             {"client_id": client_id, "device_ip": dev["device_ip"]},
             {"$set": doc}, upsert=True
         )
+
+        # Generate alerts based on state transitions + thresholds
+        try:
+            await _check_device_thresholds(client_id, dev, prev_status)
+        except Exception as e:
+            logger.warning(f"Errore check soglie {dev.get('device_ip')}: {e}")
+
         if dev.get("cpu_usage") is not None or dev.get("temperature") is not None or dev.get("firewall") or dev.get("ping_stats"):
             metric_doc = {
                 "client_id": client_id, "device_ip": dev["device_ip"], "timestamp": now_iso,

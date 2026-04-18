@@ -373,16 +373,17 @@ class RedfishPoller:
             })
 
             # Generate alerts for critical conditions
-            await self._check_alerts(device_ip, device_name, result)
+            await self._check_alerts(device_ip, device_name, result, client_id_to_set)
 
             logger.info(f"Redfish OK: {device_name} | {result['server_model']} | {result['power_watts']}W | Health: {result['health_status']}")
         else:
             logger.warning(f"Redfish failed for {device_name} ({device_ip})")
 
-    async def _check_alerts(self, device_ip: str, device_name: str, result: dict):
+    async def _check_alerts(self, device_ip: str, device_name: str, result: dict, client_id: Optional[str] = None):
         """Generate alerts for critical iLO conditions."""
         alerts = []
 
+        # Overall health
         if result["health_status"] and result["health_status"] not in ("ok", "unknown"):
             alerts.append({
                 "severity": "critical",
@@ -390,6 +391,7 @@ class RedfishPoller:
                 "message": f"Server {device_name} ({device_ip}) stato salute: {result['health_status']}",
             })
 
+        # Temperature sensors
         for t in result["temperatures"]:
             if t["value"] > 75:
                 alerts.append({
@@ -397,7 +399,14 @@ class RedfishPoller:
                     "title": f"Temperatura critica: {t['value']}C",
                     "message": f"{t['locale']} su {device_name} ({device_ip}): {t['value']}C",
                 })
+            elif t["value"] > 65:
+                alerts.append({
+                    "severity": "high",
+                    "title": f"Temperatura elevata: {t['value']}C",
+                    "message": f"{t['locale']} su {device_name} ({device_ip}): {t['value']}C",
+                })
 
+        # Fans
         for f in result["fans"]:
             if f["condition"] not in ("ok", "n/a"):
                 alerts.append({
@@ -406,12 +415,71 @@ class RedfishPoller:
                     "message": f"{f['locale']} su {device_name} ({device_ip}): {f['condition']}",
                 })
 
+        # Power supplies
         for ps in result["power_supplies"]:
             if ps["condition"] not in ("ok", "n/a"):
                 alerts.append({
                     "severity": "critical",
                     "title": f"Alimentatore {ps['condition']}",
                     "message": f"{ps['name']} su {device_name} ({device_ip}): {ps['condition']}",
+                })
+
+        # Storage controllers + drives
+        for ctrl in (result.get("storage_controllers") or []):
+            ctrl_health = (ctrl.get("health") or "").lower()
+            ctrl_status = (ctrl.get("status") or "").lower()
+            if ctrl_health and ctrl_health not in ("ok", "unknown", ""):
+                alerts.append({
+                    "severity": "critical",
+                    "title": f"Controller RAID {ctrl_health.upper()}",
+                    "message": f"Controller '{ctrl.get('name','?')}' su {device_name} ({device_ip}): stato {ctrl_health}" +
+                               (f" ({ctrl_status})" if ctrl_status else ""),
+                })
+            for dr in (ctrl.get("drives") or []):
+                drive_health = (dr.get("health") or "").lower()
+                drive_state = (dr.get("state") or "").lower()
+                drive_failed = bool(dr.get("failure_predicted"))
+                label = dr.get("model") or dr.get("name") or "disco"
+                if drive_health and drive_health not in ("ok", "unknown", ""):
+                    alerts.append({
+                        "severity": "critical",
+                        "title": f"Disco {drive_health.upper()}: {label}",
+                        "message": f"Disco {label} (slot {dr.get('slot','?')}) su {device_name} ({device_ip}): health={drive_health}, state={drive_state or 'n/a'}",
+                    })
+                elif drive_failed:
+                    alerts.append({
+                        "severity": "high",
+                        "title": f"Disco guasto previsto: {label}",
+                        "message": f"Disco {label} (slot {dr.get('slot','?')}) su {device_name} ({device_ip}): SMART prevede guasto imminente",
+                    })
+
+        # Memory DIMMs
+        for dimm in (result.get("memory_dimms") or []):
+            dimm_health = (dimm.get("health") or "").lower()
+            if dimm_health and dimm_health not in ("ok", "unknown", "") and dimm.get("capacity_mb", 0) > 0:
+                alerts.append({
+                    "severity": "critical",
+                    "title": f"DIMM Memoria {dimm_health.upper()}",
+                    "message": f"DIMM '{dimm.get('name','?')}' ({dimm.get('capacity_mb',0)}MB) su {device_name} ({device_ip}): {dimm_health}",
+                })
+
+        # Network adapters (NIC link status)
+        for nic in (result.get("network_adapters") or []):
+            nic_health = (nic.get("health") or "").lower()
+            link_status = (nic.get("link_status") or "").lower()
+            nic_name = nic.get("name") or nic.get("id") or "NIC"
+            # Alert only on configured/connected NICs that went down
+            if link_status == "linkdown" and nic.get("speed_mbps"):
+                alerts.append({
+                    "severity": "high",
+                    "title": f"Link LAN DOWN: {nic_name}",
+                    "message": f"Interfaccia {nic_name} ({nic.get('mac','?')}) su {device_name} ({device_ip}): link DOWN",
+                })
+            elif nic_health and nic_health not in ("ok", "unknown", ""):
+                alerts.append({
+                    "severity": "high",
+                    "title": f"NIC {nic_health.upper()}: {nic_name}",
+                    "message": f"Interfaccia {nic_name} su {device_name} ({device_ip}): health={nic_health}",
                 })
 
         for alert in alerts:
@@ -424,8 +492,10 @@ class RedfishPoller:
             if not existing:
                 await self.db.alerts.insert_one({
                     "id": str(uuid.uuid4()),
+                    "client_id": client_id,
                     "device_ip": device_ip,
                     "device_name": device_name,
+                    "device_type": "ilo",
                     "severity": alert["severity"],
                     "source_type": "redfish_direct",
                     "title": alert["title"],

@@ -4,7 +4,10 @@ from typing import List, Optional
 from collections import defaultdict
 import uuid
 import json
+import logging
 from datetime import datetime, timezone, timedelta
+
+logger = logging.getLogger("alerts")
 
 from database import db
 from models import AlertCreate, AlertResponse, AlertUpdate
@@ -101,11 +104,15 @@ async def get_alerts(
         device = device_map.get(a.get("device_id", ""), {})
         if device_type and device.get("device_type") != device_type:
             continue
-        a["client_name"] = client_map.get(a["client_id"], "")
-        a["device_name"] = device.get("name", "")
-        a["device_type"] = device.get("device_type", "")
-        a["ip_address"] = device.get("ip_address", "")
-        result.append(AlertResponse(**a))
+        a["client_name"] = client_map.get(a.get("client_id", ""), "")
+        a["device_name"] = a.get("device_name") or device.get("name", "") or a.get("device_ip", "")
+        a["device_type"] = a.get("device_type") or device.get("device_type", "")
+        a["ip_address"] = device.get("ip_address", "") or a.get("device_ip", "")
+        try:
+            result.append(AlertResponse(**a))
+        except Exception as e:
+            logger.warning(f"Skip invalid alert {a.get('id','?')}: {e}")
+            continue
     return result
 
 
