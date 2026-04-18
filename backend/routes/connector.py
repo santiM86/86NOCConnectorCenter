@@ -119,7 +119,12 @@ async def connector_managed_devices(request: Request):
 @router.get("/connector/vault/credentials")
 async def connector_get_vault_credentials(request: Request):
     client_data = await verify_connector_request(request)
-    creds = await db.device_credentials.find({}, {"_id": 0}).to_list(500)
+    client_id = client_data["id"]
+    # Return only credentials that belong to this client OR are global (no client_id)
+    creds = await db.device_credentials.find(
+        {"$or": [{"client_id": client_id}, {"client_id": None}, {"client_id": ""}, {"client_id": {"$exists": False}}]},
+        {"_id": 0}
+    ).to_list(500)
     result = []
     for c in creds:
         try:
@@ -136,7 +141,7 @@ async def connector_get_vault_credentials(request: Request):
     await audit_logger.log(
         AuditAction.SUSPICIOUS_ACTIVITY,
         user_email=f"connector:{client_data.get('name', 'unknown')}",
-        details={"action": "connector_vault_fetch", "client_id": client_data.get("id"), "count": len(result)},
+        details={"action": "connector_vault_fetch", "client_id": client_id, "count": len(result)},
         severity="info"
     )
     return result

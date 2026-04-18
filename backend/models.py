@@ -137,6 +137,7 @@ class CredentialCreate(BaseModel):
     notes: Optional[str] = None
     tags: Optional[List[str]] = []
     external_url: Optional[str] = None
+    client_id: Optional[str] = None
 
 class CredentialUpdate(BaseModel):
     device_name: Optional[str] = None
@@ -148,6 +149,7 @@ class CredentialUpdate(BaseModel):
     notes: Optional[str] = None
     tags: Optional[List[str]] = None
     external_url: Optional[str] = None
+    client_id: Optional[str] = None
 
 class SyslogMessage(BaseModel):
     device_ip: str
