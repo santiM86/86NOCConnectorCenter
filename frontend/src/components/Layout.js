@@ -57,30 +57,16 @@ const navConfig = [
     items: [
       { path: "/", icon: ChartLineUp, label: "Dashboard", roles: ["admin", "operator", "viewer"] },
       { path: "/alerts", icon: Bell, label: "Alert", hasBadge: true, roles: ["admin", "operator", "viewer"] },
-      { path: "/network-status", icon: WifiHigh, label: "Stato Rete", roles: ["admin", "operator", "viewer"] },
     ],
   },
   {
-    id: "monitoring",
-    label: "Monitoraggio",
+    id: "clients",
+    label: "Clienti",
     items: [
-      { path: "/devices", icon: HardDrives, label: "Dispositivi", roles: ["admin", "operator", "viewer"] },
-      { path: "/printers", icon: Printer, label: "Stampanti", roles: ["admin", "operator", "viewer"] },
-      { path: "/port-monitor", icon: Plug, label: "Monitor Servizi", roles: ["admin", "operator"] },
-      { path: "/bandwidth", icon: ArrowsDownUp, label: "Bandwidth", roles: ["admin", "operator", "viewer"] },
-      { path: "/wan-monitor", icon: Globe, label: "Monitor WAN", roles: ["admin", "operator"] },
-      { path: "/backup", icon: Database, label: "Backup", roles: ["admin", "operator", "viewer"] },
-      { path: "/trends", icon: ChartLine, label: "Grafici Trend", roles: ["admin", "operator", "viewer"] },
-    ],
-  },
-  {
-    id: "infrastructure",
-    label: "Clienti & Rete",
-    items: [
-      { path: "/clients", icon: Buildings, label: "Clienti", roles: ["admin", "operator", "viewer"] },
-      { path: "/inventory", icon: Database, label: "Inventario", roles: ["admin", "operator", "viewer"] },
+      { path: "/clients", icon: Buildings, label: "Gestione Clienti", roles: ["admin", "operator", "viewer"] },
       { path: "/connectors", icon: PlugsConnected, label: "Connettori", roles: ["admin", "operator"] },
       { path: "/discovery", icon: MagnifyingGlass, label: "Auto-Discovery", roles: ["admin", "operator"] },
+      { path: "/wan-monitor", icon: Globe, label: "Monitor WAN", roles: ["admin", "operator"] },
     ],
   },
   {

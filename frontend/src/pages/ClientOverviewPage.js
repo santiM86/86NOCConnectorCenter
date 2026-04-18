@@ -1,0 +1,425 @@
+import { useState, useEffect, useCallback } from "react";
+import { useParams, useNavigate } from "react-router-dom";
+import axios from "axios";
+import { API } from "@/App";
+import { toast } from "sonner";
+import {
+  ArrowLeft, HardDrives, Globe, Printer, Database, ShieldCheck,
+  Lightning, WifiHigh, WifiSlash, PlugsConnected, CaretDown,
+  CheckCircle, Warning, ArrowClockwise, Bell, ChartLine, Monitor,
+} from "@phosphor-icons/react";
+import { Button } from "@/components/ui/button";
+
+const STATUS_COLOR = { online: "#34C759", offline: "#FF3B30", active: "#FFCC00", degraded: "#FF9500", unknown: "#555" };
+
+export default function ClientOverviewPage() {
+  const { clientId } = useParams();
+  const navigate = useNavigate();
+  const [client, setClient] = useState(null);
+  const [devices, setDevices] = useState([]);
+  const [wanTargets, setWanTargets] = useState([]);
+  const [alerts, setAlerts] = useState([]);
+  const [printers, setPrinters] = useState([]);
+  const [backups, setBackups] = useState([]);
+  const [connector, setConnector] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState("overview");
+
+  const fetchAll = useCallback(async () => {
+    try {
+      const [clientRes, devRes, wanRes, alertRes] = await Promise.allSettled([
+        axios.get(`${API}/clients/${clientId}`),
+        axios.get(`${API}/devices?client_id=${clientId}`),
+        axios.get(`${API}/external-monitor/status`),
+        axios.get(`${API}/alerts?client_id=${clientId}&status=active&limit=50`),
+      ]);
+      if (clientRes.status === "fulfilled") setClient(clientRes.value.data);
+      if (devRes.status === "fulfilled") setDevices(devRes.value.data || []);
+      if (wanRes.status === "fulfilled") {
+        const wanData = wanRes.value.data;
+        const clientTargets = (wanData.targets || []).filter(t => t.client_id === clientId);
+        const results = wanData.results || [];
+        setWanTargets(clientTargets.map(t => ({ ...t, result: results.find(r => r.target_id === t.id) })));
+      }
+      if (alertRes.status === "fulfilled") setAlerts(alertRes.value.data || []);
+    } catch (e) { console.error(e); }
+    // Fetch printers, backup, connector separately (may not have client_id filter)
+    try {
+      const connRes = await axios.get(`${API}/connector/status`);
+      const connectors = connRes.data?.connectors || connRes.data || [];
+      const found = (Array.isArray(connectors) ? connectors : []).find(c => c.client_id === clientId);
+      setConnector(found || null);
+    } catch {}
+    try {
+      const printRes = await axios.get(`${API}/printers?client_id=${clientId}`);
+      setPrinters(printRes.data || []);
+    } catch {}
+    try {
+      const bkpRes = await axios.get(`${API}/backup/status?client_id=${clientId}`);
+      setBackups(bkpRes.data || []);
+    } catch {}
+    setLoading(false);
+  }, [clientId]);
+
+  useEffect(() => { fetchAll(); const i = setInterval(fetchAll, 30000); return () => clearInterval(i); }, [fetchAll]);
+
+  if (loading) return <div className="p-6 text-center text-[var(--text-muted)]">Caricamento...</div>;
+  if (!client) return <div className="p-6 text-center text-[var(--text-muted)]">Cliente non trovato</div>;
+
+  const onlineDevices = devices.filter(d => d.status === "online" || d.status === "active").length;
+  const offlineDevices = devices.length - onlineDevices;
+  const criticalAlerts = alerts.filter(a => a.severity === "critical").length;
+  const firewalls = devices.filter(d => ["firewall", "zyxel-usg"].includes(d.device_type));
+  const switches = devices.filter(d => d.device_type === "switch");
+  const servers = devices.filter(d => ["server", "ilo", "generic"].includes(d.device_type));
+
+  const tabs = [
+    { id: "overview", label: "Panoramica", icon: Monitor },
+    { id: "devices", label: `Dispositivi (${devices.length})`, icon: HardDrives },
+    { id: "wan", label: `WAN (${wanTargets.length})`, icon: Globe },
+    { id: "alerts", label: `Alert (${alerts.length})`, icon: Bell },
+    { id: "printers", label: `Stampanti (${printers.length})`, icon: Printer },
+    { id: "backup", label: `Backup (${backups.length})`, icon: Database },
+  ];
+
+  return (
+    <div className="p-4 md:p-5 animate-fade-in" data-testid="client-overview-page">
+      {/* Header */}
+      <div className="flex items-center gap-3 mb-4">
+        <button onClick={() => navigate("/")} className="p-1.5 rounded-md hover:bg-[var(--bg-hover)] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors">
+          <ArrowLeft size={18} />
+        </button>
+        <div className="flex-1">
+          <h1 className="font-heading text-xl font-bold text-[var(--text-primary)] tracking-tight">{client.name}</h1>
+          <p className="text-[var(--text-muted)] text-xs mt-0.5">Monitoraggio completo rete cliente</p>
+        </div>
+        <button onClick={fetchAll} className="p-1.5 rounded-md hover:bg-[var(--bg-hover)] text-[var(--text-muted)]" title="Aggiorna">
+          <ArrowClockwise size={16} />
+        </button>
+      </div>
+
+      {/* Quick Stats */}
+      <div className="grid grid-cols-2 md:grid-cols-6 gap-2 mb-4">
+        <StatBox label="Dispositivi" value={`${onlineDevices}/${devices.length}`} color={offlineDevices > 0 ? "#FF9500" : "#34C759"} sub={offlineDevices > 0 ? `${offlineDevices} offline` : "Tutti online"} />
+        <StatBox label="WAN" value={wanTargets.length > 0 ? (wanTargets.every(t => t.result?.status === "online") ? "OK" : "ALERT") : "N/C"} color={wanTargets.every(t => t.result?.status === "online") ? "#34C759" : wanTargets.length > 0 ? "#FF3B30" : "#555"} sub={wanTargets[0]?.result?.ping?.latency_ms ? `${wanTargets[0].result.ping.latency_ms}ms` : ""} />
+        <StatBox label="Alert" value={alerts.length} color={criticalAlerts > 0 ? "#FF3B30" : alerts.length > 0 ? "#FF9500" : "#34C759"} sub={criticalAlerts > 0 ? `${criticalAlerts} critici` : "Nessun critico"} />
+        <StatBox label="Connettore" value={connector ? "ONLINE" : "OFFLINE"} color={connector ? "#34C759" : "#FF3B30"} sub={connector?.connector_hostname || ""} />
+        <StatBox label="Stampanti" value={printers.length > 0 ? `${printers.length}` : "—"} color={printers.some(p => p.toner_low) ? "#FF9500" : "#34C759"} />
+        <StatBox label="Backup" value={backups.length > 0 ? (backups.some(b => b.status === "error") ? "ERR" : "OK") : "—"} color={backups.some(b => b.status === "error") ? "#FF3B30" : "#34C759"} />
+      </div>
+
+      {/* Tabs */}
+      <div className="flex gap-1 mb-4 border-b border-[var(--bg-border)] pb-px overflow-x-auto">
+        {tabs.map(t => (
+          <button key={t.id} onClick={() => setActiveTab(t.id)}
+            className={`flex items-center gap-1.5 px-3 py-2 text-[11px] font-semibold rounded-t-md transition-colors whitespace-nowrap ${activeTab === t.id ? "bg-[var(--bg-panel)] text-indigo-400 border border-[var(--bg-border)] border-b-transparent -mb-px" : "text-[var(--text-muted)] hover:text-[var(--text-primary)]"}`}
+            data-testid={`tab-${t.id}`}>
+            <t.icon size={13} weight={activeTab === t.id ? "bold" : "regular"} />
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Tab Content */}
+      <div className="min-h-[400px]">
+        {activeTab === "overview" && <OverviewTab devices={devices} wanTargets={wanTargets} alerts={alerts} connector={connector} printers={printers} backups={backups} firewalls={firewalls} switches={switches} servers={servers} />}
+        {activeTab === "devices" && <DevicesTab devices={devices} />}
+        {activeTab === "wan" && <WanTab targets={wanTargets} />}
+        {activeTab === "alerts" && <AlertsTab alerts={alerts} navigate={navigate} />}
+        {activeTab === "printers" && <PrintersTab printers={printers} />}
+        {activeTab === "backup" && <BackupTab backups={backups} />}
+      </div>
+    </div>
+  );
+}
+
+/* ==================== OVERVIEW TAB ==================== */
+function OverviewTab({ devices, wanTargets, alerts, connector, printers, backups, firewalls, switches, servers }) {
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      {/* Network Map */}
+      <div className="noc-panel p-4">
+        <h3 className="text-[9px] font-bold uppercase tracking-[0.15em] text-indigo-400 mb-3">Infrastruttura di Rete</h3>
+        <div className="space-y-2">
+          {/* WAN */}
+          {wanTargets.length > 0 && (
+            <div className="space-y-1.5">
+              <p className="text-[8px] uppercase tracking-widest text-[var(--text-muted)]">Connettivita' WAN</p>
+              {wanTargets.map(t => {
+                const r = t.result;
+                const sc = STATUS_COLOR[r?.status] || "#555";
+                return (
+                  <div key={t.id} className="flex items-center gap-2 px-3 py-2 rounded-lg border text-[11px]" style={{ borderColor: `${sc}30`, background: `${sc}06` }}>
+                    {t.device_type === "firewall" ? <ShieldCheck size={14} weight="bold" style={{ color: sc }} /> : <HardDrives size={14} weight="bold" style={{ color: sc }} />}
+                    <span className="font-bold text-[var(--text-primary)]">{t.label}</span>
+                    <span className="font-mono text-[var(--text-muted)] text-[10px]">{t.public_ip}</span>
+                    <span className="ml-auto font-mono font-bold" style={{ color: sc }}>{r?.status?.toUpperCase() || "..."}</span>
+                    {r?.ping?.latency_ms != null && <span className="font-mono text-[var(--text-muted)] text-[10px]">{r.ping.latency_ms}ms</span>}
+                    {r?.gateway_ping && (
+                      <span className="text-[9px] px-1.5 py-0.5 rounded font-bold" style={{ color: r.gateway_ping.reachable ? "#34C759" : "#FF3B30", background: r.gateway_ping.reachable ? "#34C75910" : "#FF3B3010" }}>
+                        ISP {r.gateway_ping.reachable ? "OK" : "DOWN"}
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {/* Firewalls */}
+          {firewalls.length > 0 && <DeviceGroup label="Firewall" icon={ShieldCheck} devices={firewalls} color="#FF3B30" />}
+          {/* Switches */}
+          {switches.length > 0 && <DeviceGroup label="Switch" icon={HardDrives} devices={switches} color="#6366F1" />}
+          {/* Servers */}
+          {servers.length > 0 && <DeviceGroup label="Server / Altro" icon={Monitor} devices={servers} color="#06B6D4" />}
+        </div>
+      </div>
+
+      {/* Right column: Alerts + Status */}
+      <div className="space-y-4">
+        {/* Connector */}
+        <div className="noc-panel p-4">
+          <h3 className="text-[9px] font-bold uppercase tracking-[0.15em] text-cyan-400 mb-2">Connettore</h3>
+          {connector ? (
+            <div className="flex items-center gap-3">
+              <div className="w-2.5 h-2.5 rounded-full bg-emerald-400" style={{ boxShadow: "0 0 8px #34C75960" }}></div>
+              <div>
+                <p className="text-xs font-bold text-[var(--text-primary)]">{connector.connector_hostname}</p>
+                <p className="text-[10px] text-[var(--text-muted)]">v{connector.connector_version} — Ultimo contatto: {connector.last_seen ? new Date(connector.last_seen).toLocaleString("it-IT") : "?"}</p>
+              </div>
+            </div>
+          ) : (
+            <p className="text-xs text-red-400">Connettore non collegato</p>
+          )}
+        </div>
+
+        {/* Recent Alerts */}
+        <div className="noc-panel p-4">
+          <h3 className="text-[9px] font-bold uppercase tracking-[0.15em] text-amber-400 mb-2">Alert Attivi ({alerts.length})</h3>
+          {alerts.length === 0 ? (
+            <p className="text-xs text-emerald-400">Nessun alert attivo</p>
+          ) : (
+            <div className="space-y-1 max-h-48 overflow-y-auto">
+              {alerts.slice(0, 8).map(a => {
+                const sc = a.severity === "critical" ? "#FF3B30" : a.severity === "high" ? "#FF9500" : a.severity === "medium" ? "#FFCC00" : "#888";
+                return (
+                  <div key={a.id} className="flex items-center gap-2 px-2 py-1.5 rounded text-[10px]" style={{ background: `${sc}06` }}>
+                    <span className="text-[8px] px-1 py-0.5 rounded font-bold uppercase" style={{ color: sc, background: `${sc}15` }}>{a.severity?.substring(0, 4)}</span>
+                    <span className="text-[var(--text-primary)] truncate flex-1">{a.title}</span>
+                    <span className="text-[var(--text-muted)]">{a.device_name}</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* Printers quick */}
+        {printers.length > 0 && (
+          <div className="noc-panel p-4">
+            <h3 className="text-[9px] font-bold uppercase tracking-[0.15em] text-orange-400 mb-2">Stampanti ({printers.length})</h3>
+            <div className="space-y-1">
+              {printers.slice(0, 5).map((p, i) => (
+                <div key={i} className="flex items-center gap-2 text-[10px]">
+                  <Printer size={12} className="text-[var(--text-muted)]" />
+                  <span className="text-[var(--text-primary)]">{p.name || p.ip_address}</span>
+                  <span className="ml-auto text-[var(--text-muted)]">{p.status || "?"}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ==================== DEVICE GROUP ==================== */
+function DeviceGroup({ label, icon: Icon, devices, color }) {
+  return (
+    <div>
+      <div className="flex items-center gap-1.5 mb-1">
+        <Icon size={11} weight="bold" style={{ color }} />
+        <p className="text-[8px] uppercase tracking-widest" style={{ color }}>{label} ({devices.length})</p>
+      </div>
+      <div className="space-y-1">
+        {devices.map((d, i) => {
+          const sc = STATUS_COLOR[d.status] || "#555";
+          return (
+            <div key={i} className="flex items-center gap-2 px-2.5 py-1.5 rounded-md border text-[10px]" style={{ borderColor: `${sc}20`, background: `${sc}04` }}>
+              <div className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: sc }}></div>
+              <span className="font-medium text-[var(--text-primary)] truncate">{d.name}</span>
+              <span className="font-mono text-[var(--text-muted)]">{d.ip_address}</span>
+              <span className="ml-auto font-bold text-[8px] uppercase" style={{ color: sc }}>{d.status}</span>
+              {d.source === "connector" && <span className="text-[7px] px-1 rounded bg-indigo-500/10 text-indigo-400">C</span>}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* ==================== DEVICES TAB ==================== */
+function DevicesTab({ devices }) {
+  return (
+    <div className="noc-panel overflow-hidden">
+      <table className="alert-table" data-testid="client-devices-table">
+        <thead>
+          <tr><th>Nome</th><th>Tipo</th><th>IP</th><th>Stato</th><th>Fonte</th><th>Info</th></tr>
+        </thead>
+        <tbody>
+          {devices.length === 0 ? (
+            <tr><td colSpan={6} className="text-center text-[var(--text-muted)] py-8 text-xs">Nessun dispositivo</td></tr>
+          ) : devices.map((d, i) => {
+            const sc = STATUS_COLOR[d.status] || "#555";
+            return (
+              <tr key={i}>
+                <td className="text-[var(--text-primary)] text-xs font-medium">{d.name}</td>
+                <td><span className="text-[10px] px-1.5 py-0.5 rounded border border-[var(--bg-border)]">{d.device_type}</span></td>
+                <td className="font-mono text-[var(--text-muted)] text-xs">{d.ip_address}</td>
+                <td><span className="inline-flex items-center gap-1 text-[10px] font-bold" style={{ color: sc }}>{d.status === "online" ? <WifiHigh size={12} /> : <WifiSlash size={12} />} {d.status?.toUpperCase()}</span></td>
+                <td>{d.source === "connector" ? <span className="text-[8px] px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 font-bold">CONNECTOR</span> : <span className="text-[8px] text-[var(--text-muted)]">Manuale</span>}</td>
+                <td className="text-[9px] text-[var(--text-muted)]">{d.sys_descr?.substring(0, 60) || d.hostname || ""}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/* ==================== WAN TAB ==================== */
+function WanTab({ targets }) {
+  return (
+    <div className="space-y-3">
+      {targets.length === 0 ? (
+        <div className="text-center py-8 text-[var(--text-muted)] text-xs">Nessun target WAN configurato per questo cliente</div>
+      ) : targets.map(t => {
+        const r = t.result;
+        const sc = STATUS_COLOR[r?.status] || "#555";
+        return (
+          <div key={t.id} className="noc-panel p-4">
+            <div className="flex items-center gap-3 mb-3">
+              {t.device_type === "firewall" ? <ShieldCheck size={16} weight="bold" style={{ color: sc }} /> : <HardDrives size={16} weight="bold" style={{ color: sc }} />}
+              <div>
+                <span className="text-sm font-bold text-[var(--text-primary)]">{t.label}</span>
+                <span className="ml-2 text-[8px] px-1.5 py-0.5 rounded font-bold uppercase" style={{ color: sc, background: `${sc}15` }}>{r?.status?.toUpperCase() || "PENDING"}</span>
+              </div>
+              <span className="ml-auto font-mono text-[var(--text-muted)] text-xs">{t.public_ip}</span>
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <MetricBox label="Ping ICMP" value={r?.ping?.reachable ? "OK" : "FAIL"} sub={r?.ping?.latency_ms != null ? `${r.ping.latency_ms}ms` : null} color={r?.ping?.reachable ? "#34C759" : "#FF3B30"} />
+              <MetricBox label="Packet Loss" value={r?.ping?.packet_loss_pct != null ? `${r.ping.packet_loss_pct}%` : "—"} color={r?.ping?.packet_loss_pct > 5 ? "#FF3B30" : "#34C759"} />
+              <MetricBox label="Gateway ISP" value={r?.gateway_ping ? (r.gateway_ping.reachable ? "ONLINE" : "DOWN") : "N/C"} sub={t.gateway_ip || ""} color={r?.gateway_ping?.reachable ? "#34C759" : r?.gateway_ping ? "#FF3B30" : "#555"} />
+              <MetricBox label="Ultimo Check" value={r?.checked_at ? new Date(r.checked_at).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" }) : "—"} color="#6366F1" />
+            </div>
+            {r?.ports?.length > 0 && (
+              <div className="mt-3 flex gap-2 flex-wrap">
+                {r.ports.map((p, j) => (
+                  <span key={j} className="text-[10px] font-mono px-2 py-1 rounded border" style={{ color: p.open ? "#34C759" : "#FF3B30", borderColor: p.open ? "#34C75930" : "#FF3B3030", background: p.open ? "#34C75908" : "#FF3B3008" }}>
+                    :{p.port} {p.open ? "OPEN" : "CLOSED"} {p.response_ms && `${p.response_ms}ms`}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ==================== ALERTS TAB ==================== */
+function AlertsTab({ alerts, navigate }) {
+  return (
+    <div className="noc-panel overflow-hidden">
+      <table className="alert-table">
+        <thead><tr><th>Sev.</th><th>Titolo</th><th>Dispositivo</th><th>Data</th></tr></thead>
+        <tbody>
+          {alerts.length === 0 ? (
+            <tr><td colSpan={4} className="text-center text-emerald-400 py-8 text-xs">Nessun alert attivo</td></tr>
+          ) : alerts.map(a => {
+            const sc = a.severity === "critical" ? "#FF3B30" : a.severity === "high" ? "#FF9500" : "#FFCC00";
+            return (
+              <tr key={a.id} className="cursor-pointer hover:bg-[var(--bg-hover)]" onClick={() => navigate(`/alerts/${a.id}`)}>
+                <td><span className="text-[8px] px-1.5 py-0.5 rounded font-bold uppercase" style={{ color: sc, background: `${sc}15` }}>{a.severity?.substring(0, 4)}</span></td>
+                <td className="text-[var(--text-primary)] text-xs">{a.title}</td>
+                <td className="text-[var(--text-muted)] text-xs">{a.device_name}</td>
+                <td className="font-mono text-[var(--text-muted)] text-[10px]">{a.created_at ? new Date(a.created_at).toLocaleString("it-IT") : ""}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/* ==================== PRINTERS TAB ==================== */
+function PrintersTab({ printers }) {
+  if (printers.length === 0) return <div className="text-center py-8 text-[var(--text-muted)] text-xs">Nessuna stampante monitorata</div>;
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+      {printers.map((p, i) => (
+        <div key={i} className="noc-panel p-3">
+          <div className="flex items-center gap-2 mb-2">
+            <Printer size={14} className="text-orange-400" />
+            <span className="text-xs font-bold text-[var(--text-primary)]">{p.name || p.ip_address}</span>
+          </div>
+          {p.toner_levels && typeof p.toner_levels === "object" && Object.entries(p.toner_levels).map(([color, level]) => (
+            <div key={color} className="flex items-center gap-2 text-[10px] mt-1">
+              <span className="text-[var(--text-muted)] w-12">{color}</span>
+              <div className="flex-1 h-1.5 rounded-full bg-[var(--bg-card)]"><div className="h-full rounded-full" style={{ width: `${level}%`, backgroundColor: level < 15 ? "#FF3B30" : level < 30 ? "#FF9500" : "#34C759" }}></div></div>
+              <span className="font-mono font-bold w-8 text-right" style={{ color: level < 15 ? "#FF3B30" : "#34C759" }}>{level}%</span>
+            </div>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ==================== BACKUP TAB ==================== */
+function BackupTab({ backups }) {
+  if (backups.length === 0) return <div className="text-center py-8 text-[var(--text-muted)] text-xs">Nessun backup monitorato</div>;
+  return (
+    <div className="space-y-2">
+      {backups.map((b, i) => {
+        const sc = b.status === "ok" || b.status === "success" ? "#34C759" : b.status === "warning" ? "#FF9500" : "#FF3B30";
+        return (
+          <div key={i} className="noc-panel p-3 flex items-center gap-3">
+            <Database size={14} style={{ color: sc }} />
+            <div className="flex-1">
+              <span className="text-xs font-bold text-[var(--text-primary)]">{b.name || b.job_name || "Backup"}</span>
+              <span className="ml-2 text-[8px] px-1.5 py-0.5 rounded font-bold" style={{ color: sc, background: `${sc}15` }}>{b.status?.toUpperCase()}</span>
+            </div>
+            <span className="text-[10px] text-[var(--text-muted)]">{b.last_success ? new Date(b.last_success).toLocaleString("it-IT") : "Mai"}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ==================== STAT BOX ==================== */
+function StatBox({ label, value, color, sub }) {
+  return (
+    <div className="noc-panel p-2.5">
+      <p className="text-[8px] text-[var(--text-muted)] uppercase tracking-widest">{label}</p>
+      <p className="text-lg font-bold font-mono leading-none mt-1" style={{ color }}>{value}</p>
+      {sub && <p className="text-[9px] text-[var(--text-muted)] mt-0.5">{sub}</p>}
+    </div>
+  );
+}
+
+/* ==================== METRIC BOX ==================== */
+function MetricBox({ label, value, sub, color }) {
+  return (
+    <div className="rounded-md px-2.5 py-2 bg-[var(--bg-card)] border border-[var(--bg-border)]">
+      <p className="text-[7px] uppercase tracking-[0.15em] text-[var(--text-muted)] mb-0.5">{label}</p>
+      <p className="text-sm font-bold font-mono leading-none" style={{ color }}>{value}</p>
+      {sub && <p className="text-[9px] text-[var(--text-muted)] mt-0.5 opacity-60">{sub}</p>}
+    </div>
+  );
+}

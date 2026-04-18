@@ -38,6 +38,7 @@ import ThresholdsPage from "@/pages/ThresholdsPage";
 import BandwidthPage from "@/pages/BandwidthPage";
 import BackupPage from "@/pages/BackupPage";
 import ClientPortalPage from "@/pages/ClientPortalPage";
+import ClientOverviewPage from "@/pages/ClientOverviewPage";
 import SecurityDashboardPage from "@/pages/SecurityDashboardPage";
 import ExternalMonitorPage from "@/pages/ExternalMonitorPage";
 import Layout from "@/components/Layout";
@@ -195,6 +196,7 @@ function App() {
               <Route path="alerts" element={<AlertsPage />} />
               <Route path="alerts/:id" element={<AlertDetailPage />} />
               <Route path="clients" element={<ClientsPage />} />
+              <Route path="client/:clientId" element={<ClientOverviewPage />} />
               <Route path="devices" element={<DevicesPage />} />
               <Route path="enterprise" element={<EnterprisePage />} />
               <Route path="connectors" element={<ConnectorsPage />} />
