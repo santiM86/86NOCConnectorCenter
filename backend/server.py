@@ -346,6 +346,26 @@ async def startup_event():
             "created_at_ts", expireAfterSeconds=86400 * 90
         )  # TTL 90 giorni
 
+        # === Enterprise performance indexes (push, quiet hours, on-call, escalation) ===
+        # push_subscriptions: lookup by user_id on every alert
+        await db.push_subscriptions.create_index("user_id")
+        await db.push_subscriptions.create_index("subscription.endpoint")
+        # user_notification_prefs: lookup by user_id on every notification
+        await db.user_notification_prefs.create_index("user_id", unique=True)
+        # users.role: used in send_to_roles + oncall/users
+        await db.users.create_index("role")
+        # users.id: not unique (legacy docs may have null id in some deploys)
+        await db.users.create_index("id")
+        # web_proxy_requests: long-poll query + lookup by request_id
+        await db.web_proxy_requests.create_index([("client_id", 1), ("status", 1)])
+        await db.web_proxy_requests.create_index("request_id")
+        # alerts: escalation scan (active + severity + ack + time)
+        await db.alerts.create_index(
+            [("status", 1), ("severity", 1), ("escalated", 1), ("created_at", 1)]
+        )
+        # alerts.id: not unique (legacy docs with null id)
+        await db.alerts.create_index("id")
+
         # Vulnerability Assessment indexes
         await db.vulnerability_scans.create_index([("client_id", 1), ("timestamp", -1)])
         await db.vulnerability_scans.create_index("timestamp", expireAfterSeconds=86400 * 365)  # TTL 1 anno

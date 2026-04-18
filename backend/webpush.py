@@ -162,14 +162,12 @@ async def _log_delivery(
     outcome: str,
     error: Optional[str] = None,
 ) -> None:
-    """Write a row to notification_delivery_log (best-effort)."""
+    """Write a row to notification_delivery_log (best-effort).
+    Usa cache in-memory con TTL 60s per evitare N+1 sulle users (batch-friendly)."""
     if not log_context or not log_context.get("alert_id"):
         return
     try:
-        # Resolve email (cheap cache-less lookup; usually 1-2 users)
-        user_doc = await db.users.find_one({"id": user_id}, {"_id": 0, "email": 1, "name": 1})
-        user_email = (user_doc or {}).get("email", "")
-        user_name = (user_doc or {}).get("name", "")
+        user_email, user_name = await _get_user_cached(db, user_id)
         now = datetime.now(timezone.utc)
         await db.notification_delivery_log.insert_one(
             {
@@ -188,6 +186,31 @@ async def _log_delivery(
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"[webpush] _log_delivery failed: {exc}")
+
+
+# Cache utenti (user_id -> (email, name, cached_at)) con TTL 60s per evitare N+1
+_USER_CACHE: Dict[str, tuple] = {}
+_USER_CACHE_TTL = 60.0
+
+
+async def _get_user_cached(db, user_id: str) -> tuple:
+    """Return (email, name) per user_id con cache in-memory."""
+    import time
+    now = time.monotonic()
+    cached = _USER_CACHE.get(user_id)
+    if cached and (now - cached[2]) < _USER_CACHE_TTL:
+        return cached[0], cached[1]
+    doc = await db.users.find_one({"id": user_id}, {"_id": 0, "email": 1, "name": 1})
+    email = (doc or {}).get("email", "")
+    name = (doc or {}).get("name", "")
+    _USER_CACHE[user_id] = (email, name, now)
+    # Limite cache a 500 entry per evitare crescita infinita
+    if len(_USER_CACHE) > 500:
+        # Rimuove le 100 più vecchie
+        oldest = sorted(_USER_CACHE.items(), key=lambda kv: kv[1][2])[:100]
+        for k, _ in oldest:
+            _USER_CACHE.pop(k, None)
+    return email, name
 
 
 async def send_to_roles(db, roles: List[str], payload: Dict[str, Any], log_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:

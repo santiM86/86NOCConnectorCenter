@@ -46,7 +46,9 @@ async def save_config(db, cfg: Dict[str, Any]) -> None:
 
 
 async def _run_once(db) -> int:
-    """Run one escalation pass. Returns number of alerts escalated."""
+    """Run one escalation pass. Returns number of alerts escalated.
+    Ottimizzato: usa index composito (status+severity+escalated+created_at),
+    query mirata con projection minima, limite a 100 alert per ciclo."""
     cfg = await get_config(db)
     if not cfg.get("enabled"):
         return 0
@@ -58,7 +60,7 @@ async def _run_once(db) -> int:
     now = datetime.now(timezone.utc)
     cutoff = (now - timedelta(minutes=wait_minutes)).isoformat()
 
-    # Find candidate alerts
+    # Find candidate alerts (usa index status_1_severity_1_escalated_1_created_at_1)
     candidates = await db.alerts.find(
         {
             "status": "active",
@@ -72,7 +74,7 @@ async def _run_once(db) -> int:
             ],
         },
         {"_id": 0},
-    ).to_list(length=100)
+    ).limit(100).to_list(length=100)
 
     if not candidates:
         return 0

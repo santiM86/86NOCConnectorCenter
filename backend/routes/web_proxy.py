@@ -4,28 +4,35 @@ import uuid
 import logging
 import asyncio
 from datetime import datetime, timezone, timedelta
-from collections import defaultdict
 
 from database import db
 from deps import get_current_user, validate_api_key
 
 router = APIRouter(prefix="/api", tags=["web_proxy"])
 
-# Per-client event flags: viene "set" quando arriva una nuova richiesta,
-# così eventuali long-poll bloccati sbloccano immediatamente senza attesa.
-_request_events: dict[str, asyncio.Event] = defaultdict(asyncio.Event)
-# Per-client response ready flags: viene "set" quando il connector fa POST della response,
-# così il polling frontend sblocca subito.
-_response_events: dict[str, asyncio.Event] = defaultdict(asyncio.Event)
+# Per-client event flags: viene "set" quando arriva una nuova richiesta.
+# Sono lightweight (~200 bytes) e bounded al numero di clienti attivi.
+# Vengono ripuliti dopo il timeout di long-poll se non ci sono waiter.
+_request_events: dict[str, asyncio.Event] = {}
+_request_waiters: dict[str, int] = {}
+# Per-response event: sbloccato quando il connector pubblica la response.
+# Auto-cleanup dopo lettura finale.
+_response_events: dict[str, asyncio.Event] = {}
 
 
-def _request_event(client_id: str) -> asyncio.Event:
-    ev = _request_events[client_id]
+def _get_request_event(client_id: str) -> asyncio.Event:
+    ev = _request_events.get(client_id)
+    if ev is None:
+        ev = asyncio.Event()
+        _request_events[client_id] = ev
     return ev
 
 
-def _response_event(request_id: str) -> asyncio.Event:
-    ev = _response_events[request_id]
+def _get_response_event(request_id: str) -> asyncio.Event:
+    ev = _response_events.get(request_id)
+    if ev is None:
+        ev = asyncio.Event()
+        _response_events[request_id] = ev
     return ev
 
 
@@ -54,7 +61,9 @@ async def create_web_proxy_request(request: Request, current_user: dict = Depend
         "created_at": datetime.now(timezone.utc).isoformat(), "response": None
     })
     # Hot-trigger: sblocca eventuale long-poll bloccato sul /pending
-    _request_event(client_id).set()
+    ev = _request_events.get(client_id)
+    if ev is not None:
+        ev.set()
     logging.getLogger("audit").info(
         f"[AUDIT] web_proxy_request | User: {current_user.get('email')} | Device: {device_ip}:{port}{path} | Client: {client_id}"
     )
@@ -81,12 +90,19 @@ async def get_pending_web_proxy_requests(request: Request, wait: int = 0):
 
     if not requests_list and wait > 0:
         wait_clamped = min(int(wait), 25)
-        ev = _request_event(client_id)
+        ev = _get_request_event(client_id)
         ev.clear()
+        _request_waiters[client_id] = _request_waiters.get(client_id, 0) + 1
         try:
             await asyncio.wait_for(ev.wait(), timeout=wait_clamped)
         except asyncio.TimeoutError:
             pass
+        finally:
+            _request_waiters[client_id] = max(0, _request_waiters.get(client_id, 1) - 1)
+            # Se non ci sono più waiter attivi, libera l'evento (cleanup memoria)
+            if _request_waiters.get(client_id, 0) == 0:
+                _request_events.pop(client_id, None)
+                _request_waiters.pop(client_id, None)
         # Refetch after signal/timeout
         requests_list = await _fetch()
 
@@ -118,7 +134,9 @@ async def submit_web_proxy_response(request: Request):
         }}
     )
     # Hot-trigger: sblocca il long-poll della risposta lato frontend
-    _response_event(request_id).set()
+    ev = _response_events.get(request_id)
+    if ev is not None:
+        ev.set()
     return {"status": "ok"}
 
 
@@ -137,7 +155,7 @@ async def get_web_proxy_response(
 
     if wait > 0 and doc.get("status") != "completed":
         wait_clamped = min(int(wait), 25)
-        ev = _response_event(request_id)
+        ev = _get_response_event(request_id)
         try:
             await asyncio.wait_for(ev.wait(), timeout=wait_clamped)
         except asyncio.TimeoutError:
@@ -145,6 +163,8 @@ async def get_web_proxy_response(
         # Refetch fresh state
         doc = await db.web_proxy_requests.find_one({"request_id": request_id}, {"_id": 0})
         if not doc:
+            # Rimuovi evento orfano
+            _response_events.pop(request_id, None)
             raise HTTPException(status_code=404, detail="Request not found")
 
     # Best-effort cleanup of old completed requests
