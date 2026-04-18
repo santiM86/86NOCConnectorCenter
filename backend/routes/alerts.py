@@ -202,6 +202,6 @@ async def get_alert_notification_log(
         raise HTTPException(status_code=403, detail="Solo admin")
 
     entries = await db.notification_delivery_log.find(
-        {"alert_id": alert_id}, {"_id": 0}
+        {"alert_id": alert_id}, {"_id": 0, "created_at_ts": 0}
     ).sort("created_at", 1).to_list(length=500)
     return entries

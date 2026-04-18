@@ -5,7 +5,7 @@ Delivers real push notifications to subscribed browsers / installed PWAs.
 import os
 import json
 import logging
-from datetime import datetime, time as dtime
+from datetime import datetime, time as dtime, timezone
 from typing import Optional, Dict, List, Any
 
 try:
@@ -170,6 +170,7 @@ async def _log_delivery(
         user_doc = await db.users.find_one({"id": user_id}, {"_id": 0, "email": 1, "name": 1})
         user_email = (user_doc or {}).get("email", "")
         user_name = (user_doc or {}).get("name", "")
+        now = datetime.now(timezone.utc)
         await db.notification_delivery_log.insert_one(
             {
                 "alert_id": log_context.get("alert_id"),
@@ -181,7 +182,8 @@ async def _log_delivery(
                 "endpoint": (endpoint[-40:] if endpoint else ""),
                 "outcome": outcome,
                 "error": (error or "")[:300],
-                "created_at": datetime.now().isoformat(),
+                "created_at": now.isoformat(),
+                "created_at_ts": now,  # BSON Date for TTL index
             }
         )
     except Exception as exc:  # noqa: BLE001

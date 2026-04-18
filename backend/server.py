@@ -340,6 +340,12 @@ async def startup_event():
         await db.printer_history.create_index([("client_id", 1), ("device_ip", 1), ("timestamp", -1)])
         await db.printer_history.create_index("timestamp", expireAfterSeconds=86400 * 90)  # TTL 90 giorni
 
+        # Notification delivery log indexes (admin audit)
+        await db.notification_delivery_log.create_index([("alert_id", 1), ("created_at_ts", 1)])
+        await db.notification_delivery_log.create_index(
+            "created_at_ts", expireAfterSeconds=86400 * 90
+        )  # TTL 90 giorni
+
         # Vulnerability Assessment indexes
         await db.vulnerability_scans.create_index([("client_id", 1), ("timestamp", -1)])
         await db.vulnerability_scans.create_index("timestamp", expireAfterSeconds=86400 * 365)  # TTL 1 anno
