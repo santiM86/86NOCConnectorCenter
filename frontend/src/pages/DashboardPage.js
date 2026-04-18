@@ -294,7 +294,23 @@ function ClientCard({ client: c, navigate }) {
       {/* Summary row — always visible with real data */}
       <div className="px-3.5 py-2 grid grid-cols-3 gap-x-3 gap-y-1.5">
         <SvcLine icon={Globe} label="WAN" value={wanLabel} color={wanColor} sub={c.wan?.latency_ms ? `${c.wan.latency_ms}ms` : null} />
-        <SvcLine icon={HardDrives} label="Dispositivi" value={c.devices?.total > 0 ? `${c.devices.online}/${c.devices.total}` : "—"} color={c.devices?.offline > 0 ? "#FF9500" : "#34C759"} sub={c.devices?.offline > 0 ? `${c.devices.offline} off` : null} />
+        <SvcLine
+          icon={HardDrives}
+          label="Dispositivi"
+          value={c.devices?.total > 0 ? `${c.devices.online}/${c.devices.total}` : "—"}
+          color={
+            c.devices?.offline > 0 ? "#FF3B30"
+            : c.devices?.stale > 0 ? "#FF9500"
+            : c.devices?.unknown > 0 ? "#FFCC00"
+            : "#34C759"
+          }
+          sub={
+            c.devices?.offline > 0 ? `${c.devices.offline} off`
+            : c.devices?.stale > 0 ? `${c.devices.stale} stale`
+            : c.devices?.unknown > 0 ? `${c.devices.unknown} non classif.`
+            : null
+          }
+        />
         <SvcLine icon={PlugsConnected} label="Connettore" value={c.connector_online === true ? "ON" : c.connector_online === false ? "OFF" : "—"} color={c.connector_online ? "#34C759" : c.connector_online === false ? "#FF3B30" : "#555"} />
         <SvcLine icon={Database} label="Backup" value={c.backup?.total > 0 ? (c.backup.error > 0 ? `${c.backup.error} ERR` : "OK") : "—"} color={c.backup?.error > 0 ? "#FF3B30" : c.backup?.total > 0 ? "#34C759" : "#555"} />
         <SvcLine icon={Printer} label="Stampanti" value={c.printers?.total > 0 ? (c.printers.low_toner > 0 ? `${c.printers.low_toner} LOW` : "OK") : "—"} color={c.printers?.low_toner > 0 ? "#FF9500" : c.printers?.total > 0 ? "#34C759" : "#555"} />
