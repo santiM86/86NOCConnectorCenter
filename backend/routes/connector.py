@@ -176,7 +176,16 @@ async def force_connector_update(client_id: str, current_user: dict = Depends(ge
         raise HTTPException(status_code=400, detail="Nessun aggiornamento disponibile")
     if not is_newer_version(update_info["version"], connector.get("connector_version", "0.0.0")):
         raise HTTPException(status_code=400, detail="Il connector e' gia' alla versione piu' recente")
-    await db.connector_status.update_one({"client_id": client_id}, {"$set": {"force_update": True}})
+    await db.connector_status.update_one(
+        {"client_id": client_id},
+        {"$set": {
+            "force_update": True,
+            "update_status": "queued",
+            "update_progress": 1,
+            "update_message": f"Aggiornamento forzato a v{update_info['version']} — in attesa heartbeat",
+            "update_timestamp": datetime.now(timezone.utc).isoformat(),
+        }}
+    )
     return {
         "status": "ok",
         "message": f"Aggiornamento forzato per {connector.get('hostname', client_id)}. Verra' applicato al prossimo heartbeat (~60s).",

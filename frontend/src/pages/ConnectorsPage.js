@@ -25,9 +25,19 @@ export default function ConnectorsPage() {
   useEffect(() => {
     fetchAll();
     fetchUpdateInfo();
-    intervalRef.current = setInterval(fetchAll, 15000);
+    intervalRef.current = setInterval(fetchAll, 5000);
     return () => clearInterval(intervalRef.current);
   }, []);
+
+  // Adaptive polling: switch to fast polling (1.5s) when any update is in progress
+  useEffect(() => {
+    const hasActiveUpdate = connectors.some(
+      c => c.update_status && !["completed", "error"].includes(c.update_status)
+    );
+    if (intervalRef.current) clearInterval(intervalRef.current);
+    intervalRef.current = setInterval(fetchAll, hasActiveUpdate ? 1500 : 5000);
+    return () => clearInterval(intervalRef.current);
+  }, [connectors.map(c => `${c.client_id}:${c.update_status}:${c.update_progress}`).join(",")]);
 
   const isNewerVersion = (published, current) => {
     const p = (published || "0.0.0").split(".").map(Number);
@@ -123,6 +133,14 @@ export default function ConnectorsPage() {
     try {
       const res = await axios.post(`${API}/connector/${clientId}/force-update`);
       toast.success(res.data.message);
+      // Optimistic UI: set immediate progress state while we wait for the connector to start
+      setConnectors(prev => prev.map(c =>
+        c.client_id === clientId
+          ? { ...c, update_status: "queued", update_progress: 1, update_message: "Aggiornamento forzato inviato — in attesa del prossimo heartbeat..." }
+          : c
+      ));
+      // Trigger fast polling immediately
+      setTimeout(fetchAll, 1500);
     } catch (e) {
       toast.error(e.response?.data?.detail || "Errore invio aggiornamento forzato");
     }
@@ -382,38 +400,44 @@ export default function ConnectorsPage() {
                   </div>
                 </div>
 
-                {/* Update progress */}
-                {c.update_status && c.update_status !== "completed" && c.update_status !== "error" && c.update_progress > 0 && (
-                  <div className="mx-4 mb-3" data-testid={`update-progress-${c.client_id}`}>
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="text-[10px] text-amber-400 font-medium flex items-center gap-1">
-                        <ArrowsClockwise size={10} className="animate-spin" /> {c.update_message || "Aggiornamento..."}
+                {/* Update progress — sempre visibile durante aggiornamento */}
+                {c.update_status && !["completed", "error"].includes(c.update_status) && (
+                  <div className="mx-4 mb-3 p-3 rounded-lg bg-amber-500/5 border border-amber-500/20" data-testid={`update-progress-${c.client_id}`}>
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-[11px] text-amber-400 font-semibold flex items-center gap-1.5">
+                        <ArrowsClockwise size={12} className="animate-spin" />
+                        {c.update_message || "Aggiornamento in corso..."}
                       </span>
-                      <span className="text-[10px] font-mono text-amber-400">{c.update_progress}%</span>
+                      <span className="text-[11px] font-mono font-bold text-amber-400">{c.update_progress || 0}%</span>
                     </div>
-                    <div className="w-full h-1.5 rounded-full bg-[var(--bg-hover)] overflow-hidden">
-                      <div className="h-full rounded-full bg-amber-500 transition-all duration-500" style={{ width: `${c.update_progress}%` }} />
+                    <div className="w-full h-2.5 rounded-full bg-[var(--bg-panel)] overflow-hidden relative">
+                      <div
+                        className="h-full rounded-full bg-gradient-to-r from-amber-500 to-amber-400 transition-all duration-500 relative"
+                        style={{ width: `${c.update_progress || 3}%` }}
+                      >
+                        <div className="absolute inset-0 bg-white/20 animate-pulse" />
+                      </div>
                     </div>
+                    <p className="text-[9px] text-[var(--text-muted)] mt-1.5 font-mono uppercase tracking-wider">
+                      Stato: {c.update_status}
+                    </p>
                   </div>
                 )}
                 {c.update_status === "completed" && (
-                  <div className="mx-4 mb-3 flex items-center justify-between">
-                    <span className="text-[10px] text-emerald-400 font-medium flex items-center gap-1"><CheckCircle size={10} /> Aggiornamento completato!</span>
+                  <div className="mx-4 mb-3 p-2 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-between">
+                    <span className="text-[11px] text-emerald-400 font-semibold flex items-center gap-1.5">
+                      <CheckCircle size={12} weight="bold" /> Aggiornamento completato con successo!
+                    </span>
                     <button onClick={() => resetUpdateStatus(c.client_id)}
                       className="text-[9px] px-2 py-0.5 rounded bg-[var(--bg-hover)] text-[var(--text-muted)] hover:text-amber-400 hover:bg-amber-500/10 border border-[var(--bg-border)] transition-colors"
-                      data-testid={`reset-update-${c.client_id}`}>Reset Stato</button>
-                  </div>
-                )}
-                {c.update_status === "restarting" && (
-                  <div className="mx-4 mb-3 flex items-center justify-between">
-                    <span className="text-[10px] text-amber-400 font-medium flex items-center gap-1"><ArrowsClockwise size={10} className="animate-spin" /> Riavvio in corso...</span>
-                    <button onClick={() => resetUpdateStatus(c.client_id)}
-                      className="text-[9px] px-2 py-0.5 rounded bg-[var(--bg-hover)] text-[var(--text-muted)] hover:text-amber-400 hover:bg-amber-500/10 border border-[var(--bg-border)] transition-colors">Reset</button>
+                      data-testid={`reset-update-${c.client_id}`}>Chiudi</button>
                   </div>
                 )}
                 {c.update_status === "error" && (
-                  <div className="mx-4 mb-3 flex items-center justify-between">
-                    <span className="text-[10px] text-red-400 font-medium flex items-center gap-1"><Warning size={10} /> {c.update_message || "Errore"}</span>
+                  <div className="mx-4 mb-3 p-2 rounded-lg bg-red-500/10 border border-red-500/20 flex items-center justify-between">
+                    <span className="text-[11px] text-red-400 font-semibold flex items-center gap-1.5">
+                      <Warning size={12} weight="bold" /> Errore: {c.update_message || "Aggiornamento fallito"}
+                    </span>
                     <button onClick={() => resetUpdateStatus(c.client_id)}
                       className="text-[9px] px-2 py-0.5 rounded bg-red-500/10 text-red-400 hover:bg-red-500/20 border border-red-500/20 transition-colors">Chiudi</button>
                   </div>
