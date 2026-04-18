@@ -15,7 +15,8 @@ import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import VaultPage from "./VaultPage";
-import { useWebConsole, WebConsoleModal, canOpenWebConsole, defaultWebPort } from "@/components/WebConsole";
+import { canOpenWebConsole, defaultWebPort } from "@/components/WebConsole";
+import { useWebConsoleTabs } from "@/components/WebConsoleTabs";
 import DiscoveryPage from "./DiscoveryPage";
 import VulnerabilityPage from "./VulnerabilityPage";
 
@@ -552,7 +553,7 @@ function DeviceGroup({ label, icon: Icon, devices, color }) {
 function DevicesTab({ devices, clientId, onRefresh }) {
   const [showAdd, setShowAdd] = useState(false);
   const [saving, setSaving] = useState(false);
-  const webConsole = useWebConsole();
+  const webConsole = useWebConsoleTabs();
   const emptyForm = {
     name: "", ip: "", device_type: "generic", monitor_type: "snmp",
     snmp_version: "v2c", community: "public", http_port: "80",
@@ -851,12 +852,6 @@ function DevicesTab({ devices, clientId, onRefresh }) {
           </div>
         </DialogContent>
       </Dialog>
-
-      <WebConsoleModal
-        state={webConsole.state}
-        onClose={webConsole.close}
-        onReload={() => webConsole.state && webConsole.open(webConsole.state.clientId, webConsole.state.deviceIp, webConsole.state.port, webConsole.state.path)}
-      />
     </div>
   );
 }

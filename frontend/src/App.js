@@ -5,6 +5,7 @@ import axios from "axios";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 import { PwaProvider } from "@/components/PwaProvider";
+import { WebConsoleTabsProvider } from "@/components/WebConsoleTabs";
 import { PwaInstallBanner, NotificationPermissionBanner, OfflineIndicator } from "@/components/PwaBanners";
 import { UpdateBanner, VersionProvider } from "@/components/AppVersion";
 
@@ -180,6 +181,7 @@ function App() {
       <AuthProvider>
         <VersionProvider>
         <PwaProvider>
+        <WebConsoleTabsProvider>
         <BrowserRouter>
           <OfflineIndicator />
           <UpdateBanner />
@@ -231,6 +233,7 @@ function App() {
           <NotificationPermissionBanner />
         </BrowserRouter>
         <Toaster position="top-right" theme="dark" />
+        </WebConsoleTabsProvider>
         </PwaProvider>
         </VersionProvider>
       </AuthProvider>
