@@ -348,7 +348,7 @@ async def run_probe_cycle():
             if prev_status and prev_status != r["status"]:
                 severity = "critical" if r["status"] == "offline" else "high" if r["status"] == "degraded" else "low"
                 if r["status"] == "offline" or r["status"] == "degraded":
-                    await db.alerts.insert_one({
+                    _ext_alert = {
                         "id": str(uuid.uuid4()),
                         "client_id": cid,
                         "device_id": tid,
@@ -358,7 +358,13 @@ async def run_probe_cycle():
                         "message": f"{r['label']} ({r['public_ip']}) non raggiungibile dall'esterno. Latenza: {r['ping']['latency_ms']}ms, Loss: {r['ping']['packet_loss_pct']}%",
                         "status": "active",
                         "created_at": now_iso,
-                    })
+                    }
+                    await db.alerts.insert_one(_ext_alert)
+                    try:
+                        import webpush as _wp
+                        await _wp.notify_new_alert(db, _ext_alert)
+                    except Exception:
+                        pass
                 elif r["status"] == "online" and prev_status in ("offline", "degraded"):
                     # Auto-resolve previous alert
                     await db.alerts.update_many(

@@ -114,6 +114,11 @@ class ConnectorWatchdog:
                         "created_at": now.isoformat(),
                     }
                     await self.db.alerts.insert_one(alert_doc)
+                    try:
+                        import webpush as _wp
+                        await _wp.notify_new_alert(self.db, alert_doc)
+                    except Exception:
+                        pass
                     # Mark connector as offline in its status doc (so UI shows it too)
                     await self.db.connector_status.update_one(
                         {"client_id": client_id},

@@ -586,7 +586,7 @@ class RedfishPoller:
                 "status": "active",
             })
             if not existing:
-                await self.db.alerts.insert_one({
+                _rf_alert = {
                     "id": str(uuid.uuid4()),
                     "client_id": client_id,
                     "device_ip": device_ip,
@@ -598,7 +598,13 @@ class RedfishPoller:
                     "message": alert["message"],
                     "status": "active",
                     "created_at": datetime.now(timezone.utc).isoformat(),
-                })
+                }
+                await self.db.alerts.insert_one(_rf_alert)
+                try:
+                    import webpush as _wp
+                    await _wp.notify_new_alert(self.db, _rf_alert)
+                except Exception:
+                    pass
 
     async def _get(self, client: httpx.AsyncClient, url: str, auth: tuple) -> Optional[dict]:
         """Safe GET request with error handling."""

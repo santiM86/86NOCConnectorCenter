@@ -504,7 +504,7 @@ async def _check_device_thresholds(client_id: str, dev: dict, prev_status: Optio
         })
         if existing:
             continue
-        await db.alerts.insert_one({
+        _conn_alert = {
             "id": str(uuid.uuid4()),
             "client_id": client_id,
             "device_ip": device_ip,
@@ -517,7 +517,13 @@ async def _check_device_thresholds(client_id: str, dev: dict, prev_status: Optio
             "status": "active",
             "acknowledged_by": None, "acknowledged_at": None, "resolved_at": None,
             "created_at": now_iso,
-        })
+        }
+        await db.alerts.insert_one(_conn_alert)
+        try:
+            import webpush as _wp
+            await _wp.notify_new_alert(db, _conn_alert)
+        except Exception:
+            pass
 
 
 @router.post("/connector/device-report")
@@ -970,7 +976,7 @@ async def connector_network_discovery(request: Request):
             "client_id": client_id, "title": a["title"], "status": "active"
         })
         if not existing:
-            await db.alerts.insert_one({
+            _conn2_alert = {
                 "id": str(uuid.uuid4()),
                 "client_id": client_id,
                 "device_ip": a["device_ip"],
@@ -983,7 +989,13 @@ async def connector_network_discovery(request: Request):
                 "status": "active",
                 "acknowledged_by": None, "acknowledged_at": None, "resolved_at": None,
                 "created_at": now_iso_alerts,
-            })
+            }
+            await db.alerts.insert_one(_conn2_alert)
+            try:
+                import webpush as _wp
+                await _wp.notify_new_alert(db, _conn2_alert)
+            except Exception:
+                pass
 
     # Store high-speed port info
     await db.port_speeds.delete_many({"client_id": client_id})
