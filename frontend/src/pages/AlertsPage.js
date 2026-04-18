@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import axios from "axios";
 import { API } from "@/App";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import { 
   FunnelSimple, MagnifyingGlass, CaretDown, Check
@@ -17,8 +17,25 @@ export default function AlertsPage() {
   const [alerts, setAlerts] = useState([]);
   const [clients, setClients] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [filters, setFilters] = useState({ status: "", severity: "", client_id: "", device_type: "", search: "" });
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [filters, setFilters] = useState({
+    status: searchParams.get("status") || "",
+    severity: searchParams.get("severity") || "",
+    client_id: searchParams.get("client_id") || "",
+    device_type: searchParams.get("device_type") || "",
+    search: "",
+  });
   const navigate = useNavigate();
+
+  // Sync filters -> URL so the state is shareable and the back button works as expected
+  useEffect(() => {
+    const params = new URLSearchParams();
+    if (filters.status) params.set("status", filters.status);
+    if (filters.severity) params.set("severity", filters.severity);
+    if (filters.client_id) params.set("client_id", filters.client_id);
+    if (filters.device_type) params.set("device_type", filters.device_type);
+    setSearchParams(params, { replace: true });
+  }, [filters.status, filters.severity, filters.client_id, filters.device_type, setSearchParams]);
 
   useEffect(() => { fetchAlerts(); fetchClients(); }, [filters.status, filters.severity, filters.client_id, filters.device_type]);
 
