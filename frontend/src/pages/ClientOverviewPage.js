@@ -7,8 +7,13 @@ import {
   ArrowLeft, HardDrives, Globe, Printer, Database, ShieldCheck,
   Lightning, WifiHigh, WifiSlash, PlugsConnected, CaretDown,
   CheckCircle, Warning, ArrowClockwise, Bell, ChartLine, Monitor,
+  Plus, Trash,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 const STATUS_COLOR = { online: "#34C759", offline: "#FF3B30", active: "#FFCC00", degraded: "#FF9500", unknown: "#555" };
 
@@ -123,7 +128,7 @@ export default function ClientOverviewPage() {
       {/* Tab Content */}
       <div className="min-h-[400px]">
         {activeTab === "overview" && <OverviewTab devices={devices} wanTargets={wanTargets} alerts={alerts} connector={connector} printers={printers} backups={backups} firewalls={firewalls} switches={switches} servers={servers} />}
-        {activeTab === "devices" && <DevicesTab devices={devices} />}
+        {activeTab === "devices" && <DevicesTab devices={devices} clientId={clientId} onRefresh={fetchAll} />}
         {activeTab === "wan" && <WanTab targets={wanTargets} />}
         {activeTab === "alerts" && <AlertsTab alerts={alerts} navigate={navigate} />}
         {activeTab === "printers" && <PrintersTab printers={printers} />}
@@ -261,39 +266,280 @@ function DeviceGroup({ label, icon: Icon, devices, color }) {
 }
 
 /* ==================== DEVICES TAB ==================== */
-function DevicesTab({ devices }) {
+function DevicesTab({ devices, clientId, onRefresh }) {
+  const [showAdd, setShowAdd] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const emptyForm = {
+    name: "", ip: "", device_type: "generic", monitor_type: "snmp",
+    snmp_version: "v2c", community: "public", http_port: "80",
+    snmpv3_username: "", snmpv3_auth_protocol: "SHA", snmpv3_auth_password: "",
+    snmpv3_priv_protocol: "AES", snmpv3_priv_password: "",
+    snmpv3_security_level: "authPriv",
+  };
+  const [form, setForm] = useState(emptyForm);
+
+  const handleSave = async () => {
+    if (!form.ip || !form.name) {
+      toast.error("Nome e IP sono obbligatori");
+      return;
+    }
+    setSaving(true);
+    try {
+      const payload = {
+        name: form.name,
+        ip: form.ip,
+        device_type: form.device_type,
+        monitor_type: form.monitor_type,
+        http_port: form.monitor_type === "http" ? parseInt(form.http_port || 80) : 80,
+        community: form.monitor_type === "snmp" && form.snmp_version !== "v3" ? (form.community || "public") : "",
+        snmp_version: form.snmp_version,
+      };
+      if (form.monitor_type === "snmp" && form.snmp_version === "v3") {
+        payload.snmpv3_username = form.snmpv3_username;
+        payload.snmpv3_auth_protocol = form.snmpv3_auth_protocol;
+        payload.snmpv3_auth_password = form.snmpv3_auth_password;
+        payload.snmpv3_priv_protocol = form.snmpv3_priv_protocol;
+        payload.snmpv3_priv_password = form.snmpv3_priv_password;
+        payload.snmpv3_security_level = form.snmpv3_security_level;
+      }
+      await axios.post(`${API}/connector/${clientId}/managed-devices`, payload);
+      toast.success(`Dispositivo ${form.name} aggiunto. Il connector lo rileverà entro pochi cicli.`);
+      setForm(emptyForm);
+      setShowAdd(false);
+      onRefresh?.();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Errore nel salvataggio");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDelete = async (dev) => {
+    if (!window.confirm(`Rimuovere "${dev.name}" (${dev.ip_address}) dal monitoraggio?`)) return;
+    try {
+      // For manual devices we have an id; for connector-discovered we use the device-poll-status endpoint
+      if (dev.source === "connector" && !dev.id) {
+        await axios.delete(`${API}/connector/device-poll-status/${encodeURIComponent(dev.ip_address)}`);
+      } else if (dev.id) {
+        await axios.delete(`${API}/connector/${clientId}/managed-devices/${dev.id}`);
+      } else {
+        await axios.delete(`${API}/connector/device-poll-status/${encodeURIComponent(dev.ip_address)}`);
+      }
+      toast.success("Dispositivo rimosso");
+      onRefresh?.();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Errore rimozione");
+    }
+  };
+
   return (
-    <div className="noc-panel overflow-hidden">
-      <table className="alert-table" data-testid="client-devices-table">
-        <thead>
-          <tr><th>Nome</th><th>Tipo</th><th>IP</th><th>SNMP</th><th>Community</th><th>Stato</th><th>Fonte</th><th>Ultimo Poll</th></tr>
-        </thead>
-        <tbody>
-          {devices.length === 0 ? (
-            <tr><td colSpan={8} className="text-center text-[var(--text-muted)] py-8 text-xs">Nessun dispositivo</td></tr>
-          ) : devices.map((d, i) => {
-            const sc = STATUS_COLOR[d.status] || "#555";
-            return (
-              <tr key={i}>
-                <td className="text-[var(--text-primary)] text-xs font-medium">{d.name}</td>
-                <td><span className="text-[10px] px-1.5 py-0.5 rounded border border-[var(--bg-border)]">{d.device_type}</span></td>
-                <td className="font-mono text-[var(--text-muted)] text-xs">{d.ip_address}</td>
-                <td className="text-[10px] text-[var(--text-muted)]">{d.snmp_version || d.monitor_type || "—"}</td>
-                <td className="text-[10px] font-mono text-[var(--text-muted)]">{d.snmp_community || "—"}</td>
-                <td>
-                  <span className="inline-flex items-center gap-1 text-[10px] font-bold" style={{ color: sc }}>
-                    {d.status === "online" || d.status === "active" ? <WifiHigh size={12} /> : <WifiSlash size={12} />}
-                    {d.status?.toUpperCase()}
-                  </span>
-                  {d.ping_ms && <span className="ml-1 text-[9px] text-[var(--text-muted)]">{d.ping_ms}ms</span>}
-                </td>
-                <td>{d.source === "connector" ? <span className="text-[8px] px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 font-bold">CONNECTOR</span> : <span className="text-[8px] text-[var(--text-muted)]">Manuale</span>}</td>
-                <td className="text-[9px] text-[var(--text-muted)]">{d.last_poll ? new Date(d.last_poll).toLocaleString("it-IT", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "—"}</td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <p className="text-[10px] text-[var(--text-muted)]">
+          {devices.length} dispositivi totali — i dispositivi manuali vengono interrogati dal connector entro pochi cicli di polling
+        </p>
+        <Button
+          onClick={() => { setForm(emptyForm); setShowAdd(true); }}
+          className="bg-indigo-600 hover:bg-indigo-700 text-white h-8 text-xs gap-1"
+          data-testid="add-client-device-btn"
+        >
+          <Plus size={14} weight="bold" /> Aggiungi Dispositivo
+        </Button>
+      </div>
+
+      <div className="noc-panel overflow-hidden">
+        <table className="alert-table" data-testid="client-devices-table">
+          <thead>
+            <tr><th>Nome</th><th>Tipo</th><th>IP</th><th>SNMP</th><th>Community</th><th>Stato</th><th>Fonte</th><th>Ultimo Poll</th><th></th></tr>
+          </thead>
+          <tbody>
+            {devices.length === 0 ? (
+              <tr><td colSpan={9} className="text-center text-[var(--text-muted)] py-8 text-xs">Nessun dispositivo — clicca "Aggiungi Dispositivo" per iniziare</td></tr>
+            ) : devices.map((d, i) => {
+              const sc = STATUS_COLOR[d.status] || "#555";
+              return (
+                <tr key={i}>
+                  <td className="text-[var(--text-primary)] text-xs font-medium">{d.name}</td>
+                  <td><span className="text-[10px] px-1.5 py-0.5 rounded border border-[var(--bg-border)]">{d.device_type}</span></td>
+                  <td className="font-mono text-[var(--text-muted)] text-xs">{d.ip_address}</td>
+                  <td className="text-[10px] text-[var(--text-muted)]">{d.snmp_version || d.monitor_type || "—"}</td>
+                  <td className="text-[10px] font-mono text-[var(--text-muted)]">{d.snmp_community || "—"}</td>
+                  <td>
+                    <span className="inline-flex items-center gap-1 text-[10px] font-bold" style={{ color: sc }}>
+                      {d.status === "online" || d.status === "active" ? <WifiHigh size={12} /> : <WifiSlash size={12} />}
+                      {d.status?.toUpperCase()}
+                    </span>
+                    {d.ping_ms && <span className="ml-1 text-[9px] text-[var(--text-muted)]">{d.ping_ms}ms</span>}
+                  </td>
+                  <td>{d.source === "connector" ? <span className="text-[8px] px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 font-bold">CONNECTOR</span> : <span className="text-[8px] text-[var(--text-muted)]">Manuale</span>}</td>
+                  <td className="text-[9px] text-[var(--text-muted)]">{d.last_poll ? new Date(d.last_poll).toLocaleString("it-IT", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "—"}</td>
+                  <td>
+                    <button
+                      onClick={() => handleDelete(d)}
+                      className="p-1 rounded hover:bg-[var(--critical-bg)] text-[var(--critical)] transition-colors"
+                      title="Rimuovi"
+                      data-testid={`delete-device-${d.ip_address}`}
+                    >
+                      <Trash size={12} />
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Add Device Dialog */}
+      <Dialog open={showAdd} onOpenChange={setShowAdd}>
+        <DialogContent className="bg-[var(--bg-card)] border-[var(--bg-border)] max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="text-[var(--text-primary)] flex items-center gap-2">
+              <HardDrives size={18} className="text-indigo-400" /> Aggiungi Dispositivo
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-[var(--text-muted)] text-[10px]">Nome Dispositivo *</Label>
+                <Input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="Switch Core 01" className="bg-[var(--bg-panel)] border-[var(--bg-border)] text-[var(--text-primary)] h-8 text-xs" data-testid="device-name-input" />
+              </div>
+              <div>
+                <Label className="text-[var(--text-muted)] text-[10px]">IP Address *</Label>
+                <Input value={form.ip} onChange={e => setForm({ ...form, ip: e.target.value })} placeholder="192.168.1.10" className="bg-[var(--bg-panel)] border-[var(--bg-border)] text-[var(--text-primary)] h-8 text-xs font-mono" data-testid="device-ip-input" />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-[var(--text-muted)] text-[10px]">Tipo Dispositivo</Label>
+                <Select value={form.device_type} onValueChange={v => setForm({ ...form, device_type: v })}>
+                  <SelectTrigger className="bg-[var(--bg-panel)] border-[var(--bg-border)] text-[var(--text-primary)] h-8 text-xs" data-testid="device-type-select"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="generic">Generico</SelectItem>
+                    <SelectItem value="switch">Switch</SelectItem>
+                    <SelectItem value="firewall">Firewall</SelectItem>
+                    <SelectItem value="router">Router</SelectItem>
+                    <SelectItem value="server">Server</SelectItem>
+                    <SelectItem value="ilo">HPE iLO / BMC</SelectItem>
+                    <SelectItem value="printer">Stampante</SelectItem>
+                    <SelectItem value="ups">UPS</SelectItem>
+                    <SelectItem value="ap">Access Point</SelectItem>
+                    <SelectItem value="nas">NAS / Storage</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label className="text-[var(--text-muted)] text-[10px]">Metodo Monitoraggio</Label>
+                <Select value={form.monitor_type} onValueChange={v => setForm({ ...form, monitor_type: v })}>
+                  <SelectTrigger className="bg-[var(--bg-panel)] border-[var(--bg-border)] text-[var(--text-primary)] h-8 text-xs" data-testid="monitor-type-select"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="snmp">SNMP</SelectItem>
+                    <SelectItem value="ping">Ping (ICMP)</SelectItem>
+                    <SelectItem value="http">HTTP/HTTPS</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            {form.monitor_type === "http" && (
+              <div>
+                <Label className="text-[var(--text-muted)] text-[10px]">Porta HTTP/HTTPS</Label>
+                <Input type="number" value={form.http_port} onChange={e => setForm({ ...form, http_port: e.target.value })} placeholder="80" className="bg-[var(--bg-panel)] border-[var(--bg-border)] text-[var(--text-primary)] h-8 text-xs" />
+              </div>
+            )}
+
+            {form.monitor_type === "snmp" && (
+              <div className="p-2.5 rounded-lg bg-[var(--bg-panel)] border border-[var(--bg-border)] space-y-2">
+                <div>
+                  <Label className="text-[var(--text-muted)] text-[10px]">Versione SNMP</Label>
+                  <Select value={form.snmp_version} onValueChange={v => setForm({ ...form, snmp_version: v })}>
+                    <SelectTrigger className="bg-[var(--bg-card)] border-[var(--bg-border)] text-[var(--text-primary)] h-8 text-xs" data-testid="snmp-version-select"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="v1">v1</SelectItem>
+                      <SelectItem value="v2c">v2c</SelectItem>
+                      <SelectItem value="v3">v3 (sicuro)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                {form.snmp_version !== "v3" ? (
+                  <div>
+                    <Label className="text-[var(--text-muted)] text-[10px]">Community String</Label>
+                    <Input value={form.community} onChange={e => setForm({ ...form, community: e.target.value })} placeholder="public" className="bg-[var(--bg-card)] border-[var(--bg-border)] text-[var(--text-primary)] h-8 text-xs font-mono" data-testid="snmp-community-input" />
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <Label className="text-[var(--text-muted)] text-[10px]">Username</Label>
+                        <Input value={form.snmpv3_username} onChange={e => setForm({ ...form, snmpv3_username: e.target.value })} className="bg-[var(--bg-card)] border-[var(--bg-border)] text-[var(--text-primary)] h-8 text-xs" />
+                      </div>
+                      <div>
+                        <Label className="text-[var(--text-muted)] text-[10px]">Security Level</Label>
+                        <Select value={form.snmpv3_security_level} onValueChange={v => setForm({ ...form, snmpv3_security_level: v })}>
+                          <SelectTrigger className="bg-[var(--bg-card)] border-[var(--bg-border)] text-[var(--text-primary)] h-8 text-xs"><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="noAuthNoPriv">noAuthNoPriv</SelectItem>
+                            <SelectItem value="authNoPriv">authNoPriv</SelectItem>
+                            <SelectItem value="authPriv">authPriv</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+                    {form.snmpv3_security_level !== "noAuthNoPriv" && (
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <Label className="text-[var(--text-muted)] text-[10px]">Auth Protocol</Label>
+                          <Select value={form.snmpv3_auth_protocol} onValueChange={v => setForm({ ...form, snmpv3_auth_protocol: v })}>
+                            <SelectTrigger className="bg-[var(--bg-card)] border-[var(--bg-border)] text-[var(--text-primary)] h-8 text-xs"><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="MD5">MD5</SelectItem>
+                              <SelectItem value="SHA">SHA</SelectItem>
+                              <SelectItem value="SHA256">SHA256</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div>
+                          <Label className="text-[var(--text-muted)] text-[10px]">Auth Password</Label>
+                          <Input type="password" value={form.snmpv3_auth_password} onChange={e => setForm({ ...form, snmpv3_auth_password: e.target.value })} className="bg-[var(--bg-card)] border-[var(--bg-border)] text-[var(--text-primary)] h-8 text-xs" />
+                        </div>
+                      </div>
+                    )}
+                    {form.snmpv3_security_level === "authPriv" && (
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <Label className="text-[var(--text-muted)] text-[10px]">Priv Protocol</Label>
+                          <Select value={form.snmpv3_priv_protocol} onValueChange={v => setForm({ ...form, snmpv3_priv_protocol: v })}>
+                            <SelectTrigger className="bg-[var(--bg-card)] border-[var(--bg-border)] text-[var(--text-primary)] h-8 text-xs"><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="DES">DES</SelectItem>
+                              <SelectItem value="AES">AES</SelectItem>
+                              <SelectItem value="AES256">AES256</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div>
+                          <Label className="text-[var(--text-muted)] text-[10px]">Priv Password</Label>
+                          <Input type="password" value={form.snmpv3_priv_password} onChange={e => setForm({ ...form, snmpv3_priv_password: e.target.value })} className="bg-[var(--bg-card)] border-[var(--bg-border)] text-[var(--text-primary)] h-8 text-xs" />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
+            <Button
+              onClick={handleSave}
+              disabled={saving}
+              className="w-full bg-indigo-600 hover:bg-indigo-700 text-white"
+              data-testid="save-device-btn"
+            >
+              {saving ? <ArrowClockwise size={14} className="animate-spin mr-1" /> : <Plus size={14} className="mr-1" />}
+              {saving ? "Salvataggio..." : "Aggiungi al Monitoraggio"}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
