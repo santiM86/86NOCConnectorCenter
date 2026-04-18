@@ -336,11 +336,25 @@ class RedfishPoller:
             }
 
             # Find client_id for this device
-            existing = await self.db.device_poll_status.find_one(
-                {"device_ip": device_ip}, {"_id": 0, "client_id": 1}
-            )
-            if existing and existing.get("client_id"):
-                update_doc["client_id"] = existing["client_id"]
+            # 1) Prefer client_id from the vault credential (most reliable for new devices)
+            # 2) Fallback to existing device_poll_status client_id
+            # 3) Fallback to managed_devices client_id
+            client_id_to_set = cred.get("client_id")
+            if not client_id_to_set:
+                existing = await self.db.device_poll_status.find_one(
+                    {"device_ip": device_ip}, {"_id": 0, "client_id": 1}
+                )
+                if existing and existing.get("client_id"):
+                    client_id_to_set = existing["client_id"]
+            if not client_id_to_set:
+                md = await self.db.managed_devices.find_one(
+                    {"ip": device_ip}, {"_id": 0, "client_id": 1}
+                )
+                if md and md.get("client_id"):
+                    client_id_to_set = md["client_id"]
+            if client_id_to_set:
+                update_doc["client_id"] = client_id_to_set
+                update_doc["device_type"] = "ilo"
 
             await self.db.device_poll_status.update_one(
                 {"device_ip": device_ip},
@@ -351,7 +365,7 @@ class RedfishPoller:
             # Historical metrics
             main_temp = result["temperatures"][0]["value"] if result["temperatures"] else None
             await self.db.device_metrics_history.insert_one({
-                "client_id": update_doc.get("client_id"),
+                "client_id": client_id_to_set,
                 "device_ip": device_ip,
                 "timestamp": now_iso,
                 "power_watts": result["power_watts"],

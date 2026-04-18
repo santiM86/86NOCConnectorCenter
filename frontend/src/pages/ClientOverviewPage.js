@@ -30,6 +30,7 @@ export default function ClientOverviewPage() {
   const [printers, setPrinters] = useState([]);
   const [backups, setBackups] = useState([]);
   const [connector, setConnector] = useState(null);
+  const [iloHealth, setIloHealth] = useState([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState("overview");
 
@@ -65,6 +66,10 @@ export default function ClientOverviewPage() {
     try {
       const bkpRes = await axios.get(`${API}/backup/status?client_id=${clientId}`);
       setBackups(bkpRes.data || []);
+    } catch {}
+    try {
+      const iloRes = await axios.get(`${API}/clients/${clientId}/ilo-health`);
+      setIloHealth(iloRes.data || []);
     } catch {}
     setLoading(false);
   }, [clientId]);
@@ -140,7 +145,7 @@ export default function ClientOverviewPage() {
 
       {/* Tab Content */}
       <div className="min-h-[400px]">
-        {activeTab === "overview" && <OverviewTab devices={devices} wanTargets={wanTargets} alerts={alerts} connector={connector} printers={printers} backups={backups} firewalls={firewalls} switches={switches} servers={servers} upsList={upsList} nasList={nasList} apList={apList} tvccList={tvccList} printersList={printersList} others={others} />}
+        {activeTab === "overview" && <OverviewTab devices={devices} wanTargets={wanTargets} alerts={alerts} connector={connector} printers={printers} backups={backups} firewalls={firewalls} switches={switches} servers={servers} upsList={upsList} nasList={nasList} apList={apList} tvccList={tvccList} printersList={printersList} others={others} iloHealth={iloHealth} />}
         {activeTab === "devices" && <DevicesTab devices={devices} clientId={clientId} onRefresh={fetchAll} />}
         {activeTab === "wan" && <WanTab targets={wanTargets} clientId={clientId} clientName={client.name} onRefresh={fetchAll} />}
         {activeTab === "alerts" && <AlertsTab alerts={alerts} navigate={navigate} />}
@@ -155,9 +160,13 @@ export default function ClientOverviewPage() {
 }
 
 /* ==================== OVERVIEW TAB ==================== */
-function OverviewTab({ devices, wanTargets, alerts, connector, printers, backups, firewalls, switches, servers, upsList, nasList, apList, tvccList, printersList, others }) {
+function OverviewTab({ devices, wanTargets, alerts, connector, printers, backups, firewalls, switches, servers, upsList, nasList, apList, tvccList, printersList, others, iloHealth }) {
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+    <div className="space-y-4">
+      {/* iLO Hardware Health Panel (only shown when we have iLO data) */}
+      {iloHealth && iloHealth.length > 0 && <IloHealthPanel iloHealth={iloHealth} />}
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
       {/* Network Map */}
       <div className="noc-panel p-4">
         <h3 className="text-[9px] font-bold uppercase tracking-[0.15em] text-indigo-400 mb-3">Infrastruttura di Rete</h3>
@@ -262,6 +271,100 @@ function OverviewTab({ devices, wanTargets, alerts, connector, printers, backups
           </div>
         )}
       </div>
+      </div>
+    </div>
+  );
+}
+
+/* ==================== ILO HEALTH PANEL ==================== */
+function IloHealthPanel({ iloHealth }) {
+  const healthColor = (h) => ({ ok: "#34C759", warning: "#FFCC00", critical: "#FF3B30" }[(h || "").toLowerCase()] || "#64748B");
+  return (
+    <div className="noc-panel p-4" data-testid="ilo-health-panel">
+      <div className="flex items-center gap-2 mb-3">
+        <Monitor size={14} weight="bold" className="text-cyan-400" />
+        <h3 className="text-[10px] font-bold uppercase tracking-[0.15em] text-cyan-400">Hardware iLO (Redfish) — {iloHealth.length} server</h3>
+      </div>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+        {iloHealth.map((s, idx) => {
+          const hc = healthColor(s.health_status);
+          const mainTemp = s.temperatures?.[0];
+          const okPsus = (s.power_supplies || []).filter(p => p.health === "ok" || p.condition === "ok").length;
+          const totPsus = (s.power_supplies || []).length;
+          const okFans = (s.fans || []).filter(f => f.condition === "ok").length;
+          const totFans = (s.fans || []).length;
+          return (
+            <div key={idx} className="rounded-lg border p-3" style={{ borderColor: `${hc}30`, background: `${hc}04` }}>
+              <div className="flex items-center justify-between mb-2">
+                <div>
+                  <p className="text-sm font-bold text-[var(--text-primary)]">{s.device_name}</p>
+                  <p className="text-[10px] text-[var(--text-muted)] font-mono">{s.device_ip} — {s.server_model || "?"}</p>
+                </div>
+                <span className="text-[9px] px-2 py-1 rounded font-bold uppercase" style={{ color: hc, background: `${hc}18` }}>
+                  {s.health_status || "?"}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-4 gap-2 mb-3">
+                <MiniMetric label="Alimentazione" value={s.power_watts ? `${s.power_watts}W` : "—"} color="#F59E0B" />
+                <MiniMetric label="Temperatura" value={mainTemp ? `${mainTemp.value}°C` : "—"} sub={mainTemp?.locale?.substring(0, 10)} color={mainTemp?.value > 75 ? "#FF3B30" : "#34C759"} />
+                <MiniMetric label="RAM Totale" value={s.total_memory_gb ? `${s.total_memory_gb}GB` : "—"} color="#8B5CF6" />
+                <MiniMetric label="Ventole" value={totFans > 0 ? `${okFans}/${totFans}` : "—"} color={okFans === totFans ? "#34C759" : "#FF3B30"} />
+              </div>
+
+              <div className="grid grid-cols-2 gap-2 text-[9px]">
+                <div className="p-1.5 rounded bg-[var(--bg-panel)] border border-[var(--bg-border)]">
+                  <span className="text-[var(--text-muted)] uppercase">BIOS</span>{" "}
+                  <span className="text-[var(--text-primary)] font-mono">{s.bios_version || "?"}</span>
+                </div>
+                <div className="p-1.5 rounded bg-[var(--bg-panel)] border border-[var(--bg-border)]">
+                  <span className="text-[var(--text-muted)] uppercase">iLO FW</span>{" "}
+                  <span className="text-[var(--text-primary)] font-mono">{s.ilo_firmware || "?"}</span>
+                </div>
+                <div className="p-1.5 rounded bg-[var(--bg-panel)] border border-[var(--bg-border)]">
+                  <span className="text-[var(--text-muted)] uppercase">S/N</span>{" "}
+                  <span className="text-[var(--text-primary)] font-mono">{s.serial_number || "?"}</span>
+                </div>
+                <div className="p-1.5 rounded bg-[var(--bg-panel)] border border-[var(--bg-border)]">
+                  <span className="text-[var(--text-muted)] uppercase">PSU</span>{" "}
+                  <span className="text-[var(--text-primary)] font-mono">{totPsus > 0 ? `${okPsus}/${totPsus}` : "—"}</span>
+                </div>
+                <div className="p-1.5 rounded bg-[var(--bg-panel)] border border-[var(--bg-border)] col-span-2">
+                  <span className="text-[var(--text-muted)] uppercase">Modalità</span>{" "}
+                  <span className="text-[var(--text-primary)] font-mono uppercase">{s.polling_mode?.replace("_", " ") || "?"}</span>
+                  {s.last_poll && <span className="ml-2 text-[var(--text-muted)]">· {new Date(s.last_poll).toLocaleString("it-IT", { hour: "2-digit", minute: "2-digit", day: "2-digit", month: "short" })}</span>}
+                </div>
+              </div>
+
+              {s.storage_controllers?.length > 0 && (
+                <div className="mt-2 p-2 rounded bg-[var(--bg-panel)] border border-[var(--bg-border)]">
+                  <p className="text-[9px] uppercase tracking-wider text-[var(--text-muted)] mb-1">Storage</p>
+                  {s.storage_controllers.flatMap((c, ci) => (c.drives || []).map((dr, di) => (
+                    <div key={`${ci}-${di}`} className="flex items-center gap-2 text-[10px]">
+                      <Database size={10} className="text-indigo-400" />
+                      <span className="font-mono text-[var(--text-muted)]">{dr.model || "?"}</span>
+                      <span className="text-[var(--text-primary)]">{dr.capacity_gb ? `${dr.capacity_gb}GB` : ""}</span>
+                      <span className="ml-auto text-[9px] px-1 rounded font-bold" style={{ color: dr.health === "ok" ? "#34C759" : "#FF3B30" }}>
+                        {dr.health?.toUpperCase() || "?"}
+                      </span>
+                    </div>
+                  )))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function MiniMetric({ label, value, sub, color }) {
+  return (
+    <div className="px-2 py-1.5 rounded bg-[var(--bg-panel)] border border-[var(--bg-border)] text-center">
+      <p className="text-[7px] uppercase tracking-widest text-[var(--text-muted)] mb-0.5 truncate">{label}</p>
+      <p className="text-[11px] font-bold" style={{ color: color || "var(--text-primary)" }}>{value}</p>
+      {sub && <p className="text-[7px] text-[var(--text-muted)] truncate">{sub}</p>}
     </div>
   );
 }
