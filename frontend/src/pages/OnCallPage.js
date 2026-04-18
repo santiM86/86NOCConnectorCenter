@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import axios from "axios";
 import { API, useAuth } from "@/App";
 import { toast } from "sonner";
-import { Clock, Plus, Trash, UserCircle, ArrowClockwise, CalendarBlank } from "@phosphor-icons/react";
+import { Clock, Plus, Trash, UserCircle, ArrowClockwise, CalendarBlank, ArrowUp } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -25,20 +25,24 @@ export default function OnCallPage() {
   const [cfg, setCfg] = useState({ rotation_enabled: false, timezone: "Europe/Rome", slots: [] });
   const [users, setUsers] = useState([]);
   const [current, setCurrent] = useState({ rotation_enabled: false, active_slots: [], now: "" });
+  const [escCfg, setEscCfg] = useState({ enabled: false, wait_minutes: 5, severities: ["critical"], escalate_to_roles: ["admin"] });
+  const [escBusy, setEscBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
   const fetchAll = async () => {
     setLoading(true);
     try {
-      const [s, u, c] = await Promise.all([
+      const [s, u, c, e] = await Promise.all([
         axios.get(`${API}/oncall/schedule`),
         axios.get(`${API}/oncall/users`),
         axios.get(`${API}/oncall/current`),
+        axios.get(`${API}/escalation/config`),
       ]);
       setCfg(s.data);
       setUsers(u.data);
       setCurrent(c.data);
+      setEscCfg(e.data);
     } catch (e) {
       toast.error("Errore caricamento rotazione on-call");
     } finally {
@@ -47,6 +51,37 @@ export default function OnCallPage() {
   };
 
   useEffect(() => { fetchAll(); }, []);
+
+  const saveEsc = async (next) => {
+    if (!isAdmin) return;
+    setEscBusy(true);
+    try {
+      const body = next || escCfg;
+      const r = await axios.put(`${API}/escalation/config`, body);
+      if (r.data?.success) {
+        setEscCfg(r.data.config);
+        toast.success("Escalation aggiornata");
+      }
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Errore salvataggio");
+    } finally {
+      setEscBusy(false);
+    }
+  };
+
+  const triggerEscalation = async () => {
+    setEscBusy(true);
+    try {
+      const r = await axios.post(`${API}/escalation/run-now`);
+      if (r.data?.success) {
+        toast.success(`Escalation eseguita: ${r.data.escalated} alert`);
+      }
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Errore esecuzione");
+    } finally {
+      setEscBusy(false);
+    }
+  };
 
   const save = async (nextCfg) => {
     if (!isAdmin) return;
@@ -245,6 +280,65 @@ export default function OnCallPage() {
         <p className="text-[9px] text-[var(--text-muted)] mt-3 pt-3 border-t border-[var(--bg-border)]">
           Fuso orario: <span className="font-mono">{cfg.timezone}</span> · Turni overnight (es. 22:00→07:00) supportati automaticamente.
         </p>
+      </div>
+
+      {/* Escalation automatica */}
+      <div className="noc-panel p-4 mt-4" data-testid="escalation-card">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-[var(--text-muted)] text-[10px] font-medium uppercase tracking-widest flex items-center gap-1.5">
+            <ArrowUp size={13} weight="bold" /> Escalation automatica
+          </h3>
+          {isAdmin && escCfg.enabled && (
+            <Button size="sm" variant="outline" disabled={escBusy}
+              onClick={triggerEscalation}
+              className="rounded-md text-xs h-7 border-[var(--bg-border)] hover:bg-[var(--bg-hover)] gap-1"
+              data-testid="trigger-escalation-btn">
+              <ArrowClockwise size={12} /> Esegui ora
+            </Button>
+          )}
+        </div>
+        <p className="text-[var(--text-muted)] text-[10px] mb-3">
+          Se un alert <b>critical</b> non viene preso in carico (ACK) entro la finestra, viene inviata una nuova push ai ruoli indicati con tag "ESCALATION".
+        </p>
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <Label className="text-[var(--text-primary)] text-xs font-medium">Abilita escalation</Label>
+            <Switch
+              checked={escCfg.enabled}
+              disabled={escBusy || !isAdmin}
+              onCheckedChange={(v) => saveEsc({ ...escCfg, enabled: v })}
+              data-testid="escalation-toggle"
+            />
+          </div>
+          <div className={`grid grid-cols-2 gap-3 ${escCfg.enabled ? "" : "opacity-50 pointer-events-none"}`}>
+            <div className="space-y-1.5">
+              <Label className="text-[var(--text-muted)] text-[10px] uppercase tracking-widest">Attesa (minuti)</Label>
+              <Input type="number" min={1} max={1440} value={escCfg.wait_minutes}
+                disabled={!isAdmin}
+                onChange={(e) => setEscCfg(c => ({ ...c, wait_minutes: parseInt(e.target.value || "5", 10) }))}
+                onBlur={() => saveEsc()}
+                className="bg-[var(--bg-card)] border-[var(--bg-border)] text-[var(--text-primary)] rounded-md text-xs h-8"
+                data-testid="escalation-wait-input" />
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-[var(--text-muted)] text-[10px] uppercase tracking-widest">Escala a ruolo</Label>
+              <Select value={escCfg.escalate_to_roles?.[0] || "admin"}
+                onValueChange={(v) => saveEsc({ ...escCfg, escalate_to_roles: [v] })}
+                disabled={!isAdmin}>
+                <SelectTrigger className="bg-[var(--bg-card)] border-[var(--bg-border)] text-[var(--text-primary)] text-xs h-8">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="bg-[var(--bg-panel)] border-[var(--bg-border)]">
+                  <SelectItem value="admin" className="text-xs">Admin</SelectItem>
+                  <SelectItem value="operator" className="text-xs">Operator</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <p className="text-[9px] text-[var(--text-muted)] pt-1 border-t border-[var(--bg-border)]">
+            Severity monitorate: <span className="font-mono">{escCfg.severities?.join(", ") || "critical"}</span>
+          </p>
+        </div>
       </div>
     </div>
   );

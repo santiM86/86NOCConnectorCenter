@@ -202,6 +202,7 @@ from routes.security_advanced import router as security_advanced_router
 from routes.external_monitor import router as external_monitor_router
 from routes.push import router as push_router
 from routes.oncall import router as oncall_router
+from routes.escalation import router as escalation_router
 from routes.app_version import router as app_version_router
 from routes.overview import router as overview_router
 
@@ -237,6 +238,7 @@ app.include_router(security_advanced_router)
 app.include_router(external_monitor_router)
 app.include_router(push_router)
 app.include_router(oncall_router)
+app.include_router(escalation_router)
 app.include_router(app_version_router)
 app.include_router(overview_router)
 
@@ -463,12 +465,27 @@ async def startup_event():
     except Exception as e:
         logger.error(f"Failed to start connector watchdog: {e}")
 
+    # === Escalation scheduler: re-push alerts not ACKed within N min ===
+    try:
+        from escalation import EscalationScheduler
+        global escalation_scheduler
+        escalation_scheduler = EscalationScheduler(db)
+        escalation_scheduler.start()
+        logger.info("Escalation scheduler started")
+    except Exception as e:
+        logger.error(f"Failed to start escalation scheduler: {e}")
+
 @app.on_event("shutdown")
 async def shutdown_db_client():
     redfish_poller.stop_scheduler()
     try:
         if 'connector_watchdog' in globals() and connector_watchdog:
             connector_watchdog.stop()
+    except Exception:
+        pass
+    try:
+        if 'escalation_scheduler' in globals() and escalation_scheduler:
+            await escalation_scheduler.stop()
     except Exception:
         pass
     mongo_client.close()
