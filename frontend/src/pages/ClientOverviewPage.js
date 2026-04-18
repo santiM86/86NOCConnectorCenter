@@ -77,7 +77,14 @@ export default function ClientOverviewPage() {
   const criticalAlerts = alerts.filter(a => a.severity === "critical").length;
   const firewalls = devices.filter(d => ["firewall", "zyxel-usg"].includes(d.device_type));
   const switches = devices.filter(d => d.device_type === "switch");
-  const servers = devices.filter(d => ["server", "ilo", "generic"].includes(d.device_type));
+  const servers = devices.filter(d => ["server", "ilo"].includes(d.device_type));
+  const upsList = devices.filter(d => d.device_type === "ups");
+  const nasList = devices.filter(d => ["nas", "storage"].includes(d.device_type));
+  const apList = devices.filter(d => ["ap", "access-point"].includes(d.device_type));
+  const tvccList = devices.filter(d => ["tvcc", "camera", "nvr", "dvr"].includes(d.device_type));
+  const printersList = devices.filter(d => d.device_type === "printer");
+  const knownTypes = new Set(["firewall", "zyxel-usg", "switch", "server", "ilo", "ups", "nas", "storage", "ap", "access-point", "tvcc", "camera", "nvr", "dvr", "printer"]);
+  const others = devices.filter(d => !knownTypes.has(d.device_type));
 
   const tabs = [
     { id: "overview", label: "Panoramica", icon: Monitor },
@@ -129,7 +136,7 @@ export default function ClientOverviewPage() {
 
       {/* Tab Content */}
       <div className="min-h-[400px]">
-        {activeTab === "overview" && <OverviewTab devices={devices} wanTargets={wanTargets} alerts={alerts} connector={connector} printers={printers} backups={backups} firewalls={firewalls} switches={switches} servers={servers} />}
+        {activeTab === "overview" && <OverviewTab devices={devices} wanTargets={wanTargets} alerts={alerts} connector={connector} printers={printers} backups={backups} firewalls={firewalls} switches={switches} servers={servers} upsList={upsList} nasList={nasList} apList={apList} tvccList={tvccList} printersList={printersList} others={others} />}
         {activeTab === "devices" && <DevicesTab devices={devices} clientId={clientId} onRefresh={fetchAll} />}
         {activeTab === "wan" && <WanTab targets={wanTargets} clientId={clientId} clientName={client.name} onRefresh={fetchAll} />}
         {activeTab === "alerts" && <AlertsTab alerts={alerts} navigate={navigate} />}
@@ -142,7 +149,7 @@ export default function ClientOverviewPage() {
 }
 
 /* ==================== OVERVIEW TAB ==================== */
-function OverviewTab({ devices, wanTargets, alerts, connector, printers, backups, firewalls, switches, servers }) {
+function OverviewTab({ devices, wanTargets, alerts, connector, printers, backups, firewalls, switches, servers, upsList, nasList, apList, tvccList, printersList, others }) {
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
       {/* Network Map */}
@@ -177,8 +184,20 @@ function OverviewTab({ devices, wanTargets, alerts, connector, printers, backups
           {firewalls.length > 0 && <DeviceGroup label="Firewall" icon={ShieldCheck} devices={firewalls} color="#FF3B30" />}
           {/* Switches */}
           {switches.length > 0 && <DeviceGroup label="Switch" icon={HardDrives} devices={switches} color="#6366F1" />}
-          {/* Servers */}
-          {servers.length > 0 && <DeviceGroup label="Server / Altro" icon={Monitor} devices={servers} color="#06B6D4" />}
+          {/* Servers / iLO */}
+          {servers.length > 0 && <DeviceGroup label="Server / iLO" icon={Monitor} devices={servers} color="#06B6D4" />}
+          {/* NAS / Storage */}
+          {nasList.length > 0 && <DeviceGroup label="NAS / Storage" icon={Database} devices={nasList} color="#14B8A6" />}
+          {/* UPS */}
+          {upsList.length > 0 && <DeviceGroup label="UPS" icon={Lightning} devices={upsList} color="#EAB308" />}
+          {/* Access Point */}
+          {apList.length > 0 && <DeviceGroup label="Access Point / WiFi" icon={WifiHigh} devices={apList} color="#8B5CF6" />}
+          {/* TVCC */}
+          {tvccList.length > 0 && <DeviceGroup label="TVCC / Videosorveglianza" icon={Monitor} devices={tvccList} color="#F97316" />}
+          {/* Printers */}
+          {printersList.length > 0 && <DeviceGroup label="Stampanti" icon={Printer} devices={printersList} color="#EC4899" />}
+          {/* Others / Generic */}
+          {others.length > 0 && <DeviceGroup label="Altri Dispositivi" icon={HardDrives} devices={others} color="#64748B" />}
         </div>
       </div>
 
@@ -353,20 +372,35 @@ function DevicesTab({ devices, clientId, onRefresh }) {
       <div className="noc-panel overflow-hidden">
         <table className="alert-table" data-testid="client-devices-table">
           <thead>
-            <tr><th>Nome</th><th>Tipo</th><th>IP</th><th>SNMP</th><th>Community</th><th>Stato</th><th>Fonte</th><th>Ultimo Poll</th><th></th></tr>
+            <tr><th>Nome</th><th>Tipo</th><th>IP</th><th>Metodo</th><th>SNMP</th><th>Community</th><th>Stato</th><th>Fonte</th><th>Ultimo Poll</th><th></th></tr>
           </thead>
           <tbody>
             {devices.length === 0 ? (
-              <tr><td colSpan={9} className="text-center text-[var(--text-muted)] py-8 text-xs">Nessun dispositivo — clicca "Aggiungi Dispositivo" per iniziare</td></tr>
+              <tr><td colSpan={10} className="text-center text-[var(--text-muted)] py-8 text-xs">Nessun dispositivo — clicca "Aggiungi Dispositivo" per iniziare</td></tr>
             ) : devices.map((d, i) => {
               const sc = STATUS_COLOR[d.status] || "#555";
+              const monitorType = (d.monitor_type || "snmp").toLowerCase();
+              const methodBadge = {
+                snmp: { label: "SNMP", color: "text-purple-400", bg: "bg-purple-500/10 border-purple-500/20" },
+                ping: { label: "PING", color: "text-cyan-400", bg: "bg-cyan-500/10 border-cyan-500/20" },
+                http: { label: "HTTP", color: "text-amber-400", bg: "bg-amber-500/10 border-amber-500/20" },
+              }[monitorType] || { label: monitorType.toUpperCase(), color: "text-[var(--text-muted)]", bg: "bg-[var(--bg-hover)] border-[var(--bg-border)]" };
               return (
                 <tr key={i}>
                   <td className="text-[var(--text-primary)] text-xs font-medium">{d.name}</td>
                   <td><span className="text-[10px] px-1.5 py-0.5 rounded border border-[var(--bg-border)]">{d.device_type}</span></td>
                   <td className="font-mono text-[var(--text-muted)] text-xs">{d.ip_address}</td>
-                  <td className="text-[10px] text-[var(--text-muted)]">{d.snmp_version || d.monitor_type || "—"}</td>
-                  <td className="text-[10px] font-mono text-[var(--text-muted)]">{d.snmp_community || "—"}</td>
+                  <td>
+                    <span className={`text-[9px] px-1.5 py-0.5 rounded border font-bold ${methodBadge.bg} ${methodBadge.color}`}>
+                      {methodBadge.label}
+                    </span>
+                  </td>
+                  <td className="text-[10px] text-[var(--text-muted)]">
+                    {monitorType === "snmp" ? (d.snmp_version || "v2c") : "—"}
+                  </td>
+                  <td className="text-[10px] font-mono text-[var(--text-muted)]">
+                    {monitorType === "snmp" && d.snmp_version !== "v3" ? (d.snmp_community || "—") : "—"}
+                  </td>
                   <td>
                     <span className="inline-flex items-center gap-1 text-[10px] font-bold" style={{ color: sc }}>
                       {d.status === "online" || d.status === "active" ? <WifiHigh size={12} /> : <WifiSlash size={12} />}

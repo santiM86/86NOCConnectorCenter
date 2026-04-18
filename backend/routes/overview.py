@@ -23,6 +23,84 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
 
     devices = await db.devices.find({}, {"_id": 0, "client_id": 1, "status": 1, "ip_address": 1, "name": 1, "device_type": 1}).to_list(10000)
 
+    # Also include connector-discovered devices (device_poll_status) and manually managed devices (managed_devices)
+    poll_devices = await db.device_poll_status.find(
+        {}, {"_id": 0, "client_id": 1, "device_ip": 1, "device_name": 1, "status": 1, "device_type": 1, "device_class": 1, "sys_descr": 1}
+    ).to_list(10000)
+    managed_devices_raw = await db.managed_devices.find(
+        {}, {"_id": 0, "client_id": 1, "ip": 1, "name": 1, "device_type": 1}
+    ).to_list(10000)
+    # Build maps for dedup merging by (client_id, ip)
+    seen_device_keys = {(d.get("client_id"), d.get("ip_address")) for d in devices if d.get("ip_address")}
+    managed_by_key = {(m.get("client_id"), m.get("ip")): m for m in managed_devices_raw if m.get("ip")}
+
+    def _infer_device_type(name, sys_descr, device_class, explicit_type):
+        if explicit_type and explicit_type not in ("", "?", "network", "generic"):
+            return explicit_type
+        combined = f"{name or ''} {sys_descr or ''} {device_class or ''}".lower()
+        if any(k in combined for k in ["firewall", "zyxel", "usg", "fortigate", "pfsense", "sonicwall"]):
+            return "firewall"
+        if any(k in combined for k in ["ilo", "idrac", "ipmi", "bmc", "integrated lights"]):
+            return "ilo"
+        if any(k in combined for k in ["ups", "xanto", "apc", "eaton", "liebert", "riello"]):
+            return "ups"
+        if any(k in combined for k in ["nas", "synology", "qnap", "truenas", "freenas"]):
+            return "nas"
+        if any(k in combined for k in ["printer", "stampa", "brother", "xerox", "kyocera", "ricoh"]):
+            return "printer"
+        if any(k in combined for k in ["tvcc", "nvr", "dvr", "camera", "hikvision", "dahua"]):
+            return "tvcc"
+        if any(k in combined for k in ["ubiquiti", "unifi", "aruba ap", "access point", "wifi"]):
+            return "ap"
+        if any(k in combined for k in ["switch", "catalyst", "procurve", "aruba", "5130", "5120", "netgear"]):
+            return "switch"
+        if any(k in combined for k in ["server", "proliant", "poweredge", "dell "]):
+            return "server"
+        return explicit_type or "generic"
+
+    # Merge poll_devices and managed_devices into the unified list (skip duplicates)
+    for pd in poll_devices:
+        ip = pd.get("device_ip")
+        cid = pd.get("client_id")
+        if not ip or not cid:
+            continue
+        key = (cid, ip)
+        if key in seen_device_keys:
+            continue
+        seen_device_keys.add(key)
+        # Look up name/type from managed_devices if available
+        md = managed_by_key.get(key, {})
+        dev_type = _infer_device_type(
+            md.get("name") or pd.get("device_name", ""),
+            pd.get("sys_descr", ""),
+            pd.get("device_class", ""),
+            md.get("device_type") or pd.get("device_type"),
+        )
+        devices.append({
+            "client_id": cid,
+            "name": md.get("name") or pd.get("device_name") or ip,
+            "ip_address": ip,
+            "status": pd.get("status", "unknown"),
+            "device_type": dev_type,
+        })
+    # Also add managed_devices that never polled yet
+    for md in managed_devices_raw:
+        ip = md.get("ip")
+        cid = md.get("client_id")
+        if not ip or not cid:
+            continue
+        key = (cid, ip)
+        if key in seen_device_keys:
+            continue
+        seen_device_keys.add(key)
+        devices.append({
+            "client_id": cid,
+            "name": md.get("name") or ip,
+            "ip_address": ip,
+            "status": "unknown",
+            "device_type": md.get("device_type", "generic"),
+        })
+
     # Backup status
     backup_data = await db.backup_status.find({}, {"_id": 0, "client_id": 1, "status": 1, "last_success": 1}).to_list(5000)
 
