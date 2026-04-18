@@ -884,12 +884,14 @@ function Send-DeviceReport($config, $devices) {
             }
             
             $sysDescr = ""
+            $sysName = ""
             $sysUptime = ""
             $extMetrics = $null
             $trafficData = $null
             if ($reachable) {
                 try {
                     $sysDescr = Get-SnmpValue $ip $community "1.3.6.1.2.1.1.1.0"
+                    $sysName = Get-SnmpValue $ip $community "1.3.6.1.2.1.1.5.0"
                     $uptimeTicks = Get-SnmpValue $ip $community "1.3.6.1.2.1.1.3.0"
                     if ($uptimeTicks) {
                         $secs = [math]::Floor($uptimeTicks / 100)
@@ -929,6 +931,7 @@ function Send-DeviceReport($config, $devices) {
                 reachable = $reachable
                 ports = $ports
                 sys_descr = "$sysDescr"
+                sys_name = "$sysName"
                 sys_uptime = $sysUptime
                 poll_timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
             }
@@ -1252,7 +1255,7 @@ function Install-Update($config, $updateInfo) {
 }
 
 function Start-UpdateCheckLoop($config) {
-    $checkInterval = 21600  # 6 ore in secondi
+    $checkInterval = 300   # 5 minuti - controllo rapido per aggiornamenti
     $lastCheck = [datetime]::MinValue
     
     while ($global:Running) {
@@ -1260,6 +1263,7 @@ function Start-UpdateCheckLoop($config) {
         if ($elapsed -ge $checkInterval) {
             $updateInfo = Check-ForUpdate $config
             if ($updateInfo) {
+                Write-Log "Nuova versione disponibile: $($updateInfo.latest_version) (corrente: $global:Version)" "INFO"
                 $success = Install-Update $config $updateInfo
                 if ($success) {
                     Write-Log "Riavvio connector per applicare aggiornamento..." "INFO"
@@ -1275,7 +1279,7 @@ function Start-UpdateCheckLoop($config) {
             }
             $lastCheck = Get-Date
         }
-        Start-Sleep -Seconds 60
+        Start-Sleep -Seconds 30
     }
 }
 

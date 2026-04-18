@@ -29,9 +29,17 @@ async def _enrich_client_names(creds):
 async def list_credentials(client_id: Optional[str] = None, current_user: dict = Depends(get_current_user)):
     if current_user.get("role") not in ["admin"]:
         raise HTTPException(status_code=403, detail="Solo gli admin possono accedere al vault")
-    query = {}
+    # When filtering by client, include also global credentials (no client_id)
+    # so they are always visible from any client's perspective (admin tooling).
     if client_id:
-        query["client_id"] = client_id
+        query = {"$or": [
+            {"client_id": client_id},
+            {"client_id": None},
+            {"client_id": ""},
+            {"client_id": {"$exists": False}},
+        ]}
+    else:
+        query = {}
     creds = await db.device_credentials.find(query, {"_id": 0}).sort("created_at", -1).to_list(500)
     for c in creds:
         c["password"] = "********"

@@ -283,6 +283,9 @@ export default function ConnectorsPage() {
               <p className="text-[var(--text-muted)] text-xs">
                 {updateInfo?.version ? `v${updateInfo.version} — ${updateInfo.updated_connectors || 0}/${updateInfo.total_connectors || 0} aggiornati` : "Nessun aggiornamento"}
               </p>
+              <p className="text-[9px] text-emerald-400 mt-0.5 flex items-center gap-1">
+                <ArrowsClockwise size={9} /> Check automatico ogni 5 minuti · Aggiornamento immediato con pulsante "Aggiorna"
+              </p>
             </div>
             {updateInfo?.pending_connectors > 0 && (
               <span className="text-[10px] px-2 py-1 rounded border text-[var(--medium)] bg-[var(--medium-bg)] border-[var(--medium-border)]">

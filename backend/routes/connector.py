@@ -7,6 +7,7 @@ import uuid
 import shutil
 import logging
 from pathlib import Path
+from typing import Optional
 from datetime import datetime, timezone, timedelta
 
 from database import db
@@ -240,9 +241,15 @@ async def upload_connector_update(request: Request, file: UploadFile = File(...)
         raise HTTPException(status_code=400, detail="Version is required")
     safe_filename = f"86NocConnector_v{version}.zip"
     filepath = CONNECTOR_STORAGE / safe_filename
-    content = await file.read()
-    with open(filepath, "wb") as f:
-        f.write(content)
+    try:
+        content = await file.read()
+        with open(filepath, "wb") as f:
+            f.write(content)
+    except Exception as e:
+        import logging
+        logging.error(f"Errore scrittura ZIP {filepath}: {e}")
+        raise HTTPException(status_code=500, detail=f"Errore scrittura ZIP: {e}")
+
     await db.connector_updates.update_many({}, {"$set": {"active": False}})
     update_doc = {
         "version": version, "filename": safe_filename, "changelog": changelog,
@@ -251,11 +258,26 @@ async def upload_connector_update(request: Request, file: UploadFile = File(...)
         "uploaded_by": current_user.get("name", "admin")
     }
     await db.connector_updates.insert_one(update_doc)
-    public_path = Path("/app/frontend/public/86NocConnector.zip")
-    shutil.copy2(filepath, public_path)
+
+    # Copy ZIP to public downloads folder(s) so it can be downloaded via HTTPS
+    # Some environments (build-time minified React) don't keep /app/frontend/public,
+    # so we try multiple locations and ignore failures (non-fatal for the upload itself).
+    import logging
+    for dest in [
+        Path("/app/frontend/public/86NocConnector.zip"),
+        Path("/app/frontend/public/downloads") / safe_filename,
+        Path("/app/frontend/build/86NocConnector.zip"),
+        Path("/app/frontend/build/downloads") / safe_filename,
+    ]:
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(filepath, dest)
+        except Exception as e:
+            logging.warning(f"Public copy skipped for {dest}: {e}")
+
     return {
         "status": "ok", "version": version, "filename": safe_filename,
-        "connectors_will_update": "I connettori si aggiorneranno automaticamente entro 6 ore"
+        "connectors_will_update": "I connettori si aggiorneranno automaticamente entro 5 minuti (oppure immediatamente cliccando Aggiorna)"
     }
 
 
@@ -306,6 +328,174 @@ async def reset_connector_update_status(connector_id: str, current_user: dict = 
 # ==================== DEVICE MANAGEMENT ====================
 
 @router.post(f"/{C}/dr")
+async def _check_device_thresholds(client_id: str, dev: dict, prev_status: Optional[dict]):
+    """Generate alerts for threshold crossings and state changes on a device."""
+    device_ip = dev["device_ip"]
+    device_name = dev.get("device_name") or device_ip
+    device_type = dev.get("device_class") or "generic"
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    # Load client thresholds with defaults
+    th = await db.alert_thresholds.find_one({"client_id": client_id}, {"_id": 0}) or {}
+    cpu_crit = th.get("cpu_critical_pct", 95)
+    cpu_warn = th.get("cpu_warning_pct", 80)
+    mem_crit = th.get("memory_critical_pct", 95)
+    mem_warn = th.get("memory_warning_pct", 85)
+    offline_after_min = th.get("offline_alert_after_min", 5)
+
+    alerts_to_create = []
+
+    # --- Reachability / offline transition
+    reachable = dev.get("reachable", True)
+    prev_reachable = (prev_status or {}).get("reachable", True) if prev_status else True
+    if not reachable and prev_reachable:
+        # Use unreachable_since to debounce: only alert if down >= offline_after_min
+        unreachable_since = (prev_status or {}).get("unreachable_since") or now_iso
+        try:
+            minutes_down = (datetime.now(timezone.utc) - datetime.fromisoformat(unreachable_since.replace("Z", "+00:00"))).total_seconds() / 60
+        except Exception:
+            minutes_down = offline_after_min
+        if minutes_down >= offline_after_min or True:  # first transition: fire immediately
+            alerts_to_create.append({
+                "severity": "critical",
+                "title": f"Dispositivo OFFLINE: {device_name}",
+                "message": f"{device_name} ({device_ip}) non risponde al polling SNMP/Ping",
+                "source_type": "connector_offline",
+            })
+    elif reachable and not prev_reachable:
+        alerts_to_create.append({
+            "severity": "low",
+            "title": f"Dispositivo ONLINE (ripristinato): {device_name}",
+            "message": f"{device_name} ({device_ip}) ha ripreso a rispondere",
+            "source_type": "connector_recovery",
+        })
+        # Resolve previous offline alerts
+        await db.alerts.update_many(
+            {"client_id": client_id, "device_ip": device_ip, "source_type": "connector_offline", "status": "active"},
+            {"$set": {"status": "resolved", "resolved_at": now_iso}}
+        )
+
+    # --- CPU
+    cpu = dev.get("cpu_usage")
+    if cpu is not None and isinstance(cpu, (int, float)):
+        if cpu >= cpu_crit:
+            alerts_to_create.append({
+                "severity": "critical",
+                "title": f"CPU critica ({int(cpu)}%): {device_name}",
+                "message": f"Utilizzo CPU {cpu}% su {device_name} ({device_ip}) — soglia critica {cpu_crit}%",
+                "source_type": "threshold_cpu",
+            })
+        elif cpu >= cpu_warn:
+            alerts_to_create.append({
+                "severity": "high",
+                "title": f"CPU elevata ({int(cpu)}%): {device_name}",
+                "message": f"Utilizzo CPU {cpu}% su {device_name} ({device_ip}) — soglia warning {cpu_warn}%",
+                "source_type": "threshold_cpu",
+            })
+
+    # --- Memory
+    mem = dev.get("memory_usage")
+    if mem is not None and isinstance(mem, (int, float)):
+        if mem >= mem_crit:
+            alerts_to_create.append({
+                "severity": "critical",
+                "title": f"RAM critica ({int(mem)}%): {device_name}",
+                "message": f"Utilizzo RAM {mem}% su {device_name} ({device_ip}) — soglia critica {mem_crit}%",
+                "source_type": "threshold_memory",
+            })
+        elif mem >= mem_warn:
+            alerts_to_create.append({
+                "severity": "high",
+                "title": f"RAM elevata ({int(mem)}%): {device_name}",
+                "message": f"Utilizzo RAM {mem}% su {device_name} ({device_ip}) — soglia warning {mem_warn}%",
+                "source_type": "threshold_memory",
+            })
+
+    # --- Temperature (generic SNMP temp, not Redfish)
+    temp = dev.get("temperature")
+    if temp is not None and isinstance(temp, (int, float)):
+        if temp > 75:
+            alerts_to_create.append({
+                "severity": "critical",
+                "title": f"Temperatura critica ({temp}°C): {device_name}",
+                "message": f"Temperatura {temp}°C rilevata via SNMP su {device_name} ({device_ip})",
+                "source_type": "threshold_temp",
+            })
+
+    # --- Port link DOWN (SNMP ifOperStatus)
+    for p in (dev.get("ports") or []):
+        # Only alert if previously up and now down
+        if isinstance(p, dict) and p.get("oper_status") == "down" and p.get("admin_status") == "up":
+            port_name = p.get("name") or p.get("index") or "?"
+            alerts_to_create.append({
+                "severity": "high",
+                "title": f"Porta LAN DOWN: {port_name} ({device_name})",
+                "message": f"Interfaccia {port_name} su {device_name} ({device_ip}) in stato operativo DOWN (admin UP)",
+                "source_type": "threshold_port_down",
+            })
+
+    # --- Device identity change detection (sysDescr / sysName / MACs)
+    # If the sysDescr or sysName of a known IP changes significantly, it may mean
+    # the device was replaced, is a rogue device (ARP spoofing) or swapped hardware.
+    if prev_status and prev_status.get("reachable") and reachable:
+        prev_descr = (prev_status.get("sys_descr") or "").strip()
+        curr_descr = (dev.get("sys_descr") or "").strip()
+        prev_name = (prev_status.get("sys_name") or "").strip()
+        curr_name = (dev.get("sys_name") or "").strip()
+
+        # Alert only if both old and new values are non-empty (first population is ignored)
+        if prev_descr and curr_descr and prev_descr != curr_descr:
+            alerts_to_create.append({
+                "severity": "critical",
+                "title": f"Identità dispositivo CAMBIATA: {device_name}",
+                "message": f"L'IP {device_ip} risponde con un sysDescr diverso. Prima: '{prev_descr[:100]}'. Ora: '{curr_descr[:100]}'. Possibile sostituzione HW, rogue device o ARP spoofing.",
+                "source_type": "security_identity_change",
+            })
+        elif prev_name and curr_name and prev_name != curr_name:
+            alerts_to_create.append({
+                "severity": "high",
+                "title": f"Hostname SNMP cambiato: {device_name}",
+                "message": f"L'IP {device_ip} ha cambiato sysName da '{prev_name}' a '{curr_name}'.",
+                "source_type": "security_identity_change",
+            })
+
+        # MAC address fingerprint check (from device_macs if provided)
+        prev_macs = set(m.upper() for m in (prev_status.get("device_macs") or []) if m)
+        curr_macs = set(m.upper() for m in (dev.get("device_macs") or []) if m)
+        if prev_macs and curr_macs and not prev_macs.intersection(curr_macs):
+            alerts_to_create.append({
+                "severity": "critical",
+                "title": f"MAC address cambiato: {device_name}",
+                "message": f"Tutti i MAC address su {device_ip} sono cambiati. Prima: {', '.join(sorted(prev_macs))[:120]}. Ora: {', '.join(sorted(curr_macs))[:120]}. Possibile sostituzione dispositivo o spoofing.",
+                "source_type": "security_mac_change",
+            })
+
+    # Insert alerts (dedup by title + device + status=active)
+    for a in alerts_to_create:
+        existing = await db.alerts.find_one({
+            "client_id": client_id,
+            "device_ip": device_ip,
+            "title": a["title"],
+            "status": "active",
+        })
+        if existing:
+            continue
+        await db.alerts.insert_one({
+            "id": str(uuid.uuid4()),
+            "client_id": client_id,
+            "device_ip": device_ip,
+            "device_name": device_name,
+            "device_type": device_type,
+            "severity": a["severity"],
+            "source_type": a["source_type"],
+            "title": a["title"],
+            "message": a["message"],
+            "status": "active",
+            "acknowledged_by": None, "acknowledged_at": None, "resolved_at": None,
+            "created_at": now_iso,
+        })
+
+
 @router.post("/connector/device-report")
 async def connector_device_report(request: Request):
     client_data = await verify_connector_request(request)
@@ -323,12 +513,19 @@ async def connector_device_report(request: Request):
         if is_deleted:
             continue
 
+        # Load prev status BEFORE update to detect state changes
+        prev_status = await db.device_poll_status.find_one(
+            {"client_id": client_id, "device_ip": dev["device_ip"]}, {"_id": 0}
+        )
+
         doc = {
             "client_id": client_id, "connector_hostname": hostname,
             "device_ip": dev["device_ip"], "device_name": dev["device_name"],
             "reachable": dev["reachable"], "monitor_type": dev.get("monitor_type", "snmp"),
             "ports": dev.get("ports", []), "sys_descr": dev.get("sys_descr", ""),
+            "sys_name": dev.get("sys_name", ""),
             "sys_uptime": dev.get("sys_uptime", ""),
+            "device_macs": dev.get("device_macs", []),
             "http_status": dev.get("http_status", None),
             "ping_ms": dev.get("ping_ms", None),
             "cpu_usage": dev.get("cpu_usage", None),
@@ -344,10 +541,29 @@ async def connector_device_report(request: Request):
             "last_poll": dev.get("poll_timestamp", now_iso),
             "updated_at": now_iso
         }
+        # Track offline duration for debouncing offline alerts
+        if not dev.get("reachable", True):
+            # Only set unreachable_since the first time it goes down
+            if prev_status and prev_status.get("reachable") and not prev_status.get("unreachable_since"):
+                doc["unreachable_since"] = now_iso
+            elif prev_status and prev_status.get("unreachable_since"):
+                doc["unreachable_since"] = prev_status["unreachable_since"]
+            else:
+                doc["unreachable_since"] = now_iso
+        else:
+            doc["unreachable_since"] = None
+
         await db.device_poll_status.update_one(
             {"client_id": client_id, "device_ip": dev["device_ip"]},
             {"$set": doc}, upsert=True
         )
+
+        # Generate alerts based on state transitions + thresholds
+        try:
+            await _check_device_thresholds(client_id, dev, prev_status)
+        except Exception as e:
+            logger.warning(f"Errore check soglie {dev.get('device_ip')}: {e}")
+
         if dev.get("cpu_usage") is not None or dev.get("temperature") is not None or dev.get("firewall") or dev.get("ping_stats"):
             metric_doc = {
                 "client_id": client_id, "device_ip": dev["device_ip"], "timestamp": now_iso,
@@ -672,9 +888,78 @@ async def connector_network_discovery(request: Request):
         await db.mac_connections.insert_many(inferred_connections)
 
     # Store ALL discovered endpoints (for full tree view)
+    # BEFORE replacing, capture previous IP<->MAC bindings so we can detect changes.
+    prev_endpoints = await db.discovered_endpoints.find(
+        {"client_id": client_id}, {"_id": 0, "ip": 1, "mac": 1, "switch_ip": 1, "port": 1}
+    ).to_list(10000)
+    prev_ip_mac = {}  # ip -> set(mac)
+    prev_mac_ip = {}  # mac -> ip
+    for p in prev_endpoints:
+        if p.get("ip") and p.get("mac"):
+            prev_ip_mac.setdefault(p["ip"], set()).add(p["mac"].upper())
+            prev_mac_ip[p["mac"].upper()] = p["ip"]
+
     await db.discovered_endpoints.delete_many({"client_id": client_id})
     if discovered_endpoints:
         await db.discovered_endpoints.insert_many(discovered_endpoints)
+
+    # Detect IP/MAC binding changes (possible spoofing / device replacement / roaming)
+    curr_ip_mac = {}
+    curr_mac_ip = {}
+    for e in discovered_endpoints:
+        if e.get("ip") and e.get("mac"):
+            curr_ip_mac.setdefault(e["ip"], set()).add(e["mac"].upper())
+            curr_mac_ip[e["mac"].upper()] = e["ip"]
+
+    identity_alerts = []
+    now_iso_alerts = datetime.now(timezone.utc).isoformat()
+
+    # Case A: same IP, different MAC(s) (ARP spoofing, device replaced)
+    for ip, new_macs in curr_ip_mac.items():
+        old_macs = prev_ip_mac.get(ip, set())
+        if old_macs and not old_macs.intersection(new_macs):
+            identity_alerts.append({
+                "severity": "critical",
+                "title": f"IP con MAC CAMBIATO: {ip}",
+                "message": f"L'IP {ip} ora risponde con un MAC diverso. Prima: {', '.join(sorted(old_macs))[:80]}. Ora: {', '.join(sorted(new_macs))[:80]}. Possibile ARP spoofing o sostituzione HW.",
+                "device_ip": ip,
+                "source_type": "security_ip_mac_change",
+            })
+
+    # Case B: same MAC, different IP (DHCP reassignment or device moved, lower severity)
+    for mac, new_ip in curr_mac_ip.items():
+        old_ip = prev_mac_ip.get(mac)
+        if old_ip and old_ip != new_ip:
+            # Only alert for managed/known devices to avoid spam from dynamic clients
+            if old_ip in managed_ips or new_ip in managed_ips:
+                identity_alerts.append({
+                    "severity": "high",
+                    "title": f"Dispositivo {mac} cambiato IP: {old_ip} → {new_ip}",
+                    "message": f"Il MAC {mac} è stato visto prima su {old_ip} e ora su {new_ip}. DHCP lease cambiato o dispositivo spostato.",
+                    "device_ip": new_ip,
+                    "source_type": "security_mac_ip_roam",
+                })
+
+    # Insert identity alerts (dedup)
+    for a in identity_alerts:
+        existing = await db.alerts.find_one({
+            "client_id": client_id, "title": a["title"], "status": "active"
+        })
+        if not existing:
+            await db.alerts.insert_one({
+                "id": str(uuid.uuid4()),
+                "client_id": client_id,
+                "device_ip": a["device_ip"],
+                "device_name": managed_ip_names.get(a["device_ip"], a["device_ip"]),
+                "device_type": "network",
+                "severity": a["severity"],
+                "source_type": a["source_type"],
+                "title": a["title"],
+                "message": a["message"],
+                "status": "active",
+                "acknowledged_by": None, "acknowledged_at": None, "resolved_at": None,
+                "created_at": now_iso_alerts,
+            })
 
     # Store high-speed port info
     await db.port_speeds.delete_many({"client_id": client_id})
