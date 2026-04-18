@@ -283,7 +283,12 @@ function ClientCard({ client: c, navigate }) {
             </span>
           )}
         </div>
-        <CaretDown size={14} weight="bold" className={`text-[var(--text-muted)] transition-transform ${expanded ? "rotate-180" : ""}`} />
+        <div className="flex items-center gap-2">
+          <button onClick={(e) => { e.stopPropagation(); navigate(`/client/${c.id}`); }} className="text-[9px] px-2 py-0.5 rounded-md bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 hover:bg-indigo-500/20 transition-colors font-bold" data-testid={`open-client-${c.id}`}>
+            Apri
+          </button>
+          <CaretDown size={14} weight="bold" className={`text-[var(--text-muted)] transition-transform ${expanded ? "rotate-180" : ""}`} />
+        </div>
       </div>
 
       {/* Summary row — always visible with real data */}

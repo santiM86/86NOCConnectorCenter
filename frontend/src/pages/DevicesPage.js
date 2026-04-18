@@ -62,6 +62,9 @@ export default function DevicesPage() {
     ilo: { label: "ILO/iDRAC", color: "var(--high)" },
     backup: { label: "Backup", color: "var(--low)" },
     server: { label: "Server", color: "var(--accent)" },
+    printer: { label: "Stampante", color: "#FF9500" },
+    generic: { label: "Generico", color: "var(--text-muted)" },
+    "zyxel-usg": { label: "Firewall", color: "var(--critical)" },
   };
 
   return (
@@ -118,8 +121,13 @@ export default function DevicesPage() {
                     <td>
                       {device.status === "online" ? (
                         <span className="inline-flex items-center gap-1 text-[10px] text-[var(--ok)]"><WifiHigh size={12} /> Online</span>
+                      ) : device.status === "active" ? (
+                        <span className="inline-flex items-center gap-1 text-[10px] text-[var(--medium)]"><WifiHigh size={12} /> Attivo</span>
                       ) : (
                         <span className="inline-flex items-center gap-1 text-[10px] text-[var(--critical)]"><WifiSlash size={12} /> Offline</span>
+                      )}
+                      {device.source === "connector" && (
+                        <span className="ml-1.5 text-[8px] px-1 py-0.5 rounded bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 font-bold">CONNECTOR</span>
                       )}
                     </td>
                     <td>

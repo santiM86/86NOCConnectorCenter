@@ -37,23 +37,77 @@ async def create_device(device: DeviceCreate, current_user: dict = Depends(get_c
     return DeviceResponse(**device_doc, client_name=client["name"], has_credentials=False)
 
 
-@router.get("/devices", response_model=List[DeviceResponse])
+@router.get("/devices")
 async def get_devices(client_id: Optional[str] = None, current_user: dict = Depends(get_current_user)):
     query = {}
     if client_id:
         query["client_id"] = client_id
+
+    # Fetch manually added devices
     devices = await db.devices.find(query, {"_id": 0}).to_list(1000)
-    client_ids = list(set(d["client_id"] for d in devices))
+    manual_ips = {d["ip_address"] for d in devices}
+
+    # Fetch connector-reported devices (device_poll_status)
+    poll_query = query.copy()
+    poll_devices = await db.device_poll_status.find(poll_query, {"_id": 0}).to_list(5000)
+
+    # Merge: add connector devices that aren't already in manual list
+    for pd in poll_devices:
+        ip = pd.get("device_ip", "")
+        if ip and ip not in manual_ips:
+            manual_ips.add(ip)
+            # Determine device type from poll data
+            dev_type = pd.get("device_type", "")
+            if not dev_type:
+                sys_descr = (pd.get("sys_descr") or "").lower()
+                if "switch" in sys_descr or "hp" in sys_descr or "aruba" in sys_descr:
+                    dev_type = "switch"
+                elif "firewall" in sys_descr or "zyxel" in sys_descr or "fortigate" in sys_descr:
+                    dev_type = "firewall"
+                elif "printer" in sys_descr or "laser" in sys_descr:
+                    dev_type = "printer"
+                else:
+                    dev_type = pd.get("device_class", "server")
+            devices.append({
+                "id": f"poll_{ip.replace('.','_')}",
+                "client_id": pd.get("client_id", ""),
+                "name": pd.get("device_name", ip),
+                "device_type": dev_type,
+                "ip_address": ip,
+                "hostname": pd.get("sys_name", ""),
+                "location": pd.get("sys_location", ""),
+                "status": "online" if pd.get("reachable") else "offline",
+                "redfish_enabled": False,
+                "source": "connector",
+                "last_poll": pd.get("last_poll"),
+                "sys_descr": pd.get("sys_descr", ""),
+                "cpu_usage": pd.get("cpu_usage"),
+                "uptime": pd.get("uptime"),
+                "ports": pd.get("ports"),
+            })
+
+    client_ids = list(set(d["client_id"] for d in devices if d.get("client_id")))
     clients = await db.clients.find({"id": {"$in": client_ids}}, {"_id": 0}).to_list(1000)
     client_map = {c["id"]: c["name"] for c in clients}
-    device_ids = [d["id"] for d in devices]
+    device_ids = [d["id"] for d in devices if not d["id"].startswith("poll_")]
     creds = await db.device_credentials.find({"device_id": {"$in": device_ids}}, {"_id": 0, "device_id": 1}).to_list(1000)
     cred_device_ids = {c["device_id"] for c in creds}
     result = []
     for d in devices:
         d["client_name"] = client_map.get(d["client_id"], "")
         d["has_credentials"] = d["id"] in cred_device_ids
-        result.append(DeviceResponse(**d))
+        try:
+            result.append(DeviceResponse(**d))
+        except Exception:
+            # Connector devices may have extra fields, use dict directly
+            result.append({
+                "id": d["id"], "client_id": d.get("client_id", ""), "client_name": d.get("client_name", ""),
+                "name": d.get("name", "?"), "device_type": d.get("device_type", ""), "ip_address": d.get("ip_address", ""),
+                "hostname": d.get("hostname", ""), "location": d.get("location", ""), "status": d.get("status", "unknown"),
+                "redfish_enabled": d.get("redfish_enabled", False), "has_credentials": d.get("has_credentials", False),
+                "source": d.get("source", "manual"), "sys_descr": d.get("sys_descr", ""),
+                "cpu_usage": d.get("cpu_usage"), "uptime": d.get("uptime"),
+            })
     return result
 
 
