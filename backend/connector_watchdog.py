@@ -46,6 +46,26 @@ class ConnectorWatchdog:
                 client_id = c.get("client_id")
                 if not client_id:
                     continue
+
+                # Expire stuck "queued" force-updates if connector stayed offline too long (>10min)
+                update_status = c.get("update_status")
+                if update_status == "queued" and c.get("update_timestamp"):
+                    try:
+                        ts = datetime.fromisoformat(c["update_timestamp"].replace("Z", "+00:00"))
+                        if (now - ts).total_seconds() > 600:
+                            await self.db.connector_status.update_one(
+                                {"client_id": client_id},
+                                {"$set": {
+                                    "update_status": "error",
+                                    "update_progress": 0,
+                                    "update_message": "Timeout: il connector non e' tornato online entro 10 minuti",
+                                    "force_update": False,
+                                }}
+                            )
+                            logger.warning(f"Update force timed out on {c.get('hostname', client_id)}")
+                    except Exception:
+                        pass
+
                 hostname = c.get("hostname") or c.get("connector_hostname") or "unknown"
                 client_name = c.get("client_name") or client_id[:8]
                 last_seen_raw = c.get("last_seen")

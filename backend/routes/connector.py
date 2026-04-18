@@ -171,6 +171,21 @@ async def force_connector_update(client_id: str, current_user: dict = Depends(ge
     connector = await db.connector_status.find_one({"client_id": client_id}, {"_id": 0})
     if not connector:
         raise HTTPException(status_code=404, detail="Connector non trovato")
+    # Block force-update on offline connectors: otherwise the order gets stuck in queued forever
+    last_seen_raw = connector.get("last_seen")
+    is_offline = True
+    if last_seen_raw:
+        try:
+            last_seen = datetime.fromisoformat(last_seen_raw.replace("Z", "+00:00"))
+            elapsed = (datetime.now(timezone.utc) - last_seen).total_seconds()
+            is_offline = elapsed > 180  # 3 minutes threshold
+        except Exception:
+            pass
+    if is_offline:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Il connector {connector.get('hostname', client_id)} e' OFFLINE e non puo' ricevere l'ordine di aggiornamento. Attendi che torni online oppure aggiornalo manualmente sul server."
+        )
     update_info = await db.connector_updates.find_one({"active": True}, {"_id": 0})
     if not update_info:
         raise HTTPException(status_code=400, detail="Nessun aggiornamento disponibile")
