@@ -247,7 +247,7 @@ function Get-StatusText {
 function Show-DeviceManager {
     $form = New-Object System.Windows.Forms.Form
     $form.Text = "$AppName - Gestisci Dispositivi"
-    $form.Size = New-Object System.Drawing.Size(580, 520)
+    $form.Size = New-Object System.Drawing.Size(720, 580)
     $form.StartPosition = "CenterScreen"
     $form.FormBorderStyle = "FixedDialog"
     $form.MaximizeBox = $false
@@ -329,15 +329,16 @@ function Show-DeviceManager {
     # ListView
     $listView = New-Object System.Windows.Forms.ListView
     $listView.Location = New-Object System.Drawing.Point(20, 130)
-    $listView.Size = New-Object System.Drawing.Size(518, 240)
+    $listView.Size = New-Object System.Drawing.Size(658, 240)
     $listView.View = [System.Windows.Forms.View]::Details
     $listView.FullRowSelect = $true
     $listView.GridLines = $true
     $listView.Font = New-Object System.Drawing.Font("Segoe UI", 9)
     $listView.BackColor = [System.Drawing.Color]::White
-    $null = $listView.Columns.Add("IP Address", 150)
-    $null = $listView.Columns.Add("Community", 100)
-    $null = $listView.Columns.Add("Nome", 260)
+    $null = $listView.Columns.Add("IP Address", 120)
+    $null = $listView.Columns.Add("Community", 90)
+    $null = $listView.Columns.Add("Nome", 220)
+    $null = $listView.Columns.Add("Web UI", 215)
     $form.Controls.Add($listView)
 
     # Load current devices from config
@@ -348,6 +349,8 @@ function Show-DeviceManager {
                 $item = New-Object System.Windows.Forms.ListViewItem($dev.ip)
                 $null = $item.SubItems.Add($dev.community)
                 $null = $item.SubItems.Add($dev.name)
+                $webCell = if ($dev.web_console_url) { [char]0x2713 + " " + $dev.web_console_url } else { [char]0x2014 }
+                $null = $item.SubItems.Add($webCell)
                 $listView.Items.Add($item)
             }
         }
@@ -379,8 +382,8 @@ function Show-DeviceManager {
     # Bottom buttons row
     $btnRemove = New-Object System.Windows.Forms.Button
     $btnRemove.Text = "Rimuovi selezionato"
-    $btnRemove.Size = New-Object System.Drawing.Size(125, 30)
-    $btnRemove.Location = New-Object System.Drawing.Point(20, 415)
+    $btnRemove.Size = New-Object System.Drawing.Size(135, 30)
+    $btnRemove.Location = New-Object System.Drawing.Point(20, 425)
     $btnRemove.FlatStyle = "Flat"
     $btnRemove.BackColor = [System.Drawing.Color]::White
     $btnRemove.ForeColor = [System.Drawing.Color]::FromArgb(220, 50, 50)
@@ -391,7 +394,7 @@ function Show-DeviceManager {
     $btnTestSnmp = New-Object System.Windows.Forms.Button
     $btnTestSnmp.Text = "Test SNMP"
     $btnTestSnmp.Size = New-Object System.Drawing.Size(110, 30)
-    $btnTestSnmp.Location = New-Object System.Drawing.Point(225, 415)
+    $btnTestSnmp.Location = New-Object System.Drawing.Point(165, 425)
     $btnTestSnmp.FlatStyle = "Flat"
     $btnTestSnmp.BackColor = [System.Drawing.Color]::FromArgb(59, 130, 246)
     $btnTestSnmp.ForeColor = [System.Drawing.Color]::White
@@ -399,10 +402,32 @@ function Show-DeviceManager {
     $btnTestSnmp.Cursor = [System.Windows.Forms.Cursors]::Hand
     $form.Controls.Add($btnTestSnmp)
 
+    $btnWebUI = New-Object System.Windows.Forms.Button
+    $btnWebUI.Text = "Apri Web UI"
+    $btnWebUI.Size = New-Object System.Drawing.Size(135, 30)
+    $btnWebUI.Location = New-Object System.Drawing.Point(285, 425)
+    $btnWebUI.FlatStyle = "Flat"
+    $btnWebUI.BackColor = [System.Drawing.Color]::FromArgb(168, 85, 247)
+    $btnWebUI.ForeColor = [System.Drawing.Color]::White
+    $btnWebUI.Font = New-Object System.Drawing.Font("Segoe UI", 8.5, [System.Drawing.FontStyle]::Bold)
+    $btnWebUI.Cursor = [System.Windows.Forms.Cursors]::Hand
+    $form.Controls.Add($btnWebUI)
+
+    $btnTestAllWebUI = New-Object System.Windows.Forms.Button
+    $btnTestAllWebUI.Text = "Test Web UI (tutti)"
+    $btnTestAllWebUI.Size = New-Object System.Drawing.Size(130, 30)
+    $btnTestAllWebUI.Location = New-Object System.Drawing.Point(430, 425)
+    $btnTestAllWebUI.FlatStyle = "Flat"
+    $btnTestAllWebUI.BackColor = [System.Drawing.Color]::White
+    $btnTestAllWebUI.ForeColor = [System.Drawing.Color]::FromArgb(168, 85, 247)
+    $btnTestAllWebUI.Font = New-Object System.Drawing.Font("Segoe UI", 8.5)
+    $btnTestAllWebUI.Cursor = [System.Windows.Forms.Cursors]::Hand
+    $form.Controls.Add($btnTestAllWebUI)
+
     $btnSave = New-Object System.Windows.Forms.Button
     $btnSave.Text = "Salva e Riavvia"
     $btnSave.Size = New-Object System.Drawing.Size(135, 30)
-    $btnSave.Location = New-Object System.Drawing.Point(403, 415)
+    $btnSave.Location = New-Object System.Drawing.Point(570, 425)
     $btnSave.FlatStyle = "Flat"
     $btnSave.BackColor = [System.Drawing.Color]::FromArgb(34, 197, 94)
     $btnSave.ForeColor = [System.Drawing.Color]::White
@@ -411,11 +436,11 @@ function Show-DeviceManager {
     $form.Controls.Add($btnSave)
 
     $lblHint = New-Object System.Windows.Forms.Label
-    $lblHint.Text = "Il connector verra' riavviato per applicare le modifiche."
+    $lblHint.Text = "Apri Web UI: testa http/https sul device e, se risponde, invia il link ad ARGUS Center. Salva e Riavvia applica le modifiche al servizio."
     $lblHint.Font = New-Object System.Drawing.Font("Segoe UI", 8)
     $lblHint.ForeColor = [System.Drawing.Color]::FromArgb(140, 140, 155)
-    $lblHint.Location = New-Object System.Drawing.Point(20, 455)
-    $lblHint.AutoSize = $true
+    $lblHint.Location = New-Object System.Drawing.Point(20, 465)
+    $lblHint.Size = New-Object System.Drawing.Size(680, 35)
     $form.Controls.Add($lblHint)
 
     # Add button handler
@@ -439,6 +464,7 @@ function Show-DeviceManager {
         $item = New-Object System.Windows.Forms.ListViewItem($ip)
         $null = $item.SubItems.Add($comm)
         $null = $item.SubItems.Add($devName)
+        $null = $item.SubItems.Add([char]0x2014)
         $listView.Items.Add($item)
         $txtIP.Text = ""
         $txtName.Text = ""
@@ -488,6 +514,7 @@ function Show-DeviceManager {
                 $item = New-Object System.Windows.Forms.ListViewItem($ip)
                 $null = $item.SubItems.Add($comm)
                 $null = $item.SubItems.Add($devName)
+                $null = $item.SubItems.Add([char]0x2014)
                 $listView.Items.Add($item)
                 $imported++
             }
@@ -607,6 +634,183 @@ function Show-DeviceManager {
         $btnTestSnmp.Text = "Test SNMP"
     })
 
+    # ==================== WEB UI HELPERS ====================
+    # Prova le porte HTTP/HTTPS comuni su un device, ritorna oggetto con url/port/scheme/title/status, oppure $null
+    function Test-DeviceWebUI([string]$ip) {
+        # SSL bypass per certificati self-signed (iLO, switch, firewall)
+        if (-not ("CertBypassTray" -as [type])) {
+            Add-Type -TypeDefinition @"
+using System.Net.Security;
+using System.Security.Cryptography.X509Certificates;
+public static class CertBypassTray {
+    public static void Enable() {
+        System.Net.ServicePointManager.ServerCertificateValidationCallback = (s, c, ch, e) => true;
+    }
+    public static void Disable() {
+        System.Net.ServicePointManager.ServerCertificateValidationCallback = null;
+    }
+}
+"@
+        }
+        try {
+            [Net.ServicePointManager]::SecurityProtocol = `
+                [Net.SecurityProtocolType]::Tls -bor [Net.SecurityProtocolType]::Tls11 -bor `
+                [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
+        } catch {
+            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        }
+        [CertBypassTray]::Enable()
+        try {
+            # Ordine porte: iLO/firewall su HTTPS 443 -> HTTP 80 -> alternative
+            $candidates = @(
+                @{ port=443;  scheme="https" },
+                @{ port=80;   scheme="http"  },
+                @{ port=8443; scheme="https" },
+                @{ port=8080; scheme="http"  },
+                @{ port=4443; scheme="https" },
+                @{ port=10000;scheme="https" },
+                @{ port=8000; scheme="http"  },
+                @{ port=8888; scheme="http"  }
+            )
+            foreach ($c in $candidates) {
+                $url = "$($c.scheme)://${ip}:$($c.port)/"
+                try {
+                    $resp = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 3 `
+                                -MaximumRedirection 3 -UserAgent "86NocConnector/TrayWebUI" -ErrorAction Stop
+                    $title = ""
+                    if ($resp.Content -match '<title[^>]*>(.*?)</title>') { $title = $Matches[1].Trim() }
+                    return @{
+                        url=$url; port=$c.port; scheme=$c.scheme
+                        title=$title; status_code=[int]$resp.StatusCode; working=$true
+                    }
+                } catch {
+                    # Connection refused / timeout / DNS -> prova prossima porta
+                    continue
+                }
+            }
+        } finally {
+            [CertBypassTray]::Disable()
+        }
+        return $null
+    }
+
+    function Send-WebUIToArgus([string]$ip, [string]$community, [string]$name, $detection) {
+        if (-not (Test-Path $ConfigPath)) { return $false }
+        try {
+            $cfg = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+            $url = "$($cfg.noc_center_url.TrimEnd('/'))/api/connector/web-ui-detected"
+            $payload = @{
+                device_ip   = $ip
+                name        = $name
+                community   = $community
+                url         = $detection.url
+                port        = $detection.port
+                scheme      = $detection.scheme
+                title       = $detection.title
+                status_code = $detection.status_code
+                working     = $detection.working
+            } | ConvertTo-Json -Compress
+            $headers = @{ "X-API-Key" = $cfg.api_key; "Content-Type" = "application/json" }
+            try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13 } catch {}
+            $null = Invoke-RestMethod -Uri $url -Method Post -Headers $headers -Body $payload -TimeoutSec 10 -ErrorAction Stop
+            return $true
+        } catch {
+            return $false
+        }
+    }
+
+    # Apri Web UI (device selezionato)
+    $btnWebUI.Add_Click({
+        if ($listView.SelectedItems.Count -eq 0) {
+            [System.Windows.Forms.MessageBox]::Show("Seleziona un dispositivo dalla lista.", $AppName, "OK", "Information")
+            return
+        }
+        $item = $listView.SelectedItems[0]
+        $ip   = $item.Text
+        $comm = $item.SubItems[1].Text
+        $name = $item.SubItems[2].Text
+
+        $btnWebUI.Enabled = $false
+        $btnWebUI.Text = "Rilevo..."
+        $form.Refresh()
+        [System.Windows.Forms.Cursor]::Current = [System.Windows.Forms.Cursors]::WaitCursor
+
+        $det = Test-DeviceWebUI $ip
+
+        [System.Windows.Forms.Cursor]::Current = [System.Windows.Forms.Cursors]::Default
+        $btnWebUI.Enabled = $true
+        $btnWebUI.Text = "Apri Web UI"
+
+        if (-not $det) {
+            $item.SubItems[3].Text = [char]0x2715 + " non raggiungibile"
+            [System.Windows.Forms.MessageBox]::Show(
+                "Nessuna Web UI raggiungibile su $ip.`n`nPorte provate: 443, 80, 8443, 8080, 4443, 10000, 8000, 8888.`nVerifica firewall / service web del device.",
+                $AppName, "OK", "Warning") | Out-Null
+            return
+        }
+
+        # Apri nel browser di sistema
+        try { Start-Process $det.url | Out-Null } catch {
+            [System.Windows.Forms.MessageBox]::Show("Impossibile avviare il browser: $($_.Exception.Message)", $AppName, "OK", "Error") | Out-Null
+        }
+
+        # Aggiorna colonna Web UI
+        $item.SubItems[3].Text = [char]0x2713 + " " + $det.url
+        $item.Tag = $det
+
+        # Invia ad ARGUS Center
+        $sent = Send-WebUIToArgus $ip $comm $name $det
+        $statusMsg = if ($sent) {
+            "Web UI aperta nel browser: $($det.url)`n`nInformazione registrata su ARGUS Center (device ora disponibile nella console web)."
+        } else {
+            "Web UI aperta nel browser: $($det.url)`n`nATTENZIONE: impossibile contattare ARGUS Center per registrare il device (verifica rete)."
+        }
+        [System.Windows.Forms.MessageBox]::Show($statusMsg, $AppName, "OK",
+            (& { if ($sent) { [System.Windows.Forms.MessageBoxIcon]::Information } else { [System.Windows.Forms.MessageBoxIcon]::Warning } })) | Out-Null
+    })
+
+    # Test Web UI su tutti i device (non apre il browser, solo detection + report)
+    $btnTestAllWebUI.Add_Click({
+        if ($listView.Items.Count -eq 0) {
+            [System.Windows.Forms.MessageBox]::Show("Nessun dispositivo nella lista.", $AppName, "OK", "Warning") | Out-Null
+            return
+        }
+        $btnTestAllWebUI.Enabled = $false
+        $btnTestAllWebUI.Text = "Testing..."
+        [System.Windows.Forms.Cursor]::Current = [System.Windows.Forms.Cursors]::WaitCursor
+
+        $okCount = 0; $koCount = 0; $pushed = 0
+        $summary = ""
+        foreach ($item in $listView.Items) {
+            $ip   = $item.Text
+            $comm = $item.SubItems[1].Text
+            $name = $item.SubItems[2].Text
+            $item.SubItems[3].Text = "..."
+            $form.Refresh()
+
+            $det = Test-DeviceWebUI $ip
+            if ($det) {
+                $okCount++
+                $item.SubItems[3].Text = [char]0x2713 + " " + $det.url
+                $item.Tag = $det
+                if (Send-WebUIToArgus $ip $comm $name $det) { $pushed++ }
+                $summary += "OK  $ip -> $($det.url)`r`n"
+            } else {
+                $koCount++
+                $item.SubItems[3].Text = [char]0x2715 + " non raggiungibile"
+                $summary += "--  $ip (nessuna web UI)`r`n"
+            }
+        }
+
+        [System.Windows.Forms.Cursor]::Current = [System.Windows.Forms.Cursors]::Default
+        $btnTestAllWebUI.Enabled = $true
+        $btnTestAllWebUI.Text = "Test Web UI (tutti)"
+
+        [System.Windows.Forms.MessageBox]::Show(
+            "Test completato.`n`nWeb UI rilevate: $okCount`nNon raggiungibili: $koCount`nInviate ad ARGUS Center: $pushed`n`n$summary",
+            $AppName, "OK", "Information") | Out-Null
+    })
+
     # Save button handler
     $btnSave.Add_Click({
         if (Test-Path $ConfigPath) {
@@ -619,11 +823,19 @@ function Show-DeviceManager {
         # Build devices array
         $devicesArray = @()
         foreach ($item in $listView.Items) {
-            $devicesArray += @{
+            $dev = @{
                 ip = $item.Text
                 community = $item.SubItems[1].Text
                 name = $item.SubItems[2].Text
             }
+            # Se il device ha Web UI rilevata, salvala per riuso
+            if ($item.Tag -and $item.Tag.url) {
+                $dev.web_console_url    = $item.Tag.url
+                $dev.web_console_port   = $item.Tag.port
+                $dev.web_console_scheme = $item.Tag.scheme
+                $dev.web_console_title  = $item.Tag.title
+            }
+            $devicesArray += $dev
         }
 
         # Update config - preserve existing settings, update devices
