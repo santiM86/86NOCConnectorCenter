@@ -1,4 +1,4 @@
 {
-  "version": "3.0.5",
-  "changelog": "v3.0.5: RESTART BULLETPROOF - 5 path di fallback per il restart dopo update: Start-Service, sc.exe, BAT, PowerShell diretto, net start. Nome servizio corretto (86NocConnectorService). Logging dettagliato di ogni tentativo in updater.log. Se tutti i tentativi falliscono, mostra errore esplicito invece di fake-success."
+  "version": "3.0.6",
+  "changelog": "v3.0.6: PULSANTE UPDATE MANUALE - Nuova voce 'Verifica aggiornamenti' nel menu dell'icona tray. Scarica e applica l'ultimo update da ARGUS Center direttamente dal server (richiede privilegi admin). Conferma con dialog che mostra la versione nuova e il changelog. Usa la stessa catena di fallback bulletproof dell'auto-update per il restart."
 }

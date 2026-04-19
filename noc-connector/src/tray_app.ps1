@@ -662,6 +662,126 @@ function Show-DeviceManager {
     return $false
 }
 
+# ==================== MANUAL UPDATE ====================
+
+function Invoke-SecureUpdateCheck($config) {
+    # HMAC-SHA256 signed GET to /api/connector/update-check
+    try {
+        try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13 } catch { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 }
+        $timestamp = [math]::Floor(([DateTimeOffset]::UtcNow).ToUnixTimeSeconds())
+        $nonce = [guid]::NewGuid().ToString("N")
+        $hmacSecret = "argus-hmac-k3y-2026!" + $config.api_key
+        $message = "$($config.api_key)$timestamp$nonce"
+        $hmac = New-Object System.Security.Cryptography.HMACSHA256
+        $hmac.Key = [Text.Encoding]::UTF8.GetBytes($hmacSecret)
+        $signature = [BitConverter]::ToString($hmac.ComputeHash([Text.Encoding]::UTF8.GetBytes($message))).Replace("-","").ToLower()
+        $headers = @{
+            "X-API-Key"        = $config.api_key
+            "X-HMAC-Signature" = $signature
+            "X-Timestamp"      = $timestamp.ToString()
+            "X-Nonce"          = $nonce
+        }
+        return Invoke-RestMethod -Uri "$($config.noc_center_url)/api/connector/update-check" -Method Get -Headers $headers -TimeoutSec 15 -ErrorAction Stop
+    } catch {
+        return $null
+    }
+}
+
+function Invoke-ManualUpdate($notifyIcon) {
+    # Verifica privilegi admin (necessari per Stop/Start del servizio Windows)
+    $isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")
+    if (-not $isAdmin) {
+        [System.Windows.Forms.MessageBox]::Show(
+            "L'aggiornamento manuale richiede privilegi di Amministratore.`n`nChiudi questa applicazione e riaprila cliccando con il tasto destro sull'icona -> `"Esegui come amministratore`".",
+            "$AppName - Privilegi richiesti",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
+        return
+    }
+
+    # Load config
+    if (-not (Test-Path $ConfigPath)) {
+        [System.Windows.Forms.MessageBox]::Show("Configurazione non trovata.", $AppName,
+            [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
+        return
+    }
+    $config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+    if (-not $config.api_key -or -not $config.noc_center_url) {
+        [System.Windows.Forms.MessageBox]::Show("Configurazione incompleta (api_key o noc_center_url mancante).", $AppName,
+            [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
+        return
+    }
+
+    # Show "checking..." notification
+    $notifyIcon.ShowBalloonTip(2000, $AppName, "Verifica aggiornamenti in corso...", [System.Windows.Forms.ToolTipIcon]::Info)
+
+    # Check for update
+    $updateInfo = Invoke-SecureUpdateCheck $config
+    if (-not $updateInfo) {
+        [System.Windows.Forms.MessageBox]::Show(
+            "Impossibile contattare ARGUS Center.`n`nVerifica:`n- connessione internet`n- URL in configurazione: $($config.noc_center_url)",
+            "$AppName - Errore rete",
+            [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
+        return
+    }
+
+    if (-not $updateInfo.update_available -or $updateInfo.latest_version -eq $Version) {
+        [System.Windows.Forms.MessageBox]::Show(
+            "Sei gia' alla versione piu' recente (v$Version).",
+            "$AppName - Nessun aggiornamento",
+            [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
+        return
+    }
+
+    # Confirm update
+    $msg = "E' disponibile una nuova versione.`n`n" +
+           "Corrente:  v$Version`n" +
+           "Nuova:     v$($updateInfo.latest_version)`n`n"
+    if ($updateInfo.changelog) { $msg += "Changelog:`n$($updateInfo.changelog)`n`n" }
+    $msg += "Procedere con l'aggiornamento?`n(Il connettore verra' fermato per qualche secondo e riavviato automaticamente)"
+
+    $result = [System.Windows.Forms.MessageBox]::Show(
+        $msg, "$AppName - Aggiornamento disponibile",
+        [System.Windows.Forms.MessageBoxButtons]::YesNo,
+        [System.Windows.Forms.MessageBoxIcon]::Question)
+    if ($result -ne [System.Windows.Forms.DialogResult]::Yes) { return }
+
+    # Download zip
+    try {
+        $notifyIcon.ShowBalloonTip(3000, $AppName, "Download v$($updateInfo.latest_version) in corso...", [System.Windows.Forms.ToolTipIcon]::Info)
+        $headers = @{ "X-API-Key" = $config.api_key }
+        $downloadUrl = "$($config.noc_center_url)$($updateInfo.download_url)"
+        $tempZip = Join-Path $env:TEMP "86NocConnector_manual_update.zip"
+        $tempExtract = Join-Path $env:TEMP "86NocConnector_manual_update"
+        if (Test-Path $tempExtract) { Remove-Item $tempExtract -Recurse -Force }
+        Invoke-WebRequest -Uri $downloadUrl -Headers $headers -OutFile $tempZip -TimeoutSec 120 -ErrorAction Stop
+
+        # Extract
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        [System.IO.Compression.ZipFile]::ExtractToDirectory($tempZip, $tempExtract)
+
+        # Launch updater (independent) and exit tray app
+        # Use the NEW updater.ps1 (from the just-extracted zip)
+        $newUpdater = Join-Path $tempExtract "src\updater.ps1"
+        $installDir = Split-Path -Parent $ScriptDir
+        $updaterPath = if (Test-Path $newUpdater) { $newUpdater } else { Join-Path $ScriptDir "updater.ps1" }
+        $args = "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$updaterPath`" -ExtractPath `"$tempExtract`" -InstallDir `"$installDir`" -ApiUrl `"$($config.noc_center_url)`" -ApiKey `"$($config.api_key)`""
+        Start-Process "powershell.exe" -ArgumentList $args -WindowStyle Hidden
+
+        $notifyIcon.ShowBalloonTip(5000, $AppName, "Aggiornamento in corso. Il servizio verra' riavviato automaticamente.", [System.Windows.Forms.ToolTipIcon]::Info)
+
+        # Give updater 3s to kick in, then exit tray app (updater killera' gli altri processi)
+        Start-Sleep -Seconds 3
+        $notifyIcon.Visible = $false
+        [System.Windows.Forms.Application]::Exit()
+    } catch {
+        [System.Windows.Forms.MessageBox]::Show(
+            "Errore durante l'aggiornamento:`n`n$($_.Exception.Message)",
+            "$AppName - Errore",
+            [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
+    }
+}
+
 # ==================== TRAY APPLICATION ====================
 
 function Start-TrayApp {
@@ -795,6 +915,13 @@ public class TrayRefresh {
             $notifyIcon.Text = "$AppName - Attivo"
             $notifyIcon.ShowBalloonTip(2000, $AppName, "Connector riavviato", [System.Windows.Forms.ToolTipIcon]::Info)
         }
+    })
+
+    # Check for Updates
+    $updateItem = $contextMenu.Items.Add("Verifica aggiornamenti")
+    $updateItem.ForeColor = [System.Drawing.Color]::FromArgb(99, 102, 241)
+    $updateItem.Add_Click({
+        Invoke-ManualUpdate $notifyIcon
     })
     
     $contextMenu.Items.Add("-") | Out-Null
