@@ -1224,7 +1224,9 @@ function Install-Update($config, $updateInfo) {
         Write-Log "File estratti in: $tempExtract" "INFO"
         Send-UpdateProgress $config 45 "extracting" "File estratti. Avvio updater..."
         
-        # Launch updater as independent process and EXIT
+        # Launch updater as INDEPENDENT scheduled task (bypass NSSM process tree kill)
+        # Usando schtasks con /RU SYSTEM il processo e' completamente staccato da connector/NSSM:
+        # anche se il service viene fermato, l'updater continua a girare.
         $installDir = Split-Path -Parent $PSScriptRoot
         $updaterPath = Join-Path $PSScriptRoot "updater.ps1"
         
@@ -1233,11 +1235,48 @@ function Install-Update($config, $updateInfo) {
         if (Test-Path $newUpdater) {
             $updaterPath = $newUpdater
         }
-        
-        $args = "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$updaterPath`" -ExtractPath `"$tempExtract`" -InstallDir `"$installDir`" -ApiUrl `"$($config.noc_center_url)`" -ApiKey `"$($config.api_key)`""
-        
-        Write-Log "Lancio updater: $updaterPath" "INFO"
-        Start-Process "powershell.exe" -ArgumentList $args -WindowStyle Hidden
+
+        if (-not (Test-Path $updaterPath)) {
+            $msg = "Updater script non trovato: $updaterPath"
+            Write-Log $msg "ERROR"
+            Send-UpdateProgress $config 0 "error" $msg
+            return $false
+        }
+
+        $psExe = Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe"
+        if (-not (Test-Path $psExe)) { $psExe = "powershell.exe" }
+
+        # Prepara TR stringa per schtasks (lungo ma necessario)
+        $trCmd = "`"$psExe`" -ExecutionPolicy Bypass -NoProfile -NonInteractive -WindowStyle Hidden -File `"$updaterPath`" -ExtractPath `"$tempExtract`" -InstallDir `"$installDir`" -ApiUrl `"$($config.noc_center_url)`" -ApiKey `"$($config.api_key)`""
+        $taskName = "86NocConnector_Updater_$([guid]::NewGuid().ToString('N').Substring(0,8))"
+        $runTime = (Get-Date).AddMinutes(1).ToString("HH:mm")   # futuro fittizio — eseguiremo subito con /Run
+
+        Write-Log "Lancio updater via schtasks (task: $taskName)" "INFO"
+        try {
+            # Crea task
+            & schtasks.exe /Create /TN $taskName /SC ONCE /ST $runTime /TR $trCmd /RU SYSTEM /RL HIGHEST /F 2>&1 | Out-String | ForEach-Object { Write-Log "  schtasks /Create: $_" "DEBUG" }
+            # Avvia subito
+            & schtasks.exe /Run /TN $taskName 2>&1 | Out-String | ForEach-Object { Write-Log "  schtasks /Run: $_" "INFO" }
+            Write-Log "Updater lanciato come scheduled task" "INFO"
+        } catch {
+            # Fallback: prova Start-Process classico se schtasks non funziona
+            Write-Log "schtasks fallito: $($_.Exception.Message). Fallback a Start-Process..." "WARN"
+            $updaterArgs = @(
+                "-ExecutionPolicy", "Bypass", "-NoProfile", "-NonInteractive",
+                "-WindowStyle", "Hidden", "-File", $updaterPath,
+                "-ExtractPath", $tempExtract, "-InstallDir", $installDir,
+                "-ApiUrl", $config.noc_center_url, "-ApiKey", $config.api_key
+            )
+            try {
+                $proc = Start-Process -FilePath $psExe -ArgumentList $updaterArgs -WindowStyle Hidden -PassThru
+                Write-Log "Updater avviato (fallback) PID=$($proc.Id)" "INFO"
+            } catch {
+                $errMsg = "Impossibile avviare updater: $($_.Exception.Message)"
+                Write-Log $errMsg "ERROR"
+                Send-UpdateProgress $config 0 "error" $errMsg
+                return $false
+            }
+        }
         
         # Give updater time to start before we exit
         Start-Sleep -Seconds 2
