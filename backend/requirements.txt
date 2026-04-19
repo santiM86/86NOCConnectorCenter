@@ -137,3 +137,6 @@ websockets
 wrapt
 yarl
 zipp
+pywebpush
+py-vapid
+http_ece
