@@ -48,7 +48,8 @@ export function useWebConsole() {
         { client_id: clientId, device_ip: deviceIp, port: port || 80, path: path || "/", method: "GET" },
         { signal: controller.signal }
       );
-      const requestId = reqRes.data.request_id;
+      const requestId = reqRes.data?.request_id;
+      if (!requestId) throw new Error("Backend non ha restituito un request_id valido");
       setState(prev => prev ? { ...prev, progress: 30 } : null);
 
       // Single long-poll GET — server risponde appena il connector pubblica la response
@@ -59,11 +60,28 @@ export function useWebConsole() {
       const loadTime = performance.now() - t0;
 
       if (resp.data.status !== "completed" || !resp.data.response) {
+        let hint = "Verifica che il servizio <b>86NocConnector</b> sia attivo sulla rete del cliente.";
+        let errorLabel = "Connettore non risponde";
+        try {
+          const st = await axios.get(`${API}/connector/status`);
+          const row = Array.isArray(st.data) ? st.data.find(r => r.client_id === clientId) : null;
+          if (row) {
+            const v = row.connector_version || "?";
+            const isOld = /^(1\.|2\.|3\.0\.[0-2]$)/.test(v);
+            if (row.is_offline) {
+              errorLabel = `Connettore OFFLINE (ultimo contatto: ${row.last_seen ? new Date(row.last_seen).toLocaleString("it-IT") : "sconosciuto"})`;
+              hint = `Il connector <b>${row.hostname || ""}</b> (v${v}) risulta offline. Avvia il servizio <b>86NocConnector</b> sulla macchina del cliente.`;
+            } else if (isOld) {
+              errorLabel = `Connettore v${v} troppo vecchio`;
+              hint = `Per usare la Web Console serve il connector <b>v3.0.3 o superiore</b>. Aggiorna tramite icona tray oppure reinstalla con il wizard.`;
+            }
+          }
+        } catch (_) { /* ignore */ }
         setState(prev => prev ? {
           ...prev,
           loading: false, progress: 100,
-          html: `<div style="padding:40px;text-align:center;font-family:system-ui"><h2 style="color:#FF3B30;margin-bottom:12px">Timeout</h2><p style="color:#888">Il connettore non ha risposto.<br>Verifica che il servizio <b>86NocConnector</b> sia attivo sulla rete del cliente.</p></div>`,
-          error: "Timeout connettore",
+          html: `<div style="padding:40px;text-align:center;font-family:system-ui"><h2 style="color:#FF3B30;margin-bottom:12px">${errorLabel}</h2><p style="color:#888;line-height:1.6">${hint}</p></div>`,
+          error: errorLabel,
           loadTime,
         } : null);
         return;
@@ -79,11 +97,23 @@ export function useWebConsole() {
       } : null);
     } catch (e) {
       if (axios.isCancel(e) || e.name === "CanceledError" || e.name === "AbortError") return;
+      const loadTime = performance.now() - t0;
+      const status = e.response?.status;
+      const detail = e.response?.data?.detail;
+      let errLabel = detail || e.message || "Errore sconosciuto";
+      let html = `<div style="padding:40px;text-align:center;font-family:system-ui"><h2 style="color:#FF3B30;margin-bottom:12px">Errore</h2><p style="color:#888;line-height:1.6">${errLabel}</p></div>`;
+      if (status === 403 && /not authorized/i.test(detail || "")) {
+        errLabel = "Dispositivo non censito";
+        html = `<div style="padding:40px;text-align:center;font-family:system-ui;max-width:480px;margin:0 auto"><h2 style="color:#FF3B30;margin-bottom:12px">Dispositivo non censito</h2><p style="color:#aaa;line-height:1.6">Il dispositivo <b style="color:#fff">${deviceIp}:${port}</b> non risulta registrato per questo cliente.</p><p style="color:#888;line-height:1.6;margin-top:12px">Aggiungilo da <b>Cliente → Dispositivi → + Aggiungi</b>, o attendi la discovery SNMP del connector.</p></div>`;
+      } else if (status === 401) {
+        errLabel = "Sessione scaduta";
+      } else if (status === 404) {
+        errLabel = "Richiesta scaduta o non trovata";
+      }
       setState(prev => prev ? {
         ...prev,
         loading: false, progress: 100,
-        html: `<div style="padding:40px;text-align:center;font-family:system-ui"><h2 style="color:#FF3B30;margin-bottom:12px">Errore</h2><p style="color:#888">${e.response?.data?.detail || e.message}</p></div>`,
-        error: e.response?.data?.detail || e.message,
+        html, error: errLabel, loadTime,
       } : null);
     }
   }, []);

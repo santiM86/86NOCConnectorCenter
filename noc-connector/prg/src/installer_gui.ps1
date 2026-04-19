@@ -476,7 +476,7 @@ function Show-InstallerWizard {
 
         $btnRemoveDev = New-Object System.Windows.Forms.Button
         $btnRemoveDev.Text = "Rimuovi selezionato"
-        $btnRemoveDev.Size = New-Object System.Drawing.Size(130, 28)
+        $btnRemoveDev.Size = New-Object System.Drawing.Size(140, 28)
         $btnRemoveDev.Location = New-Object System.Drawing.Point(28, 362)
         $btnRemoveDev.FlatStyle = "Flat"
         $btnRemoveDev.BackColor = [System.Drawing.Color]::White
@@ -485,12 +485,24 @@ function Show-InstallerWizard {
         $btnRemoveDev.Cursor = [System.Windows.Forms.Cursors]::Hand
         $contentPanel.Controls.Add($btnRemoveDev)
 
+        # Pulsante Importa CSV
+        $btnImportCsv = New-Object System.Windows.Forms.Button
+        $btnImportCsv.Text = "Importa CSV..."
+        $btnImportCsv.Size = New-Object System.Drawing.Size(110, 28)
+        $btnImportCsv.Location = New-Object System.Drawing.Point(180, 362)
+        $btnImportCsv.FlatStyle = "Flat"
+        $btnImportCsv.BackColor = [System.Drawing.Color]::FromArgb(99, 102, 241)
+        $btnImportCsv.ForeColor = [System.Drawing.Color]::White
+        $btnImportCsv.Font = New-Object System.Drawing.Font("Segoe UI", 8, [System.Drawing.FontStyle]::Bold)
+        $btnImportCsv.Cursor = [System.Windows.Forms.Cursors]::Hand
+        $contentPanel.Controls.Add($btnImportCsv)
+
         # Poll interval
         $lblPoll = New-Object System.Windows.Forms.Label
-        $lblPoll.Text = "Intervallo polling (sec):"
+        $lblPoll.Text = "Polling (sec):"
         $lblPoll.Font = New-Object System.Drawing.Font("Segoe UI", 8)
         $lblPoll.ForeColor = [System.Drawing.Color]::FromArgb(40, 40, 55)
-        $lblPoll.Location = New-Object System.Drawing.Point(250, 366)
+        $lblPoll.Location = New-Object System.Drawing.Point(310, 367)
         $lblPoll.AutoSize = $true
         $contentPanel.Controls.Add($lblPoll)
 
@@ -501,11 +513,11 @@ function Show-InstallerWizard {
         $contentPanel.Controls.Add($txtPollInterval)
 
         $hint = New-Object System.Windows.Forms.Label
-        $hint.Text = "Lo switch HPE 1820 non invia trap. Il polling SNMP interroga le porte ogni X secondi."
+        $hint.Text = "CSV: header ip, name, community, device_type, snmp_version, snmp_port" + [char]10 + "(separatore virgola, punto e virgola o tab - alias case-insensitive)."
         $hint.Font = New-Object System.Drawing.Font("Segoe UI", 8)
         $hint.ForeColor = [System.Drawing.Color]::FromArgb(140, 140, 155)
-        $hint.Location = New-Object System.Drawing.Point(28, 430)
-        $hint.Size = New-Object System.Drawing.Size(440, 40)
+        $hint.Location = New-Object System.Drawing.Point(28, 402)
+        $hint.Size = New-Object System.Drawing.Size(440, 55)
         $contentPanel.Controls.Add($hint)
 
         # Button handlers
@@ -528,6 +540,102 @@ function Show-InstallerWizard {
         $btnRemoveDev.Add_Click({
             if ($deviceList.SelectedItems.Count -gt 0) {
                 $deviceList.Items.Remove($deviceList.SelectedItems[0])
+            }
+        })
+
+        $btnImportCsv.Add_Click({
+            $ofd = New-Object System.Windows.Forms.OpenFileDialog
+            $ofd.Filter = "CSV Files (*.csv)|*.csv|Tutti i file (*.*)|*.*"
+            $ofd.Title = "Seleziona il CSV dei dispositivi"
+            if ($ofd.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { return }
+
+            try {
+                # Auto-detect delimiter (virgola, punto e virgola, tab)
+                $firstLine = (Get-Content $ofd.FileName -TotalCount 1 -ErrorAction Stop)
+                $delim = ","
+                if ($firstLine -match ";") { $delim = ";" }
+                elseif ($firstLine -match "`t") { $delim = "`t" }
+
+                $rows = Import-Csv -Path $ofd.FileName -Delimiter $delim -ErrorAction Stop
+                if (-not $rows -or $rows.Count -eq 0) {
+                    [System.Windows.Forms.MessageBox]::Show(
+                        "Il CSV e' vuoto o non leggibile.",
+                        $AppName, [System.Windows.Forms.MessageBoxButtons]::OK,
+                        [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
+                    return
+                }
+
+                # Normalizza header (case-insensitive, accetta alias)
+                $props = $rows[0].PSObject.Properties.Name
+                function Find-Col($names) {
+                    foreach ($n in $names) {
+                        $match = $props | Where-Object { $_.Trim().ToLower() -eq $n.ToLower() } | Select-Object -First 1
+                        if ($match) { return $match }
+                    }
+                    return $null
+                }
+
+                $colIp        = Find-Col @("ip", "ip_address", "indirizzo", "address", "host")
+                $colName      = Find-Col @("name", "nome", "device_name", "hostname", "descrizione", "description")
+                $colCommunity = Find-Col @("community", "snmp_community", "comunita")
+                $colType      = Find-Col @("device_type", "type", "tipo", "categoria")
+                $colVersion   = Find-Col @("snmp_version", "version", "versione")
+                $colPort      = Find-Col @("port", "snmp_port", "porta")
+
+                if (-not $colIp) {
+                    [System.Windows.Forms.MessageBox]::Show(
+                        "CSV non valido: manca la colonna IP (nomi accettati: ip, ip_address, indirizzo, address, host).",
+                        $AppName, [System.Windows.Forms.MessageBoxButtons]::OK,
+                        [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
+                    return
+                }
+
+                # Dedup contro liste esistenti
+                $existingIps = @{}
+                foreach ($item in $deviceList.Items) { $existingIps[$item.Text] = $true }
+
+                $imported = 0
+                $skipped = 0
+                $errors = 0
+                foreach ($row in $rows) {
+                    $ip = ($row.$colIp).ToString().Trim()
+                    if (-not $ip -or $ip -eq "") { continue }
+                    # Validazione IP base (IPv4 dotted)
+                    if ($ip -notmatch '^\d{1,3}(\.\d{1,3}){3}$' -and $ip -notmatch '^[a-zA-Z0-9\.\-]+$') {
+                        $errors++
+                        continue
+                    }
+                    if ($existingIps.ContainsKey($ip)) { $skipped++; continue }
+
+                    $comm = if ($colCommunity) { ($row.$colCommunity).ToString().Trim() } else { "public" }
+                    if (-not $comm) { $comm = "public" }
+                    $name = if ($colName) { ($row.$colName).ToString().Trim() } else { $ip }
+                    if (-not $name) { $name = $ip }
+
+                    $item = New-Object System.Windows.Forms.ListViewItem($ip)
+                    $null = $item.SubItems.Add($comm)
+                    $null = $item.SubItems.Add($name)
+                    # Tag con metadati extra (device_type, snmp_version, port) per uso futuro
+                    $extra = @{}
+                    if ($colType)    { $extra.device_type  = ($row.$colType).ToString().Trim() }
+                    if ($colVersion) { $extra.snmp_version = ($row.$colVersion).ToString().Trim() }
+                    if ($colPort)    { $extra.port         = ($row.$colPort).ToString().Trim() }
+                    if ($extra.Count -gt 0) { $item.Tag = $extra }
+
+                    $deviceList.Items.Add($item)
+                    $existingIps[$ip] = $true
+                    $imported++
+                }
+
+                [System.Windows.Forms.MessageBox]::Show(
+                    "Import CSV completato.`n`nDispositivi importati: $imported`nDuplicati saltati: $skipped`nRighe non valide: $errors",
+                    $AppName, [System.Windows.Forms.MessageBoxButtons]::OK,
+                    [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
+            } catch {
+                [System.Windows.Forms.MessageBox]::Show(
+                    "Errore durante la lettura del CSV:`n`n$($_.Exception.Message)",
+                    $AppName, [System.Windows.Forms.MessageBoxButtons]::OK,
+                    [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
             }
         })
     }
@@ -584,11 +692,19 @@ function Show-InstallerWizard {
         # Build devices array from ListView
         $devicesArray = @()
         foreach ($item in $deviceList.Items) {
-            $devicesArray += @{
+            $d = @{
                 ip = $item.Text
                 community = $item.SubItems[1].Text
                 name = $item.SubItems[2].Text
             }
+            # Metadati extra importati da CSV (salvati in $item.Tag)
+            if ($item.Tag -and $item.Tag -is [hashtable]) {
+                if ($item.Tag.device_type)  { $d.device_type  = $item.Tag.device_type }
+                if ($item.Tag.snmp_version) { $d.snmp_version = $item.Tag.snmp_version }
+                if ($item.Tag.port)         { $d.snmp_port    = $item.Tag.port }
+            }
+            if (-not $d.snmp_version) { $d.snmp_version = "v2c" }
+            $devicesArray += $d
         }
         $pollInterval = 60
         try { $pollInterval = [int]$txtPollInterval.Text } catch {}
@@ -634,7 +750,39 @@ function Show-InstallerWizard {
         $form.Refresh()
         Start-Sleep -Milliseconds 500
         
-        # Step 3: Registra come Servizio Windows (NSSM)
+        # Step 2b: COPIA FILE in C:\Program Files\86NocConnector (evita handle sulla cartella sorgente)
+        $txtStatus.AppendText("> Copia file del programma...`r`n")
+        $progressBar.Value = 50
+        $form.Refresh()
+        $InstallPath = Join-Path ([Environment]::GetFolderPath("ProgramFiles")) $AppName
+        $sourceDir = $BaseDir  # dove stanno gli script e nssm.exe (prg/ o root in installazioni legacy)
+        try {
+            if (!(Test-Path $InstallPath)) {
+                New-Item -ItemType Directory -Path $InstallPath -Force | Out-Null
+            }
+            # Se la cartella sorgente E' GIA' la InstallPath (cioe' si sta reinstallando da lì), non copiare
+            $sourceNorm = (Resolve-Path $sourceDir).Path.TrimEnd('\')
+            $installNorm = (Resolve-Path $InstallPath).Path.TrimEnd('\')
+            if ($sourceNorm -ne $installNorm) {
+                # Ferma il servizio se esiste già (evita "file in uso" durante la copia)
+                & sc.exe stop "86NocConnectorService" 2>&1 | Out-Null
+                Start-Sleep -Seconds 2
+                
+                # Copia tutti i file sorgente verso InstallPath (include src/, nssm.exe, .bat, version.json)
+                Copy-Item "$sourceDir\*" -Destination $InstallPath -Recurse -Force -ErrorAction Stop
+                $txtStatus.AppendText("  Copiati in: $InstallPath`r`n")
+            } else {
+                $txtStatus.AppendText("  Installato in: $InstallPath (in-place)`r`n")
+            }
+            # Da ora in poi, i percorsi del servizio puntano a InstallPath, non piu' alla cartella sorgente
+            $ScriptDir = Join-Path $InstallPath "src"
+            $BaseDir = $InstallPath
+        } catch {
+            $txtStatus.AppendText("  ERRORE copia file: $($_.Exception.Message)`r`n")
+            $txtStatus.AppendText("  Installazione proseguita sui file della cartella sorgente (NON eliminare la cartella!)`r`n")
+        }
+        $form.Refresh()
+        Start-Sleep -Milliseconds 300
         $txtStatus.AppendText("> Registrazione Servizio Windows (NSSM)...`r`n")
         $progressBar.Value = 60
         $form.Refresh()
@@ -813,6 +961,24 @@ function Show-InstallerWizard {
         }
         
         $txtStatus.AppendText("`r`n> Installazione completata con successo!`r`n")
+
+        # Verifica che nessun riferimento punti ancora alla cartella sorgente
+        if ($sourceDir -and $sourceNorm -and $installNorm -and ($sourceNorm -ne $installNorm)) {
+            $txtStatus.AppendText("`r`n> Verifica integrita' installazione...`r`n")
+            $allOk = $true
+            try {
+                $svcExe = (& sc.exe qc "86NocConnectorService" 2>$null | Out-String)
+                if ($svcExe -match [regex]::Escape($sourceNorm)) {
+                    $txtStatus.AppendText("  ATTENZIONE: servizio punta ancora a $sourceNorm`r`n")
+                    $allOk = $false
+                }
+            } catch {}
+            if ($allOk) {
+                $txtStatus.AppendText("  Nessun riferimento alla cartella sorgente: OK`r`n")
+                $txtStatus.AppendText("  -> La cartella di installazione originale puo' ora essere eliminata.`r`n")
+            }
+        }
+
         $form.Refresh()
         
         $btnNext.Enabled = $true
@@ -875,9 +1041,18 @@ function Show-InstallerWizard {
         $tip.Text = "Trovi l'icona di $AppName vicino all'orologio`nnella barra delle applicazioni (system tray).`nClicca con il tasto destro per le opzioni."
         $tip.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
         $tip.ForeColor = [System.Drawing.Color]::FromArgb(99, 102, 241)
-        $tip.Location = New-Object System.Drawing.Point(28, 350)
+        $tip.Location = New-Object System.Drawing.Point(28, 340)
         $tip.Size = New-Object System.Drawing.Size(450, 55)
         $contentPanel.Controls.Add($tip)
+
+        # Avviso: la cartella di installazione puo' essere eliminata
+        $cleanupTip = New-Object System.Windows.Forms.Label
+        $cleanupTip.Text = [char]0x1F5D1 + " La cartella usata per l'installazione puo' essere eliminata in sicurezza. Il servizio gira da Program Files e non ha piu' alcuna dipendenza dalla cartella originale."
+        $cleanupTip.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Italic)
+        $cleanupTip.ForeColor = [System.Drawing.Color]::FromArgb(22, 163, 74)
+        $cleanupTip.Location = New-Object System.Drawing.Point(28, 400)
+        $cleanupTip.Size = New-Object System.Drawing.Size(450, 40)
+        $contentPanel.Controls.Add($cleanupTip)
     }
     
     # ==================== NAVIGATION ====================

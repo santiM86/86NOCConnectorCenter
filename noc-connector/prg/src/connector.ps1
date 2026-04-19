@@ -1571,54 +1571,122 @@ function Check-WebProxyRequests($config) {
 }
 
 function Process-WebProxyRequest($config, $req) {
+    # =========================================================================
+    # Enterprise Web Proxy Handler
+    # - Auto-fallback HTTPS -> HTTP se timeout/errore di connessione
+    # - Bypass SSL cert validation per certificati self-signed (iLO/firewall)
+    # - Hard timeout 10s per connessione device (non blocca main loop)
+    # - Response SEMPRE inviata al server, anche su errore (previene frontend timeout)
+    # - Logging strutturato + metriche latenza
+    # =========================================================================
     $deviceIp = $req.device_ip
     $port = if ($req.port) { $req.port } else { 80 }
     $path = if ($req.path) { $req.path } else { "/" }
     $requestId = $req.request_id
-    
-    Write-Log "[WEB-PROXY] Richiesta per $deviceIp`:$port$path (ID: $requestId)"
-    
+    $tStart = [DateTime]::UtcNow
+
+    Write-Log "[WEB-PROXY] IN  -> $deviceIp`:$port$path (ID: $($requestId.Substring(0, 8)))"
+
     $responseBody = ""
     $statusCode = 0
     $contentType = "text/html"
     $title = ""
     $error = $null
-    
+
+    # Whitelist porte
+    if ($port -notin @(80, 443, 8080, 8443, 8000, 8888, 4443, 4080, 9090, 10000)) {
+        $error = "Porta $port non consentita per motivi di sicurezza"
+        $statusCode = 403
+        $responseBody = Build-WebProxyErrorPage $deviceIp $port $path $error
+        Send-WebProxyResponse $config $requestId $statusCode $contentType $responseBody $title $error
+        return
+    }
+
+    # Determina schemi da provare: se la porta è 443/8443/4443 -> HTTPS primo, HTTP fallback;
+    # altrimenti HTTP primo, HTTPS fallback (alcuni firewall fanno redirect forzato).
+    $schemes = if ($port -in @(443, 8443, 4443)) { @("https", "http") } else { @("http", "https") }
+
+    # Abilita TLS 1.0/1.1/1.2/1.3 (molti iLO vecchi negoziano solo TLS 1.0/1.1)
     try {
-        $targetUrl = "http://${deviceIp}:${port}${path}"
-        
-        # Security: only allow HTTP/HTTPS on known ports
-        if ($port -notin @(80, 443, 8080, 8443, 8000, 8888, 4443)) {
-            throw "Porta $port non consentita per motivi di sicurezza"
-        }
-        
-        # Use TLS 1.2 for HTTPS
+        [Net.ServicePointManager]::SecurityProtocol = `
+            [Net.SecurityProtocolType]::Tls -bor `
+            [Net.SecurityProtocolType]::Tls11 -bor `
+            [Net.SecurityProtocolType]::Tls12 -bor `
+            [Net.SecurityProtocolType]::Tls13
+    } catch {
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-        
-        # Fetch the page
-        $webClient = New-Object System.Net.WebClient
-        $webClient.Encoding = [System.Text.Encoding]::UTF8
-        $webClient.Headers.Add("User-Agent", "86NocConnector/WebProxy")
-        
-        $htmlContent = $webClient.DownloadString($targetUrl)
-        $contentType = $webClient.ResponseHeaders["Content-Type"]
-        if (-not $contentType) { $contentType = "text/html" }
-        
-        # Extract title
-        if ($htmlContent -match '<title[^>]*>(.*?)</title>') {
-            $title = $Matches[1]
+    }
+
+    # Bypass validation dei certificati self-signed (necessario per iLO/switch/firewall)
+    # Equivalente di -SkipCertificateCheck (disponibile solo su PS 7+)
+    if (-not ("CertBypass" -as [type])) {
+        Add-Type -TypeDefinition @"
+using System.Net.Security;
+using System.Security.Cryptography.X509Certificates;
+public static class CertBypass {
+    public static void Enable() {
+        System.Net.ServicePointManager.ServerCertificateValidationCallback = (s, c, ch, e) => true;
+    }
+    public static void Disable() {
+        System.Net.ServicePointManager.ServerCertificateValidationCallback = null;
+    }
+}
+"@
+    }
+    [CertBypass]::Enable()
+
+    $htmlContent = $null
+    $finalBaseUrl = $null
+    $lastError = $null
+
+    foreach ($scheme in $schemes) {
+        $targetUrl = "${scheme}://${deviceIp}:${port}${path}"
+        try {
+            Write-Log "[WEB-PROXY] TRY $targetUrl" "DEBUG"
+            # Invoke-WebRequest con timeout esplicito: 10s massimo per evitare blocco main loop
+            $wr = Invoke-WebRequest -Uri $targetUrl -UseBasicParsing -TimeoutSec 10 `
+                   -UserAgent "86NocConnector/WebProxy" -MaximumRedirection 5 -ErrorAction Stop
+            $htmlContent = $wr.Content
+            if ($wr.Headers.ContainsKey("Content-Type")) {
+                $contentType = $wr.Headers["Content-Type"]
+            }
+            $finalBaseUrl = "${scheme}://${deviceIp}:${port}"
+            $statusCode = [int]$wr.StatusCode
+            break
+        } catch {
+            $lastError = $_.Exception.Message
+            Write-Log "[WEB-PROXY] FAIL $targetUrl -> $lastError" "WARN"
+            continue
         }
-        
-        # Rewrite relative URLs to absolute
-        $baseUrl = "http://${deviceIp}:${port}"
-        
-        # Rewrite src and href attributes
-        $htmlContent = $htmlContent -replace '(src|href|action)="/', "`$1=`"__PROXY_BASE__/"
-        $htmlContent = $htmlContent -replace '(src|href|action)=''/', "`$1='__PROXY_BASE__/"
-        
-        # Try to inline CSS files
+    }
+
+    [CertBypass]::Disable()
+
+    if (-not $htmlContent) {
+        $error = "Dispositivo $deviceIp non raggiungibile sulla porta $port (HTTP/HTTPS). Dettaglio: $lastError"
+        $statusCode = 502
+        $responseBody = Build-WebProxyErrorPage $deviceIp $port $path $error
+        Send-WebProxyResponse $config $requestId $statusCode $contentType $responseBody $title $error
+        $elapsed = ([DateTime]::UtcNow - $tStart).TotalMilliseconds
+        Write-Log "[WEB-PROXY] OUT FAIL $deviceIp`:$port in $([math]::Round($elapsed))ms" "ERROR"
+        return
+    }
+
+    # Estrai title
+    if ($htmlContent -match '<title[^>]*>(.*?)</title>') {
+        $title = $Matches[1]
+    }
+
+    # Rewrite URL relativi a assoluti (usa il baseUrl finale, HTTPS o HTTP)
+    $baseUrl = $finalBaseUrl
+    $htmlContent = $htmlContent -replace '(src|href|action)="/', "`$1=`"__PROXY_BASE__/"
+    $htmlContent = $htmlContent -replace '(src|href|action)=''/', "`$1='__PROXY_BASE__/"
+
+    # Inline CSS (best-effort, skip su errore)
+    try {
         $cssPattern = '<link[^>]*href="([^"]*\.css[^"]*)"[^>]*/?\s*>'
         $cssMatches = [regex]::Matches($htmlContent, $cssPattern)
+        [CertBypass]::Enable()
         foreach ($cssMatch in $cssMatches) {
             $cssUrl = $cssMatch.Groups[1].Value
             if ($cssUrl.StartsWith("__PROXY_BASE__")) {
@@ -1627,18 +1695,22 @@ function Process-WebProxyRequest($config, $req) {
                 $cssUrl = "$baseUrl/$cssUrl"
             }
             try {
-                $cssContent = $webClient.DownloadString($cssUrl)
-                $styleTag = "<style>/* Inlined from $($cssMatch.Groups[1].Value) */" + "`n" + $cssContent + "`n</style>"
+                $cssResp = Invoke-WebRequest -Uri $cssUrl -UseBasicParsing -TimeoutSec 3 -ErrorAction Stop
+                $styleTag = "<style>/* $($cssMatch.Groups[1].Value) */`n$($cssResp.Content)`n</style>"
                 $htmlContent = $htmlContent.Replace($cssMatch.Value, $styleTag)
-            } catch {
-                Write-Log "[WEB-PROXY] CSS inline fallito per $cssUrl" "WARN"
-            }
+            } catch {}
         }
-        
-        # Convert small images to base64 (inline)
+        [CertBypass]::Disable()
+    } catch {}
+
+    # Inline piccole immagini come base64 (max 300KB ciascuna, max 10 immagini totali)
+    try {
+        [CertBypass]::Enable()
         $imgPattern = '<img[^>]*src="([^"]+)"[^>]*/?\s*>'
         $imgMatches = [regex]::Matches($htmlContent, $imgPattern)
+        $imgCount = 0
         foreach ($imgMatch in $imgMatches) {
+            if ($imgCount -ge 10) { break }
             $imgUrl = $imgMatch.Groups[1].Value
             if ($imgUrl.StartsWith("data:")) { continue }
             if ($imgUrl.StartsWith("__PROXY_BASE__")) {
@@ -1647,8 +1719,10 @@ function Process-WebProxyRequest($config, $req) {
                 $imgUrl = "$baseUrl/$imgUrl"
             }
             try {
-                $imgBytes = $webClient.DownloadData($imgUrl)
-                if ($imgBytes.Length -lt 500000) { # Max 500KB per image
+                $imgResp = Invoke-WebRequest -Uri $imgUrl -UseBasicParsing -TimeoutSec 3 -ErrorAction Stop
+                $imgBytes = $imgResp.Content
+                if ($imgBytes -is [string]) { $imgBytes = [System.Text.Encoding]::UTF8.GetBytes($imgBytes) }
+                if ($imgBytes.Length -lt 300000) {
                     $b64 = [Convert]::ToBase64String($imgBytes)
                     $ext = [System.IO.Path]::GetExtension($imgUrl).TrimStart('.').Split('?')[0]
                     if (-not $ext -or $ext -eq "") { $ext = "png" }
@@ -1657,18 +1731,20 @@ function Process-WebProxyRequest($config, $req) {
                     $dataUri = "data:$mime;base64,$b64"
                     $newImgTag = $imgMatch.Value.Replace($imgMatch.Groups[1].Value, $dataUri)
                     $htmlContent = $htmlContent.Replace($imgMatch.Value, $newImgTag)
+                    $imgCount++
                 }
             } catch {}
         }
-        
-        # Replace proxy base markers with proxy endpoint info
-        $htmlContent = $htmlContent.Replace("__PROXY_BASE__", $baseUrl)
-        
-        # Inject navigation interceptor script
-        $interceptScript = @"
+        [CertBypass]::Disable()
+    } catch {}
+
+    # Sostituisci proxy base markers
+    $htmlContent = $htmlContent.Replace("__PROXY_BASE__", $baseUrl)
+
+    # Inject interceptor per proxy-navigate
+    $interceptScript = @"
 <script>
 (function(){
-  // Intercept all link clicks for proxy navigation
   document.addEventListener('click', function(e) {
     var link = e.target.closest('a');
     if (link && link.href) {
@@ -1679,7 +1755,6 @@ function Process-WebProxyRequest($config, $req) {
       }
     }
   }, true);
-  // Intercept form submissions
   document.addEventListener('submit', function(e) {
     e.preventDefault();
     var form = e.target;
@@ -1691,42 +1766,53 @@ function Process-WebProxyRequest($config, $req) {
 })();
 </script>
 "@
-        
-        # Insert interceptor before </body> or at end
-        if ($htmlContent -match '</body>') {
-            $htmlContent = $htmlContent.Replace('</body>', "$interceptScript</body>")
-        } else {
-            $htmlContent += $interceptScript
-        }
-        
-        $statusCode = 200
-        $responseBody = $htmlContent
-        $webClient.Dispose()
-        
-        Write-Log "[WEB-PROXY] Pagina recuperata: $title ($($responseBody.Length) chars)"
-        
-    } catch {
-        $error = $_.Exception.Message
-        $statusCode = 500
-        $responseBody = "<html><body><h2>Errore connessione</h2><p>$error</p><p>Dispositivo: ${deviceIp}:${port}${path}</p></body></html>"
-        Write-Log "[WEB-PROXY] Errore: $error" "ERROR"
+    if ($htmlContent -match '</body>') {
+        $htmlContent = $htmlContent.Replace('</body>', "$interceptScript</body>")
+    } else {
+        $htmlContent += $interceptScript
     }
-    
-    # Send response back to NOC
+
+    $responseBody = $htmlContent
+    $elapsed = ([DateTime]::UtcNow - $tStart).TotalMilliseconds
+    Write-Log "[WEB-PROXY] OUT OK  $deviceIp`:$port in $([math]::Round($elapsed))ms ($($responseBody.Length) chars) title='$title'"
+
+    Send-WebProxyResponse $config $requestId $statusCode $contentType $responseBody $title $error
+}
+
+function Build-WebProxyErrorPage($deviceIp, $port, $path, $errorMsg) {
+    $safeErr = $errorMsg -replace '<', '&lt;' -replace '>', '&gt;'
+    return @"
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>Connessione fallita</title>
+<style>
+body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; background:#0d0d12; color:#c9c9d1; margin:0; padding:0; }
+.wrap { max-width:560px; margin:80px auto; padding:32px; background:#12121a; border:1px solid #1e1e2e; border-radius:12px; }
+h1 { color:#ff6b6b; margin:0 0 8px 0; font-size:18px; }
+.detail { color:#8a8a9a; font-size:13px; margin:14px 0; line-height:1.5; }
+.target { background:#0f0f17; padding:10px 14px; border-radius:6px; font-family:monospace; font-size:12px; color:#a78bfa; border:1px solid #2a2a3e; }
+.hint { margin-top:18px; padding:12px; background:#0f0f17; border-left:3px solid #5e5ce6; font-size:12px; color:#8a8a9a; border-radius:4px; }
+</style></head><body><div class="wrap">
+<h1>&#9888; Connessione al dispositivo fallita</h1>
+<div class="detail">Il connector non e' riuscito a raggiungere il dispositivo.</div>
+<div class="target">${deviceIp}:${port}${path}</div>
+<div class="detail"><b>Dettaglio:</b> $safeErr</div>
+<div class="hint">Verifica: (1) il device risponde al ping dalla LAN del connector; (2) la web console e' attiva sulla porta specificata; (3) nessun firewall blocca 86NocConnector verso il device.</div>
+</div></body></html>
+"@
+}
+
+function Send-WebProxyResponse($config, $requestId, $statusCode, $contentType, $responseBody, $title, $errorMsg) {
     $payload = @{
         request_id = $requestId
         status_code = $statusCode
         content_type = $contentType
         body = $responseBody
         title = $title
-        error = $error
+        error = $errorMsg
     }
-    
     $headers = @{
-        "X-API-Key" = $config.api_key
+        "X-API-Key"    = $config.api_key
         "Content-Type" = "application/json"
     }
-    
     try {
         $jsonPayload = $payload | ConvertTo-Json -Depth 5 -Compress
         $url = "$($config.noc_center_url)/api/connector/web-proxy/response"
@@ -1949,7 +2035,10 @@ function Start-Connector {
                 $lastJobHealthCheck = $now
             }
             
-            Start-Sleep -Seconds $webProxyIntervalSec
+            # Check SNMP trap job health first
+            # Note: Check-WebProxyRequests già fa long-poll 20s, quindi non serve Start-Sleep.
+            # Breve pausa solo in caso di errore rete per evitare tight-loop.
+            Start-Sleep -Milliseconds 200
         }
     } catch {
         Write-Log "Arresto..."
