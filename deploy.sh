@@ -50,4 +50,5 @@ echo "========================================"
 echo "Deployment Complete at $(date)!"
 echo "========================================"
 # To see logs
+
 # tail -f /home/arslan/86NOCConnectorCenter/deploy.log
