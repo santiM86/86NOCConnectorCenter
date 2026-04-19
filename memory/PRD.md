@@ -63,6 +63,11 @@ Società IT che necessita di un raccoglitore di alert (NOC) per tutti i disposit
 ### P1 — Notifiche Telegram
 In attesa di bot token dall'utente.
 
+### Connector v3.1.2 (2026-04-19) — CSV Import nel wizard installer
+- `installer_gui.ps1`: aggiunto pulsante "Importa CSV..." a pagina 2 (Dispositivi). Auto-detect delimitatore (`,` / `;` / tab), header case-insensitive con alias (ip/ip_address/indirizzo/host, name/nome/hostname/device_name, community/snmp_community, device_type/type/tipo, snmp_version/version, port/snmp_port). Dedup contro IP gia' in lista, validazione IPv4/hostname, messaggio riepilogativo (importati / saltati / errori).
+- Gap fix: i metadati extra (`device_type`, `snmp_version`, `snmp_port`) ora vengono serializzati in `config.json` → usati dal connector per SNMP polling e classificazione dispositivo (prima andavano persi in `$item.Tag`).
+- Rilasciato: `/tmp/86NocConnector_v3.1.2.zip` (update flat, retro-compat v3.0.x updater) + `86NocConnector_v3.1.2_install.zip` (VBS+prg/) pubblicato in `/app/frontend/public/downloads/`. Upload backend via `/api/connector/upload-update` ok, i connettori in field si auto-aggiorneranno entro 5 min.
+
 ### P1 — Sostituire mock Email con integrazione reale (Resend / SendGrid / SMTP)
 In attesa di scelta provider e credenziali. **Push notifications: DONE (Web Push VAPID).**
 

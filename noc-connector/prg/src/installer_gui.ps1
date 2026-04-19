@@ -692,11 +692,19 @@ function Show-InstallerWizard {
         # Build devices array from ListView
         $devicesArray = @()
         foreach ($item in $deviceList.Items) {
-            $devicesArray += @{
+            $d = @{
                 ip = $item.Text
                 community = $item.SubItems[1].Text
                 name = $item.SubItems[2].Text
             }
+            # Metadati extra importati da CSV (salvati in $item.Tag)
+            if ($item.Tag -and $item.Tag -is [hashtable]) {
+                if ($item.Tag.device_type)  { $d.device_type  = $item.Tag.device_type }
+                if ($item.Tag.snmp_version) { $d.snmp_version = $item.Tag.snmp_version }
+                if ($item.Tag.port)         { $d.snmp_port    = $item.Tag.port }
+            }
+            if (-not $d.snmp_version) { $d.snmp_version = "v2c" }
+            $devicesArray += $d
         }
         $pollInterval = 60
         try { $pollInterval = [int]$txtPollInterval.Text } catch {}

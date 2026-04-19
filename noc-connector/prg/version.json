@@ -1,4 +1,4 @@
 {
-  "version": "3.1.1",
-  "changelog": "v3.1.1: FIX SPAM ECCEZIONI TRAY - Risolto loop infinito di SetValueInvocationException sul tooltip NotifyIcon (limite Windows 63 caratteri). Nuova funzione helper Set-NotifyIconTooltip con troncamento sicuro + try/catch. Corretti anche altri punti del timer che usavano Substring con limite sbagliato (127 invece di 63). Contiene tutte le migliorie di v3.1.0 Web Console Enterprise."
+  "version": "3.1.2",
+  "changelog": "v3.1.2: IMPORT CSV nel wizard di installazione. Puoi caricare un CSV con dispositivi da monitorare (header: ip, name, community, device_type, snmp_version, port). Auto-detect delimitatore (virgola/punto e virgola/tab), alias header case-insensitive (ip/ip_address/indirizzo/host, name/nome/hostname, etc.), dedup automatico contro IP gia' in lista, validazione IPv4/hostname, riepilogo importati/saltati/errori. I metadati extra (device_type, snmp_version, snmp_port) vengono serializzati in config.json e usati dal connector per SNMP polling e classificazione dispositivo. Contiene tutte le migliorie di v3.1.1 (fix spam tooltip tray) e v3.1.0 (Web Console Enterprise)."
 }
