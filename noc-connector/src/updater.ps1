@@ -34,10 +34,34 @@ function Send-Progress($progress, $status, $message) {
 Write-UpdateLog "=== INIZIO AGGIORNAMENTO ==="
 Write-UpdateLog "ExtractPath: $ExtractPath"
 Write-UpdateLog "InstallDir: $InstallDir"
-Send-Progress 50 "stopping" "Arresto processi in corso..."
+Send-Progress 50 "stopping" "Arresto servizio Windows..."
 
-# ===== STEP 1: Kill ALL 86NocConnector processes =====
-Write-UpdateLog "STEP 1: Arresto processi..."
+# ===== STEP 1a: Stop Windows Service (se presente) =====
+# Evita race condition: NSSM riavvierebbe connector.ps1 vecchio in RAM mentre updater copia i file.
+$serviceName = "86NocConnector"
+$svcWasRunning = $false
+try {
+    $svc = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+    if ($svc) {
+        $svcWasRunning = ($svc.Status -eq "Running")
+        Write-UpdateLog "Servizio Windows '$serviceName' trovato (Status: $($svc.Status)). Stop in corso..."
+        Stop-Service -Name $serviceName -Force -ErrorAction SilentlyContinue
+        # Wait up to 8s for full stop
+        for ($i = 0; $i -lt 8; $i++) {
+            Start-Sleep -Seconds 1
+            $svc.Refresh()
+            if ($svc.Status -eq "Stopped") { break }
+        }
+        Write-UpdateLog "Servizio fermato (Status: $($svc.Status))"
+    } else {
+        Write-UpdateLog "Nessun servizio Windows — modalità standalone"
+    }
+} catch {
+    Write-UpdateLog "ATTENZIONE: Stop-Service fallito: $($_.Exception.Message)"
+}
+
+# ===== STEP 1b: Kill ALL 86NocConnector processes (belt + suspenders) =====
+Write-UpdateLog "STEP 1b: Arresto processi residui..."
 $currentPid = $PID
 
 # Kill by command line match
@@ -150,14 +174,37 @@ Remove-Item $ExtractPath -Recurse -Force -ErrorAction SilentlyContinue
 Write-UpdateLog "STEP 4: Riavvio applicazione..."
 Send-Progress 95 "restarting" "Riavvio 86NocConnector..."
 
-$batPath = Join-Path $InstallDir "86NocConnector.bat"
-if (Test-Path $batPath) {
-    Start-Process "cmd.exe" -ArgumentList "/c `"$batPath`"" -WindowStyle Hidden
-    Write-UpdateLog "Applicazione riavviata da: $batPath"
-} else {
-    Write-UpdateLog "ERRORE: $batPath non trovato!"
-    Send-Progress 0 "error" "Errore: file BAT non trovato"
-    exit 1
+# Se esisteva un servizio Windows, riavvialo (lui rileggerà la nuova version.json)
+$serviceRestarted = $false
+if ($svcWasRunning) {
+    try {
+        Write-UpdateLog "Riavvio servizio Windows '$serviceName'..."
+        Start-Service -Name $serviceName -ErrorAction Stop
+        # Verifica che sia running
+        Start-Sleep -Seconds 2
+        $svc = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+        if ($svc -and $svc.Status -eq "Running") {
+            Write-UpdateLog "Servizio Windows riavviato correttamente"
+            $serviceRestarted = $true
+        } else {
+            Write-UpdateLog "ATTENZIONE: servizio non risulta Running dopo Start-Service (Status: $($svc.Status))"
+        }
+    } catch {
+        Write-UpdateLog "ERRORE Start-Service: $($_.Exception.Message)"
+    }
+}
+
+# Fallback: se il servizio NON esisteva o il restart è fallito, lancia via BAT (modalità standalone)
+if (-not $serviceRestarted) {
+    $batPath = Join-Path $InstallDir "86NocConnector.bat"
+    if (Test-Path $batPath) {
+        Start-Process "cmd.exe" -ArgumentList "/c `"$batPath`"" -WindowStyle Hidden
+        Write-UpdateLog "Applicazione riavviata da: $batPath"
+    } else {
+        Write-UpdateLog "ERRORE: ne servizio Windows ne $batPath trovati!"
+        Send-Progress 0 "error" "Errore: impossibile riavviare il connettore"
+        exit 1
+    }
 }
 
 Start-Sleep -Seconds 3

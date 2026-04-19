@@ -1,4 +1,4 @@
 {
-  "version": "3.0.3",
-  "changelog": "v3.0.3: WEB CONSOLE TURBO - Long-polling con hot-trigger asincrono (latenza da ~3s a ~50ms). Timeout HTTP esteso a 25s per supportare wait=20s lato server. Questa versione richiede backend con /connector/web-proxy/pending?wait=N implementato."
+  "version": "3.0.4",
+  "changelog": "v3.0.4: FIX UPDATE FLOW - Risolta race condition con servizio Windows NSSM durante aggiornamento (ora ferma il servizio, copia file, riavvia). Rimosso sleep inutile tra long-poll. Loop principale ora reagisce istantaneamente alle richieste web-console."
 }

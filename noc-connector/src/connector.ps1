@@ -1949,7 +1949,10 @@ function Start-Connector {
                 $lastJobHealthCheck = $now
             }
             
-            Start-Sleep -Seconds $webProxyIntervalSec
+            # Check SNMP trap job health first
+            # Note: Check-WebProxyRequests già fa long-poll 20s, quindi non serve Start-Sleep.
+            # Breve pausa solo in caso di errore rete per evitare tight-loop.
+            Start-Sleep -Milliseconds 200
         }
     } catch {
         Write-Log "Arresto..."
