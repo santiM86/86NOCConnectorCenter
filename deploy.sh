@@ -36,7 +36,7 @@ cd ..
 echo "Installing backend dependencies..."
 cd backend
 # Use the existing virtual environment pip
-pip install -r requirements.txt
+venv/bin/pip install -r requirements.txt
 cd ..
 
 # 5. Restart Backend Server
