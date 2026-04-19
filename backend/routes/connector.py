@@ -113,6 +113,65 @@ async def connector_managed_devices(request: Request):
     return {"devices": devices}
 
 
+@router.post("/connector/web-ui-detected")
+async def connector_web_ui_detected(request: Request):
+    """Called by tray app when user clicks "Apri Web UI" and the device responds.
+    Registers/updates the managed_device with web_console_* fields so the UI and
+    the Web Console Enterprise can use the detected URL immediately.
+    Simple X-API-Key auth (no HMAC) — action is user-initiated via tray.
+    """
+    client_data = await validate_api_key(request)
+    client_id = client_data["id"]
+    body = await request.json()
+    check_nosql_injection(body)
+    device_ip = sanitize_string(str(body.get("device_ip", "")).strip(), 64)
+    port = int(body.get("port") or 0)
+    scheme = sanitize_string(str(body.get("scheme", "http")).strip().lower(), 8)
+    title = sanitize_string(str(body.get("title", "")).strip(), 256)
+    status_code = int(body.get("status_code") or 0)
+    url = sanitize_string(str(body.get("url", "")).strip(), 512)
+    name_from_tray = sanitize_string(str(body.get("name", "")).strip(), 128)
+    community = sanitize_string(str(body.get("community", "public")).strip(), 128)
+    working = bool(body.get("working", True))
+    if not device_ip or not port or scheme not in ("http", "https"):
+        raise HTTPException(status_code=400, detail="device_ip, port, scheme (http|https) required")
+
+    web_fields = {
+        "web_console_url": url or f"{scheme}://{device_ip}:{port}/",
+        "web_console_port": port,
+        "web_console_scheme": scheme,
+        "web_console_title": title,
+        "web_console_status_code": status_code,
+        "web_console_working": working,
+        "web_console_last_tested": datetime.now(timezone.utc).isoformat(),
+    }
+    existing = await db.managed_devices.find_one({"client_id": client_id, "ip": device_ip})
+    if existing:
+        await db.managed_devices.update_one(
+            {"client_id": client_id, "ip": device_ip},
+            {"$set": web_fields},
+        )
+        action = "updated"
+    else:
+        doc = {
+            "id": str(uuid.uuid4()), "client_id": client_id,
+            "ip": device_ip, "community": community,
+            "name": name_from_tray or device_ip,
+            "monitor_type": "http", "device_type": "network",
+            "http_port": port,
+            "snmp_version": "v2c",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "created_by": f"connector-tray:{client_data.get('name', 'unknown')}",
+            **web_fields,
+        }
+        await db.managed_devices.insert_one(doc)
+        # remove from deleted_devices blacklist if present
+        await db.deleted_devices.delete_many({"client_id": client_id, "device_ip": device_ip})
+        action = "created"
+    logger.info(f"[WEB-UI-DETECT] {action} {device_ip}:{port} via tray (client={client_data.get('name')}) working={working}")
+    return {"status": "ok", "action": action, "device_ip": device_ip, "web_console_url": web_fields["web_console_url"]}
+
+
 
 # ==================== VAULT CREDENTIALS FOR CONNECTOR ====================
 
