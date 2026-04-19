@@ -1,4 +1,4 @@
 {
-  "version": "3.0.7",
-  "changelog": "v3.0.7: NUOVA STRUTTURA INSTALLER - Tutti i file tecnici spostati in sottocartella prg/. La cartella estratta dall'utente mostra solo 'Installa 86NocConnector.vbs' per evitare confusione. Lo zip di update resta flat per retrocompatibilità con installazioni esistenti."
+  "version": "3.0.8",
+  "changelog": "v3.0.8: FIX INSTALLAZIONE - Il wizard ora COPIA i file in C:\\Program Files\\86NocConnector prima di registrare il servizio. Dopo l'installazione la cartella sorgente (Desktop, Downloads) puo' essere eliminata senza rompere il servizio. Il servizio NSSM punta ora alla installazione ufficiale in Program Files."
 }

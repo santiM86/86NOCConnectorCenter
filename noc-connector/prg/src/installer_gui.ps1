@@ -634,7 +634,39 @@ function Show-InstallerWizard {
         $form.Refresh()
         Start-Sleep -Milliseconds 500
         
-        # Step 3: Registra come Servizio Windows (NSSM)
+        # Step 2b: COPIA FILE in C:\Program Files\86NocConnector (evita handle sulla cartella sorgente)
+        $txtStatus.AppendText("> Copia file del programma...`r`n")
+        $progressBar.Value = 50
+        $form.Refresh()
+        $InstallPath = Join-Path ([Environment]::GetFolderPath("ProgramFiles")) $AppName
+        $sourceDir = $BaseDir  # dove stanno gli script e nssm.exe (prg/ o root in installazioni legacy)
+        try {
+            if (!(Test-Path $InstallPath)) {
+                New-Item -ItemType Directory -Path $InstallPath -Force | Out-Null
+            }
+            # Se la cartella sorgente E' GIA' la InstallPath (cioe' si sta reinstallando da lì), non copiare
+            $sourceNorm = (Resolve-Path $sourceDir).Path.TrimEnd('\')
+            $installNorm = (Resolve-Path $InstallPath).Path.TrimEnd('\')
+            if ($sourceNorm -ne $installNorm) {
+                # Ferma il servizio se esiste già (evita "file in uso" durante la copia)
+                & sc.exe stop "86NocConnectorService" 2>&1 | Out-Null
+                Start-Sleep -Seconds 2
+                
+                # Copia tutti i file sorgente verso InstallPath (include src/, nssm.exe, .bat, version.json)
+                Copy-Item "$sourceDir\*" -Destination $InstallPath -Recurse -Force -ErrorAction Stop
+                $txtStatus.AppendText("  Copiati in: $InstallPath`r`n")
+            } else {
+                $txtStatus.AppendText("  Installato in: $InstallPath (in-place)`r`n")
+            }
+            # Da ora in poi, i percorsi del servizio puntano a InstallPath, non piu' alla cartella sorgente
+            $ScriptDir = Join-Path $InstallPath "src"
+            $BaseDir = $InstallPath
+        } catch {
+            $txtStatus.AppendText("  ERRORE copia file: $($_.Exception.Message)`r`n")
+            $txtStatus.AppendText("  Installazione proseguita sui file della cartella sorgente (NON eliminare la cartella!)`r`n")
+        }
+        $form.Refresh()
+        Start-Sleep -Milliseconds 300
         $txtStatus.AppendText("> Registrazione Servizio Windows (NSSM)...`r`n")
         $progressBar.Value = 60
         $form.Refresh()
