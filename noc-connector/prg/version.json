@@ -1,4 +1,4 @@
 {
-  "version": "3.1.0",
-  "changelog": "v3.1.0: WEB CONSOLE ENTERPRISE - Refactor completo web proxy con hard timeout 10s, auto-fallback HTTPS/HTTP, bypass SSL self-signed (iLO/firewall/switch), TLS 1.0-1.3, whitelist porte estesa (incluso 9090/10000 per Webmin), response SEMPRE inviata al server (no piu frontend timeout), inline CSS/immagini rate-limited, error page professionale, logging strutturato con latenza in ms."
+  "version": "3.1.1",
+  "changelog": "v3.1.1: FIX SPAM ECCEZIONI TRAY - Risolto loop infinito di SetValueInvocationException sul tooltip NotifyIcon (limite Windows 63 caratteri). Nuova funzione helper Set-NotifyIconTooltip con troncamento sicuro + try/catch. Corretti anche altri punti del timer che usavano Substring con limite sbagliato (127 invece di 63). Contiene tutte le migliorie di v3.1.0 Web Console Enterprise."
 }

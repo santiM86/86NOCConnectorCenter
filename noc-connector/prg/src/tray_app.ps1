@@ -784,6 +784,21 @@ function Invoke-ManualUpdate($notifyIcon) {
 
 # ==================== TRAY APPLICATION ====================
 
+function Set-NotifyIconTooltip($notifyIcon, $text) {
+    # Windows NotifyIcon ha limite HARD di 63 caratteri per il tooltip.
+    # Superare il limite lancia SetValueInvocationException che spamma in loop nel timer.
+    try {
+        $flat = ($text -replace "`r`n", " | ") -replace "`n", " | "
+        if ($flat.Length -gt 63) {
+            $flat = $flat.Substring(0, 60) + "..."
+        }
+        $notifyIcon.Text = $flat
+    } catch {
+        # Ultimo fallback: non crashare mai il timer della tray
+        try { $notifyIcon.Text = "86NocConnector" } catch {}
+    }
+}
+
 function Start-TrayApp {
     [System.Windows.Forms.Application]::EnableVisualStyles()
     
@@ -1127,13 +1142,13 @@ info@86bit.it
             # Connettore avviato dal Task Scheduler senza passare dalla tray
             $global:IsRunning = $true
             $notifyIcon.Icon = New-TrayIcon "running"
-            $notifyIcon.Text = (Get-StatusText).Replace("`n", " | ").Substring(0, [Math]::Min(127, (Get-StatusText).Length))
+            Set-NotifyIconTooltip $notifyIcon (Get-StatusText)
             $startItem.Visible = $false
             $stopItem.Visible = $true
             $restartItem.Visible = $true
         } elseif ($global:IsRunning -and $connectorAlive) {
             # Aggiorna tooltip
-            $notifyIcon.Text = (Get-StatusText).Replace("`n", " | ").Substring(0, [Math]::Min(127, (Get-StatusText).Length))
+            Set-NotifyIconTooltip $notifyIcon (Get-StatusText)
         }
     })
     $timer.Start()
