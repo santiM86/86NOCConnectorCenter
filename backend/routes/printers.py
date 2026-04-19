@@ -220,6 +220,11 @@ async def process_printer_poll(request: Request):
             })
             if not existing_alert:
                 await db.alerts.insert_one(alert_doc)
+                try:
+                    import webpush as _wp
+                    await _wp.notify_new_alert(db, alert_doc)
+                except Exception:
+                    pass
                 logger.info(f"Alert: Toner basso {s.get('name')} ({level}%) su {device_ip}")
 
     return {"status": "ok"}

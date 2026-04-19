@@ -67,6 +67,8 @@ export function NotificationPermissionBanner() {
   const handleEnable = async () => {
     const perm = await pwa.requestNotificationPermission();
     if (perm === "granted") {
+      // Register Web Push subscription with backend (VAPID)
+      await pwa.subscribeToPush();
       setEnabled(true);
       setTimeout(() => setDismissed(true), 2000);
     } else {

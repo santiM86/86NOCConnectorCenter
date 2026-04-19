@@ -53,6 +53,11 @@ async def ingest_syslog(request: Request, msg: SyslogMessage):
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     await db.alerts.insert_one(alert_doc)
+    try:
+        import webpush as _wp
+        await _wp.notify_new_alert(db, alert_doc)
+    except Exception:
+        pass
     client = await db.clients.find_one({"id": client_id}, {"_id": 0})
     response = AlertResponse(
         **alert_doc, client_name=client["name"] if client else "",
@@ -108,6 +113,11 @@ async def ingest_snmp(request: Request, trap: SNMPTrap):
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     await db.alerts.insert_one(alert_doc)
+    try:
+        import webpush as _wp
+        await _wp.notify_new_alert(db, alert_doc)
+    except Exception:
+        pass
     client = await db.clients.find_one({"id": client_id}, {"_id": 0})
     response = AlertResponse(
         **alert_doc, client_name=client["name"] if client else "",

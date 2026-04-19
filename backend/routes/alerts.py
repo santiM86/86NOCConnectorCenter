@@ -43,8 +43,11 @@ async def create_alert(alert: AlertCreate, current_user: dict = Depends(get_curr
     alert_doc = await correlation_manager.prepare_alert_for_storage(alert_doc)
     is_duplicate, original_id = await correlation_manager.check_duplicate(alert_doc)
     if is_duplicate:
+        # Override the id with original_id for duplicate alerts
+        alert_doc_copy = dict(alert_doc)
+        alert_doc_copy["id"] = original_id
         return AlertResponse(
-            **alert_doc, id=original_id,
+            **alert_doc_copy,
             client_name=client["name"] if client else "",
             device_name=device["name"] if device else "",
             device_type=device["device_type"] if device else "",
@@ -54,6 +57,11 @@ async def create_alert(alert: AlertCreate, current_user: dict = Depends(get_curr
     if is_storm:
         alert_doc["in_storm"] = True
     await db.alerts.insert_one(alert_doc)
+    try:
+        import webpush as _wp
+        await _wp.notify_new_alert(db, alert_doc)
+    except Exception:
+        pass
     correlation_id = await correlation_manager.correlate_alerts(alert_doc)
     if correlation_id:
         alert_doc["correlation_group_id"] = correlation_id
@@ -182,3 +190,18 @@ async def get_alert_trends(hours: int = 24, current_user: dict = Depends(get_cur
         hourly_data[hour][alert["severity"]] += 1
     sorted_hours = sorted(hourly_data.keys())
     return [{"hour": h, **hourly_data[h]} for h in sorted_hours]
+
+
+@router.get("/alerts/{alert_id}/notification-log")
+async def get_alert_notification_log(
+    alert_id: str, current_user: dict = Depends(get_current_user)
+):
+    """Admin-only: restituisce il log delle notifiche inviate per un alert.
+    Utile in postmortem per verificare chi è stato notificato e con che esito."""
+    if current_user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Solo admin")
+
+    entries = await db.notification_delivery_log.find(
+        {"alert_id": alert_id}, {"_id": 0, "created_at_ts": 0}
+    ).sort("created_at", 1).to_list(length=500)
+    return entries

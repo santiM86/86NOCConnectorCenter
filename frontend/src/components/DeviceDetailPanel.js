@@ -102,7 +102,7 @@ export function DeviceDetailPanel({ clientId, deviceIp, deviceData, onClose, onD
   return (
     <div
       data-testid="device-detail-panel"
-      className="absolute right-0 top-0 bottom-0 w-[380px] bg-[var(--bg-panel)] border-l border-[var(--border-subtle)] shadow-2xl z-50 flex flex-col overflow-hidden animate-in slide-in-from-right duration-200"
+      className="fixed md:absolute right-0 top-0 bottom-0 left-0 md:left-auto w-full md:w-[380px] bg-[var(--bg-panel)] border-l border-[var(--border-subtle)] shadow-2xl z-50 flex flex-col overflow-hidden animate-in slide-in-from-right duration-200"
     >
       {/* Header */}
       <div className="flex items-center justify-between p-4 border-b border-[var(--border-subtle)]">

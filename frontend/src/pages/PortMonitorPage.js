@@ -162,7 +162,7 @@ export default function PortMonitorPage() {
 
       {/* Table */}
       <div className="noc-panel overflow-x-auto">
-        <table className="alert-table w-full" data-testid="port-monitor-table">
+        <table className="alert-table w-full min-w-[760px]" data-testid="port-monitor-table">
           <thead>
             <tr>
               <th>Stato</th>

@@ -5,6 +5,7 @@ import axios from "axios";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 import { PwaProvider } from "@/components/PwaProvider";
+import { WebConsoleTabsProvider } from "@/components/WebConsoleTabs";
 import { PwaInstallBanner, NotificationPermissionBanner, OfflineIndicator } from "@/components/PwaBanners";
 import { UpdateBanner, VersionProvider } from "@/components/AppVersion";
 
@@ -39,6 +40,7 @@ import BandwidthPage from "@/pages/BandwidthPage";
 import BackupPage from "@/pages/BackupPage";
 import ClientPortalPage from "@/pages/ClientPortalPage";
 import ClientOverviewPage from "@/pages/ClientOverviewPage";
+import OnCallPage from "@/pages/OnCallPage";
 import SecurityDashboardPage from "@/pages/SecurityDashboardPage";
 import ExternalMonitorPage from "@/pages/ExternalMonitorPage";
 import Layout from "@/components/Layout";
@@ -179,6 +181,7 @@ function App() {
       <AuthProvider>
         <VersionProvider>
         <PwaProvider>
+        <WebConsoleTabsProvider>
         <BrowserRouter>
           <OfflineIndicator />
           <UpdateBanner />
@@ -203,6 +206,7 @@ function App() {
               <Route path="network-status" element={<ClientStatusPage />} />
               <Route path="users" element={<UsersPage />} />
               <Route path="settings" element={<SettingsPage />} />
+              <Route path="oncall" element={<OnCallPage />} />
               <Route path="vault" element={<VaultPage />} />
               <Route path="reports" element={<ReportsPage />} />
               <Route path="inventory" element={<InventoryPage />} />
@@ -229,6 +233,7 @@ function App() {
           <NotificationPermissionBanner />
         </BrowserRouter>
         <Toaster position="top-right" theme="dark" />
+        </WebConsoleTabsProvider>
         </PwaProvider>
         </VersionProvider>
       </AuthProvider>

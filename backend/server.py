@@ -220,6 +220,9 @@ from routes.soc_ai import router as soc_ai_router
 from routes.security_status import router as security_status_router
 from routes.security_advanced import router as security_advanced_router
 from routes.external_monitor import router as external_monitor_router
+from routes.push import router as push_router
+from routes.oncall import router as oncall_router
+from routes.escalation import router as escalation_router
 from routes.app_version import router as app_version_router
 from routes.overview import router as overview_router
 
@@ -253,6 +256,9 @@ app.include_router(soc_ai_router)
 app.include_router(security_status_router)
 app.include_router(security_advanced_router)
 app.include_router(external_monitor_router)
+app.include_router(push_router)
+app.include_router(oncall_router)
+app.include_router(escalation_router)
 app.include_router(app_version_router)
 app.include_router(overview_router)
 
@@ -353,6 +359,32 @@ async def startup_event():
         await db.printer_status.create_index([("client_id", 1), ("device_ip", 1)], unique=True)
         await db.printer_history.create_index([("client_id", 1), ("device_ip", 1), ("timestamp", -1)])
         await db.printer_history.create_index("timestamp", expireAfterSeconds=86400 * 90)  # TTL 90 giorni
+
+        # Notification delivery log indexes (admin audit)
+        await db.notification_delivery_log.create_index([("alert_id", 1), ("created_at_ts", 1)])
+        await db.notification_delivery_log.create_index(
+            "created_at_ts", expireAfterSeconds=86400 * 90
+        )  # TTL 90 giorni
+
+        # === Enterprise performance indexes (push, quiet hours, on-call, escalation) ===
+        # push_subscriptions: lookup by user_id on every alert
+        await db.push_subscriptions.create_index("user_id")
+        await db.push_subscriptions.create_index("subscription.endpoint")
+        # user_notification_prefs: lookup by user_id on every notification
+        await db.user_notification_prefs.create_index("user_id", unique=True)
+        # users.role: used in send_to_roles + oncall/users
+        await db.users.create_index("role")
+        # users.id: not unique (legacy docs may have null id in some deploys)
+        await db.users.create_index("id")
+        # web_proxy_requests: long-poll query + lookup by request_id
+        await db.web_proxy_requests.create_index([("client_id", 1), ("status", 1)])
+        await db.web_proxy_requests.create_index("request_id")
+        # alerts: escalation scan (active + severity + ack + time)
+        await db.alerts.create_index(
+            [("status", 1), ("severity", 1), ("escalated", 1), ("created_at", 1)]
+        )
+        # alerts.id: not unique (legacy docs with null id)
+        await db.alerts.create_index("id")
 
         # Vulnerability Assessment indexes
         await db.vulnerability_scans.create_index([("client_id", 1), ("timestamp", -1)])
@@ -479,12 +511,27 @@ async def startup_event():
     except Exception as e:
         logger.error(f"Failed to start connector watchdog: {e}")
 
+    # === Escalation scheduler: re-push alerts not ACKed within N min ===
+    try:
+        from escalation import EscalationScheduler
+        global escalation_scheduler
+        escalation_scheduler = EscalationScheduler(db)
+        escalation_scheduler.start()
+        logger.info("Escalation scheduler started")
+    except Exception as e:
+        logger.error(f"Failed to start escalation scheduler: {e}")
+
 @app.on_event("shutdown")
 async def shutdown_db_client():
     redfish_poller.stop_scheduler()
     try:
         if 'connector_watchdog' in globals() and connector_watchdog:
             connector_watchdog.stop()
+    except Exception:
+        pass
+    try:
+        if 'escalation_scheduler' in globals() and escalation_scheduler:
+            await escalation_scheduler.stop()
     except Exception:
         pass
     mongo_client.close()

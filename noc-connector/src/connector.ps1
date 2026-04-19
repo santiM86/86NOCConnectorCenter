@@ -273,7 +273,7 @@ function Send-WakeOnLAN([string]$macAddress, [string]$targetIP) {
 }
 
 
-function Invoke-SecureGet($config, $endpoint) {
+function Invoke-SecureGet($config, $endpoint, $timeoutSec = 15) {
     # Secure GET with HMAC-SHA256 + Anti-Replay
     try {
         try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13 } catch { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 }
@@ -291,7 +291,7 @@ function Invoke-SecureGet($config, $endpoint) {
             "X-Timestamp"      = $timestamp.ToString()
             "X-Nonce"          = $nonce
         }
-        return Invoke-RestMethod -Uri $url -Method Get -Headers $headers -TimeoutSec 15 -ErrorAction Stop
+        return Invoke-RestMethod -Uri $url -Method Get -Headers $headers -TimeoutSec $timeoutSec -ErrorAction Stop
     } catch {
         Write-Log "Errore secure GET ($endpoint): $($_.Exception.Message)" "ERROR"
         return $null
@@ -1558,7 +1558,9 @@ function Check-DiscoveryRequest($config) {
 
 function Check-WebProxyRequests($config) {
     try {
-        $response = Invoke-SecureGet $config "connector/web-proxy/pending"
+        # Long-poll: attende fino a 20s che arrivi una richiesta (hot-trigger server).
+        # TimeoutSec 25 > wait 20 così la richiesta HTTP non scade prima del server.
+        $response = Invoke-SecureGet $config "connector/web-proxy/pending?wait=20" 25
         
         if ($response.requests -and $response.requests.Count -gt 0) {
             foreach ($req in $response.requests) {

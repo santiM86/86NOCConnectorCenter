@@ -1,4 +1,4 @@
 {
-  "version": "3.0.2",
-  "changelog": "v3.0.2: AGGIORNAMENTO RAPIDO - Controllo nuove versioni ogni 5 minuti (prima ogni 6 ore). Inviato sys_name + device_macs per rilevamento cambio identita' dispositivo. Log update-check piu' espliciti."
+  "version": "3.0.3",
+  "changelog": "v3.0.3: WEB CONSOLE TURBO - Long-polling con hot-trigger asincrono (latenza da ~3s a ~50ms). Timeout HTTP esteso a 25s per supportare wait=20s lato server. Questa versione richiede backend con /connector/web-proxy/pending?wait=N implementato."
 }

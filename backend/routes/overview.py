@@ -24,8 +24,9 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
     devices = await db.devices.find({}, {"_id": 0, "client_id": 1, "status": 1, "ip_address": 1, "name": 1, "device_type": 1}).to_list(10000)
 
     # Also include connector-discovered devices (device_poll_status) and manually managed devices (managed_devices)
+    # Also need reachable + last_poll to infer status
     poll_devices = await db.device_poll_status.find(
-        {}, {"_id": 0, "client_id": 1, "device_ip": 1, "device_name": 1, "status": 1, "device_type": 1, "device_class": 1, "sys_descr": 1}
+        {}, {"_id": 0, "client_id": 1, "device_ip": 1, "device_name": 1, "status": 1, "device_type": 1, "device_class": 1, "sys_descr": 1, "reachable": 1, "last_poll": 1, "monitor_type": 1}
     ).to_list(10000)
     managed_devices_raw = await db.managed_devices.find(
         {}, {"_id": 0, "client_id": 1, "ip": 1, "name": 1, "device_type": 1}
@@ -59,6 +60,7 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
         return explicit_type or "generic"
 
     # Merge poll_devices and managed_devices into the unified list (skip duplicates)
+    now_utc = datetime.now(timezone.utc)
     for pd in poll_devices:
         ip = pd.get("device_ip")
         cid = pd.get("client_id")
@@ -76,11 +78,33 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
             pd.get("device_class", ""),
             md.get("device_type") or pd.get("device_type"),
         )
+        # Derive status from reachable + last_poll freshness (poll should happen within last 5 min)
+        status = pd.get("status")
+        if not status or status == "unknown":
+            reachable = pd.get("reachable")
+            last_poll_raw = pd.get("last_poll")
+            is_fresh = False
+            if last_poll_raw:
+                try:
+                    last_poll_dt = datetime.fromisoformat(last_poll_raw.replace("Z", "+00:00"))
+                    # Considera fresh fino a 15 minuti (intervallo polling normale è ~60s)
+                    is_fresh = (now_utc - last_poll_dt).total_seconds() < 900
+                except Exception:
+                    pass
+            if reachable is True and is_fresh:
+                status = "online"
+            elif reachable is False and is_fresh:
+                status = "offline"
+            elif reachable is True and not is_fresh:
+                # Connector offline da tempo — stato incerto ma dispositivo era up all'ultimo poll
+                status = "stale"
+            else:
+                status = "unknown"
         devices.append({
             "client_id": cid,
             "name": md.get("name") or pd.get("device_name") or ip,
             "ip_address": ip,
-            "status": pd.get("status", "unknown"),
+            "status": status,
             "device_type": dev_type,
         })
     # Also add managed_devices that never polled yet
@@ -142,15 +166,20 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
     for d in devices:
         cid = d.get("client_id")
         if cid not in devices_by_client:
-            devices_by_client[cid] = {"total": 0, "online": 0, "offline": 0}
+            devices_by_client[cid] = {"total": 0, "online": 0, "offline": 0, "stale": 0, "unknown": 0}
             devices_detail_by_client[cid] = []
         devices_by_client[cid]["total"] += 1
-        if d.get("status") == "online":
+        status = d.get("status")
+        if status == "online":
             devices_by_client[cid]["online"] += 1
-        else:
+        elif status == "offline":
             devices_by_client[cid]["offline"] += 1
+        elif status == "stale":
+            devices_by_client[cid]["stale"] += 1
+        else:
+            devices_by_client[cid]["unknown"] += 1
         devices_detail_by_client[cid].append({
-            "name": d.get("name", "?"), "ip": d.get("ip_address", ""), "status": d.get("status", "unknown"),
+            "name": d.get("name", "?"), "ip": d.get("ip_address", ""), "status": status or "unknown",
             "type": d.get("device_type", ""),
         })
 
@@ -203,7 +232,7 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
     for c in clients:
         cid = c.get("id")
         alerts_info = alerts_by_client.get(cid, {"critical": 0, "high": 0, "medium": 0, "low": 0, "total": 0})
-        devices_info = devices_by_client.get(cid, {"total": 0, "online": 0, "offline": 0})
+        devices_info = devices_by_client.get(cid, {"total": 0, "online": 0, "offline": 0, "stale": 0, "unknown": 0})
         backup_info = backup_by_client.get(cid, {"ok": 0, "warning": 0, "error": 0, "total": 0})
         printer_info = printer_by_client.get(cid, {"total": 0, "low_toner": 0, "ok": 0})
         wan_tgts = wan_targets_by_client.get(cid, [])

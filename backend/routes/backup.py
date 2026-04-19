@@ -86,6 +86,11 @@ async def process_backup_status(request: Request):
                     "created_at": now,
                 }
                 await db.alerts.insert_one(alert)
+                try:
+                    import webpush as _wp
+                    await _wp.notify_new_alert(db, alert)
+                except Exception:
+                    pass
                 logger.warning(f"Backup alert: {title}")
 
     # Auto-resolve alerts for VMs that are now OK

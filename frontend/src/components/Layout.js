@@ -39,6 +39,7 @@ import {
   Sliders,
   ArrowsDownUp,
   Globe,
+  Clock,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import {
@@ -92,6 +93,7 @@ const navConfig = [
     label: "Amministrazione",
     items: [
       { path: "/users", icon: Users, label: "Gestione Utenti", roles: ["admin"] },
+      { path: "/oncall", icon: Clock, label: "Reperibilità", roles: ["admin", "operator"] },
       { path: "/thresholds", icon: Sliders, label: "Soglie Alert", roles: ["admin"] },
       { path: "/settings", icon: Gear, label: "Impostazioni", roles: ["admin", "operator"] },
       { path: "/tv", icon: Monitor, label: "TV Dashboard", roles: ["admin", "operator", "viewer"], external: true },
