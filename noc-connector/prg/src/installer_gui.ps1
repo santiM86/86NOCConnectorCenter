@@ -476,7 +476,7 @@ function Show-InstallerWizard {
 
         $btnRemoveDev = New-Object System.Windows.Forms.Button
         $btnRemoveDev.Text = "Rimuovi selezionato"
-        $btnRemoveDev.Size = New-Object System.Drawing.Size(130, 28)
+        $btnRemoveDev.Size = New-Object System.Drawing.Size(140, 28)
         $btnRemoveDev.Location = New-Object System.Drawing.Point(28, 362)
         $btnRemoveDev.FlatStyle = "Flat"
         $btnRemoveDev.BackColor = [System.Drawing.Color]::White
@@ -488,8 +488,8 @@ function Show-InstallerWizard {
         # Pulsante Importa CSV
         $btnImportCsv = New-Object System.Windows.Forms.Button
         $btnImportCsv.Text = "Importa CSV..."
-        $btnImportCsv.Size = New-Object System.Drawing.Size(100, 28)
-        $btnImportCsv.Location = New-Object System.Drawing.Point(165, 362)
+        $btnImportCsv.Size = New-Object System.Drawing.Size(110, 28)
+        $btnImportCsv.Location = New-Object System.Drawing.Point(180, 362)
         $btnImportCsv.FlatStyle = "Flat"
         $btnImportCsv.BackColor = [System.Drawing.Color]::FromArgb(99, 102, 241)
         $btnImportCsv.ForeColor = [System.Drawing.Color]::White
@@ -499,10 +499,10 @@ function Show-InstallerWizard {
 
         # Poll interval
         $lblPoll = New-Object System.Windows.Forms.Label
-        $lblPoll.Text = "Intervallo polling (sec):"
+        $lblPoll.Text = "Polling (sec):"
         $lblPoll.Font = New-Object System.Drawing.Font("Segoe UI", 8)
         $lblPoll.ForeColor = [System.Drawing.Color]::FromArgb(40, 40, 55)
-        $lblPoll.Location = New-Object System.Drawing.Point(250, 366)
+        $lblPoll.Location = New-Object System.Drawing.Point(310, 367)
         $lblPoll.AutoSize = $true
         $contentPanel.Controls.Add($lblPoll)
 
@@ -513,10 +513,10 @@ function Show-InstallerWizard {
         $contentPanel.Controls.Add($txtPollInterval)
 
         $hint = New-Object System.Windows.Forms.Label
-        $hint.Text = "Puoi aggiungere i device manualmente oppure importare un CSV. Formato: ip,community,name,device_type (header obbligatori, separatore virgola o punto e virgola)."
+        $hint.Text = "CSV: header ip, name, community, device_type, snmp_version, snmp_port" + [char]10 + "(separatore virgola, punto e virgola o tab - alias case-insensitive)."
         $hint.Font = New-Object System.Drawing.Font("Segoe UI", 8)
         $hint.ForeColor = [System.Drawing.Color]::FromArgb(140, 140, 155)
-        $hint.Location = New-Object System.Drawing.Point(28, 400)
+        $hint.Location = New-Object System.Drawing.Point(28, 402)
         $hint.Size = New-Object System.Drawing.Size(440, 55)
         $contentPanel.Controls.Add($hint)
 
