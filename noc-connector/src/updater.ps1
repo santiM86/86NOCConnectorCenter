@@ -38,26 +38,46 @@ Send-Progress 50 "stopping" "Arresto servizio Windows..."
 
 # ===== STEP 1a: Stop Windows Service (se presente) =====
 # Evita race condition: NSSM riavvierebbe connector.ps1 vecchio in RAM mentre updater copia i file.
-$serviceName = "86NocConnector"
+# Il servizio reale installato da installa_servizio.bat si chiama "86NocConnectorService".
+# Controlliamo entrambi i nomi per retrocompatibilità con installazioni custom.
+$possibleServiceNames = @("86NocConnectorService", "86NocConnector")
+$serviceName = $null
 $svcWasRunning = $false
-try {
-    $svc = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+
+foreach ($name in $possibleServiceNames) {
+    $svc = Get-Service -Name $name -ErrorAction SilentlyContinue
     if ($svc) {
+        $serviceName = $name
         $svcWasRunning = ($svc.Status -eq "Running")
-        Write-UpdateLog "Servizio Windows '$serviceName' trovato (Status: $($svc.Status)). Stop in corso..."
-        Stop-Service -Name $serviceName -Force -ErrorAction SilentlyContinue
-        # Wait up to 8s for full stop
-        for ($i = 0; $i -lt 8; $i++) {
+        Write-UpdateLog "Trovato servizio: $name (Status: $($svc.Status))"
+        break
+    }
+}
+
+if ($serviceName) {
+    try {
+        Write-UpdateLog "Stop servizio Windows '$serviceName'..."
+        Stop-Service -Name $serviceName -Force -ErrorAction Stop
+        # Wait up to 15s for full stop (NSSM ha throttle di 30s, ma il process muore prima)
+        $svc = Get-Service -Name $serviceName
+        for ($i = 0; $i -lt 15; $i++) {
             Start-Sleep -Seconds 1
             $svc.Refresh()
             if ($svc.Status -eq "Stopped") { break }
         }
-        Write-UpdateLog "Servizio fermato (Status: $($svc.Status))"
-    } else {
-        Write-UpdateLog "Nessun servizio Windows — modalità standalone"
+        Write-UpdateLog "Servizio fermato (Status finale: $($svc.Status)) dopo $i secondi"
+        if ($svc.Status -ne "Stopped") {
+            Write-UpdateLog "ATTENZIONE: servizio non in stato Stopped, provo con sc.exe"
+            & sc.exe stop $serviceName | Out-Null
+            Start-Sleep -Seconds 3
+        }
+    } catch {
+        Write-UpdateLog "ATTENZIONE: Stop-Service fallito: $($_.Exception.Message) — provo con sc.exe"
+        & sc.exe stop $serviceName 2>&1 | Out-String | ForEach-Object { Write-UpdateLog "  sc.exe: $_" }
+        Start-Sleep -Seconds 5
     }
-} catch {
-    Write-UpdateLog "ATTENZIONE: Stop-Service fallito: $($_.Exception.Message)"
+} else {
+    Write-UpdateLog "Nessun servizio Windows trovato — modalità standalone"
 }
 
 # ===== STEP 1b: Kill ALL 86NocConnector processes (belt + suspenders) =====
@@ -170,43 +190,105 @@ $parentZip = Join-Path $env:TEMP "86NocConnector_update.zip"
 Remove-Item $parentZip -Force -ErrorAction SilentlyContinue
 Remove-Item $ExtractPath -Recurse -Force -ErrorAction SilentlyContinue
 
-# ===== STEP 4: Restart application =====
+# ===== STEP 4: Restart application (chain of fallbacks) =====
 Write-UpdateLog "STEP 4: Riavvio applicazione..."
 Send-Progress 95 "restarting" "Riavvio 86NocConnector..."
 
-# Se esisteva un servizio Windows, riavvialo (lui rileggerà la nuova version.json)
-$serviceRestarted = $false
-if ($svcWasRunning) {
+$restartOk = $false
+
+# Path 1 (preferito): Start-Service (richiede servizio installato)
+if ($serviceName) {
     try {
-        Write-UpdateLog "Riavvio servizio Windows '$serviceName'..."
+        Write-UpdateLog "Tentativo 1: Start-Service $serviceName..."
         Start-Service -Name $serviceName -ErrorAction Stop
-        # Verifica che sia running
-        Start-Sleep -Seconds 2
+        Start-Sleep -Seconds 3
         $svc = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
         if ($svc -and $svc.Status -eq "Running") {
-            Write-UpdateLog "Servizio Windows riavviato correttamente"
-            $serviceRestarted = $true
+            Write-UpdateLog "OK: servizio Windows avviato correttamente"
+            $restartOk = $true
         } else {
-            Write-UpdateLog "ATTENZIONE: servizio non risulta Running dopo Start-Service (Status: $($svc.Status))"
+            Write-UpdateLog "Servizio non Running (Status: $($svc.Status))"
         }
     } catch {
-        Write-UpdateLog "ERRORE Start-Service: $($_.Exception.Message)"
+        Write-UpdateLog "Tentativo 1 fallito: $($_.Exception.Message)"
     }
 }
 
-# Fallback: se il servizio NON esisteva o il restart è fallito, lancia via BAT (modalità standalone)
-if (-not $serviceRestarted) {
+# Path 2: sc.exe start (bypassa problemi permessi di Start-Service in alcuni contesti)
+if (-not $restartOk -and $serviceName) {
+    try {
+        Write-UpdateLog "Tentativo 2: sc.exe start $serviceName..."
+        & sc.exe start $serviceName 2>&1 | Out-String | ForEach-Object { Write-UpdateLog "  sc.exe: $_" }
+        Start-Sleep -Seconds 5
+        $svc = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+        if ($svc -and $svc.Status -eq "Running") {
+            Write-UpdateLog "OK: servizio avviato via sc.exe"
+            $restartOk = $true
+        }
+    } catch {
+        Write-UpdateLog "Tentativo 2 fallito: $($_.Exception.Message)"
+    }
+}
+
+# Path 3: fallback BAT (standalone o se i servizi non funzionano)
+if (-not $restartOk) {
     $batPath = Join-Path $InstallDir "86NocConnector.bat"
     if (Test-Path $batPath) {
-        Start-Process "cmd.exe" -ArgumentList "/c `"$batPath`"" -WindowStyle Hidden
-        Write-UpdateLog "Applicazione riavviata da: $batPath"
+        try {
+            Write-UpdateLog "Tentativo 3: Launch via BAT $batPath"
+            Start-Process "cmd.exe" -ArgumentList "/c `"$batPath`"" -WindowStyle Hidden -ErrorAction Stop
+            Start-Sleep -Seconds 3
+            Write-UpdateLog "BAT lanciato"
+            $restartOk = $true
+        } catch {
+            Write-UpdateLog "Tentativo 3 fallito: $($_.Exception.Message)"
+        }
     } else {
-        Write-UpdateLog "ERRORE: ne servizio Windows ne $batPath trovati!"
-        Send-Progress 0 "error" "Errore: impossibile riavviare il connettore"
-        exit 1
+        Write-UpdateLog "BAT non trovato: $batPath"
     }
+}
+
+# Path 4 (ultima spiaggia): direct PowerShell launch
+if (-not $restartOk) {
+    $newConnector = Join-Path $InstallDir "src\connector.ps1"
+    if (Test-Path $newConnector) {
+        try {
+            Write-UpdateLog "Tentativo 4: Launch diretto PowerShell $newConnector"
+            Start-Process "powershell.exe" -ArgumentList "-ExecutionPolicy Bypass -NonInteractive -WindowStyle Hidden -File `"$newConnector`"" -WindowStyle Hidden
+            Start-Sleep -Seconds 3
+            $restartOk = $true
+            Write-UpdateLog "Connector lanciato direttamente"
+        } catch {
+            Write-UpdateLog "Tentativo 4 fallito: $($_.Exception.Message)"
+        }
+    }
+}
+
+# Path 5 (garanzia finale): se abbiamo un servizio NSSM con AppExit=Restart e abbiamo fatto Stop,
+# forziamo un riavvio del servizio anche se tutto il resto è fallito.
+# NSSM con AppExit=Restart RIAVVIA automaticamente se il processo muore; ma Stop-Service dice "stay stopped".
+# Se siamo arrivati qui senza successo, il servizio NSSM è in stato Stopped e non riparte da solo.
+# Ultimo tentativo: net start (più robusto di Start-Service in alcuni edge case).
+if (-not $restartOk -and $serviceName) {
+    try {
+        Write-UpdateLog "Tentativo 5: net start $serviceName"
+        & net.exe start $serviceName 2>&1 | Out-String | ForEach-Object { Write-UpdateLog "  net: $_" }
+        Start-Sleep -Seconds 3
+        $svc = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+        if ($svc -and $svc.Status -eq "Running") {
+            Write-UpdateLog "OK: servizio avviato via net.exe"
+            $restartOk = $true
+        }
+    } catch {}
 }
 
 Start-Sleep -Seconds 3
-Send-Progress 100 "completed" "Aggiornamento completato!"
-Write-UpdateLog "=== AGGIORNAMENTO COMPLETATO ==="
+if ($restartOk) {
+    Send-Progress 100 "completed" "Aggiornamento completato!"
+    Write-UpdateLog "=== AGGIORNAMENTO COMPLETATO ==="
+} else {
+    Send-Progress 0 "error" "Aggiornamento installato ma restart fallito — richiede intervento manuale"
+    Write-UpdateLog "=== ERRORE: tutti i tentativi di restart sono falliti ==="
+    Write-UpdateLog "I nuovi file sono stati copiati correttamente. Avviare il servizio manualmente."
+    Write-UpdateLog "Comando: Start-Service 86NocConnectorService"
+}

@@ -1,4 +1,4 @@
 {
-  "version": "3.0.4",
-  "changelog": "v3.0.4: FIX UPDATE FLOW - Risolta race condition con servizio Windows NSSM durante aggiornamento (ora ferma il servizio, copia file, riavvia). Rimosso sleep inutile tra long-poll. Loop principale ora reagisce istantaneamente alle richieste web-console."
+  "version": "3.0.5",
+  "changelog": "v3.0.5: RESTART BULLETPROOF - 5 path di fallback per il restart dopo update: Start-Service, sc.exe, BAT, PowerShell diretto, net start. Nome servizio corretto (86NocConnectorService). Logging dettagliato di ogni tentativo in updater.log. Se tutti i tentativi falliscono, mostra errore esplicito invece di fake-success."
 }
