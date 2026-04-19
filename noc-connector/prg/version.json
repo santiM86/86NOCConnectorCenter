@@ -1,4 +1,4 @@
 {
-  "version": "3.0.8",
-  "changelog": "v3.0.8: FIX INSTALLAZIONE - Il wizard ora COPIA i file in C:\\Program Files\\86NocConnector prima di registrare il servizio. Dopo l'installazione la cartella sorgente (Desktop, Downloads) puo' essere eliminata senza rompere il servizio. Il servizio NSSM punta ora alla installazione ufficiale in Program Files."
+  "version": "3.0.9",
+  "changelog": "v3.0.9: CLEANUP POST-INSTALL - Dopo installazione la cartella sorgente puo' essere eliminata in sicurezza. Verifica esplicita che nessun riferimento punti alla cartella originale + messaggio informativo nella pagina finale del wizard."
 }

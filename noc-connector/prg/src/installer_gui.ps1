@@ -845,6 +845,24 @@ function Show-InstallerWizard {
         }
         
         $txtStatus.AppendText("`r`n> Installazione completata con successo!`r`n")
+
+        # Verifica che nessun riferimento punti ancora alla cartella sorgente
+        if ($sourceDir -and $sourceNorm -and $installNorm -and ($sourceNorm -ne $installNorm)) {
+            $txtStatus.AppendText("`r`n> Verifica integrita' installazione...`r`n")
+            $allOk = $true
+            try {
+                $svcExe = (& sc.exe qc "86NocConnectorService" 2>$null | Out-String)
+                if ($svcExe -match [regex]::Escape($sourceNorm)) {
+                    $txtStatus.AppendText("  ATTENZIONE: servizio punta ancora a $sourceNorm`r`n")
+                    $allOk = $false
+                }
+            } catch {}
+            if ($allOk) {
+                $txtStatus.AppendText("  Nessun riferimento alla cartella sorgente: OK`r`n")
+                $txtStatus.AppendText("  -> La cartella di installazione originale puo' ora essere eliminata.`r`n")
+            }
+        }
+
         $form.Refresh()
         
         $btnNext.Enabled = $true
@@ -907,9 +925,18 @@ function Show-InstallerWizard {
         $tip.Text = "Trovi l'icona di $AppName vicino all'orologio`nnella barra delle applicazioni (system tray).`nClicca con il tasto destro per le opzioni."
         $tip.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
         $tip.ForeColor = [System.Drawing.Color]::FromArgb(99, 102, 241)
-        $tip.Location = New-Object System.Drawing.Point(28, 350)
+        $tip.Location = New-Object System.Drawing.Point(28, 340)
         $tip.Size = New-Object System.Drawing.Size(450, 55)
         $contentPanel.Controls.Add($tip)
+
+        # Avviso: la cartella di installazione puo' essere eliminata
+        $cleanupTip = New-Object System.Windows.Forms.Label
+        $cleanupTip.Text = [char]0x1F5D1 + " La cartella usata per l'installazione puo' essere eliminata in sicurezza. Il servizio gira da Program Files e non ha piu' alcuna dipendenza dalla cartella originale."
+        $cleanupTip.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Italic)
+        $cleanupTip.ForeColor = [System.Drawing.Color]::FromArgb(22, 163, 74)
+        $cleanupTip.Location = New-Object System.Drawing.Point(28, 400)
+        $cleanupTip.Size = New-Object System.Drawing.Size(450, 40)
+        $contentPanel.Controls.Add($cleanupTip)
     }
     
     # ==================== NAVIGATION ====================
