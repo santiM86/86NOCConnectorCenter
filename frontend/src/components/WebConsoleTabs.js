@@ -87,7 +87,10 @@ export function WebConsoleTabsProvider({ children }) {
       const sid = res.data?.session_id;
       const url = res.data?.iframe_url;
       if (!sid || !url) throw new Error("Backend senza session_id/iframe_url");
-      const absUrl = buildIframeUrl(url);
+      // Append cache-buster: il browser rispetta Cache-Control: no-store del backend,
+      // ma _t=<ts> evita qualunque ambiguita' con proxy intermediari (CDN, SW preesistenti)
+      const sep = url.includes("?") ? "&" : "?";
+      const absUrl = buildIframeUrl(`${url}${sep}_t=${Date.now()}`);
       updateSession(id, {
         loading: false, sessionId: sid, iframeUrl: absUrl,
       });
