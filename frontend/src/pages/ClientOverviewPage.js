@@ -62,12 +62,13 @@ export default function ClientOverviewPage() {
       setConnector(found || null);
     } catch {}
     try {
-      const printRes = await axios.get(`${API}/printers?client_id=${clientId}`);
+      const printRes = await axios.get(`${API}/printers/${clientId}`);
       setPrinters(printRes.data || []);
     } catch {}
     try {
-      const bkpRes = await axios.get(`${API}/backup/status?client_id=${clientId}`);
-      setBackups(bkpRes.data || []);
+      const bkpRes = await axios.get(`${API}/backup/dashboard/${clientId}`);
+      const data = bkpRes.data;
+      setBackups(Array.isArray(data) ? data : (data?.jobs || data?.backups || []));
     } catch {}
     try {
       const iloRes = await axios.get(`${API}/clients/${clientId}/ilo-health`);
