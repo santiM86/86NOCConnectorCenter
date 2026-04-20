@@ -120,6 +120,69 @@ async def revoke_web_console_session(session_id: str, current_user: dict = Depen
     return {"revoked": res.deleted_count > 0}
 
 
+@router.get("/web-console/probe")
+async def probe_device_path(
+    device_ip: str, port: int, path: str = "/",
+    current_user: dict = Depends(get_current_user)
+):
+    """CURL-like probe del device via connector (equivale a curl -k -I).
+    Apre sessione temporanea (5min), fa GET del path richiesto SENZA credenziali, torna:
+    http_status, content_type, www_authenticate, server, body_preview (512 byte),
+    diagnosis ragionato. Serve per il Task 'Check Locale' della checklist.
+    """
+    client_id = await _authz_device(current_user, device_ip)
+    if not path.startswith("/"):
+        path = "/" + path
+    session_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc)
+    await db.web_console_tokens.insert_one({
+        "session_id": session_id,
+        "user_email": current_user.get("email", ""),
+        "user_role": current_user.get("role", ""),
+        "client_id": client_id,
+        "device_ip": device_ip,
+        "port": port,
+        "created_at": now,
+        "expires_at": now + timedelta(minutes=5),
+        "probe_only": True,
+    })
+    try:
+        scheme = "https" if port in (443, 8443, 4443) else "http"
+        status_code, content_type, body, resp_headers = await _proxy_via_connector(
+            client_id, device_ip, port, scheme, path, "GET", session_id, b"", {}
+        )
+        body = body or b""
+        preview = body[:512].decode("utf-8", "replace") if body else ""
+        rh_lower = {k.lower(): v for k, v in (resp_headers or {}).items()}
+        diagnosis = []
+        if status_code == 401:
+            diagnosis.append("Device richiede autenticazione HTTP. Dopo v3.3 il prompt appare direttamente nell'iframe.")
+        elif status_code == 404:
+            diagnosis.append(f"Path {path} NON esiste sul device. Prova: /, /login, /index.html, /cgi-bin/login.")
+        elif status_code == 200 and (not body or len(body) < 100):
+            diagnosis.append("Device risponde 200 ma body vuoto. Probabile redirect JS - guarda body_preview.")
+        elif status_code >= 500:
+            diagnosis.append(f"Device error {status_code}. Firmware bug o servizio web broken.")
+        elif status_code == 200:
+            diagnosis.append("Path OK. Device raggiungibile con contenuto valido.")
+        return {
+            "target": f"{scheme}://{device_ip}:{port}{path}",
+            "http_status": status_code,
+            "content_type": content_type,
+            "content_encoding": rh_lower.get("content-encoding"),
+            "www_authenticate": rh_lower.get("www-authenticate"),
+            "server": rh_lower.get("server"),
+            "set_cookie": rh_lower.get("set-cookie"),
+            "location": rh_lower.get("location"),
+            "body_size": len(body),
+            "body_preview_first_512": preview,
+            "all_response_headers": resp_headers or {},
+            "diagnosis": diagnosis,
+        }
+    finally:
+        await db.web_console_tokens.delete_one({"session_id": session_id})
+
+
 @router.get("/web-console/debug/{session_id}")
 async def web_console_debug(session_id: str, current_user: dict = Depends(get_current_user)):
     """Diagnostica live: ritorna gli ultimi 20 response del connector per questa sessione,
