@@ -359,6 +359,13 @@ async def startup_event():
         # web_proxy_requests: long-poll query + lookup by request_id
         await db.web_proxy_requests.create_index([("client_id", 1), ("status", 1)])
         await db.web_proxy_requests.create_index("request_id")
+        # Web Console Enterprise B: metrics + session cookie jar
+        await db.web_proxy_metrics.create_index([("client_id", 1), ("timestamp", -1)])
+        await db.web_proxy_metrics.create_index("timestamp", expireAfterSeconds=86400 * 30)  # TTL 30gg
+        await db.web_proxy_sessions.create_index(
+            [("session_id", 1), ("client_id", 1), ("device_ip", 1)], unique=True
+        )
+        await db.web_proxy_sessions.create_index("created_at", expireAfterSeconds=3600 * 8)  # TTL 8h
         # alerts: escalation scan (active + severity + ack + time)
         await db.alerts.create_index(
             [("status", 1), ("severity", 1), ("escalated", 1), ("created_at", 1)]

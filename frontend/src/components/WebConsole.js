@@ -233,7 +233,12 @@ export function WebConsoleModal({ state, onClose, onReload }) {
               </div>
             </div>
           ) : (
-            <iframe srcDoc={state.html} className="w-full h-full border-0" title="Web Console" sandbox="allow-same-origin" />
+            <iframe
+              srcDoc={(state.html || "").replace(/__ARGUS_PROXY__/g, "")}
+              className="w-full h-full border-0"
+              title="Web Console"
+              sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
+            />
           )}
         </div>
 
