@@ -3,19 +3,14 @@ import axios from "axios";
 import { API } from "@/App";
 import {
   Monitor, Globe, ArrowClockwise, X, ShieldCheck, Warning,
-  ArrowSquareOut, House, CaretLeft,
+  ArrowSquareOut, House, CaretLeft, Star, ArrowsOutSimple, Record,
+  Share, Copy, Eye, Clock, Users,
 } from "@phosphor-icons/react";
 
 /**
- * WebConsoleTabs — ARCHITETTURA LIVE (enterprise-grade, v4).
- *
- * - POST /api/web-console/session → capability token (UUID) + iframe_url.
- * - <iframe src={iframe_url}> ha ORIGINE argus.86bit.it → cookie, XHR, JS funzionano.
- * - Backend /api/web-proxy/live/{sid}/{ip}/{port}/{path} proxa via connector, inietta
- *   <base href> → CSS/JS/IMG/XHR relativi vengono auto-proxati dal browser.
- * - Navigation/back/submit: nativi browser, nessun postMessage hack.
- * - Service Worker bypassa /api/web-proxy/live/ (sw.js v4).
- * - Multi-tab dock preservato. Refocus se stesso device+port gia' aperto.
+ * WebConsoleTabs — ENTERPRISE LIVE (v5).
+ * Feature enterprise: Fullscreen, Shortcuts, Latency, Quick Access (recent+favorites+live),
+ * Session Recording opt-in, Session Share link read-only.
  */
 
 const WebConsoleContext = createContext(null);
@@ -27,19 +22,15 @@ export function useWebConsoleTabs() {
 }
 
 function buildIframeUrl(iframeUrl) {
-  // iframeUrl dal backend e' un path assoluto tipo /api/web-proxy/live/.../
-  // Lo rendiamo assoluto con l'origine del frontend per evitare ambiguita' in iframe.
-  try {
-    return new URL(iframeUrl, window.location.origin).toString();
-  } catch {
-    return iframeUrl;
-  }
+  try { return new URL(iframeUrl, window.location.origin).toString(); } catch { return iframeUrl; }
 }
 
 export function WebConsoleTabsProvider({ children }) {
   const [sessions, setSessions] = useState([]);
   const [activeId, setActiveId] = useState(null);
   const [minimized, setMinimized] = useState(false);
+  const [quickAccessOpen, setQuickAccessOpen] = useState(false);
+  const [fullscreen, setFullscreen] = useState(false);
   const sessionsRef = useRef([]);
 
   useEffect(() => { sessionsRef.current = sessions; }, [sessions]);
@@ -48,24 +39,17 @@ export function WebConsoleTabsProvider({ children }) {
     setSessions(prev => prev.map(s => s.id === id ? { ...s, ...patch } : s));
   }, []);
 
-  const open = useCallback(async (clientId, deviceIp, port, path) => {
+  const open = useCallback(async (clientId, deviceIp, port, path, opts = {}) => {
     const p = port || 80;
-    // Dedup: stesso device+port -> refocus
     const existing = sessionsRef.current.find(s => s.deviceIp === deviceIp && s.port === p);
     if (existing) {
-      setActiveId(existing.id);
-      setMinimized(false);
-      return existing.id;
+      setActiveId(existing.id); setMinimized(false); return existing.id;
     }
 
-    // Pre-flight: se il Service Worker in pagina e' vecchio (senza bypass /api/web-proxy/live/)
-    // potrebbe intercettare la request iframe e servire stale cache. Forziamo un update check.
     try {
       if ("serviceWorker" in navigator) {
         const reg = await navigator.serviceWorker.getRegistration();
-        if (reg) {
-          reg.update().catch(() => {});
-        }
+        if (reg) reg.update().catch(() => {});
       }
     } catch (_) {}
 
@@ -75,24 +59,23 @@ export function WebConsoleTabsProvider({ children }) {
       title: `${deviceIp}:${p}`,
       loading: true, error: null, iframeUrl: null, sessionId: null,
       iframeKey: 0, loadTime: null, startedAt: performance.now(),
+      recording: !!opts.record,
     };
     setSessions(prev => [...prev, placeholder]);
-    setActiveId(id);
-    setMinimized(false);
+    setActiveId(id); setMinimized(false); setQuickAccessOpen(false);
 
     try {
       const res = await axios.post(`${API}/web-console/session`, {
-        device_ip: deviceIp, port: p,
+        device_ip: deviceIp, port: p, record: !!opts.record,
       }, { timeout: 15000 });
       const sid = res.data?.session_id;
       const url = res.data?.iframe_url;
       if (!sid || !url) throw new Error("Backend senza session_id/iframe_url");
-      // Append cache-buster: il browser rispetta Cache-Control: no-store del backend,
-      // ma _t=<ts> evita qualunque ambiguita' con proxy intermediari (CDN, SW preesistenti)
       const sep = url.includes("?") ? "&" : "?";
       const absUrl = buildIframeUrl(`${url}${sep}_t=${Date.now()}`);
       updateSession(id, {
         loading: false, sessionId: sid, iframeUrl: absUrl,
+        recording: !!res.data?.recording,
       });
     } catch (e) {
       const status = e.response?.status;
@@ -114,7 +97,6 @@ export function WebConsoleTabsProvider({ children }) {
   const goHome = useCallback((id) => {
     const s = sessionsRef.current.find(x => x.id === id);
     if (!s || !s.iframeUrl) return;
-    // Risetta src alla base -> iframe torna alla home del device
     const baseUrl = s.iframeUrl;
     updateSession(id, { iframeUrl: null });
     setTimeout(() => updateSession(id, { iframeUrl: baseUrl, iframeKey: (s.iframeKey || 0) + 1 }), 10);
@@ -122,42 +104,34 @@ export function WebConsoleTabsProvider({ children }) {
 
   const close = useCallback((id) => {
     const s = sessionsRef.current.find(x => x.id === id);
-    if (s?.sessionId) {
-      // Fire-and-forget: revoca token lato server (best-effort)
-      axios.delete(`${API}/web-console/session/${s.sessionId}`).catch(() => {});
-    }
+    if (s?.sessionId) axios.delete(`${API}/web-console/session/${s.sessionId}`).catch(() => {});
     setSessions(prev => prev.filter(x => x.id !== id));
     setActiveId(prev => {
       if (prev !== id) return prev;
       const remaining = sessionsRef.current.filter(x => x.id !== id);
       return remaining.length ? remaining[remaining.length - 1].id : null;
     });
+    if (sessionsRef.current.length <= 1) setFullscreen(false);
   }, []);
 
   const setActive = useCallback((id) => { setActiveId(id); setMinimized(false); }, []);
-  const minimize = useCallback(() => setMinimized(true), []);
+  const minimize = useCallback(() => { setMinimized(true); setFullscreen(false); }, []);
   const closeAll = useCallback(() => {
     sessionsRef.current.forEach(s => {
       if (s.sessionId) axios.delete(`${API}/web-console/session/${s.sessionId}`).catch(() => {});
     });
-    setSessions([]);
-    setActiveId(null);
+    setSessions([]); setActiveId(null); setFullscreen(false);
   }, []);
 
-  // Apri LIVE proxy in NUOVA tab del browser (bypass iframe completamente)
   const openExternal = useCallback((id) => {
     const s = sessionsRef.current.find(x => x.id === id);
     if (!s?.iframeUrl) return;
     window.open(s.iframeUrl, "_blank", "noopener");
   }, []);
 
-  // Diagnostica: apre tab con JSON debug (content-type originale, size, preview body)
   const openDebug = useCallback(async (id) => {
     const s = sessionsRef.current.find(x => x.id === id);
-    if (!s?.sessionId) {
-      alert("Sessione non pronta");
-      return;
-    }
+    if (!s?.sessionId) { alert("Sessione non pronta"); return; }
     try {
       const res = await axios.get(`${API}/web-console/debug/${s.sessionId}`);
       const pretty = JSON.stringify(res.data, null, 2);
@@ -171,37 +145,80 @@ export function WebConsoleTabsProvider({ children }) {
     }
   }, []);
 
-  // postMessage listener: iframe invia title del device -> propaga nel chrome
+  const toggleRecording = useCallback(async (id) => {
+    const s = sessionsRef.current.find(x => x.id === id);
+    if (!s?.sessionId) return;
+    try {
+      const res = await axios.post(`${API}/web-console/recording/${s.sessionId}/toggle`, {
+        enabled: !s.recording,
+      });
+      updateSession(id, { recording: !!res.data?.recording });
+    } catch (e) { alert("Recording toggle fallito: " + (e.response?.data?.detail || e.message)); }
+  }, [updateSession]);
+
+  const toggleFullscreen = useCallback(() => setFullscreen(f => !f), []);
+  const toggleQuickAccess = useCallback(() => setQuickAccessOpen(o => !o), []);
+
+  const value = {
+    sessions, activeId, minimized, fullscreen, quickAccessOpen,
+    open, reload, close, setActive, minimize, closeAll, goHome, openExternal, openDebug,
+    toggleRecording, toggleFullscreen, toggleQuickAccess,
+  };
+
+  // Keyboard shortcuts globali quando una console e' attiva
+  useEffect(() => {
+    const onKey = (e) => {
+      const active = sessionsRef.current.find(s => s.id === activeId);
+      if (!active || minimized) return;
+      // Non intercettare se focus e' in input/textarea della UI ARGUS
+      const tag = e.target?.tagName?.toLowerCase();
+      const isInput = tag === "input" || tag === "textarea" || e.target?.isContentEditable;
+      if (isInput) return;
+
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "r") {
+        e.preventDefault(); reload(active.id);
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "h") {
+        e.preventDefault(); goHome(active.id);
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "d") {
+        e.preventDefault(); openDebug(active.id);
+      } else if (e.key === "F11") {
+        e.preventDefault(); toggleFullscreen();
+      } else if (e.key === "Escape" && fullscreen) {
+        e.preventDefault(); setFullscreen(false);
+      } else if (e.altKey && e.key === "ArrowLeft") {
+        e.preventDefault();
+        try {
+          const iframe = document.querySelector('iframe[data-testid="web-console-iframe"]');
+          iframe?.contentWindow?.history.back();
+        } catch {}
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [activeId, minimized, fullscreen, reload, goHome, openDebug, toggleFullscreen]);
+
   useEffect(() => {
     const handler = (event) => {
       const d = event.data;
       if (!d || typeof d !== "object") return;
       if (d.type === "argus-title" && typeof d.title === "string") {
-        setSessions(prev => prev.map(s => {
-          // Applica il title alla sessione attiva (l'origine postMessage e' same-origin ma non possiamo filtrare meglio)
-          if (s.id === activeId) return { ...s, title: d.title };
-          return s;
-        }));
+        setSessions(prev => prev.map(s => s.id === activeId ? { ...s, title: d.title } : s));
       }
     };
     window.addEventListener("message", handler);
     return () => window.removeEventListener("message", handler);
   }, [activeId]);
 
-  const value = {
-    sessions, activeId, minimized,
-    open, reload, close, setActive, minimize, closeAll, goHome, openExternal, openDebug,
-  };
-
   return (
     <WebConsoleContext.Provider value={value}>
       {children}
       <WebConsoleDock />
+      {quickAccessOpen && <QuickAccessDrawer />}
     </WebConsoleContext.Provider>
   );
 }
 
-/* ==================== UI ==================== */
+/* ==================== DOCK ==================== */
 
 function WebConsoleDock() {
   const { sessions, activeId, minimized } = useWebConsoleTabs();
@@ -212,7 +229,7 @@ function WebConsoleDock() {
 }
 
 function MinimizedDock() {
-  const { sessions, setActive, close, closeAll } = useWebConsoleTabs();
+  const { sessions, setActive, close, closeAll, toggleQuickAccess } = useWebConsoleTabs();
   return (
     <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 items-end" data-testid="web-console-dock-minimized">
       <div className="bg-[#0f0f17]/95 backdrop-blur-xl border border-[#2a2a3e] rounded-xl shadow-2xl p-2 flex flex-col gap-1 max-w-[280px]">
@@ -222,9 +239,14 @@ function MinimizedDock() {
             <span className="text-[10px] font-bold text-white/60 uppercase">Web Console</span>
             <span className="text-[9px] text-white/30 font-mono">({sessions.length})</span>
           </div>
-          <button onClick={closeAll} className="p-1 rounded hover:bg-red-500/10 text-white/30 hover:text-red-400" title="Chiudi tutte" data-testid="web-console-close-all">
-            <X size={12} />
-          </button>
+          <div className="flex gap-1">
+            <button onClick={toggleQuickAccess} className="p-1 rounded hover:bg-indigo-500/10 text-indigo-400/80 hover:text-indigo-300" title="Quick Access" data-testid="quick-access-toggle">
+              <Star size={12} />
+            </button>
+            <button onClick={closeAll} className="p-1 rounded hover:bg-red-500/10 text-white/30 hover:text-red-400" title="Chiudi tutte" data-testid="web-console-close-all">
+              <X size={12} />
+            </button>
+          </div>
         </div>
         {sessions.map(s => (
           <div key={s.id} className="flex items-center gap-1 group">
@@ -232,6 +254,7 @@ function MinimizedDock() {
               <div className="flex items-center gap-2">
                 <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${s.loading ? "bg-amber-400 animate-pulse" : s.error ? "bg-red-400" : "bg-emerald-400"}`} />
                 <span className="text-[11px] text-white/80 font-mono truncate">{s.deviceIp}:{s.port}</span>
+                {s.recording && <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" title="Recording" />}
               </div>
               {s.title && s.title !== `${s.deviceIp}:${s.port}` && (
                 <span className="text-[9px] text-white/30 truncate block ml-3.5">{s.title}</span>
@@ -247,38 +270,42 @@ function MinimizedDock() {
   );
 }
 
+/* ==================== ACTIVE CONSOLE ==================== */
+
 function ActiveConsole({ session }) {
-  const { sessions, setActive, close, reload, goHome, minimize, openExternal, openDebug } = useWebConsoleTabs();
+  const {
+    sessions, setActive, close, reload, goHome, minimize, openExternal, openDebug,
+    toggleRecording, toggleFullscreen, fullscreen, toggleQuickAccess,
+  } = useWebConsoleTabs();
   const iframeRef = useRef(null);
   const [iframeLoaded, setIframeLoaded] = useState(false);
   const [loadTime, setLoadTime] = useState(null);
+  const [showShare, setShowShare] = useState(false);
 
   useEffect(() => {
-    setIframeLoaded(false);
-    setLoadTime(null);
+    setIframeLoaded(false); setLoadTime(null);
   }, [session.iframeKey, session.iframeUrl]);
 
   const onIframeLoad = useCallback(() => {
     setIframeLoaded(true);
-    if (session.startedAt) {
-      setLoadTime(Math.round(performance.now() - session.startedAt));
-    }
+    if (session.startedAt) setLoadTime(Math.round(performance.now() - session.startedAt));
   }, [session.startedAt]);
 
-  // Back: usa history.back dell'iframe (same-origin, funziona)
   const goBack = useCallback(() => {
-    try {
-      iframeRef.current?.contentWindow?.history.back();
-    } catch {}
+    try { iframeRef.current?.contentWindow?.history.back(); } catch {}
   }, []);
 
+  const containerCls = fullscreen
+    ? "fixed inset-0 z-[60] flex flex-col bg-[#0d0d12] overflow-hidden"
+    : "fixed inset-0 md:inset-4 z-50 flex flex-col bg-[#0d0d12] md:rounded-2xl overflow-hidden border border-[#2a2a3e] shadow-2xl shadow-black/50";
+
   return (
-    <div className="fixed inset-0 md:inset-4 z-50 flex flex-col bg-[#0d0d12] md:rounded-2xl overflow-hidden border border-[#2a2a3e] shadow-2xl shadow-black/50" data-testid="web-console-active">
+    <div className={containerCls} data-testid="web-console-active">
       <div className="flex items-center gap-2 px-3 py-2 bg-[#12121a] border-b border-[#1e1e2e] flex-shrink-0">
         <div className="flex items-center gap-1.5 mr-2">
           <button onClick={() => close(session.id)} className="w-3 h-3 rounded-full bg-red-500 hover:bg-red-400" title="Chiudi" data-testid="web-console-close" />
           <button onClick={minimize} className="w-3 h-3 rounded-full bg-amber-500 hover:bg-amber-400" title="Minimizza" data-testid="web-console-minimize" />
-          <div className="w-3 h-3 rounded-full bg-emerald-500/50" />
+          <button onClick={toggleFullscreen} className="w-3 h-3 rounded-full bg-emerald-500 hover:bg-emerald-400" title="Fullscreen (F11)" data-testid="web-console-fullscreen" />
         </div>
         <div className="flex items-center gap-2 flex-1 min-w-0">
           <ShieldCheck size={14} className="text-emerald-400 flex-shrink-0" />
@@ -288,26 +315,46 @@ function ActiveConsole({ session }) {
               <span className="text-[9px] text-white/40 truncate">{session.title}</span>
             )}
           </div>
+          {session.recording && (
+            <span className="flex items-center gap-1 px-2 py-0.5 bg-red-500/10 border border-red-500/30 rounded text-[9px] font-bold text-red-400 font-mono ml-2">
+              <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />REC
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-1 flex-shrink-0">
           {loadTime != null && iframeLoaded && (
-            <span className="text-[9px] text-white/30 font-mono px-2">
+            <span className="text-[9px] text-white/30 font-mono px-2" title="Tempo caricamento primo frame">
               {loadTime < 1000 ? `${loadTime}ms` : `${(loadTime / 1000).toFixed(2)}s`}
             </span>
           )}
-          <button onClick={goBack} className="p-1.5 rounded hover:bg-white/5 text-white/40 hover:text-white/80" title="Indietro" data-testid="web-console-back">
+          <button onClick={toggleQuickAccess} className="p-1.5 rounded hover:bg-indigo-500/10 text-indigo-400/70 hover:text-indigo-300" title="Quick Access (preferiti + recenti)" data-testid="web-console-quick-access">
+            <Star size={14} />
+          </button>
+          <button onClick={goBack} className="p-1.5 rounded hover:bg-white/5 text-white/40 hover:text-white/80" title="Indietro (Alt+←)" data-testid="web-console-back">
             <CaretLeft size={14} />
           </button>
-          <button onClick={() => goHome(session.id)} className="p-1.5 rounded hover:bg-white/5 text-white/40 hover:text-white/80" title="Home" data-testid="web-console-home">
+          <button onClick={() => goHome(session.id)} className="p-1.5 rounded hover:bg-white/5 text-white/40 hover:text-white/80" title="Home (Ctrl+H)" data-testid="web-console-home">
             <House size={14} />
           </button>
-          <button onClick={() => reload(session.id)} className="p-1.5 rounded hover:bg-white/5 text-white/40 hover:text-white/80" title="Ricarica" data-testid="web-console-reload">
+          <button onClick={() => reload(session.id)} className="p-1.5 rounded hover:bg-white/5 text-white/40 hover:text-white/80" title="Ricarica (Ctrl+R)" data-testid="web-console-reload">
             <ArrowClockwise size={14} />
+          </button>
+          <button onClick={() => toggleRecording(session.id)}
+            className={`p-1.5 rounded transition-colors ${session.recording ? "bg-red-500/20 text-red-400 hover:bg-red-500/30" : "hover:bg-white/5 text-white/40 hover:text-white/80"}`}
+            title={session.recording ? "Ferma registrazione" : "Registra sessione"}
+            data-testid="web-console-recording-toggle">
+            <Record size={14} />
+          </button>
+          <button onClick={() => setShowShare(true)} className="p-1.5 rounded hover:bg-purple-500/10 text-purple-400/80 hover:text-purple-300" title="Condividi sessione" data-testid="web-console-share-open">
+            <Share size={14} />
+          </button>
+          <button onClick={toggleFullscreen} className="p-1.5 rounded hover:bg-white/5 text-white/40 hover:text-white/80" title={fullscreen ? "Esci Fullscreen (Esc)" : "Fullscreen (F11)"} data-testid="web-console-fullscreen-btn">
+            <ArrowsOutSimple size={14} />
           </button>
           <button onClick={() => openExternal(session.id)} className="p-1.5 rounded hover:bg-indigo-500/10 text-indigo-400 transition-colors" title="Apri in nuova tab" data-testid="web-console-open-external">
             <ArrowSquareOut size={14} />
           </button>
-          <button onClick={() => openDebug(session.id)} className="px-1.5 py-1 rounded hover:bg-amber-500/10 text-amber-400 text-[9px] font-bold font-mono transition-colors" title="Debug response" data-testid="web-console-debug">
+          <button onClick={() => openDebug(session.id)} className="px-1.5 py-1 rounded hover:bg-amber-500/10 text-amber-400 text-[9px] font-bold font-mono transition-colors" title="Debug response (Ctrl+D)" data-testid="web-console-debug">
             DBG
           </button>
         </div>
@@ -322,6 +369,7 @@ function ActiveConsole({ session }) {
               }`}>
               <span className={`w-1 h-1 rounded-full ${s.loading ? "bg-amber-400" : s.error ? "bg-red-400" : "bg-emerald-400"}`} />
               {s.deviceIp}:{s.port}
+              {s.recording && <span className="w-1 h-1 rounded-full bg-red-500 animate-pulse" />}
               <X size={10} onClick={(e) => { e.stopPropagation(); close(s.id); }} className="ml-1 opacity-40 hover:opacity-100 hover:text-red-400" />
             </button>
           ))}
@@ -379,9 +427,8 @@ function ActiveConsole({ session }) {
       <div className="flex items-center justify-between px-3 py-1 border-t border-[#1e1e2e] bg-[#0f0f17] flex-shrink-0">
         <div className="flex items-center gap-3">
           <span className="text-[9px] text-white/30 font-mono">{session.deviceIp}:{session.port}</span>
-          {session.iframeUrl && (
-            <span className="text-[9px] text-emerald-400/70 font-mono uppercase">LIVE proxy</span>
-          )}
+          {session.iframeUrl && <span className="text-[9px] text-emerald-400/70 font-mono uppercase">LIVE proxy</span>}
+          {session.recording && <span className="text-[9px] text-red-400/80 font-mono uppercase">● REC</span>}
         </div>
         <div className="flex items-center gap-2">
           <span className={`w-1.5 h-1.5 rounded-full ${session.loading ? "bg-amber-400 animate-pulse" : session.error ? "bg-red-400" : iframeLoaded ? "bg-emerald-400" : "bg-amber-400 animate-pulse"}`} />
@@ -389,6 +436,245 @@ function ActiveConsole({ session }) {
             {session.loading ? "Apertura..." : session.error ? "Errore" : iframeLoaded ? "Connesso" : "Caricamento..."}
           </span>
         </div>
+      </div>
+
+      {showShare && <ShareSessionModal session={session} onClose={() => setShowShare(false)} />}
+    </div>
+  );
+}
+
+/* ==================== QUICK ACCESS ==================== */
+
+function QuickAccessDrawer() {
+  const { open, toggleQuickAccess } = useWebConsoleTabs();
+  const [tab, setTab] = useState("recent");
+  const [recent, setRecent] = useState([]);
+  const [favorites, setFavorites] = useState([]);
+  const [live, setLive] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [r1, r2, r3] = await Promise.allSettled([
+        axios.get(`${API}/web-console/recent?limit=15`),
+        axios.get(`${API}/web-console/favorites`),
+        axios.get(`${API}/web-console/live-sessions`),
+      ]);
+      if (r1.status === "fulfilled") setRecent(r1.value.data?.items || []);
+      if (r2.status === "fulfilled") setFavorites(r2.value.data?.items || []);
+      if (r3.status === "fulfilled") setLive(r3.value.data?.items || []);
+    } finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  const toggleFav = async (deviceIp) => {
+    try {
+      await axios.post(`${API}/web-console/favorites/toggle`, { device_ip: deviceIp });
+      refresh();
+    } catch (e) { alert("Toggle preferito fallito: " + (e.response?.data?.detail || e.message)); }
+  };
+
+  const isFavorite = (ip) => favorites.some(f => f.device_ip === ip);
+
+  const list = tab === "recent" ? recent : tab === "fav" ? favorites : live;
+
+  return (
+    <div className="fixed inset-0 z-[55] flex justify-end" onClick={toggleQuickAccess}>
+      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" />
+      <div className="relative w-full max-w-md h-full bg-[#0d0d12] border-l border-[#2a2a3e] shadow-2xl flex flex-col" onClick={e => e.stopPropagation()} data-testid="quick-access-drawer">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-[#1e1e2e]">
+          <div className="flex items-center gap-2">
+            <Star size={16} className="text-indigo-400" weight="fill" />
+            <h3 className="text-sm font-bold text-white">Quick Access</h3>
+          </div>
+          <button onClick={toggleQuickAccess} className="p-1.5 rounded hover:bg-white/5 text-white/40 hover:text-white">
+            <X size={16} />
+          </button>
+        </div>
+        <div className="flex border-b border-[#1e1e2e]">
+          {[
+            { id: "recent", label: "Recenti", icon: Clock, count: recent.length },
+            { id: "fav", label: "Preferiti", icon: Star, count: favorites.length },
+            { id: "live", label: "Live", icon: Users, count: live.length },
+          ].map(t => (
+            <button key={t.id} onClick={() => setTab(t.id)}
+              className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2.5 text-[11px] font-bold transition-colors ${
+                tab === t.id ? "bg-indigo-500/10 text-indigo-400 border-b-2 border-indigo-500" : "text-white/40 hover:text-white/70 hover:bg-white/5"
+              }`}
+              data-testid={`quick-access-tab-${t.id}`}>
+              <t.icon size={12} />
+              {t.label}
+              <span className="text-[9px] opacity-60">({t.count})</span>
+            </button>
+          ))}
+        </div>
+        <div className="flex-1 overflow-y-auto p-3 space-y-2">
+          {loading ? (
+            <div className="text-center py-8"><div className="w-6 h-6 rounded-full border-2 border-indigo-500/20 border-t-indigo-500 animate-spin mx-auto" /></div>
+          ) : list.length === 0 ? (
+            <div className="text-center py-12 text-white/40">
+              <Globe size={32} className="mx-auto mb-3 opacity-30" />
+              <p className="text-xs">
+                {tab === "recent" ? "Nessuna console recente" : tab === "fav" ? "Nessun preferito. Clicca ⭐ per aggiungere." : "Nessuna sessione live"}
+              </p>
+            </div>
+          ) : list.map((item, i) => (
+            <QuickAccessItem key={`${item.device_ip}-${i}`} item={item} tab={tab}
+              isFavorite={isFavorite(item.device_ip)}
+              onOpen={() => { open(item.client_id, item.device_ip, item.port); }}
+              onToggleFav={() => toggleFav(item.device_ip)} />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function QuickAccessItem({ item, tab, isFavorite, onOpen, onToggleFav }) {
+  return (
+    <div className="group bg-[#12121a] border border-[#1e1e2e] hover:border-indigo-500/30 rounded-lg p-3 flex items-start gap-2 transition-all">
+      <button onClick={onToggleFav} className={`p-1 rounded ${isFavorite ? "text-amber-400" : "text-white/20 hover:text-amber-400 opacity-0 group-hover:opacity-100 transition-opacity"}`} title={isFavorite ? "Rimuovi preferito" : "Aggiungi preferito"} data-testid={`fav-toggle-${item.device_ip}`}>
+        <Star size={14} weight={isFavorite ? "fill" : "regular"} />
+      </button>
+      <div className="flex-1 min-w-0 cursor-pointer" onClick={onOpen} data-testid={`quick-open-${item.device_ip}`}>
+        <div className="flex items-center gap-2">
+          <span className="text-[12px] font-bold text-white font-mono truncate">{item.device_ip}:{item.port || 443}</span>
+          {item.device_type && <span className="text-[9px] uppercase text-indigo-400/80 font-mono">{item.device_type}</span>}
+        </div>
+        {item.device_name && <p className="text-[11px] text-white/60 truncate mt-0.5">{item.device_name}</p>}
+        <div className="flex items-center gap-3 mt-1 text-[9px] text-white/30 font-mono">
+          {item.client_name && <span>🏢 {item.client_name}</span>}
+          {tab === "recent" && item.started_at && <span>🕐 {formatRelative(item.started_at)}</span>}
+          {tab === "live" && item.user_email && <span><Eye size={9} className="inline" /> {item.user_email}</span>}
+          {tab === "recent" && item.recorded && <span className="text-red-400">● REC</span>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function formatRelative(iso) {
+  try {
+    const then = new Date(iso).getTime();
+    const delta = Math.floor((Date.now() - then) / 1000);
+    if (delta < 60) return `${delta}s fa`;
+    if (delta < 3600) return `${Math.floor(delta / 60)}m fa`;
+    if (delta < 86400) return `${Math.floor(delta / 3600)}h fa`;
+    return `${Math.floor(delta / 86400)}g fa`;
+  } catch { return iso; }
+}
+
+/* ==================== SHARE MODAL ==================== */
+
+function ShareSessionModal({ session, onClose }) {
+  const [ttl, setTtl] = useState(15);
+  const [password, setPassword] = useState("");
+  const [shareLink, setShareLink] = useState(null);
+  const [shareToken, setShareToken] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [copied, setCopied] = useState(false);
+
+  const create = async () => {
+    setLoading(true); setError(null);
+    try {
+      const res = await axios.post(`${API}/web-console/share/${session.sessionId}`, {
+        ttl_minutes: ttl, password: password || null,
+      });
+      const token = res.data?.share_token;
+      setShareToken(token);
+      setShareLink(`${window.location.origin}/shared-console/${token}`);
+    } catch (e) {
+      setError(e.response?.data?.detail || e.message);
+    } finally { setLoading(false); }
+  };
+
+  const revoke = async () => {
+    if (!shareToken) return;
+    try {
+      await axios.delete(`${API}/web-console/share/${shareToken}`);
+      setShareLink(null); setShareToken(null);
+    } catch (e) { setError(e.response?.data?.detail || e.message); }
+  };
+
+  const copy = () => {
+    if (!shareLink) return;
+    navigator.clipboard.writeText(shareLink);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
+      <div className="bg-[#12121a] border border-[#2a2a3e] rounded-xl w-full max-w-md p-5 shadow-2xl" onClick={e => e.stopPropagation()} data-testid="share-session-modal">
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-2">
+            <Share size={18} className="text-purple-400" />
+            <h3 className="text-sm font-bold text-white">Condividi sessione</h3>
+          </div>
+          <button onClick={onClose} className="p-1 rounded hover:bg-white/5 text-white/40"><X size={14} /></button>
+        </div>
+
+        {!shareLink ? (
+          <>
+            <p className="text-[11px] text-white/50 mb-4 leading-relaxed">
+              Genera un link temporaneo read-only della console <b className="text-white/80 font-mono">{session.deviceIp}:{session.port}</b>.
+              Chi riceve il link può vedere l'iframe live SENZA login ARGUS.
+            </p>
+            <div className="space-y-3">
+              <div>
+                <label className="text-[10px] font-bold text-white/60 uppercase mb-1 block">Scadenza</label>
+                <select value={ttl} onChange={e => setTtl(Number(e.target.value))}
+                  className="w-full bg-[#0f0f17] border border-[#2a2a3e] rounded-lg px-3 py-2 text-[12px] text-white focus:border-indigo-500 outline-none"
+                  data-testid="share-ttl-select">
+                  <option value={5}>5 minuti</option>
+                  <option value={15}>15 minuti</option>
+                  <option value={30}>30 minuti</option>
+                  <option value={60}>60 minuti</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-[10px] font-bold text-white/60 uppercase mb-1 block">Password (opzionale)</label>
+                <input type="password" value={password} onChange={e => setPassword(e.target.value)}
+                  placeholder="Lascia vuoto per link aperto"
+                  className="w-full bg-[#0f0f17] border border-[#2a2a3e] rounded-lg px-3 py-2 text-[12px] text-white placeholder-white/20 focus:border-indigo-500 outline-none"
+                  data-testid="share-password-input" />
+              </div>
+            </div>
+            {error && <p className="text-[11px] text-red-400 mt-3">{error}</p>}
+            <div className="flex gap-2 mt-4">
+              <button onClick={onClose} className="flex-1 px-3 py-2 rounded-lg bg-white/5 text-white/60 hover:bg-white/10 text-[12px] font-bold">Annulla</button>
+              <button onClick={create} disabled={loading}
+                className="flex-1 px-3 py-2 rounded-lg bg-purple-500/20 text-purple-400 border border-purple-500/30 hover:bg-purple-500/30 text-[12px] font-bold disabled:opacity-50"
+                data-testid="share-create-btn">
+                {loading ? "Generazione..." : "Genera link"}
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="bg-emerald-500/5 border border-emerald-500/20 rounded-lg p-3 mb-3">
+              <p className="text-[11px] text-emerald-400 font-bold mb-2">✓ Link generato (valido {ttl} min)</p>
+              <div className="flex items-center gap-2">
+                <code className="flex-1 bg-[#0d0d12] text-[10px] text-white/80 font-mono break-all p-2 rounded border border-[#1e1e2e]">{shareLink}</code>
+                <button onClick={copy} className={`p-2 rounded ${copied ? "bg-emerald-500/20 text-emerald-400" : "bg-white/5 text-white/40 hover:text-white hover:bg-white/10"}`} title="Copia" data-testid="share-copy-btn">
+                  <Copy size={14} />
+                </button>
+              </div>
+              {password && <p className="text-[10px] text-amber-400 mt-2">🔒 Richiede password per accedere</p>}
+            </div>
+            <div className="flex gap-2">
+              <button onClick={revoke} className="flex-1 px-3 py-2 rounded-lg bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 text-[12px] font-bold" data-testid="share-revoke-btn">
+                Revoca
+              </button>
+              <button onClick={onClose} className="flex-1 px-3 py-2 rounded-lg bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 hover:bg-indigo-500/30 text-[12px] font-bold">
+                Fatto
+              </button>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
