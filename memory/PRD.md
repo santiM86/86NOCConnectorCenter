@@ -117,6 +117,17 @@ Refactor completo. Elimina la causa radice del bug iframe nero (srcDoc → origi
 - HP 5130 switch (argus cliente): iframe renderizza UI switch, login, navigation ✓
 - iLO Redfish UI: iframe con auth, grafici, console remota ✓
 
+### Web Console LIVE v2.1 — HARDENING (2026-04-20 pomeriggio)
+**Dopo deploy Prod 2.1.458**: iframe appariva vuoto con icona "file rotto" = browser riceve Content-Type non renderizzabile.
+
+**Fix backend (`web_console_live.py`)**:
+1. **Content-Type sniffing**: se risposta ha CT `application/octet-stream` / `x-binary` / `application/unknown` / vuoto, ma body inizia con `<html`/`<!doctype`/`{`/`[`/`<?xml`/`<svg`, forza CT corretto. Risolve device legacy che mandano MIME sbagliato.
+2. **Strip header che rompono iframe**: `Content-Disposition` (forza download), `X-Frame-Options`/`CSP` (blocco iframe), `Content-Encoding`/`Transfer-Encoding` (già decompressi dal connector), `Strict-Transport-Security`.
+3. **Debug headers**: `X-Argus-Proxy: v2`, `X-Argus-Sniff: 0/1`, `X-Argus-CT-Orig` per diagnostica rapida.
+4. **Nuovo `GET /api/web-console/debug/{sid}`**: ritorna ultimi 20 request con status HTTP, CT originale, CE, X-Frame-Options, Content-Disposition, size, preview 512 byte. Admin/owner only.
+
+**Fix frontend (`WebConsoleTabs.js`)**: aggiunto pulsante **DBG** (amber) nel header Web Console che apre tab JSON con diagnostica.
+
 
 In attesa di bot token dall'utente.
 

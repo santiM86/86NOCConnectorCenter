@@ -137,6 +137,26 @@ export function WebConsoleTabsProvider({ children }) {
     window.open(s.iframeUrl, "_blank", "noopener");
   }, []);
 
+  // Diagnostica: apre tab con JSON debug (content-type originale, size, preview body)
+  const openDebug = useCallback(async (id) => {
+    const s = sessionsRef.current.find(x => x.id === id);
+    if (!s?.sessionId) {
+      alert("Sessione non pronta");
+      return;
+    }
+    try {
+      const res = await axios.get(`${API}/web-console/debug/${s.sessionId}`);
+      const pretty = JSON.stringify(res.data, null, 2);
+      const win = window.open("", "_blank");
+      if (win) {
+        win.document.write(`<pre style="font:12px/1.4 monospace;padding:16px;background:#0f0f17;color:#d4d4d4;white-space:pre-wrap;word-break:break-all">${pretty.replace(/</g, "&lt;")}</pre>`);
+        win.document.title = `Debug ${s.deviceIp}:${s.port}`;
+      }
+    } catch (e) {
+      alert("Debug fallito: " + (e.response?.data?.detail || e.message));
+    }
+  }, []);
+
   // postMessage listener: iframe invia title del device -> propaga nel chrome
   useEffect(() => {
     const handler = (event) => {
@@ -156,7 +176,7 @@ export function WebConsoleTabsProvider({ children }) {
 
   const value = {
     sessions, activeId, minimized,
-    open, reload, close, setActive, minimize, closeAll, goHome, openExternal,
+    open, reload, close, setActive, minimize, closeAll, goHome, openExternal, openDebug,
   };
 
   return (
@@ -214,7 +234,7 @@ function MinimizedDock() {
 }
 
 function ActiveConsole({ session }) {
-  const { sessions, setActive, close, reload, goHome, minimize, openExternal } = useWebConsoleTabs();
+  const { sessions, setActive, close, reload, goHome, minimize, openExternal, openDebug } = useWebConsoleTabs();
   const iframeRef = useRef(null);
   const [iframeLoaded, setIframeLoaded] = useState(false);
   const [loadTime, setLoadTime] = useState(null);
@@ -272,6 +292,9 @@ function ActiveConsole({ session }) {
           </button>
           <button onClick={() => openExternal(session.id)} className="p-1.5 rounded hover:bg-indigo-500/10 text-indigo-400 transition-colors" title="Apri in nuova tab" data-testid="web-console-open-external">
             <ArrowSquareOut size={14} />
+          </button>
+          <button onClick={() => openDebug(session.id)} className="px-1.5 py-1 rounded hover:bg-amber-500/10 text-amber-400 text-[9px] font-bold font-mono transition-colors" title="Debug response" data-testid="web-console-debug">
+            DBG
           </button>
         </div>
       </div>
