@@ -132,7 +132,44 @@ Refactor completo. Elimina la causa radice del bug iframe nero (srcDoc → origi
 
 **Vantaggi**: nessun aggiornamento Connector richiesto — il fix è tutto lato backend, retrocompatibile con Connector v3.2.1 già in field.
 
-### Connector v3.2.2 (2026-04-20 sera+++) — FIX CertBypass race condition
+### Web Console ENTERPRISE v1 (2026-04-20 notte) — FEATURE PACK DATTO+RUSTDESK
+Spunto da Datto RMM (HTML5 remote, session recording, fullscreen) e RustDesk Pro (address book, device audit, permissions).
+
+**Backend** (`routes/web_console_enterprise.py`):
+- `GET /api/web-console/recent` — ultime 10 sessioni utente, dedupe per device, con device/client name
+- `GET /api/web-console/favorites` + `POST /api/web-console/favorites/toggle` — preferiti per utente
+- `GET /api/web-console/live-sessions` — sessioni aperte ora (admin/operator only)
+- `GET /api/web-console/history/device/{ip}` — audit per device (chi, quando, quanto, registrato)
+- `POST /api/web-console/recording/{sid}/toggle` + `GET /api/web-console/recording/{sid}` — session recording opt-in + timeline replay
+- `POST /api/web-console/share/{sid}` — share link con TTL 5-60min + password opzionale
+- `POST /api/web-console/shared/{token}/validate` — endpoint pubblico per accedere al share
+- `DELETE /api/web-console/share/{token}` — revoca
+
+**Collections nuove**: `web_console_history` (TTL 90gg), `web_console_favorites`, `web_console_shares` (TTL auto).
+
+**Frontend** (`WebConsoleTabs.js` riscritto v5 + `SharedConsolePage.js` nuova):
+- 🔲 Fullscreen mode (F11 + pulsante)
+- ⌨️ Keyboard shortcuts: Ctrl+R reload, Ctrl+H home, Ctrl+D debug, F11 fullscreen, Esc exit, Alt+← back
+- 📏 Latency indicator (loadTime primo frame)
+- ⭐ Quick Access Drawer (3 tab: Recenti/Preferiti/Live con toggle preferito)
+- 🔴 Recording toggle con badge REC pulsante in header
+- 🔗 Share Session modal (TTL select + password opzionale + copy link + revoca)
+- 🎨 Rotondi dark theme con animazioni micro
+
+**Pagina pubblica `/shared-console/:token`**:
+- Landing page senza auth ARGUS
+- Gate password se protetto
+- Countdown scadenza real-time
+- iframe read-only full-height
+- Header con "Shared · Read-only · by {user}"
+
+**Test backend end-to-end** (13 step tutti passati):
+- Session create con record=true
+- Recent / Live / History per device / Favorites CRUD
+- Recording toggle + timeline
+- Share create (con password) / validate (wrong/right) / revoke
+
+
 **Sintomo**: Web Console mostra "Connessione al dispositivo fallita → Impossibile stabilire una relazione di trust per il canale sicuro SSL/TLS" su HP 5130 e device con certificati self-signed, anche se il connector funziona e i device rispondono al "Test Web UI" dal tray.
 
 **Root cause**: `System.Net.ServicePointManager.ServerCertificateValidationCallback` e' **globale/statico** in .NET. Il connector chiama `[CertBypass]::Enable()` all'inizio di una Web Proxy request e `[CertBypass]::Disable()` alla fine. Ma i thread paralleli (Redfish polling, SNMP discovery, WAN probe, altre Web Proxy requests) fanno `Disable()` in parallelo → se una delle `Invoke-WebRequest` HTTPS sta negoziando TLS mentre un altro thread chiama `Disable()`, il callback diventa `null` e .NET rifiuta il cert self-signed.

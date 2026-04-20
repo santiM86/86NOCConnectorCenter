@@ -11,6 +11,7 @@ import { UpdateBanner, VersionProvider } from "@/components/AppVersion";
 
 // Pages
 import LoginPage from "@/pages/LoginPage";
+import SharedConsolePage from "@/pages/SharedConsolePage";
 import DashboardPage from "@/pages/DashboardPage";
 import AlertsPage from "@/pages/AlertsPage";
 import AlertDetailPage from "@/pages/AlertDetailPage";
@@ -187,6 +188,7 @@ function App() {
           <UpdateBanner />
           <Routes>
             <Route path="/login" element={<LoginPage />} />
+            <Route path="/shared-console/:token" element={<SharedConsolePage />} />
             <Route
               path="/"
               element={

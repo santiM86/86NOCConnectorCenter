@@ -233,6 +233,7 @@ from routes.connector import router as connector_router
 from routes.discovery import router as discovery_router
 from routes.web_proxy import router as web_proxy_router
 from routes.web_console_live import router as web_console_live_router
+from routes.web_console_enterprise import router as web_console_enterprise_router
 from routes.topology import router as topology_router
 from routes.metrics import router as metrics_router
 from routes.reports import router as reports_router
@@ -270,6 +271,7 @@ app.include_router(connector_router)
 app.include_router(discovery_router)
 app.include_router(web_proxy_router)
 app.include_router(web_console_live_router)
+app.include_router(web_console_enterprise_router)
 app.include_router(topology_router)
 app.include_router(metrics_router)
 app.include_router(reports_router)
@@ -420,6 +422,15 @@ async def startup_event():
         # Web Console LIVE token (capability) — TTL 8h
         await db.web_console_tokens.create_index("session_id", unique=True)
         await db.web_console_tokens.create_index("expires_at", expireAfterSeconds=0)
+        # Web Console ENTERPRISE
+        await db.web_console_history.create_index([("user_email", 1), ("started_at", -1)])
+        await db.web_console_history.create_index([("device_ip", 1), ("started_at", -1)])
+        await db.web_console_history.create_index("session_id")
+        # History TTL 90 giorni
+        await db.web_console_history.create_index("started_at", expireAfterSeconds=86400 * 90)
+        await db.web_console_favorites.create_index([("user_email", 1), ("device_ip", 1)], unique=True)
+        await db.web_console_shares.create_index("share_token", unique=True)
+        await db.web_console_shares.create_index("expires_at", expireAfterSeconds=0)
         # alerts: escalation scan (active + severity + ack + time)
         await db.alerts.create_index(
             [("status", 1), ("severity", 1), ("escalated", 1), ("created_at", 1)]

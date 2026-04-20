@@ -57,6 +57,7 @@ async def create_web_console_session(request: Request, current_user: dict = Depe
     body = await request.json()
     device_ip = str(body.get("device_ip", "")).strip()
     port = int(body.get("port", 0) or 0)
+    record = bool(body.get("record", False))
     if not device_ip or not port:
         raise HTTPException(status_code=400, detail="device_ip and port required")
 
@@ -71,14 +72,32 @@ async def create_web_console_session(request: Request, current_user: dict = Depe
         "client_id": client_id,
         "device_ip": device_ip,
         "port": port,
+        "recording": record,
         "created_at": now,
         "expires_at": now + timedelta(hours=SESSION_TTL_HOURS),
     })
-    audit.info(f"[AUDIT] web_console_session_open | user={current_user.get('email')} | device={device_ip}:{port} | session={session_id}")
+    # History entry per Quick Access Recent + device audit
+    try:
+        await db.web_console_history.insert_one({
+            "session_id": session_id,
+            "user_email": current_user.get("email", ""),
+            "client_id": client_id,
+            "device_ip": device_ip,
+            "port": port,
+            "started_at": now,
+            "ended_at": None,
+            "requests_count": 0,
+            "recorded": record,
+            "last_path": "/",
+        })
+    except Exception as _e:
+        logger.warning(f"history insert failed: {_e}")
+    audit.info(f"[AUDIT] web_console_session_open | user={current_user.get('email')} | device={device_ip}:{port} | session={session_id} | record={record}")
     return {
         "session_id": session_id,
         "iframe_url": f"/api/web-proxy/live/{session_id}/{device_ip}/{port}/",
         "expires_in_seconds": SESSION_TTL_HOURS * 3600,
+        "recording": record,
     }
 
 
@@ -89,6 +108,14 @@ async def revoke_web_console_session(session_id: str, current_user: dict = Depen
         "session_id": session_id,
         "user_email": current_user.get("email", ""),
     })
+    # Segna ended_at nella history per il calcolo duration
+    try:
+        await db.web_console_history.update_many(
+            {"session_id": session_id, "ended_at": None},
+            {"$set": {"ended_at": datetime.now(timezone.utc)}}
+        )
+    except Exception:
+        pass
     audit.info(f"[AUDIT] web_console_session_close | user={current_user.get('email')} | session={session_id} | deleted={res.deleted_count}")
     return {"revoked": res.deleted_count > 0}
 
@@ -426,6 +453,21 @@ async def live_proxy(
         client_id, device_ip, port, scheme, full_path, request.method,
         session_id, body_bytes, req_headers,
     )
+
+    # Update history: incrementa requests_count e traccia ultimo path visitato
+    try:
+        is_nav = request.method == "GET" and (
+            not content_type or "text/html" in (content_type or "").lower()
+        )
+        update_fields = {"last_activity_at": datetime.now(timezone.utc)}
+        if is_nav:
+            update_fields["last_path"] = full_path
+        await db.web_console_history.update_many(
+            {"session_id": session_id},
+            {"$inc": {"requests_count": 1}, "$set": update_fields}
+        )
+    except Exception:
+        pass
 
     # === FALLBACK: device risponde con body vuoto o troppo piccolo ===
     # Se il device risponde 200/3xx/4xx con body <50 bytes, l'iframe apparirebbe bianco.
