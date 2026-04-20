@@ -68,6 +68,13 @@ class DeviceResponse(BaseModel):
     has_credentials: bool = False
     last_poll: Optional[str] = None
     health_status: Optional[str] = None
+    # Web Console (auto-detected by Connector tray "Apri Web UI")
+    web_console_url: Optional[str] = None
+    web_console_port: Optional[int] = None
+    web_console_scheme: Optional[str] = None
+    web_console_title: Optional[str] = None
+    http_port: Optional[int] = None
+    monitor_type: Optional[str] = None
     created_at: str
 
 class AlertCreate(BaseModel):
