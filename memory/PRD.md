@@ -132,6 +132,20 @@ Refactor completo. Elimina la causa radice del bug iframe nero (srcDoc → origi
 
 **Vantaggi**: nessun aggiornamento Connector richiesto — il fix è tutto lato backend, retrocompatibile con Connector v3.2.1 già in field.
 
+### Redfish/iLO Diagnose endpoint (2026-04-20 notte+)
+**Problema utente**: iLO raggiungibile ma dati non live in ARGUS.
+
+**Nuovo endpoint** `GET /api/redfish/diagnose/{device_ip}` (admin/operator):
+Analizza 5 check in sequenza e ritorna JSON con `status` (ok/warn/error) e `fix` suggerito:
+1. Device registration (managed_devices vs device_poll_status)
+2. Device type (=ilo) o device_class (=hpe-ilo)
+3. Credenziale Vault presente + credential_type=ilo
+4. Direct poll cloud (direct_poll + external_url) OPPURE Connector LAN
+5. Connector assegnato e online (heartbeat <120s)
+6. Ultimo poll Redfish registrato in `ilo_status`
+
+**Output**: `current_poll_source`, `last_successful_poll`, `recommendation` (fix prioritario).
+
 ### Web Console ENTERPRISE v1 (2026-04-20 notte) — FEATURE PACK DATTO+RUSTDESK
 Spunto da Datto RMM (HTML5 remote, session recording, fullscreen) e RustDesk Pro (address book, device audit, permissions).
 
