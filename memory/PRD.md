@@ -59,7 +59,38 @@ Società IT che necessita di un raccoglitore di alert (NOC) per tutti i disposit
   - **Web Console TURBO (v3.0.3)**: riscritto il proxy web come long-polling con hot-trigger `asyncio.Event` lato backend (latenza da ~3s a ~50ms). Endpoint `/connector/web-proxy/pending?wait=N` e `/connector/web-proxy/response/{id}?wait=N` (max 25s). Connector PowerShell v3.0.3 aggiorna `Invoke-SecureGet` con timeout configurabile e usa `wait=20`. Frontend: nuovo componente riutilizzabile `/components/WebConsole.js` (hook `useWebConsole` + modal). Sostituito polling con setInterval (500ms × 40 tentativi = peggior caso 30s) con **1 sola GET long-poll** (wait=25, ~30s timeout). Pulsante Monitor in DevicesTab del ClientOverviewPage visibile solo quando `device.status=online/active` E `device_type∈[firewall, switch, router, access-point, printer, ilo, server, nas, ups]` o `monitor_type=http`. Porta default smart: 443 per iLO/firewall, 80 altri. Testato end-to-end: modal si apre, long-poll 3s timeout corretto (117ms per 404).
   - **Web Console Multi-Tab**: nuovo provider `WebConsoleTabsProvider` in `/components/WebConsoleTabs.js` montato una volta in App.js tra PwaProvider e BrowserRouter. Gestisce N sessioni parallele, ciascuna con proprio `AbortController` e long-poll indipendente. Dock flottante in basso a destra (fixed, z-40) con pulsanti `CONSOLES (N)` + pillola per ogni tab (statusDot: amber=loading, red=error, emerald=ok) + `CHIUDI TUTTE`. Modal (z-50) mostra la sessione attiva con header `(idx/total)` + frecce Prev/Next + 3 pulsanti: minimize (lascia nel dock), close (termina), semaforo macOS. Dedup automatica: apertura su stesso client+ip+port → refocus esistente. Persistente tra navigazioni di pagina (context al livello App). Hook `useWebConsoleTabs()` espone `{sessions, activeId, open, close, reload, navigate, setActive, minimize, closeAll}`. `ClientOverviewPage.DevicesTab` ora usa questo context (rimosso modal locale). Testato: aperte 3 sessioni in parallelo, dock mostra 3 tab, modal navigabile con frecce.
 
-## Pending / In Progress
+### Web Console LIVE v1 — ARCHITETTURA PULITA (2026-04-20)
+Refactor completo. Elimina la causa radice del bug iframe nero (srcDoc → origine null → fetch impossibili).
+
+**Nuova architettura**:
+- Endpoint catch-all `/api/web-proxy/live/{session_id}/{device_ip}/{port}/{path:path}` accetta qualsiasi method (GET/POST/PUT/DELETE/PATCH/HEAD/OPTIONS).
+- Auth via **capability token** (session_id è il token UUID, TTL 8h) — l'iframe non può settare Bearer headers, questo bypass è pulito e sicuro.
+- Endpoint `POST /api/web-console/session` crea il token bindato a (user, client, device, port).
+- Browser usa `iframe src=` invece di `srcDoc` → iframe ha origine argus.86bit.it → può fare fetch/XHR naturalmente.
+- Backend inietta `<base href="/api/web-proxy/live/{session}/{ip}/{port}/">` nel `<head>`. Il browser risolve tutti i path relativi contro questo base → asset CSS/JS/img/font/XHR vengono proxati automaticamente.
+- Interceptor JS minimal (solo title propagation al parent per status bar).
+- Collection `web_console_tokens` con indice TTL su `expires_at`.
+
+**File toccati**:
+- `/app/backend/routes/web_console_live.py` (nuovo, ~250 righe)
+- `/app/backend/server.py` (include_router + index TTL web_console_tokens)
+- `/app/frontend/src/components/WebConsoleTabs.js` (riscritto da 488 a 280 righe, architettura iframe src=)
+
+**Test e2e**:
+- Session creation → OK
+- Live proxy GET con NUL byte body → OK, `<base>` tag iniettato
+- Invalid session → 401
+- Tempo medio: 1.3s (vs 8.4s srcDoc approach)
+- CSS/JS/img references preservati per auto-proxy browser-side
+
+**Vantaggi**:
+- Funziona per QUALSIASI device management (iLO, HP, Aruba, Cisco, Fortinet, Zyxel, Ubiquiti, UPS APC/Xanto, Synology, stampanti)
+- Navigazione nativa (back/forward/click/submit browser standard)
+- Cookie propagati automaticamente dal browser
+- Nessun inlining lato connector più necessario (ma retro-compat mantenuta)
+- Nessuna CSP/X-Frame-Options del device (rimossi in risposta)
+- Supporta POST form, JSON API, SPA, grafica pesante
+
 ### P1 — Notifiche Telegram
 In attesa di bot token dall'utente.
 

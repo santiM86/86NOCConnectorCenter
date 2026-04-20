@@ -1224,17 +1224,15 @@ function Install-Update($config, $updateInfo) {
         Write-Log "File estratti in: $tempExtract" "INFO"
         Send-UpdateProgress $config 45 "extracting" "File estratti. Avvio updater..."
         
-        # Launch updater as INDEPENDENT scheduled task (bypass NSSM process tree kill)
-        # Usando schtasks con /RU SYSTEM il processo e' completamente staccato da connector/NSSM:
-        # anche se il service viene fermato, l'updater continua a girare.
+        # Launch updater via BAT temporaneo -> cmd.exe -> powershell.
+        # Il passaggio per cmd.exe stacca completamente dal process tree di NSSM/connector.
+        # Anche se NSSM killa l'albero processi del connector quando Stop-Service,
+        # il BAT lanciato via cmd.exe vive autonomamente (diverso PPID).
+        # Questo metodo e' usato da installer professionali (es. Chrome auto-update).
         $installDir = Split-Path -Parent $PSScriptRoot
         $updaterPath = Join-Path $PSScriptRoot "updater.ps1"
-        
-        # If updater.ps1 was just extracted, use the new one
         $newUpdater = Join-Path $tempExtract "src\updater.ps1"
-        if (Test-Path $newUpdater) {
-            $updaterPath = $newUpdater
-        }
+        if (Test-Path $newUpdater) { $updaterPath = $newUpdater }
 
         if (-not (Test-Path $updaterPath)) {
             $msg = "Updater script non trovato: $updaterPath"
@@ -1246,34 +1244,47 @@ function Install-Update($config, $updateInfo) {
         $psExe = Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe"
         if (-not (Test-Path $psExe)) { $psExe = "powershell.exe" }
 
-        # Prepara TR stringa per schtasks (lungo ma necessario)
-        $trCmd = "`"$psExe`" -ExecutionPolicy Bypass -NoProfile -NonInteractive -WindowStyle Hidden -File `"$updaterPath`" -ExtractPath `"$tempExtract`" -InstallDir `"$installDir`" -ApiUrl `"$($config.noc_center_url)`" -ApiKey `"$($config.api_key)`""
-        $taskName = "86NocConnector_Updater_$([guid]::NewGuid().ToString('N').Substring(0,8))"
-        $runTime = (Get-Date).AddMinutes(1).ToString("HH:mm")   # futuro fittizio — eseguiremo subito con /Run
-
-        Write-Log "Lancio updater via schtasks (task: $taskName)" "INFO"
+        # Creo un BAT temporaneo che lancia powershell -> updater.ps1 e si auto-cancella.
+        # Uso delay di 2 secondi per permettere al connector corrente di uscire pulito.
+        $batPath = Join-Path $env:TEMP ("86Noc_launcher_" + [guid]::NewGuid().ToString("N").Substring(0,8) + ".bat")
+        $batContent = @"
+@echo off
+rem 86NocConnector updater launcher - auto-delete after run
+timeout /t 2 /nobreak > nul 2>&1
+start "" /B "$psExe" -ExecutionPolicy Bypass -NoProfile -NonInteractive -WindowStyle Hidden -File "$updaterPath" -ExtractPath "$tempExtract" -InstallDir "$installDir" -ApiUrl "$($config.noc_center_url)" -ApiKey "$($config.api_key)"
+timeout /t 1 /nobreak > nul 2>&1
+del /F /Q "%~f0" > nul 2>&1
+"@
         try {
-            # Crea task
-            & schtasks.exe /Create /TN $taskName /SC ONCE /ST $runTime /TR $trCmd /RU SYSTEM /RL HIGHEST /F 2>&1 | Out-String | ForEach-Object { Write-Log "  schtasks /Create: $_" "DEBUG" }
-            # Avvia subito
-            & schtasks.exe /Run /TN $taskName 2>&1 | Out-String | ForEach-Object { Write-Log "  schtasks /Run: $_" "INFO" }
-            Write-Log "Updater lanciato come scheduled task" "INFO"
+            # Usa ASCII per evitare BOM + garantire esecuzione cmd
+            [System.IO.File]::WriteAllText($batPath, $batContent, [System.Text.Encoding]::ASCII)
+            Write-Log "Updater launcher BAT: $batPath" "INFO"
+
+            # Lancio cmd.exe in modo detached
+            $psi = New-Object System.Diagnostics.ProcessStartInfo
+            $psi.FileName = "cmd.exe"
+            $psi.Arguments = "/c `"$batPath`""
+            $psi.UseShellExecute = $true    # CRITICAL: usa shell -> stacca da parent
+            $psi.CreateNoWindow = $true
+            $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+            $proc = [System.Diagnostics.Process]::Start($psi)
+            Write-Log "Updater launcher avviato via cmd.exe (PID=$($proc.Id))" "INFO"
         } catch {
-            # Fallback: prova Start-Process classico se schtasks non funziona
-            Write-Log "schtasks fallito: $($_.Exception.Message). Fallback a Start-Process..." "WARN"
-            $updaterArgs = @(
-                "-ExecutionPolicy", "Bypass", "-NoProfile", "-NonInteractive",
-                "-WindowStyle", "Hidden", "-File", $updaterPath,
-                "-ExtractPath", $tempExtract, "-InstallDir", $installDir,
-                "-ApiUrl", $config.noc_center_url, "-ApiKey", $config.api_key
-            )
+            $errMsg = "Impossibile avviare updater launcher: $($_.Exception.Message)"
+            Write-Log $errMsg "ERROR"
+            Send-UpdateProgress $config 0 "error" $errMsg
+            # Fallback 1: Start-Process classico
             try {
-                $proc = Start-Process -FilePath $psExe -ArgumentList $updaterArgs -WindowStyle Hidden -PassThru
-                Write-Log "Updater avviato (fallback) PID=$($proc.Id)" "INFO"
+                $fallbackArgs = @(
+                    "-ExecutionPolicy","Bypass","-NoProfile","-NonInteractive",
+                    "-WindowStyle","Hidden","-File",$updaterPath,
+                    "-ExtractPath",$tempExtract,"-InstallDir",$installDir,
+                    "-ApiUrl",$config.noc_center_url,"-ApiKey",$config.api_key
+                )
+                Start-Process -FilePath $psExe -ArgumentList $fallbackArgs -WindowStyle Hidden | Out-Null
+                Write-Log "Fallback: Start-Process diretto" "WARN"
             } catch {
-                $errMsg = "Impossibile avviare updater: $($_.Exception.Message)"
-                Write-Log $errMsg "ERROR"
-                Send-UpdateProgress $config 0 "error" $errMsg
+                Write-Log "Fallback fallito: $($_.Exception.Message)" "ERROR"
                 return $false
             }
         }
@@ -1611,53 +1622,65 @@ function Check-WebProxyRequests($config) {
 
 function Process-WebProxyRequest($config, $req) {
     # =========================================================================
-    # Enterprise Web Proxy Handler
-    # - Auto-fallback HTTPS -> HTTP se timeout/errore di connessione
-    # - Bypass SSL cert validation per certificati self-signed (iLO/firewall)
-    # - Hard timeout 10s per connessione device (non blocca main loop)
-    # - Response SEMPRE inviata al server, anche su errore (previene frontend timeout)
-    # - Logging strutturato + metriche latenza
+    # Web Console Enterprise B - Binary-safe proxy
+    # - Supporto method GET/POST/PUT/DELETE/HEAD/OPTIONS con request body
+    # - Cookie jar cross-request (sessione persistente)
+    # - Response body inviato in base64 (binary-safe, gestisce NUL byte)
+    # - Response headers + cookies back al backend per cookie jar browser
+    # - Auto fallback HTTPS/HTTP, SSL bypass per self-signed
+    # - Response SEMPRE inviata (anche su error) -> nessun timeout browser
     # =========================================================================
     $deviceIp = $req.device_ip
-    $port = if ($req.port) { $req.port } else { 80 }
-    $path = if ($req.path) { $req.path } else { "/" }
+    $port = if ($req.port) { [int]$req.port } else { 80 }
+    $path = if ($req.path) { [string]$req.path } else { "/" }
+    $method = if ($req.method) { [string]$req.method } else { "GET" }
+    $scheme = if ($req.scheme) { [string]$req.scheme } else { "" }
     $requestId = $req.request_id
+    $reqBody = if ($req.request_body) { [string]$req.request_body } else { "" }
+    $reqBodyEnc = if ($req.request_body_encoding) { [string]$req.request_body_encoding } else { "text" }
+    $reqHeaders = $req.request_headers
+    $sessionCookies = $req.session_cookies
     $tStart = [DateTime]::UtcNow
 
-    Write-Log "[WEB-PROXY] IN  -> $deviceIp`:$port$path (ID: $($requestId.Substring(0, 8)))"
+    Write-Log "[WEB-PROXY] IN  $method -> $deviceIp`:$port$path (ID: $($requestId.Substring(0, 8)))"
 
-    $responseBody = ""
     $statusCode = 0
     $contentType = "text/html"
     $title = ""
-    $error = $null
+    $errorMsg = $null
+    $respBytes = [byte[]]@()
+    $respHeaders = @{}
+    $respCookies = @{}
 
     # Whitelist porte
     if ($port -notin @(80, 443, 8080, 8443, 8000, 8888, 4443, 4080, 9090, 10000)) {
-        $error = "Porta $port non consentita per motivi di sicurezza"
+        $errorMsg = "Porta $port non consentita per motivi di sicurezza"
         $statusCode = 403
-        $responseBody = Build-WebProxyErrorPage $deviceIp $port $path $error
-        Send-WebProxyResponse $config $requestId $statusCode $contentType $responseBody $title $error
+        $errHtml = Build-WebProxyErrorPage $deviceIp $port $path $errorMsg
+        $respBytes = [System.Text.Encoding]::UTF8.GetBytes($errHtml)
+        Send-WebProxyResponse $config $requestId $statusCode $contentType $respBytes $title $errorMsg $respHeaders $respCookies $tStart
         return
     }
 
-    # Determina schemi da provare: se la porta è 443/8443/4443 -> HTTPS primo, HTTP fallback;
-    # altrimenti HTTP primo, HTTPS fallback (alcuni firewall fanno redirect forzato).
-    $schemes = if ($port -in @(443, 8443, 4443)) { @("https", "http") } else { @("http", "https") }
+    # Determina schemi da provare
+    $schemes = if ($scheme -in @("http","https")) {
+        @($scheme)
+    } elseif ($port -in @(443, 8443, 4443)) {
+        @("https", "http")
+    } else {
+        @("http", "https")
+    }
 
-    # Abilita TLS 1.0/1.1/1.2/1.3 (molti iLO vecchi negoziano solo TLS 1.0/1.1)
+    # TLS 1.0-1.3
     try {
         [Net.ServicePointManager]::SecurityProtocol = `
-            [Net.SecurityProtocolType]::Tls -bor `
-            [Net.SecurityProtocolType]::Tls11 -bor `
-            [Net.SecurityProtocolType]::Tls12 -bor `
-            [Net.SecurityProtocolType]::Tls13
+            [Net.SecurityProtocolType]::Tls -bor [Net.SecurityProtocolType]::Tls11 -bor `
+            [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
     } catch {
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
     }
 
-    # Bypass validation dei certificati self-signed (necessario per iLO/switch/firewall)
-    # Equivalente di -SkipCertificateCheck (disponibile solo su PS 7+)
+    # SSL Bypass (self-signed: iLO/switch/firewall)
     if (-not ("CertBypass" -as [type])) {
         Add-Type -TypeDefinition @"
 using System.Net.Security;
@@ -1674,23 +1697,110 @@ public static class CertBypass {
     }
     [CertBypass]::Enable()
 
-    $htmlContent = $null
-    $finalBaseUrl = $null
-    $lastError = $null
-
-    foreach ($scheme in $schemes) {
-        $targetUrl = "${scheme}://${deviceIp}:${port}${path}"
+    # WebSession con cookie jar
+    $webSession = New-Object Microsoft.PowerShell.Commands.WebRequestSession
+    $webSession.UserAgent = "86NocConnector/WebProxy-Ent"
+    if ($sessionCookies -and ($sessionCookies.PSObject.Properties.Count -gt 0 -or $sessionCookies.Keys.Count -gt 0)) {
         try {
-            Write-Log "[WEB-PROXY] TRY $targetUrl" "DEBUG"
-            # Invoke-WebRequest con timeout esplicito: 10s massimo per evitare blocco main loop
-            $wr = Invoke-WebRequest -Uri $targetUrl -UseBasicParsing -TimeoutSec 10 `
-                   -UserAgent "86NocConnector/WebProxy" -MaximumRedirection 5 -ErrorAction Stop
-            $htmlContent = $wr.Content
-            if ($wr.Headers.ContainsKey("Content-Type")) {
-                $contentType = $wr.Headers["Content-Type"]
+            $cookieProps = if ($sessionCookies.PSObject -and $sessionCookies.PSObject.Properties) {
+                $sessionCookies.PSObject.Properties
+            } else { $null }
+            if ($cookieProps) {
+                foreach ($p in $cookieProps) {
+                    $c = New-Object System.Net.Cookie($p.Name, [string]$p.Value, "/", $deviceIp)
+                    $webSession.Cookies.Add($c)
+                }
+            } elseif ($sessionCookies -is [hashtable]) {
+                foreach ($k in $sessionCookies.Keys) {
+                    $c = New-Object System.Net.Cookie($k, [string]$sessionCookies[$k], "/", $deviceIp)
+                    $webSession.Cookies.Add($c)
+                }
             }
-            $finalBaseUrl = "${scheme}://${deviceIp}:${port}"
+        } catch {
+            Write-Log "[WEB-PROXY] Impossibile caricare session cookies: $($_.Exception.Message)" "DEBUG"
+        }
+    }
+
+    # Headers custom
+    $ihHeaders = @{}
+    if ($reqHeaders) {
+        try {
+            $headerProps = if ($reqHeaders.PSObject -and $reqHeaders.PSObject.Properties) { $reqHeaders.PSObject.Properties } else { $null }
+            if ($headerProps) {
+                foreach ($h in $headerProps) {
+                    $ihHeaders[$h.Name] = [string]$h.Value
+                }
+            } elseif ($reqHeaders -is [hashtable]) {
+                foreach ($k in $reqHeaders.Keys) { $ihHeaders[$k] = [string]$reqHeaders[$k] }
+            }
+        } catch {}
+    }
+
+    # Body request decode
+    $ihBody = $null
+    if ($reqBody) {
+        if ($reqBodyEnc -eq "base64") {
+            try { $ihBody = [Convert]::FromBase64String($reqBody) } catch { $ihBody = $null }
+        } else {
+            $ihBody = $reqBody
+        }
+    }
+
+    $lastError = $null
+    $succeeded = $false
+
+    foreach ($sch in $schemes) {
+        $targetUrl = "${sch}://${deviceIp}:${port}${path}"
+        try {
+            Write-Log "[WEB-PROXY] TRY $method $targetUrl" "DEBUG"
+            $iwrParams = @{
+                Uri             = $targetUrl
+                Method          = $method
+                UseBasicParsing = $true
+                TimeoutSec      = 15
+                WebSession      = $webSession
+                ErrorAction     = "Stop"
+                MaximumRedirection = 5
+            }
+            if ($ihHeaders.Count -gt 0) { $iwrParams.Headers = $ihHeaders }
+            if ($ihBody -and ($method -in @("POST","PUT","PATCH"))) { $iwrParams.Body = $ihBody }
+
+            $wr = Invoke-WebRequest @iwrParams
+
+            # Status + Content-Type
             $statusCode = [int]$wr.StatusCode
+            if ($wr.Headers.ContainsKey("Content-Type")) {
+                $contentType = [string]$wr.Headers["Content-Type"]
+            }
+
+            # Response body come byte[] (binary-safe)
+            if ($wr.RawContentStream) {
+                $ms = New-Object System.IO.MemoryStream
+                $wr.RawContentStream.Position = 0
+                $wr.RawContentStream.CopyTo($ms)
+                $respBytes = $ms.ToArray()
+                $ms.Dispose()
+            } elseif ($wr.Content -is [byte[]]) {
+                $respBytes = $wr.Content
+            } else {
+                $respBytes = [System.Text.Encoding]::UTF8.GetBytes([string]$wr.Content)
+            }
+
+            # Response headers (filtrati, max 100)
+            $n = 0
+            foreach ($hk in $wr.Headers.Keys) {
+                if ($n++ -ge 100) { break }
+                $respHeaders[[string]$hk] = [string]$wr.Headers[$hk]
+            }
+
+            # Response cookies da WebSession
+            try {
+                foreach ($ckc in $webSession.Cookies.GetCookies($targetUrl)) {
+                    $respCookies[[string]$ckc.Name] = [string]$ckc.Value
+                }
+            } catch {}
+
+            $succeeded = $true
             break
         } catch {
             $lastError = $_.Exception.Message
@@ -1701,122 +1811,313 @@ public static class CertBypass {
 
     [CertBypass]::Disable()
 
-    if (-not $htmlContent) {
-        $error = "Dispositivo $deviceIp non raggiungibile sulla porta $port (HTTP/HTTPS). Dettaglio: $lastError"
+    if (-not $succeeded) {
+        $errorMsg = "Dispositivo $deviceIp non raggiungibile su porta $port ($method). Dettaglio: $lastError"
         $statusCode = 502
-        $responseBody = Build-WebProxyErrorPage $deviceIp $port $path $error
-        Send-WebProxyResponse $config $requestId $statusCode $contentType $responseBody $title $error
-        $elapsed = ([DateTime]::UtcNow - $tStart).TotalMilliseconds
-        Write-Log "[WEB-PROXY] OUT FAIL $deviceIp`:$port in $([math]::Round($elapsed))ms" "ERROR"
+        $errHtml = Build-WebProxyErrorPage $deviceIp $port $path $errorMsg
+        $respBytes = [System.Text.Encoding]::UTF8.GetBytes($errHtml)
+        Send-WebProxyResponse $config $requestId $statusCode $contentType $respBytes $title $errorMsg $respHeaders $respCookies $tStart
         return
     }
 
-    # Estrai title
-    if ($htmlContent -match '<title[^>]*>(.*?)</title>') {
-        $title = $Matches[1]
+    # Estrai title (solo se content HTML-ish)
+    if ($contentType -match "html|xml" -and $respBytes.Length -lt 2000000) {
+        try {
+            $textPreview = [System.Text.Encoding]::UTF8.GetString($respBytes, 0, [math]::Min(8192, $respBytes.Length))
+            if ($textPreview -match '<title[^>]*>(.*?)</title>') {
+                $title = $Matches[1].Trim()
+            }
+        } catch {}
     }
 
-    # Rewrite URL relativi a assoluti (usa il baseUrl finale, HTTPS o HTTP)
-    $baseUrl = $finalBaseUrl
-    $htmlContent = $htmlContent -replace '(src|href|action)="/', "`$1=`"__PROXY_BASE__/"
-    $htmlContent = $htmlContent -replace '(src|href|action)=''/', "`$1='__PROXY_BASE__/"
-
-    # Inline CSS (best-effort, skip su errore)
-    try {
-        $cssPattern = '<link[^>]*href="([^"]*\.css[^"]*)"[^>]*/?\s*>'
-        $cssMatches = [regex]::Matches($htmlContent, $cssPattern)
-        [CertBypass]::Enable()
-        foreach ($cssMatch in $cssMatches) {
-            $cssUrl = $cssMatch.Groups[1].Value
-            if ($cssUrl.StartsWith("__PROXY_BASE__")) {
-                $cssUrl = $cssUrl.Replace("__PROXY_BASE__", $baseUrl)
-            } elseif (-not $cssUrl.StartsWith("http")) {
-                $cssUrl = "$baseUrl/$cssUrl"
-            }
-            try {
-                $cssResp = Invoke-WebRequest -Uri $cssUrl -UseBasicParsing -TimeoutSec 3 -ErrorAction Stop
-                $styleTag = "<style>/* $($cssMatch.Groups[1].Value) */`n$($cssResp.Content)`n</style>"
-                $htmlContent = $htmlContent.Replace($cssMatch.Value, $styleTag)
-            } catch {}
-        }
-        [CertBypass]::Disable()
-    } catch {}
-
-    # Inline piccole immagini come base64 (max 300KB ciascuna, max 10 immagini totali)
-    try {
-        [CertBypass]::Enable()
-        $imgPattern = '<img[^>]*src="([^"]+)"[^>]*/?\s*>'
-        $imgMatches = [regex]::Matches($htmlContent, $imgPattern)
-        $imgCount = 0
-        foreach ($imgMatch in $imgMatches) {
-            if ($imgCount -ge 10) { break }
-            $imgUrl = $imgMatch.Groups[1].Value
-            if ($imgUrl.StartsWith("data:")) { continue }
-            if ($imgUrl.StartsWith("__PROXY_BASE__")) {
-                $imgUrl = $imgUrl.Replace("__PROXY_BASE__", $baseUrl)
-            } elseif (-not $imgUrl.StartsWith("http")) {
-                $imgUrl = "$baseUrl/$imgUrl"
-            }
-            try {
-                $imgResp = Invoke-WebRequest -Uri $imgUrl -UseBasicParsing -TimeoutSec 3 -ErrorAction Stop
-                $imgBytes = $imgResp.Content
-                if ($imgBytes -is [string]) { $imgBytes = [System.Text.Encoding]::UTF8.GetBytes($imgBytes) }
-                if ($imgBytes.Length -lt 300000) {
-                    $b64 = [Convert]::ToBase64String($imgBytes)
-                    $ext = [System.IO.Path]::GetExtension($imgUrl).TrimStart('.').Split('?')[0]
-                    if (-not $ext -or $ext -eq "") { $ext = "png" }
-                    $mimeMap = @{ "png"="image/png"; "jpg"="image/jpeg"; "jpeg"="image/jpeg"; "gif"="image/gif"; "svg"="image/svg+xml"; "ico"="image/x-icon"; "webp"="image/webp" }
-                    $mime = if ($mimeMap.ContainsKey($ext)) { $mimeMap[$ext] } else { "image/png" }
-                    $dataUri = "data:$mime;base64,$b64"
-                    $newImgTag = $imgMatch.Value.Replace($imgMatch.Groups[1].Value, $dataUri)
-                    $htmlContent = $htmlContent.Replace($imgMatch.Value, $newImgTag)
-                    $imgCount++
+    # === AUTO-FOLLOW JS REDIRECT (HP 5130, vecchi device HP/Aruba/Dell) ===
+    # Molti device fanno: <body onload="window.location='frame/login.html'">
+    # L'iframe con srcDoc ha origine null -> window.location fallisce -> pagina vuota.
+    # Soluzione: il connector segue il redirect lato server e restituisce direttamente
+    # il body della destinazione (max 3 hops per evitare loop).
+    if ($contentType -match "html" -and $respBytes.Length -gt 0 -and $respBytes.Length -lt 500000) {
+        try {
+            $maxHops = 3
+            $hopCount = 0
+            $htmlStr = [System.Text.Encoding]::UTF8.GetString($respBytes)
+            $baseUrlForRedir = "${scheme}://${deviceIp}:${port}"
+            if (-not $scheme) { $baseUrlForRedir = "$($schemes[0])://${deviceIp}:${port}" }
+            # Pattern JS redirect (ordinati per specificita')
+            $redirectRegex = @(
+                'window\.location\.(?:href|replace)\s*=\s*["'']([^"''<>]+?)["'']',
+                'window\.location\s*=\s*["'']([^"''<>]+?)["'']',
+                'document\.location\.(?:href|replace)\s*=\s*["'']([^"''<>]+?)["'']',
+                'document\.location\s*=\s*["'']([^"''<>]+?)["'']',
+                'location\.replace\s*\(\s*["'']([^"''<>]+?)["'']',
+                'location\.href\s*=\s*["'']([^"''<>]+?)["'']',
+                '<meta[^>]+http-equiv\s*=\s*["'']?refresh["'']?[^>]+content\s*=\s*["''][^"''<>]*url\s*=\s*([^"''<>]+?)["'']'
+            )
+            while ($hopCount -lt $maxHops) {
+                $foundRedirect = $null
+                foreach ($rx in $redirectRegex) {
+                    $matches2 = [regex]::Matches($htmlStr, $rx, "IgnoreCase")
+                    # Prendi l'ultimo match in ogni pattern (di solito HP 5130 ha ternary; ultimo = https branch)
+                    foreach ($m in $matches2) {
+                        $candidate = $m.Groups[1].Value.Trim()
+                        if ($candidate -and $candidate -notlike "*__ARGUS_PROXY__*" -and $candidate.Length -lt 2048) {
+                            $foundRedirect = $candidate
+                        }
+                    }
+                    if ($foundRedirect) { break }
                 }
-            } catch {}
+                if (-not $foundRedirect) { break }
+
+                # Risolvi URL relativo
+                $absoluteUrl = $foundRedirect
+                if ($absoluteUrl -like "http*://*") { }
+                elseif ($absoluteUrl.StartsWith("//")) { $absoluteUrl = "${scheme}:$absoluteUrl" }
+                elseif ($absoluteUrl.StartsWith("/")) { $absoluteUrl = "$baseUrlForRedir$absoluteUrl" }
+                else { $absoluteUrl = "$baseUrlForRedir/$absoluteUrl" }
+
+                Write-Log "[WEB-PROXY] AUTO-FOLLOW JS redirect hop $($hopCount+1): $foundRedirect -> $absoluteUrl" "INFO"
+
+                [CertBypass]::Enable()
+                try {
+                    $redirResp = Invoke-WebRequest -Uri $absoluteUrl -UseBasicParsing -TimeoutSec 10 `
+                                 -WebSession $webSession -MaximumRedirection 5 -ErrorAction Stop
+                    # Nuovo status / content-type
+                    $statusCode = [int]$redirResp.StatusCode
+                    if ($redirResp.Headers.ContainsKey("Content-Type")) {
+                        $contentType = [string]$redirResp.Headers["Content-Type"]
+                    }
+                    # Body
+                    if ($redirResp.RawContentStream) {
+                        $ms2 = New-Object System.IO.MemoryStream
+                        $redirResp.RawContentStream.Position = 0
+                        $redirResp.RawContentStream.CopyTo($ms2)
+                        $respBytes = $ms2.ToArray()
+                        $ms2.Dispose()
+                    } elseif ($redirResp.Content -is [byte[]]) {
+                        $respBytes = $redirResp.Content
+                    } else {
+                        $respBytes = [System.Text.Encoding]::UTF8.GetBytes([string]$redirResp.Content)
+                    }
+                    # Aggiorna cookies della WebSession
+                    try {
+                        foreach ($ckc in $webSession.Cookies.GetCookies($absoluteUrl)) {
+                            $respCookies[[string]$ckc.Name] = [string]$ckc.Value
+                        }
+                    } catch {}
+                    # Aggiorna title dal nuovo body
+                    if ($respBytes.Length -lt 2000000) {
+                        try {
+                            $titleStr = [System.Text.Encoding]::UTF8.GetString($respBytes, 0, [math]::Min(8192, $respBytes.Length))
+                            if ($titleStr -match '<title[^>]*>(.*?)</title>') {
+                                $title = $Matches[1].Trim()
+                            }
+                        } catch {}
+                    }
+                    # Aggiorna baseUrl per prossimo hop (se redirect a path assoluto su stesso host)
+                    if ($absoluteUrl -match '^(https?://[^/]+)') { $baseUrlForRedir = $Matches[1] }
+                    # Non-HTML? stop seguendo
+                    if ($contentType -notmatch "html") {
+                        Write-Log "[WEB-PROXY] Redirect finale non-HTML ($contentType), stop follow" "DEBUG"
+                        break
+                    }
+                    # Nuovo HTML per check successivo hop
+                    $htmlStr = [System.Text.Encoding]::UTF8.GetString($respBytes)
+                    $hopCount++
+                } catch {
+                    Write-Log "[WEB-PROXY] Follow redirect fallito: $($_.Exception.Message)" "WARN"
+                    break
+                } finally {
+                    [CertBypass]::Disable()
+                }
+            }
+        } catch {
+            Write-Log "[WEB-PROXY] Errore auto-follow: $($_.Exception.Message)" "DEBUG"
         }
-        [CertBypass]::Disable()
-    } catch {}
+    }
 
-    # Sostituisci proxy base markers
-    $htmlContent = $htmlContent.Replace("__PROXY_BASE__", $baseUrl)
+    # INJECT <base> TAG per asset proxy automatico (CSS/JS/img/XHR)
+    # Il backend risolvera' i path relativi tramite /api/connector/web-proxy/asset/*
+    if ($contentType -match "html" -and $respBytes.Length -gt 0 -and $respBytes.Length -lt 5000000) {
+        try {
+            $htmlStr = [System.Text.Encoding]::UTF8.GetString($respBytes)
+            $baseUrlForInline = "${scheme}://${deviceIp}:${port}"
+            if (-not $scheme) { $baseUrlForInline = "$($schemes[0])://${deviceIp}:${port}" }
 
-    # Inject interceptor per proxy-navigate
-    $interceptScript = @"
+            # --- INLINE CSS (scarica e incorpora <link rel="stylesheet"> come <style>) ---
+            [CertBypass]::Enable()
+            try {
+                $cssPattern = '<link[^>]*\srel\s*=\s*["'']?stylesheet["'']?[^>]*>'
+                $cssMatches = [regex]::Matches($htmlStr, $cssPattern, "IgnoreCase")
+                $cssCount = 0
+                foreach ($cssMatch in $cssMatches) {
+                    if ($cssCount -ge 20) { break }
+                    $linkTag = $cssMatch.Value
+                    if ($linkTag -match 'href\s*=\s*["'']([^"'']+)["'']') {
+                        $cssUrl = $Matches[1]
+                        if ($cssUrl.StartsWith("data:")) { continue }
+                        # Risolvi URL
+                        if ($cssUrl -like "http*://*") { }
+                        elseif ($cssUrl.StartsWith("//")) { $cssUrl = "${scheme}:$cssUrl" }
+                        elseif ($cssUrl.StartsWith("/")) { $cssUrl = "$baseUrlForInline$cssUrl" }
+                        else { $cssUrl = "$baseUrlForInline/$cssUrl" }
+                        try {
+                            $cssResp = Invoke-WebRequest -Uri $cssUrl -UseBasicParsing -TimeoutSec 5 `
+                                        -WebSession $webSession -ErrorAction Stop
+                            $cssText = if ($cssResp.Content -is [byte[]]) {
+                                [System.Text.Encoding]::UTF8.GetString($cssResp.Content)
+                            } else { [string]$cssResp.Content }
+                            $styleTag = "<style>/* inlined from $($Matches[1]) */`n$cssText`n</style>"
+                            $htmlStr = $htmlStr.Replace($linkTag, $styleTag)
+                            $cssCount++
+                        } catch {
+                            # CSS non raggiungibile -> skip, il link tag resta (innocuo)
+                        }
+                    }
+                }
+            } catch {
+                Write-Log "[WEB-PROXY] CSS inline error: $($_.Exception.Message)" "DEBUG"
+            }
+
+            # --- INLINE IMG (converti <img src="..."> in data URI per immagini < 500KB) ---
+            try {
+                $imgPattern = '<img[^>]*\ssrc\s*=\s*["'']([^"'']+)["''][^>]*/?\s*>'
+                $imgMatches = [regex]::Matches($htmlStr, $imgPattern, "IgnoreCase")
+                $imgCount = 0
+                $mimeMap = @{
+                    "png"="image/png"; "jpg"="image/jpeg"; "jpeg"="image/jpeg";
+                    "gif"="image/gif"; "svg"="image/svg+xml"; "ico"="image/x-icon";
+                    "webp"="image/webp"; "bmp"="image/bmp"
+                }
+                foreach ($imgMatch in $imgMatches) {
+                    if ($imgCount -ge 30) { break }
+                    $imgUrl = $imgMatch.Groups[1].Value
+                    if ($imgUrl.StartsWith("data:")) { continue }
+                    $origImgUrl = $imgUrl
+                    # Risolvi URL
+                    if ($imgUrl -like "http*://*") { }
+                    elseif ($imgUrl.StartsWith("//")) { $imgUrl = "${scheme}:$imgUrl" }
+                    elseif ($imgUrl.StartsWith("/")) { $imgUrl = "$baseUrlForInline$imgUrl" }
+                    else { $imgUrl = "$baseUrlForInline/$imgUrl" }
+                    try {
+                        $imgResp = Invoke-WebRequest -Uri $imgUrl -UseBasicParsing -TimeoutSec 4 `
+                                    -WebSession $webSession -ErrorAction Stop
+                        $imgBytes = if ($imgResp.Content -is [byte[]]) { $imgResp.Content } `
+                                    else { [System.Text.Encoding]::UTF8.GetBytes([string]$imgResp.Content) }
+                        if ($imgBytes.Length -gt 500000) { continue }
+                        $ext = [System.IO.Path]::GetExtension($imgUrl).TrimStart('.').Split('?')[0].ToLower()
+                        $mime = if ($mimeMap.ContainsKey($ext)) { $mimeMap[$ext] } else { "image/png" }
+                        $b64img = [Convert]::ToBase64String($imgBytes)
+                        $dataUri = "data:${mime};base64,$b64img"
+                        # Sostituisci in modo preciso
+                        $newTag = $imgMatch.Value.Replace($origImgUrl, $dataUri)
+                        $htmlStr = $htmlStr.Replace($imgMatch.Value, $newTag)
+                        $imgCount++
+                    } catch { }
+                }
+            } catch {
+                Write-Log "[WEB-PROXY] IMG inline error: $($_.Exception.Message)" "DEBUG"
+            }
+
+            # --- INLINE JS (scarica e incorpora <script src="..."> come inline) ---
+            try {
+                $jsPattern = '<script[^>]*\ssrc\s*=\s*["'']([^"'']+)["''][^>]*>\s*</script>'
+                $jsMatches = [regex]::Matches($htmlStr, $jsPattern, "IgnoreCase")
+                $jsCount = 0
+                foreach ($jsMatch in $jsMatches) {
+                    if ($jsCount -ge 15) { break }
+                    $jsUrl = $jsMatch.Groups[1].Value
+                    if ($jsUrl.StartsWith("data:")) { continue }
+                    if ($jsUrl -like "http*://*") { }
+                    elseif ($jsUrl.StartsWith("//")) { $jsUrl = "${scheme}:$jsUrl" }
+                    elseif ($jsUrl.StartsWith("/")) { $jsUrl = "$baseUrlForInline$jsUrl" }
+                    else { $jsUrl = "$baseUrlForInline/$jsUrl" }
+                    try {
+                        $jsResp = Invoke-WebRequest -Uri $jsUrl -UseBasicParsing -TimeoutSec 5 `
+                                    -WebSession $webSession -ErrorAction Stop
+                        $jsText = if ($jsResp.Content -is [byte[]]) {
+                            [System.Text.Encoding]::UTF8.GetString($jsResp.Content)
+                        } else { [string]$jsResp.Content }
+                        # Limite 2MB per singolo JS
+                        if ($jsText.Length -gt 2000000) { continue }
+                        $inlineScript = "<script>/* inlined from $($jsMatch.Groups[1].Value) */`n$jsText`n</script>"
+                        $htmlStr = $htmlStr.Replace($jsMatch.Value, $inlineScript)
+                        $jsCount++
+                    } catch { }
+                }
+            } catch {
+                Write-Log "[WEB-PROXY] JS inline error: $($_.Exception.Message)" "DEBUG"
+            }
+            [CertBypass]::Disable()
+
+            # --- Rewrite link/form/iframe con marker ARGUS per intercettazione frontend ---
+            $htmlStr = [regex]::Replace($htmlStr, '(<a\b[^>]*\shref\s*=\s*)["'']/', "`$1`"__ARGUS_PROXY__/", "IgnoreCase")
+            $htmlStr = [regex]::Replace($htmlStr, '(<form\b[^>]*\saction\s*=\s*)["'']/', "`$1`"__ARGUS_PROXY__/", "IgnoreCase")
+            $htmlStr = [regex]::Replace($htmlStr, '(<(?:iframe|frame)\b[^>]*\ssrc\s*=\s*)["'']/', "`$1`"__ARGUS_PROXY__/", "IgnoreCase")
+
+            # --- Interceptor JS per click/submit/location -> postMessage al parent ---
+            $interceptScript = @"
 <script>
 (function(){
-  document.addEventListener('click', function(e) {
-    var link = e.target.closest('a');
-    if (link && link.href) {
-      var href = link.getAttribute('href');
-      if (href && !href.startsWith('javascript:') && !href.startsWith('#') && !href.startsWith('data:')) {
-        e.preventDefault();
-        window.parent.postMessage({type:'proxy-navigate', path: href, baseUrl: '$baseUrl'}, '*');
-      }
-    }
-  }, true);
-  document.addEventListener('submit', function(e) {
+  // 1. Click intercept
+  document.addEventListener('click', function(e){
+    var a = e.target.closest('a');
+    if (!a || !a.getAttribute) return;
+    var href = a.getAttribute('href');
+    if (!href || href.startsWith('javascript:') || href.startsWith('#') || href.startsWith('mailto:') || href.startsWith('data:')) return;
     e.preventDefault();
-    var form = e.target;
-    var action = form.getAttribute('action') || window.location.pathname;
-    var formData = new FormData(form);
-    var params = new URLSearchParams(formData).toString();
-    window.parent.postMessage({type:'proxy-navigate', path: action + '?' + params, baseUrl: '$baseUrl'}, '*');
+    window.parent.postMessage({type:'argus-proxy-navigate', path: href, method:'GET'}, '*');
   }, true);
+  // 2. Form submit intercept
+  document.addEventListener('submit', function(e){
+    var f = e.target;
+    if (!f || f.tagName !== 'FORM') return;
+    var action = f.getAttribute('action') || window.location.pathname || '/';
+    var method = (f.getAttribute('method') || 'GET').toUpperCase();
+    var fd = new FormData(f);
+    var params = '';
+    try { params = new URLSearchParams(fd).toString(); } catch(e) {}
+    e.preventDefault();
+    window.parent.postMessage({type:'argus-proxy-navigate', path: action, method: method, body: params, contentType:'application/x-www-form-urlencoded'}, '*');
+  }, true);
+  // 3. window.location assignment hook (safety net per device che fanno redirect JS)
+  try {
+    var origAssign = window.location.assign ? window.location.assign.bind(window.location) : null;
+    var origReplace = window.location.replace ? window.location.replace.bind(window.location) : null;
+    window.location.assign = function(url) {
+      window.parent.postMessage({type:'argus-proxy-navigate', path: String(url), method:'GET'}, '*');
+    };
+    window.location.replace = function(url) {
+      window.parent.postMessage({type:'argus-proxy-navigate', path: String(url), method:'GET'}, '*');
+    };
+    // Proxy per intercettare setter (window.location = "...")
+    var origLocation = window.location;
+    try {
+      Object.defineProperty(window, 'location', {
+        configurable: true,
+        get: function() { return origLocation; },
+        set: function(v) {
+          window.parent.postMessage({type:'argus-proxy-navigate', path: String(v), method:'GET'}, '*');
+        }
+      });
+    } catch(e) {}
+  } catch(e) {}
 })();
 </script>
 "@
-    if ($htmlContent -match '</body>') {
-        $htmlContent = $htmlContent.Replace('</body>', "$interceptScript</body>")
-    } else {
-        $htmlContent += $interceptScript
+            if ($htmlStr -match '</body>') {
+                $htmlStr = $htmlStr -replace '</body>', "$interceptScript</body>"
+            } else {
+                $htmlStr = $htmlStr + $interceptScript
+            }
+
+            $respBytes = [System.Text.Encoding]::UTF8.GetBytes($htmlStr)
+        } catch {
+            Write-Log "[WEB-PROXY] HTML processing skip: $($_.Exception.Message)" "DEBUG"
+        }
     }
 
-    $responseBody = $htmlContent
-    $elapsed = ([DateTime]::UtcNow - $tStart).TotalMilliseconds
-    Write-Log "[WEB-PROXY] OUT OK  $deviceIp`:$port in $([math]::Round($elapsed))ms ($($responseBody.Length) chars) title='$title'"
-
-    Send-WebProxyResponse $config $requestId $statusCode $contentType $responseBody $title $error
+    Send-WebProxyResponse $config $requestId $statusCode $contentType $respBytes $title $errorMsg $respHeaders $respCookies $tStart
 }
+
 
 function Build-WebProxyErrorPage($deviceIp, $port, $path, $errorMsg) {
     $safeErr = $errorMsg -replace '<', '&lt;' -replace '>', '&gt;'
@@ -1839,23 +2140,35 @@ h1 { color:#ff6b6b; margin:0 0 8px 0; font-size:18px; }
 "@
 }
 
-function Send-WebProxyResponse($config, $requestId, $statusCode, $contentType, $responseBody, $title, $errorMsg) {
+
+function Send-WebProxyResponse($config, $requestId, $statusCode, $contentType, [byte[]]$respBytes, $title, $errorMsg, $respHeaders, $respCookies, $tStart) {
+    # Envio SEMPRE body in base64 -> binary-safe, gestisce NUL byte, caratteri di controllo
+    $bodyB64 = if ($respBytes -and $respBytes.Length -gt 0) { [Convert]::ToBase64String($respBytes) } else { "" }
+    $sizeBytes = if ($respBytes) { $respBytes.Length } else { 0 }
+    $elapsed = [int](([DateTime]::UtcNow - $tStart).TotalMilliseconds)
+
     $payload = @{
-        request_id = $requestId
-        status_code = $statusCode
-        content_type = $contentType
-        body = $responseBody
-        title = $title
-        error = $errorMsg
+        request_id       = $requestId
+        status_code      = $statusCode
+        content_type     = $contentType
+        body_b64         = $bodyB64
+        body_encoding    = "base64"
+        title            = $title
+        error            = $errorMsg
+        duration_ms      = $elapsed
+        response_headers = if ($respHeaders) { $respHeaders } else { @{} }
+        response_cookies = if ($respCookies) { $respCookies } else { @{} }
     }
     $headers = @{
         "X-API-Key"    = $config.api_key
         "Content-Type" = "application/json"
     }
     try {
-        $jsonPayload = $payload | ConvertTo-Json -Depth 5 -Compress
+        $jsonPayload = $payload | ConvertTo-Json -Depth 10 -Compress
         $url = "$($config.noc_center_url)/api/connector/web-proxy/response"
-        Invoke-RestMethod -Uri $url -Method Post -Headers $headers -Body $jsonPayload -TimeoutSec 30 -ErrorAction Stop | Out-Null
+        Invoke-RestMethod -Uri $url -Method Post -Headers $headers -Body $jsonPayload -TimeoutSec 45 -ErrorAction Stop | Out-Null
+        $status = if ($statusCode -ge 400) { "FAIL" } else { "OK " }
+        Write-Log "[WEB-PROXY] OUT $status $($payload.status_code) size=$sizeBytes in ${elapsed}ms title='$title'"
     } catch {
         Write-Log "[WEB-PROXY] Errore invio risposta: $($_.Exception.Message)" "ERROR"
     }

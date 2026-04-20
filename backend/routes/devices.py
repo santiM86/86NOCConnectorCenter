@@ -121,7 +121,42 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
                 "snmp_version": md.get("snmp_version", ""),
                 "http_port": md.get("http_port"),
                 "ping_ms": pd.get("ping_ms"),
+                # Web Console (auto-detected dal Connector tray)
+                "web_console_url": md.get("web_console_url"),
+                "web_console_port": md.get("web_console_port"),
+                "web_console_scheme": md.get("web_console_scheme"),
+                "web_console_title": md.get("web_console_title"),
             })
+
+    # 3rd pass: managed_devices orfani (aggiunti manualmente via UI o dal tray
+    # Apri Web UI, ma non ancora pollati dal connector) - altrimenti sparirebbero
+    # dalla UI del cliente finche' il connector non li vede.
+    for md in managed_devices_raw:
+        md_ip = md.get("ip") or md.get("ip_address", "")
+        if not md_ip or md_ip in manual_ips:
+            continue
+        manual_ips.add(md_ip)
+        devices.append({
+            "id": md.get("id") or f"md_{md_ip.replace('.','_')}",
+            "client_id": md.get("client_id", ""),
+            "name": md.get("name", md_ip),
+            "device_type": md.get("device_type", "server"),
+            "ip_address": md_ip,
+            "hostname": md.get("hostname", ""),
+            "location": md.get("location", ""),
+            "status": "pending",  # non ancora pollato
+            "redfish_enabled": False,
+            "source": "managed",
+            "last_poll": md.get("web_console_last_tested"),
+            "monitor_type": md.get("monitor_type", ""),
+            "snmp_community": md.get("community", ""),
+            "snmp_version": md.get("snmp_version", ""),
+            "http_port": md.get("http_port"),
+            "web_console_url": md.get("web_console_url"),
+            "web_console_port": md.get("web_console_port"),
+            "web_console_scheme": md.get("web_console_scheme"),
+            "web_console_title": md.get("web_console_title"),
+        })
 
     client_ids = list(set(d["client_id"] for d in devices if d.get("client_id")))
     clients = await db.clients.find({"id": {"$in": client_ids}}, {"_id": 0}).to_list(1000)
@@ -148,6 +183,11 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
                 "monitor_type": d.get("monitor_type", ""), "snmp_community": d.get("snmp_community", ""),
                 "snmp_version": d.get("snmp_version", ""), "http_port": d.get("http_port"),
                 "ping_ms": d.get("ping_ms"), "last_poll": d.get("last_poll"),
+                # Web Console (auto-detected dal Connector tray)
+                "web_console_url": d.get("web_console_url"),
+                "web_console_port": d.get("web_console_port"),
+                "web_console_scheme": d.get("web_console_scheme"),
+                "web_console_title": d.get("web_console_title"),
             })
     return result
 

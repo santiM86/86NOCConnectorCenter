@@ -203,6 +203,7 @@ from routes.ingestion import router as ingestion_router
 from routes.connector import router as connector_router
 from routes.discovery import router as discovery_router
 from routes.web_proxy import router as web_proxy_router
+from routes.web_console_live import router as web_console_live_router
 from routes.topology import router as topology_router
 from routes.metrics import router as metrics_router
 from routes.reports import router as reports_router
@@ -239,6 +240,7 @@ app.include_router(ingestion_router)
 app.include_router(connector_router)
 app.include_router(discovery_router)
 app.include_router(web_proxy_router)
+app.include_router(web_console_live_router)
 app.include_router(topology_router)
 app.include_router(metrics_router)
 app.include_router(reports_router)
@@ -379,6 +381,16 @@ async def startup_event():
         # web_proxy_requests: long-poll query + lookup by request_id
         await db.web_proxy_requests.create_index([("client_id", 1), ("status", 1)])
         await db.web_proxy_requests.create_index("request_id")
+        # Web Console Enterprise B: metrics + session cookie jar
+        await db.web_proxy_metrics.create_index([("client_id", 1), ("timestamp", -1)])
+        await db.web_proxy_metrics.create_index("timestamp", expireAfterSeconds=86400 * 30)  # TTL 30gg
+        await db.web_proxy_sessions.create_index(
+            [("session_id", 1), ("client_id", 1), ("device_ip", 1)], unique=True
+        )
+        await db.web_proxy_sessions.create_index("created_at", expireAfterSeconds=3600 * 8)  # TTL 8h
+        # Web Console LIVE token (capability) — TTL 8h
+        await db.web_console_tokens.create_index("session_id", unique=True)
+        await db.web_console_tokens.create_index("expires_at", expireAfterSeconds=0)
         # alerts: escalation scan (active + severity + ack + time)
         await db.alerts.create_index(
             [("status", 1), ("severity", 1), ("escalated", 1), ("created_at", 1)]

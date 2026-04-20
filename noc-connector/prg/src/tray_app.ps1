@@ -349,8 +349,8 @@ function Show-DeviceManager {
                 $item = New-Object System.Windows.Forms.ListViewItem($dev.ip)
                 $null = $item.SubItems.Add($dev.community)
                 $null = $item.SubItems.Add($dev.name)
-                $webCell = if ($dev.web_console_url) { [char]0x2713 + " " + $dev.web_console_url } else { [char]0x2014 }
-                $null = $item.SubItems.Add($webCell)
+                $webCell = if ($dev.web_console_url) { [string]([char]0x2713) + " " + [string]$dev.web_console_url } else { [string]([char]0x2014) }
+                $null = $item.SubItems.Add([string]$webCell)
                 $listView.Items.Add($item)
             }
         }
@@ -464,7 +464,7 @@ function Show-DeviceManager {
         $item = New-Object System.Windows.Forms.ListViewItem($ip)
         $null = $item.SubItems.Add($comm)
         $null = $item.SubItems.Add($devName)
-        $null = $item.SubItems.Add([char]0x2014)
+        $null = $item.SubItems.Add([string]([char]0x2014))
         $listView.Items.Add($item)
         $txtIP.Text = ""
         $txtName.Text = ""
@@ -514,7 +514,7 @@ function Show-DeviceManager {
                 $item = New-Object System.Windows.Forms.ListViewItem($ip)
                 $null = $item.SubItems.Add($comm)
                 $null = $item.SubItems.Add($devName)
-                $null = $item.SubItems.Add([char]0x2014)
+                $null = $item.SubItems.Add([string]([char]0x2014))
                 $listView.Items.Add($item)
                 $imported++
             }
@@ -742,7 +742,7 @@ public static class CertBypassTray {
         $btnWebUI.Text = "Apri Web UI"
 
         if (-not $det) {
-            $item.SubItems[3].Text = [char]0x2715 + " non raggiungibile"
+            $item.SubItems[3].Text = [string]([char]0x2715) + " non raggiungibile"
             [System.Windows.Forms.MessageBox]::Show(
                 "Nessuna Web UI raggiungibile su $ip.`n`nPorte provate: 443, 80, 8443, 8080, 4443, 10000, 8000, 8888.`nVerifica firewall / service web del device.",
                 $AppName, "OK", "Warning") | Out-Null
@@ -755,7 +755,7 @@ public static class CertBypassTray {
         }
 
         # Aggiorna colonna Web UI
-        $item.SubItems[3].Text = [char]0x2713 + " " + $det.url
+        $item.SubItems[3].Text = [string]([char]0x2713) + " " + [string]$det.url
         $item.Tag = $det
 
         # Invia ad ARGUS Center
@@ -791,13 +791,13 @@ public static class CertBypassTray {
             $det = Test-DeviceWebUI $ip
             if ($det) {
                 $okCount++
-                $item.SubItems[3].Text = [char]0x2713 + " " + $det.url
+                $item.SubItems[3].Text = [string]([char]0x2713) + " " + [string]$det.url
                 $item.Tag = $det
                 if (Send-WebUIToArgus $ip $comm $name $det) { $pushed++ }
                 $summary += "OK  $ip -> $($det.url)`r`n"
             } else {
                 $koCount++
-                $item.SubItems[3].Text = [char]0x2715 + " non raggiungibile"
+                $item.SubItems[3].Text = [string]([char]0x2715) + " non raggiungibile"
                 $summary += "--  $ip (nessuna web UI)`r`n"
             }
         }

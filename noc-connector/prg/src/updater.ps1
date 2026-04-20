@@ -35,19 +35,6 @@ Write-UpdateLog "=== INIZIO AGGIORNAMENTO ==="
 Write-UpdateLog "ExtractPath: $ExtractPath"
 Write-UpdateLog "InstallDir: $InstallDir"
 Write-UpdateLog "PID updater: $PID"
-Send-Progress 48 "stopping" "Updater avviato, arresto servizio..."
-
-# Self-cleanup: rimuovi il task schtasks che ci ha lanciato (se presente)
-try {
-    $tasks = & schtasks.exe /Query /FO CSV /NH 2>$null | Where-Object { $_ -match "86NocConnector_Updater_" }
-    foreach ($taskLine in $tasks) {
-        $taskName = ($taskLine -split ",")[0].Trim('"')
-        if ($taskName) {
-            & schtasks.exe /Delete /TN $taskName /F 2>$null | Out-Null
-            Write-UpdateLog "Task di lancio rimosso: $taskName"
-        }
-    }
-} catch {}
 Send-Progress 50 "stopping" "Arresto servizio Windows..."
 
 # ===== STEP 1a: Stop Windows Service (se presente) =====
