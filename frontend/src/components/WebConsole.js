@@ -270,10 +270,22 @@ export function canOpenWebConsole(device) {
 
 /**
  * Porta web di default per tipo di dispositivo.
+ * Priority: web_console_port (rilevato dal tray) > http_port (manuale) > device_type default
  */
 export function defaultWebPort(device) {
+  if (device?.web_console_port) return device.web_console_port;
   if (device?.http_port) return device.http_port;
   const type = (device?.device_type || "").toLowerCase();
-  if (["ilo", "firewall"].includes(type)) return 443;
+  // HTTPS default: iLO, firewall, switch (HP/Aruba/Cisco/Zyxel usano 443), access-point, UPS moderni
+  if (["ilo", "firewall", "switch", "router", "access-point", "ups"].includes(type)) return 443;
   return 80;
+}
+
+/**
+ * Schema web di default (http / https)
+ */
+export function defaultWebScheme(device) {
+  if (device?.web_console_scheme) return device.web_console_scheme;
+  const port = defaultWebPort(device);
+  return [443, 8443, 4443].includes(port) ? "https" : "http";
 }
