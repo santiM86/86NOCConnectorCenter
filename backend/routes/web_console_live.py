@@ -177,7 +177,6 @@ def _rewrite_absolute_urls(text: str, session_id: str, device_ip: str) -> str:
     """Riscrive URL assoluti verso il device (https://10.x.x.x:port/...) nel body
     trasformandoli in path LIVE proxati. Supporta anche port diverse (iLO 443→5001)."""
     # Pattern: http[s]://{device_ip}(:port)?/path
-    # Cattura la porta se presente (altrimenti default 80 per http, 443 per https)
     ip_esc = re.escape(device_ip)
     pattern = re.compile(
         rf"\bhttps?://{ip_esc}(?::(\d+))?(/[^\s\"'<>)]*)?",
@@ -187,7 +186,6 @@ def _rewrite_absolute_urls(text: str, session_id: str, device_ip: str) -> str:
     def _sub(m: re.Match) -> str:
         port_part = m.group(1)
         path_part = m.group(2) or "/"
-        # Se URL senza port esplicita: http→80, https→443
         if not port_part:
             scheme_match = m.group(0).lower()
             port_part = "443" if scheme_match.startswith("https") else "80"
@@ -196,7 +194,34 @@ def _rewrite_absolute_urls(text: str, session_id: str, device_ip: str) -> str:
     return pattern.sub(_sub, text)
 
 
-def _inject_html_support(body: bytes, base_href: str, session_id: str, device_ip: str) -> bytes:
+def _rewrite_root_paths(html: str, session_id: str, device_ip: str, port: int) -> str:
+    """Riscrive path assoluti root (che iniziano con /) negli attributi href/src/action
+    di HTML. Necessario perche' <base href> NON risolve path assoluti root — il browser
+    li risolve contro l'origine corrente (argus.86bit.it) invece che contro il device.
+
+    Trasforma:
+        href="/css/app.css"  ->  href="/api/web-proxy/live/{sid}/{ip}/{port}/css/app.css"
+        src='/img/logo.png'  ->  src='/api/web-proxy/live/{sid}/{ip}/{port}/img/logo.png'
+        action="/login"      ->  action="/api/web-proxy/live/{sid}/{ip}/{port}/login"
+
+    NON tocca: path gia' proxati, path relativi, URL assoluti http(s)://, //cdn, #, javascript:, mailto:, data:.
+    """
+    prefix = f"/api/web-proxy/live/{session_id}/{device_ip}/{port}"
+    # attributi: href, src, action, data-src, data-href, formaction, poster, srcset (solo single url — srcset complesso skip)
+    # Match: (attr=")(path)("/')  dove path inizia con / ma NON // NON /api/web-proxy/live
+    attrs = r"(?:href|src|action|formaction|poster|data-src|data-href|xlink:href)"
+    pattern = re.compile(
+        rf"""(\s{attrs}\s*=\s*)(["'])(/(?!/|api/web-proxy/live/)[^"']*?)\2""",
+        re.IGNORECASE,
+    )
+
+    def _sub(m: re.Match) -> str:
+        return f"{m.group(1)}{m.group(2)}{prefix}{m.group(3)}{m.group(2)}"
+
+    return pattern.sub(_sub, html)
+
+
+def _inject_html_support(body: bytes, base_href: str, session_id: str, device_ip: str, port: int) -> bytes:
     """Sanifica HTML per architettura LIVE:
     - Rimuove il `__ARGUS_PROXY__` marker iniettato dal connector (srcDoc-era)
     - Rimuove il Click/Submit/Location interceptor del connector (sovrascrive window.location)
@@ -220,8 +245,12 @@ def _inject_html_support(body: bytes, base_href: str, session_id: str, device_ip
         flags=re.IGNORECASE | re.DOTALL,
     )
 
-    # 3. URL rewriting: https://{device_ip}(:port)?/... → /api/web-proxy/live/{sid}/{ip}/{port}/...
+    # 3. URL rewriting full: https://{device_ip}(:port)?/... → path LIVE proxato
     html = _rewrite_absolute_urls(html, session_id, device_ip)
+
+    # 3b. Root-path rewriting: href="/css/..." → href="/api/web-proxy/live/.../css/..."
+    # (necessario perche' <base> NON risolve path assoluti root nel browser)
+    html = _rewrite_root_paths(html, session_id, device_ip, port)
 
     # 4. Rimuovi <base> originali del device (conflitto con il nostro)
     html = re.sub(r"<base\b[^>]*>", "", html, flags=re.IGNORECASE)
@@ -419,7 +448,7 @@ async def live_proxy(
     ct_lower = (content_type or "").lower()
     if ct_lower and ("text/html" in ct_lower or "xhtml" in ct_lower):
         base_href = _build_base_href(session_id, device_ip, port)
-        body = _inject_html_support(body, base_href, session_id, device_ip)
+        body = _inject_html_support(body, base_href, session_id, device_ip, port)
     elif ct_lower and ("javascript" in ct_lower or "text/css" in ct_lower or "application/json" in ct_lower):
         # Riscrivi anche dentro JS/CSS/JSON per catturare XHR endpoint assoluti
         try:

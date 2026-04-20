@@ -132,6 +132,15 @@ Refactor completo. Elimina la causa radice del bug iframe nero (srcDoc → origi
 
 **Vantaggi**: nessun aggiornamento Connector richiesto — il fix è tutto lato backend, retrocompatibile con Connector v3.2.1 già in field.
 
+### Web Console LIVE v3.1 — ROOT PATH REWRITING (2026-04-20 sera+)
+**Secondo DBG JSON** (device iLO 10.100.61.35:443, body_size=13137): iLO HPE risponde con HTML valido di 13KB, content_type `text/html`, MA `x_frame_options: "sameorigin"` e path assoluti root (`href="/favicon.ico"`, `href=css/jquery-ui.css`, ecc.).
+
+**Gap trovato**: il tag `<base href>` NON risolve path che iniziano con `/` (regola HTML: absolute-root paths ignorano `<base>`, vengono risolti contro l'origine corrente argus.86bit.it). Quindi `/css/jquery-ui.css` tentava di caricarsi da `argus.86bit.it/css/jquery-ui.css` → 404.
+
+**Fix**: nuova funzione `_rewrite_root_paths(html, sid, ip, port)` che nel body HTML cerca attributi `href`, `src`, `action`, `formaction`, `poster`, `data-src`, `data-href`, `xlink:href` con valore che inizia con `/` (non `//`, non già proxato) e li prefixa con `/api/web-proxy/live/{sid}/{ip}/{port}`. Preserva URL assoluti (`http://`, `//cdn…`), fragment (`#`), path relativi, path già proxati.
+
+**Unit test in-place**: CSS/JS/img/link/form con path root tutti correttamente riscritti, URL esterni e fragment intatti.
+
 
 **Dopo deploy Prod 2.1.458**: iframe appariva vuoto con icona "file rotto" = browser riceve Content-Type non renderizzabile.
 
