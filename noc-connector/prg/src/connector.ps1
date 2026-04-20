@@ -1224,19 +1224,15 @@ function Install-Update($config, $updateInfo) {
         Write-Log "File estratti in: $tempExtract" "INFO"
         Send-UpdateProgress $config 45 "extracting" "File estratti. Avvio updater..."
         
-        # Launch updater as independent process via Start-Process + argument array.
-        # Usiamo argument array (non stringa) per evitare bug di quoting con path contenenti
-        # spazi (es. "C:\Program Files\86NocConnector\..."). L'updater sopravvive anche al
-        # kill del connector da parte di NSSM perche' Start-Process stacca il figlio dal
-        # process tree del parent se non usiamo -Wait.
+        # Launch updater via BAT temporaneo -> cmd.exe -> powershell.
+        # Il passaggio per cmd.exe stacca completamente dal process tree di NSSM/connector.
+        # Anche se NSSM killa l'albero processi del connector quando Stop-Service,
+        # il BAT lanciato via cmd.exe vive autonomamente (diverso PPID).
+        # Questo metodo e' usato da installer professionali (es. Chrome auto-update).
         $installDir = Split-Path -Parent $PSScriptRoot
         $updaterPath = Join-Path $PSScriptRoot "updater.ps1"
-
-        # If updater.ps1 was just extracted, use the new one
         $newUpdater = Join-Path $tempExtract "src\updater.ps1"
-        if (Test-Path $newUpdater) {
-            $updaterPath = $newUpdater
-        }
+        if (Test-Path $newUpdater) { $updaterPath = $newUpdater }
 
         if (-not (Test-Path $updaterPath)) {
             $msg = "Updater script non trovato: $updaterPath"
@@ -1248,36 +1244,49 @@ function Install-Update($config, $updateInfo) {
         $psExe = Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe"
         if (-not (Test-Path $psExe)) { $psExe = "powershell.exe" }
 
-        $updaterArgs = @(
-            "-ExecutionPolicy", "Bypass",
-            "-NoProfile",
-            "-NonInteractive",
-            "-WindowStyle", "Hidden",
-            "-File", $updaterPath,
-            "-ExtractPath", $tempExtract,
-            "-InstallDir", $installDir,
-            "-ApiUrl", $config.noc_center_url,
-            "-ApiKey", $config.api_key
-        )
-
-        # Log stdout/stderr dell'updater per debug post-mortem
-        $logsDir = Join-Path $env:ProgramData "86NocConnector\logs"
-        if (-not (Test-Path $logsDir)) { New-Item -ItemType Directory -Path $logsDir -Force | Out-Null }
-        $updaterStdout = Join-Path $logsDir "updater_stdout.log"
-        $updaterStderr = Join-Path $logsDir "updater_stderr.log"
-
-        Write-Log "Lancio updater: $updaterPath" "INFO"
+        # Creo un BAT temporaneo che lancia powershell -> updater.ps1 e si auto-cancella.
+        # Uso delay di 2 secondi per permettere al connector corrente di uscire pulito.
+        $batPath = Join-Path $env:TEMP ("86Noc_launcher_" + [guid]::NewGuid().ToString("N").Substring(0,8) + ".bat")
+        $batContent = @"
+@echo off
+rem 86NocConnector updater launcher - auto-delete after run
+timeout /t 2 /nobreak > nul 2>&1
+start "" /B "$psExe" -ExecutionPolicy Bypass -NoProfile -NonInteractive -WindowStyle Hidden -File "$updaterPath" -ExtractPath "$tempExtract" -InstallDir "$installDir" -ApiUrl "$($config.noc_center_url)" -ApiKey "$($config.api_key)"
+timeout /t 1 /nobreak > nul 2>&1
+del /F /Q "%~f0" > nul 2>&1
+"@
         try {
-            $proc = Start-Process -FilePath $psExe -ArgumentList $updaterArgs `
-                        -WindowStyle Hidden -PassThru `
-                        -RedirectStandardOutput $updaterStdout `
-                        -RedirectStandardError $updaterStderr
-            Write-Log "Updater avviato PID=$($proc.Id)" "INFO"
+            # Usa ASCII per evitare BOM + garantire esecuzione cmd
+            [System.IO.File]::WriteAllText($batPath, $batContent, [System.Text.Encoding]::ASCII)
+            Write-Log "Updater launcher BAT: $batPath" "INFO"
+
+            # Lancio cmd.exe in modo detached
+            $psi = New-Object System.Diagnostics.ProcessStartInfo
+            $psi.FileName = "cmd.exe"
+            $psi.Arguments = "/c `"$batPath`""
+            $psi.UseShellExecute = $true    # CRITICAL: usa shell -> stacca da parent
+            $psi.CreateNoWindow = $true
+            $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+            $proc = [System.Diagnostics.Process]::Start($psi)
+            Write-Log "Updater launcher avviato via cmd.exe (PID=$($proc.Id))" "INFO"
         } catch {
-            $errMsg = "Impossibile avviare updater: $($_.Exception.Message)"
+            $errMsg = "Impossibile avviare updater launcher: $($_.Exception.Message)"
             Write-Log $errMsg "ERROR"
             Send-UpdateProgress $config 0 "error" $errMsg
-            return $false
+            # Fallback 1: Start-Process classico
+            try {
+                $fallbackArgs = @(
+                    "-ExecutionPolicy","Bypass","-NoProfile","-NonInteractive",
+                    "-WindowStyle","Hidden","-File",$updaterPath,
+                    "-ExtractPath",$tempExtract,"-InstallDir",$installDir,
+                    "-ApiUrl",$config.noc_center_url,"-ApiKey",$config.api_key
+                )
+                Start-Process -FilePath $psExe -ArgumentList $fallbackArgs -WindowStyle Hidden | Out-Null
+                Write-Log "Fallback: Start-Process diretto" "WARN"
+            } catch {
+                Write-Log "Fallback fallito: $($_.Exception.Message)" "ERROR"
+                return $false
+            }
         }
         
         # Give updater time to start before we exit
