@@ -132,7 +132,14 @@ Refactor completo. Elimina la causa radice del bug iframe nero (srcDoc → origi
 
 **Vantaggi**: nessun aggiornamento Connector richiesto — il fix è tutto lato backend, retrocompatibile con Connector v3.2.1 già in field.
 
-### Web Console LIVE v3.2 — FIX FINALE middleware sicurezza (2026-04-20 sera++)
+### Connector v3.2.2 (2026-04-20 sera+++) — FIX CertBypass race condition
+**Sintomo**: Web Console mostra "Connessione al dispositivo fallita → Impossibile stabilire una relazione di trust per il canale sicuro SSL/TLS" su HP 5130 e device con certificati self-signed, anche se il connector funziona e i device rispondono al "Test Web UI" dal tray.
+
+**Root cause**: `System.Net.ServicePointManager.ServerCertificateValidationCallback` e' **globale/statico** in .NET. Il connector chiama `[CertBypass]::Enable()` all'inizio di una Web Proxy request e `[CertBypass]::Disable()` alla fine. Ma i thread paralleli (Redfish polling, SNMP discovery, WAN probe, altre Web Proxy requests) fanno `Disable()` in parallelo → se una delle `Invoke-WebRequest` HTTPS sta negoziando TLS mentre un altro thread chiama `Disable()`, il callback diventa `null` e .NET rifiuta il cert self-signed.
+
+**Fix**: `[CertBypass]::Disable()` diventa **NO-OP**. Una volta abilitato il bypass globale, lo teniamo sempre ON. Accettabile perche' il connector gira in rete cliente controllata e il rischio MITM interno e' minimo rispetto al beneficio di stabilita' SSL/TLS per device legacy (HP 5130, Aruba vecchi, UPS Xanto, NAS con cert scaduti).
+
+### Web Console LIVE v3.2 — FIX middleware sicurezza (2026-04-20 sera++)
 **Root cause finale trovata da Firefox**: "Impossibile aprire questa pagina, argus.86bit.it non consente di visualizzare la pagina dentro un altro sito". Il middleware globale `SecurityHeadersMiddleware` in `server.py` aggiungeva SEMPRE `X-Frame-Options: DENY` + `CSP: frame-ancestors 'none'` a ogni response. Il mio fix v3 strippava gli header DEL DEVICE, ma il middleware li RIMETTEVA dopo.
 
 **Fix in `server.py`**:

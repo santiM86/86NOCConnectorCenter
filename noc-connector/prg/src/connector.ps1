@@ -1681,6 +1681,10 @@ function Process-WebProxyRequest($config, $req) {
     }
 
     # SSL Bypass (self-signed: iLO/switch/firewall)
+    # IMPORTANTE: l'handler e' GLOBAL (statico in .NET). Per evitare race condition
+    # con altri thread (Redfish polling, SNMP discovery, WAN probe) che fanno Disable()
+    # in parallelo durante la negoziazione TLS di questa request, lo lasciamo SEMPRE ON.
+    # Il connector gira in rete cliente controllata: il rischio MITM interno e' accettato.
     if (-not ("CertBypass" -as [type])) {
         Add-Type -TypeDefinition @"
 using System.Net.Security;
@@ -1690,7 +1694,8 @@ public static class CertBypass {
         System.Net.ServicePointManager.ServerCertificateValidationCallback = (s, c, ch, e) => true;
     }
     public static void Disable() {
-        System.Net.ServicePointManager.ServerCertificateValidationCallback = null;
+        // NO-OP: una volta abilitato il bypass nel connector, lo teniamo on per evitare
+        // race condition con altri thread paralleli (Redfish/SNMP/Web-Proxy).
     }
 }
 "@
