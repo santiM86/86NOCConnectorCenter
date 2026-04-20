@@ -471,7 +471,10 @@ async def live_proxy(
 
     # Headers da propagare al browser (bianco-listati + debug)
     pass_headers = {}
-    safe_to_pass = {"cache-control", "etag", "last-modified", "expires", "vary"}
+    # CRITICAL: NON propaghiamo ETag/Last-Modified del device, altrimenti il browser
+    # ricade sul If-None-Match della cache precedente (es. pre-fix X-Frame-Options).
+    # La Web Console e' sempre live — no cache, sempre rete.
+    safe_to_pass = {"vary"}
     for k, v in (resp_headers or {}).items():
         kl = k.lower()
         if kl in drop_resp_headers:
@@ -483,6 +486,10 @@ async def live_proxy(
             continue
         if kl in safe_to_pass:
             pass_headers[k] = v
+    # Force no-cache: ogni load ri-fetcha dal device via connector (stato fresco)
+    pass_headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    pass_headers["Pragma"] = "no-cache"
+    pass_headers["Expires"] = "0"
     pass_headers["X-Argus-Proxy"] = "v3"
     pass_headers["X-Argus-Sniff"] = "1" if needs_sniff else "0"
     pass_headers["X-Argus-CT-Orig"] = (resp_headers or {}).get("Content-Type", (resp_headers or {}).get("content-type", ""))[:120]
