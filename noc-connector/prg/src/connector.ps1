@@ -1224,12 +1224,14 @@ function Install-Update($config, $updateInfo) {
         Write-Log "File estratti in: $tempExtract" "INFO"
         Send-UpdateProgress $config 45 "extracting" "File estratti. Avvio updater..."
         
-        # Launch updater as INDEPENDENT scheduled task (bypass NSSM process tree kill)
-        # Usando schtasks con /RU SYSTEM il processo e' completamente staccato da connector/NSSM:
-        # anche se il service viene fermato, l'updater continua a girare.
+        # Launch updater as independent process via Start-Process + argument array.
+        # Usiamo argument array (non stringa) per evitare bug di quoting con path contenenti
+        # spazi (es. "C:\Program Files\86NocConnector\..."). L'updater sopravvive anche al
+        # kill del connector da parte di NSSM perche' Start-Process stacca il figlio dal
+        # process tree del parent se non usiamo -Wait.
         $installDir = Split-Path -Parent $PSScriptRoot
         $updaterPath = Join-Path $PSScriptRoot "updater.ps1"
-        
+
         # If updater.ps1 was just extracted, use the new one
         $newUpdater = Join-Path $tempExtract "src\updater.ps1"
         if (Test-Path $newUpdater) {
@@ -1246,36 +1248,36 @@ function Install-Update($config, $updateInfo) {
         $psExe = Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe"
         if (-not (Test-Path $psExe)) { $psExe = "powershell.exe" }
 
-        # Prepara TR stringa per schtasks (lungo ma necessario)
-        $trCmd = "`"$psExe`" -ExecutionPolicy Bypass -NoProfile -NonInteractive -WindowStyle Hidden -File `"$updaterPath`" -ExtractPath `"$tempExtract`" -InstallDir `"$installDir`" -ApiUrl `"$($config.noc_center_url)`" -ApiKey `"$($config.api_key)`""
-        $taskName = "86NocConnector_Updater_$([guid]::NewGuid().ToString('N').Substring(0,8))"
-        $runTime = (Get-Date).AddMinutes(1).ToString("HH:mm")   # futuro fittizio — eseguiremo subito con /Run
+        $updaterArgs = @(
+            "-ExecutionPolicy", "Bypass",
+            "-NoProfile",
+            "-NonInteractive",
+            "-WindowStyle", "Hidden",
+            "-File", $updaterPath,
+            "-ExtractPath", $tempExtract,
+            "-InstallDir", $installDir,
+            "-ApiUrl", $config.noc_center_url,
+            "-ApiKey", $config.api_key
+        )
 
-        Write-Log "Lancio updater via schtasks (task: $taskName)" "INFO"
+        # Log stdout/stderr dell'updater per debug post-mortem
+        $logsDir = Join-Path $env:ProgramData "86NocConnector\logs"
+        if (-not (Test-Path $logsDir)) { New-Item -ItemType Directory -Path $logsDir -Force | Out-Null }
+        $updaterStdout = Join-Path $logsDir "updater_stdout.log"
+        $updaterStderr = Join-Path $logsDir "updater_stderr.log"
+
+        Write-Log "Lancio updater: $updaterPath" "INFO"
         try {
-            # Crea task
-            & schtasks.exe /Create /TN $taskName /SC ONCE /ST $runTime /TR $trCmd /RU SYSTEM /RL HIGHEST /F 2>&1 | Out-String | ForEach-Object { Write-Log "  schtasks /Create: $_" "DEBUG" }
-            # Avvia subito
-            & schtasks.exe /Run /TN $taskName 2>&1 | Out-String | ForEach-Object { Write-Log "  schtasks /Run: $_" "INFO" }
-            Write-Log "Updater lanciato come scheduled task" "INFO"
+            $proc = Start-Process -FilePath $psExe -ArgumentList $updaterArgs `
+                        -WindowStyle Hidden -PassThru `
+                        -RedirectStandardOutput $updaterStdout `
+                        -RedirectStandardError $updaterStderr
+            Write-Log "Updater avviato PID=$($proc.Id)" "INFO"
         } catch {
-            # Fallback: prova Start-Process classico se schtasks non funziona
-            Write-Log "schtasks fallito: $($_.Exception.Message). Fallback a Start-Process..." "WARN"
-            $updaterArgs = @(
-                "-ExecutionPolicy", "Bypass", "-NoProfile", "-NonInteractive",
-                "-WindowStyle", "Hidden", "-File", $updaterPath,
-                "-ExtractPath", $tempExtract, "-InstallDir", $installDir,
-                "-ApiUrl", $config.noc_center_url, "-ApiKey", $config.api_key
-            )
-            try {
-                $proc = Start-Process -FilePath $psExe -ArgumentList $updaterArgs -WindowStyle Hidden -PassThru
-                Write-Log "Updater avviato (fallback) PID=$($proc.Id)" "INFO"
-            } catch {
-                $errMsg = "Impossibile avviare updater: $($_.Exception.Message)"
-                Write-Log $errMsg "ERROR"
-                Send-UpdateProgress $config 0 "error" $errMsg
-                return $false
-            }
+            $errMsg = "Impossibile avviare updater: $($_.Exception.Message)"
+            Write-Log $errMsg "ERROR"
+            Send-UpdateProgress $config 0 "error" $errMsg
+            return $false
         }
         
         # Give updater time to start before we exit

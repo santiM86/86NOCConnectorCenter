@@ -1,4 +1,4 @@
 {
-  "version": "3.1.5",
-  "changelog": "v3.1.5: FIX CRITICO tray_app.ps1 - Risolto errore 'Impossibile convertire l'argomento item con valore - per Add' che bloccava il caricamento della lista Gestisci Dispositivi. PowerShell 5.1 non converte automaticamente [char] in [string] per ListViewSubItem.Add(). Tutte le celle con simboli Unicode (\u2713/\u2715/\u2014) ora sono esplicitamente castate a [string]. Contiene tutte le migliorie di v3.1.4 (updater schtasks), v3.1.3 (Web UI button), v3.1.2 (CSV import)."
+  "version": "3.1.6",
+  "changelog": "v3.1.6: PULIZIA LOG - Rimosso tentativo schtasks per lanciare updater.ps1 (causava errori cosmetici tipo 'ERRORE: Opzione...' nei log di Windows). Ora l'updater viene lanciato direttamente con Start-Process + argument array, che e' gia' robusto per path con spazi (C:\\Program Files\\) e sopravvive al kill del servizio da parte di NSSM. Mantenuto log stdout/stderr dell'updater in ProgramData\\86NocConnector\\logs. Contiene tutte le migliorie di v3.1.5 (fix char->string tray), v3.1.4 (updater robusto), v3.1.3 (Apri Web UI button)."
 }
