@@ -40,15 +40,13 @@ venv/bin/pip install -r requirements.txt
 cd ..
 
 # 5. Restart Backend Server
+# IMPORTANT: This script is a CHILD of noc-backend (spawned by the webhook).
+# We CANNOT call systemctl restart directly — systemd kills entire cgroup (including us).
+# Instead, we touch a trigger file. A separate systemd path unit (noc-restart.path)
+# watches for this file and restarts noc-backend from OUTSIDE the cgroup.
+rm -f /tmp/noc-restart-trigger
+touch /tmp/noc-restart-trigger
+
 echo "========================================"
 echo "Deployment Complete at $(date)!"
 echo "========================================"
-echo "Restarting backend service..."
-
-# IMPORTANT: This script is a CHILD of noc-backend (spawned by the webhook).
-# When systemd restarts noc-backend it kills this entire cgroup, including us.
-# So we background the restart, disown it, and exit immediately.
-# The D-Bus message reaches systemd PID 1 before the cgroup is killed.
-sudo -n /bin/systemctl restart noc-backend &
-disown
-exit 0
