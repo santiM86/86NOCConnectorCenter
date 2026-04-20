@@ -117,7 +117,22 @@ Refactor completo. Elimina la causa radice del bug iframe nero (srcDoc → origi
 - HP 5130 switch (argus cliente): iframe renderizza UI switch, login, navigation ✓
 - iLO Redfish UI: iframe con auth, grafici, console remota ✓
 
-### Web Console LIVE v2.1 — HARDENING (2026-04-20 pomeriggio)
+### Web Console LIVE v3 — FIX DEFINITIVO (2026-04-20 sera)
+**Root cause trovata via DBG JSON**: iLO 10.100.61.34 risponde sulla 443 con una pagina bootstrap che contiene hidden input (`http=5000, https=5001, prefer_https=false`) + script JS `location.href='https://10.100.61.34:5001/'`. Ma il Connector v3.2.1 inietta un interceptor che con `Object.defineProperty(window,'location',...)` cattura OGNI assegnazione come `postMessage({type:'argus-proxy-navigate'})`. Risultato: redirect device ignorato → iframe resta sulla bootstrap vuota → icona "file rotto".
+
+**Fix definitivo backend LIVE (`web_console_live.py`)**:
+1. **Rimozione interceptor connector**: regex che strippa qualunque `<script>…argus-proxy-navigate…</script>` dall'HTML prima di passarlo al browser.
+2. **Rimozione marker `__ARGUS_PROXY__`** dai href/form action/iframe src (concetto srcDoc-era).
+3. **URL rewriting completo**: `https?://{device_ip}(:port)?/path` → `/api/web-proxy/live/{sid}/{ip}/{port}/path` dentro HTML, JS, CSS, JSON. Supporta redirect cross-port (iLO 443→5001).
+4. **Token sessione NON più bindato alla porta**: `_validate_session_token` cerca solo per `device_ip`, così redirect su porte diverse del device funzionano con lo stesso capability token.
+5. **Location header riscritto** per redirect HTTP 3xx con URL assoluti.
+6. **Debug headers v3**: `X-Argus-Proxy: v3`, `X-Argus-Sniff`, `X-Argus-CT-Orig`.
+
+**Unit test in-place**: rewriting URL con/senza porta, strip interceptor, inject `<base>` verificati tutti OK.
+
+**Vantaggi**: nessun aggiornamento Connector richiesto — il fix è tutto lato backend, retrocompatibile con Connector v3.2.1 già in field.
+
+
 **Dopo deploy Prod 2.1.458**: iframe appariva vuoto con icona "file rotto" = browser riceve Content-Type non renderizzabile.
 
 **Fix backend (`web_console_live.py`)**:

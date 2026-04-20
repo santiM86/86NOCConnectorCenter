@@ -145,10 +145,13 @@ async def web_console_debug(session_id: str, current_user: dict = Depends(get_cu
 
 
 async def _validate_session_token(session_id: str, device_ip: str, port: int) -> dict:
-    """Valida il session_id come capability token. Restituisce il token doc o 401."""
+    """Valida il session_id come capability token bindato al device_ip.
+    Il port NON e' piu' vincolante: un device puo' fare redirect verso port diversa
+    (es. iLO HP: 443 → 5001) e il token deve restare valido. L'authz e' a livello
+    di (user, client, device) e la porta e' solo un parametro della request."""
     now = datetime.now(timezone.utc)
     tok = await db.web_console_tokens.find_one(
-        {"session_id": session_id, "device_ip": device_ip, "port": port},
+        {"session_id": session_id, "device_ip": device_ip},
         {"_id": 0},
     )
     if not tok:
@@ -170,18 +173,61 @@ def _build_base_href(session_id: str, device_ip: str, port: int) -> str:
     return f"/api/web-proxy/live/{session_id}/{device_ip}/{port}/"
 
 
-def _inject_html_support(body: bytes, base_href: str) -> bytes:
-    """Inserisce <base href=...> nel <head> + interceptor minimal."""
+def _rewrite_absolute_urls(text: str, session_id: str, device_ip: str) -> str:
+    """Riscrive URL assoluti verso il device (https://10.x.x.x:port/...) nel body
+    trasformandoli in path LIVE proxati. Supporta anche port diverse (iLO 443→5001)."""
+    # Pattern: http[s]://{device_ip}(:port)?/path
+    # Cattura la porta se presente (altrimenti default 80 per http, 443 per https)
+    ip_esc = re.escape(device_ip)
+    pattern = re.compile(
+        rf"\bhttps?://{ip_esc}(?::(\d+))?(/[^\s\"'<>)]*)?",
+        re.IGNORECASE,
+    )
+
+    def _sub(m: re.Match) -> str:
+        port_part = m.group(1)
+        path_part = m.group(2) or "/"
+        # Se URL senza port esplicita: http→80, https→443
+        if not port_part:
+            scheme_match = m.group(0).lower()
+            port_part = "443" if scheme_match.startswith("https") else "80"
+        return f"/api/web-proxy/live/{session_id}/{device_ip}/{port_part}{path_part}"
+
+    return pattern.sub(_sub, text)
+
+
+def _inject_html_support(body: bytes, base_href: str, session_id: str, device_ip: str) -> bytes:
+    """Sanifica HTML per architettura LIVE:
+    - Rimuove il `__ARGUS_PROXY__` marker iniettato dal connector (srcDoc-era)
+    - Rimuove il Click/Submit/Location interceptor del connector (sovrascrive window.location)
+    - Riscrive URL assoluti verso il device (https://{ip}:{port}/...) → path LIVE proxato
+    - Inserisce <base href=...> nel <head> per auto-proxy asset relativi
+    - Aggiunge interceptor MINIMAL (solo title propagation)
+    """
     try:
         html = body.decode("utf-8", "replace")
     except Exception:
         return body
 
-    # Rimuovi <base> originali del device (conflitto con il nostro)
+    # 1. Strip marker srcDoc-only
+    html = html.replace("__ARGUS_PROXY__", "")
+
+    # 2. Strip connector interceptor (firma: 'argus-proxy-navigate')
+    html = re.sub(
+        r"<script\b[^>]*>(?:(?!</script>).)*?argus-proxy-navigate(?:(?!</script>).)*?</script>",
+        "",
+        html,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    # 3. URL rewriting: https://{device_ip}(:port)?/... → /api/web-proxy/live/{sid}/{ip}/{port}/...
+    html = _rewrite_absolute_urls(html, session_id, device_ip)
+
+    # 4. Rimuovi <base> originali del device (conflitto con il nostro)
     html = re.sub(r"<base\b[^>]*>", "", html, flags=re.IGNORECASE)
     base_tag = f'<base href="{base_href}">'
 
-    # Inject <base> come prima cosa dentro <head>
+    # 5. Inject <base> nel <head>
     if re.search(r"<head[^>]*>", html, re.IGNORECASE):
         html = re.sub(r"(<head[^>]*>)", r"\1" + base_tag, html, count=1, flags=re.IGNORECASE)
     elif re.search(r"<html[^>]*>", html, re.IGNORECASE):
@@ -189,6 +235,7 @@ def _inject_html_support(body: bytes, base_href: str) -> bytes:
     else:
         html = base_tag + html
 
+    # 6. Interceptor MINIMAL (solo title)
     interceptor = """
 <script>
 (function(){
@@ -368,11 +415,20 @@ async def live_proxy(
         elif sniff.startswith(b"<?xml") or sniff.startswith(b"<svg"):
             content_type = "application/xml; charset=utf-8" if sniff.startswith(b"<?xml") else "image/svg+xml"
 
-    # Inject <base> tag solo se HTML
+    # Inject <base> tag + sanitize + URL rewrite solo se HTML
     ct_lower = (content_type or "").lower()
     if ct_lower and ("text/html" in ct_lower or "xhtml" in ct_lower):
         base_href = _build_base_href(session_id, device_ip, port)
-        body = _inject_html_support(body, base_href)
+        body = _inject_html_support(body, base_href, session_id, device_ip)
+    elif ct_lower and ("javascript" in ct_lower or "text/css" in ct_lower or "application/json" in ct_lower):
+        # Riscrivi anche dentro JS/CSS/JSON per catturare XHR endpoint assoluti
+        try:
+            text = body.decode("utf-8", "replace")
+            rewritten = _rewrite_absolute_urls(text, session_id, device_ip)
+            if rewritten != text:
+                body = rewritten.encode("utf-8", "replace")
+        except Exception:
+            pass
 
     # === STRIP HEADER CHE FORZANO DOWNLOAD O BLOCCANO IFRAME ===
     # Content-Disposition: attachment -> browser scarica invece di renderizzare
@@ -391,9 +447,14 @@ async def live_proxy(
         kl = k.lower()
         if kl in drop_resp_headers:
             continue
+        if kl == "location":
+            # Rewrite Location header per redirect HTTP 3xx verso URL assoluti del device
+            new_loc = _rewrite_absolute_urls(str(v), session_id, device_ip)
+            pass_headers["Location"] = new_loc
+            continue
         if kl in safe_to_pass:
             pass_headers[k] = v
-    pass_headers["X-Argus-Proxy"] = "v2"
+    pass_headers["X-Argus-Proxy"] = "v3"
     pass_headers["X-Argus-Sniff"] = "1" if needs_sniff else "0"
     pass_headers["X-Argus-CT-Orig"] = (resp_headers or {}).get("Content-Type", (resp_headers or {}).get("content-type", ""))[:120]
 
