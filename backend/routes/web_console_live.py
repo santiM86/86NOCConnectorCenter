@@ -82,6 +82,17 @@ async def create_web_console_session(request: Request, current_user: dict = Depe
     }
 
 
+@router.delete("/web-console/session/{session_id}")
+async def revoke_web_console_session(session_id: str, current_user: dict = Depends(get_current_user)):
+    """Revoca esplicita della sessione web console (best-effort: il TTL index la purgerebbe comunque)."""
+    res = await db.web_console_tokens.delete_one({
+        "session_id": session_id,
+        "user_email": current_user.get("email", ""),
+    })
+    audit.info(f"[AUDIT] web_console_session_close | user={current_user.get('email')} | session={session_id} | deleted={res.deleted_count}")
+    return {"revoked": res.deleted_count > 0}
+
+
 async def _validate_session_token(session_id: str, device_ip: str, port: int) -> dict:
     """Valida il session_id come capability token. Restituisce il token doc o 401."""
     now = datetime.now(timezone.utc)
