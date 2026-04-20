@@ -40,12 +40,15 @@ venv/bin/pip install -r requirements.txt
 cd ..
 
 # 5. Restart Backend Server
-echo "Restarting backend service..."
-# Important: ensure arslan has visudo NOPASSWD for this exact command
-sudo -n systemctl restart --no-block noc-backend
-
 echo "========================================"
 echo "Deployment Complete at $(date)!"
 echo "========================================"
-# To see logs
-# tail -f /home/arslan/86NOCConnectorCenter/deploy.log
+echo "Restarting backend service..."
+
+# IMPORTANT: This script is a CHILD of noc-backend (spawned by the webhook).
+# When systemd restarts noc-backend it kills this entire cgroup, including us.
+# So we background the restart, disown it, and exit immediately.
+# The D-Bus message reaches systemd PID 1 before the cgroup is killed.
+sudo -n /bin/systemctl restart noc-backend &
+disown
+exit 0
