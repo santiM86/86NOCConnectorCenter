@@ -1,4 +1,4 @@
-const CACHE_NAME = 'noc-center-v3';
+const CACHE_NAME = 'noc-center-v4';
 const OFFLINE_URL = '/offline.html';
 
 // Assets statici da precachare per funzionamento offline
@@ -18,21 +18,42 @@ self.addEventListener('install', (event) => {
   self.skipWaiting();
 });
 
+// ==================== MESSAGE (SKIP_WAITING per update immediato) ====================
+self.addEventListener('message', (event) => {
+  if (event.data && event.data.type === 'SKIP_WAITING') {
+    self.skipWaiting();
+  }
+});
+
 // ==================== ACTIVATE ====================
 self.addEventListener('activate', (event) => {
   event.waitUntil(
-    caches.keys().then((keys) =>
-      Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k)))
-    )
+    (async () => {
+      // Elimina TUTTE le cache diverse da quella corrente (anche quelle di versioni precedenti SW)
+      const keys = await caches.keys();
+      await Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k)));
+      await self.clients.claim();
+    })()
   );
-  self.clients.claim();
 });
 
 // ==================== FETCH (Stale-While-Revalidate per assets, Network-First per API) ====================
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
 
-  // Non intercettare richieste non-GET, API o WebSocket
+  // CRITICO: bypass assoluto per API del Web Console proxy.
+  // L'iframe deve ricevere l'HTML dei device REMOTI, non l'app shell di ARGUS.
+  // Questi path NON devono MAI essere intercettati dal service worker.
+  if (
+    url.pathname.startsWith('/api/web-proxy/live/') ||
+    url.pathname.startsWith('/api/web-console/') ||
+    url.pathname.startsWith('/api/connector/web-proxy/')
+  ) {
+    // Lascia che il network handler del browser gestisca la richiesta
+    return;
+  }
+
+  // Non intercettare richieste non-GET, API generiche o WebSocket
   if (event.request.method !== 'GET') return;
   if (url.pathname.startsWith('/api') || url.pathname.startsWith('/ws')) return;
   if (url.protocol === 'chrome-extension:') return;
