@@ -41,19 +41,35 @@ export function WebConsoleTabsProvider({ children }) {
     setSessions(prev => prev.map(s => s.id === id ? { ...s, ...patch } : s));
   }, []);
 
-  const _runSession = useCallback(async (id, clientId, deviceIp, port, path, controller) => {
+  const _runSession = useCallback(async (id, clientId, deviceIp, port, path, controller, opts = {}) => {
     const t0 = performance.now();
+    const session = sessionsRef.current.find(s => s.id === id);
+    const sessionId = session?.sessionId || opts.sessionId || id;  // riuso l'id della tab come session_id (coerente con cookie jar)
+    const method = opts.method || "GET";
+    const body = opts.body || "";
+    const scheme = session?.scheme;
     try {
       const reqRes = await axios.post(
         `${API}/connector/web-proxy/request`,
-        { client_id: clientId, device_ip: deviceIp, port: port || 80, path: path || "/", method: "GET" },
+        {
+          client_id: clientId,
+          device_ip: deviceIp,
+          port: port || 80,
+          path: path || "/",
+          method,
+          scheme,
+          session_id: sessionId,
+          body,
+          body_encoding: "text",
+          headers: opts.contentType ? { "Content-Type": opts.contentType } : {},
+        },
         { signal: controller.signal }
       );
       const requestId = reqRes.data?.request_id;
       if (!requestId) {
         throw new Error("Backend non ha restituito un request_id valido");
       }
-      updateSession(id, { progress: 30, requestId });
+      updateSession(id, { progress: 30, requestId, sessionId });
 
       const resp = await axios.get(
         `${API}/connector/web-proxy/response/${requestId}?wait=25`,
@@ -62,8 +78,6 @@ export function WebConsoleTabsProvider({ children }) {
       const loadTime = performance.now() - t0;
 
       if (resp.data.status !== "completed" || !resp.data.response) {
-        // Long-poll scaduto: connector non ha risposto. Controllo lo stato del connector
-        // per dare un messaggio piu' preciso all'utente.
         let hint = "Verifica che il servizio <b>86NocConnector</b> sia attivo sulla rete del cliente e il dispositivo raggiungibile.";
         let errorLabel = "Connettore non risponde";
         try {
@@ -77,7 +91,7 @@ export function WebConsoleTabsProvider({ children }) {
               hint = `Il connector <b>${row.hostname || ""}</b> (v${v}) risulta offline. Avvia il servizio <b>86NocConnector</b> sulla macchina del cliente.`;
             } else if (isOld) {
               errorLabel = `Connettore v${v} troppo vecchio`;
-              hint = `Per usare la Web Console serve il connector <b>v3.0.3 o superiore</b>. Aggiorna tramite l'icona tray → Aggiorna Connector, oppure reinstalla con il wizard.`;
+              hint = `Per usare la Web Console serve il connector <b>v3.1.7 o superiore</b>. Aggiorna tramite l'icona tray → Aggiorna Connector.`;
             }
           }
         } catch (_) { /* ignore status check errors */ }
@@ -90,12 +104,18 @@ export function WebConsoleTabsProvider({ children }) {
         return;
       }
 
+      const r = resp.data.response;
       updateSession(id, {
         loading: false, progress: 100,
-        html: resp.data.response.body,
-        title: resp.data.response.title || `${deviceIp}:${port}${path}`,
-        error: resp.data.response.error,
+        html: r.body || "",
+        title: r.title || `${deviceIp}:${port}${path}`,
+        error: r.error,
+        statusCode: r.status_code,
+        contentType: r.content_type,
+        durationMs: r.duration_ms,
+        size: r.size,
         loadTime,
+        scheme: resp.data.scheme || scheme,
       });
     } catch (e) {
       if (axios.isCancel(e) || e.name === "CanceledError" || e.name === "AbortError") return;
@@ -164,14 +184,14 @@ export function WebConsoleTabsProvider({ children }) {
     _runSession(id, s.clientId, s.deviceIp, s.port, s.path, controller);
   }, [_runSession, updateSession]);
 
-  const navigate = useCallback((id, newPath) => {
+  const navigate = useCallback((id, newPath, opts = {}) => {
     const s = sessionsRef.current.find(x => x.id === id);
     if (!s) return;
     if (abortsRef.current[id]) { try { abortsRef.current[id].abort(); } catch {} }
     const controller = new AbortController();
     abortsRef.current[id] = controller;
     updateSession(id, { loading: true, progress: 10, html: null, error: null, loadTime: null, path: newPath });
-    _runSession(id, s.clientId, s.deviceIp, s.port, newPath, controller);
+    _runSession(id, s.clientId, s.deviceIp, s.port, newPath, controller, opts);
   }, [_runSession, updateSession]);
 
   const close = useCallback((id) => {
@@ -197,12 +217,28 @@ export function WebConsoleTabsProvider({ children }) {
     setActiveId(null);
   }, []);
 
-  // Listen for proxy-navigate from iframe (click interno al device)
+  // Listen for argus-proxy-navigate from iframe (click/submit interni al device)
   useEffect(() => {
     const handler = (event) => {
-      if (event.data?.type === "proxy-navigate" && activeId) {
-        let p = event.data.path;
-        if (event.data.baseUrl && p.startsWith(event.data.baseUrl)) p = p.replace(event.data.baseUrl, "");
+      const d = event.data;
+      if (!d) return;
+      // Nuovo formato (v3.1.7+): { type:'argus-proxy-navigate', path, method, body, contentType }
+      if (d.type === "argus-proxy-navigate" && activeId) {
+        let p = String(d.path || "/");
+        // Normalizza - rimuovi absolute prefix se presente
+        p = p.replace(/^https?:\/\/[^/]+/i, "");
+        p = p.replace(/^__ARGUS_PROXY__/, "");
+        if (!p.startsWith("/")) p = "/" + p;
+        navigate(activeId, p, {
+          method: d.method || "GET",
+          body: d.body || "",
+          contentType: d.contentType,
+        });
+      }
+      // Retro-compat con v3.1.6 (solo GET)
+      else if (d.type === "proxy-navigate" && activeId) {
+        let p = d.path;
+        if (d.baseUrl && p.startsWith(d.baseUrl)) p = p.replace(d.baseUrl, "");
         if (!p.startsWith("/")) p = "/" + p;
         navigate(activeId, p);
       }
@@ -423,7 +459,12 @@ function WebConsoleModal({ session, onClose, onDestroy, onReload, onPrev, onNext
               </div>
             </div>
           ) : (
-            <iframe srcDoc={session.html} className="w-full h-full border-0" title="Web Console" sandbox="allow-same-origin" />
+            <iframe
+              srcDoc={(session.html || "").replace(/__ARGUS_PROXY__/g, "")}
+              className="w-full h-full border-0"
+              title="Web Console"
+              sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
+            />
           )}
         </div>
 
