@@ -1830,6 +1830,110 @@ public static class CertBypass {
         } catch {}
     }
 
+    # === AUTO-FOLLOW JS REDIRECT (HP 5130, vecchi device HP/Aruba/Dell) ===
+    # Molti device fanno: <body onload="window.location='frame/login.html'">
+    # L'iframe con srcDoc ha origine null -> window.location fallisce -> pagina vuota.
+    # Soluzione: il connector segue il redirect lato server e restituisce direttamente
+    # il body della destinazione (max 3 hops per evitare loop).
+    if ($contentType -match "html" -and $respBytes.Length -gt 0 -and $respBytes.Length -lt 500000) {
+        try {
+            $maxHops = 3
+            $hopCount = 0
+            $htmlStr = [System.Text.Encoding]::UTF8.GetString($respBytes)
+            $baseUrlForRedir = "${scheme}://${deviceIp}:${port}"
+            if (-not $scheme) { $baseUrlForRedir = "$($schemes[0])://${deviceIp}:${port}" }
+            # Pattern JS redirect (ordinati per specificita')
+            $redirectRegex = @(
+                'window\.location\.(?:href|replace)\s*=\s*["'']([^"''<>]+?)["'']',
+                'window\.location\s*=\s*["'']([^"''<>]+?)["'']',
+                'document\.location\.(?:href|replace)\s*=\s*["'']([^"''<>]+?)["'']',
+                'document\.location\s*=\s*["'']([^"''<>]+?)["'']',
+                'location\.replace\s*\(\s*["'']([^"''<>]+?)["'']',
+                'location\.href\s*=\s*["'']([^"''<>]+?)["'']',
+                '<meta[^>]+http-equiv\s*=\s*["'']?refresh["'']?[^>]+content\s*=\s*["''][^"''<>]*url\s*=\s*([^"''<>]+?)["'']'
+            )
+            while ($hopCount -lt $maxHops) {
+                $foundRedirect = $null
+                foreach ($rx in $redirectRegex) {
+                    $matches2 = [regex]::Matches($htmlStr, $rx, "IgnoreCase")
+                    # Prendi l'ultimo match in ogni pattern (di solito HP 5130 ha ternary; ultimo = https branch)
+                    foreach ($m in $matches2) {
+                        $candidate = $m.Groups[1].Value.Trim()
+                        if ($candidate -and $candidate -notlike "*__ARGUS_PROXY__*" -and $candidate.Length -lt 2048) {
+                            $foundRedirect = $candidate
+                        }
+                    }
+                    if ($foundRedirect) { break }
+                }
+                if (-not $foundRedirect) { break }
+
+                # Risolvi URL relativo
+                $absoluteUrl = $foundRedirect
+                if ($absoluteUrl -like "http*://*") { }
+                elseif ($absoluteUrl.StartsWith("//")) { $absoluteUrl = "${scheme}:$absoluteUrl" }
+                elseif ($absoluteUrl.StartsWith("/")) { $absoluteUrl = "$baseUrlForRedir$absoluteUrl" }
+                else { $absoluteUrl = "$baseUrlForRedir/$absoluteUrl" }
+
+                Write-Log "[WEB-PROXY] AUTO-FOLLOW JS redirect hop $($hopCount+1): $foundRedirect -> $absoluteUrl" "INFO"
+
+                [CertBypass]::Enable()
+                try {
+                    $redirResp = Invoke-WebRequest -Uri $absoluteUrl -UseBasicParsing -TimeoutSec 10 `
+                                 -WebSession $webSession -MaximumRedirection 5 -ErrorAction Stop
+                    # Nuovo status / content-type
+                    $statusCode = [int]$redirResp.StatusCode
+                    if ($redirResp.Headers.ContainsKey("Content-Type")) {
+                        $contentType = [string]$redirResp.Headers["Content-Type"]
+                    }
+                    # Body
+                    if ($redirResp.RawContentStream) {
+                        $ms2 = New-Object System.IO.MemoryStream
+                        $redirResp.RawContentStream.Position = 0
+                        $redirResp.RawContentStream.CopyTo($ms2)
+                        $respBytes = $ms2.ToArray()
+                        $ms2.Dispose()
+                    } elseif ($redirResp.Content -is [byte[]]) {
+                        $respBytes = $redirResp.Content
+                    } else {
+                        $respBytes = [System.Text.Encoding]::UTF8.GetBytes([string]$redirResp.Content)
+                    }
+                    # Aggiorna cookies della WebSession
+                    try {
+                        foreach ($ckc in $webSession.Cookies.GetCookies($absoluteUrl)) {
+                            $respCookies[[string]$ckc.Name] = [string]$ckc.Value
+                        }
+                    } catch {}
+                    # Aggiorna title dal nuovo body
+                    if ($respBytes.Length -lt 2000000) {
+                        try {
+                            $titleStr = [System.Text.Encoding]::UTF8.GetString($respBytes, 0, [math]::Min(8192, $respBytes.Length))
+                            if ($titleStr -match '<title[^>]*>(.*?)</title>') {
+                                $title = $Matches[1].Trim()
+                            }
+                        } catch {}
+                    }
+                    # Aggiorna baseUrl per prossimo hop (se redirect a path assoluto su stesso host)
+                    if ($absoluteUrl -match '^(https?://[^/]+)') { $baseUrlForRedir = $Matches[1] }
+                    # Non-HTML? stop seguendo
+                    if ($contentType -notmatch "html") {
+                        Write-Log "[WEB-PROXY] Redirect finale non-HTML ($contentType), stop follow" "DEBUG"
+                        break
+                    }
+                    # Nuovo HTML per check successivo hop
+                    $htmlStr = [System.Text.Encoding]::UTF8.GetString($respBytes)
+                    $hopCount++
+                } catch {
+                    Write-Log "[WEB-PROXY] Follow redirect fallito: $($_.Exception.Message)" "WARN"
+                    break
+                } finally {
+                    [CertBypass]::Disable()
+                }
+            }
+        } catch {
+            Write-Log "[WEB-PROXY] Errore auto-follow: $($_.Exception.Message)" "DEBUG"
+        }
+    }
+
     # INJECT <base> TAG per asset proxy automatico (CSS/JS/img/XHR)
     # Il backend risolvera' i path relativi tramite /api/connector/web-proxy/asset/*
     if ($contentType -match "html" -and $respBytes.Length -gt 0 -and $respBytes.Length -lt 5000000) {
@@ -1949,10 +2053,11 @@ public static class CertBypass {
             $htmlStr = [regex]::Replace($htmlStr, '(<form\b[^>]*\saction\s*=\s*)["'']/', "`$1`"__ARGUS_PROXY__/", "IgnoreCase")
             $htmlStr = [regex]::Replace($htmlStr, '(<(?:iframe|frame)\b[^>]*\ssrc\s*=\s*)["'']/', "`$1`"__ARGUS_PROXY__/", "IgnoreCase")
 
-            # --- Interceptor JS per click/submit -> postMessage al parent ---
+            # --- Interceptor JS per click/submit/location -> postMessage al parent ---
             $interceptScript = @"
 <script>
 (function(){
+  // 1. Click intercept
   document.addEventListener('click', function(e){
     var a = e.target.closest('a');
     if (!a || !a.getAttribute) return;
@@ -1961,6 +2066,7 @@ public static class CertBypass {
     e.preventDefault();
     window.parent.postMessage({type:'argus-proxy-navigate', path: href, method:'GET'}, '*');
   }, true);
+  // 2. Form submit intercept
   document.addEventListener('submit', function(e){
     var f = e.target;
     if (!f || f.tagName !== 'FORM') return;
@@ -1972,6 +2078,28 @@ public static class CertBypass {
     e.preventDefault();
     window.parent.postMessage({type:'argus-proxy-navigate', path: action, method: method, body: params, contentType:'application/x-www-form-urlencoded'}, '*');
   }, true);
+  // 3. window.location assignment hook (safety net per device che fanno redirect JS)
+  try {
+    var origAssign = window.location.assign ? window.location.assign.bind(window.location) : null;
+    var origReplace = window.location.replace ? window.location.replace.bind(window.location) : null;
+    window.location.assign = function(url) {
+      window.parent.postMessage({type:'argus-proxy-navigate', path: String(url), method:'GET'}, '*');
+    };
+    window.location.replace = function(url) {
+      window.parent.postMessage({type:'argus-proxy-navigate', path: String(url), method:'GET'}, '*');
+    };
+    // Proxy per intercettare setter (window.location = "...")
+    var origLocation = window.location;
+    try {
+      Object.defineProperty(window, 'location', {
+        configurable: true,
+        get: function() { return origLocation; },
+        set: function(v) {
+          window.parent.postMessage({type:'argus-proxy-navigate', path: String(v), method:'GET'}, '*');
+        }
+      });
+    } catch(e) {}
+  } catch(e) {}
 })();
 </script>
 "@
