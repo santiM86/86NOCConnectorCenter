@@ -58,6 +58,17 @@ export function WebConsoleTabsProvider({ children }) {
       return existing.id;
     }
 
+    // Pre-flight: se il Service Worker in pagina e' vecchio (senza bypass /api/web-proxy/live/)
+    // potrebbe intercettare la request iframe e servire stale cache. Forziamo un update check.
+    try {
+      if ("serviceWorker" in navigator) {
+        const reg = await navigator.serviceWorker.getRegistration();
+        if (reg) {
+          reg.update().catch(() => {});
+        }
+      }
+    } catch (_) {}
+
     const id = `wc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const placeholder = {
       id, clientId, deviceIp, port: p, path: path || "/",
