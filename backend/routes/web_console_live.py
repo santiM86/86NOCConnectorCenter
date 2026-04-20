@@ -93,6 +93,57 @@ async def revoke_web_console_session(session_id: str, current_user: dict = Depen
     return {"revoked": res.deleted_count > 0}
 
 
+@router.get("/web-console/debug/{session_id}")
+async def web_console_debug(session_id: str, current_user: dict = Depends(get_current_user)):
+    """Diagnostica live: ritorna gli ultimi 20 response del connector per questa sessione,
+    con content-type originale, status, size, primi 512 byte (esc). Utile per debug
+    iframe bianco / icona file rotto / contenuto strano.
+    """
+    tok = await db.web_console_tokens.find_one(
+        {"session_id": session_id},
+        {"_id": 0, "user_email": 1, "device_ip": 1, "port": 1},
+    )
+    if not tok:
+        raise HTTPException(status_code=404, detail="Session not found")
+    # Authz: owner o admin/superadmin
+    if tok.get("user_email") != current_user.get("email") and current_user.get("role") not in ("admin", "superadmin"):
+        raise HTTPException(status_code=403, detail="Not session owner")
+
+    cursor = db.web_proxy_requests.find(
+        {"session_id": session_id},
+        {"_id": 0, "request_id": 1, "path": 1, "method": 1, "created_at": 1, "status": 1, "response": 1},
+    ).sort("created_at", -1).limit(20)
+    rows = []
+    async for r in cursor:
+        resp = r.get("response") or {}
+        body_preview = ""
+        body_b64 = resp.get("body_b64")
+        if body_b64:
+            try:
+                raw = base64.b64decode(body_b64)
+                body_preview = raw[:512].decode("utf-8", "replace")
+            except Exception:
+                body_preview = "<binary decode error>"
+        elif resp.get("body"):
+            body_preview = str(resp["body"])[:512]
+        rh = resp.get("response_headers") or {}
+        rows.append({
+            "request_id": r.get("request_id", "")[:8],
+            "method": r.get("method"),
+            "path": r.get("path"),
+            "status": r.get("status"),
+            "http_status": resp.get("status_code"),
+            "content_type": resp.get("content_type") or rh.get("Content-Type") or rh.get("content-type"),
+            "content_encoding": rh.get("Content-Encoding") or rh.get("content-encoding"),
+            "content_disposition": rh.get("Content-Disposition") or rh.get("content-disposition"),
+            "x_frame_options": rh.get("X-Frame-Options") or rh.get("x-frame-options"),
+            "body_size": len(base64.b64decode(body_b64)) if body_b64 else len(resp.get("body") or ""),
+            "body_preview_first_512": body_preview,
+            "created_at": r.get("created_at"),
+        })
+    return {"session": tok, "recent_requests": rows}
+
+
 async def _validate_session_token(session_id: str, device_ip: str, port: int) -> dict:
     """Valida il session_id come capability token. Restituisce il token doc o 401."""
     now = datetime.now(timezone.utc)
@@ -294,18 +345,57 @@ async def live_proxy(
         session_id, body_bytes, req_headers,
     )
 
+    # === CONTENT-TYPE SNIFFING (fix "icona file rotto") ===
+    # Alcuni device (iLO vecchi, HP 5130, firewall legacy) rispondono con Content-Type
+    # errato (application/octet-stream, application/x-binary, vuoto) anche se il body
+    # e' HTML. Il browser vede MIME non renderizzabile -> iframe mostra placeholder
+    # "file rotto". Sniffiamo i primi 512 byte per determinare il MIME reale.
+    ct_lower = (content_type or "").lower()
+    needs_sniff = (
+        not content_type
+        or "octet-stream" in ct_lower
+        or "application/x-binary" in ct_lower
+        or "application/unknown" in ct_lower
+        or ct_lower.strip() == "application/force-download"
+    )
+    if needs_sniff and body:
+        sniff = body[:512].lstrip()
+        sniff_str = sniff[:200].decode("utf-8", "replace").lower()
+        if sniff.startswith(b"<!doctype") or sniff.startswith(b"<html") or "<html" in sniff_str or "<!doctype html" in sniff_str:
+            content_type = "text/html; charset=utf-8"
+        elif sniff.startswith(b"{") or sniff.startswith(b"["):
+            content_type = "application/json; charset=utf-8"
+        elif sniff.startswith(b"<?xml") or sniff.startswith(b"<svg"):
+            content_type = "application/xml; charset=utf-8" if sniff.startswith(b"<?xml") else "image/svg+xml"
+
     # Inject <base> tag solo se HTML
-    if content_type and ("text/html" in content_type.lower() or "xhtml" in content_type.lower()):
+    ct_lower = (content_type or "").lower()
+    if ct_lower and ("text/html" in ct_lower or "xhtml" in ct_lower):
         base_href = _build_base_href(session_id, device_ip, port)
         body = _inject_html_support(body, base_href)
 
-    # Headers da propagare al browser (bianco-listati)
+    # === STRIP HEADER CHE FORZANO DOWNLOAD O BLOCCANO IFRAME ===
+    # Content-Disposition: attachment -> browser scarica invece di renderizzare
+    # X-Frame-Options / Content-Security-Policy frame-ancestors -> blocco iframe
+    # Content-Encoding -> body gia' decompresso dal connector, non re-indicare gzip
+    drop_resp_headers = {
+        "content-disposition", "x-frame-options", "content-security-policy",
+        "content-encoding", "transfer-encoding", "content-length",
+        "strict-transport-security",
+    }
+
+    # Headers da propagare al browser (bianco-listati + debug)
     pass_headers = {}
     safe_to_pass = {"cache-control", "etag", "last-modified", "expires", "vary"}
     for k, v in (resp_headers or {}).items():
-        if k.lower() in safe_to_pass:
+        kl = k.lower()
+        if kl in drop_resp_headers:
+            continue
+        if kl in safe_to_pass:
             pass_headers[k] = v
-    pass_headers["X-Argus-Proxy"] = "v1"
+    pass_headers["X-Argus-Proxy"] = "v2"
+    pass_headers["X-Argus-Sniff"] = "1" if needs_sniff else "0"
+    pass_headers["X-Argus-CT-Orig"] = (resp_headers or {}).get("Content-Type", (resp_headers or {}).get("content-type", ""))[:120]
 
     return Response(
         content=body,
