@@ -120,15 +120,40 @@ async def submit_web_proxy_response(request: Request):
     request_id = body.get("request_id")
     if not request_id:
         raise HTTPException(status_code=400, detail="request_id required")
+
+    # MongoDB rifiuta stringhe UTF-8 con NUL byte embedded (tipico di device HP/Cisco
+    # che mixano HTML + binary/JS offuscato). Rimuovo i NUL e limito la dimensione del
+    # body a 5 MB per evitare blocchi su pagine enormi (es. iLO con asset embedded).
+    def sanitize_for_bson(s):
+        if not isinstance(s, str):
+            return "" if s is None else str(s)
+        # Rimuovi NUL byte (\x00) e caratteri di controllo non stampabili eccetto \t \n \r
+        return s.replace("\x00", "").encode("utf-8", "replace").decode("utf-8", "replace")
+
+    body_str = sanitize_for_bson(body.get("body", ""))
+    if len(body_str) > 5_000_000:
+        body_str = body_str[:5_000_000] + "\n<!-- [TRUNCATED BY ARGUS: body > 5MB] -->"
+    title_str = sanitize_for_bson(body.get("title", ""))[:512]
+    content_type = sanitize_for_bson(body.get("content_type", "text/html"))[:128]
+    error_str = body.get("error")
+    if error_str is not None:
+        error_str = sanitize_for_bson(str(error_str))[:1024]
+
+    try:
+        status_code = int(body.get("status_code", 0))
+    except (TypeError, ValueError):
+        status_code = 0
+
     await db.web_proxy_requests.update_one(
         {"request_id": request_id, "client_id": client_data["id"]},
         {"$set": {
             "status": "completed",
             "response": {
-                "status_code": body.get("status_code", 0),
-                "content_type": body.get("content_type", "text/html"),
-                "body": body.get("body", ""), "title": body.get("title", ""),
-                "error": body.get("error", None)
+                "status_code": status_code,
+                "content_type": content_type,
+                "body": body_str,
+                "title": title_str,
+                "error": error_str,
             },
             "completed_at": datetime.now(timezone.utc).isoformat()
         }}
