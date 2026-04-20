@@ -1826,19 +1826,124 @@ public static class CertBypass {
     if ($contentType -match "html" -and $respBytes.Length -gt 0 -and $respBytes.Length -lt 5000000) {
         try {
             $htmlStr = [System.Text.Encoding]::UTF8.GetString($respBytes)
-            $baseUrl = "${scheme}://${deviceIp}:${port}"
-            if (-not $scheme) { $baseUrl = "${schemes[0]}://${deviceIp}:${port}" }
+            $baseUrlForInline = "${scheme}://${deviceIp}:${port}"
+            if (-not $scheme) { $baseUrlForInline = "$($schemes[0])://${deviceIp}:${port}" }
 
-            # Rewrite link relativi -> usano proxy
-            $htmlStr = [regex]::Replace($htmlStr, '(<a\b[^>]*\shref=)["'']/', "`$1`"__ARGUS_PROXY__/", "IgnoreCase")
-            $htmlStr = [regex]::Replace($htmlStr, '(<form\b[^>]*\saction=)["'']/', "`$1`"__ARGUS_PROXY__/", "IgnoreCase")
-            $htmlStr = [regex]::Replace($htmlStr, '(<(?:img|script|link|iframe|source|video|audio)\b[^>]*\s(?:src|href)=)["'']/', "`$1`"__ARGUS_PROXY__/", "IgnoreCase")
+            # --- INLINE CSS (scarica e incorpora <link rel="stylesheet"> come <style>) ---
+            [CertBypass]::Enable()
+            try {
+                $cssPattern = '<link[^>]*\srel\s*=\s*["'']?stylesheet["'']?[^>]*>'
+                $cssMatches = [regex]::Matches($htmlStr, $cssPattern, "IgnoreCase")
+                $cssCount = 0
+                foreach ($cssMatch in $cssMatches) {
+                    if ($cssCount -ge 20) { break }
+                    $linkTag = $cssMatch.Value
+                    if ($linkTag -match 'href\s*=\s*["'']([^"'']+)["'']') {
+                        $cssUrl = $Matches[1]
+                        if ($cssUrl.StartsWith("data:")) { continue }
+                        # Risolvi URL
+                        if ($cssUrl -like "http*://*") { }
+                        elseif ($cssUrl.StartsWith("//")) { $cssUrl = "${scheme}:$cssUrl" }
+                        elseif ($cssUrl.StartsWith("/")) { $cssUrl = "$baseUrlForInline$cssUrl" }
+                        else { $cssUrl = "$baseUrlForInline/$cssUrl" }
+                        try {
+                            $cssResp = Invoke-WebRequest -Uri $cssUrl -UseBasicParsing -TimeoutSec 5 `
+                                        -WebSession $webSession -ErrorAction Stop
+                            $cssText = if ($cssResp.Content -is [byte[]]) {
+                                [System.Text.Encoding]::UTF8.GetString($cssResp.Content)
+                            } else { [string]$cssResp.Content }
+                            $styleTag = "<style>/* inlined from $($Matches[1]) */`n$cssText`n</style>"
+                            $htmlStr = $htmlStr.Replace($linkTag, $styleTag)
+                            $cssCount++
+                        } catch {
+                            # CSS non raggiungibile -> skip, il link tag resta (innocuo)
+                        }
+                    }
+                }
+            } catch {
+                Write-Log "[WEB-PROXY] CSS inline error: $($_.Exception.Message)" "DEBUG"
+            }
 
-            # Interceptor JS (click/submit -> postMessage al parent)
+            # --- INLINE IMG (converti <img src="..."> in data URI per immagini < 500KB) ---
+            try {
+                $imgPattern = '<img[^>]*\ssrc\s*=\s*["'']([^"'']+)["''][^>]*/?\s*>'
+                $imgMatches = [regex]::Matches($htmlStr, $imgPattern, "IgnoreCase")
+                $imgCount = 0
+                $mimeMap = @{
+                    "png"="image/png"; "jpg"="image/jpeg"; "jpeg"="image/jpeg";
+                    "gif"="image/gif"; "svg"="image/svg+xml"; "ico"="image/x-icon";
+                    "webp"="image/webp"; "bmp"="image/bmp"
+                }
+                foreach ($imgMatch in $imgMatches) {
+                    if ($imgCount -ge 30) { break }
+                    $imgUrl = $imgMatch.Groups[1].Value
+                    if ($imgUrl.StartsWith("data:")) { continue }
+                    $origImgUrl = $imgUrl
+                    # Risolvi URL
+                    if ($imgUrl -like "http*://*") { }
+                    elseif ($imgUrl.StartsWith("//")) { $imgUrl = "${scheme}:$imgUrl" }
+                    elseif ($imgUrl.StartsWith("/")) { $imgUrl = "$baseUrlForInline$imgUrl" }
+                    else { $imgUrl = "$baseUrlForInline/$imgUrl" }
+                    try {
+                        $imgResp = Invoke-WebRequest -Uri $imgUrl -UseBasicParsing -TimeoutSec 4 `
+                                    -WebSession $webSession -ErrorAction Stop
+                        $imgBytes = if ($imgResp.Content -is [byte[]]) { $imgResp.Content } `
+                                    else { [System.Text.Encoding]::UTF8.GetBytes([string]$imgResp.Content) }
+                        if ($imgBytes.Length -gt 500000) { continue }
+                        $ext = [System.IO.Path]::GetExtension($imgUrl).TrimStart('.').Split('?')[0].ToLower()
+                        $mime = if ($mimeMap.ContainsKey($ext)) { $mimeMap[$ext] } else { "image/png" }
+                        $b64img = [Convert]::ToBase64String($imgBytes)
+                        $dataUri = "data:${mime};base64,$b64img"
+                        # Sostituisci in modo preciso
+                        $newTag = $imgMatch.Value.Replace($origImgUrl, $dataUri)
+                        $htmlStr = $htmlStr.Replace($imgMatch.Value, $newTag)
+                        $imgCount++
+                    } catch { }
+                }
+            } catch {
+                Write-Log "[WEB-PROXY] IMG inline error: $($_.Exception.Message)" "DEBUG"
+            }
+
+            # --- INLINE JS (scarica e incorpora <script src="..."> come inline) ---
+            try {
+                $jsPattern = '<script[^>]*\ssrc\s*=\s*["'']([^"'']+)["''][^>]*>\s*</script>'
+                $jsMatches = [regex]::Matches($htmlStr, $jsPattern, "IgnoreCase")
+                $jsCount = 0
+                foreach ($jsMatch in $jsMatches) {
+                    if ($jsCount -ge 15) { break }
+                    $jsUrl = $jsMatch.Groups[1].Value
+                    if ($jsUrl.StartsWith("data:")) { continue }
+                    if ($jsUrl -like "http*://*") { }
+                    elseif ($jsUrl.StartsWith("//")) { $jsUrl = "${scheme}:$jsUrl" }
+                    elseif ($jsUrl.StartsWith("/")) { $jsUrl = "$baseUrlForInline$jsUrl" }
+                    else { $jsUrl = "$baseUrlForInline/$jsUrl" }
+                    try {
+                        $jsResp = Invoke-WebRequest -Uri $jsUrl -UseBasicParsing -TimeoutSec 5 `
+                                    -WebSession $webSession -ErrorAction Stop
+                        $jsText = if ($jsResp.Content -is [byte[]]) {
+                            [System.Text.Encoding]::UTF8.GetString($jsResp.Content)
+                        } else { [string]$jsResp.Content }
+                        # Limite 2MB per singolo JS
+                        if ($jsText.Length -gt 2000000) { continue }
+                        $inlineScript = "<script>/* inlined from $($jsMatch.Groups[1].Value) */`n$jsText`n</script>"
+                        $htmlStr = $htmlStr.Replace($jsMatch.Value, $inlineScript)
+                        $jsCount++
+                    } catch { }
+                }
+            } catch {
+                Write-Log "[WEB-PROXY] JS inline error: $($_.Exception.Message)" "DEBUG"
+            }
+            [CertBypass]::Disable()
+
+            # --- Rewrite link/form/iframe con marker ARGUS per intercettazione frontend ---
+            $htmlStr = [regex]::Replace($htmlStr, '(<a\b[^>]*\shref\s*=\s*)["'']/', "`$1`"__ARGUS_PROXY__/", "IgnoreCase")
+            $htmlStr = [regex]::Replace($htmlStr, '(<form\b[^>]*\saction\s*=\s*)["'']/', "`$1`"__ARGUS_PROXY__/", "IgnoreCase")
+            $htmlStr = [regex]::Replace($htmlStr, '(<(?:iframe|frame)\b[^>]*\ssrc\s*=\s*)["'']/', "`$1`"__ARGUS_PROXY__/", "IgnoreCase")
+
+            # --- Interceptor JS per click/submit -> postMessage al parent ---
             $interceptScript = @"
 <script>
 (function(){
-  var origin = '__ARGUS_ORIGIN__';
   document.addEventListener('click', function(e){
     var a = e.target.closest('a');
     if (!a || !a.getAttribute) return;
@@ -1866,9 +1971,10 @@ public static class CertBypass {
             } else {
                 $htmlStr = $htmlStr + $interceptScript
             }
+
             $respBytes = [System.Text.Encoding]::UTF8.GetBytes($htmlStr)
         } catch {
-            Write-Log "[WEB-PROXY] HTML inject skip: $($_.Exception.Message)" "DEBUG"
+            Write-Log "[WEB-PROXY] HTML processing skip: $($_.Exception.Message)" "DEBUG"
         }
     }
 
