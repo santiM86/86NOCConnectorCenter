@@ -1746,8 +1746,40 @@ public static class CertBypass {
         }
     }
 
+    # Referer automatico: sempre la home del device ("/") - risolve device paranoici come HP 5130
+    # che restituiscono 404 se non e' presente Referer che punti alla home.
+    if (-not $ihHeaders.ContainsKey("Referer") -and -not $ihHeaders.ContainsKey("referer")) {
+        $refScheme = if ($scheme) { $scheme } else { $schemes[0] }
+        $ihHeaders["Referer"] = "${refScheme}://${deviceIp}:${port}/"
+    }
+    # User-Agent reale (browser standard) - alcuni device rifiutano user-agent custom
+    if (-not $ihHeaders.ContainsKey("User-Agent") -and -not $ihHeaders.ContainsKey("user-agent")) {
+        $ihHeaders["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+    # Accept header realistico
+    if (-not $ihHeaders.ContainsKey("Accept") -and -not $ihHeaders.ContainsKey("accept")) {
+        $ihHeaders["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
+    }
+
     $lastError = $null
     $succeeded = $false
+
+    # Strategia anti-404: se il path NON e' "/" e la sessione non ha ancora cookie,
+    # prima fai un warm-up GET sulla home "/" per popolare cookie jar + stabilire Referer,
+    # poi esegui la richiesta reale. Questo risolve device tipo HP 5130 che richiedono
+    # una sessione "viva" iniziata dalla home.
+    $needsWarmup = ($path -ne "/" -and $path -ne "" -and $method -eq "GET" -and $webSession.Cookies.Count -eq 0)
+    if ($needsWarmup) {
+        $warmScheme = if ($scheme) { $scheme } else { $schemes[0] }
+        $homeUrl = "${warmScheme}://${deviceIp}:${port}/"
+        try {
+            Write-Log "[WEB-PROXY] WARMUP GET $homeUrl (prima di $path)" "DEBUG"
+            [CertBypass]::Enable()
+            Invoke-WebRequest -Uri $homeUrl -UseBasicParsing -TimeoutSec 8 `
+                -WebSession $webSession -MaximumRedirection 3 `
+                -UserAgent $ihHeaders["User-Agent"] -ErrorAction SilentlyContinue | Out-Null
+        } catch { } finally { [CertBypass]::Disable() }
+    }
 
     foreach ($sch in $schemes) {
         $targetUrl = "${sch}://${deviceIp}:${port}${path}"
@@ -1804,6 +1836,42 @@ public static class CertBypass {
             break
         } catch {
             $lastError = $_.Exception.Message
+            # CRITICAL: se il device ha risposto con status HTTP >= 400 (404, 500, etc.),
+            # non e' un vero fallimento di connettivita' - e' il device che ci ha risposto.
+            # Estraggo la response dall'exception e la rispedisco al browser.
+            # Invoke-WebRequest -ErrorAction Stop lancia WebException con una Response embedded.
+            $httpResp = $null
+            try {
+                $httpResp = $_.Exception.Response
+            } catch { }
+            if ($httpResp) {
+                try {
+                    $statusCode = [int]$httpResp.StatusCode
+                    if ($httpResp.ContentType) { $contentType = [string]$httpResp.ContentType }
+                    # Leggi body dallo stream
+                    $respStream = $httpResp.GetResponseStream()
+                    $msE = New-Object System.IO.MemoryStream
+                    $respStream.CopyTo($msE)
+                    $respBytes = $msE.ToArray()
+                    $msE.Dispose()
+                    $respStream.Close()
+                    # Headers
+                    foreach ($hk in $httpResp.Headers.AllKeys) {
+                        $respHeaders[[string]$hk] = [string]$httpResp.Headers[$hk]
+                    }
+                    # Cookies
+                    try {
+                        foreach ($ckc in $webSession.Cookies.GetCookies($targetUrl)) {
+                            $respCookies[[string]$ckc.Name] = [string]$ckc.Value
+                        }
+                    } catch {}
+                    Write-Log "[WEB-PROXY] Device risponde HTTP $statusCode su $targetUrl ($($respBytes.Length) bytes) - passo al browser" "INFO"
+                    $succeeded = $true
+                    break
+                } catch {
+                    Write-Log "[WEB-PROXY] Impossibile estrarre body da HTTP error: $($_.Exception.Message)" "WARN"
+                }
+            }
             Write-Log "[WEB-PROXY] FAIL $targetUrl -> $lastError" "WARN"
             continue
         }
