@@ -322,7 +322,7 @@ function ActiveConsole({ session }) {
         </div>
       )}
 
-      <div className="flex-1 bg-white overflow-auto relative">
+      <div className="flex-1 bg-white overflow-auto relative" style={{ backgroundColor: "#ffffff" }}>
         {session.loading ? (
           <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#0d0d12]/90 z-10 backdrop-blur-sm">
             <div className="relative">
@@ -347,10 +347,41 @@ function ActiveConsole({ session }) {
               </button>
             </div>
           </div>
+        ) : (!session.html || session.html.length < 50) ? (
+          <div className="flex items-center justify-center h-full bg-[#0d0d12] p-6">
+            <div className="text-center max-w-lg">
+              <div className="w-14 h-14 rounded-full bg-amber-500/10 flex items-center justify-center mx-auto mb-4">
+                <Warning size={28} className="text-amber-400" />
+              </div>
+              <p className="text-amber-400 font-bold text-lg mb-2">Risposta vuota dal dispositivo</p>
+              <p className="text-white/60 text-sm leading-relaxed mb-3">
+                Il connector ha ricevuto <b className="text-white">{session.html?.length || 0} byte</b> dal dispositivo{" "}
+                <b className="text-white font-mono">{session.deviceIp}:{session.port}</b>.
+              </p>
+              <p className="text-white/40 text-xs leading-relaxed">
+                Possibili cause: la web UI risponde con redirect JavaScript (non supportato in iframe) · porta sbagliata · device che richiede autenticazione diversa · HTTP vs HTTPS.
+              </p>
+              <div className="flex gap-2 justify-center mt-4">
+                <button onClick={() => reload(session.id)} className="px-4 py-2 rounded-lg bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 text-xs font-bold hover:bg-indigo-500/20">
+                  Riprova
+                </button>
+                <button onClick={() => openExternal(session.id)} className="px-4 py-2 rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-xs font-bold hover:bg-emerald-500/20 inline-flex items-center gap-1.5">
+                  <ArrowSquareOut size={12} /> Apri in nuova tab (LIVE)
+                </button>
+              </div>
+              {session.html && session.html.length > 0 && (
+                <details className="mt-4 text-left">
+                  <summary className="text-[10px] text-white/40 cursor-pointer hover:text-white/60">Mostra body ricevuto (debug)</summary>
+                  <pre className="text-[10px] text-white/50 bg-black/30 p-2 rounded mt-2 overflow-auto max-h-40 font-mono">{session.html.slice(0, 500)}</pre>
+                </details>
+              )}
+            </div>
+          </div>
         ) : (
           <iframe
             srcDoc={(session.html || "").replace(/__ARGUS_PROXY__/g, "")}
             className="w-full h-full border-0"
+            style={{ backgroundColor: "#ffffff" }}
             title="Web Console"
             sandbox="allow-same-origin allow-scripts allow-forms allow-popups allow-modals"
             data-testid="web-console-iframe"
@@ -363,6 +394,14 @@ function ActiveConsole({ session }) {
           <span className="text-[9px] text-white/30 font-mono">{session.deviceIp}:{session.port}</span>
           {session.path && session.path !== "/" && (
             <span className="text-[9px] text-white/20 truncate max-w-[220px] font-mono">{session.path}</span>
+          )}
+          {session.statusCode ? (
+            <span className={`text-[9px] font-mono ${session.statusCode >= 400 ? "text-red-400" : session.statusCode >= 300 ? "text-amber-400" : "text-emerald-400"}`}>
+              HTTP {session.statusCode}
+            </span>
+          ) : null}
+          {typeof session.html === "string" && (
+            <span className="text-[9px] text-white/20 font-mono">{(session.html.length / 1024).toFixed(1)}KB</span>
           )}
         </div>
         <div className="flex items-center gap-2">
