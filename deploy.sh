@@ -42,9 +42,7 @@ cd ..
 # 5. Restart Backend Server
 echo "Restarting backend service..."
 # Important: ensure arslan has visudo NOPASSWD for this exact command
-sudo -n systemctl restart noc-backend
-
-sudo -n systemctl --no-pager status noc-backend
+sudo -n systemctl restart --no-block noc-backend
 
 echo "========================================"
 echo "Deployment Complete at $(date)!"
