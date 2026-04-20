@@ -437,12 +437,40 @@ async def live_proxy(
     scheme = "https" if port in (443, 8443, 4443) else "http"
 
     body_bytes = await request.body()
+    # Header da NON inoltrare al device:
+    # - host/connection/content-length/accept-encoding: ricostruiti dal connector
+    # - origin/referer: contengono argus.86bit.it, confonderebbero il device
+    # - sec-fetch-*: meta browser moderni, rumore
+    # NON droppiamo piu' 'authorization': il browser puo' rispondere a HTTP Basic/Digest
+    # challenge del device, le credenziali DEVONO raggiungerlo. Se rimangono, fine del
+    # prompt login ricorsivo e del "404 con body vuoto".
+    # NON droppiamo piu' 'cookie': ma filtriamo i cookie di ARGUS (vedi sotto).
     dropped_headers = {
         "host", "connection", "content-length", "accept-encoding",
-        "authorization", "cookie", "origin", "referer", "sec-fetch-site",
+        "origin", "referer", "sec-fetch-site",
         "sec-fetch-mode", "sec-fetch-dest", "sec-fetch-user",
     }
-    req_headers = {k: v for k, v in request.headers.items() if k.lower() not in dropped_headers}
+    # Cookie ARGUS da rimuovere (non devono mai raggiungere il device)
+    ARGUS_COOKIE_NAMES = {"jwt_token", "refresh_token", "session", "session_id", "XSRF-TOKEN", "csrftoken"}
+
+    req_headers = {}
+    for k, v in request.headers.items():
+        kl = k.lower()
+        if kl in dropped_headers:
+            continue
+        if kl == "cookie":
+            # Parse cookie header e filtra quelli di ARGUS
+            parts = [c.strip() for c in v.split(";") if c.strip()]
+            kept = []
+            for part in parts:
+                name = part.split("=", 1)[0].strip()
+                if name in ARGUS_COOKIE_NAMES:
+                    continue
+                kept.append(part)
+            if kept:
+                req_headers[k] = "; ".join(kept)
+            continue
+        req_headers[k] = v
 
     audit.info(
         f"[AUDIT] web_console_live | user={tok.get('user_email')} | "
@@ -470,15 +498,25 @@ async def live_proxy(
         pass
 
     # === FALLBACK: device risponde con body vuoto o troppo piccolo ===
-    # Se il device risponde 200/3xx/4xx con body <50 bytes, l'iframe apparirebbe bianco.
-    # Mostriamo invece un placeholder HTML informativo (solo per navigation document,
-    # non per assets come CSS/JS/img che possono legittimamente essere vuoti).
+    # Se il device risponde 4xx/5xx con body <50 bytes, l'iframe apparirebbe bianco.
+    # Mostriamo invece un placeholder HTML informativo.
+    # ECCEZIONE: status 401/407 con header WWW-Authenticate/Proxy-Authenticate
+    # DEVE arrivare al browser cosi com'e', altrimenti non parte il prompt login Basic/Digest.
+    has_auth_challenge = any(
+        k.lower() in ("www-authenticate", "proxy-authenticate")
+        for k in (resp_headers or {})
+    )
     is_doc_request = request.method == "GET" and (
         "text/html" in (content_type or "").lower()
         or not content_type
         or path in ("", "/")
     )
-    if is_doc_request and (not body or len(body) < 50) and status_code >= 400:
+    if (
+        is_doc_request
+        and (not body or len(body) < 50)
+        and status_code >= 400
+        and not has_auth_challenge
+    ):
         placeholder = (
             '<!DOCTYPE html><html><head><meta charset="utf-8">'
             f'<title>Risposta vuota dal device {device_ip}</title>'
@@ -556,7 +594,10 @@ async def live_proxy(
     # CRITICAL: NON propaghiamo ETag/Last-Modified del device, altrimenti il browser
     # ricade sul If-None-Match della cache precedente (es. pre-fix X-Frame-Options).
     # La Web Console e' sempre live — no cache, sempre rete.
-    safe_to_pass = {"vary"}
+    # DOBBIAMO pero' propagare:
+    # - www-authenticate: altrimenti il browser non mostra il prompt Basic/Digest login
+    # - set-cookie: altrimenti lo stato di sessione del device si perde fra richieste
+    safe_to_pass = {"vary", "www-authenticate", "proxy-authenticate", "set-cookie"}
     for k, v in (resp_headers or {}).items():
         kl = k.lower()
         if kl in drop_resp_headers:
