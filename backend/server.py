@@ -43,28 +43,57 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 # ==================== SECURITY HEADERS MIDDLEWARE ====================
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
-    """Add enterprise security headers to all responses."""
+    """Add enterprise security headers to all responses.
+
+    Exception: /api/web-proxy/live/* (Web Console iframe) needs to be embeddable
+    inside the ARGUS app iframe, so X-Frame-Options and CSP frame-ancestors are
+    explicitly relaxed for these paths only.
+    """
     async def dispatch(self, request: Request, call_next):
         response = await call_next(request)
-        # Security headers
-        response.headers["X-Frame-Options"] = "DENY"
+        path = request.url.path or ""
+        is_web_console_live = path.startswith("/api/web-proxy/live/")
+
+        # X-Frame-Options: DENY bloccherebbe l'iframe Web Console.
+        # Per il proxy LIVE permettiamo SAMEORIGIN (iframe dentro argus.86bit.it).
+        response.headers["X-Frame-Options"] = "SAMEORIGIN" if is_web_console_live else "DENY"
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-XSS-Protection"] = "1; mode=block"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=(), payment=()"
-        response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; "
-            "script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
-            "style-src 'self' 'unsafe-inline'; "
-            "img-src 'self' data: blob: https:; "
-            "font-src 'self' data: https:; "
-            "connect-src 'self' wss: ws: https:; "
-            "frame-ancestors 'none';"
-        )
+
+        if is_web_console_live:
+            # CSP rilassata per iframe: permette script/style inline del device remoto,
+            # frame-ancestors 'self' (solo dentro ARGUS). NIENTE upgrade-insecure-requests
+            # perche' il content proxato passa gia' via HTTPS.
+            response.headers["Content-Security-Policy"] = (
+                "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; "
+                "script-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; "
+                "style-src 'self' 'unsafe-inline' data:; "
+                "img-src 'self' data: blob: https: http:; "
+                "font-src 'self' data: https: http:; "
+                "connect-src 'self' https: http: wss: ws:; "
+                "frame-src 'self' data: blob:; "
+                "frame-ancestors 'self';"
+            )
+        else:
+            response.headers["Content-Security-Policy"] = (
+                "default-src 'self'; "
+                "script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
+                "style-src 'self' 'unsafe-inline'; "
+                "img-src 'self' data: blob: https:; "
+                "font-src 'self' data: https:; "
+                "connect-src 'self' wss: ws: https:; "
+                "frame-ancestors 'none';"
+            )
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
         response.headers["X-Permitted-Cross-Domain-Policies"] = "none"
         # Cache Control differenziato
-        if request.url.path.startswith("/api/auth") or request.url.path.startswith("/api/admin"):
+        if is_web_console_live:
+            # La Web Console LIVE imposta gia' i propri header Cache-Control nella route.
+            # Non sovrascriverli qui.
+            pass
+        elif request.url.path.startswith("/api/auth") or request.url.path.startswith("/api/admin"):
             response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, private"
             response.headers["Pragma"] = "no-cache"
         elif request.url.path.startswith("/api"):

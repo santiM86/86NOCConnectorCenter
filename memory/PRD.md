@@ -132,7 +132,23 @@ Refactor completo. Elimina la causa radice del bug iframe nero (srcDoc → origi
 
 **Vantaggi**: nessun aggiornamento Connector richiesto — il fix è tutto lato backend, retrocompatibile con Connector v3.2.1 già in field.
 
-### Web Console LIVE v3.1 — ROOT PATH REWRITING (2026-04-20 sera+)
+### Web Console LIVE v3.2 — FIX FINALE middleware sicurezza (2026-04-20 sera++)
+**Root cause finale trovata da Firefox**: "Impossibile aprire questa pagina, argus.86bit.it non consente di visualizzare la pagina dentro un altro sito". Il middleware globale `SecurityHeadersMiddleware` in `server.py` aggiungeva SEMPRE `X-Frame-Options: DENY` + `CSP: frame-ancestors 'none'` a ogni response. Il mio fix v3 strippava gli header DEL DEVICE, ma il middleware li RIMETTEVA dopo.
+
+**Fix in `server.py`**:
+- Path `/api/web-proxy/live/*` ora riceve `X-Frame-Options: SAMEORIGIN` e CSP con `frame-ancestors 'self'` (permette embedding dentro argus.86bit.it).
+- CSP rilassata anche per script/style/img/font/connect del device proxato (il device e' trusted via capability token).
+- Tutti gli altri endpoint mantengono `DENY` + `frame-ancestors 'none'` (sicurezza invariata).
+
+**Cache-Control in web_console_live.py**: `no-store, no-cache, must-revalidate` + strip ETag/Last-Modified del device per evitare 304 Not Modified che riserviva vecchie response.
+
+**Frontend**: iframe src include `?_t={Date.now()}` per cache-bust assoluto.
+
+**Test curl post-fix**:
+- `/api/app-version` → `X-Frame-Options: DENY` (invariato, sicuro)
+- `/api/web-proxy/live/...` → `X-Frame-Options: SAMEORIGIN`, CSP `frame-ancestors 'self'`, `Cache-Control: no-store`
+
+
 **Secondo DBG JSON** (device iLO 10.100.61.35:443, body_size=13137): iLO HPE risponde con HTML valido di 13KB, content_type `text/html`, MA `x_frame_options: "sameorigin"` e path assoluti root (`href="/favicon.ico"`, `href=css/jquery-ui.css`, ecc.).
 
 **Gap trovato**: il tag `<base href>` NON risolve path che iniziano con `/` (regola HTML: absolute-root paths ignorano `<base>`, vengono risolti contro l'origine corrente argus.86bit.it). Quindi `/css/jquery-ui.css` tentava di caricarsi da `argus.86bit.it/css/jquery-ui.css` → 404.
