@@ -395,11 +395,17 @@ async def live_proxy(
     tok = await _validate_session_token(session_id, device_ip, port)
     client_id = tok["client_id"]
 
-    # Costruisci path completo
+    # Costruisci path completo. Stripping del cache-buster `_t=<ts>` del frontend
+    # che serve solo al browser per forzare no-cache, e NON deve arrivare al device
+    # (alcuni switch legacy come HP 5130 sono paranoici sui query param sconosciuti).
     full_path = "/" + path
     qs = request.url.query
     if qs:
-        full_path = f"{full_path}?{qs}"
+        # Rimuove SOLO _t se presente; preserva tutti gli altri parametri
+        parts = [p for p in qs.split("&") if p and not p.startswith("_t=")]
+        filtered_qs = "&".join(parts)
+        if filtered_qs:
+            full_path = f"{full_path}?{filtered_qs}"
 
     scheme = "https" if port in (443, 8443, 4443) else "http"
 
@@ -420,6 +426,40 @@ async def live_proxy(
         client_id, device_ip, port, scheme, full_path, request.method,
         session_id, body_bytes, req_headers,
     )
+
+    # === FALLBACK: device risponde con body vuoto o troppo piccolo ===
+    # Se il device risponde 200/3xx/4xx con body <50 bytes, l'iframe apparirebbe bianco.
+    # Mostriamo invece un placeholder HTML informativo (solo per navigation document,
+    # non per assets come CSS/JS/img che possono legittimamente essere vuoti).
+    is_doc_request = request.method == "GET" and (
+        "text/html" in (content_type or "").lower()
+        or not content_type
+        or path in ("", "/")
+    )
+    if is_doc_request and (not body or len(body) < 50) and status_code >= 400:
+        placeholder = (
+            '<!DOCTYPE html><html><head><meta charset="utf-8">'
+            f'<title>Risposta vuota dal device {device_ip}</title>'
+            '<style>body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:#0d0d12;color:#c9c9d1;margin:0;padding:0;}'
+            '.wrap{max-width:640px;margin:80px auto;padding:32px;background:#12121a;border:1px solid #1e1e2e;border-radius:12px;}'
+            'h1{color:#fbbf24;margin:0 0 12px 0;font-size:18px;}.detail{color:#8a8a9a;font-size:13px;line-height:1.6;margin:14px 0;}'
+            '.target{background:#0f0f17;padding:10px 14px;border-radius:8px;font-family:monospace;font-size:12px;color:#a78bfa;border:1px solid #1e1e2e;}'
+            '.hint{background:#1a1a2e;padding:12px 14px;border-left:3px solid #6366f1;margin-top:18px;font-size:12px;line-height:1.6;color:#b0b0c0;border-radius:0 6px 6px 0;}'
+            '</style></head><body><div class="wrap">'
+            f'<h1>⚠️ Device ha risposto HTTP {status_code} con body vuoto</h1>'
+            f'<div class="target">{request.method} {device_ip}:{port}{full_path}</div>'
+            f'<p class="detail">Il device <b>{device_ip}</b> ha risposto con HTTP <b>{status_code}</b> e nessun contenuto. '
+            'Questa e\' una risposta del device stesso, non del proxy ARGUS.</p>'
+            '<div class="hint"><b>Cosa fare:</b><br>'
+            '&bull; Se il path e\' <code>/frame/login.html</code> o simile: il device richiede un cookie di sessione '
+            'non ancora stabilito. Torna alla home (icona &#127968; in alto) e rifai.<br>'
+            '&bull; Il device potrebbe richiedere autenticazione basic/digest non gestita dal proxy.<br>'
+            '&bull; Prova a usare <b>"Apri in nuova tab"</b> per fare un test diretto del LIVE proxy.'
+            '</div></div></body></html>'
+        )
+        body = placeholder.encode("utf-8")
+        content_type = "text/html; charset=utf-8"
+        status_code = 200
 
     # === CONTENT-TYPE SNIFFING (fix "icona file rotto") ===
     # Alcuni device (iLO vecchi, HP 5130, firewall legacy) rispondono con Content-Type
