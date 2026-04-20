@@ -132,6 +132,14 @@ Refactor completo. Elimina la causa radice del bug iframe nero (srcDoc → origi
 
 **Vantaggi**: nessun aggiornamento Connector richiesto — il fix è tutto lato backend, retrocompatibile con Connector v3.2.1 già in field.
 
+### Web Console LIVE v3.3 — FIX HTTP AUTH Basic/Digest (2026-04-20 notte++)
+**Intuizione utente confermata corretta**: il proxy strippava `Authorization` dalle request browser→device e `WWW-Authenticate` dalle response device→browser. Risultato: i device con HTTP Basic/Digest auth (firewall, iLO legacy, switch enterprise) non mostravano mai il prompt di login → browser vedeva 401 o pagine vuote → iframe bianco.
+
+**Fix `web_console_live.py`**:
+- **Request**: rimosso `authorization` dalla blacklist header (il browser invia le credenziali Basic/Digest, ora raggiungono il device). Rimosso `cookie` dalla blacklist: ora filtriamo solo cookie ARGUS noti (`jwt_token`, `refresh_token`, `session*`, `XSRF-TOKEN`, `csrftoken`), tutti gli altri passano (sessione device preservata cross-request).
+- **Response**: aggiunto `www-authenticate`, `proxy-authenticate`, `set-cookie` a `safe_to_pass`. Ora il browser riceve il challenge `WWW-Authenticate: Basic realm="iLO"` e apre il prompt nativo login.
+- **Placeholder 404 body vuoto**: non sostituisce più se `status >= 400` ma header `WWW-Authenticate` presente (altrimenti mangerebbe il prompt login).
+
 ### Redfish/iLO Diagnose endpoint (2026-04-20 notte+)
 **Problema utente**: iLO raggiungibile ma dati non live in ARGUS.
 
