@@ -3,14 +3,19 @@ import axios from "axios";
 import { API } from "@/App";
 import {
   Monitor, Globe, ArrowClockwise, X, ShieldCheck, Warning,
-  CaretLeft, ArrowSquareOut, House,
+  ArrowSquareOut, House, CaretLeft,
 } from "@phosphor-icons/react";
 
 /**
- * WebConsoleTabs — modello srcDoc (v2-compatibile, pulito).
- * Il connector restituisce HTML (auto-follow JS redirect + inlining CSS/IMG in v3.2.0+).
- * L'iframe riceve l'HTML via srcDoc. Click/submit intercettati via postMessage.
- * Per device complessi: pulsante "Apri in nuova tab" → usa architettura LIVE proxy.
+ * WebConsoleTabs — ARCHITETTURA LIVE (enterprise-grade, v4).
+ *
+ * - POST /api/web-console/session → capability token (UUID) + iframe_url.
+ * - <iframe src={iframe_url}> ha ORIGINE argus.86bit.it → cookie, XHR, JS funzionano.
+ * - Backend /api/web-proxy/live/{sid}/{ip}/{port}/{path} proxa via connector, inietta
+ *   <base href> → CSS/JS/IMG/XHR relativi vengono auto-proxati dal browser.
+ * - Navigation/back/submit: nativi browser, nessun postMessage hack.
+ * - Service Worker bypassa /api/web-proxy/live/ (sw.js v4).
+ * - Multi-tab dock preservato. Refocus se stesso device+port gia' aperto.
  */
 
 const WebConsoleContext = createContext(null);
@@ -21,12 +26,21 @@ export function useWebConsoleTabs() {
   return ctx;
 }
 
+function buildIframeUrl(iframeUrl) {
+  // iframeUrl dal backend e' un path assoluto tipo /api/web-proxy/live/.../
+  // Lo rendiamo assoluto con l'origine del frontend per evitare ambiguita' in iframe.
+  try {
+    return new URL(iframeUrl, window.location.origin).toString();
+  } catch {
+    return iframeUrl;
+  }
+}
+
 export function WebConsoleTabsProvider({ children }) {
   const [sessions, setSessions] = useState([]);
   const [activeId, setActiveId] = useState(null);
   const [minimized, setMinimized] = useState(false);
   const sessionsRef = useRef([]);
-  const abortsRef = useRef({});
 
   useEffect(() => { sessionsRef.current = sessions; }, [sessions]);
 
@@ -34,133 +48,74 @@ export function WebConsoleTabsProvider({ children }) {
     setSessions(prev => prev.map(s => s.id === id ? { ...s, ...patch } : s));
   }, []);
 
-  const _runSession = useCallback(async (id, clientId, deviceIp, port, path, controller, opts = {}) => {
-    const t0 = performance.now();
-    const session = sessionsRef.current.find(s => s.id === id);
-    const sessionId = session?.sessionId || id;
-    const method = opts.method || "GET";
-    const body = opts.body || "";
-    try {
-      const reqRes = await axios.post(
-        `${API}/connector/web-proxy/request`,
-        {
-          client_id: clientId, device_ip: deviceIp,
-          port: port || 80, path: path || "/",
-          method, session_id: sessionId, body, body_encoding: "text",
-          headers: opts.contentType ? { "Content-Type": opts.contentType } : {},
-        },
-        { signal: controller.signal }
-      );
-      const requestId = reqRes.data?.request_id;
-      if (!requestId) throw new Error("Backend senza request_id");
-      updateSession(id, { progress: 30, requestId, sessionId });
-
-      const resp = await axios.get(
-        `${API}/connector/web-proxy/response/${requestId}?wait=25`,
-        { signal: controller.signal, timeout: 30000 }
-      );
-      const loadTime = performance.now() - t0;
-
-      if (resp.data.status !== "completed" || !resp.data.response) {
-        let hint = "Verifica che il servizio <b>86NocConnector</b> sia attivo e il dispositivo raggiungibile.";
-        let errorLabel = "Connettore non risponde";
-        try {
-          const st = await axios.get(`${API}/connector/status`);
-          const row = Array.isArray(st.data) ? st.data.find(r => r.client_id === clientId) : null;
-          if (row) {
-            const v = row.connector_version || "?";
-            const isOld = /^(1\.|2\.|3\.0\.[0-2]$|3\.1\.[0-6]$)/.test(v);
-            if (row.is_offline) {
-              errorLabel = `Connettore OFFLINE (ultimo: ${row.last_seen ? new Date(row.last_seen).toLocaleString("it-IT") : "?"})`;
-              hint = `Il connector <b>${row.hostname || ""}</b> (v${v}) risulta offline.`;
-            } else if (isOld) {
-              errorLabel = `Connettore v${v} obsoleto`;
-              hint = `Per la Web Console serve <b>v3.2.0+</b>. Aggiorna dal tray.`;
-            }
-          }
-        } catch (_) {}
-        updateSession(id, {
-          loading: false, progress: 100,
-          html: `<div style="padding:40px;text-align:center;font-family:system-ui"><h2 style="color:#FF3B30;margin-bottom:12px">${errorLabel}</h2><p style="color:#888;line-height:1.6">${hint}</p></div>`,
-          error: errorLabel, loadTime,
-        });
-        return;
-      }
-
-      const r = resp.data.response;
-      updateSession(id, {
-        loading: false, progress: 100,
-        html: r.body || "",
-        title: r.title || `${deviceIp}:${port}${path}`,
-        error: r.error, statusCode: r.status_code,
-        loadTime,
-      });
-    } catch (e) {
-      if (axios.isCancel(e) || e.name === "CanceledError" || e.name === "AbortError") return;
-      const loadTime = performance.now() - t0;
-      const status = e.response?.status;
-      const detail = e.response?.data?.detail;
-      let errLabel = detail || e.message || "Errore sconosciuto";
-      let html = `<div style="padding:40px;text-align:center;font-family:system-ui"><h2 style="color:#FF3B30;margin-bottom:12px">Errore</h2><p style="color:#888;line-height:1.6">${errLabel}</p></div>`;
-      if (status === 403 && /not authorized/i.test(detail || "")) {
-        errLabel = "Dispositivo non censito";
-        html = `<div style="padding:40px;text-align:center;font-family:system-ui;max-width:480px;margin:0 auto"><h2 style="color:#FF3B30;margin-bottom:12px">Dispositivo non censito</h2><p style="color:#aaa;line-height:1.6">Il dispositivo <b style="color:#fff">${deviceIp}:${port}</b> non risulta registrato per questo cliente.</p></div>`;
-      } else if (status === 401) errLabel = "Sessione scaduta";
-      else if (status === 404) errLabel = "Richiesta scaduta";
-      updateSession(id, { loading: false, progress: 100, html, error: errLabel, loadTime });
-    } finally {
-      delete abortsRef.current[id];
-    }
-  }, [updateSession]);
-
-  const open = useCallback((clientId, deviceIp, port, path) => {
-    const existing = sessionsRef.current.find(s => s.deviceIp === deviceIp && s.port === port);
+  const open = useCallback(async (clientId, deviceIp, port, path) => {
+    const p = port || 80;
+    // Dedup: stesso device+port -> refocus
+    const existing = sessionsRef.current.find(s => s.deviceIp === deviceIp && s.port === p);
     if (existing) {
       setActiveId(existing.id);
       setMinimized(false);
       return existing.id;
     }
-    const id = `wc-${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
-    const newSession = {
-      id, clientId, deviceIp, port: port || 80, path: path || "/",
-      title: `${deviceIp}:${port}`, loading: true, progress: 10,
-      html: null, error: null, loadTime: null, sessionId: id,
+
+    const id = `wc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const placeholder = {
+      id, clientId, deviceIp, port: p, path: path || "/",
+      title: `${deviceIp}:${p}`,
+      loading: true, error: null, iframeUrl: null, sessionId: null,
+      iframeKey: 0, loadTime: null, startedAt: performance.now(),
     };
-    setSessions(prev => [...prev, newSession]);
+    setSessions(prev => [...prev, placeholder]);
     setActiveId(id);
     setMinimized(false);
-    const controller = new AbortController();
-    abortsRef.current[id] = controller;
-    _runSession(id, clientId, deviceIp, port, path, controller);
+
+    try {
+      const res = await axios.post(`${API}/web-console/session`, {
+        device_ip: deviceIp, port: p,
+      }, { timeout: 15000 });
+      const sid = res.data?.session_id;
+      const url = res.data?.iframe_url;
+      if (!sid || !url) throw new Error("Backend senza session_id/iframe_url");
+      const absUrl = buildIframeUrl(url);
+      updateSession(id, {
+        loading: false, sessionId: sid, iframeUrl: absUrl,
+      });
+    } catch (e) {
+      const status = e.response?.status;
+      const detail = e.response?.data?.detail || e.message;
+      let msg = detail;
+      if (status === 403) msg = "Dispositivo non autorizzato per questo utente/cliente.";
+      else if (status === 401) msg = "Sessione ARGUS scaduta, rieffettua il login.";
+      updateSession(id, { loading: false, error: msg });
+    }
     return id;
-  }, [_runSession]);
+  }, [updateSession]);
 
   const reload = useCallback((id) => {
     const s = sessionsRef.current.find(x => x.id === id);
     if (!s) return;
-    if (abortsRef.current[id]) { try { abortsRef.current[id].abort(); } catch {} }
-    const controller = new AbortController();
-    abortsRef.current[id] = controller;
-    updateSession(id, { loading: true, progress: 10, html: null, error: null, loadTime: null });
-    _runSession(id, s.clientId, s.deviceIp, s.port, s.path, controller);
-  }, [_runSession, updateSession]);
+    updateSession(id, { iframeKey: (s.iframeKey || 0) + 1, loadTime: null, startedAt: performance.now() });
+  }, [updateSession]);
 
-  const navigate = useCallback((id, newPath, opts = {}) => {
+  const goHome = useCallback((id) => {
     const s = sessionsRef.current.find(x => x.id === id);
-    if (!s) return;
-    if (abortsRef.current[id]) { try { abortsRef.current[id].abort(); } catch {} }
-    const controller = new AbortController();
-    abortsRef.current[id] = controller;
-    updateSession(id, { loading: true, progress: 10, html: null, error: null, loadTime: null, path: newPath });
-    _runSession(id, s.clientId, s.deviceIp, s.port, newPath, controller, opts);
-  }, [_runSession, updateSession]);
+    if (!s || !s.iframeUrl) return;
+    // Risetta src alla base -> iframe torna alla home del device
+    const baseUrl = s.iframeUrl;
+    updateSession(id, { iframeUrl: null });
+    setTimeout(() => updateSession(id, { iframeUrl: baseUrl, iframeKey: (s.iframeKey || 0) + 1 }), 10);
+  }, [updateSession]);
 
   const close = useCallback((id) => {
-    if (abortsRef.current[id]) { try { abortsRef.current[id].abort(); } catch {} delete abortsRef.current[id]; }
-    setSessions(prev => prev.filter(s => s.id !== id));
+    const s = sessionsRef.current.find(x => x.id === id);
+    if (s?.sessionId) {
+      // Fire-and-forget: revoca token lato server (best-effort)
+      axios.delete(`${API}/web-console/session/${s.sessionId}`).catch(() => {});
+    }
+    setSessions(prev => prev.filter(x => x.id !== id));
     setActiveId(prev => {
       if (prev !== id) return prev;
-      const remaining = sessionsRef.current.filter(s => s.id !== id);
+      const remaining = sessionsRef.current.filter(x => x.id !== id);
       return remaining.length ? remaining[remaining.length - 1].id : null;
     });
   }, []);
@@ -168,54 +123,42 @@ export function WebConsoleTabsProvider({ children }) {
   const setActive = useCallback((id) => { setActiveId(id); setMinimized(false); }, []);
   const minimize = useCallback(() => setMinimized(true), []);
   const closeAll = useCallback(() => {
-    Object.values(abortsRef.current).forEach(c => { try { c.abort(); } catch {} });
-    abortsRef.current = {};
+    sessionsRef.current.forEach(s => {
+      if (s.sessionId) axios.delete(`${API}/web-console/session/${s.sessionId}`).catch(() => {});
+    });
     setSessions([]);
     setActiveId(null);
   }, []);
-  const goHome = useCallback((id) => navigate(id, "/"), [navigate]);
 
-  // Apri in NUOVA tab usando l'architettura LIVE proxy (bypass srcDoc limits)
-  const openExternal = useCallback(async (id) => {
+  // Apri LIVE proxy in NUOVA tab del browser (bypass iframe completamente)
+  const openExternal = useCallback((id) => {
     const s = sessionsRef.current.find(x => x.id === id);
-    if (!s) return;
-    try {
-      const res = await axios.post(`${API}/web-console/session`, {
-        device_ip: s.deviceIp, port: s.port,
-      });
-      if (res.data?.iframe_url) {
-        window.open(res.data.iframe_url, "_blank", "noopener");
-      }
-    } catch (e) {
-      alert("Impossibile aprire sessione esterna: " + (e.response?.data?.detail || e.message));
-    }
+    if (!s?.iframeUrl) return;
+    window.open(s.iframeUrl, "_blank", "noopener");
   }, []);
 
-  // Intercept postMessage da iframe (click/submit interceptor v3.1.7+)
+  // postMessage listener: iframe invia title del device -> propaga nel chrome
   useEffect(() => {
     const handler = (event) => {
       const d = event.data;
-      if (!d || typeof d !== "object" || !activeId) return;
-      if (d.type === "argus-proxy-navigate") {
-        let p = String(d.path || "/");
-        p = p.replace(/^https?:\/\/[^/]+/i, "").replace(/^__ARGUS_PROXY__/, "");
-        if (!p.startsWith("/")) p = "/" + p;
-        navigate(activeId, p, { method: d.method || "GET", body: d.body || "", contentType: d.contentType });
-      } else if (d.type === "proxy-navigate") { // retro-compat v3.1.6
-        let p = d.path;
-        if (d.baseUrl && p.startsWith(d.baseUrl)) p = p.replace(d.baseUrl, "");
-        if (!p.startsWith("/")) p = "/" + p;
-        navigate(activeId, p);
+      if (!d || typeof d !== "object") return;
+      if (d.type === "argus-title" && typeof d.title === "string") {
+        setSessions(prev => prev.map(s => {
+          // Applica il title alla sessione attiva (l'origine postMessage e' same-origin ma non possiamo filtrare meglio)
+          if (s.id === activeId) return { ...s, title: d.title };
+          return s;
+        }));
       }
     };
     window.addEventListener("message", handler);
     return () => window.removeEventListener("message", handler);
-  }, [activeId, navigate]);
+  }, [activeId]);
 
   const value = {
     sessions, activeId, minimized,
-    open, reload, navigate, close, setActive, minimize, closeAll, goHome, openExternal,
+    open, reload, close, setActive, minimize, closeAll, goHome, openExternal,
   };
+
   return (
     <WebConsoleContext.Provider value={value}>
       {children}
@@ -272,6 +215,29 @@ function MinimizedDock() {
 
 function ActiveConsole({ session }) {
   const { sessions, setActive, close, reload, goHome, minimize, openExternal } = useWebConsoleTabs();
+  const iframeRef = useRef(null);
+  const [iframeLoaded, setIframeLoaded] = useState(false);
+  const [loadTime, setLoadTime] = useState(null);
+
+  useEffect(() => {
+    setIframeLoaded(false);
+    setLoadTime(null);
+  }, [session.iframeKey, session.iframeUrl]);
+
+  const onIframeLoad = useCallback(() => {
+    setIframeLoaded(true);
+    if (session.startedAt) {
+      setLoadTime(Math.round(performance.now() - session.startedAt));
+    }
+  }, [session.startedAt]);
+
+  // Back: usa history.back dell'iframe (same-origin, funziona)
+  const goBack = useCallback(() => {
+    try {
+      iframeRef.current?.contentWindow?.history.back();
+    } catch {}
+  }, []);
+
   return (
     <div className="fixed inset-0 md:inset-4 z-50 flex flex-col bg-[#0d0d12] md:rounded-2xl overflow-hidden border border-[#2a2a3e] shadow-2xl shadow-black/50" data-testid="web-console-active">
       <div className="flex items-center gap-2 px-3 py-2 bg-[#12121a] border-b border-[#1e1e2e] flex-shrink-0">
@@ -290,19 +256,22 @@ function ActiveConsole({ session }) {
           </div>
         </div>
         <div className="flex items-center gap-1 flex-shrink-0">
-          {session.loadTime && !session.loading && (
+          {loadTime != null && iframeLoaded && (
             <span className="text-[9px] text-white/30 font-mono px-2">
-              {session.loadTime < 1000 ? `${Math.round(session.loadTime)}ms` : `${(session.loadTime / 1000).toFixed(2)}s`}
+              {loadTime < 1000 ? `${loadTime}ms` : `${(loadTime / 1000).toFixed(2)}s`}
             </span>
           )}
-          <button onClick={() => openExternal(session.id)} className="p-1.5 rounded hover:bg-indigo-500/10 text-indigo-400 transition-colors" title="Apri in nuova tab (LIVE proxy)" data-testid="web-console-open-external">
-            <ArrowSquareOut size={14} />
+          <button onClick={goBack} className="p-1.5 rounded hover:bg-white/5 text-white/40 hover:text-white/80" title="Indietro" data-testid="web-console-back">
+            <CaretLeft size={14} />
           </button>
           <button onClick={() => goHome(session.id)} className="p-1.5 rounded hover:bg-white/5 text-white/40 hover:text-white/80" title="Home" data-testid="web-console-home">
             <House size={14} />
           </button>
           <button onClick={() => reload(session.id)} className="p-1.5 rounded hover:bg-white/5 text-white/40 hover:text-white/80" title="Ricarica" data-testid="web-console-reload">
             <ArrowClockwise size={14} />
+          </button>
+          <button onClick={() => openExternal(session.id)} className="p-1.5 rounded hover:bg-indigo-500/10 text-indigo-400 transition-colors" title="Apri in nuova tab" data-testid="web-console-open-external">
+            <ArrowSquareOut size={14} />
           </button>
         </div>
       </div>
@@ -322,92 +291,65 @@ function ActiveConsole({ session }) {
         </div>
       )}
 
-      <div className="flex-1 bg-white overflow-auto relative" style={{ backgroundColor: "#ffffff" }}>
+      <div className="flex-1 bg-white overflow-hidden relative" style={{ backgroundColor: "#ffffff" }}>
         {session.loading ? (
-          <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#0d0d12]/90 z-10 backdrop-blur-sm">
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#0d0d12]/95 z-10 backdrop-blur-sm">
             <div className="relative">
               <div className="w-12 h-12 rounded-full border-2 border-indigo-500/20 border-t-indigo-500 animate-spin" />
               <Monitor size={20} className="text-indigo-400 absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2" />
             </div>
             <div className="text-center mt-4">
-              <p className="text-white/70 text-sm font-medium">Caricamento {session.deviceIp}...</p>
-              <p className="text-white/30 text-[10px] mt-2 font-mono">via 86NocConnector</p>
+              <p className="text-white/70 text-sm font-medium">Apertura sessione {session.deviceIp}...</p>
+              <p className="text-white/30 text-[10px] mt-2 font-mono">LIVE proxy · capability token</p>
             </div>
           </div>
-        ) : session.error && !session.html ? (
+        ) : session.error ? (
           <div className="flex items-center justify-center h-full bg-[#0d0d12] p-6">
             <div className="text-center max-w-md">
               <div className="w-14 h-14 rounded-full bg-red-500/10 flex items-center justify-center mx-auto mb-4">
                 <Warning size={28} className="text-red-400" />
               </div>
-              <p className="text-red-400 font-bold text-lg mb-2">Connessione Fallita</p>
+              <p className="text-red-400 font-bold text-lg mb-2">Impossibile aprire la Web Console</p>
               <p className="text-white/60 text-sm leading-relaxed">{session.error}</p>
               <button onClick={() => reload(session.id)} className="mt-4 px-4 py-2 rounded-lg bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 text-xs font-bold hover:bg-indigo-500/20">
                 Riprova
               </button>
             </div>
           </div>
-        ) : (!session.html || session.html.length < 50) ? (
-          <div className="flex items-center justify-center h-full bg-[#0d0d12] p-6">
-            <div className="text-center max-w-lg">
-              <div className="w-14 h-14 rounded-full bg-amber-500/10 flex items-center justify-center mx-auto mb-4">
-                <Warning size={28} className="text-amber-400" />
+        ) : session.iframeUrl ? (
+          <>
+            {!iframeLoaded && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#0d0d12]/95 z-10 backdrop-blur-sm pointer-events-none">
+                <div className="w-10 h-10 rounded-full border-2 border-indigo-500/20 border-t-indigo-500 animate-spin" />
+                <p className="text-white/50 text-xs mt-3 font-mono">Caricamento device...</p>
               </div>
-              <p className="text-amber-400 font-bold text-lg mb-2">Risposta vuota dal dispositivo</p>
-              <p className="text-white/60 text-sm leading-relaxed mb-3">
-                Il connector ha ricevuto <b className="text-white">{session.html?.length || 0} byte</b> dal dispositivo{" "}
-                <b className="text-white font-mono">{session.deviceIp}:{session.port}</b>.
-              </p>
-              <p className="text-white/40 text-xs leading-relaxed">
-                Possibili cause: la web UI risponde con redirect JavaScript (non supportato in iframe) · porta sbagliata · device che richiede autenticazione diversa · HTTP vs HTTPS.
-              </p>
-              <div className="flex gap-2 justify-center mt-4">
-                <button onClick={() => reload(session.id)} className="px-4 py-2 rounded-lg bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 text-xs font-bold hover:bg-indigo-500/20">
-                  Riprova
-                </button>
-                <button onClick={() => openExternal(session.id)} className="px-4 py-2 rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-xs font-bold hover:bg-emerald-500/20 inline-flex items-center gap-1.5">
-                  <ArrowSquareOut size={12} /> Apri in nuova tab (LIVE)
-                </button>
-              </div>
-              {session.html && session.html.length > 0 && (
-                <details className="mt-4 text-left">
-                  <summary className="text-[10px] text-white/40 cursor-pointer hover:text-white/60">Mostra body ricevuto (debug)</summary>
-                  <pre className="text-[10px] text-white/50 bg-black/30 p-2 rounded mt-2 overflow-auto max-h-40 font-mono">{session.html.slice(0, 500)}</pre>
-                </details>
-              )}
-            </div>
-          </div>
-        ) : (
-          <iframe
-            srcDoc={(session.html || "").replace(/__ARGUS_PROXY__/g, "")}
-            className="w-full h-full border-0"
-            style={{ backgroundColor: "#ffffff" }}
-            title="Web Console"
-            sandbox="allow-same-origin allow-scripts allow-forms allow-popups allow-modals"
-            data-testid="web-console-iframe"
-          />
-        )}
+            )}
+            <iframe
+              ref={iframeRef}
+              key={`${session.id}-${session.iframeKey}`}
+              src={session.iframeUrl}
+              onLoad={onIframeLoad}
+              className="w-full h-full border-0"
+              style={{ backgroundColor: "#ffffff" }}
+              title={`Web Console ${session.deviceIp}`}
+              sandbox="allow-same-origin allow-scripts allow-forms allow-popups allow-modals allow-downloads allow-top-navigation-by-user-activation"
+              data-testid="web-console-iframe"
+            />
+          </>
+        ) : null}
       </div>
 
       <div className="flex items-center justify-between px-3 py-1 border-t border-[#1e1e2e] bg-[#0f0f17] flex-shrink-0">
         <div className="flex items-center gap-3">
           <span className="text-[9px] text-white/30 font-mono">{session.deviceIp}:{session.port}</span>
-          {session.path && session.path !== "/" && (
-            <span className="text-[9px] text-white/20 truncate max-w-[220px] font-mono">{session.path}</span>
-          )}
-          {session.statusCode ? (
-            <span className={`text-[9px] font-mono ${session.statusCode >= 400 ? "text-red-400" : session.statusCode >= 300 ? "text-amber-400" : "text-emerald-400"}`}>
-              HTTP {session.statusCode}
-            </span>
-          ) : null}
-          {typeof session.html === "string" && (
-            <span className="text-[9px] text-white/20 font-mono">{(session.html.length / 1024).toFixed(1)}KB</span>
+          {session.iframeUrl && (
+            <span className="text-[9px] text-emerald-400/70 font-mono uppercase">LIVE proxy</span>
           )}
         </div>
         <div className="flex items-center gap-2">
-          <span className={`w-1.5 h-1.5 rounded-full ${session.loading ? "bg-amber-400 animate-pulse" : session.error ? "bg-red-400" : "bg-emerald-400"}`} />
+          <span className={`w-1.5 h-1.5 rounded-full ${session.loading ? "bg-amber-400 animate-pulse" : session.error ? "bg-red-400" : iframeLoaded ? "bg-emerald-400" : "bg-amber-400 animate-pulse"}`} />
           <span className="text-[9px] text-white/30">
-            {session.loading ? "Caricamento..." : session.error ? "Errore" : "Connesso"}
+            {session.loading ? "Apertura..." : session.error ? "Errore" : iframeLoaded ? "Connesso" : "Caricamento..."}
           </span>
         </div>
       </div>

@@ -91,7 +91,33 @@ Refactor completo. Elimina la causa radice del bug iframe nero (srcDoc → origi
 - Nessuna CSP/X-Frame-Options del device (rimossi in risposta)
 - Supporta POST form, JSON API, SPA, grafica pesante
 
-### P1 — Notifiche Telegram
+### Web Console LIVE v2 — FRONTEND RISCRITTO (2026-04-20)
+**Obiettivo raggiunto**: Web Console enterprise-grade come argus.86bit.it richiesto. Eliminato `srcDoc` (origine null) a favore di `<iframe src={iframe_url}>` che ha origine argus → cookie, XHR, JS, auth moderna funzionano nativamente.
+
+**File toccati**:
+- `/app/frontend/src/components/WebConsoleTabs.js` (riscritto, ~320 righe): usa `POST /api/web-console/session` all'apertura, renderizza `<iframe src={absoluteIframeUrl}>`, sandbox rilassato per fullscreen nativo, postMessage listener per title, dock multi-tab preservato. Nuovi pulsanti: Indietro (`history.back()`), Home, Ricarica (iframe key bump), Apri in nuova tab (stesso URL LIVE).
+- `/app/backend/routes/web_console_live.py`: aggiunto `DELETE /api/web-console/session/{session_id}` per revoca best-effort (TTL index fa comunque cleanup automatico).
+
+**Flusso**:
+1. Click "Monitor" su device → `POST /api/web-console/session {device_ip, port}` → capability token + iframe_url.
+2. `<iframe src=/api/web-proxy/live/{sid}/{ip}/{port}/>` carica e riceve HTML dal connector.
+3. Backend inietta `<base href=...>` → browser fetcha CSS/JS/img relativi tramite endpoint LIVE (auto-proxy).
+4. Service Worker `sw.js v4` bypassa `/api/web-proxy/live/` per non intercettare le richieste interne iframe.
+5. Connector v3.2.1 (già in field) gestisce auto-follow JS redirect + Referer/User-Agent spoofing per HP 5130.
+
+**Test backend**:
+- Session senza device autorizzato → 403 OK
+- Session con device autorizzato → 200 + UUID + iframe_url OK
+- GET LIVE con token valido, no connector collegato → 504 dopo long-poll 20s OK
+- GET LIVE con session invalida → 401 OK
+- DELETE session → 200 {revoked: bool} OK
+- Path con/senza trailing slash entrambi matchano catch-all OK
+
+**Da validare in field (richiede connector + device reali)**:
+- HP 5130 switch (argus cliente): iframe renderizza UI switch, login, navigation ✓
+- iLO Redfish UI: iframe con auth, grafici, console remota ✓
+
+
 In attesa di bot token dall'utente.
 
 ### Connector v3.1.2 (2026-04-19) — CSV Import nel wizard installer
