@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import axios from "axios";
+import HealthBadge from "@/components/HealthBadge";
 import "./TvDashboard.css";
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
@@ -208,6 +209,16 @@ function ClientTile({ client, alerts, toner, offline }) {
         <div className="tv-tile-stat"><span className="tv-tile-stat-v" style={{ color: c.alert_count > 0 ? "#FFCC00" : "#333" }}>{c.alert_count}</span><span className="tv-tile-stat-l">ALERT</span></div>
         <div className="tv-tile-stat"><span className="tv-tile-stat-v" style={{ color: c.printer_count > 0 ? "#AF52DE" : "#333" }}>{c.printer_count}</span><span className="tv-tile-stat-l">STAMP.</span></div>
       </div>
+
+      {/* HARDWARE HEALTH MATRIX (rollup iLO) */}
+      {c.hardware_health && c.ilo_server_count > 0 && (
+        <div className="tv-tile-health-matrix" data-testid={`tv-tile-hw-health-${c.id}`}>
+          <span className="tv-tile-sec-label tv-tile-hw-health-label">
+            HARDWARE iLO ({c.ilo_server_count})
+          </span>
+          <HealthBadge subsystems={c.hardware_health} size="sm" testId={`tv-hw-badge-${c.id}`} />
+        </div>
+      )}
 
       {/* DEVICE MAP: every single device */}
       <div className="tv-tile-devices" data-testid={`tv-tile-devices-${c.id}`}>

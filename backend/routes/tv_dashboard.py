@@ -9,6 +9,105 @@ logger = logging.getLogger("tv_dashboard")
 router = APIRouter(prefix="/api/tv", tags=["tv-dashboard"])
 
 
+# --- Hardware Health Matrix aggregation helpers ------------------------------
+
+_RANK = {"critical": 3, "warning": 2, "ok": 1, "unknown": 0}
+_SUBSYSTEM_KEYS = ("system", "thermal", "fans", "power", "memory", "storage", "processors", "network")
+
+
+def _norm_health(h):
+    h = (h or "").lower().strip()
+    if h in ("critical", "failed", "fatal"):
+        return "critical"
+    if h in ("warning", "degraded", "predictive"):
+        return "warning"
+    if h in ("ok", "good"):
+        return "ok"
+    return "unknown"
+
+
+def _worst(a: str, b: str) -> str:
+    return a if _RANK.get(a, 0) >= _RANK.get(b, 0) else b
+
+
+def _agg(items, getter=lambda x: x.get("health")):
+    """Return worst-of across items, ignoring unknown. Returns 'unknown' if no valid item."""
+    worst = "unknown"
+    seen = False
+    for it in items or []:
+        v = _norm_health(getter(it))
+        if v == "unknown":
+            continue
+        seen = True
+        worst = _worst(worst, v)
+    return worst if seen else "unknown"
+
+
+def _compute_subsystems_for_device(poll_doc: dict) -> dict:
+    """Compute 8-subsystem health from a single device_poll_status doc (iLO)."""
+    rf = (poll_doc.get("redfish") or {}) if poll_doc else {}
+    hw = (poll_doc.get("hardware") or {}) if poll_doc else {}
+    # Thermal from hardware.temperatures (filter stale)
+    temps = [t for t in (hw.get("temperatures") or []) if not t.get("stale")]
+    thermal = _agg(temps, lambda t: t.get("condition") or t.get("health"))
+    # Fans
+    fans = [f for f in (hw.get("fans") or []) if not f.get("stale")]
+    fans_h = _agg(fans, lambda f: f.get("condition") or f.get("health"))
+    # PSUs
+    psus = hw.get("power_supplies") or []
+    power_h = _agg(psus, lambda p: p.get("condition") or p.get("health"))
+    # Memory
+    dimms = [d for d in (rf.get("memory_dimms") or []) if (d.get("capacity_mb") or 0) > 0]
+    memory_h = _agg(dimms)
+    # Storage (controllers + drives + failure_predicted)
+    storage_items = []
+    for ctrl in (rf.get("storage_controllers") or []):
+        storage_items.append({"health": ctrl.get("health")})
+        for dr in (ctrl.get("drives") or []):
+            storage_items.append({"health": dr.get("health")})
+            if dr.get("failure_predicted"):
+                storage_items.append({"health": "warning"})
+    storage_h = _agg(storage_items)
+    # Network (only NICs that are up or were configured)
+    nic_items = []
+    for nic in (rf.get("network_adapters") or []):
+        ls = (nic.get("link_status") or "").lower()
+        if ls == "linkdown" and nic.get("speed_mbps"):
+            nic_items.append({"health": "warning"})
+        elif ls in ("linkup", "up"):
+            nic_items.append({"health": nic.get("health") or "ok"})
+    network_h = _agg(nic_items)
+    # Processors: aggregated from CPU-named temperature sensors (proxy)
+    cpu_t = [t for t in temps if (t.get("locale") or t.get("name") or "").lower() and
+             ("cpu" in (t.get("locale") or t.get("name") or "").lower() or
+              "processor" in (t.get("locale") or t.get("name") or "").lower())]
+    processors_h = _agg(cpu_t, lambda t: t.get("condition") or t.get("health"))
+    # System
+    system_h = _norm_health(hw.get("health_status"))
+    return {
+        "system": system_h,
+        "thermal": thermal,
+        "fans": fans_h,
+        "power": power_h,
+        "memory": memory_h,
+        "storage": storage_h,
+        "processors": processors_h,
+        "network": network_h,
+    }
+
+
+def _rollup_subsystems(list_of_subsystems):
+    """Rollup worst-of across multiple device subsystems dicts."""
+    out = {k: "unknown" for k in _SUBSYSTEM_KEYS}
+    for subs in list_of_subsystems or []:
+        if not subs:
+            continue
+        for k in _SUBSYSTEM_KEYS:
+            out[k] = _worst(out[k], _norm_health(subs.get(k)))
+    return out
+
+
+
 def _time_ago(iso_str: str) -> str:
     """Convert ISO timestamp to human-readable 'time ago' string in Italian."""
     if not iso_str:
@@ -173,6 +272,14 @@ async def tv_dashboard_data():
 
         health = round((online / max(len(client_devices), 1)) * 100)
 
+        # Hardware Health Matrix (rollup worst-of across iLO servers of this client)
+        ilo_docs = [d for d in client_devices
+                    if d.get("device_class") == "hpe-ilo"
+                    or d.get("monitor_type") == "redfish_direct"
+                    or (d.get("redfish") or {}).get("server_model")]
+        ilo_subs = [_compute_subsystems_for_device(d) for d in ilo_docs]
+        hw_health = _rollup_subsystems(ilo_subs) if ilo_subs else None
+
         client_summaries.append({
             "id": cid,
             "name": client["name"],
@@ -189,6 +296,8 @@ async def tv_dashboard_data():
             "problem_devices": problem_devices[:8],
             "online_devices": online_devices[:20],
             "printer_count": sum(1 for p in all_printers if p.get("client_id") == cid),
+            "hardware_health": hw_health,
+            "ilo_server_count": len(ilo_docs),
         })
 
     # 8. Open incidents (enriched)
@@ -291,4 +400,38 @@ async def tv_dashboard_data():
         "connectors": connector_list,
         "low_toner": low_toner_printers[:10],
         "ticker": ticker_events[:15],
+    }
+
+
+
+@router.get("/clients/{client_id}/hardware-health")
+async def client_hardware_health(client_id: str):
+    """Aggregate hardware Health Matrix for all iLO servers of a client.
+    Returns {subsystems, ilo_server_count, per_device[]}. No auth (same as TV board)."""
+    docs = await db.device_poll_status.find(
+        {
+            "client_id": client_id,
+            "$or": [
+                {"device_class": "hpe-ilo"},
+                {"monitor_type": "redfish_direct"},
+                {"redfish.server_model": {"$nin": [None, ""]}},
+            ],
+        },
+        {"_id": 0}
+    ).to_list(100)
+    per_device = []
+    all_subs = []
+    for d in docs:
+        subs = _compute_subsystems_for_device(d)
+        per_device.append({
+            "device_ip": d.get("device_ip"),
+            "device_name": d.get("device_name") or d.get("device_ip"),
+            "subsystems": subs,
+        })
+        all_subs.append(subs)
+    return {
+        "client_id": client_id,
+        "ilo_server_count": len(docs),
+        "subsystems": _rollup_subsystems(all_subs) if all_subs else None,
+        "per_device": per_device,
     }

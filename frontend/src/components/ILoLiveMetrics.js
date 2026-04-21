@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import axios from "axios";
 import { API } from "@/App";
+import HealthBadge from "./HealthBadge";
 
 /**
  * iLOLiveMetrics — sparkline real-time (polls /api/redfish/metrics/{ip} ogni 15s).
@@ -49,8 +50,26 @@ export default function ILoLiveMetrics({ deviceIp, deviceName, compact = false }
 
   const powerSeries = data.series?.power_watts || [];
   const tempSeries = data.series?.max_temperature || [];
+  const inletSeries = data.series?.inlet_temperature || [];
+  const fanMaxSeries = data.series?.fan_max_percent || [];
+
+  const inletC = latest.inlet_celsius;
+  const inletName = latest.inlet_sensor_name;
+  const fanMax = latest.fan_max_percent;
+  const fanCount = latest.fan_count;
+  const subsystems = latest.subsystems || {};
 
   const tempColor = maxTemp >= 75 ? "#ef4444" : maxTemp >= 65 ? "#f59e0b" : "#10b981";
+  // Inlet: 25°C è ideale datacenter, 30°C limite ASHRAE, 35°C warning, 40°C critico
+  const inletColor = inletC == null ? "#64748b"
+    : inletC >= 35 ? "#ef4444"
+    : inletC >= 28 ? "#f59e0b"
+    : "#38bdf8";
+  // Fan: <50% normale, 50-75% warning, >75% stress
+  const fanColor = fanMax == null ? "#64748b"
+    : fanMax >= 75 ? "#ef4444"
+    : fanMax >= 50 ? "#f59e0b"
+    : "#22d3ee";
   const healthColor = latest.health_status === "ok" ? "#10b981" : latest.health_status === "warning" ? "#f59e0b" : "#ef4444";
 
   // Age
@@ -96,6 +115,47 @@ export default function ILoLiveMetrics({ deviceIp, deviceName, compact = false }
           <span className="text-white/30 font-mono uppercase" style={{ fontSize: size.fontLbl }}>max temp</span>
         </div>
       </div>
+
+      {/* INLET / AMBIENT — contesto ambientale (datacenter AC health) */}
+      <div
+        className="flex items-center gap-1.5"
+        title={inletC != null
+          ? `Inlet ambient: ${inletC}°C · ${inletName || ''} · ASHRAE range 18–27°C`
+          : "Inlet ambient non disponibile"}
+        data-testid="ilo-live-inlet"
+      >
+        <Sparkline data={inletSeries} width={size.w} height={size.h} color={inletColor} />
+        <div className="flex flex-col leading-tight">
+          <span className="font-mono font-bold" style={{ fontSize: size.fontVal, color: inletColor }}>
+            {inletC != null ? `${inletC}°C` : "—"}
+          </span>
+          <span className="text-white/30 font-mono uppercase" style={{ fontSize: size.fontLbl }}>inlet</span>
+        </div>
+      </div>
+
+      {/* FAN MAX % — risposta cooling (stress indicator) */}
+      <div
+        className="flex items-center gap-1.5"
+        title={fanMax != null
+          ? `Fan max: ${fanMax}% (${fanCount} ventole) · >75% = stress termico`
+          : "Ventole non disponibili"}
+        data-testid="ilo-live-fanmax"
+      >
+        <Sparkline data={fanMaxSeries} width={size.w} height={size.h} color={fanColor} />
+        <div className="flex flex-col leading-tight">
+          <span className="font-mono font-bold" style={{ fontSize: size.fontVal, color: fanColor }}>
+            {fanMax != null ? `${fanMax}%` : "—"}
+          </span>
+          <span className="text-white/30 font-mono uppercase" style={{ fontSize: size.fontLbl }}>fan max</span>
+        </div>
+      </div>
+
+      {/* HEALTH MATRIX — 8 pallini per sotto-sistema */}
+      {Object.keys(subsystems).length > 0 && (
+        <div className="pl-3 border-l border-white/10">
+          <HealthBadge subsystems={subsystems} size={compact ? "sm" : "md"} testId="ilo-live-health-matrix" />
+        </div>
+      )}
 
       <span className="text-[9px] text-white/30 font-mono ml-auto" title={`Source: ${latest.source}`}>{ageText}</span>
     </div>

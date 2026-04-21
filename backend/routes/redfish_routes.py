@@ -233,8 +233,17 @@ async def get_redfish_metrics(
         "power_watts": [],
         "max_temperature": [],
         "avg_temperature": [],
+        "inlet_temperature": [],
+        "fan_max_percent": [],
     }
     sensor_series = {}  # keyed by sensor name
+
+    def _is_inlet(name: str) -> bool:
+        if not name:
+            return False
+        n = name.lower()
+        return ("inlet" in n) or ("ambient" in n) or ("intake" in n)
+
     for s in snapshots:
         ts = s["timestamp"]
         if s.get("power_watts") is not None:
@@ -243,12 +252,111 @@ async def get_redfish_metrics(
         if temps:
             series["max_temperature"].append({"t": ts, "v": max(temps)})
             series["avg_temperature"].append({"t": ts, "v": round(sum(temps) / len(temps), 1)})
+        # Inlet ambient: primo sensore con nome contenente "inlet"/"ambient"/"intake"
+        inlet_vals = [t["celsius"] for t in (s.get("temperatures") or [])
+                      if t.get("celsius") is not None and _is_inlet(t.get("name"))]
+        if inlet_vals:
+            series["inlet_temperature"].append({"t": ts, "v": inlet_vals[0]})
+        # Fan max %: massimo rpm_percent tra tutte le ventole dello snapshot
+        fan_vals = [f["rpm_percent"] for f in (s.get("fans") or []) if f.get("rpm_percent") is not None]
+        if fan_vals:
+            series["fan_max_percent"].append({"t": ts, "v": max(fan_vals)})
         for t in s.get("temperatures") or []:
             name = t.get("name") or "unknown"
             if name not in sensor_series:
                 sensor_series[name] = []
             if t.get("celsius") is not None:
                 sensor_series[name].append({"t": ts, "v": t["celsius"]})
+
+    # Enrich latest con inlet corrente + fan max% corrente
+    if latest:
+        temps_latest = [t for t in (latest.get("temperatures") or []) if t.get("celsius") is not None]
+        inlet_latest = next((t for t in temps_latest if _is_inlet(t.get("name"))), None)
+        latest["inlet_celsius"] = inlet_latest["celsius"] if inlet_latest else None
+        latest["inlet_sensor_name"] = inlet_latest.get("name") if inlet_latest else None
+        fans_latest = [f for f in (latest.get("fans") or []) if f.get("rpm_percent") is not None]
+        latest["fan_max_percent"] = max([f["rpm_percent"] for f in fans_latest]) if fans_latest else None
+        latest["fan_count"] = len(fans_latest)
+
+        # ==== Health Matrix (subsystems) ====
+        # Aggregati da: ultimo snapshot telemetry (thermal/fans/power) + device_poll_status (memory/storage/network)
+        def _agg_health(items, key="health"):
+            """Ritorna 'critical' se qualche item critical, 'warning' se qualche warning, altrimenti 'ok'.
+               Ignora 'unknown'/'n/a'/''.  Ritorna 'unknown' se items vuoto."""
+            if not items:
+                return "unknown"
+            worst = "ok"
+            seen_any = False
+            for it in items:
+                h = (it.get(key) or "").lower().strip()
+                if h in ("", "unknown", "n/a"):
+                    continue
+                seen_any = True
+                if h in ("critical", "failed", "fatal"):
+                    return "critical"
+                if h in ("warning", "degraded", "predictive"):
+                    worst = "warning"
+            return worst if seen_any else "unknown"
+
+        # Thermal: dai temperatures[].health (filtra stale perché potrebbe falsare)
+        thermal_health = _agg_health([t for t in (latest.get("temperatures") or []) if not t.get("stale")])
+        # Fans: dai fans[].health
+        fan_health = _agg_health([f for f in (latest.get("fans") or []) if not f.get("stale")])
+        # Power supplies: ogni PS ha campo "condition"/"health"
+        ps_items = latest.get("power_supplies") or []
+        power_health = _agg_health([{"health": (p.get("condition") or p.get("health") or "")} for p in ps_items])
+
+        # Memory / Storage / Network / Processors: da device_poll_status
+        ps_doc = await db.device_poll_status.find_one(
+            {"device_ip": device_ip},
+            {"_id": 0, "redfish": 1, "hardware": 1}
+        ) or {}
+        rf = ps_doc.get("redfish") or {}
+        memory_health = _agg_health([
+            {"health": (d.get("health") or "").lower()}
+            for d in (rf.get("memory_dimms") or []) if (d.get("capacity_mb") or 0) > 0
+        ])
+        # Storage: aggrega controller + drives
+        storage_items = []
+        for ctrl in (rf.get("storage_controllers") or []):
+            storage_items.append({"health": ctrl.get("health")})
+            for dr in (ctrl.get("drives") or []):
+                storage_items.append({"health": dr.get("health")})
+                if dr.get("failure_predicted"):
+                    storage_items.append({"health": "warning"})
+        storage_health = _agg_health(storage_items)
+        # Network: solo NIC con linkUp (quelli down non connessi non sono allarme)
+        nic_items = []
+        for nic in (rf.get("network_adapters") or []):
+            h = (nic.get("health") or "").lower()
+            ls = (nic.get("link_status") or "").lower()
+            if ls == "linkdown" and nic.get("speed_mbps"):
+                # NIC configurato (aveva speed) ma ora giù → warning
+                nic_items.append({"health": "warning"})
+            elif ls in ("linkup", "up"):
+                nic_items.append({"health": h or "ok"})
+        network_health = _agg_health(nic_items)
+        # Processors: derivato dai sensori CPU in warning/critical (non abbiamo un canale diretto Redfish
+        # per ogni CPU senza agent). Fallback su sistema.
+        cpu_temps = [t for t in (latest.get("temperatures") or [])
+                     if t.get("name") and ("cpu" in t["name"].lower() or "processor" in t["name"].lower())
+                     and not t.get("stale")]
+        processor_health = _agg_health(cpu_temps)
+
+        system_health = (latest.get("health_status") or "unknown").lower()
+        if system_health in ("ok", "good"):
+            system_health = "ok"
+
+        latest["subsystems"] = {
+            "system": system_health,
+            "thermal": thermal_health,
+            "fans": fan_health,
+            "power": power_health,
+            "memory": memory_health,
+            "storage": storage_health,
+            "network": network_health,
+            "processors": processor_health,
+        }
 
     return {
         "device_ip": device_ip,
