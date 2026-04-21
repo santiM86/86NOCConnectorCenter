@@ -245,6 +245,7 @@ from routes.remediation import router as remediation_router
 from routes.lifecycle import router as lifecycle_router
 from routes.intelligence import router as intelligence_router
 from routes.auto_dispatch import router as auto_dispatch_router
+from routes.firmware_catalog import router as firmware_catalog_router
 
 app.include_router(auth_router)
 app.include_router(admin_router)
@@ -292,6 +293,7 @@ app.include_router(remediation_router)
 app.include_router(lifecycle_router)
 app.include_router(intelligence_router)
 app.include_router(auto_dispatch_router)
+app.include_router(firmware_catalog_router)
 
 # Include enterprise routes
 from enterprise_routes import create_enterprise_router
@@ -454,9 +456,11 @@ async def startup_event():
             from routes.remediation import init_indexes as _rem_idx
             from routes.lifecycle import init_indexes as _lc_idx
             from routes.intelligence import init_indexes as _intel_idx
+            from routes.firmware_catalog import init_indexes as _fw_idx
             await _rem_idx()
             await _lc_idx()
             await _intel_idx()
+            await _fw_idx()
         except Exception as _ix_err:
             logging.getLogger(__name__).warning(f"remediation/lifecycle/intelligence indexes: {_ix_err}")
         # alerts: escalation scan (active + severity + ack + time)

@@ -365,6 +365,25 @@ Chiude il cerchio tra **Hardware Lifecycle risk score** + **Predictive Failure A
 
 **Test E2E**: creato record high-risk → run → 1 incident creato (risk 80) → run again → skipped_duplicate=1 → incident in lista con `auto_dispatch=true`. ✅
 
+### Firmware Catalog & CVE Compliance (2026-04-21 sera)
+Cata­logo firmware "latest known good" con confronto automatico vs versioni iLO/BIOS correnti, CVE tracking, e integrazione col modulo Patch Compliance esistente.
+
+**Backend `routes/firmware_catalog.py`**:
+- Collection `firmware_catalog` con seed iniziale (HPE iLO 5 ProLiant Gen10 v3.20, BIOS U41 v3.70, iLO 4 Gen9, Dell iDRAC 9 14G).
+- CRUD admin-only + **import CSV** con delimiter auto-detect.
+- `check_firmware_compliance(model, ilo_fw, bios_fw)`: regex match su `model_pattern`, confronto versioni numerico robusto (tuple int), ritorna `overall_status` (compliant/outdated/critical), severity, lista CVE, advisory URL.
+- Endpoint: `GET /api/firmware/check/{device_ip}`, `GET /api/firmware/compliance/overview`, `POST /api/firmware/catalog/import-csv`.
+- **Hook automatico nel Redfish poller** (`redfish.py`): dopo ogni poll iLO completato, esegue `check_firmware_compliance` e:
+  - Salva `firmware_compliance` su `device_poll_status` (usato dal frontend badge)
+  - Upserta `patch_status` con critical_patches/pending_patches/cve_list (appare nel dashboard NOC Intelligence → Patch Compliance)
+  - Crea alert `firmware_critical_outdated` se `overall_status=critical` (dedup 6h) — poi il remediation evaluator + webpush escalation gestiscono il resto.
+
+**Frontend — `ClientOverviewPage.js` IloServerCard**:
+- Nuovo componente `FirmwareComplianceBadge`: badge colorato sopra i sensor details con stato (AGGIORNATO/FW OUTDATED/CVE CRITICAL), N° CVE aperte, lista componenti espandibile con versione corrente → latest, CVE ID, link advisory.
+- Fetch automatico su mount da `/api/firmware/check/{ip}`, si aggiorna ad ogni refresh card.
+
+**Test E2E**: seedato `device_poll_status` con iLO 3.18 + BIOS U41 v3.62 per ProLiant ML350 Gen10 → `/api/firmware/check` ritorna overall_status=outdated, 2 CVE iLO (CVE-2024-28991, CVE-2024-46984), 1 CVE BIOS (CVE-2025-1001), advisory URL HPE. ✅
+
 ## Constraints
 - NON re-introdurre IP Ban/Honeypot middlewares (richiesta esplicita utente)
 - NON usare `emergentintegrations` per AI

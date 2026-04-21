@@ -609,6 +609,73 @@ class RedfishPoller:
             # Generate alerts for critical conditions
             await self._check_alerts(device_ip, device_name, result, client_id_to_set)
 
+            # Firmware compliance check (iLO + BIOS vs catalog)
+            try:
+                from routes.firmware_catalog import check_firmware_compliance
+                fc = await check_firmware_compliance(
+                    result.get("server_model"),
+                    result.get("ilo_firmware"),
+                    result.get("bios_version"),
+                )
+                # Store compliance summary on device_poll_status for frontend badge
+                await self.db.device_poll_status.update_one(
+                    {"device_ip": device_ip},
+                    {"$set": {"firmware_compliance": fc}}
+                )
+                # Upsert patch_status row for Patch Compliance dashboard integration
+                critical_count = sum(1 for c in (fc.get("components") or []) if c.get("status") == "critical_outdated")
+                outdated_count = sum(1 for c in (fc.get("components") or []) if c.get("status") in ("outdated", "critical_outdated"))
+                all_cves = []
+                for c in (fc.get("components") or []):
+                    all_cves.extend(c.get("cve_list") or [])
+                await self.db.patch_status.update_one(
+                    {"device_ip": device_ip},
+                    {"$set": {
+                        "device_ip": device_ip,
+                        "client_id": client_id_to_set,
+                        "os_name": result.get("server_model"),
+                        "firmware_version": f"iLO {result.get('ilo_firmware')} / BIOS {result.get('bios_version')}",
+                        "pending_patches": outdated_count,
+                        "critical_patches": critical_count,
+                        "cve_count": len(all_cves),
+                        "cve_list": all_cves[:50],
+                        "last_check_at": now_iso,
+                        "source": "redfish_firmware_compliance",
+                    }, "$setOnInsert": {"id": str(uuid.uuid4()), "created_at": now_iso}},
+                    upsert=True
+                )
+                # If critical, create a specific alert (dedupe via fingerprint)
+                if fc.get("overall_status") == "critical":
+                    from datetime import timedelta as _td
+                    since = (datetime.now(timezone.utc) - _td(hours=6)).isoformat()
+                    existing = await self.db.alerts.find_one({
+                        "device_ip": device_ip,
+                        "type": "firmware_critical_outdated",
+                        "created_at": {"$gte": since},
+                    })
+                    if not existing:
+                        alert_doc = {
+                            "id": str(uuid.uuid4()),
+                            "client_id": client_id_to_set,
+                            "device_ip": device_ip,
+                            "device_name": device_name,
+                            "device_type": "ilo",
+                            "severity": fc.get("severity", "high"),
+                            "type": "firmware_critical_outdated",
+                            "title": f"Firmware critical outdated — {device_name}",
+                            "message": f"Versione iLO/BIOS sotto min_safe_version. CVE aperte: {len(all_cves)}. Aggiornamento raccomandato urgente.",
+                            "source_type": "redfish",
+                            "status": "active",
+                            "acknowledged_by": None,
+                            "acknowledged_at": None,
+                            "resolved_at": None,
+                            "created_at": datetime.now(timezone.utc).isoformat(),
+                            "raw_data": "",
+                        }
+                        await self.db.alerts.insert_one(alert_doc)
+            except Exception as _fe:
+                logger.warning(f"firmware compliance check failed for {device_ip}: {_fe}")
+
             logger.info(f"Redfish OK: {device_name} | {result['server_model']} | {result['power_watts']}W | Health: {result['health_status']}")
         else:
             logger.warning(f"Redfish failed for {device_name} ({device_ip})")
