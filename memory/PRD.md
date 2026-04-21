@@ -37,6 +37,13 @@ Società IT che necessita di un raccoglitore di alert (NOC) per tutti i disposit
 - 2026-02-25: Device merging (managed_devices + device_poll_status)
 - 2026-03-01: Web Proxy Console Enterprise UI
 - 2026-04-18 (pomeriggio):
+- 2026-04-21: **Web Console V4 (Popup/New Tab JWT proxy)** — completata & testata al 100% (16/16). Backend `/app/backend/routes/web_console_v4.py` espone:
+  - `POST /api/console-v4/request-session` → firma JWT HS256 (TTL 60 min), insert in `console_sessions`, ritorna path relativo `/api/console-v4/s/<token>/` (frontend antepone `window.location.origin` per evitare problemi di Host header dietro ingress).
+  - `GET/POST/PUT/DELETE/PATCH/HEAD/OPTIONS /api/console-v4/s/{token}/{path}` → reverse-proxy full: inietta `<base href>` in HTML, riscrive URL assoluti/root-relative (href/src/action/url in HTML & CSS), riscrive Location in redirect, mantiene cookie jar server-side in `_SESSION_COOKIES`, strippa `X-Frame-Options/CSP/HSTS`, forwarda Basic/Digest Auth al browser, `verify=False` per self-signed. Fallback HTML 502 per device non raggiungibili, 410 per token scaduto, 401 per token invalido.
+  - `GET /api/console-v4/sessions` (admin) + `POST /api/console-v4/revoke/{sid}` (solo admin → 403 per viewer).
+  - Frontend `WebConsoleTabs.js`: `openPopup(deviceIp)` esposto nel context; pulsante "V4" nell'ActiveConsole toolbar (`data-testid=web-console-popup-v4`) e in ogni `QuickAccessItem` (`data-testid=quick-popup-<ip>`). Bypass definitivo dei blocchi iframe/CSP/JS routing di iLO 5, Fortinet, UniFi.
+  - Fix correlato: riparato errore di sintassi nella funzione `close()` del provider (era lasciata a metà, bloccava la compilazione frontend).
+
   - **Add Device from Client Page**: pulsante "+ Aggiungi Dispositivo" e eliminazione device dentro la tab Dispositivi del `ClientOverviewPage`, supporto SNMP v1/v2c/v3 + Ping + HTTP. POST su `/api/connector/{client_id}/managed-devices`.
   - **Bug fix fetch-devices**: l'endpoint `GET /api/connector/fetch-devices` e `/{C}/fd` (HMAC) ora restituisce tutti i campi SNMPv3 (snmp_version, snmpv3_username, snmpv3_auth_*, snmpv3_priv_*, snmpv3_security_level). Prima venivano ignorati.
   - **Connector v3.0.1 (FIX REDFISH)**:
