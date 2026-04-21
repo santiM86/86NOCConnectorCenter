@@ -102,17 +102,30 @@ export function WebConsoleTabsProvider({ children }) {
     setTimeout(() => updateSession(id, { iframeUrl: baseUrl, iframeKey: (s.iframeKey || 0) + 1 }), 10);
   }, [updateSession]);
 
-  const close = useCallback((id) => {
-    const s = sessionsRef.current.find(x => x.id === id);
-    if (s?.sessionId) axios.delete(`${API}/web-console/session/${s.sessionId}`).catch(() => {});
-    setSessions(prev => prev.filter(x => x.id !== id));
-    setActiveId(prev => {
-      if (prev !== id) return prev;
-      const remaining = sessionsRef.current.filter(x => x.id !== id);
-      return remaining.length ? remaining[remaining.length - 1].id : null;
-    });
-    if (sessionsRef.current.length <= 1) setFullscreen(false);
+  const openPopup = useCallback(async (deviceIp, opts = {}) => {
+    // V4 popup mode: window.open() in new tab, no iframe. Enterprise cloud proxy.
+    if (!deviceIp) return null;
+    try {
+      const res = await axios.post(`${API}/console-v4/request-session`, {
+        device_ip: deviceIp,
+      }, { timeout: 10000 });
+      const url = res.data?.url;
+      if (!url) throw new Error("Backend senza URL sessione");
+      // Open in new tab. Browser pop-up blockers require user gesture (questo e' chiamato da click)
+      const win = window.open(url, "_blank", "noopener,noreferrer");
+      if (!win) {
+        alert("⚠ Pop-up bloccato dal browser. Consenti pop-up da " + window.location.hostname + " e riprova.");
+        return null;
+      }
+      return res.data;
+    } catch (e) {
+      const detail = e.response?.data?.detail || e.message;
+      alert(`Errore apertura console: ${detail}`);
+      return null;
+    }
   }, []);
+
+  const close = useCallback((id) => {
 
   const setActive = useCallback((id) => { setActiveId(id); setMinimized(false); }, []);
   const minimize = useCallback(() => { setMinimized(true); setFullscreen(false); }, []);
@@ -161,7 +174,7 @@ export function WebConsoleTabsProvider({ children }) {
 
   const value = {
     sessions, activeId, minimized, fullscreen, quickAccessOpen,
-    open, reload, close, setActive, minimize, closeAll, goHome, openExternal, openDebug,
+    open, openPopup, reload, close, setActive, minimize, closeAll, goHome, openExternal, openDebug,
     toggleRecording, toggleFullscreen, toggleQuickAccess,
   };
 
@@ -524,6 +537,7 @@ function QuickAccessDrawer() {
             <QuickAccessItem key={`${item.device_ip}-${i}`} item={item} tab={tab}
               isFavorite={isFavorite(item.device_ip)}
               onOpen={() => { open(item.client_id, item.device_ip, item.port); }}
+              onOpenPopup={() => { openPopup(item.device_ip); }}
               onToggleFav={() => toggleFav(item.device_ip)} />
           ))}
         </div>

@@ -246,6 +246,7 @@ from routes.lifecycle import router as lifecycle_router
 from routes.intelligence import router as intelligence_router
 from routes.auto_dispatch import router as auto_dispatch_router
 from routes.firmware_catalog import router as firmware_catalog_router
+from routes.web_console_v4 import router as web_console_v4_router
 
 app.include_router(auth_router)
 app.include_router(admin_router)
@@ -294,6 +295,7 @@ app.include_router(lifecycle_router)
 app.include_router(intelligence_router)
 app.include_router(auto_dispatch_router)
 app.include_router(firmware_catalog_router)
+app.include_router(web_console_v4_router)
 
 # Include enterprise routes
 from enterprise_routes import create_enterprise_router
