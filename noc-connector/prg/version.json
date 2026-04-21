@@ -1,4 +1,4 @@
 {
-  "version": "3.3.3",
-  "changelog": "v3.3.3: FIX updater bloccato al 45% EXTRACTING. ROOT CAUSE: in v3.3.2 l'updater veniva staged in %TEMP%, bloccato da Windows Defender ASR rule (Block execution of potentially obfuscated scripts) → processo spawnato ma killato prima della prima riga. FIX: updater staged in InstallDir\\_update_staging\\ (path trusted da Defender). Aggiunti anche: breadcrumb early-start (updater_started.flag) + dual-log in InstallDir\\updater_last.log + cleanup robusto staging dir. Include tutti i fix v3.3.2 (ENTERPRISE dual-path iLO polling, dedup lato connector), v3.3.1 (WMI Win32_Process.Create per updater out-of-NSSM-job), v3.3.0 (Automated Remediation executor), v3.2.2 (CertBypass TLS race)."
+  "version": "3.3.4",
+  "changelog": "v3.3.4: Installer aggiunge automaticamente esclusioni Windows Defender per InstallDir (C:\\Program Files\\86NocConnector) + ConfigDir + nssm.exe + connector.ps1. Previene definitivamente kill silenzioso di updater e connector da ASR rules (Attack Surface Reduction) e real-time scanning. Richiede admin durante install (gia' lo e' via wizard). Include tutti i fix v3.3.3 (updater staged in InstallDir Defender-safe + breadcrumb + dual-log), v3.3.2 (ENTERPRISE dual-path iLO), v3.3.1 (WMI updater), v3.3.0 (Remediation executor)."
 }
