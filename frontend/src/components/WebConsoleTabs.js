@@ -102,6 +102,34 @@ export function WebConsoleTabsProvider({ children }) {
     setTimeout(() => updateSession(id, { iframeUrl: baseUrl, iframeKey: (s.iframeKey || 0) + 1 }), 10);
   }, [updateSession]);
 
+  const openPopup = useCallback(async (deviceIp, opts = {}) => {
+    // V4 popup mode: window.open() in new tab, no iframe. Enterprise cloud proxy.
+    if (!deviceIp) return null;
+    try {
+      const res = await axios.post(`${API}/console-v4/request-session`, {
+        device_ip: deviceIp,
+      }, { timeout: 10000 });
+      const path = res.data?.url;
+      if (!path) throw new Error("Backend senza URL sessione");
+      // Backend returns a relative path; prefix with current origin so the
+      // browser targets the public (ingress) URL, not the internal host.
+      const absUrl = path.startsWith("http")
+        ? path
+        : `${window.location.origin}${path}`;
+      // Open in new tab. Browser pop-up blockers require user gesture (questo e' chiamato da click)
+      const win = window.open(absUrl, "_blank", "noopener,noreferrer");
+      if (!win) {
+        alert("⚠ Pop-up bloccato dal browser. Consenti pop-up da " + window.location.hostname + " e riprova.");
+        return null;
+      }
+      return { ...res.data, absolute_url: absUrl };
+    } catch (e) {
+      const detail = e.response?.data?.detail || e.message;
+      alert(`Errore apertura console: ${detail}`);
+      return null;
+    }
+  }, []);
+
   const close = useCallback((id) => {
     const s = sessionsRef.current.find(x => x.id === id);
     if (s?.sessionId) axios.delete(`${API}/web-console/session/${s.sessionId}`).catch(() => {});
@@ -161,7 +189,7 @@ export function WebConsoleTabsProvider({ children }) {
 
   const value = {
     sessions, activeId, minimized, fullscreen, quickAccessOpen,
-    open, reload, close, setActive, minimize, closeAll, goHome, openExternal, openDebug,
+    open, openPopup, reload, close, setActive, minimize, closeAll, goHome, openExternal, openDebug,
     toggleRecording, toggleFullscreen, toggleQuickAccess,
   };
 
@@ -274,7 +302,7 @@ function MinimizedDock() {
 
 function ActiveConsole({ session }) {
   const {
-    sessions, setActive, close, reload, goHome, minimize, openExternal, openDebug,
+    sessions, setActive, close, reload, goHome, minimize, openExternal, openDebug, openPopup,
     toggleRecording, toggleFullscreen, fullscreen, toggleQuickAccess,
   } = useWebConsoleTabs();
   const iframeRef = useRef(null);
@@ -353,6 +381,14 @@ function ActiveConsole({ session }) {
           </button>
           <button onClick={() => openExternal(session.id)} className="p-1.5 rounded hover:bg-indigo-500/10 text-indigo-400 transition-colors" title="Apri in nuova tab" data-testid="web-console-open-external">
             <ArrowSquareOut size={14} />
+          </button>
+          <button
+            onClick={() => openPopup(session.deviceIp)}
+            className="px-2 py-1 rounded hover:bg-indigo-500/20 bg-indigo-500/10 text-indigo-300 text-[9px] font-bold border border-indigo-500/30 transition-colors"
+            title="Popup V4 — apre in nuova tab bypassando blocchi iframe (CSP/JS)"
+            data-testid="web-console-popup-v4"
+          >
+            V4
           </button>
           <button onClick={() => openDebug(session.id)} className="px-1.5 py-1 rounded hover:bg-amber-500/10 text-amber-400 text-[9px] font-bold font-mono transition-colors" title="Debug response (Ctrl+D)" data-testid="web-console-debug">
             DBG
@@ -446,7 +482,7 @@ function ActiveConsole({ session }) {
 /* ==================== QUICK ACCESS ==================== */
 
 function QuickAccessDrawer() {
-  const { open, toggleQuickAccess } = useWebConsoleTabs();
+  const { open, openPopup, toggleQuickAccess } = useWebConsoleTabs();
   const [tab, setTab] = useState("recent");
   const [recent, setRecent] = useState([]);
   const [favorites, setFavorites] = useState([]);
@@ -524,6 +560,7 @@ function QuickAccessDrawer() {
             <QuickAccessItem key={`${item.device_ip}-${i}`} item={item} tab={tab}
               isFavorite={isFavorite(item.device_ip)}
               onOpen={() => { open(item.client_id, item.device_ip, item.port); }}
+              onOpenPopup={() => { openPopup(item.device_ip); }}
               onToggleFav={() => toggleFav(item.device_ip)} />
           ))}
         </div>
@@ -532,7 +569,7 @@ function QuickAccessDrawer() {
   );
 }
 
-function QuickAccessItem({ item, tab, isFavorite, onOpen, onToggleFav }) {
+function QuickAccessItem({ item, tab, isFavorite, onOpen, onOpenPopup, onToggleFav }) {
   return (
     <div className="group bg-[#12121a] border border-[#1e1e2e] hover:border-indigo-500/30 rounded-lg p-3 flex items-start gap-2 transition-all">
       <button onClick={onToggleFav} className={`p-1 rounded ${isFavorite ? "text-amber-400" : "text-white/20 hover:text-amber-400 opacity-0 group-hover:opacity-100 transition-opacity"}`} title={isFavorite ? "Rimuovi preferito" : "Aggiungi preferito"} data-testid={`fav-toggle-${item.device_ip}`}>
@@ -551,6 +588,16 @@ function QuickAccessItem({ item, tab, isFavorite, onOpen, onToggleFav }) {
           {tab === "recent" && item.recorded && <span className="text-red-400">● REC</span>}
         </div>
       </div>
+      {onOpenPopup && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onOpenPopup(); }}
+          className="flex-shrink-0 px-2 py-1 rounded bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-300 text-[10px] font-bold border border-indigo-500/20 transition-colors"
+          title="Apri in nuova tab (Popup V4 — bypassa iframe blocks)"
+          data-testid={`quick-popup-${item.device_ip}`}
+        >
+          <ArrowSquareOut size={12} className="inline mr-1" />V4
+        </button>
+      )}
     </div>
   );
 }
