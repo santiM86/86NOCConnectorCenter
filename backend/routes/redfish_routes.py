@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 import asyncio
 import uuid
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from database import db
 from security import security_manager
@@ -60,6 +60,97 @@ async def trigger_direct_poll(request: Request, current_user: dict = Depends(get
         raise HTTPException(status_code=403, detail="Solo admin")
     asyncio.create_task(redfish_poller.poll_cycle())
     return {"status": "ok", "message": "Polling Redfish avviato"}
+
+
+@router.get("/redfish/metrics/{device_ip}")
+async def get_redfish_metrics(
+    device_ip: str, minutes: int = 60,
+    current_user: dict = Depends(get_current_user)
+):
+    """Timeline metriche iLO per grafici real-time enterprise.
+    Ritorna temperatures[], fans[], power_watts, health per ogni snapshot nelle ultime N minuti.
+    Default 60 min; max 24h.
+    """
+    if current_user.get("role") not in ["admin", "superadmin", "operator", "viewer"]:
+        raise HTTPException(status_code=403, detail="Accesso negato")
+    minutes = max(1, min(minutes, 1440))
+    since = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+    # Prendi ultimi 500 snapshot (upper bound)
+    cursor = db.ilo_telemetry.find(
+        {"device_ip": device_ip, "timestamp": {"$gte": since}},
+        {"_id": 0}
+    ).sort("timestamp", 1).limit(500)
+    snapshots = []
+    async for doc in cursor:
+        ts = doc.get("timestamp")
+        if isinstance(ts, datetime):
+            doc["timestamp"] = ts.isoformat()
+        snapshots.append(doc)
+
+    # Latest snapshot "wide" (con tutti i sensori)
+    latest = await db.ilo_telemetry.find_one(
+        {"device_ip": device_ip},
+        {"_id": 0},
+        sort=[("timestamp", -1)]
+    )
+    if latest and isinstance(latest.get("timestamp"), datetime):
+        latest["timestamp"] = latest["timestamp"].isoformat()
+
+    # Costruzione serie time-series per charting veloce
+    series = {
+        "power_watts": [],
+        "max_temperature": [],
+        "avg_temperature": [],
+    }
+    sensor_series = {}  # keyed by sensor name
+    for s in snapshots:
+        ts = s["timestamp"]
+        if s.get("power_watts") is not None:
+            series["power_watts"].append({"t": ts, "v": s["power_watts"]})
+        temps = [t["celsius"] for t in (s.get("temperatures") or []) if t.get("celsius") is not None]
+        if temps:
+            series["max_temperature"].append({"t": ts, "v": max(temps)})
+            series["avg_temperature"].append({"t": ts, "v": round(sum(temps) / len(temps), 1)})
+        for t in s.get("temperatures") or []:
+            name = t.get("name") or "unknown"
+            if name not in sensor_series:
+                sensor_series[name] = []
+            if t.get("celsius") is not None:
+                sensor_series[name].append({"t": ts, "v": t["celsius"]})
+
+    return {
+        "device_ip": device_ip,
+        "snapshots_count": len(snapshots),
+        "time_range_minutes": minutes,
+        "latest": latest,
+        "series": series,
+        "per_sensor_temperatures": sensor_series,
+    }
+
+
+@router.get("/redfish/metrics/{device_ip}/live")
+async def get_redfish_live(device_ip: str, current_user: dict = Depends(get_current_user)):
+    """Ultimo snapshot disponibile (latest frame). Ideale per poll rapido dalla UI ogni 10-15s."""
+    if current_user.get("role") not in ["admin", "superadmin", "operator", "viewer"]:
+        raise HTTPException(status_code=403, detail="Accesso negato")
+    latest = await db.ilo_telemetry.find_one(
+        {"device_ip": device_ip},
+        {"_id": 0},
+        sort=[("timestamp", -1)]
+    )
+    if not latest:
+        raise HTTPException(status_code=404, detail="Nessuna telemetria disponibile per questo device")
+    if isinstance(latest.get("timestamp"), datetime):
+        latest["timestamp"] = latest["timestamp"].isoformat()
+    # Age in seconds (utile per UI "ultimo update X sec fa")
+    try:
+        ts_dt = datetime.fromisoformat(latest["timestamp"].replace("Z", "+00:00"))
+        if ts_dt.tzinfo is None:
+            ts_dt = ts_dt.replace(tzinfo=timezone.utc)
+        latest["age_seconds"] = int((datetime.now(timezone.utc) - ts_dt).total_seconds())
+    except Exception:
+        latest["age_seconds"] = None
+    return latest
 
 
 @router.get("/redfish/diagnose/{device_ip}")

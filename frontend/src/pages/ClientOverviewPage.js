@@ -17,6 +17,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import VaultPage from "./VaultPage";
 import { canOpenWebConsole, defaultWebPort } from "@/components/WebConsole";
 import { useWebConsoleTabs } from "@/components/WebConsoleTabs";
+import ILoLiveMetrics from "@/components/ILoLiveMetrics";
 import DiscoveryPage from "./DiscoveryPage";
 import VulnerabilityPage from "./VulnerabilityPage";
 
@@ -344,6 +345,11 @@ function IloServerCard({ s, healthColor }) {
               {expanded ? "Nascondi dettagli" : "Mostra dettagli"}
             </button>
           </div>
+        </div>
+
+        {/* Live metrics sparkline — auto-refresh 15s */}
+        <div className="mb-3 px-3 py-2 rounded-md bg-[#0d0d12]/40 border border-[var(--bg-border)]">
+          <ILoLiveMetrics deviceIp={s.device_ip} deviceName={s.device_name} />
         </div>
 
         <div className="grid grid-cols-2 md:grid-cols-6 gap-2 mb-3">

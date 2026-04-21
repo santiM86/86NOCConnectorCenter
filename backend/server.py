@@ -411,6 +411,11 @@ async def startup_event():
         await db.web_console_favorites.create_index([("user_email", 1), ("device_ip", 1)], unique=True)
         await db.web_console_shares.create_index("share_token", unique=True)
         await db.web_console_shares.create_index("expires_at", expireAfterSeconds=0)
+
+        # iLO Telemetry time-series (enterprise real-time stats)
+        await db.ilo_telemetry.create_index([("device_ip", 1), ("timestamp", -1)])
+        # TTL 7 giorni (grafici short-term)
+        await db.ilo_telemetry.create_index("timestamp", expireAfterSeconds=86400 * 7)
         # alerts: escalation scan (active + severity + ack + time)
         await db.alerts.create_index(
             [("status", 1), ("severity", 1), ("escalated", 1), ("created_at", 1)]
@@ -526,9 +531,10 @@ async def startup_event():
 
     try:
         setting = await db.settings.find_one({"key": "redfish_poll_interval"})
-        interval = setting.get("value", 5) if setting else 5
+        # Default 1 minuto (era 5 min) per real-time stats. Configurabile via settings.
+        interval = setting.get("value", 1) if setting else 1
         await redfish_poller.start_scheduler(interval_minutes=interval)
-        logger.info("Redfish polling scheduler started")
+        logger.info(f"Redfish polling scheduler started (interval: {interval} min)")
     except Exception as e:
         logger.error(f"Failed to start Redfish scheduler: {e}")
 
