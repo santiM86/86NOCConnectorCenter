@@ -45,6 +45,121 @@ COMMON_OIDS = {
 # =========================================================================
 
 PROFILES: list[dict[str, Any]] = [
+    # ---------------- HPE iLO — ProLiant Gen9/Gen10/Gen11 ----------------
+    {
+        "key": "hpe_ilo",
+        "vendor": "HPE",
+        "family": "server_oob",
+        "label": "HPE iLO (ProLiant Gen9/10/11)",
+        "description": "Server HPE ProLiant con iLO 4 (Gen9), iLO 5 (Gen10/10+) o iLO 6 (Gen11). Preferisce Redfish; SNMP via CPQHLTH-MIB come fallback se HP Agents installati sull'OS ospite.",
+        "fingerprint": {
+            "sysobjectid_prefixes": [
+                "1.3.6.1.4.1.232.",   # Compaq/HP enterprise tree (CPQ-MIBs)
+                "1.3.6.1.4.1.11.5.7.", # iLO-specific entity
+            ],
+            "sysdescr_patterns": [
+                r"integrated\s+lights[-\s]*out",
+                r"ilo\s*[456]",
+                r"proliant\s+(dl|ml|bl|xl|apollo)\d+\s+gen\d+",
+                r"hp(e)?\s+proliant",
+                r"cpqhost",
+                r"cpqhlth",
+            ],
+        },
+        "snmp": {"port": 161, "version": "v2c", "community_suggestion": "public", "timeout_seconds": 5, "retries": 2},
+        "web_console": {
+            "port": 443, "scheme": "https", "path": "/",
+            "notes": "iLO webui è SPA React (iLO 5+) con CSP strict — richiede Popup V4 per bypass iframe. Console KVM HTML5 integrata. Login default: Administrator/<serial-number-tag>."
+        },
+        "oids": {
+            **COMMON_OIDS,
+            # CPQSINFO-MIB — System info
+            "cpqSiSysSerialNum":        "1.3.6.1.4.1.232.2.2.2.1.0",
+            "cpqSiProductName":         "1.3.6.1.4.1.232.2.2.4.2.0",
+            # CPQHLTH-MIB — Health aggregate
+            "cpqHeMibCondition":        "1.3.6.1.4.1.232.6.1.3.0",      # 1=other, 2=ok, 3=degraded, 4=failed
+            "cpqHeThermalSystemStatus": "1.3.6.1.4.1.232.6.2.6.5.0",
+            "cpqHeThermalCpuStatus":    "1.3.6.1.4.1.232.6.2.6.4.0",
+            "cpqHeThermalTempStatus":   "1.3.6.1.4.1.232.6.2.6.3.0",
+            # Temperatures (table)
+            "cpqHeTempTable":           "1.3.6.1.4.1.232.6.2.6.8.1",
+            "cpqHeTempLocale":          "1.3.6.1.4.1.232.6.2.6.8.1.3",  # locale: 2=cpu,3=memory,5=system,etc
+            "cpqHeTempCelsius":         "1.3.6.1.4.1.232.6.2.6.8.1.4",
+            "cpqHeTempCondition":       "1.3.6.1.4.1.232.6.2.6.8.1.6",
+            # Fans (table)
+            "cpqHeFltTolFanTable":      "1.3.6.1.4.1.232.6.2.6.7.1",
+            "cpqHeFltTolFanLocale":     "1.3.6.1.4.1.232.6.2.6.7.1.3",
+            "cpqHeFltTolFanPresent":    "1.3.6.1.4.1.232.6.2.6.7.1.4",
+            "cpqHeFltTolFanCondition":  "1.3.6.1.4.1.232.6.2.6.7.1.9",
+            "cpqHeFltTolFanSpeed":      "1.3.6.1.4.1.232.6.2.6.7.1.12",
+            # Power supplies (table)
+            "cpqHeFltTolPowerSupplyStatus":    "1.3.6.1.4.1.232.6.2.9.3.1.4",
+            "cpqHeFltTolPowerSupplyCondition": "1.3.6.1.4.1.232.6.2.9.3.1.5",
+            "cpqHeFltTolPowerSupplyCapacity":  "1.3.6.1.4.1.232.6.2.9.3.1.7",
+            # CMOS battery
+            "cpqHeSysBatteryCondition": "1.3.6.1.4.1.232.6.2.17.2.1.4",
+            # CPU
+            "cpqSeCpuUnitTable":        "1.3.6.1.4.1.232.1.2.2.1",
+            "cpqSeCpuStatus":           "1.3.6.1.4.1.232.1.2.2.1.1.6",
+            "cpqSeCpuSpeed":            "1.3.6.1.4.1.232.1.2.2.1.1.4",
+            # Memory
+            "cpqHeResilientMemTotalMB": "1.3.6.1.4.1.232.6.2.14.4.0",
+            "cpqHeResMemModuleTable":   "1.3.6.1.4.1.232.6.2.14.11.1",
+            "cpqHeResMemModuleCondition": "1.3.6.1.4.1.232.6.2.14.11.1.9",
+            # Smart Array (storage)
+            "cpqDaCntlrTable":          "1.3.6.1.4.1.232.3.2.2.1",
+            "cpqDaCntlrCondition":      "1.3.6.1.4.1.232.3.2.2.1.1.6",
+            "cpqDaLogDrvTable":         "1.3.6.1.4.1.232.3.2.3.1",
+            "cpqDaLogDrvStatus":        "1.3.6.1.4.1.232.3.2.3.1.1.4",      # 1=other,2=ok,3=failed,4=unconfigured,5=recovering,6=ready-for-rebuild,7=rebuilding,etc
+            "cpqDaPhyDrvTable":         "1.3.6.1.4.1.232.3.2.5.1",
+            "cpqDaPhyDrvStatus":        "1.3.6.1.4.1.232.3.2.5.1.1.6",
+            "cpqDaPhyDrvSMARTStatus":   "1.3.6.1.4.1.232.3.2.5.1.1.57",     # 1=ok, 3=replaceDrive
+            "cpqDaPhyDrvCurrentTemperature": "1.3.6.1.4.1.232.3.2.5.1.1.70",
+        },
+        "thresholds": {
+            "cpu_warn_pct": 70, "cpu_crit_pct": 90,
+            "mem_warn_pct": 80, "mem_crit_pct": 95,
+            "inlet_temp_warn_c": 27, "inlet_temp_crit_c": 32,    # ASHRAE A1 tolleranze
+            "cpu_temp_warn_c": 75, "cpu_temp_crit_c": 90,
+            "fan_percent_warn": 70, "fan_percent_crit": 90,
+            "disk_temp_warn_c": 45, "disk_temp_crit_c": 55,
+            "psu_redundancy_required": True,
+        },
+        "polling_interval_seconds": 60,
+        "capabilities": [
+            "snmp_basic", "redfish_preferred", "hardware_oob",
+            "kvm_console_html5", "virtual_media", "power_control",
+            "firmware_inventory", "thermal_detail", "smart_array_status",
+            "ilo_generation_detect", "ilo_federation",
+        ],
+        "api_endpoints": {
+            # Redfish — common across iLO 4 (Gen9), iLO 5 (Gen10), iLO 6 (Gen11)
+            "redfish_root":        "/redfish/v1/",
+            "redfish_systems":     "/redfish/v1/Systems/1",
+            "redfish_chassis":     "/redfish/v1/Chassis/1",
+            "redfish_managers":    "/redfish/v1/Managers/1",
+            "redfish_thermal":     "/redfish/v1/Chassis/1/Thermal",
+            "redfish_power":       "/redfish/v1/Chassis/1/Power",
+            "redfish_thermal_subsys":  "/redfish/v1/Chassis/1/ThermalSubsystem",  # iLO 5 Gen10+ schema
+            "redfish_power_subsys":    "/redfish/v1/Chassis/1/PowerSubsystem",
+            "redfish_storage":     "/redfish/v1/Systems/1/Storage",
+            "redfish_memory":      "/redfish/v1/Systems/1/Memory",
+            "redfish_network":     "/redfish/v1/Systems/1/EthernetInterfaces",
+            "redfish_processors":  "/redfish/v1/Systems/1/Processors",
+            "redfish_firmware":    "/redfish/v1/UpdateService/FirmwareInventory",
+            "redfish_log_services":"/redfish/v1/Managers/1/LogServices",
+            # iLO-specific extensions (Oem/Hpe)
+            "ilo_hpe_security":    "/redfish/v1/Managers/1/SecurityService",
+            "ilo_virtual_media":   "/redfish/v1/Managers/1/VirtualMedia",
+            "ilo_power_action":    "/redfish/v1/Systems/1/Actions/ComputerSystem.Reset",
+        },
+        "generations": {
+            "gen9":  {"ilo_version": "iLO 4", "redfish_schema": "legacy", "ssl_min": "TLSv1.1", "notes": "Redfish parziale; preferire RIBCL o HPONCFG per Gen9 su operazioni complesse."},
+            "gen10": {"ilo_version": "iLO 5", "redfish_schema": "modern", "ssl_min": "TLSv1.2", "notes": "Redfish completo, ThermalSubsystem disponibile, Federation group supportato."},
+            "gen11": {"ilo_version": "iLO 6", "redfish_schema": "modern", "ssl_min": "TLSv1.3", "notes": "SPDM attestation, iLO Scale-out, migliori log security e HSM."},
+        },
+    },
+
     # ---------------- HPE Comware (ex-H3C) — 5130/5500/5900/7500 ----------------
     {
         "key": "hpe_comware",

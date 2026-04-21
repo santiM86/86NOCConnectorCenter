@@ -1225,7 +1225,7 @@ function DeviceProfileModal({ device, onClose, onApplied }) {
             if (t === "nas") return p.key === "synology_dsm";
             if (t === "ups") return p.key === "generic_ups";
             if (t === "switch") return p.key === "hpe_comware";
-            if (t === "ilo") return p.key === "dell_idrac" || p.key === "generic_snmp";
+            if (t === "ilo" || t === "server_oob" || t === "server") return p.key === "hpe_ilo";
             if (t === "firewall") return p.key === "fortinet_fortigate";
             return false;
           });
