@@ -49,8 +49,26 @@ export default function ILoLiveMetrics({ deviceIp, deviceName, compact = false }
 
   const powerSeries = data.series?.power_watts || [];
   const tempSeries = data.series?.max_temperature || [];
+  const inletSeries = data.series?.inlet_temperature || [];
+  const fanMaxSeries = data.series?.fan_max_percent || [];
+
+  const inletC = latest.inlet_celsius;
+  const inletName = latest.inlet_sensor_name;
+  const fanMax = latest.fan_max_percent;
+  const fanCount = latest.fan_count;
+  const subsystems = latest.subsystems || {};
 
   const tempColor = maxTemp >= 75 ? "#ef4444" : maxTemp >= 65 ? "#f59e0b" : "#10b981";
+  // Inlet: 25°C è ideale datacenter, 30°C limite ASHRAE, 35°C warning, 40°C critico
+  const inletColor = inletC == null ? "#64748b"
+    : inletC >= 35 ? "#ef4444"
+    : inletC >= 28 ? "#f59e0b"
+    : "#38bdf8";
+  // Fan: <50% normale, 50-75% warning, >75% stress
+  const fanColor = fanMax == null ? "#64748b"
+    : fanMax >= 75 ? "#ef4444"
+    : fanMax >= 50 ? "#f59e0b"
+    : "#22d3ee";
   const healthColor = latest.health_status === "ok" ? "#10b981" : latest.health_status === "warning" ? "#f59e0b" : "#ef4444";
 
   // Age
@@ -97,7 +115,110 @@ export default function ILoLiveMetrics({ deviceIp, deviceName, compact = false }
         </div>
       </div>
 
+      {/* INLET / AMBIENT — contesto ambientale (datacenter AC health) */}
+      <div
+        className="flex items-center gap-1.5"
+        title={inletC != null
+          ? `Inlet ambient: ${inletC}°C · ${inletName || ''} · ASHRAE range 18–27°C`
+          : "Inlet ambient non disponibile"}
+        data-testid="ilo-live-inlet"
+      >
+        <Sparkline data={inletSeries} width={size.w} height={size.h} color={inletColor} />
+        <div className="flex flex-col leading-tight">
+          <span className="font-mono font-bold" style={{ fontSize: size.fontVal, color: inletColor }}>
+            {inletC != null ? `${inletC}°C` : "—"}
+          </span>
+          <span className="text-white/30 font-mono uppercase" style={{ fontSize: size.fontLbl }}>inlet</span>
+        </div>
+      </div>
+
+      {/* FAN MAX % — risposta cooling (stress indicator) */}
+      <div
+        className="flex items-center gap-1.5"
+        title={fanMax != null
+          ? `Fan max: ${fanMax}% (${fanCount} ventole) · >75% = stress termico`
+          : "Ventole non disponibili"}
+        data-testid="ilo-live-fanmax"
+      >
+        <Sparkline data={fanMaxSeries} width={size.w} height={size.h} color={fanColor} />
+        <div className="flex flex-col leading-tight">
+          <span className="font-mono font-bold" style={{ fontSize: size.fontVal, color: fanColor }}>
+            {fanMax != null ? `${fanMax}%` : "—"}
+          </span>
+          <span className="text-white/30 font-mono uppercase" style={{ fontSize: size.fontLbl }}>fan max</span>
+        </div>
+      </div>
+
+      {/* HEALTH MATRIX — 8 pallini per sotto-sistema */}
+      {Object.keys(subsystems).length > 0 && (
+        <HealthMatrix subsystems={subsystems} compact={compact} />
+      )}
+
       <span className="text-[9px] text-white/30 font-mono ml-auto" title={`Source: ${latest.source}`}>{ageText}</span>
+    </div>
+  );
+}
+
+/* ================= HEALTH MATRIX ================= */
+
+const SUBSYSTEM_META = [
+  { key: "system",     label: "SYS",  full: "Sistema" },
+  { key: "thermal",    label: "TMP",  full: "Thermal (temperature)" },
+  { key: "fans",       label: "FAN",  full: "Ventole" },
+  { key: "power",      label: "PSU",  full: "Alimentatori" },
+  { key: "memory",     label: "MEM",  full: "Memoria (DIMM)" },
+  { key: "storage",    label: "STO",  full: "Storage (RAID / dischi)" },
+  { key: "processors", label: "CPU",  full: "Processori" },
+  { key: "network",    label: "NIC",  full: "Network adapter" },
+];
+
+function statusColor(s) {
+  switch ((s || "unknown").toLowerCase()) {
+    case "ok":       return { bg: "#10b981", ring: "rgba(16,185,129,0.25)" };
+    case "warning":  return { bg: "#f59e0b", ring: "rgba(245,158,11,0.25)" };
+    case "critical": return { bg: "#ef4444", ring: "rgba(239,68,68,0.3)" };
+    default:         return { bg: "#475569", ring: "rgba(71,85,105,0.2)" };
+  }
+}
+
+function HealthMatrix({ subsystems, compact }) {
+  const dot = compact ? 6 : 7;
+  return (
+    <div className="flex items-center gap-2 pl-3 border-l border-white/10" data-testid="ilo-live-health-matrix">
+      <div className="grid grid-cols-4 gap-x-2 gap-y-1">
+        {SUBSYSTEM_META.map(({ key, label, full }) => {
+          const s = subsystems[key] || "unknown";
+          const col = statusColor(s);
+          return (
+            <div
+              key={key}
+              className="flex items-center gap-1 cursor-default"
+              title={`${full}: ${s.toUpperCase()}`}
+              data-testid={`ilo-live-health-${key}`}
+            >
+              <span
+                className={s === "critical" ? "animate-pulse" : ""}
+                style={{
+                  display: "inline-block",
+                  width: dot, height: dot,
+                  borderRadius: "50%",
+                  background: col.bg,
+                  boxShadow: `0 0 0 2px ${col.ring}`,
+                }}
+              />
+              <span
+                className="font-mono font-bold tracking-wider"
+                style={{
+                  fontSize: compact ? "8px" : "9px",
+                  color: s === "unknown" ? "rgba(255,255,255,0.25)" : "rgba(255,255,255,0.6)",
+                }}
+              >
+                {label}
+              </span>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
