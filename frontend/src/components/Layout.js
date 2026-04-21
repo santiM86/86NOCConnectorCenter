@@ -40,6 +40,8 @@ import {
   ArrowsDownUp,
   Globe,
   Clock,
+  Book,
+  Target,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import {
@@ -67,6 +69,9 @@ const navConfig = [
       { path: "/clients", icon: Buildings, label: "Gestione Clienti", roles: ["admin", "operator", "viewer"] },
       { path: "/connectors", icon: PlugsConnected, label: "Connettori", roles: ["admin", "operator"] },
       { path: "/wan-monitor", icon: Globe, label: "Monitor WAN", roles: ["admin", "operator"] },
+      { path: "/cmdb", icon: Database, label: "CMDB (Asset)", roles: ["admin", "operator", "viewer"] },
+      { path: "/runbooks", icon: Book, label: "Runbooks", roles: ["admin", "operator", "viewer"] },
+      { path: "/sla", icon: Target, label: "SLA Management", roles: ["admin", "operator"] },
     ],
   },
   {

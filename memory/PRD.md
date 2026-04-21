@@ -132,7 +132,32 @@ Refactor completo. Elimina la causa radice del bug iframe nero (srcDoc → origi
 
 **Vantaggi**: nessun aggiornamento Connector richiesto — il fix è tutto lato backend, retrocompatibile con Connector v3.2.1 già in field.
 
-### Redfish REAL-TIME Telemetry (2026-04-21) — Sparkline live iLO
+### ITIL / INOC Feature Pack (2026-04-21) — Enterprise NOC maturity
+Spunto gap-analysis ARGUS vs INOC Ops 3.0. Implementate 8 feature enterprise.
+
+**Backend — 5 nuovi router**:
+- `routes/cmdb.py` — Asset inventory (vendor, S/N, garanzia, contratto, ciclo vita, responsabile). Warranty-alerts 60gg.
+- `routes/runbooks.py` — Procedure operative CRUD, matching smart su alert (device_type + keywords + severity).
+- `routes/sla.py` — SLA targets per cliente (uptime/MTTA/MTTR/coverage/credit), compliance report mensile con breach analysis.
+- `routes/customer_portal.py` — JWT dedicato `role=customer`, dashboard/devices/alerts/incidents filtered by client_id (isolation).
+- `routes/itsm.py` — Change Management (RFC approve/reject/complete), Problem Management (5-whys, recurrence KPI), Shift Handoff report, Service Billing mensile.
+
+**DB collections**: `cmdb_assets`, `runbooks`, `sla_targets`, `customer_users`, `changes`, `problems` con indici appropriati.
+
+**Frontend — 4 nuove pagine admin**:
+- `CMDBPage` — tabella asset con editor, warranty warnings banner
+- `RunbooksPage` — CRUD runbook con steps, keywords/device-types multi-tag
+- `SLAPage` — lista clienti con targets inline, compliance report dettagliato (breach + credit)
+- `CustomerPortalPage` — login standalone su `/customer-portal`, dashboard cliente read-only con stats + alert recenti
+
+**Route sidebar**: aggiunti CMDB, Runbooks, SLA Management.
+
+**Endpoint API completi** (API-first, UI custom successiva):
+- ITSM: `POST/GET /api/itsm/changes`, approve/reject/complete, `POST/GET /api/itsm/problems`, `GET /api/itsm/shift-handoff?hours=8`, `GET /api/itsm/billing/monthly/{client_id}`
+
+**Skippato**: AIOps ML noise reduction (troppo pesante per singola sessione, rimane backlog).
+
+
 **Richiesta utente**: telemetria real-time HPE iLO (Thermal, Power, System) con URIs Redfish standard.
 
 **Backend `redfish.py`**:
