@@ -45,6 +45,79 @@ COMMON_OIDS = {
 # =========================================================================
 
 PROFILES: list[dict[str, Any]] = [
+    # ---------------- HPE Comware (ex-H3C) — 5130/5500/5900/7500 ----------------
+    {
+        "key": "hpe_comware",
+        "vendor": "HPE / H3C",
+        "family": "switch",
+        "label": "HPE Comware (5130/5500/5900/7500)",
+        "description": "Switch HPE Comware ex-H3C (5130 EI/HI/SI, 5500, 5900, 7500) — MIB H3C/HH3C.",
+        "fingerprint": {
+            "sysobjectid_prefixes": [
+                "1.3.6.1.4.1.25506.",    # H3C enterprise
+                "1.3.6.1.4.1.11.2.3.7.8.",  # HPE Comware via HP tree
+            ],
+            "sysdescr_patterns": [r"comware", r"h3c", r"hpe?\s*5130", r"hpe?\s*5500", r"hpe?\s*5900", r"hpe?\s*7500", r"3com.*switch"],
+        },
+        "snmp": {"port": 161, "version": "v2c", "community_suggestion": "public", "timeout_seconds": 5, "retries": 2},
+        "web_console": {"port": 443, "scheme": "https", "path": "/", "notes": "HPE Comware HTTPS 443 (HTTP 80 disabilitato di default). La webui è SPA — richiede popup V4 per bypass CSP/X-Frame."},
+        "oids": {
+            **COMMON_OIDS,
+            # H3C/HH3C enterprise MIB
+            "h3cEntityExtCpuUsage":   "1.3.6.1.4.1.25506.2.6.1.1.1.1.6",
+            "h3cEntityExtMemUsage":   "1.3.6.1.4.1.25506.2.6.1.1.1.1.8",
+            "h3cEntityExtTemperature":"1.3.6.1.4.1.25506.2.6.1.1.1.1.12",
+            "h3cFanState":            "1.3.6.1.4.1.25506.2.6.1.1.1.1.16",
+            "h3cPowerState":          "1.3.6.1.4.1.25506.2.6.1.1.1.1.18",
+        },
+        "thresholds": {"cpu_warn_pct": 70, "cpu_crit_pct": 90, "mem_warn_pct": 80, "mem_crit_pct": 95, "temp_warn_c": 55, "temp_crit_c": 70},
+        "polling_interval_seconds": 60,
+        "capabilities": ["snmp_basic", "port_traffic", "stack_status", "comware_cli_ssh"],
+    },
+
+    # ---------------- Generic UPS (Riello, XANTO, CyberPower, Eaton) ----------------
+    {
+        "key": "generic_ups",
+        "vendor": "Riello / XANTO / CyberPower / Eaton",
+        "family": "ups",
+        "label": "UPS generico (RFC 1628 UPS-MIB)",
+        "description": "UPS generici non-APC con RFC 1628 UPS-MIB standard (XANTO/Riello, CyberPower, Eaton, Socomec).",
+        "fingerprint": {
+            "sysobjectid_prefixes": [
+                "1.3.6.1.4.1.3808.",    # CyberPower
+                "1.3.6.1.4.1.534.",     # Eaton/Powerware
+                "1.3.6.1.4.1.4555.",    # Riello / XANTO
+                "1.3.6.1.4.1.705.",     # MGE UPS Systems
+                "1.3.6.1.4.1.4329.",    # Socomec
+            ],
+            "sysdescr_patterns": [r"xanto", r"riello", r"cyberpower", r"eaton.*ups", r"powerware", r"socomec", r"mge\s*ups"],
+        },
+        "snmp": {"port": 161, "version": "v2c", "community_suggestion": "public", "timeout_seconds": 5, "retries": 2},
+        "web_console": {"port": 443, "scheme": "https", "path": "/", "notes": "UPS moderni usano HTTPS 443 (alcuni vecchi solo HTTP 80). XANTO/Riello di default: HTTPS 443, login admin/admin."},
+        "oids": {
+            **COMMON_OIDS,
+            # RFC 1628 UPS-MIB (supportato da tutti i principali vendor moderni)
+            "upsIdentManufacturer":   "1.3.6.1.2.1.33.1.1.1.0",
+            "upsIdentModel":          "1.3.6.1.2.1.33.1.1.2.0",
+            "upsIdentUpsFirmware":    "1.3.6.1.2.1.33.1.1.3.0",
+            "upsBatteryStatus":       "1.3.6.1.2.1.33.1.2.1.0",       # 1=unknown, 2=normal, 3=low, 4=depleted
+            "upsSecondsOnBattery":    "1.3.6.1.2.1.33.1.2.2.0",
+            "upsEstimatedMinutesRemaining": "1.3.6.1.2.1.33.1.2.3.0",
+            "upsEstimatedChargeRemaining":  "1.3.6.1.2.1.33.1.2.4.0",  # %
+            "upsBatteryVoltage":      "1.3.6.1.2.1.33.1.2.5.0",       # dV (decivolt)
+            "upsBatteryTemperature":  "1.3.6.1.2.1.33.1.2.7.0",       # °C
+            "upsInputLineBads":       "1.3.6.1.2.1.33.1.3.1.0",
+            "upsInputVoltage":        "1.3.6.1.2.1.33.1.3.3.1.3",
+            "upsInputFrequency":      "1.3.6.1.2.1.33.1.3.3.1.2",
+            "upsOutputSource":        "1.3.6.1.2.1.33.1.4.1.0",       # 1=other, 2=none, 3=normal, 4=bypass, 5=battery, 6=booster, 7=reducer
+            "upsOutputPercentLoad":   "1.3.6.1.2.1.33.1.4.4.1.5",
+            "upsAlarmsPresent":       "1.3.6.1.2.1.33.1.6.1.0",
+        },
+        "thresholds": {"battery_pct_warn": 75, "battery_pct_crit": 30, "runtime_min_warn": 15, "runtime_min_crit": 5, "load_pct_warn": 70, "load_pct_crit": 90, "temp_warn_c": 40, "temp_crit_c": 55},
+        "polling_interval_seconds": 60,
+        "capabilities": ["snmp_basic", "battery_monitoring", "input_voltage", "rfc1628_ups_mib"],
+    },
+
     # ---------------- HP / Aruba ProCurve / Aruba CX ----------------
     {
         "key": "hp_procurve",

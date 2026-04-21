@@ -6,7 +6,7 @@ import { toast } from "sonner";
 import {
   ArrowLeft, HardDrives, Globe, Printer, Database, ShieldCheck,
   Lightning, WifiHigh, WifiSlash, PlugsConnected, CaretDown,
-  CheckCircle, Warning, ArrowClockwise, Bell, ChartLine, Monitor,
+  CheckCircle, Warning, ArrowClockwise, Bell, ChartLine, Monitor, Cpu,
   Plus, Trash, Lock, MagnifyingGlass,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
@@ -885,6 +885,7 @@ function DeviceGroup({ label, icon: Icon, devices, color }) {
 /* ==================== DEVICES TAB ==================== */
 function DevicesTab({ devices, clientId, onRefresh }) {
   const [showAdd, setShowAdd] = useState(false);
+  const [profileTarget, setProfileTarget] = useState(null);
   const [saving, setSaving] = useState(false);
   const webConsole = useWebConsoleTabs();
   const emptyForm = {
@@ -1012,12 +1013,20 @@ function DevicesTab({ devices, clientId, onRefresh }) {
                         <button
                           onClick={() => webConsole.open(clientId, d.ip_address, defaultWebPort(d))}
                           className="p-1 rounded hover:bg-indigo-500/10 text-indigo-400 transition-colors"
-                          title={`Apri Web Console (porta ${defaultWebPort(d)})`}
+                          title={`Apri Web Console (porta ${defaultWebPort(d)})${d.profile_key ? ` · profilo ${d.profile_key}` : " · nessun profilo"}`}
                           data-testid={`web-console-btn-${d.ip_address}`}
                         >
                           <Monitor size={13} />
                         </button>
                       )}
+                      <button
+                        onClick={() => setProfileTarget(d)}
+                        className={`p-1 rounded transition-colors ${d.profile_key ? "hover:bg-cyan-500/10 text-cyan-400" : "hover:bg-amber-500/10 text-amber-400 animate-pulse"}`}
+                        title={d.profile_key ? `Profilo: ${d.profile_key}` : "Nessun profilo — clicca per configurare"}
+                        data-testid={`configure-profile-${d.ip_address}`}
+                      >
+                        <Cpu size={13} />
+                      </button>
                       <button
                         onClick={() => handleDelete(d)}
                         className="p-1 rounded hover:bg-[var(--critical-bg)] text-[var(--critical)] transition-colors"
@@ -1185,7 +1194,147 @@ function DevicesTab({ devices, clientId, onRefresh }) {
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* Profile Config Modal */}
+      {profileTarget && (
+        <DeviceProfileModal
+          device={profileTarget}
+          onClose={() => setProfileTarget(null)}
+          onApplied={() => { setProfileTarget(null); onRefresh(); }}
+        />
+      )}
     </div>
+  );
+}
+
+/* ==================== DEVICE PROFILE MODAL ==================== */
+function DeviceProfileModal({ device, onClose, onApplied }) {
+  const [profiles, setProfiles] = useState([]);
+  const [selected, setSelected] = useState(device.profile_key || "");
+  const [applying, setApplying] = useState(false);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    axios.get(`${API}/device-profiles`)
+      .then(r => {
+        setProfiles(r.data?.profiles || []);
+        // Auto-suggest by device_type if not already configured
+        if (!device.profile_key) {
+          const t = (device.device_type || "").toLowerCase();
+          const suggest = (r.data?.profiles || []).find(p => {
+            if (t === "nas") return p.key === "synology_dsm";
+            if (t === "ups") return p.key === "generic_ups";
+            if (t === "switch") return p.key === "hpe_comware";
+            if (t === "ilo") return p.key === "dell_idrac" || p.key === "generic_snmp";
+            if (t === "firewall") return p.key === "fortinet_fortigate";
+            return false;
+          });
+          if (suggest) setSelected(suggest.key);
+        }
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, [device.profile_key, device.device_type]);
+
+  const apply = async () => {
+    if (!selected) { toast.error("Seleziona un profilo"); return; }
+    setApplying(true);
+    try {
+      await axios.post(`${API}/device-profiles/apply`, {
+        device_ip: device.ip_address,
+        profile_key: selected,
+      });
+      toast.success(`Profilo "${selected}" applicato a ${device.name}`);
+      onApplied();
+    } catch (e) {
+      toast.error("Errore: " + (e.response?.data?.detail || e.message));
+    } finally { setApplying(false); }
+  };
+
+  const chosen = profiles.find(p => p.key === selected);
+
+  // Group by family for clean dropdown
+  const byFamily = profiles.reduce((acc, p) => {
+    const f = p.family || "generic";
+    if (!acc[f]) acc[f] = [];
+    acc[f].push(p);
+    return acc;
+  }, {});
+  const familyOrder = ["switch", "firewall", "nas", "ups", "server_oob", "unifi", "generic"];
+  const familyLabels = { switch: "Switch", firewall: "Firewall", nas: "NAS", ups: "UPS", server_oob: "Server OOB (iLO/iDRAC)", unifi: "UniFi", generic: "Generico" };
+
+  return (
+    <Dialog open onOpenChange={onClose}>
+      <DialogContent className="bg-[var(--bg-card)] border-[var(--bg-border)] max-w-lg">
+        <DialogHeader>
+          <DialogTitle className="text-[var(--text-primary)] flex items-center gap-2">
+            <Cpu size={18} className="text-indigo-400" />
+            Configura profilo — {device.name}
+          </DialogTitle>
+        </DialogHeader>
+        <div className="space-y-3 pt-2">
+          <div className="text-[11px] text-white/60 leading-relaxed">
+            Applica un profilo vendor per auto-configurare <strong>porta web console</strong>, <strong>SNMP</strong>, <strong>OID</strong> e <strong>soglie</strong>. La Web Console userà automaticamente le porte corrette.
+          </div>
+
+          <div className="grid grid-cols-3 gap-2 text-[10px] font-mono text-white/50">
+            <div><span className="text-white/30">IP:</span> <span className="text-white/80">{device.ip_address}</span></div>
+            <div><span className="text-white/30">Tipo:</span> <span className="text-white/80">{device.device_type}</span></div>
+            <div><span className="text-white/30">Profilo ora:</span> <span className="text-cyan-300">{device.profile_key || "—"}</span></div>
+          </div>
+
+          <div>
+            <label className="text-[10px] font-bold uppercase tracking-wider text-white/50 mb-1 block">Seleziona profilo</label>
+            <select
+              value={selected}
+              onChange={e => setSelected(e.target.value)}
+              disabled={loading}
+              className="w-full bg-[var(--bg-panel)] border border-[var(--bg-border)] rounded px-3 py-2 text-[12px] text-white focus:border-indigo-500 outline-none"
+              data-testid="profile-select"
+            >
+              <option value="">— scegli un profilo —</option>
+              {familyOrder.filter(f => byFamily[f]).map(f => (
+                <optgroup key={f} label={familyLabels[f] || f}>
+                  {byFamily[f].map(p => (
+                    <option key={p.key} value={p.key}>
+                      {p.vendor} — {p.label}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+          </div>
+
+          {chosen && (
+            <div className="bg-indigo-500/5 border border-indigo-500/20 rounded-md p-3 space-y-1.5 text-[11px] font-mono" data-testid="profile-preview">
+              <div className="text-[9px] font-bold uppercase tracking-wider text-indigo-300 mb-1">Anteprima configurazione</div>
+              <div className="flex justify-between"><span className="text-white/50">Web Console:</span> <span className="text-white">{chosen.web_console?.scheme}://{device.ip_address}:{chosen.web_console?.port}{chosen.web_console?.path}</span></div>
+              <div className="flex justify-between"><span className="text-white/50">SNMP:</span> <span className="text-white">{chosen.snmp?.version} porta {chosen.snmp?.port}</span></div>
+              <div className="flex justify-between"><span className="text-white/50">Polling:</span> <span className="text-white">{chosen.polling_interval_seconds}s</span></div>
+              <div className="flex justify-between"><span className="text-white/50">OID monitorati:</span> <span className="text-white">{Object.keys(chosen.oids || {}).length}</span></div>
+              {chosen.web_console?.notes && (
+                <div className="text-[10px] text-amber-300/80 mt-2 pt-2 border-t border-white/5">
+                  ℹ {chosen.web_console.notes}
+                </div>
+              )}
+            </div>
+          )}
+
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="ghost" onClick={onClose} className="h-8 text-xs">Annulla</Button>
+            <Button
+              onClick={apply}
+              disabled={!selected || applying}
+              className="bg-indigo-600 hover:bg-indigo-700 text-white h-8 text-xs"
+              data-testid="apply-profile-btn"
+            >
+              {applying ? <ArrowClockwise size={12} className="animate-spin mr-1" /> : <Cpu size={12} className="mr-1" />}
+              {applying ? "Applicazione..." : "Applica profilo"}
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 

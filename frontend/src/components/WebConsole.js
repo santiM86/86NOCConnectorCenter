@@ -281,6 +281,8 @@ export function defaultWebPort(device) {
   if (device?.web_console_port) return device.web_console_port;
   if (device?.http_port) return device.http_port;
   const type = (device?.device_type || "").toLowerCase();
+  // NAS: Synology 5001 HTTPS, QNAP 443, Generic 443
+  if (type === "nas") return 5001;
   // HTTPS default: iLO, firewall, switch (HP/Aruba/Cisco/Zyxel usano 443), access-point, UPS moderni
   if (["ilo", "firewall", "switch", "router", "access-point", "ups"].includes(type)) return 443;
   return 80;
