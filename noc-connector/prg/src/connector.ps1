@@ -397,6 +397,19 @@ function Send-Heartbeat($config) {
     }
     $response = Send-ToNOC $config "connector/heartbeat" $payload
     
+    # Aggiornamento whitelist porte dinamica (da UI Admin)
+    if ($response -and $response.allowed_ports_extra) {
+        try {
+            $ports = @($response.allowed_ports_extra | ForEach-Object { [int]$_ })
+            $script:DynamicAllowedPorts = $ports
+            if ($ports.Count -gt 0) {
+                Write-Log "Allowed ports extra aggiornati: $($ports -join ',')" "INFO"
+            }
+        } catch {
+            Write-Log "Errore parsing allowed_ports_extra: $_" "WARN"
+        }
+    }
+    
     # Process pending commands (Wake-on-LAN, VA Scan, etc.)
     if ($response -and $response.pending_commands) {
         foreach ($cmd in $response.pending_commands) {
@@ -1782,8 +1795,27 @@ function Process-WebProxyRequest($config, $req) {
     $respHeaders = @{}
     $respCookies = @{}
 
-    # Whitelist porte
-    if ($port -notin @(80, 443, 8080, 8443, 8000, 8888, 4443, 4080, 9090, 10000)) {
+    # Whitelist porte — combina default + extra forniti dal backend tramite command config
+    # Il backend può inviare `allowed_ports_extra` (array di int) via endpoint /api/connector/command-poll
+    # così l'admin aggiunge nuove porte da UI senza ricompilare il connector.
+    $defaultAllowedPorts = @(
+        80, 443, 8080, 8443, 8000, 8888, 4443, 4080, 9090, 10000,
+        5000, 5001,        # Synology DSM
+        8006,              # Proxmox PVE
+        81, 8088,          # TrueNAS legacy / QNAP secondary
+        3000, 19999,       # AdGuard/Pihole/Grafana / Netdata
+        4444,              # pfSense/OPNsense alt
+        2222, 8083,        # DirectAdmin / Plesk
+        17988, 17990       # iLO XMLagent / XMLssl
+    )
+    $extraAllowedPorts = @()
+    try {
+        if ($script:DynamicAllowedPorts -and $script:DynamicAllowedPorts.Count -gt 0) {
+            $extraAllowedPorts = $script:DynamicAllowedPorts
+        }
+    } catch {}
+    $allAllowedPorts = $defaultAllowedPorts + $extraAllowedPorts
+    if ($port -notin $allAllowedPorts) {
         $errorMsg = "Porta $port non consentita per motivi di sicurezza"
         $statusCode = 403
         $errHtml = Build-WebProxyErrorPage $deviceIp $port $path $errorMsg

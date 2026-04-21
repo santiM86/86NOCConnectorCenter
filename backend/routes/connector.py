@@ -30,7 +30,145 @@ router = APIRouter(prefix="/api", tags=["connector"])
 C = CONNECTOR_PATH  # e.g. "c7x9"
 
 
-# ==================== HEARTBEAT ====================
+# ==================== AUTO-DETECT WEB UI ====================
+
+# Porte che di sicuro ospitano una management UI, ordine di preferenza
+# (porta, scheme, peso) — peso più alto = preferita
+_WEB_UI_PORT_PREFERENCE = [
+    (5001, "https", 110),   # Synology DSM HTTPS
+    (8443, "https", 100),   # UniFi / vari HTTPS alternativo
+    (4443, "https",  95),   # alt HTTPS
+    (443,  "https",  90),   # HTTPS standard
+    (8006, "https",  88),   # Proxmox
+    (17990,"https",  85),   # iLO XMLssl
+    (5000, "http",   80),   # Synology DSM HTTP
+    (8088, "https",  78),   # QNAP secondary
+    (8080, "http",   75),   # HTTP alt
+    (8000, "http",   72),   # HTTP alt
+    (10000,"https",  70),   # Webmin
+    (8888, "http",   68),
+    (9090, "http",   65),
+    (81,   "http",   62),   # TrueNAS
+    (80,   "http",   60),   # HTTP standard
+    (3000, "http",   55),   # AdGuard / Grafana
+    (19999,"http",   50),   # Netdata
+    (17988,"http",   45),   # iLO XMLagent
+]
+
+_WEB_UI_PORT_WEIGHT = {p[0]: (p[1], p[2]) for p in _WEB_UI_PORT_PREFERENCE}
+
+
+async def _auto_detect_web_ui(client_id: str, dev: dict) -> None:
+    """Promote best open_ports/http_details to managed_devices.web_console_*
+    when the device has NO explicit manual override and NO profile-based config.
+
+    Priority chain (highest wins):
+      1. managed_devices.web_console_port set BY USER (user_configured=true) — do not touch
+      2. managed_devices.web_console_port set by profile — keep but overlay detected_port
+      3. best port from open_ports with http_details.status 2xx/3xx — promote to web_console_*
+    """
+    device_ip = dev.get("device_ip")
+    if not device_ip:
+        return
+    open_ports = dev.get("open_ports") or []
+    http_details = dev.get("http_details") or {}
+    if not open_ports:
+        return
+
+    # Compute best candidate port
+    best_port = None
+    best_scheme = None
+    best_weight = -1
+    best_title = ""
+    status_code = 0
+    try:
+        http_status = int(http_details.get("status_code") or http_details.get("status") or 0)
+        status_code = http_status
+    except (ValueError, TypeError):
+        http_status = 0
+    http_title = (http_details.get("title") or "").strip()
+
+    for entry in open_ports:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            p = int(entry.get("port") or 0)
+        except (ValueError, TypeError):
+            continue
+        if p <= 0:
+            continue
+        scheme, weight = _WEB_UI_PORT_WEIGHT.get(p, (None, 0))
+        if not scheme:
+            continue
+        # Extra boost if this port responded HTTP 2xx/3xx
+        if 200 <= http_status < 400 and http_title:
+            # http_details refers to the port the connector actually probed (first open)
+            weight += 20
+        if weight > best_weight:
+            best_weight = weight
+            best_port = p
+            best_scheme = scheme
+            best_title = http_title if (200 <= http_status < 400) else ""
+
+    if not best_port:
+        return
+
+    # Fetch current managed_devices to decide if we should overwrite
+    existing = await db.managed_devices.find_one(
+        {"ip": device_ip, "client_id": client_id},
+        {"_id": 0, "web_console_port": 1, "web_console_user_configured": 1, "profile_key": 1},
+    )
+    if existing and existing.get("web_console_user_configured"):
+        # Admin cliccò esplicitamente → non sovrascrivere, ma salva detected per UI
+        await db.device_poll_status.update_one(
+            {"client_id": client_id, "device_ip": device_ip},
+            {"$set": {
+                "detected_web_console_port": best_port,
+                "detected_web_console_scheme": best_scheme,
+                "detected_web_console_title": best_title,
+                "detected_web_console_confidence": min(100, best_weight),
+                "detected_at": datetime.now(timezone.utc).isoformat(),
+            }}
+        )
+        return
+
+    # Only write if different from existing (avoid unnecessary updates)
+    patch = {
+        "detected_web_console_port": best_port,
+        "detected_web_console_scheme": best_scheme,
+        "detected_web_console_title": best_title,
+        "detected_at": datetime.now(timezone.utc).isoformat(),
+    }
+    # If no explicit managed record OR no explicit port set → promote
+    has_strong_evidence = bool(status_code and 200 <= status_code < 400 and best_title)
+    should_upsert = not existing and has_strong_evidence
+    if not existing or not existing.get("web_console_port") or should_upsert:
+        await db.managed_devices.update_one(
+            {"ip": device_ip, "client_id": client_id},
+            {"$set": {
+                "ip": device_ip,
+                "client_id": client_id,
+                "name": dev.get("device_name") or device_ip,
+                "web_console_port": best_port,
+                "web_console_scheme": best_scheme,
+                "web_console_url": f"{best_scheme}://{device_ip}:{best_port}/",
+                "web_console_title": best_title or None,
+                "web_console_status_code": status_code or None,
+                "web_console_working": bool(status_code and 200 <= status_code < 400),
+                "web_console_auto_detected": True,
+                "web_console_last_tested": datetime.now(timezone.utc).isoformat(),
+            }},
+            upsert=True,
+        )
+        patch["promoted"] = True
+
+    await db.device_poll_status.update_one(
+        {"client_id": client_id, "device_ip": device_ip},
+        {"$set": patch}
+    )
+
+
+
 
 @router.post(f"/{C}/hb")
 @router.post("/connector/heartbeat")
@@ -98,6 +236,21 @@ async def connector_heartbeat(request: Request, heartbeat: ConnectorHeartbeat):
     response["secure_path"] = C
     if client_data.get("_legacy_auth"):
         response["security_upgrade_available"] = True
+    # Inject dynamic allowed ports (admin configurable via UI /connector/settings)
+    try:
+        settings_doc = await db.connector_settings.find_one({"key": "allowed_ports_extra"}, {"_id": 0})
+        if settings_doc and isinstance(settings_doc.get("value"), list):
+            ports_clean = []
+            for p in settings_doc["value"]:
+                try:
+                    pi = int(p)
+                    if 1 <= pi <= 65535:
+                        ports_clean.append(pi)
+                except (ValueError, TypeError):
+                    continue
+            response["allowed_ports_extra"] = ports_clean
+    except Exception:
+        pass
     return response
 
 
@@ -299,12 +452,36 @@ async def connector_update_check(request: Request):
 
 @router.get("/connector/download/{filename}")
 async def connector_download(filename: str, request: Request):
+    # Allow either (1) a valid connector API key, or (2) an admin JWT — admins can
+    # grab the latest ZIP manually from the browser, connectors pull via API key.
+    client_data = None
     try:
         client_data = await verify_connector_request(request)
     except Exception:
-        client_data = None
-        if not client_data:
-            raise HTTPException(status_code=401, detail="Invalid API key")
+        pass
+    if not client_data:
+        # Try admin JWT (Authorization: Bearer ...)
+        auth_hdr = request.headers.get("Authorization") or request.headers.get("authorization") or ""
+        token_hdr = None
+        if auth_hdr.lower().startswith("bearer "):
+            token_hdr = auth_hdr.split(" ", 1)[1]
+        # Allow also ?token=<jwt> for direct browser download (anchor href)
+        if not token_hdr:
+            token_hdr = request.query_params.get("token")
+        if token_hdr:
+            try:
+                import jwt as _jwt
+                from deps import JWT_SECRET, JWT_ALGORITHM
+                payload = _jwt.decode(token_hdr, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+                user_id = payload.get("user_id")
+                if user_id:
+                    user = await db.users.find_one({"id": user_id}, {"_id": 0, "role": 1, "email": 1})
+                    if user and user.get("role") in ("admin", "superadmin", "security_admin"):
+                        client_data = {"_admin": True, "email": user.get("email")}
+            except Exception:
+                pass
+    if not client_data:
+        raise HTTPException(status_code=401, detail="Invalid API key or admin token required")
     filepath = CONNECTOR_STORAGE / filename
     if not filepath.exists():
         raise HTTPException(status_code=404, detail="File not found")
@@ -646,6 +823,16 @@ async def connector_device_report(request: Request):
             {"client_id": client_id, "device_ip": dev["device_ip"]},
             {"$set": doc}, upsert=True
         )
+
+        # Auto-detect Web UI from open_ports scan
+        # Il connector fa TCP probe + HTTP GET: se trova una porta che risponde con
+        # un title/server header valido, la salviamo come "porta osservata".
+        # Priorità scelta: HTTPS > HTTP, preferenza porte management note,
+        # confidence = (risposta HTTP 2xx/3xx + title non vuoto).
+        try:
+            await _auto_detect_web_ui(client_id, dev)
+        except Exception as e:
+            logger.warning(f"Auto-detect web UI failed for {dev.get('device_ip')}: {e}")
 
         # Auto-classify new devices via Device Profile fingerprinting (non-blocking)
         # Only on first-ingest (prev_status None) OR when sys_descr changed significantly
