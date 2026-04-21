@@ -45,6 +45,7 @@ import {
   Robot,
   Brain,
   Heartbeat,
+  Cpu,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import {
@@ -107,6 +108,7 @@ const navConfig = [
       { path: "/users", icon: Users, label: "Gestione Utenti", roles: ["admin"] },
       { path: "/oncall", icon: Clock, label: "Reperibilità", roles: ["admin", "operator"] },
       { path: "/thresholds", icon: Sliders, label: "Soglie Alert", roles: ["admin"] },
+      { path: "/device-profiles", icon: Cpu, label: "Device Profiles", roles: ["admin", "operator"] },
       { path: "/settings", icon: Gear, label: "Impostazioni", roles: ["admin", "operator"] },
       { path: "/tv", icon: Monitor, label: "TV Dashboard", roles: ["admin", "operator", "viewer"], external: true },
     ],
