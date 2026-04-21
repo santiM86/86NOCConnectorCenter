@@ -1036,8 +1036,18 @@ function DevicesTab({ devices, clientId, onRefresh }) {
                       )}
                       <button
                         onClick={() => setProfileTarget(d)}
-                        className={`p-1 rounded transition-colors ${d.profile_key ? "hover:bg-cyan-500/10 text-cyan-400" : "hover:bg-amber-500/10 text-amber-400 animate-pulse"}`}
-                        title={d.profile_key ? `Profilo: ${d.profile_key}` : "Nessun profilo — clicca per configurare"}
+                        className={`p-1 rounded transition-colors ${
+                          d.profile_key
+                            ? (d.profile_auto_matched
+                                ? "hover:bg-emerald-500/10 text-emerald-400"
+                                : "hover:bg-cyan-500/10 text-cyan-400")
+                            : "hover:bg-amber-500/10 text-amber-400 animate-pulse"
+                        }`}
+                        title={
+                          d.profile_key
+                            ? `Profilo: ${d.profile_key}${d.profile_auto_matched ? " (auto-rilevato)" : " (configurato manualmente)"}${d.vendor ? ` · ${d.vendor}` : ""}`
+                            : "Nessun profilo — clicca per configurare"
+                        }
                         data-testid={`configure-profile-${d.ip_address}`}
                       >
                         <Cpu size={13} />

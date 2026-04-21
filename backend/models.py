@@ -75,6 +75,11 @@ class DeviceResponse(BaseModel):
     web_console_title: Optional[str] = None
     http_port: Optional[int] = None
     monitor_type: Optional[str] = None
+    # Device profile (auto-configurazione vendor-specific)
+    profile_key: Optional[str] = None
+    vendor: Optional[str] = None
+    family: Optional[str] = None
+    profile_auto_matched: Optional[bool] = None
     created_at: str
 
 class AlertCreate(BaseModel):
