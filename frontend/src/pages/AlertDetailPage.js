@@ -3,7 +3,7 @@ import { useParams, useNavigate } from "react-router-dom";
 import axios from "axios";
 import { API, useAuth } from "@/App";
 import { toast } from "sonner";
-import { ArrowLeft, Clock, HardDrive, MapPin, User, CheckCircle, Warning, Bell, XCircle, MoonStars, BellSlash, ArrowUp } from "@phosphor-icons/react";
+import { ArrowLeft, Clock, HardDrive, MapPin, User, CheckCircle, Warning, Bell, XCircle, MoonStars, BellSlash, ArrowUp, BookOpen, Lightning, CaretRight } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 
@@ -16,8 +16,23 @@ export default function AlertDetailPage() {
   const [loading, setLoading] = useState(true);
   const [notifLog, setNotifLog] = useState([]);
   const [notifLoading, setNotifLoading] = useState(false);
+  const [runbookMatches, setRunbookMatches] = useState([]);
+  const [runbookCtx, setRunbookCtx] = useState(null);
+  const [runbookLoading, setRunbookLoading] = useState(false);
+  const [openRunbookId, setOpenRunbookId] = useState(null);
 
   useEffect(() => { fetchAlert(); }, [id]);
+  useEffect(() => {
+    if (!id) return;
+    setRunbookLoading(true);
+    axios.get(`${API}/runbooks/match/alert/${id}`)
+      .then(r => {
+        setRunbookMatches(r.data?.matches || []);
+        setRunbookCtx(r.data?.context || null);
+      })
+      .catch(() => { setRunbookMatches([]); setRunbookCtx(null); })
+      .finally(() => setRunbookLoading(false));
+  }, [id]);
   useEffect(() => {
     if (isAdmin && id) {
       setNotifLoading(true);
@@ -192,7 +207,135 @@ export default function AlertDetailPage() {
             )}
           </div>
         )}
+
+        {/* ============ RUNBOOK SUGGERITI (auto-match vendor + capability) ============ */}
+        <div className="mt-5 bg-[var(--bg-panel)] border border-[var(--bg-border)] rounded-lg p-4 sm:p-5" data-testid="alert-runbooks-panel">
+          <div className="flex items-center justify-between gap-3 mb-3">
+            <div className="flex items-center gap-2">
+              <BookOpen size={16} weight="bold" className="text-indigo-400" />
+              <h2 className="text-sm font-bold text-[var(--text-primary)]">Runbook suggeriti</h2>
+              {runbookMatches.length > 0 && (
+                <span className="text-[9px] font-mono bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 rounded px-1.5 py-0.5">
+                  {runbookMatches.length}
+                </span>
+              )}
+            </div>
+            {runbookCtx && (runbookCtx.profile_key || runbookCtx.vendor) && (
+              <div className="flex items-center gap-1.5 text-[10px] font-mono text-white/50">
+                <Lightning size={11} weight="bold" className="text-amber-400" />
+                <span>device:</span>
+                {runbookCtx.vendor && <span className="text-cyan-300">{runbookCtx.vendor}</span>}
+                {runbookCtx.profile_key && <span className="text-indigo-300">/{runbookCtx.profile_key}</span>}
+              </div>
+            )}
+          </div>
+
+          {runbookLoading && (
+            <p className="text-[11px] text-white/40">Analisi runbook...</p>
+          )}
+
+          {!runbookLoading && runbookMatches.length === 0 && (
+            <div className="py-4 text-center">
+              <p className="text-[12px] text-white/50">Nessun runbook corrisponde a questo alert.</p>
+              <button
+                onClick={() => navigate("/runbooks")}
+                className="mt-2 text-[11px] text-indigo-400 hover:text-indigo-300 underline"
+                data-testid="runbook-create-link"
+              >
+                Crea il primo runbook →
+              </button>
+            </div>
+          )}
+
+          {!runbookLoading && runbookMatches.length > 0 && (
+            <div className="space-y-2">
+              {runbookMatches.map((rb, idx) => (
+                <RunbookMatchCard
+                  key={rb.id}
+                  rb={rb}
+                  isTop={idx === 0}
+                  expanded={openRunbookId === rb.id}
+                  onToggle={() => setOpenRunbookId(openRunbookId === rb.id ? null : rb.id)}
+                />
+              ))}
+            </div>
+          )}
+        </div>
       </div>
+    </div>
+  );
+}
+
+function RunbookMatchCard({ rb, isTop, expanded, onToggle }) {
+  const steps = rb.steps || [];
+  return (
+    <div
+      className={`border rounded-md transition-all ${
+        isTop
+          ? "border-indigo-500/40 bg-indigo-500/5"
+          : "border-[var(--bg-border)] bg-black/20 hover:border-indigo-500/20"
+      }`}
+      data-testid={`runbook-match-${rb.id}`}
+    >
+      <button
+        onClick={onToggle}
+        className="w-full flex items-center justify-between gap-3 p-3 text-left"
+        data-testid={`runbook-toggle-${rb.id}`}
+      >
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 mb-0.5">
+            {isTop && (
+              <span className="text-[8px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 rounded px-1.5 py-0.5 uppercase tracking-widest">
+                Best Match
+              </span>
+            )}
+            <span className="text-[13px] font-bold text-white truncate">{rb.title}</span>
+            <span className="text-[9px] font-mono text-white/40 ml-auto flex-shrink-0">
+              score {rb._match_score}
+            </span>
+          </div>
+          {rb.description && <p className="text-[11px] text-white/50 truncate">{rb.description}</p>}
+          {rb._match_reasons && rb._match_reasons.length > 0 && (
+            <div className="flex flex-wrap gap-1 mt-1.5">
+              {rb._match_reasons.slice(0, 4).map((r, i) => (
+                <span key={i} className="text-[8px] font-mono px-1.5 py-0.5 rounded bg-white/5 text-white/50">
+                  {r}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+        <CaretRight size={14} className={`text-white/40 flex-shrink-0 transition-transform ${expanded ? "rotate-90" : ""}`} />
+      </button>
+
+      {expanded && (
+        <div className="px-3 pb-3 pt-1 border-t border-white/5" data-testid={`runbook-steps-${rb.id}`}>
+          <p className="text-[9px] uppercase tracking-widest text-white/40 mb-2 mt-2">
+            Procedura — {steps.length} step
+          </p>
+          <ol className="space-y-2.5">
+            {steps.map((s, i) => (
+              <li key={i} className="pl-5 relative">
+                <span className="absolute left-0 top-0 w-4 h-4 rounded-full bg-indigo-500/20 border border-indigo-500/40 text-[9px] font-bold text-indigo-200 flex items-center justify-center">
+                  {s.order || i + 1}
+                </span>
+                <p className="text-[12px] font-bold text-white leading-tight">{s.title}</p>
+                {s.description && <p className="text-[11px] text-white/60 mt-0.5">{s.description}</p>}
+                {s.command && (
+                  <pre className="mt-1 bg-black/60 border border-white/5 rounded p-2 text-[10px] font-mono text-emerald-300 whitespace-pre-wrap overflow-x-auto">
+                    {s.command}
+                  </pre>
+                )}
+                {s.expected_result && (
+                  <p className="text-[10px] text-cyan-300/80 mt-1 font-mono">
+                    → {s.expected_result}
+                  </p>
+                )}
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
     </div>
   );
 }
