@@ -89,15 +89,38 @@ async def request_session(body: dict, request: Request, current_user: dict = Dep
     if not cred and not md and not ps:
         raise HTTPException(status_code=404, detail="Device non registrato nel Vault o tra i managed devices")
 
-    # Determine base URL: external_url ha priorità, fallback su device_ip:port LAN (solo se connector attivo)
+    # Determine base URL with priority:
+    # 1. cred.external_url (Vault explicit override) — ha sempre la priorità
+    # 2. managed_devices.web_console_{port,scheme,path} (scritti dal profilo applicato)
+    # 3. cred.port (Vault port) + scheme inferito
+    # 4. Fallback: 443/https
     external_url = (cred or {}).get("external_url", "").strip() if cred else ""
-    port = (cred or {}).get("port") or 443 if cred else 443
-    scheme = "https" if port == 443 else ("http" if port == 80 else "https")
+
+    # Step 2: leggi valori dal profilo (via managed_devices/device_poll_status)
+    # Priorita': managed_devices > device_poll_status
+    md_port = (md or {}).get("web_console_port")
+    md_scheme = (md or {}).get("web_console_scheme")
+    md_path = (md or {}).get("web_console_path") or "/"
+    ps_port = (ps or {}).get("web_console_port")
+    ps_scheme = (ps or {}).get("web_console_scheme")
+
+    profile_port = md_port or ps_port
+    profile_scheme = md_scheme or ps_scheme
 
     if external_url:
         base_url = external_url.rstrip("/")
         transport = "direct"
+    elif profile_port:
+        # Profilo device vendor applicato → usa configurazione profilo
+        scheme = profile_scheme or ("https" if profile_port in (443, 5001, 8443, 4443) else "http")
+        base_url = f"{scheme}://{device_ip}:{profile_port}"
+        if md_path and md_path != "/":
+            base_url = base_url + md_path.rstrip("/")
+        transport = "direct"
     else:
+        # Fallback Vault / default
+        port = (cred or {}).get("port") or 443 if cred else 443
+        scheme = "https" if port == 443 else ("http" if port == 80 else "https")
         base_url = f"{scheme}://{device_ip}:{port}"
         transport = "connector"
 
