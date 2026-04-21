@@ -1,4 +1,4 @@
 {
-  "version": "3.3.4",
-  "changelog": "v3.3.4: Installer aggiunge automaticamente esclusioni Windows Defender per InstallDir (C:\\Program Files\\86NocConnector) + ConfigDir + nssm.exe + connector.ps1. Previene definitivamente kill silenzioso di updater e connector da ASR rules (Attack Surface Reduction) e real-time scanning. Richiede admin durante install (gia' lo e' via wizard). Include tutti i fix v3.3.3 (updater staged in InstallDir Defender-safe + breadcrumb + dual-log), v3.3.2 (ENTERPRISE dual-path iLO), v3.3.1 (WMI updater), v3.3.0 (Remediation executor)."
+  "version": "3.3.5",
+  "changelog": "v3.3.5: Whitelist porte Web Proxy estesa per supporto profili vendor multi-marca. Aggiunte: Synology DSM (5000/5001), Proxmox PVE (8006), TrueNAS legacy (81), QNAP secondary (8088), AdGuard/Pihole (3000), pfSense/OPNsense alt (4444), DirectAdmin (2222), Plesk (8083), iLO XMLagent (17988/17990), Netdata (19999). Risolve errore 'Porta X non consentita' che appariva applicando profili hpe_ilo/synology_dsm/generic_ups al primo apri Web Console via Popup V4. Include tutti i fix v3.3.4 (ASR Defender exclusions), v3.3.3 (updater staged), v3.3.2 (dual-path iLO), v3.3.1 (WMI updater), v3.3.0 (Remediation executor)."
 }
