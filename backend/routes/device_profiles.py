@@ -183,6 +183,7 @@ async def apply_profile(body: dict, current_user: dict = Depends(get_current_use
         "web_console_port": wc.get("port"),
         "web_console_scheme": wc.get("scheme"),
         "web_console_path": wc.get("path"),
+        "web_console_user_configured": True,  # Admin applied profile → do not overwrite from auto-detect
         "polling_interval_seconds": eff.get("polling_interval_seconds"),
         "profile_applied_at": datetime.now(timezone.utc).isoformat(),
         "profile_applied_by": current_user.get("email"),
@@ -197,6 +198,33 @@ async def apply_profile(body: dict, current_user: dict = Depends(get_current_use
         {"$set": {"profile_key": eff["key"], "device_type": eff["family"], "vendor": eff["vendor"]}},
     )
 
+    # Auto-populate allowed_ports_extra se la porta del profilo non è nelle default
+    DEFAULT_WHITELIST = {
+        80, 443, 8080, 8443, 8000, 8888, 4443, 4080, 9090, 10000,
+        5000, 5001, 8006, 81, 8088, 3000, 19999, 4444, 2222, 8083, 17988, 17990,
+    }
+    port_added = False
+    try:
+        profile_port = (snmp.get("port") if False else wc.get("port"))
+        if profile_port and int(profile_port) not in DEFAULT_WHITELIST:
+            cur = await db.connector_settings.find_one({"key": "allowed_ports_extra"}, {"_id": 0}) or {}
+            extra = set(int(p) for p in (cur.get("value") or []) if isinstance(p, (int, str)))
+            if int(profile_port) not in extra:
+                extra.add(int(profile_port))
+                await db.connector_settings.update_one(
+                    {"key": "allowed_ports_extra"},
+                    {"$set": {
+                        "key": "allowed_ports_extra",
+                        "value": sorted(extra),
+                        "updated_by": current_user.get("email"),
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                    }},
+                    upsert=True,
+                )
+                port_added = True
+    except Exception:
+        pass
+
     return {
         "ok": True,
         "profile": eff,
@@ -205,6 +233,7 @@ async def apply_profile(body: dict, current_user: dict = Depends(get_current_use
             "managed_devices_modified": md_res.modified_count,
             "poll_status_matched": ps_res.matched_count,
             "poll_status_modified": ps_res.modified_count,
+            "port_added_to_whitelist": port_added,
         },
         "forced": force,
     }
