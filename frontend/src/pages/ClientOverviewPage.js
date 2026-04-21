@@ -402,6 +402,7 @@ function IloServerCard({ s, healthColor }) {
               {topTemps.map((t, idx) => {
                 const sensorColor = t.value > 75 ? "#FF3B30" : t.value > 65 ? "#FFCC00" : "#34C759";
                 const cond = (t.condition || "ok").toLowerCase();
+                const prettyName = prettifySensorName(t.locale);
                 return (
                   <div key={idx} className="px-2 py-1.5 rounded border" style={{ borderColor: `${sensorColor}30`, background: `${sensorColor}08` }}>
                     <div className="flex items-center justify-between gap-1">
@@ -409,7 +410,8 @@ function IloServerCard({ s, healthColor }) {
                       <span className="text-[8px] font-bold" style={{ color: sensorColor }}>{cond.toUpperCase()}</span>
                     </div>
                     <div className="text-[15px] font-bold mt-0.5" style={{ color: sensorColor }}>{t.value}°C</div>
-                    <div className="text-[9px] text-[var(--text-muted)] truncate" title={t.locale}>{t.locale || "—"}</div>
+                    <div className="text-[10px] text-[var(--text-primary)] truncate" title={t.locale}>{prettyName}</div>
+                    <div className="text-[8px] text-[var(--text-muted)]/70 font-mono truncate">{t.locale}</div>
                   </div>
                 );
               })}
@@ -533,6 +535,62 @@ function InfoBadge({ label, value, color }) {
   );
 }
 
+
+// Mappa nomi sensori HPE iLO (ProLiant Gen10/Gen9/Gen11) a etichette leggibili italiane.
+// iLO espone sensori come "53-CPU1 DigIO", "02-BMC Zone", "15-PCI 1", "01-Inlet Ambient", ecc.
+// Rimuoviamo il prefisso ID + mappiamo le abbreviazioni piu' comuni.
+function prettifySensorName(raw) {
+  if (!raw) return "—";
+  // Rimuove prefisso ID numerico stile "53-" o "02-"
+  let n = raw.replace(/^\s*\d{1,3}\s*[-_]\s*/, "").trim();
+  const lower = n.toLowerCase();
+
+  // Regole di mapping ordinate per specificità
+  const rules = [
+    { re: /^cpu\s*(\d+)\s*dig\s*io/i, out: m => `CPU ${m[1]} — Digital I/O` },
+    { re: /^cpu\s*(\d+)\s*zone/i, out: m => `CPU ${m[1]} — Zona termica` },
+    { re: /^cpu\s*(\d+)\s*mem\s*zone/i, out: m => `CPU ${m[1]} — Memoria (DIMM)` },
+    { re: /^cpu\s*(\d+)\s*vr/i, out: m => `CPU ${m[1]} — VRM alimentazione` },
+    { re: /^cpu\s*(\d+)/i, out: m => `CPU ${m[1]}` },
+    { re: /^p(\d+)\s*dimm\s*(\d+)\s*-\s*(\d+)/i, out: m => `Processore ${m[1]} · DIMM ${m[2]}-${m[3]}` },
+    { re: /^p(\d+)\s*dimm/i, out: m => `Processore ${m[1]} · DIMM` },
+    { re: /^dimm\s*(\d+)/i, out: m => `DIMM slot ${m[1]}` },
+    { re: /^inlet\s*ambient/i, out: () => "Aria in ingresso (Inlet)" },
+    { re: /^inlet/i, out: () => "Aria in ingresso" },
+    { re: /^outlet/i, out: () => "Aria in uscita (Outlet)" },
+    { re: /^ambient/i, out: () => "Ambiente sistema" },
+    { re: /^sys\s*(amb|board)/i, out: () => "Scheda madre" },
+    { re: /^bmc/i, out: () => "BMC (controller iLO)" },
+    { re: /^ilo\s*zone/i, out: () => "Zona chip iLO" },
+    { re: /^chipset\s*(\d+)?/i, out: m => m[1] ? `Chipset ${m[1]}` : "Chipset PCH" },
+    { re: /^pch/i, out: () => "Chipset PCH" },
+    { re: /^pci\s*(\d+)/i, out: m => `Slot PCI-E ${m[1]}` },
+    { re: /^pci/i, out: () => "Slot PCI-E" },
+    { re: /^vr\s*(\d+)?/i, out: m => m[1] ? `VRM ${m[1]}` : "VRM alimentazione" },
+    { re: /^i\/?o\s*zone/i, out: () => "Zona I/O (PCIe/NIC)" },
+    { re: /^i\/?o\s*board/i, out: () => "Scheda I/O" },
+    { re: /^storage\s*batt/i, out: () => "Batteria cache RAID" },
+    { re: /^storage\s*zone/i, out: () => "Zona storage" },
+    { re: /^hdd\s*max/i, out: () => "Dischi (HDD/SSD)" },
+    { re: /^hd\s*controller/i, out: () => "Controller RAID" },
+    { re: /^fan\s*(\d+)/i, out: m => `Zona ventola ${m[1]}` },
+    { re: /^nic\s*(\d+)?/i, out: m => m[1] ? `Scheda di rete ${m[1]}` : "Scheda di rete" },
+    { re: /^power\s*supply\s*(\d+)?/i, out: m => m[1] ? `Alimentatore PSU ${m[1]}` : "Alimentatore" },
+    { re: /^supercap/i, out: () => "SuperCap (Smart Array)" },
+    { re: /^expansion\s*bay/i, out: () => "Bay espansione" },
+    { re: /^memory/i, out: () => "Memoria RAM" },
+  ];
+  for (const r of rules) {
+    const m = n.match(r.re);
+    if (m) return r.out(m);
+  }
+  // Fallback: capitalizza + sostituisce abbreviazioni note
+  n = n.replace(/\bzone\b/gi, "zona")
+       .replace(/\btemp\b/gi, "")
+       .replace(/\s+/g, " ")
+       .trim();
+  return n.charAt(0).toUpperCase() + n.slice(1);
+}
 
 function FirmwareComplianceBadge({ fc }) {
   const [open, setOpen] = useState(false);
