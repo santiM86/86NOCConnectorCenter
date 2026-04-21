@@ -84,7 +84,10 @@ async def get_redfish_metrics(
     async for doc in cursor:
         ts = doc.get("timestamp")
         if isinstance(ts, datetime):
-            doc["timestamp"] = ts.isoformat()
+            # Forza UTC+Z per evitare parse JS come local time (bug "2h fa")
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            doc["timestamp"] = ts.isoformat().replace("+00:00", "Z")
         snapshots.append(doc)
 
     # Latest snapshot "wide" (con tutti i sensori)
@@ -94,7 +97,17 @@ async def get_redfish_metrics(
         sort=[("timestamp", -1)]
     )
     if latest and isinstance(latest.get("timestamp"), datetime):
-        latest["timestamp"] = latest["timestamp"].isoformat()
+        ts = latest["timestamp"]
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        latest["timestamp"] = ts.isoformat().replace("+00:00", "Z")
+    # Server-side age_seconds to avoid JS TZ interpretation bugs ("2h fa")
+    if latest and latest.get("timestamp"):
+        try:
+            ts_dt = datetime.fromisoformat(latest["timestamp"].replace("Z", "+00:00"))
+            latest["age_seconds"] = int((datetime.now(timezone.utc) - ts_dt).total_seconds())
+        except Exception:
+            latest["age_seconds"] = None
 
     # Costruzione serie time-series per charting veloce
     series = {
@@ -141,7 +154,10 @@ async def get_redfish_live(device_ip: str, current_user: dict = Depends(get_curr
     if not latest:
         raise HTTPException(status_code=404, detail="Nessuna telemetria disponibile per questo device")
     if isinstance(latest.get("timestamp"), datetime):
-        latest["timestamp"] = latest["timestamp"].isoformat()
+        ts = latest["timestamp"]
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        latest["timestamp"] = ts.isoformat().replace("+00:00", "Z")
     # Age in seconds (utile per UI "ultimo update X sec fa")
     try:
         ts_dt = datetime.fromisoformat(latest["timestamp"].replace("Z", "+00:00"))
@@ -151,6 +167,51 @@ async def get_redfish_live(device_ip: str, current_user: dict = Depends(get_curr
     except Exception:
         latest["age_seconds"] = None
     return latest
+
+
+@router.get("/redfish/raw/{device_ip}")
+async def redfish_raw_probe(device_ip: str, path: str = "/redfish/v1/Chassis/1/Thermal/",
+                              current_user: dict = Depends(get_current_user)):
+    """Debug: esegue GET diretto su un URI Redfish arbitrario e ritorna il JSON raw.
+    Utile per diagnosticare perche' Temperatures/Fans/NIC non vengono letti.
+    Usa le credenziali del Vault e il transport diretto (external_url o device_ip).
+    Restringere a admin/operator.
+    """
+    if current_user.get("role") not in ["admin", "superadmin", "operator"]:
+        raise HTTPException(status_code=403, detail="Accesso negato")
+    # Find iLO credential for device
+    cred = await db.device_credentials.find_one({"device_ip": device_ip, "credential_type": {"$in": ["ilo", "redfish"]}}, {"_id": 0})
+    if not cred:
+        raise HTTPException(status_code=404, detail="Credenziale iLO non trovata in Vault per questo device")
+    try:
+        from security import SecurityManager
+        sm = SecurityManager()
+        username = sm.decrypt_credential(cred["username_enc"])
+        password = sm.decrypt_credential(cred["password_enc"])
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Decrypt failed: {e}")
+    import httpx as _httpx
+    port = cred.get("port") or 443
+    base_url = cred.get("external_url", "").rstrip("/") or f"https://{device_ip}:{port}"
+    target = path if path.startswith("/") else f"/{path}"
+    url = f"{base_url}{target}"
+    try:
+        async with _httpx.AsyncClient(verify=False, timeout=15.0) as client:
+            r = await client.get(url, auth=(username, password))
+            data = {}
+            try:
+                data = r.json()
+            except Exception:
+                data = {"_raw_text": r.text[:4000]}
+            return {
+                "url": url,
+                "status_code": r.status_code,
+                "content_type": r.headers.get("content-type"),
+                "body": data,
+            }
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Redfish GET error: {e}")
+
 
 
 @router.get("/redfish/diagnose/{device_ip}")

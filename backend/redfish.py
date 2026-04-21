@@ -234,8 +234,46 @@ class RedfishPoller:
                 else:
                     logger.warning(f"Redfish {device_ip}: PowerControl not found at any URI")
 
-                # 3. Thermal (iLO5/6 usano ReadingCelsius, iLO4 usa CurrentReading)
+                # 3. Thermal (multi-URI fallback: Thermal legacy + ThermalSubsystem Redfish 2020.4+)
                 thermal = await self._get(client, f"{base_url}/redfish/v1/Chassis/1/Thermal/", auth)
+                # ML350 Gen10 + iLO5 3.x moderno: /ThermalSubsystem/ con sotto-endpoint separati
+                if not thermal or (not thermal.get("Temperatures") and not thermal.get("Fans")):
+                    ts = await self._get(client, f"{base_url}/redfish/v1/Chassis/1/ThermalSubsystem/", auth)
+                    if ts:
+                        merged = {"Temperatures": [], "Fans": []}
+                        # Fans collection
+                        fans_col = await self._get(client, f"{base_url}/redfish/v1/Chassis/1/ThermalSubsystem/Fans/", auth)
+                        if fans_col and fans_col.get("Members"):
+                            for ref in fans_col["Members"][:20]:
+                                f = await self._get(client, f"{base_url}{ref['@odata.id']}", auth)
+                                if f:
+                                    # Normalize ThermalSubsystem.Fans (new schema) to legacy shape
+                                    reading_pct = None
+                                    if isinstance(f.get("SpeedPercent"), dict):
+                                        reading_pct = f["SpeedPercent"].get("Reading")
+                                    elif isinstance(f.get("Reading"), (int, float)):
+                                        reading_pct = f.get("Reading")
+                                    merged["Fans"].append({
+                                        "Name": f.get("Name", "Fan"),
+                                        "Reading": reading_pct,
+                                        "Status": f.get("Status", {}),
+                                    })
+                        # Temperature sensors: ThermalSubsystem esposto come /Sensors/
+                        sensors_col = await self._get(client, f"{base_url}/redfish/v1/Chassis/1/Sensors/", auth)
+                        if sensors_col and sensors_col.get("Members"):
+                            for ref in sensors_col["Members"][:80]:
+                                s = await self._get(client, f"{base_url}{ref['@odata.id']}", auth)
+                                if not s:
+                                    continue
+                                rtype = (s.get("ReadingType") or "").lower()
+                                if rtype == "temperature":
+                                    merged["Temperatures"].append({
+                                        "Name": s.get("Name", "Sensor"),
+                                        "ReadingCelsius": s.get("Reading"),
+                                        "Status": s.get("Status", {}),
+                                    })
+                        thermal = merged
+                        logger.info(f"Redfish {device_ip}: ThermalSubsystem fallback found {len(merged['Temperatures'])} temp, {len(merged['Fans'])} fans")
                 if thermal:
                     for t in thermal.get("Temperatures", []):
                         # iLO omette sensori "absent" con ReadingCelsius=null. Skippiamo SOLO null/missing.
@@ -306,7 +344,45 @@ class RedfishPoller:
                                 "status": dimm.get("Status", {}).get("Health", "OK"),
                             })
 
-                # 6. Network Adapters
+                # 6. Network Adapters — due fonti:
+                #    a) /Systems/1/EthernetInterfaces/ (livello OS, mostra IP/MAC ma spesso non LinkStatus su ML350)
+                #    b) /Chassis/1/NetworkAdapters/.../Ports/ (livello hardware, mostra LinkStatus reale)
+                # Aggreghiamo entrambi usando MAC come chiave (fallback indice).
+                hw_ports_by_mac = {}
+                try:
+                    chassis_nics = await self._get(client, f"{base_url}/redfish/v1/Chassis/1/NetworkAdapters/", auth)
+                    if chassis_nics and chassis_nics.get("Members"):
+                        for adr_ref in chassis_nics["Members"][:10]:
+                            adp = await self._get(client, f"{base_url}{adr_ref['@odata.id']}", auth)
+                            if not adp:
+                                continue
+                            ports_ref = (adp.get("NetworkPorts") or adp.get("Ports") or {}).get("@odata.id")
+                            if not ports_ref:
+                                continue
+                            ports_col = await self._get(client, f"{base_url}{ports_ref}", auth)
+                            if not ports_col or not ports_col.get("Members"):
+                                continue
+                            for p_ref in ports_col["Members"][:10]:
+                                p = await self._get(client, f"{base_url}{p_ref['@odata.id']}", auth)
+                                if not p:
+                                    continue
+                                # LinkStatus viene esposto in modi diversi a seconda dello schema
+                                l = (p.get("LinkStatus") or p.get("linkStatus") or
+                                     (p.get("Status", {}).get("State") if p.get("Status") else None))
+                                # MAC key
+                                macs = []
+                                for m_field in ("AssociatedNetworkAddresses", "NetAddressMediaMAC", "NetworkAddresses"):
+                                    v = p.get(m_field)
+                                    if isinstance(v, list):
+                                        macs.extend([m.upper() for m in v if isinstance(m, str)])
+                                    elif isinstance(v, str):
+                                        macs.append(v.upper())
+                                for mac_k in macs:
+                                    if mac_k:
+                                        hw_ports_by_mac[mac_k] = {"link_status": l, "health": (p.get("Status", {}) or {}).get("Health")}
+                except Exception as e:
+                    logger.debug(f"Redfish {device_ip}: NetworkAdapters fallback skipped: {e}")
+
                 nics = await self._get(client, f"{base_url}/redfish/v1/Systems/1/EthernetInterfaces/", auth)
                 if nics and nics.get("Members"):
                     for ref in nics["Members"][:16]:
@@ -316,6 +392,16 @@ class RedfishPoller:
                             link_status = nic.get("LinkStatus") or nic.get("linkStatus") or (nic.get("Oem", {}).get("Hpe", {}) or {}).get("LinkStatus")
                             state = (nic.get("Status", {}).get("State") or "Unknown")
                             health = (nic.get("Status", {}).get("Health") or "N/A")
+                            mac_key = (nic.get("MACAddress") or "").upper()
+                            # Fallback su hardware port data se disponibile
+                            if (not link_status or link_status.lower() == "unknown") and mac_key in hw_ports_by_mac:
+                                hw = hw_ports_by_mac[mac_key]
+                                link_status = hw.get("link_status") or link_status
+                                if hw.get("health") and health == "N/A":
+                                    health = hw["health"]
+                            # Se stato NIC e' Enabled + LinkStatus LinkUp -> health = OK
+                            if health in ("N/A", "?", None) and state == "Enabled" and str(link_status).lower() in ("linkup", "up"):
+                                health = "OK"
                             result["network_adapters"].append({
                                 "name": nic.get("Name", "NIC"),
                                 "mac": nic.get("MACAddress"),
