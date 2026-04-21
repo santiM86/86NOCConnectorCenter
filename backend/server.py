@@ -241,6 +241,9 @@ from routes.oncall import router as oncall_router
 from routes.escalation import router as escalation_router
 from routes.app_version import router as app_version_router
 from routes.overview import router as overview_router
+from routes.remediation import router as remediation_router
+from routes.lifecycle import router as lifecycle_router
+from routes.intelligence import router as intelligence_router
 
 app.include_router(auth_router)
 app.include_router(admin_router)
@@ -284,6 +287,9 @@ app.include_router(oncall_router)
 app.include_router(escalation_router)
 app.include_router(app_version_router)
 app.include_router(overview_router)
+app.include_router(remediation_router)
+app.include_router(lifecycle_router)
+app.include_router(intelligence_router)
 
 # Include enterprise routes
 from enterprise_routes import create_enterprise_router
@@ -440,6 +446,17 @@ async def startup_event():
         await db.changes.create_index([("status", 1), ("created_at", -1)])
         await db.problems.create_index("id", unique=True)
         await db.problems.create_index("status")
+
+        # Remediation Engine + Hardware Lifecycle + Intelligence (2026-02)
+        try:
+            from routes.remediation import init_indexes as _rem_idx
+            from routes.lifecycle import init_indexes as _lc_idx
+            from routes.intelligence import init_indexes as _intel_idx
+            await _rem_idx()
+            await _lc_idx()
+            await _intel_idx()
+        except Exception as _ix_err:
+            logging.getLogger(__name__).warning(f"remediation/lifecycle/intelligence indexes: {_ix_err}")
         # alerts: escalation scan (active + severity + ack + time)
         await db.alerts.create_index(
             [("status", 1), ("severity", 1), ("escalated", 1), ("created_at", 1)]

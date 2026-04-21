@@ -62,6 +62,12 @@ async def create_alert(alert: AlertCreate, current_user: dict = Depends(get_curr
         await _wp.notify_new_alert(db, alert_doc)
     except Exception:
         pass
+    # Remediation evaluator (auto-propose fix based on rules)
+    try:
+        from routes.remediation import evaluate_alert_for_remediation as _evr
+        await _evr(alert_doc)
+    except Exception:
+        pass
     correlation_id = await correlation_manager.correlate_alerts(alert_doc)
     if correlation_id:
         alert_doc["correlation_group_id"] = correlation_id

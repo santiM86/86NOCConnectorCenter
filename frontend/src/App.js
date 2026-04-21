@@ -46,6 +46,9 @@ import SecurityDashboardPage from "@/pages/SecurityDashboardPage";
 import CMDBPage from "@/pages/CMDBPage";
 import RunbooksPage from "@/pages/RunbooksPage";
 import SLAPage from "@/pages/SLAPage";
+import RemediationPage from "@/pages/RemediationPage";
+import LifecyclePage from "@/pages/LifecyclePage";
+import IntelligencePage from "@/pages/IntelligencePage";
 import CustomerPortalPage from "@/pages/CustomerPortalPage";
 import ExternalMonitorPage from "@/pages/ExternalMonitorPage";
 import Layout from "@/components/Layout";
@@ -232,6 +235,9 @@ function App() {
               <Route path="cmdb" element={<CMDBPage />} />
               <Route path="runbooks" element={<RunbooksPage />} />
               <Route path="sla" element={<SLAPage />} />
+              <Route path="remediation" element={<RemediationPage />} />
+              <Route path="lifecycle" element={<LifecyclePage />} />
+              <Route path="intelligence" element={<IntelligencePage />} />
             </Route>
             <Route path="/public/:token" element={<PublicDashboard />} />
             <Route path="/tv" element={<TvDashboardPage />} />
