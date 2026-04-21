@@ -632,6 +632,16 @@ class RedfishPoller:
                     await _wp.notify_new_alert(self.db, _rf_alert)
                 except Exception:
                     pass
+                # CRITICAL: broadcast WebSocket per UI live-refresh (altrimenti gli
+                # alert iLO appaiono solo al prossimo refresh manuale della pagina).
+                # Gli altri moduli (alerts, ingestion, backup) fanno gia' questo.
+                try:
+                    from deps import manager as _mgr
+                    _broadcast_alert = dict(_rf_alert)
+                    _broadcast_alert.pop("_id", None)
+                    await _mgr.broadcast({"type": "new_alert", "alert": _broadcast_alert})
+                except Exception as _e:
+                    logger.debug(f"WS broadcast failed: {_e}")
 
     async def _get(self, client: httpx.AsyncClient, url: str, auth: tuple) -> Optional[dict]:
         """Safe GET request with error handling."""
