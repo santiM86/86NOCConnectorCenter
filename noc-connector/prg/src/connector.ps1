@@ -1335,10 +1335,18 @@ function Install-Update($config, $updateInfo) {
             return $false
         }
 
-        # Copia updater.ps1 in TEMP per garantire che non sia sovrascritto durante la copia file
-        $tempUpdater = Join-Path $env:TEMP ("86Noc_updater_" + [guid]::NewGuid().ToString("N").Substring(0,8) + ".ps1")
+        # Copia updater.ps1 in location TRUSTED (InstallDir) invece che in TEMP.
+        # ROOT CAUSE v3.3.2 bug: stagiare in %TEMP% causava kill silenzioso da Windows Defender ASR
+        # ("Block execution of potentially obfuscated scripts"). Sintomo: WMI Create restituisce PID
+        # ma il processo muore immediatamente senza eseguire nemmeno la prima riga.
+        # InstallDir e' firmato/trusted dal nostro installer, Defender non blocca.
+        $updaterStagingDir = Join-Path $installDir "_update_staging"
+        if (-not (Test-Path $updaterStagingDir)) {
+            New-Item -ItemType Directory -Path $updaterStagingDir -Force | Out-Null
+        }
+        $tempUpdater = Join-Path $updaterStagingDir ("updater_" + [guid]::NewGuid().ToString("N").Substring(0,8) + ".ps1")
         Copy-Item $updaterPath $tempUpdater -Force
-        Write-Log "Updater staged in TEMP: $tempUpdater" "INFO"
+        Write-Log "Updater staged in InstallDir (Defender-safe): $tempUpdater" "INFO"
 
         $psExe = Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe"
         if (-not (Test-Path $psExe)) { $psExe = "powershell.exe" }
