@@ -69,34 +69,44 @@ class RedfishPoller:
         if not ilo_creds:
             return
 
-        # Determine which devices need direct polling
+        # Determine which devices need direct polling.
+        # === Enterprise policy (2026-04-21) ===
+        # Regola: se external_url e' configurato, ARGUS POLLA SEMPRE DIRETTO.
+        # Il connector resta come canale ridondante per eventuali device senza external_url
+        # o per SNMP/Syslog. In questo modo, se il connector cade, i dati iLO continuano
+        # ad arrivare direttamente dall'URL pubblico (requisito NOC enterprise non negoziabile).
+        # Il flag "direct_poll" ora determina solo se FORZARE direct anche senza external_url
+        # (caso: iLO esposto solo via connector LAN). Il flag "connector_only" (nuovo, opzionale)
+        # permette di disattivare il direct e usare SOLO il connector per quel device.
         devices_to_poll = []
         for cred in ilo_creds:
             external_url = cred.get("external_url")
-            direct_poll = cred.get("direct_poll", False)
+            direct_poll_forced = cred.get("direct_poll", False)
+            connector_only = cred.get("connector_only", False)
             device_ip = cred.get("device_ip")
 
-            if not external_url and not direct_poll:
-                # Check failover: is the connector for this device offline?
-                should_failover = await self._should_failover(device_ip)
-                if should_failover and external_url:
-                    devices_to_poll.append({
-                        "cred": cred,
-                        "reason": "failover",
-                    })
-            elif direct_poll and external_url:
+            if connector_only:
+                # Explicit opt-out: solo connector, mai diretto
+                continue
+            if external_url:
+                # external_url presente -> polla diretto SEMPRE (enterprise default)
                 devices_to_poll.append({
                     "cred": cred,
-                    "reason": "direct",
+                    "reason": "direct" if direct_poll_forced else "direct_default",
                 })
-            elif external_url:
-                # Has external URL, check if connector offline for failover
+            elif direct_poll_forced:
+                # Forzato anche senza external_url -> prova con device_ip (LAN raggiungibile?)
+                devices_to_poll.append({
+                    "cred": cred,
+                    "reason": "direct_forced_lan",
+                })
+            else:
+                # Nessun external_url + non forzato -> connector-only (polling lato connector)
+                # Ma se il connector e' offline, facciamo failover a... nulla. L'unica speranza
+                # e' che l'admin configuri external_url.
                 should_failover = await self._should_failover(device_ip)
                 if should_failover:
-                    devices_to_poll.append({
-                        "cred": cred,
-                        "reason": "failover",
-                    })
+                    logger.warning(f"Redfish {device_ip}: connector offline ma external_url non configurato, polling impossibile")
 
         if not devices_to_poll:
             return
@@ -104,14 +114,126 @@ class RedfishPoller:
         logger.info(f"Redfish direct polling: {len(devices_to_poll)} devices")
 
         for item in devices_to_poll:
+            dev_ip = item["cred"].get("device_ip")
+            dev_name = item["cred"].get("device_name") or dev_ip
             try:
                 await self._poll_device(item["cred"], item["reason"])
+                # Success: reset direct failure counter
+                await self.db.ilo_channel_health.update_one(
+                    {"device_ip": dev_ip},
+                    {"$set": {
+                        "device_ip": dev_ip,
+                        "device_name": dev_name,
+                        "client_id": item["cred"].get("client_id"),
+                        "direct_last_success": datetime.now(timezone.utc).isoformat(),
+                        "direct_consecutive_failures": 0,
+                    }},
+                    upsert=True
+                )
+                # Check if we should auto-resolve a "both channels down" alert
+                await self._resolve_both_channels_alert(dev_ip)
             except Exception as e:
-                logger.error(f"Redfish poll error for {item['cred'].get('device_ip')}: {e}")
+                logger.error(f"Redfish poll error for {dev_ip}: {e}")
+                await self.db.ilo_channel_health.update_one(
+                    {"device_ip": dev_ip},
+                    {"$set": {
+                        "device_ip": dev_ip,
+                        "device_name": dev_name,
+                        "client_id": item["cred"].get("client_id"),
+                        "direct_last_failure": datetime.now(timezone.utc).isoformat(),
+                        "direct_last_error": str(e)[:300],
+                    }, "$inc": {"direct_consecutive_failures": 1}},
+                    upsert=True
+                )
+                # Check both-channels-down
+                await self._check_both_channels_down(item["cred"])
+
+    async def _check_both_channels_down(self, cred: dict) -> None:
+        """Crea alert critical se DIRECT poll fallisce >=3 volte consecutive
+        E allo stesso tempo il connector e' offline/stale per lo stesso device.
+        Thresholds: 3 failures direct (=3 min con poll 1/min) + connector stale >5 min.
+        """
+        device_ip = cred.get("device_ip")
+        device_name = cred.get("device_name") or device_ip
+        client_id = cred.get("client_id")
+
+        health = await self.db.ilo_channel_health.find_one({"device_ip": device_ip}, {"_id": 0})
+        if not health:
+            return
+        direct_failures = int(health.get("direct_consecutive_failures") or 0)
+        if direct_failures < 3:
+            return
+
+        # Check connector-side health: stale > 5 min OR never polled
+        stale_cutoff = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+        dps = await self.db.device_poll_status.find_one({"device_ip": device_ip}, {"_id": 0})
+        connector_stale = True
+        if dps and dps.get("last_update"):
+            connector_stale = str(dps["last_update"]) < stale_cutoff
+
+        if not connector_stale:
+            return  # Connector is active, we only have a direct-path issue (not critical yet)
+
+        # Dedup: only raise if no active alert in last 6h
+        since = (datetime.now(timezone.utc) - timedelta(hours=6)).isoformat()
+        existing = await self.db.alerts.find_one({
+            "device_ip": device_ip,
+            "type": "ilo_both_channels_down",
+            "status": "active",
+            "created_at": {"$gte": since},
+        })
+        if existing:
+            return
+
+        alert_doc = {
+            "id": str(uuid.uuid4()),
+            "client_id": client_id,
+            "device_ip": device_ip,
+            "device_name": device_name,
+            "device_type": "ilo",
+            "severity": "critical",
+            "type": "ilo_both_channels_down",
+            "title": f"iLO TOTAL LOSS: {device_name} — nessun canale risponde",
+            "message": (
+                f"CRITICAL: iLO {device_ip} ({device_name}) non risponde da entrambi i canali. "
+                f"Direct poll WAN fallito {direct_failures} volte consecutive (ultimo errore: {health.get('direct_last_error','n/a')[:150]}). "
+                f"Connector LAN stale o offline. Possibili cause: management board iLO in down hardware, "
+                f"rack network isolation, alimentazione staccata, firewall che blocca sia WAN che LAN. "
+                f"Intervento on-site richiesto."
+            ),
+            "source_type": "redfish_health_monitor",
+            "status": "active",
+            "acknowledged_by": None,
+            "acknowledged_at": None,
+            "resolved_at": None,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "raw_data": "",
+        }
+        await self.db.alerts.insert_one(alert_doc)
+        # Broadcast + push
+        try:
+            import webpush as _wp
+            await _wp.notify_new_alert(self.db, alert_doc)
+        except Exception:
+            pass
+        logger.critical(f"iLO BOTH CHANNELS DOWN: {device_name} ({device_ip})")
+
+    async def _resolve_both_channels_alert(self, device_ip: str) -> None:
+        """Auto-resolve l'alert 'ilo_both_channels_down' quando il direct poll torna a funzionare."""
+        res = await self.db.alerts.update_many(
+            {"device_ip": device_ip, "type": "ilo_both_channels_down", "status": "active"},
+            {"$set": {
+                "status": "resolved",
+                "resolved_at": datetime.now(timezone.utc).isoformat(),
+                "resolved_by": "auto-recovery",
+                "resolution_note": "iLO direct channel back online",
+            }}
+        )
+        if res.modified_count > 0:
+            logger.info(f"iLO both-channels alert auto-resolved for {device_ip}")
 
     async def _should_failover(self, device_ip: str) -> bool:
-        """Check if the connector responsible for this device is offline."""
-        # Find which client owns this device
+        """Check if the connector responsible for this device is offline."""        # Find which client owns this device
         device = await self.db.device_poll_status.find_one(
             {"device_ip": device_ip},
             {"_id": 0, "client_id": 1}
@@ -863,10 +985,13 @@ class RedfishPoller:
             return {"success": False, "error": str(e)}
 
     async def get_failover_status(self) -> list:
-        """Get failover status for all iLO devices."""
+        """Get failover status for all iLO devices.
+        Enterprise policy (2026-04-21): external_url presente = polling diretto SEMPRE.
+        Connector = canale ridondante passivo.
+        """
         ilo_creds = await self.db.device_credentials.find(
             {"credential_type": "ilo"},
-            {"_id": 0, "device_ip": 1, "device_name": 1, "external_url": 1, "direct_poll": 1, "id": 1}
+            {"_id": 0, "device_ip": 1, "device_name": 1, "external_url": 1, "direct_poll": 1, "connector_only": 1, "id": 1}
         ).to_list(500)
 
         result = []
@@ -875,20 +1000,30 @@ class RedfishPoller:
             connector_offline = await self._should_failover(device_ip)
             external_url = cred.get("external_url")
             direct_poll = cred.get("direct_poll", False)
+            connector_only = cred.get("connector_only", False)
 
-            polling_mode = "connector"
-            if direct_poll and external_url:
-                polling_mode = "direct"
-            elif connector_offline and external_url:
-                polling_mode = "failover"
-            elif connector_offline:
+            # New 3-state polling mode:
+            # - direct: external_url configurato + non connector_only = diretto enterprise
+            # - connector: nessun external_url + connector attivo = solo via connector
+            # - failover: forced direct o connector offline + external_url presente
+            # - offline: tutto down
+            if connector_only and external_url:
+                polling_mode = "connector"
+            elif external_url and not connector_only:
+                polling_mode = "direct"  # enterprise default: diretto sempre
+            elif direct_poll and not external_url:
+                polling_mode = "failover"  # forced, ma rischia di non funzionare (LAN unreachable)
+            elif connector_offline and not external_url:
                 polling_mode = "offline"
+            else:
+                polling_mode = "connector"
 
             result.append({
                 "device_ip": device_ip,
                 "device_name": cred.get("device_name"),
                 "external_url": external_url,
                 "direct_poll": direct_poll,
+                "connector_only": connector_only,
                 "connector_offline": connector_offline,
                 "polling_mode": polling_mode,
             })

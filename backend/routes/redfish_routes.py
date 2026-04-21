@@ -54,6 +54,125 @@ async def get_failover_status(current_user: dict = Depends(get_current_user)):
     return await redfish_poller.get_failover_status()
 
 
+@router.get("/redfish/channel-health-matrix")
+async def channel_health_matrix(current_user: dict = Depends(get_current_user)):
+    """Matrice iLO health per Dashboard Channel Health: direct + connector + overall.
+    Aggregates: device_credentials (iLO only) × ilo_channel_health × device_poll_status × connector_status.
+    """
+    if current_user.get("role") not in ["admin", "superadmin", "operator"]:
+        raise HTTPException(status_code=403, detail="Accesso negato")
+
+    from datetime import datetime, timezone, timedelta
+
+    now = datetime.now(timezone.utc)
+    stale_cutoff = (now - timedelta(minutes=5)).isoformat()
+    direct_cutoff = (now - timedelta(minutes=3)).isoformat()
+
+    ilo_creds = await db.device_credentials.find(
+        {"credential_type": "ilo"},
+        {"_id": 0, "device_ip": 1, "device_name": 1, "external_url": 1, "connector_only": 1, "client_id": 1, "id": 1}
+    ).to_list(500)
+
+    # Prefetch clients map
+    client_ids = list({c["client_id"] for c in ilo_creds if c.get("client_id")})
+    clients_map = {}
+    if client_ids:
+        cl_docs = await db.clients.find({"id": {"$in": client_ids}}, {"_id": 0, "id": 1, "name": 1}).to_list(500)
+        clients_map = {c["id"]: c["name"] for c in cl_docs}
+
+    result = []
+    stats = {"total": 0, "both_ok": 0, "direct_only": 0, "connector_only": 0, "both_down": 0, "n_a": 0}
+    for c in ilo_creds:
+        device_ip = c.get("device_ip")
+        if not device_ip:
+            continue
+        stats["total"] += 1
+
+        # Direct channel
+        health = await db.ilo_channel_health.find_one({"device_ip": device_ip}, {"_id": 0})
+        direct_status = "n_a"
+        direct_detail = None
+        if c.get("external_url") and not c.get("connector_only"):
+            if health:
+                failures = int(health.get("direct_consecutive_failures") or 0)
+                last_success = health.get("direct_last_success")
+                if failures == 0 and last_success and last_success >= direct_cutoff:
+                    direct_status = "ok"
+                elif failures >= 3:
+                    direct_status = "down"
+                elif failures >= 1:
+                    direct_status = "degraded"
+                else:
+                    direct_status = "unknown"
+                direct_detail = {
+                    "last_success": last_success,
+                    "last_failure": health.get("direct_last_failure"),
+                    "consecutive_failures": failures,
+                    "last_error": health.get("direct_last_error"),
+                }
+            else:
+                direct_status = "unknown"  # not yet polled
+        else:
+            direct_status = "disabled"
+
+        # Connector channel
+        connector_status = "n_a"
+        connector_detail = None
+        dps = await db.device_poll_status.find_one({"device_ip": device_ip}, {"_id": 0})
+        if dps:
+            last_update = dps.get("last_update")
+            connector_detail = {"last_update": last_update, "client_id": dps.get("client_id")}
+            if last_update and str(last_update) > stale_cutoff:
+                connector_status = "ok"
+            elif last_update:
+                connector_status = "stale"
+            else:
+                connector_status = "unknown"
+        else:
+            connector_status = "unknown"
+
+        # Check connector heartbeat
+        if c.get("client_id"):
+            conn_heartbeat = await db.connector_status.find_one({"client_id": c["client_id"]}, {"_id": 0, "last_seen": 1, "hostname": 1})
+            if conn_heartbeat:
+                if connector_detail is None: connector_detail = {}
+                connector_detail["connector_host"] = conn_heartbeat.get("hostname")
+                last_seen = conn_heartbeat.get("last_seen")
+                if last_seen and str(last_seen) < stale_cutoff and connector_status not in ("ok",):
+                    connector_status = "down"
+
+        # Overall
+        if direct_status == "ok" and connector_status == "ok":
+            overall = "both_ok"
+        elif direct_status == "ok":
+            overall = "direct_only"
+        elif connector_status == "ok":
+            overall = "connector_only"
+        elif direct_status in ("down", "degraded") and connector_status in ("down", "stale"):
+            overall = "both_down"
+        else:
+            overall = "n_a"
+        stats[overall] = stats.get(overall, 0) + 1
+
+        result.append({
+            "device_ip": device_ip,
+            "device_name": c.get("device_name") or device_ip,
+            "client_id": c.get("client_id"),
+            "client_name": clients_map.get(c.get("client_id"), ""),
+            "external_url": c.get("external_url"),
+            "connector_only": bool(c.get("connector_only")),
+            "direct": {"status": direct_status, **(direct_detail or {})},
+            "connector": {"status": connector_status, **(connector_detail or {})},
+            "overall": overall,
+        })
+
+    # Sort: both_down first, then connector_only/direct_only (degraded), then ok
+    sort_order = {"both_down": 0, "direct_only": 1, "connector_only": 2, "n_a": 3, "both_ok": 4}
+    result.sort(key=lambda x: (sort_order.get(x["overall"], 9), x["device_name"]))
+    return {"stats": stats, "items": result, "generated_at": now.isoformat()}
+
+
+
 @router.post("/redfish/poll-now")
 async def trigger_direct_poll(request: Request, current_user: dict = Depends(get_current_user)):
     if current_user.get("role") not in ["admin"]:

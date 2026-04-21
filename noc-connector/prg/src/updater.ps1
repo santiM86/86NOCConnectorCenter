@@ -16,11 +16,27 @@ param(
 
 function Write-UpdateLog($msg) {
     $logDir = Join-Path $env:ProgramData "86NocConnector"
-    if (!(Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
+    if (!(Test-Path $logDir)) {
+        try { New-Item -ItemType Directory -Path $logDir -Force | Out-Null } catch {}
+    }
     $logFile = Join-Path $logDir "updater.log"
     $ts = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    Add-Content $logFile "[$ts] $msg"
+    try { Add-Content $logFile "[$ts] $msg" -ErrorAction SilentlyContinue } catch {}
+    # Dual-log in InstallDir (fallback se ProgramData non scrivibile)
+    try {
+        if ($InstallDir -and (Test-Path $InstallDir)) {
+            $altLog = Join-Path $InstallDir "updater_last.log"
+            Add-Content $altLog "[$ts] $msg" -ErrorAction SilentlyContinue
+        }
+    } catch {}
 }
+
+# ===== FIRST LINE BREADCRUMB: prova a scrivere un marker minimale prima di tutto =====
+# Se questo file non viene creato, significa che lo script non parte proprio (ASR/antivirus kill).
+try {
+    $startMarker = Join-Path $env:ProgramData "86NocConnector\updater_started.flag"
+    "started PID=$PID at $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff')" | Out-File -FilePath $startMarker -Force -Encoding ASCII -ErrorAction SilentlyContinue
+} catch {}
 
 function Send-Progress($progress, $status, $message) {
     if (-not $ApiUrl -or -not $ApiKey) { return }
@@ -310,12 +326,17 @@ try {
         [Environment]::SetEnvironmentVariable("ARGUS_UPDATE_TASK", $null, "Machine")
     }
 } catch {}
-# Self-delete staged updater (in TEMP)
+# Self-delete staged updater (in TEMP o InstallDir staging)
 try {
-    if ($MyInvocation.MyCommand.Path -and $MyInvocation.MyCommand.Path -like "*\Temp\*") {
+    if ($MyInvocation.MyCommand.Path -and ($MyInvocation.MyCommand.Path -like "*\Temp\*" -or $MyInvocation.MyCommand.Path -like "*_update_staging*")) {
         $selfPath = $MyInvocation.MyCommand.Path
-        # Schedule deletion via cmd so we can exit cleanly
-        Start-Process "cmd.exe" -ArgumentList "/c timeout /t 5 /nobreak > nul & del /F /Q `"$selfPath`" > nul 2>&1" -WindowStyle Hidden
+        $selfDir = Split-Path -Parent $selfPath
+        # Schedule deletion via cmd so we can exit cleanly. Pulisce il file e il dir se staging.
+        $cleanupCmd = "timeout /t 5 /nobreak > nul & del /F /Q `"$selfPath`" > nul 2>&1"
+        if ($selfDir -like "*_update_staging*") {
+            $cleanupCmd += " & rd /S /Q `"$selfDir`" > nul 2>&1"
+        }
+        Start-Process "cmd.exe" -ArgumentList "/c $cleanupCmd" -WindowStyle Hidden
     }
 } catch {}
 

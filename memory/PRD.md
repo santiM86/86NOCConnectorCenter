@@ -384,6 +384,60 @@ Cata­logo firmware "latest known good" con confronto automatico vs versioni iLO
 
 **Test E2E**: seedato `device_poll_status` con iLO 3.18 + BIOS U41 v3.62 per ProLiant ML350 Gen10 → `/api/firmware/check` ritorna overall_status=outdated, 2 CVE iLO (CVE-2024-28991, CVE-2024-46984), 1 CVE BIOS (CVE-2025-1001), advisory URL HPE. ✅
 
+
+### ENTERPRISE Dual-Path iLO Polling (2026-04-21 notte) — P0 critico
+**Requisito utente**: "ARGUS è un NOC enterprise, NON può essere vincolato dal connector. Se il connector cade, i dati iLO devono continuare ad arrivare direttamente".
+
+**Root cause**: il redfish poller usava `direct_poll=true` come gate; con external_url configurato ma `direct_poll=false` il polling diretto non partiva mai, e se il connector cadeva c'era un buco fino al timeout failover.
+
+**Nuova logica (redfish.py + connector.ps1 v3.3.2)**:
+- **Default enterprise**: `external_url` configurato → ARGUS polla DIRETTO sempre. Connector = canale ridondante passivo (skip automatico).
+- **Nuovo campo `connector_only`** su `device_credentials`: override per forzare solo-connector (iLO dietro VPN senza port-forward).
+- **`/api/redfish/failover-status`** ritorna `polling_mode` a 4 stati: direct / connector / failover / offline.
+- **Dedup lato connector v3.3.2**: se `vaultCreds[$ip].external_url` e `connector_only=false`, skip Redfish per evitare rate-limit iLO 5.
+
+**Frontend VaultPage.js**:
+- Badge "DIRETTO (ENTERPRISE)" cyan (vs "VIA CONNECTOR" verde precedente)
+- Button toggle "Diretto ATTIVO / Solo Connector" per-credenziale
+
+
+### iLO Total Loss Detection (2026-04-22) — "Both Channels Down" alert
+Nuovo alert critical dedicato al caso in cui **né direct né connector** rispondono più. Segnala guasto hardware iLO / isolamento rack / perdita totale management board.
+
+**Backend `redfish.py`**:
+- Collection nuova `ilo_channel_health` per device: direct_consecutive_failures, direct_last_success/failure/error.
+- `_check_both_channels_down()`: se direct_failures >= 3 consecutive E device_poll_status.last_update > 5 min fa (connector stale) → crea alert `ilo_both_channels_down` critical (dedup 6h).
+- `_resolve_both_channels_alert()`: auto-resolve quando il direct poll torna OK.
+- Hook integrato in `poll_direct_devices` (try/except per device).
+
+**Alert payload**:
+- Titolo: "iLO TOTAL LOSS: {name} — nessun canale risponde"
+- Severity: critical
+- Dettaglio errore direct + istruzioni troubleshooting (hardware management board, rack isolation, firewall).
+
+**Test E2E**: ✅ alert creato, dedup funziona (2 call → 1 alert), auto-recovery testato.
+
+**Connector v3.3.2** pubblicato: update ZIP + install ZIP completo su `/downloads/`.
+
+
+### Channel Health Matrix Dashboard (2026-04-22)
+Dashboard dedicata `/channel-health` per visualizzare in un colpo d'occhio lo stato dual-path di tutti gli iLO monitorati.
+
+**Backend `/api/redfish/channel-health-matrix`**:
+- Aggrega `device_credentials` (iLO) × `ilo_channel_health` × `device_poll_status` × `connector_status`
+- Per ogni device ritorna: `direct.status` (ok/degraded/down/disabled/unknown) + `connector.status` (ok/stale/down/unknown) + `overall` (both_ok/direct_only/connector_only/both_down/n_a)
+- Statistiche aggregate: total, both_ok, direct_only, connector_only, both_down
+- Ordering: both_down first (urgenza), poi degradati, infine healthy
+
+**Frontend `ChannelHealthPage.js`**:
+- 5 summary card con pulse rosso animato se both_down > 0
+- Matrix table con 3 colonne status colorate (Direct WAN · Connector LAN · Overall)
+- Auto-refresh 30s toggle + pulsante manuale Refresh
+- Dettagli per riga: last error direct, hostname connector, last OK timestamp IT locale
+- Sidebar: voce "Channel Health iLO" in gruppo Operazioni con icona Heartbeat
+
+**Test E2E**: pagina caricata correttamente, 1 iLO rilevato (ILO-SRV-DC01 ML350 Gen9), badge DIRECT=OK, CONNECTOR=DOWN, OVERALL=SOLO DIRETTO (coerente con stato reale: direct funziona via external_url https://ilo.86bit.internal:443, connector in 86BIT_Office non ha polled questo device ultimamente).
+
 ## Constraints
 - NON re-introdurre IP Ban/Honeypot middlewares (richiesta esplicita utente)
 - NON usare `emergentintegrations` per AI

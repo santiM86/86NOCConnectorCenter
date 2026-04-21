@@ -822,6 +822,22 @@ function Show-InstallerWizard {
                     # Rimuovi vecchi metodi di autostart
                     & reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v $AppName /f 2>$null
                     Unregister-ScheduledTask -TaskName $svcName -Confirm:$false -ErrorAction SilentlyContinue
+
+                    # === Defender exclusions (v3.3.4+) ===
+                    # Previene che ASR/real-time scanning blocchino updater.ps1 o killi processi legittimi
+                    # del connector. Cartelle whitelist + processi whitelist.
+                    try {
+                        $txtStatus.AppendText("> Configurazione esclusioni Windows Defender...`r`n")
+                        Add-MpPreference -ExclusionPath $BaseDir -ErrorAction SilentlyContinue
+                        Add-MpPreference -ExclusionPath $ConfigDir -ErrorAction SilentlyContinue
+                        Add-MpPreference -ExclusionProcess (Join-Path $BaseDir "nssm.exe") -ErrorAction SilentlyContinue
+                        Add-MpPreference -ExclusionProcess (Join-Path $ScriptDir "connector.ps1") -ErrorAction SilentlyContinue
+                        Add-MpPreference -ExclusionExtension ".ps1" -ErrorAction SilentlyContinue 2>$null
+                        $txtStatus.AppendText("  OK: Defender exclusions aggiunte per InstallDir + ConfigDir`r`n")
+                    } catch {
+                        $txtStatus.AppendText("  NOTA: Defender exclusions non aggiunte: $($_.Exception.Message)`r`n")
+                        $txtStatus.AppendText("  (Se l'updater ha problemi in futuro, aggiungi manualmente C:\Program Files\86NocConnector alle esclusioni Defender)`r`n")
+                    }
                     
                 } catch {
                     $txtStatus.AppendText("  NSSM: $($_.Exception.Message)`r`n")
