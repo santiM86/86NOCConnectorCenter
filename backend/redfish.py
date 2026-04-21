@@ -234,22 +234,40 @@ class RedfishPoller:
                 else:
                     logger.warning(f"Redfish {device_ip}: PowerControl not found at any URI")
 
-                # 3. Thermal
+                # 3. Thermal (iLO5/6 usano ReadingCelsius, iLO4 usa CurrentReading)
                 thermal = await self._get(client, f"{base_url}/redfish/v1/Chassis/1/Thermal/", auth)
                 if thermal:
                     for t in thermal.get("Temperatures", []):
-                        if t.get("ReadingCelsius") and t["ReadingCelsius"] > 0:
-                            result["temperatures"].append({
-                                "locale": t.get("Name", "Sensor"),
-                                "value": t["ReadingCelsius"],
-                                "condition": (t.get("Status", {}).get("Health", "OK")).lower(),
-                            })
+                        # iLO omette sensori "absent" con ReadingCelsius=null. Skippiamo SOLO null/missing.
+                        reading = t.get("ReadingCelsius")
+                        if reading is None:
+                            reading = t.get("CurrentReading")  # fallback iLO4
+                        if reading is None:
+                            continue
+                        # State "Absent" -> skip. Ma "Enabled" con reading 0 e' valido (es. DIMM idle).
+                        state = (t.get("Status", {}).get("State") or "Enabled")
+                        if state.lower() in ("absent", "disabled"):
+                            continue
+                        result["temperatures"].append({
+                            "locale": t.get("Name", "Sensor"),
+                            "value": reading,
+                            "condition": (t.get("Status", {}).get("Health") or "OK").lower(),
+                        })
                     for f in thermal.get("Fans", []):
+                        state = (f.get("Status", {}).get("State") or "Enabled")
+                        if state.lower() in ("absent", "disabled"):
+                            continue
+                        speed = f.get("Reading")
+                        if speed is None:
+                            speed = f.get("CurrentReading")
                         result["fans"].append({
                             "locale": f.get("Name", "Fan"),
-                            "speed": f.get("Reading"),
-                            "condition": (f.get("Status", {}).get("Health", "OK")).lower(),
+                            "speed": speed,
+                            "condition": (f.get("Status", {}).get("Health") or "OK").lower(),
                         })
+                    logger.info(f"Redfish {device_ip}: Thermal found {len(result['temperatures'])} temp, {len(result['fans'])} fans")
+                else:
+                    logger.warning(f"Redfish {device_ip}: /Chassis/1/Thermal/ returned None")
 
                 # 4. iLO Manager info (try multiple URIs)
                 mgr = None
@@ -294,12 +312,19 @@ class RedfishPoller:
                     for ref in nics["Members"][:16]:
                         nic = await self._get(client, f"{base_url}{ref['@odata.id']}", auth)
                         if nic:
+                            # LinkStatus: "LinkUp"/"LinkDown"/"NoLink"
+                            link_status = nic.get("LinkStatus") or nic.get("linkStatus") or (nic.get("Oem", {}).get("Hpe", {}) or {}).get("LinkStatus")
+                            state = (nic.get("Status", {}).get("State") or "Unknown")
+                            health = (nic.get("Status", {}).get("Health") or "N/A")
                             result["network_adapters"].append({
                                 "name": nic.get("Name", "NIC"),
                                 "mac": nic.get("MACAddress"),
                                 "speed_mbps": nic.get("SpeedMbps"),
-                                "status": (nic.get("Status", {}).get("Health") or "N/A"),
+                                "status": health,
+                                "state": state,
+                                "link_status": link_status or "unknown",
                                 "ipv4": (nic.get("IPv4Addresses", [{}])[0].get("Address") if nic.get("IPv4Addresses") else None),
+                                "fqdn": nic.get("FQDN"),
                             })
 
                 # 7. Storage (SmartStorage + Storage DMTF + physical drives)

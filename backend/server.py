@@ -531,8 +531,23 @@ async def startup_event():
 
     try:
         setting = await db.settings.find_one({"key": "redfish_poll_interval"})
-        # Default 1 minuto (era 5 min) per real-time stats. Configurabile via settings.
-        interval = setting.get("value", 1) if setting else 1
+        # Default 1 minuto (era 5 min originale, 10 in DB). Per real-time stats
+        # forziamo cap max a 5min: valori >= 5 vengono normalizzati a 1 per default.
+        current = setting.get("value", 1) if setting else 1
+        try:
+            current = int(current)
+        except Exception:
+            current = 1
+        if current < 1 or current > 5:
+            # Migrazione: valori stale (es. 10min) -> forziamo 1min real-time
+            await db.settings.update_one(
+                {"key": "redfish_poll_interval"},
+                {"$set": {"key": "redfish_poll_interval", "value": 1, "migrated_at": datetime.utcnow().isoformat()}},
+                upsert=True
+            )
+            current = 1
+            logger.info("Redfish poll interval migrated to 1min (real-time stats)")
+        interval = current
         await redfish_poller.start_scheduler(interval_minutes=interval)
         logger.info(f"Redfish polling scheduler started (interval: {interval} min)")
     except Exception as e:
