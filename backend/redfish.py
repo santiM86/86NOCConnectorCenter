@@ -357,7 +357,18 @@ class RedfishPoller:
                     logger.warning(f"Redfish {device_ip}: PowerControl not found at any URI")
 
                 # 3. Thermal (multi-URI fallback: Thermal legacy + ThermalSubsystem Redfish 2020.4+)
-                thermal = await self._get(client, f"{base_url}/redfish/v1/Chassis/1/Thermal/", auth)
+                # Retry up to 2 volte per device con WAN instabile (sintomo: temp/fan N/D intermittente)
+                thermal = None
+                for _attempt in range(2):
+                    try:
+                        thermal = await self._get(client, f"{base_url}/redfish/v1/Chassis/1/Thermal/", auth, timeout=20.0)
+                        if thermal and (thermal.get("Temperatures") or thermal.get("Fans")):
+                            break
+                    except Exception as _te:
+                        logger.debug(f"Thermal fetch attempt {_attempt+1} failed for {device_ip}: {_te}")
+                    if _attempt == 0:
+                        import asyncio as _a
+                        await _a.sleep(1.0)
                 # ML350 Gen10 + iLO5 3.x moderno: /ThermalSubsystem/ con sotto-endpoint separati
                 if not thermal or (not thermal.get("Temperatures") and not thermal.get("Fans")):
                     ts = await self._get(client, f"{base_url}/redfish/v1/Chassis/1/ThermalSubsystem/", auth)
@@ -607,6 +618,39 @@ class RedfishPoller:
         # Save results to device_poll_status (same as connector does)
         now_iso = datetime.now(timezone.utc).isoformat()
         if result["redfish_ok"]:
+            # Stale-fallback pre-persistence: se Thermal sub-endpoint ha fallito (temperatures/fans vuoti)
+            # MA il poll principale e' andato a buon fine (power_watts presente), riusa l'ultimo snapshot
+            # valido per evitare UI N/D intermittente su WAN instabile.
+            if (not result.get("temperatures") or not result.get("fans")) and result.get("power_watts") is not None:
+                try:
+                    last = await self.db.ilo_telemetry.find_one(
+                        {"device_ip": device_ip, "$or": [{"temperatures.0": {"$exists": True}}, {"fans.0": {"$exists": True}}]},
+                        {"_id": 0, "temperatures": 1, "fans": 1, "timestamp": 1},
+                        sort=[("timestamp", -1)]
+                    )
+                    if last:
+                        last_ts = last.get("timestamp")
+                        age_min = 999
+                        if isinstance(last_ts, datetime):
+                            if last_ts.tzinfo is None:
+                                last_ts = last_ts.replace(tzinfo=timezone.utc)
+                            age_min = (datetime.now(timezone.utc) - last_ts).total_seconds() / 60.0
+                        if age_min < 30:
+                            if not result.get("temperatures") and last.get("temperatures"):
+                                result["temperatures"] = [
+                                    {"locale": t.get("name"), "value": t.get("celsius"), "condition": t.get("health") or "OK", "stale": True}
+                                    for t in last["temperatures"] if t.get("celsius") is not None
+                                ]
+                                logger.info(f"Redfish {device_ip}: Thermal stale-fallback applied ({len(result['temperatures'])} sensors, age {age_min:.1f}min)")
+                            if not result.get("fans") and last.get("fans"):
+                                result["fans"] = [
+                                    {"locale": f.get("name"), "speed": f.get("rpm_percent"), "condition": f.get("health") or "OK", "stale": True}
+                                    for f in last["fans"] if f.get("rpm_percent") is not None
+                                ]
+                                logger.info(f"Redfish {device_ip}: Fans stale-fallback applied ({len(result['fans'])} fans, age {age_min:.1f}min)")
+                except Exception as _fbe:
+                    logger.debug(f"stale-fallback error for {device_ip}: {_fbe}")
+
             update_doc = {
                 "device_ip": device_ip,
                 "device_name": device_name,
@@ -704,8 +748,12 @@ class RedfishPoller:
             # NEW: Full telemetry snapshot per grafici real-time enterprise.
             # Storage completo di temperature[], fans[], power_supplies[], health,
             # per permettere grafici multi-sensore in frontend (sparklines).
+            # Nota: stale-fallback gia' applicato a result sopra.
             try:
                 now_dt = datetime.now(timezone.utc)
+                temp_src = result.get("temperatures") or []
+                fan_src = result.get("fans") or []
+                any_stale = any(t.get("stale") for t in temp_src) or any(f.get("stale") for f in fan_src)
                 telemetry_doc = {
                     "client_id": client_id_to_set,
                     "device_ip": device_ip,
@@ -715,14 +763,15 @@ class RedfishPoller:
                     "power_watts": result.get("power_watts"),
                     "health_status": result.get("health_status"),
                     "temperatures": [
-                        {"name": t.get("locale"), "celsius": t.get("value"), "health": t.get("condition")}
-                        for t in (result.get("temperatures") or []) if t.get("value") is not None
+                        {"name": t.get("locale"), "celsius": t.get("value"), "health": t.get("condition"), "stale": bool(t.get("stale"))}
+                        for t in temp_src if t.get("value") is not None
                     ],
                     "fans": [
-                        {"name": f.get("locale"), "rpm_percent": f.get("speed"), "health": f.get("condition")}
-                        for f in (result.get("fans") or []) if f.get("speed") is not None
+                        {"name": f.get("locale"), "rpm_percent": f.get("speed"), "health": f.get("condition"), "stale": bool(f.get("stale"))}
+                        for f in fan_src if f.get("speed") is not None
                     ],
                     "power_supplies": result.get("power_supplies") or [],
+                    "thermal_fetch_failed": any_stale,
                 }
                 await self.db.ilo_telemetry.insert_one(telemetry_doc)
             except Exception as _e:
@@ -943,10 +992,13 @@ class RedfishPoller:
                 except Exception as _e:
                     logger.debug(f"WS broadcast failed: {_e}")
 
-    async def _get(self, client: httpx.AsyncClient, url: str, auth: tuple) -> Optional[dict]:
-        """Safe GET request with error handling."""
+    async def _get(self, client: httpx.AsyncClient, url: str, auth: tuple, timeout: float = None) -> Optional[dict]:
+        """Safe GET request with error handling. Optional per-call timeout override."""
         try:
-            r = await client.get(url, auth=auth)
+            if timeout is not None:
+                r = await client.get(url, auth=auth, timeout=timeout)
+            else:
+                r = await client.get(url, auth=auth)
             if r.status_code == 200:
                 return r.json()
         except Exception:

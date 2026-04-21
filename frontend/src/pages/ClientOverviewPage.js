@@ -320,6 +320,8 @@ function IloServerCard({ s, healthColor }) {
   const critTemps = temps.filter(t => t.value > 75);
   const warnTemps = temps.filter(t => t.value > 65 && t.value <= 75);
   const tempColor = critTemps.length ? "#FF3B30" : warnTemps.length ? "#FFCC00" : "#34C759";
+  // Top N sensori ordinati per temperatura decrescente (per mostrare i piu' caldi)
+  const topTemps = [...temps].sort((a, b) => b.value - a.value).slice(0, 3);
 
   const fans = s.fans || [];
   const okFans = fans.filter(f => (f.condition || "").toLowerCase() === "ok").length;
@@ -388,6 +390,32 @@ function IloServerCard({ s, healthColor }) {
           <MiniMetric label="Ventole" value={fans.length ? `${okFans}/${fans.length}` : "N/D"} color={fansColor} />
           <MiniMetric label="PSU" value={psus.length ? `${okPsus}/${psus.length}` : "N/D"} color={psuColor} />
         </div>
+
+        {/* Top 3 hottest sensors breakdown (sempre visibile, sotto la griglia metriche) */}
+        {topTemps.length > 0 && (
+          <div className="mb-3 px-3 py-2 rounded-md bg-[#0d0d12]/40 border border-[var(--bg-border)]" data-testid={`top-temps-${s.device_ip}`}>
+            <div className="text-[9px] uppercase tracking-wider text-[var(--text-muted)] mb-2 flex items-center gap-2">
+              <span>Sensori più caldi</span>
+              <span className="text-[8px] text-[var(--text-muted)]/70">(top 3 di {temps.length})</span>
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+              {topTemps.map((t, idx) => {
+                const sensorColor = t.value > 75 ? "#FF3B30" : t.value > 65 ? "#FFCC00" : "#34C759";
+                const cond = (t.condition || "ok").toLowerCase();
+                return (
+                  <div key={idx} className="px-2 py-1.5 rounded border" style={{ borderColor: `${sensorColor}30`, background: `${sensorColor}08` }}>
+                    <div className="flex items-center justify-between gap-1">
+                      <span className="text-[9px] uppercase tracking-wider text-[var(--text-muted)]">Sensore {idx + 1}</span>
+                      <span className="text-[8px] font-bold" style={{ color: sensorColor }}>{cond.toUpperCase()}</span>
+                    </div>
+                    <div className="text-[15px] font-bold mt-0.5" style={{ color: sensorColor }}>{t.value}°C</div>
+                    <div className="text-[9px] text-[var(--text-muted)] truncate" title={t.locale}>{t.locale || "—"}</div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         <div className="grid grid-cols-2 gap-2 text-[9px]">
           <InfoBadge label="BIOS" value={s.bios_version} />
