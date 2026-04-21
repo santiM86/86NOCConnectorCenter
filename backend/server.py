@@ -244,6 +244,7 @@ from routes.overview import router as overview_router
 from routes.remediation import router as remediation_router
 from routes.lifecycle import router as lifecycle_router
 from routes.intelligence import router as intelligence_router
+from routes.auto_dispatch import router as auto_dispatch_router
 
 app.include_router(auth_router)
 app.include_router(admin_router)
@@ -290,6 +291,7 @@ app.include_router(overview_router)
 app.include_router(remediation_router)
 app.include_router(lifecycle_router)
 app.include_router(intelligence_router)
+app.include_router(auto_dispatch_router)
 
 # Include enterprise routes
 from enterprise_routes import create_enterprise_router
@@ -614,6 +616,24 @@ async def startup_event():
         logger.info("Escalation scheduler started")
     except Exception as e:
         logger.error(f"Failed to start escalation scheduler: {e}")
+
+    # === Auto-Dispatch cron (hardware risk + predictive failure → incident) ===
+    try:
+        from apscheduler.schedulers.asyncio import AsyncIOScheduler
+        from apscheduler.triggers.interval import IntervalTrigger
+        from routes.auto_dispatch import run_auto_dispatch
+        global auto_dispatch_scheduler
+        auto_dispatch_scheduler = AsyncIOScheduler()
+        auto_dispatch_scheduler.add_job(
+            run_auto_dispatch,
+            trigger=IntervalTrigger(hours=6),
+            id="auto_dispatch_scan",
+            next_run_time=datetime.now(timezone.utc) + timedelta(minutes=10),  # First run 10 min after startup
+        )
+        auto_dispatch_scheduler.start()
+        logger.info("Auto-dispatch scheduler started (interval: 6h)")
+    except Exception as e:
+        logger.error(f"Failed to start auto-dispatch scheduler: {e}")
 
 @app.on_event("shutdown")
 async def shutdown_db_client():

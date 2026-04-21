@@ -334,6 +334,37 @@ Su richiesta utente ("procedi con tutto"), clonate 3 funzionalità top-tier da K
 - Backend: **37/37 test passati** (iteration_52.json) — CRUD scripts/rules/executions, evaluator hook su alert, builtin scripts non modificabili, lifecycle risk scoring, CSV import con fix MongoDB duplicate key, triage rules, patch compliance, predictive overview.
 - Frontend: 3/3 pagine caricano con sidebar aggiornata, tabs funzionanti, modali aprono.
 
+### Connector v3.3.1 — FIX CRITICO Updater NSSM Job Object (2026-04-21)
+**Bug reportato utente**: "update connector non funziona, si chiude e poi non si apre più e non si aggiorna".
+
+**Root cause** trovato in `connector.ps1` / `Install-Update`: l'updater.ps1 veniva lanciato come processo figlio del connector (via cmd.exe + BAT). Quando l'updater chiamava `Stop-Service` per permettere la copia dei file, NSSM — che tiene TUTTI i processi figli del service in un **Job Object Windows** — uccideva l'intero job, **incluso l'updater** a metà copia. Risultato: servizio morto, file parzialmente copiati, nessun restart possibile.
+
+**Fix in `Install-Update`**:
+1. **Metodo 1 (preferito): WMI `Win32_Process.Create`** — il processo creato via WMI diventa figlio di `wmiprvse.exe` (servizio WMI), NON del connector. È FUORI dal Job Object di NSSM → sopravvive a Stop-Service.
+2. **Metodo 2 (fallback): `schtasks` run-once come SYSTEM** — Task Scheduler esegue task come SYSTEM fuori dal job object.
+3. **Metodo 3 (ultima spiaggia): `cmd.exe` detached** (metodo precedente, meno affidabile ma mantenuto).
+4. **Self-staging**: updater.ps1 viene copiato in `%TEMP%\86Noc_updater_*.ps1` prima del lancio, così la copia file dell'update non sovrascrive l'updater in esecuzione.
+5. **Cleanup finale**: l'updater in TEMP si auto-elimina dopo 5s + rimuove il task scheduler se usato.
+
+**Diagnostica aggiunta**: updater.ps1 logga PID/parent/command line in `%ProgramData%\86NocConnector\updater.log` per debug post-mortem.
+
+**Distribuzione v3.3.1**:
+- Update ZIP (auto-update): `86NocConnector_v3.3.1.zip` pubblicato come active in DB. I connector in field con l'updater v3.2.2 probabilmente NON si aggiorneranno (bug pre-esistente nel loro updater locale). 
+- **Install ZIP completo**: `86NocConnector_v3.3.1_install.zip` (292KB) disponibile su `/downloads/86NocConnector_v3.3.1_install.zip`. Richiede **reinstallazione manuale una tantum** per sbloccare il ciclo di update. Dalla v3.3.1 in avanti tutti gli update successivi funzioneranno via WMI spawn.
+
+### Auto-Dispatch ParkView-style (2026-04-21) — detect → predict → ticket
+Chiude il cerchio tra **Hardware Lifecycle risk score** + **Predictive Failure Analysis** e la creazione automatica di **incident/ticket** pronti per il NOC.
+
+**Backend `routes/auto_dispatch.py`**:
+- `scan_hardware_lifecycle()`: lifecycle record con `risk_band=high` → crea incident "[Hardware Risk] Vendor Model — IP" con motivi (garanzia scaduta, EOSL, criticality) e severity high/medium dinamica.
+- `scan_predictive_failures()`: device con telemetria iLO 24h + predicted window ≤72h → crea incident "[Predictive Failure] IP — guasto previsto entro Nh" con segnali ML (temp/fan/psu), confidence, metrics summary, severity critical(≤24h)/high(≤72h).
+- **Deduplica** su `device_ip + auto_dispatch_kind` in finestra 7gg: incident già aperto → skip (evita spam).
+- Endpoint: `POST /api/intel/auto-dispatch/run` (manuale), `GET /api/intel/auto-dispatch/history`, `GET /api/intel/auto-dispatch/status`.
+- **Cron APScheduler 6h** attivo (primo run 10 min dopo startup backend).
+- Persistenza: `auto_dispatch_history` collection.
+
+**Test E2E**: creato record high-risk → run → 1 incident creato (risk 80) → run again → skipped_duplicate=1 → incident in lista con `auto_dispatch=true`. ✅
+
 ## Constraints
 - NON re-introdurre IP Ban/Honeypot middlewares (richiesta esplicita utente)
 - NON usare `emergentintegrations` per AI
