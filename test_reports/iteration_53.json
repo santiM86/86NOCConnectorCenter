@@ -1,0 +1,77 @@
+{
+  "summary": "Web Console V4 (popup/new tab JWT proxy) testing completed. Backend: 16/16 tests passed (100%). Frontend: compiles without errors, V4 button correctly implemented in WebConsoleTabs.js (lines 385-392 in ActiveConsole toolbar, lines 591-600 in QuickAccessItem).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "Dashboard",
+        "issues": ["Minor React warning: 'Cannot update a component while rendering a different component' - not blocking"]
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_web_console_v4.py",
+    "/app/test_reports/pytest/pytest_web_console_v4.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "POST /api/console-v4/request-session correctly validates device_ip (400 if missing, 404 if not in DB)",
+    "JWT token generation uses correct payload structure (sid, dip, cid, usr, base, iat, exp)",
+    "Proxy endpoint correctly handles: invalid token (401), expired token (410 with HTML), valid requests",
+    "HTML rewriting correctly injects <base> tag and rewrites absolute URLs",
+    "Redirect Location headers are correctly rewritten to go through proxy",
+    "Sessions list and revoke endpoints work correctly with RBAC (viewer gets 403 on revoke)",
+    "Frontend WebConsoleTabs.js compiles without errors",
+    "V4 button has correct data-testid='web-console-popup-v4' in ActiveConsole toolbar",
+    "V4 button has correct data-testid='quick-popup-{ip}' in QuickAccessItem",
+    "openPopup function correctly calls /api/console-v4/request-session and opens window.open()"
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_web_console_v4.py"
+  ],
+  "success_rate": {
+    "backend": "100% (16/16 passed)",
+    "frontend": "100% (compiles, V4 button implemented)"
+  },
+  "test_credentials": {
+    "admin": "admin@86bit.it / password",
+    "viewer": "tv@86bit.it / Tv86bit!2026"
+  },
+  "seed_data_creation": "No seed data created - used existing device 192.168.1.8 for request-session tests",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Web Console V4 endpoints fully tested. Test file: /app/backend/tests/test_web_console_v4.py covers: auth requirements, request-session validation (400/404), proxy with httpbin.org (JSON, HTML base injection, redirect rewriting), expired/invalid tokens, sessions list, revoke RBAC. Frontend V4 button is in WebConsoleTabs.js - visible when a Web Console session is active. Device 192.168.1.8 is in 'SOLO CONNECTOR' mode so direct console opening may require connector.",
+  "tested_features": {
+    "request_session": {
+      "auth_required": "PASS - returns 403 without auth",
+      "missing_device_ip": "PASS - returns 400",
+      "empty_device_ip": "PASS - returns 400",
+      "nonexistent_device": "PASS - returns 404",
+      "valid_device": "PASS - returns url, token, expires_at, transport, base_url"
+    },
+    "proxy_endpoint": {
+      "invalid_token": "PASS - returns 401 with 'Token invalido'",
+      "expired_token": "PASS - returns 410 with 'Sessione scaduta' HTML",
+      "httpbin_json": "PASS - returns JSON with query params passed through",
+      "httpbin_html_base_injection": "PASS - <base href> tag injected in <head>",
+      "httpbin_redirect_rewrite": "PASS - Location header rewritten to proxy path",
+      "unreachable_device": "PASS - returns 502/504 with error message"
+    },
+    "sessions_admin": {
+      "list_sessions": "PASS - returns {active, items} structure",
+      "revoke_nonexistent": "PASS - returns ok:true (idempotent)",
+      "revoke_viewer_forbidden": "PASS - returns 403"
+    },
+    "frontend": {
+      "webconsoletabs_compiles": "PASS - no lint errors",
+      "v4_button_in_toolbar": "PASS - data-testid='web-console-popup-v4' at line 389",
+      "v4_button_in_quickaccess": "PASS - data-testid='quick-popup-{ip}' at line 596",
+      "openpopup_function": "PASS - calls /api/console-v4/request-session and window.open()"
+    }
+  }
+}

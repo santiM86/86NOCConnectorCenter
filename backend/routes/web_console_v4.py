@@ -124,14 +124,13 @@ async def request_session(body: dict, request: Request, current_user: dict = Dep
         "expires_at": exp.isoformat(),
     })
 
-    # Determine return URL (absolute for popup)
-    # Frontend calls with Origin = argus.86bit.it, backend serves it from same origin
-    host = request.headers.get("host") or "argus.86bit.it"
-    scheme_out = request.headers.get("x-forwarded-proto") or ("https" if request.url.scheme == "https" else "http")
-    popup_url = f"{scheme_out}://{host}/api/console-v4/s/{token}/"
+    # Return relative path — frontend will prefix with window.location.origin
+    # This avoids Host-header issues when backend is behind an ingress/proxy
+    # whose internal host differs from the public URL
+    relative_path = f"/api/console-v4/s/{token}/"
 
     return {
-        "url": popup_url,
+        "url": relative_path,  # frontend concatenates window.location.origin
         "token": token,
         "expires_at": exp.isoformat(),
         "transport": transport,
