@@ -384,6 +384,24 @@ Cata­logo firmware "latest known good" con confronto automatico vs versioni iLO
 
 **Test E2E**: seedato `device_poll_status` con iLO 3.18 + BIOS U41 v3.62 per ProLiant ML350 Gen10 → `/api/firmware/check` ritorna overall_status=outdated, 2 CVE iLO (CVE-2024-28991, CVE-2024-46984), 1 CVE BIOS (CVE-2025-1001), advisory URL HPE. ✅
 
+
+### ENTERPRISE Dual-Path iLO Polling (2026-04-21 notte) — P0 critico
+**Requisito utente**: "ARGUS è un NOC enterprise, NON può essere vincolato dal connector. Se il connector cade, i dati iLO devono continuare ad arrivare direttamente".
+
+**Root cause**: il redfish poller usava `direct_poll=true` come gate; con external_url configurato ma `direct_poll=false` il polling diretto non partiva mai, e se il connector cadeva c'era un buco fino al timeout failover.
+
+**Nuova logica (redfish.py + connector.ps1 v3.3.2)**:
+- **Default enterprise**: `external_url` configurato → ARGUS polla DIRETTO sempre. Connector = canale ridondante passivo (skip automatico).
+- **Nuovo campo `connector_only`** su `device_credentials`: override per forzare solo-connector (iLO dietro VPN senza port-forward).
+- **`/api/redfish/failover-status`** ritorna `polling_mode` a 4 stati: direct / connector / failover / offline.
+- **Dedup lato connector v3.3.2**: se `vaultCreds[$ip].external_url` e `connector_only=false`, skip Redfish per evitare rate-limit iLO 5.
+
+**Frontend VaultPage.js**:
+- Badge "DIRETTO (ENTERPRISE)" cyan (vs "VIA CONNECTOR" verde precedente)
+- Button toggle "Diretto ATTIVO / Solo Connector" per-credenziale
+
+**Connector v3.3.2** pubblicato: update ZIP + install ZIP completo su `/downloads/`.
+
 ## Constraints
 - NON re-introdurre IP Ban/Honeypot middlewares (richiesta esplicita utente)
 - NON usare `emergentintegrations` per AI

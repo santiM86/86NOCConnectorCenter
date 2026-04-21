@@ -69,34 +69,44 @@ class RedfishPoller:
         if not ilo_creds:
             return
 
-        # Determine which devices need direct polling
+        # Determine which devices need direct polling.
+        # === Enterprise policy (2026-04-21) ===
+        # Regola: se external_url e' configurato, ARGUS POLLA SEMPRE DIRETTO.
+        # Il connector resta come canale ridondante per eventuali device senza external_url
+        # o per SNMP/Syslog. In questo modo, se il connector cade, i dati iLO continuano
+        # ad arrivare direttamente dall'URL pubblico (requisito NOC enterprise non negoziabile).
+        # Il flag "direct_poll" ora determina solo se FORZARE direct anche senza external_url
+        # (caso: iLO esposto solo via connector LAN). Il flag "connector_only" (nuovo, opzionale)
+        # permette di disattivare il direct e usare SOLO il connector per quel device.
         devices_to_poll = []
         for cred in ilo_creds:
             external_url = cred.get("external_url")
-            direct_poll = cred.get("direct_poll", False)
+            direct_poll_forced = cred.get("direct_poll", False)
+            connector_only = cred.get("connector_only", False)
             device_ip = cred.get("device_ip")
 
-            if not external_url and not direct_poll:
-                # Check failover: is the connector for this device offline?
-                should_failover = await self._should_failover(device_ip)
-                if should_failover and external_url:
-                    devices_to_poll.append({
-                        "cred": cred,
-                        "reason": "failover",
-                    })
-            elif direct_poll and external_url:
+            if connector_only:
+                # Explicit opt-out: solo connector, mai diretto
+                continue
+            if external_url:
+                # external_url presente -> polla diretto SEMPRE (enterprise default)
                 devices_to_poll.append({
                     "cred": cred,
-                    "reason": "direct",
+                    "reason": "direct" if direct_poll_forced else "direct_default",
                 })
-            elif external_url:
-                # Has external URL, check if connector offline for failover
+            elif direct_poll_forced:
+                # Forzato anche senza external_url -> prova con device_ip (LAN raggiungibile?)
+                devices_to_poll.append({
+                    "cred": cred,
+                    "reason": "direct_forced_lan",
+                })
+            else:
+                # Nessun external_url + non forzato -> connector-only (polling lato connector)
+                # Ma se il connector e' offline, facciamo failover a... nulla. L'unica speranza
+                # e' che l'admin configuri external_url.
                 should_failover = await self._should_failover(device_ip)
                 if should_failover:
-                    devices_to_poll.append({
-                        "cred": cred,
-                        "reason": "failover",
-                    })
+                    logger.warning(f"Redfish {device_ip}: connector offline ma external_url non configurato, polling impossibile")
 
         if not devices_to_poll:
             return
@@ -863,10 +873,13 @@ class RedfishPoller:
             return {"success": False, "error": str(e)}
 
     async def get_failover_status(self) -> list:
-        """Get failover status for all iLO devices."""
+        """Get failover status for all iLO devices.
+        Enterprise policy (2026-04-21): external_url presente = polling diretto SEMPRE.
+        Connector = canale ridondante passivo.
+        """
         ilo_creds = await self.db.device_credentials.find(
             {"credential_type": "ilo"},
-            {"_id": 0, "device_ip": 1, "device_name": 1, "external_url": 1, "direct_poll": 1, "id": 1}
+            {"_id": 0, "device_ip": 1, "device_name": 1, "external_url": 1, "direct_poll": 1, "connector_only": 1, "id": 1}
         ).to_list(500)
 
         result = []
@@ -875,20 +888,30 @@ class RedfishPoller:
             connector_offline = await self._should_failover(device_ip)
             external_url = cred.get("external_url")
             direct_poll = cred.get("direct_poll", False)
+            connector_only = cred.get("connector_only", False)
 
-            polling_mode = "connector"
-            if direct_poll and external_url:
-                polling_mode = "direct"
-            elif connector_offline and external_url:
-                polling_mode = "failover"
-            elif connector_offline:
+            # New 3-state polling mode:
+            # - direct: external_url configurato + non connector_only = diretto enterprise
+            # - connector: nessun external_url + connector attivo = solo via connector
+            # - failover: forced direct o connector offline + external_url presente
+            # - offline: tutto down
+            if connector_only and external_url:
+                polling_mode = "connector"
+            elif external_url and not connector_only:
+                polling_mode = "direct"  # enterprise default: diretto sempre
+            elif direct_poll and not external_url:
+                polling_mode = "failover"  # forced, ma rischia di non funzionare (LAN unreachable)
+            elif connector_offline and not external_url:
                 polling_mode = "offline"
+            else:
+                polling_mode = "connector"
 
             result.append({
                 "device_ip": device_ip,
                 "device_name": cred.get("device_name"),
                 "external_url": external_url,
                 "direct_poll": direct_poll,
+                "connector_only": connector_only,
                 "connector_offline": connector_offline,
                 "polling_mode": polling_mode,
             })

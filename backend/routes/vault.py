@@ -94,6 +94,7 @@ async def create_credential(cred: CredentialCreate, current_user: dict = Depends
         "url": cred.url, "port": cred.port, "notes": cred.notes,
         "tags": cred.tags or [],
         "external_url": getattr(cred, 'external_url', None) or "",
+        "connector_only": getattr(cred, 'connector_only', False) or False,
         "direct_poll": False,
         "created_by": current_user.get("email"),
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -125,6 +126,7 @@ async def update_credential(cred_id: str, cred: CredentialUpdate, current_user: 
     if cred.notes is not None: update_data["notes"] = cred.notes
     if cred.tags is not None: update_data["tags"] = cred.tags
     if cred.external_url is not None: update_data["external_url"] = cred.external_url
+    if cred.connector_only is not None: update_data["connector_only"] = bool(cred.connector_only)
     if cred.client_id is not None:
         if cred.client_id:  # non-empty -> validate
             client = await db.clients.find_one({"id": cred.client_id}, {"_id": 0, "id": 1})

@@ -1044,6 +1044,19 @@ function Send-DeviceReport($config, $devices) {
             }
 
             if ($redfishTrigger) {
+                # === Enterprise dedup (v3.3.2) ===
+                # Se questa credenziale ha external_url configurata E non ha connector_only=true,
+                # il backend ARGUS polla gia' iLO direttamente. Skippiamo per evitare doppio polling
+                # e rate-limit dell'iLO (iLO 5 max ~30 sessioni concorrenti).
+                $hasExternalUrl = $credEntry.external_url -and $credEntry.external_url.Length -gt 0
+                $connectorOnly = $credEntry.connector_only -eq $true
+                if ($hasExternalUrl -and -not $connectorOnly) {
+                    Write-Log "  Redfish $devName ($ip): skip (backend polla diretto via external_url, modalita' ridondante passiva)" "INFO"
+                    $redfishTrigger = $false
+                }
+            }
+
+            if ($redfishTrigger) {
                 try {
                     Write-Log "  Redfish polling $devName ($ip) con credenziali dal Vault (type=$($credEntry.credential_type))..."
                     $rfMetrics = Poll-RedfishMetrics $ip $credEntry

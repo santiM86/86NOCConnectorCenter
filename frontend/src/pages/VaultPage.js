@@ -27,7 +27,7 @@ const typeConfig = {
   other: { label: "Altro", icon: Key, color: "text-[var(--text-muted)]", bg: "bg-[var(--bg-hover)] border-[var(--bg-border)]" },
 };
 
-function CredentialRow({ cred, onReveal, onEdit, onDelete, revealed, failoverInfo, onToggleDirectPoll, onTestConnection }) {
+function CredentialRow({ cred, onReveal, onEdit, onDelete, revealed, failoverInfo, onToggleDirectPoll, onToggleConnectorOnly, onTestConnection }) {
   const [copied, setCopied] = useState(null);
   const tc = typeConfig[cred.credential_type] || typeConfig.other;
   const Icon = tc.icon;
@@ -35,9 +35,9 @@ function CredentialRow({ cred, onReveal, onEdit, onDelete, revealed, failoverInf
   const fi = failoverInfo || {};
 
   const pollingBadge = {
-    direct: { label: "POLLING DIRETTO", color: "text-teal-400", bg: "bg-teal-500/10 border-teal-500/20" },
-    failover: { label: "FAILOVER ATTIVO", color: "text-amber-400", bg: "bg-amber-500/10 border-amber-500/20" },
-    connector: { label: "VIA CONNECTOR", color: "text-[var(--ok)]", bg: "bg-[var(--low-bg)] border-[var(--low-border)]" },
+    direct: { label: "DIRETTO (ENTERPRISE)", color: "text-cyan-400", bg: "bg-cyan-500/10 border-cyan-500/30" },
+    failover: { label: "FAILOVER (LAN)", color: "text-amber-400", bg: "bg-amber-500/10 border-amber-500/20" },
+    connector: { label: "SOLO CONNECTOR", color: "text-emerald-400", bg: "bg-emerald-500/10 border-emerald-500/30" },
     offline: { label: "OFFLINE", color: "text-[var(--critical)]", bg: "bg-[var(--critical-bg)] border-[var(--critical-border)]" },
   };
 
@@ -94,11 +94,12 @@ function CredentialRow({ cred, onReveal, onEdit, onDelete, revealed, failoverInf
               <Plugs size={12} /> Test
             </Button>
           )}
-          {isILO && onToggleDirectPoll && (
-            <Button size="sm" variant="ghost" onClick={() => onToggleDirectPoll(cred)} 
-              className={`h-7 text-[10px] gap-1 ${fi.direct_poll ? "text-teal-400" : "text-[var(--text-muted)]"}`}
-              data-testid={`toggle-direct-${cred.id}`}>
-              <Lightning size={12} /> {fi.direct_poll ? "Diretto ON" : "Diretto"}
+          {isILO && fi.external_url && onToggleConnectorOnly && (
+            <Button size="sm" variant="ghost" onClick={() => onToggleConnectorOnly(cred)}
+              className={`h-7 text-[10px] gap-1 ${fi.connector_only ? "text-emerald-400" : "text-cyan-400"}`}
+              title={fi.connector_only ? "Disabilita modalita' solo-connector (torna a diretto+ridondante)" : "Forza solo-connector (disabilita polling diretto dal cloud)"}
+              data-testid={`toggle-connector-only-${cred.id}`}>
+              <Lightning size={12} /> {fi.connector_only ? "Solo Connector" : "Diretto ATTIVO"}
             </Button>
           )}
           <Button size="sm" variant="ghost" onClick={() => onReveal(cred.id)} className="h-7 text-[10px] gap-1" data-testid={`reveal-${cred.id}`}>
@@ -294,6 +295,22 @@ export default function VaultPage({ scopedClientId = null, scopedClientName = ""
       fetchFailover();
     } catch (e) {
       toast.error(e.response?.data?.detail || "Errore nell'eliminazione");
+    }
+  };
+
+  const handleToggleConnectorOnly = async (cred) => {
+    try {
+      const fi = failoverStatus.find(f => f.device_ip === cred.device_ip);
+      const newValue = !fi?.connector_only;
+      await axios.put(`${API}/vault/credentials/${cred.id}`, {
+        connector_only: newValue,
+      });
+      toast.success(newValue
+        ? "Polling SOLO connector attivato (diretto disabilitato)"
+        : "Polling diretto riattivato (enterprise ridondante)");
+      fetchFailover();
+    } catch (e) {
+      toast.error("Errore nell'aggiornamento");
     }
   };
 
@@ -493,6 +510,7 @@ export default function VaultPage({ scopedClientId = null, scopedClientName = ""
               revealed={revealed[cred.id]}
               failoverInfo={failoverStatus.find(f => f.device_ip === cred.device_ip)}
               onToggleDirectPoll={handleToggleDirectPoll}
+              onToggleConnectorOnly={handleToggleConnectorOnly}
               onTestConnection={handleTestConnection}
             />
           ))}

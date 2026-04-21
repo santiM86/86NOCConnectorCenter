@@ -145,6 +145,7 @@ class CredentialCreate(BaseModel):
     notes: Optional[str] = None
     tags: Optional[List[str]] = []
     external_url: Optional[str] = None
+    connector_only: Optional[bool] = False  # Disattiva polling diretto anche se external_url presente
     client_id: Optional[str] = None
 
 class CredentialUpdate(BaseModel):
@@ -157,6 +158,7 @@ class CredentialUpdate(BaseModel):
     notes: Optional[str] = None
     tags: Optional[List[str]] = None
     external_url: Optional[str] = None
+    connector_only: Optional[bool] = None
     client_id: Optional[str] = None
 
 class SyslogMessage(BaseModel):
