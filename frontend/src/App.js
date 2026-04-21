@@ -45,6 +45,7 @@ import OnCallPage from "@/pages/OnCallPage";
 import SecurityDashboardPage from "@/pages/SecurityDashboardPage";
 import CMDBPage from "@/pages/CMDBPage";
 import RunbooksPage from "@/pages/RunbooksPage";
+import DeviceProfilesPage from "@/pages/DeviceProfilesPage";
 import SLAPage from "@/pages/SLAPage";
 import RemediationPage from "@/pages/RemediationPage";
 import LifecyclePage from "@/pages/LifecyclePage";
@@ -240,6 +241,7 @@ function App() {
               <Route path="lifecycle" element={<LifecyclePage />} />
               <Route path="intelligence" element={<IntelligencePage />} />
               <Route path="channel-health" element={<ChannelHealthPage />} />
+              <Route path="device-profiles" element={<DeviceProfilesPage />} />
             </Route>
             <Route path="/public/:token" element={<PublicDashboard />} />
             <Route path="/tv" element={<TvDashboardPage />} />

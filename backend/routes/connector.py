@@ -647,6 +647,49 @@ async def connector_device_report(request: Request):
             {"$set": doc}, upsert=True
         )
 
+        # Auto-classify new devices via Device Profile fingerprinting (non-blocking)
+        # Only on first-ingest (prev_status None) OR when sys_descr changed significantly
+        try:
+            is_new = prev_status is None
+            descr_changed = prev_status and (prev_status.get("sys_descr") or "") != (dev.get("sys_descr") or "")
+            if is_new or descr_changed:
+                from device_profiles import fingerprint as _fp
+                matched = _fp(dev.get("sys_object_id") or dev.get("sysObjectID"), dev.get("sys_descr"))
+                if matched:
+                    snmp = matched.get("snmp") or {}
+                    wc = matched.get("web_console") or {}
+                    await db.device_poll_status.update_one(
+                        {"client_id": client_id, "device_ip": dev["device_ip"]},
+                        {"$set": {
+                            "profile_key": matched["key"],
+                            "vendor": matched["vendor"],
+                            "family": matched["family"],
+                            "profile_auto_matched": True,
+                            "profile_matched_at": now_iso,
+                        }}
+                    )
+                    # Also patch managed_devices if it exists and doesn't have an explicit profile
+                    existing_md = await db.managed_devices.find_one(
+                        {"ip": dev["device_ip"], "client_id": client_id},
+                        {"_id": 0, "profile_key": 1}
+                    )
+                    if existing_md and not existing_md.get("profile_key"):
+                        await db.managed_devices.update_one(
+                            {"ip": dev["device_ip"], "client_id": client_id},
+                            {"$set": {
+                                "profile_key": matched["key"],
+                                "vendor": matched["vendor"],
+                                "device_type": matched["family"],
+                                "snmp_port": snmp.get("port", 161),
+                                "snmp_version": snmp.get("version"),
+                                "web_console_port": wc.get("port"),
+                                "web_console_scheme": wc.get("scheme"),
+                            }}
+                        )
+                    logger.info(f"Auto-classified {dev['device_ip']} → {matched['key']} ({matched['vendor']})")
+        except Exception as e:
+            logger.warning(f"Profile auto-classify failed for {dev.get('device_ip')}: {e}")
+
         # Generate alerts based on state transitions + thresholds
         try:
             await _check_device_thresholds(client_id, dev, prev_status)

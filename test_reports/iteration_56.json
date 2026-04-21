@@ -1,0 +1,111 @@
+{
+  "summary": "Runbook Auto-Match feature testing completed. Backend: 23/23 tests passed (100%). Frontend: All UI components working correctly - runbook panel visible, 5 matches displayed for offline alert, expandable steps with commands (green monospace) and expected results (cyan). Web Console V4 regression: 6/6 passed. Device Profiles regression: 10/10 passed.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "POST /api/runbooks",
+        "issue": "MongoDB ObjectId was being returned in response causing 500 error - FIXED by adding data.pop('_id', None) before return",
+        "priority": "FIXED"
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_runbook_automatch.py",
+    "/app/test_reports/pytest/pytest_runbook_automatch.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "routes/runbooks.py: POST /api/runbooks/seed-defaults correctly seeds 8 runbooks (idempotent via seed:<slug> tags)",
+    "routes/runbooks.py: GET /api/runbooks returns items with new fields: profile_keys, capability_match, vendor_match, severity_match",
+    "routes/runbooks.py: GET /api/runbooks/match/alert/{id} returns {alert, context, matches} with scoring algorithm working correctly",
+    "routes/runbooks.py: Scoring: profile_key=+5, keyword=+3 each, device_type=+2, vendor=+2, capability=+2 each, severity=+1",
+    "routes/runbooks.py: Context enrichment from device_poll_status (profile_key, vendor, family) + device_profiles.get_profile() for capabilities",
+    "AlertDetailPage.js: useEffect calls /api/runbooks/match/alert/{id} and renders RunbookMatchCard components",
+    "AlertDetailPage.js: Panel has data-testid='alert-runbooks-panel', cards have data-testid='runbook-match-{id}'",
+    "AlertDetailPage.js: Toggle button data-testid='runbook-toggle-{id}', steps container data-testid='runbook-steps-{id}'",
+    "AlertDetailPage.js: Steps show command in green monospace (text-emerald-300), expected_result in cyan (text-cyan-300)",
+    "AlertDetailPage.js: Context badge shows 'device: vendor/profile_key' when available",
+    "AlertDetailPage.js: No-match state shows 'Nessun runbook corrisponde' + create link (data-testid='runbook-create-link')"
+  ],
+  "updated_files": [
+    "/app/backend/routes/runbooks.py",
+    "/app/backend/tests/test_runbook_automatch.py"
+  ],
+  "success_rate": {
+    "backend": "100% (23/23 passed)",
+    "frontend": "100% (all UI components working)"
+  },
+  "test_credentials": {
+    "admin": "admin@86bit.it / password",
+    "viewer": "tv@86bit.it / Tv86bit!2026",
+    "client_id": "da3d6e40-b3e5-4d46-9787-dde328a3aa36"
+  },
+  "seed_data_creation": "8 seed runbooks already present from previous session (synology-disk-degraded, synology-volume-full, fortinet-vpn-down, apc-ups-on-battery, hp-switch-port-down, unifi-ap-offline, ilo-fan-critical, device-offline-generic)",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Runbook Auto-Match feature fully tested. All 8 seed runbooks present with correct profile_keys, capability_match, vendor_match, severity_match fields. Match endpoint returns up to 5 matches with _match_score and _match_reasons. Frontend AlertDetailPage shows 'Runbook suggeriti' panel with expandable cards showing steps, commands (green), and expected results (cyan). Web Console V4 and Device Profiles regression tests pass.",
+  "tested_features": {
+    "seed_defaults_api": {
+      "admin_can_seed": "PASS - returns {ok:true, inserted:N, skipped:N, total_seeds:8}",
+      "idempotent": "PASS - second call returns inserted=0, skipped=8",
+      "viewer_forbidden": "PASS - returns 403"
+    },
+    "list_runbooks_api": {
+      "returns_items": "PASS - at least 8 runbooks",
+      "has_new_fields": "PASS - profile_keys, capability_match, vendor_match, severity_match present"
+    },
+    "match_alert_api": {
+      "returns_structure": "PASS - {alert, context, matches}",
+      "context_fields": "PASS - profile_key, vendor, family, capabilities",
+      "scoring_structure": "PASS - _match_score (int), _match_reasons (list)",
+      "not_found": "PASS - returns 404 for nonexistent alert"
+    },
+    "crud_regression": {
+      "create_runbook": "PASS",
+      "get_runbook_by_id": "PASS",
+      "update_runbook": "PASS",
+      "delete_runbook": "PASS",
+      "viewer_cannot_create": "PASS - returns 403"
+    },
+    "seed_runbook_content": {
+      "synology_disk_degraded": "PASS - profile_keys=[synology_dsm], capability_match=[disk_smart,raid_status]",
+      "fortinet_vpn_down": "PASS - profile_keys=[fortinet_fortigate], capability_match=[vpn_tunnels]",
+      "apc_ups_on_battery": "PASS - profile_keys=[apc_ups], capability_match=[battery_monitoring]",
+      "hp_switch_port_down": "PASS - profile_keys=[hp_procurve]",
+      "unifi_ap_offline": "PASS - profile_keys=[unifi], vendor_match=[ubiquiti]",
+      "ilo_fan_critical": "PASS - capability_match=[hardware_oob]",
+      "device_offline_generic": "PASS - keywords=[offline,unreachable,...]",
+      "all_8_present": "PASS"
+    },
+    "scoring_algorithm": {
+      "keyword_match": "PASS - +3 per keyword hit",
+      "severity_match": "PASS - +1 for matching severity"
+    },
+    "frontend_ui": {
+      "runbook_panel_visible": "PASS - data-testid='alert-runbooks-panel'",
+      "match_cards": "PASS - 5 cards for offline alert",
+      "best_match_badge": "PASS - shown on top match",
+      "score_display": "PASS - 'score 7' visible",
+      "reason_chips": "PASS - 'keywords:offline,non raggiungibile', 'severity:critical'",
+      "expandable_steps": "PASS - toggle reveals steps",
+      "command_styling": "PASS - green monospace (text-emerald-300)",
+      "expected_result_styling": "PASS - cyan (text-cyan-300)"
+    },
+    "regression_tests": {
+      "web_console_v4": "PASS - 6/6 proxy tests",
+      "device_profiles": "PASS - 10/10 tests"
+    }
+  },
+  "bug_fix_applied": {
+    "file": "/app/backend/routes/runbooks.py",
+    "issue": "POST /api/runbooks returned 500 due to MongoDB ObjectId in response",
+    "fix": "Added data.pop('_id', None) after insert_one() before returning data",
+    "line": 72
+  }
+}
