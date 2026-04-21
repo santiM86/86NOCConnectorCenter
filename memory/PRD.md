@@ -306,6 +306,34 @@ In attesa di scelta provider e credenziali. **Push notifications: DONE (Web Push
 - P2: LDAP/Active Directory integration
 - P3: Zyxel Nebula Cloud API
 
+### Kaseya+ParkPlace Enterprise Feature Pack (2026-04-21 sera) — Automated Remediation, Hardware Lifecycle, NOC Intelligence
+Su richiesta utente ("procedi con tutto"), clonate 3 funzionalità top-tier da Kaseya NOC Services e Park Place Technologies ParkView:
+
+**Backend — 3 nuovi router**:
+- `routes/remediation.py` — Automated Remediation Engine (stile Kaseya VSA). Scripts builtin (Ping, Traceroute, HTTP health, Restart svc, Printer spooler, SNMP port bounce) + custom scripts + rules matching alert→script con cooldown+max_per_day. Approval gate manuale. Evaluator hookato in `alerts.py` e `ingestion.py`. Callback `/api/remediation/result` per risultato esecuzione. Audit log per ogni azione. Collections: `remediation_scripts`, `remediation_rules`, `remediation_executions`.
+- `routes/lifecycle.py` — Hardware Lifecycle & Warranty (stile Park Place ParkView). Tracking scadenze garanzia OEM, EOL/EOSL, contratti 3rd-party. **Risk score 0-100** calcolato da warranty/maintenance/EOSL + criticality. Dashboard aggregato per vendor/cliente/risk band. Endpoint `/expiring?days_ahead=90` per alert scadenze 30/60/90gg. **Import CSV** con auto-detect delimiter + alias headers italiani (data_acquisto/scadenza_garanzia/criticita). Collection: `lifecycle_records` con indice unique device_ip.
+- `routes/intelligence.py` — NOC Intelligence:
+  1. **Proactive Fault Triage**: 16 rule euristiche (cpu/memory/disk/thermal/fan/PSU/SMART/cert/service/backup/auth/latency/printer) → classificazione automatica severity + root-cause + recommended actions + KB match (su `problems` collection known_error/resolved) + recurrence KPI 30gg. Endpoint `/triage/{alert_id}` e `/triage-bulk?hours=24`.
+  2. **Patch Compliance Dashboard**: tracking patch OS/firmware per device (pending_patches, critical_patches, cve_count, cve_list). Compliance % aggregata. Endpoint `/patch/status` per upsert dal connector.
+  3. **Predictive Failure Analysis**: analizza trend 24h di `ilo_telemetry` (temp/fan/power) con slope analysis + threshold detection. Predice guasto entro 24/72/168h con risk band + confidence. Endpoint `/predictive/{ip}` e `/predictive` (overview).
+
+**Frontend — 3 nuove pagine** (con testid per testing):
+- `RemediationPage.js` — 3 tabs (Esecuzioni/Regole/Script), stats cards (pending, 24h success/fail, rules), Approve/Reject inline, RuleEditor + ScriptEditor modali con preview body.
+- `LifecyclePage.js` — tabs Dashboard/In scadenza/Tutti, stats cards (totali, high risk, warranty expired, 30gg, EOSL), bar charts per vendor/risk, CSV upload + editor form con criticality.
+- `IntelligencePage.js` — tabs Triage/Patch/Predictive, bulk triage 24h button, alert cards con severity upgrades visibili, patch compliance tabella, predictive risk board con ETA guasto.
+
+**Sidebar Layout**:
+- Clienti group: aggiunto "Hardware Lifecycle"
+- Operazioni group: aggiunti "Auto Remediation" e "NOC Intelligence"
+
+**Connector v3.3.0**:
+- Executor PowerShell per comandi type=`remediation`: supporta powershell/shell/http-get/http-post con timeout configurabile, capture stdout/stderr, report risultato su `/api/remediation/result`. Job Start-Job con timeout hard. Output troncato a 4000 char.
+- `version.json` aggiornato a 3.3.0 con changelog completo.
+
+**Test E2E**:
+- Backend: **37/37 test passati** (iteration_52.json) — CRUD scripts/rules/executions, evaluator hook su alert, builtin scripts non modificabili, lifecycle risk scoring, CSV import con fix MongoDB duplicate key, triage rules, patch compliance, predictive overview.
+- Frontend: 3/3 pagine caricano con sidebar aggiornata, tabs funzionanti, modali aprono.
+
 ## Constraints
 - NON re-introdurre IP Ban/Honeypot middlewares (richiesta esplicita utente)
 - NON usare `emergentintegrations` per AI
