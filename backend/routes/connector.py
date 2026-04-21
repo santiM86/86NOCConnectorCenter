@@ -258,11 +258,51 @@ async def connector_heartbeat(request: Request, heartbeat: ConnectorHeartbeat):
 @router.post(f"/{C}/md")
 @router.post("/connector/managed-devices")
 async def connector_managed_devices(request: Request):
-    """Return the list of managed devices for this connector's client."""
+    """Return the list of managed devices for this connector's client.
+    Now enriched with `vendor_snmp_targets` — gli OID vendor-specific da pollare
+    per device con profile_key (Synology, APC, Fortinet, ecc.).
+    """
     client_data = await verify_connector_request(request)
     devices = await db.managed_devices.find(
         {"client_id": client_data["id"]}, {"_id": 0}
     ).to_list(500)
+    # Enrich with vendor-specific OID targets (derivati dal profilo)
+    try:
+        from device_profiles import get_profile
+        for d in devices:
+            pk = d.get("profile_key")
+            if not pk:
+                continue
+            profile = get_profile(pk)
+            if not profile:
+                continue
+            oids = profile.get("oids") or {}
+            # Separa scalari (singoli) da table-walks (prefix OIDs senza .0)
+            scalars = {}
+            tables = {}
+            for name, oid in oids.items():
+                if not oid or not isinstance(oid, str):
+                    continue
+                # Sistema OID: STANDARD MIB-II già letto dal connector base, skippa
+                if name in {"sysDescr", "sysObjectID", "sysUpTime", "sysContact", "sysName", "sysLocation", "ifNumber", "ifDescr", "ifOperStatus", "ifInOctets", "ifOutOctets"}:
+                    continue
+                # Termina con .0 → scalare; altrimenti → table walk
+                if oid.endswith(".0"):
+                    scalars[name] = oid
+                else:
+                    tables[name] = oid
+            if scalars or tables:
+                d["vendor_snmp_targets"] = {
+                    "profile_key": pk,
+                    "vendor": profile.get("vendor"),
+                    "scalars": scalars,
+                    "tables": tables,
+                    "poll_interval_seconds": profile.get("polling_interval_seconds", 120),
+                }
+                # Expose thresholds so connector can pre-filter (opzionale — il center ricalcola)
+                d["profile_thresholds"] = profile.get("thresholds") or {}
+    except Exception as e:
+        logger.warning(f"Vendor OID enrichment failed: {e}")
     return {"devices": devices}
 
 
@@ -595,13 +635,46 @@ async def _check_device_thresholds(client_id: str, dev: dict, prev_status: Optio
     device_type = dev.get("device_class") or "generic"
     now_iso = datetime.now(timezone.utc).isoformat()
 
-    # Load client thresholds with defaults
+    # Load client thresholds with defaults (global fallback)
     th = await db.alert_thresholds.find_one({"client_id": client_id}, {"_id": 0}) or {}
     cpu_crit = th.get("cpu_critical_pct", 95)
     cpu_warn = th.get("cpu_warning_pct", 80)
     mem_crit = th.get("memory_critical_pct", 95)
     mem_warn = th.get("memory_warning_pct", 85)
+    temp_crit = 75  # fallback hardcoded
+    temp_warn = 65
     offline_after_min = th.get("offline_alert_after_min", 5)
+
+    # FASE A: Override con le soglie del profilo vendor se disponibili
+    profile_key = dev.get("profile_key") or (prev_status or {}).get("profile_key")
+    if not profile_key:
+        md = await db.managed_devices.find_one(
+            {"client_id": client_id, "ip": device_ip},
+            {"_id": 0, "profile_key": 1}
+        ) or {}
+        profile_key = md.get("profile_key")
+    profile_thresholds = {}
+    if profile_key:
+        try:
+            from device_profiles import get_profile
+            prof = get_profile(profile_key)
+            if prof:
+                profile_thresholds = prof.get("thresholds") or {}
+                # Override only if profile specifies (profile wins on per-device tuning)
+                if "cpu_crit_pct" in profile_thresholds:
+                    cpu_crit = profile_thresholds["cpu_crit_pct"]
+                if "cpu_warn_pct" in profile_thresholds:
+                    cpu_warn = profile_thresholds["cpu_warn_pct"]
+                if "mem_crit_pct" in profile_thresholds:
+                    mem_crit = profile_thresholds["mem_crit_pct"]
+                if "mem_warn_pct" in profile_thresholds:
+                    mem_warn = profile_thresholds["mem_warn_pct"]
+                if "temp_crit_c" in profile_thresholds:
+                    temp_crit = profile_thresholds["temp_crit_c"]
+                if "temp_warn_c" in profile_thresholds:
+                    temp_warn = profile_thresholds["temp_warn_c"]
+        except Exception:
+            pass
 
     alerts_to_create = []
 
