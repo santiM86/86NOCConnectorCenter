@@ -458,7 +458,7 @@ class RedfishPoller:
                 upsert=True
             )
 
-            # Historical metrics
+            # Historical metrics (compact, per backward compat con charts esistenti)
             main_temp = result["temperatures"][0]["value"] if result["temperatures"] else None
             await self.db.device_metrics_history.insert_one({
                 "client_id": client_id_to_set,
@@ -467,6 +467,33 @@ class RedfishPoller:
                 "power_watts": result["power_watts"],
                 "temperature": main_temp,
             })
+
+            # NEW: Full telemetry snapshot per grafici real-time enterprise.
+            # Storage completo di temperature[], fans[], power_supplies[], health,
+            # per permettere grafici multi-sensore in frontend (sparklines).
+            try:
+                now_dt = datetime.now(timezone.utc)
+                telemetry_doc = {
+                    "client_id": client_id_to_set,
+                    "device_ip": device_ip,
+                    "device_name": device_name,
+                    "source": "REDFISH_DIRECT" if reason == "direct" else "REDFISH_FAILOVER",
+                    "timestamp": now_dt,
+                    "power_watts": result.get("power_watts"),
+                    "health_status": result.get("health_status"),
+                    "temperatures": [
+                        {"name": t.get("locale"), "celsius": t.get("value"), "health": t.get("condition")}
+                        for t in (result.get("temperatures") or []) if t.get("value") is not None
+                    ],
+                    "fans": [
+                        {"name": f.get("locale"), "rpm_percent": f.get("speed"), "health": f.get("condition")}
+                        for f in (result.get("fans") or []) if f.get("speed") is not None
+                    ],
+                    "power_supplies": result.get("power_supplies") or [],
+                }
+                await self.db.ilo_telemetry.insert_one(telemetry_doc)
+            except Exception as _e:
+                logger.warning(f"ilo_telemetry insert failed for {device_ip}: {_e}")
 
             # Generate alerts for critical conditions
             await self._check_alerts(device_ip, device_name, result, client_id_to_set)

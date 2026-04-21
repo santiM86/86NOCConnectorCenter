@@ -132,6 +132,33 @@ Refactor completo. Elimina la causa radice del bug iframe nero (srcDoc → origi
 
 **Vantaggi**: nessun aggiornamento Connector richiesto — il fix è tutto lato backend, retrocompatibile con Connector v3.2.1 già in field.
 
+### Redfish REAL-TIME Telemetry (2026-04-21) — Sparkline live iLO
+**Richiesta utente**: telemetria real-time HPE iLO (Thermal, Power, System) con URIs Redfish standard.
+
+**Backend `redfish.py`**:
+- Conferma: tutti gli URI Redfish richiesti erano gia' pollati (`/Systems/1/`, `/Chassis/1/Power/`, `/Chassis/1/Thermal/`, `/Managers/1/`, Memory, EthernetInterfaces, Storage).
+- Nuovo: **snapshot completo `ilo_telemetry`** per ogni poll con temperatures[], fans[], power_supplies[], health_status, power_watts, source.
+- Indice `(device_ip, timestamp)` + TTL 7 giorni per time-series efficiente.
+- Poll interval default ridotto da 5 min a **1 min** (configurabile via `settings.redfish_poll_interval`).
+
+**Backend `redfish_routes.py`** (2 nuovi endpoint):
+- `GET /api/redfish/metrics/{ip}?minutes=60`: timeline con serie power_watts/max_temp/avg_temp + per_sensor_temperatures per grafici multi-sensore.
+- `GET /api/redfish/metrics/{ip}/live`: ultimo snapshot + age_seconds (per UI polling veloce).
+
+**Frontend** — nuovo componente `ILoLiveMetrics.js`:
+- Sparkline SVG custom (power in viola, max temp colorata per soglia 65/75°C) con pallino animato "live pulse"
+- Auto-refresh ogni 15s (polling `/redfish/metrics/{ip}?minutes=60`)
+- Badge "LIVE" con dot animato e colore health-aware
+- Age label ("23s fa") per freshness
+- Integrato nella `IloServerCard` in `ClientOverviewPage`, dentro un box bordato
+
+**Test E2E** (curl):
+- Seeded 5 snapshot fake → endpoint /metrics ritorna timeline completa ✓
+- /metrics/live ritorna latest con age_seconds ✓
+- Cleanup fixture ✓
+
+**NB**: il metodo "Event Subscriptions" (push) descritto in HPE docs richiede listener HTTP pubblico raggiungibile dall'iLO e SSL valido, non praticabile per deploy multi-tenant. Abbiamo optato per polling 1-min aggressivo + snapshot time-series che da' UX equivalente senza bucare firewall cliente.
+
 ### Web Console LIVE v3.3 — FIX HTTP AUTH Basic/Digest (2026-04-20 notte++)
 **Intuizione utente confermata corretta**: il proxy strippava `Authorization` dalle request browser→device e `WWW-Authenticate` dalle response device→browser. Risultato: i device con HTTP Basic/Digest auth (firewall, iLO legacy, switch enterprise) non mostravano mai il prompt di login → browser vedeva 401 o pagine vuote → iframe bianco.
 
