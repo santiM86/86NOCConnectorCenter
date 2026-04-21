@@ -547,12 +547,22 @@ class RedfishPoller:
                             })
 
                 # 7. Storage (SmartStorage + Storage DMTF + physical drives)
+                # Try multiple URI patterns — iLO 4/5/6 differ:
+                # - iLO 4 Gen9: /Systems/1/SmartStorage/ArrayControllers/
+                # - iLO 5 Gen10+: /Systems/1/Storage/ (DMTF) OR /Systems/1/SmartStorage/
+                # - iLO 6 Gen11: /Systems/1/Storage/
                 storage_uris = [
                     f"{base_url}/redfish/v1/Systems/1/SmartStorage/ArrayControllers/",
                     f"{base_url}/redfish/v1/Systems/1/Storage/",
+                    f"{base_url}/redfish/v1/Systems/1/Storage",           # no trailing slash
                     f"{base_url}/redfish/v1/Chassis/1/Storage/",
+                    f"{base_url}/redfish/v1/Systems/1/SmartStorage/",     # wrapper index
                 ]
+                storage_found_any = False
                 for st_uri in storage_uris:
+                    if storage_found_any and len(result["storage_controllers"]) >= 2:
+                        # Already got good data from previous URI, skip redundant ones
+                        break
                     storage = await self._get(client, st_uri, auth)
                     if not (storage and storage.get("Members")):
                         continue
@@ -560,6 +570,18 @@ class RedfishPoller:
                         ctrl = await self._get(client, f"{base_url}{ref['@odata.id']}", auth)
                         if not ctrl:
                             continue
+                        # For SmartStorage index ("/SmartStorage/") follow ArrayControllers link
+                        if "ArrayControllers" in (ctrl.get("Links") or {}):
+                            arr_uri = ctrl["Links"]["ArrayControllers"].get("@odata.id")
+                            if arr_uri:
+                                arr_coll = await self._get(client, f"{base_url}{arr_uri}", auth)
+                                if arr_coll and arr_coll.get("Members"):
+                                    for arr_ref in arr_coll["Members"][:8]:
+                                        arr_ctrl = await self._get(client, f"{base_url}{arr_ref['@odata.id']}", auth)
+                                        if arr_ctrl:
+                                            ctrl = arr_ctrl
+                                            ref = arr_ref
+                                            break
                         ctrl_info = {
                             "name": ctrl.get("Model") or ctrl.get("Name") or "Controller",
                             "firmware": (ctrl.get("FirmwareVersion") or {}).get("Current", {}).get("VersionString") if isinstance(ctrl.get("FirmwareVersion"), dict) else ctrl.get("FirmwareVersion"),
@@ -568,7 +590,7 @@ class RedfishPoller:
                             "logical_drives": [],
                             "drives": [],
                         }
-                        # Logical drives (HP SmartStorage)
+                        # Logical drives (HP SmartStorage + DMTF Volumes)
                         for ld_sub in ["LogicalDrives/", "Volumes/"]:
                             ld_path = ref['@odata.id'].rstrip('/') + '/' + ld_sub
                             lds = await self._get(client, f"{base_url}{ld_path}", auth)
@@ -585,28 +607,50 @@ class RedfishPoller:
                                             "raid": ld.get("Raid") or ld.get("RAIDType"),
                                             "status": (ld.get("Status", {}).get("Health") or "OK"),
                                         })
-                        # Physical drives
+                        # Physical drives (HP DiskDrives + DMTF Drives)
+                        # Also honor controller-level Drives[] reference array
+                        drive_refs = []
                         for dr_sub in ["DiskDrives/", "Drives/"]:
                             dr_path = ref['@odata.id'].rstrip('/') + '/' + dr_sub
                             drives = await self._get(client, f"{base_url}{dr_path}", auth)
                             if drives and drives.get("Members"):
-                                for drref in drives["Members"][:32]:
-                                    dr = await self._get(client, f"{base_url}{drref['@odata.id']}", auth)
-                                    if not dr:
-                                        continue
-                                    cap_gb = dr.get("CapacityGB") or (round(dr.get("CapacityBytes", 0) / (1024**3), 1) if dr.get("CapacityBytes") else None) or (round(dr.get("CapacityMiB", 0) / 1024, 1) if dr.get("CapacityMiB") else None)
-                                    ctrl_info["drives"].append({
-                                        "slot": dr.get("Location") or dr.get("PhysicalLocation", {}).get("PartLocation", {}).get("LocationOrdinalValue") or dr.get("Id"),
-                                        "model": dr.get("Model"),
-                                        "serial": dr.get("SerialNumber"),
-                                        "capacity_gb": cap_gb,
-                                        "media_type": dr.get("MediaType"),
-                                        "interface_type": dr.get("InterfaceType") or dr.get("Protocol"),
-                                        "health": (dr.get("Status", {}).get("Health") or "ok").lower(),
-                                        "state": dr.get("Status", {}).get("State"),
-                                        "failure_predicted": dr.get("FailurePredicted", False),
-                                    })
-                        result["storage_controllers"].append(ctrl_info)
+                                drive_refs.extend(drives["Members"])
+                        # DMTF: controller may have Drives[] inline
+                        for dr_inline in (ctrl.get("Drives") or []):
+                            if isinstance(dr_inline, dict) and "@odata.id" in dr_inline:
+                                drive_refs.append(dr_inline)
+                        # Dedupe by @odata.id
+                        seen_ids = set()
+                        unique_refs = []
+                        for dref in drive_refs:
+                            did = dref.get("@odata.id")
+                            if did and did not in seen_ids:
+                                seen_ids.add(did)
+                                unique_refs.append(dref)
+                        for drref in unique_refs[:32]:
+                            dr = await self._get(client, f"{base_url}{drref['@odata.id']}", auth)
+                            if not dr:
+                                continue
+                            cap_gb = dr.get("CapacityGB") or (round(dr.get("CapacityBytes", 0) / (1024**3), 1) if dr.get("CapacityBytes") else None) or (round(dr.get("CapacityMiB", 0) / 1024, 1) if dr.get("CapacityMiB") else None)
+                            ctrl_info["drives"].append({
+                                "slot": dr.get("Location") or dr.get("PhysicalLocation", {}).get("PartLocation", {}).get("LocationOrdinalValue") or dr.get("Id"),
+                                "model": dr.get("Model"),
+                                "serial": dr.get("SerialNumber"),
+                                "capacity_gb": cap_gb,
+                                "media_type": dr.get("MediaType"),
+                                "interface_type": dr.get("InterfaceType") or dr.get("Protocol"),
+                                "health": (dr.get("Status", {}).get("Health") or "ok").lower(),
+                                "state": dr.get("Status", {}).get("State"),
+                                "failure_predicted": dr.get("FailurePredicted", False),
+                                "rotation_rpm": dr.get("RotationSpeedRPM"),
+                                "hours_used": dr.get("PowerOnHours") or (dr.get("Oem", {}).get("Hpe", {}) or {}).get("PowerOnHours"),
+                                "temp_celsius": (dr.get("Oem", {}).get("Hpe", {}) or {}).get("CurrentTemperatureCelsius") or dr.get("Temperature"),
+                            })
+                        # Only append if we actually got at least 1 drive or logical_drive
+                        # (avoid empty controller shells that happen on timeouts mid-request)
+                        if ctrl_info["drives"] or ctrl_info["logical_drives"] or ctrl_info["name"] != "Controller":
+                            result["storage_controllers"].append(ctrl_info)
+                            storage_found_any = True
 
         except httpx.TimeoutException:
             logger.warning(f"Timeout polling {device_ip}")
@@ -728,6 +772,49 @@ class RedfishPoller:
                         logger.warning(f"Vault cred auto-heal failed: {e}")
             else:
                 logger.warning(f"Redfish {device_ip}: could not determine client_id — alerts will be orphan")
+
+            # === STALE-BUT-GOOD fallback for storage/memory/network ===
+            # Redfish endpoints /Storage /Memory /EthernetInterfaces sometimes timeout
+            # or return empty payloads intermittently (especially iLO 5 Gen10 under load).
+            # Never overwrite last-good data with empty — keep stale with a flag.
+            prev = await self.db.device_poll_status.find_one(
+                {"device_ip": device_ip},
+                {"_id": 0, "redfish": 1, "hardware": 1}
+            ) or {}
+            prev_rf = (prev.get("redfish") or {})
+
+            def _keep_if_empty(new_list, prev_list, label):
+                """Return new_list if not empty; else return prev_list with stale flag."""
+                if new_list and len(new_list) > 0:
+                    return new_list
+                if prev_list and len(prev_list) > 0:
+                    # Mark each item as stale
+                    stale_list = []
+                    for item in prev_list:
+                        item_copy = dict(item)
+                        item_copy["stale"] = True
+                        stale_list.append(item_copy)
+                    logger.info(f"Redfish {device_ip}: {label} empty, keeping {len(stale_list)} stale items")
+                    return stale_list
+                return new_list  # both empty → really no data
+
+            update_doc["redfish"]["storage_controllers"] = _keep_if_empty(
+                result["storage_controllers"], prev_rf.get("storage_controllers") or [], "storage"
+            )
+            update_doc["redfish"]["memory_dimms"] = _keep_if_empty(
+                result["memory_dimms"], prev_rf.get("memory_dimms") or [], "memory"
+            )
+            update_doc["redfish"]["network_adapters"] = _keep_if_empty(
+                result["network_adapters"], prev_rf.get("network_adapters") or [], "network"
+            )
+
+            # Track when each subsystem was last fully fresh (so UI can show "fresh vs N min ago")
+            if result["storage_controllers"]:
+                update_doc["redfish"]["storage_last_good_at"] = now_iso
+            if result["memory_dimms"]:
+                update_doc["redfish"]["memory_last_good_at"] = now_iso
+            if result["network_adapters"]:
+                update_doc["redfish"]["network_last_good_at"] = now_iso
 
             await self.db.device_poll_status.update_one(
                 {"device_ip": device_ip},

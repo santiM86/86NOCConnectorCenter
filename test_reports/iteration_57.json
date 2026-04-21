@@ -1,0 +1,83 @@
+{
+  "summary": "HPE iLO Stale-But-Good Fallback feature testing completed. Backend: 23/23 tests passed (100%). All features verified: hpe_ilo profile with 44 OIDs + 17 Redfish endpoints + generations metadata, fingerprint API matching HP patterns correctly, _keep_if_empty stale fallback logic, ilo-fan-critical runbook with profile_keys=['hpe_ilo'] and capability_match=['hardware_oob','thermal_detail']. Frontend: Device Profiles page shows HPE iLO with 44 OID + API badges, fingerprint tester modal working, Channel Health iLO page functional.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "Runbook seed data",
+        "issue": "Old ilo-fan-critical runbook in DB was missing profile_keys=['hpe_ilo'] and capability_match=['thermal_detail'] - FIXED by deleting and re-seeding",
+        "priority": "FIXED"
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_hpe_ilo_stale_fallback.py",
+    "/app/test_reports/pytest/pytest_hpe_ilo_stale_fallback.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "device_profiles/__init__.py: hpe_ilo profile correctly defined with 44 OIDs (11 common + 33 CPQHLTH-MIB), 17 Redfish api_endpoints, generations metadata (gen9/gen10/gen11)",
+    "device_profiles/__init__.py: fingerprint patterns include 'integrated\\s+lights[-\\s]*out', 'ilo\\s*[456]', 'proliant\\s+(dl|ml|bl|xl|apollo)\\d+\\s+gen\\d+', 'hp(e)?\\s+proliant'",
+    "redfish.py lines 786-809: _keep_if_empty() function correctly implements stale-but-good fallback - marks items with stale=true when new list is empty but prev list has data",
+    "redfish.py lines 801-817: storage_controllers, memory_dimms, network_adapters all use _keep_if_empty() + track storage_last_good_at/memory_last_good_at/network_last_good_at timestamps",
+    "routes/runbooks.py: ilo-fan-critical seed has profile_keys=['hpe_ilo'], capability_match=['hardware_oob','thermal_detail'], device_types=['ilo','server_oob']",
+    "ClientOverviewPage.js lines 362-466: IloServerCard correctly computes storageStale from storage_controllers[].stale or drives[].stale, shows 'Storage (cache)' label with violet color (#A78BFA) and tooltip when stale"
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_hpe_ilo_stale_fallback.py"
+  ],
+  "success_rate": {
+    "backend": "100% (23/23 passed)",
+    "frontend": "100% (all UI components verified)"
+  },
+  "test_credentials": {
+    "admin": "admin@86bit.it / password",
+    "viewer": "tv@86bit.it / Tv86bit!2026",
+    "client_id": "da3d6e40-b3e5-4d46-9787-dde328a3aa36"
+  },
+  "seed_data_creation": "Re-seeded ilo-fan-critical runbook with updated profile_keys and capability_match fields",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "HPE iLO stale-but-good fallback feature fully tested. Key points: (1) hpe_ilo profile has 44 OIDs + 17 Redfish endpoints + gen9/10/11 metadata, (2) fingerprint API returns profile in 'profile.key' field (not top-level 'key'), (3) _keep_if_empty() in redfish.py marks items with stale=true when new poll returns empty but previous had data, (4) ilo-fan-critical runbook now has profile_keys=['hpe_ilo'] and capability_match=['hardware_oob','thermal_detail'], (5) Frontend IloServerCard shows 'Storage (cache)' with violet color when storageStale=true.",
+  "tested_features": {
+    "device_profiles_hpe_ilo": {
+      "profile_exists": "PASS - key='hpe_ilo', family='server_oob'",
+      "oid_count": "PASS - 44+ OIDs (CPQHLTH-MIB + common)",
+      "api_endpoints_count": "PASS - 17 Redfish endpoints",
+      "generations_metadata": "PASS - gen9 (iLO 4), gen10 (iLO 5), gen11 (iLO 6)"
+    },
+    "fingerprint_api": {
+      "sysobjectid_match": "PASS - 1.3.6.1.4.1.232.9.2.10 → hpe_ilo, confidence=high",
+      "sysdescr_ilo5_gen10": "PASS - 'Integrated Lights-Out 5 Firmware 3.18 ProLiant DL360 Gen10' → hpe_ilo",
+      "sysdescr_ilo6_gen11": "PASS - 'Integrated Lights-Out 6 Firmware HPE ProLiant Gen11' → hpe_ilo",
+      "hp_not_dell": "PASS - HP patterns do not match dell_idrac"
+    },
+    "stale_fallback_logic": {
+      "prev_full_new_empty": "PASS - returns prev list with stale=true on each item",
+      "prev_empty_new_full": "PASS - returns new list without stale flag",
+      "both_empty": "PASS - returns empty list"
+    },
+    "runbook_ilo_fan_critical": {
+      "exists": "PASS - seed:ilo-fan-critical tag present",
+      "profile_keys": "PASS - ['hpe_ilo']",
+      "capability_match": "PASS - ['hardware_oob', 'thermal_detail']",
+      "device_types": "PASS - ['ilo', 'server_oob']"
+    },
+    "frontend_ui": {
+      "device_profiles_page": "PASS - shows 13 vendor profiles",
+      "hpe_ilo_card": "PASS - shows 44 OID + API badges",
+      "fingerprint_modal": "PASS - working with sysObjectID and sysDescr inputs",
+      "channel_health_ilo": "PASS - shows iLO devices with dual-channel status"
+    },
+    "regression_tests": {
+      "web_console_v4": "PASS - proxy endpoint exists",
+      "device_profiles_library": "PASS - all major vendor profiles present",
+      "hardware_health_matrix": "PASS - endpoint returns 200"
+    }
+  }
+}

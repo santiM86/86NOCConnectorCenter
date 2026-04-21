@@ -50,6 +50,7 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
     # Fetch connector-reported devices (device_poll_status)
     poll_query = query.copy()
     poll_devices = await db.device_poll_status.find(poll_query, {"_id": 0}).to_list(5000)
+    poll_by_ip = {pd.get("device_ip"): pd for pd in poll_devices if pd.get("device_ip")}
 
     # Fetch managed devices for community/snmp info
     managed_query = query.copy()
@@ -59,6 +60,17 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
         md_ip = md.get("ip") or md.get("ip_address", "")
         if md_ip:
             managed_by_ip[md_ip] = md
+
+    # Enrich manually-added devices with profile_key from managed_devices/poll_status
+    for d in devices:
+        ip = d.get("ip_address")
+        if not ip:
+            continue
+        md = managed_by_ip.get(ip) or {}
+        pd = poll_by_ip.get(ip) or {}
+        d["profile_key"] = d.get("profile_key") or md.get("profile_key") or pd.get("profile_key")
+        d["vendor"] = d.get("vendor") or md.get("vendor") or pd.get("vendor")
+        d["family"] = d.get("family") or md.get("family") or pd.get("family")
 
     # Merge: add connector devices that aren't already in manual list
     for pd in poll_devices:
@@ -97,6 +109,10 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
                     dev_type = dev_class if dev_class and dev_class != "generic" else "server"
             # Get managed device config (community, snmp version, etc.)
             md = managed_by_ip.get(ip, {})
+            # Profile key: managed_devices wins over poll_status (manual override > auto-detect)
+            profile_key = md.get("profile_key") or pd.get("profile_key")
+            vendor = md.get("vendor") or pd.get("vendor")
+            family = md.get("family") or pd.get("family")
             devices.append({
                 "id": f"poll_{ip.replace('.','_')}",
                 "client_id": pd.get("client_id", ""),
@@ -126,6 +142,11 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
                 "web_console_port": md.get("web_console_port"),
                 "web_console_scheme": md.get("web_console_scheme"),
                 "web_console_title": md.get("web_console_title"),
+                # Device Profile (vendor auto-config)
+                "profile_key": profile_key,
+                "vendor": vendor,
+                "family": family,
+                "profile_auto_matched": pd.get("profile_auto_matched", False) if not md.get("profile_key") else False,
             })
 
     # 3rd pass: managed_devices orfani (aggiunti manualmente via UI o dal tray
@@ -156,6 +177,9 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
             "web_console_port": md.get("web_console_port"),
             "web_console_scheme": md.get("web_console_scheme"),
             "web_console_title": md.get("web_console_title"),
+            "profile_key": md.get("profile_key"),
+            "vendor": md.get("vendor"),
+            "family": md.get("family"),
         })
 
     client_ids = list(set(d["client_id"] for d in devices if d.get("client_id")))
@@ -188,6 +212,9 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
                 "web_console_port": d.get("web_console_port"),
                 "web_console_scheme": d.get("web_console_scheme"),
                 "web_console_title": d.get("web_console_title"),
+                "profile_key": d.get("profile_key"),
+                "vendor": d.get("vendor"),
+                "family": d.get("family"),
             })
     return result
 

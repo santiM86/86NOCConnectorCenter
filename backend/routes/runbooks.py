@@ -341,8 +341,8 @@ def _default_seeds() -> list[dict]:
             "description": "Ventola server HPE rilevata come critical/failed via Redfish.",
             "device_types": ["ilo", "server_oob"],
             "vendor_match": ["hpe", "hp"],
-            "profile_keys": [],  # applies to any iLO (already monitored natively)
-            "capability_match": ["hardware_oob"],
+            "profile_keys": ["hpe_ilo"],
+            "capability_match": ["hardware_oob", "thermal_detail"],
             "severity_match": ["critical", "high"],
             "alert_keywords": ["fan", "ventola", "cooling", "redfish"],
             "tags": ["vendor:hpe", "hardware:cooling"],

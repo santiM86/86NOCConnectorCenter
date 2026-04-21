@@ -359,6 +359,8 @@ function IloServerCard({ s, healthColor }) {
   const drives = (s.storage_controllers || []).flatMap(c => c.drives || []);
   const okDrives = drives.filter(d => ["ok"].includes((d.health || "").toLowerCase())).length;
   const drivesColor = drives.length === 0 ? "#64748B" : okDrives === drives.length ? "#34C759" : "#FF3B30";
+  const storageStale = (s.storage_controllers || []).some(c => c.stale) || drives.some(d => d.stale);
+  const storageLastGoodAt = s.storage_last_good_at;
 
   const nics = s.network_adapters || [];
 
@@ -450,7 +452,20 @@ function IloServerCard({ s, healthColor }) {
           <InfoBadge label="BIOS" value={s.bios_version} />
           <InfoBadge label="iLO FW" value={s.ilo_firmware} />
           <InfoBadge label="iLO License" value={s.ilo_license} />
-          <InfoBadge label="Storage" value={drives.length ? `${okDrives}/${drives.length} drive OK` : "Nessun controller"} color={drivesColor} />
+          <InfoBadge
+            label={storageStale ? "Storage (cache)" : "Storage"}
+            value={
+              drives.length
+                ? `${okDrives}/${drives.length} drive OK${storageStale ? " · stale" : ""}`
+                : "Nessun controller"
+            }
+            color={storageStale ? "#A78BFA" : drivesColor}
+            tooltip={
+              storageStale && storageLastGoodAt
+                ? `Dati storage dal cache: ultimo poll completo ${new Date(storageLastGoodAt).toLocaleString("it-IT")}. Redfish /Storage ha avuto timeout o risposta vuota all'ultimo ciclo.`
+                : undefined
+            }
+          />
         </div>
 
         {/* Firmware compliance badge (stile ParkPlace) */}
@@ -680,9 +695,9 @@ function StatMini({ label, value, color }) {
   );
 }
 
-function InfoBadge({ label, value, color }) {
+function InfoBadge({ label, value, color, tooltip }) {
   return (
-    <div className="p-1.5 rounded bg-[var(--bg-panel)] border border-[var(--bg-border)]">
+    <div className="p-1.5 rounded bg-[var(--bg-panel)] border border-[var(--bg-border)]" title={tooltip}>
       <span className="text-[var(--text-muted)] uppercase text-[8px]">{label}</span>{" "}
       <span className="font-mono" style={{ color: color || "var(--text-primary)" }}>{value || "N/D"}</span>
     </div>
@@ -1021,8 +1036,18 @@ function DevicesTab({ devices, clientId, onRefresh }) {
                       )}
                       <button
                         onClick={() => setProfileTarget(d)}
-                        className={`p-1 rounded transition-colors ${d.profile_key ? "hover:bg-cyan-500/10 text-cyan-400" : "hover:bg-amber-500/10 text-amber-400 animate-pulse"}`}
-                        title={d.profile_key ? `Profilo: ${d.profile_key}` : "Nessun profilo — clicca per configurare"}
+                        className={`p-1 rounded transition-colors ${
+                          d.profile_key
+                            ? (d.profile_auto_matched
+                                ? "hover:bg-emerald-500/10 text-emerald-400"
+                                : "hover:bg-cyan-500/10 text-cyan-400")
+                            : "hover:bg-amber-500/10 text-amber-400 animate-pulse"
+                        }`}
+                        title={
+                          d.profile_key
+                            ? `Profilo: ${d.profile_key}${d.profile_auto_matched ? " (auto-rilevato)" : " (configurato manualmente)"}${d.vendor ? ` · ${d.vendor}` : ""}`
+                            : "Nessun profilo — clicca per configurare"
+                        }
                         data-testid={`configure-profile-${d.ip_address}`}
                       >
                         <Cpu size={13} />
@@ -1225,7 +1250,7 @@ function DeviceProfileModal({ device, onClose, onApplied }) {
             if (t === "nas") return p.key === "synology_dsm";
             if (t === "ups") return p.key === "generic_ups";
             if (t === "switch") return p.key === "hpe_comware";
-            if (t === "ilo") return p.key === "dell_idrac" || p.key === "generic_snmp";
+            if (t === "ilo" || t === "server_oob" || t === "server") return p.key === "hpe_ilo";
             if (t === "firewall") return p.key === "fortinet_fortigate";
             return false;
           });
