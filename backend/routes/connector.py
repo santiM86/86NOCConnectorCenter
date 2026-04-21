@@ -98,6 +98,21 @@ async def connector_heartbeat(request: Request, heartbeat: ConnectorHeartbeat):
     response["secure_path"] = C
     if client_data.get("_legacy_auth"):
         response["security_upgrade_available"] = True
+    # Inject dynamic allowed ports (admin configurable via UI /connector/settings)
+    try:
+        settings_doc = await db.connector_settings.find_one({"key": "allowed_ports_extra"}, {"_id": 0})
+        if settings_doc and isinstance(settings_doc.get("value"), list):
+            ports_clean = []
+            for p in settings_doc["value"]:
+                try:
+                    pi = int(p)
+                    if 1 <= pi <= 65535:
+                        ports_clean.append(pi)
+                except (ValueError, TypeError):
+                    continue
+            response["allowed_ports_extra"] = ports_clean
+    except Exception:
+        pass
     return response
 
 
@@ -299,12 +314,36 @@ async def connector_update_check(request: Request):
 
 @router.get("/connector/download/{filename}")
 async def connector_download(filename: str, request: Request):
+    # Allow either (1) a valid connector API key, or (2) an admin JWT — admins can
+    # grab the latest ZIP manually from the browser, connectors pull via API key.
+    client_data = None
     try:
         client_data = await verify_connector_request(request)
     except Exception:
-        client_data = None
-        if not client_data:
-            raise HTTPException(status_code=401, detail="Invalid API key")
+        pass
+    if not client_data:
+        # Try admin JWT (Authorization: Bearer ...)
+        auth_hdr = request.headers.get("Authorization") or request.headers.get("authorization") or ""
+        token_hdr = None
+        if auth_hdr.lower().startswith("bearer "):
+            token_hdr = auth_hdr.split(" ", 1)[1]
+        # Allow also ?token=<jwt> for direct browser download (anchor href)
+        if not token_hdr:
+            token_hdr = request.query_params.get("token")
+        if token_hdr:
+            try:
+                import jwt as _jwt
+                from deps import JWT_SECRET, JWT_ALGORITHM
+                payload = _jwt.decode(token_hdr, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+                user_id = payload.get("user_id")
+                if user_id:
+                    user = await db.users.find_one({"id": user_id}, {"_id": 0, "role": 1, "email": 1})
+                    if user and user.get("role") in ("admin", "superadmin", "security_admin"):
+                        client_data = {"_admin": True, "email": user.get("email")}
+            except Exception:
+                pass
+    if not client_data:
+        raise HTTPException(status_code=401, detail="Invalid API key or admin token required")
     filepath = CONNECTOR_STORAGE / filename
     if not filepath.exists():
         raise HTTPException(status_code=404, detail="File not found")
