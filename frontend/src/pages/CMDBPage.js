@@ -8,16 +8,22 @@ export default function CMDBPage() {
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(null);
   const [warnings, setWarnings] = useState([]);
+  const [clients, setClients] = useState([]);
+  const [candidates, setCandidates] = useState([]);
 
   const load = async () => {
     setLoading(true);
     try {
-      const [r1, r2] = await Promise.all([
+      const [r1, r2, r3, r4] = await Promise.all([
         axios.get(`${API}/cmdb/assets`),
         axios.get(`${API}/cmdb/warranty-alerts?days_ahead=60`),
+        axios.get(`${API}/clients`),
+        axios.get(`${API}/cmdb/candidates`),
       ]);
       setItems(r1.data?.items || []);
       setWarnings(r2.data?.items || []);
+      setClients(r3.data?.items || r3.data || []);
+      setCandidates(r4.data?.items || []);
     } finally { setLoading(false); }
   };
 
@@ -97,25 +103,131 @@ export default function CMDBPage() {
         </table>
       )}
 
-      {editing && <AssetEditor initial={editing} onClose={() => setEditing(null)} onSave={save} />}
+      {editing && <AssetEditor initial={editing} onClose={() => setEditing(null)} onSave={save} clients={clients} candidates={candidates} />}
     </div>
   );
 }
 
-function AssetEditor({ initial, onClose, onSave }) {
+function AssetEditor({ initial, onClose, onSave, clients = [], candidates = [] }) {
   const [f, setF] = useState({
-    device_ip: "", vendor: "", model: "", serial_number: "", firmware: "",
+    device_ip: "", device_name: "", client_id: "", vendor: "", model: "", serial_number: "", firmware: "",
     warranty_end: "", support_expires: "", location: "", rack: "",
     responsible_user: "", lifecycle_state: "production", notes: "",
     ...initial,
   });
+  const [importing, setImporting] = useState(false);
+  const [importMsg, setImportMsg] = useState(null);
   const set = (k, v) => setF(p => ({ ...p, [k]: v }));
+
+  const autofillFromILO = async () => {
+    if (!f.device_ip) { setImportMsg({ type: "error", text: "Inserisci prima un IP o seleziona un device dalla lista" }); return; }
+    setImporting(true); setImportMsg(null);
+    try {
+      const res = await axios.get(`${API}/cmdb/autofill/${f.device_ip}`);
+      const d = res.data || {};
+      if (!d.has_data) {
+        setImportMsg({ type: "warn", text: `Nessun dato telemetria disponibile per ${f.device_ip}. Compila manualmente.` });
+        // Still import client_id if present
+        if (d.client_id) set("client_id", d.client_id);
+      } else {
+        setF(p => ({
+          ...p,
+          vendor: d.vendor || p.vendor,
+          model: d.model || p.model,
+          serial_number: d.serial_number || p.serial_number,
+          firmware: d.firmware || p.firmware,
+          device_name: d.device_name || p.device_name,
+          client_id: d.client_id || p.client_id,
+        }));
+        setImportMsg({ type: "ok", text: `Dati importati da ${d.source}${d.client_name ? ` · Cliente: ${d.client_name}` : ""}` });
+      }
+    } catch (e) {
+      setImportMsg({ type: "error", text: `Errore: ${e.response?.data?.detail || e.message}` });
+    } finally { setImporting(false); }
+  };
+
+  const pickCandidate = async (ip) => {
+    set("device_ip", ip);
+    // Trigger autofill immediately
+    setTimeout(() => {
+      const orig = f.device_ip;
+      setF(p => ({ ...p, device_ip: ip }));
+      // Call autofill against the new ip after state settles
+      setTimeout(async () => {
+        setImporting(true);
+        try {
+          const res = await axios.get(`${API}/cmdb/autofill/${ip}`);
+          const d = res.data || {};
+          setF(p => ({
+            ...p,
+            device_ip: ip,
+            vendor: d.vendor || "",
+            model: d.model || "",
+            serial_number: d.serial_number || "",
+            firmware: d.firmware || "",
+            device_name: d.device_name || "",
+            client_id: d.client_id || "",
+          }));
+          setImportMsg({ type: d.has_data ? "ok" : "warn", text: d.has_data ? `Dati importati da ${d.source}${d.client_name ? ` · Cliente: ${d.client_name}` : ""}` : "Device trovato ma senza telemetria — compila manualmente" });
+        } catch (e) {
+          setImportMsg({ type: "error", text: "Errore import: " + (e.message || "unknown") });
+        } finally { setImporting(false); }
+      }, 50);
+    }, 0);
+  };
+
   return (
     <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-[#12121a] border border-[#2a2a3e] rounded-xl max-w-xl w-full p-5 max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+      <div className="bg-[#12121a] border border-[#2a2a3e] rounded-xl max-w-2xl w-full p-5 max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
         <h3 className="text-lg font-bold text-white mb-4">{initial.device_ip ? `Modifica ${initial.device_ip}` : "Nuovo Asset CMDB"}</h3>
+
+        {/* Quick-pick da device monitorati */}
+        {!initial.device_ip && candidates.length > 0 && (
+          <div className="mb-4 p-3 bg-indigo-500/5 border border-indigo-500/20 rounded">
+            <div className="text-[10px] uppercase tracking-wider text-indigo-400 mb-2">⚡ Import rapido da device già monitorati</div>
+            <select
+              onChange={e => { if (e.target.value) pickCandidate(e.target.value); }}
+              className="w-full bg-[#0f0f17] border border-[#2a2a3e] rounded px-2 py-2 text-white text-[12px]"
+              data-testid="cmdb-quick-pick"
+              defaultValue="">
+              <option value="">— Seleziona device monitorato ({candidates.length} disponibili) —</option>
+              {candidates.map(c => (
+                <option key={c.device_ip} value={c.device_ip}>
+                  {c.device_ip} · {c.device_name || "—"}
+                </option>
+              ))}
+            </select>
+            <div className="text-[10px] text-white/40 mt-1">I dati hardware (vendor/modello/serial/firmware) verranno importati automaticamente.</div>
+          </div>
+        )}
+
+        {/* Cliente selector — PRIMARIO */}
+        <div className="mb-3 p-3 bg-white/[0.03] border border-white/10 rounded">
+          <label className="text-[10px] uppercase tracking-wider text-white/60">Cliente *</label>
+          <select value={f.client_id || ""} onChange={e => set("client_id", e.target.value)}
+            className="w-full bg-[#0f0f17] border border-[#2a2a3e] rounded px-2 py-2 text-white text-[13px] mt-1"
+            data-testid="cmdb-client-select">
+            <option value="">— Seleziona cliente —</option>
+            {clients.map(c => (
+              <option key={c.id} value={c.id}>{c.name}</option>
+            ))}
+          </select>
+        </div>
+
         <div className="grid grid-cols-2 gap-3">
           <Field label="IP device *" v={f.device_ip} set={v => set("device_ip", v)} disabled={!!initial.device_ip} testid="cmdb-ip" />
+          <div>
+            <label className="text-[10px] text-white/60 uppercase">Nome device</label>
+            <div className="flex gap-1">
+              <input value={f.device_name || ""} onChange={e => set("device_name", e.target.value)}
+                className="flex-1 bg-[#0f0f17] border border-[#2a2a3e] rounded px-2 py-1.5 text-white text-[12px]" />
+              <button onClick={autofillFromILO} disabled={importing || !f.device_ip}
+                className="px-3 rounded bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 hover:bg-cyan-500/30 text-[11px] font-bold disabled:opacity-40"
+                data-testid="cmdb-autofill-btn" title="Importa dati dalla iLO/telemetria attuale">
+                {importing ? "…" : "⚡ iLO"}
+              </button>
+            </div>
+          </div>
           <Field label="Vendor" v={f.vendor} set={v => set("vendor", v)} />
           <Field label="Modello" v={f.model} set={v => set("model", v)} />
           <Field label="Serial Number" v={f.serial_number} set={v => set("serial_number", v)} />
@@ -134,10 +246,17 @@ function AssetEditor({ initial, onClose, onSave }) {
             </select>
           </div>
         </div>
+
+        {importMsg && (
+          <div className={`mt-3 p-2 rounded text-[11px] ${importMsg.type === "ok" ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/30" : importMsg.type === "warn" ? "bg-amber-500/10 text-amber-400 border border-amber-500/30" : "bg-rose-500/10 text-rose-400 border border-rose-500/30"}`}>
+            {importMsg.text}
+          </div>
+        )}
+
         <textarea value={f.notes || ""} onChange={e => set("notes", e.target.value)} placeholder="Note" className="w-full mt-3 bg-[#0f0f17] border border-[#2a2a3e] rounded px-2 py-1.5 text-white text-[12px]" rows={3} />
         <div className="flex justify-end gap-2 mt-4">
           <button onClick={onClose} className="px-4 py-2 rounded bg-white/5 text-white/60 text-sm">Annulla</button>
-          <button onClick={() => onSave(f)} disabled={!f.device_ip} className="px-4 py-2 rounded bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 hover:bg-indigo-500/30 text-sm font-bold disabled:opacity-50" data-testid="cmdb-save-btn">Salva</button>
+          <button onClick={() => onSave(f)} disabled={!f.device_ip || !f.client_id} className="px-4 py-2 rounded bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 hover:bg-indigo-500/30 text-sm font-bold disabled:opacity-50" data-testid="cmdb-save-btn">Salva</button>
         </div>
       </div>
     </div>
