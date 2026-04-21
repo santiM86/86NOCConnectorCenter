@@ -13,6 +13,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer
+} from "recharts";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import VaultPage from "./VaultPage";
 import { canOpenWebConsole, defaultWebPort } from "@/components/WebConsole";
@@ -299,6 +302,7 @@ function IloHealthPanel({ iloHealth }) {
 function IloServerCard({ s, healthColor }) {
   const [expanded, setExpanded] = useState(false);
   const [firmwareCompliance, setFirmwareCompliance] = useState(s.firmware_compliance || null);
+  const [timelineSensor, setTimelineSensor] = useState(null);
   const hc = healthColor(s.health_status);
 
   // Fetch firmware compliance on mount (piggybacks on telemetry poll)
@@ -402,15 +406,22 @@ function IloServerCard({ s, healthColor }) {
               {topTemps.map((t, idx) => {
                 const sensorColor = t.value > 75 ? "#FF3B30" : t.value > 65 ? "#FFCC00" : "#34C759";
                 const cond = (t.condition || "ok").toLowerCase();
+                const prettyName = prettifySensorName(t.locale);
                 return (
-                  <div key={idx} className="px-2 py-1.5 rounded border" style={{ borderColor: `${sensorColor}30`, background: `${sensorColor}08` }}>
+                  <button key={idx}
+                    onClick={() => setTimelineSensor({ name: t.locale, pretty: prettyName, type: "temperature", device_ip: s.device_ip, device_name: s.device_name })}
+                    className="px-2 py-1.5 rounded border text-left hover:brightness-125 transition"
+                    style={{ borderColor: `${sensorColor}30`, background: `${sensorColor}08` }}
+                    data-testid={`sensor-card-${s.device_ip}-${idx}`}
+                    title="Clicca per grafico 24h">
                     <div className="flex items-center justify-between gap-1">
                       <span className="text-[9px] uppercase tracking-wider text-[var(--text-muted)]">Sensore {idx + 1}</span>
                       <span className="text-[8px] font-bold" style={{ color: sensorColor }}>{cond.toUpperCase()}</span>
                     </div>
                     <div className="text-[15px] font-bold mt-0.5" style={{ color: sensorColor }}>{t.value}°C</div>
-                    <div className="text-[9px] text-[var(--text-muted)] truncate" title={t.locale}>{t.locale || "—"}</div>
-                  </div>
+                    <div className="text-[10px] text-[var(--text-primary)] truncate" title={t.locale}>{prettyName}</div>
+                    <div className="text-[8px] text-[var(--text-muted)]/70 font-mono truncate">{t.locale}</div>
+                  </button>
                 );
               })}
             </div>
@@ -520,6 +531,133 @@ function IloServerCard({ s, healthColor }) {
           )}
         </div>
       )}
+
+      {/* Timeline modal */}
+      {timelineSensor && (
+        <SensorTimelineModal
+          device_ip={timelineSensor.device_ip}
+          device_name={timelineSensor.device_name}
+          sensor={timelineSensor.name}
+          pretty={timelineSensor.pretty}
+          onClose={() => setTimelineSensor(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+function SensorTimelineModal({ device_ip, device_name, sensor, pretty, onClose }) {
+  const [hours, setHours] = useState(24);
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    (async () => {
+      try {
+        const res = await axios.get(`${API}/redfish/sensor-timeline/${device_ip}`, {
+          params: { sensor, hours }
+        });
+        if (!cancelled) setData(res.data);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [device_ip, sensor, hours]);
+
+  const points = (data?.points || []).map(p => ({
+    ts: new Date(p.ts).getTime(),
+    label: new Date(p.ts).toLocaleString("it-IT", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }),
+    value: p.value,
+    stale: p.stale,
+  }));
+  const stats = data?.stats || {};
+  const isTemp = (stats.sensor_type || "temperature") === "temperature";
+  const unit = isTemp ? "°C" : "%";
+
+  return (
+    <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-[#0d1117] border border-white/20 rounded-lg max-w-4xl w-full max-h-[90vh] overflow-auto" onClick={e => e.stopPropagation()}>
+        <div className="p-5">
+          <div className="flex items-start justify-between mb-4">
+            <div>
+              <div className="text-[11px] uppercase text-[var(--text-muted)] tracking-wider">{device_name} · {device_ip}</div>
+              <h2 className="text-lg font-bold text-white mt-1">{pretty}</h2>
+              <div className="text-[10px] text-[var(--text-muted)] font-mono">{sensor}</div>
+            </div>
+            <button onClick={onClose} className="text-white/40 hover:text-white text-xl leading-none px-2" data-testid="close-timeline">×</button>
+          </div>
+
+          <div className="flex items-center gap-2 mb-4">
+            {[6, 24, 72, 168].map(h => (
+              <button key={h} onClick={() => setHours(h)}
+                className={`px-3 py-1 rounded text-[11px] font-medium transition ${hours === h ? "bg-violet-500/30 text-violet-200 border border-violet-500/50" : "bg-white/5 text-white/60 border border-white/10 hover:bg-white/10"}`}
+                data-testid={`timeline-range-${h}`}>
+                {h < 24 ? `${h}h` : h < 168 ? `${h/24}g` : "7g"}
+              </button>
+            ))}
+          </div>
+
+          {loading ? (
+            <div className="text-white/40 text-center py-12">Caricamento…</div>
+          ) : points.length === 0 ? (
+            <div className="text-white/40 text-center py-12">Nessun dato disponibile per questa finestra temporale.</div>
+          ) : (
+            <>
+              <div className="grid grid-cols-4 gap-2 mb-4">
+                <StatMini label="MIN" value={`${stats.min}${unit}`} color="#34C759" />
+                <StatMini label="AVG" value={`${stats.avg}${unit}`} color="#8B5CF6" />
+                <StatMini label="MAX" value={`${stats.max}${unit}`} color={stats.max > 75 && isTemp ? "#FF3B30" : stats.max > 65 && isTemp ? "#FFCC00" : "#34C759"} />
+                <StatMini label="SAMPLES" value={stats.samples} color="#00D4FF" />
+              </div>
+
+              <div className="bg-[#0a0a0f] rounded border border-white/10 p-3">
+                <ResponsiveContainer width="100%" height={320}>
+                  <AreaChart data={points}>
+                    <defs>
+                      <linearGradient id="temp-grad" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="#8B5CF6" stopOpacity={0.6} />
+                        <stop offset="100%" stopColor="#8B5CF6" stopOpacity={0.05} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid stroke="rgba(255,255,255,0.05)" strokeDasharray="3 3" />
+                    <XAxis dataKey="label" stroke="rgba(255,255,255,0.3)" style={{ fontSize: 10 }} tickLine={false} />
+                    <YAxis stroke="rgba(255,255,255,0.3)" style={{ fontSize: 10 }} unit={unit} tickLine={false} />
+                    <Tooltip
+                      contentStyle={{ background: "#0d1117", border: "1px solid rgba(139,92,246,0.5)", borderRadius: 6, fontSize: 12 }}
+                      labelStyle={{ color: "#fff" }}
+                      formatter={(v, name, props) => [`${v}${unit}${props.payload.stale ? " (stale)" : ""}`, pretty]}
+                    />
+                    {isTemp && (
+                      <>
+                        <CartesianGrid />
+                      </>
+                    )}
+                    <Area type="monotone" dataKey="value" stroke="#8B5CF6" strokeWidth={2} fill="url(#temp-grad)" />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </div>
+
+              {isTemp && stats.max > 75 && (
+                <div className="mt-3 p-2 rounded border border-rose-500/30 bg-rose-500/5 text-[11px] text-rose-400">
+                  ⚠ Picco a {stats.max}°C rilevato nella finestra. Verifica ventilazione e raffreddamento della zona.
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StatMini({ label, value, color }) {
+  return (
+    <div className="bg-white/[0.03] border border-white/10 rounded px-3 py-2">
+      <div className="text-[9px] uppercase tracking-wider text-white/40">{label}</div>
+      <div className="text-lg font-bold mt-0.5" style={{ color }}>{value}</div>
     </div>
   );
 }
@@ -533,6 +671,62 @@ function InfoBadge({ label, value, color }) {
   );
 }
 
+
+// Mappa nomi sensori HPE iLO (ProLiant Gen10/Gen9/Gen11) a etichette leggibili italiane.
+// iLO espone sensori come "53-CPU1 DigIO", "02-BMC Zone", "15-PCI 1", "01-Inlet Ambient", ecc.
+// Rimuoviamo il prefisso ID + mappiamo le abbreviazioni piu' comuni.
+function prettifySensorName(raw) {
+  if (!raw) return "—";
+  // Rimuove prefisso ID numerico stile "53-" o "02-"
+  let n = raw.replace(/^\s*\d{1,3}\s*[-_]\s*/, "").trim();
+  const lower = n.toLowerCase();
+
+  // Regole di mapping ordinate per specificità
+  const rules = [
+    { re: /^cpu\s*(\d+)\s*dig\s*io/i, out: m => `CPU ${m[1]} — Digital I/O` },
+    { re: /^cpu\s*(\d+)\s*zone/i, out: m => `CPU ${m[1]} — Zona termica` },
+    { re: /^cpu\s*(\d+)\s*mem\s*zone/i, out: m => `CPU ${m[1]} — Memoria (DIMM)` },
+    { re: /^cpu\s*(\d+)\s*vr/i, out: m => `CPU ${m[1]} — VRM alimentazione` },
+    { re: /^cpu\s*(\d+)/i, out: m => `CPU ${m[1]}` },
+    { re: /^p(\d+)\s*dimm\s*(\d+)\s*-\s*(\d+)/i, out: m => `Processore ${m[1]} · DIMM ${m[2]}-${m[3]}` },
+    { re: /^p(\d+)\s*dimm/i, out: m => `Processore ${m[1]} · DIMM` },
+    { re: /^dimm\s*(\d+)/i, out: m => `DIMM slot ${m[1]}` },
+    { re: /^inlet\s*ambient/i, out: () => "Aria in ingresso (Inlet)" },
+    { re: /^inlet/i, out: () => "Aria in ingresso" },
+    { re: /^outlet/i, out: () => "Aria in uscita (Outlet)" },
+    { re: /^ambient/i, out: () => "Ambiente sistema" },
+    { re: /^sys\s*(amb|board)/i, out: () => "Scheda madre" },
+    { re: /^bmc/i, out: () => "BMC (controller iLO)" },
+    { re: /^ilo\s*zone/i, out: () => "Zona chip iLO" },
+    { re: /^chipset\s*(\d+)?/i, out: m => m[1] ? `Chipset ${m[1]}` : "Chipset PCH" },
+    { re: /^pch/i, out: () => "Chipset PCH" },
+    { re: /^pci\s*(\d+)/i, out: m => `Slot PCI-E ${m[1]}` },
+    { re: /^pci/i, out: () => "Slot PCI-E" },
+    { re: /^vr\s*(\d+)?/i, out: m => m[1] ? `VRM ${m[1]}` : "VRM alimentazione" },
+    { re: /^i\/?o\s*zone/i, out: () => "Zona I/O (PCIe/NIC)" },
+    { re: /^i\/?o\s*board/i, out: () => "Scheda I/O" },
+    { re: /^storage\s*batt/i, out: () => "Batteria cache RAID" },
+    { re: /^storage\s*zone/i, out: () => "Zona storage" },
+    { re: /^hdd\s*max/i, out: () => "Dischi (HDD/SSD)" },
+    { re: /^hd\s*controller/i, out: () => "Controller RAID" },
+    { re: /^fan\s*(\d+)/i, out: m => `Zona ventola ${m[1]}` },
+    { re: /^nic\s*(\d+)?/i, out: m => m[1] ? `Scheda di rete ${m[1]}` : "Scheda di rete" },
+    { re: /^power\s*supply\s*(\d+)?/i, out: m => m[1] ? `Alimentatore PSU ${m[1]}` : "Alimentatore" },
+    { re: /^supercap/i, out: () => "SuperCap (Smart Array)" },
+    { re: /^expansion\s*bay/i, out: () => "Bay espansione" },
+    { re: /^memory/i, out: () => "Memoria RAM" },
+  ];
+  for (const r of rules) {
+    const m = n.match(r.re);
+    if (m) return r.out(m);
+  }
+  // Fallback: capitalizza + sostituisce abbreviazioni note
+  n = n.replace(/\bzone\b/gi, "zona")
+       .replace(/\btemp\b/gi, "")
+       .replace(/\s+/g, " ")
+       .trim();
+  return n.charAt(0).toUpperCase() + n.slice(1);
+}
 
 function FirmwareComplianceBadge({ fc }) {
   const [open, setOpen] = useState(false);

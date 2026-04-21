@@ -288,6 +288,80 @@ async def get_redfish_live(device_ip: str, current_user: dict = Depends(get_curr
     return latest
 
 
+@router.get("/redfish/sensor-timeline/{device_ip}")
+async def sensor_timeline(device_ip: str, sensor: str, hours: int = 24,
+                           current_user: dict = Depends(get_current_user)):
+    """Timeline di UN singolo sensore termico o ventola nelle ultime N ore.
+    Query param:
+      - sensor: nome grezzo del sensore (es. "53-CPU1 DigIO")
+      - hours: finestra temporale (default 24, max 168 = 7 giorni)
+    Ritorna serie temporale [{ts, value, health}].
+    """
+    hours = max(1, min(hours, 168))
+    since = datetime.now(timezone.utc) - timedelta(hours=hours)
+    cursor = db.ilo_telemetry.find(
+        {"device_ip": device_ip, "timestamp": {"$gte": since}},
+        {"_id": 0, "timestamp": 1, "temperatures": 1, "fans": 1}
+    ).sort("timestamp", 1)
+    points = []
+    min_v = None
+    max_v = None
+    avg_sum = 0.0
+    count = 0
+    sensor_lower = sensor.lower().strip()
+    sensor_type = "temperature"  # default
+    async for doc in cursor:
+        ts = doc.get("timestamp")
+        if isinstance(ts, datetime):
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            ts_str = ts.isoformat().replace("+00:00", "Z")
+        else:
+            ts_str = str(ts)
+        # Find matching sensor in temperatures[] first, then fans[]
+        value = None
+        health = None
+        stale = False
+        for t in (doc.get("temperatures") or []):
+            if (t.get("name") or "").lower() == sensor_lower:
+                value = t.get("celsius")
+                health = t.get("health")
+                stale = bool(t.get("stale"))
+                sensor_type = "temperature"
+                break
+        if value is None:
+            for f in (doc.get("fans") or []):
+                if (f.get("name") or "").lower() == sensor_lower:
+                    value = f.get("rpm_percent")
+                    health = f.get("health")
+                    stale = bool(f.get("stale"))
+                    sensor_type = "fan"
+                    break
+        if value is None:
+            continue
+        points.append({"ts": ts_str, "value": value, "health": health, "stale": stale})
+        if min_v is None or value < min_v: min_v = value
+        if max_v is None or value > max_v: max_v = value
+        avg_sum += value
+        count += 1
+
+    stats = {
+        "min": min_v,
+        "max": max_v,
+        "avg": round(avg_sum / count, 1) if count else None,
+        "samples": count,
+        "window_hours": hours,
+        "sensor_type": sensor_type,
+    }
+    return {
+        "device_ip": device_ip,
+        "sensor": sensor,
+        "stats": stats,
+        "points": points,
+    }
+
+
+
 @router.get("/redfish/raw/{device_ip}")
 async def redfish_raw_probe(device_ip: str, path: str = "/redfish/v1/Chassis/1/Thermal/",
                               current_user: dict = Depends(get_current_user)):
