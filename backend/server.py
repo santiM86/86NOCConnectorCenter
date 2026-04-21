@@ -300,6 +300,8 @@ app.include_router(firmware_catalog_router)
 app.include_router(web_console_v4_router)
 app.include_router(device_profiles_router)
 app.include_router(connector_settings_router)
+from routes.device_probe import router as device_probe_router
+app.include_router(device_probe_router)
 
 # Include enterprise routes
 from enterprise_routes import create_enterprise_router
