@@ -359,6 +359,8 @@ function IloServerCard({ s, healthColor }) {
   const drives = (s.storage_controllers || []).flatMap(c => c.drives || []);
   const okDrives = drives.filter(d => ["ok"].includes((d.health || "").toLowerCase())).length;
   const drivesColor = drives.length === 0 ? "#64748B" : okDrives === drives.length ? "#34C759" : "#FF3B30";
+  const storageStale = (s.storage_controllers || []).some(c => c.stale) || drives.some(d => d.stale);
+  const storageLastGoodAt = s.storage_last_good_at;
 
   const nics = s.network_adapters || [];
 
@@ -450,7 +452,20 @@ function IloServerCard({ s, healthColor }) {
           <InfoBadge label="BIOS" value={s.bios_version} />
           <InfoBadge label="iLO FW" value={s.ilo_firmware} />
           <InfoBadge label="iLO License" value={s.ilo_license} />
-          <InfoBadge label="Storage" value={drives.length ? `${okDrives}/${drives.length} drive OK` : "Nessun controller"} color={drivesColor} />
+          <InfoBadge
+            label={storageStale ? "Storage (cache)" : "Storage"}
+            value={
+              drives.length
+                ? `${okDrives}/${drives.length} drive OK${storageStale ? " · stale" : ""}`
+                : "Nessun controller"
+            }
+            color={storageStale ? "#A78BFA" : drivesColor}
+            tooltip={
+              storageStale && storageLastGoodAt
+                ? `Dati storage dal cache: ultimo poll completo ${new Date(storageLastGoodAt).toLocaleString("it-IT")}. Redfish /Storage ha avuto timeout o risposta vuota all'ultimo ciclo.`
+                : undefined
+            }
+          />
         </div>
 
         {/* Firmware compliance badge (stile ParkPlace) */}
@@ -680,9 +695,9 @@ function StatMini({ label, value, color }) {
   );
 }
 
-function InfoBadge({ label, value, color }) {
+function InfoBadge({ label, value, color, tooltip }) {
   return (
-    <div className="p-1.5 rounded bg-[var(--bg-panel)] border border-[var(--bg-border)]">
+    <div className="p-1.5 rounded bg-[var(--bg-panel)] border border-[var(--bg-border)]" title={tooltip}>
       <span className="text-[var(--text-muted)] uppercase text-[8px]">{label}</span>{" "}
       <span className="font-mono" style={{ color: color || "var(--text-primary)" }}>{value || "N/D"}</span>
     </div>
