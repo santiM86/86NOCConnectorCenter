@@ -400,6 +400,23 @@ Cata­logo firmware "latest known good" con confronto automatico vs versioni iLO
 - Badge "DIRETTO (ENTERPRISE)" cyan (vs "VIA CONNECTOR" verde precedente)
 - Button toggle "Diretto ATTIVO / Solo Connector" per-credenziale
 
+
+### iLO Total Loss Detection (2026-04-22) — "Both Channels Down" alert
+Nuovo alert critical dedicato al caso in cui **né direct né connector** rispondono più. Segnala guasto hardware iLO / isolamento rack / perdita totale management board.
+
+**Backend `redfish.py`**:
+- Collection nuova `ilo_channel_health` per device: direct_consecutive_failures, direct_last_success/failure/error.
+- `_check_both_channels_down()`: se direct_failures >= 3 consecutive E device_poll_status.last_update > 5 min fa (connector stale) → crea alert `ilo_both_channels_down` critical (dedup 6h).
+- `_resolve_both_channels_alert()`: auto-resolve quando il direct poll torna OK.
+- Hook integrato in `poll_direct_devices` (try/except per device).
+
+**Alert payload**:
+- Titolo: "iLO TOTAL LOSS: {name} — nessun canale risponde"
+- Severity: critical
+- Dettaglio errore direct + istruzioni troubleshooting (hardware management board, rack isolation, firewall).
+
+**Test E2E**: ✅ alert creato, dedup funziona (2 call → 1 alert), auto-recovery testato.
+
 **Connector v3.3.2** pubblicato: update ZIP + install ZIP completo su `/downloads/`.
 
 ## Constraints

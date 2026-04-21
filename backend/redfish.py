@@ -114,14 +114,126 @@ class RedfishPoller:
         logger.info(f"Redfish direct polling: {len(devices_to_poll)} devices")
 
         for item in devices_to_poll:
+            dev_ip = item["cred"].get("device_ip")
+            dev_name = item["cred"].get("device_name") or dev_ip
             try:
                 await self._poll_device(item["cred"], item["reason"])
+                # Success: reset direct failure counter
+                await self.db.ilo_channel_health.update_one(
+                    {"device_ip": dev_ip},
+                    {"$set": {
+                        "device_ip": dev_ip,
+                        "device_name": dev_name,
+                        "client_id": item["cred"].get("client_id"),
+                        "direct_last_success": datetime.now(timezone.utc).isoformat(),
+                        "direct_consecutive_failures": 0,
+                    }},
+                    upsert=True
+                )
+                # Check if we should auto-resolve a "both channels down" alert
+                await self._resolve_both_channels_alert(dev_ip)
             except Exception as e:
-                logger.error(f"Redfish poll error for {item['cred'].get('device_ip')}: {e}")
+                logger.error(f"Redfish poll error for {dev_ip}: {e}")
+                await self.db.ilo_channel_health.update_one(
+                    {"device_ip": dev_ip},
+                    {"$set": {
+                        "device_ip": dev_ip,
+                        "device_name": dev_name,
+                        "client_id": item["cred"].get("client_id"),
+                        "direct_last_failure": datetime.now(timezone.utc).isoformat(),
+                        "direct_last_error": str(e)[:300],
+                    }, "$inc": {"direct_consecutive_failures": 1}},
+                    upsert=True
+                )
+                # Check both-channels-down
+                await self._check_both_channels_down(item["cred"])
+
+    async def _check_both_channels_down(self, cred: dict) -> None:
+        """Crea alert critical se DIRECT poll fallisce >=3 volte consecutive
+        E allo stesso tempo il connector e' offline/stale per lo stesso device.
+        Thresholds: 3 failures direct (=3 min con poll 1/min) + connector stale >5 min.
+        """
+        device_ip = cred.get("device_ip")
+        device_name = cred.get("device_name") or device_ip
+        client_id = cred.get("client_id")
+
+        health = await self.db.ilo_channel_health.find_one({"device_ip": device_ip}, {"_id": 0})
+        if not health:
+            return
+        direct_failures = int(health.get("direct_consecutive_failures") or 0)
+        if direct_failures < 3:
+            return
+
+        # Check connector-side health: stale > 5 min OR never polled
+        stale_cutoff = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+        dps = await self.db.device_poll_status.find_one({"device_ip": device_ip}, {"_id": 0})
+        connector_stale = True
+        if dps and dps.get("last_update"):
+            connector_stale = str(dps["last_update"]) < stale_cutoff
+
+        if not connector_stale:
+            return  # Connector is active, we only have a direct-path issue (not critical yet)
+
+        # Dedup: only raise if no active alert in last 6h
+        since = (datetime.now(timezone.utc) - timedelta(hours=6)).isoformat()
+        existing = await self.db.alerts.find_one({
+            "device_ip": device_ip,
+            "type": "ilo_both_channels_down",
+            "status": "active",
+            "created_at": {"$gte": since},
+        })
+        if existing:
+            return
+
+        alert_doc = {
+            "id": str(uuid.uuid4()),
+            "client_id": client_id,
+            "device_ip": device_ip,
+            "device_name": device_name,
+            "device_type": "ilo",
+            "severity": "critical",
+            "type": "ilo_both_channels_down",
+            "title": f"iLO TOTAL LOSS: {device_name} — nessun canale risponde",
+            "message": (
+                f"CRITICAL: iLO {device_ip} ({device_name}) non risponde da entrambi i canali. "
+                f"Direct poll WAN fallito {direct_failures} volte consecutive (ultimo errore: {health.get('direct_last_error','n/a')[:150]}). "
+                f"Connector LAN stale o offline. Possibili cause: management board iLO in down hardware, "
+                f"rack network isolation, alimentazione staccata, firewall che blocca sia WAN che LAN. "
+                f"Intervento on-site richiesto."
+            ),
+            "source_type": "redfish_health_monitor",
+            "status": "active",
+            "acknowledged_by": None,
+            "acknowledged_at": None,
+            "resolved_at": None,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "raw_data": "",
+        }
+        await self.db.alerts.insert_one(alert_doc)
+        # Broadcast + push
+        try:
+            import webpush as _wp
+            await _wp.notify_new_alert(self.db, alert_doc)
+        except Exception:
+            pass
+        logger.critical(f"iLO BOTH CHANNELS DOWN: {device_name} ({device_ip})")
+
+    async def _resolve_both_channels_alert(self, device_ip: str) -> None:
+        """Auto-resolve l'alert 'ilo_both_channels_down' quando il direct poll torna a funzionare."""
+        res = await self.db.alerts.update_many(
+            {"device_ip": device_ip, "type": "ilo_both_channels_down", "status": "active"},
+            {"$set": {
+                "status": "resolved",
+                "resolved_at": datetime.now(timezone.utc).isoformat(),
+                "resolved_by": "auto-recovery",
+                "resolution_note": "iLO direct channel back online",
+            }}
+        )
+        if res.modified_count > 0:
+            logger.info(f"iLO both-channels alert auto-resolved for {device_ip}")
 
     async def _should_failover(self, device_ip: str) -> bool:
-        """Check if the connector responsible for this device is offline."""
-        # Find which client owns this device
+        """Check if the connector responsible for this device is offline."""        # Find which client owns this device
         device = await self.db.device_poll_status.find_one(
             {"device_ip": device_ip},
             {"_id": 0, "client_id": 1}
