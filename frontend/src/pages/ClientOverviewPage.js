@@ -21,6 +21,7 @@ import VaultPage from "./VaultPage";
 import { canOpenWebConsole, defaultWebPort } from "@/components/WebConsole";
 import { useWebConsoleTabs } from "@/components/WebConsoleTabs";
 import ILoLiveMetrics from "@/components/ILoLiveMetrics";
+import HealthBadge from "@/components/HealthBadge";
 import DiscoveryPage from "./DiscoveryPage";
 import VulnerabilityPage from "./VulnerabilityPage";
 
@@ -37,6 +38,7 @@ export default function ClientOverviewPage() {
   const [backups, setBackups] = useState([]);
   const [connector, setConnector] = useState(null);
   const [iloHealth, setIloHealth] = useState([]);
+  const [hwHealth, setHwHealth] = useState(null);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState("overview");
 
@@ -77,6 +79,10 @@ export default function ClientOverviewPage() {
     try {
       const iloRes = await axios.get(`${API}/clients/${clientId}/ilo-health`);
       setIloHealth(iloRes.data || []);
+    } catch {}
+    try {
+      const hwRes = await axios.get(`${API}/tv/clients/${clientId}/hardware-health`);
+      setHwHealth(hwRes.data || null);
     } catch {}
     setLoading(false);
   }, [clientId]);
@@ -123,6 +129,18 @@ export default function ClientOverviewPage() {
           <h1 className="font-heading text-xl font-bold text-[var(--text-primary)] tracking-tight">{client.name}</h1>
           <p className="text-[var(--text-muted)] text-xs mt-0.5">Monitoraggio completo rete cliente</p>
         </div>
+        {hwHealth?.subsystems && hwHealth.ilo_server_count > 0 && (
+          <div
+            className="hidden md:flex flex-col items-end gap-1 px-3 py-1.5 rounded-md border border-[var(--bg-border)] bg-[var(--bg-panel)]/40"
+            data-testid="client-hw-health-badge"
+            title={`Health aggregata di ${hwHealth.ilo_server_count} server iLO`}
+          >
+            <span className="text-[8px] font-bold uppercase tracking-[0.15em] text-cyan-400/60">
+              Hardware iLO · {hwHealth.ilo_server_count}
+            </span>
+            <HealthBadge subsystems={hwHealth.subsystems} size="sm" testId="client-hw-badge" />
+          </div>
+        )}
         <button onClick={fetchAll} className="p-1.5 rounded-md hover:bg-[var(--bg-hover)] text-[var(--text-muted)]" title="Aggiorna">
           <ArrowClockwise size={16} />
         </button>

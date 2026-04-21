@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import axios from "axios";
 import { API } from "@/App";
+import HealthBadge from "./HealthBadge";
 
 /**
  * iLOLiveMetrics — sparkline real-time (polls /api/redfish/metrics/{ip} ogni 15s).
@@ -151,74 +152,12 @@ export default function ILoLiveMetrics({ deviceIp, deviceName, compact = false }
 
       {/* HEALTH MATRIX — 8 pallini per sotto-sistema */}
       {Object.keys(subsystems).length > 0 && (
-        <HealthMatrix subsystems={subsystems} compact={compact} />
+        <div className="pl-3 border-l border-white/10">
+          <HealthBadge subsystems={subsystems} size={compact ? "sm" : "md"} testId="ilo-live-health-matrix" />
+        </div>
       )}
 
       <span className="text-[9px] text-white/30 font-mono ml-auto" title={`Source: ${latest.source}`}>{ageText}</span>
-    </div>
-  );
-}
-
-/* ================= HEALTH MATRIX ================= */
-
-const SUBSYSTEM_META = [
-  { key: "system",     label: "SYS",  full: "Sistema" },
-  { key: "thermal",    label: "TMP",  full: "Thermal (temperature)" },
-  { key: "fans",       label: "FAN",  full: "Ventole" },
-  { key: "power",      label: "PSU",  full: "Alimentatori" },
-  { key: "memory",     label: "MEM",  full: "Memoria (DIMM)" },
-  { key: "storage",    label: "STO",  full: "Storage (RAID / dischi)" },
-  { key: "processors", label: "CPU",  full: "Processori" },
-  { key: "network",    label: "NIC",  full: "Network adapter" },
-];
-
-function statusColor(s) {
-  switch ((s || "unknown").toLowerCase()) {
-    case "ok":       return { bg: "#10b981", ring: "rgba(16,185,129,0.25)" };
-    case "warning":  return { bg: "#f59e0b", ring: "rgba(245,158,11,0.25)" };
-    case "critical": return { bg: "#ef4444", ring: "rgba(239,68,68,0.3)" };
-    default:         return { bg: "#475569", ring: "rgba(71,85,105,0.2)" };
-  }
-}
-
-function HealthMatrix({ subsystems, compact }) {
-  const dot = compact ? 6 : 7;
-  return (
-    <div className="flex items-center gap-2 pl-3 border-l border-white/10" data-testid="ilo-live-health-matrix">
-      <div className="grid grid-cols-4 gap-x-2 gap-y-1">
-        {SUBSYSTEM_META.map(({ key, label, full }) => {
-          const s = subsystems[key] || "unknown";
-          const col = statusColor(s);
-          return (
-            <div
-              key={key}
-              className="flex items-center gap-1 cursor-default"
-              title={`${full}: ${s.toUpperCase()}`}
-              data-testid={`ilo-live-health-${key}`}
-            >
-              <span
-                className={s === "critical" ? "animate-pulse" : ""}
-                style={{
-                  display: "inline-block",
-                  width: dot, height: dot,
-                  borderRadius: "50%",
-                  background: col.bg,
-                  boxShadow: `0 0 0 2px ${col.ring}`,
-                }}
-              />
-              <span
-                className="font-mono font-bold tracking-wider"
-                style={{
-                  fontSize: compact ? "8px" : "9px",
-                  color: s === "unknown" ? "rgba(255,255,255,0.25)" : "rgba(255,255,255,0.6)",
-                }}
-              >
-                {label}
-              </span>
-            </div>
-          );
-        })}
-      </div>
     </div>
   );
 }
