@@ -43,6 +43,13 @@ import ClientPortalPage from "@/pages/ClientPortalPage";
 import ClientOverviewPage from "@/pages/ClientOverviewPage";
 import OnCallPage from "@/pages/OnCallPage";
 import SecurityDashboardPage from "@/pages/SecurityDashboardPage";
+import CMDBPage from "@/pages/CMDBPage";
+import RunbooksPage from "@/pages/RunbooksPage";
+import SLAPage from "@/pages/SLAPage";
+import RemediationPage from "@/pages/RemediationPage";
+import LifecyclePage from "@/pages/LifecyclePage";
+import IntelligencePage from "@/pages/IntelligencePage";
+import CustomerPortalPage from "@/pages/CustomerPortalPage";
 import ExternalMonitorPage from "@/pages/ExternalMonitorPage";
 import Layout from "@/components/Layout";
 
@@ -225,10 +232,17 @@ function App() {
               <Route path="backup" element={<BackupPage />} />
               <Route path="security-dashboard" element={<SecurityDashboardPage />} />
               <Route path="wan-monitor" element={<ExternalMonitorPage />} />
+              <Route path="cmdb" element={<CMDBPage />} />
+              <Route path="runbooks" element={<RunbooksPage />} />
+              <Route path="sla" element={<SLAPage />} />
+              <Route path="remediation" element={<RemediationPage />} />
+              <Route path="lifecycle" element={<LifecyclePage />} />
+              <Route path="intelligence" element={<IntelligencePage />} />
             </Route>
             <Route path="/public/:token" element={<PublicDashboard />} />
             <Route path="/tv" element={<TvDashboardPage />} />
             <Route path="/portal" element={<ClientPortalPage />} />
+            <Route path="/customer-portal" element={<CustomerPortalPage />} />
             <Route path="/2fa" element={<TwoFactorPage />} />
           </Routes>
           <PwaInstallBanner />

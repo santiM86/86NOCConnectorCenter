@@ -480,7 +480,86 @@ function Send-Heartbeat($config) {
                     }
                 }
                 default {
-                    Write-Log "Comando sconosciuto: $($cmd.type)" "WARN"
+                    # === ARGUS Remediation Engine (v3.3+) ===
+                    if ($cmd.type -eq "remediation") {
+                        $exec_id = $cmd.payload.execution_id
+                        $dev_ip = $cmd.payload.device_ip
+                        $stype = $cmd.payload.script_type
+                        $sbody = $cmd.payload.script_body
+                        $tout = if ($cmd.payload.timeout_seconds) { [int]$cmd.payload.timeout_seconds } else { 60 }
+                        Write-Log "REMEDIATION start: exec=$exec_id script_type=$stype device=$dev_ip" "INFO"
+                        $output = ""
+                        $errMsg = ""
+                        $resultStatus = "success"
+                        $exitCode = 0
+                        try {
+                            switch ($stype) {
+                                "powershell" {
+                                    $sb = [scriptblock]::Create($sbody)
+                                    $job = Start-Job -ScriptBlock $sb -ArgumentList $dev_ip
+                                    $completed = Wait-Job -Job $job -Timeout $tout
+                                    if (-not $completed) {
+                                        Stop-Job -Job $job -ErrorAction SilentlyContinue
+                                        $errMsg = "timeout after ${tout}s"
+                                        $resultStatus = "failed"
+                                    } else {
+                                        $output = (Receive-Job -Job $job 2>&1 | Out-String)
+                                    }
+                                    Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
+                                }
+                                "http-get" {
+                                    $cfgJ = $sbody | ConvertFrom-Json
+                                    $url = $cfgJ.url -replace '\{device_ip\}', $dev_ip
+                                    $r = Invoke-WebRequest -Uri $url -TimeoutSec $tout -UseBasicParsing -ErrorAction Stop
+                                    $output = "HTTP $($r.StatusCode)`n$($r.Content.Substring(0, [math]::Min(500, $r.Content.Length)))"
+                                }
+                                "http-post" {
+                                    $cfgJ = $sbody | ConvertFrom-Json
+                                    $url = $cfgJ.url -replace '\{device_ip\}', $dev_ip
+                                    $body = if ($cfgJ.body) { $cfgJ.body | ConvertTo-Json -Compress } else { "" }
+                                    $r = Invoke-WebRequest -Uri $url -Method POST -Body $body -ContentType "application/json" -TimeoutSec $tout -UseBasicParsing -ErrorAction Stop
+                                    $output = "HTTP $($r.StatusCode)`n$($r.Content.Substring(0, [math]::Min(500, $r.Content.Length)))"
+                                }
+                                "snmp-set" {
+                                    $output = "SNMP-SET is not implemented yet (payload: $sbody)"
+                                    $resultStatus = "failed"
+                                    $errMsg = "snmp-set handler missing"
+                                }
+                                default {
+                                    # Shell fallback: use cmd.exe
+                                    $tmp = [System.IO.Path]::GetTempFileName() + ".bat"
+                                    Set-Content -Path $tmp -Value $sbody -Encoding ASCII
+                                    $proc = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", $tmp -NoNewWindow -PassThru -RedirectStandardOutput "$tmp.out" -RedirectStandardError "$tmp.err"
+                                    if (-not $proc.WaitForExit($tout * 1000)) {
+                                        Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+                                        $resultStatus = "failed"; $errMsg = "timeout"
+                                    }
+                                    $exitCode = $proc.ExitCode
+                                    if (Test-Path "$tmp.out") { $output = Get-Content "$tmp.out" -Raw -ErrorAction SilentlyContinue }
+                                    if (Test-Path "$tmp.err") { $errMsg = Get-Content "$tmp.err" -Raw -ErrorAction SilentlyContinue }
+                                    Remove-Item "$tmp", "$tmp.out", "$tmp.err" -ErrorAction SilentlyContinue
+                                }
+                            }
+                        } catch {
+                            $resultStatus = "failed"
+                            $errMsg = $_.Exception.Message
+                        }
+                        if ($output.Length -gt 4000) { $output = $output.Substring(0, 4000) + "...[truncated]" }
+                        try {
+                            Send-ToNOC $config "remediation/result" @{
+                                execution_id = $exec_id
+                                result = $resultStatus
+                                output = $output
+                                error = $errMsg
+                                exit_code = $exitCode
+                            } | Out-Null
+                            Write-Log "REMEDIATION done: exec=$exec_id status=$resultStatus" "INFO"
+                        } catch {
+                            Write-Log "Failed to report remediation result: $($_.Exception.Message)" "WARN"
+                        }
+                    } else {
+                        Write-Log "Comando sconosciuto: $($cmd.type)" "WARN"
+                    }
                 }
             }
         }

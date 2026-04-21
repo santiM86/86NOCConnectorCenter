@@ -40,6 +40,10 @@ import {
   ArrowsDownUp,
   Globe,
   Clock,
+  Book,
+  Target,
+  Robot,
+  Brain,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import {
@@ -67,6 +71,10 @@ const navConfig = [
       { path: "/clients", icon: Buildings, label: "Gestione Clienti", roles: ["admin", "operator", "viewer"] },
       { path: "/connectors", icon: PlugsConnected, label: "Connettori", roles: ["admin", "operator"] },
       { path: "/wan-monitor", icon: Globe, label: "Monitor WAN", roles: ["admin", "operator"] },
+      { path: "/cmdb", icon: Database, label: "CMDB (Asset)", roles: ["admin", "operator", "viewer"] },
+      { path: "/lifecycle", icon: HardDrives, label: "Hardware Lifecycle", roles: ["admin", "operator", "viewer"] },
+      { path: "/runbooks", icon: Book, label: "Runbooks", roles: ["admin", "operator", "viewer"] },
+      { path: "/sla", icon: Target, label: "SLA Management", roles: ["admin", "operator"] },
     ],
   },
   {
@@ -74,6 +82,8 @@ const navConfig = [
     label: "Operazioni",
     items: [
       { path: "/incidents", icon: Ticket, label: "Incidenti", roles: ["admin", "operator"] },
+      { path: "/remediation", icon: Robot, label: "Auto Remediation", roles: ["admin", "operator"] },
+      { path: "/intelligence", icon: Brain, label: "NOC Intelligence", roles: ["admin", "operator"] },
       { path: "/maintenance", icon: CalendarBlank, label: "Manutenzione", roles: ["admin", "operator"] },
       { path: "/reports", icon: FileText, label: "Report PDF", roles: ["admin", "operator"] },
     ],

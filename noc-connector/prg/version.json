@@ -1,4 +1,4 @@
 {
-  "version": "3.2.2",
-  "changelog": "v3.2.2: FIX critico race condition TLS. (1) CertBypass.Disable() diventa NO-OP per evitare che thread paralleli (Redfish polling, SNMP, discovery, WAN probe) disabilitino il bypass durante la negoziazione TLS di Web Proxy request. Sintomo risolto: 'Impossibile stabilire una relazione di trust per il canale sicuro SSL/TLS' su HP 5130 e device con certificati self-signed. Il connector gira in rete cliente controllata, il bypass globale e' accettabile. Contiene tutti i fix precedenti da v3.2.1 (Referer, User-Agent realistico, auto-follow JS redirect), v3.1.9 (BAT launcher auto-updater), v3.1.8 (inlining CSS/IMG), v3.1.7 (Web Console Enterprise base64)."
+  "version": "3.3.0",
+  "changelog": "v3.3.0: NEW Automated Remediation Engine executor. Il connector ora esegue comandi 'remediation' (PowerShell, shell, http-get, http-post) dispatched dal NOC con approvazione manuale, timeout configurabile, capture stdout/stderr, e reporting risultato su /remediation/result. Include tutti i fix v3.2.2 (CertBypass NO-OP race condition TLS), v3.2.1 (Referer, User-Agent realistico, auto-follow JS redirect), v3.1.9 (BAT launcher auto-updater), v3.1.8 (inlining CSS/IMG), v3.1.7 (Web Console Enterprise base64)."
 }

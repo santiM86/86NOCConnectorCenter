@@ -234,6 +234,11 @@ from routes.discovery import router as discovery_router
 from routes.web_proxy import router as web_proxy_router
 from routes.web_console_live import router as web_console_live_router
 from routes.web_console_enterprise import router as web_console_enterprise_router
+from routes.cmdb import router as cmdb_router
+from routes.runbooks import router as runbooks_router
+from routes.sla import router as sla_router
+from routes.customer_portal import router as customer_portal_router
+from routes.itsm import router as itsm_router
 from routes.topology import router as topology_router
 from routes.metrics import router as metrics_router
 from routes.reports import router as reports_router
@@ -256,6 +261,9 @@ from routes.oncall import router as oncall_router
 from routes.escalation import router as escalation_router
 from routes.app_version import router as app_version_router
 from routes.overview import router as overview_router
+from routes.remediation import router as remediation_router
+from routes.lifecycle import router as lifecycle_router
+from routes.intelligence import router as intelligence_router
 
 app.include_router(auth_router)
 app.include_router(admin_router)
@@ -272,6 +280,11 @@ app.include_router(discovery_router)
 app.include_router(web_proxy_router)
 app.include_router(web_console_live_router)
 app.include_router(web_console_enterprise_router)
+app.include_router(cmdb_router)
+app.include_router(runbooks_router)
+app.include_router(sla_router)
+app.include_router(customer_portal_router)
+app.include_router(itsm_router)
 app.include_router(topology_router)
 app.include_router(metrics_router)
 app.include_router(reports_router)
@@ -294,6 +307,9 @@ app.include_router(oncall_router)
 app.include_router(escalation_router)
 app.include_router(app_version_router)
 app.include_router(overview_router)
+app.include_router(remediation_router)
+app.include_router(lifecycle_router)
+app.include_router(intelligence_router)
 
 # Include enterprise routes
 from enterprise_routes import create_enterprise_router
@@ -436,6 +452,31 @@ async def startup_event():
         await db.ilo_telemetry.create_index([("device_ip", 1), ("timestamp", -1)])
         # TTL 7 giorni (grafici short-term)
         await db.ilo_telemetry.create_index("timestamp", expireAfterSeconds=86400 * 7)
+
+        # INOC-like ITIL collections
+        await db.cmdb_assets.create_index("device_ip", unique=True)
+        await db.cmdb_assets.create_index("client_id")
+        await db.cmdb_assets.create_index("warranty_end")
+        await db.runbooks.create_index("id", unique=True)
+        await db.runbooks.create_index("device_types")
+        await db.sla_targets.create_index("client_id", unique=True)
+        await db.customer_users.create_index("email", unique=True)
+        await db.customer_users.create_index("client_id")
+        await db.changes.create_index("id", unique=True)
+        await db.changes.create_index([("status", 1), ("created_at", -1)])
+        await db.problems.create_index("id", unique=True)
+        await db.problems.create_index("status")
+
+        # Remediation Engine + Hardware Lifecycle + Intelligence (2026-02)
+        try:
+            from routes.remediation import init_indexes as _rem_idx
+            from routes.lifecycle import init_indexes as _lc_idx
+            from routes.intelligence import init_indexes as _intel_idx
+            await _rem_idx()
+            await _lc_idx()
+            await _intel_idx()
+        except Exception as _ix_err:
+            logging.getLogger(__name__).warning(f"remediation/lifecycle/intelligence indexes: {_ix_err}")
         # alerts: escalation scan (active + severity + ack + time)
         await db.alerts.create_index(
             [("status", 1), ("severity", 1), ("escalated", 1), ("created_at", 1)]
