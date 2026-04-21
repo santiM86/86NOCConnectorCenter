@@ -298,7 +298,21 @@ function IloHealthPanel({ iloHealth }) {
 
 function IloServerCard({ s, healthColor }) {
   const [expanded, setExpanded] = useState(false);
+  const [firmwareCompliance, setFirmwareCompliance] = useState(s.firmware_compliance || null);
   const hc = healthColor(s.health_status);
+
+  // Fetch firmware compliance on mount (piggybacks on telemetry poll)
+  useEffect(() => {
+    if (!s.device_ip) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await axios.get(`${API}/firmware/check/${s.device_ip}`);
+        if (!cancelled && res.data && !res.data.error) setFirmwareCompliance(res.data);
+      } catch {}
+    })();
+    return () => { cancelled = true; };
+  }, [s.device_ip]);
 
   // Compute real telemetry (NOT just first sensor!)
   const temps = (s.temperatures || []).filter(t => t.value != null && t.value > 0);
@@ -381,6 +395,11 @@ function IloServerCard({ s, healthColor }) {
           <InfoBadge label="iLO License" value={s.ilo_license} />
           <InfoBadge label="Storage" value={drives.length ? `${okDrives}/${drives.length} drive OK` : "Nessun controller"} color={drivesColor} />
         </div>
+
+        {/* Firmware compliance badge (stile ParkPlace) */}
+        {firmwareCompliance && (
+          <FirmwareComplianceBadge fc={firmwareCompliance} />
+        )}
 
         <div className="mt-2 text-[9px] text-[var(--text-muted)] flex items-center gap-2">
           <span>Modalità: <span className="font-mono uppercase text-[var(--text-primary)]">{s.polling_mode?.replace("_", " ") || "?"}</span></span>
@@ -485,6 +504,73 @@ function InfoBadge({ label, value, color }) {
     </div>
   );
 }
+
+
+function FirmwareComplianceBadge({ fc }) {
+  const [open, setOpen] = useState(false);
+  if (!fc || !fc.components?.length) return null;
+  const status = fc.overall_status;
+  const sev = fc.severity || "low";
+  const colorMap = {
+    compliant: { fg: "#34C759", bg: "#34C75918", label: "AGGIORNATO" },
+    outdated: { fg: "#FFCC00", bg: "#FFCC0018", label: "FW OUTDATED" },
+    critical: { fg: "#FF3B30", bg: "#FF3B3018", label: "CVE CRITICAL" },
+  };
+  const c = colorMap[status] || colorMap.compliant;
+  const totalCves = fc.components.reduce((a, x) => a + (x.cve_list?.length || 0), 0);
+  return (
+    <div className="mt-2" data-testid={`firmware-compliance-${fc.device_ip || "unknown"}`}>
+      <button
+        onClick={() => setOpen(!open)}
+        className="flex items-center gap-2 w-full text-left px-2 py-1.5 rounded border transition-colors hover:brightness-125"
+        style={{ borderColor: `${c.fg}40`, background: c.bg }}
+      >
+        <span className="text-[10px] font-bold uppercase tracking-wider" style={{ color: c.fg }}>
+          {c.label}
+        </span>
+        {totalCves > 0 && (
+          <span className="text-[10px] font-mono" style={{ color: c.fg }}>
+            · {totalCves} CVE
+          </span>
+        )}
+        <span className="text-[10px] text-[var(--text-muted)] ml-auto">
+          {fc.components.length} componenti · {open ? "▾" : "▸"}
+        </span>
+      </button>
+      {open && (
+        <div className="mt-2 space-y-1 px-2">
+          {fc.components.map((comp, i) => {
+            const ok = comp.status === "up_to_date";
+            const critical = comp.status === "critical_outdated";
+            const compColor = ok ? "#34C759" : critical ? "#FF3B30" : "#FFCC00";
+            return (
+              <div key={i} className="text-[10px] border-l-2 pl-2" style={{ borderColor: compColor }}>
+                <div className="flex items-center justify-between">
+                  <span className="font-mono uppercase text-[var(--text-muted)]">{comp.component}</span>
+                  <span className="font-mono" style={{ color: compColor }}>
+                    {comp.current_version} {ok ? "=" : "→"} {comp.latest_version}
+                  </span>
+                </div>
+                {(comp.cve_list || []).length > 0 && (
+                  <div className="text-[9px] text-rose-400 mt-0.5">
+                    CVE: {comp.cve_list.join(", ")}
+                  </div>
+                )}
+                {comp.advisory_url && (
+                  <a href={comp.advisory_url} target="_blank" rel="noopener noreferrer"
+                    className="text-[9px] text-cyan-400 hover:underline">
+                    Advisory →
+                  </a>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 
 function SensorTable({ title, headers, rows }) {
   if (!rows || rows.length === 0) return null;

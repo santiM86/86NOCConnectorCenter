@@ -1303,11 +1303,13 @@ function Install-Update($config, $updateInfo) {
         Write-Log "File estratti in: $tempExtract" "INFO"
         Send-UpdateProgress $config 45 "extracting" "File estratti. Avvio updater..."
         
-        # Launch updater via BAT temporaneo -> cmd.exe -> powershell.
-        # Il passaggio per cmd.exe stacca completamente dal process tree di NSSM/connector.
-        # Anche se NSSM killa l'albero processi del connector quando Stop-Service,
-        # il BAT lanciato via cmd.exe vive autonomamente (diverso PPID).
-        # Questo metodo e' usato da installer professionali (es. Chrome auto-update).
+        # Launch updater OUTSIDE the NSSM Job Object.
+        # ROOT CAUSE del bug "chiude e non si riapre": NSSM mette tutti i processi figli del servizio
+        # nel suo Job Object. Quando l'updater chiama Stop-Service, il job viene killato interamente,
+        # compreso l'updater stesso, a meta' copia file. Risultato: servizio morto, nessun restart.
+        # FIX v3.3.1: usiamo WMI Win32_Process.Create che spawna processi figli del service WMI
+        # (wmiprvse.exe), FUORI dal job object di NSSM. L'updater puo' quindi fare Stop/Start/Copy
+        # in sicurezza. Fallback schtasks SYSTEM come belt+suspenders.
         $installDir = Split-Path -Parent $PSScriptRoot
         $updaterPath = Join-Path $PSScriptRoot "updater.ps1"
         $newUpdater = Join-Path $tempExtract "src\updater.ps1"
@@ -1320,50 +1322,78 @@ function Install-Update($config, $updateInfo) {
             return $false
         }
 
+        # Copia updater.ps1 in TEMP per garantire che non sia sovrascritto durante la copia file
+        $tempUpdater = Join-Path $env:TEMP ("86Noc_updater_" + [guid]::NewGuid().ToString("N").Substring(0,8) + ".ps1")
+        Copy-Item $updaterPath $tempUpdater -Force
+        Write-Log "Updater staged in TEMP: $tempUpdater" "INFO"
+
         $psExe = Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe"
         if (-not (Test-Path $psExe)) { $psExe = "powershell.exe" }
 
-        # Creo un BAT temporaneo che lancia powershell -> updater.ps1 e si auto-cancella.
-        # Uso delay di 2 secondi per permettere al connector corrente di uscire pulito.
-        $batPath = Join-Path $env:TEMP ("86Noc_launcher_" + [guid]::NewGuid().ToString("N").Substring(0,8) + ".bat")
-        $batContent = @"
+        $updaterCmd = "`"$psExe`" -ExecutionPolicy Bypass -NoProfile -NonInteractive -WindowStyle Hidden -File `"$tempUpdater`" -ExtractPath `"$tempExtract`" -InstallDir `"$installDir`" -ApiUrl `"$($config.noc_center_url)`" -ApiKey `"$($config.api_key)`""
+
+        $launched = $false
+
+        # === METODO 1 (preferito): WMI Win32_Process.Create ===
+        # Il processo creato via WMI diventa figlio di wmiprvse.exe, NON del nostro servizio.
+        # Rimane vivo quando NSSM killa il Job Object del connector.
+        try {
+            Write-Log "Launch updater via WMI Win32_Process.Create..." "INFO"
+            $wmi = [WMICLASS]"\\.\root\cimv2:Win32_Process"
+            $spawnResult = $wmi.Create($updaterCmd)
+            if ($spawnResult.ReturnValue -eq 0) {
+                Write-Log "OK: updater spawnato via WMI (PID=$($spawnResult.ProcessId))" "INFO"
+                $launched = $true
+            } else {
+                Write-Log "WMI Create ReturnValue=$($spawnResult.ReturnValue) (!=0 = errore)" "WARN"
+            }
+        } catch {
+            Write-Log "WMI method failed: $($_.Exception.Message)" "WARN"
+        }
+
+        # === METODO 2 (fallback): schtasks run-once come SYSTEM ===
+        # Task Scheduler e' un servizio separato, task eseguiti come SYSTEM girano fuori dal Job Object.
+        if (-not $launched) {
+            try {
+                Write-Log "Fallback: launch via schtasks SYSTEM..." "WARN"
+                $taskName = "86NocUpdate_" + [guid]::NewGuid().ToString("N").Substring(0,8)
+                $runTime = (Get-Date).AddSeconds(45).ToString("HH:mm")
+                & schtasks.exe /Create /TN $taskName /SC ONCE /ST $runTime /TR $updaterCmd /RU "SYSTEM" /RL HIGHEST /F 2>&1 | Out-String | ForEach-Object { Write-Log "  schtasks-create: $_" }
+                & schtasks.exe /Run /TN $taskName 2>&1 | Out-String | ForEach-Object { Write-Log "  schtasks-run: $_" }
+                # Salva il task name nell'updater env per permetter cleanup finale
+                [Environment]::SetEnvironmentVariable("ARGUS_UPDATE_TASK", $taskName, "Machine")
+                Write-Log "Task $taskName creato e avviato" "INFO"
+                $launched = $true
+            } catch {
+                Write-Log "schtasks fallback failed: $($_.Exception.Message)" "ERROR"
+            }
+        }
+
+        # === METODO 3 (ultima spiaggia): cmd.exe detached ===
+        if (-not $launched) {
+            try {
+                Write-Log "Fallback 3: cmd.exe detached..." "WARN"
+                $batPath = Join-Path $env:TEMP ("86Noc_launcher_" + [guid]::NewGuid().ToString("N").Substring(0,8) + ".bat")
+                $batContent = @"
 @echo off
-rem 86NocConnector updater launcher - auto-delete after run
-timeout /t 2 /nobreak > nul 2>&1
-start "" /B "$psExe" -ExecutionPolicy Bypass -NoProfile -NonInteractive -WindowStyle Hidden -File "$updaterPath" -ExtractPath "$tempExtract" -InstallDir "$installDir" -ApiUrl "$($config.noc_center_url)" -ApiKey "$($config.api_key)"
+timeout /t 3 /nobreak > nul 2>&1
+start "" /B $updaterCmd
 timeout /t 1 /nobreak > nul 2>&1
 del /F /Q "%~f0" > nul 2>&1
 "@
-        try {
-            # Usa ASCII per evitare BOM + garantire esecuzione cmd
-            [System.IO.File]::WriteAllText($batPath, $batContent, [System.Text.Encoding]::ASCII)
-            Write-Log "Updater launcher BAT: $batPath" "INFO"
-
-            # Lancio cmd.exe in modo detached
-            $psi = New-Object System.Diagnostics.ProcessStartInfo
-            $psi.FileName = "cmd.exe"
-            $psi.Arguments = "/c `"$batPath`""
-            $psi.UseShellExecute = $true    # CRITICAL: usa shell -> stacca da parent
-            $psi.CreateNoWindow = $true
-            $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
-            $proc = [System.Diagnostics.Process]::Start($psi)
-            Write-Log "Updater launcher avviato via cmd.exe (PID=$($proc.Id))" "INFO"
-        } catch {
-            $errMsg = "Impossibile avviare updater launcher: $($_.Exception.Message)"
-            Write-Log $errMsg "ERROR"
-            Send-UpdateProgress $config 0 "error" $errMsg
-            # Fallback 1: Start-Process classico
-            try {
-                $fallbackArgs = @(
-                    "-ExecutionPolicy","Bypass","-NoProfile","-NonInteractive",
-                    "-WindowStyle","Hidden","-File",$updaterPath,
-                    "-ExtractPath",$tempExtract,"-InstallDir",$installDir,
-                    "-ApiUrl",$config.noc_center_url,"-ApiKey",$config.api_key
-                )
-                Start-Process -FilePath $psExe -ArgumentList $fallbackArgs -WindowStyle Hidden | Out-Null
-                Write-Log "Fallback: Start-Process diretto" "WARN"
+                [System.IO.File]::WriteAllText($batPath, $batContent, [System.Text.Encoding]::ASCII)
+                $psi = New-Object System.Diagnostics.ProcessStartInfo
+                $psi.FileName = "cmd.exe"
+                $psi.Arguments = "/c `"$batPath`""
+                $psi.UseShellExecute = $true
+                $psi.CreateNoWindow = $true
+                $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+                [System.Diagnostics.Process]::Start($psi) | Out-Null
+                Write-Log "cmd.exe detached lanciato" "INFO"
+                $launched = $true
             } catch {
-                Write-Log "Fallback fallito: $($_.Exception.Message)" "ERROR"
+                Write-Log "All launcher methods failed: $($_.Exception.Message)" "ERROR"
+                Send-UpdateProgress $config 0 "error" "Tutti i metodi di lancio updater sono falliti"
                 return $false
             }
         }

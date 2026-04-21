@@ -35,6 +35,13 @@ Write-UpdateLog "=== INIZIO AGGIORNAMENTO ==="
 Write-UpdateLog "ExtractPath: $ExtractPath"
 Write-UpdateLog "InstallDir: $InstallDir"
 Write-UpdateLog "PID updater: $PID"
+# Diagnostic: chi e' il mio parent?
+try {
+    $myProc = Get-CimInstance Win32_Process -Filter "ProcessId = $PID"
+    $parentPid = $myProc.ParentProcessId
+    $parentProc = Get-CimInstance Win32_Process -Filter "ProcessId = $parentPid" -ErrorAction SilentlyContinue
+    Write-UpdateLog "Parent PID: $parentPid ($($parentProc.Name) - $($parentProc.CommandLine))"
+} catch {}
 Send-Progress 50 "stopping" "Arresto servizio Windows..."
 
 # ===== STEP 1a: Stop Windows Service (se presente) =====
@@ -293,6 +300,24 @@ if ($restartOk) {
     Write-UpdateLog "I nuovi file sono stati copiati correttamente. Avviare il servizio manualmente."
     Write-UpdateLog "Comando: Start-Service 86NocConnectorService"
 }
+
+# Cleanup: self-delete staged updater copy + remove schtasks task if present
+try {
+    $taskName = [Environment]::GetEnvironmentVariable("ARGUS_UPDATE_TASK", "Machine")
+    if ($taskName) {
+        Write-UpdateLog "Cleanup task scheduler: $taskName"
+        & schtasks.exe /Delete /TN $taskName /F 2>&1 | Out-Null
+        [Environment]::SetEnvironmentVariable("ARGUS_UPDATE_TASK", $null, "Machine")
+    }
+} catch {}
+# Self-delete staged updater (in TEMP)
+try {
+    if ($MyInvocation.MyCommand.Path -and $MyInvocation.MyCommand.Path -like "*\Temp\*") {
+        $selfPath = $MyInvocation.MyCommand.Path
+        # Schedule deletion via cmd so we can exit cleanly
+        Start-Process "cmd.exe" -ArgumentList "/c timeout /t 5 /nobreak > nul & del /F /Q `"$selfPath`" > nul 2>&1" -WindowStyle Hidden
+    }
+} catch {}
 
 # ===== STEP 5: Restart TRAY in user interactive session =====
 # Il service gira come LocalSystem e non puo' lanciare processi GUI nella sessione utente.

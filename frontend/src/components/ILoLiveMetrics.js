@@ -56,8 +56,13 @@ export default function ILoLiveMetrics({ deviceIp, deviceName, compact = false }
   // Age
   let ageText = "";
   try {
-    const ts = new Date(latest.timestamp).getTime();
-    const age = Math.floor((Date.now() - ts) / 1000);
+    // Prefer server-computed age_seconds (robusto a TZ/clock skew)
+    let age = latest.age_seconds;
+    if (age == null) {
+      const ts = new Date(latest.timestamp).getTime();
+      age = Math.floor((Date.now() - ts) / 1000);
+    }
+    if (age < 0) age = 0;
     ageText = age < 60 ? `${age}s fa` : age < 3600 ? `${Math.floor(age / 60)}m fa` : `${Math.floor(age / 3600)}h fa`;
   } catch {}
 
