@@ -49,6 +49,7 @@ import SLAPage from "@/pages/SLAPage";
 import RemediationPage from "@/pages/RemediationPage";
 import LifecyclePage from "@/pages/LifecyclePage";
 import IntelligencePage from "@/pages/IntelligencePage";
+import ChannelHealthPage from "@/pages/ChannelHealthPage";
 import CustomerPortalPage from "@/pages/CustomerPortalPage";
 import ExternalMonitorPage from "@/pages/ExternalMonitorPage";
 import Layout from "@/components/Layout";
@@ -238,6 +239,7 @@ function App() {
               <Route path="remediation" element={<RemediationPage />} />
               <Route path="lifecycle" element={<LifecyclePage />} />
               <Route path="intelligence" element={<IntelligencePage />} />
+              <Route path="channel-health" element={<ChannelHealthPage />} />
             </Route>
             <Route path="/public/:token" element={<PublicDashboard />} />
             <Route path="/tv" element={<TvDashboardPage />} />

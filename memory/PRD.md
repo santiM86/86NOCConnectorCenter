@@ -419,6 +419,25 @@ Nuovo alert critical dedicato al caso in cui **né direct né connector** rispon
 
 **Connector v3.3.2** pubblicato: update ZIP + install ZIP completo su `/downloads/`.
 
+
+### Channel Health Matrix Dashboard (2026-04-22)
+Dashboard dedicata `/channel-health` per visualizzare in un colpo d'occhio lo stato dual-path di tutti gli iLO monitorati.
+
+**Backend `/api/redfish/channel-health-matrix`**:
+- Aggrega `device_credentials` (iLO) × `ilo_channel_health` × `device_poll_status` × `connector_status`
+- Per ogni device ritorna: `direct.status` (ok/degraded/down/disabled/unknown) + `connector.status` (ok/stale/down/unknown) + `overall` (both_ok/direct_only/connector_only/both_down/n_a)
+- Statistiche aggregate: total, both_ok, direct_only, connector_only, both_down
+- Ordering: both_down first (urgenza), poi degradati, infine healthy
+
+**Frontend `ChannelHealthPage.js`**:
+- 5 summary card con pulse rosso animato se both_down > 0
+- Matrix table con 3 colonne status colorate (Direct WAN · Connector LAN · Overall)
+- Auto-refresh 30s toggle + pulsante manuale Refresh
+- Dettagli per riga: last error direct, hostname connector, last OK timestamp IT locale
+- Sidebar: voce "Channel Health iLO" in gruppo Operazioni con icona Heartbeat
+
+**Test E2E**: pagina caricata correttamente, 1 iLO rilevato (ILO-SRV-DC01 ML350 Gen9), badge DIRECT=OK, CONNECTOR=DOWN, OVERALL=SOLO DIRETTO (coerente con stato reale: direct funziona via external_url https://ilo.86bit.internal:443, connector in 86BIT_Office non ha polled questo device ultimamente).
+
 ## Constraints
 - NON re-introdurre IP Ban/Honeypot middlewares (richiesta esplicita utente)
 - NON usare `emergentintegrations` per AI
