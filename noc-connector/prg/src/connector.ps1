@@ -2563,6 +2563,36 @@ function Remove-StatusFile {
 
 # ==================== MAIN ====================
 
+# v3.3.7: WATCHDOG AUTO-RECOVERY
+# Registra uno scheduled task Windows che ogni 5 minuti verifica lo stato del servizio
+# 86NocConnectorService. Se è Stopped (es. update bloccato al 45%), lo riavvia.
+# Questo garantisce che anche se un update futuro dovesse fallire, il servizio torni
+# online automaticamente entro 5 minuti senza intervento manuale.
+function Register-ServiceWatchdog {
+    $taskName = "86NocConnector_Watchdog"
+    $ps = Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe"
+    # Comando watchdog: se servizio esiste ed è Stopped, fa Start-Service
+    $watchdogCmd = "Get-Service -Name '86NocConnectorService','86NocConnector' -ErrorAction SilentlyContinue | Where-Object { `$_.Status -eq 'Stopped' } | ForEach-Object { Start-Service -Name `$_.Name -ErrorAction SilentlyContinue; Add-Content -Path '$env:ProgramData\86NocConnector\watchdog.log' -Value ""[`$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Restarted service `$(`$_.Name)"" -ErrorAction SilentlyContinue }"
+    $escCmd = $watchdogCmd -replace '"', '\"'
+    $taskCmd = "`"$ps`" -NoProfile -NonInteractive -WindowStyle Hidden -Command `"$escCmd`""
+
+    # Verifica se task già esiste e ha la versione corretta
+    $existing = & schtasks.exe /Query /TN $taskName 2>&1 | Out-String
+    if ($existing -match $taskName -and $existing -match "Ready|Running") {
+        # Task esiste, skip
+        return
+    }
+
+    Write-Log "Registrazione Watchdog scheduled task (riavvio automatico servizio ogni 5 min se Stopped)..." "INFO"
+    try {
+        # Crea task: trigger ogni 5 minuti, gira come SYSTEM
+        & schtasks.exe /Create /TN $taskName /SC MINUTE /MO 5 /TR $taskCmd /RU "SYSTEM" /RL HIGHEST /F 2>&1 | Out-String | ForEach-Object { Write-Log "  watchdog: $_" "DEBUG" }
+        Write-Log "Watchdog registrato (controllo servizio ogni 5 min)" "INFO"
+    } catch {
+        Write-Log "Watchdog register fallito: $($_.Exception.Message)" "WARN"
+    }
+}
+
 function Start-Connector {
     $config = Read-Config
     if (-not $config) {
@@ -2595,6 +2625,15 @@ function Start-Connector {
         if ($_.Exception.InnerException) { $errDetail += " | Inner: $($_.Exception.InnerException.Message)" }
         Write-Log "  ERRORE: NOC non raggiungibile: $errDetail" "ERROR"
         Write-Log "  Il connettore continuera' a tentare..." "WARN"
+    }
+
+    # v3.3.7: Watchdog auto-recovery. Se un update si blocca e il servizio rimane stopped,
+    # questo scheduled task Windows riavvia il servizio ogni 5 minuti finché torna Running.
+    # Idempotente: se esiste già, lo aggiorna. Non critico se fallisce.
+    try {
+        Register-ServiceWatchdog
+    } catch {
+        Write-Log "Watchdog setup non critico: $($_.Exception.Message)" "DEBUG"
     }
     
     # Start listeners in background jobs
