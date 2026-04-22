@@ -46,6 +46,11 @@ def _decode_token(token: str) -> dict:
 _FRAME_Q: dict[str, asyncio.Queue] = {}
 _INPUT_Q: dict[str, asyncio.Queue] = {}
 _SESSION_META: dict[str, dict] = {}
+# Latest frame per session (for polling fallback) — stores (seq, data_dict)
+_LATEST_FRAME: dict[str, tuple[int, dict]] = {}
+_LATEST_STATUS: dict[str, dict] = {}
+_SEQ: dict[str, int] = {}
+_START_DISPATCHED: dict[str, bool] = {}
 
 
 def _get_frame_q(sid: str) -> asyncio.Queue:
@@ -166,11 +171,20 @@ async def post_input(token: str, body: dict):
 
 @router.post("/frame/{token}")
 async def push_frame(token: str, body: dict):
-    """Connector → server. Pushes a single frame (base64 JPEG) into the browser queue.
-    body = {data: <base64>, ts, w, h}
+    """Connector → server. Pushes a single frame (base64 JPEG).
+    Used both by SSE (pushes into _FRAME_Q) and polling (stored in _LATEST_FRAME).
     """
     payload = _decode_token(token)
     sid = payload["sid"]
+    # Polling fallback: store latest frame with incremental seq
+    _SEQ[sid] = _SEQ.get(sid, 0) + 1
+    _LATEST_FRAME[sid] = (_SEQ[sid], {
+        "data": body.get("data", ""),
+        "ts": body.get("ts"),
+        "w": body.get("w"),
+        "h": body.get("h"),
+    })
+    # SSE path (legacy, kept for backward compat)
     q = _get_frame_q(sid)
     evt = json.dumps({
         "type": "frame",
@@ -182,13 +196,79 @@ async def push_frame(token: str, body: dict):
     try:
         q.put_nowait(evt)
     except asyncio.QueueFull:
-        # Drop oldest frame for fresh video
         try:
             q.get_nowait()
         except asyncio.QueueEmpty:
             pass
         q.put_nowait(evt)
-    return {"ok": True}
+    return {"ok": True, "seq": _SEQ[sid]}
+
+
+@router.get("/latest-frame/{token}")
+async def latest_frame(token: str, since: int = 0):
+    """Polling endpoint per browser: ritorna l'ultimo frame disponibile se seq > since.
+    Altrimenti 204 No Content. Timeout veloce (non è long-poll), il browser riprova ogni 250ms.
+    """
+    from fastapi.responses import JSONResponse, Response
+    payload = _decode_token(token)
+    sid = payload["sid"]
+    latest = _LATEST_FRAME.get(sid)
+    if not latest or latest[0] <= since:
+        # No new frame yet
+        return Response(status_code=204)
+    seq, frame = latest
+    return JSONResponse({"seq": seq, **frame})
+
+
+@router.get("/poll-status/{token}")
+async def poll_status_route(token: str):
+    """Browser chiede lo status corrente (ready/upgrade/error/closed).
+    Dispatcha il 'remote_browser_start' al connector al primo poll.
+    """
+    from fastapi.responses import JSONResponse
+    payload = _decode_token(token)
+    sid = payload["sid"]
+    client_id = payload["cid"]
+    device_ip = payload["dip"]
+    port = payload["dport"]
+
+    # If we already have a status set by the connector, return it
+    if sid in _LATEST_STATUS:
+        return JSONResponse(_LATEST_STATUS[sid])
+
+    # First call: check connector and dispatch
+    connector = await db.connector_status.find_one({"client_id": client_id}, {"_id": 0, "connector_version": 1, "is_offline": 1})
+    version = (connector or {}).get("connector_version")
+    offline = (connector or {}).get("is_offline", True)
+
+    if offline:
+        return JSONResponse({"type": "error", "msg": "Connector offline. Accendi il PC del cliente."})
+    if not _is_connector_supported(version):
+        return JSONResponse({
+            "type": "upgrade_required",
+            "msg": f"Remote Browser richiede connector v{REQUIRED_CONNECTOR_VERSION}+. Versione: v{version or 'sconosciuta'}.",
+            "current_version": version,
+            "required_version": REQUIRED_CONNECTOR_VERSION,
+        })
+
+    # Dispatch start once
+    if not _START_DISPATCHED.get(sid):
+        _START_DISPATCHED[sid] = True
+        await db.pending_commands.insert_one({
+            "id": str(uuid.uuid4()),
+            "client_id": client_id,
+            "type": "remote_browser_start",
+            "payload": {
+                "session_id": sid,
+                "device_ip": device_ip,
+                "port": port,
+                "token": token,
+                "transport": "http",
+            },
+            "status": "pending",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+    return JSONResponse({"type": "ready", "msg": "In attesa che il connector avvii Edge headless..."})
 
 
 @router.get("/poll-inputs/{token}")
@@ -221,12 +301,17 @@ async def push_status(token: str, body: dict):
     """Connector → server. Pushes status updates (es. 'edge_started', 'error', 'closed')."""
     payload = _decode_token(token)
     sid = payload["sid"]
-    q = _get_frame_q(sid)
-    evt = json.dumps({
+    status_obj = {
         "type": body.get("type", "status"),
         "msg": body.get("msg", ""),
         **{k: v for k, v in body.items() if k not in ("type", "msg")},
-    })
+    }
+    # Save for polling fallback (only overwrite if more meaningful state)
+    if body.get("type") in ("error", "closed", "edge_started", "streaming"):
+        _LATEST_STATUS[sid] = status_obj
+    # SSE queue (legacy)
+    q = _get_frame_q(sid)
+    evt = json.dumps(status_obj)
     try:
         q.put_nowait(evt)
     except asyncio.QueueFull:
