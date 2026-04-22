@@ -2178,6 +2178,7 @@ public static class CertBypass {
             if (-not $scheme) { $baseUrlForInline = "$($schemes[0])://${deviceIp}:${port}" }
 
             # --- INLINE CSS (scarica e incorpora <link rel="stylesheet"> come <style>) ---
+            # v3.3.6: supporta sia HTML quoted (href="foo") che HTML5 unquoted (href=foo)
             [CertBypass]::Enable()
             try {
                 $cssPattern = '<link[^>]*\srel\s*=\s*["'']?stylesheet["'']?[^>]*>'
@@ -2186,8 +2187,12 @@ public static class CertBypass {
                 foreach ($cssMatch in $cssMatches) {
                     if ($cssCount -ge 20) { break }
                     $linkTag = $cssMatch.Value
-                    if ($linkTag -match 'href\s*=\s*["'']([^"'']+)["'']') {
-                        $cssUrl = $Matches[1]
+                    # Match quoted OR unquoted value (HTML5-compliant)
+                    $cssUrl = $null
+                    if ($linkTag -match 'href\s*=\s*"([^"]+)"') { $cssUrl = $Matches[1] }
+                    elseif ($linkTag -match "href\s*=\s*'([^']+)'") { $cssUrl = $Matches[1] }
+                    elseif ($linkTag -match 'href\s*=\s*([^\s>"''`]+)') { $cssUrl = $Matches[1] }
+                    if ($cssUrl) {
                         if ($cssUrl.StartsWith("data:")) { continue }
                         # Risolvi URL
                         if ($cssUrl -like "http*://*") { }
@@ -2200,7 +2205,7 @@ public static class CertBypass {
                             $cssText = if ($cssResp.Content -is [byte[]]) {
                                 [System.Text.Encoding]::UTF8.GetString($cssResp.Content)
                             } else { [string]$cssResp.Content }
-                            $styleTag = "<style>/* inlined from $($Matches[1]) */`n$cssText`n</style>"
+                            $styleTag = "<style>/* inlined from $cssUrl */`n$cssText`n</style>"
                             $htmlStr = $htmlStr.Replace($linkTag, $styleTag)
                             $cssCount++
                         } catch {
@@ -2213,8 +2218,9 @@ public static class CertBypass {
             }
 
             # --- INLINE IMG (converti <img src="..."> in data URI per immagini < 500KB) ---
+            # v3.3.6: supporta sia quoted che unquoted (HTML5)
             try {
-                $imgPattern = '<img[^>]*\ssrc\s*=\s*["'']([^"'']+)["''][^>]*/?\s*>'
+                $imgPattern = '<img\b[^>]*\ssrc\s*=[^>]*/?\s*>'
                 $imgMatches = [regex]::Matches($htmlStr, $imgPattern, "IgnoreCase")
                 $imgCount = 0
                 $mimeMap = @{
@@ -2224,7 +2230,12 @@ public static class CertBypass {
                 }
                 foreach ($imgMatch in $imgMatches) {
                     if ($imgCount -ge 30) { break }
-                    $imgUrl = $imgMatch.Groups[1].Value
+                    $imgTag = $imgMatch.Value
+                    $imgUrl = $null
+                    if ($imgTag -match 'src\s*=\s*"([^"]+)"') { $imgUrl = $Matches[1] }
+                    elseif ($imgTag -match "src\s*=\s*'([^']+)'") { $imgUrl = $Matches[1] }
+                    elseif ($imgTag -match 'src\s*=\s*([^\s>"''`]+)') { $imgUrl = $Matches[1] }
+                    if (-not $imgUrl) { continue }
                     if ($imgUrl.StartsWith("data:")) { continue }
                     $origImgUrl = $imgUrl
                     # Risolvi URL
@@ -2243,8 +2254,8 @@ public static class CertBypass {
                         $b64img = [Convert]::ToBase64String($imgBytes)
                         $dataUri = "data:${mime};base64,$b64img"
                         # Sostituisci in modo preciso
-                        $newTag = $imgMatch.Value.Replace($origImgUrl, $dataUri)
-                        $htmlStr = $htmlStr.Replace($imgMatch.Value, $newTag)
+                        $newTag = $imgTag.Replace($origImgUrl, $dataUri)
+                        $htmlStr = $htmlStr.Replace($imgTag, $newTag)
                         $imgCount++
                     } catch { }
                 }
@@ -2253,13 +2264,20 @@ public static class CertBypass {
             }
 
             # --- INLINE JS (scarica e incorpora <script src="..."> come inline) ---
+            # v3.3.6: supporta sia HTML quoted (src="foo") che HTML5 unquoted (src=foo)
             try {
-                $jsPattern = '<script[^>]*\ssrc\s*=\s*["'']([^"'']+)["''][^>]*>\s*</script>'
+                $jsPattern = '<script\b[^>]*\ssrc\s*=[^>]*>\s*</script>'
                 $jsMatches = [regex]::Matches($htmlStr, $jsPattern, "IgnoreCase")
                 $jsCount = 0
                 foreach ($jsMatch in $jsMatches) {
                     if ($jsCount -ge 15) { break }
-                    $jsUrl = $jsMatch.Groups[1].Value
+                    $scriptTag = $jsMatch.Value
+                    $jsUrl = $null
+                    if ($scriptTag -match 'src\s*=\s*"([^"]+)"') { $jsUrl = $Matches[1] }
+                    elseif ($scriptTag -match "src\s*=\s*'([^']+)'") { $jsUrl = $Matches[1] }
+                    elseif ($scriptTag -match 'src\s*=\s*([^\s>"''`]+)') { $jsUrl = $Matches[1] }
+                    if (-not $jsUrl) { continue }
+                    $origJsUrl = $jsUrl
                     if ($jsUrl.StartsWith("data:")) { continue }
                     if ($jsUrl -like "http*://*") { }
                     elseif ($jsUrl.StartsWith("//")) { $jsUrl = "${scheme}:$jsUrl" }
@@ -2273,8 +2291,8 @@ public static class CertBypass {
                         } else { [string]$jsResp.Content }
                         # Limite 2MB per singolo JS
                         if ($jsText.Length -gt 2000000) { continue }
-                        $inlineScript = "<script>/* inlined from $($jsMatch.Groups[1].Value) */`n$jsText`n</script>"
-                        $htmlStr = $htmlStr.Replace($jsMatch.Value, $inlineScript)
+                        $inlineScript = "<script>/* inlined from $origJsUrl */`n$jsText`n</script>"
+                        $htmlStr = $htmlStr.Replace($scriptTag, $inlineScript)
                         $jsCount++
                     } catch { }
                 }
