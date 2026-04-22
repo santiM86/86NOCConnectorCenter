@@ -493,6 +493,47 @@ function Send-Heartbeat($config) {
                     }
                 }
                 default {
+                    # === ARGUS Remote Browser v3.4.0 ===
+                    if ($cmd.type -eq "remote_browser_start") {
+                        try {
+                            $sid = $cmd.payload.session_id
+                            $devIp = $cmd.payload.device_ip
+                            $devPort = $cmd.payload.port
+                            $token = $cmd.payload.token
+                            if (-not $token -and $cmd.payload.ws_relay_url) {
+                                # ws_relay_url è formato /api/console-rmt/connector-ws/<token>
+                                $token = ($cmd.payload.ws_relay_url -split '/')[-1]
+                            }
+                            $scheme = if ($devPort -in 80, 8080, 8008) { "http" } else { "https" }
+                            $devUrl = "$scheme" + "://" + "$devIp" + ":" + "$devPort" + "/"
+                            $rmtScript = Join-Path $PSScriptRoot "remote_browser.ps1"
+                            if (-not (Test-Path $rmtScript)) {
+                                Write-Log "remote_browser.ps1 non trovato a $rmtScript" "ERROR"
+                                break
+                            }
+                            $rmtLog = Join-Path $env:ProgramData "86NocConnector\rmt_$sid.log"
+                            $rmtArgs = @(
+                                "-ExecutionPolicy", "Bypass",
+                                "-NoProfile",
+                                "-NonInteractive",
+                                "-WindowStyle", "Hidden",
+                                "-File", "`"$rmtScript`"",
+                                "-NocCenterUrl", "`"$($config.noc_center_url)`"",
+                                "-Token", "`"$token`"",
+                                "-DeviceUrl", "`"$devUrl`"",
+                                "-SessionId", "`"$sid`"",
+                                "-LogFile", "`"$rmtLog`""
+                            )
+                            Write-Log "Avvio Remote Browser session sid=$sid device=$devUrl log=$rmtLog" "INFO"
+                            $psExe = Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe"
+                            Start-Process -FilePath $psExe -ArgumentList $rmtArgs -WindowStyle Hidden | Out-Null
+                            Write-Log "Remote Browser process spawn OK per sid=$sid" "INFO"
+                        } catch {
+                            Write-Log "Errore avvio remote browser: $($_.Exception.Message)" "ERROR"
+                        }
+                        break
+                    }
+
                     # === ARGUS Remediation Engine (v3.3+) ===
                     if ($cmd.type -eq "remediation") {
                         $exec_id = $cmd.payload.execution_id
@@ -1361,41 +1402,110 @@ function Install-Update($config, $updateInfo) {
         Copy-Item $updaterPath $tempUpdater -Force
         Write-Log "Updater staged in InstallDir (Defender-safe): $tempUpdater" "INFO"
 
+        # Reset flag start (se esiste da update precedente)
+        try {
+            $oldFlag = Join-Path $env:ProgramData "86NocConnector\updater_started.flag"
+            if (Test-Path $oldFlag) { Remove-Item $oldFlag -Force -ErrorAction SilentlyContinue }
+        } catch {}
+
+        Send-UpdateProgress $config 47 "spawning" "Lancio processo updater (Start-Process/WMI/schtasks)..."
+
         $psExe = Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe"
         if (-not (Test-Path $psExe)) { $psExe = "powershell.exe" }
 
         $updaterCmd = "`"$psExe`" -ExecutionPolicy Bypass -NoProfile -NonInteractive -WindowStyle Hidden -File `"$tempUpdater`" -ExtractPath `"$tempExtract`" -InstallDir `"$installDir`" -ApiUrl `"$($config.noc_center_url)`" -ApiKey `"$($config.api_key)`""
+        # Args per Start-Process (che richiede array, non stringa unica)
+        $updaterArgs = @(
+            "-ExecutionPolicy", "Bypass",
+            "-NoProfile",
+            "-NonInteractive",
+            "-WindowStyle", "Hidden",
+            "-File", "`"$tempUpdater`"",
+            "-ExtractPath", "`"$tempExtract`"",
+            "-InstallDir", "`"$installDir`"",
+            "-ApiUrl", "`"$($config.noc_center_url)`"",
+            "-ApiKey", "`"$($config.api_key)`""
+        )
 
         $launched = $false
 
-        # === METODO 1 (preferito): WMI Win32_Process.Create ===
-        # Il processo creato via WMI diventa figlio di wmiprvse.exe, NON del nostro servizio.
-        # Rimane vivo quando NSSM killa il Job Object del connector.
+        # Helper: verifica che il PID sia ancora vivo dopo N secondi
+        # (alcuni metodi ritornano OK ma il processo muore subito per Defender/GPO)
+        function Test-UpdaterAlive($pid, $secondsToWait = 3) {
+            if (-not $pid) { return $false }
+            Start-Sleep -Seconds $secondsToWait
+            try {
+                $p = Get-Process -Id $pid -ErrorAction SilentlyContinue
+                return ($null -ne $p -and -not $p.HasExited)
+            } catch { return $false }
+        }
+
+        # === METODO 0 (preferito per retrocompat): Start-Process semplice ===
+        # Era il metodo originale v3.0.x - v3.3.0 che ha funzionato per mesi.
+        # v3.3.1 ha introdotto WMI come "fix" per NSSM Job Object, ma WMI fallisce
+        # silenziosamente su Windows 11 con Defender attivo/GPO restrittive.
+        # Strategia: provo PRIMA il metodo semplice; se il processo muore in 3s,
+        # fallback a WMI/schtasks.
         try {
-            Write-Log "Launch updater via WMI Win32_Process.Create..." "INFO"
-            $wmi = [WMICLASS]"\\.\root\cimv2:Win32_Process"
-            $spawnResult = $wmi.Create($updaterCmd)
-            if ($spawnResult.ReturnValue -eq 0) {
-                Write-Log "OK: updater spawnato via WMI (PID=$($spawnResult.ProcessId))" "INFO"
-                $launched = $true
-            } else {
-                Write-Log "WMI Create ReturnValue=$($spawnResult.ReturnValue) (!=0 = errore)" "WARN"
+            Write-Log "Launch updater via Start-Process (metodo originale v3.0.x)..." "INFO"
+            $proc = Start-Process -FilePath $psExe -ArgumentList $updaterArgs -WindowStyle Hidden -PassThru -ErrorAction Stop
+            if ($proc -and $proc.Id) {
+                Write-Log "Start-Process spawnato PID=$($proc.Id), verifica vita dopo 3s..." "INFO"
+                if (Test-UpdaterAlive $proc.Id 3) {
+                    Write-Log "OK: updater vivo dopo 3s (PID=$($proc.Id))" "INFO"
+                    $launched = $true
+                } else {
+                    Write-Log "Start-Process: updater morto entro 3s (Defender ASR? GPO?). Fallback a WMI..." "WARN"
+                }
             }
         } catch {
-            Write-Log "WMI method failed: $($_.Exception.Message)" "WARN"
+            Write-Log "Start-Process fallito: $($_.Exception.Message)" "WARN"
+        }
+
+        # === METODO 1 (fallback NSSM-safe): WMI Win32_Process.Create ===
+        # Il processo creato via WMI diventa figlio di wmiprvse.exe, NON del nostro servizio.
+        # Rimane vivo quando NSSM killa il Job Object del connector.
+        if (-not $launched) {
+            try {
+                Write-Log "Launch updater via WMI Win32_Process.Create..." "INFO"
+                $wmi = [WMICLASS]"\\.\root\cimv2:Win32_Process"
+                $spawnResult = $wmi.Create($updaterCmd)
+                if ($spawnResult.ReturnValue -eq 0) {
+                    Write-Log "WMI spawn OK PID=$($spawnResult.ProcessId), verifica vita dopo 3s..." "INFO"
+                    if (Test-UpdaterAlive $spawnResult.ProcessId 3) {
+                        Write-Log "OK: updater vivo via WMI (PID=$($spawnResult.ProcessId))" "INFO"
+                        $launched = $true
+                    } else {
+                        Write-Log "WMI: updater morto entro 3s (Defender? GPO?). Fallback a schtasks..." "WARN"
+                    }
+                } else {
+                    Write-Log "WMI Create ReturnValue=$($spawnResult.ReturnValue) (!=0 = errore)" "WARN"
+                }
+            } catch {
+                Write-Log "WMI method failed: $($_.Exception.Message)" "WARN"
+            }
         }
 
         # === METODO 2 (fallback): schtasks run-once come SYSTEM ===
         # Task Scheduler e' un servizio separato, task eseguiti come SYSTEM girano fuori dal Job Object.
+        # FIX v3.3.6: $runTime usa HH:mm:ss per evitare che l'orario sia nel passato quando
+        # aggiungiamo 45s in un minuto che sta per scadere (es: 14:30:25+45s=14:31:10 OK,
+        # ma 14:30:50+45s=14:31:35 con .ToString("HH:mm") diventa "14:31" che è solo 10s avanti
+        # e può finire prima dello schedule).
         if (-not $launched) {
             try {
                 Write-Log "Fallback: launch via schtasks SYSTEM..." "WARN"
                 $taskName = "86NocUpdate_" + [guid]::NewGuid().ToString("N").Substring(0,8)
-                $runTime = (Get-Date).AddSeconds(45).ToString("HH:mm")
+                # schtasks /ST richiede HH:mm, usiamo +60s per sicurezza
+                $runTime = (Get-Date).AddMinutes(1).ToString("HH:mm")
                 & schtasks.exe /Create /TN $taskName /SC ONCE /ST $runTime /TR $updaterCmd /RU "SYSTEM" /RL HIGHEST /F 2>&1 | Out-String | ForEach-Object { Write-Log "  schtasks-create: $_" }
                 & schtasks.exe /Run /TN $taskName 2>&1 | Out-String | ForEach-Object { Write-Log "  schtasks-run: $_" }
                 # Salva il task name nell'updater env per permetter cleanup finale
                 [Environment]::SetEnvironmentVariable("ARGUS_UPDATE_TASK", $taskName, "Machine")
+                # Verifica task status 3s dopo /Run
+                Start-Sleep -Seconds 3
+                $taskInfo = & schtasks.exe /Query /TN $taskName /FO LIST /V 2>&1 | Out-String
+                Write-Log "  schtasks-status: $taskInfo" "DEBUG"
                 Write-Log "Task $taskName creato e avviato" "INFO"
                 $launched = $true
             } catch {
@@ -1427,9 +1537,36 @@ del /F /Q "%~f0" > nul 2>&1
                 $launched = $true
             } catch {
                 Write-Log "All launcher methods failed: $($_.Exception.Message)" "ERROR"
-                Send-UpdateProgress $config 0 "error" "Tutti i metodi di lancio updater sono falliti"
+                Send-UpdateProgress $config 0 "error" "Tutti i metodi di lancio updater sono falliti (Start-Process, WMI, schtasks, cmd.exe). Verifica Defender/GPO."
                 return $false
             }
+        }
+
+        # === POST-LAUNCH: verifica che l'updater abbia effettivamente creato il flag start ===
+        # L'updater scrive $env:ProgramData\86NocConnector\updater_started.flag come prima cosa.
+        # Se dopo 8s il flag non esiste, vuol dire che nessuno dei metodi ha funzionato davvero
+        # (es. Defender ha killato tutti i tentativi). In quel caso informiamo il backend.
+        $startMarker = Join-Path $env:ProgramData "86NocConnector\updater_started.flag"
+        $markerFound = $false
+        for ($i = 0; $i -lt 8; $i++) {
+            Start-Sleep -Seconds 1
+            if (Test-Path $startMarker) {
+                try {
+                    $markerContent = Get-Content $startMarker -ErrorAction SilentlyContinue | Select-Object -First 1
+                    # Verifica che sia stato scritto DA QUESTO tentativo (entro 30s)
+                    $markerAge = (Get-Date) - (Get-Item $startMarker).LastWriteTime
+                    if ($markerAge.TotalSeconds -lt 30) {
+                        Write-Log "OK: updater ha scritto il flag start ($markerContent)" "INFO"
+                        $markerFound = $true
+                        break
+                    }
+                } catch {}
+            }
+        }
+        if (-not $markerFound) {
+            Write-Log "ATTENZIONE: updater lanciato ma nessun flag di start rilevato in 8s - probabile Defender ASR kill" "ERROR"
+            Send-UpdateProgress $config 0 "error" "Updater lanciato ma non risponde (possibile Defender ASR). Staging dir: $updaterStagingDir"
+            # NON return false — forse il flag è in ritardo. Continuiamo.
         }
         
         # Give updater time to start before we exit
@@ -2178,6 +2315,7 @@ public static class CertBypass {
             if (-not $scheme) { $baseUrlForInline = "$($schemes[0])://${deviceIp}:${port}" }
 
             # --- INLINE CSS (scarica e incorpora <link rel="stylesheet"> come <style>) ---
+            # v3.3.6: supporta sia HTML quoted (href="foo") che HTML5 unquoted (href=foo)
             [CertBypass]::Enable()
             try {
                 $cssPattern = '<link[^>]*\srel\s*=\s*["'']?stylesheet["'']?[^>]*>'
@@ -2186,8 +2324,12 @@ public static class CertBypass {
                 foreach ($cssMatch in $cssMatches) {
                     if ($cssCount -ge 20) { break }
                     $linkTag = $cssMatch.Value
-                    if ($linkTag -match 'href\s*=\s*["'']([^"'']+)["'']') {
-                        $cssUrl = $Matches[1]
+                    # Match quoted OR unquoted value (HTML5-compliant)
+                    $cssUrl = $null
+                    if ($linkTag -match 'href\s*=\s*"([^"]+)"') { $cssUrl = $Matches[1] }
+                    elseif ($linkTag -match "href\s*=\s*'([^']+)'") { $cssUrl = $Matches[1] }
+                    elseif ($linkTag -match 'href\s*=\s*([^\s>"''`]+)') { $cssUrl = $Matches[1] }
+                    if ($cssUrl) {
                         if ($cssUrl.StartsWith("data:")) { continue }
                         # Risolvi URL
                         if ($cssUrl -like "http*://*") { }
@@ -2200,7 +2342,7 @@ public static class CertBypass {
                             $cssText = if ($cssResp.Content -is [byte[]]) {
                                 [System.Text.Encoding]::UTF8.GetString($cssResp.Content)
                             } else { [string]$cssResp.Content }
-                            $styleTag = "<style>/* inlined from $($Matches[1]) */`n$cssText`n</style>"
+                            $styleTag = "<style>/* inlined from $cssUrl */`n$cssText`n</style>"
                             $htmlStr = $htmlStr.Replace($linkTag, $styleTag)
                             $cssCount++
                         } catch {
@@ -2213,8 +2355,9 @@ public static class CertBypass {
             }
 
             # --- INLINE IMG (converti <img src="..."> in data URI per immagini < 500KB) ---
+            # v3.3.6: supporta sia quoted che unquoted (HTML5)
             try {
-                $imgPattern = '<img[^>]*\ssrc\s*=\s*["'']([^"'']+)["''][^>]*/?\s*>'
+                $imgPattern = '<img\b[^>]*\ssrc\s*=[^>]*/?\s*>'
                 $imgMatches = [regex]::Matches($htmlStr, $imgPattern, "IgnoreCase")
                 $imgCount = 0
                 $mimeMap = @{
@@ -2224,7 +2367,12 @@ public static class CertBypass {
                 }
                 foreach ($imgMatch in $imgMatches) {
                     if ($imgCount -ge 30) { break }
-                    $imgUrl = $imgMatch.Groups[1].Value
+                    $imgTag = $imgMatch.Value
+                    $imgUrl = $null
+                    if ($imgTag -match 'src\s*=\s*"([^"]+)"') { $imgUrl = $Matches[1] }
+                    elseif ($imgTag -match "src\s*=\s*'([^']+)'") { $imgUrl = $Matches[1] }
+                    elseif ($imgTag -match 'src\s*=\s*([^\s>"''`]+)') { $imgUrl = $Matches[1] }
+                    if (-not $imgUrl) { continue }
                     if ($imgUrl.StartsWith("data:")) { continue }
                     $origImgUrl = $imgUrl
                     # Risolvi URL
@@ -2243,8 +2391,8 @@ public static class CertBypass {
                         $b64img = [Convert]::ToBase64String($imgBytes)
                         $dataUri = "data:${mime};base64,$b64img"
                         # Sostituisci in modo preciso
-                        $newTag = $imgMatch.Value.Replace($origImgUrl, $dataUri)
-                        $htmlStr = $htmlStr.Replace($imgMatch.Value, $newTag)
+                        $newTag = $imgTag.Replace($origImgUrl, $dataUri)
+                        $htmlStr = $htmlStr.Replace($imgTag, $newTag)
                         $imgCount++
                     } catch { }
                 }
@@ -2253,13 +2401,20 @@ public static class CertBypass {
             }
 
             # --- INLINE JS (scarica e incorpora <script src="..."> come inline) ---
+            # v3.3.6: supporta sia HTML quoted (src="foo") che HTML5 unquoted (src=foo)
             try {
-                $jsPattern = '<script[^>]*\ssrc\s*=\s*["'']([^"'']+)["''][^>]*>\s*</script>'
+                $jsPattern = '<script\b[^>]*\ssrc\s*=[^>]*>\s*</script>'
                 $jsMatches = [regex]::Matches($htmlStr, $jsPattern, "IgnoreCase")
                 $jsCount = 0
                 foreach ($jsMatch in $jsMatches) {
                     if ($jsCount -ge 15) { break }
-                    $jsUrl = $jsMatch.Groups[1].Value
+                    $scriptTag = $jsMatch.Value
+                    $jsUrl = $null
+                    if ($scriptTag -match 'src\s*=\s*"([^"]+)"') { $jsUrl = $Matches[1] }
+                    elseif ($scriptTag -match "src\s*=\s*'([^']+)'") { $jsUrl = $Matches[1] }
+                    elseif ($scriptTag -match 'src\s*=\s*([^\s>"''`]+)') { $jsUrl = $Matches[1] }
+                    if (-not $jsUrl) { continue }
+                    $origJsUrl = $jsUrl
                     if ($jsUrl.StartsWith("data:")) { continue }
                     if ($jsUrl -like "http*://*") { }
                     elseif ($jsUrl.StartsWith("//")) { $jsUrl = "${scheme}:$jsUrl" }
@@ -2273,8 +2428,8 @@ public static class CertBypass {
                         } else { [string]$jsResp.Content }
                         # Limite 2MB per singolo JS
                         if ($jsText.Length -gt 2000000) { continue }
-                        $inlineScript = "<script>/* inlined from $($jsMatch.Groups[1].Value) */`n$jsText`n</script>"
-                        $htmlStr = $htmlStr.Replace($jsMatch.Value, $inlineScript)
+                        $inlineScript = "<script>/* inlined from $origJsUrl */`n$jsText`n</script>"
+                        $htmlStr = $htmlStr.Replace($scriptTag, $inlineScript)
                         $jsCount++
                     } catch { }
                 }
@@ -2449,6 +2604,36 @@ function Remove-StatusFile {
 
 # ==================== MAIN ====================
 
+# v3.3.7: WATCHDOG AUTO-RECOVERY
+# Registra uno scheduled task Windows che ogni 5 minuti verifica lo stato del servizio
+# 86NocConnectorService. Se è Stopped (es. update bloccato al 45%), lo riavvia.
+# Questo garantisce che anche se un update futuro dovesse fallire, il servizio torni
+# online automaticamente entro 5 minuti senza intervento manuale.
+function Register-ServiceWatchdog {
+    $taskName = "86NocConnector_Watchdog"
+    $ps = Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe"
+    # Comando watchdog: se servizio esiste ed è Stopped, fa Start-Service
+    $watchdogCmd = "Get-Service -Name '86NocConnectorService','86NocConnector' -ErrorAction SilentlyContinue | Where-Object { `$_.Status -eq 'Stopped' } | ForEach-Object { Start-Service -Name `$_.Name -ErrorAction SilentlyContinue; Add-Content -Path '$env:ProgramData\86NocConnector\watchdog.log' -Value ""[`$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Restarted service `$(`$_.Name)"" -ErrorAction SilentlyContinue }"
+    $escCmd = $watchdogCmd -replace '"', '\"'
+    $taskCmd = "`"$ps`" -NoProfile -NonInteractive -WindowStyle Hidden -Command `"$escCmd`""
+
+    # Verifica se task già esiste e ha la versione corretta
+    $existing = & schtasks.exe /Query /TN $taskName 2>&1 | Out-String
+    if ($existing -match $taskName -and $existing -match "Ready|Running") {
+        # Task esiste, skip
+        return
+    }
+
+    Write-Log "Registrazione Watchdog scheduled task (riavvio automatico servizio ogni 5 min se Stopped)..." "INFO"
+    try {
+        # Crea task: trigger ogni 5 minuti, gira come SYSTEM
+        & schtasks.exe /Create /TN $taskName /SC MINUTE /MO 5 /TR $taskCmd /RU "SYSTEM" /RL HIGHEST /F 2>&1 | Out-String | ForEach-Object { Write-Log "  watchdog: $_" "DEBUG" }
+        Write-Log "Watchdog registrato (controllo servizio ogni 5 min)" "INFO"
+    } catch {
+        Write-Log "Watchdog register fallito: $($_.Exception.Message)" "WARN"
+    }
+}
+
 function Start-Connector {
     $config = Read-Config
     if (-not $config) {
@@ -2481,6 +2666,15 @@ function Start-Connector {
         if ($_.Exception.InnerException) { $errDetail += " | Inner: $($_.Exception.InnerException.Message)" }
         Write-Log "  ERRORE: NOC non raggiungibile: $errDetail" "ERROR"
         Write-Log "  Il connettore continuera' a tentare..." "WARN"
+    }
+
+    # v3.3.7: Watchdog auto-recovery. Se un update si blocca e il servizio rimane stopped,
+    # questo scheduled task Windows riavvia il servizio ogni 5 minuti finché torna Running.
+    # Idempotente: se esiste già, lo aggiorna. Non critico se fallisce.
+    try {
+        Register-ServiceWatchdog
+    } catch {
+        Write-Log "Watchdog setup non critico: $($_.Exception.Message)" "DEBUG"
     }
     
     # Start listeners in background jobs

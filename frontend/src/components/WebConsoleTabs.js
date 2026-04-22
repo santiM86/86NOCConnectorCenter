@@ -1,3 +1,4 @@
+import { RemoteBrowserModal } from "./RemoteBrowserModal";
 import { createContext, useContext, useState, useCallback, useRef, useEffect } from "react";
 import axios from "axios";
 import { API } from "@/App";
@@ -309,6 +310,37 @@ function ActiveConsole({ session }) {
   const [iframeLoaded, setIframeLoaded] = useState(false);
   const [loadTime, setLoadTime] = useState(null);
   const [showShare, setShowShare] = useState(false);
+  const [showRmt, setShowRmt] = useState(false);
+  const [probeOpen, setProbeOpen] = useState(false);
+  const [probeRunning, setProbeRunning] = useState(false);
+  const [probeData, setProbeData] = useState(null);
+  const [probeError, setProbeError] = useState(null);
+
+  const runProbe = useCallback(async () => {
+    setProbeRunning(true); setProbeError(null); setProbeData(null);
+    try {
+      const res = await axios.post(`${API}/diag/web-console-probe`, {
+        device_ip: session.deviceIp, port: session.port,
+      }, { timeout: 45000 });
+      setProbeData(res.data);
+    } catch (e) {
+      setProbeError(e?.response?.data?.detail || e.message || "Probe fallita");
+    } finally {
+      setProbeRunning(false);
+    }
+  }, [session.deviceIp, session.port]);
+
+  const applyProbePath = useCallback(async (path) => {
+    try {
+      await axios.post(`${API}/diag/apply-web-console-path`, {
+        device_ip: session.deviceIp, path,
+      });
+      setProbeOpen(false);
+      reload(session.id);
+    } catch (e) {
+      setProbeError(e?.response?.data?.detail || e.message || "Apply fallito");
+    }
+  }, [session.deviceIp, session.id, reload]);
 
   useEffect(() => {
     setIframeLoaded(false); setLoadTime(null);
@@ -393,6 +425,22 @@ function ActiveConsole({ session }) {
           <button onClick={() => openDebug(session.id)} className="px-1.5 py-1 rounded hover:bg-amber-500/10 text-amber-400 text-[9px] font-bold font-mono transition-colors" title="Debug response (Ctrl+D)" data-testid="web-console-debug">
             DBG
           </button>
+          <button
+            onClick={() => { setProbeOpen(true); runProbe(); }}
+            className="px-1.5 py-1 rounded hover:bg-cyan-500/10 text-cyan-400 text-[9px] font-bold font-mono transition-colors"
+            title="Probe path — scansiona URL comuni del device (login.html, webui, frame...)"
+            data-testid="web-console-probe"
+          >
+            PRB
+          </button>
+          <button
+            onClick={() => setShowRmt(true)}
+            className="px-1.5 py-1 rounded hover:bg-fuchsia-500/20 bg-fuchsia-500/10 text-fuchsia-300 text-[9px] font-bold font-mono border border-fuchsia-500/30 transition-colors"
+            title="Remote Browser (RMT) — Edge headless via connector, nessun parsing HTML. Richiede connector v3.4+"
+            data-testid="web-console-rmt"
+          >
+            RMT
+          </button>
         </div>
       </div>
 
@@ -475,6 +523,103 @@ function ActiveConsole({ session }) {
       </div>
 
       {showShare && <ShareSessionModal session={session} onClose={() => setShowShare(false)} />}
+      {showRmt && <RemoteBrowserModal session={session} onClose={() => setShowRmt(false)} />}
+      {probeOpen && (
+        <ProbePathsModal
+          session={session}
+          running={probeRunning}
+          data={probeData}
+          error={probeError}
+          onRetry={runProbe}
+          onApply={applyProbePath}
+          onClose={() => setProbeOpen(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+function ProbePathsModal({ session, running, data, error, onRetry, onApply, onClose }) {
+  return (
+    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4" onClick={onClose}>
+      <div
+        className="bg-[#0f0f17] border border-[#2a2a3e] rounded-xl shadow-2xl max-w-2xl w-full max-h-[85vh] flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+        data-testid="web-console-probe-modal"
+      >
+        <div className="flex items-center justify-between px-4 py-3 border-b border-[#1e1e2e]">
+          <div className="flex items-center gap-2">
+            <span className="text-cyan-400 text-[10px] font-bold font-mono">PRB</span>
+            <span className="text-white/80 text-sm font-medium">Scansione path web — {session.deviceIp}:{session.port}</span>
+          </div>
+          <button onClick={onClose} className="p-1 rounded hover:bg-white/5 text-white/40 hover:text-white" data-testid="web-console-probe-close">
+            <X size={14} />
+          </button>
+        </div>
+        <div className="flex-1 overflow-auto p-4 text-[11px] font-mono text-white/70">
+          {running && (
+            <div className="flex items-center gap-3 py-8 justify-center">
+              <div className="w-5 h-5 rounded-full border-2 border-cyan-500/20 border-t-cyan-500 animate-spin" />
+              <span className="text-white/50 text-xs">Sondaggio in corso via connector (max ~20s)...</span>
+            </div>
+          )}
+          {error && !running && (
+            <div className="p-3 bg-red-500/10 border border-red-500/30 rounded text-red-300 text-xs">{error}</div>
+          )}
+          {data && !running && (
+            <>
+              <div className="flex items-center gap-3 pb-3 text-[10px] text-white/40">
+                <span>{data.total_paths} path testati</span>
+                <span className="text-emerald-400">{data.ok_count} OK</span>
+                {data.best_path && <span className="text-cyan-400">Best: {data.best_path}</span>}
+              </div>
+              <table className="w-full text-[10px]">
+                <thead className="text-white/30 border-b border-[#1e1e2e]">
+                  <tr>
+                    <th className="text-left py-1 font-normal">Path</th>
+                    <th className="text-right py-1 font-normal w-14">Status</th>
+                    <th className="text-right py-1 font-normal w-16">Size</th>
+                    <th className="text-left py-1 font-normal">Title</th>
+                    <th className="w-20"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(data.results || []).map((r) => (
+                    <tr key={r.path} className="border-b border-[#141420] hover:bg-white/[0.02]">
+                      <td className="py-1.5 text-white/80">{r.path}</td>
+                      <td className={`py-1.5 text-right ${r.ok ? "text-emerald-400" : r.status_code >= 400 ? "text-amber-400" : "text-red-400"}`}>
+                        {r.status_code || "—"}
+                      </td>
+                      <td className="py-1.5 text-right text-white/50">{r.body_size}</td>
+                      <td className="py-1.5 text-white/60 truncate max-w-[200px]" title={r.title || r.error || ""}>
+                        {r.title || <span className="text-white/25">{r.error || "—"}</span>}
+                      </td>
+                      <td className="py-1.5 text-right">
+                        {r.ok && (
+                          <button
+                            onClick={() => onApply(r.path)}
+                            className="px-2 py-0.5 rounded bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-300 text-[9px] font-bold border border-cyan-500/30"
+                            data-testid={`web-console-probe-apply-${r.path}`}
+                            title="Salva questo path nel profilo device"
+                          >
+                            USA
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </>
+          )}
+        </div>
+        <div className="flex items-center justify-between px-4 py-2 border-t border-[#1e1e2e] text-[10px]">
+          <span className="text-white/30">Scan parallelo · 12 path standard · timeout 8s/path</span>
+          <button onClick={onRetry} disabled={running} className="px-2 py-1 rounded bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-300 text-[10px] font-bold border border-cyan-500/30 disabled:opacity-40" data-testid="web-console-probe-retry">
+            Riscansiona
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
