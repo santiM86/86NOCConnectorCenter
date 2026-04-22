@@ -4,17 +4,18 @@ import { API } from "@/App";
 import { X, ArrowsOutSimple, Cursor, ArrowClockwise, Keyboard } from "@phosphor-icons/react";
 
 /**
- * RemoteBrowserModal — Phase 1 scaffolding.
+ * RemoteBrowserModal — HTTP/SSE version (no WebSocket).
  *
- * Opens a WebSocket to /api/console-rmt/ws/{token} and:
- * - Renders incoming JPEG frames onto a canvas
- * - Sends mouse/keyboard events to the connector (Phase 2+)
+ * Opens EventSource to /api/console-rmt/stream/{token} for incoming frames + status,
+ * and POSTs input events to /api/console-rmt/input/{token}.
  *
- * If the connector is not v3.4.0+, shows an "upgrade required" screen.
+ * Funziona su qualunque ingress HTTP standard, senza necessità di abilitare WS upgrade
+ * sul dominio custom.
  */
 export function RemoteBrowserModal({ session, onClose }) {
   const canvasRef = useRef(null);
-  const wsRef = useRef(null);
+  const esRef = useRef(null);
+  const tokenRef = useRef(null);
   const [state, setState] = useState("connecting"); // connecting|upgrade|error|ready|streaming|closed
   const [message, setMessage] = useState("Apertura sessione Remote Browser...");
   const [fullscreen, setFullscreen] = useState(false);
@@ -22,10 +23,9 @@ export function RemoteBrowserModal({ session, onClose }) {
   const [frameCount, setFrameCount] = useState(0);
   const [lastFrameTs, setLastFrameTs] = useState(null);
 
-  // Establish session + WS
+  // Establish session + SSE stream
   useEffect(() => {
     let cancelled = false;
-
     const run = async () => {
       try {
         // 1. Create session
@@ -34,7 +34,8 @@ export function RemoteBrowserModal({ session, onClose }) {
           port: session.port,
         });
         if (cancelled) return;
-        const { ws_url, connector_supported, connector_offline, connector_version, required_version } = res.data;
+        const { token, connector_supported, connector_offline, connector_version, required_version } = res.data;
+        tokenRef.current = token;
 
         if (connector_offline) {
           setState("error");
@@ -50,21 +51,27 @@ export function RemoteBrowserModal({ session, onClose }) {
           return;
         }
 
-        // 2. Open WS
-        const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-        const ws = new WebSocket(`${proto}//${window.location.host}${ws_url}`);
-        wsRef.current = ws;
+        // 2. Open SSE stream
+        const url = `${API}/console-rmt/stream/${token}`;
+        const es = new EventSource(url, { withCredentials: false });
+        esRef.current = es;
 
-        ws.onopen = () => setMessage("Connessione al connector...");
-        ws.onclose = () => { if (!cancelled) setState("closed"); };
-        ws.onerror = () => { if (!cancelled) { setState("error"); setMessage("Errore WebSocket"); } };
-        ws.onmessage = (ev) => {
+        es.onopen = () => setMessage("Connesso al backend, in attesa del connector...");
+        es.onerror = () => {
+          if (cancelled) return;
+          // EventSource auto-reconnects; mark error only if nothing ever arrived
+          if (state === "connecting") {
+            setState("error");
+            setMessage("Errore di connessione SSE. Verifica che il dominio supporti Server-Sent Events.");
+          }
+        };
+        es.onmessage = (ev) => {
           if (cancelled) return;
           try {
             const m = JSON.parse(ev.data);
             handleMessage(m);
           } catch {
-            // binary frames (future: direct JPEG push)
+            // ignore non-JSON (pings)
           }
         };
       } catch (e) {
@@ -76,8 +83,8 @@ export function RemoteBrowserModal({ session, onClose }) {
     run();
     return () => {
       cancelled = true;
-      if (wsRef.current) {
-        try { wsRef.current.close(); } catch {}
+      if (esRef.current) {
+        try { esRef.current.close(); } catch {}
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -126,24 +133,25 @@ export function RemoteBrowserModal({ session, onClose }) {
   }, []);
 
   const sendEvent = useCallback((evt) => {
-    const ws = wsRef.current;
-    if (!ws || ws.readyState !== 1) return;
-    try { ws.send(JSON.stringify(evt)); } catch {}
+    const token = tokenRef.current;
+    if (!token) return;
+    // Fire-and-forget POST
+    axios.post(`${API}/console-rmt/input/${token}`, evt).catch(() => {});
   }, []);
 
   const onCanvasMouseMove = useCallback((e) => {
     if (state !== "streaming") return;
     const r = e.currentTarget.getBoundingClientRect();
-    const x = Math.round(((e.clientX - r.left) / r.width) * (canvasRef.current?.width || 1920));
-    const y = Math.round(((e.clientY - r.top) / r.height) * (canvasRef.current?.height || 1080));
+    const x = Math.round(((e.clientX - r.left) / r.width) * (canvasRef.current?.width || 1600));
+    const y = Math.round(((e.clientY - r.top) / r.height) * (canvasRef.current?.height || 900));
     sendEvent({ type: "mouse", event: "move", x, y });
   }, [state, sendEvent]);
 
   const onCanvasMouseDown = useCallback((e) => {
     if (state !== "streaming") return;
     const r = e.currentTarget.getBoundingClientRect();
-    const x = Math.round(((e.clientX - r.left) / r.width) * (canvasRef.current?.width || 1920));
-    const y = Math.round(((e.clientY - r.top) / r.height) * (canvasRef.current?.height || 1080));
+    const x = Math.round(((e.clientX - r.left) / r.width) * (canvasRef.current?.width || 1600));
+    const y = Math.round(((e.clientY - r.top) / r.height) * (canvasRef.current?.height || 900));
     const btnMap = { 0: "left", 1: "middle", 2: "right" };
     sendEvent({ type: "mouse", event: "down", x, y, button: btnMap[e.button] || "left" });
   }, [state, sendEvent]);
@@ -151,8 +159,8 @@ export function RemoteBrowserModal({ session, onClose }) {
   const onCanvasMouseUp = useCallback((e) => {
     if (state !== "streaming") return;
     const r = e.currentTarget.getBoundingClientRect();
-    const x = Math.round(((e.clientX - r.left) / r.width) * (canvasRef.current?.width || 1920));
-    const y = Math.round(((e.clientY - r.top) / r.height) * (canvasRef.current?.height || 1080));
+    const x = Math.round(((e.clientX - r.left) / r.width) * (canvasRef.current?.width || 1600));
+    const y = Math.round(((e.clientY - r.top) / r.height) * (canvasRef.current?.height || 900));
     const btnMap = { 0: "left", 1: "middle", 2: "right" };
     sendEvent({ type: "mouse", event: "up", x, y, button: btnMap[e.button] || "left" });
   }, [state, sendEvent]);
@@ -162,11 +170,9 @@ export function RemoteBrowserModal({ session, onClose }) {
     sendEvent({ type: "scroll", dx: e.deltaX, dy: e.deltaY });
   }, [state, sendEvent]);
 
-  // Global keyboard listener (when modal is open)
   useEffect(() => {
     if (state !== "streaming") return;
     const onKey = (e) => {
-      // Allow escape to close
       if (e.key === "Escape") { onClose(); return; }
       e.preventDefault();
       sendEvent({
@@ -191,7 +197,6 @@ export function RemoteBrowserModal({ session, onClose }) {
 
   return (
     <div className={containerCls} data-testid="rmt-modal">
-      {/* Toolbar */}
       <div className="flex items-center gap-2 px-3 py-2 bg-gradient-to-r from-[#1a0d1f] to-[#12121a] border-b border-fuchsia-500/30 flex-shrink-0">
         <div className="flex items-center gap-1.5 mr-2">
           <button onClick={onClose} className="w-3 h-3 rounded-full bg-red-500 hover:bg-red-400" title="Chiudi" data-testid="rmt-close" />
@@ -199,7 +204,7 @@ export function RemoteBrowserModal({ session, onClose }) {
         </div>
         <span className="text-fuchsia-400 text-[10px] font-bold font-mono bg-fuchsia-500/10 border border-fuchsia-500/30 px-2 py-0.5 rounded">RMT</span>
         <span className="text-white/80 text-xs font-mono">{session.deviceIp}:{session.port}</span>
-        <span className="text-white/30 text-[10px]">Remote Browser via Edge headless</span>
+        <span className="text-white/30 text-[10px]">Remote Browser · SSE/HTTP</span>
         <div className="flex-1" />
         {state === "streaming" && (
           <>
@@ -219,7 +224,6 @@ export function RemoteBrowserModal({ session, onClose }) {
         </button>
       </div>
 
-      {/* Body */}
       <div className="flex-1 flex items-center justify-center bg-black overflow-hidden relative">
         {state !== "streaming" && (
           <div className="absolute inset-0 flex flex-col items-center justify-center z-10 bg-black/90 backdrop-blur-sm">
@@ -271,11 +275,10 @@ export function RemoteBrowserModal({ session, onClose }) {
         />
       </div>
 
-      {/* Footer */}
       <div className="flex items-center justify-between px-3 py-1 border-t border-fuchsia-500/20 bg-[#0f0a10] flex-shrink-0 text-[9px] font-mono">
         <div className="flex items-center gap-3 text-white/40">
           <span>Session: {session.deviceIp}:{session.port}</span>
-          <span className="text-fuchsia-400/70">via CDP screencast</span>
+          <span className="text-fuchsia-400/70">CDP screencast via HTTP</span>
           {lastFrameTs && <span>last: {Math.round((Date.now() - lastFrameTs) / 100) / 10}s ago</span>}
         </div>
         <span className={`${state === "streaming" ? "text-emerald-400/80" : state === "error" ? "text-red-400/80" : "text-white/30"}`}>
