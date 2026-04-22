@@ -4,28 +4,30 @@ import { API } from "@/App";
 import { X, ArrowsOutSimple, Cursor, ArrowClockwise, Keyboard } from "@phosphor-icons/react";
 
 /**
- * RemoteBrowserModal — HTTP/SSE version (no WebSocket).
+ * RemoteBrowserModal — POLLING version (no SSE, no WebSocket).
  *
- * Opens EventSource to /api/console-rmt/stream/{token} for incoming frames + status,
- * and POSTs input events to /api/console-rmt/input/{token}.
+ * Frame polling: GET /api/console-rmt/latest-frame/{token}?since=<seq> every 250ms
+ * Status polling: GET /api/console-rmt/poll-status/{token} every 1500ms (until streaming)
+ * Input: POST /api/console-rmt/input/{token} on events
  *
- * Funziona su qualunque ingress HTTP standard, senza necessità di abilitare WS upgrade
- * sul dominio custom.
+ * Funziona su qualunque ingress / CDN / dominio custom. Zero streaming deps.
  */
 export function RemoteBrowserModal({ session, onClose }) {
   const canvasRef = useRef(null);
-  const esRef = useRef(null);
   const tokenRef = useRef(null);
-  const [state, setState] = useState("connecting"); // connecting|upgrade|error|ready|streaming|closed
+  const stopRef = useRef(false);
+  const seqRef = useRef(0);
+  const [state, setState] = useState("connecting");
   const [message, setMessage] = useState("Apertura sessione Remote Browser...");
   const [fullscreen, setFullscreen] = useState(false);
   const [kbOpen, setKbOpen] = useState(false);
   const [frameCount, setFrameCount] = useState(0);
   const [lastFrameTs, setLastFrameTs] = useState(null);
 
-  // Establish session + SSE stream
   useEffect(() => {
-    let cancelled = false;
+    stopRef.current = false;
+    seqRef.current = 0;
+
     const run = async () => {
       try {
         // 1. Create session
@@ -33,8 +35,8 @@ export function RemoteBrowserModal({ session, onClose }) {
           device_ip: session.deviceIp,
           port: session.port,
         });
-        if (cancelled) return;
-        const { token, connector_supported, connector_offline, connector_version, required_version } = res.data;
+        if (stopRef.current) return;
+        const { token, connector_offline, connector_supported, connector_version, required_version } = res.data;
         tokenRef.current = token;
 
         if (connector_offline) {
@@ -51,73 +53,82 @@ export function RemoteBrowserModal({ session, onClose }) {
           return;
         }
 
-        // 2. Open SSE stream
-        const url = `${API}/console-rmt/stream/${token}`;
-        const es = new EventSource(url, { withCredentials: false });
-        esRef.current = es;
-
-        es.onopen = () => setMessage("Connesso al backend, in attesa del connector...");
-        es.onerror = () => {
-          if (cancelled) return;
-          // EventSource auto-reconnects; mark error only if nothing ever arrived
-          if (state === "connecting") {
-            setState("error");
-            setMessage("Errore di connessione SSE. Verifica che il dominio supporti Server-Sent Events.");
-          }
-        };
-        es.onmessage = (ev) => {
-          if (cancelled) return;
-          try {
-            const m = JSON.parse(ev.data);
-            handleMessage(m);
-          } catch {
-            // ignore non-JSON (pings)
-          }
-        };
+        setMessage("Connessione al connector...");
+        // 2. Start status poller (slow: 1.5s)
+        statusPollLoop(token);
+        // 3. Start frame poller (fast: 250ms)
+        framePollLoop(token);
       } catch (e) {
-        if (cancelled) return;
+        if (stopRef.current) return;
         setState("error");
         setMessage(e?.response?.data?.detail || e.message || "Errore sessione");
       }
     };
+
+    const statusPollLoop = async (token) => {
+      while (!stopRef.current) {
+        try {
+          const r = await axios.get(`${API}/console-rmt/poll-status/${token}`, { timeout: 10000 });
+          const m = r.data;
+          if (stopRef.current) return;
+          if (m.type === "upgrade_required") {
+            setState("upgrade");
+            setMessage(m.msg);
+            return;
+          }
+          if (m.type === "error") {
+            setState("error");
+            setMessage(m.msg);
+            return;
+          }
+          if (m.type === "closed") {
+            setState("closed");
+            setMessage(m.msg || "Sessione chiusa");
+            return;
+          }
+          // "ready" or other - keep waiting
+        } catch {
+          // network blip, retry
+        }
+        await new Promise((r) => setTimeout(r, 1500));
+      }
+    };
+
+    const framePollLoop = async (token) => {
+      while (!stopRef.current) {
+        try {
+          const r = await axios.get(`${API}/console-rmt/latest-frame/${token}`, {
+            params: { since: seqRef.current },
+            timeout: 10000,
+            validateStatus: (s) => s === 200 || s === 204,
+          });
+          if (stopRef.current) return;
+          if (r.status === 200 && r.data && r.data.data) {
+            seqRef.current = r.data.seq || seqRef.current + 1;
+            setState("streaming");
+            drawFrame(r.data.data);
+            setFrameCount((c) => c + 1);
+            setLastFrameTs(Date.now());
+          }
+        } catch {
+          // retry
+        }
+        await new Promise((r) => setTimeout(r, 250));
+      }
+    };
+
     run();
+
     return () => {
-      cancelled = true;
-      if (esRef.current) {
-        try { esRef.current.close(); } catch {}
+      stopRef.current = true;
+      // Best-effort notify backend
+      const t = tokenRef.current;
+      if (t) {
+        axios.post(`${API}/console-rmt/input/${t}`, { type: "close" }).catch(() => {});
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session.deviceIp, session.port]);
-
-  const handleMessage = useCallback((m) => {
-    if (m.type === "ready") {
-      setState("ready");
-      setMessage(m.msg || "Session pronta, in attesa del primo frame...");
-      return;
-    }
-    if (m.type === "upgrade_required") {
-      setState("upgrade");
-      setMessage(m.msg);
-      return;
-    }
-    if (m.type === "error") {
-      setState("error");
-      setMessage(m.msg);
-      return;
-    }
-    if (m.type === "closed") {
-      setState("closed");
-      setMessage(m.msg || "Sessione chiusa");
-      return;
-    }
-    if (m.type === "frame" && m.data) {
-      setState("streaming");
-      drawFrame(m.data);
-      setFrameCount((c) => c + 1);
-      setLastFrameTs(Date.now());
-    }
-  }, []);
 
   const drawFrame = useCallback((b64) => {
     const canvas = canvasRef.current;
@@ -126,8 +137,7 @@ export function RemoteBrowserModal({ session, onClose }) {
     img.onload = () => {
       if (canvas.width !== img.width) canvas.width = img.width;
       if (canvas.height !== img.height) canvas.height = img.height;
-      const ctx = canvas.getContext("2d");
-      ctx.drawImage(img, 0, 0);
+      canvas.getContext("2d").drawImage(img, 0, 0);
     };
     img.src = `data:image/jpeg;base64,${b64}`;
   }, []);
@@ -135,32 +145,35 @@ export function RemoteBrowserModal({ session, onClose }) {
   const sendEvent = useCallback((evt) => {
     const token = tokenRef.current;
     if (!token) return;
-    // Fire-and-forget POST
     axios.post(`${API}/console-rmt/input/${token}`, evt).catch(() => {});
   }, []);
 
+  const getNormXY = (e) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    const cw = canvasRef.current?.width || 1600;
+    const ch = canvasRef.current?.height || 900;
+    return {
+      x: Math.round(((e.clientX - r.left) / r.width) * cw),
+      y: Math.round(((e.clientY - r.top) / r.height) * ch),
+    };
+  };
+
   const onCanvasMouseMove = useCallback((e) => {
     if (state !== "streaming") return;
-    const r = e.currentTarget.getBoundingClientRect();
-    const x = Math.round(((e.clientX - r.left) / r.width) * (canvasRef.current?.width || 1600));
-    const y = Math.round(((e.clientY - r.top) / r.height) * (canvasRef.current?.height || 900));
+    const { x, y } = getNormXY(e);
     sendEvent({ type: "mouse", event: "move", x, y });
   }, [state, sendEvent]);
 
   const onCanvasMouseDown = useCallback((e) => {
     if (state !== "streaming") return;
-    const r = e.currentTarget.getBoundingClientRect();
-    const x = Math.round(((e.clientX - r.left) / r.width) * (canvasRef.current?.width || 1600));
-    const y = Math.round(((e.clientY - r.top) / r.height) * (canvasRef.current?.height || 900));
+    const { x, y } = getNormXY(e);
     const btnMap = { 0: "left", 1: "middle", 2: "right" };
     sendEvent({ type: "mouse", event: "down", x, y, button: btnMap[e.button] || "left" });
   }, [state, sendEvent]);
 
   const onCanvasMouseUp = useCallback((e) => {
     if (state !== "streaming") return;
-    const r = e.currentTarget.getBoundingClientRect();
-    const x = Math.round(((e.clientX - r.left) / r.width) * (canvasRef.current?.width || 1600));
-    const y = Math.round(((e.clientY - r.top) / r.height) * (canvasRef.current?.height || 900));
+    const { x, y } = getNormXY(e);
     const btnMap = { 0: "left", 1: "middle", 2: "right" };
     sendEvent({ type: "mouse", event: "up", x, y, button: btnMap[e.button] || "left" });
   }, [state, sendEvent]);
@@ -204,7 +217,7 @@ export function RemoteBrowserModal({ session, onClose }) {
         </div>
         <span className="text-fuchsia-400 text-[10px] font-bold font-mono bg-fuchsia-500/10 border border-fuchsia-500/30 px-2 py-0.5 rounded">RMT</span>
         <span className="text-white/80 text-xs font-mono">{session.deviceIp}:{session.port}</span>
-        <span className="text-white/30 text-[10px]">Remote Browser · SSE/HTTP</span>
+        <span className="text-white/30 text-[10px]">Remote Browser · HTTP polling</span>
         <div className="flex-1" />
         {state === "streaming" && (
           <>
@@ -278,7 +291,7 @@ export function RemoteBrowserModal({ session, onClose }) {
       <div className="flex items-center justify-between px-3 py-1 border-t border-fuchsia-500/20 bg-[#0f0a10] flex-shrink-0 text-[9px] font-mono">
         <div className="flex items-center gap-3 text-white/40">
           <span>Session: {session.deviceIp}:{session.port}</span>
-          <span className="text-fuchsia-400/70">CDP screencast via HTTP</span>
+          <span className="text-fuchsia-400/70">CDP screencast via HTTP polling</span>
           {lastFrameTs && <span>last: {Math.round((Date.now() - lastFrameTs) / 100) / 10}s ago</span>}
         </div>
         <span className={`${state === "streaming" ? "text-emerald-400/80" : state === "error" ? "text-red-400/80" : "text-white/30"}`}>
