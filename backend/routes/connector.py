@@ -913,6 +913,285 @@ async def _check_device_thresholds(client_id: str, dev: dict, prev_status: Optio
             except (ValueError, TypeError):
                 pass
 
+        # --- Synology: systemStatus (1=Normal, 2=Failed)
+        sys_st = vendor_metrics.get("systemStatus")
+        if sys_st is not None:
+            try:
+                if int(sys_st) == 2:
+                    alerts_to_create.append({
+                        "severity": "critical",
+                        "title": f"System FAILED: {device_name}",
+                        "message": f"Synology {device_name} ({device_ip}) systemStatus=FAILED. Verificare log DSM.",
+                        "source_type": "vendor_synology_system_failed",
+                    })
+            except (ValueError, TypeError):
+                pass
+
+        # --- Synology: diskStatus table (2=Init, 3=SysPart failed, 4=Crashed, 5=Failed)
+        disk_statuses = vendor_metrics.get("diskStatus") or {}
+        if isinstance(disk_statuses, dict):
+            for idx, st in disk_statuses.items():
+                try:
+                    sc = int(st)
+                    if sc in (4, 5):
+                        alerts_to_create.append({
+                            "severity": "critical",
+                            "title": f"Disco {idx} {'CRASHED' if sc == 4 else 'FAILED'}: {device_name}",
+                            "message": f"Disco {idx} su {device_name} ({device_ip}) in stato {sc} (4=Crashed, 5=Failed). Sostituire il disco.",
+                            "source_type": "vendor_disk_failed",
+                        })
+                    elif sc == 3:
+                        alerts_to_create.append({
+                            "severity": "high",
+                            "title": f"Disco {idx} SysPart Failed: {device_name}",
+                            "message": f"Disco {idx} su {device_name} ({device_ip}) ha system partition corrotta. Riparazione necessaria.",
+                            "source_type": "vendor_disk_syspart_failed",
+                        })
+                except (ValueError, TypeError):
+                    pass
+
+        # --- Generic UPS (RFC 1628): RIELLO/XANTO, CyberPower, Eaton, Socomec
+        #     Riusa upsBatteryStatus, upsOutputSource, upsEstimatedChargeRemaining (già evaluated sopra)
+        # --- UPS Runtime residuo
+        runtime = vendor_metrics.get("upsEstimatedMinutesRemaining")
+        if runtime is not None:
+            try:
+                rt = float(runtime)
+                runtime_crit = profile_thresholds.get("runtime_min_crit", 5)
+                runtime_warn = profile_thresholds.get("runtime_min_warn", 15)
+                if rt <= runtime_crit:
+                    alerts_to_create.append({
+                        "severity": "critical",
+                        "title": f"UPS runtime CRITICO ({int(rt)}min): {device_name}",
+                        "message": f"UPS {device_name} ({device_ip}) residuo batteria solo {rt} min — soglia {runtime_crit} min",
+                        "source_type": "vendor_ups_runtime",
+                    })
+                elif rt <= runtime_warn:
+                    alerts_to_create.append({
+                        "severity": "high",
+                        "title": f"UPS runtime basso ({int(rt)}min): {device_name}",
+                        "message": f"UPS {device_name} ({device_ip}) residuo batteria {rt} min — warning {runtime_warn} min",
+                        "source_type": "vendor_ups_runtime",
+                    })
+            except (ValueError, TypeError):
+                pass
+
+        # --- UPS Output Load %
+        load = vendor_metrics.get("upsOutputPercentLoad")
+        if isinstance(load, dict):
+            # Table: take max
+            load_vals = [float(v) for v in load.values() if isinstance(v, (int, float))]
+            if load_vals:
+                load = max(load_vals)
+        if load is not None:
+            try:
+                lv = float(load)
+                load_crit = profile_thresholds.get("load_pct_crit", 90)
+                if lv >= load_crit:
+                    alerts_to_create.append({
+                        "severity": "high",
+                        "title": f"UPS sovraccarico ({int(lv)}%): {device_name}",
+                        "message": f"UPS {device_name} ({device_ip}) carico output {lv}% — soglia {load_crit}%",
+                        "source_type": "vendor_ups_overload",
+                    })
+            except (ValueError, TypeError):
+                pass
+
+        # --- HPE Comware switch: CPU/Memory/Temperature (tabelle indicizzate per modulo)
+        # h3cEntityExtCpuUsage, h3cEntityExtMemUsage, h3cEntityExtTemperature
+        cpu_warn = profile_thresholds.get("cpu_warn_pct", 70)
+        cpu_crit = profile_thresholds.get("cpu_crit_pct", 90)
+        mem_warn = profile_thresholds.get("mem_warn_pct", 80)
+        mem_crit = profile_thresholds.get("mem_crit_pct", 95)
+        temp_warn = profile_thresholds.get("temp_warn_c", 55)
+        temp_crit = profile_thresholds.get("temp_crit_c", 70)
+
+        for metric_key, label in [
+            ("h3cEntityExtCpuUsage", "CPU"),
+            ("cpuUtil", "CPU"),              # HP ProCurve
+            ("cpuUsage", "CPU"),             # QNAP
+            ("cpuUtilization", "CPU"),       # UniFi generic
+            ("mtxrHlProcessorTemperature", "CPU Temp"),  # MikroTik
+        ]:
+            val = vendor_metrics.get(metric_key)
+            if isinstance(val, dict):
+                vals = [float(v) for v in val.values() if isinstance(v, (int, float))]
+                if vals:
+                    val = max(vals)
+            if val is not None:
+                try:
+                    v = float(val)
+                    if "Temp" in label:
+                        if v >= temp_crit:
+                            alerts_to_create.append({
+                                "severity": "critical",
+                                "title": f"{label} critica ({int(v)}°C): {device_name}",
+                                "message": f"{device_name} ({device_ip}) {label} {v}°C — soglia critica {temp_crit}°C",
+                                "source_type": f"vendor_{metric_key}_temp",
+                            })
+                        elif v >= temp_warn:
+                            alerts_to_create.append({
+                                "severity": "high",
+                                "title": f"{label} alta ({int(v)}°C): {device_name}",
+                                "message": f"{device_name} ({device_ip}) {label} {v}°C — warning {temp_warn}°C",
+                                "source_type": f"vendor_{metric_key}_temp",
+                            })
+                    else:
+                        if v >= cpu_crit:
+                            alerts_to_create.append({
+                                "severity": "critical",
+                                "title": f"{label} {int(v)}% (critico): {device_name}",
+                                "message": f"{device_name} ({device_ip}) {label} {v}% — soglia critica {cpu_crit}%",
+                                "source_type": f"vendor_{metric_key}_high",
+                            })
+                        elif v >= cpu_warn:
+                            alerts_to_create.append({
+                                "severity": "high",
+                                "title": f"{label} {int(v)}%: {device_name}",
+                                "message": f"{device_name} ({device_ip}) {label} {v}% — warning {cpu_warn}%",
+                                "source_type": f"vendor_{metric_key}_high",
+                            })
+                except (ValueError, TypeError):
+                    pass
+
+        # --- HPE Comware: fan + power supply state (2=fault)
+        for metric_key, label in [
+            ("h3cFanState", "Fan"),
+            ("h3cPowerState", "Power Supply"),
+            ("psuStatus", "Power Supply"),  # HP ProCurve
+            ("fanStatus", "Fan"),           # HP ProCurve
+            ("tempSensor", "Temp Sensor"),  # HP ProCurve
+        ]:
+            states = vendor_metrics.get(metric_key)
+            if isinstance(states, dict):
+                for idx, st in states.items():
+                    try:
+                        sc = int(st)
+                        # Convention: 1/2=ok, 3+=fault (varies per vendor)
+                        if sc in (3, 4, 5, 6):
+                            alerts_to_create.append({
+                                "severity": "high",
+                                "title": f"{label} {idx} FAULT: {device_name}",
+                                "message": f"{label} {idx} su {device_name} ({device_ip}) in stato fault (code {sc})",
+                                "source_type": f"vendor_{metric_key}_fault",
+                            })
+                    except (ValueError, TypeError):
+                        pass
+
+        # --- MikroTik: PSU + temperature
+        psu1 = vendor_metrics.get("mtxrHlPsu1Status")
+        psu2 = vendor_metrics.get("mtxrHlPsu2Status")
+        for psu_val, psu_name in [(psu1, "PSU1"), (psu2, "PSU2")]:
+            if psu_val is not None:
+                try:
+                    if int(psu_val) == 0:  # MikroTik: 1=ok, 0=fault
+                        alerts_to_create.append({
+                            "severity": "high",
+                            "title": f"{psu_name} FAULT: {device_name}",
+                            "message": f"MikroTik {device_name} ({device_ip}) {psu_name} guasto",
+                            "source_type": f"vendor_mikrotik_{psu_name.lower()}_fault",
+                        })
+                except (ValueError, TypeError):
+                    pass
+
+        mikro_temp = vendor_metrics.get("mtxrHlTemperature")
+        if mikro_temp is not None:
+            try:
+                # MikroTik reports temperature in °C * 10 (decicelsius)
+                t = float(mikro_temp) / 10 if float(mikro_temp) > 200 else float(mikro_temp)
+                if t >= temp_crit:
+                    alerts_to_create.append({
+                        "severity": "critical",
+                        "title": f"MikroTik temp critica ({int(t)}°C): {device_name}",
+                        "message": f"MikroTik {device_name} ({device_ip}) temp {t}°C — soglia {temp_crit}°C",
+                        "source_type": "vendor_mikrotik_temp",
+                    })
+            except (ValueError, TypeError):
+                pass
+
+        # --- Cisco IOS: temperature status (1=normal, 2=warning, 3=critical, 4=shutdown)
+        cisco_temps = vendor_metrics.get("ciscoEnvMonTemperatureStatusValue")
+        if isinstance(cisco_temps, dict):
+            for idx, tstate in cisco_temps.items():
+                try:
+                    s = int(tstate)
+                    if s >= 3:
+                        alerts_to_create.append({
+                            "severity": "critical" if s >= 4 else "high",
+                            "title": f"Cisco temp sensor {idx} {'SHUTDOWN' if s>=4 else 'CRITICAL'}: {device_name}",
+                            "message": f"Cisco {device_name} ({device_ip}) sensor {idx} stato {s} (1=normal, 3=critical, 4=shutdown)",
+                            "source_type": "vendor_cisco_temp",
+                        })
+                except (ValueError, TypeError):
+                    pass
+
+        # --- Cisco CPU 5min
+        cpu5 = vendor_metrics.get("cpmCPUTotal5min")
+        if isinstance(cpu5, dict):
+            vals = [float(v) for v in cpu5.values() if isinstance(v, (int, float))]
+            if vals: cpu5 = max(vals)
+        if cpu5 is not None:
+            try:
+                v = float(cpu5)
+                if v >= cpu_crit:
+                    alerts_to_create.append({
+                        "severity": "critical",
+                        "title": f"Cisco CPU 5min {int(v)}%: {device_name}",
+                        "message": f"Cisco {device_name} ({device_ip}) CPU 5min avg {v}% — soglia {cpu_crit}%",
+                        "source_type": "vendor_cisco_cpu",
+                    })
+            except (ValueError, TypeError):
+                pass
+
+        # --- QNAP SMART status (GOOD / WARNING / ERROR)
+        smart_map = vendor_metrics.get("hddSMART")
+        if isinstance(smart_map, dict):
+            for idx, smart in smart_map.items():
+                sv = str(smart).upper().strip()
+                if sv == "ERROR":
+                    alerts_to_create.append({
+                        "severity": "critical",
+                        "title": f"Disco {idx} SMART ERROR: {device_name}",
+                        "message": f"QNAP {device_name} ({device_ip}) disco {idx} SMART ERROR — sostituire.",
+                        "source_type": "vendor_qnap_smart",
+                    })
+                elif sv == "WARNING":
+                    alerts_to_create.append({
+                        "severity": "high",
+                        "title": f"Disco {idx} SMART WARNING: {device_name}",
+                        "message": f"QNAP {device_name} ({device_ip}) disco {idx} SMART WARNING — programmare sostituzione.",
+                        "source_type": "vendor_qnap_smart",
+                    })
+
+        # --- Zyxel: già parziale (OID_zyxelCpuCurrent) nel polling Poll-Device
+        zyxel_cpu = vendor_metrics.get("zyxelCpu5min") or vendor_metrics.get("zyxelCpuCurrent")
+        if zyxel_cpu is not None:
+            try:
+                v = float(zyxel_cpu)
+                if v >= cpu_crit:
+                    alerts_to_create.append({
+                        "severity": "critical",
+                        "title": f"Zyxel CPU {int(v)}%: {device_name}",
+                        "message": f"Zyxel {device_name} ({device_ip}) CPU {v}% — soglia {cpu_crit}%",
+                        "source_type": "vendor_zyxel_cpu",
+                    })
+            except (ValueError, TypeError):
+                pass
+
+        zyxel_ram = vendor_metrics.get("zyxelRamUsage")
+        if zyxel_ram is not None:
+            try:
+                v = float(zyxel_ram)
+                if v >= mem_crit:
+                    alerts_to_create.append({
+                        "severity": "critical",
+                        "title": f"Zyxel RAM {int(v)}%: {device_name}",
+                        "message": f"Zyxel {device_name} ({device_ip}) RAM {v}% — soglia {mem_crit}%",
+                        "source_type": "vendor_zyxel_ram",
+                    })
+            except (ValueError, TypeError):
+                pass
+
 
     # --- Device identity change detection (sysDescr / sysName / MACs)
     # If the sysDescr or sysName of a known IP changes significantly, it may mean
