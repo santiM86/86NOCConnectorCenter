@@ -326,6 +326,8 @@ from routes.console_rmt import router as console_rmt_router
 app.include_router(console_rmt_router)
 from routes.console_rmt_http import router as console_rmt_http_router
 app.include_router(console_rmt_http_router)
+from routes.console_rmt_v2 import router as console_rmt_v2_router
+app.include_router(console_rmt_v2_router)
 
 # Include enterprise routes
 from enterprise_routes import create_enterprise_router
