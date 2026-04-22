@@ -1,4 +1,4 @@
-const CACHE_NAME = 'noc-center-v7';
+const CACHE_NAME = 'noc-center-v8';
 const OFFLINE_URL = '/offline.html';
 
 // Assets statici da precachare per funzionamento offline

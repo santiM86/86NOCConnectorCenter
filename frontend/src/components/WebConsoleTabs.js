@@ -1,3 +1,4 @@
+import { RemoteBrowserModal } from "./RemoteBrowserModal";
 import { createContext, useContext, useState, useCallback, useRef, useEffect } from "react";
 import axios from "axios";
 import { API } from "@/App";
@@ -309,6 +310,7 @@ function ActiveConsole({ session }) {
   const [iframeLoaded, setIframeLoaded] = useState(false);
   const [loadTime, setLoadTime] = useState(null);
   const [showShare, setShowShare] = useState(false);
+  const [showRmt, setShowRmt] = useState(false);
   const [probeOpen, setProbeOpen] = useState(false);
   const [probeRunning, setProbeRunning] = useState(false);
   const [probeData, setProbeData] = useState(null);
@@ -431,6 +433,14 @@ function ActiveConsole({ session }) {
           >
             PRB
           </button>
+          <button
+            onClick={() => setShowRmt(true)}
+            className="px-1.5 py-1 rounded hover:bg-fuchsia-500/20 bg-fuchsia-500/10 text-fuchsia-300 text-[9px] font-bold font-mono border border-fuchsia-500/30 transition-colors"
+            title="Remote Browser (RMT) — Edge headless via connector, nessun parsing HTML. Richiede connector v3.4+"
+            data-testid="web-console-rmt"
+          >
+            RMT
+          </button>
         </div>
       </div>
 
@@ -513,6 +523,7 @@ function ActiveConsole({ session }) {
       </div>
 
       {showShare && <ShareSessionModal session={session} onClose={() => setShowShare(false)} />}
+      {showRmt && <RemoteBrowserModal session={session} onClose={() => setShowRmt(false)} />}
       {probeOpen && (
         <ProbePathsModal
           session={session}
