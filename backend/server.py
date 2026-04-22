@@ -308,6 +308,10 @@ from routes.console_rmt_http import router as console_rmt_http_router
 app.include_router(console_rmt_http_router)
 from routes.console_rmt_v2 import router as console_rmt_v2_router
 app.include_router(console_rmt_v2_router)
+from routes.metric_history import router as metric_history_router, ensure_index as ensure_metric_idx
+app.include_router(metric_history_router)
+from routes.syslog_trap import router as syslog_trap_router, _ensure_indexes as ensure_syslog_idx
+app.include_router(syslog_trap_router)
 
 # Include enterprise routes
 from enterprise_routes import create_enterprise_router
@@ -378,6 +382,10 @@ async def startup_event():
         await db.metrics_history.create_index([("device_ip", 1), ("timestamp", -1)])
 
         await db.device_metrics_history.create_index([("client_id", 1), ("device_ip", 1), ("timestamp", -1)])
+
+        # Time-series + syslog/trap TTL indexes
+        await ensure_metric_idx()
+        await ensure_syslog_idx()
 
         await db.network_changes.create_index([("client_id", 1), ("timestamp", -1)])
 
