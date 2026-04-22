@@ -68,7 +68,10 @@ export function RemoteBrowserModal({ session, onClose }) {
     const statusPollLoop = async (token) => {
       while (!stopRef.current) {
         try {
-          const r = await axios.get(`${API}/console-rmt/poll-status/${token}`, { timeout: 10000 });
+          const r = await axios.get(`${API}/console-rmt/poll-status`, {
+            headers: { "X-RMT-Token": token },
+            timeout: 10000,
+          });
           const m = r.data;
           if (stopRef.current) return;
           if (m.type === "upgrade_required") {
@@ -97,8 +100,9 @@ export function RemoteBrowserModal({ session, onClose }) {
     const framePollLoop = async (token) => {
       while (!stopRef.current) {
         try {
-          const r = await axios.get(`${API}/console-rmt/latest-frame/${token}`, {
+          const r = await axios.get(`${API}/console-rmt/latest-frame`, {
             params: { since: seqRef.current },
+            headers: { "X-RMT-Token": token },
             timeout: 10000,
             validateStatus: (s) => s === 200 || s === 204,
           });
@@ -124,7 +128,7 @@ export function RemoteBrowserModal({ session, onClose }) {
       // Best-effort notify backend
       const t = tokenRef.current;
       if (t) {
-        axios.post(`${API}/console-rmt/input/${t}`, { type: "close" }).catch(() => {});
+        axios.post(`${API}/console-rmt/input`, { type: "close" }, { headers: { "X-RMT-Token": t } }).catch(() => {});
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -145,7 +149,7 @@ export function RemoteBrowserModal({ session, onClose }) {
   const sendEvent = useCallback((evt) => {
     const token = tokenRef.current;
     if (!token) return;
-    axios.post(`${API}/console-rmt/input/${token}`, evt).catch(() => {});
+    axios.post(`${API}/console-rmt/input`, evt, { headers: { "X-RMT-Token": token } }).catch(() => {});
   }, []);
 
   const getNormXY = (e) => {

@@ -48,7 +48,7 @@ function Find-EdgeExe {
 $edgeExe = Find-EdgeExe
 if (-not $edgeExe) {
     Write-RmtLog "Edge/Chrome non trovato" "ERROR"
-    try { Invoke-RestMethod -Uri "$NocCenterUrl/api/console-rmt/status/$Token" -Method Post -Body (@{type="error";msg="Edge/Chrome non installato sul PC del connector"} | ConvertTo-Json) -ContentType "application/json" -TimeoutSec 10 } catch {}
+    try { Invoke-RestMethod -Uri "$NocCenterUrl/api/console-rmt/status" -Method Post -Headers @{"X-RMT-Token"=$Token} -Body (@{type="error";msg="Edge/Chrome non installato sul PC del connector"} | ConvertTo-Json) -ContentType "application/json" -TimeoutSec 10 } catch {}
     exit 2
 }
 Write-RmtLog "Browser: $edgeExe"
@@ -202,7 +202,7 @@ $cdpReaderScript = {
                 $ackBytes = [Text.Encoding]::UTF8.GetBytes($ack)
                 $ackSeg = New-Object System.ArraySegment[byte] (,$ackBytes)
                 $state.CdpWs.SendAsync($ackSeg, [System.Net.WebSockets.WebSocketMessageType]::Text, $true, $state.CancelToken).Wait(1000)
-                # POST frame al backend
+                # POST frame al backend (header-auth)
                 try {
                     $payload = @{
                         data = $obj.params.data
@@ -210,7 +210,7 @@ $cdpReaderScript = {
                         w = $obj.params.metadata.deviceWidth
                         h = $obj.params.metadata.deviceHeight
                     } | ConvertTo-Json -Compress
-                    Invoke-RestMethod -Uri "$($state.NocUrl)/api/console-rmt/frame/$($state.Token)" -Method Post -Body $payload -ContentType "application/json" -TimeoutSec 5 | Out-Null
+                    Invoke-RestMethod -Uri "$($state.NocUrl)/api/console-rmt/frame" -Method Post -Headers @{"X-RMT-Token"=$state.Token} -Body $payload -ContentType "application/json" -TimeoutSec 5 | Out-Null
                 } catch {
                     # network blip - non fatale, continua
                 }
@@ -224,7 +224,7 @@ $inputPollerScript = {
     param($state)
     while ($state.Active) {
         try {
-            $resp = Invoke-RestMethod -Uri "$($state.NocUrl)/api/console-rmt/poll-inputs/$($state.Token)" -Method Get -TimeoutSec 30
+            $resp = Invoke-RestMethod -Uri "$($state.NocUrl)/api/console-rmt/poll-inputs" -Method Get -Headers @{"X-RMT-Token"=$state.Token} -TimeoutSec 30
             if ($resp.events -and $resp.events.Count -gt 0) {
                 $state.LastActivity = Get-Date
                 foreach ($cmd in $resp.events) {
@@ -306,7 +306,8 @@ Start-Sleep 1
 try { Get-CimInstance Win32_Process -Filter "CommandLine LIKE '%86Noc_rmt_$SessionId%'" -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } } catch {}
 try { Remove-Item $userDataDir -Recurse -Force -ErrorAction SilentlyContinue } catch {}
 try {
-    Invoke-RestMethod -Uri "$NocCenterUrl/api/console-rmt/status/$Token" -Method Post `
+    Invoke-RestMethod -Uri "$NocCenterUrl/api/console-rmt/status" -Method Post `
+        -Headers @{"X-RMT-Token"=$Token} `
         -Body (@{type="closed"; msg="Sessione terminata"} | ConvertTo-Json) `
         -ContentType "application/json" -TimeoutSec 5 | Out-Null
 } catch {}

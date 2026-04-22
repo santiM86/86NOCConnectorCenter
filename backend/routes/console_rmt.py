@@ -45,18 +45,18 @@ audit = logging.getLogger("audit")
 SECRET_KEY = os.environ.get("JWT_SECRET", "argus-console-rmt-fallback")
 ALGORITHM = "HS256"
 SESSION_TTL_MINUTES = 60
-REQUIRED_CONNECTOR_VERSION = "3.4.1"
+REQUIRED_CONNECTOR_VERSION = "3.4.2"
 
 
 def _is_connector_supported(version: Optional[str]) -> bool:
-    """v3.4.1+ supports RMT (HTTP transport). Lower versions get upgrade_required."""
+    """v3.4.2+ supports RMT (HTTP polling + header auth)."""
     if not version:
         return False
     try:
         parts = [int(p) for p in version.split(".")[:3]]
         while len(parts) < 3:
             parts.append(0)
-        req = [3, 4, 1]
+        req = [3, 4, 2]
         return parts >= req
     except Exception:
         return False
