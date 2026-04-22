@@ -1,37 +1,29 @@
 # CHANGELOG — 86BIT ARGUS Center
 
-## 2026-04-22 — RMT Phase 1 (Remote Browser scaffolding) + Connector v3.3.7
-- **Backend** `/app/backend/routes/console_rmt.py`:
-  - `POST /api/console-rmt/session` crea JWT session, verifica versione connector (required: v3.4.0+), ritorna `{token, ws_url, connector_supported, connector_offline}`.
-  - `WS /api/console-rmt/ws/{token}` endpoint operator (browser del Center).
-  - `WS /api/console-rmt/connector-ws/{token}` endpoint connector (lato server cliente).
-  - Relay JSON bidirezionale via in-memory registry `_CLIENT_WS/_CONNECTOR_WS`.
-  - Dispatch `pending_commands.type=remote_browser_start` al connector via polling.
-  - Audit in `rmt_sessions` collection.
-- **Frontend** `/app/frontend/src/components/RemoteBrowserModal.js`:
-  - Modal full-screen fuchsia/magenta con canvas HTML5.
-  - Stati: connecting → ready → streaming; upgrade/error/closed.
-  - Mouse events (move/down/up/wheel) + keyboard con modifiers → WebSocket.
-  - Schermata "Upgrade Required" con link a /connectors.
-  - Pulsante **RMT** (fuchsia) in `WebConsoleTabs.js` accanto a PRB/DBG/V4.
-  - `data-testid="web-console-rmt"`, `data-testid="rmt-canvas"`, `data-testid="rmt-modal"`.
-- **SW cache** bumped v7→v8.
-- **Connector v3.3.7** (published, SHA `9cf91b5e...070a2bcf`, 296 KB):
-  - `Register-ServiceWatchdog` — scheduled task Windows ogni 5 min che riavvia il servizio se Stopped. Self-heal da update bloccati.
-  - Fix regex HTML5 unquoted per inline CSS/JS/IMG (fix Web Console iLO pagina bianca).
-  - `Install-Update` con Start-Process come primary + WMI/schtasks/cmd fallback, ciascuno con verifica PID-alive dopo 3s + flag `updater_started.flag` check entro 8s.
-  - schtasks $runTime con +60s invece di +45s (fix "orario nel passato").
-  - Nuovo progress 47% "spawning" per distinguere extract da launch updater.
-- **Device Probe** `/api/diag/web-console-probe` — scansiona 12 path comuni via connector + pulsante **PRB** (cyan) nella toolbar.
+## 2026-04-22 — RMT Phase 2 (Remote Browser v3.4.0 LIVE)
+- **Connector v3.4.0** published (SHA `0a422583...5e5509`, 303 KB):
+  - **Nuovo modulo** `/app/noc-connector/prg/src/remote_browser.ps1` (~400 righe):
+    - Auto-discover Edge (ProgramFiles, LocalAppData) / Chrome fallback
+    - Lancio headless con `--headless=new --remote-debugging-port=<random>`, `--ignore-certificate-errors`, `--disable-web-security`, `--user-data-dir=<temp_per_sessione>`, `--window-size=1600,900`
+    - Discovery CDP via `http://127.0.0.1:<port>/json/version` + `PUT /json/new?<deviceUrl>`
+    - **Dual WebSocket simultaneo**: CDP ↔ ARGUS con 2 Runspace paralleli
+    - `Page.enable` / `Runtime.enable` / `Network.enable` / `Page.startScreencast` (JPEG q=60, 1600x900, everyNthFrame=1)
+    - Handler `Page.screencastFrame` con **ACK obbligatorio** (`Page.screencastFrameAck`) altrimenti screencast si ferma dopo pochi frame → relay `{type:frame, data, ts, w, h}` ad ARGUS
+    - Handler inverso da ARGUS: traduce `{mouse/key/scroll}` in `Input.dispatchMouseEvent` / `Input.dispatchKeyEvent` / `Input.dispatchMouseWheel`
+    - Modifiers mapping CDP: alt=1, ctrl=2, meta=4, shift=8 (bitmask sommata)
+    - Watchdog inattività 30 min + max 2h sessione + cleanup user-data-dir + kill Edge orphan
+  - **Handler `remote_browser_start`** in `connector.ps1` (main pending_commands loop):
+    - Estrae session_id/device_ip/port/token dal payload
+    - Deriva URL device (https o http su porte 80/8080/8008)
+    - Lancia `remote_browser.ps1` in processo separato con `Start-Process -WindowStyle Hidden`
+    - Log per sessione in `$env:ProgramData\86NocConnector\rmt_<sid>.log`
+  - **Backend** `console_rmt.py` aggiornato: `pending_commands.payload.token` ora incluso esplicitamente (il connector lo usa senza parsare ws_relay_url)
+  - Include TUTTI i fix v3.3.7: Watchdog auto-recovery servizio, regex HTML5 unquoted, Install-Update con 4 metodi fallback + verifica PID-alive.
 
-## 🔜 Fase 2 (v3.4.0 connector) — TODO
-- `/app/noc-connector/prg/src/remote_browser.ps1` — client CDP PowerShell (WebSocket + JSON dispatch).
-- Lancio `msedge.exe --headless=new --remote-debugging-port=<random>` con `--ignore-certificate-errors`, `--disable-gpu`, `--disable-web-security`, `--user-data-dir=<temp>`.
-- `Page.navigate` al device URL, `Page.startScreencast` (JPEG quality=70, maxWidth=1600, everyNthFrame=1).
-- Handler `Page.screencastFrame` → base64 JPEG → WS relay.
-- Handler messages dal Center: `Input.dispatchMouseEvent`, `Input.dispatchKeyEvent`, `Input.insertText`.
-- Auto-cleanup Edge process + user-data-dir dopo sessione.
-- Version bump version.json → 3.4.0.
+## 2026-04-22 — RMT Phase 1
+- Backend `/app/backend/routes/console_rmt.py` — POST /session, WS relay operator/connector, audit.
+- Frontend `RemoteBrowserModal.js` + pulsante **RMT** (fuchsia) in WebConsoleTabs toolbar.
+- SW cache v7→v8.
 
-## 2026-04-21 Sessione precedente (Vendor Alerts Phase A + Device Profiles + Runbook Auto-Match + Web Console V4 + Port Whitelist Dynamic)
-(Vedi sezione originale PRD per dettagli. Include: Fase A vendor alerts backend (vendor_oids send + vendor_metrics receive), 13 device profiles, runbook auto-match, V4 popup proxy.)
+## 2026-04-21 Sessione precedente
+(Vedi PRD.md per dettagli completi: Vendor Alerts Phase A, 13 Device Profiles, Runbook Auto-Match, Web Console V4, v3.3.5 Dynamic Port Whitelist, v3.3.6 HTML5 regex fix, v3.3.7 Watchdog.)

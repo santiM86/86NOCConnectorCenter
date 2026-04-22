@@ -493,6 +493,47 @@ function Send-Heartbeat($config) {
                     }
                 }
                 default {
+                    # === ARGUS Remote Browser v3.4.0 ===
+                    if ($cmd.type -eq "remote_browser_start") {
+                        try {
+                            $sid = $cmd.payload.session_id
+                            $devIp = $cmd.payload.device_ip
+                            $devPort = $cmd.payload.port
+                            $token = $cmd.payload.token
+                            if (-not $token -and $cmd.payload.ws_relay_url) {
+                                # ws_relay_url è formato /api/console-rmt/connector-ws/<token>
+                                $token = ($cmd.payload.ws_relay_url -split '/')[-1]
+                            }
+                            $scheme = if ($devPort -in 80, 8080, 8008) { "http" } else { "https" }
+                            $devUrl = "$scheme" + "://" + "$devIp" + ":" + "$devPort" + "/"
+                            $rmtScript = Join-Path $PSScriptRoot "remote_browser.ps1"
+                            if (-not (Test-Path $rmtScript)) {
+                                Write-Log "remote_browser.ps1 non trovato a $rmtScript" "ERROR"
+                                break
+                            }
+                            $rmtLog = Join-Path $env:ProgramData "86NocConnector\rmt_$sid.log"
+                            $rmtArgs = @(
+                                "-ExecutionPolicy", "Bypass",
+                                "-NoProfile",
+                                "-NonInteractive",
+                                "-WindowStyle", "Hidden",
+                                "-File", "`"$rmtScript`"",
+                                "-NocCenterUrl", "`"$($config.noc_center_url)`"",
+                                "-Token", "`"$token`"",
+                                "-DeviceUrl", "`"$devUrl`"",
+                                "-SessionId", "`"$sid`"",
+                                "-LogFile", "`"$rmtLog`""
+                            )
+                            Write-Log "Avvio Remote Browser session sid=$sid device=$devUrl log=$rmtLog" "INFO"
+                            $psExe = Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe"
+                            Start-Process -FilePath $psExe -ArgumentList $rmtArgs -WindowStyle Hidden | Out-Null
+                            Write-Log "Remote Browser process spawn OK per sid=$sid" "INFO"
+                        } catch {
+                            Write-Log "Errore avvio remote browser: $($_.Exception.Message)" "ERROR"
+                        }
+                        break
+                    }
+
                     # === ARGUS Remediation Engine (v3.3+) ===
                     if ($cmd.type -eq "remediation") {
                         $exec_id = $cmd.payload.execution_id

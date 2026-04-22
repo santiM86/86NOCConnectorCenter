@@ -210,6 +210,7 @@ async def rmt_operator_ws(websocket: WebSocket, token: str):
             "session_id": sid,
             "device_ip": device_ip,
             "port": port,
+            "token": token,
             "ws_relay_url": f"/api/console-rmt/connector-ws/{token}",
         },
         "status": "pending",
