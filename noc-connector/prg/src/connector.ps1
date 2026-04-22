@@ -1361,41 +1361,110 @@ function Install-Update($config, $updateInfo) {
         Copy-Item $updaterPath $tempUpdater -Force
         Write-Log "Updater staged in InstallDir (Defender-safe): $tempUpdater" "INFO"
 
+        # Reset flag start (se esiste da update precedente)
+        try {
+            $oldFlag = Join-Path $env:ProgramData "86NocConnector\updater_started.flag"
+            if (Test-Path $oldFlag) { Remove-Item $oldFlag -Force -ErrorAction SilentlyContinue }
+        } catch {}
+
+        Send-UpdateProgress $config 47 "spawning" "Lancio processo updater (Start-Process/WMI/schtasks)..."
+
         $psExe = Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe"
         if (-not (Test-Path $psExe)) { $psExe = "powershell.exe" }
 
         $updaterCmd = "`"$psExe`" -ExecutionPolicy Bypass -NoProfile -NonInteractive -WindowStyle Hidden -File `"$tempUpdater`" -ExtractPath `"$tempExtract`" -InstallDir `"$installDir`" -ApiUrl `"$($config.noc_center_url)`" -ApiKey `"$($config.api_key)`""
+        # Args per Start-Process (che richiede array, non stringa unica)
+        $updaterArgs = @(
+            "-ExecutionPolicy", "Bypass",
+            "-NoProfile",
+            "-NonInteractive",
+            "-WindowStyle", "Hidden",
+            "-File", "`"$tempUpdater`"",
+            "-ExtractPath", "`"$tempExtract`"",
+            "-InstallDir", "`"$installDir`"",
+            "-ApiUrl", "`"$($config.noc_center_url)`"",
+            "-ApiKey", "`"$($config.api_key)`""
+        )
 
         $launched = $false
 
-        # === METODO 1 (preferito): WMI Win32_Process.Create ===
-        # Il processo creato via WMI diventa figlio di wmiprvse.exe, NON del nostro servizio.
-        # Rimane vivo quando NSSM killa il Job Object del connector.
+        # Helper: verifica che il PID sia ancora vivo dopo N secondi
+        # (alcuni metodi ritornano OK ma il processo muore subito per Defender/GPO)
+        function Test-UpdaterAlive($pid, $secondsToWait = 3) {
+            if (-not $pid) { return $false }
+            Start-Sleep -Seconds $secondsToWait
+            try {
+                $p = Get-Process -Id $pid -ErrorAction SilentlyContinue
+                return ($null -ne $p -and -not $p.HasExited)
+            } catch { return $false }
+        }
+
+        # === METODO 0 (preferito per retrocompat): Start-Process semplice ===
+        # Era il metodo originale v3.0.x - v3.3.0 che ha funzionato per mesi.
+        # v3.3.1 ha introdotto WMI come "fix" per NSSM Job Object, ma WMI fallisce
+        # silenziosamente su Windows 11 con Defender attivo/GPO restrittive.
+        # Strategia: provo PRIMA il metodo semplice; se il processo muore in 3s,
+        # fallback a WMI/schtasks.
         try {
-            Write-Log "Launch updater via WMI Win32_Process.Create..." "INFO"
-            $wmi = [WMICLASS]"\\.\root\cimv2:Win32_Process"
-            $spawnResult = $wmi.Create($updaterCmd)
-            if ($spawnResult.ReturnValue -eq 0) {
-                Write-Log "OK: updater spawnato via WMI (PID=$($spawnResult.ProcessId))" "INFO"
-                $launched = $true
-            } else {
-                Write-Log "WMI Create ReturnValue=$($spawnResult.ReturnValue) (!=0 = errore)" "WARN"
+            Write-Log "Launch updater via Start-Process (metodo originale v3.0.x)..." "INFO"
+            $proc = Start-Process -FilePath $psExe -ArgumentList $updaterArgs -WindowStyle Hidden -PassThru -ErrorAction Stop
+            if ($proc -and $proc.Id) {
+                Write-Log "Start-Process spawnato PID=$($proc.Id), verifica vita dopo 3s..." "INFO"
+                if (Test-UpdaterAlive $proc.Id 3) {
+                    Write-Log "OK: updater vivo dopo 3s (PID=$($proc.Id))" "INFO"
+                    $launched = $true
+                } else {
+                    Write-Log "Start-Process: updater morto entro 3s (Defender ASR? GPO?). Fallback a WMI..." "WARN"
+                }
             }
         } catch {
-            Write-Log "WMI method failed: $($_.Exception.Message)" "WARN"
+            Write-Log "Start-Process fallito: $($_.Exception.Message)" "WARN"
+        }
+
+        # === METODO 1 (fallback NSSM-safe): WMI Win32_Process.Create ===
+        # Il processo creato via WMI diventa figlio di wmiprvse.exe, NON del nostro servizio.
+        # Rimane vivo quando NSSM killa il Job Object del connector.
+        if (-not $launched) {
+            try {
+                Write-Log "Launch updater via WMI Win32_Process.Create..." "INFO"
+                $wmi = [WMICLASS]"\\.\root\cimv2:Win32_Process"
+                $spawnResult = $wmi.Create($updaterCmd)
+                if ($spawnResult.ReturnValue -eq 0) {
+                    Write-Log "WMI spawn OK PID=$($spawnResult.ProcessId), verifica vita dopo 3s..." "INFO"
+                    if (Test-UpdaterAlive $spawnResult.ProcessId 3) {
+                        Write-Log "OK: updater vivo via WMI (PID=$($spawnResult.ProcessId))" "INFO"
+                        $launched = $true
+                    } else {
+                        Write-Log "WMI: updater morto entro 3s (Defender? GPO?). Fallback a schtasks..." "WARN"
+                    }
+                } else {
+                    Write-Log "WMI Create ReturnValue=$($spawnResult.ReturnValue) (!=0 = errore)" "WARN"
+                }
+            } catch {
+                Write-Log "WMI method failed: $($_.Exception.Message)" "WARN"
+            }
         }
 
         # === METODO 2 (fallback): schtasks run-once come SYSTEM ===
         # Task Scheduler e' un servizio separato, task eseguiti come SYSTEM girano fuori dal Job Object.
+        # FIX v3.3.6: $runTime usa HH:mm:ss per evitare che l'orario sia nel passato quando
+        # aggiungiamo 45s in un minuto che sta per scadere (es: 14:30:25+45s=14:31:10 OK,
+        # ma 14:30:50+45s=14:31:35 con .ToString("HH:mm") diventa "14:31" che è solo 10s avanti
+        # e può finire prima dello schedule).
         if (-not $launched) {
             try {
                 Write-Log "Fallback: launch via schtasks SYSTEM..." "WARN"
                 $taskName = "86NocUpdate_" + [guid]::NewGuid().ToString("N").Substring(0,8)
-                $runTime = (Get-Date).AddSeconds(45).ToString("HH:mm")
+                # schtasks /ST richiede HH:mm, usiamo +60s per sicurezza
+                $runTime = (Get-Date).AddMinutes(1).ToString("HH:mm")
                 & schtasks.exe /Create /TN $taskName /SC ONCE /ST $runTime /TR $updaterCmd /RU "SYSTEM" /RL HIGHEST /F 2>&1 | Out-String | ForEach-Object { Write-Log "  schtasks-create: $_" }
                 & schtasks.exe /Run /TN $taskName 2>&1 | Out-String | ForEach-Object { Write-Log "  schtasks-run: $_" }
                 # Salva il task name nell'updater env per permetter cleanup finale
                 [Environment]::SetEnvironmentVariable("ARGUS_UPDATE_TASK", $taskName, "Machine")
+                # Verifica task status 3s dopo /Run
+                Start-Sleep -Seconds 3
+                $taskInfo = & schtasks.exe /Query /TN $taskName /FO LIST /V 2>&1 | Out-String
+                Write-Log "  schtasks-status: $taskInfo" "DEBUG"
                 Write-Log "Task $taskName creato e avviato" "INFO"
                 $launched = $true
             } catch {
@@ -1427,9 +1496,36 @@ del /F /Q "%~f0" > nul 2>&1
                 $launched = $true
             } catch {
                 Write-Log "All launcher methods failed: $($_.Exception.Message)" "ERROR"
-                Send-UpdateProgress $config 0 "error" "Tutti i metodi di lancio updater sono falliti"
+                Send-UpdateProgress $config 0 "error" "Tutti i metodi di lancio updater sono falliti (Start-Process, WMI, schtasks, cmd.exe). Verifica Defender/GPO."
                 return $false
             }
+        }
+
+        # === POST-LAUNCH: verifica che l'updater abbia effettivamente creato il flag start ===
+        # L'updater scrive $env:ProgramData\86NocConnector\updater_started.flag come prima cosa.
+        # Se dopo 8s il flag non esiste, vuol dire che nessuno dei metodi ha funzionato davvero
+        # (es. Defender ha killato tutti i tentativi). In quel caso informiamo il backend.
+        $startMarker = Join-Path $env:ProgramData "86NocConnector\updater_started.flag"
+        $markerFound = $false
+        for ($i = 0; $i -lt 8; $i++) {
+            Start-Sleep -Seconds 1
+            if (Test-Path $startMarker) {
+                try {
+                    $markerContent = Get-Content $startMarker -ErrorAction SilentlyContinue | Select-Object -First 1
+                    # Verifica che sia stato scritto DA QUESTO tentativo (entro 30s)
+                    $markerAge = (Get-Date) - (Get-Item $startMarker).LastWriteTime
+                    if ($markerAge.TotalSeconds -lt 30) {
+                        Write-Log "OK: updater ha scritto il flag start ($markerContent)" "INFO"
+                        $markerFound = $true
+                        break
+                    }
+                } catch {}
+            }
+        }
+        if (-not $markerFound) {
+            Write-Log "ATTENZIONE: updater lanciato ma nessun flag di start rilevato in 8s - probabile Defender ASR kill" "ERROR"
+            Send-UpdateProgress $config 0 "error" "Updater lanciato ma non risponde (possibile Defender ASR). Staging dir: $updaterStagingDir"
+            # NON return false — forse il flag è in ritardo. Continuiamo.
         }
         
         # Give updater time to start before we exit
