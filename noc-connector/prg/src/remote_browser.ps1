@@ -65,7 +65,12 @@ function Get-FreePort {
 }
 
 $cdpPort = Get-FreePort
-$userDataDir = Join-Path $env:TEMP "86Noc_rmt_$SessionId"
+# v3.4.3: Edge headless quando lanciato dal servizio SYSTEM richiede user-data-dir
+# in C:\Windows\Temp (non %TEMP% del user profile che per SYSTEM ha problemi ACL).
+# Issue noto: https://github.com/microsoft/playwright/issues/8272
+$userDataBase = "C:\Windows\Temp\86Noc_rmt"
+if (-not (Test-Path $userDataBase)) { New-Item -ItemType Directory -Path $userDataBase -Force | Out-Null }
+$userDataDir = Join-Path $userDataBase $SessionId
 if (Test-Path $userDataDir) { Remove-Item $userDataDir -Recurse -Force -ErrorAction SilentlyContinue }
 New-Item -ItemType Directory -Path $userDataDir -Force | Out-Null
 
@@ -73,37 +78,83 @@ $edgeArgs = @(
     "--headless=new",
     "--remote-debugging-port=$cdpPort",
     "--remote-allow-origins=*",
+    # v3.4.3 — flag obbligatori per Edge come servizio SYSTEM:
+    "--no-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-gpu-sandbox",
+    "--disable-software-rasterizer",
+    # Crash resilience
+    "--disable-crash-reporter",
+    "--disable-breakpad",
+    "--disable-component-update",
+    # TLS / cert
     "--ignore-certificate-errors",
     "--ignore-ssl-errors",
     "--allow-insecure-localhost",
+    "--test-type",  # abilita --ignore-certificate-errors in new headless
+    # Performance / stability
     "--disable-gpu",
     "--disable-web-security",
     "--no-first-run",
     "--no-default-browser-check",
     "--disable-extensions",
     "--disable-background-networking",
-    "--disable-features=Translate,BackForwardCache,IsolateOrigins,site-per-process",
+    "--disable-features=Translate,BackForwardCache,IsolateOrigins,site-per-process,VizDisplayCompositor",
     "--window-size=1600,900",
     "--user-data-dir=`"$userDataDir`"",
     "about:blank"
 )
 
-Write-RmtLog "Avvio Edge CDP=$cdpPort"
+Write-RmtLog "Avvio Edge CDP=$cdpPort UserDataDir=$userDataDir (SYSTEM-compatible flags)"
 $edgeProc = Start-Process -FilePath $edgeExe -ArgumentList $edgeArgs -WindowStyle Hidden -PassThru
 Write-RmtLog "Edge PID=$($edgeProc.Id)"
 
-# Wait CDP ready
+# Wait CDP ready (fino a 30s con log diagnostico)
 $cdpReady = $false
-for ($i = 0; $i -lt 30; $i++) {
+for ($i = 0; $i -lt 60; $i++) {
     Start-Sleep -Milliseconds 500
     try {
         $null = Invoke-RestMethod -Uri "http://127.0.0.1:$cdpPort/json/version" -TimeoutSec 2 -ErrorAction Stop
         $cdpReady = $true; break
     } catch {}
+    # Check if Edge process is still alive
+    if ($i -eq 10 -or $i -eq 20 -or $i -eq 40) {
+        try {
+            $alive = Get-Process -Id $edgeProc.Id -ErrorAction SilentlyContinue
+            if (-not $alive -or $alive.HasExited) {
+                Write-RmtLog "Edge PID=$($edgeProc.Id) e' morto durante l'attesa CDP" "ERROR"
+                break
+            }
+            # Check port listening
+            $listening = Get-NetTCPConnection -LocalPort $cdpPort -State Listen -ErrorAction SilentlyContinue
+            if ($listening) {
+                Write-RmtLog "Porta $cdpPort in listen su $($listening.LocalAddress) PID=$($listening.OwningProcess), ma CDP non risponde ancora"
+            } else {
+                Write-RmtLog "Porta $cdpPort NON in listen dopo $(($i+1)*500)ms (Edge PID=$($edgeProc.Id) ancora vivo)"
+            }
+        } catch {}
+    }
 }
 if (-not $cdpReady) {
-    Write-RmtLog "CDP non pronto" "ERROR"
-    try { Stop-Process -Id $edgeProc.Id -Force } catch {}
+    # Raccogli info diagnostiche
+    $diag = ""
+    try {
+        $alive = Get-Process -Id $edgeProc.Id -ErrorAction SilentlyContinue
+        $diag += " EdgeAlive=$($null -ne $alive -and -not $alive.HasExited);"
+    } catch {}
+    try {
+        $listening = Get-NetTCPConnection -LocalPort $cdpPort -State Listen -ErrorAction SilentlyContinue
+        $diag += " PortListening=$($null -ne $listening);"
+    } catch {}
+    $diag += " UserDataDir=$userDataDir;"
+    Write-RmtLog "CDP non pronto dopo 30s.$diag" "ERROR"
+    try {
+        Invoke-RestMethod -Uri "$NocCenterUrl/api/console-rmt/status" -Method Post `
+            -Headers @{"X-RMT-Token"=$Token} `
+            -Body (@{type="error"; msg="Edge CDP non risponde dopo 30s.$diag Probabile problema Defender ASR o servizio SYSTEM senza permessi Edge."} | ConvertTo-Json) `
+            -ContentType "application/json" -TimeoutSec 10 | Out-Null
+    } catch {}
+    try { Stop-Process -Id $edgeProc.Id -Force -ErrorAction SilentlyContinue } catch {}
     exit 3
 }
 
@@ -305,6 +356,13 @@ try { Stop-Process -Id $edgeProc.Id -Force -ErrorAction SilentlyContinue } catch
 Start-Sleep 1
 try { Get-CimInstance Win32_Process -Filter "CommandLine LIKE '%86Noc_rmt_$SessionId%'" -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } } catch {}
 try { Remove-Item $userDataDir -Recurse -Force -ErrorAction SilentlyContinue } catch {}
+# Cleanup vecchie dir user-data di sessioni precedenti (>1h)
+try {
+    $base = "C:\Windows\Temp\86Noc_rmt"
+    if (Test-Path $base) {
+        Get-ChildItem $base -Directory -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -lt (Get-Date).AddHours(-1) } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+    }
+} catch {}
 try {
     Invoke-RestMethod -Uri "$NocCenterUrl/api/console-rmt/status" -Method Post `
         -Headers @{"X-RMT-Token"=$Token} `
