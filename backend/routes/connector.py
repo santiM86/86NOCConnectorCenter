@@ -1383,6 +1383,13 @@ async def connector_device_report(request: Request):
         except Exception as e:
             logger.warning(f"Errore check soglie {dev.get('device_ip')}: {e}")
 
+        # Time-series recording (metric_history, 30gg TTL)
+        try:
+            from routes.metric_history import record_metrics
+            await record_metrics(client_id, dev["device_ip"], dev)
+        except Exception as e:
+            logger.debug(f"record_metrics skip {dev.get('device_ip')}: {e}")
+
         if dev.get("cpu_usage") is not None or dev.get("temperature") is not None or dev.get("firewall") or dev.get("ping_stats"):
             metric_doc = {
                 "client_id": client_id, "device_ip": dev["device_ip"], "timestamp": now_iso,

@@ -1035,6 +1035,14 @@ function DevicesTab({ devices, clientId, onRefresh }) {
                         </button>
                       )}
                       <button
+                        onClick={() => navigate(`/device-metrics?ip=${d.ip_address}`)}
+                        className="p-1 rounded hover:bg-indigo-500/10 text-indigo-400 transition-colors"
+                        title="Trend metriche storiche"
+                        data-testid={`device-trend-${d.ip_address}`}
+                      >
+                        <ChartLine size={13} />
+                      </button>
+                      <button
                         onClick={() => setProfileTarget(d)}
                         className={`p-1 rounded transition-colors ${
                           d.profile_key

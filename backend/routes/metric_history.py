@@ -71,7 +71,8 @@ async def record_metrics(client_id: str, device_ip: str, dev: dict) -> None:
         v = vm.get(k)
         if isinstance(v, dict):
             nums = [x for x in v.values() if isinstance(x, (int, float))]
-            if nums: _add("cpu", max(nums))
+            if nums:
+                _add("cpu", max(nums))
         elif v is not None:
             _add("cpu", v)
 

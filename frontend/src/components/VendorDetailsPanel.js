@@ -11,7 +11,7 @@
 import { useEffect, useState } from "react";
 import axios from "axios";
 import { API } from "@/App";
-import { HardDrives, Thermometer, Battery, Lightning, ShieldCheck, Activity, Fan, Plugs, WarningCircle } from "@phosphor-icons/react";
+import { HardDrives, Thermometer, BatteryMedium as Battery, Lightning, ShieldCheck, Pulse as Activity, Fan, Plugs, WarningCircle } from "@phosphor-icons/react";
 
 // =======================  HELPERS  =======================
 const severityColor = (v, warn, crit) => {

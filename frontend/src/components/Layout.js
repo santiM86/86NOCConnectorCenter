@@ -84,6 +84,9 @@ const navConfig = [
     label: "Operazioni",
     items: [
       { path: "/incidents", icon: Ticket, label: "Incidenti", roles: ["admin", "operator"] },
+      { path: "/device-metrics", icon: ChartLine, label: "Trend Metriche", roles: ["admin", "operator", "viewer"] },
+      { path: "/syslog", icon: ListChecks, label: "Syslog Viewer", roles: ["admin", "operator"] },
+      { path: "/snmp-traps", icon: Pulse, label: "SNMP Traps", roles: ["admin", "operator"] },
       { path: "/remediation", icon: Robot, label: "Auto Remediation", roles: ["admin", "operator"] },
       { path: "/intelligence", icon: Brain, label: "NOC Intelligence", roles: ["admin", "operator"] },
       { path: "/channel-health", icon: Heartbeat, label: "Channel Health iLO", roles: ["admin", "operator"] },

@@ -53,6 +53,24 @@ async def ingest_syslog(request: Request, msg: SyslogMessage):
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     await db.alerts.insert_one(alert_doc)
+    # History log for Syslog Viewer (TTL 14gg via syslog_trap router index)
+    try:
+        now_ts = datetime.now(timezone.utc)
+        await db.syslog_events.insert_one({
+            "id": str(uuid.uuid4()),
+            "client_id": client_id,
+            "device_ip": msg.device_ip,
+            "host": None,
+            "severity": int(msg.severity_level) if msg.severity_level is not None else 6,
+            "severity_label": ["emerg","alert","crit","err","warning","notice","info","debug"][int(msg.severity_level)] if (msg.severity_level is not None and 0 <= int(msg.severity_level) <= 7) else "info",
+            "facility": int(msg.facility) if msg.facility is not None else 1,
+            "facility_label": "user",
+            "message": (msg.message or "")[:2000],
+            "raw": (msg.message or "")[:3000],
+            "ts": now_ts,
+        })
+    except Exception:
+        pass
     try:
         import webpush as _wp
         await _wp.notify_new_alert(db, alert_doc)
@@ -118,6 +136,20 @@ async def ingest_snmp(request: Request, trap: SNMPTrap):
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     await db.alerts.insert_one(alert_doc)
+    # History log for SNMP Traps viewer (TTL 14gg via syslog_trap router index)
+    try:
+        await db.snmp_traps.insert_one({
+            "id": str(uuid.uuid4()),
+            "client_id": client_id,
+            "device_ip": trap.device_ip,
+            "community": None,
+            "trap_oid": trap.oid,
+            "varbinds": {"value": trap.value, "trap_type": trap.trap_type},
+            "raw_b64": "",
+            "ts": datetime.now(timezone.utc),
+        })
+    except Exception:
+        pass
     try:
         import webpush as _wp
         await _wp.notify_new_alert(db, alert_doc)
