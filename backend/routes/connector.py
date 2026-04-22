@@ -767,6 +767,432 @@ async def _check_device_thresholds(client_id: str, dev: dict, prev_status: Optio
                 "source_type": "threshold_port_down",
             })
 
+    # --- FASE B: Vendor-specific metrics evaluation
+    # Alert sui valori critici anche se il profilo non è associato (hard-coded fallback thresholds).
+    vendor_metrics = dev.get("vendor_metrics") or {}
+    if vendor_metrics:
+        # Synology RAID / Disk / Temperature
+        # --- Synology: disk / RAID status
+        raid_status = vendor_metrics.get("raidStatus")
+        if raid_status is not None:
+            # Synology convention: 1=Normal, 2=Repairing, 3=Migrating, 4=Expanding, 5=Deleting,
+            # 6=Creating, 7=RaidSyncing, 8=RaidParityChecking, 9=RaidAssembling,
+            # 10=Canceling, 11=Degraded, 12=Crashed
+            raid_code = int(raid_status) if isinstance(raid_status, (int, float)) else -1
+            if raid_code == 11:
+                alerts_to_create.append({
+                    "severity": "high",
+                    "title": f"RAID DEGRADED: {device_name}",
+                    "message": f"Volume RAID su {device_name} ({device_ip}) in stato Degraded (disco guasto). Azione: controllare lo stato dei dischi e sostituire quello rotto.",
+                    "source_type": "vendor_raid_degraded",
+                })
+            elif raid_code == 12:
+                alerts_to_create.append({
+                    "severity": "critical",
+                    "title": f"RAID CRASHED: {device_name}",
+                    "message": f"Volume RAID su {device_name} ({device_ip}) in stato Crashed (perdita dati possibile). Intervento URGENTE richiesto.",
+                    "source_type": "vendor_raid_crashed",
+                })
+
+        # --- Synology: disk temperature (table walk: diskTemperature)
+        disk_temp_crit = profile_thresholds.get("disk_temp_crit_c", 60)
+        disk_temp_warn = profile_thresholds.get("disk_temp_warn_c", 50)
+        disk_temps = vendor_metrics.get("diskTemperature") or {}
+        if isinstance(disk_temps, dict):
+            for idx, t in disk_temps.items():
+                try:
+                    tv = float(t)
+                    if tv >= disk_temp_crit:
+                        alerts_to_create.append({
+                            "severity": "critical",
+                            "title": f"Disco {idx} temp critica ({int(tv)}°C): {device_name}",
+                            "message": f"Disco {idx} di {device_name} ({device_ip}) a {tv}°C — soglia critica {disk_temp_crit}°C",
+                            "source_type": "vendor_disk_temp",
+                        })
+                    elif tv >= disk_temp_warn:
+                        alerts_to_create.append({
+                            "severity": "high",
+                            "title": f"Disco {idx} temp alta ({int(tv)}°C): {device_name}",
+                            "message": f"Disco {idx} di {device_name} ({device_ip}) a {tv}°C — warning {disk_temp_warn}°C",
+                            "source_type": "vendor_disk_temp",
+                        })
+                except (ValueError, TypeError):
+                    pass
+
+        # --- APC UPS: battery status (upsBatteryStatus OID enum: 1=unknown, 2=batteryNormal, 3=batteryLow, 4=batteryDepleted)
+        ups_batt = vendor_metrics.get("upsBatteryStatus")
+        if ups_batt is not None:
+            try:
+                batt_code = int(ups_batt)
+                if batt_code == 3:
+                    alerts_to_create.append({
+                        "severity": "high",
+                        "title": f"UPS batteria BASSA: {device_name}",
+                        "message": f"UPS {device_name} ({device_ip}) in stato 'Battery Low'. Verificare carica e programmare test batteria.",
+                        "source_type": "vendor_ups_battery_low",
+                    })
+                elif batt_code == 4:
+                    alerts_to_create.append({
+                        "severity": "critical",
+                        "title": f"UPS batteria ESAURITA: {device_name}",
+                        "message": f"UPS {device_name} ({device_ip}) in stato 'Battery Depleted'. Il sistema si spegnerà al prossimo blackout. Intervento IMMEDIATO.",
+                        "source_type": "vendor_ups_battery_depleted",
+                    })
+            except (ValueError, TypeError):
+                pass
+
+        # --- APC UPS: output source (upsOutputSource: 3=normal, 4=bypass, 5=battery, 6=booster, 7=reducer)
+        out_src = vendor_metrics.get("upsOutputSource")
+        if out_src is not None:
+            try:
+                src_code = int(out_src)
+                if src_code == 5:
+                    alerts_to_create.append({
+                        "severity": "high",
+                        "title": f"UPS su BATTERIA: {device_name}",
+                        "message": f"UPS {device_name} ({device_ip}) sta alimentando il carico dalla batteria (blackout o sottotensione). Runtime limitato.",
+                        "source_type": "vendor_ups_on_battery",
+                    })
+            except (ValueError, TypeError):
+                pass
+
+        # --- APC UPS: battery charge %
+        batt_pct = vendor_metrics.get("upsEstimatedChargeRemaining")
+        batt_crit = profile_thresholds.get("battery_crit_pct", 20)
+        batt_warn = profile_thresholds.get("battery_warn_pct", 50)
+        if batt_pct is not None:
+            try:
+                pct = float(batt_pct)
+                if pct <= batt_crit:
+                    alerts_to_create.append({
+                        "severity": "critical",
+                        "title": f"UPS carica critica ({int(pct)}%): {device_name}",
+                        "message": f"UPS {device_name} ({device_ip}) batteria al {pct}% — soglia critica {batt_crit}%",
+                        "source_type": "vendor_ups_battery_pct",
+                    })
+                elif pct <= batt_warn:
+                    alerts_to_create.append({
+                        "severity": "high",
+                        "title": f"UPS carica bassa ({int(pct)}%): {device_name}",
+                        "message": f"UPS {device_name} ({device_ip}) batteria al {pct}% — warning {batt_warn}%",
+                        "source_type": "vendor_ups_battery_pct",
+                    })
+            except (ValueError, TypeError):
+                pass
+
+        # --- Fortinet: VPN tunnel down (tabella)
+        vpn_tunnels = vendor_metrics.get("fgVpnTunnelStatus") or {}
+        if isinstance(vpn_tunnels, dict):
+            for tname, tstatus in vpn_tunnels.items():
+                try:
+                    tc = int(tstatus)
+                    # Fortinet: 1=down, 2=up
+                    if tc == 1:
+                        alerts_to_create.append({
+                            "severity": "high",
+                            "title": f"VPN tunnel DOWN: {tname} ({device_name})",
+                            "message": f"Tunnel VPN '{tname}' su Fortinet {device_name} ({device_ip}) in stato DOWN. Verifica connettività remota.",
+                            "source_type": "vendor_vpn_down",
+                        })
+                except (ValueError, TypeError):
+                    pass
+
+        # --- Fortinet: HA cluster status (fgHaStatsSyncStatus)
+        ha_sync = vendor_metrics.get("fgHaStatsSyncStatus")
+        if ha_sync is not None:
+            try:
+                hs = int(ha_sync)
+                # 0=out-of-sync, 1=in-sync
+                if hs == 0:
+                    alerts_to_create.append({
+                        "severity": "high",
+                        "title": f"HA cluster OUT-OF-SYNC: {device_name}",
+                        "message": f"Fortinet {device_name} ({device_ip}) HA cluster non sincronizzato. I cambi di config non sono replicati.",
+                        "source_type": "vendor_ha_out_of_sync",
+                    })
+            except (ValueError, TypeError):
+                pass
+
+        # --- Synology: systemStatus (1=Normal, 2=Failed)
+        sys_st = vendor_metrics.get("systemStatus")
+        if sys_st is not None:
+            try:
+                if int(sys_st) == 2:
+                    alerts_to_create.append({
+                        "severity": "critical",
+                        "title": f"System FAILED: {device_name}",
+                        "message": f"Synology {device_name} ({device_ip}) systemStatus=FAILED. Verificare log DSM.",
+                        "source_type": "vendor_synology_system_failed",
+                    })
+            except (ValueError, TypeError):
+                pass
+
+        # --- Synology: diskStatus table (2=Init, 3=SysPart failed, 4=Crashed, 5=Failed)
+        disk_statuses = vendor_metrics.get("diskStatus") or {}
+        if isinstance(disk_statuses, dict):
+            for idx, st in disk_statuses.items():
+                try:
+                    sc = int(st)
+                    if sc in (4, 5):
+                        alerts_to_create.append({
+                            "severity": "critical",
+                            "title": f"Disco {idx} {'CRASHED' if sc == 4 else 'FAILED'}: {device_name}",
+                            "message": f"Disco {idx} su {device_name} ({device_ip}) in stato {sc} (4=Crashed, 5=Failed). Sostituire il disco.",
+                            "source_type": "vendor_disk_failed",
+                        })
+                    elif sc == 3:
+                        alerts_to_create.append({
+                            "severity": "high",
+                            "title": f"Disco {idx} SysPart Failed: {device_name}",
+                            "message": f"Disco {idx} su {device_name} ({device_ip}) ha system partition corrotta. Riparazione necessaria.",
+                            "source_type": "vendor_disk_syspart_failed",
+                        })
+                except (ValueError, TypeError):
+                    pass
+
+        # --- Generic UPS (RFC 1628): RIELLO/XANTO, CyberPower, Eaton, Socomec
+        #     Riusa upsBatteryStatus, upsOutputSource, upsEstimatedChargeRemaining (già evaluated sopra)
+        # --- UPS Runtime residuo
+        runtime = vendor_metrics.get("upsEstimatedMinutesRemaining")
+        if runtime is not None:
+            try:
+                rt = float(runtime)
+                runtime_crit = profile_thresholds.get("runtime_min_crit", 5)
+                runtime_warn = profile_thresholds.get("runtime_min_warn", 15)
+                if rt <= runtime_crit:
+                    alerts_to_create.append({
+                        "severity": "critical",
+                        "title": f"UPS runtime CRITICO ({int(rt)}min): {device_name}",
+                        "message": f"UPS {device_name} ({device_ip}) residuo batteria solo {rt} min — soglia {runtime_crit} min",
+                        "source_type": "vendor_ups_runtime",
+                    })
+                elif rt <= runtime_warn:
+                    alerts_to_create.append({
+                        "severity": "high",
+                        "title": f"UPS runtime basso ({int(rt)}min): {device_name}",
+                        "message": f"UPS {device_name} ({device_ip}) residuo batteria {rt} min — warning {runtime_warn} min",
+                        "source_type": "vendor_ups_runtime",
+                    })
+            except (ValueError, TypeError):
+                pass
+
+        # --- UPS Output Load %
+        load = vendor_metrics.get("upsOutputPercentLoad")
+        if isinstance(load, dict):
+            # Table: take max
+            load_vals = [float(v) for v in load.values() if isinstance(v, (int, float))]
+            if load_vals:
+                load = max(load_vals)
+        if load is not None:
+            try:
+                lv = float(load)
+                load_crit = profile_thresholds.get("load_pct_crit", 90)
+                if lv >= load_crit:
+                    alerts_to_create.append({
+                        "severity": "high",
+                        "title": f"UPS sovraccarico ({int(lv)}%): {device_name}",
+                        "message": f"UPS {device_name} ({device_ip}) carico output {lv}% — soglia {load_crit}%",
+                        "source_type": "vendor_ups_overload",
+                    })
+            except (ValueError, TypeError):
+                pass
+
+        # --- HPE Comware switch: CPU/Memory/Temperature (tabelle indicizzate per modulo)
+        # h3cEntityExtCpuUsage, h3cEntityExtMemUsage, h3cEntityExtTemperature
+        cpu_warn = profile_thresholds.get("cpu_warn_pct", 70)
+        cpu_crit = profile_thresholds.get("cpu_crit_pct", 90)
+        mem_warn = profile_thresholds.get("mem_warn_pct", 80)
+        mem_crit = profile_thresholds.get("mem_crit_pct", 95)
+        temp_warn = profile_thresholds.get("temp_warn_c", 55)
+        temp_crit = profile_thresholds.get("temp_crit_c", 70)
+
+        for metric_key, label in [
+            ("h3cEntityExtCpuUsage", "CPU"),
+            ("cpuUtil", "CPU"),              # HP ProCurve
+            ("cpuUsage", "CPU"),             # QNAP
+            ("cpuUtilization", "CPU"),       # UniFi generic
+            ("mtxrHlProcessorTemperature", "CPU Temp"),  # MikroTik
+        ]:
+            val = vendor_metrics.get(metric_key)
+            if isinstance(val, dict):
+                vals = [float(v) for v in val.values() if isinstance(v, (int, float))]
+                if vals:
+                    val = max(vals)
+            if val is not None:
+                try:
+                    v = float(val)
+                    if "Temp" in label:
+                        if v >= temp_crit:
+                            alerts_to_create.append({
+                                "severity": "critical",
+                                "title": f"{label} critica ({int(v)}°C): {device_name}",
+                                "message": f"{device_name} ({device_ip}) {label} {v}°C — soglia critica {temp_crit}°C",
+                                "source_type": f"vendor_{metric_key}_temp",
+                            })
+                        elif v >= temp_warn:
+                            alerts_to_create.append({
+                                "severity": "high",
+                                "title": f"{label} alta ({int(v)}°C): {device_name}",
+                                "message": f"{device_name} ({device_ip}) {label} {v}°C — warning {temp_warn}°C",
+                                "source_type": f"vendor_{metric_key}_temp",
+                            })
+                    else:
+                        if v >= cpu_crit:
+                            alerts_to_create.append({
+                                "severity": "critical",
+                                "title": f"{label} {int(v)}% (critico): {device_name}",
+                                "message": f"{device_name} ({device_ip}) {label} {v}% — soglia critica {cpu_crit}%",
+                                "source_type": f"vendor_{metric_key}_high",
+                            })
+                        elif v >= cpu_warn:
+                            alerts_to_create.append({
+                                "severity": "high",
+                                "title": f"{label} {int(v)}%: {device_name}",
+                                "message": f"{device_name} ({device_ip}) {label} {v}% — warning {cpu_warn}%",
+                                "source_type": f"vendor_{metric_key}_high",
+                            })
+                except (ValueError, TypeError):
+                    pass
+
+        # --- HPE Comware: fan + power supply state (2=fault)
+        for metric_key, label in [
+            ("h3cFanState", "Fan"),
+            ("h3cPowerState", "Power Supply"),
+            ("psuStatus", "Power Supply"),  # HP ProCurve
+            ("fanStatus", "Fan"),           # HP ProCurve
+            ("tempSensor", "Temp Sensor"),  # HP ProCurve
+        ]:
+            states = vendor_metrics.get(metric_key)
+            if isinstance(states, dict):
+                for idx, st in states.items():
+                    try:
+                        sc = int(st)
+                        # Convention: 1/2=ok, 3+=fault (varies per vendor)
+                        if sc in (3, 4, 5, 6):
+                            alerts_to_create.append({
+                                "severity": "high",
+                                "title": f"{label} {idx} FAULT: {device_name}",
+                                "message": f"{label} {idx} su {device_name} ({device_ip}) in stato fault (code {sc})",
+                                "source_type": f"vendor_{metric_key}_fault",
+                            })
+                    except (ValueError, TypeError):
+                        pass
+
+        # --- MikroTik: PSU + temperature
+        psu1 = vendor_metrics.get("mtxrHlPsu1Status")
+        psu2 = vendor_metrics.get("mtxrHlPsu2Status")
+        for psu_val, psu_name in [(psu1, "PSU1"), (psu2, "PSU2")]:
+            if psu_val is not None:
+                try:
+                    if int(psu_val) == 0:  # MikroTik: 1=ok, 0=fault
+                        alerts_to_create.append({
+                            "severity": "high",
+                            "title": f"{psu_name} FAULT: {device_name}",
+                            "message": f"MikroTik {device_name} ({device_ip}) {psu_name} guasto",
+                            "source_type": f"vendor_mikrotik_{psu_name.lower()}_fault",
+                        })
+                except (ValueError, TypeError):
+                    pass
+
+        mikro_temp = vendor_metrics.get("mtxrHlTemperature")
+        if mikro_temp is not None:
+            try:
+                # MikroTik reports temperature in °C * 10 (decicelsius)
+                t = float(mikro_temp) / 10 if float(mikro_temp) > 200 else float(mikro_temp)
+                if t >= temp_crit:
+                    alerts_to_create.append({
+                        "severity": "critical",
+                        "title": f"MikroTik temp critica ({int(t)}°C): {device_name}",
+                        "message": f"MikroTik {device_name} ({device_ip}) temp {t}°C — soglia {temp_crit}°C",
+                        "source_type": "vendor_mikrotik_temp",
+                    })
+            except (ValueError, TypeError):
+                pass
+
+        # --- Cisco IOS: temperature status (1=normal, 2=warning, 3=critical, 4=shutdown)
+        cisco_temps = vendor_metrics.get("ciscoEnvMonTemperatureStatusValue")
+        if isinstance(cisco_temps, dict):
+            for idx, tstate in cisco_temps.items():
+                try:
+                    s = int(tstate)
+                    if s >= 3:
+                        alerts_to_create.append({
+                            "severity": "critical" if s >= 4 else "high",
+                            "title": f"Cisco temp sensor {idx} {'SHUTDOWN' if s>=4 else 'CRITICAL'}: {device_name}",
+                            "message": f"Cisco {device_name} ({device_ip}) sensor {idx} stato {s} (1=normal, 3=critical, 4=shutdown)",
+                            "source_type": "vendor_cisco_temp",
+                        })
+                except (ValueError, TypeError):
+                    pass
+
+        # --- Cisco CPU 5min
+        cpu5 = vendor_metrics.get("cpmCPUTotal5min")
+        if isinstance(cpu5, dict):
+            vals = [float(v) for v in cpu5.values() if isinstance(v, (int, float))]
+            if vals: cpu5 = max(vals)
+        if cpu5 is not None:
+            try:
+                v = float(cpu5)
+                if v >= cpu_crit:
+                    alerts_to_create.append({
+                        "severity": "critical",
+                        "title": f"Cisco CPU 5min {int(v)}%: {device_name}",
+                        "message": f"Cisco {device_name} ({device_ip}) CPU 5min avg {v}% — soglia {cpu_crit}%",
+                        "source_type": "vendor_cisco_cpu",
+                    })
+            except (ValueError, TypeError):
+                pass
+
+        # --- QNAP SMART status (GOOD / WARNING / ERROR)
+        smart_map = vendor_metrics.get("hddSMART")
+        if isinstance(smart_map, dict):
+            for idx, smart in smart_map.items():
+                sv = str(smart).upper().strip()
+                if sv == "ERROR":
+                    alerts_to_create.append({
+                        "severity": "critical",
+                        "title": f"Disco {idx} SMART ERROR: {device_name}",
+                        "message": f"QNAP {device_name} ({device_ip}) disco {idx} SMART ERROR — sostituire.",
+                        "source_type": "vendor_qnap_smart",
+                    })
+                elif sv == "WARNING":
+                    alerts_to_create.append({
+                        "severity": "high",
+                        "title": f"Disco {idx} SMART WARNING: {device_name}",
+                        "message": f"QNAP {device_name} ({device_ip}) disco {idx} SMART WARNING — programmare sostituzione.",
+                        "source_type": "vendor_qnap_smart",
+                    })
+
+        # --- Zyxel: già parziale (OID_zyxelCpuCurrent) nel polling Poll-Device
+        zyxel_cpu = vendor_metrics.get("zyxelCpu5min") or vendor_metrics.get("zyxelCpuCurrent")
+        if zyxel_cpu is not None:
+            try:
+                v = float(zyxel_cpu)
+                if v >= cpu_crit:
+                    alerts_to_create.append({
+                        "severity": "critical",
+                        "title": f"Zyxel CPU {int(v)}%: {device_name}",
+                        "message": f"Zyxel {device_name} ({device_ip}) CPU {v}% — soglia {cpu_crit}%",
+                        "source_type": "vendor_zyxel_cpu",
+                    })
+            except (ValueError, TypeError):
+                pass
+
+        zyxel_ram = vendor_metrics.get("zyxelRamUsage")
+        if zyxel_ram is not None:
+            try:
+                v = float(zyxel_ram)
+                if v >= mem_crit:
+                    alerts_to_create.append({
+                        "severity": "critical",
+                        "title": f"Zyxel RAM {int(v)}%: {device_name}",
+                        "message": f"Zyxel {device_name} ({device_ip}) RAM {v}% — soglia {mem_crit}%",
+                        "source_type": "vendor_zyxel_ram",
+                    })
+            except (ValueError, TypeError):
+                pass
+
+
     # --- Device identity change detection (sysDescr / sysName / MACs)
     # If the sysDescr or sysName of a known IP changes significantly, it may mean
     # the device was replaced, is a rogue device (ARP spoofing) or swapped hardware.
@@ -877,6 +1303,7 @@ async def connector_device_report(request: Request):
             "ping_stats": dev.get("ping_stats", None),
             "open_ports": dev.get("open_ports", None),
             "http_details": dev.get("http_details", None),
+            "vendor_metrics": dev.get("vendor_metrics", None),
             "last_poll": dev.get("poll_timestamp", now_iso),
             "updated_at": now_iso
         }

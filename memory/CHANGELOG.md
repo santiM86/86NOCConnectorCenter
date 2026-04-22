@@ -1,29 +1,42 @@
 # CHANGELOG — 86BIT ARGUS Center
 
-## 2026-04-22 — RMT Phase 2 (Remote Browser v3.4.0 LIVE)
-- **Connector v3.4.0** published (SHA `0a422583...5e5509`, 303 KB):
-  - **Nuovo modulo** `/app/noc-connector/prg/src/remote_browser.ps1` (~400 righe):
-    - Auto-discover Edge (ProgramFiles, LocalAppData) / Chrome fallback
-    - Lancio headless con `--headless=new --remote-debugging-port=<random>`, `--ignore-certificate-errors`, `--disable-web-security`, `--user-data-dir=<temp_per_sessione>`, `--window-size=1600,900`
-    - Discovery CDP via `http://127.0.0.1:<port>/json/version` + `PUT /json/new?<deviceUrl>`
-    - **Dual WebSocket simultaneo**: CDP ↔ ARGUS con 2 Runspace paralleli
-    - `Page.enable` / `Runtime.enable` / `Network.enable` / `Page.startScreencast` (JPEG q=60, 1600x900, everyNthFrame=1)
-    - Handler `Page.screencastFrame` con **ACK obbligatorio** (`Page.screencastFrameAck`) altrimenti screencast si ferma dopo pochi frame → relay `{type:frame, data, ts, w, h}` ad ARGUS
-    - Handler inverso da ARGUS: traduce `{mouse/key/scroll}` in `Input.dispatchMouseEvent` / `Input.dispatchKeyEvent` / `Input.dispatchMouseWheel`
-    - Modifiers mapping CDP: alt=1, ctrl=2, meta=4, shift=8 (bitmask sommata)
-    - Watchdog inattività 30 min + max 2h sessione + cleanup user-data-dir + kill Edge orphan
-  - **Handler `remote_browser_start`** in `connector.ps1` (main pending_commands loop):
-    - Estrae session_id/device_ip/port/token dal payload
-    - Deriva URL device (https o http su porte 80/8080/8008)
-    - Lancia `remote_browser.ps1` in processo separato con `Start-Process -WindowStyle Hidden`
-    - Log per sessione in `$env:ProgramData\86NocConnector\rmt_<sid>.log`
-  - **Backend** `console_rmt.py` aggiornato: `pending_commands.payload.token` ora incluso esplicitamente (il connector lo usa senza parsare ws_relay_url)
-  - Include TUTTI i fix v3.3.7: Watchdog auto-recovery servizio, regex HTML5 unquoted, Install-Update con 4 metodi fallback + verifica PID-alive.
+## 2026-04-22 — FASE B COMPLETATA: Vendor-Specific SNMP Monitoring + RMT HTTP Polling
 
-## 2026-04-22 — RMT Phase 1
-- Backend `/app/backend/routes/console_rmt.py` — POST /session, WS relay operator/connector, audit.
-- Frontend `RemoteBrowserModal.js` + pulsante **RMT** (fuchsia) in WebConsoleTabs toolbar.
-- SW cache v7→v8.
+### 🚀 Fase B — Vendor Alerts (Connector v3.4.4)
+**Backend** `routes/connector.py`:
+- `_check_device_thresholds` esteso con block Fase B (righe ~770-900)
+- Alert auto-generati da `vendor_metrics`:
+  - **Synology**: `raidStatus` (11=Degraded, 12=Crashed), `diskTemperature` (table walk)
+  - **APC UPS**: `upsBatteryStatus` (3=Low, 4=Depleted), `upsOutputSource` (5=On Battery), `upsEstimatedChargeRemaining` %
+  - **Fortinet**: `fgVpnTunnelStatus` (table, 1=down), `fgHaStatsSyncStatus` (0=out-of-sync)
+- `vendor_metrics` salvato in `device_poll_status` per frontend
+- Backend check fallback senza profilo: alert RAID/UPS critical sempre generati
 
-## 2026-04-21 Sessione precedente
-(Vedi PRD.md per dettagli completi: Vendor Alerts Phase A, 13 Device Profiles, Runbook Auto-Match, Web Console V4, v3.3.5 Dynamic Port Whitelist, v3.3.6 HTML5 regex fix, v3.3.7 Watchdog.)
+**Connector v3.4.4** (SHA `c8b14ac3...06262d4`, 297 KB):
+- Nuova funzione `Poll-VendorOids` in `connector.ps1`
+- Legge `$dev.vendor_snmp_targets` (scalars + tables) dal heartbeat
+- Esegue `Get-SnmpValue` per scalars, `Get-SnmpWalk` per tables
+- Allega risultati come `vendor_metrics` in `/connector/device-report`
+- Testato end-to-end via curl: 4 alert creati correttamente
+
+### 🖥️ RMT HTTP Polling (connector v3.4.3)
+- `routes/console_rmt_v2.py` — endpoint header-based auth (bypass WAF path issues)
+- `routes/console_rmt_http.py` — SSE + polling fallback
+- `RemoteBrowserModal.js` — EventSource + axios polling, canvas HTML5
+- `remote_browser.ps1` — Edge CDP headless screencast, 2 runspace (CDP reader + input poller)
+- Fix Edge SYSTEM service: `--no-sandbox`, `--disable-dev-shm-usage`, user-data-dir in `C:\Windows\Temp`
+
+### 🔧 Fix stabilità precedenti
+- `Register-ServiceWatchdog` auto-recovery (v3.3.7)
+- Regex HTML5 unquoted per inline CSS/JS (v3.3.6)
+- Install-Update 4 metodi fallback + verifica PID-alive (v3.3.6)
+
+## ⏭️ Prossimi step backlog
+- **UI Dashboard per vendor_metrics**: pagine device-details con tab Volumi/RAID (Synology), Battery/Load (UPS), VPN/HA (Fortinet)
+- **Notifiche Telegram/Email** per alert vendor-specific
+- **Analytics MTTA/MTTR/MTTD**
+- **Multi-tenant white-label**
+- **Vulnerability Assessment CVE/EoL**
+
+## 📅 Storia precedente
+Vedi PRD.md per Web Console V4, Device Profiles 13-vendor, Runbook Auto-Match, Dynamic Port Whitelist.

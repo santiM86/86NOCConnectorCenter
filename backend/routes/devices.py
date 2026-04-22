@@ -231,6 +231,48 @@ async def get_device(device_id: str, current_user: dict = Depends(get_current_us
     return DeviceResponse(**device)
 
 
+@router.get("/devices/by-ip/{device_ip}/vendor-details")
+async def device_vendor_details(device_ip: str, current_user: dict = Depends(get_current_user)):
+    """Returns full vendor-specific telemetry (vendor_metrics + profile info) for a device.
+    Used by the vendor-specific detail pages in the frontend.
+    """
+    ps = await db.device_poll_status.find_one({"device_ip": device_ip}, {"_id": 0})
+    md = await db.managed_devices.find_one({"ip": device_ip}, {"_id": 0})
+    if not ps and not md:
+        raise HTTPException(status_code=404, detail="Device non trovato")
+
+    profile_key = (md or {}).get("profile_key") or (ps or {}).get("profile_key")
+    profile_data = None
+    if profile_key:
+        try:
+            from device_profiles import get_profile
+            profile_data = get_profile(profile_key)
+        except Exception:
+            profile_data = None
+
+    return {
+        "device_ip": device_ip,
+        "name": (md or ps or {}).get("name") or (ps or {}).get("device_name") or device_ip,
+        "profile_key": profile_key,
+        "profile": {
+            "vendor": (profile_data or {}).get("vendor"),
+            "family": (profile_data or {}).get("family"),
+            "label": (profile_data or {}).get("label"),
+            "thresholds": (profile_data or {}).get("thresholds"),
+        } if profile_data else None,
+        "vendor_metrics": (ps or {}).get("vendor_metrics") or {},
+        "cpu_usage": (ps or {}).get("cpu_usage"),
+        "memory_usage": (ps or {}).get("memory_usage"),
+        "temperature": (ps or {}).get("temperature"),
+        "hardware": (ps or {}).get("hardware"),
+        "last_poll": (ps or {}).get("last_poll"),
+        "status": (ps or {}).get("status"),
+    }
+
+
+@router.get("/clients/{client_id}/ilo-health")
+
+
 @router.post("/devices/{device_id}/credentials")
 async def set_device_credentials(device_id: str, credentials: DeviceCredentials, current_user: dict = Depends(get_current_user)):
     device = await db.devices.find_one({"id": device_id}, {"_id": 0})

@@ -936,6 +936,87 @@ if (Test-Path $pollerPath) {
     . $pollerPath
 }
 
+# ==================== FASE B: VENDOR-SPECIFIC SNMP POLLING ====================
+# Esegue SNMP GET/WALK sugli OID vendor-specific forniti dal backend via heartbeat.
+# Il backend popola $dev.vendor_snmp_targets = @{
+#   scalars: @{ "metricName"="OID"; ... }      # Singolo valore per metrica
+#   tables:  @{ "metricName"="OID_base"; ... } # SNMP walk sotto-albero
+# }
+# Ritorna hashtable { "metricName" = value (scalar) OR { "idx1"=val, "idx2"=val } (table) }
+function Poll-VendorOids([string]$ip, [string]$community, $vendorTargets) {
+    $result = @{}
+    if (-not $vendorTargets) { return $result }
+
+    # --- Scalars: GET singolo OID
+    if ($vendorTargets.scalars) {
+        foreach ($metric in $vendorTargets.scalars.PSObject.Properties) {
+            $mname = $metric.Name
+            $oid = [string]$metric.Value
+            if (-not $oid) { continue }
+            try {
+                $v = Get-SnmpValue $ip $community $oid
+                if ($null -ne $v -and $v -ne "") {
+                    # Try to parse as number if looks numeric
+                    $strV = [string]$v
+                    if ($strV -match '^-?\d+(\.\d+)?$') {
+                        $result[$mname] = [double]$strV
+                    } else {
+                        $result[$mname] = $strV
+                    }
+                }
+            } catch {
+                # Non critical, continua
+            }
+        }
+    }
+
+    # --- Tables: SNMP walk (Get-SnmpWalk exists in snmp_poller.ps1)
+    if ($vendorTargets.tables) {
+        foreach ($metric in $vendorTargets.tables.PSObject.Properties) {
+            $mname = $metric.Name
+            $baseOid = [string]$metric.Value
+            if (-not $baseOid) { continue }
+            try {
+                # Use Get-SnmpValues-Walk or Get-SnmpWalk (depends on poller version)
+                $walkResult = $null
+                if (Get-Command Get-SnmpWalk -ErrorAction SilentlyContinue) {
+                    $walkResult = Get-SnmpWalk $ip $community $baseOid
+                } elseif (Get-Command Get-SnmpValues-Walk -ErrorAction SilentlyContinue) {
+                    $walkResult = Get-SnmpValues-Walk $ip $community $baseOid
+                } else {
+                    # Minimal fallback: try to get a few indexed values .1 .2 .3 ...
+                    $walkResult = @{}
+                    for ($i = 1; $i -le 32; $i++) {
+                        try {
+                            $val = Get-SnmpValue $ip $community "$baseOid.$i"
+                            if ($null -ne $val -and $val -ne "") { $walkResult[$i] = $val }
+                        } catch { break }
+                    }
+                }
+                if ($walkResult -and $walkResult.Count -gt 0) {
+                    $table = @{}
+                    if ($walkResult -is [System.Collections.IDictionary]) {
+                        foreach ($k in $walkResult.Keys) {
+                            $v = $walkResult[$k]
+                            $strV = [string]$v
+                            if ($strV -match '^-?\d+(\.\d+)?$') {
+                                $table[[string]$k] = [double]$strV
+                            } else {
+                                $table[[string]$k] = $strV
+                            }
+                        }
+                    }
+                    if ($table.Count -gt 0) { $result[$mname] = $table }
+                }
+            } catch {
+                # Non critical
+            }
+        }
+    }
+
+    return $result
+}
+
 function Send-DeviceReport($config, $devices) {
     $reportDevices = @()
     foreach ($dev in $devices) {
@@ -943,7 +1024,6 @@ function Send-DeviceReport($config, $devices) {
         $devName = if ($dev.name) { $dev.name } else { $ip }
         $monitorType = if ($dev.monitor_type) { $dev.monitor_type } else { "snmp" }
         $community = if ($dev.community) { $dev.community } else { "public" }
-        
         if ($monitorType -eq "ping" -or $monitorType -eq "http") {
             # Ping/HTTP device - use cached poll results with advanced metrics
             $reachable = $script:DeviceUp.ContainsKey($ip) -and $script:DeviceUp[$ip]
@@ -1040,6 +1120,20 @@ function Send-DeviceReport($config, $devices) {
                 
                 # Interface traffic (bandwidth, speed, errors)
                 try { $trafficData = Poll-InterfaceTraffic $ip $community } catch {}
+
+                # FASE B: Vendor-specific OIDs (RAID status, UPS battery, VPN tunnels, etc.)
+                $vendorMetrics = $null
+                if ($dev.vendor_snmp_targets) {
+                    try {
+                        Write-Log "  Vendor SNMP polling $devName ($ip)..." "DEBUG"
+                        $vendorMetrics = Poll-VendorOids $ip $community $dev.vendor_snmp_targets
+                        if ($vendorMetrics -and $vendorMetrics.Count -gt 0) {
+                            Write-Log "  Vendor metrics raccolte per ${devName}: $($vendorMetrics.Count) metriche" "INFO"
+                        }
+                    } catch {
+                        Write-Log "  Errore vendor polling ${ip}: $($_.Exception.Message)" "WARN"
+                    }
+                }
             }
             
             # Enrich ports with traffic data
@@ -1079,6 +1173,11 @@ function Send-DeviceReport($config, $devices) {
                 if ($extMetrics.firewall) {
                     $deviceReport.firewall = $extMetrics.firewall
                 }
+            }
+
+            # FASE B: Vendor-specific metrics
+            if ($vendorMetrics -and $vendorMetrics.Count -gt 0) {
+                $deviceReport.vendor_metrics = $vendorMetrics
             }
             
             # Redfish/iLO deep polling

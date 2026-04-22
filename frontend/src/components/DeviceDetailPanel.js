@@ -4,6 +4,7 @@ import { API } from "@/App";
 import { X, Warning, WifiHigh, WifiSlash, CircleNotch, Globe, PlusCircle, ArrowSquareOut } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import { SnmpConfigPanel } from "@/components/SnmpConfigPanel";
+import { VendorDetailsPanel } from "@/components/VendorDetailsPanel";
 
 const SEVERITY_COLORS = {
   critical: { bg: "bg-red-500/20", text: "text-red-400", border: "border-red-500/30" },
@@ -177,6 +178,9 @@ export function DeviceDetailPanel({ clientId, deviceIp, deviceData, onClose, onD
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
+        {hasIp && !isEndpoint && (
+          <VendorDetailsPanel deviceIp={deviceIp} />
+        )}
         {loading && !isEndpoint ? (
           <div className="flex items-center justify-center py-8">
             <CircleNotch size={24} className="animate-spin text-indigo-400" />
