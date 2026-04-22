@@ -8,7 +8,7 @@ Collections:
   syslog_events:  {device_ip, facility, severity, host, message, ts}  TTL 14 giorni
   snmp_traps:     {device_ip, community, trap_oid, varbinds, raw_b64, ts}  TTL 14 giorni
 """
-from fastapi import APIRouter, HTTPException, Header
+from fastapi import APIRouter, HTTPException, Header, Request
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List
 import re
@@ -54,15 +54,15 @@ async def _ensure_indexes():
 
 @router.post("/syslog-batch")
 async def ingest_syslog_batch(
+    request: Request,
     payload: dict,
-    x_api_key: Optional[str] = Header(None),
 ):
     """Connector invia batch syslog events ogni 30s.
     payload: {hostname, events: [{device_ip, raw, received_at}]}
     Parse RFC 3164/5424 e salva in syslog_events. Genera alert per pattern noti.
     """
-    connector = await verify_connector_request(x_api_key)
-    client_id = connector.get("client_id")
+    connector = await verify_connector_request(request)
+    client_id = connector.get("client_id") or connector.get("id")
     events = payload.get("events") or []
     if not events:
         return {"stored": 0}
@@ -153,15 +153,15 @@ async def ingest_syslog_batch(
 
 @router.post("/snmp-trap-batch")
 async def ingest_trap_batch(
+    request: Request,
     payload: dict,
-    x_api_key: Optional[str] = Header(None),
 ):
     """Connector invia batch SNMP traps (raw UDP payload base64).
     payload: {hostname, traps: [{device_ip, raw_b64, community?, received_at}]}
     Salva in snmp_traps. Se ha parsed info (trap_oid, varbinds) li indicizza.
     """
-    connector = await verify_connector_request(x_api_key)
-    client_id = connector.get("client_id")
+    connector = await verify_connector_request(request)
+    client_id = connector.get("client_id") or connector.get("id")
     traps = payload.get("traps") or []
     if not traps:
         return {"stored": 0}

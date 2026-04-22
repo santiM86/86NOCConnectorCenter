@@ -329,6 +329,26 @@ In attesa di scelta provider e credenziali. **Push notifications: DONE (Web Push
 - P2: LDAP/Active Directory integration
 - P3: Zyxel Nebula Cloud API
 
+### Time-Series Metrics + Syslog Viewer + SNMP Traps (2026-04-22 — iteration_59)
+**Richiesta utente**: "procedi con Sessione 2 SNMP Trap receiver, Sessione 3 Syslog receiver, Sessione 4 Time-series + grafici".
+
+**Backend**:
+- `routes/metric_history.py` — collection `metric_history` con TTL 30gg. `record_metrics(client_id, device_ip, dev)` chiamata dentro `POST /api/connector/device-report` (connector.py:1388). Endpoint `GET /api/devices/by-ip/{ip}/metrics?metric=cpu&period=24h` con bucket $mod dinamico (1h/6h/24h/7d/30d). Estrae cpu/memory/temperature/response_ms/ups_charge_pct/ups_runtime_min/ups_load_pct/sessions + metriche vendor (Synology disk_temp, Fortinet fgSysCpuUsage, HPE H3C cpuUsage).
+- `routes/syslog_trap.py` — collection `syslog_events` e `snmp_traps` con TTL 14gg. Endpoint `GET /api/connector/syslog?device_ip&severity_max&limit` e `GET /api/connector/snmp-traps?device_ip&limit`. Endpoint batch `POST /api/connector/syslog-batch` e `POST /api/connector/snmp-trap-batch` per il connector (richiedono X-API-Key + HMAC).
+- `routes/ingestion.py` — gli endpoint esistenti `/api/ingest/syslog` e `/api/ingest/snmp` (usati dal connector v3.4.5 già in field) ora scrivono ANCHE in `syslog_events` / `snmp_traps` in aggiunta agli alert. Così l'Syslog/Trap Viewer funziona senza update connector.
+- Pattern-based alerting nel syslog-batch per 11 regex (authentication fail, link down, config change, power issue, overheat, fan fault, panic/crash, disk fail, memory error).
+
+**Frontend** (3 nuove pagine):
+- `/device-metrics` → `DeviceMetricsPage.js` — selettore client/device/metric/periodo (1h/6h/24h/7d/30d), stat cards (ultimo/media/picco), grafico recharts area+line con avg/min/max, refresh 60s. Supporta `?ip=` URL param per pre-select.
+- `/syslog` → `SyslogPage.js` — tabella eventi con filtri device_ip/severity (0-7)/text search, colonne timestamp/severity badge/device/host/facility/message, auto-refresh 15s.
+- `/snmp-traps` → `TrapsPage.js` — tabella traps + pannello dettaglio varbinds JSON con formatting.
+- Sidebar `Operazioni` aggiornata: "Trend Metriche" (ChartLine), "Syslog Viewer" (ListChecks), "SNMP Traps" (Pulse).
+- ClientOverviewPage tab Dispositivi: aggiunto bottone ChartLine indigo (`data-testid=device-trend-{ip}`) accanto a "Configura profilo" che naviga a `/device-metrics?ip={ip}`.
+
+**Bug fix collaterale**: `VendorDetailsPanel.js` aveva import `Activity` e `Battery` da `@phosphor-icons/react` v2.1.10 che non sono esportati (solo `ActivityIcon`). Alias workaround: `BatteryMedium as Battery, Pulse as Activity`.
+
+**Test** (iteration_59): Backend 18/20 (90%) — i 2 fallimenti erano minor error handling sui batch endpoint (ora fissato, 401 correttamente ritornato). Frontend 100% — tutte e 3 le pagine caricano, navigazione sidebar OK, bottone trend per device OK.
+
 ### Kaseya+ParkPlace Enterprise Feature Pack (2026-04-21 sera) — Automated Remediation, Hardware Lifecycle, NOC Intelligence
 Su richiesta utente ("procedi con tutto"), clonate 3 funzionalità top-tier da Kaseya NOC Services e Park Place Technologies ParkView:
 
