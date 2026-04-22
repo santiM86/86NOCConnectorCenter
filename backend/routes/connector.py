@@ -767,6 +767,153 @@ async def _check_device_thresholds(client_id: str, dev: dict, prev_status: Optio
                 "source_type": "threshold_port_down",
             })
 
+    # --- FASE B: Vendor-specific metrics evaluation
+    # Alert sui valori critici anche se il profilo non è associato (hard-coded fallback thresholds).
+    vendor_metrics = dev.get("vendor_metrics") or {}
+    if vendor_metrics:
+        # Synology RAID / Disk / Temperature
+        # --- Synology: disk / RAID status
+        raid_status = vendor_metrics.get("raidStatus")
+        if raid_status is not None:
+            # Synology convention: 1=Normal, 2=Repairing, 3=Migrating, 4=Expanding, 5=Deleting,
+            # 6=Creating, 7=RaidSyncing, 8=RaidParityChecking, 9=RaidAssembling,
+            # 10=Canceling, 11=Degraded, 12=Crashed
+            raid_code = int(raid_status) if isinstance(raid_status, (int, float)) else -1
+            if raid_code == 11:
+                alerts_to_create.append({
+                    "severity": "high",
+                    "title": f"RAID DEGRADED: {device_name}",
+                    "message": f"Volume RAID su {device_name} ({device_ip}) in stato Degraded (disco guasto). Azione: controllare lo stato dei dischi e sostituire quello rotto.",
+                    "source_type": "vendor_raid_degraded",
+                })
+            elif raid_code == 12:
+                alerts_to_create.append({
+                    "severity": "critical",
+                    "title": f"RAID CRASHED: {device_name}",
+                    "message": f"Volume RAID su {device_name} ({device_ip}) in stato Crashed (perdita dati possibile). Intervento URGENTE richiesto.",
+                    "source_type": "vendor_raid_crashed",
+                })
+
+        # --- Synology: disk temperature (table walk: diskTemperature)
+        disk_temp_crit = profile_thresholds.get("disk_temp_crit_c", 60)
+        disk_temp_warn = profile_thresholds.get("disk_temp_warn_c", 50)
+        disk_temps = vendor_metrics.get("diskTemperature") or {}
+        if isinstance(disk_temps, dict):
+            for idx, t in disk_temps.items():
+                try:
+                    tv = float(t)
+                    if tv >= disk_temp_crit:
+                        alerts_to_create.append({
+                            "severity": "critical",
+                            "title": f"Disco {idx} temp critica ({int(tv)}°C): {device_name}",
+                            "message": f"Disco {idx} di {device_name} ({device_ip}) a {tv}°C — soglia critica {disk_temp_crit}°C",
+                            "source_type": "vendor_disk_temp",
+                        })
+                    elif tv >= disk_temp_warn:
+                        alerts_to_create.append({
+                            "severity": "high",
+                            "title": f"Disco {idx} temp alta ({int(tv)}°C): {device_name}",
+                            "message": f"Disco {idx} di {device_name} ({device_ip}) a {tv}°C — warning {disk_temp_warn}°C",
+                            "source_type": "vendor_disk_temp",
+                        })
+                except (ValueError, TypeError):
+                    pass
+
+        # --- APC UPS: battery status (upsBatteryStatus OID enum: 1=unknown, 2=batteryNormal, 3=batteryLow, 4=batteryDepleted)
+        ups_batt = vendor_metrics.get("upsBatteryStatus")
+        if ups_batt is not None:
+            try:
+                batt_code = int(ups_batt)
+                if batt_code == 3:
+                    alerts_to_create.append({
+                        "severity": "high",
+                        "title": f"UPS batteria BASSA: {device_name}",
+                        "message": f"UPS {device_name} ({device_ip}) in stato 'Battery Low'. Verificare carica e programmare test batteria.",
+                        "source_type": "vendor_ups_battery_low",
+                    })
+                elif batt_code == 4:
+                    alerts_to_create.append({
+                        "severity": "critical",
+                        "title": f"UPS batteria ESAURITA: {device_name}",
+                        "message": f"UPS {device_name} ({device_ip}) in stato 'Battery Depleted'. Il sistema si spegnerà al prossimo blackout. Intervento IMMEDIATO.",
+                        "source_type": "vendor_ups_battery_depleted",
+                    })
+            except (ValueError, TypeError):
+                pass
+
+        # --- APC UPS: output source (upsOutputSource: 3=normal, 4=bypass, 5=battery, 6=booster, 7=reducer)
+        out_src = vendor_metrics.get("upsOutputSource")
+        if out_src is not None:
+            try:
+                src_code = int(out_src)
+                if src_code == 5:
+                    alerts_to_create.append({
+                        "severity": "high",
+                        "title": f"UPS su BATTERIA: {device_name}",
+                        "message": f"UPS {device_name} ({device_ip}) sta alimentando il carico dalla batteria (blackout o sottotensione). Runtime limitato.",
+                        "source_type": "vendor_ups_on_battery",
+                    })
+            except (ValueError, TypeError):
+                pass
+
+        # --- APC UPS: battery charge %
+        batt_pct = vendor_metrics.get("upsEstimatedChargeRemaining")
+        batt_crit = profile_thresholds.get("battery_crit_pct", 20)
+        batt_warn = profile_thresholds.get("battery_warn_pct", 50)
+        if batt_pct is not None:
+            try:
+                pct = float(batt_pct)
+                if pct <= batt_crit:
+                    alerts_to_create.append({
+                        "severity": "critical",
+                        "title": f"UPS carica critica ({int(pct)}%): {device_name}",
+                        "message": f"UPS {device_name} ({device_ip}) batteria al {pct}% — soglia critica {batt_crit}%",
+                        "source_type": "vendor_ups_battery_pct",
+                    })
+                elif pct <= batt_warn:
+                    alerts_to_create.append({
+                        "severity": "high",
+                        "title": f"UPS carica bassa ({int(pct)}%): {device_name}",
+                        "message": f"UPS {device_name} ({device_ip}) batteria al {pct}% — warning {batt_warn}%",
+                        "source_type": "vendor_ups_battery_pct",
+                    })
+            except (ValueError, TypeError):
+                pass
+
+        # --- Fortinet: VPN tunnel down (tabella)
+        vpn_tunnels = vendor_metrics.get("fgVpnTunnelStatus") or {}
+        if isinstance(vpn_tunnels, dict):
+            for tname, tstatus in vpn_tunnels.items():
+                try:
+                    tc = int(tstatus)
+                    # Fortinet: 1=down, 2=up
+                    if tc == 1:
+                        alerts_to_create.append({
+                            "severity": "high",
+                            "title": f"VPN tunnel DOWN: {tname} ({device_name})",
+                            "message": f"Tunnel VPN '{tname}' su Fortinet {device_name} ({device_ip}) in stato DOWN. Verifica connettività remota.",
+                            "source_type": "vendor_vpn_down",
+                        })
+                except (ValueError, TypeError):
+                    pass
+
+        # --- Fortinet: HA cluster status (fgHaStatsSyncStatus)
+        ha_sync = vendor_metrics.get("fgHaStatsSyncStatus")
+        if ha_sync is not None:
+            try:
+                hs = int(ha_sync)
+                # 0=out-of-sync, 1=in-sync
+                if hs == 0:
+                    alerts_to_create.append({
+                        "severity": "high",
+                        "title": f"HA cluster OUT-OF-SYNC: {device_name}",
+                        "message": f"Fortinet {device_name} ({device_ip}) HA cluster non sincronizzato. I cambi di config non sono replicati.",
+                        "source_type": "vendor_ha_out_of_sync",
+                    })
+            except (ValueError, TypeError):
+                pass
+
+
     # --- Device identity change detection (sysDescr / sysName / MACs)
     # If the sysDescr or sysName of a known IP changes significantly, it may mean
     # the device was replaced, is a rogue device (ARP spoofing) or swapped hardware.
@@ -877,6 +1024,7 @@ async def connector_device_report(request: Request):
             "ping_stats": dev.get("ping_stats", None),
             "open_ports": dev.get("open_ports", None),
             "http_details": dev.get("http_details", None),
+            "vendor_metrics": dev.get("vendor_metrics", None),
             "last_poll": dev.get("poll_timestamp", now_iso),
             "updated_at": now_iso
         }
