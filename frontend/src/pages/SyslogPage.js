@@ -100,7 +100,7 @@ export default function SyslogPage() {
           <div className="text-center py-12 text-[var(--text-secondary)]">
             Nessun evento syslog ricevuto.<br />
             <span className="text-xs">
-              Assicurati che il connector v3.4.6+ sia installato e che i dispositivi abbiano il forwarding syslog verso l'IP del connector (UDP 514).
+              Assicurati che sui dispositivi sia attivo il forwarding syslog verso l'IP del connector sulla porta UDP 514.
             </span>
           </div>
         )}
