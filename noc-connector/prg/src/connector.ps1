@@ -960,75 +960,116 @@ if (Test-Path $pollerPath) {
 # Ritorna hashtable { "metricName" = value (scalar) OR { "idx1"=val, "idx2"=val } (table) }
 function Poll-VendorOids([string]$ip, [string]$community, $vendorTargets) {
     $result = @{}
-    if (-not $vendorTargets) { return $result }
+    if (-not $vendorTargets) {
+        Write-Log "  [VENDOR] ${ip}: vendorTargets NULL (no profile assigned)" "DEBUG"
+        return $result
+    }
+
+    $scalarsList = @()
+    $tablesList = @()
+    # Supporta sia PSCustomObject (da JSON) sia Hashtable — defensivo
+    try {
+        if ($vendorTargets.scalars) {
+            if ($vendorTargets.scalars -is [System.Collections.IDictionary]) {
+                $scalarsList = @($vendorTargets.scalars.GetEnumerator())
+            } else {
+                $scalarsList = @($vendorTargets.scalars.PSObject.Properties)
+            }
+        }
+        if ($vendorTargets.tables) {
+            if ($vendorTargets.tables -is [System.Collections.IDictionary]) {
+                $tablesList = @($vendorTargets.tables.GetEnumerator())
+            } else {
+                $tablesList = @($vendorTargets.tables.PSObject.Properties)
+            }
+        }
+    } catch {
+        Write-Log "  [VENDOR] ${ip}: errore enum targets: $($_.Exception.Message)" "WARN"
+        return $result
+    }
+    $scalarsCount = $scalarsList.Count
+    $tablesCount = $tablesList.Count
+    Write-Log "  [VENDOR] ${ip}: ricevuti $scalarsCount scalars + $tablesCount tables dal NOC" "INFO"
 
     # --- Scalars: GET singolo OID
-    if ($vendorTargets.scalars) {
-        foreach ($metric in $vendorTargets.scalars.PSObject.Properties) {
-            $mname = $metric.Name
-            $oid = [string]$metric.Value
-            if (-not $oid) { continue }
-            try {
-                $v = Get-SnmpValue $ip $community $oid
-                if ($null -ne $v -and $v -ne "") {
-                    # Try to parse as number if looks numeric
-                    $strV = [string]$v
-                    if ($strV -match '^-?\d+(\.\d+)?$') {
-                        $result[$mname] = [double]$strV
-                    } else {
-                        $result[$mname] = $strV
-                    }
+    $scalarsOk = 0
+    $scalarsFail = 0
+    foreach ($metric in $scalarsList) {
+        $mname = $metric.Name
+        $oid = [string]$metric.Value
+        if (-not $oid) { continue }
+        try {
+            $v = Get-SnmpValue $ip $community $oid
+            if ($null -ne $v -and $v -ne "") {
+                # Try to parse as number if looks numeric
+                $strV = [string]$v
+                if ($strV -match '^-?\d+(\.\d+)?$') {
+                    $result[$mname] = [double]$strV
+                } else {
+                    $result[$mname] = $strV
                 }
-            } catch {
-                # Non critical, continua
+                $scalarsOk++
+            } else {
+                $scalarsFail++
             }
+        } catch {
+            $scalarsFail++
+            # Non critical, continua
         }
     }
 
     # --- Tables: SNMP walk (Get-SnmpWalk exists in snmp_poller.ps1)
-    if ($vendorTargets.tables) {
-        foreach ($metric in $vendorTargets.tables.PSObject.Properties) {
-            $mname = $metric.Name
-            $baseOid = [string]$metric.Value
-            if (-not $baseOid) { continue }
-            try {
-                # Use Get-SnmpValues-Walk or Get-SnmpWalk (depends on poller version)
-                $walkResult = $null
-                if (Get-Command Get-SnmpWalk -ErrorAction SilentlyContinue) {
-                    $walkResult = Get-SnmpWalk $ip $community $baseOid
-                } elseif (Get-Command Get-SnmpValues-Walk -ErrorAction SilentlyContinue) {
-                    $walkResult = Get-SnmpValues-Walk $ip $community $baseOid
-                } else {
-                    # Minimal fallback: try to get a few indexed values .1 .2 .3 ...
-                    $walkResult = @{}
-                    for ($i = 1; $i -le 32; $i++) {
-                        try {
-                            $val = Get-SnmpValue $ip $community "$baseOid.$i"
-                            if ($null -ne $val -and $val -ne "") { $walkResult[$i] = $val }
-                        } catch { break }
-                    }
+    $tablesOk = 0
+    $tablesFail = 0
+    foreach ($metric in $tablesList) {
+        $mname = $metric.Name
+        $baseOid = [string]$metric.Value
+        if (-not $baseOid) { continue }
+        try {
+            # Use Get-SnmpValues-Walk or Get-SnmpWalk (depends on poller version)
+            $walkResult = $null
+            if (Get-Command Get-SnmpWalk -ErrorAction SilentlyContinue) {
+                $walkResult = Get-SnmpWalk $ip $community $baseOid
+            } elseif (Get-Command Get-SnmpValues-Walk -ErrorAction SilentlyContinue) {
+                $walkResult = Get-SnmpValues-Walk $ip $community $baseOid
+            } else {
+                # Minimal fallback: try to get a few indexed values .1 .2 .3 ...
+                $walkResult = @{}
+                for ($i = 1; $i -le 32; $i++) {
+                    try {
+                        $val = Get-SnmpValue $ip $community "$baseOid.$i"
+                        if ($null -ne $val -and $val -ne "") { $walkResult[$i] = $val }
+                    } catch { break }
                 }
-                if ($walkResult -and $walkResult.Count -gt 0) {
-                    $table = @{}
-                    if ($walkResult -is [System.Collections.IDictionary]) {
-                        foreach ($k in $walkResult.Keys) {
-                            $v = $walkResult[$k]
-                            $strV = [string]$v
-                            if ($strV -match '^-?\d+(\.\d+)?$') {
-                                $table[[string]$k] = [double]$strV
-                            } else {
-                                $table[[string]$k] = $strV
-                            }
+            }
+            if ($walkResult -and $walkResult.Count -gt 0) {
+                $table = @{}
+                if ($walkResult -is [System.Collections.IDictionary]) {
+                    foreach ($k in $walkResult.Keys) {
+                        $v = $walkResult[$k]
+                        $strV = [string]$v
+                        if ($strV -match '^-?\d+(\.\d+)?$') {
+                            $table[[string]$k] = [double]$strV
+                        } else {
+                            $table[[string]$k] = $strV
                         }
                     }
-                    if ($table.Count -gt 0) { $result[$mname] = $table }
                 }
-            } catch {
-                # Non critical
+                if ($table.Count -gt 0) {
+                    $result[$mname] = $table
+                    $tablesOk++
+                } else {
+                    $tablesFail++
+                }
+            } else {
+                $tablesFail++
             }
+        } catch {
+            $tablesFail++
         }
     }
 
+    Write-Log "  [VENDOR] ${ip}: scalars OK=$scalarsOk / FAIL=$scalarsFail | tables OK=$tablesOk / FAIL=$tablesFail → $($result.Count) metriche totali" "INFO"
     return $result
 }
 
