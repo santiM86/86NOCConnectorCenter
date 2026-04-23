@@ -1757,21 +1757,64 @@ async def connector_fetch_devices(request: Request):
     ).to_list(500)
     deleted_ips = {d["device_ip"] for d in deleted}
     devices = [d for d in devices if d.get("ip") not in deleted_ips]
-    return [{
-        "ip": d["ip"],
-        "community": d.get("community", "public"),
-        "name": d["name"],
-        "monitor_type": d.get("monitor_type", "snmp"),
-        "device_type": d.get("device_type", "network"),
-        "http_port": d.get("http_port", 80),
-        "snmp_version": d.get("snmp_version", "v2c"),
-        "snmpv3_username": d.get("snmpv3_username"),
-        "snmpv3_auth_protocol": d.get("snmpv3_auth_protocol"),
-        "snmpv3_auth_password": d.get("snmpv3_auth_password"),
-        "snmpv3_priv_protocol": d.get("snmpv3_priv_protocol"),
-        "snmpv3_priv_password": d.get("snmpv3_priv_password"),
-        "snmpv3_security_level": d.get("snmpv3_security_level", "authPriv"),
-    } for d in devices]
+    result = []
+    for d in devices:
+        dev_out = {
+            "ip": d["ip"],
+            "community": d.get("community", "public"),
+            "name": d["name"],
+            "monitor_type": d.get("monitor_type", "snmp"),
+            "device_type": d.get("device_type", "network"),
+            "http_port": d.get("http_port", 80),
+            "snmp_version": d.get("snmp_version", "v2c"),
+            "snmpv3_username": d.get("snmpv3_username"),
+            "snmpv3_auth_protocol": d.get("snmpv3_auth_protocol"),
+            "snmpv3_auth_password": d.get("snmpv3_auth_password"),
+            "snmpv3_priv_protocol": d.get("snmpv3_priv_protocol"),
+            "snmpv3_priv_password": d.get("snmpv3_priv_password"),
+            "snmpv3_security_level": d.get("snmpv3_security_level", "authPriv"),
+        }
+        # Enrich with vendor-specific OIDs (same logic as /connector/managed-devices).
+        # Senza questo arricchimento il connector non sapeva quali OID vendor pollare
+        # (Synology DSM, APC UPS, HPE iLO, ecc.) e le schede dispositivi restavano
+        # vuote nelle sezioni HARDWARE/Sistema/RAID/Dischi nonostante il profilo
+        # fosse applicato.
+        try:
+            pk = d.get("profile_key")
+            if pk:
+                from device_profiles import get_profile
+                profile = get_profile(pk)
+                if profile:
+                    oids = profile.get("oids") or {}
+                    scalars: dict = {}
+                    tables: dict = {}
+                    skip_base = {
+                        "sysDescr", "sysObjectID", "sysUpTime", "sysContact", "sysName",
+                        "sysLocation", "ifNumber", "ifDescr", "ifOperStatus",
+                        "ifInOctets", "ifOutOctets",
+                    }
+                    for name, oid in oids.items():
+                        if not oid or not isinstance(oid, str):
+                            continue
+                        if name in skip_base:
+                            continue
+                        if oid.endswith(".0"):
+                            scalars[name] = oid
+                        else:
+                            tables[name] = oid
+                    if scalars or tables:
+                        dev_out["vendor_snmp_targets"] = {
+                            "profile_key": pk,
+                            "vendor": profile.get("vendor"),
+                            "scalars": scalars,
+                            "tables": tables,
+                            "poll_interval_seconds": profile.get("polling_interval_seconds", 120),
+                        }
+                        dev_out["profile_thresholds"] = profile.get("thresholds") or {}
+        except Exception as e:
+            logger.warning(f"fetch-devices vendor enrichment failed for {d.get('ip')}: {e}")
+        result.append(dev_out)
+    return result
 
 
 @router.post(f"/{C}/ln")
