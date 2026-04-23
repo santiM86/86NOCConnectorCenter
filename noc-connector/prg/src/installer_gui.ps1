@@ -846,7 +846,37 @@ function Show-InstallerWizard {
                     # Rimuovi servizio precedente se esiste
                     & $nssmPath stop $svcName 2>$null
                     & $nssmPath remove $svcName confirm 2>$null
-                    
+
+                    # === CRITICAL v3.5.12 ===
+                    # Rimuovi EVENTUALI Task Scheduler residui con lo stesso nome del servizio.
+                    # Nelle prime versioni (pre-v3.3.0) il connector girava come Scheduled Task
+                    # chiamato "86NocConnectorService". Se l'utente aveva una vecchia installazione
+                    # quel task puo' essere rimasto orfano. Ogni volta che si triggera lancia
+                    # una nuova istanza di PowerShell che pollua con il servizio NSSM attuale,
+                    # causando restart ciclici ogni ~60 secondi e race condition (il task killa
+                    # il servizio e viceversa). Nessun polling completa mai un ciclo.
+                    try {
+                        $conflictTask = Get-ScheduledTask -TaskName $svcName -ErrorAction SilentlyContinue
+                        if ($conflictTask) {
+                            $txtStatus.AppendText("  ATTENZIONE: rilevato Task Scheduler legacy con stesso nome del servizio, rimozione...`r`n")
+                            Unregister-ScheduledTask -TaskName $svcName -Confirm:$false -ErrorAction SilentlyContinue
+                            # Prova anche via schtasks (alcuni task creati da versioni molto vecchie
+                            # non sono visibili via Get-ScheduledTask)
+                            & schtasks.exe /Delete /TN $svcName /F 2>$null | Out-Null
+                            & schtasks.exe /Delete /TN "\$svcName" /F 2>$null | Out-Null
+                            Start-Sleep -Milliseconds 500
+                            $txtStatus.AppendText("  Task Scheduler legacy rimosso (previene restart ciclici)`r`n")
+                        }
+                    } catch {
+                        $txtStatus.AppendText("  Warn: cleanup task legacy non critico: $($_.Exception.Message)`r`n")
+                    }
+                    # Kill eventuali processi PowerShell legati a connector.ps1 (orfani da task vecchi)
+                    try {
+                        Get-WmiObject Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
+                            Where-Object { $_.CommandLine -like "*connector.ps1*" } |
+                            ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+                    } catch {}
+
                     # Registra il servizio con NSSM
                     & $nssmPath install $svcName "powershell.exe" "-ExecutionPolicy Bypass -NonInteractive -WindowStyle Hidden -File `"$connectorScript`""
                     & $nssmPath set $svcName AppDirectory $ScriptDir

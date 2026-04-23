@@ -2495,24 +2495,61 @@ function Remove-StatusFile {
 # online automaticamente entro 5 minuti senza intervento manuale.
 function Register-ServiceWatchdog {
     $taskName = "86NocConnector_Watchdog"
-    $ps = Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe"
-    # Comando watchdog: se servizio esiste ed è Stopped, fa Start-Service
-    $watchdogCmd = "Get-Service -Name '86NocConnectorService','86NocConnector' -ErrorAction SilentlyContinue | Where-Object { `$_.Status -eq 'Stopped' } | ForEach-Object { Start-Service -Name `$_.Name -ErrorAction SilentlyContinue; Add-Content -Path '$env:ProgramData\86NocConnector\watchdog.log' -Value ""[`$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Restarted service `$(`$_.Name)"" -ErrorAction SilentlyContinue }"
-    $escCmd = $watchdogCmd -replace '"', '\"'
-    $taskCmd = "`"$ps`" -NoProfile -NonInteractive -WindowStyle Hidden -Command `"$escCmd`""
 
-    # Verifica se task già esiste e ha la versione corretta
+    # Verifica se task già esiste ed e' in stato sano
     $existing = & schtasks.exe /Query /TN $taskName 2>&1 | Out-String
     if ($existing -match $taskName -and $existing -match "Ready|Running") {
-        # Task esiste, skip
         return
     }
 
     Write-Log "Registrazione Watchdog scheduled task (riavvio automatico servizio ogni 5 min se Stopped)..." "INFO"
+
+    # v3.5.12: usiamo un file .ps1 intermedio in ProgramData invece di inline command.
+    # Il metodo inline con schtasks /TR "... -Name ..." falliva perche' schtasks
+    # parsava "-Name" come argomento del proprio comando (collision di tokenizer).
+    # Il file .ps1 e' robusto contro qualsiasi carattere speciale nel corpo del comando.
+    $watchdogDir = Join-Path $env:ProgramData "86NocConnector"
+    if (-not (Test-Path $watchdogDir)) {
+        try { New-Item -ItemType Directory -Path $watchdogDir -Force | Out-Null } catch {}
+    }
+    $watchdogScript = Join-Path $watchdogDir "watchdog.ps1"
+    $watchdogBody = @'
+# 86NocConnector Service Watchdog - auto-generato
+# Controlla che il servizio sia Running; se Stopped lo riavvia.
+$ErrorActionPreference = "SilentlyContinue"
+$logFile = "$env:ProgramData\86NocConnector\watchdog.log"
+$svc = Get-Service -Name "86NocConnectorService"
+if ($null -eq $svc) {
+    Add-Content -Path $logFile -Value "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Servizio non registrato, skip"
+    exit 0
+}
+if ($svc.Status -eq "Stopped") {
     try {
-        # Crea task: trigger ogni 5 minuti, gira come SYSTEM
+        Start-Service -Name "86NocConnectorService"
+        Add-Content -Path $logFile -Value "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Servizio era Stopped, riavviato"
+    } catch {
+        Add-Content -Path $logFile -Value "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Errore restart: $($_.Exception.Message)"
+    }
+} elseif ($svc.Status -eq "Paused") {
+    try {
+        Resume-Service -Name "86NocConnectorService"
+        Add-Content -Path $logFile -Value "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Servizio era Paused, resumed"
+    } catch {
+        Add-Content -Path $logFile -Value "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Errore resume: $($_.Exception.Message)"
+    }
+}
+'@
+    try {
+        Set-Content -Path $watchdogScript -Value $watchdogBody -Encoding UTF8 -Force
+
+        $ps = Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe"
+        $taskCmd = "`"$ps`" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$watchdogScript`""
         & schtasks.exe /Create /TN $taskName /SC MINUTE /MO 5 /TR $taskCmd /RU "SYSTEM" /RL HIGHEST /F 2>&1 | Out-String | ForEach-Object { Write-Log "  watchdog: $_" "DEBUG" }
-        Write-Log "Watchdog registrato (controllo servizio ogni 5 min)" "INFO"
+        if ($LASTEXITCODE -eq 0) {
+            Write-Log "Watchdog registrato (controllo servizio ogni 5 min via $watchdogScript)" "INFO"
+        } else {
+            Write-Log "Watchdog register exit=$LASTEXITCODE — continuo senza" "WARN"
+        }
     } catch {
         Write-Log "Watchdog register fallito: $($_.Exception.Message)" "WARN"
     }
@@ -2539,6 +2576,25 @@ function Start-Connector {
     Write-Log "  Config: $(Get-ConfigPath)"
     Write-Log "=================================================="
     
+    # v3.5.12: Self-heal al boot — rileva e rimuove Task Scheduler conflittuali
+    # con lo stesso nome del servizio NSSM (causa principale di restart ciclici
+    # ogni 60s nelle installazioni che hanno avuto versioni pre-v3.3.0 del connector).
+    try {
+        $svcName = if ($global:ServiceName) { $global:ServiceName } else { "86NocConnectorService" }
+        $conflictTask = Get-ScheduledTask -TaskName $svcName -ErrorAction SilentlyContinue
+        if ($conflictTask) {
+            Write-Log "[SELF-HEAL] Rilevato Task Scheduler conflittuale '$svcName' — causa race condition con servizio NSSM. Rimozione..." "WARN"
+            try {
+                Unregister-ScheduledTask -TaskName $svcName -Confirm:$false -ErrorAction SilentlyContinue
+                & schtasks.exe /Delete /TN $svcName /F 2>$null | Out-Null
+                & schtasks.exe /Delete /TN "\$svcName" /F 2>$null | Out-Null
+                Write-Log "[SELF-HEAL] Task Scheduler conflittuale rimosso — restart ciclici cessati" "INFO"
+            } catch {
+                Write-Log "[SELF-HEAL] Errore rimozione task conflittuale: $($_.Exception.Message)" "ERROR"
+            }
+        }
+    } catch {}
+
     # Test connettivita' NOC all'avvio
     Write-Log "Test connettivita' verso il NOC..."
     try {
