@@ -62,6 +62,76 @@ Write-UpdateLog "=========================================="
 Write-UpdateLog "UpdateChecker start (pattern Task Scheduler v3.5.0+)"
 Write-UpdateLog "InstallDir: $InstallDir"
 
+# ==================== LOCK FILE (safety net contro concorrenza) ====================
+# Anche con MultipleInstancesPolicy=IgnoreNew, lock esplicito su file system
+# garantisce che solo UNA istanza alla volta puo' fare update.
+$LockFile = Join-Path $LogDir "update_check.lock"
+$LockAge = 1200   # lock stale se piu' vecchio di 20 min (oltre il nostro timeout di 15 min)
+
+if (Test-Path $LockFile) {
+    try {
+        $lockInfo = Get-Item $LockFile
+        $ageSec = (Get-Date).Subtract($lockInfo.LastWriteTime).TotalSeconds
+        if ($ageSec -lt $LockAge) {
+            $lockPid = Get-Content $LockFile -ErrorAction SilentlyContinue
+            Write-UpdateLog "Lock attivo (PID=$lockPid, eta=$([int]$ageSec)s). Skip run (un altro updater e' in corso)." "INFO"
+            exit 0
+        } else {
+            Write-UpdateLog "Lock stale ($([int]$ageSec)s > $LockAge). Rimozione e continuo..." "WARN"
+            Remove-Item $LockFile -Force -ErrorAction SilentlyContinue
+        }
+    } catch {}
+}
+
+# Acquire lock
+try {
+    Set-Content -Path $LockFile -Value $PID -ErrorAction Stop
+} catch {
+    Write-UpdateLog "Impossibile creare lock file: $($_.Exception.Message)" "WARN"
+}
+
+# Release lock on exit (ogni exit path)
+$ReleaseLock = {
+    try { Remove-Item $LockFile -Force -ErrorAction SilentlyContinue } catch {}
+}
+Register-EngineEvent -SourceIdentifier PowerShell.Exiting -Action $ReleaseLock | Out-Null
+
+# ==================== SELF-HARDEN TASK (prima volta post-bootstrap) ====================
+# Il bootstrap_to_v350.cmd crea il task con schtasks /Create semplice.
+# Qui verifichiamo e ottimizziamo le opzioni del task se non gia' settate.
+# Costo: 1 chiamata schtasks /Query ogni 5 min, irrilevante.
+try {
+    $taskXml = & schtasks.exe /Query /TN "\86BIT\ArgusConnectorUpdater" /XML 2>$null
+    if ($taskXml -and ($taskXml -join "") -notmatch "MultipleInstancesPolicy") {
+        Write-UpdateLog "Self-harden task settings (MultipleInstancesPolicy + Priority + ExecutionTimeLimit)..."
+        $xml = [xml]($taskXml -join "`n")
+        $ns = New-Object System.Xml.XmlNamespaceManager($xml.NameTable)
+        $ns.AddNamespace("t", "http://schemas.microsoft.com/windows/2004/02/mit/task")
+        $settings = $xml.SelectSingleNode("//t:Settings", $ns)
+        if ($settings) {
+            function Add-IfMissing($parent, $name, $value, $xmlDoc, $nsMgr) {
+                if (-not $parent.SelectSingleNode("t:$name", $nsMgr)) {
+                    $el = $xmlDoc.CreateElement($name, "http://schemas.microsoft.com/windows/2004/02/mit/task")
+                    $el.InnerText = $value
+                    $parent.AppendChild($el) | Out-Null
+                }
+            }
+            Add-IfMissing $settings "MultipleInstancesPolicy" "IgnoreNew" $xml $ns
+            Add-IfMissing $settings "Priority" "7" $xml $ns
+            Add-IfMissing $settings "ExecutionTimeLimit" "PT15M" $xml $ns
+            Add-IfMissing $settings "StartWhenAvailable" "true" $xml $ns
+            $tmpXml = Join-Path $env:TEMP "_selfharden.xml"
+            $xml.Save($tmpXml)
+            & schtasks.exe /Delete /TN "\86BIT\ArgusConnectorUpdater" /F 2>$null | Out-Null
+            & schtasks.exe /Create /TN "\86BIT\ArgusConnectorUpdater" /XML $tmpXml /RU "SYSTEM" /RL HIGHEST /F 2>&1 | Out-Null
+            Remove-Item $tmpXml -Force -ErrorAction SilentlyContinue
+            Write-UpdateLog "Task self-harden completato"
+        }
+    }
+} catch {
+    Write-UpdateLog "Self-harden fallito (non critico): $($_.Exception.Message)" "DEBUG"
+}
+
 # ==================== READ CONFIG ====================
 $configPath = Join-Path $InstallDir "config.json"
 if (-not (Test-Path $configPath)) {

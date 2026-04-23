@@ -972,21 +972,34 @@ function Show-InstallerWizard {
             # - Avvia al boot (se saltato)
             # - Non blocca se in batteria (serverside)
             # - Timeout 15 min per evitare stuck
+            # - MultipleInstancesPolicy: IgnoreNew (se un update e' in corso, skippa nuova istanza)
+            # - Priority: 7 (sotto-normale, non competere con il servizio principale)
             $taskXml = & schtasks.exe /Query /TN $fullTaskName /XML 2>$null
             if ($taskXml) {
                 $xml = [xml]($taskXml -join "`n")
                 $ns = New-Object System.Xml.XmlNamespaceManager($xml.NameTable)
                 $ns.AddNamespace("t", "http://schemas.microsoft.com/windows/2004/02/mit/task")
-                # StartWhenAvailable = true
                 $settings = $xml.SelectSingleNode("//t:Settings", $ns)
                 if ($settings) {
-                    $swa = $xml.CreateElement("StartWhenAvailable", "http://schemas.microsoft.com/windows/2004/02/mit/task")
-                    $swa.InnerText = "true"
-                    # Evita duplicati
-                    $existing = $settings.SelectSingleNode("t:StartWhenAvailable", $ns)
-                    if (-not $existing) { $settings.AppendChild($swa) | Out-Null }
-                    $etl = $settings.SelectSingleNode("t:ExecutionTimeLimit", $ns)
-                    if ($etl) { $etl.InnerText = "PT15M" }
+                    # Helper function: set or create child element
+                    function Set-TaskSetting($parent, $name, $value, $xmlDoc, $nsMgr) {
+                        $existing = $parent.SelectSingleNode("t:$name", $nsMgr)
+                        if ($existing) {
+                            $existing.InnerText = $value
+                        } else {
+                            $el = $xmlDoc.CreateElement($name, "http://schemas.microsoft.com/windows/2004/02/mit/task")
+                            $el.InnerText = $value
+                            $parent.AppendChild($el) | Out-Null
+                        }
+                    }
+                    Set-TaskSetting $settings "StartWhenAvailable" "true" $xml $ns
+                    Set-TaskSetting $settings "ExecutionTimeLimit" "PT15M" $xml $ns
+                    Set-TaskSetting $settings "MultipleInstancesPolicy" "IgnoreNew" $xml $ns
+                    Set-TaskSetting $settings "Priority" "7" $xml $ns
+                    Set-TaskSetting $settings "DisallowStartIfOnBatteries" "false" $xml $ns
+                    Set-TaskSetting $settings "StopIfGoingOnBatteries" "false" $xml $ns
+                    Set-TaskSetting $settings "RestartOnFailure" "false" $xml $ns
+                    
                     $tmpXml = Join-Path $env:TEMP "task_$taskName.xml"
                     $xml.Save($tmpXml)
                     & schtasks.exe /Delete /TN $fullTaskName /F 2>$null | Out-Null
