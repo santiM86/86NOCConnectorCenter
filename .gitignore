@@ -900,3 +900,4 @@ credentials.json
 *.key
 .credentials
 frontend/node_modules/.cache/default-development/71.pack
+frontend/node_modules/.cache/default-development/68.pack
