@@ -27,15 +27,58 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# ==================== BOOT LOG (bulletproof) ====================
+# Log PRIMA di qualsiasi altra operazione in C:\Windows\Temp (sempre scrivibile da SYSTEM).
+# Se lo script fallisce early (es. InstallDir mancante, permessi, ASR block), almeno
+# qui vediamo WHERE si e' piantato. Il log principale update.log puo' fallire se
+# ProgramData\86NocConnector non esiste o non e' scrivibile.
+$BootLog = Join-Path $env:TEMP "argus_updater_boot.log"
+# $env:TEMP punta a C:\Windows\Temp quando gira come SYSTEM, sempre accessibile
+function Write-BootLog {
+    param([string]$msg)
+    $ts = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+    try { Add-Content -Path $BootLog -Value "[$ts] $msg" -Encoding UTF8 -ErrorAction SilentlyContinue } catch {}
+}
+Write-BootLog "===== BOOT updater ====="
+Write-BootLog "PID=$PID User=$env:USERNAME (RunAs=$(whoami)) InstallDir=$InstallDir"
+Write-BootLog "PSVersion=$($PSVersionTable.PSVersion)"
+Write-BootLog "ScriptPath=$PSCommandPath"
+Write-BootLog "WorkingDir=$(Get-Location)"
+
+# Global try/catch ultra-esterno: cattura qualsiasi errore e lo logga a BootLog
+# (senza questo, uno $ErrorActionPreference="Stop" + exception non gestita porta
+# al codice 1 silenzioso che stiamo vedendo nel Task Scheduler)
+trap {
+    Write-BootLog "FATAL UNHANDLED: $($_.Exception.Message)"
+    Write-BootLog "StackTrace: $($_.ScriptStackTrace)"
+    Write-BootLog "InvocationInfo: $($_.InvocationInfo.PositionMessage)"
+    exit 99
+}
+
+# Verifica InstallDir prima di qualsiasi altra cosa
+if (-not (Test-Path $InstallDir)) {
+    Write-BootLog "FATAL: InstallDir '$InstallDir' non esiste. Abort."
+    exit 10
+}
+Write-BootLog "InstallDir OK: $InstallDir"
+
 # TLS 1.2 (Windows Server 2016+ richiede override esplicito)
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+Write-BootLog "TLS 1.2 abilitato"
 
-# ==================== LOGGING ====================
+# ==================== LOGGING (detail log) ====================
 $LogDir = Join-Path $env:ProgramData "86NocConnector"
 if (-not (Test-Path $LogDir)) {
-    New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
+    try {
+        New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
+        Write-BootLog "Creato LogDir: $LogDir"
+    } catch {
+        Write-BootLog "FATAL: non riesco a creare LogDir $LogDir — $($_.Exception.Message)"
+        exit 11
+    }
 }
 $LogFile = Join-Path $LogDir "update.log"
+Write-BootLog "LogFile target: $LogFile"
 
 function Write-UpdateLog {
     param([string]$Message, [string]$Level = "INFO")
@@ -46,6 +89,7 @@ function Write-UpdateLog {
     } catch {}
     Write-Host $line
 }
+Write-UpdateLog "Updater avviato (PID $PID, InstallDir=$InstallDir)"
 
 # Rotation: se log > 2 MB, mantieni solo le ultime 5000 righe
 try {

@@ -414,10 +414,15 @@ function Send-Heartbeat($config) {
     # invece di aspettare il ciclo normale (ogni 10 poll, ~10 minuti).
     # Usato quando admin cambia community/monitor-type/profilo e vuole vedere
     # subito il connector applicare la nuova config senza riavviare il servizio.
+    # IMPORTANTE: Start-PollingLoop gira in un Start-Job (scope runspace separato),
+    # quindi $global:ForceRefreshPending NON e' visibile dal polling job. Usiamo
+    # un file flag su disco come canale IPC cross-process.
     if ($response -and $response.refresh_now) {
         Write-Log "[REFRESH] NOC ha richiesto fetch-devices immediato (admin ha cliccato 'Applica ora')" "INFO"
         try {
-            $global:ForceRefreshPending = $true
+            $flagFile = Join-Path (Join-Path $env:ProgramData "86NocConnector") "refresh.flag"
+            Set-Content -Path $flagFile -Value (Get-Date -Format "o") -Encoding UTF8 -Force
+            $global:ForceRefreshPending = $true   # anche global per scope locali
         } catch {
             Write-Log "Errore segnalazione refresh: $_" "WARN"
         }
@@ -1311,6 +1316,13 @@ function Start-PollingLoop($config) {
     if ($config.devices) {
         $devices = @($config.devices)
     }
+
+    # Cleanup flag file residuo da un crash precedente (altrimenti il primo ciclo
+    # di poll triggerebbe un refresh fantasma)
+    try {
+        $_flagBoot = Join-Path (Join-Path $env:ProgramData "86NocConnector") "refresh.flag"
+        if (Test-Path $_flagBoot) { Remove-Item $_flagBoot -Force -ErrorAction SilentlyContinue }
+    } catch {}
     
     # Also fetch from NOC (centralized management)
     $nocDevices = Fetch-DevicesFromNOC $config
@@ -1398,15 +1410,26 @@ function Start-PollingLoop($config) {
             
             # Refresh device list from NOC every 10 cycles,
             # oppure immediatamente se admin ha cliccato "Applica ora" nel Center.
+            # Il flag arriva via file su disco (IPC cross-job, vedi Send-Heartbeat)
+            # perche' Start-PollingLoop gira in un Start-Job separato e non vede
+            # $global:ForceRefreshPending settato nel processo principale.
             $refreshCounter++
             $forceRefresh = $false
+            $flagFile = Join-Path (Join-Path $env:ProgramData "86NocConnector") "refresh.flag"
             try {
-                if ($global:ForceRefreshPending) {
+                if (Test-Path $flagFile) {
+                    $forceRefresh = $true
+                    Remove-Item $flagFile -Force -ErrorAction SilentlyContinue
+                    Write-Log "[REFRESH] Eseguo fetch-devices immediato (trigger: file flag da admin Center)" "INFO"
+                } elseif ($global:ForceRefreshPending) {
+                    # fallback scope locale (se heartbeat e polling sono nello stesso scope)
                     $forceRefresh = $true
                     $global:ForceRefreshPending = $false
-                    Write-Log "[REFRESH] Eseguo fetch-devices immediato (trigger: admin Center)" "INFO"
+                    Write-Log "[REFRESH] Eseguo fetch-devices immediato (trigger: global flag)" "INFO"
                 }
-            } catch {}
+            } catch {
+                Write-Log "[REFRESH] Errore check flag: $_" "WARN"
+            }
             if ($refreshCounter -ge 10 -or $forceRefresh) {
                 $refreshCounter = 0
                 $nocDevices = Fetch-DevicesFromNOC $config
