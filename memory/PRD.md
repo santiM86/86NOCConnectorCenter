@@ -420,6 +420,58 @@ Rimossi in v3.5.0 (con OK utente): Check-ForUpdate, Install-Update (5 metodi fal
 
 ### Time-Series Metrics + Syslog Viewer + SNMP Traps (2026-04-22 — iteration_59)
 
+### Connector v3.5.13 — FIX CRITICO passaggio dati + stabilità listener UDP (2026-04-23)
+**Contesto**: cliente frustrato per "troppo tempo e soldi spesi sul connector" che non passava tutte le informazioni dei dispositivi. Audit completo della pipeline connector → center rivela 2 bug critici *pre-esistenti* che invalidavano il valore del connector.
+
+**Bug #1 — Listener UDP mai realmente attivi (P0)**
+Root cause: `Start-SNMPListener` e `Start-SyslogListener` sono eseguiti dentro `Start-Job` child-process. Il loop interno `while ($global:Running)` richiede `$global:Running = $true` ma la variabile NON era settata dentro lo scope del job — solo in `Start-Connector` (che non viene rieseguito nei job per via della guardia `$MyInvocation.InvocationName -ne "."`). Risultato: i job terminavano immediatamente dopo 2s → job health-check riaffiorava ogni 3 min → il connector di fatto non ha MAI ricevuto trap SNMP o messaggi syslog. I log mostravano il loop "Listener morto, riavvio" perpetuo mentre gli utenti si lamentavano di aver perso alert critici inviati dai device.
+
+**Fix**: aggiunto `$global:Running = $true` dentro lo scriptblock di entrambi i Start-Job (all'avvio + nei restart del health-check). Patch minima, 4 righe.
+
+**Bug #2 — Perdita dati hardware (P0)**
+Root cause: `Poll-ExtendedMetrics` raccoglieva correttamente da ogni device SNMP:
+- `entity_mib` (vendor, modello, serial number, firmware version dallo standard RFC 4133 ENTITY-MIB, che funziona su *qualsiasi* device SNMP compliant — switch, firewall, stampanti, NAS, server)
+- `primary_mac` (MAC principale del device)
+- `if_aliases` (nomi custom delle porte dello switch, es. "Uplink DC", "Firewall LAN")
+- `arp_table` (tabella ARP per correlazione IP→MAC cross-device: fondamentale per mappare endpoint LAN senza SNMP proprio)
+
+Ma `Send-DeviceReport` li ignorava sistematicamente: solo 6 campi su 10 venivano propagati nel payload HTTP verso il NOC (`cpu_usage`, `memory_usage`, `temperature`, `device_class`, `hardware`, `firewall`). Il backend era già pronto a riceverli (righe 1355-1358 di `connector.py`) ma non arrivavano mai → UI mostrava sempre "sconosciuto" per vendor/modello/firmware anche su device che li esponevano regolarmente.
+
+Mancava inoltre il polling di `sys_object_id` (OID 1.3.6.1.2.1.1.2.0) usato dal backend per il fingerprint automatico dei profili vendor (device_profiles). Senza sysObjectID il fingerprint cadeva sul solo `sysDescr` regex → match mancanti per device con descrizioni atipiche.
+
+**Fix**:
+1. `connector.ps1` Send-DeviceReport: aggiunti 4 campi (`entity_mib`, `primary_mac`, `if_aliases`, `arp_table`) al `$deviceReport` (condizionali su non-null per non inquinare payload device offline).
+2. `connector.ps1` Send-DeviceReport: polling di `sys_object_id` (1.3.6.1.2.1.1.2.0) insieme a sysDescr/sysName/sysUptime.
+3. `connector.ps1`: dichiarazione `$vendorMetrics = $null` fuori dall'if-reachable per evitare errore scope in caso di device irraggiungibile.
+4. `backend/routes/connector.py` device-report: salva anche `sys_object_id` su `device_poll_status`.
+
+**Test end-to-end** (curl con HMAC signing completo, simula il connector):
+```
+POST /api/connector/device-report → 200 OK {"devices_updated":1}
+Saved fields verified:
+  sys_object_id: 1.3.6.1.4.1.25506.11.1.208   ✓
+  entity_mib: {'vendor':'HPE','model':'5130-24G-4SFP+','serial':'CN00000000','firmware':'7.1.070'}   ✓
+  primary_mac: AA:BB:CC:DD:EE:FF   ✓
+  if_aliases: {'1':'Uplink','2':'Server'}   ✓
+  arp_entries_count: 2 (→ arp_cache populated)   ✓
+```
+
+**File toccati**:
+- `/app/noc-connector/prg/src/connector.ps1` — Send-DeviceReport (+4 field propagation, +sys_object_id polling), Start-Connector (fix listener jobs), job health-check (fix restart scriptblock)
+- `/app/backend/routes/connector.py` — device-report endpoint salva sys_object_id
+- `/app/noc-connector/prg/version.json` → 3.5.13
+- `/app/frontend/public/downloads/86NocConnector_v3.5.13.zip` (361 KB) + `_install.zip`
+- `/app/connector_updates/86NocConnector_v3.5.13.zip` (attivo in DB)
+
+**Impatto atteso in field**:
+- UI Device Detail: colonne vendor/modello/firmware/serial popolate automaticamente per *tutti* i device SNMP compliant, non più solo Synology/iLO/Comware.
+- Sezione ARP: correlazione IP→MAC popolata per device downstream senza SNMP proprio (VM, stampanti non-SNMP, IP cam, ecc.).
+- Alert SNMP trap e syslog ora effettivamente ricevuti (potenzialmente: aumento del volume alert, soprattutto per device rumorosi — monitor first 24h).
+- Fingerprint auto-profili più robusto grazie a sysObjectID.
+
+### Connector v3.5.12 — Self-heal Task Scheduler conflittuale (2026-04-23 mattina)
+Vedi handoff: self-healing al boot rimuove Task Scheduler legacy omonimo del servizio NSSM + watchdog schtasks fix via file intermedio + fix BER/vendor enrichment/Get-SnmpTable delle v3.5.9/3.5.10/3.5.11.
+
 ### Connector v3.5.7 — Applica Ora (real-time config sync, 2026-04-23)
 **Problema**: modificando community/profilo/monitor-type dal Center, il connector applicava le modifiche solo al ciclo successivo di `Fetch-DevicesFromNOC` — che gira **ogni 10 cicli di poll (~10 minuti)**. Per sbloccare prima servivano: restart del servizio o del tray app sul server field.
 

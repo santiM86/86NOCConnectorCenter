@@ -1146,12 +1146,15 @@ function Send-DeviceReport($config, $devices) {
             $sysDescr = ""
             $sysName = ""
             $sysUptime = ""
+            $sysObjectID = ""
             $extMetrics = $null
             $trafficData = $null
+            $vendorMetrics = $null
             if ($reachable) {
                 try {
                     $sysDescr = Get-SnmpValue $ip $community "1.3.6.1.2.1.1.1.0"
                     $sysName = Get-SnmpValue $ip $community "1.3.6.1.2.1.1.5.0"
+                    $sysObjectID = Get-SnmpValue $ip $community "1.3.6.1.2.1.1.2.0"
                     $uptimeTicks = Get-SnmpValue $ip $community "1.3.6.1.2.1.1.3.0"
                     if ($uptimeTicks) {
                         $secs = [math]::Floor($uptimeTicks / 100)
@@ -1162,14 +1165,13 @@ function Send-DeviceReport($config, $devices) {
                     }
                 } catch {}
                 
-                # Extended metrics (CPU, Memory, Temperature, Hardware health)
+                # Extended metrics (CPU, Memory, Temperature, Hardware health, entity_mib, primary_mac, if_aliases, arp_table)
                 try { $extMetrics = Poll-ExtendedMetrics $ip $community } catch {}
                 
                 # Interface traffic (bandwidth, speed, errors)
                 try { $trafficData = Poll-InterfaceTraffic $ip $community } catch {}
 
                 # FASE B: Vendor-specific OIDs (RAID status, UPS battery, VPN tunnels, etc.)
-                $vendorMetrics = $null
                 if ($dev.vendor_snmp_targets) {
                     try {
                         Write-Log "  Vendor SNMP polling $devName ($ip)..." "DEBUG"
@@ -1206,11 +1208,16 @@ function Send-DeviceReport($config, $devices) {
                 ports = $ports
                 sys_descr = "$sysDescr"
                 sys_name = "$sysName"
+                sys_object_id = "$sysObjectID"
                 sys_uptime = $sysUptime
                 poll_timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
             }
             
-            # Add extended metrics if available
+            # Add extended metrics if available.
+            # v3.5.13 FIX: passa TUTTI i campi raccolti da Poll-ExtendedMetrics (prima
+            # entity_mib / primary_mac / if_aliases / arp_table venivano raccolti dal
+            # connector ma MAI propagati nel device_report → il backend li riceveva
+            # sempre $null e l'UI non mostrava mai vendor/modello/firmware ecc.)
             if ($extMetrics) {
                 $deviceReport.cpu_usage = $extMetrics.cpu_usage
                 $deviceReport.memory_usage = $extMetrics.memory_usage
@@ -1219,6 +1226,18 @@ function Send-DeviceReport($config, $devices) {
                 $deviceReport.hardware = $extMetrics.hardware
                 if ($extMetrics.firewall) {
                     $deviceReport.firewall = $extMetrics.firewall
+                }
+                if ($extMetrics.entity_mib) {
+                    $deviceReport.entity_mib = $extMetrics.entity_mib
+                }
+                if ($extMetrics.primary_mac) {
+                    $deviceReport.primary_mac = $extMetrics.primary_mac
+                }
+                if ($extMetrics.if_aliases) {
+                    $deviceReport.if_aliases = $extMetrics.if_aliases
+                }
+                if ($extMetrics.arp_table) {
+                    $deviceReport.arp_table = $extMetrics.arp_table
                 }
             }
 
@@ -2618,15 +2637,22 @@ function Start-Connector {
     }
     
     # Start listeners in background jobs
+    # v3.5.13 FIX: $global:Running va settato ESPLICITAMENTE dentro lo scope del job.
+    # Quando Start-Job dot-source lo script, la guardia "if (InvocationName -ne '.')"
+    # salta Start-Connector e $global:Running resta $null → il loop `while ($global:Running)`
+    # esce immediatamente → job "Completed" dopo 2s → il health-check lo ripartiva ogni 3 min.
+    # Risultato pre-fix: listener UDP morti per 2-3 min ogni 3 min = buco trap/syslog.
     $snmpJob = Start-Job -ScriptBlock {
         param($scriptPath, $configPath)
         . $scriptPath -ConfigPath $configPath
+        $global:Running = $true
         Start-SNMPListener (Read-Config)
     } -ArgumentList $PSCommandPath, (Get-ConfigPath)
     
     $syslogJob = Start-Job -ScriptBlock {
         param($scriptPath, $configPath)
         . $scriptPath -ConfigPath $configPath
+        $global:Running = $true
         Start-SyslogListener (Read-Config)
     } -ArgumentList $PSCommandPath, (Get-ConfigPath)
     
@@ -2708,6 +2734,7 @@ function Start-Connector {
                         $snmpJob = Start-Job -ScriptBlock {
                             param($scriptPath, $configPath)
                             . $scriptPath -ConfigPath $configPath
+                            $global:Running = $true
                             Start-SNMPListener (Read-Config)
                         } -ArgumentList $PSCommandPath, (Get-ConfigPath)
                         Write-Log "SNMP Listener riavviato" "INFO"
@@ -2721,6 +2748,7 @@ function Start-Connector {
                         $syslogJob = Start-Job -ScriptBlock {
                             param($scriptPath, $configPath)
                             . $scriptPath -ConfigPath $configPath
+                            $global:Running = $true
                             Start-SyslogListener (Read-Config)
                         } -ArgumentList $PSCommandPath, (Get-ConfigPath)
                         Write-Log "Syslog Listener riavviato" "INFO"

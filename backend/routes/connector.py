@@ -1337,6 +1337,7 @@ async def connector_device_report(request: Request):
             "reachable": dev["reachable"], "monitor_type": dev.get("monitor_type", "snmp"),
             "ports": dev.get("ports", []), "sys_descr": dev.get("sys_descr", ""),
             "sys_name": dev.get("sys_name", ""),
+            "sys_object_id": dev.get("sys_object_id", ""),
             "sys_uptime": dev.get("sys_uptime", ""),
             "device_macs": dev.get("device_macs", []),
             "http_status": dev.get("http_status", None),
