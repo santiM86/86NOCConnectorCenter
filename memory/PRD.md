@@ -329,6 +329,11 @@ In attesa di scelta provider e credenziali. **Push notifications: DONE (Web Push
 - P2: LDAP/Active Directory integration
 - P3: Zyxel Nebula Cloud API
 
+### 🎨 Connector v3.4.7 UI Polish (TODO alla prossima build connector — richiesta utente 2026-04-23)
+- **Task 1 — Logo 86bit nei shortcut menu Start**: generare `86bit_logo.ico` multi-risoluzione (16/32/48/256) da `86bit_logo.jpg` e applicare `.IconLocation` su tutti e 4 i shortcut creati da `installer_gui.ps1`/`install.bat`: "ARGUS Center Connector" (attualmente icona globo), "Apri Cartella Log" (cartella generica), "Diagnostica Connessione" (lente), "Disinstalla ARGUS Connector" (cestino).
+- **Task 2 — Logo in Pannello di Controllo → Programmi e funzionalità**: aggiungere chiave registry `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\86NocConnector\DisplayIcon` che punti al percorso di `86bit_logo.ico` installato. Attualmente mostra icona blu generica Windows.
+- **Task 3 — Fix spazio vuoto GUI "Gestisci Dispositivi"**: nel form `installer_gui.ps1` c'è spazio bianco a destra del pulsante "Salva e Riavvia" — rimpicciolire Form width o aggiungere `Anchor = Right` ai bottoni per riempimento proporzionale.
+
 ### Time-Series Metrics + Syslog Viewer + SNMP Traps (2026-04-22 — iteration_59)
 **Richiesta utente**: "procedi con Sessione 2 SNMP Trap receiver, Sessione 3 Syslog receiver, Sessione 4 Time-series + grafici".
 
