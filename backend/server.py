@@ -334,6 +334,8 @@ from routes.syslog_trap import router as syslog_trap_router, _ensure_indexes as 
 app.include_router(syslog_trap_router)
 from routes.device_info_card import router as device_info_card_router
 app.include_router(device_info_card_router)
+from routes.arp_cache import router as arp_cache_router, ensure_arp_idx
+app.include_router(arp_cache_router)
 
 # Include enterprise routes
 from enterprise_routes import create_enterprise_router
@@ -408,6 +410,7 @@ async def startup_event():
         # Time-series + syslog/trap TTL indexes
         await ensure_metric_idx()
         await ensure_syslog_idx()
+        await ensure_arp_idx()
 
         await db.network_changes.create_index([("client_id", 1), ("timestamp", -1)])
 

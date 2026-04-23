@@ -270,9 +270,6 @@ async def device_vendor_details(device_ip: str, current_user: dict = Depends(get
     }
 
 
-@router.get("/clients/{client_id}/ilo-health")
-
-
 @router.post("/devices/{device_id}/credentials")
 async def set_device_credentials(device_id: str, credentials: DeviceCredentials, current_user: dict = Depends(get_current_user)):
     device = await db.devices.find_one({"id": device_id}, {"_id": 0})

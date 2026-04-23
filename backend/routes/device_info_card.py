@@ -290,9 +290,23 @@ async def build_info_card(device_ip: str) -> Dict[str, Any]:
         cmdb.get("hostname"),
     )
 
-    # MAC: prefer primary MAC if exposed; else first from device_macs list
+    # MAC: prefer primary MAC if exposed; else first from device_macs list; else ARP-cache lookup
     macs = poll.get("device_macs") or []
-    primary_mac = poll.get("primary_mac") or (macs[0].get("mac") if isinstance(macs, list) and macs and isinstance(macs[0], dict) else (macs[0] if isinstance(macs, list) and macs else None))
+    primary_mac = poll.get("primary_mac")
+    if not primary_mac and isinstance(macs, list) and macs:
+        first = macs[0]
+        primary_mac = first.get("mac") if isinstance(first, dict) else first
+    # Cross-device ARP cache lookup (IP discovered by a neighbor router/switch)
+    mac_source = None
+    arp_source_ip = None
+    if primary_mac:
+        mac_source = "self-snmp"
+    else:
+        arp_doc = await db.arp_cache.find_one({"ip": device_ip}, {"_id": 0}, sort=[("last_seen", -1)])
+        if arp_doc and arp_doc.get("mac"):
+            primary_mac = arp_doc["mac"]
+            mac_source = "arp-cache"
+            arp_source_ip = arp_doc.get("source_device_ip")
 
     device_type = _first_not_none(
         poll.get("device_class"),
@@ -320,6 +334,8 @@ async def build_info_card(device_ip: str) -> Dict[str, Any]:
             "ip": device_ip,
             "hostname": hostname,
             "mac_primary": primary_mac,
+            "mac_source": mac_source,
+            "mac_arp_source_ip": arp_source_ip,
             "mac_count": len(macs) if isinstance(macs, list) else 0,
             "vendor": vendor,
             "model": model,
