@@ -1555,6 +1555,55 @@ async def remove_managed_device(client_id: str, device_id: str, current_user: di
     return {"status": "ok"}
 
 
+@router.put("/connector/{client_id}/managed-devices/{device_id}/monitor-type")
+async def update_device_monitor_type_by_id(
+    client_id: str,
+    device_id: str,
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+):
+    """Aggiorna il metodo di monitoraggio di un dispositivo (snmp | ping | http | snmp+http)."""
+    body = await request.json()
+    check_nosql_injection(body)
+    mt = body.get("monitor_type")
+    if mt not in ("snmp", "ping", "http", "snmp+http"):
+        raise HTTPException(status_code=400, detail="monitor_type deve essere uno di: snmp, ping, http, snmp+http")
+    update = {"monitor_type": mt}
+    if body.get("http_port"):
+        try:
+            update["http_port"] = int(body.get("http_port"))
+        except Exception:
+            pass
+    result = await db.managed_devices.update_one(
+        {"id": device_id, "client_id": client_id},
+        {"$set": update},
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Device non trovato")
+    return {"ok": True, "monitor_type": mt}
+
+
+@router.post("/connector/{client_id}/managed-devices/bulk-upgrade-snmp")
+async def bulk_upgrade_snmp_monitor_type(
+    client_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Per tutti i device del cliente con monitor_type='http' che hanno una community
+    SNMP o snmp_version configurata, passa il monitor_type a 'snmp+http'.
+    Utile per correggere device importati come http-only che però hanno SNMP attivo.
+    """
+    upgraded = []
+    async for d in db.managed_devices.find({"client_id": client_id, "monitor_type": "http"}, {"_id": 0}):
+        has_snmp = bool(d.get("community")) or d.get("snmp_version") or d.get("snmpv3_username")
+        if has_snmp:
+            await db.managed_devices.update_one(
+                {"id": d["id"]},
+                {"$set": {"monitor_type": "snmp+http"}},
+            )
+            upgraded.append({"id": d["id"], "name": d.get("name"), "ip": d.get("ip")})
+    return {"ok": True, "upgraded_count": len(upgraded), "upgraded": upgraded}
+
+
 @router.put("/connector/{client_id}/managed-devices/{device_id}/snmp")
 async def update_device_snmp_config(client_id: str, device_id: str, request: Request, current_user: dict = Depends(get_current_user)):
     """Aggiorna la configurazione SNMP (v1/v2c/v3) di un dispositivo."""

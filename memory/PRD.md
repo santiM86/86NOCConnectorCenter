@@ -324,6 +324,30 @@ In attesa di scelta provider e credenziali. **Push notifications: DONE (Web Push
 - Testare fix Redfish: dopo re-deploy e auto-update del connector a v3.0.1, confermare che l'iLO `10.100.61.35` sia monitorato (redfish_ok=true nei log del connector).
 - Testare Vault per cliente: editare credenziale `ILO - SRV-DC01 (ML350 Gen9)` assegnandola a un cliente specifico.
 
+## 🛡️ POLICY DEVELOPMENT — REGOLE NON NEGOZIABILI
+Regole stabilite dall'utente il 2026-04-23 dopo che un bug di routing iLO ha fatto sembrare fossero state rimosse funzioni:
+
+1. **MAI rimuovere funzioni, endpoint, route, componenti UI, campi visualizzati, colonne tabella** senza esplicita autorizzazione utente
+2. **MAI "ripulire" codice** che sembra duplicato/orfano senza prima verificare cross-reference e ricevere OK
+3. **MAI toccare decoratori `@router.*`** se non per aggiungere nuove route
+4. **MAI ristrutturare/refactorare** file esistenti se non espressamente richiesto
+5. **Solo aggiunte**: ogni intervento estende, non sostituisce
+6. **Prima di toccare file esistente**: grep dei riferimenti cross-file
+7. **Se rilevo un bug che richiede rimozione**, segnalarlo PRIMA e attendere OK utente
+
+## 📦 POLICY PUBBLICAZIONE CONNECTOR — DOPPIA LOCAZIONE OBBLIGATORIA
+Ogni nuova versione del connector DEVE essere pubblicata in DUE percorsi, altrimenti l'auto-update dai client non funziona:
+
+1. `/app/connector_updates/<filename>.zip` — path usato dall'API `/api/connector/download/{filename}` (auto-update del connector)
+2. `/app/frontend/public/downloads/<filename>.zip` — path pubblico per download manuale via browser
+3. `/app/frontend/public/downloads/<filename>_install.zip` — con VBS installer per prima installazione
+
+Il record `db.connector_updates` deve contenere: `version`, `filename`, `file_size`, `active=True`, `published_at`, `changelog`.
+
+**USA LO SCRIPT `/app/scripts/publish-connector.sh <version> "<changelog>"`** che fa tutto in automatico.
+
+Bug storico (2026-04-23): pubblicazione v3.4.6/v3.4.7 fatta solo in `/app/frontend/public/downloads/` → auto-update endpoint restituiva 404 ai connector client.
+
 ## Backlog / Future
 - P2: Multi-tenant + White-label SaaS (workspace isolation)
 - P2: LDAP/Active Directory integration

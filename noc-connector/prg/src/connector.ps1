@@ -1327,8 +1327,8 @@ function Start-PollingLoop($config) {
     }
 
     # Separate SNMP, Ping/HTTP, and Printer devices
-    $snmpDevices = @($devices | Where-Object { (-not $_.monitor_type -or $_.monitor_type -eq "snmp") -and $_.device_type -ne "printer" })
-    $pingDevices = @($devices | Where-Object { $_.monitor_type -eq "ping" -or $_.monitor_type -eq "http" })
+    $snmpDevices = @($devices | Where-Object { (-not $_.monitor_type -or $_.monitor_type -eq "snmp" -or $_.monitor_type -eq "snmp+http") -and $_.device_type -ne "printer" })
+    $pingDevices = @($devices | Where-Object { $_.monitor_type -eq "ping" -or $_.monitor_type -eq "http" -or $_.monitor_type -eq "snmp+http" })
     $printerDevices = @($devices | Where-Object { $_.device_type -eq "printer" })
     
     # Initialize ping results cache
@@ -1400,8 +1400,8 @@ function Start-PollingLoop($config) {
                         }
                     }
                     $devices = @($nocDevices) + $localOnly
-                    $snmpDevices = @($devices | Where-Object { (-not $_.monitor_type -or $_.monitor_type -eq "snmp") -and $_.device_type -ne "printer" })
-                    $pingDevices = @($devices | Where-Object { $_.monitor_type -eq "ping" -or $_.monitor_type -eq "http" })
+                    $snmpDevices = @($devices | Where-Object { (-not $_.monitor_type -or $_.monitor_type -eq "snmp" -or $_.monitor_type -eq "snmp+http") -and $_.device_type -ne "printer" })
+                    $pingDevices = @($devices | Where-Object { $_.monitor_type -eq "ping" -or $_.monitor_type -eq "http" -or $_.monitor_type -eq "snmp+http" })
                     $printerDevices = @($devices | Where-Object { $_.device_type -eq "printer" })
                     Write-Log "Lista dispositivi aggiornata dal NOC: $($devices.Count) totali (SNMP: $($snmpDevices.Count), Ping: $($pingDevices.Count), Stampanti: $($printerDevices.Count))"
                 }

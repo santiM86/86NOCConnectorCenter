@@ -921,16 +921,18 @@ function DevicesTab({ devices, clientId, onRefresh }) {
     }
     setSaving(true);
     try {
+      const isSnmp = form.monitor_type === "snmp" || form.monitor_type === "snmp+http";
+      const isHttp = form.monitor_type === "http" || form.monitor_type === "snmp+http";
       const payload = {
         name: form.name,
         ip: form.ip,
         device_type: form.device_type,
         monitor_type: form.monitor_type,
-        http_port: form.monitor_type === "http" ? parseInt(form.http_port || 80) : 80,
-        community: form.monitor_type === "snmp" && form.snmp_version !== "v3" ? (form.community || "public") : "",
+        http_port: isHttp ? parseInt(form.http_port || 80) : 80,
+        community: isSnmp && form.snmp_version !== "v3" ? (form.community || "public") : "",
         snmp_version: form.snmp_version,
       };
-      if (form.monitor_type === "snmp" && form.snmp_version === "v3") {
+      if (isSnmp && form.snmp_version === "v3") {
         payload.snmpv3_username = form.snmpv3_username;
         payload.snmpv3_auth_protocol = form.snmpv3_auth_protocol;
         payload.snmpv3_auth_password = form.snmpv3_auth_password;
@@ -998,6 +1000,8 @@ function DevicesTab({ devices, clientId, onRefresh }) {
                 snmp: { label: "SNMP", color: "text-purple-400", bg: "bg-purple-500/10 border-purple-500/20" },
                 ping: { label: "PING", color: "text-cyan-400", bg: "bg-cyan-500/10 border-cyan-500/20" },
                 http: { label: "HTTP", color: "text-amber-400", bg: "bg-amber-500/10 border-amber-500/20" },
+                "snmp+http": { label: "SNMP+HTTP", color: "text-emerald-400", bg: "bg-emerald-500/10 border-emerald-500/20" },
+                redfish_direct: { label: "REDFISH", color: "text-orange-400", bg: "bg-orange-500/10 border-orange-500/20" },
               }[monitorType] || { label: monitorType.toUpperCase(), color: "text-[var(--text-muted)]", bg: "bg-[var(--bg-hover)] border-[var(--bg-border)]" };
               return (
                 <tr key={i}>
@@ -1133,19 +1137,20 @@ function DevicesTab({ devices, clientId, onRefresh }) {
                     <SelectItem value="snmp">SNMP</SelectItem>
                     <SelectItem value="ping">Ping (ICMP)</SelectItem>
                     <SelectItem value="http">HTTP/HTTPS</SelectItem>
+                    <SelectItem value="snmp+http">SNMP + HTTP (device con web UI e metriche)</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
             </div>
 
-            {form.monitor_type === "http" && (
+            {(form.monitor_type === "http" || form.monitor_type === "snmp+http") && (
               <div>
                 <Label className="text-[var(--text-muted)] text-[10px]">Porta HTTP/HTTPS</Label>
                 <Input type="number" value={form.http_port} onChange={e => setForm({ ...form, http_port: e.target.value })} placeholder="80" className="bg-[var(--bg-panel)] border-[var(--bg-border)] text-[var(--text-primary)] h-8 text-xs" />
               </div>
             )}
 
-            {form.monitor_type === "snmp" && (
+            {(form.monitor_type === "snmp" || form.monitor_type === "snmp+http") && (
               <div className="p-2.5 rounded-lg bg-[var(--bg-panel)] border border-[var(--bg-border)] space-y-2">
                 <div>
                   <Label className="text-[var(--text-muted)] text-[10px]">Versione SNMP</Label>

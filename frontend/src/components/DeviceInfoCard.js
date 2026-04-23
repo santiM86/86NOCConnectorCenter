@@ -120,7 +120,23 @@ export default function DeviceInfoCard({ deviceIp, onClose = null, compact = fal
       .join(", ");
   };
 
-  const isSnmpMonitored = st.monitor_type === "snmp" || st.monitor_type === "snmp+ping" || (card.data_sources || []).includes("entity_mib");
+  // Determine if SNMP is effectively working — look at REAL data, not just monitor_type field.
+  // SNMP is considered working if ANY of these is true:
+  //  - monitor_type contains "snmp"
+  //  - ENTITY-MIB data was retrieved (v3.4.6+ connector)
+  //  - sys_descr is populated (SNMP sysDescr OID)
+  //  - device_class is not generic (i.e. SNMP fingerprint matched a profile)
+  //  - vendor_metrics populated (vendor-specific SNMP OIDs read)
+  //  - device has SNMP version configured in managed_devices (net.snmp_version)
+  //  - profile_key assigned (Phase B profiles)
+  const sources = card.data_sources || [];
+  const hasEntityMib = sources.includes("entity_mib");
+  const hasSysDescr = !!card.sys_descr_raw;
+  const hasVendorMetrics = (card.vendor_metrics_summary?.count || 0) > 0;
+  const hasProfile = !!id.profile_key && id.profile_key !== "generic";
+  const hasSnmpConfig = !!net.snmp_version;
+  const monitorHasSnmp = (st.monitor_type || "").toLowerCase().includes("snmp");
+  const isSnmpMonitored = monitorHasSnmp || hasEntityMib || hasSysDescr || hasVendorMetrics || hasProfile || hasSnmpConfig;
 
   const sourcesBadges = {
     connector: { label: "Connector", color: "bg-emerald-500/20 text-emerald-300 border-emerald-500/40" },
@@ -242,7 +258,7 @@ export default function DeviceInfoCard({ deviceIp, onClose = null, compact = fal
           {/* Status */}
           <Section title="Stato Live" icon={ArrowsClockwise} testid="info-section-status" color="text-emerald-300">
             <Field label="Reachable" value={st.reachable === true ? "Sì" : st.reachable === false ? "No" : null} />
-            <Field label="Monitor tipo" value={st.monitor_type} />
+            <Field label="Monitor tipo" value={isSnmpMonitored && !monitorHasSnmp ? `${st.monitor_type || "http"} + snmp (attivo)` : st.monitor_type} highlight={isSnmpMonitored} />
             <Field label="Ultimo poll" value={fmtDateTime(st.last_poll)} />
             <Field label="Ultimo update" value={fmtDateTime(st.last_update)} />
             <Field label="Uptime (gg)" value={st.uptime_days} />
@@ -343,6 +359,29 @@ export default function DeviceInfoCard({ deviceIp, onClose = null, compact = fal
             <p className="text-xs text-amber-100/60 mt-1">
               Synology: Pannello di Controllo → Terminal & SNMP → Abilita servizio SNMP (v2c) → community (es: <code className="font-mono bg-black/30 px-1 rounded">public</code> o custom).
             </p>
+          </div>
+        </div>
+      )}
+
+      {/* Warning B: SNMP configurato ma nessun dato dettagliato raccolto */}
+      {isSnmpMonitored && !hasEntityMib && !hasVendorMetrics && hw.cpu_usage == null && hw.memory_usage == null && hw.temperature == null && !fw.current && (
+        <div className="rounded-lg border border-sky-500/40 bg-sky-500/10 p-3 flex items-start gap-3" data-testid="warning-snmp-no-data">
+          <Info size={18} className="text-sky-400 flex-shrink-0 mt-0.5" weight="duotone" />
+          <div className="flex-1">
+            <h4 className="text-sm font-semibold text-sky-200">SNMP configurato ma dati limitati</h4>
+            <p className="text-xs text-sky-100/80 mt-0.5">
+              Il connector sta comunicando via SNMP con questo dispositivo ({net.snmp_version || "v2c"} su porta {net.snmp_port || 161}),
+              ma <strong>non ha ancora raccolto metriche dettagliate</strong> (firmware, HDD, CPU, RAM, temperatura).
+            </p>
+            <p className="text-xs text-sky-100/70 mt-1">
+              Possibili cause:
+            </p>
+            <ul className="text-xs text-sky-100/70 mt-0.5 ml-4 list-disc space-y-0.5">
+              <li>Il connector in campo è ancora <code className="font-mono bg-black/30 px-1 rounded">v3.4.5</code> — i nuovi OID ENTITY-MIB/Synology vengono pollati solo da <code className="font-mono bg-black/30 px-1 rounded">v3.4.6+</code></li>
+              <li>La <strong>community SNMP</strong> configurata ha accesso limitato (verifica che sia read-only SNMPv2c con vista completa)</li>
+              <li>Il <strong>profilo vendor</strong> non è ancora associato al dispositivo (vai in <em>Configura profilo</em> → seleziona Synology DSM)</li>
+              <li>Il primo <strong>poll completo</strong> del ciclo vendor-specific non è ancora stato eseguito (attendi 1-2 cicli, ~60-120s)</li>
+            </ul>
           </div>
         </div>
       )}
