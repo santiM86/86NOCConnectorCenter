@@ -12,11 +12,15 @@ const METRICS = [
   { key: "cpu", label: "CPU %", unit: "%", color: "#6366f1", max: 100 },
   { key: "memory", label: "Memoria %", unit: "%", color: "#10b981", max: 100 },
   { key: "temperature", label: "Temperatura °C", unit: "°C", color: "#ef4444", max: null },
-  { key: "response_ms", label: "Risposta (ms)", unit: "ms", color: "#f59e0b", max: null },
+  { key: "response_ms", label: "Ping Latency (ms)", unit: "ms", color: "#f59e0b", max: null },
+  { key: "ping_avg", label: "Ping medio (ms)", unit: "ms", color: "#f59e0b", max: null },
+  { key: "ping_jitter", label: "Ping Jitter (ms)", unit: "ms", color: "#fb923c", max: null },
+  { key: "packet_loss", label: "Packet Loss %", unit: "%", color: "#ef4444", max: 100 },
+  { key: "sessions", label: "Sessioni firewall", unit: "", color: "#f97316", max: null },
+  { key: "vpn_throughput", label: "VPN Throughput", unit: "Mbps", color: "#06b6d4", max: null },
   { key: "ups_charge_pct", label: "UPS Carica %", unit: "%", color: "#22c55e", max: 100 },
   { key: "ups_runtime_min", label: "UPS Autonomia (min)", unit: "min", color: "#06b6d4", max: null },
   { key: "ups_load_pct", label: "UPS Carico %", unit: "%", color: "#a855f7", max: 100 },
-  { key: "sessions", label: "Sessioni firewall", unit: "", color: "#f97316", max: null },
 ];
 
 const PERIODS = [
