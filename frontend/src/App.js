@@ -33,6 +33,9 @@ import PublicDashboard from "@/pages/PublicDashboard";
 import TvDashboardPage from "@/pages/TvDashboardPage";
 import VulnerabilityPage from "@/pages/VulnerabilityPage";
 import TrendPage from "@/pages/TrendPage";
+import DeviceMetricsPage from "@/pages/DeviceMetricsPage";
+import SyslogPage from "@/pages/SyslogPage";
+import TrapsPage from "@/pages/TrapsPage";
 import DiscoveryPage from "@/pages/DiscoveryPage";
 import MaintenancePage from "@/pages/MaintenancePage";
 import CorrelationPage from "@/pages/CorrelationPage";
@@ -226,6 +229,9 @@ function App() {
               <Route path="printers" element={<PrintersPage />} />
               <Route path="vulnerability" element={<VulnerabilityPage />} />
               <Route path="trends" element={<TrendPage />} />
+              <Route path="device-metrics" element={<DeviceMetricsPage />} />
+              <Route path="syslog" element={<SyslogPage />} />
+              <Route path="snmp-traps" element={<TrapsPage />} />
               <Route path="discovery" element={<DiscoveryPage />} />
               <Route path="maintenance" element={<MaintenancePage />} />
               <Route path="correlation" element={<CorrelationPage />} />
