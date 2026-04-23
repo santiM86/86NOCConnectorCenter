@@ -419,6 +419,62 @@ Rimossi in v3.5.0 (con OK utente): Check-ForUpdate, Install-Update (5 metodi fal
 **Verifica**: sintassi PowerShell bilanciata (braces 176/176, parens 618/618). ZIP `200 OK` su HTTPS pubblico.
 
 ### Time-Series Metrics + Syslog Viewer + SNMP Traps (2026-04-22 — iteration_59)
+
+### Connector v3.5.7 — Applica Ora (real-time config sync, 2026-04-23)
+**Problema**: modificando community/profilo/monitor-type dal Center, il connector applicava le modifiche solo al ciclo successivo di `Fetch-DevicesFromNOC` — che gira **ogni 10 cicli di poll (~10 minuti)**. Per sbloccare prima servivano: restart del servizio o del tray app sul server field.
+
+**Soluzione (minimal surface change, no new endpoint chain)**:
+1. **Backend** (`connector.py`):
+   - Nuovo endpoint `POST /api/connector/{client_id}/request-refresh` → setta flag `refresh_requested=true` in `connector_status` (richiede ruolo admin + audit log).
+   - `POST /api/connector/heartbeat` response ora include `refresh_now: true` se il flag è settato, e lo resetta atomicamente nello stesso update (self-clearing).
+2. **Connector PowerShell** (`connector.ps1`):
+   - `Send-Heartbeat` ora controlla `$response.refresh_now` e setta `$global:ForceRefreshPending = $true`.
+   - Loop di polling principale: se `$global:ForceRefreshPending` è true, resetta il flag in memoria e forza `Fetch-DevicesFromNOC` + `Run-FullDiscovery` subito al prossimo ciclo (≤ 60s) invece di aspettare i 10 cicli standard.
+3. **Frontend** (`DeviceEditModal.js` + `DeviceProfileModal` in `ClientOverviewPage.js`):
+   - Aggiunto pulsante **"Applica ora"** (ambra + icona Lightning) nel modal di edit, che chiama `POST /request-refresh`.
+   - `DeviceProfileModal` chiama automaticamente `request-refresh` in fire-and-forget dopo ogni applicazione profilo → l'admin non deve cliccare nulla di extra.
+
+**Timing totale dopo "Applica ora"**: ≤ 30s (tempo del prossimo heartbeat) + ≤ 60s (prossimo ciclo di poll) = **max ~90s** invece di 10 min.
+
+**File toccati**:
+- `/app/backend/routes/connector.py` — endpoint `/request-refresh`, heartbeat arricchito con `refresh_now`
+- `/app/noc-connector/prg/src/connector.ps1` — handler in `Send-Heartbeat`, bypass ciclo 10 nel main loop
+- `/app/frontend/src/components/DeviceEditModal.js` — pulsante "Applica ora" + data-testid `edit-apply-now-btn`
+- `/app/frontend/src/pages/ClientOverviewPage.js` — fire-and-forget in `DeviceProfileModal.apply()`
+- `/app/noc-connector/prg/version.json` → 3.5.7
+
+**Verifica curl**:
+- `POST /request-refresh` → `{"status":"ok","message":"Richiesta refresh inviata..."}` ✅
+- Flag `refresh_requested=true` persistito in `connector_status` ✅
+- `POST /request-refresh` con client inesistente → 404 ✅
+- Audit log: azione `UPDATE_CLIENT` con `details={action:"request_refresh"}` ✅
+
+### AUDIT Comunicazione Connector↔Center (2026-04-23)
+**17/17 endpoint mappati correttamente** — zero endpoint "phantom":
+
+| Endpoint connector | Backend registrato |
+|---|---|
+| `POST /connector/heartbeat` | ✅ `connector.py:173` (+ `/c/hb` secure) |
+| `POST /connector/device-report` | ✅ `connector.py:1264` |
+| `POST /connector/managed-devices` | ✅ `connector.py:258` |
+| `POST /connector/discovery-results` | ✅ `connector.py:1766` (+ `/c/nd`) |
+| `GET /connector/fetch-devices` | ✅ `connector.py:1701` (+ `/c/fd`) |
+| `GET /connector/vault/credentials` | ✅ `connector.py:371` (+ `/c/vc`) |
+| `POST /ingest/snmp` | ✅ |
+| `POST /ingest/syslog` | ✅ |
+| `POST /remediation/result` | ✅ `remediation.py:408` |
+| `POST /vulnerability/process-scan-results` | ✅ `vulnerability.py:369` |
+| `POST /vulnerability/update-scan-status` | ✅ `vulnerability.py:448` |
+| `GET /connector/discovery-check` | ✅ |
+| `GET /connector/web-proxy/pending` | ✅ |
+| `POST /connector/web-proxy/response` | ✅ |
+| `GET /connector/update-check` | ✅ `connector.py:465` (+ `/c/uc`) |
+| `POST /connector/update-progress` | ✅ `connector.py:597` (+ `/c/up`) |
+| `POST /connector/web-ui-detected` | ✅ `connector.py:309` |
+
+**Sicurezza**: ogni richiesta connector → center passa per `verify_connector_request` con HMAC-SHA256 signature + anti-replay (timestamp/nonce) + API key rotation supportata.
+
+### Time-Series Metrics + Syslog Viewer + SNMP Traps (2026-04-22 — iteration_59)
 **Richiesta utente**: "procedi con Sessione 2 SNMP Trap receiver, Sessione 3 Syslog receiver, Sessione 4 Time-series + grafici".
 
 **Backend**:

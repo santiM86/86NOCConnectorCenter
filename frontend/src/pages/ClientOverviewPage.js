@@ -1335,7 +1335,12 @@ function DeviceProfileModal({ device, onClose, onApplied }) {
         device_ip: device.ip_address,
         profile_key: selected,
       });
-      toast.success(`Profilo "${selected}" applicato a ${device.name}`);
+      // Fire-and-forget: chiedi al connector di rileggere subito la lista dispositivi
+      // con il nuovo profilo applicato (evita attesa fino a 10 min sul ciclo normale).
+      if (device.client_id) {
+        axios.post(`${API}/connector/${device.client_id}/request-refresh`).catch(() => {});
+      }
+      toast.success(`Profilo "${selected}" applicato a ${device.name} — il connector userà la nuova config entro 30s`);
       onApplied();
     } catch (e) {
       toast.error("Errore: " + (e.response?.data?.detail || e.message));

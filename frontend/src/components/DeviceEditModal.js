@@ -2,7 +2,7 @@ import { useState } from "react";
 import { API } from "@/App";
 import axios from "axios";
 import { toast } from "sonner";
-import { PencilSimple, ShieldCheck, WifiHigh } from "@phosphor-icons/react";
+import { PencilSimple, ShieldCheck, WifiHigh, Lightning } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -31,6 +31,7 @@ export function DeviceEditModal({ clientId, device, open, onClose, onSaved }) {
     security_level: device?.snmpv3_security_level || "authPriv",
   });
   const [saving, setSaving] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   const save = async () => {
     if (!device?.id && !device?.device_id) {
@@ -65,13 +66,26 @@ export function DeviceEditModal({ clientId, device, open, onClose, onSaved }) {
           payload
         );
       }
-      toast.success("Dispositivo aggiornato — il connector applichera' le modifiche al prossimo fetch (max 10 min)");
+      toast.success("Dispositivo aggiornato. Clicca 'Applica ora' per forzare il connector a ri-leggere immediatamente (altrimenti max 10 min).");
       if (onSaved) onSaved();
-      onClose();
+      // Non chiudo il modal: l'utente potrebbe voler cliccare "Applica ora"
     } catch (e) {
       toast.error(e.response?.data?.detail || "Errore nel salvataggio");
     } finally {
       setSaving(false);
+    }
+  };
+
+  const applyNow = async () => {
+    setRefreshing(true);
+    try {
+      const res = await axios.post(`${API}/connector/${clientId}/request-refresh`);
+      toast.success(res.data?.message || "Richiesta inviata al connector");
+      onClose();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Errore nella richiesta refresh");
+    } finally {
+      setRefreshing(false);
     }
   };
 
@@ -233,18 +247,29 @@ export function DeviceEditModal({ clientId, device, open, onClose, onSaved }) {
           )}
         </div>
 
-        <div className="flex gap-2 justify-end mt-4">
+        <div className="flex flex-wrap gap-2 justify-end mt-4">
           <Button
             variant="ghost"
             onClick={onClose}
             className="text-[var(--text-muted)] hover:text-[var(--text-primary)] h-8 text-xs"
             data-testid="edit-cancel-btn"
           >
-            Annulla
+            Chiudi
+          </Button>
+          <Button
+            onClick={applyNow}
+            disabled={refreshing || saving}
+            variant="outline"
+            className="border-amber-500/40 bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 h-8 text-xs"
+            title="Forza il connector a ri-leggere subito la lista dispositivi con la nuova config (max 30s di attesa)"
+            data-testid="edit-apply-now-btn"
+          >
+            <Lightning size={13} className="mr-1" />
+            {refreshing ? "Invio..." : "Applica ora"}
           </Button>
           <Button
             onClick={save}
-            disabled={saving}
+            disabled={saving || refreshing}
             className="bg-indigo-500 hover:bg-indigo-600 text-white h-8 text-xs"
             data-testid="edit-save-btn"
           >
