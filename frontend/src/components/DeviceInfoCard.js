@@ -216,7 +216,7 @@ export default function DeviceInfoCard({ deviceIp, onClose = null, compact = fal
             <Field label="MAC primario" value={id.mac_primary} mono />
             {!id.mac_primary && (
               <div className="py-1 text-[10px] text-amber-300/80 italic">
-                MAC non disponibile — pollare ARP table su router/switch (v3.4.6+)
+                MAC non disponibile — verifica che il connector abbia accesso SNMP/ARP al router/switch del segmento
               </div>
             )}
             {id.mac_primary && id.mac_source === "arp-cache" && (
@@ -374,13 +374,13 @@ export default function DeviceInfoCard({ deviceIp, onClose = null, compact = fal
               ma <strong>non ha ancora raccolto metriche dettagliate</strong> (firmware, HDD, CPU, RAM, temperatura).
             </p>
             <p className="text-xs text-sky-100/70 mt-1">
-              Possibili cause:
+              Cosa verificare (in ordine):
             </p>
             <ul className="text-xs text-sky-100/70 mt-0.5 ml-4 list-disc space-y-0.5">
-              <li>Il connector in campo è ancora <code className="font-mono bg-black/30 px-1 rounded">v3.4.5</code> — i nuovi OID ENTITY-MIB/Synology vengono pollati solo da <code className="font-mono bg-black/30 px-1 rounded">v3.4.6+</code></li>
-              <li>La <strong>community SNMP</strong> configurata ha accesso limitato (verifica che sia read-only SNMPv2c con vista completa)</li>
-              <li>Il <strong>profilo vendor</strong> non è ancora associato al dispositivo (vai in <em>Configura profilo</em> → seleziona Synology DSM)</li>
-              <li>Il primo <strong>poll completo</strong> del ciclo vendor-specific non è ancora stato eseguito (attendi 1-2 cicli, ~60-120s)</li>
+              <li>La <strong>community SNMP</strong> del device risponde in read-only con vista completa — prova da un terminale sul connector: <code className="font-mono bg-black/30 px-1 rounded">snmpwalk -v2c -c &lt;community&gt; {net.ip || "IP"} .1.3.6.1.2.1.1</code></li>
+              <li>Il <strong>profilo vendor</strong> è associato al dispositivo: clicca <em>Configura profilo</em> nella tabella Dispositivi e scegli il profilo corretto (Synology DSM, HPE Comware, APC UPS, generic UPS, ecc.)</li>
+              <li>Sul <strong>device vendor</strong> l'SNMP è abilitato ed espone le MIB avanzate (es. Synology: Pannello di Controllo → Terminal &amp; SNMP → Abilita SNMPv2c)</li>
+              <li>Attendi 1-2 cicli di poll (~60-120s) dopo aver associato il profilo — il ciclo vendor-specific parte solo se il profilo matcha.</li>
             </ul>
           </div>
         </div>

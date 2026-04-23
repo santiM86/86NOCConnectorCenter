@@ -1404,6 +1404,63 @@ async def connector_device_report(request: Request):
         except Exception as e:
             logger.warning(f"Profile auto-classify failed for {dev.get('device_ip')}: {e}")
 
+        # Auto-promote managed_devices.monitor_type based on REAL poll evidence.
+        # Motivazione: alla prima creazione via auto-detect Web UI il connector
+        # scrive monitor_type="http" hardcoded (line ~353). Poi pollando scopre
+        # che SNMP risponde (sys_descr valido, ENTITY-MIB letto, vendor_metrics
+        # popolati, oppure il connector stesso invia monitor_type="snmp+http"/"snmp").
+        # La tabella Dispositivi legge da managed_devices, quindi continuava a
+        # mostrare "HTTP" anche se in realtà il device era pollato via SNMP+HTTP.
+        # Promuovo ad "snmp+http" quando c'è evidenza forte, mai demoto.
+        try:
+            has_snmp_evidence = bool(
+                dev.get("sys_descr") or
+                dev.get("entity_mib") or
+                (dev.get("vendor_metrics") and isinstance(dev.get("vendor_metrics"), dict) and len(dev["vendor_metrics"]) > 0) or
+                (dev.get("cpu_usage") is not None) or
+                (dev.get("memory_usage") is not None)
+            )
+            reported_mt = (dev.get("monitor_type") or "").lower()
+            # Determina il tipo effettivo in base a evidenze e stato reported dal connector
+            has_http_evidence = bool(
+                (dev.get("http_status") and dev.get("http_status") < 400) or
+                dev.get("http_details") or
+                reported_mt in ("http", "snmp+http")
+            )
+            if has_snmp_evidence and has_http_evidence:
+                target_mt = "snmp+http"
+            elif has_snmp_evidence:
+                target_mt = "snmp"
+            elif has_http_evidence:
+                target_mt = "http"
+            else:
+                target_mt = None   # non tocco se non ho evidenza
+
+            if target_mt:
+                md = await db.managed_devices.find_one(
+                    {"ip": dev["device_ip"], "client_id": client_id},
+                    {"_id": 0, "monitor_type": 1, "monitor_type_user_locked": 1},
+                )
+                if md and not md.get("monitor_type_user_locked"):
+                    current_mt = (md.get("monitor_type") or "").lower()
+                    # Regola non-regressione: snmp+http > snmp|http > ping
+                    rank = {"": 0, "ping": 1, "http": 2, "snmp": 2, "snmp+http": 3}
+                    if rank.get(target_mt, 0) > rank.get(current_mt, 0):
+                        await db.managed_devices.update_one(
+                            {"ip": dev["device_ip"], "client_id": client_id},
+                            {"$set": {
+                                "monitor_type": target_mt,
+                                "monitor_type_auto_promoted": True,
+                                "monitor_type_updated_at": now_iso,
+                            }},
+                        )
+                        logger.info(
+                            f"[MONITOR-TYPE-PROMOTE] {dev['device_ip']} {current_mt or '(none)'} → {target_mt} "
+                            f"(snmp_evidence={has_snmp_evidence}, http_evidence={has_http_evidence})"
+                        )
+        except Exception as e:
+            logger.warning(f"Monitor-type auto-promote failed for {dev.get('device_ip')}: {e}")
+
         # Generate alerts based on state transitions + thresholds
         try:
             await _check_device_thresholds(client_id, dev, prev_status)
