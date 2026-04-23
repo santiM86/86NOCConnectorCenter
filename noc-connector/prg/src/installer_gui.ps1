@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    86NocConnector - Wizard di Installazione
+    ARGUS Connector - Wizard di Installazione
 .DESCRIPTION
     Interfaccia grafica per installazione e configurazione.
     Usa .NET Windows.Forms nativo.
@@ -42,7 +42,7 @@ if (-not $isAdmin) {
             "  - Seleziona 'Esegui come amministratore'`n" +
             "  - Accetta il prompt UAC`n`n" +
             "Errore tecnico: $($_.Exception.Message)",
-            "86NocConnector - Privilegi insufficienti",
+            "ARGUS Connector - Privilegi insufficienti",
             [System.Windows.Forms.MessageBoxButtons]::OK,
             [System.Windows.Forms.MessageBoxIcon]::Warning
         ) | Out-Null
@@ -50,7 +50,10 @@ if (-not $isAdmin) {
     }
 }
 
+# $AppName: identificatore tecnico (path ProgramData, nomi servizio/task) — NON cambiare
+# $DisplayName: nome visualizzato all'utente in tutta l'UI del wizard
 $AppName = "86NocConnector"
+$DisplayName = "ARGUS Connector"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $BaseDir = Split-Path -Parent $ScriptDir
 $VersionFile = Join-Path $BaseDir "version.json"
@@ -69,7 +72,7 @@ function Show-InstallerWizard {
     [System.Windows.Forms.Application]::EnableVisualStyles()
     
     $form = New-Object System.Windows.Forms.Form
-    $form.Text = "$AppName - Installazione"
+    $form.Text = "$DisplayName - Installazione"
     $form.Size = New-Object System.Drawing.Size(750, 580)
     $form.StartPosition = "CenterScreen"
     $form.FormBorderStyle = "FixedDialog"
@@ -240,7 +243,7 @@ function Show-InstallerWizard {
         $btnNext.Enabled = $true
         
         $title = New-Object System.Windows.Forms.Label
-        $title.Text = "Installazione di $AppName"
+        $title.Text = "Installazione di $DisplayName"
         $title.Font = New-Object System.Drawing.Font("Segoe UI", 18, [System.Drawing.FontStyle]::Bold)
         $title.ForeColor = [System.Drawing.Color]::FromArgb(30, 30, 40)
         $title.Location = New-Object System.Drawing.Point(28, 20)
@@ -248,7 +251,7 @@ function Show-InstallerWizard {
         $contentPanel.Controls.Add($title)
         
         $desc = New-Object System.Windows.Forms.Label
-        $desc.Text = "Questa procedura installera' $AppName sul computer.`n`n$AppName raccoglie SNMP Traps e messaggi Syslog dai dispositivi di rete (switch, firewall, server ILO) e li inoltra al NOC Center in tempo reale."
+        $desc.Text = "Questa procedura installera' $DisplayName sul computer.`n`n$DisplayName raccoglie SNMP Traps e messaggi Syslog dai dispositivi di rete (switch, firewall, server ILO) e li inoltra al NOC Center in tempo reale."
         $desc.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
         $desc.ForeColor = [System.Drawing.Color]::FromArgb(60, 60, 80)
         $desc.Location = New-Object System.Drawing.Point(28, 60)
@@ -410,7 +413,7 @@ function Show-InstallerWizard {
             $url = $txtUrl.Text.Trim().TrimEnd("/")
             $key = $txtApiKey.Text.Trim()
             if (-not $url -or -not $key) {
-                [System.Windows.Forms.MessageBox]::Show("Inserisci URL e API Key.", $AppName, "OK", "Warning")
+                [System.Windows.Forms.MessageBox]::Show("Inserisci URL e API Key.", $DisplayName, "OK", "Warning")
                 return
             }
             try {
@@ -418,9 +421,9 @@ function Show-InstallerWizard {
                 $body = @{ connector_version=$Version; hostname=$env:COMPUTERNAME; uptime_seconds=0; traps_received=0; syslogs_received=0 } | ConvertTo-Json
                 $headers = @{ "X-API-Key" = $key; "Content-Type" = "application/json" }
                 Invoke-RestMethod -Uri "$url/api/connector/heartbeat" -Method Post -Headers $headers -Body $body -TimeoutSec 10
-                [System.Windows.Forms.MessageBox]::Show("Connessione OK!`nAPI Key valida.", $AppName, "OK", "Information")
+                [System.Windows.Forms.MessageBox]::Show("Connessione OK!`nAPI Key valida.", $DisplayName, "OK", "Information")
             } catch {
-                [System.Windows.Forms.MessageBox]::Show("Errore: $($_.Exception.Message)", $AppName, "OK", "Error")
+                [System.Windows.Forms.MessageBox]::Show("Errore: $($_.Exception.Message)", $DisplayName, "OK", "Error")
             }
         })
         $contentPanel.Controls.Add($btnTest)
@@ -565,7 +568,7 @@ function Show-InstallerWizard {
         $btnAddDev.Add_Click({
             $ip = $txtDeviceIP.Text.Trim()
             if (-not $ip) {
-                [System.Windows.Forms.MessageBox]::Show("Inserisci l'indirizzo IP.", $AppName, "OK", "Warning")
+                [System.Windows.Forms.MessageBox]::Show("Inserisci l'indirizzo IP.", $DisplayName, "OK", "Warning")
                 return
             }
             $comm = if ($txtDeviceCommunity.Text.Trim()) { $txtDeviceCommunity.Text.Trim() } else { "public" }
@@ -601,7 +604,7 @@ function Show-InstallerWizard {
                 if (-not $rows -or $rows.Count -eq 0) {
                     [System.Windows.Forms.MessageBox]::Show(
                         "Il CSV e' vuoto o non leggibile.",
-                        $AppName, [System.Windows.Forms.MessageBoxButtons]::OK,
+                        $DisplayName, [System.Windows.Forms.MessageBoxButtons]::OK,
                         [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
                     return
                 }
@@ -626,7 +629,7 @@ function Show-InstallerWizard {
                 if (-not $colIp) {
                     [System.Windows.Forms.MessageBox]::Show(
                         "CSV non valido: manca la colonna IP (nomi accettati: ip, ip_address, indirizzo, address, host).",
-                        $AppName, [System.Windows.Forms.MessageBoxButtons]::OK,
+                        $DisplayName, [System.Windows.Forms.MessageBoxButtons]::OK,
                         [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
                     return
                 }
@@ -670,12 +673,12 @@ function Show-InstallerWizard {
 
                 [System.Windows.Forms.MessageBox]::Show(
                     "Import CSV completato.`n`nDispositivi importati: $imported`nDuplicati saltati: $skipped`nRighe non valide: $errors",
-                    $AppName, [System.Windows.Forms.MessageBoxButtons]::OK,
+                    $DisplayName, [System.Windows.Forms.MessageBoxButtons]::OK,
                     [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
             } catch {
                 [System.Windows.Forms.MessageBox]::Show(
                     "Errore durante la lettura del CSV:`n`n$($_.Exception.Message)",
-                    $AppName, [System.Windows.Forms.MessageBoxButtons]::OK,
+                    $DisplayName, [System.Windows.Forms.MessageBoxButtons]::OK,
                     [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
             }
         })
@@ -686,7 +689,7 @@ function Show-InstallerWizard {
         $url = $txtUrl.Text.Trim().TrimEnd("/")
         $key = $txtApiKey.Text.Trim()
         if (-not $url -or -not $key) {
-            [System.Windows.Forms.MessageBox]::Show("URL e API Key sono obbligatori.", $AppName, "OK", "Warning")
+            [System.Windows.Forms.MessageBox]::Show("URL e API Key sono obbligatori.", $DisplayName, "OK", "Warning")
             Show-Page 1
             return
         }
@@ -918,9 +921,14 @@ function Show-InstallerWizard {
             $oldDir2 = Join-Path ([Environment]::GetFolderPath("CommonStartMenu")) "Programs\86BIT Connector"
             if (Test-Path $oldDir2) { Remove-Item $oldDir2 -Recurse -Force -ErrorAction SilentlyContinue }
             
-            # Path del logo 86bit (usato come icona per TUTTI gli shortcut)
+            # Path del logo 86bit (icona per shortcut principali "Avvia Connector" e "Diagnostica")
             $iconPath = Join-Path $BaseDir "src\86bit_logo.ico"
             $iconLocation = if (Test-Path $iconPath) { "$iconPath,0" } else { "shell32.dll,13" }
+            # Icone native Windows per shortcut "Cartella Log" e "Disinstalla":
+            # - shell32.dll,3   = cartella (gialla)
+            # - shell32.dll,271 = cestino / remove (rosso)
+            $iconFolderNative = "$env:SystemRoot\System32\shell32.dll,3"
+            $iconUninstallNative = "$env:SystemRoot\System32\shell32.dll,271"
             
             # Verifica che il batPath esista, altrimenti usa powershell.exe diretto
             $connectorTarget = $batPath
@@ -960,15 +968,15 @@ function Show-InstallerWizard {
                 $ok = & $createShortcutSafe $shell "$startMenuDir\Diagnostica Connessione.lnk" "powershell.exe" "-ExecutionPolicy Bypass -File `"$diagScript`"" $BaseDir "Diagnostica connessione ARGUS Center" $iconLocation 1
                 $shortcutResults += @{ name = "Diagnostica Connessione"; ok = $ok }
             }
-            # Collegamento Disinstalla
+            # Collegamento Disinstalla (icona nativa Windows: cestino)
             if (Test-Path $uninstallBat) {
-                $ok = & $createShortcutSafe $shell "$startMenuDir\Disinstalla ARGUS Connector.lnk" $uninstallBat $null $BaseDir "Disinstalla ARGUS Center Connector" $iconLocation 1
+                $ok = & $createShortcutSafe $shell "$startMenuDir\Disinstalla ARGUS Connector.lnk" $uninstallBat $null $BaseDir "Disinstalla ARGUS Center Connector" $iconUninstallNative 1
                 $shortcutResults += @{ name = "Disinstalla"; ok = $ok }
             }
-            # Collegamento Apri Cartella Log
+            # Collegamento Apri Cartella Log (icona nativa Windows: cartella)
             $logDir = Join-Path $env:ProgramData "86NocConnector\logs"
             if (!(Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
-            $ok = & $createShortcutSafe $shell "$startMenuDir\Apri Cartella Log.lnk" "explorer.exe" $logDir $null "Apri la cartella dei log del connettore" $iconLocation 1
+            $ok = & $createShortcutSafe $shell "$startMenuDir\Apri Cartella Log.lnk" "explorer.exe" $logDir $null "Apri la cartella dei log del connettore" $iconFolderNative 1
             $shortcutResults += @{ name = "Apri Cartella Log"; ok = $ok }
             
             [System.Runtime.InteropServices.Marshal]::ReleaseComObject($shell) | Out-Null
@@ -1133,7 +1141,7 @@ function Show-InstallerWizard {
         Start-Sleep -Milliseconds 500
         
         # Step 5: Start connector service + tray
-        $txtStatus.AppendText("> Avvio $AppName...`r`n")
+        $txtStatus.AppendText("> Avvio $DisplayName...`r`n")
         $progressBar.Value = 100
         $form.Refresh()
         
@@ -1208,7 +1216,7 @@ function Show-InstallerWizard {
         $contentPanel.Controls.Add($title)
         
         $desc = New-Object System.Windows.Forms.Label
-        $desc.Text = "$AppName e' stato installato e avviato.`n`nOra lo switch HPE verra' monitorato automaticamente.`nSe una porta cambia stato, riceverai un alert nel NOC."
+        $desc.Text = "$DisplayName e' stato installato e avviato.`n`nOra lo switch HPE verra' monitorato automaticamente.`nSe una porta cambia stato, riceverai un alert nel NOC."
         $desc.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
         $desc.ForeColor = [System.Drawing.Color]::FromArgb(60, 60, 80)
         $desc.Location = New-Object System.Drawing.Point(28, 60)
@@ -1246,7 +1254,7 @@ function Show-InstallerWizard {
         }
         
         $tip = New-Object System.Windows.Forms.Label
-        $tip.Text = "Trovi l'icona di $AppName vicino all'orologio`nnella barra delle applicazioni (system tray).`nClicca con il tasto destro per le opzioni."
+        $tip.Text = "Trovi l'icona di $DisplayName vicino all'orologio`nnella barra delle applicazioni (system tray).`nClicca con il tasto destro per le opzioni."
         $tip.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
         $tip.ForeColor = [System.Drawing.Color]::FromArgb(99, 102, 241)
         $tip.Location = New-Object System.Drawing.Point(28, 340)

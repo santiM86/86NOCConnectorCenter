@@ -372,6 +372,32 @@ Rimossi in v3.5.0 (con OK utente): Check-ForUpdate, Install-Update (5 metodi fal
 - **Task 2 — Logo in Pannello di Controllo → Programmi e funzionalità**: aggiungere chiave registry `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\86NocConnector\DisplayIcon` che punti al percorso di `86bit_logo.ico` installato. Attualmente mostra icona blu generica Windows.
 - **Task 3 — Fix spazio vuoto GUI "Gestisci Dispositivi"**: nel form `installer_gui.ps1` c'è spazio bianco a destra del pulsante "Salva e Riavvia" — rimpicciolire Form width o aggiungere `Anchor = Right` ai bottoni per riempimento proporzionale.
 
+### Connector v3.5.4 — UI Polish ARGUS Connector Branding (2026-04-23)
+**Richiesta utente** (screenshot tray + installer): 1) Rinominare "86NocConnector" → "ARGUS Connector" ovunque nell'UI (tray menu, tooltip, form titles, About dialog, MessageBox captions). 2) Semplificare tooltip system tray a `ARGUS Connector vX.X.X | Stato: ATTIVO/FERMO`. 3) Shortcut Menu Start: icone native Windows contestuali per "Apri Cartella Log" e "Disinstalla" invece del logo 86bit generico.
+
+**Approccio non-breaking**:
+- Nuova variabile `$DisplayName = "ARGUS Connector"` (UI) aggiunta in `tray_app.ps1` e `installer_gui.ps1` accanto a `$AppName = "86NocConnector"` (path tecnici, nome servizio/task).
+- Path tecnici intatti per retrocompatibilità con installazioni esistenti: `C:\ProgramData\86NocConnector`, `C:\Program Files\86NocConnector`, service `86NocConnectorService`, Scheduled Task `\86BIT\ArgusConnectorUpdater`, chiavi Registry `Uninstall\86NocConnector` e `Run\86NocConnector`.
+- Sostituiti in UI: tray_app.ps1 → 59 `$DisplayName` / 4 `$AppName` (technical-only); installer_gui.ps1 → 18 `$DisplayName` / 9 `$AppName`.
+
+**Nuova funzione `Get-TooltipText`** in `tray_app.ps1` che ritorna stringa sintetica (<63 char limite hard NotifyIcon): `ARGUS Connector v3.5.4 | Stato: ATTIVO` o `| Stato: FERMO`. Sostituita in tutte le assegnazioni `$notifyIcon.Text = "$AppName - Attivo"` (7 punti: avvio, auto-start Task, post-start/stop/restart click, Manage Devices restart, timer health check). La funzione estesa `Get-StatusText` (multi-riga con uptime, SNMP/Syslog count, NOC url) resta usata solo per il MessageBox "Stato" (click menu + double-click tray).
+
+**Icone native Windows** in `installer_gui.ps1`:
+- `Apri Cartella Log.lnk` → `%SystemRoot%\System32\shell32.dll,3` (cartella gialla)
+- `Disinstalla ARGUS Connector.lnk` → `%SystemRoot%\System32\shell32.dll,271` (cestino rosso)
+- `Avvia ARGUS Connector.lnk` e `Diagnostica Connessione.lnk` continuano a usare `86bit_logo.ico` (branding principale)
+
+**Distribuzione Metodo A (upload via Center UI)**: ZIP generati in `/app/frontend/public/downloads/` e **non** registrati nel DB automatico — l'admin li scarica via HTTPS e li ricarica dalla pagina `/connectors` (pulsante "Pubblica Aggiornamento" → `POST /api/connector/upload-update`) che si occupa di: copia in `/app/connector_updates/`, record `connector_updates` active=true, copia extra in `/app/frontend/public/downloads/`. Connector in field si aggiornano via Scheduled Task `\86BIT\ArgusConnectorUpdater` (poll 5 min) verso `GET /api/connector/update-check`.
+
+**File toccati**:
+- `/app/noc-connector/prg/src/tray_app.ps1` (rinominato UI, nuova `Get-TooltipText`, tooltip semplificato)
+- `/app/noc-connector/prg/src/installer_gui.ps1` (rinominato UI, icone native shortcut Log/Uninstall)
+- `/app/noc-connector/prg/version.json` → 3.5.4 + changelog
+- `/app/frontend/public/downloads/86NocConnector_v3.5.4.zip` (356 KB)
+- `/app/frontend/public/downloads/86NocConnector_v3.5.4_install.zip` (357 KB, con VBS installer)
+
+**Verifica HTTP**: entrambi gli ZIP raggiungibili `200 OK` via `https://<domain>/downloads/86NocConnector_v3.5.4*.zip`. Sintassi PowerShell bilanciata (braces/parens match 0 diff).
+
 ### Time-Series Metrics + Syslog Viewer + SNMP Traps (2026-04-22 — iteration_59)
 **Richiesta utente**: "procedi con Sessione 2 SNMP Trap receiver, Sessione 3 Syslog receiver, Sessione 4 Time-series + grafici".
 

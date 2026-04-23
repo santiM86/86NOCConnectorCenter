@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    86NocConnector - System Tray Application
+    ARGUS Connector - System Tray Application
 .DESCRIPTION
     Icona nella system tray vicino all'orologio.
     Usa .NET Windows.Forms nativo (incluso in Windows).
@@ -9,7 +9,10 @@
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
+# $AppName: identificatore tecnico (path ProgramData, nomi task/servizio) — NON cambiare, rompe installazioni esistenti
+# $DisplayName: nome visualizzato all'utente in tutta l'UI (tooltip, form title, MessageBox, About)
 $AppName = "86NocConnector"
+$DisplayName = "ARGUS Connector"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $BaseDir = Split-Path -Parent $ScriptDir
 $versionFile = Join-Path $BaseDir "version.json"
@@ -237,16 +240,26 @@ function Get-StatusText {
         $nocUrl = if ($config) { $config.noc_center_url } else { "N/D" }
         $taskRunning = Test-ConnectorTask
         $mode = if ($taskRunning) { "Servizio Windows (Task)" } else { "Processo diretto" }
-        return "$AppName v$($status.version)`nStato: ATTIVO ($mode)`nUptime: ${upH}h ${upM}m`nNOC: $nocUrl`nSNMP: $($status.snmp_received) | Syslog: $($status.syslog_received)"
+        return "$DisplayName v$($status.version)`nStato: ATTIVO ($mode)`nUptime: ${upH}h ${upM}m`nNOC: $nocUrl`nSNMP: $($status.snmp_received) | Syslog: $($status.syslog_received)"
     }
-    return "$AppName v$Version`nStato: FERMO"
+    return "$DisplayName v$Version`nStato: FERMO"
+}
+
+# Tooltip sintetico per la system tray (limite hard 63 char).
+# Richiesta utente: mostrare solo versione e stato attivo/fermo.
+function Get-TooltipText {
+    $status = Read-ConnectorStatus
+    if ($status -and $status.status -eq "running") {
+        return "$DisplayName v$($status.version) | Stato: ATTIVO"
+    }
+    return "$DisplayName v$Version | Stato: FERMO"
 }
 
 # ==================== DEVICE MANAGER ====================
 
 function Show-DeviceManager {
     $form = New-Object System.Windows.Forms.Form
-    $form.Text = "$AppName - Gestisci Dispositivi"
+    $form.Text = "$DisplayName - Gestisci Dispositivi"
     $form.Size = New-Object System.Drawing.Size(820, 580)
     $form.StartPosition = "CenterScreen"
     $form.FormBorderStyle = "FixedDialog"
@@ -446,7 +459,7 @@ function Show-DeviceManager {
     $btnAdd.Add_Click({
         $ip = $txtIP.Text.Trim()
         if (-not $ip) {
-            [System.Windows.Forms.MessageBox]::Show("Inserisci un indirizzo IP.", $AppName, "OK", "Warning")
+            [System.Windows.Forms.MessageBox]::Show("Inserisci un indirizzo IP.", $DisplayName, "OK", "Warning")
             return
         }
         $comm = if ($txtComm.Text.Trim()) { $txtComm.Text.Trim() } else { "public" }
@@ -455,7 +468,7 @@ function Show-DeviceManager {
         # Check duplicate
         foreach ($existing in $listView.Items) {
             if ($existing.Text -eq $ip) {
-                [System.Windows.Forms.MessageBox]::Show("IP gia' presente nella lista.", $AppName, "OK", "Warning")
+                [System.Windows.Forms.MessageBox]::Show("IP gia' presente nella lista.", $DisplayName, "OK", "Warning")
                 return
             }
         }
@@ -472,7 +485,7 @@ function Show-DeviceManager {
     # Export CSV handler
     $btnExport.Add_Click({
         if ($listView.Items.Count -eq 0) {
-            [System.Windows.Forms.MessageBox]::Show("Nessun dispositivo da esportare.", $AppName, "OK", "Warning")
+            [System.Windows.Forms.MessageBox]::Show("Nessun dispositivo da esportare.", $DisplayName, "OK", "Warning")
             return
         }
         $saveDialog = New-Object System.Windows.Forms.SaveFileDialog
@@ -485,7 +498,7 @@ function Show-DeviceManager {
                 $lines += "$($item.Text),$($item.SubItems[1].Text),$($item.SubItems[2].Text)"
             }
             $lines -join "`r`n" | Set-Content $saveDialog.FileName -Encoding UTF8
-            [System.Windows.Forms.MessageBox]::Show("$($listView.Items.Count) dispositivi esportati in:`n$($saveDialog.FileName)", $AppName, "OK", "Information")
+            [System.Windows.Forms.MessageBox]::Show("$($listView.Items.Count) dispositivi esportati in:`n$($saveDialog.FileName)", $DisplayName, "OK", "Information")
         }
     })
 
@@ -517,7 +530,7 @@ function Show-DeviceManager {
                 $listView.Items.Add($item)
                 $imported++
             }
-            [System.Windows.Forms.MessageBox]::Show("$imported dispositivi importati.", $AppName, "OK", "Information")
+            [System.Windows.Forms.MessageBox]::Show("$imported dispositivi importati.", $DisplayName, "OK", "Information")
         }
     })
 
@@ -526,14 +539,14 @@ function Show-DeviceManager {
         if ($listView.SelectedItems.Count -gt 0) {
             $listView.Items.Remove($listView.SelectedItems[0])
         } else {
-            [System.Windows.Forms.MessageBox]::Show("Seleziona un dispositivo dalla lista.", $AppName, "OK", "Information")
+            [System.Windows.Forms.MessageBox]::Show("Seleziona un dispositivo dalla lista.", $DisplayName, "OK", "Information")
         }
     })
 
     # Test SNMP button handler
     $btnTestSnmp.Add_Click({
         if ($listView.Items.Count -eq 0) {
-            [System.Windows.Forms.MessageBox]::Show("Nessun dispositivo nella lista.", $AppName, "OK", "Warning")
+            [System.Windows.Forms.MessageBox]::Show("Nessun dispositivo nella lista.", $DisplayName, "OK", "Warning")
             return
         }
         $btnTestSnmp.Enabled = $false
@@ -611,7 +624,7 @@ function Show-DeviceManager {
         
         # Show results
         $resultForm = New-Object System.Windows.Forms.Form
-        $resultForm.Text = "$AppName - Risultati Test SNMP"
+        $resultForm.Text = "$DisplayName - Risultati Test SNMP"
         $resultForm.Size = New-Object System.Drawing.Size(520, 350)
         $resultForm.StartPosition = "CenterScreen"
         $resultForm.FormBorderStyle = "FixedDialog"
@@ -721,7 +734,7 @@ public static class CertBypassTray {
     # Apri Web UI (device selezionato)
     $btnWebUI.Add_Click({
         if ($listView.SelectedItems.Count -eq 0) {
-            [System.Windows.Forms.MessageBox]::Show("Seleziona un dispositivo dalla lista.", $AppName, "OK", "Information")
+            [System.Windows.Forms.MessageBox]::Show("Seleziona un dispositivo dalla lista.", $DisplayName, "OK", "Information")
             return
         }
         $item = $listView.SelectedItems[0]
@@ -744,13 +757,13 @@ public static class CertBypassTray {
             $item.SubItems[3].Text = [string]([char]0x2715) + " non raggiungibile"
             [System.Windows.Forms.MessageBox]::Show(
                 "Nessuna Web UI raggiungibile su $ip.`n`nPorte provate: 443, 80, 8443, 8080, 4443, 10000, 8000, 8888.`nVerifica firewall / service web del device.",
-                $AppName, "OK", "Warning") | Out-Null
+                $DisplayName, "OK", "Warning") | Out-Null
             return
         }
 
         # Apri nel browser di sistema
         try { Start-Process $det.url | Out-Null } catch {
-            [System.Windows.Forms.MessageBox]::Show("Impossibile avviare il browser: $($_.Exception.Message)", $AppName, "OK", "Error") | Out-Null
+            [System.Windows.Forms.MessageBox]::Show("Impossibile avviare il browser: $($_.Exception.Message)", $DisplayName, "OK", "Error") | Out-Null
         }
 
         # Aggiorna colonna Web UI
@@ -764,14 +777,14 @@ public static class CertBypassTray {
         } else {
             "Web UI aperta nel browser: $($det.url)`n`nATTENZIONE: impossibile contattare ARGUS Center per registrare il device (verifica rete)."
         }
-        [System.Windows.Forms.MessageBox]::Show($statusMsg, $AppName, "OK",
+        [System.Windows.Forms.MessageBox]::Show($statusMsg, $DisplayName, "OK",
             (& { if ($sent) { [System.Windows.Forms.MessageBoxIcon]::Information } else { [System.Windows.Forms.MessageBoxIcon]::Warning } })) | Out-Null
     })
 
     # Test Web UI su tutti i device (non apre il browser, solo detection + report)
     $btnTestAllWebUI.Add_Click({
         if ($listView.Items.Count -eq 0) {
-            [System.Windows.Forms.MessageBox]::Show("Nessun dispositivo nella lista.", $AppName, "OK", "Warning") | Out-Null
+            [System.Windows.Forms.MessageBox]::Show("Nessun dispositivo nella lista.", $DisplayName, "OK", "Warning") | Out-Null
             return
         }
         $btnTestAllWebUI.Enabled = $false
@@ -807,7 +820,7 @@ public static class CertBypassTray {
 
         [System.Windows.Forms.MessageBox]::Show(
             "Test completato.`n`nWeb UI rilevate: $okCount`nNon raggiungibili: $koCount`nInviate ad ARGUS Center: $pushed`n`n$summary",
-            $AppName, "OK", "Information") | Out-Null
+            $DisplayName, "OK", "Information") | Out-Null
     })
 
     # Save button handler
@@ -815,7 +828,7 @@ public static class CertBypassTray {
         if (Test-Path $ConfigPath) {
             $config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
         } else {
-            [System.Windows.Forms.MessageBox]::Show("Nessuna configurazione trovata. Esegui prima l'installer.", $AppName, "OK", "Error")
+            [System.Windows.Forms.MessageBox]::Show("Nessuna configurazione trovata. Esegui prima l'installer.", $DisplayName, "OK", "Error")
             return
         }
 
@@ -847,7 +860,7 @@ public static class CertBypassTray {
 
         $result = [System.Windows.Forms.MessageBox]::Show(
             "Configurazione salvata con $($devicesArray.Count) dispositivi.`n`nVuoi riavviare il connector per applicare le modifiche?",
-            $AppName,
+            $DisplayName,
             [System.Windows.Forms.MessageBoxButtons]::YesNo,
             [System.Windows.Forms.MessageBoxIcon]::Question
         )
@@ -904,7 +917,7 @@ function Invoke-ManualUpdate($notifyIcon) {
     if (-not $isAdmin) {
         [System.Windows.Forms.MessageBox]::Show(
             "L'aggiornamento manuale richiede privilegi di Amministratore.`n`nChiudi questa applicazione e riaprila cliccando con il tasto destro sull'icona -> `"Esegui come amministratore`".",
-            "$AppName - Privilegi richiesti",
+            "$DisplayName - Privilegi richiesti",
             [System.Windows.Forms.MessageBoxButtons]::OK,
             [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
         return
@@ -912,26 +925,26 @@ function Invoke-ManualUpdate($notifyIcon) {
 
     # Load config
     if (-not (Test-Path $ConfigPath)) {
-        [System.Windows.Forms.MessageBox]::Show("Configurazione non trovata.", $AppName,
+        [System.Windows.Forms.MessageBox]::Show("Configurazione non trovata.", $DisplayName,
             [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
         return
     }
     $config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
     if (-not $config.api_key -or -not $config.noc_center_url) {
-        [System.Windows.Forms.MessageBox]::Show("Configurazione incompleta (api_key o noc_center_url mancante).", $AppName,
+        [System.Windows.Forms.MessageBox]::Show("Configurazione incompleta (api_key o noc_center_url mancante).", $DisplayName,
             [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
         return
     }
 
     # Show "checking..." notification
-    $notifyIcon.ShowBalloonTip(2000, $AppName, "Verifica aggiornamenti in corso...", [System.Windows.Forms.ToolTipIcon]::Info)
+    $notifyIcon.ShowBalloonTip(2000, $DisplayName, "Verifica aggiornamenti in corso...", [System.Windows.Forms.ToolTipIcon]::Info)
 
     # Check for update
     $updateInfo = Invoke-SecureUpdateCheck $config
     if (-not $updateInfo) {
         [System.Windows.Forms.MessageBox]::Show(
             "Impossibile contattare ARGUS Center.`n`nVerifica:`n- connessione internet`n- URL in configurazione: $($config.noc_center_url)",
-            "$AppName - Errore rete",
+            "$DisplayName - Errore rete",
             [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
         return
     }
@@ -939,7 +952,7 @@ function Invoke-ManualUpdate($notifyIcon) {
     if (-not $updateInfo.update_available -or $updateInfo.latest_version -eq $Version) {
         [System.Windows.Forms.MessageBox]::Show(
             "Sei gia' alla versione piu' recente (v$Version).",
-            "$AppName - Nessun aggiornamento",
+            "$DisplayName - Nessun aggiornamento",
             [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
         return
     }
@@ -952,14 +965,14 @@ function Invoke-ManualUpdate($notifyIcon) {
     $msg += "Procedere con l'aggiornamento?`n(Il connettore verra' fermato per qualche secondo e riavviato automaticamente)"
 
     $result = [System.Windows.Forms.MessageBox]::Show(
-        $msg, "$AppName - Aggiornamento disponibile",
+        $msg, "$DisplayName - Aggiornamento disponibile",
         [System.Windows.Forms.MessageBoxButtons]::YesNo,
         [System.Windows.Forms.MessageBoxIcon]::Question)
     if ($result -ne [System.Windows.Forms.DialogResult]::Yes) { return }
 
     # Download zip
     try {
-        $notifyIcon.ShowBalloonTip(3000, $AppName, "Download v$($updateInfo.latest_version) in corso...", [System.Windows.Forms.ToolTipIcon]::Info)
+        $notifyIcon.ShowBalloonTip(3000, $DisplayName, "Download v$($updateInfo.latest_version) in corso...", [System.Windows.Forms.ToolTipIcon]::Info)
         $headers = @{ "X-API-Key" = $config.api_key }
         $downloadUrl = "$($config.noc_center_url)$($updateInfo.download_url)"
         $tempZip = Join-Path $env:TEMP "86NocConnector_manual_update.zip"
@@ -979,7 +992,7 @@ function Invoke-ManualUpdate($notifyIcon) {
         $args = "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$updaterPath`" -ExtractPath `"$tempExtract`" -InstallDir `"$installDir`" -ApiUrl `"$($config.noc_center_url)`" -ApiKey `"$($config.api_key)`""
         Start-Process "powershell.exe" -ArgumentList $args -WindowStyle Hidden
 
-        $notifyIcon.ShowBalloonTip(5000, $AppName, "Aggiornamento in corso. Il servizio verra' riavviato automaticamente.", [System.Windows.Forms.ToolTipIcon]::Info)
+        $notifyIcon.ShowBalloonTip(5000, $DisplayName, "Aggiornamento in corso. Il servizio verra' riavviato automaticamente.", [System.Windows.Forms.ToolTipIcon]::Info)
 
         # Give updater 3s to kick in, then exit tray app (updater killera' gli altri processi)
         Start-Sleep -Seconds 3
@@ -988,7 +1001,7 @@ function Invoke-ManualUpdate($notifyIcon) {
     } catch {
         [System.Windows.Forms.MessageBox]::Show(
             "Errore durante l'aggiornamento:`n`n$($_.Exception.Message)",
-            "$AppName - Errore",
+            "$DisplayName - Errore",
             [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
     }
 }
@@ -1006,7 +1019,7 @@ function Set-NotifyIconTooltip($notifyIcon, $text) {
         $notifyIcon.Text = $flat
     } catch {
         # Ultimo fallback: non crashare mai il timer della tray
-        try { $notifyIcon.Text = "86NocConnector" } catch {}
+        try { $notifyIcon.Text = $DisplayName } catch {}
     }
 }
 
@@ -1060,7 +1073,7 @@ public class TrayRefresh {
     
     $notifyIcon = New-Object System.Windows.Forms.NotifyIcon
     $notifyIcon.Icon = New-TrayIcon "stopped"
-    $notifyIcon.Text = "$AppName - Avvio..."
+    $notifyIcon.Text = "$DisplayName v$Version | Avvio..."
     $notifyIcon.Visible = $true
     
     # Context Menu
@@ -1070,7 +1083,7 @@ public class TrayRefresh {
     $contextMenu.Font = New-Object System.Drawing.Font("Segoe UI", 9)
     
     # Title item (disabled)
-    $titleItem = $contextMenu.Items.Add("$AppName v$Version")
+    $titleItem = $contextMenu.Items.Add("$DisplayName v$Version")
     $titleItem.Enabled = $false
     $titleItem.ForeColor = [System.Drawing.Color]::FromArgb(99, 102, 241)
     $titleItem.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
@@ -1081,7 +1094,7 @@ public class TrayRefresh {
     $statusItem = $contextMenu.Items.Add("Stato")
     $statusItem.Add_Click({
         $text = Get-StatusText
-        [System.Windows.Forms.MessageBox]::Show($text, "$AppName - Stato", 
+        [System.Windows.Forms.MessageBox]::Show($text, "$DisplayName - Stato", 
             [System.Windows.Forms.MessageBoxButtons]::OK,
             [System.Windows.Forms.MessageBoxIcon]::Information)
     })
@@ -1105,13 +1118,13 @@ public class TrayRefresh {
     $startItem.Add_Click({
         if (Start-ConnectorViaTask) {
             $notifyIcon.Icon = New-TrayIcon "running"
-            $notifyIcon.Text = "$AppName - Attivo"
-            $notifyIcon.ShowBalloonTip(3000, $AppName, "Connector avviato e in ascolto", [System.Windows.Forms.ToolTipIcon]::Info)
+            $notifyIcon.Text = "$DisplayName v$Version | Stato: ATTIVO"
+            $notifyIcon.ShowBalloonTip(3000, $DisplayName, "Connector avviato e in ascolto", [System.Windows.Forms.ToolTipIcon]::Info)
             $startItem.Visible = $false
             $stopItem.Visible = $true
             $restartItem.Visible = $true
         } else {
-            [System.Windows.Forms.MessageBox]::Show("Errore avvio. Verifica la configurazione.", $AppName,
+            [System.Windows.Forms.MessageBox]::Show("Errore avvio. Verifica la configurazione.", $DisplayName,
                 [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
         }
     })
@@ -1123,8 +1136,8 @@ public class TrayRefresh {
     $stopItem.Add_Click({
         Stop-ConnectorProcess
         $notifyIcon.Icon = New-TrayIcon "stopped"
-        $notifyIcon.Text = "$AppName - Fermo"
-        $notifyIcon.ShowBalloonTip(2000, $AppName, "Connector fermato", [System.Windows.Forms.ToolTipIcon]::Warning)
+        $notifyIcon.Text = "$DisplayName v$Version | Stato: FERMO"
+        $notifyIcon.ShowBalloonTip(2000, $DisplayName, "Connector fermato", [System.Windows.Forms.ToolTipIcon]::Warning)
         $startItem.Visible = $true
         $stopItem.Visible = $false
         $restartItem.Visible = $false
@@ -1138,8 +1151,8 @@ public class TrayRefresh {
         Start-Sleep -Seconds 1
         if (Start-ConnectorViaTask) {
             $notifyIcon.Icon = New-TrayIcon "running"
-            $notifyIcon.Text = "$AppName - Attivo"
-            $notifyIcon.ShowBalloonTip(2000, $AppName, "Connector riavviato", [System.Windows.Forms.ToolTipIcon]::Info)
+            $notifyIcon.Text = "$DisplayName v$Version | Stato: ATTIVO"
+            $notifyIcon.ShowBalloonTip(2000, $DisplayName, "Connector riavviato", [System.Windows.Forms.ToolTipIcon]::Info)
         }
     })
 
@@ -1159,7 +1172,7 @@ public class TrayRefresh {
         if (Test-Path $logFile) {
             Start-Process "notepad.exe" -ArgumentList $logFile
         } else {
-            [System.Windows.Forms.MessageBox]::Show("File log non ancora creato.", $AppName)
+            [System.Windows.Forms.MessageBox]::Show("File log non ancora creato.", $DisplayName)
         }
     })
     
@@ -1169,7 +1182,7 @@ public class TrayRefresh {
         if (Test-Path $ConfigPath) {
             Start-Process "notepad.exe" -ArgumentList $ConfigPath
         } else {
-            [System.Windows.Forms.MessageBox]::Show("Nessuna configurazione. Esegui install.bat", $AppName)
+            [System.Windows.Forms.MessageBox]::Show("Nessuna configurazione. Esegui install.bat", $DisplayName)
         }
     })
 
@@ -1184,8 +1197,8 @@ public class TrayRefresh {
             Start-Sleep -Seconds 1
             if (Start-ConnectorViaTask) {
                 $notifyIcon.Icon = New-TrayIcon "running"
-                $notifyIcon.Text = "$AppName - Attivo (riavviato)"
-                $notifyIcon.ShowBalloonTip(3000, $AppName, "Connector riavviato con nuovi dispositivi", [System.Windows.Forms.ToolTipIcon]::Info)
+                $notifyIcon.Text = "$DisplayName v$Version | Stato: ATTIVO"
+                $notifyIcon.ShowBalloonTip(3000, $DisplayName, "Connector riavviato con nuovi dispositivi", [System.Windows.Forms.ToolTipIcon]::Info)
             }
         }
     })
@@ -1196,7 +1209,7 @@ public class TrayRefresh {
     $aboutItem = $contextMenu.Items.Add("Informazioni")
     $aboutItem.Add_Click({
         $aboutForm = New-Object System.Windows.Forms.Form
-        $aboutForm.Text = "$AppName - Informazioni"
+        $aboutForm.Text = "$DisplayName - Informazioni"
         $aboutForm.Size = New-Object System.Drawing.Size(420, 340)
         $aboutForm.StartPosition = "CenterScreen"
         $aboutForm.FormBorderStyle = "FixedDialog"
@@ -1217,7 +1230,7 @@ public class TrayRefresh {
 
         # App Name + Version
         $lblName = New-Object System.Windows.Forms.Label
-        $lblName.Text = "$AppName  v$Version"
+        $lblName.Text = "$DisplayName  v$Version"
         $lblName.Font = New-Object System.Drawing.Font("Segoe UI", 14, [System.Drawing.FontStyle]::Bold)
         $lblName.ForeColor = [System.Drawing.Color]::FromArgb(30, 30, 50)
         $lblName.Location = New-Object System.Drawing.Point(110, 20)
@@ -1299,7 +1312,7 @@ info@86bit.it
     # Double-click shows status
     $notifyIcon.Add_DoubleClick({
         $text = Get-StatusText
-        [System.Windows.Forms.MessageBox]::Show($text, "$AppName - Stato",
+        [System.Windows.Forms.MessageBox]::Show($text, "$DisplayName - Stato",
             [System.Windows.Forms.MessageBoxButtons]::OK,
             [System.Windows.Forms.MessageBoxIcon]::Information)
     })
@@ -1310,27 +1323,27 @@ info@86bit.it
         # Il connettore gira gia' (via Task Scheduler o avvio precedente)
         $global:IsRunning = $true
         $notifyIcon.Icon = New-TrayIcon "running"
-        $notifyIcon.Text = "$AppName - Attivo (Servizio)"
+        $notifyIcon.Text = "$DisplayName v$Version | Stato: ATTIVO"
         $startItem.Visible = $false
         $stopItem.Visible = $true
         $restartItem.Visible = $true
-        $notifyIcon.ShowBalloonTip(3000, $AppName, "Connector attivo come servizio di sistema", [System.Windows.Forms.ToolTipIcon]::Info)
+        $notifyIcon.ShowBalloonTip(3000, $DisplayName, "Connector attivo come servizio di sistema", [System.Windows.Forms.ToolTipIcon]::Info)
     } elseif (Test-Path $ConfigPath) {
         $config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
         if ($config.noc_center_url -and $config.api_key) {
             if (Start-ConnectorViaTask) {
                 $notifyIcon.Icon = New-TrayIcon "running"
-                $notifyIcon.Text = "$AppName - Attivo"
+                $notifyIcon.Text = "$DisplayName v$Version | Stato: ATTIVO"
                 $startItem.Visible = $false
                 $stopItem.Visible = $true
                 $restartItem.Visible = $true
-                $notifyIcon.ShowBalloonTip(3000, $AppName, "Connector avviato e in ascolto", [System.Windows.Forms.ToolTipIcon]::Info)
+                $notifyIcon.ShowBalloonTip(3000, $DisplayName, "Connector avviato e in ascolto", [System.Windows.Forms.ToolTipIcon]::Info)
             }
         } else {
-            $notifyIcon.ShowBalloonTip(5000, $AppName, "Configurazione incompleta. Esegui install.bat", [System.Windows.Forms.ToolTipIcon]::Warning)
+            $notifyIcon.ShowBalloonTip(5000, $DisplayName, "Configurazione incompleta. Esegui install.bat", [System.Windows.Forms.ToolTipIcon]::Warning)
         }
     } else {
-        $notifyIcon.ShowBalloonTip(5000, $AppName, "Prima installazione. Esegui install.bat", [System.Windows.Forms.ToolTipIcon]::Warning)
+        $notifyIcon.ShowBalloonTip(5000, $DisplayName, "Prima installazione. Esegui install.bat", [System.Windows.Forms.ToolTipIcon]::Warning)
     }
     
     # Timer for tooltip update and connector health monitoring
@@ -1344,8 +1357,8 @@ info@86bit.it
             # Connettore era attivo ma ora non risponde piu'
             $global:IsRunning = $false
             $notifyIcon.Icon = New-TrayIcon "error"
-            $notifyIcon.Text = "$AppName - NON RISPONDE"
-            $notifyIcon.ShowBalloonTip(5000, $AppName, "Il connector non risponde! Verificare i log.", [System.Windows.Forms.ToolTipIcon]::Error)
+            $notifyIcon.Text = "$DisplayName v$Version | NON RISPONDE"
+            $notifyIcon.ShowBalloonTip(5000, $DisplayName, "Il connector non risponde! Verificare i log.", [System.Windows.Forms.ToolTipIcon]::Error)
             $startItem.Visible = $true
             $stopItem.Visible = $false
             $restartItem.Visible = $false
@@ -1353,13 +1366,13 @@ info@86bit.it
             # Connettore avviato dal Task Scheduler senza passare dalla tray
             $global:IsRunning = $true
             $notifyIcon.Icon = New-TrayIcon "running"
-            Set-NotifyIconTooltip $notifyIcon (Get-StatusText)
+            Set-NotifyIconTooltip $notifyIcon (Get-TooltipText)
             $startItem.Visible = $false
             $stopItem.Visible = $true
             $restartItem.Visible = $true
         } elseif ($global:IsRunning -and $connectorAlive) {
             # Aggiorna tooltip
-            Set-NotifyIconTooltip $notifyIcon (Get-StatusText)
+            Set-NotifyIconTooltip $notifyIcon (Get-TooltipText)
         }
     })
     $timer.Start()
