@@ -1307,9 +1307,33 @@ async def connector_device_report(request: Request):
             "entity_mib": dev.get("entity_mib", None),
             "primary_mac": dev.get("primary_mac", None),
             "if_aliases": dev.get("if_aliases", None),
+            "arp_entries_count": len(dev.get("arp_table") or []) if dev.get("arp_table") else 0,
             "last_poll": dev.get("poll_timestamp", now_iso),
             "updated_at": now_iso
         }
+        # Ingest ARP table into arp_cache collection for cross-device MAC lookup
+        arp_table = dev.get("arp_table") or []
+        if isinstance(arp_table, list) and arp_table:
+            try:
+                now_dt = datetime.now(timezone.utc)
+                for entry in arp_table:
+                    ip_e = (entry.get("ip") or "").strip() if isinstance(entry, dict) else ""
+                    mac_e = (entry.get("mac") or "").strip().upper() if isinstance(entry, dict) else ""
+                    if not ip_e or not mac_e:
+                        continue
+                    await db.arp_cache.update_one(
+                        {"client_id": client_id, "ip": ip_e},
+                        {"$set": {
+                            "client_id": client_id,
+                            "ip": ip_e,
+                            "mac": mac_e,
+                            "source_device_ip": dev.get("device_ip"),
+                            "last_seen": now_dt,
+                        }},
+                        upsert=True,
+                    )
+            except Exception as e:
+                logger.debug(f"ARP cache upsert failed for {dev.get('device_ip')}: {e}")
         # Track offline duration for debouncing offline alerts
         if not dev.get("reachable", True):
             # Only set unreachable_since the first time it goes down

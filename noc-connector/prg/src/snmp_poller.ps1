@@ -912,6 +912,7 @@ $script:OID_entPhysicalAssetID      = "1.3.6.1.2.1.47.1.1.1.1.15"
 $script:OID_entPhysicalClass        = "1.3.6.1.2.1.47.1.1.1.1.5"   # 3=chassis
 $script:OID_ifPhysAddress           = "1.3.6.1.2.1.2.2.1.6"        # MAC per interfaccia
 $script:OID_ipAdEntIfIndex          = "1.3.6.1.2.1.4.20.1.2"       # IP -> ifIndex
+$script:OID_ipNetToMediaPhysAddress = "1.3.6.1.2.1.4.22.1.2"       # ARP table IP -> MAC
 
 function Poll-EntityMib([string]$ip, [string]$community) {
     # Returns the chassis-level info: vendor/model/serial/firmware/hw_rev/asset_tag.
@@ -1012,6 +1013,42 @@ function Poll-IfAliases([string]$ip, [string]$community) {
         }
     } catch {}
     return $aliases
+}
+
+function Poll-ArpTable([string]$ip, [string]$community) {
+    # Walk ipNetToMediaPhysAddress (ARP table del device). Solo router/switch/firewall
+    # l'hanno popolata. Returns array of @{ip=..., mac=...}.
+    $arp = @()
+    try {
+        $results = Get-SnmpTable $ip $community $script:OID_ipNetToMediaPhysAddress
+        foreach ($oidKey in $results.Keys) {
+            # Il suffisso OID ha forma: <ifIndex>.<a>.<b>.<c>.<d> -> estraiamo gli ultimi 4 ottetti
+            $parts = $oidKey -split '\.'
+            if ($parts.Count -lt 5) { continue }
+            $ipParts = $parts[-4..-1]
+            $foundIp = ($ipParts -join ".")
+            $macRaw = $results[$oidKey]
+            $macStr = $null
+            if ($macRaw -is [byte[]]) {
+                if ($macRaw.Length -eq 6) {
+                    $macStr = (($macRaw | ForEach-Object { "{0:X2}" -f $_ }) -join ":")
+                }
+            } else {
+                $s = "$macRaw".Trim()
+                # Possibili formati: "00 11 22 33 44 55", "00-11-22-33-44-55", "0011.2233.4455", "00:11:22:33:44:55"
+                $hex = $s -replace "[^0-9A-Fa-f]", ""
+                if ($hex.Length -eq 12) {
+                    $macStr = ((0..5 | ForEach-Object { $hex.Substring($_*2, 2) }) -join ":").ToUpper()
+                } elseif ($s -match "^([0-9A-Fa-f]{2}[:\-\s\.]){5}[0-9A-Fa-f]{2}$") {
+                    $macStr = ($s -replace "[\-\s\.]", ":").ToUpper()
+                }
+            }
+            if ($foundIp -and $macStr) {
+                $arp += @{ ip = $foundIp; mac = $macStr }
+            }
+        }
+    } catch {}
+    return ,$arp
 }
 
 # HPE ILO / ProLiant OIDs (CPQHLTH-MIB)
@@ -1343,6 +1380,16 @@ function Poll-ExtendedMetrics([string]$ip, [string]$community) {
         $aliases = Poll-IfAliases $ip $community
         if ($aliases -and $aliases.Count -gt 0) {
             $metrics.if_aliases = $aliases
+        }
+    } catch {}
+
+    # --- ARP table (solo router/switch/firewall hanno l'ARP table popolata) ---
+    # Consente correlazione IP->MAC cross-device per gli altri device senza SNMP proprio
+    try {
+        $arpEntries = Poll-ArpTable $ip $community
+        if ($arpEntries -and $arpEntries.Count -gt 0) {
+            $metrics.arp_table = @($arpEntries)
+            Write-Log "  ARP $ip : $($arpEntries.Count) entries" "DEBUG"
         }
     } catch {}
 

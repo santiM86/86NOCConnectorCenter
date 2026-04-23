@@ -198,6 +198,16 @@ export default function DeviceInfoCard({ deviceIp, onClose = null, compact = fal
             <Field label="Hostname" value={id.hostname} mono />
             <Field label="IP" value={id.ip} mono highlight />
             <Field label="MAC primario" value={id.mac_primary} mono />
+            {!id.mac_primary && (
+              <div className="py-1 text-[10px] text-amber-300/80 italic">
+                MAC non disponibile — pollare ARP table su router/switch (v3.4.6+)
+              </div>
+            )}
+            {id.mac_primary && id.mac_source === "arp-cache" && (
+              <div className="py-1 text-[10px] text-[var(--text-secondary)] italic">
+                via ARP cache da {id.mac_arp_source_ip || "vicino"}
+              </div>
+            )}
             <Field label="MAC totali" value={id.mac_count || null} />
             <Field label="Vendor" value={id.vendor} highlight />
             <Field label="Modello" value={id.model} highlight />
