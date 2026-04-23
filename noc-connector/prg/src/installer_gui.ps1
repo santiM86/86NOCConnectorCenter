@@ -839,6 +839,8 @@ function Show-InstallerWizard {
         $connectorScript = Join-Path $ScriptDir "connector.ps1"
         $nssmPath = Join-Path $BaseDir "nssm.exe"
         $svcName = "86NocConnectorService"
+        # v3.5.15: path assoluto a powershell.exe (evita PATH env var non definiti in NSSM LocalSystem context)
+        $psExe = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
         
         if ($chkAutostart.Checked) {
             if (Test-Path $nssmPath) {
@@ -878,7 +880,13 @@ function Show-InstallerWizard {
                     } catch {}
 
                     # Registra il servizio con NSSM
-                    & $nssmPath install $svcName "powershell.exe" "-ExecutionPolicy Bypass -NonInteractive -WindowStyle Hidden -File `"$connectorScript`""
+                    # v3.5.15 FIX quoting: nssm install con AppParameters inline
+                    # NON rispetta le virgolette su path con spazi (es. "C:\Program Files\...").
+                    # Risultato pre-fix: PowerShell ricevette `-File C:\Program` come path monco
+                    # → "Il file non ha estensione 'ps1'" → crash infinito ogni 60s su Program Files.
+                    # Fix: install col solo eseguibile, poi AppParameters via `set` (quoting OK).
+                    & $nssmPath install $svcName $psExe
+                    & $nssmPath set $svcName AppParameters ('-ExecutionPolicy Bypass -NonInteractive -WindowStyle Hidden -File "' + $connectorScript + '"')
                     & $nssmPath set $svcName AppDirectory $ScriptDir
                     & $nssmPath set $svcName DisplayName "86NocConnector Service"
                     & $nssmPath set $svcName Description "86NocConnector - Raccolta SNMP/Syslog per NOC Center"
