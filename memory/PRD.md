@@ -420,6 +420,51 @@ Rimossi in v3.5.0 (con OK utente): Check-ForUpdate, Install-Update (5 metodi fal
 
 ### Time-Series Metrics + Syslog Viewer + SNMP Traps (2026-04-22 — iteration_59)
 
+### Connector v3.5.14 — Disinstallazione enterprise-grade (2026-04-23 sera)
+**Contesto**: dopo il rescue di GALVANSRV (connector in stato "Paused + Disabled", Task Scheduler omonimo del servizio NSSM rimasto orfano, cartella `C:\Program Files\86NocConnector` con `nssm.exe` locked), l'utente ha chiesto di **consolidare tutta la procedura di pulizia "nuclear-safe" dentro il flusso di disinstallazione ufficiale** del connector — in modo che qualunque amministratore futuro che disinstalli dal Pannello di Controllo o dal Menu Start ottenga la stessa pulizia completa, senza bisogno di istruzioni manuali.
+
+**Sostituito**: il vecchio `uninstall.bat` lineare (~125 righe, path hardcoded a `C:\86NocConnector` non più usato dalla v3.4.0, nessuna gestione stati anomali del servizio) con un design a 2 file:
+
+- **`uninstall.ps1`** (~380 righe, logica robusta completa)
+- **`uninstall.bat`** (wrapper minimo ~50 righe: auto-elevation UAC + copia dello script in `%TEMP%` per evitare file-lock sulla stessa install dir + `ExecutionPolicy Bypass`)
+
+**Cosa copre uninstall.ps1 — 8 step idempotenti con log**:
+
+1. **Task Scheduler — ordine critico PRIMA del servizio** (altrimenti un task in esecuzione riavvierebbe il servizio mentre proviamo a eliminarlo):
+   - `\86BIT\ArgusConnectorUpdater` (v3.5.0+ auto-update)
+   - `\86BIT\86NocConnector_Watchdog` (v3.5.12 watchdog)
+   - `\86NocConnector` (legacy pre-v3.3.0)
+   - **`\86NocConnectorService` — il colpevole storico omonimo del servizio NSSM visto su GALVANSRV** (root del loop di restart ciclico pre-v3.5.12)
+   - `\ArgusConnector` + varianti in `\86BIT\`
+   - Cartella parent `\86BIT\` rimossa se vuota (via COM Schedule.Service)
+   - Doppio approccio: `Unregister-ScheduledTask` + fallback `schtasks.exe /Delete /F` per compatibilità API vecchie
+2. **Servizio NSSM — resistente a ogni stato**: gestisce Running, Paused, StopPending, Disabled. Sequenza: Resume-Service se Paused (altrimenti Stop si blocca), NSSM stop se disponibile, `sc.exe stop`, wait-loop fino a 15s, fallback kill dei processi in install dir, `sc.exe delete` finale.
+3. **Kill processi orfani**: filtrato via `Get-CimInstance Win32_Process` + `CommandLine` matching su `connector.ps1 | tray_app.ps1 | snmp_poller.ps1 | update_check.ps1 | service_wrapper.ps1`. **Guardia anti-suicidio `$_.Id -ne $PID`** (impara dalla lezione del primo `fix-connector.ps1` che killava se stesso). `nssm.exe` separato, filtrato solo se `Path -like` install dir → non tocca NSSM di altri prodotti Windows.
+4. **Menu Start**: tutti i path alias storici (`86BIT ArgusCenter`, `86BIT Connector`, `86NocConnector`, `ARGUS Connector`, sia `%ProgramData%` che `%AppData%`).
+5. **Registro**: `HKLM` + `HKCU` + `WOW6432Node`, sia `reg64` che `reg32`, chiavi Uninstall + Run per tutti gli alias (`86BIT_ArgusCenter_Connector`, `86NocConnector`, `ARGUS_Connector`).
+6. **Cartella dati** `%ProgramData%\86NocConnector`.
+7. **Cartella installazione** con **retry loop 5×** + kill secondario processi in path al 2° fallimento + **fallback `HKLM\System\CurrentControlSet\Control\Session Manager\PendingFileRenameOperations`** per programmare l'eliminazione al prossimo reboot se i file sono ancora bloccati da servizi di sistema (Antivirus, SmartScreen, ecc.). Rimuove anche la legacy `C:\86NocConnector` pre-v3.4.0.
+8. **Verifica finale**: check residui su cartelle, servizio, task scheduler. 3 scenari di exit:
+   - `Code 0`: sistema vergine ✓
+   - `Code 1` + "richiesto reboot": tutti i file saranno eliminati al prossimo riavvio
+   - `Code 1` + lista residui: azioni manuali suggerite con elenco preciso di cosa resta
+
+**Log completo** in `%TEMP%\argus-uninstall-<timestamp>.log` (sempre scritto, anche se lo script fallisce a metà) con livelli INFO/OK/WARN/ERROR/STEP color-coded in console.
+
+**File toccati**:
+- `/app/noc-connector/prg/uninstall.bat` (rewrite: wrapper ~50 righe con auto-elevation + copia in %TEMP%)
+- `/app/noc-connector/prg/uninstall.ps1` (nuovo, ~380 righe)
+- `/app/noc-connector/prg/version.json` → 3.5.14
+- Pubblicati: `/app/connector_updates/86NocConnector_v3.5.14.zip` (361 KB) + `/app/frontend/public/downloads/86NocConnector_v3.5.14_install.zip`
+- `db.connector_updates` → v3.5.14 attivo, v3.5.13 disattivato
+
+**Entry point utente** (già cablati da `installer_gui.ps1` dalla v3.5.5):
+- Menu Start: *"Disinstalla ARGUS Connector"* → `uninstall.bat`
+- Pannello di Controllo → Programmi e funzionalità → *ARGUS Connector* → Disinstalla (chiave registry `HKLM\...\Uninstall\86BIT_ArgusCenter_Connector\UninstallString`) → `uninstall.bat`
+- Esecuzione manuale: `C:\Program Files\86NocConnector\uninstall.bat` (tasto destro Amministratore)
+
+**Non toccato**: l'installer `installer_gui.ps1` — il flusso di install-time cleanup (prima dei nuovi componenti) resta inalterato perché già corretto dalla v3.5.12. Qui interveniamo solo sul flusso di disinstallazione finale.
+
 ### Connector v3.5.13 — FIX CRITICO passaggio dati + stabilità listener UDP (2026-04-23)
 **Contesto**: cliente frustrato per "troppo tempo e soldi spesi sul connector" che non passava tutte le informazioni dei dispositivi. Audit completo della pipeline connector → center rivela 2 bug critici *pre-esistenti* che invalidavano il valore del connector.
 
