@@ -761,8 +761,10 @@ function Show-InstallerWizard {
                 New-Item -ItemType Directory -Path $InstallPath -Force | Out-Null
             }
             # Se la cartella sorgente E' GIA' la InstallPath (cioe' si sta reinstallando da lì), non copiare
-            $sourceNorm = (Resolve-Path $sourceDir).Path.TrimEnd('\')
-            $installNorm = (Resolve-Path $InstallPath).Path.TrimEnd('\')
+            # NOTA: usiamo [IO.Path]::GetFullPath invece di Resolve-Path perche' quest'ultimo ritorna null
+            # se il path non esiste (bug installer v3.4.x - fix in v3.5.0)
+            $sourceNorm = [IO.Path]::GetFullPath($sourceDir).TrimEnd('\')
+            $installNorm = [IO.Path]::GetFullPath($InstallPath).TrimEnd('\')
             if ($sourceNorm -ne $installNorm) {
                 # Ferma il servizio se esiste già (evita "file in uso" durante la copia)
                 & sc.exe stop "86NocConnectorService" 2>&1 | Out-Null
@@ -780,6 +782,8 @@ function Show-InstallerWizard {
         } catch {
             $txtStatus.AppendText("  ERRORE copia file: $($_.Exception.Message)`r`n")
             $txtStatus.AppendText("  Installazione proseguita sui file della cartella sorgente (NON eliminare la cartella!)`r`n")
+            # IMPORTANTE: se la copia fallisce, BaseDir resta la sorgente, quindi Script/Bat path devono ancora funzionare
+            if (-not (Test-Path $ScriptDir)) { $ScriptDir = Join-Path $sourceDir "src" }
         }
         $form.Refresh()
         Start-Sleep -Milliseconds 300
@@ -858,7 +862,15 @@ function Show-InstallerWizard {
         # Start Menu shortcut - Cartella "86BIT ArgusCenter"
         try {
             $startMenuDir = Join-Path ([Environment]::GetFolderPath("CommonStartMenu")) "Programs\86BIT ArgusCenter"
-            if (!(Test-Path $startMenuDir)) { New-Item -ItemType Directory -Path $startMenuDir -Force | Out-Null }
+            # Crea la cartella con timeout di filesystem sync (a volte la creazione e' lazy)
+            if (-not (Test-Path $startMenuDir)) {
+                New-Item -ItemType Directory -Path $startMenuDir -Force -ErrorAction Stop | Out-Null
+                Start-Sleep -Milliseconds 300  # Attendi sync filesystem
+            }
+            # Verifica esplicita post-creazione
+            if (-not (Test-Path $startMenuDir)) {
+                throw "Impossibile creare cartella $startMenuDir"
+            }
             # Rimuovi vecchie cartelle con nomi diversi
             $oldDir = Join-Path ([Environment]::GetFolderPath("CommonStartMenu")) "Programs\86NocConnector"
             if (Test-Path $oldDir) { Remove-Item $oldDir -Recurse -Force -ErrorAction SilentlyContinue }
@@ -868,45 +880,65 @@ function Show-InstallerWizard {
             # Path del logo 86bit (usato come icona per TUTTI gli shortcut)
             $iconPath = Join-Path $BaseDir "src\86bit_logo.ico"
             $iconLocation = if (Test-Path $iconPath) { "$iconPath,0" } else { "shell32.dll,13" }
+            
+            # Verifica che il batPath esista, altrimenti usa powershell.exe diretto
+            $connectorTarget = $batPath
+            $connectorArgs = ""
+            if (-not (Test-Path $batPath)) {
+                $connectorTarget = "powershell.exe"
+                $connectorArgs = "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$connectorScript`""
+            }
 
             $shell = New-Object -ComObject WScript.Shell
+            # Funzione helper per creare shortcut con error handling individuale
+            $createShortcutSafe = {
+                param($shell, $path, $target, $args, $workdir, $desc, $iconLoc, $windowStyle)
+                try {
+                    $sc = $shell.CreateShortcut($path)
+                    $sc.TargetPath = $target
+                    if ($args) { $sc.Arguments = $args }
+                    if ($workdir -and (Test-Path $workdir)) { $sc.WorkingDirectory = $workdir }
+                    $sc.Description = $desc
+                    if ($iconLoc) { $sc.IconLocation = $iconLoc }
+                    if ($windowStyle) { $sc.WindowStyle = $windowStyle }
+                    $sc.Save()
+                    return $true
+                } catch {
+                    return $false
+                }
+            }
+            
+            $shortcutResults = @()
             # Collegamento Avvia ARGUS Center Connector
-            $shortcut = $shell.CreateShortcut("$startMenuDir\ARGUS Center Connector.lnk")
-            $shortcut.TargetPath = $batPath
-            $shortcut.WorkingDirectory = $BaseDir
-            $shortcut.Description = "Avvia ARGUS Center Connector - Monitoring SNMP, Syslog e Redfish"
-            $shortcut.IconLocation = $iconLocation
-            $shortcut.WindowStyle = 7
-            $shortcut.Save()
+            $ok = & $createShortcutSafe $shell "$startMenuDir\ARGUS Center Connector.lnk" $connectorTarget $connectorArgs $BaseDir "Avvia ARGUS Center Connector" $iconLocation 7
+            $shortcutResults += @{ name = "ARGUS Center Connector"; ok = $ok }
+            
             # Collegamento Diagnostica
             $diagScript = Join-Path $BaseDir "diagnostica_connessione.ps1"
             if (Test-Path $diagScript) {
-                $diagShortcut = $shell.CreateShortcut("$startMenuDir\Diagnostica Connessione.lnk")
-                $diagShortcut.TargetPath = "powershell.exe"
-                $diagShortcut.Arguments = "-ExecutionPolicy Bypass -File `"$diagScript`""
-                $diagShortcut.WorkingDirectory = $BaseDir
-                $diagShortcut.Description = "Diagnostica connessione ARGUS Center"
-                $diagShortcut.IconLocation = $iconLocation
-                $diagShortcut.Save()
+                $ok = & $createShortcutSafe $shell "$startMenuDir\Diagnostica Connessione.lnk" "powershell.exe" "-ExecutionPolicy Bypass -File `"$diagScript`"" $BaseDir "Diagnostica connessione ARGUS Center" $iconLocation 1
+                $shortcutResults += @{ name = "Diagnostica Connessione"; ok = $ok }
             }
             # Collegamento Disinstalla
-            $unShortcut = $shell.CreateShortcut("$startMenuDir\Disinstalla ARGUS Connector.lnk")
-            $unShortcut.TargetPath = $uninstallBat
-            $unShortcut.WorkingDirectory = $BaseDir
-            $unShortcut.Description = "Disinstalla ARGUS Center Connector"
-            $unShortcut.IconLocation = $iconLocation
-            $unShortcut.Save()
+            if (Test-Path $uninstallBat) {
+                $ok = & $createShortcutSafe $shell "$startMenuDir\Disinstalla ARGUS Connector.lnk" $uninstallBat $null $BaseDir "Disinstalla ARGUS Center Connector" $iconLocation 1
+                $shortcutResults += @{ name = "Disinstalla"; ok = $ok }
+            }
             # Collegamento Apri Cartella Log
             $logDir = Join-Path $env:ProgramData "86NocConnector\logs"
             if (!(Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
-            $logShortcut = $shell.CreateShortcut("$startMenuDir\Apri Cartella Log.lnk")
-            $logShortcut.TargetPath = "explorer.exe"
-            $logShortcut.Arguments = $logDir
-            $logShortcut.Description = "Apri la cartella dei log del connettore"
-            $logShortcut.IconLocation = $iconLocation
-            $logShortcut.Save()
+            $ok = & $createShortcutSafe $shell "$startMenuDir\Apri Cartella Log.lnk" "explorer.exe" $logDir $null "Apri la cartella dei log del connettore" $iconLocation 1
+            $shortcutResults += @{ name = "Apri Cartella Log"; ok = $ok }
+            
             [System.Runtime.InteropServices.Marshal]::ReleaseComObject($shell) | Out-Null
-            $txtStatus.AppendText("  Menu Start: OK (86BIT ArgusCenter)`r`n")
+            $okCount = ($shortcutResults | Where-Object { $_.ok }).Count
+            $totalCount = $shortcutResults.Count
+            if ($okCount -eq $totalCount) {
+                $txtStatus.AppendText("  Menu Start: OK ($okCount/$totalCount shortcut)`r`n")
+            } else {
+                $failedNames = ($shortcutResults | Where-Object { -not $_.ok } | ForEach-Object { $_.name }) -join ", "
+                $txtStatus.AppendText("  Menu Start: parziale ($okCount/$totalCount shortcut, falliti: $failedNames)`r`n")
+            }
         } catch {
             $txtStatus.AppendText("  Menu Start: $($_.Exception.Message)`r`n")
         }
@@ -940,78 +972,96 @@ function Show-InstallerWizard {
         $txtStatus.AppendText("> Creazione Scheduled Task auto-update...`r`n")
         $form.Refresh()
         try {
-            $taskPath = "\86BIT\"
             $taskName = "ArgusConnectorUpdater"
-            $fullTaskName = "$taskPath$taskName"
+            $fullTaskName = "\86BIT\$taskName"
             $updateScriptPath = Join-Path $BaseDir "src\update_check.ps1"
             
             if (-not (Test-Path $updateScriptPath)) {
                 throw "update_check.ps1 non trovato in $updateScriptPath"
             }
             
-            # Rimuovi task preesistente (clean state)
-            & schtasks.exe /Delete /TN $fullTaskName /F 2>$null | Out-Null
-            # Rimuovi anche vecchi task obsoleti di versioni precedenti
-            & schtasks.exe /Delete /TN "\86NocConnector\UpdateChecker" /F 2>$null | Out-Null
+            # Rimuovi task preesistenti (clean state)
+            & schtasks.exe /Delete /TN $fullTaskName /F 2>&1 | Out-Null
+            & schtasks.exe /Delete /TN "\86NocConnector\UpdateChecker" /F 2>&1 | Out-Null
             
-            # Crea il task nuovo: ogni 5 minuti, SYSTEM, RunLevel highest
-            $taskAction = "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$updateScriptPath`" -InstallDir `"$BaseDir`""
-            & schtasks.exe /Create `
-                /TN $fullTaskName `
-                /SC MINUTE /MO 5 `
-                /TR "$taskAction" `
-                /RU "SYSTEM" `
-                /RL HIGHEST `
-                /F 2>&1 | Out-Null
+            # Metodo XML-first (piu' affidabile di schtasks /TR con virgolette annidate)
+            # Genera un XML task completo con tutte le safety features e lo registra via /XML.
+            $taskXmlContent = @"
+<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>ARGUS Connector auto-update - checks NOC every 5 min</Description>
+    <Author>86BIT srl</Author>
+  </RegistrationInfo>
+  <Triggers>
+    <TimeTrigger>
+      <Repetition>
+        <Interval>PT5M</Interval>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+      <StartBoundary>2026-01-01T00:00:00</StartBoundary>
+      <Enabled>true</Enabled>
+    </TimeTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>S-1-5-18</UserId>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT15M</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>powershell.exe</Command>
+      <Arguments>-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$updateScriptPath" -InstallDir "$BaseDir"</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+"@
+            $tmpXml = Join-Path $env:TEMP "argus_updater_task.xml"
+            # IMPORTANTE: schtasks /XML richiede Unicode UTF-16 LE con BOM
+            [System.IO.File]::WriteAllText($tmpXml, $taskXmlContent, [System.Text.Encoding]::Unicode)
             
-            if ($LASTEXITCODE -ne 0) {
-                throw "schtasks /Create fallito (exit $LASTEXITCODE)"
-            }
+            $createOutput = & schtasks.exe /Create /TN $fullTaskName /XML $tmpXml /F 2>&1
+            $createExit = $LASTEXITCODE
+            Remove-Item $tmpXml -Force -ErrorAction SilentlyContinue
             
-            # Configura opzioni avanzate via XML update (Microsoft pattern)
-            # - Avvia al boot (se saltato)
-            # - Non blocca se in batteria (serverside)
-            # - Timeout 15 min per evitare stuck
-            # - MultipleInstancesPolicy: IgnoreNew (se un update e' in corso, skippa nuova istanza)
-            # - Priority: 7 (sotto-normale, non competere con il servizio principale)
-            $taskXml = & schtasks.exe /Query /TN $fullTaskName /XML 2>$null
-            if ($taskXml) {
-                $xml = [xml]($taskXml -join "`n")
-                $ns = New-Object System.Xml.XmlNamespaceManager($xml.NameTable)
-                $ns.AddNamespace("t", "http://schemas.microsoft.com/windows/2004/02/mit/task")
-                $settings = $xml.SelectSingleNode("//t:Settings", $ns)
-                if ($settings) {
-                    # Helper function: set or create child element
-                    function Set-TaskSetting($parent, $name, $value, $xmlDoc, $nsMgr) {
-                        $existing = $parent.SelectSingleNode("t:$name", $nsMgr)
-                        if ($existing) {
-                            $existing.InnerText = $value
-                        } else {
-                            $el = $xmlDoc.CreateElement($name, "http://schemas.microsoft.com/windows/2004/02/mit/task")
-                            $el.InnerText = $value
-                            $parent.AppendChild($el) | Out-Null
-                        }
-                    }
-                    Set-TaskSetting $settings "StartWhenAvailable" "true" $xml $ns
-                    Set-TaskSetting $settings "ExecutionTimeLimit" "PT15M" $xml $ns
-                    Set-TaskSetting $settings "MultipleInstancesPolicy" "IgnoreNew" $xml $ns
-                    Set-TaskSetting $settings "Priority" "7" $xml $ns
-                    Set-TaskSetting $settings "DisallowStartIfOnBatteries" "false" $xml $ns
-                    Set-TaskSetting $settings "StopIfGoingOnBatteries" "false" $xml $ns
-                    Set-TaskSetting $settings "RestartOnFailure" "false" $xml $ns
-                    
-                    $tmpXml = Join-Path $env:TEMP "task_$taskName.xml"
-                    $xml.Save($tmpXml)
-                    & schtasks.exe /Delete /TN $fullTaskName /F 2>$null | Out-Null
-                    & schtasks.exe /Create /TN $fullTaskName /XML $tmpXml /RU "SYSTEM" /RL HIGHEST /F 2>&1 | Out-Null
-                    Remove-Item $tmpXml -Force -ErrorAction SilentlyContinue
+            if ($createExit -eq 0) {
+                $txtStatus.AppendText("  Scheduled Task: OK ($fullTaskName ogni 5 min, XML method)`r`n")
+            } else {
+                # Fallback: metodo /TR string-based con escape doppio manuale
+                $txtStatus.AppendText("  XML method exit=$createExit : fallback /TR method...`r`n")
+                $escPs = $updateScriptPath -replace '"', '\"'
+                $escBd = $BaseDir -replace '"', '\"'
+                $taskActionFallback = "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \`"$escPs\`" -InstallDir \`"$escBd\`""
+                $fallbackOutput = & schtasks.exe /Create /TN $fullTaskName /SC MINUTE /MO 5 /TR $taskActionFallback /RU "SYSTEM" /RL HIGHEST /F 2>&1
+                if ($LASTEXITCODE -eq 0) {
+                    $txtStatus.AppendText("  Scheduled Task: OK ($fullTaskName, fallback method)`r`n")
+                } else {
+                    throw "Entrambi i metodi falliti (XML exit=$createExit, fallback exit=$LASTEXITCODE). Output: $fallbackOutput"
                 }
             }
-            
-            $txtStatus.AppendText("  Scheduled Task: OK ($fullTaskName ogni 5 min)`r`n")
         } catch {
             $txtStatus.AppendText("  Scheduled Task: ERRORE - $($_.Exception.Message)`r`n")
-            $txtStatus.AppendText("  (auto-update non funzionera'; configura manualmente via schtasks.exe)`r`n")
+            $txtStatus.AppendText("  (auto-update non funzionera'; puoi riprovare lanciando bootstrap_to_v350.cmd come admin)`r`n")
         }
         $form.Refresh()
         Start-Sleep -Milliseconds 500

@@ -109,14 +109,27 @@ if not exist "%UPDATE_SCRIPT%" (
     pause
     exit /b 5
 )
-set "TASK_ACTION=powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"%UPDATE_SCRIPT%\" -InstallDir \"%INSTALL_DIR%\""
-schtasks.exe /Create /TN "\86BIT\ArgusConnectorUpdater" /SC MINUTE /MO 5 /TR "%TASK_ACTION%" /RU "SYSTEM" /RL HIGHEST /F >nul 2>&1
-if errorlevel 1 (
-    echo      ERRORE creazione scheduled task
-    pause
-    exit /b 6
+
+REM Usa l'helper PS (se presente) che crea il task con XML completo e tutte le safety
+set "HELPER=%EXTRACT_DIR%\bootstrap_to_v350_helper.ps1"
+if exist "%HELPER%" (
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%HELPER%" -InstallDir "%INSTALL_DIR%" -UpdateScript "%UPDATE_SCRIPT%"
+    if errorlevel 1 (
+        echo      ERRORE helper script
+        pause
+        exit /b 6
+    )
+    echo      OK - task creato via helper XML method
+) else (
+    REM Fallback senza helper: metodo /TR base (potrebbe dare problemi con path contenenti spazi)
+    schtasks.exe /Create /TN "\86BIT\ArgusConnectorUpdater" /SC MINUTE /MO 5 /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"%UPDATE_SCRIPT%\" -InstallDir \"%INSTALL_DIR%\"" /RU "SYSTEM" /RL HIGHEST /F >nul 2>&1
+    if errorlevel 1 (
+        echo      ERRORE creazione scheduled task
+        pause
+        exit /b 6
+    )
+    echo      OK - task creato con fallback method
 )
-echo      OK - task creato
 
 REM === STEP 5: START servizio ===
 echo [5/5] Start servizio 86NocConnectorService...
