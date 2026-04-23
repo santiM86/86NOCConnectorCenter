@@ -30,6 +30,11 @@ nssm.exe remove 86NocConnectorService confirm >nul 2>&1
 REM Ferma Scheduled Task se esiste
 schtasks /End /TN "86NocConnector" >nul 2>&1
 schtasks /Delete /TN "86NocConnector" /F >nul 2>&1
+REM Rimuovi Scheduled Task v3.5.0+ Microsoft-native auto-update
+schtasks /End /TN "\86BIT\ArgusConnectorUpdater" >nul 2>&1
+schtasks /Delete /TN "\86BIT\ArgusConnectorUpdater" /F >nul 2>&1
+REM Rimuovi anche il folder task parent se vuoto
+schtasks /Delete /TN "\86BIT" /F >nul 2>&1
 
 REM Termina processi PowerShell del connettore
 echo Terminazione processi connettore...
@@ -60,8 +65,10 @@ if exist "%ProgramData%\Microsoft\Windows\Start Menu\Programs\86NocConnector" (
 )
 
 echo === STEP 3: Rimozione dal Registro (Programmi e Funzionalita) ===
-reg delete "HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\86BIT_ArgusCenter_Connector" /f >nul 2>&1
-reg delete "HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\86NocConnector" /f >nul 2>&1
+reg delete "HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\86BIT_ArgusCenter_Connector" /f /reg:64 >nul 2>&1
+reg delete "HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\86BIT_ArgusCenter_Connector" /f /reg:32 >nul 2>&1
+reg delete "HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\86NocConnector" /f /reg:64 >nul 2>&1
+reg delete "HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\86NocConnector" /f /reg:32 >nul 2>&1
 reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run\86NocConnector" /f >nul 2>&1
 echo [OK] Chiavi di registro rimosse
 

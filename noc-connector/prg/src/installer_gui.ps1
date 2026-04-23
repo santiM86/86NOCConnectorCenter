@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    86NocConnector - Wizard di Installazione
+    ARGUS Connector - Wizard di Installazione
 .DESCRIPTION
     Interfaccia grafica per installazione e configurazione.
     Usa .NET Windows.Forms nativo.
@@ -9,7 +9,51 @@
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
+# ================================================================
+# ADMIN CHECK + AUTO-ELEVATION
+# ================================================================
+# Se non siamo admin, rilanciamo lo script via "runas" (triggera UAC prompt)
+# e usciamo dal processo corrente. Il nuovo processo girera' con privilegi admin.
+# ================================================================
+$currentIdentity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+$currentPrincipal = New-Object System.Security.Principal.WindowsPrincipal($currentIdentity)
+$isAdmin = $currentPrincipal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
+
+if (-not $isAdmin) {
+    try {
+        $scriptPath = $MyInvocation.MyCommand.Path
+        # Mostra un messaggio user-friendly (solo console, non blocca il flow)
+        Write-Host "[INFO] Elevazione a privilegi amministratore richiesta. Accetta il prompt UAC..." -ForegroundColor Yellow
+        
+        # Rilancia lo script come admin
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = "powershell.exe"
+        $psi.Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$scriptPath`""
+        $psi.Verb = "runas"    # questo triggera UAC
+        $psi.UseShellExecute = $true
+        [System.Diagnostics.Process]::Start($psi) | Out-Null
+        exit 0
+    } catch {
+        # L'utente ha rifiutato UAC o altro errore
+        [System.Windows.Forms.MessageBox]::Show(
+            "Questa installazione richiede privilegi amministratore.`n`n" +
+            "Per favore lancia questo file:`n" +
+            "  - Tasto destro sul file 'Installa 86NocConnector.vbs'`n" +
+            "  - Seleziona 'Esegui come amministratore'`n" +
+            "  - Accetta il prompt UAC`n`n" +
+            "Errore tecnico: $($_.Exception.Message)",
+            "ARGUS Connector - Privilegi insufficienti",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Warning
+        ) | Out-Null
+        exit 1
+    }
+}
+
+# $AppName: identificatore tecnico (path ProgramData, nomi servizio/task) — NON cambiare
+# $DisplayName: nome visualizzato all'utente in tutta l'UI del wizard
 $AppName = "86NocConnector"
+$DisplayName = "ARGUS Connector"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $BaseDir = Split-Path -Parent $ScriptDir
 $VersionFile = Join-Path $BaseDir "version.json"
@@ -28,7 +72,7 @@ function Show-InstallerWizard {
     [System.Windows.Forms.Application]::EnableVisualStyles()
     
     $form = New-Object System.Windows.Forms.Form
-    $form.Text = "$AppName - Installazione"
+    $form.Text = "$DisplayName - Installazione"
     $form.Size = New-Object System.Drawing.Size(750, 580)
     $form.StartPosition = "CenterScreen"
     $form.FormBorderStyle = "FixedDialog"
@@ -199,7 +243,7 @@ function Show-InstallerWizard {
         $btnNext.Enabled = $true
         
         $title = New-Object System.Windows.Forms.Label
-        $title.Text = "Installazione di $AppName"
+        $title.Text = "Installazione di $DisplayName"
         $title.Font = New-Object System.Drawing.Font("Segoe UI", 18, [System.Drawing.FontStyle]::Bold)
         $title.ForeColor = [System.Drawing.Color]::FromArgb(30, 30, 40)
         $title.Location = New-Object System.Drawing.Point(28, 20)
@@ -207,7 +251,7 @@ function Show-InstallerWizard {
         $contentPanel.Controls.Add($title)
         
         $desc = New-Object System.Windows.Forms.Label
-        $desc.Text = "Questa procedura installera' $AppName sul computer.`n`n$AppName raccoglie SNMP Traps e messaggi Syslog dai dispositivi di rete (switch, firewall, server ILO) e li inoltra al NOC Center in tempo reale."
+        $desc.Text = "Questa procedura installera' $DisplayName sul computer.`n`n$DisplayName raccoglie SNMP Traps e messaggi Syslog dai dispositivi di rete (switch, firewall, server ILO) e li inoltra al NOC Center in tempo reale."
         $desc.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
         $desc.ForeColor = [System.Drawing.Color]::FromArgb(60, 60, 80)
         $desc.Location = New-Object System.Drawing.Point(28, 60)
@@ -369,7 +413,7 @@ function Show-InstallerWizard {
             $url = $txtUrl.Text.Trim().TrimEnd("/")
             $key = $txtApiKey.Text.Trim()
             if (-not $url -or -not $key) {
-                [System.Windows.Forms.MessageBox]::Show("Inserisci URL e API Key.", $AppName, "OK", "Warning")
+                [System.Windows.Forms.MessageBox]::Show("Inserisci URL e API Key.", $DisplayName, "OK", "Warning")
                 return
             }
             try {
@@ -377,9 +421,9 @@ function Show-InstallerWizard {
                 $body = @{ connector_version=$Version; hostname=$env:COMPUTERNAME; uptime_seconds=0; traps_received=0; syslogs_received=0 } | ConvertTo-Json
                 $headers = @{ "X-API-Key" = $key; "Content-Type" = "application/json" }
                 Invoke-RestMethod -Uri "$url/api/connector/heartbeat" -Method Post -Headers $headers -Body $body -TimeoutSec 10
-                [System.Windows.Forms.MessageBox]::Show("Connessione OK!`nAPI Key valida.", $AppName, "OK", "Information")
+                [System.Windows.Forms.MessageBox]::Show("Connessione OK!`nAPI Key valida.", $DisplayName, "OK", "Information")
             } catch {
-                [System.Windows.Forms.MessageBox]::Show("Errore: $($_.Exception.Message)", $AppName, "OK", "Error")
+                [System.Windows.Forms.MessageBox]::Show("Errore: $($_.Exception.Message)", $DisplayName, "OK", "Error")
             }
         })
         $contentPanel.Controls.Add($btnTest)
@@ -524,7 +568,7 @@ function Show-InstallerWizard {
         $btnAddDev.Add_Click({
             $ip = $txtDeviceIP.Text.Trim()
             if (-not $ip) {
-                [System.Windows.Forms.MessageBox]::Show("Inserisci l'indirizzo IP.", $AppName, "OK", "Warning")
+                [System.Windows.Forms.MessageBox]::Show("Inserisci l'indirizzo IP.", $DisplayName, "OK", "Warning")
                 return
             }
             $comm = if ($txtDeviceCommunity.Text.Trim()) { $txtDeviceCommunity.Text.Trim() } else { "public" }
@@ -560,7 +604,7 @@ function Show-InstallerWizard {
                 if (-not $rows -or $rows.Count -eq 0) {
                     [System.Windows.Forms.MessageBox]::Show(
                         "Il CSV e' vuoto o non leggibile.",
-                        $AppName, [System.Windows.Forms.MessageBoxButtons]::OK,
+                        $DisplayName, [System.Windows.Forms.MessageBoxButtons]::OK,
                         [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
                     return
                 }
@@ -585,7 +629,7 @@ function Show-InstallerWizard {
                 if (-not $colIp) {
                     [System.Windows.Forms.MessageBox]::Show(
                         "CSV non valido: manca la colonna IP (nomi accettati: ip, ip_address, indirizzo, address, host).",
-                        $AppName, [System.Windows.Forms.MessageBoxButtons]::OK,
+                        $DisplayName, [System.Windows.Forms.MessageBoxButtons]::OK,
                         [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
                     return
                 }
@@ -629,12 +673,12 @@ function Show-InstallerWizard {
 
                 [System.Windows.Forms.MessageBox]::Show(
                     "Import CSV completato.`n`nDispositivi importati: $imported`nDuplicati saltati: $skipped`nRighe non valide: $errors",
-                    $AppName, [System.Windows.Forms.MessageBoxButtons]::OK,
+                    $DisplayName, [System.Windows.Forms.MessageBoxButtons]::OK,
                     [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
             } catch {
                 [System.Windows.Forms.MessageBox]::Show(
                     "Errore durante la lettura del CSV:`n`n$($_.Exception.Message)",
-                    $AppName, [System.Windows.Forms.MessageBoxButtons]::OK,
+                    $DisplayName, [System.Windows.Forms.MessageBoxButtons]::OK,
                     [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
             }
         })
@@ -645,7 +689,7 @@ function Show-InstallerWizard {
         $url = $txtUrl.Text.Trim().TrimEnd("/")
         $key = $txtApiKey.Text.Trim()
         if (-not $url -or -not $key) {
-            [System.Windows.Forms.MessageBox]::Show("URL e API Key sono obbligatori.", $AppName, "OK", "Warning")
+            [System.Windows.Forms.MessageBox]::Show("URL e API Key sono obbligatori.", $DisplayName, "OK", "Warning")
             Show-Page 1
             return
         }
@@ -761,8 +805,10 @@ function Show-InstallerWizard {
                 New-Item -ItemType Directory -Path $InstallPath -Force | Out-Null
             }
             # Se la cartella sorgente E' GIA' la InstallPath (cioe' si sta reinstallando da lì), non copiare
-            $sourceNorm = (Resolve-Path $sourceDir).Path.TrimEnd('\')
-            $installNorm = (Resolve-Path $InstallPath).Path.TrimEnd('\')
+            # NOTA: usiamo [IO.Path]::GetFullPath invece di Resolve-Path perche' quest'ultimo ritorna null
+            # se il path non esiste (bug installer v3.4.x - fix in v3.5.0)
+            $sourceNorm = [IO.Path]::GetFullPath($sourceDir).TrimEnd('\')
+            $installNorm = [IO.Path]::GetFullPath($InstallPath).TrimEnd('\')
             if ($sourceNorm -ne $installNorm) {
                 # Ferma il servizio se esiste già (evita "file in uso" durante la copia)
                 & sc.exe stop "86NocConnectorService" 2>&1 | Out-Null
@@ -780,6 +826,8 @@ function Show-InstallerWizard {
         } catch {
             $txtStatus.AppendText("  ERRORE copia file: $($_.Exception.Message)`r`n")
             $txtStatus.AppendText("  Installazione proseguita sui file della cartella sorgente (NON eliminare la cartella!)`r`n")
+            # IMPORTANTE: se la copia fallisce, BaseDir resta la sorgente, quindi Script/Bat path devono ancora funzionare
+            if (-not (Test-Path $ScriptDir)) { $ScriptDir = Join-Path $sourceDir "src" }
         }
         $form.Refresh()
         Start-Sleep -Milliseconds 300
@@ -858,72 +906,233 @@ function Show-InstallerWizard {
         # Start Menu shortcut - Cartella "86BIT ArgusCenter"
         try {
             $startMenuDir = Join-Path ([Environment]::GetFolderPath("CommonStartMenu")) "Programs\86BIT ArgusCenter"
-            if (!(Test-Path $startMenuDir)) { New-Item -ItemType Directory -Path $startMenuDir -Force | Out-Null }
+            # Crea la cartella con timeout di filesystem sync (a volte la creazione e' lazy)
+            if (-not (Test-Path $startMenuDir)) {
+                New-Item -ItemType Directory -Path $startMenuDir -Force -ErrorAction Stop | Out-Null
+                Start-Sleep -Milliseconds 300  # Attendi sync filesystem
+            }
+            # Verifica esplicita post-creazione
+            if (-not (Test-Path $startMenuDir)) {
+                throw "Impossibile creare cartella $startMenuDir"
+            }
             # Rimuovi vecchie cartelle con nomi diversi
             $oldDir = Join-Path ([Environment]::GetFolderPath("CommonStartMenu")) "Programs\86NocConnector"
             if (Test-Path $oldDir) { Remove-Item $oldDir -Recurse -Force -ErrorAction SilentlyContinue }
             $oldDir2 = Join-Path ([Environment]::GetFolderPath("CommonStartMenu")) "Programs\86BIT Connector"
             if (Test-Path $oldDir2) { Remove-Item $oldDir2 -Recurse -Force -ErrorAction SilentlyContinue }
             
+            # Path del logo 86bit (icona per shortcut principali "Avvia Connector" e "Diagnostica")
+            $iconPath = Join-Path $BaseDir "src\86bit_logo.ico"
+            $iconLocation = if (Test-Path $iconPath) { "$iconPath,0" } else { "shell32.dll,13" }
+            # Icone native Windows per shortcut "Cartella Log" e "Disinstalla":
+            # - shell32.dll,3   = cartella (gialla)
+            # - shell32.dll,271 = cestino / remove (rosso)
+            $iconFolderNative = "$env:SystemRoot\System32\shell32.dll,3"
+            $iconUninstallNative = "$env:SystemRoot\System32\shell32.dll,271"
+            
+            # Verifica che il batPath esista, altrimenti usa powershell.exe diretto
+            $connectorTarget = $batPath
+            $connectorArgs = ""
+            if (-not (Test-Path $batPath)) {
+                $connectorTarget = "powershell.exe"
+                $connectorArgs = "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$connectorScript`""
+            }
+
             $shell = New-Object -ComObject WScript.Shell
+            # Funzione helper per creare shortcut con error handling individuale
+            $createShortcutSafe = {
+                param($shell, $path, $target, $args, $workdir, $desc, $iconLoc, $windowStyle)
+                try {
+                    $sc = $shell.CreateShortcut($path)
+                    $sc.TargetPath = $target
+                    if ($args) { $sc.Arguments = $args }
+                    if ($workdir -and (Test-Path $workdir)) { $sc.WorkingDirectory = $workdir }
+                    $sc.Description = $desc
+                    if ($iconLoc) { $sc.IconLocation = $iconLoc }
+                    if ($windowStyle) { $sc.WindowStyle = $windowStyle }
+                    $sc.Save()
+                    return $true
+                } catch {
+                    return $false
+                }
+            }
+            
+            $shortcutResults = @()
             # Collegamento Avvia ARGUS Center Connector
-            $shortcut = $shell.CreateShortcut("$startMenuDir\ARGUS Center Connector.lnk")
-            $shortcut.TargetPath = $batPath
-            $shortcut.WorkingDirectory = $BaseDir
-            $shortcut.Description = "Avvia ARGUS Center Connector - Monitoring SNMP, Syslog e Redfish"
-            $shortcut.IconLocation = "shell32.dll,13"
-            $shortcut.WindowStyle = 7
-            $shortcut.Save()
+            $ok = & $createShortcutSafe $shell "$startMenuDir\ARGUS Center Connector.lnk" $connectorTarget $connectorArgs $BaseDir "Avvia ARGUS Center Connector" $iconLocation 7
+            $shortcutResults += @{ name = "ARGUS Center Connector"; ok = $ok }
+            
             # Collegamento Diagnostica
             $diagScript = Join-Path $BaseDir "diagnostica_connessione.ps1"
             if (Test-Path $diagScript) {
-                $diagShortcut = $shell.CreateShortcut("$startMenuDir\Diagnostica Connessione.lnk")
-                $diagShortcut.TargetPath = "powershell.exe"
-                $diagShortcut.Arguments = "-ExecutionPolicy Bypass -File `"$diagScript`""
-                $diagShortcut.WorkingDirectory = $BaseDir
-                $diagShortcut.Description = "Diagnostica connessione ARGUS Center"
-                $diagShortcut.IconLocation = "shell32.dll,22"
-                $diagShortcut.Save()
+                $ok = & $createShortcutSafe $shell "$startMenuDir\Diagnostica Connessione.lnk" "powershell.exe" "-ExecutionPolicy Bypass -File `"$diagScript`"" $BaseDir "Diagnostica connessione ARGUS Center" $iconLocation 1
+                $shortcutResults += @{ name = "Diagnostica Connessione"; ok = $ok }
             }
-            # Collegamento Disinstalla
-            $unShortcut = $shell.CreateShortcut("$startMenuDir\Disinstalla ARGUS Connector.lnk")
-            $unShortcut.TargetPath = $uninstallBat
-            $unShortcut.WorkingDirectory = $BaseDir
-            $unShortcut.Description = "Disinstalla ARGUS Center Connector"
-            $unShortcut.IconLocation = "shell32.dll,31"
-            $unShortcut.Save()
-            # Collegamento Apri Cartella Log
+            # Collegamento Disinstalla (icona nativa Windows: cestino)
+            if (Test-Path $uninstallBat) {
+                $ok = & $createShortcutSafe $shell "$startMenuDir\Disinstalla ARGUS Connector.lnk" $uninstallBat $null $BaseDir "Disinstalla ARGUS Center Connector" $iconUninstallNative 1
+                $shortcutResults += @{ name = "Disinstalla"; ok = $ok }
+            }
+            # Collegamento Apri Cartella Log (icona nativa Windows: cartella)
             $logDir = Join-Path $env:ProgramData "86NocConnector\logs"
             if (!(Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
-            $logShortcut = $shell.CreateShortcut("$startMenuDir\Apri Cartella Log.lnk")
-            $logShortcut.TargetPath = "explorer.exe"
-            $logShortcut.Arguments = $logDir
-            $logShortcut.Description = "Apri la cartella dei log del connettore"
-            $logShortcut.IconLocation = "shell32.dll,3"
-            $logShortcut.Save()
+            $ok = & $createShortcutSafe $shell "$startMenuDir\Apri Cartella Log.lnk" "explorer.exe" $logDir $null "Apri la cartella dei log del connettore" $iconFolderNative 1
+            $shortcutResults += @{ name = "Apri Cartella Log"; ok = $ok }
+            
             [System.Runtime.InteropServices.Marshal]::ReleaseComObject($shell) | Out-Null
-            $txtStatus.AppendText("  Menu Start: OK (86BIT ArgusCenter)`r`n")
+            $okCount = ($shortcutResults | Where-Object { $_.ok }).Count
+            $totalCount = $shortcutResults.Count
+            if ($okCount -eq $totalCount) {
+                $txtStatus.AppendText("  Menu Start: OK ($okCount/$totalCount shortcut)`r`n")
+            } else {
+                $failedNames = ($shortcutResults | Where-Object { -not $_.ok } | ForEach-Object { $_.name }) -join ", "
+                $txtStatus.AppendText("  Menu Start: parziale ($okCount/$totalCount shortcut, falliti: $failedNames)`r`n")
+            }
         } catch {
             $txtStatus.AppendText("  Menu Start: $($_.Exception.Message)`r`n")
         }
         try {
             $regPath = "HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\86BIT_ArgusCenter_Connector"
-            # Rimuovi vecchia chiave con nome diverso
-            & reg delete "HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\$AppName" /f 2>$null
-            & reg add $regPath /v "DisplayName" /t REG_SZ /d "86BIT ARGUS Center Connector" /f 2>$null
-            & reg add $regPath /v "DisplayVersion" /t REG_SZ /d "$Version" /f 2>$null
-            & reg add $regPath /v "Publisher" /t REG_SZ /d "86BIT srl Unipersonale" /f 2>$null
-            & reg add $regPath /v "URLInfoAbout" /t REG_SZ /d "https://www.86bit.it" /f 2>$null
-            & reg add $regPath /v "HelpLink" /t REG_SZ /d "mailto:info@86bit.it" /f 2>$null
-            & reg add $regPath /v "Contact" /t REG_SZ /d "info@86bit.it" /f 2>$null
-            & reg add $regPath /v "UninstallString" /t REG_SZ /d "`"$uninstallBat`"" /f 2>$null
-            & reg add $regPath /v "InstallLocation" /t REG_SZ /d "$BaseDir" /f 2>$null
-            & reg add $regPath /v "InstallDate" /t REG_SZ /d "$(Get-Date -Format 'yyyyMMdd')" /f 2>$null
-            & reg add $regPath /v "EstimatedSize" /t REG_DWORD /d 1024 /f 2>$null
-            & reg add $regPath /v "NoModify" /t REG_DWORD /d 1 /f 2>$null
-            & reg add $regPath /v "NoRepair" /t REG_DWORD /d 1 /f 2>$null
-            $txtStatus.AppendText("  Programmi e Funzionalita': OK (86BIT ARGUS Center Connector)`r`n")
-        } catch {}
+            # Rimuovi vecchia chiave con nome diverso (da entrambe le registry view)
+            & reg delete "HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\$AppName" /f /reg:64 2>$null
+            & reg delete "HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\$AppName" /f /reg:32 2>$null
+            # Rimuovi chiave vecchia con stesso nome ma eventualmente scritta in Wow6432Node
+            & reg delete $regPath /f /reg:32 2>$null
+            # Calcola dimensione reale installazione in KB per "EstimatedSize" (App e funzionalita')
+            $estimatedSizeKB = 1024
+            try {
+                $sizeBytes = (Get-ChildItem -LiteralPath $BaseDir -Recurse -Force -ErrorAction SilentlyContinue |
+                    Measure-Object -Property Length -Sum).Sum
+                if ($sizeBytes -and $sizeBytes -gt 0) {
+                    $estimatedSizeKB = [int]([Math]::Ceiling($sizeBytes / 1024))
+                }
+            } catch {}
+            # Scrivi ESPLICITAMENTE nella 64-bit registry view (per visibilita' in "App e funzionalita'")
+            & reg add $regPath /v "DisplayName" /t REG_SZ /d "ARGUS Connector" /f /reg:64 2>$null
+            & reg add $regPath /v "DisplayVersion" /t REG_SZ /d "$Version" /f /reg:64 2>$null
+            & reg add $regPath /v "Publisher" /t REG_SZ /d "86BIT srl Unipersonale" /f /reg:64 2>$null
+            & reg add $regPath /v "URLInfoAbout" /t REG_SZ /d "https://www.86bit.it" /f /reg:64 2>$null
+            & reg add $regPath /v "HelpLink" /t REG_SZ /d "mailto:info@86bit.it" /f /reg:64 2>$null
+            & reg add $regPath /v "Contact" /t REG_SZ /d "info@86bit.it" /f /reg:64 2>$null
+            & reg add $regPath /v "UninstallString" /t REG_SZ /d "`"$uninstallBat`"" /f /reg:64 2>$null
+            & reg add $regPath /v "InstallLocation" /t REG_SZ /d "$BaseDir" /f /reg:64 2>$null
+            # Logo 86bit in Programmi e Funzionalita' (invece dell'icona generica blu di Windows)
+            $iconRegPath = Join-Path $BaseDir "src\86bit_logo.ico"
+            if (Test-Path $iconRegPath) {
+                & reg add $regPath /v "DisplayIcon" /t REG_SZ /d "$iconRegPath" /f /reg:64 2>$null
+            }
+            & reg add $regPath /v "InstallDate" /t REG_SZ /d "$(Get-Date -Format 'yyyyMMdd')" /f /reg:64 2>$null
+            & reg add $regPath /v "EstimatedSize" /t REG_DWORD /d $estimatedSizeKB /f /reg:64 2>$null
+            # Verifica lettura: deve essere visibile in x64 registry
+            $verifyRead = & reg query $regPath /v "DisplayName" /reg:64 2>$null
+            if ($verifyRead -and ($verifyRead -match "DisplayName")) {
+                $txtStatus.AppendText("  Programmi e Funzionalita': OK (ARGUS Connector v$Version, $estimatedSizeKB KB)`r`n")
+            } else {
+                $txtStatus.AppendText("  Programmi e Funzionalita': scritta ma non verificata (controlla manualmente)`r`n")
+            }
+            & reg add $regPath /v "NoModify" /t REG_DWORD /d 1 /f /reg:64 2>$null
+            & reg add $regPath /v "NoRepair" /t REG_DWORD /d 1 /f /reg:64 2>$null
+        } catch {
+            $txtStatus.AppendText("  Programmi e Funzionalita': errore - $($_.Exception.Message)`r`n")
+        }
+        $form.Refresh()
+        Start-Sleep -Milliseconds 500
+        
+        # === Step 3b: Scheduled Task per auto-update (pattern Microsoft-native v3.5.0+) ===
+        $txtStatus.AppendText("> Creazione Scheduled Task auto-update...`r`n")
+        $form.Refresh()
+        try {
+            $taskName = "ArgusConnectorUpdater"
+            $fullTaskName = "\86BIT\$taskName"
+            $updateScriptPath = Join-Path $BaseDir "src\update_check.ps1"
+            
+            if (-not (Test-Path $updateScriptPath)) {
+                throw "update_check.ps1 non trovato in $updateScriptPath"
+            }
+            
+            # Rimuovi task preesistenti (clean state)
+            & schtasks.exe /Delete /TN $fullTaskName /F 2>&1 | Out-Null
+            & schtasks.exe /Delete /TN "\86NocConnector\UpdateChecker" /F 2>&1 | Out-Null
+            
+            # Metodo XML-first (piu' affidabile di schtasks /TR con virgolette annidate)
+            # Genera un XML task completo con tutte le safety features e lo registra via /XML.
+            $taskXmlContent = @"
+<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>ARGUS Connector auto-update - checks NOC every 5 min</Description>
+    <Author>86BIT srl</Author>
+  </RegistrationInfo>
+  <Triggers>
+    <TimeTrigger>
+      <Repetition>
+        <Interval>PT5M</Interval>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+      <StartBoundary>2026-01-01T00:00:00</StartBoundary>
+      <Enabled>true</Enabled>
+    </TimeTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>S-1-5-18</UserId>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT15M</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>powershell.exe</Command>
+      <Arguments>-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$updateScriptPath" -InstallDir "$BaseDir"</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+"@
+            $tmpXml = Join-Path $env:TEMP "argus_updater_task.xml"
+            # IMPORTANTE: schtasks /XML richiede Unicode UTF-16 LE con BOM
+            [System.IO.File]::WriteAllText($tmpXml, $taskXmlContent, [System.Text.Encoding]::Unicode)
+            
+            $createOutput = & schtasks.exe /Create /TN $fullTaskName /XML $tmpXml /F 2>&1
+            $createExit = $LASTEXITCODE
+            Remove-Item $tmpXml -Force -ErrorAction SilentlyContinue
+            
+            if ($createExit -eq 0) {
+                $txtStatus.AppendText("  Scheduled Task: OK ($fullTaskName ogni 5 min, XML method)`r`n")
+            } else {
+                # Fallback: metodo /TR string-based con escape doppio manuale
+                $txtStatus.AppendText("  XML method exit=$createExit : fallback /TR method...`r`n")
+                $escPs = $updateScriptPath -replace '"', '\"'
+                $escBd = $BaseDir -replace '"', '\"'
+                $taskActionFallback = "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \`"$escPs\`" -InstallDir \`"$escBd\`""
+                $fallbackOutput = & schtasks.exe /Create /TN $fullTaskName /SC MINUTE /MO 5 /TR $taskActionFallback /RU "SYSTEM" /RL HIGHEST /F 2>&1
+                if ($LASTEXITCODE -eq 0) {
+                    $txtStatus.AppendText("  Scheduled Task: OK ($fullTaskName, fallback method)`r`n")
+                } else {
+                    throw "Entrambi i metodi falliti (XML exit=$createExit, fallback exit=$LASTEXITCODE). Output: $fallbackOutput"
+                }
+            }
+        } catch {
+            $txtStatus.AppendText("  Scheduled Task: ERRORE - $($_.Exception.Message)`r`n")
+            $txtStatus.AppendText("  (auto-update non funzionera'; puoi riprovare lanciando bootstrap_to_v350.cmd come admin)`r`n")
+        }
         $form.Refresh()
         Start-Sleep -Milliseconds 500
         
@@ -941,7 +1150,7 @@ function Show-InstallerWizard {
         Start-Sleep -Milliseconds 500
         
         # Step 5: Start connector service + tray
-        $txtStatus.AppendText("> Avvio $AppName...`r`n")
+        $txtStatus.AppendText("> Avvio $DisplayName...`r`n")
         $progressBar.Value = 100
         $form.Refresh()
         
@@ -1016,7 +1225,7 @@ function Show-InstallerWizard {
         $contentPanel.Controls.Add($title)
         
         $desc = New-Object System.Windows.Forms.Label
-        $desc.Text = "$AppName e' stato installato e avviato.`n`nOra lo switch HPE verra' monitorato automaticamente.`nSe una porta cambia stato, riceverai un alert nel NOC."
+        $desc.Text = "$DisplayName e' stato installato e avviato.`n`nOra lo switch HPE verra' monitorato automaticamente.`nSe una porta cambia stato, riceverai un alert nel NOC."
         $desc.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
         $desc.ForeColor = [System.Drawing.Color]::FromArgb(60, 60, 80)
         $desc.Location = New-Object System.Drawing.Point(28, 60)
@@ -1054,7 +1263,7 @@ function Show-InstallerWizard {
         }
         
         $tip = New-Object System.Windows.Forms.Label
-        $tip.Text = "Trovi l'icona di $AppName vicino all'orologio`nnella barra delle applicazioni (system tray).`nClicca con il tasto destro per le opzioni."
+        $tip.Text = "Trovi l'icona di $DisplayName vicino all'orologio`nnella barra delle applicazioni (system tray).`nClicca con il tasto destro per le opzioni."
         $tip.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
         $tip.ForeColor = [System.Drawing.Color]::FromArgb(99, 102, 241)
         $tip.Location = New-Object System.Drawing.Point(28, 340)
