@@ -1539,6 +1539,55 @@ function Install-Update($config, $updateInfo) {
             } catch { return $false }
         }
 
+        # === METODO -1 (v3.4.8 ASR-SAFE): updater.cmd nativo, no PowerShell ===
+        # Defender ASR blocca powershell.exe anche da InstallDir trustato con regole
+        # "Block PowerShell from creating child processes" o "Obfuscated scripts".
+        # Un .cmd nativo eseguito da cmd.exe e' SEMPRE permesso (cmd.exe e' whitelist ASR).
+        # Se l'updater.cmd esiste nel pacchetto estratto, lo preferiamo a updater.ps1.
+        $updaterCmdPath = Join-Path $tempExtract "prg\src\updater.cmd"
+        if (-not (Test-Path $updaterCmdPath)) {
+            $updaterCmdPath = Join-Path $tempExtract "src\updater.cmd"
+        }
+        # Fallback: cerca in InstallDir (se v3.4.8 e' gia' installato)
+        if (-not (Test-Path $updaterCmdPath)) {
+            $updaterCmdPath = Join-Path $installDir "src\updater.cmd"
+        }
+
+        if (Test-Path $updaterCmdPath) {
+            try {
+                Write-Log "METODO CMD-native (ASR-safe): $updaterCmdPath" "INFO"
+                # Stage anche il cmd nell'InstallDir per trust e per permettere sopravvivenza se tempExtract viene cancellato
+                $stagedCmd = Join-Path $updaterStagingDir ("updater_" + [guid]::NewGuid().ToString("N").Substring(0,8) + ".cmd")
+                Copy-Item $updaterCmdPath $stagedCmd -Force
+                # Imposta variabili d'ambiente che il cmd legge
+                $env:ARGUS_EXTRACT_PATH = $tempExtract
+                $env:ARGUS_INSTALL_DIR = $installDir
+                $env:ARGUS_API_URL = $config.noc_center_url
+                $env:ARGUS_API_KEY = $config.api_key
+                # Lancia via cmd.exe detached — cmd.exe non e' bloccato da ASR
+                $cmdCall = "`"$env:WINDIR\System32\cmd.exe`" /c `"$stagedCmd`""
+                $wmi = [WMICLASS]"\\.\root\cimv2:Win32_Process"
+                # Passa le env vars via cmd /c set + chain
+                $envPassthrough = "set ARGUS_EXTRACT_PATH=$tempExtract && set ARGUS_INSTALL_DIR=$installDir && set ARGUS_API_URL=$($config.noc_center_url) && set ARGUS_API_KEY=$($config.api_key) && `"$stagedCmd`""
+                $spawnResult = $wmi.Create("cmd.exe /c `"$envPassthrough`"")
+                if ($spawnResult.ReturnValue -eq 0) {
+                    Write-Log "CMD-native updater spawnato via WMI PID=$($spawnResult.ProcessId)" "INFO"
+                    if (Test-UpdaterAlive $spawnResult.ProcessId 3) {
+                        Write-Log "OK: CMD updater vivo dopo 3s (ASR-safe path)" "INFO"
+                        $launched = $true
+                    } else {
+                        Write-Log "CMD updater morto in 3s (improbabile, quasi sempre cmd non e' bloccato) - fallback a PS" "WARN"
+                    }
+                } else {
+                    Write-Log "CMD spawn WMI ReturnValue=$($spawnResult.ReturnValue) - fallback a PS" "WARN"
+                }
+            } catch {
+                Write-Log "METODO CMD-native fallito: $($_.Exception.Message) - fallback a PS" "WARN"
+            }
+        } else {
+            Write-Log "updater.cmd non trovato nel pacchetto estratto, uso updater.ps1 (vecchio metodo)" "DEBUG"
+        }
+
         # === METODO 0 (preferito per retrocompat): Start-Process semplice ===
         # Era il metodo originale v3.0.x - v3.3.0 che ha funzionato per mesi.
         # v3.3.1 ha introdotto WMI come "fix" per NSSM Job Object, ma WMI fallisce

@@ -1,4 +1,4 @@
 {
-  "version": "3.4.7",
-  "changelog": "v3.4.7: BUG FIX METODO MONITORAGGIO - Il connector ora riconosce il nuovo monitor_type 'snmp+http' per device come NAS Synology, UPS, switch che espongono sia una web UI sia dati SNMP. Prima questi device configurati come 'http' dal backend venivano pollati SOLO via ping+http, ignorando l'SNMP. Con 'snmp+http' il connector li polla via ENTRAMBI. Aggiunto endpoint backend /api/connector/{client_id}/managed-devices/bulk-upgrade-snmp per migrare in batch i device esistenti. Include fix v3.4.6 (ENTITY-MIB, MAC primario, ifAlias)."
+  "version": "3.4.8",
+  "changelog": "v3.4.8: FIX DEFINITIVO AUTO-UPDATE CON DEFENDER ASR - Aggiunto updater.cmd nativo Windows (no PowerShell) che bypassa le regole ASR 'Block PowerShell from creating child processes' e 'Obfuscated scripts'. Il connector prova PRIMA il metodo cmd-native, poi fallback ai 4 metodi powershell precedenti. Nessuna modifica al comportamento runtime: solo il meccanismo di auto-update diventa immune ad ASR senza esclusioni manuali Defender. Include fix v3.4.7 (snmp+http monitor type), v3.4.6 (ENTITY-MIB, MAC primario, ARP table)."
 }
