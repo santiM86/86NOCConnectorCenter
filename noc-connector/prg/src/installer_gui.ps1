@@ -865,13 +865,17 @@ function Show-InstallerWizard {
             $oldDir2 = Join-Path ([Environment]::GetFolderPath("CommonStartMenu")) "Programs\86BIT Connector"
             if (Test-Path $oldDir2) { Remove-Item $oldDir2 -Recurse -Force -ErrorAction SilentlyContinue }
             
+            # Path del logo 86bit (usato come icona per TUTTI gli shortcut)
+            $iconPath = Join-Path $BaseDir "src\86bit_logo.ico"
+            $iconLocation = if (Test-Path $iconPath) { "$iconPath,0" } else { "shell32.dll,13" }
+
             $shell = New-Object -ComObject WScript.Shell
             # Collegamento Avvia ARGUS Center Connector
             $shortcut = $shell.CreateShortcut("$startMenuDir\ARGUS Center Connector.lnk")
             $shortcut.TargetPath = $batPath
             $shortcut.WorkingDirectory = $BaseDir
             $shortcut.Description = "Avvia ARGUS Center Connector - Monitoring SNMP, Syslog e Redfish"
-            $shortcut.IconLocation = "shell32.dll,13"
+            $shortcut.IconLocation = $iconLocation
             $shortcut.WindowStyle = 7
             $shortcut.Save()
             # Collegamento Diagnostica
@@ -882,7 +886,7 @@ function Show-InstallerWizard {
                 $diagShortcut.Arguments = "-ExecutionPolicy Bypass -File `"$diagScript`""
                 $diagShortcut.WorkingDirectory = $BaseDir
                 $diagShortcut.Description = "Diagnostica connessione ARGUS Center"
-                $diagShortcut.IconLocation = "shell32.dll,22"
+                $diagShortcut.IconLocation = $iconLocation
                 $diagShortcut.Save()
             }
             # Collegamento Disinstalla
@@ -890,7 +894,7 @@ function Show-InstallerWizard {
             $unShortcut.TargetPath = $uninstallBat
             $unShortcut.WorkingDirectory = $BaseDir
             $unShortcut.Description = "Disinstalla ARGUS Center Connector"
-            $unShortcut.IconLocation = "shell32.dll,31"
+            $unShortcut.IconLocation = $iconLocation
             $unShortcut.Save()
             # Collegamento Apri Cartella Log
             $logDir = Join-Path $env:ProgramData "86NocConnector\logs"
@@ -899,7 +903,7 @@ function Show-InstallerWizard {
             $logShortcut.TargetPath = "explorer.exe"
             $logShortcut.Arguments = $logDir
             $logShortcut.Description = "Apri la cartella dei log del connettore"
-            $logShortcut.IconLocation = "shell32.dll,3"
+            $logShortcut.IconLocation = $iconLocation
             $logShortcut.Save()
             [System.Runtime.InteropServices.Marshal]::ReleaseComObject($shell) | Out-Null
             $txtStatus.AppendText("  Menu Start: OK (86BIT ArgusCenter)`r`n")
@@ -918,6 +922,11 @@ function Show-InstallerWizard {
             & reg add $regPath /v "Contact" /t REG_SZ /d "info@86bit.it" /f 2>$null
             & reg add $regPath /v "UninstallString" /t REG_SZ /d "`"$uninstallBat`"" /f 2>$null
             & reg add $regPath /v "InstallLocation" /t REG_SZ /d "$BaseDir" /f 2>$null
+            # Logo 86bit in Programmi e Funzionalita' (invece dell'icona generica blu di Windows)
+            $iconRegPath = Join-Path $BaseDir "src\86bit_logo.ico"
+            if (Test-Path $iconRegPath) {
+                & reg add $regPath /v "DisplayIcon" /t REG_SZ /d "$iconRegPath" /f 2>$null
+            }
             & reg add $regPath /v "InstallDate" /t REG_SZ /d "$(Get-Date -Format 'yyyyMMdd')" /f 2>$null
             & reg add $regPath /v "EstimatedSize" /t REG_DWORD /d 1024 /f 2>$null
             & reg add $regPath /v "NoModify" /t REG_DWORD /d 1 /f 2>$null

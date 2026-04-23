@@ -247,7 +247,7 @@ function Get-StatusText {
 function Show-DeviceManager {
     $form = New-Object System.Windows.Forms.Form
     $form.Text = "$AppName - Gestisci Dispositivi"
-    $form.Size = New-Object System.Drawing.Size(720, 580)
+    $form.Size = New-Object System.Drawing.Size(820, 580)
     $form.StartPosition = "CenterScreen"
     $form.FormBorderStyle = "FixedDialog"
     $form.MaximizeBox = $false
@@ -311,14 +311,14 @@ function Show-DeviceManager {
 
     $txtName = New-Object System.Windows.Forms.TextBox
     $txtName.Location = New-Object System.Drawing.Point(270, 90)
-    $txtName.Size = New-Object System.Drawing.Size(180, 26)
+    $txtName.Size = New-Object System.Drawing.Size(260, 26)
     $txtName.Font = New-Object System.Drawing.Font("Consolas", 9.5)
     $form.Controls.Add($txtName)
 
     $btnAdd = New-Object System.Windows.Forms.Button
     $btnAdd.Text = "Aggiungi"
     $btnAdd.Size = New-Object System.Drawing.Size(80, 26)
-    $btnAdd.Location = New-Object System.Drawing.Point(458, 90)
+    $btnAdd.Location = New-Object System.Drawing.Point(538, 90)
     $btnAdd.FlatStyle = "Flat"
     $btnAdd.BackColor = [System.Drawing.Color]::FromArgb(99, 102, 241)
     $btnAdd.ForeColor = [System.Drawing.Color]::White
@@ -329,7 +329,7 @@ function Show-DeviceManager {
     # ListView
     $listView = New-Object System.Windows.Forms.ListView
     $listView.Location = New-Object System.Drawing.Point(20, 130)
-    $listView.Size = New-Object System.Drawing.Size(658, 240)
+    $listView.Size = New-Object System.Drawing.Size(758, 240)
     $listView.View = [System.Windows.Forms.View]::Details
     $listView.FullRowSelect = $true
     $listView.GridLines = $true
@@ -338,7 +338,7 @@ function Show-DeviceManager {
     $null = $listView.Columns.Add("IP Address", 120)
     $null = $listView.Columns.Add("Community", 90)
     $null = $listView.Columns.Add("Nome", 220)
-    $null = $listView.Columns.Add("Web UI", 215)
+    $null = $listView.Columns.Add("Web UI", 315)
     $form.Controls.Add($listView)
 
     # Load current devices from config
@@ -390,12 +390,10 @@ function Show-DeviceManager {
     $btnRemove.Font = New-Object System.Drawing.Font("Segoe UI", 8.5)
     $btnRemove.Cursor = [System.Windows.Forms.Cursors]::Hand
     $form.Controls.Add($btnRemove)
-
     $btnTestSnmp = New-Object System.Windows.Forms.Button
     $btnTestSnmp.Text = "Test SNMP"
     $btnTestSnmp.Size = New-Object System.Drawing.Size(110, 30)
-    $btnTestSnmp.Location = New-Object System.Drawing.Point(165, 425)
-    $btnTestSnmp.FlatStyle = "Flat"
+    $btnTestSnmp.Location = New-Object System.Drawing.Point(165, 425)    $btnTestSnmp.FlatStyle = "Flat"
     $btnTestSnmp.BackColor = [System.Drawing.Color]::FromArgb(59, 130, 246)
     $btnTestSnmp.ForeColor = [System.Drawing.Color]::White
     $btnTestSnmp.Font = New-Object System.Drawing.Font("Segoe UI", 8.5, [System.Drawing.FontStyle]::Bold)
@@ -405,7 +403,7 @@ function Show-DeviceManager {
     $btnWebUI = New-Object System.Windows.Forms.Button
     $btnWebUI.Text = "Apri Web UI"
     $btnWebUI.Size = New-Object System.Drawing.Size(135, 30)
-    $btnWebUI.Location = New-Object System.Drawing.Point(285, 425)
+    $btnWebUI.Location = New-Object System.Drawing.Point(290, 425)
     $btnWebUI.FlatStyle = "Flat"
     $btnWebUI.BackColor = [System.Drawing.Color]::FromArgb(168, 85, 247)
     $btnWebUI.ForeColor = [System.Drawing.Color]::White
@@ -415,8 +413,8 @@ function Show-DeviceManager {
 
     $btnTestAllWebUI = New-Object System.Windows.Forms.Button
     $btnTestAllWebUI.Text = "Test Web UI (tutti)"
-    $btnTestAllWebUI.Size = New-Object System.Drawing.Size(130, 30)
-    $btnTestAllWebUI.Location = New-Object System.Drawing.Point(430, 425)
+    $btnTestAllWebUI.Size = New-Object System.Drawing.Size(140, 30)
+    $btnTestAllWebUI.Location = New-Object System.Drawing.Point(435, 425)
     $btnTestAllWebUI.FlatStyle = "Flat"
     $btnTestAllWebUI.BackColor = [System.Drawing.Color]::White
     $btnTestAllWebUI.ForeColor = [System.Drawing.Color]::FromArgb(168, 85, 247)
@@ -426,8 +424,8 @@ function Show-DeviceManager {
 
     $btnSave = New-Object System.Windows.Forms.Button
     $btnSave.Text = "Salva e Riavvia"
-    $btnSave.Size = New-Object System.Drawing.Size(135, 30)
-    $btnSave.Location = New-Object System.Drawing.Point(570, 425)
+    $btnSave.Size = New-Object System.Drawing.Size(200, 30)
+    $btnSave.Location = New-Object System.Drawing.Point(590, 425)
     $btnSave.FlatStyle = "Flat"
     $btnSave.BackColor = [System.Drawing.Color]::FromArgb(34, 197, 94)
     $btnSave.ForeColor = [System.Drawing.Color]::White
@@ -440,7 +438,7 @@ function Show-DeviceManager {
     $lblHint.Font = New-Object System.Drawing.Font("Segoe UI", 8)
     $lblHint.ForeColor = [System.Drawing.Color]::FromArgb(140, 140, 155)
     $lblHint.Location = New-Object System.Drawing.Point(20, 465)
-    $lblHint.Size = New-Object System.Drawing.Size(680, 35)
+    $lblHint.Size = New-Object System.Drawing.Size(780, 35)
     $form.Controls.Add($lblHint)
 
     # Add button handler
