@@ -7,7 +7,7 @@ import {
   ArrowLeft, HardDrives, Globe, Printer, Database, ShieldCheck,
   Lightning, WifiHigh, WifiSlash, PlugsConnected, CaretDown,
   CheckCircle, Warning, ArrowClockwise, Bell, ChartLine, Monitor, Cpu,
-  Plus, Trash, Lock, MagnifyingGlass, Info,
+  Plus, Trash, Lock, MagnifyingGlass, Info, PencilSimple,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -23,6 +23,7 @@ import { canOpenWebConsole, defaultWebPort } from "@/components/WebConsole";
 import { useWebConsoleTabs } from "@/components/WebConsoleTabs";
 import ILoLiveMetrics from "@/components/ILoLiveMetrics";
 import HealthBadge from "@/components/HealthBadge";
+import { DeviceEditModal } from "@/components/DeviceEditModal";
 import DiscoveryPage from "./DiscoveryPage";
 import VulnerabilityPage from "./VulnerabilityPage";
 
@@ -903,6 +904,7 @@ function DevicesTab({ devices, clientId, onRefresh }) {
   const [showAdd, setShowAdd] = useState(false);
   const [profileTarget, setProfileTarget] = useState(null);
   const [infoTarget, setInfoTarget] = useState(null);
+  const [editTarget, setEditTarget] = useState(null);
   const [saving, setSaving] = useState(false);
   const webConsole = useWebConsoleTabs();
   const emptyForm = {
@@ -1055,6 +1057,14 @@ function DevicesTab({ devices, clientId, onRefresh }) {
                         data-testid={`device-trend-${d.ip_address}`}
                       >
                         <ChartLine size={13} />
+                      </button>
+                      <button
+                        onClick={() => setEditTarget(d)}
+                        className="p-1 rounded hover:bg-violet-500/10 text-violet-400 transition-colors"
+                        title="Modifica dispositivo (metodo, community SNMP, versione, credenziali v3)"
+                        data-testid={`edit-device-${d.ip_address}`}
+                      >
+                        <PencilSimple size={13} />
                       </button>
                       <button
                         onClick={() => setProfileTarget(d)}
@@ -1252,6 +1262,17 @@ function DevicesTab({ devices, clientId, onRefresh }) {
         />
       )}
 
+      {/* Device Edit Modal (rapid edit: monitor-type + SNMP community/version/v3 creds) */}
+      {editTarget && (
+        <DeviceEditModal
+          clientId={clientId}
+          device={editTarget}
+          open={!!editTarget}
+          onClose={() => setEditTarget(null)}
+          onSaved={() => { setEditTarget(null); onRefresh(); }}
+        />
+      )}
+
       {/* Device Info Card Modal */}
       {infoTarget && (
         <Dialog open={!!infoTarget} onOpenChange={(o) => !o && setInfoTarget(null)}>
@@ -1284,9 +1305,16 @@ function DeviceProfileModal({ device, onClose, onApplied }) {
         // Auto-suggest by device_type if not already configured
         if (!device.profile_key) {
           const t = (device.device_type || "").toLowerCase();
+          const nm = (device.name || "").toLowerCase();
           const suggest = (r.data?.profiles || []).find(p => {
             if (t === "nas") return p.key === "synology_dsm";
-            if (t === "ups") return p.key === "generic_ups";
+            if (t === "ups") {
+              // Heuristic: se il nome contiene "xanto" usa il profilo dedicato
+              if (nm.includes("xanto") || nm.includes("netagent") || nm.includes("megatec")) {
+                return p.key === "xanto_ups";
+              }
+              return p.key === "generic_ups";
+            }
             if (t === "switch") return p.key === "hpe_comware";
             if (t === "ilo" || t === "server_oob" || t === "server") return p.key === "hpe_ilo";
             if (t === "firewall") return p.key === "fortinet_fortigate";
@@ -1307,7 +1335,12 @@ function DeviceProfileModal({ device, onClose, onApplied }) {
         device_ip: device.ip_address,
         profile_key: selected,
       });
-      toast.success(`Profilo "${selected}" applicato a ${device.name}`);
+      // Fire-and-forget: chiedi al connector di rileggere subito la lista dispositivi
+      // con il nuovo profilo applicato (evita attesa fino a 10 min sul ciclo normale).
+      if (device.client_id) {
+        axios.post(`${API}/connector/${device.client_id}/request-refresh`).catch(() => {});
+      }
+      toast.success(`Profilo "${selected}" applicato a ${device.name} — il connector userà la nuova config entro 30s`);
       onApplied();
     } catch (e) {
       toast.error("Errore: " + (e.response?.data?.detail || e.message));

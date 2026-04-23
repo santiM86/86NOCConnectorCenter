@@ -409,6 +409,19 @@ function Send-Heartbeat($config) {
             Write-Log "Errore parsing allowed_ports_extra: $_" "WARN"
         }
     }
+
+    # "Applica ora" dall'admin del Center: forza re-fetch device list immediato
+    # invece di aspettare il ciclo normale (ogni 10 poll, ~10 minuti).
+    # Usato quando admin cambia community/monitor-type/profilo e vuole vedere
+    # subito il connector applicare la nuova config senza riavviare il servizio.
+    if ($response -and $response.refresh_now) {
+        Write-Log "[REFRESH] NOC ha richiesto fetch-devices immediato (admin ha cliccato 'Applica ora')" "INFO"
+        try {
+            $global:ForceRefreshPending = $true
+        } catch {
+            Write-Log "Errore segnalazione refresh: $_" "WARN"
+        }
+    }
     
     # Process pending commands (Wake-on-LAN, VA Scan, etc.)
     if ($response -and $response.pending_commands) {
@@ -1383,9 +1396,18 @@ function Start-PollingLoop($config) {
             # Send full status report after every poll
             Send-DeviceReport $config $devices
             
-            # Refresh device list from NOC every 10 cycles
+            # Refresh device list from NOC every 10 cycles,
+            # oppure immediatamente se admin ha cliccato "Applica ora" nel Center.
             $refreshCounter++
-            if ($refreshCounter -ge 10) {
+            $forceRefresh = $false
+            try {
+                if ($global:ForceRefreshPending) {
+                    $forceRefresh = $true
+                    $global:ForceRefreshPending = $false
+                    Write-Log "[REFRESH] Eseguo fetch-devices immediato (trigger: admin Center)" "INFO"
+                }
+            } catch {}
+            if ($refreshCounter -ge 10 -or $forceRefresh) {
                 $refreshCounter = 0
                 $nocDevices = Fetch-DevicesFromNOC $config
                 if ($nocDevices) {

@@ -251,7 +251,55 @@ async def connector_heartbeat(request: Request, heartbeat: ConnectorHeartbeat):
             response["allowed_ports_extra"] = ports_clean
     except Exception:
         pass
+    # === "Applica ora" — refresh-requested flag ===
+    # L'admin clicca "Applica ora" nel Device Edit Modal/altre azioni → setta
+    # refresh_requested=true nella doc connector_status. Al prossimo heartbeat
+    # (ogni 30s) restituiamo refresh_now=true al connector e resettiamo il flag.
+    # Il connector al ricevimento di refresh_now esegue subito Fetch-DevicesFromNOC
+    # invece di aspettare il normale ciclo (ogni 10 cicli di poll, ~10 min).
+    if existing and existing.get("refresh_requested"):
+        response["refresh_now"] = True
+        await db.connector_status.update_one(
+            {"client_id": client_data["id"]},
+            {"$unset": {"refresh_requested": ""}, "$set": {"refresh_fulfilled_at": datetime.now(timezone.utc).isoformat()}}
+        )
     return response
+
+
+@router.post("/connector/{client_id}/request-refresh")
+async def connector_request_refresh(client_id: str, current_user: dict = Depends(get_current_user)):
+    """
+    Forza il connector del cliente {client_id} a rifare subito il fetch-devices
+    al prossimo heartbeat (max ~30 secondi di attesa invece di ~10 minuti).
+    Usato quando l'admin cambia community/monitor-type/profilo e vuole che il
+    connector applichi le modifiche immediatamente senza dover accedere al server.
+    """
+    # Verifica che il client esista
+    client = await db.clients.find_one({"id": client_id}, {"_id": 0, "id": 1, "name": 1})
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+    # Setta il flag nella doc connector_status (upsert se il connector non ha ancora
+    # fatto il primo heartbeat — sarà consumato non appena si connette)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.connector_status.update_one(
+        {"client_id": client_id},
+        {"$set": {
+            "refresh_requested": True,
+            "refresh_requested_at": now_iso,
+            "refresh_requested_by": current_user.get("email"),
+        }},
+        upsert=True,
+    )
+    await audit_logger.log(
+        AuditAction.UPDATE_CLIENT,
+        user_id=current_user["id"], user_email=current_user["email"],
+        resource_type="client", resource_id=client_id,
+        details={"action": "request_refresh", "client_name": client.get("name")},
+    )
+    return {
+        "status": "ok",
+        "message": f"Richiesta refresh inviata al connector di '{client.get('name')}'. Sarà applicata entro 30 secondi.",
+    }
 
 
 

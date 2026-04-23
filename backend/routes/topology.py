@@ -784,8 +784,18 @@ async def get_device_detail(client_id: str, device_ip: str, current_user: dict =
         {"client_id": client_id, "from_ip": device_ip}, {"_id": 0}
     ).to_list(50)
 
+    # Managed device info (for SNMP config editability + primary metadata)
+    # Senza questo il frontend non ha l'id interno del managed_device e non puo'
+    # PUT /managed-devices/{id}/snmp → si blocca con "Device not found" 404.
+    managed = await db.managed_devices.find_one(
+        {"client_id": client_id, "ip": device_ip}, {"_id": 0}
+    )
+
     return {
         "device": device,
+        "managed_device": managed,   # settings correnti (id, community, snmp_version, snmpv3_*, monitor_type, profile_key)
+        "device_id": managed.get("id") if managed else None,
+        "managed": managed is not None,
         "alerts": alerts,
         "alerts_count": len(alerts),
         "active_alerts": sum(1 for a in alerts if not a.get("acknowledged")),
