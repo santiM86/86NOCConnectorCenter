@@ -103,6 +103,25 @@ export default function DeviceInfoCard({ deviceIp, onClose = null, compact = fal
   const loc = card.location || {};
   const fwComp = fw.compliance;
 
+  // Format open_ports: può contenere oggetti {port, service} o stringhe/numeri
+  const formatOpenPorts = (ports) => {
+    if (!Array.isArray(ports) || ports.length === 0) return null;
+    return ports
+      .map((p) => {
+        if (typeof p === "string" || typeof p === "number") return String(p);
+        if (p && typeof p === "object") {
+          const port = p.port || p.p;
+          const service = p.service || p.name || p.proto;
+          if (port && service) return `${port} (${service})`;
+          return port ? String(port) : JSON.stringify(p);
+        }
+        return String(p);
+      })
+      .join(", ");
+  };
+
+  const isSnmpMonitored = st.monitor_type === "snmp" || st.monitor_type === "snmp+ping" || (card.data_sources || []).includes("entity_mib");
+
   const sourcesBadges = {
     connector: { label: "Connector", color: "bg-emerald-500/20 text-emerald-300 border-emerald-500/40" },
     managed_devices: { label: "Manuale", color: "bg-cyan-500/20 text-cyan-300 border-cyan-500/40" },
@@ -240,7 +259,7 @@ export default function DeviceInfoCard({ deviceIp, onClose = null, compact = fal
           {/* Network */}
           <Section title="Rete" icon={Globe} testid="info-section-network" color="text-sky-300">
             <Field label="Interfacce" value={net.interfaces_count || null} />
-            <Field label="Porte aperte" value={(net.open_ports || []).length ? net.open_ports.join(", ") : null} mono />
+            <Field label="Porte aperte" value={formatOpenPorts(net.open_ports)} mono />
             <Field label="Ping (ms)" value={net.ping_ms} />
             {net.ping_stats?.avg != null && <Field label="Ping avg" value={`${net.ping_stats.avg}ms`} />}
             {net.ping_stats?.packet_loss != null && <Field label="Packet loss" value={`${net.ping_stats.packet_loss}%`} />}
@@ -300,7 +319,29 @@ export default function DeviceInfoCard({ deviceIp, onClose = null, compact = fal
         </div>
       )}
 
-      {/* Raw sys_descr (collapsible debug) */}
+      {/* Warning: device monitored only via HTTP (no SNMP telemetry) */}
+      {!isSnmpMonitored && (
+        <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 flex items-start gap-3" data-testid="warning-no-snmp">
+          <Warning size={18} className="text-amber-400 flex-shrink-0 mt-0.5" weight="fill" />
+          <div className="flex-1">
+            <h4 className="text-sm font-semibold text-amber-200">Monitoraggio limitato</h4>
+            <p className="text-xs text-amber-100/80 mt-0.5">
+              Questo dispositivo è monitorato solo via <code className="px-1 py-0.5 bg-black/30 rounded font-mono">{st.monitor_type || "ping/http"}</code>.
+              Per raccogliere informazioni dettagliate su <strong>firmware, HDD/RAID, CPU, temperatura, dischi SMART, volumi</strong>,
+              configura anche l'<strong>accesso SNMP</strong> sul dispositivo e aggiungi la community nel pannello Vault del cliente.
+            </p>
+            <p className="text-xs text-amber-100/60 mt-1">
+              Synology: Pannello di Controllo → Terminal & SNMP → Abilita servizio SNMP (v2c) → community (es: <code className="font-mono bg-black/30 px-1 rounded">public</code> o custom).
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Synology disks & RAID section (when vendor_metrics has them) */}
+      {card.identity?.vendor?.toLowerCase().includes("synology") && card.vendor_metrics_summary?.count > 0 && (
+        <SynologyDetailSection deviceIp={card.device_ip} />
+      )}
+
       {card.sys_descr_raw && (
         <details className="rounded-lg border border-[var(--bg-border)] bg-black/20 p-2">
           <summary className="text-[10px] uppercase text-[var(--text-secondary)] cursor-pointer">
@@ -313,4 +354,159 @@ export default function DeviceInfoCard({ deviceIp, onClose = null, compact = fal
       )}
     </div>
   );
+}
+
+/** Synology disks + RAID live panel (lazy loaded via vendor-details endpoint) */
+function SynologyDetailSection({ deviceIp }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const token = localStorage.getItem("noc_token");
+
+  useEffect(() => {
+    setLoading(true);
+    axios.get(`${API}/api/devices/by-ip/${deviceIp}/vendor-details`, { headers: { Authorization: `Bearer ${token}` } })
+      .then((r) => setData(r.data))
+      .catch(() => setData(null))
+      .finally(() => setLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deviceIp]);
+
+  if (loading) return null;
+  if (!data) return null;
+
+  const syn = data.synology || data.vendor_metrics || {};
+  const disks = syn.disks || syn.diskStatus || [];
+  const raids = syn.raids || syn.raidStatus || [];
+  const volumes = syn.volumes || [];
+  const dsmVersion = syn.dsm_version || syn.systemVersion || syn.modelName;
+  const systemStatus = syn.system_status || syn.systemStatus;
+  const temp = syn.temperature;
+
+  const hasContent = (Array.isArray(disks) && disks.length) ||
+                     (Array.isArray(raids) && raids.length) ||
+                     (Array.isArray(volumes) && volumes.length) ||
+                     dsmVersion || systemStatus;
+
+  if (!hasContent) return null;
+
+  return (
+    <div className="rounded-xl border border-teal-500/30 bg-gradient-to-br from-teal-500/5 to-transparent p-4" data-testid="synology-detail">
+      <div className="flex items-center gap-2 mb-3">
+        <HardDrives size={16} className="text-teal-400" weight="duotone" />
+        <h4 className="text-sm font-bold uppercase tracking-wide text-teal-300">Synology DSM — Dischi & RAID</h4>
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3">
+        {dsmVersion && (
+          <div className="rounded bg-black/20 border border-[var(--bg-border)] p-2">
+            <div className="text-[10px] uppercase text-[var(--text-secondary)]">DSM Version</div>
+            <div className="text-xs font-mono text-teal-300">{dsmVersion}</div>
+          </div>
+        )}
+        {systemStatus && (
+          <div className="rounded bg-black/20 border border-[var(--bg-border)] p-2">
+            <div className="text-[10px] uppercase text-[var(--text-secondary)]">System Status</div>
+            <div className={`text-xs font-bold ${systemStatus === "Normal" || systemStatus === 1 ? "text-emerald-300" : "text-amber-300"}`}>
+              {systemStatus}
+            </div>
+          </div>
+        )}
+        {temp != null && (
+          <div className="rounded bg-black/20 border border-[var(--bg-border)] p-2">
+            <div className="text-[10px] uppercase text-[var(--text-secondary)]">System Temp</div>
+            <div className="text-xs font-bold text-orange-300">{temp}°C</div>
+          </div>
+        )}
+        <div className="rounded bg-black/20 border border-[var(--bg-border)] p-2">
+          <div className="text-[10px] uppercase text-[var(--text-secondary)]">Dischi / RAID / Volumi</div>
+          <div className="text-xs font-bold text-cyan-300">{(disks?.length || 0)} / {(raids?.length || 0)} / {(volumes?.length || 0)}</div>
+        </div>
+      </div>
+
+      {Array.isArray(disks) && disks.length > 0 && (
+        <div className="mb-3">
+          <h5 className="text-xs font-semibold text-[var(--text-primary)] mb-1.5">Dischi</h5>
+          <div className="overflow-x-auto">
+            <table className="w-full text-[10px]">
+              <thead className="bg-black/30 border-b border-[var(--bg-border)]">
+                <tr className="text-left text-[var(--text-secondary)]">
+                  <th className="px-2 py-1">#</th>
+                  <th className="px-2 py-1">Modello</th>
+                  <th className="px-2 py-1">Status</th>
+                  <th className="px-2 py-1">SMART</th>
+                  <th className="px-2 py-1">Temp</th>
+                  <th className="px-2 py-1">Role</th>
+                </tr>
+              </thead>
+              <tbody>
+                {disks.map((d, i) => (
+                  <tr key={i} className="border-b border-[var(--bg-border)]/50">
+                    <td className="px-2 py-1 text-[var(--text-secondary)] font-mono">{d.index ?? i + 1}</td>
+                    <td className="px-2 py-1 text-[var(--text-primary)] font-mono">{d.model || d.diskModel || "—"}</td>
+                    <td className="px-2 py-1">
+                      <span className={`px-1.5 py-0.5 rounded text-[9px] uppercase ${d.status === "Normal" || d.status === 1 ? "bg-emerald-500/20 text-emerald-300" : "bg-red-500/20 text-red-300"}`}>
+                        {d.status || "—"}
+                      </span>
+                    </td>
+                    <td className="px-2 py-1 text-[var(--text-primary)]">{d.smart_status || d.smart || "—"}</td>
+                    <td className="px-2 py-1 text-orange-300">{d.temp != null ? `${d.temp}°C` : "—"}</td>
+                    <td className="px-2 py-1 text-[var(--text-secondary)]">{d.role || d.type || "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {Array.isArray(raids) && raids.length > 0 && (
+        <div className="mb-3">
+          <h5 className="text-xs font-semibold text-[var(--text-primary)] mb-1.5">RAID</h5>
+          <div className="flex flex-wrap gap-1.5">
+            {raids.map((r, i) => (
+              <div key={i} className="rounded bg-black/30 border border-[var(--bg-border)] p-2 text-[10px]">
+                <div className="font-mono text-[var(--text-primary)]">{r.name || `RAID ${i + 1}`}</div>
+                <div className={`${r.status === "Normal" || r.status === 1 ? "text-emerald-300" : "text-amber-300"}`}>
+                  {r.status || r.state || "—"}
+                </div>
+                {r.level && <div className="text-[var(--text-secondary)]">Level: {r.level}</div>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {Array.isArray(volumes) && volumes.length > 0 && (
+        <div>
+          <h5 className="text-xs font-semibold text-[var(--text-primary)] mb-1.5">Volumi</h5>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+            {volumes.map((v, i) => {
+              const usedPct = v.used_pct ?? (v.total && v.used ? Math.round((v.used / v.total) * 100) : null);
+              return (
+                <div key={i} className="rounded bg-black/30 border border-[var(--bg-border)] p-2 text-[10px]">
+                  <div className="flex items-center justify-between">
+                    <span className="font-mono text-[var(--text-primary)]">{v.name || v.id || `Volume ${i + 1}`}</span>
+                    <span className={`${v.status === "Normal" || v.status === 1 ? "text-emerald-300" : "text-amber-300"}`}>{v.status}</span>
+                  </div>
+                  {usedPct != null && (
+                    <div className="mt-1">
+                      <div className="h-1.5 bg-black/50 rounded overflow-hidden">
+                        <div className={`h-full ${usedPct > 90 ? "bg-red-500" : usedPct > 75 ? "bg-amber-500" : "bg-emerald-500"}`}
+                          style={{ width: `${usedPct}%` }}></div>
+                      </div>
+                      <div className="text-[9px] text-[var(--text-secondary)] mt-0.5">{usedPct}% usato</div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function _unused() {
+  return null;
 }
