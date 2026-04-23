@@ -65,8 +65,10 @@ if exist "%ProgramData%\Microsoft\Windows\Start Menu\Programs\86NocConnector" (
 )
 
 echo === STEP 3: Rimozione dal Registro (Programmi e Funzionalita) ===
-reg delete "HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\86BIT_ArgusCenter_Connector" /f >nul 2>&1
-reg delete "HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\86NocConnector" /f >nul 2>&1
+reg delete "HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\86BIT_ArgusCenter_Connector" /f /reg:64 >nul 2>&1
+reg delete "HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\86BIT_ArgusCenter_Connector" /f /reg:32 >nul 2>&1
+reg delete "HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\86NocConnector" /f /reg:64 >nul 2>&1
+reg delete "HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\86NocConnector" /f /reg:32 >nul 2>&1
 reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run\86NocConnector" /f >nul 2>&1
 echo [OK] Chiavi di registro rimosse
 

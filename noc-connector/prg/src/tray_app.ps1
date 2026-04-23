@@ -393,7 +393,8 @@ function Show-DeviceManager {
     $btnTestSnmp = New-Object System.Windows.Forms.Button
     $btnTestSnmp.Text = "Test SNMP"
     $btnTestSnmp.Size = New-Object System.Drawing.Size(110, 30)
-    $btnTestSnmp.Location = New-Object System.Drawing.Point(165, 425)    $btnTestSnmp.FlatStyle = "Flat"
+    $btnTestSnmp.Location = New-Object System.Drawing.Point(165, 425)
+    $btnTestSnmp.FlatStyle = "Flat"
     $btnTestSnmp.BackColor = [System.Drawing.Color]::FromArgb(59, 130, 246)
     $btnTestSnmp.ForeColor = [System.Drawing.Color]::White
     $btnTestSnmp.Font = New-Object System.Drawing.Font("Segoe UI", 8.5, [System.Drawing.FontStyle]::Bold)

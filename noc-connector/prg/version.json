@@ -1,4 +1,4 @@
 {
-  "version": "3.5.1",
-  "changelog": "v3.5.1: FIX BUG INSTALLER v3.5.0 - (1) Copia file: Resolve-Path ritornava null se InstallPath non esisteva -> sostituito con [IO.Path]::GetFullPath che gestisce anche path inesistenti. (2) Shortcut Menu Start: gestione individuale di ogni shortcut con error handling separato + verifica cartella parent post-creazione + fallback a powershell.exe diretto se batPath manca. (3) Scheduled Task: schtasks /TR con virgolette annidate fallisce (exit 1) -> metodo XML-first via /XML + fallback a /TR con escape doppio. Helper bootstrap_to_v350_helper.ps1 per migrazioni da v3.4.x."
+  "version": "3.5.2",
+  "changelog": "v3.5.2: FIX UI + REGISTRY x64 - (1) Pulsante Test SNMP fuori posto nella form 'Gestisci Dispositivi' (due proprieta' su stessa riga causavano Location errata) -> ripristinato. (2) Uninstall entry in Programmi e Funzionalita' non visibile su Windows Server x64 -> aggiunto /reg:64 esplicito a tutte le reg add, forzando scrittura in HKLM\\Software\\...\\Uninstall x64 view + verifica /reg query post-scrittura. (3) Bootstrap helper esteso: ora ricrea anche registry Uninstall x64 + shortcut Menu Start per fixare installazioni rotte v3.5.0/v3.5.1 senza disinstallare. uninstall.bat ora rimuove la chiave in entrambe le registry view (/reg:32 + /reg:64)."
 }

@@ -944,27 +944,39 @@ function Show-InstallerWizard {
         }
         try {
             $regPath = "HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\86BIT_ArgusCenter_Connector"
-            # Rimuovi vecchia chiave con nome diverso
-            & reg delete "HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\$AppName" /f 2>$null
-            & reg add $regPath /v "DisplayName" /t REG_SZ /d "86BIT ARGUS Center Connector" /f 2>$null
-            & reg add $regPath /v "DisplayVersion" /t REG_SZ /d "$Version" /f 2>$null
-            & reg add $regPath /v "Publisher" /t REG_SZ /d "86BIT srl Unipersonale" /f 2>$null
-            & reg add $regPath /v "URLInfoAbout" /t REG_SZ /d "https://www.86bit.it" /f 2>$null
-            & reg add $regPath /v "HelpLink" /t REG_SZ /d "mailto:info@86bit.it" /f 2>$null
-            & reg add $regPath /v "Contact" /t REG_SZ /d "info@86bit.it" /f 2>$null
-            & reg add $regPath /v "UninstallString" /t REG_SZ /d "`"$uninstallBat`"" /f 2>$null
-            & reg add $regPath /v "InstallLocation" /t REG_SZ /d "$BaseDir" /f 2>$null
+            # Rimuovi vecchia chiave con nome diverso (da entrambe le registry view)
+            & reg delete "HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\$AppName" /f /reg:64 2>$null
+            & reg delete "HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\$AppName" /f /reg:32 2>$null
+            # Rimuovi chiave vecchia con stesso nome ma eventualmente scritta in Wow6432Node
+            & reg delete $regPath /f /reg:32 2>$null
+            # Scrivi ESPLICITAMENTE nella 64-bit registry view (per visibilita' in "App e funzionalita'")
+            & reg add $regPath /v "DisplayName" /t REG_SZ /d "86BIT ARGUS Center Connector" /f /reg:64 2>$null
+            & reg add $regPath /v "DisplayVersion" /t REG_SZ /d "$Version" /f /reg:64 2>$null
+            & reg add $regPath /v "Publisher" /t REG_SZ /d "86BIT srl Unipersonale" /f /reg:64 2>$null
+            & reg add $regPath /v "URLInfoAbout" /t REG_SZ /d "https://www.86bit.it" /f /reg:64 2>$null
+            & reg add $regPath /v "HelpLink" /t REG_SZ /d "mailto:info@86bit.it" /f /reg:64 2>$null
+            & reg add $regPath /v "Contact" /t REG_SZ /d "info@86bit.it" /f /reg:64 2>$null
+            & reg add $regPath /v "UninstallString" /t REG_SZ /d "`"$uninstallBat`"" /f /reg:64 2>$null
+            & reg add $regPath /v "InstallLocation" /t REG_SZ /d "$BaseDir" /f /reg:64 2>$null
             # Logo 86bit in Programmi e Funzionalita' (invece dell'icona generica blu di Windows)
             $iconRegPath = Join-Path $BaseDir "src\86bit_logo.ico"
             if (Test-Path $iconRegPath) {
-                & reg add $regPath /v "DisplayIcon" /t REG_SZ /d "$iconRegPath" /f 2>$null
+                & reg add $regPath /v "DisplayIcon" /t REG_SZ /d "$iconRegPath" /f /reg:64 2>$null
             }
-            & reg add $regPath /v "InstallDate" /t REG_SZ /d "$(Get-Date -Format 'yyyyMMdd')" /f 2>$null
-            & reg add $regPath /v "EstimatedSize" /t REG_DWORD /d 1024 /f 2>$null
-            & reg add $regPath /v "NoModify" /t REG_DWORD /d 1 /f 2>$null
-            & reg add $regPath /v "NoRepair" /t REG_DWORD /d 1 /f 2>$null
-            $txtStatus.AppendText("  Programmi e Funzionalita': OK (86BIT ARGUS Center Connector)`r`n")
-        } catch {}
+            & reg add $regPath /v "InstallDate" /t REG_SZ /d "$(Get-Date -Format 'yyyyMMdd')" /f /reg:64 2>$null
+            & reg add $regPath /v "EstimatedSize" /t REG_DWORD /d 1024 /f /reg:64 2>$null
+            # Verifica lettura: deve essere visibile in x64 registry
+            $verifyRead = & reg query $regPath /v "DisplayName" /reg:64 2>$null
+            if ($verifyRead -and ($verifyRead -match "DisplayName")) {
+                $txtStatus.AppendText("  Programmi e Funzionalita': OK (86BIT ARGUS Center Connector)`r`n")
+            } else {
+                $txtStatus.AppendText("  Programmi e Funzionalita': scritta ma non verificata (controlla manualmente)`r`n")
+            }
+            & reg add $regPath /v "NoModify" /t REG_DWORD /d 1 /f /reg:64 2>$null
+            & reg add $regPath /v "NoRepair" /t REG_DWORD /d 1 /f /reg:64 2>$null
+        } catch {
+            $txtStatus.AppendText("  Programmi e Funzionalita': errore - $($_.Exception.Message)`r`n")
+        }
         $form.Refresh()
         Start-Sleep -Milliseconds 500
         
