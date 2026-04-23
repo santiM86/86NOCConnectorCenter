@@ -1026,33 +1026,23 @@ function Poll-VendorOids([string]$ip, [string]$community, $vendorTargets) {
         $baseOid = [string]$metric.Value
         if (-not $baseOid) { continue }
         try {
-            # Use Get-SnmpValues-Walk or Get-SnmpWalk (depends on poller version)
-            $walkResult = $null
-            if (Get-Command Get-SnmpWalk -ErrorAction SilentlyContinue) {
-                $walkResult = Get-SnmpWalk $ip $community $baseOid
-            } elseif (Get-Command Get-SnmpValues-Walk -ErrorAction SilentlyContinue) {
-                $walkResult = Get-SnmpValues-Walk $ip $community $baseOid
-            } else {
-                # Minimal fallback: try to get a few indexed values .1 .2 .3 ...
-                $walkResult = @{}
-                for ($i = 1; $i -le 32; $i++) {
-                    try {
-                        $val = Get-SnmpValue $ip $community "$baseOid.$i"
-                        if ($null -ne $val -and $val -ne "") { $walkResult[$i] = $val }
-                    } catch { break }
-                }
-            }
+            # Use Get-SnmpTable (GETNEXT walk with correct OID scope check).
+            # Il fallback precedente con 32 GET numerate era errato: i walk reali
+            # hanno indici OID piu' profondi (es. h3cEntityExtCpuUsage usa 1.3.6.1.4.1.25506.2.6.1.1.1.1.6.<slotId>
+            # dove <slotId> puo' essere 1, 2, 9, 10, 65536...). Un loop .1 .2 ...32
+            # non intercettava nulla su device reali come switch Comware.
+            $walkResult = Get-SnmpTable $ip $community $baseOid
             if ($walkResult -and $walkResult.Count -gt 0) {
                 $table = @{}
-                if ($walkResult -is [System.Collections.IDictionary]) {
-                    foreach ($k in $walkResult.Keys) {
-                        $v = $walkResult[$k]
-                        $strV = [string]$v
-                        if ($strV -match '^-?\d+(\.\d+)?$') {
-                            $table[[string]$k] = [double]$strV
-                        } else {
-                            $table[[string]$k] = $strV
-                        }
+                foreach ($fullOid in $walkResult.Keys) {
+                    # Estrai solo l'indice finale (tutto dopo baseOid.)
+                    $suffix = $fullOid.Substring($baseOid.Length).TrimStart('.')
+                    $v = $walkResult[$fullOid]
+                    $strV = [string]$v
+                    if ($strV -match '^-?\d+(\.\d+)?$') {
+                        $table[$suffix] = [double]$strV
+                    } else {
+                        $table[$suffix] = $strV
                     }
                 }
                 if ($table.Count -gt 0) {
@@ -1066,6 +1056,7 @@ function Poll-VendorOids([string]$ip, [string]$community, $vendorTargets) {
             }
         } catch {
             $tablesFail++
+            Write-Log "  [VENDOR] ${ip}: walk ${mname} failed: $($_.Exception.Message)" "DEBUG"
         }
     }
 
