@@ -398,6 +398,26 @@ Rimossi in v3.5.0 (con OK utente): Check-ForUpdate, Install-Update (5 metodi fal
 
 **Verifica HTTP**: entrambi gli ZIP raggiungibili `200 OK` via `https://<domain>/downloads/86NocConnector_v3.5.4*.zip`. Sintassi PowerShell bilanciata (braces/parens match 0 diff).
 
+### Connector v3.5.5 — Branding Pannello di Controllo (2026-04-23)
+**Richiesta utente** (chiude Task 2 del TODO v3.4.7): allineare il nome visualizzato in "Pannello di Controllo → Programmi e funzionalità" / "App e funzionalità" al nuovo branding ARGUS Connector.
+
+**Modifiche in `installer_gui.ps1`** → chiave registry `HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\86BIT_ArgusCenter_Connector` (`/reg:64`):
+- `DisplayName`: da `"86BIT ARGUS Center Connector"` → `"ARGUS Connector"` (coerente con tray, Menu Start, form UI)
+- `EstimatedSize`: ora calcolato dalla dimensione reale della cartella installata via `Get-ChildItem -Recurse | Measure-Object Length` / 1024 (era fisso a 1024 KB)
+- `DisplayIcon` → `86bit_logo.ico` (già presente dalla v3.5.0, invariato)
+- `Publisher` → "86BIT srl Unipersonale", `HelpLink` → `mailto:info@86bit.it`, `URLInfoAbout` → `https://www.86bit.it` (già presenti)
+- `NoModify` / `NoRepair` → 1 (l'entry mostra solo "Disinstalla" nel pannello)
+
+**Log installer** ora riporta: `Programmi e Funzionalita': OK (ARGUS Connector v3.5.5, <N> KB)` con dimensione effettiva.
+
+**File toccati**:
+- `/app/noc-connector/prg/src/installer_gui.ps1` (sezione registry uninstall)
+- `/app/noc-connector/prg/version.json` → 3.5.5
+- `/app/frontend/public/downloads/86NocConnector_v3.5.5.zip` (356 KB)
+- `/app/frontend/public/downloads/86NocConnector_v3.5.5_install.zip` (357 KB)
+
+**Verifica**: sintassi PowerShell bilanciata (braces 176/176, parens 618/618). ZIP `200 OK` su HTTPS pubblico.
+
 ### Time-Series Metrics + Syslog Viewer + SNMP Traps (2026-04-22 — iteration_59)
 **Richiesta utente**: "procedi con Sessione 2 SNMP Trap receiver, Sessione 3 Syslog receiver, Sessione 4 Time-series + grafici".
 

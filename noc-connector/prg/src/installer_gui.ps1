@@ -998,8 +998,17 @@ function Show-InstallerWizard {
             & reg delete "HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\$AppName" /f /reg:32 2>$null
             # Rimuovi chiave vecchia con stesso nome ma eventualmente scritta in Wow6432Node
             & reg delete $regPath /f /reg:32 2>$null
+            # Calcola dimensione reale installazione in KB per "EstimatedSize" (App e funzionalita')
+            $estimatedSizeKB = 1024
+            try {
+                $sizeBytes = (Get-ChildItem -LiteralPath $BaseDir -Recurse -Force -ErrorAction SilentlyContinue |
+                    Measure-Object -Property Length -Sum).Sum
+                if ($sizeBytes -and $sizeBytes -gt 0) {
+                    $estimatedSizeKB = [int]([Math]::Ceiling($sizeBytes / 1024))
+                }
+            } catch {}
             # Scrivi ESPLICITAMENTE nella 64-bit registry view (per visibilita' in "App e funzionalita'")
-            & reg add $regPath /v "DisplayName" /t REG_SZ /d "86BIT ARGUS Center Connector" /f /reg:64 2>$null
+            & reg add $regPath /v "DisplayName" /t REG_SZ /d "ARGUS Connector" /f /reg:64 2>$null
             & reg add $regPath /v "DisplayVersion" /t REG_SZ /d "$Version" /f /reg:64 2>$null
             & reg add $regPath /v "Publisher" /t REG_SZ /d "86BIT srl Unipersonale" /f /reg:64 2>$null
             & reg add $regPath /v "URLInfoAbout" /t REG_SZ /d "https://www.86bit.it" /f /reg:64 2>$null
@@ -1013,11 +1022,11 @@ function Show-InstallerWizard {
                 & reg add $regPath /v "DisplayIcon" /t REG_SZ /d "$iconRegPath" /f /reg:64 2>$null
             }
             & reg add $regPath /v "InstallDate" /t REG_SZ /d "$(Get-Date -Format 'yyyyMMdd')" /f /reg:64 2>$null
-            & reg add $regPath /v "EstimatedSize" /t REG_DWORD /d 1024 /f /reg:64 2>$null
+            & reg add $regPath /v "EstimatedSize" /t REG_DWORD /d $estimatedSizeKB /f /reg:64 2>$null
             # Verifica lettura: deve essere visibile in x64 registry
             $verifyRead = & reg query $regPath /v "DisplayName" /reg:64 2>$null
             if ($verifyRead -and ($verifyRead -match "DisplayName")) {
-                $txtStatus.AppendText("  Programmi e Funzionalita': OK (86BIT ARGUS Center Connector)`r`n")
+                $txtStatus.AppendText("  Programmi e Funzionalita': OK (ARGUS Connector v$Version, $estimatedSizeKB KB)`r`n")
             } else {
                 $txtStatus.AppendText("  Programmi e Funzionalita': scritta ma non verificata (controlla manualmente)`r`n")
             }
