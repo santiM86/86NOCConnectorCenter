@@ -133,9 +133,23 @@ try {
 }
 
 # ==================== READ CONFIG ====================
-$configPath = Join-Path $InstallDir "config.json"
+# Config.json e' salvato dall'installer in ProgramData (NON in InstallDir), perche'
+# il servizio gira come SYSTEM e ProgramData e' la posizione standard Windows
+# per file di configurazione scrivibili da un servizio.
+# InstallDir (C:\Program Files) e' read-only per SYSTEM in write senza UAC.
+$ProgramDataConfigDir = Join-Path $env:ProgramData "86NocConnector"
+$configPath = Join-Path $ProgramDataConfigDir "config.json"
+# Fallback legacy: alcune installazioni molto vecchie potrebbero avere il config
+# nella InstallDir stessa. Manteniamo retro-compat.
 if (-not (Test-Path $configPath)) {
-    Write-UpdateLog "Config non trovata in $configPath" "ERROR"
+    $legacyPath = Join-Path $InstallDir "config.json"
+    if (Test-Path $legacyPath) {
+        Write-UpdateLog "Config trovata in posizione legacy ($legacyPath) — uso quella" "INFO"
+        $configPath = $legacyPath
+    }
+}
+if (-not (Test-Path $configPath)) {
+    Write-UpdateLog "Config non trovata ne' in $ProgramDataConfigDir ne' in $InstallDir" "ERROR"
     exit 1
 }
 
