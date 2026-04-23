@@ -195,13 +195,14 @@ export function DeviceDetailPanel({ clientId, deviceIp, deviceData, onClose, onD
             <ConnectedEndpoints endpoints={detail.connected_endpoints} />
             <LldpSection neighbors={detail.lldp_neighbors} />
             <MacConnections connections={detail.mac_connections} />
-            {/* SNMP Configuration for managed devices */}
-            {clientId && detail.device?.device_ip && (
+            {/* SNMP Configuration for managed devices — uses managed_device id,
+                not device_poll_status which lacks the internal id and would 404 */}
+            {clientId && detail.managed && detail.device_id && (
               <div className="border-t border-[var(--border-subtle)] pt-3">
                 <SnmpConfigPanel
                   clientId={clientId}
-                  deviceId={detail.device?.id || detail.device?.device_id}
-                  device={detail.device}
+                  deviceId={detail.device_id}
+                  device={detail.managed_device || detail.device}
                 />
               </div>
             )}
