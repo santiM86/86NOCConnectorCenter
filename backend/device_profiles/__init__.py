@@ -190,22 +190,73 @@ PROFILES: list[dict[str, Any]] = [
         "capabilities": ["snmp_basic", "port_traffic", "stack_status", "comware_cli_ssh"],
     },
 
-    # ---------------- Generic UPS (Riello, XANTO, CyberPower, Eaton) ----------------
+    # ---------------- Xanto UPS (Serie 2017, scheda SNMP Megatec/NetAgent) ----------------
+    {
+        "key": "xanto_ups",
+        "vendor": "Xanto (Riello Group)",
+        "family": "ups",
+        "label": "UPS Xanto Serie 2017 (NetAgent/Megatec)",
+        "description": "UPS Xanto con scheda SNMP NetAgent/Megatec (Enterprise OID 3468). Legge lo stato vendor-specific via MIB 1.3.6.1.4.1.3468.* + battery/input/output via RFC 1628 UPS-MIB standard.",
+        "fingerprint": {
+            "sysobjectid_prefixes": [
+                "1.3.6.1.4.1.3468.",     # Megatec / NetAgent (schede SNMP Xanto, Tecnoware, alcune OEM italiane)
+            ],
+            "sysdescr_patterns": [r"xanto", r"ups.*xanto", r"netagent", r"megatec"],
+        },
+        "snmp": {"port": 161, "version": "v2c", "community_suggestion": "public", "timeout_seconds": 5, "retries": 2},
+        "web_console": {"port": 80, "scheme": "http", "path": "/", "notes": "Scheda NetAgent espone WebUI HTTP 80 (alcune versioni firmware recenti supportano HTTPS 443). Login default: admin/admin. La WebUI permette gestione carichi, shutdown schedule, log eventi."},
+        "oids": {
+            **COMMON_OIDS,
+            # Vendor-specific (Megatec/NetAgent enterprise MIB)
+            "upsStatus":                   "1.3.6.1.4.1.3468.1.1.1.0",   # Stato generale UPS (specifico Xanto/Megatec)
+            # RFC 1628 UPS-MIB — batteria
+            "upsBatteryStatus":            "1.3.6.1.2.1.33.1.2.1.0",      # 1=unknown, 2=normal, 3=low, 4=depleted
+            "upsSecondsOnBattery":         "1.3.6.1.2.1.33.1.2.2.0",      # s trascorsi in modalità batteria
+            "upsEstimatedMinutesRemaining": "1.3.6.1.2.1.33.1.2.3.0",     # min autonomia stimata
+            "upsEstimatedChargeRemaining": "1.3.6.1.2.1.33.1.2.4.0",      # % carica residua
+            "upsBatteryVoltage":           "1.3.6.1.2.1.33.1.2.5.0",      # dV (decivolt)
+            "upsBatteryTemperature":       "1.3.6.1.2.1.33.1.2.7.0",      # °C temperatura batterie
+            # RFC 1628 UPS-MIB — input (fase 1)
+            "upsInputLineBads":            "1.3.6.1.2.1.33.1.3.1.0",
+            "upsInputVoltage":             "1.3.6.1.2.1.33.1.3.3.1.3.1",  # V tensione ingresso fase 1
+            "upsInputFrequency":           "1.3.6.1.2.1.33.1.3.3.1.2.1",  # dHz frequenza ingresso fase 1
+            # RFC 1628 UPS-MIB — output (fase 1)
+            "upsOutputSource":             "1.3.6.1.2.1.33.1.4.1.0",      # 1=other, 2=none, 3=normal, 4=bypass, 5=battery, 6=booster, 7=reducer
+            "upsOutputVoltage":            "1.3.6.1.2.1.33.1.4.4.1.2.1",  # V tensione uscita fase 1
+            "upsOutputPercentLoad":        "1.3.6.1.2.1.33.1.4.4.1.5.1",  # % carico uscita fase 1
+            # RFC 1628 UPS-MIB — identificazione (se presente)
+            "upsIdentManufacturer":        "1.3.6.1.2.1.33.1.1.1.0",
+            "upsIdentModel":               "1.3.6.1.2.1.33.1.1.2.0",
+            "upsIdentUpsFirmware":         "1.3.6.1.2.1.33.1.1.3.0",
+            "upsAlarmsPresent":            "1.3.6.1.2.1.33.1.6.1.0",
+        },
+        "thresholds": {
+            "cpu_warn_pct": 70, "cpu_crit_pct": 90,
+            "temp_warn_c": 40, "temp_crit_c": 50,           # Batterie UPS soffrono >50°C
+            "battery_pct_warn": 30, "battery_pct_crit": 15, # Scarica batteria critica
+            "runtime_min_warn": 15, "runtime_min_crit": 5,
+            "load_pct_warn": 70, "load_pct_crit": 90,
+        },
+        "polling_interval_seconds": 60,
+        "capabilities": ["snmp_basic", "battery_monitoring", "input_voltage", "output_voltage", "rfc1628_ups_mib", "netagent_webui", "megatec_vendor_oid"],
+    },
+
+    # ---------------- Generic UPS (Riello, CyberPower, Eaton, Socomec) ----------------
     {
         "key": "generic_ups",
-        "vendor": "Riello / XANTO / CyberPower / Eaton",
+        "vendor": "Riello / CyberPower / Eaton",
         "family": "ups",
         "label": "UPS generico (RFC 1628 UPS-MIB)",
-        "description": "UPS generici non-APC con RFC 1628 UPS-MIB standard (XANTO/Riello, CyberPower, Eaton, Socomec).",
+        "description": "UPS generici non-APC con RFC 1628 UPS-MIB standard (Riello enterprise, CyberPower, Eaton, Socomec, MGE). Per Xanto con scheda NetAgent usare il profilo dedicato xanto_ups.",
         "fingerprint": {
             "sysobjectid_prefixes": [
                 "1.3.6.1.4.1.3808.",    # CyberPower
                 "1.3.6.1.4.1.534.",     # Eaton/Powerware
-                "1.3.6.1.4.1.4555.",    # Riello / XANTO
+                "1.3.6.1.4.1.4555.",    # Riello (enterprise diretto, non NetAgent)
                 "1.3.6.1.4.1.705.",     # MGE UPS Systems
                 "1.3.6.1.4.1.4329.",    # Socomec
             ],
-            "sysdescr_patterns": [r"xanto", r"riello", r"cyberpower", r"eaton.*ups", r"powerware", r"socomec", r"mge\s*ups"],
+            "sysdescr_patterns": [r"riello", r"cyberpower", r"eaton.*ups", r"powerware", r"socomec", r"mge\s*ups"],
         },
         "snmp": {"port": 161, "version": "v2c", "community_suggestion": "public", "timeout_seconds": 5, "retries": 2},
         "web_console": {"port": 443, "scheme": "https", "path": "/", "notes": "UPS moderni usano HTTPS 443 (alcuni vecchi solo HTTP 80). XANTO/Riello di default: HTTPS 443, login admin/admin."},

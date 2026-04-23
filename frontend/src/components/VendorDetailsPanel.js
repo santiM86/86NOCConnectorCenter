@@ -331,7 +331,7 @@ export function VendorDetailsPanel({ deviceIp }) {
 
       {pk === "synology_dsm" ? (
         <SynologyPanel vm={vm} thresholds={thresholds} />
-      ) : pk === "apc_ups" || pk === "generic_ups" ? (
+      ) : pk === "apc_ups" || pk === "generic_ups" || pk === "xanto_ups" ? (
         <UpsPanel vm={vm} thresholds={thresholds} />
       ) : pk === "fortinet_fortigate" ? (
         <FortinetPanel vm={vm} />

@@ -1284,9 +1284,16 @@ function DeviceProfileModal({ device, onClose, onApplied }) {
         // Auto-suggest by device_type if not already configured
         if (!device.profile_key) {
           const t = (device.device_type || "").toLowerCase();
+          const nm = (device.name || "").toLowerCase();
           const suggest = (r.data?.profiles || []).find(p => {
             if (t === "nas") return p.key === "synology_dsm";
-            if (t === "ups") return p.key === "generic_ups";
+            if (t === "ups") {
+              // Heuristic: se il nome contiene "xanto" usa il profilo dedicato
+              if (nm.includes("xanto") || nm.includes("netagent") || nm.includes("megatec")) {
+                return p.key === "xanto_ups";
+              }
+              return p.key === "generic_ups";
+            }
             if (t === "switch") return p.key === "hpe_comware";
             if (t === "ilo" || t === "server_oob" || t === "server") return p.key === "hpe_ilo";
             if (t === "firewall") return p.key === "fortinet_fortigate";
