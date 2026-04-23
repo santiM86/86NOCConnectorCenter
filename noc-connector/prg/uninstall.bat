@@ -30,6 +30,11 @@ nssm.exe remove 86NocConnectorService confirm >nul 2>&1
 REM Ferma Scheduled Task se esiste
 schtasks /End /TN "86NocConnector" >nul 2>&1
 schtasks /Delete /TN "86NocConnector" /F >nul 2>&1
+REM Rimuovi Scheduled Task v3.5.0+ Microsoft-native auto-update
+schtasks /End /TN "\86BIT\ArgusConnectorUpdater" >nul 2>&1
+schtasks /Delete /TN "\86BIT\ArgusConnectorUpdater" /F >nul 2>&1
+REM Rimuovi anche il folder task parent se vuoto
+schtasks /Delete /TN "\86BIT" /F >nul 2>&1
 
 REM Termina processi PowerShell del connettore
 echo Terminazione processi connettore...

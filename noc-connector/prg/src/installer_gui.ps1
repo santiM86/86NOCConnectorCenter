@@ -936,6 +936,73 @@ function Show-InstallerWizard {
         $form.Refresh()
         Start-Sleep -Milliseconds 500
         
+        # === Step 3b: Scheduled Task per auto-update (pattern Microsoft-native v3.5.0+) ===
+        $txtStatus.AppendText("> Creazione Scheduled Task auto-update...`r`n")
+        $form.Refresh()
+        try {
+            $taskPath = "\86BIT\"
+            $taskName = "ArgusConnectorUpdater"
+            $fullTaskName = "$taskPath$taskName"
+            $updateScriptPath = Join-Path $BaseDir "src\update_check.ps1"
+            
+            if (-not (Test-Path $updateScriptPath)) {
+                throw "update_check.ps1 non trovato in $updateScriptPath"
+            }
+            
+            # Rimuovi task preesistente (clean state)
+            & schtasks.exe /Delete /TN $fullTaskName /F 2>$null | Out-Null
+            # Rimuovi anche vecchi task obsoleti di versioni precedenti
+            & schtasks.exe /Delete /TN "\86NocConnector\UpdateChecker" /F 2>$null | Out-Null
+            
+            # Crea il task nuovo: ogni 5 minuti, SYSTEM, RunLevel highest
+            $taskAction = "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$updateScriptPath`" -InstallDir `"$BaseDir`""
+            & schtasks.exe /Create `
+                /TN $fullTaskName `
+                /SC MINUTE /MO 5 `
+                /TR "$taskAction" `
+                /RU "SYSTEM" `
+                /RL HIGHEST `
+                /F 2>&1 | Out-Null
+            
+            if ($LASTEXITCODE -ne 0) {
+                throw "schtasks /Create fallito (exit $LASTEXITCODE)"
+            }
+            
+            # Configura opzioni avanzate via XML update (Microsoft pattern)
+            # - Avvia al boot (se saltato)
+            # - Non blocca se in batteria (serverside)
+            # - Timeout 15 min per evitare stuck
+            $taskXml = & schtasks.exe /Query /TN $fullTaskName /XML 2>$null
+            if ($taskXml) {
+                $xml = [xml]($taskXml -join "`n")
+                $ns = New-Object System.Xml.XmlNamespaceManager($xml.NameTable)
+                $ns.AddNamespace("t", "http://schemas.microsoft.com/windows/2004/02/mit/task")
+                # StartWhenAvailable = true
+                $settings = $xml.SelectSingleNode("//t:Settings", $ns)
+                if ($settings) {
+                    $swa = $xml.CreateElement("StartWhenAvailable", "http://schemas.microsoft.com/windows/2004/02/mit/task")
+                    $swa.InnerText = "true"
+                    # Evita duplicati
+                    $existing = $settings.SelectSingleNode("t:StartWhenAvailable", $ns)
+                    if (-not $existing) { $settings.AppendChild($swa) | Out-Null }
+                    $etl = $settings.SelectSingleNode("t:ExecutionTimeLimit", $ns)
+                    if ($etl) { $etl.InnerText = "PT15M" }
+                    $tmpXml = Join-Path $env:TEMP "task_$taskName.xml"
+                    $xml.Save($tmpXml)
+                    & schtasks.exe /Delete /TN $fullTaskName /F 2>$null | Out-Null
+                    & schtasks.exe /Create /TN $fullTaskName /XML $tmpXml /RU "SYSTEM" /RL HIGHEST /F 2>&1 | Out-Null
+                    Remove-Item $tmpXml -Force -ErrorAction SilentlyContinue
+                }
+            }
+            
+            $txtStatus.AppendText("  Scheduled Task: OK ($fullTaskName ogni 5 min)`r`n")
+        } catch {
+            $txtStatus.AppendText("  Scheduled Task: ERRORE - $($_.Exception.Message)`r`n")
+            $txtStatus.AppendText("  (auto-update non funzionera'; configura manualmente via schtasks.exe)`r`n")
+        }
+        $form.Refresh()
+        Start-Sleep -Milliseconds 500
+        
         # Step 4: Test
         $txtStatus.AppendText("> Test connessione...`r`n")
         $progressBar.Value = 80

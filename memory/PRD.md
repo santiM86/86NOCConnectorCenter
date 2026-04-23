@@ -348,6 +348,20 @@ Il record `db.connector_updates` deve contenere: `version`, `filename`, `file_si
 
 Bug storico (2026-04-23): pubblicazione v3.4.6/v3.4.7 fatta solo in `/app/frontend/public/downloads/` → auto-update endpoint restituiva 404 ai connector client.
 
+## 🏗️ ARCHITETTURA AUTO-UPDATE (v3.5.0 reset completo 2026-04-23)
+**Pattern enterprise Microsoft-native** — eliminato il precedente design fragile a 5 metodi fallback PowerShell.
+
+- **Task**: `\86BIT\ArgusConnectorUpdater` (Windows Task Scheduler nativo)
+- **Trigger**: ogni 5 minuti
+- **Principal**: NT AUTHORITY\SYSTEM (RunLevel HIGHEST)
+- **Azione**: `powershell.exe -File C:\Program Files\86NocConnector\src\update_check.ps1`
+- **Perche' non bloccato da ASR/WDAC/SmartScreen**: Task Scheduler e' host firstparty Microsoft, PowerShell lanciato da lui e' sempre trusted.
+- **File unico**: `prg/src/update_check.ps1` (~300 righe) contiene TUTTA la logica update (check, download, extract, stop service, copy, start, rollback).
+- **Log centralizzato**: `%ProgramData%\86NocConnector\update.log` con rotation 2MB.
+- **Migrazione**: da v3.4.x si usa una sola volta `bootstrap_to_v350.cmd` (incluso nel ZIP installer) — poi tutto automatico per sempre.
+
+Rimossi in v3.5.0 (con OK utente): Check-ForUpdate, Install-Update (5 metodi fallback), Send-UpdateProgress, Start-UpdateCheckLoop, updater.ps1, updater.cmd, force-update-to-v3.4.x.cmd. Net cleanup: 500+ righe.
+
 ## Backlog / Future
 - P2: Multi-tenant + White-label SaaS (workspace isolation)
 - P2: LDAP/Active Directory integration
