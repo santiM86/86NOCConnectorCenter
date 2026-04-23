@@ -9,6 +9,47 @@
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
+# ================================================================
+# ADMIN CHECK + AUTO-ELEVATION
+# ================================================================
+# Se non siamo admin, rilanciamo lo script via "runas" (triggera UAC prompt)
+# e usciamo dal processo corrente. Il nuovo processo girera' con privilegi admin.
+# ================================================================
+$currentIdentity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+$currentPrincipal = New-Object System.Security.Principal.WindowsPrincipal($currentIdentity)
+$isAdmin = $currentPrincipal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
+
+if (-not $isAdmin) {
+    try {
+        $scriptPath = $MyInvocation.MyCommand.Path
+        # Mostra un messaggio user-friendly (solo console, non blocca il flow)
+        Write-Host "[INFO] Elevazione a privilegi amministratore richiesta. Accetta il prompt UAC..." -ForegroundColor Yellow
+        
+        # Rilancia lo script come admin
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = "powershell.exe"
+        $psi.Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$scriptPath`""
+        $psi.Verb = "runas"    # questo triggera UAC
+        $psi.UseShellExecute = $true
+        [System.Diagnostics.Process]::Start($psi) | Out-Null
+        exit 0
+    } catch {
+        # L'utente ha rifiutato UAC o altro errore
+        [System.Windows.Forms.MessageBox]::Show(
+            "Questa installazione richiede privilegi amministratore.`n`n" +
+            "Per favore lancia questo file:`n" +
+            "  - Tasto destro sul file 'Installa 86NocConnector.vbs'`n" +
+            "  - Seleziona 'Esegui come amministratore'`n" +
+            "  - Accetta il prompt UAC`n`n" +
+            "Errore tecnico: $($_.Exception.Message)",
+            "86NocConnector - Privilegi insufficienti",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Warning
+        ) | Out-Null
+        exit 1
+    }
+}
+
 $AppName = "86NocConnector"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $BaseDir = Split-Path -Parent $ScriptDir
