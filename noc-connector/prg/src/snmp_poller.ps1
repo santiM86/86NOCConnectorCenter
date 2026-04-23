@@ -14,15 +14,26 @@
 
 # ==================== BER / ASN.1 ENCODING ====================
 
+# CRITICAL FIX v3.5.9: PowerShell 5.1 pipeline unrolling bug.
+# ConvertTo-BerLength ritorna un [byte[]] che, quando contiene UN solo elemento,
+# viene "spacchettato" da PowerShell durante return → il chiamante riceve un singolo
+# [byte] invece dell'array. Questo faceva crashare AddRange($lenBytes) con errore
+# "Impossibile convertire 'System.Byte' in 'IEnumerable`1[Byte]'" per TUTTI i
+# pacchetti SNMP con payload < 128 byte (cioe' praticamente TUTTE le GET singole).
+#
+# Fix: operator "," unario davanti al return forza PowerShell a preservare l'array
+# anche se di 1 elemento. Il chiamante riceve sempre [byte[]].
+# Pattern standard Microsoft documentato: https://learn.microsoft.com/en-us/powershell/scripting/learn/deep-dives/everything-about-arrays#return-a-single-item-array
+
 function ConvertTo-BerLength([int]$length) {
     if ($length -lt 128) {
-        return [byte[]]@($length)
+        return ,([byte[]]@([byte]$length))
     } elseif ($length -lt 256) {
-        return [byte[]]@(0x81, $length)
+        return ,([byte[]]@(0x81, [byte]$length))
     } else {
         $hi = [byte](($length -shr 8) -band 0xFF)
         $lo = [byte]($length -band 0xFF)
-        return [byte[]]@(0x82, $hi, $lo)
+        return ,([byte[]]@(0x82, $hi, $lo))
     }
 }
 
@@ -43,7 +54,7 @@ function ConvertTo-BerInteger([int]$value) {
     $lenBytes = ConvertTo-BerLength $bytes.Count
     $result = [System.Collections.Generic.List[byte]]::new()
     $result.Add(0x02)
-    $result.AddRange($lenBytes)
+    $result.AddRange([byte[]]@($lenBytes))
     $result.AddRange($bytes)
     return [byte[]]$result.ToArray()
 }
@@ -53,7 +64,7 @@ function ConvertTo-BerOctetString([string]$text) {
     $lenBytes = ConvertTo-BerLength $data.Length
     $result = [System.Collections.Generic.List[byte]]::new()
     $result.Add(0x04)
-    $result.AddRange($lenBytes)
+    $result.AddRange([byte[]]@($lenBytes))
     $result.AddRange($data)
     return [byte[]]$result.ToArray()
 }
@@ -80,7 +91,7 @@ function ConvertTo-BerOID([string]$oidStr) {
     $lenBytes = ConvertTo-BerLength $bytes.Count
     $result = [System.Collections.Generic.List[byte]]::new()
     $result.Add(0x06)
-    $result.AddRange($lenBytes)
+    $result.AddRange([byte[]]@($lenBytes))
     $result.AddRange($bytes)
     return [byte[]]$result.ToArray()
 }
@@ -93,7 +104,7 @@ function ConvertTo-BerSequence([byte[]]$content) {
     $lenBytes = ConvertTo-BerLength $content.Length
     $result = [System.Collections.Generic.List[byte]]::new()
     $result.Add(0x30)
-    $result.AddRange($lenBytes)
+    $result.AddRange([byte[]]@($lenBytes))
     $result.AddRange($content)
     return [byte[]]$result.ToArray()
 }
@@ -820,7 +831,7 @@ function Send-SnmpGet([string]$target, [string]$community, [string]$oid, [int]$p
     $pduLenBytes = ConvertTo-BerLength $pduContent.Length
     $pdu = [System.Collections.Generic.List[byte]]::new()
     $pdu.Add($pduTag)
-    $pdu.AddRange($pduLenBytes)
+    $pdu.AddRange([byte[]]@($pduLenBytes))
     $pdu.AddRange($pduContent)
 
     # Build message
