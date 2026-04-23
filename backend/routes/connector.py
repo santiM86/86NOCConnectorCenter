@@ -1304,6 +1304,9 @@ async def connector_device_report(request: Request):
             "open_ports": dev.get("open_ports", None),
             "http_details": dev.get("http_details", None),
             "vendor_metrics": dev.get("vendor_metrics", None),
+            "entity_mib": dev.get("entity_mib", None),
+            "primary_mac": dev.get("primary_mac", None),
+            "if_aliases": dev.get("if_aliases", None),
             "last_poll": dev.get("poll_timestamp", now_iso),
             "updated_at": now_iso
         }

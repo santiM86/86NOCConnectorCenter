@@ -7,7 +7,7 @@ import {
   ArrowLeft, HardDrives, Globe, Printer, Database, ShieldCheck,
   Lightning, WifiHigh, WifiSlash, PlugsConnected, CaretDown,
   CheckCircle, Warning, ArrowClockwise, Bell, ChartLine, Monitor, Cpu,
-  Plus, Trash, Lock, MagnifyingGlass,
+  Plus, Trash, Lock, MagnifyingGlass, Info,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -18,6 +18,7 @@ import {
 } from "recharts";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import VaultPage from "./VaultPage";
+import DeviceInfoCard from "@/components/DeviceInfoCard";
 import { canOpenWebConsole, defaultWebPort } from "@/components/WebConsole";
 import { useWebConsoleTabs } from "@/components/WebConsoleTabs";
 import ILoLiveMetrics from "@/components/ILoLiveMetrics";
@@ -901,6 +902,7 @@ function DeviceGroup({ label, icon: Icon, devices, color }) {
 function DevicesTab({ devices, clientId, onRefresh }) {
   const [showAdd, setShowAdd] = useState(false);
   const [profileTarget, setProfileTarget] = useState(null);
+  const [infoTarget, setInfoTarget] = useState(null);
   const [saving, setSaving] = useState(false);
   const webConsole = useWebConsoleTabs();
   const emptyForm = {
@@ -1034,6 +1036,14 @@ function DevicesTab({ devices, clientId, onRefresh }) {
                           <Monitor size={13} />
                         </button>
                       )}
+                      <button
+                        onClick={() => setInfoTarget(d)}
+                        className="p-1 rounded hover:bg-cyan-500/10 text-cyan-400 transition-colors"
+                        title="Scheda dispositivo completa (anagrafica, firmware, lifecycle)"
+                        data-testid={`device-info-${d.ip_address}`}
+                      >
+                        <Info size={13} />
+                      </button>
                       <button
                         onClick={() => navigate(`/device-metrics?ip=${d.ip_address}`)}
                         className="p-1 rounded hover:bg-indigo-500/10 text-indigo-400 transition-colors"
@@ -1235,6 +1245,21 @@ function DevicesTab({ devices, clientId, onRefresh }) {
           onClose={() => setProfileTarget(null)}
           onApplied={() => { setProfileTarget(null); onRefresh(); }}
         />
+      )}
+
+      {/* Device Info Card Modal */}
+      {infoTarget && (
+        <Dialog open={!!infoTarget} onOpenChange={(o) => !o && setInfoTarget(null)}>
+          <DialogContent className="bg-[var(--bg-card)] border-[var(--bg-border)] max-w-6xl max-h-[90vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2 text-[var(--text-primary)]">
+                <Info size={18} className="text-cyan-400" />
+                Scheda Dispositivo — {infoTarget.name || infoTarget.ip_address}
+              </DialogTitle>
+            </DialogHeader>
+            <DeviceInfoCard deviceIp={infoTarget.ip_address} onClose={() => setInfoTarget(null)} />
+          </DialogContent>
+        </Dialog>
       )}
     </div>
   );

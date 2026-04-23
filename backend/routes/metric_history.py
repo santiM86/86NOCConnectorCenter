@@ -92,6 +92,9 @@ async def get_metrics_history(
 ):
     """Returns aggregated time-series for a metric.
     period: 1h | 6h | 24h | 7d | 30d
+    Aggrega da DUE collection:
+      - metric_history (nuova, 30gg TTL, granulare per-metric)
+      - device_metrics_history (legacy, 24h, un doc per poll con cpu_usage/memory_usage/temperature/ping_avg/active_sessions/vpn_throughput)
     """
     delta_map = {"1h": (1, 60), "6h": (6, 300), "24h": (24, 900), "7d": (168, 3600), "30d": (720, 14400)}
     if period not in delta_map:
@@ -99,31 +102,75 @@ async def get_metrics_history(
     hours, bucket_sec = delta_map[period]
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
 
-    pipeline = [
-        {"$match": {"device_ip": device_ip, "metric": metric, "ts": {"$gte": cutoff}}},
-        {"$group": {
-            "_id": {
-                "$toDate": {
-                    "$subtract": [
-                        {"$toLong": "$ts"},
-                        {"$mod": [{"$toLong": "$ts"}, bucket_sec * 1000]}
-                    ]
-                }
-            },
-            "avg": {"$avg": "$value"},
-            "min": {"$min": "$value"},
-            "max": {"$max": "$value"},
-            "count": {"$sum": 1},
-        }},
-        {"$sort": {"_id": 1}},
-        {"$limit": 500},
-    ]
+    # Legacy fallback: mapping metric name -> field name in device_metrics_history
+    # il doc legacy ha `timestamp` come ISO-string, non `ts`. Convertiamo on-the-fly.
+    legacy_field_map = {
+        "cpu": "cpu_usage",
+        "memory": "memory_usage",
+        "temperature": "temperature",
+        "response_ms": "ping_avg",
+        "sessions": "active_sessions",
+        "vpn_throughput": "vpn_throughput",
+        "ping_avg": "ping_avg",
+        "ping_jitter": "ping_jitter",
+        "packet_loss": "packet_loss",
+    }
+
+    # Bucket points raccolti da entrambe le collection
+    buckets: dict = {}
+
+    def _accumulate(ts_dt, val):
+        if val is None or ts_dt is None:
+            return
+        try:
+            v = float(val)
+        except (TypeError, ValueError):
+            return
+        # Align to bucket start
+        epoch_ms = int(ts_dt.replace(tzinfo=timezone.utc).timestamp() * 1000) if ts_dt.tzinfo is None else int(ts_dt.timestamp() * 1000)
+        bucket_ms = epoch_ms - (epoch_ms % (bucket_sec * 1000))
+        b = buckets.setdefault(bucket_ms, {"sum": 0.0, "count": 0, "min": v, "max": v})
+        b["sum"] += v
+        b["count"] += 1
+        if v < b["min"]:
+            b["min"] = v
+        if v > b["max"]:
+            b["max"] = v
+
+    # Source 1: new metric_history
+    async for d in db.metric_history.find(
+        {"device_ip": device_ip, "metric": metric, "ts": {"$gte": cutoff}},
+        {"_id": 0, "ts": 1, "value": 1},
+    ):
+        _accumulate(d.get("ts"), d.get("value"))
+
+    # Source 2: legacy device_metrics_history (timestamp è ISO string)
+    legacy_field = legacy_field_map.get(metric)
+    if legacy_field:
+        cutoff_iso = cutoff.isoformat()
+        async for d in db.device_metrics_history.find(
+            {"device_ip": device_ip, "timestamp": {"$gte": cutoff_iso}},
+            {"_id": 0, "timestamp": 1, legacy_field: 1},
+        ):
+            val = d.get(legacy_field)
+            ts_s = d.get("timestamp")
+            if val is None or not ts_s:
+                continue
+            try:
+                ts_dt = datetime.fromisoformat(ts_s.replace("Z", "+00:00"))
+            except Exception:
+                continue
+            _accumulate(ts_dt, val)
+
+    # Build response ordered
     rows = []
-    async for r in db.metric_history.aggregate(pipeline):
+    for bucket_ms in sorted(buckets.keys())[:500]:
+        b = buckets[bucket_ms]
         rows.append({
-            "ts": r["_id"].isoformat() if hasattr(r["_id"], "isoformat") else str(r["_id"]),
-            "avg": round(r["avg"], 2) if r.get("avg") is not None else None,
-            "min": round(r["min"], 2) if r.get("min") is not None else None,
-            "max": round(r["max"], 2) if r.get("max") is not None else None,
+            "ts": datetime.fromtimestamp(bucket_ms / 1000, tz=timezone.utc).isoformat(),
+            "avg": round(b["sum"] / b["count"], 2) if b["count"] > 0 else None,
+            "min": round(b["min"], 2),
+            "max": round(b["max"], 2),
         })
+
     return {"device_ip": device_ip, "metric": metric, "period": period, "points": rows, "count": len(rows)}

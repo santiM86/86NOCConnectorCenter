@@ -332,6 +332,8 @@ from routes.metric_history import router as metric_history_router, ensure_index 
 app.include_router(metric_history_router)
 from routes.syslog_trap import router as syslog_trap_router, _ensure_indexes as ensure_syslog_idx
 app.include_router(syslog_trap_router)
+from routes.device_info_card import router as device_info_card_router
+app.include_router(device_info_card_router)
 
 # Include enterprise routes
 from enterprise_routes import create_enterprise_router

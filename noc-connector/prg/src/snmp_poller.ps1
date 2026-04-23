@@ -899,6 +899,121 @@ $script:OID_hh3cCpuUsage   = "1.3.6.1.4.1.25506.2.6.1.1.1.1.6"
 $script:OID_hh3cMemUsage    = "1.3.6.1.4.1.25506.2.6.1.1.1.1.8"
 $script:OID_hh3cTemperature = "1.3.6.1.4.1.25506.2.6.1.1.1.1.12"
 
+# ==================== ENTITY-MIB Universal (RFC 4133) ====================
+# 95% dei device enterprise espongono questa MIB: vendor/model/serial/firmware STANDARD
+$script:OID_entPhysicalDescr        = "1.3.6.1.2.1.47.1.1.1.1.2"
+$script:OID_entPhysicalMfgName      = "1.3.6.1.2.1.47.1.1.1.1.12"
+$script:OID_entPhysicalModelName    = "1.3.6.1.2.1.47.1.1.1.1.13"
+$script:OID_entPhysicalSerialNum    = "1.3.6.1.2.1.47.1.1.1.1.11"
+$script:OID_entPhysicalSoftwareRev  = "1.3.6.1.2.1.47.1.1.1.1.10"
+$script:OID_entPhysicalHardwareRev  = "1.3.6.1.2.1.47.1.1.1.1.8"
+$script:OID_entPhysicalFirmwareRev  = "1.3.6.1.2.1.47.1.1.1.1.9"
+$script:OID_entPhysicalAssetID      = "1.3.6.1.2.1.47.1.1.1.1.15"
+$script:OID_entPhysicalClass        = "1.3.6.1.2.1.47.1.1.1.1.5"   # 3=chassis
+$script:OID_ifPhysAddress           = "1.3.6.1.2.1.2.2.1.6"        # MAC per interfaccia
+$script:OID_ipAdEntIfIndex          = "1.3.6.1.2.1.4.20.1.2"       # IP -> ifIndex
+
+function Poll-EntityMib([string]$ip, [string]$community) {
+    # Returns the chassis-level info: vendor/model/serial/firmware/hw_rev/asset_tag.
+    # Walks entPhysicalClass and picks the first entry with class=3 (chassis).
+    $result = @{
+        vendor = $null; model = $null; serial_number = $null
+        firmware = $null; hardware_rev = $null; asset_tag = $null
+        physical_descr = $null; source = "entity-mib"
+    }
+    try {
+        $classes = Get-SnmpTable $ip $community $script:OID_entPhysicalClass
+        if (-not $classes -or $classes.Count -eq 0) { return $null }
+        # Find chassis entry (class=3). If none, fallback to first entry.
+        $chassisIdx = $null
+        foreach ($oidKey in $classes.Keys) {
+            $idxSuffix = ($oidKey -split '\.')[-1]
+            try {
+                if ([int]$classes[$oidKey] -eq 3) { $chassisIdx = $idxSuffix; break }
+            } catch {}
+        }
+        if (-not $chassisIdx) {
+            $firstKey = @($classes.Keys)[0]
+            $chassisIdx = ($firstKey -split '\.')[-1]
+        }
+        $result.vendor         = Get-SnmpValue $ip $community "$($script:OID_entPhysicalMfgName).$chassisIdx"
+        $result.model          = Get-SnmpValue $ip $community "$($script:OID_entPhysicalModelName).$chassisIdx"
+        $result.serial_number  = Get-SnmpValue $ip $community "$($script:OID_entPhysicalSerialNum).$chassisIdx"
+        $result.firmware       = Get-SnmpValue $ip $community "$($script:OID_entPhysicalSoftwareRev).$chassisIdx"
+        if (-not $result.firmware) {
+            $result.firmware = Get-SnmpValue $ip $community "$($script:OID_entPhysicalFirmwareRev).$chassisIdx"
+        }
+        $result.hardware_rev   = Get-SnmpValue $ip $community "$($script:OID_entPhysicalHardwareRev).$chassisIdx"
+        $result.asset_tag      = Get-SnmpValue $ip $community "$($script:OID_entPhysicalAssetID).$chassisIdx"
+        $result.physical_descr = Get-SnmpValue $ip $community "$($script:OID_entPhysicalDescr).$chassisIdx"
+        # Strip empty strings
+        foreach ($k in @($result.Keys)) {
+            if ($result[$k] -is [string] -and $result[$k].Trim() -eq "") { $result[$k] = $null }
+        }
+        # Only return if we actually got something useful
+        if ($result.vendor -or $result.model -or $result.serial_number -or $result.firmware) {
+            return $result
+        }
+        return $null
+    } catch {
+        return $null
+    }
+}
+
+function Get-PrimaryMac([string]$ip, [string]$community) {
+    # Trova il MAC primario del device: ifIndex dell'IP -> ifPhysAddress di quel ifIndex
+    try {
+        # Walk ipAdEntIfIndex -> ritorna ifIndex per ogni IP configurato
+        $ipTable = Get-SnmpTable $ip $community $script:OID_ipAdEntIfIndex
+        $targetIfIndex = $null
+        foreach ($oidKey in $ipTable.Keys) {
+            # OID suffix = IP in formato a.b.c.d
+            if ($oidKey -match "\.$([regex]::Escape($ip))$") {
+                $targetIfIndex = $ipTable[$oidKey]
+                break
+            }
+        }
+        if (-not $targetIfIndex) { return $null }
+        # Read ifPhysAddress for that ifIndex
+        $macRaw = Get-SnmpValue $ip $community "$($script:OID_ifPhysAddress).$targetIfIndex"
+        if (-not $macRaw) { return $null }
+        # Convert bytes to MAC format XX:XX:XX:XX:XX:XX
+        if ($macRaw -is [byte[]]) {
+            if ($macRaw.Length -eq 6) {
+                return (($macRaw | ForEach-Object { "{0:X2}" -f $_ }) -join ":")
+            }
+            return $null
+        }
+        # Already a string
+        $macStr = "$macRaw".Trim()
+        if ($macStr -match "^([0-9A-Fa-f]{2}[:\s]){5}[0-9A-Fa-f]{2}$") {
+            return ($macStr -replace "\s+", ":").ToUpper()
+        }
+        # Hex-string 0x001122334455
+        if ($macStr -match "^(0x)?([0-9A-Fa-f]{12})$") {
+            $hex = $Matches[2]
+            return (0..5 | ForEach-Object { $hex.Substring($_*2, 2) }) -join ":" | ForEach-Object { $_.ToUpper() }
+        }
+        return $null
+    } catch {
+        return $null
+    }
+}
+
+function Poll-IfAliases([string]$ip, [string]$community) {
+    # Return hashtable ifIndex -> alias (nome custom porta configurato dall'admin)
+    $aliases = @{}
+    try {
+        $results = Get-SnmpTable $ip $community $script:OID_ifAlias
+        foreach ($oidKey in $results.Keys) {
+            $ifIndex = ($oidKey -split '\.')[-1]
+            $val = "$($results[$oidKey])".Trim()
+            if ($val -and $val -ne "") { $aliases[$ifIndex] = $val }
+        }
+    } catch {}
+    return $aliases
+}
+
 # HPE ILO / ProLiant OIDs (CPQHLTH-MIB)
 $script:OID_cpqHealth       = "1.3.6.1.4.1.232.6.1.3.0"           # cpqHeMibCondition (2=ok,3=degraded,4=failed)
 $script:OID_cpqTempTable    = "1.3.6.1.4.1.232.6.2.6.8.1"         # cpqHeTemperatureTable
@@ -1205,7 +1320,32 @@ function Poll-ExtendedMetrics([string]$ip, [string]$community) {
             }
         } catch {}
     }
-    
+
+    # --- UNIVERSAL: ENTITY-MIB standard (vendor/model/serial/firmware) ---
+    try {
+        $entity = Poll-EntityMib $ip $community
+        if ($entity) {
+            $metrics.entity_mib = $entity
+            Write-Log "  ENTITY-MIB $ip : vendor=$($entity.vendor) model=$($entity.model) fw=$($entity.firmware)" "DEBUG"
+        }
+    } catch {}
+
+    # --- UNIVERSAL: MAC primario del device ---
+    try {
+        $primaryMac = Get-PrimaryMac $ip $community
+        if ($primaryMac) {
+            $metrics.primary_mac = $primaryMac
+        }
+    } catch {}
+
+    # --- UNIVERSAL: ifAlias (nomi custom porte) ---
+    try {
+        $aliases = Poll-IfAliases $ip $community
+        if ($aliases -and $aliases.Count -gt 0) {
+            $metrics.if_aliases = $aliases
+        }
+    } catch {}
+
     return $metrics
 }
 
