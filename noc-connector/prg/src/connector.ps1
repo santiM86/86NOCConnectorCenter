@@ -66,6 +66,52 @@ function Save-Config($config) {
     $config | ConvertTo-Json -Depth 5 | Set-Content $path -Encoding UTF8
 }
 
+function Get-ClientIdFromServer($nocUrl, $apiKey) {
+    # v3.5.16: auto-discovery del client_id tramite endpoint /api/connector/identify.
+    # Risolve il problema di config.json con client_id vuoto (wizard pre-v3.5.16 non
+    # chiedeva client_id all'admin) che causava loop infinito di 401 Unauthorized
+    # su tutte le chiamate HMAC (heartbeat, device-report, web-proxy, discovery-check).
+    if (-not $nocUrl -or -not $apiKey) { return $null }
+    try {
+        $url = "$($nocUrl.TrimEnd('/'))/api/connector/identify"
+        $headers = @{ "X-API-Key" = $apiKey }
+        $r = Invoke-RestMethod -Uri $url -Headers $headers -Method Get -TimeoutSec 15 -ErrorAction Stop
+        if ($r -and $r.client_id) {
+            return $r.client_id
+        }
+    } catch {
+        Write-Host "[WARN] Auto-discovery client_id fallito: $($_.Exception.Message)"
+    }
+    return $null
+}
+
+function Ensure-ClientIdInConfig {
+    # Idempotente: se config.json ha client_id vuoto, lo ricava dal server e lo salva.
+    # Chiamato all'avvio di Start-PollingLoop e in caso di 401 durante runtime.
+    $cfg = Read-Config
+    if (-not $cfg) { return $null }
+    if ($cfg.client_id -and $cfg.client_id.ToString().Length -gt 0) {
+        return $cfg.client_id
+    }
+    $cid = Get-ClientIdFromServer $cfg.noc_center_url $cfg.api_key
+    if ($cid) {
+        # Aggiorna config.json in-place
+        if ($cfg.PSObject.Properties.Name -contains "client_id") {
+            $cfg.client_id = $cid
+        } else {
+            $cfg | Add-Member -NotePropertyName "client_id" -NotePropertyValue $cid -Force
+        }
+        try {
+            Save-Config $cfg
+            Write-Log "Auto-discovery OK: client_id=$cid (salvato in config.json)" "INFO"
+        } catch {
+            Write-Log "Auto-discovery OK ma salvataggio config fallito: $($_.Exception.Message)" "WARN"
+        }
+        return $cid
+    }
+    return $null
+}
+
 function Write-Log($Message, $Level = "INFO") {
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $line = "[$timestamp] [$Level] $Message"
@@ -208,6 +254,7 @@ $global:Stats = @{
     snmp_sent = 0
     syslog_sent = 0
     errors = 0
+    auth_failures = 0
     last_error = ""
     start_time = Get-Date
 }
@@ -293,7 +340,20 @@ function Invoke-SecureGet($config, $endpoint, $timeoutSec = 15) {
         }
         return Invoke-RestMethod -Uri $url -Method Get -Headers $headers -TimeoutSec $timeoutSec -ErrorAction Stop
     } catch {
-        Write-Log "Errore secure GET ($endpoint): $($_.Exception.Message)" "ERROR"
+        # v3.5.16: messaggi di errore actionable per 401 (vs 404/500/network)
+        $msg = $_.Exception.Message
+        $isAuth = ($msg -match "401" -or $msg -match "Non autorizzato" -or $msg -match "Unauthorized")
+        if ($isAuth) {
+            $global:Stats.auth_failures = [int]($global:Stats.auth_failures) + 1
+            # Logga warning DETTAGLIATO solo ogni 10 fallimenti per non inondare il log
+            if (($global:Stats.auth_failures % 10) -eq 1) {
+                Write-Log "401 Non autorizzato su $endpoint — API Key non accettata dal NOC. Probabile causa: key rigenerata/ruotata nel Center UI. Soluzione: Clienti > [tuo cliente] > Rigenera API Key → copia in $env:ProgramData\86NocConnector\config.json → Restart-Service 86NocConnectorService." "ERROR"
+            } else {
+                Write-Log "401 su $endpoint (fallimento #$($global:Stats.auth_failures))" "WARN"
+            }
+        } else {
+            Write-Log "Errore secure GET ($endpoint): $msg" "ERROR"
+        }
         return $null
     }
 }
@@ -354,7 +414,18 @@ function Send-ToNOC($config, $endpoint, $payload) {
         $errMsg = $_.Exception.Message
         if ($_.Exception.InnerException) { $errMsg += " | Inner: $($_.Exception.InnerException.Message)" }
         $global:Stats.last_error = $errMsg
-        Write-Log "Errore invio a NOC ($endpoint): $errMsg" "ERROR"
+        # v3.5.16: messaggio chiaro + stop-the-bleed su 401
+        $isAuth = ($errMsg -match "401" -or $errMsg -match "Non autorizzato" -or $errMsg -match "Unauthorized")
+        if ($isAuth) {
+            $global:Stats.auth_failures = [int]($global:Stats.auth_failures) + 1
+            if (($global:Stats.auth_failures % 10) -eq 1) {
+                Write-Log "401 Non autorizzato su $endpoint — API Key non accettata dal NOC. Soluzione: nel Center vai su Clienti > [tuo cliente] > Rigenera API Key → copia nuova chiave in $env:ProgramData\86NocConnector\config.json → Restart-Service 86NocConnectorService." "ERROR"
+            } else {
+                Write-Log "401 su $endpoint (fallimento #$($global:Stats.auth_failures))" "WARN"
+            }
+        } else {
+            Write-Log "Errore invio a NOC ($endpoint): $errMsg" "ERROR"
+        }
         return $null
     }
 }
@@ -1363,6 +1434,22 @@ function Fetch-VaultCredentials($config) {
 }
 
 function Start-PollingLoop($config) {
+    # v3.5.16: se client_id nel config è vuoto (wizard pre-v3.5.16 non lo chiedeva),
+    # auto-discovery tramite endpoint /api/connector/identify. Salva il risultato
+    # in config.json così i restart successivi lo trovano già pronto.
+    if (-not $config.client_id -or $config.client_id.ToString().Trim().Length -eq 0) {
+        Write-Log "Config client_id vuoto — auto-discovery in corso..." "WARN"
+        $cid = Ensure-ClientIdInConfig
+        if ($cid) {
+            # Ricarica config da disco (ora contiene il client_id aggiornato)
+            $config = Read-Config
+        } else {
+            Write-Log "Auto-discovery FALLITO: tutte le chiamate HMAC al NOC riceveranno 401." "ERROR"
+            Write-Log "  Cause possibili: (a) API key non valida, (b) NOC irraggiungibile, (c) endpoint /connector/identify non deployato su NOC produzione." "ERROR"
+            Write-Log "  Workaround manuale: copiare il client_id dal Center UI e inserirlo in config.json." "ERROR"
+        }
+    }
+
     $devices = @()
     if ($config.devices) {
         $devices = @($config.devices)

@@ -420,6 +420,42 @@ Rimossi in v3.5.0 (con OK utente): Check-ForUpdate, Install-Update (5 metodi fal
 
 ### Time-Series Metrics + Syslog Viewer + SNMP Traps (2026-04-22 — iteration_59)
 
+### Connector v3.5.16 — Auto-discovery client_id + messaggi 401 actionable (2026-04-24)
+**Contesto**: sessione drammatica di debug su GALVANSRV. Dopo aver risolto bug NSSM quoting (v3.5.15), installazione pulita con v3.5.14 e servizio stabile, è emerso che il connector riceveva **401 Non autorizzato** su TUTTE le chiamate (heartbeat, device-report, web-proxy/pending, discovery-check). L'utente ha visto il servizio come "si disconnette ogni 60s" nel Center perché nessun heartbeat veniva registrato.
+
+**Root cause analisi profonda**:
+- Il `config.json` di GALVANSRV ha `client_id=""` (vuoto) — il wizard installer pre-v3.5.16 NON chiedeva `client_id` all'admin, solo URL + API Key.
+- PERÒ: il backend `verify_connector_request` + `validate_api_key` NON usano `X-Client-Id` header! Il client viene sempre risolto via `X-API-Key` lookup nel DB → quindi il client_id vuoto nel config **non è la causa diretta** del 401.
+- Causa reale: **la API key nel config.json non matcha alcun record in `db.clients` di argus.86bit.it**. Cause possibili: key rigenerata nel Center UI dopo l'installazione, cliente ricreato, typo durante il wizard, installazione contro Center sbagliato.
+
+**Fix rilasciati (prevenzione futura)**:
+1. Nuovo endpoint backend `GET /api/connector/identify` che dato solo `X-API-Key` ritorna `{client_id, client_name, status}`. Permette ai connector di auto-configurarsi e serve da **primo test di validità della key** in sede di wizard.
+2. Connector runtime: funzioni `Get-ClientIdFromServer` + `Ensure-ClientIdInConfig` chiamate in apertura di `Start-PollingLoop`. Se `config.client_id` è vuoto → chiama `/identify` → salva risultato nel `config.json` → ricarica config. Se anche l'identify fallisce (es. key invalida) → log ERROR esplicito.
+3. Wizard installer: il pulsante *"Test Connessione"* ora chiama `/identify` dopo health check e **mostra il client_id scoperto all'admin** come conferma visiva (MessageBox). Client_id salvato in `$script:DiscoveredClientId` e poi propagato in `config.json` durante installazione. Fallback legacy a heartbeat+X-API-Key se il NOC non ha ancora `/identify`.
+4. Messaggi 401 **chiari e actionable**: prima `Errore secure GET connector/web-proxy/pending: Errore del server remoto (401)` generico, ora `401 Non autorizzato su <endpoint> — API Key non accettata dal NOC. Soluzione: nel Center vai su Clienti > [tuo cliente] > Rigenera API Key → copia in config.json → Restart-Service`. Con throttling (full message ogni 10 fallimenti, WARN per i restanti) per evitare log flood.
+5. Nuovo contatore `$global:Stats.auth_failures` (contabilizza i 401 per eventuali dashboard future).
+
+**Situazione GALVANSRV residua** (azione manuale richiesta all'utente su server produzione argus.86bit.it):
+- L'utente deve **rigenerare l'API Key** del cliente 86BIT_Office nel Center UI
+- **Copiare la nuova key** in `C:\ProgramData\86NocConnector\config.json` sul server
+- `Restart-Service 86NocConnectorService`
+- Da quel momento il connector riprende a comunicare e l'auto-update applicherà v3.5.16 in background entro ~30 min.
+
+**File modificati**:
+- `/app/backend/routes/connector.py`: aggiunto endpoint `/connector/identify` (linea 510) + salvato `sys_object_id` nel device-report doc (v3.5.13)
+- `/app/noc-connector/prg/src/connector.ps1`: nuove `Get-ClientIdFromServer`, `Ensure-ClientIdInConfig`; `Start-PollingLoop` ora chiama auto-discovery; `Invoke-SecureGet` + `Send-ToNOC` ora distinguono 401 (auth) da altri errori e producono messaggi chiari; `$global:Stats.auth_failures` contatore
+- `/app/noc-connector/prg/src/installer_gui.ps1`: `btnTest.Add_Click` ora chiama `/identify`; config.json ora include `client_id` valorizzato dall'identify; `$script:DiscoveredClientId`
+- `/app/noc-connector/prg/version.json` → 3.5.16
+- `/app/connector_updates/86NocConnector_v3.5.16.zip` (361 KB) + pubblicato `/downloads/86NocConnector_v3.5.16_install.zip` (v3.5.15 disattivato in DB)
+
+**Debito tecnico emerso in questa sessione**:
+- Il wizard attuale non valida API key contro il NOC prima di installare il servizio (il pulsante "Test" lo faceva ma non bloccava se skippato). Idea per v3.6: validazione obbligatoria prima di "Installa".
+- Aggiungere alla pagina `/connectors` del Center un pannello "Problemi autenticazione" che mostra i client/connector che ricevono 401 ricorrenti (count > 5 negli ultimi 10 min) → permette all'admin di accorgersi del mismatch key prima che l'utente chiami il supporto.
+- Il wizard potrebbe mostrare un warning se il cliente nel Center ha N connector già registrati con lo stesso hostname → evita doppioni.
+
+### Connector v3.5.15 — FIX CRITICO INSTALLER NSSM quoting su path con spazi (2026-04-23 notte)
+Vedi changelog embedded in `version.json` commit. Root cause: `nssm install <svc> powershell.exe "-File C:\Program Files\...connector.ps1"` non preservava correttamente le virgolette → PowerShell riceveva `-File C:\Program` monco → crash infinito ogni 60s. Fix: separare `nssm install` (solo exe) e `nssm set AppParameters` (args). + path assoluto a `powershell.exe` via `$env:SystemRoot`.
+
 ### Connector v3.5.14 — Disinstallazione enterprise-grade (2026-04-23 sera)
 **Contesto**: dopo il rescue di GALVANSRV (connector in stato "Paused + Disabled", Task Scheduler omonimo del servizio NSSM rimasto orfano, cartella `C:\Program Files\86NocConnector` con `nssm.exe` locked), l'utente ha chiesto di **consolidare tutta la procedura di pulizia "nuclear-safe" dentro il flusso di disinstallazione ufficiale** del connector — in modo che qualunque amministratore futuro che disinstalli dal Pannello di Controllo o dal Menu Start ottenga la stessa pulizia completa, senza bisogno di istruzioni manuali.
 
