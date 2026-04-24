@@ -1359,6 +1359,109 @@ function Show-InstallerWizard {
     # ==================== NAVIGATION ====================
     $btnNext.Add_Click({
         if ($script:currentPage -eq 4) { $form.Close(); return }
+
+        # v3.5.17 Enterprise: validazione BLOCCANTE all'uscita dalla pagina 1.
+        # L'admin NON può procedere con URL NOC vuoto, API Key vuota, o API Key non
+        # riconosciuta dal backend. Evita installazioni che poi danno 401 infiniti
+        # perché la key è stata incollata male o è stata rigenerata nel Center.
+        if ($script:currentPage -eq 1) {
+            $url = $txtUrl.Text.Trim().TrimEnd("/")
+            $key = $txtApiKey.Text.Trim()
+            if (-not $url -or -not $key) {
+                [System.Windows.Forms.MessageBox]::Show(
+                    "URL del NOC e API Key sono obbligatori per proseguire.",
+                    $DisplayName, "OK", "Warning") | Out-Null
+                return
+            }
+            # Test health + identify (o fallback heartbeat). Se fallisce → blocco.
+            $btnNext.Enabled = $false
+            $btnNext.Text = "Verifica..."
+            $form.Refresh()
+            try {
+                # Health check — NOC raggiungibile?
+                try {
+                    Invoke-RestMethod -Uri "$url/api/health" -TimeoutSec 8 -ErrorAction Stop | Out-Null
+                } catch {
+                    [System.Windows.Forms.MessageBox]::Show(
+                        "Impossibile raggiungere il NOC Center:`r`n$url`r`n`r`nDettaglio: $($_.Exception.Message)`r`n`r`nVerifica URL, connettività di rete e che il server NOC sia in esecuzione.",
+                        $DisplayName, "OK", "Error") | Out-Null
+                    return
+                }
+
+                # Validazione API Key tramite /connector/identify (preferred) o heartbeat (fallback)
+                $identity = $null
+                $h = @{ "X-API-Key" = $key }
+                try {
+                    $identity = Invoke-RestMethod -Uri "$url/api/connector/identify" -Headers $h -TimeoutSec 10 -ErrorAction Stop
+                } catch {
+                    $status = 0
+                    try { $status = [int]$_.Exception.Response.StatusCode.value__ } catch {}
+                    if ($status -eq 401) {
+                        [System.Windows.Forms.MessageBox]::Show(
+                            "API Key non valida.`r`n`r`nIl NOC ha rifiutato la chiave inserita (401 Unauthorized).`r`nVerifica nel Center UI che la API Key del cliente sia corretta e non sia stata rigenerata di recente.",
+                            $DisplayName, "OK", "Error") | Out-Null
+                        return
+                    }
+                    if ($status -eq 404) {
+                        # Endpoint /identify non ancora disponibile sul NOC (backend vecchio).
+                        # Fallback: verifica con heartbeat X-API-Key.
+                        try {
+                            $body = @{ connector_version=$Version; hostname=$env:COMPUTERNAME; uptime_seconds=0; traps_received=0; syslogs_received=0 } | ConvertTo-Json -Compress
+                            $h2 = @{ "X-API-Key" = $key; "Content-Type" = "application/json" }
+                            Invoke-RestMethod -Uri "$url/api/connector/heartbeat" -Method Post -Headers $h2 -Body $body -TimeoutSec 10 -ErrorAction Stop | Out-Null
+                            # Se passa, la key è accettata ma non abbiamo client_id (backend legacy).
+                            $identity = [PSCustomObject]@{ client_id = ""; client_name = "(backend legacy, client_id sara' scoperto al runtime)" }
+                        } catch {
+                            $fbStatus = 0
+                            try { $fbStatus = [int]$_.Exception.Response.StatusCode.value__ } catch {}
+                            if ($fbStatus -eq 401) {
+                                [System.Windows.Forms.MessageBox]::Show(
+                                    "API Key non valida (401).`r`nVerifica la chiave nel Center UI del cliente.",
+                                    $DisplayName, "OK", "Error") | Out-Null
+                            } else {
+                                [System.Windows.Forms.MessageBox]::Show(
+                                    "Errore di validazione API Key: $($_.Exception.Message)",
+                                    $DisplayName, "OK", "Error") | Out-Null
+                            }
+                            return
+                        }
+                    } else {
+                        [System.Windows.Forms.MessageBox]::Show(
+                            "Errore di connessione al NOC: $($_.Exception.Message)",
+                            $DisplayName, "OK", "Error") | Out-Null
+                        return
+                    }
+                }
+
+                if ($identity -and $identity.client_id) {
+                    $script:DiscoveredClientId = $identity.client_id
+                    $script:DiscoveredClientName = $identity.client_name
+                }
+
+                # Warning se esiste già un connector registrato con lo stesso hostname
+                # (potenziale doppione). Non bloccante, solo avviso.
+                try {
+                    $existing = Invoke-RestMethod -Uri "$url/api/connector/by-hostname/$([uri]::EscapeDataString($env:COMPUTERNAME))" -Headers $h -TimeoutSec 5 -ErrorAction SilentlyContinue
+                    if ($existing -and $existing.exists) {
+                        $resp = [System.Windows.Forms.MessageBox]::Show(
+                            "Un connector con hostname '$env:COMPUTERNAME' risulta gia' registrato nel NOC per questo cliente.`r`n`r`nUltimo heartbeat: $($existing.last_heartbeat)`r`nVersione: $($existing.version)`r`n`r`nVuoi procedere comunque (sovrascrive)?",
+                            $DisplayName, "YesNo", "Warning")
+                        if ($resp -ne [System.Windows.Forms.DialogResult]::Yes) { return }
+                    }
+                } catch {}
+
+                # Mostra conferma dettagliata
+                $nameDisp = if ($identity.client_name) { $identity.client_name } else { "(sconosciuto)" }
+                $idDisp = if ($identity.client_id) { $identity.client_id } else { "(sara' scoperto al runtime)" }
+                [System.Windows.Forms.MessageBox]::Show(
+                    "Connessione OK.`r`n`r`nCliente: $nameDisp`r`nClient ID: $idDisp`r`n`r`nClicca OK per proseguire con la configurazione dei dispositivi.",
+                    $DisplayName, "OK", "Information") | Out-Null
+            } finally {
+                $btnNext.Enabled = $true
+                $btnNext.Text = "Avanti >"
+            }
+        }
+
         Show-Page ($script:currentPage + 1)
     })
     
