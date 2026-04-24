@@ -508,6 +508,25 @@ async def force_connector_update(client_id: str, current_user: dict = Depends(ge
     }
 
 
+@router.get("/connector/identify")
+async def connector_identify(request: Request):
+    """Auto-discovery del client_id tramite X-API-Key.
+
+    Uso: quando il connector ha l'API key ma non il client_id (es. wizard installer
+    pre-v3.5.16 che non chiedeva client_id), questo endpoint permette di ricavarlo
+    autonomamente senza che l'admin debba andare nel Center UI a copiarlo manualmente.
+
+    Richiede solo X-API-Key header (no HMAC). Sicuro perche' l'API key stessa gia'
+    autentica univocamente il client nel DB.
+    """
+    client_data = await validate_api_key(request)
+    return {
+        "client_id": client_data["id"],
+        "client_name": client_data.get("name", ""),
+        "status": "ok",
+    }
+
+
 # ==================== AUTO-UPDATE ====================
 
 @router.get(f"/{C}/uc")
