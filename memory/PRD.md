@@ -420,6 +420,32 @@ Rimossi in v3.5.0 (con OK utente): Check-ForUpdate, Install-Update (5 metodi fal
 
 ### Time-Series Metrics + Syslog Viewer + SNMP Traps (2026-04-22 — iteration_59)
 
+### Connector v3.5.17 — Enterprise Edition (2026-04-24)
+**Obiettivo release**: package "production-grade" unico pronto per deployment su server vergini, con validazione preflight che previene il problema storico di installazione cieca → scoperta del problema solo ore dopo nei log.
+
+**Novità v3.5.17**:
+1. **Wizard bloccante**: il pulsante "Avanti" dalla pagina 1 (URL + API Key) ora esegue 3 verifiche sequenziali prima di consentire il passaggio alla pagina 2:
+   - `GET /api/health` — NOC raggiungibile? (altrimenti MessageBox rosso con dettaglio errore rete)
+   - `GET /api/connector/identify` con `X-API-Key` — la key è riconosciuta dal DB? (su 401 → "API Key non valida — verifica nel Center UI"; su 404 fallback a `POST /connector/heartbeat` per backend pre-v3.5.16)
+   - Feedback visivo: MessageBox di conferma con "Cliente: <nome> | Client ID: <uuid>" — l'admin vede ESATTAMENTE quale cliente sta attivando
+2. **Warning doppioni hostname**: nuovo endpoint `GET /api/connector/by-hostname/{hostname}` interrogato dal wizard; se esiste già un connector registrato per quel cliente con lo stesso hostname l'admin riceve "Un connector con hostname X risulta già registrato (v3.5.14, last heartbeat 12:34). Sovrascrivere?"
+3. **Auto-save `client_id`** nel config.json dopo la validazione (il runtime non avrà bisogno di auto-discovery al primo boot — tutto è già pronto)
+
+**Stack completo cumulato in v3.5.17**:
+- Installazione: wizard grafico bloccante, validazione preflight, Defender exclusions, firewall UDP 162+514, NSSM service LocalSystem con AppParameters separato (quoting Program Files fixato), Task Scheduler `\86BIT\ArgusConnectorUpdater` ogni 5 min per auto-update, Menu Start + registro Uninstall per rimozione da Pannello di Controllo.
+- Runtime: listener UDP effettivamente attivi (`$global:Running = $true` nello scope job, fix v3.5.13), polling SNMP con entity_mib + primary_mac + if_aliases + arp_table + sys_object_id propagati al NOC, vendor_snmp_targets applicati da profili device_profiles, IPC via `refresh.flag` per "Applica ora" real-time, auto-discovery `client_id` se config vuoto, messaggi 401 actionable con soluzione esplicita.
+- Disinstallazione: `uninstall.ps1` 8-step idempotente (task scheduler, service qualsiasi stato, processi orfani con guardia anti-suicidio, Menu Start, registro HKLM+HKCU reg32/64, cartelle ProgramData + Program Files, fallback `PendingFileRenameOperations` per file lockati, verifica finale con exit code 0/1).
+
+**File coinvolti questa release**:
+- `/app/noc-connector/prg/src/installer_gui.ps1` — logica navigazione con validazione bloccante in `$btnNext.Add_Click` sulla pagina 1
+- `/app/backend/routes/connector.py` — nuovo endpoint `/connector/by-hostname/{hostname}`
+- `/app/noc-connector/prg/version.json` → 3.5.17
+- Pubblicati: `/app/connector_updates/86NocConnector_v3.5.17.zip` (361 KB) + `/downloads/86NocConnector_v3.5.17_install.zip` (363 KB)
+
+**Nota deploy produzione**: i nuovi endpoint backend (`/connector/identify` e `/connector/by-hostname`) esistono solo sul preview Emergent. Per usarli in produzione il cliente deve deployare il backend Python aggiornato sul proprio server IIS (argus.86bit.it). Il wizard ha fallback graceful: se `/identify` ritorna 404, prova con `/connector/heartbeat` che esiste da sempre.
+
+**Known gotcha osservato in field**: il backend IIS del cliente (argus.86bit.it) era fermo alla v3.5.8 del `connector_updates` — gli ZIP più recenti (v3.5.9 in poi) non sono pubblicati sul DB di produzione. Azione richiesta all'admin: deploy backend Python + ripubblicazione ZIP v3.5.17 come attivo su produzione.
+
 ### Connector v3.5.16 — Auto-discovery client_id + messaggi 401 actionable (2026-04-24)
 **Contesto**: sessione drammatica di debug su GALVANSRV. Dopo aver risolto bug NSSM quoting (v3.5.15), installazione pulita con v3.5.14 e servizio stabile, è emerso che il connector riceveva **401 Non autorizzato** su TUTTE le chiamate (heartbeat, device-report, web-proxy/pending, discovery-check). L'utente ha visto il servizio come "si disconnette ogni 60s" nel Center perché nessun heartbeat veniva registrato.
 

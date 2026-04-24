@@ -527,6 +527,29 @@ async def connector_identify(request: Request):
     }
 
 
+@router.get("/connector/by-hostname/{hostname}")
+async def connector_by_hostname(hostname: str, request: Request):
+    """Preflight wizard v3.5.17: verifica se un connector con quell'hostname è già
+    registrato per il cliente (evita doppioni). Richiede X-API-Key."""
+    client_data = await validate_api_key(request)
+    hostname = (hostname or "").strip()[:256]
+    if not hostname:
+        return {"exists": False}
+    doc = await db.connector_status.find_one(
+        {"client_id": client_data["id"], "hostname": hostname},
+        {"_id": 0, "hostname": 1, "connector_version": 1, "last_heartbeat": 1, "connector_ip": 1},
+    )
+    if not doc:
+        return {"exists": False}
+    return {
+        "exists": True,
+        "hostname": doc.get("hostname", ""),
+        "version": doc.get("connector_version", ""),
+        "last_heartbeat": doc.get("last_heartbeat", ""),
+        "connector_ip": doc.get("connector_ip", ""),
+    }
+
+
 # ==================== AUTO-UPDATE ====================
 
 @router.get(f"/{C}/uc")
