@@ -420,6 +420,139 @@ Rimossi in v3.5.0 (con OK utente): Check-ForUpdate, Install-Update (5 metodi fal
 
 ### Time-Series Metrics + Syslog Viewer + SNMP Traps (2026-04-22 — iteration_59)
 
+### Connector v3.5.16 — Auto-discovery client_id + messaggi 401 actionable (2026-04-24)
+**Contesto**: sessione drammatica di debug su GALVANSRV. Dopo aver risolto bug NSSM quoting (v3.5.15), installazione pulita con v3.5.14 e servizio stabile, è emerso che il connector riceveva **401 Non autorizzato** su TUTTE le chiamate (heartbeat, device-report, web-proxy/pending, discovery-check). L'utente ha visto il servizio come "si disconnette ogni 60s" nel Center perché nessun heartbeat veniva registrato.
+
+**Root cause analisi profonda**:
+- Il `config.json` di GALVANSRV ha `client_id=""` (vuoto) — il wizard installer pre-v3.5.16 NON chiedeva `client_id` all'admin, solo URL + API Key.
+- PERÒ: il backend `verify_connector_request` + `validate_api_key` NON usano `X-Client-Id` header! Il client viene sempre risolto via `X-API-Key` lookup nel DB → quindi il client_id vuoto nel config **non è la causa diretta** del 401.
+- Causa reale: **la API key nel config.json non matcha alcun record in `db.clients` di argus.86bit.it**. Cause possibili: key rigenerata nel Center UI dopo l'installazione, cliente ricreato, typo durante il wizard, installazione contro Center sbagliato.
+
+**Fix rilasciati (prevenzione futura)**:
+1. Nuovo endpoint backend `GET /api/connector/identify` che dato solo `X-API-Key` ritorna `{client_id, client_name, status}`. Permette ai connector di auto-configurarsi e serve da **primo test di validità della key** in sede di wizard.
+2. Connector runtime: funzioni `Get-ClientIdFromServer` + `Ensure-ClientIdInConfig` chiamate in apertura di `Start-PollingLoop`. Se `config.client_id` è vuoto → chiama `/identify` → salva risultato nel `config.json` → ricarica config. Se anche l'identify fallisce (es. key invalida) → log ERROR esplicito.
+3. Wizard installer: il pulsante *"Test Connessione"* ora chiama `/identify` dopo health check e **mostra il client_id scoperto all'admin** come conferma visiva (MessageBox). Client_id salvato in `$script:DiscoveredClientId` e poi propagato in `config.json` durante installazione. Fallback legacy a heartbeat+X-API-Key se il NOC non ha ancora `/identify`.
+4. Messaggi 401 **chiari e actionable**: prima `Errore secure GET connector/web-proxy/pending: Errore del server remoto (401)` generico, ora `401 Non autorizzato su <endpoint> — API Key non accettata dal NOC. Soluzione: nel Center vai su Clienti > [tuo cliente] > Rigenera API Key → copia in config.json → Restart-Service`. Con throttling (full message ogni 10 fallimenti, WARN per i restanti) per evitare log flood.
+5. Nuovo contatore `$global:Stats.auth_failures` (contabilizza i 401 per eventuali dashboard future).
+
+**Situazione GALVANSRV residua** (azione manuale richiesta all'utente su server produzione argus.86bit.it):
+- L'utente deve **rigenerare l'API Key** del cliente 86BIT_Office nel Center UI
+- **Copiare la nuova key** in `C:\ProgramData\86NocConnector\config.json` sul server
+- `Restart-Service 86NocConnectorService`
+- Da quel momento il connector riprende a comunicare e l'auto-update applicherà v3.5.16 in background entro ~30 min.
+
+**File modificati**:
+- `/app/backend/routes/connector.py`: aggiunto endpoint `/connector/identify` (linea 510) + salvato `sys_object_id` nel device-report doc (v3.5.13)
+- `/app/noc-connector/prg/src/connector.ps1`: nuove `Get-ClientIdFromServer`, `Ensure-ClientIdInConfig`; `Start-PollingLoop` ora chiama auto-discovery; `Invoke-SecureGet` + `Send-ToNOC` ora distinguono 401 (auth) da altri errori e producono messaggi chiari; `$global:Stats.auth_failures` contatore
+- `/app/noc-connector/prg/src/installer_gui.ps1`: `btnTest.Add_Click` ora chiama `/identify`; config.json ora include `client_id` valorizzato dall'identify; `$script:DiscoveredClientId`
+- `/app/noc-connector/prg/version.json` → 3.5.16
+- `/app/connector_updates/86NocConnector_v3.5.16.zip` (361 KB) + pubblicato `/downloads/86NocConnector_v3.5.16_install.zip` (v3.5.15 disattivato in DB)
+
+**Debito tecnico emerso in questa sessione**:
+- Il wizard attuale non valida API key contro il NOC prima di installare il servizio (il pulsante "Test" lo faceva ma non bloccava se skippato). Idea per v3.6: validazione obbligatoria prima di "Installa".
+- Aggiungere alla pagina `/connectors` del Center un pannello "Problemi autenticazione" che mostra i client/connector che ricevono 401 ricorrenti (count > 5 negli ultimi 10 min) → permette all'admin di accorgersi del mismatch key prima che l'utente chiami il supporto.
+- Il wizard potrebbe mostrare un warning se il cliente nel Center ha N connector già registrati con lo stesso hostname → evita doppioni.
+
+### Connector v3.5.15 — FIX CRITICO INSTALLER NSSM quoting su path con spazi (2026-04-23 notte)
+Vedi changelog embedded in `version.json` commit. Root cause: `nssm install <svc> powershell.exe "-File C:\Program Files\...connector.ps1"` non preservava correttamente le virgolette → PowerShell riceveva `-File C:\Program` monco → crash infinito ogni 60s. Fix: separare `nssm install` (solo exe) e `nssm set AppParameters` (args). + path assoluto a `powershell.exe` via `$env:SystemRoot`.
+
+### Connector v3.5.14 — Disinstallazione enterprise-grade (2026-04-23 sera)
+**Contesto**: dopo il rescue di GALVANSRV (connector in stato "Paused + Disabled", Task Scheduler omonimo del servizio NSSM rimasto orfano, cartella `C:\Program Files\86NocConnector` con `nssm.exe` locked), l'utente ha chiesto di **consolidare tutta la procedura di pulizia "nuclear-safe" dentro il flusso di disinstallazione ufficiale** del connector — in modo che qualunque amministratore futuro che disinstalli dal Pannello di Controllo o dal Menu Start ottenga la stessa pulizia completa, senza bisogno di istruzioni manuali.
+
+**Sostituito**: il vecchio `uninstall.bat` lineare (~125 righe, path hardcoded a `C:\86NocConnector` non più usato dalla v3.4.0, nessuna gestione stati anomali del servizio) con un design a 2 file:
+
+- **`uninstall.ps1`** (~380 righe, logica robusta completa)
+- **`uninstall.bat`** (wrapper minimo ~50 righe: auto-elevation UAC + copia dello script in `%TEMP%` per evitare file-lock sulla stessa install dir + `ExecutionPolicy Bypass`)
+
+**Cosa copre uninstall.ps1 — 8 step idempotenti con log**:
+
+1. **Task Scheduler — ordine critico PRIMA del servizio** (altrimenti un task in esecuzione riavvierebbe il servizio mentre proviamo a eliminarlo):
+   - `\86BIT\ArgusConnectorUpdater` (v3.5.0+ auto-update)
+   - `\86BIT\86NocConnector_Watchdog` (v3.5.12 watchdog)
+   - `\86NocConnector` (legacy pre-v3.3.0)
+   - **`\86NocConnectorService` — il colpevole storico omonimo del servizio NSSM visto su GALVANSRV** (root del loop di restart ciclico pre-v3.5.12)
+   - `\ArgusConnector` + varianti in `\86BIT\`
+   - Cartella parent `\86BIT\` rimossa se vuota (via COM Schedule.Service)
+   - Doppio approccio: `Unregister-ScheduledTask` + fallback `schtasks.exe /Delete /F` per compatibilità API vecchie
+2. **Servizio NSSM — resistente a ogni stato**: gestisce Running, Paused, StopPending, Disabled. Sequenza: Resume-Service se Paused (altrimenti Stop si blocca), NSSM stop se disponibile, `sc.exe stop`, wait-loop fino a 15s, fallback kill dei processi in install dir, `sc.exe delete` finale.
+3. **Kill processi orfani**: filtrato via `Get-CimInstance Win32_Process` + `CommandLine` matching su `connector.ps1 | tray_app.ps1 | snmp_poller.ps1 | update_check.ps1 | service_wrapper.ps1`. **Guardia anti-suicidio `$_.Id -ne $PID`** (impara dalla lezione del primo `fix-connector.ps1` che killava se stesso). `nssm.exe` separato, filtrato solo se `Path -like` install dir → non tocca NSSM di altri prodotti Windows.
+4. **Menu Start**: tutti i path alias storici (`86BIT ArgusCenter`, `86BIT Connector`, `86NocConnector`, `ARGUS Connector`, sia `%ProgramData%` che `%AppData%`).
+5. **Registro**: `HKLM` + `HKCU` + `WOW6432Node`, sia `reg64` che `reg32`, chiavi Uninstall + Run per tutti gli alias (`86BIT_ArgusCenter_Connector`, `86NocConnector`, `ARGUS_Connector`).
+6. **Cartella dati** `%ProgramData%\86NocConnector`.
+7. **Cartella installazione** con **retry loop 5×** + kill secondario processi in path al 2° fallimento + **fallback `HKLM\System\CurrentControlSet\Control\Session Manager\PendingFileRenameOperations`** per programmare l'eliminazione al prossimo reboot se i file sono ancora bloccati da servizi di sistema (Antivirus, SmartScreen, ecc.). Rimuove anche la legacy `C:\86NocConnector` pre-v3.4.0.
+8. **Verifica finale**: check residui su cartelle, servizio, task scheduler. 3 scenari di exit:
+   - `Code 0`: sistema vergine ✓
+   - `Code 1` + "richiesto reboot": tutti i file saranno eliminati al prossimo riavvio
+   - `Code 1` + lista residui: azioni manuali suggerite con elenco preciso di cosa resta
+
+**Log completo** in `%TEMP%\argus-uninstall-<timestamp>.log` (sempre scritto, anche se lo script fallisce a metà) con livelli INFO/OK/WARN/ERROR/STEP color-coded in console.
+
+**File toccati**:
+- `/app/noc-connector/prg/uninstall.bat` (rewrite: wrapper ~50 righe con auto-elevation + copia in %TEMP%)
+- `/app/noc-connector/prg/uninstall.ps1` (nuovo, ~380 righe)
+- `/app/noc-connector/prg/version.json` → 3.5.14
+- Pubblicati: `/app/connector_updates/86NocConnector_v3.5.14.zip` (361 KB) + `/app/frontend/public/downloads/86NocConnector_v3.5.14_install.zip`
+- `db.connector_updates` → v3.5.14 attivo, v3.5.13 disattivato
+
+**Entry point utente** (già cablati da `installer_gui.ps1` dalla v3.5.5):
+- Menu Start: *"Disinstalla ARGUS Connector"* → `uninstall.bat`
+- Pannello di Controllo → Programmi e funzionalità → *ARGUS Connector* → Disinstalla (chiave registry `HKLM\...\Uninstall\86BIT_ArgusCenter_Connector\UninstallString`) → `uninstall.bat`
+- Esecuzione manuale: `C:\Program Files\86NocConnector\uninstall.bat` (tasto destro Amministratore)
+
+**Non toccato**: l'installer `installer_gui.ps1` — il flusso di install-time cleanup (prima dei nuovi componenti) resta inalterato perché già corretto dalla v3.5.12. Qui interveniamo solo sul flusso di disinstallazione finale.
+
+### Connector v3.5.13 — FIX CRITICO passaggio dati + stabilità listener UDP (2026-04-23)
+**Contesto**: cliente frustrato per "troppo tempo e soldi spesi sul connector" che non passava tutte le informazioni dei dispositivi. Audit completo della pipeline connector → center rivela 2 bug critici *pre-esistenti* che invalidavano il valore del connector.
+
+**Bug #1 — Listener UDP mai realmente attivi (P0)**
+Root cause: `Start-SNMPListener` e `Start-SyslogListener` sono eseguiti dentro `Start-Job` child-process. Il loop interno `while ($global:Running)` richiede `$global:Running = $true` ma la variabile NON era settata dentro lo scope del job — solo in `Start-Connector` (che non viene rieseguito nei job per via della guardia `$MyInvocation.InvocationName -ne "."`). Risultato: i job terminavano immediatamente dopo 2s → job health-check riaffiorava ogni 3 min → il connector di fatto non ha MAI ricevuto trap SNMP o messaggi syslog. I log mostravano il loop "Listener morto, riavvio" perpetuo mentre gli utenti si lamentavano di aver perso alert critici inviati dai device.
+
+**Fix**: aggiunto `$global:Running = $true` dentro lo scriptblock di entrambi i Start-Job (all'avvio + nei restart del health-check). Patch minima, 4 righe.
+
+**Bug #2 — Perdita dati hardware (P0)**
+Root cause: `Poll-ExtendedMetrics` raccoglieva correttamente da ogni device SNMP:
+- `entity_mib` (vendor, modello, serial number, firmware version dallo standard RFC 4133 ENTITY-MIB, che funziona su *qualsiasi* device SNMP compliant — switch, firewall, stampanti, NAS, server)
+- `primary_mac` (MAC principale del device)
+- `if_aliases` (nomi custom delle porte dello switch, es. "Uplink DC", "Firewall LAN")
+- `arp_table` (tabella ARP per correlazione IP→MAC cross-device: fondamentale per mappare endpoint LAN senza SNMP proprio)
+
+Ma `Send-DeviceReport` li ignorava sistematicamente: solo 6 campi su 10 venivano propagati nel payload HTTP verso il NOC (`cpu_usage`, `memory_usage`, `temperature`, `device_class`, `hardware`, `firewall`). Il backend era già pronto a riceverli (righe 1355-1358 di `connector.py`) ma non arrivavano mai → UI mostrava sempre "sconosciuto" per vendor/modello/firmware anche su device che li esponevano regolarmente.
+
+Mancava inoltre il polling di `sys_object_id` (OID 1.3.6.1.2.1.1.2.0) usato dal backend per il fingerprint automatico dei profili vendor (device_profiles). Senza sysObjectID il fingerprint cadeva sul solo `sysDescr` regex → match mancanti per device con descrizioni atipiche.
+
+**Fix**:
+1. `connector.ps1` Send-DeviceReport: aggiunti 4 campi (`entity_mib`, `primary_mac`, `if_aliases`, `arp_table`) al `$deviceReport` (condizionali su non-null per non inquinare payload device offline).
+2. `connector.ps1` Send-DeviceReport: polling di `sys_object_id` (1.3.6.1.2.1.1.2.0) insieme a sysDescr/sysName/sysUptime.
+3. `connector.ps1`: dichiarazione `$vendorMetrics = $null` fuori dall'if-reachable per evitare errore scope in caso di device irraggiungibile.
+4. `backend/routes/connector.py` device-report: salva anche `sys_object_id` su `device_poll_status`.
+
+**Test end-to-end** (curl con HMAC signing completo, simula il connector):
+```
+POST /api/connector/device-report → 200 OK {"devices_updated":1}
+Saved fields verified:
+  sys_object_id: 1.3.6.1.4.1.25506.11.1.208   ✓
+  entity_mib: {'vendor':'HPE','model':'5130-24G-4SFP+','serial':'CN00000000','firmware':'7.1.070'}   ✓
+  primary_mac: AA:BB:CC:DD:EE:FF   ✓
+  if_aliases: {'1':'Uplink','2':'Server'}   ✓
+  arp_entries_count: 2 (→ arp_cache populated)   ✓
+```
+
+**File toccati**:
+- `/app/noc-connector/prg/src/connector.ps1` — Send-DeviceReport (+4 field propagation, +sys_object_id polling), Start-Connector (fix listener jobs), job health-check (fix restart scriptblock)
+- `/app/backend/routes/connector.py` — device-report endpoint salva sys_object_id
+- `/app/noc-connector/prg/version.json` → 3.5.13
+- `/app/frontend/public/downloads/86NocConnector_v3.5.13.zip` (361 KB) + `_install.zip`
+- `/app/connector_updates/86NocConnector_v3.5.13.zip` (attivo in DB)
+
+**Impatto atteso in field**:
+- UI Device Detail: colonne vendor/modello/firmware/serial popolate automaticamente per *tutti* i device SNMP compliant, non più solo Synology/iLO/Comware.
+- Sezione ARP: correlazione IP→MAC popolata per device downstream senza SNMP proprio (VM, stampanti non-SNMP, IP cam, ecc.).
+- Alert SNMP trap e syslog ora effettivamente ricevuti (potenzialmente: aumento del volume alert, soprattutto per device rumorosi — monitor first 24h).
+- Fingerprint auto-profili più robusto grazie a sysObjectID.
+
+### Connector v3.5.12 — Self-heal Task Scheduler conflittuale (2026-04-23 mattina)
+Vedi handoff: self-healing al boot rimuove Task Scheduler legacy omonimo del servizio NSSM + watchdog schtasks fix via file intermedio + fix BER/vendor enrichment/Get-SnmpTable delle v3.5.9/3.5.10/3.5.11.
+
 ### Connector v3.5.7 — Applica Ora (real-time config sync, 2026-04-23)
 **Problema**: modificando community/profilo/monitor-type dal Center, il connector applicava le modifiche solo al ciclo successivo di `Fetch-DevicesFromNOC` — che gira **ogni 10 cicli di poll (~10 minuti)**. Per sbloccare prima servivano: restart del servizio o del tray app sul server field.
 

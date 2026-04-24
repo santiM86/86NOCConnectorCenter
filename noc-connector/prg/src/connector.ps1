@@ -66,6 +66,52 @@ function Save-Config($config) {
     $config | ConvertTo-Json -Depth 5 | Set-Content $path -Encoding UTF8
 }
 
+function Get-ClientIdFromServer($nocUrl, $apiKey) {
+    # v3.5.16: auto-discovery del client_id tramite endpoint /api/connector/identify.
+    # Risolve il problema di config.json con client_id vuoto (wizard pre-v3.5.16 non
+    # chiedeva client_id all'admin) che causava loop infinito di 401 Unauthorized
+    # su tutte le chiamate HMAC (heartbeat, device-report, web-proxy, discovery-check).
+    if (-not $nocUrl -or -not $apiKey) { return $null }
+    try {
+        $url = "$($nocUrl.TrimEnd('/'))/api/connector/identify"
+        $headers = @{ "X-API-Key" = $apiKey }
+        $r = Invoke-RestMethod -Uri $url -Headers $headers -Method Get -TimeoutSec 15 -ErrorAction Stop
+        if ($r -and $r.client_id) {
+            return $r.client_id
+        }
+    } catch {
+        Write-Host "[WARN] Auto-discovery client_id fallito: $($_.Exception.Message)"
+    }
+    return $null
+}
+
+function Ensure-ClientIdInConfig {
+    # Idempotente: se config.json ha client_id vuoto, lo ricava dal server e lo salva.
+    # Chiamato all'avvio di Start-PollingLoop e in caso di 401 durante runtime.
+    $cfg = Read-Config
+    if (-not $cfg) { return $null }
+    if ($cfg.client_id -and $cfg.client_id.ToString().Length -gt 0) {
+        return $cfg.client_id
+    }
+    $cid = Get-ClientIdFromServer $cfg.noc_center_url $cfg.api_key
+    if ($cid) {
+        # Aggiorna config.json in-place
+        if ($cfg.PSObject.Properties.Name -contains "client_id") {
+            $cfg.client_id = $cid
+        } else {
+            $cfg | Add-Member -NotePropertyName "client_id" -NotePropertyValue $cid -Force
+        }
+        try {
+            Save-Config $cfg
+            Write-Log "Auto-discovery OK: client_id=$cid (salvato in config.json)" "INFO"
+        } catch {
+            Write-Log "Auto-discovery OK ma salvataggio config fallito: $($_.Exception.Message)" "WARN"
+        }
+        return $cid
+    }
+    return $null
+}
+
 function Write-Log($Message, $Level = "INFO") {
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $line = "[$timestamp] [$Level] $Message"
@@ -208,6 +254,7 @@ $global:Stats = @{
     snmp_sent = 0
     syslog_sent = 0
     errors = 0
+    auth_failures = 0
     last_error = ""
     start_time = Get-Date
 }
@@ -293,7 +340,20 @@ function Invoke-SecureGet($config, $endpoint, $timeoutSec = 15) {
         }
         return Invoke-RestMethod -Uri $url -Method Get -Headers $headers -TimeoutSec $timeoutSec -ErrorAction Stop
     } catch {
-        Write-Log "Errore secure GET ($endpoint): $($_.Exception.Message)" "ERROR"
+        # v3.5.16: messaggi di errore actionable per 401 (vs 404/500/network)
+        $msg = $_.Exception.Message
+        $isAuth = ($msg -match "401" -or $msg -match "Non autorizzato" -or $msg -match "Unauthorized")
+        if ($isAuth) {
+            $global:Stats.auth_failures = [int]($global:Stats.auth_failures) + 1
+            # Logga warning DETTAGLIATO solo ogni 10 fallimenti per non inondare il log
+            if (($global:Stats.auth_failures % 10) -eq 1) {
+                Write-Log "401 Non autorizzato su $endpoint — API Key non accettata dal NOC. Probabile causa: key rigenerata/ruotata nel Center UI. Soluzione: Clienti > [tuo cliente] > Rigenera API Key → copia in $env:ProgramData\86NocConnector\config.json → Restart-Service 86NocConnectorService." "ERROR"
+            } else {
+                Write-Log "401 su $endpoint (fallimento #$($global:Stats.auth_failures))" "WARN"
+            }
+        } else {
+            Write-Log "Errore secure GET ($endpoint): $msg" "ERROR"
+        }
         return $null
     }
 }
@@ -354,7 +414,18 @@ function Send-ToNOC($config, $endpoint, $payload) {
         $errMsg = $_.Exception.Message
         if ($_.Exception.InnerException) { $errMsg += " | Inner: $($_.Exception.InnerException.Message)" }
         $global:Stats.last_error = $errMsg
-        Write-Log "Errore invio a NOC ($endpoint): $errMsg" "ERROR"
+        # v3.5.16: messaggio chiaro + stop-the-bleed su 401
+        $isAuth = ($errMsg -match "401" -or $errMsg -match "Non autorizzato" -or $errMsg -match "Unauthorized")
+        if ($isAuth) {
+            $global:Stats.auth_failures = [int]($global:Stats.auth_failures) + 1
+            if (($global:Stats.auth_failures % 10) -eq 1) {
+                Write-Log "401 Non autorizzato su $endpoint — API Key non accettata dal NOC. Soluzione: nel Center vai su Clienti > [tuo cliente] > Rigenera API Key → copia nuova chiave in $env:ProgramData\86NocConnector\config.json → Restart-Service 86NocConnectorService." "ERROR"
+            } else {
+                Write-Log "401 su $endpoint (fallimento #$($global:Stats.auth_failures))" "WARN"
+            }
+        } else {
+            Write-Log "Errore invio a NOC ($endpoint): $errMsg" "ERROR"
+        }
         return $null
     }
 }
@@ -960,75 +1031,107 @@ if (Test-Path $pollerPath) {
 # Ritorna hashtable { "metricName" = value (scalar) OR { "idx1"=val, "idx2"=val } (table) }
 function Poll-VendorOids([string]$ip, [string]$community, $vendorTargets) {
     $result = @{}
-    if (-not $vendorTargets) { return $result }
+    if (-not $vendorTargets) {
+        Write-Log "  [VENDOR] ${ip}: vendorTargets NULL (no profile assigned)" "DEBUG"
+        return $result
+    }
+
+    $scalarsList = @()
+    $tablesList = @()
+    # Supporta sia PSCustomObject (da JSON) sia Hashtable — defensivo
+    try {
+        if ($vendorTargets.scalars) {
+            if ($vendorTargets.scalars -is [System.Collections.IDictionary]) {
+                $scalarsList = @($vendorTargets.scalars.GetEnumerator())
+            } else {
+                $scalarsList = @($vendorTargets.scalars.PSObject.Properties)
+            }
+        }
+        if ($vendorTargets.tables) {
+            if ($vendorTargets.tables -is [System.Collections.IDictionary]) {
+                $tablesList = @($vendorTargets.tables.GetEnumerator())
+            } else {
+                $tablesList = @($vendorTargets.tables.PSObject.Properties)
+            }
+        }
+    } catch {
+        Write-Log "  [VENDOR] ${ip}: errore enum targets: $($_.Exception.Message)" "WARN"
+        return $result
+    }
+    $scalarsCount = $scalarsList.Count
+    $tablesCount = $tablesList.Count
+    Write-Log "  [VENDOR] ${ip}: ricevuti $scalarsCount scalars + $tablesCount tables dal NOC" "INFO"
 
     # --- Scalars: GET singolo OID
-    if ($vendorTargets.scalars) {
-        foreach ($metric in $vendorTargets.scalars.PSObject.Properties) {
-            $mname = $metric.Name
-            $oid = [string]$metric.Value
-            if (-not $oid) { continue }
-            try {
-                $v = Get-SnmpValue $ip $community $oid
-                if ($null -ne $v -and $v -ne "") {
-                    # Try to parse as number if looks numeric
-                    $strV = [string]$v
-                    if ($strV -match '^-?\d+(\.\d+)?$') {
-                        $result[$mname] = [double]$strV
-                    } else {
-                        $result[$mname] = $strV
-                    }
+    $scalarsOk = 0
+    $scalarsFail = 0
+    foreach ($metric in $scalarsList) {
+        $mname = $metric.Name
+        $oid = [string]$metric.Value
+        if (-not $oid) { continue }
+        try {
+            $v = Get-SnmpValue $ip $community $oid
+            if ($null -ne $v -and $v -ne "") {
+                # Try to parse as number if looks numeric
+                $strV = [string]$v
+                if ($strV -match '^-?\d+(\.\d+)?$') {
+                    $result[$mname] = [double]$strV
+                } else {
+                    $result[$mname] = $strV
                 }
-            } catch {
-                # Non critical, continua
+                $scalarsOk++
+            } else {
+                $scalarsFail++
             }
+        } catch {
+            $scalarsFail++
+            # Non critical, continua
         }
     }
 
     # --- Tables: SNMP walk (Get-SnmpWalk exists in snmp_poller.ps1)
-    if ($vendorTargets.tables) {
-        foreach ($metric in $vendorTargets.tables.PSObject.Properties) {
-            $mname = $metric.Name
-            $baseOid = [string]$metric.Value
-            if (-not $baseOid) { continue }
-            try {
-                # Use Get-SnmpValues-Walk or Get-SnmpWalk (depends on poller version)
-                $walkResult = $null
-                if (Get-Command Get-SnmpWalk -ErrorAction SilentlyContinue) {
-                    $walkResult = Get-SnmpWalk $ip $community $baseOid
-                } elseif (Get-Command Get-SnmpValues-Walk -ErrorAction SilentlyContinue) {
-                    $walkResult = Get-SnmpValues-Walk $ip $community $baseOid
+    $tablesOk = 0
+    $tablesFail = 0
+    foreach ($metric in $tablesList) {
+        $mname = $metric.Name
+        $baseOid = [string]$metric.Value
+        if (-not $baseOid) { continue }
+        try {
+            # Use Get-SnmpTable (GETNEXT walk with correct OID scope check).
+            # Il fallback precedente con 32 GET numerate era errato: i walk reali
+            # hanno indici OID piu' profondi (es. h3cEntityExtCpuUsage usa 1.3.6.1.4.1.25506.2.6.1.1.1.1.6.<slotId>
+            # dove <slotId> puo' essere 1, 2, 9, 10, 65536...). Un loop .1 .2 ...32
+            # non intercettava nulla su device reali come switch Comware.
+            $walkResult = Get-SnmpTable $ip $community $baseOid
+            if ($walkResult -and $walkResult.Count -gt 0) {
+                $table = @{}
+                foreach ($fullOid in $walkResult.Keys) {
+                    # Estrai solo l'indice finale (tutto dopo baseOid.)
+                    $suffix = $fullOid.Substring($baseOid.Length).TrimStart('.')
+                    $v = $walkResult[$fullOid]
+                    $strV = [string]$v
+                    if ($strV -match '^-?\d+(\.\d+)?$') {
+                        $table[$suffix] = [double]$strV
+                    } else {
+                        $table[$suffix] = $strV
+                    }
+                }
+                if ($table.Count -gt 0) {
+                    $result[$mname] = $table
+                    $tablesOk++
                 } else {
-                    # Minimal fallback: try to get a few indexed values .1 .2 .3 ...
-                    $walkResult = @{}
-                    for ($i = 1; $i -le 32; $i++) {
-                        try {
-                            $val = Get-SnmpValue $ip $community "$baseOid.$i"
-                            if ($null -ne $val -and $val -ne "") { $walkResult[$i] = $val }
-                        } catch { break }
-                    }
+                    $tablesFail++
                 }
-                if ($walkResult -and $walkResult.Count -gt 0) {
-                    $table = @{}
-                    if ($walkResult -is [System.Collections.IDictionary]) {
-                        foreach ($k in $walkResult.Keys) {
-                            $v = $walkResult[$k]
-                            $strV = [string]$v
-                            if ($strV -match '^-?\d+(\.\d+)?$') {
-                                $table[[string]$k] = [double]$strV
-                            } else {
-                                $table[[string]$k] = $strV
-                            }
-                        }
-                    }
-                    if ($table.Count -gt 0) { $result[$mname] = $table }
-                }
-            } catch {
-                # Non critical
+            } else {
+                $tablesFail++
             }
+        } catch {
+            $tablesFail++
+            Write-Log "  [VENDOR] ${ip}: walk ${mname} failed: $($_.Exception.Message)" "DEBUG"
         }
     }
 
+    Write-Log "  [VENDOR] ${ip}: scalars OK=$scalarsOk / FAIL=$scalarsFail | tables OK=$tablesOk / FAIL=$tablesFail → $($result.Count) metriche totali" "INFO"
     return $result
 }
 
@@ -1114,12 +1217,15 @@ function Send-DeviceReport($config, $devices) {
             $sysDescr = ""
             $sysName = ""
             $sysUptime = ""
+            $sysObjectID = ""
             $extMetrics = $null
             $trafficData = $null
+            $vendorMetrics = $null
             if ($reachable) {
                 try {
                     $sysDescr = Get-SnmpValue $ip $community "1.3.6.1.2.1.1.1.0"
                     $sysName = Get-SnmpValue $ip $community "1.3.6.1.2.1.1.5.0"
+                    $sysObjectID = Get-SnmpValue $ip $community "1.3.6.1.2.1.1.2.0"
                     $uptimeTicks = Get-SnmpValue $ip $community "1.3.6.1.2.1.1.3.0"
                     if ($uptimeTicks) {
                         $secs = [math]::Floor($uptimeTicks / 100)
@@ -1130,14 +1236,13 @@ function Send-DeviceReport($config, $devices) {
                     }
                 } catch {}
                 
-                # Extended metrics (CPU, Memory, Temperature, Hardware health)
+                # Extended metrics (CPU, Memory, Temperature, Hardware health, entity_mib, primary_mac, if_aliases, arp_table)
                 try { $extMetrics = Poll-ExtendedMetrics $ip $community } catch {}
                 
                 # Interface traffic (bandwidth, speed, errors)
                 try { $trafficData = Poll-InterfaceTraffic $ip $community } catch {}
 
                 # FASE B: Vendor-specific OIDs (RAID status, UPS battery, VPN tunnels, etc.)
-                $vendorMetrics = $null
                 if ($dev.vendor_snmp_targets) {
                     try {
                         Write-Log "  Vendor SNMP polling $devName ($ip)..." "DEBUG"
@@ -1174,11 +1279,16 @@ function Send-DeviceReport($config, $devices) {
                 ports = $ports
                 sys_descr = "$sysDescr"
                 sys_name = "$sysName"
+                sys_object_id = "$sysObjectID"
                 sys_uptime = $sysUptime
                 poll_timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
             }
             
-            # Add extended metrics if available
+            # Add extended metrics if available.
+            # v3.5.13 FIX: passa TUTTI i campi raccolti da Poll-ExtendedMetrics (prima
+            # entity_mib / primary_mac / if_aliases / arp_table venivano raccolti dal
+            # connector ma MAI propagati nel device_report → il backend li riceveva
+            # sempre $null e l'UI non mostrava mai vendor/modello/firmware ecc.)
             if ($extMetrics) {
                 $deviceReport.cpu_usage = $extMetrics.cpu_usage
                 $deviceReport.memory_usage = $extMetrics.memory_usage
@@ -1187,6 +1297,18 @@ function Send-DeviceReport($config, $devices) {
                 $deviceReport.hardware = $extMetrics.hardware
                 if ($extMetrics.firewall) {
                     $deviceReport.firewall = $extMetrics.firewall
+                }
+                if ($extMetrics.entity_mib) {
+                    $deviceReport.entity_mib = $extMetrics.entity_mib
+                }
+                if ($extMetrics.primary_mac) {
+                    $deviceReport.primary_mac = $extMetrics.primary_mac
+                }
+                if ($extMetrics.if_aliases) {
+                    $deviceReport.if_aliases = $extMetrics.if_aliases
+                }
+                if ($extMetrics.arp_table) {
+                    $deviceReport.arp_table = $extMetrics.arp_table
                 }
             }
 
@@ -1312,6 +1434,22 @@ function Fetch-VaultCredentials($config) {
 }
 
 function Start-PollingLoop($config) {
+    # v3.5.16: se client_id nel config è vuoto (wizard pre-v3.5.16 non lo chiedeva),
+    # auto-discovery tramite endpoint /api/connector/identify. Salva il risultato
+    # in config.json così i restart successivi lo trovano già pronto.
+    if (-not $config.client_id -or $config.client_id.ToString().Trim().Length -eq 0) {
+        Write-Log "Config client_id vuoto — auto-discovery in corso..." "WARN"
+        $cid = Ensure-ClientIdInConfig
+        if ($cid) {
+            # Ricarica config da disco (ora contiene il client_id aggiornato)
+            $config = Read-Config
+        } else {
+            Write-Log "Auto-discovery FALLITO: tutte le chiamate HMAC al NOC riceveranno 401." "ERROR"
+            Write-Log "  Cause possibili: (a) API key non valida, (b) NOC irraggiungibile, (c) endpoint /connector/identify non deployato su NOC produzione." "ERROR"
+            Write-Log "  Workaround manuale: copiare il client_id dal Center UI e inserirlo in config.json." "ERROR"
+        }
+    }
+
     $devices = @()
     if ($config.devices) {
         $devices = @($config.devices)
@@ -2463,24 +2601,61 @@ function Remove-StatusFile {
 # online automaticamente entro 5 minuti senza intervento manuale.
 function Register-ServiceWatchdog {
     $taskName = "86NocConnector_Watchdog"
-    $ps = Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe"
-    # Comando watchdog: se servizio esiste ed è Stopped, fa Start-Service
-    $watchdogCmd = "Get-Service -Name '86NocConnectorService','86NocConnector' -ErrorAction SilentlyContinue | Where-Object { `$_.Status -eq 'Stopped' } | ForEach-Object { Start-Service -Name `$_.Name -ErrorAction SilentlyContinue; Add-Content -Path '$env:ProgramData\86NocConnector\watchdog.log' -Value ""[`$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Restarted service `$(`$_.Name)"" -ErrorAction SilentlyContinue }"
-    $escCmd = $watchdogCmd -replace '"', '\"'
-    $taskCmd = "`"$ps`" -NoProfile -NonInteractive -WindowStyle Hidden -Command `"$escCmd`""
 
-    # Verifica se task già esiste e ha la versione corretta
+    # Verifica se task già esiste ed e' in stato sano
     $existing = & schtasks.exe /Query /TN $taskName 2>&1 | Out-String
     if ($existing -match $taskName -and $existing -match "Ready|Running") {
-        # Task esiste, skip
         return
     }
 
     Write-Log "Registrazione Watchdog scheduled task (riavvio automatico servizio ogni 5 min se Stopped)..." "INFO"
+
+    # v3.5.12: usiamo un file .ps1 intermedio in ProgramData invece di inline command.
+    # Il metodo inline con schtasks /TR "... -Name ..." falliva perche' schtasks
+    # parsava "-Name" come argomento del proprio comando (collision di tokenizer).
+    # Il file .ps1 e' robusto contro qualsiasi carattere speciale nel corpo del comando.
+    $watchdogDir = Join-Path $env:ProgramData "86NocConnector"
+    if (-not (Test-Path $watchdogDir)) {
+        try { New-Item -ItemType Directory -Path $watchdogDir -Force | Out-Null } catch {}
+    }
+    $watchdogScript = Join-Path $watchdogDir "watchdog.ps1"
+    $watchdogBody = @'
+# 86NocConnector Service Watchdog - auto-generato
+# Controlla che il servizio sia Running; se Stopped lo riavvia.
+$ErrorActionPreference = "SilentlyContinue"
+$logFile = "$env:ProgramData\86NocConnector\watchdog.log"
+$svc = Get-Service -Name "86NocConnectorService"
+if ($null -eq $svc) {
+    Add-Content -Path $logFile -Value "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Servizio non registrato, skip"
+    exit 0
+}
+if ($svc.Status -eq "Stopped") {
     try {
-        # Crea task: trigger ogni 5 minuti, gira come SYSTEM
+        Start-Service -Name "86NocConnectorService"
+        Add-Content -Path $logFile -Value "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Servizio era Stopped, riavviato"
+    } catch {
+        Add-Content -Path $logFile -Value "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Errore restart: $($_.Exception.Message)"
+    }
+} elseif ($svc.Status -eq "Paused") {
+    try {
+        Resume-Service -Name "86NocConnectorService"
+        Add-Content -Path $logFile -Value "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Servizio era Paused, resumed"
+    } catch {
+        Add-Content -Path $logFile -Value "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Errore resume: $($_.Exception.Message)"
+    }
+}
+'@
+    try {
+        Set-Content -Path $watchdogScript -Value $watchdogBody -Encoding UTF8 -Force
+
+        $ps = Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe"
+        $taskCmd = "`"$ps`" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$watchdogScript`""
         & schtasks.exe /Create /TN $taskName /SC MINUTE /MO 5 /TR $taskCmd /RU "SYSTEM" /RL HIGHEST /F 2>&1 | Out-String | ForEach-Object { Write-Log "  watchdog: $_" "DEBUG" }
-        Write-Log "Watchdog registrato (controllo servizio ogni 5 min)" "INFO"
+        if ($LASTEXITCODE -eq 0) {
+            Write-Log "Watchdog registrato (controllo servizio ogni 5 min via $watchdogScript)" "INFO"
+        } else {
+            Write-Log "Watchdog register exit=$LASTEXITCODE — continuo senza" "WARN"
+        }
     } catch {
         Write-Log "Watchdog register fallito: $($_.Exception.Message)" "WARN"
     }
@@ -2507,6 +2682,25 @@ function Start-Connector {
     Write-Log "  Config: $(Get-ConfigPath)"
     Write-Log "=================================================="
     
+    # v3.5.12: Self-heal al boot — rileva e rimuove Task Scheduler conflittuali
+    # con lo stesso nome del servizio NSSM (causa principale di restart ciclici
+    # ogni 60s nelle installazioni che hanno avuto versioni pre-v3.3.0 del connector).
+    try {
+        $svcName = if ($global:ServiceName) { $global:ServiceName } else { "86NocConnectorService" }
+        $conflictTask = Get-ScheduledTask -TaskName $svcName -ErrorAction SilentlyContinue
+        if ($conflictTask) {
+            Write-Log "[SELF-HEAL] Rilevato Task Scheduler conflittuale '$svcName' — causa race condition con servizio NSSM. Rimozione..." "WARN"
+            try {
+                Unregister-ScheduledTask -TaskName $svcName -Confirm:$false -ErrorAction SilentlyContinue
+                & schtasks.exe /Delete /TN $svcName /F 2>$null | Out-Null
+                & schtasks.exe /Delete /TN "\$svcName" /F 2>$null | Out-Null
+                Write-Log "[SELF-HEAL] Task Scheduler conflittuale rimosso — restart ciclici cessati" "INFO"
+            } catch {
+                Write-Log "[SELF-HEAL] Errore rimozione task conflittuale: $($_.Exception.Message)" "ERROR"
+            }
+        }
+    } catch {}
+
     # Test connettivita' NOC all'avvio
     Write-Log "Test connettivita' verso il NOC..."
     try {
@@ -2530,15 +2724,22 @@ function Start-Connector {
     }
     
     # Start listeners in background jobs
+    # v3.5.13 FIX: $global:Running va settato ESPLICITAMENTE dentro lo scope del job.
+    # Quando Start-Job dot-source lo script, la guardia "if (InvocationName -ne '.')"
+    # salta Start-Connector e $global:Running resta $null → il loop `while ($global:Running)`
+    # esce immediatamente → job "Completed" dopo 2s → il health-check lo ripartiva ogni 3 min.
+    # Risultato pre-fix: listener UDP morti per 2-3 min ogni 3 min = buco trap/syslog.
     $snmpJob = Start-Job -ScriptBlock {
         param($scriptPath, $configPath)
         . $scriptPath -ConfigPath $configPath
+        $global:Running = $true
         Start-SNMPListener (Read-Config)
     } -ArgumentList $PSCommandPath, (Get-ConfigPath)
     
     $syslogJob = Start-Job -ScriptBlock {
         param($scriptPath, $configPath)
         . $scriptPath -ConfigPath $configPath
+        $global:Running = $true
         Start-SyslogListener (Read-Config)
     } -ArgumentList $PSCommandPath, (Get-ConfigPath)
     
@@ -2620,6 +2821,7 @@ function Start-Connector {
                         $snmpJob = Start-Job -ScriptBlock {
                             param($scriptPath, $configPath)
                             . $scriptPath -ConfigPath $configPath
+                            $global:Running = $true
                             Start-SNMPListener (Read-Config)
                         } -ArgumentList $PSCommandPath, (Get-ConfigPath)
                         Write-Log "SNMP Listener riavviato" "INFO"
@@ -2633,6 +2835,7 @@ function Start-Connector {
                         $syslogJob = Start-Job -ScriptBlock {
                             param($scriptPath, $configPath)
                             . $scriptPath -ConfigPath $configPath
+                            $global:Running = $true
                             Start-SyslogListener (Read-Config)
                         } -ArgumentList $PSCommandPath, (Get-ConfigPath)
                         Write-Log "Syslog Listener riavviato" "INFO"

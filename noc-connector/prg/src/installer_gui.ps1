@@ -418,10 +418,29 @@ function Show-InstallerWizard {
             }
             try {
                 $r = Invoke-RestMethod -Uri "$url/api/health" -TimeoutSec 10
-                $body = @{ connector_version=$Version; hostname=$env:COMPUTERNAME; uptime_seconds=0; traps_received=0; syslogs_received=0 } | ConvertTo-Json
-                $headers = @{ "X-API-Key" = $key; "Content-Type" = "application/json" }
-                Invoke-RestMethod -Uri "$url/api/connector/heartbeat" -Method Post -Headers $headers -Body $body -TimeoutSec 10
-                [System.Windows.Forms.MessageBox]::Show("Connessione OK!`nAPI Key valida.", $DisplayName, "OK", "Information")
+                # v3.5.16: verifica API key tramite /connector/identify (endpoint backend
+                # che data la API key ritorna il client_id). Se 200 e client_id valorizzato
+                # la key e' sicuramente accettata dal NOC in produzione.
+                $headers = @{ "X-API-Key" = $key }
+                try {
+                    $identity = Invoke-RestMethod -Uri "$url/api/connector/identify" -Headers $headers -TimeoutSec 10
+                    if ($identity -and $identity.client_id) {
+                        # Salva il client_id in una variabile form-level per usarlo dopo
+                        $script:DiscoveredClientId = $identity.client_id
+                        $script:DiscoveredClientName = $identity.client_name
+                        [System.Windows.Forms.MessageBox]::Show("Connessione OK! API Key valida.`r`nCliente: $($identity.client_name)`r`nClient ID: $($identity.client_id)", $DisplayName, "OK", "Information")
+                        return
+                    }
+                } catch {
+                    # Fallback legacy: prova heartbeat con solo X-API-Key (server pre-v3.5.16
+                    # potrebbe non avere ancora /connector/identify ma accettare comunque X-API-Key)
+                    $body = @{ connector_version=$Version; hostname=$env:COMPUTERNAME; uptime_seconds=0; traps_received=0; syslogs_received=0 } | ConvertTo-Json
+                    $headers["Content-Type"] = "application/json"
+                    Invoke-RestMethod -Uri "$url/api/connector/heartbeat" -Method Post -Headers $headers -Body $body -TimeoutSec 10
+                    [System.Windows.Forms.MessageBox]::Show("Connessione OK!`r`nAPI Key valida (modalita' legacy: endpoint /identify non disponibile sul NOC).", $DisplayName, "OK", "Information")
+                    return
+                }
+                [System.Windows.Forms.MessageBox]::Show("Connessione OK ma API Key NON riconosciuta dal NOC.`r`nVerifica che la key sia quella attiva nel Center UI.", $DisplayName, "OK", "Warning")
             } catch {
                 [System.Windows.Forms.MessageBox]::Show("Errore: $($_.Exception.Message)", $DisplayName, "OK", "Error")
             }
@@ -753,9 +772,28 @@ function Show-InstallerWizard {
         $pollInterval = 60
         try { $pollInterval = [int]$txtPollInterval.Text } catch {}
 
+        # v3.5.16: se il test connessione ha scoperto il client_id via /identify,
+        # salvalo nel config (evita l'auto-discovery runtime). Se non disponibile,
+        # prova a ricavarlo ora (anche se l'admin ha skippato il pulsante Test).
+        $discoveredClientId = ""
+        if ($script:DiscoveredClientId) {
+            $discoveredClientId = $script:DiscoveredClientId
+        } else {
+            try {
+                $_h = @{ "X-API-Key" = $key }
+                $_id = Invoke-RestMethod -Uri "$url/api/connector/identify" -Headers $_h -TimeoutSec 10 -ErrorAction Stop
+                if ($_id -and $_id.client_id) { $discoveredClientId = $_id.client_id }
+            } catch {
+                # Endpoint /identify non disponibile (NOC produzione pre-v3.5.16) o key invalida
+                # → il connector runtime fara' l'auto-discovery dopo il deploy
+                $discoveredClientId = ""
+            }
+        }
+
         $config = @{
             noc_center_url = $url
             api_key = $key
+            client_id = $discoveredClientId
             snmp_trap_port = [int]$txtSNMP.Text
             syslog_port = [int]$txtSyslog.Text
             heartbeat_interval_seconds = 60
@@ -839,6 +877,8 @@ function Show-InstallerWizard {
         $connectorScript = Join-Path $ScriptDir "connector.ps1"
         $nssmPath = Join-Path $BaseDir "nssm.exe"
         $svcName = "86NocConnectorService"
+        # v3.5.15: path assoluto a powershell.exe (evita PATH env var non definiti in NSSM LocalSystem context)
+        $psExe = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
         
         if ($chkAutostart.Checked) {
             if (Test-Path $nssmPath) {
@@ -846,9 +886,45 @@ function Show-InstallerWizard {
                     # Rimuovi servizio precedente se esiste
                     & $nssmPath stop $svcName 2>$null
                     & $nssmPath remove $svcName confirm 2>$null
-                    
+
+                    # === CRITICAL v3.5.12 ===
+                    # Rimuovi EVENTUALI Task Scheduler residui con lo stesso nome del servizio.
+                    # Nelle prime versioni (pre-v3.3.0) il connector girava come Scheduled Task
+                    # chiamato "86NocConnectorService". Se l'utente aveva una vecchia installazione
+                    # quel task puo' essere rimasto orfano. Ogni volta che si triggera lancia
+                    # una nuova istanza di PowerShell che pollua con il servizio NSSM attuale,
+                    # causando restart ciclici ogni ~60 secondi e race condition (il task killa
+                    # il servizio e viceversa). Nessun polling completa mai un ciclo.
+                    try {
+                        $conflictTask = Get-ScheduledTask -TaskName $svcName -ErrorAction SilentlyContinue
+                        if ($conflictTask) {
+                            $txtStatus.AppendText("  ATTENZIONE: rilevato Task Scheduler legacy con stesso nome del servizio, rimozione...`r`n")
+                            Unregister-ScheduledTask -TaskName $svcName -Confirm:$false -ErrorAction SilentlyContinue
+                            # Prova anche via schtasks (alcuni task creati da versioni molto vecchie
+                            # non sono visibili via Get-ScheduledTask)
+                            & schtasks.exe /Delete /TN $svcName /F 2>$null | Out-Null
+                            & schtasks.exe /Delete /TN "\$svcName" /F 2>$null | Out-Null
+                            Start-Sleep -Milliseconds 500
+                            $txtStatus.AppendText("  Task Scheduler legacy rimosso (previene restart ciclici)`r`n")
+                        }
+                    } catch {
+                        $txtStatus.AppendText("  Warn: cleanup task legacy non critico: $($_.Exception.Message)`r`n")
+                    }
+                    # Kill eventuali processi PowerShell legati a connector.ps1 (orfani da task vecchi)
+                    try {
+                        Get-WmiObject Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
+                            Where-Object { $_.CommandLine -like "*connector.ps1*" } |
+                            ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+                    } catch {}
+
                     # Registra il servizio con NSSM
-                    & $nssmPath install $svcName "powershell.exe" "-ExecutionPolicy Bypass -NonInteractive -WindowStyle Hidden -File `"$connectorScript`""
+                    # v3.5.15 FIX quoting: nssm install con AppParameters inline
+                    # NON rispetta le virgolette su path con spazi (es. "C:\Program Files\...").
+                    # Risultato pre-fix: PowerShell ricevette `-File C:\Program` come path monco
+                    # → "Il file non ha estensione 'ps1'" → crash infinito ogni 60s su Program Files.
+                    # Fix: install col solo eseguibile, poi AppParameters via `set` (quoting OK).
+                    & $nssmPath install $svcName $psExe
+                    & $nssmPath set $svcName AppParameters ('-ExecutionPolicy Bypass -NonInteractive -WindowStyle Hidden -File "' + $connectorScript + '"')
                     & $nssmPath set $svcName AppDirectory $ScriptDir
                     & $nssmPath set $svcName DisplayName "86NocConnector Service"
                     & $nssmPath set $svcName Description "86NocConnector - Raccolta SNMP/Syslog per NOC Center"
