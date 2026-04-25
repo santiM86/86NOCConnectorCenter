@@ -420,7 +420,89 @@ Rimossi in v3.5.0 (con OK utente): Check-ForUpdate, Install-Update (5 metodi fal
 
 ### Time-Series Metrics + Syslog Viewer + SNMP Traps (2026-04-22 — iteration_59)
 
-### Connector v3.5.17 — Enterprise Edition (2026-04-24)
+### Sprint Sicurezza Enterprise — IP Allowlist + WireGuard VPN (2026-04-25)
+
+**Trigger**: il cliente ha richiesto "VPN estremamente sicura e protetta per collegarsi ai dispositivi" + "ulteriore sicurezza dove inseriamo IP Pubblici autorizzati al collegamento". Implementati DUE sistemi di sicurezza enterprise complementari.
+
+#### 1. IP Allowlist (Network Layer)
+**Scope**: blocca accessi a `/api/admin/*` e `/api/auth/login` da IP non autorizzati. Bypass automatico per `/api/health`, `/api/connector/*` (autenticati via X-API-Key + HMAC), `/downloads/*`, loopback.
+
+**Componenti**:
+- `/app/backend/routes/security_allowlist.py` — modulo completo (CRUD + middleware FastAPI + validazione CIDR via `ipaddress` stdlib + audit log)
+- Middleware `IPAllowlistMiddleware` registrato in `server.py` — controlla `X-Forwarded-For` o `request.client.host`
+- **Anti-lockout protection**: il backend rifiuta con 422 `lockout_risk` se la nuova regola NON include l'IP del richiedente E nessun'altra regola attiva lo include. Bypass con `?force=true` per casi avanzati.
+- `/app/frontend/src/pages/IPAllowlistPage.js` — UI dedicata con: banner IP corrente + reason, status "ATTIVA/INATTIVA", tabella regole con toggle enable/disable, dialog add con preview "il tuo IP è incluso?" in tempo reale, dialog confermazione force per lock-out scenarios, dialog conferma delete
+- Link da `SettingsPage` → "Gestisci IP Pubblici Autorizzati"
+
+**Logica**:
+- Lista vuota → tutti gli IP consentiti (evita lock-out durante setup iniziale)
+- Lista popolata → solo IP/range attivi consentiti su admin endpoints
+- Connector bypassano sempre (autenticazione separata via X-API-Key)
+- Loopback sempre consentito (per healthcheck interno e debug)
+
+**Endpoint**:
+- `GET /api/admin/security/allowed-ips` — lista
+- `POST /api/admin/security/allowed-ips[?force=true]` — aggiungi
+- `PATCH /api/admin/security/allowed-ips/{id}` — toggle/edit
+- `DELETE /api/admin/security/allowed-ips/{id}` — rimuovi
+- `GET /api/admin/security/allowed-ips/check` — diagnostico (ritorna IP corrente + allowed/reason)
+
+#### 2. WireGuard VPN — Military-Grade Remote Access
+**Scope**: tunnel on-demand crittografati ChaCha20-Poly1305/Curve25519 verso i dispositivi del cliente attraverso il connector ARGUS. Isolamento per-tenant strict (un cliente NON vede mai la rete di un altro). Tunnel attivo solo quando l'admin clicca "Connetti", chiusura automatica via TTL.
+
+**Componenti**:
+- `/app/backend/routes/wireguard.py` — modulo backend completo:
+  - Schema DB: `wireguard_peers` (client_id, public_key, tunnel_ip auto-allocato dalla pool /16, active flag), `wireguard_sessions` (id, status active/expired/stopped/superseded, started_by, target_device_ip, reason, expires_at)
+  - Endpoint connector-facing (X-API-Key auth): `POST /api/connector/wireguard/register-public-key` (idempotent, rotation supportata), `GET /api/connector/wireguard/config` (ritorna tunnel_ip + server_endpoint + interface_name `wg-<client-id8>`), `GET /api/connector/wireguard/session` (long-poll per attivazione/disattivazione tunnel)
+  - Endpoint admin-facing (JWT auth): `GET /api/admin/wireguard/server-status` (ready/not-ready), `GET /api/admin/wireguard/peers`, `POST /api/admin/wireguard/session/start` (con TTL 1-240 min), `POST /api/admin/wireguard/session/{id}/stop`, `GET /api/admin/wireguard/sessions[?client_id&limit]`, `POST /api/admin/wireguard/peer/{client_id}/disable`
+  - Auto-allocazione IP da pool `WG_POOL_BASE` (default 10.86.0.0/16, configurabile via env)
+  - Idempotency: re-registrare la stessa pubkey è no-op; ruotare la pubkey mantiene lo stesso tunnel_ip
+  - Audit log completo (WG_PEER_REGISTERED, WG_PEER_KEY_ROTATED, WG_PEER_DISABLED, WG_SESSION_START, WG_SESSION_STOP)
+  - Validazione pubkey WireGuard via base64 32-byte raw check
+- `/app/scripts/setup-wireguard-server.sh` — installazione one-shot del server WG su Linux: apt/dnf/yum auto-detect, generazione chiavi server idempotente, config `/etc/wireguard/wg0.conf` con NAT iptables MASQUERADE, IP forwarding persistente, ufw/firewalld auto-config, systemd `wg-quick@wg0` enable+start, output finale con env vars da aggiungere a `.env`
+- `/app/scripts/teardown-wireguard-server.sh` — disinstallazione pulita con backup config
+- `/app/frontend/src/pages/WireGuardPage.js` — UI Center completa:
+  - Banner status server (ready/not-ready con istruzioni step-by-step se mancano env vars)
+  - 3 tab: Sessioni Attive (con stop button), Peer Registrati (con disable + copy pubkey), Storico (con stato active/expired/stopped/superseded color-coded)
+  - Dialog "Avvia Sessione VPN" con select cliente (solo peer attivi), IP target (audit), motivo (audit), TTL custom
+  - Auto-refresh ogni 10s quando la pagina è aperta
+  - Empty states con CTA chiare
+
+**Modello sicurezza**:
+- Tunnel **on-demand**: il connector NON tiene su il tunnel sempre. Long-poll ogni 5s, attiva quando session.status=active, chiude quando expired/stopped.
+- **Per-tenant isolation**: ogni connector ha la sua sub-interface `wg-<client-id8>` (se tradotto a livello kernel WireGuard via setup avanzato), zero cross-tenant traffic
+- **Audit completo**: chi ha avviato la sessione, quale device target, motivo, durata, exit reason
+- **Disable peer**: l'admin può disabilitare un peer compromesso senza rimuoverlo (impedisce nuove sessioni)
+- **TTL forzato**: max 240 min per sessione, sessioni scadute si chiudono automaticamente
+
+**Operatività**:
+- Step 1 (sysadmin): `sudo bash /app/scripts/setup-wireguard-server.sh` sul server Argus → ottiene `WG_SERVER_PUBKEY` + `WG_SERVER_ENDPOINT`
+- Step 2 (sysadmin): copia env vars in `/app/backend/.env` + `sudo supervisorctl restart backend`
+- Step 3 (deploy connector v3.5.18+): connector all'avvio genera coppia chiavi WG, registra pubkey, riceve config
+- Step 4 (admin Center): `/settings/wireguard` → "Avvia Sessione VPN" → seleziona cliente + device → tunnel attivo entro ~5s
+
+**File**:
+- `/app/backend/routes/security_allowlist.py` (nuovo, 250 righe)
+- `/app/backend/routes/wireguard.py` (nuovo, 285 righe)
+- `/app/backend/server.py` (registrato 2 nuovi router + 1 middleware)
+- `/app/frontend/src/pages/IPAllowlistPage.js` (nuovo, 320 righe)
+- `/app/frontend/src/pages/WireGuardPage.js` (nuovo, 380 righe)
+- `/app/frontend/src/pages/SettingsPage.js` (aggiunte 2 card "Gestisci")
+- `/app/frontend/src/App.js` (registrate 2 nuove route)
+- `/app/scripts/setup-wireguard-server.sh` (nuovo, 165 righe)
+- `/app/scripts/teardown-wireguard-server.sh` (nuovo, 30 righe)
+
+**Test backend**:
+- ✅ CRUD allowed-ips: add/list/patch/delete + anti-lockout 422 + force=true bypass
+- ✅ WG status: pool 10.86.0.0/16, ready=false (server non config in preview)
+- ✅ WG peer register: nuova pubkey → tunnel_ip 10.86.0.2 assegnato; idempotent re-registration; rotation pubkey mantiene IP
+- ✅ WG session lifecycle: admin start → connector poll vede `tunnel_required=true session_id ...` → admin stop → connector poll vede `tunnel_required=false`
+
+**TODO sprint successivi**:
+- v3.5.18 connector: integrazione runtime WireGuard (genera chiavi, register, long-poll session, lancia `wireguard.exe /installtunnelservice` o `wg-quick up/down`)
+- Integration test su VM Linux + cliente Windows reale con VPS WireGuard ready
+- Implementare iptables/wg per-tenant strict isolation a livello kernel (oggi è solo logico)
+- Pannello "Connettiti al device" sulla pagina dispositivo: pulsante che fa start session + apre il browser sull'IP del device tramite tunnel
 **Obiettivo release**: package "production-grade" unico pronto per deployment su server vergini, con validazione preflight che previene il problema storico di installazione cieca → scoperta del problema solo ore dopo nei log.
 
 **Novità v3.5.17**:

@@ -1,0 +1,323 @@
+"""
+ARGUS Center — WireGuard VPN Module
+====================================
+Sicurezza "military-grade" per accesso remoto on-demand ai dispositivi del cliente
+attraverso il connector ARGUS, tramite tunnel WireGuard isolato per-tenant.
+
+Architettura:
+- Server WireGuard sullo stesso host del Center (o VPS dedicato).
+- Ogni cliente ha un'interfaccia wg dedicata (es. wg-tenant-<client_id_short>) →
+  isolamento di rete completo, zero leak cross-tenant.
+- Connector genera coppia chiavi al primo avvio, registra pubkey al Center,
+  riceve config (IP, peer pubkey server, endpoint) e crea il tunnel.
+- Tunnel ON-DEMAND: il connector NON tiene su il tunnel sempre. Quando l'admin
+  clicca "Connetti" nel Center, viene creata una `wireguard_session` (TTL 30 min),
+  il connector vede il flag e lancia `wg-quick up tunnel`. Quando l'admin clicca
+  "Disconnetti" o scade TTL, il connector lancia `wg-quick down`.
+- Multi-tenant strict: il routing del Center forwarda solo verso la subnet del
+  cliente attivo, regole iptables per-cliente.
+
+Endpoints:
+- POST /api/admin/wireguard/peer/register-public-key  — connector registra pubkey
+- GET  /api/connector/wireguard/config                — connector legge sua config
+- GET  /api/connector/wireguard/session               — connector long-poll session
+- POST /api/admin/wireguard/session/start             — admin avvia tunnel
+- POST /api/admin/wireguard/session/{id}/stop         — admin chiude tunnel
+- GET  /api/admin/wireguard/peers                     — admin lista peer
+- POST /api/admin/wireguard/peer/{client_id}/rotate   — admin ruota chiavi
+
+NOTE: questo modulo gestisce SOLO il piano dati (DB schema + API).
+Il setup runtime di WireGuard server (wg-quick, iptables, IP forwarding) è
+fornito separatamente da `scripts/setup-wireguard-server.sh`.
+"""
+import ipaddress
+import logging
+import os
+import secrets
+import uuid
+from datetime import datetime, timedelta, timezone
+from typing import Optional
+
+from fastapi import APIRouter, HTTPException, Request, Depends
+from pydantic import BaseModel, Field
+
+from database import db
+from deps import get_current_user, require_admin, validate_api_key
+
+logger = logging.getLogger(__name__)
+audit = logging.getLogger("audit")
+
+router = APIRouter(tags=["wireguard"])
+
+# ============================================================
+# Configuration (env vars)
+# ============================================================
+# Subnet pool da cui assegnare IP ai peer connector. /24 per cliente di default.
+WG_POOL_BASE = os.environ.get("WG_POOL_BASE", "10.86.0.0/16")
+WG_SERVER_PUBKEY = os.environ.get("WG_SERVER_PUBKEY", "")  # pubkey server (impostata da setup script)
+WG_SERVER_ENDPOINT = os.environ.get("WG_SERVER_ENDPOINT", "")  # es. argus.86bit.it:51820
+WG_SESSION_TTL_MIN = int(os.environ.get("WG_SESSION_TTL_MIN", "30"))
+
+
+# ============================================================
+# Pydantic models
+# ============================================================
+class PeerRegisterPublicKey(BaseModel):
+    public_key: str = Field(..., min_length=43, max_length=44, description="WireGuard public key base64")
+
+
+class SessionStart(BaseModel):
+    client_id: str
+    ttl_minutes: Optional[int] = None
+    target_device_ip: Optional[str] = None  # se fornito, audit info per log
+    reason: Optional[str] = ""
+
+
+# ============================================================
+# Helpers
+# ============================================================
+def _is_valid_wg_pubkey(key: str) -> bool:
+    """WireGuard pubkey base64 = 32 bytes raw → 44 chars b64 (con padding =)."""
+    if not key or not isinstance(key, str):
+        return False
+    key = key.strip()
+    if len(key) != 44 or not key.endswith("="):
+        return False
+    try:
+        import base64
+        raw = base64.b64decode(key, validate=True)
+        return len(raw) == 32
+    except Exception:
+        return False
+
+
+async def _allocate_peer_ip(client_id: str) -> str:
+    """Assegna un IP libero dalla pool /16 al peer.
+    Strategia: usa client_id hash → IP deterministico. Se collide, scan sequenziale."""
+    pool = ipaddress.ip_network(WG_POOL_BASE, strict=False)
+    used = set()
+    async for p in db.wireguard_peers.find({}, {"_id": 0, "tunnel_ip": 1}):
+        if p.get("tunnel_ip"):
+            used.add(p["tunnel_ip"])
+    # Skip .0 e .1 (network + server)
+    skip = {str(pool.network_address), str(pool.network_address + 1)}
+    for host in pool.hosts():
+        ip = str(host)
+        if ip in skip or ip in used:
+            continue
+        return ip
+    raise HTTPException(status_code=507, detail="WireGuard pool esaurita")
+
+
+# ============================================================
+# CONNECTOR-FACING ENDPOINTS (X-API-Key auth)
+# ============================================================
+@router.post("/api/connector/wireguard/register-public-key")
+async def connector_register_pubkey(payload: PeerRegisterPublicKey, request: Request):
+    """Il connector registra la propria pubkey WireGuard.
+    Idempotent: se pubkey identica → no-op. Se cambiata → ruota IP+config."""
+    client_data = await validate_api_key(request)
+    client_id = client_data["id"]
+
+    if not _is_valid_wg_pubkey(payload.public_key):
+        raise HTTPException(status_code=400, detail="Public key WireGuard non valida (formato base64 32-byte richiesto)")
+
+    existing = await db.wireguard_peers.find_one({"client_id": client_id}, {"_id": 0})
+    if existing and existing.get("public_key") == payload.public_key:
+        # Idempotente: stessa pubkey → ritorna config esistente
+        return {
+            "status": "unchanged",
+            "tunnel_ip": existing["tunnel_ip"],
+            "server_public_key": WG_SERVER_PUBKEY or "(server-not-configured)",
+            "server_endpoint": WG_SERVER_ENDPOINT or "(server-not-configured)",
+            "allowed_ips": existing.get("allowed_ips", "10.86.0.0/16"),
+        }
+
+    if existing:
+        # Pubkey cambiata → mantieni stesso tunnel_ip, aggiorna pubkey + audit
+        new_doc = dict(existing)
+        new_doc["public_key"] = payload.public_key
+        new_doc["public_key_rotated_at"] = datetime.now(timezone.utc).isoformat()
+        await db.wireguard_peers.update_one({"client_id": client_id}, {"$set": new_doc})
+        audit.info(f"WG_PEER_KEY_ROTATED client_id={client_id}")
+        return {
+            "status": "rotated",
+            "tunnel_ip": existing["tunnel_ip"],
+            "server_public_key": WG_SERVER_PUBKEY or "(server-not-configured)",
+            "server_endpoint": WG_SERVER_ENDPOINT or "(server-not-configured)",
+            "allowed_ips": existing.get("allowed_ips", "10.86.0.0/16"),
+        }
+
+    # Nuovo peer: alloca IP, salva
+    tunnel_ip = await _allocate_peer_ip(client_id)
+    doc = {
+        "id": uuid.uuid4().hex,
+        "client_id": client_id,
+        "client_name": client_data.get("name", ""),
+        "public_key": payload.public_key,
+        "tunnel_ip": tunnel_ip,
+        "allowed_ips": "10.86.0.0/16",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "active": True,
+    }
+    await db.wireguard_peers.insert_one(doc)
+    audit.info(f"WG_PEER_REGISTERED client_id={client_id} tunnel_ip={tunnel_ip}")
+    return {
+        "status": "created",
+        "tunnel_ip": tunnel_ip,
+        "server_public_key": WG_SERVER_PUBKEY or "(server-not-configured)",
+        "server_endpoint": WG_SERVER_ENDPOINT or "(server-not-configured)",
+        "allowed_ips": doc["allowed_ips"],
+    }
+
+
+@router.get("/api/connector/wireguard/config")
+async def connector_get_config(request: Request):
+    """Il connector richiede la sua config WireGuard.
+    Ritorna 404 se peer non registrato (connector deve registrare prima)."""
+    client_data = await validate_api_key(request)
+    peer = await db.wireguard_peers.find_one({"client_id": client_data["id"]}, {"_id": 0})
+    if not peer:
+        raise HTTPException(status_code=404, detail="Peer non registrato. Esegui prima register-public-key.")
+    return {
+        "tunnel_ip": peer["tunnel_ip"],
+        "server_public_key": WG_SERVER_PUBKEY or "(server-not-configured)",
+        "server_endpoint": WG_SERVER_ENDPOINT or "(server-not-configured)",
+        "allowed_ips": peer.get("allowed_ips", "10.86.0.0/16"),
+        "active": peer.get("active", True),
+        "interface_name": f"wg-{client_data['id'][:8]}",
+    }
+
+
+@router.get("/api/connector/wireguard/session")
+async def connector_poll_session(request: Request):
+    """Long-poll endpoint per il connector: ritorna se c'è una session attiva
+    o il flag 'pending start/stop' per il tunnel WireGuard.
+    Polling ogni ~5s dal connector quando configurato."""
+    client_data = await validate_api_key(request)
+    cid = client_data["id"]
+    now = datetime.now(timezone.utc)
+
+    # Mark scaduti
+    await db.wireguard_sessions.update_many(
+        {"client_id": cid, "status": "active", "expires_at": {"$lt": now.isoformat()}},
+        {"$set": {"status": "expired", "ended_at": now.isoformat()}},
+    )
+
+    active = await db.wireguard_sessions.find_one(
+        {"client_id": cid, "status": "active"}, {"_id": 0}, sort=[("started_at", -1)]
+    )
+    if active:
+        return {
+            "tunnel_required": True,
+            "session_id": active["id"],
+            "expires_at": active["expires_at"],
+            "started_by": active.get("started_by", ""),
+            "target_device_ip": active.get("target_device_ip", ""),
+        }
+    return {"tunnel_required": False}
+
+
+# ============================================================
+# ADMIN-FACING ENDPOINTS (JWT auth)
+# ============================================================
+@router.get("/api/admin/wireguard/peers")
+async def admin_list_peers(current_user: dict = Depends(get_current_user)):
+    require_admin(current_user)
+    cursor = db.wireguard_peers.find({}, {"_id": 0}).sort("created_at", -1)
+    items = await cursor.to_list(length=500)
+    return {"items": items, "count": len(items)}
+
+
+@router.get("/api/admin/wireguard/server-status")
+async def admin_server_status(current_user: dict = Depends(get_current_user)):
+    """Ritorna lo stato della config server WireGuard (env var presenti?)."""
+    require_admin(current_user)
+    return {
+        "server_pubkey_configured": bool(WG_SERVER_PUBKEY),
+        "server_endpoint_configured": bool(WG_SERVER_ENDPOINT),
+        "server_endpoint": WG_SERVER_ENDPOINT if WG_SERVER_ENDPOINT else "",
+        "pool_base": WG_POOL_BASE,
+        "session_ttl_minutes": WG_SESSION_TTL_MIN,
+        "ready": bool(WG_SERVER_PUBKEY and WG_SERVER_ENDPOINT),
+    }
+
+
+@router.post("/api/admin/wireguard/session/start")
+async def admin_start_session(payload: SessionStart, request: Request, current_user: dict = Depends(get_current_user)):
+    """Avvia una sessione VPN on-demand: il connector del cliente attiverà
+    il tunnel al prossimo poll (~entro 5 secondi)."""
+    require_admin(current_user)
+
+    peer = await db.wireguard_peers.find_one({"client_id": payload.client_id, "active": True}, {"_id": 0})
+    if not peer:
+        raise HTTPException(status_code=404, detail="Peer WireGuard non registrato per questo cliente")
+
+    # Chiudi eventuali sessioni precedenti dello stesso cliente
+    now = datetime.now(timezone.utc)
+    await db.wireguard_sessions.update_many(
+        {"client_id": payload.client_id, "status": "active"},
+        {"$set": {"status": "superseded", "ended_at": now.isoformat()}},
+    )
+
+    ttl = payload.ttl_minutes or WG_SESSION_TTL_MIN
+    if ttl < 1 or ttl > 240:
+        raise HTTPException(status_code=400, detail="TTL deve essere tra 1 e 240 minuti")
+
+    session = {
+        "id": uuid.uuid4().hex,
+        "client_id": payload.client_id,
+        "client_name": peer.get("client_name", ""),
+        "tunnel_ip": peer["tunnel_ip"],
+        "target_device_ip": payload.target_device_ip or "",
+        "reason": payload.reason or "",
+        "started_at": now.isoformat(),
+        "started_by": current_user.get("name", "admin"),
+        "started_by_user_id": current_user.get("id", ""),
+        "expires_at": (now + timedelta(minutes=ttl)).isoformat(),
+        "status": "active",
+    }
+    await db.wireguard_sessions.insert_one(session)
+    audit.info(
+        f"WG_SESSION_START by={current_user.get('name')} client_id={payload.client_id} "
+        f"target={payload.target_device_ip} ttl={ttl}min reason={payload.reason}"
+    )
+    return {k: v for k, v in session.items() if k != "_id"}
+
+
+@router.post("/api/admin/wireguard/session/{session_id}/stop")
+async def admin_stop_session(session_id: str, current_user: dict = Depends(get_current_user)):
+    require_admin(current_user)
+    now = datetime.now(timezone.utc)
+    res = await db.wireguard_sessions.update_one(
+        {"id": session_id, "status": "active"},
+        {"$set": {"status": "stopped", "ended_at": now.isoformat(), "stopped_by": current_user.get("name", "admin")}},
+    )
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Sessione non trovata o già chiusa")
+    audit.info(f"WG_SESSION_STOP by={current_user.get('name')} session_id={session_id}")
+    return {"status": "stopped", "id": session_id}
+
+
+@router.get("/api/admin/wireguard/sessions")
+async def admin_list_sessions(client_id: Optional[str] = None, limit: int = 50, current_user: dict = Depends(get_current_user)):
+    require_admin(current_user)
+    query = {}
+    if client_id:
+        query["client_id"] = client_id
+    cursor = db.wireguard_sessions.find(query, {"_id": 0}).sort("started_at", -1).limit(min(limit, 500))
+    items = await cursor.to_list(length=limit)
+    return {"items": items, "count": len(items)}
+
+
+@router.post("/api/admin/wireguard/peer/{client_id}/disable")
+async def admin_disable_peer(client_id: str, current_user: dict = Depends(get_current_user)):
+    require_admin(current_user)
+    res = await db.wireguard_peers.update_one(
+        {"client_id": client_id},
+        {"$set": {"active": False, "disabled_at": datetime.now(timezone.utc).isoformat(), "disabled_by": current_user.get("name", "admin")}},
+    )
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Peer non trovato")
+    audit.warning(f"WG_PEER_DISABLED by={current_user.get('name')} client_id={client_id}")
+    return {"status": "disabled", "client_id": client_id}

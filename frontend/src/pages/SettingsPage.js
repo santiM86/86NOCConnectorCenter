@@ -147,6 +147,34 @@ export default function SettingsPage() {
                 {user?.two_factor_enabled ? "Gestisci" : "Attiva"}
               </Button>
             </div>
+            <div className="flex items-center justify-between pt-3 border-t border-[var(--bg-border)]">
+              <div>
+                <p className="text-[var(--text-primary)] text-xs font-medium">IP Pubblici Autorizzati</p>
+                <p className="text-[var(--text-muted)] text-[10px] mt-0.5">
+                  Limita l'accesso al Center solo da IP/range autorizzati (military-grade allowlist).
+                </p>
+              </div>
+              <Button size="sm" variant="outline"
+                onClick={() => navigate("/settings/ip-allowlist")}
+                className="rounded-md text-xs h-7 border-[var(--bg-border)] hover:bg-[var(--bg-hover)]"
+                data-testid="manage-ip-allowlist-btn">
+                Gestisci
+              </Button>
+            </div>
+            <div className="flex items-center justify-between pt-3 border-t border-[var(--bg-border)]">
+              <div>
+                <p className="text-[var(--text-primary)] text-xs font-medium">VPN WireGuard (Accesso Remoto)</p>
+                <p className="text-[var(--text-muted)] text-[10px] mt-0.5">
+                  Tunnel on-demand verso i dispositivi del cliente con crittografia ChaCha20-Poly1305.
+                </p>
+              </div>
+              <Button size="sm" variant="outline"
+                onClick={() => navigate("/settings/wireguard")}
+                className="rounded-md text-xs h-7 border-[var(--bg-border)] hover:bg-[var(--bg-hover)]"
+                data-testid="manage-wireguard-btn">
+                Gestisci
+              </Button>
+            </div>
           </div>
         </div>
 
