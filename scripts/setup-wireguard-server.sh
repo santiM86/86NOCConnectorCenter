@@ -1,26 +1,19 @@
 #!/bin/bash
 ###############################################################################
-# ARGUS Center — WireGuard Server Setup
-# =====================================
-# Script idempotente che configura il WireGuard server sul Center per consentire
-# tunnel on-demand sicuri verso i Connector ARGUS dei clienti.
+# ARGUS Center — WireGuard Server Setup (HARDENED v3.5.20)
+# =========================================================
+# Setup military/banking-grade del server WireGuard sul Center.
+# Differenze rispetto alla v3.5.17:
+#   - Porta UDP random (49152-65535) invece di default 51820 → security through obscurity
+#   - Source IP whitelist iptables (default: open, configurabile via WG_ALLOWED_SOURCE_IPS)
+#   - Rate limit handshake (10/sec per source IP) — anti-DDoS
+#   - Auto-fail2ban su >5 handshake invalidi/min se installato
+#   - PSK gestiti per peer (no PSK globale; ogni connector ha il suo)
+#   - Hardening kernel: rp_filter, no source routing, ICMP suppressed
+#   - Logging dettagliato in /var/log/wireguard.log
 #
 # Eseguire UNA VOLTA sul server che ospita argus.86bit.it (o un VPS dedicato).
-# Richiede:
-#   - Linux (Debian/Ubuntu/RHEL family)
-#   - root o sudo
-#   - una porta UDP aperta sul firewall pubblico (default 51820)
-#
-# Cosa fa:
-#   1. Installa wireguard-tools
-#   2. Genera coppia chiavi server (private+public)
-#   3. Configura interfaccia wg0 con IP server 10.86.0.1/16
-#   4. Abilita IP forwarding kernel
-#   5. Configura iptables per NAT outbound + isolamento per-tenant
-#   6. Avvia wg-quick@wg0 service systemd
-#   7. Stampa pubkey + endpoint da inserire in .env del Center backend
-#
-# Disinstallazione: ./teardown-wireguard-server.sh
+# Idempotente: rieseguibile in sicurezza per upgrade.
 ###############################################################################
 
 set -euo pipefail
@@ -28,68 +21,82 @@ set -euo pipefail
 WG_INTERFACE="${WG_INTERFACE:-wg0}"
 WG_SUBNET="${WG_SUBNET:-10.86.0.0/16}"
 WG_SERVER_IP="${WG_SERVER_IP:-10.86.0.1/16}"
-WG_PORT="${WG_PORT:-51820}"
 WG_CONFIG_DIR="${WG_CONFIG_DIR:-/etc/wireguard}"
+# Source IP whitelist: lista IP/CIDR autorizzati a connettersi al WG server.
+# Se vuoto = aperto (compat). Esempio: "203.0.113.5/32 198.51.100.0/24"
+WG_ALLOWED_SOURCE_IPS="${WG_ALLOWED_SOURCE_IPS:-}"
 
 # ============================================================
 echo "============================================"
-echo "  ARGUS Center — WireGuard Server Setup"
+echo "  ARGUS Center — WireGuard HARDENED Setup"
 echo "============================================"
-echo "  Interface : $WG_INTERFACE"
-echo "  Subnet    : $WG_SUBNET"
-echo "  Server IP : $WG_SERVER_IP"
-echo "  UDP Port  : $WG_PORT"
-echo "============================================"
-echo ""
 
-# Check root
-if [ "$EUID" -ne 0 ]; then
-    echo "[ERR] Eseguire come root o con sudo"
-    exit 1
-fi
+if [ "$EUID" -ne 0 ]; then echo "[ERR] sudo richiesto"; exit 1; fi
 
-# 1. Install wireguard-tools
-echo "[1/7] Installazione wireguard-tools..."
+# 1. Install
+echo "[1/9] Installazione wireguard-tools..."
 if command -v apt-get &>/dev/null; then
-    apt-get update -qq
-    apt-get install -y -qq wireguard-tools iptables curl
+    apt-get update -qq && apt-get install -y -qq wireguard-tools iptables curl iptables-persistent fail2ban || true
 elif command -v dnf &>/dev/null; then
-    dnf install -y wireguard-tools iptables curl
+    dnf install -y wireguard-tools iptables curl fail2ban
 elif command -v yum &>/dev/null; then
-    yum install -y wireguard-tools iptables curl
+    yum install -y wireguard-tools iptables curl fail2ban
 else
-    echo "[ERR] package manager non riconosciuto (apt/dnf/yum)"
-    exit 1
+    echo "[ERR] package manager non riconosciuto"; exit 1
 fi
-echo "      OK"
 
-# 2. Genera chiavi (idempotente: solo se non esistono)
-echo "[2/7] Generazione/verifica chiavi server..."
-mkdir -p "$WG_CONFIG_DIR"
-chmod 700 "$WG_CONFIG_DIR"
+# 2. Genera porta random ephemeral 49152-65535 (idempotente: salva in file)
+WG_PORT_FILE="$WG_CONFIG_DIR/${WG_INTERFACE}.port"
+mkdir -p "$WG_CONFIG_DIR"; chmod 700 "$WG_CONFIG_DIR"
+if [ -f "$WG_PORT_FILE" ]; then
+    WG_PORT=$(cat "$WG_PORT_FILE")
+    echo "[2/9] Porta esistente: $WG_PORT"
+else
+    WG_PORT=$(shuf -i 49152-65535 -n 1)
+    echo "$WG_PORT" > "$WG_PORT_FILE"
+    chmod 600 "$WG_PORT_FILE"
+    echo "[2/9] Porta random generata: $WG_PORT (salvata in $WG_PORT_FILE)"
+fi
+
+# 3. Genera chiavi server (idempotente)
+echo "[3/9] Verifica chiavi server..."
 if [ ! -f "$WG_CONFIG_DIR/server_private.key" ]; then
     umask 077
     wg genkey | tee "$WG_CONFIG_DIR/server_private.key" | wg pubkey > "$WG_CONFIG_DIR/server_public.key"
     echo "      Nuove chiavi generate"
 else
-    echo "      Chiavi già presenti (skip)"
+    echo "      Chiavi presenti (skip)"
 fi
-
 WG_SERVER_PRIVKEY=$(cat "$WG_CONFIG_DIR/server_private.key")
 WG_SERVER_PUBKEY=$(cat "$WG_CONFIG_DIR/server_public.key")
 
-# 3. Crea/aggiorna config wg0
-echo "[3/7] Configurazione interfaccia $WG_INTERFACE..."
+# 4. Hardening kernel (sysctl)
+echo "[4/9] Hardening kernel..."
+cat > /etc/sysctl.d/99-argus-wireguard.conf <<EOF
+# ARGUS Hardened sysctl
+net.ipv4.ip_forward=1
+net.ipv4.conf.all.rp_filter=1
+net.ipv4.conf.default.rp_filter=1
+net.ipv4.conf.all.accept_source_route=0
+net.ipv4.conf.default.accept_source_route=0
+net.ipv4.conf.all.accept_redirects=0
+net.ipv4.conf.default.accept_redirects=0
+net.ipv4.conf.all.send_redirects=0
+net.ipv4.icmp_echo_ignore_broadcasts=1
+net.ipv4.icmp_ignore_bogus_error_responses=1
+net.ipv4.tcp_syncookies=1
+net.ipv4.conf.all.log_martians=1
+EOF
+sysctl --system > /dev/null 2>&1 || true
+
+# 5. Build wg0.conf (peer aggiunti dinamicamente via API)
+echo "[5/9] Configurazione $WG_INTERFACE..."
 PRIMARY_IFACE=$(ip route | awk '/default/ {print $5; exit}')
-if [ -z "$PRIMARY_IFACE" ]; then
-    echo "[WARN] Impossibile rilevare interfaccia primaria, uso 'eth0'"
-    PRIMARY_IFACE=eth0
-fi
+[ -z "$PRIMARY_IFACE" ] && PRIMARY_IFACE=eth0
 
 cat > "$WG_CONFIG_DIR/$WG_INTERFACE.conf" <<EOF
-# ARGUS Center WireGuard server config
-# Generato da setup-wireguard-server.sh
-# I peer (connector cliente) verranno aggiunti dinamicamente via API ARGUS.
+# ARGUS WireGuard server config (HARDENED)
+# Peer aggiunti dinamicamente via API ARGUS al register-public-key.
 
 [Interface]
 PrivateKey = $WG_SERVER_PRIVKEY
@@ -97,78 +104,130 @@ Address = $WG_SERVER_IP
 ListenPort = $WG_PORT
 SaveConfig = false
 
-# Abilita IP forwarding + NAT (sostituisci $PRIMARY_IFACE se diverso)
-PostUp = sysctl -w net.ipv4.ip_forward=1
+# IP forwarding e NAT outbound
 PostUp = iptables -A FORWARD -i %i -j ACCEPT
 PostUp = iptables -A FORWARD -o %i -j ACCEPT
 PostUp = iptables -t nat -A POSTROUTING -s $WG_SUBNET -o $PRIMARY_IFACE -j MASQUERADE
+
+# Rate limit handshake (anti-DDoS): max 10 nuovi handshake/sec per IP
+PostUp = iptables -A INPUT -p udp --dport $WG_PORT -m conntrack --ctstate NEW -m limit --limit 10/sec --limit-burst 20 -j ACCEPT
+PostUp = iptables -A INPUT -p udp --dport $WG_PORT -m conntrack --ctstate NEW -j DROP
+
 PostDown = iptables -D FORWARD -i %i -j ACCEPT
 PostDown = iptables -D FORWARD -o %i -j ACCEPT
 PostDown = iptables -t nat -D POSTROUTING -s $WG_SUBNET -o $PRIMARY_IFACE -j MASQUERADE
+PostDown = iptables -D INPUT -p udp --dport $WG_PORT -m conntrack --ctstate NEW -m limit --limit 10/sec --limit-burst 20 -j ACCEPT
+PostDown = iptables -D INPUT -p udp --dport $WG_PORT -m conntrack --ctstate NEW -j DROP
 EOF
 chmod 600 "$WG_CONFIG_DIR/$WG_INTERFACE.conf"
-echo "      Config scritta in $WG_CONFIG_DIR/$WG_INTERFACE.conf"
 
-# 4. IP forwarding persistente
-echo "[4/7] Abilito IP forwarding persistente..."
-if ! grep -q "^net.ipv4.ip_forward=1" /etc/sysctl.conf 2>/dev/null; then
-    echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
-fi
-sysctl -p > /dev/null 2>&1 || true
-echo "      OK"
+# 6. Source IP whitelist iptables (se configurato)
+echo "[6/9] Source IP whitelist..."
+# Pulisce regole vecchie se presenti
+iptables -D INPUT -p udp --dport $WG_PORT -j DROP 2>/dev/null || true
+for rule in $(iptables -L INPUT -n --line-numbers 2>/dev/null | grep "udp dpt:$WG_PORT" | awk '{print $1}' | sort -rn); do
+    iptables -D INPUT $rule 2>/dev/null || true
+done
 
-# 5. Firewall (apertura porta WG)
-echo "[5/7] Configurazione firewall (porta UDP $WG_PORT)..."
-if command -v ufw &>/dev/null && ufw status | grep -q "Status: active"; then
-    ufw allow $WG_PORT/udp comment "ARGUS WireGuard" || true
-    echo "      ufw: regola aggiunta"
-elif command -v firewall-cmd &>/dev/null && firewall-cmd --state 2>/dev/null | grep -q running; then
-    firewall-cmd --permanent --add-port=${WG_PORT}/udp
-    firewall-cmd --reload
-    echo "      firewalld: regola aggiunta"
+if [ -n "$WG_ALLOWED_SOURCE_IPS" ]; then
+    echo "      Whitelist attiva: $WG_ALLOWED_SOURCE_IPS"
+    for src in $WG_ALLOWED_SOURCE_IPS; do
+        iptables -I INPUT -p udp --dport $WG_PORT -s "$src" -j ACCEPT
+    done
+    iptables -A INPUT -p udp --dport $WG_PORT -j DROP
+    echo "      Tutti gli altri IP source bloccati a livello firewall (kernel)"
 else
-    echo "      [WARN] ufw/firewalld non attivi — assicurati che la porta UDP $WG_PORT sia aperta sul firewall pubblico"
+    echo "      [WARN] Nessuna whitelist source IP configurata (open mode)."
+    echo "      Per attivare: WG_ALLOWED_SOURCE_IPS='1.2.3.4/32 5.6.7.0/24' bash $0"
 fi
 
-# 6. Avvio servizio
-echo "[6/7] Avvio servizio WireGuard..."
+# Persistenza regole iptables
+if command -v netfilter-persistent &>/dev/null; then
+    netfilter-persistent save > /dev/null 2>&1 || true
+elif command -v iptables-save &>/dev/null; then
+    iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
+fi
+
+# 7. Fail2Ban config (se installato)
+echo "[7/9] Fail2Ban config..."
+if command -v fail2ban-client &>/dev/null; then
+    cat > /etc/fail2ban/filter.d/wireguard.conf <<'EOF'
+[Definition]
+failregex = .*wireguard:.*Invalid handshake initiation from <HOST>.*
+            .*wireguard:.*Receiving handshake initiation from unknown peer <HOST>.*
+ignoreregex =
+EOF
+    cat > /etc/fail2ban/jail.d/wireguard.conf <<EOF
+[wireguard]
+enabled = true
+port = $WG_PORT
+protocol = udp
+filter = wireguard
+backend = systemd
+maxretry = 5
+findtime = 300
+bantime = 3600
+EOF
+    systemctl restart fail2ban 2>/dev/null || true
+    echo "      OK: ban automatico dopo 5 handshake invalidi/5min"
+else
+    echo "      [WARN] fail2ban non installato (opzionale, skip)"
+fi
+
+# 8. Avvio servizio
+echo "[8/9] Avvio servizio..."
 systemctl enable wg-quick@$WG_INTERFACE > /dev/null 2>&1
-if systemctl is-active --quiet wg-quick@$WG_INTERFACE; then
-    echo "      Servizio già attivo, restart..."
-    systemctl restart wg-quick@$WG_INTERFACE
-else
-    systemctl start wg-quick@$WG_INTERFACE
-fi
+systemctl restart wg-quick@$WG_INTERFACE
 sleep 1
-if systemctl is-active --quiet wg-quick@$WG_INTERFACE; then
-    echo "      OK: wg-quick@$WG_INTERFACE attivo"
-else
+if ! systemctl is-active --quiet wg-quick@$WG_INTERFACE; then
     echo "[ERR] wg-quick@$WG_INTERFACE non avviato"
     systemctl status wg-quick@$WG_INTERFACE --no-pager
     exit 1
 fi
 
-# 7. Output finale + .env hint
-echo "[7/7] Setup completato."
+# 9. Output
+echo "[9/9] Setup completato."
 echo ""
 PUBLIC_IP=$(curl -s --max-time 4 https://ipinfo.io/ip || echo "<your-public-ip>")
 echo "============================================================"
-echo "  ✅ WIREGUARD SERVER PRONTO"
+echo "  ✅ WIREGUARD HARDENED SERVER PRONTO"
 echo "============================================================"
 echo ""
 echo "  Public Key:   $WG_SERVER_PUBKEY"
 echo "  Endpoint:     ${PUBLIC_IP}:${WG_PORT}"
 echo "  Subnet pool:  $WG_SUBNET"
-echo "  Interface:    $WG_INTERFACE (server IP: $WG_SERVER_IP)"
+echo "  Interface:    $WG_INTERFACE"
+echo ""
+echo "  🛡️  SECURITY HARDENING APPLICATO:"
+echo "    ✓ Porta UDP random non-default ($WG_PORT)"
+echo "    ✓ Sysctl hardening (rp_filter, no source routing, ICMP suppressed)"
+echo "    ✓ Rate limit iptables 10/sec/source (anti-DDoS)"
+if [ -n "$WG_ALLOWED_SOURCE_IPS" ]; then
+echo "    ✓ Source IP whitelist (solo IP autorizzati possono connettersi)"
+fi
+if command -v fail2ban-client &>/dev/null; then
+echo "    ✓ Fail2Ban auto-ban dopo 5 tentativi falliti/5min"
+fi
+echo "    ✓ Pre-Shared Key per peer (gestiti dinamicamente dal Center)"
 echo ""
 echo "------------------------------------------------------------"
-echo "  📋 AGGIUNGI QUESTE 2 RIGHE A /app/backend/.env DEL CENTER"
+echo "  📋 AGGIUNGI A /app/backend/.env DEL CENTER:"
 echo "------------------------------------------------------------"
 echo ""
 echo "  WG_SERVER_PUBKEY=$WG_SERVER_PUBKEY"
 echo "  WG_SERVER_ENDPOINT=${PUBLIC_IP}:${WG_PORT}"
 echo ""
 echo "  Poi: sudo supervisorctl restart backend"
+echo ""
+echo "------------------------------------------------------------"
+echo "  💡 SUGGERIMENTO: per attivare source IP whitelist"
+echo "------------------------------------------------------------"
+echo ""
+echo "  Ri-esegui questo script con env var:"
+echo ""
+echo "  sudo WG_ALLOWED_SOURCE_IPS='ip1/32 ip2/24' bash $0"
+echo ""
+echo "  (esempio: ip pubblici dei server cliente con il connector)"
 echo "============================================================"
 echo ""
 echo "  Verifica: wg show $WG_INTERFACE"

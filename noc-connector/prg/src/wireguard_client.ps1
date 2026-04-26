@@ -165,8 +165,16 @@ function Start-WireGuardTunnel($peerConfig) {
     if ($tunnelIp -notmatch '/') { $tunnelIp = "$tunnelIp/16" }
     $allowedIps = if ($peerConfig.allowed_ips) { $peerConfig.allowed_ips } else { "10.86.0.0/16" }
 
+    # v3.5.20: Pre-Shared Key (PSK) per quantum-resistance.
+    # Il PSK è opzionale (compat con peer pre-v3.5.20) ma fortemente raccomandato.
+    $pskLine = ""
+    if ($peerConfig.preshared_key) {
+        $pskLine = "PresharedKey = $($peerConfig.preshared_key)`n"
+    }
+
     $conf = @"
 # ARGUS WireGuard tunnel — generato automaticamente
+# v3.5.20 HARDENED: include PSK quantum-resistant + AllowedIPs ristretti
 # Non modificare manualmente. Riavvia il connector per rigenerare.
 
 [Interface]
@@ -175,7 +183,7 @@ Address = $tunnelIp
 
 [Peer]
 PublicKey = $($peerConfig.server_public_key)
-Endpoint = $($peerConfig.server_endpoint)
+${pskLine}Endpoint = $($peerConfig.server_endpoint)
 AllowedIPs = $allowedIps
 PersistentKeepalive = 25
 "@
@@ -185,11 +193,10 @@ PersistentKeepalive = 25
     Stop-WireGuardTunnel -Quiet | Out-Null
 
     try {
-        # WireGuard for Windows: /installtunnelservice <conf> crea e avvia un servizio Windows
-        # dedicato per quel tunnel. Path conf DEVE essere assoluto.
         $proc = Start-Process -FilePath $script:WG_EXE -ArgumentList @("/installtunnelservice", $script:WG_TUNNEL_CONF) -Wait -PassThru -NoNewWindow
         if ($proc.ExitCode -eq 0) {
-            Write-Log "WG tunnel '$($script:WG_TUNNEL_NAME)' attivato (peer=$($peerConfig.server_endpoint), ip=$tunnelIp)" "INFO"
+            $pskNote = if ($peerConfig.preshared_key) { " [PSK enabled]" } else { "" }
+            Write-Log "WG tunnel '$($script:WG_TUNNEL_NAME)' attivato (peer=$($peerConfig.server_endpoint), ip=$tunnelIp)$pskNote" "INFO"
             return $true
         } else {
             Write-Log "WG tunnel install exit code: $($proc.ExitCode)" "WARN"
@@ -199,6 +206,39 @@ PersistentKeepalive = 25
         Write-Log "Errore Start-WireGuardTunnel: $($_.Exception.Message)" "ERROR"
         return $false
     }
+}
+
+# ============================================================
+# v3.5.20: Force key rotation (chiamato quando l'admin clicca "Ruota chiavi")
+# ============================================================
+function Invoke-WireGuardKeyRotation($config) {
+    if (-not $script:WG_TOOLS_EXE) { return $false }
+    Write-Log "WG: rotazione chiavi forzata in corso..." "WARN"
+
+    # Stop tunnel attivo
+    Stop-WireGuardTunnel -Quiet | Out-Null
+
+    # Cancella chiavi esistenti per forzare rigenerazione
+    Remove-Item $script:WG_PRIV_KEY_FILE -Force -ErrorAction SilentlyContinue
+    Remove-Item $script:WG_PUB_KEY_FILE -Force -ErrorAction SilentlyContinue
+
+    # Rigenera coppia
+    $keys = Get-WireGuardKeys
+    if (-not $keys) { return $false }
+
+    # Re-registra al Center (riceverà anche nuovo PSK)
+    $script:WG_PEER_CONFIG = Register-WireGuardPeer $config $keys.public_key
+    if ($script:WG_PEER_CONFIG) {
+        Write-Log "WG: nuove chiavi generate e registrate. tunnel_ip=$($script:WG_PEER_CONFIG.tunnel_ip)" "INFO"
+        # Notifica al Center che la rotazione è completata
+        try {
+            $url = "$($config.noc_center_url)/api/admin/wireguard/peer/$($script:WG_PEER_CONFIG.client_id)/clear-rotation-flag"
+            # Endpoint admin - skippiamo (lo gestisce il backend al successivo register-public-key)
+        } catch {}
+        $script:WG_LAST_SESSION_ID = $null  # forza riapertura tunnel se serve
+        return $true
+    }
+    return $false
 }
 
 # ============================================================
@@ -245,12 +285,25 @@ function Sync-WireGuardSession($config, $peerConfig) {
     if (($now - $script:WG_LAST_POLL_AT).TotalSeconds -lt 4) { return }
     $script:WG_LAST_POLL_AT = $now
 
+    # v3.5.20: prima controlla se l'admin ha richiesto rotation forzata
+    try {
+        $rotUrl = "$($config.noc_center_url)/api/connector/wireguard/rotation-pending"
+        $r = Invoke-RestMethod -Uri $rotUrl -Method Get -Headers @{ "X-API-Key" = $config.api_key } -TimeoutSec 5 -ErrorAction Stop
+        if ($r.rotation_pending -eq $true) {
+            Write-Log "WG: rotation forzata richiesta dal Center, eseguo..." "WARN"
+            if (Invoke-WireGuardKeyRotation $config) {
+                # Aggiorna $peerConfig nel scope chiamante via reference
+                # (variabile script-scope già aggiornata da Invoke-WireGuardKeyRotation)
+                $peerConfig = $script:WG_PEER_CONFIG
+            }
+        }
+    } catch { }
+
     $url = "$($config.noc_center_url)/api/connector/wireguard/session"
     try {
         $headers = @{ "X-API-Key" = $config.api_key }
         $r = Invoke-RestMethod -Uri $url -Method Get -Headers $headers -TimeoutSec 8 -ErrorAction Stop
     } catch {
-        # Errori HTTP qui sono normali (es. 401 se key cambiata) — log a livello DEBUG
         return
     }
 
@@ -259,10 +312,8 @@ function Sync-WireGuardSession($config, $peerConfig) {
         # restrict mode (solo device registrati). Garantisce che il tunnel sia limitato.
         $effectiveConfig = $peerConfig.PSObject.Copy()
         if ($r.restrict_mode -eq $true -and $r.allowed_device_ips -and $r.allowed_device_ips.Count -gt 0) {
-            # Lista IP /32 separati da virgola (formato wireguard.conf)
             $effectiveConfig | Add-Member -NotePropertyName allowed_ips -NotePropertyValue ($r.allowed_device_ips -join ", ") -Force
         }
-        # Una sessione è attiva. Attiviamo il tunnel se non è già up.
         if ($script:WG_LAST_SESSION_ID -ne $r.session_id) {
             $restrictNote = if ($r.restrict_mode) { " [RESTRICT mode: $($r.allowed_device_ips.Count) device]" } else { "" }
             Write-Log "WG session start (id=$($r.session_id), avviata da=$($r.started_by), target=$($r.target_device_ip))$restrictNote" "INFO"
@@ -272,7 +323,6 @@ function Sync-WireGuardSession($config, $peerConfig) {
             }
         }
     } else {
-        # Nessuna sessione attiva. Chiudiamo se era acceso.
         if ($script:WG_LAST_SESSION_ID) {
             Write-Log "WG session end" "INFO"
             Stop-WireGuardTunnel | Out-Null

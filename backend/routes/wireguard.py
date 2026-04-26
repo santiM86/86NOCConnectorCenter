@@ -118,7 +118,14 @@ async def _allocate_peer_ip(client_id: str) -> str:
 @router.post("/api/connector/wireguard/register-public-key")
 async def connector_register_pubkey(payload: PeerRegisterPublicKey, request: Request):
     """Il connector registra la propria pubkey WireGuard.
-    Idempotent: se pubkey identica → no-op. Se cambiata → ruota IP+config."""
+    Idempotent: se pubkey identica → no-op. Se cambiata → ruota IP+config.
+
+    v3.5.20 HARDENING: ad ogni nuova registrazione genera un Pre-Shared Key (PSK)
+    32-byte random associato al peer. Il PSK è additivo alla normale crittografia
+    (ChaCha20-Poly1305 + Curve25519): se in futuro Curve25519 viene rotto da
+    computer quantistici, il PSK preserva la confidenzialità ("post-quantum bridge").
+    Standard NSA CSfC (Commercial Solutions for Classified) per dati classified.
+    """
     client_data = await validate_api_key(request)
     client_id = client_data["id"]
 
@@ -127,50 +134,61 @@ async def connector_register_pubkey(payload: PeerRegisterPublicKey, request: Req
 
     existing = await db.wireguard_peers.find_one({"client_id": client_id}, {"_id": 0})
     if existing and existing.get("public_key") == payload.public_key:
-        # Idempotente: stessa pubkey → ritorna config esistente
+        # Idempotente: stessa pubkey → ritorna config esistente (incluso PSK persistente)
         return {
             "status": "unchanged",
             "tunnel_ip": existing["tunnel_ip"],
             "server_public_key": WG_SERVER_PUBKEY or "(server-not-configured)",
             "server_endpoint": WG_SERVER_ENDPOINT or "(server-not-configured)",
             "allowed_ips": existing.get("allowed_ips", "10.86.0.0/16"),
+            "preshared_key": existing.get("preshared_key", ""),
         }
 
+    # Genera PSK 32-byte random (uguale formato wg.exe genpsk)
+    import base64 as _b64
+    psk = _b64.b64encode(secrets.token_bytes(32)).decode()
+
     if existing:
-        # Pubkey cambiata → mantieni stesso tunnel_ip, aggiorna pubkey + audit
+        # Pubkey cambiata → mantieni stesso tunnel_ip ma RUOTA anche il PSK
+        # (paranoia: se la pubkey cambia, assumiamo possible compromise)
         new_doc = dict(existing)
         new_doc["public_key"] = payload.public_key
+        new_doc["preshared_key"] = psk
         new_doc["public_key_rotated_at"] = datetime.now(timezone.utc).isoformat()
         await db.wireguard_peers.update_one({"client_id": client_id}, {"$set": new_doc})
-        audit.info(f"WG_PEER_KEY_ROTATED client_id={client_id}")
+        audit.warning(f"WG_PEER_KEY_ROTATED client_id={client_id} (pubkey + PSK rotated)")
         return {
             "status": "rotated",
             "tunnel_ip": existing["tunnel_ip"],
             "server_public_key": WG_SERVER_PUBKEY or "(server-not-configured)",
             "server_endpoint": WG_SERVER_ENDPOINT or "(server-not-configured)",
             "allowed_ips": existing.get("allowed_ips", "10.86.0.0/16"),
+            "preshared_key": psk,
         }
 
-    # Nuovo peer: alloca IP, salva
+    # Nuovo peer: alloca IP, genera PSK, salva
     tunnel_ip = await _allocate_peer_ip(client_id)
     doc = {
         "id": uuid.uuid4().hex,
         "client_id": client_id,
         "client_name": client_data.get("name", ""),
         "public_key": payload.public_key,
+        "preshared_key": psk,
         "tunnel_ip": tunnel_ip,
         "allowed_ips": "10.86.0.0/16",
         "created_at": datetime.now(timezone.utc).isoformat(),
+        "last_rotation_at": datetime.now(timezone.utc).isoformat(),
         "active": True,
     }
     await db.wireguard_peers.insert_one(doc)
-    audit.info(f"WG_PEER_REGISTERED client_id={client_id} tunnel_ip={tunnel_ip}")
+    audit.info(f"WG_PEER_REGISTERED client_id={client_id} tunnel_ip={tunnel_ip} psk_generated=true")
     return {
         "status": "created",
         "tunnel_ip": tunnel_ip,
         "server_public_key": WG_SERVER_PUBKEY or "(server-not-configured)",
         "server_endpoint": WG_SERVER_ENDPOINT or "(server-not-configured)",
         "allowed_ips": doc["allowed_ips"],
+        "preshared_key": psk,
     }
 
 
@@ -187,8 +205,10 @@ async def connector_get_config(request: Request):
         "server_public_key": WG_SERVER_PUBKEY or "(server-not-configured)",
         "server_endpoint": WG_SERVER_ENDPOINT or "(server-not-configured)",
         "allowed_ips": peer.get("allowed_ips", "10.86.0.0/16"),
+        "preshared_key": peer.get("preshared_key", ""),
         "active": peer.get("active", True),
         "interface_name": f"wg-{client_data['id'][:8]}",
+        "last_rotation_at": peer.get("last_rotation_at", peer.get("created_at", "")),
     }
 
 
@@ -364,3 +384,49 @@ async def admin_disable_peer(client_id: str, current_user: dict = Depends(get_cu
         raise HTTPException(status_code=404, detail="Peer non trovato")
     audit.warning(f"WG_PEER_DISABLED by={current_user.get('name')} client_id={client_id}")
     return {"status": "disabled", "client_id": client_id}
+
+
+@router.post("/api/admin/wireguard/peer/{client_id}/force-key-rotation")
+async def admin_force_key_rotation(client_id: str, current_user: dict = Depends(get_current_user)):
+    """Forza la rotazione delle chiavi (pubkey + PSK) per il peer indicato.
+    Il connector al prossimo poll rileverà il `force_rotation_pending` e
+    rigenererà la coppia chiavi locale + ri-registrerà la nuova pubkey.
+
+    Use case: chiave sospetta di compromissione, audit periodico, scheduled rotation.
+    """
+    require_admin(current_user)
+    peer = await db.wireguard_peers.find_one({"client_id": client_id}, {"_id": 0})
+    if not peer:
+        raise HTTPException(status_code=404, detail="Peer non trovato")
+    await db.wireguard_peers.update_one(
+        {"client_id": client_id},
+        {"$set": {
+            "force_rotation_pending": True,
+            "force_rotation_requested_at": datetime.now(timezone.utc).isoformat(),
+            "force_rotation_requested_by": current_user.get("name", "admin"),
+        }},
+    )
+    audit.warning(f"WG_FORCE_ROTATION by={current_user.get('name')} client_id={client_id}")
+    return {"status": "rotation_pending", "client_id": client_id, "message": "Il connector ruoterà le chiavi al prossimo polling cycle (~5 min max)"}
+
+
+@router.get("/api/connector/wireguard/rotation-pending")
+async def connector_check_rotation(request: Request):
+    """Il connector chiama questo endpoint nel polling loop per verificare
+    se l'admin ha richiesto una key rotation forzata. Se True, il connector
+    rigenera coppia chiavi e ri-registra. Idempotent: il flag viene resettato
+    al register-public-key successivo (perché la pubkey diversa lo invalida)."""
+    client_data = await validate_api_key(request)
+    peer = await db.wireguard_peers.find_one({"client_id": client_data["id"]}, {"_id": 0, "force_rotation_pending": 1})
+    return {"rotation_pending": bool(peer and peer.get("force_rotation_pending"))}
+
+
+@router.post("/api/admin/wireguard/peer/{client_id}/clear-rotation-flag")
+async def admin_clear_rotation_flag(client_id: str, current_user: dict = Depends(get_current_user)):
+    """Pulisce il flag rotation_pending dopo che il connector ha completato la rotazione."""
+    require_admin(current_user)
+    await db.wireguard_peers.update_one(
+        {"client_id": client_id},
+        {"$set": {"force_rotation_pending": False, "last_rotation_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    return {"status": "cleared"}

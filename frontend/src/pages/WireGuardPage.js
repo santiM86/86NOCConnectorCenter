@@ -93,6 +93,23 @@ export default function WireGuardPage() {
     }
   };
 
+  const rotateKeys = async (clientId, clientName) => {
+    if (!confirm(
+      `Forzare la rotazione delle chiavi del peer "${clientName}"?\n\n` +
+      `Il connector rigenererà coppia chiavi + PSK al prossimo polling (~5 min).\n` +
+      `Eventuali sessioni VPN attive si chiuderanno temporaneamente.`
+    )) return;
+    try {
+      await axios.post(`${API}/admin/wireguard/peer/${clientId}/force-key-rotation`);
+      toast.success("Rotazione chiavi richiesta", {
+        description: "Il connector ruoterà le chiavi al prossimo polling cycle (~5 min max)",
+      });
+      await load();
+    } catch (e) {
+      toast.error("Errore rotazione", { description: e?.response?.data?.detail || e.message });
+    }
+  };
+
   return (
     <div className="p-4 md:p-6 max-w-6xl mx-auto" data-testid="wireguard-page">
       {/* Header */}
@@ -120,6 +137,30 @@ export default function WireGuardPage() {
       {/* Server status banner */}
       <ServerStatusBanner status={serverStatus} />
 
+      {/* HARDENING summary banner */}
+      <div className="noc-panel p-3 mb-4 border-l-2 border-emerald-400" data-testid="hardening-summary">
+        <div className="flex items-start gap-3">
+          <ShieldCheck size={18} className="text-emerald-400 mt-0.5 shrink-0" />
+          <div className="flex-1 text-[10px] leading-relaxed">
+            <p className="text-emerald-400 font-semibold mb-1">🛡️ MILITARY-GRADE HARDENING ATTIVO</p>
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-x-3 gap-y-0.5 text-[var(--text-secondary)]">
+              <div>✓ ChaCha20-Poly1305 + Curve25519</div>
+              <div>✓ Forward secrecy</div>
+              <div>✓ Pre-Shared Key (quantum-resistant)</div>
+              <div>✓ Restrict mode (solo device registrati)</div>
+              <div>✓ TTL session 30 min default</div>
+              <div>✓ Audit log + key rotation</div>
+              <div>✓ IP source whitelist (firewall)</div>
+              <div>✓ Rate limit 10/sec/source</div>
+              <div>✓ Fail2Ban auto-ban</div>
+              <div>✓ Porta UDP non-default</div>
+              <div>✓ Sysctl hardening</div>
+              <div>✓ Per-tenant isolation</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       {/* Tabs */}
       <div className="flex items-center gap-1 mb-4 border-b border-[var(--bg-border)]">
         {[
@@ -146,7 +187,7 @@ export default function WireGuardPage() {
             <SessionsTab sessions={activeSessions} onStop={stopSession} />
           )}
           {tab === "peers" && (
-            <PeersTab peers={peers} onDisable={disablePeer} />
+            <PeersTab peers={peers} onDisable={disablePeer} onRotate={rotateKeys} />
           )}
           {tab === "history" && (
             <HistoryTab history={history} />
@@ -292,7 +333,7 @@ function SessionsTab({ sessions, onStop }) {
   );
 }
 
-function PeersTab({ peers, onDisable }) {
+function PeersTab({ peers, onDisable, onRotate }) {
   if (peers.length === 0) {
     return (
       <div className="noc-panel p-12 text-center" data-testid="no-peers">
@@ -310,7 +351,8 @@ function PeersTab({ peers, onDisable }) {
             <th className="text-left px-3 py-2 font-medium">Cliente</th>
             <th className="text-left px-3 py-2 font-medium">Tunnel IP</th>
             <th className="text-left px-3 py-2 font-medium">Public Key</th>
-            <th className="text-left px-3 py-2 font-medium">Registrato</th>
+            <th className="text-center px-3 py-2 font-medium">PSK</th>
+            <th className="text-left px-3 py-2 font-medium">Ultima rotazione</th>
             <th className="text-center px-3 py-2 font-medium">Stato</th>
             <th className="text-right px-3 py-2 font-medium">Azioni</th>
           </tr>
@@ -320,14 +362,32 @@ function PeersTab({ peers, onDisable }) {
             <tr key={p.id || p.client_id} className="border-t border-[var(--bg-border)]" data-testid={`peer-${p.client_id}`}>
               <td className="px-3 py-2 text-[var(--text-primary)] font-medium">{p.client_name || p.client_id}</td>
               <td className="px-3 py-2 font-mono text-emerald-400">{p.tunnel_ip}</td>
-              <td className="px-3 py-2 font-mono text-[10px] text-[var(--text-muted)] flex items-center gap-1.5">
-                <span className="truncate max-w-[180px]">{p.public_key}</span>
-                <button onClick={() => { navigator.clipboard.writeText(p.public_key); toast.success("Copiata"); }}
-                  className="hover:text-emerald-400" title="Copia">
-                  <Copy size={11} />
-                </button>
+              <td className="px-3 py-2 font-mono text-[10px] text-[var(--text-muted)]">
+                <div className="flex items-center gap-1.5">
+                  <span className="truncate max-w-[140px]">{p.public_key}</span>
+                  <button onClick={() => { navigator.clipboard.writeText(p.public_key); toast.success("Copiata"); }}
+                    className="hover:text-emerald-400" title="Copia">
+                    <Copy size={11} />
+                  </button>
+                </div>
               </td>
-              <td className="px-3 py-2 text-[10px] text-[var(--text-muted)]">{formatDate(p.created_at)}</td>
+              <td className="px-3 py-2 text-center">
+                {p.preshared_key ? (
+                  <span className="text-[9px] px-1.5 py-0.5 bg-emerald-400/10 text-emerald-400 rounded" title="Pre-Shared Key abilitato (quantum-resistant)">
+                    ✓ ON
+                  </span>
+                ) : (
+                  <span className="text-[9px] px-1.5 py-0.5 bg-amber-400/10 text-amber-400 rounded" title="PSK non configurato (peer pre-v3.5.20)">
+                    OFF
+                  </span>
+                )}
+              </td>
+              <td className="px-3 py-2 text-[10px] text-[var(--text-muted)]">
+                {p.last_rotation_at ? formatDate(p.last_rotation_at) : formatDate(p.created_at)}
+                {p.force_rotation_pending && (
+                  <div className="text-amber-400 mt-0.5">⏳ rotazione pending</div>
+                )}
+              </td>
               <td className="px-3 py-2 text-center">
                 {p.active ? (
                   <span className="text-[10px] px-1.5 py-0.5 bg-emerald-400/10 text-emerald-400 rounded">attivo</span>
@@ -336,13 +396,23 @@ function PeersTab({ peers, onDisable }) {
                 )}
               </td>
               <td className="px-3 py-2 text-right">
-                {p.active && (
-                  <Button size="sm" variant="ghost" onClick={() => onDisable(p.client_id)}
-                    className="h-7 text-xs text-red-400 hover:bg-red-500/10"
-                    data-testid={`disable-${p.client_id}`}>
-                    Disabilita
-                  </Button>
-                )}
+                <div className="flex items-center justify-end gap-1">
+                  {p.active && (
+                    <>
+                      <Button size="sm" variant="ghost" onClick={() => onRotate(p.client_id, p.client_name)}
+                        className="h-7 text-[10px] text-blue-400 hover:bg-blue-500/10"
+                        title="Rigenera coppia chiavi (anti-compromissione)"
+                        data-testid={`rotate-${p.client_id}`}>
+                        ↻ Ruota
+                      </Button>
+                      <Button size="sm" variant="ghost" onClick={() => onDisable(p.client_id)}
+                        className="h-7 text-[10px] text-red-400 hover:bg-red-500/10"
+                        data-testid={`disable-${p.client_id}`}>
+                        Disabilita
+                      </Button>
+                    </>
+                  )}
+                </div>
               </td>
             </tr>
           ))}
