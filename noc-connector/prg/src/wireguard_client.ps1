@@ -255,10 +255,18 @@ function Sync-WireGuardSession($config, $peerConfig) {
     }
 
     if ($r.tunnel_required -eq $true) {
+        # v3.5.19: clona peerConfig e sovrascrivi allowed_ips se la session richiede
+        # restrict mode (solo device registrati). Garantisce che il tunnel sia limitato.
+        $effectiveConfig = $peerConfig.PSObject.Copy()
+        if ($r.restrict_mode -eq $true -and $r.allowed_device_ips -and $r.allowed_device_ips.Count -gt 0) {
+            # Lista IP /32 separati da virgola (formato wireguard.conf)
+            $effectiveConfig | Add-Member -NotePropertyName allowed_ips -NotePropertyValue ($r.allowed_device_ips -join ", ") -Force
+        }
         # Una sessione è attiva. Attiviamo il tunnel se non è già up.
         if ($script:WG_LAST_SESSION_ID -ne $r.session_id) {
-            Write-Log "WG session start (id=$($r.session_id), avviata da=$($r.started_by), target=$($r.target_device_ip))" "INFO"
-            $ok = Start-WireGuardTunnel $peerConfig
+            $restrictNote = if ($r.restrict_mode) { " [RESTRICT mode: $($r.allowed_device_ips.Count) device]" } else { "" }
+            Write-Log "WG session start (id=$($r.session_id), avviata da=$($r.started_by), target=$($r.target_device_ip))$restrictNote" "INFO"
+            $ok = Start-WireGuardTunnel $effectiveConfig
             if ($ok) {
                 $script:WG_LAST_SESSION_ID = $r.session_id
             }

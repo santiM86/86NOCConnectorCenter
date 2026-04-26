@@ -71,6 +71,9 @@ class SessionStart(BaseModel):
     ttl_minutes: Optional[int] = None
     target_device_ip: Optional[str] = None  # se fornito, audit info per log
     reason: Optional[str] = ""
+    # v3.5.19: se True, l'AllowedIPs del tunnel sarà ristretta SOLO agli IP dei
+    # device registrati nel connector per quel cliente. Default False = backward compat.
+    restrict_to_registered_devices: Optional[bool] = False
 
 
 # ============================================================
@@ -214,6 +217,11 @@ async def connector_poll_session(request: Request):
             "expires_at": active["expires_at"],
             "started_by": active.get("started_by", ""),
             "target_device_ip": active.get("target_device_ip", ""),
+            # v3.5.19: lista IP permessi nel tunnel. Se vuota → fallback "10.86.0.0/16"
+            # (compat). Se non vuota → il connector configurerà AllowedIPs solo a questi
+            # IP /32, garantendo che il tunnel non apra l'intera rete cliente.
+            "allowed_device_ips": active.get("allowed_device_ips", []),
+            "restrict_mode": active.get("restrict_mode", False),
         }
     return {"tunnel_required": False}
 
@@ -246,7 +254,14 @@ async def admin_server_status(current_user: dict = Depends(get_current_user)):
 @router.post("/api/admin/wireguard/session/start")
 async def admin_start_session(payload: SessionStart, request: Request, current_user: dict = Depends(get_current_user)):
     """Avvia una sessione VPN on-demand: il connector del cliente attiverà
-    il tunnel al prossimo poll (~entro 5 secondi)."""
+    il tunnel al prossimo poll (~entro 5 secondi).
+
+    v3.5.19: se restrict_to_registered_devices=True, calcola la lista degli IP
+    dei device registrati nel connector per quel cliente e la include nella
+    sessione come `allowed_device_ips` (lista /32). Il connector userà questa
+    lista come AllowedIPs nel proprio .conf WireGuard, garantendo che il tunnel
+    NON apra accesso all'intera rete del cliente — solo agli IP target legittimi.
+    """
     require_admin(current_user)
 
     peer = await db.wireguard_peers.find_one({"client_id": payload.client_id, "active": True}, {"_id": 0})
@@ -264,6 +279,31 @@ async def admin_start_session(payload: SessionStart, request: Request, current_u
     if ttl < 1 or ttl > 240:
         raise HTTPException(status_code=400, detail="TTL deve essere tra 1 e 240 minuti")
 
+    # v3.5.19: build allowed_device_ips se restrict mode attivo
+    allowed_device_ips = []
+    if payload.restrict_to_registered_devices:
+        cursor = db.managed_devices.find(
+            {"client_id": payload.client_id, "monitor_type": {"$ne": "external"}},
+            {"_id": 0, "ip": 1, "ip_address": 1},
+        )
+        async for d in cursor:
+            ip = d.get("ip") or d.get("ip_address")
+            if ip:
+                # Forza /32 (single host) per limitare accesso
+                allowed_device_ips.append(f"{ip}/32")
+        # Se nessun device registrato, blocca preventivamente l'avvio
+        if not allowed_device_ips:
+            raise HTTPException(
+                status_code=422,
+                detail="Nessun device registrato nel connector per questo cliente: la VPN ristretta non avrebbe target accessibili.",
+            )
+        # Verifica anche che target_device_ip (se specificato) sia tra gli allowed
+        if payload.target_device_ip and f"{payload.target_device_ip}/32" not in allowed_device_ips:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Il device target {payload.target_device_ip} non è registrato nel connector di questo cliente. Per sicurezza la VPN ristretta consente solo device monitorati.",
+            )
+
     session = {
         "id": uuid.uuid4().hex,
         "client_id": payload.client_id,
@@ -276,11 +316,14 @@ async def admin_start_session(payload: SessionStart, request: Request, current_u
         "started_by_user_id": current_user.get("id", ""),
         "expires_at": (now + timedelta(minutes=ttl)).isoformat(),
         "status": "active",
+        "restrict_mode": bool(payload.restrict_to_registered_devices),
+        "allowed_device_ips": allowed_device_ips,
     }
     await db.wireguard_sessions.insert_one(session)
     audit.info(
         f"WG_SESSION_START by={current_user.get('name')} client_id={payload.client_id} "
-        f"target={payload.target_device_ip} ttl={ttl}min reason={payload.reason}"
+        f"target={payload.target_device_ip} ttl={ttl}min reason={payload.reason} "
+        f"restrict={payload.restrict_to_registered_devices} allowed_ips={len(allowed_device_ips)}"
     )
     return {k: v for k, v in session.items() if k != "_id"}
 

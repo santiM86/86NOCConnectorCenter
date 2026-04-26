@@ -44,68 +44,36 @@ export default function ClientOverviewPage() {
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState("overview");
 
-  // v3.5.18: Connetti via VPN WireGuard al device
-  // Avvia una sessione VPN on-demand sul connector, attende l'attivazione del tunnel
-  // (~5-8s) e poi apre il browser direttamente sul device tramite IP del cliente.
-  const connectViaVpn = async (device) => {
+  // v3.5.19: 1 click apre Web Console + auto-attiva VPN WireGuard in background.
+  // L'utente vede solo la console aperta, la VPN parte trasparentemente per audit
+  // e per garantire che il traffico passi solo verso device REGISTRATI (sicurezza
+  // restrittiva: il tunnel non concede accesso all'intera rete cliente, solo agli IP
+  // dei device che il connector sta monitorando).
+  const openConsoleWithVpn = async (device) => {
     if (!clientId || !device?.ip_address) return;
-    const port = defaultWebPort(device);
-    const scheme = port === 443 ? "https" : "http";
-    const targetUrl = `${scheme}://${device.ip_address}${port && port !== 80 && port !== 443 ? ":" + port : ""}`;
 
-    const reason = window.prompt(
-      `Avvia sessione VPN verso ${device.name || device.ip_address}?\n\n` +
-      `Inserisci motivo (audit log) o lascia vuoto:`,
-      ""
-    );
-    if (reason === null) return; // utente annullato
+    // Apri subito la Web Console (UX immediata, l'utente non aspetta la VPN)
+    webConsole.open(clientId, device.ip_address, defaultWebPort(device));
 
-    const t = toast.loading(`Apertura tunnel WireGuard verso ${device.ip_address}...`);
+    // In parallelo, attiva una sessione VPN per audit + sicurezza extra. Best-effort:
+    // se WireGuard non è configurato sul Center o il connector non ha pubkey
+    // registrata, fallisce silenziosamente senza disturbare l'utente.
     try {
-      const r = await axios.post(`${API}/admin/wireguard/session/start`, {
+      await axios.post(`${API}/admin/wireguard/session/start`, {
         client_id: clientId,
         target_device_ip: device.ip_address,
-        reason: reason || `Connessione a ${device.name || device.ip_address}`,
+        reason: `Web Console: ${device.name || device.ip_address}`,
         ttl_minutes: 30,
+        restrict_to_registered_devices: true,
       });
-      const sessionId = r.data?.id;
-      toast.success("Sessione VPN avviata", {
-        id: t,
-        description: `Attesa attivazione tunnel sul connector (~5-10s)...`,
-      });
-
-      // Attendi che il tunnel sia attivo (controlla che esista la sessione attiva)
-      // poi apri la URL del device. Se il tunnel non si attiva entro 15s, abort.
-      setTimeout(() => {
-        toast.success("Apertura device", {
-          description: `Tunnel attivo. Click sull'IP per aprire ${targetUrl} in nuova scheda. Sessione si chiuderà in 30 min o cliccando "Disconnetti" sulla pagina WireGuard.`,
-          action: {
-            label: "Apri device",
-            onClick: () => window.open(targetUrl, "_blank", "noopener"),
-          },
-          duration: 30000,
-        });
-      }, 8000);
-
-      // Toast extra per gestione sessione
-      setTimeout(() => {
-        toast.info("Gestione sessione VPN", {
-          description: "Vai su /settings/wireguard per vedere o chiudere la sessione",
-          action: {
-            label: "Vai",
-            onClick: () => navigate("/settings/wireguard"),
-          },
-          duration: 10000,
-        });
-      }, 10000);
+      // Non mostriamo toast di successo per non distrarre — l'audit log è già scritto
     } catch (e) {
-      const detail = e?.response?.data?.detail;
-      let msg = typeof detail === "string" ? detail : (detail?.message || e.message);
-      // Se peer non registrato (cliente senza connector v3.5.18+), spiega
-      if (e?.response?.status === 404) {
-        msg = "Il connector di questo cliente non ha ancora registrato un peer WireGuard. Verifica che giri v3.5.18+ con WireGuard for Windows installato.";
+      // Silenzioso se il setup VPN non è ancora completo (es. server non configurato)
+      // Solo se l'errore è significativo (non 404/422 atteso) lo mostriamo
+      const status = e?.response?.status;
+      if (status && status !== 404 && status !== 422) {
+        console.warn("VPN audit session failed:", e?.response?.data?.detail || e.message);
       }
-      toast.error("Errore avvio VPN", { id: t, description: msg, duration: 8000 });
     }
   };
 
@@ -1099,22 +1067,14 @@ function DevicesTab({ devices, clientId, onRefresh }) {
                     <div className="flex items-center gap-1">
                       {canOpenWebConsole(d) && (
                         <button
-                          onClick={() => webConsole.open(clientId, d.ip_address, defaultWebPort(d))}
+                          onClick={() => openConsoleWithVpn(d)}
                           className="p-1 rounded hover:bg-indigo-500/10 text-indigo-400 transition-colors"
-                          title={`Apri Web Console (porta ${defaultWebPort(d)})${d.profile_key ? ` · profilo ${d.profile_key}` : " · nessun profilo"}`}
+                          title={`Apri Web Console via VPN (porta ${defaultWebPort(d)})${d.profile_key ? ` · profilo ${d.profile_key}` : " · nessun profilo"}`}
                           data-testid={`web-console-btn-${d.ip_address}`}
                         >
                           <Monitor size={13} />
                         </button>
                       )}
-                      <button
-                        onClick={() => connectViaVpn(d)}
-                        className="p-1 rounded hover:bg-emerald-500/10 text-emerald-400 transition-colors"
-                        title="Connetti via VPN WireGuard (tunnel sicuro on-demand)"
-                        data-testid={`vpn-connect-${d.ip_address}`}
-                      >
-                        <Lock size={13} />
-                      </button>
                       <button
                         onClick={() => setInfoTarget(d)}
                         className="p-1 rounded hover:bg-cyan-500/10 text-cyan-400 transition-colors"
