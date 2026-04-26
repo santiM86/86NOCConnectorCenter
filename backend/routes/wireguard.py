@@ -237,11 +237,12 @@ async def connector_poll_session(request: Request):
             "expires_at": active["expires_at"],
             "started_by": active.get("started_by", ""),
             "target_device_ip": active.get("target_device_ip", ""),
-            # v3.5.19: lista IP permessi nel tunnel. Se vuota → fallback "10.86.0.0/16"
-            # (compat). Se non vuota → il connector configurerà AllowedIPs solo a questi
-            # IP /32, garantendo che il tunnel non apra l'intera rete cliente.
             "allowed_device_ips": active.get("allowed_device_ips", []),
             "restrict_mode": active.get("restrict_mode", False),
+            # v3.5.21: PSK ephemeral generato per questa sessione. Il connector lo usa
+            # nel .conf WireGuard al posto del PSK statico del peer. Materiale crittografico
+            # fresco per ogni connessione.
+            "ephemeral_psk": active.get("ephemeral_psk", ""),
         }
     return {"tunnel_required": False}
 
@@ -299,7 +300,7 @@ async def admin_start_session(payload: SessionStart, request: Request, current_u
     if ttl < 1 or ttl > 240:
         raise HTTPException(status_code=400, detail="TTL deve essere tra 1 e 240 minuti")
 
-    # v3.5.19: build allowed_device_ips se restrict mode attivo
+    # v3.5.20: build allowed_device_ips se restrict mode attivo
     allowed_device_ips = []
     if payload.restrict_to_registered_devices:
         cursor = db.managed_devices.find(
@@ -309,20 +310,25 @@ async def admin_start_session(payload: SessionStart, request: Request, current_u
         async for d in cursor:
             ip = d.get("ip") or d.get("ip_address")
             if ip:
-                # Forza /32 (single host) per limitare accesso
                 allowed_device_ips.append(f"{ip}/32")
-        # Se nessun device registrato, blocca preventivamente l'avvio
         if not allowed_device_ips:
             raise HTTPException(
                 status_code=422,
                 detail="Nessun device registrato nel connector per questo cliente: la VPN ristretta non avrebbe target accessibili.",
             )
-        # Verifica anche che target_device_ip (se specificato) sia tra gli allowed
         if payload.target_device_ip and f"{payload.target_device_ip}/32" not in allowed_device_ips:
             raise HTTPException(
                 status_code=422,
                 detail=f"Il device target {payload.target_device_ip} non è registrato nel connector di questo cliente. Per sicurezza la VPN ristretta consente solo device monitorati.",
             )
+
+    # v3.5.21: EPHEMERAL PSK per sessione. Ogni nuova sessione genera un Pre-Shared Key
+    # secondario UNICO che si applica solo a quella sessione e viene distrutto alla
+    # chiusura. Anche se un attaccante intercetta o ruba il PSK statico del peer, ha
+    # accesso solo per la durata di una singola sessione (max 30 min default).
+    # Sicurezza max: ogni connessione ha materiale crittografico fresco.
+    import base64 as _b64
+    ephemeral_psk = _b64.b64encode(secrets.token_bytes(32)).decode()
 
     session = {
         "id": uuid.uuid4().hex,
@@ -338,14 +344,44 @@ async def admin_start_session(payload: SessionStart, request: Request, current_u
         "status": "active",
         "restrict_mode": bool(payload.restrict_to_registered_devices),
         "allowed_device_ips": allowed_device_ips,
+        "ephemeral_psk": ephemeral_psk,
     }
     await db.wireguard_sessions.insert_one(session)
     audit.info(
         f"WG_SESSION_START by={current_user.get('name')} client_id={payload.client_id} "
         f"target={payload.target_device_ip} ttl={ttl}min reason={payload.reason} "
-        f"restrict={payload.restrict_to_registered_devices} allowed_ips={len(allowed_device_ips)}"
+        f"restrict={payload.restrict_to_registered_devices} allowed_ips={len(allowed_device_ips)} ephemeral_psk=true"
     )
     return {k: v for k, v in session.items() if k != "_id"}
+
+
+@router.post("/api/admin/wireguard/session/stop-by-target")
+async def admin_stop_session_by_target(
+    request: Request,
+    current_user: dict = Depends(get_current_user)
+):
+    """v3.5.21: chiude sessioni VPN attive che corrispondono a (client_id, target_device_ip).
+    Chiamato dal frontend quando l'admin chiude il pannello Web Console — garantisce che
+    la VPN si chiuda IMMEDIATAMENTE invece di aspettare TTL 30 min.
+    Body: {"client_id": "...", "target_device_ip": "..."}
+    """
+    require_admin(current_user)
+    body = await request.json()
+    client_id = body.get("client_id", "")
+    target = body.get("target_device_ip", "")
+    if not client_id:
+        raise HTTPException(status_code=400, detail="client_id required")
+    now = datetime.now(timezone.utc)
+    query = {"client_id": client_id, "status": "active"}
+    if target:
+        query["target_device_ip"] = target
+    res = await db.wireguard_sessions.update_many(
+        query,
+        {"$set": {"status": "stopped", "ended_at": now.isoformat(), "stopped_by": current_user.get("name", "admin"), "stopped_reason": "web_console_closed"}},
+    )
+    if res.modified_count > 0:
+        audit.info(f"WG_SESSION_STOP by={current_user.get('name')} client_id={client_id} target={target} reason=web_console_closed count={res.modified_count}")
+    return {"status": "ok", "stopped_count": res.modified_count}
 
 
 @router.post("/api/admin/wireguard/session/{session_id}/stop")

@@ -174,12 +174,13 @@ function Start-WireGuardTunnel($peerConfig) {
 
     $conf = @"
 # ARGUS WireGuard tunnel — generato automaticamente
-# v3.5.20 HARDENED: include PSK quantum-resistant + AllowedIPs ristretti
+# v3.5.21 OPTIMIZED: PSK ephemeral + MTU tuned per zero fragmentation
 # Non modificare manualmente. Riavvia il connector per rigenerare.
 
 [Interface]
 PrivateKey = $($keys.private_key)
 Address = $tunnelIp
+MTU = 1420
 
 [Peer]
 PublicKey = $($peerConfig.server_public_key)
@@ -280,20 +281,21 @@ function Sync-WireGuardSession($config, $peerConfig) {
     if (-not $script:WG_EXE) { return }   # WG non installato → no-op
     if (-not $peerConfig) { return }
 
-    # Throttle: max 1 poll ogni 5s
+    # v3.5.21: polling ADATTIVO per ottimizzare performance
+    #   - Sessione attiva  → poll ogni 3 sec (reattività rapida a stop session)
+    #   - Idle (no session) → poll ogni 10 sec (CPU risparmiata)
+    $pollInterval = if ($script:WG_LAST_SESSION_ID) { 3 } else { 10 }
     $now = Get-Date
-    if (($now - $script:WG_LAST_POLL_AT).TotalSeconds -lt 4) { return }
+    if (($now - $script:WG_LAST_POLL_AT).TotalSeconds -lt $pollInterval) { return }
     $script:WG_LAST_POLL_AT = $now
 
-    # v3.5.20: prima controlla se l'admin ha richiesto rotation forzata
+    # Check rotation pending (priorità massima)
     try {
         $rotUrl = "$($config.noc_center_url)/api/connector/wireguard/rotation-pending"
         $r = Invoke-RestMethod -Uri $rotUrl -Method Get -Headers @{ "X-API-Key" = $config.api_key } -TimeoutSec 5 -ErrorAction Stop
         if ($r.rotation_pending -eq $true) {
             Write-Log "WG: rotation forzata richiesta dal Center, eseguo..." "WARN"
             if (Invoke-WireGuardKeyRotation $config) {
-                # Aggiorna $peerConfig nel scope chiamante via reference
-                # (variabile script-scope già aggiornata da Invoke-WireGuardKeyRotation)
                 $peerConfig = $script:WG_PEER_CONFIG
             }
         }
@@ -308,15 +310,21 @@ function Sync-WireGuardSession($config, $peerConfig) {
     }
 
     if ($r.tunnel_required -eq $true) {
-        # v3.5.19: clona peerConfig e sovrascrivi allowed_ips se la session richiede
-        # restrict mode (solo device registrati). Garantisce che il tunnel sia limitato.
+        # Clona peerConfig e applica overrides per questa sessione
         $effectiveConfig = $peerConfig.PSObject.Copy()
+        # Restrict mode: AllowedIPs limitati ai device registrati
         if ($r.restrict_mode -eq $true -and $r.allowed_device_ips -and $r.allowed_device_ips.Count -gt 0) {
             $effectiveConfig | Add-Member -NotePropertyName allowed_ips -NotePropertyValue ($r.allowed_device_ips -join ", ") -Force
         }
+        # v3.5.21: Ephemeral PSK per questa sessione (override del PSK statico del peer)
+        if ($r.ephemeral_psk) {
+            $effectiveConfig | Add-Member -NotePropertyName preshared_key -NotePropertyValue $r.ephemeral_psk -Force
+        }
+
         if ($script:WG_LAST_SESSION_ID -ne $r.session_id) {
-            $restrictNote = if ($r.restrict_mode) { " [RESTRICT mode: $($r.allowed_device_ips.Count) device]" } else { "" }
-            Write-Log "WG session start (id=$($r.session_id), avviata da=$($r.started_by), target=$($r.target_device_ip))$restrictNote" "INFO"
+            $restrictNote = if ($r.restrict_mode) { " [RESTRICT: $($r.allowed_device_ips.Count) device]" } else { "" }
+            $pskNote = if ($r.ephemeral_psk) { " [EPHEMERAL-PSK]" } else { "" }
+            Write-Log "WG session start (id=$($r.session_id), avviata da=$($r.started_by), target=$($r.target_device_ip))${restrictNote}${pskNote}" "INFO"
             $ok = Start-WireGuardTunnel $effectiveConfig
             if ($ok) {
                 $script:WG_LAST_SESSION_ID = $r.session_id
