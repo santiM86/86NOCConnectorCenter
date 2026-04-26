@@ -39,6 +39,88 @@ if [ "$VERSION_IN_JSON" != "$VERSION" ]; then
     exit 1
 fi
 
+# ============================================================================
+# PRE-FLIGHT CHECK PowerShell encoding (introdotto in v3.5.23)
+# ----------------------------------------------------------------------------
+# Verifica che TUTTI i file .ps1 del connector:
+#   1. Abbiano BOM UTF-8 (ef bb bf) all'inizio. Senza BOM, Windows PowerShell
+#      5.1 con locale italiano usa CP-1252 e i caratteri UTF-8 multibyte
+#      vengono mal-interpretati.
+#   2. NON contengano caratteri tipografici Unicode "killer":
+#        - em-dash '—' (U+2014, e2 80 94) -> il byte 0x94 in CP-1252 e' '"'
+#          (smart quote close) e CHIUDE la stringa di Write-Log, trasformando
+#          i '>' successivi in operatori di redirect e rompendo il parser.
+#        - en-dash '–' (U+2013, e2 80 93) -> stesso problema (0x93 = '"' open)
+#        - arrow '→' '←' (U+2192/2190) -> il byte 0x92/0x90 in CP-1252 e'
+#          '''/'\u2018' che corrompe stringhe single-quoted.
+#        - smart quotes ' ' " " (U+2018/2019/201C/201D) -> idem
+# Se trova problemi, esce con codice 2 e indica come correggere.
+# ----------------------------------------------------------------------------
+echo ""
+echo "   PRE-FLIGHT CHECK PowerShell encoding (BOM + Unicode killers)"
+echo "   ..."
+
+PS_FILES=$(find "$PRG_DIR" -type f -name "*.ps1")
+PRECHECK_FAILED=0
+PRECHECK_REPORT=""
+
+while IFS= read -r f; do
+    # 1. BOM check
+    bom=$(head -c 3 "$f" | od -An -tx1 | tr -d ' \n')
+    if [ "$bom" != "efbbbf" ]; then
+        PRECHECK_REPORT+="    [NO BOM]   $f"$'\n'
+        PRECHECK_FAILED=1
+    fi
+    # 2. Unicode killers — usa LC_ALL=C per byte-exact match.
+    # NB: `grep -c` emette il count su stdout MA esce con codice 1 quando il
+    # count e' 0. Sotto `set -e` il `$()` cattura "0" ma poi lo script fallisce.
+    # Soluzione: avvolgere ogni grep in un "(... ; true)" che neutralizza
+    # l'exit code preservando stdout. Cosi' $em e' SEMPRE un integer valido.
+    em=$( (LC_ALL=C grep -cP $'\xe2\x80\x94' "$f" 2>/dev/null || true) | head -n1 )
+    en=$( (LC_ALL=C grep -cP $'\xe2\x80\x93' "$f" 2>/dev/null || true) | head -n1 )
+    arr_r=$( (LC_ALL=C grep -cP $'\xe2\x86\x92' "$f" 2>/dev/null || true) | head -n1 )
+    arr_l=$( (LC_ALL=C grep -cP $'\xe2\x86\x90' "$f" 2>/dev/null || true) | head -n1 )
+    sq=$( (LC_ALL=C grep -cP $'\xe2\x80[\x98\x99\x9c\x9d]' "$f" 2>/dev/null || true) | head -n1 )
+    # Default a 0 se vuoto (paranoia)
+    em=${em:-0}; en=${en:-0}; arr_r=${arr_r:-0}; arr_l=${arr_l:-0}; sq=${sq:-0}
+    total=$((em + en + arr_r + arr_l + sq))
+    if [ "$total" -gt 0 ]; then
+        PRECHECK_REPORT+="    [UNICODE]  $f: em-dash=$em en-dash=$en arrow_r=$arr_r arrow_l=$arr_l smart_quotes=$sq"$'\n'
+        PRECHECK_FAILED=1
+    fi
+done <<< "$PS_FILES"
+
+if [ "$PRECHECK_FAILED" -eq 1 ]; then
+    echo ""
+    echo "   PRE-FLIGHT FAIL — pubblicazione interrotta"
+    echo "==========================================================================="
+    echo ""
+    echo "I file PowerShell del connector hanno problemi di encoding che rompono"
+    echo "Windows PowerShell 5.1 su locale italiano (CP-1252) — vedi v3.5.23 nel PRD."
+    echo ""
+    echo "$PRECHECK_REPORT"
+    echo "FIX automatico (esegui questi 2 comandi nella shell del container):"
+    echo ""
+    echo "  # 1. Sostituisci caratteri tipografici Unicode con ASCII"
+    echo "  for f in $PRG_DIR/src/*.ps1 $PRG_DIR/*.ps1; do"
+    echo "    LC_ALL=C sed -i \$'s/\\xe2\\x80\\x94/-/g; s/\\xe2\\x80\\x93/-/g; s/\\xe2\\x86\\x92/->/g; s/\\xe2\\x86\\x90/<-/g; s/\\xe2\\x80\\x98/'\\\"'\\\"'/g; s/\\xe2\\x80\\x99/'\\\"'\\\"'/g; s/\\xe2\\x80\\x9c/\\\"/g; s/\\xe2\\x80\\x9d/\\\"/g' \"\$f\""
+    echo "  done"
+    echo ""
+    echo "  # 2. Aggiungi BOM UTF-8 ai file che non lo hanno"
+    echo "  for f in $PRG_DIR/src/*.ps1 $PRG_DIR/*.ps1; do"
+    echo "    if [ \"\$(head -c 3 \"\$f\" | od -An -tx1 | tr -d ' \\n')\" != \"efbbbf\" ]; then"
+    echo "      printf '\\xef\\xbb\\xbf' > \"\$f.tmp\" && cat \"\$f\" >> \"\$f.tmp\" && mv \"\$f.tmp\" \"\$f\""
+    echo "    fi"
+    echo "  done"
+    echo ""
+    echo "Poi rilancia ./publish-connector.sh $VERSION \"\$CHANGELOG\""
+    exit 2
+fi
+
+PS_COUNT=$(echo "$PS_FILES" | wc -l)
+echo "   PRE-FLIGHT OK ($PS_COUNT file .ps1 verificati: BOM + zero Unicode killers)"
+echo ""
+
 # Build ZIPs
 mkdir -p "$TMP_DIR"
 cp -r "$PRG_DIR" "$TMP_DIR/"

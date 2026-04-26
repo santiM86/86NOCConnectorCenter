@@ -397,9 +397,10 @@ PowerShell rifiuta di parsare lo script -> `connector.ps1` non parte mai ->
 process child di NSSM crash entro 1.5s -> NSSM throttle il riavvio e mette
 il servizio in stato `Paused`. Sintomo: log file non viene creato, no heartbeat.
 
-**FIX APPLICATO** a 8 file PowerShell:
+**FIX APPLICATO** a 12 file PowerShell (8 individuati nel primo round + 4 trovati dal pre-check):
 - `connector.ps1`, `installer_gui.ps1`, `snmp_poller.ps1`, `tray_app.ps1`,
-  `wireguard_client.ps1`, `update_check.ps1`, `remote_browser.ps1`, `uninstall.ps1`
+  `wireguard_client.ps1`, `update_check.ps1`, `remote_browser.ps1`, `uninstall.ps1`,
+  `backup_monitor.ps1`, `service_wrapper.ps1`, `diagnostica.ps1`, `diagnostica_connessione.ps1`
 
 1. **Sostituzione caratteri killer** (sed in-place):
    - `-` (em-dash) -> `-` ASCII hyphen
@@ -408,18 +409,32 @@ il servizio in stato `Paused`. Sintomo: log file non viene creato, no heartbeat.
    defesa in profondita' - anche se in futuro qualcuno aggiungesse di nuovo
    caratteri Unicode tipografici, il BOM forza PowerShell 5.1 a usare
    encoding UTF-8 invece di CP-1252, evitando il bug definitivamente.
+3. **PRE-FLIGHT CHECK in `/app/scripts/publish-connector.sh`** (defesa permanente):
+   ad ogni invocazione di `./publish-connector.sh <ver> "<changelog>"`, prima
+   di costruire i ZIP lo script:
+   - scansiona tutti i `.ps1` sotto `/app/noc-connector/prg/`
+   - verifica BOM UTF-8 (ef bb bf) all'inizio di ogni file
+   - cerca caratteri Unicode "killer": em-dash, en-dash, arrow LR, smart quotes
+   - se trova problemi, esce con exit code 2 e stampa il fix automatico da
+     copiare/incollare nella shell. La pubblicazione e' bloccata: nessun ZIP
+     puo' essere creato con file non-conformi.
 
 Le lettere accentate italiane (a', e', i', o') restano nel file ma con BOM
 vengono parsate correttamente come UTF-8 multibyte.
 
 **Verifica**:
-- 8/8 file: BOM `ef bb bf` aggiunto
-- 8/8 file: em-dash + arrow = 0 occorrenze
-- 8/8 file: braces bilanciati (delta 0)
+- 12/12 file: BOM `ef bb bf` aggiunto
+- 12/12 file: em-dash + arrow = 0 occorrenze
+- 12/12 file: braces bilanciati (delta 0)
 - 0 byte `0x94`/`0x80` problematici residui
 - ZIP `86NocConnector_v3.5.23_install.zip` (371 KB) pubblicato + DB record
   active=true, precedenti deactivati
-- SHA256 install: `1f28e8a400253dfa65bad2dfd85f0576d615ab7e3ba0ff3d04fd7c0f26ac4a9b`
+- SHA256 install: `f11cba20c125d1a071fbef5aef572c5b6b716ac0d6176f7ac58bd922bc3b306b`
+- SHA256 plain:   `ff6d631c1c4078483334c0f4ab922e76201cc50782f909c4b834c31389f75196`
+- Pre-check `publish-connector.sh` testato:
+  - stato pulito -> PRE-FLIGHT OK (12 file verificati)
+  - em-dash artificiale aggiunto -> PRE-FLIGHT FAIL exit=2 con fix suggerito
+  - BOM rimosso artificialmente -> PRE-FLIGHT FAIL exit=2 con fix suggerito
 
 **Why this never showed before v3.5.22**:
 Le versioni precedenti probabilmente avevano BOM (perche' editate in PowerShell ISE
