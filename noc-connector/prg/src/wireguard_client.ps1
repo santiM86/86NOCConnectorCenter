@@ -60,18 +60,102 @@ function Initialize-WireGuard {
         if (Test-Path $p) { $script:WG_TOOLS_EXE = $p; break }
     }
 
+    # v3.5.22: AUTO-INSTALL di WireGuard for Windows se mancante.
+    # Il connector scarica l'installer ufficiale Microsoft-firmato e lo esegue
+    # in silent mode. Garantisce zero-touch deployment: l'admin installa solo
+    # il connector ARGUS, tutto il resto (driver kernel WinTun + tools wg.exe)
+    # viene gestito automaticamente al primo avvio.
     if (-not $script:WG_EXE -or -not $script:WG_TOOLS_EXE) {
-        Write-Log "WireGuard non installato sul sistema. Per abilitare l'accesso VPN remoto: scarica e installa WireGuard for Windows da https://www.wireguard.com/install/" "WARN"
+        Write-Log "WireGuard for Windows non rilevato. Tento installazione automatica..." "WARN"
+        $installed = Install-WireGuardClient
+        if ($installed) {
+            # Re-check dopo install
+            foreach ($p in $script:WG_EXE_CANDIDATES) {
+                if (Test-Path $p) { $script:WG_EXE = $p; break }
+            }
+            foreach ($p in $script:WG_TOOLS_EXE_CANDIDATES) {
+                if (Test-Path $p) { $script:WG_TOOLS_EXE = $p; break }
+            }
+        }
+    }
+
+    if (-not $script:WG_EXE -or -not $script:WG_TOOLS_EXE) {
+        Write-Log "WireGuard non disponibile: VPN remota disabilitata. Le altre feature del connector continuano normalmente. Per abilitare manualmente: scarica https://download.wireguard.com/windows-client/wireguard-installer.exe" "WARN"
         return $false
     }
 
-    # Crea directory dati WG
     if (-not (Test-Path $script:WG_DIR)) {
         New-Item -ItemType Directory -Path $script:WG_DIR -Force | Out-Null
     }
 
-    Write-Log "WireGuard tools rilevati: $($script:WG_EXE) | $($script:WG_TOOLS_EXE)" "INFO"
+    Write-Log "WireGuard tools rilevati: $($script:WG_EXE)" "INFO"
     return $true
+}
+
+# ============================================================
+# v3.5.22: Auto-install di WireGuard for Windows
+# ============================================================
+function Install-WireGuardClient {
+    [CmdletBinding()]
+    param()
+
+    # URL ufficiale (firmato Microsoft, signed Authenticode da WireGuard LLC)
+    $installerUrl = "https://download.wireguard.com/windows-client/wireguard-installer.exe"
+    $installerPath = Join-Path $env:TEMP "wireguard-installer.exe"
+
+    try {
+        Write-Log "Download WireGuard for Windows da $installerUrl ..." "INFO"
+        # TLS 1.2+ (Windows Server 2016+ supporta out-of-the-box)
+        try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13 } catch { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 }
+        # Usa WebClient per progress + maggior compat con server vecchi
+        $wc = New-Object System.Net.WebClient
+        $wc.Headers.Add("User-Agent", "ARGUS-Connector/$($global:Version)")
+        $wc.DownloadFile($installerUrl, $installerPath)
+        if (-not (Test-Path $installerPath)) {
+            Write-Log "Download fallito: file non creato" "ERROR"
+            return $false
+        }
+
+        # Verifica signature Authenticode (defense-in-depth)
+        try {
+            $sig = Get-AuthenticodeSignature $installerPath
+            if ($sig.Status -ne "Valid") {
+                Write-Log "Signature WireGuard installer NON valida (status=$($sig.Status)). Install ABORTITO per sicurezza." "ERROR"
+                Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
+                return $false
+            }
+            $issuer = $sig.SignerCertificate.Subject
+            if ($issuer -notmatch "WireGuard|Jason A. Donenfeld") {
+                Write-Log "Signature firmataria sospetta: $issuer. Install ABORTITO." "ERROR"
+                Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
+                return $false
+            }
+            Write-Log "Signature WireGuard verificata (signed by: $issuer)" "INFO"
+        } catch {
+            Write-Log "Verifica signature non disponibile: $($_.Exception.Message). Procedo comunque (il file e' scaricato da HTTPS ufficiale)." "WARN"
+        }
+
+        # Esegui installer silent. WireGuard installer accetta /quiet o /S.
+        # Default flag: /S (silent), no UI, install in C:\Program Files\WireGuard\
+        Write-Log "Esecuzione installer WireGuard in silent mode..." "INFO"
+        $proc = Start-Process -FilePath $installerPath -ArgumentList "/S" -Wait -PassThru -NoNewWindow
+        Start-Sleep -Seconds 3
+
+        if ($proc.ExitCode -eq 0) {
+            Write-Log "WireGuard for Windows installato (exit=0)" "INFO"
+            # Cleanup file scaricato
+            Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
+            return $true
+        } else {
+            Write-Log "Installer WireGuard exit code: $($proc.ExitCode). Possibile install incompleto." "WARN"
+            Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
+            return $false
+        }
+    } catch {
+        Write-Log "Errore download/install WireGuard: $($_.Exception.Message)" "ERROR"
+        Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
+        return $false
+    }
 }
 
 # ============================================================
