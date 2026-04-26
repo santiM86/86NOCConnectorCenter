@@ -1,4 +1,4 @@
-# =============================================
+﻿# =============================================
 # 86NocConnector - Backup Monitor (Hornetsecurity VM Backup)
 # Monitora lo stato dei backup Hyper-V tramite API REST locale
 # =============================================

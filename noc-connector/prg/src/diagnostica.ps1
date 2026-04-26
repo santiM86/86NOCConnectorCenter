@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     86NocConnector - Script di Diagnostica
 .DESCRIPTION

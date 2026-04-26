@@ -1,6 +1,6 @@
-<#
+﻿<#
 .SYNOPSIS
-    86NocConnector Remote Browser (RMT) — v3.4.1 HTTP TRANSPORT
+    86NocConnector Remote Browser (RMT) - v3.4.1 HTTP TRANSPORT
     Stream frame via POST al backend, input via long-poll GET. Zero WebSocket.
 
 .PARAMETER NocCenterUrl  es. https://argus.86bit.it
@@ -78,7 +78,7 @@ $edgeArgs = @(
     "--headless=new",
     "--remote-debugging-port=$cdpPort",
     "--remote-allow-origins=*",
-    # v3.4.3 — flag obbligatori per Edge come servizio SYSTEM:
+    # v3.4.3 - flag obbligatori per Edge come servizio SYSTEM:
     "--no-sandbox",
     "--disable-dev-shm-usage",
     "--disable-gpu-sandbox",
@@ -316,7 +316,7 @@ $inputPollerScript = {
                 }
             }
         } catch {
-            # timeout normale dopo 25s, riloopa. Errori 410/401 = sessione scaduta → termina
+            # timeout normale dopo 25s, riloopa. Errori 410/401 = sessione scaduta -> termina
             if ($_.Exception.Response -and $_.Exception.Response.StatusCode -in @(410, 401)) {
                 $state.Active = $false; break
             }

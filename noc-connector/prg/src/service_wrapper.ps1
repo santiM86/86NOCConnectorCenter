@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Wrapper per avviare connector.ps1 come servizio.
     Cattura gli errori e li logga, poi riavvia automaticamente.

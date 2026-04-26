@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     ARGUS Connector - System Tray Application
 .DESCRIPTION
@@ -9,7 +9,7 @@
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
-# $AppName: identificatore tecnico (path ProgramData, nomi task/servizio) — NON cambiare, rompe installazioni esistenti
+# $AppName: identificatore tecnico (path ProgramData, nomi task/servizio) - NON cambiare, rompe installazioni esistenti
 # $DisplayName: nome visualizzato all'utente in tutta l'UI (tooltip, form title, MessageBox, About)
 $AppName = "86NocConnector"
 $DisplayName = "ARGUS Connector"
