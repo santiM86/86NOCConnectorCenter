@@ -30,6 +30,14 @@ if (Test-Path $versionFile) {
     $global:Version = "1.0.0"
 }
 
+# ==================== WIREGUARD MODULE ====================
+# Dot-source modulo WireGuard se presente. Se mancante (versioni vecchie) il
+# connector continua a girare normalmente (graceful degradation).
+$wgModule = Join-Path $PSScriptRoot "wireguard_client.ps1"
+if (Test-Path $wgModule) {
+    . $wgModule
+}
+
 # ==================== CONFIGURAZIONE ====================
 
 function Get-ConfigDir {
@@ -1513,7 +1521,21 @@ function Start-PollingLoop($config) {
     }
     Write-Log "Stato iniziale acquisito. Invio report al NOC..."
     Send-DeviceReport $config $devices
-    
+
+    # v3.5.18: inizializza WireGuard (graceful: se WG non installato, no-op)
+    $script:WG_PEER_CONFIG = $null
+    if (Get-Command Initialize-WireGuard -ErrorAction SilentlyContinue) {
+        if (Initialize-WireGuard) {
+            $keys = Get-WireGuardKeys
+            if ($keys -and $keys.public_key) {
+                $script:WG_PEER_CONFIG = Register-WireGuardPeer $config $keys.public_key
+                if ($script:WG_PEER_CONFIG) {
+                    Write-Log "WireGuard pronto: tunnel_ip=$($script:WG_PEER_CONFIG.tunnel_ip)" "INFO"
+                }
+            }
+        }
+    }
+
     $refreshCounter = 0
 
     while ($global:Running) {
@@ -1545,7 +1567,16 @@ function Start-PollingLoop($config) {
             
             # Send full status report after every poll
             Send-DeviceReport $config $devices
-            
+
+            # v3.5.18: sync WireGuard session (long-poll throttled internamente a 5s)
+            if (Get-Command Sync-WireGuardSession -ErrorAction SilentlyContinue) {
+                try {
+                    Sync-WireGuardSession $config $script:WG_PEER_CONFIG
+                } catch {
+                    Write-Log "WG sync error: $($_.Exception.Message)" "DEBUG"
+                }
+            }
+
             # Refresh device list from NOC every 10 cycles,
             # oppure immediatamente se admin ha cliccato "Applica ora" nel Center.
             # Il flag arriva via file su disco (IPC cross-job, vedi Send-Heartbeat)

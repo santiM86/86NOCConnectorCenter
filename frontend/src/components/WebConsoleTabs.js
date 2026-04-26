@@ -134,6 +134,15 @@ export function WebConsoleTabsProvider({ children }) {
   const close = useCallback((id) => {
     const s = sessionsRef.current.find(x => x.id === id);
     if (s?.sessionId) axios.delete(`${API}/web-console/session/${s.sessionId}`).catch(() => {});
+    // v3.5.21: chiudi anche la sessione VPN WireGuard associata (se aperta tramite
+    // openConsoleWithVpn). Garantisce che il tunnel si chiuda IMMEDIATAMENTE quando
+    // l'admin chiude il pannello, invece di aspettare TTL 30 min.
+    if (s?.clientId && s?.deviceIp) {
+      axios.post(`${API}/admin/wireguard/session/stop-by-target`, {
+        client_id: s.clientId,
+        target_device_ip: s.deviceIp,
+      }).catch(() => {});
+    }
     setSessions(prev => prev.filter(x => x.id !== id));
     setActiveId(prev => {
       if (prev !== id) return prev;
@@ -148,6 +157,13 @@ export function WebConsoleTabsProvider({ children }) {
   const closeAll = useCallback(() => {
     sessionsRef.current.forEach(s => {
       if (s.sessionId) axios.delete(`${API}/web-console/session/${s.sessionId}`).catch(() => {});
+      // v3.5.21: chiudi anche le VPN sessions attive collegate
+      if (s.clientId && s.deviceIp) {
+        axios.post(`${API}/admin/wireguard/session/stop-by-target`, {
+          client_id: s.clientId,
+          target_device_ip: s.deviceIp,
+        }).catch(() => {});
+      }
     });
     setSessions([]); setActiveId(null); setFullscreen(false);
   }, []);

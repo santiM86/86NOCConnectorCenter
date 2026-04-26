@@ -44,6 +44,39 @@ export default function ClientOverviewPage() {
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState("overview");
 
+  // v3.5.19: 1 click apre Web Console + auto-attiva VPN WireGuard in background.
+  // L'utente vede solo la console aperta, la VPN parte trasparentemente per audit
+  // e per garantire che il traffico passi solo verso device REGISTRATI (sicurezza
+  // restrittiva: il tunnel non concede accesso all'intera rete cliente, solo agli IP
+  // dei device che il connector sta monitorando).
+  const openConsoleWithVpn = async (device) => {
+    if (!clientId || !device?.ip_address) return;
+
+    // Apri subito la Web Console (UX immediata, l'utente non aspetta la VPN)
+    webConsole.open(clientId, device.ip_address, defaultWebPort(device));
+
+    // In parallelo, attiva una sessione VPN per audit + sicurezza extra. Best-effort:
+    // se WireGuard non è configurato sul Center o il connector non ha pubkey
+    // registrata, fallisce silenziosamente senza disturbare l'utente.
+    try {
+      await axios.post(`${API}/admin/wireguard/session/start`, {
+        client_id: clientId,
+        target_device_ip: device.ip_address,
+        reason: `Web Console: ${device.name || device.ip_address}`,
+        ttl_minutes: 30,
+        restrict_to_registered_devices: true,
+      });
+      // Non mostriamo toast di successo per non distrarre — l'audit log è già scritto
+    } catch (e) {
+      // Silenzioso se il setup VPN non è ancora completo (es. server non configurato)
+      // Solo se l'errore è significativo (non 404/422 atteso) lo mostriamo
+      const status = e?.response?.status;
+      if (status && status !== 404 && status !== 422) {
+        console.warn("VPN audit session failed:", e?.response?.data?.detail || e.message);
+      }
+    }
+  };
+
   const fetchAll = useCallback(async () => {
     try {
       const [clientRes, devRes, wanRes, alertRes] = await Promise.allSettled([
@@ -1034,9 +1067,9 @@ function DevicesTab({ devices, clientId, onRefresh }) {
                     <div className="flex items-center gap-1">
                       {canOpenWebConsole(d) && (
                         <button
-                          onClick={() => webConsole.open(clientId, d.ip_address, defaultWebPort(d))}
+                          onClick={() => openConsoleWithVpn(d)}
                           className="p-1 rounded hover:bg-indigo-500/10 text-indigo-400 transition-colors"
-                          title={`Apri Web Console (porta ${defaultWebPort(d)})${d.profile_key ? ` · profilo ${d.profile_key}` : " · nessun profilo"}`}
+                          title={`Apri Web Console via VPN (porta ${defaultWebPort(d)})${d.profile_key ? ` · profilo ${d.profile_key}` : " · nessun profilo"}`}
                           data-testid={`web-console-btn-${d.ip_address}`}
                         >
                           <Monitor size={13} />

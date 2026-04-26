@@ -328,6 +328,13 @@ from routes.console_rmt_http import router as console_rmt_http_router
 app.include_router(console_rmt_http_router)
 from routes.console_rmt_v2 import router as console_rmt_v2_router
 app.include_router(console_rmt_v2_router)
+from routes.security_allowlist import router as security_allowlist_router, IPAllowlistMiddleware
+app.include_router(security_allowlist_router)
+from routes.wireguard import router as wireguard_router
+app.include_router(wireguard_router)
+# IP Allowlist middleware: blocca admin endpoints da IP non autorizzati.
+# Posizionato dopo il routing setup in modo da intercettare ogni request.
+app.add_middleware(IPAllowlistMiddleware)
 from routes.metric_history import router as metric_history_router, ensure_index as ensure_metric_idx
 app.include_router(metric_history_router)
 from routes.syslog_trap import router as syslog_trap_router, _ensure_indexes as ensure_syslog_idx
