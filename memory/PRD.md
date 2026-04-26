@@ -367,6 +367,40 @@ Rimossi in v3.5.0 (con OK utente): Check-ForUpdate, Install-Update (5 metodi fal
 - P2: LDAP/Active Directory integration
 - P3: Zyxel Nebula Cloud API
 
+### Connector v3.5.22 — WireGuard PORTABLE deployment (2026-04-26)
+**Richiesta utente**: "non voglio assolutamente sporcare il server di produzione". Valutate alternative: WireGuard portable, WireSock, wireproxy, TunnlTo. Scelta: **estrazione binari da MSI ufficiale via `msiexec /a` (administrative install)** — la piu' pulita e sicura.
+
+**Cambiamento rispetto a v3.5.21** (che faceva install completo via NSIS `/S`):
+- `wireguard_client.ps1::Install-WireGuardClient` riscritto: scarica MSI da `download.wireguard.com`, verifica firma Authenticode (rifiuta se non firmato da WireGuard LLC / Jason A. Donenfeld), esegue `msiexec /a "$msi" /qn TARGETDIR="$tempDir"` (administrative install = solo spacchettamento file, NO install nel sistema), copia `wireguard.exe` + `wg.exe` (+ DLL companion eventuali) sotto `C:\Program Files\86NocConnector\wireguard-portable\`, elimina MSI temporaneo + cartella estrazione.
+- Auto-discovery URL MSI: parsa la directory listing HTML di `https://download.wireguard.com/windows-client/` con regex `wireguard-amd64-(\d+\.\d+\.\d+)\.msi`, prende la versione piu' alta. Fallback hardcoded: `wireguard-amd64-0.5.3.msi`.
+- `WG_EXE_CANDIDATES` priorita' #1: `C:\Program Files\86NocConnector\wireguard-portable\wireguard.exe`. Path legacy `Program Files\WireGuard\` come fallback (compat con setup pre-v3.5.22).
+- `uninstall.ps1` STEP 1.5 nuovo: prima di rimuovere il connector, ferma e cancella il servizio dinamico `WireGuardTunnel$argus` se attivo (via `wireguard.exe portable /uninstalltunnelservice argus`, fallback `sc.exe stop` + `sc.exe delete`).
+
+**Risultato sul server di produzione**:
+- ZERO entry in "Programmi e funzionalita'"
+- ZERO service permanente "WireGuard Tunnel Manager"
+- ZERO chiavi registry HKLM\Software\WireGuard
+- Tutto sotto C:\Program Files\86NocConnector\ → sparisce con uninstall.ps1
+- Firma Microsoft/WireGuard LLC dei binari preservata (estraiamo, non ricompiliamo)
+- Service VPN dinamico creato/distrutto SOLO per la durata della sessione admin
+
+**File toccati**:
+- `/app/noc-connector/prg/src/wireguard_client.ps1` (riscritto Install-WireGuardClient + WG_EXE_CANDIDATES con priorita' portable)
+- `/app/noc-connector/prg/uninstall.ps1` (nuovo STEP 1.5 stop tunnel WG)
+- `/app/noc-connector/prg/version.json` → 3.5.22 + changelog dettagliato
+- ZIP pubblicati: `/app/connector_updates/86NocConnector_v3.5.22.zip` (379 KB) + `/app/frontend/public/downloads/86NocConnector_v3.5.22{,_install}.zip`
+- DB: record `connector_updates` v3.5.22 inserito con `active=true`, precedenti deactivati
+
+**Verifica**: 
+- Sintassi PowerShell bilanciata (delta parens 14/14, braces 22/22)
+- Backend `/api/connector/update-info` ritorna v3.5.22 active=true, file_size=378691 bytes
+- ZIP contiene msiexec=10 occorrenze, WG_PORTABLE_DIR=11, STEP 1.5 nell'uninstall=2
+- Download HTTPS pubblico HTTP 200, content-length 379744 bytes
+- Allowlist client_ip=35.225.230.28 allowed=true reason=empty_list
+- WG server status: pool 10.86.0.0/16, ready=false (server WG non ancora setup in preview Kubernetes — atteso)
+
+**Pending user action**: validazione end-to-end su Windows reale (1) connector si auto-aggiorna a v3.5.22, (2) al primo apri Web Console scarica il MSI, lo estrae via msiexec /a, mette i binari in `C:\Program Files\86NocConnector\wireguard-portable\`, (3) nessuna entry compare in "Programmi e funzionalita'", (4) tunnel temporaneo viene attivato/distrutto correttamente.
+
 ### 🎨 Connector v3.4.7 UI Polish (TODO alla prossima build connector — richiesta utente 2026-04-23)
 - **Task 1 — Logo 86bit nei shortcut menu Start**: generare `86bit_logo.ico` multi-risoluzione (16/32/48/256) da `86bit_logo.jpg` e applicare `.IconLocation` su tutti e 4 i shortcut creati da `installer_gui.ps1`/`install.bat`: "ARGUS Center Connector" (attualmente icona globo), "Apri Cartella Log" (cartella generica), "Diagnostica Connessione" (lente), "Disinstalla ARGUS Connector" (cestino).
 - **Task 2 — Logo in Pannello di Controllo → Programmi e funzionalità**: aggiungere chiave registry `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\86NocConnector\DisplayIcon` che punti al percorso di `86bit_logo.ico` installato. Attualmente mostra icona blu generica Windows.

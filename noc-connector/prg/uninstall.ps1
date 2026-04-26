@@ -123,6 +123,48 @@ try {
 } catch {}
 
 # ============================================================
+# STEP 1.5 — Stop tunnel WireGuard portable (v3.5.22+)
+# ============================================================
+# Se il connector ha attivato un tunnel WG (servizio Windows dinamico
+# 'WireGuardTunnel$argus'), lo fermiamo qui PRIMA di rimuovere i binari portable.
+# Usa wireguard.exe portable se presente, altrimenti sc.exe come fallback.
+Write-UninstallLog "STEP 1.5 — Stop tunnel WireGuard (se attivo)" "STEP"
+
+$wgPortableExe = Join-Path $InstallDir "wireguard-portable\wireguard.exe"
+$wgTunnelSvc = "WireGuardTunnel`$argus"
+$wgSvc = Get-Service -Name $wgTunnelSvc -ErrorAction SilentlyContinue
+if ($wgSvc) {
+    Write-UninstallLog "Tunnel WG '$wgTunnelSvc' attivo (stato=$($wgSvc.Status)), rimozione in corso..." "INFO"
+    if (Test-Path $wgPortableExe) {
+        # Best-effort via wireguard.exe /uninstalltunnelservice (canonico)
+        try {
+            $proc = Start-Process -FilePath $wgPortableExe -ArgumentList @("/uninstalltunnelservice", "argus") -Wait -PassThru -NoNewWindow -ErrorAction Stop
+            if ($proc.ExitCode -eq 0) {
+                Write-UninstallLog "Tunnel WG rimosso via wireguard.exe portable" "OK"
+            } else {
+                Write-UninstallLog "wireguard.exe /uninstalltunnelservice exit=$($proc.ExitCode), uso fallback sc.exe" "WARN"
+                & sc.exe stop $wgTunnelSvc 2>&1 | Out-Null
+                Start-Sleep -Seconds 1
+                & sc.exe delete $wgTunnelSvc 2>&1 | Out-Null
+            }
+        } catch {
+            Write-UninstallLog "wireguard.exe portable error: $($_.Exception.Message), uso fallback sc.exe" "WARN"
+            & sc.exe stop $wgTunnelSvc 2>&1 | Out-Null
+            Start-Sleep -Seconds 1
+            & sc.exe delete $wgTunnelSvc 2>&1 | Out-Null
+        }
+    } else {
+        # Binario portable gia' rimosso o non presente: fallback duro
+        & sc.exe stop $wgTunnelSvc 2>&1 | Out-Null
+        Start-Sleep -Seconds 1
+        & sc.exe delete $wgTunnelSvc 2>&1 | Out-Null
+        Write-UninstallLog "Tunnel WG rimosso via sc.exe (binario portable assente)" "OK"
+    }
+} else {
+    Write-UninstallLog "Nessun tunnel WG attivo (skip)" "INFO"
+}
+
+# ============================================================
 # STEP 2 — Stop + Delete Servizio NSSM (resistente a Paused/StopPending)
 # ============================================================
 Write-UninstallLog "STEP 2 — Arresto ed eliminazione servizio NSSM '$SvcName'" "STEP"

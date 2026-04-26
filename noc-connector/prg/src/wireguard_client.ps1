@@ -17,9 +17,25 @@
       - Nessuna chiave privata mai trasmessa al NOC
       - Tunnel creato come servizio Windows isolato (gira in kernel mode dove possibile)
 
-    Prerequisito: WireGuard for Windows installato (https://www.wireguard.com/install/)
-    Se mancante, le funzioni emettono WARN e ritornano $false; il connector continua
-    a funzionare in tutte le altre feature (graceful degradation).
+    Modalita' deployment v3.5.22+ — PORTABLE (zero footprint sistema):
+      Il connector NON installa il MSI ufficiale di WireGuard for Windows. Invece:
+        - Scarica il MSI da download.wireguard.com (HTTPS, signed by WireGuard LLC)
+        - Verifica firma Authenticode
+        - Esegue 'msiexec /a' (administrative install = ESTRAZIONE FILE, NO install)
+        - Copia 'wireguard.exe' + 'wg.exe' in C:\Program Files\86NocConnector\wireguard-portable\
+        - Elimina MSI temporaneo
+      Risultato sul server di produzione:
+        - ZERO entry in "Programmi e funzionalita'"
+        - ZERO service permanente "WireGuard Tunnel Manager"
+        - ZERO chiavi registry HKLM\Software\WireGuard
+        - Tutto sotto C:\Program Files\86NocConnector\ -> sparisce con uninstall.ps1
+      Quando l'admin apre la Web Console, viene creato un service Windows TEMPORANEO
+      'WireGuardTunnel$argus' che vive solo per la durata della sessione, e viene
+      rimosso istantaneamente al close UI o al TTL della sessione.
+
+      Fallback: se Install-WireGuardClient fallisce (es. nessuna rete, MSI corrotto),
+      il connector continua a funzionare in tutte le altre feature; la VPN remota
+      resta disabilitata fino al prossimo retry o intervento admin.
 #>
 
 # ============================================================
@@ -33,12 +49,18 @@ $script:WG_TUNNEL_NAME = "argus"   # nome del tunnel/servizio Windows
 $script:WG_LAST_SESSION_ID = $null
 $script:WG_LAST_POLL_AT = [DateTime]::MinValue
 
-# Path possibili di wireguard.exe (installazione standard)
+# Path possibili di wireguard.exe (PRIORITA': portable embedded sotto Connector)
+# v3.5.22: PORTABLE FIRST — la cartella sotto il Connector e' deployata da
+# Install-WireGuardClient via msiexec /a. Se manca, fallback a installazione
+# di sistema (compat con setup pre-v3.5.22 dove l'admin aveva installato il MSI).
+$script:WG_PORTABLE_DIR = Join-Path ([Environment]::GetFolderPath("ProgramFiles")) "86NocConnector\wireguard-portable"
 $script:WG_EXE_CANDIDATES = @(
+    (Join-Path $script:WG_PORTABLE_DIR "wireguard.exe"),
     "${env:ProgramFiles}\WireGuard\wireguard.exe",
     "${env:ProgramFiles(x86)}\WireGuard\wireguard.exe"
 )
 $script:WG_TOOLS_EXE_CANDIDATES = @(
+    (Join-Path $script:WG_PORTABLE_DIR "wg.exe"),
     "${env:ProgramFiles}\WireGuard\wg.exe",
     "${env:ProgramFiles(x86)}\WireGuard\wg.exe"
 )
@@ -60,16 +82,16 @@ function Initialize-WireGuard {
         if (Test-Path $p) { $script:WG_TOOLS_EXE = $p; break }
     }
 
-    # v3.5.22: AUTO-INSTALL di WireGuard for Windows se mancante.
-    # Il connector scarica l'installer ufficiale Microsoft-firmato e lo esegue
-    # in silent mode. Garantisce zero-touch deployment: l'admin installa solo
-    # il connector ARGUS, tutto il resto (driver kernel WinTun + tools wg.exe)
-    # viene gestito automaticamente al primo avvio.
+    # v3.5.22: PORTABLE EXTRACTION (zero footprint sistema).
+    # Scarica MSI ufficiale, lo estrae con 'msiexec /a' (administrative install =
+    # spacchettamento file, NO install nel sistema), copia solo i 2 binari nella
+    # cartella del Connector. Niente service permanente, niente entry in Programmi
+    # e funzionalita', niente registry HKLM\Software\WireGuard.
     if (-not $script:WG_EXE -or -not $script:WG_TOOLS_EXE) {
-        Write-Log "WireGuard for Windows non rilevato. Tento installazione automatica..." "WARN"
+        Write-Log "WireGuard binari non rilevati. Tento estrazione portable da MSI ufficiale..." "WARN"
         $installed = Install-WireGuardClient
         if ($installed) {
-            # Re-check dopo install
+            # Re-check dopo estrazione (la cartella WG_PORTABLE_DIR e' la priorita' #1)
             foreach ($p in $script:WG_EXE_CANDIDATES) {
                 if (Test-Path $p) { $script:WG_EXE = $p; break }
             }
@@ -80,7 +102,7 @@ function Initialize-WireGuard {
     }
 
     if (-not $script:WG_EXE -or -not $script:WG_TOOLS_EXE) {
-        Write-Log "WireGuard non disponibile: VPN remota disabilitata. Le altre feature del connector continuano normalmente. Per abilitare manualmente: scarica https://download.wireguard.com/windows-client/wireguard-installer.exe" "WARN"
+        Write-Log "WireGuard non disponibile: VPN remota disabilitata. Le altre feature del connector continuano normalmente. Retry automatico al prossimo restart del connector. Per debug: vedi log estrazione MSI in %TEMP%\\argus-wg-install-*.log" "WARN"
         return $false
     }
 
@@ -88,72 +110,158 @@ function Initialize-WireGuard {
         New-Item -ItemType Directory -Path $script:WG_DIR -Force | Out-Null
     }
 
-    Write-Log "WireGuard tools rilevati: $($script:WG_EXE)" "INFO"
+    $mode = if ($script:WG_EXE -like "$($script:WG_PORTABLE_DIR)*") { "PORTABLE" } else { "SYSTEM-INSTALL (legacy)" }
+    Write-Log "WireGuard tools rilevati [mode=$mode]: $($script:WG_EXE)" "INFO"
     return $true
 }
 
 # ============================================================
-# v3.5.22: Auto-install di WireGuard for Windows
+# v3.5.22: Estrazione PORTABLE WireGuard via 'msiexec /a' (admin install)
+# ----------------------------------------------------------------
+# 'msiexec /a' (administrative install) NON installa il MSI nel sistema:
+# semplicemente decomprime i file in una cartella di destinazione. Nessun
+# service Windows, nessuna entry "Programmi e funzionalita'", nessuna chiave
+# di registro HKLM\Software\WireGuard. I binari estratti sono firmati
+# Microsoft/WireGuard LLC (la firma e' preservata). Successivamente li
+# copiamo nella cartella del Connector dove vivranno fino al prossimo
+# uninstall.ps1.
 # ============================================================
 function Install-WireGuardClient {
     [CmdletBinding()]
     param()
 
-    # URL ufficiale (firmato Microsoft, signed Authenticode da WireGuard LLC)
-    $installerUrl = "https://download.wireguard.com/windows-client/wireguard-installer.exe"
-    $installerPath = Join-Path $env:TEMP "wireguard-installer.exe"
+    $logFile = Join-Path $env:TEMP "argus-wg-install-$(Get-Date -Format 'yyyyMMdd-HHmmss').log"
+    function _wgLog($msg, $lvl = "INFO") {
+        try { Add-Content -Path $logFile -Value "[$(Get-Date -Format 'HH:mm:ss')] [$lvl] $msg" } catch {}
+        Write-Log $msg $lvl
+    }
+
+    # TLS 1.2+ (Win Server 2016+ supporta out-of-the-box)
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
+    } catch {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    }
+
+    # ---- 1. Auto-discovery URL MSI piu' recente da directory listing ----
+    # In fallback: URL versionato hardcoded testato (v0.5.3, stabile)
+    $msiUrl = $null
+    try {
+        $listingUrl = "https://download.wireguard.com/windows-client/"
+        _wgLog "Discovery MSI WireGuard piu' recente da $listingUrl"
+        $html = (New-Object System.Net.WebClient).DownloadString($listingUrl)
+        # Trova tutti i wireguard-amd64-X.Y.Z.msi e prendi il piu' alto
+        $candidates = [regex]::Matches($html, 'wireguard-amd64-(\d+\.\d+\.\d+)\.msi') | ForEach-Object {
+            [PSCustomObject]@{
+                File    = $_.Value
+                Version = [Version]$_.Groups[1].Value
+            }
+        }
+        if ($candidates -and $candidates.Count -gt 0) {
+            $latest = $candidates | Sort-Object Version -Descending | Select-Object -First 1
+            $msiUrl = "$listingUrl$($latest.File)"
+            _wgLog "MSI piu' recente: $($latest.File) (v$($latest.Version))"
+        }
+    } catch {
+        _wgLog "Discovery MSI fallita: $($_.Exception.Message). Uso fallback hardcoded." "WARN"
+    }
+    if (-not $msiUrl) {
+        $msiUrl = "https://download.wireguard.com/windows-client/wireguard-amd64-0.5.3.msi"
+        _wgLog "MSI URL fallback: $msiUrl"
+    }
+
+    $msiPath = Join-Path $env:TEMP "wireguard-portable.msi"
+    $extractDir = Join-Path $env:TEMP "argus-wg-extract-$(Get-Random -Minimum 1000 -Maximum 9999)"
 
     try {
-        Write-Log "Download WireGuard for Windows da $installerUrl ..." "INFO"
-        # TLS 1.2+ (Windows Server 2016+ supporta out-of-the-box)
-        try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13 } catch { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 }
-        # Usa WebClient per progress + maggior compat con server vecchi
+        # ---- 2. Download MSI ----
+        _wgLog "Download $msiUrl ..."
         $wc = New-Object System.Net.WebClient
         $wc.Headers.Add("User-Agent", "ARGUS-Connector/$($global:Version)")
-        $wc.DownloadFile($installerUrl, $installerPath)
-        if (-not (Test-Path $installerPath)) {
-            Write-Log "Download fallito: file non creato" "ERROR"
+        $wc.DownloadFile($msiUrl, $msiPath)
+        if (-not (Test-Path $msiPath)) {
+            _wgLog "Download fallito: file non creato" "ERROR"
             return $false
         }
+        $msiSize = (Get-Item $msiPath).Length
+        _wgLog "MSI scaricato: $msiSize bytes"
 
-        # Verifica signature Authenticode (defense-in-depth)
+        # ---- 3. Verifica signature Authenticode (defense-in-depth) ----
         try {
-            $sig = Get-AuthenticodeSignature $installerPath
+            $sig = Get-AuthenticodeSignature $msiPath
             if ($sig.Status -ne "Valid") {
-                Write-Log "Signature WireGuard installer NON valida (status=$($sig.Status)). Install ABORTITO per sicurezza." "ERROR"
-                Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
+                _wgLog "Signature MSI WireGuard NON valida (status=$($sig.Status)). Estrazione ABORTITA per sicurezza." "ERROR"
+                Remove-Item $msiPath -Force -ErrorAction SilentlyContinue
                 return $false
             }
             $issuer = $sig.SignerCertificate.Subject
             if ($issuer -notmatch "WireGuard|Jason A. Donenfeld") {
-                Write-Log "Signature firmataria sospetta: $issuer. Install ABORTITO." "ERROR"
-                Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
+                _wgLog "Signature firmataria sospetta: $issuer. Estrazione ABORTITA." "ERROR"
+                Remove-Item $msiPath -Force -ErrorAction SilentlyContinue
                 return $false
             }
-            Write-Log "Signature WireGuard verificata (signed by: $issuer)" "INFO"
+            _wgLog "Signature MSI verificata (signed by: $issuer)"
         } catch {
-            Write-Log "Verifica signature non disponibile: $($_.Exception.Message). Procedo comunque (il file e' scaricato da HTTPS ufficiale)." "WARN"
+            _wgLog "Verifica signature non disponibile: $($_.Exception.Message). Procedo (file scaricato da HTTPS ufficiale)." "WARN"
         }
 
-        # Esegui installer silent. WireGuard installer accetta /quiet o /S.
-        # Default flag: /S (silent), no UI, install in C:\Program Files\WireGuard\
-        Write-Log "Esecuzione installer WireGuard in silent mode..." "INFO"
-        $proc = Start-Process -FilePath $installerPath -ArgumentList "/S" -Wait -PassThru -NoNewWindow
-        Start-Sleep -Seconds 3
+        # ---- 4. Administrative install: estrai files SENZA installare ----
+        # 'msiexec /a' NON registra il MSI nel sistema, solo spacchetta i file.
+        if (Test-Path $extractDir) { Remove-Item $extractDir -Recurse -Force }
+        New-Item -ItemType Directory -Path $extractDir -Force | Out-Null
 
-        if ($proc.ExitCode -eq 0) {
-            Write-Log "WireGuard for Windows installato (exit=0)" "INFO"
-            # Cleanup file scaricato
-            Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
-            return $true
-        } else {
-            Write-Log "Installer WireGuard exit code: $($proc.ExitCode). Possibile install incompleto." "WARN"
-            Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
+        _wgLog "Esecuzione 'msiexec /a' (administrative install — solo estrazione file)..."
+        $msiArgs = @(
+            "/a", "`"$msiPath`"",
+            "/qn",
+            "TARGETDIR=`"$extractDir`""
+        )
+        $proc = Start-Process -FilePath "msiexec.exe" -ArgumentList $msiArgs -Wait -PassThru -NoNewWindow
+        if ($proc.ExitCode -ne 0) {
+            _wgLog "msiexec /a fallito (exit=$($proc.ExitCode)). Probabile MSI corrotto o disco pieno." "ERROR"
+            Remove-Item $msiPath -Force -ErrorAction SilentlyContinue
+            if (Test-Path $extractDir) { Remove-Item $extractDir -Recurse -Force -ErrorAction SilentlyContinue }
             return $false
         }
+        _wgLog "msiexec /a OK: file estratti in $extractDir"
+
+        # ---- 5. Trova wireguard.exe + wg.exe nei file estratti ----
+        # Layout MSI: TARGETDIR\Program Files\WireGuard\{wireguard.exe, wg.exe, ...}
+        $foundExe = Get-ChildItem -Path $extractDir -Recurse -Filter "wireguard.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+        $foundWg = Get-ChildItem -Path $extractDir -Recurse -Filter "wg.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+
+        if (-not $foundExe -or -not $foundWg) {
+            _wgLog "Estrazione MSI: binari non trovati (wireguard.exe=$($foundExe -ne $null), wg.exe=$($foundWg -ne $null))" "ERROR"
+            Remove-Item $msiPath -Force -ErrorAction SilentlyContinue
+            if (Test-Path $extractDir) { Remove-Item $extractDir -Recurse -Force -ErrorAction SilentlyContinue }
+            return $false
+        }
+
+        # ---- 6. Copia binari nella cartella portable del Connector ----
+        if (-not (Test-Path $script:WG_PORTABLE_DIR)) {
+            New-Item -ItemType Directory -Path $script:WG_PORTABLE_DIR -Force | Out-Null
+        }
+        Copy-Item $foundExe.FullName -Destination (Join-Path $script:WG_PORTABLE_DIR "wireguard.exe") -Force
+        Copy-Item $foundWg.FullName  -Destination (Join-Path $script:WG_PORTABLE_DIR "wg.exe")        -Force
+
+        # Copia anche eventuali DLL companion (es. wintun.dll se presente nel MSI)
+        Get-ChildItem -Path $extractDir -Recurse -Filter "*.dll" -ErrorAction SilentlyContinue | ForEach-Object {
+            try {
+                Copy-Item $_.FullName -Destination (Join-Path $script:WG_PORTABLE_DIR $_.Name) -Force -ErrorAction SilentlyContinue
+                _wgLog "  + companion DLL: $($_.Name)"
+            } catch {}
+        }
+
+        # ---- 7. Cleanup ----
+        Remove-Item $msiPath -Force -ErrorAction SilentlyContinue
+        Remove-Item $extractDir -Recurse -Force -ErrorAction SilentlyContinue
+
+        _wgLog "PORTABLE deploy completato: $script:WG_PORTABLE_DIR (zero footprint sistema)"
+        return $true
     } catch {
-        Write-Log "Errore download/install WireGuard: $($_.Exception.Message)" "ERROR"
-        Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
+        _wgLog "Errore Install-WireGuardClient: $($_.Exception.Message)" "ERROR"
+        Remove-Item $msiPath -Force -ErrorAction SilentlyContinue
+        if (Test-Path $extractDir) { Remove-Item $extractDir -Recurse -Force -ErrorAction SilentlyContinue }
         return $false
     }
 }
