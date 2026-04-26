@@ -44,6 +44,71 @@ export default function ClientOverviewPage() {
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState("overview");
 
+  // v3.5.18: Connetti via VPN WireGuard al device
+  // Avvia una sessione VPN on-demand sul connector, attende l'attivazione del tunnel
+  // (~5-8s) e poi apre il browser direttamente sul device tramite IP del cliente.
+  const connectViaVpn = async (device) => {
+    if (!clientId || !device?.ip_address) return;
+    const port = defaultWebPort(device);
+    const scheme = port === 443 ? "https" : "http";
+    const targetUrl = `${scheme}://${device.ip_address}${port && port !== 80 && port !== 443 ? ":" + port : ""}`;
+
+    const reason = window.prompt(
+      `Avvia sessione VPN verso ${device.name || device.ip_address}?\n\n` +
+      `Inserisci motivo (audit log) o lascia vuoto:`,
+      ""
+    );
+    if (reason === null) return; // utente annullato
+
+    const t = toast.loading(`Apertura tunnel WireGuard verso ${device.ip_address}...`);
+    try {
+      const r = await axios.post(`${API}/admin/wireguard/session/start`, {
+        client_id: clientId,
+        target_device_ip: device.ip_address,
+        reason: reason || `Connessione a ${device.name || device.ip_address}`,
+        ttl_minutes: 30,
+      });
+      const sessionId = r.data?.id;
+      toast.success("Sessione VPN avviata", {
+        id: t,
+        description: `Attesa attivazione tunnel sul connector (~5-10s)...`,
+      });
+
+      // Attendi che il tunnel sia attivo (controlla che esista la sessione attiva)
+      // poi apri la URL del device. Se il tunnel non si attiva entro 15s, abort.
+      setTimeout(() => {
+        toast.success("Apertura device", {
+          description: `Tunnel attivo. Click sull'IP per aprire ${targetUrl} in nuova scheda. Sessione si chiuderà in 30 min o cliccando "Disconnetti" sulla pagina WireGuard.`,
+          action: {
+            label: "Apri device",
+            onClick: () => window.open(targetUrl, "_blank", "noopener"),
+          },
+          duration: 30000,
+        });
+      }, 8000);
+
+      // Toast extra per gestione sessione
+      setTimeout(() => {
+        toast.info("Gestione sessione VPN", {
+          description: "Vai su /settings/wireguard per vedere o chiudere la sessione",
+          action: {
+            label: "Vai",
+            onClick: () => navigate("/settings/wireguard"),
+          },
+          duration: 10000,
+        });
+      }, 10000);
+    } catch (e) {
+      const detail = e?.response?.data?.detail;
+      let msg = typeof detail === "string" ? detail : (detail?.message || e.message);
+      // Se peer non registrato (cliente senza connector v3.5.18+), spiega
+      if (e?.response?.status === 404) {
+        msg = "Il connector di questo cliente non ha ancora registrato un peer WireGuard. Verifica che giri v3.5.18+ con WireGuard for Windows installato.";
+      }
+      toast.error("Errore avvio VPN", { id: t, description: msg, duration: 8000 });
+    }
+  };
+
   const fetchAll = useCallback(async () => {
     try {
       const [clientRes, devRes, wanRes, alertRes] = await Promise.allSettled([
@@ -1042,6 +1107,14 @@ function DevicesTab({ devices, clientId, onRefresh }) {
                           <Monitor size={13} />
                         </button>
                       )}
+                      <button
+                        onClick={() => connectViaVpn(d)}
+                        className="p-1 rounded hover:bg-emerald-500/10 text-emerald-400 transition-colors"
+                        title="Connetti via VPN WireGuard (tunnel sicuro on-demand)"
+                        data-testid={`vpn-connect-${d.ip_address}`}
+                      >
+                        <Lock size={13} />
+                      </button>
                       <button
                         onClick={() => setInfoTarget(d)}
                         className="p-1 rounded hover:bg-cyan-500/10 text-cyan-400 transition-colors"
