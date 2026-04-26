@@ -370,6 +370,37 @@ Rimossi in v3.5.0 (con OK utente): Check-ForUpdate, Install-Update (5 metodi fal
 ### Connector v3.5.22 — WireGuard PORTABLE deployment (2026-04-26)
 **Richiesta utente**: "non voglio assolutamente sporcare il server di produzione". Valutate alternative: WireGuard portable, WireSock, wireproxy, TunnlTo. Scelta: **estrazione binari da MSI ufficiale via `msiexec /a` (administrative install)** — la piu' pulita e sicura.
 
+### Backend v3.5.22 — Routing intelligente Web Console (WireGuard direct vs Connector long-poll) (2026-04-26)
+**Richiesta utente**: "pulisci tutte le funzioni non piu' necessarie con nuova logica dentro in webconsole e lascia invece tutto quello necessario" — opzione B (intelligent routing senza rimozioni distruttive) approvata "con la massima precisione".
+
+**Cambio architetturale in `/app/backend/routes/web_console_live.py`**:
+- 2 nuovi helper: `_wg_server_ready()` (con cache TTL 60s su env vars `WG_SERVER_PUBKEY`+`WG_SERVER_ENDPOINT`), `_wg_session_active_for_device(client_id, device_ip)` (query `wireguard_sessions` filtrato `status=active` + `expires_at>$now`).
+- 1 nuovo transport: `_proxy_via_wireguard()` — usa `httpx.AsyncClient` per chiamare DIRETTAMENTE `http(s)://device_ip:port/path` attraverso il tunnel kernel WG. Latenza ~30-80ms vs ~300-800ms del long-poll connector.
+- `live_proxy()` modificato: prima tenta WG transport (solo se WG ready + sessione attiva), su qualsiasi exception fallback automatico al transport legacy `_proxy_via_connector`. Trasparente al browser: stessa shape di response, stesso URL rewriting + base href + header filtering.
+- Nuovo header debug `X-Argus-Transport: wireguard | connector` per troubleshooting.
+
+**Cosa NON e' stato rimosso (per sicurezza e zero rottura)**:
+- `web_proxy.py` (488 righe): resta come fallback transport quando WG non e' disponibile (es. ambiente preview Kubernetes attuale dove `WG_SERVER_PUBKEY` non e' configurato → `ready=false`).
+- Funzioni `Check-WebProxyRequests` / `Process-WebProxyRequest` / `Build-WebProxyErrorPage` / `Send-WebProxyResponse` in `connector.ps1`: restano essenziali per scenario fallback.
+- Endpoint backend e funzioni frontend in `WebConsoleTabs.js`: nessun codice morto trovato in audit cross-reference, tutto e' usato.
+
+**Test**: 8/8 pytest passati in `/app/backend/tests/test_web_console_wg_routing.py`:
+- `_wg_server_ready` con env vars assenti / parziali / complete + cache TTL 60s
+- `_wg_session_active_for_device` short-circuit quando server non ready (no DB call)
+- Query DB con filtro corretto (`client_id`, `target_device_ip`, `status=active`, `expires_at>$now`)
+- `_proxy_via_wireguard` ritorna shape `(status_code, content_type, body, resp_headers)` compatibile
+
+**Comportamento runtime in produzione**:
+- Cliente con WG NON configurato: zero cambiamento, tutto continua via connector long-poll come oggi.
+- Cliente con WG configurato + sessione attiva: ogni request iframe della Web Console verso quel device va via tunnel (perf ~10x). Trasparente.
+- Cliente con WG configurato ma tunnel down a runtime: fallback automatico al connector. Niente errori al browser.
+
+**File toccati**:
+- `/app/backend/routes/web_console_live.py` (+125 righe per i 3 nuovi helper, +18 righe per routing + header)
+- `/app/backend/tests/test_web_console_wg_routing.py` (nuovo, 165 righe, 8 test)
+
+### Connector v3.5.22 — WireGuard PORTABLE deployment (continua sotto) 
+
 **Cambiamento rispetto a v3.5.21** (che faceva install completo via NSIS `/S`):
 - `wireguard_client.ps1::Install-WireGuardClient` riscritto: scarica MSI da `download.wireguard.com`, verifica firma Authenticode (rifiuta se non firmato da WireGuard LLC / Jason A. Donenfeld), esegue `msiexec /a "$msi" /qn TARGETDIR="$tempDir"` (administrative install = solo spacchettamento file, NO install nel sistema), copia `wireguard.exe` + `wg.exe` (+ DLL companion eventuali) sotto `C:\Program Files\86NocConnector\wireguard-portable\`, elimina MSI temporaneo + cartella estrazione.
 - Auto-discovery URL MSI: parsa la directory listing HTML di `https://download.wireguard.com/windows-client/` con regex `wireguard-amd64-(\d+\.\d+\.\d+)\.msi`, prende la versione piu' alta. Fallback hardcoded: `wireguard-amd64-0.5.3.msi`.

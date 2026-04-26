@@ -377,6 +377,123 @@ def _inject_html_support(body: bytes, base_href: str, session_id: str, device_ip
     return html.encode("utf-8", "replace")
 
 
+# ============================================================================
+# v3.5.22+ — Routing intelligente: WireGuard direct vs Connector long-poll
+# ============================================================================
+# Quando un tunnel WireGuard e' attivo verso il device target, il backend Linux
+# (che ospita anche il server WG) puo' raggiungere DIRETTAMENTE il device via
+# routing kernel attraverso wg0. Risparmio: 2 hop e ~250ms di latenza media
+# (no Mongo queue, no long-poll connector). Quando il tunnel non e' disponibile
+# o fallisce, il sistema ricade automaticamente sul transport legacy via
+# connector long-poll (_proxy_via_connector).
+#
+# La logica e' totalmente trasparente all'iframe del browser: URL rewriting,
+# base href injection, header filtering, cookie handling restano invariati.
+# Cambia solo il "trasporto" interno backend->device.
+# ============================================================================
+
+import os as _os
+import time as _time
+
+# Cache 60s del flag "WG server pronto" (evita check env vars su ogni request)
+_WG_SERVER_READY_CACHE = {"value": None, "checked_at": 0.0}
+
+
+def _wg_server_ready() -> bool:
+    """True se il server WireGuard del Center e' configurato (env vars presenti).
+    Cache 60s per evitare overhead. Senza queste env vars il backend non ha rotte
+    verso le subnet dei clienti tramite WG, quindi il transport diretto e' inutile."""
+    now = _time.time()
+    if _WG_SERVER_READY_CACHE["value"] is not None and (now - _WG_SERVER_READY_CACHE["checked_at"]) < 60.0:
+        return _WG_SERVER_READY_CACHE["value"]
+    ready = bool(
+        _os.environ.get("WG_SERVER_PUBKEY")
+        and _os.environ.get("WG_SERVER_ENDPOINT")
+    )
+    _WG_SERVER_READY_CACHE["value"] = ready
+    _WG_SERVER_READY_CACHE["checked_at"] = now
+    return ready
+
+
+async def _wg_session_active_for_device(client_id: str, device_ip: str) -> bool:
+    """True se esiste una sessione WireGuard ATTIVA (non scaduta) verso il
+    device target per questo cliente. Premessa per usare _proxy_via_wireguard.
+
+    Nota: la sessione e' creata da POST /api/admin/wireguard/session/start (vedi
+    routes/wireguard.py); il connector la attiva via long-poll su /api/connector/
+    wireguard/session ed alza il tunnel kernel. Questo helper si limita a
+    interrogare il DB, non verifica la salute del kernel route (gia' garantita
+    dal lifecycle WG)."""
+    if not _wg_server_ready():
+        return False
+    now = datetime.now(timezone.utc)
+    doc = await db.wireguard_sessions.find_one(
+        {
+            "client_id": client_id,
+            "target_device_ip": device_ip,
+            "status": "active",
+            "expires_at": {"$gt": now},
+        },
+        {"_id": 0, "session_id": 1},
+    )
+    return doc is not None
+
+
+async def _proxy_via_wireguard(
+    device_ip: str,
+    port: int,
+    scheme: str,
+    path: str,
+    method: str,
+    body_bytes: bytes,
+    req_headers: dict,
+) -> tuple[int, str, bytes, dict]:
+    """[FAST TRANSPORT] Proxy diretto verso il device tramite tunnel WireGuard.
+
+    Il backend Linux ha gia' il route kernel verso la subnet del cliente via
+    interfaccia wg0 (configurato da setup-wireguard-server.sh). Una semplice
+    httpx.request() viene quindi instradata trasparentemente attraverso il
+    tunnel verso il device finale. Latenza tipica: 30-80ms (vs 300-800ms del
+    transport via connector long-poll).
+
+    Solleva httpx.HTTPError / httpx.RequestError in caso di errore — il caller
+    (live_proxy) cattura e fa fallback automatico al transport via connector.
+
+    Restituisce (status_code, content_type, body_bytes, resp_headers) con la
+    stessa shape di _proxy_via_connector, mantenendo trasparenza al chiamante.
+    """
+    import httpx
+
+    url = f"{scheme}://{device_ip}:{port}{path}"
+    timeout = httpx.Timeout(connect=5.0, read=20.0, write=10.0, pool=5.0)
+
+    # follow_redirects=False: i redirect vengono passati al browser via Location
+    # rewriting (gia' gestito da live_proxy chiamante), come nel flusso connector.
+    async with httpx.AsyncClient(
+        verify=False,
+        timeout=timeout,
+        follow_redirects=False,
+        http2=False,  # alcuni device legacy fallano con HTTP/2 nego
+    ) as client:
+        resp = await client.request(
+            method,
+            url,
+            headers=req_headers or {},
+            content=body_bytes if body_bytes else None,
+        )
+
+    content_type = resp.headers.get("content-type") or "application/octet-stream"
+    # httpx Headers e' case-insensitive multi-dict. Convertilo in dict semplice
+    # mantenendo i casing originali (importante per Set-Cookie, WWW-Authenticate).
+    resp_headers: dict = {}
+    for hk, hv in resp.headers.items():
+        # Per multi-value (es. Set-Cookie multiplo) httpx fa join con ", " — ok
+        # per il caller che fa pass-through.
+        resp_headers[hk] = hv
+
+    return resp.status_code, content_type, resp.content, resp_headers
+
+
 async def _proxy_via_connector(
     client_id: str,
     device_ip: str,
@@ -388,7 +505,12 @@ async def _proxy_via_connector(
     body_bytes: bytes,
     req_headers: dict,
 ) -> tuple[int, str, bytes, dict]:
-    """Crea request per connector, long-poll response, restituisce (status_code, content_type, body_bytes, resp_headers)."""
+    """Crea request per connector, long-poll response, restituisce (status_code, content_type, body_bytes, resp_headers).
+
+    [LEGACY TRANSPORT] Usato come fallback quando il tunnel WireGuard non e' disponibile
+    per il device target. Path: backend -> Mongo queue -> connector long-poll -> device.
+    Latenza tipica 300-800ms. Da v3.5.22 il transport preferito e' _proxy_via_wireguard
+    (vedi sotto), che bypassa il connector quando un tunnel WG e' attivo per il device."""
     jar_doc = await db.web_proxy_sessions.find_one(
         {"session_id": session_id, "client_id": client_id, "device_ip": device_ip},
         {"_id": 0, "cookies": 1},
@@ -540,10 +662,33 @@ async def live_proxy(
         f"{request.method} {device_ip}:{port}{full_path} | session={session_id}"
     )
 
-    status_code, content_type, body, resp_headers = await _proxy_via_connector(
-        client_id, device_ip, port, scheme, full_path, request.method,
-        session_id, body_bytes, req_headers,
-    )
+    # === Routing intelligente: WireGuard direct se disponibile, altrimenti long-poll ===
+    # Il transport WG e' ~10x piu' veloce (no Mongo queue, no connector hop) ma
+    # richiede: (1) server WG configurato sul Center, (2) sessione WG attiva per
+    # il device target. Se una di queste non e' soddisfatta, fallback automatico
+    # al transport legacy via connector. Se WG fallisce a runtime (es. tunnel
+    # appena scaduto), fallback automatico — zero rottura per il browser.
+    transport_used = "connector"
+    status_code = content_type = body = resp_headers = None
+    if await _wg_session_active_for_device(client_id, device_ip):
+        try:
+            status_code, content_type, body, resp_headers = await _proxy_via_wireguard(
+                device_ip, port, scheme, full_path, request.method,
+                body_bytes, req_headers,
+            )
+            transport_used = "wireguard"
+        except Exception as e:
+            logger.warning(
+                f"WG transport failed for {device_ip}:{port}{full_path}: "
+                f"{type(e).__name__}: {e} — fallback to connector long-poll"
+            )
+            status_code = content_type = body = resp_headers = None  # forza fallback
+
+    if status_code is None:
+        status_code, content_type, body, resp_headers = await _proxy_via_connector(
+            client_id, device_ip, port, scheme, full_path, request.method,
+            session_id, body_bytes, req_headers,
+        )
 
     # Update history: incrementa requests_count e traccia ultimo path visitato
     try:
@@ -677,6 +822,7 @@ async def live_proxy(
     pass_headers["Pragma"] = "no-cache"
     pass_headers["Expires"] = "0"
     pass_headers["X-Argus-Proxy"] = "v3"
+    pass_headers["X-Argus-Transport"] = transport_used  # v3.5.22+ : 'wireguard' | 'connector'
     pass_headers["X-Argus-Sniff"] = "1" if needs_sniff else "0"
     pass_headers["X-Argus-CT-Orig"] = (resp_headers or {}).get("Content-Type", (resp_headers or {}).get("content-type", ""))[:120]
 
