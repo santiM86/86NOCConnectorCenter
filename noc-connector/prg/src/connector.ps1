@@ -1,4 +1,4 @@
-<# 
+﻿<# 
 .SYNOPSIS
     86NocConnector - Motore Collector SNMP Traps + Syslog
 .DESCRIPTION
@@ -355,7 +355,7 @@ function Invoke-SecureGet($config, $endpoint, $timeoutSec = 15) {
             $global:Stats.auth_failures = [int]($global:Stats.auth_failures) + 1
             # Logga warning DETTAGLIATO solo ogni 10 fallimenti per non inondare il log
             if (($global:Stats.auth_failures % 10) -eq 1) {
-                Write-Log "401 Non autorizzato su $endpoint — API Key non accettata dal NOC. Probabile causa: key rigenerata/ruotata nel Center UI. Soluzione: Clienti > [tuo cliente] > Rigenera API Key → copia in $env:ProgramData\86NocConnector\config.json → Restart-Service 86NocConnectorService." "ERROR"
+                Write-Log "401 Non autorizzato su $endpoint - API Key non accettata dal NOC. Probabile causa: key rigenerata/ruotata nel Center UI. Soluzione: Clienti > [tuo cliente] > Rigenera API Key -> copia in $env:ProgramData\86NocConnector\config.json -> Restart-Service 86NocConnectorService." "ERROR"
             } else {
                 Write-Log "401 su $endpoint (fallimento #$($global:Stats.auth_failures))" "WARN"
             }
@@ -427,7 +427,7 @@ function Send-ToNOC($config, $endpoint, $payload) {
         if ($isAuth) {
             $global:Stats.auth_failures = [int]($global:Stats.auth_failures) + 1
             if (($global:Stats.auth_failures % 10) -eq 1) {
-                Write-Log "401 Non autorizzato su $endpoint — API Key non accettata dal NOC. Soluzione: nel Center vai su Clienti > [tuo cliente] > Rigenera API Key → copia nuova chiave in $env:ProgramData\86NocConnector\config.json → Restart-Service 86NocConnectorService." "ERROR"
+                Write-Log "401 Non autorizzato su $endpoint - API Key non accettata dal NOC. Soluzione: nel Center vai su Clienti > [tuo cliente] > Rigenera API Key -> copia nuova chiave in $env:ProgramData\86NocConnector\config.json -> Restart-Service 86NocConnectorService." "ERROR"
             } else {
                 Write-Log "401 su $endpoint (fallimento #$($global:Stats.auth_failures))" "WARN"
             }
@@ -1046,7 +1046,7 @@ function Poll-VendorOids([string]$ip, [string]$community, $vendorTargets) {
 
     $scalarsList = @()
     $tablesList = @()
-    # Supporta sia PSCustomObject (da JSON) sia Hashtable — defensivo
+    # Supporta sia PSCustomObject (da JSON) sia Hashtable - defensivo
     try {
         if ($vendorTargets.scalars) {
             if ($vendorTargets.scalars -is [System.Collections.IDictionary]) {
@@ -1139,7 +1139,7 @@ function Poll-VendorOids([string]$ip, [string]$community, $vendorTargets) {
         }
     }
 
-    Write-Log "  [VENDOR] ${ip}: scalars OK=$scalarsOk / FAIL=$scalarsFail | tables OK=$tablesOk / FAIL=$tablesFail → $($result.Count) metriche totali" "INFO"
+    Write-Log "  [VENDOR] ${ip}: scalars OK=$scalarsOk / FAIL=$scalarsFail | tables OK=$tablesOk / FAIL=$tablesFail -> $($result.Count) metriche totali" "INFO"
     return $result
 }
 
@@ -1295,7 +1295,7 @@ function Send-DeviceReport($config, $devices) {
             # Add extended metrics if available.
             # v3.5.13 FIX: passa TUTTI i campi raccolti da Poll-ExtendedMetrics (prima
             # entity_mib / primary_mac / if_aliases / arp_table venivano raccolti dal
-            # connector ma MAI propagati nel device_report → il backend li riceveva
+            # connector ma MAI propagati nel device_report -> il backend li riceveva
             # sempre $null e l'UI non mostrava mai vendor/modello/firmware ecc.)
             if ($extMetrics) {
                 $deviceReport.cpu_usage = $extMetrics.cpu_usage
@@ -1446,7 +1446,7 @@ function Start-PollingLoop($config) {
     # auto-discovery tramite endpoint /api/connector/identify. Salva il risultato
     # in config.json così i restart successivi lo trovano già pronto.
     if (-not $config.client_id -or $config.client_id.ToString().Trim().Length -eq 0) {
-        Write-Log "Config client_id vuoto — auto-discovery in corso..." "WARN"
+        Write-Log "Config client_id vuoto - auto-discovery in corso..." "WARN"
         $cid = Ensure-ClientIdInConfig
         if ($cid) {
             # Ricarica config da disco (ora contiene il client_id aggiornato)
@@ -1953,7 +1953,7 @@ function Process-WebProxyRequest($config, $req) {
     $respHeaders = @{}
     $respCookies = @{}
 
-    # Whitelist porte — combina default + extra forniti dal backend tramite command config
+    # Whitelist porte - combina default + extra forniti dal backend tramite command config
     # Il backend può inviare `allowed_ports_extra` (array di int) via endpoint /api/connector/command-poll
     # così l'admin aggiunge nuove porte da UI senza ricompilare il connector.
     $defaultAllowedPorts = @(
@@ -2685,7 +2685,7 @@ if ($svc.Status -eq "Stopped") {
         if ($LASTEXITCODE -eq 0) {
             Write-Log "Watchdog registrato (controllo servizio ogni 5 min via $watchdogScript)" "INFO"
         } else {
-            Write-Log "Watchdog register exit=$LASTEXITCODE — continuo senza" "WARN"
+            Write-Log "Watchdog register exit=$LASTEXITCODE - continuo senza" "WARN"
         }
     } catch {
         Write-Log "Watchdog register fallito: $($_.Exception.Message)" "WARN"
@@ -2713,19 +2713,19 @@ function Start-Connector {
     Write-Log "  Config: $(Get-ConfigPath)"
     Write-Log "=================================================="
     
-    # v3.5.12: Self-heal al boot — rileva e rimuove Task Scheduler conflittuali
+    # v3.5.12: Self-heal al boot - rileva e rimuove Task Scheduler conflittuali
     # con lo stesso nome del servizio NSSM (causa principale di restart ciclici
     # ogni 60s nelle installazioni che hanno avuto versioni pre-v3.3.0 del connector).
     try {
         $svcName = if ($global:ServiceName) { $global:ServiceName } else { "86NocConnectorService" }
         $conflictTask = Get-ScheduledTask -TaskName $svcName -ErrorAction SilentlyContinue
         if ($conflictTask) {
-            Write-Log "[SELF-HEAL] Rilevato Task Scheduler conflittuale '$svcName' — causa race condition con servizio NSSM. Rimozione..." "WARN"
+            Write-Log "[SELF-HEAL] Rilevato Task Scheduler conflittuale '$svcName' - causa race condition con servizio NSSM. Rimozione..." "WARN"
             try {
                 Unregister-ScheduledTask -TaskName $svcName -Confirm:$false -ErrorAction SilentlyContinue
                 & schtasks.exe /Delete /TN $svcName /F 2>$null | Out-Null
                 & schtasks.exe /Delete /TN "\$svcName" /F 2>$null | Out-Null
-                Write-Log "[SELF-HEAL] Task Scheduler conflittuale rimosso — restart ciclici cessati" "INFO"
+                Write-Log "[SELF-HEAL] Task Scheduler conflittuale rimosso - restart ciclici cessati" "INFO"
             } catch {
                 Write-Log "[SELF-HEAL] Errore rimozione task conflittuale: $($_.Exception.Message)" "ERROR"
             }
@@ -2757,8 +2757,8 @@ function Start-Connector {
     # Start listeners in background jobs
     # v3.5.13 FIX: $global:Running va settato ESPLICITAMENTE dentro lo scope del job.
     # Quando Start-Job dot-source lo script, la guardia "if (InvocationName -ne '.')"
-    # salta Start-Connector e $global:Running resta $null → il loop `while ($global:Running)`
-    # esce immediatamente → job "Completed" dopo 2s → il health-check lo ripartiva ogni 3 min.
+    # salta Start-Connector e $global:Running resta $null -> il loop `while ($global:Running)`
+    # esce immediatamente -> job "Completed" dopo 2s -> il health-check lo ripartiva ogni 3 min.
     # Risultato pre-fix: listener UDP morti per 2-3 min ogni 3 min = buco trap/syslog.
     $snmpJob = Start-Job -ScriptBlock {
         param($scriptPath, $configPath)
@@ -2789,7 +2789,7 @@ function Start-Connector {
         Write-Log "Polling SNMP avviato in background"
     }
     
-    # Auto-update via Windows Task Scheduler (v3.5.0+) — gestito esternamente dal connector
+    # Auto-update via Windows Task Scheduler (v3.5.0+) - gestito esternamente dal connector
     # Il task \86BIT\ArgusConnectorUpdater viene creato dall'installer e eseguito ogni 5 minuti.
     # $updateJob qui e' un Job dummy NoOp per retrocompatibilita' (altre parti del codice ne controllano lo stato).
     $updateJob = Start-Job -ScriptBlock { Start-Sleep -Seconds 2147483 }

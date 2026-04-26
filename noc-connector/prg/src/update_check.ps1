@@ -1,5 +1,5 @@
-# ============================================================================
-# 86NocConnector Update Checker — v3.5.0 Microsoft-native pattern
+﻿# ============================================================================
+# 86NocConnector Update Checker - v3.5.0 Microsoft-native pattern
 # ============================================================================
 # Eseguito da Windows Task Scheduler ogni 5 minuti come NT AUTHORITY\SYSTEM.
 # Task: \86BIT\ArgusConnectorUpdater
@@ -7,7 +7,7 @@
 # Logica:
 #   1. Legge config del connector (API URL + API Key)
 #   2. GET /api/connector/update-check
-#   3. Se update_available && latest_version != current → applica update
+#   3. Se update_available && latest_version != current -> applica update
 #   4. Report progress al NOC via /api/connector/update-progress
 #   5. Logga tutto in ProgramData\86NocConnector\update.log
 #
@@ -73,7 +73,7 @@ if (-not (Test-Path $LogDir)) {
         New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
         Write-BootLog "Creato LogDir: $LogDir"
     } catch {
-        Write-BootLog "FATAL: non riesco a creare LogDir $LogDir — $($_.Exception.Message)"
+        Write-BootLog "FATAL: non riesco a creare LogDir $LogDir - $($_.Exception.Message)"
         exit 11
     }
 }
@@ -188,7 +188,7 @@ $configPath = Join-Path $ProgramDataConfigDir "config.json"
 if (-not (Test-Path $configPath)) {
     $legacyPath = Join-Path $InstallDir "config.json"
     if (Test-Path $legacyPath) {
-        Write-UpdateLog "Config trovata in posizione legacy ($legacyPath) — uso quella" "INFO"
+        Write-UpdateLog "Config trovata in posizione legacy ($legacyPath) - uso quella" "INFO"
         $configPath = $legacyPath
     }
 }

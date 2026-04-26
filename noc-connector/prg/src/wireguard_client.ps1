@@ -1,6 +1,6 @@
-<#
+﻿<#
 .SYNOPSIS
-    ARGUS Connector — WireGuard runtime integration (lato cliente)
+    ARGUS Connector - WireGuard runtime integration (lato cliente)
 
 .DESCRIPTION
     Modulo dot-sourced da connector.ps1 che gestisce l'intero ciclo di vita VPN:
@@ -17,7 +17,7 @@
       - Nessuna chiave privata mai trasmessa al NOC
       - Tunnel creato come servizio Windows isolato (gira in kernel mode dove possibile)
 
-    Modalita' deployment v3.5.22+ — PORTABLE (zero footprint sistema):
+    Modalita' deployment v3.5.22+ - PORTABLE (zero footprint sistema):
       Il connector NON installa il MSI ufficiale di WireGuard for Windows. Invece:
         - Scarica il MSI da download.wireguard.com (HTTPS, signed by WireGuard LLC)
         - Verifica firma Authenticode
@@ -50,7 +50,7 @@ $script:WG_LAST_SESSION_ID = $null
 $script:WG_LAST_POLL_AT = [DateTime]::MinValue
 
 # Path possibili di wireguard.exe (PRIORITA': portable embedded sotto Connector)
-# v3.5.22: PORTABLE FIRST — la cartella sotto il Connector e' deployata da
+# v3.5.22: PORTABLE FIRST - la cartella sotto il Connector e' deployata da
 # Install-WireGuardClient via msiexec /a. Se manca, fallback a installazione
 # di sistema (compat con setup pre-v3.5.22 dove l'admin aveva installato il MSI).
 $script:WG_PORTABLE_DIR = Join-Path ([Environment]::GetFolderPath("ProgramFiles")) "86NocConnector\wireguard-portable"
@@ -210,7 +210,7 @@ function Install-WireGuardClient {
         if (Test-Path $extractDir) { Remove-Item $extractDir -Recurse -Force }
         New-Item -ItemType Directory -Path $extractDir -Force | Out-Null
 
-        _wgLog "Esecuzione 'msiexec /a' (administrative install — solo estrazione file)..."
+        _wgLog "Esecuzione 'msiexec /a' (administrative install - solo estrazione file)..."
         $msiArgs = @(
             "/a", "`"$msiPath`"",
             "/qn",
@@ -365,7 +365,7 @@ function Start-WireGuardTunnel($peerConfig) {
     }
 
     $conf = @"
-# ARGUS WireGuard tunnel — generato automaticamente
+# ARGUS WireGuard tunnel - generato automaticamente
 # v3.5.21 OPTIMIZED: PSK ephemeral + MTU tuned per zero fragmentation
 # Non modificare manualmente. Riavvia il connector per rigenerare.
 
@@ -470,12 +470,12 @@ function Stop-WireGuardTunnel {
 # Chiamato dal polling loop ogni ~5 secondi.
 # ============================================================
 function Sync-WireGuardSession($config, $peerConfig) {
-    if (-not $script:WG_EXE) { return }   # WG non installato → no-op
+    if (-not $script:WG_EXE) { return }   # WG non installato -> no-op
     if (-not $peerConfig) { return }
 
     # v3.5.21: polling ADATTIVO per ottimizzare performance
-    #   - Sessione attiva  → poll ogni 3 sec (reattività rapida a stop session)
-    #   - Idle (no session) → poll ogni 10 sec (CPU risparmiata)
+    #   - Sessione attiva  -> poll ogni 3 sec (reattività rapida a stop session)
+    #   - Idle (no session) -> poll ogni 10 sec (CPU risparmiata)
     $pollInterval = if ($script:WG_LAST_SESSION_ID) { 3 } else { 10 }
     $now = Get-Date
     if (($now - $script:WG_LAST_POLL_AT).TotalSeconds -lt $pollInterval) { return }

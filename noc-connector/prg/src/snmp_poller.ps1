@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     86NocConnector - SNMP v1/v2c/v3 Poller
 .DESCRIPTION
@@ -16,7 +16,7 @@
 
 # CRITICAL FIX v3.5.9: PowerShell 5.1 pipeline unrolling bug.
 # ConvertTo-BerLength ritorna un [byte[]] che, quando contiene UN solo elemento,
-# viene "spacchettato" da PowerShell durante return → il chiamante riceve un singolo
+# viene "spacchettato" da PowerShell durante return -> il chiamante riceve un singolo
 # [byte] invece dell'array. Questo faceva crashare AddRange($lenBytes) con errore
 # "Impossibile convertire 'System.Byte' in 'IEnumerable`1[Byte]'" per TUTTI i
 # pacchetti SNMP con payload < 128 byte (cioe' praticamente TUTTE le GET singole).
@@ -2153,7 +2153,7 @@ function Poll-LldpNeighbors($ip, $community) {
             }
         }
         
-        # Parse sysNames entries — index pattern: .timeMark.localPortNum.remIndex
+        # Parse sysNames entries - index pattern: .timeMark.localPortNum.remIndex
         foreach ($entry in $sysNames) {
             # Extract the 3-part index from the OID
             $baseSuffix = $entry.oid.Replace("1.0.8802.1.1.2.1.4.1.1.9.", "")

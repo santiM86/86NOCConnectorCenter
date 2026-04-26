@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     ARGUS Connector - Wizard di Installazione
 .DESCRIPTION
@@ -50,7 +50,7 @@ if (-not $isAdmin) {
     }
 }
 
-# $AppName: identificatore tecnico (path ProgramData, nomi servizio/task) — NON cambiare
+# $AppName: identificatore tecnico (path ProgramData, nomi servizio/task) - NON cambiare
 # $DisplayName: nome visualizzato all'utente in tutta l'UI del wizard
 $AppName = "86NocConnector"
 $DisplayName = "ARGUS Connector"
@@ -785,7 +785,7 @@ function Show-InstallerWizard {
                 if ($_id -and $_id.client_id) { $discoveredClientId = $_id.client_id }
             } catch {
                 # Endpoint /identify non disponibile (NOC produzione pre-v3.5.16) o key invalida
-                # → il connector runtime fara' l'auto-discovery dopo il deploy
+                # -> il connector runtime fara' l'auto-discovery dopo il deploy
                 $discoveredClientId = ""
             }
         }
@@ -921,7 +921,7 @@ function Show-InstallerWizard {
                     # v3.5.15 FIX quoting: nssm install con AppParameters inline
                     # NON rispetta le virgolette su path con spazi (es. "C:\Program Files\...").
                     # Risultato pre-fix: PowerShell ricevette `-File C:\Program` come path monco
-                    # → "Il file non ha estensione 'ps1'" → crash infinito ogni 60s su Program Files.
+                    # -> "Il file non ha estensione 'ps1'" -> crash infinito ogni 60s su Program Files.
                     # Fix: install col solo eseguibile, poi AppParameters via `set` (quoting OK).
                     & $nssmPath install $svcName $psExe
                     & $nssmPath set $svcName AppParameters ('-ExecutionPolicy Bypass -NonInteractive -WindowStyle Hidden -File "' + $connectorScript + '"')
@@ -1373,12 +1373,12 @@ function Show-InstallerWizard {
                     $DisplayName, "OK", "Warning") | Out-Null
                 return
             }
-            # Test health + identify (o fallback heartbeat). Se fallisce → blocco.
+            # Test health + identify (o fallback heartbeat). Se fallisce -> blocco.
             $btnNext.Enabled = $false
             $btnNext.Text = "Verifica..."
             $form.Refresh()
             try {
-                # Health check — NOC raggiungibile?
+                # Health check - NOC raggiungibile?
                 try {
                     Invoke-RestMethod -Uri "$url/api/health" -TimeoutSec 8 -ErrorAction Stop | Out-Null
                 } catch {

@@ -367,6 +367,76 @@ Rimossi in v3.5.0 (con OK utente): Check-ForUpdate, Install-Update (5 metodi fal
 - P2: LDAP/Active Directory integration
 - P3: Zyxel Nebula Cloud API
 
+### Connector v3.5.23 — HOTFIX CRITICO encoding em-dash (2026-04-26)
+**Sintomo segnalato dall'utente** (post-install v3.5.22 su GALVANSRV):
+- `Get-Service 86NocConnectorService` -> Status=**Paused**
+- File `C:\ProgramData\86NocConnector\connector.log` non esiste (mai creato)
+- Nessun heartbeat al Center
+- Esecuzione manuale di `connector.ps1` produce errori PowerShell parser:
+  - "flusso output per il comando gia' rindirizzato" su righe 358 e 430
+  - "')' di chiusura mancante nell'espressione"
+  - "'}' di chiusura mancante nel blocco di istruzioni" alle righe 1444 e 2633
+  - Cascata di errori parser
+
+**ROOT CAUSE TROVATA**:
+I file PowerShell del connector erano salvati come **UTF-8 SENZA BOM** e contenevano
+caratteri tipografici Unicode all'interno di stringhe Write-Log e commenti:
+- em-dash `-` (U+2014, byte UTF-8: `e2 80 94`) - 49 occorrenze totali nei 8 file
+- arrow `->` (U+2192, byte UTF-8: `e2 86 92`) - 17 occorrenze totali
+
+Su Windows PowerShell 5.1 con locale italiano (default su Win Server e Win 10/11 IT),
+**un file senza BOM viene parsato usando il code page CP-1252**. In CP-1252 il
+byte `0x94` (terzo byte UTF-8 dell'em-dash) corrisponde al carattere `"` (smart
+quote close), un ASCII-equivalent che **CHIUDE PREMATURAMENTE la stringa
+double-quoted di Write-Log**. Da quel punto in poi tutti i `>` presenti nella
+stringa (es. "Clienti > [tuo cliente] > Rigenera API Key") vengono interpretati
+come operatori di redirect output PowerShell, generando "flusso output gia'
+rindirizzato" e causando rottura a cascata della struttura del file.
+
+PowerShell rifiuta di parsare lo script -> `connector.ps1` non parte mai ->
+process child di NSSM crash entro 1.5s -> NSSM throttle il riavvio e mette
+il servizio in stato `Paused`. Sintomo: log file non viene creato, no heartbeat.
+
+**FIX APPLICATO** a 8 file PowerShell:
+- `connector.ps1`, `installer_gui.ps1`, `snmp_poller.ps1`, `tray_app.ps1`,
+  `wireguard_client.ps1`, `update_check.ps1`, `remote_browser.ps1`, `uninstall.ps1`
+
+1. **Sostituzione caratteri killer** (sed in-place):
+   - `-` (em-dash) -> `-` ASCII hyphen
+   - `->` (right arrow) -> `->` ASCII
+2. **BOM UTF-8 prepended** (`ef bb bf`) all'inizio di ogni file:
+   defesa in profondita' - anche se in futuro qualcuno aggiungesse di nuovo
+   caratteri Unicode tipografici, il BOM forza PowerShell 5.1 a usare
+   encoding UTF-8 invece di CP-1252, evitando il bug definitivamente.
+
+Le lettere accentate italiane (a', e', i', o') restano nel file ma con BOM
+vengono parsate correttamente come UTF-8 multibyte.
+
+**Verifica**:
+- 8/8 file: BOM `ef bb bf` aggiunto
+- 8/8 file: em-dash + arrow = 0 occorrenze
+- 8/8 file: braces bilanciati (delta 0)
+- 0 byte `0x94`/`0x80` problematici residui
+- ZIP `86NocConnector_v3.5.23_install.zip` (371 KB) pubblicato + DB record
+  active=true, precedenti deactivati
+- SHA256 install: `1f28e8a400253dfa65bad2dfd85f0576d615ab7e3ba0ff3d04fd7c0f26ac4a9b`
+
+**Why this never showed before v3.5.22**:
+Le versioni precedenti probabilmente avevano BOM (perche' editate in PowerShell ISE
+che salva UTF-8-BOM di default), oppure non avevano em-dash dentro stringhe critiche.
+Il fix in v3.5.16 che aggiunse i messaggi 401 actionable con "Clienti > [tuo cliente]
+> Rigenera API Key -> copia in..." ha introdotto i caratteri killer dentro stringhe
+write-Log al volo via search_replace dell'agent, perdendo il BOM nel salvataggio.
+
+**Procedura di recupero per cliente con servizio Paused**:
+1. Scaricare nuovo ZIP install:
+   `https://<center>/downloads/86NocConnector_v3.5.23_install.zip`
+2. Disinstallare versione attuale (PowerShell admin):
+   `& "C:\Program Files\86NocConnector\uninstall.ps1" -NoPause`
+3. Estrarre nuovo ZIP -> tasto destro sui file -> Annulla blocco
+4. Doppio-click `Installa 86NocConnector.vbs` -> wizard
+5. Verificare: `Get-Service 86NocConnectorService` -> Status=Running
+
 ### Connector v3.5.22 — WireGuard PORTABLE deployment (2026-04-26)
 **Richiesta utente**: "non voglio assolutamente sporcare il server di produzione". Valutate alternative: WireGuard portable, WireSock, wireproxy, TunnlTo. Scelta: **estrazione binari da MSI ufficiale via `msiexec /a` (administrative install)** — la piu' pulita e sicura.
 

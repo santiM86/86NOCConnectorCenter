@@ -1,6 +1,6 @@
-<#
+﻿<#
 .SYNOPSIS
-    ARGUS Connector (86NocConnector) — Disinstallazione enterprise-grade.
+    ARGUS Connector (86NocConnector) - Disinstallazione enterprise-grade.
 
 .DESCRIPTION
     Rimuove in modo robusto e idempotente ogni traccia del connector dalla macchina:
@@ -71,7 +71,7 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 Clear-Host
 Write-Host ""
 Write-Host "  ============================================================" -ForegroundColor Cyan
-Write-Host "     $DisplayName — Disinstallazione" -ForegroundColor Cyan
+Write-Host "     $DisplayName - Disinstallazione" -ForegroundColor Cyan
 Write-Host "  ============================================================" -ForegroundColor Cyan
 Write-Host "  Log: $LogFile" -ForegroundColor DarkGray
 Write-Host ""
@@ -80,11 +80,11 @@ Write-UninstallLog "Avvio disinstallazione $DisplayName" "INFO"
 Write-UninstallLog "Utente: $($currentUser.Name) | Host: $env:COMPUTERNAME" "INFO"
 
 # ============================================================
-# STEP 1 — Rimozione Task Scheduler (PRIMA del servizio NSSM)
+# STEP 1 - Rimozione Task Scheduler (PRIMA del servizio NSSM)
 # ============================================================
 # Ordine critico: prima i task, poi il servizio. Altrimenti il task
 # in esecuzione potrebbe riavviare il servizio mentre lo stiamo eliminando.
-Write-UninstallLog "STEP 1 — Rimozione Task Scheduler" "STEP"
+Write-UninstallLog "STEP 1 - Rimozione Task Scheduler" "STEP"
 
 $tasksToRemove = @(
     @{ Path = '\86BIT\';    Name = 'ArgusConnectorUpdater' },   # v3.5.0+ auto-update
@@ -123,12 +123,12 @@ try {
 } catch {}
 
 # ============================================================
-# STEP 1.5 — Stop tunnel WireGuard portable (v3.5.22+)
+# STEP 1.5 - Stop tunnel WireGuard portable (v3.5.22+)
 # ============================================================
 # Se il connector ha attivato un tunnel WG (servizio Windows dinamico
 # 'WireGuardTunnel$argus'), lo fermiamo qui PRIMA di rimuovere i binari portable.
 # Usa wireguard.exe portable se presente, altrimenti sc.exe come fallback.
-Write-UninstallLog "STEP 1.5 — Stop tunnel WireGuard (se attivo)" "STEP"
+Write-UninstallLog "STEP 1.5 - Stop tunnel WireGuard (se attivo)" "STEP"
 
 $wgPortableExe = Join-Path $InstallDir "wireguard-portable\wireguard.exe"
 $wgTunnelSvc = "WireGuardTunnel`$argus"
@@ -165,15 +165,15 @@ if ($wgSvc) {
 }
 
 # ============================================================
-# STEP 2 — Stop + Delete Servizio NSSM (resistente a Paused/StopPending)
+# STEP 2 - Stop + Delete Servizio NSSM (resistente a Paused/StopPending)
 # ============================================================
-Write-UninstallLog "STEP 2 — Arresto ed eliminazione servizio NSSM '$SvcName'" "STEP"
+Write-UninstallLog "STEP 2 - Arresto ed eliminazione servizio NSSM '$SvcName'" "STEP"
 
 $svc = Get-Service -Name $SvcName -ErrorAction SilentlyContinue
 if ($svc) {
     Write-UninstallLog "Servizio trovato, stato=$($svc.Status) startType=$($svc.StartType)" "INFO"
 
-    # Caso 1: Paused → Resume forzato per poterlo poi stoppare (altrimenti Stop-Service si blocca)
+    # Caso 1: Paused -> Resume forzato per poterlo poi stoppare (altrimenti Stop-Service si blocca)
     if ($svc.Status -eq 'Paused') {
         Write-UninstallLog "Servizio in stato Paused: tentativo Resume prima di stop..." "WARN"
         try { Resume-Service -Name $SvcName -ErrorAction SilentlyContinue } catch {}
@@ -202,7 +202,7 @@ if ($svc) {
         if (-not $cur -or $cur.Status -eq 'Stopped') { break }
     }
 
-    # Caso 4: servizio ancora Paused dopo 15s → kill del process child di NSSM
+    # Caso 4: servizio ancora Paused dopo 15s -> kill del process child di NSSM
     $cur = Get-Service -Name $SvcName -ErrorAction SilentlyContinue
     if ($cur -and $cur.Status -ne 'Stopped') {
         Write-UninstallLog "Servizio non si ferma in 15s (stato=$($cur.Status)): kill processi in $InstallDir..." "WARN"
@@ -222,7 +222,7 @@ if ($svc) {
     Start-Sleep -Seconds 1
     $stillThere = Get-Service -Name $SvcName -ErrorAction SilentlyContinue
     if ($stillThere) {
-        Write-UninstallLog "Servizio ancora presente — richiedo rimozione manuale del DB SCM. Reboot libererà il record." "WARN"
+        Write-UninstallLog "Servizio ancora presente - richiedo rimozione manuale del DB SCM. Reboot libererà il record." "WARN"
     } else {
         Write-UninstallLog "Servizio NSSM eliminato" "OK"
     }
@@ -231,9 +231,9 @@ if ($svc) {
 }
 
 # ============================================================
-# STEP 3 — Kill processi orfani (PowerShell + NSSM del connector)
+# STEP 3 - Kill processi orfani (PowerShell + NSSM del connector)
 # ============================================================
-Write-UninstallLog "STEP 3 — Terminazione processi orfani legati al connector" "STEP"
+Write-UninstallLog "STEP 3 - Terminazione processi orfani legati al connector" "STEP"
 
 $killedCount = 0
 
@@ -277,9 +277,9 @@ if ($killedCount -eq 0) { Write-UninstallLog "Nessun processo orfano trovato" "O
 Start-Sleep -Seconds 2
 
 # ============================================================
-# STEP 4 — Rimozione collegamenti Menu Start
+# STEP 4 - Rimozione collegamenti Menu Start
 # ============================================================
-Write-UninstallLog "STEP 4 — Pulizia collegamenti Menu Start" "STEP"
+Write-UninstallLog "STEP 4 - Pulizia collegamenti Menu Start" "STEP"
 
 $startMenuCandidates = @(
     "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\86BIT ArgusCenter",
@@ -301,9 +301,9 @@ foreach ($d in $startMenuCandidates) {
 }
 
 # ============================================================
-# STEP 5 — Pulizia registro (Uninstall + Run, 32/64)
+# STEP 5 - Pulizia registro (Uninstall + Run, 32/64)
 # ============================================================
-Write-UninstallLog "STEP 5 — Pulizia chiavi di registro" "STEP"
+Write-UninstallLog "STEP 5 - Pulizia chiavi di registro" "STEP"
 
 $regKeys = @(
     'HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\86BIT_ArgusCenter_Connector',
@@ -321,9 +321,9 @@ foreach ($k in $regKeys) {
 Write-UninstallLog "Chiavi registro rimosse (idempotente)" "OK"
 
 # ============================================================
-# STEP 6 — Rimozione cartella dati (%ProgramData%\86NocConnector)
+# STEP 6 - Rimozione cartella dati (%ProgramData%\86NocConnector)
 # ============================================================
-Write-UninstallLog "STEP 6 — Rimozione cartella dati $ConfigDir" "STEP"
+Write-UninstallLog "STEP 6 - Rimozione cartella dati $ConfigDir" "STEP"
 
 if (Test-Path $ConfigDir) {
     try {
@@ -337,9 +337,9 @@ if (Test-Path $ConfigDir) {
 }
 
 # ============================================================
-# STEP 7 — Rimozione installazione (con retry + reboot fallback)
+# STEP 7 - Rimozione installazione (con retry + reboot fallback)
 # ============================================================
-Write-UninstallLog "STEP 7 — Rimozione cartella installazione $InstallDir" "STEP"
+Write-UninstallLog "STEP 7 - Rimozione cartella installazione $InstallDir" "STEP"
 
 function Remove-WithRetry([string]$Path, [int]$Tries = 5) {
     if (-not (Test-Path $Path)) { return $true }
@@ -368,7 +368,7 @@ if (Test-Path $InstallDir) {
         Write-UninstallLog "Installazione rimossa: $InstallDir" "OK"
     } else {
         # Fallback: schedule per il reboot successivo tramite MoveFileEx PendingRename
-        Write-UninstallLog "File ancora in uso — programmo eliminazione al prossimo reboot" "WARN"
+        Write-UninstallLog "File ancora in uso - programmo eliminazione al prossimo reboot" "WARN"
         try {
             $key = 'HKLM\System\CurrentControlSet\Control\Session Manager'
             $vals = @()
@@ -400,9 +400,9 @@ if (Test-Path $LegacyDir) {
 }
 
 # ============================================================
-# STEP 8 — Verifica finale (sistema vergine?)
+# STEP 8 - Verifica finale (sistema vergine?)
 # ============================================================
-Write-UninstallLog "STEP 8 — Verifica finale" "STEP"
+Write-UninstallLog "STEP 8 - Verifica finale" "STEP"
 
 $problems = @()
 
@@ -421,19 +421,19 @@ if ($residualTasks) {
 Write-Host ""
 Write-Host "  ============================================================" -ForegroundColor Cyan
 if ($problems.Count -eq 0) {
-    Write-Host "     SISTEMA PULITO — disinstallazione completata" -ForegroundColor Green
+    Write-Host "     SISTEMA PULITO - disinstallazione completata" -ForegroundColor Green
     Write-Host "  ============================================================" -ForegroundColor Cyan
     Write-UninstallLog "Sistema vergine: nessuna traccia residua del connector" "OK"
     $exitCode = 0
 } elseif (-not $removed -and $problems.Count -eq 1) {
-    Write-Host "     DISINSTALLAZIONE IN SOSPESO — richiesto reboot" -ForegroundColor Yellow
+    Write-Host "     DISINSTALLAZIONE IN SOSPESO - richiesto reboot" -ForegroundColor Yellow
     Write-Host "  ============================================================" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "  I file della cartella installazione sono ancora bloccati da processi di sistema." -ForegroundColor Yellow
     Write-Host "  Al prossimo riavvio di Windows verranno eliminati automaticamente." -ForegroundColor Yellow
     $exitCode = 1
 } else {
-    Write-Host "     DISINSTALLAZIONE PARZIALE — azioni manuali consigliate" -ForegroundColor Yellow
+    Write-Host "     DISINSTALLAZIONE PARZIALE - azioni manuali consigliate" -ForegroundColor Yellow
     Write-Host "  ============================================================" -ForegroundColor Cyan
     Write-Host ""
     foreach ($p in $problems) { Write-Host "  - $p" -ForegroundColor Yellow }
