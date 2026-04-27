@@ -1,5 +1,5 @@
-# =============================================================================
-# ARGUS Connector — Diagnostica automatica (v1)
+﻿# =============================================================================
+# ARGUS Connector - Diagnostica automatica (v1)
 # =============================================================================
 # Esegui questo file con doppio click (richiede UAC).
 # Scrive un report dettagliato in C:\Temp\argus-diag-<timestamp>.txt

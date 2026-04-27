@@ -1,4 +1,4 @@
-# =============================================================================
+﻿# =============================================================================
 # ARGUS Fix - sblocca connector v3.5.23 in 4 step automatici
 # =============================================================================
 # Doppio click. Risolve:
@@ -14,7 +14,7 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
 }
 
 $ErrorActionPreference = 'Continue'
-$Host.UI.RawUI.WindowTitle = "ARGUS Connector — Fix v1"
+$Host.UI.RawUI.WindowTitle = "ARGUS Connector - Fix v1"
 
 function H($t)  { Write-Host "`n=== $t ===" -ForegroundColor Cyan }
 function Ok($t) { Write-Host "  [OK] $t" -ForegroundColor Green }
@@ -142,7 +142,7 @@ if ($svc.Status -eq 'Running') {
 # Riabilita watchdog
 & schtasks.exe /Run /TN "\86BIT\86NocConnector_Watchdog" 2>$null | Out-Null
 
-H "STATO FINALE — controlla il log applicativo"
+H "STATO FINALE - controlla il log applicativo"
 Write-Host ""
 Inf "Tail connector.log (entro 30 secondi dovresti vedere ciclo SNMP + heartbeat OK):"
 Write-Host ""

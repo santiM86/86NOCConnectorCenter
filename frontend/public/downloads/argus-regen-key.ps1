@@ -1,5 +1,5 @@
-# =============================================================================
-# ARGUS Regen-Key — rigenera API Key sul Center e aggiorna config.json del connector
+﻿# =============================================================================
+# ARGUS Regen-Key - rigenera API Key sul Center e aggiorna config.json del connector
 # =============================================================================
 # Doppio click. Chiede credenziali admin del Center, lista i clienti, ti fa
 # scegliere quale rigenerare, applica nuova chiave al connector locale, restart.

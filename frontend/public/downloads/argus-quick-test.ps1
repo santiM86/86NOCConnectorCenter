@@ -1,5 +1,5 @@
-# =============================================================================
-# ARGUS Quick-Test — Punta il connector al Center preview per validare end-to-end
+﻿# =============================================================================
+# ARGUS Quick-Test - Punta il connector al Center preview per validare end-to-end
 # =============================================================================
 # Cosa fa:
 #   1. Backup del config.json attuale (che punta al tuo prod argus.86bit.it)
@@ -17,7 +17,7 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
     exit
 }
 
-# Logging persistente — anche se lo script va in errore tutto e' in C:\Temp\argus-quick-test.log
+# Logging persistente - anche se lo script va in errore tutto e' in C:\Temp\argus-quick-test.log
 if (-not (Test-Path "C:\Temp")) { New-Item -ItemType Directory -Path "C:\Temp" -Force | Out-Null }
 $transcriptFile = "C:\Temp\argus-quick-test-$(Get-Date -Format 'yyyyMMdd-HHmmss').log"
 try { Start-Transcript -Path $transcriptFile -Force | Out-Null } catch {}

@@ -1,5 +1,5 @@
-# =============================================================================
-# ARGUS Final-Fix — sblocca il connector e diagnostica il backend prod
+﻿# =============================================================================
+# ARGUS Final-Fix - sblocca il connector e diagnostica il backend prod
 # =============================================================================
 # Eseguito DOPO firewall-test che ha confermato connettivita OK.
 # Cosa fa:
@@ -39,7 +39,7 @@ function Pass($t)    { Write-Host "  [OK] $t" -ForegroundColor Green }
 function Warn2($t)   { Write-Host "  [WARN] $t" -ForegroundColor Yellow }
 function Fail($t)    { Write-Host "  [ERR] $t" -ForegroundColor Red }
 
-Section "ARGUS Final-Fix — sblocco connector e diagnosi backend prod"
+Section "ARGUS Final-Fix - sblocco connector e diagnosi backend prod"
 
 # =========================================================
 Section "1. Stop servizio + watchdog"
