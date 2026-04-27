@@ -160,25 +160,42 @@ PROFILES: list[dict[str, Any]] = [
         },
     },
 
-    # ---------------- HPE Comware (ex-H3C) — 5130/5500/5900/7500 ----------------
+    # ---------------- HPE Comware (ex-H3C) — 5130/5140/5500/5900/7500 ----------------
     {
         "key": "hpe_comware",
         "vendor": "HPE / H3C",
         "family": "switch",
-        "label": "HPE Comware (5130/5500/5900/7500)",
-        "description": "Switch HPE Comware ex-H3C (5130 EI/HI/SI, 5500, 5900, 7500) — MIB H3C/HH3C.",
+        "label": "HPE Comware (5130/5140/5500/5900/7500)",
+        "description": "Switch HPE Comware ex-H3C (5130 EI/HI/SI, 5140 EI, 5500, 5900, 7500) — MIB H3C/HH3C.",
         "fingerprint": {
             "sysobjectid_prefixes": [
-                "1.3.6.1.4.1.25506.",    # H3C enterprise
-                "1.3.6.1.4.1.11.2.3.7.8.",  # HPE Comware via HP tree
+                "1.3.6.1.4.1.25506.",         # H3C enterprise (matrice principale OID device)
+                "1.3.6.1.4.1.11.2.3.7.8.",    # HPE Comware via HP tree (Comware 5/altri)
+                "1.3.6.1.4.1.11.2.3.7.11.",   # HPE FlexNetwork 5130/5140 (Comware 7) — PREFISSO UFFICIALE
             ],
-            "sysdescr_patterns": [r"comware", r"h3c", r"hpe?\s*5130", r"hpe?\s*5500", r"hpe?\s*5900", r"hpe?\s*7500", r"3com.*switch"],
+            "sysdescr_patterns": [
+                r"comware",
+                r"h3c",
+                r"hpe?\s*5130",
+                r"hpe?\s*5140",
+                r"hpe?\s*5500",
+                r"hpe?\s*5900",
+                r"hpe?\s*7500",
+                r"3com.*switch",
+            ],
+            # Model lookup: dopo il match del profilo, mappa l'ultimo numero del sysObjectID
+            # al modello specifico (HPE FlexNetwork tree .11.2.3.7.11.<X>)
+            "model_by_oid_suffix": {
+                "1.3.6.1.4.1.11.2.3.7.11.161": "HPE FlexNetwork 5130 EI",
+                "1.3.6.1.4.1.11.2.3.7.11.162": "HPE FlexNetwork 5130 HI",
+                "1.3.6.1.4.1.11.2.3.7.11.173": "HPE FlexNetwork 5140 EI",
+            },
         },
         "snmp": {"port": 161, "version": "v2c", "community_suggestion": "public", "timeout_seconds": 5, "retries": 2},
-        "web_console": {"port": 443, "scheme": "https", "path": "/", "notes": "HPE Comware HTTPS 443 (HTTP 80 disabilitato di default). La webui è SPA — richiede popup V4 per bypass CSP/X-Frame."},
+        "web_console": {"port": 443, "scheme": "https", "path": "/", "notes": "HPE Comware HTTPS 443 (HTTP 80 disabilitato di default). La webui è SPA — richiede popup V4 per bypass CSP/X-Frame. Auth: local-user 'admin' role network-admin."},
         "oids": {
             **COMMON_OIDS,
-            # H3C/HH3C enterprise MIB
+            # H3C/HH3C enterprise MIB (vale anche per HPE 5130/5140 anche se sysObjectID e` HP tree)
             "h3cEntityExtCpuUsage":   "1.3.6.1.4.1.25506.2.6.1.1.1.1.6",
             "h3cEntityExtMemUsage":   "1.3.6.1.4.1.25506.2.6.1.1.1.1.8",
             "h3cEntityExtTemperature":"1.3.6.1.4.1.25506.2.6.1.1.1.1.12",
@@ -187,7 +204,7 @@ PROFILES: list[dict[str, Any]] = [
         },
         "thresholds": {"cpu_warn_pct": 70, "cpu_crit_pct": 90, "mem_warn_pct": 80, "mem_crit_pct": 95, "temp_warn_c": 55, "temp_crit_c": 70},
         "polling_interval_seconds": 60,
-        "capabilities": ["snmp_basic", "port_traffic", "stack_status", "comware_cli_ssh"],
+        "capabilities": ["snmp_basic", "port_traffic", "stack_status", "comware_cli_ssh", "https_webui"],
     },
 
     # ---------------- Xanto UPS (Serie 2017, scheda SNMP Megatec/NetAgent) ----------------
@@ -671,3 +688,22 @@ def get_profile(key: str) -> dict | None:
 
 def all_profiles() -> list[dict]:
     return list(PROFILES)
+
+
+def detect_model_label(profile: dict | None, sysobjectid: str | None) -> str | None:
+    """Dato un profilo e il sysObjectID, ritorna il nome modello specifico se il profilo
+    espone una mappa `fingerprint.model_by_oid_suffix`. Esempio: per HPE Comware il sysoid
+    1.3.6.1.4.1.11.2.3.7.11.162 viene mappato a "HPE FlexNetwork 5130 HI"."""
+    if not profile or not sysobjectid:
+        return None
+    fp = profile.get("fingerprint") or {}
+    table = fp.get("model_by_oid_suffix") or {}
+    sysoid = sysobjectid.strip()
+    # Match esatto (le chiavi sono OID interi, non suffissi)
+    if sysoid in table:
+        return table[sysoid]
+    # Match come prefisso (per OID con suffissi serializzazione, es. .162.0)
+    for oid_key, label in table.items():
+        if sysoid.startswith(oid_key + ".") or sysoid == oid_key:
+            return label
+    return None

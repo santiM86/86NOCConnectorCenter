@@ -335,6 +335,18 @@ async def build_info_card(device_ip: str) -> Dict[str, Any]:
         parsed.get("model"),
         (profile_doc or {}).get("family"),
     )
+
+    # Sostituisci il modello con quello specifico dato dal sysObjectID se mappato nel profilo.
+    # Esempio: profilo hpe_comware ha model_by_oid_suffix per .161 (5130 EI), .162 (5130 HI), .173 (5140 EI).
+    sysoid_for_model = poll.get("sys_object_id") or managed.get("sys_object_id") or entity.get("sys_object_id")
+    if sysoid_for_model and profile_doc:
+        try:
+            from device_profiles import detect_model_label
+            specific = detect_model_label(profile_doc, sysoid_for_model)
+            if specific:
+                model = specific
+        except Exception:
+            pass
     serial = _first_not_none(
         ilo.get("serial_number"),
         entity.get("serial_number"),
