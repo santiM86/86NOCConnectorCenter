@@ -152,18 +152,34 @@ export default function ClientsPage() {
 
             return (
               <div key={client.id}
-                className="noc-panel p-0 overflow-hidden cursor-pointer hover:border-indigo-500/30 transition-all group"
+                className="noc-panel p-0 overflow-hidden cursor-pointer hover:border-indigo-500/30 active:border-indigo-500/50 transition-all group select-none"
                 onClick={() => navigate(`/client/${client.id}`)}
                 data-testid={`client-row-${client.id}`}>
 
                 {/* Main Row */}
-                <div className="flex items-center gap-4 px-4 py-3">
+                <div className="flex items-center gap-4 px-4 py-4 md:py-3">
                   {/* Health dot + Name */}
                   <div className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: hColor, boxShadow: `0 0 8px ${hColor}50` }}></div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
                       <h3 className="text-sm font-bold text-[var(--text-primary)]">{client.name}</h3>
                       {client.description && <span className="text-[10px] text-[var(--text-muted)] truncate hidden md:inline">{client.description}</span>}
+                    </div>
+                    {/* Compact status pills on mobile (sotto al nome, non confondono tap zones) */}
+                    <div className="flex items-center gap-1.5 mt-1 md:hidden text-[10px]">
+                      <span className="font-mono" style={{ color: ov.devices?.offline > 0 ? "#FF9500" : "#34C759" }}>
+                        {ov.devices?.total > 0 ? `${ov.devices.online}/${ov.devices.total}` : "—"} disp.
+                      </span>
+                      <span className="text-[var(--text-muted)]">·</span>
+                      <span style={{ color: ov.connector_online ? "#34C759" : ov.connector_online === false ? "#FF3B30" : "#888" }}>
+                        {ov.connector_online ? "ON" : ov.connector_online === false ? "OFF" : "—"}
+                      </span>
+                      {ov.alerts?.total > 0 && (
+                        <>
+                          <span className="text-[var(--text-muted)]">·</span>
+                          <span style={{ color: ov.alerts?.critical > 0 ? "#FF3B30" : "#FF9500" }}>{ov.alerts.total} alert</span>
+                        </>
+                      )}
                     </div>
                   </div>
 
@@ -179,8 +195,8 @@ export default function ClientsPage() {
                     <StatusPill icon={Bell} value={ov.alerts?.total || 0} color={ov.alerts?.critical > 0 ? "#FF3B30" : ov.alerts?.total > 0 ? "#FF9500" : "#34C759"} label="Alert" />
                   </div>
 
-                  {/* Connector Info */}
-                  <div className="flex items-center gap-2 flex-shrink-0" onClick={e => e.stopPropagation()}>
+                  {/* Connector Info — nascosto su mobile per evitare wrap che confonde tap zones */}
+                  <div className="hidden md:flex items-center gap-2 flex-shrink-0" onClick={e => e.stopPropagation()}>
                     {client.api_key && (
                       <button onClick={(e) => copyToClipboard(client.api_key, "API Key", e)}
                         className="text-[9px] px-2 py-1 rounded-md bg-[var(--bg-card)] border border-[var(--bg-border)] text-[var(--text-muted)] hover:text-indigo-400 hover:border-indigo-500/30 transition-colors flex items-center gap-1"

@@ -1,5 +1,6 @@
 """Redfish direct polling, power control, and Wake-on-LAN routes."""
 from fastapi import APIRouter, Depends, HTTPException, Request
+from typing import Optional
 import asyncio
 import uuid
 import logging
@@ -48,10 +49,10 @@ async def set_direct_poll(cred_id: str, request: Request, current_user: dict = D
 
 
 @router.get("/redfish/failover-status")
-async def get_failover_status(current_user: dict = Depends(get_current_user)):
+async def get_failover_status(client_id: Optional[str] = None, current_user: dict = Depends(get_current_user)):
     if current_user.get("role") not in ["admin"]:
         raise HTTPException(status_code=403, detail="Solo admin")
-    return await redfish_poller.get_failover_status()
+    return await redfish_poller.get_failover_status(client_id=client_id)
 
 
 @router.get("/redfish/channel-health-matrix")
