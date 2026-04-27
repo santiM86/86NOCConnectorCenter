@@ -11,6 +11,7 @@ if not exist "%DST%" (
     exit /b 1
 )
 
-powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process powershell -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','%DST%' -Verb RunAs"
+REM -NoExit lascia la finestra aperta anche se lo script va in errore
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process powershell -ArgumentList '-NoProfile','-NoExit','-ExecutionPolicy','Bypass','-File','%DST%' -Verb RunAs"
 
 exit /b 0

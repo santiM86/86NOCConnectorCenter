@@ -13,12 +13,35 @@
 # =============================================================================
 
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    Start-Process powershell.exe -Verb RunAs -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
+    Start-Process powershell.exe -Verb RunAs -ArgumentList "-NoProfile -NoExit -ExecutionPolicy Bypass -File `"$PSCommandPath`""
     exit
 }
 
-$ErrorActionPreference = 'Stop'
+# Logging persistente — anche se lo script va in errore tutto e' in C:\Temp\argus-quick-test.log
+if (-not (Test-Path "C:\Temp")) { New-Item -ItemType Directory -Path "C:\Temp" -Force | Out-Null }
+$transcriptFile = "C:\Temp\argus-quick-test-$(Get-Date -Format 'yyyyMMdd-HHmmss').log"
+try { Start-Transcript -Path $transcriptFile -Force | Out-Null } catch {}
+
+$ErrorActionPreference = 'Continue'  # NON Stop: lasciamo continuare e gestiamo errori manualmente
 $Host.UI.RawUI.WindowTitle = "ARGUS Quick-Test (Center preview)"
+
+# Catch-all globale: qualsiasi errore non-handled viene mostrato senza far chiudere la finestra
+trap {
+    Write-Host ""
+    Write-Host "==========================================================" -ForegroundColor Red
+    Write-Host " ERRORE NON GESTITO - lo script si e' interrotto" -ForegroundColor Red
+    Write-Host "==========================================================" -ForegroundColor Red
+    Write-Host "  Errore:    $($_.Exception.Message)" -ForegroundColor Yellow
+    Write-Host "  Tipo:      $($_.Exception.GetType().FullName)" -ForegroundColor Yellow
+    Write-Host "  Posizione: $($_.InvocationInfo.PositionMessage)" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "  Log completo salvato in: $transcriptFile" -ForegroundColor Cyan
+    Write-Host "  MANDA QUEL FILE all'agente per analisi." -ForegroundColor Cyan
+    Write-Host ""
+    Read-Host "INVIO per chiudere"
+    try { Stop-Transcript | Out-Null } catch {}
+    exit 1
+}
 
 # ====== TARGET PREVIEW ======
 $PREVIEW_URL = "https://noc-monitor-hub.preview.emergentagent.com"
@@ -160,4 +183,5 @@ if ($success) {
 }
 
 Write-Host ""
+try { Stop-Transcript | Out-Null } catch {}
 Read-Host "INVIO per chiudere"
