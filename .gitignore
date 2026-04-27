@@ -1057,3 +1057,4 @@ credentials.json
 *.pem
 *.key
 .credentials
+frontend/build/downloads/argus-frontend-latest.tar.gz
