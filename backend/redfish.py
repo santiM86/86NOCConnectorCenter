@@ -1123,14 +1123,19 @@ class RedfishPoller:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    async def get_failover_status(self) -> list:
-        """Get failover status for all iLO devices.
+    async def get_failover_status(self, client_id: Optional[str] = None) -> list:
+        """Get failover status for all iLO devices (or for a single client when
+        `client_id` is set — used by the Credenziali tab inside ClientOverviewPage).
+
         Enterprise policy (2026-04-21): external_url presente = polling diretto SEMPRE.
         Connector = canale ridondante passivo.
         """
+        query: dict = {"credential_type": "ilo"}
+        if client_id:
+            query["client_id"] = client_id
         ilo_creds = await self.db.device_credentials.find(
-            {"credential_type": "ilo"},
-            {"_id": 0, "device_ip": 1, "device_name": 1, "external_url": 1, "direct_poll": 1, "connector_only": 1, "id": 1}
+            query,
+            {"_id": 0, "device_ip": 1, "device_name": 1, "external_url": 1, "direct_poll": 1, "connector_only": 1, "id": 1, "client_id": 1}
         ).to_list(500)
 
         result = []

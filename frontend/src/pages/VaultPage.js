@@ -199,10 +199,16 @@ export default function VaultPage({ scopedClientId = null, scopedClientName = ""
 
   const fetchFailover = useCallback(async () => {
     try {
-      const res = await axios.get(`${API}/redfish/failover-status`);
+      // Quando scoped a un cliente, filtra il failover-status per quel client_id
+      // altrimenti il pannello mostrava le iLO di tutti i clienti dentro la tab
+      // Credenziali del cliente sbagliato (data leakage multi-tenant).
+      const url = scopedClientId
+        ? `${API}/redfish/failover-status?client_id=${scopedClientId}`
+        : `${API}/redfish/failover-status`;
+      const res = await axios.get(url);
       setFailoverStatus(res.data);
     } catch {}
-  }, []);
+  }, [scopedClientId]);
 
   useEffect(() => { fetchCreds(); fetchClients(); fetchFailover(); }, [fetchCreds, fetchClients, fetchFailover]);
   useEffect(() => {

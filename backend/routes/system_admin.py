@@ -35,7 +35,7 @@ STATUS_FILE = Path(os.environ.get("ARGUS_UPDATE_STATUS_FILE", "/tmp/argus-update
 RUNNER_LOG = Path("/tmp/argus-update-runner.log")
 
 # Versione del backend: aggiornata manualmente ad ogni release importante
-BACKEND_VERSION = os.environ.get("ARGUS_BACKEND_VERSION", "3.5.25-fase2")
+BACKEND_VERSION = os.environ.get("ARGUS_BACKEND_VERSION", "3.5.26-fase2")
 
 
 class SelfUpdateRequest(BaseModel):

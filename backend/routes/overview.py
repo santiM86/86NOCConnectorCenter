@@ -285,13 +285,28 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
                 wan_status = "pending"
 
         # Overall health score
+        # Policy 2026-04-27 (richiesto utente):
+        # Il dot di salute riflette lo stato dei *sistemi*, non degli alert storici.
+        # Se devices/connector/wan sono tutti OK -> verde, anche con alert in coda.
+        # Gli alert hanno il loro pill dedicato con conteggio rosso nella UI.
+        devices_offline = devices_info.get("offline", 0) if isinstance(devices_info, dict) else 0
+        backup_errors = backup_info.get("error", 0) if isinstance(backup_info, dict) else 0
+        toner_low = printer_info.get("low_toner", 0) if isinstance(printer_info, dict) else 0
+
         health = "ok"
-        if alerts_info["critical"] > 0 or wan_status in ("isp_down", "firewall_down", "router_down"):
+        # CRITICAL: qualcosa di importante non funziona ORA
+        if (devices_offline > 0
+                or connector_online is False
+                or wan_status in ("isp_down", "firewall_down", "router_down", "offline")):
             health = "critical"
-        elif alerts_info["high"] > 0 or wan_status in ("firewall_degraded", "router_degraded") or backup_info.get("error", 0) > 0:
+        # WARNING: degradi noti
+        elif (wan_status in ("firewall_degraded", "router_degraded", "degraded")
+                or backup_errors > 0):
             health = "warning"
-        elif alerts_info["total"] > 0 or printer_info.get("low_toner", 0) > 0:
+        # ATTENTION: piccole anomalie da monitorare (toner basso)
+        elif toner_low > 0:
             health = "attention"
+        # else: ok (verde) — ANCHE con alert in coda, che sono mostrati nel pill dedicato
 
         # WAN targets detail for expansion
         wan_detail = []
