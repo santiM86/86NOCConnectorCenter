@@ -6,6 +6,7 @@ import {
   ChartLineUp,
 } from "@phosphor-icons/react";
 import AllMetricsDialog from "@/components/AllMetricsDialog";
+import { VendorDetailsPanel } from "@/components/VendorDetailsPanel";
 
 const API = process.env.REACT_APP_BACKEND_URL;
 
@@ -427,6 +428,11 @@ export default function DeviceInfoCard({ deviceIp, onClose = null, compact = fal
           </div>
         </div>
       )}
+
+      {/* Vendor-specific detailed panels (UPS battery/power, Synology disks/RAID,
+          Fortinet HA/FWsessions, Comware CPU/Temp, APC, MikroTik, Cisco, QNAP, Zyxel).
+          Il componente fa self-fetch e si auto-renderizza in base al profilo. */}
+      <VendorDetailsPanel deviceIp={deviceIp} />
 
       {/* Synology disks & RAID section (when vendor_metrics has them) */}
       {card.identity?.vendor?.toLowerCase().includes("synology") && card.vendor_metrics_summary?.count > 0 && (
