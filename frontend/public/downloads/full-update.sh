@@ -15,7 +15,9 @@
 set +e
 
 # Default URL (cdn pubblico del Center stesso)
-HOST="${ARGUS_HOST:-argus.86bit.it}"
+# Default HOST = Emergent preview (qui pubblico i tarball aggiornati).
+# Puoi overridarlo con ARGUS_HOST=<tuo-dominio> se stai hostando i tarball altrove.
+HOST="${ARGUS_HOST:-noc-monitor-hub.preview.emergentagent.com}"
 BACKEND_URL="https://${HOST}/downloads/argus-backend-latest.tar.gz"
 FRONTEND_URL="https://${HOST}/downloads/argus-frontend-latest.tar.gz"
 
