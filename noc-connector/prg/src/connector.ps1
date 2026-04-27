@@ -329,23 +329,30 @@ function Send-WakeOnLAN([string]$macAddress, [string]$targetIP) {
 
 
 function Invoke-SecureGet($config, $endpoint, $timeoutSec = 15) {
-    # Secure GET with HMAC-SHA256 + Anti-Replay
+    # GET verso il NOC. v3.5.24: HMAC opzionale (config.enable_hmac).
+    # Per default mando solo X-API-Key (modalita' legacy retrocompatibile col
+    # backend prod che esisteva prima dell'introduzione di HMAC).
     try {
         try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13 } catch { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 }
         $url = "$($config.noc_center_url)/api/$endpoint"
-        $timestamp = [math]::Floor(([DateTimeOffset]::UtcNow).ToUnixTimeSeconds())
-        $nonce = [guid]::NewGuid().ToString("N")
-        $hmacSecret = "argus-hmac-k3y-2026!" + $config.api_key
-        $message = "$($config.api_key)$timestamp$nonce"
-        $hmac = New-Object System.Security.Cryptography.HMACSHA256
-        $hmac.Key = [Text.Encoding]::UTF8.GetBytes($hmacSecret)
-        $signature = [BitConverter]::ToString($hmac.ComputeHash([Text.Encoding]::UTF8.GetBytes($message))).Replace("-","").ToLower()
-        $headers = @{
-            "X-API-Key"        = $config.api_key
-            "X-HMAC-Signature" = $signature
-            "X-Timestamp"      = $timestamp.ToString()
-            "X-Nonce"          = $nonce
+
+        $headers = @{ "X-API-Key" = $config.api_key }
+
+        # Se l'admin ha abilitato HMAC esplicitamente nel config, calcoliamolo.
+        # Default: non lo mandiamo (compat con backend pre-HMAC).
+        if ($config.enable_hmac -eq $true) {
+            $timestamp = [math]::Floor(([DateTimeOffset]::UtcNow).ToUnixTimeSeconds())
+            $nonce = [guid]::NewGuid().ToString("N")
+            $hmacSecret = "argus-hmac-k3y-2026!" + $config.api_key
+            $message = "$($config.api_key)$timestamp$nonce"
+            $hmac = New-Object System.Security.Cryptography.HMACSHA256
+            $hmac.Key = [Text.Encoding]::UTF8.GetBytes($hmacSecret)
+            $signature = [BitConverter]::ToString($hmac.ComputeHash([Text.Encoding]::UTF8.GetBytes($message))).Replace("-","").ToLower()
+            $headers["X-HMAC-Signature"] = $signature
+            $headers["X-Timestamp"]      = $timestamp.ToString()
+            $headers["X-Nonce"]          = $nonce
         }
+
         return Invoke-RestMethod -Uri $url -Method Get -Headers $headers -TimeoutSec $timeoutSec -ErrorAction Stop
     } catch {
         # v3.5.16: messaggi di errore actionable per 401 (vs 404/500/network)
@@ -371,33 +378,32 @@ function Send-ToNOC($config, $endpoint, $payload) {
     try {
         # === TLS 1.2/1.3 enforcement ===
         try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13 } catch { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 }
-        
+
         $body = $payload | ConvertTo-Json -Depth 5 -Compress
         $url = "$($config.noc_center_url)/api/$endpoint"
-        
-        # === HMAC-SHA256 Signature + Anti-Replay ===
-        $timestamp = [math]::Floor(([DateTimeOffset]::UtcNow).ToUnixTimeSeconds())
-        $nonce = [guid]::NewGuid().ToString("N")
-        $hmacSecret = "argus-hmac-k3y-2026!" + $config.api_key
-        
-        # Body hash
-        $sha256 = [System.Security.Cryptography.SHA256]::Create()
-        $bodyHash = if ($body) { [BitConverter]::ToString($sha256.ComputeHash([Text.Encoding]::UTF8.GetBytes($body))).Replace("-","").ToLower() } else { "" }
-        
-        # HMAC message = api_key + timestamp + nonce + body_hash
-        $message = "$($config.api_key)$timestamp$nonce$bodyHash"
-        $hmac = New-Object System.Security.Cryptography.HMACSHA256
-        $hmac.Key = [Text.Encoding]::UTF8.GetBytes($hmacSecret)
-        $signature = [BitConverter]::ToString($hmac.ComputeHash([Text.Encoding]::UTF8.GetBytes($message))).Replace("-","").ToLower()
-        
+
+        # v3.5.24: HMAC opzionale via config.enable_hmac. Default: legacy mode
+        # (solo X-API-Key) per garantire retro-compat con backend pre-HMAC.
         $headers = @{
-            "X-API-Key"        = $config.api_key
-            "X-HMAC-Signature" = $signature
-            "X-Timestamp"      = $timestamp.ToString()
-            "X-Nonce"          = $nonce
-            "Content-Type"     = "application/json"
+            "X-API-Key"    = $config.api_key
+            "Content-Type" = "application/json"
         }
-        
+
+        if ($config.enable_hmac -eq $true) {
+            $timestamp = [math]::Floor(([DateTimeOffset]::UtcNow).ToUnixTimeSeconds())
+            $nonce = [guid]::NewGuid().ToString("N")
+            $hmacSecret = "argus-hmac-k3y-2026!" + $config.api_key
+            $sha256 = [System.Security.Cryptography.SHA256]::Create()
+            $bodyHash = if ($body) { [BitConverter]::ToString($sha256.ComputeHash([Text.Encoding]::UTF8.GetBytes($body))).Replace("-","").ToLower() } else { "" }
+            $message = "$($config.api_key)$timestamp$nonce$bodyHash"
+            $hmac = New-Object System.Security.Cryptography.HMACSHA256
+            $hmac.Key = [Text.Encoding]::UTF8.GetBytes($hmacSecret)
+            $signature = [BitConverter]::ToString($hmac.ComputeHash([Text.Encoding]::UTF8.GetBytes($message))).Replace("-","").ToLower()
+            $headers["X-HMAC-Signature"] = $signature
+            $headers["X-Timestamp"]      = $timestamp.ToString()
+            $headers["X-Nonce"]          = $nonce
+        }
+
         $response = Invoke-RestMethod -Uri $url -Method Post -Headers $headers -Body $body -TimeoutSec 15 -ErrorAction Stop
         
         # Handle key rotation from server

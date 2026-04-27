@@ -331,6 +331,53 @@ async def test_redfish_connection(test: RedfishTestRequest, current_user: dict =
     return result
 
 
+@router.patch("/devices/{device_id}")
+async def patch_device(device_id: str, payload: dict, current_user: dict = Depends(get_current_user)):
+    """Aggiorna in modo selettivo i campi di un device (es. client_id, name).
+    Pensato per cleanup multi-tenant: riassegnazione device a un cliente diverso.
+    Whitelist dei campi modificabili - mai concedere update arbitrari da JSON."""
+    device = await db.devices.find_one({"id": device_id}, {"_id": 0})
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found")
+
+    allowed = {"client_id", "name", "device_type", "ip_address", "hostname", "location", "status", "redfish_enabled"}
+    updates = {k: v for k, v in payload.items() if k in allowed}
+    if not updates:
+        raise HTTPException(status_code=400, detail=f"No valid fields. Allowed: {sorted(allowed)}")
+
+    # Se cambia client_id, verifica che il nuovo cliente esista
+    if "client_id" in updates:
+        target = await db.clients.find_one({"id": updates["client_id"]}, {"_id": 0, "id": 1, "name": 1})
+        if not target:
+            raise HTTPException(status_code=400, detail=f"Target client_id {updates['client_id']} not found")
+
+    updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await db.devices.update_one({"id": device_id}, {"$set": updates})
+    # Cascade update su collezioni correlate per coerenza multi-tenant
+    if "client_id" in updates:
+        try:
+            await db.device_poll_status.update_many(
+                {"device_ip": device.get("ip_address")},
+                {"$set": {"client_id": updates["client_id"]}}
+            )
+            await db.managed_devices.update_many(
+                {"ip": device.get("ip_address")},
+                {"$set": {"client_id": updates["client_id"]}}
+            )
+        except Exception:
+            pass
+
+    await audit_logger.log(
+        AuditAction.UPDATE_DEVICE if hasattr(AuditAction, "UPDATE_DEVICE") else AuditAction.CREATE_DEVICE,
+        user_id=current_user["id"], user_email=current_user["email"],
+        ip_address=current_user.get("_request_ip"),
+        resource_type="device", resource_id=device_id,
+        details={"patched_fields": list(updates.keys())}
+    )
+    updated = await db.devices.find_one({"id": device_id}, {"_id": 0})
+    return updated
+
+
 @router.delete("/devices/{device_id}")
 async def delete_device(device_id: str, current_user: dict = Depends(get_current_user)):
     result = await db.devices.delete_one({"id": device_id})
