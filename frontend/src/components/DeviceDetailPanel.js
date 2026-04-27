@@ -1,10 +1,11 @@
 import { useState, useEffect } from "react";
 import axios from "axios";
 import { API } from "@/App";
-import { X, Warning, WifiHigh, WifiSlash, CircleNotch, Globe, PlusCircle, ArrowSquareOut } from "@phosphor-icons/react";
+import { X, Warning, WifiHigh, WifiSlash, CircleNotch, Globe, PlusCircle, ArrowSquareOut, ChartLineUp } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import { SnmpConfigPanel } from "@/components/SnmpConfigPanel";
 import { VendorDetailsPanel } from "@/components/VendorDetailsPanel";
+import AllMetricsDialog from "@/components/AllMetricsDialog";
 
 const SEVERITY_COLORS = {
   critical: { bg: "bg-red-500/20", text: "text-red-400", border: "border-red-500/30" },
@@ -20,6 +21,7 @@ export function DeviceDetailPanel({ clientId, deviceIp, deviceData, onClose, onD
   const [monitorType, setMonitorType] = useState("ping");
   const [community, setCommunity] = useState("public");
   const [proxyLoading, setProxyLoading] = useState(false);
+  const [showAllMetrics, setShowAllMetrics] = useState(false);
 
   useEffect(() => {
     if (!clientId || !deviceIp) return;
@@ -118,9 +120,21 @@ export function DeviceDetailPanel({ clientId, deviceIp, deviceData, onClose, onD
             )}
           </div>
         </div>
-        <button onClick={onClose} className="p-1.5 rounded hover:bg-white/10 transition-colors" data-testid="detail-close-btn">
-          <X size={18} className="text-[var(--text-muted)]" />
-        </button>
+        <div className="flex items-center gap-1 flex-shrink-0">
+          {hasIp && (
+            <button
+              onClick={() => setShowAllMetrics(true)}
+              title="Tutte le metriche raccolte dal dispositivo"
+              className="p-1.5 rounded hover:bg-white/10 transition-colors"
+              data-testid="detail-all-metrics-btn"
+            >
+              <ChartLineUp size={16} className="text-cyan-400" weight="duotone" />
+            </button>
+          )}
+          <button onClick={onClose} className="p-1.5 rounded hover:bg-white/10 transition-colors" data-testid="detail-close-btn">
+            <X size={18} className="text-[var(--text-muted)]" />
+          </button>
+        </div>
       </div>
 
       {/* Action Buttons */}
@@ -211,6 +225,15 @@ export function DeviceDetailPanel({ clientId, deviceIp, deviceData, onClose, onD
           <p className="text-sm text-[var(--text-muted)] text-center py-8">Nessun dato disponibile</p>
         )}
       </div>
+
+      {/* Dialog Tutte le metriche (raw vendor_metrics + poll snapshot) */}
+      {showAllMetrics && (
+        <AllMetricsDialog
+          deviceIp={deviceIp}
+          deviceLabel={deviceData?.label || detail?.managed_device?.device_name || deviceIp}
+          onClose={() => setShowAllMetrics(false)}
+        />
+      )}
     </div>
   );
 }
