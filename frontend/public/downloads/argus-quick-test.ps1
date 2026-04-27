@@ -48,12 +48,12 @@ $PREVIEW_URL = "https://noc-monitor-hub.preview.emergentagent.com"
 $PREVIEW_CLIENT_ID = "da3d6e40-b3e5-4d46-9787-dde328a3aa36"
 $PREVIEW_API_KEY = "noc_35cf39b4d68740b1a981aedef2ee293d"
 
-function H($t) { Write-Host "`n=== $t ===" -ForegroundColor Cyan }
-function Ok($t){ Write-Host "  [OK] $t" -ForegroundColor Green }
-function Wn($t){ Write-Host "  [WARN] $t" -ForegroundColor Yellow }
-function Er($t){ Write-Host "  [ERR] $t" -ForegroundColor Red }
+function Section($t) { Write-Host "`n=== $t ===" -ForegroundColor Cyan }
+function Pass($t)    { Write-Host "  [OK] $t" -ForegroundColor Green }
+function Warn2($t)   { Write-Host "  [WARN] $t" -ForegroundColor Yellow }
+function Fail($t)    { Write-Host "  [ERR] $t" -ForegroundColor Red }
 
-H "ARGUS Quick-Test"
+Section "ARGUS Quick-Test"
 Write-Host "  Cosa faccio: puntare temporaneamente il connector al Center preview Kubernetes"
 Write-Host "  per validare che TUTTO funziona end-to-end."
 Write-Host ""
@@ -64,25 +64,25 @@ $conf = Read-Host "Procedo? [S/n]"
 if ($conf -match '^[nN]') { exit 0 }
 
 # ====== 1. BACKUP CONFIG ======
-H "1. Backup config attuale"
+Section "1. Backup config attuale"
 $cfgPath = "C:\ProgramData\86NocConnector\config.json"
 if (-not (Test-Path $cfgPath)) {
-    Er "config.json non trovato: $cfgPath"
+    Fail "config.json non trovato: $cfgPath"
     Read-Host "INVIO per uscire"; exit 1
 }
 $bk = "$cfgPath.PROD-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
 Copy-Item $cfgPath $bk
-Ok "Backup salvato: $bk"
+Pass "Backup salvato: $bk"
 
 # Il backup viene anche memorizzato in posizione fissa per facilitare il restore
 $fixedBk = "C:\ProgramData\86NocConnector\config.PROD-original.json"
 if (-not (Test-Path $fixedBk)) {
     Copy-Item $cfgPath $fixedBk
-    Ok "Backup PERMANENTE in: $fixedBk (per restore futuro)"
+    Pass "Backup PERMANENTE in: $fixedBk (per restore futuro)"
 }
 
 # ====== 2. RISCRITTURA CONFIG ======
-H "2. Riconfigurazione su Center preview"
+Section "2. Riconfigurazione su Center preview"
 $cfg = Get-Content $cfgPath -Raw | ConvertFrom-Json
 Write-Host "  PRIMA:"
 Write-Host "    URL:    $($cfg.noc_center_url)"
@@ -98,25 +98,25 @@ Write-Host "  DOPO:"
 Write-Host "    URL:    $($cfg.noc_center_url)" -ForegroundColor Green
 Write-Host "    Client: $($cfg.client_id)" -ForegroundColor Green
 Write-Host "    APIKey: $($cfg.api_key.Substring(0,8))...$($cfg.api_key.Substring($cfg.api_key.Length-4))" -ForegroundColor Green
-Ok "Config aggiornato"
+Pass "Config aggiornato"
 
 # ====== 3. TEST PRELIMINARE HEARTBEAT ======
-H "3. Test pre-volo: heartbeat verso il Center preview"
+Section "3. Test pre-volo: heartbeat verso il Center preview"
 $body = @{ client_id = $PREVIEW_CLIENT_ID; status = "running"; devices = @() } | ConvertTo-Json -Compress
 try {
     $r = Invoke-WebRequest -Uri "$PREVIEW_URL/api/connector/device-report" -Method Post `
          -Body $body -ContentType "application/json" `
          -Headers @{ "X-API-Key" = $PREVIEW_API_KEY } -TimeoutSec 10 -UseBasicParsing
-    Ok "Center preview risponde: HTTP $($r.StatusCode)"
+    Pass "Center preview risponde: HTTP $($r.StatusCode)"
 } catch {
     $code = $_.Exception.Response.StatusCode.Value__
-    Er "Test pre-volo FALLITO: HTTP $code"
-    Wn "$($_.Exception.Message)"
-    Wn "Procedo comunque col restart per vedere se il connector reale funziona"
+    Fail "Test pre-volo FALLITO: HTTP $code"
+    Warn2 "$($_.Exception.Message)"
+    Warn2 "Procedo comunque col restart per vedere se il connector reale funziona"
 }
 
 # ====== 4. RESTART SERVIZIO ======
-H "4. Restart servizio"
+Section "4. Restart servizio"
 try {
     Stop-Service 86NocConnectorService -Force -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 3
@@ -124,14 +124,14 @@ try {
     Start-Sleep -Seconds 6
     $svc = Get-Service 86NocConnectorService -ErrorAction SilentlyContinue
     if ($svc.Status -eq 'Running') {
-        Ok "Servizio: Running"
+        Pass "Servizio: Running"
     } else {
-        Wn "Servizio: $($svc.Status)"
+        Warn2 "Servizio: $($svc.Status)"
     }
 } catch { Er "Restart fallito: $($_.Exception.Message)" }
 
 # ====== 5. ATTESA + TAIL LOG ======
-H "5. Attesa heartbeat (60 secondi)..."
+Section "5. Attesa heartbeat (60 secondi)..."
 Write-Host "  Tail log in tempo reale - dovresti vedere POST 200 senza piu' 401:"
 Write-Host ""
 $logFile = "C:\ProgramData\86NocConnector\logs\connector.log"
@@ -159,7 +159,7 @@ while ($elapsed -lt 60 -and -not $success) {
 }
 
 # ====== 6. RESULT FINALE ======
-H "RISULTATO FINALE"
+Section "RISULTATO FINALE"
 if ($success) {
     Write-Host ""
     Write-Host "   IL CONNECTOR SI E' AGGANCIATO AL CENTER PREVIEW!" -ForegroundColor Green
