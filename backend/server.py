@@ -673,6 +673,27 @@ async def startup_event():
     except Exception as e:
         logger.error(f"Failed to start auto-dispatch scheduler: {e}")
 
+    # ----- Embedded WireGuard runtime (POC, opt-in via env WG_EMBEDDED_ENABLED) -----
+    if os.environ.get("WG_EMBEDDED_ENABLED", "").lower() in ("1", "true", "yes"):
+        try:
+            from wireguard_embedded import wg_manager
+            await wg_manager.start()
+            st = wg_manager.status()
+            if st.get("running"):
+                logger.info(
+                    f"WG embedded runtime started: pid={st['pid']} iface={st['interface']} "
+                    f"port={st['listen_port']}"
+                )
+            else:
+                logger.warning(
+                    f"WG embedded runtime NOT started (host requirements unmet): "
+                    f"{st.get('last_error') or st['environment'].get('missing_prerequisites')}"
+                )
+        except Exception as e:
+            logger.error(f"WG embedded runtime startup error: {e}")
+    else:
+        logger.info("WG embedded runtime disabled (set WG_EMBEDDED_ENABLED=true to opt-in)")
+
 @app.on_event("shutdown")
 async def shutdown_db_client():
     redfish_poller.stop_scheduler()
@@ -684,6 +705,13 @@ async def shutdown_db_client():
     try:
         if 'escalation_scheduler' in globals() and escalation_scheduler:
             await escalation_scheduler.stop()
+    except Exception:
+        pass
+    # Stop embedded WG runtime if running
+    try:
+        from wireguard_embedded import wg_manager
+        if wg_manager.process is not None:
+            await wg_manager.stop()
     except Exception:
         pass
     mongo_client.close()

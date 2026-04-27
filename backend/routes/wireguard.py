@@ -272,6 +272,74 @@ async def admin_server_status(current_user: dict = Depends(get_current_user)):
     }
 
 
+@router.get("/api/admin/wireguard/embedded/status")
+async def admin_embedded_status(current_user: dict = Depends(get_current_user)):
+    """[POC v1] Stato del runtime WireGuard embedded (`wireguard-go` userspace
+    bundlato dentro il backend). Risponde a "il Center sta gestendo da solo
+    il server WG, senza che io abbia installato nulla?".
+
+    Ritorna:
+    - environment.binary_present: i binari sono nel repo?
+    - environment.tun_device_available: /dev/net/tun esiste?
+    - environment.cap_net_admin: il backend gira con CAP_NET_ADMIN?
+    - environment.ready_to_start: tutti i prerequisiti soddisfatti?
+    - environment.missing_prerequisites: lista esatta dei requisiti mancanti
+    - running, pid, started_at: stato del subprocess
+    - last_error: motivo se non e` partito
+    - public_key: pubkey server (se gia` derivata)
+
+    Quando `enabled=true` ma `running=false` con `missing_prerequisites` popolato,
+    indica al sysadmin esattamente cosa configurare sull'host (di solito basta
+    una capability oppure il device TUN nel container)."""
+    require_admin(current_user)
+    try:
+        from wireguard_embedded import wg_manager
+    except Exception as e:
+        return {
+            "enabled": False,
+            "running": False,
+            "last_error": f"manager import failed: {e}",
+        }
+    status = wg_manager.status()
+    # Se il subprocess e` vivo, prova a leggere lo stato live via UAPI
+    if status.get("running"):
+        try:
+            uapi = await wg_manager.get_uapi_state()
+            status["uapi"] = uapi
+        except Exception as e:
+            status["uapi"] = {"available": False, "reason": str(e)}
+    return status
+
+
+@router.post("/api/admin/wireguard/embedded/start")
+async def admin_embedded_start(current_user: dict = Depends(get_current_user)):
+    """[POC v1] Avvia (o re-avvia) il runtime embedded. Idempotent: se gia`
+    running, ritorna lo status corrente senza side-effect.
+
+    NB: se i prerequisiti host non sono soddisfatti (TUN, CAP_NET_ADMIN), la
+    chiamata NON solleva — torna status con `running=false` e `last_error`
+    descrittivo. Cosi` la UI puo` mostrare il motivo invece di un 500."""
+    require_admin(current_user)
+    try:
+        from wireguard_embedded import wg_manager
+        return await wg_manager.start()
+    except Exception as e:
+        logger.error(f"Embedded WG start error: {e}")
+        return {"enabled": False, "running": False, "last_error": str(e)}
+
+
+@router.post("/api/admin/wireguard/embedded/stop")
+async def admin_embedded_stop(current_user: dict = Depends(get_current_user)):
+    """[POC v1] Stop pulito del runtime embedded."""
+    require_admin(current_user)
+    try:
+        from wireguard_embedded import wg_manager
+        return await wg_manager.stop()
+    except Exception as e:
+        logger.error(f"Embedded WG stop error: {e}")
+        return {"enabled": False, "running": False, "last_error": str(e)}
+
+
 @router.post("/api/admin/wireguard/session/start")
 async def admin_start_session(payload: SessionStart, request: Request, current_user: dict = Depends(get_current_user)):
     """Avvia una sessione VPN on-demand: il connector del cliente attiverà
