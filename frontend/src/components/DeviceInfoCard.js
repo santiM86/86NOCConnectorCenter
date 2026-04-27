@@ -280,6 +280,34 @@ export default function DeviceInfoCard({ deviceIp, onClose = null, compact = fal
             <Field label="NIC count" value={hw.nic_count} />
             {hw.firewall_sessions != null && <Field label="Sessioni FW" value={hw.firewall_sessions.toLocaleString("it-IT")} />}
             <Field label="Flash usage %" value={hw.firewall_flash_usage_pct} />
+
+            {/* PSU/Fan structured states (switch HPE/H3C) */}
+            {hw.psu_states && Object.keys(hw.psu_states).length > 0 && (
+              <div className="mt-2 pt-2 border-t border-[var(--bg-border)]/50 space-y-1">
+                <span className="text-[10px] uppercase tracking-wide text-[var(--text-secondary)]">Power Supplies</span>
+                {Object.entries(hw.psu_states).map(([idx, st]) => (
+                  <div key={`psu${idx}`} className="flex items-center justify-between text-[11px]">
+                    <span className="text-[var(--text-secondary)]">PSU {idx}</span>
+                    <span className={`font-mono ${st <= 2 ? "text-emerald-400" : "text-red-400"}`}>
+                      {st <= 2 ? "OK" : `FAULT (${st})`}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+            {hw.fan_states && Object.keys(hw.fan_states).length > 0 && (
+              <div className="mt-2 pt-2 border-t border-[var(--bg-border)]/50 space-y-1">
+                <span className="text-[10px] uppercase tracking-wide text-[var(--text-secondary)]">Fans</span>
+                {Object.entries(hw.fan_states).map(([idx, st]) => (
+                  <div key={`fan${idx}`} className="flex items-center justify-between text-[11px]">
+                    <span className="text-[var(--text-secondary)]">Fan {idx}</span>
+                    <span className={`font-mono ${st <= 2 ? "text-emerald-400" : "text-red-400"}`}>
+                      {st <= 2 ? "OK" : `FAULT (${st})`}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
           </Section>
 
           {/* Network */}
