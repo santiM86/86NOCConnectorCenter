@@ -24,6 +24,71 @@ from deps import get_current_user
 router = APIRouter(prefix="/api", tags=["device-info-card"])
 
 
+# ==================== HELPER: vendor_metrics extraction & sanitization ====================
+# Bug noti dei polling SNMP: 0xFFFF=65535 viene usato come "no value" sentinel da molti vendor.
+# Inoltre alcuni walk OID restituiscono indici parassiti (84-96) che non sono PSU/Fan veri.
+
+def _sanitize_temp(v):
+    """Filtra valori temperatura palesemente errati (sentinel 65535, valori >= 200°C, negativi)."""
+    if not isinstance(v, (int, float)):
+        return None
+    if v <= -50 or v >= 200:
+        return None
+    return float(v)
+
+
+def _max_valid_number(d):
+    """Da un dict {idx: value}, ritorna il max dei value numerici validi (>0, <1000), None altrimenti.
+    Se invece e` un singolo numero, lo ritorna pulito."""
+    if isinstance(d, dict):
+        nums = [v for v in d.values() if isinstance(v, (int, float)) and 0 < v < 1000]
+        return max(nums) if nums else None
+    if isinstance(d, (int, float)) and 0 < d < 1000:
+        return float(d)
+    return None
+
+
+def _filter_states(d, max_idx=12):
+    """Filtra un dict {idx: state} a soli indici plausibili (1..max_idx) e valori interi.
+    Risolve il bug di walk OID che includeva indici parassiti (es. PSU 84-96).
+    state code WireGuard/RFC 4133: 1=unknown, 2=ok, 3=warning, 4=critical."""
+    if not isinstance(d, dict):
+        return {}
+    out = {}
+    for k, v in d.items():
+        try:
+            idx = int(k)
+        except (ValueError, TypeError):
+            continue
+        if not (1 <= idx <= max_idx):
+            continue
+        try:
+            v_int = int(v)
+        except (ValueError, TypeError):
+            continue
+        out[str(idx)] = v_int
+    return out
+
+
+def _extract_switch_metrics(vm: dict) -> dict:
+    """Estrae dal vendor_metrics i dati Performance/Hardware tipici di switch HP/H3C/Comware/Zyxel.
+    Ritorna dict con cpu_usage, memory_usage, temperature (sanitizzati), psu_states, fan_states."""
+    if not vm:
+        return {}
+    cpu = _max_valid_number(vm.get("h3cEntityExtCpuUsage") or vm.get("cpuUtil") or vm.get("zyxelCpuCurrent"))
+    mem = _max_valid_number(vm.get("h3cEntityExtMemUsage") or vm.get("memUtil"))
+    temp = _sanitize_temp(_max_valid_number(vm.get("h3cEntityExtTemperature") or vm.get("entTemperature")))
+    psu = _filter_states(vm.get("h3cPowerState") or vm.get("psuStatus"))
+    fan = _filter_states(vm.get("h3cFanState") or vm.get("fanStatus"))
+    return {
+        "cpu_usage": round(cpu, 1) if cpu is not None else None,
+        "memory_usage": round(mem, 1) if mem is not None else None,
+        "temperature": round(temp, 1) if temp is not None else None,
+        "psu_states": psu or None,
+        "fan_states": fan or None,
+    }
+
+
 # ==================== sys_descr PARSER ====================
 
 # Regex pattern list: ordered by specificity.
@@ -218,9 +283,13 @@ async def build_info_card(device_ip: str) -> Dict[str, Any]:
     if profile_key:
         profile_doc = await db.device_profiles.find_one({"key": profile_key}, {"_id": 0})
 
+    # Switch vendor_metrics extracted once (sanitized)
     # 9) Firewall metrics (Zyxel / Fortinet)
     fw_data = poll.get("firewall") or {}
     vm = poll.get("vendor_metrics") or {}
+
+    # Switch-style vendor metrics extracted/sanitized once
+    sw_metrics = _extract_switch_metrics(vm)
 
     # 10) Client info
     client_id = _first_not_none(poll.get("client_id"), managed.get("client_id"), cmdb.get("client_id"))
@@ -367,9 +436,9 @@ async def build_info_card(device_ip: str) -> Dict[str, Any]:
             "connector_hostname": poll.get("connector_hostname"),
         },
         "hardware": {
-            "cpu_usage": poll.get("cpu_usage"),
-            "memory_usage": poll.get("memory_usage"),
-            "temperature": poll.get("temperature"),
+            "cpu_usage": _first_not_none(poll.get("cpu_usage"), sw_metrics.get("cpu_usage")),
+            "memory_usage": _first_not_none(poll.get("memory_usage"), sw_metrics.get("memory_usage")),
+            "temperature": _sanitize_temp(_first_not_none(poll.get("temperature"), sw_metrics.get("temperature"))),
             "power_watts": ilo.get("power_watts"),
             "fan_count": len(ilo.get("fans") or []) or None,
             "psu_count": len(ilo.get("power_supplies") or []) or None,
@@ -379,6 +448,9 @@ async def build_info_card(device_ip: str) -> Dict[str, Any]:
             "nic_count": len(ilo.get("network_interfaces") or []) or None,
             "firewall_sessions": fw_data.get("active_sessions"),
             "firewall_flash_usage_pct": fw_data.get("flash_usage"),
+            # Switch-specific structured states (sanitizzato vs vendor_metrics raw)
+            "psu_states": sw_metrics.get("psu_states"),
+            "fan_states": sw_metrics.get("fan_states"),
         },
         "network": {
             "open_ports": poll.get("open_ports") or [],
