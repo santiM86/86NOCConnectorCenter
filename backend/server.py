@@ -312,7 +312,8 @@ from routes.security_allowlist import router as security_allowlist_router, IPAll
 app.include_router(security_allowlist_router)
 from routes.wireguard import router as wireguard_router
 app.include_router(wireguard_router)
-# IP Allowlist middleware: blocca admin endpoints da IP non autorizzati.
+from routes.system_admin import router as system_admin_router
+app.include_router(system_admin_router)# IP Allowlist middleware: blocca admin endpoints da IP non autorizzati.
 # Posizionato dopo il routing setup in modo da intercettare ogni request.
 app.add_middleware(IPAllowlistMiddleware)
 from routes.metric_history import router as metric_history_router, ensure_index as ensure_metric_idx

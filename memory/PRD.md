@@ -475,6 +475,49 @@ La POC dimostra che in produzione (Linux con `/dev/net/tun` standard + backend l
 7. Verificare nel Center → WireGuard: banner verde "RUNTIME ATTIVO"
 8. Avviare sessione VPN da UI verso un device → connector cliente attivera` il tunnel
 
+### Fase 4 — Self-Update 1-click dalla UI (2026-04-27)
+
+**Richiesta utente**: "non possiamo far girare tutto all'interno del center?" — minimizzare al massimo l'attrito di aggiornamento backend, eliminando la necessita` di SSH per gli update successivi al primo.
+
+**File creati**:
+- `/app/backend/scripts/self_update.sh` (~210 righe bash) — runner detached: download tarball, backup, stop service, replace files, restore .env+data/, opzionale aggiunta `WG_EMBEDDED_ENABLED=true` al .env, opzionale `ufw allow 51820/udp`, pip install, start service, health check, rollback automatico se fallisce. Scrive status JSON a ogni fase su `/tmp/argus-update-status.json` per polling UI.
+- `/app/backend/routes/system_admin.py` (~200 righe) — 4 endpoint admin:
+  - `GET /api/admin/system/version` → versione corrente backend (default `3.5.25-fase2`, override via env `ARGUS_BACKEND_VERSION`)
+  - `GET /api/admin/system/self-update/status` → polling status JSON (con auto-detect "stale" se runner morto)
+  - `POST /api/admin/system/self-update` (202) → triggera runner detached (subprocess.Popen + start_new_session=True), accetta body `{package_url?, enable_wireguard, wireguard_host?}`. Refusa con 409 se update gia` in corso fresh.
+  - `GET /api/admin/system/self-update/log?lines=N` → ritorna ultime N righe di `/tmp/argus-update-runner.log`
+
+**File modificati**:
+- `/app/backend/server.py` — include `system_admin_router`
+- `/app/frontend/src/pages/WireGuardPage.js` (~120 righe aggiunte):
+  - State `systemVersion`, `updateStatus`, `updating`, `showUpdateDialog`
+  - 2 fetch helper: `loadSystemVersion`, `loadUpdateStatus` (polling adattivo: 1s durante update, 10s a riposo)
+  - `triggerUpdate(enableWg)` lancia POST con auto-detect hostname browser per `WG_SERVER_HOST`
+  - Componente `SystemUpdateBanner` inserito tra `<ServerStatusBanner>` e `<EmbeddedRuntimeBanner>`. Mostra:
+    - Badge stato dinamico (cyan idle / amber running / emerald done / rose failed) con dot animato
+    - Versione corrente, label fase (queued/downloading/extracting/backing-up/stopping/replacing/installing/starting-backend/health-check/cleanup/done/failed) con percentuale 0-100
+    - Progress bar animata transition-all
+    - Sezione errore con suggerimento `/tmp/argus-update-runner.log` per troubleshooting
+    - Pulsante "Aggiorna Backend" / "Riprova" / "Re-aggiorna" (testid: `system-update-trigger-btn`)
+  - Dialog di conferma con checkbox "Attiva contestualmente il server WireGuard embedded" default ON, spiegazione cosa succede, pulsante "Aggiorna Adesso" (testid: `confirm-update-btn`)
+  - Auto-reload pagina post-completamento update (timeout 2s dopo phase=done)
+
+**Tarball backend pubblicato**:
+- `/app/frontend/public/downloads/argus-backend-latest.tar.gz` (2.5 MB) include `routes/system_admin.py` + `scripts/self_update.sh`
+
+**Test**:
+- 6/6 pytest pass (regression POC + Fase 2)
+- Lint Python + JS pulito
+- 3 endpoint nuovi rispondono HTTP 200 a curl con admin JWT
+- Frontend smoke test screenshot: banner update renderizzato correttamente, dialog di conferma si apre con checkbox, layout coerente con il resto della pagina
+
+**Limitazione nota — chicken-and-egg per il PRIMO deploy**:
+Il backend di produzione attualmente in field e` v3.5.8: NON ha l'endpoint `/api/admin/system/self-update`, quindi il pulsante "Aggiorna Backend" dara` 404. Il PRIMO aggiornamento DEVE essere fatto tramite il deploy script bash via SSH (vedi Fase 3). DA QUEL MOMENTO IN POI, ogni successivo update sara` 1-click dalla UI.
+
+**Flow completo per l'admin**:
+1. **Una volta sola**: `ssh root@argus.86bit.it && bash deploy-backend-linux.sh https://argus.86bit.it/downloads/argus-backend-latest.tar.gz`
+2. **Per sempre**: aprire Center → WireGuard → click "Aggiorna Backend" → conferma dialog → attendere progress bar → page reload automatico
+
 ### Connector v3.5.23 — HOTFIX CRITICO encoding em-dash (2026-04-26)
 **Sintomo segnalato dall'utente** (post-install v3.5.22 su GALVANSRV):
 - `Get-Service 86NocConnectorService` -> Status=**Paused**
