@@ -28,6 +28,108 @@ export default function WireGuardPage() {
   const [showStartDialog, setShowStartDialog] = useState(false);
   const [startForm, setStartForm] = useState({ client_id: "", target_device_ip: "", reason: "", ttl_minutes: 30 });
   const [starting, setStarting] = useState(false);
+  const [embeddedStatus, setEmbeddedStatus] = useState(null);
+  const [embeddedBusy, setEmbeddedBusy] = useState(false);
+  const [systemVersion, setSystemVersion] = useState(null);
+  const [updateStatus, setUpdateStatus] = useState({ phase: "idle", progress: 0, message: "" });
+  const [updating, setUpdating] = useState(false);
+  const [showUpdateDialog, setShowUpdateDialog] = useState(false);
+
+  const loadSystemVersion = useCallback(async () => {
+    try {
+      const r = await axios.get(`${API}/admin/system/version`);
+      setSystemVersion(r.data);
+    } catch (e) { setSystemVersion(null); }
+  }, []);
+
+  const loadUpdateStatus = useCallback(async () => {
+    try {
+      const r = await axios.get(`${API}/admin/system/self-update/status`);
+      setUpdateStatus(r.data);
+      const phase = r.data.phase;
+      // Quando l'update e` finito o fallito, smetti di pollare e ricarica la pagina dati
+      if (phase === "done") {
+        setUpdating(false);
+        setTimeout(() => { window.location.reload(); }, 2000);
+      } else if (phase === "failed" || phase === "stale" || phase === "error") {
+        setUpdating(false);
+      } else if (phase !== "idle") {
+        setUpdating(true);
+      }
+    } catch (e) { /* ignore */ }
+  }, []);
+
+  const triggerUpdate = async (enableWireguard) => {
+    setUpdating(true);
+    setShowUpdateDialog(false);
+    setUpdateStatus({ phase: "queued", progress: 0, message: "Invio richiesta..." });
+    try {
+      // Calcola hostname pubblico dal browser (es. argus.86bit.it)
+      const wgHost = window.location.hostname;
+      await axios.post(`${API}/admin/system/self-update`, {
+        enable_wireguard: !!enableWireguard,
+        wireguard_host: wgHost,
+      });
+      toast.success("Aggiornamento avviato", { description: "Il backend sta scaricando il nuovo codice. Non chiudere la pagina." });
+    } catch (e) {
+      const det = e?.response?.data?.detail || e.message;
+      toast.error("Errore avvio update", { description: det });
+      setUpdating(false);
+      setUpdateStatus({ phase: "failed", progress: 0, error: det, message: det });
+    }
+  };
+
+  const loadEmbedded = useCallback(async () => {
+    try {
+      const r = await axios.get(`${API}/admin/wireguard/embedded/status`);
+      setEmbeddedStatus(r.data);
+    } catch (e) {
+      // Endpoint optional (older backend versions). Silently ignore.
+      setEmbeddedStatus(null);
+    }
+  }, []);
+
+  const startEmbedded = async () => {
+    setEmbeddedBusy(true);
+    try {
+      const r = await axios.post(`${API}/admin/wireguard/embedded/start`);
+      setEmbeddedStatus(r.data);
+      if (r.data.running) toast.success("Server WireGuard embedded avviato");
+      else toast.error("Server NON avviato", { description: r.data.last_error || "Verifica i prerequisiti host" });
+    } catch (e) {
+      toast.error("Errore avvio embedded", { description: e?.response?.data?.detail || e.message });
+    } finally { setEmbeddedBusy(false); }
+  };
+
+  const stopEmbedded = async () => {
+    if (!window.confirm("Fermare il server WireGuard embedded? Le sessioni VPN attive verranno interrotte.")) return;
+    setEmbeddedBusy(true);
+    try {
+      const r = await axios.post(`${API}/admin/wireguard/embedded/stop`);
+      setEmbeddedStatus(r.data);
+      toast.success("Server WireGuard embedded fermato");
+    } catch (e) {
+      toast.error("Errore stop embedded", { description: e?.response?.data?.detail || e.message });
+    } finally { setEmbeddedBusy(false); }
+  };
+
+  const syncNowEmbedded = async () => {
+    setEmbeddedBusy(true);
+    try {
+      await axios.post(`${API}/admin/wireguard/embedded/sync-now`);
+      await loadEmbedded();
+      toast.success("Sync peer eseguita");
+    } catch (e) {
+      toast.error("Errore sync", { description: e?.response?.data?.detail || e.message });
+    } finally { setEmbeddedBusy(false); }
+  };
+
+  const copyPubkey = () => {
+    const pk = embeddedStatus?.public_key || "";
+    if (!pk) return;
+    navigator.clipboard?.writeText(pk);
+    toast.success("Public key copiata");
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -50,6 +152,15 @@ export default function WireGuardPage() {
   }, []);
 
   useEffect(() => { load(); const t = setInterval(load, 10000); return () => clearInterval(t); }, [load]);
+  useEffect(() => { loadEmbedded(); const t = setInterval(loadEmbedded, 10000); return () => clearInterval(t); }, [loadEmbedded]);
+  useEffect(() => { loadSystemVersion(); }, [loadSystemVersion]);
+  useEffect(() => {
+    loadUpdateStatus();
+    // Polling piu` aggressivo durante un update in corso (1s vs 10s a riposo)
+    const interval = updating ? 1000 : 10000;
+    const t = setInterval(loadUpdateStatus, interval);
+    return () => clearInterval(t);
+  }, [loadUpdateStatus, updating]);
 
   const startSession = async () => {
     if (!startForm.client_id) { toast.error("Seleziona un cliente"); return; }
@@ -136,6 +247,30 @@ export default function WireGuardPage() {
 
       {/* Server status banner */}
       <ServerStatusBanner status={serverStatus} />
+
+      {/* System self-update banner (1-click backend upgrade from UI) */}
+      {systemVersion?.self_update_supported && (
+        <SystemUpdateBanner
+          version={systemVersion}
+          updateStatus={updateStatus}
+          updating={updating}
+          embeddedRunning={!!embeddedStatus?.running}
+          embeddedReady={!!embeddedStatus?.environment?.ready_to_start}
+          onTrigger={() => setShowUpdateDialog(true)}
+        />
+      )}
+
+      {/* Embedded runtime banner (Fase 2 — server WireGuard self-hosted nel Center) */}
+      {embeddedStatus && (
+        <EmbeddedRuntimeBanner
+          status={embeddedStatus}
+          busy={embeddedBusy}
+          onStart={startEmbedded}
+          onStop={stopEmbedded}
+          onSync={syncNowEmbedded}
+          onCopyPubkey={copyPubkey}
+        />
+      )}
 
       {/* HARDENING summary banner */}
       <div className="noc-panel p-3 mb-4 border-l-2 border-emerald-400" data-testid="hardening-summary">
@@ -243,6 +378,52 @@ export default function WireGuardPage() {
             <Button variant="outline" onClick={() => setShowStartDialog(false)}>Annulla</Button>
             <Button onClick={startSession} disabled={starting || !startForm.client_id} data-testid="confirm-start-btn">
               {starting ? "Avvio..." : "Avvia"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* System self-update confirm dialog */}
+      <Dialog open={showUpdateDialog} onOpenChange={setShowUpdateDialog}>
+        <DialogContent className="sm:max-w-md" data-testid="update-confirm-dialog">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <ShieldCheck size={16} className="text-cyan-400" /> Aggiorna Backend Center
+            </DialogTitle>
+            <DialogDescription className="text-xs">
+              Il backend si scarichera` da solo l'ultima versione, fara` backup, sostituira` i file e si riavviera`. Tempo stimato: ~60 secondi.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 text-xs">
+            <div className="p-3 rounded bg-amber-500/10 border border-amber-500/30">
+              <p className="text-amber-300 font-semibold mb-1.5">⚠️ Cosa succede esattamente</p>
+              <ul className="text-[var(--text-secondary)] space-y-1 ml-4 list-disc text-[11px]">
+                <li>Backup completo del backend in <code className="text-cyan-300">/opt/argus/backups/backend-&lt;timestamp&gt;</code></li>
+                <li>Stop backend, sostituzione file, restore <code className="text-cyan-300">.env</code> + <code className="text-cyan-300">data/</code>, pip install, restart</li>
+                <li>Health check post-restart con <strong>rollback automatico</strong> se la nuova versione non risponde</li>
+                <li>La pagina si ricarichera` automaticamente al termine</li>
+              </ul>
+            </div>
+            <div className="p-3 rounded bg-cyan-500/5 border border-cyan-500/30">
+              <label className="flex items-start gap-2 cursor-pointer">
+                <input type="checkbox" id="enable-wg-checkbox" defaultChecked className="mt-0.5"
+                  data-testid="enable-wg-checkbox" />
+                <span>
+                  <span className="text-cyan-300 font-semibold">Attiva contestualmente il server WireGuard embedded</span>
+                  <span className="block text-[11px] text-[var(--text-muted)] mt-0.5">
+                    Aggiunge <code>WG_EMBEDDED_ENABLED=true</code> al .env, prova ad aprire UDP 51820 sul firewall (se ufw rilevato), e fa partire il server VPN. Se i prerequisiti host non sono soddisfatti il banner ti dira` cosa manca dopo il riavvio.
+                  </span>
+                </span>
+              </label>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowUpdateDialog(false)}>Annulla</Button>
+            <Button onClick={() => {
+              const cb = document.getElementById("enable-wg-checkbox");
+              triggerUpdate(cb?.checked);
+            }} data-testid="confirm-update-btn">
+              Aggiorna Adesso
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -486,4 +667,248 @@ function formatRelative(iso) {
     if (min < 60) return `tra ${min} min`;
     return `tra ${Math.floor(min / 60)}h ${min % 60}m`;
   } catch { return iso; }
+}
+
+
+function EmbeddedRuntimeBanner({ status, busy, onStart, onStop, onSync, onCopyPubkey }) {
+  if (!status) return null;
+  const env = status.environment || {};
+  const sync = status.peer_sync || {};
+  const running = !!status.running;
+  const ready = !!env.ready_to_start;
+  const missing = env.missing_prerequisites || [];
+
+  // Stato visivo principale
+  const stateColor = running ? "emerald" : (ready ? "amber" : "rose");
+  const stateLabel = running
+    ? "RUNTIME ATTIVO"
+    : (ready ? "PRONTO ALL'AVVIO" : "PREREQUISITI MANCANTI");
+
+  return (
+    <div className="noc-panel p-4 mb-4 border-l-2" data-testid="embedded-runtime-banner"
+      style={{ borderLeftColor: `var(--${stateColor === "emerald" ? "noc-emerald" : stateColor === "amber" ? "noc-amber" : "noc-rose"})` }}>
+      <div className="flex items-start justify-between gap-4 mb-3">
+        <div className="flex items-center gap-3">
+          <div className={`w-2 h-2 rounded-full bg-${stateColor}-400 ${running ? "animate-pulse" : ""}`} />
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="text-[var(--text-primary)] text-sm font-semibold">Server WireGuard Embedded</span>
+              <span className={`text-[10px] px-1.5 py-0.5 rounded bg-${stateColor}-400/15 text-${stateColor}-400 font-mono`}>{stateLabel}</span>
+            </div>
+            <p className="text-[var(--text-muted)] text-[11px] mt-0.5">
+              Server VPN self-hosted dentro il Center — zero installazioni esterne.
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center gap-1.5">
+          {!running && (
+            <Button onClick={onStart} disabled={busy || !ready} size="sm" variant="default"
+              className="rounded-md text-xs h-7" data-testid="embedded-start-btn">
+              <Power size={12} className="mr-1" /> Avvia
+            </Button>
+          )}
+          {running && (
+            <>
+              <Button onClick={onSync} disabled={busy} size="sm" variant="secondary"
+                className="rounded-md text-xs h-7" data-testid="embedded-sync-btn">
+                <Pulse size={12} className="mr-1" /> Sync
+              </Button>
+              <Button onClick={onStop} disabled={busy} size="sm" variant="destructive"
+                className="rounded-md text-xs h-7" data-testid="embedded-stop-btn">
+                <X size={12} className="mr-1" /> Stop
+              </Button>
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* Grid info */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-x-4 gap-y-2 text-[11px]">
+        <div>
+          <span className="text-[var(--text-muted)]">Interfaccia</span>
+          <div className="text-[var(--text-primary)] font-mono mt-0.5">{status.interface}</div>
+        </div>
+        <div>
+          <span className="text-[var(--text-muted)]">Porta UDP</span>
+          <div className="text-[var(--text-primary)] font-mono mt-0.5">{status.listen_port}</div>
+        </div>
+        <div>
+          <span className="text-[var(--text-muted)]">Subnet tunnel</span>
+          <div className="text-[var(--text-primary)] font-mono mt-0.5">{status.tunnel_cidr}</div>
+        </div>
+        <div>
+          <span className="text-[var(--text-muted)]">Endpoint pubblico</span>
+          <div className="text-[var(--text-primary)] font-mono mt-0.5 truncate" title={status.endpoint || "non configurato"}>
+            {status.endpoint || <span className="text-amber-400">—</span>}
+          </div>
+        </div>
+      </div>
+
+      {/* Public key */}
+      {status.public_key && (
+        <div className="mt-3 p-2 rounded bg-[var(--bg-darker)]/40 border border-[var(--bg-border)] flex items-center gap-2">
+          <span className="text-[var(--text-muted)] text-[10px]">Server Public Key</span>
+          <code className="flex-1 text-[10px] text-emerald-400 font-mono truncate" data-testid="embedded-server-pubkey">
+            {status.public_key}
+          </code>
+          <Button onClick={onCopyPubkey} size="sm" variant="ghost" className="h-6 px-2 text-[10px]" data-testid="embedded-copy-pubkey">
+            <Copy size={11} />
+          </Button>
+        </div>
+      )}
+
+      {/* Missing prerequisites */}
+      {!ready && missing.length > 0 && (
+        <div className="mt-3 p-2 rounded bg-rose-500/10 border border-rose-500/30 text-[11px]">
+          <div className="flex items-center gap-1.5 text-rose-400 font-semibold mb-1">
+            <Warning size={12} /> Prerequisiti host non soddisfatti
+          </div>
+          <ul className="text-[var(--text-secondary)] space-y-0.5 ml-4 list-disc">
+            {missing.map((m, i) => (<li key={i} className="text-[10px]">{m}</li>))}
+          </ul>
+          <p className="text-[var(--text-muted)] text-[10px] mt-1.5">
+            In produzione su un Linux normale (non container limitato) questi sono soddisfatti automaticamente. Se sei in container Docker/K8s aggiungi <code className="text-cyan-300">--cap-add=NET_ADMIN</code> e <code className="text-cyan-300">--device=/dev/net/tun</code>.
+          </p>
+        </div>
+      )}
+
+      {/* Environment readiness checks */}
+      {ready && !running && (
+        <div className="mt-3 p-2 rounded bg-amber-500/10 border border-amber-500/30 text-[11px] text-amber-300">
+          <Warning size={12} className="inline mr-1" />
+          Tutti i prerequisiti sono soddisfatti. Premi <strong>Avvia</strong> per attivare il server VPN, oppure setta <code className="text-cyan-300">WG_EMBEDDED_ENABLED=true</code> nell'env del backend per auto-start al boot.
+        </div>
+      )}
+
+      {/* Last error */}
+      {status.last_error && (
+        <div className="mt-3 p-2 rounded bg-rose-500/5 border border-rose-500/20 text-[10px] text-rose-300 font-mono">
+          <strong>last_error:</strong> {status.last_error}
+        </div>
+      )}
+
+      {/* Peer sync state */}
+      {running && (
+        <div className="mt-3 grid grid-cols-2 md:grid-cols-4 gap-x-4 gap-y-1 text-[10px]">
+          <div>
+            <span className="text-[var(--text-muted)]">Peer sync</span>
+            <div className={sync.running ? "text-emerald-400" : "text-amber-400"}>
+              {sync.running ? "ATTIVO (5s)" : "FERMO"}
+            </div>
+          </div>
+          <div>
+            <span className="text-[var(--text-muted)]">Ultima sync</span>
+            <div className="text-[var(--text-primary)] font-mono">
+              {sync.last_sync_at ? new Date(sync.last_sync_at).toLocaleTimeString("it-IT") : "—"}
+            </div>
+          </div>
+          <div>
+            <span className="text-[var(--text-muted)]">Peer attivi</span>
+            <div className="text-[var(--text-primary)] font-mono">
+              {(status.uapi?.peers || []).length}
+            </div>
+          </div>
+          <div>
+            <span className="text-[var(--text-muted)]">Diff ultima sync</span>
+            <div className="text-[var(--text-primary)] font-mono">
+              +{(sync.last_diff?.added || []).length} / -{(sync.last_diff?.removed || []).length} / Δ{(sync.last_diff?.updated || []).length}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+function SystemUpdateBanner({ version, updateStatus, updating, embeddedRunning, embeddedReady, onTrigger }) {
+  if (!version) return null;
+  const phase = updateStatus?.phase || "idle";
+  const progress = updateStatus?.progress || 0;
+  const isRunning = updating || (phase !== "idle" && phase !== "done" && phase !== "failed" && phase !== "stale" && phase !== "error");
+  const isFailed = phase === "failed" || phase === "stale" || phase === "error";
+  const isDone = phase === "done";
+
+  const phaseLabels = {
+    queued: "In coda",
+    starting: "Avvio",
+    downloading: "Download",
+    extracting: "Estrazione",
+    "backing-up": "Backup",
+    stopping: "Stop backend",
+    replacing: "Sostituzione",
+    installing: "pip install",
+    "starting-backend": "Restart",
+    "health-check": "Health check",
+    cleanup: "Pulizia",
+    done: "Completato",
+    failed: "Fallito",
+    stale: "Bloccato",
+    error: "Errore",
+  };
+
+  // Banner colore secondo stato
+  let borderColor = "var(--noc-cyan, #22d3ee)";
+  let badgeClass = "bg-cyan-400/15 text-cyan-400";
+  let badgeLabel = "AGGIORNAMENTO BACKEND";
+  if (isRunning) { borderColor = "var(--noc-amber, #f59e0b)"; badgeClass = "bg-amber-400/15 text-amber-400"; badgeLabel = `${phaseLabels[phase] || phase} ${progress}%`; }
+  if (isDone)    { borderColor = "var(--noc-emerald, #10b981)"; badgeClass = "bg-emerald-400/15 text-emerald-400"; badgeLabel = "COMPLETATO"; }
+  if (isFailed)  { borderColor = "var(--noc-rose, #f43f5e)"; badgeClass = "bg-rose-400/15 text-rose-400"; badgeLabel = "FALLITO"; }
+
+  return (
+    <div className="noc-panel p-4 mb-4 border-l-2" style={{ borderLeftColor: borderColor }} data-testid="system-update-banner">
+      <div className="flex items-start justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <div className={`w-2 h-2 rounded-full ${isRunning ? "bg-amber-400 animate-pulse" : isDone ? "bg-emerald-400" : isFailed ? "bg-rose-400" : "bg-cyan-400"}`} />
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="text-[var(--text-primary)] text-sm font-semibold">Aggiorna Backend Center</span>
+              <span className={`text-[10px] px-1.5 py-0.5 rounded font-mono ${badgeClass}`}>{badgeLabel}</span>
+              <span className="text-[10px] text-[var(--text-muted)] ml-1">v{version.version}</span>
+            </div>
+            <p className="text-[var(--text-muted)] text-[11px] mt-0.5">
+              Aggiornamento 1-click del backend con backup + rollback automatico. Zero SSH richiesto.
+            </p>
+          </div>
+        </div>
+        {!isRunning && (
+          <Button onClick={onTrigger} disabled={updating} size="sm"
+            variant={isFailed ? "destructive" : "default"}
+            className="rounded-md text-xs h-8" data-testid="system-update-trigger-btn">
+            {isFailed ? "Riprova" : isDone ? "Re-aggiorna" : "Aggiorna Backend"}
+          </Button>
+        )}
+      </div>
+
+      {/* Progress bar */}
+      {isRunning && (
+        <div className="mt-3">
+          <div className="h-1.5 bg-[var(--bg-darker)] rounded-full overflow-hidden">
+            <div className="h-full bg-amber-400 transition-all duration-500 ease-out"
+              style={{ width: `${progress}%` }} data-testid="update-progress-bar" />
+          </div>
+          <p className="text-[var(--text-secondary)] text-[10px] mt-1.5 font-mono">
+            {updateStatus.message || phaseLabels[phase] || phase}
+          </p>
+        </div>
+      )}
+
+      {/* Successo */}
+      {isDone && (
+        <div className="mt-3 p-2 rounded bg-emerald-500/10 border border-emerald-500/30 text-[11px] text-emerald-300">
+          ✓ {updateStatus.message || "Backend aggiornato. La pagina si ricaricherà tra pochi secondi."}
+        </div>
+      )}
+
+      {/* Errore */}
+      {isFailed && (
+        <div className="mt-3 p-2 rounded bg-rose-500/10 border border-rose-500/30 text-[11px] text-rose-300">
+          <strong>{phaseLabels[phase] || phase}:</strong> {updateStatus.error || updateStatus.message || "Errore non specificato"}
+          <p className="text-[10px] mt-1 text-rose-200/70">
+            Il backend è stato ripristinato alla versione precedente automaticamente. Controlla i log su <code>/tmp/argus-update-runner.log</code> per dettagli.
+          </p>
+        </div>
+      )}
+    </div>
+  );
 }

@@ -94,6 +94,19 @@ def _is_valid_wg_pubkey(key: str) -> bool:
         return False
 
 
+async def _trigger_embedded_sync_best_effort() -> None:
+    """Se il runtime WireGuard embedded e` attivo, forza una riconciliazione
+    peer immediata cosi` la modifica DB (session start/stop) si traduce in
+    azione sul tunnel entro pochi millisecondi invece dei 5s del loop.
+    Best-effort: any error e` swallowed (il sync loop fara` comunque catch-up)."""
+    try:
+        from wireguard_embedded import wg_manager
+        if wg_manager.process and wg_manager.process.poll() is None:
+            await wg_manager._reconcile_peers(db)
+    except Exception as e:
+        logger.debug(f"WG embedded sync trigger skipped: {e}")
+
+
 async def _allocate_peer_ip(client_id: str) -> str:
     """Assegna un IP libero dalla pool /16 al peer.
     Strategia: usa client_id hash → IP deterministico. Se collide, scan sequenziale."""
@@ -272,6 +285,115 @@ async def admin_server_status(current_user: dict = Depends(get_current_user)):
     }
 
 
+@router.get("/api/admin/wireguard/embedded/status")
+async def admin_embedded_status(current_user: dict = Depends(get_current_user)):
+    """[POC v1] Stato del runtime WireGuard embedded (`wireguard-go` userspace
+    bundlato dentro il backend). Risponde a "il Center sta gestendo da solo
+    il server WG, senza che io abbia installato nulla?".
+
+    Ritorna:
+    - environment.binary_present: i binari sono nel repo?
+    - environment.tun_device_available: /dev/net/tun esiste?
+    - environment.cap_net_admin: il backend gira con CAP_NET_ADMIN?
+    - environment.ready_to_start: tutti i prerequisiti soddisfatti?
+    - environment.missing_prerequisites: lista esatta dei requisiti mancanti
+    - running, pid, started_at: stato del subprocess
+    - last_error: motivo se non e` partito
+    - public_key: pubkey server (se gia` derivata)
+
+    Quando `enabled=true` ma `running=false` con `missing_prerequisites` popolato,
+    indica al sysadmin esattamente cosa configurare sull'host (di solito basta
+    una capability oppure il device TUN nel container)."""
+    require_admin(current_user)
+    try:
+        from wireguard_embedded import wg_manager
+    except Exception as e:
+        return {
+            "enabled": False,
+            "running": False,
+            "last_error": f"manager import failed: {e}",
+        }
+    status = wg_manager.status()
+    # Se il subprocess e` vivo, prova a leggere lo stato live via UAPI
+    if status.get("running"):
+        try:
+            uapi = await wg_manager.get_uapi_state()
+            status["uapi"] = uapi
+        except Exception as e:
+            status["uapi"] = {"available": False, "reason": str(e)}
+    return status
+
+
+@router.post("/api/admin/wireguard/embedded/start")
+async def admin_embedded_start(current_user: dict = Depends(get_current_user)):
+    """[POC v1] Avvia (o re-avvia) il runtime embedded. Idempotent: se gia`
+    running, ritorna lo status corrente senza side-effect.
+
+    NB: se i prerequisiti host non sono soddisfatti (TUN, CAP_NET_ADMIN), la
+    chiamata NON solleva — torna status con `running=false` e `last_error`
+    descrittivo. Cosi` la UI puo` mostrare il motivo invece di un 500."""
+    require_admin(current_user)
+    try:
+        from wireguard_embedded import wg_manager
+        return await wg_manager.start()
+    except Exception as e:
+        logger.error(f"Embedded WG start error: {e}")
+        return {"enabled": False, "running": False, "last_error": str(e)}
+
+
+@router.post("/api/admin/wireguard/embedded/stop")
+async def admin_embedded_stop(current_user: dict = Depends(get_current_user)):
+    """[POC v1] Stop pulito del runtime embedded."""
+    require_admin(current_user)
+    try:
+        from wireguard_embedded import wg_manager
+        return await wg_manager.stop()
+    except Exception as e:
+        logger.error(f"Embedded WG stop error: {e}")
+        return {"enabled": False, "running": False, "last_error": str(e)}
+
+
+@router.post("/api/admin/wireguard/embedded/sync-now")
+async def admin_embedded_sync_now(current_user: dict = Depends(get_current_user)):
+    """[Fase 2] Forza una riconciliazione peer immediata invece di aspettare
+    il prossimo tick del loop (5s). Utile dopo una session start/stop per
+    feedback istantaneo nell'UI."""
+    require_admin(current_user)
+    try:
+        from wireguard_embedded import wg_manager
+        from database import db as _db
+        await wg_manager._reconcile_peers(_db)
+        return wg_manager.status().get("peer_sync", {})
+    except Exception as e:
+        logger.error(f"Embedded WG sync-now error: {e}")
+        return {"error": str(e)}
+
+
+@router.get("/api/admin/wireguard/embedded/server-pubkey")
+async def admin_embedded_pubkey(current_user: dict = Depends(get_current_user)):
+    """[Fase 2] Ritorna pubkey + endpoint del server WireGuard embedded.
+    Usato dal connector per costruire il proprio .conf WireGuard.
+
+    Se il manager non ha ancora generato la chiave (es. non lanciato),
+    la genera al volo via `_ensure_keys()` cosi` la pubkey e` immediatamente
+    disponibile anche in modalita` "preview/dry-run"."""
+    require_admin(current_user)
+    try:
+        from wireguard_embedded import wg_manager
+        if not wg_manager._public_key_b64:
+            wg_manager._ensure_keys()
+        return {
+            "public_key": wg_manager._public_key_b64 or "",
+            "endpoint": os.environ.get("WG_SERVER_ENDPOINT", ""),
+            "listen_port": int(os.environ.get("WG_EMBEDDED_LISTEN_PORT", "51820")),
+            "interface": os.environ.get("WG_EMBEDDED_INTERFACE", "wg-argus"),
+            "tunnel_cidr": os.environ.get("WG_EMBEDDED_TUNNEL_CIDR", "10.86.0.1/16"),
+        }
+    except Exception as e:
+        logger.error(f"Embedded WG pubkey error: {e}")
+        return {"public_key": "", "error": str(e)}
+
+
 @router.post("/api/admin/wireguard/session/start")
 async def admin_start_session(payload: SessionStart, request: Request, current_user: dict = Depends(get_current_user)):
     """Avvia una sessione VPN on-demand: il connector del cliente attiverà
@@ -352,6 +474,8 @@ async def admin_start_session(payload: SessionStart, request: Request, current_u
         f"target={payload.target_device_ip} ttl={ttl}min reason={payload.reason} "
         f"restrict={payload.restrict_to_registered_devices} allowed_ips={len(allowed_device_ips)} ephemeral_psk=true"
     )
+    # Sync immediato col runtime embedded se presente
+    await _trigger_embedded_sync_best_effort()
     return {k: v for k, v in session.items() if k != "_id"}
 
 
@@ -381,6 +505,7 @@ async def admin_stop_session_by_target(
     )
     if res.modified_count > 0:
         audit.info(f"WG_SESSION_STOP by={current_user.get('name')} client_id={client_id} target={target} reason=web_console_closed count={res.modified_count}")
+    await _trigger_embedded_sync_best_effort()
     return {"status": "ok", "stopped_count": res.modified_count}
 
 
@@ -395,6 +520,7 @@ async def admin_stop_session(session_id: str, current_user: dict = Depends(get_c
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="Sessione non trovata o già chiusa")
     audit.info(f"WG_SESSION_STOP by={current_user.get('name')} session_id={session_id}")
+    await _trigger_embedded_sync_best_effort()
     return {"status": "stopped", "id": session_id}
 
 

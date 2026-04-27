@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<title>ARGUS — Cleanup Multi-Tenant Tool</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f1419; color: #e6edf3; margin: 0; padding: 40px 20px; line-height: 1.6; }
+  .container { max-width: 760px; margin: 0 auto; }
+  h1 { color: #58a6ff; margin-bottom: 8px; font-size: 28px; }
+  .subtitle { color: #8b949e; margin-bottom: 40px; font-size: 16px; }
+  .step { background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 24px; margin-bottom: 20px; }
+  .step-num { display: inline-block; width: 28px; height: 28px; line-height: 28px; text-align: center; background: #1f6feb; color: white; border-radius: 50%; font-weight: bold; margin-right: 12px; }
+  .step h2 { display: inline; color: #e6edf3; font-size: 18px; }
+  .bookmarklet { display: inline-block; background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%); color: #fff !important; padding: 12px 24px; border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 16px; margin: 16px 0; box-shadow: 0 4px 12px rgba(245, 158, 11, 0.3); cursor: grab; user-select: none; }
+  .bookmarklet:hover { transform: translateY(-1px); box-shadow: 0 6px 20px rgba(245, 158, 11, 0.4); }
+  code { background: #21262d; padding: 2px 8px; border-radius: 4px; color: #79c0ff; font-family: 'SF Mono', Consolas, monospace; font-size: 14px; }
+  .note { background: #1c2333; border-left: 3px solid #58a6ff; padding: 12px 16px; border-radius: 4px; margin: 16px 0; font-size: 14px; color: #c9d1d9; }
+  ul { padding-left: 24px; }
+  li { margin: 6px 0; }
+  .warn { color: #f59e0b; }
+  .ok { color: #3fb950; }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>ARGUS - Cleanup Multi-Tenant</h1>
+<p class="subtitle">Strumento per rimuovere device "estranei" dalla pagina di un cliente. Funziona direttamente nel browser, zero installazione.</p>
+
+<div class="step">
+  <span class="step-num">1</span>
+  <h2>Apri il tuo Center e logga come admin</h2>
+  <p>Vai sul tuo Center e fai login normalmente:</p>
+  <p><code>https://argus.86bit.it</code></p>
+</div>
+
+<div class="step">
+  <span class="step-num">2</span>
+  <h2>Trascina questo pulsante nei tuoi PREFERITI del browser</h2>
+  <p>Letteralmente: clicca sul pulsante arancione qui sotto, tienilo premuto, e trascinalo dentro la barra dei preferiti del browser (in alto). Si salvera' come segnalibro.</p>
+  
+  <p style="text-align: center;">
+    <a class="bookmarklet" href="javascript:(function()%7Bvar%20token%3Dlocalstorage.getitem(%22noc_token%22)%7C%7Clocalstorage.getitem(%22token%22)%3Bif(!token)%7Balert(%22Devi%20essere%20loggato%20come%20admin%20sul%20Center%22)%3Breturn%7Dvar%20m%3Dlocation.pathname.match(%2F%5C%2F(clients%7Cclient)%5C%2F(%5Ba-f0-9-%5D%2B)%2F)%7C%7Clocation.pathname.match(%2Fclient.*%5C%2F(%5Ba-f0-9-%5D%7B36%7D)%2F)%3Bvar%20clientid%3Dm%3F(m%5B2%5D%7C%7Cm%5B1%5D)%3Aprompt(%22Client%20ID%20del%20cliente%20da%20pulire%20(uuid)%3A%22)%3Bif(!clientid)return%3Bvar%20subnet%3Dprompt(%22Subnet%20naturale%20del%20cliente%20(es.%2010.100.61.0%2F24)%22%2C%2210.100.61.0%2F24%22)%3Bif(!subnet)return%3Bvar%20parts%3Dsubnet.split(%22%2F%22)%5B0%5D.split(%22.%22)%3Bvar%20mask%3Dparseint(subnet.split(%22%2F%22)%5B1%5D%7C%7C24)%3Bvar%20prefix%3Dparts.slice(0%2cmath.floor(mask%2F8)).join(%22.%22)%2B%22.%22%3Bfetch(%22%2Fapi%2Fdevices%3Fclient_id%3D%22%2Bclientid%2C%7Bheaders%3A%7Bauthorization%3A%22bearer%20%22%2Btoken%7D%7D).then(r%3D%3Er.json()).then(devs%3D%3E%7Bvar%20alien%3Ddevs.filter(d%3D%3E%7Bvar%20ip%3Dd.ip_address%7C%7Cd.ip%7C%7C%22%22%3Bif(ip.startswith(%22127.%22))return%20true%3Bif(ip.startswith(prefix))return%20false%3Breturn%20true%7D)%3Bif(alien.length%3D%3D0)%7Balert(%22nessun%20device%20estraneo%2c%20tutto%20pulito.%22)%3Breturn%7Dvar%20list%3Dalien.map(d%3D%3E%22-%20%22%2B(d.name%7C%7Cd.id)%2B%22%20(%22%2B(d.ip_address%7C%7Cd.ip)%2B%22)%22).join(%22%5cn%22)%3Bif(!confirm(%22cancellare%20%22%2Balien.length%2B%22%20device%20estranei%3F%5cn%5cn%22%2Blist))return%3Bpromise.all(alien.map(d%3D%3Efetch(%22%2Fapi%2Fdevices%2F%22%2Bd.id%2C%7Bmethod%3A%22delete%22%2cheaders%3A%7Bauthorization%3A%22bearer%20%22%2Btoken%7D%7D))).then(()%3D%3E%7Balert(%22Pulito!%20Ricarico%20la%20pagina.%22)%3Blocation.reload()%7D)%7D).catch(e%3D%3Ealert(%22errore%3A%20%22%2Be.message))%7D)()">ARGUS Cleanup</a>
+  </p>
+  
+  <div class="note">
+    <strong>Nota:</strong> se la barra dei preferiti non e' visibile, premi <code>Ctrl+Shift+B</code> (Windows) per mostrarla.
+  </div>
+</div>
+
+<div class="step">
+  <span class="step-num">3</span>
+  <h2>Vai sulla pagina del cliente con device sporchi</h2>
+  <p>Esempio: pagina del cliente Galvan. Devi essere DENTRO la pagina, l'URL deve essere tipo:</p>
+  <p><code>https://argus.86bit.it/clients/90f83b9b-10f3-477d-b9f5-d1ca864e4199</code></p>
+  <p>(o qualunque sia il path nel tuo Center)</p>
+</div>
+
+<div class="step">
+  <span class="step-num">4</span>
+  <h2>Clicca il segnalibro "ARGUS Cleanup" che hai appena salvato</h2>
+  <p>Lo script:</p>
+  <ul>
+    <li>Recupera il client_id dall'URL automaticamente (se serve te lo chiede)</li>
+    <li>Ti chiede la <strong>subnet "naturale" del cliente</strong> (es. <code>10.100.61.0/24</code> per Galvan)</li>
+    <li>Lista i device "estranei" (IP fuori dalla subnet + Auto-127.0.0.1)</li>
+    <li>Ti mostra l'elenco e chiede conferma</li>
+    <li>Se confermi -> DELETE via API + ricarica la pagina</li>
+  </ul>
+  
+  <div class="note ok">
+    <strong>Risultato:</strong> dopo il reload vedrai SOLO i 5 device legittimi di Galvan (Switch01/02 HP, NAS Backup, UPS XANTO 3000, iLO GALVANSRV).
+  </div>
+</div>
+
+<div class="step">
+  <h2 style="color: #f59e0b;">In caso di problemi</h2>
+  <ul>
+    <li><strong>"Devi essere loggato"</strong> -> rifai login sul Center prima di cliccare il bookmarklet</li>
+    <li><strong>"Client ID del cliente"</strong> chiesto via prompt -> incolla l'UUID del cliente (lo trovi nell'URL o nella tabella Clienti)</li>
+    <li><strong>"Subnet"</strong> -> per Galvan e' <code>10.100.61.0/24</code>. Per altri clienti adatta.</li>
+    <li><strong>Errore HTTP 401</strong> -> il token JWT e' scaduto, fai logout/login</li>
+  </ul>
+</div>
+
+</div>
+</body>
+</html>

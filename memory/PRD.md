@@ -367,6 +367,157 @@ Rimossi in v3.5.0 (con OK utente): Check-ForUpdate, Install-Update (5 metodi fal
 - P2: LDAP/Active Directory integration
 - P3: Zyxel Nebula Cloud API
 
+### POC v1 — WireGuard EMBEDDED nel Center (2026-04-27)
+**Richiesta utente**: "non voglio installarlo deve essere dentro al center" — il server WireGuard non deve richiedere `apt install wireguard-tools` o setup manuale sul Linux di produzione. Tutto self-contained nel pacchetto del backend.
+
+**Approccio scelto**: bundle del binario `wireguard-go` (userspace WireGuard ufficiale di Jason A. Donenfeld, autore del protocollo), gestito a runtime come subprocess dal backend FastAPI. Lifecycle automatico (startup/shutdown), peer management via UAPI socket Unix.
+
+**File creati**:
+- `/app/backend/bin/wireguard-go-linux-amd64` (2.5 MB, Debian package estratto)
+- `/app/backend/bin/wireguard-go-linux-arm64` (2.4 MB, Debian package estratto)
+- `/app/backend/wireguard_embedded.py` (~330 righe) — `EmbeddedWireGuardManager` singleton con:
+  - `detect_environment()`: rileva arch host, presenza binari, /dev/net/tun, CAP_NET_ADMIN, kernel WireGuard module, pyroute2
+  - `start()`: fail-safe, idempotent, log su `/var/log/argus-wireguard.log`
+  - `stop()`: SIGTERM + 5s timeout poi SIGKILL
+  - `_uapi_set_config()`: scrive private_key (hex) + listen_port via UAPI socket
+  - `_activate_link()`: ip addr + ip link via pyroute2 (fallback subprocess `ip`)
+  - `get_uapi_state()`: legge peer + handshake live via UAPI
+  - Persiste private key in `/app/backend/data/wireguard/server.key` (chmod 0600)
+- `/app/backend/tests/test_wireguard_embedded_poc.py` — 6 test pytest, tutti passati
+
+**File modificati**:
+- `/app/backend/server.py` — startup_event lancia `wg_manager.start()` solo se `WG_EMBEDDED_ENABLED=true` (opt-in). Shutdown handler ferma il subprocess
+- `/app/backend/routes/wireguard.py` — 3 nuovi endpoint admin:
+  - `GET /api/admin/wireguard/embedded/status` — diagnostica completa con `environment.missing_prerequisites`
+  - `POST /api/admin/wireguard/embedded/start` — avvio manuale on-demand
+  - `POST /api/admin/wireguard/embedded/stop` — stop manuale
+- `/app/backend/requirements.txt` — `pyroute2==0.9.6` + `pytest-asyncio`
+
+**Test end-to-end (preview Kubernetes container)**:
+- ✅ Backend si avvia normalmente, log `WG embedded runtime disabled (set WG_EMBEDDED_ENABLED=true to opt-in)`
+- ✅ GET /status risponde con env detection corretto: `host_arch=aarch64`, `binary_arch=arm64`, `binary_present=true`, `tun_device_available=false`, `cap_net_admin=false`
+- ✅ POST /start fail-safe: `running=false`, `last_error="Prerequisiti mancanti: /dev/net/tun device unavailable; CAP_NET_ADMIN not present"` (no exception, no crash)
+- ✅ 6/6 pytest pass: import senza side-effect, binari presenti, status iniziale corretto, start fail-safe, stop idempotente
+- ✅ Lint Python: All checks passed
+
+**Validazione architettura**:
+La POC dimostra che in produzione (Linux con `/dev/net/tun` standard + backend lanciato come root o con `--cap-add=NET_ADMIN`) basta solo settare `WG_EMBEDDED_ENABLED=true` nell'env e riavviare il backend. Nessun `apt install`, nessun `wg-quick`, nessun config file da scrivere a mano. Il manager:
+- Genera la private key alla prima esecuzione
+- Avvia `wireguard-go` automaticamente
+- Configura private key + listen port via UAPI socket
+- Attiva l'interfaccia con pyroute2 (zero `wg-tools` bundling necessario)
+
+**Prossimi passi (Fase 2, dopo OK utente)**:
+- Peer management via UAPI: aggiungere/rimuovere peer dinamicamente in base a `wireguard_peers` collection (gia` esistente in `routes/wireguard.py`)
+- Hook su `wireguard_sessions` start/stop per applicare ephemeral PSK al peer al volo
+- UI admin "Server VPN" con lista peer attivi + traffico + ultimo handshake
+- Script bash zero-downtime per aggiornare il backend Linux di produzione (necessario perche` la prod e` ancora v3.5.8)
+- Setup `WG_SERVER_PUBKEY` + `WG_SERVER_ENDPOINT` nell'env del backend prod
+
+### Fase 2 + Fase 3 — Peer sync UAPI + UI admin + Deploy script Linux (2026-04-27)
+
+**Fase 2 (peer reconciliation runtime)**:
+- `wireguard_embedded.py` esteso (~600 righe totali) con:
+  - **Public key derivation** via X25519 (cryptography lib): all'avvio (o on-demand su richiesta endpoint) deriva la pubkey dalla private key e la setta automaticamente in `os.environ['WG_SERVER_PUBKEY']` cosi` che `_wg_server_ready()` in web_console_live.py la veda subito senza restart.
+  - **Peer sync loop** (`_peer_sync_loop`): asyncio Task in background, tick ogni 5s. Legge `wireguard_sessions` con status=active+expires_at>now, recupera il peer associato in `wireguard_peers`, costruisce lo stato desiderato `{pubkey: {psk, allowed_ips}}` e fa diff vs stato corrente del runtime via UAPI socket. Applica solo le differenze (added/removed/updated). Politica: peer presente nel runtime SOLO durante una sessione attiva (zero attack surface a riposo).
+  - **UAPI peer write** (`_uapi_set_peers`): costruisce un singolo messaggio UAPI atomico con `set=1` + linee `public_key=<hex>`, `preshared_key=<hex>`, `replace_allowed_ips=true`, `allowed_ip=<cidr>`, `remove=true`. Encoding b64→hex via helper `_b64_to_hex`.
+  - **UAPI state read** (`get_uapi_state`): legge `get=1` dal socket, parser ritorna `{peers: [...], private_key, listen_port, errno}`.
+  - Sync state esposto in `status()` come `peer_sync: {running, last_sync_at, last_sync_error, last_diff: {added, removed, updated}}`.
+- `routes/wireguard.py`:
+  - 2 nuovi endpoint: `POST /api/admin/wireguard/embedded/sync-now` (forza riconciliazione immediata), `GET /api/admin/wireguard/embedded/server-pubkey` (espone pubkey+endpoint per copia in connector .conf).
+  - Helper `_trigger_embedded_sync_best_effort()` chiamato dopo `session/start`, `session/{id}/stop`, `session/stop-by-target` per feedback istantaneo (~ms invece dei 5s del loop). No-op se runtime embedded non e` attivo.
+- `WireGuardPage.js` (frontend):
+  - Nuovo state `embeddedStatus` + `embeddedBusy` con auto-refresh 10s.
+  - Componente `EmbeddedRuntimeBanner` (~150 righe React) inserito tra `<ServerStatusBanner>` e l'hardening summary. Mostra:
+    - Badge stato (RUNTIME ATTIVO verde / PRONTO ALL'AVVIO ambra / PREREQUISITI MANCANTI rosso) con dot animato pulsante
+    - Grid 4-col: interface, listen_port, tunnel_cidr, endpoint
+    - Public key copy-able con icona `Copy` (Phosphor) + toast su click
+    - Box rosso dettaglio "Prerequisiti host non soddisfatti" con elenco preciso (TUN, CAP_NET_ADMIN) e suggerimento `--cap-add=NET_ADMIN --device=/dev/net/tun`
+    - Box ambra "Premi Avvia per attivare" quando ready ma non running, con suggerimento `WG_EMBEDDED_ENABLED=true`
+    - Box rosso `last_error` mono-spaced
+    - Grid sync status: peer sync running/fermo, ultima sync timestamp, peer attivi count, diff +N/-M/ΔK
+    - Pulsanti: Avvia (disabilitato se non ready), Sync, Stop
+    - Tutti con `data-testid` (`embedded-runtime-banner`, `embedded-start-btn`, `embedded-sync-btn`, `embedded-stop-btn`, `embedded-server-pubkey`, `embedded-copy-pubkey`)
+
+**Fase 3 (deploy script Linux di produzione)**:
+- `/app/scripts/deploy-backend-linux.sh` (~300 righe bash): script zero-downtime per portare in produzione il nuovo backend.
+  - Auto-detect: virtualenv (cerca in /opt/argus/.venv, /opt/argus/venv, /root/.venv), service manager (systemd vs supervisor vs manuale), backend dir (default /opt/argus/backend, override via ARGUS_BACKEND_DIR=).
+  - Backup completo del backend corrente prima di toccare nulla in `/opt/argus/backups/backend-<timestamp>/`.
+  - Conferma utente esplicita con riepilogo pre-deploy (paths, service manager, health corrente).
+  - Stop backend → mv vecchio dir come `.old.<timestamp>` (rollback istantaneo se serve) → cp nuovo → restore `.env` + `data/` + `data/wireguard/` (chiavi server preservate) → pip install requirements.txt → start backend.
+  - Health check post-deploy con retry per 30s su `/api/health`. Accetta anche 401/403/422/404 come "FastAPI sta rispondendo" (potrebbero esserci endpoint protetti).
+  - **Rollback automatico**: se health fallisce, ferma backend, ripristina vecchio dir, riavvia. Exit code 2 con istruzioni log.
+  - Cleanup old dir alla fine + istruzioni rollback manuale + cleanup backup vecchi (>30 giorni).
+  - Sintassi bash validata con `bash -n`.
+- Tarball backend: `/app/frontend/public/downloads/argus-backend-latest.tar.gz` (~2.5 MB, esclude __pycache__ e data/).
+- README utente: `/app/frontend/public/downloads/DEPLOY-BACKEND-README.md` con procedura passo-passo (3 step: ssh → curl script → bash deploy <URL>).
+- Tutti e 3 gli artifact sono pubblicamente accessibili da `https://<center>/downloads/`.
+
+**Test fatti**:
+- 6/6 pytest pass su `test_wireguard_embedded_poc.py` (regression POC)
+- Backend si riavvia pulito, log `WG embedded runtime disabled (set WG_EMBEDDED_ENABLED=true to opt-in)` quando opt-in OFF
+- curl GET `/api/admin/wireguard/embedded/status`: ritorna pubkey derivata + sync state coerente
+- curl GET `/api/admin/wireguard/embedded/server-pubkey`: ritorna pubkey + endpoint + listen_port + interface
+- curl POST `/api/admin/wireguard/embedded/sync-now`: ritorna sync state (no peers in preview, atteso)
+- Frontend smoke test: banner "Server WireGuard Embedded" renderizzato con tutti i dati corretti (interface wg-argus, port 51820, pubkey copy-able, missing prerequisites elencati, pulsante "Avvia" disabilitato perche` ready=false in preview)
+- bash -n deploy-backend-linux.sh: OK
+- HTTP 200 su tutti e 3 gli artifact pubblici (`deploy-backend-linux.sh` 10.8 KB, `argus-backend-latest.tar.gz` 2.5 MB, `DEPLOY-BACKEND-README.md` 3.4 KB)
+- Lint Python: All checks passed
+- Lint JavaScript: No issues found
+
+**Cosa resta per provare VPN end-to-end** (azioni utente):
+1. SSH al server Linux di produzione
+2. `curl -fL https://argus.86bit.it/downloads/deploy-backend-linux.sh -o deploy-backend-linux.sh && chmod +x ./deploy-backend-linux.sh`
+3. `sudo bash deploy-backend-linux.sh https://argus.86bit.it/downloads/argus-backend-latest.tar.gz` → conferma → wait health check
+4. Aggiungere a /opt/argus/backend/.env: `WG_EMBEDDED_ENABLED=true` + `WG_SERVER_HOST=argus.86bit.it`
+5. Aprire UDP 51820 sul firewall (`ufw allow 51820/udp`)
+6. `sudo systemctl restart argus-backend` (o supervisorctl)
+7. Verificare nel Center → WireGuard: banner verde "RUNTIME ATTIVO"
+8. Avviare sessione VPN da UI verso un device → connector cliente attivera` il tunnel
+
+### Fase 4 — Self-Update 1-click dalla UI (2026-04-27)
+
+**Richiesta utente**: "non possiamo far girare tutto all'interno del center?" — minimizzare al massimo l'attrito di aggiornamento backend, eliminando la necessita` di SSH per gli update successivi al primo.
+
+**File creati**:
+- `/app/backend/scripts/self_update.sh` (~210 righe bash) — runner detached: download tarball, backup, stop service, replace files, restore .env+data/, opzionale aggiunta `WG_EMBEDDED_ENABLED=true` al .env, opzionale `ufw allow 51820/udp`, pip install, start service, health check, rollback automatico se fallisce. Scrive status JSON a ogni fase su `/tmp/argus-update-status.json` per polling UI.
+- `/app/backend/routes/system_admin.py` (~200 righe) — 4 endpoint admin:
+  - `GET /api/admin/system/version` → versione corrente backend (default `3.5.25-fase2`, override via env `ARGUS_BACKEND_VERSION`)
+  - `GET /api/admin/system/self-update/status` → polling status JSON (con auto-detect "stale" se runner morto)
+  - `POST /api/admin/system/self-update` (202) → triggera runner detached (subprocess.Popen + start_new_session=True), accetta body `{package_url?, enable_wireguard, wireguard_host?}`. Refusa con 409 se update gia` in corso fresh.
+  - `GET /api/admin/system/self-update/log?lines=N` → ritorna ultime N righe di `/tmp/argus-update-runner.log`
+
+**File modificati**:
+- `/app/backend/server.py` — include `system_admin_router`
+- `/app/frontend/src/pages/WireGuardPage.js` (~120 righe aggiunte):
+  - State `systemVersion`, `updateStatus`, `updating`, `showUpdateDialog`
+  - 2 fetch helper: `loadSystemVersion`, `loadUpdateStatus` (polling adattivo: 1s durante update, 10s a riposo)
+  - `triggerUpdate(enableWg)` lancia POST con auto-detect hostname browser per `WG_SERVER_HOST`
+  - Componente `SystemUpdateBanner` inserito tra `<ServerStatusBanner>` e `<EmbeddedRuntimeBanner>`. Mostra:
+    - Badge stato dinamico (cyan idle / amber running / emerald done / rose failed) con dot animato
+    - Versione corrente, label fase (queued/downloading/extracting/backing-up/stopping/replacing/installing/starting-backend/health-check/cleanup/done/failed) con percentuale 0-100
+    - Progress bar animata transition-all
+    - Sezione errore con suggerimento `/tmp/argus-update-runner.log` per troubleshooting
+    - Pulsante "Aggiorna Backend" / "Riprova" / "Re-aggiorna" (testid: `system-update-trigger-btn`)
+  - Dialog di conferma con checkbox "Attiva contestualmente il server WireGuard embedded" default ON, spiegazione cosa succede, pulsante "Aggiorna Adesso" (testid: `confirm-update-btn`)
+  - Auto-reload pagina post-completamento update (timeout 2s dopo phase=done)
+
+**Tarball backend pubblicato**:
+- `/app/frontend/public/downloads/argus-backend-latest.tar.gz` (2.5 MB) include `routes/system_admin.py` + `scripts/self_update.sh`
+
+**Test**:
+- 6/6 pytest pass (regression POC + Fase 2)
+- Lint Python + JS pulito
+- 3 endpoint nuovi rispondono HTTP 200 a curl con admin JWT
+- Frontend smoke test screenshot: banner update renderizzato correttamente, dialog di conferma si apre con checkbox, layout coerente con il resto della pagina
+
+**Limitazione nota — chicken-and-egg per il PRIMO deploy**:
+Il backend di produzione attualmente in field e` v3.5.8: NON ha l'endpoint `/api/admin/system/self-update`, quindi il pulsante "Aggiorna Backend" dara` 404. Il PRIMO aggiornamento DEVE essere fatto tramite il deploy script bash via SSH (vedi Fase 3). DA QUEL MOMENTO IN POI, ogni successivo update sara` 1-click dalla UI.
+
+**Flow completo per l'admin**:
+1. **Una volta sola**: `ssh root@argus.86bit.it && bash deploy-backend-linux.sh https://argus.86bit.it/downloads/argus-backend-latest.tar.gz`
+2. **Per sempre**: aprire Center → WireGuard → click "Aggiorna Backend" → conferma dialog → attendere progress bar → page reload automatico
+
 ### Connector v3.5.23 — HOTFIX CRITICO encoding em-dash (2026-04-26)
 **Sintomo segnalato dall'utente** (post-install v3.5.22 su GALVANSRV):
 - `Get-Service 86NocConnectorService` -> Status=**Paused**
