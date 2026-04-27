@@ -66,6 +66,11 @@ class EmbeddedWireGuardManager:
         self._private_key_b64: Optional[str] = None
         self._public_key_b64: Optional[str] = None
         self._uapi_socket: Optional[Path] = None
+        self._sync_task: Optional[asyncio.Task] = None
+        self._sync_stop = asyncio.Event()
+        self._last_sync_at: Optional[str] = None
+        self._last_sync_error: Optional[str] = None
+        self._last_sync_diff: dict = {"added": [], "removed": [], "updated": []}
 
     # ---------- Environment detection ----------
     def detect_environment(self) -> dict:
@@ -144,7 +149,7 @@ class EmbeddedWireGuardManager:
     # ---------- Key management ----------
     def _ensure_keys(self) -> None:
         """Genera o carica la chiave privata server. Persistita su disco con
-        permessi 0600. La chiave pubblica viene derivata via wireguard-go."""
+        permessi 0600. Deriva la chiave pubblica via X25519 (cryptography)."""
         WG_DATA_DIR.mkdir(parents=True, exist_ok=True)
         priv_path = WG_DATA_DIR / "server.key"
         if priv_path.exists():
@@ -162,23 +167,39 @@ class EmbeddedWireGuardManager:
                 pass
             logger.info(f"WG: generated new private key at {priv_path}")
 
-        # Public key: derivabile via wg pubkey o curve25519. Per la POC la
-        # calcoliamo via subprocess al binario wg se disponibile, altrimenti
-        # lasciamo None (la pubkey verra` esposta dal UAPI dopo lo start).
+        # Deriva la public key con X25519. Curve25519 esegue clamping interno
+        # sui bit del private key (RFC 7748 §5), quindi il risultato e` identico
+        # a quello che produrrebbe `wg pubkey` o l'auto-derivazione di
+        # wireguard-go al boot.
         try:
-            wg_bin = WG_BIN_DIR / "wg"  # bundled tool, optional
-            if wg_bin.exists():
-                proc = subprocess.run(
-                    [str(wg_bin), "pubkey"],
-                    input=self._private_key_b64,
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                )
-                if proc.returncode == 0:
-                    self._public_key_b64 = proc.stdout.strip()
+            from cryptography.hazmat.primitives import serialization
+            from cryptography.hazmat.primitives.asymmetric.x25519 import (
+                X25519PrivateKey,
+            )
+
+            priv_raw = base64.b64decode(self._private_key_b64)
+            priv = X25519PrivateKey.from_private_bytes(priv_raw)
+            pub = priv.public_key().public_bytes(
+                serialization.Encoding.Raw, serialization.PublicFormat.Raw
+            )
+            self._public_key_b64 = base64.b64encode(pub).decode()
+            logger.info(f"WG: derived public key {self._public_key_b64[:8]}...")
         except Exception as e:
-            logger.debug(f"WG pubkey derivation skipped: {e}")
+            logger.error(f"WG: pubkey derivation failed: {e}")
+            self._public_key_b64 = None
+
+        # Espone la pubkey (e l'endpoint configurato) come variabile d'ambiente
+        # in modo che `_wg_server_ready()` in web_console_live.py la veda subito
+        # senza bisogno di restart.
+        if self._public_key_b64:
+            os.environ["WG_SERVER_PUBKEY"] = self._public_key_b64
+        endpoint_env = os.environ.get("WG_SERVER_ENDPOINT", "")
+        if not endpoint_env:
+            # Default: stessa porta UDP, hostname rilevato da REACT_APP_BACKEND_URL
+            # se possibile; altrimenti placeholder che l'admin configurera`.
+            host = os.environ.get("WG_SERVER_HOST", "")
+            if host:
+                os.environ["WG_SERVER_ENDPOINT"] = f"{host}:{WG_LISTEN_PORT}"
 
     # ---------- Lifecycle ----------
     async def start(self) -> dict:
@@ -261,10 +282,30 @@ class EmbeddedWireGuardManager:
             f"WG embedded started: pid={self.process.pid} iface={WG_INTERFACE} "
             f"port={WG_LISTEN_PORT} cidr={WG_TUNNEL_CIDR}"
         )
+
+        # Avvia il peer-sync loop in background (Fase 2). Ogni 5s riconcilia
+        # il runtime con `wireguard_peers` + `wireguard_sessions` del DB.
+        self._sync_stop.clear()
+        if self._sync_task is None or self._sync_task.done():
+            self._sync_task = asyncio.create_task(self._peer_sync_loop())
+            logger.info("WG embedded peer-sync loop started (interval 5s)")
+
         return self.status()
 
     async def stop(self) -> dict:
-        """Stop pulito del subprocess + cleanup."""
+        """Stop pulito del subprocess + cleanup + ferma sync loop."""
+        # 1. Ferma sync task
+        if self._sync_task and not self._sync_task.done():
+            self._sync_stop.set()
+            try:
+                await asyncio.wait_for(self._sync_task, timeout=3)
+            except asyncio.TimeoutError:
+                self._sync_task.cancel()
+            except Exception:
+                pass
+        self._sync_task = None
+
+        # 2. Stop subprocess
         if self.process and self.process.poll() is None:
             try:
                 self.process.terminate()
@@ -399,6 +440,7 @@ class EmbeddedWireGuardManager:
         running = bool(self.process and self.process.poll() is None)
         pid = self.process.pid if running else None
         public_key = self._public_key_b64 or ""
+        endpoint = os.environ.get("WG_SERVER_ENDPOINT", "")
         return {
             "enabled": True,
             "running": running,
@@ -414,9 +456,182 @@ class EmbeddedWireGuardManager:
                 self._uapi_socket and self._uapi_socket.exists()
             ),
             "public_key": public_key,
+            "endpoint": endpoint,
             "last_error": self.last_error,
+            "peer_sync": {
+                "running": bool(self._sync_task and not self._sync_task.done()),
+                "last_sync_at": self._last_sync_at,
+                "last_sync_error": self._last_sync_error,
+                "last_diff": self._last_sync_diff,
+            },
             "environment": env,
         }
+
+    # ---------- Peer reconciliation (Fase 2) ----------
+    async def _peer_sync_loop(self) -> None:
+        """Loop di riconciliazione: ogni 5s confronta peers in DB (con sessione
+        VPN attiva) con peers nel runtime UAPI, applica solo le differenze.
+
+        Politica: il peer e` ATTIVO nel runtime SOLO durante una sessione
+        wireguard_sessions con status=active. Quando la sessione scade/stop,
+        il peer viene rimosso dal runtime (zero attack surface a riposo)."""
+        try:
+            from database import db as _db  # local import to avoid cycle
+        except Exception as e:
+            logger.error(f"WG sync: cannot import db: {e}")
+            return
+
+        while not self._sync_stop.is_set():
+            try:
+                await self._reconcile_peers(_db)
+            except Exception as e:
+                self._last_sync_error = f"{type(e).__name__}: {e}"
+                logger.error(f"WG sync error: {e}")
+            try:
+                await asyncio.wait_for(self._sync_stop.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                continue
+            except Exception:
+                break
+
+    async def _reconcile_peers(self, db) -> None:
+        """Computa lo stato desiderato (da DB) vs corrente (da UAPI) e applica
+        le differenze atomicamente via UAPI."""
+        if not self._uapi_socket or not self._uapi_socket.exists():
+            return
+
+        now = datetime.now(timezone.utc)
+        # 1. Sessioni attive non scadute
+        sessions = await db.wireguard_sessions.find(
+            {"status": "active", "expires_at": {"$gt": now.isoformat()}},
+            {"_id": 0},
+        ).to_list(length=200)
+
+        # 2. Per ogni sessione, recupera il peer associato e calcola desired
+        desired: dict[str, dict] = {}
+        for s in sessions:
+            cid = s.get("client_id")
+            if not cid:
+                continue
+            peer = await db.wireguard_peers.find_one(
+                {"client_id": cid, "active": True}, {"_id": 0}
+            )
+            if not peer:
+                continue
+            pubkey = peer.get("public_key", "").strip()
+            if not pubkey:
+                continue
+            # PSK: ephemeral della sessione (preferito) -> static del peer (fallback)
+            psk = s.get("ephemeral_psk") or peer.get("preshared_key", "")
+            # Allowed IPs: SE restrict_mode -> solo allowed_device_ips (lista /32)
+            # ALTRIMENTI -> /32 dell'IP tunnel del peer (catch-all sotto wg)
+            if s.get("restrict_mode") and s.get("allowed_device_ips"):
+                allowed = list(s["allowed_device_ips"])
+            else:
+                allowed = [f"{peer['tunnel_ip']}/32"]
+            desired[pubkey] = {
+                "psk": psk,
+                "allowed_ips": allowed,
+                "session_id": s.get("id", ""),
+                "client_id": cid,
+            }
+
+        # 3. Stato corrente da UAPI
+        current = await self.get_uapi_state()
+        current_peers: dict[str, dict] = {
+            p["public_key"]: p for p in current.get("peers", [])
+        }
+
+        # 4. Diff
+        added = sorted(set(desired) - set(current_peers))
+        removed = sorted(set(current_peers) - set(desired))
+        # Update se PSK o allowed_ips cambiati (semplificato: ricontrolliamo sempre)
+        updated: list[str] = []
+        for pk in set(desired) & set(current_peers):
+            cur = current_peers[pk]
+            cur_allowed = (cur.get("allowed_ip") or "").split(",")
+            cur_allowed = [a.strip() for a in cur_allowed if a.strip()]
+            if set(cur_allowed) != set(desired[pk]["allowed_ips"]):
+                updated.append(pk)
+
+        if not (added or removed or updated):
+            self._last_sync_at = now.isoformat()
+            self._last_sync_diff = {"added": [], "removed": [], "updated": []}
+            return
+
+        # 5. Costruisci UAPI message: per i removed mettiamo `remove=true`,
+        # per added/updated scriviamo l'intera config peer.
+        ok = await self._uapi_set_peers(desired, removed)
+        if ok:
+            self._last_sync_at = now.isoformat()
+            self._last_sync_error = None
+            self._last_sync_diff = {
+                "added": added,
+                "removed": removed,
+                "updated": updated,
+            }
+            logger.info(
+                f"WG sync OK: added={len(added)} removed={len(removed)} updated={len(updated)}"
+            )
+        else:
+            self._last_sync_error = "UAPI set peers failed"
+
+    async def _uapi_set_peers(
+        self, desired: dict[str, dict], to_remove: list[str]
+    ) -> bool:
+        """Scrive un singolo UAPI 'set=1' atomico con add/update/remove peers."""
+        if not self._uapi_socket or not self._uapi_socket.exists():
+            return False
+
+        lines: list[str] = ["set=1"]
+
+        # Removed peers
+        for pk in to_remove:
+            lines.append(f"public_key={_b64_to_hex(pk)}")
+            lines.append("remove=true")
+
+        # Added/updated peers (idempotent: si scrive sempre l'intera config)
+        for pk, cfg in desired.items():
+            lines.append(f"public_key={_b64_to_hex(pk)}")
+            psk = cfg.get("psk") or ""
+            if psk:
+                lines.append(f"preshared_key={_b64_to_hex(psk)}")
+            lines.append("replace_allowed_ips=true")
+            for aip in cfg.get("allowed_ips", []):
+                lines.append(f"allowed_ip={aip}")
+
+        msg = "\n".join(lines) + "\n\n"
+
+        try:
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.settimeout(5)
+            sock.connect(str(self._uapi_socket))
+            sock.sendall(msg.encode())
+            data = b""
+            while True:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+                if b"\n\n" in data:
+                    break
+            sock.close()
+            text = data.decode("utf-8", errors="replace")
+            ok = "errno=0" in text
+            if not ok:
+                logger.warning(f"UAPI set peers returned: {text!r}")
+            return ok
+        except Exception as e:
+            logger.error(f"UAPI set peers failed: {e}")
+            return False
+
+
+def _b64_to_hex(b64_key: str) -> str:
+    """Converte una chiave (pubkey o PSK) da base64 a hex per UAPI."""
+    try:
+        return base64.b64decode(b64_key).hex()
+    except Exception:
+        return ""
 
 
 def _parse_uapi_get(text: str) -> dict:

@@ -28,6 +28,60 @@ export default function WireGuardPage() {
   const [showStartDialog, setShowStartDialog] = useState(false);
   const [startForm, setStartForm] = useState({ client_id: "", target_device_ip: "", reason: "", ttl_minutes: 30 });
   const [starting, setStarting] = useState(false);
+  const [embeddedStatus, setEmbeddedStatus] = useState(null);
+  const [embeddedBusy, setEmbeddedBusy] = useState(false);
+
+  const loadEmbedded = useCallback(async () => {
+    try {
+      const r = await axios.get(`${API}/admin/wireguard/embedded/status`);
+      setEmbeddedStatus(r.data);
+    } catch (e) {
+      // Endpoint optional (older backend versions). Silently ignore.
+      setEmbeddedStatus(null);
+    }
+  }, []);
+
+  const startEmbedded = async () => {
+    setEmbeddedBusy(true);
+    try {
+      const r = await axios.post(`${API}/admin/wireguard/embedded/start`);
+      setEmbeddedStatus(r.data);
+      if (r.data.running) toast.success("Server WireGuard embedded avviato");
+      else toast.error("Server NON avviato", { description: r.data.last_error || "Verifica i prerequisiti host" });
+    } catch (e) {
+      toast.error("Errore avvio embedded", { description: e?.response?.data?.detail || e.message });
+    } finally { setEmbeddedBusy(false); }
+  };
+
+  const stopEmbedded = async () => {
+    if (!window.confirm("Fermare il server WireGuard embedded? Le sessioni VPN attive verranno interrotte.")) return;
+    setEmbeddedBusy(true);
+    try {
+      const r = await axios.post(`${API}/admin/wireguard/embedded/stop`);
+      setEmbeddedStatus(r.data);
+      toast.success("Server WireGuard embedded fermato");
+    } catch (e) {
+      toast.error("Errore stop embedded", { description: e?.response?.data?.detail || e.message });
+    } finally { setEmbeddedBusy(false); }
+  };
+
+  const syncNowEmbedded = async () => {
+    setEmbeddedBusy(true);
+    try {
+      await axios.post(`${API}/admin/wireguard/embedded/sync-now`);
+      await loadEmbedded();
+      toast.success("Sync peer eseguita");
+    } catch (e) {
+      toast.error("Errore sync", { description: e?.response?.data?.detail || e.message });
+    } finally { setEmbeddedBusy(false); }
+  };
+
+  const copyPubkey = () => {
+    const pk = embeddedStatus?.public_key || "";
+    if (!pk) return;
+    navigator.clipboard?.writeText(pk);
+    toast.success("Public key copiata");
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -50,6 +104,7 @@ export default function WireGuardPage() {
   }, []);
 
   useEffect(() => { load(); const t = setInterval(load, 10000); return () => clearInterval(t); }, [load]);
+  useEffect(() => { loadEmbedded(); const t = setInterval(loadEmbedded, 10000); return () => clearInterval(t); }, [loadEmbedded]);
 
   const startSession = async () => {
     if (!startForm.client_id) { toast.error("Seleziona un cliente"); return; }
@@ -136,6 +191,18 @@ export default function WireGuardPage() {
 
       {/* Server status banner */}
       <ServerStatusBanner status={serverStatus} />
+
+      {/* Embedded runtime banner (Fase 2 — server WireGuard self-hosted nel Center) */}
+      {embeddedStatus && (
+        <EmbeddedRuntimeBanner
+          status={embeddedStatus}
+          busy={embeddedBusy}
+          onStart={startEmbedded}
+          onStop={stopEmbedded}
+          onSync={syncNowEmbedded}
+          onCopyPubkey={copyPubkey}
+        />
+      )}
 
       {/* HARDENING summary banner */}
       <div className="noc-panel p-3 mb-4 border-l-2 border-emerald-400" data-testid="hardening-summary">
@@ -486,4 +553,155 @@ function formatRelative(iso) {
     if (min < 60) return `tra ${min} min`;
     return `tra ${Math.floor(min / 60)}h ${min % 60}m`;
   } catch { return iso; }
+}
+
+
+function EmbeddedRuntimeBanner({ status, busy, onStart, onStop, onSync, onCopyPubkey }) {
+  if (!status) return null;
+  const env = status.environment || {};
+  const sync = status.peer_sync || {};
+  const running = !!status.running;
+  const ready = !!env.ready_to_start;
+  const missing = env.missing_prerequisites || [];
+
+  // Stato visivo principale
+  const stateColor = running ? "emerald" : (ready ? "amber" : "rose");
+  const stateLabel = running
+    ? "RUNTIME ATTIVO"
+    : (ready ? "PRONTO ALL'AVVIO" : "PREREQUISITI MANCANTI");
+
+  return (
+    <div className="noc-panel p-4 mb-4 border-l-2" data-testid="embedded-runtime-banner"
+      style={{ borderLeftColor: `var(--${stateColor === "emerald" ? "noc-emerald" : stateColor === "amber" ? "noc-amber" : "noc-rose"})` }}>
+      <div className="flex items-start justify-between gap-4 mb-3">
+        <div className="flex items-center gap-3">
+          <div className={`w-2 h-2 rounded-full bg-${stateColor}-400 ${running ? "animate-pulse" : ""}`} />
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="text-[var(--text-primary)] text-sm font-semibold">Server WireGuard Embedded</span>
+              <span className={`text-[10px] px-1.5 py-0.5 rounded bg-${stateColor}-400/15 text-${stateColor}-400 font-mono`}>{stateLabel}</span>
+            </div>
+            <p className="text-[var(--text-muted)] text-[11px] mt-0.5">
+              Server VPN self-hosted dentro il Center — zero installazioni esterne.
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center gap-1.5">
+          {!running && (
+            <Button onClick={onStart} disabled={busy || !ready} size="sm" variant="default"
+              className="rounded-md text-xs h-7" data-testid="embedded-start-btn">
+              <Power size={12} className="mr-1" /> Avvia
+            </Button>
+          )}
+          {running && (
+            <>
+              <Button onClick={onSync} disabled={busy} size="sm" variant="secondary"
+                className="rounded-md text-xs h-7" data-testid="embedded-sync-btn">
+                <Pulse size={12} className="mr-1" /> Sync
+              </Button>
+              <Button onClick={onStop} disabled={busy} size="sm" variant="destructive"
+                className="rounded-md text-xs h-7" data-testid="embedded-stop-btn">
+                <X size={12} className="mr-1" /> Stop
+              </Button>
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* Grid info */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-x-4 gap-y-2 text-[11px]">
+        <div>
+          <span className="text-[var(--text-muted)]">Interfaccia</span>
+          <div className="text-[var(--text-primary)] font-mono mt-0.5">{status.interface}</div>
+        </div>
+        <div>
+          <span className="text-[var(--text-muted)]">Porta UDP</span>
+          <div className="text-[var(--text-primary)] font-mono mt-0.5">{status.listen_port}</div>
+        </div>
+        <div>
+          <span className="text-[var(--text-muted)]">Subnet tunnel</span>
+          <div className="text-[var(--text-primary)] font-mono mt-0.5">{status.tunnel_cidr}</div>
+        </div>
+        <div>
+          <span className="text-[var(--text-muted)]">Endpoint pubblico</span>
+          <div className="text-[var(--text-primary)] font-mono mt-0.5 truncate" title={status.endpoint || "non configurato"}>
+            {status.endpoint || <span className="text-amber-400">—</span>}
+          </div>
+        </div>
+      </div>
+
+      {/* Public key */}
+      {status.public_key && (
+        <div className="mt-3 p-2 rounded bg-[var(--bg-darker)]/40 border border-[var(--bg-border)] flex items-center gap-2">
+          <span className="text-[var(--text-muted)] text-[10px]">Server Public Key</span>
+          <code className="flex-1 text-[10px] text-emerald-400 font-mono truncate" data-testid="embedded-server-pubkey">
+            {status.public_key}
+          </code>
+          <Button onClick={onCopyPubkey} size="sm" variant="ghost" className="h-6 px-2 text-[10px]" data-testid="embedded-copy-pubkey">
+            <Copy size={11} />
+          </Button>
+        </div>
+      )}
+
+      {/* Missing prerequisites */}
+      {!ready && missing.length > 0 && (
+        <div className="mt-3 p-2 rounded bg-rose-500/10 border border-rose-500/30 text-[11px]">
+          <div className="flex items-center gap-1.5 text-rose-400 font-semibold mb-1">
+            <Warning size={12} /> Prerequisiti host non soddisfatti
+          </div>
+          <ul className="text-[var(--text-secondary)] space-y-0.5 ml-4 list-disc">
+            {missing.map((m, i) => (<li key={i} className="text-[10px]">{m}</li>))}
+          </ul>
+          <p className="text-[var(--text-muted)] text-[10px] mt-1.5">
+            In produzione su un Linux normale (non container limitato) questi sono soddisfatti automaticamente. Se sei in container Docker/K8s aggiungi <code className="text-cyan-300">--cap-add=NET_ADMIN</code> e <code className="text-cyan-300">--device=/dev/net/tun</code>.
+          </p>
+        </div>
+      )}
+
+      {/* Environment readiness checks */}
+      {ready && !running && (
+        <div className="mt-3 p-2 rounded bg-amber-500/10 border border-amber-500/30 text-[11px] text-amber-300">
+          <Warning size={12} className="inline mr-1" />
+          Tutti i prerequisiti sono soddisfatti. Premi <strong>Avvia</strong> per attivare il server VPN, oppure setta <code className="text-cyan-300">WG_EMBEDDED_ENABLED=true</code> nell'env del backend per auto-start al boot.
+        </div>
+      )}
+
+      {/* Last error */}
+      {status.last_error && (
+        <div className="mt-3 p-2 rounded bg-rose-500/5 border border-rose-500/20 text-[10px] text-rose-300 font-mono">
+          <strong>last_error:</strong> {status.last_error}
+        </div>
+      )}
+
+      {/* Peer sync state */}
+      {running && (
+        <div className="mt-3 grid grid-cols-2 md:grid-cols-4 gap-x-4 gap-y-1 text-[10px]">
+          <div>
+            <span className="text-[var(--text-muted)]">Peer sync</span>
+            <div className={sync.running ? "text-emerald-400" : "text-amber-400"}>
+              {sync.running ? "ATTIVO (5s)" : "FERMO"}
+            </div>
+          </div>
+          <div>
+            <span className="text-[var(--text-muted)]">Ultima sync</span>
+            <div className="text-[var(--text-primary)] font-mono">
+              {sync.last_sync_at ? new Date(sync.last_sync_at).toLocaleTimeString("it-IT") : "—"}
+            </div>
+          </div>
+          <div>
+            <span className="text-[var(--text-muted)]">Peer attivi</span>
+            <div className="text-[var(--text-primary)] font-mono">
+              {(status.uapi?.peers || []).length}
+            </div>
+          </div>
+          <div>
+            <span className="text-[var(--text-muted)]">Diff ultima sync</span>
+            <div className="text-[var(--text-primary)] font-mono">
+              +{(sync.last_diff?.added || []).length} / -{(sync.last_diff?.removed || []).length} / Δ{(sync.last_diff?.updated || []).length}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
