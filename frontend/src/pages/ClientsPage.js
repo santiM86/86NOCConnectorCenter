@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom";
 import axios from "axios";
 import { API } from "@/App";
 import { toast } from "sonner";
@@ -152,12 +152,21 @@ export default function ClientsPage() {
 
             return (
               <div key={client.id}
-                className="noc-panel p-0 overflow-hidden cursor-pointer hover:border-indigo-500/30 active:border-indigo-500/50 transition-all group select-none"
-                onClick={() => navigate(`/client/${client.id}`)}
+                className="noc-panel p-0 overflow-hidden hover:border-indigo-500/30 transition-all group select-none relative"
                 data-testid={`client-row-${client.id}`}>
 
+                {/* Absolute overlay Link — copre l'intera riga come tap target unico.
+                    Risolve il bug touch su mobile dove altri elementi interferivano col target.
+                    Gli elementi interattivi (bottoni) sotto hanno z-10 per stare sopra l'overlay. */}
+                <Link
+                  to={`/client/${client.id}`}
+                  className="absolute inset-0 z-0"
+                  aria-label={`Apri ${client.name}`}
+                  data-testid={`client-link-${client.id}`}
+                />
+
                 {/* Main Row */}
-                <div className="flex items-center gap-4 px-4 py-4 md:py-3">
+                <div className="flex items-center gap-4 px-4 py-4 md:py-3 relative pointer-events-none">
                   {/* Health dot + Name */}
                   <div className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: hColor, boxShadow: `0 0 8px ${hColor}50` }}></div>
                   <div className="flex-1 min-w-0">
@@ -165,7 +174,7 @@ export default function ClientsPage() {
                       <h3 className="text-sm font-bold text-[var(--text-primary)]">{client.name}</h3>
                       {client.description && <span className="text-[10px] text-[var(--text-muted)] truncate hidden md:inline">{client.description}</span>}
                     </div>
-                    {/* Compact status pills on mobile (sotto al nome, non confondono tap zones) */}
+                    {/* Compact status pills on mobile */}
                     <div className="flex items-center gap-1.5 mt-1 md:hidden text-[10px]">
                       <span className="font-mono" style={{ color: ov.devices?.offline > 0 ? "#FF9500" : "#34C759" }}>
                         {ov.devices?.total > 0 ? `${ov.devices.online}/${ov.devices.total}` : "—"} disp.
@@ -183,7 +192,7 @@ export default function ClientsPage() {
                     </div>
                   </div>
 
-                  {/* Quick Status Pills */}
+                  {/* Quick Status Pills (desktop only — cliccabili per dettagli future, ora pass-through) */}
                   <div className="flex items-center gap-2 flex-shrink-0 hidden md:flex">
                     {/* Devices */}
                     <StatusPill icon={HardDrives} value={ov.devices?.total > 0 ? `${ov.devices.online}/${ov.devices.total}` : "—"} color={ov.devices?.offline > 0 ? "#FF9500" : "#34C759"} label="Disp." />
@@ -195,8 +204,8 @@ export default function ClientsPage() {
                     <StatusPill icon={Bell} value={ov.alerts?.total || 0} color={ov.alerts?.critical > 0 ? "#FF3B30" : ov.alerts?.total > 0 ? "#FF9500" : "#34C759"} label="Alert" />
                   </div>
 
-                  {/* Connector Info — nascosto su mobile per evitare wrap che confonde tap zones */}
-                  <div className="hidden md:flex items-center gap-2 flex-shrink-0" onClick={e => e.stopPropagation()}>
+                  {/* Connector Info — pointer-events-auto + z-10 per stare sopra il Link overlay */}
+                  <div className="hidden md:flex items-center gap-2 flex-shrink-0 pointer-events-auto relative z-10" onClick={e => e.stopPropagation()}>
                     {client.api_key && (
                       <button onClick={(e) => copyToClipboard(client.api_key, "API Key", e)}
                         className="text-[9px] px-2 py-1 rounded-md bg-[var(--bg-card)] border border-[var(--bg-border)] text-[var(--text-muted)] hover:text-indigo-400 hover:border-indigo-500/30 transition-colors flex items-center gap-1"
@@ -242,8 +251,8 @@ export default function ClientsPage() {
                     </button>
                   </div>
 
-                  {/* Delete + Arrow */}
-                  <div className="flex items-center gap-1 flex-shrink-0" onClick={e => e.stopPropagation()}>
+                  {/* Delete + Arrow — pointer-events-auto + z-10 per stare sopra il Link overlay */}
+                  <div className="flex items-center gap-1 flex-shrink-0 pointer-events-auto relative z-10" onClick={e => e.stopPropagation()}>
                     <AlertDialog>
                       <AlertDialogTrigger asChild>
                         <Button variant="ghost" size="icon" className="h-7 w-7 text-[var(--text-muted)] hover:text-[var(--critical)] hover:bg-[var(--critical-bg)] rounded-md opacity-0 group-hover:opacity-100 transition-opacity" data-testid={`delete-client-${client.id}`}>

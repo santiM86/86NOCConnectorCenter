@@ -1057,3 +1057,13 @@ credentials.json
 *.pem
 *.key
 .credentials
+frontend/build/downloads/argus-frontend-latest.tar.gz
+-e 
+# Environment and credential files
+.env
+.env.*
+*.env
+credentials.json
+*.pem
+*.key
+.credentials
