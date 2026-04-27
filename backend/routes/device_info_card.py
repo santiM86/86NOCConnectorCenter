@@ -505,6 +505,16 @@ async def build_info_card(device_ip: str) -> Dict[str, Any]:
             "keys": list(vm.keys())[:20] if vm else [],
             "count": len(vm) if vm else 0,
         },
+        # Raw vendor_metrics (key:value) — usato dal pulsante "Tutte le metriche" in UI.
+        # Limitato a 200 chiavi per evitare payload eccessivi.
+        "vendor_metrics_full": dict(list(vm.items())[:200]) if vm else {},
+        # Raw poll snapshot — fornisce all'admin TUTTI i dati grezzi raccolti dal dispositivo
+        # (CPU, memoria, ports, vendor_metrics, hardware, ecc.) per ispezione completa.
+        # Filtra solo campi non serializzabili (datetime gia` convertiti, nessun ObjectId).
+        "raw_data": {
+            k: v for k, v in poll.items()
+            if k not in {"_id", "client_id", "device_ip", "id", "uuid"} and not k.startswith("_")
+        } if poll else {},
         "sys_descr_raw": poll.get("sys_descr"),
         "data_sources": sources,
     }

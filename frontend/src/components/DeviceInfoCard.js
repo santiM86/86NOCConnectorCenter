@@ -3,6 +3,7 @@ import axios from "axios";
 import {
   Desktop, Cpu, HardDrives, Thermometer, Info, MapPin, Package, Shield, Barcode,
   Calendar, Globe, ArrowsClockwise, Warning, CheckCircle, CircleNotch,
+  ChartLineUp, MagnifyingGlass, X as XIcon, Copy as CopyIcon,
 } from "@phosphor-icons/react";
 
 const API = process.env.REACT_APP_BACKEND_URL;
@@ -57,6 +58,7 @@ export default function DeviceInfoCard({ deviceIp, onClose = null, compact = fal
   const [card, setCard] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [showAllMetrics, setShowAllMetrics] = useState(false);
   const token = localStorage.getItem("noc_token");
 
   const fetchCard = () => {
@@ -183,6 +185,17 @@ export default function DeviceInfoCard({ deviceIp, onClose = null, compact = fal
             )}
           </div>
           <div className="flex items-center gap-2">
+            <button
+              onClick={() => setShowAllMetrics(true)}
+              title="Mostra tutte le metriche raccolte"
+              className="px-2.5 py-1.5 text-[11px] rounded-md border border-cyan-500/40 bg-cyan-500/10 text-cyan-300 hover:bg-cyan-500/20 hover:border-cyan-400 flex items-center gap-1.5 transition-colors"
+              data-testid="device-info-card-all-metrics-btn">
+              <ChartLineUp size={13} weight="duotone" />
+              <span className="hidden sm:inline">Tutte le metriche</span>
+              {(card.vendor_metrics_summary?.count || 0) > 0 && (
+                <span className="px-1 py-0 text-[9px] rounded bg-cyan-400/20 font-mono">{card.vendor_metrics_summary.count}</span>
+              )}
+            </button>
             <button onClick={fetchCard} title="Aggiorna" className="p-2 rounded-md hover:bg-white/5 text-[var(--text-secondary)]" data-testid="device-info-card-refresh">
               <ArrowsClockwise size={14} />
             </button>
@@ -429,6 +442,179 @@ export default function DeviceInfoCard({ deviceIp, onClose = null, compact = fal
           </pre>
         </details>
       )}
+
+      {/* "Tutte le metriche" sub-dialog: mostra raw vendor_metrics + raw poll data */}
+      {showAllMetrics && (
+        <AllMetricsDialog
+          card={card}
+          onClose={() => setShowAllMetrics(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+/** Sub-dialog "Tutte le metriche" — mostra TUTTI i dati raw raccolti dal dispositivo:
+ * vendor_metrics (key:value), raw poll snapshot, organizzati con search/copy/JSON view. */
+function AllMetricsDialog({ card, onClose }) {
+  const [search, setSearch] = useState("");
+  const [view, setView] = useState("table"); // 'table' | 'json'
+  const [copied, setCopied] = useState(false);
+
+  const vm = card.vendor_metrics_full || {};
+  const raw = card.raw_data || {};
+
+  // Flatten all metrics: vendor_metrics + selected poll fields, into a sorted [key, value] list.
+  // I valori complessi (dict/array) vengono serializzati JSON con indent.
+  const flatten = (obj, prefix = "") => {
+    const entries = [];
+    Object.entries(obj || {}).forEach(([k, v]) => {
+      const fullKey = prefix ? `${prefix}.${k}` : k;
+      if (v && typeof v === "object" && !Array.isArray(v)) {
+        const subEntries = flatten(v, fullKey);
+        if (subEntries.length === 0) entries.push([fullKey, "{}"]);
+        else entries.push(...subEntries);
+      } else {
+        entries.push([fullKey, v]);
+      }
+    });
+    return entries;
+  };
+
+  const vmFlat = flatten(vm);
+  const rawFlat = flatten(raw);
+  const allFlat = [...vmFlat.map(([k, v]) => [`vendor_metrics.${k}`, v]),
+                   ...rawFlat.map(([k, v]) => [`poll.${k}`, v])];
+
+  const filtered = search
+    ? allFlat.filter(([k, v]) => {
+        const s = search.toLowerCase();
+        return k.toLowerCase().includes(s) || String(v).toLowerCase().includes(s);
+      })
+    : allFlat;
+
+  const fmtValue = (v) => {
+    if (v === null || v === undefined) return "—";
+    if (typeof v === "boolean") return v ? "true" : "false";
+    if (Array.isArray(v)) return JSON.stringify(v);
+    if (typeof v === "object") return JSON.stringify(v);
+    return String(v);
+  };
+
+  const copyJson = () => {
+    const blob = JSON.stringify({ vendor_metrics: vm, raw_data: raw }, null, 2);
+    navigator.clipboard?.writeText(blob).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-2 md:p-6"
+      onClick={onClose} data-testid="all-metrics-dialog">
+      <div className="w-full max-w-5xl max-h-[90vh] flex flex-col bg-[var(--bg-card)] border border-[var(--bg-border)] rounded-lg shadow-2xl"
+        onClick={(e) => e.stopPropagation()}>
+        {/* Header */}
+        <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--bg-border)] gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <ChartLineUp size={18} className="text-cyan-400" weight="duotone" />
+            <h3 className="text-sm font-bold text-[var(--text-primary)] truncate">
+              Tutte le metriche — {card.identity?.hostname || card.device_ip}
+            </h3>
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-300 font-mono flex-shrink-0">
+              {filtered.length}/{allFlat.length}
+            </span>
+          </div>
+          <div className="flex items-center gap-1 flex-shrink-0">
+            <button onClick={() => setView(view === "table" ? "json" : "table")}
+              className="px-2 py-1 text-[10px] rounded border border-[var(--bg-border)] hover:bg-white/5"
+              title={view === "table" ? "Vista JSON" : "Vista tabella"}>
+              {view === "table" ? "JSON" : "Tabella"}
+            </button>
+            <button onClick={copyJson} className="px-2 py-1 text-[10px] rounded border border-[var(--bg-border)] hover:bg-white/5 flex items-center gap-1"
+              title="Copia JSON completo">
+              <CopyIcon size={11} /> {copied ? "Copiato" : "Copia"}
+            </button>
+            <button onClick={onClose} className="p-1.5 rounded hover:bg-white/5 text-[var(--text-secondary)]" title="Chiudi"
+              data-testid="all-metrics-close-btn">
+              <XIcon size={16} />
+            </button>
+          </div>
+        </div>
+
+        {/* Search bar */}
+        <div className="px-4 py-2 border-b border-[var(--bg-border)] bg-black/20 flex items-center gap-2">
+          <MagnifyingGlass size={14} className="text-[var(--text-secondary)] flex-shrink-0" />
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Cerca chiave o valore (es: cpu, temp, disk, vendor)..."
+            className="flex-1 bg-transparent text-xs text-[var(--text-primary)] placeholder-[var(--text-secondary)] focus:outline-none"
+            data-testid="all-metrics-search"
+            autoFocus
+          />
+          {search && (
+            <button onClick={() => setSearch("")} className="text-[10px] text-[var(--text-secondary)] hover:text-white">
+              <XIcon size={12} />
+            </button>
+          )}
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-auto">
+          {view === "json" ? (
+            <pre className="text-[11px] font-mono text-cyan-100/90 p-4 whitespace-pre-wrap break-all">
+              {JSON.stringify({ vendor_metrics: vm, raw_data: raw }, null, 2)}
+            </pre>
+          ) : (
+            <table className="w-full text-[11px]">
+              <thead className="sticky top-0 bg-[var(--bg-card)] border-b border-[var(--bg-border)] z-10">
+                <tr>
+                  <th className="text-left px-4 py-2 text-[10px] uppercase text-[var(--text-secondary)] font-semibold">Chiave</th>
+                  <th className="text-left px-4 py-2 text-[10px] uppercase text-[var(--text-secondary)] font-semibold">Valore</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.length === 0 ? (
+                  <tr>
+                    <td colSpan={2} className="px-4 py-8 text-center text-[var(--text-secondary)]">
+                      {search ? `Nessun risultato per "${search}"` : "Nessuna metrica disponibile"}
+                    </td>
+                  </tr>
+                ) : (
+                  filtered.map(([k, v], i) => {
+                    const isVendor = k.startsWith("vendor_metrics.");
+                    const formatted = fmtValue(v);
+                    const isLong = formatted.length > 60;
+                    return (
+                      <tr key={i} className="border-b border-[var(--bg-border)]/30 hover:bg-white/5">
+                        <td className="px-4 py-1.5 align-top">
+                          <code className={`text-[10px] font-mono ${isVendor ? "text-cyan-300" : "text-amber-200"}`}>
+                            {k}
+                          </code>
+                        </td>
+                        <td className={`px-4 py-1.5 font-mono text-[10px] text-[var(--text-primary)] align-top ${isLong ? "break-all" : ""}`}>
+                          {formatted}
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          )}
+        </div>
+
+        {/* Footer hint */}
+        <div className="px-4 py-2 border-t border-[var(--bg-border)] text-[10px] text-[var(--text-secondary)] flex items-center justify-between">
+          <span>
+            <span className="text-cyan-300">vendor_metrics.*</span> = SNMP vendor-specific |{" "}
+            <span className="text-amber-200">poll.*</span> = ultimo snapshot raw del polling
+          </span>
+          <span className="hidden sm:inline">Ultimo poll: {fmtDateTime(card.status?.last_polled_at) || "—"}</span>
+        </div>
+      </div>
     </div>
   );
 }
