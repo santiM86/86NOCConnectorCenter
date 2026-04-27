@@ -58,6 +58,25 @@ export default function ClientsPage() {
     catch { toast.error("Errore nell'eliminazione"); }
   };
 
+  const handleRegenerateKey = async (clientId, clientName, e) => {
+    e?.stopPropagation();
+    try {
+      const res = await axios.post(`${API}/clients/${clientId}/regenerate-key`);
+      const newKey = res.data?.api_key;
+      if (newKey) {
+        // Auto-copy della nuova chiave negli appunti per facilitare l'aggiornamento del config.json del connector
+        try { await navigator.clipboard.writeText(newKey); } catch {}
+        toast.success(`API Key di "${clientName}" rigenerata e copiata`, {
+          description: `${newKey.substring(0, 12)}…${newKey.substring(newKey.length - 4)} - aggiorna config.json del connector`,
+          duration: 8000,
+        });
+        fetchClients();
+      }
+    } catch (err) {
+      toast.error("Errore nella rigenerazione", { description: err?.response?.data?.detail || err.message });
+    }
+  };
+
   const nocUrl = window.location.origin;
 
   const copyToClipboard = (text, label, e) => {
@@ -168,6 +187,34 @@ export default function ClientsPage() {
                         title={`API Key: ${client.api_key}`}>
                         <Key size={10} /> API Key
                       </button>
+                    )}
+                    {client.api_key && (
+                      <AlertDialog>
+                        <AlertDialogTrigger asChild>
+                          <button onClick={(e) => e.stopPropagation()}
+                            data-testid={`regenerate-api-key-${client.id}`}
+                            className="text-[9px] px-2 py-1 rounded-md bg-[var(--bg-card)] border border-[var(--bg-border)] text-[var(--text-muted)] hover:text-amber-400 hover:border-amber-500/30 transition-colors flex items-center gap-1"
+                            title="Rigenera API Key (invalida la precedente)">
+                            <ArrowsClockwise size={10} /> Rigenera
+                          </button>
+                        </AlertDialogTrigger>
+                        <AlertDialogContent className="bg-[var(--bg-panel)] border-[var(--bg-border)] rounded-lg" onClick={e => e.stopPropagation()}>
+                          <AlertDialogHeader>
+                            <AlertDialogTitle className="text-[var(--text-primary)] text-sm">Rigenera API Key per {client.name}?</AlertDialogTitle>
+                            <AlertDialogDescription className="text-[var(--text-muted)] text-xs">
+                              La chiave attuale verrà <strong className="text-amber-400">invalidata immediatamente</strong>. Il connector smetterà di funzionare finché non aggiorni <code className="text-[10px] bg-[var(--bg-card)] px-1 rounded">C:\ProgramData\86NocConnector\config.json</code> con la nuova chiave e riavvii il servizio.
+                            </AlertDialogDescription>
+                          </AlertDialogHeader>
+                          <AlertDialogFooter>
+                            <AlertDialogCancel className="bg-[var(--bg-card)] border-[var(--bg-border)] text-[var(--text-secondary)] text-xs">Annulla</AlertDialogCancel>
+                            <AlertDialogAction
+                              onClick={(e) => handleRegenerateKey(client.id, client.name, e)}
+                              className="bg-amber-600 hover:bg-amber-700 text-white text-xs">
+                              Rigenera e copia
+                            </AlertDialogAction>
+                          </AlertDialogFooter>
+                        </AlertDialogContent>
+                      </AlertDialog>
                     )}
                     <button onClick={(e) => copyToClipboard(nocUrl, "NOC URL", e)}
                       className="text-[9px] px-2 py-1 rounded-md bg-[var(--bg-card)] border border-[var(--bg-border)] text-[var(--text-muted)] hover:text-indigo-400 hover:border-indigo-500/30 transition-colors flex items-center gap-1"
