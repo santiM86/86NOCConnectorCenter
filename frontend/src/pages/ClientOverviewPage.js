@@ -908,29 +908,46 @@ function DevicesTab({ devices, clientId, onRefresh }) {
   const [saving, setSaving] = useState(false);
   const webConsole = useWebConsoleTabs();
 
-  // 1 click apre Web Console + auto-attiva VPN WireGuard in background (best-effort).
-  // L'utente vede subito la console, la VPN parte trasparentemente per audit + sicurezza
-  // restrittiva (accesso solo ai device REGISTRATI). Fix: webConsole deve essere nel
-  // SAME scope del click handler — per questo la funzione vive dentro DevicesTab e non
-  // nel parent ClientOverviewPage.
+  // 1 click sul pulsante Monitor:
+  //  - Apre la Web Console in UNA NUOVA TAB (V4 popup) tramite proxy HTTP diretto del
+  //    Center (backend -> device via tunnel WireGuard quando attivo, altrimenti via
+  //    route LAN diretta). L'utente vive l'esperienza di navigazione NATIVA:
+  //    indietro/avanti, cookies, Basic/Digest auth dialog, download di file — come
+  //    se avesse digitato https://<ip>:<port>/ nella barra indirizzi del browser.
+  //  - In parallelo (best-effort, non blocca l'apertura) attiva una sessione VPN
+  //    audit-scoped al solo device target (TTL 30 min), cosi' il Center ha rotta
+  //    verso l'IP privato via tunnel cifrato. Se il setup VPN non e' completo (es.
+  //    connector offline o WG non configurato), la sessione fallisce in silenzio e
+  //    la proxy V4 tenta comunque il connect diretto.
+  //  - Fallback: se il browser blocca la popup (ad es. pop-up blocker senza user
+  //    gesture grace window), ripieghiamo sull'iframe V3 LIVE nel dock in basso.
   const openConsoleWithVpn = async (device) => {
     if (!clientId || !device?.ip_address) return;
-    // Apri subito la Web Console (UX immediata, l'utente non aspetta la VPN)
-    webConsole.open(clientId, device.ip_address, defaultWebPort(device));
-    // In parallelo, attiva sessione VPN audit (silenzioso se setup incompleto)
-    try {
-      await axios.post(`${API}/admin/wireguard/session/start`, {
+
+    // Fire-and-forget: attivazione VPN audit in background (non blocca la popup,
+    // altrimenti il browser perderebbe il "user-gesture trust" e bloccherebbe window.open)
+    axios
+      .post(`${API}/admin/wireguard/session/start`, {
         client_id: clientId,
         target_device_ip: device.ip_address,
         reason: `Web Console: ${device.name || device.ip_address}`,
         ttl_minutes: 30,
         restrict_to_registered_devices: true,
+      })
+      .catch((e) => {
+        const status = e?.response?.status;
+        if (status && status !== 404 && status !== 422) {
+          console.warn("VPN audit session failed:", e?.response?.data?.detail || e.message);
+        }
       });
-    } catch (e) {
-      const status = e?.response?.status;
-      if (status && status !== 404 && status !== 422) {
-        console.warn("VPN audit session failed:", e?.response?.data?.detail || e.message);
-      }
+
+    // Apri V4 popup (nuova tab). Il backend firma un JWT, torna l'URL proxied
+    // e apriamo window.open subito — esperienza "browser nativo".
+    const result = await webConsole.openPopup(device.ip_address);
+
+    if (!result) {
+      // Popup bloccato / sessione V4 non creabile -> fallback iframe V3 LIVE nel dock
+      webConsole.open(clientId, device.ip_address, defaultWebPort(device));
     }
   };
 
@@ -1063,7 +1080,7 @@ function DevicesTab({ devices, clientId, onRefresh }) {
                         <button
                           onClick={() => openConsoleWithVpn(d)}
                           className="p-1 rounded hover:bg-indigo-500/10 text-indigo-400 transition-colors"
-                          title={`Apri Web Console via VPN (porta ${defaultWebPort(d)})${d.profile_key ? ` · profilo ${d.profile_key}` : " · nessun profilo"}`}
+                          title={`Apri Web Console in nuova tab (proxy diretto via VPN, porta ${defaultWebPort(d)})${d.profile_key ? ` · profilo ${d.profile_key}` : " · nessun profilo"}`}
                           data-testid={`web-console-btn-${d.ip_address}`}
                         >
                           <Monitor size={13} />

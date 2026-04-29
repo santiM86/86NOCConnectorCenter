@@ -1,0 +1,38 @@
+{
+  "summary": "Frontend-only regression test for V4 popup Monitor button on Dispositivi tab. POST /api/console-v4/request-session IS called, POST /api/admin/wireguard/session/start IS called in parallel, no ReferenceError. HOWEVER critical bug found: openPopup() in WebConsoleTabs.js uses window.open(url, '_blank', 'noopener,noreferrer') which returns null in Chromium (documented behavior when noopener flag is set). The null check at line 122-125 incorrectly interprets this as 'popup blocked', fires an alert, returns null, and triggers the V3 iframe LIVE fallback — so POST /api/web-console/session IS still called AND the dock iframe (data-testid=web-console-active) DOES appear on desktop, which contradicts the fix intent. On mobile the popup DOES open successfully (Chromium opens the tab even though return value is null due to noopener), but V3 fallback still fires unnecessarily.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {
+        "flow": "Monitor button V4 popup (openConsoleWithVpn -> webConsole.openPopup)",
+        "issue": "window.open(absUrl, '_blank', 'noopener,noreferrer') returns null in Chromium by design (MDN: when noopener is set, no reference to the new window is returned). The code at WebConsoleTabs.js:121-125 treats null return as 'popup blocked' and (a) alerts the user, (b) returns null, which makes openConsoleWithVpn fall back to webConsole.open() V3 LIVE iframe. Result: POST /api/web-console/session is still fired, dock iframe appears on screen, and user sees the bogus 'Pop-up bloccato' alert — even though the popup tab actually opened successfully on mobile.",
+        "affected_selectors": ["[data-testid='web-console-btn-<ip>']", "[data-testid='web-console-active']"]
+      }
+    ],
+    "design_issues": []
+  },
+  "test_report_links": [],
+  "action_items": [
+    "URGENT: Fix WebConsoleTabs.js openPopup() (lines 106-132). Either (a) remove 'noopener,noreferrer' from window.open arguments so it returns a WindowProxy reference, or (b) remove the null check since with 'noopener' Chromium always returns null even on successful popup, or (c) use <a href target=_blank rel=noopener> programmatic click fallback. Recommended fix: remove ',noreferrer' and 'noopener' from the window.open features string OR keep noopener but remove the `if (!win)` failure path (assume success when user gesture is active). Browser proof in Playwright: window.open(url,'_blank','noopener,noreferrer') === null; window.open(url,'_blank') returns object.",
+    "After fix, retest to confirm: (1) no V3 /api/web-console/session call, (2) no dock iframe web-console-active on screen, (3) no 'Pop-up bloccato' alert, (4) popup opens with /api/console-v4/s/<token>/ URL."
+  ],
+  "critical_code_review_comments": [
+    "WebConsoleTabs.js:121 — `window.open(absUrl, '_blank', 'noopener,noreferrer')` returns null by spec when noopener is present. The subsequent `if (!win)` popup-blocked check is broken: it fires on success and triggers an incorrect fallback + alert.",
+    "ClientOverviewPage.js:946-951 — fallback `webConsole.open()` correctly attempts V3 iframe when openPopup returns null, but because openPopup always returns null (see above), V4 NEVER wins on Chromium — the fix is effectively not applied until openPopup null-check is corrected.",
+    "The V4 JWT token (from /api/console-v4/request-session) is placed directly in the URL path: `/api/console-v4/s/<jwt>/` — this token is logged by ingress/proxy access logs and browser history. Consider moving the token to Authorization header via a short-lived redirect, or use a opaque session id mapped server-side to the JWT (so the path contains only an opaque id).",
+    "When noopener is removed, add a rel=noopener on any subsequent share/link UI to prevent reverse-tabnabbing of internal device pages."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "N/A", "frontend": "50% (2/4 critical assertions passed — V4 endpoint + WG start fire correctly; V3 suppression + dock absence FAIL)"},
+  "test_credentials": {"admin": "admin@86bit.it / password"},
+  "seed_data_creation": "None — used existing 86BIT_Office (da3d6e40-b3e5-4d46-9787-dde328a3aa36), device 192.168.1.3 (first web-console-btn).",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "On click of [data-testid='web-console-btn-192.168.1.3']: network traces observed 3 POST calls (desktop+mobile) — /api/admin/wireguard/session/start (OK), /api/console-v4/request-session (OK, returns JWT url), /api/web-console/session (V3 — SHOULD NOT be called). The dock iframe web-console-active appears. On mobile a popup DID open with URL https://<host>/api/console-v4/s/<JWT>/. Root cause verified via page.evaluate: window.open(url,'_blank','noopener,noreferrer') returns null in Chromium while window.open without noopener returns object. Fix window.open call in WebConsoleTabs.js openPopup and retest.",
+  "rca_of_the_issue": {
+    "root_cause": "window.open('url','_blank','noopener,noreferrer') returns null in Chromium (documented behavior per MDN — when noopener is set the caller does not receive a WindowProxy). The code at /app/frontend/src/components/WebConsoleTabs.js line 122 `if (!win) { alert('Pop-up bloccato...'); return null; }` misinterprets null as 'popup blocked' and triggers the V3 fallback.",
+    "reproduction": "Login admin -> open client 86BIT_Office -> tab Dispositivi -> click Monitor (web-console-btn-192.168.1.3). Network tab shows POST /api/console-v4/request-session AND POST /api/web-console/session. On desktop: dock iframe web-console-active appears (wrong). On mobile: popup opens correctly but V3 dock also spawns.",
+    "mitigation": "Remove 'noopener,noreferrer' from window.open call OR remove the null-check + alert path. Keep user gesture intact (openPopup is called synchronously from button onClick so popup blocker is not triggered in normal browsers). Confirmed via page.evaluate executed in Chromium preview: {with_noopener: win_null=true, without_noopener: win_null=false}."
+  }
+}
