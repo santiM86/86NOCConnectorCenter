@@ -367,6 +367,26 @@ Rimossi in v3.5.0 (con OK utente): Check-ForUpdate, Install-Update (5 metodi fal
 - P2: LDAP/Active Directory integration
 - P3: Zyxel Nebula Cloud API
 
+### 2026-02-10: Fix P0 pulsante Web Console (icona Monitor indigo) non apriva nulla
+**Sintomo utente**: cliccando sul pulsante Monitor viola/indigo nella tabella Dispositivi della Client Overview, non si apriva nessuna console/modal. Nessun errore visibile in console per l'utente.
+
+**Root cause**: scope bug. In `/app/frontend/src/pages/ClientOverviewPage.js`:
+- `openConsoleWithVpn` era definita a riga 52 DENTRO la funzione parent `ClientOverviewPage`
+- Il pulsante che la chiamava (riga 1070) viveva però dentro il sub-component `DevicesTab` (riga 936), che è una funzione separata a livello modulo → NON eredita lo scope del parent
+- Al click: `ReferenceError: openConsoleWithVpn is not defined` (swallowed da React onClick + non visibile se DevTools non aperto con "Preserve log")
+- Inoltre `openConsoleWithVpn` usava `webConsole` che era a sua volta dichiarato SOLO dentro `DevicesTab` (riga 942) → era rotta anche se fosse stata chiamata dal parent
+
+**Fix**: spostata la funzione `openConsoleWithVpn` dentro `DevicesTab`, subito dopo `const webConsole = useWebConsoleTabs()`. Logica invariata (apre console via `webConsole.open` + sessione VPN WireGuard best-effort in background). Rimossa la definizione morta nel parent.
+
+**Test** (iteration_60.json): 100% PASS. 5/5 test cases desktop 1920x1080 + 5/5 mobile 390x844. Verified:
+- Button renders per 10/14 devices del cliente 86BIT_Office (firewall/switch/router/etc online)
+- Click apre `data-testid=web-console-active` (il dock)
+- POST `/api/web-console/session` chiamato correttamente
+- 0 ReferenceError in console
+- Bottone Info (DeviceInfoCard) continua a funzionare senza regressioni
+
+**File toccato**: `/app/frontend/src/pages/ClientOverviewPage.js` (funzione spostata di ~890 righe, scope corretto).
+
 ### POC v1 — WireGuard EMBEDDED nel Center (2026-04-27)
 **Richiesta utente**: "non voglio installarlo deve essere dentro al center" — il server WireGuard non deve richiedere `apt install wireguard-tools` o setup manuale sul Linux di produzione. Tutto self-contained nel pacchetto del backend.
 
