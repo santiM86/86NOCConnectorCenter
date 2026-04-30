@@ -1,5 +1,59 @@
 # CHANGELOG — 86BIT ARGUS Center
 
+## 2026-04-30 — Hornetsecurity 365 Total Backup Integration (backend v3.5.30)
+
+### 🛡️ Fase 1 — Cloud Microsoft 365 Backup Monitoring
+Integrazione end-to-end con Hornetsecurity 365 Total Backup REST API (custom-generated
+endpoint + X-API-KEY header), per monitorare backup di Mailbox, OneDrive,
+SharePoint, Teams attraverso tutti i tenant clienti registrati nel Control Panel MSP.
+
+**Backend** `routes/hornetsecurity_backup.py` (NEW):
+- `GET/PUT/DELETE /api/clients/{client_id}/backup/hornetsecurity/config` — CRUD
+  configurazione per cliente. API key crittografata via `security_manager` (Fernet)
+  e mai esposta in chiaro. Mostrata UI come `****1234`.
+- `POST /api/clients/{client_id}/backup/hornetsecurity/test` — chiamata di test
+  senza persistenza, ritorna count workload + sample.
+- `POST /api/clients/{client_id}/backup/hornetsecurity/poll` — forza polling
+  immediato (rispetta rate limit 5min Hornetsecurity, ritorna 429 se troppo presto).
+- `GET /api/clients/{client_id}/backup/hornetsecurity/status` — lista ultimi
+  workload + aggregati per status/type + count alert attivi.
+- `GET /api/clients/{client_id}/backup/hornetsecurity/storage-trend?days=N` — trend
+  storage per tenant negli ultimi N giorni (default 30).
+- `GET /api/clients/{client_id}/backup/hornetsecurity/alerts` — alert backup falliti.
+- Parser JSON robusto su 3 layout possibili (camelCase nested, PascalCase flat,
+  generic data array). Verificato in unit test in-session.
+
+**Backend** `services/hornetsecurity_poller.py` (NEW):
+- APScheduler job ogni minuto che itera `hornetsecurity_configs`, calcola se
+  `poll_interval_minutes` è scaduto da `last_polled_at`, esegue HTTP GET e
+  persiste workload/storage/alert.
+- Auto-deduplicate alerts: 1 alert aperto per workload, auto-resolve quando lo
+  status torna success.
+- Failed-poll tracking: salva `last_poll_status` + `last_poll_error` per UI.
+
+**MongoDB collections** (NEW):
+- `hornetsecurity_configs` — { client_id, api_url, api_key_enc, poll_interval_minutes, enabled, last_polled_at, last_poll_status }
+- `backup_job_status` — { client_id, tenant, workload_id, workload_type, status, last_backup_time, size_bytes, error, captured_at }
+- `backup_storage_history` — { client_id, tenant, size_bytes, recorded_at }
+- `backup_alerts` — { client_id, tenant, workload_id, severity, message, resolved, last_seen }
+
+**Frontend** `ClientOverviewPage.js`:
+- Tab **Backup** completamente riprogettata:
+  - Setup wizard se non configurato (CTA con istruzioni Control Panel)
+  - Header config con URL mascherato, key preview, polling interval, last poll
+  - 4 stat box (OK, Failed, Active alerts, Workload types)
+  - Storage trend card per tenant con delta % e size in MB/GB/TB
+  - Filtri stato + tipo workload (mailbox/onedrive/sharepoint/teams)
+  - Tabella workload con stato colorato, last backup, size, error message
+- Pulsanti "Poll Ora" + "Test" + "Modifica" + "Elimina" con permission check admin
+- Dialog config: URL + key (password input) + polling interval + enabled
+- Fallback graceful se backend non aggiornato (banner amber con istruzioni update)
+
+**Rate limit safety**:
+- Schedule minimo 5 min, default 30 min
+- Anti-flood manuale 300s tra `/poll` consecutivi
+- HTTP 429 esplicito al frontend con messaggio chiaro
+
 ## 2026-04-30 — Profile Re-match Engine (backend v3.5.29)
 
 ### 🎯 Auto-aggancio profili vendor dopo fix SNMP
