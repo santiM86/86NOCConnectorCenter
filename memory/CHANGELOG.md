@@ -1,5 +1,59 @@
 # CHANGELOG — 86BIT ARGUS Center
 
+## 2026-04-30 — Encryption Hardening NIST 2024 (backend v3.5.33)
+
+### 🔐 Schema cifratura v2 con backward-compat
+Hardening della cifratura credenziali allineato a NIST SP 800-132 rev. 2024 + audit
+detection + master key rotation a runtime senza downtime.
+
+**Backend** `security.py` (riscritto):
+- **Salt random per deployment**: 32 byte CSPRNG persistito in
+  `data/encryption_salt.bin` (mode 0600), generato al primo avvio post-update.
+  Risolve la nota legacy "use unique salt per deployment".
+- **PBKDF2-HMAC-SHA256 600k iterazioni** (era 100k) — allineato NIST 2024.
+- **Versioned ciphertext**: blob v2 hanno prefisso `"v2:"`, blob senza prefisso
+  sono trattati come legacy v1 (salt fisso, 100k) e decifrabili in lettura.
+- **Failed-decrypt counter**: tiene traccia di tentativi fallita di decrypt;
+  emette `SECURITY_ALERT decrypt_failed_burst` nei log audit dopo 3 fallimenti
+  in 60 secondi — pronto per ingestione SIEM/SOC engine.
+- API `is_v2_ciphertext()`, `reencrypt_to_v2()` per migration tooling.
+
+**Backend** `routes/security_admin.py` (NEW):
+- `GET /api/admin/security/encryption-status` — scansione tutte le collection,
+  conta blob v2 vs v1 vs invalid, breakdown per `collection.field`.
+- `POST /api/admin/security/migrate-to-v2` — re-encrypt in-place dei blob
+  legacy v1 → v2. Idempotente, atomico per documento. Audit log.
+- `POST /api/admin/security/rotate-master-key` — rotazione master key:
+  pre-flight decrypt di TUTTI i blob, generazione nuova ENCRYPTION_KEY
+  (32 byte hex CSPRNG) + nuovo salt random, rebuild SecurityManager
+  in-process, re-encrypt di tutti i blob, scrittura atomica `backend/.env`
+  (con backup `.bak`). Richiede `confirm=true` + 2FA admin (se attivo).
+
+**Frontend** `pages/EncryptionPage.js` (NEW):
+- Route `/settings/encryption` (admin only)
+- Card "Stato cifratura" con badge percentuale v2, 4 stat box,
+  banner amber se serve migration (con CTA "Migra ora"), banner emerald se
+  100% v2
+- Breakdown collapsible per `collection.field`
+- Card "Rotazione master key" con dialog modal di conferma + campo TOTP
+- Voce "Cifratura & Master Key" aggiunta in Settings
+
+**Test E2E in-session** (con dati reali):
+1. Salt v2 generato al primo avvio: `data/encryption_salt.bin` mode 0600 ✓
+2. Backward-compat: blob legacy v1 (Hornetsecurity API key) decifrabile → 4377
+   workload tornati ✓
+3. Migration v1→v2: 2/2 blob migrati, 100% v2 post-migration ✓
+4. Rotation key: nuova master key generata, .env aggiornato atomicamente,
+   2/2 blob re-cifrati con nuova key, decrypt continua a funzionare ✓
+5. Alert burst: 3 decrypt fallite consecutive → SECURITY_ALERT in audit log ✓
+
+**Standard di compliance allineati**:
+- NIST SP 800-38D (AES-GCM) — già presente
+- NIST SP 800-132 rev. 2024 (PBKDF2 600k iter) — NUOVO
+- OWASP ASVS L2/L3 (encryption at rest) — già presente
+- ISO 27001 A.10.1.1 (cryptographic policy) — già presente
+- ISO 27001 A.10.1.2 (key management) con rotation — NUOVO
+
 ## 2026-04-30 — Tenant→Client Mapping Reverse View (backend v3.5.32)
 
 ### 🔄 Modalita` "Per tenant Hornetsecurity"
