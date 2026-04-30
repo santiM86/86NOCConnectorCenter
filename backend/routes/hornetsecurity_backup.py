@@ -76,6 +76,34 @@ def _mask_key(api_key: str) -> str:
     return f"****{api_key[-4:]}"
 
 
+# Sub-group extraction (per-domain bucketing within a single Hornetsecurity tenant)
+# ---------------------------------------------------------------------------
+SUBGROUP_UNGROUPED = "_ungrouped_"  # workloads without an identifiable email domain
+
+
+def _extract_sub_group(workload: dict) -> str:
+    """Estrae il sotto-gruppo (dominio email) di un workload dentro un tenant.
+
+    Regole:
+    1. Se `workload_user` contiene un `@`, ritorna il dominio (lowercase).
+    2. Se `workload_name` contiene un `@` (es. SharePoint con email mailbox), idem.
+    3. Altrimenti ritorna SUBGROUP_UNGROUPED (sotto-gruppo "Senza dominio") in
+       modo che SharePoint senza owner email, Entra ID di sistema, o workload
+       con metadata mancanti restino visibili e mappabili separatamente.
+    """
+    user = (workload.get("workload_user") or "").strip().lower()
+    if "@" in user:
+        dom = user.split("@", 1)[1].strip().rstrip(".")
+        if dom:
+            return dom
+    name = (workload.get("workload_name") or "").strip().lower()
+    if "@" in name:
+        dom = name.split("@", 1)[1].strip().rstrip(".")
+        if dom:
+            return dom
+    return SUBGROUP_UNGROUPED
+
+
 def _config_to_out(doc: dict) -> dict:
     return {
         "client_id": doc["client_id"],
@@ -396,6 +424,7 @@ async def _persist_poll_results_global(report: dict) -> dict:
 
     for w in workloads:
         tenants_seen.add(w["tenant"])
+        sub_group = _extract_sub_group(w)
         await db.backup_job_status.update_one(
             {"tenant": w["tenant"], "workload_id": w["workload_id"]},
             {"$set": {
@@ -406,6 +435,7 @@ async def _persist_poll_results_global(report: dict) -> dict:
                 "workload_user": w["workload_user"],
                 "workload_subcategory": w["workload_subcategory"],
                 "workload_type": w["workload_type"],
+                "sub_group": sub_group,
                 "status": w["status"],
                 "status_raw": w["status_raw"],
                 "last_backup_time": w["last_backup_time"],
@@ -428,6 +458,7 @@ async def _persist_poll_results_global(report: dict) -> dict:
                     "workload_id": w["workload_id"],
                     "workload_name": w["workload_name"],
                     "workload_type": w["workload_type"],
+                    "sub_group": sub_group,
                     "severity": "warning",
                     "message": w.get("error") or f"Backup fallito per {w['workload_name']} ({w['status_raw']})",
                     "last_seen": now_iso,
@@ -653,19 +684,65 @@ async def poll_hornetsecurity(
 # Read endpoints (UI) — leggono dati globali filtrati via mapping cliente↔tenant
 # ---------------------------------------------------------------------------
 async def _resolve_client_tenants(client_id: str) -> list[str]:
-    """Ritorna la lista di tenant Hornetsecurity associati a un cliente ARGUS.
+    """[Compat] Ritorna solo nomi tenant (legacy). Per la nuova logica con
+    sub-group usare `_resolve_client_filters`.
+    """
+    filters = await _resolve_client_filters(client_id)
+    return sorted({f["tenant"] for f in filters})
 
-    Il mapping e` salvato nel doc `clients.hornetsecurity_tenants` (lista di
-    `office365Organisation` o `customerName`). Se vuoto, ritorna [] e la UI
-    mostrera` un setup vuoto invitando a configurare il mapping.
+
+async def _resolve_client_filters(client_id: str) -> list[dict]:
+    """Ritorna i filtri tenant/sub_group di un cliente.
+
+    Ogni elemento del mapping puo` essere:
+      - string  → mapping legacy "tutto il tenant"  → {tenant, sub_groups: None}
+      - dict    → {tenant, sub_groups: [...] | None}
+        * sub_groups None / vuoto / mancante → tutto il tenant
+        * sub_groups lista non vuota → solo quei domini
     """
     client = await db.clients.find_one({"id": client_id}, {"_id": 0, "hornetsecurity_tenants": 1})
     if not client:
         return []
-    tenants = client.get("hornetsecurity_tenants") or []
-    if isinstance(tenants, str):
-        tenants = [tenants]
-    return [str(t) for t in tenants if t]
+    raw = client.get("hornetsecurity_tenants") or []
+    if isinstance(raw, str):
+        raw = [raw]
+    out: list[dict] = []
+    for item in raw:
+        if isinstance(item, str):
+            if item.strip():
+                out.append({"tenant": item.strip(), "sub_groups": None})
+        elif isinstance(item, dict):
+            t = (item.get("tenant") or "").strip()
+            if not t:
+                continue
+            sg = item.get("sub_groups")
+            if isinstance(sg, list):
+                sg_clean = sorted({str(x).strip().lower() for x in sg if x and str(x).strip()})
+                out.append({"tenant": t, "sub_groups": sg_clean if sg_clean else None})
+            else:
+                out.append({"tenant": t, "sub_groups": None})
+    return out
+
+
+def _build_mongo_filter_for_client(filters: list[dict], extra_match: dict | None = None) -> dict:
+    """Costruisce una query Mongo `$or` partendo dai filtri tenant/sub_group.
+
+    Se `filters` e` vuoto, ritorna un match impossibile (`__no_match__`) per
+    evitare che la mancanza di mapping mostri tutto il dataset.
+    """
+    if not filters:
+        return {"_no_mapping_": True}  # impossibile → 0 risultati
+    or_blocks: list[dict] = []
+    for f in filters:
+        block: dict = {"tenant": f["tenant"]}
+        if f.get("sub_groups"):
+            block["sub_group"] = {"$in": f["sub_groups"]}
+        if extra_match:
+            block = {**block, **extra_match}
+        or_blocks.append(block)
+    if len(or_blocks) == 1:
+        return or_blocks[0]
+    return {"$or": or_blocks}
 
 
 @router.get("/clients/{client_id}/backup/hornetsecurity/status")
@@ -681,12 +758,14 @@ async def get_backup_status(
     per-cliente per compatibilita`.
     """
     await _ensure_client_exists(client_id)
-    tenants = await _resolve_client_tenants(client_id)
+    filters = await _resolve_client_filters(client_id)
+    tenants = sorted({f["tenant"] for f in filters})
 
-    # Query globale via mapping
+    # Query globale via mapping (con sub_group se specificato)
     query: dict[str, Any] = {"source": "hornetsecurity"}
-    if tenants:
-        query["tenant"] = {"$in": tenants}
+    if filters:
+        mapping_q = _build_mongo_filter_for_client(filters)
+        query.update(mapping_q)
     else:
         # Fallback: dati legacy per-cliente (config storica)
         query["client_id"] = client_id
@@ -701,25 +780,30 @@ async def get_backup_status(
     by_status: dict[str, int] = {}
     by_type: dict[str, int] = {}
     by_tenant: dict[str, int] = {}
+    by_sub_group: dict[str, int] = {}
     for it in items:
         by_status[it.get("status", "unknown")] = by_status.get(it.get("status", "unknown"), 0) + 1
         by_type[it.get("workload_type", "unknown")] = by_type.get(it.get("workload_type", "unknown"), 0) + 1
         by_tenant[it.get("tenant", "unknown")] = by_tenant.get(it.get("tenant", "unknown"), 0) + 1
+        sg = it.get("sub_group") or SUBGROUP_UNGROUPED
+        by_sub_group[sg] = by_sub_group.get(sg, 0) + 1
 
-    alert_query = {"resolved": False, "source": "hornetsecurity"}
-    if tenants:
-        alert_query["tenant"] = {"$in": tenants}
+    alert_query: dict[str, Any] = {"resolved": False, "source": "hornetsecurity"}
+    if filters:
+        alert_query.update(_build_mongo_filter_for_client(filters))
     else:
         alert_query["client_id"] = client_id
     active_alerts = await db.backup_alerts.count_documents(alert_query)
 
     return {
         "mapped_tenants": tenants,
+        "mapped_filters": filters,
         "items": items,
         "totals": {
             "by_status": by_status,
             "by_type": by_type,
             "by_tenant": by_tenant,
+            "by_sub_group": by_sub_group,
             "total_items": len(items),
             "active_alerts": active_alerts,
         },
@@ -734,11 +818,13 @@ async def get_storage_trend(
 ):
     """Trend storage per tenant del cliente, negli ultimi N giorni."""
     await _ensure_client_exists(client_id)
-    tenants = await _resolve_client_tenants(client_id)
+    filters = await _resolve_client_filters(client_id)
     days = max(1, min(days, 180))
     since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
     query: dict[str, Any] = {"recorded_at": {"$gte": since}}
-    if tenants:
+    if filters:
+        # storage_history e` aggregato per tenant (no sub_group), filtro solo per nome
+        tenants = sorted({f["tenant"] for f in filters})
         query["tenant"] = {"$in": tenants}
     else:
         query["client_id"] = client_id
@@ -753,12 +839,12 @@ async def get_backup_alerts(
     only_active: bool = True,
     current_user: dict = Depends(get_current_user),
 ):
-    """Alert backup falliti del cliente (filtrati via mapping tenant)."""
+    """Alert backup falliti del cliente (filtrati via mapping tenant + sub_group)."""
     await _ensure_client_exists(client_id)
-    tenants = await _resolve_client_tenants(client_id)
+    filters = await _resolve_client_filters(client_id)
     query: dict[str, Any] = {"source": "hornetsecurity"}
-    if tenants:
-        query["tenant"] = {"$in": tenants}
+    if filters:
+        query.update(_build_mongo_filter_for_client(filters))
     else:
         query["client_id"] = client_id
     if only_active:
@@ -939,6 +1025,7 @@ async def list_detected_tenants(current_user: dict = Depends(get_current_user)):
             "workloads_total": {"$sum": 1},
             "workloads_failed": {"$sum": {"$cond": [{"$eq": ["$status", "failed"]}, 1, 0]}},
             "workloads_protected": {"$sum": {"$cond": [{"$eq": ["$status", "success"]}, 1, 0]}},
+            "sub_groups": {"$addToSet": "$sub_group"},
             "last_seen": {"$max": "$captured_at"},
         }},
         {"$sort": {"_id": 1}},
@@ -948,12 +1035,14 @@ async def list_detected_tenants(current_user: dict = Depends(get_current_user)):
     for r in rows:
         if not r.get("_id"):
             continue
+        sgs = [s for s in (r.get("sub_groups") or []) if s]
         out.append({
             "tenant": r["_id"],
             "tenant_long": r.get("tenant_long"),
             "workloads_total": r.get("workloads_total", 0),
             "workloads_failed": r.get("workloads_failed", 0),
             "workloads_protected": r.get("workloads_protected", 0),
+            "sub_groups_count": len(sgs),
             "last_seen": r.get("last_seen"),
         })
 
@@ -961,10 +1050,27 @@ async def list_detected_tenants(current_user: dict = Depends(get_current_user)):
     mappings = []
     async for c in db.clients.find({}, {"_id": 0, "id": 1, "name": 1, "hornetsecurity_tenants": 1}):
         if c.get("hornetsecurity_tenants"):
+            raw = c["hornetsecurity_tenants"]
+            if isinstance(raw, str):
+                raw = [raw]
+            # Espongo SIA la lista flat di tenant (legacy/whole) SIA la lista filters dettagliata
+            flat_tenants: list[str] = []
+            full_filters: list[dict] = []
+            for it in raw:
+                if isinstance(it, str):
+                    flat_tenants.append(it)
+                    full_filters.append({"tenant": it, "sub_groups": None})
+                elif isinstance(it, dict) and it.get("tenant"):
+                    if it.get("sub_groups"):
+                        full_filters.append({"tenant": it["tenant"], "sub_groups": list(it["sub_groups"])})
+                    else:
+                        flat_tenants.append(it["tenant"])
+                        full_filters.append({"tenant": it["tenant"], "sub_groups": None})
             mappings.append({
                 "client_id": c["id"],
                 "client_name": c.get("name"),
-                "tenants": c["hornetsecurity_tenants"],
+                "tenants": flat_tenants,
+                "filters": full_filters,
             })
     return {"tenants": out, "mappings": mappings}
 
@@ -973,7 +1079,14 @@ async def list_detected_tenants(current_user: dict = Depends(get_current_user)):
 # CLIENT MAPPING — collega un cliente ARGUS a 1+ tenant Hornetsecurity
 # ---------------------------------------------------------------------------
 class TenantMappingIn(BaseModel):
-    tenants: list[str] = Field(default_factory=list, description="Lista tenant Hornetsecurity (office365Organisation o customerName)")
+    tenants: list[Any] = Field(
+        default_factory=list,
+        description=(
+            "Lista mapping. Ogni elemento puo` essere:\n"
+            "- string (nome tenant) → mappa l'intero tenant (legacy)\n"
+            "- {tenant: str, sub_groups: [str] | null} → mappa solo i sotto-gruppi indicati"
+        ),
+    )
 
 
 @router.get("/clients/{client_id}/backup/hornetsecurity/mapping")
@@ -981,12 +1094,33 @@ async def get_client_tenant_mapping(
     client_id: str,
     current_user: dict = Depends(get_current_user),
 ):
-    """Ritorna i tenant Hornetsecurity associati a questo cliente."""
+    """Ritorna i tenant Hornetsecurity associati a questo cliente (con sub_groups se mappati)."""
     client = await _ensure_client_exists(client_id)
+    raw = client.get("hornetsecurity_tenants", []) or []
+    if isinstance(raw, str):
+        raw = [raw]
+    # Compat output: lista di stringhe (legacy) E lista normalizzata
+    legacy_tenants = []
+    full_filters = []
+    for item in raw:
+        if isinstance(item, str) and item.strip():
+            legacy_tenants.append(item.strip())
+            full_filters.append({"tenant": item.strip(), "sub_groups": None})
+        elif isinstance(item, dict):
+            t = (item.get("tenant") or "").strip()
+            if not t:
+                continue
+            sg = item.get("sub_groups")
+            if isinstance(sg, list) and sg:
+                full_filters.append({"tenant": t, "sub_groups": sorted({str(x).lower() for x in sg if x})})
+            else:
+                legacy_tenants.append(t)
+                full_filters.append({"tenant": t, "sub_groups": None})
     return {
         "client_id": client_id,
         "client_name": client.get("name"),
-        "tenants": client.get("hornetsecurity_tenants", []),
+        "tenants": legacy_tenants,         # backcompat
+        "filters": full_filters,           # nuovo formato
     }
 
 
@@ -996,16 +1130,157 @@ async def set_client_tenant_mapping(
     payload: TenantMappingIn,
     current_user: dict = Depends(get_current_user),
 ):
-    """Imposta il mapping cliente → tenant Hornetsecurity (1+ tenant per cliente)."""
+    """Imposta il mapping cliente → tenant Hornetsecurity (1+ tenant per cliente).
+
+    Accetta sia liste di stringhe (legacy: tutto il tenant) sia liste di
+    oggetti {tenant, sub_groups} per mapping a livello sotto-gruppo (dominio).
+    """
     require_admin(current_user)
     await _ensure_client_exists(client_id)
-    cleaned = sorted({t.strip() for t in payload.tenants if t and t.strip()})
+
+    cleaned: list[Any] = []
+    seen_keys: set[str] = set()
+    for item in payload.tenants or []:
+        if isinstance(item, str):
+            t = item.strip()
+            if t and t not in seen_keys:
+                cleaned.append(t)
+                seen_keys.add(t)
+        elif isinstance(item, dict):
+            t = (item.get("tenant") or "").strip()
+            if not t:
+                continue
+            sg_raw = item.get("sub_groups")
+            if isinstance(sg_raw, list) and sg_raw:
+                sg_clean = sorted({str(x).strip().lower() for x in sg_raw if x and str(x).strip()})
+                if sg_clean:
+                    key = f"{t}::{','.join(sg_clean)}"
+                    if key not in seen_keys:
+                        cleaned.append({"tenant": t, "sub_groups": sg_clean})
+                        seen_keys.add(key)
+                    continue
+            # Nessun sub_group → mapping intero tenant (forma legacy stringa)
+            if t not in seen_keys:
+                cleaned.append(t)
+                seen_keys.add(t)
+
     await db.clients.update_one(
         {"id": client_id},
         {"$set": {"hornetsecurity_tenants": cleaned}},
     )
     audit.warning(
         f"HORNETSECURITY_MAPPING_SET by={current_user.get('email')} "
-        f"client_id={client_id} tenants={cleaned}"
+        f"client_id={client_id} entries={cleaned}"
     )
     return {"saved": True, "tenants": cleaned}
+
+
+# ---------------------------------------------------------------------------
+# SUB-GROUP DISCOVERY — sotto-gruppi (domini email) dentro un tenant
+# ---------------------------------------------------------------------------
+@router.get("/admin/hornetsecurity/tenants/{tenant_name}/sub-groups")
+async def list_tenant_sub_groups(
+    tenant_name: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Lista i sotto-gruppi (domini email) rilevati dentro un tenant
+    Hornetsecurity, con conteggio workload e mapping clienti.
+
+    Usato dalla UI mapping per espandere un tenant e mostrare i sub-group
+    selezionabili come unita` di mapping.
+    """
+    require_admin(current_user)
+    pipeline = [
+        {"$match": {"source": "hornetsecurity", "tenant": tenant_name}},
+        {"$group": {
+            "_id": "$sub_group",
+            "workloads_total": {"$sum": 1},
+            "workloads_failed": {"$sum": {"$cond": [{"$eq": ["$status", "failed"]}, 1, 0]}},
+            "workloads_protected": {"$sum": {"$cond": [{"$eq": ["$status", "success"]}, 1, 0]}},
+            "types": {"$addToSet": "$workload_type"},
+            "last_seen": {"$max": "$captured_at"},
+        }},
+        {"$sort": {"_id": 1}},
+    ]
+    rows = await db.backup_job_status.aggregate(pipeline).to_list(500)
+    sub_groups: list[dict] = []
+    for r in rows:
+        sub_groups.append({
+            "sub_group": r["_id"] or SUBGROUP_UNGROUPED,
+            "is_ungrouped": (r["_id"] is None) or (r["_id"] == SUBGROUP_UNGROUPED),
+            "workloads_total": r.get("workloads_total", 0),
+            "workloads_failed": r.get("workloads_failed", 0),
+            "workloads_protected": r.get("workloads_protected", 0),
+            "types": sorted([t for t in r.get("types", []) if t]),
+            "last_seen": r.get("last_seen"),
+        })
+
+    # Mappature attuali sub_group -> client (per evidenziare nella UI)
+    sg_to_clients: dict[str, list[dict]] = {}
+    async for c in db.clients.find(
+        {"hornetsecurity_tenants": {"$exists": True, "$ne": []}},
+        {"_id": 0, "id": 1, "name": 1, "hornetsecurity_tenants": 1},
+    ):
+        for item in c.get("hornetsecurity_tenants") or []:
+            if isinstance(item, dict) and item.get("tenant") == tenant_name:
+                for sg in item.get("sub_groups") or []:
+                    sg_to_clients.setdefault(str(sg).lower(), []).append(
+                        {"client_id": c["id"], "client_name": c.get("name")}
+                    )
+            elif isinstance(item, str) and item == tenant_name:
+                # Cliente che ha mappato l'intero tenant → tutti i sub-group sono suoi
+                sg_to_clients.setdefault("__whole_tenant__", []).append(
+                    {"client_id": c["id"], "client_name": c.get("name")}
+                )
+
+    for sg in sub_groups:
+        whole = sg_to_clients.get("__whole_tenant__", [])
+        specific = sg_to_clients.get(sg["sub_group"].lower(), [])
+        # whole-tenant clients also "own" this sub_group implicitly
+        sg["mapped_clients"] = specific + [{**c, "via": "whole_tenant"} for c in whole]
+
+    return {
+        "tenant": tenant_name,
+        "sub_groups": sub_groups,
+        "total_sub_groups": len(sub_groups),
+    }
+
+
+@router.post("/admin/hornetsecurity/backfill-sub-groups")
+async def backfill_sub_groups(current_user: dict = Depends(get_current_user)):
+    """One-shot: ricalcola e salva il campo `sub_group` per tutti i workload
+    Hornetsecurity gia` ingestiti (utile dopo l'aggiornamento del codice).
+    """
+    require_admin(current_user)
+    updated = 0
+    cursor = db.backup_job_status.find(
+        {"source": "hornetsecurity", "sub_group": {"$exists": False}},
+        {"_id": 1, "workload_user": 1, "workload_name": 1},
+    )
+    async for d in cursor:
+        sg = _extract_sub_group(d)
+        await db.backup_job_status.update_one(
+            {"_id": d["_id"]},
+            {"$set": {"sub_group": sg}},
+        )
+        updated += 1
+    # Anche backup_alerts
+    alerts_updated = 0
+    cursor2 = db.backup_alerts.find(
+        {"source": "hornetsecurity", "sub_group": {"$exists": False}},
+        {"_id": 1, "workload_id": 1, "tenant": 1},
+    )
+    async for d in cursor2:
+        # Resolve from latest workload status doc
+        wd = await db.backup_job_status.find_one(
+            {"tenant": d.get("tenant"), "workload_id": d.get("workload_id")},
+            {"_id": 0, "sub_group": 1},
+        )
+        sg = (wd or {}).get("sub_group") or SUBGROUP_UNGROUPED
+        await db.backup_alerts.update_one({"_id": d["_id"]}, {"$set": {"sub_group": sg}})
+        alerts_updated += 1
+    audit.warning(
+        f"HORNETSECURITY_BACKFILL_SUBGROUPS by={current_user.get('email')} "
+        f"workloads={updated} alerts={alerts_updated}"
+    )
+    return {"workloads_updated": updated, "alerts_updated": alerts_updated}

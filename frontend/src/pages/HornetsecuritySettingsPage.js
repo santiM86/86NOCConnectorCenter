@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import axios from "axios";
 import { API } from "@/App";
 import { toast } from "sonner";
-import { Database, ShieldCheck, ArrowsClockwise, Trash, Plug } from "@phosphor-icons/react";
+import { Database, ShieldCheck, ArrowsClockwise, Trash, Plug, CaretDown, CaretRight, Users } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useNavigate } from "react-router-dom";
@@ -104,6 +104,56 @@ export default function HornetsecuritySettingsPage() {
       await reload();
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Errore mapping");
+    }
+  };
+
+  // Helper centrale per modificare l'assegnazione di un singolo (tenant, sub_group):
+  // - newClientId: cliente target (vuoto = rimuove l'assegnazione)
+  // Mantiene intatti tutti gli altri mapping e i mapping "whole_tenant" altrui.
+  const updateSubGroupMapping = async (tenantName, subGroup, newClientId) => {
+    try {
+      // 1) Rimuovi questo (tenant, sub_group) da TUTTI i clienti che lo avevano
+      for (const m of mappings) {
+        const filters = m.filters || [];
+        const had = filters.some(f => f.tenant === tenantName && Array.isArray(f.sub_groups) && f.sub_groups.includes(subGroup));
+        if (!had) continue;
+        const newFilters = filters
+          .map(f => {
+            if (f.tenant !== tenantName) return f;
+            if (!Array.isArray(f.sub_groups)) return f;
+            const cleaned = f.sub_groups.filter(x => x !== subGroup);
+            if (cleaned.length === 0) return null;
+            return { tenant: f.tenant, sub_groups: cleaned };
+          })
+          .filter(Boolean);
+        // ricostruisci payload (string per whole tenant, dict per sub-group)
+        const payload = newFilters.map(f => (f.sub_groups ? { tenant: f.tenant, sub_groups: f.sub_groups } : f.tenant));
+        await axios.put(`${API}/clients/${m.client_id}/backup/hornetsecurity/mapping`, { tenants: payload });
+      }
+      // 2) Aggiungi al nuovo cliente (se selezionato)
+      if (newClientId) {
+        const cm = mappings.find(m => m.client_id === newClientId);
+        const filters = (cm && cm.filters) || [];
+        // Se il cliente ha gia` tutto il tenant come whole, non serve aggiungere il sub_group
+        const hasWhole = filters.some(f => f.tenant === tenantName && !f.sub_groups);
+        if (!hasWhole) {
+          let found = false;
+          const newFilters = filters.map(f => {
+            if (f.tenant === tenantName && Array.isArray(f.sub_groups)) {
+              found = true;
+              return { tenant: f.tenant, sub_groups: Array.from(new Set([...(f.sub_groups || []), subGroup])) };
+            }
+            return f;
+          });
+          if (!found) newFilters.push({ tenant: tenantName, sub_groups: [subGroup] });
+          const payload = newFilters.map(f => (f.sub_groups ? { tenant: f.tenant, sub_groups: f.sub_groups } : f.tenant));
+          await axios.put(`${API}/clients/${newClientId}/backup/hornetsecurity/mapping`, { tenants: payload });
+        }
+      }
+      toast.success(`Sotto-gruppo "${subGroup}" aggiornato`);
+      await reload();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Errore mapping sub-group");
     }
   };
 
@@ -226,7 +276,7 @@ export default function HornetsecuritySettingsPage() {
               : "Per ciascun cliente ARGUS scegli quali tenant Hornetsecurity gli appartengono. Un cliente puo` avere piu` tenant (multi-dominio)."}
           </p>
           {viewMode === "by-tenant" ? (
-            <TenantMappingTable tenants={tenants} clients={clients} mappings={mappings} updateMapping={updateMapping} />
+            <TenantMappingTable tenants={tenants} clients={clients} mappings={mappings} updateMapping={updateMapping} updateSubGroupMapping={updateSubGroupMapping} />
           ) : (
             <ClientMappingTable clients={clients} tenants={tenants} updateMapping={updateMapping} />
           )}
@@ -272,7 +322,7 @@ export default function HornetsecuritySettingsPage() {
   );
 }
 
-function TenantMappingTable({ tenants, clients, mappings, updateMapping }) {
+function TenantMappingTable({ tenants, clients, mappings, updateMapping, updateSubGroupMapping }) {
   // Build reverse map: tenant -> client_id (assumendo 1 tenant a 1 cliente principale, ma supportiamo piu` clienti per tenant via lista)
   const tenantToClient = {};
   mappings.forEach(m => {
@@ -312,8 +362,10 @@ function TenantMappingTable({ tenants, clients, mappings, updateMapping }) {
         <table className="noc-table w-full text-[11px]">
           <thead>
             <tr>
+              <th style={{ width: 24 }}></th>
               <th>Tenant Hornetsecurity</th>
               <th>Workload</th>
+              <th>Sotto-gruppi</th>
               <th>Falliti</th>
               <th>Cliente ARGUS</th>
               <th>Azioni</th>
@@ -321,7 +373,7 @@ function TenantMappingTable({ tenants, clients, mappings, updateMapping }) {
           </thead>
           <tbody>
             {filteredTenants.map(t => (
-              <TenantMappingRow key={t.tenant} tenant={t} clients={clients} currentClients={tenantToClient[t.tenant] || []} updateMapping={updateMapping} mappings={mappings} />
+              <TenantMappingRow key={t.tenant} tenant={t} clients={clients} currentClients={tenantToClient[t.tenant] || []} updateMapping={updateMapping} updateSubGroupMapping={updateSubGroupMapping} mappings={mappings} />
             ))}
           </tbody>
         </table>
@@ -333,10 +385,13 @@ function TenantMappingTable({ tenants, clients, mappings, updateMapping }) {
   );
 }
 
-function TenantMappingRow({ tenant, clients, currentClients, updateMapping, mappings }) {
+function TenantMappingRow({ tenant, clients, currentClients, updateMapping, updateSubGroupMapping, mappings }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(currentClients[0]?.id || "");
   const [saving, setSaving] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const [subGroups, setSubGroups] = useState(null);
+  const [loadingSg, setLoadingSg] = useState(false);
 
   // suggerimento auto: cliente con nome simile al tenant
   const tn = tenant.tenant.toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -351,6 +406,30 @@ function TenantMappingRow({ tenant, clients, currentClients, updateMapping, mapp
   const startEdit = () => {
     setDraft(currentClients[0]?.id || suggested?.id || "");
     setEditing(true);
+  };
+
+  const loadSubGroups = useCallback(async () => {
+    setLoadingSg(true);
+    try {
+      const r = await axios.get(`${API}/admin/hornetsecurity/tenants/${encodeURIComponent(tenant.tenant)}/sub-groups`);
+      setSubGroups(r.data?.sub_groups || []);
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Errore caricamento sotto-gruppi");
+      setSubGroups([]);
+    } finally {
+      setLoadingSg(false);
+    }
+  }, [tenant.tenant]);
+
+  const toggleExpand = async () => {
+    const next = !expanded;
+    setExpanded(next);
+    if (next && subGroups === null) await loadSubGroups();
+  };
+
+  const onSubGroupChanged = async (subGroup, newClientId) => {
+    await updateSubGroupMapping(tenant.tenant, subGroup, newClientId);
+    await loadSubGroups();
   };
 
   const save = async () => {
@@ -393,9 +472,16 @@ function TenantMappingRow({ tenant, clients, currentClients, updateMapping, mapp
   };
 
   const failedCol = (tenant.workloads_failed || 0) > 0 ? "#FF3B30" : "var(--text-muted)";
+  const sgCount = tenant.sub_groups_count ?? 0;
 
   return (
+    <>
     <tr data-testid={`tenant-row-${tenant.tenant}`}>
+      <td className="text-center">
+        <button onClick={toggleExpand} className="text-[var(--text-muted)] hover:text-cyan-300 p-0.5" data-testid={`expand-tenant-${tenant.tenant}`} title="Espandi sotto-gruppi (domini)">
+          {expanded ? <CaretDown size={12} /> : <CaretRight size={12} />}
+        </button>
+      </td>
       <td>
         <div className="font-semibold">{tenant.tenant}</div>
         {tenant.tenant_long && tenant.tenant_long !== tenant.tenant && (
@@ -403,6 +489,15 @@ function TenantMappingRow({ tenant, clients, currentClients, updateMapping, mapp
         )}
       </td>
       <td className="text-[10px] font-mono">{tenant.workloads_total || 0}</td>
+      <td className="text-[10px] font-mono">
+        {sgCount > 1 ? (
+          <span className="px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30" title="Tenant con piu` sotto-gruppi (domini): puoi mappare ciascun sotto-gruppo a un cliente diverso">
+            {sgCount} <Users size={9} className="inline" />
+          </span>
+        ) : (
+          <span className="text-[var(--text-muted)]">{sgCount}</span>
+        )}
+      </td>
       <td className="text-[10px] font-mono font-bold" style={{ color: failedCol }}>{tenant.workloads_failed || 0}</td>
       <td>
         {editing ? (
@@ -457,6 +552,183 @@ function TenantMappingRow({ tenant, clients, currentClients, updateMapping, mapp
             {currentClients.length > 0 && (
               <Button size="sm" variant="outline" onClick={remove} disabled={saving} className="h-6 text-[10px] text-red-400 border-red-400/30" data-testid={`remove-tenant-${tenant.tenant}`}>
                 <Trash size={10} />
+              </Button>
+            )}
+          </div>
+        )}
+      </td>
+    </tr>
+    {expanded && (
+      <tr data-testid={`subgroups-row-${tenant.tenant}`}>
+        <td></td>
+        <td colSpan={6} className="bg-[var(--bg-card)]/40 px-2 py-2">
+          <SubGroupsPanel
+            tenantName={tenant.tenant}
+            subGroups={subGroups}
+            loading={loadingSg}
+            clients={clients}
+            wholeTenantClients={currentClients}
+            onChange={onSubGroupChanged}
+          />
+        </td>
+      </tr>
+    )}
+    </>
+  );
+}
+
+function SubGroupsPanel({ tenantName, subGroups, loading, clients, wholeTenantClients, onChange }) {
+  if (loading || subGroups === null) {
+    return <div className="text-[10px] text-[var(--text-muted)] py-1">Caricamento sotto-gruppi…</div>;
+  }
+  if (!subGroups || subGroups.length === 0) {
+    return <div className="text-[10px] text-[var(--text-muted)] py-1">Nessun sotto-gruppo rilevato</div>;
+  }
+  const wholeOwner = wholeTenantClients[0];
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center gap-2 text-[10px] text-[var(--text-muted)]">
+        <Users size={11} className="text-amber-300" />
+        <span>
+          <strong className="text-[var(--text-primary)]">Sotto-gruppi (domini email)</strong> di <em>{tenantName}</em>.
+          {wholeOwner && (
+            <span className="ml-1 text-amber-300">
+              Tenant intero gia` mappato a <strong>{wholeOwner.name}</strong> — i sotto-gruppi sono ereditati ma puoi sovrascriverli.
+            </span>
+          )}
+        </span>
+      </div>
+      <table className="noc-table w-full text-[10.5px]">
+        <thead>
+          <tr>
+            <th>Sotto-gruppo</th>
+            <th>Workload</th>
+            <th>Falliti</th>
+            <th>Tipi</th>
+            <th>Cliente assegnato</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {subGroups.map(sg => (
+            <SubGroupRow key={sg.sub_group} tenantName={tenantName} sg={sg} clients={clients} onChange={onChange} />
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function SubGroupRow({ tenantName, sg, clients, onChange }) {
+  const explicitMapped = (sg.mapped_clients || []).filter(c => c.via !== "whole_tenant");
+  const inheritedMapped = (sg.mapped_clients || []).filter(c => c.via === "whole_tenant");
+  const currentClientId = explicitMapped[0]?.client_id || "";
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(currentClientId);
+  const [saving, setSaving] = useState(false);
+
+  // Auto-suggestion: cerca un cliente il cui nome matcha il dominio (es. "Galvan" ↔ "galvan.it")
+  const dom = (sg.sub_group || "").toLowerCase();
+  const domBase = dom.replace(/\.(it|com|net|org|onmicrosoft\.com|cloud)$/, "").replace(/[^a-z0-9]/g, "");
+  const suggested = !sg.is_ungrouped && domBase ? clients.find(c => {
+    const cn = (c.name || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+    return cn && (cn === domBase || cn.includes(domBase) || domBase.includes(cn));
+  }) : null;
+
+  const start = () => {
+    setDraft(currentClientId || suggested?.id || "");
+    setEditing(true);
+  };
+  const save = async () => {
+    setSaving(true);
+    try {
+      await onChange(sg.sub_group, draft);
+      setEditing(false);
+    } finally {
+      setSaving(false);
+    }
+  };
+  const remove = async () => {
+    setSaving(true);
+    try {
+      await onChange(sg.sub_group, "");
+      setEditing(false);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <tr data-testid={`subgroup-row-${tenantName}-${sg.sub_group}`}>
+      <td className="font-mono text-[10px]">
+        {sg.is_ungrouped ? <span className="italic text-[var(--text-muted)]">Senza dominio</span> : sg.sub_group}
+      </td>
+      <td className="font-mono text-[10px]">{sg.workloads_total}</td>
+      <td className="font-mono text-[10px]" style={{ color: sg.workloads_failed > 0 ? "#FF3B30" : "var(--text-muted)" }}>{sg.workloads_failed}</td>
+      <td className="text-[9.5px] text-[var(--text-muted)]">
+        {(sg.types || []).slice(0, 4).join(", ")}{(sg.types || []).length > 4 ? "…" : ""}
+      </td>
+      <td>
+        {editing ? (
+          <select
+            value={draft}
+            onChange={e => setDraft(e.target.value)}
+            className="text-[10px] bg-[var(--bg-card)] border border-[var(--bg-border)] rounded px-1 py-0.5 w-full"
+            data-testid={`subgroup-select-${tenantName}-${sg.sub_group}`}
+            autoFocus
+          >
+            <option value="">— Nessuno —</option>
+            {clients
+              .slice()
+              .sort((a, b) => {
+                if (suggested && a.id === suggested.id) return -1;
+                if (suggested && b.id === suggested.id) return 1;
+                return (a.name || "").localeCompare(b.name || "");
+              })
+              .map(c => (
+                <option key={c.id} value={c.id}>
+                  {suggested && c.id === suggested.id ? "★ " : ""}{c.name}
+                </option>
+              ))}
+          </select>
+        ) : explicitMapped.length > 0 ? (
+          <div className="flex flex-wrap gap-1">
+            {explicitMapped.map(c => (
+              <span key={c.client_id} className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                {c.client_name}
+              </span>
+            ))}
+          </div>
+        ) : inheritedMapped.length > 0 ? (
+          <div className="flex flex-wrap gap-1">
+            {inheritedMapped.map(c => (
+              <span key={c.client_id} className="text-[9.5px] px-1.5 py-0.5 rounded bg-cyan-500/10 text-cyan-200 border border-cyan-500/20" title="Ereditato dal mapping intero del tenant">
+                {c.client_name} <span className="text-[8px]">(ereditato)</span>
+              </span>
+            ))}
+          </div>
+        ) : (
+          <span className="text-[10px] text-[var(--text-muted)] italic">
+            — non mappato —{suggested && <span className="ml-1 text-amber-300">★ {suggested.name}</span>}
+          </span>
+        )}
+      </td>
+      <td>
+        {editing ? (
+          <div className="flex gap-1">
+            <Button size="sm" onClick={save} disabled={saving} className="bg-emerald-600 hover:bg-emerald-700 h-5 text-[9px] px-1.5" data-testid={`save-subgroup-${tenantName}-${sg.sub_group}`}>
+              {saving ? "..." : "OK"}
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => setEditing(false)} disabled={saving} className="h-5 text-[9px] px-1.5">X</Button>
+          </div>
+        ) : (
+          <div className="flex gap-1">
+            <Button size="sm" variant="outline" className="h-5 text-[9px] px-1.5" onClick={start} data-testid={`edit-subgroup-${tenantName}-${sg.sub_group}`}>
+              {explicitMapped.length > 0 ? "Cambia" : "Assegna"}
+            </Button>
+            {explicitMapped.length > 0 && (
+              <Button size="sm" variant="outline" onClick={remove} disabled={saving} className="h-5 text-[9px] px-1.5 text-red-400 border-red-400/30" data-testid={`remove-subgroup-${tenantName}-${sg.sub_group}`}>
+                <Trash size={9} />
               </Button>
             )}
           </div>
