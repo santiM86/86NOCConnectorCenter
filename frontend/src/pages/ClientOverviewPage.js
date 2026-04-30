@@ -1061,8 +1061,13 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
       toast.success(`Rimossi ${result.removed_count || 0} device scomparsi dal connector`);
       onRefresh?.();
     } catch (e) {
+      const status = e.response?.status;
       const det = e.response?.data?.detail || e.message;
-      toast.error(`Errore cleanup: ${det}`);
+      if (status === 404 && /connector/i.test(det || "")) {
+        toast.error("Connector non registrato per questo cliente: non posso sincronizzare finche` il connector non fa il primo heartbeat.");
+      } else {
+        toast.error(`Errore cleanup: ${det}`);
+      }
     }
   };
 

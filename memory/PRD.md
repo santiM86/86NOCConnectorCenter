@@ -464,6 +464,21 @@ Frontend:
 
 **Tarball aggiornato**: `argus-backend-latest.tar.gz` (~2.5 MB) con BACKEND_VERSION=3.5.27-fase2.
 
+### 2026-02-10 (notte, fix 2): Delete button + sync inversa connector↔Center
+**Segnalazione utente (screenshot WhatsApp)**: 1) il cestino rosso di rimozione device non funziona; 2) i device rimossi dalla config del connector restano "offline per sempre" nel Center.
+
+**Backend fix**:
+- `DELETE /api/connector/{client_id}/managed-devices/{device_id}` — completamente riscritto con multi-source delete: cerca il device in managed_devices/devices per `id` o `ip`, estrae l'IP anche da id sintetico `poll_<ip>`, esegue delete_many su tutte e 3 le collection (managed_devices, devices, device_poll_status) + auto-resolve alert aperti. Ritorna 404 solo se device assente ovunque.
+- **NUOVO** `POST /api/connector/{client_id}/cleanup-stale-devices` — cleanup self-healing basato su staleness. Pre-check: connector MUST be online (<5 min dall'ultimo heartbeat), altrimenti `{ok:false, reason:'connector_offline'}` per evitare eliminazione accidentale durante manutenzione. Rimuove managed_devices con `source=connector` e `last_seen>threshold_minutes` (default 30). Protegge device manuali (source!=connector) + silenziati (alerts_silenced=true). Supporta `dry_run=true` (default) per preview.
+- **NUOVO** `POST /api/connector/{client_id}/sync-active-devices` — sync esplicita lato server: accetta `active_ips:[...]` (lista IP attivi sul connector), rimuove tutti gli altri device `source=connector` non nella lista. Utile per futuri sync automatici dal PowerShell.
+
+**Frontend fix**:
+- **NUOVO** pulsante `data-testid=cleanup-stale-btn` "🗑️ Rimuovi scomparsi" (arancione) nella tab Dispositivi. Click → preview dry-run + `window.confirm` con lista candidati → conferma → cleanup effettivo + toast + refresh. Distingue 404 (connector_not_registered) da connector_offline con toast separati.
+
+**Test** (iteration_67): **100% PASS** backend (10/10 pytest) + frontend (4/4). Verified: delete funziona per UUID manuale + UUID auto-discovered + id sintetico `poll_<ip>`; alert resolvution; protection su silenziati/manuali; connector_online guard; sync_active dry-run preview.
+
+**Follow-up non bloccante**: estendere il PowerShell connector per chiamare automaticamente `/sync-active-devices` ogni heartbeat con la lista dei device attualmente configurati — così la sync inversa diventa self-healing senza click manuale. Backend già pronto.
+
 ### POC v1 — WireGuard EMBEDDED nel Center (2026-04-27)
 **Richiesta utente**: "non voglio installarlo deve essere dentro al center" — il server WireGuard non deve richiedere `apt install wireguard-tools` o setup manuale sul Linux di produzione. Tutto self-contained nel pacchetto del backend.
 
