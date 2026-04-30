@@ -424,6 +424,17 @@ Rimossi in v3.5.0 (con OK utente): Check-ForUpdate, Install-Update (5 metodi fal
 
 **Test**: lint Python OK (i 4 warning pre-esistenti sono di altre sezioni). Test end-to-end richiede device target reale con HTTP.sys server (non riproducibile nel preview container).
 
+### 2026-02-10 (sera tardi): Custom Tarball URL field nel dialog Self-Update
+**Razionale**: lo script di self-update scarica il tarball backend da `https://<center-host>/downloads/argus-backend-latest.tar.gz`, ma se quella build frontend non e` aggiornata (chicken-and-egg) il file e` vecchio o 404. Aggiunto un input opzionale "URL pacchetto custom" nel dialog per puntare a una build remota raggiungibile (es. `https://noc-monitor-hub.preview.emergentagent.com/downloads/argus-backend-latest.tar.gz` quando si vuole bypassare la build locale).
+
+**File toccati**:
+- `/app/frontend/src/pages/WireGuardPage.js` `triggerUpdate(enableWireguard, customUrl)` ora accetta secondo arg opzionale → invia `package_url` al POST `/api/admin/system/self-update`. Dialog ha sezione `<details>` "Opzioni avanzate" con input mono-spaced + hint che mostra il default URL.
+- Backend `system_admin.py` gia` gestiva `package_url` opzionale (nessuna modifica necessaria).
+
+**Note operative**: per il PRIMO update post-fix l'utente puo` o:
+1. SSH al prod, `curl -o /home/arslan/86NOCConnectorCenter/frontend/build/downloads/argus-backend-latest.tar.gz https://noc-monitor-hub.preview.emergentagent.com/downloads/argus-backend-latest.tar.gz`, poi click "Riprova" sull'UI.
+2. Aspettare che la nuova frontend sia deployata, poi usare il campo "URL pacchetto custom" direttamente.
+
 ### POC v1 — WireGuard EMBEDDED nel Center (2026-04-27)
 **Richiesta utente**: "non voglio installarlo deve essere dentro al center" — il server WireGuard non deve richiedere `apt install wireguard-tools` o setup manuale sul Linux di produzione. Tutto self-contained nel pacchetto del backend.
 
