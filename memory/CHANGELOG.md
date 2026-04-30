@@ -1,5 +1,54 @@
 # CHANGELOG — 86BIT ARGUS Center
 
+## 2026-04-30 — Hornetsecurity Sub-Group Mapping (P0)
+
+### Mappatura per Sotto-Gruppo (dominio email) dentro un singolo tenant
+Richiesta utente: alcuni tenant Hornetsecurity (es. "Gruppo Giambarini") contengono
+più aziende distinte (galvan.it, olfez.it, zincaturadicambiano.it, ecc.). Ora è
+possibile mappare ciascun sotto-gruppo a un cliente ARGUS diverso.
+
+**Backend** `routes/hornetsecurity_backup.py`:
+- Nuovo helper `_extract_sub_group()` → deriva automaticamente il dominio email
+  da `workload_user` (fallback su `workload_name`, default `_ungrouped_`)
+- `_persist_poll_results_global()` ora salva il campo `sub_group` sia in
+  `backup_job_status` che in `backup_alerts` ad ogni poll
+- Nuova funzione `_resolve_client_filters()` + `_build_mongo_filter_for_client()`
+  costruisce query MongoDB `$or` che combina tenant e sub_group
+- `GET /api/admin/hornetsecurity/tenants/{tenant_name}/sub-groups` (admin-only)
+  ritorna aggregazione dei sotto-gruppi con workloads_total/failed/protected,
+  tipi workload, e `mapped_clients` (sia espliciti che ereditati da whole-tenant)
+- `POST /api/admin/hornetsecurity/backfill-sub-groups` (one-shot admin)
+  popola `sub_group` sui dati già ingestiti (4249 workload + 196 alert migrati)
+- `PUT /api/clients/{client_id}/backup/hornetsecurity/mapping` ora accetta
+  liste miste: string (whole tenant, legacy) o `{tenant, sub_groups: [...]}`
+- `GET /api/clients/{client_id}/backup/hornetsecurity/mapping` espone sia
+  `tenants` (legacy string list) sia `filters` (formato dettagliato)
+- Endpoint `/status`, `/alerts`, `/storage-trend` ora filtrano per sub_group
+  quando il mapping lo specifica. Totali includono `by_sub_group`.
+- `GET /api/admin/hornetsecurity/tenants` espone `sub_groups_count` per tenant
+
+**Frontend** `pages/HornetsecuritySettingsPage.js`:
+- Nuova colonna "Sotto-gruppi" nella tabella mapping con badge ambra quando >1
+- Pulsante expand (chevron) per ogni riga tenant → carica i sotto-gruppi via
+  API e mostra una sotto-tabella con: sotto-gruppo, workload, falliti, tipi,
+  cliente assegnato, pulsanti Assegna/Cambia/Rimuovi
+- Auto-suggestion cliente per dominio (es. "galvan.it" → ★ cliente "Galvan")
+- Se il tenant è mappato whole, i sotto-gruppi mostrano badge cyan "(ereditato)"
+- Helper `updateSubGroupMapping()` che preserva tutti gli altri mapping del
+  cliente, rimuove il sub-group dal cliente precedente e aggiunge al nuovo
+
+**Retro-compatibilità**: i vecchi mapping string (whole-tenant) continuano a
+funzionare invariati. Il payload di PUT accetta entrambe le forme, la
+persistenza normalizza sulla forma più compatta (string se whole, dict se
+sub-group).
+
+**Test**: 14/14 pytest backend (`test_hornetsecurity_subgroups.py`) + 3/3
+frontend E2E (iteration_69). Test con mapping mix (string + dict): 432 Europizzi
++ 8 jumboservice.it = 440 workload filtrati correttamente.
+
+---
+
+
 ## 2026-04-30 — Operational Security Hardening (backend v3.5.34)
 
 ### 🛡 Brute force + HIBP + Audit Dashboard
