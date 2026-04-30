@@ -1,5 +1,35 @@
 # CHANGELOG — 86BIT ARGUS Center
 
+## 2026-04-30 — Profile Re-match Engine (backend v3.5.29)
+
+### 🎯 Auto-aggancio profili vendor dopo fix SNMP
+Risolve il caso in cui i device erano stati ingestati prima che lo SNMP funzionasse
+correttamente (sysObjectID/sysDescr vuoti): ora che i metadati arrivano popolati, il
+fingerprint veniva saltato perché il matcher richiedeva `prev_status is None`.
+
+**Backend** `routes/connector.py` (device-report ingest):
+- Retry policy estesa: il fingerprint si attiva ora anche quando `profile_key`
+  è assente E il device ha un identificatore (sys_object_id o sys_descr). NON
+  sovrascrive profili impostati manualmente (`profile_auto_matched=false`).
+- Log esplicita la ragione: `[new]` | `[descr-changed]` | `[missing-profile-retry]`
+
+**Backend** `routes/devices.py` — nuovi endpoint:
+- `POST /api/clients/{client_id}/rematch-profiles` — bulk rematch su tutti i device
+  del cliente. Ritorna summary `{total, matched, skipped, details[]}`.
+- `POST /api/clients/{client_id}/devices/{device_ip}/rematch-profile` — rematch
+  singolo device.
+- Funzione interna `_rematch_one()` con safety: skip profili manuali, skip device
+  senza identificatori.
+
+**Frontend** `ClientOverviewPage.js`:
+- Nuovo pulsante **"🔎 Riconosci profili"** (cyan) accanto a "Rimuovi scomparsi",
+  chiama il bulk endpoint e mostra toast dettagliato con nomi/vendor matchati.
+
+**Fingerprint verification** (unit test in-session):
+- Switch HP 5130 EI (sysObjectID 1.3.6.1.4.1.11.2.3.7.11.161) → `hpe_comware` ✓
+- UPS Xanto S 3000 (sysDescr) → `xanto_ups` ✓
+- Synology NAS DSM 7.2 → `synology_dsm` ✓
+
 ## 2026-04-30 — Self-Updater hardening P1 (backend v3.5.28)
 
 ### 🔧 Fix definitivo loop 404 aggiornamento backend in produzione

@@ -401,6 +401,171 @@ async def delete_device(device_id: str, current_user: dict = Depends(get_current
     return {"message": "Device deleted"}
 
 
+# ============================================================================
+# PROFILE RE-MATCH — forza fingerprint vendor su device gia` polled
+# ============================================================================
+# Caso d'uso: device ingestati prima che SNMP/sys_descr funzionassero; ora i
+# metadati sono disponibili ma il matcher automatico non si ri-attiva (prev_status
+# non-None). Questi endpoint permettono di ri-agganciare il profilo:
+#  - singolo device via id O ip
+#  - bulk su tutti i device di un cliente
+# NON sovrascrive profili impostati manualmente dall'utente.
+
+
+async def _rematch_one(client_id: str, device_ip: str) -> dict:
+    """Esegue il fingerprint su un device usando sys_object_id/sys_descr correnti.
+
+    Ritorna un dict con l'esito: {matched: bool, profile_key?, vendor?, skipped_reason?}.
+    """
+    ps = await db.device_poll_status.find_one(
+        {"client_id": client_id, "device_ip": device_ip},
+        {"_id": 0, "sys_descr": 1, "sys_object_id": 1, "profile_key": 1, "profile_auto_matched": 1},
+    ) or {}
+    md = await db.managed_devices.find_one(
+        {"client_id": client_id, "ip": device_ip},
+        {"_id": 0, "profile_key": 1, "name": 1},
+    ) or {}
+
+    # Skip: profilo manuale (utente ha scelto esplicitamente) → non sovrascrivere
+    manual_profile = bool(md.get("profile_key")) and not ps.get("profile_auto_matched", False)
+    if manual_profile:
+        return {
+            "device_ip": device_ip, "name": md.get("name"),
+            "matched": False, "skipped_reason": "manual-profile",
+            "current_profile_key": md.get("profile_key"),
+        }
+
+    sys_object_id = ps.get("sys_object_id")
+    sys_descr = ps.get("sys_descr")
+    if not sys_object_id and not sys_descr:
+        return {
+            "device_ip": device_ip, "name": md.get("name"),
+            "matched": False, "skipped_reason": "no-identifier",
+        }
+
+    from device_profiles import fingerprint as _fp
+    matched = _fp(sys_object_id, sys_descr)
+    if not matched:
+        return {
+            "device_ip": device_ip, "name": md.get("name"),
+            "matched": False, "skipped_reason": "no-match",
+            "sys_object_id": sys_object_id,
+        }
+
+    from datetime import datetime, timezone as _tz
+    now_iso = datetime.now(_tz.utc).isoformat()
+    snmp = matched.get("snmp") or {}
+    wc = matched.get("web_console") or {}
+
+    await db.device_poll_status.update_one(
+        {"client_id": client_id, "device_ip": device_ip},
+        {"$set": {
+            "profile_key": matched["key"],
+            "vendor": matched["vendor"],
+            "family": matched["family"],
+            "profile_auto_matched": True,
+            "profile_matched_at": now_iso,
+        }},
+    )
+    # Aggiorna managed_device solo se non ha gia` un profilo manuale
+    if md and not md.get("profile_key"):
+        await db.managed_devices.update_one(
+            {"client_id": client_id, "ip": device_ip},
+            {"$set": {
+                "profile_key": matched["key"],
+                "vendor": matched["vendor"],
+                "device_type": matched["family"],
+                "snmp_port": snmp.get("port", 161),
+                "snmp_version": snmp.get("version"),
+                "web_console_port": wc.get("port"),
+                "web_console_scheme": wc.get("scheme"),
+            }},
+        )
+    return {
+        "device_ip": device_ip, "name": md.get("name"),
+        "matched": True,
+        "profile_key": matched["key"],
+        "vendor": matched["vendor"],
+        "family": matched["family"],
+    }
+
+
+@router.post("/clients/{client_id}/rematch-profiles")
+async def rematch_profiles_bulk(
+    client_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Ri-esegue il fingerprint dei profili vendor su tutti i device del cliente.
+
+    Utile quando lo SNMP ha iniziato a funzionare dopo l'ingest iniziale e
+    i device non hanno piu` ricevuto auto-classificazione. NON sovrascrive
+    profili impostati manualmente.
+
+    Ritorna summary: {total, matched, skipped, details[]}.
+    """
+    # Controllo cliente esistente
+    client = await db.clients.find_one({"id": client_id}, {"_id": 0, "name": 1})
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+
+    # Unione IP da managed_devices + device_poll_status (copre device auto-discovered)
+    ips: set[str] = set()
+    async for d in db.managed_devices.find({"client_id": client_id}, {"_id": 0, "ip": 1}):
+        if d.get("ip"):
+            ips.add(d["ip"])
+    async for d in db.device_poll_status.find({"client_id": client_id}, {"_id": 0, "device_ip": 1}):
+        if d.get("device_ip"):
+            ips.add(d["device_ip"])
+
+    details = []
+    matched_count = 0
+    skipped_count = 0
+    for ip in sorted(ips):
+        try:
+            res = await _rematch_one(client_id, ip)
+            details.append(res)
+            if res.get("matched"):
+                matched_count += 1
+            else:
+                skipped_count += 1
+        except Exception as e:
+            details.append({"device_ip": ip, "matched": False, "error": str(e)})
+            skipped_count += 1
+
+    await audit_logger.log(
+        AuditAction.UPDATE_DEVICE, user_id=current_user["id"], user_email=current_user["email"],
+        ip_address=current_user.get("_request_ip"),
+        resource_type="client", resource_id=client_id,
+        details={"action": "rematch_profiles_bulk", "total": len(ips), "matched": matched_count},
+    )
+
+    return {
+        "client_id": client_id,
+        "client_name": client.get("name"),
+        "total": len(ips),
+        "matched": matched_count,
+        "skipped": skipped_count,
+        "details": details,
+    }
+
+
+@router.post("/clients/{client_id}/devices/{device_ip}/rematch-profile")
+async def rematch_profile_single(
+    client_id: str,
+    device_ip: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Ri-esegue il fingerprint del profilo vendor su un singolo device."""
+    res = await _rematch_one(client_id, device_ip)
+    await audit_logger.log(
+        AuditAction.UPDATE_DEVICE, user_id=current_user["id"], user_email=current_user["email"],
+        ip_address=current_user.get("_request_ip"),
+        resource_type="device", resource_id=device_ip,
+        details={"action": "rematch_profile", "result": res},
+    )
+    return res
+
+
 
 @router.get("/clients/{client_id}/ilo-health")
 async def get_client_ilo_health(client_id: str, current_user: dict = Depends(get_current_user)):
