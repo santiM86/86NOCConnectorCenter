@@ -12,7 +12,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer
 } from "recharts";
@@ -212,7 +212,7 @@ export default function ClientOverviewPage() {
         {activeTab === "wan" && <WanTab targets={wanTargets} clientId={clientId} clientName={client.name} onRefresh={fetchAll} />}
         {activeTab === "alerts" && <AlertsTab alerts={alerts} navigate={navigate} />}
         {activeTab === "printers" && <PrintersTab printers={mergedPrinters} />}
-        {activeTab === "backup" && <BackupTab backups={backups} />}
+        {activeTab === "backup" && <BackupTab backups={backups} clientId={clientId} />}
         {activeTab === "credentials" && <VaultPage scopedClientId={clientId} scopedClientName={client.name} />}
         {activeTab === "discovery" && <DiscoveryPage scopedClientId={clientId} scopedClientName={client.name} />}
         {activeTab === "vulnerability" && <VulnerabilityPage scopedClientId={clientId} scopedClientName={client.name} />}
@@ -1924,25 +1924,369 @@ function PrintersTab({ printers }) {
 }
 
 /* ==================== BACKUP TAB ==================== */
-function BackupTab({ backups }) {
-  if (backups.length === 0) return <div className="text-center py-8 text-[var(--text-muted)] text-xs">Nessun backup monitorato</div>;
-  return (
-    <div className="space-y-2">
-      {backups.map((b, i) => {
-        const sc = b.status === "ok" || b.status === "success" ? "#34C759" : b.status === "warning" ? "#FF9500" : "#FF3B30";
-        return (
-          <div key={i} className="noc-panel p-3 flex items-center gap-3">
-            <Database size={14} style={{ color: sc }} />
-            <div className="flex-1">
-              <span className="text-xs font-bold text-[var(--text-primary)]">{b.name || b.job_name || "Backup"}</span>
-              <span className="ml-2 text-[8px] px-1.5 py-0.5 rounded font-bold" style={{ color: sc, background: `${sc}15` }}>{b.status?.toUpperCase()}</span>
-            </div>
-            <span className="text-[10px] text-[var(--text-muted)]">{b.last_success ? new Date(b.last_success).toLocaleString("it-IT") : "Mai"}</span>
+function BackupTab({ backups, clientId }) {
+  return <HornetsecurityBackupPanel clientId={clientId} legacyBackups={backups} />;
+}
+
+/* ==================== HORNETSECURITY 365 BACKUP PANEL ==================== */
+function HornetsecurityBackupPanel({ clientId, legacyBackups }) {
+  const [config, setConfig] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [showConfig, setShowConfig] = useState(false);
+  const [savingCfg, setSavingCfg] = useState(false);
+  const [polling, setPolling] = useState(false);
+  const [statusData, setStatusData] = useState({ items: [], totals: {} });
+  const [storageTrend, setStorageTrend] = useState([]);
+  const [filterStatus, setFilterStatus] = useState("all");
+  const [filterType, setFilterType] = useState("all");
+  const emptyForm = { api_url: "", api_key: "", poll_interval_minutes: 30, enabled: true };
+  const [form, setForm] = useState(emptyForm);
+
+  const reload = useCallback(async () => {
+    setLoading(true);
+    try {
+      const cfgRes = await axios.get(`${API}/clients/${clientId}/backup/hornetsecurity/config`);
+      setConfig(cfgRes.data);
+      if (cfgRes.data.configured) {
+        const [statusRes, trendRes] = await Promise.all([
+          axios.get(`${API}/clients/${clientId}/backup/hornetsecurity/status`),
+          axios.get(`${API}/clients/${clientId}/backup/hornetsecurity/storage-trend?days=30`),
+        ]);
+        setStatusData(statusRes.data || { items: [], totals: {} });
+        setStorageTrend(trendRes.data?.points || []);
+      } else {
+        setStatusData({ items: [], totals: {} });
+        setStorageTrend([]);
+      }
+    } catch (e) {
+      // Backend non aggiornato (404) → mostra fallback legacy
+      if (e?.response?.status !== 404) {
+        toast.error(`Errore caricamento Hornetsecurity: ${e?.response?.data?.detail || e.message}`);
+      }
+      setConfig(null);
+    } finally {
+      setLoading(false);
+    }
+  }, [clientId]);
+
+  useEffect(() => { reload(); }, [reload]);
+
+  const saveConfig = async () => {
+    if (!form.api_url || !form.api_key) {
+      toast.error("URL e API key sono obbligatori"); return;
+    }
+    setSavingCfg(true);
+    try {
+      await axios.put(`${API}/clients/${clientId}/backup/hornetsecurity/config`, form);
+      toast.success("Configurazione Hornetsecurity salvata");
+      setShowConfig(false);
+      setForm(emptyForm);
+      await reload();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Errore salvataggio");
+    } finally {
+      setSavingCfg(false);
+    }
+  };
+
+  const testConnection = async () => {
+    setPolling(true);
+    try {
+      const { data } = await axios.post(`${API}/clients/${clientId}/backup/hornetsecurity/test`);
+      if (data.ok) {
+        toast.success(`Connessione OK — ${data.workloads_detected} workload, ${data.tenants_with_storage} tenant`);
+      } else {
+        toast.error(`Test fallito (HTTP ${data.http_status}): ${data.raw_response_excerpt?.slice(0, 200)}`, { duration: 8000 });
+      }
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Errore test connessione");
+    } finally {
+      setPolling(false);
+    }
+  };
+
+  const pollNow = async () => {
+    setPolling(true);
+    try {
+      const { data } = await axios.post(`${API}/clients/${clientId}/backup/hornetsecurity/poll`);
+      toast.success(`Polling completato — ${data.workloads_total} workload (${data.workloads_failed} falliti)`);
+      await reload();
+    } catch (e) {
+      const det = e?.response?.data?.detail || e.message;
+      if (e?.response?.status === 429) toast.warning(det);
+      else toast.error(`Errore poll: ${det}`);
+    } finally {
+      setPolling(false);
+    }
+  };
+
+  const removeConfig = async () => {
+    if (!window.confirm("Rimuovere la configurazione Hornetsecurity? Lo storico viene mantenuto.")) return;
+    try {
+      await axios.delete(`${API}/clients/${clientId}/backup/hornetsecurity/config`);
+      toast.success("Configurazione rimossa");
+      await reload();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Errore rimozione");
+    }
+  };
+
+  if (loading) {
+    return <div className="text-center py-8 text-[var(--text-muted)] text-xs">Caricamento configurazione backup…</div>;
+  }
+
+  const configured = config?.configured;
+  const backendMissing = config === null;
+
+  if (backendMissing) {
+    // Backend non aggiornato → fallback all'UI legacy
+    return (
+      <div className="space-y-3">
+        <div className="noc-panel p-3 border-l-2 border-amber-400">
+          <p className="text-[11px] text-amber-300 font-semibold mb-1">Backend non aggiornato</p>
+          <p className="text-[10px] text-[var(--text-muted)]">L'integrazione Hornetsecurity 365 Total Backup richiede backend v3.5.30+. Aggiorna il Center per attivarla.</p>
+        </div>
+        {legacyBackups?.length > 0 && (
+          <div className="space-y-2">
+            {legacyBackups.map((b, i) => (
+              <div key={i} className="noc-panel p-3 text-xs flex items-center gap-3">
+                <Database size={14} className="text-[var(--text-muted)]" />
+                <span className="flex-1">{b.name || b.job_name}</span>
+                <span className="text-[10px]">{b.status?.toUpperCase()}</span>
+              </div>
+            ))}
           </div>
-        );
-      })}
+        )}
+      </div>
+    );
+  }
+
+  if (!configured) {
+    return (
+      <div className="space-y-3">
+        <div className="noc-panel p-5 text-center">
+          <Database size={28} className="text-cyan-400 mx-auto mb-2" />
+          <p className="text-sm font-semibold text-[var(--text-primary)] mb-1">Hornetsecurity 365 Total Backup</p>
+          <p className="text-[11px] text-[var(--text-muted)] mb-3 max-w-md mx-auto">
+            Aggancia il monitoraggio backup Microsoft 365 (Mailbox, OneDrive, SharePoint, Teams) generando una API key dal Control Panel Hornetsecurity → 365 Total Backup → Generate Report.
+          </p>
+          <Button
+            onClick={() => { setForm(emptyForm); setShowConfig(true); }}
+            className="bg-cyan-600 hover:bg-cyan-700 text-white h-8 text-xs gap-1"
+            data-testid="hornetsecurity-configure-btn"
+          >
+            <Plus size={13} weight="bold" /> Configura integrazione
+          </Button>
+        </div>
+        <ConfigDialog
+          open={showConfig} onClose={() => setShowConfig(false)} form={form} setForm={setForm}
+          onSave={saveConfig} saving={savingCfg}
+        />
+      </div>
+    );
+  }
+
+  const items = (statusData.items || []).filter(it => {
+    if (filterStatus !== "all" && it.status !== filterStatus) return false;
+    if (filterType !== "all" && it.workload_type !== filterType) return false;
+    return true;
+  });
+  const byStatus = statusData.totals?.by_status || {};
+  const byType = statusData.totals?.by_type || {};
+  const activeAlerts = statusData.totals?.active_alerts || 0;
+
+  return (
+    <div className="space-y-3">
+      {/* Header config */}
+      <div className="noc-panel p-3 flex items-center gap-3 flex-wrap">
+        <div className="flex-1 min-w-[260px]">
+          <p className="text-[10px] uppercase tracking-widest text-[var(--text-muted)]">Hornetsecurity 365 Total Backup</p>
+          <p className="text-xs font-mono text-[var(--text-primary)] truncate" title={config.api_url}>
+            {config.api_url} <span className="text-[var(--text-muted)]">· key {config.api_key_preview}</span>
+          </p>
+          <p className="text-[10px] text-[var(--text-muted)] mt-0.5">
+            Polling ogni {config.poll_interval_minutes}min
+            {config.last_polled_at ? ` · Ultimo: ${new Date(config.last_polled_at).toLocaleString("it-IT")}` : " · Mai eseguito"}
+            {config.last_poll_status === "failed" && (
+              <span className="ml-1 text-red-400" title={config.last_poll_error}> · Errore: {(config.last_poll_error || "").slice(0, 80)}</span>
+            )}
+          </p>
+        </div>
+        <div className="flex gap-1.5">
+          <Button onClick={pollNow} disabled={polling} className="bg-cyan-600 hover:bg-cyan-700 h-7 text-[11px] gap-1" data-testid="hornetsecurity-poll-btn">
+            {polling ? "..." : "Poll Ora"}
+          </Button>
+          <Button onClick={testConnection} disabled={polling} className="bg-indigo-600 hover:bg-indigo-700 h-7 text-[11px]" data-testid="hornetsecurity-test-btn">
+            Test
+          </Button>
+          <Button onClick={() => { setForm({ api_url: config.api_url, api_key: "", poll_interval_minutes: config.poll_interval_minutes, enabled: config.enabled }); setShowConfig(true); }} variant="outline" className="h-7 text-[11px]" data-testid="hornetsecurity-edit-btn">
+            Modifica
+          </Button>
+          <Button onClick={removeConfig} variant="outline" className="h-7 text-[11px] text-red-400 hover:text-red-300 border-red-400/30" data-testid="hornetsecurity-delete-btn">
+            <Trash size={11} />
+          </Button>
+        </div>
+      </div>
+
+      {/* Stat boxes */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+        <StatBox label="Workload OK" value={byStatus.success || 0} color="#34C759" />
+        <StatBox label="Failed" value={(byStatus.failed || 0) + (byStatus.error || 0) + (byStatus.fail || 0)} color="#FF3B30" />
+        <StatBox label="Alert attivi" value={activeAlerts} color={activeAlerts > 0 ? "#FF9500" : "#34C759"} />
+        <StatBox label="Tipi workload" value={Object.keys(byType).length} color="#06B6D4" />
+      </div>
+
+      {/* Storage trend (compact sparkline) */}
+      {storageTrend.length > 1 && <StorageTrendCard points={storageTrend} />}
+
+      {/* Filters */}
+      <div className="flex items-center gap-2 flex-wrap text-[11px]">
+        <span className="text-[var(--text-muted)]">Stato:</span>
+        {["all", "success", "failed", "warning", "in_progress"].map(s => (
+          <button key={s}
+            onClick={() => setFilterStatus(s)}
+            className={`px-2 py-0.5 rounded border text-[10px] ${filterStatus === s ? "bg-cyan-500/20 border-cyan-400 text-cyan-300" : "border-[var(--bg-border)] text-[var(--text-muted)]"}`}
+            data-testid={`hornetsecurity-filter-status-${s}`}
+          >{s}</button>
+        ))}
+        <span className="text-[var(--text-muted)] ml-2">Tipo:</span>
+        {["all", "mailbox", "onedrive", "sharepoint", "teams"].map(t => (
+          <button key={t}
+            onClick={() => setFilterType(t)}
+            className={`px-2 py-0.5 rounded border text-[10px] ${filterType === t ? "bg-violet-500/20 border-violet-400 text-violet-300" : "border-[var(--bg-border)] text-[var(--text-muted)]"}`}
+            data-testid={`hornetsecurity-filter-type-${t}`}
+          >{t}</button>
+        ))}
+      </div>
+
+      {/* Workload table */}
+      {items.length === 0 ? (
+        <div className="noc-panel p-5 text-center text-[11px] text-[var(--text-muted)]">
+          Nessun workload corrispondente ai filtri. {config.last_polled_at ? "" : "Esegui il primo poll per caricare i dati."}
+        </div>
+      ) : (
+        <div className="noc-panel overflow-x-auto">
+          <table className="noc-table w-full text-[11px]" data-testid="hornetsecurity-workload-table">
+            <thead>
+              <tr><th>Workload</th><th>Tenant</th><th>Tipo</th><th>Stato</th><th>Ultimo backup</th><th>Size</th><th>Note</th></tr>
+            </thead>
+            <tbody>
+              {items.map((it, i) => {
+                const sc = it.status === "success" ? "#34C759"
+                  : (it.status === "failed" || it.status === "error" || it.status === "fail") ? "#FF3B30"
+                  : it.status === "in_progress" ? "#FFB400" : "#8E8E93";
+                return (
+                  <tr key={i} data-testid={`hornetsecurity-row-${i}`}>
+                    <td className="font-semibold">{it.workload_name || it.workload_id}</td>
+                    <td className="text-[var(--text-muted)]">{it.tenant}</td>
+                    <td><span className="text-[9px] px-1 py-0.5 rounded border border-[var(--bg-border)]">{it.workload_type}</span></td>
+                    <td><span className="text-[10px] font-bold" style={{ color: sc }}>{(it.status || "-").toUpperCase()}</span></td>
+                    <td className="text-[10px] text-[var(--text-muted)]">{it.last_backup_time ? new Date(it.last_backup_time).toLocaleString("it-IT", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "—"}</td>
+                    <td className="text-[10px] font-mono">{formatBytes(it.size_bytes || 0)}</td>
+                    <td className="text-[10px] text-red-400 truncate max-w-[260px]" title={it.error || ""}>{it.error || ""}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <ConfigDialog
+        open={showConfig} onClose={() => setShowConfig(false)} form={form} setForm={setForm}
+        onSave={saveConfig} saving={savingCfg}
+      />
     </div>
   );
+}
+
+function ConfigDialog({ open, onClose, form, setForm, onSave, saving }) {
+  if (!open) return null;
+  return (
+    <Dialog open={open} onOpenChange={onClose}>
+      <DialogContent className="sm:max-w-lg" data-testid="hornetsecurity-config-dialog">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2"><Database size={16} className="text-cyan-400" /> Configura Hornetsecurity 365 Total Backup</DialogTitle>
+          <DialogDescription className="text-[11px]">
+            Per generare la API key vai su <code className="text-cyan-300">cp.hornetsecurity.com</code> → 365 Total Backup → Backups → Generate Report → seleziona scope tenant → genera. Copia URL + key (mostrate una sola volta).
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3 text-xs">
+          <div>
+            <label className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">API URL</label>
+            <Input value={form.api_url} onChange={e => setForm({ ...form, api_url: e.target.value })} placeholder="https://reports.hornetsecurity.com/api/..." className="bg-[var(--bg-card)] border-[var(--bg-border)] h-8 text-xs font-mono" data-testid="hornetsecurity-cfg-url" />
+          </div>
+          <div>
+            <label className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">X-API-KEY</label>
+            <Input type="password" value={form.api_key} onChange={e => setForm({ ...form, api_key: e.target.value })} placeholder="incolla la chiave (verra` crittografata)" className="bg-[var(--bg-card)] border-[var(--bg-border)] h-8 text-xs font-mono" data-testid="hornetsecurity-cfg-key" />
+          </div>
+          <div className="flex gap-3 items-end">
+            <div className="flex-1">
+              <label className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">Polling ogni (min)</label>
+              <Input type="number" min={5} max={720} value={form.poll_interval_minutes} onChange={e => setForm({ ...form, poll_interval_minutes: parseInt(e.target.value) || 30 })} className="bg-[var(--bg-card)] border-[var(--bg-border)] h-8 text-xs" data-testid="hornetsecurity-cfg-interval" />
+            </div>
+            <label className="flex items-center gap-1.5 text-[11px] cursor-pointer pb-1.5">
+              <input type="checkbox" checked={form.enabled} onChange={e => setForm({ ...form, enabled: e.target.checked })} data-testid="hornetsecurity-cfg-enabled" />
+              <span>Abilitato</span>
+            </label>
+          </div>
+          <p className="text-[10px] text-[var(--text-muted)] leading-relaxed bg-amber-500/5 border border-amber-500/30 rounded p-2">
+            ⚠️ Hornetsecurity limita le chiamate a <strong>1 ogni 5 minuti per endpoint</strong>. Il polling minimo configurabile e` 5 min, default 30 min.
+          </p>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose} disabled={saving}>Annulla</Button>
+          <Button onClick={onSave} disabled={saving || !form.api_url || !form.api_key} className="bg-cyan-600 hover:bg-cyan-700" data-testid="hornetsecurity-cfg-save">
+            {saving ? "Salvataggio..." : "Salva configurazione"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function StorageTrendCard({ points }) {
+  // Aggrega per tenant: per ogni tenant, ultimo size + delta vs primo punto
+  const byTenant = {};
+  points.forEach(p => {
+    if (!byTenant[p.tenant]) byTenant[p.tenant] = [];
+    byTenant[p.tenant].push(p);
+  });
+  const rows = Object.entries(byTenant).map(([tenant, arr]) => {
+    arr.sort((a, b) => new Date(a.recorded_at) - new Date(b.recorded_at));
+    const first = arr[0]?.size_bytes || 0;
+    const last = arr[arr.length - 1]?.size_bytes || 0;
+    const deltaPct = first > 0 ? ((last - first) / first) * 100 : 0;
+    return { tenant, last, delta: last - first, deltaPct, samples: arr.length };
+  });
+  if (rows.length === 0) return null;
+  return (
+    <div className="noc-panel p-3" data-testid="hornetsecurity-storage-trend">
+      <p className="text-[10px] uppercase tracking-widest text-[var(--text-muted)] mb-2">Trend storage (30gg)</p>
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
+        {rows.map(r => {
+          const trendCol = r.deltaPct > 5 ? "#FF9500" : r.deltaPct < -5 ? "#06B6D4" : "#8E8E93";
+          return (
+            <div key={r.tenant} className="rounded bg-[var(--bg-card)] border border-[var(--bg-border)] p-2">
+              <p className="text-[10px] font-semibold truncate" title={r.tenant}>{r.tenant}</p>
+              <p className="text-sm font-bold font-mono" style={{ color: trendCol }}>{formatBytes(r.last)}</p>
+              <p className="text-[9px] text-[var(--text-muted)]">
+                {r.deltaPct > 0 ? "+" : ""}{r.deltaPct.toFixed(1)}% · {r.samples} sample
+              </p>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function formatBytes(bytes) {
+  if (!bytes || bytes <= 0) return "—";
+  const u = ["B", "KB", "MB", "GB", "TB", "PB"];
+  let i = 0; let v = bytes;
+  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+  return `${v.toFixed(v >= 100 ? 0 : v >= 10 ? 1 : 2)} ${u[i]}`;
 }
 
 /* ==================== STAT BOX ==================== */

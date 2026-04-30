@@ -249,6 +249,7 @@ from routes.firmware_catalog import router as firmware_catalog_router
 from routes.web_console_v4 import router as web_console_v4_router
 from routes.device_profiles import router as device_profiles_router
 from routes.connector_settings import router as connector_settings_router
+from routes.hornetsecurity_backup import router as hornetsecurity_backup_router
 
 app.include_router(auth_router)
 app.include_router(admin_router)
@@ -300,6 +301,7 @@ app.include_router(firmware_catalog_router)
 app.include_router(web_console_v4_router)
 app.include_router(device_profiles_router)
 app.include_router(connector_settings_router)
+app.include_router(hornetsecurity_backup_router)
 from routes.device_probe import router as device_probe_router
 app.include_router(device_probe_router)
 from routes.console_rmt import router as console_rmt_router
@@ -673,6 +675,26 @@ async def startup_event():
         logger.info("Auto-dispatch scheduler started (interval: 6h)")
     except Exception as e:
         logger.error(f"Failed to start auto-dispatch scheduler: {e}")
+
+    # === Hornetsecurity 365 Total Backup polling scheduler ===
+    try:
+        from apscheduler.schedulers.asyncio import AsyncIOScheduler
+        from apscheduler.triggers.interval import IntervalTrigger
+        from services.hornetsecurity_poller import hornetsecurity_polling_tick
+        global hornetsecurity_scheduler
+        hornetsecurity_scheduler = AsyncIOScheduler()
+        hornetsecurity_scheduler.add_job(
+            hornetsecurity_polling_tick,
+            trigger=IntervalTrigger(minutes=1),
+            id="hornetsecurity_polling_tick",
+            next_run_time=datetime.now(timezone.utc) + timedelta(seconds=30),
+            max_instances=1,
+            coalesce=True,
+        )
+        hornetsecurity_scheduler.start()
+        logger.info("Hornetsecurity 365 backup polling scheduler started (tick: 1min)")
+    except Exception as e:
+        logger.error(f"Failed to start Hornetsecurity scheduler: {e}")
 
     # ----- Embedded WireGuard runtime (POC, opt-in via env WG_EMBEDDED_ENABLED) -----
     if os.environ.get("WG_EMBEDDED_ENABLED", "").lower() in ("1", "true", "yes"):
