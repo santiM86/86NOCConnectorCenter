@@ -2460,6 +2460,67 @@ async def connector_lldp_report(request: Request):
     return {"status": "ok", "neighbors_stored": len(neighbors)}
 
 
+@router.post(f"/{C}/sp")
+@router.post("/connector/switch-ports")
+async def connector_switch_ports_report(request: Request):
+    """Riceve la tabella completa delle porte degli switch dal connector.
+
+    Body:
+    {
+      "switches": [
+        { "local_ip": "192.168.1.2", "device_mac": "...",
+          "ports": [
+            {"idx": 1, "name": "Gi1/0/1", "oper": 1, "admin": 1, "speed_mbps": 1000, "last_change_s": 12345},
+            ...
+          ]
+        }
+      ]
+    }
+    Oper/Admin: 1=up, 2=down, 3=testing, 5=dormant, 6=notPresent, 7=lowerLayerDown
+    """
+    client_data = await verify_connector_request(request)
+    body = await request.json()
+    check_nosql_injection(body)
+    client_id = client_data["id"]
+    switches = body.get("switches", []) or []
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    # Wipe and reinsert per-switch to stay idempotent and handle port changes
+    total_stored = 0
+    stored_per_switch: list[dict] = []
+    for sw in switches:
+        local_ip = sanitize_string(sw.get("local_ip", ""), 64)
+        if not local_ip:
+            continue
+        ports = sw.get("ports", []) or []
+        await db.switch_ports.delete_many({"client_id": client_id, "local_ip": local_ip})
+        if ports:
+            docs = []
+            for p in ports:
+                try:
+                    idx_v = int(p.get("idx", 0))
+                except Exception:
+                    continue
+                docs.append({
+                    "client_id": client_id,
+                    "local_ip": local_ip,
+                    "idx": idx_v,
+                    "name": sanitize_string(str(p.get("name") or f"port{idx_v}"), 128),
+                    "oper": int(p.get("oper", 0)) if p.get("oper") is not None else 0,
+                    "admin": int(p.get("admin", 0)) if p.get("admin") is not None else 0,
+                    "speed_mbps": int(p.get("speed_mbps", 0) or 0),
+                    "last_change_s": int(p.get("last_change_s", 0) or 0),
+                    "updated_at": now_iso,
+                })
+            if docs:
+                await db.switch_ports.insert_many(docs)
+                total_stored += len(docs)
+        stored_per_switch.append({"local_ip": local_ip, "ports_count": len(ports)})
+
+    logger.info(f"Switch ports updated for {client_id}: {len(switches)} switch, {total_stored} porte totali")
+    return {"status": "ok", "switches_stored": len(switches), "total_ports": total_stored, "per_switch": stored_per_switch}
+
+
 @router.post(f"/{C}/nd")
 @router.post("/connector/network-discovery")
 async def connector_network_discovery(request: Request):
