@@ -2059,7 +2059,11 @@ function HornetsecurityBackupPanel({ clientId, legacyBackups }) {
   }
 
   const items = (statusData.items || []).filter(it => {
-    if (filterStatus !== "all" && it.status !== filterStatus) return false;
+    if (filterStatus !== "all") {
+      if (filterStatus === "protected_only" && it.status !== "success") return false;
+      if (filterStatus === "issues_only" && !["failed", "warning", "in_progress"].includes(it.status)) return false;
+      if (!["protected_only", "issues_only"].includes(filterStatus) && it.status !== filterStatus) return false;
+    }
     if (filterType !== "all" && it.workload_type !== filterType) return false;
     if (filterTenant !== "all" && it.tenant !== filterTenant) return false;
     return true;
@@ -2117,31 +2121,58 @@ function HornetsecurityBackupPanel({ clientId, legacyBackups }) {
         <StatBox label="Workload tot" value={statusData.totals?.total_items || 0} color="#06B6D4" />
       </div>
 
-      {/* Filters */}
-      <div className="flex items-center gap-2 flex-wrap text-[11px]">
-        <span className="text-[var(--text-muted)]">Stato:</span>
-        {["all", "success", "failed", "warning", "in_progress", "not_applicable", "excluded"].map(s => (
-          <button key={s} onClick={() => setFilterStatus(s)}
-            className={`px-2 py-0.5 rounded border text-[10px] ${filterStatus === s ? "bg-cyan-500/20 border-cyan-400 text-cyan-300" : "border-[var(--bg-border)] text-[var(--text-muted)]"}`}
-            data-testid={`hornetsecurity-filter-status-${s}`}>{s}</button>
-        ))}
-        <span className="text-[var(--text-muted)] ml-2">Tipo:</span>
-        {["all", "mailbox", "onedrive", "sharepoint", "teams", "entra_id", "planner"].map(t => (
-          <button key={t} onClick={() => setFilterType(t)}
-            className={`px-2 py-0.5 rounded border text-[10px] ${filterType === t ? "bg-violet-500/20 border-violet-400 text-violet-300" : "border-[var(--bg-border)] text-[var(--text-muted)]"}`}
-            data-testid={`hornetsecurity-filter-type-${t}`}>{t}</button>
-        ))}
-        {(mappedTenants.length > 1 || mappedFilters.length > 1) && (
-          <>
-            <span className="text-[var(--text-muted)] ml-2">Tenant:</span>
-            <button onClick={() => setFilterTenant("all")} className={`px-2 py-0.5 rounded border text-[10px] ${filterTenant === "all" ? "bg-emerald-500/20 border-emerald-400 text-emerald-300" : "border-[var(--bg-border)] text-[var(--text-muted)]"}`}>all</button>
-            {Array.from(new Set([...(mappedTenants || []), ...(mappedFilters || []).map(f => f.tenant)])).map(t => (
-              <button key={t} onClick={() => setFilterTenant(t)}
-                className={`px-2 py-0.5 rounded border text-[10px] ${filterTenant === t ? "bg-emerald-500/20 border-emerald-400 text-emerald-300" : "border-[var(--bg-border)] text-[var(--text-muted)]"}`}>{t} ({byTenant[t] || 0})</button>
-            ))}
-          </>
-        )}
+      {/* Quick view toggle (primary) */}
+      <div className="flex items-center gap-1.5 flex-wrap text-[11px]">
+        <span className="text-[10px] uppercase tracking-widest text-[var(--text-muted)]">Vista:</span>
+        {[
+          { id: "all", label: `Tutti (${statusData.totals?.total_items || 0})`, color: "cyan" },
+          { id: "protected_only", label: `Solo protetti (${byStatus.success || 0})`, color: "emerald" },
+          { id: "issues_only", label: `Solo problemi (${(byStatus.failed || 0) + (byStatus.warning || 0) + (byStatus.in_progress || 0)})`, color: "red" },
+        ].map(v => {
+          const active = filterStatus === v.id;
+          const cls = v.color === "emerald"
+            ? (active ? "bg-emerald-500/20 border-emerald-400 text-emerald-300" : "border-emerald-500/30 text-emerald-300/70 hover:bg-emerald-500/10")
+            : v.color === "red"
+            ? (active ? "bg-red-500/20 border-red-400 text-red-300" : "border-red-500/30 text-red-300/70 hover:bg-red-500/10")
+            : (active ? "bg-cyan-500/20 border-cyan-400 text-cyan-300" : "border-cyan-500/30 text-cyan-300/70 hover:bg-cyan-500/10");
+          return (
+            <button key={v.id} onClick={() => setFilterStatus(v.id)}
+              className={`px-3 py-1 rounded-md border text-[11px] font-semibold transition ${cls}`}
+              data-testid={`hornetsecurity-quickfilter-${v.id}`}>
+              {v.label}
+            </button>
+          );
+        })}
       </div>
+
+      {/* Filters (advanced) */}
+      <details className="text-[11px]">
+        <summary className="text-[10px] uppercase tracking-widest text-[var(--text-muted)] cursor-pointer hover:text-cyan-300 select-none">Filtri avanzati</summary>
+        <div className="flex items-center gap-2 flex-wrap mt-2 pl-2 border-l border-[var(--bg-border)]">
+          <span className="text-[var(--text-muted)]">Stato dettaglio:</span>
+          {["all", "success", "failed", "warning", "in_progress", "not_applicable", "excluded"].map(s => (
+            <button key={s} onClick={() => setFilterStatus(s)}
+              className={`px-2 py-0.5 rounded border text-[10px] ${filterStatus === s ? "bg-cyan-500/20 border-cyan-400 text-cyan-300" : "border-[var(--bg-border)] text-[var(--text-muted)]"}`}
+              data-testid={`hornetsecurity-filter-status-${s}`}>{s}</button>
+          ))}
+          <span className="text-[var(--text-muted)] ml-2">Tipo:</span>
+          {["all", "mailbox", "onedrive", "sharepoint", "teams", "entra_id", "planner"].map(t => (
+            <button key={t} onClick={() => setFilterType(t)}
+              className={`px-2 py-0.5 rounded border text-[10px] ${filterType === t ? "bg-violet-500/20 border-violet-400 text-violet-300" : "border-[var(--bg-border)] text-[var(--text-muted)]"}`}
+              data-testid={`hornetsecurity-filter-type-${t}`}>{t}</button>
+          ))}
+          {(mappedTenants.length > 1 || mappedFilters.length > 1) && (
+            <>
+              <span className="text-[var(--text-muted)] ml-2">Tenant:</span>
+              <button onClick={() => setFilterTenant("all")} className={`px-2 py-0.5 rounded border text-[10px] ${filterTenant === "all" ? "bg-emerald-500/20 border-emerald-400 text-emerald-300" : "border-[var(--bg-border)] text-[var(--text-muted)]"}`}>all</button>
+              {Array.from(new Set([...(mappedTenants || []), ...(mappedFilters || []).map(f => f.tenant)])).map(t => (
+                <button key={t} onClick={() => setFilterTenant(t)}
+                  className={`px-2 py-0.5 rounded border text-[10px] ${filterTenant === t ? "bg-emerald-500/20 border-emerald-400 text-emerald-300" : "border-[var(--bg-border)] text-[var(--text-muted)]"}`}>{t} ({byTenant[t] || 0})</button>
+              ))}
+            </>
+          )}
+        </div>
+      </details>
 
       {/* Workload table */}
       {items.length === 0 ? (

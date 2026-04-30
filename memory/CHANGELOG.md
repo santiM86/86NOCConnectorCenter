@@ -1,5 +1,28 @@
 # CHANGELOG — 86BIT ARGUS Center
 
+## 2026-04-30 — Quick View Filter "Tutti / Solo protetti / Solo problemi"
+
+### UX: filtri rapidi nel pannello Backup cliente
+Su richiesta dell'utente, aggiunto toggle prominente sopra la tabella workload
+per filtrare velocemente la vista con tre presets:
+
+- **Tutti (N)** — mostra tutti i workload (default)
+- **Solo protetti (N)** — mostra solo `status=success` (verde)
+- **Solo problemi (N)** — mostra solo `failed + warning + in_progress`
+
+I conteggi nei pulsanti aggiornano dinamicamente in base ai dati. I vecchi
+filtri dettagliati (status: success/failed/warning/in_progress/not_applicable/
+excluded + tipo + tenant) sono stati spostati in un `<details>` collassabile
+"Filtri avanzati" per non saturare la UI.
+
+**File**: `pages/ClientOverviewPage.js` — `HornetsecurityBackupPanel`.
+- Test selectors: `data-testid="hornetsecurity-quickfilter-{all|protected_only|issues_only}"`
+
+**Build artifacts**:
+- `/app/frontend/public/downloads/argus-frontend-latest.tar.gz` (4.7 MB, SHA256 `562b36b3…`)
+
+---
+
 ## 2026-04-30 — Fix Backup Panel Sub-Group Recognition (P0 hotfix)
 
 ### Bug: ClientOverviewPage backup tab non riconosceva i mapping per sotto-gruppo
