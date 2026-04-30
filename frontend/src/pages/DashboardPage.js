@@ -312,7 +312,25 @@ function ClientCard({ client: c, navigate }) {
           }
         />
         <SvcLine icon={PlugsConnected} label="Connettore" value={c.connector_online === true ? "ON" : c.connector_online === false ? "OFF" : "—"} color={c.connector_online ? "#34C759" : c.connector_online === false ? "#FF3B30" : "#555"} />
-        <SvcLine icon={Database} label="Backup" value={c.backup?.total > 0 ? (c.backup.error > 0 ? `${c.backup.error} ERR` : "OK") : "—"} color={c.backup?.error > 0 ? "#FF3B30" : c.backup?.total > 0 ? "#34C759" : "#555"} />
+        <SvcLine
+          icon={Database}
+          label="Backup"
+          value={
+            c.backup?.total > 0
+              ? (c.backup.error > 0 ? `${c.backup.error} ERR`
+                : c.backup.warning > 0 ? `${c.backup.warning} WARN`
+                : c.backup.stale > 0 ? `${c.backup.stale} STALE`
+                : "OK")
+              : "—"
+          }
+          color={
+            c.backup?.error > 0 ? "#FF3B30"
+            : c.backup?.warning > 0 || c.backup?.stale > 0 ? "#FF9500"
+            : c.backup?.total > 0 ? "#34C759"
+            : "#555"
+          }
+          sub={c.backup?.total > 0 && (c.backup.error + c.backup.warning + c.backup.stale) === 0 ? `${c.backup.ok}/${c.backup.total}` : null}
+        />
         <SvcLine icon={Printer} label="Stampanti" value={c.printers?.total > 0 ? (c.printers.low_toner > 0 ? `${c.printers.low_toner} LOW` : "OK") : "—"} color={c.printers?.low_toner > 0 ? "#FF9500" : c.printers?.total > 0 ? "#34C759" : "#555"} />
         <SvcLine icon={WifiHigh} label="ISP" value={c.wan?.gateway === "online" ? "OK" : c.wan?.gateway === "offline" ? "DOWN" : "—"} color={c.wan?.gateway === "online" ? "#34C759" : c.wan?.gateway === "offline" ? "#FF3B30" : "#555"} />
       </div>

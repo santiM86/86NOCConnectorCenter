@@ -35,12 +35,14 @@ async def run_vmbackup_tick(force: bool = False) -> dict:
     """
     now = datetime.now(timezone.utc)
     cfg = await db.hornetsecurity_vmbackup_config.find_one({"_id": GLOBAL_CONFIG_ID})
-    if not cfg or not cfg.get("enabled", True):
+    if not cfg:
+        return {"error": "Configurazione non presente. Vai in Settings e clicca Configura."}
+    if not force and not cfg.get("enabled", True):
         return {}
     if not force and not _should_poll(cfg, now):
         return {}
     if not cfg.get("api_key_enc") or not cfg.get("user_id"):
-        return {}
+        return {"error": "API key o User ID mancanti nella configurazione."}
     now_iso = now.isoformat()
     try:
         api_key = security_manager.decrypt_credential(cfg["api_key_enc"])

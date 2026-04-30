@@ -125,8 +125,111 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
             "device_type": md.get("device_type", "generic"),
         })
 
-    # Backup status
+    # Backup status (legacy)
     backup_data = await db.backup_status.find({}, {"_id": 0, "client_id": 1, "status": 1, "last_success": 1}).to_list(5000)
+
+    # === Hornetsecurity 365 Total Backup aggregato per cliente via mapping ===
+    # Schema mapping: clients.hornetsecurity_tenants = list of str (whole tenant)
+    # oppure dict {tenant, sub_groups: [...]}
+    m365_by_client: dict[str, dict[str, int]] = {}
+    clients_hs_raw = await db.clients.find(
+        {"hornetsecurity_tenants": {"$exists": True, "$ne": []}},
+        {"_id": 0, "id": 1, "hornetsecurity_tenants": 1},
+    ).to_list(500)
+    if clients_hs_raw:
+        m365_workloads = await db.backup_job_status.find(
+            {"source": "hornetsecurity"},
+            {"_id": 0, "tenant": 1, "sub_group": 1, "status": 1},
+        ).to_list(20000)
+        for c in clients_hs_raw:
+            cid = c.get("id")
+            raw = c.get("hornetsecurity_tenants") or []
+            if isinstance(raw, str):
+                raw = [raw]
+            filters = []
+            for it in raw:
+                if isinstance(it, str) and it.strip():
+                    filters.append((it.strip(), None))
+                elif isinstance(it, dict) and (it.get("tenant") or "").strip():
+                    sg = it.get("sub_groups")
+                    if isinstance(sg, list) and sg:
+                        filters.append((it["tenant"].strip(), {str(x).lower() for x in sg if x}))
+                    else:
+                        filters.append((it["tenant"].strip(), None))
+            if not filters:
+                continue
+            agg = {"total": 0, "ok": 0, "error": 0}
+            for w in m365_workloads:
+                t = w.get("tenant")
+                sg = w.get("sub_group")
+                for (ft, fsg) in filters:
+                    if ft != t:
+                        continue
+                    if fsg is not None and sg not in fsg:
+                        continue
+                    agg["total"] += 1
+                    st = w.get("status")
+                    if st == "success":
+                        agg["ok"] += 1
+                    elif st == "failed":
+                        agg["error"] += 1
+                    break
+            m365_by_client[cid] = agg
+
+    # === Hornetsecurity VM Backup (Altaro) aggregato per cliente ===
+    vm_by_client: dict[str, dict[str, int]] = {}
+    clients_vm_raw = await db.clients.find(
+        {"hornetsecurity_vm_customers": {"$exists": True, "$ne": []}},
+        {"_id": 0, "id": 1, "hornetsecurity_vm_customers": 1},
+    ).to_list(500)
+    if clients_vm_raw:
+        vm_workloads = await db.vmbackup_jobs.find(
+            {"source": "hornetsecurity-vm"},
+            {"_id": 0, "customer_name": 1, "host_name": 1, "alert_reason": 1, "onsite_status": 1},
+        ).to_list(20000)
+        for c in clients_vm_raw:
+            cid = c.get("id")
+            raw_vm = c.get("hornetsecurity_vm_customers") or []
+            if isinstance(raw_vm, str):
+                raw_vm = [raw_vm]
+            # Filters: str → (customer, None) | dict → (customer, hosts_set|None)
+            vm_filters = []
+            for it in raw_vm:
+                if isinstance(it, str) and it.strip():
+                    vm_filters.append((it.strip(), None))
+                elif isinstance(it, dict) and (it.get("customer") or "").strip():
+                    hs = it.get("hosts")
+                    if isinstance(hs, list) and hs:
+                        vm_filters.append((it["customer"].strip(), {str(h) for h in hs if h}))
+                    else:
+                        vm_filters.append((it["customer"].strip(), None))
+            if not vm_filters:
+                continue
+            agg = {"total": 0, "ok": 0, "error": 0, "warning": 0, "stale": 0}
+            for w in vm_workloads:
+                cn = w.get("customer_name")
+                hn = w.get("host_name") or ""
+                match = False
+                for (fc, fh) in vm_filters:
+                    if fc != cn:
+                        continue
+                    if fh is not None and hn not in fh:
+                        continue
+                    match = True
+                    break
+                if not match:
+                    continue
+                agg["total"] += 1
+                r = w.get("alert_reason")
+                if r == "failed":
+                    agg["error"] += 1
+                elif r == "warning":
+                    agg["warning"] += 1
+                elif r == "stale":
+                    agg["stale"] += 1
+                elif w.get("onsite_status") == "success":
+                    agg["ok"] += 1
+            vm_by_client[cid] = agg
 
     # Printer status
     printer_data = await db.printers.find({}, {"_id": 0, "client_id": 1, "toner_levels": 1, "status": 1}).to_list(5000)
@@ -187,7 +290,7 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
     for b in backup_data:
         cid = b.get("client_id")
         if cid not in backup_by_client:
-            backup_by_client[cid] = {"ok": 0, "warning": 0, "error": 0, "total": 0}
+            backup_by_client[cid] = {"ok": 0, "warning": 0, "error": 0, "total": 0, "stale": 0}
         st = b.get("status", "unknown")
         backup_by_client[cid]["total"] += 1
         if st in ("ok", "success", "completed"):
@@ -196,6 +299,22 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
             backup_by_client[cid]["warning"] += 1
         else:
             backup_by_client[cid]["error"] += 1
+
+    # Fondi i contatori Hornetsecurity 365 + VM (se presenti) nei totali per-cliente
+    for cid, m in m365_by_client.items():
+        if cid not in backup_by_client:
+            backup_by_client[cid] = {"ok": 0, "warning": 0, "error": 0, "total": 0, "stale": 0}
+        backup_by_client[cid]["total"] += m.get("total", 0)
+        backup_by_client[cid]["ok"] += m.get("ok", 0)
+        backup_by_client[cid]["error"] += m.get("error", 0)
+    for cid, v in vm_by_client.items():
+        if cid not in backup_by_client:
+            backup_by_client[cid] = {"ok": 0, "warning": 0, "error": 0, "total": 0, "stale": 0}
+        backup_by_client[cid]["total"] += v.get("total", 0)
+        backup_by_client[cid]["ok"] += v.get("ok", 0)
+        backup_by_client[cid]["error"] += v.get("error", 0)
+        backup_by_client[cid]["warning"] += v.get("warning", 0)
+        backup_by_client[cid]["stale"] += v.get("stale", 0)
 
     printer_by_client = {}
     for p in printer_data:
@@ -233,7 +352,7 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
         cid = c.get("id")
         alerts_info = alerts_by_client.get(cid, {"critical": 0, "high": 0, "medium": 0, "low": 0, "total": 0})
         devices_info = devices_by_client.get(cid, {"total": 0, "online": 0, "offline": 0, "stale": 0, "unknown": 0})
-        backup_info = backup_by_client.get(cid, {"ok": 0, "warning": 0, "error": 0, "total": 0})
+        backup_info = backup_by_client.get(cid, {"ok": 0, "warning": 0, "error": 0, "total": 0, "stale": 0})
         printer_info = printer_by_client.get(cid, {"total": 0, "low_toner": 0, "ok": 0})
         wan_tgts = wan_targets_by_client.get(cid, [])
         connector_online = connector_by_client.get(cid)
@@ -291,6 +410,8 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
         # Gli alert hanno il loro pill dedicato con conteggio rosso nella UI.
         devices_offline = devices_info.get("offline", 0) if isinstance(devices_info, dict) else 0
         backup_errors = backup_info.get("error", 0) if isinstance(backup_info, dict) else 0
+        backup_warnings = backup_info.get("warning", 0) if isinstance(backup_info, dict) else 0
+        backup_stale = backup_info.get("stale", 0) if isinstance(backup_info, dict) else 0
         toner_low = printer_info.get("low_toner", 0) if isinstance(printer_info, dict) else 0
 
         health = "ok"
@@ -301,7 +422,7 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
             health = "critical"
         # WARNING: degradi noti
         elif (wan_status in ("firewall_degraded", "router_degraded", "degraded")
-                or backup_errors > 0):
+                or backup_errors > 0 or backup_warnings > 0 or backup_stale > 0):
             health = "warning"
         # ATTENTION: piccole anomalie da monitorare (toner basso)
         elif toner_low > 0:

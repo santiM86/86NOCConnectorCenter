@@ -38,6 +38,7 @@ export default function ClientOverviewPage() {
   const [alerts, setAlerts] = useState([]);
   const [printers, setPrinters] = useState([]);
   const [backups, setBackups] = useState([]);
+  const [backupSummary, setBackupSummary] = useState({ m365: null, vm: null });
   const [connector, setConnector] = useState(null);
   const [iloHealth, setIloHealth] = useState([]);
   const [hwHealth, setHwHealth] = useState(null);
@@ -77,6 +78,16 @@ export default function ClientOverviewPage() {
       const bkpRes = await axios.get(`${API}/backup/dashboard/${clientId}`);
       const data = bkpRes.data;
       setBackups(Array.isArray(data) ? data : (data?.jobs || data?.backups || []));
+    } catch {}
+    // Aggregati Hornetsecurity (365 + VM) per la card Quick Stats
+    try {
+      const [m365Res, vmRes] = await Promise.allSettled([
+        axios.get(`${API}/clients/${clientId}/backup/hornetsecurity/status`),
+        axios.get(`${API}/clients/${clientId}/backup/vmbackup/status`),
+      ]);
+      const m365 = m365Res.status === "fulfilled" ? m365Res.value.data : null;
+      const vm = vmRes.status === "fulfilled" ? vmRes.value.data : null;
+      setBackupSummary({ m365, vm });
     } catch {}
     try {
       const iloRes = await axios.get(`${API}/clients/${clientId}/ilo-health`);
@@ -190,7 +201,49 @@ export default function ClientOverviewPage() {
         <StatBox label="Alert" value={alerts.length} color={criticalAlerts > 0 ? "#FF3B30" : alerts.length > 0 ? "#FF9500" : "#34C759"} sub={criticalAlerts > 0 ? `${criticalAlerts} critici` : "Nessun critico"} />
         <StatBox label="Connettore" value={connector ? "ONLINE" : "OFFLINE"} color={connector ? "#34C759" : "#FF3B30"} sub={connector?.connector_hostname || ""} />
         <StatBox label="Stampanti" value={printers.length > 0 ? `${printers.length}` : "—"} color={printers.some(p => p.toner_low) ? "#FF9500" : "#34C759"} />
-        <StatBox label="Backup" value={backups.length > 0 ? (backups.some(b => b.status === "error") ? "ERR" : "OK") : "—"} color={backups.some(b => b.status === "error") ? "#FF3B30" : "#34C759"} />
+        {(() => {
+          const m = backupSummary.m365 || {};
+          const v = backupSummary.vm || {};
+          const m365Mapped = (m.mapped_filters?.length || m.mapped_tenants?.length || 0) > 0;
+          const vmMapped = (v.mapped_customers?.length || 0) > 0;
+          const m365Failed = m.totals?.active_alerts || 0;
+          const m365Total = m.totals?.total_items || 0;
+          const m365Ok = m.totals?.by_status?.success || 0;
+          const vmFailed = v.totals?.failed || 0;
+          const vmWarn = v.totals?.warning || 0;
+          const vmStale = v.totals?.stale || 0;
+          const vmTotal = v.totals?.vms_total || 0;
+          const vmOk = v.totals?.by_status?.success || 0;
+          const legacyErr = backups.some(b => b.status === "error");
+
+          const anyFailed = m365Failed > 0 || vmFailed > 0 || legacyErr;
+          const anyWarn = vmWarn > 0;
+          const anyStale = vmStale > 0;
+
+          let value, color, sub;
+          if (!m365Mapped && !vmMapped && backups.length === 0) {
+            value = "—"; color = "#555"; sub = "non configurato";
+          } else if (anyFailed) {
+            const n = m365Failed + vmFailed;
+            value = n > 0 ? `${n} KO` : "ERR"; color = "#FF3B30";
+            sub = [
+              m365Failed ? `365:${m365Failed}` : null,
+              vmFailed ? `VM:${vmFailed}` : null,
+            ].filter(Boolean).join(" · ") || "backup falliti";
+          } else if (anyWarn || anyStale) {
+            value = anyWarn ? "WARN" : "STALE"; color = "#FF9500";
+            sub = [
+              vmWarn ? `${vmWarn} warn` : null,
+              vmStale ? `${vmStale} stale` : null,
+            ].filter(Boolean).join(" · ");
+          } else {
+            value = "OK"; color = "#34C759";
+            const okTot = m365Ok + vmOk;
+            const tot = m365Total + vmTotal + backups.length;
+            sub = tot > 0 ? `${okTot}/${tot} protetti` : "tutto ok";
+          }
+          return <StatBox label="Backup" value={value} color={color} sub={sub} />;
+        })()}
       </div>
 
       {/* Tabs */}
