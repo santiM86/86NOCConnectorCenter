@@ -1,5 +1,45 @@
 # CHANGELOG — 86BIT ARGUS Center
 
+## 2026-04-30 — Backup aggregati nelle card Dashboard + Quick Stats cliente
+
+### Le card esistenti ora includono 365 + VM Backup (non più solo legacy)
+Su richiesta dell'utente, la card **Backup** nella dashboard principale e nel
+Quick Stats del cliente mostra i contatori aggregati di tutti e 3 i provider:
+`db.backup_status` (legacy) + `db.backup_job_status` (365 Total) + `db.vmbackup_jobs`
+(VM Altaro), filtrati per cliente via i rispettivi mapping.
+
+**Backend** `routes/overview.py` — endpoint `/api/overview/clients`:
+- Nuova aggregazione `m365_by_client`: legge i workload 365 e li fan-out sui
+  clienti secondo il mapping `hornetsecurity_tenants` (stringhe o dict con
+  sub_groups), sommando totale/ok/error per-cliente
+- Nuova aggregazione `vm_by_client`: legge le VM Altaro e le fan-out secondo
+  `hornetsecurity_vm_customers`, aggiungendo `warning` e `stale`
+- I 3 totali vengono fusi in `backup_by_client[cid]` con schema
+  `{total, ok, warning, error, stale}`
+- `health = "warning"` ora viene triggerato anche da `backup_warnings > 0`
+  o `backup_stale > 0` (prima solo `error > 0`)
+
+**Frontend** `pages/DashboardPage.js` — SvcLine "Backup":
+- Priorità di display: error > warning > stale > OK
+- Stringhe: `"N ERR"` (rosso) / `"N WARN"` (arancio) / `"N STALE"` (arancio) / `"OK"` (verde)
+- Sub-label mostra `ok/total` solo quando tutto OK
+
+**Frontend** `pages/ClientOverviewPage.js` — Quick Stats "Backup":
+- Nuovo stato `backupSummary` con fetch paralleli di `/backup/hornetsecurity/status`
+  e `/backup/vmbackup/status`
+- Card mostra `"N KO"` se ci sono failed, sub dettaglia `365:X · VM:Y`
+- Stato WARN/STALE/OK con contatori `ok/total` nel sub
+
+**Test**: cliente 86BIT_Office con mapping galvan.it (365) + ifalegnami.eu (VM):
+aggrega a **123 backup totali** (50 ok galvan + 16 VM + 57 legacy), **1 error**
+(365), **12 stale** (VM + legacy). `health="warning"` come da policy.
+
+**Build artifacts**:
+- Backend: `argus-backend-latest.tar.gz` 2.5 MB, SHA256 `d14913cb…`
+- Frontend: `argus-frontend-latest.tar.gz` 4.7 MB, SHA256 `8cf17e22…`
+
+---
+
 ## 2026-04-30 — UI Config globale VM Backup nella pagina Hornetsecurity Settings
 
 ### Pagina `/settings/hornetsecurity` ora ha tab "VM Backup (Altaro)"
