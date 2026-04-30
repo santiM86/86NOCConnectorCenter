@@ -17,6 +17,7 @@ export default function HornetsecuritySettingsPage() {
   const [saving, setSaving] = useState(false);
   const [busy, setBusy] = useState(false);
   const [showEdit, setShowEdit] = useState(false);
+  const [viewMode, setViewMode] = useState("by-tenant"); // "by-tenant" | "by-client"
   const [form, setForm] = useState({ api_url: "", api_key: "", poll_interval_minutes: 30, enabled: true });
 
   const reload = useCallback(async () => {
@@ -201,26 +202,33 @@ export default function HornetsecuritySettingsPage() {
       {/* Mapping clienti ↔ tenant */}
       {isConfigured && tenants.length > 0 && (
         <div className="noc-panel p-4 space-y-3" data-testid="mapping-section">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <ShieldCheck size={16} className="text-emerald-400" />
             <span className="text-sm font-bold">Mapping clienti ↔ tenant Hornetsecurity</span>
-            <span className="text-[10px] text-[var(--text-muted)]">{tenants.length} tenant rilevati · {mappedTenants.size} mappati · {unmappedTenants.length} non mappati</span>
+            <span className="text-[10px] text-[var(--text-muted)]">{tenants.length} tenant · {mappedTenants.size} mappati · {unmappedTenants.length} liberi</span>
+            <div className="ml-auto flex items-center gap-1 text-[10px]">
+              <span className="text-[var(--text-muted)]">Vista:</span>
+              <button
+                onClick={() => setViewMode("by-tenant")}
+                className={`px-2 py-0.5 rounded border ${viewMode === "by-tenant" ? "bg-emerald-500/20 border-emerald-400 text-emerald-300" : "border-[var(--bg-border)] text-[var(--text-muted)]"}`}
+                data-testid="view-by-tenant"
+              >Per tenant Hornetsecurity</button>
+              <button
+                onClick={() => setViewMode("by-client")}
+                className={`px-2 py-0.5 rounded border ${viewMode === "by-client" ? "bg-emerald-500/20 border-emerald-400 text-emerald-300" : "border-[var(--bg-border)] text-[var(--text-muted)]"}`}
+                data-testid="view-by-client"
+              >Per cliente ARGUS</button>
+            </div>
           </div>
           <p className="text-[10px] text-[var(--text-muted)]">
-            Associa ogni cliente ARGUS al tenant Hornetsecurity corrispondente. Senza mapping, la tab Backup del cliente non mostrera` dati. Un cliente puo` essere associato a piu` tenant (es. multiplo dominio).
+            {viewMode === "by-tenant"
+              ? "Per ciascun tenant Hornetsecurity scegli a quale cliente ARGUS appartiene. Modalita` consigliata quando vuoi mappare velocemente molti tenant."
+              : "Per ciascun cliente ARGUS scegli quali tenant Hornetsecurity gli appartengono. Un cliente puo` avere piu` tenant (multi-dominio)."}
           </p>
-          <ClientMappingTable clients={clients} tenants={tenants} updateMapping={updateMapping} />
-          {unmappedTenants.length > 0 && (
-            <details className="text-[11px]">
-              <summary className="text-amber-300 cursor-pointer">⚠ {unmappedTenants.length} tenant Hornetsecurity senza cliente ARGUS associato</summary>
-              <div className="mt-2 grid grid-cols-2 md:grid-cols-3 gap-1.5">
-                {unmappedTenants.map(t => (
-                  <div key={t.tenant} className="text-[10px] font-mono text-[var(--text-muted)] bg-[var(--bg-card)] px-2 py-1 rounded border border-[var(--bg-border)]">
-                    {t.tenant} <span className="text-[9px]">({t.workloads_total}wl)</span>
-                  </div>
-                ))}
-              </div>
-            </details>
+          {viewMode === "by-tenant" ? (
+            <TenantMappingTable tenants={tenants} clients={clients} mappings={mappings} updateMapping={updateMapping} />
+          ) : (
+            <ClientMappingTable clients={clients} tenants={tenants} updateMapping={updateMapping} />
           )}
         </div>
       )}
@@ -261,6 +269,200 @@ export default function HornetsecuritySettingsPage() {
         </div>
       )}
     </div>
+  );
+}
+
+function TenantMappingTable({ tenants, clients, mappings, updateMapping }) {
+  // Build reverse map: tenant -> client_id (assumendo 1 tenant a 1 cliente principale, ma supportiamo piu` clienti per tenant via lista)
+  const tenantToClient = {};
+  mappings.forEach(m => {
+    (m.tenants || []).forEach(t => {
+      if (!tenantToClient[t]) tenantToClient[t] = [];
+      tenantToClient[t].push({ id: m.client_id, name: m.client_name });
+    });
+  });
+
+  const [filter, setFilter] = useState("all"); // all | mapped | unmapped | failed
+  const filteredTenants = tenants.filter(t => {
+    if (filter === "mapped") return tenantToClient[t.tenant]?.length > 0;
+    if (filter === "unmapped") return !tenantToClient[t.tenant]?.length;
+    if (filter === "failed") return (t.workloads_failed || 0) > 0;
+    return true;
+  });
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-1.5 text-[10px]">
+        <span className="text-[var(--text-muted)]">Filtra:</span>
+        {[
+          { id: "all", label: `Tutti (${tenants.length})` },
+          { id: "unmapped", label: `Da mappare (${tenants.filter(t => !tenantToClient[t.tenant]?.length).length})` },
+          { id: "mapped", label: `Mappati (${tenants.filter(t => tenantToClient[t.tenant]?.length).length})` },
+          { id: "failed", label: `Con backup falliti (${tenants.filter(t => (t.workloads_failed || 0) > 0).length})` },
+        ].map(f => (
+          <button key={f.id} onClick={() => setFilter(f.id)}
+            className={`px-2 py-0.5 rounded border ${filter === f.id ? "bg-cyan-500/20 border-cyan-400 text-cyan-300" : "border-[var(--bg-border)] text-[var(--text-muted)]"}`}
+            data-testid={`filter-${f.id}`}>
+            {f.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="overflow-x-auto">
+        <table className="noc-table w-full text-[11px]">
+          <thead>
+            <tr>
+              <th>Tenant Hornetsecurity</th>
+              <th>Workload</th>
+              <th>Falliti</th>
+              <th>Cliente ARGUS</th>
+              <th>Azioni</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filteredTenants.map(t => (
+              <TenantMappingRow key={t.tenant} tenant={t} clients={clients} currentClients={tenantToClient[t.tenant] || []} updateMapping={updateMapping} mappings={mappings} />
+            ))}
+          </tbody>
+        </table>
+        {filteredTenants.length === 0 && (
+          <div className="text-center py-3 text-[var(--text-muted)] text-[11px]">Nessun tenant corrispondente al filtro</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function TenantMappingRow({ tenant, clients, currentClients, updateMapping, mappings }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(currentClients[0]?.id || "");
+  const [saving, setSaving] = useState(false);
+
+  // suggerimento auto: cliente con nome simile al tenant
+  const tn = tenant.tenant.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const tnLong = (tenant.tenant_long || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  const suggested = clients.find(c => {
+    const cn = (c.name || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (!cn) return false;
+    return cn === tn || tn.includes(cn) || cn.includes(tn) ||
+           (tnLong && (cn === tnLong || tnLong.includes(cn) || cn.includes(tnLong)));
+  });
+
+  const startEdit = () => {
+    setDraft(currentClients[0]?.id || suggested?.id || "");
+    setEditing(true);
+  };
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      // Rimuovi questo tenant da TUTTI i clienti che ce l'avevano
+      for (const c of currentClients) {
+        if (c.id !== draft) {
+          const cm = mappings.find(m => m.client_id === c.id);
+          const newTenants = (cm?.tenants || []).filter(x => x !== tenant.tenant);
+          await updateMapping(c.id, newTenants);
+        }
+      }
+      // Aggiungi al nuovo cliente (se selezionato)
+      if (draft) {
+        const cm = mappings.find(m => m.client_id === draft);
+        const existing = cm?.tenants || [];
+        if (!existing.includes(tenant.tenant)) {
+          await updateMapping(draft, [...existing, tenant.tenant]);
+        }
+      }
+      setEditing(false);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const remove = async () => {
+    setSaving(true);
+    try {
+      for (const c of currentClients) {
+        const cm = mappings.find(m => m.client_id === c.id);
+        const newTenants = (cm?.tenants || []).filter(x => x !== tenant.tenant);
+        await updateMapping(c.id, newTenants);
+      }
+      setEditing(false);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const failedCol = (tenant.workloads_failed || 0) > 0 ? "#FF3B30" : "var(--text-muted)";
+
+  return (
+    <tr data-testid={`tenant-row-${tenant.tenant}`}>
+      <td>
+        <div className="font-semibold">{tenant.tenant}</div>
+        {tenant.tenant_long && tenant.tenant_long !== tenant.tenant && (
+          <div className="text-[9px] text-[var(--text-muted)] font-mono">{tenant.tenant_long}</div>
+        )}
+      </td>
+      <td className="text-[10px] font-mono">{tenant.workloads_total || 0}</td>
+      <td className="text-[10px] font-mono font-bold" style={{ color: failedCol }}>{tenant.workloads_failed || 0}</td>
+      <td>
+        {editing ? (
+          <select
+            value={draft}
+            onChange={e => setDraft(e.target.value)}
+            className="text-[11px] bg-[var(--bg-card)] border border-[var(--bg-border)] rounded px-1 py-0.5 w-full"
+            data-testid={`tenant-select-${tenant.tenant}`}
+            autoFocus
+          >
+            <option value="">— Nessun cliente —</option>
+            {clients
+              .slice()
+              .sort((a, b) => {
+                if (suggested && a.id === suggested.id) return -1;
+                if (suggested && b.id === suggested.id) return 1;
+                return (a.name || "").localeCompare(b.name || "");
+              })
+              .map(c => (
+                <option key={c.id} value={c.id}>
+                  {suggested && c.id === suggested.id ? "★ " : ""}{c.name}
+                </option>
+              ))}
+          </select>
+        ) : currentClients.length > 0 ? (
+          <div className="flex flex-wrap gap-1">
+            {currentClients.map(c => (
+              <span key={c.id} className="text-[10px] px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-300 border border-cyan-500/30">
+                {c.name}
+              </span>
+            ))}
+          </div>
+        ) : (
+          <span className="text-[10px] text-[var(--text-muted)] italic">
+            — non mappato —{suggested && <span className="ml-1 text-amber-300">suggerimento: {suggested.name}</span>}
+          </span>
+        )}
+      </td>
+      <td>
+        {editing ? (
+          <div className="flex gap-1">
+            <Button size="sm" onClick={save} disabled={saving} className="bg-emerald-600 hover:bg-emerald-700 h-6 text-[10px]" data-testid={`save-tenant-${tenant.tenant}`}>
+              {saving ? "..." : "Salva"}
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => setEditing(false)} disabled={saving} className="h-6 text-[10px]">Annulla</Button>
+          </div>
+        ) : (
+          <div className="flex gap-1">
+            <Button size="sm" variant="outline" className="h-6 text-[10px]" onClick={startEdit} data-testid={`edit-tenant-${tenant.tenant}`}>
+              {currentClients.length > 0 ? "Modifica" : "Associa"}
+            </Button>
+            {currentClients.length > 0 && (
+              <Button size="sm" variant="outline" onClick={remove} disabled={saving} className="h-6 text-[10px] text-red-400 border-red-400/30" data-testid={`remove-tenant-${tenant.tenant}`}>
+                <Trash size={10} />
+              </Button>
+            )}
+          </div>
+        )}
+      </td>
+    </tr>
   );
 }
 

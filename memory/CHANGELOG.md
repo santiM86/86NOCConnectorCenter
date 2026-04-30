@@ -1,5 +1,24 @@
 # CHANGELOG — 86BIT ARGUS Center
 
+## 2026-04-30 — Tenant→Client Mapping Reverse View (backend v3.5.32)
+
+### 🔄 Modalita` "Per tenant Hornetsecurity"
+Aggiunta vista alternativa per il mapping cliente↔tenant: tabella centrata sui
+44 tenant Hornetsecurity rilevati, con dropdown "Associa cliente ARGUS" per
+ciascuno. Piu` rapida quando hai molti tenant da mappare (vs flow per-cliente).
+
+**Frontend** `pages/HornetsecuritySettingsPage.js`:
+- Nuovo toggle vista: **"Per tenant Hornetsecurity"** (default) | "Per cliente ARGUS"
+- Componente `TenantMappingTable` con:
+  - Filtri: Tutti / Da mappare / Mappati / Con backup falliti
+  - Colonne: Tenant + dominio + workload count + falliti + cliente associato + azioni
+  - Auto-suggerimento cliente Argus (★ in dropdown) per nome simile/identico
+  - Edit inline con `<select>` (lista clienti ordinata, suggested in cima)
+  - Action button "Associa" (se non mappato) o "Modifica/Cestino" (se mappato)
+  - Reverse mapping internamente: tenant → client_id derivato dalla lista mappings
+- Componente `TenantMappingRow` gestisce add/remove tenant da clients in modo
+  transazionale: rimuove dal vecchio cliente + aggiunge al nuovo
+
 ## 2026-04-30 — Hornetsecurity Global Config + Tenant Mapping (backend v3.5.31)
 
 ### 🌍 Refactor a config globale + mapping multi-tenant
