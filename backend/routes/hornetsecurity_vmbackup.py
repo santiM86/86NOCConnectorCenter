@@ -305,24 +305,110 @@ async def _ensure_client(client_id: str) -> dict:
 
 
 async def _client_vm_customers(client_id: str) -> list[str]:
+    """[Compat] Ritorna solo nomi customer (whole-customer), ignora host-only mapping."""
+    filters = await _client_vm_filters(client_id)
+    return sorted({f["customer"] for f in filters if not f.get("hosts")})
+
+
+async def _client_vm_filters(client_id: str) -> list[dict]:
+    """Ritorna i filtri customer/hosts di un cliente.
+
+    Ogni elemento puo` essere:
+      - string  → {customer, hosts: None} (tutto il customer)
+      - dict    → {customer, hosts: [...]|None}
+    """
     c = await db.clients.find_one({"id": client_id}, {"_id": 0, "hornetsecurity_vm_customers": 1})
     if not c:
         return []
     raw = c.get("hornetsecurity_vm_customers") or []
     if isinstance(raw, str):
         raw = [raw]
-    return [str(x).strip() for x in raw if x and str(x).strip()]
+    out: list[dict] = []
+    for item in raw:
+        if isinstance(item, str):
+            s = item.strip()
+            if s:
+                out.append({"customer": s, "hosts": None})
+        elif isinstance(item, dict):
+            cn = (item.get("customer") or "").strip()
+            if not cn:
+                continue
+            hosts = item.get("hosts")
+            if isinstance(hosts, list) and hosts:
+                cleaned = sorted({str(x).strip() for x in hosts if x and str(x).strip()})
+                out.append({"customer": cn, "hosts": cleaned or None})
+            else:
+                out.append({"customer": cn, "hosts": None})
+    return out
+
+
+def _matches_vm_filter(filter_item: Any, customer: str, host: str) -> bool:
+    """True se il filter_item del mapping cliente copre la coppia (customer, host)."""
+    if isinstance(filter_item, str):
+        return filter_item == customer
+    if isinstance(filter_item, dict):
+        if filter_item.get("customer") != customer:
+            return False
+        hosts = filter_item.get("hosts")
+        if not hosts:
+            return True
+        return host in {str(x) for x in hosts if x}
+    return False
+
+
+def _build_vm_mongo_filter(filters: list[dict]) -> dict:
+    """Costruisce query Mongo dai filtri (customer, hosts)."""
+    if not filters:
+        return {"_no_mapping_": True}
+    or_blocks: list[dict] = []
+    for f in filters:
+        block: dict = {"customer_name": f["customer"]}
+        if f.get("hosts"):
+            block["host_name"] = {"$in": f["hosts"]}
+        or_blocks.append(block)
+    if len(or_blocks) == 1:
+        return or_blocks[0]
+    return {"$or": or_blocks}
 
 
 class VMCustomerMappingIn(BaseModel):
-    customers: list[str] = Field(default_factory=list)
+    customers: list[Any] = Field(
+        default_factory=list,
+        description=(
+            "Lista mapping. Ogni elemento puo` essere:\n"
+            "- string (nome customer) → mappa l'intero customer (legacy)\n"
+            "- {customer: str, hosts: [str] | null} → mappa solo gli host indicati"
+        ),
+    )
 
 
 @router.get("/clients/{client_id}/backup/vmbackup/mapping")
 async def get_vm_mapping(client_id: str, current_user: dict = Depends(get_current_user)):
     c = await _ensure_client(client_id)
-    return {"client_id": client_id, "client_name": c.get("name"),
-            "customers": c.get("hornetsecurity_vm_customers") or []}
+    raw = c.get("hornetsecurity_vm_customers", []) or []
+    if isinstance(raw, str):
+        raw = [raw]
+    legacy_customers: list[str] = []
+    full_filters: list[dict] = []
+    for item in raw:
+        if isinstance(item, str) and item.strip():
+            legacy_customers.append(item.strip())
+            full_filters.append({"customer": item.strip(), "hosts": None})
+        elif isinstance(item, dict):
+            cn = (item.get("customer") or "").strip()
+            if not cn:
+                continue
+            hosts = item.get("hosts")
+            if isinstance(hosts, list) and hosts:
+                full_filters.append({"customer": cn, "hosts": sorted({str(h) for h in hosts if h})})
+            else:
+                legacy_customers.append(cn)
+                full_filters.append({"customer": cn, "hosts": None})
+    return {
+        "client_id": client_id, "client_name": c.get("name"),
+        "customers": legacy_customers,   # backcompat
+        "filters": full_filters,
+    }
 
 
 @router.put("/clients/{client_id}/backup/vmbackup/mapping")
@@ -332,12 +418,35 @@ async def set_vm_mapping(
 ):
     require_admin(current_user)
     await _ensure_client(client_id)
-    cleaned = sorted({(c or "").strip() for c in payload.customers if c and c.strip()})
+    cleaned: list[Any] = []
+    seen: set[str] = set()
+    for item in payload.customers or []:
+        if isinstance(item, str):
+            s = item.strip()
+            if s and s not in seen:
+                cleaned.append(s)
+                seen.add(s)
+        elif isinstance(item, dict):
+            cn = (item.get("customer") or "").strip()
+            if not cn:
+                continue
+            hosts_raw = item.get("hosts")
+            if isinstance(hosts_raw, list) and hosts_raw:
+                hosts_clean = sorted({str(h).strip() for h in hosts_raw if h and str(h).strip()})
+                if hosts_clean:
+                    key = f"{cn}::{','.join(hosts_clean)}"
+                    if key not in seen:
+                        cleaned.append({"customer": cn, "hosts": hosts_clean})
+                        seen.add(key)
+                    continue
+            if cn not in seen:
+                cleaned.append(cn)
+                seen.add(cn)
     await db.clients.update_one(
         {"id": client_id},
         {"$set": {"hornetsecurity_vm_customers": cleaned}},
     )
-    audit.warning(f"VMBACKUP_MAPPING_SET by={current_user.get('email')} client={client_id} customers={cleaned}")
+    audit.warning(f"VMBACKUP_MAPPING_SET by={current_user.get('email')} client={client_id} entries={cleaned}")
     synced = 0
     try:
         synced = await _sync_vm_alerts_for_client(client_id, cleaned)
@@ -349,14 +458,15 @@ async def set_vm_mapping(
 @router.get("/clients/{client_id}/backup/vmbackup/status")
 async def get_vm_status(client_id: str, current_user: dict = Depends(get_current_user)):
     await _ensure_client(client_id)
-    customers = await _client_vm_customers(client_id)
-    if not customers:
-        return {"mapped_customers": [], "items": [], "totals": {
+    filters = await _client_vm_filters(client_id)
+    if not filters:
+        return {"mapped_customers": [], "mapped_filters": [], "items": [], "totals": {
             "by_status": {}, "by_host": {}, "vms_total": 0,
             "failed": 0, "warning": 0, "stale": 0,
         }}
+    customers = sorted({f["customer"] for f in filters})
     items = await db.vmbackup_jobs.find(
-        {"customer_name": {"$in": customers}}, {"_id": 0}
+        _build_vm_mongo_filter(filters), {"_id": 0},
     ).sort("vm_name", 1).limit(5000).to_list(5000)
     by_host: dict[str, int] = {}
     by_status: dict[str, int] = {}
@@ -375,12 +485,86 @@ async def get_vm_status(client_id: str, current_user: dict = Depends(get_current
             stale += 1
     return {
         "mapped_customers": customers,
+        "mapped_filters": filters,
         "items": items,
         "totals": {
             "by_host": by_host, "by_status": by_status,
             "vms_total": len(items),
             "failed": failed, "warning": warning, "stale": stale,
         },
+    }
+
+
+# ---------------------------------------------------------------------------
+# Hosts discovery (for host-level mapping UI)
+# ---------------------------------------------------------------------------
+@router.get("/admin/hornetsecurity-vm/customers/{customer_name}/hosts")
+async def list_customer_hosts(
+    customer_name: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Lista gli host (fisici Hyper-V/VMware) dentro un customer Altaro, con
+    conteggio VM, stato ed eventuali client mappati (espliciti o ereditati).
+    """
+    require_admin(current_user)
+    rows = await db.vmbackup_jobs.aggregate([
+        {"$match": {"source": "hornetsecurity-vm", "customer_name": customer_name}},
+        {"$group": {
+            "_id": "$host_name",
+            "host_type": {"$first": "$host_type"},
+            "installation": {"$first": "$installation_name"},
+            "vms_total": {"$sum": 1},
+            "vms_failed": {"$sum": {"$cond": [{"$eq": ["$alert_reason", "failed"]}, 1, 0]}},
+            "vms_warning": {"$sum": {"$cond": [{"$eq": ["$alert_reason", "warning"]}, 1, 0]}},
+            "vms_stale": {"$sum": {"$cond": [{"$eq": ["$alert_reason", "stale"]}, 1, 0]}},
+            "vms_success": {"$sum": {"$cond": [{"$eq": ["$onsite_status", "success"]}, 1, 0]}},
+            "last_seen": {"$max": "$captured_at"},
+        }},
+        {"$sort": {"_id": 1}},
+    ]).to_list(500)
+    hosts = []
+    for r in rows:
+        hosts.append({
+            "host_name": r["_id"] or "(sconosciuto)",
+            "host_type": r.get("host_type") or "",
+            "installation": r.get("installation") or "",
+            "vms_total": r.get("vms_total", 0),
+            "vms_failed": r.get("vms_failed", 0),
+            "vms_warning": r.get("vms_warning", 0),
+            "vms_stale": r.get("vms_stale", 0),
+            "vms_success": r.get("vms_success", 0),
+            "last_seen": r.get("last_seen"),
+        })
+
+    # Mappings attuali host → clienti
+    host_to_clients: dict[str, list[dict]] = {}
+    async for c in db.clients.find(
+        {"hornetsecurity_vm_customers": {"$exists": True, "$ne": []}},
+        {"_id": 0, "id": 1, "name": 1, "hornetsecurity_vm_customers": 1},
+    ):
+        raw = c.get("hornetsecurity_vm_customers") or []
+        if isinstance(raw, str):
+            raw = [raw]
+        for item in raw:
+            if isinstance(item, dict) and item.get("customer") == customer_name:
+                for h in (item.get("hosts") or []):
+                    host_to_clients.setdefault(str(h), []).append(
+                        {"client_id": c["id"], "client_name": c.get("name")}
+                    )
+            elif isinstance(item, str) and item == customer_name:
+                host_to_clients.setdefault("__whole_customer__", []).append(
+                    {"client_id": c["id"], "client_name": c.get("name")}
+                )
+
+    for h in hosts:
+        whole = host_to_clients.get("__whole_customer__", [])
+        specific = host_to_clients.get(h["host_name"], [])
+        h["mapped_clients"] = specific + [{**c, "via": "whole_customer"} for c in whole]
+
+    return {
+        "customer_name": customer_name,
+        "hosts": hosts,
+        "total_hosts": len(hosts),
     }
 
 
@@ -422,8 +606,26 @@ async def list_vm_customers(current_user: dict = Depends(get_current_user)):
         {"hornetsecurity_vm_customers": {"$exists": True, "$ne": []}},
         {"_id": 0, "id": 1, "name": 1, "hornetsecurity_vm_customers": 1},
     ):
-        mappings.append({"client_id": c["id"], "client_name": c.get("name"),
-                         "customers": c.get("hornetsecurity_vm_customers") or []})
+        raw = c.get("hornetsecurity_vm_customers") or []
+        if isinstance(raw, str):
+            raw = [raw]
+        flat_customers: list[str] = []
+        full_filters: list[dict] = []
+        for it in raw:
+            if isinstance(it, str):
+                flat_customers.append(it)
+                full_filters.append({"customer": it, "hosts": None})
+            elif isinstance(it, dict) and it.get("customer"):
+                if it.get("hosts"):
+                    full_filters.append({"customer": it["customer"], "hosts": list(it["hosts"])})
+                else:
+                    flat_customers.append(it["customer"])
+                    full_filters.append({"customer": it["customer"], "hosts": None})
+        mappings.append({
+            "client_id": c["id"], "client_name": c.get("name"),
+            "customers": flat_customers,
+            "filters": full_filters,
+        })
     return {"customers": customers, "mappings": mappings}
 
 
@@ -431,12 +633,19 @@ async def list_vm_customers(current_user: dict = Depends(get_current_user)):
 # Alert fan-out to main alerts collection
 # ---------------------------------------------------------------------------
 async def _fanout_vm_alert(vm: dict, severity: str, reason: str, now_iso: str) -> int:
-    """Crea/aggiorna alert in db.alerts per ogni cliente mappato al customer."""
+    """Crea/aggiorna alert in db.alerts per ogni cliente mappato alla coppia
+    (customer, host) della VM (filtraggio stretto per host quando specificato).
+    """
     touched = 0
     async for client in db.clients.find(
-        {"hornetsecurity_vm_customers": vm["customer_name"]},
-        {"_id": 0, "id": 1},
+        {"hornetsecurity_vm_customers": {"$exists": True, "$ne": []}},
+        {"_id": 0, "id": 1, "hornetsecurity_vm_customers": 1},
     ):
+        raw = client.get("hornetsecurity_vm_customers") or []
+        if isinstance(raw, str):
+            raw = [raw]
+        if not any(_matches_vm_filter(it, vm["customer_name"], vm.get("host_name") or "") for it in raw):
+            continue
         alert_id = f"vmbackup-{client['id']}-{vm['customer_name']}-{vm['vm_id']}"[:200]
         title_reason = {
             "failed": "Backup VM fallito",
@@ -495,18 +704,32 @@ async def _resolve_vm_alerts(customer_name: str, vm_id: str, now_iso: str) -> in
     return res.modified_count
 
 
-async def _sync_vm_alerts_for_client(client_id: str, customers: list[str]) -> int:
-    """Rilegge VM con alert_severity attivo per i customer mappati e riemette alert."""
-    if not customers:
+async def _sync_vm_alerts_for_client(client_id: str, mapping_entries: list[Any]) -> int:
+    """Rilegge VM con alert_severity attivo coperte dal mapping del cliente e
+    riemette gli alert. Supporta filtro host-level.
+    """
+    if not mapping_entries:
         return 0
     now_iso = datetime.now(timezone.utc).isoformat()
+    or_blocks: list[dict] = []
+    for it in mapping_entries:
+        if isinstance(it, str) and it.strip():
+            or_blocks.append({"customer_name": it.strip(), "alert_severity": {"$ne": None}})
+        elif isinstance(it, dict):
+            cn = (it.get("customer") or "").strip()
+            if not cn:
+                continue
+            hosts = it.get("hosts")
+            block: dict = {"customer_name": cn, "alert_severity": {"$ne": None}}
+            if isinstance(hosts, list) and hosts:
+                block["host_name"] = {"$in": list(hosts)}
+            or_blocks.append(block)
+    if not or_blocks:
+        return 0
+    query = {"$or": or_blocks} if len(or_blocks) > 1 else or_blocks[0]
     synced = 0
-    cursor = db.vmbackup_jobs.find(
-        {"customer_name": {"$in": customers}, "alert_severity": {"$ne": None}},
-        {"_id": 0},
-    )
+    cursor = db.vmbackup_jobs.find(query, {"_id": 0})
     async for v in cursor:
-        # Build single-client fan-out (inline per non reiterare sulla mappa completa)
         sev = v.get("alert_severity") or "medium"
         reason = v.get("alert_reason") or "warning"
         alert_id = f"vmbackup-{client_id}-{v['customer_name']}-{v['vm_id']}"[:200]

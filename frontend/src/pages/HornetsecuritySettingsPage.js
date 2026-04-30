@@ -464,6 +464,53 @@ function VMBackupSettingsSection({ clients }) {
     }
   };
 
+  // Helper: modifica l'assegnazione di un singolo (customer, host) mantenendo
+  // intatti gli altri mapping. Se `newClientId` e` vuoto: rimuove l'assegnazione.
+  const updateHostMapping = async (customerName, hostName, newClientId) => {
+    try {
+      // 1) Rimuovi questo (customer, host) da TUTTI i clienti che lo avevano
+      for (const m of mappings) {
+        const filters = m.filters || [];
+        const had = filters.some(f => f.customer === customerName && Array.isArray(f.hosts) && f.hosts.includes(hostName));
+        if (!had) continue;
+        const newFilters = filters
+          .map(f => {
+            if (f.customer !== customerName) return f;
+            if (!Array.isArray(f.hosts)) return f;
+            const cleaned = f.hosts.filter(h => h !== hostName);
+            if (cleaned.length === 0) return null;
+            return { customer: f.customer, hosts: cleaned };
+          })
+          .filter(Boolean);
+        const payload = newFilters.map(f => (f.hosts ? { customer: f.customer, hosts: f.hosts } : f.customer));
+        await axios.put(`${API}/clients/${m.client_id}/backup/vmbackup/mapping`, { customers: payload });
+      }
+      // 2) Aggiungi al nuovo cliente
+      if (newClientId) {
+        const cm = mappings.find(m => m.client_id === newClientId);
+        const filters = (cm && cm.filters) || [];
+        const hasWhole = filters.some(f => f.customer === customerName && !f.hosts);
+        if (!hasWhole) {
+          let found = false;
+          const newFilters = filters.map(f => {
+            if (f.customer === customerName && Array.isArray(f.hosts)) {
+              found = true;
+              return { customer: f.customer, hosts: Array.from(new Set([...(f.hosts || []), hostName])) };
+            }
+            return f;
+          });
+          if (!found) newFilters.push({ customer: customerName, hosts: [hostName] });
+          const payload = newFilters.map(f => (f.hosts ? { customer: f.customer, hosts: f.hosts } : f.customer));
+          await axios.put(`${API}/clients/${newClientId}/backup/vmbackup/mapping`, { customers: payload });
+        }
+      }
+      toast.success(`Host "${hostName}" aggiornato`);
+      await reload();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Errore mapping host");
+    }
+  };
+
   if (loading) return <div className="p-4 text-[var(--text-muted)] text-sm">Caricamento…</div>;
 
   const isConfigured = !!config?.configured;
@@ -636,6 +683,7 @@ function VMBackupSettingsSection({ clients }) {
             <table className="noc-table w-full text-[11px]">
               <thead>
                 <tr>
+                  <th style={{ width: 24 }}></th>
                   <th>Customer Hornetsecurity VM</th>
                   <th>VM</th>
                   <th>Hosts</th>
@@ -654,6 +702,7 @@ function VMBackupSettingsSection({ clients }) {
                     mappings={mappings}
                     currentClients={customerToClients[c.customer_name] || []}
                     updateMapping={updateCustomerMapping}
+                    updateHostMapping={updateHostMapping}
                   />
                 ))}
               </tbody>
@@ -668,17 +717,44 @@ function VMBackupSettingsSection({ clients }) {
   );
 }
 
-function VMCustomerRow({ customer, clients, mappings, currentClients, updateMapping }) {
+function VMCustomerRow({ customer, clients, mappings, currentClients, updateMapping, updateHostMapping }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(currentClients[0]?.id || "");
   const [saving, setSaving] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const [hosts, setHosts] = useState(null);
+  const [loadingHosts, setLoadingHosts] = useState(false);
 
-  // Auto-suggestion: cliente con nome simile al customer (es. "86bit.it" → "86BIT_Office")
+  // Auto-suggestion: cliente con nome simile al customer
   const cn = customer.customer_name.toLowerCase().replace(/\.(it|com|net|eu|onmicrosoft\.com)$/, "").replace(/[^a-z0-9]/g, "");
   const suggested = cn ? clients.find(cl => {
     const nn = (cl.name || "").toLowerCase().replace(/[^a-z0-9]/g, "");
     return nn && (nn === cn || nn.includes(cn) || cn.includes(nn));
   }) : null;
+
+  const loadHosts = useCallback(async () => {
+    setLoadingHosts(true);
+    try {
+      const r = await axios.get(`${API}/admin/hornetsecurity-vm/customers/${encodeURIComponent(customer.customer_name)}/hosts`);
+      setHosts(r.data?.hosts || []);
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Errore caricamento host");
+      setHosts([]);
+    } finally {
+      setLoadingHosts(false);
+    }
+  }, [customer.customer_name]);
+
+  const toggleExpand = async () => {
+    const next = !expanded;
+    setExpanded(next);
+    if (next && hosts === null) await loadHosts();
+  };
+
+  const onHostChanged = async (hostName, newClientId) => {
+    await updateHostMapping(customer.customer_name, hostName, newClientId);
+    await loadHosts();
+  };
 
   const start = () => {
     setDraft(currentClients[0]?.id || suggested?.id || "");
@@ -688,21 +764,18 @@ function VMCustomerRow({ customer, clients, mappings, currentClients, updateMapp
   const save = async () => {
     setSaving(true);
     try {
-      // Rimuovi il customer da tutti i clienti che lo avevano
       for (const m of mappings) {
         if ((m.customers || []).includes(customer.customer_name) && m.client_id !== draft) {
           const newList = (m.customers || []).filter(x => x !== customer.customer_name);
           await axios.put(`${API}/clients/${m.client_id}/backup/vmbackup/mapping`, { customers: newList });
         }
       }
-      // Aggiungi al nuovo cliente (se selezionato)
       if (draft) {
         const targetMapping = mappings.find(m => m.client_id === draft);
         const existing = new Set(targetMapping?.customers || []);
         existing.add(customer.customer_name);
         await updateMapping(draft, Array.from(existing));
       } else {
-        // Solo rimozione (sopra)
         toast.success("Customer rimosso dal mapping");
       }
       setEditing(false);
@@ -728,9 +801,16 @@ function VMCustomerRow({ customer, clients, mappings, currentClients, updateMapp
 
   const failedCol = (customer.vms_failed || 0) > 0 ? "#FF3B30" : "var(--text-muted)";
   const staleCol = (customer.vms_stale || 0) > 0 ? "#FF9500" : "var(--text-muted)";
+  const hostsCount = customer.hosts_count || 0;
 
   return (
+    <>
     <tr data-testid={`vm-customer-row-${customer.customer_name}`}>
+      <td className="text-center">
+        <button onClick={toggleExpand} className="text-[var(--text-muted)] hover:text-cyan-300 p-0.5" data-testid={`expand-vm-customer-${customer.customer_name}`} title="Espandi host del customer">
+          {expanded ? <CaretDown size={12} /> : <CaretRight size={12} />}
+        </button>
+      </td>
       <td>
         <div className="font-semibold">{customer.customer_name}</div>
         <div className="text-[9px] text-[var(--text-muted)]">
@@ -738,7 +818,15 @@ function VMCustomerRow({ customer, clients, mappings, currentClients, updateMapp
         </div>
       </td>
       <td className="text-[10px] font-mono">{customer.vms_total || 0}</td>
-      <td className="text-[10px] font-mono text-[var(--text-muted)]">{customer.hosts_count || 0}</td>
+      <td className="text-[10px] font-mono">
+        {hostsCount > 1 ? (
+          <span className="px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30" title="Customer con piu` host: mappabili singolarmente">
+            {hostsCount} <Users size={9} className="inline" />
+          </span>
+        ) : (
+          <span className="text-[var(--text-muted)]">{hostsCount}</span>
+        )}
+      </td>
       <td className="text-[10px] font-mono font-bold" style={{ color: failedCol }}>{customer.vms_failed || 0}</td>
       <td className="text-[10px] font-mono font-bold" style={{ color: staleCol }}>{customer.vms_stale || 0}</td>
       <td>
@@ -789,6 +877,177 @@ function VMCustomerRow({ customer, clients, mappings, currentClients, updateMapp
             {currentClients.length > 0 && (
               <Button size="sm" variant="outline" onClick={remove} disabled={saving} className="h-6 text-[10px] text-red-400 border-red-400/30" data-testid={`vm-remove-${customer.customer_name}`}>
                 <Trash size={10} />
+              </Button>
+            )}
+          </div>
+        )}
+      </td>
+    </tr>
+    {expanded && (
+      <tr data-testid={`vm-hosts-row-${customer.customer_name}`}>
+        <td></td>
+        <td colSpan={7} className="bg-[var(--bg-card)]/40 px-2 py-2">
+          <HostsPanel
+            customerName={customer.customer_name}
+            hosts={hosts}
+            loading={loadingHosts}
+            clients={clients}
+            wholeCustomerClients={currentClients}
+            onChange={onHostChanged}
+          />
+        </td>
+      </tr>
+    )}
+    </>
+  );
+}
+
+function HostsPanel({ customerName, hosts, loading, clients, wholeCustomerClients, onChange }) {
+  if (loading || hosts === null) {
+    return <div className="text-[10px] text-[var(--text-muted)] py-1">Caricamento host…</div>;
+  }
+  if (!hosts || hosts.length === 0) {
+    return <div className="text-[10px] text-[var(--text-muted)] py-1">Nessun host rilevato</div>;
+  }
+  const whole = wholeCustomerClients[0];
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center gap-2 text-[10px] text-[var(--text-muted)]">
+        <Users size={11} className="text-amber-300" />
+        <span>
+          <strong className="text-[var(--text-primary)]">Host fisici (Hyper-V/VMware)</strong> di <em>{customerName}</em>.
+          {whole && (
+            <span className="ml-1 text-amber-300">
+              Customer intero gia` mappato a <strong>{whole.name}</strong> — gli host sono ereditati ma puoi sovrascriverli.
+            </span>
+          )}
+        </span>
+      </div>
+      <table className="noc-table w-full text-[10.5px]">
+        <thead>
+          <tr>
+            <th>Host</th>
+            <th>Hypervisor</th>
+            <th>VM</th>
+            <th>Failed</th>
+            <th>Stale</th>
+            <th>Cliente assegnato</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {hosts.map(h => (
+            <HostRow key={h.host_name} customerName={customerName} host={h} clients={clients} onChange={onChange} />
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function HostRow({ customerName, host, clients, onChange }) {
+  const explicitMapped = (host.mapped_clients || []).filter(c => c.via !== "whole_customer");
+  const inheritedMapped = (host.mapped_clients || []).filter(c => c.via === "whole_customer");
+  const currentClientId = explicitMapped[0]?.client_id || "";
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(currentClientId);
+  const [saving, setSaving] = useState(false);
+
+  // Auto-suggestion: match per nome host (es. GALVANSRV → cliente "Galvan")
+  const hn = (host.host_name || "").toLowerCase().replace(/srv\d*$|server$|host\d*$/i, "").replace(/[^a-z0-9]/g, "");
+  const suggested = hn ? clients.find(cl => {
+    const nn = (cl.name || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+    return nn && (nn === hn || nn.includes(hn) || hn.includes(nn));
+  }) : null;
+
+  const start = () => {
+    setDraft(currentClientId || suggested?.id || "");
+    setEditing(true);
+  };
+  const save = async () => {
+    setSaving(true);
+    try {
+      await onChange(host.host_name, draft);
+      setEditing(false);
+    } finally {
+      setSaving(false);
+    }
+  };
+  const remove = async () => {
+    setSaving(true);
+    try {
+      await onChange(host.host_name, "");
+      setEditing(false);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <tr data-testid={`vm-host-row-${customerName}-${host.host_name}`}>
+      <td className="font-mono text-[10px] font-semibold">{host.host_name}</td>
+      <td className="text-[9.5px] text-[var(--text-muted)]">{host.host_type}</td>
+      <td className="font-mono text-[10px]">{host.vms_total}</td>
+      <td className="font-mono text-[10px]" style={{ color: host.vms_failed > 0 ? "#FF3B30" : "var(--text-muted)" }}>{host.vms_failed}</td>
+      <td className="font-mono text-[10px]" style={{ color: host.vms_stale > 0 ? "#FF9500" : "var(--text-muted)" }}>{host.vms_stale}</td>
+      <td>
+        {editing ? (
+          <select
+            value={draft}
+            onChange={e => setDraft(e.target.value)}
+            className="text-[10px] bg-[var(--bg-card)] border border-[var(--bg-border)] rounded px-1 py-0.5 w-full"
+            data-testid={`vm-host-select-${customerName}-${host.host_name}`}
+            autoFocus
+          >
+            <option value="">— Nessuno —</option>
+            {clients.slice().sort((a, b) => {
+              if (suggested && a.id === suggested.id) return -1;
+              if (suggested && b.id === suggested.id) return 1;
+              return (a.name || "").localeCompare(b.name || "");
+            }).map(c => (
+              <option key={c.id} value={c.id}>
+                {suggested && c.id === suggested.id ? "★ " : ""}{c.name}
+              </option>
+            ))}
+          </select>
+        ) : explicitMapped.length > 0 ? (
+          <div className="flex flex-wrap gap-1">
+            {explicitMapped.map(c => (
+              <span key={c.client_id} className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                {c.client_name}
+              </span>
+            ))}
+          </div>
+        ) : inheritedMapped.length > 0 ? (
+          <div className="flex flex-wrap gap-1">
+            {inheritedMapped.map(c => (
+              <span key={c.client_id} className="text-[9.5px] px-1.5 py-0.5 rounded bg-cyan-500/10 text-cyan-200 border border-cyan-500/20" title="Ereditato dal mapping intero del customer">
+                {c.client_name} <span className="text-[8px]">(ereditato)</span>
+              </span>
+            ))}
+          </div>
+        ) : (
+          <span className="text-[10px] text-[var(--text-muted)] italic">
+            — non mappato —{suggested && <span className="ml-1 text-amber-300">★ {suggested.name}</span>}
+          </span>
+        )}
+      </td>
+      <td>
+        {editing ? (
+          <div className="flex gap-1">
+            <Button size="sm" onClick={save} disabled={saving} className="bg-emerald-600 hover:bg-emerald-700 h-5 text-[9px] px-1.5" data-testid={`vm-host-save-${customerName}-${host.host_name}`}>
+              {saving ? "..." : "OK"}
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => setEditing(false)} disabled={saving} className="h-5 text-[9px] px-1.5">X</Button>
+          </div>
+        ) : (
+          <div className="flex gap-1">
+            <Button size="sm" variant="outline" className="h-5 text-[9px] px-1.5" onClick={start} data-testid={`vm-host-edit-${customerName}-${host.host_name}`}>
+              {explicitMapped.length > 0 ? "Cambia" : "Assegna"}
+            </Button>
+            {explicitMapped.length > 0 && (
+              <Button size="sm" variant="outline" onClick={remove} disabled={saving} className="h-5 text-[9px] px-1.5 text-red-400 border-red-400/30" data-testid={`vm-host-remove-${customerName}-${host.host_name}`}>
+                <Trash size={9} />
               </Button>
             )}
           </div>

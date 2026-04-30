@@ -185,19 +185,39 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
     if clients_vm_raw:
         vm_workloads = await db.vmbackup_jobs.find(
             {"source": "hornetsecurity-vm"},
-            {"_id": 0, "customer_name": 1, "alert_reason": 1, "onsite_status": 1},
+            {"_id": 0, "customer_name": 1, "host_name": 1, "alert_reason": 1, "onsite_status": 1},
         ).to_list(20000)
         for c in clients_vm_raw:
             cid = c.get("id")
-            customers = c.get("hornetsecurity_vm_customers") or []
-            if isinstance(customers, str):
-                customers = [customers]
-            cs = {str(x).strip() for x in customers if x and str(x).strip()}
-            if not cs:
+            raw_vm = c.get("hornetsecurity_vm_customers") or []
+            if isinstance(raw_vm, str):
+                raw_vm = [raw_vm]
+            # Filters: str → (customer, None) | dict → (customer, hosts_set|None)
+            vm_filters = []
+            for it in raw_vm:
+                if isinstance(it, str) and it.strip():
+                    vm_filters.append((it.strip(), None))
+                elif isinstance(it, dict) and (it.get("customer") or "").strip():
+                    hs = it.get("hosts")
+                    if isinstance(hs, list) and hs:
+                        vm_filters.append((it["customer"].strip(), {str(h) for h in hs if h}))
+                    else:
+                        vm_filters.append((it["customer"].strip(), None))
+            if not vm_filters:
                 continue
             agg = {"total": 0, "ok": 0, "error": 0, "warning": 0, "stale": 0}
             for w in vm_workloads:
-                if w.get("customer_name") not in cs:
+                cn = w.get("customer_name")
+                hn = w.get("host_name") or ""
+                match = False
+                for (fc, fh) in vm_filters:
+                    if fc != cn:
+                        continue
+                    if fh is not None and hn not in fh:
+                        continue
+                    match = True
+                    break
+                if not match:
                     continue
                 agg["total"] += 1
                 r = w.get("alert_reason")

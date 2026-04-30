@@ -1,5 +1,38 @@
 # CHANGELOG — 86BIT ARGUS Center
 
+## 2026-04-30 — Host-level mapping VM Backup (simmetria con 365 sub-groups)
+
+### Dentro un customer puoi agganciare ogni host alla sua azienda
+Richiesta utente: "anche per VM mostrami e lasciami agganciare gli host che
+diventano l'azienda". Esempio: `giambarinigroup.onmicrosoft.com` ha 6 host
+HyperV (CAMBIANOSRV, GALVANSRV, METALJUMBOSRV, ODSTRASPORTISRV, OLFEZSRV2,
+ZITACSRV) ognuno fisicamente in un'azienda diversa del gruppo.
+
+**Backend** `routes/hornetsecurity_vmbackup.py`:
+- `_client_vm_filters()` ritorna (customer, hosts), `_matches_vm_filter()` +
+  `_build_vm_mongo_filter()` simmetrici alla 365 sub-group
+- `GET /admin/hornetsecurity-vm/customers/{customer}/hosts` → aggregazione
+  host con stats (vms_total/failed/stale/warning/success) e mapped_clients
+- `PUT /mapping` accetta `[{customer, hosts: [...]}]` oltre a stringhe legacy
+- Fan-out alert rispetta il filtro host (scelta utente: filtraggio stretto)
+
+**Backend** `routes/overview.py`: dashboard aggregata rispetta il filtro host.
+
+**Frontend** `pages/HornetsecuritySettingsPage.js`:
+- Chevron expand su riga customer + badge "N 👥" se `hosts_count > 1`
+- `HostsPanel`/`HostRow` con auto-suggestion per nome (GALVANSRV → Galvan)
+- Badge "(ereditato)" se customer intero gia` mappato
+
+**Test reali**: mapping `CAMBIANOSRV` su 86BIT_Office → 35 VM filtrate (30 OK
++ 5 stale), 5 alert sincronizzati; gli altri 5 host non toccano quel cliente.
+
+**Build artifacts**:
+- Backend: `argus-backend-latest.tar.gz` 2.5 MB, SHA256 `f433036c…`
+- Frontend: `argus-frontend-latest.tar.gz` 4.7 MB, SHA256 `e3ce3162…`
+
+---
+
+
 ## 2026-04-30 — Backup aggregati nelle card Dashboard + Quick Stats cliente
 
 ### Le card esistenti ora includono 365 + VM Backup (non più solo legacy)
