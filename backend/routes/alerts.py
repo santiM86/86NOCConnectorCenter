@@ -117,11 +117,13 @@ async def get_alerts(
     result = []
     for a in alerts:
         device = device_map.get(a.get("device_id", ""), {})
-        if device_type and device.get("device_type") != device_type:
+        # device_type fallback: if alert has its own device_type (backup, ecc.), usalo
+        eff_device_type = a.get("device_type") or device.get("device_type", "")
+        if device_type and eff_device_type != device_type:
             continue
         a["client_name"] = client_map.get(a.get("client_id", ""), "")
         a["device_name"] = a.get("device_name") or device.get("name", "") or a.get("device_ip", "")
-        a["device_type"] = a.get("device_type") or device.get("device_type", "")
+        a["device_type"] = eff_device_type
         a["ip_address"] = device.get("ip_address", "") or a.get("device_ip", "")
         try:
             result.append(AlertResponse(**a))

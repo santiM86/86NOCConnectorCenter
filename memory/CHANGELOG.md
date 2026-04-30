@@ -1,5 +1,165 @@
 # CHANGELOG — 86BIT ARGUS Center
 
+## 2026-04-30 — UI Config globale VM Backup nella pagina Hornetsecurity Settings
+
+### Pagina `/settings/hornetsecurity` ora ha tab "VM Backup (Altaro)"
+Prima l'utente doveva chiamare gli endpoint via curl per configurare la
+chiave API del portal MSP Altaro. Ora e` tutto UI-driven:
+
+**Frontend** `pages/HornetsecuritySettingsPage.js`:
+- Tab switcher in alto: `365 Total Backup` / `VM Backup (Altaro)`
+- Nuovo componente `VMBackupSettingsSection`:
+  - Form config (API URL + User ID + API Key + polling interval + enabled),
+    chiave in campo password, mai mostrata in chiaro (solo maschera ****xxxx)
+  - Pulsanti "Poll Ora" (trigger manuale) e "Sync Alert" (riemette gli alert)
+  - Stato connessione con ultimo polling, conteggi customers/VM/failed/stale
+  - Tabella 47 customer con stats (VM totali, hosts, failed, stale)
+  - Filtri: Tutti / Da mappare / Mappati / Con problemi
+  - Mapping customer↔cliente ARGUS con **auto-suggestion** (es. dominio
+    `86bit.it` → suggerisce automaticamente cliente "86BIT_Office") e
+    dropdown Cambia/Assegna/Rimuovi
+
+**Build artifacts**:
+- Frontend: `argus-frontend-latest.tar.gz` 4.7 MB, SHA256 `42a43eed…`
+
+Testato: config salvata → badge ATTIVA → 47 rows customer caricate.
+
+---
+
+## 2026-04-30 — Integrazione Hornetsecurity VM Backup (ex-Altaro)
+
+### 2ª fonte backup: Altaro VM Backup via API portal MSP
+Aggiunta integrazione completa con l'API del portal MSP (Hornetsecurity VM
+Backup / Altaro). Supporta 47 customer reali gestiti, 242 VM, polling 10 min.
+
+**Backend** — nuovi file:
+- `routes/hornetsecurity_vmbackup.py`:
+  - Config globale cifrata (api_url + api_key + userId) a `/admin/hornetsecurity-vm/config`
+  - Parser payload `hornetSecurityReport → installations → hosts → VMs`
+  - Storage `vmbackup_jobs` (key: customer+host+vm_id), persiste per ogni VM
+    status onsite, offsite, 2nd offsite, tempo, durata, dimensione, cdpEnabled
+  - Mapping `clients.hornetsecurity_vm_customers: [customerName]` (list[str])
+  - Endpoint admin `/admin/hornetsecurity-vm/customers` (stats per customer)
+  - Endpoint client `/clients/{id}/backup/vmbackup/status` + `/mapping`
+  - Endpoint admin `/admin/hornetsecurity-vm/sync-all-alerts` + `/poll-now`
+- `services/hornetsecurity_vmbackup_poller.py`: scheduler APS separato (tick 1 min,
+  rispetta `polling_interval_minutes` default 10)
+
+**Severity smart escalation**:
+- `Failed` → **high** (intervento richiesto)
+- `Warning` → **medium**
+- Backup **stale** > 48h anche se Success → **medium** (anomalia operativa)
+- `Unknown` con tempo null → skip (installazione vuota, no signal)
+
+**Alert fan-out**: per ogni cliente mappato al customer, alert in `db.alerts`
+con id deterministico `vmbackup-{client_id}-{customer}-{vm_id}`, auto-resolve
+quando il backup torna OK. Sync immediato alla modifica mapping.
+
+**Frontend** `pages/ClientOverviewPage.js`:
+- `BackupTab` rifattorizzato con sub-tabs "365 Total Backup" / "VM Backup (Altaro)"
+- Nuovo `VMBackupPanel` con:
+  - Header mapping + polling info + pulsante "Poll Ora" + "Modifica mapping"
+  - 5 stat box (VM totali / Success / Failed / Warning / Stale >48h)
+  - Filtri Vista: Tutte / Solo problemi / Solo stale
+  - Tabella VM con colonne: VM, Host, Hypervisor, Customer, Onsite, Offsite,
+    2° Offsite, Ultimo backup, Dim. Badge colorati FAILED/WARN/STALE
+  - Modal checkbox multi-select dei customer disponibili, con stats inline
+
+**Test reali**: config con API prod → poll 242 VM su 47 customer, 5 failed, 67
+stale, 208 success. Mapping `86bit.it + ifalegnami.eu` su cliente test:
+sync di 3 alert immediato, severity medium (stale).
+
+**Build artifacts**:
+- Backend: `argus-backend-latest.tar.gz` 2.5 MB, SHA256 `0c094b59…`
+- Frontend: `argus-frontend-latest.tar.gz` 4.7 MB, SHA256 `8eab2b03…`
+
+### 🚀 Deploy in produzione (ordine consigliato)
+1. Self-update backend (via Center → WireGuard → Aggiorna Backend)
+2. Self-update frontend
+3. UI: `Amministrazione → Hornetsecurity VM Backup → Configura` (incolla api_key
+   + userId dal tuo portal MSP)
+4. Click "Poll Ora" per popolare subito i dati (o attendi 10 min)
+5. Per ogni cliente ARGUS: scheda cliente → Backup → tab "VM Backup (Altaro)"
+   → Modifica mapping → seleziona il customer corrispondente → Salva
+6. Gli alert backup falliti/stale appariranno automaticamente in `/alerts`
+
+---
+
+
+
+### I backup falliti ora compaiono nella pagina Alert e nel badge sidebar
+Su richiesta dell'utente, gli alert dei backup Hornetsecurity falliti sono
+stati integrati nel sistema di alert principale (`db.alerts`), in modo da
+essere visibili a colpo d'occhio nella pagina `/alerts` e contribuire al
+contatore della sidebar.
+
+**Backend** `routes/hornetsecurity_backup.py`:
+- Nuovo helper `_matches_client_filter()` per matching mapping tenant+sub_group
+- Nuovo `_fanout_backup_alert()`: per ogni workload `failed`, fa fan-out su
+  TUTTI i clienti il cui mapping copre la coppia (tenant, sub_group),
+  creando/aggiornando un record in `db.alerts` con id deterministico
+  (`backup-hornet-{client_id}-{tenant}-{workload_id}`) per dedup
+- Nuovo `_resolve_backup_alerts()`: auto-resolve degli alert quando il
+  workload torna OK (`success`) — aggiorna `status: resolved` + `resolved_at`
+- Severity = `high`, source_type = `backup`, device_type = `backup`
+- Title formato "Backup fallito: {workload_name}", message include contesto
+  (utente, tenant, sub_group)
+- Nuovo `_sync_alerts_for_client()` chiamato automaticamente dal PUT
+  `/api/clients/{client_id}/backup/hornetsecurity/mapping`: quando cambi un
+  mapping, gli alert vengono sincronizzati immediatamente (no attesa del
+  prossimo poll)
+- Nuovo endpoint admin `POST /api/admin/hornetsecurity/sync-all-alerts` per
+  sincronizzare in massa dopo il deploy
+
+**Backend** `routes/alerts.py`:
+- Fix filtro `device_type`: ora usa il campo `device_type` dell'alert stesso
+  come fallback (prima leggeva solo dal device referenziato, escludendo gli
+  alert backup che non hanno device_id)
+
+**Frontend** `pages/AlertsPage.js`:
+- Nessuna modifica: il filtro "Tipo: Backup" era già presente e ora funziona
+
+**Test**: mapping cliente → "Europizzi" sincronizza 193 backup alert nel
+sistema principale; severity stats `high: 5 → 198`; ACK/Resolve operano
+correttamente; cambio mapping triggera sync immediato.
+
+**Build artifacts**:
+- `/app/frontend/public/downloads/argus-backend-latest.tar.gz` (2.5 MB,
+  SHA256 `862eb46d…`)
+
+### 🚀 Deploy in produzione (oltre al normale self-update backend):
+Dopo aver aggiornato il backend, lanciare una sola volta:
+```bash
+curl -X POST https://argus.86bit.it/api/admin/hornetsecurity/sync-all-alerts \
+     -H "Authorization: Bearer <ADMIN_TOKEN>"
+```
+per popolare gli alert per i clienti già mappati.
+
+---
+
+
+
+### UX: filtri rapidi nel pannello Backup cliente
+Su richiesta dell'utente, aggiunto toggle prominente sopra la tabella workload
+per filtrare velocemente la vista con tre presets:
+
+- **Tutti (N)** — mostra tutti i workload (default)
+- **Solo protetti (N)** — mostra solo `status=success` (verde)
+- **Solo problemi (N)** — mostra solo `failed + warning + in_progress`
+
+I conteggi nei pulsanti aggiornano dinamicamente in base ai dati. I vecchi
+filtri dettagliati (status: success/failed/warning/in_progress/not_applicable/
+excluded + tipo + tenant) sono stati spostati in un `<details>` collassabile
+"Filtri avanzati" per non saturare la UI.
+
+**File**: `pages/ClientOverviewPage.js` — `HornetsecurityBackupPanel`.
+- Test selectors: `data-testid="hornetsecurity-quickfilter-{all|protected_only|issues_only}"`
+
+**Build artifacts**:
+- `/app/frontend/public/downloads/argus-frontend-latest.tar.gz` (4.7 MB, SHA256 `562b36b3…`)
+
+---
+
 ## 2026-04-30 — Fix Backup Panel Sub-Group Recognition (P0 hotfix)
 
 ### Bug: ClientOverviewPage backup tab non riconosceva i mapping per sotto-gruppo
