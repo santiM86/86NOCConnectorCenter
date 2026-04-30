@@ -1,6 +1,33 @@
 # CHANGELOG — 86BIT ARGUS Center
 
-## 2026-04-30 — Hornetsecurity Sub-Group Mapping (P0)
+## 2026-04-30 — Fix Backup Panel Sub-Group Recognition (P0 hotfix)
+
+### Bug: ClientOverviewPage backup tab non riconosceva i mapping per sotto-gruppo
+Dopo il deploy della feature Sub-Group Mapping, mappando un cliente solo a uno
+o piu` sotto-gruppi (es. galvan.it dentro Gruppo Giambarini), il pannello
+Backup nella scheda cliente mostrava ancora "Mapping tenant non configurato"
+con CTA "Configura mapping" — perche` controllava solo il vecchio campo
+`mapping.tenants` (whole-tenant string list) invece di anche `mapping.filters`
+(formato dettagliato con sub_groups).
+
+**Frontend** `pages/ClientOverviewPage.js` (`HornetsecurityBackupPanel`):
+- Nuovo computed `hasAnyMapping = mappedFilters.length > 0 || mappedTenants.length > 0`
+- Header del pannello attivo ora mostra distintamente i due tipi di mapping:
+  - `Tenant (intero)` per whole-tenant string
+  - `Tenant → sub_group_a, sub_group_b` per mapping sub-group
+- Filtro tenant ora aggrega da entrambe le sorgenti (set union)
+
+**Build artifacts riallineati**:
+- `/app/frontend/public/downloads/argus-backend-latest.tar.gz` (2.5 MB)
+- `/app/frontend/public/downloads/argus-frontend-latest.tar.gz` (4.7 MB)
+
+**Test**: Mapping `galvan.it` su 86BIT_Office → tab Backup mostra correttamente
+98 workload Galvan filtrati (50 Protected + 24 Excluded + 24 N/A), header
+"1 mapping attivi: Gruppo Giambarini → galvan.it".
+
+---
+
+
 
 ### Mappatura per Sotto-Gruppo (dominio email) dentro un singolo tenant
 Richiesta utente: alcuni tenant Hornetsecurity (es. "Gruppo Giambarini") contengono
