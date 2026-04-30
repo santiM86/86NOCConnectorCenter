@@ -1,0 +1,51 @@
+{
+  "summary": "E2E retest of silence flow after backend multi-source fallback fix. BACKEND FIX VERIFIED: PUT /api/connector/{cid}/managed-devices/{did}/silence now returns 200 OK with {ok:true, alerts_silenced:true, device_id, device_ip:'192.168.1.3'} — the previous 404 is gone (resolver fallback to db.devices works). /api/devices now returns alerts_silenced + alerts_silenced_reason fields correctly (verified via curl). HOWEVER end-to-end UI flow has TWO frontend bugs that block the 'badge + reopen pre-filled' scenario: (1) ClientOverviewPage does NOT refetch /api/devices immediately after Salva, so silence-badge does not appear within ~4s of save (eventually appears via background polling much later); (2) DeviceEditModal initializes silence-toggle / silence-reason from the (stale) device prop, so when user clicks Modifica again right after Save, toggle shows UNCHECKED even though backend has alerts_silenced=true → silence-reason field is NOT visible (conditionally hidden), reopen-prefilled scenario fails. Also confirmed (still): PUT /monitor-type and PUT /snmp on managed-devices return 404 for this device (only /silence got the multi-source resolver fix). Since save() has 3 independent try/catches, silence still persists, but the user sees an error toast listing 'Metodo monitoraggio' and 'SNMP' failures every time.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "PUT /api/connector/{client_id}/managed-devices/{device_id}/monitor-type", "issue": "Returns 404 'Device non trovato' for device 192.168.1.3 (id=1089e659-...). Only /silence got the multi-source fallback resolver. Same bug as iteration_64 but now isolated to monitor-type/snmp endpoints. Causes noisy error toast even when user only changed silence."},
+      {"endpoint": "PUT /api/connector/{client_id}/managed-devices/{device_id}/snmp", "issue": "Same 404 issue as /monitor-type — needs the same fallback resolver applied (db.devices → poll_<ip> synthetic + upsert into managed_devices)."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "ClientOverviewPage devices tab", "issue": "Silence-badge [data-testid='silence-badge-192.168.1.3'] does not render within ~4s after Salva success even though PUT /silence returned 200. Page needs to refetch /api/devices?client_id=... immediately after a successful silence save, OR the modal needs to push the new alerts_silenced state up to the page state. Currently only background polling eventually updates the row.", "selector": "[data-testid='silence-badge-192.168.1.3']", "priority": "HIGH"},
+      {"component": "DeviceEditModal", "issue": "On reopen, silence-toggle is rendered UNCHECKED even though backend has alerts_silenced=true (verified via /api/devices response). The modal seeds local state from the device prop only at mount; since ClientOverviewPage hasn't refetched, the device prop is stale → reopen-prefilled scenario broken. Fix should: (a) refetch /api/devices after save in ClientOverviewPage, and/or (b) optimistically update the local device row from the silence PUT 200 response, and/or (c) re-seed modal state when device.alerts_silenced changes.", "selector": "[data-testid='silence-toggle']", "priority": "HIGH"}
+    ],
+    "integration_issues": [
+      {"flow": "Silence ON → close → reopen → silence OFF", "issue": "Reopen step fails because modal sees stale device prop (toggle unchecked, silence-reason hidden). User cannot test the OFF flow without a manual page refresh between save and reopen.", "affected_selectors": ["[data-testid='silence-toggle']", "[data-testid='silence-reason']", "[data-testid='silence-badge-192.168.1.3']"]},
+      {"flow": "Save (any change)", "issue": "Save always shows error toast for 'Metodo monitoraggio' + 'SNMP' branches because their PUT endpoints still 404 for auto-discovered devices. Even users who only toggle silence see a confusing red toast listing the unrelated failures.", "affected_selectors": ["[data-testid='edit-save-btn']"]}
+    ],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/test_reports/iteration_64.json",
+    "/app/test_reports/iteration_65.json"
+  ],
+  "action_items": [
+    "Frontend: After successful PUT /silence (or any of the 3 PUTs), ClientOverviewPage must refetch /api/devices?client_id=... so the silence-badge renders immediately. Currently relies on slow background polling. Highest priority — directly blocks user-visible badge.",
+    "Frontend: DeviceEditModal must re-seed silence-toggle / silence-reason from device prop when the prop changes (or accept onSave callback that updates parent state). Currently reopen always shows stale unchecked toggle even after a successful ON save.",
+    "Backend: Apply the same multi-source resolver fallback (managed_devices → db.devices → poll_<ip> synthetic + upsert) to PUT /monitor-type and PUT /snmp endpoints in /app/backend/routes/connector.py. Without this, every Save triggers a noisy error toast with 2 of 3 branches failing — silence persists but user thinks something is broken.",
+    "Optionally: hide the 'Metodo monitoraggio' / 'SNMP' error toast lines when those values were not actually changed by the user (compare against initial values), to reduce false-error noise."
+  ],
+  "critical_code_review_comments": [
+    "DeviceEditModal save() with 3 independent try/catches is correctly resilient — silence persists even when monitor-type/snmp 404. Good design.",
+    "Backend silence resolver fix (db.devices fallback + poll_<ip> synthetic + upsert into managed_devices) works as designed and propagates to /api/devices via the alerts_silenced fields. Recommend extracting this resolver into a shared helper and reusing it for /monitor-type and /snmp instead of duplicating the lookup logic in 3 endpoints.",
+    "ClientOverviewPage owns the device list state but provides no callback to children for optimistic updates. After any successful PUT, the page should either invalidate the /api/devices query or accept an onDeviceUpdated(updatedDevice) prop in DeviceEditModal. This is the architectural root cause of both UI bugs above."
+  ],
+  "updated_files": [],
+  "success_rate": {
+    "backend": "PUT /silence: 100% (200 OK, persists, propagates to /api/devices). PUT /monitor-type and PUT /snmp: 0% for this device (still 404).",
+    "frontend": "Step 1 (Save ON → 200): PASS. Step 2 (badge after close): FAIL (badge not rendered within 4s). Step 3 (reopen pre-filled): FAIL (toggle unchecked, reason field hidden). Step 4 (Save OFF): N/A (couldn't reach properly). Step 5 (badge gone): N/A. Step 6 (poll_<ip> resilience): not retested (manual confirmed)."
+  },
+  "test_credentials": {"admin": "admin@86bit.it / password"},
+  "seed_data_creation": "No new seed. Used existing client da3d6e40-b3e5-4d46-9787-dde328a3aa36 with auto-discovered device 192.168.1.3 (id=1089e659-b593-42bf-bb9c-a18aa990e6a9, name=Auto-192.168.1.3, type=switch). Cleanup performed: PUT /silence with {silenced:false, reason:''} → confirmed alerts_silenced=false in /api/devices.",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Backend silence multi-source fallback IS working — do not retest. The remaining blockers are 100% frontend: (1) refetch /api/devices after save in ClientOverviewPage so badge renders, (2) DeviceEditModal must respond to device prop changes for reopen-prefill. Also still pending: extend the same resolver to /monitor-type and /snmp endpoints to remove the noisy error toast on every save. After main agent applies (1) and (2), retest the 30-second flow: Modifica → silence ON + reason → Salva → expect badge 'ALERT OFF' within 1-2s on the 192.168.1.3 row → reopen Modifica → expect toggle CHECKED + reason prefilled → uncheck → Salva → expect badge gone within 1-2s. Use admin@86bit.it / password and client da3d6e40-b3e5-4d46-9787-dde328a3aa36, device id 1089e659-b593-42bf-bb9c-a18aa990e6a9. Edit button testid is 'edit-device-192.168.1.3'.",
+  "rca_of_the_issue": {
+    "root_cause": "Two distinct frontend issues, same architectural cause: ClientOverviewPage does not invalidate or refetch /api/devices after a successful PUT, and DeviceEditModal does not react to device prop changes after mount. Result: backend state (alerts_silenced=true) is correctly persisted and observable via /api/devices, but the React UI keeps showing the pre-save device snapshot until the next slow polling cycle. The silence-badge depends on this stale state, and the modal reopen pre-fill depends on the same stale prop.",
+    "evidence": "Playwright captured PUT /silence 200 OK with body {ok:true, alerts_silenced:true}. Curl GET /api/devices immediately after returned alerts_silenced=true for the same device. UI: badge selector [data-testid='silence-badge-192.168.1.3'] returned null 4s after close-modal; reopening modal showed silence-toggle.is_checked()=False and silence-reason field absent (conditional render). After cleanup (PUT silenced:false), curl confirmed alerts_silenced=false in /api/devices. Backend also returns 404 for PUT /monitor-type and /snmp on the same device id (verified in playwright network log: two 404 responses alongside the 200 for /silence).",
+    "mitigation": "Frontend: in ClientOverviewPage, after onSave from DeviceEditModal, call the /api/devices fetch (or react-query invalidate) and update local state. In DeviceEditModal, useEffect on [device.alerts_silenced, device.alerts_silenced_reason] to re-seed local state. Backend: apply the same multi-source resolver to /monitor-type and /snmp endpoints (or extract into a shared helper resolve_managed_device(client_id, device_id)). Cleanup: alerts_silenced=false confirmed for 192.168.1.3."
+  }
+}

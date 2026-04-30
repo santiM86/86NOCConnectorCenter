@@ -80,6 +80,9 @@ class DeviceResponse(BaseModel):
     vendor: Optional[str] = None
     family: Optional[str] = None
     profile_auto_matched: Optional[bool] = None
+    # Alert silencing (admin can silence alerts per-device for noisy/best-effort devices)
+    alerts_silenced: Optional[bool] = False
+    alerts_silenced_reason: Optional[str] = None
     created_at: str
 
 class AlertCreate(BaseModel):

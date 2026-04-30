@@ -1921,21 +1921,64 @@ async def update_device_silence(
         "alerts_silenced_reason": silence_reason if silenced else "",
         "alerts_silenced_by": (current_user or {}).get("email") if silenced else "",
     }
-    result = await db.managed_devices.update_one(
-        {"id": device_id, "client_id": client_id},
-        {"$set": update_doc},
-    )
-    if result.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Device non trovato")
 
-    # Recupera ip per invalidare la cache puntualmente
-    dev = await db.managed_devices.find_one(
+    # Resolve device by id across all 3 sources (managed_devices, devices, device_poll_status).
+    # Il PRIMARY storage del flag `alerts_silenced` e` `managed_devices` perche` `alert_filter`
+    # interroga quella collection. Se il device esiste solo in `devices` o `device_poll_status`
+    # (auto-discovered, mai promosso a managed), creiamo/aggiorniamo il record in
+    # managed_devices on-the-fly. UI gia` mostra questi device ma le configurazioni vanno a 404
+    # con i vecchi handler.
+    md = await db.managed_devices.find_one(
         {"id": device_id, "client_id": client_id},
         {"_id": 0, "ip": 1, "name": 1},
     )
-    if dev and dev.get("ip"):
-        invalidate_silence_cache(client_id=client_id, device_ip=dev["ip"])
+    device_ip = (md or {}).get("ip") or ""
+    device_name = (md or {}).get("name") or ""
+    if not md:
+        # Fallback 1: db.devices (manually added)
+        manual = await db.devices.find_one(
+            {"id": device_id, "client_id": client_id},
+            {"_id": 0, "ip_address": 1, "name": 1},
+        )
+        if manual:
+            device_ip = manual.get("ip_address") or ""
+            device_name = manual.get("name") or ""
+        else:
+            # Fallback 2: device_id come "poll_<ip>" sintetico (auto-discovered only)
+            if device_id.startswith("poll_"):
+                synth_ip = device_id[len("poll_"):].replace("_", ".")
+                pd = await db.device_poll_status.find_one(
+                    {"client_id": client_id, "device_ip": synth_ip},
+                    {"_id": 0, "device_ip": 1, "device_name": 1},
+                )
+                if pd:
+                    device_ip = pd.get("device_ip") or synth_ip
+                    device_name = pd.get("device_name") or synth_ip
+            # Fallback 3: cerca per name match in device_poll_status (se device_id e` un UUID
+            # di un record manuale in db.devices ma con auto-detect aggiunto al poll)
+            if not device_ip:
+                raise HTTPException(status_code=404, detail="Device non trovato in nessuna collection")
 
+        # Upsert minimal record in managed_devices cosi` il flag silence persiste e
+        # alert_filter possa consultarlo
+        await db.managed_devices.update_one(
+            {"client_id": client_id, "ip": device_ip},
+            {
+                "$set": {**update_doc, "name": device_name, "ip": device_ip, "client_id": client_id},
+                "$setOnInsert": {"id": device_id, "created_at": now_iso, "created_by": "silence-toggle"},
+            },
+            upsert=True,
+        )
+    else:
+        await db.managed_devices.update_one(
+            {"id": device_id, "client_id": client_id},
+            {"$set": update_doc},
+        )
+
+    if device_ip:
+        invalidate_silence_cache(client_id=client_id, device_ip=device_ip)
+
+    dev = {"ip": device_ip, "name": device_name}
     audit_logger and await audit_logger.log(
         AuditAction.UPDATE_DEVICE,
         user_id=(current_user or {}).get("id"),
@@ -1946,10 +1989,11 @@ async def update_device_silence(
             "client_id": client_id,
             "alerts_silenced": silenced,
             "reason": silence_reason,
-            "device_name": (dev or {}).get("name"),
+            "device_name": dev.get("name"),
+            "device_ip": dev.get("ip"),
         },
     )
-    return {"ok": True, "alerts_silenced": silenced, "device_id": device_id}
+    return {"ok": True, "alerts_silenced": silenced, "device_id": device_id, "device_ip": device_ip}
 
 
 @router.post("/connector/{client_id}/managed-devices/auto-classify")
