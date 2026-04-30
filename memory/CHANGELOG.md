@@ -1,5 +1,31 @@
 # CHANGELOG — 86BIT ARGUS Center
 
+## 2026-04-30 — UI Config globale VM Backup nella pagina Hornetsecurity Settings
+
+### Pagina `/settings/hornetsecurity` ora ha tab "VM Backup (Altaro)"
+Prima l'utente doveva chiamare gli endpoint via curl per configurare la
+chiave API del portal MSP Altaro. Ora e` tutto UI-driven:
+
+**Frontend** `pages/HornetsecuritySettingsPage.js`:
+- Tab switcher in alto: `365 Total Backup` / `VM Backup (Altaro)`
+- Nuovo componente `VMBackupSettingsSection`:
+  - Form config (API URL + User ID + API Key + polling interval + enabled),
+    chiave in campo password, mai mostrata in chiaro (solo maschera ****xxxx)
+  - Pulsanti "Poll Ora" (trigger manuale) e "Sync Alert" (riemette gli alert)
+  - Stato connessione con ultimo polling, conteggi customers/VM/failed/stale
+  - Tabella 47 customer con stats (VM totali, hosts, failed, stale)
+  - Filtri: Tutti / Da mappare / Mappati / Con problemi
+  - Mapping customer↔cliente ARGUS con **auto-suggestion** (es. dominio
+    `86bit.it` → suggerisce automaticamente cliente "86BIT_Office") e
+    dropdown Cambia/Assegna/Rimuovi
+
+**Build artifacts**:
+- Frontend: `argus-frontend-latest.tar.gz` 4.7 MB, SHA256 `42a43eed…`
+
+Testato: config salvata → badge ATTIVA → 47 rows customer caricate.
+
+---
+
 ## 2026-04-30 — Integrazione Hornetsecurity VM Backup (ex-Altaro)
 
 ### 2ª fonte backup: Altaro VM Backup via API portal MSP

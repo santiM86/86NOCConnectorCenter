@@ -9,6 +9,7 @@ import { useNavigate } from "react-router-dom";
 
 export default function HornetsecuritySettingsPage() {
   const navigate = useNavigate();
+  const [provider, setProvider] = useState("m365"); // "m365" | "vm"
   const [config, setConfig] = useState(null);
   const [tenants, setTenants] = useState([]);
   const [mappings, setMappings] = useState([]);
@@ -170,8 +171,40 @@ export default function HornetsecuritySettingsPage() {
       <div className="flex items-center gap-3 mb-2">
         <button onClick={() => navigate(-1)} className="text-[var(--text-muted)] hover:text-[var(--text-primary)] text-sm">←</button>
         <Database size={20} className="text-cyan-400" />
-        <h1 className="text-xl font-bold text-[var(--text-primary)]">Hornetsecurity 365 Backup</h1>
+        <h1 className="text-xl font-bold text-[var(--text-primary)]">Hornetsecurity Backup</h1>
       </div>
+
+      {/* Provider tabs */}
+      <div className="flex items-center gap-1.5 flex-wrap text-[11px] border-b border-[var(--bg-border)] pb-2">
+        <span className="text-[10px] uppercase tracking-widest text-[var(--text-muted)]">Provider:</span>
+        <button
+          onClick={() => setProvider("m365")}
+          className={`px-3 py-1 rounded-md border text-[11px] font-semibold transition ${
+            provider === "m365"
+              ? "bg-cyan-500/20 border-cyan-400 text-cyan-300"
+              : "border-cyan-500/30 text-cyan-300/70 hover:bg-cyan-500/10"
+          }`}
+          data-testid="settings-provider-m365"
+        >
+          365 Total Backup
+        </button>
+        <button
+          onClick={() => setProvider("vm")}
+          className={`px-3 py-1 rounded-md border text-[11px] font-semibold transition ${
+            provider === "vm"
+              ? "bg-violet-500/20 border-violet-400 text-violet-300"
+              : "border-violet-500/30 text-violet-300/70 hover:bg-violet-500/10"
+          }`}
+          data-testid="settings-provider-vm"
+        >
+          VM Backup (Altaro)
+        </button>
+      </div>
+
+      {provider === "vm" ? (
+        <VMBackupSettingsSection clients={clients} />
+      ) : (
+      <>
       <p className="text-[11px] text-[var(--text-muted)]">
         Configurazione a livello Center (una sola API key per tutti i tenant).
         I dati ingestiti vengono filtrati per cliente tramite mapping <code>cliente ↔ tenant</code> sotto.
@@ -318,7 +351,450 @@ export default function HornetsecuritySettingsPage() {
           </div>
         </div>
       )}
+      </>
+      )}
     </div>
+  );
+}
+
+/* ==================== VM BACKUP SETTINGS SECTION ==================== */
+function VMBackupSettingsSection({ clients }) {
+  const [config, setConfig] = useState(null);
+  const [customers, setCustomers] = useState([]);
+  const [mappings, setMappings] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [showEdit, setShowEdit] = useState(false);
+  const [filter, setFilter] = useState("all"); // all | unmapped | mapped | problems
+  const [form, setForm] = useState({
+    api_url: "https://portal.86bit.it/api/v1/reports/altaro/getHornetSecurityReport",
+    api_key: "", user_id: "", polling_interval_minutes: 10, enabled: true,
+  });
+
+  const reload = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [cfgR, custR] = await Promise.all([
+        axios.get(`${API}/admin/hornetsecurity-vm/config`),
+        axios.get(`${API}/admin/hornetsecurity-vm/customers`).catch(() => ({ data: { customers: [], mappings: [] } })),
+      ]);
+      setConfig(cfgR.data);
+      setCustomers(custR.data?.customers || []);
+      setMappings(custR.data?.mappings || []);
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Errore caricamento VM Backup config");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { reload(); }, [reload]);
+
+  const saveConfig = async () => {
+    setSaving(true);
+    try {
+      const payload = { ...form };
+      if (!payload.api_key && config?.configured) {
+        toast.error("Inserisci la chiave API (non mostrata per sicurezza)");
+        setSaving(false);
+        return;
+      }
+      await axios.put(`${API}/admin/hornetsecurity-vm/config`, payload);
+      toast.success("Configurazione salvata. Primo polling entro un minuto.");
+      setShowEdit(false);
+      setForm(f => ({ ...f, api_key: "" }));
+      await reload();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Errore salvataggio");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const pollNow = async () => {
+    setBusy(true);
+    try {
+      const { data } = await axios.post(`${API}/admin/hornetsecurity-vm/poll-now`);
+      if (data?.error) {
+        toast.error(`Poll fallito: ${data.error}`);
+      } else {
+        toast.success(
+          `Poll OK — ${data.vms || 0} VM (${data.failed || 0} failed, ${data.warning || 0} warn, ${data.stale || 0} stale) su ${data.customers || 0} customer`,
+        );
+      }
+      await reload();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Errore poll");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const syncAll = async () => {
+    setBusy(true);
+    try {
+      const { data } = await axios.post(`${API}/admin/hornetsecurity-vm/sync-all-alerts`);
+      toast.success(`Sync alert completato: ${data.alerts_synced || 0} alert su ${data.clients_touched || 0} clienti`);
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Errore sync");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const removeConfig = async () => {
+    if (!window.confirm("Rimuovere la configurazione VM Backup? I dati gia` ingestiti restano nel DB.")) return;
+    try {
+      await axios.delete(`${API}/admin/hornetsecurity-vm/config`);
+      toast.success("Configurazione rimossa");
+      await reload();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Errore");
+    }
+  };
+
+  const updateCustomerMapping = async (clientId, newCustomers) => {
+    try {
+      const r = await axios.put(`${API}/clients/${clientId}/backup/vmbackup/mapping`, { customers: newCustomers });
+      toast.success(`Mapping aggiornato (${r.data?.alerts_synced ?? 0} alert sincronizzati)`);
+      await reload();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Errore mapping");
+    }
+  };
+
+  if (loading) return <div className="p-4 text-[var(--text-muted)] text-sm">Caricamento…</div>;
+
+  const isConfigured = !!config?.configured;
+
+  // Reverse map: customer → clients
+  const customerToClients = {};
+  mappings.forEach(m => {
+    (m.customers || []).forEach(c => {
+      if (!customerToClients[c]) customerToClients[c] = [];
+      customerToClients[c].push({ id: m.client_id, name: m.client_name });
+    });
+  });
+
+  const filteredCustomers = customers.filter(c => {
+    if (filter === "unmapped") return !(customerToClients[c.customer_name]?.length);
+    if (filter === "mapped") return (customerToClients[c.customer_name]?.length || 0) > 0;
+    if (filter === "problems") return (c.vms_failed || 0) > 0 || (c.vms_warning || 0) > 0 || (c.vms_stale || 0) > 0;
+    return true;
+  });
+
+  return (
+    <div className="space-y-4">
+      <p className="text-[11px] text-[var(--text-muted)]">
+        Integrazione <strong>Altaro VM Backup</strong> (Hyper-V / VMware). Config a livello Center: una sola chiamata API copre
+        tutti i customer. I dati ingestiti sono filtrati per cliente tramite il mapping <code>cliente ↔ customerName</code>.
+      </p>
+
+      {/* Config card */}
+      <div className="noc-panel p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Plug size={16} className="text-violet-400" />
+            <span className="text-sm font-bold">Connessione API portal MSP</span>
+            {isConfigured && config.enabled && (
+              <span className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">ATTIVA</span>
+            )}
+            {isConfigured && !config.enabled && (
+              <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30">DISABILITATA</span>
+            )}
+            {!isConfigured && (
+              <span className="text-[9px] px-1.5 py-0.5 rounded bg-[var(--bg-card)] text-[var(--text-muted)] border border-[var(--bg-border)]">NON CONFIGURATA</span>
+            )}
+          </div>
+          <div className="flex gap-1.5">
+            {isConfigured && (
+              <>
+                <Button size="sm" onClick={pollNow} disabled={busy} className="bg-violet-600 hover:bg-violet-700 h-7 text-[11px] gap-1" data-testid="vm-poll-now-btn">
+                  <ArrowsClockwise size={12} /> {busy ? "..." : "Poll Ora"}
+                </Button>
+                <Button size="sm" onClick={syncAll} disabled={busy} variant="outline" className="h-7 text-[11px]" data-testid="vm-sync-all-btn">Sync Alert</Button>
+              </>
+            )}
+            <Button size="sm" onClick={() => {
+              setForm({
+                api_url: config?.api_url || "https://portal.86bit.it/api/v1/reports/altaro/getHornetSecurityReport",
+                api_key: "", user_id: config?.user_id || "",
+                polling_interval_minutes: config?.polling_interval_minutes || 10,
+                enabled: config?.enabled ?? true,
+              });
+              setShowEdit(true);
+            }} variant="outline" className="h-7 text-[11px]" data-testid="vm-edit-cfg-btn">
+              {isConfigured ? "Modifica" : "Configura"}
+            </Button>
+            {isConfigured && (
+              <Button size="sm" onClick={removeConfig} variant="outline" className="h-7 text-[11px] text-red-400 border-red-400/30" data-testid="vm-delete-cfg-btn"><Trash size={11} /></Button>
+            )}
+          </div>
+        </div>
+        {isConfigured && (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-[11px]">
+            <div>
+              <p className="text-[9px] uppercase text-[var(--text-muted)] tracking-wide">API URL</p>
+              <p className="font-mono truncate" title={config.api_url}>{config.api_url}</p>
+            </div>
+            <div>
+              <p className="text-[9px] uppercase text-[var(--text-muted)] tracking-wide">User ID</p>
+              <p className="font-mono">{config.user_id}</p>
+            </div>
+            <div>
+              <p className="text-[9px] uppercase text-[var(--text-muted)] tracking-wide">API Key</p>
+              <p className="font-mono">{config.api_key_masked}</p>
+            </div>
+            <div>
+              <p className="text-[9px] uppercase text-[var(--text-muted)] tracking-wide">Intervallo polling</p>
+              <p className="font-mono">{config.polling_interval_minutes} min</p>
+            </div>
+            {config.last_polled_at && (
+              <div className="md:col-span-2">
+                <p className="text-[9px] uppercase text-[var(--text-muted)] tracking-wide">Ultimo polling</p>
+                <p className="font-mono">
+                  {new Date(config.last_polled_at).toLocaleString("it-IT")}
+                  {config.last_poll_status === "success" && <span className="ml-2 text-emerald-400">✓ success</span>}
+                  {config.last_poll_status === "failed" && <span className="ml-2 text-red-400">✗ {config.last_poll_error}</span>}
+                </p>
+                {config.last_poll_summary && (
+                  <p className="text-[10px] text-[var(--text-muted)] mt-1">
+                    {config.last_poll_summary.customers || 0} customer · {config.last_poll_summary.vms || 0} VM ·{" "}
+                    <span className="text-red-400">{config.last_poll_summary.failed || 0} failed</span> ·{" "}
+                    <span className="text-amber-400">{config.last_poll_summary.warning || 0} warn</span> ·{" "}
+                    <span className="text-orange-300">{config.last_poll_summary.stale || 0} stale</span>
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {showEdit && (
+        <div className="noc-panel p-4 space-y-3 border border-violet-400/40">
+          <p className="text-[11px] font-bold text-violet-300">
+            {isConfigured ? "Modifica configurazione VM Backup" : "Nuova configurazione VM Backup"}
+          </p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+              <label className="text-[10px] uppercase tracking-wide text-[var(--text-muted)] block mb-1">API URL</label>
+              <Input value={form.api_url} onChange={e => setForm({ ...form, api_url: e.target.value })} placeholder="https://portal.../getHornetSecurityReport" className="font-mono text-[11px]" data-testid="vm-cfg-url" />
+            </div>
+            <div>
+              <label className="text-[10px] uppercase tracking-wide text-[var(--text-muted)] block mb-1">User ID</label>
+              <Input value={form.user_id} onChange={e => setForm({ ...form, user_id: e.target.value })} placeholder="5ec7affa..." className="font-mono text-[11px]" data-testid="vm-cfg-userid" />
+            </div>
+            <div className="md:col-span-2">
+              <label className="text-[10px] uppercase tracking-wide text-[var(--text-muted)] block mb-1">
+                API Key {isConfigured && <span className="text-[9px] text-[var(--text-muted)]">(lascia vuoto per non cambiarla, oppure inserisci la nuova)</span>}
+              </label>
+              <Input type="password" value={form.api_key} onChange={e => setForm({ ...form, api_key: e.target.value })} placeholder={isConfigured ? "••••••••••••" : "la tua chiave API"} className="font-mono text-[11px]" data-testid="vm-cfg-key" />
+            </div>
+            <div>
+              <label className="text-[10px] uppercase tracking-wide text-[var(--text-muted)] block mb-1">Intervallo polling (min)</label>
+              <Input type="number" min={5} max={120} value={form.polling_interval_minutes} onChange={e => setForm({ ...form, polling_interval_minutes: parseInt(e.target.value) || 10 })} className="font-mono text-[11px]" data-testid="vm-cfg-interval" />
+            </div>
+            <label className="flex items-center gap-1.5 text-[11px] cursor-pointer pb-1.5">
+              <input type="checkbox" checked={form.enabled} onChange={e => setForm({ ...form, enabled: e.target.checked })} data-testid="vm-cfg-enabled" />
+              <span>Abilitato</span>
+            </label>
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="outline" onClick={() => setShowEdit(false)} disabled={saving}>Annulla</Button>
+            <Button onClick={saveConfig} disabled={saving || !form.api_url || !form.user_id || (!isConfigured && !form.api_key)} className="bg-violet-600 hover:bg-violet-700" data-testid="vm-cfg-save">
+              {saving ? "Salvataggio..." : "Salva"}
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* Customers mapping table */}
+      {isConfigured && customers.length === 0 ? (
+        <div className="noc-panel p-5 text-center text-[11px] text-[var(--text-muted)]">
+          Nessun customer ancora ingerito. Clicca "Poll Ora" per scaricare i dati dal portal MSP.
+        </div>
+      ) : isConfigured && (
+        <div className="noc-panel p-3 space-y-2">
+          <div className="flex items-center gap-1.5 text-[10px]">
+            <span className="text-[var(--text-muted)]">Filtra:</span>
+            {[
+              { id: "all", label: `Tutti (${customers.length})` },
+              { id: "unmapped", label: `Da mappare (${customers.filter(c => !customerToClients[c.customer_name]?.length).length})` },
+              { id: "mapped", label: `Mappati (${customers.filter(c => customerToClients[c.customer_name]?.length).length})` },
+              { id: "problems", label: `Con problemi (${customers.filter(c => (c.vms_failed || 0) > 0 || (c.vms_warning || 0) > 0 || (c.vms_stale || 0) > 0).length})` },
+            ].map(f => (
+              <button key={f.id} onClick={() => setFilter(f.id)}
+                className={`px-2 py-0.5 rounded border ${filter === f.id ? "bg-violet-500/20 border-violet-400 text-violet-300" : "border-[var(--bg-border)] text-[var(--text-muted)]"}`}
+                data-testid={`vm-filter-${f.id}`}>
+                {f.label}
+              </button>
+            ))}
+          </div>
+          <div className="overflow-x-auto">
+            <table className="noc-table w-full text-[11px]">
+              <thead>
+                <tr>
+                  <th>Customer Hornetsecurity VM</th>
+                  <th>VM</th>
+                  <th>Hosts</th>
+                  <th>Failed</th>
+                  <th>Stale</th>
+                  <th>Cliente ARGUS</th>
+                  <th>Azioni</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredCustomers.map(c => (
+                  <VMCustomerRow
+                    key={c.customer_name}
+                    customer={c}
+                    clients={clients}
+                    mappings={mappings}
+                    currentClients={customerToClients[c.customer_name] || []}
+                    updateMapping={updateCustomerMapping}
+                  />
+                ))}
+              </tbody>
+            </table>
+            {filteredCustomers.length === 0 && (
+              <div className="text-center py-3 text-[var(--text-muted)] text-[11px]">Nessun customer corrispondente al filtro</div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function VMCustomerRow({ customer, clients, mappings, currentClients, updateMapping }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(currentClients[0]?.id || "");
+  const [saving, setSaving] = useState(false);
+
+  // Auto-suggestion: cliente con nome simile al customer (es. "86bit.it" → "86BIT_Office")
+  const cn = customer.customer_name.toLowerCase().replace(/\.(it|com|net|eu|onmicrosoft\.com)$/, "").replace(/[^a-z0-9]/g, "");
+  const suggested = cn ? clients.find(cl => {
+    const nn = (cl.name || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+    return nn && (nn === cn || nn.includes(cn) || cn.includes(nn));
+  }) : null;
+
+  const start = () => {
+    setDraft(currentClients[0]?.id || suggested?.id || "");
+    setEditing(true);
+  };
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      // Rimuovi il customer da tutti i clienti che lo avevano
+      for (const m of mappings) {
+        if ((m.customers || []).includes(customer.customer_name) && m.client_id !== draft) {
+          const newList = (m.customers || []).filter(x => x !== customer.customer_name);
+          await axios.put(`${API}/clients/${m.client_id}/backup/vmbackup/mapping`, { customers: newList });
+        }
+      }
+      // Aggiungi al nuovo cliente (se selezionato)
+      if (draft) {
+        const targetMapping = mappings.find(m => m.client_id === draft);
+        const existing = new Set(targetMapping?.customers || []);
+        existing.add(customer.customer_name);
+        await updateMapping(draft, Array.from(existing));
+      } else {
+        // Solo rimozione (sopra)
+        toast.success("Customer rimosso dal mapping");
+      }
+      setEditing(false);
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Errore");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const remove = async () => {
+    if (!currentClients[0]) return;
+    setSaving(true);
+    try {
+      const m = mappings.find(x => x.client_id === currentClients[0].id);
+      const newList = (m?.customers || []).filter(x => x !== customer.customer_name);
+      await updateMapping(currentClients[0].id, newList);
+      setEditing(false);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const failedCol = (customer.vms_failed || 0) > 0 ? "#FF3B30" : "var(--text-muted)";
+  const staleCol = (customer.vms_stale || 0) > 0 ? "#FF9500" : "var(--text-muted)";
+
+  return (
+    <tr data-testid={`vm-customer-row-${customer.customer_name}`}>
+      <td>
+        <div className="font-semibold">{customer.customer_name}</div>
+        <div className="text-[9px] text-[var(--text-muted)]">
+          {customer.installations_count} install · {customer.hosts_count} host
+        </div>
+      </td>
+      <td className="text-[10px] font-mono">{customer.vms_total || 0}</td>
+      <td className="text-[10px] font-mono text-[var(--text-muted)]">{customer.hosts_count || 0}</td>
+      <td className="text-[10px] font-mono font-bold" style={{ color: failedCol }}>{customer.vms_failed || 0}</td>
+      <td className="text-[10px] font-mono font-bold" style={{ color: staleCol }}>{customer.vms_stale || 0}</td>
+      <td>
+        {currentClients.length > 0 ? (
+          <div className="flex flex-wrap gap-1">
+            {currentClients.map(c => (
+              <span key={c.id} className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">{c.name}</span>
+            ))}
+          </div>
+        ) : (
+          <span className="text-[10px] text-[var(--text-muted)] italic">
+            — non mappato —
+            {suggested && <span className="ml-1 text-amber-300">★ {suggested.name}</span>}
+          </span>
+        )}
+      </td>
+      <td>
+        {editing ? (
+          <div className="flex items-center gap-1">
+            <select
+              value={draft}
+              onChange={e => setDraft(e.target.value)}
+              className="text-[10px] bg-[var(--bg-card)] border border-[var(--bg-border)] rounded px-1 py-0.5 max-w-[160px]"
+              data-testid={`vm-select-${customer.customer_name}`}
+              autoFocus
+            >
+              <option value="">— Nessuno —</option>
+              {clients.slice().sort((a, b) => {
+                if (suggested && a.id === suggested.id) return -1;
+                if (suggested && b.id === suggested.id) return 1;
+                return (a.name || "").localeCompare(b.name || "");
+              }).map(c => (
+                <option key={c.id} value={c.id}>
+                  {suggested && c.id === suggested.id ? "★ " : ""}{c.name}
+                </option>
+              ))}
+            </select>
+            <Button size="sm" onClick={save} disabled={saving} className="bg-emerald-600 hover:bg-emerald-700 h-6 text-[10px] px-2" data-testid={`vm-save-${customer.customer_name}`}>
+              {saving ? "..." : "OK"}
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => setEditing(false)} disabled={saving} className="h-6 text-[10px] px-1.5">X</Button>
+          </div>
+        ) : (
+          <div className="flex gap-1">
+            <Button size="sm" variant="outline" className="h-6 text-[10px]" onClick={start} data-testid={`vm-edit-${customer.customer_name}`}>
+              {currentClients.length > 0 ? "Cambia" : "Assegna"}
+            </Button>
+            {currentClients.length > 0 && (
+              <Button size="sm" variant="outline" onClick={remove} disabled={saving} className="h-6 text-[10px] text-red-400 border-red-400/30" data-testid={`vm-remove-${customer.customer_name}`}>
+                <Trash size={10} />
+              </Button>
+            )}
+          </div>
+        )}
+      </td>
+    </tr>
   );
 }
 
