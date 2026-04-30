@@ -42,14 +42,25 @@ export function DeviceEditModal({ clientId, device, open, onClose, onSaved }) {
     }
     const deviceId = device.id || device.device_id;
     setSaving(true);
+    // Eseguo le 3 PUT in modo INDIPENDENTE: il fallimento di una non deve
+    // impedire le altre. Il silence in particolare e` la modifica piu` semplice e
+    // l'utente si aspetta che funzioni anche se monitor-type/snmp falliscono.
+    const errors = [];
+    let silencePersisted = false;
+
+    // 1) Monitor type
     try {
-      // 1) Monitor type
       await axios.put(
         `${API}/connector/${clientId}/managed-devices/${deviceId}/monitor-type`,
         { monitor_type: monitorType }
       );
-      // 2) SNMP config (solo se il tipo include SNMP)
-      if (monitorType === "snmp" || monitorType === "snmp+http") {
+    } catch (e) {
+      errors.push(`Metodo monitoraggio: ${e.response?.data?.detail || e.message}`);
+    }
+
+    // 2) SNMP config (solo se il tipo include SNMP)
+    if (monitorType === "snmp" || monitorType === "snmp+http") {
+      try {
         const payload = { snmp_version: snmpVersion };
         if (snmpVersion === "v3") {
           Object.assign(payload, {
@@ -67,23 +78,41 @@ export function DeviceEditModal({ clientId, device, open, onClose, onSaved }) {
           `${API}/connector/${clientId}/managed-devices/${deviceId}/snmp`,
           payload
         );
+      } catch (e) {
+        errors.push(`SNMP: ${e.response?.data?.detail || e.message}`);
       }
-      // 3) Silenziamento alert (separato per non interferire se l'utente cambia solo questo)
-      const wasSilenced = !!device?.alerts_silenced;
-      if (alertsSilenced !== wasSilenced || (alertsSilenced && silenceReason !== (device?.alerts_silenced_reason || ""))) {
+    }
+
+    // 3) Silenziamento alert (sempre tentato, anche se 1/2 falliscono)
+    const wasSilenced = !!device?.alerts_silenced;
+    const wasReason = device?.alerts_silenced_reason || "";
+    const silenceDirty = alertsSilenced !== wasSilenced || silenceReason !== wasReason;
+    if (silenceDirty) {
+      try {
         await axios.put(
           `${API}/connector/${clientId}/managed-devices/${deviceId}/silence`,
           { silenced: alertsSilenced, reason: silenceReason }
         );
+        silencePersisted = true;
+      } catch (e) {
+        errors.push(`Silenzio alert: ${e.response?.data?.detail || e.message}`);
       }
-      toast.success("Dispositivo aggiornato. Clicca 'Applica ora' per forzare il connector a ri-leggere immediatamente (altrimenti max 10 min).");
-      if (onSaved) onSaved();
-      // Non chiudo il modal: l'utente potrebbe voler cliccare "Applica ora"
-    } catch (e) {
-      toast.error(e.response?.data?.detail || "Errore nel salvataggio");
-    } finally {
-      setSaving(false);
     }
+
+    setSaving(false);
+
+    if (errors.length > 0) {
+      toast.error(`Errori durante il salvataggio: ${errors.join(" | ")}`);
+      return;
+    }
+    if (silencePersisted) {
+      toast.success(alertsSilenced
+        ? "Alert SILENZIATI per questo device. Eventuali alert già aperti restano e vanno risolti manualmente."
+        : "Alert RIATTIVATI per questo device.");
+    } else {
+      toast.success("Dispositivo aggiornato. Clicca 'Applica ora' per forzare il connector a ri-leggere immediatamente.");
+    }
+    if (onSaved) onSaved();
   };
 
   const applyNow = async () => {
