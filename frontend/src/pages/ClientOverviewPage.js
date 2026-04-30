@@ -2208,7 +2208,7 @@ function ConfigDialog({ open, onClose, form, setForm, onSave, saving }) {
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2"><Database size={16} className="text-cyan-400" /> Configura Hornetsecurity 365 Total Backup</DialogTitle>
           <DialogDescription className="text-[11px]">
-            Per generare la API key vai su <code className="text-cyan-300">cp.hornetsecurity.com</code> → 365 Total Backup → Backups → Generate Report → seleziona scope tenant → genera. Copia URL + key (mostrate una sola volta).
+            Per generare la API key vai su <code className="text-cyan-300">cp.hornetsecurity.com</code> → 365 Total Backup → <strong>Alerts → Monitoring &amp; Alerts</strong> → tab <strong>Monitoring</strong> → <strong>Generate API Link</strong>. Specifica almeno un IP autorizzato (es. quello di argus.86bit.it). URL + key sono mostrate <strong>una sola volta</strong>: copiale subito.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-3 text-xs">
