@@ -250,6 +250,7 @@ from routes.web_console_v4 import router as web_console_v4_router
 from routes.device_profiles import router as device_profiles_router
 from routes.connector_settings import router as connector_settings_router
 from routes.hornetsecurity_backup import router as hornetsecurity_backup_router
+from routes.hornetsecurity_vmbackup import router as hornetsecurity_vmbackup_router
 from routes.security_admin import router as security_admin_router
 
 app.include_router(auth_router)
@@ -303,6 +304,7 @@ app.include_router(web_console_v4_router)
 app.include_router(device_profiles_router)
 app.include_router(connector_settings_router)
 app.include_router(hornetsecurity_backup_router)
+app.include_router(hornetsecurity_vmbackup_router)
 app.include_router(security_admin_router)
 from routes.security_admin import audit_router as audit_dashboard_router
 app.include_router(audit_dashboard_router)
@@ -699,6 +701,26 @@ async def startup_event():
         logger.info("Hornetsecurity 365 backup polling scheduler started (tick: 1min)")
     except Exception as e:
         logger.error(f"Failed to start Hornetsecurity scheduler: {e}")
+
+    # === Hornetsecurity VM Backup (Altaro) polling scheduler ===
+    try:
+        from apscheduler.schedulers.asyncio import AsyncIOScheduler as _VMSched
+        from apscheduler.triggers.interval import IntervalTrigger as _VMTrig
+        from services.hornetsecurity_vmbackup_poller import vmbackup_polling_tick
+        global hornetsecurity_vm_scheduler
+        hornetsecurity_vm_scheduler = _VMSched()
+        hornetsecurity_vm_scheduler.add_job(
+            vmbackup_polling_tick,
+            trigger=_VMTrig(minutes=1),
+            id="hornetsecurity_vmbackup_polling_tick",
+            next_run_time=datetime.now(timezone.utc) + timedelta(seconds=45),
+            max_instances=1,
+            coalesce=True,
+        )
+        hornetsecurity_vm_scheduler.start()
+        logger.info("Hornetsecurity VM backup polling scheduler started (tick: 1min)")
+    except Exception as e:
+        logger.error(f"Failed to start Hornetsecurity VM backup scheduler: {e}")
 
     # ----- Embedded WireGuard runtime (POC, opt-in via env WG_EMBEDDED_ENABLED) -----
     if os.environ.get("WG_EMBEDDED_ENABLED", "").lower() in ("1", "true", "yes"):

@@ -1925,7 +1925,288 @@ function PrintersTab({ printers }) {
 
 /* ==================== BACKUP TAB ==================== */
 function BackupTab({ backups, clientId }) {
-  return <HornetsecurityBackupPanel clientId={clientId} legacyBackups={backups} />;
+  const [subTab, setSubTab] = useState("m365");
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-1.5 flex-wrap text-[11px]">
+        <span className="text-[10px] uppercase tracking-widest text-[var(--text-muted)]">Provider:</span>
+        <button
+          onClick={() => setSubTab("m365")}
+          className={`px-3 py-1 rounded-md border text-[11px] font-semibold transition ${
+            subTab === "m365"
+              ? "bg-cyan-500/20 border-cyan-400 text-cyan-300"
+              : "border-cyan-500/30 text-cyan-300/70 hover:bg-cyan-500/10"
+          }`}
+          data-testid="backup-subtab-m365"
+        >
+          365 Total Backup
+        </button>
+        <button
+          onClick={() => setSubTab("vm")}
+          className={`px-3 py-1 rounded-md border text-[11px] font-semibold transition ${
+            subTab === "vm"
+              ? "bg-violet-500/20 border-violet-400 text-violet-300"
+              : "border-violet-500/30 text-violet-300/70 hover:bg-violet-500/10"
+          }`}
+          data-testid="backup-subtab-vm"
+        >
+          VM Backup (Altaro)
+        </button>
+      </div>
+      {subTab === "m365" ? (
+        <HornetsecurityBackupPanel clientId={clientId} legacyBackups={backups} />
+      ) : (
+        <VMBackupPanel clientId={clientId} />
+      )}
+    </div>
+  );
+}
+
+/* ==================== HORNETSECURITY VM BACKUP PANEL ==================== */
+function VMBackupPanel({ clientId }) {
+  const [loading, setLoading] = useState(true);
+  const [config, setConfig] = useState(null);
+  const [mapping, setMapping] = useState({ customers: [] });
+  const [status, setStatus] = useState({ items: [], totals: {} });
+  const [allCustomers, setAllCustomers] = useState([]);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState([]);
+  const [polling, setPolling] = useState(false);
+  const [view, setView] = useState("all"); // all | problems | stale
+
+  const reload = useCallback(async () => {
+    setLoading(true);
+    try {
+      const cfgPromise = axios.get(`${API}/admin/hornetsecurity-vm/config`).catch(e => {
+        if (e?.response?.status === 403) return { data: { configured: false, _no_admin: true } };
+        return { data: null };
+      });
+      const custsPromise = axios.get(`${API}/admin/hornetsecurity-vm/customers`).catch(() => ({ data: { customers: [] } }));
+      const mapPromise = axios.get(`${API}/clients/${clientId}/backup/vmbackup/mapping`).catch(() => ({ data: { customers: [] } }));
+      const stPromise = axios.get(`${API}/clients/${clientId}/backup/vmbackup/status`).catch(() => ({ data: { items: [], totals: {} } }));
+      const [cfgR, custsR, mapR, stR] = await Promise.all([cfgPromise, custsPromise, mapPromise, stPromise]);
+      setConfig(cfgR.data);
+      setAllCustomers(custsR.data?.customers || []);
+      setMapping(mapR.data || { customers: [] });
+      setDraft(mapR.data?.customers || []);
+      setStatus(stR.data || { items: [], totals: {} });
+    } catch (e) {
+      toast.error("Errore caricamento VM Backup");
+    } finally {
+      setLoading(false);
+    }
+  }, [clientId]);
+
+  useEffect(() => { reload(); }, [reload]);
+
+  const saveMapping = async () => {
+    try {
+      const r = await axios.put(`${API}/clients/${clientId}/backup/vmbackup/mapping`, { customers: draft });
+      toast.success(`Mapping salvato (${r.data?.alerts_synced ?? 0} alert sincronizzati)`);
+      setEditing(false);
+      await reload();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Errore salvataggio");
+    }
+  };
+
+  const pollNow = async () => {
+    setPolling(true);
+    try {
+      const r = await axios.post(`${API}/admin/hornetsecurity-vm/poll-now`);
+      const s = r.data || {};
+      toast.success(`Poll completato: ${s.vms || 0} VM (${s.failed || 0} failed, ${s.stale || 0} stale)`);
+      await reload();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Errore polling");
+    } finally {
+      setPolling(false);
+    }
+  };
+
+  if (loading) return <div className="noc-panel p-5 text-[11px] text-[var(--text-muted)] text-center">Caricamento…</div>;
+
+  // Config non presente (no-admin è separato)
+  if (!config || (!config.configured && !config._no_admin)) {
+    return (
+      <div className="noc-panel p-5 text-center">
+        <Database size={24} className="mx-auto text-[var(--text-muted)] mb-2" />
+        <p className="text-xs text-[var(--text-primary)] font-semibold">Hornetsecurity VM Backup non configurato</p>
+        <p className="text-[10px] text-[var(--text-muted)] mt-1">
+          Configura l'API globale in <em>Amministrazione → Hornetsecurity VM Backup</em> per abilitare il monitoraggio delle VM (Altaro).
+        </p>
+      </div>
+    );
+  }
+
+  const t = status.totals || {};
+  const items = (status.items || []).filter(it => {
+    if (view === "problems" && it.alert_reason !== "failed" && it.alert_reason !== "warning") return false;
+    if (view === "stale" && it.alert_reason !== "stale") return false;
+    return true;
+  });
+
+  return (
+    <div className="space-y-3">
+      <div className="noc-panel p-3 flex items-center gap-3 flex-wrap">
+        <div className="flex-1 min-w-[260px]">
+          <p className="text-[10px] uppercase tracking-widest text-[var(--text-muted)]">Hornetsecurity VM Backup (Altaro)</p>
+          <p className="text-xs font-semibold text-[var(--text-primary)]">
+            {mapping.customers?.length > 0
+              ? <>{mapping.customers.length} customer: <span className="text-violet-300">{mapping.customers.join(", ")}</span></>
+              : <span className="text-amber-300">Nessun customer mappato — clicca "Modifica"</span>}
+          </p>
+          <p className="text-[10px] text-[var(--text-muted)] mt-0.5">
+            Polling ogni {config.polling_interval_minutes} min
+            {config.last_polled_at && ` · Ultimo: ${new Date(config.last_polled_at).toLocaleString("it-IT", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}`}
+          </p>
+        </div>
+        <div className="flex gap-1.5">
+          <Button size="sm" onClick={pollNow} disabled={polling} className="bg-violet-600 hover:bg-violet-700 h-7 text-[11px]" data-testid="vmbackup-poll-now">
+            {polling ? "Polling…" : "Poll Ora"}
+          </Button>
+          {!editing ? (
+            <Button size="sm" variant="outline" onClick={() => { setDraft(mapping.customers || []); setEditing(true); }} className="h-7 text-[11px]" data-testid="vmbackup-edit-mapping">
+              Modifica mapping
+            </Button>
+          ) : (
+            <>
+              <Button size="sm" onClick={saveMapping} className="bg-emerald-600 hover:bg-emerald-700 h-7 text-[11px]" data-testid="vmbackup-save-mapping">Salva</Button>
+              <Button size="sm" variant="outline" onClick={() => setEditing(false)} className="h-7 text-[11px]">X</Button>
+            </>
+          )}
+        </div>
+      </div>
+
+      {editing && (
+        <div className="noc-panel p-3">
+          <p className="text-[11px] text-[var(--text-muted)] mb-2">Seleziona i customer Hornetsecurity VM di questo cliente:</p>
+          <div className="max-h-[220px] overflow-auto border border-[var(--bg-border)] rounded p-2 space-y-1">
+            {allCustomers.map(c => {
+              const checked = draft.includes(c.customer_name);
+              return (
+                <label key={c.customer_name} className="flex items-center gap-2 text-[11px] cursor-pointer hover:bg-[var(--bg-hover)] px-1 py-0.5 rounded">
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={e => {
+                      setDraft(d => e.target.checked ? [...d, c.customer_name] : d.filter(x => x !== c.customer_name));
+                    }}
+                    data-testid={`vmbackup-customer-checkbox-${c.customer_name}`}
+                  />
+                  <span className="font-mono flex-1">{c.customer_name}</span>
+                  <span className="text-[9px] text-[var(--text-muted)]">
+                    {c.vms_total} VM · {c.hosts_count} host
+                    {c.vms_failed > 0 && <span className="text-red-400 ml-1">· {c.vms_failed} failed</span>}
+                    {c.vms_warning > 0 && <span className="text-amber-400 ml-1">· {c.vms_warning} warn</span>}
+                    {c.vms_stale > 0 && <span className="text-orange-300 ml-1">· {c.vms_stale} stale</span>}
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {(mapping.customers?.length || 0) > 0 && (
+        <>
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
+            <StatBox label="VM totali" value={t.vms_total || 0} color="#06B6D4" />
+            <StatBox label="Success" value={t.by_status?.success || 0} color="#34C759" />
+            <StatBox label="Failed" value={t.failed || 0} color="#FF3B30" />
+            <StatBox label="Warning" value={t.warning || 0} color="#FFB400" />
+            <StatBox label="Stale > 48h" value={t.stale || 0} color="#FF9500" />
+          </div>
+
+          <div className="flex items-center gap-1.5 flex-wrap text-[11px]">
+            <span className="text-[10px] uppercase tracking-widest text-[var(--text-muted)]">Vista:</span>
+            {[
+              { id: "all", label: `Tutte (${t.vms_total || 0})`, color: "cyan" },
+              { id: "problems", label: `Solo problemi (${(t.failed || 0) + (t.warning || 0)})`, color: "red" },
+              { id: "stale", label: `Solo stale (${t.stale || 0})`, color: "orange" },
+            ].map(v => {
+              const active = view === v.id;
+              const cls = v.color === "red"
+                ? (active ? "bg-red-500/20 border-red-400 text-red-300" : "border-red-500/30 text-red-300/70 hover:bg-red-500/10")
+                : v.color === "orange"
+                ? (active ? "bg-orange-500/20 border-orange-400 text-orange-300" : "border-orange-500/30 text-orange-300/70 hover:bg-orange-500/10")
+                : (active ? "bg-cyan-500/20 border-cyan-400 text-cyan-300" : "border-cyan-500/30 text-cyan-300/70 hover:bg-cyan-500/10");
+              return (
+                <button key={v.id} onClick={() => setView(v.id)} className={`px-3 py-1 rounded-md border text-[11px] font-semibold transition ${cls}`} data-testid={`vmbackup-view-${v.id}`}>
+                  {v.label}
+                </button>
+              );
+            })}
+          </div>
+
+          {items.length === 0 ? (
+            <div className="noc-panel p-5 text-center text-[11px] text-[var(--text-muted)]">Nessuna VM da mostrare con il filtro corrente.</div>
+          ) : (
+            <div className="noc-panel overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="noc-table w-full text-[11px]" data-testid="vmbackup-table">
+                  <thead>
+                    <tr>
+                      <th>VM</th>
+                      <th>Host</th>
+                      <th>Hypervisor</th>
+                      <th>Customer</th>
+                      <th>Onsite</th>
+                      <th>Offsite</th>
+                      <th>2° Offsite</th>
+                      <th>Ultimo backup</th>
+                      <th>Dim.</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {items.map(vm => (
+                      <tr key={`${vm.customer_name}-${vm.vm_id}`} data-testid={`vmbackup-row-${vm.vm_id}`}>
+                        <td className="font-semibold">
+                          {vm.vm_name}
+                          {vm.alert_reason === "failed" && <span className="ml-1 text-[9px] px-1 rounded bg-red-500/20 text-red-300">FAILED</span>}
+                          {vm.alert_reason === "warning" && <span className="ml-1 text-[9px] px-1 rounded bg-amber-500/20 text-amber-300">WARN</span>}
+                          {vm.alert_reason === "stale" && <span className="ml-1 text-[9px] px-1 rounded bg-orange-500/20 text-orange-300">STALE</span>}
+                        </td>
+                        <td className="font-mono text-[10px]">{vm.host_name}</td>
+                        <td className="text-[10px] text-[var(--text-muted)]">{vm.host_type}</td>
+                        <td className="text-[10px] text-[var(--text-muted)]">{vm.customer_name}</td>
+                        <td><StatusPill s={vm.onsite_status_raw || vm.onsite_status} /></td>
+                        <td><StatusPill s={vm.offsite_status_raw || vm.offsite_status} /></td>
+                        <td><StatusPill s={vm.second_offsite_status_raw || vm.second_offsite_status} muted /></td>
+                        <td className="text-[10px] text-[var(--text-muted)] font-mono">
+                          {vm.onsite_time ? new Date(vm.onsite_time).toLocaleString("it-IT", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "—"}
+                        </td>
+                        <td className="text-[10px] text-[var(--text-muted)] font-mono">{_fmtBytes(vm.onsite_size_bytes)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function StatusPill({ s, muted }) {
+  if (!s || s === "Unknown" || s === "unknown") return <span className="text-[9px] text-[var(--text-muted)]">—</span>;
+  const low = String(s).toLowerCase();
+  let cls = "bg-[var(--bg-hover)] text-[var(--text-muted)] border-[var(--bg-border)]";
+  if (low === "success") cls = "bg-emerald-500/15 text-emerald-300 border-emerald-500/30";
+  else if (low === "failed" || low === "failure") cls = "bg-red-500/20 text-red-300 border-red-500/30";
+  else if (low === "warning") cls = "bg-amber-500/15 text-amber-300 border-amber-500/30";
+  else if (low.includes("progress")) cls = "bg-cyan-500/15 text-cyan-300 border-cyan-500/30";
+  return <span className={`text-[9px] px-1.5 py-0.5 rounded border ${cls} ${muted ? "opacity-60" : ""}`}>{s}</span>;
+}
+
+function _fmtBytes(n) {
+  if (!n || n <= 0) return "—";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let i = 0, v = n;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+  return `${v.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
 }
 
 /* ==================== HORNETSECURITY 365 BACKUP PANEL (per-cliente) ==================== */
