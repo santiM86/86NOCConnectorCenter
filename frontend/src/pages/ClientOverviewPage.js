@@ -2027,9 +2027,12 @@ function HornetsecurityBackupPanel({ clientId, legacyBackups }) {
   }
 
   const mappedTenants = mapping?.tenants || [];
+  const mappedFilters = mapping?.filters || [];
+  // Considera mappato se c'e` ALMENO un filter (whole tenant string OR sub-group dict)
+  const hasAnyMapping = mappedFilters.length > 0 || mappedTenants.length > 0;
 
   // Mapping mancante → invito a configurare
-  if (mappedTenants.length === 0) {
+  if (!hasAnyMapping) {
     return (
       <div className="space-y-3">
         <div className="noc-panel p-3 flex items-center justify-between">
@@ -2073,7 +2076,22 @@ function HornetsecurityBackupPanel({ clientId, legacyBackups }) {
         <div className="flex-1 min-w-[260px]">
           <p className="text-[10px] uppercase tracking-widest text-[var(--text-muted)]">Hornetsecurity 365 Backup</p>
           <p className="text-xs font-semibold text-[var(--text-primary)]">
-            {mappedTenants.length} tenant mappati: {mappedTenants.slice(0, 3).join(", ")}{mappedTenants.length > 3 ? `, +${mappedTenants.length - 3}` : ""}
+            {mappedFilters.length > 0 ? (
+              <>
+                {mappedFilters.length} mapping attivi:{" "}
+                {mappedFilters.slice(0, 3).map((f, i) => (
+                  <span key={i} className="mr-1">
+                    {f.sub_groups && f.sub_groups.length > 0
+                      ? <span className="inline-flex items-center gap-1"><span className="text-[10px] text-cyan-300">{f.tenant}</span><span className="text-[9px] text-amber-300">→ {f.sub_groups.join(", ")}</span></span>
+                      : <span className="text-[10px] text-cyan-300">{f.tenant} <span className="text-[9px] text-[var(--text-muted)]">(intero)</span></span>}
+                    {i < Math.min(2, mappedFilters.length - 1) ? "," : ""}
+                  </span>
+                ))}
+                {mappedFilters.length > 3 ? `, +${mappedFilters.length - 3}` : ""}
+              </>
+            ) : (
+              <>{mappedTenants.length} tenant mappati: {mappedTenants.slice(0, 3).join(", ")}{mappedTenants.length > 3 ? `, +${mappedTenants.length - 3}` : ""}</>
+            )}
           </p>
           <p className="text-[10px] text-[var(--text-muted)] mt-0.5">
             Polling globale ogni {globalCfg.poll_interval_minutes} min
@@ -2113,11 +2131,11 @@ function HornetsecurityBackupPanel({ clientId, legacyBackups }) {
             className={`px-2 py-0.5 rounded border text-[10px] ${filterType === t ? "bg-violet-500/20 border-violet-400 text-violet-300" : "border-[var(--bg-border)] text-[var(--text-muted)]"}`}
             data-testid={`hornetsecurity-filter-type-${t}`}>{t}</button>
         ))}
-        {mappedTenants.length > 1 && (
+        {(mappedTenants.length > 1 || mappedFilters.length > 1) && (
           <>
             <span className="text-[var(--text-muted)] ml-2">Tenant:</span>
             <button onClick={() => setFilterTenant("all")} className={`px-2 py-0.5 rounded border text-[10px] ${filterTenant === "all" ? "bg-emerald-500/20 border-emerald-400 text-emerald-300" : "border-[var(--bg-border)] text-[var(--text-muted)]"}`}>all</button>
-            {mappedTenants.map(t => (
+            {Array.from(new Set([...(mappedTenants || []), ...(mappedFilters || []).map(f => f.tenant)])).map(t => (
               <button key={t} onClick={() => setFilterTenant(t)}
                 className={`px-2 py-0.5 rounded border text-[10px] ${filterTenant === t ? "bg-emerald-500/20 border-emerald-400 text-emerald-300" : "border-[var(--bg-border)] text-[var(--text-muted)]"}`}>{t} ({byTenant[t] || 0})</button>
             ))}
