@@ -124,7 +124,7 @@ async def get_vmbackup_config(current_user: dict = Depends(get_current_user)):
     if not cfg:
         return VMBackupConfigOut(
             api_url=DEFAULT_API_URL, user_id="", api_key_masked="(non configurato)",
-            polling_interval_minutes=10, enabled=False, configured=False,
+            polling_interval_minutes=10, enabled=True, configured=False,
         )
     try:
         k = security_manager.decrypt_credential(cfg.get("api_key_enc", ""))
