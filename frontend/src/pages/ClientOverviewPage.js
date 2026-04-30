@@ -1928,42 +1928,39 @@ function BackupTab({ backups, clientId }) {
   return <HornetsecurityBackupPanel clientId={clientId} legacyBackups={backups} />;
 }
 
-/* ==================== HORNETSECURITY 365 BACKUP PANEL ==================== */
+/* ==================== HORNETSECURITY 365 BACKUP PANEL (per-cliente) ==================== */
 function HornetsecurityBackupPanel({ clientId, legacyBackups }) {
-  const [config, setConfig] = useState(null);
+  const [globalCfg, setGlobalCfg] = useState(null);
+  const [mapping, setMapping] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [showConfig, setShowConfig] = useState(false);
-  const [savingCfg, setSavingCfg] = useState(false);
   const [polling, setPolling] = useState(false);
   const [statusData, setStatusData] = useState({ items: [], totals: {} });
-  const [storageTrend, setStorageTrend] = useState([]);
   const [filterStatus, setFilterStatus] = useState("all");
   const [filterType, setFilterType] = useState("all");
-  const emptyForm = { api_url: "", api_key: "", poll_interval_minutes: 30, enabled: true };
-  const [form, setForm] = useState(emptyForm);
+  const [filterTenant, setFilterTenant] = useState("all");
 
   const reload = useCallback(async () => {
     setLoading(true);
     try {
-      const cfgRes = await axios.get(`${API}/clients/${clientId}/backup/hornetsecurity/config`);
-      setConfig(cfgRes.data);
-      if (cfgRes.data.configured) {
-        const [statusRes, trendRes] = await Promise.all([
-          axios.get(`${API}/clients/${clientId}/backup/hornetsecurity/status`),
-          axios.get(`${API}/clients/${clientId}/backup/hornetsecurity/storage-trend?days=30`),
-        ]);
-        setStatusData(statusRes.data || { items: [], totals: {} });
-        setStorageTrend(trendRes.data?.points || []);
-      } else {
-        setStatusData({ items: [], totals: {} });
-        setStorageTrend([]);
+      // Leggiamo la config globale via admin (richiede admin) — se 403/non-admin, gestiamo gracefully
+      let gcfg = null;
+      try {
+        const r = await axios.get(`${API}/admin/hornetsecurity/global-config`);
+        gcfg = r.data;
+      } catch (e) {
+        if (e?.response?.status === 403) gcfg = { configured: false, _no_admin: true };
+        else if (e?.response?.status === 404) gcfg = null; // backend obsoleto
+        else throw e;
       }
+      setGlobalCfg(gcfg);
+
+      const mr = await axios.get(`${API}/clients/${clientId}/backup/hornetsecurity/mapping`).catch(() => ({ data: null }));
+      setMapping(mr.data);
+
+      const sr = await axios.get(`${API}/clients/${clientId}/backup/hornetsecurity/status`).catch(() => ({ data: { items: [], totals: {} } }));
+      setStatusData(sr.data || { items: [], totals: {} });
     } catch (e) {
-      // Backend non aggiornato (404) → mostra fallback legacy
-      if (e?.response?.status !== 404) {
-        toast.error(`Errore caricamento Hornetsecurity: ${e?.response?.data?.detail || e.message}`);
-      }
-      setConfig(null);
+      toast.error(`Errore caricamento backup: ${e?.response?.data?.detail || e.message}`);
     } finally {
       setLoading(false);
     }
@@ -1971,80 +1968,30 @@ function HornetsecurityBackupPanel({ clientId, legacyBackups }) {
 
   useEffect(() => { reload(); }, [reload]);
 
-  const saveConfig = async () => {
-    if (!form.api_url || !form.api_key) {
-      toast.error("URL e API key sono obbligatori"); return;
-    }
-    setSavingCfg(true);
-    try {
-      await axios.put(`${API}/clients/${clientId}/backup/hornetsecurity/config`, form);
-      toast.success("Configurazione Hornetsecurity salvata");
-      setShowConfig(false);
-      setForm(emptyForm);
-      await reload();
-    } catch (e) {
-      toast.error(e?.response?.data?.detail || "Errore salvataggio");
-    } finally {
-      setSavingCfg(false);
-    }
-  };
-
-  const testConnection = async () => {
+  const pollGlobalNow = async () => {
     setPolling(true);
     try {
-      const { data } = await axios.post(`${API}/clients/${clientId}/backup/hornetsecurity/test`);
-      if (data.ok) {
-        toast.success(`Connessione OK — ${data.workloads_detected} workload, ${data.tenants_with_storage} tenant`);
-      } else {
-        toast.error(`Test fallito (HTTP ${data.http_status}): ${data.raw_response_excerpt?.slice(0, 200)}`, { duration: 8000 });
-      }
-    } catch (e) {
-      toast.error(e?.response?.data?.detail || "Errore test connessione");
-    } finally {
-      setPolling(false);
-    }
-  };
-
-  const pollNow = async () => {
-    setPolling(true);
-    try {
-      const { data } = await axios.post(`${API}/clients/${clientId}/backup/hornetsecurity/poll`);
-      toast.success(`Polling completato — ${data.workloads_total} workload (${data.workloads_failed} falliti)`);
+      const { data } = await axios.post(`${API}/admin/hornetsecurity/poll`);
+      toast.success(`Poll globale OK — ${data.workloads_total} workload (${data.workloads_failed} falliti)`);
       await reload();
     } catch (e) {
+      const status = e?.response?.status;
       const det = e?.response?.data?.detail || e.message;
-      if (e?.response?.status === 429) toast.warning(det);
-      else toast.error(`Errore poll: ${det}`);
+      if (status === 429) toast.warning(det); else toast.error(`Errore poll: ${det}`);
     } finally {
       setPolling(false);
     }
   };
 
-  const removeConfig = async () => {
-    if (!window.confirm("Rimuovere la configurazione Hornetsecurity? Lo storico viene mantenuto.")) return;
-    try {
-      await axios.delete(`${API}/clients/${clientId}/backup/hornetsecurity/config`);
-      toast.success("Configurazione rimossa");
-      await reload();
-    } catch (e) {
-      toast.error(e?.response?.data?.detail || "Errore rimozione");
-    }
-  };
+  if (loading) return <div className="text-center py-8 text-[var(--text-muted)] text-xs">Caricamento backup…</div>;
 
-  if (loading) {
-    return <div className="text-center py-8 text-[var(--text-muted)] text-xs">Caricamento configurazione backup…</div>;
-  }
-
-  const configured = config?.configured;
-  const backendMissing = config === null;
-
-  if (backendMissing) {
-    // Backend non aggiornato → fallback all'UI legacy
+  // Backend non aggiornato → mostra fallback legacy
+  if (globalCfg === null) {
     return (
       <div className="space-y-3">
         <div className="noc-panel p-3 border-l-2 border-amber-400">
           <p className="text-[11px] text-amber-300 font-semibold mb-1">Backend non aggiornato</p>
-          <p className="text-[10px] text-[var(--text-muted)]">L'integrazione Hornetsecurity 365 Total Backup richiede backend v3.5.30+. Aggiorna il Center per attivarla.</p>
+          <p className="text-[10px] text-[var(--text-muted)]">L'integrazione Hornetsecurity richiede backend v3.5.30+. Aggiorna il Center.</p>
         </div>
         {legacyBackups?.length > 0 && (
           <div className="space-y-2">
@@ -2061,27 +2008,49 @@ function HornetsecurityBackupPanel({ clientId, legacyBackups }) {
     );
   }
 
-  if (!configured) {
+  // Config globale assente → CTA verso settings
+  if (!globalCfg.configured) {
+    return (
+      <div className="noc-panel p-5 text-center">
+        <Database size={28} className="text-cyan-400 mx-auto mb-2" />
+        <p className="text-sm font-semibold mb-1">Hornetsecurity 365 Total Backup</p>
+        <p className="text-[11px] text-[var(--text-muted)] mb-3 max-w-md mx-auto">
+          La configurazione globale non e` ancora attiva. Un admin deve configurarla in Settings → Hornetsecurity 365 Backup.
+        </p>
+        {!globalCfg._no_admin && (
+          <Button onClick={() => window.location.href = "/settings/hornetsecurity"} className="bg-cyan-600 hover:bg-cyan-700 h-8 text-xs gap-1" data-testid="goto-hornetsecurity-settings">
+            Vai alle impostazioni
+          </Button>
+        )}
+      </div>
+    );
+  }
+
+  const mappedTenants = mapping?.tenants || [];
+
+  // Mapping mancante → invito a configurare
+  if (mappedTenants.length === 0) {
     return (
       <div className="space-y-3">
+        <div className="noc-panel p-3 flex items-center justify-between">
+          <div>
+            <p className="text-[11px] text-cyan-300 font-semibold">Hornetsecurity 365 Backup attivo (livello Center)</p>
+            <p className="text-[10px] text-[var(--text-muted)]">
+              Ultimo poll: {globalCfg.last_polled_at ? new Date(globalCfg.last_polled_at).toLocaleString("it-IT") : "mai"} ·
+              {globalCfg.last_poll_summary?.tenants_seen || 0} tenant rilevati
+            </p>
+          </div>
+        </div>
         <div className="noc-panel p-5 text-center">
-          <Database size={28} className="text-cyan-400 mx-auto mb-2" />
-          <p className="text-sm font-semibold text-[var(--text-primary)] mb-1">Hornetsecurity 365 Total Backup</p>
+          <ShieldCheck size={28} className="text-amber-400 mx-auto mb-2" />
+          <p className="text-sm font-semibold mb-1">Mapping tenant non configurato</p>
           <p className="text-[11px] text-[var(--text-muted)] mb-3 max-w-md mx-auto">
-            Aggancia il monitoraggio backup Microsoft 365 (Mailbox, OneDrive, SharePoint, Teams) generando una API key dal Control Panel Hornetsecurity → 365 Total Backup → Generate Report.
+            Per visualizzare i backup di questo cliente occorre associarlo ai tenant Hornetsecurity corrispondenti. Vai in Settings → Hornetsecurity 365 Backup → tabella mapping.
           </p>
-          <Button
-            onClick={() => { setForm(emptyForm); setShowConfig(true); }}
-            className="bg-cyan-600 hover:bg-cyan-700 text-white h-8 text-xs gap-1"
-            data-testid="hornetsecurity-configure-btn"
-          >
-            <Plus size={13} weight="bold" /> Configura integrazione
+          <Button onClick={() => window.location.href = "/settings/hornetsecurity"} className="bg-amber-600 hover:bg-amber-700 h-8 text-xs gap-1" data-testid="goto-mapping">
+            Configura mapping
           </Button>
         </div>
-        <ConfigDialog
-          open={showConfig} onClose={() => setShowConfig(false)} form={form} setForm={setForm}
-          onSave={saveConfig} saving={savingCfg}
-        />
       </div>
     );
   }
@@ -2089,204 +2058,110 @@ function HornetsecurityBackupPanel({ clientId, legacyBackups }) {
   const items = (statusData.items || []).filter(it => {
     if (filterStatus !== "all" && it.status !== filterStatus) return false;
     if (filterType !== "all" && it.workload_type !== filterType) return false;
+    if (filterTenant !== "all" && it.tenant !== filterTenant) return false;
     return true;
   });
   const byStatus = statusData.totals?.by_status || {};
   const byType = statusData.totals?.by_type || {};
+  const byTenant = statusData.totals?.by_tenant || {};
   const activeAlerts = statusData.totals?.active_alerts || 0;
 
   return (
     <div className="space-y-3">
-      {/* Header config */}
+      {/* Header */}
       <div className="noc-panel p-3 flex items-center gap-3 flex-wrap">
         <div className="flex-1 min-w-[260px]">
-          <p className="text-[10px] uppercase tracking-widest text-[var(--text-muted)]">Hornetsecurity 365 Total Backup</p>
-          <p className="text-xs font-mono text-[var(--text-primary)] truncate" title={config.api_url}>
-            {config.api_url} <span className="text-[var(--text-muted)]">· key {config.api_key_preview}</span>
+          <p className="text-[10px] uppercase tracking-widest text-[var(--text-muted)]">Hornetsecurity 365 Backup</p>
+          <p className="text-xs font-semibold text-[var(--text-primary)]">
+            {mappedTenants.length} tenant mappati: {mappedTenants.slice(0, 3).join(", ")}{mappedTenants.length > 3 ? `, +${mappedTenants.length - 3}` : ""}
           </p>
           <p className="text-[10px] text-[var(--text-muted)] mt-0.5">
-            Polling ogni {config.poll_interval_minutes}min
-            {config.last_polled_at ? ` · Ultimo: ${new Date(config.last_polled_at).toLocaleString("it-IT")}` : " · Mai eseguito"}
-            {config.last_poll_status === "failed" && (
-              <span className="ml-1 text-red-400" title={config.last_poll_error}> · Errore: {(config.last_poll_error || "").slice(0, 80)}</span>
-            )}
+            Polling globale ogni {globalCfg.poll_interval_minutes} min
+            {globalCfg.last_polled_at && ` · Ultimo: ${new Date(globalCfg.last_polled_at).toLocaleString("it-IT", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}`}
           </p>
         </div>
         <div className="flex gap-1.5">
-          <Button onClick={pollNow} disabled={polling} className="bg-cyan-600 hover:bg-cyan-700 h-7 text-[11px] gap-1" data-testid="hornetsecurity-poll-btn">
+          <Button onClick={pollGlobalNow} disabled={polling} className="bg-cyan-600 hover:bg-cyan-700 h-7 text-[11px] gap-1" data-testid="hornetsecurity-poll-btn">
             {polling ? "..." : "Poll Ora"}
           </Button>
-          <Button onClick={testConnection} disabled={polling} className="bg-indigo-600 hover:bg-indigo-700 h-7 text-[11px]" data-testid="hornetsecurity-test-btn">
-            Test
-          </Button>
-          <Button onClick={() => { setForm({ api_url: config.api_url, api_key: "", poll_interval_minutes: config.poll_interval_minutes, enabled: config.enabled }); setShowConfig(true); }} variant="outline" className="h-7 text-[11px]" data-testid="hornetsecurity-edit-btn">
-            Modifica
-          </Button>
-          <Button onClick={removeConfig} variant="outline" className="h-7 text-[11px] text-red-400 hover:text-red-300 border-red-400/30" data-testid="hornetsecurity-delete-btn">
-            <Trash size={11} />
+          <Button onClick={() => window.location.href = "/settings/hornetsecurity"} variant="outline" className="h-7 text-[11px]" data-testid="hornetsecurity-settings-btn">
+            Settings
           </Button>
         </div>
       </div>
 
       {/* Stat boxes */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
         <StatBox label="Workload OK" value={byStatus.success || 0} color="#34C759" />
-        <StatBox label="Failed" value={(byStatus.failed || 0) + (byStatus.error || 0) + (byStatus.fail || 0)} color="#FF3B30" />
+        <StatBox label="Failed" value={byStatus.failed || 0} color="#FF3B30" />
+        <StatBox label="In progress" value={byStatus.in_progress || 0} color="#FFB400" />
         <StatBox label="Alert attivi" value={activeAlerts} color={activeAlerts > 0 ? "#FF9500" : "#34C759"} />
-        <StatBox label="Tipi workload" value={Object.keys(byType).length} color="#06B6D4" />
+        <StatBox label="Workload tot" value={statusData.totals?.total_items || 0} color="#06B6D4" />
       </div>
-
-      {/* Storage trend (compact sparkline) */}
-      {storageTrend.length > 1 && <StorageTrendCard points={storageTrend} />}
 
       {/* Filters */}
       <div className="flex items-center gap-2 flex-wrap text-[11px]">
         <span className="text-[var(--text-muted)]">Stato:</span>
-        {["all", "success", "failed", "warning", "in_progress"].map(s => (
-          <button key={s}
-            onClick={() => setFilterStatus(s)}
+        {["all", "success", "failed", "warning", "in_progress", "not_applicable", "excluded"].map(s => (
+          <button key={s} onClick={() => setFilterStatus(s)}
             className={`px-2 py-0.5 rounded border text-[10px] ${filterStatus === s ? "bg-cyan-500/20 border-cyan-400 text-cyan-300" : "border-[var(--bg-border)] text-[var(--text-muted)]"}`}
-            data-testid={`hornetsecurity-filter-status-${s}`}
-          >{s}</button>
+            data-testid={`hornetsecurity-filter-status-${s}`}>{s}</button>
         ))}
         <span className="text-[var(--text-muted)] ml-2">Tipo:</span>
-        {["all", "mailbox", "onedrive", "sharepoint", "teams"].map(t => (
-          <button key={t}
-            onClick={() => setFilterType(t)}
+        {["all", "mailbox", "onedrive", "sharepoint", "teams", "entra_id", "planner"].map(t => (
+          <button key={t} onClick={() => setFilterType(t)}
             className={`px-2 py-0.5 rounded border text-[10px] ${filterType === t ? "bg-violet-500/20 border-violet-400 text-violet-300" : "border-[var(--bg-border)] text-[var(--text-muted)]"}`}
-            data-testid={`hornetsecurity-filter-type-${t}`}
-          >{t}</button>
+            data-testid={`hornetsecurity-filter-type-${t}`}>{t}</button>
         ))}
+        {mappedTenants.length > 1 && (
+          <>
+            <span className="text-[var(--text-muted)] ml-2">Tenant:</span>
+            <button onClick={() => setFilterTenant("all")} className={`px-2 py-0.5 rounded border text-[10px] ${filterTenant === "all" ? "bg-emerald-500/20 border-emerald-400 text-emerald-300" : "border-[var(--bg-border)] text-[var(--text-muted)]"}`}>all</button>
+            {mappedTenants.map(t => (
+              <button key={t} onClick={() => setFilterTenant(t)}
+                className={`px-2 py-0.5 rounded border text-[10px] ${filterTenant === t ? "bg-emerald-500/20 border-emerald-400 text-emerald-300" : "border-[var(--bg-border)] text-[var(--text-muted)]"}`}>{t} ({byTenant[t] || 0})</button>
+            ))}
+          </>
+        )}
       </div>
 
       {/* Workload table */}
       {items.length === 0 ? (
         <div className="noc-panel p-5 text-center text-[11px] text-[var(--text-muted)]">
-          Nessun workload corrispondente ai filtri. {config.last_polled_at ? "" : "Esegui il primo poll per caricare i dati."}
+          Nessun workload corrispondente ai filtri.
         </div>
       ) : (
         <div className="noc-panel overflow-x-auto">
           <table className="noc-table w-full text-[11px]" data-testid="hornetsecurity-workload-table">
             <thead>
-              <tr><th>Workload</th><th>Tenant</th><th>Tipo</th><th>Stato</th><th>Ultimo backup</th><th>Size</th><th>Note</th></tr>
+              <tr><th>Workload</th><th>Utente</th><th>Tenant</th><th>Tipo</th><th>Stato</th><th>Ultimo backup</th><th>Note</th></tr>
             </thead>
             <tbody>
-              {items.map((it, i) => {
+              {items.slice(0, 1000).map((it, i) => {
                 const sc = it.status === "success" ? "#34C759"
-                  : (it.status === "failed" || it.status === "error" || it.status === "fail") ? "#FF3B30"
-                  : it.status === "in_progress" ? "#FFB400" : "#8E8E93";
+                  : it.status === "failed" ? "#FF3B30"
+                  : it.status === "in_progress" ? "#FFB400"
+                  : it.status === "not_applicable" ? "#666"
+                  : it.status === "excluded" ? "#999" : "#8E8E93";
                 return (
                   <tr key={i} data-testid={`hornetsecurity-row-${i}`}>
                     <td className="font-semibold">{it.workload_name || it.workload_id}</td>
-                    <td className="text-[var(--text-muted)]">{it.tenant}</td>
-                    <td><span className="text-[9px] px-1 py-0.5 rounded border border-[var(--bg-border)]">{it.workload_type}</span></td>
-                    <td><span className="text-[10px] font-bold" style={{ color: sc }}>{(it.status || "-").toUpperCase()}</span></td>
+                    <td className="text-[10px] text-[var(--text-muted)] font-mono">{it.workload_user || ""}</td>
+                    <td className="text-[10px]">{it.tenant}</td>
+                    <td><span className="text-[9px] px-1 py-0.5 rounded border border-[var(--bg-border)]">{it.workload_type}{it.workload_subcategory ? ` · ${it.workload_subcategory}` : ""}</span></td>
+                    <td><span className="text-[10px] font-bold" style={{ color: sc }}>{it.status_raw || it.status}</span></td>
                     <td className="text-[10px] text-[var(--text-muted)]">{it.last_backup_time ? new Date(it.last_backup_time).toLocaleString("it-IT", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "—"}</td>
-                    <td className="text-[10px] font-mono">{formatBytes(it.size_bytes || 0)}</td>
                     <td className="text-[10px] text-red-400 truncate max-w-[260px]" title={it.error || ""}>{it.error || ""}</td>
                   </tr>
                 );
               })}
             </tbody>
           </table>
+          {items.length > 1000 && <p className="text-[9px] text-[var(--text-muted)] text-center py-2">…limitato a 1000 record visualizzati</p>}
         </div>
       )}
-
-      <ConfigDialog
-        open={showConfig} onClose={() => setShowConfig(false)} form={form} setForm={setForm}
-        onSave={saveConfig} saving={savingCfg}
-      />
     </div>
   );
-}
-
-function ConfigDialog({ open, onClose, form, setForm, onSave, saving }) {
-  if (!open) return null;
-  return (
-    <Dialog open={open} onOpenChange={onClose}>
-      <DialogContent className="sm:max-w-lg" data-testid="hornetsecurity-config-dialog">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2"><Database size={16} className="text-cyan-400" /> Configura Hornetsecurity 365 Total Backup</DialogTitle>
-          <DialogDescription className="text-[11px]">
-            Per generare la API key vai su <code className="text-cyan-300">cp.hornetsecurity.com</code> → 365 Total Backup → <strong>Alerts → Monitoring &amp; Alerts</strong> → tab <strong>Monitoring</strong> → <strong>Generate API Link</strong>. Specifica almeno un IP autorizzato (es. quello di argus.86bit.it). URL + key sono mostrate <strong>una sola volta</strong>: copiale subito.
-          </DialogDescription>
-        </DialogHeader>
-        <div className="space-y-3 text-xs">
-          <div>
-            <label className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">API URL</label>
-            <Input value={form.api_url} onChange={e => setForm({ ...form, api_url: e.target.value })} placeholder="https://reports.hornetsecurity.com/api/..." className="bg-[var(--bg-card)] border-[var(--bg-border)] h-8 text-xs font-mono" data-testid="hornetsecurity-cfg-url" />
-          </div>
-          <div>
-            <label className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">X-API-KEY</label>
-            <Input type="password" value={form.api_key} onChange={e => setForm({ ...form, api_key: e.target.value })} placeholder="incolla la chiave (verra` crittografata)" className="bg-[var(--bg-card)] border-[var(--bg-border)] h-8 text-xs font-mono" data-testid="hornetsecurity-cfg-key" />
-          </div>
-          <div className="flex gap-3 items-end">
-            <div className="flex-1">
-              <label className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">Polling ogni (min)</label>
-              <Input type="number" min={5} max={720} value={form.poll_interval_minutes} onChange={e => setForm({ ...form, poll_interval_minutes: parseInt(e.target.value) || 30 })} className="bg-[var(--bg-card)] border-[var(--bg-border)] h-8 text-xs" data-testid="hornetsecurity-cfg-interval" />
-            </div>
-            <label className="flex items-center gap-1.5 text-[11px] cursor-pointer pb-1.5">
-              <input type="checkbox" checked={form.enabled} onChange={e => setForm({ ...form, enabled: e.target.checked })} data-testid="hornetsecurity-cfg-enabled" />
-              <span>Abilitato</span>
-            </label>
-          </div>
-          <p className="text-[10px] text-[var(--text-muted)] leading-relaxed bg-amber-500/5 border border-amber-500/30 rounded p-2">
-            ⚠️ Hornetsecurity limita le chiamate a <strong>1 ogni 5 minuti per endpoint</strong>. Il polling minimo configurabile e` 5 min, default 30 min.
-          </p>
-        </div>
-        <DialogFooter>
-          <Button variant="outline" onClick={onClose} disabled={saving}>Annulla</Button>
-          <Button onClick={onSave} disabled={saving || !form.api_url || !form.api_key} className="bg-cyan-600 hover:bg-cyan-700" data-testid="hornetsecurity-cfg-save">
-            {saving ? "Salvataggio..." : "Salva configurazione"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-function StorageTrendCard({ points }) {
-  // Aggrega per tenant: per ogni tenant, ultimo size + delta vs primo punto
-  const byTenant = {};
-  points.forEach(p => {
-    if (!byTenant[p.tenant]) byTenant[p.tenant] = [];
-    byTenant[p.tenant].push(p);
-  });
-  const rows = Object.entries(byTenant).map(([tenant, arr]) => {
-    arr.sort((a, b) => new Date(a.recorded_at) - new Date(b.recorded_at));
-    const first = arr[0]?.size_bytes || 0;
-    const last = arr[arr.length - 1]?.size_bytes || 0;
-    const deltaPct = first > 0 ? ((last - first) / first) * 100 : 0;
-    return { tenant, last, delta: last - first, deltaPct, samples: arr.length };
-  });
-  if (rows.length === 0) return null;
-  return (
-    <div className="noc-panel p-3" data-testid="hornetsecurity-storage-trend">
-      <p className="text-[10px] uppercase tracking-widest text-[var(--text-muted)] mb-2">Trend storage (30gg)</p>
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
-        {rows.map(r => {
-          const trendCol = r.deltaPct > 5 ? "#FF9500" : r.deltaPct < -5 ? "#06B6D4" : "#8E8E93";
-          return (
-            <div key={r.tenant} className="rounded bg-[var(--bg-card)] border border-[var(--bg-border)] p-2">
-              <p className="text-[10px] font-semibold truncate" title={r.tenant}>{r.tenant}</p>
-              <p className="text-sm font-bold font-mono" style={{ color: trendCol }}>{formatBytes(r.last)}</p>
-              <p className="text-[9px] text-[var(--text-muted)]">
-                {r.deltaPct > 0 ? "+" : ""}{r.deltaPct.toFixed(1)}% · {r.samples} sample
-              </p>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-function formatBytes(bytes) {
-  if (!bytes || bytes <= 0) return "—";
-  const u = ["B", "KB", "MB", "GB", "TB", "PB"];
-  let i = 0; let v = bytes;
-  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
-  return `${v.toFixed(v >= 100 ? 0 : v >= 10 ? 1 : 2)} ${u[i]}`;
 }
 
 /* ==================== STAT BOX ==================== */

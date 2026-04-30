@@ -1,5 +1,75 @@
 # CHANGELOG — 86BIT ARGUS Center
 
+## 2026-04-30 — Tenant→Client Mapping Reverse View (backend v3.5.32)
+
+### 🔄 Modalita` "Per tenant Hornetsecurity"
+Aggiunta vista alternativa per il mapping cliente↔tenant: tabella centrata sui
+44 tenant Hornetsecurity rilevati, con dropdown "Associa cliente ARGUS" per
+ciascuno. Piu` rapida quando hai molti tenant da mappare (vs flow per-cliente).
+
+**Frontend** `pages/HornetsecuritySettingsPage.js`:
+- Nuovo toggle vista: **"Per tenant Hornetsecurity"** (default) | "Per cliente ARGUS"
+- Componente `TenantMappingTable` con:
+  - Filtri: Tutti / Da mappare / Mappati / Con backup falliti
+  - Colonne: Tenant + dominio + workload count + falliti + cliente associato + azioni
+  - Auto-suggerimento cliente Argus (★ in dropdown) per nome simile/identico
+  - Edit inline con `<select>` (lista clienti ordinata, suggested in cima)
+  - Action button "Associa" (se non mappato) o "Modifica/Cestino" (se mappato)
+  - Reverse mapping internamente: tenant → client_id derivato dalla lista mappings
+- Componente `TenantMappingRow` gestisce add/remove tenant da clients in modo
+  transazionale: rimuove dal vecchio cliente + aggiunge al nuovo
+
+## 2026-04-30 — Hornetsecurity Global Config + Tenant Mapping (backend v3.5.31)
+
+### 🌍 Refactor a config globale + mapping multi-tenant
+Una sola API key copre tutti i tenant del partner Hornetsecurity (1 chiamata API
+ogni 30 min vs N chiamate per cliente). Mapping cliente ARGUS ↔ tenant
+Hornetsecurity multi-valore con auto-suggest fuzzy.
+
+**Backend** `routes/hornetsecurity_backup.py`:
+- Nuova collection `hornetsecurity_global_config` (singolo doc `_id="global"`)
+- Endpoint admin: `GET/PUT/DELETE /api/admin/hornetsecurity/global-config`,
+  `POST /api/admin/hornetsecurity/test`, `POST /api/admin/hornetsecurity/poll`,
+  `GET /api/admin/hornetsecurity/tenants` (lista tenant con stats aggregate)
+- Endpoint mapping: `GET/PUT /api/clients/{id}/backup/hornetsecurity/mapping`
+  salva `clients.hornetsecurity_tenants` (lista nomi tenant)
+- Funzione `_resolve_client_tenants()`: filtro a lettura tramite mapping
+- `_persist_poll_results_global()`: persistenza globale (chiave: tenant + workload_id)
+- Parser aggiornato per layout reale Hornetsecurity Operational Report:
+  `{statistics: [{customerName, office365Organisation, objectTypeBackedUp,
+  objectName, objectDetails, backupState, backupStateEnum, lastBackup,
+  lastErrorMessage}]}`
+- Status mapping: Protected→success, Last Backup Failed→failed,
+  First Backup In Progress→in_progress, Excluded→excluded,
+  No <workload>→not_applicable
+- Backward compat: endpoint per-cliente legacy mantenuti
+
+**Backend** `services/hornetsecurity_poller.py`:
+- Tick gestisce sia config globale (preferita) che config per-cliente legacy
+- Solo "failed" reali generano alert (non "not_applicable" / "excluded" /
+  "in_progress")
+
+**Frontend** `pages/HornetsecuritySettingsPage.js` (NEW):
+- Pagina admin Settings → Hornetsecurity 365 Backup
+- Connessione API (URL + key cifrata + polling interval) con Test/Poll Now
+- Tabella mapping clienti ARGUS ↔ tenant: dropdown multi-select con
+  auto-suggest fuzzy (nome cliente vs nome tenant)
+- Sezione "tenant non mappati" per scoprire clienti Hornetsecurity senza
+  controparte ARGUS
+- Stats real-time per tenant: workload totali, falliti, protetti
+
+**Frontend** `pages/ClientOverviewPage.js` (BackupTab refactor):
+- Ora legge config globale invece di per-cliente
+- Stati: backend obsoleto / config assente (CTA Settings) / mapping mancante
+  (CTA mapping) / dati visibili
+- Filtro multi-tenant nella pagina cliente (utile per clienti con piu` domini)
+
+**Risultato test E2E con dati reali utente**:
+- 4377 workload, 44 tenant rilevati, 196 backup falliti reali, 1231 protetti
+- Mapping cliente ↔ tenant "Aldegani" → 111 workload filtrati correttamente
+- Storage trend non disponibile (Operational Report Hornetsecurity non include
+  size per workload — limite del prodotto)
+
 ## 2026-04-30 — Hornetsecurity 365 Total Backup Integration (backend v3.5.30)
 
 ### 🛡️ Fase 1 — Cloud Microsoft 365 Backup Monitoring
