@@ -387,6 +387,32 @@ Rimossi in v3.5.0 (con OK utente): Check-ForUpdate, Install-Update (5 metodi fal
 
 **File toccato**: `/app/frontend/src/pages/ClientOverviewPage.js` (funzione spostata di ~890 righe, scope corretto).
 
+### 2026-02-10 (pomeriggio): UX Web Console — pulsante Monitor ora apre in NUOVA TAB (V4 popup) invece dell'iframe bloccato
+**Feedback utente**: dopo il fix dello scope, l'iframe V3 LIVE si apriva ma restava su "Caricamento device..." infinito (connector GALVANSRV offline / rotta VPN non completamente up lato client). Richiesta: "con VPN su vai dritto al dispositivo come se facessimo dal browser" → esperienza browser nativa, nuova tab.
+
+**Modifica**:
+- `/app/frontend/src/pages/ClientOverviewPage.js` → `openConsoleWithVpn` in `DevicesTab` ora chiama `webConsole.openPopup(device.ip_address)` (V4 — JWT proxy full-page in nuova tab) come **primary**, con fallback a `webConsole.open(...)` (V3 iframe nel dock) solo se la popup è bloccata realmente. La sessione VPN audit `/api/admin/wireguard/session/start` è fire-and-forget in parallelo (non blocca l'apertura popup → preserva il "user-gesture trust" del browser).
+- Tooltip del pulsante aggiornato: "Apri Web Console in nuova tab (proxy diretto via VPN)".
+
+**Bug collaterale trovato via testing agent (iteration_61) e corretto (iteration_62)**:
+- `/app/frontend/src/components/WebConsoleTabs.js` `openPopup()` usava `window.open(url, '_blank', 'noopener,noreferrer')` che in **Chromium ritorna sempre `null`** per design (MDN: con `noopener` il caller non riceve WindowProxy).
+- Il check successivo `if (!win)` interpretava erroneamente il `null` come "popup bloccata" → chiamava `alert("Pop-up bloccato")` + fallback V3 → entrambi i percorsi si attivavano contemporaneamente.
+- **Fix**: rimosso `'noopener,noreferrer'` dal `window.open`. Rischio reverse-tabnabbing nullo perché la target URL è sul nostro stesso dominio (`/api/console-v4/s/<jwt>/`), non una pagina di terzi.
+
+**Architettura risultante**:
+- V4 popup (nuova tab) = default per desktop+mobile: backend `httpx` diretto al device, tunnel WireGuard embedded sul Center fornisce la rotta verso IP privati del cliente, browser vede navigazione full-page nativa (no iframe/CSP/X-Frame issues).
+- V3 iframe LIVE = fallback solo se la popup è realmente bloccata dal browser.
+
+**Test** (iteration_62.json): 100% PASS desktop 1920x1080 + mobile 390x844. 6/6 critical assertions:
+1. POST `/api/console-v4/request-session` fired ✓
+2. POST `/api/web-console/session` (V3) NOT fired ✓
+3. POST `/api/admin/wireguard/session/start` fired in parallel ✓
+4. `data-testid=web-console-active` dock NOT rendered ✓
+5. Nessun alert "Pop-up bloccato" ✓
+6. Zero ReferenceError in console ✓
+
+**Next UX note**: il JWT è ancora embedded nel path URL → ingress logs + browser history lo vedono. Migrazione futura consigliata: opaque session id lato server + JWT via HttpOnly cookie (post-MVP, non bloccante).
+
 ### POC v1 — WireGuard EMBEDDED nel Center (2026-04-27)
 **Richiesta utente**: "non voglio installarlo deve essere dentro al center" — il server WireGuard non deve richiedere `apt install wireguard-tools` o setup manuale sul Linux di produzione. Tutto self-contained nel pacchetto del backend.
 
