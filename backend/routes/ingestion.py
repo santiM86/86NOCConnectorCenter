@@ -11,6 +11,7 @@ from deps import (
     limiter, manager, notification_service,
     map_syslog_severity, map_snmp_severity
 )
+from alert_filter import insert_alert_if_emit
 
 router = APIRouter(prefix="/api", tags=["ingestion"])
 
@@ -52,7 +53,7 @@ async def ingest_syslog(request: Request, msg: SyslogMessage):
         "status": "active", "acknowledged_by": None, "acknowledged_at": None, "resolved_at": None,
         "created_at": datetime.now(timezone.utc).isoformat()
     }
-    await db.alerts.insert_one(alert_doc)
+    await insert_alert_if_emit(db, alert_doc)
     # History log for Syslog Viewer (TTL 14gg via syslog_trap router index)
     try:
         now_ts = datetime.now(timezone.utc)
@@ -135,7 +136,7 @@ async def ingest_snmp(request: Request, trap: SNMPTrap):
         "status": "active", "acknowledged_by": None, "acknowledged_at": None, "resolved_at": None,
         "created_at": datetime.now(timezone.utc).isoformat()
     }
-    await db.alerts.insert_one(alert_doc)
+    await insert_alert_if_emit(db, alert_doc)
     # History log for SNMP Traps viewer (TTL 14gg via syslog_trap router index)
     try:
         await db.snmp_traps.insert_one({

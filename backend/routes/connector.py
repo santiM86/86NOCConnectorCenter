@@ -22,6 +22,8 @@ from deps import (
 from middleware.connector_security import (
     verify_connector_request, rotate_api_key, CONNECTOR_PATH,
 )
+from alert_filter import invalidate_silence_cache, insert_alert_if_emit
+from device_classifier import classify_device_type
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["connector"])
@@ -171,6 +173,83 @@ async def _auto_detect_web_ui(client_id: str, dev: dict) -> None:
 
 
 @router.post(f"/{C}/hb")
+@router.post("/connector/sync-active-devices")
+async def connector_sync_active_devices(request: Request):
+    """Sync inversa connector-auth: il connector invia via HMAC la lista dei device
+    ATTUALMENTE configurati sul connector. Il Center rimuove quelli con source=connector
+    non presenti nella lista. Chiamato automaticamente dal PowerShell ad ogni heartbeat
+    (v3.5.27+) per tenere il Center allineato quando l'admin rimuove device dalla tray.
+
+    Body: { active_ips: ["10.x.x.x", ...], dry_run: false, source: "connector_heartbeat" }
+    Auth: HMAC connector (non user JWT)
+    """
+    client_data = await verify_connector_request(request)
+    client_id = client_data["id"]
+    body = await request.json()
+    active_ips = body.get("active_ips") or []
+    if not isinstance(active_ips, list):
+        return {"ok": False, "error": "active_ips must be list"}
+    active_set = {str(ip).strip() for ip in active_ips if ip}
+    dry_run = bool(body.get("dry_run", False))
+
+    if len(active_set) == 0:
+        # Safety: rifiuta liste vuote per evitare wipe accidentale se il connector
+        # manda devices=[] durante un bootstrap. L'admin puo` usare il pulsante UI manuale.
+        return {"ok": False, "error": "empty_active_ips_rejected_for_safety"}
+
+    to_remove = []
+    ip_seen = set()
+
+    async for d in db.managed_devices.find(
+        {"client_id": client_id},
+        {"_id": 0, "id": 1, "ip": 1, "name": 1, "source": 1, "alerts_silenced": 1},
+    ):
+        ip = d.get("ip")
+        if not ip or ip in ip_seen:
+            continue
+        # Proteggi device manuali (source != connector) e silenziati
+        if d.get("source") and d.get("source") != "connector":
+            continue
+        if d.get("alerts_silenced"):
+            continue
+        if ip not in active_set:
+            to_remove.append({"id": d.get("id"), "ip": ip, "name": d.get("name")})
+            ip_seen.add(ip)
+
+    async for p in db.device_poll_status.find(
+        {"client_id": client_id},
+        {"_id": 0, "device_ip": 1, "device_name": 1},
+    ):
+        ip = p.get("device_ip")
+        if not ip or ip in ip_seen:
+            continue
+        if ip not in active_set:
+            to_remove.append({"id": None, "ip": ip, "name": p.get("device_name")})
+            ip_seen.add(ip)
+
+    if dry_run:
+        return {"ok": True, "dry_run": True, "would_remove_count": len(to_remove), "would_remove": to_remove}
+
+    deleted = 0
+    now_iso = datetime.now(timezone.utc).isoformat()
+    for d in to_remove:
+        ip = d["ip"]
+        await db.managed_devices.delete_many({"client_id": client_id, "ip": ip, "source": {"$ne": "manual"}})
+        await db.device_poll_status.delete_many({"client_id": client_id, "device_ip": ip})
+        try:
+            await db.alerts.update_many(
+                {"client_id": client_id, "device_ip": ip, "status": {"$ne": "resolved"}},
+                {"$set": {"status": "resolved", "resolved_at": now_iso,
+                           "resolved_by_system": True,
+                           "resolution_note": "Device rimosso dal connector (auto-sync)"}}
+            )
+        except Exception:
+            pass
+        deleted += 1
+
+    return {"ok": True, "removed_count": deleted, "active_ips_received": len(active_set)}
+
+
 @router.post("/connector/heartbeat")
 async def connector_heartbeat(request: Request, heartbeat: ConnectorHeartbeat):
     client_data = await verify_connector_request(request)
@@ -1343,7 +1422,7 @@ async def _check_device_thresholds(client_id: str, dev: dict, prev_status: Optio
             "acknowledged_by": None, "acknowledged_at": None, "resolved_at": None,
             "created_at": now_iso,
         }
-        await db.alerts.insert_one(_conn_alert)
+        await insert_alert_if_emit(db, _conn_alert)
         try:
             import webpush as _wp
             await _wp.notify_new_alert(db, _conn_alert)
@@ -1494,6 +1573,41 @@ async def connector_device_report(request: Request):
                     logger.info(f"Auto-classified {dev['device_ip']} → {matched['key']} ({matched['vendor']})")
         except Exception as e:
             logger.warning(f"Profile auto-classify failed for {dev.get('device_ip')}: {e}")
+
+        # Fallback classifier (regex hostname/sysDescr + Printer-MIB sysObjectID).
+        # Si attiva solo se il fingerprint vendor-specifico sopra NON ha matchato e
+        # il device ha device_type generico (network/server/iLO sbagliato/none).
+        # Indispensabile per stampanti senza profilo SNMP dedicato (es. HP OfficeJet,
+        # Brother MFC, Sharp MX) che altrimenti finiscono sotto "Server / iLO".
+        try:
+            is_new = prev_status is None
+            descr_changed = prev_status and (prev_status.get("sys_descr") or "") != (dev.get("sys_descr") or "")
+            if is_new or descr_changed:
+                existing_md = await db.managed_devices.find_one(
+                    {"ip": dev["device_ip"], "client_id": client_id},
+                    {"_id": 0, "device_type": 1, "profile_key": 1, "name": 1, "model": 1},
+                )
+                cur_type = (existing_md or {}).get("device_type") or ""
+                # Riclassifica solo se: nessun profilo applicato E type generico/sbagliato
+                generic_types = {"", "network", "generic", "server", "ilo", "unknown"}
+                if existing_md and not existing_md.get("profile_key") and cur_type.lower() in generic_types:
+                    new_type = classify_device_type(
+                        sys_descr=dev.get("sys_descr"),
+                        sys_object_id=dev.get("sys_object_id") or dev.get("sysObjectID"),
+                        hostname=existing_md.get("name") or dev.get("name"),
+                        model=existing_md.get("model") or dev.get("model"),
+                    )
+                    if new_type and new_type != cur_type:
+                        await db.managed_devices.update_one(
+                            {"ip": dev["device_ip"], "client_id": client_id},
+                            {"$set": {
+                                "device_type": new_type,
+                                "device_type_auto_classified_at": now_iso,
+                            }},
+                        )
+                        logger.info(f"Reclassified {dev['device_ip']}: '{cur_type}' → '{new_type}' (regex)")
+        except Exception as e:
+            logger.warning(f"Regex auto-classify failed for {dev.get('device_ip')}: {e}")
 
         # Auto-promote managed_devices.monitor_type based on REAL poll evidence.
         # Motivazione: alla prima creazione via auto-detect Web UI il connector
@@ -1694,13 +1808,354 @@ async def add_managed_device(client_id: str, device: ManagedDevice, current_user
     return {"status": "ok", "device": {k: v for k, v in doc.items() if k != "_id"}}
 
 
+@router.post("/connector/{client_id}/cleanup-stale-devices")
+async def cleanup_stale_devices(
+    client_id: str,
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+):
+    """Self-healing cleanup dei device rimossi dal connector.
+
+    Logica self-healing:
+      1. Il connector del cliente DEVE essere ONLINE (last_seen < 5 min) — altrimenti
+         risposta di sicurezza "connector_offline" e nessuna delete, per evitare di
+         cancellare tutto durante una manutenzione del connector.
+      2. Ogni device attivo ha `last_seen` in managed_devices aggiornato ad ogni
+         poll (tipicamente < 2 min). Se un device ha `last_seen` piu` vecchio di
+         `stale_threshold_minutes` (default 30) → il connector non sta piu` facendo
+         polling → e` stato rimosso dalla sua config.
+      3. Device MANUALI (source != connector) sono PROTETTI.
+      4. Device SILENZIATI (alerts_silenced=true) sono PROTETTI comunque — non
+         vengono rimossi dal cleanup automatico, per rispettare l'intento utente.
+
+    Body:
+        {
+            "stale_threshold_minutes": 30,   # default
+            "dry_run": true                   # default - mostra preview, NON cancella
+        }
+    """
+    body = await request.json() if request.headers.get("content-length") else {}
+    check_nosql_injection(body or {})
+    threshold_min = int((body or {}).get("stale_threshold_minutes") or 30)
+    dry_run = bool((body or {}).get("dry_run", True))  # sicurezza: default dry-run
+
+    # Verifica connector online
+    connector = await db.connectors.find_one({"client_id": client_id}, {"_id": 0, "last_seen": 1, "hostname": 1})
+    if not connector:
+        raise HTTPException(status_code=404, detail="Connector non registrato per questo cliente")
+    last_seen_raw = connector.get("last_seen")
+    now = datetime.now(timezone.utc)
+    connector_online = False
+    seconds_since_hb = None
+    if last_seen_raw:
+        try:
+            last_seen = datetime.fromisoformat(str(last_seen_raw).replace("Z", "+00:00"))
+            seconds_since_hb = (now - last_seen).total_seconds()
+            connector_online = seconds_since_hb < 300  # 5 min
+        except Exception:
+            pass
+    if not connector_online:
+        return {
+            "ok": False,
+            "reason": "connector_offline",
+            "message": f"Connector del cliente offline (ultimo heartbeat {int(seconds_since_hb or 0)}s fa). Cleanup saltato per sicurezza.",
+            "connector_hostname": connector.get("hostname"),
+        }
+
+    threshold_ts = now - timedelta(minutes=threshold_min)
+    candidates = []  # {id, ip, name, last_seen, reason}
+
+    async for d in db.managed_devices.find(
+        {"client_id": client_id},
+        {"_id": 0, "id": 1, "ip": 1, "name": 1, "last_seen": 1, "source": 1, "alerts_silenced": 1},
+    ):
+        if d.get("source") and d.get("source") != "connector":
+            continue  # manuale, protetto
+        if d.get("alerts_silenced"):
+            continue  # silenziato, protetto
+        last_s = d.get("last_seen")
+        if not last_s:
+            continue  # mai pollato, potrebbe essere appena aggiunto — skip
+        try:
+            last_dt = datetime.fromisoformat(str(last_s).replace("Z", "+00:00"))
+        except Exception:
+            continue
+        if last_dt < threshold_ts:
+            candidates.append({
+                "id": d.get("id"),
+                "ip": d.get("ip"),
+                "name": d.get("name"),
+                "last_seen": last_s,
+                "stale_minutes": int((now - last_dt).total_seconds() / 60),
+            })
+
+    if dry_run:
+        return {
+            "ok": True,
+            "dry_run": True,
+            "connector_online": True,
+            "threshold_minutes": threshold_min,
+            "candidates_count": len(candidates),
+            "candidates": candidates,
+        }
+
+    # Delete confermato
+    removed_ips = []
+    for c in candidates:
+        ip = c["ip"]
+        if not ip:
+            continue
+        await db.managed_devices.delete_many({"client_id": client_id, "ip": ip})
+        await db.device_poll_status.delete_many({"client_id": client_id, "device_ip": ip})
+        try:
+            await db.alerts.update_many(
+                {"client_id": client_id, "device_ip": ip, "status": {"$ne": "resolved"}},
+                {"$set": {"status": "resolved", "resolved_at": now.isoformat(),
+                           "resolved_by_system": True,
+                           "resolution_note": f"Device stale {c['stale_minutes']}min - rimosso da cleanup"}}
+            )
+        except Exception:
+            pass
+        removed_ips.append(ip)
+
+    audit_logger and await audit_logger.log(
+        AuditAction.DELETE_DEVICE,
+        user_id=(current_user or {}).get("id"),
+        user_email=(current_user or {}).get("email"),
+        resource_type="bulk_device",
+        resource_id=client_id,
+        details={"client_id": client_id, "removed_count": len(removed_ips), "removed_ips": removed_ips,
+                 "threshold_minutes": threshold_min, "cleanup_type": "stale_auto"},
+    )
+    return {
+        "ok": True,
+        "removed_count": len(removed_ips),
+        "removed": candidates,
+        "threshold_minutes": threshold_min,
+    }
+
+
+@router.post("/connector/{client_id}/sync-active-devices")
+async def sync_active_devices(
+    client_id: str,
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+):
+    """Sincronizzazione inversa Center ← Connector: l'admin (o il connector stesso)
+    fornisce la lista di IP/hostname dei device ATTUALMENTE configurati sul connector.
+    Il Center rimuove TUTTI i device di questo cliente con source='connector' che NON
+    sono nella lista → cosi` i device deselezionati/rimossi dalla UI del connector
+    spariscono anche dal Center, evitando "zombie offline" che restano per sempre.
+
+    Body:
+        {
+            "active_ips": ["10.100.61.220", "10.100.61.34", ...],
+            "dry_run": false   # opzionale, default false → se true solo preview
+        }
+
+    I device MANUALI (aggiunti dall'admin via UI, non dal connector) sono PROTETTI e
+    non vengono mai rimossi, anche se mancano dalla lista.
+    """
+    body = await request.json()
+    check_nosql_injection(body)
+    active_ips = body.get("active_ips") or []
+    if not isinstance(active_ips, list):
+        raise HTTPException(status_code=400, detail="active_ips deve essere una lista")
+    active_set = {str(ip).strip() for ip in active_ips if ip}
+    dry_run = bool(body.get("dry_run", False))
+
+    # Collect candidates from all 3 collections (managed_devices, device_poll_status).
+    # db.devices = manualmente aggiunti → SEMPRE protetti (no delete).
+    to_remove = []  # list of {id, ip, source_colls}
+    ip_seen = set()
+
+    async for d in db.managed_devices.find(
+        {"client_id": client_id, "source": "connector"},
+        {"_id": 0, "id": 1, "ip": 1, "name": 1},
+    ):
+        ip = d.get("ip")
+        if not ip or ip in ip_seen:
+            continue
+        if ip not in active_set:
+            to_remove.append({"id": d.get("id"), "ip": ip, "name": d.get("name"), "source_collections": ["managed_devices"]})
+            ip_seen.add(ip)
+
+    async for p in db.device_poll_status.find(
+        {"client_id": client_id},
+        {"_id": 0, "device_ip": 1, "device_name": 1},
+    ):
+        ip = p.get("device_ip")
+        if not ip or ip in ip_seen:
+            continue
+        if ip not in active_set:
+            to_remove.append({"id": None, "ip": ip, "name": p.get("device_name"), "source_collections": ["device_poll_status"]})
+            ip_seen.add(ip)
+
+    if dry_run:
+        return {"ok": True, "dry_run": True, "would_remove_count": len(to_remove), "would_remove": to_remove}
+
+    # Execute deletion. Preserve db.devices (manuali).
+    deleted = 0
+    for d in to_remove:
+        ip = d["ip"]
+        await db.managed_devices.delete_many({"client_id": client_id, "ip": ip, "source": "connector"})
+        await db.device_poll_status.delete_many({"client_id": client_id, "device_ip": ip})
+        # Resolve any open alert against this device
+        try:
+            await db.alerts.update_many(
+                {"client_id": client_id, "device_ip": ip, "status": {"$ne": "resolved"}},
+                {"$set": {"status": "resolved", "resolved_at": datetime.now(timezone.utc).isoformat(),
+                           "resolved_by_system": True,
+                           "resolution_note": "Device rimosso dal connector (sync inversa)"}}
+            )
+        except Exception:
+            pass
+        deleted += 1
+
+    audit_logger and await audit_logger.log(
+        AuditAction.DELETE_DEVICE,
+        user_id=(current_user or {}).get("id"),
+        user_email=(current_user or {}).get("email"),
+        resource_type="bulk_device",
+        resource_id=client_id,
+        details={"client_id": client_id, "removed_count": deleted, "active_ips_count": len(active_set),
+                 "removed_ips": [d["ip"] for d in to_remove]},
+    )
+    return {"ok": True, "removed_count": deleted, "removed": to_remove, "active_ips_received": len(active_set)}
+
+
 @router.delete("/connector/{client_id}/managed-devices/{device_id}")
 async def remove_managed_device(client_id: str, device_id: str, current_user: dict = Depends(get_current_user)):
-    result = await db.managed_devices.delete_one({"id": device_id, "client_id": client_id})
-    if result.deleted_count == 0:
-        raise HTTPException(status_code=404, detail="Device not found")
-    await db.device_poll_status.delete_one({"client_id": client_id, "device_ip": device_id})
-    return {"status": "ok"}
+    """Rimuove un device dal Center. Multi-source:
+    - Prova a risolvere l'id via managed_devices/db.devices/poll_<ip> → ottiene l'IP target
+    - Cancella il record da TUTTE le collection (managed_devices, devices, device_poll_status)
+      usando sia l'id che l'IP come chiavi. Cosi` il device sparisce per davvero,
+      non solo da una collection, evitando "zombie" che restano nelle altre.
+    """
+    # Cerca il device senza upsert (il resolver fa upsert, qui non vogliamo)
+    md = await db.managed_devices.find_one(
+        {"$or": [{"id": device_id}, {"ip": device_id}]},
+        {"_id": 0, "ip": 1, "id": 1},
+    )
+    manual = await db.devices.find_one(
+        {"$or": [{"id": device_id}, {"ip_address": device_id}]},
+        {"_id": 0, "ip_address": 1, "id": 1},
+    )
+
+    # Se device_id assomiglia a `poll_<ip>` estrai l'IP per le delete
+    synth_ip = None
+    if device_id.startswith("poll_"):
+        synth_ip = device_id[len("poll_"):].replace("_", ".")
+
+    # IP candidate (per cancellare da device_poll_status)
+    candidate_ip = (md or {}).get("ip") or (manual or {}).get("ip_address") or synth_ip
+
+    # Esegui delete in tutte le collection dove puo` esistere il record
+    results = {"managed_devices": 0, "devices": 0, "device_poll_status": 0}
+    if md or manual or synth_ip:
+        r1 = await db.managed_devices.delete_many(
+            {"$or": [{"id": device_id, "client_id": client_id},
+                     {"ip": candidate_ip, "client_id": client_id} if candidate_ip else {"_nomatch": 1}]}
+        )
+        results["managed_devices"] = r1.deleted_count
+
+        r2 = await db.devices.delete_many(
+            {"$or": [{"id": device_id, "client_id": client_id},
+                     {"ip_address": candidate_ip, "client_id": client_id} if candidate_ip else {"_nomatch": 1}]}
+        )
+        results["devices"] = r2.deleted_count
+
+        if candidate_ip:
+            r3 = await db.device_poll_status.delete_many(
+                {"client_id": client_id, "device_ip": candidate_ip}
+            )
+            results["device_poll_status"] = r3.deleted_count
+
+    total = sum(results.values())
+    if total == 0:
+        raise HTTPException(status_code=404, detail="Device non trovato in nessuna collection")
+
+    # Cleanup collaterale: alert/metrics/live_metrics/iLO data per lo stesso device
+    if candidate_ip:
+        try:
+            await db.alerts.update_many(
+                {"client_id": client_id, "device_ip": candidate_ip, "status": {"$ne": "resolved"}},
+                {"$set": {"status": "resolved", "resolved_at": datetime.now(timezone.utc).isoformat(),
+                           "resolved_by_system": True, "resolution_note": "Device rimosso dall'utente"}}
+            )
+        except Exception:
+            pass
+
+    audit_logger and await audit_logger.log(
+        AuditAction.DELETE_DEVICE,
+        user_id=(current_user or {}).get("id"),
+        user_email=(current_user or {}).get("email"),
+        resource_type="device",
+        resource_id=device_id,
+        details={"client_id": client_id, "ip": candidate_ip, "deletes": results},
+    )
+    return {"status": "ok", "deletes": results, "total": total}
+
+
+async def _resolve_or_upsert_managed_device(
+    client_id: str,
+    device_id: str,
+) -> tuple[str, str, bool]:
+    """Resolver multi-source per gli endpoint di update device.
+    Cerca il device in (1) managed_devices, (2) db.devices, (3) device_poll_status
+    via id sintetico `poll_<ip>`. Se trovato fuori da managed_devices, fa upsert
+    minimale cosi` i successivi `update_one` per `client_id+ip` funzionano.
+    Restituisce (device_ip, device_name, was_upserted). Solleva HTTPException 404
+    se nessuna source contiene il device.
+    """
+    md = await db.managed_devices.find_one(
+        {"id": device_id, "client_id": client_id},
+        {"_id": 0, "ip": 1, "name": 1},
+    )
+    if md and md.get("ip"):
+        return md["ip"], md.get("name") or "", False
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    # Fallback 1: db.devices (manualmente aggiunti)
+    manual = await db.devices.find_one(
+        {"id": device_id, "client_id": client_id},
+        {"_id": 0, "ip_address": 1, "name": 1},
+    )
+    if manual and manual.get("ip_address"):
+        ip = manual["ip_address"]
+        name = manual.get("name") or ""
+        await db.managed_devices.update_one(
+            {"client_id": client_id, "ip": ip},
+            {
+                "$set": {"name": name, "ip": ip, "client_id": client_id},
+                "$setOnInsert": {"id": device_id, "created_at": now_iso, "created_by": "auto-resolver"},
+            },
+            upsert=True,
+        )
+        return ip, name, True
+
+    # Fallback 2: device_id sintetico `poll_<ip-with-underscores>`
+    if device_id.startswith("poll_"):
+        synth_ip = device_id[len("poll_"):].replace("_", ".")
+        pd = await db.device_poll_status.find_one(
+            {"client_id": client_id, "device_ip": synth_ip},
+            {"_id": 0, "device_ip": 1, "device_name": 1},
+        )
+        if pd:
+            ip = pd.get("device_ip") or synth_ip
+            name = pd.get("device_name") or synth_ip
+            await db.managed_devices.update_one(
+                {"client_id": client_id, "ip": ip},
+                {
+                    "$set": {"name": name, "ip": ip, "client_id": client_id},
+                    "$setOnInsert": {"id": device_id, "created_at": now_iso, "created_by": "auto-resolver"},
+                },
+                upsert=True,
+            )
+            return ip, name, True
+
+    raise HTTPException(status_code=404, detail="Device non trovato in managed_devices, devices, o device_poll_status")
 
 
 @router.put("/connector/{client_id}/managed-devices/{device_id}/monitor-type")
@@ -1722,13 +2177,13 @@ async def update_device_monitor_type_by_id(
             update["http_port"] = int(body.get("http_port"))
         except Exception:
             pass
-    result = await db.managed_devices.update_one(
-        {"id": device_id, "client_id": client_id},
+    # Multi-source resolver: gestisce device-id da managed_devices/devices/poll_<ip>
+    device_ip, _, _ = await _resolve_or_upsert_managed_device(client_id, device_id)
+    await db.managed_devices.update_one(
+        {"client_id": client_id, "ip": device_ip},
         {"$set": update},
     )
-    if result.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Device non trovato")
-    return {"ok": True, "monitor_type": mt}
+    return {"ok": True, "monitor_type": mt, "device_ip": device_ip}
 
 
 @router.post("/connector/{client_id}/managed-devices/bulk-upgrade-snmp")
@@ -1773,19 +2228,19 @@ async def update_device_snmp_config(client_id: str, device_id: str, request: Req
         update["snmpv3_priv_protocol"] = body.get("snmpv3_priv_protocol")  # DES, AES, AES256
         update["snmpv3_priv_password"] = sanitize_string(body.get("snmpv3_priv_password", ""), 256)
         update["snmpv3_security_level"] = body.get("snmpv3_security_level", "authPriv")
-    result = await db.managed_devices.update_one(
-        {"id": device_id, "client_id": client_id},
+    # Multi-source resolver
+    device_ip, _, _ = await _resolve_or_upsert_managed_device(client_id, device_id)
+    await db.managed_devices.update_one(
+        {"client_id": client_id, "ip": device_ip},
         {"$set": update}
     )
-    if result.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Device not found")
     await audit_logger.log(
         AuditAction.UPDATE_DEVICE,
         user_id=current_user["id"], user_email=current_user["email"],
         resource_type="device", resource_id=device_id,
         details={"action": "snmp_config_updated", "version": snmp_version},
     )
-    return {"status": "ok", "snmp_version": snmp_version}
+    return {"status": "ok", "snmp_version": snmp_version, "device_ip": device_ip}
 
 
 
@@ -1858,6 +2313,94 @@ async def connector_fetch_devices(request: Request):
             logger.warning(f"fetch-devices vendor enrichment failed for {d.get('ip')}: {e}")
         result.append(dev_out)
     return result
+
+
+@router.put("/connector/{client_id}/managed-devices/{device_id}/silence")
+async def update_device_silence(
+    client_id: str,
+    device_id: str,
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+):
+    """Toggle del flag `alerts_silenced`. Quando true, nessun alert verra` creato
+    per questo device (gating in alert_filter.should_emit_alert applicato a tutti
+    i punti di emissione). Esistenti alert NON vengono toccati — l'admin puo`
+    risolverli manualmente. Il flag e` cached lato server (TTL 30s) per perf.
+    """
+    body = await request.json()
+    check_nosql_injection(body)
+    silenced = bool(body.get("silenced", False))
+    silence_reason = sanitize_string(body.get("reason") or "", max_length=200)
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    update_doc = {
+        "alerts_silenced": silenced,
+        "alerts_silenced_updated_at": now_iso,
+        "alerts_silenced_reason": silence_reason if silenced else "",
+        "alerts_silenced_by": (current_user or {}).get("email") if silenced else "",
+    }
+
+    # Multi-source resolver: gestisce device-id da managed_devices/devices/poll_<ip>
+    device_ip, device_name, _ = await _resolve_or_upsert_managed_device(client_id, device_id)
+    await db.managed_devices.update_one(
+        {"client_id": client_id, "ip": device_ip},
+        {"$set": update_doc},
+    )
+
+    invalidate_silence_cache(client_id=client_id, device_ip=device_ip)
+
+    audit_logger and await audit_logger.log(
+        AuditAction.UPDATE_DEVICE,
+        user_id=(current_user or {}).get("id"),
+        user_email=(current_user or {}).get("email"),
+        resource_type="managed_device",
+        resource_id=device_id,
+        details={
+            "client_id": client_id,
+            "alerts_silenced": silenced,
+            "reason": silence_reason,
+            "device_name": device_name,
+            "device_ip": device_ip,
+        },
+    )
+    return {"ok": True, "alerts_silenced": silenced, "device_id": device_id, "device_ip": device_ip}
+
+
+@router.post("/connector/{client_id}/managed-devices/auto-classify")
+async def bulk_auto_classify_devices(
+    client_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Riclassifica automaticamente i device del cliente basandosi su sysDescr/
+    sysObjectID/hostname/model. Aggiorna `device_type` solo dove la classifica
+    differisce da quella corrente — non sovrascrive con None se nulla matcha.
+    Utile dopo onboarding o per correggere device classificati come "server"
+    quando in realta` sono stampanti, NAS, ecc.
+    """
+    changed = []
+    async for d in db.managed_devices.find({"client_id": client_id}, {"_id": 0}):
+        sys_descr = d.get("sys_descr") or d.get("vendor_telemetry", {}).get("sys_descr")
+        sys_object_id = d.get("sys_object_id") or d.get("vendor_telemetry", {}).get("sys_object_id")
+        new_type = classify_device_type(
+            sys_descr=sys_descr,
+            sys_object_id=sys_object_id,
+            hostname=d.get("name"),
+            model=d.get("model"),
+        )
+        old_type = d.get("device_type") or ""
+        if new_type and new_type != old_type:
+            await db.managed_devices.update_one(
+                {"id": d["id"]},
+                {"$set": {"device_type": new_type, "device_type_auto_classified_at": datetime.now(timezone.utc).isoformat()}},
+            )
+            changed.append({
+                "id": d["id"],
+                "name": d.get("name"),
+                "ip": d.get("ip"),
+                "old_type": old_type or "(none)",
+                "new_type": new_type,
+            })
+    return {"ok": True, "changed_count": len(changed), "changed": changed}
 
 
 @router.post(f"/{C}/ln")
@@ -2053,7 +2596,7 @@ async def connector_network_discovery(request: Request):
                 "acknowledged_by": None, "acknowledged_at": None, "resolved_at": None,
                 "created_at": now_iso_alerts,
             }
-            await db.alerts.insert_one(_conn2_alert)
+            await insert_alert_if_emit(db, _conn2_alert)
             try:
                 import webpush as _wp
                 await _wp.notify_new_alert(db, _conn2_alert)

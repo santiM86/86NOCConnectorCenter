@@ -1401,6 +1401,35 @@ function Send-DeviceReport($config, $devices) {
     }
     Send-ToNOC $config "connector/device-report" $payload | Out-Null
     Write-Log "Report stato dispositivi inviato ($($reportDevices.Count) dispositivi)"
+
+    # === v3.5.25: Sincronizzazione inversa Center <- Connector ===
+    # Il Center rimuove i device che esistono nel suo DB ma NON sono piu' configurati
+    # in questo connector (es. admin ha rimosso device dalla tray app). Best-effort:
+    # se fallisce (endpoint non ancora presente sul Center vecchio, 5xx, ecc.) logghiamo
+    # e proseguiamo senza bloccare il heartbeat. Il Center-side e' protetto da:
+    #   - connector online (deve fare heartbeat < 5min)
+    #   - device manuali (source!=connector) e silenziati sono PRESERVATI
+    try {
+        if ($reportDevices.Count -gt 0) {
+            $activeIps = @($reportDevices | ForEach-Object { $_.device_ip } | Where-Object { $_ })
+            $syncPayload = @{
+                active_ips = $activeIps
+                dry_run    = $false
+                source     = "connector_heartbeat"
+            }
+            # NB: niente client_id nell'URL - il Center lo deriva dalla firma HMAC
+            Send-ToNOC $config "connector/sync-active-devices" $syncPayload | Out-Null
+            Write-Log "Sync inversa: inviati $($activeIps.Count) IP attivi al Center" "DEBUG"
+        }
+    } catch {
+        # Non bloccare se il Center e' piu' vecchio e non ha ancora l'endpoint
+        $errMsg = $_.Exception.Message
+        if ($errMsg -match "404") {
+            Write-Log "Sync inversa: endpoint non disponibile sul Center (forse versione < 3.5.27). Salto." "DEBUG"
+        } else {
+            Write-Log "Sync inversa fallita (non bloccante): $errMsg" "WARN"
+        }
+    }
 }
 
 function Fetch-DevicesFromNOC($config) {

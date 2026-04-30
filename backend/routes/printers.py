@@ -5,6 +5,7 @@ from datetime import datetime, timezone, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Request
 from database import db
 from deps import get_current_user
+from alert_filter import insert_alert_if_emit
 
 logger = logging.getLogger("printers")
 router = APIRouter(prefix="/api/printers", tags=["printers"])
@@ -219,7 +220,7 @@ async def process_printer_poll(request: Request):
                 "title": {"$regex": s.get("name", "?")}
             })
             if not existing_alert:
-                await db.alerts.insert_one(alert_doc)
+                await insert_alert_if_emit(db, alert_doc)
                 try:
                     import webpush as _wp
                     await _wp.notify_new_alert(db, alert_doc)

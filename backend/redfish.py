@@ -15,6 +15,9 @@ from typing import Optional, Dict, List, Any
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
+from alert_filter import insert_alert_if_emit
+
+
 logger = logging.getLogger("redfish")
 
 FAILOVER_THRESHOLD_SECONDS = 120  # 2 minutes without heartbeat = connector offline
@@ -209,7 +212,7 @@ class RedfishPoller:
             "created_at": datetime.now(timezone.utc).isoformat(),
             "raw_data": "",
         }
-        await self.db.alerts.insert_one(alert_doc)
+        await insert_alert_if_emit(self.db, alert_doc)
         # Broadcast + push
         try:
             import webpush as _wp
@@ -930,7 +933,7 @@ class RedfishPoller:
                             "created_at": datetime.now(timezone.utc).isoformat(),
                             "raw_data": "",
                         }
-                        await self.db.alerts.insert_one(alert_doc)
+                        await insert_alert_if_emit(self.db, alert_doc)
             except Exception as _fe:
                 logger.warning(f"firmware compliance check failed for {device_ip}: {_fe}")
 
@@ -1062,7 +1065,7 @@ class RedfishPoller:
                     "status": "active",
                     "created_at": datetime.now(timezone.utc).isoformat(),
                 }
-                await self.db.alerts.insert_one(_rf_alert)
+                await insert_alert_if_emit(self.db, _rf_alert)
                 try:
                     import webpush as _wp
                     await _wp.notify_new_alert(self.db, _rf_alert)

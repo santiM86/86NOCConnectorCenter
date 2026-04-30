@@ -1,0 +1,42 @@
+{
+  "summary": "Backend test della feature AUTO-SYNC inversa connector-triggered: POST /api/connector/sync-active-devices con HMAC/legacy X-API-Key auth. 11/11 pytest PASS. Copertura: auth (missing key, invalid key), validazione (active_ips mancante, non-list, empty), dry_run non distruttivo, sync effettivo (rimuove solo source=connector non in active_ips, preserva manual + silenced), alert auto-resolved con resolution_note='Device rimosso dal connector (auto-sync)', blocco PowerShell presente in connector.ps1 (dopo device-report), version.json=3.5.25.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_sync_active_devices.py",
+    "/app/test_reports/pytest/iteration_68_sync.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Endpoint connector_sync_active_devices (routes/connector.py L176-250): client_id derivato correttamente dalla firma HMAC via verify_connector_request (middleware supporta legacy auth solo X-API-Key, quindi il PowerShell corrente funziona anche senza HMAC completo).",
+    "Safety check liste vuote: correttamente rigettata con error='empty_active_ips_rejected_for_safety' PRIMA di iterare, anche con dry_run=True. Previene wipe accidentale durante bootstrap.",
+    "Protezione device manuali: `if d.get('source') and d.get('source') != 'connector': continue` — corretto. Device senza source (legacy) vengono trattati come connector-managed.",
+    "Protezione silenced: `if d.get('alerts_silenced'): continue` — corretto.",
+    "Alert resolution: update_many con `status:{$ne:'resolved'}` + resolution_note menziona 'auto-sync' come da spec.",
+    "Piccola nota: la delete usa `source:{$ne:'manual'}` come doppia protezione, ma il filtro a monte già escludeva i manual — difensivo e OK.",
+    "device_poll_status è iterato DOPO managed_devices con `ip_seen` set per evitare duplicati nel to_remove list: corretto.",
+    "connector.ps1 v3.5.25: blocco 'Sincronizzazione inversa Center <- Connector' presente a riga 1405 DOPO Send-ToNOC 'connector/device-report' (riga 1402), payload contiene active_ips + dry_run=false + source='connector_heartbeat'. Try/catch best-effort gestisce 404 (Center pre-3.5.27) silenzioso — corretto."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_sync_active_devices.py (new)",
+    "/app/test_reports/iteration_68.json (new)",
+    "/app/test_reports/pytest/iteration_68_sync.xml (new)"
+  ],
+  "success_rate": {
+    "backend": "100% (11/11 pytest)",
+    "frontend": "N/A (backend-only testing per review_request)"
+  },
+  "test_credentials": "Non usate credenziali JWT (endpoint HMAC-auth). Usata X-API-Key del client esistente '86BIT_Office' letta da db.clients.",
+  "seed_data_creation": "Seed: 3 managed_devices source=connector (10.88.1.1/2.2/3.3), 1 manual (10.88.9.9), 1 silenced (10.88.5.5), 1 alert active su 10.88.2.2. Cleanup automatico in fixture teardown — DB pulito al termine (verified: managed=0 alerts=0 poll=0 per quei test IP).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Feature AUTO-SYNC inversa connector-triggered FULLY WORKING: (1) endpoint POST /api/connector/sync-active-devices accetta X-API-Key valido (legacy auth path abilitata nel middleware — HMAC headers opzionali), (2) body validation: active_ips deve essere list non vuota, (3) dry_run=true ritorna would_remove list senza cancellare, (4) sync=false rimuove solo device source=connector non in active_ips e preserva source=manual + alerts_silenced, (5) alert aperti del device rimosso vengono marcati status='resolved' con resolution_note='Device rimosso dal connector (auto-sync)', (6) PowerShell v3.5.25 chiama /connector/sync-active-devices dopo ogni device-report. Tutti gli acceptance criteria del review_request soddisfatti. Nessun fix necessario lato backend.",
+  "rca_of_the_issue": "Non applicabile — nuova feature validata, nessun bug trovato."
+}

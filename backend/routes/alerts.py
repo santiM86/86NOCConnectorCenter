@@ -17,6 +17,7 @@ from deps import (
     get_current_user, audit_logger, notification_service,
     manager, correlation_manager, maintenance_manager
 )
+from alert_filter import insert_alert_if_emit
 
 router = APIRouter(prefix="/api", tags=["alerts"])
 
@@ -56,7 +57,7 @@ async def create_alert(alert: AlertCreate, current_user: dict = Depends(get_curr
     is_storm, storm_count = await correlation_manager.check_alert_storm(alert.client_id, alert.device_id)
     if is_storm:
         alert_doc["in_storm"] = True
-    await db.alerts.insert_one(alert_doc)
+    await insert_alert_if_emit(db, alert_doc)
     try:
         import webpush as _wp
         await _wp.notify_new_alert(db, alert_doc)
