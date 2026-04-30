@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { API } from "@/App";
 import axios from "axios";
 import { toast } from "sonner";
@@ -35,6 +35,19 @@ export function DeviceEditModal({ clientId, device, open, onClose, onSaved }) {
   const [alertsSilenced, setAlertsSilenced] = useState(!!device?.alerts_silenced);
   const [silenceReason, setSilenceReason] = useState(device?.alerts_silenced_reason || "");
 
+  // Re-seed dello stato locale quando la prop `device` cambia.
+  // Necessario perche` ClientOverviewPage refetch /api/devices dopo un Salva e
+  // riapre il modal sullo STESSO componente con prop aggiornata: se non
+  // re-seedo, il toggle resta sullo stato precedente. Stesso discorso quando
+  // l'utente apre il modal su un altro device senza unmount.
+  useEffect(() => {
+    setMonitorType(device?.monitor_type || "snmp");
+    setSnmpVersion(device?.snmp_version || "v2c");
+    setCommunity(device?.snmp_community || device?.community || "public");
+    setAlertsSilenced(!!device?.alerts_silenced);
+    setSilenceReason(device?.alerts_silenced_reason || "");
+  }, [device?.id, device?.alerts_silenced, device?.alerts_silenced_reason, device?.monitor_type, device?.snmp_version, device?.snmp_community]);
+
   const save = async () => {
     if (!device?.id && !device?.device_id) {
       toast.error("ID dispositivo mancante");
@@ -48,18 +61,38 @@ export function DeviceEditModal({ clientId, device, open, onClose, onSaved }) {
     const errors = [];
     let silencePersisted = false;
 
-    // 1) Monitor type
-    try {
-      await axios.put(
-        `${API}/connector/${clientId}/managed-devices/${deviceId}/monitor-type`,
-        { monitor_type: monitorType }
-      );
-    } catch (e) {
-      errors.push(`Metodo monitoraggio: ${e.response?.data?.detail || e.message}`);
+    // Calcolo dirty-state per evitare PUT inutili (riducono chiamate + non
+    // generano toast errore quando il device e` solo in db.devices/poll_status
+    // — gli endpoint /monitor-type e /snmp non hanno ancora il fallback
+    // multi-source che invece /silence ha).
+    const monitorDirty = monitorType !== (device?.monitor_type || "snmp");
+    const snmpFieldsDirty = (
+      snmpVersion !== (device?.snmp_version || "v2c") ||
+      (snmpVersion !== "v3" && community !== (device?.snmp_community || device?.community || "public")) ||
+      (snmpVersion === "v3" && (
+        v3.username !== (device?.snmpv3_username || "") ||
+        v3.auth_protocol !== (device?.snmpv3_auth_protocol || "SHA") ||
+        v3.auth_password !== (device?.snmpv3_auth_password || "") ||
+        v3.priv_protocol !== (device?.snmpv3_priv_protocol || "AES") ||
+        v3.priv_password !== (device?.snmpv3_priv_password || "") ||
+        v3.security_level !== (device?.snmpv3_security_level || "authPriv")
+      ))
+    );
+
+    // 1) Monitor type — solo se cambiato
+    if (monitorDirty) {
+      try {
+        await axios.put(
+          `${API}/connector/${clientId}/managed-devices/${deviceId}/monitor-type`,
+          { monitor_type: monitorType }
+        );
+      } catch (e) {
+        errors.push(`Metodo monitoraggio: ${e.response?.data?.detail || e.message}`);
+      }
     }
 
-    // 2) SNMP config (solo se il tipo include SNMP)
-    if (monitorType === "snmp" || monitorType === "snmp+http") {
+    // 2) SNMP config — solo se SNMP attivo E i field sono cambiati
+    if ((monitorType === "snmp" || monitorType === "snmp+http") && snmpFieldsDirty) {
       try {
         const payload = { snmp_version: snmpVersion };
         if (snmpVersion === "v3") {
@@ -112,7 +145,18 @@ export function DeviceEditModal({ clientId, device, open, onClose, onSaved }) {
     } else {
       toast.success("Dispositivo aggiornato. Clicca 'Applica ora' per forzare il connector a ri-leggere immediatamente.");
     }
-    if (onSaved) onSaved();
+    // Push optimistic update verso il parent: il parent puo` aggiornare la riga
+    // immediatamente senza aspettare il refetch async (evita ritardi UI 1-4s).
+    if (onSaved) {
+      onSaved({
+        ...device,
+        alerts_silenced: alertsSilenced,
+        alerts_silenced_reason: silenceReason,
+        monitor_type: monitorDirty ? monitorType : device?.monitor_type,
+        snmp_version: snmpFieldsDirty ? snmpVersion : device?.snmp_version,
+        snmp_community: snmpFieldsDirty && snmpVersion !== "v3" ? community : device?.snmp_community,
+      });
+    }
   };
 
   const applyNow = async () => {

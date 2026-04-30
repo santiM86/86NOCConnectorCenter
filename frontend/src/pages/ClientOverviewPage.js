@@ -148,6 +148,13 @@ export default function ClientOverviewPage() {
     { id: "credentials", label: "Credenziali", icon: Lock },
   ];
 
+  // Optimistic update locale: il modal Edit chiama questa per riflettere subito
+  // i cambi (es. silence toggle) senza aspettare il refetch async di /api/devices.
+  const optimisticUpdateDevice = (updatedDevice) => {
+    if (!updatedDevice || !updatedDevice.id) return;
+    setDevices(prev => prev.map(d => d.id === updatedDevice.id ? { ...d, ...updatedDevice } : d));
+  };
+
   return (
     <div className="p-4 md:p-5 animate-fade-in" data-testid="client-overview-page">
       {/* Header */}
@@ -201,7 +208,7 @@ export default function ClientOverviewPage() {
       {/* Tab Content */}
       <div className="min-h-[400px]">
         {activeTab === "overview" && <OverviewTab devices={devices} wanTargets={wanTargets} alerts={alerts} connector={connector} printers={printers} backups={backups} firewalls={firewalls} switches={switches} servers={servers} upsList={upsList} nasList={nasList} apList={apList} tvccList={tvccList} printersList={printersList} others={others} iloHealth={iloHealth} />}
-        {activeTab === "devices" && <DevicesTab devices={devices} clientId={clientId} onRefresh={fetchAll} />}
+        {activeTab === "devices" && <DevicesTab devices={devices} clientId={clientId} onRefresh={fetchAll} onOptimisticUpdate={optimisticUpdateDevice} />}
         {activeTab === "wan" && <WanTab targets={wanTargets} clientId={clientId} clientName={client.name} onRefresh={fetchAll} />}
         {activeTab === "alerts" && <AlertsTab alerts={alerts} navigate={navigate} />}
         {activeTab === "printers" && <PrintersTab printers={mergedPrinters} />}
@@ -928,7 +935,7 @@ function DeviceGroup({ label, icon: Icon, devices, color }) {
 }
 
 /* ==================== DEVICES TAB ==================== */
-function DevicesTab({ devices, clientId, onRefresh }) {
+function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
   const [showAdd, setShowAdd] = useState(false);
   const [profileTarget, setProfileTarget] = useState(null);
   const [infoTarget, setInfoTarget] = useState(null);
@@ -1354,7 +1361,15 @@ function DevicesTab({ devices, clientId, onRefresh }) {
           device={editTarget}
           open={!!editTarget}
           onClose={() => setEditTarget(null)}
-          onSaved={() => { setEditTarget(null); onRefresh(); }}
+          onSaved={(updatedDevice) => {
+            // Optimistic update sullo state parent — evita 1-4s di ritardo prima
+            // che il badge ALERT OFF appaia dopo Save.
+            if (updatedDevice && updatedDevice.id && onOptimisticUpdate) {
+              onOptimisticUpdate(updatedDevice);
+            }
+            setEditTarget(null);
+            onRefresh();
+          }}
         />
       )}
 
