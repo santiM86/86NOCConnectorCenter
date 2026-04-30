@@ -2035,12 +2035,12 @@ function VMBackupPanel({ clientId }) {
         return { data: null };
       });
       const custsPromise = axios.get(`${API}/admin/hornetsecurity-vm/customers`).catch(() => ({ data: { customers: [] } }));
-      const mapPromise = axios.get(`${API}/clients/${clientId}/backup/vmbackup/mapping`).catch(() => ({ data: { customers: [] } }));
+      const mapPromise = axios.get(`${API}/clients/${clientId}/backup/vmbackup/mapping`).catch(() => ({ data: { customers: [], filters: [] } }));
       const stPromise = axios.get(`${API}/clients/${clientId}/backup/vmbackup/status`).catch(() => ({ data: { items: [], totals: {} } }));
       const [cfgR, custsR, mapR, stR] = await Promise.all([cfgPromise, custsPromise, mapPromise, stPromise]);
       setConfig(cfgR.data);
       setAllCustomers(custsR.data?.customers || []);
-      setMapping(mapR.data || { customers: [] });
+      setMapping(mapR.data || { customers: [], filters: [] });
       setDraft(mapR.data?.customers || []);
       setStatus(stR.data || { items: [], totals: {} });
     } catch (e) {
@@ -2105,9 +2105,24 @@ function VMBackupPanel({ clientId }) {
         <div className="flex-1 min-w-[260px]">
           <p className="text-[10px] uppercase tracking-widest text-[var(--text-muted)]">Hornetsecurity VM Backup (Altaro)</p>
           <p className="text-xs font-semibold text-[var(--text-primary)]">
-            {mapping.customers?.length > 0
-              ? <>{mapping.customers.length} customer: <span className="text-violet-300">{mapping.customers.join(", ")}</span></>
-              : <span className="text-amber-300">Nessun customer mappato — clicca "Modifica"</span>}
+            {(mapping.filters?.length || 0) > 0 ? (
+              <>
+                {mapping.filters.length} mapping attivi:{" "}
+                {mapping.filters.slice(0, 3).map((f, i) => (
+                  <span key={i} className="mr-1">
+                    {f.hosts && f.hosts.length > 0
+                      ? <span className="inline-flex items-center gap-1"><span className="text-[10px] text-violet-300">{f.customer}</span><span className="text-[9px] text-amber-300">→ {f.hosts.join(", ")}</span></span>
+                      : <span className="text-[10px] text-violet-300">{f.customer} <span className="text-[9px] text-[var(--text-muted)]">(intero)</span></span>}
+                    {i < Math.min(2, mapping.filters.length - 1) ? "," : ""}
+                  </span>
+                ))}
+                {mapping.filters.length > 3 ? `, +${mapping.filters.length - 3}` : ""}
+              </>
+            ) : (mapping.customers?.length || 0) > 0 ? (
+              <>{mapping.customers.length} customer: <span className="text-violet-300">{mapping.customers.join(", ")}</span></>
+            ) : (
+              <span className="text-amber-300">Nessun customer mappato — clicca "Modifica"</span>
+            )}
           </p>
           <p className="text-[10px] text-[var(--text-muted)] mt-0.5">
             Polling ogni {config.polling_interval_minutes} min
@@ -2161,7 +2176,7 @@ function VMBackupPanel({ clientId }) {
         </div>
       )}
 
-      {(mapping.customers?.length || 0) > 0 && (
+      {((mapping.filters?.length || 0) > 0 || (mapping.customers?.length || 0) > 0) && (
         <>
           <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
             <StatBox label="VM totali" value={t.vms_total || 0} color="#06B6D4" />
