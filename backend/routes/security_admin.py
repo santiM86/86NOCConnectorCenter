@@ -3,14 +3,10 @@ Security Admin — Master key rotation + ciphertext migration v1→v2.
 
 Endpoints (admin-only):
   GET  /api/admin/security/encryption-status
-       Stato cifratura: percentuale di blob v2 vs legacy v1, raccomandazioni.
   POST /api/admin/security/migrate-to-v2
-       Migra (re-encrypt) tutti i blob legacy v1 al schema v2 in-place.
-       Operazione idempotente: salta blob gia` v2.
   POST /api/admin/security/rotate-master-key
-       Rotazione master key (+ salt v2). Decifra tutti i blob, rigenera
-       master key + salt v2, ricifra tutto. Aggiorna .env in modo atomico.
-       Richiede 2FA admin (se configurato per l'utente) e flag esplicita.
+  POST /api/admin/security/check-password    (test strength + HIBP)
+  GET  /api/admin/audit/recent               (audit dashboard data)
 """
 from __future__ import annotations
 
@@ -18,14 +14,15 @@ import logging
 import os
 import secrets
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from database import db
-from deps import get_current_user, require_admin
-from security import security_manager, _V2_SALT_PATH, _load_or_create_v2_salt  # noqa: F401 (re-export for tools)
+from deps import get_current_user, require_admin, limiter
+from security import security_manager, _V2_SALT_PATH, _load_or_create_v2_salt  # noqa: F401
+from services.password_policy_check import check_password
 
 logger = logging.getLogger(__name__)
 audit = logging.getLogger("audit")
@@ -105,7 +102,8 @@ async def encryption_status(current_user: dict = Depends(get_current_user)):
 
 
 @router.post("/migrate-to-v2")
-async def migrate_to_v2(current_user: dict = Depends(get_current_user)):
+@limiter.limit("3/minute")
+async def migrate_to_v2(request: Request, current_user: dict = Depends(get_current_user)):
     """Migra tutti i blob legacy v1 a schema v2 (re-encrypt in-place).
 
     Idempotente: salta blob gia` v2. Ritorna summary delle modifiche.
@@ -166,7 +164,9 @@ class RotateKeyPayload(BaseModel):
 
 
 @router.post("/rotate-master-key")
+@limiter.limit("2/minute")
 async def rotate_master_key(
+    request: Request,
     payload: RotateKeyPayload,
     current_user: dict = Depends(get_current_user),
 ):
@@ -316,3 +316,134 @@ async def rotate_master_key(
         ),
         "new_key_preview": f"{new_master_hex[:8]}...{new_master_hex[-4:]}",
     }
+
+
+# ---------------------------------------------------------------------------
+# PASSWORD STRENGTH + HIBP CHECK
+# ---------------------------------------------------------------------------
+class PasswordCheckRequest(BaseModel):
+    password: str = Field(..., min_length=1, max_length=200)
+
+
+@router.post("/check-password")
+@limiter.limit("30/minute")
+async def check_password_endpoint(
+    request: Request,
+    payload: PasswordCheckRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """Valida la robustezza di una password (locale) + check HIBP via k-anonymity.
+
+    Usato dal form "cambia password" per feedback live, e dal flow di onboarding
+    per impedire password trapelate. La password NON viene mai loggata.
+    """
+    require_admin(current_user)
+    res = await check_password(payload.password)
+    return {
+        "ok": res.ok,
+        "score": res.score,
+        "issues": res.issues,
+        "pwned_count": res.pwned_count,
+    }
+
+
+# ---------------------------------------------------------------------------
+# AUDIT DASHBOARD DATA
+# ---------------------------------------------------------------------------
+from datetime import datetime, timezone, timedelta  # noqa: E402
+
+
+@router.get("/../audit/recent", include_in_schema=False)  # placeholder, see real route below
+async def _placeholder():
+    return {}
+
+
+# Real audit route mounted directly so prefix becomes /api/admin/audit/...
+audit_router = APIRouter(prefix="/api/admin/audit", tags=["audit"])
+
+
+@audit_router.get("/recent")
+async def audit_recent(
+    days: int = 7,
+    severity: Optional[str] = None,
+    action: Optional[str] = None,
+    only_security: bool = False,
+    current_user: dict = Depends(get_current_user),
+):
+    """Ultimi eventi audit (default 7gg). Filtri per severity/action/security."""
+    require_admin(current_user)
+    days = max(1, min(days, 90))
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    query: dict[str, Any] = {"timestamp": {"$gte": since}}
+    if severity:
+        query["severity"] = severity
+    if action:
+        query["action"] = action
+    if only_security:
+        # Eventi marcati security-relevant
+        query["$or"] = [
+            {"action": {"$regex": "LOGIN|LOCK|SECURITY|ROTATE|MIGRATE|DELETE", "$options": "i"}},
+            {"severity": {"$in": ["critical", "warning"]}},
+        ]
+
+    cursor = db.audit_logs.find(query, {"_id": 0}).sort("timestamp", -1).limit(500)
+    rows = await cursor.to_list(500)
+
+    # aggregate
+    by_action: dict[str, int] = {}
+    by_severity: dict[str, int] = {}
+    by_ip: dict[str, int] = {}
+    failed_logins = 0
+    for r in rows:
+        a = r.get("action", "unknown")
+        s = r.get("severity", "info")
+        ip = r.get("ip_address") or "unknown"
+        by_action[a] = by_action.get(a, 0) + 1
+        by_severity[s] = by_severity.get(s, 0) + 1
+        by_ip[ip] = by_ip.get(ip, 0) + 1
+        if a == "LOGIN_FAILED":
+            failed_logins += 1
+
+    # Top 10 IP per frequenza
+    top_ips = sorted(by_ip.items(), key=lambda x: x[1], reverse=True)[:10]
+
+    return {
+        "items": rows,
+        "totals": {
+            "total": len(rows),
+            "by_action": by_action,
+            "by_severity": by_severity,
+            "failed_logins": failed_logins,
+            "unique_ips": len(by_ip),
+            "top_ips": [{"ip": ip, "count": c} for ip, c in top_ips],
+        },
+        "days": days,
+    }
+
+
+@audit_router.get("/blocked-ips")
+async def list_blocked_ips(current_user: dict = Depends(get_current_user)):
+    """Lista IP attualmente bloccati per brute-force."""
+    require_admin(current_user)
+    cursor = db.ip_blocks.find({}, {"_id": 0}).sort("blocked_at", -1).limit(200)
+    rows = await cursor.to_list(200)
+    return {"blocked_ips": rows, "count": len(rows)}
+
+
+class UnblockIpRequest(BaseModel):
+    ip_address: str
+
+
+@audit_router.post("/unblock-ip")
+async def unblock_ip(
+    payload: UnblockIpRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """Sblocca manualmente un IP bloccato per brute-force."""
+    require_admin(current_user)
+    res = await db.ip_blocks.delete_one({"ip_address": payload.ip_address})
+    audit.warning(
+        f"SECURITY_IP_UNBLOCK by={current_user.get('email')} "
+        f"ip={payload.ip_address} deleted={res.deleted_count}"
+    )
+    return {"unblocked": res.deleted_count > 0}

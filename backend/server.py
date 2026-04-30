@@ -304,6 +304,8 @@ app.include_router(device_profiles_router)
 app.include_router(connector_settings_router)
 app.include_router(hornetsecurity_backup_router)
 app.include_router(security_admin_router)
+from routes.security_admin import audit_router as audit_dashboard_router
+app.include_router(audit_dashboard_router)
 from routes.device_probe import router as device_probe_router
 app.include_router(device_probe_router)
 from routes.console_rmt import router as console_rmt_router

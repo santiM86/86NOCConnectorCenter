@@ -1,5 +1,51 @@
 # CHANGELOG — 86BIT ARGUS Center
 
+## 2026-04-30 — Operational Security Hardening (backend v3.5.34)
+
+### 🛡 Brute force + HIBP + Audit Dashboard
+Hardening operativo per chiudere il gap "castelli di sabbia": dal singolo
+sistema cifrato a un perimetro che si difende attivamente.
+
+**Backend** `security_hardening.py`:
+- IP-based brute force detection: 20 fail in finestra `lockout_duration_minutes`
+  (default 5min) → blocco IP per 3x il timeout
+- Nuova collection `ip_blocks` con TTL implicito (unlock_at)
+- `is_ip_blocked()` chiamato in `/api/auth/login` PRIMA del check account
+- HTTP 423 "Indirizzo IP temporaneamente bloccato" (audit log severity=critical)
+
+**Backend** `services/password_policy_check.py` (NEW):
+- HIBP "Pwned Passwords" via k-anonymity (solo i primi 5 char dello SHA-1)
+- API gratuita illimitata, fail-open se HIBP irraggiungibile
+- Validazione locale: lunghezza min, mix maiusc/minusc/cifre/simboli, blacklist
+  pattern banali (password, admin, qwerty, ...)
+- `check_password()` async ritorna {ok, score 0..100, issues, pwned_count}
+
+**Backend** `routes/security_admin.py`:
+- `POST /api/admin/security/check-password` (rate-limited 30/min) — UI feedback
+- `GET /api/admin/audit/recent?days=N&only_security=bool` — eventi audit con
+  aggregati by_action / by_severity / top_ips / failed_logins
+- `GET /api/admin/audit/blocked-ips` — IP attualmente bloccati
+- `POST /api/admin/audit/unblock-ip` — sblocco manuale admin (audit logged)
+- Rate limit aggiunto: rotate-master-key (2/min), migrate-to-v2 (3/min)
+
+**Frontend** `pages/AuditPage.js` (NEW):
+- Route `/settings/audit` (admin only)
+- Filtri periodo (1/7/30/90 gg) + checkbox "solo eventi security"
+- 5 stat box (eventi totali, login falliti, IP unique, critical, warning)
+- Card "IP bloccati" con dettaglio reason + unlock_at + pulsante Sblocca manuale
+- Card "Top IP per accessi" (10 IPs)
+- Breakdown bar charts: eventi per azione + per severity (con color coding)
+- Tabella ultimi 500 eventi: timestamp, action, severity, user, IP, resource, esito
+- Voce "Audit & Security Events" aggiunta in Settings
+
+**Test E2E in-session**:
+- HIBP check: password "password" → score 0, pwned_count=52,256,179, refused ✓
+- HIBP check: password forte 16 char → score 85, pwned_count=0, ok ✓
+- Brute force: 22 tentativi `hacker[1-22]@evil.com` → tutti loggati come
+  LOGIN_FAILED warning, slowapi rate-limit triggered (10/5min) ✓
+- Audit dashboard renderizzata: 168 eventi 7gg, 22 failed login visibili,
+  top 5 IP listati, breakdown azione/severity ✓
+
 ## 2026-04-30 — Encryption Hardening NIST 2024 (backend v3.5.33)
 
 ### 🔐 Schema cifratura v2 con backward-compat
