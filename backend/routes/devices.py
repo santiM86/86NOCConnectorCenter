@@ -71,6 +71,9 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
         d["profile_key"] = d.get("profile_key") or md.get("profile_key") or pd.get("profile_key")
         d["vendor"] = d.get("vendor") or md.get("vendor") or pd.get("vendor")
         d["family"] = d.get("family") or md.get("family") or pd.get("family")
+        # alerts_silenced flag (managed_devices wins; default False)
+        d["alerts_silenced"] = bool(md.get("alerts_silenced", d.get("alerts_silenced", False)))
+        d["alerts_silenced_reason"] = md.get("alerts_silenced_reason") or d.get("alerts_silenced_reason") or ""
 
     # Merge: add connector devices that aren't already in manual list
     for pd in poll_devices:
@@ -147,6 +150,8 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
                 "vendor": vendor,
                 "family": family,
                 "profile_auto_matched": pd.get("profile_auto_matched", False) if not md.get("profile_key") else False,
+                "alerts_silenced": bool(md.get("alerts_silenced", False)),
+                "alerts_silenced_reason": md.get("alerts_silenced_reason") or "",
             })
 
     # 3rd pass: managed_devices orfani (aggiunti manualmente via UI o dal tray
@@ -180,6 +185,8 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
             "profile_key": md.get("profile_key"),
             "vendor": md.get("vendor"),
             "family": md.get("family"),
+            "alerts_silenced": bool(md.get("alerts_silenced", False)),
+            "alerts_silenced_reason": md.get("alerts_silenced_reason") or "",
         })
 
     client_ids = list(set(d["client_id"] for d in devices if d.get("client_id")))
@@ -215,6 +222,8 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
                 "profile_key": d.get("profile_key"),
                 "vendor": d.get("vendor"),
                 "family": d.get("family"),
+                "alerts_silenced": d.get("alerts_silenced", False),
+                "alerts_silenced_reason": d.get("alerts_silenced_reason", ""),
             })
     return result
 

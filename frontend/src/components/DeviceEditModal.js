@@ -1,8 +1,8 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { API } from "@/App";
 import axios from "axios";
 import { toast } from "sonner";
-import { PencilSimple, ShieldCheck, WifiHigh, Lightning } from "@phosphor-icons/react";
+import { PencilSimple, ShieldCheck, WifiHigh, Lightning, BellSlash } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -32,6 +32,21 @@ export function DeviceEditModal({ clientId, device, open, onClose, onSaved }) {
   });
   const [saving, setSaving] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [alertsSilenced, setAlertsSilenced] = useState(!!device?.alerts_silenced);
+  const [silenceReason, setSilenceReason] = useState(device?.alerts_silenced_reason || "");
+
+  // Re-seed dello stato locale quando la prop `device` cambia.
+  // Necessario perche` ClientOverviewPage refetch /api/devices dopo un Salva e
+  // riapre il modal sullo STESSO componente con prop aggiornata: se non
+  // re-seedo, il toggle resta sullo stato precedente. Stesso discorso quando
+  // l'utente apre il modal su un altro device senza unmount.
+  useEffect(() => {
+    setMonitorType(device?.monitor_type || "snmp");
+    setSnmpVersion(device?.snmp_version || "v2c");
+    setCommunity(device?.snmp_community || device?.community || "public");
+    setAlertsSilenced(!!device?.alerts_silenced);
+    setSilenceReason(device?.alerts_silenced_reason || "");
+  }, [device?.id, device?.alerts_silenced, device?.alerts_silenced_reason, device?.monitor_type, device?.snmp_version, device?.snmp_community]);
 
   const save = async () => {
     if (!device?.id && !device?.device_id) {
@@ -40,14 +55,45 @@ export function DeviceEditModal({ clientId, device, open, onClose, onSaved }) {
     }
     const deviceId = device.id || device.device_id;
     setSaving(true);
-    try {
-      // 1) Monitor type
-      await axios.put(
-        `${API}/connector/${clientId}/managed-devices/${deviceId}/monitor-type`,
-        { monitor_type: monitorType }
-      );
-      // 2) SNMP config (solo se il tipo include SNMP)
-      if (monitorType === "snmp" || monitorType === "snmp+http") {
+    // Eseguo le 3 PUT in modo INDIPENDENTE: il fallimento di una non deve
+    // impedire le altre. Il silence in particolare e` la modifica piu` semplice e
+    // l'utente si aspetta che funzioni anche se monitor-type/snmp falliscono.
+    const errors = [];
+    let silencePersisted = false;
+
+    // Calcolo dirty-state per evitare PUT inutili (riducono chiamate + non
+    // generano toast errore quando il device e` solo in db.devices/poll_status
+    // — gli endpoint /monitor-type e /snmp non hanno ancora il fallback
+    // multi-source che invece /silence ha).
+    const monitorDirty = monitorType !== (device?.monitor_type || "snmp");
+    const snmpFieldsDirty = (
+      snmpVersion !== (device?.snmp_version || "v2c") ||
+      (snmpVersion !== "v3" && community !== (device?.snmp_community || device?.community || "public")) ||
+      (snmpVersion === "v3" && (
+        v3.username !== (device?.snmpv3_username || "") ||
+        v3.auth_protocol !== (device?.snmpv3_auth_protocol || "SHA") ||
+        v3.auth_password !== (device?.snmpv3_auth_password || "") ||
+        v3.priv_protocol !== (device?.snmpv3_priv_protocol || "AES") ||
+        v3.priv_password !== (device?.snmpv3_priv_password || "") ||
+        v3.security_level !== (device?.snmpv3_security_level || "authPriv")
+      ))
+    );
+
+    // 1) Monitor type — solo se cambiato
+    if (monitorDirty) {
+      try {
+        await axios.put(
+          `${API}/connector/${clientId}/managed-devices/${deviceId}/monitor-type`,
+          { monitor_type: monitorType }
+        );
+      } catch (e) {
+        errors.push(`Metodo monitoraggio: ${e.response?.data?.detail || e.message}`);
+      }
+    }
+
+    // 2) SNMP config — solo se SNMP attivo E i field sono cambiati
+    if ((monitorType === "snmp" || monitorType === "snmp+http") && snmpFieldsDirty) {
+      try {
         const payload = { snmp_version: snmpVersion };
         if (snmpVersion === "v3") {
           Object.assign(payload, {
@@ -65,14 +111,51 @@ export function DeviceEditModal({ clientId, device, open, onClose, onSaved }) {
           `${API}/connector/${clientId}/managed-devices/${deviceId}/snmp`,
           payload
         );
+      } catch (e) {
+        errors.push(`SNMP: ${e.response?.data?.detail || e.message}`);
       }
-      toast.success("Dispositivo aggiornato. Clicca 'Applica ora' per forzare il connector a ri-leggere immediatamente (altrimenti max 10 min).");
-      if (onSaved) onSaved();
-      // Non chiudo il modal: l'utente potrebbe voler cliccare "Applica ora"
-    } catch (e) {
-      toast.error(e.response?.data?.detail || "Errore nel salvataggio");
-    } finally {
-      setSaving(false);
+    }
+
+    // 3) Silenziamento alert (sempre tentato, anche se 1/2 falliscono)
+    const wasSilenced = !!device?.alerts_silenced;
+    const wasReason = device?.alerts_silenced_reason || "";
+    const silenceDirty = alertsSilenced !== wasSilenced || silenceReason !== wasReason;
+    if (silenceDirty) {
+      try {
+        await axios.put(
+          `${API}/connector/${clientId}/managed-devices/${deviceId}/silence`,
+          { silenced: alertsSilenced, reason: silenceReason }
+        );
+        silencePersisted = true;
+      } catch (e) {
+        errors.push(`Silenzio alert: ${e.response?.data?.detail || e.message}`);
+      }
+    }
+
+    setSaving(false);
+
+    if (errors.length > 0) {
+      toast.error(`Errori durante il salvataggio: ${errors.join(" | ")}`);
+      return;
+    }
+    if (silencePersisted) {
+      toast.success(alertsSilenced
+        ? "Alert SILENZIATI per questo device. Eventuali alert già aperti restano e vanno risolti manualmente."
+        : "Alert RIATTIVATI per questo device.");
+    } else {
+      toast.success("Dispositivo aggiornato. Clicca 'Applica ora' per forzare il connector a ri-leggere immediatamente.");
+    }
+    // Push optimistic update verso il parent: il parent puo` aggiornare la riga
+    // immediatamente senza aspettare il refetch async (evita ritardi UI 1-4s).
+    if (onSaved) {
+      onSaved({
+        ...device,
+        alerts_silenced: alertsSilenced,
+        alerts_silenced_reason: silenceReason,
+        monitor_type: monitorDirty ? monitorType : device?.monitor_type,
+        snmp_version: snmpFieldsDirty ? snmpVersion : device?.snmp_version,
+        snmp_community: snmpFieldsDirty && snmpVersion !== "v3" ? community : device?.snmp_community,
+      });
     }
   };
 
@@ -245,6 +328,43 @@ export function DeviceEditModal({ clientId, device, open, onClose, onSaved }) {
               )}
             </>
           )}
+
+          {/* Silenziamento alert per device — utile per stampanti che vanno offline la sera */}
+          <div className={`rounded p-2.5 border transition-colors ${alertsSilenced ? "bg-amber-500/10 border-amber-500/40" : "bg-[var(--bg-card)] border-[var(--bg-border)]"}`}>
+            <label className="flex items-start gap-2 cursor-pointer" data-testid="silence-toggle-label">
+              <input
+                type="checkbox"
+                checked={alertsSilenced}
+                onChange={(e) => setAlertsSilenced(e.target.checked)}
+                className="mt-0.5 cursor-pointer"
+                data-testid="silence-toggle"
+              />
+              <span className="flex-1">
+                <span className="flex items-center gap-1.5 text-[11px] font-semibold text-amber-300">
+                  <BellSlash size={13} weight="fill" />
+                  Silenzia alert per questo dispositivo
+                </span>
+                <span className="block text-[9px] text-[var(--text-muted)] mt-0.5 leading-relaxed">
+                  Il device viene comunque monitorato ed appare nelle dashboard, ma <strong>nessun nuovo alert</strong>{" "}
+                  (offline, errori, soglia, syslog, SNMP trap, iLO) verra` generato.
+                  Gli alert gia` aperti restano e vanno risolti manualmente.
+                </span>
+              </span>
+            </label>
+            {alertsSilenced && (
+              <div className="mt-2 pl-5">
+                <Label className="text-[var(--text-muted)] text-[9px] uppercase tracking-wider">Motivo (opzionale)</Label>
+                <Input
+                  value={silenceReason}
+                  onChange={(e) => setSilenceReason(e.target.value)}
+                  placeholder="Es. stampante ufficio — spenta dopo 19:00"
+                  className="bg-[var(--bg-card)] border-amber-500/30 text-[var(--text-primary)] h-7 text-xs mt-0.5"
+                  maxLength={200}
+                  data-testid="silence-reason"
+                />
+              </div>
+            )}
+          </div>
         </div>
 
         <div className="flex flex-wrap gap-2 justify-end mt-4">

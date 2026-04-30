@@ -59,23 +59,53 @@ export default function WireGuardPage() {
     } catch (e) { /* ignore */ }
   }, []);
 
-  const triggerUpdate = async (enableWireguard) => {
+  const triggerUpdate = async (enableWireguard, customUrl) => {
     setUpdating(true);
     setShowUpdateDialog(false);
     setUpdateStatus({ phase: "queued", progress: 0, message: "Invio richiesta..." });
     try {
       // Calcola hostname pubblico dal browser (es. argus.86bit.it)
       const wgHost = window.location.hostname;
-      await axios.post(`${API}/admin/system/self-update`, {
+      const payload = {
         enable_wireguard: !!enableWireguard,
         wireguard_host: wgHost,
-      });
-      toast.success("Aggiornamento avviato", { description: "Il backend sta scaricando il nuovo codice. Non chiudere la pagina." });
+      };
+      if (customUrl && customUrl.trim()) {
+        payload.package_url = customUrl.trim();
+      }
+      const res = await axios.post(`${API}/admin/system/self-update`, payload);
+      const src = res.data?.url_source || "";
+      const srcLabel = src === "remote-fallback" ? " (fallback CDN remoto)"
+                     : src === "custom" ? " (URL custom)"
+                     : src === "local" ? " (CDN locale)" : "";
+      toast.success("Aggiornamento avviato", { description: `Download da ${res.data?.package_url}${srcLabel}. Non chiudere la pagina.` });
     } catch (e) {
       const det = e?.response?.data?.detail || e.message;
       toast.error("Errore avvio update", { description: det });
       setUpdating(false);
       setUpdateStatus({ phase: "failed", progress: 0, error: det, message: det });
+    }
+  };
+
+  const precheckUrl = async (customUrl) => {
+    try {
+      const params = customUrl && customUrl.trim()
+        ? { params: { url: customUrl.trim() } } : undefined;
+      const r = await axios.get(`${API}/admin/system/self-update/resolve-url`, params);
+      const { resolved_url, source, reachable, http_status, content_length } = r.data;
+      if (reachable) {
+        toast.success(
+          `URL raggiungibile (${source})`,
+          { description: `${resolved_url} — ${(content_length/1024/1024).toFixed(2)} MB` },
+        );
+      } else {
+        toast.error(
+          `URL NON raggiungibile (HTTP ${http_status || "?"})`,
+          { description: `Risolto: ${resolved_url}. Inserisci un URL custom o configura ARGUS_UPDATE_ARTIFACT_BASE_URL.` },
+        );
+      }
+    } catch (e) {
+      toast.error("Pre-check fallito", { description: e?.response?.data?.detail || e.message });
     }
   };
 
@@ -416,12 +446,45 @@ export default function WireGuardPage() {
                 </span>
               </label>
             </div>
+            <details className="p-3 rounded bg-violet-500/5 border border-violet-500/30">
+              <summary className="text-violet-300 font-semibold cursor-pointer text-[11px]">⚙️ Opzioni avanzate · URL pacchetto custom</summary>
+              <div className="mt-2 space-y-1.5">
+                <label className="block text-[10px] text-[var(--text-muted)] uppercase tracking-wide">URL tarball backend</label>
+                <input
+                  type="text"
+                  id="custom-url-input"
+                  placeholder="lascia vuoto per usare il default"
+                  className="w-full text-[11px] font-mono px-2 py-1.5 rounded bg-black/30 border border-[var(--bg-border)] text-cyan-300 placeholder:text-[var(--text-muted)]/50 focus:outline-none focus:border-violet-500"
+                  data-testid="custom-package-url-input"
+                />
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-6 text-[10px] px-2"
+                    data-testid="precheck-url-btn"
+                    onClick={() => {
+                      const v = document.getElementById("custom-url-input")?.value || "";
+                      precheckUrl(v);
+                    }}
+                  >
+                    Pre-check URL
+                  </Button>
+                  <span className="text-[10px] text-[var(--text-muted)]">verifica raggiungibilita` prima di lanciare</span>
+                </div>
+                <p className="text-[10px] text-[var(--text-muted)] leading-relaxed">
+                  Ordine di risoluzione: <strong>custom</strong> → <strong>locale</strong> <code className="text-cyan-300">https://{typeof window !== "undefined" ? window.location.hostname : "argus.86bit.it"}/downloads/argus-backend-latest.tar.gz</code> → <strong>fallback remoto</strong> (env <code>ARGUS_UPDATE_ARTIFACT_BASE_URL</code>{systemVersion?.update_artifact_fallback ? ` = ${systemVersion.update_artifact_fallback}` : " non configurata"}).
+                </p>
+              </div>
+            </details>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowUpdateDialog(false)}>Annulla</Button>
             <Button onClick={() => {
               const cb = document.getElementById("enable-wg-checkbox");
-              triggerUpdate(cb?.checked);
+              const customUrl = document.getElementById("custom-url-input")?.value || "";
+              triggerUpdate(cb?.checked, customUrl);
             }} data-testid="confirm-update-btn">
               Aggiorna Adesso
             </Button>

@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from database import db
 from deps import get_current_user, require_admin, audit_logger, check_nosql_injection, sanitize_string
 from audit import AuditAction
+from alert_filter import insert_alert_if_emit
 import uuid
 
 logger = logging.getLogger("external_monitor")
@@ -359,7 +360,7 @@ async def run_probe_cycle():
                         "status": "active",
                         "created_at": now_iso,
                     }
-                    await db.alerts.insert_one(_ext_alert)
+                    await insert_alert_if_emit(db, _ext_alert)
                     try:
                         import webpush as _wp
                         await _wp.notify_new_alert(db, _ext_alert)

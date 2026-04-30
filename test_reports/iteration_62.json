@@ -1,0 +1,29 @@
+{
+  "summary": "Frontend-only retest of V4 popup fix on Monitor button (Dispositivi tab). Fix in WebConsoleTabs.js:127 — removed 'noopener,noreferrer' from window.open(absUrl,'_blank') so Chromium returns a valid WindowProxy. ALL acceptance criteria PASS on both desktop (1920x1080) and mobile (390x844): (1) POST /api/console-v4/request-session is called, (2) POST /api/web-console/session (V3) is NOT called, (3) POST /api/admin/wireguard/session/start is called in parallel, (4) data-testid=web-console-active dock is NOT rendered (count=0), (5) no 'Pop-up bloccato' alert in DOM, (6) no ReferenceError in console. The previous V3-fallback regression observed in iteration_61 is fully resolved.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "WebConsoleTabs.js:127 — removing 'noopener,noreferrer' is correct given the V4 proxy serves URLs on the SAME origin (window.location.origin + /api/console-v4/s/<jwt>/), so reverse-tabnabbing risk is null (no third-party page can manipulate window.opener). Acceptable trade-off for distinguishing 'popup blocked' (null) from 'popup opened' (WindowProxy).",
+    "WebConsoleTabs.js openPopup — JWT token is still embedded in URL path (/api/console-v4/s/<JWT>/). This is logged by ingress access logs and stays in browser history. Recommend (post-MVP) using opaque session id mapped server-side, or a one-shot redirect that exchanges JWT in path for a HttpOnly cookie.",
+    "ClientOverviewPage.js openConsoleWithVpn — the V3 fallback path (webConsole.open()) is still wired as a safety net if openPopup() returns null (real popup-block case). Behavior is correct; only triggers on actual block now.",
+    "Pre-existing React warning (LoginPage 'Cannot update a component while rendering a different component') is unrelated to V4 fix — same warning observed across previous iterations. Not blocking but worth cleaning up in LoginPage."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "N/A", "frontend": "100% (6/6 critical assertions passed on desktop + mobile)"},
+  "test_credentials": {"admin": "admin@86bit.it / password"},
+  "seed_data_creation": "None — used existing 86BIT_Office (da3d6e40-b3e5-4d46-9787-dde328a3aa36), device 192.168.1.3.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "V4 popup fix verified. On click of [data-testid='web-console-btn-192.168.1.3']: only POST /api/console-v4/request-session + /api/admin/wireguard/session/start fire (no V3 /api/web-console/session). web-console-active dock NOT rendered. No popup-blocked alert. Note: Playwright context.on('page') did not capture the new tab in headless mode (popup target is a backend /api/ URL); however absence of alert + absence of V3 fallback confirms window.open returned a valid WindowProxy (not null). Pre-existing console warning from LoginPage about setState-in-render is unrelated.",
+  "rca_of_the_issue": {
+    "root_cause": "Previous iteration_61 bug: window.open(url,'_blank','noopener,noreferrer') returns null in Chromium per spec, which incorrectly triggered the if(!win) popup-blocked path → V3 fallback + dock + alert.",
+    "fix_applied": "WebConsoleTabs.js line 127 changed to window.open(absUrl, '_blank') without noopener/noreferrer. Same-origin V4 proxy URL makes reverse-tabnabbing risk negligible.",
+    "verification": "Network trace post-fix shows ONLY V4 + WG endpoints, no V3. DOM shows no web-console-active dock, no 'Pop-up bloccato' text. Tested on desktop 1920x1080 and mobile 390x844."
+  }
+}

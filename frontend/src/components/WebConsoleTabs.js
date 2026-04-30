@@ -117,8 +117,14 @@ export function WebConsoleTabsProvider({ children }) {
       const absUrl = path.startsWith("http")
         ? path
         : `${window.location.origin}${path}`;
-      // Open in new tab. Browser pop-up blockers require user gesture (questo e' chiamato da click)
-      const win = window.open(absUrl, "_blank", "noopener,noreferrer");
+      // Open in new tab. NB: intenzionalmente NON passiamo 'noopener,noreferrer'
+      // perche' con quella flag Chromium ritorna SEMPRE null (MDN spec), che
+      // confonderebbe il check successivo facendoci credere che la popup sia
+      // bloccata. Senza noopener otteniamo una WindowProxy valida per distinguere
+      // apertura riuscita (obj) vs bloccata (null). La sicurezza reverse-tabnabbing
+      // non e' un problema qui: il proxy V4 serve URL sotto il NOSTRO dominio, non
+      // pagine di terzi che possano modificare window.opener.
+      const win = window.open(absUrl, "_blank");
       if (!win) {
         alert("⚠ Pop-up bloccato dal browser. Consenti pop-up da " + window.location.hostname + " e riprova.");
         return null;

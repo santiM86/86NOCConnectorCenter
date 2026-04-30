@@ -42,11 +42,16 @@ logger = logging.getLogger(__name__)
 # ============================================================
 # Configuration (env vars)
 # ============================================================
+# Path BASE: relative to the location of THIS module so che il manager funziona
+# correttamente sia in /app/backend (preview) che in /home/<user>/.../backend
+# (produzione), senza richiedere override esplicito di WG_EMBEDDED_BIN_DIR.
+_THIS_DIR = Path(__file__).resolve().parent
+
 WG_INTERFACE = os.environ.get("WG_EMBEDDED_INTERFACE", "wg-argus")
 WG_LISTEN_PORT = int(os.environ.get("WG_EMBEDDED_LISTEN_PORT", "51820"))
 WG_TUNNEL_CIDR = os.environ.get("WG_EMBEDDED_TUNNEL_CIDR", "10.86.0.1/16")
-WG_DATA_DIR = Path(os.environ.get("WG_EMBEDDED_DATA_DIR", "/app/backend/data/wireguard"))
-WG_BIN_DIR = Path(os.environ.get("WG_EMBEDDED_BIN_DIR", "/app/backend/bin"))
+WG_DATA_DIR = Path(os.environ.get("WG_EMBEDDED_DATA_DIR", str(_THIS_DIR / "data" / "wireguard")))
+WG_BIN_DIR = Path(os.environ.get("WG_EMBEDDED_BIN_DIR", str(_THIS_DIR / "bin")))
 WG_LOG_PATH = Path(os.environ.get("WG_EMBEDDED_LOG_PATH", "/var/log/argus-wireguard.log"))
 
 # CAP_NET_ADMIN bit nel bitmask delle capabilities Linux

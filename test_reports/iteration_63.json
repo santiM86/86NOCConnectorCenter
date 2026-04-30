@@ -1,0 +1,45 @@
+{
+  "summary": "Validated silence-toggle backend + auto-classify + device_classifier + alert_filter. Backend 14/14 pytest (100%). Frontend: silence-toggle and silence-reason data-testids present in edit modal and toggle behavior works; however clicking 'Salva' did NOT fire PUT /silence (observed 8s timeout waiting for the request). Modal contains TWO save-like buttons ('Applica ora' and 'Salva') which is ambiguous — silence save wiring likely bound to 'Applica ora' only, not to 'Salva'. Consequently silence-badge-<ip> does not render in the device table. Stampanti tab shows count (1) and renders (already visible in header tab 'Stampanti (1)'), deeper printer-card merge UI not fully asserted due to modal navigation timing.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "DeviceEditModal", "issue": "Clicking 'Salva' after toggling silence-toggle + filling silence-reason does NOT emit PUT /api/connector/{client_id}/managed-devices/{device_id}/silence. The modal has two buttons ('Applica ora' and 'Salva') — silence PUT is likely only wired to 'Applica ora'. Expected per review-request: save via 'Salva' triggers PUT /silence.", "selector": "button:has-text('Salva')", "priority": "HIGH"},
+      {"component": "ClientOverviewPage devices table", "issue": "silence-badge-<ip> does not appear in table after save (consequence of the save not persisting via this button path; if the underlying API is not hit, local state + badge do not update).", "selector": "[data-testid^='silence-badge-']", "priority": "HIGH"}
+    ],
+    "integration_issues": [
+      {"flow": "Silence toggle save via modal 'Salva' button", "issue": "PUT /silence not dispatched on Salva click (verified via Playwright expect_response — 8s timeout). Backend endpoint itself is fully operational (direct curl + pytest confirm 200 with correct payload).", "affected_selectors": ["button:has-text('Salva')", "[data-testid='silence-toggle']", "[data-testid='silence-reason']"]}
+    ],
+    "design_issues": [
+      {"screen": "DeviceEditModal", "issues": ["Two save-like buttons ('Applica ora' primary, 'Salva' also present) creates UX ambiguity about which one persists silence settings. Suggest unifying into single 'Salva' that handles all fields including silence, or clearly label 'Applica ora' as 'Applica silenzio'."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_silence_and_classifier.py",
+    "/app/test_reports/pytest/iteration_63.xml"
+  ],
+  "action_items": [
+    "Wire PUT /silence to the 'Salva' button handler in DeviceEditModal.js (currently it appears only 'Applica ora' triggers the silence endpoint).",
+    "After successful save, emit a refresh of the device list so silence-badge-<ip> renders immediately without full page reload.",
+    "Consider consolidating 'Applica ora' + 'Salva' into single primary save action to avoid UX ambiguity."
+  ],
+  "critical_code_review_comments": [
+    "alert_filter.insert_alert_if_emit is correctly a drop-in wrapper: when device_ip is empty/None it always inserts (verified by unit test) — connector_watchdog/connector_recovery unaffected.",
+    "device_classifier._PRINTER_PATTERNS regex is broad but guarded by a precedence check against _SWITCH_PATTERNS (ProCurve etc) — verified test_switch_beats_printer_on_procurve passes.",
+    "/app/backend/routes/connector.py PUT /silence audit-logs with user email and returns 404 on unknown device_id — matches spec.",
+    "POST /auto-classify returns {ok, changed_count, changed[]} with required shape {id,name,ip,old_type,new_type} — validated."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_silence_and_classifier.py (new)"
+  ],
+  "success_rate": {"backend": "100% (14/14 pytest)", "frontend": "~60% — silence-toggle + reason fields render & toggle works; Salva button does not fire PUT /silence; badge does not render."},
+  "test_credentials": {"admin": "admin@86bit.it / password"},
+  "seed_data_creation": "Used existing 86BIT_Office client (da3d6e40-b3e5-4d46-9787-dde328a3aa36); backend tests set/clear silence on device 3f20edc0-5d79-472d-9780-17eea4b041b5 (NETGEAR GS110EMX 192.168.1.3). Final state: silenced=false (cleaned up).",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Backend is solid — do not retest. Focus on DeviceEditModal.js: confirm which button triggers PUT /silence. If only 'Applica ora' does, user flow is broken per spec. After main agent's fix, repeat: (1) click edit-device-192.168.1.3 → toggle silence-toggle → fill silence-reason → click Salva → expect PUT /silence 200, (2) verify silence-badge-192.168.1.3 visible in devices table, (3) reopen modal → toggle pre-checked + reason pre-filled, (4) Stampanti tab should show merge of /api/printers and device_type=printer devices with either toner bars or 'Nessuna telemetria toner — configura SNMP Printer-MIB' fallback.",
+  "rca_of_the_issue": {
+    "root_cause": "Frontend DeviceEditModal.js appears to split save actions between 'Applica ora' (which likely calls PUT /silence directly) and 'Salva' (which probably only saves monitor-type/snmp fields). The review request specifies the Salva button should persist silence settings too; currently it does not.",
+    "evidence": "Playwright expect_response on '/silence' URL pattern timed out at 8s after clicking Salva; silence-badge did not render post-save; on reopen the silence-toggle state could not be verified (modal re-interaction timed out)",
+    "mitigation": "Ensure the main Salva handler dispatches PUT /silence whenever the silence-toggle or silence-reason fields have been modified (dirty-state tracking), plus the existing other-field persistence logic."
+  }
+}

@@ -7,6 +7,8 @@ from typing import Optional
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
+from alert_filter import insert_alert_if_emit
+
 logger = logging.getLogger("connector_watchdog")
 
 # A connector is considered offline if no heartbeat for this many seconds.
@@ -113,7 +115,7 @@ class ConnectorWatchdog:
                         "resolved_at": None,
                         "created_at": now.isoformat(),
                     }
-                    await self.db.alerts.insert_one(alert_doc)
+                    await insert_alert_if_emit(self.db, alert_doc)
                     try:
                         import webpush as _wp
                         await _wp.notify_new_alert(self.db, alert_doc)
@@ -151,7 +153,7 @@ class ConnectorWatchdog:
                             }}
                         )
                         # Create a low-severity recovery notice
-                        await self.db.alerts.insert_one({
+                        await insert_alert_if_emit(self.db, {
                             "id": str(uuid.uuid4()),
                             "client_id": client_id,
                             "device_id": "",
