@@ -479,6 +479,17 @@ Frontend:
 
 **Follow-up non bloccante**: estendere il PowerShell connector per chiamare automaticamente `/sync-active-devices` ogni heartbeat con la lista dei device attualmente configurati — così la sync inversa diventa self-healing senza click manuale. Backend già pronto.
 
+### 2026-02-10 (notte, fix 3): Auto-sync inversa Connector→Center (self-healing)
+**Fix del follow-up precedente — completo**.
+
+**Backend nuovo**: `POST /api/connector/sync-active-devices` (HMAC auth — deriva client_id dalla firma, non serve URL parameter). Duplica la logica di `/cleanup-stale-devices` ma triggered dal connector stesso ad ogni heartbeat invece che manualmente. Protezioni identiche: device manuali (`source!=connector`) e silenziati (`alerts_silenced=true`) preservati; liste vuote RIFIUTATE per safety (evita wipe durante bootstrap); alert aperti dei device rimossi vengono auto-resolved con resolution_note='Device rimosso dal connector (auto-sync)'.
+
+**Connector PowerShell v3.5.25**: nuovo blocco nel flow `Send-StatusReport` subito dopo `Send-ToNOC connector/device-report`. Invia `active_ips` = lista IP dei device attualmente nel poll cycle + `source="connector_heartbeat"`. Best-effort: 404 (Center pre-3.5.27) silenzioso, 5xx loggato come WARN ma non blocca il heartbeat. Payload non blocca se la lista è vuota (skip proattivo). Pubblicato via `scripts/publish-connector.sh 3.5.25` → disponibile come `86NocConnector_v3.5.25_install.zip` (378 KB).
+
+**Test** (iteration_68): **11/11 pytest PASS** backend. Verified: auth (401 senza key), validazione body, dry_run non-destructive, sync effettivo (preserva manual + silenced), alert auto-resolved, PowerShell payload/path correct.
+
+**Effetto operativo**: da v3.5.25 connector + v3.5.27 Center, quando l'utente rimuove un device dalla tray app del connector, entro ~60s il device sparisce anche dal Center automaticamente. Nessun click manuale richiesto. Il pulsante "Rimuovi scomparsi" UI resta disponibile come fallback/emergency se il connector è down.
+
 ### POC v1 — WireGuard EMBEDDED nel Center (2026-04-27)
 **Richiesta utente**: "non voglio installarlo deve essere dentro al center" — il server WireGuard non deve richiedere `apt install wireguard-tools` o setup manuale sul Linux di produzione. Tutto self-contained nel pacchetto del backend.
 
