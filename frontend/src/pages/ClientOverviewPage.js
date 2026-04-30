@@ -1033,6 +1033,39 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
     }
   };
 
+  const cleanupStaleDevices = async () => {
+    try {
+      // Dry-run cleanup basato su staleness (device con last_seen > 30 min ma connector online)
+      const { data: preview } = await axios.post(
+        `${API}/connector/${clientId}/cleanup-stale-devices`,
+        { dry_run: true, stale_threshold_minutes: 30 }
+      );
+      if (!preview?.ok) {
+        toast.error(preview?.message || "Connector offline o non registrato — cleanup saltato");
+        return;
+      }
+      const count = preview.candidates_count || 0;
+      if (count === 0) {
+        toast.info("Nessun device scomparso dal connector");
+        return;
+      }
+      const ipList = (preview.candidates || []).map(c => `• ${c.name || "(?)"} (${c.ip}) — stale ${c.stale_minutes}min`).join("\n");
+      const confirmed = window.confirm(
+        `Sto per rimuovere ${count} device che non sono piu' visti dal connector:\n\n${ipList}\n\nConfermi? (I device manuali e quelli silenziati sono protetti)`
+      );
+      if (!confirmed) return;
+      const { data: result } = await axios.post(
+        `${API}/connector/${clientId}/cleanup-stale-devices`,
+        { dry_run: false, stale_threshold_minutes: 30 }
+      );
+      toast.success(`Rimossi ${result.removed_count || 0} device scomparsi dal connector`);
+      onRefresh?.();
+    } catch (e) {
+      const det = e.response?.data?.detail || e.message;
+      toast.error(`Errore cleanup: ${det}`);
+    }
+  };
+
   const handleDelete = async (dev) => {
     if (!window.confirm(`Rimuovere "${dev.name}" (${dev.ip_address}) dal monitoraggio?`)) return;
     try {
@@ -1053,17 +1086,27 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
         <p className="text-[10px] text-[var(--text-muted)]">
           {devices.length} dispositivi totali — i dispositivi manuali vengono interrogati dal connector entro pochi cicli di polling
         </p>
-        <Button
-          onClick={() => { setForm(emptyForm); setShowAdd(true); }}
-          className="bg-indigo-600 hover:bg-indigo-700 text-white h-8 text-xs gap-1"
-          data-testid="add-client-device-btn"
-        >
-          <Plus size={14} weight="bold" /> Aggiungi Dispositivo
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            onClick={() => cleanupStaleDevices()}
+            className="bg-amber-600/90 hover:bg-amber-600 text-white h-8 text-xs gap-1"
+            data-testid="cleanup-stale-btn"
+            title="Rimuove dal Center tutti i device attualmente sconosciuti al connector (sincronizzazione inversa). Chiede conferma prima di cancellare."
+          >
+            <Trash size={13} /> Rimuovi scomparsi
+          </Button>
+          <Button
+            onClick={() => { setForm(emptyForm); setShowAdd(true); }}
+            className="bg-indigo-600 hover:bg-indigo-700 text-white h-8 text-xs gap-1"
+            data-testid="add-client-device-btn"
+          >
+            <Plus size={14} weight="bold" /> Aggiungi Dispositivo
+          </Button>
+        </div>
       </div>
 
       <div className="noc-panel overflow-x-auto">
