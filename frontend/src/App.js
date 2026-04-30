@@ -20,6 +20,7 @@ import DevicesPage from "@/pages/DevicesPage";
 import SettingsPage from "@/pages/SettingsPage";
 import IPAllowlistPage from "@/pages/IPAllowlistPage";
 import WireGuardPage from "@/pages/WireGuardPage";
+import HornetsecuritySettingsPage from "@/pages/HornetsecuritySettingsPage";
 import TwoFactorPage from "@/pages/TwoFactorPage";
 import EnterprisePage from "@/pages/EnterprisePage";
 import ConnectorsPage from "@/pages/ConnectorsPage";
@@ -224,6 +225,7 @@ function App() {
               <Route path="settings" element={<SettingsPage />} />
               <Route path="settings/ip-allowlist" element={<IPAllowlistPage />} />
               <Route path="settings/wireguard" element={<WireGuardPage />} />
+              <Route path="settings/hornetsecurity" element={<HornetsecuritySettingsPage />} />
               <Route path="oncall" element={<OnCallPage />} />
               <Route path="vault" element={<VaultPage />} />
               <Route path="reports" element={<ReportsPage />} />

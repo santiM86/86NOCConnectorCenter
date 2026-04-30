@@ -175,6 +175,20 @@ export default function SettingsPage() {
                 Gestisci
               </Button>
             </div>
+            <div className="flex items-center justify-between pt-3 border-t border-[var(--bg-border)]">
+              <div>
+                <p className="text-[var(--text-primary)] text-xs font-medium">Hornetsecurity 365 Backup</p>
+                <p className="text-[var(--text-muted)] text-[10px] mt-0.5">
+                  Monitoraggio backup Microsoft 365 (Mailbox, OneDrive, SharePoint, Teams) per tutti i tenant.
+                </p>
+              </div>
+              <Button size="sm" variant="outline"
+                onClick={() => navigate("/settings/hornetsecurity")}
+                className="rounded-md text-xs h-7 border-[var(--bg-border)] hover:bg-[var(--bg-hover)]"
+                data-testid="manage-hornetsecurity-btn">
+                Gestisci
+              </Button>
+            </div>
           </div>
         </div>
 
