@@ -1073,6 +1073,47 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
     }
   };
 
+  const rematchProfiles = async () => {
+    try {
+      const { data } = await axios.post(`${API}/clients/${clientId}/rematch-profiles`);
+      const { total = 0, matched = 0, skipped = 0, details = [] } = data || {};
+      if (matched === 0 && total === 0) {
+        toast.info("Nessun device da riconoscere");
+        return;
+      }
+      // Build compact summary for toast
+      const newMatches = details
+        .filter(d => d.matched)
+        .map(d => `• ${d.name || d.device_ip} → ${d.vendor || d.profile_key}`)
+        .slice(0, 6);
+      const extra = details.filter(d => d.matched).length - newMatches.length;
+      const body = newMatches.join("\n") + (extra > 0 ? `\n…e altri ${extra}` : "");
+      if (matched > 0) {
+        toast.success(
+          `Profilo agganciato su ${matched}/${total} device`,
+          { description: body || `Skipped: ${skipped}`, duration: 7000 },
+        );
+        onRefresh?.();
+      } else {
+        toast.warning(
+          `Nessun profilo agganciato (${skipped} skip su ${total})`,
+          { description: "Controlla che i device abbiano sysObjectID/sysDescr popolati (polling SNMP ok?)." },
+        );
+      }
+    } catch (e) {
+      const status = e.response?.status;
+      const det = e.response?.data?.detail || e.message;
+      if (status === 404) {
+        toast.error(
+          "Backend non aggiornato: endpoint /rematch-profiles non esiste. Aggiorna il backend Center a v3.5.29-fase2+.",
+          { duration: 7000 },
+        );
+      } else {
+        toast.error(`Errore rematch: ${det}`);
+      }
+    }
+  };
+
   const handleDelete = async (dev) => {
     if (!window.confirm(`Rimuovere "${dev.name}" (${dev.ip_address}) dal monitoraggio?`)) return;
     try {
@@ -1098,6 +1139,14 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
           {devices.length} dispositivi totali — i dispositivi manuali vengono interrogati dal connector entro pochi cicli di polling
         </p>
         <div className="flex items-center gap-2">
+          <Button
+            onClick={() => rematchProfiles()}
+            className="bg-cyan-600/90 hover:bg-cyan-600 text-white h-8 text-xs gap-1"
+            data-testid="rematch-profiles-btn"
+            title="Ri-esegue il fingerprint vendor (Synology, Xanto, HPE Comware, ecc.) su tutti i device del cliente. Utile dopo che lo SNMP ha iniziato a funzionare — i profili manuali non vengono sovrascritti."
+          >
+            <MagnifyingGlass size={13} /> Riconosci profili
+          </Button>
           <Button
             onClick={() => cleanupStaleDevices()}
             className="bg-amber-600/90 hover:bg-amber-600 text-white h-8 text-xs gap-1"

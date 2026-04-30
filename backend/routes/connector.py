@@ -1532,13 +1532,33 @@ async def connector_device_report(request: Request):
             logger.warning(f"Auto-detect web UI failed for {dev.get('device_ip')}: {e}")
 
         # Auto-classify new devices via Device Profile fingerprinting (non-blocking)
-        # Only on first-ingest (prev_status None) OR when sys_descr changed significantly
+        # Retry policy:
+        #   1. prev_status None (primo ingest)                 → match
+        #   2. sys_descr cambiato                              → match
+        #   3. profile_key mancante E abbiamo identificatori   → retry
+        # Il caso 3 copre i device storici che erano stati ingestati prima
+        # che lo SNMP funzionasse correttamente (sysObjectID/sysDescr vuoti):
+        # ora che il connector raccoglie i metadati veri, riaggancia il profilo
+        # automaticamente al prossimo heartbeat senza richiedere intervento manuale.
         try:
             is_new = prev_status is None
             descr_changed = prev_status and (prev_status.get("sys_descr") or "") != (dev.get("sys_descr") or "")
-            if is_new or descr_changed:
+            already_matched = bool((prev_status or {}).get("profile_key"))
+            already_matched_manual = bool(
+                (prev_status or {}).get("profile_key")
+                and not (prev_status or {}).get("profile_auto_matched", False)
+            )
+            cur_soid = dev.get("sys_object_id") or dev.get("sysObjectID")
+            cur_descr = dev.get("sys_descr")
+            has_identifier = bool(cur_soid) or bool(cur_descr)
+            # Ri-analizza se manca il profilo e abbiamo almeno un identificatore.
+            # NON sovrascriviamo un profilo impostato MANUALMENTE dall'utente.
+            missing_profile_retry = (
+                has_identifier and not already_matched and not already_matched_manual
+            )
+            if is_new or descr_changed or missing_profile_retry:
                 from device_profiles import fingerprint as _fp
-                matched = _fp(dev.get("sys_object_id") or dev.get("sysObjectID"), dev.get("sys_descr"))
+                matched = _fp(cur_soid, cur_descr)
                 if matched:
                     snmp = matched.get("snmp") or {}
                     wc = matched.get("web_console") or {}
@@ -1570,7 +1590,8 @@ async def connector_device_report(request: Request):
                                 "web_console_scheme": wc.get("scheme"),
                             }}
                         )
-                    logger.info(f"Auto-classified {dev['device_ip']} → {matched['key']} ({matched['vendor']})")
+                    reason = "new" if is_new else ("descr-changed" if descr_changed else "missing-profile-retry")
+                    logger.info(f"Auto-classified {dev['device_ip']} → {matched['key']} ({matched['vendor']}) [{reason}]")
         except Exception as e:
             logger.warning(f"Profile auto-classify failed for {dev.get('device_ip')}: {e}")
 
