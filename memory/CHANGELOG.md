@@ -1,6 +1,58 @@
 # CHANGELOG — 86BIT ARGUS Center
 
-## 2026-04-30 — Quick View Filter "Tutti / Solo protetti / Solo problemi"
+## 2026-04-30 — Integrazione Backup Alerts nel sistema globale Alert
+
+### I backup falliti ora compaiono nella pagina Alert e nel badge sidebar
+Su richiesta dell'utente, gli alert dei backup Hornetsecurity falliti sono
+stati integrati nel sistema di alert principale (`db.alerts`), in modo da
+essere visibili a colpo d'occhio nella pagina `/alerts` e contribuire al
+contatore della sidebar.
+
+**Backend** `routes/hornetsecurity_backup.py`:
+- Nuovo helper `_matches_client_filter()` per matching mapping tenant+sub_group
+- Nuovo `_fanout_backup_alert()`: per ogni workload `failed`, fa fan-out su
+  TUTTI i clienti il cui mapping copre la coppia (tenant, sub_group),
+  creando/aggiornando un record in `db.alerts` con id deterministico
+  (`backup-hornet-{client_id}-{tenant}-{workload_id}`) per dedup
+- Nuovo `_resolve_backup_alerts()`: auto-resolve degli alert quando il
+  workload torna OK (`success`) — aggiorna `status: resolved` + `resolved_at`
+- Severity = `high`, source_type = `backup`, device_type = `backup`
+- Title formato "Backup fallito: {workload_name}", message include contesto
+  (utente, tenant, sub_group)
+- Nuovo `_sync_alerts_for_client()` chiamato automaticamente dal PUT
+  `/api/clients/{client_id}/backup/hornetsecurity/mapping`: quando cambi un
+  mapping, gli alert vengono sincronizzati immediatamente (no attesa del
+  prossimo poll)
+- Nuovo endpoint admin `POST /api/admin/hornetsecurity/sync-all-alerts` per
+  sincronizzare in massa dopo il deploy
+
+**Backend** `routes/alerts.py`:
+- Fix filtro `device_type`: ora usa il campo `device_type` dell'alert stesso
+  come fallback (prima leggeva solo dal device referenziato, escludendo gli
+  alert backup che non hanno device_id)
+
+**Frontend** `pages/AlertsPage.js`:
+- Nessuna modifica: il filtro "Tipo: Backup" era già presente e ora funziona
+
+**Test**: mapping cliente → "Europizzi" sincronizza 193 backup alert nel
+sistema principale; severity stats `high: 5 → 198`; ACK/Resolve operano
+correttamente; cambio mapping triggera sync immediato.
+
+**Build artifacts**:
+- `/app/frontend/public/downloads/argus-backend-latest.tar.gz` (2.5 MB,
+  SHA256 `862eb46d…`)
+
+### 🚀 Deploy in produzione (oltre al normale self-update backend):
+Dopo aver aggiornato il backend, lanciare una sola volta:
+```bash
+curl -X POST https://argus.86bit.it/api/admin/hornetsecurity/sync-all-alerts \
+     -H "Authorization: Bearer <ADMIN_TOKEN>"
+```
+per popolare gli alert per i clienti già mappati.
+
+---
+
+
 
 ### UX: filtri rapidi nel pannello Backup cliente
 Su richiesta dell'utente, aggiunto toggle prominente sopra la tabella workload

@@ -24,6 +24,7 @@ Endpoints exposed:
 from __future__ import annotations
 
 import logging
+import json
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
@@ -405,6 +406,85 @@ def _parse_storage_per_tenant(report: dict) -> dict[str, int]:
     return storage
 
 
+def _matches_client_filter(filter_item: Any, tenant: str, sub_group: str) -> bool:
+    """True se il filter_item del mapping cliente copre la coppia (tenant, sub_group)."""
+    if isinstance(filter_item, str):
+        return filter_item == tenant
+    if isinstance(filter_item, dict):
+        if filter_item.get("tenant") != tenant:
+            return False
+        sg = filter_item.get("sub_groups")
+        if not sg:  # whole tenant
+            return True
+        return sub_group in {str(x).lower() for x in sg if x}
+    return False
+
+
+async def _fanout_backup_alert(
+    *, tenant: str, tenant_long: str, sub_group: str,
+    workload_id: str, workload_name: str, workload_type: str,
+    severity: str, title: str, message: str, now_iso: str,
+) -> int:
+    """Crea/aggiorna alert nel sistema PRINCIPALE (`db.alerts`) per ogni cliente
+    il cui mapping copre questo workload. Id alert deterministico (tenant+
+    workload_id+client) per dedup. Ritorna il numero di alert toccati.
+    """
+    touched = 0
+    async for client in db.clients.find(
+        {"hornetsecurity_tenants": {"$exists": True, "$ne": []}},
+        {"_id": 0, "id": 1, "hornetsecurity_tenants": 1},
+    ):
+        raw = client.get("hornetsecurity_tenants") or []
+        if isinstance(raw, str):
+            raw = [raw]
+        if not any(_matches_client_filter(it, tenant, sub_group) for it in raw):
+            continue
+        alert_id = f"backup-hornet-{client['id']}-{tenant}-{workload_id}"[:200]
+        existing = await db.alerts.find_one({"id": alert_id}, {"_id": 0, "status": 1})
+        update_doc = {
+            "id": alert_id,
+            "client_id": client["id"],
+            "device_id": "",
+            "severity": severity,
+            "source_type": "backup",
+            "title": title,
+            "message": message,
+            "raw_data": json.dumps({
+                "tenant": tenant, "tenant_long": tenant_long, "sub_group": sub_group,
+                "workload_id": workload_id, "workload_name": workload_name,
+                "workload_type": workload_type, "provider": "hornetsecurity",
+            }),
+            "device_name": workload_name,
+            "device_type": "backup",
+            "last_seen": now_iso,
+        }
+        if existing:
+            # Riapri se era resolved e c'e` ancora il fallimento
+            if existing.get("status") == "resolved":
+                update_doc["status"] = "active"
+                update_doc["resolved_at"] = None
+            await db.alerts.update_one({"id": alert_id}, {"$set": update_doc})
+        else:
+            update_doc["status"] = "active"
+            update_doc["acknowledged_by"] = None
+            update_doc["acknowledged_at"] = None
+            update_doc["resolved_at"] = None
+            update_doc["created_at"] = now_iso
+            await db.alerts.insert_one(update_doc)
+        touched += 1
+    return touched
+
+
+async def _resolve_backup_alerts(*, tenant: str, workload_id: str, now_iso: str) -> int:
+    """Auto-resolve di tutti gli alert backup principali per questo workload."""
+    res = await db.alerts.update_many(
+        {"source_type": "backup", "status": {"$in": ["active", "acknowledged"]},
+         "id": {"$regex": f"^backup-hornet-.*-{tenant}-{workload_id}$"}},
+        {"$set": {"status": "resolved", "resolved_at": now_iso}},
+    )
+    return res.modified_count
+
+
 async def _persist_poll_results_global(report: dict) -> dict:
     """Salva globalmente workloads + emette alert su backup falliti.
 
@@ -412,6 +492,11 @@ async def _persist_poll_results_global(report: dict) -> dict:
     NON client_id (che e` derivato in lettura via mapping). Status considerati
     falliti veri (alert): solo "failed" (Hornetsecurity 'Last Backup Failed').
     "not_applicable" / "excluded" non generano alert (sono stati informativi).
+
+    Emette anche alert nel sistema PRINCIPALE (`db.alerts`) con fan-out su tutti
+    i clienti il cui mapping (tenant, sub_group) copre il workload, in modo
+    che i backup falliti compaiano nella pagina Alert globale e nei conteggi
+    della sidebar. Auto-resolve degli alert quando il workload torna OK.
     """
     now_dt = datetime.now(timezone.utc)
     now_iso = now_dt.isoformat()
@@ -467,11 +552,39 @@ async def _persist_poll_results_global(report: dict) -> dict:
                 }, "$setOnInsert": {"created_at": now_iso}},
                 upsert=True,
             )
+            # Fan-out nel sistema alert principale (visibile in /alerts e badge sidebar)
+            try:
+                msg = w.get("error") or f"Backup fallito per {w['workload_name']} ({w['status_raw']})"
+                ctx = []
+                if w.get("workload_user"):
+                    ctx.append(f"utente: {w['workload_user']}")
+                ctx.append(f"tenant: {w['tenant']}")
+                if sub_group and sub_group != SUBGROUP_UNGROUPED:
+                    ctx.append(f"gruppo: {sub_group}")
+                full_msg = msg + " (" + ", ".join(ctx) + ")"
+                await _fanout_backup_alert(
+                    tenant=w["tenant"], tenant_long=w.get("tenant_long") or w["tenant"],
+                    sub_group=sub_group, workload_id=w["workload_id"],
+                    workload_name=w["workload_name"], workload_type=w["workload_type"],
+                    severity="high",
+                    title=f"Backup fallito: {w['workload_name']}",
+                    message=full_msg,
+                    now_iso=now_iso,
+                )
+            except Exception as e:
+                logger.warning(f"[hornetsecurity] fanout alert failed for {w['workload_id']}: {e}")
         else:
             await db.backup_alerts.update_many(
                 {"tenant": w["tenant"], "workload_id": w["workload_id"], "resolved": False},
                 {"$set": {"resolved": True, "resolved_at": now_iso}},
             )
+            # Auto-resolve degli alert principali se il backup torna OK
+            try:
+                await _resolve_backup_alerts(
+                    tenant=w["tenant"], workload_id=w["workload_id"], now_iso=now_iso,
+                )
+            except Exception as e:
+                logger.warning(f"[hornetsecurity] auto-resolve failed for {w['workload_id']}: {e}")
 
     for tenant_name, bytes_used in storage.items():
         await db.backup_storage_history.insert_one({
@@ -1172,7 +1285,112 @@ async def set_client_tenant_mapping(
         f"HORNETSECURITY_MAPPING_SET by={current_user.get('email')} "
         f"client_id={client_id} entries={cleaned}"
     )
-    return {"saved": True, "tenants": cleaned}
+    # Sync degli alert: per ogni workload failed coperto dal nuovo mapping,
+    # crea/aggiorna l'alert nel sistema principale (db.alerts). Gli alert per
+    # workload non piu` coperti restano - saranno auto-resolved al prossimo
+    # poll quando il workload torna OK, oppure puoi rimuoverli manualmente.
+    try:
+        synced = await _sync_alerts_for_client(client_id, cleaned)
+    except Exception as e:
+        logger.warning(f"[hornetsecurity] sync alerts on mapping change failed: {e}")
+        synced = 0
+    return {"saved": True, "tenants": cleaned, "alerts_synced": synced}
+
+
+async def _sync_alerts_for_client(client_id: str, mapping_entries: list[Any]) -> int:
+    """Rilegge tutti i workload failed coperti dal mapping del cliente e
+    riemette gli alert nel sistema principale. Usato dopo un cambio mapping.
+    """
+    if not mapping_entries:
+        return 0
+    now_iso = datetime.now(timezone.utc).isoformat()
+    # Build query that matches the mapping
+    or_blocks: list[dict] = []
+    for it in mapping_entries:
+        if isinstance(it, str):
+            or_blocks.append({"tenant": it, "status": "failed"})
+        elif isinstance(it, dict):
+            t = it.get("tenant")
+            if not t:
+                continue
+            sg = it.get("sub_groups")
+            if sg:
+                or_blocks.append({"tenant": t, "sub_group": {"$in": list(sg)}, "status": "failed"})
+            else:
+                or_blocks.append({"tenant": t, "status": "failed"})
+    if not or_blocks:
+        return 0
+    query = {"$or": or_blocks} if len(or_blocks) > 1 else or_blocks[0]
+    query["source"] = "hornetsecurity"
+    synced = 0
+    async for w in db.backup_job_status.find(query, {"_id": 0}):
+        sg = w.get("sub_group") or SUBGROUP_UNGROUPED
+        msg = w.get("error") or f"Backup fallito per {w.get('workload_name')} ({w.get('status_raw')})"
+        ctx = []
+        if w.get("workload_user"):
+            ctx.append(f"utente: {w['workload_user']}")
+        ctx.append(f"tenant: {w.get('tenant')}")
+        if sg and sg != SUBGROUP_UNGROUPED:
+            ctx.append(f"gruppo: {sg}")
+        full_msg = msg + " (" + ", ".join(ctx) + ")"
+        # Crea solo per il client_id specifico
+        alert_id = f"backup-hornet-{client_id}-{w.get('tenant')}-{w.get('workload_id')}"[:200]
+        existing = await db.alerts.find_one({"id": alert_id}, {"_id": 0, "status": 1})
+        doc = {
+            "id": alert_id,
+            "client_id": client_id,
+            "device_id": "",
+            "severity": "high",
+            "source_type": "backup",
+            "title": f"Backup fallito: {w.get('workload_name')}",
+            "message": full_msg,
+            "raw_data": json.dumps({
+                "tenant": w.get("tenant"), "tenant_long": w.get("tenant_long"),
+                "sub_group": sg, "workload_id": w.get("workload_id"),
+                "workload_name": w.get("workload_name"),
+                "workload_type": w.get("workload_type"),
+                "provider": "hornetsecurity",
+            }),
+            "device_name": w.get("workload_name"),
+            "device_type": "backup",
+            "last_seen": now_iso,
+        }
+        if existing:
+            if existing.get("status") == "resolved":
+                doc["status"] = "active"
+                doc["resolved_at"] = None
+            await db.alerts.update_one({"id": alert_id}, {"$set": doc})
+        else:
+            doc.update({"status": "active", "acknowledged_by": None, "acknowledged_at": None,
+                        "resolved_at": None, "created_at": now_iso})
+            await db.alerts.insert_one(doc)
+        synced += 1
+    return synced
+
+
+@router.post("/admin/hornetsecurity/sync-all-alerts")
+async def sync_all_backup_alerts(current_user: dict = Depends(get_current_user)):
+    """One-shot: riemette nel sistema alert principale tutti gli alert dei
+    backup falliti per ogni cliente mappato. Utile dopo l'aggiornamento del
+    backend perche` gli alert pre-esistenti in `backup_alerts` non avevano
+    una controparte in `db.alerts`.
+    """
+    require_admin(current_user)
+    total = 0
+    clients_touched = 0
+    async for c in db.clients.find(
+        {"hornetsecurity_tenants": {"$exists": True, "$ne": []}},
+        {"_id": 0, "id": 1, "hornetsecurity_tenants": 1},
+    ):
+        n = await _sync_alerts_for_client(c["id"], c.get("hornetsecurity_tenants") or [])
+        total += n
+        if n > 0:
+            clients_touched += 1
+    audit.warning(
+        f"HORNETSECURITY_SYNC_ALL_ALERTS by={current_user.get('email')} "
+        f"alerts={total} clients={clients_touched}"
+    )
+    return {"alerts_synced": total, "clients_touched": clients_touched}
 
 
 # ---------------------------------------------------------------------------
