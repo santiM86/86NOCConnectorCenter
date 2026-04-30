@@ -1,5 +1,39 @@
 # CHANGELOG — 86BIT ARGUS Center
 
+## 2026-04-30 — Self-Updater hardening P1 (backend v3.5.28)
+
+### 🔧 Fix definitivo loop 404 aggiornamento backend in produzione
+**Backend** `routes/system_admin.py`:
+- Nuova funzione `_resolve_package_url()`: risolve URL del tarball in cascata
+  1. `payload.package_url` (custom) → 2. `https://{host}/downloads/...` (locale) → 3. `ARGUS_UPDATE_ARTIFACT_BASE_URL` (fallback remoto)
+- Nuova funzione `_head_check()`: HEAD preflight con validazione content-length > 100 KB
+  (intercetta le pagine HTML di errore servite come 200)
+- `POST /api/admin/system/self-update` fa ora il **preflight check PRIMA** di spawnare
+  il subprocess; se l'URL non è raggiungibile ritorna `424 Failed Dependency` con
+  messaggio esplicito (prima restava bloccato 10s dentro `curl` del runner)
+- Auto-retry sul fallback remoto se il locale fallisce (e env var è configurata)
+- Nuovo endpoint `GET /api/admin/system/self-update/resolve-url?url=...`:
+  mostra URL risolto, sorgente, reachable, HTTP status, content-length
+- Risposta `/version` ora include `update_artifact_fallback` per UI
+
+**Frontend** `WireGuardPage.js`:
+- Dialog self-update: nuovo pulsante **"Pre-check URL"** che valida raggiungibilità
+  prima di lanciare l'update, con toast dettagliato (size MB / HTTP status)
+- Toast post-avvio mostra la sorgente risolta: "custom", "CDN locale" o
+  "fallback CDN remoto"
+- Nota esplicativa aggiornata con l'ordine di risoluzione + env var corrente
+
+**Env var opzionale** (P1 rollout):
+- `ARGUS_UPDATE_ARTIFACT_BASE_URL=https://<cdn>`: base URL fallback per artefatti
+  quando il CDN locale non è ancora sincronizzato
+
+## 2026-04-27 — Silence Alerts + Printer auto-classify + Cleanup bidirezionale
+- Flag `alerts_silenced` su device, intercettato da 8 watcher backend
+- Auto-classifier stampanti via regex + Printer-MIB sysObjectID
+- `/sync-active-devices` (HMAC) + `/cleanup-stale-devices` per pulizia bulk
+- Fix cestino unificato (poll_ip multi-source)
+- Connector v3.5.25 con heartbeat reverse-sync
+
 ## 2026-04-22 — FASE B COMPLETATA: Vendor-Specific SNMP Monitoring + RMT HTTP Polling
 
 ### 🚀 Fase B — Vendor Alerts (Connector v3.4.4)
