@@ -1063,7 +1063,9 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
     } catch (e) {
       const status = e.response?.status;
       const det = e.response?.data?.detail || e.message;
-      if (status === 404 && /connector/i.test(det || "")) {
+      if (status === 404 && /not found/i.test(det) && !/connector/i.test(det)) {
+        toast.error("Backend non aggiornato: endpoint /cleanup-stale-devices non esiste. Aggiorna il backend Center a v3.5.27-fase2+.", { duration: 7000 });
+      } else if (status === 404 && /connector/i.test(det || "")) {
         toast.error("Connector non registrato per questo cliente: non posso sincronizzare finche` il connector non fa il primo heartbeat.");
       } else {
         toast.error(`Errore cleanup: ${det}`);
