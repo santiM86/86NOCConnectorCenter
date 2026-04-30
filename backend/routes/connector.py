@@ -173,6 +173,83 @@ async def _auto_detect_web_ui(client_id: str, dev: dict) -> None:
 
 
 @router.post(f"/{C}/hb")
+@router.post("/connector/sync-active-devices")
+async def connector_sync_active_devices(request: Request):
+    """Sync inversa connector-auth: il connector invia via HMAC la lista dei device
+    ATTUALMENTE configurati sul connector. Il Center rimuove quelli con source=connector
+    non presenti nella lista. Chiamato automaticamente dal PowerShell ad ogni heartbeat
+    (v3.5.27+) per tenere il Center allineato quando l'admin rimuove device dalla tray.
+
+    Body: { active_ips: ["10.x.x.x", ...], dry_run: false, source: "connector_heartbeat" }
+    Auth: HMAC connector (non user JWT)
+    """
+    client_data = await verify_connector_request(request)
+    client_id = client_data["id"]
+    body = await request.json()
+    active_ips = body.get("active_ips") or []
+    if not isinstance(active_ips, list):
+        return {"ok": False, "error": "active_ips must be list"}
+    active_set = {str(ip).strip() for ip in active_ips if ip}
+    dry_run = bool(body.get("dry_run", False))
+
+    if len(active_set) == 0:
+        # Safety: rifiuta liste vuote per evitare wipe accidentale se il connector
+        # manda devices=[] durante un bootstrap. L'admin puo` usare il pulsante UI manuale.
+        return {"ok": False, "error": "empty_active_ips_rejected_for_safety"}
+
+    to_remove = []
+    ip_seen = set()
+
+    async for d in db.managed_devices.find(
+        {"client_id": client_id},
+        {"_id": 0, "id": 1, "ip": 1, "name": 1, "source": 1, "alerts_silenced": 1},
+    ):
+        ip = d.get("ip")
+        if not ip or ip in ip_seen:
+            continue
+        # Proteggi device manuali (source != connector) e silenziati
+        if d.get("source") and d.get("source") != "connector":
+            continue
+        if d.get("alerts_silenced"):
+            continue
+        if ip not in active_set:
+            to_remove.append({"id": d.get("id"), "ip": ip, "name": d.get("name")})
+            ip_seen.add(ip)
+
+    async for p in db.device_poll_status.find(
+        {"client_id": client_id},
+        {"_id": 0, "device_ip": 1, "device_name": 1},
+    ):
+        ip = p.get("device_ip")
+        if not ip or ip in ip_seen:
+            continue
+        if ip not in active_set:
+            to_remove.append({"id": None, "ip": ip, "name": p.get("device_name")})
+            ip_seen.add(ip)
+
+    if dry_run:
+        return {"ok": True, "dry_run": True, "would_remove_count": len(to_remove), "would_remove": to_remove}
+
+    deleted = 0
+    now_iso = datetime.now(timezone.utc).isoformat()
+    for d in to_remove:
+        ip = d["ip"]
+        await db.managed_devices.delete_many({"client_id": client_id, "ip": ip, "source": {"$ne": "manual"}})
+        await db.device_poll_status.delete_many({"client_id": client_id, "device_ip": ip})
+        try:
+            await db.alerts.update_many(
+                {"client_id": client_id, "device_ip": ip, "status": {"$ne": "resolved"}},
+                {"$set": {"status": "resolved", "resolved_at": now_iso,
+                           "resolved_by_system": True,
+                           "resolution_note": "Device rimosso dal connector (auto-sync)"}}
+            )
+        except Exception:
+            pass
+        deleted += 1
+
+    return {"ok": True, "removed_count": deleted, "active_ips_received": len(active_set)}
+
+
 @router.post("/connector/heartbeat")
 async def connector_heartbeat(request: Request, heartbeat: ConnectorHeartbeat):
     client_data = await verify_connector_request(request)
