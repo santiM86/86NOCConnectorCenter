@@ -413,6 +413,17 @@ Rimossi in v3.5.0 (con OK utente): Check-ForUpdate, Install-Update (5 metodi fal
 
 **Next UX note**: il JWT è ancora embedded nel path URL → ingress logs + browser history lo vedono. Migrazione futura consigliata: opaque session id lato server + JWT via HttpOnly cookie (post-MVP, non bloccante).
 
+### 2026-02-10 (sera): Fix V4 proxy "Bad Request - Invalid URL" su HPE iLO / IIS / HTTP.sys
+**Sintomo utente**: nuova tab apre correttamente, ma il device (iLO HPE / firmware Windows-based) risponde con la pagina di errore HTTP.sys "HTTP Error 400. The request URL is invalid.".
+
+**Root cause**: `/app/backend/routes/web_console_v4.py` passava `Host: 10.100.61.221:443` (con porta default esplicita) al device. HTTP.sys/IIS (usato da iLO 5/6, Windows admin pages, alcuni firmware Comware) rifiuta in modo strict il Host con porta default per lo scheme — è una violazione di RFC 7230 §5.4 nella loro implementazione.
+
+**Fix** (`web_console_v4.py` linea 250-265): strip della porta default dal Host header — `:443` rimosso quando scheme=https, `:80` rimosso quando scheme=http. Per tutte le altre porte (es. 8443, 17990, 5001) la porta resta nel Host. Verificato con httpx test: il Host custom viene onorato e inviato al device.
+
+**Tarball backend** rigenerato: `/app/frontend/public/downloads/argus-backend-latest.tar.gz` aggiornato (~2.5 MB, include il fix). L'utente può deployare con il self-update 1-click dalla UI WireGuard.
+
+**Test**: lint Python OK (i 4 warning pre-esistenti sono di altre sezioni). Test end-to-end richiede device target reale con HTTP.sys server (non riproducibile nel preview container).
+
 ### POC v1 — WireGuard EMBEDDED nel Center (2026-04-27)
 **Richiesta utente**: "non voglio installarlo deve essere dentro al center" — il server WireGuard non deve richiedere `apt install wireguard-tools` o setup manuale sul Linux di produzione. Tutto self-contained nel pacchetto del backend.
 
