@@ -4,6 +4,7 @@ from datetime import datetime, timezone, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Request
 from database import db
 from deps import get_current_user, validate_api_key
+from alert_filter import insert_alert_if_emit
 
 logger = logging.getLogger("backup")
 router = APIRouter(prefix="/api", tags=["backup"])
@@ -85,7 +86,7 @@ async def process_backup_status(request: Request):
                     "resolved": False,
                     "created_at": now,
                 }
-                await db.alerts.insert_one(alert)
+                await insert_alert_if_emit(db, alert)
                 try:
                     import webpush as _wp
                     await _wp.notify_new_alert(db, alert)

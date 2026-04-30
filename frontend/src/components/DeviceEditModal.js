@@ -2,7 +2,7 @@ import { useState } from "react";
 import { API } from "@/App";
 import axios from "axios";
 import { toast } from "sonner";
-import { PencilSimple, ShieldCheck, WifiHigh, Lightning } from "@phosphor-icons/react";
+import { PencilSimple, ShieldCheck, WifiHigh, Lightning, BellSlash } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -32,6 +32,8 @@ export function DeviceEditModal({ clientId, device, open, onClose, onSaved }) {
   });
   const [saving, setSaving] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [alertsSilenced, setAlertsSilenced] = useState(!!device?.alerts_silenced);
+  const [silenceReason, setSilenceReason] = useState(device?.alerts_silenced_reason || "");
 
   const save = async () => {
     if (!device?.id && !device?.device_id) {
@@ -64,6 +66,14 @@ export function DeviceEditModal({ clientId, device, open, onClose, onSaved }) {
         await axios.put(
           `${API}/connector/${clientId}/managed-devices/${deviceId}/snmp`,
           payload
+        );
+      }
+      // 3) Silenziamento alert (separato per non interferire se l'utente cambia solo questo)
+      const wasSilenced = !!device?.alerts_silenced;
+      if (alertsSilenced !== wasSilenced || (alertsSilenced && silenceReason !== (device?.alerts_silenced_reason || ""))) {
+        await axios.put(
+          `${API}/connector/${clientId}/managed-devices/${deviceId}/silence`,
+          { silenced: alertsSilenced, reason: silenceReason }
         );
       }
       toast.success("Dispositivo aggiornato. Clicca 'Applica ora' per forzare il connector a ri-leggere immediatamente (altrimenti max 10 min).");
@@ -245,6 +255,43 @@ export function DeviceEditModal({ clientId, device, open, onClose, onSaved }) {
               )}
             </>
           )}
+
+          {/* Silenziamento alert per device — utile per stampanti che vanno offline la sera */}
+          <div className={`rounded p-2.5 border transition-colors ${alertsSilenced ? "bg-amber-500/10 border-amber-500/40" : "bg-[var(--bg-card)] border-[var(--bg-border)]"}`}>
+            <label className="flex items-start gap-2 cursor-pointer" data-testid="silence-toggle-label">
+              <input
+                type="checkbox"
+                checked={alertsSilenced}
+                onChange={(e) => setAlertsSilenced(e.target.checked)}
+                className="mt-0.5 cursor-pointer"
+                data-testid="silence-toggle"
+              />
+              <span className="flex-1">
+                <span className="flex items-center gap-1.5 text-[11px] font-semibold text-amber-300">
+                  <BellSlash size={13} weight="fill" />
+                  Silenzia alert per questo dispositivo
+                </span>
+                <span className="block text-[9px] text-[var(--text-muted)] mt-0.5 leading-relaxed">
+                  Il device viene comunque monitorato ed appare nelle dashboard, ma <strong>nessun nuovo alert</strong>{" "}
+                  (offline, errori, soglia, syslog, SNMP trap, iLO) verra` generato.
+                  Gli alert gia` aperti restano e vanno risolti manualmente.
+                </span>
+              </span>
+            </label>
+            {alertsSilenced && (
+              <div className="mt-2 pl-5">
+                <Label className="text-[var(--text-muted)] text-[9px] uppercase tracking-wider">Motivo (opzionale)</Label>
+                <Input
+                  value={silenceReason}
+                  onChange={(e) => setSilenceReason(e.target.value)}
+                  placeholder="Es. stampante ufficio — spenta dopo 19:00"
+                  className="bg-[var(--bg-card)] border-amber-500/30 text-[var(--text-primary)] h-7 text-xs mt-0.5"
+                  maxLength={200}
+                  data-testid="silence-reason"
+                />
+              </div>
+            )}
+          </div>
         </div>
 
         <div className="flex flex-wrap gap-2 justify-end mt-4">

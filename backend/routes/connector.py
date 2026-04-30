@@ -22,6 +22,8 @@ from deps import (
 from middleware.connector_security import (
     verify_connector_request, rotate_api_key, CONNECTOR_PATH,
 )
+from alert_filter import invalidate_silence_cache, insert_alert_if_emit
+from device_classifier import classify_device_type
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["connector"])
@@ -1343,7 +1345,7 @@ async def _check_device_thresholds(client_id: str, dev: dict, prev_status: Optio
             "acknowledged_by": None, "acknowledged_at": None, "resolved_at": None,
             "created_at": now_iso,
         }
-        await db.alerts.insert_one(_conn_alert)
+        await insert_alert_if_emit(db, _conn_alert)
         try:
             import webpush as _wp
             await _wp.notify_new_alert(db, _conn_alert)
@@ -1494,6 +1496,41 @@ async def connector_device_report(request: Request):
                     logger.info(f"Auto-classified {dev['device_ip']} → {matched['key']} ({matched['vendor']})")
         except Exception as e:
             logger.warning(f"Profile auto-classify failed for {dev.get('device_ip')}: {e}")
+
+        # Fallback classifier (regex hostname/sysDescr + Printer-MIB sysObjectID).
+        # Si attiva solo se il fingerprint vendor-specifico sopra NON ha matchato e
+        # il device ha device_type generico (network/server/iLO sbagliato/none).
+        # Indispensabile per stampanti senza profilo SNMP dedicato (es. HP OfficeJet,
+        # Brother MFC, Sharp MX) che altrimenti finiscono sotto "Server / iLO".
+        try:
+            is_new = prev_status is None
+            descr_changed = prev_status and (prev_status.get("sys_descr") or "") != (dev.get("sys_descr") or "")
+            if is_new or descr_changed:
+                existing_md = await db.managed_devices.find_one(
+                    {"ip": dev["device_ip"], "client_id": client_id},
+                    {"_id": 0, "device_type": 1, "profile_key": 1, "name": 1, "model": 1},
+                )
+                cur_type = (existing_md or {}).get("device_type") or ""
+                # Riclassifica solo se: nessun profilo applicato E type generico/sbagliato
+                generic_types = {"", "network", "generic", "server", "ilo", "unknown"}
+                if existing_md and not existing_md.get("profile_key") and cur_type.lower() in generic_types:
+                    new_type = classify_device_type(
+                        sys_descr=dev.get("sys_descr"),
+                        sys_object_id=dev.get("sys_object_id") or dev.get("sysObjectID"),
+                        hostname=existing_md.get("name") or dev.get("name"),
+                        model=existing_md.get("model") or dev.get("model"),
+                    )
+                    if new_type and new_type != cur_type:
+                        await db.managed_devices.update_one(
+                            {"ip": dev["device_ip"], "client_id": client_id},
+                            {"$set": {
+                                "device_type": new_type,
+                                "device_type_auto_classified_at": now_iso,
+                            }},
+                        )
+                        logger.info(f"Reclassified {dev['device_ip']}: '{cur_type}' → '{new_type}' (regex)")
+        except Exception as e:
+            logger.warning(f"Regex auto-classify failed for {dev.get('device_ip')}: {e}")
 
         # Auto-promote managed_devices.monitor_type based on REAL poll evidence.
         # Motivazione: alla prima creazione via auto-detect Web UI il connector
@@ -1860,6 +1897,98 @@ async def connector_fetch_devices(request: Request):
     return result
 
 
+@router.put("/connector/{client_id}/managed-devices/{device_id}/silence")
+async def update_device_silence(
+    client_id: str,
+    device_id: str,
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+):
+    """Toggle del flag `alerts_silenced`. Quando true, nessun alert verra` creato
+    per questo device (gating in alert_filter.should_emit_alert applicato a tutti
+    i punti di emissione). Esistenti alert NON vengono toccati — l'admin puo`
+    risolverli manualmente. Il flag e` cached lato server (TTL 30s) per perf.
+    """
+    body = await request.json()
+    check_nosql_injection(body)
+    silenced = bool(body.get("silenced", False))
+    silence_reason = sanitize_string(body.get("reason") or "", max_length=200)
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    update_doc = {
+        "alerts_silenced": silenced,
+        "alerts_silenced_updated_at": now_iso,
+        "alerts_silenced_reason": silence_reason if silenced else "",
+        "alerts_silenced_by": (current_user or {}).get("email") if silenced else "",
+    }
+    result = await db.managed_devices.update_one(
+        {"id": device_id, "client_id": client_id},
+        {"$set": update_doc},
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Device non trovato")
+
+    # Recupera ip per invalidare la cache puntualmente
+    dev = await db.managed_devices.find_one(
+        {"id": device_id, "client_id": client_id},
+        {"_id": 0, "ip": 1, "name": 1},
+    )
+    if dev and dev.get("ip"):
+        invalidate_silence_cache(client_id=client_id, device_ip=dev["ip"])
+
+    audit_logger and await audit_logger.log(
+        AuditAction.UPDATE_DEVICE,
+        user_id=(current_user or {}).get("id"),
+        user_email=(current_user or {}).get("email"),
+        resource_type="managed_device",
+        resource_id=device_id,
+        details={
+            "client_id": client_id,
+            "alerts_silenced": silenced,
+            "reason": silence_reason,
+            "device_name": (dev or {}).get("name"),
+        },
+    )
+    return {"ok": True, "alerts_silenced": silenced, "device_id": device_id}
+
+
+@router.post("/connector/{client_id}/managed-devices/auto-classify")
+async def bulk_auto_classify_devices(
+    client_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Riclassifica automaticamente i device del cliente basandosi su sysDescr/
+    sysObjectID/hostname/model. Aggiorna `device_type` solo dove la classifica
+    differisce da quella corrente — non sovrascrive con None se nulla matcha.
+    Utile dopo onboarding o per correggere device classificati come "server"
+    quando in realta` sono stampanti, NAS, ecc.
+    """
+    changed = []
+    async for d in db.managed_devices.find({"client_id": client_id}, {"_id": 0}):
+        sys_descr = d.get("sys_descr") or d.get("vendor_telemetry", {}).get("sys_descr")
+        sys_object_id = d.get("sys_object_id") or d.get("vendor_telemetry", {}).get("sys_object_id")
+        new_type = classify_device_type(
+            sys_descr=sys_descr,
+            sys_object_id=sys_object_id,
+            hostname=d.get("name"),
+            model=d.get("model"),
+        )
+        old_type = d.get("device_type") or ""
+        if new_type and new_type != old_type:
+            await db.managed_devices.update_one(
+                {"id": d["id"]},
+                {"$set": {"device_type": new_type, "device_type_auto_classified_at": datetime.now(timezone.utc).isoformat()}},
+            )
+            changed.append({
+                "id": d["id"],
+                "name": d.get("name"),
+                "ip": d.get("ip"),
+                "old_type": old_type or "(none)",
+                "new_type": new_type,
+            })
+    return {"ok": True, "changed_count": len(changed), "changed": changed}
+
+
 @router.post(f"/{C}/ln")
 @router.post("/connector/lldp-neighbors")
 async def connector_lldp_report(request: Request):
@@ -2053,7 +2182,7 @@ async def connector_network_discovery(request: Request):
                 "acknowledged_by": None, "acknowledged_at": None, "resolved_at": None,
                 "created_at": now_iso_alerts,
             }
-            await db.alerts.insert_one(_conn2_alert)
+            await insert_alert_if_emit(db, _conn2_alert)
             try:
                 import webpush as _wp
                 await _wp.notify_new_alert(db, _conn2_alert)

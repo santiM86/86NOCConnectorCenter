@@ -6,7 +6,7 @@ import { toast } from "sonner";
 import {
   ArrowLeft, HardDrives, Globe, Printer, Database, ShieldCheck,
   Lightning, WifiHigh, WifiSlash, PlugsConnected, CaretDown,
-  CheckCircle, Warning, ArrowClockwise, Bell, ChartLine, Monitor, Cpu,
+  CheckCircle, Warning, ArrowClockwise, Bell, BellSlash, ChartLine, Monitor, Cpu,
   Plus, Trash, Lock, MagnifyingGlass, Info, PencilSimple,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
@@ -105,6 +105,34 @@ export default function ClientOverviewPage() {
   const apList = devices.filter(d => ["ap", "access-point"].includes(d.device_type));
   const tvccList = devices.filter(d => ["tvcc", "camera", "nvr", "dvr"].includes(d.device_type));
   const printersList = devices.filter(d => d.device_type === "printer");
+  // Tab "Stampanti" = unione di /api/printers (con telemetria toner) + managed_devices con
+  // device_type=printer. Match per IP — se entrambi presenti i toner della /api/printers
+  // hanno priorità (più specifici).
+  const mergedPrinters = (() => {
+    const byIp = new Map();
+    printersList.forEach(d => byIp.set(d.ip_address, {
+      name: d.name,
+      ip_address: d.ip_address,
+      status: d.status,
+      alerts_silenced: d.alerts_silenced,
+      from_managed: true,
+    }));
+    printers.forEach(p => {
+      const ip = p.ip_address || p.ip;
+      const prev = byIp.get(ip) || {};
+      byIp.set(ip, {
+        ...prev,
+        name: prev.name || p.name,
+        ip_address: ip,
+        status: p.status || prev.status,
+        toner_levels: p.toner_levels,
+        page_count: p.page_count,
+        alerts_silenced: prev.alerts_silenced ?? p.alerts_silenced,
+        has_telemetry: true,
+      });
+    });
+    return Array.from(byIp.values());
+  })();
   const knownTypes = new Set(["firewall", "zyxel-usg", "switch", "server", "ilo", "ups", "nas", "storage", "ap", "access-point", "tvcc", "camera", "nvr", "dvr", "printer"]);
   const others = devices.filter(d => !knownTypes.has(d.device_type));
 
@@ -113,7 +141,7 @@ export default function ClientOverviewPage() {
     { id: "devices", label: `Dispositivi (${devices.length})`, icon: HardDrives },
     { id: "wan", label: `WAN (${wanTargets.length})`, icon: Globe },
     { id: "alerts", label: `Alert (${alerts.length})`, icon: Bell },
-    { id: "printers", label: `Stampanti (${printers.length})`, icon: Printer },
+    { id: "printers", label: `Stampanti (${mergedPrinters.length})`, icon: Printer },
     { id: "backup", label: `Backup (${backups.length})`, icon: Database },
     { id: "discovery", label: "Auto-Discovery", icon: MagnifyingGlass },
     { id: "vulnerability", label: "Vulnerability", icon: ShieldCheck },
@@ -176,7 +204,7 @@ export default function ClientOverviewPage() {
         {activeTab === "devices" && <DevicesTab devices={devices} clientId={clientId} onRefresh={fetchAll} />}
         {activeTab === "wan" && <WanTab targets={wanTargets} clientId={clientId} clientName={client.name} onRefresh={fetchAll} />}
         {activeTab === "alerts" && <AlertsTab alerts={alerts} navigate={navigate} />}
-        {activeTab === "printers" && <PrintersTab printers={printers} />}
+        {activeTab === "printers" && <PrintersTab printers={mergedPrinters} />}
         {activeTab === "backup" && <BackupTab backups={backups} />}
         {activeTab === "credentials" && <VaultPage scopedClientId={clientId} scopedClientName={client.name} />}
         {activeTab === "discovery" && <DiscoveryPage scopedClientId={clientId} scopedClientName={client.name} />}
@@ -1050,8 +1078,21 @@ function DevicesTab({ devices, clientId, onRefresh }) {
                 redfish_direct: { label: "REDFISH", color: "text-orange-400", bg: "bg-orange-500/10 border-orange-500/20" },
               }[monitorType] || { label: monitorType.toUpperCase(), color: "text-[var(--text-muted)]", bg: "bg-[var(--bg-hover)] border-[var(--bg-border)]" };
               return (
-                <tr key={i}>
-                  <td className="text-[var(--text-primary)] text-xs font-medium">{d.name}</td>
+                <tr key={i} className={d.alerts_silenced ? "opacity-70" : ""}>
+                  <td className="text-[var(--text-primary)] text-xs font-medium">
+                    <span className="inline-flex items-center gap-1.5">
+                      {d.name}
+                      {d.alerts_silenced && (
+                        <span
+                          className="inline-flex items-center gap-0.5 text-[9px] px-1 py-px rounded bg-amber-500/15 text-amber-300 border border-amber-500/40"
+                          title={d.alerts_silenced_reason ? `Alert silenziati — ${d.alerts_silenced_reason}` : "Alert silenziati per questo device"}
+                          data-testid={`silence-badge-${d.ip_address}`}
+                        >
+                          <BellSlash size={9} weight="fill" /> ALERT OFF
+                        </span>
+                      )}
+                    </span>
+                  </td>
                   <td><span className="text-[10px] px-1.5 py-0.5 rounded border border-[var(--bg-border)]">{d.device_type}</span></td>
                   <td className="font-mono text-[var(--text-muted)] text-xs">{d.ip_address}</td>
                   <td>
@@ -1724,21 +1765,46 @@ function PrintersTab({ printers }) {
   if (printers.length === 0) return <div className="text-center py-8 text-[var(--text-muted)] text-xs">Nessuna stampante monitorata</div>;
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-      {printers.map((p, i) => (
-        <div key={i} className="noc-panel p-3">
-          <div className="flex items-center gap-2 mb-2">
-            <Printer size={14} className="text-orange-400" />
-            <span className="text-xs font-bold text-[var(--text-primary)]">{p.name || p.ip_address}</span>
-          </div>
-          {p.toner_levels && typeof p.toner_levels === "object" && Object.entries(p.toner_levels).map(([color, level]) => (
-            <div key={color} className="flex items-center gap-2 text-[10px] mt-1">
-              <span className="text-[var(--text-muted)] w-12">{color}</span>
-              <div className="flex-1 h-1.5 rounded-full bg-[var(--bg-card)]"><div className="h-full rounded-full" style={{ width: `${level}%`, backgroundColor: level < 15 ? "#FF3B30" : level < 30 ? "#FF9500" : "#34C759" }}></div></div>
-              <span className="font-mono font-bold w-8 text-right" style={{ color: level < 15 ? "#FF3B30" : "#34C759" }}>{level}%</span>
+      {printers.map((p, i) => {
+        const sc = p.status === "online" || p.status === "active" ? "#34C759" : p.status === "warning" ? "#FF9500" : p.status === "offline" || p.status === "down" ? "#FF3B30" : "#9E9E9E";
+        return (
+          <div key={i} className={`noc-panel p-3 ${p.alerts_silenced ? "opacity-75" : ""}`} data-testid={`printer-card-${p.ip_address}`}>
+            <div className="flex items-center justify-between gap-2 mb-2">
+              <div className="flex items-center gap-2 min-w-0 flex-1">
+                <Printer size={14} className="text-orange-400 shrink-0" />
+                <span className="text-xs font-bold text-[var(--text-primary)] truncate">{p.name || p.ip_address}</span>
+              </div>
+              <span className="text-[8px] font-bold px-1.5 py-0.5 rounded shrink-0" style={{ color: sc, background: `${sc}15`, border: `1px solid ${sc}40` }}>
+                {p.status?.toUpperCase() || "—"}
+              </span>
             </div>
-          ))}
-        </div>
-      ))}
+            <div className="text-[9px] text-[var(--text-muted)] font-mono mb-2 flex items-center gap-1.5">
+              {p.ip_address}
+              {p.alerts_silenced && (
+                <span className="inline-flex items-center gap-0.5 text-[8px] px-1 py-px rounded bg-amber-500/15 text-amber-300 border border-amber-500/40 normal-case font-sans font-semibold">
+                  ALERT OFF
+                </span>
+              )}
+            </div>
+            {p.toner_levels && typeof p.toner_levels === "object" && Object.entries(p.toner_levels).length > 0 ? (
+              Object.entries(p.toner_levels).map(([color, level]) => (
+                <div key={color} className="flex items-center gap-2 text-[10px] mt-1">
+                  <span className="text-[var(--text-muted)] w-12 capitalize">{color}</span>
+                  <div className="flex-1 h-1.5 rounded-full bg-[var(--bg-card)]"><div className="h-full rounded-full" style={{ width: `${level}%`, backgroundColor: level < 15 ? "#FF3B30" : level < 30 ? "#FF9500" : "#34C759" }}></div></div>
+                  <span className="font-mono font-bold w-8 text-right" style={{ color: level < 15 ? "#FF3B30" : "#34C759" }}>{level}%</span>
+                </div>
+              ))
+            ) : (
+              <p className="text-[9px] text-[var(--text-muted)] italic mt-1">
+                Nessuna telemetria toner — {p.has_telemetry === false || !p.has_telemetry ? "configura SNMP Printer-MIB" : "in attesa..."}
+              </p>
+            )}
+            {p.page_count !== undefined && p.page_count !== null && (
+              <p className="text-[9px] text-[var(--text-muted)] mt-1.5 font-mono">Pagine: {p.page_count.toLocaleString()}</p>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
