@@ -246,10 +246,24 @@ async def proxy(token: str, request: Request, path: str = ""):
         if k.lower() in HOP_BY_HOP or k.lower() in {"host", "origin", "referer"}:
             continue
         fwd_headers[k] = v
-    # Fix Host header to device
+    # Fix Host header to device.
+    # IMPORTANT: HTTP.sys / IIS (HPE iLO 5+/6+, Windows-based admin pages, alcuni
+    # firmware Comware) e altri server enterprise rifiutano `Host` con porta
+    # esplicita quando questa coincide con la default per lo scheme — errore
+    # "HTTP Error 400. The request URL is invalid". Stripping della porta default
+    # per uniformarsi al canonical Host RFC 7230 §5.4.
     from urllib.parse import urlparse as _urlparse
     parsed = _urlparse(base_url)
-    fwd_headers["Host"] = parsed.netloc
+    _hostname = parsed.hostname or parsed.netloc.split(":")[0]
+    _port = parsed.port
+    _scheme = parsed.scheme
+    if _port and not (
+        (_scheme == "https" and _port == 443)
+        or (_scheme == "http" and _port == 80)
+    ):
+        fwd_headers["Host"] = f"{_hostname}:{_port}"
+    else:
+        fwd_headers["Host"] = _hostname
 
     # Cookie jar: use stored cookies if any
     cookie_jar = _SESSION_COOKIES.get(sid, {})

@@ -413,6 +413,28 @@ Rimossi in v3.5.0 (con OK utente): Check-ForUpdate, Install-Update (5 metodi fal
 
 **Next UX note**: il JWT è ancora embedded nel path URL → ingress logs + browser history lo vedono. Migrazione futura consigliata: opaque session id lato server + JWT via HttpOnly cookie (post-MVP, non bloccante).
 
+### 2026-02-10 (sera): Fix V4 proxy "Bad Request - Invalid URL" su HPE iLO / IIS / HTTP.sys
+**Sintomo utente**: nuova tab apre correttamente, ma il device (iLO HPE / firmware Windows-based) risponde con la pagina di errore HTTP.sys "HTTP Error 400. The request URL is invalid.".
+
+**Root cause**: `/app/backend/routes/web_console_v4.py` passava `Host: 10.100.61.221:443` (con porta default esplicita) al device. HTTP.sys/IIS (usato da iLO 5/6, Windows admin pages, alcuni firmware Comware) rifiuta in modo strict il Host con porta default per lo scheme — è una violazione di RFC 7230 §5.4 nella loro implementazione.
+
+**Fix** (`web_console_v4.py` linea 250-265): strip della porta default dal Host header — `:443` rimosso quando scheme=https, `:80` rimosso quando scheme=http. Per tutte le altre porte (es. 8443, 17990, 5001) la porta resta nel Host. Verificato con httpx test: il Host custom viene onorato e inviato al device.
+
+**Tarball backend** rigenerato: `/app/frontend/public/downloads/argus-backend-latest.tar.gz` aggiornato (~2.5 MB, include il fix). L'utente può deployare con il self-update 1-click dalla UI WireGuard.
+
+**Test**: lint Python OK (i 4 warning pre-esistenti sono di altre sezioni). Test end-to-end richiede device target reale con HTTP.sys server (non riproducibile nel preview container).
+
+### 2026-02-10 (sera tardi): Custom Tarball URL field nel dialog Self-Update
+**Razionale**: lo script di self-update scarica il tarball backend da `https://<center-host>/downloads/argus-backend-latest.tar.gz`, ma se quella build frontend non e` aggiornata (chicken-and-egg) il file e` vecchio o 404. Aggiunto un input opzionale "URL pacchetto custom" nel dialog per puntare a una build remota raggiungibile (es. `https://noc-monitor-hub.preview.emergentagent.com/downloads/argus-backend-latest.tar.gz` quando si vuole bypassare la build locale).
+
+**File toccati**:
+- `/app/frontend/src/pages/WireGuardPage.js` `triggerUpdate(enableWireguard, customUrl)` ora accetta secondo arg opzionale → invia `package_url` al POST `/api/admin/system/self-update`. Dialog ha sezione `<details>` "Opzioni avanzate" con input mono-spaced + hint che mostra il default URL.
+- Backend `system_admin.py` gia` gestiva `package_url` opzionale (nessuna modifica necessaria).
+
+**Note operative**: per il PRIMO update post-fix l'utente puo` o:
+1. SSH al prod, `curl -o /home/arslan/86NOCConnectorCenter/frontend/build/downloads/argus-backend-latest.tar.gz https://noc-monitor-hub.preview.emergentagent.com/downloads/argus-backend-latest.tar.gz`, poi click "Riprova" sull'UI.
+2. Aspettare che la nuova frontend sia deployata, poi usare il campo "URL pacchetto custom" direttamente.
+
 ### POC v1 — WireGuard EMBEDDED nel Center (2026-04-27)
 **Richiesta utente**: "non voglio installarlo deve essere dentro al center" — il server WireGuard non deve richiedere `apt install wireguard-tools` o setup manuale sul Linux di produzione. Tutto self-contained nel pacchetto del backend.
 

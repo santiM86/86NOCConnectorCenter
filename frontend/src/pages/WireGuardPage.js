@@ -59,17 +59,21 @@ export default function WireGuardPage() {
     } catch (e) { /* ignore */ }
   }, []);
 
-  const triggerUpdate = async (enableWireguard) => {
+  const triggerUpdate = async (enableWireguard, customUrl) => {
     setUpdating(true);
     setShowUpdateDialog(false);
     setUpdateStatus({ phase: "queued", progress: 0, message: "Invio richiesta..." });
     try {
       // Calcola hostname pubblico dal browser (es. argus.86bit.it)
       const wgHost = window.location.hostname;
-      await axios.post(`${API}/admin/system/self-update`, {
+      const payload = {
         enable_wireguard: !!enableWireguard,
         wireguard_host: wgHost,
-      });
+      };
+      if (customUrl && customUrl.trim()) {
+        payload.package_url = customUrl.trim();
+      }
+      await axios.post(`${API}/admin/system/self-update`, payload);
       toast.success("Aggiornamento avviato", { description: "Il backend sta scaricando il nuovo codice. Non chiudere la pagina." });
     } catch (e) {
       const det = e?.response?.data?.detail || e.message;
@@ -416,12 +420,30 @@ export default function WireGuardPage() {
                 </span>
               </label>
             </div>
+            <details className="p-3 rounded bg-violet-500/5 border border-violet-500/30">
+              <summary className="text-violet-300 font-semibold cursor-pointer text-[11px]">⚙️ Opzioni avanzate · URL pacchetto custom</summary>
+              <div className="mt-2 space-y-1.5">
+                <label className="block text-[10px] text-[var(--text-muted)] uppercase tracking-wide">URL tarball backend</label>
+                <input
+                  type="text"
+                  id="custom-url-input"
+                  placeholder="lascia vuoto per usare il default"
+                  className="w-full text-[11px] font-mono px-2 py-1.5 rounded bg-black/30 border border-[var(--bg-border)] text-cyan-300 placeholder:text-[var(--text-muted)]/50 focus:outline-none focus:border-violet-500"
+                  data-testid="custom-package-url-input"
+                />
+                <p className="text-[10px] text-[var(--text-muted)] leading-relaxed">
+                  Default: <code className="text-cyan-300">https://{typeof window !== "undefined" ? window.location.hostname : "argus.86bit.it"}/downloads/argus-backend-latest.tar.gz</code><br />
+                  Usa questo campo se il file sul tuo server non e` aggiornato — puoi puntare a una build remota raggiungibile dal backend.
+                </p>
+              </div>
+            </details>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowUpdateDialog(false)}>Annulla</Button>
             <Button onClick={() => {
               const cb = document.getElementById("enable-wg-checkbox");
-              triggerUpdate(cb?.checked);
+              const customUrl = document.getElementById("custom-url-input")?.value || "";
+              triggerUpdate(cb?.checked, customUrl);
             }} data-testid="confirm-update-btn">
               Aggiorna Adesso
             </Button>
