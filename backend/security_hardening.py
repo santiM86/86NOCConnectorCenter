@@ -176,26 +176,77 @@ class SecurityHardening:
         if "@" in user_id_or_email:
             user = await self.db.users.find_one({"email": user_id_or_email}, {"_id": 0, "id": 1})
             user_id = user["id"] if user else user_id_or_email
-        
+
         await self.db.login_attempts.insert_one({
             "user_id": user_id,
+            "email": user_id_or_email if "@" in user_id_or_email else None,
             "ip_address": ip_address,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "success": False
         })
-        
+
         # Check if should lock account
         policy = await self.get_password_policy()
         cutoff = (datetime.now(timezone.utc) - timedelta(minutes=policy.lockout_duration_minutes)).isoformat()
-        
+
         failed_count = await self.db.login_attempts.count_documents({
             "user_id": user_id,
             "success": False,
             "timestamp": {"$gte": cutoff}
         })
-        
+
         if failed_count >= policy.lockout_attempts:
             await self._lock_account(user_id)
+
+        # IP-based brute force detection (cross-account): blocca un IP che tenta
+        # molti login con email diverse — defense contro credential stuffing.
+        ip_failed_count = await self.db.login_attempts.count_documents({
+            "ip_address": ip_address,
+            "success": False,
+            "timestamp": {"$gte": cutoff},
+        })
+        IP_LOCK_THRESHOLD = 20  # 20 fail in lockout_duration_minutes (default 5min)
+        if ip_failed_count >= IP_LOCK_THRESHOLD:
+            await self._lock_ip(ip_address)
+
+    async def _lock_ip(self, ip_address: str):
+        """Lock an IP address to prevent brute-force across accounts."""
+        policy = await self.get_password_policy()
+        unlock_at = datetime.now(timezone.utc) + timedelta(minutes=policy.lockout_duration_minutes * 3)
+        await self.db.ip_blocks.update_one(
+            {"ip_address": ip_address},
+            {"$set": {
+                "ip_address": ip_address,
+                "blocked_at": datetime.now(timezone.utc).isoformat(),
+                "unlock_at": unlock_at.isoformat(),
+                "reason": "brute_force_burst",
+            }},
+            upsert=True,
+        )
+        audit_log = logging.getLogger("audit")
+        audit_log.warning(
+            f"SECURITY_ALERT ip_brute_force_block ip={ip_address} "
+            f"unlock_at={unlock_at.isoformat()}"
+        )
+        logger.warning(f"IP locked for brute-force: {ip_address}")
+
+    async def is_ip_blocked(self, ip_address: str) -> bool:
+        """Verifica se un IP e` attualmente in blocco brute-force."""
+        if not ip_address or ip_address == "unknown":
+            return False
+        block = await self.db.ip_blocks.find_one({"ip_address": ip_address}, {"_id": 0})
+        if not block:
+            return False
+        unlock_at = block.get("unlock_at")
+        if unlock_at:
+            try:
+                unlock_time = datetime.fromisoformat(unlock_at.replace("Z", "+00:00"))
+                if datetime.now(timezone.utc) > unlock_time:
+                    await self.db.ip_blocks.delete_one({"ip_address": ip_address})
+                    return False
+            except Exception:
+                pass
+        return True
     
     async def _lock_account(self, user_id: str):
         """Lock a user account."""

@@ -1,0 +1,47 @@
+{
+  "summary": "Full-stack test della feature P0 'Hornetsecurity 365 Total Backup Sub-Group Mapping'. Backend: 14/14 pytest PASS (admin auth, sub-group discovery con 9 elementi su 'Gruppo Giambarini', PUT mapping con liste miste string+dict, GET mapping che ritorna sia 'tenants' legacy che 'filters', filtraggio sub_group sullo /status (~299 con galvan+olfez vs 654 whole-tenant), filtraggio /alerts, backfill admin-only idempotente). Frontend: rotta /settings/hornetsecurity carica correttamente, 44 tenant rilevati, expand button mostra pannello con 9 righe sub-group per Giambarini, flow Assegna→select cliente→Salva chiama PUT /mapping correttamente con sub_groups e mostra toast 'Sotto-gruppo galvan.it aggiornato'. Verificato anche scenario whole-tenant: tutti i 9 sub-group mostrano badge cyan '(ereditato)' con banner informativo. Cleanup mapping 86BIT_Office eseguito.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "HornetsecuritySettingsPage (intera app)", "issues": ["Console warning React: 'Cannot update a component while rendering a different component' — possibile setState durante render in qualche componente padre/figlio. Non blocca funzionalita` ma da` ripulire."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_hornetsecurity_subgroups.py",
+    "/app/test_reports/pytest/iteration_69_subgroups.xml"
+  ],
+  "action_items": [
+    "Investigare e risolvere il React warning 'Cannot update a component while rendering a different component' (visibile in console su /settings/hornetsecurity e altre rotte autenticate). Probabilmente setState chiamato durante render in TenantMappingRow o SubGroupsPanel; sposta in useEffect."
+  ],
+  "critical_code_review_comments": [
+    "_extract_sub_group (L84-104) corretto: lowercase + strip, dominio da workload_user.@... fallback su workload_name.@..., default '_ungrouped_'. Coerente con feature description.",
+    "_resolve_client_filters (L694) gestisce correttamente sia stringhe (legacy whole-tenant) sia dict {tenant, sub_groups}. sub_groups vuoto/None → whole tenant.",
+    "_build_mongo_filter_for_client costruisce correttamente $or con block per tenant + opzionale sub_group $in. Filtraggio MongoDB efficiente.",
+    "set_client_tenant_mapping (L1128) deduplica correttamente con seen_keys: chiave whole=tenant string, chiave sub-group='tenant::sg1,sg2,...'. Forma legacy preservata se sub_groups vuoto.",
+    "list_tenant_sub_groups (L1182) include logica di mapped_clients sia 'specific' (sub_group esplicito) sia 'inherited' (whole-tenant). Frontend usa questo per il badge ereditato → flusso end-to-end testato OK.",
+    "GET /admin/hornetsecurity/tenants espone 'mappings' al top-level (NON nested per tenant). Test corretto di conseguenza.",
+    "Backfill (L1249) e` admin-only (require_admin) e idempotente (filtro $exists:False), corretto.",
+    "Routes file /app/backend/routes/hornetsecurity_backup.py e` 1287 linee — supera la soglia raccomandata di 700. Considerare split (ingest pipeline, mapping/admin, status/alerts).",
+    "HornetsecuritySettingsPage.js: tutti i data-testid richiesti presenti (expand-tenant-{}, subgroups-row-{}, subgroup-row-{}-{}, edit-subgroup-{}-{}, save-subgroup-{}-{}, remove-subgroup-{}-{}, subgroup-select-{}-{}). Eccellente testabilita`."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_hornetsecurity_subgroups.py (new)",
+    "/app/test_reports/iteration_69.json (new)",
+    "/app/test_reports/pytest/iteration_69_subgroups.xml (new)"
+  ],
+  "success_rate": {
+    "backend": "100% (14/14 pytest)",
+    "frontend": "100% (3/3 flussi: page load + 9-row expand, sub-group assignment con toast, inherited badge per whole-tenant)"
+  },
+  "test_credentials": "admin@86bit.it / password (admin role, JWT) — confirmed working",
+  "seed_data_creation": "Nessun seed creato. Usato il client esistente '86BIT_Office' (id da3d6e40-b3e5-4d46-9787-dde328a3aa36) come da agent-context. Il mapping e` stato manipolato durante i test (galvan, galvan+olfez, whole Giambarini, mix Europizzi+Giambarini-galvan, whole Giambarini) e infine RESETTATO a {tenants:[]} sia da fixture pytest che da curl di chiusura — verificato 200 OK. Backfill workload+alert non rieseguito (gia` fatto pre-test). I dati Hornetsecurity reali (44 tenant, 4377 workload, 196 falliti) NON sono stati modificati.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Feature 'Hornetsecurity Sub-Group Mapping' FULLY WORKING end-to-end. Test suite riusabile in /app/backend/tests/test_hornetsecurity_subgroups.py (14 test, ~3.5s). Per il frontend i data-testid sono ben strutturati: expand-tenant-{tenantName}, subgroups-row-{tenantName}, subgroup-row-{tenantName}-{subGroup}, edit/save/remove-subgroup-{tenantName}-{subGroup}, subgroup-select-{tenantName}-{subGroup}. Nota: dopo save di un sub-group, il pannello espanso si ricarica via fetch (1.5-2.5s timeout consigliato). Il banner 'Tenant intero gia` mappato' + badge cyan (ereditato) sono mostrati quando il client ha whole-tenant mapping. Unico warning React (non bloccante) da indagare per igiene del codice.",
+  "rca_of_the_issue": "Non applicabile — feature implementata correttamente. Backend logica robusta su normalizzazione mapping (string vs dict, deduplica), MongoDB query $or efficiente, ereditarieta` whole-tenant -> sub-groups gestita server-side e visualizzata client-side. Nessun bug critico trovato."
+}

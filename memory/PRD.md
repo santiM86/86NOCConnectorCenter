@@ -367,6 +367,10 @@ Rimossi in v3.5.0 (con OK utente): Check-ForUpdate, Install-Update (5 metodi fal
 - P2: LDAP/Active Directory integration
 - P3: Zyxel Nebula Cloud API
 
+## 2026-04-30: Hornetsecurity Sub-Group Mapping (P0 completato)
+Mappatura per dominio email dentro un singolo tenant Hornetsecurity. Vedi
+CHANGELOG.md per dettagli. 14/14 backend + 3/3 frontend test PASS.
+
 ### 2026-02-10: Fix P0 pulsante Web Console (icona Monitor indigo) non apriva nulla
 **Sintomo utente**: cliccando sul pulsante Monitor viola/indigo nella tabella Dispositivi della Client Overview, non si apriva nessuna console/modal. Nessun errore visibile in console per l'utente.
 

@@ -189,6 +189,34 @@ export default function SettingsPage() {
                 Gestisci
               </Button>
             </div>
+            <div className="flex items-center justify-between pt-3 border-t border-[var(--bg-border)]">
+              <div>
+                <p className="text-[var(--text-primary)] text-xs font-medium">Cifratura &amp; Master Key</p>
+                <p className="text-[var(--text-muted)] text-[10px] mt-0.5">
+                  AES-256-GCM, salt random per deployment, 600k iter PBKDF2. Migrazione legacy + rotazione master key.
+                </p>
+              </div>
+              <Button size="sm" variant="outline"
+                onClick={() => navigate("/settings/encryption")}
+                className="rounded-md text-xs h-7 border-[var(--bg-border)] hover:bg-[var(--bg-hover)]"
+                data-testid="manage-encryption-btn">
+                Gestisci
+              </Button>
+            </div>
+            <div className="flex items-center justify-between pt-3 border-t border-[var(--bg-border)]">
+              <div>
+                <p className="text-[var(--text-primary)] text-xs font-medium">Audit &amp; Security Events</p>
+                <p className="text-[var(--text-muted)] text-[10px] mt-0.5">
+                  Login falliti, IP bloccati per brute-force, eventi critici, top IP — visibilita` real-time.
+                </p>
+              </div>
+              <Button size="sm" variant="outline"
+                onClick={() => navigate("/settings/audit")}
+                className="rounded-md text-xs h-7 border-[var(--bg-border)] hover:bg-[var(--bg-hover)]"
+                data-testid="manage-audit-btn">
+                Apri
+              </Button>
+            </div>
           </div>
         </div>
 

@@ -94,6 +94,19 @@ async def login(request: Request, credentials: UserLogin):
     client_ip = request.client.host if request.client else "unknown"
 
     try:
+        if await security_hardening.is_ip_blocked(client_ip):
+            await audit_logger.log(
+                AuditAction.LOGIN_FAILED, user_email=credentials.email,
+                ip_address=client_ip, success=False,
+                details={"reason": "IP blocked (brute force)"}, severity="critical"
+            )
+            raise HTTPException(status_code=423, detail="Indirizzo IP temporaneamente bloccato per troppi tentativi falliti.")
+    except HTTPException:
+        raise
+    except Exception:
+        pass
+
+    try:
         is_locked = await security_hardening.is_account_locked(credentials.email)
         if is_locked:
             await audit_logger.log(

@@ -1,5 +1,154 @@
 # CHANGELOG — 86BIT ARGUS Center
 
+## 2026-04-30 — Hornetsecurity Sub-Group Mapping (P0)
+
+### Mappatura per Sotto-Gruppo (dominio email) dentro un singolo tenant
+Richiesta utente: alcuni tenant Hornetsecurity (es. "Gruppo Giambarini") contengono
+più aziende distinte (galvan.it, olfez.it, zincaturadicambiano.it, ecc.). Ora è
+possibile mappare ciascun sotto-gruppo a un cliente ARGUS diverso.
+
+**Backend** `routes/hornetsecurity_backup.py`:
+- Nuovo helper `_extract_sub_group()` → deriva automaticamente il dominio email
+  da `workload_user` (fallback su `workload_name`, default `_ungrouped_`)
+- `_persist_poll_results_global()` ora salva il campo `sub_group` sia in
+  `backup_job_status` che in `backup_alerts` ad ogni poll
+- Nuova funzione `_resolve_client_filters()` + `_build_mongo_filter_for_client()`
+  costruisce query MongoDB `$or` che combina tenant e sub_group
+- `GET /api/admin/hornetsecurity/tenants/{tenant_name}/sub-groups` (admin-only)
+  ritorna aggregazione dei sotto-gruppi con workloads_total/failed/protected,
+  tipi workload, e `mapped_clients` (sia espliciti che ereditati da whole-tenant)
+- `POST /api/admin/hornetsecurity/backfill-sub-groups` (one-shot admin)
+  popola `sub_group` sui dati già ingestiti (4249 workload + 196 alert migrati)
+- `PUT /api/clients/{client_id}/backup/hornetsecurity/mapping` ora accetta
+  liste miste: string (whole tenant, legacy) o `{tenant, sub_groups: [...]}`
+- `GET /api/clients/{client_id}/backup/hornetsecurity/mapping` espone sia
+  `tenants` (legacy string list) sia `filters` (formato dettagliato)
+- Endpoint `/status`, `/alerts`, `/storage-trend` ora filtrano per sub_group
+  quando il mapping lo specifica. Totali includono `by_sub_group`.
+- `GET /api/admin/hornetsecurity/tenants` espone `sub_groups_count` per tenant
+
+**Frontend** `pages/HornetsecuritySettingsPage.js`:
+- Nuova colonna "Sotto-gruppi" nella tabella mapping con badge ambra quando >1
+- Pulsante expand (chevron) per ogni riga tenant → carica i sotto-gruppi via
+  API e mostra una sotto-tabella con: sotto-gruppo, workload, falliti, tipi,
+  cliente assegnato, pulsanti Assegna/Cambia/Rimuovi
+- Auto-suggestion cliente per dominio (es. "galvan.it" → ★ cliente "Galvan")
+- Se il tenant è mappato whole, i sotto-gruppi mostrano badge cyan "(ereditato)"
+- Helper `updateSubGroupMapping()` che preserva tutti gli altri mapping del
+  cliente, rimuove il sub-group dal cliente precedente e aggiunge al nuovo
+
+**Retro-compatibilità**: i vecchi mapping string (whole-tenant) continuano a
+funzionare invariati. Il payload di PUT accetta entrambe le forme, la
+persistenza normalizza sulla forma più compatta (string se whole, dict se
+sub-group).
+
+**Test**: 14/14 pytest backend (`test_hornetsecurity_subgroups.py`) + 3/3
+frontend E2E (iteration_69). Test con mapping mix (string + dict): 432 Europizzi
++ 8 jumboservice.it = 440 workload filtrati correttamente.
+
+---
+
+
+## 2026-04-30 — Operational Security Hardening (backend v3.5.34)
+
+### 🛡 Brute force + HIBP + Audit Dashboard
+Hardening operativo per chiudere il gap "castelli di sabbia": dal singolo
+sistema cifrato a un perimetro che si difende attivamente.
+
+**Backend** `security_hardening.py`:
+- IP-based brute force detection: 20 fail in finestra `lockout_duration_minutes`
+  (default 5min) → blocco IP per 3x il timeout
+- Nuova collection `ip_blocks` con TTL implicito (unlock_at)
+- `is_ip_blocked()` chiamato in `/api/auth/login` PRIMA del check account
+- HTTP 423 "Indirizzo IP temporaneamente bloccato" (audit log severity=critical)
+
+**Backend** `services/password_policy_check.py` (NEW):
+- HIBP "Pwned Passwords" via k-anonymity (solo i primi 5 char dello SHA-1)
+- API gratuita illimitata, fail-open se HIBP irraggiungibile
+- Validazione locale: lunghezza min, mix maiusc/minusc/cifre/simboli, blacklist
+  pattern banali (password, admin, qwerty, ...)
+- `check_password()` async ritorna {ok, score 0..100, issues, pwned_count}
+
+**Backend** `routes/security_admin.py`:
+- `POST /api/admin/security/check-password` (rate-limited 30/min) — UI feedback
+- `GET /api/admin/audit/recent?days=N&only_security=bool` — eventi audit con
+  aggregati by_action / by_severity / top_ips / failed_logins
+- `GET /api/admin/audit/blocked-ips` — IP attualmente bloccati
+- `POST /api/admin/audit/unblock-ip` — sblocco manuale admin (audit logged)
+- Rate limit aggiunto: rotate-master-key (2/min), migrate-to-v2 (3/min)
+
+**Frontend** `pages/AuditPage.js` (NEW):
+- Route `/settings/audit` (admin only)
+- Filtri periodo (1/7/30/90 gg) + checkbox "solo eventi security"
+- 5 stat box (eventi totali, login falliti, IP unique, critical, warning)
+- Card "IP bloccati" con dettaglio reason + unlock_at + pulsante Sblocca manuale
+- Card "Top IP per accessi" (10 IPs)
+- Breakdown bar charts: eventi per azione + per severity (con color coding)
+- Tabella ultimi 500 eventi: timestamp, action, severity, user, IP, resource, esito
+- Voce "Audit & Security Events" aggiunta in Settings
+
+**Test E2E in-session**:
+- HIBP check: password "password" → score 0, pwned_count=52,256,179, refused ✓
+- HIBP check: password forte 16 char → score 85, pwned_count=0, ok ✓
+- Brute force: 22 tentativi `hacker[1-22]@evil.com` → tutti loggati come
+  LOGIN_FAILED warning, slowapi rate-limit triggered (10/5min) ✓
+- Audit dashboard renderizzata: 168 eventi 7gg, 22 failed login visibili,
+  top 5 IP listati, breakdown azione/severity ✓
+
+## 2026-04-30 — Encryption Hardening NIST 2024 (backend v3.5.33)
+
+### 🔐 Schema cifratura v2 con backward-compat
+Hardening della cifratura credenziali allineato a NIST SP 800-132 rev. 2024 + audit
+detection + master key rotation a runtime senza downtime.
+
+**Backend** `security.py` (riscritto):
+- **Salt random per deployment**: 32 byte CSPRNG persistito in
+  `data/encryption_salt.bin` (mode 0600), generato al primo avvio post-update.
+  Risolve la nota legacy "use unique salt per deployment".
+- **PBKDF2-HMAC-SHA256 600k iterazioni** (era 100k) — allineato NIST 2024.
+- **Versioned ciphertext**: blob v2 hanno prefisso `"v2:"`, blob senza prefisso
+  sono trattati come legacy v1 (salt fisso, 100k) e decifrabili in lettura.
+- **Failed-decrypt counter**: tiene traccia di tentativi fallita di decrypt;
+  emette `SECURITY_ALERT decrypt_failed_burst` nei log audit dopo 3 fallimenti
+  in 60 secondi — pronto per ingestione SIEM/SOC engine.
+- API `is_v2_ciphertext()`, `reencrypt_to_v2()` per migration tooling.
+
+**Backend** `routes/security_admin.py` (NEW):
+- `GET /api/admin/security/encryption-status` — scansione tutte le collection,
+  conta blob v2 vs v1 vs invalid, breakdown per `collection.field`.
+- `POST /api/admin/security/migrate-to-v2` — re-encrypt in-place dei blob
+  legacy v1 → v2. Idempotente, atomico per documento. Audit log.
+- `POST /api/admin/security/rotate-master-key` — rotazione master key:
+  pre-flight decrypt di TUTTI i blob, generazione nuova ENCRYPTION_KEY
+  (32 byte hex CSPRNG) + nuovo salt random, rebuild SecurityManager
+  in-process, re-encrypt di tutti i blob, scrittura atomica `backend/.env`
+  (con backup `.bak`). Richiede `confirm=true` + 2FA admin (se attivo).
+
+**Frontend** `pages/EncryptionPage.js` (NEW):
+- Route `/settings/encryption` (admin only)
+- Card "Stato cifratura" con badge percentuale v2, 4 stat box,
+  banner amber se serve migration (con CTA "Migra ora"), banner emerald se
+  100% v2
+- Breakdown collapsible per `collection.field`
+- Card "Rotazione master key" con dialog modal di conferma + campo TOTP
+- Voce "Cifratura & Master Key" aggiunta in Settings
+
+**Test E2E in-session** (con dati reali):
+1. Salt v2 generato al primo avvio: `data/encryption_salt.bin` mode 0600 ✓
+2. Backward-compat: blob legacy v1 (Hornetsecurity API key) decifrabile → 4377
+   workload tornati ✓
+3. Migration v1→v2: 2/2 blob migrati, 100% v2 post-migration ✓
+4. Rotation key: nuova master key generata, .env aggiornato atomicamente,
+   2/2 blob re-cifrati con nuova key, decrypt continua a funzionare ✓
+5. Alert burst: 3 decrypt fallite consecutive → SECURITY_ALERT in audit log ✓
+
+**Standard di compliance allineati**:
+- NIST SP 800-38D (AES-GCM) — già presente
+- NIST SP 800-132 rev. 2024 (PBKDF2 600k iter) — NUOVO
+- OWASP ASVS L2/L3 (encryption at rest) — già presente
+- ISO 27001 A.10.1.1 (cryptographic policy) — già presente
+- ISO 27001 A.10.1.2 (key management) con rotation — NUOVO
+
 ## 2026-04-30 — Tenant→Client Mapping Reverse View (backend v3.5.32)
 
 ### 🔄 Modalita` "Per tenant Hornetsecurity"
