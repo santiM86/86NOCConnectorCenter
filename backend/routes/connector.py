@@ -1740,6 +1740,67 @@ async def remove_managed_device(client_id: str, device_id: str, current_user: di
     return {"status": "ok"}
 
 
+async def _resolve_or_upsert_managed_device(
+    client_id: str,
+    device_id: str,
+) -> tuple[str, str, bool]:
+    """Resolver multi-source per gli endpoint di update device.
+    Cerca il device in (1) managed_devices, (2) db.devices, (3) device_poll_status
+    via id sintetico `poll_<ip>`. Se trovato fuori da managed_devices, fa upsert
+    minimale cosi` i successivi `update_one` per `client_id+ip` funzionano.
+    Restituisce (device_ip, device_name, was_upserted). Solleva HTTPException 404
+    se nessuna source contiene il device.
+    """
+    md = await db.managed_devices.find_one(
+        {"id": device_id, "client_id": client_id},
+        {"_id": 0, "ip": 1, "name": 1},
+    )
+    if md and md.get("ip"):
+        return md["ip"], md.get("name") or "", False
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    # Fallback 1: db.devices (manualmente aggiunti)
+    manual = await db.devices.find_one(
+        {"id": device_id, "client_id": client_id},
+        {"_id": 0, "ip_address": 1, "name": 1},
+    )
+    if manual and manual.get("ip_address"):
+        ip = manual["ip_address"]
+        name = manual.get("name") or ""
+        await db.managed_devices.update_one(
+            {"client_id": client_id, "ip": ip},
+            {
+                "$set": {"name": name, "ip": ip, "client_id": client_id},
+                "$setOnInsert": {"id": device_id, "created_at": now_iso, "created_by": "auto-resolver"},
+            },
+            upsert=True,
+        )
+        return ip, name, True
+
+    # Fallback 2: device_id sintetico `poll_<ip-with-underscores>`
+    if device_id.startswith("poll_"):
+        synth_ip = device_id[len("poll_"):].replace("_", ".")
+        pd = await db.device_poll_status.find_one(
+            {"client_id": client_id, "device_ip": synth_ip},
+            {"_id": 0, "device_ip": 1, "device_name": 1},
+        )
+        if pd:
+            ip = pd.get("device_ip") or synth_ip
+            name = pd.get("device_name") or synth_ip
+            await db.managed_devices.update_one(
+                {"client_id": client_id, "ip": ip},
+                {
+                    "$set": {"name": name, "ip": ip, "client_id": client_id},
+                    "$setOnInsert": {"id": device_id, "created_at": now_iso, "created_by": "auto-resolver"},
+                },
+                upsert=True,
+            )
+            return ip, name, True
+
+    raise HTTPException(status_code=404, detail="Device non trovato in managed_devices, devices, o device_poll_status")
+
+
 @router.put("/connector/{client_id}/managed-devices/{device_id}/monitor-type")
 async def update_device_monitor_type_by_id(
     client_id: str,
@@ -1759,13 +1820,13 @@ async def update_device_monitor_type_by_id(
             update["http_port"] = int(body.get("http_port"))
         except Exception:
             pass
-    result = await db.managed_devices.update_one(
-        {"id": device_id, "client_id": client_id},
+    # Multi-source resolver: gestisce device-id da managed_devices/devices/poll_<ip>
+    device_ip, _, _ = await _resolve_or_upsert_managed_device(client_id, device_id)
+    await db.managed_devices.update_one(
+        {"client_id": client_id, "ip": device_ip},
         {"$set": update},
     )
-    if result.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Device non trovato")
-    return {"ok": True, "monitor_type": mt}
+    return {"ok": True, "monitor_type": mt, "device_ip": device_ip}
 
 
 @router.post("/connector/{client_id}/managed-devices/bulk-upgrade-snmp")
@@ -1810,19 +1871,19 @@ async def update_device_snmp_config(client_id: str, device_id: str, request: Req
         update["snmpv3_priv_protocol"] = body.get("snmpv3_priv_protocol")  # DES, AES, AES256
         update["snmpv3_priv_password"] = sanitize_string(body.get("snmpv3_priv_password", ""), 256)
         update["snmpv3_security_level"] = body.get("snmpv3_security_level", "authPriv")
-    result = await db.managed_devices.update_one(
-        {"id": device_id, "client_id": client_id},
+    # Multi-source resolver
+    device_ip, _, _ = await _resolve_or_upsert_managed_device(client_id, device_id)
+    await db.managed_devices.update_one(
+        {"client_id": client_id, "ip": device_ip},
         {"$set": update}
     )
-    if result.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Device not found")
     await audit_logger.log(
         AuditAction.UPDATE_DEVICE,
         user_id=current_user["id"], user_email=current_user["email"],
         resource_type="device", resource_id=device_id,
         details={"action": "snmp_config_updated", "version": snmp_version},
     )
-    return {"status": "ok", "snmp_version": snmp_version}
+    return {"status": "ok", "snmp_version": snmp_version, "device_ip": device_ip}
 
 
 
@@ -1922,63 +1983,15 @@ async def update_device_silence(
         "alerts_silenced_by": (current_user or {}).get("email") if silenced else "",
     }
 
-    # Resolve device by id across all 3 sources (managed_devices, devices, device_poll_status).
-    # Il PRIMARY storage del flag `alerts_silenced` e` `managed_devices` perche` `alert_filter`
-    # interroga quella collection. Se il device esiste solo in `devices` o `device_poll_status`
-    # (auto-discovered, mai promosso a managed), creiamo/aggiorniamo il record in
-    # managed_devices on-the-fly. UI gia` mostra questi device ma le configurazioni vanno a 404
-    # con i vecchi handler.
-    md = await db.managed_devices.find_one(
-        {"id": device_id, "client_id": client_id},
-        {"_id": 0, "ip": 1, "name": 1},
+    # Multi-source resolver: gestisce device-id da managed_devices/devices/poll_<ip>
+    device_ip, device_name, _ = await _resolve_or_upsert_managed_device(client_id, device_id)
+    await db.managed_devices.update_one(
+        {"client_id": client_id, "ip": device_ip},
+        {"$set": update_doc},
     )
-    device_ip = (md or {}).get("ip") or ""
-    device_name = (md or {}).get("name") or ""
-    if not md:
-        # Fallback 1: db.devices (manually added)
-        manual = await db.devices.find_one(
-            {"id": device_id, "client_id": client_id},
-            {"_id": 0, "ip_address": 1, "name": 1},
-        )
-        if manual:
-            device_ip = manual.get("ip_address") or ""
-            device_name = manual.get("name") or ""
-        else:
-            # Fallback 2: device_id come "poll_<ip>" sintetico (auto-discovered only)
-            if device_id.startswith("poll_"):
-                synth_ip = device_id[len("poll_"):].replace("_", ".")
-                pd = await db.device_poll_status.find_one(
-                    {"client_id": client_id, "device_ip": synth_ip},
-                    {"_id": 0, "device_ip": 1, "device_name": 1},
-                )
-                if pd:
-                    device_ip = pd.get("device_ip") or synth_ip
-                    device_name = pd.get("device_name") or synth_ip
-            # Fallback 3: cerca per name match in device_poll_status (se device_id e` un UUID
-            # di un record manuale in db.devices ma con auto-detect aggiunto al poll)
-            if not device_ip:
-                raise HTTPException(status_code=404, detail="Device non trovato in nessuna collection")
 
-        # Upsert minimal record in managed_devices cosi` il flag silence persiste e
-        # alert_filter possa consultarlo
-        await db.managed_devices.update_one(
-            {"client_id": client_id, "ip": device_ip},
-            {
-                "$set": {**update_doc, "name": device_name, "ip": device_ip, "client_id": client_id},
-                "$setOnInsert": {"id": device_id, "created_at": now_iso, "created_by": "silence-toggle"},
-            },
-            upsert=True,
-        )
-    else:
-        await db.managed_devices.update_one(
-            {"id": device_id, "client_id": client_id},
-            {"$set": update_doc},
-        )
+    invalidate_silence_cache(client_id=client_id, device_ip=device_ip)
 
-    if device_ip:
-        invalidate_silence_cache(client_id=client_id, device_ip=device_ip)
-
-    dev = {"ip": device_ip, "name": device_name}
     audit_logger and await audit_logger.log(
         AuditAction.UPDATE_DEVICE,
         user_id=(current_user or {}).get("id"),
@@ -1989,8 +2002,8 @@ async def update_device_silence(
             "client_id": client_id,
             "alerts_silenced": silenced,
             "reason": silence_reason,
-            "device_name": dev.get("name"),
-            "device_ip": dev.get("ip"),
+            "device_name": device_name,
+            "device_ip": device_ip,
         },
     )
     return {"ok": True, "alerts_silenced": silenced, "device_id": device_id, "device_ip": device_ip}

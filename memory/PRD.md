@@ -435,6 +435,35 @@ Rimossi in v3.5.0 (con OK utente): Check-ForUpdate, Install-Update (5 metodi fal
 1. SSH al prod, `curl -o /home/arslan/86NOCConnectorCenter/frontend/build/downloads/argus-backend-latest.tar.gz https://noc-monitor-hub.preview.emergentagent.com/downloads/argus-backend-latest.tar.gz`, poi click "Riprova" sull'UI.
 2. Aspettare che la nuova frontend sia deployata, poi usare il campo "URL pacchetto custom" direttamente.
 
+### 2026-02-10 (notte): Per-device alert silencing + auto-classifier stampanti
+**Richiesta utente**: 1) checkbox "silenzia alert" per device che monitora ma non vuole notifiche (es. stampanti che si spengono la sera); 2) auto-classificazione device_type (Sharp/Brother MFC stavano sotto "Server"); 3) tab Stampanti deve includere device classificati `device_type=printer` non solo /api/printers.
+
+**Implementazione**:
+
+Backend nuovi:
+- `/app/backend/alert_filter.py`: helper `is_device_silenced()`, `should_emit_alert()`, `insert_alert_if_emit(db, alert_doc)` con cache TTL 30s. **Drop-in replacement** per `db.alerts.insert_one()` in **8 file** (`connector_watchdog.py`, `redfish.py`, `routes/alerts.py`, `routes/backup.py`, `routes/connector.py`, `routes/external_monitor.py`, `routes/ingestion.py`, `routes/printers.py`). Wrapper estrae automaticamente `client_id`+`device_ip` dall'alert_doc; alert senza device specifico (es. connector watchdog) non vengono mai silenziati.
+- `/app/backend/device_classifier.py`: `classify_device_type(sys_descr, sys_object_id, hostname, model)` con (1) match Printer-MIB sysObjectID OID prefixes (HP, Brother, Canon, Epson, Lexmark, Kyocera, Konica, Xerox, Ricoh, OKI, Samsung, Sharp, OKI Data, Dell), (2) regex hostname/sysDescr per stampanti+switch+firewall+AP+NAS+UPS+iLO. Test cases: "HP OfficeJet"→printer, "SHARP MX-B427PW"→printer, "Brother MFC-L6710DW"→printer, "Konica Minolta bizhub"→printer, "NETGEAR GS110EMX"→switch, "FortiGate 60F"→firewall, "Synology"→nas, "iLO5"→ilo.
+
+Backend nuovi endpoint (in `routes/connector.py`):
+- `PUT /api/connector/{client_id}/managed-devices/{device_id}/silence` — toggle alerts_silenced + reason. Multi-source resolver: gestisce device_id da managed_devices, db.devices, o sintetico `poll_<ip>` con auto-upsert in managed_devices.
+- `POST /api/connector/{client_id}/managed-devices/auto-classify` — riclassifica bulk basandosi su sys_descr/sys_object_id/hostname.
+- Helper interno `_resolve_or_upsert_managed_device()` condiviso da `/silence`, `/monitor-type`, `/snmp` (DRY refactor — i 3 endpoint usano lo stesso resolver, niente piu` 404 spuri).
+
+Backend ingestion: `connector.py` `report_poll_status` ora applica `classify_device_type()` come fallback secondario quando il fingerprint vendor non matcha e il device_type corrente è generic/unknown/server/ilo. Solo per nuovi device o con sys_descr cambiato.
+
+Frontend:
+- `DeviceEditModal.js`: sezione checkbox "🔕 Silenzia alert" + textarea motivo. `useEffect` re-seed dello stato quando `device` prop cambia (per supportare reopen). `save()` con 3 try/catch indipendenti + dirty-detection per evitare PUT inutili. `onSaved(updatedDevice)` ora passa il device aggiornato per optimistic update.
+- `ClientOverviewPage.js`: badge "ALERT OFF" nella riga tabella Dispositivi (data-testid=silence-badge-{ip}). `optimisticUpdateDevice()` aggiorna lo state setDevices in <1s senza aspettare refetch. PrintersTab refattorizzato per accettare `mergedPrinters` (union device_type=printer + /api/printers con merge per IP, telemetria toner dove disponibile).
+- `models.py` `DeviceResponse`: aggiunti campi `alerts_silenced` + `alerts_silenced_reason`.
+- `routes/devices.py`: merge `alerts_silenced` da managed_devices nel response GET /api/devices.
+
+**Test** (iteration_63 → 64 → 65 → 66):
+- Backend pytest: 14/14 PASS (alert filter + classifier + endpoints).
+- Frontend E2E iteration_66: **6/7 step 100% PASS** (1 ms = 0.51s optimistic badge, 1 PUT chirurgica per save-only-silence, useEffect re-seed funziona, dirty-detection skip /monitor-type+/snmp se non cambiati).
+- Step 7 partially blocked dal residuo 404 backend su /monitor-type+/snmp risolto subito dopo (multi-source resolver esteso a tutti e 3).
+
+**Tarball aggiornato**: `argus-backend-latest.tar.gz` (~2.5 MB) con BACKEND_VERSION=3.5.27-fase2.
+
 ### POC v1 — WireGuard EMBEDDED nel Center (2026-04-27)
 **Richiesta utente**: "non voglio installarlo deve essere dentro al center" — il server WireGuard non deve richiedere `apt install wireguard-tools` o setup manuale sul Linux di produzione. Tutto self-contained nel pacchetto del backend.
 
