@@ -268,6 +268,7 @@ export default function SwitchPortsPage() {
   if (!data) return <div className="p-6 text-[var(--text-muted)] text-sm">Nessun dato</div>;
 
   const t = data.totals || {};
+  const noPortData = !data.ports || data.ports.length === 0;
 
   return (
     <div className="p-3 md:p-6 max-w-6xl mx-auto space-y-4" data-testid="switch-ports-page">
@@ -295,6 +296,27 @@ export default function SwitchPortsPage() {
         <button className="px-4 py-2 text-[var(--text-muted)] cursor-not-allowed" disabled title="Disponibile in futura versione">Aggregazioni</button>
       </div>
 
+      {/* Messaggio se nessun dato porte */}
+      {noPortData && (
+        <div className="noc-panel p-6 text-center space-y-2" data-testid="switch-ports-empty">
+          <Cpu size={36} className="mx-auto text-[var(--text-muted)] opacity-40" />
+          <h3 className="text-sm font-semibold text-[var(--text-primary)]">Nessun dato porte ricevuto dal connector</h3>
+          <p className="text-[11px] text-[var(--text-muted)] max-w-md mx-auto leading-relaxed">
+            Lo switch <span className="font-mono text-cyan-300">{data.device_ip}</span> non ha ancora inviato dettagli porte SNMP.<br />
+            Cause possibili:
+          </p>
+          <ul className="text-[11px] text-[var(--text-muted)] max-w-md mx-auto text-left list-disc list-inside space-y-1">
+            <li>Connector versione &lt; <b className="text-cyan-300">3.7.0</b> (manca polling <code>ifTable + POWER-ETHERNET-MIB</code>) → <a className="text-cyan-300 underline" href="/api/connector/public-download/latest" target="_blank" rel="noreferrer">scarica ultima versione</a></li>
+            <li>Discovery non ancora completato (ciclo full-discovery ogni ~5 min)</li>
+            <li>Lo switch non risponde ai walk SNMP <code>1.3.6.1.2.1.2.2</code> (verifica community e ACL)</li>
+            <li>Dispositivo non è uno switch managed L2 (router/firewall non hanno tabella porte)</li>
+          </ul>
+          <Button size="sm" variant="outline" onClick={reload} className="h-7 gap-1 text-[11px] mt-3"><ArrowsClockwise size={12} /> Riprova</Button>
+        </div>
+      )}
+
+      {!noPortData && (
+      <>
       {/* Filtri */}
       <div className="flex items-center gap-1.5 flex-wrap text-[11px]">
         {[
@@ -421,6 +443,8 @@ export default function SwitchPortsPage() {
           </table>
         </div>
       </details>
+      </>
+      )}
     </div>
   );
 }

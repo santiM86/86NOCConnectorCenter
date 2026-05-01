@@ -597,7 +597,7 @@ export default function ClientStatusPage() {
                               data-testid={`web-console-${dev.device_ip}`}>
                               <Monitor size={14} />
                             </button>
-                            {!isPing && portStats.total > 0 && (
+                            {!isPing && (
                               <Link to={`/switch-ports/${encodeURIComponent(dev.device_ip)}`}
                                 onClick={(e) => e.stopPropagation()}
                                 className="flex-shrink-0 w-7 h-7 rounded-md flex items-center justify-center text-[var(--text-muted)] hover:text-cyan-400 hover:bg-cyan-500/10 transition-colors"
