@@ -6,6 +6,7 @@ from fastapi.responses import FileResponse
 import uuid
 import shutil
 import logging
+import re
 from pathlib import Path
 from typing import Optional
 from datetime import datetime, timezone, timedelta
@@ -694,6 +695,29 @@ async def connector_download(filename: str, request: Request):
     filepath = CONNECTOR_STORAGE / filename
     if not filepath.exists():
         raise HTTPException(status_code=404, detail="File not found")
+    return FileResponse(path=str(filepath), filename=filename, media_type="application/zip")
+
+
+@router.get("/connector/public-download/latest")
+async def connector_public_download_latest():
+    """Public download of the latest active connector ZIP. No auth required.
+
+    Sicuro perche':
+    - Lo ZIP contiene solo gli script PowerShell open (no segreti, no credenziali).
+    - Le credenziali (api_key, hmac secret) sono salvate in config.json LOCALE
+      del cliente (in ProgramData), mai distribuite nel binario.
+    - Permette al cliente di fare bootstrap manuale o disaster recovery senza
+      conoscere il filename esatto.
+    """
+    update_info = await db.connector_updates.find_one({"active": True}, {"_id": 0})
+    if not update_info:
+        raise HTTPException(status_code=404, detail="Nessun aggiornamento attivo")
+    filename = update_info.get("filename", "")
+    if not filename or not re.match(r"^86NocConnector_v[\d\.]+\.zip$", filename):
+        raise HTTPException(status_code=500, detail="Filename non valido")
+    filepath = CONNECTOR_STORAGE / filename
+    if not filepath.exists():
+        raise HTTPException(status_code=404, detail="File ZIP non trovato sul server")
     return FileResponse(path=str(filepath), filename=filename, media_type="application/zip")
 
 
