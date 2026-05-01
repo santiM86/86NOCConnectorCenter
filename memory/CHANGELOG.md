@@ -1,3 +1,53 @@
+## 2026-05-01 (notte) — Connector v3.7.0: LLDP/CDP Topology Auto-Discovery
+
+### Cosa cambia
+Estende il discovery automatico della topologia per supportare **CDP (Cisco Discovery Protocol)** come fallback di LLDP, e introduce i **"Ghost Node" auto-scoperti** sulla mappa.
+
+### PowerShell Connector (`snmp_poller.ps1`)
+- Nuova funzione `Poll-CdpNeighbors($ip,$community)` che interroga la CDP-MIB Cisco
+  (OID base `1.3.6.1.4.1.9.9.23.1.2.1.1.*`): cdpCacheDeviceId, DevicePort, Address,
+  Platform, Capabilities. Mappa il bitmap CDP -> bitmap LLDP-style per uniformità
+  rendering frontend (Bridge=0x04, AP=0x08, Router=0x10, Phone=0x20).
+- `Run-FullDiscovery` ora chiama anche CDP per ogni device SNMP e invia `connector/cdp-neighbors`
+  (anche con array vuoto, per pulire la collection lato server).
+
+### Backend (`routes/connector.py`, `routes/topology.py`)
+- Nuovo endpoint `POST /api/connector/cdp-neighbors` (e short alias `/{C}/cn`)
+  con stessa firma HMAC-SHA256 di LLDP. Salva in `db.cdp_neighbors` con clear+insert.
+- Nuova funzione `build_cdp_edges(cdp_neighbors, device_ips, existing_pairs)` analoga
+  a LLDP ma evita duplicati con coppie già coperte da LLDP.
+- Nuova funzione `build_ghost_nodes_and_edges(...)`: trasforma i neighbor LLDP/CDP
+  che NON corrispondono a dispositivi managed in **discovery candidates**
+  (`role="discovery_candidate"`) con type derivato da capability bitmap.
+- `GET /api/network/topology/{client_id}`: ora include `cdp_count`, edges CDP,
+  ghost-node layer "Vicini Scoperti (LLDP/CDP)".
+- Nuovi endpoint:
+  - `GET /api/network/cdp/{client_id}` raw CDP neighbors
+  - `GET /api/network/discovery-candidates/{client_id}` lista deduplicata di
+    candidati per UI "Aggiungi dispositivo scoperto".
+
+### Frontend (`components/NetworkMap.js`)
+- `EDGE_COLORS.cdp = "#fb923c"` (orange Cisco) + stroke dashed (`6 4`).
+- Edge label `CDP · <port>` per distinguere visivamente da LLDP.
+- `DeviceNode`: gestione `role==="discovery_candidate"` con bordo dashed orange,
+  badge in alto a destra (LLDP/CDP), background a strisce diagonali.
+- Health bar: nuovo badge `CDP: <count>`.
+- Legenda: nuova voce "CDP (Cisco)" con line dashed.
+
+### Packaging
+- `scripts/publish-connector.sh`: lo zip storage ora include `Installa 86NocConnector.vbs`
+  in root oltre a `prg/` (richiesto dal flow wizard UAC introdotto in v3.6.3).
+- Pubblicato `86NocConnector_v3.7.0.zip` (~384 KB), record DB `connector_updates` aggiornato.
+
+### Test
+- Smoke test backend: inserito mock LLDP+CDP per cliente "TEST-CDP" -> topology
+  endpoint ritorna 2 LLDP edges + 1 CDP edge + 2 ghost nodes (AP via LLDP,
+  IP Phone via CDP), `lldp_count=2 cdp_count=1`.
+- Smoke test frontend: schermata `/network-status` -> tab Mappa mostra correttamente
+  edge cyan (LLDP), edge dashed orange (CDP), 2 ghost nodes con badge LLDP/CDP,
+  legenda aggiornata.
+
+
 # CHANGELOG — 86BIT ARGUS Center
 
 ## 2026-05-01 (sera) — Bootstrap Installer Wizard self-elevating

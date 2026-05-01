@@ -1,4 +1,4 @@
 {
-  "version": "3.6.3",
-  "changelog": "v3.6.3 - Fix critico packaging: VBS launcher 'Installa 86NocConnector.vbs' incluso correttamente in root dello ZIP (era stato dimenticato dalle build precedenti che includevano solo prg/). Doppio click sul VBS apre direttamente il wizard GUI con UAC prompt nativo - flow originale come previsto. Include tutto v3.6.0-3.6.2: Switch Port Monitor Nebula-style + Force-Update Fallback + install.bat aggiornato."
+  "version": "3.7.0",
+  "changelog": "v3.7.0 - LLDP/CDP Topology Auto-Discovery: aggiunto polling CDP-MIB (Cisco Discovery Protocol) come fallback per switch Cisco con LLDP disabilitato. I neighbor scoperti via LLDP/CDP che non corrispondono a dispositivi managed appaiono ora come 'ghost node' nella mappa con stile dashed/orange e badge LLDP/CDP per facilitare l'aggiunta come dispositivi monitorati. Backend espone /api/network/cdp/{client_id} e /api/network/discovery-candidates/{client_id}."
 }
