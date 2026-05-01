@@ -1,5 +1,58 @@
 # CHANGELOG — 86BIT ARGUS Center
 
+## 2026-05-01 — Switch Port Monitor Nebula-style + Connector v3.6.0
+
+### Vista porta-per-porta in stile HPE Instant On / Cisco Meraki
+Richiesta utente: "vorrei come vedi questo esempio quali sono le porte accese,
+funzionanti, poe acceso, e dove sono collegate a cosa" (3 screenshot HPE Instant
+On del cellulare allegati).
+
+**Connector PowerShell v3.6.0** (`snmp_poller.ps1`):
+- Nuova funzione `Poll-SwitchPortDetails` che effettua polling completo
+  ifTable/ifXTable/ifLastChange + POWER-ETHERNET-MIB (RFC 3621) per dati PoE
+- Counters HC (HCInOctets/HCOutOctets/HCInUcastPkts/HCOutUcastPkts) con
+  delta-state in `$script:PortCounters` per calcolo **Rx/Tx bps live + pps**
+- PoE per porta: `pethPsePortAdminEnable` + `pethPsePortDetectionStatus` +
+  `pethPsePortPowerClassifications` (Class 1..4 mappata a 4/7/15.4/30 W)
+- LLDP arricchito con `lldpRemSysCapEnabled` (bitmap WLAN AP=0x08, Bridge=0x04,
+  Router=0x10) per discriminare AP / Switch uplink / Internet
+- Chiamata aggiunta in `Run-FullDiscovery` che invia tutto a `connector/switch-ports`
+- Fallback a counter 32-bit se HC vuoti, skip Vlan/Loopback/Tunnel automatico
+
+**Backend** (`routes/connector.py`, `routes/topology.py`):
+- Endpoint `/sp` esteso per persistere: `descr/alias/rx_bps/tx_bps/rx_pps/tx_pps/`
+  `in_octets/out_octets/poe_admin/poe_status/poe_class`
+- `lldp_neighbors` ora salva anche `remote_sys_cap`
+- `GET /api/devices/{ip}/switch-ports` arricchito con classificazione **port_type**
+  (`poe`/`ap`/`switch`/`cloud`/`device`/`link_up`/`empty`/`disabled`) calcolata
+  da LLDP capabilities + lookup in `managed_devices` (device_type)
+- `totals` restituisce anche `poe_active`, `rx_bps`, `tx_bps` totali
+
+**Frontend** (`pages/SwitchPortsPage.js` riscritto):
+- Tile Nebula-style: chip nero col numero porta sopra, riquadro 11×11 con icona
+  contestuale (`Lightning` PoE, `WifiHigh` AP, `Stack` switch uplink, `Cloud`
+  internet/router, `Desktop` device, `Plugs` link up generico, `Prohibit` off)
+- Click su porta → pannello dettaglio: `1 Gbps / Full-duplex` + badge
+  `PoE attivo · Classe N (X W)`, traffico Rx/Tx bps + pps con frecce, "Connesso a"
+  con link al device remoto se presente nel NOC, **donut SVG 24h** con totali
+  Scaricati/Caricati/Trasferiti
+- Filtri: Tutte / Up / Down / Admin-down / **PoE** / LLDP
+- Tabella riepilogo collassabile ↓ con colonna PoE Class chip ambra
+- Auto-refresh ogni 30s per traffico live, responsive nativo (tile 11×11 mobile,
+  12×12 desktop), legenda icone in fondo
+
+**Test end-to-end con dati simulati** (8 porte: 2 PoE attivo, 1 AP=Casa Mamma,
+1 PC, 1 FortiGate uplink, 1 Switch01, 3 down): API restituisce
+classificazione corretta `port_type` per ogni porta, UI render screenshot OK
+con tile colorati e selection ring cyan, dettaglio porta 4 mostra "PoE attivo
+Classe 2 · 15.4 W · Connesso a AP2 - Casa Mamma".
+
+**Per testare in produzione:** il connector v3.6.0 deve essere installato sui
+client (auto-update via `update_check.ps1`); ad ogni "Full Network Discovery"
+(default 10 cicli ≈ 10 min) gli switch SNMP verranno pollati per le porte.
+
+
+
 ## 2026-04-30 — Host-level mapping VM Backup (simmetria con 365 sub-groups)
 
 ### Dentro un customer puoi agganciare ogni host alla sua azienda

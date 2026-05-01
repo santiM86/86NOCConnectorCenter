@@ -10,6 +10,193 @@ from deps import get_current_user
 
 router = APIRouter(prefix="/api", tags=["topology"])
 
+# ---------------------------------------------------------------------------
+# Switch port detail (with LLDP neighbor enrichment + stats)
+# ---------------------------------------------------------------------------
+IF_OPER_STATUS_MAP = {
+    1: "up", 2: "down", 3: "testing", 4: "unknown",
+    5: "dormant", 6: "notPresent", 7: "lowerLayerDown",
+}
+IF_ADMIN_STATUS_MAP = {1: "up", 2: "down", 3: "testing"}
+
+
+def _port_number_from_name(name: str) -> str:
+    """Estrae il numero porta da nomi tipo 'Gi1/0/24', 'Port 12', 'GigabitEthernet0/8'."""
+    import re as _re
+    if not name:
+        return ""
+    # 'Gi1/0/24' → '24', 'Eth0/8' → '8'
+    m = _re.search(r"(\d+)$", name)
+    if m:
+        return m.group(1)
+    m = _re.search(r"Port[ _-]?(\d+)", name, _re.IGNORECASE)
+    if m:
+        return m.group(1)
+    return ""
+
+
+@router.get("/devices/{device_ip}/switch-ports")
+async def get_switch_ports(device_ip: str, current_user: dict = Depends(get_current_user)):
+    """Ritorna le porte dello switch con status arricchito da LLDP neighbor.
+
+    `device_ip` = indirizzo IP locale del device switch (match `local_ip` in
+    `switch_ports`). Ritorna lista ordinata per idx con:
+      idx, name, oper_status, admin_status, speed_mbps, last_change_s,
+      neighbor: {remote_sys_name, remote_port_desc, remote_ip, matched_via}
+    """
+    ports = await db.switch_ports.find({"local_ip": device_ip}, {"_id": 0}).sort("idx", 1).to_list(2000)
+    neighbors = await db.lldp_neighbors.find({"local_ip": device_ip}, {"_id": 0}).to_list(500)
+
+    # Index neighbors by local_port_desc and by port_number extracted
+    by_desc: dict[str, dict] = {}
+    by_number: dict[str, dict] = {}
+    for n in neighbors:
+        pd = (n.get("local_port_desc") or "").strip().lower()
+        pid = (n.get("local_port_id") or "").strip().lower()
+        if pd:
+            by_desc[pd] = n
+        if pid:
+            by_desc[pid] = n
+        pnum = _port_number_from_name(n.get("local_port_desc") or n.get("local_port_id") or "")
+        if pnum:
+            by_number[pnum] = n
+
+    # Lookup managed_devices by remote_ip to enrich neighbor with type/icon
+    mgmt_by_ip: dict[str, dict] = {}
+    if neighbors:
+        rips = list({n.get("remote_ip") for n in neighbors if n.get("remote_ip")})
+        if rips:
+            md_docs = await db.managed_devices.find(
+                {"ip": {"$in": rips}},
+                {"_id": 0, "ip": 1, "device_type": 1, "device_name": 1, "vendor": 1, "profile_key": 1}
+            ).to_list(500)
+            mgmt_by_ip = {d["ip"]: d for d in md_docs}
+
+    out = []
+    ok_count = down_count = disabled_count = neighbor_count = 0
+    poe_active_count = 0
+    total_rx_bps = total_tx_bps = 0
+    for p in ports:
+        oper = p.get("oper", 0)
+        admin = p.get("admin", 0)
+        # Match neighbor: priority by name, by port_number
+        neigh = by_desc.get((p.get("name") or "").strip().lower())
+        if not neigh:
+            neigh = by_number.get(_port_number_from_name(p.get("name") or ""))
+
+        # Port type classification (Nebula-style)
+        # disabled: admin_down
+        # empty: oper_down (no link)
+        # poe: PoE deliveringPower (poe_status==3) regardless of neighbor
+        # ap: LLDP cap bit 0x08 (WLAN) OR neighbor name contains AP/Wireless
+        # switch: LLDP cap bit 0x04 (Bridge) OR vendor "switch" device_type
+        # router/cloud: LLDP cap bit 0x10 (Router) OR device_type firewall/router/internet
+        # device: link up + neighbor presente ma generic
+        # link_up: link up senza neighbor
+        port_type = "empty"
+        if admin == 2:
+            port_type = "disabled"
+        elif oper != 1:
+            port_type = "empty"
+        else:
+            # link up
+            poe_status = int(p.get("poe_status") or 0)
+            cap = int((neigh or {}).get("remote_sys_cap") or 0)
+            md_remote = mgmt_by_ip.get((neigh or {}).get("remote_ip") or "") if neigh else None
+            dtype = (md_remote or {}).get("device_type", "") if md_remote else ""
+            sys_desc = ((neigh or {}).get("remote_sys_desc") or "").lower() if neigh else ""
+            sys_name = ((neigh or {}).get("remote_sys_name") or "").lower() if neigh else ""
+
+            is_ap = (cap & 0x08) != 0 or "ap" in sys_name.split() or "access point" in sys_desc or "wireless" in sys_desc or dtype == "ap"
+            is_switch = (cap & 0x04) != 0 or dtype == "switch" or "switch" in sys_desc
+            is_router = (cap & 0x10) != 0 or dtype in ("firewall", "router") or "router" in sys_desc or "firewall" in sys_desc
+
+            if is_ap:
+                port_type = "ap"
+            elif is_router:
+                port_type = "cloud"   # uplink internet/firewall
+            elif is_switch:
+                port_type = "switch"
+            elif poe_status == 3:
+                port_type = "poe"     # PoE attivo (telefono/cam IP non identificato)
+            elif neigh:
+                port_type = "device"
+            else:
+                port_type = "link_up"
+
+        neighbor_obj = None
+        if neigh:
+            md_remote = mgmt_by_ip.get(neigh.get("remote_ip") or "")
+            neighbor_obj = {
+                "remote_sys_name": neigh.get("remote_sys_name") or "",
+                "remote_port_desc": neigh.get("remote_port_desc") or "",
+                "remote_port_id": neigh.get("remote_port_id") or "",
+                "remote_ip": neigh.get("remote_ip") or "",
+                "remote_chassis_id": neigh.get("remote_chassis_id") or "",
+                "remote_sys_cap": int(neigh.get("remote_sys_cap") or 0),
+                "remote_sys_desc": neigh.get("remote_sys_desc") or "",
+                "remote_device_type": (md_remote or {}).get("device_type") or "",
+                "remote_device_name": (md_remote or {}).get("device_name") or "",
+            }
+            neighbor_count += 1
+
+        if admin == 2:
+            disabled_count += 1
+        elif oper == 1:
+            ok_count += 1
+        else:
+            down_count += 1
+
+        rx_bps = int(p.get("rx_bps") or 0)
+        tx_bps = int(p.get("tx_bps") or 0)
+        total_rx_bps += rx_bps
+        total_tx_bps += tx_bps
+        if int(p.get("poe_status") or 0) == 3:
+            poe_active_count += 1
+
+        out.append({
+            "idx": p.get("idx"),
+            "name": p.get("name"),
+            "alias": p.get("alias") or "",
+            "oper": oper,
+            "oper_status": IF_OPER_STATUS_MAP.get(oper, "unknown"),
+            "admin": admin,
+            "admin_status": IF_ADMIN_STATUS_MAP.get(admin, "unknown"),
+            "speed_mbps": p.get("speed_mbps") or 0,
+            "last_change_s": p.get("last_change_s") or 0,
+            "rx_bps": rx_bps,
+            "tx_bps": tx_bps,
+            "rx_pps": int(p.get("rx_pps") or 0),
+            "tx_pps": int(p.get("tx_pps") or 0),
+            "in_octets": str(p.get("in_octets") or "0"),
+            "out_octets": str(p.get("out_octets") or "0"),
+            "poe_admin": int(p.get("poe_admin") or 0),
+            "poe_status": int(p.get("poe_status") or 0),
+            "poe_class": int(p.get("poe_class") or 0),
+            "port_type": port_type,
+            "neighbor": neighbor_obj,
+        })
+
+    # Port_number summary for UI badge
+    first_updated = ports[0].get("updated_at") if ports else None
+    return {
+        "device_ip": device_ip,
+        "ports": out,
+        "totals": {
+            "total": len(out),
+            "up": ok_count,
+            "down": down_count,
+            "admin_down": disabled_count,
+            "with_neighbor": neighbor_count,
+            "poe_active": poe_active_count,
+            "rx_bps": total_rx_bps,
+            "tx_bps": total_tx_bps,
+        },
+        "updated_at": first_updated,
+    }
+
+
+
 
 def classify_device(dev):
     """Classify device type from name, sys_descr, and other hints."""

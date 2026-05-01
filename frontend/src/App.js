@@ -33,6 +33,7 @@ import ReportsPage from "@/pages/ReportsPage";
 import InventoryPage from "@/pages/InventoryPage";
 import IncidentsPage from "@/pages/IncidentsPage";
 import PortMonitorPage from "@/pages/PortMonitorPage";
+import SwitchPortsPage from "@/pages/SwitchPortsPage";
 import PrintersPage from "@/pages/PrintersPage";
 import PublicDashboard from "@/pages/PublicDashboard";
 import TvDashboardPage from "@/pages/TvDashboardPage";
@@ -236,6 +237,7 @@ function App() {
               <Route path="inventory" element={<InventoryPage />} />
               <Route path="incidents" element={<IncidentsPage />} />
               <Route path="port-monitor" element={<PortMonitorPage />} />
+              <Route path="switch-ports/:deviceIp" element={<SwitchPortsPage />} />
               <Route path="printers" element={<PrintersPage />} />
               <Route path="vulnerability" element={<VulnerabilityPage />} />
               <Route path="trends" element={<TrendPage />} />
