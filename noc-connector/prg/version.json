@@ -1,4 +1,4 @@
 {
-  "version": "3.6.2",
-  "changelog": "v3.6.2 - install.bat aggiornato per lanciare automaticamente il wizard GUI (installer_gui.ps1) invece dell'installer legacy v3.0.0 che usava Scheduled Task obsoleto. Doppio click su install.bat ora avvia l'installer NSSM con UI grafica completa. Include tutto v3.6.0/3.6.1 (Switch Port Monitor + Force-Update Fallback)."
+  "version": "3.6.3",
+  "changelog": "v3.6.3 - Fix critico packaging: VBS launcher 'Installa 86NocConnector.vbs' incluso correttamente in root dello ZIP (era stato dimenticato dalle build precedenti che includevano solo prg/). Doppio click sul VBS apre direttamente il wizard GUI con UAC prompt nativo - flow originale come previsto. Include tutto v3.6.0-3.6.2: Switch Port Monitor Nebula-style + Force-Update Fallback + install.bat aggiornato."
 }
