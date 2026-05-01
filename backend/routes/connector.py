@@ -2452,6 +2452,7 @@ async def connector_lldp_report(request: Request):
                 "remote_port_desc": sanitize_string(n.get("remote_port_desc", ""), 256),
                 "remote_sys_desc": sanitize_string(n.get("remote_sys_desc", ""), 512),
                 "remote_chassis_id": sanitize_string(n.get("remote_chassis_id", ""), 128),
+                "remote_sys_cap": int(n.get("remote_sys_cap", 0) or 0),
                 "updated_at": now_iso,
             })
         await db.lldp_neighbors.insert_many(docs)
@@ -2506,10 +2507,21 @@ async def connector_switch_ports_report(request: Request):
                     "local_ip": local_ip,
                     "idx": idx_v,
                     "name": sanitize_string(str(p.get("name") or f"port{idx_v}"), 128),
+                    "descr": sanitize_string(str(p.get("descr") or ""), 128),
+                    "alias": sanitize_string(str(p.get("alias") or ""), 128),
                     "oper": int(p.get("oper", 0)) if p.get("oper") is not None else 0,
                     "admin": int(p.get("admin", 0)) if p.get("admin") is not None else 0,
                     "speed_mbps": int(p.get("speed_mbps", 0) or 0),
                     "last_change_s": int(p.get("last_change_s", 0) or 0),
+                    "in_octets": str(p.get("in_octets") or "0"),
+                    "out_octets": str(p.get("out_octets") or "0"),
+                    "rx_bps": int(p.get("rx_bps", 0) or 0),
+                    "tx_bps": int(p.get("tx_bps", 0) or 0),
+                    "rx_pps": int(p.get("rx_pps", 0) or 0),
+                    "tx_pps": int(p.get("tx_pps", 0) or 0),
+                    "poe_admin": int(p.get("poe_admin", 0) or 0),
+                    "poe_status": int(p.get("poe_status", 0) or 0),
+                    "poe_class": int(p.get("poe_class", 0) or 0),
                     "updated_at": now_iso,
                 })
             if docs:

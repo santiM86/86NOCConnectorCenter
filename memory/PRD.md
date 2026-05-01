@@ -26,6 +26,9 @@ Società IT che necessita di un raccoglitore di alert (NOC) per tutti i disposit
 ```
 
 ## Completed (session log)
+- 2026-05-01: **Switch Port Monitor Nebula-style + Connector v3.6.0**. Su richiesta utente (3 screenshot HPE Instant On allegati per riferimento), implementata vista porta-per-porta in stile Cisco Meraki / Nebula. PowerShell connector ora effettua polling completo `ifTable+ifXTable+ifLastChange+POWER-ETHERNET-MIB (RFC 3621)+lldpRemSysCapEnabled`, calcola Rx/Tx bps live tramite delta-state counters HC, distingue PoE attivo (saetta), AP (WiFi icon), switch uplink (Stack), router/internet (Cloud), device (Desktop), link_up (Plugs), empty/disabled. Backend `GET /api/devices/{ip}/switch-ports` arricchito con `port_type` calcolato da LLDP cap bitmap + managed_devices lookup, totali con `poe_active/rx_bps/tx_bps`. UI riscritta `SwitchPortsPage.js`: tile colorati con chip numero porta nero sopra, click apre pannello dettaglio (speed/full-duplex, PoE classe+W, Rx/Tx live + pps, Connesso a con link, donut SVG totali Scaricati/Caricati/Trasferiti), filtri Up/Down/Admin-down/PoE/LLDP, auto-refresh 30s, responsive mobile+desktop. Endpoint `/api/connector/switch-ports` esteso per persistere counters/PoE/LLDP cap. Test E2E con dati simulati 8 porte (2 PoE, 1 AP, 1 PC, 1 FortiGate, 1 switch, 3 down) → classificazione + render UI verificati screenshot.
+
+
 - 2026-01-15: Login redesign + responsiveness
 - 2026-01-18: Client-centric navigation & Unified Client Overview Page
 - 2026-01-22: Auto-Update Polling System with Cache Busting

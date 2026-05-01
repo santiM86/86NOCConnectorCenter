@@ -904,6 +904,24 @@ $script:OID_ifOutOctets = "1.3.6.1.2.1.2.2.1.16"
 $script:OID_ifAlias     = "1.3.6.1.2.1.31.1.1.1.18"
 $script:OID_ifHCInOctets  = "1.3.6.1.2.1.31.1.1.1.6"
 $script:OID_ifHCOutOctets = "1.3.6.1.2.1.31.1.1.1.10"
+$script:OID_ifHCInUcastPkts  = "1.3.6.1.2.1.31.1.1.1.7"
+$script:OID_ifHCOutUcastPkts = "1.3.6.1.2.1.31.1.1.1.11"
+$script:OID_ifHighSpeed   = "1.3.6.1.2.1.31.1.1.1.15"   # Speed in Mbps (per >4Gbps)
+$script:OID_ifName        = "1.3.6.1.2.1.31.1.1.1.1"
+$script:OID_ifLastChange  = "1.3.6.1.2.1.2.2.1.9"        # TimeTicks (1/100 sec)
+
+# POWER-ETHERNET-MIB (RFC 3621) - PoE per-port
+# NB: pse port indices are NOT necessarily ifIndex; per-group subindex.
+$script:OID_pethPsePortAdminEnable        = "1.3.6.1.2.1.105.1.1.1.3"   # 1=true,2=false
+$script:OID_pethPsePortDetectionStatus    = "1.3.6.1.2.1.105.1.1.1.6"   # 1=disabled,2=searching,3=deliveringPower,4=fault,5=test,6=otherFault
+$script:OID_pethPsePortPowerClassifications = "1.3.6.1.2.1.105.1.1.1.10" # 1..5 (class0..class4)
+# Cisco/HP power consumption per-port (mW) - extended; not RFC standard but common
+$script:OID_pethPsePortPowerActual        = "1.3.6.1.4.1.9.9.402.1.2.1.9"  # cpeExtPsePortPwrConsumption (mW)
+$script:OID_pethPsePortPowerHpe           = "1.3.6.1.2.1.105.1.1.1.11"     # pethPsePortMaxPowerDraw  (deciW) - some vendors
+
+# LLDP system capabilities (per neighbor)
+# 1.0.8802.1.1.2.1.4.1.1.12 = lldpRemSysCapEnabled (bitmap: 0x01=Other,0x02=Repeater,0x04=Bridge,0x08=WLAN AP,0x10=Router,0x20=Telephone,0x40=DOCSIS,0x80=Station)
+$script:OID_lldpRemSysCapEnabled = "1.0.8802.1.1.2.1.4.1.1.12"
 
 # HPE Comware / H3C OIDs (HPE 5130, 5500, 5900, etc.)
 $script:OID_hh3cCpuUsage   = "1.3.6.1.4.1.25506.2.6.1.1.1.1.6"
@@ -2127,6 +2145,7 @@ function Poll-LldpNeighbors($ip, $community) {
         $sysDescs   = Walk-SnmpTable $ip $community "1.0.8802.1.1.2.1.4.1.1.10"
         $chassisIds = Walk-SnmpTable $ip $community "1.0.8802.1.1.2.1.4.1.1.5"
         $manAddrs   = Walk-SnmpTable $ip $community "1.0.8802.1.1.2.1.4.2.1.4"
+        $sysCaps    = Walk-SnmpTable $ip $community $script:OID_lldpRemSysCapEnabled
         
         # Walk local port descriptions
         $locPortIds  = Walk-SnmpTable $ip $community "1.0.8802.1.1.2.1.3.7.1.3"
@@ -2189,6 +2208,22 @@ function Poll-LldpNeighbors($ip, $community) {
                 $match = $chassisIds | Where-Object { $_.oid.EndsWith(".$fullIndex") }
                 if ($match) { $remoteChassisId = $match.value }
             }
+
+            # System capabilities bitmap (HEX or decimal). Bit 4 = WLAN AP, Bit 2 = Bridge/Switch, Bit 4 (0x10) = Router
+            $remoteSysCap = 0
+            if ($sysCaps) {
+                $match = $sysCaps | Where-Object { $_.oid.EndsWith(".$fullIndex") }
+                if ($match) {
+                    $v = $match.value
+                    try {
+                        if ($v -is [string] -and $v -match '^[0-9A-Fa-f]+$' -and $v.Length -le 4) {
+                            $remoteSysCap = [Convert]::ToInt32($v, 16)
+                        } else {
+                            $remoteSysCap = [int]$v
+                        }
+                    } catch { $remoteSysCap = 0 }
+                }
+            }
             
             # Try to extract management IP from lldpRemManAddr
             # The OID index for manAddr table is different: timeMark.localPortNum.remIndex.addrSubtype.addr
@@ -2225,6 +2260,7 @@ function Poll-LldpNeighbors($ip, $community) {
                 remote_sys_desc = "$remoteSysDesc"
                 remote_chassis_id = "$remoteChassisId"
                 remote_ip = "$remoteManAddr"
+                remote_sys_cap = [int]$remoteSysCap
             }
             
             $neighbors += $neighbor
@@ -2393,11 +2429,163 @@ function Poll-PortSpeeds($ip, $community) {
     
     Combina tutti i dati per ricostruire la topologia fisica reale.
 #>
+function Poll-SwitchPortDetails($ip, $community) {
+    <#
+    .SYNOPSIS
+    Polling completo porte switch: stato, velocita, traffic delta, PoE.
+    Restituisce hashtable: { ports = @( @{idx,name,oper,admin,speed_mbps,...}, ... ) }
+    Usa $script:PortCounters[$ip] per memorizzare counters precedenti e calcolare bps.
+    #>
+    if (-not $script:PortCounters) { $script:PortCounters = @{} }
+
+    $result = @{ ports = @(); poll_at = (Get-Date).ToUniversalTime().ToString("o") }
+
+    try {
+        $ifDescr   = Get-SnmpTable $ip $community $script:OID_ifDescr
+        if (-not $ifDescr -or $ifDescr.Count -eq 0) { return $result }
+
+        $ifName    = Get-SnmpTable $ip $community $script:OID_ifName
+        $ifAlias   = Get-SnmpTable $ip $community $script:OID_ifAlias
+        $ifOper    = Get-SnmpTable $ip $community $script:OID_ifOperStat
+        $ifAdmin   = Get-SnmpTable $ip $community $script:OID_ifAdminStat
+        $ifSpeed   = Get-SnmpTable $ip $community $script:OID_ifSpeed
+        $ifHigh    = Get-SnmpTable $ip $community $script:OID_ifHighSpeed
+        $ifLast    = Get-SnmpTable $ip $community $script:OID_ifLastChange
+        $ifInOct   = Get-SnmpTable $ip $community $script:OID_ifHCInOctets
+        $ifOutOct  = Get-SnmpTable $ip $community $script:OID_ifHCOutOctets
+        $ifInPkt   = Get-SnmpTable $ip $community $script:OID_ifHCInUcastPkts
+        $ifOutPkt  = Get-SnmpTable $ip $community $script:OID_ifHCOutUcastPkts
+        # Fallback 32-bit counters if HC empty
+        $ifInOct32  = $null; $ifOutOct32 = $null
+        if (-not $ifInOct -or $ifInOct.Count -eq 0) { $ifInOct32 = Get-SnmpTable $ip $community $script:OID_ifInOctets }
+        if (-not $ifOutOct -or $ifOutOct.Count -eq 0) { $ifOutOct32 = Get-SnmpTable $ip $community $script:OID_ifOutOctets }
+
+        # POWER-ETHERNET-MIB (per-port; key index = "groupIndex.portIndex")
+        $poeAdmin    = Get-SnmpTable $ip $community $script:OID_pethPsePortAdminEnable
+        $poeStatus   = Get-SnmpTable $ip $community $script:OID_pethPsePortDetectionStatus
+        $poeClass    = Get-SnmpTable $ip $community $script:OID_pethPsePortPowerClassifications
+
+        # Build poe map by extracting last 2 digits as port; group=1 typical
+        # We map by trailing port number (treat as ifIndex match by port number digit)
+        function _PoeKeyToPort([string]$oidKey, [string]$base) {
+            $suffix = $oidKey.Substring($base.Length).TrimStart('.')
+            $parts = $suffix -split '\.'
+            if ($parts.Count -ge 2) { return $parts[$parts.Count - 1] }
+            return $suffix
+        }
+
+        $poeAdminByPort = @{}
+        if ($poeAdmin) { foreach ($k in $poeAdmin.Keys) { $p = _PoeKeyToPort $k $script:OID_pethPsePortAdminEnable; $poeAdminByPort[$p] = [int]$poeAdmin[$k] } }
+        $poeStatusByPort = @{}
+        if ($poeStatus) { foreach ($k in $poeStatus.Keys) { $p = _PoeKeyToPort $k $script:OID_pethPsePortDetectionStatus; $poeStatusByPort[$p] = [int]$poeStatus[$k] } }
+        $poeClassByPort = @{}
+        if ($poeClass) { foreach ($k in $poeClass.Keys) { $p = _PoeKeyToPort $k $script:OID_pethPsePortPowerClassifications; $poeClassByPort[$p] = [int]$poeClass[$k] } }
+
+        # Precompute "now" time and load previous counters
+        $nowEpoch = [int][double]::Parse((Get-Date -UFormat %s))
+        if (-not $script:PortCounters.ContainsKey($ip)) { $script:PortCounters[$ip] = @{} }
+        $prev = $script:PortCounters[$ip]
+        $newPrev = @{}
+
+        # Build per-ifIndex helper
+        function _IdxFromOid([string]$k) { return ($k.Split('.'))[-1] }
+        $operByIdx = @{}; if ($ifOper) { foreach ($k in $ifOper.Keys) { $operByIdx[(_IdxFromOid $k)] = [int]$ifOper[$k] } }
+        $adminByIdx = @{}; if ($ifAdmin) { foreach ($k in $ifAdmin.Keys) { $adminByIdx[(_IdxFromOid $k)] = [int]$ifAdmin[$k] } }
+        $speedByIdx = @{}; if ($ifSpeed) { foreach ($k in $ifSpeed.Keys) { $speedByIdx[(_IdxFromOid $k)] = [long]$ifSpeed[$k] } }
+        $highByIdx = @{}; if ($ifHigh) { foreach ($k in $ifHigh.Keys) { $highByIdx[(_IdxFromOid $k)] = [int]$ifHigh[$k] } }
+        $lastByIdx = @{}; if ($ifLast) { foreach ($k in $ifLast.Keys) { $lastByIdx[(_IdxFromOid $k)] = [long]$ifLast[$k] } }
+        $nameByIdx = @{}; if ($ifName) { foreach ($k in $ifName.Keys) { $nameByIdx[(_IdxFromOid $k)] = "$($ifName[$k])" } }
+        $aliasByIdx = @{}; if ($ifAlias) { foreach ($k in $ifAlias.Keys) { $aliasByIdx[(_IdxFromOid $k)] = "$($ifAlias[$k])" } }
+        $inByIdx = @{};  if ($ifInOct)  { foreach ($k in $ifInOct.Keys)  { $inByIdx[(_IdxFromOid $k)] = [decimal]$ifInOct[$k] } }
+        elseif ($ifInOct32)  { foreach ($k in $ifInOct32.Keys)  { $inByIdx[(_IdxFromOid $k)] = [decimal]$ifInOct32[$k] } }
+        $outByIdx = @{}; if ($ifOutOct) { foreach ($k in $ifOutOct.Keys) { $outByIdx[(_IdxFromOid $k)] = [decimal]$ifOutOct[$k] } }
+        elseif ($ifOutOct32) { foreach ($k in $ifOutOct32.Keys) { $outByIdx[(_IdxFromOid $k)] = [decimal]$ifOutOct32[$k] } }
+        $inPktByIdx = @{}; if ($ifInPkt) { foreach ($k in $ifInPkt.Keys) { $inPktByIdx[(_IdxFromOid $k)] = [decimal]$ifInPkt[$k] } }
+        $outPktByIdx = @{}; if ($ifOutPkt) { foreach ($k in $ifOutPkt.Keys) { $outPktByIdx[(_IdxFromOid $k)] = [decimal]$ifOutPkt[$k] } }
+
+        foreach ($k in $ifDescr.Keys) {
+            $idx = _IdxFromOid $k
+            $descr = "$($ifDescr[$k])"
+            $name  = if ($nameByIdx.ContainsKey($idx) -and $nameByIdx[$idx]) { $nameByIdx[$idx] } else { $descr }
+
+            # Skip non-physical interfaces (basic heuristic): VLAN, Loopback, Tunnel
+            if ($name -match '^(Vlan|Lo|Loop|Tunnel|Null|Mgmt|Trunk|Port-channel|Bond|Bridge)' -and -not ($name -match 'GigabitEthernet|Eth|Port|Te|Twe|Hu|Fo|Fa')) {
+                continue
+            }
+
+            # speed_mbps (use HighSpeed if present > 0)
+            $sp = 0
+            if ($highByIdx.ContainsKey($idx) -and $highByIdx[$idx] -gt 0) { $sp = $highByIdx[$idx] }
+            elseif ($speedByIdx.ContainsKey($idx)) { $sp = [int]([math]::Floor($speedByIdx[$idx] / 1000000)) }
+
+            # last_change in seconds (TimeTicks 1/100s -> seconds delta from current sysUpTime is non-trivial, store raw)
+            $lastChange = 0
+            if ($lastByIdx.ContainsKey($idx)) { $lastChange = [int]([math]::Floor($lastByIdx[$idx] / 100)) }
+
+            # Counters delta -> bps
+            $inOct = 0; $outOct = 0
+            if ($inByIdx.ContainsKey($idx)) { $inOct = $inByIdx[$idx] }
+            if ($outByIdx.ContainsKey($idx)) { $outOct = $outByIdx[$idx] }
+            $inPkt = 0; $outPkt = 0
+            if ($inPktByIdx.ContainsKey($idx)) { $inPkt = $inPktByIdx[$idx] }
+            if ($outPktByIdx.ContainsKey($idx)) { $outPkt = $outPktByIdx[$idx] }
+
+            $rxBps = 0; $txBps = 0; $rxPps = 0; $txPps = 0
+            $prevKey = "p$idx"
+            if ($prev.ContainsKey($prevKey)) {
+                $pp = $prev[$prevKey]
+                $dt = $nowEpoch - $pp.t
+                if ($dt -gt 0 -and $dt -lt 3600) {
+                    if ($inOct -ge $pp.in)   { $rxBps = [long](($inOct - $pp.in) * 8 / $dt) }
+                    if ($outOct -ge $pp.out) { $txBps = [long](($outOct - $pp.out) * 8 / $dt) }
+                    if ($inPkt -ge $pp.inp)  { $rxPps = [long](($inPkt - $pp.inp) / $dt) }
+                    if ($outPkt -ge $pp.outp){ $txPps = [long](($outPkt - $pp.outp) / $dt) }
+                }
+            }
+            $newPrev[$prevKey] = @{ t = $nowEpoch; in = $inOct; out = $outOct; inp = $inPkt; outp = $outPkt }
+
+            # PoE (try lookup by ifIndex digit)
+            $poeAdminV = 0; $poeStatusV = 0; $poeClassV = 0
+            if ($poeAdminByPort.ContainsKey($idx)) { $poeAdminV = $poeAdminByPort[$idx] }
+            if ($poeStatusByPort.ContainsKey($idx)) { $poeStatusV = $poeStatusByPort[$idx] }
+            if ($poeClassByPort.ContainsKey($idx)) { $poeClassV = $poeClassByPort[$idx] }
+
+            $result.ports += @{
+                idx          = [int]$idx
+                name         = $name
+                descr        = $descr
+                alias        = if ($aliasByIdx.ContainsKey($idx)) { $aliasByIdx[$idx] } else { "" }
+                oper         = if ($operByIdx.ContainsKey($idx)) { $operByIdx[$idx] } else { 0 }
+                admin        = if ($adminByIdx.ContainsKey($idx)) { $adminByIdx[$idx] } else { 0 }
+                speed_mbps   = $sp
+                last_change_s = $lastChange
+                in_octets    = [string]$inOct
+                out_octets   = [string]$outOct
+                rx_bps       = $rxBps
+                tx_bps       = $txBps
+                rx_pps       = $rxPps
+                tx_pps       = $txPps
+                poe_admin    = $poeAdminV    # 1=on,2=off
+                poe_status   = $poeStatusV   # 3=delivering,4=fault, etc
+                poe_class    = $poeClassV    # 1..5 -> class0..class4
+            }
+        }
+
+        $script:PortCounters[$ip] = $newPrev
+    } catch {
+        Write-Log "  SwitchPortDetails: errore su $ip - $($_.Exception.Message)" "WARN"
+    }
+
+    return $result
+}
+
+
 function Run-FullDiscovery($config, $devices) {
     $allNeighbors = @()
     $allMacTables = @()
     $allPortSpeeds = @()
     $deviceMacs = @()  # MAC di ogni dispositivo managed
+    $allSwitchPorts = @()  # Porte dettagliate per UI Nebula-style
     
     foreach ($dev in $devices) {
         if ($dev.monitor_type -ne "snmp") { continue }
@@ -2453,6 +2641,21 @@ function Run-FullDiscovery($config, $devices) {
                 macs = $macList
             }
         }
+
+        # 5. Switch port details (Nebula-style: oper/admin/speed/PoE/traffic delta)
+        try {
+            $portDetails = Poll-SwitchPortDetails $ip $community
+            if ($portDetails -and $portDetails.ports -and $portDetails.ports.Count -gt 0) {
+                $allSwitchPorts += @{
+                    local_ip = $ip
+                    device_name = $dev.name
+                    ports = $portDetails.ports
+                }
+                Write-Log "  SwitchPorts: $($portDetails.ports.Count) porte raccolte da $ip" "INFO"
+            }
+        } catch {
+            Write-Log "  SwitchPorts: errore su $ip - $($_.Exception.Message)" "WARN"
+        }
     }
     
     # Invia dati LLDP
@@ -2469,6 +2672,17 @@ function Run-FullDiscovery($config, $devices) {
     }
     Send-ToNOC $config "connector/network-discovery" $discoveryPayload | Out-Null
     Write-Log "Discovery: $($allMacTables.Count) MAC tables, $($allPortSpeeds.Count) port speed reports inviati" "INFO"
+
+    # Send dettaglio porte switch per UI Nebula-style
+    if ($allSwitchPorts.Count -gt 0) {
+        try {
+            Send-ToNOC $config "connector/switch-ports" @{ switches = $allSwitchPorts } | Out-Null
+            $totalPorts = ($allSwitchPorts | ForEach-Object { $_.ports.Count } | Measure-Object -Sum).Sum
+            Write-Log "Discovery: $($allSwitchPorts.Count) switch / $totalPorts porte dettagliate inviate" "INFO"
+        } catch {
+            Write-Log "Discovery: errore invio switch ports - $($_.Exception.Message)" "WARN"
+        }
+    }
 }
 
 
