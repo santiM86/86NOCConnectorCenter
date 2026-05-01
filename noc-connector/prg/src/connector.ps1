@@ -724,15 +724,43 @@ function Send-Heartbeat($config) {
     
     # Check if server is requesting a forced update
     if ($response -and $response.force_update) {
-        Write-Log "FORCE UPDATE ricevuto dal NOC per v$($response.latest_version). Delego allo Scheduled Task ArgusConnectorUpdater (lo esegue al prossimo trigger, max 5 min)." "INFO"
-        # v3.5.0+: l'update e' gestito da Windows Task Scheduler via update_check.ps1
-        # Triggeriamo subito il task (se esiste) invece di aspettare il trigger periodico
+        Write-Log "FORCE UPDATE ricevuto dal NOC per v$($response.latest_version)." "INFO"
+        # v3.6.0+: try Task Scheduler first, fallback to direct child process
+        $taskTriggered = $false
         try {
             $taskName = "\86BIT\ArgusConnectorUpdater"
-            & schtasks.exe /Run /TN $taskName 2>&1 | Out-Null
-            Write-Log "Task Scheduler ArgusConnectorUpdater triggerato manualmente." "INFO"
+            $tsResult = & schtasks.exe /Run /TN $taskName 2>&1
+            $tsExit = $LASTEXITCODE
+            if ($tsExit -eq 0) {
+                Write-Log "Task Scheduler ArgusConnectorUpdater triggerato (schtasks /Run OK)." "INFO"
+                $taskTriggered = $true
+            } else {
+                Write-Log "schtasks /Run fallito (exit=$tsExit, output: $tsResult). Provo fallback inline." "WARN"
+            }
         } catch {
-            Write-Log "Task Scheduler non trovato o errore: $($_.Exception.Message)" "WARN"
+            Write-Log "Task Scheduler error: $($_.Exception.Message). Provo fallback inline." "WARN"
+        }
+
+        if (-not $taskTriggered) {
+            # FALLBACK: eseguiamo update_check.ps1 direttamente come child process detached.
+            # Funziona anche se il Task Scheduler e' stato eliminato/corrotto.
+            $updateScript = Join-Path $PSScriptRoot "update_check.ps1"
+            if (-not (Test-Path $updateScript)) {
+                $updateScript = "C:\Program Files\86NocConnector\src\update_check.ps1"
+            }
+            if (Test-Path $updateScript) {
+                try {
+                    Write-Log "FALLBACK: lancio update_check.ps1 direttamente da $updateScript" "INFO"
+                    # Detached so the connector can keep running while updater stops it later
+                    $psArgs = @("-NoProfile","-ExecutionPolicy","Bypass","-WindowStyle","Hidden","-File",$updateScript)
+                    Start-Process -FilePath "powershell.exe" -ArgumentList $psArgs -WindowStyle Hidden | Out-Null
+                    Write-Log "Updater inline lanciato in background." "INFO"
+                } catch {
+                    Write-Log "FALLBACK fallito: $($_.Exception.Message)" "ERROR"
+                }
+            } else {
+                Write-Log "ERRORE CRITICO: update_check.ps1 non trovato ne' nel folder src ne' in C:\Program Files\86NocConnector\src. Update impossibile." "ERROR"
+            }
         }
     }
 }
