@@ -2,7 +2,7 @@
 Security: HMAC-SHA256, Anti-Replay, Obfuscated paths, TLS 1.2+
 """
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 import uuid
 import shutil
 import logging
@@ -719,6 +719,58 @@ async def connector_public_download_latest():
     if not filepath.exists():
         raise HTTPException(status_code=404, detail="File ZIP non trovato sul server")
     return FileResponse(path=str(filepath), filename=filename, media_type="application/zip")
+
+
+@router.get("/connector/install-bootstrap.ps1")
+async def connector_install_bootstrap_ps1(request: Request):
+    """Self-elevating PowerShell bootstrap installer.
+
+    Doppio click (oppure tasto destro -> Esegui con PowerShell) e parte
+    automaticamente: auto-UAC, download ZIP, estrazione, lancio wizard GUI.
+
+    Il Center URL viene iniettato dinamicamente in base all'host della richiesta
+    in modo che lo script funzioni qualunque sia il dominio del Center.
+    """
+    bootstrap_file = Path(__file__).resolve().parent.parent.parent / "noc-connector" / "installer" / "Install-ArgusConnector.ps1"
+    if not bootstrap_file.exists():
+        raise HTTPException(status_code=404, detail="Bootstrap installer non trovato sul server")
+    content = bootstrap_file.read_text(encoding="utf-8")
+    # Build the PUBLIC Center URL from forwarded headers (kubernetes ingress + cloudflare)
+    # so the bootstrap downloads from the same domain the admin used to fetch the script.
+    fwd_host = request.headers.get("x-forwarded-host") or request.headers.get("host", "")
+    fwd_proto = request.headers.get("x-forwarded-proto") or "https"
+    base = f"{fwd_proto}://{fwd_host}".rstrip("/") if fwd_host else str(request.base_url).rstrip("/")
+    if base:
+        content = re.sub(
+            r'\$CenterUrl\s*=\s*"[^"]*"',
+            f'$CenterUrl = "{base}"',
+            content,
+            count=1,
+        )
+    headers = {
+        "Content-Disposition": 'attachment; filename="Install-ArgusConnector.ps1"',
+        "Content-Type": "text/plain; charset=utf-8",
+    }
+    return Response(content=content, headers=headers, media_type="text/plain; charset=utf-8")
+
+
+@router.get("/connector/install-bootstrap.bat")
+async def connector_install_bootstrap_bat():
+    """Companion .bat launcher per chi non sa eseguire .ps1 da PowerShell.
+
+    Doppio click su questo file -> lancia automaticamente
+    Install-ArgusConnector.ps1 (che pero' deve trovarsi nella stessa cartella).
+    Per uso piu' semplice usa direttamente il .ps1 con tasto destro -> Esegui.
+    """
+    bootstrap_file = Path(__file__).resolve().parent.parent.parent / "noc-connector" / "installer" / "Install-ArgusConnector.bat"
+    if not bootstrap_file.exists():
+        raise HTTPException(status_code=404, detail="Bootstrap launcher non trovato")
+    content = bootstrap_file.read_text(encoding="utf-8")
+    headers = {
+        "Content-Disposition": 'attachment; filename="Install-ArgusConnector.bat"',
+        "Content-Type": "text/plain; charset=utf-8",
+    }
+    return Response(content=content, headers=headers, media_type="text/plain; charset=utf-8")
 
 
 @router.post("/connector/upload-update")

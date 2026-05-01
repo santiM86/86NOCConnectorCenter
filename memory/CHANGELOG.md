@@ -1,5 +1,40 @@
 # CHANGELOG — 86BIT ARGUS Center
 
+## 2026-05-01 (sera) — Bootstrap Installer Wizard self-elevating
+
+### Installer "doppio-click" per setup nuovi connector
+Richiesta utente: link con wizard UI cliccabile per installazione, non ZIP da
+estrarre manualmente.
+
+**Nuovo file** `/app/noc-connector/installer/Install-ArgusConnector.ps1`:
+single-file bootstrap installer che fa:
+1. Auto-elevazione UAC (rileva privilegi e si rilancia come admin)
+2. Download dell'ultima versione attiva del connector ZIP dal Center
+3. Estrazione in `$env:TEMP\argus_bootstrap_<timestamp>`
+4. Lancio del wizard GUI esistente (`installer_gui.ps1` con WinForms native)
+5. Cleanup tmp dir
+
+**Companion** `/app/noc-connector/installer/Install-ArgusConnector.bat`:
+launcher .bat per chi non sa eseguire .ps1 da PowerShell. Doppio click parte.
+
+**Backend** (`routes/connector.py`):
+- `GET /api/connector/install-bootstrap.ps1`: serve il bootstrap script con
+  iniezione dinamica del `$CenterUrl` derivato da `x-forwarded-host` +
+  `x-forwarded-proto` (così funziona sia su preview che su prod argus.86bit.it
+  qualunque sia il dominio del Center).
+- `GET /api/connector/install-bootstrap.bat`: serve il companion launcher
+  con `Content-Disposition: attachment` per il download diretto.
+
+**UX flow per nuovo cliente:**
+1. Admin manda al cliente: `https://argus.86bit.it/api/connector/install-bootstrap.ps1`
+2. Cliente scarica → tasto destro → Esegui con PowerShell
+3. UAC prompt → accept → script scarica ZIP, estrae, lancia wizard GUI
+4. Wizard chiede URL Center + API Key + percorso install → installazione NSSM
+   completa con Defender exclusions + Task Scheduler updater
+5. Connector parte come servizio Windows + tray icon
+
+
+
 ## 2026-05-01 — Switch Port Monitor Nebula-style + Connector v3.6.0
 
 ### Vista porta-per-porta in stile HPE Instant On / Cisco Meraki
