@@ -2,10 +2,11 @@
 Security: HMAC-SHA256, Anti-Replay, Obfuscated paths, TLS 1.2+
 """
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 import uuid
 import shutil
 import logging
+import re
 from pathlib import Path
 from typing import Optional
 from datetime import datetime, timezone, timedelta
@@ -694,6 +695,29 @@ async def connector_download(filename: str, request: Request):
     filepath = CONNECTOR_STORAGE / filename
     if not filepath.exists():
         raise HTTPException(status_code=404, detail="File not found")
+    return FileResponse(path=str(filepath), filename=filename, media_type="application/zip")
+
+
+@router.get("/connector/public-download/latest")
+async def connector_public_download_latest():
+    """Public download of the latest active connector ZIP. No auth required.
+
+    Sicuro perche':
+    - Lo ZIP contiene solo gli script PowerShell open (no segreti, no credenziali).
+    - Le credenziali (api_key, hmac secret) sono salvate in config.json LOCALE
+      del cliente (in ProgramData), mai distribuite nel binario.
+    - Permette al cliente di fare bootstrap manuale o disaster recovery senza
+      conoscere il filename esatto.
+    """
+    update_info = await db.connector_updates.find_one({"active": True}, {"_id": 0})
+    if not update_info:
+        raise HTTPException(status_code=404, detail="Nessun aggiornamento attivo")
+    filename = update_info.get("filename", "")
+    if not filename or not re.match(r"^86NocConnector_v[\d\.]+\.zip$", filename):
+        raise HTTPException(status_code=500, detail="Filename non valido")
+    filepath = CONNECTOR_STORAGE / filename
+    if not filepath.exists():
+        raise HTTPException(status_code=404, detail="File ZIP non trovato sul server")
     return FileResponse(path=str(filepath), filename=filename, media_type="application/zip")
 
 
@@ -2458,6 +2482,43 @@ async def connector_lldp_report(request: Request):
         await db.lldp_neighbors.insert_many(docs)
 
     logger.info(f"LLDP neighbors updated for {client_id}: {len(neighbors)} entries")
+    return {"status": "ok", "neighbors_stored": len(neighbors)}
+
+
+@router.post(f"/{C}/cn")
+@router.post("/connector/cdp-neighbors")
+async def connector_cdp_report(request: Request):
+    """Receive CDP (Cisco Discovery Protocol) neighbor data from the connector."""
+    client_data = await verify_connector_request(request)
+    body = await request.json()
+    check_nosql_injection(body)
+    client_id = client_data["id"]
+    neighbors = body.get("neighbors", [])
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    # Clear old CDP data for this client and re-insert fresh
+    await db.cdp_neighbors.delete_many({"client_id": client_id})
+
+    if neighbors:
+        docs = []
+        for n in neighbors:
+            docs.append({
+                "client_id": client_id,
+                "local_ip": sanitize_string(n.get("local_ip", ""), 64),
+                "local_port_id": sanitize_string(n.get("local_port_id", ""), 128),
+                "local_port_desc": sanitize_string(n.get("local_port_desc", ""), 256),
+                "remote_ip": sanitize_string(n.get("remote_ip", ""), 64),
+                "remote_sys_name": sanitize_string(n.get("remote_sys_name", ""), 256),
+                "remote_port_id": sanitize_string(n.get("remote_port_id", ""), 128),
+                "remote_port_desc": sanitize_string(n.get("remote_port_desc", ""), 256),
+                "remote_sys_desc": sanitize_string(n.get("remote_sys_desc", ""), 512),
+                "remote_platform": sanitize_string(n.get("remote_platform", ""), 256),
+                "remote_sys_cap": int(n.get("remote_sys_cap", 0) or 0),
+                "updated_at": now_iso,
+            })
+        await db.cdp_neighbors.insert_many(docs)
+
+    logger.info(f"CDP neighbors updated for {client_id}: {len(neighbors)} entries")
     return {"status": "ok", "neighbors_stored": len(neighbors)}
 
 
