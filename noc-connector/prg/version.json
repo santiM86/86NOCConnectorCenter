@@ -1,4 +1,4 @@
 {
-  "version": "3.6.1",
-  "changelog": "v3.6.1 - Force-Update Fallback Robusto. Se il Task Scheduler '\\86BIT\\ArgusConnectorUpdater' non esiste o non risponde, il connector ora esegue automaticamente update_check.ps1 come child process detached (powershell.exe -File). Questo risolve definitivamente il problema 'Aggiornamento forzato in attesa heartbeat' che si verificava quando il Task Scheduler legacy era stato eliminato manualmente o l'installer non l'aveva creato. Include tutto v3.6.0 (Switch Port Monitor Nebula-style)."
+  "version": "3.6.2",
+  "changelog": "v3.6.2 - install.bat aggiornato per lanciare automaticamente il wizard GUI (installer_gui.ps1) invece dell'installer legacy v3.0.0 che usava Scheduled Task obsoleto. Doppio click su install.bat ora avvia l'installer NSSM con UI grafica completa. Include tutto v3.6.0/3.6.1 (Switch Port Monitor + Force-Update Fallback)."
 }
