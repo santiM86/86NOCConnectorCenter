@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import axios from "axios";
+import { Link } from "react-router-dom";
 import { API } from "@/App";
 import {
   WifiHigh, WifiSlash, ArrowClockwise, Clock, Buildings,
@@ -8,6 +9,7 @@ import {
   Monitor, X, Trash, CheckCircle, HardDrive, SpinnerGap,
   WifiHigh as WifiIcon, Pulse, ListBullets, Graph,
   CircleNotch, ShieldCheck, Warning,
+  Stack as StackIcon,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
@@ -595,6 +597,15 @@ export default function ClientStatusPage() {
                               data-testid={`web-console-${dev.device_ip}`}>
                               <Monitor size={14} />
                             </button>
+                            {!isPing && portStats.total > 0 && (
+                              <Link to={`/switch-ports/${encodeURIComponent(dev.device_ip)}`}
+                                onClick={(e) => e.stopPropagation()}
+                                className="flex-shrink-0 w-7 h-7 rounded-md flex items-center justify-center text-[var(--text-muted)] hover:text-cyan-400 hover:bg-cyan-500/10 transition-colors"
+                                title="Vedi porte switch (Up/Down/PoE/Uplink/LLDP)"
+                                data-testid={`view-ports-${dev.device_ip}`}>
+                                <StackIcon size={14} weight="bold" />
+                              </Link>
+                            )}
                             <button onClick={(e) => { e.stopPropagation(); setDeleteTarget(dev.device_ip); }}
                               className="flex-shrink-0 w-7 h-7 rounded-md flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--critical)] hover:bg-[var(--critical-bg)] transition-colors" title="Elimina"
                               data-testid={`delete-device-${dev.device_ip}`}>
