@@ -91,8 +91,14 @@ function Show-InstallerWizard {
             if (Test-Path $existingVerFile) {
                 $script:ExistingVersion = (Get-Content $existingVerFile -Raw | ConvertFrom-Json).version
             }
-            # Considera upgrade solo se config valida (URL + API key)
-            if ($script:ExistingConfig.noc_url -and $script:ExistingConfig.api_key) {
+            # v3.6.6: supporta entrambi i nomi chiave (noc_center_url e' il nome corrente
+            # in production, noc_url era il nome legacy in alcune build di test).
+            $cfgUrl = if ($script:ExistingConfig.noc_center_url) {
+                $script:ExistingConfig.noc_center_url
+            } elseif ($script:ExistingConfig.noc_url) {
+                $script:ExistingConfig.noc_url
+            } else { $null }
+            if ($cfgUrl -and $script:ExistingConfig.api_key) {
                 $script:IsUpgrade = $true
             }
         } catch {
@@ -349,7 +355,10 @@ function Show-InstallerWizard {
         
         $desc = New-Object System.Windows.Forms.Label
         if ($script:IsUpgrade) {
-            $cliName = if ($script:ExistingConfig.client_name) { $script:ExistingConfig.client_name } else { "(rilevato)" }
+            $cliId = $script:ExistingConfig.client_id
+            $cliName = if ($script:ExistingConfig.client_name) { $script:ExistingConfig.client_name }
+                       elseif ($cliId) { "ID " + ($cliId.ToString().Substring(0,[Math]::Min(8, $cliId.ToString().Length))) + "..." }
+                       else { "(rilevato)" }
             $desc.Text = "Rilevata installazione esistente per cliente '$cliName'. I campi sono pre-compilati - clicca Avanti per aggiornare a v$Version."
         } else {
             $desc.Text = "Inserisci i dati di connessione al NOC Center."
@@ -376,9 +385,10 @@ function Show-InstallerWizard {
         $txtUrl.Location = New-Object System.Drawing.Point(28, 118)
         $txtUrl.Size = New-Object System.Drawing.Size(450, 28)
         $txtUrl.Font = New-Object System.Drawing.Font("Consolas", 10)
-        # v3.6.5: pre-compila se aggiornamento
-        if ($script:IsUpgrade -and $script:ExistingConfig.noc_url) {
-            $txtUrl.Text = $script:ExistingConfig.noc_url
+        # v3.6.5: pre-compila se aggiornamento (supporta noc_center_url + noc_url legacy)
+        if ($script:IsUpgrade) {
+            $cfgUrl = if ($script:ExistingConfig.noc_center_url) { $script:ExistingConfig.noc_center_url } elseif ($script:ExistingConfig.noc_url) { $script:ExistingConfig.noc_url } else { "" }
+            if ($cfgUrl) { $txtUrl.Text = $cfgUrl }
         }
         $contentPanel.Controls.Add($txtUrl)
         
@@ -427,8 +437,10 @@ function Show-InstallerWizard {
         
         # v3.6.5: pre-compila porte da config esistente se upgrade
         if ($script:IsUpgrade) {
-            if ($script:ExistingConfig.snmp_port) { $txtSNMP.Text = "$($script:ExistingConfig.snmp_port)" }
-            if ($script:ExistingConfig.syslog_port) { $txtSyslog.Text = "$($script:ExistingConfig.syslog_port)" }
+            $cfgSnmp = if ($script:ExistingConfig.snmp_trap_port) { $script:ExistingConfig.snmp_trap_port } elseif ($script:ExistingConfig.snmp_port) { $script:ExistingConfig.snmp_port } else { $null }
+            $cfgSyslog = $script:ExistingConfig.syslog_port
+            if ($cfgSnmp) { $txtSNMP.Text = "$cfgSnmp" }
+            if ($cfgSyslog) { $txtSyslog.Text = "$cfgSyslog" }
         }
         $txtSNMP.Text = if ($txtSNMP.Text) { $txtSNMP.Text } else { "162" }
         $txtSNMP.Location = New-Object System.Drawing.Point(110, 261)
