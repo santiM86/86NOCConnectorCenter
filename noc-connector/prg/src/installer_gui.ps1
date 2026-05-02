@@ -1028,13 +1028,12 @@ function Show-InstallerWizard {
                     } catch {}
 
                     # Registra il servizio con NSSM
-                    # v3.5.15 FIX quoting: nssm install con AppParameters inline
-                    # NON rispetta le virgolette su path con spazi (es. "C:\Program Files\...").
-                    # Risultato pre-fix: PowerShell ricevette `-File C:\Program` come path monco
-                    # -> "Il file non ha estensione 'ps1'" -> crash infinito ogni 60s su Program Files.
-                    # Fix: install col solo eseguibile, poi AppParameters via `set` (quoting OK).
+                    # v3.6.8 FIX DEFINITIVO quoting: nssm set AppParameters via CLI sfila
+                    # le virgolette dai path con spazi anche passandoli con stringa singola.
+                    # Unico modo affidabile: scrivere direttamente in registry dopo l'install.
+                    # Senza questo fix il servizio parte in SERVICE_PAUSED con errore
+                    # "Impossibile elaborare -File 'C:\Program'" e non arriva mai RUNNING.
                     & $nssmPath install $svcName $psExe
-                    & $nssmPath set $svcName AppParameters ('-ExecutionPolicy Bypass -NonInteractive -WindowStyle Hidden -File "' + $connectorScript + '"')
                     & $nssmPath set $svcName AppDirectory $ScriptDir
                     & $nssmPath set $svcName DisplayName "86NocConnector Service"
                     & $nssmPath set $svcName Description "86NocConnector - Raccolta SNMP/Syslog per NOC Center"
@@ -1047,7 +1046,20 @@ function Show-InstallerWizard {
                     & $nssmPath set $svcName AppRestartDelay 30000
                     & $nssmPath set $svcName AppThrottle 30000
                     & $nssmPath set $svcName AppExit Default Restart
-                    
+
+                    # AppParameters via registry diretto (preserva virgolette su path con spazi)
+                    try {
+                        $svcRegPath = "HKLM:\SYSTEM\CurrentControlSet\Services\$svcName\Parameters"
+                        if (-not (Test-Path $svcRegPath)) {
+                            New-Item -Path $svcRegPath -Force | Out-Null
+                        }
+                        $svcParams = '-NoProfile -ExecutionPolicy Bypass -NonInteractive -WindowStyle Hidden -File "' + $connectorScript + '"'
+                        Set-ItemProperty -Path $svcRegPath -Name "AppParameters" -Value $svcParams -Type String
+                        $txtStatus.AppendText("  AppParameters scritto in registry (quoting preservato)`r`n")
+                    } catch {
+                        $txtStatus.AppendText("  ATTENZIONE: impossibile scrivere AppParameters in registry: $($_.Exception.Message)`r`n")
+                    }
+
                     $txtStatus.AppendText("  Servizio Windows registrato (NSSM)`r`n")
                     $txtStatus.AppendText("  Modalita': LocalSystem (sopravvive a disconnessione RDP)`r`n")
                     $txtStatus.AppendText("  Riavvio automatico su crash: SI`r`n")
