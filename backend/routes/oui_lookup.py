@@ -25,7 +25,10 @@ OUI_DB = {
     "b8:17:c2": "Apple", "b8:e8:56": "Apple", "c8:1e:e7": "Apple", "d0:03:4b": "Apple",
     "d0:23:db": "Apple", "dc:a9:04": "Apple", "e0:ac:cb": "Apple", "f0:d1:a9": "Apple",
     "f4:0f:24": "Apple",
-    # HP / HPE / Aruba
+    # HP / HPE / Aruba / HPE iLO (management interface - indica server)
+    "9c:dc:71": "HPE iLO", "3c:4a:92": "HPE iLO", "d4:85:64": "HPE iLO",
+    "98:4b:e1": "HP", "f4:ce:46": "HPE iLO", "14:58:d0": "HPE iLO",
+    "fc:15:b4": "HPE iLO", "7c:e9:d3": "HPE iLO", "94:f1:28": "HPE iLO",
     "00:08:02": "HP", "00:0b:cd": "HP", "00:0f:20": "HP", "00:10:83": "HP",
     "00:11:0a": "HP", "00:11:85": "HP", "00:12:79": "HP", "00:13:21": "HP",
     "00:14:38": "HP", "00:14:c2": "HP", "00:15:60": "HP", "00:16:35": "HP",
@@ -66,7 +69,9 @@ OUI_DB = {
     "00:25:45": "Cisco", "00:26:51": "Cisco", "00:26:cb": "Cisco", "2c:5a:0f": "Cisco",
     "6c:20:56": "Cisco", "80:e0:1d": "Cisco Meraki", "88:15:44": "Cisco Meraki",
     "98:18:88": "Cisco Meraki", "ac:17:c8": "Cisco Meraki", "e0:55:3d": "Cisco Meraki",
-    # Dell
+    # Dell / Dell iDRAC (management interface server Dell)
+    "a4:ba:db": "Dell iDRAC", "18:fb:7b": "Dell iDRAC", "f8:bc:12": "Dell iDRAC",
+    "c8:1f:66": "Dell iDRAC", "b0:83:fe": "Dell iDRAC", "18:66:da": "Dell iDRAC",
     "00:06:5b": "Dell", "00:08:74": "Dell", "00:0b:db": "Dell", "00:0d:56": "Dell",
     "00:0f:1f": "Dell", "00:11:43": "Dell", "00:12:3f": "Dell", "00:13:72": "Dell",
     "00:14:22": "Dell", "00:15:c5": "Dell", "00:18:8b": "Dell", "00:19:b9": "Dell",
@@ -121,10 +126,23 @@ OUI_DB = {
     "74:83:c2": "Ubiquiti", "78:8a:20": "Ubiquiti", "80:2a:a8": "Ubiquiti",
     "94:2a:6f": "Ubiquiti", "b4:fb:e4": "Ubiquiti", "dc:9f:db": "Ubiquiti",
     "f0:9f:c2": "Ubiquiti", "fc:ec:da": "Ubiquiti",
+    # IBM IMM (Integrated Management Module server IBM/Lenovo)
+    "5c:f3:fc": "IBM IMM", "6c:ae:8b": "IBM IMM", "e4:1f:13": "IBM IMM",
     # Fortinet / pfSense / Sophos (firewall)
     "00:09:0f": "Fortinet", "04:d5:90": "Fortinet", "70:4c:a5": "Fortinet",
-    "90:6c:ac": "Fortinet", "e8:1c:ba": "Fortinet",
-    "00:04:23": "Sophos", "00:1e:67": "Sophos", "00:c0:ee": "Sophos",
+    "90:6c:ac": "Fortinet", "e8:1c:ba": "Fortinet", "00:1e:26": "Fortinet",
+    "00:04:23": "Sophos", "00:1a:8c": "Sophos",
+    # SonicWall
+    "00:06:b1": "SonicWall", "c0:ea:e4": "SonicWall", "18:b1:69": "SonicWall",
+    # WatchGuard
+    "00:90:7f": "WatchGuard",
+    # Checkpoint
+    "00:1c:7f": "Checkpoint",
+    # Palo Alto Networks
+    "00:1b:17": "Palo Alto", "b4:0c:25": "Palo Alto",
+    # Juniper
+    "00:05:85": "Juniper", "00:12:1e": "Juniper", "00:1b:c0": "Juniper",
+    "28:8a:1c": "Juniper", "50:c7:bf": "Juniper",
     # Samsung / LG / Lenovo / Asus (laptop/tablet)
     "00:12:fb": "Samsung", "00:17:c9": "Samsung", "00:1a:8a": "Samsung", "00:21:19": "Samsung",
     "5c:0a:5b": "Samsung", "cc:07:ab": "Samsung", "ec:1f:72": "Samsung", "e8:50:8b": "Samsung",

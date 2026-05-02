@@ -678,6 +678,9 @@ def _guess_endpoint_type(hostname, mac):
     # Fallback: usa OUI vendor del MAC per indovinare tipo
     vendor = lookup_oui(mac).lower() if mac else ""
     if vendor:
+        # Firewall/security vendor - priorita' massima (se MAC proviene da un firewall, e' un firewall)
+        if any(k in vendor for k in ["fortinet", "sophos", "sonicwall", "watchguard", "checkpoint", "palo alto", "juniper"]):
+            return "firewall"
         if any(k in vendor for k in ["synology", "qnap"]):
             return "nas"
         if any(k in vendor for k in ["axis", "hikvision", "dahua", "uniview"]):
@@ -688,12 +691,19 @@ def _guess_endpoint_type(hostname, mac):
             return "ap"
         if any(k in vendor for k in ["apc", "eaton", "riello"]):
             return "ups"
-        if any(k in vendor for k in ["hp", "brother", "canon", "epson", "ricoh", "xerox", "lexmark", "kyocera"]):
+        if any(k in vendor for k in ["brother", "canon", "epson", "ricoh", "xerox", "lexmark", "kyocera"]):
             return "printer"
+        # Server management interface (iLO/iDRAC) - OUI dedicati dai vendor
+        if "ilo" in vendor or "idrac" in vendor or "imm" in vendor:
+            return "server"
         if any(k in vendor for k in ["vmware"]):
             return "server"
         if any(k in vendor for k in ["raspberry"]):
             return "generic"
+        # HP/Dell/Lenovo/Supermicro: potrebbe essere sia server che workstation - marca generico
+        # (il match con managed device da' il tipo preciso quando monitorato)
+        if any(k in vendor for k in ["hp", "dell", "lenovo", "supermicro"]):
+            return "generic"  # ambiguo, serve inferenza ulteriore
     return "generic"
 
 
