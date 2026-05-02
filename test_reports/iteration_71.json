@@ -1,0 +1,36 @@
+{
+  "summary": "Backend testing of v3.6.14 Redfish/BMC Auto-Discovery feature. Created /app/backend/tests/test_bmc_auto_discovery.py with 22 tests covering: connector network-discovery payload with bmc_candidates persistence, db.bmc_candidates upsert (idempotency verified, no duplicates on re-POST), discovered_endpoints enrichment with bmc_kind/bmc_version, JWT-protected admin endpoints (list/dismiss/import), import->device creation with redfish_enabled=True/created_via=bmc_auto_discovery, re-import already_exists path, _guess_endpoint_type unit tests for all 5 BMC kinds (ilo/idrac/ipmi/xcc/redfish_generic) with priority over hostname/ports, plus legacy payload regression. All 22/22 tests pass.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/connector/network-discovery (BMC upsert section)", "issue": "Line 2686-2688: db.bmc_candidates.delete_many({client_id, ip: {$in: managed_ip_set_for_bmc}}) is OK but redundant — the upsert at 2666-2684 already skips IPs in managed_ip_set_for_bmc. The delete_many also has no time-based pruning despite the comment 'Drop BMC candidates not seen in last 24h or already managed' (24h logic is missing)."},
+      {"endpoint": "GET /api/bmc-candidates", "issue": "discovered_endpoints enrichment query does not filter by client_id. If two clients have a BMC at the same IP, switch_ip/port could leak across clients. Recommend adding client_id filter to the find()."},
+      {"endpoint": "POST /api/bmc-candidates/{client_id}/{ip}/import", "issue": "Creates record in db.devices, but the rest of the platform mainly uses db.managed_devices for polling. The created device may not be auto-polled until the admin re-creates it as a managed device. Worth documenting the follow-up step (vault credentials + managed_devices link)."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_bmc_auto_discovery.py",
+    "/app/test_reports/pytest/pytest_bmc_auto_discovery.xml"
+  ],
+  "action_items": [
+    "Optional: enrich GET /api/bmc-candidates query with client_id filter on discovered_endpoints to avoid cross-tenant leakage (low risk in practice since IPs are private but still a defense-in-depth fix).",
+    "Optional: implement the 24h pruning for db.bmc_candidates referenced in the comment but not actually coded.",
+    "Optional: create a corresponding managed_devices entry on import (or document the follow-up vault step in the UI)."
+  ],
+  "critical_code_review_comments": [
+    "connector.py is now 3022 lines — well over the 700-line guideline. Should be split into submodules (heartbeat/devices/discovery/bmc/maintenance) for maintainability.",
+    "BMC import endpoint writes to db.devices but most of the codebase uses db.managed_devices: dual-write pattern needs to be reconciled.",
+    "GET /api/bmc-candidates enrichment ignores client_id when querying discovered_endpoints — minor cross-client risk."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_bmc_auto_discovery.py (new)"
+  ],
+  "success_rate": {"backend": "100% (22/22)", "frontend": "n/a (skipped per request)"},
+  "test_credentials": "admin@86bit.it / password (JWT). Test client created on the fly via POST /api/clients.",
+  "seed_data_creation": "Per test: 1 client TEST_bmc_<uuid>, 1 device_poll_status (switch 10.88.88.1), 3 BMC candidates (10.88.88.50/51/52 - ilo/idrac/ipmi). All cleaned up in fixture teardown.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "v3.6.14 BMC auto-discovery is fully covered by /app/backend/tests/test_bmc_auto_discovery.py. The test file is order-sensitive within TestNetworkDiscoveryBMCPersistence (idempotency test re-posts full payload to keep state). Module-scoped fixture creates a fresh client every run. Useful for regression on /api/connector/network-discovery, /api/bmc-candidates*, and routes.topology._guess_endpoint_type.",
+  "rca of the issue": "n/a — feature works as designed."
+}

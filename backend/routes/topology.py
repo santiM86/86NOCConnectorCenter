@@ -656,16 +656,19 @@ def _find_ilo_parent(ilo, servers, switches, gateways):
     return _find_best_parent(ilo, switches, gateways)
 
 
-def _guess_endpoint_type(hostname, mac, listening_ports=None):
-    """Guess endpoint type from hostname, TCP fingerprint (listening_ports), then MAC OUI vendor.
+def _guess_endpoint_type(hostname, mac, listening_ports=None, bmc_kind=None):
+    """Guess endpoint type from hostname, BMC fingerprint, TCP fingerprint, MAC OUI.
 
-    listening_ports: optional list of int TCP ports found open on the device (v3.6.13).
     Priority order:
-      1. Hostname keywords (strongest signal if naming convention exists)
-      2. TCP port fingerprint (3389=Win Server, 22 only=Linux, 9100/515/631=Printer, ...)
-      3. MAC OUI vendor fallback
+      1. BMC fingerprint Redfish/IPMI attivo (iLO/iDRAC/IPMI/XCC) => sempre server
+      2. Hostname keywords (strongest signal if naming convention exists)
+      3. TCP port fingerprint (3389=Win Server, 22 only=Linux, 9100/515/631=Printer, ...)
+      4. MAC OUI vendor fallback
     """
     from .oui_lookup import lookup_oui
+    # v3.6.14: BMC Redfish rilevato -> server sicuro
+    if bmc_kind and bmc_kind in ("ilo", "idrac", "ipmi", "xcc", "redfish_generic"):
+        return "server"
     h = (hostname or "").lower()
     if any(k in h for k in ["srv", "server", "esxi", "vmware", "proxmox", "dc-", "ad-"]):
         return "server"
@@ -1040,8 +1043,12 @@ async def get_network_topology(client_id: str, current_user: dict = Depends(get_
             if ip and ip != display_name:
                 subtitle = f"{ip} | {mac}"
 
-            # Determine endpoint type from MAC OUI, hostname, or TCP port fingerprint
-            ep_type = _guess_endpoint_type(hostname, mac, ep.get("listening_ports") or [])
+            # Determine endpoint type from MAC OUI, hostname, TCP fingerprint, BMC
+            ep_type = _guess_endpoint_type(
+                hostname, mac,
+                ep.get("listening_ports") or [],
+                ep.get("bmc_kind") or "",
+            )
             vendor = _vendor_from_mac(mac)
 
             # Se non c'e' hostname, mostra vendor OUI come display name
@@ -1066,6 +1073,8 @@ async def get_network_topology(client_id: str, current_user: dict = Depends(get_
                 "hostname": hostname,
                 "subtitle": subtitle,
                 "listening_ports": ep.get("listening_ports") or [],  # v3.6.13: TCP fingerprint
+                "bmc_kind": ep.get("bmc_kind") or "",  # v3.6.14: iLO/iDRAC/IPMI
+                "bmc_version": ep.get("bmc_version") or "",
             }
             topology["nodes"].append(ep_node)
             endpoint_layer_nodes.append(node_id)

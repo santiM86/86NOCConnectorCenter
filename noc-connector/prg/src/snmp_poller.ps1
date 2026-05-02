@@ -2707,6 +2707,75 @@ function Poll-SwitchPortDetails($ip, $community) {
 }
 
 
+# v3.6.14: Redfish BMC fingerprint probe.
+# Dato un IP con porta 443 aperta, testa /redfish/v1/ (unauth, endpoint pubblico
+# che espone RedfishVersion + vendor banner). Ritorna $null oppure hashtable con
+# bmc_kind (ilo|idrac|ipmi|redfish_generic), redfish_version, oem_hint.
+function Probe-RedfishBmc {
+    param([string]$ip, [int]$timeoutMs = 2000)
+    try {
+        # Accetta self-signed
+        [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+        [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12 -bor [System.Net.SecurityProtocolType]::Tls11 -bor [System.Net.SecurityProtocolType]::Tls
+        $url = "https://$ip/redfish/v1/"
+        $req = [System.Net.HttpWebRequest]::Create($url)
+        $req.Method = "GET"
+        $req.Timeout = $timeoutMs
+        $req.ReadWriteTimeout = $timeoutMs
+        $req.AllowAutoRedirect = $true
+        $req.UserAgent = "ARGUS-NOC-Connector/3.6.14"
+        try {
+            $resp = $req.GetResponse()
+        } catch [System.Net.WebException] {
+            # Alcuni iLO/iDRAC tornano 401 sulla root: consideralo comunque BMC rilevato
+            $resp = $_.Exception.Response
+            if (-not $resp) { return $null }
+        }
+        $stream = $resp.GetResponseStream()
+        $reader = New-Object System.IO.StreamReader($stream)
+        $body = $reader.ReadToEnd()
+        $reader.Close()
+        $stream.Close()
+        try { $resp.Close() } catch {}
+        # Parse JSON se possibile
+        $redfishVer = ""; $oemHint = ""; $bmcKind = ""
+        try {
+            $json = $body | ConvertFrom-Json
+            if ($json.RedfishVersion) { $redfishVer = [string]$json.RedfishVersion }
+            if ($json.Oem) {
+                $oemKeys = @($json.Oem.PSObject.Properties.Name)
+                if ($oemKeys.Count -gt 0) { $oemHint = $oemKeys[0] }
+            }
+        } catch {}
+        # Anche se JSON non parse, cerca banner nel body o negli header
+        $bodyLower = $body.ToLower()
+        $serverHdr = ""
+        try { $serverHdr = ($resp.Headers["Server"] + "").ToLower() } catch {}
+        if ($oemHint -match "(?i)Hp|Hpe" -or $bodyLower -match "iLO|ProLiant|HPE" -or $serverHdr -match "iLO") {
+            $bmcKind = "ilo"
+        } elseif ($oemHint -match "(?i)Dell" -or $bodyLower -match "idrac|dell" -or $serverHdr -match "idrac") {
+            $bmcKind = "idrac"
+        } elseif ($oemHint -match "(?i)Supermicro|Ami" -or $bodyLower -match "supermicro|bmc") {
+            $bmcKind = "ipmi"
+        } elseif ($oemHint -match "(?i)Lenovo|Ibm" -or $bodyLower -match "xcc|thinksystem|lenovo") {
+            $bmcKind = "xcc"
+        } elseif ($redfishVer) {
+            $bmcKind = "redfish_generic"
+        } else {
+            return $null
+        }
+        return @{
+            bmc_kind = $bmcKind
+            redfish_version = $redfishVer
+            oem_hint = $oemHint
+            server_header = $serverHdr
+        }
+    } catch {
+        return $null
+    }
+}
+
+
 # v3.6.13: TCP Port Fingerprint Probe per classificare device ambigui (HP/Dell/Intel OUI)
 # Avvia connessioni TCP in parallelo (async BeginConnect) per scoprire servizi attivi.
 # Usato per distinguere Windows Server (3389), Linux/SSH (22), Printer (9100/515/631),
@@ -2892,6 +2961,7 @@ function Run-FullDiscovery($config, $devices) {
         }
         $probedCount = 0
         $probeMax = 150  # limite di sicurezza
+        $bmcCandidates = @()  # v3.6.14: BMC/Redfish scoperti
         foreach ($pip in $ipsToProbe) {
             if ($probedCount -ge $probeMax) { break }
             $probedCount++
@@ -2902,10 +2972,24 @@ function Run-FullDiscovery($config, $devices) {
                         ip = $pip
                         ports = @($openPorts)
                     }
+                    # v3.6.14: se 443 aperto, prova a capire se e' un BMC Redfish
+                    if ($openPorts -contains 443) {
+                        $bmc = Probe-RedfishBmc -ip $pip -timeoutMs 2000
+                        if ($bmc -and $bmc.bmc_kind) {
+                            $bmcCandidates += @{
+                                ip = $pip
+                                bmc_kind = $bmc.bmc_kind
+                                redfish_version = $bmc.redfish_version
+                                oem_hint = $bmc.oem_hint
+                                server_header = $bmc.server_header
+                            }
+                            Write-Log "  BMC rilevato: $pip -> $($bmc.bmc_kind) (redfish $($bmc.redfish_version))" "INFO"
+                        }
+                    }
                 }
             } catch {}
         }
-        Write-Log "TCP probe: $probedCount IP scansionati, $($ipPortProbes.Count) con porte aperte" "INFO"
+        Write-Log "TCP probe: $probedCount IP scansionati, $($ipPortProbes.Count) con porte aperte, $($bmcCandidates.Count) BMC Redfish" "INFO"
     } catch {
         Write-Log "TCP probe: errore top-level - $($_.Exception.Message)" "WARN"
     }
@@ -2915,9 +2999,10 @@ function Run-FullDiscovery($config, $devices) {
         port_speeds = $allPortSpeeds
         device_macs = $deviceMacs
         ip_port_probes = $ipPortProbes
+        bmc_candidates = $bmcCandidates
     }
     Send-ToNOC $config "connector/network-discovery" $discoveryPayload | Out-Null
-    Write-Log "Discovery: $($allMacTables.Count) MAC tables, $($allPortSpeeds.Count) port speed reports, $($ipPortProbes.Count) TCP probes inviati" "INFO"
+    Write-Log "Discovery: $($allMacTables.Count) MAC tables, $($allPortSpeeds.Count) port speed reports, $($ipPortProbes.Count) TCP probes, $($bmcCandidates.Count) BMC inviati" "INFO"
 
     # Send dettaglio porte switch per UI Nebula-style
     if ($allSwitchPorts.Count -gt 0) {
