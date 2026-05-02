@@ -1,4 +1,4 @@
 {
-  "version": "3.6.12",
-  "changelog": "v3.6.12 - FIX identificazione device MONITORATI nella FDB degli switch. Il connector v3.6.11 raccoglieva correttamente i MAC dalla FDB degli switch con bridge-port mapping, ma per farli matchare con un device monitorato (NAS/server/PC/stampante) serviva che il device rispondesse a SNMP ifPhysAddress. Tutti i PC Windows / server senza SNMP erano quindi mostrati solo come 'Vendor device' via OUI, mai con il loro vero nome managed. Fix: pre-loop di Run-FullDiscovery ora legge l'ARP cache locale del server connector (Get-NetNeighbor Reachable/Stale/Permanent) e per ogni device monitorato (anche ping-only!) aggiunge la coppia IP->MAC a device_macs. Cosi' il backend puo' associare il MAC dalla FDB switch al managed device giusto. Include tutti i fix v3.6.0-3.6.11."
+  "version": "3.6.13",
+  "changelog": "v3.6.13 - TCP Port Fingerprint: il connector ora scansiona (async parallel) le porte 22/80/443/445/515/631/3389/5060/8080/9100 su tutti gli IP managed + ARP cache (max 150/ciclo). Le porte aperte vengono inviate al backend in 'ip_port_probes'. Il backend le usa per classificare device con OUI ambigui: 3389 -> Windows Server, 22 -> Linux server, 9100/515/631 -> Printer, 5060 -> VoIP, 443/80 -> appliance. Include tutti i fix v3.6.0-3.6.12."
 }

@@ -2707,12 +2707,50 @@ function Poll-SwitchPortDetails($ip, $community) {
 }
 
 
+# v3.6.13: TCP Port Fingerprint Probe per classificare device ambigui (HP/Dell/Intel OUI)
+# Avvia connessioni TCP in parallelo (async BeginConnect) per scoprire servizi attivi.
+# Usato per distinguere Windows Server (3389), Linux/SSH (22), Printer (9100/515/631),
+# Firewall/Appliance (solo 443/80), VoIP (5060), etc.
+function Probe-TcpPorts {
+    param(
+        [string]$ip,
+        [int[]]$ports,
+        [int]$timeoutMs = 400
+    )
+    $clients = @{}
+    $iars = @{}
+    foreach ($p in $ports) {
+        try {
+            $c = New-Object System.Net.Sockets.TcpClient
+            $iar = $c.BeginConnect($ip, $p, $null, $null)
+            $clients[$p] = $c
+            $iars[$p] = $iar
+        } catch {}
+    }
+    # Wait once for all in parallel
+    Start-Sleep -Milliseconds $timeoutMs
+    $open = @()
+    foreach ($p in $ports) {
+        try {
+            if (-not $clients.ContainsKey($p)) { continue }
+            $c = $clients[$p]
+            $iar = $iars[$p]
+            if ($iar.IsCompleted -and $c.Connected) {
+                $open += [int]$p
+            }
+            try { $c.Close() } catch {}
+        } catch {}
+    }
+    return ,$open
+}
+
 function Run-FullDiscovery($config, $devices) {
     $allNeighbors = @()
     $allMacTables = @()
     $allPortSpeeds = @()
     $deviceMacs = @()  # MAC di ogni dispositivo managed
     $allSwitchPorts = @()  # Porte dettagliate per UI Nebula-style
+    $ipPortProbes = @()  # v3.6.13: TCP port fingerprint su managed IP + ARP cache
 
     # v3.6.12: Raccogli MAC di TUTTI i managed device (anche non-SNMP) via ARP locale.
     # Questo garantisce che il match tra FDB FDB switch e managed device funzioni
@@ -2834,13 +2872,52 @@ function Run-FullDiscovery($config, $devices) {
     }
     
     # Invia dati MAC/Speed per la ricostruzione topologica
+    # v3.6.13: TCP fingerprint probe su tutti gli IP raggiungibili (managed + ARP cache)
+    # per classificare server/stampanti/firewall ambigui (OUI HP/Dell/Intel).
+    try {
+        $probePorts = @(22, 80, 443, 445, 515, 631, 3389, 5060, 8080, 9100)
+        $ipsToProbe = New-Object 'System.Collections.Generic.HashSet[string]'
+        foreach ($d in $devices) {
+            if ($d.ip) { [void]$ipsToProbe.Add($d.ip) }
+        }
+        if ($allArpMap) {
+            foreach ($k in $allArpMap.Keys) {
+                if ($k -and -not $ipsToProbe.Contains($k)) {
+                    # Skip multicast/broadcast/link-local
+                    if ($k -notmatch '^(224\.|239\.|255\.|169\.254\.|0\.0\.)') {
+                        [void]$ipsToProbe.Add($k)
+                    }
+                }
+            }
+        }
+        $probedCount = 0
+        $probeMax = 150  # limite di sicurezza
+        foreach ($pip in $ipsToProbe) {
+            if ($probedCount -ge $probeMax) { break }
+            $probedCount++
+            try {
+                $openPorts = Probe-TcpPorts -ip $pip -ports $probePorts -timeoutMs 400
+                if ($openPorts -and $openPorts.Count -gt 0) {
+                    $ipPortProbes += @{
+                        ip = $pip
+                        ports = @($openPorts)
+                    }
+                }
+            } catch {}
+        }
+        Write-Log "TCP probe: $probedCount IP scansionati, $($ipPortProbes.Count) con porte aperte" "INFO"
+    } catch {
+        Write-Log "TCP probe: errore top-level - $($_.Exception.Message)" "WARN"
+    }
+
     $discoveryPayload = @{
         mac_tables = $allMacTables
         port_speeds = $allPortSpeeds
         device_macs = $deviceMacs
+        ip_port_probes = $ipPortProbes
     }
     Send-ToNOC $config "connector/network-discovery" $discoveryPayload | Out-Null
-    Write-Log "Discovery: $($allMacTables.Count) MAC tables, $($allPortSpeeds.Count) port speed reports inviati" "INFO"
+    Write-Log "Discovery: $($allMacTables.Count) MAC tables, $($allPortSpeeds.Count) port speed reports, $($ipPortProbes.Count) TCP probes inviati" "INFO"
 
     # Send dettaglio porte switch per UI Nebula-style
     if ($allSwitchPorts.Count -gt 0) {
