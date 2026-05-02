@@ -656,8 +656,15 @@ def _find_ilo_parent(ilo, servers, switches, gateways):
     return _find_best_parent(ilo, switches, gateways)
 
 
-def _guess_endpoint_type(hostname, mac):
-    """Guess endpoint type from hostname, then fallback to MAC OUI vendor."""
+def _guess_endpoint_type(hostname, mac, listening_ports=None):
+    """Guess endpoint type from hostname, TCP fingerprint (listening_ports), then MAC OUI vendor.
+
+    listening_ports: optional list of int TCP ports found open on the device (v3.6.13).
+    Priority order:
+      1. Hostname keywords (strongest signal if naming convention exists)
+      2. TCP port fingerprint (3389=Win Server, 22 only=Linux, 9100/515/631=Printer, ...)
+      3. MAC OUI vendor fallback
+    """
     from .oui_lookup import lookup_oui
     h = (hostname or "").lower()
     if any(k in h for k in ["srv", "server", "esxi", "vmware", "proxmox", "dc-", "ad-"]):
@@ -675,9 +682,35 @@ def _guess_endpoint_type(hostname, mac):
     if any(k in h for k in ["pc-", "desktop", "laptop", "workstation", "nb-"]):
         return "generic"
 
+    # v3.6.13: TCP port fingerprint (prima del fallback OUI, batte l'ambiguita')
+    ports = set(listening_ports or [])
+    if ports:
+        # Printer: porta stampa diretta Raw/LPD/IPP
+        if ports & {9100, 515, 631}:
+            return "printer"
+        # Windows Server/Workstation: RDP esposto
+        if 3389 in ports:
+            return "server"
+        # VoIP phone/PBX
+        if 5060 in ports:
+            return "generic"
+        # Linux/Unix server con SSH ma senza RDP - server di sicuro se anche altre porte tipiche
+        if 22 in ports:
+            if ports & {80, 443, 8080, 445}:
+                return "server"
+            # Solo SSH: managed appliance o server minimale
+            return "server"
+        # Solo HTTPS/HTTP: tipico di appliance/firewall/router management UI
+        if ports & {443, 80, 8080} and not (ports & {22, 3389, 445}):
+            # Se e' un vendor firewall lo sappiamo gia' da OUI piu' sotto, qui marca come generic
+            pass
+
     # Fallback: usa OUI vendor del MAC per indovinare tipo
     vendor = lookup_oui(mac).lower() if mac else ""
     if vendor:
+        # Firewall/security vendor - priorita' massima (se MAC proviene da un firewall, e' un firewall)
+        if any(k in vendor for k in ["fortinet", "sophos", "sonicwall", "watchguard", "checkpoint", "palo alto", "juniper"]):
+            return "firewall"
         if any(k in vendor for k in ["synology", "qnap"]):
             return "nas"
         if any(k in vendor for k in ["axis", "hikvision", "dahua", "uniview"]):
@@ -688,12 +721,19 @@ def _guess_endpoint_type(hostname, mac):
             return "ap"
         if any(k in vendor for k in ["apc", "eaton", "riello"]):
             return "ups"
-        if any(k in vendor for k in ["hp", "brother", "canon", "epson", "ricoh", "xerox", "lexmark", "kyocera"]):
+        if any(k in vendor for k in ["brother", "canon", "epson", "ricoh", "xerox", "lexmark", "kyocera"]):
             return "printer"
+        # Server management interface (iLO/iDRAC) - OUI dedicati dai vendor
+        if "ilo" in vendor or "idrac" in vendor or "imm" in vendor:
+            return "server"
         if any(k in vendor for k in ["vmware"]):
             return "server"
         if any(k in vendor for k in ["raspberry"]):
             return "generic"
+        # HP/Dell/Lenovo/Supermicro: potrebbe essere sia server che workstation - marca generico
+        # (il match con managed device da' il tipo preciso quando monitorato)
+        if any(k in vendor for k in ["hp", "dell", "lenovo", "supermicro"]):
+            return "generic"  # ambiguo, serve inferenza ulteriore
     return "generic"
 
 
@@ -1180,8 +1220,8 @@ async def get_network_topology(client_id: str, current_user: dict = Depends(get_
             if ip and ip != display_name:
                 subtitle = f"{ip} | {mac}"
 
-            # Determine endpoint type from MAC OUI or hostname
-            ep_type = _guess_endpoint_type(hostname, mac)
+            # Determine endpoint type from MAC OUI, hostname, or TCP port fingerprint
+            ep_type = _guess_endpoint_type(hostname, mac, ep.get("listening_ports") or [])
             vendor = _vendor_from_mac(mac)
 
             # Se non c'e' hostname, mostra vendor OUI come display name
@@ -1205,6 +1245,7 @@ async def get_network_topology(client_id: str, current_user: dict = Depends(get_
                 "vlan": vlan,
                 "hostname": hostname,
                 "subtitle": subtitle,
+                "listening_ports": ep.get("listening_ports") or [],  # v3.6.13: TCP fingerprint
             }
             topology["nodes"].append(ep_node)
             endpoint_layer_nodes.append(node_id)

@@ -2658,15 +2658,25 @@ async def connector_network_discovery(request: Request):
     mac_tables = body.get("mac_tables", [])
     port_speeds = body.get("port_speeds", [])
     device_macs = body.get("device_macs", [])
+    ip_port_probes = body.get("ip_port_probes", [])  # v3.6.13: TCP fingerprint
+
+    # Build IP -> listening_ports map from probes
+    ip_ports_map = {}
+    for probe in ip_port_probes:
+        pip = probe.get("ip", "")
+        ports = probe.get("ports", []) or []
+        if pip and ports:
+            ip_ports_map[pip] = sorted(set(int(p) for p in ports if str(p).isdigit()))
 
     # Store discovery data (replace old data for this client)
     await db.network_discovery.delete_many({"client_id": client_id})
-    if mac_tables or port_speeds or device_macs:
+    if mac_tables or port_speeds or device_macs or ip_port_probes:
         await db.network_discovery.insert_one({
             "client_id": client_id,
             "mac_tables": mac_tables,
             "port_speeds": port_speeds,
             "device_macs": device_macs,
+            "ip_port_probes": ip_port_probes,
             "updated_at": now_iso,
         })
 
@@ -2709,15 +2719,17 @@ async def connector_network_discovery(request: Request):
                     "source": "mac_table",
                 })
             # Store ALL MAC entries as discovered endpoints
+            ep_ip = resolved_ip or entry.get("ip", "")
             discovered_endpoints.append({
                 "client_id": client_id,
                 "switch_ip": switch_ip,
                 "port": port,
                 "mac": mac,
-                "ip": resolved_ip or entry.get("ip", ""),
+                "ip": ep_ip,
                 "vlan": vlan,
                 "hostname": entry.get("hostname", ""),
                 "is_managed": resolved_ip in managed_ips,
+                "listening_ports": ip_ports_map.get(ep_ip, []),  # v3.6.13
                 "updated_at": now_iso,
             })
 
