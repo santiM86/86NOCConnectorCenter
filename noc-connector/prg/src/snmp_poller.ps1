@@ -2348,23 +2348,53 @@ function Poll-MacTable($ip, $community) {
         $fdbPorts = Get-SnmpTable $ip $community "1.3.6.1.2.1.17.4.3.1.2"
         if (-not $fdbPorts -or $fdbPorts.Count -eq 0) { return $macEntries }
 
+        # v3.6.11: Walk dot1dBasePortIfIndex per convertire bridge port -> ifIndex.
+        # Su HPE Comware e altri switch la FDB usa bridge port number (es. 1..48),
+        # che NON coincide con ifIndex (es. 261..308). Senza questa conversione
+        # il match con switch_ports.idx nel backend fallisce sempre.
+        $bridgeToIf = @{}
+        try {
+            $basePortTable = Get-SnmpTable $ip $community "1.3.6.1.2.1.17.1.4.1.2"
+            if ($basePortTable) {
+                foreach ($k in @($basePortTable.Keys)) {
+                    $bp = ("$k" -split '\.')[-1]
+                    $ifIdx = "$($basePortTable[$k])"
+                    if ($bp -and $ifIdx) {
+                        $bridgeToIf["$bp"] = "$ifIdx"
+                    }
+                }
+            }
+        } catch {
+            Write-Log "  MAC Table: dot1dBasePortIfIndex non disponibile su $ip" "DEBUG"
+        }
+
         foreach ($oidKey in @($fdbPorts.Keys)) {
             $portNum = $fdbPorts[$oidKey]
-            # Estrai il MAC dall'OID suffix (6 ottetti decimali)
             $suffix = "$oidKey".Replace("1.3.6.1.2.1.17.4.3.1.2.", "")
             $macOctets = $suffix -split '\.'
             if ($macOctets.Count -eq 6) {
                 $mac = ($macOctets | ForEach-Object { "{0:X2}" -f [int]$_ }) -join ":"
-                $portInt = 0
-                try { $portInt = [int]"$portNum" } catch { $portInt = 0 }
+                $bridgePortInt = 0
+                try { $bridgePortInt = [int]"$portNum" } catch { $bridgePortInt = 0 }
+
+                # Converti bridge port -> ifIndex quando mapping disponibile
+                $ifIndexInt = $bridgePortInt
+                if ($bridgeToIf.Count -gt 0) {
+                    $mapped = $bridgeToIf["$bridgePortInt"]
+                    if ($mapped) {
+                        try { $ifIndexInt = [int]$mapped } catch { $ifIndexInt = $bridgePortInt }
+                    }
+                }
+
                 $macEntries += @{
                     mac = $mac
-                    port = $portInt
+                    port = $ifIndexInt          # ifIndex (matchable con switch_ports.idx)
+                    bridge_port = $bridgePortInt  # bridge port number originale
                 }
             }
         }
 
-        Write-Log "  MAC Table: $($macEntries.Count) entries su $ip" "DEBUG"
+        Write-Log "  MAC Table: $($macEntries.Count) entries su $ip (bridge-port mapping: $($bridgeToIf.Count))" "DEBUG"
     } catch {
         Write-Log "  MAC Table: Errore polling ${ip}: $($_.Exception.Message)" "WARN"
     }
