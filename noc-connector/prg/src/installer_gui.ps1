@@ -618,6 +618,35 @@ function Show-InstallerWizard {
         $null = $deviceList.Columns.Add("Nome", 190)
         $contentPanel.Controls.Add($deviceList)
 
+        # v3.6.7: pre-popola la lista dispositivi dalla config esistente quando si tratta di un aggiornamento.
+        # Lo facciamo solo la PRIMA volta che si entra in questa pagina (script:DevicesPrefilled flag)
+        # cosi' se l'utente cancella un device e va Indietro/Avanti non glielo ri-aggiungiamo.
+        if ($script:IsUpgrade -and $script:ExistingConfig.devices -and -not $script:DevicesPrefilled) {
+            try {
+                foreach ($d in @($script:ExistingConfig.devices)) {
+                    $devIp = "$($d.ip)"
+                    if (-not $devIp) { continue }
+                    # Skip se gia' presente (caso UI tornata indietro)
+                    $exists = $false
+                    foreach ($it in $deviceList.Items) { if ($it.Text -eq $devIp) { $exists = $true; break } }
+                    if ($exists) { continue }
+                    $devComm = if ($d.community) { "$($d.community)" } else { "public" }
+                    $devName = if ($d.name) { "$($d.name)" } else { $devIp }
+                    $item = New-Object System.Windows.Forms.ListViewItem($devIp)
+                    $null = $item.SubItems.Add($devComm)
+                    $null = $item.SubItems.Add($devName)
+                    $deviceList.Items.Add($item) | Out-Null
+                }
+                $script:DevicesPrefilled = $true
+            } catch {
+                # Pre-popolamento non critico: in caso di errore lasciamo lista vuota
+            }
+        }
+        # v3.6.7: pre-popola anche poll_interval da config se upgrade (default 60s)
+        if ($script:IsUpgrade -and $script:ExistingConfig.poll_interval_seconds) {
+            $txtPollInterval.Text = "$($script:ExistingConfig.poll_interval_seconds)"
+        }
+
         $btnRemoveDev = New-Object System.Windows.Forms.Button
         $btnRemoveDev.Text = "Rimuovi selezionato"
         $btnRemoveDev.Size = New-Object System.Drawing.Size(140, 28)
