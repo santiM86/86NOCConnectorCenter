@@ -18,6 +18,7 @@ import {
   Prohibit, Plugs, ArrowDown, ArrowUp, Cpu,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
+import PortCableView from "@/components/PortCableView";
 
 // ----- formatters -----
 function fmtSpeed(mbps) {
@@ -113,7 +114,7 @@ function PortTile({ p, onClick, active }) {
   );
 }
 
-function PortDetailPanel({ p, onClose }) {
+function PortDetailPanel({ p, onClose, onOpenCable }) {
   if (!p) return null;
   const isUp = p.oper === 1 && p.admin === 1;
   const isPoe = p.poe_status === 3;
@@ -131,7 +132,19 @@ function PortDetailPanel({ p, onClose }) {
     <div className="noc-panel p-4 space-y-3" data-testid={`switch-port-detail-${p.idx}`}>
       <div className="flex items-baseline justify-between">
         <h3 className="text-base font-bold">Porta {portLabel(p.name, p.idx)} <span className="text-[var(--text-muted)] text-xs font-mono">· {p.name}</span></h3>
-        <button onClick={onClose} className="text-[var(--text-muted)] hover:text-[var(--text-primary)] text-xs">Chiudi ✕</button>
+        <div className="flex items-center gap-2">
+          {onOpenCable && (
+            <button
+              onClick={onOpenCable}
+              className="text-[11px] px-2 py-1 rounded bg-cyan-500/15 hover:bg-cyan-500/30 text-cyan-300 border border-cyan-400/30 flex items-center gap-1 transition-colors"
+              data-testid={`switch-port-cable-view-${p.idx}`}
+              title="Apri vista cavo con diagramma switch → device"
+            >
+              ↯ Vista Cavo
+            </button>
+          )}
+          <button onClick={onClose} className="text-[var(--text-muted)] hover:text-[var(--text-primary)] text-xs">Chiudi ✕</button>
+        </div>
       </div>
 
       {/* Status row */}
@@ -240,6 +253,7 @@ export default function SwitchPortsPage() {
   const [data, setData] = useState(null);
   const [filter, setFilter] = useState("all");
   const [selected, setSelected] = useState(null);
+  const [cableView, setCableView] = useState(null);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -354,7 +368,17 @@ export default function SwitchPortsPage() {
       </div>
 
       {/* Pannello dettaglio porta selezionata */}
-      {selected && <PortDetailPanel p={selected} onClose={() => setSelected(null)} />}
+      {selected && <PortDetailPanel p={selected} onClose={() => setSelected(null)} onOpenCable={() => setCableView(selected)} />}
+
+      {/* Modale Vista Cavo */}
+      {cableView && (
+        <PortCableView
+          p={cableView}
+          switchIp={data.device_ip}
+          switchName={data.device_name}
+          onClose={() => setCableView(null)}
+        />
+      )}
 
       {/* Tabella riepilogo (collassabile su mobile) */}
       <details className="noc-panel" open>
