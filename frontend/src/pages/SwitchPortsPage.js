@@ -18,6 +18,8 @@ import {
   Prohibit, Plugs, ArrowDown, ArrowUp, Cpu,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
+import PortCableView from "@/components/PortCableView";
+import PortFlapHistory from "@/components/PortFlapHistory";
 
 // ----- formatters -----
 function fmtSpeed(mbps) {
@@ -122,7 +124,7 @@ function PortTile({ p, onClick, active }) {
   );
 }
 
-function PortDetailPanel({ p, onClose }) {
+function PortDetailPanel({ p, onClose, onOpenCable, deviceIp }) {
   if (!p) return null;
   const isUp = p.oper === 1 && p.admin === 1;
   const isPoe = p.poe_status === 3;
@@ -140,8 +142,28 @@ function PortDetailPanel({ p, onClose }) {
     <div className="noc-panel p-4 space-y-3" data-testid={`switch-port-detail-${p.idx}`}>
       <div className="flex items-baseline justify-between">
         <h3 className="text-base font-bold">Porta {portLabel(p.name, p.idx)} <span className="text-[var(--text-muted)] text-xs font-mono">· {p.name}</span></h3>
-        <button onClick={onClose} className="text-[var(--text-muted)] hover:text-[var(--text-primary)] text-xs">Chiudi ✕</button>
+        <div className="flex items-center gap-2">
+          {onOpenCable && (
+            <button
+              onClick={onOpenCable}
+              className="text-[11px] px-2 py-1 rounded bg-cyan-500/15 hover:bg-cyan-500/30 text-cyan-300 border border-cyan-400/30 flex items-center gap-1 transition-colors"
+              data-testid={`switch-port-cable-view-${p.idx}`}
+              title="Apri vista cavo con diagramma switch → device"
+            >
+              ↯ Vista Cavo
+            </button>
+          )}
+          <button onClick={onClose} className="text-[var(--text-muted)] hover:text-[var(--text-primary)] text-xs">Chiudi ✕</button>
+        </div>
       </div>
+
+      {/* Flap history 24h (micro-sparkline) */}
+      {deviceIp && (
+        <div className="flex items-center justify-between gap-2 border-b border-[var(--bg-border)] pb-2">
+          <span className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider font-semibold">Storia flap 24h</span>
+          <PortFlapHistory deviceIp={deviceIp} idx={p.idx} hours={24} />
+        </div>
+      )}
 
       {/* Status row */}
       <div className="flex flex-wrap items-center gap-2 text-[11px]">
@@ -192,14 +214,33 @@ function PortDetailPanel({ p, onClose }) {
         <div className="flex items-start gap-2 text-[11px] border-t border-[var(--bg-border)] pt-2">
           <PortIcon p={p} size={16} />
           <div className="flex-1 min-w-0">
-            <div className="text-[9px] text-[var(--text-muted)] uppercase">Connesso a</div>
+            <div className="text-[9px] text-[var(--text-muted)] uppercase flex items-center gap-1">
+              Connesso a
+              {p.neighbor.match_source === "lldp" && (
+                <span className="px-1 py-0 rounded bg-emerald-500/20 text-emerald-300 text-[8px] font-bold tracking-wider">LLDP</span>
+              )}
+              {p.neighbor.match_source === "mac_managed" && (
+                <span className="px-1 py-0 rounded bg-cyan-500/20 text-cyan-300 text-[8px] font-bold tracking-wider">MAC</span>
+              )}
+              {p.neighbor.match_source === "mac_oui" && (
+                <span className="px-1 py-0 rounded bg-amber-500/20 text-amber-300 text-[8px] font-bold tracking-wider">OUI</span>
+              )}
+              {p.neighbor.match_source === "mac_unknown" && (
+                <span className="px-1 py-0 rounded bg-neutral-500/20 text-neutral-300 text-[8px] font-bold tracking-wider">MAC?</span>
+              )}
+            </div>
             <div className="font-semibold text-cyan-300 truncate">
               {p.neighbor.remote_device_name || p.neighbor.remote_sys_name || "(senza nome)"}
             </div>
-            <div className="text-[10px] text-[var(--text-muted)]">
-              {p.neighbor.remote_port_desc && <span>porta {p.neighbor.remote_port_desc}</span>}
-              {p.neighbor.remote_ip && <span className="font-mono ml-1">· {p.neighbor.remote_ip}</span>}
+            <div className="text-[10px] text-[var(--text-muted)] font-mono break-all">
+              {p.neighbor.remote_port_desc && <span>porta {p.neighbor.remote_port_desc} </span>}
+              {p.neighbor.remote_port_id && !p.neighbor.remote_port_desc && <span>{p.neighbor.remote_port_id} </span>}
+              {p.neighbor.remote_ip && <span>· {p.neighbor.remote_ip} </span>}
+              {p.neighbor.remote_chassis_id && !p.neighbor.remote_ip && <span>· {p.neighbor.remote_chassis_id}</span>}
             </div>
+            {p.neighbor.remote_sys_desc && (
+              <div className="text-[10px] text-[var(--text-muted)] italic truncate">{p.neighbor.remote_sys_desc}</div>
+            )}
           </div>
         </div>
       )}
@@ -235,6 +276,7 @@ export default function SwitchPortsPage() {
   const [data, setData] = useState(null);
   const [filter, setFilter] = useState("all");
   const [selected, setSelected] = useState(null);
+  const [cableView, setCableView] = useState(null);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -378,7 +420,17 @@ export default function SwitchPortsPage() {
       </div>
 
       {/* Pannello dettaglio porta selezionata */}
-      {selected && <PortDetailPanel p={selected} onClose={() => setSelected(null)} />}
+      {selected && <PortDetailPanel p={selected} onClose={() => setSelected(null)} onOpenCable={() => setCableView(selected)} deviceIp={data.device_ip} />}
+
+      {/* Modale Vista Cavo */}
+      {cableView && (
+        <PortCableView
+          p={cableView}
+          switchIp={data.device_ip}
+          switchName={data.device_name}
+          onClose={() => setCableView(null)}
+        />
+      )}
 
       {/* Tabella riepilogo (collassabile su mobile) */}
       <details className="noc-panel" open>
@@ -439,11 +491,26 @@ export default function SwitchPortsPage() {
                       {p.neighbor ? (
                         <div className="flex items-center gap-1 text-[10px]">
                           <PortIcon p={p} size={11} />
-                          <Link to={p.neighbor.remote_ip ? `/devices/${encodeURIComponent(p.neighbor.remote_ip)}` : "#"}
-                                className="text-cyan-300 hover:underline truncate max-w-[160px]"
-                                onClick={(e) => e.stopPropagation()}>
-                            {p.neighbor.remote_device_name || p.neighbor.remote_sys_name || p.neighbor.remote_ip}
-                          </Link>
+                          {p.neighbor.remote_ip ? (
+                            <Link to={`/devices/${encodeURIComponent(p.neighbor.remote_ip)}`}
+                                  className="text-cyan-300 hover:underline truncate max-w-[160px]"
+                                  onClick={(e) => e.stopPropagation()}>
+                              {p.neighbor.remote_device_name || p.neighbor.remote_sys_name}
+                            </Link>
+                          ) : (
+                            <span className={`truncate max-w-[160px] ${p.neighbor.match_source === "mac_oui" ? "text-amber-300" : "text-neutral-300"}`}>
+                              {p.neighbor.remote_device_name || p.neighbor.remote_sys_name}
+                            </span>
+                          )}
+                          {p.neighbor.match_source === "lldp" && (
+                            <span className="px-0.5 rounded bg-emerald-500/20 text-emerald-300 text-[8px] font-bold">L</span>
+                          )}
+                          {p.neighbor.match_source === "mac_managed" && (
+                            <span className="px-0.5 rounded bg-cyan-500/20 text-cyan-300 text-[8px] font-bold">M</span>
+                          )}
+                          {p.neighbor.match_source === "mac_oui" && (
+                            <span className="px-0.5 rounded bg-amber-500/20 text-amber-300 text-[8px] font-bold">V</span>
+                          )}
                           {p.neighbor.remote_port_desc && <span className="text-[var(--text-muted)]">·{p.neighbor.remote_port_desc}</span>}
                         </div>
                       ) : (

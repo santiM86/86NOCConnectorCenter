@@ -165,9 +165,16 @@ function DeviceNode({ data }) {
           <div className="text-[9px] font-mono text-[var(--text-muted)] mt-0.5">{data.ip}</div>
         )}
 
-        {/* MAC Address */}
+        {/* MAC Address con vendor OUI (se presente) */}
         {data.mac && (
-          <div className="text-[8px] font-mono text-[var(--text-muted)] mt-0.5 opacity-70" title={data.mac}>{data.mac}</div>
+          <div className="text-[8px] font-mono text-[var(--text-muted)] mt-0.5 opacity-70 flex items-center justify-center gap-1" title={data.mac}>
+            <span className="truncate max-w-[75px]">{data.mac}</span>
+            {data.vendor && (
+              <span className="px-1 py-0 rounded bg-amber-500/20 text-amber-300 text-[7px] font-bold tracking-wider" title={`OUI vendor: ${data.vendor}`}>
+                {data.vendor.split(" ")[0]}
+              </span>
+            )}
+          </div>
         )}
 
         {/* Switch port info (for discovered endpoints) */}
@@ -222,6 +229,7 @@ function topoToFlowNodes(topoNodes, hasCustomLayout) {
         monitor_type: n.monitor_type,
         role: n.role,
         mac: n.mac,
+        vendor: n.vendor,
         switch_port: n.switch_port,
         vlan: n.vlan,
         hostname: n.hostname,

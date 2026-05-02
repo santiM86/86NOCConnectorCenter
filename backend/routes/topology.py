@@ -37,15 +37,26 @@ def _port_number_from_name(name: str) -> str:
 
 @router.get("/devices/{device_ip}/switch-ports")
 async def get_switch_ports(device_ip: str, current_user: dict = Depends(get_current_user)):
-    """Ritorna le porte dello switch con status arricchito da LLDP neighbor.
+    """Ritorna le porte dello switch con status arricchito da LLDP neighbor + MAC table.
 
-    `device_ip` = indirizzo IP locale del device switch (match `local_ip` in
-    `switch_ports`). Ritorna lista ordinata per idx con:
-      idx, name, oper_status, admin_status, speed_mbps, last_change_s,
-      neighbor: {remote_sys_name, remote_port_desc, remote_ip, matched_via}
+    Matching in cascata (priorita' decrescente):
+      1. LLDP neighbor (remote_sys_name/remote_ip) — funziona con device managed/LLDP-capable
+      2. MAC Table -> managed_devices (via MAC di ifPhysAddress) — per NAS/stampanti/UPS
+      3. MAC Table -> OUI vendor lookup — per device sconosciuti (es. "Apple laptop")
     """
+    from .oui_lookup import lookup_oui
+
     ports = await db.switch_ports.find({"local_ip": device_ip}, {"_id": 0}).sort("idx", 1).to_list(2000)
     neighbors = await db.lldp_neighbors.find({"local_ip": device_ip}, {"_id": 0}).to_list(500)
+
+    # MAC-based enrichment: prendi endpoint FDB raccolti e i managed devices
+    endpoints = await db.discovered_endpoints.find({"switch_ip": device_ip}, {"_id": 0}).to_list(5000)
+
+    # Managed devices: costruisci MAC -> device map
+    # NB: discovered_endpoints.ip e' gia' risolto lato connector per i MAC managed,
+    # ma teniamo anche un fallback via device_poll_status/managed_devices
+    md_all = await db.managed_devices.find({}, {"_id": 0, "ip": 1, "device_type": 1, "device_name": 1, "vendor": 1}).to_list(2000)
+    md_by_ip = {d["ip"]: d for d in md_all if d.get("ip")}
 
     # Index neighbors by local_port_desc and by port_number extracted
     by_desc: dict[str, dict] = {}
@@ -60,6 +71,70 @@ async def get_switch_ports(device_ip: str, current_user: dict = Depends(get_curr
         pnum = _port_number_from_name(n.get("local_port_desc") or n.get("local_port_id") or "")
         if pnum:
             by_number[pnum] = n
+
+    # Index endpoints (MAC table) by port number (endpoint.port dal FDB e' l'ifIndex o bridge port index)
+    # Per HPE Comware FDB il port e' il bridgePort, spesso coincide con un idx. Proviamo match multipli.
+    endpoints_by_port_num: dict[str, list] = {}
+    endpoints_by_idx: dict[int, list] = {}
+    for e in endpoints:
+        port_val = e.get("port")
+        try:
+            port_int = int(port_val) if port_val is not None else None
+        except Exception:
+            port_int = None
+        if port_int is not None:
+            endpoints_by_idx.setdefault(port_int, []).append(e)
+            endpoints_by_port_num.setdefault(str(port_int), []).append(e)
+
+    def _build_mac_neighbor(port_idx: int, port_name: str):
+        """Costruisce un neighbor-like dict dai MAC endpoints della porta."""
+        cand = endpoints_by_idx.get(port_idx) or []
+        if not cand:
+            pnum = _port_number_from_name(port_name or "")
+            if pnum:
+                cand = endpoints_by_port_num.get(pnum) or []
+        if not cand:
+            return None, []
+        # Priorita': managed > unmanaged OUI-known > unknown
+        managed = [x for x in cand if x.get("is_managed")]
+        unmanaged = [x for x in cand if not x.get("is_managed")]
+        # Preferisci un singolo device managed se presente
+        if managed:
+            e = managed[0]
+            ip = e.get("ip") or ""
+            md = md_by_ip.get(ip, {})
+            return {
+                "remote_sys_name": md.get("device_name") or ip or "Device managed",
+                "remote_ip": ip,
+                "remote_device_type": md.get("device_type") or "",
+                "remote_device_name": md.get("device_name") or "",
+                "remote_port_id": "",
+                "remote_port_desc": "",
+                "remote_chassis_id": e.get("mac", ""),
+                "remote_sys_cap": 0,
+                "remote_sys_desc": "",
+                "match_source": "mac_managed",
+            }, cand
+        # Nessun managed: prova OUI del primo MAC
+        if unmanaged:
+            e = unmanaged[0]
+            mac = e.get("mac", "")
+            vendor = lookup_oui(mac)
+            label = f"{vendor} device" if vendor else "Dispositivo sconosciuto"
+            return {
+                "remote_sys_name": label,
+                "remote_ip": e.get("ip") or "",
+                "remote_device_type": "unmanaged",
+                "remote_device_name": label,
+                "remote_port_id": "",
+                "remote_port_desc": "",
+                "remote_chassis_id": mac,
+                "remote_sys_cap": 0,
+                "remote_sys_desc": f"MAC: {mac}" + (f" ({vendor})" if vendor else ""),
+                "match_source": "mac_oui" if vendor else "mac_unknown",
+                "mac_count": len(cand),
+            }, cand
+        return None, []
 
     # Lookup managed_devices by remote_ip to enrich neighbor with type/icon
     mgmt_by_ip: dict[str, dict] = {}
@@ -79,10 +154,20 @@ async def get_switch_ports(device_ip: str, current_user: dict = Depends(get_curr
     for p in ports:
         oper = p.get("oper", 0)
         admin = p.get("admin", 0)
-        # Match neighbor: priority by name, by port_number
+        # Match neighbor in cascata:
+        # 1) LLDP (priorita' alta)
         neigh = by_desc.get((p.get("name") or "").strip().lower())
         if not neigh:
             neigh = by_number.get(_port_number_from_name(p.get("name") or ""))
+        match_source = "lldp" if neigh else None
+
+        # 2) Fallback MAC Table (se porta UP e nessun LLDP match)
+        mac_neigh = None
+        mac_cand = []
+        if not neigh and oper == 1:
+            mac_neigh, mac_cand = _build_mac_neighbor(p.get("idx") or 0, p.get("name") or "")
+            if mac_neigh:
+                match_source = mac_neigh.get("match_source", "mac")
 
         # Port type classification (Nebula-style)
         # disabled: admin_down
@@ -123,6 +208,8 @@ async def get_switch_ports(device_ip: str, current_user: dict = Depends(get_curr
                 port_type = "device"
             else:
                 port_type = "link_up"
+            # match_source used below for neighbor_obj
+            _ = match_source
 
         neighbor_obj = None
         if neigh:
@@ -137,8 +224,29 @@ async def get_switch_ports(device_ip: str, current_user: dict = Depends(get_curr
                 "remote_sys_desc": neigh.get("remote_sys_desc") or "",
                 "remote_device_type": (md_remote or {}).get("device_type") or "",
                 "remote_device_name": (md_remote or {}).get("device_name") or "",
+                "match_source": "lldp",
             }
             neighbor_count += 1
+        elif mac_neigh:
+            # Fallback via MAC table (no LLDP, ma ce un endpoint FDB riconosciuto)
+            neighbor_obj = dict(mac_neigh)
+            # Allinea chiavi per compatibilita' con UI
+            neighbor_obj.setdefault("remote_port_desc", "")
+            neighbor_obj.setdefault("remote_port_id", "")
+            neighbor_obj.setdefault("remote_sys_cap", 0)
+            neighbor_obj.setdefault("remote_sys_desc", "")
+            neighbor_count += 1
+            # Se e' un device managed, migliora la port_type classification
+            if neighbor_obj.get("match_source") == "mac_managed" and port_type == "link_up":
+                dtype = (neighbor_obj.get("remote_device_type") or "").lower()
+                if dtype in ("firewall", "router"):
+                    port_type = "cloud"
+                elif dtype == "switch":
+                    port_type = "switch"
+                elif dtype == "ap":
+                    port_type = "ap"
+                else:
+                    port_type = "device"
 
         if admin == 2:
             disabled_count += 1
@@ -193,6 +301,37 @@ async def get_switch_ports(device_ip: str, current_user: dict = Depends(get_curr
             "tx_bps": total_tx_bps,
         },
         "updated_at": first_updated,
+    }
+
+
+@router.get("/devices/{device_ip}/switch-ports/{idx}/flaps")
+async def get_port_flap_history(
+    device_ip: str,
+    idx: int,
+    hours: int = 24,
+    current_user: dict = Depends(get_current_user),
+):
+    """Ritorna gli eventi flap (UP/DOWN/ADMIN/SPEED change) per una porta, ultime N ore."""
+    from datetime import datetime, timezone, timedelta
+    hours = max(1, min(hours, 720))  # 1h..30gg
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    events = await db.port_flap_events.find(
+        {"local_ip": device_ip, "idx": idx, "ts": {"$gte": cutoff}},
+        {"_id": 0}
+    ).sort("ts", 1).to_list(500)
+    # Breakdown per tipo
+    kinds = {"oper_change": 0, "admin_change": 0, "speed_change": 0}
+    for e in events:
+        k = e.get("kind", "")
+        if k in kinds:
+            kinds[k] += 1
+    return {
+        "device_ip": device_ip,
+        "idx": idx,
+        "hours": hours,
+        "events": events,
+        "total": len(events),
+        "by_kind": kinds,
     }
 
 
@@ -518,7 +657,8 @@ def _find_ilo_parent(ilo, servers, switches, gateways):
 
 
 def _guess_endpoint_type(hostname, mac):
-    """Guess endpoint type from hostname or MAC OUI prefix."""
+    """Guess endpoint type from hostname, then fallback to MAC OUI vendor."""
+    from .oui_lookup import lookup_oui
     h = (hostname or "").lower()
     if any(k in h for k in ["srv", "server", "esxi", "vmware", "proxmox", "dc-", "ad-"]):
         return "server"
@@ -534,7 +674,33 @@ def _guess_endpoint_type(hostname, mac):
         return "generic"
     if any(k in h for k in ["pc-", "desktop", "laptop", "workstation", "nb-"]):
         return "generic"
+
+    # Fallback: usa OUI vendor del MAC per indovinare tipo
+    vendor = lookup_oui(mac).lower() if mac else ""
+    if vendor:
+        if any(k in vendor for k in ["synology", "qnap"]):
+            return "nas"
+        if any(k in vendor for k in ["axis", "hikvision", "dahua", "uniview"]):
+            return "camera"
+        if any(k in vendor for k in ["yealink", "polycom", "grandstream", "snom"]):
+            return "generic"
+        if any(k in vendor for k in ["ubiquiti", "aruba", "meraki"]):
+            return "ap"
+        if any(k in vendor for k in ["apc", "eaton", "riello"]):
+            return "ups"
+        if any(k in vendor for k in ["hp", "brother", "canon", "epson", "ricoh", "xerox", "lexmark", "kyocera"]):
+            return "printer"
+        if any(k in vendor for k in ["vmware"]):
+            return "server"
+        if any(k in vendor for k in ["raspberry"]):
+            return "generic"
     return "generic"
+
+
+def _vendor_from_mac(mac: str) -> str:
+    """Wrapper to expose OUI vendor at module level for topology enrichment."""
+    from .oui_lookup import lookup_oui
+    return lookup_oui(mac or "")
 
 
 def _clean_device_name(name):
@@ -1013,10 +1179,16 @@ async def get_network_topology(client_id: str, current_user: dict = Depends(get_
             subtitle = mac
             if ip and ip != display_name:
                 subtitle = f"{ip} | {mac}"
-            
+
             # Determine endpoint type from MAC OUI or hostname
             ep_type = _guess_endpoint_type(hostname, mac)
-            
+            vendor = _vendor_from_mac(mac)
+
+            # Se non c'e' hostname, mostra vendor OUI come display name
+            if not hostname and not ip and vendor:
+                display_name = f"{vendor} device"
+                subtitle = mac
+
             # Create endpoint node
             ep_node = {
                 "id": node_id,
@@ -1027,6 +1199,7 @@ async def get_network_topology(client_id: str, current_user: dict = Depends(get_
                 "reachable": True,
                 "ip": ip,
                 "mac": mac,
+                "vendor": vendor,  # v3.6.9+: OUI vendor per badge UI
                 "switch_ip": switch_ip,
                 "switch_port": port,
                 "vlan": vlan,
