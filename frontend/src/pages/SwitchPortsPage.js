@@ -85,12 +85,15 @@ function PortTile({ p, onClick, active }) {
   const isDisabled = p.admin === 2;
   const isUp = p.oper === 1 && p.admin === 1;
   const isPoe = p.poe_status === 3;
+  const isUplink = p.port_type === "switch" || p.port_type === "cloud";
 
   let bg = "bg-neutral-700/40 border-neutral-600";
   if (isDisabled) bg = "bg-neutral-800/60 border-neutral-700";
   else if (isUp) {
     bg = isPoe
       ? "bg-emerald-500 border-emerald-300 shadow-emerald-400/40 shadow-md"
+      : isUplink
+      ? "bg-cyan-500 border-cyan-300 shadow-cyan-400/40 shadow-md"
       : "bg-emerald-500 border-emerald-300";
   } else bg = "bg-neutral-700/30 border-neutral-600";
 
@@ -98,7 +101,7 @@ function PortTile({ p, onClick, active }) {
     <button
       onClick={onClick}
       data-testid={`switch-port-tile-${p.idx}`}
-      title={`Porta ${p.idx} · ${p.name} · ${p.oper_status}/${p.admin_status}${p.neighbor?.remote_sys_name ? "\n→ " + p.neighbor.remote_sys_name : ""}`}
+      title={`Porta ${p.idx} · ${p.name} · ${p.oper_status}/${p.admin_status}${isUplink ? " · UPLINK" : ""}${p.neighbor?.remote_sys_name ? "\n→ " + p.neighbor.remote_sys_name : ""}`}
       className={`relative flex flex-col items-center group`}
     >
       {/* Numero porta sopra (chip nero) - label fisica invece di ifIndex SNMP */}
@@ -109,6 +112,12 @@ function PortTile({ p, onClick, active }) {
       <div className={`flex items-center justify-center w-11 h-11 sm:w-12 sm:h-12 rounded-md border transition-all ${bg} ${active ? "ring-2 ring-cyan-300 scale-110" : "group-hover:scale-105"}`}>
         <PortIcon p={p} />
       </div>
+      {/* UPLINK badge sotto (solo se connesso ad altro switch/router) */}
+      {isUplink && isUp && (
+        <span className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 bg-cyan-600 text-white text-[8px] font-bold px-1 rounded uppercase tracking-wider shadow">
+          Uplink
+        </span>
+      )}
     </button>
   );
 }
@@ -144,6 +153,11 @@ function PortDetailPanel({ p, onClose }) {
           <span className="px-2 py-1 rounded border bg-neutral-700/40 border-neutral-600 text-neutral-200 font-mono">ADMIN-DOWN</span>
         ) : (
           <span className="px-2 py-1 rounded border bg-red-500/15 border-red-400/40 text-red-300 font-mono">DOWN</span>
+        )}
+        {(p.port_type === "switch" || p.port_type === "cloud") && isUp && (
+          <span className="px-2 py-1 rounded border bg-cyan-500/20 border-cyan-400/50 text-cyan-200 flex items-center gap-1 font-mono uppercase tracking-wider">
+            <Stack size={12} weight="bold" /> Uplink {p.port_type === "cloud" ? "WAN/Router" : "Switch"}
+          </span>
         )}
         {isPoe && (
           <span className="px-2 py-1 rounded border bg-amber-400/20 border-amber-300/50 text-amber-200 flex items-center gap-1 font-mono">
@@ -254,14 +268,21 @@ export default function SwitchPortsPage() {
       if (filter === "admin_down") return p.admin === 2;
       if (filter === "with_neighbor") return !!p.neighbor;
       if (filter === "poe") return p.poe_status === 3;
+      if (filter === "uplink") return (p.port_type === "switch" || p.port_type === "cloud") && p.oper === 1 && p.admin === 1;
       return true;
     });
   }, [data, filter]);
+
+  const uplinkCount = useMemo(() => {
+    if (!data?.ports) return 0;
+    return data.ports.filter(p => (p.port_type === "switch" || p.port_type === "cloud") && p.oper === 1 && p.admin === 1).length;
+  }, [data]);
 
   if (loading && !data) return <div className="p-6 text-[var(--text-muted)] text-sm">Caricamento…</div>;
   if (!data) return <div className="p-6 text-[var(--text-muted)] text-sm">Nessun dato</div>;
 
   const t = data.totals || {};
+  const noPortData = !data.ports || data.ports.length === 0;
 
   return (
     <div className="p-3 md:p-6 max-w-6xl mx-auto space-y-4" data-testid="switch-ports-page">
@@ -289,6 +310,27 @@ export default function SwitchPortsPage() {
         <button className="px-4 py-2 text-[var(--text-muted)] cursor-not-allowed" disabled title="Disponibile in futura versione">Aggregazioni</button>
       </div>
 
+      {/* Messaggio se nessun dato porte */}
+      {noPortData && (
+        <div className="noc-panel p-6 text-center space-y-2" data-testid="switch-ports-empty">
+          <Cpu size={36} className="mx-auto text-[var(--text-muted)] opacity-40" />
+          <h3 className="text-sm font-semibold text-[var(--text-primary)]">Nessun dato porte ricevuto dal connector</h3>
+          <p className="text-[11px] text-[var(--text-muted)] max-w-md mx-auto leading-relaxed">
+            Lo switch <span className="font-mono text-cyan-300">{data.device_ip}</span> non ha ancora inviato dettagli porte SNMP.<br />
+            Cause possibili:
+          </p>
+          <ul className="text-[11px] text-[var(--text-muted)] max-w-md mx-auto text-left list-disc list-inside space-y-1">
+            <li>Connector versione &lt; <b className="text-cyan-300">3.7.0</b> (manca polling <code>ifTable + POWER-ETHERNET-MIB</code>) → <a className="text-cyan-300 underline" href="/api/connector/public-download/latest" target="_blank" rel="noreferrer">scarica ultima versione</a></li>
+            <li>Discovery non ancora completato (ciclo full-discovery ogni ~5 min)</li>
+            <li>Lo switch non risponde ai walk SNMP <code>1.3.6.1.2.1.2.2</code> (verifica community e ACL)</li>
+            <li>Dispositivo non è uno switch managed L2 (router/firewall non hanno tabella porte)</li>
+          </ul>
+          <Button size="sm" variant="outline" onClick={reload} className="h-7 gap-1 text-[11px] mt-3"><ArrowsClockwise size={12} /> Riprova</Button>
+        </div>
+      )}
+
+      {!noPortData && (
+      <>
       {/* Filtri */}
       <div className="flex items-center gap-1.5 flex-wrap text-[11px]">
         {[
@@ -296,6 +338,7 @@ export default function SwitchPortsPage() {
           { id: "up", label: `Up ${t.up || 0}`, color: "emerald" },
           { id: "down", label: `Down ${t.down || 0}`, color: "red" },
           { id: "admin_down", label: `Admin-down ${t.admin_down || 0}`, color: "neutral" },
+          { id: "uplink", label: `Uplink ${uplinkCount}`, color: "cyan" },
           { id: "poe", label: `PoE ${t.poe_active || 0}`, color: "amber" },
           { id: "with_neighbor", label: `LLDP ${t.with_neighbor || 0}`, color: "cyan" },
         ].map(f => {
@@ -326,10 +369,10 @@ export default function SwitchPortsPage() {
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-[var(--text-muted)] mt-3 pt-3 border-t border-[var(--bg-border)]">
           <span className="flex items-center gap-1"><Lightning size={11} weight="fill" className="text-emerald-400" /> PoE attivo</span>
           <span className="flex items-center gap-1"><WifiHigh size={11} weight="bold" className="text-emerald-400" /> Access Point</span>
-          <span className="flex items-center gap-1"><Stack size={11} weight="bold" className="text-emerald-400" /> Switch uplink</span>
-          <span className="flex items-center gap-1"><Cloud size={11} weight="bold" className="text-emerald-400" /> Internet/Router</span>
+          <span className="flex items-center gap-1"><Stack size={11} weight="bold" className="text-cyan-400" /> Switch uplink (cyan)</span>
+          <span className="flex items-center gap-1"><Cloud size={11} weight="bold" className="text-cyan-400" /> Internet/Router uplink</span>
           <span className="flex items-center gap-1"><Desktop size={11} weight="bold" className="text-emerald-400" /> Dispositivo</span>
-          <span className="flex items-center gap-1"><Plugs size={11} weight="bold" className="text-emerald-400" /> Link up</span>
+          <span className="flex items-center gap-1"><Plugs size={11} weight="bold" className="text-emerald-400" /> Link up generico</span>
           <span className="flex items-center gap-1"><Prohibit size={11} weight="bold" className="text-neutral-400" /> Disabilitata / non usata</span>
         </div>
       </div>
@@ -370,7 +413,14 @@ export default function SwitchPortsPage() {
                       {p.admin === 2 ? (
                         <span className="text-[9px] px-1.5 py-0.5 rounded bg-neutral-600/30 text-neutral-200 border border-neutral-400/30">ADMIN-DOWN</span>
                       ) : isUp ? (
-                        <span className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">UP</span>
+                        <div className="flex items-center gap-1">
+                          <span className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">UP</span>
+                          {(p.port_type === "switch" || p.port_type === "cloud") && (
+                            <span className="text-[8px] px-1 py-0.5 rounded bg-cyan-500/25 text-cyan-200 border border-cyan-400/40 uppercase font-bold tracking-wider" title="Porta uplink (collegata a switch/router)">
+                              Uplink
+                            </span>
+                          )}
+                        </div>
                       ) : (
                         <span className="text-[9px] px-1.5 py-0.5 rounded bg-red-500/20 text-red-300 border border-red-500/30">DOWN</span>
                       )}
@@ -407,6 +457,8 @@ export default function SwitchPortsPage() {
           </table>
         </div>
       </details>
+      </>
+      )}
     </div>
   );
 }
