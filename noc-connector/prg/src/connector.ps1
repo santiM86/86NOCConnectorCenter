@@ -1667,7 +1667,7 @@ function Start-PollingLoop($config) {
             } catch {
                 Write-Log "[REFRESH] Errore check flag: $_" "WARN"
             }
-            if ($refreshCounter -ge 10 -or $forceRefresh) {
+            if ($refreshCounter -ge 2 -or $forceRefresh) {
                 $refreshCounter = 0
                 $nocDevices = Fetch-DevicesFromNOC $config
                 if ($nocDevices) {
@@ -1685,7 +1685,7 @@ function Start-PollingLoop($config) {
                     Write-Log "Lista dispositivi aggiornata dal NOC: $($devices.Count) totali (SNMP: $($snmpDevices.Count), Ping: $($pingDevices.Count), Stampanti: $($printerDevices.Count))"
                 }
                 
-                # Full Network Discovery - ogni 10 cicli
+                # Full Network Discovery - ogni 2 cicli (~2 min)
                 if ($snmpDevices.Count -gt 0) {
                     try {
                         Write-Log "Avvio Full Network Discovery (LLDP + MAC + Speed)..." "INFO"
