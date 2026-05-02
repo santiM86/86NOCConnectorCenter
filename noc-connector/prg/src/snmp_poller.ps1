@@ -2537,10 +2537,31 @@ function Poll-SwitchPortDetails($ip, $community) {
         $lastByIdx = @{}; if ($ifLast) { foreach ($k in $ifLast.Keys) { $lastByIdx[(_IdxFromOid $k)] = (_SafeNum $ifLast[$k] 'long') } }
         $nameByIdx = @{}; if ($ifName) { foreach ($k in $ifName.Keys) { $nameByIdx[(_IdxFromOid $k)] = "$($ifName[$k])" } }
         $aliasByIdx = @{}; if ($ifAlias) { foreach ($k in $ifAlias.Keys) { $aliasByIdx[(_IdxFromOid $k)] = "$($ifAlias[$k])" } }
-        $inByIdx = @{};  if ($ifInOct)  { foreach ($k in $ifInOct.Keys)  { $inByIdx[(_IdxFromOid $k)] = (_SafeNum $ifInOct[$k]) } }
-        elseif ($ifInOct32)  { foreach ($k in $ifInOct32.Keys)  { $inByIdx[(_IdxFromOid $k)] = (_SafeNum $ifInOct32[$k]) } }
-        $outByIdx = @{}; if ($ifOutOct) { foreach ($k in $ifOutOct.Keys) { $outByIdx[(_IdxFromOid $k)] = (_SafeNum $ifOutOct[$k]) } }
-        elseif ($ifOutOct32) { foreach ($k in $ifOutOct32.Keys) { $outByIdx[(_IdxFromOid $k)] = (_SafeNum $ifOutOct32[$k]) } }
+        # v3.6.8 - HPE Comware bug: ifHCInOctets (Counter64) torna come bytes raw non decodificati.
+        # Se i valori 64bit sono TUTTI non numerici (stringhe binarie/vuote) cadi sul 32bit.
+        function _IsNumericTable($tbl) {
+            if (-not $tbl -or $tbl.Count -eq 0) { return $false }
+            $ok = 0; $total = 0
+            foreach ($v in $tbl.Values) {
+                $total++
+                $s = "$v".Trim()
+                if ([string]::IsNullOrWhiteSpace($s)) { continue }
+                if ($s -match '^-?\d+$') { $ok++ }
+                if ($total -ge 10) { break }
+            }
+            # Se almeno il 30% dei primi 10 valori e' numerico, considera la tabella valida
+            return ($ok -ge 3)
+        }
+
+        $use64In = _IsNumericTable $ifInOct
+        $use64Out = _IsNumericTable $ifOutOct
+
+        $inByIdx = @{}
+        if ($use64In)        { foreach ($k in $ifInOct.Keys)   { $inByIdx[(_IdxFromOid $k)] = (_SafeNum $ifInOct[$k]) } }
+        elseif ($ifInOct32)  { foreach ($k in $ifInOct32.Keys) { $inByIdx[(_IdxFromOid $k)] = (_SafeNum $ifInOct32[$k]) } }
+        $outByIdx = @{}
+        if ($use64Out)        { foreach ($k in $ifOutOct.Keys)   { $outByIdx[(_IdxFromOid $k)] = (_SafeNum $ifOutOct[$k]) } }
+        elseif ($ifOutOct32)  { foreach ($k in $ifOutOct32.Keys) { $outByIdx[(_IdxFromOid $k)] = (_SafeNum $ifOutOct32[$k]) } }
         $inPktByIdx = @{}; if ($ifInPkt) { foreach ($k in $ifInPkt.Keys) { $inPktByIdx[(_IdxFromOid $k)] = (_SafeNum $ifInPkt[$k]) } }
         $outPktByIdx = @{}; if ($ifOutPkt) { foreach ($k in $ifOutPkt.Keys) { $outPktByIdx[(_IdxFromOid $k)] = (_SafeNum $ifOutPkt[$k]) } }
 
