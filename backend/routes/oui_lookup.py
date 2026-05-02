@@ -29,6 +29,13 @@ OUI_DB = {
     "9c:dc:71": "HPE iLO", "3c:4a:92": "HPE iLO", "d4:85:64": "HPE iLO",
     "98:4b:e1": "HP", "f4:ce:46": "HPE iLO", "14:58:d0": "HPE iLO",
     "fc:15:b4": "HPE iLO", "7c:e9:d3": "HPE iLO", "94:f1:28": "HPE iLO",
+    # HPE MA-L post-2018 (ProLiant Gen10/Gen11, Aruba, blade, storage)
+    "94:40:c9": "HPE", "38:af:d7": "HPE", "5c:b9:01": "HPE", "80:30:e0": "HPE",
+    "88:fd:f2": "HPE", "d4:f4:be": "HPE", "e4:3d:1a": "HPE", "ec:eb:b8": "HPE",
+    "50:65:f3": "HPE", "70:b3:d5": "HPE", "78:0c:b8": "HPE", "78:e3:b5": "HPE",
+    "a8:a1:59": "HPE", "b0:26:28": "HPE", "c4:65:16": "HPE", "cc:3e:5f": "HPE",
+    "d0:bf:9c": "HPE", "ec:9a:74": "HPE", "3c:a8:2a": "HPE Aruba", "6c:f3:7f": "HPE Aruba",
+    "70:3a:0e": "HPE Aruba", "ac:a3:1e": "HPE Aruba", "b8:d4:e7": "HPE Aruba",
     "00:08:02": "HP", "00:0b:cd": "HP", "00:0f:20": "HP", "00:10:83": "HP",
     "00:11:0a": "HP", "00:11:85": "HP", "00:12:79": "HP", "00:13:21": "HP",
     "00:14:38": "HP", "00:14:c2": "HP", "00:15:60": "HP", "00:16:35": "HP",
