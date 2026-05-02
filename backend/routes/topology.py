@@ -626,7 +626,8 @@ def _find_ilo_parent(ilo, servers, switches, gateways):
 
 
 def _guess_endpoint_type(hostname, mac):
-    """Guess endpoint type from hostname or MAC OUI prefix."""
+    """Guess endpoint type from hostname, then fallback to MAC OUI vendor."""
+    from .oui_lookup import lookup_oui
     h = (hostname or "").lower()
     if any(k in h for k in ["srv", "server", "esxi", "vmware", "proxmox", "dc-", "ad-"]):
         return "server"
@@ -642,7 +643,33 @@ def _guess_endpoint_type(hostname, mac):
         return "generic"
     if any(k in h for k in ["pc-", "desktop", "laptop", "workstation", "nb-"]):
         return "generic"
+
+    # Fallback: usa OUI vendor del MAC per indovinare tipo
+    vendor = lookup_oui(mac).lower() if mac else ""
+    if vendor:
+        if any(k in vendor for k in ["synology", "qnap"]):
+            return "nas"
+        if any(k in vendor for k in ["axis", "hikvision", "dahua", "uniview"]):
+            return "camera"
+        if any(k in vendor for k in ["yealink", "polycom", "grandstream", "snom"]):
+            return "generic"
+        if any(k in vendor for k in ["ubiquiti", "aruba", "meraki"]):
+            return "ap"
+        if any(k in vendor for k in ["apc", "eaton", "riello"]):
+            return "ups"
+        if any(k in vendor for k in ["hp", "brother", "canon", "epson", "ricoh", "xerox", "lexmark", "kyocera"]):
+            return "printer"
+        if any(k in vendor for k in ["vmware"]):
+            return "server"
+        if any(k in vendor for k in ["raspberry"]):
+            return "generic"
     return "generic"
+
+
+def _vendor_from_mac(mac: str) -> str:
+    """Wrapper to expose OUI vendor at module level for topology enrichment."""
+    from .oui_lookup import lookup_oui
+    return lookup_oui(mac or "")
 
 
 def _clean_device_name(name):
@@ -941,10 +968,16 @@ async def get_network_topology(client_id: str, current_user: dict = Depends(get_
             subtitle = mac
             if ip and ip != display_name:
                 subtitle = f"{ip} | {mac}"
-            
+
             # Determine endpoint type from MAC OUI or hostname
             ep_type = _guess_endpoint_type(hostname, mac)
-            
+            vendor = _vendor_from_mac(mac)
+
+            # Se non c'e' hostname, mostra vendor OUI come display name
+            if not hostname and not ip and vendor:
+                display_name = f"{vendor} device"
+                subtitle = mac
+
             # Create endpoint node
             ep_node = {
                 "id": node_id,
@@ -955,6 +988,7 @@ async def get_network_topology(client_id: str, current_user: dict = Depends(get_
                 "reachable": True,
                 "ip": ip,
                 "mac": mac,
+                "vendor": vendor,  # v3.6.9+: OUI vendor per badge UI
                 "switch_ip": switch_ip,
                 "switch_port": port,
                 "vlan": vlan,
