@@ -2466,10 +2466,22 @@ function Poll-SwitchPortDetails($ip, $community) {
         $ifOutOct  = Get-SnmpTable $ip $community $script:OID_ifHCOutOctets
         $ifInPkt   = Get-SnmpTable $ip $community $script:OID_ifHCInUcastPkts
         $ifOutPkt  = Get-SnmpTable $ip $community $script:OID_ifHCOutUcastPkts
-        # Fallback 32-bit counters if HC empty
+        # Fallback 32-bit counters if HC empty OR garbage (HPE Comware restituisce
+        # i Counter64 come bytes BER raw non decodificati)
         $ifInOct32  = $null; $ifOutOct32 = $null
-        if (-not $ifInOct -or $ifInOct.Count -eq 0) { $ifInOct32 = Get-SnmpTable $ip $community $script:OID_ifInOctets }
-        if (-not $ifOutOct -or $ifOutOct.Count -eq 0) { $ifOutOct32 = Get-SnmpTable $ip $community $script:OID_ifOutOctets }
+        function _LocalIsNumTbl($tbl) {
+            if (-not $tbl -or $tbl.Count -eq 0) { return $false }
+            $ok = 0; $total = 0
+            foreach ($v in $tbl.Values) {
+                $total++
+                $s = "$v".Trim()
+                if ($s -match '^-?\d+$') { $ok++ }
+                if ($total -ge 10) { break }
+            }
+            return ($ok -ge 3)
+        }
+        if (-not (_LocalIsNumTbl $ifInOct))  { $ifInOct32  = Get-SnmpTable $ip $community $script:OID_ifInOctets }
+        if (-not (_LocalIsNumTbl $ifOutOct)) { $ifOutOct32 = Get-SnmpTable $ip $community $script:OID_ifOutOctets }
 
         # POWER-ETHERNET-MIB (per-port; key index = "groupIndex.portIndex")
         $poeAdmin    = Get-SnmpTable $ip $community $script:OID_pethPsePortAdminEnable
