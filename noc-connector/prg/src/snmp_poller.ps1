@@ -2130,26 +2130,39 @@ public class TrustAllCertsPolicy : ICertificatePolicy {
 #>
 function Poll-LldpNeighbors($ip, $community) {
     $neighbors = @()
-    
+
+    # v3.6.10: Get-SnmpTable restituisce hashtable {oid->value} ma i parser esistenti
+    # iteravano array di oggetti {oid; value} (vecchio formato Walk-SnmpTable).
+    # Questo helper converte hashtable in array per compatibilita' retroattiva.
+    function _TblToArray($tbl) {
+        if (-not $tbl) { return @() }
+        if ($tbl -is [array]) { return $tbl }  # gia' array
+        $out = @()
+        foreach ($k in @($tbl.Keys)) {
+            $out += ,[pscustomobject]@{ oid = "$k"; value = $tbl[$k] }
+        }
+        return ,$out
+    }
+
     try {
         # Walk lldpRemSysName (1.0.8802.1.1.2.1.4.1.1.9)
-        $sysNames = Get-SnmpTable $ip $community "1.0.8802.1.1.2.1.4.1.1.9"
+        $sysNames = _TblToArray (Get-SnmpTable $ip $community "1.0.8802.1.1.2.1.4.1.1.9")
         if (-not $sysNames -or $sysNames.Count -eq 0) {
             Write-Log "  LLDP: Nessun neighbor trovato su $ip (tabella vuota)" "DEBUG"
             return $neighbors
         }
-        
-        # Walk additional tables
-        $portIds    = Get-SnmpTable $ip $community "1.0.8802.1.1.2.1.4.1.1.7"
-        $portDescs  = Get-SnmpTable $ip $community "1.0.8802.1.1.2.1.4.1.1.8"
-        $sysDescs   = Get-SnmpTable $ip $community "1.0.8802.1.1.2.1.4.1.1.10"
-        $chassisIds = Get-SnmpTable $ip $community "1.0.8802.1.1.2.1.4.1.1.5"
-        $manAddrs   = Get-SnmpTable $ip $community "1.0.8802.1.1.2.1.4.2.1.4"
-        $sysCaps    = Get-SnmpTable $ip $community $script:OID_lldpRemSysCapEnabled
-        
+
+        # Walk additional tables - converti tutti in array per parser uniforme
+        $portIds    = _TblToArray (Get-SnmpTable $ip $community "1.0.8802.1.1.2.1.4.1.1.7")
+        $portDescs  = _TblToArray (Get-SnmpTable $ip $community "1.0.8802.1.1.2.1.4.1.1.8")
+        $sysDescs   = _TblToArray (Get-SnmpTable $ip $community "1.0.8802.1.1.2.1.4.1.1.10")
+        $chassisIds = _TblToArray (Get-SnmpTable $ip $community "1.0.8802.1.1.2.1.4.1.1.5")
+        $manAddrs   = _TblToArray (Get-SnmpTable $ip $community "1.0.8802.1.1.2.1.4.2.1.4")
+        $sysCaps    = _TblToArray (Get-SnmpTable $ip $community $script:OID_lldpRemSysCapEnabled)
+
         # Walk local port descriptions
-        $locPortIds  = Get-SnmpTable $ip $community "1.0.8802.1.1.2.1.3.7.1.3"
-        $locPortDesc = Get-SnmpTable $ip $community "1.0.8802.1.1.2.1.3.7.1.4"
+        $locPortIds  = _TblToArray (Get-SnmpTable $ip $community "1.0.8802.1.1.2.1.3.7.1.3")
+        $locPortDesc = _TblToArray (Get-SnmpTable $ip $community "1.0.8802.1.1.2.1.3.7.1.4")
         
         # Build a lookup: local port number -> description
         $localPortMap = @{}
@@ -2466,48 +2479,78 @@ function Run-LldpDiscovery($config, $devices) {
 #>
 function Poll-MacTable($ip, $community) {
     $macEntries = @()
-    
+
     try {
+        # v3.6.10: Get-SnmpTable torna hashtable - itera sulle keys direttamente
         # Walk dot1dTpFdbPort (MAC -> bridge port number)
         $fdbPorts = Get-SnmpTable $ip $community "1.3.6.1.2.1.17.4.3.1.2"
         if (-not $fdbPorts -or $fdbPorts.Count -eq 0) { return $macEntries }
-        
-        # Walk dot1dTpFdbAddress (MAC address in tabella)
-        $fdbAddrs = Get-SnmpTable $ip $community "1.3.6.1.2.1.17.4.3.1.1"
-        
-        foreach ($entry in $fdbPorts) {
-            $portNum = $entry.value
-            # Estrai il MAC dall'OID suffix (6 ottetti decimali)
-            $suffix = $entry.oid.Replace("1.3.6.1.2.1.17.4.3.1.2.", "")
+
+        # v3.6.11: Walk dot1dBasePortIfIndex per convertire bridge port -> ifIndex.
+        # Su HPE Comware e altri switch la FDB usa bridge port number (es. 1..48),
+        # che NON coincide con ifIndex (es. 261..308). Senza questa conversione
+        # il match con switch_ports.idx nel backend fallisce sempre.
+        $bridgeToIf = @{}
+        try {
+            $basePortTable = Get-SnmpTable $ip $community "1.3.6.1.2.1.17.1.4.1.2"
+            if ($basePortTable) {
+                foreach ($k in @($basePortTable.Keys)) {
+                    $bp = ("$k" -split '\.')[-1]
+                    $ifIdx = "$($basePortTable[$k])"
+                    if ($bp -and $ifIdx) {
+                        $bridgeToIf["$bp"] = "$ifIdx"
+                    }
+                }
+            }
+        } catch {
+            Write-Log "  MAC Table: dot1dBasePortIfIndex non disponibile su $ip" "DEBUG"
+        }
+
+        foreach ($oidKey in @($fdbPorts.Keys)) {
+            $portNum = $fdbPorts[$oidKey]
+            $suffix = "$oidKey".Replace("1.3.6.1.2.1.17.4.3.1.2.", "")
             $macOctets = $suffix -split '\.'
             if ($macOctets.Count -eq 6) {
                 $mac = ($macOctets | ForEach-Object { "{0:X2}" -f [int]$_ }) -join ":"
+                $bridgePortInt = 0
+                try { $bridgePortInt = [int]"$portNum" } catch { $bridgePortInt = 0 }
+
+                # Converti bridge port -> ifIndex quando mapping disponibile
+                $ifIndexInt = $bridgePortInt
+                if ($bridgeToIf.Count -gt 0) {
+                    $mapped = $bridgeToIf["$bridgePortInt"]
+                    if ($mapped) {
+                        try { $ifIndexInt = [int]$mapped } catch { $ifIndexInt = $bridgePortInt }
+                    }
+                }
+
                 $macEntries += @{
                     mac = $mac
-                    port = [int]$portNum
+                    port = $ifIndexInt          # ifIndex (matchable con switch_ports.idx)
+                    bridge_port = $bridgePortInt  # bridge port number originale
                 }
             }
         }
-        
-        Write-Log "  MAC Table: $($macEntries.Count) entries su $ip" "DEBUG"
+
+        Write-Log "  MAC Table: $($macEntries.Count) entries su $ip (bridge-port mapping: $($bridgeToIf.Count))" "DEBUG"
     } catch {
         Write-Log "  MAC Table: Errore polling ${ip}: $($_.Exception.Message)" "WARN"
     }
-    
+
     return $macEntries
 }
 
 function Poll-InterfaceMacs($ip, $community) {
     $ifMacs = @{}
-    
+
     try {
-        # Walk ifPhysAddress (MAC dell'interfaccia di ogni porta dello switch)
+        # v3.6.10: itera hashtable
         $results = Get-SnmpTable $ip $community "1.3.6.1.2.1.2.2.1.6"
-        foreach ($entry in $results) {
-            $ifIndex = ($entry.oid -split '\.')[-1]
-            $rawMac = $entry.value
+        if (-not $results) { return $ifMacs }
+        foreach ($oidKey in @($results.Keys)) {
+            $ifIndex = ("$oidKey" -split '\.')[-1]
+            $rawMac = "$($results[$oidKey])"
             if ($rawMac -and $rawMac.Length -ge 12) {
-                # Prova a parsare come hex string
                 $mac = ""
                 if ($rawMac -match '^[0-9A-Fa-f:.\-]+$') {
                     $mac = ($rawMac -replace '[:\.\-]','').ToUpper()
@@ -2521,39 +2564,41 @@ function Poll-InterfaceMacs($ip, $community) {
     } catch {
         Write-Log "  InterfaceMACs: Errore ${ip}: $($_.Exception.Message)" "WARN"
     }
-    
+
     return $ifMacs
 }
 
 function Poll-PortSpeeds($ip, $community) {
     $speeds = @{}
-    
+
     try {
+        # v3.6.10: itera hashtable
         # Walk ifHighSpeed (Mbps - per porte 10G+)
         $results = Get-SnmpTable $ip $community "1.3.6.1.2.1.31.1.1.1.15"
-        foreach ($entry in $results) {
-            $ifIndex = ($entry.oid -split '\.')[-1]
-            $speedMbps = [int]$entry.value
-            if ($speedMbps -gt 0) {
-                $speeds[$ifIndex] = $speedMbps
+        if ($results) {
+            foreach ($oidKey in @($results.Keys)) {
+                $ifIndex = ("$oidKey" -split '\.')[-1]
+                $speedMbps = 0
+                try { $speedMbps = [int]"$($results[$oidKey])" } catch { }
+                if ($speedMbps -gt 0) { $speeds[$ifIndex] = $speedMbps }
             }
         }
-        
-        # Se non abbiamo ifHighSpeed, usa ifSpeed (bps)
+
+        # Fallback: ifSpeed (bps)
         if ($speeds.Count -eq 0) {
             $results = Get-SnmpTable $ip $community "1.3.6.1.2.1.2.2.1.5"
-            foreach ($entry in $results) {
-                $ifIndex = ($entry.oid -split '\.')[-1]
-                $speedBps = [long]$entry.value
-                if ($speedBps -gt 0) {
-                    $speeds[$ifIndex] = [int]($speedBps / 1000000)
+            if ($results) {
+                foreach ($oidKey in @($results.Keys)) {
+                    $ifIndex = ("$oidKey" -split '\.')[-1]
+                    $speedBps = 0
+                    try { $speedBps = [long]"$($results[$oidKey])" } catch { }
+                    if ($speedBps -gt 0) { $speeds[$ifIndex] = [int]($speedBps / 1000000) }
                 }
             }
         }
     } catch {
         Write-Log "  PortSpeeds: Errore ${ip}: $($_.Exception.Message)" "WARN"
     }
-    
     return $speeds
 }
 
