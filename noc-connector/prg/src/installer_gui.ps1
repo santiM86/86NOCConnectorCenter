@@ -70,9 +70,44 @@ $ConfigPath = Join-Path $ConfigDir "config.json"
 
 function Show-InstallerWizard {
     [System.Windows.Forms.Application]::EnableVisualStyles()
-    
+
+    # ==================== UPGRADE DETECTION (v3.6.5+) ====================
+    # Rileva installazione esistente leggendo config.json e version.json.
+    # Se trovata, il wizard viene mostrato in modalita' "Aggiornamento":
+    #   - Titolo cambia in "Aggiornamento vX.X -> vY.Y"
+    #   - Banner verde in cima al pannello content
+    #   - Campi URL Center / API Key pre-compilati
+    #   - Pulsante finale "Aggiorna" invece di "Installa"
+    # L'utente puo' cliccare semplicemente "Avanti -> Avanti -> Aggiorna" senza
+    # reinserire dati, oppure modificare i campi se vuole (es. nuovo Center URL).
+    $script:ExistingConfig = $null
+    $script:ExistingVersion = $null
+    $script:IsUpgrade = $false
+    if (Test-Path $ConfigPath) {
+        try {
+            $script:ExistingConfig = Get-Content $ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            $existingInstallPath = Join-Path ([Environment]::GetFolderPath("ProgramFiles")) $AppName
+            $existingVerFile = Join-Path $existingInstallPath "version.json"
+            if (Test-Path $existingVerFile) {
+                $script:ExistingVersion = (Get-Content $existingVerFile -Raw | ConvertFrom-Json).version
+            }
+            # Considera upgrade solo se config valida (URL + API key)
+            if ($script:ExistingConfig.noc_url -and $script:ExistingConfig.api_key) {
+                $script:IsUpgrade = $true
+            }
+        } catch {
+            # Config corrotta, fallback a installazione pulita
+            $script:ExistingConfig = $null
+            $script:IsUpgrade = $false
+        }
+    }
+
     $form = New-Object System.Windows.Forms.Form
-    $form.Text = "$DisplayName - Installazione"
+    if ($script:IsUpgrade) {
+        $form.Text = "$DisplayName - Aggiornamento (v$($script:ExistingVersion) -> v$Version)"
+    } else {
+        $form.Text = "$DisplayName - Installazione"
+    }
     $form.Size = New-Object System.Drawing.Size(750, 580)
     $form.StartPosition = "CenterScreen"
     $form.FormBorderStyle = "FixedDialog"
@@ -301,7 +336,11 @@ function Show-InstallerWizard {
         $btnNext.Enabled = $true
         
         $title = New-Object System.Windows.Forms.Label
-        $title.Text = "Configurazione"
+        if ($script:IsUpgrade) {
+            $title.Text = "Aggiornamento connector"
+        } else {
+            $title.Text = "Configurazione"
+        }
         $title.Font = New-Object System.Drawing.Font("Segoe UI", 18, [System.Drawing.FontStyle]::Bold)
         $title.ForeColor = [System.Drawing.Color]::FromArgb(30, 30, 40)
         $title.Location = New-Object System.Drawing.Point(28, 20)
@@ -309,11 +348,20 @@ function Show-InstallerWizard {
         $contentPanel.Controls.Add($title)
         
         $desc = New-Object System.Windows.Forms.Label
-        $desc.Text = "Inserisci i dati di connessione al NOC Center."
+        if ($script:IsUpgrade) {
+            $cliName = if ($script:ExistingConfig.client_name) { $script:ExistingConfig.client_name } else { "(rilevato)" }
+            $desc.Text = "Rilevata installazione esistente per cliente '$cliName'. I campi sono pre-compilati - clicca Avanti per aggiornare a v$Version."
+        } else {
+            $desc.Text = "Inserisci i dati di connessione al NOC Center."
+        }
         $desc.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
-        $desc.ForeColor = [System.Drawing.Color]::FromArgb(60, 60, 80)
+        if ($script:IsUpgrade) {
+            $desc.ForeColor = [System.Drawing.Color]::FromArgb(20, 130, 75)
+        } else {
+            $desc.ForeColor = [System.Drawing.Color]::FromArgb(60, 60, 80)
+        }
         $desc.Location = New-Object System.Drawing.Point(28, 55)
-        $desc.AutoSize = $true
+        $desc.Size = New-Object System.Drawing.Size(470, 35)
         $contentPanel.Controls.Add($desc)
         
         # URL
@@ -328,6 +376,10 @@ function Show-InstallerWizard {
         $txtUrl.Location = New-Object System.Drawing.Point(28, 118)
         $txtUrl.Size = New-Object System.Drawing.Size(450, 28)
         $txtUrl.Font = New-Object System.Drawing.Font("Consolas", 10)
+        # v3.6.5: pre-compila se aggiornamento
+        if ($script:IsUpgrade -and $script:ExistingConfig.noc_url) {
+            $txtUrl.Text = $script:ExistingConfig.noc_url
+        }
         $contentPanel.Controls.Add($txtUrl)
         
         $hintUrl = New-Object System.Windows.Forms.Label
@@ -350,6 +402,10 @@ function Show-InstallerWizard {
         $txtApiKey.Location = New-Object System.Drawing.Point(28, 198)
         $txtApiKey.Size = New-Object System.Drawing.Size(450, 28)
         $txtApiKey.Font = New-Object System.Drawing.Font("Consolas", 10)
+        # v3.6.5: pre-compila se aggiornamento
+        if ($script:IsUpgrade -and $script:ExistingConfig.api_key) {
+            $txtApiKey.Text = $script:ExistingConfig.api_key
+        }
         $contentPanel.Controls.Add($txtApiKey)
         
         $hintKey = New-Object System.Windows.Forms.Label
@@ -369,6 +425,11 @@ function Show-InstallerWizard {
         $lblSNMP.AutoSize = $true
         $contentPanel.Controls.Add($lblSNMP)
         
+        # v3.6.5: pre-compila porte da config esistente se upgrade
+        if ($script:IsUpgrade) {
+            if ($script:ExistingConfig.snmp_port) { $txtSNMP.Text = "$($script:ExistingConfig.snmp_port)" }
+            if ($script:ExistingConfig.syslog_port) { $txtSyslog.Text = "$($script:ExistingConfig.syslog_port)" }
+        }
         $txtSNMP.Text = if ($txtSNMP.Text) { $txtSNMP.Text } else { "162" }
         $txtSNMP.Location = New-Object System.Drawing.Point(110, 261)
         $txtSNMP.Size = New-Object System.Drawing.Size(60, 28)
@@ -450,11 +511,19 @@ function Show-InstallerWizard {
     
     # ==================== PAGE 2: DEVICES ====================
     function Show-Devices {
-        $btnNext.Text = "Installa >"
+        if ($script:IsUpgrade) {
+            $btnNext.Text = "Aggiorna >"
+        } else {
+            $btnNext.Text = "Installa >"
+        }
         $btnNext.Enabled = $true
 
         $title = New-Object System.Windows.Forms.Label
-        $title.Text = "Dispositivi da Monitorare"
+        if ($script:IsUpgrade) {
+            $title.Text = "Conferma aggiornamento"
+        } else {
+            $title.Text = "Dispositivi da Monitorare"
+        }
         $title.Font = New-Object System.Drawing.Font("Segoe UI", 18, [System.Drawing.FontStyle]::Bold)
         $title.ForeColor = [System.Drawing.Color]::FromArgb(30, 30, 40)
         $title.Location = New-Object System.Drawing.Point(28, 15)
