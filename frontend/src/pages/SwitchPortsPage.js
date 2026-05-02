@@ -51,6 +51,20 @@ function poeClassLabel(c) {
   if (!c || c < 1 || c > 5) return null;
   return `Classe ${c - 1} (${POE_CLASS_W[c]} W)`;
 }
+// Estrae label fisica della porta dal nome SNMP.
+// Esempi: "GigabitEthernet5/0/1" -> "1", "Ten-GigabitEthernet5/0/49" -> "49",
+// "1/1/1" -> "1", "Gi0/1" -> "1", "Ethernet1/1" -> "1", fallback idx SNMP.
+function portLabel(name, idx) {
+  if (!name) return String(idx ?? "");
+  const s = String(name).trim();
+  // Prende l'ultimo numero dopo uno "/" se presente
+  const m = s.match(/\/(\d+)\s*$/);
+  if (m) return m[1];
+  // Altrimenti l'ultima sequenza di cifre nel nome
+  const m2 = s.match(/(\d+)\s*$/);
+  if (m2) return m2[1];
+  return String(idx ?? "");
+}
 
 // ----- port icon -----
 function PortIcon({ p, size = 22 }) {
@@ -87,9 +101,9 @@ function PortTile({ p, onClick, active }) {
       title={`Porta ${p.idx} · ${p.name} · ${p.oper_status}/${p.admin_status}${p.neighbor?.remote_sys_name ? "\n→ " + p.neighbor.remote_sys_name : ""}`}
       className={`relative flex flex-col items-center group`}
     >
-      {/* Numero porta sopra (chip nero) */}
+      {/* Numero porta sopra (chip nero) - label fisica invece di ifIndex SNMP */}
       <span className="bg-neutral-900 text-neutral-100 text-[10px] font-semibold rounded-full px-1.5 py-[1px] mb-0.5 min-w-[22px] text-center">
-        {p.idx}
+        {portLabel(p.name, p.idx)}
       </span>
       {/* Tile */}
       <div className={`flex items-center justify-center w-11 h-11 sm:w-12 sm:h-12 rounded-md border transition-all ${bg} ${active ? "ring-2 ring-cyan-300 scale-110" : "group-hover:scale-105"}`}>
@@ -116,7 +130,7 @@ function PortDetailPanel({ p, onClose }) {
   return (
     <div className="noc-panel p-4 space-y-3" data-testid={`switch-port-detail-${p.idx}`}>
       <div className="flex items-baseline justify-between">
-        <h3 className="text-base font-bold">Porta {p.idx} <span className="text-[var(--text-muted)] text-xs font-mono">· {p.name}</span></h3>
+        <h3 className="text-base font-bold">Porta {portLabel(p.name, p.idx)} <span className="text-[var(--text-muted)] text-xs font-mono">· {p.name}</span></h3>
         <button onClick={onClose} className="text-[var(--text-muted)] hover:text-[var(--text-primary)] text-xs">Chiudi ✕</button>
       </div>
 
@@ -350,7 +364,7 @@ export default function SwitchPortsPage() {
                   <tr key={p.idx} data-testid={`switch-port-row-${p.idx}`}
                       className={`cursor-pointer ${selected?.idx === p.idx ? "bg-cyan-500/10" : ""}`}
                       onClick={() => setSelected(p)}>
-                    <td className="font-mono font-semibold">{p.idx}</td>
+                    <td className="font-mono font-semibold">{portLabel(p.name, p.idx)}</td>
                     <td className="font-mono text-[10px]">{p.name}</td>
                     <td>
                       {p.admin === 2 ? (
