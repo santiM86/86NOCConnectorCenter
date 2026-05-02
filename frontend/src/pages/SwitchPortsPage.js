@@ -19,6 +19,7 @@ import {
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import PortCableView from "@/components/PortCableView";
+import PortFlapHistory from "@/components/PortFlapHistory";
 
 // ----- formatters -----
 function fmtSpeed(mbps) {
@@ -114,7 +115,7 @@ function PortTile({ p, onClick, active }) {
   );
 }
 
-function PortDetailPanel({ p, onClose, onOpenCable }) {
+function PortDetailPanel({ p, onClose, onOpenCable, deviceIp }) {
   if (!p) return null;
   const isUp = p.oper === 1 && p.admin === 1;
   const isPoe = p.poe_status === 3;
@@ -146,6 +147,14 @@ function PortDetailPanel({ p, onClose, onOpenCable }) {
           <button onClick={onClose} className="text-[var(--text-muted)] hover:text-[var(--text-primary)] text-xs">Chiudi ✕</button>
         </div>
       </div>
+
+      {/* Flap history 24h (micro-sparkline) */}
+      {deviceIp && (
+        <div className="flex items-center justify-between gap-2 border-b border-[var(--bg-border)] pb-2">
+          <span className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider font-semibold">Storia flap 24h</span>
+          <PortFlapHistory deviceIp={deviceIp} idx={p.idx} hours={24} />
+        </div>
+      )}
 
       {/* Status row */}
       <div className="flex flex-wrap items-center gap-2 text-[11px]">
@@ -368,7 +377,7 @@ export default function SwitchPortsPage() {
       </div>
 
       {/* Pannello dettaglio porta selezionata */}
-      {selected && <PortDetailPanel p={selected} onClose={() => setSelected(null)} onOpenCable={() => setCableView(selected)} />}
+      {selected && <PortDetailPanel p={selected} onClose={() => setSelected(null)} onOpenCable={() => setCableView(selected)} deviceIp={data.device_ip} />}
 
       {/* Modale Vista Cavo */}
       {cableView && (

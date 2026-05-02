@@ -10,6 +10,7 @@ import {
   Cloud, WifiHigh, Monitor, HardDrives, X,
 } from "@phosphor-icons/react";
 import { Link } from "react-router-dom";
+import PortFlapHistory from "./PortFlapHistory";
 
 function fmtBytes(n) {
   if (!n || n <= 0) return "0 B";
@@ -233,6 +234,10 @@ export default function PortCableView({ p, switchIp, switchName, onClose }) {
 
         {/* Dettagli tecnici inferiori */}
         <div className="grid grid-cols-2 gap-3 text-[11px] pt-2 border-t border-[var(--bg-border)]">
+          <div className="col-span-2 flex items-center justify-between gap-2 pb-2 border-b border-[var(--bg-border)]">
+            <div className="text-[9px] text-[var(--text-muted)] uppercase tracking-wider font-semibold">Storia flap 24h</div>
+            <PortFlapHistory deviceIp={switchIp} idx={p.idx} hours={24} width={200} />
+          </div>
           <div>
             <div className="text-[9px] text-[var(--text-muted)] uppercase mb-0.5">Velocita' negoziata</div>
             <div className="font-mono font-semibold">{fmtSpeed(p.speed_mbps)}</div>

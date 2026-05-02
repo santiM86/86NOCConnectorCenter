@@ -304,6 +304,37 @@ async def get_switch_ports(device_ip: str, current_user: dict = Depends(get_curr
     }
 
 
+@router.get("/devices/{device_ip}/switch-ports/{idx}/flaps")
+async def get_port_flap_history(
+    device_ip: str,
+    idx: int,
+    hours: int = 24,
+    current_user: dict = Depends(get_current_user),
+):
+    """Ritorna gli eventi flap (UP/DOWN/ADMIN/SPEED change) per una porta, ultime N ore."""
+    from datetime import datetime, timezone, timedelta
+    hours = max(1, min(hours, 720))  # 1h..30gg
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    events = await db.port_flap_events.find(
+        {"local_ip": device_ip, "idx": idx, "ts": {"$gte": cutoff}},
+        {"_id": 0}
+    ).sort("ts", 1).to_list(500)
+    # Breakdown per tipo
+    kinds = {"oper_change": 0, "admin_change": 0, "speed_change": 0}
+    for e in events:
+        k = e.get("kind", "")
+        if k in kinds:
+            kinds[k] += 1
+    return {
+        "device_ip": device_ip,
+        "idx": idx,
+        "hours": hours,
+        "events": events,
+        "total": len(events),
+        "by_kind": kinds,
+    }
+
+
 
 
 def classify_device(dev):
