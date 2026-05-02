@@ -2133,23 +2133,23 @@ function Poll-LldpNeighbors($ip, $community) {
     
     try {
         # Walk lldpRemSysName (1.0.8802.1.1.2.1.4.1.1.9)
-        $sysNames = Walk-SnmpTable $ip $community "1.0.8802.1.1.2.1.4.1.1.9"
+        $sysNames = Get-SnmpTable $ip $community "1.0.8802.1.1.2.1.4.1.1.9"
         if (-not $sysNames -or $sysNames.Count -eq 0) {
             Write-Log "  LLDP: Nessun neighbor trovato su $ip (tabella vuota)" "DEBUG"
             return $neighbors
         }
         
         # Walk additional tables
-        $portIds    = Walk-SnmpTable $ip $community "1.0.8802.1.1.2.1.4.1.1.7"
-        $portDescs  = Walk-SnmpTable $ip $community "1.0.8802.1.1.2.1.4.1.1.8"
-        $sysDescs   = Walk-SnmpTable $ip $community "1.0.8802.1.1.2.1.4.1.1.10"
-        $chassisIds = Walk-SnmpTable $ip $community "1.0.8802.1.1.2.1.4.1.1.5"
-        $manAddrs   = Walk-SnmpTable $ip $community "1.0.8802.1.1.2.1.4.2.1.4"
-        $sysCaps    = Walk-SnmpTable $ip $community $script:OID_lldpRemSysCapEnabled
+        $portIds    = Get-SnmpTable $ip $community "1.0.8802.1.1.2.1.4.1.1.7"
+        $portDescs  = Get-SnmpTable $ip $community "1.0.8802.1.1.2.1.4.1.1.8"
+        $sysDescs   = Get-SnmpTable $ip $community "1.0.8802.1.1.2.1.4.1.1.10"
+        $chassisIds = Get-SnmpTable $ip $community "1.0.8802.1.1.2.1.4.1.1.5"
+        $manAddrs   = Get-SnmpTable $ip $community "1.0.8802.1.1.2.1.4.2.1.4"
+        $sysCaps    = Get-SnmpTable $ip $community $script:OID_lldpRemSysCapEnabled
         
         # Walk local port descriptions
-        $locPortIds  = Walk-SnmpTable $ip $community "1.0.8802.1.1.2.1.3.7.1.3"
-        $locPortDesc = Walk-SnmpTable $ip $community "1.0.8802.1.1.2.1.3.7.1.4"
+        $locPortIds  = Get-SnmpTable $ip $community "1.0.8802.1.1.2.1.3.7.1.3"
+        $locPortDesc = Get-SnmpTable $ip $community "1.0.8802.1.1.2.1.3.7.1.4"
         
         # Build a lookup: local port number -> description
         $localPortMap = @{}
@@ -2331,11 +2331,11 @@ function Poll-MacTable($ip, $community) {
     
     try {
         # Walk dot1dTpFdbPort (MAC -> bridge port number)
-        $fdbPorts = Walk-SnmpTable $ip $community "1.3.6.1.2.1.17.4.3.1.2"
+        $fdbPorts = Get-SnmpTable $ip $community "1.3.6.1.2.1.17.4.3.1.2"
         if (-not $fdbPorts -or $fdbPorts.Count -eq 0) { return $macEntries }
         
         # Walk dot1dTpFdbAddress (MAC address in tabella)
-        $fdbAddrs = Walk-SnmpTable $ip $community "1.3.6.1.2.1.17.4.3.1.1"
+        $fdbAddrs = Get-SnmpTable $ip $community "1.3.6.1.2.1.17.4.3.1.1"
         
         foreach ($entry in $fdbPorts) {
             $portNum = $entry.value
@@ -2364,7 +2364,7 @@ function Poll-InterfaceMacs($ip, $community) {
     
     try {
         # Walk ifPhysAddress (MAC dell'interfaccia di ogni porta dello switch)
-        $results = Walk-SnmpTable $ip $community "1.3.6.1.2.1.2.2.1.6"
+        $results = Get-SnmpTable $ip $community "1.3.6.1.2.1.2.2.1.6"
         foreach ($entry in $results) {
             $ifIndex = ($entry.oid -split '\.')[-1]
             $rawMac = $entry.value
@@ -2392,7 +2392,7 @@ function Poll-PortSpeeds($ip, $community) {
     
     try {
         # Walk ifHighSpeed (Mbps - per porte 10G+)
-        $results = Walk-SnmpTable $ip $community "1.3.6.1.2.1.31.1.1.1.15"
+        $results = Get-SnmpTable $ip $community "1.3.6.1.2.1.31.1.1.1.15"
         foreach ($entry in $results) {
             $ifIndex = ($entry.oid -split '\.')[-1]
             $speedMbps = [int]$entry.value
@@ -2403,7 +2403,7 @@ function Poll-PortSpeeds($ip, $community) {
         
         # Se non abbiamo ifHighSpeed, usa ifSpeed (bps)
         if ($speeds.Count -eq 0) {
-            $results = Walk-SnmpTable $ip $community "1.3.6.1.2.1.2.2.1.5"
+            $results = Get-SnmpTable $ip $community "1.3.6.1.2.1.2.2.1.5"
             foreach ($entry in $results) {
                 $ifIndex = ($entry.oid -split '\.')[-1]
                 $speedBps = [long]$entry.value
@@ -2670,7 +2670,9 @@ function Run-FullDiscovery($config, $devices) {
     $allSwitchPorts = @()  # Porte dettagliate per UI Nebula-style
     
     foreach ($dev in $devices) {
-        if ($dev.monitor_type -ne "snmp") { continue }
+        # v3.6.9: accetta sia "snmp" che "snmp+http" (pre-fix skippava gli switch con snmp+http!)
+        $mt = if ($dev.monitor_type) { $dev.monitor_type } else { "snmp" }
+        if ($mt -ne "snmp" -and $mt -ne "snmp+http") { continue }
         
         $ip = $dev.ip
         $community = if ($dev.community) { $dev.community } else { "public" }
