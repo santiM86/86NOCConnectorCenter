@@ -9,7 +9,7 @@ router = APIRouter(prefix="/api", tags=["version"])
 
 # Base version
 MAJOR = 2
-MINOR = 0
+MINOR = 1
 
 # Cache for computed values
 _cached_hash = None

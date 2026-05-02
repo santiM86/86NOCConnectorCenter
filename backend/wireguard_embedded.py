@@ -639,6 +639,14 @@ def _b64_to_hex(b64_key: str) -> str:
         return ""
 
 
+def _hex_to_b64(hex_key: str) -> str:
+    """Convert a hex-encoded key (from UAPI) to base64 (DB format)."""
+    try:
+        return base64.b64encode(bytes.fromhex(hex_key)).decode()
+    except Exception:
+        return hex_key  # fallback: return as-is
+
+
 def _parse_uapi_get(text: str) -> dict:
     """Parser molto piccolo del formato UAPI 'get=1' di wireguard-go.
     Esempio output:
@@ -651,6 +659,9 @@ def _parse_uapi_get(text: str) -> dict:
       tx_bytes=...
       ...
       errno=0
+
+    NB: UAPI returns keys as hex, but the DB and _reconcile_peers use base64.
+    We convert public_key and preshared_key to base64 here so comparisons work.
     """
     out: dict = {"available": True, "peers": []}
     current_peer: Optional[dict] = None
@@ -659,8 +670,8 @@ def _parse_uapi_get(text: str) -> dict:
             continue
         k, _, v = line.partition("=")
         if k == "public_key":
-            # nuovo peer
-            current_peer = {"public_key": v}
+            # nuovo peer — convert hex to base64 for DB compatibility
+            current_peer = {"public_key": _hex_to_b64(v)}
             out["peers"].append(current_peer)
         elif current_peer is not None and k in (
             "preshared_key",
@@ -673,6 +684,9 @@ def _parse_uapi_get(text: str) -> dict:
             "allowed_ip",
             "protocol_version",
         ):
+            # Convert preshared_key from hex to base64 as well
+            if k == "preshared_key":
+                v = _hex_to_b64(v)
             current_peer[k] = v
         elif k in ("private_key", "listen_port", "fwmark", "errno"):
             out[k] = v
