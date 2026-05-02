@@ -1,5 +1,41 @@
 # CHANGELOG — 86BIT ARGUS Center
 
+## 2026-02-12 — v3.6.8 Connector SNMP: fix crash cast decimal su switch HPE
+
+### Problema
+`Poll-SwitchPortDetails` crashava in toto a linea 2513 con:
+`Impossibile convertire il valore "" nel tipo "System.Decimal"`.
+
+Gli switch HPE Comware restituiscono stringhe vuote `""` o `null` su alcuni
+contatori (`ifInOctets`, `ifOutOctets`, `ifHCInOctets`, `ifHighSpeed`,
+`ifLastChange`) per porte disabilitate o non attive. Il cast diretto
+`[decimal]$val` trovava una stringa vuota e faceva fallire TUTTO il loop,
+lasciando `$result.ports` sempre vuoto.
+
+### Fix
+In `snmp_poller.ps1` (`Poll-SwitchPortDetails`):
+- Aggiunto helper `_SafeNum($val, $type)` che converte in modo difensivo
+  qualsiasi valore SNMP in `decimal`/`long`/`int`, ritornando 0 su vuoti,
+  null o formati non validi (con fallback culture-safe per locale italiano).
+- Sostituiti tutti i cast diretti `[decimal]`/`[long]`/`[int]` alle righe
+  2506-2518 con chiamate a `_SafeNum`.
+- Protetti anche i cast `[int]` dei valori PoE (`pethPsePortAdminEnable`,
+  `pethPsePortDetectionStatus`, `pethPsePortPowerClassifications`) alle
+  righe 2488-2492.
+
+### File modificati
+- `/app/noc-connector/prg/src/snmp_poller.ps1` (2486-2545)
+- `/app/noc-connector/prg/version.json` → 3.6.8
+
+### Test atteso
+```powershell
+. "C:\Program Files\86NocConnector\src\snmp_poller.ps1"
+$r = Poll-SwitchPortDetails "10.100.61.220" "Argus"
+"Porte: $($r.ports.Count)"
+# Atteso: Porte: 48 (o simile, non piu' 0)
+```
+
+
 ## 2026-05-01 (sera) — Bootstrap Installer Wizard self-elevating
 
 ### Installer "doppio-click" per setup nuovi connector

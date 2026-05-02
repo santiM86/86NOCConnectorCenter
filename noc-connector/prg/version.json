@@ -1,4 +1,4 @@
 {
-  "version": "3.6.7",
-  "changelog": "v3.6.7 - Wizard upgrade ora importa AUTOMATICAMENTE anche i dispositivi monitorati dalla config esistente. Quando il wizard rileva una installazione (config.json presente con noc_center_url + api_key), oltre a pre-compilare URL Center, API Key e porte, ora carica TUTTI i devices dell'array 'devices' nel config (IP, community, nome, snmp_version) nella tabella dispositivi del wizard. L'utente puo' aggiungere/rimuovere device e cliccare Aggiorna. Inoltre pre-compila il poll_interval_seconds. Il flag $script:DevicesPrefilled previene re-import se l'utente naviga Indietro/Avanti. Include tutti i fix v3.6.0-3.6.6."
+  "version": "3.6.8",
+  "changelog": "v3.6.8 - FIX CRITICO Poll-SwitchPortDetails: il polling delle porte crashava con 'Impossibile convertire il valore \"\" nel tipo System.Decimal' alla riga 2513 sugli switch HPE Comware (e simili) che restituiscono stringhe vuote su contatori ifInOctets/ifOutOctets/ifHCInOctets per porte non attive. Aggiunto helper _SafeNum per cast difensivo (vuoti/null/malformati -> 0) usato su tutti i cast [decimal]/[long]/[int] di contatori, velocita, admin/oper, last-change e valori PoE (admin/status/class). Ora le porte valide vengono popolate anche se alcuni indici hanno valori mancanti. Include tutti i fix v3.6.0-3.6.7."
 }
