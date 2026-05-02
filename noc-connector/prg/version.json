@@ -1,4 +1,4 @@
 {
-  "version": "3.6.13",
-  "changelog": "v3.6.13 - TCP Port Fingerprint: il connector ora scansiona (async parallel) le porte 22/80/443/445/515/631/3389/5060/8080/9100 su tutti gli IP managed + ARP cache (max 150/ciclo). Le porte aperte vengono inviate al backend in 'ip_port_probes'. Il backend le usa per classificare device con OUI ambigui: 3389 -> Windows Server, 22 -> Linux server, 9100/515/631 -> Printer, 5060 -> VoIP, 443/80 -> appliance. Include tutti i fix v3.6.0-3.6.12."
+  "version": "3.6.14",
+  "changelog": "v3.6.14 - Redfish BMC Auto-Discovery: quando il TCP probe (v3.6.13) trova porta 443 aperta, il connector fa subito un GET non-autenticato a https://<ip>/redfish/v1/ e rileva automaticamente iLO (HPE), iDRAC (Dell), IPMI (Supermicro), XCC (Lenovo) o Redfish generici. I BMC scoperti vengono inviati al backend come 'bmc_candidates' e mostrati nel tab 'Discovery' del cliente con un bottone 'Importa come server' che crea il device con Redfish attivato. Il backend usa bmc_kind in _guess_endpoint_type per classificare inequivocabilmente come server (priorita' massima, prima di OUI/porte). Include tutti i fix v3.6.0-3.6.13 + v3.6.13 TCP Port Fingerprint."
 }

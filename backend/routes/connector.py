@@ -2659,6 +2659,7 @@ async def connector_network_discovery(request: Request):
     port_speeds = body.get("port_speeds", [])
     device_macs = body.get("device_macs", [])
     ip_port_probes = body.get("ip_port_probes", [])  # v3.6.13: TCP fingerprint
+    bmc_candidates = body.get("bmc_candidates", [])  # v3.6.14: Redfish BMC auto-discovery
 
     # Build IP -> listening_ports map from probes
     ip_ports_map = {}
@@ -2668,17 +2669,60 @@ async def connector_network_discovery(request: Request):
         if pip and ports:
             ip_ports_map[pip] = sorted(set(int(p) for p in ports if str(p).isdigit()))
 
+    # Build IP -> BMC info map
+    ip_bmc_map = {}
+    for bmc in bmc_candidates:
+        bip = bmc.get("ip", "")
+        if bip and bmc.get("bmc_kind"):
+            ip_bmc_map[bip] = {
+                "bmc_kind": bmc.get("bmc_kind", ""),
+                "redfish_version": bmc.get("redfish_version", ""),
+                "oem_hint": bmc.get("oem_hint", ""),
+            }
+
     # Store discovery data (replace old data for this client)
     await db.network_discovery.delete_many({"client_id": client_id})
-    if mac_tables or port_speeds or device_macs or ip_port_probes:
+    if mac_tables or port_speeds or device_macs or ip_port_probes or bmc_candidates:
         await db.network_discovery.insert_one({
             "client_id": client_id,
             "mac_tables": mac_tables,
             "port_speeds": port_speeds,
             "device_macs": device_macs,
             "ip_port_probes": ip_port_probes,
+            "bmc_candidates": bmc_candidates,
             "updated_at": now_iso,
         })
+
+    # Upsert BMC candidates into dedicated collection (for admin "Add server" UI)
+    # Keep only non-managed BMCs so the admin sees real suggestions.
+    managed_ip_set_for_bmc = set()
+    _mdev_for_bmc = await db.managed_devices.find({"client_id": client_id}, {"_id": 0, "ip": 1}).to_list(2000)
+    for _md in _mdev_for_bmc:
+        if _md.get("ip"):
+            managed_ip_set_for_bmc.add(_md["ip"])
+    for bmc in bmc_candidates:
+        bip = bmc.get("ip", "")
+        if not bip or not bmc.get("bmc_kind"):
+            continue
+        if bip in managed_ip_set_for_bmc:
+            continue  # gia' censito
+        await db.bmc_candidates.update_one(
+            {"client_id": client_id, "ip": bip},
+            {"$set": {
+                "client_id": client_id,
+                "ip": bip,
+                "bmc_kind": bmc.get("bmc_kind", ""),
+                "redfish_version": bmc.get("redfish_version", ""),
+                "oem_hint": bmc.get("oem_hint", ""),
+                "server_header": bmc.get("server_header", ""),
+                "last_seen": now_iso,
+            }, "$setOnInsert": {"first_seen": now_iso, "dismissed": False}},
+            upsert=True,
+        )
+    # Drop BMC candidates not seen in last 24h or already managed
+    await db.bmc_candidates.delete_many({
+        "client_id": client_id, "ip": {"$in": list(managed_ip_set_for_bmc)}
+    })
 
     # Build MAC -> IP mapping from device_macs and managed devices
     device_mac_map = {}  # MAC -> IP mapping
@@ -2720,6 +2764,7 @@ async def connector_network_discovery(request: Request):
                 })
             # Store ALL MAC entries as discovered endpoints
             ep_ip = resolved_ip or entry.get("ip", "")
+            ep_bmc = ip_bmc_map.get(ep_ip, {}) if ep_ip else {}
             discovered_endpoints.append({
                 "client_id": client_id,
                 "switch_ip": switch_ip,
@@ -2730,6 +2775,8 @@ async def connector_network_discovery(request: Request):
                 "hostname": entry.get("hostname", ""),
                 "is_managed": resolved_ip in managed_ips,
                 "listening_ports": ip_ports_map.get(ep_ip, []),  # v3.6.13
+                "bmc_kind": ep_bmc.get("bmc_kind", ""),  # v3.6.14: ilo/idrac/ipmi/xcc
+                "bmc_version": ep_bmc.get("redfish_version", ""),
                 "updated_at": now_iso,
             })
 
@@ -2893,3 +2940,119 @@ async def backfill_orphan_records(current_user: dict = Depends(get_current_user)
         "message": f"Backfill completato: {stats['alerts_fixed']} alert, {stats['poll_status_fixed']} device, {stats['credentials_fixed']} credenziali aggiornate.",
         **stats,
     }
+
+
+# ==================== BMC CANDIDATES (v3.6.14) ====================
+# Redfish/BMC auto-discovery: il connector trova iLO/iDRAC/IPMI/XCC sulla rete
+# e li propone come nuovi device da censire (con un click lato UI).
+
+@router.get("/bmc-candidates")
+async def list_bmc_candidates(
+    client_id: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
+):
+    """Lista dei BMC scoperti dal connector e non ancora censiti/scartati."""
+    q = {"dismissed": {"$ne": True}}
+    if client_id:
+        q["client_id"] = client_id
+    items = await db.bmc_candidates.find(q, {"_id": 0}).sort("last_seen", -1).to_list(500)
+    # Enrich with switch_ip/port if available from discovered_endpoints
+    ips = [i.get("ip") for i in items if i.get("ip")]
+    ep_map = {}
+    if ips:
+        async for e in db.discovered_endpoints.find(
+            {"ip": {"$in": ips}},
+            {"_id": 0, "ip": 1, "switch_ip": 1, "port": 1, "mac": 1, "vlan": 1},
+        ):
+            ep_map[e["ip"]] = e
+    for i in items:
+        ep = ep_map.get(i.get("ip"), {})
+        i["switch_ip"] = ep.get("switch_ip", "")
+        i["switch_port"] = ep.get("port", "")
+        i["mac"] = ep.get("mac", "")
+        i["vlan"] = ep.get("vlan", "")
+    return {"items": items, "count": len(items)}
+
+
+@router.post("/bmc-candidates/{client_id}/{ip}/dismiss")
+async def dismiss_bmc_candidate(
+    client_id: str, ip: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Nascondi un BMC candidato (non proporlo piu' nella UI)."""
+    r = await db.bmc_candidates.update_one(
+        {"client_id": client_id, "ip": ip},
+        {"$set": {"dismissed": True, "dismissed_at": datetime.now(timezone.utc).isoformat(),
+                  "dismissed_by": current_user.get("email", "")}},
+    )
+    if r.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Candidate non trovato")
+    return {"status": "ok"}
+
+
+@router.post("/bmc-candidates/{client_id}/{ip}/import")
+async def import_bmc_candidate(
+    client_id: str, ip: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Importa un BMC candidato come managed device (Redfish-enabled).
+    Crea un record in db.devices con device_type='server' e redfish_enabled=True.
+    Le credenziali vanno aggiunte in un secondo step dal Vault.
+    """
+    cand = await db.bmc_candidates.find_one({"client_id": client_id, "ip": ip}, {"_id": 0})
+    if not cand:
+        raise HTTPException(status_code=404, detail="Candidate non trovato")
+    client = await db.clients.find_one({"id": client_id}, {"_id": 0})
+    if not client:
+        raise HTTPException(status_code=404, detail="Client non trovato")
+    # Nome suggerito dal vendor BMC
+    bmc_kind = cand.get("bmc_kind", "")
+    kind_label = {
+        "ilo": "HPE iLO", "idrac": "Dell iDRAC", "ipmi": "Supermicro IPMI",
+        "xcc": "Lenovo XCC", "redfish_generic": "Redfish BMC",
+    }.get(bmc_kind, "BMC")
+    device_name = f"{kind_label} {ip}"
+    # Skip se gia' esiste
+    existing = await db.devices.find_one({"client_id": client_id, "ip_address": ip}, {"_id": 0})
+    if existing:
+        # Marca come imported cosi' sparisce dalla lista
+        await db.bmc_candidates.update_one(
+            {"client_id": client_id, "ip": ip},
+            {"$set": {"dismissed": True, "imported_as": existing.get("id"),
+                      "dismissed_at": datetime.now(timezone.utc).isoformat()}},
+        )
+        return {"status": "already_exists", "device_id": existing.get("id")}
+    device_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    await db.devices.insert_one({
+        "id": device_id,
+        "client_id": client_id,
+        "name": device_name,
+        "device_type": "server",
+        "ip_address": ip,
+        "hostname": "",
+        "location": "",
+        "status": "active",
+        "redfish_enabled": True,
+        "last_poll": None,
+        "health_status": None,
+        "created_at": now,
+        "created_via": "bmc_auto_discovery",
+        "bmc_kind": bmc_kind,
+        "bmc_redfish_version": cand.get("redfish_version", ""),
+    })
+    await db.bmc_candidates.update_one(
+        {"client_id": client_id, "ip": ip},
+        {"$set": {"dismissed": True, "imported_as": device_id, "dismissed_at": now,
+                  "dismissed_by": current_user.get("email", "")}},
+    )
+    try:
+        await audit_logger.log(
+            AuditAction.CREATE_DEVICE, user_id=current_user["id"], user_email=current_user["email"],
+            resource_type="device", resource_id=device_id,
+            details={"name": device_name, "type": "server", "source": "bmc_auto_discovery",
+                     "bmc_kind": bmc_kind, "ip": ip},
+        )
+    except Exception:
+        pass
+    return {"status": "imported", "device_id": device_id, "name": device_name}

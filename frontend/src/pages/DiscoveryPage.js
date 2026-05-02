@@ -85,6 +85,51 @@ export default function DiscoveryPage({ scopedClientId = null, scopedClientName 
       .catch(() => toast.error("Errore"));
   };
 
+  // ==================== BMC CANDIDATES (v3.6.14) ====================
+  const [bmcCandidates, setBmcCandidates] = useState([]);
+  const fetchBmcCandidates = useCallback(() => {
+    if (!selectedClient) return;
+    axios.get(`${API}/api/bmc-candidates?client_id=${selectedClient}`, { headers })
+      .then(r => setBmcCandidates(r.data.items || []))
+      .catch(() => {});
+  }, [selectedClient]);
+  useEffect(() => { fetchBmcCandidates(); }, [fetchBmcCandidates]);
+  useEffect(() => {
+    if (!scanning) return;
+    const i = setInterval(fetchBmcCandidates, 10000);
+    return () => clearInterval(i);
+  }, [scanning, fetchBmcCandidates]);
+
+  const importBmc = (bmc) => {
+    axios.post(`${API}/api/bmc-candidates/${selectedClient}/${encodeURIComponent(bmc.ip)}/import`, {}, { headers })
+      .then(r => {
+        if (r.data.status === "already_exists") {
+          toast.info(`Device gia' presente (${bmc.ip})`);
+        } else {
+          toast.success(`BMC ${bmc.ip} aggiunto come ${r.data.name}. Aggiungi credenziali iLO/iDRAC in Vault.`);
+        }
+        fetchBmcCandidates();
+        fetchResults();
+      })
+      .catch(err => toast.error(err.response?.data?.detail || "Errore import"));
+  };
+  const dismissBmc = (bmc) => {
+    axios.post(`${API}/api/bmc-candidates/${selectedClient}/${encodeURIComponent(bmc.ip)}/dismiss`, {}, { headers })
+      .then(() => {
+        toast.success("BMC ignorato");
+        fetchBmcCandidates();
+      })
+      .catch(() => toast.error("Errore"));
+  };
+  const bmcStyles = {
+    ilo: { bg: "bg-emerald-500/20", border: "border-emerald-500/40", text: "text-emerald-300", label: "HPE iLO" },
+    idrac: { bg: "bg-sky-500/20", border: "border-sky-500/40", text: "text-sky-300", label: "Dell iDRAC" },
+    ipmi: { bg: "bg-violet-500/20", border: "border-violet-500/40", text: "text-violet-300", label: "Supermicro IPMI" },
+    xcc: { bg: "bg-amber-500/20", border: "border-amber-500/40", text: "text-amber-300", label: "Lenovo XCC" },
+    redfish_generic: { bg: "bg-slate-500/20", border: "border-slate-500/40", text: "text-slate-300", label: "Redfish BMC" },
+  };
+  const bmcStyle = (kind) => bmcStyles[kind] || bmcStyles.redfish_generic;
+
   const managedIps = results?.managed_ips || [];
   const devices = (results?.devices || []).filter(d => !managedIps.includes(d.ip));
 
@@ -139,6 +184,71 @@ export default function DiscoveryPage({ scopedClientId = null, scopedClientName 
           <div className="rounded-lg border border-[var(--bg-border)] bg-[var(--bg-card)] p-3 text-center">
             <p className="text-2xl font-bold text-amber-500">{devices.length}</p>
             <p className="text-xs text-[var(--text-secondary)]">Da Approvare</p>
+          </div>
+        </div>
+      )}
+
+      {/* BMC Candidates (v3.6.14) - auto-scoperti da Redfish probe */}
+      {bmcCandidates.length > 0 && (
+        <div className="rounded-xl border border-emerald-500/40 bg-emerald-500/5 overflow-hidden" data-testid="bmc-candidates-panel">
+          <div className="p-3 border-b border-emerald-500/30 flex items-center justify-between">
+            <div>
+              <h3 className="text-sm font-semibold text-emerald-300 flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                Server BMC Rilevati (Redfish)
+              </h3>
+              <p className="text-[11px] text-[var(--text-secondary)] mt-0.5">
+                iLO / iDRAC / IPMI scoperti automaticamente dal connector. Importa per attivare il polling hardware server.
+              </p>
+            </div>
+            <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 text-[10px] font-bold">{bmcCandidates.length} nuovi</span>
+          </div>
+          <div className="divide-y divide-emerald-500/20">
+            {bmcCandidates.map((b, i) => {
+              const s = bmcStyle(b.bmc_kind);
+              return (
+              <div key={i} className="flex items-center justify-between p-3 hover:bg-emerald-500/5 transition-colors" data-testid={`bmc-candidate-${i}`}>
+                <div className="flex items-center gap-3">
+                  <div className={`w-10 h-10 rounded-md flex items-center justify-center ${s.bg} border ${s.border}`}>
+                    <span className={`text-[10px] font-bold ${s.text} uppercase tracking-wider`}>BMC</span>
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <p className="text-sm font-semibold text-[var(--text-primary)]">{s.label}</p>
+                      {b.redfish_version && (
+                        <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[var(--bg-surface)] text-[var(--text-secondary)] border border-[var(--bg-border)]">
+                          Redfish {b.redfish_version}
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-[11px] font-mono text-[var(--text-secondary)]">
+                      {b.ip}
+                      {b.mac ? <> · MAC {b.mac}</> : null}
+                      {b.switch_ip ? <> · via switch {b.switch_ip} porta {b.switch_port}</> : null}
+                      {b.vlan ? <> · VLAN {b.vlan}</> : null}
+                    </p>
+                    {b.server_header && (
+                      <p className="text-[10px] italic text-[var(--text-secondary)] opacity-70 truncate max-w-md" title={b.server_header}>
+                        {b.server_header}
+                      </p>
+                    )}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button onClick={() => importBmc(b)}
+                    className="h-7 px-3 text-xs font-semibold rounded-md bg-emerald-600 text-white hover:bg-emerald-700"
+                    data-testid={`import-bmc-${i}`}>
+                    Importa come server
+                  </button>
+                  <button onClick={() => dismissBmc(b)}
+                    className="h-7 px-3 text-xs rounded-md border border-[var(--bg-border)] text-[var(--text-secondary)] hover:bg-[var(--bg-surface)]"
+                    data-testid={`dismiss-bmc-${i}`}>
+                    Ignora
+                  </button>
+                </div>
+              </div>
+              );
+            })}
           </div>
         </div>
       )}
