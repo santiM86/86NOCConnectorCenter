@@ -2713,8 +2713,40 @@ function Run-FullDiscovery($config, $devices) {
     $allPortSpeeds = @()
     $deviceMacs = @()  # MAC di ogni dispositivo managed
     $allSwitchPorts = @()  # Porte dettagliate per UI Nebula-style
-    
+
+    # v3.6.12: Raccogli MAC di TUTTI i managed device (anche non-SNMP) via ARP locale.
+    # Questo garantisce che il match tra FDB FDB switch e managed device funzioni
+    # anche per PC Windows, server, NAS che non rispondono a ifPhysAddress SNMP.
+    $allArpMap = $null
+    try {
+        $allArpMap = @{}
+        $arpEntries = Get-NetNeighbor -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+            Where-Object { $_.LinkLayerAddress -and $_.LinkLayerAddress -ne "00-00-00-00-00-00" -and $_.State -in @("Reachable","Stale","Permanent") }
+        foreach ($n in $arpEntries) {
+            # Normalizza MAC formato: AA-BB-CC-DD-EE-FF -> AA:BB:CC:DD:EE:FF
+            $mac = ($n.LinkLayerAddress -replace '-', ':').ToUpper()
+            $allArpMap["$($n.IPAddress)"] = $mac
+        }
+        Write-Log "ARP cache locale: $($allArpMap.Count) entries disponibili per MAC lookup managed device" "DEBUG"
+    } catch {
+        Write-Log "ARP cache locale non disponibile: $($_.Exception.Message)" "DEBUG"
+    }
+
     foreach ($dev in $devices) {
+        # v3.6.12: anche per device NON-SNMP (ping-only/HTTP-only), almeno estrai il MAC via ARP locale
+        # in modo da identificarli nella FDB degli switch.
+        if ($allArpMap -and $allArpMap.ContainsKey($dev.ip)) {
+            $already = $deviceMacs | Where-Object { $_.ip -eq $dev.ip } | Select-Object -First 1
+            if (-not $already) {
+                $deviceMacs += @{
+                    ip = $dev.ip
+                    name = $dev.name
+                    macs = @($allArpMap[$dev.ip])
+                    source = "arp_local_pre"
+                }
+            }
+        }
+
         # v3.6.9: accetta sia "snmp" che "snmp+http" (pre-fix skippava gli switch con snmp+http!)
         $mt = if ($dev.monitor_type) { $dev.monitor_type } else { "snmp" }
         if ($mt -ne "snmp" -and $mt -ne "snmp+http") { continue }
@@ -2768,6 +2800,14 @@ function Run-FullDiscovery($config, $devices) {
                 ip = $ip
                 name = $dev.name
                 macs = $macList
+            }
+        } elseif ($allArpMap -and $allArpMap.ContainsKey($ip)) {
+            # v3.6.12: device non-SNMP o SNMP senza ifPhysAddress - usa ARP locale
+            $deviceMacs += @{
+                ip = $ip
+                name = $dev.name
+                macs = @($allArpMap[$ip])
+                source = "arp_local"
             }
         }
 
