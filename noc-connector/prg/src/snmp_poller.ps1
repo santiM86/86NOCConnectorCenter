@@ -2438,11 +2438,22 @@ function Poll-SwitchPortDetails($ip, $community) {
     #>
     if (-not $script:PortCounters) { $script:PortCounters = @{} }
 
+    # Defensive fallback: Write-Log non e' definito quando questo file viene dot-sourced
+    # standalone per debug (e' definito in connector.ps1). Stub silente in tal caso.
+    if (-not (Get-Command Write-Log -ErrorAction SilentlyContinue)) {
+        function Write-Log { param($m, $l = "INFO") Write-Host "[$l] $m" }
+    }
+
     $result = @{ ports = @(); poll_at = (Get-Date).ToUniversalTime().ToString("o") }
 
     try {
         $ifDescr   = Get-SnmpTable $ip $community $script:OID_ifDescr
-        if (-not $ifDescr -or $ifDescr.Count -eq 0) { return $result }
+        if (-not $ifDescr -or $ifDescr.Count -eq 0) {
+            Write-Log "  SwitchPorts: ifDescr vuoto su $ip - SNMP non risponde o ACL/community" "WARN"
+            return $result
+        }
+
+        Write-Log "  SwitchPorts[$ip]: ifDescr ha $($ifDescr.Count) interfacce, polling tabelle correlate..." "DEBUG"
 
         $ifName    = Get-SnmpTable $ip $community $script:OID_ifName
         $ifAlias   = Get-SnmpTable $ip $community $script:OID_ifAlias
@@ -2465,8 +2476,7 @@ function Poll-SwitchPortDetails($ip, $community) {
         $poeStatus   = Get-SnmpTable $ip $community $script:OID_pethPsePortDetectionStatus
         $poeClass    = Get-SnmpTable $ip $community $script:OID_pethPsePortPowerClassifications
 
-        # Build poe map by extracting last 2 digits as port; group=1 typical
-        # We map by trailing port number (treat as ifIndex match by port number digit)
+        # Build poe map by extracting last digit as port (assumes group=1)
         function _PoeKeyToPort([string]$oidKey, [string]$base) {
             $suffix = $oidKey.Substring($base.Length).TrimStart('.')
             $parts = $suffix -split '\.'
@@ -2481,13 +2491,17 @@ function Poll-SwitchPortDetails($ip, $community) {
         $poeClassByPort = @{}
         if ($poeClass) { foreach ($k in $poeClass.Keys) { $p = _PoeKeyToPort $k $script:OID_pethPsePortPowerClassifications; $poeClassByPort[$p] = [int]$poeClass[$k] } }
 
-        # Precompute "now" time and load previous counters
-        $nowEpoch = [int][double]::Parse((Get-Date -UFormat %s))
+        # Locale-safe epoch (NON usare Get-Date -UFormat %s, fallisce in italiano per il decimale ',')
+        try {
+            $nowEpoch = [int][DateTimeOffset]::Now.ToUnixTimeSeconds()
+        } catch {
+            $nowEpoch = [int]([DateTime]::UtcNow - [DateTime]::new(1970,1,1)).TotalSeconds
+        }
+
         if (-not $script:PortCounters.ContainsKey($ip)) { $script:PortCounters[$ip] = @{} }
         $prev = $script:PortCounters[$ip]
         $newPrev = @{}
 
-        # Build per-ifIndex helper
         function _IdxFromOid([string]$k) { return ($k.Split('.'))[-1] }
         $operByIdx = @{}; if ($ifOper) { foreach ($k in $ifOper.Keys) { $operByIdx[(_IdxFromOid $k)] = [int]$ifOper[$k] } }
         $adminByIdx = @{}; if ($ifAdmin) { foreach ($k in $ifAdmin.Keys) { $adminByIdx[(_IdxFromOid $k)] = [int]$ifAdmin[$k] } }
@@ -2503,77 +2517,85 @@ function Poll-SwitchPortDetails($ip, $community) {
         $inPktByIdx = @{}; if ($ifInPkt) { foreach ($k in $ifInPkt.Keys) { $inPktByIdx[(_IdxFromOid $k)] = [decimal]$ifInPkt[$k] } }
         $outPktByIdx = @{}; if ($ifOutPkt) { foreach ($k in $ifOutPkt.Keys) { $outPktByIdx[(_IdxFromOid $k)] = [decimal]$ifOutPkt[$k] } }
 
+        $physCount = 0; $skippedCount = 0
         foreach ($k in $ifDescr.Keys) {
-            $idx = _IdxFromOid $k
-            $descr = "$($ifDescr[$k])"
-            $name  = if ($nameByIdx.ContainsKey($idx) -and $nameByIdx[$idx]) { $nameByIdx[$idx] } else { $descr }
+            try {
+                $idx = _IdxFromOid $k
+                $descr = "$($ifDescr[$k])"
+                $name  = if ($nameByIdx.ContainsKey($idx) -and $nameByIdx[$idx]) { $nameByIdx[$idx] } else { $descr }
 
-            # Skip non-physical interfaces (basic heuristic): VLAN, Loopback, Tunnel
-            if ($name -match '^(Vlan|Lo|Loop|Tunnel|Null|Mgmt|Trunk|Port-channel|Bond|Bridge)' -and -not ($name -match 'GigabitEthernet|Eth|Port|Te|Twe|Hu|Fo|Fa')) {
-                continue
-            }
-
-            # speed_mbps (use HighSpeed if present > 0)
-            $sp = 0
-            if ($highByIdx.ContainsKey($idx) -and $highByIdx[$idx] -gt 0) { $sp = $highByIdx[$idx] }
-            elseif ($speedByIdx.ContainsKey($idx)) { $sp = [int]([math]::Floor($speedByIdx[$idx] / 1000000)) }
-
-            # last_change in seconds (TimeTicks 1/100s -> seconds delta from current sysUpTime is non-trivial, store raw)
-            $lastChange = 0
-            if ($lastByIdx.ContainsKey($idx)) { $lastChange = [int]([math]::Floor($lastByIdx[$idx] / 100)) }
-
-            # Counters delta -> bps
-            $inOct = 0; $outOct = 0
-            if ($inByIdx.ContainsKey($idx)) { $inOct = $inByIdx[$idx] }
-            if ($outByIdx.ContainsKey($idx)) { $outOct = $outByIdx[$idx] }
-            $inPkt = 0; $outPkt = 0
-            if ($inPktByIdx.ContainsKey($idx)) { $inPkt = $inPktByIdx[$idx] }
-            if ($outPktByIdx.ContainsKey($idx)) { $outPkt = $outPktByIdx[$idx] }
-
-            $rxBps = 0; $txBps = 0; $rxPps = 0; $txPps = 0
-            $prevKey = "p$idx"
-            if ($prev.ContainsKey($prevKey)) {
-                $pp = $prev[$prevKey]
-                $dt = $nowEpoch - $pp.t
-                if ($dt -gt 0 -and $dt -lt 3600) {
-                    if ($inOct -ge $pp.in)   { $rxBps = [long](($inOct - $pp.in) * 8 / $dt) }
-                    if ($outOct -ge $pp.out) { $txBps = [long](($outOct - $pp.out) * 8 / $dt) }
-                    if ($inPkt -ge $pp.inp)  { $rxPps = [long](($inPkt - $pp.inp) / $dt) }
-                    if ($outPkt -ge $pp.outp){ $txPps = [long](($outPkt - $pp.outp) / $dt) }
+                # Skip non-physical interfaces (Vlan/Loopback/Tunnel/Null/InLoopBack0/Bridge/Mgmt)
+                # MA tieni le ethernet (anche prefissate Ten-/Twen-/Forty-/Hundred-)
+                $isEth = ($name -match '(?i)Ethernet|Eth\d|Port|^Te\d|^Twe\d|^Hu\d|^Fo\d|^Fa\d|^Gi\d')
+                $isVirtual = ($name -match '(?i)^(Vlan|Vlan-interface|Lo|Loop|InLoopBack|Tunnel|Null|Mgmt|Trunk|Port-channel|Bond|Bridge|Dialer|Async|PPP|VirtualBridge|Register|Aux)')
+                if ($isVirtual -and -not $isEth) {
+                    $skippedCount++
+                    continue
                 }
-            }
-            $newPrev[$prevKey] = @{ t = $nowEpoch; in = $inOct; out = $outOct; inp = $inPkt; outp = $outPkt }
+                $physCount++
 
-            # PoE (try lookup by ifIndex digit)
-            $poeAdminV = 0; $poeStatusV = 0; $poeClassV = 0
-            if ($poeAdminByPort.ContainsKey($idx)) { $poeAdminV = $poeAdminByPort[$idx] }
-            if ($poeStatusByPort.ContainsKey($idx)) { $poeStatusV = $poeStatusByPort[$idx] }
-            if ($poeClassByPort.ContainsKey($idx)) { $poeClassV = $poeClassByPort[$idx] }
+                $sp = 0
+                if ($highByIdx.ContainsKey($idx) -and $highByIdx[$idx] -gt 0) { $sp = $highByIdx[$idx] }
+                elseif ($speedByIdx.ContainsKey($idx)) { $sp = [int]([math]::Floor($speedByIdx[$idx] / 1000000)) }
 
-            $result.ports += @{
-                idx          = [int]$idx
-                name         = $name
-                descr        = $descr
-                alias        = if ($aliasByIdx.ContainsKey($idx)) { $aliasByIdx[$idx] } else { "" }
-                oper         = if ($operByIdx.ContainsKey($idx)) { $operByIdx[$idx] } else { 0 }
-                admin        = if ($adminByIdx.ContainsKey($idx)) { $adminByIdx[$idx] } else { 0 }
-                speed_mbps   = $sp
-                last_change_s = $lastChange
-                in_octets    = [string]$inOct
-                out_octets   = [string]$outOct
-                rx_bps       = $rxBps
-                tx_bps       = $txBps
-                rx_pps       = $rxPps
-                tx_pps       = $txPps
-                poe_admin    = $poeAdminV    # 1=on,2=off
-                poe_status   = $poeStatusV   # 3=delivering,4=fault, etc
-                poe_class    = $poeClassV    # 1..5 -> class0..class4
+                $lastChange = 0
+                if ($lastByIdx.ContainsKey($idx)) { $lastChange = [int]([math]::Floor($lastByIdx[$idx] / 100)) }
+
+                $inOct = 0; $outOct = 0
+                if ($inByIdx.ContainsKey($idx)) { $inOct = $inByIdx[$idx] }
+                if ($outByIdx.ContainsKey($idx)) { $outOct = $outByIdx[$idx] }
+                $inPkt = 0; $outPkt = 0
+                if ($inPktByIdx.ContainsKey($idx)) { $inPkt = $inPktByIdx[$idx] }
+                if ($outPktByIdx.ContainsKey($idx)) { $outPkt = $outPktByIdx[$idx] }
+
+                $rxBps = 0; $txBps = 0; $rxPps = 0; $txPps = 0
+                $prevKey = "p$idx"
+                if ($prev.ContainsKey($prevKey)) {
+                    $pp = $prev[$prevKey]
+                    $dt = $nowEpoch - $pp.t
+                    if ($dt -gt 0 -and $dt -lt 3600) {
+                        if ($inOct -ge $pp.in)   { $rxBps = [long](($inOct - $pp.in) * 8 / $dt) }
+                        if ($outOct -ge $pp.out) { $txBps = [long](($outOct - $pp.out) * 8 / $dt) }
+                        if ($inPkt -ge $pp.inp)  { $rxPps = [long](($inPkt - $pp.inp) / $dt) }
+                        if ($outPkt -ge $pp.outp){ $txPps = [long](($outPkt - $pp.outp) / $dt) }
+                    }
+                }
+                $newPrev[$prevKey] = @{ t = $nowEpoch; in = $inOct; out = $outOct; inp = $inPkt; outp = $outPkt }
+
+                $poeAdminV = 0; $poeStatusV = 0; $poeClassV = 0
+                if ($poeAdminByPort.ContainsKey($idx)) { $poeAdminV = $poeAdminByPort[$idx] }
+                if ($poeStatusByPort.ContainsKey($idx)) { $poeStatusV = $poeStatusByPort[$idx] }
+                if ($poeClassByPort.ContainsKey($idx)) { $poeClassV = $poeClassByPort[$idx] }
+
+                $result.ports += @{
+                    idx          = [int]$idx
+                    name         = $name
+                    descr        = $descr
+                    alias        = if ($aliasByIdx.ContainsKey($idx)) { $aliasByIdx[$idx] } else { "" }
+                    oper         = if ($operByIdx.ContainsKey($idx)) { $operByIdx[$idx] } else { 0 }
+                    admin        = if ($adminByIdx.ContainsKey($idx)) { $adminByIdx[$idx] } else { 0 }
+                    speed_mbps   = $sp
+                    last_change_s = $lastChange
+                    in_octets    = [string]$inOct
+                    out_octets   = [string]$outOct
+                    rx_bps       = $rxBps
+                    tx_bps       = $txBps
+                    rx_pps       = $rxPps
+                    tx_pps       = $txPps
+                    poe_admin    = $poeAdminV
+                    poe_status   = $poeStatusV
+                    poe_class    = $poeClassV
+                }
+            } catch {
+                Write-Log "  SwitchPorts[$ip]: errore parsing porta idx=$idx descr='$descr' - $($_.Exception.Message)" "WARN"
+                continue
             }
         }
 
         $script:PortCounters[$ip] = $newPrev
+        Write-Log "  SwitchPorts[$ip]: $physCount porte fisiche (skippate $skippedCount virtuali)" "INFO"
     } catch {
-        Write-Log "  SwitchPortDetails: errore su $ip - $($_.Exception.Message)" "WARN"
+        Write-Log "  SwitchPortDetails[$ip]: ERRORE TOP-LEVEL - $($_.Exception.Message) - linea $($_.InvocationInfo.ScriptLineNumber)" "ERROR"
     }
 
     return $result

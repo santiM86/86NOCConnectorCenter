@@ -1599,7 +1599,12 @@ function Start-PollingLoop($config) {
         }
     }
 
-    $refreshCounter = 0
+    # v3.7.1: Inizializza a 10 (=trigger immediato) cosi' al primo ciclo
+    # del polling loop il connector contatta /fetch-devices E ESEGUE Full
+    # Network Discovery (porte switch + LLDP + MAC). Senza questo fix
+    # bisognerebbe aspettare 10 minuti dopo ogni restart del servizio per
+    # vedere i dati porte nella UI.
+    $refreshCounter = 10
 
     while ($global:Running) {
         try {
