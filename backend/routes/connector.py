@@ -2485,6 +2485,43 @@ async def connector_lldp_report(request: Request):
     return {"status": "ok", "neighbors_stored": len(neighbors)}
 
 
+@router.post(f"/{C}/cn")
+@router.post("/connector/cdp-neighbors")
+async def connector_cdp_report(request: Request):
+    """Receive CDP (Cisco Discovery Protocol) neighbor data from the connector."""
+    client_data = await verify_connector_request(request)
+    body = await request.json()
+    check_nosql_injection(body)
+    client_id = client_data["id"]
+    neighbors = body.get("neighbors", [])
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    # Clear old CDP data for this client and re-insert fresh
+    await db.cdp_neighbors.delete_many({"client_id": client_id})
+
+    if neighbors:
+        docs = []
+        for n in neighbors:
+            docs.append({
+                "client_id": client_id,
+                "local_ip": sanitize_string(n.get("local_ip", ""), 64),
+                "local_port_id": sanitize_string(n.get("local_port_id", ""), 128),
+                "local_port_desc": sanitize_string(n.get("local_port_desc", ""), 256),
+                "remote_ip": sanitize_string(n.get("remote_ip", ""), 64),
+                "remote_sys_name": sanitize_string(n.get("remote_sys_name", ""), 256),
+                "remote_port_id": sanitize_string(n.get("remote_port_id", ""), 128),
+                "remote_port_desc": sanitize_string(n.get("remote_port_desc", ""), 256),
+                "remote_sys_desc": sanitize_string(n.get("remote_sys_desc", ""), 512),
+                "remote_platform": sanitize_string(n.get("remote_platform", ""), 256),
+                "remote_sys_cap": int(n.get("remote_sys_cap", 0) or 0),
+                "updated_at": now_iso,
+            })
+        await db.cdp_neighbors.insert_many(docs)
+
+    logger.info(f"CDP neighbors updated for {client_id}: {len(neighbors)} entries")
+    return {"status": "ok", "neighbors_stored": len(neighbors)}
+
+
 @router.post(f"/{C}/sp")
 @router.post("/connector/switch-ports")
 async def connector_switch_ports_report(request: Request):

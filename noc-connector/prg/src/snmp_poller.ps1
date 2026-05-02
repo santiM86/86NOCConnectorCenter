@@ -2276,6 +2276,144 @@ function Poll-LldpNeighbors($ip, $community) {
     return $neighbors
 }
 
+# ==================== CDP NEIGHBOR DISCOVERY (Cisco) ====================
+
+<#
+.SYNOPSIS
+    Interroga la tabella CDP-MIB di uno switch Cisco per ottenere i neighbor CDP.
+    Molti switch Cisco vecchi hanno CDP attivo ma LLDP disabilitato.
+
+    OID base: 1.3.6.1.4.1.9.9.23.1.2.1.1 (cdpCacheEntry)
+    Indice tabella: ifIndex.cacheIndex
+    - cdpCacheAddressType: .1   (1=IP)
+    - cdpCacheAddress:     .4   (HexString IPv4)
+    - cdpCacheVersion:     .5   (versione IOS)
+    - cdpCacheDeviceId:    .6   (hostname remoto)
+    - cdpCacheDevicePort:  .7   (porta remota)
+    - cdpCachePlatform:    .8   (piattaforma/modello)
+    - cdpCacheCapabilities:.9   (bitmap: 0x01=Router 0x02=TBridge 0x04=SRBridge 0x08=Switch 0x10=Host 0x80=Phone)
+#>
+function Poll-CdpNeighbors($ip, $community) {
+    $neighbors = @()
+
+    try {
+        $deviceIds = Walk-SnmpTable $ip $community "1.3.6.1.4.1.9.9.23.1.2.1.1.6"
+        if (-not $deviceIds -or $deviceIds.Count -eq 0) {
+            Write-Log "  CDP: Nessun neighbor su $ip (tabella vuota / non Cisco)" "DEBUG"
+            return $neighbors
+        }
+
+        $addrs       = Walk-SnmpTable $ip $community "1.3.6.1.4.1.9.9.23.1.2.1.1.4"
+        $versions    = Walk-SnmpTable $ip $community "1.3.6.1.4.1.9.9.23.1.2.1.1.5"
+        $devicePorts = Walk-SnmpTable $ip $community "1.3.6.1.4.1.9.9.23.1.2.1.1.7"
+        $platforms   = Walk-SnmpTable $ip $community "1.3.6.1.4.1.9.9.23.1.2.1.1.8"
+        $caps        = Walk-SnmpTable $ip $community "1.3.6.1.4.1.9.9.23.1.2.1.1.9"
+
+        # Mappa ifIndex -> port description (riusa ifDescr)
+        $localPortMap = @{}
+        $ifDescr = Walk-SnmpTable $ip $community "1.3.6.1.2.1.2.2.1.2"
+        if ($ifDescr) {
+            foreach ($entry in $ifDescr) {
+                $idx = ($entry.oid -split '\.')[-1]
+                $localPortMap[$idx] = $entry.value
+            }
+        }
+
+        foreach ($entry in $deviceIds) {
+            $baseSuffix = $entry.oid.Replace("1.3.6.1.4.1.9.9.23.1.2.1.1.6.", "")
+            $idxParts = $baseSuffix -split '\.'
+            if ($idxParts.Count -lt 2) { continue }
+            $localIfIndex = $idxParts[0]
+            $cacheIndex = $idxParts[1]
+            $fullIndex = "$localIfIndex.$cacheIndex"
+
+            $remoteDeviceId = $entry.value
+
+            # Lookup helpers
+            function _MatchByIndex($table, $suffix) {
+                if (-not $table) { return $null }
+                $m = $table | Where-Object { $_.oid.EndsWith(".$suffix") } | Select-Object -First 1
+                if ($m) { return $m.value }
+                return $null
+            }
+
+            $remoteAddrRaw = _MatchByIndex $addrs $fullIndex
+            $remoteVersion = _MatchByIndex $versions $fullIndex
+            $remotePort    = _MatchByIndex $devicePorts $fullIndex
+            $remotePlatform = _MatchByIndex $platforms $fullIndex
+            $remoteCapsRaw = _MatchByIndex $caps $fullIndex
+
+            # cdpCacheAddress arrives as 4-byte hex string for IPv4. Try parse.
+            $remoteIp = ""
+            if ($remoteAddrRaw) {
+                $clean = ([string]$remoteAddrRaw).Trim().Replace(" ", "").Replace(":", "").Replace("0x", "")
+                if ($clean.Length -eq 8) {
+                    try {
+                        $b1 = [Convert]::ToInt32($clean.Substring(0,2),16)
+                        $b2 = [Convert]::ToInt32($clean.Substring(2,2),16)
+                        $b3 = [Convert]::ToInt32($clean.Substring(4,2),16)
+                        $b4 = [Convert]::ToInt32($clean.Substring(6,2),16)
+                        $remoteIp = "$b1.$b2.$b3.$b4"
+                    } catch { $remoteIp = "" }
+                } elseif (([string]$remoteAddrRaw) -match '^\d{1,3}(\.\d{1,3}){3}$') {
+                    $remoteIp = [string]$remoteAddrRaw
+                }
+            }
+
+            # Capabilities: hex string or int. Map to LLDP-compatible bitmap (0x04=Bridge, 0x08=AP, 0x10=Router, 0x80=Telephone)
+            $cdpCap = 0
+            if ($remoteCapsRaw) {
+                try {
+                    $v = [string]$remoteCapsRaw
+                    if ($v.Length -le 8 -and $v -match '^[0-9A-Fa-f]+$') {
+                        $cdpCap = [Convert]::ToInt32($v, 16)
+                    } else {
+                        $cdpCap = [int]$v
+                    }
+                } catch { $cdpCap = 0 }
+            }
+            # Convert CDP cap -> LLDP-style bitmap for unified frontend rendering
+            $unifiedCap = 0
+            if ($cdpCap -band 0x01) { $unifiedCap = $unifiedCap -bor 0x10 }   # Router
+            if ($cdpCap -band 0x02) { $unifiedCap = $unifiedCap -bor 0x04 }   # Bridge
+            if ($cdpCap -band 0x04) { $unifiedCap = $unifiedCap -bor 0x04 }   # SourceRouteBridge -> Bridge
+            if ($cdpCap -band 0x08) { $unifiedCap = $unifiedCap -bor 0x04 }   # Switch -> Bridge
+            if ($cdpCap -band 0x80) { $unifiedCap = $unifiedCap -bor 0x20 }   # IP Phone -> Telephone
+
+            $localPortDesc = ""
+            if ($localPortMap.ContainsKey($localIfIndex)) {
+                $localPortDesc = $localPortMap[$localIfIndex]
+            }
+
+            $neighbor = @{
+                local_ip = $ip
+                local_port_num = [int]$localIfIndex
+                local_port_id = "$localIfIndex"
+                local_port_desc = "$localPortDesc"
+                remote_sys_name = "$remoteDeviceId"
+                remote_port_id = "$remotePort"
+                remote_port_desc = "$remotePort"
+                remote_sys_desc = "$remotePlatform $remoteVersion".Trim()
+                remote_chassis_id = ""
+                remote_ip = "$remoteIp"
+                remote_sys_cap = [int]$unifiedCap
+                remote_platform = "$remotePlatform"
+            }
+
+            $neighbors += $neighbor
+            Write-Log "  CDP: $ip if$localIfIndex -> $remoteDeviceId ($remoteIp) porta $remotePort" "INFO"
+        }
+
+        Write-Log "  CDP: $($neighbors.Count) neighbor trovati su $ip" "INFO"
+
+    } catch {
+        Write-Log "  CDP: Errore polling $ip - $($_.Exception.Message)" "WARN"
+    }
+
+    return $neighbors
+}
+
+
 <#
 .SYNOPSIS
     Esegue il discovery LLDP su tutti i dispositivi SNMP managed e invia i risultati al NOC.
@@ -2664,6 +2802,7 @@ function Poll-SwitchPortDetails($ip, $community) {
 
 function Run-FullDiscovery($config, $devices) {
     $allNeighbors = @()
+    $allCdpNeighbors = @()
     $allMacTables = @()
     $allPortSpeeds = @()
     $deviceMacs = @()  # MAC di ogni dispositivo managed
@@ -2681,6 +2820,16 @@ function Run-FullDiscovery($config, $devices) {
         $neighbors = Poll-LldpNeighbors $ip $community
         if ($neighbors -and $neighbors.Count -gt 0) {
             $allNeighbors += $neighbors
+        }
+
+        # 1b. CDP (Cisco-only ma fallback prezioso quando LLDP è disabilitato)
+        try {
+            $cdpNeighbors = Poll-CdpNeighbors $ip $community
+            if ($cdpNeighbors -and $cdpNeighbors.Count -gt 0) {
+                $allCdpNeighbors += $cdpNeighbors
+            }
+        } catch {
+            Write-Log "  CDP: errore generico su $ip - $($_.Exception.Message)" "WARN"
         }
         
         # 2. MAC Table (solo per switch)
@@ -2744,6 +2893,12 @@ function Run-FullDiscovery($config, $devices) {
     if ($allNeighbors.Count -gt 0) {
         Send-ToNOC $config "connector/lldp-neighbors" @{ neighbors = $allNeighbors } | Out-Null
         Write-Log "Discovery: $($allNeighbors.Count) LLDP neighbors inviati" "INFO"
+    }
+
+    # Invia dati CDP (anche quando vuoto, per pulire la collection lato server)
+    Send-ToNOC $config "connector/cdp-neighbors" @{ neighbors = $allCdpNeighbors } | Out-Null
+    if ($allCdpNeighbors.Count -gt 0) {
+        Write-Log "Discovery: $($allCdpNeighbors.Count) CDP neighbors inviati" "INFO"
     }
     
     # Invia dati MAC/Speed per la ricostruzione topologica
