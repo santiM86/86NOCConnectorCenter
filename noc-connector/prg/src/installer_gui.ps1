@@ -70,9 +70,50 @@ $ConfigPath = Join-Path $ConfigDir "config.json"
 
 function Show-InstallerWizard {
     [System.Windows.Forms.Application]::EnableVisualStyles()
-    
+
+    # ==================== UPGRADE DETECTION (v3.6.5+) ====================
+    # Rileva installazione esistente leggendo config.json e version.json.
+    # Se trovata, il wizard viene mostrato in modalita' "Aggiornamento":
+    #   - Titolo cambia in "Aggiornamento vX.X -> vY.Y"
+    #   - Banner verde in cima al pannello content
+    #   - Campi URL Center / API Key pre-compilati
+    #   - Pulsante finale "Aggiorna" invece di "Installa"
+    # L'utente puo' cliccare semplicemente "Avanti -> Avanti -> Aggiorna" senza
+    # reinserire dati, oppure modificare i campi se vuole (es. nuovo Center URL).
+    $script:ExistingConfig = $null
+    $script:ExistingVersion = $null
+    $script:IsUpgrade = $false
+    if (Test-Path $ConfigPath) {
+        try {
+            $script:ExistingConfig = Get-Content $ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            $existingInstallPath = Join-Path ([Environment]::GetFolderPath("ProgramFiles")) $AppName
+            $existingVerFile = Join-Path $existingInstallPath "version.json"
+            if (Test-Path $existingVerFile) {
+                $script:ExistingVersion = (Get-Content $existingVerFile -Raw | ConvertFrom-Json).version
+            }
+            # v3.6.6: supporta entrambi i nomi chiave (noc_center_url e' il nome corrente
+            # in production, noc_url era il nome legacy in alcune build di test).
+            $cfgUrl = if ($script:ExistingConfig.noc_center_url) {
+                $script:ExistingConfig.noc_center_url
+            } elseif ($script:ExistingConfig.noc_url) {
+                $script:ExistingConfig.noc_url
+            } else { $null }
+            if ($cfgUrl -and $script:ExistingConfig.api_key) {
+                $script:IsUpgrade = $true
+            }
+        } catch {
+            # Config corrotta, fallback a installazione pulita
+            $script:ExistingConfig = $null
+            $script:IsUpgrade = $false
+        }
+    }
+
     $form = New-Object System.Windows.Forms.Form
-    $form.Text = "$DisplayName - Installazione"
+    if ($script:IsUpgrade) {
+        $form.Text = "$DisplayName - Aggiornamento (v$($script:ExistingVersion) -> v$Version)"
+    } else {
+        $form.Text = "$DisplayName - Installazione"
+    }
     $form.Size = New-Object System.Drawing.Size(750, 580)
     $form.StartPosition = "CenterScreen"
     $form.FormBorderStyle = "FixedDialog"
@@ -301,7 +342,11 @@ function Show-InstallerWizard {
         $btnNext.Enabled = $true
         
         $title = New-Object System.Windows.Forms.Label
-        $title.Text = "Configurazione"
+        if ($script:IsUpgrade) {
+            $title.Text = "Aggiornamento connector"
+        } else {
+            $title.Text = "Configurazione"
+        }
         $title.Font = New-Object System.Drawing.Font("Segoe UI", 18, [System.Drawing.FontStyle]::Bold)
         $title.ForeColor = [System.Drawing.Color]::FromArgb(30, 30, 40)
         $title.Location = New-Object System.Drawing.Point(28, 20)
@@ -309,11 +354,23 @@ function Show-InstallerWizard {
         $contentPanel.Controls.Add($title)
         
         $desc = New-Object System.Windows.Forms.Label
-        $desc.Text = "Inserisci i dati di connessione al NOC Center."
+        if ($script:IsUpgrade) {
+            $cliId = $script:ExistingConfig.client_id
+            $cliName = if ($script:ExistingConfig.client_name) { $script:ExistingConfig.client_name }
+                       elseif ($cliId) { "ID " + ($cliId.ToString().Substring(0,[Math]::Min(8, $cliId.ToString().Length))) + "..." }
+                       else { "(rilevato)" }
+            $desc.Text = "Rilevata installazione esistente per cliente '$cliName'. I campi sono pre-compilati - clicca Avanti per aggiornare a v$Version."
+        } else {
+            $desc.Text = "Inserisci i dati di connessione al NOC Center."
+        }
         $desc.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
-        $desc.ForeColor = [System.Drawing.Color]::FromArgb(60, 60, 80)
+        if ($script:IsUpgrade) {
+            $desc.ForeColor = [System.Drawing.Color]::FromArgb(20, 130, 75)
+        } else {
+            $desc.ForeColor = [System.Drawing.Color]::FromArgb(60, 60, 80)
+        }
         $desc.Location = New-Object System.Drawing.Point(28, 55)
-        $desc.AutoSize = $true
+        $desc.Size = New-Object System.Drawing.Size(470, 35)
         $contentPanel.Controls.Add($desc)
         
         # URL
@@ -328,6 +385,11 @@ function Show-InstallerWizard {
         $txtUrl.Location = New-Object System.Drawing.Point(28, 118)
         $txtUrl.Size = New-Object System.Drawing.Size(450, 28)
         $txtUrl.Font = New-Object System.Drawing.Font("Consolas", 10)
+        # v3.6.5: pre-compila se aggiornamento (supporta noc_center_url + noc_url legacy)
+        if ($script:IsUpgrade) {
+            $cfgUrl = if ($script:ExistingConfig.noc_center_url) { $script:ExistingConfig.noc_center_url } elseif ($script:ExistingConfig.noc_url) { $script:ExistingConfig.noc_url } else { "" }
+            if ($cfgUrl) { $txtUrl.Text = $cfgUrl }
+        }
         $contentPanel.Controls.Add($txtUrl)
         
         $hintUrl = New-Object System.Windows.Forms.Label
@@ -350,6 +412,10 @@ function Show-InstallerWizard {
         $txtApiKey.Location = New-Object System.Drawing.Point(28, 198)
         $txtApiKey.Size = New-Object System.Drawing.Size(450, 28)
         $txtApiKey.Font = New-Object System.Drawing.Font("Consolas", 10)
+        # v3.6.5: pre-compila se aggiornamento
+        if ($script:IsUpgrade -and $script:ExistingConfig.api_key) {
+            $txtApiKey.Text = $script:ExistingConfig.api_key
+        }
         $contentPanel.Controls.Add($txtApiKey)
         
         $hintKey = New-Object System.Windows.Forms.Label
@@ -369,6 +435,13 @@ function Show-InstallerWizard {
         $lblSNMP.AutoSize = $true
         $contentPanel.Controls.Add($lblSNMP)
         
+        # v3.6.5: pre-compila porte da config esistente se upgrade
+        if ($script:IsUpgrade) {
+            $cfgSnmp = if ($script:ExistingConfig.snmp_trap_port) { $script:ExistingConfig.snmp_trap_port } elseif ($script:ExistingConfig.snmp_port) { $script:ExistingConfig.snmp_port } else { $null }
+            $cfgSyslog = $script:ExistingConfig.syslog_port
+            if ($cfgSnmp) { $txtSNMP.Text = "$cfgSnmp" }
+            if ($cfgSyslog) { $txtSyslog.Text = "$cfgSyslog" }
+        }
         $txtSNMP.Text = if ($txtSNMP.Text) { $txtSNMP.Text } else { "162" }
         $txtSNMP.Location = New-Object System.Drawing.Point(110, 261)
         $txtSNMP.Size = New-Object System.Drawing.Size(60, 28)
@@ -450,11 +523,19 @@ function Show-InstallerWizard {
     
     # ==================== PAGE 2: DEVICES ====================
     function Show-Devices {
-        $btnNext.Text = "Installa >"
+        if ($script:IsUpgrade) {
+            $btnNext.Text = "Aggiorna >"
+        } else {
+            $btnNext.Text = "Installa >"
+        }
         $btnNext.Enabled = $true
 
         $title = New-Object System.Windows.Forms.Label
-        $title.Text = "Dispositivi da Monitorare"
+        if ($script:IsUpgrade) {
+            $title.Text = "Conferma aggiornamento"
+        } else {
+            $title.Text = "Dispositivi da Monitorare"
+        }
         $title.Font = New-Object System.Drawing.Font("Segoe UI", 18, [System.Drawing.FontStyle]::Bold)
         $title.ForeColor = [System.Drawing.Color]::FromArgb(30, 30, 40)
         $title.Location = New-Object System.Drawing.Point(28, 15)
@@ -536,6 +617,35 @@ function Show-InstallerWizard {
         $null = $deviceList.Columns.Add("Community", 100)
         $null = $deviceList.Columns.Add("Nome", 190)
         $contentPanel.Controls.Add($deviceList)
+
+        # v3.6.7: pre-popola la lista dispositivi dalla config esistente quando si tratta di un aggiornamento.
+        # Lo facciamo solo la PRIMA volta che si entra in questa pagina (script:DevicesPrefilled flag)
+        # cosi' se l'utente cancella un device e va Indietro/Avanti non glielo ri-aggiungiamo.
+        if ($script:IsUpgrade -and $script:ExistingConfig.devices -and -not $script:DevicesPrefilled) {
+            try {
+                foreach ($d in @($script:ExistingConfig.devices)) {
+                    $devIp = "$($d.ip)"
+                    if (-not $devIp) { continue }
+                    # Skip se gia' presente (caso UI tornata indietro)
+                    $exists = $false
+                    foreach ($it in $deviceList.Items) { if ($it.Text -eq $devIp) { $exists = $true; break } }
+                    if ($exists) { continue }
+                    $devComm = if ($d.community) { "$($d.community)" } else { "public" }
+                    $devName = if ($d.name) { "$($d.name)" } else { $devIp }
+                    $item = New-Object System.Windows.Forms.ListViewItem($devIp)
+                    $null = $item.SubItems.Add($devComm)
+                    $null = $item.SubItems.Add($devName)
+                    $deviceList.Items.Add($item) | Out-Null
+                }
+                $script:DevicesPrefilled = $true
+            } catch {
+                # Pre-popolamento non critico: in caso di errore lasciamo lista vuota
+            }
+        }
+        # v3.6.7: pre-popola anche poll_interval da config se upgrade (default 60s)
+        if ($script:IsUpgrade -and $script:ExistingConfig.poll_interval_seconds) {
+            $txtPollInterval.Text = "$($script:ExistingConfig.poll_interval_seconds)"
+        }
 
         $btnRemoveDev = New-Object System.Windows.Forms.Button
         $btnRemoveDev.Text = "Rimuovi selezionato"
@@ -918,13 +1028,12 @@ function Show-InstallerWizard {
                     } catch {}
 
                     # Registra il servizio con NSSM
-                    # v3.5.15 FIX quoting: nssm install con AppParameters inline
-                    # NON rispetta le virgolette su path con spazi (es. "C:\Program Files\...").
-                    # Risultato pre-fix: PowerShell ricevette `-File C:\Program` come path monco
-                    # -> "Il file non ha estensione 'ps1'" -> crash infinito ogni 60s su Program Files.
-                    # Fix: install col solo eseguibile, poi AppParameters via `set` (quoting OK).
+                    # v3.6.8 FIX DEFINITIVO quoting: nssm set AppParameters via CLI sfila
+                    # le virgolette dai path con spazi anche passandoli con stringa singola.
+                    # Unico modo affidabile: scrivere direttamente in registry dopo l'install.
+                    # Senza questo fix il servizio parte in SERVICE_PAUSED con errore
+                    # "Impossibile elaborare -File 'C:\Program'" e non arriva mai RUNNING.
                     & $nssmPath install $svcName $psExe
-                    & $nssmPath set $svcName AppParameters ('-ExecutionPolicy Bypass -NonInteractive -WindowStyle Hidden -File "' + $connectorScript + '"')
                     & $nssmPath set $svcName AppDirectory $ScriptDir
                     & $nssmPath set $svcName DisplayName "86NocConnector Service"
                     & $nssmPath set $svcName Description "86NocConnector - Raccolta SNMP/Syslog per NOC Center"
@@ -937,7 +1046,20 @@ function Show-InstallerWizard {
                     & $nssmPath set $svcName AppRestartDelay 30000
                     & $nssmPath set $svcName AppThrottle 30000
                     & $nssmPath set $svcName AppExit Default Restart
-                    
+
+                    # AppParameters via registry diretto (preserva virgolette su path con spazi)
+                    try {
+                        $svcRegPath = "HKLM:\SYSTEM\CurrentControlSet\Services\$svcName\Parameters"
+                        if (-not (Test-Path $svcRegPath)) {
+                            New-Item -Path $svcRegPath -Force | Out-Null
+                        }
+                        $svcParams = '-NoProfile -ExecutionPolicy Bypass -NonInteractive -WindowStyle Hidden -File "' + $connectorScript + '"'
+                        Set-ItemProperty -Path $svcRegPath -Name "AppParameters" -Value $svcParams -Type String
+                        $txtStatus.AppendText("  AppParameters scritto in registry (quoting preservato)`r`n")
+                    } catch {
+                        $txtStatus.AppendText("  ATTENZIONE: impossibile scrivere AppParameters in registry: $($_.Exception.Message)`r`n")
+                    }
+
                     $txtStatus.AppendText("  Servizio Windows registrato (NSSM)`r`n")
                     $txtStatus.AppendText("  Modalita': LocalSystem (sopravvive a disconnessione RDP)`r`n")
                     $txtStatus.AppendText("  Riavvio automatico su crash: SI`r`n")

@@ -2604,10 +2604,22 @@ function Poll-SwitchPortDetails($ip, $community) {
         $ifOutOct  = Get-SnmpTable $ip $community $script:OID_ifHCOutOctets
         $ifInPkt   = Get-SnmpTable $ip $community $script:OID_ifHCInUcastPkts
         $ifOutPkt  = Get-SnmpTable $ip $community $script:OID_ifHCOutUcastPkts
-        # Fallback 32-bit counters if HC empty
+        # Fallback 32-bit counters if HC empty OR garbage (HPE Comware restituisce
+        # i Counter64 come bytes BER raw non decodificati)
         $ifInOct32  = $null; $ifOutOct32 = $null
-        if (-not $ifInOct -or $ifInOct.Count -eq 0) { $ifInOct32 = Get-SnmpTable $ip $community $script:OID_ifInOctets }
-        if (-not $ifOutOct -or $ifOutOct.Count -eq 0) { $ifOutOct32 = Get-SnmpTable $ip $community $script:OID_ifOutOctets }
+        function _LocalIsNumTbl($tbl) {
+            if (-not $tbl -or $tbl.Count -eq 0) { return $false }
+            $ok = 0; $total = 0
+            foreach ($v in $tbl.Values) {
+                $total++
+                $s = "$v".Trim()
+                if ($s -match '^-?\d+$') { $ok++ }
+                if ($total -ge 10) { break }
+            }
+            return ($ok -ge 3)
+        }
+        if (-not (_LocalIsNumTbl $ifInOct))  { $ifInOct32  = Get-SnmpTable $ip $community $script:OID_ifInOctets }
+        if (-not (_LocalIsNumTbl $ifOutOct)) { $ifOutOct32 = Get-SnmpTable $ip $community $script:OID_ifOutOctets }
 
         # POWER-ETHERNET-MIB (per-port; key index = "groupIndex.portIndex")
         $poeAdmin    = Get-SnmpTable $ip $community $script:OID_pethPsePortAdminEnable
@@ -2623,11 +2635,11 @@ function Poll-SwitchPortDetails($ip, $community) {
         }
 
         $poeAdminByPort = @{}
-        if ($poeAdmin) { foreach ($k in $poeAdmin.Keys) { $p = _PoeKeyToPort $k $script:OID_pethPsePortAdminEnable; $poeAdminByPort[$p] = [int]$poeAdmin[$k] } }
+        if ($poeAdmin) { foreach ($k in $poeAdmin.Keys) { $p = _PoeKeyToPort $k $script:OID_pethPsePortAdminEnable; $v = "$($poeAdmin[$k])".Trim(); if ($v) { try { $poeAdminByPort[$p] = [int]$v } catch { $poeAdminByPort[$p] = 0 } } else { $poeAdminByPort[$p] = 0 } } }
         $poeStatusByPort = @{}
-        if ($poeStatus) { foreach ($k in $poeStatus.Keys) { $p = _PoeKeyToPort $k $script:OID_pethPsePortDetectionStatus; $poeStatusByPort[$p] = [int]$poeStatus[$k] } }
+        if ($poeStatus) { foreach ($k in $poeStatus.Keys) { $p = _PoeKeyToPort $k $script:OID_pethPsePortDetectionStatus; $v = "$($poeStatus[$k])".Trim(); if ($v) { try { $poeStatusByPort[$p] = [int]$v } catch { $poeStatusByPort[$p] = 0 } } else { $poeStatusByPort[$p] = 0 } } }
         $poeClassByPort = @{}
-        if ($poeClass) { foreach ($k in $poeClass.Keys) { $p = _PoeKeyToPort $k $script:OID_pethPsePortPowerClassifications; $poeClassByPort[$p] = [int]$poeClass[$k] } }
+        if ($poeClass) { foreach ($k in $poeClass.Keys) { $p = _PoeKeyToPort $k $script:OID_pethPsePortPowerClassifications; $v = "$($poeClass[$k])".Trim(); if ($v) { try { $poeClassByPort[$p] = [int]$v } catch { $poeClassByPort[$p] = 0 } } else { $poeClassByPort[$p] = 0 } } }
 
         # Locale-safe epoch (NON usare Get-Date -UFormat %s, fallisce in italiano per il decimale ',')
         try {
@@ -2641,19 +2653,67 @@ function Poll-SwitchPortDetails($ip, $community) {
         $newPrev = @{}
 
         function _IdxFromOid([string]$k) { return ($k.Split('.'))[-1] }
-        $operByIdx = @{}; if ($ifOper) { foreach ($k in $ifOper.Keys) { $operByIdx[(_IdxFromOid $k)] = [int]$ifOper[$k] } }
-        $adminByIdx = @{}; if ($ifAdmin) { foreach ($k in $ifAdmin.Keys) { $adminByIdx[(_IdxFromOid $k)] = [int]$ifAdmin[$k] } }
-        $speedByIdx = @{}; if ($ifSpeed) { foreach ($k in $ifSpeed.Keys) { $speedByIdx[(_IdxFromOid $k)] = [long]$ifSpeed[$k] } }
-        $highByIdx = @{}; if ($ifHigh) { foreach ($k in $ifHigh.Keys) { $highByIdx[(_IdxFromOid $k)] = [int]$ifHigh[$k] } }
-        $lastByIdx = @{}; if ($ifLast) { foreach ($k in $ifLast.Keys) { $lastByIdx[(_IdxFromOid $k)] = [long]$ifLast[$k] } }
+
+        # v3.6.8 - Safe numeric cast: alcuni switch (HPE Comware) restituiscono "" o null
+        # su porte non attive. Cast diretto a [decimal]/[long]/[int] crasha tutto il loop.
+        function _SafeNum($val, [string]$type = 'decimal') {
+            if ($null -eq $val) { return 0 }
+            $s = "$val".Trim()
+            if ([string]::IsNullOrWhiteSpace($s)) { return 0 }
+            # Rimuove eventuali separatori migliaia/spazi e normalizza virgola decimale
+            $s = $s -replace '\s+',''
+            try {
+                switch ($type) {
+                    'int'     { return [int]([decimal]::Parse($s, [Globalization.CultureInfo]::InvariantCulture)) }
+                    'long'    { return [long]([decimal]::Parse($s, [Globalization.CultureInfo]::InvariantCulture)) }
+                    default   { return [decimal]::Parse($s, [Globalization.CultureInfo]::InvariantCulture) }
+                }
+            } catch {
+                # Fallback: prova con locale corrente
+                try {
+                    switch ($type) {
+                        'int'   { return [int][decimal]$s }
+                        'long'  { return [long][decimal]$s }
+                        default { return [decimal]$s }
+                    }
+                } catch { return 0 }
+            }
+        }
+
+        $operByIdx = @{}; if ($ifOper) { foreach ($k in $ifOper.Keys) { $operByIdx[(_IdxFromOid $k)] = (_SafeNum $ifOper[$k] 'int') } }
+        $adminByIdx = @{}; if ($ifAdmin) { foreach ($k in $ifAdmin.Keys) { $adminByIdx[(_IdxFromOid $k)] = (_SafeNum $ifAdmin[$k] 'int') } }
+        $speedByIdx = @{}; if ($ifSpeed) { foreach ($k in $ifSpeed.Keys) { $speedByIdx[(_IdxFromOid $k)] = (_SafeNum $ifSpeed[$k] 'long') } }
+        $highByIdx = @{}; if ($ifHigh) { foreach ($k in $ifHigh.Keys) { $highByIdx[(_IdxFromOid $k)] = (_SafeNum $ifHigh[$k] 'int') } }
+        $lastByIdx = @{}; if ($ifLast) { foreach ($k in $ifLast.Keys) { $lastByIdx[(_IdxFromOid $k)] = (_SafeNum $ifLast[$k] 'long') } }
         $nameByIdx = @{}; if ($ifName) { foreach ($k in $ifName.Keys) { $nameByIdx[(_IdxFromOid $k)] = "$($ifName[$k])" } }
         $aliasByIdx = @{}; if ($ifAlias) { foreach ($k in $ifAlias.Keys) { $aliasByIdx[(_IdxFromOid $k)] = "$($ifAlias[$k])" } }
-        $inByIdx = @{};  if ($ifInOct)  { foreach ($k in $ifInOct.Keys)  { $inByIdx[(_IdxFromOid $k)] = [decimal]$ifInOct[$k] } }
-        elseif ($ifInOct32)  { foreach ($k in $ifInOct32.Keys)  { $inByIdx[(_IdxFromOid $k)] = [decimal]$ifInOct32[$k] } }
-        $outByIdx = @{}; if ($ifOutOct) { foreach ($k in $ifOutOct.Keys) { $outByIdx[(_IdxFromOid $k)] = [decimal]$ifOutOct[$k] } }
-        elseif ($ifOutOct32) { foreach ($k in $ifOutOct32.Keys) { $outByIdx[(_IdxFromOid $k)] = [decimal]$ifOutOct32[$k] } }
-        $inPktByIdx = @{}; if ($ifInPkt) { foreach ($k in $ifInPkt.Keys) { $inPktByIdx[(_IdxFromOid $k)] = [decimal]$ifInPkt[$k] } }
-        $outPktByIdx = @{}; if ($ifOutPkt) { foreach ($k in $ifOutPkt.Keys) { $outPktByIdx[(_IdxFromOid $k)] = [decimal]$ifOutPkt[$k] } }
+        # v3.6.8 - HPE Comware bug: ifHCInOctets (Counter64) torna come bytes raw non decodificati.
+        # Se i valori 64bit sono TUTTI non numerici (stringhe binarie/vuote) cadi sul 32bit.
+        function _IsNumericTable($tbl) {
+            if (-not $tbl -or $tbl.Count -eq 0) { return $false }
+            $ok = 0; $total = 0
+            foreach ($v in $tbl.Values) {
+                $total++
+                $s = "$v".Trim()
+                if ([string]::IsNullOrWhiteSpace($s)) { continue }
+                if ($s -match '^-?\d+$') { $ok++ }
+                if ($total -ge 10) { break }
+            }
+            # Se almeno il 30% dei primi 10 valori e' numerico, considera la tabella valida
+            return ($ok -ge 3)
+        }
+
+        $use64In = _IsNumericTable $ifInOct
+        $use64Out = _IsNumericTable $ifOutOct
+
+        $inByIdx = @{}
+        if ($use64In)        { foreach ($k in $ifInOct.Keys)   { $inByIdx[(_IdxFromOid $k)] = (_SafeNum $ifInOct[$k]) } }
+        elseif ($ifInOct32)  { foreach ($k in $ifInOct32.Keys) { $inByIdx[(_IdxFromOid $k)] = (_SafeNum $ifInOct32[$k]) } }
+        $outByIdx = @{}
+        if ($use64Out)        { foreach ($k in $ifOutOct.Keys)   { $outByIdx[(_IdxFromOid $k)] = (_SafeNum $ifOutOct[$k]) } }
+        elseif ($ifOutOct32)  { foreach ($k in $ifOutOct32.Keys) { $outByIdx[(_IdxFromOid $k)] = (_SafeNum $ifOutOct32[$k]) } }
+        $inPktByIdx = @{}; if ($ifInPkt) { foreach ($k in $ifInPkt.Keys) { $inPktByIdx[(_IdxFromOid $k)] = (_SafeNum $ifInPkt[$k]) } }
+        $outPktByIdx = @{}; if ($ifOutPkt) { foreach ($k in $ifOutPkt.Keys) { $outPktByIdx[(_IdxFromOid $k)] = (_SafeNum $ifOutPkt[$k]) } }
 
         $physCount = 0; $skippedCount = 0
         foreach ($k in $ifDescr.Keys) {
