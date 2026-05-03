@@ -4,13 +4,17 @@
  * [Switch locale + porta] -> [cavo animato con velocita'] -> [device remoto]
  * Utile per help-desk: risponde a colpo d'occhio "porta X a cosa e' collegata?".
  */
-import React from "react";
+import React, { useState } from "react";
 import {
   Lightning, ArrowUp, ArrowDown, Plug, Link as LinkIcon,
   Cloud, WifiHigh, Monitor, HardDrives, X,
 } from "@phosphor-icons/react";
 import { Link } from "react-router-dom";
+import axios from "axios";
+import { toast } from "sonner";
 import PortFlapHistory from "./PortFlapHistory";
+
+const API = process.env.REACT_APP_BACKEND_URL;
 
 function fmtBytes(n) {
   if (!n || n <= 0) return "0 B";
@@ -69,6 +73,7 @@ function SourceBadge({ source }) {
     lldp: { bg: "bg-emerald-500/20", fg: "text-emerald-300", label: "LLDP" },
     mac_managed: { bg: "bg-cyan-500/20", fg: "text-cyan-300", label: "MAC" },
     mac_fdb_trunk: { bg: "bg-violet-500/20", fg: "text-violet-200", label: "FDB-TRUNK" },
+    mac_manual: { bg: "bg-blue-500/20", fg: "text-blue-300", label: "MANUALE" },
     mac_oui: { bg: "bg-amber-500/20", fg: "text-amber-300", label: "OUI" },
     mac_unknown: { bg: "bg-neutral-500/20", fg: "text-neutral-300", label: "MAC?" },
   };
@@ -80,9 +85,10 @@ function SourceBadge({ source }) {
   );
 }
 
-export default function PortCableView({ p, switchIp, switchName, onClose }) {
+export default function PortCableView({ p, switchIp, switchName, onClose, clientId, onRefresh }) {
   if (!p) return null;
 
+  const [showBindModal, setShowBindModal] = useState(false);
   const isUp = p.oper === 1 && p.admin === 1;
   const isPoe = p.poe_status === 3;
   const isAdminDown = p.admin === 2;
@@ -272,22 +278,47 @@ export default function PortCableView({ p, switchIp, switchName, onClose }) {
         </div>
 
         {/* Footer suggerimento */}
-        {n?.match_source === "mac_oui" && (
-          <div className="text-[10px] text-amber-300/80 italic bg-amber-500/10 border border-amber-500/20 rounded p-2">
-            🔍 Identificazione via OUI vendor. Per nome e IP precisi serve LLDP abilitato sul device remoto, oppure aggiungerlo come managed device.
+        {(n?.match_source === "mac_oui" || n?.match_source === "mac_unknown") && (
+          <div className="flex items-center justify-between gap-2 bg-amber-500/10 border border-amber-500/20 rounded p-2">
+            <div className="text-[10px] text-amber-300/90 italic flex-1">
+              {n?.match_source === "mac_oui"
+                ? `🔍 Solo vendor identificato via OUI. Per nome+IP precisi: abilita LLDP sullo switch remoto, oppure...`
+                : `⚠️ Vendor non identificato. Per ottenere nome+IP: abilita LLDP sullo switch remoto, oppure...`}
+            </div>
+            <button
+              onClick={() => setShowBindModal(true)}
+              className="h-7 px-3 text-xs font-semibold rounded-md bg-blue-600 text-white hover:bg-blue-700 whitespace-nowrap"
+              data-testid="manual-bind-btn"
+            >
+              Associa manualmente
+            </button>
           </div>
         )}
         {n?.match_source === "mac_fdb_trunk" && (
           <div className="text-[10px] text-violet-300/90 italic bg-violet-500/10 border border-violet-500/20 rounded p-2">
-            🔗 Link trunk switch-to-switch dedotto via cross-correlation FDB. Porta remota calcolata cercando nel MAC table dello switch peer le interfacce di questo switch. Per precisione 100% abilita LLDP su entrambi gli switch.
+            🔗 Link trunk switch-to-switch dedotto via cross-correlation FDB. Per precisione 100% abilita LLDP su entrambi gli switch.
           </div>
         )}
-        {n?.match_source === "mac_unknown" && (
-          <div className="text-[10px] text-neutral-300/80 italic bg-neutral-500/10 border border-neutral-500/20 rounded p-2">
-            ⚠️ Vendor non identificato. Per ottenere nome+porta remota: (1) abilita LLDP sullo switch remoto, oppure (2) aggiungi il device come managed in ARGUS.
+        {n?.match_source === "mac_manual" && (
+          <div className="text-[10px] text-blue-300/90 italic bg-blue-500/10 border border-blue-500/20 rounded p-2">
+            ✋ Binding manuale impostato dall'admin. Persiste finche' non viene rimosso o sovrascritto da LLDP/MAC managed.
           </div>
         )}
       </div>
+
+      {/* Manual MAC Binding Modal */}
+      {showBindModal && (
+        <ManualBindModal
+          mac={n?.remote_chassis_id || ""}
+          clientId={clientId}
+          onClose={() => setShowBindModal(false)}
+          onSaved={() => {
+            setShowBindModal(false);
+            if (onRefresh) onRefresh();
+            onClose();
+          }}
+        />
+      )}
 
       {/* Animations */}
       <style>{`
@@ -305,3 +336,159 @@ export default function PortCableView({ p, switchIp, switchName, onClose }) {
     </div>
   );
 }
+
+
+// ===================================================================
+// Manual MAC Binding Modal — input form per agganciare nome+IP a MAC
+// ===================================================================
+function ManualBindModal({ mac, clientId, onClose, onSaved }) {
+  const [name, setName] = useState("");
+  const [ip, setIp] = useState("");
+  const [deviceType, setDeviceType] = useState("generic");
+  const [alsoCreate, setAlsoCreate] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const token = localStorage.getItem("noc_token");
+
+  const macUpper = (mac || "").toUpperCase();
+  const macValid = /^([0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(macUpper);
+  const ipValid = /^(\d{1,3}\.){3}\d{1,3}$/.test(ip.trim());
+  const canSave = macValid && ipValid && name.trim().length >= 2 && !saving;
+
+  const submit = async () => {
+    if (!canSave) return;
+    setSaving(true);
+    try {
+      const r = await axios.post(
+        `${API}/api/topology/mac-bindings`,
+        {
+          mac: macUpper,
+          ip: ip.trim(),
+          name: name.trim(),
+          device_type: deviceType,
+          client_id: clientId || "",
+          also_create_managed_device: alsoCreate && Boolean(clientId),
+        },
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+      const action = r.data.action === "created" ? "creato" : "aggiornato";
+      toast.success(`Binding ${action}: ${name.trim()} (${ip.trim()}) → ${macUpper}`);
+      if (onSaved) onSaved();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Errore salvataggio binding");
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/85 backdrop-blur-sm p-4"
+      onClick={onClose}
+      data-testid="manual-bind-modal"
+    >
+      <div
+        className="noc-panel w-full max-w-md p-5 space-y-4"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between border-b border-[var(--bg-border)] pb-2">
+          <h3 className="text-base font-bold">Associa dispositivo manualmente</h3>
+          <button onClick={onClose} className="text-[var(--text-muted)] hover:text-[var(--text-primary)] p-1" data-testid="manual-bind-close">
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="text-[11px] text-[var(--text-secondary)]">
+          ARGUS non e' riuscito ad identificare il device su questa porta. Inserisci tu i dati: il MAC verra' agganciato in modo permanente.
+        </div>
+
+        <div className="space-y-3">
+          <div>
+            <label className="text-[10px] uppercase tracking-wider text-[var(--text-secondary)] font-semibold">MAC (rilevato automaticamente)</label>
+            <input
+              type="text"
+              value={macUpper}
+              readOnly
+              className={`w-full mt-0.5 h-8 px-2 text-xs font-mono rounded border ${macValid ? "border-[var(--bg-border)]" : "border-red-500/50"} bg-[var(--bg-surface)] text-[var(--text-primary)] cursor-not-allowed`}
+              data-testid="manual-bind-mac-input"
+            />
+          </div>
+
+          <div>
+            <label className="text-[10px] uppercase tracking-wider text-[var(--text-secondary)] font-semibold">Nome dispositivo *</label>
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Es. Switch02 HP 5130 52G"
+              className="w-full mt-0.5 h-8 px-2 text-xs rounded border border-[var(--bg-border)] bg-[var(--bg-card)] text-[var(--text-primary)] focus:outline-none focus:border-blue-500"
+              data-testid="manual-bind-name-input"
+            />
+          </div>
+
+          <div>
+            <label className="text-[10px] uppercase tracking-wider text-[var(--text-secondary)] font-semibold">Indirizzo IP *</label>
+            <input
+              type="text"
+              value={ip}
+              onChange={(e) => setIp(e.target.value)}
+              placeholder="Es. 10.100.61.221"
+              className={`w-full mt-0.5 h-8 px-2 text-xs font-mono rounded border ${ip && !ipValid ? "border-red-500/50" : "border-[var(--bg-border)]"} bg-[var(--bg-card)] text-[var(--text-primary)] focus:outline-none focus:border-blue-500`}
+              data-testid="manual-bind-ip-input"
+            />
+          </div>
+
+          <div>
+            <label className="text-[10px] uppercase tracking-wider text-[var(--text-secondary)] font-semibold">Tipo</label>
+            <select
+              value={deviceType}
+              onChange={(e) => setDeviceType(e.target.value)}
+              className="w-full mt-0.5 h-8 px-2 text-xs rounded border border-[var(--bg-border)] bg-[var(--bg-card)] text-[var(--text-primary)] focus:outline-none focus:border-blue-500"
+              data-testid="manual-bind-type-select"
+            >
+              <option value="generic">Generico</option>
+              <option value="server">Server</option>
+              <option value="switch">Switch</option>
+              <option value="firewall">Firewall</option>
+              <option value="ap">Access Point</option>
+              <option value="nas">NAS</option>
+              <option value="printer">Stampante</option>
+              <option value="camera">Camera IP</option>
+              <option value="ups">UPS</option>
+            </select>
+          </div>
+
+          {clientId && (
+            <label className="flex items-center gap-2 text-[11px] text-[var(--text-secondary)] cursor-pointer mt-2 select-none">
+              <input
+                type="checkbox"
+                checked={alsoCreate}
+                onChange={(e) => setAlsoCreate(e.target.checked)}
+                className="rounded border-[var(--bg-border)]"
+                data-testid="manual-bind-also-create"
+              />
+              <span>Crea anche il managed device in ARGUS (con questo IP) per attivare polling SNMP/ICMP</span>
+            </label>
+          )}
+        </div>
+
+        <div className="flex items-center justify-end gap-2 pt-2 border-t border-[var(--bg-border)]">
+          <button
+            onClick={onClose}
+            className="h-8 px-3 text-xs rounded-md border border-[var(--bg-border)] text-[var(--text-secondary)] hover:bg-[var(--bg-surface)]"
+            data-testid="manual-bind-cancel"
+          >
+            Annulla
+          </button>
+          <button
+            onClick={submit}
+            disabled={!canSave}
+            className="h-8 px-4 text-xs font-semibold rounded-md bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            data-testid="manual-bind-save"
+          >
+            {saving ? "Salvataggio..." : "Salva e aggancia"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+

@@ -145,6 +145,23 @@ async def get_switch_ports(device_ip: str, current_user: dict = Depends(get_curr
                 cand = endpoints_by_port_num.get(pnum) or []
         if not cand:
             return None, []
+        # v3.6.16: Manual MAC binding ha priorita' su tutto il MAC fallback
+        # (subito sotto LLDP). Se almeno un endpoint candidato ha un manual_binding,
+        # restituiscilo come neighbor "manual_mac".
+        manual = next((x for x in cand if x.get("manual_binding_ip")), None)
+        if manual:
+            return {
+                "remote_sys_name": manual.get("manual_binding_name") or manual.get("manual_binding_ip"),
+                "remote_ip": manual.get("manual_binding_ip"),
+                "remote_device_type": manual.get("manual_binding_type") or "generic",
+                "remote_device_name": manual.get("manual_binding_name") or "",
+                "remote_port_id": "",
+                "remote_port_desc": "",
+                "remote_chassis_id": manual.get("mac", ""),
+                "remote_sys_cap": 0,
+                "remote_sys_desc": "Binding manuale impostato dall'admin",
+                "match_source": "mac_manual",
+            }, cand
         # Priorita': managed > unmanaged OUI-known > unknown
         managed = [x for x in cand if x.get("is_managed")]
         unmanaged = [x for x in cand if not x.get("is_managed")]
@@ -340,8 +357,12 @@ async def get_switch_ports(device_ip: str, current_user: dict = Depends(get_curr
 
     # Port_number summary for UI badge
     first_updated = ports[0].get("updated_at") if ports else None
+    # v3.6.16: include client_id + device_name per features come Manual MAC Binding nella UI
+    md_local = await db.managed_devices.find_one({"ip": device_ip}, {"_id": 0, "client_id": 1, "device_name": 1, "name": 1}) or {}
     return {
         "device_ip": device_ip,
+        "device_name": md_local.get("device_name") or md_local.get("name") or "",
+        "client_id": md_local.get("client_id") or "",
         "ports": out,
         "totals": {
             "total": len(out),
@@ -1370,3 +1391,112 @@ async def add_endpoint_to_monitoring(body: dict, current_user: dict = Depends(ge
 
     device_doc.pop("_id", None)
     return {"status": "ok", "message": f"Dispositivo {ip} aggiunto al monitoraggio", "device": device_doc}
+
+
+# ==================== MANUAL MAC BINDINGS (v3.6.16) ====================
+# Permette all'admin di "agganciare" manualmente un MAC visto nella FDB ad un
+# device (Nome + IP) quando l'auto-discovery non riesce a identificarlo.
+# Il binding diventa permanente e ha priorita' immediatamente sotto LLDP nella
+# risoluzione neighbor (sopra OUI e mac_unknown).
+
+@router.post("/topology/mac-bindings")
+async def create_mac_binding(
+    payload: dict,
+    current_user: dict = Depends(get_current_user),
+):
+    """Crea o aggiorna un binding MAC -> {ip, name, device_type}.
+    payload: { mac, ip, name, device_type?, client_id?, also_create_managed_device? }
+    """
+    mac = (payload.get("mac") or "").upper().strip()
+    ip = (payload.get("ip") or "").strip()
+    name = (payload.get("name") or "").strip()
+    device_type = (payload.get("device_type") or "generic").strip().lower()
+    client_id = (payload.get("client_id") or "").strip()
+    also_create = bool(payload.get("also_create_managed_device", False))
+
+    if not mac or not ip or not name:
+        raise HTTPException(status_code=400, detail="mac, ip e name sono obbligatori")
+    # Validate MAC format AA:BB:CC:DD:EE:FF
+    if not re.match(r"^([0-9A-F]{2}:){5}[0-9A-F]{2}$", mac):
+        raise HTTPException(status_code=400, detail="MAC non valido (atteso AA:BB:CC:DD:EE:FF)")
+    # Validate IP
+    try:
+        ipaddress.ip_address(ip)
+    except Exception:
+        raise HTTPException(status_code=400, detail="IP non valido")
+
+    now = datetime.now(timezone.utc).isoformat()
+    doc = {
+        "mac": mac, "ip": ip, "name": name,
+        "device_type": device_type, "client_id": client_id,
+        "updated_at": now, "updated_by": current_user.get("email", ""),
+    }
+    existing = await db.mac_device_bindings.find_one({"mac": mac}, {"_id": 0})
+    if existing:
+        await db.mac_device_bindings.update_one({"mac": mac}, {"$set": doc})
+        action = "updated"
+    else:
+        doc["created_at"] = now
+        doc["created_by"] = current_user.get("email", "")
+        await db.mac_device_bindings.insert_one(doc.copy())
+        action = "created"
+
+    # Optional: create a managed device too (if it doesn't already exist)
+    created_device_id = None
+    if also_create and client_id:
+        existing_dev = await db.devices.find_one({"client_id": client_id, "ip_address": ip}, {"_id": 0, "id": 1})
+        if not existing_dev:
+            import uuid as _uuid
+            created_device_id = str(_uuid.uuid4())
+            await db.devices.insert_one({
+                "id": created_device_id, "client_id": client_id,
+                "name": name, "device_type": device_type,
+                "ip_address": ip, "hostname": "", "location": "",
+                "status": "active", "redfish_enabled": False,
+                "last_poll": None, "health_status": None,
+                "created_at": now,
+                "created_via": "manual_mac_binding",
+                "bound_mac": mac,
+            })
+        else:
+            created_device_id = existing_dev.get("id")
+
+    # Aggiorna ALSO discovered_endpoints esistenti per match immediato
+    await db.discovered_endpoints.update_many(
+        {"mac": mac},
+        {"$set": {"manual_binding_ip": ip, "manual_binding_name": name,
+                  "manual_binding_type": device_type}},
+    )
+
+    return {"status": "ok", "action": action, "mac": mac,
+            "device_id": created_device_id, "binding": doc}
+
+
+@router.get("/topology/mac-bindings")
+async def list_mac_bindings(
+    client_id: str | None = None,
+    current_user: dict = Depends(get_current_user),
+):
+    q = {}
+    if client_id:
+        q["client_id"] = client_id
+    items = await db.mac_device_bindings.find(q, {"_id": 0}).sort("updated_at", -1).to_list(500)
+    return {"items": items, "count": len(items)}
+
+
+@router.delete("/topology/mac-bindings/{mac}")
+async def delete_mac_binding(
+    mac: str,
+    current_user: dict = Depends(get_current_user),
+):
+    mac_norm = mac.upper().strip()
+    r = await db.mac_device_bindings.delete_one({"mac": mac_norm})
+    # Cleanup discovered_endpoints overrides
+    await db.discovered_endpoints.update_many(
+        {"mac": mac_norm},
+        {"$unset": {"manual_binding_ip": "", "manual_binding_name": "", "manual_binding_type": ""}},
+    )
+    if r.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Binding non trovato")
+    return {"status": "ok", "deleted": r.deleted_count}
+

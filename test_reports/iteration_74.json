@@ -1,0 +1,33 @@
+{
+  "summary": "Backend testing v3.6.16 Manual MAC Binding completato. 19/19 test passati al primo run su tutti gli scenari richiesti: create/update/validation, also_create_managed_device, list (con/senza client_id), delete + cleanup endpoint overrides, priorita' mac_manual sotto LLDP e sopra mac_managed/oui/unknown, nuovi campi top-level device_name/client_id su GET switch-ports, regressione neighbor matching invariata in assenza di binding.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_manual_mac_binding.py",
+    "/app/test_reports/pytest/pytest_manual_mac_binding.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "POST /api/topology/mac-bindings non valida che device_type appartenga ad un set noto (printer, ap, camera, generic, ...). Attualmente accetta qualunque stringa lowercase. Considerare un Enum/whitelist per evitare device_type spuri.",
+    "Endpoint protetti con get_current_user ma il review_request menziona 'JWT admin'. Verificato che get_current_user non controlla il ruolo: tecnicamente anche utenti viewer possono creare/cancellare bindings. Se la regola vuole solo admin, aggiungere un check sul role (es. require_admin).",
+    "Nessun indice unique su mac_device_bindings.mac. La logica applicativa (find_one + update/insert) e' corretta in single-thread ma sotto race condition potrebbe creare duplicati. Aggiungere indice unique: db.mac_device_bindings.create_index('mac', unique=True).",
+    "DELETE /api/topology/mac-bindings/{mac} accetta MAC non normalizzato (lower) tramite .upper().strip() ma non valida il formato; un path tipo /<random> ritorna 404 senza distinguere 'malformato' da 'non trovato'. Minore.",
+    "topology.py supera 1500 righe; valutare split in moduli (mac_bindings.py, switch_ports.py) per manutenibilita' (>700 righe la guideline interna)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_manual_mac_binding.py"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "N/A (skip)"},
+  "test_credentials": "admin@86bit.it / password (token field='token')",
+  "seed_data_creation": "TEST_mac_binding_<uuid> client_id; switch 10.250.97.11 (TEST_MMB_Switch) + NAS 10.250.97.60; 5 porte (idx 10..14) con discovered_endpoints associati. Tutti i record cleanati nel teardown del modulo + collection mac_device_bindings/devices ripulite.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Test stabile in /app/backend/tests/test_manual_mac_binding.py (19 test, ~3s). Copre tutti i requisiti del review_request v3.6.16 inclusa la regressione su mac_managed/mac_oui/mac_unknown. Per estendere: testare permessi role-based admin-only se verra' aggiunto require_admin sui 3 endpoint mac-bindings."
+}

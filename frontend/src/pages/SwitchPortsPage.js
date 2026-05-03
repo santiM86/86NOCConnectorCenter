@@ -385,6 +385,8 @@ export default function SwitchPortsPage() {
           p={cableView}
           switchIp={data.device_ip}
           switchName={data.device_name}
+          clientId={data.client_id}
+          onRefresh={reload}
           onClose={() => setCableView(null)}
         />
       )}
