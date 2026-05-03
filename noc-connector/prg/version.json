@@ -1,4 +1,4 @@
 {
-  "version": "3.6.19",
-  "changelog": "v3.6.19 - Fix tray app modal 'Informazioni': (1) la versione viene ora riletta da version.json ad ogni apertura del modal (era hardcoded all'avvio del tray, mostrava versione stale dopo auto-update); (2) bottone OK non piu' tagliato su Win11 DPI 125% (form alzato da 340 a 420, button riposizionato a Y=340, anchor Bottom+Right, AutoScaleMode=Dpi). Include tutti i fix v3.6.0-v3.6.18 (TCP probe, Redfish BMC auto-discovery, OUI HPE, MAC trunk cross-correlation, manual MAC binding, scale-up indexes, fix update-check filename, fix UI SNMP/community)."
+  "version": "3.6.20",
+  "changelog": "v3.6.20 - Datto RMM Integration. Nuovo endpoint admin /api/admin/datto/config con api_key cifrata. Sync con portal.86bit.it/api/v1/reports/datto/getDattoDevices. Linking 1:1 cliente Center -> site Datto. Match automatico 100% MAC+IP con discovered_endpoints: ogni device riconosciuto via Datto popola le sezioni 'Vista Cavo' degli switch con badge 'DATTO' (priorita' subito sotto LLDP). Nuova UI /settings/datto con tabella mappatura. Include tutti i fix v3.6.0-v3.6.19."
 }

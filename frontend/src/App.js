@@ -21,6 +21,7 @@ import SettingsPage from "@/pages/SettingsPage";
 import IPAllowlistPage from "@/pages/IPAllowlistPage";
 import WireGuardPage from "@/pages/WireGuardPage";
 import HornetsecuritySettingsPage from "@/pages/HornetsecuritySettingsPage";
+import DattoRmmSettingsPage from "@/pages/DattoRmmSettingsPage";
 import EncryptionPage from "@/pages/EncryptionPage";
 import AuditPage from "@/pages/AuditPage";
 import TwoFactorPage from "@/pages/TwoFactorPage";
@@ -229,6 +230,7 @@ function App() {
               <Route path="settings/ip-allowlist" element={<IPAllowlistPage />} />
               <Route path="settings/wireguard" element={<WireGuardPage />} />
               <Route path="settings/hornetsecurity" element={<HornetsecuritySettingsPage />} />
+              <Route path="settings/datto" element={<DattoRmmSettingsPage />} />
               <Route path="settings/encryption" element={<EncryptionPage />} />
               <Route path="settings/audit" element={<AuditPage />} />
               <Route path="oncall" element={<OnCallPage />} />

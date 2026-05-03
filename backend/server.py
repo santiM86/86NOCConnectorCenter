@@ -251,6 +251,7 @@ from routes.device_profiles import router as device_profiles_router
 from routes.connector_settings import router as connector_settings_router
 from routes.hornetsecurity_backup import router as hornetsecurity_backup_router
 from routes.hornetsecurity_vmbackup import router as hornetsecurity_vmbackup_router
+from routes.datto_rmm import router as datto_rmm_router
 from routes.security_admin import router as security_admin_router
 
 app.include_router(auth_router)
@@ -305,6 +306,7 @@ app.include_router(device_profiles_router)
 app.include_router(connector_settings_router)
 app.include_router(hornetsecurity_backup_router)
 app.include_router(hornetsecurity_vmbackup_router)
+app.include_router(datto_rmm_router)
 app.include_router(security_admin_router)
 from routes.security_admin import audit_router as audit_dashboard_router
 app.include_router(audit_dashboard_router)
