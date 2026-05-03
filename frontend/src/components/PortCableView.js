@@ -68,6 +68,7 @@ function SourceBadge({ source }) {
   const map = {
     lldp: { bg: "bg-emerald-500/20", fg: "text-emerald-300", label: "LLDP" },
     mac_managed: { bg: "bg-cyan-500/20", fg: "text-cyan-300", label: "MAC" },
+    mac_fdb_trunk: { bg: "bg-violet-500/20", fg: "text-violet-200", label: "FDB-TRUNK" },
     mac_oui: { bg: "bg-amber-500/20", fg: "text-amber-300", label: "OUI" },
     mac_unknown: { bg: "bg-neutral-500/20", fg: "text-neutral-300", label: "MAC?" },
   };
@@ -274,6 +275,16 @@ export default function PortCableView({ p, switchIp, switchName, onClose }) {
         {n?.match_source === "mac_oui" && (
           <div className="text-[10px] text-amber-300/80 italic bg-amber-500/10 border border-amber-500/20 rounded p-2">
             🔍 Identificazione via OUI vendor. Per nome e IP precisi serve LLDP abilitato sul device remoto, oppure aggiungerlo come managed device.
+          </div>
+        )}
+        {n?.match_source === "mac_fdb_trunk" && (
+          <div className="text-[10px] text-violet-300/90 italic bg-violet-500/10 border border-violet-500/20 rounded p-2">
+            🔗 Link trunk switch-to-switch dedotto via cross-correlation FDB. Porta remota calcolata cercando nel MAC table dello switch peer le interfacce di questo switch. Per precisione 100% abilita LLDP su entrambi gli switch.
+          </div>
+        )}
+        {n?.match_source === "mac_unknown" && (
+          <div className="text-[10px] text-neutral-300/80 italic bg-neutral-500/10 border border-neutral-500/20 rounded p-2">
+            ⚠️ Vendor non identificato. Per ottenere nome+porta remota: (1) abilita LLDP sullo switch remoto, oppure (2) aggiungi il device come managed in ARGUS.
           </div>
         )}
       </div>

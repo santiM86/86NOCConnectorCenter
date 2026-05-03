@@ -1,0 +1,34 @@
+{
+  "summary": "Backend testing v3.6.15 MAC Cross-Correlation switch-to-switch trunk via FDB. Creato test_mac_trunk_correlation.py con 7 casi pytest che coprono trunk bidirezionale, peer managed non-switch (NAS), priorita' LLDP, fallback OUI/unknown e smoke perf. 7/7 PASSED.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_mac_trunk_correlation.py",
+    "/app/test_reports/pytest/pytest_mac_trunk_correlation.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "topology.py >700 righe (1373): valutare split (es. spostare get_switch_ports + helper in routes/switch_ports.py).",
+    "remote_port_cache costruita scansionando le ULTIME 20 network_discovery senza filtro per client_id: il primo doc che contiene un dato IP vince. In ambienti multi-cliente con stesso IP overlap di tenant questo puo' produrre false correlazioni. Suggerimento: filtrare per client_id del device locale (lookup managed_devices.client_id e poi nd con stesso client).",
+    "Le query FDB su candidate_remote_ips sono N (1 per peer): sequenziali async. Per molti peer si potrebbe usare un'unica $in su switch_ip + projection {switch_ip,port,mac}. Accettabile per ora (N tipicamente <5).",
+    "_build_mac_neighbor: se piu' MAC managed compaiono sulla stessa porta locale prende solo managed[0] -> potenziale loss-of-info quando una porta fa trunk verso piu' device managed (raro ma possibile in stack).",
+    "remote_port_cache key e' solo remote_ip, ma con multi-tenant potrebbero esistere device managed con stesso IP in client diversi. Tie-in con punto 2."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_mac_trunk_correlation.py"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "n/a"},
+  "test_credentials": "admin@86bit.it / password (presa da /app/memory/test_credentials.md)",
+  "seed_data_creation": "Inserito tramite pymongo direttamente in MongoDB (cleanup automatico via fixture teardown): 2 switch managed (10.250.99.11, .12) + 1 NAS (10.250.99.50); 5 switch_ports su switch A (idx 24-28); 1 doc network_discovery con device_macs di A e B; 6 discovered_endpoints (FDB di A porte 25/26/27/28 + FDB di B porta 26 con MAC di A x2); 1 lldp_neighbor su porta 24 di A. Tutti i record taggati con client_id TEST_mac_trunk_<uuid8> e prefisso TEST_ nei nomi.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Il test usa pymongo per scrivere direttamente nelle collection (managed_devices, switch_ports, network_discovery, discovered_endpoints, lldp_neighbors) e testa GET /api/devices/{ip}/switch-ports. La cleanup nel fixture rimuove tutti i doc di test. Login admin via /api/auth/login restituisce 'token' (non 'access_token'). Il campo neighbor.remote_port_id e' string (richiesta UI). match_source='mac_fdb_trunk' attivato solo quando: (a) endpoint FDB locale e' is_managed=True, (b) il peer ip ha entry in network_discovery.device_macs, (c) almeno uno dei MAC dello switch locale appare nelle FDB del peer.",
+  "rca of the issue": "N/A - feature funziona come specificato. Tutti i 5 scenari richiesti (trunk bidirezionale, NAS managed, LLDP priority, mac_oui, mac_unknown) verificati con asserzioni puntuali su match_source, remote_ip, remote_port_id (string), remote_sys_cap=4 e remote_sys_desc."
+}
