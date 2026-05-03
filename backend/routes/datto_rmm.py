@@ -49,6 +49,7 @@ router = APIRouter(prefix="/api", tags=["datto-rmm"])
 
 DEFAULT_BASE_URL = "https://portal.86bit.it/api/v1/reports/datto/getDattoDevices"
 DEFAULT_AUDIT_URL = "https://portal.86bit.it/api/v1/reports/datto/getDeviceAuditDataFromUid"
+DEFAULT_SITES_URL = "https://portal.86bit.it/api/v1/reports/datto/getDattoSites"
 AUDIT_CONCURRENCY = 3           # richieste audit concorrenti verso il portal
 AUDIT_PER_SYNC_CAP = 500        # cap di sicurezza per sync (evita hammering)
 
@@ -264,6 +265,78 @@ def _group_devices_by_site(devices: list[dict]) -> list[dict]:
     return list(sites.values())
 
 
+async def _fetch_all_sites_from_portal(timeout: float = 20.0) -> list[dict]:
+    """Fetch l'elenco completo dei siti Datto dal portal (endpoint `getDattoSites`).
+
+    Quando il wrapper 86bit sara' fixato per popolare l'array (attualmente
+    restituisce {success:true, count:128, devices:[]}), questo ritornera'
+    TUTTI i siti — inclusi quelli con 0 device o oltre il limite di 250
+    restituiti da getDattoDevices.
+
+    Accetta qualsiasi shape: sites:[...], data:[...], items:[...], devices:[...].
+    Ritorna lista normalizzata di {site_id, site_name, device_count?}.
+    Se l'endpoint non esiste o l'array e' vuoto, ritorna [] (fallback su siti
+    derivati da getDattoDevices).
+    """
+    cfg = await db.datto_settings.find_one({"id": "global"}, {"_id": 0})
+    if not cfg:
+        return []
+    try:
+        api_key = security_manager.decrypt_credential(cfg["api_key_enc"])
+    except Exception:
+        return []
+    sites_url = cfg.get("sites_url") or DEFAULT_SITES_URL
+    user_id = cfg.get("user_id", "")
+    params = {"api_key": api_key, "userId": user_id, "json": "true"}
+    try:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            resp = await client.get(sites_url, params=params)
+    except httpx.RequestError:
+        return []
+    if resp.status_code != 200:
+        return []
+    try:
+        data = resp.json()
+    except Exception:
+        return []
+    if not isinstance(data, dict):
+        return []
+    # Cerca l'array siti in qualsiasi chiave standard
+    arr: Any = None
+    for k in ("sites", "data", "items", "result", "devices"):
+        v = data.get(k)
+        if isinstance(v, list) and v:
+            arr = v
+            break
+    if not arr:
+        # Endpoint ritorna count ma array vuoto (bug wrapper): log e ritorna []
+        declared = data.get("count")
+        if declared:
+            logger.info(f"datto_sites_endpoint_empty declared_count={declared}")
+        return []
+    normalized: list[dict] = []
+    for it in arr:
+        if not isinstance(it, dict):
+            continue
+        sid = str(
+            it.get("siteUid") or it.get("uid") or it.get("site_id")
+            or it.get("siteId") or it.get("id") or ""
+        ).strip()
+        sname = (
+            it.get("siteName") or it.get("name") or it.get("site_name")
+            or it.get("description") or sid
+        )
+        if not sid:
+            continue
+        normalized.append({
+            "site_id": sid,
+            "site_name": str(sname),
+            "device_count": int(it.get("deviceCount") or it.get("device_count") or 0),
+        })
+    logger.info(f"datto_sites_portal fetched={len(normalized)}")
+    return normalized
+
+
 # ---------------------------------------------------------------------------
 # Live fetch — audit per singolo device (estrae SOLO nic macAddress+ipv4)
 # ---------------------------------------------------------------------------
@@ -310,15 +383,36 @@ def _extract_nics(audit_data: dict) -> list[dict]:
 # ---------------------------------------------------------------------------
 async def _refresh_sites_cache() -> dict:
     devices = await _fetch_devices_list_all()
-    sites = _group_devices_by_site(devices)
+    device_sites = _group_devices_by_site(devices)
     now = datetime.now(timezone.utc).isoformat()
+
+    # Merge: siti dedotti dai device + siti completi da getDattoSites (se popolato)
+    # Usa dict per dedup per site_id, dando priorita' al nome trovato nei device
+    # (piu' aggiornato) rispetto a quello del sites endpoint.
+    merged: dict[str, dict] = {}
+    for s in await _fetch_all_sites_from_portal():
+        merged[s["site_id"]] = {
+            "site_id": s["site_id"],
+            "site_name": s["site_name"],
+            "device_count": s.get("device_count", 0),
+            "devices": [],  # no device details da sites endpoint
+        }
+    for s in device_sites:
+        prev = merged.get(s["site_id"])
+        merged[s["site_id"]] = {
+            "site_id": s["site_id"],
+            "site_name": s["site_name"],
+            "device_count": max(len(s["devices"]), (prev or {}).get("device_count", 0)),
+            "devices": s["devices"],
+        }
+    sites = sorted(merged.values(), key=lambda x: x["site_name"].lower())
 
     # (1) Replace sites cache (solo id/name/count — MAI detail device)
     await db.datto_sites_cache.delete_many({})
     if sites:
         await db.datto_sites_cache.insert_many([
             {"site_id": s["site_id"], "site_name": s["site_name"],
-             "device_count": len(s["devices"]), "fetched_at": now}
+             "device_count": s["device_count"], "fetched_at": now}
             for s in sites
         ])
 
@@ -539,14 +633,22 @@ async def test_datto_connection(current_user: dict = Depends(get_current_user)):
     """Chiama il portal e ritorna SOLO il conteggio site/device. Nessun dato sensibile."""
     require_admin(current_user)
     devices = await _fetch_devices_list_all(timeout=20.0)
-    sites = _group_devices_by_site(devices)
+    device_sites = _group_devices_by_site(devices)
+    portal_sites = await _fetch_all_sites_from_portal(timeout=10.0)
+    merged_ids = set(s["site_id"] for s in device_sites) | set(s["site_id"] for s in portal_sites)
     summary = [
         {"site_id": s["site_id"], "site_name": s["site_name"],
          "device_count": len(s["devices"])}
-        for s in sites
+        for s in sorted(device_sites, key=lambda x: x["site_name"].lower())
     ]
-    return {"ok": True, "sites_found": len(sites),
-            "devices_found": len(devices), "sites": summary}
+    return {
+        "ok": True,
+        "sites_found": len(merged_ids),
+        "sites_from_devices_endpoint": len(device_sites),
+        "sites_from_sites_endpoint": len(portal_sites),
+        "devices_found": len(devices),
+        "sites": summary,
+    }
 
 
 @router.post("/datto/sync-now")
