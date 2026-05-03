@@ -381,6 +381,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# SECURITY: silenzia logger di librerie HTTP che stampano URL completi con
+# query string (api_key, userId, token in chiaro). Livello WARNING cattura
+# solo errori reali, non le request di routine.
+for _noisy in ("httpx", "httpcore", "httpcore.http11", "httpcore.connection",
+               "httpx._client", "urllib3.connectionpool"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
+
 
 # ==================== LIFECYCLE ====================
 
