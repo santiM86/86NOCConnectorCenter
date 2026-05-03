@@ -1,4 +1,4 @@
 {
-  "version": "3.6.14",
-  "changelog": "v3.6.14 - Redfish BMC Auto-Discovery: quando il TCP probe (v3.6.13) trova porta 443 aperta, il connector fa subito un GET non-autenticato a https://<ip>/redfish/v1/ e rileva automaticamente iLO (HPE), iDRAC (Dell), IPMI (Supermicro), XCC (Lenovo) o Redfish generici. I BMC scoperti vengono inviati al backend come 'bmc_candidates' e mostrati nel tab 'Discovery' del cliente con un bottone 'Importa come server' che crea il device con Redfish attivato. Il backend usa bmc_kind in _guess_endpoint_type per classificare inequivocabilmente come server (priorita' massima, prima di OUI/porte). Include tutti i fix v3.6.0-3.6.13 + v3.6.13 TCP Port Fingerprint."
+  "version": "3.6.15",
+  "changelog": "v3.6.15 - MAC Cross-Correlation switch-to-switch trunk. Il backend adesso deduce automaticamente la porta remota sui link switch-to-switch anche SENZA LLDP abilitato: dato switch A porta X con un MAC che appartiene a switch B managed, cerca nella FDB di B quale porta vede i MAC delle interfacce di A e la riporta come remote_port_id. Nuovo match_source='mac_fdb_trunk' con badge violet 'FDB-TRUNK' nella UI PortCableView. LLDP resta priorita' massima quando presente. Nessuna modifica al connector PowerShell: feature 100% backend. Include tutti i fix v3.6.0-v3.6.14 (TCP fingerprint, Redfish BMC auto-discovery, OUI HPE ampliato)."
 }
