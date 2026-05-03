@@ -2887,8 +2887,106 @@ async def connector_network_discovery(request: Request):
             ps["updated_at"] = now_iso
         await db.port_speeds.insert_many(port_speeds)
 
+    # ==================================================================
+    # v3.6.21: Device Movement Tracking & Anomaly Detection
+    # Per ogni endpoint ricevuto, mantieni un histogram (client_id, mac) ->
+    # {(switch_ip, port): count}. Se il MAC viene visto su una porta diversa
+    # dalla "home" stabilita (count >= NORMAL_THRESHOLD) -> genera alert.
+    # ==================================================================
+    NORMAL_THRESHOLD = 50  # quanti hit servono per "stabilire" una home
+    movement_alerts: list[dict] = []
+    if discovered_endpoints:
+        from pymongo import UpdateOne
+        history_ops = []
+        # Mappa MAC -> nome managed (per label nell'alert)
+        mac_to_name: dict[str, str] = {}
+        for ep in discovered_endpoints:
+            mac = (ep.get("mac") or "").upper()
+            if not mac:
+                continue
+            name = (
+                ep.get("datto_name") or ep.get("manual_binding_name")
+                or ep.get("hostname") or mac
+            )
+            mac_to_name[mac] = name
+            switch_ip = ep.get("switch_ip", "")
+            port = ep.get("port", "")
+            if not switch_ip or port == "":
+                continue
+            loc_key = f"{switch_ip}|{port}"
+            history_ops.append(UpdateOne(
+                {"client_id": client_id, "mac": mac},
+                {"$set": {
+                    "client_id": client_id, "mac": mac,
+                    "current_location": {"switch_ip": switch_ip, "port": port},
+                    "last_seen": now_iso,
+                    "device_name": name,
+                }, "$inc": {f"locations.{loc_key}": 1}},
+                upsert=True,
+            ))
+        if history_ops:
+            await db.device_port_history.bulk_write(history_ops, ordered=False)
+
+        # Detect movement anomalies: per ciascun MAC trova la location TOP
+        # e confronta con current. Se differenti AND TOP ha >= THRESHOLD -> alert.
+        history_docs = await db.device_port_history.find(
+            {"client_id": client_id, "mac": {"$in": list(mac_to_name.keys())}},
+            {"_id": 0},
+        ).to_list(50000)
+        for h in history_docs:
+            locs = h.get("locations", {}) or {}
+            cur = h.get("current_location", {}) or {}
+            cur_key = f"{cur.get('switch_ip','')}|{cur.get('port','')}"
+            if not cur_key or cur_key == "|":
+                continue
+            # Top location escluse current
+            top_key, top_count = None, 0
+            for k, c in locs.items():
+                if c > top_count:
+                    top_key, top_count = k, c
+            if not top_key or top_count < NORMAL_THRESHOLD or top_key == cur_key:
+                continue
+            # Movement detected: solo se non gia' alertato per stessa coppia
+            already = await db.alerts.find_one({
+                "client_id": client_id, "kind": "device_moved",
+                "mac": h["mac"], "from_location": top_key, "to_location": cur_key,
+                "status": "active",
+            }, {"_id": 0, "id": 1})
+            if already:
+                continue
+            top_sw, top_pt = top_key.split("|", 1)
+            cur_sw, cur_pt = cur_key.split("|", 1)
+            mv_alert = {
+                "id": str(uuid.uuid4()),
+                "client_id": client_id, "kind": "device_moved",
+                "mac": h["mac"], "device_name": h.get("device_name") or h["mac"],
+                "from_location": top_key, "to_location": cur_key,
+                "from_switch": top_sw, "from_port": top_pt,
+                "to_switch": cur_sw, "to_port": cur_pt,
+                "device_ip": cur_sw,  # alert points to the switch where the device is now
+                "device_type": "endpoint",
+                "severity": "warning",
+                "source_type": "movement_anomaly",
+                "title": "Spostamento dispositivo rilevato",
+                "message": (
+                    f"{h.get('device_name') or h['mac']} (MAC {h['mac']}) e' stato visto "
+                    f"sulla porta {cur_pt} dello switch {cur_sw}, ma di solito e' su "
+                    f"{top_pt} dello switch {top_sw} (visto {top_count} volte)."
+                ),
+                "status": "active",
+                "acknowledged_by": None, "acknowledged_at": None, "resolved_at": None,
+                "created_at": now_iso,
+            }
+            await insert_alert_if_emit(db, mv_alert)
+            movement_alerts.append(mv_alert)
+            try:
+                import webpush as _wp_mv
+                await _wp_mv.notify_new_alert(db, mv_alert)
+            except Exception:
+                pass
+
     total_mac = sum(len(mt.get("entries", [])) for mt in mac_tables)
-    logger.info(f"Network discovery for {client_id}: {total_mac} MAC entries, {len(inferred_connections)} connections, {len(discovered_endpoints)} endpoints, {len(port_speeds)} speed reports")
+    logger.info(f"Network discovery for {client_id}: {total_mac} MAC entries, {len(inferred_connections)} connections, {len(discovered_endpoints)} endpoints, {len(port_speeds)} speed reports, {len(movement_alerts)} movement anomalies")
     return {
         "status": "ok",
         "mac_entries": total_mac,
@@ -2970,6 +3068,54 @@ async def list_bmc_candidates(
     # Enrich with switch_ip/port if available from discovered_endpoints
     ips = [i.get("ip") for i in items if i.get("ip")]
     ep_map = {}
+
+
+# ==================== DEVICE MOVEMENT ANOMALIES (v3.6.21) ====================
+# Endpoint per dashboard "Spostamenti recenti" sulla SecurityPage o ClientOverview.
+
+@router.get("/security/device-movements")
+async def list_device_movements(
+    client_id: str | None = None,
+    days: int = 7,
+    current_user: dict = Depends(get_current_user),
+):
+    """Lista alert di movimento dispositivi negli ultimi N giorni (default 7)."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=max(1, min(days, 90)))).isoformat()
+    q: dict = {"kind": "device_moved", "created_at": {"$gte": cutoff}}
+    if client_id:
+        q["client_id"] = client_id
+    items = await db.alerts.find(q, {"_id": 0}).sort("created_at", -1).limit(500).to_list(500)
+    active = sum(1 for a in items if a.get("status") == "active")
+    return {"items": items, "count": len(items), "active": active, "days_window": days}
+
+
+@router.get("/security/device-history/{client_id}/{mac}")
+async def get_device_port_history(
+    client_id: str, mac: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Ritorna l'histogram delle location storiche di un MAC (per debug/forensics)."""
+    mac_norm = mac.upper().strip()
+    h = await db.device_port_history.find_one(
+        {"client_id": client_id, "mac": mac_norm}, {"_id": 0}
+    )
+    if not h:
+        raise HTTPException(status_code=404, detail="MAC non tracciato")
+    locations = h.get("locations", {}) or {}
+    sorted_locs = sorted(
+        [{"location": k, "count": v, "switch_ip": k.split("|", 1)[0],
+          "port": k.split("|", 1)[1] if "|" in k else ""} for k, v in locations.items()],
+        key=lambda x: -x["count"],
+    )
+    return {
+        "client_id": client_id, "mac": mac_norm,
+        "device_name": h.get("device_name", ""),
+        "current_location": h.get("current_location"),
+        "last_seen": h.get("last_seen"),
+        "locations": sorted_locs,
+        "total_observations": sum(locations.values()),
+    }
+
     if ips:
         async for e in db.discovered_endpoints.find(
             {"ip": {"$in": ips}},
