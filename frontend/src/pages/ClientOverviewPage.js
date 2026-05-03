@@ -1260,10 +1260,10 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
                     </span>
                   </td>
                   <td className="text-[10px] text-[var(--text-muted)]">
-                    {monitorType === "snmp" ? (d.snmp_version || "v2c") : "—"}
+                    {(monitorType === "snmp" || monitorType === "snmp+http") ? (d.snmp_version || "v2c") : "—"}
                   </td>
                   <td className="text-[10px] font-mono text-[var(--text-muted)]">
-                    {monitorType === "snmp" && d.snmp_version !== "v3" ? (d.snmp_community || "—") : "—"}
+                    {(monitorType === "snmp" || monitorType === "snmp+http") && d.snmp_version !== "v3" ? (d.snmp_community || "—") : "—"}
                   </td>
                   <td>
                     <span className="inline-flex items-center gap-1 text-[10px] font-bold" style={{ color: sc }}>

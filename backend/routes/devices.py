@@ -136,8 +136,8 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
                 "uptime": pd.get("sys_uptime") or pd.get("uptime", ""),
                 "ports": pd.get("ports"),
                 "monitor_type": md.get("monitor_type") or pd.get("monitor_type", ""),
-                "snmp_community": md.get("community", ""),
-                "snmp_version": md.get("snmp_version", ""),
+                "snmp_community": md.get("community") or pd.get("snmp_community") or pd.get("community", ""),
+                "snmp_version": md.get("snmp_version") or pd.get("snmp_version", ""),
                 "http_port": md.get("http_port"),
                 "ping_ms": pd.get("ping_ms"),
                 # Web Console (auto-detected dal Connector tray)
