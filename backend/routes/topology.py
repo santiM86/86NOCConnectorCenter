@@ -65,20 +65,24 @@ async def get_switch_ports(device_ip: str, current_user: dict = Depends(get_curr
     local_ifmacs: set[str] = set()
     remote_port_cache: dict[str, str] = {}  # remote_ip -> port remota computata
     try:
-        # Carica i MAC delle interfacce di TUTTI gli switch managed dal network_discovery
-        # piu' recente (aggiornato dal connector ogni 2 min).
-        nd_docs = await db.network_discovery.find({}, {"_id": 0, "device_macs": 1, "updated_at": 1}).sort("updated_at", -1).to_list(20)
+        # v3.6.17 PERF: scope la query a un singolo client_id se conosciuto, e prendi
+        # solo l'ultimo doc (era to_list(20)). Su scale evita full scan di network_discovery.
+        local_md = next((d for d in md_all if d.get("ip") == device_ip), None)
+        scope_client_id = (local_md or {}).get("client_id") if local_md else None
+        nd_query = {"client_id": scope_client_id} if scope_client_id else {}
+        nd_doc = await db.network_discovery.find_one(
+            nd_query, {"_id": 0, "device_macs": 1, "client_id": 1},
+            sort=[("updated_at", -1)],
+        )
         ifmacs_by_ip: dict[str, set[str]] = {}
-        seen_ips: set[str] = set()
-        for nd in nd_docs:
-            for dm in (nd.get("device_macs") or []):
+        if nd_doc:
+            for dm in (nd_doc.get("device_macs") or []):
                 dip = dm.get("ip", "")
-                if not dip or dip in seen_ips:
+                if not dip:
                     continue
                 macs = set((m or "").upper() for m in (dm.get("macs") or []) if m)
                 if macs:
                     ifmacs_by_ip[dip] = macs
-                    seen_ips.add(dip)
         local_ifmacs = ifmacs_by_ip.get(device_ip, set())
 
         if endpoints and local_ifmacs:
