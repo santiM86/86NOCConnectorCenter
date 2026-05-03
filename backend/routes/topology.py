@@ -58,6 +58,56 @@ async def get_switch_ports(device_ip: str, current_user: dict = Depends(get_curr
     md_all = await db.managed_devices.find({}, {"_id": 0, "ip": 1, "device_type": 1, "device_name": 1, "vendor": 1}).to_list(2000)
     md_by_ip = {d["ip"]: d for d in md_all if d.get("ip")}
 
+    # v3.6.15: MAC Cross-Correlation per trunk switch-to-switch.
+    # Se un endpoint sulla porta locale risolve a un altro switch managed, cerchiamo
+    # nella FDB dell'altro switch quale porta vede i MAC delle interfacce di QUESTO
+    # switch locale: quella e' la porta remota del trunk (FDB bidirezionale).
+    local_ifmacs: set[str] = set()
+    remote_port_cache: dict[str, str] = {}  # remote_ip -> port remota computata
+    try:
+        # Carica i MAC delle interfacce di TUTTI gli switch managed dal network_discovery
+        # piu' recente (aggiornato dal connector ogni 2 min).
+        nd_docs = await db.network_discovery.find({}, {"_id": 0, "device_macs": 1, "updated_at": 1}).sort("updated_at", -1).to_list(20)
+        ifmacs_by_ip: dict[str, set[str]] = {}
+        seen_ips: set[str] = set()
+        for nd in nd_docs:
+            for dm in (nd.get("device_macs") or []):
+                dip = dm.get("ip", "")
+                if not dip or dip in seen_ips:
+                    continue
+                macs = set((m or "").upper() for m in (dm.get("macs") or []) if m)
+                if macs:
+                    ifmacs_by_ip[dip] = macs
+                    seen_ips.add(dip)
+        local_ifmacs = ifmacs_by_ip.get(device_ip, set())
+
+        if endpoints and local_ifmacs:
+            # IP managed riferiti dalle FDB del device locale (potenziali trunk peer)
+            candidate_remote_ips = set()
+            for e in endpoints:
+                rip = e.get("ip") or ""
+                if e.get("is_managed") and rip and rip != device_ip:
+                    candidate_remote_ips.add(rip)
+            # Per ciascun peer switch managed, cerca quale porta ha nei propri FDB
+            # almeno un MAC delle interfacce locali (= trunk bidirezionale).
+            from collections import Counter
+            for rip in candidate_remote_ips:
+                items = await db.discovered_endpoints.find(
+                    {"switch_ip": rip, "mac": {"$in": list(local_ifmacs)}},
+                    {"_id": 0, "port": 1, "mac": 1},
+                ).to_list(100)
+                if not items:
+                    continue
+                port_counter: Counter = Counter(
+                    i.get("port") for i in items if i.get("port") is not None
+                )
+                if port_counter:
+                    best_port, _cnt = port_counter.most_common(1)[0]
+                    remote_port_cache[rip] = str(best_port)
+    except Exception as _e_cc:
+        # Non bloccare il rendering della pagina se il cross-correlation fallisce
+        remote_port_cache = {}
+
     # Index neighbors by local_port_desc and by port_number extracted
     by_desc: dict[str, dict] = {}
     by_number: dict[str, dict] = {}
@@ -103,17 +153,20 @@ async def get_switch_ports(device_ip: str, current_user: dict = Depends(get_curr
             e = managed[0]
             ip = e.get("ip") or ""
             md = md_by_ip.get(ip, {})
+            # v3.6.15: se il peer e' un altro switch managed, risolvi anche la porta remota via FDB cross-correlation
+            remote_port = remote_port_cache.get(ip, "")
+            is_switch_trunk = bool(remote_port)
             return {
                 "remote_sys_name": md.get("device_name") or ip or "Device managed",
                 "remote_ip": ip,
                 "remote_device_type": md.get("device_type") or "",
                 "remote_device_name": md.get("device_name") or "",
-                "remote_port_id": "",
-                "remote_port_desc": "",
+                "remote_port_id": remote_port,
+                "remote_port_desc": (f"port {remote_port}" if remote_port else ""),
                 "remote_chassis_id": e.get("mac", ""),
-                "remote_sys_cap": 0,
-                "remote_sys_desc": "",
-                "match_source": "mac_managed",
+                "remote_sys_cap": (0x04 if is_switch_trunk else 0),  # bit 2 = bridge/switch
+                "remote_sys_desc": ("Trunk switch-to-switch (FDB correlation)" if is_switch_trunk else ""),
+                "match_source": ("mac_fdb_trunk" if is_switch_trunk else "mac_managed"),
             }, cand
         # Nessun managed: prova OUI del primo MAC
         if unmanaged:

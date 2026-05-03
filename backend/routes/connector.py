@@ -303,6 +303,7 @@ async def connector_heartbeat(request: Request, heartbeat: ConnectorHeartbeat):
         if update_info and is_newer_version(update_info["version"], heartbeat.connector_version):
             response["force_update"] = True
             response["latest_version"] = update_info["version"]
+            response["filename"] = update_info["filename"]  # v3.6.16 fix
             response["download_url"] = f"/api/connector/download/{update_info['filename']}"
             response["changelog"] = update_info.get("changelog", "")
             await db.connector_status.update_one(
@@ -653,6 +654,7 @@ async def connector_update_check(request: Request):
     update_needed = is_newer_version(published_version, current_version)
     return {
         "update_available": update_needed, "latest_version": published_version,
+        "filename": update_info["filename"],  # v3.6.16 fix: update_check.ps1 legge $checkResponse.filename
         "download_url": f"/api/connector/download/{update_info['filename']}",
         "changelog": update_info.get("changelog", ""),
         "published_at": update_info.get("published_at", ""),
