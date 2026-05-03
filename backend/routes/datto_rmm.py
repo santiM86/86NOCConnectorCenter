@@ -211,65 +211,44 @@ async def _get_datto_creds() -> tuple[str, str, str, str]:
 
 
 async def _fetch_devices_list_all(timeout: float = 30.0) -> list[dict]:
-    """Scarica la lista completa dei device Datto.
+    """Scarica la lista completa dei device Datto in una singola richiesta.
 
-    Il wrapper portal.86bit.it attualmente espone una singola pagina (max ~250
-    device). Tentiamo comunque &page=N per forward-compat: se il payload
-    duplicato (stesso primo uid di pagina 1) ci fermiamo.
+    Il wrapper `portal.86bit.it/api/v1/reports/datto/getDattoDevices` restituisce
+    l'intero elenco del tenant in un unico payload (no paginazione client-side).
+    Il campo `pageDetails.totalCount` che arriva dal wrapper e' un artefatto
+    legacy del protocollo Datto Centrastage e non corrisponde al numero reale
+    di device — quello vero e' `len(devices)`.
     """
     api_key, user_id, base_url, _ = await _get_datto_creds()
     params = {"api_key": api_key, "userId": user_id, "json": "true"}
-    all_devices: list[dict] = []
-    seen_first_uid: Optional[str] = None
-    total_expected: Optional[int] = None
-    page = 0
-    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-        while page < 20:  # hard cap
-            p = {**params, "page": page} if page > 0 else params
-            try:
-                resp = await client.get(base_url, params=p)
-            except httpx.RequestError:
-                raise HTTPException(status_code=502, detail="Errore rete Datto API")
-            if resp.status_code != 200:
-                raise HTTPException(
-                    status_code=resp.status_code,
-                    detail=f"Datto API ha risposto {resp.status_code}",
-                )
-            try:
-                data = resp.json()
-            except Exception:
-                raise HTTPException(status_code=502, detail="Risposta Datto non JSON")
-            dd = data.get("dattoDevices") if isinstance(data, dict) else None
-            devs = (dd or {}).get("devices") or []
-            if not isinstance(devs, list) or not devs:
-                break
-            first_uid = str(devs[0].get("uid") or devs[0].get("id") or "")
-            if seen_first_uid is not None and first_uid == seen_first_uid:
-                break  # paginazione non supportata, e' la stessa pagina
-            seen_first_uid = seen_first_uid or first_uid
-            all_devices.extend(devs)
-            pd = (dd or {}).get("pageDetails") or {}
-            total_expected = total_expected or pd.get("totalCount")
-            next_url = pd.get("nextPageUrl")
-            if not next_url:
-                break
-            page += 1
-    # Dedup per uid (safety)
+    try:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            resp = await client.get(base_url, params=params)
+    except httpx.RequestError:
+        raise HTTPException(status_code=502, detail="Errore rete Datto API")
+    if resp.status_code != 200:
+        raise HTTPException(
+            status_code=resp.status_code,
+            detail=f"Datto API ha risposto {resp.status_code}",
+        )
+    try:
+        data = resp.json()
+    except Exception:
+        raise HTTPException(status_code=502, detail="Risposta Datto non JSON")
+    dd = data.get("dattoDevices") if isinstance(data, dict) else None
+    devices = (dd or {}).get("devices") or []
+    if not isinstance(devices, list):
+        return []
+    # Dedup per uid (safety netto)
     seen: set = set()
     unique: list[dict] = []
-    for d in all_devices:
+    for d in devices:
         u = str(d.get("uid") or d.get("id") or "")
-        if u and u in seen:
+        if not u or u in seen:
             continue
         seen.add(u)
         unique.append(d)
-    # Log riservato
-    missing = (total_expected or len(unique)) - len(unique)
-    if missing > 0:
-        logger.info(
-            f"datto_list_paginate total_expected={total_expected} fetched={len(unique)} "
-            f"missing={missing} (portal pagination limit)"
-        )
+    logger.info(f"datto_list_fetched total={len(unique)}")
     return unique
 
 
