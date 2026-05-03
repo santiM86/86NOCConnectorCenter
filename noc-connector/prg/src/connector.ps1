@@ -1200,6 +1200,9 @@ function Send-DeviceReport($config, $devices) {
                 sys_descr = ""
                 sys_uptime = ""
                 poll_timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+                # v3.6.18: SNMP config persistita nel Center
+                snmp_version = if ($dev.snmp_version) { $dev.snmp_version } else { "v2c" }
+                community = if ($dev.community) { $dev.community } else { "" }
                 # Advanced ping metrics
                 ping_stats = $null
                 open_ports = $null
@@ -1316,7 +1319,7 @@ function Send-DeviceReport($config, $devices) {
             $deviceReport = @{
                 device_ip = $ip
                 device_name = $devName
-                monitor_type = "snmp"
+                monitor_type = $monitorType
                 reachable = $reachable
                 ports = $ports
                 sys_descr = "$sysDescr"
@@ -1324,6 +1327,9 @@ function Send-DeviceReport($config, $devices) {
                 sys_object_id = "$sysObjectID"
                 sys_uptime = $sysUptime
                 poll_timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+                # v3.6.18: SNMP config persistita nel Center
+                snmp_version = if ($dev.snmp_version) { $dev.snmp_version } else { "v2c" }
+                community = $community
             }
             
             # Add extended metrics if available.

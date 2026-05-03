@@ -149,8 +149,27 @@ async def get_switch_ports(device_ip: str, current_user: dict = Depends(get_curr
                 cand = endpoints_by_port_num.get(pnum) or []
         if not cand:
             return None, []
+        # v3.6.20: Datto RMM match ha priorita' su MANUAL/MAC (subito sotto LLDP).
+        # Se uno dei candidate ha datto_name popolato, usalo per identificazione precisa.
+        datto_match = next((x for x in cand if x.get("datto_name")), None)
+        if datto_match:
+            return {
+                "remote_sys_name": datto_match.get("datto_name") or datto_match.get("datto_ip", ""),
+                "remote_ip": datto_match.get("datto_ip") or datto_match.get("ip", ""),
+                "remote_device_type": "generic",
+                "remote_device_name": datto_match.get("datto_name", ""),
+                "remote_port_id": "",
+                "remote_port_desc": "",
+                "remote_chassis_id": datto_match.get("mac", ""),
+                "remote_sys_cap": 0,
+                "remote_sys_desc": (
+                    f"Datto RMM: {datto_match.get('datto_os','')} "
+                    f"{datto_match.get('datto_os_version','')}".strip()
+                ) or "Identificato via Datto RMM",
+                "match_source": "datto_rmm",
+            }, cand
         # v3.6.16: Manual MAC binding ha priorita' su tutto il MAC fallback
-        # (subito sotto LLDP). Se almeno un endpoint candidato ha un manual_binding,
+        # (subito sotto LLDP/Datto). Se almeno un endpoint candidato ha un manual_binding,
         # restituiscilo come neighbor "manual_mac".
         manual = next((x for x in cand if x.get("manual_binding_ip")), None)
         if manual:

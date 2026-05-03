@@ -1,4 +1,4 @@
 {
-  "version": "3.6.15",
-  "changelog": "v3.6.15 - MAC Cross-Correlation switch-to-switch trunk. Il backend adesso deduce automaticamente la porta remota sui link switch-to-switch anche SENZA LLDP abilitato: dato switch A porta X con un MAC che appartiene a switch B managed, cerca nella FDB di B quale porta vede i MAC delle interfacce di A e la riporta come remote_port_id. Nuovo match_source='mac_fdb_trunk' con badge violet 'FDB-TRUNK' nella UI PortCableView. LLDP resta priorita' massima quando presente. Nessuna modifica al connector PowerShell: feature 100% backend. Include tutti i fix v3.6.0-v3.6.14 (TCP fingerprint, Redfish BMC auto-discovery, OUI HPE ampliato)."
+  "version": "3.6.20",
+  "changelog": "v3.6.20 - Datto RMM Integration. Nuovo endpoint admin /api/admin/datto/config con api_key cifrata. Sync con portal.86bit.it/api/v1/reports/datto/getDattoDevices. Linking 1:1 cliente Center -> site Datto. Match automatico 100% MAC+IP con discovered_endpoints: ogni device riconosciuto via Datto popola le sezioni 'Vista Cavo' degli switch con badge 'DATTO' (priorita' subito sotto LLDP). Nuova UI /settings/datto con tabella mappatura. Include tutti i fix v3.6.0-v3.6.19."
 }

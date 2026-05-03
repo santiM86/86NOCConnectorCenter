@@ -71,6 +71,7 @@ function remoteIconFor(type, sysCap) {
 function SourceBadge({ source }) {
   const map = {
     lldp: { bg: "bg-emerald-500/20", fg: "text-emerald-300", label: "LLDP" },
+    datto_rmm: { bg: "bg-fuchsia-500/20", fg: "text-fuchsia-200", label: "DATTO" },
     mac_managed: { bg: "bg-cyan-500/20", fg: "text-cyan-300", label: "MAC" },
     mac_fdb_trunk: { bg: "bg-violet-500/20", fg: "text-violet-200", label: "FDB-TRUNK" },
     mac_manual: { bg: "bg-blue-500/20", fg: "text-blue-300", label: "MANUALE" },

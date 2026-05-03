@@ -1493,6 +1493,10 @@ async def connector_device_report(request: Request):
             "memory_usage": dev.get("memory_usage", None),
             "temperature": dev.get("temperature", None),
             "device_class": dev.get("device_class", "generic"),
+            "monitor_type": dev.get("monitor_type"),  # v3.6.18: persist SNMP config in poll_status
+            "snmp_version": dev.get("snmp_version"),
+            "snmp_community": dev.get("snmp_community") or dev.get("community"),
+            "community": dev.get("community") or dev.get("snmp_community"),
             "hardware": dev.get("hardware", None),
             "firewall": dev.get("firewall", None),
             "redfish": dev.get("redfish", None),
