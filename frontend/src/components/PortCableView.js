@@ -86,9 +86,11 @@ function SourceBadge({ source }) {
 }
 
 export default function PortCableView({ p, switchIp, switchName, onClose, clientId, onRefresh }) {
+  // ⚠️ React Rules of Hooks: tutti gli hooks DEVONO essere chiamati prima di qualsiasi early return.
+  const [showBindModal, setShowBindModal] = useState(false);
+
   if (!p) return null;
 
-  const [showBindModal, setShowBindModal] = useState(false);
   const isUp = p.oper === 1 && p.admin === 1;
   const isPoe = p.poe_status === 3;
   const isAdminDown = p.admin === 2;
