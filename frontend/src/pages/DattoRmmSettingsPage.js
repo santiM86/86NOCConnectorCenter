@@ -268,11 +268,16 @@ export default function DattoRmmSettingsPage() {
                             value={link?.site_id || ""}
                             onChange={(e) => linkClient(cli.id, e.target.value)}
                             className="h-7 px-2 text-xs rounded border border-[var(--bg-border)] bg-[var(--bg-surface)] text-[var(--text-primary)]"
+                            style={{ colorScheme: "dark" }}
                             data-testid={`datto-site-select-${cli.id}`}
                           >
-                            <option value="">— Non linkato —</option>
+                            <option value="" style={{ backgroundColor: "#0f1115", color: "#e5e7eb" }}>— Non linkato —</option>
                             {sites.map((s) => (
-                              <option key={s.site_id} value={s.site_id}>
+                              <option
+                                key={s.site_id}
+                                value={s.site_id}
+                                style={{ backgroundColor: "#0f1115", color: "#e5e7eb" }}
+                              >
                                 {s.site_name} ({s.device_count})
                               </option>
                             ))}
