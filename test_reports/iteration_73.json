@@ -1,0 +1,36 @@
+{
+  "summary": "Verified the v3.6.16 auto-update connector bug fix (filename field added in update-check + heartbeat force_update responses). Created /app/backend/tests/test_connector_autoupdate.py with 14 pytest cases covering update-check payload, download endpoint (X-API-Key + admin JWT + ?token=... + 404 + 401), heartbeat with force_update returning filename, update-info admin, public-download/latest no-auth, and the regression case with no active update. All 14 tests PASS (100%).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_connector_autoupdate.py",
+    "/app/test_reports/pytest/connector_autoupdate.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "routes/connector.py is 3024 lines — exceeds the 700-line guideline. Recommend splitting into submodules (auto_update, heartbeat, vault, devices, etc.) for maintainability.",
+    "Heartbeat force_update path duplicates the (filename, download_url, latest_version, changelog) payload that update-check builds. Extract a shared helper build_update_payload(update_info) to avoid drift; this is exactly the kind of DRY-violation that caused the v3.6.16 bug in the first place (filename was added in update-check but originally missed in heartbeat).",
+    "verify_connector_request still falls back to legacy auth (no HMAC) silently. Consider logging a metric so admins can track legacy connectors that need rotation.",
+    "/connector/public-download/latest is fully public (no auth at all). Risk is low (ZIP is open scripts) but consider rate-limiting to prevent abuse/CDN-style scraping."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_connector_autoupdate.py (new)"
+  ],
+  "success_rate": {
+    "backend": "100%",
+    "frontend": "not tested (backend only)"
+  },
+  "test_credentials": "admin@86bit.it / password (token field 'token'); X-API-Key noc_35cf39b4d68740b1a981aedef2ee293d for client 86BIT_Office",
+  "seed_data_creation": "No new seed data. The TestNoActiveUpdate test temporarily flips active=False on the live v3.6.15 update doc and restores it within the same fixture (verified post-run: still active). The heartbeat test mutated db.connector_status for the 86BIT_Office client (set hostname=test-autoupdate-host, version=1.0.0); update_status / force_update fields were cleaned up after the run. Real connector is offline since April 2026 so this has no production impact (it will overwrite when it heartbeats again).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "If you re-run test_connector_autoupdate.py: (1) it expects v3.6.15 to be the active update (hardcoded EXPECTED_VERSION); update if a new version is published. (2) The TestHeartbeatForceUpdate test calls /api/connector/{client_id}/force-update on the live 86BIT_Office connector and registers a fake heartbeat — safe because the real connector is offline. (3) The TestNoActiveUpdate test temporarily deactivates the active doc; if the test crashes mid-way the doc may stay inactive — re-run the suite to restore. (4) Filename pattern is 86NocConnector_v[X.Y.Z].zip — same regex as production code.",
+  "rca of the issue": "Bug RCA: GET /api/connector/update-check originally returned download_url but NOT filename. The PowerShell client update_check.ps1 reads $checkResponse.filename and concatenates it to /api/connector/download/$filename — so when filename was null, the resulting URL was '/api/connector/download/' (empty filename) and the GET 404'd / failed. Fix verified in routes/connector.py at lines 657 (update-check) and 306 (heartbeat force_update path) — both now return the 'filename' key explicitly. Reproduction: pre-fix, GET /api/connector/update-check would return JSON without 'filename' key. Post-fix, the test_update_check_returns_filename_field test asserts 'filename' is present, non-empty, and matches 86NocConnector_v[\\d.]+\\.zip. Mitigation already in place; recommend the DRY refactor noted above to prevent recurrence."
+}
