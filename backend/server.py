@@ -586,6 +586,62 @@ async def startup_event():
         await db.device_metrics_history.create_index("timestamp", expireAfterSeconds=86400 * 90)  # TTL 90 giorni
         await db.metrics_history.create_index("timestamp", expireAfterSeconds=86400 * 90)  # TTL 90 giorni
 
+        # === SCALE-UP indexes (v3.6.17) — pronti per migliaia di device ===
+        # vmbackup_jobs (18k+ docs in deploy reali): upsert key + aggregations
+        try:
+            await db.vmbackup_jobs.create_index(
+                [("customer_name", 1), ("host_name", 1), ("vm_id", 1)],
+                unique=True, name="vm_upsert_key",
+            )
+        except Exception:
+            pass
+        await db.vmbackup_jobs.create_index([("source", 1), ("customer_name", 1)])
+        await db.vmbackup_jobs.create_index([("client_id", 1), ("alert_reason", 1)])
+        await db.vmbackup_jobs.create_index([("customer_name", 1), ("host_name", 1)])
+
+        # backup_job_status (4k+ docs)
+        await db.backup_job_status.create_index([("client_id", 1), ("workload_name", 1)])
+        await db.backup_job_status.create_index([("client_id", 1), ("alert_reason", 1)])
+        await db.backup_job_status.create_index([("device_ip", 1), ("timestamp", -1)])
+
+        # switch_ports: query principale by local_ip + sort idx (topology.py)
+        await db.switch_ports.create_index([("local_ip", 1), ("idx", 1)])
+
+        # discovered_endpoints: aggiunti switch_ip e mac (per topology + cleanup binding)
+        await db.discovered_endpoints.create_index([("switch_ip", 1)])
+        await db.discovered_endpoints.create_index([("mac", 1)])
+
+        # network_discovery: scan recente per remote_port_cache
+        await db.network_discovery.create_index([("client_id", 1), ("updated_at", -1)])
+
+        # mac_device_bindings (v3.6.16) — UNIQUE per evitare duplicati
+        try:
+            await db.mac_device_bindings.create_index([("mac", 1)], unique=True)
+        except Exception:
+            pass
+        await db.mac_device_bindings.create_index([("client_id", 1)])
+
+        # bmc_candidates (v3.6.14)
+        try:
+            await db.bmc_candidates.create_index([("client_id", 1), ("ip", 1)], unique=True)
+        except Exception:
+            pass
+        await db.bmc_candidates.create_index([("dismissed", 1), ("last_seen", -1)])
+
+        # port_flap_events (sparkline 24h query)
+        await db.port_flap_events.create_index([("local_ip", 1), ("idx", 1), ("ts", -1)])
+        await db.port_flap_events.create_index("ts", expireAfterSeconds=86400 * 30)  # TTL 30gg
+
+        # devices (manual+ created via discovery)
+        await db.devices.create_index([("client_id", 1), ("ip_address", 1)])
+        await db.devices.create_index([("id", 1)], unique=True)
+
+        # lldp_neighbors: il codice topology.py usa "local_ip" non "local_device_ip"
+        await db.lldp_neighbors.create_index([("local_ip", 1)])
+
+        # auto_dispatch_history: TTL 30gg + lookup
+        await db.auto_dispatch_history.create_index("timestamp", expireAfterSeconds=86400 * 30)
+
         logger.info("MongoDB indexes created/verified successfully")
 
     except Exception as e:

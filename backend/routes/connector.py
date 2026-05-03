@@ -2697,22 +2697,24 @@ async def connector_network_discovery(request: Request):
 
     # Upsert BMC candidates into dedicated collection (for admin "Add server" UI)
     # Keep only non-managed BMCs so the admin sees real suggestions.
+    # v3.6.17 PERF: bulk_write invece di N awaits separate.
     managed_ip_set_for_bmc = set()
     _mdev_for_bmc = await db.managed_devices.find({"client_id": client_id}, {"_id": 0, "ip": 1}).to_list(2000)
     for _md in _mdev_for_bmc:
         if _md.get("ip"):
             managed_ip_set_for_bmc.add(_md["ip"])
+    bmc_ops = []
+    from pymongo import UpdateOne
     for bmc in bmc_candidates:
         bip = bmc.get("ip", "")
         if not bip or not bmc.get("bmc_kind"):
             continue
         if bip in managed_ip_set_for_bmc:
             continue  # gia' censito
-        await db.bmc_candidates.update_one(
+        bmc_ops.append(UpdateOne(
             {"client_id": client_id, "ip": bip},
             {"$set": {
-                "client_id": client_id,
-                "ip": bip,
+                "client_id": client_id, "ip": bip,
                 "bmc_kind": bmc.get("bmc_kind", ""),
                 "redfish_version": bmc.get("redfish_version", ""),
                 "oem_hint": bmc.get("oem_hint", ""),
@@ -2720,11 +2722,14 @@ async def connector_network_discovery(request: Request):
                 "last_seen": now_iso,
             }, "$setOnInsert": {"first_seen": now_iso, "dismissed": False}},
             upsert=True,
-        )
+        ))
+    if bmc_ops:
+        await db.bmc_candidates.bulk_write(bmc_ops, ordered=False)
     # Drop BMC candidates not seen in last 24h or already managed
-    await db.bmc_candidates.delete_many({
-        "client_id": client_id, "ip": {"$in": list(managed_ip_set_for_bmc)}
-    })
+    if managed_ip_set_for_bmc:
+        await db.bmc_candidates.delete_many({
+            "client_id": client_id, "ip": {"$in": list(managed_ip_set_for_bmc)}
+        })
 
     # Build MAC -> IP mapping from device_macs and managed devices
     device_mac_map = {}  # MAC -> IP mapping
