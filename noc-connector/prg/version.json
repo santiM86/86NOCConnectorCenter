@@ -1,4 +1,4 @@
 {
-  "version": "3.6.18",
-  "changelog": "v3.6.18 - Fix UI tabella device: le colonne SNMP version e Community ora si popolano correttamente. Backend (connector.py): persiste in device_poll_status i campi monitor_type, snmp_version, snmp_community/community ricevuti dal device report. Backend (devices.py): /api/devices ha fallback gerarchico managed_devices -> device_poll_status per snmp_version e snmp_community. Connector PowerShell: i poll-result includono ora snmp_version (default v2c) e community (dal config.json) per ogni device sia in path SNMP sia in SNMP+HTTP/HTTP/Ping. Frontend (ClientOverviewPage.js): la condizione di rendering della tabella accetta sia 'snmp' sia 'snmp+http' (prima escludeva snmp+http). Include tutti i fix v3.6.0-v3.6.17."
+  "version": "3.6.19",
+  "changelog": "v3.6.19 - Fix tray app modal 'Informazioni': (1) la versione viene ora riletta da version.json ad ogni apertura del modal (era hardcoded all'avvio del tray, mostrava versione stale dopo auto-update); (2) bottone OK non piu' tagliato su Win11 DPI 125% (form alzato da 340 a 420, button riposizionato a Y=340, anchor Bottom+Right, AutoScaleMode=Dpi). Include tutti i fix v3.6.0-v3.6.18 (TCP probe, Redfish BMC auto-discovery, OUI HPE, MAC trunk cross-correlation, manual MAC binding, scale-up indexes, fix update-check filename, fix UI SNMP/community)."
 }

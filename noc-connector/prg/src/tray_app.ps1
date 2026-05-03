@@ -1208,14 +1208,25 @@ public class TrayRefresh {
     # Informazioni / About
     $aboutItem = $contextMenu.Items.Add("Informazioni")
     $aboutItem.Add_Click({
+        # v3.6.19: rileggi sempre la versione corrente da version.json (post-autoupdate)
+        $currentVersion = $Version
+        try {
+            if (Test-Path $versionFile) {
+                $vInfoFresh = Get-Content $versionFile -Raw -ErrorAction Stop | ConvertFrom-Json
+                if ($vInfoFresh.version) { $currentVersion = $vInfoFresh.version }
+            }
+        } catch {}
+
         $aboutForm = New-Object System.Windows.Forms.Form
         $aboutForm.Text = "$DisplayName - Informazioni"
-        $aboutForm.Size = New-Object System.Drawing.Size(420, 340)
+        # v3.6.19: alzata altezza da 340 a 420 per evitare il taglio del bottone OK su Win11 (DPI 125%)
+        $aboutForm.Size = New-Object System.Drawing.Size(440, 420)
         $aboutForm.StartPosition = "CenterScreen"
         $aboutForm.FormBorderStyle = "FixedDialog"
         $aboutForm.MaximizeBox = $false
         $aboutForm.MinimizeBox = $false
         $aboutForm.BackColor = [System.Drawing.Color]::White
+        $aboutForm.AutoScaleMode = "Dpi"
 
         # Logo
         $logoPath = Join-Path $ScriptDir "86bit_logo.jpg"
@@ -1230,7 +1241,7 @@ public class TrayRefresh {
 
         # App Name + Version
         $lblName = New-Object System.Windows.Forms.Label
-        $lblName.Text = "$DisplayName  v$Version"
+        $lblName.Text = "$DisplayName  v$currentVersion"
         $lblName.Font = New-Object System.Drawing.Font("Segoe UI", 14, [System.Drawing.FontStyle]::Bold)
         $lblName.ForeColor = [System.Drawing.Color]::FromArgb(30, 30, 50)
         $lblName.Location = New-Object System.Drawing.Point(110, 20)
@@ -1277,15 +1288,17 @@ info@86bit.it
         $lblCompany.Size = New-Object System.Drawing.Size(370, 170)
         $aboutForm.Controls.Add($lblCompany)
 
-        # OK button
+        # OK button (v3.6.19: spostato in basso e centrato per evitare taglio su DPI 125%)
         $btnOk = New-Object System.Windows.Forms.Button
         $btnOk.Text = "OK"
-        $btnOk.Size = New-Object System.Drawing.Size(80, 30)
-        $btnOk.Location = New-Object System.Drawing.Point(310, 270)
+        $btnOk.Size = New-Object System.Drawing.Size(90, 32)
+        $btnOk.Location = New-Object System.Drawing.Point(330, 340)
         $btnOk.FlatStyle = "Flat"
         $btnOk.BackColor = [System.Drawing.Color]::FromArgb(99, 102, 241)
         $btnOk.ForeColor = [System.Drawing.Color]::White
         $btnOk.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+        $btnOk.FlatAppearance.BorderSize = 0
+        $btnOk.Anchor = [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Right
         $btnOk.Add_Click({ $aboutForm.Close() })
         $aboutForm.Controls.Add($btnOk)
         $aboutForm.AcceptButton = $btnOk
