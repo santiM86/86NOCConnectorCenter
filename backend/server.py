@@ -780,6 +780,38 @@ async def startup_event():
     except Exception as e:
         logger.error(f"Failed to start Hornetsecurity VM backup scheduler: {e}")
 
+    # === Datto RMM auto-sync scheduler (v3.6.20) ===
+    try:
+        from apscheduler.schedulers.asyncio import AsyncIOScheduler as _DattoSched
+        from apscheduler.triggers.interval import IntervalTrigger as _DattoTrig
+        from routes.datto_rmm import _refresh_sites_cache as _datto_tick
+
+        async def _datto_tick_safe():
+            """Ignora gracefully se la config non e' settata (no auth/nessun setup)."""
+            try:
+                cfg = await db.datto_settings.find_one({"id": "global"}, {"_id": 0, "id": 1})
+                if not cfg:
+                    return  # Datto non configurato, skip silenzioso
+                result = await _datto_tick()
+                logger.info(f"[datto-auto-sync] {result}")
+            except Exception as ex:
+                logger.warning(f"[datto-auto-sync] failed: {ex}")
+
+        global datto_scheduler
+        datto_scheduler = _DattoSched()
+        datto_scheduler.add_job(
+            _datto_tick_safe,
+            trigger=_DattoTrig(hours=6),
+            id="datto_rmm_auto_sync",
+            next_run_time=datetime.now(timezone.utc) + timedelta(minutes=2),
+            max_instances=1,
+            coalesce=True,
+        )
+        datto_scheduler.start()
+        logger.info("Datto RMM auto-sync scheduler started (tick: 6h)")
+    except Exception as e:
+        logger.error(f"Failed to start Datto RMM scheduler: {e}")
+
     # ----- Embedded WireGuard runtime (POC, opt-in via env WG_EMBEDDED_ENABLED) -----
     if os.environ.get("WG_EMBEDDED_ENABLED", "").lower() in ("1", "true", "yes"):
         try:

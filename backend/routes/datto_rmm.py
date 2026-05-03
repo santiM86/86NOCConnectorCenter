@@ -366,6 +366,38 @@ async def list_datto_sites(current_user: dict = Depends(get_current_user)):
     return {"items": sites, "count": len(sites)}
 
 
+@router.get("/datto/scheduler-status")
+async def datto_scheduler_status(current_user: dict = Depends(get_current_user)):
+    """Ritorna ultimo refresh + prossimo scheduled run dello scheduler Datto (auto-sync 6h)."""
+    require_admin(current_user)
+    cfg = await db.datto_settings.find_one({"id": "global"}, {"_id": 0, "id": 1})
+    last = await db.datto_sites_cache.find_one({}, {"_id": 0, "fetched_at": 1}, sort=[("fetched_at", -1)])
+    sites_count = await db.datto_sites_cache.count_documents({})
+    devices_count = await db.datto_devices.count_documents({})
+    links_count = await db.datto_client_links.count_documents({})
+    next_run = None
+    try:
+        # Best-effort: leggi lo scheduler globale se accessibile
+        from server import datto_scheduler  # type: ignore
+        if datto_scheduler:
+            jobs = datto_scheduler.get_jobs()
+            for j in jobs:
+                if j.id == "datto_rmm_auto_sync" and j.next_run_time:
+                    next_run = j.next_run_time.isoformat()
+                    break
+    except Exception:
+        pass
+    return {
+        "configured": bool(cfg),
+        "last_refresh_at": (last or {}).get("fetched_at"),
+        "next_scheduled_at": next_run,
+        "interval_hours": 6,
+        "sites_in_cache": sites_count,
+        "linked_clients": links_count,
+        "synced_devices": devices_count,
+    }
+
+
 @router.get("/clients/{client_id}/datto/link")
 async def get_datto_link(
     client_id: str, current_user: dict = Depends(get_current_user),

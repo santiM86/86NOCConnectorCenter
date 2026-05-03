@@ -19,6 +19,7 @@ export default function DattoRmmSettingsPage() {
   const [sites, setSites] = useState([]);
   const [links, setLinks] = useState([]);
   const [clients, setClients] = useState([]);
+  const [schedStatus, setSchedStatus] = useState(null);
   const [loading, setLoading] = useState(true);
   const [testing, setTesting] = useState(false);
   const [syncing, setSyncing] = useState(false);
@@ -26,13 +27,15 @@ export default function DattoRmmSettingsPage() {
 
   const reload = useCallback(async () => {
     try {
-      const [c, s, cl] = await Promise.all([
+      const [c, s, cl, sched] = await Promise.all([
         axios.get(`${API}/api/admin/datto/config`, { headers }),
         axios.get(`${API}/api/datto/sites`, { headers }).catch(() => ({ data: { items: [] } })),
         axios.get(`${API}/api/clients`, { headers }).catch(() => ({ data: [] })),
+        axios.get(`${API}/api/datto/scheduler-status`, { headers }).catch(() => ({ data: null })),
       ]);
       setConfig(c.data);
       setSites(s.data.items || []);
+      setSchedStatus(sched.data);
       const cls = Array.isArray(cl.data) ? cl.data : (cl.data.clients || []);
       setClients(cls);
       // Carica link per ogni client (parallelo)
@@ -216,6 +219,22 @@ export default function DattoRmmSettingsPage() {
       </div>
 
       {/* Linking matrix */}
+      {config?.configured && schedStatus && (
+        <div className="rounded-xl border border-fuchsia-500/30 bg-fuchsia-500/5 p-3 flex items-center gap-3">
+          <ArrowsClockwise size={18} className="text-fuchsia-300" />
+          <div className="flex-1 text-[11px]">
+            <div className="text-fuchsia-200 font-semibold">Auto-sync attivo (ogni 6h)</div>
+            <div className="text-[var(--text-secondary)]">
+              Ultimo refresh: {schedStatus.last_refresh_at ? new Date(schedStatus.last_refresh_at).toLocaleString("it-IT") : "mai"}
+              {" · "}
+              Prossimo: {schedStatus.next_scheduled_at ? new Date(schedStatus.next_scheduled_at).toLocaleString("it-IT") : "—"}
+              {" · "}
+              {schedStatus.sites_in_cache} site, {schedStatus.linked_clients} cliente linkato, {schedStatus.synced_devices} device sincronizzati
+            </div>
+          </div>
+        </div>
+      )}
+
       {config?.configured && (
         <div className="rounded-xl border border-[var(--bg-border)] bg-[var(--bg-card)] p-4 md:p-5">
           <div className="flex items-center justify-between mb-3">
