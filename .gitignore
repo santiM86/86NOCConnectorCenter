@@ -1396,3 +1396,5 @@ credentials.json
 *.pem
 *.key
 .credentials
+frontend/node_modules/.cache/default-development/61.pack
+frontend/node_modules/.cache/default-development/61.pack
