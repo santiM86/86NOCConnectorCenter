@@ -36,6 +36,8 @@ import {
   X,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
+import DeviceMovementCard from "@/components/DeviceMovementCard";
+import ErrorBoundary from "@/components/ErrorBoundary";
 
 const PROTECTION_ICONS = {
   brute_force: Lock,
@@ -504,6 +506,16 @@ export default function SecurityDashboardPage() {
           </div>
         );
       })}
+
+      {/* Device Movement Anomalies (v3.6.21) */}
+      <div>
+        <h2 className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider mb-2 flex items-center gap-2">
+          <ArrowsDownUp size={14} /> Spostamenti Dispositivi (anomalie forensi)
+        </h2>
+        <ErrorBoundary label="Spostamenti dispositivi">
+          <DeviceMovementCard days={7} />
+        </ErrorBoundary>
+      </div>
 
       {/* Recent Security Events */}
       {recent_events.length > 0 && (

@@ -3030,7 +3030,20 @@ async def list_bmc_candidates(
     items = await db.bmc_candidates.find(q, {"_id": 0}).sort("last_seen", -1).to_list(500)
     # Enrich with switch_ip/port if available from discovered_endpoints
     ips = [i.get("ip") for i in items if i.get("ip")]
-    ep_map = {}
+    ep_map: dict = {}
+    if ips:
+        async for e in db.discovered_endpoints.find(
+            {"ip": {"$in": ips}},
+            {"_id": 0, "ip": 1, "switch_ip": 1, "port": 1, "mac": 1, "vlan": 1},
+        ):
+            ep_map[e["ip"]] = e
+    for i in items:
+        ep = ep_map.get(i.get("ip"), {})
+        i["switch_ip"] = ep.get("switch_ip", "")
+        i["switch_port"] = ep.get("port", "")
+        i["mac"] = ep.get("mac", "")
+        i["vlan"] = ep.get("vlan", "")
+    return {"items": items, "count": len(items)}
 
 
 # ==================== DEVICE MOVEMENT ANOMALIES (v3.6.21) ====================
@@ -3078,20 +3091,6 @@ async def get_device_port_history(
         "locations": sorted_locs,
         "total_observations": sum(locations.values()),
     }
-
-    if ips:
-        async for e in db.discovered_endpoints.find(
-            {"ip": {"$in": ips}},
-            {"_id": 0, "ip": 1, "switch_ip": 1, "port": 1, "mac": 1, "vlan": 1},
-        ):
-            ep_map[e["ip"]] = e
-    for i in items:
-        ep = ep_map.get(i.get("ip"), {})
-        i["switch_ip"] = ep.get("switch_ip", "")
-        i["switch_port"] = ep.get("port", "")
-        i["mac"] = ep.get("mac", "")
-        i["vlan"] = ep.get("vlan", "")
-    return {"items": items, "count": len(items)}
 
 
 @router.post("/bmc-candidates/{client_id}/{ip}/dismiss")
