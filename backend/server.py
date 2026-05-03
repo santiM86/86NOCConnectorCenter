@@ -624,6 +624,11 @@ async def startup_event():
         # auto_dispatch_history: TTL 30gg + lookup
         await db.auto_dispatch_history.create_index("timestamp", expireAfterSeconds=86400 * 30)
 
+        # v3.6.21: device_port_history per movement anomaly detection
+        await db.device_port_history.create_index([("client_id", 1), ("mac", 1)], unique=True)
+        await db.device_port_history.create_index([("client_id", 1), ("last_seen", -1)])
+        await db.alerts.create_index([("client_id", 1), ("kind", 1), ("mac", 1), ("status", 1)])
+
         logger.info("MongoDB indexes created/verified successfully")
 
     except Exception as e:
