@@ -19,6 +19,7 @@ import {
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import VaultPage from "./VaultPage";
 import DeviceInfoCard from "@/components/DeviceInfoCard";
+import ErrorBoundary from "@/components/ErrorBoundary";
 import { canOpenWebConsole, defaultWebPort } from "@/components/WebConsole";
 import { useWebConsoleTabs } from "@/components/WebConsoleTabs";
 import ILoLiveMetrics from "@/components/ILoLiveMetrics";
@@ -1535,7 +1536,12 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
                 Scheda Dispositivo — {infoTarget.name || infoTarget.ip_address}
               </DialogTitle>
             </DialogHeader>
-            <DeviceInfoCard deviceIp={infoTarget.ip_address} onClose={() => setInfoTarget(null)} />
+            <ErrorBoundary
+              label="scheda dispositivo"
+              hint="Possibile dato malformato dal connector. Verifica i log o riprova; se persiste, controlla la console browser per dettagli."
+            >
+              <DeviceInfoCard deviceIp={infoTarget.ip_address} onClose={() => setInfoTarget(null)} />
+            </ErrorBoundary>
           </DialogContent>
         </Dialog>
       )}

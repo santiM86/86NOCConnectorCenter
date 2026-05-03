@@ -7,16 +7,35 @@ import {
 } from "@phosphor-icons/react";
 import AllMetricsDialog from "@/components/AllMetricsDialog";
 import { VendorDetailsPanel } from "@/components/VendorDetailsPanel";
+import ErrorBoundary from "@/components/ErrorBoundary";
 
 const API = process.env.REACT_APP_BACKEND_URL;
 
 function Field({ label, value, mono = false, highlight = false }) {
   if (value === null || value === undefined || value === "") return null;
+  // Defensive: never render raw objects/arrays
+  let displayValue;
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    displayValue = String(value);
+  } else if (Array.isArray(value)) {
+    if (value.length === 0) return null;
+    displayValue = value.map((v) =>
+      v === null || v === undefined ? "" :
+      (typeof v === "object" ? (v.label || v.name || v.value || JSON.stringify(v)) : String(v))
+    ).filter(Boolean).join(", ");
+  } else if (typeof value === "object") {
+    displayValue = value.label || value.name || (value.value !== undefined ? String(value.value) : null);
+    if (!displayValue) {
+      try { displayValue = JSON.stringify(value); } catch { displayValue = "[object]"; }
+    }
+  } else {
+    displayValue = String(value);
+  }
   return (
     <div className="flex items-start justify-between gap-3 py-1 border-b border-[var(--bg-border)]/50">
       <span className="text-[10px] uppercase tracking-wide text-[var(--text-secondary)] whitespace-nowrap pt-0.5">{label}</span>
       <span className={`text-xs text-right ${mono ? "font-mono" : ""} ${highlight ? "text-cyan-300 font-semibold" : "text-[var(--text-primary)]"}`}>
-        {String(value)}
+        {displayValue}
       </span>
     </div>
   );
@@ -54,6 +73,22 @@ function fmtDateTime(iso) {
   } catch {
     return iso;
   }
+}
+
+/** Defensive: rende sicuro qualsiasi valore per il render React (mai oggetti raw). */
+function safe(value, fallback = "—") {
+  if (value === null || value === undefined || value === "") return fallback;
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) return value.length === 0 ? fallback : value.map((v) => safe(v, "")).filter(Boolean).join(", ");
+  if (typeof value === "object") {
+    // Synology spesso ritorna { code: 1, label: "Normal" } o { value: X, unit: "C" }
+    if (value.label) return String(value.label);
+    if (value.name) return String(value.name);
+    if (value.value !== undefined) return String(value.value);
+    if (value.status !== undefined) return String(value.status);
+    try { return JSON.stringify(value); } catch { return fallback; }
+  }
+  return String(value);
 }
 
 export default function DeviceInfoCard({ deviceIp, onClose = null, compact = false }) {
@@ -432,11 +467,15 @@ export default function DeviceInfoCard({ deviceIp, onClose = null, compact = fal
       {/* Vendor-specific detailed panels (UPS battery/power, Synology disks/RAID,
           Fortinet HA/FWsessions, Comware CPU/Temp, APC, MikroTik, Cisco, QNAP, Zyxel).
           Il componente fa self-fetch e si auto-renderizza in base al profilo. */}
-      <VendorDetailsPanel deviceIp={deviceIp} />
+      <ErrorBoundary label="pannello vendor (telemetria)">
+        <VendorDetailsPanel deviceIp={deviceIp} />
+      </ErrorBoundary>
 
       {/* Synology disks & RAID section (when vendor_metrics has them) */}
       {card.identity?.vendor?.toLowerCase().includes("synology") && card.vendor_metrics_summary?.count > 0 && (
-        <SynologyDetailSection deviceIp={card.device_ip} />
+        <ErrorBoundary label="dettaglio Synology DSM">
+          <SynologyDetailSection deviceIp={card.device_ip} />
+        </ErrorBoundary>
       )}
 
       {card.sys_descr_raw && (
@@ -513,14 +552,14 @@ function SynologyDetailSection({ deviceIp }) {
           <div className="rounded bg-black/20 border border-[var(--bg-border)] p-2">
             <div className="text-[10px] uppercase text-[var(--text-secondary)]">System Status</div>
             <div className={`text-xs font-bold ${systemStatus === "Normal" || systemStatus === 1 ? "text-emerald-300" : "text-amber-300"}`}>
-              {systemStatus}
+              {safe(systemStatus)}
             </div>
           </div>
         )}
         {temp != null && (
           <div className="rounded bg-black/20 border border-[var(--bg-border)] p-2">
             <div className="text-[10px] uppercase text-[var(--text-secondary)]">System Temp</div>
-            <div className="text-xs font-bold text-orange-300">{temp}°C</div>
+            <div className="text-xs font-bold text-orange-300">{safe(temp)}°C</div>
           </div>
         )}
         <div className="rounded bg-black/20 border border-[var(--bg-border)] p-2">
@@ -548,15 +587,15 @@ function SynologyDetailSection({ deviceIp }) {
                 {disks.map((d, i) => (
                   <tr key={i} className="border-b border-[var(--bg-border)]/50">
                     <td className="px-2 py-1 text-[var(--text-secondary)] font-mono">{d.index ?? i + 1}</td>
-                    <td className="px-2 py-1 text-[var(--text-primary)] font-mono">{d.model || d.diskModel || "—"}</td>
+                    <td className="px-2 py-1 text-[var(--text-primary)] font-mono">{safe(d.model || d.diskModel)}</td>
                     <td className="px-2 py-1">
                       <span className={`px-1.5 py-0.5 rounded text-[9px] uppercase ${d.status === "Normal" || d.status === 1 ? "bg-emerald-500/20 text-emerald-300" : "bg-red-500/20 text-red-300"}`}>
-                        {d.status || "—"}
+                        {safe(d.status)}
                       </span>
                     </td>
-                    <td className="px-2 py-1 text-[var(--text-primary)]">{d.smart_status || d.smart || "—"}</td>
-                    <td className="px-2 py-1 text-orange-300">{d.temp != null ? `${d.temp}°C` : "—"}</td>
-                    <td className="px-2 py-1 text-[var(--text-secondary)]">{d.role || d.type || "—"}</td>
+                    <td className="px-2 py-1 text-[var(--text-primary)]">{safe(d.smart_status || d.smart)}</td>
+                    <td className="px-2 py-1 text-orange-300">{d.temp != null ? `${safe(d.temp)}°C` : "—"}</td>
+                    <td className="px-2 py-1 text-[var(--text-secondary)]">{safe(d.role || d.type)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -571,11 +610,11 @@ function SynologyDetailSection({ deviceIp }) {
           <div className="flex flex-wrap gap-1.5">
             {raids.map((r, i) => (
               <div key={i} className="rounded bg-black/30 border border-[var(--bg-border)] p-2 text-[10px]">
-                <div className="font-mono text-[var(--text-primary)]">{r.name || `RAID ${i + 1}`}</div>
+                <div className="font-mono text-[var(--text-primary)]">{safe(r.name) !== "—" ? safe(r.name) : `RAID ${i + 1}`}</div>
                 <div className={`${r.status === "Normal" || r.status === 1 ? "text-emerald-300" : "text-amber-300"}`}>
-                  {r.status || r.state || "—"}
+                  {safe(r.status || r.state)}
                 </div>
-                {r.level && <div className="text-[var(--text-secondary)]">Level: {r.level}</div>}
+                {r.level && <div className="text-[var(--text-secondary)]">Level: {safe(r.level)}</div>}
               </div>
             ))}
           </div>
@@ -591,8 +630,8 @@ function SynologyDetailSection({ deviceIp }) {
               return (
                 <div key={i} className="rounded bg-black/30 border border-[var(--bg-border)] p-2 text-[10px]">
                   <div className="flex items-center justify-between">
-                    <span className="font-mono text-[var(--text-primary)]">{v.name || v.id || `Volume ${i + 1}`}</span>
-                    <span className={`${v.status === "Normal" || v.status === 1 ? "text-emerald-300" : "text-amber-300"}`}>{v.status}</span>
+                    <span className="font-mono text-[var(--text-primary)]">{safe(v.name || v.id) !== "—" ? safe(v.name || v.id) : `Volume ${i + 1}`}</span>
+                    <span className={`${v.status === "Normal" || v.status === 1 ? "text-emerald-300" : "text-amber-300"}`}>{safe(v.status)}</span>
                   </div>
                   {usedPct != null && (
                     <div className="mt-1">
