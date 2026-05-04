@@ -320,6 +320,19 @@ export default function SwitchPortsPage() {
     return () => clearInterval(i);
   }, [reload]);
 
+  // Cleanup difensivo: se arriviamo qui da un Dialog Radix ancora in chiusura,
+  // il body puo' avere pointer-events:none o overflow:hidden residui che
+  // fanno apparire la pagina "congelata / schermata nera". Resettiamo al mount.
+  useEffect(() => {
+    const body = document.body;
+    if (body.style.pointerEvents === "none") body.style.pointerEvents = "";
+    if (body.hasAttribute("data-scroll-locked")) body.removeAttribute("data-scroll-locked");
+    // Rimuovi eventuali overlay Radix orfani (portal rimasto da unmount incompleto)
+    document.querySelectorAll('[data-state="closed"][data-radix-dialog-overlay], [data-radix-portal] [data-state="closed"]').forEach((el) => {
+      try { el.remove(); } catch { /* noop */ }
+    });
+  }, []);
+
   const ports = useMemo(() => {
     if (!data?.ports) return [];
     return data.ports.filter(p => {
