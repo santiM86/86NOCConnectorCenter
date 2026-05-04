@@ -1296,8 +1296,7 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
                       >
                         <Info size={13} />
                       </button>
-                      {/* Porte Switch: detection multi-segnale (device_type / model / hostname / profile / vendor).
-                          Apre la pagina /switch-ports/:ip con tiles UP/DOWN/Admin-down/PoE/LLDP e tabella "Connesso a". */}
+                      {/* Porte Switch: detection multi-segnale (device_type / model / hostname / profile / vendor) */}
                       {(() => {
                         const dt = (d.device_type || "").toLowerCase();
                         const modelL = (d.model || d.sys_descr || "").toLowerCase();

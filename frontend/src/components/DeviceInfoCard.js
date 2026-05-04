@@ -224,9 +224,9 @@ export default function DeviceInfoCard({ deviceIp, onClose = null, compact = fal
             )}
           </div>
           <div className="flex items-center gap-2">
-            {/* Porte switch: apre la pagina "Dettagli switch" (SwitchPortsPage) con
-                tiles UP/DOWN/Admin-down/PoE/LLDP + tabella "Connesso a" per ogni porta.
-                La pagina e' /switch-ports/:ip. */}
+            {/* Porte Switch: visibile per qualsiasi device identificato come switch/router/network.
+                Detection multi-segnale perche' molti device hanno device_type generico
+                (es. "hpe-comware", "cisco-ios") o profile_key vendor-specifico. */}
             {(() => {
               const dt = (id.device_type || id.class || "").toLowerCase();
               const modelL = (id.model || "").toLowerCase();
@@ -234,39 +234,48 @@ export default function DeviceInfoCard({ deviceIp, onClose = null, compact = fal
               const hostL = (id.hostname || "").toLowerCase();
               const profileL = (id.profile_key || "").toLowerCase();
               const osL = (id.os_family || "").toLowerCase();
+              // Keyword match su modello / hostname (product codes e famiglie)
               const networkKeywords = [
                 "switch", "router", "firewall", "gateway",
-                "catalyst", "nexus", "meraki",
-                "procurve", "aruba", "5130", "5140", "5500", "5900", "5940",
-                "jg937", "jg938", "jl", "jg",
-                "ex2300", "ex3400", "ex4300", "srx",
-                "fortigate", "fortiswitch", "fortiap",
-                "zyxel", "xgs", "gs1900", "gs2200", "usg",
-                "mikrotik", "routerboard", "ccr", "crs",
-                "unifi", "edgerouter", "edgeswitch",
-                "dgs-", "dxs-",
-                "powerconnect", "n1500", "n2000", "n3000",
-                "s5700", "s6700", "ar2200",
-                "pfsense", "opnsense",
+                "catalyst", "nexus", "meraki",                    // Cisco
+                "procurve", "aruba", "5130", "5140", "5500", "5900", "5940", // HPE/Aruba
+                "jg937", "jg938", "jl", "jg",                     // HPE product codes (5130=JG937x, 5140=JL xxx)
+                "ex2300", "ex3400", "ex4300", "srx",              // Juniper
+                "fortigate", "fortiswitch", "fortiap",            // Fortinet
+                "zyxel", "xgs", "gs1900", "gs2200", "usg",        // Zyxel / Ubiquiti
+                "mikrotik", "routerboard", "ccr", "crs",          // MikroTik
+                "unifi", "edgerouter", "edgeswitch",              // Ubiquiti
+                "dgs-", "dxs-",                                   // D-Link
+                "powerconnect", "n1500", "n2000", "n3000",        // Dell
+                "s5700", "s6700", "ar2200",                       // Huawei
+                "pfsense", "opnsense",                            // OSS firewall
               ];
               const matchesKeyword = networkKeywords.some((k) => modelL.includes(k) || hostL.includes(k));
+              // OS family / device_type / profile_key vendor-specific = certamente network device
               const networkOsFamilies = [
-                "comware", "hpe-comware", "hp-comware",
-                "cisco-ios", "ios-xe", "ios-xr", "nxos", "nx-os",
-                "aruba-os", "arubaos", "junos", "juniper-junos",
-                "fortios", "fortiswitch-os", "routeros",
-                "zld", "zynos", "edgeos", "unifi-os",
+                "comware", "hpe-comware", "hp-comware",           // HPE
+                "cisco-ios", "ios-xe", "ios-xr", "nxos", "nx-os", // Cisco
+                "aruba-os", "arubaos",                            // Aruba
+                "junos", "juniper-junos",                         // Juniper
+                "fortios", "fortiswitch-os",                      // Fortinet
+                "routeros",                                       // MikroTik
+                "zld", "zynos",                                   // Zyxel
+                "edgeos", "unifi-os",                             // Ubiquiti
               ];
               const matchesOs =
                 networkOsFamilies.some((k) => dt.includes(k) || osL.includes(k) || profileL.includes(k));
+              // Vendor di rete conosciuti (solo se il device ha un profilo SNMP attivo,
+              // altrimenti un "HPE server iLO" finirebbe col pulsante)
               const networkVendors = [
                 "hpe", "hp", "aruba", "cisco", "meraki", "juniper",
                 "fortinet", "fortigate", "mikrotik", "ubiquiti",
                 "zyxel", "d-link", "dell networking", "huawei", "brocade",
                 "ruckus", "netgear", "tp-link",
               ];
+              // Vendor network + profilo SNMP riconosciuto = sicuramente network device
               const matchesVendorProfile =
                 profileL && networkVendors.some((v) => vendorL === v || vendorL.includes(v));
+
               const isSwitchLike =
                 dt.includes("switch") || dt.includes("router") || dt.includes("firewall") ||
                 dt === "network-device" || matchesKeyword || matchesOs || matchesVendorProfile;
@@ -274,16 +283,12 @@ export default function DeviceInfoCard({ deviceIp, onClose = null, compact = fal
               return (
                 <button
                   onClick={() => {
-                    // FIX "schermata nera" quando apriamo Porte Switch DAL MODAL Scheda
-                    // Dispositivo: Radix Dialog lascia overlay + pointer-events lock sul body
-                    // se naviga mentre e' ancora aperto. Chiudiamo il modal esplicitamente
-                    // (onClose -> setInfoTarget(null)) e navighiamo al tick successivo
-                    // in modo che Radix abbia tempo di smontare overlay e ripristinare body.
-                    if (typeof onClose === "function") onClose();
-                    const targetPath = `/switch-ports/${encodeURIComponent(id.ip)}`;
-                    setTimeout(() => navigate(targetPath), 80);
+                    // Workaround Radix Dialog portal: chiudi PRIMA, poi naviga.
+                    const url = `/switch-ports/${encodeURIComponent(id.ip)}`;
+                    if (onClose) onClose();
+                    setTimeout(() => navigate(url), 80);
                   }}
-                  title="Apri Dettagli switch - porte con tiles UP/DOWN + tabella 'Connesso a'"
+                  title="Apri vista porte switch (tiles + neighbor LLDP + flap history)"
                   className="px-2.5 py-1.5 text-[11px] rounded-md border border-indigo-500/40 bg-indigo-500/10 text-indigo-300 hover:bg-indigo-500/20 hover:border-indigo-400 flex items-center gap-1.5 transition-colors"
                   data-testid="device-info-card-switch-ports-btn">
                   <NetworkSlash size={13} weight="duotone" />
