@@ -2876,10 +2876,12 @@ function Start-Connector {
     $lastDiscovery = [datetime]::MinValue
     $lastMemoryCleanup = [datetime]::MinValue
     $lastJobHealthCheck = [datetime]::MinValue
+    $lastPrinterProbe = [datetime]::MinValue
     $heartbeatIntervalSec = 60
     $discoveryIntervalSec = 120
     $memoryCleanupIntervalSec = 300    # Ogni 5 minuti
     $jobHealthCheckIntervalSec = 180   # Ogni 3 minuti
+    $printerProbeIntervalSec = 900     # Ogni 15 minuti
     $webProxyIntervalSec = 3
     
     # Send first heartbeat immediately
@@ -2905,6 +2907,20 @@ function Start-Connector {
             if (($now - $lastDiscovery).TotalSeconds -ge $discoveryIntervalSec) {
                 Check-DiscoveryRequest $config
                 $lastDiscovery = $now
+            }
+
+            # Printer probe TCP+SNMP (every 15 min, solo se il file ps1 esiste)
+            if (($now - $lastPrinterProbe).TotalSeconds -ge $printerProbeIntervalSec) {
+                try {
+                    $ppScript = Join-Path $PSScriptRoot "printer_probe.ps1"
+                    if (Test-Path $ppScript) {
+                        . $ppScript
+                        Invoke-PrinterProbe -Config $config
+                    }
+                } catch {
+                    Write-Log "PrinterProbe error: $_" "WARN"
+                }
+                $lastPrinterProbe = $now
             }
             
             # Memory cleanup (every 5 min) - previene memory leak nei job

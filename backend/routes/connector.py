@@ -495,6 +495,138 @@ async def connector_web_ui_detected(request: Request):
 
 
 
+
+
+# ==================== PRINTER PROBE (v3.7.3) ====================
+# Il connector effettua:
+#   1. TCP probe su porte 9100 (JetDirect), 515 (LPD), 631 (IPP), 80, 443
+#   2. SNMP GetRequest su sysDescr (1.3.6.1.2.1.1.1.0) se TCP aperto o OUI stampante
+# Poi invia il risultato qui. L'endpoint arricchisce discovered_endpoints con:
+#   - sys_descr : stringa completa identificativa
+#   - printer_model : modello estratto (es "HP LaserJet Pro M404dn")
+#   - probe_ports : lista porte TCP aperte
+# Queste info fanno comparire la stampante nella PrinterDiscoveryPage con badge SNMP.
+
+@router.post("/connector/printer-probe")
+async def connector_printer_probe(request: Request):
+    """Riceve risultati probe stampanti dal connector."""
+    client_data = await verify_connector_request(request)
+    client_id = client_data["id"]
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+    results = body.get("results") or []
+    if not isinstance(results, list):
+        raise HTTPException(status_code=400, detail="results must be a list")
+
+    from pymongo import UpdateOne
+    now = datetime.now(timezone.utc).isoformat()
+    eps_ops: list = []
+    managed_ops: list = []
+    added = 0
+
+    for r in results[:500]:  # safety cap
+        if not isinstance(r, dict):
+            continue
+        ip = (r.get("ip") or "").strip()
+        mac = (r.get("mac") or "").upper().strip()
+        if not ip and not mac:
+            continue
+        sys_descr = (r.get("sys_descr") or "").strip()[:500]
+        model = (r.get("model") or sys_descr[:120]).strip()
+        tcp_ports = r.get("tcp_ports") or []  # [9100, 631] es.
+        vendor = (r.get("vendor") or "").strip()
+        if not isinstance(tcp_ports, list):
+            tcp_ports = []
+        tcp_ports = [int(p) for p in tcp_ports if isinstance(p, (int, str)) and str(p).isdigit()][:10]
+
+        is_printer = bool(sys_descr) or bool(tcp_ports) or bool(r.get("is_printer"))
+        if not is_printer:
+            continue
+
+        # Arricchisci TUTTI i discovered_endpoints del cliente con stesso IP o MAC
+        q: dict = {"client_id": client_id}
+        if mac and ip:
+            q["$or"] = [{"mac": mac}, {"ip": ip}]
+        elif mac:
+            q["mac"] = mac
+        else:
+            q["ip"] = ip
+        eps_ops.append(UpdateOne(q, {"$set": {
+            "sys_descr": sys_descr,
+            "printer_model": model,
+            "printer_probe_ports": tcp_ports,
+            "printer_probed_at": now,
+            "is_printer": True,
+        }}, upsert=False))
+
+        # Se il connector ha segnalato una porta (switch_ip+port già noto dal FDB),
+        # aggiorniamo anche il managed_devices (upsert per avere il device nel CMDB).
+        if ip and sys_descr:
+            md_id = f"auto-printer-{mac or ip}"
+            managed_ops.append(UpdateOne(
+                {"id": md_id, "client_id": client_id},
+                {"$set": {
+                    "id": md_id, "client_id": client_id,
+                    "name": model or f"Stampante {ip}",
+                    "ip_address": ip, "ip": ip,
+                    "mac_address": mac,
+                    "device_type": "printer",
+                    "vendor": vendor or "",
+                    "model": model,
+                    "sys_descr": sys_descr,
+                    "auto_created": True,
+                    "last_probe_at": now,
+                }, "$setOnInsert": {"created_at": now}},
+                upsert=True,
+            ))
+            added += 1
+
+    if eps_ops:
+        await db.discovered_endpoints.bulk_write(eps_ops, ordered=False)
+    if managed_ops:
+        await db.managed_devices.bulk_write(managed_ops, ordered=False)
+
+    return {
+        "ok": True,
+        "received": len(results),
+        "endpoints_enriched": len(eps_ops),
+        "managed_upserted": added,
+    }
+
+
+# ==================== PRINTER PROBE CANDIDATES (pull from connector) ====================
+@router.get("/connector/printer-probe/candidates")
+async def connector_printer_probe_candidates(request: Request):
+    """Restituisce al connector la lista di IP candidati stampante da probare.
+    Logica: OUI stampante nei discovered_endpoints + device managed senza sys_descr.
+    """
+    client_data = await verify_connector_request(request)
+    client_id = client_data["id"]
+    from routes.oui_lookup import lookup_oui, is_printer_vendor
+
+    candidates: dict = {}
+    # 1. Endpoint con OUI stampante (priorità)
+    async for e in db.discovered_endpoints.find(
+        {"client_id": client_id, "ip": {"$exists": True, "$ne": ""}},
+        {"_id": 0, "ip": 1, "mac": 1},
+    ):
+        ip = e.get("ip") or ""
+        mac = (e.get("mac") or "").upper()
+        if not ip:
+            continue
+        vendor = lookup_oui(mac) if mac else ""
+        if is_printer_vendor(vendor):
+            candidates[ip] = {"ip": ip, "mac": mac, "vendor": vendor, "priority": "high"}
+
+    # 2. Endpoint senza OUI ma con segnali deboli (rete non classificata)
+    #    Il connector decide quali provare facendo TCP probe veloce.
+    # Per sicurezza limitiamo a 500 IP in output
+    result = list(candidates.values())[:500]
+    return {"items": result, "count": len(result)}
+
+
 # ==================== VAULT CREDENTIALS FOR CONNECTOR ====================
 
 @router.get(f"/{C}/vc")

@@ -70,12 +70,15 @@ async def discover_client_printers(
     current_user: dict = Depends(get_current_user),
 ):
     """Lista stampanti del cliente aggregando FDB/SNMP/Datto/manual."""
-    # 1. Endpoint FDB (MAC-IP-switch-port)
+    # 1. Endpoint FDB (MAC-IP-switch-port + nuovi campi da printer-probe)
     eps = await db.discovered_endpoints.find(
         {"client_id": client_id},
         {"_id": 0, "ip": 1, "mac": 1, "switch_ip": 1, "port": 1,
          "datto_name": 1, "manual_binding_name": 1, "manual_binding_type": 1,
-         "is_managed": 1},
+         "is_managed": 1,
+         # v3.7.3: arricchimenti da printer-probe del connector
+         "is_printer": 1, "sys_descr": 1, "printer_model": 1,
+         "printer_probe_ports": 1},
     ).to_list(100000)
 
     # 2. Managed devices (per sysDescr / device_type / vendor)
@@ -121,9 +124,15 @@ async def discover_client_printers(
         vendor = lookup_oui(mac) if mac else ""
         is_by_oui = is_printer_vendor(vendor)
         md = managed_by_ip.get(ip) or managed_by_mac.get(mac) or {}
-        sys_descr = md.get("sys_descr") or ""
+        # sys_descr: prima dal probe dell'endpoint (piu' fresco), poi dal managed
+        ep_sys_descr = ep.get("sys_descr") or ""
+        sys_descr = ep_sys_descr or md.get("sys_descr") or ""
         dtype = (md.get("device_type") or "").lower()
-        is_by_snmp = _looks_like_printer_sysdescr(sys_descr) or dtype == "printer"
+        is_by_snmp = (
+            bool(ep.get("is_printer"))
+            or _looks_like_printer_sysdescr(sys_descr)
+            or dtype == "printer"
+        )
         datto_name = ep.get("datto_name") or ""
         datto_dev = datto_by_mac.get(mac) or (datto_by_ip.get(ip) if ip else None)
         is_by_datto = bool(datto_name) and _looks_like_printer_hostname(datto_name)
@@ -141,10 +150,11 @@ async def discover_client_printers(
                 "switch_port": str(ep.get("port") or ""),
                 "sources": set(),
                 "is_managed": False, "datto_matched": False,
+                "probe_ports": ep.get("printer_probe_ports") or [],
             }
             printers[k] = entry
 
-        # name priority: managed > datto > manual > (vendor default)
+        # name priority: managed > datto > manual > probe_model > (vendor default)
         if md.get("name") and not entry["name"]:
             entry["name"] = md["name"]
         elif datto_name and not entry["name"]:
@@ -153,8 +163,13 @@ async def discover_client_printers(
             entry["name"] = ep["manual_binding_name"]
         elif datto_dev and not entry["name"]:
             entry["name"] = datto_dev.get("name", "")
+        elif ep.get("printer_model") and not entry["name"]:
+            entry["name"] = ep["printer_model"]
 
-        if sys_descr and not entry["model"]:
+        # Model: priorità probe > sysDescr managed
+        if ep.get("printer_model") and not entry["model"]:
+            entry["model"] = ep["printer_model"][:120]
+        elif sys_descr and not entry["model"]:
             entry["model"] = sys_descr[:120].strip()
         if not entry["vendor"] and md.get("vendor"):
             entry["vendor"] = md["vendor"]
@@ -163,7 +178,7 @@ async def discover_client_printers(
             entry["sources"].add("oui")
         if is_by_snmp:
             entry["sources"].add("snmp")
-            entry["is_managed"] = True
+            entry["is_managed"] = bool(md) or bool(ep.get("is_printer"))
         if is_by_datto or datto_dev:
             entry["sources"].add("datto")
             if datto_dev:
