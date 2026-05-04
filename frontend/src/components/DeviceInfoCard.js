@@ -283,10 +283,12 @@ export default function DeviceInfoCard({ deviceIp, onClose = null, compact = fal
               return (
                 <button
                   onClick={() => {
-                    // Workaround Radix Dialog portal: chiudi PRIMA, poi naviga.
-                    const url = `/switch-ports/${encodeURIComponent(id.ip)}`;
-                    if (onClose) onClose();
-                    setTimeout(() => navigate(url), 80);
+                    // Fix overlay nero: NON chiudere il Dialog qui. Naviga direttamente;
+                    // il route change smonta ClientOverviewPage (e con essa la Dialog Radix
+                    // + portal overlay) in un singolo commit. Chiamare onClose() qui
+                    // innescava l'animazione close di Radix che lasciava l'overlay nero
+                    // incollato sopra la SwitchPortsPage appena montata.
+                    navigate(`/switch-ports/${encodeURIComponent(id.ip)}`);
                   }}
                   title="Apri vista porte switch (tiles + neighbor LLDP + flap history)"
                   className="px-2.5 py-1.5 text-[11px] rounded-md border border-indigo-500/40 bg-indigo-500/10 text-indigo-300 hover:bg-indigo-500/20 hover:border-indigo-400 flex items-center gap-1.5 transition-colors"
