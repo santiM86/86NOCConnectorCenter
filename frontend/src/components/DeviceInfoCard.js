@@ -274,9 +274,14 @@ export default function DeviceInfoCard({ deviceIp, onClose = null, compact = fal
               return (
                 <button
                   onClick={() => {
-                    // Navigo direttamente. Il route change smonta ClientOverviewPage
-                    // e la Dialog Radix in un singolo commit, niente overlay nero.
-                    navigate(`/switch-ports/${encodeURIComponent(id.ip)}`);
+                    // FIX "schermata nera" quando apriamo Porte Switch DAL MODAL Scheda
+                    // Dispositivo: Radix Dialog lascia overlay + pointer-events lock sul body
+                    // se naviga mentre e' ancora aperto. Chiudiamo il modal esplicitamente
+                    // (onClose -> setInfoTarget(null)) e navighiamo al tick successivo
+                    // in modo che Radix abbia tempo di smontare overlay e ripristinare body.
+                    if (typeof onClose === "function") onClose();
+                    const targetPath = `/switch-ports/${encodeURIComponent(id.ip)}`;
+                    setTimeout(() => navigate(targetPath), 80);
                   }}
                   title="Apri Dettagli switch - porte con tiles UP/DOWN + tabella 'Connesso a'"
                   className="px-2.5 py-1.5 text-[11px] rounded-md border border-indigo-500/40 bg-indigo-500/10 text-indigo-300 hover:bg-indigo-500/20 hover:border-indigo-400 flex items-center gap-1.5 transition-colors"
