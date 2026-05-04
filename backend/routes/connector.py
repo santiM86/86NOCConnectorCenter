@@ -1992,6 +1992,62 @@ async def connector_device_report(request: Request):
         except Exception as e:
             logger.warning(f"Monitor-type auto-promote failed for {dev.get('device_ip')}: {e}")
 
+        # Auto-promote del NOME device se ancora il default 'Auto-{ip}' / 'Manuale-{ip}'.
+        # Quando il connector restituisce un sys_name SNMP valido, lo usiamo per
+        # rimpiazzare il placeholder dell'auto-discovery. Rispetta i nomi modificati
+        # manualmente dall'utente (flag name_user_locked) e non sovrascrive nomi
+        # gia' significativi diversi dal pattern default.
+        try:
+            sys_name_val = (dev.get("sys_name") or "").strip()
+            # Valido se: lunghezza ragionevole, non vuoto, non e' un IP nudo,
+            # non e' un MAC. Limita a 80 char per sicurezza.
+            if sys_name_val and 2 <= len(sys_name_val) <= 80:
+                d_ip = dev["device_ip"]
+                default_patterns = {
+                    f"Auto-{d_ip}", f"Manuale-{d_ip}", d_ip, "",
+                }
+                # 1) Aggiorna db.devices (collezione manuale, FONTE: Manuale)
+                manual_dev = await db.devices.find_one(
+                    {"client_id": client_id, "ip_address": d_ip},
+                    {"_id": 0, "name": 1, "name_user_locked": 1},
+                )
+                if manual_dev and not manual_dev.get("name_user_locked"):
+                    cur_name = (manual_dev.get("name") or "").strip()
+                    if cur_name in default_patterns and sys_name_val != cur_name:
+                        await db.devices.update_one(
+                            {"client_id": client_id, "ip_address": d_ip},
+                            {"$set": {
+                                "name": sys_name_val,
+                                "name_auto_promoted": True,
+                                "name_updated_at": now_iso,
+                            }},
+                        )
+                        logger.info(
+                            f"[NAME-PROMOTE devices] {d_ip} '{cur_name}' -> '{sys_name_val}'"
+                        )
+                # 2) Aggiorna managed_devices (collezione del connector, FONTE: CONNECTOR)
+                md_dev = await db.managed_devices.find_one(
+                    {"client_id": client_id, "ip": d_ip},
+                    {"_id": 0, "device_name": 1, "name": 1, "name_user_locked": 1},
+                )
+                if md_dev and not md_dev.get("name_user_locked"):
+                    cur_name = (md_dev.get("device_name") or md_dev.get("name") or "").strip()
+                    if cur_name in default_patterns and sys_name_val != cur_name:
+                        await db.managed_devices.update_one(
+                            {"client_id": client_id, "ip": d_ip},
+                            {"$set": {
+                                "device_name": sys_name_val,
+                                "name": sys_name_val,
+                                "name_auto_promoted": True,
+                                "name_updated_at": now_iso,
+                            }},
+                        )
+                        logger.info(
+                            f"[NAME-PROMOTE managed_devices] {d_ip} '{cur_name}' -> '{sys_name_val}'"
+                        )
+        except Exception as e:
+            logger.warning(f"Name auto-promote failed for {dev.get('device_ip')}: {e}")
+
         # Generate alerts based on state transitions + thresholds
         try:
             await _check_device_thresholds(client_id, dev, prev_status)
