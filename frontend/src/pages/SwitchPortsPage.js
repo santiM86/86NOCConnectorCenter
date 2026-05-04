@@ -316,28 +316,6 @@ export default function SwitchPortsPage() {
     return () => clearInterval(i);
   }, [reload]);
 
-  // Cleanup difensivo al mount: se arriviamo qui da un Radix Dialog non smontato
-  // completamente (flusso modal Scheda Dispositivo -> Porte switch), il body
-  // puo' avere pointer-events:none / overflow:hidden / data-scroll-locked
-  // residui che bloccano l'interazione e oscurano la pagina (effetto "schermata
-  // nera"). Forziamo il reset sia al mount che dopo 400ms per coprire anche il
-  // close-animation in ritardo di Radix.
-  useEffect(() => {
-    const unlock = () => {
-      const b = document.body;
-      if (b.style.pointerEvents === "none") b.style.pointerEvents = "";
-      if (b.style.overflow === "hidden") b.style.overflow = "";
-      if (b.hasAttribute("data-scroll-locked")) b.removeAttribute("data-scroll-locked");
-      // Rimuove overlay Radix orfani rimasti in stato "closed" nel DOM
-      document.querySelectorAll('[data-radix-dialog-overlay][data-state="closed"]').forEach((el) => {
-        try { el.remove(); } catch { /* noop */ }
-      });
-    };
-    unlock();
-    const t = setTimeout(unlock, 400);
-    return () => clearTimeout(t);
-  }, []);
-
   const ports = useMemo(() => {
     if (!data?.ports) return [];
     return data.ports.filter(p => {
