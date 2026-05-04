@@ -284,9 +284,11 @@ export default function DeviceInfoCard({ deviceIp, onClose = null, compact = fal
                 <button
                   onClick={() => {
                     // Workaround Radix Dialog portal: chiudi PRIMA, poi naviga.
+                    // Serve delay sufficiente per permettere a Radix di smontare
+                    // overlay + sbloccare body (pointer-events/scroll-lock).
                     const url = `/switch-ports/${encodeURIComponent(id.ip)}`;
                     if (onClose) onClose();
-                    setTimeout(() => navigate(url), 80);
+                    setTimeout(() => navigate(url), 250);
                   }}
                   title="Apri vista porte switch (tiles + neighbor LLDP + flap history)"
                   className="px-2.5 py-1.5 text-[11px] rounded-md border border-indigo-500/40 bg-indigo-500/10 text-indigo-300 hover:bg-indigo-500/20 hover:border-indigo-400 flex items-center gap-1.5 transition-colors"
