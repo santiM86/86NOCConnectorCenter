@@ -1,10 +1,10 @@
 import { useState, useEffect } from "react";
 import axios from "axios";
-import { Link } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import {
   Desktop, Cpu, HardDrives, Thermometer, Info, MapPin, Package, Shield, Barcode,
   Calendar, Globe, ArrowsClockwise, Warning, CheckCircle, CircleNotch,
-  ChartLineUp, Stack,
+  ChartLineUp, NetworkSlash,
 } from "@phosphor-icons/react";
 import AllMetricsDialog from "@/components/AllMetricsDialog";
 import { VendorDetailsPanel } from "@/components/VendorDetailsPanel";
@@ -93,6 +93,7 @@ function safe(value, fallback = "—") {
 }
 
 export default function DeviceInfoCard({ deviceIp, onClose = null, compact = false }) {
+  const navigate = useNavigate();
   const [card, setCard] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -223,16 +224,52 @@ export default function DeviceInfoCard({ deviceIp, onClose = null, compact = fal
             )}
           </div>
           <div className="flex items-center gap-2">
-            {isSnmpMonitored && (
-              <Link
-                to={`/switch-ports/${encodeURIComponent(id.ip || deviceIp)}`}
-                title="Vedi porte switch (Up/Down/PoE/Uplink/LLDP)"
-                className="px-2.5 py-1.5 text-[11px] rounded-md border border-cyan-500/40 bg-cyan-500/10 text-cyan-300 hover:bg-cyan-500/20 hover:border-cyan-400 flex items-center gap-1.5 transition-colors"
-                data-testid="device-info-card-view-ports-btn">
-                <Stack size={13} weight="bold" />
-                <span className="hidden sm:inline">Porte switch</span>
-              </Link>
-            )}
+            {/* Porte Switch: visibile per qualsiasi device identificato come switch/router/network.
+                Detection multi-segnale perche' molti device hanno device_type=null in DB ma
+                sono palesemente network devices (es. Cisco Catalyst, HPE 5130, Aruba). */}
+            {(() => {
+              const dt = (id.device_type || id.class || "").toLowerCase();
+              const modelL = (id.model || "").toLowerCase();
+              const vendorL = (id.vendor || "").toLowerCase();
+              const hostL = (id.hostname || "").toLowerCase();
+              // Keyword match su modello / hostname
+              const networkKeywords = [
+                "switch", "router", "firewall", "gateway",
+                "catalyst", "nexus", "meraki",                    // Cisco
+                "procurve", "aruba", "5130", "5140", "5900",      // HPE/Aruba
+                "ex2300", "ex3400", "ex4300", "srx",              // Juniper
+                "fortigate", "fortiswitch", "fortiap",            // Fortinet
+                "zyxel", "xgs", "gs1900", "gs2200",               // Zyxel
+                "mikrotik", "routerboard", "ccr", "crs",          // MikroTik
+                "unifi", "edgerouter", "edgeswitch", "usg",       // Ubiquiti
+                "dgs-", "dxs-",                                   // D-Link
+                "powerconnect", "n1500", "n2000", "n3000",        // Dell
+                "huawei", "s5700", "s6700", "ar2200",             // Huawei
+                "pfsense", "opnsense",                            // OSS firewall
+              ];
+              const matchesKeyword = networkKeywords.some((k) => modelL.includes(k) || hostL.includes(k));
+              const isSwitchLike =
+                dt.includes("switch") || dt.includes("router") || dt.includes("firewall") ||
+                dt === "network-device" || matchesKeyword;
+              if (!isSwitchLike) return null;
+              return (
+                <button
+                  onClick={() => {
+                    // Workaround Radix Dialog portal: chiudi PRIMA (animazione close ~150ms),
+                    // poi naviga. Se navighi subito, il portal overlay rimane "appiccicato"
+                    // sopra la nuova pagina perche' la Dialog non ha tempo di cleanup.
+                    const url = `/switch-ports/${encodeURIComponent(id.ip)}`;
+                    if (onClose) onClose();
+                    setTimeout(() => navigate(url), 80);
+                  }}
+                  title="Apri vista porte switch (tiles + neighbor LLDP + flap history)"
+                  className="px-2.5 py-1.5 text-[11px] rounded-md border border-indigo-500/40 bg-indigo-500/10 text-indigo-300 hover:bg-indigo-500/20 hover:border-indigo-400 flex items-center gap-1.5 transition-colors"
+                  data-testid="device-info-card-switch-ports-btn">
+                  <NetworkSlash size={13} weight="duotone" />
+                  <span className="hidden sm:inline">Porte switch</span>
+                </button>
+              );
+            })()}
             <button
               onClick={() => setShowAllMetrics(true)}
               title="Mostra tutte le metriche raccolte"
@@ -502,11 +539,16 @@ export default function DeviceInfoCard({ deviceIp, onClose = null, compact = fal
 
       {/* "Tutte le metriche" sub-dialog */}
       {showAllMetrics && (
-        <AllMetricsDialog
-          deviceIp={deviceIp}
-          deviceLabel={card.identity?.hostname || card.device_ip}
-          onClose={() => setShowAllMetrics(false)}
-        />
+        <ErrorBoundary
+          label="dialog Tutte le metriche"
+          hint="Possibile payload SNMP troppo grande o malformato. Chiudi la modale e riprova, oppure usa la ricerca per filtrare le chiavi."
+        >
+          <AllMetricsDialog
+            deviceIp={deviceIp}
+            deviceLabel={card.identity?.hostname || card.device_ip}
+            onClose={() => setShowAllMetrics(false)}
+          />
+        </ErrorBoundary>
       )}
     </div>
   );

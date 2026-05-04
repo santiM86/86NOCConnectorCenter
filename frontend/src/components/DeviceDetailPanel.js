@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import { SnmpConfigPanel } from "@/components/SnmpConfigPanel";
 import { VendorDetailsPanel } from "@/components/VendorDetailsPanel";
 import AllMetricsDialog from "@/components/AllMetricsDialog";
+import ErrorBoundary from "@/components/ErrorBoundary";
 
 const SEVERITY_COLORS = {
   critical: { bg: "bg-red-500/20", text: "text-red-400", border: "border-red-500/30" },
@@ -238,11 +239,16 @@ export function DeviceDetailPanel({ clientId, deviceIp, deviceData, onClose, onD
 
       {/* Dialog Tutte le metriche (raw vendor_metrics + poll snapshot) */}
       {showAllMetrics && (
-        <AllMetricsDialog
-          deviceIp={deviceIp}
-          deviceLabel={deviceData?.label || detail?.managed_device?.device_name || deviceIp}
-          onClose={() => setShowAllMetrics(false)}
-        />
+        <ErrorBoundary
+          label="dialog Tutte le metriche"
+          hint="Possibile payload SNMP troppo grande o malformato. Chiudi la modale e riprova, oppure usa la ricerca per filtrare le chiavi."
+        >
+          <AllMetricsDialog
+            deviceIp={deviceIp}
+            deviceLabel={deviceData?.label || detail?.managed_device?.device_name || deviceIp}
+            onClose={() => setShowAllMetrics(false)}
+          />
+        </ErrorBoundary>
       )}
     </div>
   );

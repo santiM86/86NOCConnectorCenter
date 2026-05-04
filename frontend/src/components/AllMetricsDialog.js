@@ -1,18 +1,81 @@
 /**
- * AllMetricsDialog — modale "Tutte le metriche" usata sia da DeviceInfoCard
+ * AllMetricsDialog - modale "Tutte le metriche" usata sia da DeviceInfoCard
  * (modal Scheda Dispositivo nella pagina cliente) sia da DeviceDetailPanel
  * (clic della lente nella pagina globale Dispositivi).
  *
  * Carica `/api/devices/by-ip/{ip}/info-card` e mostra:
  *   - vendor_metrics_full (raw SNMP key:value)
  *   - raw_data (snapshot poll)
- * con search/JSON view/copy.
+ * con search / JSON view / copy.
+ *
+ * FIX v2 (2026-02-13): su switch grossi (HP 5130 52G = 52 porte x 30+ OID)
+ * il render di > 3000 righe in un solo tick sincrono bloccava il main thread,
+ * gli overlay scuri della Dialog rimanevano sullo schermo e l'utente vedeva
+ * "schermata nera" (render freeze percepito come crash).
+ * Interventi:
+ *   1. flatten() ora ha un Set `seen` anti-riferimento-ciclico + maxDepth=20
+ *      per evitare stack overflow su strutture SNMP auto-referenzianti.
+ *   2. Cap di rendering: massimo `visibleCap` righe (default 500), con toggle
+ *      "Mostra tutte" se l'utente vuole davvero la lista intera.
+ *   3. try/catch su JSON.stringify (vendor_metrics potrebbe avere circular).
+ *   4. Ricerca ora forza il rendering di TUTTE le righe filtrate (l'utente sta
+ *      cercando qualcosa di specifico, il cap non serve).
  */
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import axios from "axios";
-import { ChartLineUp, MagnifyingGlass, X as XIcon, Copy as CopyIcon, CircleNotch } from "@phosphor-icons/react";
+import { ChartLineUp, MagnifyingGlass, X as XIcon, Copy as CopyIcon, CircleNotch, Warning } from "@phosphor-icons/react";
 
 const API = process.env.REACT_APP_BACKEND_URL;
+
+// Soglia oltre cui il rendering diventa lento. Tipico switch enterprise (52G)
+// genera 2000-4000 entry; desktop veloce regge bene fino a 800 righe senza lag.
+const DEFAULT_VISIBLE_CAP = 500;
+const MAX_FLATTEN_DEPTH = 20;
+
+function safeFlatten(obj, prefix = "", depth = 0, seen = new WeakSet()) {
+  const entries = [];
+  if (depth > MAX_FLATTEN_DEPTH) {
+    entries.push([prefix || "<root>", "[truncated: max depth]"]);
+    return entries;
+  }
+  if (obj && typeof obj === "object") {
+    if (seen.has(obj)) {
+      entries.push([prefix || "<root>", "[circular]"]);
+      return entries;
+    }
+    seen.add(obj);
+  }
+  try {
+    Object.entries(obj || {}).forEach(([k, v]) => {
+      const fullKey = prefix ? `${prefix}.${k}` : k;
+      if (v && typeof v === "object" && !Array.isArray(v)) {
+        const subEntries = safeFlatten(v, fullKey, depth + 1, seen);
+        if (subEntries.length === 0) entries.push([fullKey, "{}"]);
+        else entries.push(...subEntries);
+      } else {
+        entries.push([fullKey, v]);
+      }
+    });
+  } catch (e) {
+    entries.push([prefix || "<root>", `[flatten error: ${e.message}]`]);
+  }
+  return entries;
+}
+
+function safeStringify(obj) {
+  try {
+    const seen = new WeakSet();
+    return JSON.stringify(obj, (_k, v) => {
+      if (v && typeof v === "object") {
+        if (seen.has(v)) return "[circular]";
+        seen.add(v);
+      }
+      return v;
+    }, 2);
+  } catch (e) {
+    return `/* Errore serializzazione JSON: ${e.message} */`;
+  }
+}
 
 export default function AllMetricsDialog({ deviceIp, deviceLabel = null, onClose }) {
   const [card, setCard] = useState(null);
@@ -21,6 +84,7 @@ export default function AllMetricsDialog({ deviceIp, deviceLabel = null, onClose
   const [search, setSearch] = useState("");
   const [view, setView] = useState("table");
   const [copied, setCopied] = useState(false);
+  const [showAll, setShowAll] = useState(false);
 
   useEffect(() => {
     if (!deviceIp) return;
@@ -35,41 +99,46 @@ export default function AllMetricsDialog({ deviceIp, deviceLabel = null, onClose
   const vm = card?.vendor_metrics_full || {};
   const raw = card?.raw_data || {};
 
-  const flatten = (obj, prefix = "") => {
-    const entries = [];
-    Object.entries(obj || {}).forEach(([k, v]) => {
-      const fullKey = prefix ? `${prefix}.${k}` : k;
-      if (v && typeof v === "object" && !Array.isArray(v)) {
-        const subEntries = flatten(v, fullKey);
-        if (subEntries.length === 0) entries.push([fullKey, "{}"]);
-        else entries.push(...subEntries);
-      } else {
-        entries.push([fullKey, v]);
-      }
-    });
-    return entries;
-  };
+  // Flatten eseguito in useMemo per non rifarlo ad ogni render (ricerca cambia
+  // spesso, flatten e' costoso su oggetti grossi).
+  const allFlat = useMemo(() => {
+    if (!card) return [];
+    try {
+      return [
+        ...safeFlatten(vm).map(([k, v]) => [`vendor_metrics.${k}`, v]),
+        ...safeFlatten(raw).map(([k, v]) => [`poll.${k}`, v]),
+      ];
+    } catch (e) {
+      // Safety net: se qualcosa esplode durante il flatten, meglio un array
+      // vuoto + messaggio d'errore che un white/black screen.
+      return [["__error__", `flatten failed: ${e.message}`]];
+    }
+  }, [card]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const allFlat = [
-    ...flatten(vm).map(([k, v]) => [`vendor_metrics.${k}`, v]),
-    ...flatten(raw).map(([k, v]) => [`poll.${k}`, v]),
-  ];
-  const filtered = search
-    ? allFlat.filter(([k, v]) => {
-        const s = search.toLowerCase();
-        return k.toLowerCase().includes(s) || String(v).toLowerCase().includes(s);
-      })
-    : allFlat;
+  const filtered = useMemo(() => {
+    if (!search) return allFlat;
+    const s = search.toLowerCase();
+    return allFlat.filter(([k, v]) =>
+      k.toLowerCase().includes(s) || String(v).toLowerCase().includes(s)
+    );
+  }, [allFlat, search]);
+
+  // Cap di rendering: se la lista e' grossa e non stiamo cercando nulla,
+  // mostra solo le prime N per non bloccare il main thread.
+  const shouldCap = !search && !showAll && filtered.length > DEFAULT_VISIBLE_CAP;
+  const visible = shouldCap ? filtered.slice(0, DEFAULT_VISIBLE_CAP) : filtered;
 
   const fmtValue = (v) => {
-    if (v === null || v === undefined) return "—";
+    if (v === null || v === undefined) return "-";
     if (typeof v === "boolean") return v ? "true" : "false";
-    if (Array.isArray(v) || typeof v === "object") return JSON.stringify(v);
+    if (Array.isArray(v) || typeof v === "object") {
+      try { return JSON.stringify(v); } catch { return "[unserializable]"; }
+    }
     return String(v);
   };
 
   const copyJson = () => {
-    const blob = JSON.stringify({ vendor_metrics: vm, raw_data: raw }, null, 2);
+    const blob = safeStringify({ vendor_metrics: vm, raw_data: raw });
     navigator.clipboard?.writeText(blob).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
@@ -86,11 +155,11 @@ export default function AllMetricsDialog({ deviceIp, deviceLabel = null, onClose
           <div className="flex items-center gap-2 min-w-0">
             <ChartLineUp size={18} className="text-cyan-400" weight="duotone" />
             <h3 className="text-sm font-bold text-[var(--text-primary)] truncate">
-              Tutte le metriche — {deviceLabel || deviceIp}
+              Tutte le metriche - {deviceLabel || deviceIp}
             </h3>
             {!loading && !error && (
               <span className="text-[10px] px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-300 font-mono flex-shrink-0">
-                {filtered.length}/{allFlat.length}
+                {visible.length}/{allFlat.length}
               </span>
             )}
           </div>
@@ -98,7 +167,8 @@ export default function AllMetricsDialog({ deviceIp, deviceLabel = null, onClose
             {!loading && !error && (
               <>
                 <button onClick={() => setView(view === "table" ? "json" : "table")}
-                  className="px-2 py-1 text-[10px] rounded border border-[var(--bg-border)] hover:bg-white/5">
+                  className="px-2 py-1 text-[10px] rounded border border-[var(--bg-border)] hover:bg-white/5"
+                  data-testid="all-metrics-toggle-view">
                   {view === "table" ? "JSON" : "Tabella"}
                 </button>
                 <button onClick={copyJson} className="px-2 py-1 text-[10px] rounded border border-[var(--bg-border)] hover:bg-white/5 flex items-center gap-1">
@@ -126,7 +196,7 @@ export default function AllMetricsDialog({ deviceIp, deviceLabel = null, onClose
               {error}
             </code>
             <p className="text-[11px] text-[var(--text-muted)] max-w-md">
-              Probabilmente il device non e` ancora stato pollato o non e` in <code>device_poll_status</code>.
+              Probabilmente il device non e' ancora stato pollato o non e' in <code>device_poll_status</code>.
               Verifica che il connector sia attivo e che il device sia nella lista managed_devices.
             </p>
           </div>
@@ -152,13 +222,31 @@ export default function AllMetricsDialog({ deviceIp, deviceLabel = null, onClose
               )}
             </div>
 
+            {/* Warning cap */}
+            {shouldCap && (
+              <div className="px-4 py-2 border-b border-[var(--bg-border)] bg-amber-500/10 flex items-center gap-2 text-[11px]">
+                <Warning size={14} className="text-amber-400 flex-shrink-0" weight="fill" />
+                <span className="text-amber-200 flex-1">
+                  Mostro le prime {DEFAULT_VISIBLE_CAP} di {allFlat.length} metriche per non bloccare il browser.
+                  Usa la ricerca per trovare chiavi specifiche.
+                </span>
+                <button
+                  onClick={() => setShowAll(true)}
+                  className="px-2 py-1 text-[10px] rounded border border-amber-400/50 text-amber-200 hover:bg-amber-400/10 font-semibold"
+                  data-testid="all-metrics-show-all"
+                >
+                  Mostra tutte ({allFlat.length})
+                </button>
+              </div>
+            )}
+
             <div className="flex-1 overflow-auto">
               {view === "json" ? (
                 <pre className="text-[11px] font-mono text-cyan-100/90 p-4 whitespace-pre-wrap break-all">
-                  {JSON.stringify({ vendor_metrics: vm, raw_data: raw }, null, 2)}
+                  {safeStringify({ vendor_metrics: vm, raw_data: raw })}
                 </pre>
               ) : (
-                <table className="w-full text-[11px]">
+                <table className="w-full text-[11px]" data-testid="all-metrics-table">
                   <thead className="sticky top-0 bg-[var(--bg-card)] border-b border-[var(--bg-border)] z-10">
                     <tr>
                       <th className="text-left px-4 py-2 text-[10px] uppercase text-[var(--text-secondary)] font-semibold">Chiave</th>
@@ -166,14 +254,14 @@ export default function AllMetricsDialog({ deviceIp, deviceLabel = null, onClose
                     </tr>
                   </thead>
                   <tbody>
-                    {filtered.length === 0 ? (
+                    {visible.length === 0 ? (
                       <tr>
                         <td colSpan={2} className="px-4 py-8 text-center text-[var(--text-secondary)]">
                           {search ? `Nessun risultato per "${search}"` : "Nessuna metrica disponibile per questo device"}
                         </td>
                       </tr>
                     ) : (
-                      filtered.map(([k, v], i) => {
+                      visible.map(([k, v], i) => {
                         const isVendor = k.startsWith("vendor_metrics.");
                         const formatted = fmtValue(v);
                         const isLong = formatted.length > 60;
