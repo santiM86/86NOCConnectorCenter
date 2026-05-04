@@ -1699,6 +1699,26 @@ function Start-PollingLoop($config) {
                     } catch {
                         Write-Log "Errore Network Discovery: $($_.Exception.Message)" "WARN"
                     }
+
+                    # v3.7.4: Switch Enrichment (ARP + LLDP-MED + DHCP Snooping)
+                    # Cross-VLAN discovery senza probe attivi ai client finali.
+                    try {
+                        $seScript = Join-Path $PSScriptRoot "switch_enrichment.ps1"
+                        if (Test-Path $seScript) {
+                            . $seScript
+                            foreach ($d in $snmpDevices) {
+                                $dType = if ($d.device_type) { [string]$d.device_type } else { "" }
+                                # Enrichment solo su switch/router/firewall L3
+                                if ($dType -match "switch|router|firewall|l3|gateway") {
+                                    $c = if ($d.community) { [string]$d.community } else { "public" }
+                                    Invoke-SwitchEnrichment -Config $config `
+                                        -SwitchIp ([string]$d.ip) -Community $c
+                                }
+                            }
+                        }
+                    } catch {
+                        Write-Log "SwitchEnrichment error: $_" "WARN"
+                    }
                 }
             }
         } catch {
