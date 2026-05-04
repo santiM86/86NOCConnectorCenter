@@ -46,7 +46,7 @@ sla_manager = SLAManager(db, notification_service)
 security_hardening = SecurityHardening(db)
 
 # Connector storage path
-CONNECTOR_STORAGE = Path("/app/connector_updates")
+CONNECTOR_STORAGE = Path(__file__).parent / "connector_updates"
 CONNECTOR_STORAGE.mkdir(exist_ok=True)
 
 # Refresh token config
