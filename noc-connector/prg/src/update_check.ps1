@@ -441,6 +441,76 @@ try {
     Write-UpdateLog "Tray restart signal failed: $($_.Exception.Message)" "WARN"
 }
 
+# ==================== STEP 9.5: Migrate Start Menu / Startup shortcuts (v3.7.6) ====================
+# Le vecchie installazioni (<v3.7.6) avevano lo shortcut "ARGUS Center Connector.lnk"
+# puntato a 86NocConnector.bat, che apre brevemente un DOS box (cmd.exe flash).
+# Dalla v3.7.6 usiamo wscript.exe + tray_launcher.vbs = COMPLETAMENTE silenzioso.
+# Qui migriamo automaticamente le vecchie installazioni: se trovo il .lnk vecchio,
+# lo riscrivo puntando a wscript.exe.
+# In piu', se non esiste un avvio automatico del tray al logon, creo uno shortcut
+# nella Startup common (All Users) che lancia la tray al prossimo logon.
+try {
+    $trayVbsPath = Join-Path $InstallDir "src\tray_launcher.vbs"
+    if (Test-Path $trayVbsPath) {
+        $iconPath = Join-Path $InstallDir "src\86bit_logo.ico"
+        $iconLoc = if (Test-Path $iconPath) { "$iconPath,0" } else { $null }
+        $wscriptExe = Join-Path $env:SystemRoot "System32\wscript.exe"
+        $shell = New-Object -ComObject WScript.Shell
+        $rewriteShortcut = {
+            param($lnkPath, $desc)
+            try {
+                if (Test-Path $lnkPath) {
+                    $sc = $shell.CreateShortcut($lnkPath)
+                    # Se gia' punta a wscript.exe, skip (idempotente)
+                    if ($sc.TargetPath -ieq $wscriptExe -and $sc.Arguments -like "*tray_launcher.vbs*") {
+                        Write-UpdateLog "Shortcut gia' migrato: $lnkPath"
+                        return $false
+                    }
+                }
+                $sc = $shell.CreateShortcut($lnkPath)
+                $sc.TargetPath = $wscriptExe
+                $sc.Arguments = "`"$trayVbsPath`""
+                $sc.WorkingDirectory = $InstallDir
+                $sc.Description = $desc
+                if ($iconLoc) { $sc.IconLocation = $iconLoc }
+                $sc.WindowStyle = 7
+                $sc.Save()
+                Write-UpdateLog "Shortcut migrato a wscript+VBS: $lnkPath"
+                return $true
+            } catch {
+                Write-UpdateLog "Errore migrazione shortcut $lnkPath : $($_.Exception.Message)" "WARN"
+                return $false
+            }
+        }
+
+        # Start Menu (All Users)
+        $startMenuDir = Join-Path ([Environment]::GetFolderPath("CommonStartMenu")) "Programs\86BIT ArgusCenter"
+        if (Test-Path $startMenuDir) {
+            $mainLnk = Join-Path $startMenuDir "ARGUS Center Connector.lnk"
+            if (Test-Path $mainLnk) {
+                & $rewriteShortcut $mainLnk "Avvia ARGUS Center Connector"
+            }
+        }
+
+        # Startup folder (auto-launch tray al logon). Crea solo se mancante.
+        $startupDir = [Environment]::GetFolderPath("CommonStartup")
+        $startupLnk = Join-Path $startupDir "ARGUS Connector Tray.lnk"
+        if (-not (Test-Path $startupLnk)) {
+            & $rewriteShortcut $startupLnk "ARGUS Connector - Tray system monitor (avvio silenzioso)"
+            Write-UpdateLog "Creato shortcut Startup per auto-avvio tray al logon"
+        } else {
+            # Migra se esiste ma punta ancora a .bat / .ps1
+            & $rewriteShortcut $startupLnk "ARGUS Connector - Tray system monitor (avvio silenzioso)"
+        }
+
+        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($shell) | Out-Null
+    } else {
+        Write-UpdateLog "tray_launcher.vbs non presente nel nuovo pacchetto, migrazione shortcut skip" "WARN"
+    }
+} catch {
+    Write-UpdateLog "Migrazione shortcut fallita: $($_.Exception.Message)" "WARN"
+}
+
 # ==================== SUCCESS ====================
 Write-UpdateLog "AGGIORNAMENTO COMPLETATO: v$currentVersion -> v$newVersion" "INFO"
 Send-Progress 100 "success" "Aggiornato a v$newVersion"

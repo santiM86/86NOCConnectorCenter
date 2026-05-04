@@ -9,6 +9,23 @@
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
+# v3.7.6: Rendi il processo DPI-aware PRIMA di qualsiasi chiamata Windows.Forms.
+# Senza questo, su Windows 11 con DPI 125%/150% il sistema applica "DPI
+# virtualization" (bitmap scaling) che falsa le coordinate calcolate e taglia
+# i controlli posizionati in pixel assoluti.
+try {
+    Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public static class DpiAwareTray {
+    [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+    [DllImport("shcore.dll")] public static extern int SetProcessDpiAwareness(int value);
+}
+"@ -ErrorAction SilentlyContinue
+    # 1 = Process_System_DPI_Aware. Fallback su Win7/8 con SetProcessDPIAware.
+    try { [DpiAwareTray]::SetProcessDpiAwareness(1) | Out-Null } catch { [DpiAwareTray]::SetProcessDPIAware() | Out-Null }
+} catch {}
+
 # $AppName: identificatore tecnico (path ProgramData, nomi task/servizio) - NON cambiare, rompe installazioni esistenti
 # $DisplayName: nome visualizzato all'utente in tutta l'UI (tooltip, form title, MessageBox, About)
 $AppName = "86NocConnector"
@@ -1219,16 +1236,55 @@ public class TrayRefresh {
 
         $aboutForm = New-Object System.Windows.Forms.Form
         $aboutForm.Text = "$DisplayName - Informazioni"
-        # v3.7.5: form size DPI-aware. Usiamo ClientSize (area interna garantita)
-        # + AutoScaleMode=None per evitare doppio scaling del WindowsForms quando
-        # Windows e' gia' a 125%/150%. Btn OK ancorato in basso con Anchor.
-        $aboutForm.ClientSize = New-Object System.Drawing.Size(440, 460)
+        # v3.7.6: Layout DPI-BULLETPROOF con Dock-based containers.
+        # Il bottone OK vive in $bottomPanel (Dock=Bottom) -> Windows calcola la
+        # posizione in modo nativo, nessun pixel hardcoded. Abbinato a
+        # SetProcessDpiAwareness(1) chiamato all'avvio del tray, questo risolve
+        # definitivamente il "button cut-off" su DPI 125%/150%.
+        $aboutForm.ClientSize = New-Object System.Drawing.Size(460, 500)
         $aboutForm.StartPosition = "CenterScreen"
         $aboutForm.FormBorderStyle = "FixedDialog"
         $aboutForm.MaximizeBox = $false
         $aboutForm.MinimizeBox = $false
         $aboutForm.BackColor = [System.Drawing.Color]::White
-        $aboutForm.AutoScaleMode = "None"
+        $aboutForm.AutoScaleMode = "Dpi"
+        $aboutForm.AutoScaleDimensions = New-Object System.Drawing.SizeF(96, 96)
+
+        # ----- Bottom panel (docked) : OK button -----
+        # IMPORTANTE: in Windows.Forms gli elementi DOCKED devono essere aggiunti
+        # PRIMA dell'elemento Fill (l'ordine di aggiunta determina z-order: i
+        # controlli aggiunti per ultimi occupano l'area "Fill" residua).
+        $bottomPanel = New-Object System.Windows.Forms.Panel
+        $bottomPanel.Dock = [System.Windows.Forms.DockStyle]::Bottom
+        $bottomPanel.Height = 58
+        $bottomPanel.BackColor = [System.Drawing.Color]::FromArgb(248, 249, 252)
+
+        $bottomSep = New-Object System.Windows.Forms.Label
+        $bottomSep.Dock = [System.Windows.Forms.DockStyle]::Top
+        $bottomSep.Height = 1
+        $bottomSep.BackColor = [System.Drawing.Color]::FromArgb(220, 222, 230)
+        $bottomPanel.Controls.Add($bottomSep)
+
+        $btnOk = New-Object System.Windows.Forms.Button
+        $btnOk.Text = "OK"
+        $btnOk.Size = New-Object System.Drawing.Size(100, 34)
+        # Ancorato Bottom+Right nel bottomPanel: si sposta correttamente se il panel scala
+        $btnOk.Anchor = [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Right
+        $btnOk.Location = New-Object System.Drawing.Point(($bottomPanel.Width - 115), 12)
+        $btnOk.FlatStyle = "Flat"
+        $btnOk.BackColor = [System.Drawing.Color]::FromArgb(99, 102, 241)
+        $btnOk.ForeColor = [System.Drawing.Color]::White
+        $btnOk.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+        $btnOk.FlatAppearance.BorderSize = 0
+        $btnOk.Add_Click({ $aboutForm.Close() })
+        $bottomPanel.Controls.Add($btnOk)
+        # Riposiziona il bottone alla Resize del panel (assicura allineamento destro)
+        $bottomPanel.Add_Resize({ $btnOk.Location = New-Object System.Drawing.Point(($bottomPanel.Width - 115), 12) })
+
+        # ----- Content panel (fill) -----
+        $contentPanel = New-Object System.Windows.Forms.Panel
+        $contentPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
+        $contentPanel.BackColor = [System.Drawing.Color]::White
 
         # Logo
         $logoPath = Join-Path $ScriptDir "86bit_logo.jpg"
@@ -1238,7 +1294,7 @@ public class TrayRefresh {
             $picBox.Size = New-Object System.Drawing.Size(80, 80)
             $picBox.SizeMode = "Zoom"
             $picBox.Image = [System.Drawing.Image]::FromFile($logoPath)
-            $aboutForm.Controls.Add($picBox)
+            $contentPanel.Controls.Add($picBox)
         }
 
         # App Name + Version
@@ -1248,7 +1304,7 @@ public class TrayRefresh {
         $lblName.ForeColor = [System.Drawing.Color]::FromArgb(30, 30, 50)
         $lblName.Location = New-Object System.Drawing.Point(110, 20)
         $lblName.AutoSize = $true
-        $aboutForm.Controls.Add($lblName)
+        $contentPanel.Controls.Add($lblName)
 
         $lblDesc = New-Object System.Windows.Forms.Label
         $lblDesc.Text = "NOC Collector - SNMP Trap, Syslog, Active Polling"
@@ -1256,14 +1312,14 @@ public class TrayRefresh {
         $lblDesc.ForeColor = [System.Drawing.Color]::FromArgb(100, 100, 120)
         $lblDesc.Location = New-Object System.Drawing.Point(110, 52)
         $lblDesc.AutoSize = $true
-        $aboutForm.Controls.Add($lblDesc)
+        $contentPanel.Controls.Add($lblDesc)
 
         # Separator
         $sep = New-Object System.Windows.Forms.Label
         $sep.BorderStyle = "Fixed3D"
         $sep.Location = New-Object System.Drawing.Point(20, 105)
-        $sep.Size = New-Object System.Drawing.Size(370, 2)
-        $aboutForm.Controls.Add($sep)
+        $sep.Size = New-Object System.Drawing.Size(400, 2)
+        $contentPanel.Controls.Add($sep)
 
         # Company info
         $companyInfo = @"
@@ -1287,25 +1343,14 @@ info@86bit.it
         $lblCompany.Font = New-Object System.Drawing.Font("Segoe UI", 8.5)
         $lblCompany.ForeColor = [System.Drawing.Color]::FromArgb(60, 60, 80)
         $lblCompany.Location = New-Object System.Drawing.Point(20, 115)
-        $lblCompany.Size = New-Object System.Drawing.Size(370, 170)
-        $aboutForm.Controls.Add($lblCompany)
+        $lblCompany.Size = New-Object System.Drawing.Size(400, 220)
+        $contentPanel.Controls.Add($lblCompany)
 
-        # OK button (v3.7.5: posizionato relativamente a ClientSize, Anchor B+R per DPI)
-        $btnOk = New-Object System.Windows.Forms.Button
-        $btnOk.Text = "OK"
-        $btnOk.Size = New-Object System.Drawing.Size(90, 34)
-        $btnOk.Location = New-Object System.Drawing.Point(
-            ($aboutForm.ClientSize.Width - 110),
-            ($aboutForm.ClientSize.Height - 48)
-        )
-        $btnOk.FlatStyle = "Flat"
-        $btnOk.BackColor = [System.Drawing.Color]::FromArgb(99, 102, 241)
-        $btnOk.ForeColor = [System.Drawing.Color]::White
-        $btnOk.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
-        $btnOk.FlatAppearance.BorderSize = 0
-        $btnOk.Anchor = [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Right
-        $btnOk.Add_Click({ $aboutForm.Close() })
-        $aboutForm.Controls.Add($btnOk)
+        # ORDINE DI AGGIUNTA (critico per Dock): Bottom prima, Fill dopo.
+        # In WinForms il Fill occupa lo spazio residuo al termine del layout,
+        # quindi deve essere l'ULTIMO aggiunto. I docked devono essere PRIMA.
+        $aboutForm.Controls.Add($bottomPanel)
+        $aboutForm.Controls.Add($contentPanel)
         $aboutForm.AcceptButton = $btnOk
 
         $aboutForm.ShowDialog()
