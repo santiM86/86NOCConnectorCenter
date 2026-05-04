@@ -491,11 +491,16 @@ export default function DeviceInfoCard({ deviceIp, onClose = null, compact = fal
 
       {/* "Tutte le metriche" sub-dialog */}
       {showAllMetrics && (
-        <AllMetricsDialog
-          deviceIp={deviceIp}
-          deviceLabel={card.identity?.hostname || card.device_ip}
-          onClose={() => setShowAllMetrics(false)}
-        />
+        <ErrorBoundary
+          label="dialog Tutte le metriche"
+          hint="Possibile payload SNMP troppo grande o malformato. Chiudi la modale e riprova, oppure usa la ricerca per filtrare le chiavi."
+        >
+          <AllMetricsDialog
+            deviceIp={deviceIp}
+            deviceLabel={card.identity?.hostname || card.device_ip}
+            onClose={() => setShowAllMetrics(false)}
+          />
+        </ErrorBoundary>
       )}
     </div>
   );
