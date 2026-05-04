@@ -302,6 +302,25 @@ export default function SwitchPortsPage() {
     return () => clearInterval(i);
   }, [reload]);
 
+  // FIX schermata nera: se arriviamo da un Radix Dialog non smontato del tutto
+  // (es. modal "Scheda Dispositivo" -> Porte switch), il body resta con
+  // pointer-events:none / overflow:hidden / data-scroll-locked che oscurano
+  // e disabilitano la pagina. Forziamo lo sblocco al mount + dopo 400ms.
+  useEffect(() => {
+    const unlock = () => {
+      const b = document.body;
+      if (b.style.pointerEvents === "none") b.style.pointerEvents = "";
+      if (b.style.overflow === "hidden") b.style.overflow = "";
+      if (b.hasAttribute("data-scroll-locked")) b.removeAttribute("data-scroll-locked");
+      document.querySelectorAll('[data-radix-dialog-overlay][data-state="closed"]').forEach((el) => {
+        try { el.remove(); } catch { /* noop */ }
+      });
+    };
+    unlock();
+    const t = setTimeout(unlock, 400);
+    return () => clearTimeout(t);
+  }, []);
+
   const ports = useMemo(() => {
     if (!data?.ports) return [];
     return data.ports.filter(p => {
