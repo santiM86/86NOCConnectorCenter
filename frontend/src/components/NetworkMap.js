@@ -45,6 +45,7 @@ function DeviceNode({ data }) {
   const cfg = TYPE_CONFIG[data.deviceType] || TYPE_CONFIG.generic;
   const isVirtual = data.virtual;
   const isReachable = data.reachable !== false;
+  const isCandidate = data.role === "discovery_candidate";
   const overlay = useContext(OverlayContext);
 
   // Compute visual state from overlay context (not from node.data — avoids setNodes loop)
@@ -91,18 +92,40 @@ function DeviceNode({ data }) {
       {/* Node Card */}
       <div
         className={`rounded-xl border-2 px-3 py-2.5 text-center cursor-pointer active:cursor-grabbing transition-all duration-200 hover:scale-105 ${
-          !isReachable && !isVirtual ? "animate-[blink_2s_ease-in-out_infinite]" : ""
+          !isReachable && !isVirtual && !isCandidate ? "animate-[blink_2s_ease-in-out_infinite]" : ""
         } ${isHighlighted ? "ring-2 ring-yellow-400 ring-offset-2 ring-offset-[var(--bg-app)]" : ""}`}
         style={{
-          background: isImpacted
+          background: isCandidate
+            ? "repeating-linear-gradient(135deg, rgba(251,146,60,0.08) 0px, rgba(251,146,60,0.08) 6px, transparent 6px, transparent 14px)"
+            : isImpacted
             ? "linear-gradient(135deg, rgba(239,68,68,0.08) 0%, rgba(239,68,68,0.15) 100%)"
             : `linear-gradient(135deg, var(--bg-card) 0%, ${cfg.bg} 100%)`,
-          borderColor: isImpacted ? "#ef444480" : isSelected ? "#818cf8" : cfg.border,
-          boxShadow: isSelected ? `0 0 16px ${cfg.color}40` : isImpacted ? "0 0 12px rgba(239,68,68,0.3)" : `0 2px 8px rgba(0,0,0,0.3)`,
+          borderColor: isCandidate ? "#fb923c80" : isImpacted ? "#ef444480" : isSelected ? "#818cf8" : cfg.border,
+          borderStyle: isCandidate ? "dashed" : "solid",
+          boxShadow: isSelected
+            ? `0 0 16px ${cfg.color}40`
+            : isImpacted
+            ? "0 0 12px rgba(239,68,68,0.3)"
+            : isCandidate
+            ? "0 0 10px rgba(251,146,60,0.25)"
+            : `0 2px 8px rgba(0,0,0,0.3)`,
+          opacity: isCandidate ? 0.92 : 1,
         }}
       >
+        {/* Discovery candidate badge */}
+        {isCandidate && (
+          <div
+            className="absolute -top-2 -right-2 z-10 px-1.5 py-0.5 rounded-full text-[7px] font-bold text-white uppercase tracking-wider"
+            style={{ backgroundColor: "#fb923c" }}
+            data-testid={`ghost-badge-${data.nodeId}`}
+            title={`Scoperto via ${(data.discovered_via || "").toUpperCase()}`}
+          >
+            {(data.discovered_via || "?").toUpperCase()}
+          </div>
+        )}
+
         {/* Status indicator */}
-        {!isVirtual && (
+        {!isVirtual && !isCandidate && (
           <div
             className={`absolute -top-1 -right-1 w-3 h-3 rounded-full border-2 ${!isReachable ? "animate-pulse" : ""}`}
             style={{
@@ -182,6 +205,7 @@ const EDGE_COLORS = {
   server: "#10b981",
   mgmt: "#f59e0b",
   lldp: "#22d3ee",
+  cdp: "#fb923c",       // CDP = orange (Cisco)
   custom: "#8b5cf6",
 };
 
@@ -210,6 +234,10 @@ function topoToFlowNodes(topoNodes, hasCustomLayout) {
         vlan: n.vlan,
         hostname: n.hostname,
         subtitle: n.subtitle,
+        discovered_via: n.discovered_via,
+        remote_platform: n.remote_platform,
+        remote_chassis_id: n.remote_chassis_id,
+        remote_sys_cap: n.remote_sys_cap,
       },
     };
   });
@@ -219,6 +247,7 @@ function topoToFlowEdges(topoEdges) {
   return (topoEdges || []).map((e, i) => {
     const is10G = (e.label || "").includes("10G");
     const isLldp = e.source === "lldp" || e.type === "lldp";
+    const isCdp = e.source === "cdp" || e.type === "cdp";
     const isMac = e.source === "mac_table";
     const isHighSpeed = is10G || e.type === "trunk";
 
@@ -226,42 +255,47 @@ function topoToFlowEdges(topoEdges) {
     let strokeWidth = 1.5;
     if (e.type === "wan") strokeWidth = 2.5;
     else if (is10G) strokeWidth = 3;
-    else if (e.type === "trunk" || isLldp) strokeWidth = 2;
+    else if (e.type === "trunk" || isLldp || isCdp) strokeWidth = 2;
 
-    // Determine color: 10G gets bright orange, LLDP gets cyan
+    // Determine color: 10G gets bright orange, LLDP gets cyan, CDP gets light orange
     let color = EDGE_COLORS[e.type] || EDGE_COLORS.custom;
     if (is10G) color = "#f97316"; // bright orange for 10G
     else if (isLldp) color = "#22d3ee";
+    else if (isCdp) color = "#fb923c";
     else if (isMac) color = "#818cf8";
 
     // Label: show speed info when available
     let label = e.label || "";
     if (!label && e.type === "access") label = "1G";
+    if (isCdp && label && !label.startsWith("CDP")) label = `CDP · ${label}`;
 
     // Label style: bigger for important edges
-    const fontSize = is10G ? 12 : (isLldp || isMac) ? 11 : 10;
+    const fontSize = is10G ? 12 : (isLldp || isCdp || isMac) ? 11 : 10;
+
+    // CDP uses dashed stroke to differentiate from LLDP
+    const strokeDasharray = isCdp ? "6 4" : undefined;
 
     return {
       id: e.id || `e-${e.from}-${e.to}-${i}`,
       source: e.from,
       target: e.to,
       type: "default",
-      animated: e.type === "wan" || isHighSpeed || isLldp,
+      animated: e.type === "wan" || isHighSpeed || isLldp || isCdp,
       label,
-      style: { stroke: color, strokeWidth },
+      style: { stroke: color, strokeWidth, strokeDasharray },
       markerEnd: { type: MarkerType.ArrowClosed, color, width: 14, height: 14 },
       data: { edgeType: e.type || "custom", source: e.source || "inferred" },
       labelStyle: {
-        fill: is10G ? "#f97316" : "var(--text-muted)",
+        fill: is10G ? "#f97316" : isCdp ? "#fb923c" : "var(--text-muted)",
         fontSize,
         fontFamily: "monospace",
         fontWeight: is10G ? 700 : 400,
       },
       labelBgStyle: {
-        fill: is10G ? "rgba(249,115,22,0.12)" : "var(--bg-panel)",
+        fill: is10G ? "rgba(249,115,22,0.12)" : isCdp ? "rgba(251,146,60,0.10)" : "var(--bg-panel)",
         fillOpacity: 0.9,
-        stroke: is10G ? "#f9731640" : "transparent",
-        strokeWidth: is10G ? 1 : 0,
+        stroke: is10G ? "#f9731640" : isCdp ? "#fb923c40" : "transparent",
+        strokeWidth: is10G || isCdp ? 1 : 0,
       },
       labelBgPadding: [6, 4],
       labelBgBorderRadius: 4,
@@ -773,6 +807,11 @@ function NetworkMapInner({ clientGroups, onDeviceSelect }) {
                 LLDP: {activeTopo.lldp_count}
               </span>
             )}
+            {activeTopo.cdp_count > 0 && (
+              <span className="text-[9px] px-2 py-0.5 rounded-full bg-orange-600/15 text-orange-400 border border-orange-500/30 font-medium" data-testid="cdp-badge">
+                CDP: {activeTopo.cdp_count}
+              </span>
+            )}
             {activeTopo.mac_connections_count > 0 && (
               <span className="text-[9px] px-2 py-0.5 rounded-full bg-emerald-600/15 text-emerald-400 border border-emerald-500/30 font-medium" data-testid="mac-badge">
                 MAC: {activeTopo.mac_connections_count}
@@ -849,10 +888,17 @@ function NetworkMapInner({ clientGroups, onDeviceSelect }) {
                   { label: "Server", color: EDGE_COLORS.server },
                   { label: "MGMT", color: EDGE_COLORS.mgmt },
                   { label: "LLDP", color: EDGE_COLORS.lldp },
+                  { label: "CDP (Cisco)", color: EDGE_COLORS.cdp, dashed: true },
                   { label: "Manuale", color: EDGE_COLORS.custom },
                 ].map((item) => (
                   <div key={item.label} className="flex items-center gap-2">
-                    <div className="w-4 h-0.5 rounded" style={{ backgroundColor: item.color }} />
+                    <div
+                      className="w-4 h-0.5 rounded"
+                      style={{
+                        backgroundColor: item.dashed ? "transparent" : item.color,
+                        backgroundImage: item.dashed ? `repeating-linear-gradient(90deg, ${item.color} 0 4px, transparent 4px 7px)` : undefined,
+                      }}
+                    />
                     <span className="text-[9px] text-[var(--text-secondary)]">{item.label}</span>
                   </div>
                 ))}

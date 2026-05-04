@@ -1,7 +1,8 @@
 import { useState, useEffect } from "react";
 import axios from "axios";
+import { Link } from "react-router-dom";
 import { API } from "@/App";
-import { X, Warning, WifiHigh, WifiSlash, CircleNotch, Globe, PlusCircle, ArrowSquareOut, ChartLineUp } from "@phosphor-icons/react";
+import { X, Warning, WifiHigh, WifiSlash, CircleNotch, Globe, PlusCircle, ArrowSquareOut, ChartLineUp, Stack } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import { SnmpConfigPanel } from "@/components/SnmpConfigPanel";
 import { VendorDetailsPanel } from "@/components/VendorDetailsPanel";
@@ -139,22 +140,31 @@ export function DeviceDetailPanel({ clientId, deviceIp, deviceData, onClose, onD
       </div>
 
       {/* Action Buttons */}
-      <div className="p-3 border-b border-[var(--border-subtle)] flex gap-2">
+      <div className="p-3 border-b border-[var(--border-subtle)] flex gap-2 flex-wrap">
         {hasIp && (
           <button
             onClick={openWebPage}
             disabled={proxyLoading}
-            className="flex-1 h-8 rounded-lg bg-indigo-600/15 text-indigo-400 border border-indigo-500/30 text-xs font-medium flex items-center justify-center gap-1.5 hover:bg-indigo-600/25 transition-all disabled:opacity-50"
+            className="flex-1 min-w-[140px] h-8 rounded-lg bg-indigo-600/15 text-indigo-400 border border-indigo-500/30 text-xs font-medium flex items-center justify-center gap-1.5 hover:bg-indigo-600/25 transition-all disabled:opacity-50"
             data-testid="open-web-btn"
           >
             <Globe size={14} /> {proxyLoading ? "Caricamento via Connettore..." : "Apri Pagina Web"}
           </button>
         )}
+        {hasIp && (deviceData?.deviceType === "switch" || deviceData?.type === "switch") && (
+          <Link
+            to={`/switch-ports/${encodeURIComponent(deviceData?.ip || deviceIp)}`}
+            className="flex-1 min-w-[140px] h-8 rounded-lg bg-cyan-600/15 text-cyan-300 border border-cyan-500/30 text-xs font-medium flex items-center justify-center gap-1.5 hover:bg-cyan-600/25 transition-all"
+            data-testid="view-switch-ports-btn"
+          >
+            <Stack size={14} weight="bold" /> Vedi porte switch
+          </Link>
+        )}
         {isEndpoint && hasIp && (
           <button
             onClick={addToMonitoring}
             disabled={adding}
-            className="flex-1 h-8 rounded-lg bg-emerald-600/15 text-emerald-400 border border-emerald-500/30 text-xs font-medium flex items-center justify-center gap-1.5 hover:bg-emerald-600/25 transition-all disabled:opacity-50"
+            className="flex-1 min-w-[140px] h-8 rounded-lg bg-emerald-600/15 text-emerald-400 border border-emerald-500/30 text-xs font-medium flex items-center justify-center gap-1.5 hover:bg-emerald-600/25 transition-all disabled:opacity-50"
             data-testid="add-to-monitoring-btn"
           >
             <PlusCircle size={14} /> {adding ? "Aggiunta..." : "Aggiungi al Monitoraggio"}

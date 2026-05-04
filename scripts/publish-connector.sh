@@ -132,7 +132,8 @@ INSTALL_ZIP="86NocConnector_v${VERSION}_install.zip"
 mkdir -p "$STORAGE_DIR" "$DOWNLOADS_DIR"
 
 cd "$TMP_DIR"
-zip -rq "$STORAGE_DIR/$PLAIN_ZIP" prg/
+# Includi il VBS launcher anche nello ZIP standard (richiesto dal flusso wizard UAC v3.6.3+)
+zip -rq "$STORAGE_DIR/$PLAIN_ZIP" prg/ "Installa 86NocConnector.vbs"
 cp "$STORAGE_DIR/$PLAIN_ZIP" "$DOWNLOADS_DIR/$PLAIN_ZIP"
 zip -rq "$DOWNLOADS_DIR/$INSTALL_ZIP" prg/ "Installa 86NocConnector.vbs"
 cd - > /dev/null
