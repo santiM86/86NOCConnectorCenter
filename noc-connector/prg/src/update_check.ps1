@@ -416,6 +416,31 @@ try {
     Write-UpdateLog "Cleanup temp directory OK"
 } catch {}
 
+# ==================== STEP 9: Restart Tray App (v3.7.5) ====================
+# Il tray_app.ps1 gira come processo utente e non viene restartato dal servizio NSSM.
+# Dopo un update, chiediamo al tray di uscire cosi' al prossimo avvio Windows (o
+# ora se l'utente e' ancora loggato) usera' il nuovo codice. Due metodi:
+#   1. File flag `tray_restart.flag` che il tray monitora e si chiude
+#   2. Kill dei processi PowerShell figli che hanno tray_app.ps1 nella CommandLine
+try {
+    # Method 1: flag file (preferred, pulito)
+    $trayFlag = Join-Path $InstallDir "tray_restart.flag"
+    Set-Content -Path $trayFlag -Value (Get-Date -Format "o") -Encoding UTF8 -Force
+    Write-UpdateLog "Creato tray_restart.flag per segnalare riavvio tray app"
+
+    # Method 2: kill fallback (se il tray non monitora ancora il flag)
+    Get-CimInstance Win32_Process -Filter "Name='powershell.exe' OR Name='pwsh.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -match "tray_app\.ps1" } |
+        ForEach-Object {
+            try {
+                Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+                Write-UpdateLog "Terminato tray_app.ps1 PID=$($_.ProcessId) (riavviato al prossimo logon)"
+            } catch {}
+        }
+} catch {
+    Write-UpdateLog "Tray restart signal failed: $($_.Exception.Message)" "WARN"
+}
+
 # ==================== SUCCESS ====================
 Write-UpdateLog "AGGIORNAMENTO COMPLETATO: v$currentVersion -> v$newVersion" "INFO"
 Send-Progress 100 "success" "Aggiornato a v$newVersion"

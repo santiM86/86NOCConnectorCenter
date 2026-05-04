@@ -1219,14 +1219,16 @@ public class TrayRefresh {
 
         $aboutForm = New-Object System.Windows.Forms.Form
         $aboutForm.Text = "$DisplayName - Informazioni"
-        # v3.6.19: alzata altezza da 340 a 420 per evitare il taglio del bottone OK su Win11 (DPI 125%)
-        $aboutForm.Size = New-Object System.Drawing.Size(440, 420)
+        # v3.7.5: form size DPI-aware. Usiamo ClientSize (area interna garantita)
+        # + AutoScaleMode=None per evitare doppio scaling del WindowsForms quando
+        # Windows e' gia' a 125%/150%. Btn OK ancorato in basso con Anchor.
+        $aboutForm.ClientSize = New-Object System.Drawing.Size(440, 460)
         $aboutForm.StartPosition = "CenterScreen"
         $aboutForm.FormBorderStyle = "FixedDialog"
         $aboutForm.MaximizeBox = $false
         $aboutForm.MinimizeBox = $false
         $aboutForm.BackColor = [System.Drawing.Color]::White
-        $aboutForm.AutoScaleMode = "Dpi"
+        $aboutForm.AutoScaleMode = "None"
 
         # Logo
         $logoPath = Join-Path $ScriptDir "86bit_logo.jpg"
@@ -1288,11 +1290,14 @@ info@86bit.it
         $lblCompany.Size = New-Object System.Drawing.Size(370, 170)
         $aboutForm.Controls.Add($lblCompany)
 
-        # OK button (v3.6.19: spostato in basso e centrato per evitare taglio su DPI 125%)
+        # OK button (v3.7.5: posizionato relativamente a ClientSize, Anchor B+R per DPI)
         $btnOk = New-Object System.Windows.Forms.Button
         $btnOk.Text = "OK"
-        $btnOk.Size = New-Object System.Drawing.Size(90, 32)
-        $btnOk.Location = New-Object System.Drawing.Point(330, 340)
+        $btnOk.Size = New-Object System.Drawing.Size(90, 34)
+        $btnOk.Location = New-Object System.Drawing.Point(
+            ($aboutForm.ClientSize.Width - 110),
+            ($aboutForm.ClientSize.Height - 48)
+        )
         $btnOk.FlatStyle = "Flat"
         $btnOk.BackColor = [System.Drawing.Color]::FromArgb(99, 102, 241)
         $btnOk.ForeColor = [System.Drawing.Color]::White
@@ -1363,6 +1368,23 @@ info@86bit.it
     $timer = New-Object System.Windows.Forms.Timer
     $timer.Interval = 15000  # 15 seconds
     $timer.Add_Tick({
+        # v3.7.5: Rileva richieste di riavvio dopo update e chiudi il tray.
+        # Al prossimo logon Windows avvia il nuovo tray_app.ps1.
+        try {
+            $restartFlag = Join-Path $BaseDir "tray_restart.flag"
+            if (Test-Path $restartFlag) {
+                Remove-Item $restartFlag -Force -ErrorAction SilentlyContinue
+                $notifyIcon.ShowBalloonTip(3000, $DisplayName,
+                    "Update applicato. Tray app in chiusura per applicare la nuova versione.",
+                    [System.Windows.Forms.ToolTipIcon]::Info)
+                Start-Sleep -Seconds 3
+                $notifyIcon.Visible = $false
+                $notifyIcon.Dispose()
+                [System.Windows.Forms.Application]::Exit()
+                return
+            }
+        } catch {}
+
         $status = Read-ConnectorStatus
         $connectorAlive = ($status -ne $null -and $status.status -eq "running")
         
