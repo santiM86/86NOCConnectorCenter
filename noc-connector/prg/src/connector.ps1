@@ -1699,6 +1699,26 @@ function Start-PollingLoop($config) {
                     } catch {
                         Write-Log "Errore Network Discovery: $($_.Exception.Message)" "WARN"
                     }
+
+                    # v3.7.4: Switch Enrichment (ARP + LLDP-MED + DHCP Snooping)
+                    # Cross-VLAN discovery senza probe attivi ai client finali.
+                    try {
+                        $seScript = Join-Path $PSScriptRoot "switch_enrichment.ps1"
+                        if (Test-Path $seScript) {
+                            . $seScript
+                            foreach ($d in $snmpDevices) {
+                                $dType = if ($d.device_type) { [string]$d.device_type } else { "" }
+                                # Enrichment solo su switch/router/firewall L3
+                                if ($dType -match "switch|router|firewall|l3|gateway") {
+                                    $c = if ($d.community) { [string]$d.community } else { "public" }
+                                    Invoke-SwitchEnrichment -Config $config `
+                                        -SwitchIp ([string]$d.ip) -Community $c
+                                }
+                            }
+                        }
+                    } catch {
+                        Write-Log "SwitchEnrichment error: $_" "WARN"
+                    }
                 }
             }
         } catch {
@@ -2876,10 +2896,12 @@ function Start-Connector {
     $lastDiscovery = [datetime]::MinValue
     $lastMemoryCleanup = [datetime]::MinValue
     $lastJobHealthCheck = [datetime]::MinValue
+    $lastPrinterProbe = [datetime]::MinValue
     $heartbeatIntervalSec = 60
     $discoveryIntervalSec = 120
     $memoryCleanupIntervalSec = 300    # Ogni 5 minuti
     $jobHealthCheckIntervalSec = 180   # Ogni 3 minuti
+    $printerProbeIntervalSec = 900     # Ogni 15 minuti
     $webProxyIntervalSec = 3
     
     # Send first heartbeat immediately
@@ -2905,6 +2927,20 @@ function Start-Connector {
             if (($now - $lastDiscovery).TotalSeconds -ge $discoveryIntervalSec) {
                 Check-DiscoveryRequest $config
                 $lastDiscovery = $now
+            }
+
+            # Printer probe TCP+SNMP (every 15 min, solo se il file ps1 esiste)
+            if (($now - $lastPrinterProbe).TotalSeconds -ge $printerProbeIntervalSec) {
+                try {
+                    $ppScript = Join-Path $PSScriptRoot "printer_probe.ps1"
+                    if (Test-Path $ppScript) {
+                        . $ppScript
+                        Invoke-PrinterProbe -Config $config
+                    }
+                } catch {
+                    Write-Log "PrinterProbe error: $_" "WARN"
+                }
+                $lastPrinterProbe = $now
             }
             
             # Memory cleanup (every 5 min) - previene memory leak nei job

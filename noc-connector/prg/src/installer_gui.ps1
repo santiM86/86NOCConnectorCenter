@@ -1089,14 +1089,19 @@ function Show-InstallerWizard {
                     $txtStatus.AppendText("  NSSM: $($_.Exception.Message)`r`n")
                     $txtStatus.AppendText("  Fallback: avvio automatico via registro...`r`n")
                     try {
-                        & reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v $AppName /t REG_SZ /d "`"$batPath`"" /f 2>$null
+                        # v3.7.6: wscript + VBS = nessun DOS box al logon
+                        $trayVbsRun = Join-Path $ScriptDir "tray_launcher.vbs"
+                        $runValue = if (Test-Path $trayVbsRun) { "wscript.exe `"$trayVbsRun`"" } else { "`"$batPath`"" }
+                        & reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v $AppName /t REG_SZ /d $runValue /f 2>$null
                         $txtStatus.AppendText("  Avvio automatico (registro): OK`r`n")
                     } catch {}
                 }
             } else {
                 $txtStatus.AppendText("  nssm.exe non trovato, uso registro di sistema...`r`n")
                 try {
-                    & reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v $AppName /t REG_SZ /d "`"$batPath`"" /f 2>$null
+                    $trayVbsRun = Join-Path $ScriptDir "tray_launcher.vbs"
+                    $runValue = if (Test-Path $trayVbsRun) { "wscript.exe `"$trayVbsRun`"" } else { "`"$batPath`"" }
+                    & reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v $AppName /t REG_SZ /d $runValue /f 2>$null
                     $txtStatus.AppendText("  Avvio automatico (registro): OK`r`n")
                 } catch {}
             }
@@ -1128,12 +1133,23 @@ function Show-InstallerWizard {
             $iconFolderNative = "$env:SystemRoot\System32\shell32.dll,3"
             $iconUninstallNative = "$env:SystemRoot\System32\shell32.dll,271"
             
-            # Verifica che il batPath esista, altrimenti usa powershell.exe diretto
-            $connectorTarget = $batPath
-            $connectorArgs = ""
-            if (-not (Test-Path $batPath)) {
-                $connectorTarget = "powershell.exe"
-                $connectorArgs = "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$connectorScript`""
+            # v3.7.6: shortcut punta direttamente a wscript.exe + tray_launcher.vbs
+            # In passato puntava a 86NocConnector.bat (che apriva un DOS box per ~0.5s
+            # perche' cmd.exe deve eseguire il batch). wscript.exe e' COMPLETAMENTE
+            # silenzioso (niente window, niente taskbar entry). Il VBS a sua volta
+            # lancia powershell.exe -WindowStyle Hidden con il tray_app.ps1.
+            $trayVbs = Join-Path $ScriptDir "tray_launcher.vbs"
+            $connectorTarget = "$env:SystemRoot\System32\wscript.exe"
+            $connectorArgs = "`"$trayVbs`""
+            if (-not (Test-Path $trayVbs)) {
+                # Fallback per release <v3.7.6 (non dovrebbe capitare ma safety net)
+                if (Test-Path $batPath) {
+                    $connectorTarget = $batPath
+                    $connectorArgs = ""
+                } else {
+                    $connectorTarget = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+                    $connectorArgs = "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$connectorScript`""
+                }
             }
 
             $shell = New-Object -ComObject WScript.Shell
@@ -1185,6 +1201,26 @@ function Show-InstallerWizard {
             } else {
                 $failedNames = ($shortcutResults | Where-Object { -not $_.ok } | ForEach-Object { $_.name }) -join ", "
                 $txtStatus.AppendText("  Menu Start: parziale ($okCount/$totalCount shortcut, falliti: $failedNames)`r`n")
+            }
+
+            # v3.7.6: Shortcut nella cartella Startup per auto-avvio tray al logon
+            # Anche qui usa wscript+VBS per massima invisibilita' all'utente.
+            try {
+                $startupDir = [Environment]::GetFolderPath("CommonStartup")
+                if ($chkAutostart.Checked -and (Test-Path $trayVbs)) {
+                    $shell2 = New-Object -ComObject WScript.Shell
+                    # Rimuovi eventuali vecchie entry (potrebbero puntare a .bat)
+                    $oldStartupLnk = Join-Path $startupDir "ARGUS Connector Tray.lnk"
+                    if (Test-Path $oldStartupLnk) { Remove-Item $oldStartupLnk -Force -ErrorAction SilentlyContinue }
+                    $startupLnk = Join-Path $startupDir "ARGUS Connector Tray.lnk"
+                    $okStartup = & $createShortcutSafe $shell2 $startupLnk "$env:SystemRoot\System32\wscript.exe" "`"$trayVbs`"" $BaseDir "ARGUS Connector - Tray system monitor (avvio silenzioso)" $iconLocation 7
+                    [System.Runtime.InteropServices.Marshal]::ReleaseComObject($shell2) | Out-Null
+                    if ($okStartup) {
+                        $txtStatus.AppendText("  Autostart tray al logon: OK (wscript + VBS, nessun DOS box)`r`n")
+                    }
+                }
+            } catch {
+                $txtStatus.AppendText("  Autostart tray: $($_.Exception.Message)`r`n")
             }
         } catch {
             $txtStatus.AppendText("  Menu Start: $($_.Exception.Message)`r`n")
@@ -1375,9 +1411,15 @@ function Show-InstallerWizard {
         }
         
         # Avvia la tray app per monitoraggio (opzionale, solo se in sessione interattiva)
+        # v3.7.6: usa tray_launcher.vbs via wscript per evitare DOS box visibile
         $trayScript = Join-Path $ScriptDir "tray_app.ps1"
+        $trayVbs = Join-Path $ScriptDir "tray_launcher.vbs"
         try {
-            Start-Process "powershell.exe" -ArgumentList "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$trayScript`"" -WindowStyle Hidden
+            if (Test-Path $trayVbs) {
+                Start-Process "wscript.exe" -ArgumentList "`"$trayVbs`"" -WindowStyle Hidden
+            } else {
+                Start-Process "powershell.exe" -ArgumentList "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$trayScript`"" -WindowStyle Hidden
+            }
             $txtStatus.AppendText("  Icona system tray: ATTIVA (solo monitoraggio)`r`n")
         } catch {
             $txtStatus.AppendText("  Tray: $($_.Exception.Message)`r`n")

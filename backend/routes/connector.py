@@ -495,6 +495,281 @@ async def connector_web_ui_detected(request: Request):
 
 
 
+
+
+# ==================== PRINTER PROBE (v3.7.3) ====================
+# Il connector effettua:
+#   1. TCP probe su porte 9100 (JetDirect), 515 (LPD), 631 (IPP), 80, 443
+#   2. SNMP GetRequest su sysDescr (1.3.6.1.2.1.1.1.0) se TCP aperto o OUI stampante
+# Poi invia il risultato qui. L'endpoint arricchisce discovered_endpoints con:
+#   - sys_descr : stringa completa identificativa
+#   - printer_model : modello estratto (es "HP LaserJet Pro M404dn")
+#   - probe_ports : lista porte TCP aperte
+# Queste info fanno comparire la stampante nella PrinterDiscoveryPage con badge SNMP.
+
+@router.post("/connector/printer-probe")
+async def connector_printer_probe(request: Request):
+    """Riceve risultati probe stampanti dal connector."""
+    client_data = await verify_connector_request(request)
+    client_id = client_data["id"]
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+    results = body.get("results") or []
+    if not isinstance(results, list):
+        raise HTTPException(status_code=400, detail="results must be a list")
+
+    from pymongo import UpdateOne
+    now = datetime.now(timezone.utc).isoformat()
+    eps_ops: list = []
+    managed_ops: list = []
+    added = 0
+
+    for r in results[:500]:  # safety cap
+        if not isinstance(r, dict):
+            continue
+        ip = (r.get("ip") or "").strip()
+        mac = (r.get("mac") or "").upper().strip()
+        if not ip and not mac:
+            continue
+        sys_descr = (r.get("sys_descr") or "").strip()[:500]
+        model = (r.get("model") or sys_descr[:120]).strip()
+        tcp_ports = r.get("tcp_ports") or []  # [9100, 631] es.
+        vendor = (r.get("vendor") or "").strip()
+        if not isinstance(tcp_ports, list):
+            tcp_ports = []
+        tcp_ports = [int(p) for p in tcp_ports if isinstance(p, (int, str)) and str(p).isdigit()][:10]
+
+        is_printer = bool(sys_descr) or bool(tcp_ports) or bool(r.get("is_printer"))
+        if not is_printer:
+            continue
+
+        # Arricchisci TUTTI i discovered_endpoints del cliente con stesso IP o MAC
+        q: dict = {"client_id": client_id}
+        if mac and ip:
+            q["$or"] = [{"mac": mac}, {"ip": ip}]
+        elif mac:
+            q["mac"] = mac
+        else:
+            q["ip"] = ip
+        eps_ops.append(UpdateOne(q, {"$set": {
+            "sys_descr": sys_descr,
+            "printer_model": model,
+            "printer_probe_ports": tcp_ports,
+            "printer_probed_at": now,
+            "is_printer": True,
+        }}, upsert=False))
+
+        # Se il connector ha segnalato una porta (switch_ip+port già noto dal FDB),
+        # aggiorniamo anche il managed_devices (upsert per avere il device nel CMDB).
+        if ip and sys_descr:
+            md_id = f"auto-printer-{mac or ip}"
+            managed_ops.append(UpdateOne(
+                {"id": md_id, "client_id": client_id},
+                {"$set": {
+                    "id": md_id, "client_id": client_id,
+                    "name": model or f"Stampante {ip}",
+                    "ip_address": ip, "ip": ip,
+                    "mac_address": mac,
+                    "device_type": "printer",
+                    "vendor": vendor or "",
+                    "model": model,
+                    "sys_descr": sys_descr,
+                    "auto_created": True,
+                    "last_probe_at": now,
+                }, "$setOnInsert": {"created_at": now}},
+                upsert=True,
+            ))
+            added += 1
+
+    if eps_ops:
+        await db.discovered_endpoints.bulk_write(eps_ops, ordered=False)
+    if managed_ops:
+        await db.managed_devices.bulk_write(managed_ops, ordered=False)
+
+    return {
+        "ok": True,
+        "received": len(results),
+        "endpoints_enriched": len(eps_ops),
+        "managed_upserted": added,
+    }
+
+
+# ==================== PRINTER PROBE CANDIDATES (pull from connector) ====================
+
+
+# ==================== SWITCH ENRICHMENT (v3.7.4) ====================
+# Il connector, dopo il discovery SNMP dello switch, invia 3 dataset aggiuntivi
+# che non richiedono raggiungibilita' L3 verso i client (zero-touch cross-VLAN):
+#   1. arp_entries        : ipNetToMediaTable dello switch/router L3
+#   2. lldp_med_inventory : remote model/mfg/serial via LLDP-MED (printers enterprise)
+#   3. dhcp_bindings      : DHCP snooping table (ip+mac+port+vlan)
+# Qui arricchiamo `discovered_endpoints` SENZA sovrascrivere dati esistenti.
+
+@router.post("/connector/switch-enrichment")
+async def connector_switch_enrichment(request: Request):
+    """Arricchisce discovered_endpoints con dati letti direttamente dallo switch."""
+    client_data = await verify_connector_request(request)
+    client_id = client_data["id"]
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    switch_ip = (body.get("switch_ip") or "").strip()
+    arp_entries = body.get("arp_entries") or []
+    lldp_med = body.get("lldp_med_inventory") or []
+    dhcp_bindings = body.get("dhcp_bindings") or []
+
+    from pymongo import UpdateOne
+    ops: list = []
+    now = datetime.now(timezone.utc).isoformat()
+
+    # 1. ARP table: mapping IP<->MAC per tutti i device L3 router-visibili
+    for e in arp_entries[:5000]:
+        if not isinstance(e, dict):
+            continue
+        mac = (e.get("mac") or "").upper().strip()
+        ip = (e.get("ip") or "").strip()
+        if not mac or not ip:
+            continue
+        # Aggiorna endpoint esistenti con lo stesso MAC che hanno ip vuoto/diverso
+        ops.append(UpdateOne(
+            {"client_id": client_id, "mac": mac, "$or": [{"ip": ""}, {"ip": None}, {"ip": {"$exists": False}}]},
+            {"$set": {"ip": ip, "ip_source": "arp", "ip_resolved_at": now}},
+            upsert=False,
+        ))
+
+    # 2. DHCP snooping: IP+MAC+port+VLAN direttamente dallo switch
+    for d in dhcp_bindings[:5000]:
+        if not isinstance(d, dict):
+            continue
+        mac = (d.get("mac") or "").upper().strip()
+        ip = (d.get("ip") or "").strip()
+        port = str(d.get("port") or "")
+        vlan = d.get("vlan")
+        if not mac:
+            continue
+        set_fields = {"ip_source": "dhcp_snoop", "ip_resolved_at": now}
+        if ip:
+            set_fields["ip"] = ip
+        if vlan is not None:
+            try: set_fields["vlan"] = int(vlan)
+            except Exception: pass
+        # Prima: upsert per la riga specifica se abbiamo switch+port+mac
+        if switch_ip and port:
+            ops.append(UpdateOne(
+                {"client_id": client_id, "switch_ip": switch_ip, "port": port, "mac": mac},
+                {"$set": set_fields,
+                 "$setOnInsert": {"client_id": client_id, "switch_ip": switch_ip,
+                                  "port": port, "mac": mac, "discovered_at": now}},
+                upsert=True,
+            ))
+        else:
+            # Fallback: aggiorna tutti gli endpoint con questo MAC
+            ops.append(UpdateOne(
+                {"client_id": client_id, "mac": mac},
+                {"$set": set_fields},
+                upsert=False,
+            ))
+
+    # 3. LLDP-MED inventory: modello/vendor/SN della stampante tramite lo switch
+    lldp_enriched = 0
+    for l in lldp_med[:2000]:
+        if not isinstance(l, dict):
+            continue
+        port = str(l.get("port") or "")
+        mfg = (l.get("mfg") or "").strip()
+        model = (l.get("model") or "").strip()
+        serial = (l.get("serial") or "").strip()
+        firmware = (l.get("firmware") or "").strip()
+        asset_tag = (l.get("asset_tag") or "").strip()
+        sys_name = (l.get("sys_name") or "").strip()
+        sys_desc = (l.get("sys_desc") or "").strip()
+        if not (mfg or model or sys_desc):
+            continue
+        if not switch_ip or not port:
+            continue
+        # Identifica stampante dal LLDP (se model/mfg contiene keyword)
+        combo = f"{mfg} {model} {sys_desc}".lower()
+        is_printer_lldp = any(k in combo for k in (
+            "laserjet", "officejet", "deskjet", "pagewide",
+            "stylus", "workforce", "ecotank",
+            "brother", "lexmark", "kyocera", "xerox", "phaser", "workcentre",
+            "ricoh", "aficio", "oki", "sharp", "bizhub", "konica",
+            "zebra", "printer", "mfp", "copier",
+        ))
+        set_fields = {
+            "lldp_med_mfg": mfg, "lldp_med_model": model,
+            "lldp_med_serial": serial, "lldp_med_firmware": firmware,
+            "lldp_med_asset_tag": asset_tag,
+            "lldp_med_enriched_at": now,
+        }
+        if sys_name:
+            set_fields["sys_name"] = sys_name
+        if sys_desc:
+            set_fields["sys_descr"] = sys_desc
+        if is_printer_lldp:
+            set_fields["is_printer"] = True
+            set_fields["printer_model"] = (model or sys_desc)[:120]
+        ops.append(UpdateOne(
+            {"client_id": client_id, "switch_ip": switch_ip, "port": port},
+            {"$set": set_fields},
+            upsert=False,
+        ))
+        lldp_enriched += 1
+
+    if ops:
+        try:
+            res = await db.discovered_endpoints.bulk_write(ops, ordered=False)
+            modified = res.modified_count
+        except Exception as e:
+            logger.warning(f"switch-enrich bulk_write failed: {type(e).__name__}")
+            modified = 0
+    else:
+        modified = 0
+
+    return {
+        "ok": True,
+        "arp_count": len(arp_entries),
+        "dhcp_count": len(dhcp_bindings),
+        "lldp_med_count": len(lldp_med),
+        "endpoints_enriched": modified,
+        "lldp_printers_detected": lldp_enriched,
+    }
+
+
+@router.get("/connector/printer-probe/candidates")
+async def connector_printer_probe_candidates(request: Request):
+    """Restituisce al connector la lista di IP candidati stampante da probare.
+    Logica: OUI stampante nei discovered_endpoints + device managed senza sys_descr.
+    """
+    client_data = await verify_connector_request(request)
+    client_id = client_data["id"]
+    from routes.oui_lookup import lookup_oui, is_printer_vendor
+
+    candidates: dict = {}
+    # 1. Endpoint con OUI stampante (priorità)
+    async for e in db.discovered_endpoints.find(
+        {"client_id": client_id, "ip": {"$exists": True, "$ne": ""}},
+        {"_id": 0, "ip": 1, "mac": 1},
+    ):
+        ip = e.get("ip") or ""
+        mac = (e.get("mac") or "").upper()
+        if not ip:
+            continue
+        vendor = lookup_oui(mac) if mac else ""
+        if is_printer_vendor(vendor):
+            candidates[ip] = {"ip": ip, "mac": mac, "vendor": vendor, "priority": "high"}
+
+    # 2. Endpoint senza OUI ma con segnali deboli (rete non classificata)
+    #    Il connector decide quali provare facendo TCP probe veloce.
+    # Per sicurezza limitiamo a 500 IP in output
+    result = list(candidates.values())[:500]
+    return {"items": result, "count": len(result)}
+
+
 # ==================== VAULT CREDENTIALS FOR CONNECTOR ====================
 
 @router.get(f"/{C}/vc")

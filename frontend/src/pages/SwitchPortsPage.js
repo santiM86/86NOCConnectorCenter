@@ -15,7 +15,7 @@ import { API } from "@/App";
 import { toast } from "sonner";
 import {
   ArrowsClockwise, Lightning, WifiHigh, Stack, Cloud, Desktop,
-  Prohibit, Plugs, ArrowDown, ArrowUp, Cpu,
+  Prohibit, Plugs, ArrowDown, ArrowUp, Cpu, CaretUp, CaretDown,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import PortCableView from "@/components/PortCableView";
@@ -277,6 +277,20 @@ export default function SwitchPortsPage() {
   const [filter, setFilter] = useState("all");
   const [selected, setSelected] = useState(null);
   const [cableView, setCableView] = useState(null);
+  // Ordinamento tabella (header cliccabili)
+  const [sortBy, setSortBy] = useState("idx");     // idx|name|status|speed|rx|tx|poe|neighbor
+  const [sortDir, setSortDir] = useState("asc");   // asc|desc
+  // Flag "solo accese" della tabella completa
+  const [tableOnlyUp, setTableOnlyUp] = useState(false);
+
+  const toggleSort = (col) => {
+    if (sortBy === col) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortBy(col);
+      setSortDir("asc");
+    }
+  };
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -315,10 +329,37 @@ export default function SwitchPortsPage() {
     });
   }, [data, filter]);
 
-  const uplinkCount = useMemo(() => {
-    if (!data?.ports) return 0;
-    return data.ports.filter(p => (p.port_type === "switch" || p.port_type === "cloud") && p.oper === 1 && p.admin === 1).length;
-  }, [data]);
+  // Ports ordinati + filtrati per la tabella completa (solo-UP toggle)
+  const tablePorts = useMemo(() => {
+    let list = tableOnlyUp
+      ? ports.filter((p) => p.oper === 1 && p.admin === 1)
+      : ports;
+    const dir = sortDir === "asc" ? 1 : -1;
+    const keyFn = {
+      idx: (p) => p.idx || 0,
+      name: (p) => (p.name || "").toLowerCase(),
+      status: (p) => (p.admin === 2 ? 2 : p.oper === 1 ? 0 : 1),  // UP<DOWN<ADMIN
+      speed: (p) => p.speed_mbps || 0,
+      rx: (p) => p.rx_bps || 0,
+      tx: (p) => p.tx_bps || 0,
+      poe: (p) => p.poe_status === 3 ? 1 : 0,
+      neighbor: (p) => (p.neighbor?.remote_device_name || p.neighbor?.remote_sys_name || "").toLowerCase(),
+    }[sortBy] || ((p) => p.idx || 0);
+    return [...list].sort((a, b) => {
+      const ka = keyFn(a);
+      const kb = keyFn(b);
+      if (ka < kb) return -1 * dir;
+      if (ka > kb) return 1 * dir;
+      return 0;
+    });
+  }, [ports, sortBy, sortDir, tableOnlyUp]);
+
+  const SortIcon = ({ col }) => {
+    if (sortBy !== col) return <CaretUp size={9} className="opacity-30 inline ml-0.5" />;
+    return sortDir === "asc"
+      ? <CaretUp size={9} className="inline ml-0.5 text-cyan-300" />
+      : <CaretDown size={9} className="inline ml-0.5 text-cyan-300" />;
+  };
 
   if (loading && !data) return <div className="p-6 text-[var(--text-muted)] text-sm">Caricamento…</div>;
   if (!data) return <div className="p-6 text-[var(--text-muted)] text-sm">Nessun dato</div>;
@@ -436,25 +477,54 @@ export default function SwitchPortsPage() {
 
       {/* Tabella riepilogo (collassabile su mobile) */}
       <details className="noc-panel" open>
-        <summary className="cursor-pointer px-3 py-2 text-[12px] font-semibold border-b border-[var(--bg-border)] hover:bg-[var(--bg-hover)]">
-          Tabella completa ({ports.length})
+        <summary className="cursor-pointer px-3 py-2 text-[12px] font-semibold border-b border-[var(--bg-border)] hover:bg-[var(--bg-hover)] flex items-center gap-3">
+          <span>Tabella completa ({tablePorts.length}{tableOnlyUp ? `/${ports.length}` : ""})</span>
+          <label
+            className="ml-auto flex items-center gap-1.5 text-[10px] font-normal text-[var(--text-secondary)] cursor-pointer"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <input
+              type="checkbox"
+              checked={tableOnlyUp}
+              onChange={(e) => setTableOnlyUp(e.target.checked)}
+              className="accent-emerald-400"
+              data-testid="switch-ports-only-up"
+            />
+            <span>Solo porte accese (UP)</span>
+          </label>
         </summary>
         <div className="overflow-x-auto">
           <table className="noc-table w-full text-[11px]" data-testid="switch-ports-table">
             <thead>
               <tr>
-                <th>#</th>
-                <th>Nome</th>
-                <th>Stato</th>
-                <th>Speed</th>
-                <th>Rx</th>
-                <th>Tx</th>
-                <th>PoE</th>
-                <th>Connesso a</th>
+                <th className="cursor-pointer hover:text-cyan-300 select-none" onClick={() => toggleSort("idx")} data-testid="sort-idx">
+                  # <SortIcon col="idx" />
+                </th>
+                <th className="cursor-pointer hover:text-cyan-300 select-none" onClick={() => toggleSort("name")} data-testid="sort-name">
+                  Nome <SortIcon col="name" />
+                </th>
+                <th className="cursor-pointer hover:text-cyan-300 select-none" onClick={() => toggleSort("status")} data-testid="sort-status">
+                  Stato <SortIcon col="status" />
+                </th>
+                <th className="cursor-pointer hover:text-cyan-300 select-none" onClick={() => toggleSort("speed")} data-testid="sort-speed">
+                  Speed <SortIcon col="speed" />
+                </th>
+                <th className="cursor-pointer hover:text-cyan-300 select-none" onClick={() => toggleSort("rx")} data-testid="sort-rx">
+                  Rx <SortIcon col="rx" />
+                </th>
+                <th className="cursor-pointer hover:text-cyan-300 select-none" onClick={() => toggleSort("tx")} data-testid="sort-tx">
+                  Tx <SortIcon col="tx" />
+                </th>
+                <th className="cursor-pointer hover:text-cyan-300 select-none" onClick={() => toggleSort("poe")} data-testid="sort-poe">
+                  PoE <SortIcon col="poe" />
+                </th>
+                <th className="cursor-pointer hover:text-cyan-300 select-none" onClick={() => toggleSort("neighbor")} data-testid="sort-neighbor">
+                  Connesso a <SortIcon col="neighbor" />
+                </th>
               </tr>
             </thead>
             <tbody>
-              {ports.map(p => {
+              {tablePorts.map(p => {
                 const isUp = p.oper === 1 && p.admin === 1;
                 const isPoe = p.poe_status === 3;
                 return (
@@ -491,29 +561,62 @@ export default function SwitchPortsPage() {
                     </td>
                     <td>
                       {p.neighbor ? (
-                        <div className="flex items-center gap-1 text-[10px]">
-                          <PortIcon p={p} size={11} />
-                          {p.neighbor.remote_ip ? (
-                            <Link to={`/devices/${encodeURIComponent(p.neighbor.remote_ip)}`}
-                                  className="text-cyan-300 hover:underline truncate max-w-[160px]"
-                                  onClick={(e) => e.stopPropagation()}>
-                              {p.neighbor.remote_device_name || p.neighbor.remote_sys_name}
-                            </Link>
-                          ) : (
-                            <span className={`truncate max-w-[160px] ${p.neighbor.match_source === "mac_oui" ? "text-amber-300" : "text-neutral-300"}`}>
-                              {p.neighbor.remote_device_name || p.neighbor.remote_sys_name}
-                            </span>
-                          )}
-                          {p.neighbor.match_source === "lldp" && (
-                            <span className="px-0.5 rounded bg-emerald-500/20 text-emerald-300 text-[8px] font-bold">L</span>
-                          )}
-                          {p.neighbor.match_source === "mac_managed" && (
-                            <span className="px-0.5 rounded bg-cyan-500/20 text-cyan-300 text-[8px] font-bold">M</span>
-                          )}
-                          {p.neighbor.match_source === "mac_oui" && (
-                            <span className="px-0.5 rounded bg-amber-500/20 text-amber-300 text-[8px] font-bold">V</span>
-                          )}
-                          {p.neighbor.remote_port_desc && <span className="text-[var(--text-muted)]">·{p.neighbor.remote_port_desc}</span>}
+                        <div className="flex items-start gap-1.5 text-[10px]">
+                          <PortIcon p={p} size={13} />
+                          <div className="flex flex-col leading-tight min-w-0">
+                            {/* Riga 1: NOME (grassetto) + badge sorgente match */}
+                            <div className="flex items-center gap-1 flex-wrap">
+                              {p.neighbor.remote_ip ? (
+                                <Link to={`/devices/${encodeURIComponent(p.neighbor.remote_ip)}`}
+                                      className="font-bold text-[11px] text-cyan-200 hover:text-cyan-100 hover:underline truncate max-w-[220px]"
+                                      onClick={(e) => e.stopPropagation()}
+                                      data-testid={`port-neighbor-name-${p.idx}`}>
+                                  {p.neighbor.remote_device_name || p.neighbor.remote_sys_name || p.neighbor.remote_ip}
+                                </Link>
+                              ) : (
+                                <span className={`font-bold text-[11px] truncate max-w-[220px] ${p.neighbor.match_source === "mac_oui" ? "text-amber-200" : "text-neutral-100"}`}
+                                      data-testid={`port-neighbor-name-${p.idx}`}>
+                                  {p.neighbor.remote_device_name || p.neighbor.remote_sys_name || "(sconosciuto)"}
+                                </span>
+                              )}
+                              {p.neighbor.match_source === "lldp" && (
+                                <span className="px-1 rounded bg-emerald-500/20 text-emerald-300 text-[8px] font-bold" title="LLDP">L</span>
+                              )}
+                              {p.neighbor.match_source === "datto_rmm" && (
+                                <span className="px-1 rounded bg-fuchsia-500/20 text-fuchsia-300 text-[8px] font-bold" title="Datto RMM">DATTO</span>
+                              )}
+                              {p.neighbor.match_source === "mac_managed" && (
+                                <span className="px-1 rounded bg-cyan-500/20 text-cyan-300 text-[8px] font-bold" title="Managed">M</span>
+                              )}
+                              {p.neighbor.match_source === "mac_manual" && (
+                                <span className="px-1 rounded bg-violet-500/20 text-violet-300 text-[8px] font-bold" title="Binding manuale">B</span>
+                              )}
+                              {p.neighbor.match_source === "mac_fdb_trunk" && (
+                                <span className="px-1 rounded bg-sky-500/20 text-sky-300 text-[8px] font-bold" title="Trunk FDB">T</span>
+                              )}
+                              {p.neighbor.match_source === "mac_oui" && (
+                                <span className="px-1 rounded bg-amber-500/20 text-amber-300 text-[8px] font-bold" title="OUI vendor">V</span>
+                              )}
+                            </div>
+                            {/* Riga 2: IP */}
+                            {p.neighbor.remote_ip && (
+                              <span className="text-[9px] font-mono text-[var(--text-secondary)]">
+                                IP: <span className="text-cyan-300">{p.neighbor.remote_ip}</span>
+                              </span>
+                            )}
+                            {/* Riga 3: MAC (remote_chassis_id contiene il MAC su LLDP/datto/mac_managed) */}
+                            {p.neighbor.remote_chassis_id && /[0-9a-f]{2}[:.-][0-9a-f]{2}/i.test(p.neighbor.remote_chassis_id) && (
+                              <span className="text-[9px] font-mono text-[var(--text-secondary)]">
+                                MAC: <span className="text-neutral-300">{p.neighbor.remote_chassis_id}</span>
+                              </span>
+                            )}
+                            {/* Riga 4: porta remota di collegamento */}
+                            {(p.neighbor.remote_port_desc || p.neighbor.remote_port_id) && (
+                              <span className="text-[9px] font-mono text-[var(--text-secondary)]">
+                                porta: <span className="text-violet-300">{p.neighbor.remote_port_desc || p.neighbor.remote_port_id}</span>
+                              </span>
+                            )}
+                          </div>
                         </div>
                       ) : (
                         <span className="text-[10px] text-[var(--text-muted)] italic">—</span>
