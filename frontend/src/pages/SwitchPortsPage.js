@@ -15,7 +15,7 @@ import { API } from "@/App";
 import { toast } from "sonner";
 import {
   ArrowsClockwise, Lightning, WifiHigh, Stack, Cloud, Desktop,
-  Prohibit, Plugs, ArrowDown, ArrowUp, Cpu,
+  Prohibit, Plugs, ArrowDown, ArrowUp, Cpu, CaretUp, CaretDown,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import PortCableView from "@/components/PortCableView";
@@ -263,6 +263,20 @@ export default function SwitchPortsPage() {
   const [filter, setFilter] = useState("all");
   const [selected, setSelected] = useState(null);
   const [cableView, setCableView] = useState(null);
+  // Ordinamento tabella (header cliccabili)
+  const [sortBy, setSortBy] = useState("idx");     // idx|name|status|speed|rx|tx|poe|neighbor
+  const [sortDir, setSortDir] = useState("asc");   // asc|desc
+  // Flag "solo accese" della tabella completa
+  const [tableOnlyUp, setTableOnlyUp] = useState(false);
+
+  const toggleSort = (col) => {
+    if (sortBy === col) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortBy(col);
+      setSortDir("asc");
+    }
+  };
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -299,6 +313,38 @@ export default function SwitchPortsPage() {
       return true;
     });
   }, [data, filter]);
+
+  // Ports ordinati + filtrati per la tabella completa (solo-UP toggle)
+  const tablePorts = useMemo(() => {
+    let list = tableOnlyUp
+      ? ports.filter((p) => p.oper === 1 && p.admin === 1)
+      : ports;
+    const dir = sortDir === "asc" ? 1 : -1;
+    const keyFn = {
+      idx: (p) => p.idx || 0,
+      name: (p) => (p.name || "").toLowerCase(),
+      status: (p) => (p.admin === 2 ? 2 : p.oper === 1 ? 0 : 1),  // UP<DOWN<ADMIN
+      speed: (p) => p.speed_mbps || 0,
+      rx: (p) => p.rx_bps || 0,
+      tx: (p) => p.tx_bps || 0,
+      poe: (p) => p.poe_status === 3 ? 1 : 0,
+      neighbor: (p) => (p.neighbor?.remote_device_name || p.neighbor?.remote_sys_name || "").toLowerCase(),
+    }[sortBy] || ((p) => p.idx || 0);
+    return [...list].sort((a, b) => {
+      const ka = keyFn(a);
+      const kb = keyFn(b);
+      if (ka < kb) return -1 * dir;
+      if (ka > kb) return 1 * dir;
+      return 0;
+    });
+  }, [ports, sortBy, sortDir, tableOnlyUp]);
+
+  const SortIcon = ({ col }) => {
+    if (sortBy !== col) return <CaretUp size={9} className="opacity-30 inline ml-0.5" />;
+    return sortDir === "asc"
+      ? <CaretUp size={9} className="inline ml-0.5 text-cyan-300" />
+      : <CaretDown size={9} className="inline ml-0.5 text-cyan-300" />;
+  };
 
   if (loading && !data) return <div className="p-6 text-[var(--text-muted)] text-sm">Caricamento…</div>;
   if (!data) return <div className="p-6 text-[var(--text-muted)] text-sm">Nessun dato</div>;
@@ -393,25 +439,54 @@ export default function SwitchPortsPage() {
 
       {/* Tabella riepilogo (collassabile su mobile) */}
       <details className="noc-panel" open>
-        <summary className="cursor-pointer px-3 py-2 text-[12px] font-semibold border-b border-[var(--bg-border)] hover:bg-[var(--bg-hover)]">
-          Tabella completa ({ports.length})
+        <summary className="cursor-pointer px-3 py-2 text-[12px] font-semibold border-b border-[var(--bg-border)] hover:bg-[var(--bg-hover)] flex items-center gap-3">
+          <span>Tabella completa ({tablePorts.length}{tableOnlyUp ? `/${ports.length}` : ""})</span>
+          <label
+            className="ml-auto flex items-center gap-1.5 text-[10px] font-normal text-[var(--text-secondary)] cursor-pointer"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <input
+              type="checkbox"
+              checked={tableOnlyUp}
+              onChange={(e) => setTableOnlyUp(e.target.checked)}
+              className="accent-emerald-400"
+              data-testid="switch-ports-only-up"
+            />
+            <span>Solo porte accese (UP)</span>
+          </label>
         </summary>
         <div className="overflow-x-auto">
           <table className="noc-table w-full text-[11px]" data-testid="switch-ports-table">
             <thead>
               <tr>
-                <th>#</th>
-                <th>Nome</th>
-                <th>Stato</th>
-                <th>Speed</th>
-                <th>Rx</th>
-                <th>Tx</th>
-                <th>PoE</th>
-                <th>Connesso a</th>
+                <th className="cursor-pointer hover:text-cyan-300 select-none" onClick={() => toggleSort("idx")} data-testid="sort-idx">
+                  # <SortIcon col="idx" />
+                </th>
+                <th className="cursor-pointer hover:text-cyan-300 select-none" onClick={() => toggleSort("name")} data-testid="sort-name">
+                  Nome <SortIcon col="name" />
+                </th>
+                <th className="cursor-pointer hover:text-cyan-300 select-none" onClick={() => toggleSort("status")} data-testid="sort-status">
+                  Stato <SortIcon col="status" />
+                </th>
+                <th className="cursor-pointer hover:text-cyan-300 select-none" onClick={() => toggleSort("speed")} data-testid="sort-speed">
+                  Speed <SortIcon col="speed" />
+                </th>
+                <th className="cursor-pointer hover:text-cyan-300 select-none" onClick={() => toggleSort("rx")} data-testid="sort-rx">
+                  Rx <SortIcon col="rx" />
+                </th>
+                <th className="cursor-pointer hover:text-cyan-300 select-none" onClick={() => toggleSort("tx")} data-testid="sort-tx">
+                  Tx <SortIcon col="tx" />
+                </th>
+                <th className="cursor-pointer hover:text-cyan-300 select-none" onClick={() => toggleSort("poe")} data-testid="sort-poe">
+                  PoE <SortIcon col="poe" />
+                </th>
+                <th className="cursor-pointer hover:text-cyan-300 select-none" onClick={() => toggleSort("neighbor")} data-testid="sort-neighbor">
+                  Connesso a <SortIcon col="neighbor" />
+                </th>
               </tr>
             </thead>
             <tbody>
-              {ports.map(p => {
+              {tablePorts.map(p => {
                 const isUp = p.oper === 1 && p.admin === 1;
                 const isPoe = p.poe_status === 3;
                 return (
