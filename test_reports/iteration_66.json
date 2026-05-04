@@ -28,7 +28,7 @@
     "frontend": "Steps 1-6: 100% PASS. Step 7 delta (correct set of PUTs): PASS. Step 7 end-to-end: PARTIAL (blocked by residual backend 404 on /monitor-type, already documented)."
   },
   "test_credentials": {"admin": "admin@86bit.it / password"},
-  "seed_data_creation": "No new seed. Used existing client da3d6e40-b3e5-4d46-9787-dde328a3aa36 / device 192.168.1.3 (id=device-alerts). Cleanup confirmed: alerts_silenced=false, monitor_type=snmp (unchanged — 404 on update side meant DB never moved).",
+  "seed_data_creation": "No new seed. Used existing client da3d6e40-b3e5-4d46-9787-dde328a3aa36 / device 192.168.1.3 (id=alert-hub-dev-1). Cleanup confirmed: alerts_silenced=false, monitor_type=snmp (unchanged — 404 on update side meant DB never moved).",
   "retest_needed": false,
   "should_main_agent_self_test": false,
   "context_for_next_testing_agent": "All 3 UX fixes from iteration_65 are confirmed working: (1) DeviceEditModal useEffect re-seed on device prop change, (2) save() dirty-detection gating of the 3 PUTs, (3) ClientOverviewPage optimistic update via setDevices+onSaved. Remaining work is strictly backend: apply the /silence resolver fallback to /monitor-type and /snmp. If you get asked to retest after the backend fix, the expected outcome for STEP 7 is: 2 PUTs both 200, no toast error, badge appears in <1s, modal closes, onSaved fires, optimistic update includes monitor_type change.",

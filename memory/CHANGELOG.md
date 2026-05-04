@@ -50,6 +50,33 @@ Estende il discovery automatico della topologia per supportare **CDP (Cisco Disc
 
 # CHANGELOG — 86BIT ARGUS Center
 
+## 2026-02-13 — FIX URGENTE: ripristino pulsante "Porte switch" nella tabella device
+
+### Problema
+L'utente ha segnalato che il pulsante "Porte switch" non funzionava piu' come
+prima nella lista dispositivi del cliente (`ClientOverviewPage` > tab Dispositivi).
+Una sessione precedente aveva rimosso interamente il blocco JSX che renderizzava
+l'icona `NetworkSlash` accanto a ogni riga device (commit `43bb07a`, 58 righe
+eliminate da `ClientOverviewPage.js`). Rimaneva solo il pulsante nella scheda
+info popup (`DeviceInfoCard`), ma non era quello che l'utente usava quotidianamente.
+
+### Fix
+- `frontend/src/pages/ClientOverviewPage.js` — ripristinato il blocco di detection
+  multi-segnale (device_type / model / hostname / profile_key / vendor) e il
+  pulsante icona `NetworkSlash` che naviga a `/switch-ports/:ip`. Inserito tra
+  l'icona "Info" e l'icona "Trend" come era prima.
+- Nessuna modifica a `SwitchPortsPage.js`, `App.js`, routing o `ErrorBoundary`.
+
+### Verifica
+- Login admin@86bit.it su preview → Clienti → 86BIT_Office → Dispositivi.
+- 3 icone `Porte switch` visibili accanto agli switch (switch-test, Auto-192.168.1.3,
+  TestSwitch). I device unknown non mostrano l'icona. Click → naviga correttamente
+  a `/switch-ports/:ip` e mostra la pagina completa (empty state amber nel preview
+  perche' non ci sono dati SNMP; in produzione con Connector attivo appariranno
+  tutti i dati).
+
+
+
 ## 2026-02-13 — v3.7.6 FIX DOS box + pulsante OK tagliato (DPI 125%/150%)
 
 ### Problemi risolti

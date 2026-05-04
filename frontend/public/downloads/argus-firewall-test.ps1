@@ -84,7 +84,7 @@ Section "ARGUS Firewall Test + Auto-Restore"
 Write-Host "  Testa connettivita verso 2 Center e ripristina config al prod"
 
 Section "1. Test Center PREVIEW (Kubernetes)"
-$r1 = TestHost "Preview" "noc-monitor-hub.preview.emergentagent.com" "https://device-alerts.preview.emergentagent.com"
+$r1 = TestHost "Preview" "noc-monitor-hub.preview.emergentagent.com" "https://alert-hub-dev-1.preview.emergentagent.com"
 
 Section "2. Test Center PROD (argus.86bit.it)"
 $r2 = TestHost "Prod" "argus.86bit.it" "https://argus.86bit.it"
@@ -135,7 +135,7 @@ if (-not $r1.HttpOk -and $r2.HttpOk) {
     Write-Host "    -> SOLUZIONE: deploy del backend Python aggiornato su IIS." -ForegroundColor Yellow
     Write-Host ""
     Write-Host "    Pacchetto deploy:" -ForegroundColor Cyan
-    Write-Host "      https://device-alerts.preview.emergentagent.com/downloads/argus-backend-deploy.zip" -ForegroundColor White
+    Write-Host "      https://alert-hub-dev-1.preview.emergentagent.com/downloads/argus-backend-deploy.zip" -ForegroundColor White
     Write-Host ""
     Write-Host "    Procedura assistita: dopo aver scaricato e estratto, lancia deploy.ps1 da admin" -ForegroundColor Cyan
 } elseif ($r1.HttpOk -and $r2.HttpOk) {
