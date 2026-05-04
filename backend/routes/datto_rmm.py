@@ -211,45 +211,65 @@ async def _get_datto_creds() -> tuple[str, str, str, str]:
     )
 
 
-async def _fetch_devices_list_all(timeout: float = 30.0) -> list[dict]:
-    """Scarica la lista completa dei device Datto in una singola richiesta.
+async def _fetch_devices_list_all(timeout: float = 60.0) -> list[dict]:
+    """Scarica TUTTI i device Datto paginando il wrapper.
 
-    Il wrapper `portal.86bit.it/api/v1/reports/datto/getDattoDevices` restituisce
-    l'intero elenco del tenant in un unico payload (no paginazione client-side).
-    Il campo `pageDetails.totalCount` che arriva dal wrapper e' un artefatto
-    legacy del protocollo Datto Centrastage e non corrisponde al numero reale
-    di device — quello vero e' `len(devices)`.
+    Il wrapper `portal.86bit.it/api/v1/reports/datto/getDattoDevices` ora
+    supporta `?page=N&max=250` (cap 250 per pagina).
+    Itera finche':
+      - pagina ritorna < max device (ultima pagina), oppure
+      - primo uid della pagina corrente == primo uid pagina precedente
+        (safety net: wrapper non supporta la pagina richiesta)
+      - hard cap 50 pagine (= 12'500 device massimo)
     """
     api_key, user_id, base_url, _ = await _get_datto_creds()
-    params = {"api_key": api_key, "userId": user_id, "json": "true"}
-    try:
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-            resp = await client.get(base_url, params=params)
-    except httpx.RequestError:
-        raise HTTPException(status_code=502, detail="Errore rete Datto API")
-    if resp.status_code != 200:
-        raise HTTPException(
-            status_code=resp.status_code,
-            detail=f"Datto API ha risposto {resp.status_code}",
-        )
-    try:
-        data = resp.json()
-    except Exception:
-        raise HTTPException(status_code=502, detail="Risposta Datto non JSON")
-    dd = data.get("dattoDevices") if isinstance(data, dict) else None
-    devices = (dd or {}).get("devices") or []
-    if not isinstance(devices, list):
-        return []
-    # Dedup per uid (safety netto)
+    MAX_PER_PAGE = 250
+    MAX_PAGES = 50
+    all_devices: list[dict] = []
+    prev_first_uid: Optional[str] = None
+    page = 0
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        while page < MAX_PAGES:
+            params = {
+                "api_key": api_key, "userId": user_id, "json": "true",
+                "page": page, "max": MAX_PER_PAGE,
+            }
+            try:
+                resp = await client.get(base_url, params=params)
+            except httpx.RequestError:
+                raise HTTPException(status_code=502, detail="Errore rete Datto API")
+            if resp.status_code != 200:
+                raise HTTPException(
+                    status_code=resp.status_code,
+                    detail=f"Datto API ha risposto {resp.status_code}",
+                )
+            try:
+                data = resp.json()
+            except Exception:
+                raise HTTPException(status_code=502, detail="Risposta Datto non JSON")
+            dd = data.get("dattoDevices") if isinstance(data, dict) else None
+            devs = (dd or {}).get("devices") or []
+            if not isinstance(devs, list) or not devs:
+                break
+            first_uid = str(devs[0].get("uid") or devs[0].get("id") or "")
+            if prev_first_uid is not None and first_uid == prev_first_uid:
+                # wrapper non paginato davvero: stessa pagina ritornata
+                break
+            prev_first_uid = first_uid
+            all_devices.extend(devs)
+            if len(devs) < MAX_PER_PAGE:
+                break  # ultima pagina
+            page += 1
+    # Dedup per uid
     seen: set = set()
     unique: list[dict] = []
-    for d in devices:
+    for d in all_devices:
         u = str(d.get("uid") or d.get("id") or "")
         if not u or u in seen:
             continue
         seen.add(u)
         unique.append(d)
-    logger.info(f"datto_list_fetched total={len(unique)}")
+    logger.info(f"datto_list_fetched pages={page + 1} total={len(unique)}")
     return unique
 
 
@@ -265,18 +285,16 @@ def _group_devices_by_site(devices: list[dict]) -> list[dict]:
     return list(sites.values())
 
 
-async def _fetch_all_sites_from_portal(timeout: float = 20.0) -> list[dict]:
-    """Fetch l'elenco completo dei siti Datto dal portal (endpoint `getDattoSites`).
+async def _fetch_all_sites_from_portal(timeout: float = 60.0) -> list[dict]:
+    """Fetch paginato dell'elenco completo dei siti Datto dal portal
+    (`getDattoSites`). Usa `?page=N&max=250` e itera finche' arrivano pagine
+    non vuote (stesso protocollo di getDattoDevices).
 
-    Quando il wrapper 86bit sara' fixato per popolare l'array (attualmente
-    restituisce {success:true, count:128, devices:[]}), questo ritornera'
-    TUTTI i siti — inclusi quelli con 0 device o oltre il limite di 250
-    restituiti da getDattoDevices.
+    Quando il wrapper 86bit popolera' l'array (attualmente ritorna
+    `{success:true, count:128, devices:[]}`), questo ritornera' TUTTI i siti —
+    inclusi quelli con 0 device.
 
     Accetta qualsiasi shape: sites:[...], data:[...], items:[...], devices:[...].
-    Ritorna lista normalizzata di {site_id, site_name, device_count?}.
-    Se l'endpoint non esiste o l'array e' vuoto, ritorna [] (fallback su siti
-    derivati da getDattoDevices).
     """
     cfg = await db.datto_settings.find_one({"id": "global"}, {"_id": 0})
     if not cfg:
@@ -287,53 +305,71 @@ async def _fetch_all_sites_from_portal(timeout: float = 20.0) -> list[dict]:
         return []
     sites_url = cfg.get("sites_url") or DEFAULT_SITES_URL
     user_id = cfg.get("user_id", "")
-    params = {"api_key": api_key, "userId": user_id, "json": "true"}
-    try:
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-            resp = await client.get(sites_url, params=params)
-    except httpx.RequestError:
-        return []
-    if resp.status_code != 200:
-        return []
-    try:
-        data = resp.json()
-    except Exception:
-        return []
-    if not isinstance(data, dict):
-        return []
-    # Cerca l'array siti in qualsiasi chiave standard
-    arr: Any = None
-    for k in ("sites", "data", "items", "result", "devices"):
-        v = data.get(k)
-        if isinstance(v, list) and v:
-            arr = v
-            break
-    if not arr:
-        # Endpoint ritorna count ma array vuoto (bug wrapper): log e ritorna []
-        declared = data.get("count")
-        if declared:
-            logger.info(f"datto_sites_endpoint_empty declared_count={declared}")
-        return []
+    MAX_PER_PAGE = 250
+    MAX_PAGES = 20
+    collected: list[dict] = []
+    prev_first_id: Optional[str] = None
+    page = 0
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        while page < MAX_PAGES:
+            params = {
+                "api_key": api_key, "userId": user_id, "json": "true",
+                "page": page, "max": MAX_PER_PAGE,
+            }
+            try:
+                resp = await client.get(sites_url, params=params)
+            except httpx.RequestError:
+                break
+            if resp.status_code != 200:
+                break
+            try:
+                data = resp.json()
+            except Exception:
+                break
+            if not isinstance(data, dict):
+                break
+            arr = None
+            for k in ("sites", "data", "items", "result", "devices"):
+                v = data.get(k)
+                if isinstance(v, list) and v:
+                    arr = v
+                    break
+            if not arr:
+                if page == 0 and data.get("count"):
+                    logger.info(f"datto_sites_endpoint_empty declared_count={data.get('count')}")
+                break
+            first_id = str(arr[0].get("siteUid") or arr[0].get("uid")
+                           or arr[0].get("site_id") or arr[0].get("id") or "")
+            if prev_first_id is not None and first_id == prev_first_id:
+                break
+            prev_first_id = first_id
+            collected.extend(arr)
+            if len(arr) < MAX_PER_PAGE:
+                break
+            page += 1
+    # Normalizza + dedup
+    seen: set = set()
     normalized: list[dict] = []
-    for it in arr:
+    for it in collected:
         if not isinstance(it, dict):
             continue
         sid = str(
             it.get("siteUid") or it.get("uid") or it.get("site_id")
             or it.get("siteId") or it.get("id") or ""
         ).strip()
+        if not sid or sid in seen:
+            continue
+        seen.add(sid)
         sname = (
             it.get("siteName") or it.get("name") or it.get("site_name")
             or it.get("description") or sid
         )
-        if not sid:
-            continue
         normalized.append({
             "site_id": sid,
             "site_name": str(sname),
             "device_count": int(it.get("deviceCount") or it.get("device_count") or 0),
         })
-    logger.info(f"datto_sites_portal fetched={len(normalized)}")
+    logger.info(f"datto_sites_portal pages={page + 1} fetched={len(normalized)}")
     return normalized
 
 
@@ -804,3 +840,80 @@ async def list_datto_devices_for_client(
         "count": len(devs),
         "matched": matched_count,
     }
+
+# ---------------------------------------------------------------------------
+# Endpoint BROWSE paginato — UI Prev/Next
+# ---------------------------------------------------------------------------
+from fastapi import Query
+
+
+@router.get("/datto/browse/devices")
+async def browse_datto_devices(
+    client_id: Optional[str] = Query(default=None),
+    page: int = Query(default=0, ge=0, le=10000),
+    size: int = Query(default=25, ge=5, le=250),
+    only_matched: bool = Query(default=False),
+    current_user: dict = Depends(get_current_user),
+):
+    """Paginazione lato server dei device Datto sincronizzati.
+    Ritorna SOLO {name, mac, ip, matched, site_name} — privacy-hardened.
+    """
+    q: dict = {}
+    if client_id:
+        q["client_id"] = client_id
+    if only_matched:
+        q["matched"] = True
+    projection = {
+        "_id": 0, "name": 1, "mac": 1, "ip": 1,
+        "matched": 1, "matched_at": 1, "site_name": 1,
+    }
+    total = await db.datto_devices.count_documents(q)
+    skip = page * size
+    devs = await db.datto_devices.find(q, projection).sort("name", 1).skip(skip).limit(size).to_list(size)
+    items = [
+        {
+            "name": d.get("name", ""),
+            "mac": d.get("mac", ""),
+            "ip": d.get("ip", ""),
+            "matched": bool(d.get("matched")),
+            "site_name": d.get("site_name", ""),
+        }
+        for d in devs
+    ]
+    total_pages = max(1, (total + size - 1) // size)
+    return {
+        "items": items,
+        "page": page,
+        "size": size,
+        "total": total,
+        "total_pages": total_pages,
+        "has_prev": page > 0,
+        "has_next": page + 1 < total_pages,
+    }
+
+
+@router.get("/datto/browse/sites")
+async def browse_datto_sites(
+    page: int = Query(default=0, ge=0, le=10000),
+    size: int = Query(default=25, ge=5, le=250),
+    current_user: dict = Depends(get_current_user),
+):
+    """Paginazione lato server dei siti Datto cached.
+    Utile per UI "tutti i siti Datto" con Prev/Next.
+    """
+    total = await db.datto_sites_cache.count_documents({})
+    skip = page * size
+    sites = await db.datto_sites_cache.find(
+        {}, {"_id": 0},
+    ).sort("site_name", 1).skip(skip).limit(size).to_list(size)
+    total_pages = max(1, (total + size - 1) // size)
+    return {
+        "items": sites,
+        "page": page,
+        "size": size,
+        "total": total,
+        "total_pages": total_pages,
+        "has_prev": page > 0,
+        "has_next": page + 1 < total_pages,
+    }
+

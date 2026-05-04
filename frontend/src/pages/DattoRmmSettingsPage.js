@@ -6,6 +6,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ArrowLeft, ShieldCheck, Trash, Plug, Sparkle, ArrowsClockwise } from "@phosphor-icons/react";
+import DattoBrowser from "@/components/DattoBrowser";
+import ErrorBoundary from "@/components/ErrorBoundary";
 
 const API = process.env.REACT_APP_BACKEND_URL;
 
@@ -305,6 +307,23 @@ export default function DattoRmmSettingsPage() {
             💡 Quando linki un cliente, viene fatto immediatamente un sync. Ogni device Datto con MAC o IP che corrisponde
             ad un MAC visto nelle FDB degli switch verra' usato per nominare quel device sulle porte (badge violetto "DATTO" in Vista Cavo).
           </p>
+        </div>
+      )}
+
+      {/* Datto Browser: Siti/Device paginati */}
+      {config?.configured && (
+        <div className="rounded-lg border border-[var(--bg-border)] bg-[var(--bg-card)] p-4 space-y-3" data-testid="datto-browser-section">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="text-sm font-bold text-[var(--text-primary)]">Esplora Datto RMM</h3>
+              <p className="text-[10px] text-[var(--text-muted)] mt-0.5">
+                Vista paginata di tutti i siti e dispositivi sincronizzati dal portale. Solo nome/MAC/IP visibili — dati sensibili cifrati.
+              </p>
+            </div>
+          </div>
+          <ErrorBoundary label="Esplora Datto">
+            <DattoBrowser />
+          </ErrorBoundary>
         </div>
       )}
     </div>
