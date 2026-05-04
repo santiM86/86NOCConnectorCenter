@@ -441,29 +441,62 @@ export default function SwitchPortsPage() {
                     </td>
                     <td>
                       {p.neighbor ? (
-                        <div className="flex items-center gap-1 text-[10px]">
-                          <PortIcon p={p} size={11} />
-                          {p.neighbor.remote_ip ? (
-                            <Link to={`/devices/${encodeURIComponent(p.neighbor.remote_ip)}`}
-                                  className="text-cyan-300 hover:underline truncate max-w-[160px]"
-                                  onClick={(e) => e.stopPropagation()}>
-                              {p.neighbor.remote_device_name || p.neighbor.remote_sys_name}
-                            </Link>
-                          ) : (
-                            <span className={`truncate max-w-[160px] ${p.neighbor.match_source === "mac_oui" ? "text-amber-300" : "text-neutral-300"}`}>
-                              {p.neighbor.remote_device_name || p.neighbor.remote_sys_name}
-                            </span>
-                          )}
-                          {p.neighbor.match_source === "lldp" && (
-                            <span className="px-0.5 rounded bg-emerald-500/20 text-emerald-300 text-[8px] font-bold">L</span>
-                          )}
-                          {p.neighbor.match_source === "mac_managed" && (
-                            <span className="px-0.5 rounded bg-cyan-500/20 text-cyan-300 text-[8px] font-bold">M</span>
-                          )}
-                          {p.neighbor.match_source === "mac_oui" && (
-                            <span className="px-0.5 rounded bg-amber-500/20 text-amber-300 text-[8px] font-bold">V</span>
-                          )}
-                          {p.neighbor.remote_port_desc && <span className="text-[var(--text-muted)]">·{p.neighbor.remote_port_desc}</span>}
+                        <div className="flex items-start gap-1.5 text-[10px]">
+                          <PortIcon p={p} size={13} />
+                          <div className="flex flex-col leading-tight min-w-0">
+                            {/* Riga 1: NOME (grassetto) + badge sorgente match */}
+                            <div className="flex items-center gap-1 flex-wrap">
+                              {p.neighbor.remote_ip ? (
+                                <Link to={`/devices/${encodeURIComponent(p.neighbor.remote_ip)}`}
+                                      className="font-bold text-[11px] text-cyan-200 hover:text-cyan-100 hover:underline truncate max-w-[220px]"
+                                      onClick={(e) => e.stopPropagation()}
+                                      data-testid={`port-neighbor-name-${p.idx}`}>
+                                  {p.neighbor.remote_device_name || p.neighbor.remote_sys_name || p.neighbor.remote_ip}
+                                </Link>
+                              ) : (
+                                <span className={`font-bold text-[11px] truncate max-w-[220px] ${p.neighbor.match_source === "mac_oui" ? "text-amber-200" : "text-neutral-100"}`}
+                                      data-testid={`port-neighbor-name-${p.idx}`}>
+                                  {p.neighbor.remote_device_name || p.neighbor.remote_sys_name || "(sconosciuto)"}
+                                </span>
+                              )}
+                              {p.neighbor.match_source === "lldp" && (
+                                <span className="px-1 rounded bg-emerald-500/20 text-emerald-300 text-[8px] font-bold" title="LLDP">L</span>
+                              )}
+                              {p.neighbor.match_source === "datto_rmm" && (
+                                <span className="px-1 rounded bg-fuchsia-500/20 text-fuchsia-300 text-[8px] font-bold" title="Datto RMM">DATTO</span>
+                              )}
+                              {p.neighbor.match_source === "mac_managed" && (
+                                <span className="px-1 rounded bg-cyan-500/20 text-cyan-300 text-[8px] font-bold" title="Managed">M</span>
+                              )}
+                              {p.neighbor.match_source === "mac_manual" && (
+                                <span className="px-1 rounded bg-violet-500/20 text-violet-300 text-[8px] font-bold" title="Binding manuale">B</span>
+                              )}
+                              {p.neighbor.match_source === "mac_fdb_trunk" && (
+                                <span className="px-1 rounded bg-sky-500/20 text-sky-300 text-[8px] font-bold" title="Trunk FDB">T</span>
+                              )}
+                              {p.neighbor.match_source === "mac_oui" && (
+                                <span className="px-1 rounded bg-amber-500/20 text-amber-300 text-[8px] font-bold" title="OUI vendor">V</span>
+                              )}
+                            </div>
+                            {/* Riga 2: IP */}
+                            {p.neighbor.remote_ip && (
+                              <span className="text-[9px] font-mono text-[var(--text-secondary)]">
+                                IP: <span className="text-cyan-300">{p.neighbor.remote_ip}</span>
+                              </span>
+                            )}
+                            {/* Riga 3: MAC (remote_chassis_id contiene il MAC su LLDP/datto/mac_managed) */}
+                            {p.neighbor.remote_chassis_id && /[0-9a-f]{2}[:.-][0-9a-f]{2}/i.test(p.neighbor.remote_chassis_id) && (
+                              <span className="text-[9px] font-mono text-[var(--text-secondary)]">
+                                MAC: <span className="text-neutral-300">{p.neighbor.remote_chassis_id}</span>
+                              </span>
+                            )}
+                            {/* Riga 4: porta remota di collegamento */}
+                            {(p.neighbor.remote_port_desc || p.neighbor.remote_port_id) && (
+                              <span className="text-[9px] font-mono text-[var(--text-secondary)]">
+                                porta: <span className="text-violet-300">{p.neighbor.remote_port_desc || p.neighbor.remote_port_id}</span>
+                              </span>
+                            )}
+                          </div>
                         </div>
                       ) : (
                         <span className="text-[10px] text-[var(--text-muted)] italic">—</span>
