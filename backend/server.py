@@ -228,6 +228,7 @@ from routes.port_monitor import router as port_monitor_router
 from routes.public_dashboard import router as public_dashboard_router
 from routes.notification_config import router as notification_config_router
 from routes.printers import router as printers_router
+from routes.printer_discovery import router as printer_discovery_router
 from routes.tv_dashboard import router as tv_dashboard_router
 from routes.vulnerability import router as vulnerability_router
 from routes.advanced_features import router as advanced_features_router
@@ -283,6 +284,7 @@ app.include_router(port_monitor_router)
 app.include_router(public_dashboard_router)
 app.include_router(notification_config_router)
 app.include_router(printers_router)
+app.include_router(printer_discovery_router)
 app.include_router(tv_dashboard_router)
 app.include_router(vulnerability_router)
 app.include_router(advanced_features_router)
