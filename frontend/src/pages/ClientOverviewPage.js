@@ -990,6 +990,7 @@ function DeviceGroup({ label, icon: Icon, devices, color }) {
 
 /* ==================== DEVICES TAB ==================== */
 function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
+  const navigate = useNavigate();
   const [showAdd, setShowAdd] = useState(false);
   const [profileTarget, setProfileTarget] = useState(null);
   const [infoTarget, setInfoTarget] = useState(null);
@@ -1295,29 +1296,52 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
                       >
                         <Info size={13} />
                       </button>
-                      {/* Porte Switch: detection multi-segnale (device_type / model / hostname) */}
+                      {/* Porte Switch: detection multi-segnale (device_type / model / hostname / profile / vendor) */}
                       {(() => {
                         const dt = (d.device_type || "").toLowerCase();
                         const modelL = (d.model || d.sys_descr || "").toLowerCase();
                         const nameL = (d.name || "").toLowerCase();
+                        const hostL = (d.hostname || "").toLowerCase();
+                        const vendorL = (d.vendor || "").toLowerCase();
+                        const profileL = (d.profile_key || "").toLowerCase();
+                        const osL = (d.os_family || "").toLowerCase();
                         const kw = [
                           "switch", "router", "firewall", "gateway",
                           "catalyst", "nexus", "meraki",
-                          "procurve", "aruba", "5130", "5140", "5900",
+                          "procurve", "aruba", "5130", "5140", "5500", "5900", "5940",
+                          "jg937", "jg938", "jl", "jg",
                           "ex2300", "ex3400", "ex4300", "srx",
                           "fortigate", "fortiswitch", "fortiap",
-                          "zyxel", "xgs", "gs1900", "gs2200",
+                          "zyxel", "xgs", "gs1900", "gs2200", "usg",
                           "mikrotik", "routerboard", "ccr", "crs",
-                          "unifi", "edgerouter", "edgeswitch", "usg",
+                          "unifi", "edgerouter", "edgeswitch",
                           "dgs-", "dxs-",
                           "powerconnect", "n1500", "n2000", "n3000",
-                          "huawei", "s5700", "s6700", "ar2200",
+                          "s5700", "s6700", "ar2200",
                           "pfsense", "opnsense",
                         ];
-                        const matches = kw.some((k) => modelL.includes(k) || nameL.includes(k));
+                        const matches = kw.some((k) =>
+                          modelL.includes(k) || nameL.includes(k) || hostL.includes(k));
+                        const networkOs = [
+                          "comware", "hpe-comware", "hp-comware",
+                          "cisco-ios", "ios-xe", "ios-xr", "nxos", "nx-os",
+                          "aruba-os", "arubaos", "junos", "juniper-junos",
+                          "fortios", "fortiswitch-os", "routeros",
+                          "zld", "zynos", "edgeos", "unifi-os",
+                        ];
+                        const matchesOs =
+                          networkOs.some((k) => dt.includes(k) || osL.includes(k) || profileL.includes(k));
+                        const netVendors = [
+                          "hpe", "hp", "aruba", "cisco", "meraki", "juniper",
+                          "fortinet", "fortigate", "mikrotik", "ubiquiti",
+                          "zyxel", "d-link", "dell networking", "huawei", "brocade",
+                          "ruckus", "netgear", "tp-link",
+                        ];
+                        const matchesVendorProfile =
+                          profileL && netVendors.some((v) => vendorL === v || vendorL.includes(v));
                         const isSwitchLike =
                           dt.includes("switch") || dt.includes("router") || dt.includes("firewall") ||
-                          dt === "network-device" || matches;
+                          dt === "network-device" || matches || matchesOs || matchesVendorProfile;
                         if (!isSwitchLike) return null;
                         return (
                           <button
