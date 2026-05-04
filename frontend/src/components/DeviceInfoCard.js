@@ -1,9 +1,10 @@
 import { useState, useEffect } from "react";
 import axios from "axios";
+import { Link } from "react-router-dom";
 import {
   Desktop, Cpu, HardDrives, Thermometer, Info, MapPin, Package, Shield, Barcode,
   Calendar, Globe, ArrowsClockwise, Warning, CheckCircle, CircleNotch,
-  ChartLineUp,
+  ChartLineUp, Stack,
 } from "@phosphor-icons/react";
 import AllMetricsDialog from "@/components/AllMetricsDialog";
 import { VendorDetailsPanel } from "@/components/VendorDetailsPanel";
@@ -222,6 +223,16 @@ export default function DeviceInfoCard({ deviceIp, onClose = null, compact = fal
             )}
           </div>
           <div className="flex items-center gap-2">
+            {isSnmpMonitored && (
+              <Link
+                to={`/switch-ports/${encodeURIComponent(id.ip || deviceIp)}`}
+                title="Vedi porte switch (Up/Down/PoE/Uplink/LLDP)"
+                className="px-2.5 py-1.5 text-[11px] rounded-md border border-cyan-500/40 bg-cyan-500/10 text-cyan-300 hover:bg-cyan-500/20 hover:border-cyan-400 flex items-center gap-1.5 transition-colors"
+                data-testid="device-info-card-view-ports-btn">
+                <Stack size={13} weight="bold" />
+                <span className="hidden sm:inline">Porte switch</span>
+              </Link>
+            )}
             <button
               onClick={() => setShowAllMetrics(true)}
               title="Mostra tutte le metriche raccolte"

@@ -947,6 +947,163 @@ def build_lldp_edges(lldp_neighbors, device_ips):
     return edges
 
 
+def build_cdp_edges(cdp_neighbors, device_ips, existing_pairs):
+    """Build edges from CDP neighbor data, skipping pairs already covered (e.g. by LLDP)."""
+    edges = []
+    seen = set(existing_pairs)
+    ip_set = set(device_ips)
+
+    for neighbor in cdp_neighbors:
+        local_ip = neighbor.get("local_ip", "")
+        remote_ip = neighbor.get("remote_ip", "")
+
+        target = remote_ip if remote_ip in ip_set else None
+        if not target:
+            continue
+
+        key = tuple(sorted([local_ip, target]))
+        if key in seen:
+            continue
+        seen.add(key)
+
+        local_port = neighbor.get("local_port_desc", neighbor.get("local_port_id", ""))
+        remote_port = neighbor.get("remote_port_desc", neighbor.get("remote_port_id", ""))
+        label_parts = []
+        if local_port:
+            label_parts.append(local_port)
+        if remote_port:
+            label_parts.append(remote_port)
+        label = " <-> ".join(label_parts) if label_parts else ""
+
+        edges.append({
+            "from": local_ip,
+            "to": target,
+            "type": "cdp",
+            "label": label,
+            "source": "cdp",
+            "local_port": local_port,
+            "remote_port": remote_port,
+        })
+
+    return edges
+
+
+def _ghost_type_from_cap(cap: int, sys_name: str = "", platform: str = "") -> str:
+    """Map LLDP/CDP capability bitmap (0x01..0x80) to a NOC device type."""
+    s = (sys_name or "").lower() + " " + (platform or "").lower()
+    if cap & 0x08 or "ap " in s or "access point" in s or "wireless" in s:
+        return "ap"
+    if cap & 0x20 or "phone" in s:
+        return "generic"  # IP phone -> generic icon
+    if cap & 0x10:
+        return "router"
+    if cap & 0x04 or "switch" in s:
+        return "switch"
+    return "generic"
+
+
+def build_ghost_nodes_and_edges(lldp_neighbors, cdp_neighbors, existing_node_ids, device_ips):
+    """Surface unmanaged LLDP/CDP neighbors as 'ghost' candidate nodes for auto-discovery.
+
+    Returns (ghost_nodes, ghost_edges, ghost_layer_node_ids).
+    Each ghost node has role='discovery_candidate' so the frontend can render it
+    as a dashed/outlined node and offer "Aggiungi come dispositivo managed".
+    """
+    ip_set = set(device_ips)
+    ghost_nodes = []
+    ghost_edges = []
+    layer_ids = []
+    # dedupe candidate by (remote_ip, sys_name)
+    seen_candidates: dict[str, dict] = {}
+
+    def _add_neighbor(n, source):
+        local_ip = n.get("local_ip", "")
+        remote_ip = (n.get("remote_ip") or "").strip()
+        sys_name = (n.get("remote_sys_name") or "").strip()
+        if not local_ip:
+            return
+        # Skip if remote is managed (already an edge target via build_*_edges)
+        if remote_ip and remote_ip in ip_set:
+            return
+        # Need at least an IP or sys_name to deduplicate
+        if not remote_ip and not sys_name:
+            return
+
+        cand_key = remote_ip or f"name::{sys_name}"
+        node_id = f"ghost-{cand_key.replace(':', '').replace('.', '_').replace(' ', '_')}"
+        if node_id in existing_node_ids:
+            # Add only the edge if the ghost was already created
+            ex_edge = {
+                "from": local_ip,
+                "to": node_id,
+                "type": source,
+                "label": (n.get("local_port_desc") or n.get("local_port_id") or "").strip(),
+                "source": source,
+            }
+            ghost_edges.append(ex_edge)
+            return
+
+        if cand_key in seen_candidates:
+            # Add additional edge for this ghost (multi-link discovery)
+            ghost_edges.append({
+                "from": local_ip,
+                "to": seen_candidates[cand_key]["id"],
+                "type": source,
+                "label": (n.get("local_port_desc") or n.get("local_port_id") or "").strip(),
+                "source": source,
+            })
+            return
+
+        cap = int(n.get("remote_sys_cap") or 0)
+        gtype = _ghost_type_from_cap(cap, sys_name, n.get("remote_platform", ""))
+        display_name = sys_name or remote_ip or "Vicino sconosciuto"
+        subtitle_parts = []
+        if remote_ip:
+            subtitle_parts.append(remote_ip)
+        if n.get("remote_platform"):
+            subtitle_parts.append(n.get("remote_platform"))
+        elif n.get("remote_sys_desc"):
+            sd = n.get("remote_sys_desc")
+            if len(sd) > 60:
+                sd = sd[:57] + "..."
+            subtitle_parts.append(sd)
+
+        ghost = {
+            "id": node_id,
+            "name": display_name,
+            "type": gtype,
+            "layer": 6,
+            "role": "discovery_candidate",
+            "reachable": True,
+            "ip": remote_ip,
+            "hostname": sys_name,
+            "subtitle": " | ".join(subtitle_parts),
+            "discovered_via": source,
+            "remote_chassis_id": n.get("remote_chassis_id", ""),
+            "remote_platform": n.get("remote_platform", ""),
+            "remote_sys_cap": cap,
+        }
+        ghost_nodes.append(ghost)
+        seen_candidates[cand_key] = ghost
+        existing_node_ids.add(node_id)
+        layer_ids.append(node_id)
+
+        ghost_edges.append({
+            "from": local_ip,
+            "to": node_id,
+            "type": source,
+            "label": (n.get("local_port_desc") or n.get("local_port_id") or "").strip(),
+            "source": source,
+        })
+
+    for n in lldp_neighbors or []:
+        _add_neighbor(n, "lldp")
+    for n in cdp_neighbors or []:
+        _add_neighbor(n, "cdp")
+
+    return ghost_nodes, ghost_edges, layer_ids
+
+
 def build_mac_edges(mac_connections, device_ips, port_speeds_data):
     """Build edges from MAC address table analysis."""
     edges = []
@@ -1006,13 +1163,18 @@ async def get_network_topology(client_id: str, current_user: dict = Depends(get_
     ).to_list(500)
     
     if not devices:
-        return {"nodes": [], "edges": [], "layers": [], "health": {"score": 0}, "has_custom_layout": False}
+        return {"nodes": [], "edges": [], "layers": [], "health": {"score": 0}, "has_custom_layout": False, "lldp_count": 0, "cdp_count": 0}
     
     # Calculate health from real device data
     health = calculate_health_score(devices)
     
     # Fetch LLDP neighbor data (if available)
     lldp_neighbors = await db.lldp_neighbors.find(
+        {"client_id": client_id}, {"_id": 0}
+    ).to_list(1000)
+
+    # Fetch CDP neighbor data (if available)
+    cdp_neighbors = await db.cdp_neighbors.find(
         {"client_id": client_id}, {"_id": 0}
     ).to_list(1000)
     
@@ -1054,6 +1216,7 @@ async def get_network_topology(client_id: str, current_user: dict = Depends(get_
             "client_name": client_name,
             "has_custom_layout": True,
             "lldp_count": len(lldp_neighbors),
+            "cdp_count": len(cdp_neighbors),
         }
     
     # No saved layout — return inferred topology, enriched with LLDP/MAC if available
@@ -1080,6 +1243,12 @@ async def get_network_topology(client_id: str, current_user: dict = Depends(get_
     if lldp_neighbors:
         lldp_edges = build_lldp_edges(lldp_neighbors, device_ips)
         discovered_edges.extend(lldp_edges)
+
+    # CDP edges (skip pairs already covered by LLDP)
+    if cdp_neighbors:
+        existing_pairs = set(tuple(sorted([e["from"], e["to"]])) for e in discovered_edges)
+        cdp_edges = build_cdp_edges(cdp_neighbors, device_ips, existing_pairs)
+        discovered_edges.extend(cdp_edges)
     
     # Also check MAC-based connections
     mac_connections = await db.mac_connections.find(
@@ -1091,13 +1260,13 @@ async def get_network_topology(client_id: str, current_user: dict = Depends(get_
     
     if mac_connections:
         mac_edges = build_mac_edges(mac_connections, device_ips, port_speeds_data)
-        # Only add MAC edges that don't overlap with LLDP
-        lldp_pairs = set(tuple(sorted([e["from"], e["to"]])) for e in discovered_edges)
+        # Only add MAC edges that don't overlap with LLDP/CDP
+        discovered_pairs = set(tuple(sorted([e["from"], e["to"]])) for e in discovered_edges)
         for me in mac_edges:
             key = tuple(sorted([me["from"], me["to"]]))
-            if key not in lldp_pairs:
+            if key not in discovered_pairs:
                 discovered_edges.append(me)
-                lldp_pairs.add(key)
+                discovered_pairs.add(key)
     
     if discovered_edges:
         # Replace inferred edges with discovered edges where available
@@ -1107,6 +1276,17 @@ async def get_network_topology(client_id: str, current_user: dict = Depends(get_
             if tuple(sorted([e["from"], e["to"]])) not in discovered_pairs
         ]
         topology["edges"] = discovered_edges + kept_inferred
+
+    # === Ghost nodes: surface unmanaged LLDP/CDP neighbors as discovery candidates ===
+    if lldp_neighbors or cdp_neighbors:
+        existing_ids = set(n.get("id") for n in topology["nodes"])
+        ghost_nodes, ghost_edges, ghost_layer_ids = build_ghost_nodes_and_edges(
+            lldp_neighbors, cdp_neighbors, existing_ids, device_ips
+        )
+        if ghost_nodes:
+            topology["nodes"].extend(ghost_nodes)
+            topology["edges"].extend(ghost_edges)
+            topology["layers"].append({"name": "Vicini Scoperti (LLDP/CDP)", "nodes": ghost_layer_ids})
     
     # === Add discovered endpoints (MAC-based leaf nodes) ===
     endpoints = await db.discovered_endpoints.find(
@@ -1205,9 +1385,9 @@ async def get_network_topology(client_id: str, current_user: dict = Depends(get_
     topology["client_name"] = client_name
     topology["has_custom_layout"] = False
     topology["lldp_count"] = len(lldp_neighbors)
+    topology["cdp_count"] = len(cdp_neighbors)
     topology["mac_connections_count"] = len(mac_connections)
     topology["discovered_endpoints_count"] = len(endpoints) if endpoints else 0
-    
     return topology
 
 
@@ -1218,6 +1398,66 @@ async def get_lldp_neighbors(client_id: str, current_user: dict = Depends(get_cu
         {"client_id": client_id}, {"_id": 0}
     ).to_list(1000)
     return {"client_id": client_id, "neighbors": neighbors, "count": len(neighbors)}
+
+
+@router.get("/network/cdp/{client_id}")
+async def get_cdp_neighbors(client_id: str, current_user: dict = Depends(get_current_user)):
+    """Get raw CDP (Cisco Discovery Protocol) neighbor data for a client."""
+    neighbors = await db.cdp_neighbors.find(
+        {"client_id": client_id}, {"_id": 0}
+    ).to_list(1000)
+    return {"client_id": client_id, "neighbors": neighbors, "count": len(neighbors)}
+
+
+@router.get("/network/discovery-candidates/{client_id}")
+async def get_discovery_candidates(client_id: str, current_user: dict = Depends(get_current_user)):
+    """Lista neighbor LLDP/CDP che NON corrispondono a dispositivi managed.
+    Utile per popolare un pannello "Aggiungi dispositivi scoperti".
+    """
+    devices = await db.device_poll_status.find(
+        {"client_id": client_id}, {"_id": 0, "device_ip": 1}
+    ).to_list(500)
+    managed_ips = set(d.get("device_ip", "") for d in devices)
+
+    lldp_n = await db.lldp_neighbors.find({"client_id": client_id}, {"_id": 0}).to_list(2000)
+    cdp_n  = await db.cdp_neighbors.find({"client_id": client_id}, {"_id": 0}).to_list(2000)
+
+    seen: dict[str, dict] = {}
+    def _add(n, src):
+        rip = (n.get("remote_ip") or "").strip()
+        sname = (n.get("remote_sys_name") or "").strip()
+        if not rip and not sname:
+            return
+        if rip and rip in managed_ips:
+            return
+        key = rip or f"name::{sname}"
+        if key not in seen:
+            seen[key] = {
+                "remote_ip": rip,
+                "remote_sys_name": sname,
+                "remote_sys_desc": n.get("remote_sys_desc", ""),
+                "remote_platform": n.get("remote_platform", ""),
+                "remote_chassis_id": n.get("remote_chassis_id", ""),
+                "remote_sys_cap": int(n.get("remote_sys_cap", 0) or 0),
+                "discovered_via": [src],
+                "links": [],
+            }
+        elif src not in seen[key]["discovered_via"]:
+            seen[key]["discovered_via"].append(src)
+        seen[key]["links"].append({
+            "local_ip": n.get("local_ip", ""),
+            "local_port": n.get("local_port_desc") or n.get("local_port_id", ""),
+            "remote_port": n.get("remote_port_desc") or n.get("remote_port_id", ""),
+            "via": src,
+        })
+
+    for n in lldp_n:
+        _add(n, "lldp")
+    for n in cdp_n:
+        _add(n, "cdp")
+
+    candidates = list(seen.values())
+    return {"client_id": client_id, "candidates": candidates, "count": len(candidates)}
 
 
 @router.post("/network/topology/{client_id}/layout")
