@@ -2818,6 +2818,35 @@ async def connector_network_discovery(request: Request):
                     ))
             if ops_dm:
                 await db.discovered_endpoints.bulk_write(ops_dm, ordered=False)
+
+            # Match anche su managed_devices (switch, firewall, UPS gestiti dal Center)
+            managed_list = await db.managed_devices.find(
+                {"client_id": client_id},
+                {"_id": 0, "id": 1, "ip_address": 1, "mac_address": 1},
+            ).to_list(5000)
+            md_ops_dm = []
+            for md in managed_list:
+                ip = md.get("ip_address") or ""
+                mac = (md.get("mac_address") or "").upper()
+                d = None
+                mt = None
+                if mac and mac in mac_to_dev:
+                    d, mt = mac_to_dev[mac], "mac"
+                elif ip and ip in ip_to_dev:
+                    d, mt = ip_to_dev[ip], "ip"
+                if d:
+                    matched_uids.add(d["uid"])
+                    md_ops_dm.append(UpdateOne(
+                        {"id": md["id"]},
+                        {"$set": {
+                            "datto_name": d["name"],
+                            "datto_match": mt,
+                            "datto_matched_at": now_dm,
+                        }},
+                    ))
+            if md_ops_dm:
+                await db.managed_devices.bulk_write(md_ops_dm, ordered=False)
+
             if matched_uids:
                 await db.datto_devices.update_many(
                     {"client_id": client_id, "uid": {"$in": list(matched_uids)}},
