@@ -46,33 +46,45 @@ $LogPath = Join-Path $ConfigDir "logs\connector.log"
 
 # ==================== ICON GENERATION ====================
 
-function New-TrayIcon([string]$status = "running") {
+function New-TrayIcon([string]$status = "running", [string]$mode = "master") {
     $bmp = New-Object System.Drawing.Bitmap(32, 32)
     $g = [System.Drawing.Graphics]::FromImage($bmp)
     $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
     $g.Clear([System.Drawing.Color]::Transparent)
-    
-    # Background color based on status
-    switch ($status) {
-        "running" { $bgColor = [System.Drawing.Color]::FromArgb(34, 197, 94) }   # Green
-        "error"   { $bgColor = [System.Drawing.Color]::FromArgb(239, 68, 68) }   # Red
-        "stopped" { $bgColor = [System.Drawing.Color]::FromArgb(107, 114, 128) }  # Gray
-        default   { $bgColor = [System.Drawing.Color]::FromArgb(99, 102, 241) }   # Purple
+
+    # v3.8.7: in modalita' Scanner usiamo SEMPRE l'azzurro come colore primario
+    # (anche quando running) per distinguere visualmente master vs scanner nel tray.
+    if ($mode -eq "scanner") {
+        switch ($status) {
+            "running" { $bgColor = [System.Drawing.Color]::FromArgb(56, 132, 222) }    # Sky-500 azzurro
+            "error"   { $bgColor = [System.Drawing.Color]::FromArgb(239, 68, 68) }     # Red
+            "stopped" { $bgColor = [System.Drawing.Color]::FromArgb(107, 114, 128) }   # Gray
+            default   { $bgColor = [System.Drawing.Color]::FromArgb(56, 132, 222) }    # Sky-500 azzurro
+        }
+    } else {
+        # Modalita' Master: schema colori originale (verde quando running)
+        switch ($status) {
+            "running" { $bgColor = [System.Drawing.Color]::FromArgb(34, 197, 94) }    # Green
+            "error"   { $bgColor = [System.Drawing.Color]::FromArgb(239, 68, 68) }    # Red
+            "stopped" { $bgColor = [System.Drawing.Color]::FromArgb(107, 114, 128) }  # Gray
+            default   { $bgColor = [System.Drawing.Color]::FromArgb(99, 102, 241) }   # Purple
+        }
     }
-    
+
     # Draw rounded rect background
     $brush = New-Object System.Drawing.SolidBrush($bgColor)
     $g.FillRectangle($brush, 0, 0, 32, 32)
-    
+
     # Draw "86" text
     $font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Bold)
     $whiteBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::White)
     $g.DrawString("86", $font, $whiteBrush, 2, 1)
-    
-    # Draw "NC" text smaller
+
+    # v3.8.7: per scanner mostriamo "SC" invece di "NC", per master "NC" come prima
     $fontSmall = New-Object System.Drawing.Font("Arial", 7, [System.Drawing.FontStyle]::Bold)
-    $g.DrawString("NC", $fontSmall, $whiteBrush, 5, 18)
-    
+    $bottomLabel = if ($mode -eq "scanner") { "SC" } else { "NC" }
+    $g.DrawString($bottomLabel, $fontSmall, $whiteBrush, 5, 18)
+
     # Status dot
     $dotColor = switch ($status) {
         "running" { [System.Drawing.Color]::White }
@@ -81,17 +93,34 @@ function New-TrayIcon([string]$status = "running") {
     }
     $dotBrush = New-Object System.Drawing.SolidBrush($dotColor)
     $g.FillEllipse($dotBrush, 24, 24, 7, 7)
-    
+
     $g.Dispose()
     $font.Dispose()
     $fontSmall.Dispose()
     $brush.Dispose()
     $whiteBrush.Dispose()
     $dotBrush.Dispose()
-    
+
     $hIcon = $bmp.GetHicon()
     $icon = [System.Drawing.Icon]::FromHandle($hIcon)
     return $icon
+}
+
+# v3.8.7 helper: legge mode dal config (cached). Usato da tooltip, titoli finestre, icona.
+function Get-ConnectorMode {
+    try {
+        if (Test-Path $ConfigPath) {
+            $cfg = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+            if ($cfg.mode) { return $cfg.mode.ToLower() }
+        }
+    } catch {}
+    return "master"
+}
+
+# v3.8.7 helper: nome visualizzato dipendente dalla modalita' (master vs scanner)
+function Get-DisplayNameForMode {
+    if ((Get-ConnectorMode) -eq "scanner") { return "Connector Scanner" }
+    return $DisplayName
 }
 
 # ==================== CONNECTOR PROCESS (via Scheduled Task) ====================
@@ -274,17 +303,25 @@ function Get-TooltipText {
     $status = Read-ConnectorStatus
     $config = if (Test-Path $ConfigPath) { Get-Content $ConfigPath -Raw | ConvertFrom-Json } else { $null }
     $cMode = if ($config -and $config.mode) { $config.mode.ToUpper() } else { "MASTER" }
+    # v3.8.7: per scanner usiamo nome esteso "Connector Scanner" nel tooltip
+    $name = if ($cMode -eq "SCANNER") { "Connector Scanner" } else { $DisplayName }
     if ($status -and $status.status -eq "running") {
-        return "$DisplayName v$($status.version) [$cMode] | ATTIVO"
+        return "$name v$($status.version) | ATTIVO"
     }
-    return "$DisplayName v$Version [$cMode] | FERMO"
+    return "$name v$Version | FERMO"
 }
 
 # ==================== DEVICE MANAGER ====================
 
 function Show-DeviceManager {
+    $isScanner = (Get-ConnectorMode) -eq "scanner"
     $form = New-Object System.Windows.Forms.Form
-    $form.Text = "$DisplayName - Gestisci Dispositivi"
+    # v3.8.7: titolo finestra dipende dalla modalita'
+    if ($isScanner) {
+        $form.Text = "Connector Scanner - Discovery LAN"
+    } else {
+        $form.Text = "$DisplayName - Gestisci Dispositivi"
+    }
     $form.Size = New-Object System.Drawing.Size(820, 580)
     $form.StartPosition = "CenterScreen"
     $form.FormBorderStyle = "FixedDialog"
@@ -294,9 +331,14 @@ function Show-DeviceManager {
 
     # Title
     $lblTitle = New-Object System.Windows.Forms.Label
-    $lblTitle.Text = "Dispositivi Monitorati (SNMP Polling)"
+    if ($isScanner) {
+        $lblTitle.Text = "Discovery LAN (Modalita' Scanner)"
+        $lblTitle.ForeColor = [System.Drawing.Color]::FromArgb(56, 132, 222)  # azzurro
+    } else {
+        $lblTitle.Text = "Dispositivi Monitorati (SNMP Polling)"
+        $lblTitle.ForeColor = [System.Drawing.Color]::FromArgb(30, 30, 40)
+    }
     $lblTitle.Font = New-Object System.Drawing.Font("Segoe UI", 13, [System.Drawing.FontStyle]::Bold)
-    $lblTitle.ForeColor = [System.Drawing.Color]::FromArgb(30, 30, 40)
     $lblTitle.Location = New-Object System.Drawing.Point(20, 15)
     $lblTitle.AutoSize = $true
     $form.Controls.Add($lblTitle)
@@ -472,13 +514,78 @@ function Show-DeviceManager {
     $btnSave.Cursor = [System.Windows.Forms.Cursors]::Hand
     $form.Controls.Add($btnSave)
 
-    $lblHint = New-Object System.Windows.Forms.Label
-    $lblHint.Text = "Apri Web UI: testa http/https sul device e, se risponde, invia il link ad ARGUS Center. Salva e Riavvia applica le modifiche al servizio."
-    $lblHint.Font = New-Object System.Drawing.Font("Segoe UI", 8)
-    $lblHint.ForeColor = [System.Drawing.Color]::FromArgb(140, 140, 155)
-    $lblHint.Location = New-Object System.Drawing.Point(20, 465)
-    $lblHint.Size = New-Object System.Drawing.Size(780, 35)
-    $form.Controls.Add($lblHint)
+    # v3.8.7: Pulsante "Scansiona LAN ora" — solo modalita' Scanner.
+    # Lancia argus-scanner.ps1 -ScanOnce in un job di sfondo e mostra l'esito.
+    if ($isScanner) {
+        $btnScanNow = New-Object System.Windows.Forms.Button
+        $btnScanNow.Text = "Scansiona LAN ora"
+        $btnScanNow.Size = New-Object System.Drawing.Size(180, 30)
+        $btnScanNow.Location = New-Object System.Drawing.Point(20, 425)
+        $btnScanNow.FlatStyle = "Flat"
+        $btnScanNow.BackColor = [System.Drawing.Color]::FromArgb(56, 132, 222)  # azzurro Scanner
+        $btnScanNow.ForeColor = [System.Drawing.Color]::White
+        $btnScanNow.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+        $btnScanNow.Cursor = [System.Windows.Forms.Cursors]::Hand
+        $btnScanNow.Add_Click({
+            $btnScanNow.Enabled = $false
+            $btnScanNow.Text = "Scansione in corso..."
+            $form.Refresh()
+            try {
+                $scannerScript = Join-Path $ScriptDir "argus-scanner.ps1"
+                if (-not (Test-Path $scannerScript)) {
+                    [System.Windows.Forms.MessageBox]::Show(
+                        "argus-scanner.ps1 non trovato in:`r`n$scannerScript",
+                        "Connector Scanner", "OK", "Error") | Out-Null
+                    return
+                }
+                # Lancio sincrono dello scan singolo: ARP+mDNS+Masscan(se installato) e invio al Center
+                $proc = Start-Process -FilePath "powershell.exe" `
+                    -ArgumentList "-NoProfile","-ExecutionPolicy","Bypass","-File",$scannerScript,"-ScanOnce" `
+                    -WindowStyle Hidden -Wait -PassThru
+                if ($proc.ExitCode -eq 0) {
+                    [System.Windows.Forms.MessageBox]::Show(
+                        "Scansione completata. Gli endpoint rilevati sono stati inviati al Center.`r`n`r`nVerifica nella dashboard Web (sezione Discovery / Endpoint).",
+                        "Connector Scanner", "OK", "Information") | Out-Null
+                } else {
+                    [System.Windows.Forms.MessageBox]::Show(
+                        "Scansione terminata con codice $($proc.ExitCode). Controlla il log:`r`n$env:ProgramData\86NocConnector\scanner.log",
+                        "Connector Scanner", "OK", "Warning") | Out-Null
+                }
+            } catch {
+                [System.Windows.Forms.MessageBox]::Show(
+                    "Errore avvio scansione: $($_.Exception.Message)",
+                    "Connector Scanner", "OK", "Error") | Out-Null
+            } finally {
+                $btnScanNow.Enabled = $true
+                $btnScanNow.Text = "Scansiona LAN ora"
+            }
+        })
+        $form.Controls.Add($btnScanNow)
+
+        # Hint scanner-mode-aware
+        $lblHint = New-Object System.Windows.Forms.Label
+        $lblHint.Text = "Modalita' Scanner: questo connector NON polla i device via SNMP. Esegue solo discovery LAN (ARP/mDNS/Masscan) e invia gli endpoint rilevati al Center, dove il Master li classifichera'."
+        $lblHint.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+        $lblHint.ForeColor = [System.Drawing.Color]::FromArgb(56, 132, 222)
+        $lblHint.Location = New-Object System.Drawing.Point(20, 465)
+        $lblHint.Size = New-Object System.Drawing.Size(780, 35)
+        $form.Controls.Add($lblHint)
+
+        # In modalita' Scanner, nascondi i pulsanti SNMP/WebUI che non si applicano
+        $btnAdd.Visible = $false
+        $btnTestSnmp.Visible = $false
+        $btnWebUI.Visible = $false
+        $btnTestAllWebUI.Visible = $false
+        $lblTitle.Text = "Discovery LAN attiva"
+    } else {
+        $lblHint = New-Object System.Windows.Forms.Label
+        $lblHint.Text = "Apri Web UI: testa http/https sul device e, se risponde, invia il link ad ARGUS Center. Salva e Riavvia applica le modifiche al servizio."
+        $lblHint.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+        $lblHint.ForeColor = [System.Drawing.Color]::FromArgb(140, 140, 155)
+        $lblHint.Location = New-Object System.Drawing.Point(20, 465)
+        $lblHint.Size = New-Object System.Drawing.Size(780, 35)
+        $form.Controls.Add($lblHint)
+    }
 
     # Add button handler
     $btnAdd.Add_Click({
@@ -1097,7 +1204,7 @@ public class TrayRefresh {
     } catch {}
     
     $notifyIcon = New-Object System.Windows.Forms.NotifyIcon
-    $notifyIcon.Icon = New-TrayIcon "stopped"
+    $notifyIcon.Icon = New-TrayIcon "stopped" (Get-ConnectorMode)
     $notifyIcon.Text = "$DisplayName v$Version | Avvio..."
     $notifyIcon.Visible = $true
     
@@ -1142,7 +1249,7 @@ public class TrayRefresh {
     $startItem.ForeColor = [System.Drawing.Color]::FromArgb(34, 197, 94)
     $startItem.Add_Click({
         if (Start-ConnectorViaTask) {
-            $notifyIcon.Icon = New-TrayIcon "running"
+            $notifyIcon.Icon = New-TrayIcon "running" (Get-ConnectorMode)
             $notifyIcon.Text = "$DisplayName v$Version | Stato: ATTIVO"
             $notifyIcon.ShowBalloonTip(3000, $DisplayName, "Connector avviato e in ascolto", [System.Windows.Forms.ToolTipIcon]::Info)
             $startItem.Visible = $false
@@ -1160,7 +1267,7 @@ public class TrayRefresh {
     $stopItem.Visible = $false
     $stopItem.Add_Click({
         Stop-ConnectorProcess
-        $notifyIcon.Icon = New-TrayIcon "stopped"
+        $notifyIcon.Icon = New-TrayIcon "stopped" (Get-ConnectorMode)
         $notifyIcon.Text = "$DisplayName v$Version | Stato: FERMO"
         $notifyIcon.ShowBalloonTip(2000, $DisplayName, "Connector fermato", [System.Windows.Forms.ToolTipIcon]::Warning)
         $startItem.Visible = $true
@@ -1175,7 +1282,7 @@ public class TrayRefresh {
         Stop-ConnectorProcess
         Start-Sleep -Seconds 1
         if (Start-ConnectorViaTask) {
-            $notifyIcon.Icon = New-TrayIcon "running"
+            $notifyIcon.Icon = New-TrayIcon "running" (Get-ConnectorMode)
             $notifyIcon.Text = "$DisplayName v$Version | Stato: ATTIVO"
             $notifyIcon.ShowBalloonTip(2000, $DisplayName, "Connector riavviato", [System.Windows.Forms.ToolTipIcon]::Info)
         }
@@ -1221,7 +1328,7 @@ public class TrayRefresh {
             Stop-ConnectorProcess
             Start-Sleep -Seconds 1
             if (Start-ConnectorViaTask) {
-                $notifyIcon.Icon = New-TrayIcon "running"
+                $notifyIcon.Icon = New-TrayIcon "running" (Get-ConnectorMode)
                 $notifyIcon.Text = "$DisplayName v$Version | Stato: ATTIVO"
                 $notifyIcon.ShowBalloonTip(3000, $DisplayName, "Connector riavviato con nuovi dispositivi", [System.Windows.Forms.ToolTipIcon]::Info)
             }
@@ -1393,7 +1500,7 @@ info@86bit.it
     if ($existingStatus -and $existingStatus.status -eq "running") {
         # Il connettore gira gia' (via Task Scheduler o avvio precedente)
         $global:IsRunning = $true
-        $notifyIcon.Icon = New-TrayIcon "running"
+        $notifyIcon.Icon = New-TrayIcon "running" (Get-ConnectorMode)
         $notifyIcon.Text = "$DisplayName v$Version | Stato: ATTIVO"
         $startItem.Visible = $false
         $stopItem.Visible = $true
@@ -1403,7 +1510,7 @@ info@86bit.it
         $config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
         if ($config.noc_center_url -and $config.api_key) {
             if (Start-ConnectorViaTask) {
-                $notifyIcon.Icon = New-TrayIcon "running"
+                $notifyIcon.Icon = New-TrayIcon "running" (Get-ConnectorMode)
                 $notifyIcon.Text = "$DisplayName v$Version | Stato: ATTIVO"
                 $startItem.Visible = $false
                 $stopItem.Visible = $true
@@ -1444,7 +1551,7 @@ info@86bit.it
         if ($global:IsRunning -and -not $connectorAlive) {
             # Connettore era attivo ma ora non risponde piu'
             $global:IsRunning = $false
-            $notifyIcon.Icon = New-TrayIcon "error"
+            $notifyIcon.Icon = New-TrayIcon "error" (Get-ConnectorMode)
             $notifyIcon.Text = "$DisplayName v$Version | NON RISPONDE"
             $notifyIcon.ShowBalloonTip(5000, $DisplayName, "Il connector non risponde! Verificare i log.", [System.Windows.Forms.ToolTipIcon]::Error)
             $startItem.Visible = $true
@@ -1453,7 +1560,7 @@ info@86bit.it
         } elseif (-not $global:IsRunning -and $connectorAlive) {
             # Connettore avviato dal Task Scheduler senza passare dalla tray
             $global:IsRunning = $true
-            $notifyIcon.Icon = New-TrayIcon "running"
+            $notifyIcon.Icon = New-TrayIcon "running" (Get-ConnectorMode)
             Set-NotifyIconTooltip $notifyIcon (Get-TooltipText)
             $startItem.Visible = $false
             $stopItem.Visible = $true
