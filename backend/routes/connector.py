@@ -12,7 +12,7 @@ from typing import Optional
 from datetime import datetime, timezone, timedelta
 
 from database import db
-from models import ConnectorHeartbeat, ManagedDevice
+from models import ConnectorHeartbeat, ManagedDevice, LanScanReport
 from security import security_manager
 from audit import AuditAction
 from deps import (
@@ -264,6 +264,9 @@ async def connector_heartbeat(request: Request, heartbeat: ConnectorHeartbeat):
             "connector_ip": request.client.host if request.client else "unknown",
             "uptime_seconds": heartbeat.uptime_seconds,
             "traps_received": heartbeat.traps_received, "syslogs_received": heartbeat.syslogs_received,
+            "mode": heartbeat.mode or "master",
+            "subnet": heartbeat.subnet,
+            "vlan_id": heartbeat.vlan_id,
             "last_seen": datetime.now(timezone.utc).isoformat()
         }},
         upsert=True
@@ -345,6 +348,67 @@ async def connector_heartbeat(request: Request, heartbeat: ConnectorHeartbeat):
             {"$unset": {"refresh_requested": ""}, "$set": {"refresh_fulfilled_at": datetime.now(timezone.utc).isoformat()}}
         )
     return response
+
+
+@router.post("/connector/lan-scan")
+async def connector_lan_scan(request: Request, report: LanScanReport):
+    """Riceve risultati ARP/mDNS/SNMP locale da un Connector in modalita' scanner.
+
+    Aggrega gli endpoint in `discovered_endpoints` con tracciamento `source_connector_id`
+    cosi' il Center sa da quale mini-scanner e' arrivato ciascun MAC.
+    Fa upsert sui MAC senza distruggere i dati gia' raccolti dal master (LLDP, FDB switch).
+    """
+    client_data = await verify_connector_request(request)
+    client_id = client_data["id"]
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    # Aggiorna stato connector con subnet/vlan visti
+    await db.connector_status.update_one(
+        {"client_id": client_id},
+        {"$set": {
+            "last_lan_scan_at": now_iso,
+            "last_lan_scan_subnet": report.subnet,
+            "last_lan_scan_endpoints": len(report.endpoints),
+        }},
+    )
+
+    if not report.endpoints:
+        return {"status": "ok", "stored": 0}
+
+    stored = 0
+    for ep in report.endpoints:
+        mac_norm = (ep.mac or "").lower().replace("-", ":").strip()
+        if not mac_norm or len(mac_norm.replace(":", "")) != 12:
+            continue
+        update = {
+            "client_id": client_id,
+            "mac": mac_norm,
+            "last_seen_at": now_iso,
+            "last_seen_via": ep.discovered_via,
+            "last_seen_subnet": report.subnet,
+            "source_connector_id": client_data.get("connector_id") or client_id,
+            "source_connector_mode": "scanner",
+        }
+        if ep.ip:
+            update["ip"] = ep.ip
+            update["last_ip_seen_at"] = now_iso
+        if ep.hostname:
+            update["hostname_scanner"] = ep.hostname
+        if ep.sys_descr:
+            update["sys_descr_scanner"] = ep.sys_descr
+        if ep.sys_name:
+            update["sys_name_scanner"] = ep.sys_name
+        if report.vlan_id is not None:
+            update["vlan_id"] = report.vlan_id
+        await db.discovered_endpoints.update_one(
+            {"client_id": client_id, "mac": mac_norm},
+            {"$set": update},
+            upsert=True,
+        )
+        stored += 1
+
+    logger.info(f"[LAN-SCAN] {client_data.get('name')} subnet={report.subnet} stored={stored}/{len(report.endpoints)} via=scanner")
+    return {"status": "ok", "stored": stored, "total": len(report.endpoints)}
 
 
 @router.post("/connector/{client_id}/request-refresh")

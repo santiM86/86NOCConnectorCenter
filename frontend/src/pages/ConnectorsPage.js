@@ -375,12 +375,32 @@ export default function ConnectorsPage() {
                       <span className={`text-[10px] px-1.5 py-0.5 rounded border ${online ? "text-[var(--ok)] bg-[var(--low-bg)] border-[var(--low-border)]" : "text-[var(--critical)] bg-[var(--critical-bg)] border-[var(--critical-border)]"}`}>
                         {online ? "ONLINE" : "OFFLINE"}
                       </span>
+                      {/* Mode badge: master = full polling, scanner = LAN discovery */}
+                      <span
+                        className={`text-[10px] px-1.5 py-0.5 rounded border font-mono ${
+                          (c.mode || "master") === "scanner"
+                            ? "text-fuchsia-300 bg-fuchsia-500/10 border-fuchsia-500/30"
+                            : "text-cyan-300 bg-cyan-500/10 border-cyan-500/30"
+                        }`}
+                        title={(c.mode || "master") === "scanner"
+                          ? "Modalita' SCANNER: solo discovery LAN (ARP/mDNS/SNMP locale). Per VLAN remote dove il master non arriva."
+                          : "Modalita' MASTER: polling completo switch/firewall + Syslog/Trap. Uno per sito."}
+                        data-testid={`connector-mode-${c.client_id}`}>
+                        {(c.mode || "master").toUpperCase()}
+                      </span>
+                      {c.subnet && (
+                        <span className="text-[10px] text-[var(--text-muted)] font-mono" title="Subnet locale">
+                          {c.subnet}{c.vlan_id ? ` · VLAN ${c.vlan_id}` : ""}
+                        </span>
+                      )}
                     </div>
                     <div className="grid grid-cols-2 md:grid-cols-5 gap-x-4 gap-y-0.5 mt-1">
                       <InfoItem label="Versione" value={`v${c.connector_version || "?"}`} />
                       <InfoItem label="Uptime" value={formatUptime(c.uptime_seconds)} />
-                      <InfoItem label="SNMP" value={c.traps_received || 0} />
-                      <InfoItem label="Syslog" value={c.syslogs_received || 0} />
+                      <InfoItem label={(c.mode || "master") === "scanner" ? "Endpoint scan" : "SNMP"}
+                        value={(c.mode || "master") === "scanner" ? (c.last_lan_scan_endpoints ?? 0) : (c.traps_received || 0)} />
+                      <InfoItem label={(c.mode || "master") === "scanner" ? "Ultima scan" : "Syslog"}
+                        value={(c.mode || "master") === "scanner" ? formatLastSeen(c.last_lan_scan_at) : (c.syslogs_received || 0)} />
                       <InfoItem label="Ultimo" value={formatLastSeen(c.last_seen)} />
                     </div>
                   </div>
