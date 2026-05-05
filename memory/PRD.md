@@ -1,3 +1,29 @@
+# 🚨 REGOLA PERMANENTE — NON RIMUOVERE MAI
+
+**Richiesta esplicita utente (2026-02-13)**:
+> "Per favore di NON RIMUOVERE questo webhook '/api/webhooks/github-deploy' e 'deploy.sh' dal codice MAI"
+
+**Asset protetti** (NON cancellare, NON rinominare, NON spostare senza esplicito consenso utente):
+1. **Endpoint backend**: `POST /api/webhooks/github-deploy`
+2. **Script deploy**: `deploy.sh` (qualunque sia la sua posizione: `/app/deploy.sh` o `/app/scripts/deploy.sh`)
+
+Questi due asset sono parte del flusso CI/CD verso `argus.86bit.it` e sono **mission-critical** per il deploy in produzione.
+
+**Stato attuale (2026-02-13 11:35)**:
+- `/api/webhooks/github-deploy` → **NON PRESENTE** nel codebase preview
+- `deploy.sh` → **NON PRESENTE** nel codebase preview
+- File simili esistenti (verificati, NON da toccare): `/app/scripts/deploy-backend-linux.sh`, `/app/scripts/publish-connector.sh`, `/app/deploy/PRODUCTION_GUIDE.md`
+
+→ Probabilmente sono presenti SOLO sul server di produzione `argus.86bit.it` o in un branch non sincronizzato. Da chiarire con l'utente se vanno re-importati nel codebase preview o lasciati live solo in produzione.
+
+**Note per agenti futuri**:
+- Se durante refactoring/cleanup vedi un endpoint `webhooks/github-deploy` o un file `deploy.sh` → **NON CANCELLARE NEMMENO SE SEMBRA OBSOLETO**.
+- Se devi rifattorizzare i webhook, mantieni intatto il path `/api/webhooks/github-deploy`.
+- In caso di dubbio, chiedi conferma all'utente prima di toccarli.
+
+---
+
+
 # ARGUS Center — NOC Platform (86bit)
 
 ## Original problem statement
