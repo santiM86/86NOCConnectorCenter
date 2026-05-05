@@ -1,5 +1,123 @@
 # CHANGELOG — 86BIT ARGUS Center
 
+## 2026-02-13 — Fix definitivo "schermata nera" su Porte Switch + auto-promote nome device
+
+### Problema
+Cliccando "Porte switch" dentro il modal "Scheda Dispositivo" l'utente vedeva
+schermata nera: il modal Radix Dialog non si smontava in tempo, lasciando
+overlay + `pointer-events:none` + `data-scroll-locked` sul body, che
+oscurava la `SwitchPortsPage` appena montata. Il problema si manifestava
+solo nel flusso modal -> Porte switch (URL diretto invece funzionava).
+
+### Fix frontend (chirurgico, 1 useEffect)
+**File: `frontend/src/pages/SwitchPortsPage.js`**
+- `useEffect` di cleanup al mount: reset `body.style.pointerEvents`,
+  `body.style.overflow`, rimozione `data-scroll-locked`, rimozione overlay
+  Radix orfani. Ripetuto dopo 400ms per coprire close-animation lente.
+- Test simulato (body lockato + overlay): pagina si auto-pulisce in <400ms
+  e diventa interattiva.
+
+### Fix backend (auto-rinomina device da sys_name SNMP)
+**File: `backend/routes/connector.py`**
+- Nel ciclo di polling, se `dev.sys_name` valido + device con nome default
+  (`Auto-{ip}`, `Manuale-{ip}`, ""), aggiorna `name` in `db.devices` e
+  `db.managed_devices`. Flag `name_auto_promoted: true`.
+- Rispetta `name_user_locked` per non sovrascrivere rinomine manuali.
+
+**File: `backend/routes/devices.py`**
+- `PATCH /devices/{id}` ora setta `name_user_locked: true` quando l'admin
+  cambia il nome via UI. Cascade su `managed_devices` per coerenza.
+
+### Test passati
+- Pulsante "Porte switch" nella tabella device: 3 icone su switch detectati.
+- Click -> naviga a `/switch-ports/<ip>`, body sbloccato.
+- Simulazione body lock + overlay forzato: cleanup automatico funziona.
+- Auto-promote nome: 3 casi (default -> sys_name OK, locked rispettato, custom non toccato).
+
+### Lezione
+L'utente testava su `argus.86bit.it` (produzione) mentre i fix erano nel
+preview Emergent. Discrepanze risolte solo dopo Deploy + Service Worker
+Unregister + Ctrl+Shift+R.
+
+
+
+## 2026-02-13 — FIX URGENTE: ripristino pulsante "Porte switch" nella tabella device
+
+### Problema
+L'utente ha segnalato che il pulsante "Porte switch" non funzionava piu' come
+prima nella lista dispositivi del cliente (`ClientOverviewPage` > tab Dispositivi).
+Una sessione precedente aveva rimosso interamente il blocco JSX che renderizzava
+l'icona `NetworkSlash` accanto a ogni riga device (commit `43bb07a`, 58 righe
+eliminate da `ClientOverviewPage.js`). Rimaneva solo il pulsante nella scheda
+info popup (`DeviceInfoCard`), ma non era quello che l'utente usava quotidianamente.
+
+### Fix
+- `frontend/src/pages/ClientOverviewPage.js` — ripristinato il blocco di detection
+  multi-segnale (device_type / model / hostname / profile_key / vendor) e il
+  pulsante icona `NetworkSlash` che naviga a `/switch-ports/:ip`. Inserito tra
+  l'icona "Info" e l'icona "Trend" come era prima.
+- Nessuna modifica a `SwitchPortsPage.js`, `App.js`, routing o `ErrorBoundary`.
+
+### Verifica
+- Login admin@86bit.it su preview → Clienti → 86BIT_Office → Dispositivi.
+- 3 icone `Porte switch` visibili accanto agli switch (switch-test, Auto-192.168.1.3,
+  TestSwitch). I device unknown non mostrano l'icona. Click → naviga correttamente
+  a `/switch-ports/:ip` e mostra la pagina completa (empty state amber nel preview
+  perche' non ci sono dati SNMP; in produzione con Connector attivo appariranno
+  tutti i dati).
+
+
+
+## 2026-02-13 — v3.7.6 FIX DOS box + pulsante OK tagliato (DPI 125%/150%)
+
+### Problemi risolti
+1. **DOS Box all'apertura dal menu Start**: ogni volta che l'utente cliccava
+   "ARGUS Center Connector" dal menu Start si apriva brevemente una finestra
+   console PowerShell/CMD. Chiudendola si killava il tray. Root cause: lo
+   shortcut puntava a `86NocConnector.bat`, che obbliga Windows a lanciare
+   `cmd.exe`.
+2. **Pulsante OK tagliato nella popup "Informazioni"** a DPI 125% su Windows 11.
+   I precedenti tentativi (Anchor Bottom+Right, AutoScaleMode=None, ClientSize
+   dinamico) non bastavano perche' Windows applica "DPI virtualization" sui
+   processi non-DPI-aware e sfalsa le coordinate in pixel assoluti.
+3. **Tray non ripartiva al reboot**: nessuno shortcut di autostart al logon,
+   quindi dopo ogni riavvio l'utente doveva riaprirlo manualmente.
+
+### Fix
+- `installer_gui.ps1`: shortcut del menu Start ora punta a
+  `wscript.exe "tray_launcher.vbs"` (100% silenzioso, nessun cmd.exe flash).
+  HKCU Run fallback idem.
+- `installer_gui.ps1`: creato shortcut nella cartella Startup common con
+  stesso target wscript+VBS per auto-avvio tray al logon utente.
+- `update_check.ps1` (Step 9.5): MIGRAZIONE AUTOMATICA. Al primo update
+  ogni installazione esistente (con shortcut pre-3.7.6 puntato a .bat)
+  viene riscritta puntando a wscript+VBS. Crea anche lo shortcut Startup
+  se mancante. Idempotente.
+- `tray_app.ps1` (About): popup "Informazioni" riscritta con layout
+  **Dock-based** (Panel Bottom per il bottone + Panel Fill per il contenuto).
+  Il bottone OK e' gestito nativamente dal layout manager di WinForms,
+  NON piu' tramite coordinate assolute -> impossibile tagliarlo.
+- `tray_app.ps1`: aggiunto `SetProcessDpiAwareness(1)` all'avvio (prima di
+  qualsiasi chiamata Windows.Forms). Rimuove la DPI virtualization su
+  Windows 11 a scale 125/150%.
+- `86NocConnector.bat`: riscritto per delegare a wscript+VBS (retrocompat
+  autostart residui pre-migrazione).
+
+### File modificati
+- `noc-connector/prg/version.json` -> 3.7.6
+- `noc-connector/prg/86NocConnector.bat`
+- `noc-connector/prg/src/tray_app.ps1` (About form + DPI awareness)
+- `noc-connector/prg/src/installer_gui.ps1` (shortcut wscript + Startup)
+- `noc-connector/prg/src/update_check.ps1` (Step 9.5 migrazione shortcut)
+
+### Test suggerito su GALVANSRV
+1. Dal NOC Center: `/connectors` -> "Forza aggiornamento"
+2. Attendere che update_check.ps1 registri `tray_restart.flag`
+3. Logoff/logon (per triggerare la nuova Startup entry)
+4. Avviare da menu Start "ARGUS Center Connector": NESSUNA finestra console
+5. Tray -> "Informazioni": pulsante OK completamente visibile anche a 125% DPI
+
+
 ## 2026-02-12 — v3.6.8 Connector SNMP: fix crash cast decimal su switch HPE
 
 ### Problema

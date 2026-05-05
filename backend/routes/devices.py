@@ -361,7 +361,24 @@ async def patch_device(device_id: str, payload: dict, current_user: dict = Depen
             raise HTTPException(status_code=400, detail=f"Target client_id {updates['client_id']} not found")
 
     updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+    # Se l'utente sta cambiando il nome, blocca l'auto-promote dal connector
+    # (sys_name SNMP) per evitare che sovrascriva la rinomina manuale.
+    if "name" in updates and updates["name"] != device.get("name"):
+        updates["name_user_locked"] = True
     await db.devices.update_one({"id": device_id}, {"$set": updates})
+    # Cascade su managed_devices: stesso lock + nome aggiornato per coerenza UI
+    if "name" in updates:
+        try:
+            await db.managed_devices.update_one(
+                {"ip": device.get("ip_address")},
+                {"$set": {
+                    "device_name": updates["name"],
+                    "name": updates["name"],
+                    "name_user_locked": True,
+                }},
+            )
+        except Exception:
+            pass
     # Cascade update su collezioni correlate per coerenza multi-tenant
     if "client_id" in updates:
         try:

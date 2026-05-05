@@ -7,7 +7,7 @@ import {
   ArrowLeft, HardDrives, Globe, Printer, Database, ShieldCheck,
   Lightning, WifiHigh, WifiSlash, PlugsConnected, CaretDown,
   CheckCircle, Warning, ArrowClockwise, Bell, BellSlash, ChartLine, Monitor, Cpu,
-  Plus, Trash, Lock, MagnifyingGlass, Info, PencilSimple,
+  Plus, Trash, Lock, MagnifyingGlass, Info, PencilSimple, NetworkSlash,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -1295,6 +1295,41 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
                       >
                         <Info size={13} />
                       </button>
+                      {/* Porte Switch: detection multi-segnale (device_type / model / hostname) */}
+                      {(() => {
+                        const dt = (d.device_type || "").toLowerCase();
+                        const modelL = (d.model || d.sys_descr || "").toLowerCase();
+                        const nameL = (d.name || "").toLowerCase();
+                        const kw = [
+                          "switch", "router", "firewall", "gateway",
+                          "catalyst", "nexus", "meraki",
+                          "procurve", "aruba", "5130", "5140", "5900",
+                          "ex2300", "ex3400", "ex4300", "srx",
+                          "fortigate", "fortiswitch", "fortiap",
+                          "zyxel", "xgs", "gs1900", "gs2200",
+                          "mikrotik", "routerboard", "ccr", "crs",
+                          "unifi", "edgerouter", "edgeswitch", "usg",
+                          "dgs-", "dxs-",
+                          "powerconnect", "n1500", "n2000", "n3000",
+                          "huawei", "s5700", "s6700", "ar2200",
+                          "pfsense", "opnsense",
+                        ];
+                        const matches = kw.some((k) => modelL.includes(k) || nameL.includes(k));
+                        const isSwitchLike =
+                          dt.includes("switch") || dt.includes("router") || dt.includes("firewall") ||
+                          dt === "network-device" || matches;
+                        if (!isSwitchLike) return null;
+                        return (
+                          <button
+                            onClick={() => navigate(`/switch-ports/${encodeURIComponent(d.ip_address)}`)}
+                            className="p-1 rounded hover:bg-indigo-500/10 text-indigo-400 transition-colors"
+                            title="Porte switch (tiles UP/DOWN + neighbor LLDP + flap history)"
+                            data-testid={`device-switch-ports-${d.ip_address}`}
+                          >
+                            <NetworkSlash size={13} />
+                          </button>
+                        );
+                      })()}
                       <button
                         onClick={() => navigate(`/device-metrics?ip=${d.ip_address}`)}
                         className="p-1 rounded hover:bg-indigo-500/10 text-indigo-400 transition-colors"

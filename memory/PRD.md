@@ -26,6 +26,15 @@ Società IT che necessita di un raccoglitore di alert (NOC) per tutti i disposit
 ```
 
 ## Completed (session log)
+- 2026-02-13: **v3.7.6 — FIX definitivo DOS box + pulsante OK tagliato (DPI 125%/150%)**.
+  (1) Shortcut menu Start + autostart Startup folder ora puntano a `wscript.exe "tray_launcher.vbs"` -> 100% silenziosi, nessun `cmd.exe` flash all'apertura (precedentemente puntavano a `86NocConnector.bat` che causava un breve DOS box).
+  (2) Popup "Informazioni" riscritta con layout Dock-based (Panel Bottom + Panel Fill): il bottone OK e' gestito nativamente da WinForms, NON piu' con coordinate assolute, quindi non puo' essere tagliato neanche a DPI 150%+.
+  (3) Tray app ora chiama `SetProcessDpiAwareness(1)` all'avvio -> Windows non applica piu' DPI virtualization (root cause delle coordinate sfasate sulle macchine a 125%).
+  (4) `update_check.ps1` Step 9.5: MIGRAZIONE AUTOMATICA delle installazioni esistenti. Al primo update la shortcut vecchia puntata a `.bat` viene riscritta verso wscript+VBS, e viene creato lo shortcut Startup se mancante. Idempotente.
+  (5) Aggiunto autostart del tray al logon (Startup folder common).
+  File: `tray_app.ps1`, `installer_gui.ps1`, `update_check.ps1`, `86NocConnector.bat`, `version.json`. Pubblicato in `/app/connector_updates/86NocConnector_v3.7.6.zip` (398KB). Preflight encoding OK (14 file .ps1, BOM + zero Unicode killers).
+
+
 - 2026-02-13: **Paginazione Datto completa (1000 device, 138 siti) + UI browser Prev/Next**. Wrapper `portal.86bit.it` ora supporta `?page=N&max=250`. (1) Backend `_fetch_devices_list_all` re-implementato come loop paginato (0..50 pagine, break su last-page < max o first_uid duplicato = safety net). Verifica live: 4 pagine × 250 = **1000 device in 8s** (vs 250 prima = +300%). Dedup per uid cross-page. (2) `_fetch_all_sites_from_portal` altrettanto paginato (accetta shape `sites/data/items/devices`). Pronto per attivarsi appena il wrapper fixa l'array vuoto di `getDattoSites`. (3) Merge automatico in `_refresh_sites_cache`: union tra siti dedotti-da-device e siti-da-sites-endpoint → oggi **138 siti** in cache (prima 47). (4) Nuovi endpoint API: `GET /api/datto/browse/devices?page=N&size=M&only_matched=bool` e `GET /api/datto/browse/sites?page=N&size=M` — privacy-hardened, ritornano SOLO `{name, mac, ip, matched, site_name}` + metadata `{page, size, total, total_pages, has_prev, has_next}`. (5) Nuovo componente `DattoBrowser.js`: tabs "Siti Datto (N)" / "Dispositivi sincronizzati (N)", search client-side, toggle "Solo matched", paginator con 7 bottoni numerici + Prev/Next + counter "Pagina X di Y · N totali". Integrato in `DattoRmmSettingsPage` sotto la tabella di mappatura, wrappato in ErrorBoundary. Test e2e: sync 11s, browse sites 10/pag → 14 pagine, ultima pagina ritorna 8 items con `has_prev=true, has_next=false`.
 
 - 2026-02-13: **Fix LEAK log sicurezza**. Audit segnalò 141 match `api_key`/`userId` in chiaro nei log backend perche' `httpx` logger INFO stampa ogni request con query string completa. Fix in `server.py`: silenzio dei logger `httpx`, `httpcore`, `urllib3` a livello WARNING. Truncate dei log esistenti contenenti segreti. Re-audit post-fix: 0 match su tutte le 6 superfici (DB, log, API response, config preview, URL portale). Encryption chain AES-256-GCM + PBKDF2-HMAC-SHA256 600k iter + salt random confermata integra, nessun plaintext in chiaro.
@@ -481,14 +490,14 @@ CHANGELOG.md per dettagli. 14/14 backend + 3/3 frontend test PASS.
 **Test**: lint Python OK (i 4 warning pre-esistenti sono di altre sezioni). Test end-to-end richiede device target reale con HTTP.sys server (non riproducibile nel preview container).
 
 ### 2026-02-10 (sera tardi): Custom Tarball URL field nel dialog Self-Update
-**Razionale**: lo script di self-update scarica il tarball backend da `https://<center-host>/downloads/argus-backend-latest.tar.gz`, ma se quella build frontend non e` aggiornata (chicken-and-egg) il file e` vecchio o 404. Aggiunto un input opzionale "URL pacchetto custom" nel dialog per puntare a una build remota raggiungibile (es. `https://noc-monitor-hub.preview.emergentagent.com/downloads/argus-backend-latest.tar.gz` quando si vuole bypassare la build locale).
+**Razionale**: lo script di self-update scarica il tarball backend da `https://<center-host>/downloads/argus-backend-latest.tar.gz`, ma se quella build frontend non e` aggiornata (chicken-and-egg) il file e` vecchio o 404. Aggiunto un input opzionale "URL pacchetto custom" nel dialog per puntare a una build remota raggiungibile (es. `https://alert-hub-dev-1.preview.emergentagent.com/downloads/argus-backend-latest.tar.gz` quando si vuole bypassare la build locale).
 
 **File toccati**:
 - `/app/frontend/src/pages/WireGuardPage.js` `triggerUpdate(enableWireguard, customUrl)` ora accetta secondo arg opzionale → invia `package_url` al POST `/api/admin/system/self-update`. Dialog ha sezione `<details>` "Opzioni avanzate" con input mono-spaced + hint che mostra il default URL.
 - Backend `system_admin.py` gia` gestiva `package_url` opzionale (nessuna modifica necessaria).
 
 **Note operative**: per il PRIMO update post-fix l'utente puo` o:
-1. SSH al prod, `curl -o /home/arslan/86NOCConnectorCenter/frontend/build/downloads/argus-backend-latest.tar.gz https://noc-monitor-hub.preview.emergentagent.com/downloads/argus-backend-latest.tar.gz`, poi click "Riprova" sull'UI.
+1. SSH al prod, `curl -o /home/arslan/86NOCConnectorCenter/frontend/build/downloads/argus-backend-latest.tar.gz https://alert-hub-dev-1.preview.emergentagent.com/downloads/argus-backend-latest.tar.gz`, poi click "Riprova" sull'UI.
 2. Aspettare che la nuova frontend sia deployata, poi usare il campo "URL pacchetto custom" direttamente.
 
 ### 2026-02-10 (notte): Per-device alert silencing + auto-classifier stampanti
