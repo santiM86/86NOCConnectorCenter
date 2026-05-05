@@ -368,6 +368,33 @@ async def get_switch_ports(device_ip: str, current_user: dict = Depends(get_curr
                 neighbor_obj["device_category"] = _classification.get("category")
                 neighbor_obj["classification_confidence"] = _classification.get("confidence")
                 neighbor_obj["classification_source"] = _classification.get("source")
+
+                # ==== FALLBACK FINGERBANK (Fase 2) ====
+                # Se la classificazione locale e' debole (< 70 confidence) E
+                # l'integrazione Fingerbank e' configurata, interroga il database
+                # online per ottenere device_name preciso (es. "HP LaserJet M404").
+                # Tutto cacheato 30gg, quindi quota gratuita 250 query/g e' sufficiente
+                # per ~7500 device/mese. La query negativa (no match) e' anch'essa
+                # cacheata per non riprovare ad ogni reload.
+                try:
+                    if (_classification.get("confidence") or 0) < 70 and _mac:
+                        from services import fingerbank_service
+                        if await fingerbank_service.is_configured():
+                            fb = await fingerbank_service.interrogate(mac=_mac)
+                            if fb and fb.get("device_name"):
+                                neighbor_obj["device_name_precise"] = fb["device_name"]
+                                neighbor_obj["device_category"] = neighbor_obj.get("device_category") or "unknown"
+                                neighbor_obj["classification_source"] = (
+                                    (neighbor_obj.get("classification_source") or "") + "+fingerbank"
+                                )
+                                # Boost confidence se Fingerbank ha trovato qualcosa
+                                fb_score = fb.get("score") or 60
+                                neighbor_obj["classification_confidence"] = max(
+                                    neighbor_obj.get("classification_confidence") or 0,
+                                    int(fb_score),
+                                )
+                except Exception:
+                    pass
             except Exception:
                 pass
 
