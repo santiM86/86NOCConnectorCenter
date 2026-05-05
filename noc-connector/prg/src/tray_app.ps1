@@ -44,6 +44,16 @@ $ConfigDir = Join-Path $env:ProgramData $AppName
 $ConfigPath = Join-Path $ConfigDir "config.json"
 $LogPath = Join-Path $ConfigDir "logs\connector.log"
 
+# v3.8.8: dot-source del Network Scanner (tool standalone integrato).
+# Carica le funzioni Show-NetworkScanner, NS-GetMac, NS-GetHostname, NS-GetVendor,
+# NS-TestPort, NS-ListSmbShares, NS-WakeOnLan e $script:NS_OuiMap.
+$networkScannerScript = Join-Path $ScriptDir "network_scanner.ps1"
+if (Test-Path $networkScannerScript) {
+    try { . $networkScannerScript } catch {
+        Write-Host "[WARN] Errore caricamento network_scanner.ps1: $($_.Exception.Message)"
+    }
+}
+
 # ==================== ICON GENERATION ====================
 
 function New-TrayIcon([string]$status = "running", [string]$mode = "master") {
@@ -1334,7 +1344,18 @@ public class TrayRefresh {
             }
         }
     })
-    
+
+    # v3.8.8: Network Scanner — visibile SOLO in modalita' scanner.
+    # Tool standalone simile ad altri network scanner enterprise: ping sweep,
+    # ARP MAC, DNS+NetBIOS hostname, OUI vendor, SMB shares, HTTP/HTTPS detection,
+    # WoL, export CSV. Tutto sviluppato da zero in PowerShell+WinForms.
+    if ((Get-ConnectorMode) -eq "scanner") {
+        $netScanItem = $contextMenu.Items.Add("Network Scanner")
+        $netScanItem.ForeColor = [System.Drawing.Color]::FromArgb(56, 132, 222)  # azzurro
+        $netScanItem.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+        $netScanItem.Add_Click({ Show-NetworkScanner })
+    }
+
     $contextMenu.Items.Add("-") | Out-Null
 
     # Informazioni / About
