@@ -1,5 +1,46 @@
 # CHANGELOG — 86BIT ARGUS Center
 
+## 2026-02-13 — Fix definitivo "schermata nera" su Porte Switch + auto-promote nome device
+
+### Problema
+Cliccando "Porte switch" dentro il modal "Scheda Dispositivo" l'utente vedeva
+schermata nera: il modal Radix Dialog non si smontava in tempo, lasciando
+overlay + `pointer-events:none` + `data-scroll-locked` sul body, che
+oscurava la `SwitchPortsPage` appena montata. Il problema si manifestava
+solo nel flusso modal -> Porte switch (URL diretto invece funzionava).
+
+### Fix frontend (chirurgico, 1 useEffect)
+**File: `frontend/src/pages/SwitchPortsPage.js`**
+- `useEffect` di cleanup al mount: reset `body.style.pointerEvents`,
+  `body.style.overflow`, rimozione `data-scroll-locked`, rimozione overlay
+  Radix orfani. Ripetuto dopo 400ms per coprire close-animation lente.
+- Test simulato (body lockato + overlay): pagina si auto-pulisce in <400ms
+  e diventa interattiva.
+
+### Fix backend (auto-rinomina device da sys_name SNMP)
+**File: `backend/routes/connector.py`**
+- Nel ciclo di polling, se `dev.sys_name` valido + device con nome default
+  (`Auto-{ip}`, `Manuale-{ip}`, ""), aggiorna `name` in `db.devices` e
+  `db.managed_devices`. Flag `name_auto_promoted: true`.
+- Rispetta `name_user_locked` per non sovrascrivere rinomine manuali.
+
+**File: `backend/routes/devices.py`**
+- `PATCH /devices/{id}` ora setta `name_user_locked: true` quando l'admin
+  cambia il nome via UI. Cascade su `managed_devices` per coerenza.
+
+### Test passati
+- Pulsante "Porte switch" nella tabella device: 3 icone su switch detectati.
+- Click -> naviga a `/switch-ports/<ip>`, body sbloccato.
+- Simulazione body lock + overlay forzato: cleanup automatico funziona.
+- Auto-promote nome: 3 casi (default -> sys_name OK, locked rispettato, custom non toccato).
+
+### Lezione
+L'utente testava su `argus.86bit.it` (produzione) mentre i fix erano nel
+preview Emergent. Discrepanze risolte solo dopo Deploy + Service Worker
+Unregister + Ctrl+Shift+R.
+
+
+
 ## 2026-02-13 — FIX URGENTE: ripristino pulsante "Porte switch" nella tabella device
 
 ### Problema
