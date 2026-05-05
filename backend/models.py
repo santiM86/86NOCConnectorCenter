@@ -214,6 +214,7 @@ class LanScanReport(BaseModel):
     scan_started_at: str
     scan_ended_at: str
     endpoints: list[LanScanEndpoint]
+    hostname: Optional[str] = None  # hostname del mini-scanner che invia il report
 
 class DeviceStatusReport(BaseModel):
     device_ip: str

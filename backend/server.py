@@ -427,7 +427,20 @@ async def startup_event():
         await db.incidents.create_index([("status", 1), ("priority", 1)])
         await db.incidents.create_index([("created_at", -1)])
 
-        await db.connector_status.create_index([("client_id", 1)], unique=True)
+        # v3.8: chiave composita per supportare piu' connectors per cliente
+        # (1 master + N scanner su VLAN diverse). Chiamiamo drop+recreate per upgrade in-place.
+        try:
+            existing_idx = await db.connector_status.list_indexes().to_list(20)
+            for idx in existing_idx:
+                if idx.get("name") == "client_id_1" and idx.get("unique"):
+                    await db.connector_status.drop_index("client_id_1")
+        except Exception:
+            pass
+        await db.connector_status.create_index(
+            [("client_id", 1), ("hostname", 1)],
+            unique=True,
+            name="client_hostname_unique",
+        )
         await db.connector_status.create_index([("hostname", 1)])
 
         await db.discovered_endpoints.create_index([("client_id", 1)])

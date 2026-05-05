@@ -352,10 +352,32 @@ export default function ConnectorsPage() {
         </div>
       ) : (
         <div className="space-y-2">
-          {connectors.map((c, i) => {
+          {(() => {
+            // Raggruppa per client_id: master in cima, scanner figli indentati sotto.
+            // Se un cliente ha solo scanner (senza master), li mostra comunque.
+            const byClient = {};
+            for (const c of connectors) {
+              const cid = c.client_id || "_orphan_";
+              if (!byClient[cid]) byClient[cid] = { master: null, scanners: [] };
+              if ((c.mode || "master") === "scanner") byClient[cid].scanners.push(c);
+              else byClient[cid].master = c;
+            }
+            const ordered = [];
+            for (const [cid, group] of Object.entries(byClient)) {
+              if (group.master) ordered.push({ ...group.master, _isChild: false, _clientId: cid });
+              for (const s of group.scanners) ordered.push({ ...s, _isChild: !!group.master, _clientId: cid });
+            }
+            return ordered;
+          })().map((c, i) => {
             const online = isOnline(c.last_seen);
+            const isChild = c._isChild;
             return (
-              <div key={i} className="noc-panel overflow-hidden" data-testid={`connector-${c.client_id}`}>
+              <div key={i}
+                className={`noc-panel overflow-hidden ${isChild ? "ml-8 border-l-2 border-l-fuchsia-500/40 relative" : ""}`}
+                data-testid={`connector-${c.client_id}`}>
+                {isChild && (
+                  <div className="absolute -left-4 top-1/2 -translate-y-1/2 w-4 h-px bg-fuchsia-500/40" aria-hidden="true" />
+                )}
                 <div className="p-3 flex items-center gap-3">
                   <div className={`w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0 relative group ${online ? "bg-[var(--low-bg)] border border-[var(--low-border)]" : "bg-[var(--critical-bg)] border border-[var(--critical-border)]"}`}>
                     {online ? <SealCheck size={18} weight="fill" className="text-[var(--ok)]" /> : <Warning size={18} weight="fill" className="text-[var(--critical)]" />}

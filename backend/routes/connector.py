@@ -254,10 +254,13 @@ async def connector_sync_active_devices(request: Request):
 @router.post("/connector/heartbeat")
 async def connector_heartbeat(request: Request, heartbeat: ConnectorHeartbeat):
     client_data = await verify_connector_request(request)
-    existing = await db.connector_status.find_one({"client_id": client_data["id"]}, {"_id": 0})
+    # Chiave composita (client_id, hostname) per supportare piu' connectors per cliente
+    # (es. 1 master + N scanners su VLAN diverse). Hostname e' univoco per macchina.
+    filter_q = {"client_id": client_data["id"], "hostname": heartbeat.hostname}
+    existing = await db.connector_status.find_one(filter_q, {"_id": 0})
     force_update = existing.get("force_update", False) if existing else False
     await db.connector_status.update_one(
-        {"client_id": client_data["id"]},
+        filter_q,
         {"$set": {
             "client_id": client_data["id"], "client_name": client_data["name"],
             "connector_version": heartbeat.connector_version, "hostname": heartbeat.hostname,
@@ -362,9 +365,14 @@ async def connector_lan_scan(request: Request, report: LanScanReport):
     client_id = client_data["id"]
     now_iso = datetime.now(timezone.utc).isoformat()
 
-    # Aggiorna stato connector con subnet/vlan visti
-    await db.connector_status.update_one(
-        {"client_id": client_id},
+    # Aggiorna stato connector con subnet/vlan visti.
+    # Se il report contiene hostname, target preciso; altrimenti aggiorna tutti
+    # gli scanner del cliente (compatibilita' v1 mini-scanner).
+    status_filter = {"client_id": client_id}
+    if report.hostname:
+        status_filter["hostname"] = report.hostname
+    await db.connector_status.update_many(
+        status_filter,
         {"$set": {
             "last_lan_scan_at": now_iso,
             "last_lan_scan_subnet": report.subnet,
