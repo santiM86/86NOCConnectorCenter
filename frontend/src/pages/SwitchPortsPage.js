@@ -216,14 +216,34 @@ function PortDetailPanel({ p, onClose, onOpenCable, deviceIp }) {
               )}
             </div>
             <div className="font-semibold text-cyan-300 truncate">
-              {p.neighbor.remote_device_name || p.neighbor.remote_sys_name || "(senza nome)"}
+              {p.neighbor.remote_device_name || p.neighbor.remote_sys_name || p.neighbor.device_name_precise || "(senza nome)"}
             </div>
+            {/* Fingerbank: device_name_precise se ottenuto via fingerprint API */}
+            {p.neighbor.device_name_precise && !p.neighbor.remote_sys_name && (
+              <div className="text-[10px] text-fuchsia-300 font-medium truncate" title="Identificato via Fingerbank API">
+                <span className="text-[8px] uppercase tracking-wider mr-1 opacity-70">FB</span>
+                {p.neighbor.device_name_precise}
+              </div>
+            )}
             <div className="text-[10px] text-[var(--text-muted)] font-mono break-all">
               {p.neighbor.remote_port_desc && <span>porta {p.neighbor.remote_port_desc} </span>}
               {p.neighbor.remote_port_id && !p.neighbor.remote_port_desc && <span>{p.neighbor.remote_port_id} </span>}
               {p.neighbor.remote_ip && <span>· {p.neighbor.remote_ip} </span>}
               {p.neighbor.remote_chassis_id && !p.neighbor.remote_ip && <span>· {p.neighbor.remote_chassis_id}</span>}
             </div>
+            {/* device_category badge: mostra categoria classificata (printer/voip/camera/AP) */}
+            {p.neighbor.device_category && p.neighbor.device_category !== "unknown" && (
+              <div className="text-[10px] mt-0.5">
+                <span className="px-1.5 py-0.5 rounded bg-indigo-500/15 text-indigo-300 text-[9px] font-bold tracking-wide uppercase">
+                  {p.neighbor.device_category.replace(/_/g, " ")}
+                </span>
+                {p.neighbor.classification_confidence != null && (
+                  <span className="ml-1 text-[9px] text-[var(--text-muted)]">
+                    {p.neighbor.classification_confidence}%
+                  </span>
+                )}
+              </div>
+            )}
             {p.neighbor.remote_sys_desc && (
               <div className="text-[10px] text-[var(--text-muted)] italic truncate">{p.neighbor.remote_sys_desc}</div>
             )}
@@ -485,6 +505,15 @@ export default function SwitchPortsPage() {
           <span className="flex items-center gap-1"><Desktop size={11} weight="bold" className="text-emerald-400" /> Dispositivo</span>
           <span className="flex items-center gap-1"><Plugs size={11} weight="bold" className="text-emerald-400" /> Link up</span>
           <span className="flex items-center gap-1"><Prohibit size={11} weight="bold" className="text-neutral-400" /> Disabilitata / non usata</span>
+          <span className="ml-auto flex items-center gap-2 text-[9px]">
+            <span className="px-1 rounded bg-emerald-500/20 text-emerald-300 font-bold">L</span> LLDP
+            <span className="px-1 rounded bg-fuchsia-500/20 text-fuchsia-300 font-bold">DATTO</span>
+            <span className="px-1 rounded bg-cyan-500/20 text-cyan-300 font-bold">M</span> Managed
+            <span className="px-1 rounded bg-violet-500/20 text-violet-300 font-bold">B</span> Bind
+            <span className="px-1 rounded bg-sky-500/20 text-sky-300 font-bold">T</span> Trunk
+            <span className="px-1 rounded bg-amber-500/20 text-amber-300 font-bold">V</span> OUI
+            <span className="px-1 rounded bg-fuchsia-500/20 text-fuchsia-200 font-bold">FB</span> Fingerbank
+          </span>
         </div>
       </div>
 
@@ -618,7 +647,23 @@ export default function SwitchPortsPage() {
                               {p.neighbor.match_source === "mac_oui" && (
                                 <span className="px-1 rounded bg-amber-500/20 text-amber-300 text-[8px] font-bold" title="OUI vendor">V</span>
                               )}
+                              {/* Fingerbank badge: classificazione via API esterna */}
+                              {p.neighbor.classification_source && p.neighbor.classification_source.includes("fingerbank") && (
+                                <span className="px-1 rounded bg-fuchsia-500/20 text-fuchsia-200 text-[8px] font-bold" title="Identificato via Fingerbank API">FB</span>
+                              )}
+                              {/* device_category badge */}
+                              {p.neighbor.device_category && p.neighbor.device_category !== "unknown" && (
+                                <span className="px-1 rounded bg-indigo-500/15 text-indigo-300 text-[8px] font-bold uppercase" title={`Categoria: ${p.neighbor.device_category} (confidence ${p.neighbor.classification_confidence}%)`}>
+                                  {p.neighbor.device_category.replace(/_/g, " ")}
+                                </span>
+                              )}
                             </div>
+                            {/* device_name_precise da Fingerbank quando il device non ha nome LLDP */}
+                            {p.neighbor.device_name_precise && !p.neighbor.remote_sys_name && (
+                              <span className="text-[9px] text-fuchsia-300 italic truncate max-w-[220px] block" title="Nome device da Fingerbank API">
+                                ↳ {p.neighbor.device_name_precise}
+                              </span>
+                            )}
                             {/* Riga 2: IP */}
                             {p.neighbor.remote_ip && (
                               <span className="text-[9px] font-mono text-[var(--text-secondary)]">

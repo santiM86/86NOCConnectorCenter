@@ -253,6 +253,11 @@ function Show-InstallerWizard {
     $txtSNMP = New-Object System.Windows.Forms.TextBox
     $txtSyslog = New-Object System.Windows.Forms.TextBox
     $chkAutostart = New-Object System.Windows.Forms.CheckBox
+    # v3.8: modalita' MASTER vs SCANNER + parametri scanner
+    $rdoMaster = New-Object System.Windows.Forms.RadioButton
+    $rdoScanner = New-Object System.Windows.Forms.RadioButton
+    $txtSubnet = New-Object System.Windows.Forms.TextBox
+    $txtVlanId = New-Object System.Windows.Forms.TextBox
     $txtStatus = New-Object System.Windows.Forms.TextBox
     $progressBar = New-Object System.Windows.Forms.ProgressBar
     $txtDeviceIP = New-Object System.Windows.Forms.TextBox
@@ -471,12 +476,99 @@ function Show-InstallerWizard {
         $chkAutostart.AutoSize = $true
         $chkAutostart.BackColor = [System.Drawing.Color]::Transparent
         $contentPanel.Controls.Add($chkAutostart)
-        
-        # Test button
+
+        # ============== MODALITA' (v3.8) ==============
+        # Separatore visuale
+        $sepMode = New-Object System.Windows.Forms.Label
+        $sepMode.Text = "MODALITA' DI FUNZIONAMENTO"
+        $sepMode.Font = New-Object System.Drawing.Font("Segoe UI", 8, [System.Drawing.FontStyle]::Bold)
+        $sepMode.ForeColor = [System.Drawing.Color]::FromArgb(120, 120, 135)
+        $sepMode.Location = New-Object System.Drawing.Point(28, 340)
+        $sepMode.AutoSize = $true
+        $contentPanel.Controls.Add($sepMode)
+
+        # Radio MASTER
+        $rdoMaster.Text = "MASTER  -  Polling completo (switch, firewall, Syslog/Trap). Uno per sito."
+        $rdoMaster.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+        $rdoMaster.ForeColor = [System.Drawing.Color]::FromArgb(40, 40, 55)
+        $rdoMaster.Location = New-Object System.Drawing.Point(28, 363)
+        $rdoMaster.Size = New-Object System.Drawing.Size(470, 22)
+        $rdoMaster.BackColor = [System.Drawing.Color]::Transparent
+        $rdoMaster.Checked = $true
+        $contentPanel.Controls.Add($rdoMaster)
+
+        # Radio SCANNER
+        $rdoScanner.Text = "SCANNER  -  Discovery LAN locale (ARP/mDNS/SNMP). Per VLAN aggiuntive."
+        $rdoScanner.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+        $rdoScanner.ForeColor = [System.Drawing.Color]::FromArgb(40, 40, 55)
+        $rdoScanner.Location = New-Object System.Drawing.Point(28, 388)
+        $rdoScanner.Size = New-Object System.Drawing.Size(470, 22)
+        $rdoScanner.BackColor = [System.Drawing.Color]::Transparent
+        $contentPanel.Controls.Add($rdoScanner)
+
+        # Subnet (visibile solo se Scanner)
+        $lblSubnet = New-Object System.Windows.Forms.Label
+        $lblSubnet.Text = "Subnet"
+        $lblSubnet.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+        $lblSubnet.ForeColor = [System.Drawing.Color]::FromArgb(40, 40, 55)
+        $lblSubnet.Location = New-Object System.Drawing.Point(48, 418)
+        $lblSubnet.AutoSize = $true
+        $lblSubnet.BackColor = [System.Drawing.Color]::Transparent
+        $contentPanel.Controls.Add($lblSubnet)
+
+        # Auto-detect default subnet (rete locale del PC)
+        $defaultSubnet = ""
+        try {
+            $localIp = (Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+                Where-Object {$_.IPAddress -notlike "169.254.*" -and $_.IPAddress -ne "127.0.0.1" -and $_.PrefixOrigin -in @("Dhcp","Manual")} |
+                Select-Object -First 1).IPAddress
+            if ($localIp) { $defaultSubnet = ($localIp -replace "\.\d+$",".0/24") }
+        } catch { }
+
+        $txtSubnet.Text = if ($script:ExistingConfig.subnet) { $script:ExistingConfig.subnet } else { $defaultSubnet }
+        $txtSubnet.Location = New-Object System.Drawing.Point(105, 415)
+        $txtSubnet.Size = New-Object System.Drawing.Size(180, 24)
+        $txtSubnet.Font = New-Object System.Drawing.Font("Consolas", 9)
+        $contentPanel.Controls.Add($txtSubnet)
+
+        $lblVlan = New-Object System.Windows.Forms.Label
+        $lblVlan.Text = "VLAN ID"
+        $lblVlan.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+        $lblVlan.ForeColor = [System.Drawing.Color]::FromArgb(40, 40, 55)
+        $lblVlan.Location = New-Object System.Drawing.Point(305, 418)
+        $lblVlan.AutoSize = $true
+        $lblVlan.BackColor = [System.Drawing.Color]::Transparent
+        $contentPanel.Controls.Add($lblVlan)
+
+        $txtVlanId.Text = if ($script:ExistingConfig.vlan_id) { "$($script:ExistingConfig.vlan_id)" } else { "" }
+        $txtVlanId.Location = New-Object System.Drawing.Point(370, 415)
+        $txtVlanId.Size = New-Object System.Drawing.Size(60, 24)
+        $txtVlanId.Font = New-Object System.Drawing.Font("Consolas", 9)
+        $contentPanel.Controls.Add($txtVlanId)
+
+        # Pre-seleziona modalita' se upgrade
+        if ($script:IsUpgrade -and $script:ExistingConfig.mode -eq "scanner") {
+            $rdoScanner.Checked = $true
+            $rdoMaster.Checked = $false
+        }
+
+        # Toggle visibility subnet/vlan in base alla modalita'
+        $toggleScannerFields = {
+            $visible = $rdoScanner.Checked
+            $lblSubnet.Visible = $visible
+            $txtSubnet.Visible = $visible
+            $lblVlan.Visible = $visible
+            $txtVlanId.Visible = $visible
+        }
+        $rdoMaster.Add_CheckedChanged($toggleScannerFields)
+        $rdoScanner.Add_CheckedChanged($toggleScannerFields)
+        & $toggleScannerFields  # applica subito al render
+
+        # Test button (spostato sotto la sezione modalita')
         $btnTest = New-Object System.Windows.Forms.Button
         $btnTest.Text = "Test Connessione"
         $btnTest.Size = New-Object System.Drawing.Size(140, 32)
-        $btnTest.Location = New-Object System.Drawing.Point(28, 350)
+        $btnTest.Location = New-Object System.Drawing.Point(28, 455)
         $btnTest.FlatStyle = "Flat"
         $btnTest.BackColor = [System.Drawing.Color]::White
         $btnTest.ForeColor = [System.Drawing.Color]::FromArgb(99, 102, 241)
@@ -491,29 +583,23 @@ function Show-InstallerWizard {
             }
             try {
                 $r = Invoke-RestMethod -Uri "$url/api/health" -TimeoutSec 10
-                # v3.5.16: verifica API key tramite /connector/identify (endpoint backend
-                # che data la API key ritorna il client_id). Se 200 e client_id valorizzato
-                # la key e' sicuramente accettata dal NOC in produzione.
                 $headers = @{ "X-API-Key" = $key }
                 try {
                     $identity = Invoke-RestMethod -Uri "$url/api/connector/identify" -Headers $headers -TimeoutSec 10
                     if ($identity -and $identity.client_id) {
-                        # Salva il client_id in una variabile form-level per usarlo dopo
                         $script:DiscoveredClientId = $identity.client_id
                         $script:DiscoveredClientName = $identity.client_name
                         [System.Windows.Forms.MessageBox]::Show("Connessione OK! API Key valida.`r`nCliente: $($identity.client_name)`r`nClient ID: $($identity.client_id)", $DisplayName, "OK", "Information")
                         return
                     }
                 } catch {
-                    # Fallback legacy: prova heartbeat con solo X-API-Key (server pre-v3.5.16
-                    # potrebbe non avere ancora /connector/identify ma accettare comunque X-API-Key)
                     $body = @{ connector_version=$Version; hostname=$env:COMPUTERNAME; uptime_seconds=0; traps_received=0; syslogs_received=0 } | ConvertTo-Json
                     $headers["Content-Type"] = "application/json"
                     Invoke-RestMethod -Uri "$url/api/connector/heartbeat" -Method Post -Headers $headers -Body $body -TimeoutSec 10
-                    [System.Windows.Forms.MessageBox]::Show("Connessione OK!`r`nAPI Key valida (modalita' legacy: endpoint /identify non disponibile sul NOC).", $DisplayName, "OK", "Information")
+                    [System.Windows.Forms.MessageBox]::Show("Connessione OK!`r`nAPI Key valida (modalita' legacy).", $DisplayName, "OK", "Information")
                     return
                 }
-                [System.Windows.Forms.MessageBox]::Show("Connessione OK ma API Key NON riconosciuta dal NOC.`r`nVerifica che la key sia quella attiva nel Center UI.", $DisplayName, "OK", "Warning")
+                [System.Windows.Forms.MessageBox]::Show("Connessione OK ma API Key NON riconosciuta dal NOC.", $DisplayName, "OK", "Warning")
             } catch {
                 [System.Windows.Forms.MessageBox]::Show("Errore: $($_.Exception.Message)", $DisplayName, "OK", "Error")
             }
@@ -900,6 +986,15 @@ function Show-InstallerWizard {
             }
         }
 
+        # v3.8: deduce mode + subnet + vlan dai radio button del wizard (con
+        # fallback al config esistente per compatibilita' upgrade da v<3.8)
+        $selectedMode = if ($rdoScanner.Checked) { "scanner" } else { "master" }
+        $selectedSubnet = $txtSubnet.Text.Trim()
+        $selectedVlanId = $null
+        if ($txtVlanId.Text.Trim() -match "^\d+$") {
+            $selectedVlanId = [int]$txtVlanId.Text.Trim()
+        }
+
         $config = @{
             noc_center_url = $url
             api_key = $key
@@ -910,6 +1005,10 @@ function Show-InstallerWizard {
             batch_interval_seconds = 3
             poll_interval_seconds = $pollInterval
             devices = $devicesArray
+            # v3.8: modalita' connector
+            mode = $selectedMode
+            subnet = $selectedSubnet
+            vlan_id = $selectedVlanId
         }
         $config | ConvertTo-Json -Depth 5 | Set-Content $ConfigPath -Encoding UTF8
         $txtStatus.AppendText("  Salvato in: $ConfigPath`r`n")
@@ -1518,6 +1617,347 @@ function Show-InstallerWizard {
         $cleanupTip.Location = New-Object System.Drawing.Point(28, 400)
         $cleanupTip.Size = New-Object System.Drawing.Size(450, 40)
         $contentPanel.Controls.Add($cleanupTip)
+
+        # v3.8.1: Pulsante "Scansiona LAN" disponibile per modalita' SCANNER
+        # Permette all'admin di vedere subito i dispositivi rilevati e importarli nel Center.
+        if ($rdoScanner.Checked) {
+            $btnScanNow = New-Object System.Windows.Forms.Button
+            $btnScanNow.Text = "Scansiona LAN e Importa Dispositivi"
+            $btnScanNow.Size = New-Object System.Drawing.Size(450, 36)
+            $btnScanNow.Location = New-Object System.Drawing.Point(28, 445)
+            $btnScanNow.FlatStyle = "Flat"
+            $btnScanNow.BackColor = [System.Drawing.Color]::FromArgb(56, 132, 222)  # azzurro Scanner
+            $btnScanNow.ForeColor = [System.Drawing.Color]::White
+            $btnScanNow.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+            $btnScanNow.Cursor = [System.Windows.Forms.Cursors]::Hand
+            $btnScanNow.Add_Click({
+                Show-LanScanDialog -Url ($txtUrl.Text.Trim().TrimEnd("/")) -ApiKey ($txtApiKey.Text.Trim()) `
+                    -Subnet ($txtSubnet.Text.Trim()) -VlanId ($txtVlanId.Text.Trim()) -ParentForm $form
+            })
+            $contentPanel.Controls.Add($btnScanNow)
+        }
+    }
+
+    # ==================== LAN SCAN DIALOG (Scanner mode) ====================
+    function Show-LanScanDialog {
+        param([string]$Url, [string]$ApiKey, [string]$Subnet, [string]$VlanId, $ParentForm)
+
+        # Form modale
+        $dlg = New-Object System.Windows.Forms.Form
+        $dlg.Text = "Scansione LAN — $DisplayName"
+        $dlg.Size = New-Object System.Drawing.Size(720, 540)
+        $dlg.StartPosition = "CenterParent"
+        $dlg.FormBorderStyle = "FixedDialog"
+        $dlg.MaximizeBox = $false
+        $dlg.MinimizeBox = $false
+        $dlg.BackColor = [System.Drawing.Color]::FromArgb(245, 247, 250)
+
+        $lblTitle = New-Object System.Windows.Forms.Label
+        $lblTitle.Text = "Dispositivi rilevati nella LAN"
+        $lblTitle.Font = New-Object System.Drawing.Font("Segoe UI", 14, [System.Drawing.FontStyle]::Bold)
+        $lblTitle.ForeColor = [System.Drawing.Color]::FromArgb(56, 132, 222)
+        $lblTitle.Location = New-Object System.Drawing.Point(20, 16)
+        $lblTitle.AutoSize = $true
+        $dlg.Controls.Add($lblTitle)
+
+        $lblHelp = New-Object System.Windows.Forms.Label
+        $lblHelp.Text = "Seleziona i dispositivi da importare nel NOC Center. Il Master prendera' in carico questi endpoint per la classificazione."
+        $lblHelp.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+        $lblHelp.ForeColor = [System.Drawing.Color]::FromArgb(80, 80, 90)
+        $lblHelp.Location = New-Object System.Drawing.Point(20, 50)
+        $lblHelp.Size = New-Object System.Drawing.Size(670, 36)
+        $dlg.Controls.Add($lblHelp)
+
+        $lstDevices = New-Object System.Windows.Forms.ListView
+        $lstDevices.Location = New-Object System.Drawing.Point(20, 92)
+        $lstDevices.Size = New-Object System.Drawing.Size(670, 320)
+        $lstDevices.View = [System.Windows.Forms.View]::Details
+        $lstDevices.CheckBoxes = $true
+        $lstDevices.FullRowSelect = $true
+        $lstDevices.GridLines = $true
+        $lstDevices.Columns.Add("IP", 130) | Out-Null
+        $lstDevices.Columns.Add("MAC", 160) | Out-Null
+        $lstDevices.Columns.Add("Rilevato via", 100) | Out-Null
+        $lstDevices.Columns.Add("Hostname / Vendor", 260) | Out-Null
+        $dlg.Controls.Add($lstDevices)
+
+        $lblStatus = New-Object System.Windows.Forms.Label
+        $lblStatus.Text = "Premi 'Avvia scansione' per ping sweep parallelo della subnet $Subnet."
+        $lblStatus.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Italic)
+        $lblStatus.ForeColor = [System.Drawing.Color]::FromArgb(80, 80, 90)
+        $lblStatus.Location = New-Object System.Drawing.Point(20, 420)
+        $lblStatus.Size = New-Object System.Drawing.Size(670, 22)
+        $dlg.Controls.Add($lblStatus)
+
+        $btnStart = New-Object System.Windows.Forms.Button
+        $btnStart.Text = "Avvia scansione"
+        $btnStart.Size = New-Object System.Drawing.Size(160, 34)
+        $btnStart.Location = New-Object System.Drawing.Point(20, 450)
+        $btnStart.FlatStyle = "Flat"
+        $btnStart.BackColor = [System.Drawing.Color]::FromArgb(56, 132, 222)
+        $btnStart.ForeColor = [System.Drawing.Color]::White
+        $btnStart.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+        $btnStart.Cursor = [System.Windows.Forms.Cursors]::Hand
+        $dlg.Controls.Add($btnStart)
+
+        $btnImport = New-Object System.Windows.Forms.Button
+        $btnImport.Text = "Importa selezionati al Center"
+        $btnImport.Size = New-Object System.Drawing.Size(220, 34)
+        $btnImport.Location = New-Object System.Drawing.Point(360, 450)
+        $btnImport.FlatStyle = "Flat"
+        $btnImport.BackColor = [System.Drawing.Color]::FromArgb(22, 163, 74)
+        $btnImport.ForeColor = [System.Drawing.Color]::White
+        $btnImport.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+        $btnImport.Cursor = [System.Windows.Forms.Cursors]::Hand
+        $btnImport.Enabled = $false
+        $dlg.Controls.Add($btnImport)
+
+        $btnClose = New-Object System.Windows.Forms.Button
+        $btnClose.Text = "Chiudi"
+        $btnClose.Size = New-Object System.Drawing.Size(95, 34)
+        $btnClose.Location = New-Object System.Drawing.Point(595, 450)
+        $btnClose.FlatStyle = "Flat"
+        $btnClose.BackColor = [System.Drawing.Color]::White
+        $btnClose.ForeColor = [System.Drawing.Color]::FromArgb(60, 60, 70)
+        $btnClose.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+        $btnClose.Cursor = [System.Windows.Forms.Cursors]::Hand
+        $btnClose.Add_Click({ $dlg.Close() })
+        $dlg.Controls.Add($btnClose)
+
+        # ----- v3.8.2 Streaming scan: ping parallelo (Runspace Pool) + popolazione live ListView -----
+        # Stile Advanced IP Scanner: ping sweep, hostname (DNS+NBSTAT), MAC (ARP), vendor da OUI.
+
+        # Helper come scriptblock script-scoped per essere accessibili dai Timer event handler
+        $script:GetMacFromArp = {
+            param([string]$ip)
+            try {
+                $n = Get-NetNeighbor -IPAddress $ip -ErrorAction SilentlyContinue |
+                     Where-Object { $_.LinkLayerAddress -and $_.LinkLayerAddress -ne "00-00-00-00-00-00" } |
+                     Select-Object -First 1
+                if ($n) { return ($n.LinkLayerAddress -replace "-",":").ToLower() }
+            } catch {}
+            try {
+                $arpOut = & arp -a $ip 2>$null
+                foreach ($line in $arpOut) {
+                    if ($line -match "([0-9a-f]{2}-[0-9a-f]{2}-[0-9a-f]{2}-[0-9a-f]{2}-[0-9a-f]{2}-[0-9a-f]{2})") {
+                        return ($matches[1] -replace "-",":").ToLower()
+                    }
+                }
+            } catch {}
+            return ""
+        }
+
+        $script:GetHostnameFromIp = {
+            param([string]$ip)
+            try {
+                $h = [System.Net.Dns]::GetHostEntry($ip)
+                if ($h -and $h.HostName -and $h.HostName -ne $ip) { return $h.HostName.Split('.')[0] }
+            } catch {}
+            try {
+                $nb = & nbtstat -A $ip 2>$null
+                foreach ($line in $nb) {
+                    if ($line -match "^\s*(\S+)\s+<00>\s+UNIQUE") { return $matches[1] }
+                }
+            } catch {}
+            return ""
+        }
+
+        $script:OuiMap = @{
+            "001D72"="Wistron"; "0019A9"="Cisco"; "001B17"="Cisco"; "0050BA"="DLink";
+            "5C260A"="Dell"; "001CC0"="Intel"; "B827EB"="Raspberry"; "DCA632"="Raspberry";
+            "F4A99A"="Cisco"; "C46516"="Cisco"; "F0BCC8"="Hewlett"; "F4CE46"="HP";
+            "9C8E99"="HP"; "ECB1D7"="HP"; "B499BA"="HP"; "001E0B"="HP"; "78ACC0"="HP";
+            "001CC4"="HP"; "001A4B"="HP"; "0017A4"="HP"; "001321"="HP"; "5065F3"="HP";
+            "70106F"="HP"; "C8D3A3"="HP"; "001B78"="HP"; "9457A5"="HP"; "1062E5"="HP";
+            "00041B"="Synology"; "001132"="Synology"; "B0227A"="HP"; "08002B"="Digital";
+            "00059A"="Cisco"; "00040B"="3Com"; "001195"="Dell"; "001E68"="Cisco";
+            "0030B6"="Cisco"; "AC1F6B"="SuperMicro"; "E454E8"="PEGATRON"; "F46D04"="ASRock";
+            "0017F2"="Apple"; "001451"="Apple"; "F0DCE2"="Apple"; "B8E856"="Apple";
+            "78CA39"="Apple"; "A8866D"="Apple"; "0024C4"="Cisco"; "0024D7"="Intel";
+            "78E700"="Apple"; "F0F61C"="Apple"; "B0A737"="TPLink"; "C04A00"="TPLink";
+            "5404A6"="ASUSTek"; "B06EBF"="ASUSTek"; "AC9E17"="ASUSTek"; "001E8C"="ASUSTek";
+            "DCA904"="Pegatron"; "001517"="Intel"; "0023E7"="Hewlett"; "FC15B4"="Hewlett";
+            "00248C"="ASUSTek"; "001E2A"="NETGEAR"; "9C3DCF"="NETGEAR"; "281878"="MikroTik";
+            "4C5E0C"="MikroTik"; "B8699D"="MikroTik"; "6CF049"="Fortinet"; "9094E4"="Fortinet";
+            "0009F0"="Fortinet"; "F84C77"="Hewlett"; "C03FD5"="Hewlett"; "C8FF77"="Brother";
+            "0080A1"="Brother"; "3CD92B"="Hewlett"; "FCB4E6"="Brother"; "008094"="Brother";
+            "002219"="Dell"; "F8B156"="Dell"; "001E4F"="Dell"; "00188B"="Dell";
+            "0026BB"="Apple"; "00037F"="Atheros"; "000D88"="DLink"; "F0921C"="Hewlett";
+            "F0B1E7"="Hewlett"; "1083D2"="Hewlett"; "001A1E"="Aruba"; "94B40F"="Aruba";
+            "20EA63"="Cisco"; "001583"="HP"; "44A856"="Hewlett"; "00219B"="Dell";
+            "001CB3"="Apple"; "0050BA"="DLink"; "0019A9"="Cisco"
+        }
+        $script:GetVendorFromMac = {
+            param([string]$Mac)
+            if (-not $Mac -or $Mac.Length -lt 8) { return "" }
+            $oui = ($Mac -replace "[:-]","").Substring(0,6).ToUpper()
+            if ($script:OuiMap.ContainsKey($oui)) { return $script:OuiMap[$oui] }
+            return ""
+        }
+
+        # ----- Avvia scansione (streaming + parallel) -----
+        $btnStart.Add_Click({
+            if (-not $Subnet -or $Subnet -notmatch "^\d+\.\d+\.\d+\.\d+/\d+$") {
+                [System.Windows.Forms.MessageBox]::Show(
+                    "Subnet non valida: '$Subnet'.`r`nDeve essere in formato CIDR (es. 192.168.1.0/24).",
+                    $DisplayName, "OK", "Warning") | Out-Null
+                return
+            }
+            $btnStart.Enabled = $false
+            $btnStart.Text = "Scansione in corso..."
+            $btnImport.Enabled = $false
+            $lstDevices.Items.Clear()
+
+            # Calcola range IP da subnet (supporta /24 /23 /22 fino a max 1024 host)
+            $base = ($Subnet -split "/")[0]
+            $mask = [int](($Subnet -split "/")[1])
+            $b = $base -split "\."
+            $startIp = ([uint32]$b[0] -shl 24) -bor ([uint32]$b[1] -shl 16) -bor ([uint32]$b[2] -shl 8) -bor [uint32]$b[3]
+            $hostBits = 32 - $mask
+            $count = if ($hostBits -ge 16) { 65534 } else { [int]([math]::Pow(2, $hostBits) - 2) }
+            $startIp = ($startIp -band ([uint32]::MaxValue -shl $hostBits)) + 1
+            if ($count -gt 1024) { $count = 1024 }
+            $ipList = @()
+            for ($i = 0; $i -lt $count; $i++) {
+                $n = $startIp + $i
+                $ipList += "$(($n -shr 24) -band 0xFF).$(($n -shr 16) -band 0xFF).$(($n -shr 8) -band 0xFF).$($n -band 0xFF)"
+            }
+            $lblStatus.Text = "Ping sweep su $($ipList.Count) IP in corso (parallelo, max ~5s)..."
+            $dlg.Refresh()
+
+            # Crea Runspace Pool (32 thread paralleli)
+            $rsPool = [runspacefactory]::CreateRunspacePool(1, 32)
+            $rsPool.Open()
+            $jobs = New-Object System.Collections.ArrayList
+
+            $pingScript = {
+                param($ip)
+                try {
+                    $p = New-Object System.Net.NetworkInformation.Ping
+                    $r = $p.Send($ip, 400)
+                    if ($r.Status -eq "Success") {
+                        return [PSCustomObject]@{ ip = $ip; alive = $true; rtt = $r.RoundtripTime }
+                    }
+                } catch {}
+                return [PSCustomObject]@{ ip = $ip; alive = $false }
+            }
+
+            foreach ($ip in $ipList) {
+                $ps = [powershell]::Create().AddScript($pingScript).AddArgument($ip)
+                $ps.RunspacePool = $rsPool
+                [void]$jobs.Add([PSCustomObject]@{ PS = $ps; Handle = $ps.BeginInvoke(); Ip = $ip; Done = $false })
+            }
+
+            # Timer UI: drena risultati ogni 200ms, popola live la ListView
+            $script:scanFoundCount = 0
+            $script:scanProcessedCount = 0
+            $script:scanJobs = $jobs
+            $script:scanPool = $rsPool
+            $script:scanLst = $lstDevices
+            $script:scanLblStatus = $lblStatus
+            $script:scanBtnStart = $btnStart
+            $script:scanBtnImport = $btnImport
+
+            $timer = New-Object System.Windows.Forms.Timer
+            $timer.Interval = 200
+            $timer.Add_Tick({
+                $totalJobs = $script:scanJobs.Count
+                $completedNow = 0
+                for ($i = 0; $i -lt $script:scanJobs.Count; $i++) {
+                    $job = $script:scanJobs[$i]
+                    if ($job.Done) { continue }
+                    if ($job.Handle.IsCompleted) {
+                        $job.Done = $true
+                        $completedNow++
+                        try {
+                            $res = $job.PS.EndInvoke($job.Handle)
+                            $job.PS.Dispose()
+                            if ($res -and $res.alive) {
+                                $script:scanFoundCount++
+                                $mac = & $script:GetMacFromArp $res.ip
+                                $hn = & $script:GetHostnameFromIp $res.ip
+                                $vendor = if ($mac) { & $script:GetVendorFromMac $mac } else { "" }
+                                $hostDisplay = if ($hn) { $hn } elseif ($vendor) { "($vendor)" } else { "" }
+                                $item = New-Object System.Windows.Forms.ListViewItem($res.ip)
+                                $item.SubItems.Add($mac) | Out-Null
+                                $item.SubItems.Add("ping+arp") | Out-Null
+                                $item.SubItems.Add($hostDisplay) | Out-Null
+                                $item.Checked = $true
+                                $script:scanLst.Items.Add($item) | Out-Null
+                            }
+                        } catch {}
+                    }
+                }
+                $script:scanProcessedCount += $completedNow
+                $script:scanLblStatus.Text = "Scansione: $($script:scanProcessedCount)/$totalJobs IP testati — $($script:scanFoundCount) dispositivi trovati"
+
+                $remaining = ($script:scanJobs | Where-Object { -not $_.Done }).Count
+                if ($remaining -eq 0) {
+                    $this.Stop()
+                    try { $script:scanPool.Close(); $script:scanPool.Dispose() } catch {}
+                    $script:scanBtnStart.Enabled = $true
+                    $script:scanBtnStart.Text = "Riavvia scansione"
+                    $script:scanBtnImport.Enabled = ($script:scanLst.Items.Count -gt 0)
+                    $script:scanLblStatus.Text = "Scansione completata: $($script:scanFoundCount) dispositivi trovati. Deseleziona quelli che NON vuoi importare."
+                }
+            })
+            $timer.Start()
+        })
+
+        # ----- Importa al Center -----
+        $btnImport.Add_Click({
+            $checked = @()
+            foreach ($it in $lstDevices.Items) {
+                if ($it.Checked) {
+                    $hnVendor = $it.SubItems[3].Text
+                    # "(Cisco)" -> vendor=Cisco, hostname=""; "SW01" -> hostname=SW01, vendor=""
+                    $hostname = ""; $vendor = ""
+                    if ($hnVendor -match "^\((.+)\)$") { $vendor = $matches[1] } else { $hostname = $hnVendor }
+                    $checked += [PSCustomObject]@{
+                        ip = $it.Text
+                        mac = $it.SubItems[1].Text
+                        discovered_via = $it.SubItems[2].Text
+                        hostname = $hostname
+                        vendor = $vendor
+                    }
+                }
+            }
+            if ($checked.Count -eq 0) {
+                [System.Windows.Forms.MessageBox]::Show("Nessun dispositivo selezionato.", $DisplayName, "OK", "Information") | Out-Null
+                return
+            }
+            $btnImport.Enabled = $false
+            $btnImport.Text = "Invio in corso..."
+            $dlg.Refresh()
+            try {
+                $vlanInt = $null
+                if ($VlanId -match "^\d+$") { $vlanInt = [int]$VlanId }
+                $body = @{
+                    subnet = $Subnet
+                    vlan_id = $vlanInt
+                    scan_started_at = (Get-Date).ToUniversalTime().AddSeconds(-30).ToString("o")
+                    scan_ended_at = (Get-Date).ToUniversalTime().ToString("o")
+                    endpoints = $checked
+                    hostname = $env:COMPUTERNAME
+                } | ConvertTo-Json -Depth 5 -Compress
+                $r = Invoke-RestMethod -Uri "$Url/api/connector/lan-scan" `
+                    -Method POST -Headers @{ "X-API-Key" = $ApiKey } `
+                    -Body $body -ContentType "application/json" -TimeoutSec 30
+                [System.Windows.Forms.MessageBox]::Show(
+                    "Importati $($r.stored)/$($r.total) dispositivi nel NOC Center.`r`n`r`nIl Master prendera' in carico questi endpoint per la classificazione automatica.",
+                    $DisplayName, "OK", "Information") | Out-Null
+                $dlg.Close()
+            } catch {
+                [System.Windows.Forms.MessageBox]::Show(
+                    "Errore invio al Center: $($_.Exception.Message)",
+                    $DisplayName, "OK", "Error") | Out-Null
+            } finally {
+                $btnImport.Enabled = $true
+                $btnImport.Text = "Importa selezionati al Center"
+            }
+        })
+
+        $dlg.ShowDialog($ParentForm) | Out-Null
     }
     
     # ==================== NAVIGATION ====================

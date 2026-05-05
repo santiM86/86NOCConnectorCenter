@@ -257,19 +257,27 @@ function Get-StatusText {
         $nocUrl = if ($config) { $config.noc_center_url } else { "N/D" }
         $taskRunning = Test-ConnectorTask
         $mode = if ($taskRunning) { "Servizio Windows (Task)" } else { "Processo diretto" }
-        return "$DisplayName v$($status.version)`nStato: ATTIVO ($mode)`nUptime: ${upH}h ${upM}m`nNOC: $nocUrl`nSNMP: $($status.snmp_received) | Syslog: $($status.syslog_received)"
+        # v3.8: mostra modalita' connector (master/scanner)
+        $cMode = if ($config -and $config.mode) { $config.mode.ToUpper() } else { "MASTER" }
+        $cExtra = ""
+        if ($cMode -eq "SCANNER" -and $config) {
+            $cExtra = " | Subnet: $($config.subnet)"
+            if ($config.vlan_id) { $cExtra += " VLAN $($config.vlan_id)" }
+        }
+        return "$DisplayName v$($status.version)`nModalita': $cMode$cExtra`nStato: ATTIVO ($mode)`nUptime: ${upH}h ${upM}m`nNOC: $nocUrl`nSNMP: $($status.snmp_received) | Syslog: $($status.syslog_received)"
     }
     return "$DisplayName v$Version`nStato: FERMO"
 }
 
 # Tooltip sintetico per la system tray (limite hard 63 char).
-# Richiesta utente: mostrare solo versione e stato attivo/fermo.
 function Get-TooltipText {
     $status = Read-ConnectorStatus
+    $config = if (Test-Path $ConfigPath) { Get-Content $ConfigPath -Raw | ConvertFrom-Json } else { $null }
+    $cMode = if ($config -and $config.mode) { $config.mode.ToUpper() } else { "MASTER" }
     if ($status -and $status.status -eq "running") {
-        return "$DisplayName v$($status.version) | Stato: ATTIVO"
+        return "$DisplayName v$($status.version) [$cMode] | ATTIVO"
     }
-    return "$DisplayName v$Version | Stato: FERMO"
+    return "$DisplayName v$Version [$cMode] | FERMO"
 }
 
 # ==================== DEVICE MANAGER ====================

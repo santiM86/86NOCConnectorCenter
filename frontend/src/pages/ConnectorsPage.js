@@ -352,10 +352,32 @@ export default function ConnectorsPage() {
         </div>
       ) : (
         <div className="space-y-2">
-          {connectors.map((c, i) => {
+          {(() => {
+            // Raggruppa per client_id: master in cima, scanner figli indentati sotto.
+            // Se un cliente ha solo scanner (senza master), li mostra comunque.
+            const byClient = {};
+            for (const c of connectors) {
+              const cid = c.client_id || "_orphan_";
+              if (!byClient[cid]) byClient[cid] = { master: null, scanners: [] };
+              if ((c.mode || "master") === "scanner") byClient[cid].scanners.push(c);
+              else byClient[cid].master = c;
+            }
+            const ordered = [];
+            for (const [cid, group] of Object.entries(byClient)) {
+              if (group.master) ordered.push({ ...group.master, _isChild: false, _clientId: cid });
+              for (const s of group.scanners) ordered.push({ ...s, _isChild: !!group.master, _clientId: cid });
+            }
+            return ordered;
+          })().map((c, i) => {
             const online = isOnline(c.last_seen);
+            const isChild = c._isChild;
             return (
-              <div key={i} className="noc-panel overflow-hidden" data-testid={`connector-${c.client_id}`}>
+              <div key={i}
+                className={`noc-panel overflow-hidden ${isChild ? "ml-8 border-l-2 border-l-sky-500/40 relative" : ""}`}
+                data-testid={`connector-${c.client_id}`}>
+                {isChild && (
+                  <div className="absolute -left-4 top-1/2 -translate-y-1/2 w-4 h-px bg-sky-500/40" aria-hidden="true" />
+                )}
                 <div className="p-3 flex items-center gap-3">
                   <div className={`w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0 relative group ${online ? "bg-[var(--low-bg)] border border-[var(--low-border)]" : "bg-[var(--critical-bg)] border border-[var(--critical-border)]"}`}>
                     {online ? <SealCheck size={18} weight="fill" className="text-[var(--ok)]" /> : <Warning size={18} weight="fill" className="text-[var(--critical)]" />}
@@ -370,17 +392,39 @@ export default function ConnectorsPage() {
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
-                      <p className="font-heading font-bold text-sm text-[var(--text-primary)] truncate">{c.hostname || "Server"}</p>
+                      <p className="font-heading font-bold text-sm text-[var(--text-primary)] truncate">
+                        {(c.mode || "master") === "scanner" ? `Connector Scanner — ${c.hostname || "Server"}` : (c.hostname || "Server")}
+                      </p>
                       <span className="text-[10px] text-[var(--text-muted)] font-mono">{clientMap[c.client_id] || ""}</span>
                       <span className={`text-[10px] px-1.5 py-0.5 rounded border ${online ? "text-[var(--ok)] bg-[var(--low-bg)] border-[var(--low-border)]" : "text-[var(--critical)] bg-[var(--critical-bg)] border-[var(--critical-border)]"}`}>
                         {online ? "ONLINE" : "OFFLINE"}
                       </span>
+                      {/* Mode badge: master = full polling (cyan), scanner = LAN discovery (azzurro/sky) */}
+                      <span
+                        className={`text-[10px] px-1.5 py-0.5 rounded border font-mono ${
+                          (c.mode || "master") === "scanner"
+                            ? "text-sky-300 bg-sky-500/10 border-sky-500/40"
+                            : "text-emerald-300 bg-emerald-500/10 border-emerald-500/30"
+                        }`}
+                        title={(c.mode || "master") === "scanner"
+                          ? "Modalita' SCANNER: solo discovery LAN (ARP/mDNS/SNMP locale). Per VLAN remote dove il master non arriva."
+                          : "Modalita' MASTER: polling completo switch/firewall + Syslog/Trap. Uno per sito."}
+                        data-testid={`connector-mode-${c.client_id}`}>
+                        {(c.mode || "master").toUpperCase()}
+                      </span>
+                      {c.subnet && (
+                        <span className="text-[10px] text-[var(--text-muted)] font-mono" title="Subnet locale">
+                          {c.subnet}{c.vlan_id ? ` · VLAN ${c.vlan_id}` : ""}
+                        </span>
+                      )}
                     </div>
                     <div className="grid grid-cols-2 md:grid-cols-5 gap-x-4 gap-y-0.5 mt-1">
                       <InfoItem label="Versione" value={`v${c.connector_version || "?"}`} />
                       <InfoItem label="Uptime" value={formatUptime(c.uptime_seconds)} />
-                      <InfoItem label="SNMP" value={c.traps_received || 0} />
-                      <InfoItem label="Syslog" value={c.syslogs_received || 0} />
+                      <InfoItem label={(c.mode || "master") === "scanner" ? "Endpoint scan" : "SNMP"}
+                        value={(c.mode || "master") === "scanner" ? (c.last_lan_scan_endpoints ?? 0) : (c.traps_received || 0)} />
+                      <InfoItem label={(c.mode || "master") === "scanner" ? "Ultima scan" : "Syslog"}
+                        value={(c.mode || "master") === "scanner" ? formatLastSeen(c.last_lan_scan_at) : (c.syslogs_received || 0)} />
                       <InfoItem label="Ultimo" value={formatLastSeen(c.last_seen)} />
                     </div>
                   </div>

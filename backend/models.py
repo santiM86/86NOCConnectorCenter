@@ -190,6 +190,32 @@ class ConnectorHeartbeat(BaseModel):
     uptime_seconds: int
     traps_received: int
     syslogs_received: int
+    # v3.8: connector mode (master = polling completo; scanner = solo discovery LAN)
+    mode: Optional[str] = "master"
+    subnet: Optional[str] = None       # subnet visibile dal connector (es. "10.100.61.0/24")
+    vlan_id: Optional[int] = None      # opzionale, per UI grouping
+
+
+class LanScanEndpoint(BaseModel):
+    """Endpoint rilevato dal mini-scanner via ARP/mDNS/SNMP locale."""
+    mac: str
+    ip: Optional[str] = None
+    hostname: Optional[str] = None
+    sys_descr: Optional[str] = None
+    sys_name: Optional[str] = None
+    discovered_via: str = "arp"        # arp | mdns | snmp | dhcp | ping+arp
+    rtt_ms: Optional[float] = None     # latenza ICMP
+    vendor: Optional[str] = None       # v3.8.2: vendor da OUI lookup (es. "Cisco", "HP")
+
+
+class LanScanReport(BaseModel):
+    """Report periodico dello scanner: endpoint visti nella subnet locale."""
+    subnet: str
+    vlan_id: Optional[int] = None
+    scan_started_at: str
+    scan_ended_at: str
+    endpoints: list[LanScanEndpoint]
+    hostname: Optional[str] = None  # hostname del mini-scanner che invia il report
 
 class DeviceStatusReport(BaseModel):
     device_ip: str
