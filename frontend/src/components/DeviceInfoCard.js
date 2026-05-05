@@ -383,27 +383,35 @@ export default function DeviceInfoCard({ deviceIp, onClose = null, compact = fal
             {hw.psu_states && Object.keys(hw.psu_states).length > 0 && (
               <div className="mt-2 pt-2 border-t border-[var(--bg-border)]/50 space-y-1">
                 <span className="text-[10px] uppercase tracking-wide text-[var(--text-secondary)]">Power Supplies</span>
-                {Object.entries(hw.psu_states).map(([idx, st]) => (
-                  <div key={`psu${idx}`} className="flex items-center justify-between text-[11px]">
-                    <span className="text-[var(--text-secondary)]">PSU {idx}</span>
-                    <span className={`font-mono ${st <= 2 ? "text-emerald-400" : "text-red-400"}`}>
-                      {st <= 2 ? "OK" : `FAULT (${st})`}
-                    </span>
-                  </div>
-                ))}
+                {Object.entries(hw.psu_states).map(([idx, st]) => {
+                  const n = Number(st);
+                  const isValid = Number.isFinite(n) && n > 0;  // 0/empty/NaN = sensor not reporting
+                  return (
+                    <div key={`psu${idx}`} className="flex items-center justify-between text-[11px]">
+                      <span className="text-[var(--text-secondary)]">PSU {idx}</span>
+                      <span className={`font-mono ${!isValid ? "text-neutral-400" : n <= 2 ? "text-emerald-400" : "text-red-400"}`}>
+                        {!isValid ? "N/D" : n <= 2 ? "OK" : `FAULT (codice ${n})`}
+                      </span>
+                    </div>
+                  );
+                })}
               </div>
             )}
             {hw.fan_states && Object.keys(hw.fan_states).length > 0 && (
               <div className="mt-2 pt-2 border-t border-[var(--bg-border)]/50 space-y-1">
                 <span className="text-[10px] uppercase tracking-wide text-[var(--text-secondary)]">Fans</span>
-                {Object.entries(hw.fan_states).map(([idx, st]) => (
-                  <div key={`fan${idx}`} className="flex items-center justify-between text-[11px]">
-                    <span className="text-[var(--text-secondary)]">Fan {idx}</span>
-                    <span className={`font-mono ${st <= 2 ? "text-emerald-400" : "text-red-400"}`}>
-                      {st <= 2 ? "OK" : `FAULT (${st})`}
-                    </span>
-                  </div>
-                ))}
+                {Object.entries(hw.fan_states).map(([idx, st]) => {
+                  const n = Number(st);
+                  const isValid = Number.isFinite(n) && n > 0;
+                  return (
+                    <div key={`fan${idx}`} className="flex items-center justify-between text-[11px]">
+                      <span className="text-[var(--text-secondary)]">Fan {idx}</span>
+                      <span className={`font-mono ${!isValid ? "text-neutral-400" : n <= 2 ? "text-emerald-400" : "text-red-400"}`}>
+                        {!isValid ? "N/D" : n <= 2 ? "OK" : `FAULT (codice ${n})`}
+                      </span>
+                    </div>
+                  );
+                })}
               </div>
             )}
           </Section>

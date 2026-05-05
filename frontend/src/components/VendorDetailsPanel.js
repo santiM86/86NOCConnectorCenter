@@ -229,22 +229,30 @@ function SwitchPanel({ vm, thresholds, profileKey }) {
 
       <Card title="Hardware" icon={Plugs} testid="vendor-switch-hardware">
         <div className="space-y-2 text-[11px]">
-          {Object.entries(psuStates).map(([idx, st]) => (
-            <div key={`psu${idx}`} className="flex items-center justify-between">
-              <span className="text-white/60">PSU {idx}</span>
-              <span className={`font-mono ${parseInt(st) <= 2 ? "text-emerald-400" : "text-red-400"}`}>
-                {parseInt(st) <= 2 ? "OK" : `FAULT (${st})`}
-              </span>
-            </div>
-          ))}
-          {Object.entries(fanStates).map(([idx, st]) => (
-            <div key={`fan${idx}`} className="flex items-center justify-between">
-              <span className="text-white/60">Fan {idx}</span>
-              <span className={`font-mono ${parseInt(st) <= 2 ? "text-emerald-400" : "text-red-400"}`}>
-                {parseInt(st) <= 2 ? "OK" : `FAULT (${st})`}
-              </span>
-            </div>
-          ))}
+          {Object.entries(psuStates).map(([idx, st]) => {
+            const n = Number(st);
+            const isValid = Number.isFinite(n) && n > 0;
+            return (
+              <div key={`psu${idx}`} className="flex items-center justify-between">
+                <span className="text-white/60">PSU {idx}</span>
+                <span className={`font-mono ${!isValid ? "text-neutral-400" : n <= 2 ? "text-emerald-400" : "text-red-400"}`}>
+                  {!isValid ? "N/D" : n <= 2 ? "OK" : `FAULT (codice ${n})`}
+                </span>
+              </div>
+            );
+          })}
+          {Object.entries(fanStates).map(([idx, st]) => {
+            const n = Number(st);
+            const isValid = Number.isFinite(n) && n > 0;
+            return (
+              <div key={`fan${idx}`} className="flex items-center justify-between">
+                <span className="text-white/60">Fan {idx}</span>
+                <span className={`font-mono ${!isValid ? "text-neutral-400" : n <= 2 ? "text-emerald-400" : "text-red-400"}`}>
+                  {!isValid ? "N/D" : n <= 2 ? "OK" : `FAULT (codice ${n})`}
+                </span>
+              </div>
+            );
+          })}
           {Object.keys(psuStates).length === 0 && Object.keys(fanStates).length === 0 && (
             <p className="text-white/30 italic">Hardware detail non disponibile per {profileKey || "profilo sconosciuto"}.</p>
           )}
