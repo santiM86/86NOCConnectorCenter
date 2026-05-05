@@ -334,6 +334,8 @@ from routes.syslog_trap import router as syslog_trap_router, _ensure_indexes as 
 app.include_router(syslog_trap_router)
 from routes.device_info_card import router as device_info_card_router
 app.include_router(device_info_card_router)
+from routes.admin_integrations import router as admin_integrations_router
+app.include_router(admin_integrations_router)
 from routes.arp_cache import router as arp_cache_router, ensure_arp_idx
 app.include_router(arp_cache_router)
 

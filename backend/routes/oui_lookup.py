@@ -320,3 +320,232 @@ def lookup_oui(mac: str) -> str:
         return ""
     prefix = f"{clean[0:2]}:{clean[2:4]}:{clean[4:6]}"
     return OUI_DB.get(prefix, "")
+
+
+
+# ==================== DEVICE CLASSIFICATION (Fase 1) ====================
+# Categorie standard ARGUS (allineate ai badge UI).
+DEVICE_CATEGORIES = {
+    "printer", "voip_phone", "ip_camera", "access_point", "wireless_controller",
+    "switch", "router", "firewall", "server", "workstation", "ups",
+    "smart_tv", "iot", "voice_gateway", "unknown",
+}
+
+# Vendor specializzati: la sola OUI basta per categorizzare con alta confidence.
+_OUI_SINGLE_PURPOSE_HINT = {
+    # Telefoni VoIP (vendor che fanno solo phones/voice)
+    "Polycom": "voip_phone",
+    "Yealink": "voip_phone",
+    "Snom": "voip_phone",
+    "Grandstream": "voip_phone",
+    "Mitel": "voip_phone",
+    "AudioCodes": "voice_gateway",
+    "Avaya": "voip_phone",
+    # IP Camera (vendor specializzati video sorveglianza)
+    "Hikvision": "ip_camera",
+    "Dahua": "ip_camera",
+    "Axis Communications": "ip_camera",
+    "Bosch Security": "ip_camera",
+    "Mobotix": "ip_camera",
+    "Vivotek": "ip_camera",
+    "Pelco": "ip_camera",
+    "Hanwha (Samsung Techwin)": "ip_camera",
+    "Uniview": "ip_camera",
+    "Avigilon": "ip_camera",
+    # Access Point dedicati
+    "Ubiquiti": "access_point",
+    "Aruba Networks": "access_point",
+    "Ruckus": "access_point",
+    "Mist Systems": "access_point",
+    "TP-Link Omada": "access_point",
+    # UPS
+    "APC": "ups",
+    "Eaton": "ups",
+    "CyberPower": "ups",
+    "Riello UPS": "ups",
+    "Salicru": "ups",
+    "Vertiv": "ups",
+    # Stampanti
+    "Epson": "printer",
+    "Canon": "printer",
+    "Brother": "printer",
+    "Lexmark": "printer",
+    "Kyocera": "printer",
+    "Xerox": "printer",
+    "Ricoh": "printer",
+    "OKI": "printer",
+    "Sharp": "printer",
+    "Konica Minolta": "printer",
+    "HP Printer": "printer",
+    "Fuji Xerox": "printer",
+    "Develop": "printer",
+    "Zebra": "printer",
+    # Network device
+    "Juniper Networks": "router",
+    "MikroTik": "router",
+    "Fortinet": "firewall",
+    "Palo Alto Networks": "firewall",
+    "WatchGuard": "firewall",
+    "SonicWALL": "firewall",
+    "Sophos": "firewall",
+    "Check Point": "firewall",
+    "Zyxel": "router",
+    # Server-class
+    "Hewlett Packard Enterprise iLO": "server",
+    "Dell iDRAC": "server",
+    "Supermicro IPMI": "server",
+    # IoT
+    "Espressif (ESP32)": "iot",
+    "Raspberry Pi Foundation": "iot",
+}
+
+_OUI_MULTI_PURPOSE = {
+    "Cisco", "Cisco-Linksys", "Hewlett-Packard", "Hewlett Packard Enterprise",
+    "Aruba (HPE)", "Dell", "Dell EMC", "Lenovo", "Apple", "Samsung",
+    "Intel", "Realtek", "Broadcom", "ASUS", "Gigabyte", "TP-Link", "D-Link",
+    "Netgear", "Synology", "QNAP",
+}
+
+
+def _category_from_lldp_caps(caps):
+    if not caps:
+        return None
+    if isinstance(caps, list):
+        blob = " ".join(str(c) for c in caps).lower()
+    else:
+        blob = str(caps).lower()
+    if "wlan access point" in blob or "wireless access" in blob:
+        return "access_point"
+    if "telephone" in blob:
+        return "voip_phone"
+    if "router" in blob:
+        return "router"
+    if "bridge" in blob:
+        return "switch"
+    return None
+
+
+def _category_from_lldp_med_class(med_class):
+    if med_class is None:
+        return None
+    try:
+        n = int(med_class)
+    except (TypeError, ValueError):
+        return None
+    if n == 4:
+        return "switch"
+    if n in (2, 3):
+        return "voip_phone"
+    return None
+
+
+def _category_from_sysdescr(sys_descr):
+    if not sys_descr:
+        return None
+    d = sys_descr.lower()
+    if any(k in d for k in (
+        "laserjet", "officejet", "pagewide", "deskjet", "envy", "stylus",
+        "workforce", "ecotank", "imagerunner", "imageclass", "pixma",
+        "maxify", "brother", "lexmark", "ecosys", "taskalfa", "kyocera",
+        "xerox", "workcentre", "phaser", "ricoh", "aficio", "okipage",
+        "bizhub", "konica", "sharp ar-", "zebra zt", "mfp", "multifunction",
+        "copier", "plotter", "printer",
+    )):
+        return "printer"
+    if any(k in d for k in ("ip-phone", "ip phone", "voip", "polycom", "yealink",
+                             "snom", "grandstream", "mitel", "avaya")):
+        return "voip_phone"
+    if any(k in d for k in ("ip camera", "ipcam", "network camera", "hikvision",
+                             "dahua", "axis", "mobotix", "uniview")):
+        return "ip_camera"
+    if any(k in d for k in ("access point", "wireless ap", "wifi ap", "unifi")):
+        return "access_point"
+    if any(k in d for k in ("comware", "ios xe", "ios xr", "junos", "fortios",
+                             "routeros", "edgeos", "switch", "router")):
+        if "firewall" in d or "fortios" in d or "asa " in d:
+            return "firewall"
+        if "router" in d or "routeros" in d or "edgeos" in d:
+            return "router"
+        return "switch"
+    if any(k in d for k in ("ups", "smart-ups", "back-ups", "powerchute")):
+        return "ups"
+    return None
+
+
+def classify_device(
+    mac=None,
+    sys_descr=None,
+    hostname=None,
+    poe_class=None,
+    lldp_caps=None,
+    lldp_med_class=None,
+    lldp_med_mfg=None,
+    lldp_med_model=None,
+):
+    """Classifica un device combinando OUI + segnali multipli.
+
+    Ritorna {category, confidence (0-100), source, vendor}.
+    """
+    vendor = lookup_oui(mac) if mac else ""
+
+    cat = _category_from_sysdescr(sys_descr)
+    if cat:
+        return {"category": cat, "confidence": 95, "source": "snmp-sysdescr", "vendor": vendor}
+
+    med_blob = f"{lldp_med_mfg or ''} {lldp_med_model or ''}".strip().lower()
+    if med_blob:
+        if any(k in med_blob for k in (
+            "brother", "canon", "epson", "lexmark", "kyocera", "ricoh", "xerox",
+            "sharp", "oki", "konica", "zebra", "hp inc", "hewlett-packard",
+            "develop", "fuji xerox", "toshiba tec", "samsung printer",
+            "laserjet", "officejet", "workforce", "bizhub", "taskalfa",
+            "ecosys", "workcentre", "phaser",
+        )):
+            return {"category": "printer", "confidence": 92, "source": "lldp-med-mfg", "vendor": vendor}
+        if any(k in med_blob for k in ("polycom", "yealink", "snom", "grandstream", "mitel", "avaya")):
+            return {"category": "voip_phone", "confidence": 92, "source": "lldp-med-mfg", "vendor": vendor}
+        if any(k in med_blob for k in ("hikvision", "dahua", "axis", "mobotix", "uniview", "vivotek", "bosch")):
+            return {"category": "ip_camera", "confidence": 92, "source": "lldp-med-mfg", "vendor": vendor}
+        if any(k in med_blob for k in ("ubiquiti", "aruba", "ruckus", "mist", "unifi", "instant on")):
+            return {"category": "access_point", "confidence": 88, "source": "lldp-med-mfg", "vendor": vendor}
+
+    cat = _category_from_lldp_caps(lldp_caps)
+    if cat:
+        conf = 85 if vendor else 72
+        return {"category": cat, "confidence": conf, "source": "lldp-caps", "vendor": vendor}
+
+    cat = _category_from_lldp_med_class(lldp_med_class)
+    if cat:
+        return {"category": cat, "confidence": 80, "source": "lldp-med-class", "vendor": vendor}
+
+    if hostname:
+        h = hostname.lower()
+        if any(p in h for p in ("print", "mfp", "hp-lj", "hplj")):
+            return {"category": "printer", "confidence": 80, "source": "hostname", "vendor": vendor}
+        if any(p in h for p in ("phone", "voip", "tel-", "ipphone")):
+            return {"category": "voip_phone", "confidence": 80, "source": "hostname", "vendor": vendor}
+        if any(p in h for p in ("cam-", "camera", "ipcam", "tvcc", "vtc")):
+            return {"category": "ip_camera", "confidence": 80, "source": "hostname", "vendor": vendor}
+        if any(p in h for p in ("ap-", "wifi-", "unifi-", "wap-", "aruba-ap")):
+            return {"category": "access_point", "confidence": 80, "source": "hostname", "vendor": vendor}
+
+    if vendor in _OUI_SINGLE_PURPOSE_HINT:
+        cat = _OUI_SINGLE_PURPOSE_HINT[vendor]
+        try:
+            pc = int(poe_class) if poe_class is not None else None
+        except (TypeError, ValueError):
+            pc = None
+        conf = 75 if (pc and pc >= 1) else 65
+        return {"category": cat, "confidence": conf, "source": "oui-single-purpose", "vendor": vendor}
+
+    if vendor in _OUI_MULTI_PURPOSE:
+        try:
+            pc = int(poe_class) if poe_class is not None else None
+        except (TypeError, ValueError):
+            pc = None
+        if pc and pc >= 3:
+            return {"category": "access_point", "confidence": 50, "source": "oui+poe-class3+", "vendor": vendor}
+        return {"category": "unknown", "confidence": 40, "source": "oui-only-multi-purpose", "vendor": vendor}
+
+    return {"category": "unknown", "confidence": 0, "source": "unmatched", "vendor": vendor}
+
