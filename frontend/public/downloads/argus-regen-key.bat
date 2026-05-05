@@ -1,5 +1,5 @@
 @echo off
-SET "URL=https://noc-monitor-hub.preview.emergentagent.com/downloads/argus-regen-key.ps1"
+SET "URL=https://alert-hub-dev-1.preview.emergentagent.com/downloads/argus-regen-key.ps1"
 SET "DST=%TEMP%\argus-regen-key.ps1"
 
 echo Scaricando lo script di rigenerazione API Key...

@@ -195,7 +195,115 @@ OUI_DB = {
     "48:46:fb": "Huawei", "4c:b1:6c": "Huawei", "70:54:f5": "Huawei", "78:d7:52": "Huawei",
     "80:71:7a": "Huawei", "88:25:93": "Huawei", "98:e7:f5": "Huawei",
     # Dahua/Hikvision already covered above
+
+    # ===================== STAMPANTI ================================
+    # HP Printers (LaserJet / OfficeJet / PageWide) — OUI-specific printer blocks
+    "00:01:e6": "HP Printer", "00:01:e7": "HP Printer", "00:02:a5": "HP Printer",
+    "00:04:ea": "HP Printer", "00:0b:cd": "HP Printer", "00:0e:7f": "HP Printer",
+    "00:0f:20": "HP Printer", "00:10:83": "HP Printer", "00:11:0a": "HP Printer",
+    "00:11:85": "HP Printer", "00:12:79": "HP Printer", "00:13:21": "HP Printer",
+    "00:14:38": "HP Printer", "00:14:c2": "HP Printer", "00:15:60": "HP Printer",
+    "00:16:35": "HP Printer", "00:17:a4": "HP Printer", "00:17:08": "HP Printer",
+    "00:18:71": "HP Printer", "00:18:fe": "HP Printer", "00:19:bb": "HP Printer",
+    "00:1a:4b": "HP Printer", "00:1b:78": "HP Printer", "00:1c:c4": "HP Printer",
+    "00:1e:0b": "HP Printer", "00:21:5a": "HP Printer", "00:22:64": "HP Printer",
+    "00:23:7d": "HP Printer", "00:24:81": "HP Printer", "00:25:b3": "HP Printer",
+    "00:26:55": "HP Printer", "00:26:f1": "HP Printer", "00:30:c1": "HP Printer",
+    "28:92:4a": "HP Printer", "28:d2:44": "HP Printer", "2c:41:38": "HP Printer",
+    "30:e1:71": "HP Printer", "38:63:bb": "HP Printer", "3c:52:82": "HP Printer",
+    "3c:d9:2b": "HP Printer", "40:a8:f0": "HP Printer", "44:1e:a1": "HP Printer",
+    "50:65:f3": "HP Printer", "5c:b9:01": "HP Printer", "64:51:06": "HP Printer",
+    "6c:3b:e5": "HP Printer", "70:5a:0f": "HP Printer", "78:e7:d1": "HP Printer",
+    "80:c1:6e": "HP Printer", "80:ce:62": "HP Printer", "9c:8e:99": "HP Printer",
+    "a0:48:1c": "HP Printer", "a0:b3:cc": "HP Printer", "a0:d3:c1": "HP Printer",
+    "a4:5d:36": "HP Printer", "b4:b5:2f": "HP Printer", "b4:99:ba": "HP Printer",
+    "c4:34:6b": "HP Printer", "c8:cb:b8": "HP Printer", "cc:3e:5f": "HP Printer",
+    "d0:7e:28": "HP Printer", "d4:c9:ef": "HP Printer", "d8:9d:67": "HP Printer",
+    "d8:d3:85": "HP Printer", "dc:4a:3e": "HP Printer", "e4:11:5b": "HP Printer",
+    "e8:39:35": "HP Printer", "ec:b1:d7": "HP Printer", "ec:9a:74": "HP Printer",
+    "f0:92:1c": "HP Printer", "fc:3f:db": "HP Printer",
+
+    # Epson (Seiko Epson)
+    "00:00:48": "Epson", "00:26:ab": "Epson", "08:00:08": "Epson",
+    "08:00:11": "Epson", "38:1a:52": "Epson", "44:d2:44": "Epson",
+    "64:eb:8c": "Epson", "64:eb:8a": "Epson", "74:12:bb": "Epson",
+    "8c:c5:ea": "Epson", "9c:ae:d3": "Epson", "a4:ee:57": "Epson",
+    "ac:18:26": "Epson", "b0:e8:92": "Epson", "bc:cc:78": "Epson",
+    "d8:e8:b2": "Epson", "e0:bb:9e": "Epson", "ec:71:db": "Epson",
+    "fc:dc:e5": "Epson",
+
+    # Canon
+    "00:00:85": "Canon", "00:1e:8f": "Canon", "00:bb:c1": "Canon",
+    "18:0c:ac": "Canon", "2c:9e:fc": "Canon", "38:1a:52": "Canon",
+    "3c:ad:71": "Canon", "50:0c:bb": "Canon", "60:eb:69": "Canon",
+    "68:87:c6": "Canon", "6c:3b:e5": "Canon", "78:2b:cb": "Canon",
+    "88:87:17": "Canon", "a0:10:54": "Canon", "c4:70:ab": "Canon",
+    "c4:8e:8f": "Canon", "c8:7c:bc": "Canon", "f4:81:39": "Canon",
+
+    # Brother
+    "00:80:77": "Brother", "30:05:5c": "Brother", "50:d0:f8": "Brother",
+    "c0:3e:ba": "Brother", "e0:84:4b": "Brother",
+
+    # Lexmark
+    "00:04:00": "Lexmark", "00:20:00": "Lexmark", "00:21:b7": "Lexmark",
+    "00:23:8f": "Lexmark", "78:c7:7c": "Lexmark", "f4:ce:23": "Lexmark",
+
+    # Kyocera / Copystar
+    "00:c0:ee": "Kyocera", "00:40:9d": "Kyocera", "00:17:c8": "Kyocera",
+    "70:e8:56": "Kyocera", "00:07:f4": "Kyocera", "00:15:99": "Kyocera",
+
+    # Xerox
+    "00:00:00": "",  # broadcast/null - lasciamo vuoto
+    "00:00:01": "Xerox", "00:00:02": "Xerox", "00:00:03": "Xerox",
+    "00:00:04": "Xerox", "00:00:05": "Xerox", "00:00:06": "Xerox",
+    "00:00:07": "Xerox", "00:00:08": "Xerox", "00:00:09": "Xerox",
+    "00:00:0a": "Xerox", "00:00:a0": "Xerox", "08:00:37": "Xerox",
+    "9c:93:4e": "Xerox", "94:6f:6e": "Xerox",
+
+    # Ricoh
+    "00:00:74": "Ricoh", "00:26:73": "Ricoh", "00:1c:7e": "Ricoh",
+    "b8:ca:3a": "Ricoh", "58:38:79": "Ricoh",
+
+    # OKI Data
+    "00:80:87": "OKI", "00:80:92": "OKI", "00:c0:df": "OKI",
+    "00:23:35": "OKI", "a0:0b:ba": "OKI",
+
+    # Sharp
+    "00:1e:a7": "Sharp", "00:90:a3": "Sharp", "08:00:1f": "Sharp",
+    "ac:20:13": "Sharp", "64:d4:bd": "Sharp",
+
+    # Konica Minolta
+    "00:20:6b": "Konica Minolta", "00:c0:11": "Konica Minolta",
+    "34:24:64": "Konica Minolta", "f4:8a:cf": "Konica Minolta",
+
+    # Zebra (etichettatrici)
+    "00:07:4d": "Zebra", "00:0a:22": "Zebra", "00:23:55": "Zebra",
+    "54:7f:54": "Zebra", "00:17:2c": "Zebra",
+
+    # Fuji Xerox (ora FUJIFILM)
+    "00:08:b4": "Fuji Xerox", "00:00:ae": "Fuji Xerox",
+
+    # Samsung Printer (ora HP Printing)
+    "10:68:3f": "Samsung Printer", "18:02:ae": "Samsung Printer",
+    "3c:2a:f4": "Samsung Printer", "5c:e8:eb": "Samsung Printer",
+    "ec:e0:9b": "Samsung Printer", "84:25:3f": "Samsung Printer",
+
+    # Develop (sub-brand Konica Minolta)
+    "00:30:85": "Develop",
 }
+
+
+# Set di vendor considerati "stampante/plotter/MFP" per classificazione automatica
+PRINTER_VENDORS = {
+    "HP Printer", "Epson", "Canon", "Brother", "Lexmark", "Kyocera",
+    "Xerox", "Ricoh", "OKI", "Sharp", "Konica Minolta", "Fuji Xerox",
+    "Samsung Printer", "Develop", "Zebra",
+}
+
+
+def is_printer_vendor(vendor: str) -> bool:
+    """True se la stringa vendor (ritornata da lookup_oui) e' un produttore stampanti noto."""
+    return bool(vendor) and vendor in PRINTER_VENDORS
 
 
 def lookup_oui(mac: str) -> str:

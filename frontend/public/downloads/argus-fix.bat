@@ -1,5 +1,5 @@
 @echo off
-SET "URL=https://noc-monitor-hub.preview.emergentagent.com/downloads/argus-fix.ps1"
+SET "URL=https://alert-hub-dev-1.preview.emergentagent.com/downloads/argus-fix.ps1"
 SET "DST=%TEMP%\argus-fix.ps1"
 
 echo Scaricando lo script di fix...

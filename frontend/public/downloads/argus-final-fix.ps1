@@ -196,7 +196,7 @@ if ($apiOk -and $hbOk) {
     Write-Host "  ma rifiuta lo schema /heartbeat che il connector v3.5.23 vuole inviare."
     Write-Host ""
     Write-Host "  -> SOLUZIONE: deploy del backend Python aggiornato su IIS" -ForegroundColor Yellow
-    Write-Host "  -> Pacchetto: https://noc-monitor-hub.preview.emergentagent.com/downloads/argus-backend-deploy.zip"
+    Write-Host "  -> Pacchetto: https://alert-hub-dev-1.preview.emergentagent.com/downloads/argus-backend-deploy.zip"
 } elseif (-not $apiOk -and $apiCode -eq 401) {
     Write-Host "  API KEY NON VALIDA sul prod (HTTP 401)" -ForegroundColor Red
     Write-Host ""

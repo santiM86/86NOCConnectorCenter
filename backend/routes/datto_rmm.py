@@ -631,18 +631,36 @@ async def _match_with_center(client_id: str, datto_devices: list[dict]) -> int:
                 }},
             ))
 
-    # Pass 3: match su managed_devices (per IP senza LLDP/FDB)
+    # Pass 3: match su managed_devices (via IP e/o MAC management).
+    # I managed_devices sono i device "ufficiali" del Center (switch, firewall, UPS,
+    # NAS, server) con IP e spesso MAC di management. Se Datto li conosce li
+    # arricchiamo con datto_name cosi che UI/Report abbiano il nome allineato.
     managed = await db.managed_devices.find(
         {"client_id": client_id},
-        {"_id": 0, "id": 1, "name": 1, "ip_address": 1},
+        {"_id": 0, "id": 1, "name": 1, "ip_address": 1, "mac_address": 1},
     ).to_list(10000)
+    md_ops: list = []
     for md in managed:
         ip = md.get("ip_address") or ""
-        if ip and ip in ip_to_dev:
-            d = ip_to_dev[ip]
-            if d["uid"] in matched_uids:
-                continue
+        mac = (md.get("mac_address") or "").upper()
+        d = None
+        mt = None
+        if mac and mac in mac_to_dev:
+            d, mt = mac_to_dev[mac], "mac"
+        elif ip and ip in ip_to_dev:
+            d, mt = ip_to_dev[ip], "ip"
+        if d:
             matched_uids.add(d["uid"])
+            md_ops.append(UpdateOne(
+                {"id": md["id"]},
+                {"$set": {
+                    "datto_name": d["name"],
+                    "datto_match": mt,
+                    "datto_matched_at": now,
+                }},
+            ))
+    if md_ops:
+        await db.managed_devices.bulk_write(md_ops, ordered=False)
 
     # Scrivi stato matched sui datto_devices (senza mai mettere in chiaro dati sensibili)
     if matched_uids:
@@ -803,6 +821,10 @@ async def remove_datto_link(
         {"$unset": {"datto_name": "", "datto_match": "", "datto_matched_at": "",
                     "datto_id": "", "datto_os": "", "datto_os_version": "",
                     "datto_ip": ""}},
+    )
+    await db.managed_devices.update_many(
+        {"client_id": client_id, "datto_name": {"$exists": True}},
+        {"$unset": {"datto_name": "", "datto_match": "", "datto_matched_at": ""}},
     )
     audit.info(f"datto_unlink client={client_id} by={current_user.get('email')}")
     return {"unlinked": r1.deleted_count, "devices_removed": r2.deleted_count}

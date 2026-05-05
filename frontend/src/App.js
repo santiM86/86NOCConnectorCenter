@@ -36,6 +36,7 @@ import IncidentsPage from "@/pages/IncidentsPage";
 import PortMonitorPage from "@/pages/PortMonitorPage";
 import SwitchPortsPage from "@/pages/SwitchPortsPage";
 import PrintersPage from "@/pages/PrintersPage";
+import PrinterDiscoveryPage from "@/pages/PrinterDiscoveryPage";
 import PublicDashboard from "@/pages/PublicDashboard";
 import TvDashboardPage from "@/pages/TvDashboardPage";
 import VulnerabilityPage from "@/pages/VulnerabilityPage";
@@ -241,6 +242,7 @@ function App() {
               <Route path="port-monitor" element={<PortMonitorPage />} />
               <Route path="switch-ports/:deviceIp" element={<SwitchPortsPage />} />
               <Route path="printers" element={<PrintersPage />} />
+              <Route path="clients/:clientId/printer-discovery" element={<PrinterDiscoveryPage />} />
               <Route path="vulnerability" element={<VulnerabilityPage />} />
               <Route path="trends" element={<TrendPage />} />
               <Route path="device-metrics" element={<DeviceMetricsPage />} />
