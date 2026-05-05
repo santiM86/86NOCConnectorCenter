@@ -44,7 +44,7 @@ async def get_switch_ports(device_ip: str, current_user: dict = Depends(get_curr
       2. MAC Table -> managed_devices (via MAC di ifPhysAddress) — per NAS/stampanti/UPS
       3. MAC Table -> OUI vendor lookup — per device sconosciuti (es. "Apple laptop")
     """
-    from .oui_lookup import lookup_oui
+    from .oui_lookup import lookup_oui, classify_device
 
     ports = await db.switch_ports.find({"local_ip": device_ip}, {"_id": 0}).sort("idx", 1).to_list(2000)
     neighbors = await db.lldp_neighbors.find({"local_ip": device_ip}, {"_id": 0}).to_list(500)
@@ -344,6 +344,32 @@ async def get_switch_ports(device_ip: str, current_user: dict = Depends(get_curr
             ok_count += 1
         else:
             down_count += 1
+
+        # ==== DEVICE CLASSIFICATION (Fase 1: OUI + LLDP + euristiche) ====
+        # Aggiunge {device_category, classification_confidence, classification_source}
+        # al neighbor_obj per device sconosciuti / parzialmente noti.
+        # Si esegue solo se neighbor_obj esiste e non e' gia' un managed device noto.
+        if neighbor_obj is not None and (
+            neighbor_obj.get("match_source") in ("mac_oui", "mac_unknown", "mac_fdb_trunk")
+            or not neighbor_obj.get("remote_device_type")
+        ):
+            try:
+                _mac = neighbor_obj.get("remote_chassis_id") or ""
+                _classification = classify_device(
+                    mac=_mac,
+                    sys_descr=neighbor_obj.get("remote_sys_desc"),
+                    hostname=neighbor_obj.get("remote_sys_name"),
+                    poe_class=p.get("poe_class") or p.get("poe_priority"),
+                    lldp_caps=neigh.get("remote_sys_cap_str") if neigh else None,
+                    lldp_med_class=neigh.get("remote_med_class") if neigh else None,
+                    lldp_med_mfg=neigh.get("remote_med_mfg") if neigh else None,
+                    lldp_med_model=neigh.get("remote_med_model") if neigh else None,
+                )
+                neighbor_obj["device_category"] = _classification.get("category")
+                neighbor_obj["classification_confidence"] = _classification.get("confidence")
+                neighbor_obj["classification_source"] = _classification.get("source")
+            except Exception:
+                pass
 
         rx_bps = int(p.get("rx_bps") or 0)
         tx_bps = int(p.get("tx_bps") or 0)
