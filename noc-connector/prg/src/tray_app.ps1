@@ -325,13 +325,14 @@ function Get-TooltipText {
 
 function Show-DeviceManager {
     $isScanner = (Get-ConnectorMode) -eq "scanner"
-    $form = New-Object System.Windows.Forms.Form
-    # v3.8.7: titolo finestra dipende dalla modalita'
+    # v3.8.9: in modalita' Scanner, "Gestisci Dispositivi" apre direttamente
+    # il Network Scanner completo (no Device Manager con campi SNMP).
     if ($isScanner) {
-        $form.Text = "Connector Scanner - Discovery LAN"
-    } else {
-        $form.Text = "$DisplayName - Gestisci Dispositivi"
+        Show-NetworkScanner
+        return $false
     }
+    $form = New-Object System.Windows.Forms.Form
+    $form.Text = "$DisplayName - Gestisci Dispositivi"
     $form.Size = New-Object System.Drawing.Size(820, 580)
     $form.StartPosition = "CenterScreen"
     $form.FormBorderStyle = "FixedDialog"
@@ -341,13 +342,8 @@ function Show-DeviceManager {
 
     # Title
     $lblTitle = New-Object System.Windows.Forms.Label
-    if ($isScanner) {
-        $lblTitle.Text = "Discovery LAN (Modalita' Scanner)"
-        $lblTitle.ForeColor = [System.Drawing.Color]::FromArgb(56, 132, 222)  # azzurro
-    } else {
-        $lblTitle.Text = "Dispositivi Monitorati (SNMP Polling)"
-        $lblTitle.ForeColor = [System.Drawing.Color]::FromArgb(30, 30, 40)
-    }
+    $lblTitle.Text = "Dispositivi Monitorati (SNMP Polling)"
+    $lblTitle.ForeColor = [System.Drawing.Color]::FromArgb(30, 30, 40)
     $lblTitle.Font = New-Object System.Drawing.Font("Segoe UI", 13, [System.Drawing.FontStyle]::Bold)
     $lblTitle.Location = New-Object System.Drawing.Point(20, 15)
     $lblTitle.AutoSize = $true
@@ -524,78 +520,13 @@ function Show-DeviceManager {
     $btnSave.Cursor = [System.Windows.Forms.Cursors]::Hand
     $form.Controls.Add($btnSave)
 
-    # v3.8.7: Pulsante "Scansiona LAN ora" — solo modalita' Scanner.
-    # Lancia argus-scanner.ps1 -ScanOnce in un job di sfondo e mostra l'esito.
-    if ($isScanner) {
-        $btnScanNow = New-Object System.Windows.Forms.Button
-        $btnScanNow.Text = "Scansiona LAN ora"
-        $btnScanNow.Size = New-Object System.Drawing.Size(180, 30)
-        $btnScanNow.Location = New-Object System.Drawing.Point(20, 425)
-        $btnScanNow.FlatStyle = "Flat"
-        $btnScanNow.BackColor = [System.Drawing.Color]::FromArgb(56, 132, 222)  # azzurro Scanner
-        $btnScanNow.ForeColor = [System.Drawing.Color]::White
-        $btnScanNow.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
-        $btnScanNow.Cursor = [System.Windows.Forms.Cursors]::Hand
-        $btnScanNow.Add_Click({
-            $btnScanNow.Enabled = $false
-            $btnScanNow.Text = "Scansione in corso..."
-            $form.Refresh()
-            try {
-                $scannerScript = Join-Path $ScriptDir "argus-scanner.ps1"
-                if (-not (Test-Path $scannerScript)) {
-                    [System.Windows.Forms.MessageBox]::Show(
-                        "argus-scanner.ps1 non trovato in:`r`n$scannerScript",
-                        "Connector Scanner", "OK", "Error") | Out-Null
-                    return
-                }
-                # Lancio sincrono dello scan singolo: ARP+mDNS+Masscan(se installato) e invio al Center
-                $proc = Start-Process -FilePath "powershell.exe" `
-                    -ArgumentList "-NoProfile","-ExecutionPolicy","Bypass","-File",$scannerScript,"-ScanOnce" `
-                    -WindowStyle Hidden -Wait -PassThru
-                if ($proc.ExitCode -eq 0) {
-                    [System.Windows.Forms.MessageBox]::Show(
-                        "Scansione completata. Gli endpoint rilevati sono stati inviati al Center.`r`n`r`nVerifica nella dashboard Web (sezione Discovery / Endpoint).",
-                        "Connector Scanner", "OK", "Information") | Out-Null
-                } else {
-                    [System.Windows.Forms.MessageBox]::Show(
-                        "Scansione terminata con codice $($proc.ExitCode). Controlla il log:`r`n$env:ProgramData\86NocConnector\scanner.log",
-                        "Connector Scanner", "OK", "Warning") | Out-Null
-                }
-            } catch {
-                [System.Windows.Forms.MessageBox]::Show(
-                    "Errore avvio scansione: $($_.Exception.Message)",
-                    "Connector Scanner", "OK", "Error") | Out-Null
-            } finally {
-                $btnScanNow.Enabled = $true
-                $btnScanNow.Text = "Scansiona LAN ora"
-            }
-        })
-        $form.Controls.Add($btnScanNow)
-
-        # Hint scanner-mode-aware
-        $lblHint = New-Object System.Windows.Forms.Label
-        $lblHint.Text = "Modalita' Scanner: questo connector NON polla i device via SNMP. Esegue solo discovery LAN (ARP/mDNS/Masscan) e invia gli endpoint rilevati al Center, dove il Master li classifichera'."
-        $lblHint.Font = New-Object System.Drawing.Font("Segoe UI", 8)
-        $lblHint.ForeColor = [System.Drawing.Color]::FromArgb(56, 132, 222)
-        $lblHint.Location = New-Object System.Drawing.Point(20, 465)
-        $lblHint.Size = New-Object System.Drawing.Size(780, 35)
-        $form.Controls.Add($lblHint)
-
-        # In modalita' Scanner, nascondi i pulsanti SNMP/WebUI che non si applicano
-        $btnAdd.Visible = $false
-        $btnTestSnmp.Visible = $false
-        $btnWebUI.Visible = $false
-        $btnTestAllWebUI.Visible = $false
-        $lblTitle.Text = "Discovery LAN attiva"
-    } else {
-        $lblHint = New-Object System.Windows.Forms.Label
-        $lblHint.Text = "Apri Web UI: testa http/https sul device e, se risponde, invia il link ad ARGUS Center. Salva e Riavvia applica le modifiche al servizio."
-        $lblHint.Font = New-Object System.Drawing.Font("Segoe UI", 8)
-        $lblHint.ForeColor = [System.Drawing.Color]::FromArgb(140, 140, 155)
-        $lblHint.Location = New-Object System.Drawing.Point(20, 465)
-        $lblHint.Size = New-Object System.Drawing.Size(780, 35)
-        $form.Controls.Add($lblHint)
-    }
+    $lblHint = New-Object System.Windows.Forms.Label
+    $lblHint.Text = "Apri Web UI: testa http/https sul device e, se risponde, invia il link ad ARGUS Center. Salva e Riavvia applica le modifiche al servizio."
+    $lblHint.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+    $lblHint.ForeColor = [System.Drawing.Color]::FromArgb(140, 140, 155)
+    $lblHint.Location = New-Object System.Drawing.Point(20, 465)
+    $lblHint.Size = New-Object System.Drawing.Size(780, 35)
+    $form.Controls.Add($lblHint)
 
     # Add button handler
     $btnAdd.Add_Click({
@@ -1350,7 +1281,7 @@ public class TrayRefresh {
     # ARP MAC, DNS+NetBIOS hostname, OUI vendor, SMB shares, HTTP/HTTPS detection,
     # WoL, export CSV. Tutto sviluppato da zero in PowerShell+WinForms.
     if ((Get-ConnectorMode) -eq "scanner") {
-        $netScanItem = $contextMenu.Items.Add("Network Scanner")
+        $netScanItem = $contextMenu.Items.Add("Scansione di rete")
         $netScanItem.ForeColor = [System.Drawing.Color]::FromArgb(56, 132, 222)  # azzurro
         $netScanItem.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
         $netScanItem.Add_Click({ Show-NetworkScanner })

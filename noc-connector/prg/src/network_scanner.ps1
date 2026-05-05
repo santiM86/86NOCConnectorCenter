@@ -125,7 +125,7 @@ function Show-NetworkScanner {
     [System.Windows.Forms.Application]::EnableVisualStyles()
 
     $form = New-Object System.Windows.Forms.Form
-    $form.Text = "Connector Scanner — Network Scanner"
+    $form.Text = "Connector Scanner — Scansione di rete"
     $form.Size = New-Object System.Drawing.Size(1100, 680)
     $form.StartPosition = "CenterScreen"
     $form.BackColor = [System.Drawing.Color]::FromArgb(245, 247, 250)
@@ -134,12 +134,20 @@ function Show-NetworkScanner {
 
     # Header
     $lblTitle = New-Object System.Windows.Forms.Label
-    $lblTitle.Text = "Network Scanner"
+    $lblTitle.Text = "Scansione di rete"
     $lblTitle.Font = New-Object System.Drawing.Font("Segoe UI", 16, [System.Drawing.FontStyle]::Bold)
     $lblTitle.ForeColor = [System.Drawing.Color]::FromArgb(56, 132, 222)
     $lblTitle.Location = New-Object System.Drawing.Point(20, 12)
     $lblTitle.AutoSize = $true
     $form.Controls.Add($lblTitle)
+
+    $lblSubtitle = New-Object System.Windows.Forms.Label
+    $lblSubtitle.Text = "Discovery completo della rete: ping sweep, MAC, hostname, vendor, servizi attivi."
+    $lblSubtitle.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+    $lblSubtitle.ForeColor = [System.Drawing.Color]::FromArgb(100, 100, 110)
+    $lblSubtitle.Location = New-Object System.Drawing.Point(22, 38)
+    $lblSubtitle.Size = New-Object System.Drawing.Size(700, 18)
+    $form.Controls.Add($lblSubtitle)
 
     # Subnet input
     $lblSubnet = New-Object System.Windows.Forms.Label
