@@ -1,14 +1,10 @@
 # Test Credentials - ARGUS Center
 
-## Admin
-- Email: `admin@86bit.it`
-- Password: `password`
-- Role: admin
-
-## Admin (Marco Santinelli)
+## Admin (unico)
 - Email: `info@86bit.it`
-- Password: `password`
+- Password: `Ariel17051986@!@86`
 - Role: admin
+- (Aggiornato 2026-02-13 — sostituisce admin@86bit.it/password che è stato rimosso)
 
 ## TV Monitor
 - Email: `tv@86bit.it`
