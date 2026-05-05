@@ -253,6 +253,11 @@ function Show-InstallerWizard {
     $txtSNMP = New-Object System.Windows.Forms.TextBox
     $txtSyslog = New-Object System.Windows.Forms.TextBox
     $chkAutostart = New-Object System.Windows.Forms.CheckBox
+    # v3.8: modalita' MASTER vs SCANNER + parametri scanner
+    $rdoMaster = New-Object System.Windows.Forms.RadioButton
+    $rdoScanner = New-Object System.Windows.Forms.RadioButton
+    $txtSubnet = New-Object System.Windows.Forms.TextBox
+    $txtVlanId = New-Object System.Windows.Forms.TextBox
     $txtStatus = New-Object System.Windows.Forms.TextBox
     $progressBar = New-Object System.Windows.Forms.ProgressBar
     $txtDeviceIP = New-Object System.Windows.Forms.TextBox
@@ -471,12 +476,99 @@ function Show-InstallerWizard {
         $chkAutostart.AutoSize = $true
         $chkAutostart.BackColor = [System.Drawing.Color]::Transparent
         $contentPanel.Controls.Add($chkAutostart)
-        
-        # Test button
+
+        # ============== MODALITA' (v3.8) ==============
+        # Separatore visuale
+        $sepMode = New-Object System.Windows.Forms.Label
+        $sepMode.Text = "MODALITA' DI FUNZIONAMENTO"
+        $sepMode.Font = New-Object System.Drawing.Font("Segoe UI", 8, [System.Drawing.FontStyle]::Bold)
+        $sepMode.ForeColor = [System.Drawing.Color]::FromArgb(120, 120, 135)
+        $sepMode.Location = New-Object System.Drawing.Point(28, 340)
+        $sepMode.AutoSize = $true
+        $contentPanel.Controls.Add($sepMode)
+
+        # Radio MASTER
+        $rdoMaster.Text = "MASTER  -  Polling completo (switch, firewall, Syslog/Trap). Uno per sito."
+        $rdoMaster.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+        $rdoMaster.ForeColor = [System.Drawing.Color]::FromArgb(40, 40, 55)
+        $rdoMaster.Location = New-Object System.Drawing.Point(28, 363)
+        $rdoMaster.Size = New-Object System.Drawing.Size(470, 22)
+        $rdoMaster.BackColor = [System.Drawing.Color]::Transparent
+        $rdoMaster.Checked = $true
+        $contentPanel.Controls.Add($rdoMaster)
+
+        # Radio SCANNER
+        $rdoScanner.Text = "SCANNER  -  Discovery LAN locale (ARP/mDNS/SNMP). Per VLAN aggiuntive."
+        $rdoScanner.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+        $rdoScanner.ForeColor = [System.Drawing.Color]::FromArgb(40, 40, 55)
+        $rdoScanner.Location = New-Object System.Drawing.Point(28, 388)
+        $rdoScanner.Size = New-Object System.Drawing.Size(470, 22)
+        $rdoScanner.BackColor = [System.Drawing.Color]::Transparent
+        $contentPanel.Controls.Add($rdoScanner)
+
+        # Subnet (visibile solo se Scanner)
+        $lblSubnet = New-Object System.Windows.Forms.Label
+        $lblSubnet.Text = "Subnet"
+        $lblSubnet.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+        $lblSubnet.ForeColor = [System.Drawing.Color]::FromArgb(40, 40, 55)
+        $lblSubnet.Location = New-Object System.Drawing.Point(48, 418)
+        $lblSubnet.AutoSize = $true
+        $lblSubnet.BackColor = [System.Drawing.Color]::Transparent
+        $contentPanel.Controls.Add($lblSubnet)
+
+        # Auto-detect default subnet (rete locale del PC)
+        $defaultSubnet = ""
+        try {
+            $localIp = (Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+                Where-Object {$_.IPAddress -notlike "169.254.*" -and $_.IPAddress -ne "127.0.0.1" -and $_.PrefixOrigin -in @("Dhcp","Manual")} |
+                Select-Object -First 1).IPAddress
+            if ($localIp) { $defaultSubnet = ($localIp -replace "\.\d+$",".0/24") }
+        } catch { }
+
+        $txtSubnet.Text = if ($script:ExistingConfig.subnet) { $script:ExistingConfig.subnet } else { $defaultSubnet }
+        $txtSubnet.Location = New-Object System.Drawing.Point(105, 415)
+        $txtSubnet.Size = New-Object System.Drawing.Size(180, 24)
+        $txtSubnet.Font = New-Object System.Drawing.Font("Consolas", 9)
+        $contentPanel.Controls.Add($txtSubnet)
+
+        $lblVlan = New-Object System.Windows.Forms.Label
+        $lblVlan.Text = "VLAN ID"
+        $lblVlan.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+        $lblVlan.ForeColor = [System.Drawing.Color]::FromArgb(40, 40, 55)
+        $lblVlan.Location = New-Object System.Drawing.Point(305, 418)
+        $lblVlan.AutoSize = $true
+        $lblVlan.BackColor = [System.Drawing.Color]::Transparent
+        $contentPanel.Controls.Add($lblVlan)
+
+        $txtVlanId.Text = if ($script:ExistingConfig.vlan_id) { "$($script:ExistingConfig.vlan_id)" } else { "" }
+        $txtVlanId.Location = New-Object System.Drawing.Point(370, 415)
+        $txtVlanId.Size = New-Object System.Drawing.Size(60, 24)
+        $txtVlanId.Font = New-Object System.Drawing.Font("Consolas", 9)
+        $contentPanel.Controls.Add($txtVlanId)
+
+        # Pre-seleziona modalita' se upgrade
+        if ($script:IsUpgrade -and $script:ExistingConfig.mode -eq "scanner") {
+            $rdoScanner.Checked = $true
+            $rdoMaster.Checked = $false
+        }
+
+        # Toggle visibility subnet/vlan in base alla modalita'
+        $toggleScannerFields = {
+            $visible = $rdoScanner.Checked
+            $lblSubnet.Visible = $visible
+            $txtSubnet.Visible = $visible
+            $lblVlan.Visible = $visible
+            $txtVlanId.Visible = $visible
+        }
+        $rdoMaster.Add_CheckedChanged($toggleScannerFields)
+        $rdoScanner.Add_CheckedChanged($toggleScannerFields)
+        & $toggleScannerFields  # applica subito al render
+
+        # Test button (spostato sotto la sezione modalita')
         $btnTest = New-Object System.Windows.Forms.Button
         $btnTest.Text = "Test Connessione"
         $btnTest.Size = New-Object System.Drawing.Size(140, 32)
-        $btnTest.Location = New-Object System.Drawing.Point(28, 350)
+        $btnTest.Location = New-Object System.Drawing.Point(28, 455)
         $btnTest.FlatStyle = "Flat"
         $btnTest.BackColor = [System.Drawing.Color]::White
         $btnTest.ForeColor = [System.Drawing.Color]::FromArgb(99, 102, 241)
@@ -491,29 +583,23 @@ function Show-InstallerWizard {
             }
             try {
                 $r = Invoke-RestMethod -Uri "$url/api/health" -TimeoutSec 10
-                # v3.5.16: verifica API key tramite /connector/identify (endpoint backend
-                # che data la API key ritorna il client_id). Se 200 e client_id valorizzato
-                # la key e' sicuramente accettata dal NOC in produzione.
                 $headers = @{ "X-API-Key" = $key }
                 try {
                     $identity = Invoke-RestMethod -Uri "$url/api/connector/identify" -Headers $headers -TimeoutSec 10
                     if ($identity -and $identity.client_id) {
-                        # Salva il client_id in una variabile form-level per usarlo dopo
                         $script:DiscoveredClientId = $identity.client_id
                         $script:DiscoveredClientName = $identity.client_name
                         [System.Windows.Forms.MessageBox]::Show("Connessione OK! API Key valida.`r`nCliente: $($identity.client_name)`r`nClient ID: $($identity.client_id)", $DisplayName, "OK", "Information")
                         return
                     }
                 } catch {
-                    # Fallback legacy: prova heartbeat con solo X-API-Key (server pre-v3.5.16
-                    # potrebbe non avere ancora /connector/identify ma accettare comunque X-API-Key)
                     $body = @{ connector_version=$Version; hostname=$env:COMPUTERNAME; uptime_seconds=0; traps_received=0; syslogs_received=0 } | ConvertTo-Json
                     $headers["Content-Type"] = "application/json"
                     Invoke-RestMethod -Uri "$url/api/connector/heartbeat" -Method Post -Headers $headers -Body $body -TimeoutSec 10
-                    [System.Windows.Forms.MessageBox]::Show("Connessione OK!`r`nAPI Key valida (modalita' legacy: endpoint /identify non disponibile sul NOC).", $DisplayName, "OK", "Information")
+                    [System.Windows.Forms.MessageBox]::Show("Connessione OK!`r`nAPI Key valida (modalita' legacy).", $DisplayName, "OK", "Information")
                     return
                 }
-                [System.Windows.Forms.MessageBox]::Show("Connessione OK ma API Key NON riconosciuta dal NOC.`r`nVerifica che la key sia quella attiva nel Center UI.", $DisplayName, "OK", "Warning")
+                [System.Windows.Forms.MessageBox]::Show("Connessione OK ma API Key NON riconosciuta dal NOC.", $DisplayName, "OK", "Warning")
             } catch {
                 [System.Windows.Forms.MessageBox]::Show("Errore: $($_.Exception.Message)", $DisplayName, "OK", "Error")
             }
@@ -900,6 +986,15 @@ function Show-InstallerWizard {
             }
         }
 
+        # v3.8: deduce mode + subnet + vlan dai radio button del wizard (con
+        # fallback al config esistente per compatibilita' upgrade da v<3.8)
+        $selectedMode = if ($rdoScanner.Checked) { "scanner" } else { "master" }
+        $selectedSubnet = $txtSubnet.Text.Trim()
+        $selectedVlanId = $null
+        if ($txtVlanId.Text.Trim() -match "^\d+$") {
+            $selectedVlanId = [int]$txtVlanId.Text.Trim()
+        }
+
         $config = @{
             noc_center_url = $url
             api_key = $key
@@ -910,6 +1005,10 @@ function Show-InstallerWizard {
             batch_interval_seconds = 3
             poll_interval_seconds = $pollInterval
             devices = $devicesArray
+            # v3.8: modalita' connector
+            mode = $selectedMode
+            subnet = $selectedSubnet
+            vlan_id = $selectedVlanId
         }
         $config | ConvertTo-Json -Depth 5 | Set-Content $ConfigPath -Encoding UTF8
         $txtStatus.AppendText("  Salvato in: $ConfigPath`r`n")

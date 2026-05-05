@@ -1,4 +1,4 @@
 {
-  "version": "3.8.4",
-  "changelog": "v3.8.4 - ROLLBACK installer al v3.7.7. L'installer_gui.ps1 e' RIPRISTINATO BIT-PER-BIT alla versione 3.7.7 perfettamente funzionante. Tolte TUTTE le aggiunte di scansione LAN integrate dentro il wizard. La feature 'Scansiona e Importa Dispositivi' viene spostata SOLO lato Center web (browser), accessibile dall'admin senza toccare il connector. Restano attivi: (1) argus-scanner.ps1 v3.8.1 in modalita' standalone (avvio manuale: powershell argus-scanner.ps1 -Setup), (2) Backend fix indice composito (client_id, hostname, mode) che permette al Master e Scanner di coesistere, (3) UI Center: badge azzurro Scanner + label 'Connector Scanner -- hostname'. Il Connector Master resta IDENTICO al v3.7.7."
+  "version": "3.8.5",
+  "changelog": "v3.8.5 - INSTALLER WIZARD = v3.8.0 (perfettamente funzionante). L'installer_gui.ps1 e' ripristinato BIT-PER-BIT al v3.8.0 con radio button MASTER/SCANNER e campi Subnet/VLAN per l'agganciamento del mini-scanner. ZERO mie modifiche al wizard. La feature 'Scansiona e Importa' verra' implementata SOLO lato Center web nelle prossime release per non rischiare di rompere il flusso d'installazione. Fix backend mantenuti: indice composito (client_id, hostname, mode) per Master+Scanner coesistenza, badge azzurro SCANNER, label 'Connector Scanner -- hostname' nella UI Center."
 }
