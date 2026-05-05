@@ -1642,21 +1642,6 @@ function Show-InstallerWizard {
     function Show-LanScanDialog {
         param([string]$Url, [string]$ApiKey, [string]$Subnet, [string]$VlanId, $ParentForm)
 
-        # Carica le funzioni di scan da argus-scanner.ps1 (AsLibrary = no entry point)
-        $scannerLib = Join-Path $ScriptDir "argus-scanner.ps1"
-        if (-not (Test-Path $scannerLib)) {
-            [System.Windows.Forms.MessageBox]::Show(
-                "argus-scanner.ps1 non trovato in:`r`n$scannerLib`r`n`r`nLa scansione richiede questo file.",
-                $DisplayName, "OK", "Error") | Out-Null
-            return
-        }
-        try { . $scannerLib -AsLibrary } catch {
-            [System.Windows.Forms.MessageBox]::Show(
-                "Errore caricamento scanner: $($_.Exception.Message)",
-                $DisplayName, "OK", "Error") | Out-Null
-            return
-        }
-
         # Form modale
         $dlg = New-Object System.Windows.Forms.Form
         $dlg.Text = "Scansione LAN — $DisplayName"
@@ -1690,14 +1675,14 @@ function Show-InstallerWizard {
         $lstDevices.CheckBoxes = $true
         $lstDevices.FullRowSelect = $true
         $lstDevices.GridLines = $true
-        $lstDevices.Columns.Add("IP", 160) | Out-Null
-        $lstDevices.Columns.Add("MAC", 180) | Out-Null
-        $lstDevices.Columns.Add("Rilevato via", 140) | Out-Null
-        $lstDevices.Columns.Add("Hostname", 165) | Out-Null
+        $lstDevices.Columns.Add("IP", 130) | Out-Null
+        $lstDevices.Columns.Add("MAC", 160) | Out-Null
+        $lstDevices.Columns.Add("Rilevato via", 100) | Out-Null
+        $lstDevices.Columns.Add("Hostname / Vendor", 260) | Out-Null
         $dlg.Controls.Add($lstDevices)
 
         $lblStatus = New-Object System.Windows.Forms.Label
-        $lblStatus.Text = "Premi 'Avvia scansione' per iniziare."
+        $lblStatus.Text = "Premi 'Avvia scansione' per ping sweep parallelo della subnet $Subnet."
         $lblStatus.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Italic)
         $lblStatus.ForeColor = [System.Drawing.Color]::FromArgb(80, 80, 90)
         $lblStatus.Location = New-Object System.Drawing.Point(20, 420)
@@ -1739,43 +1724,184 @@ function Show-InstallerWizard {
         $btnClose.Add_Click({ $dlg.Close() })
         $dlg.Controls.Add($btnClose)
 
-        # ----- Avvia scansione -----
-        $btnStart.Add_Click({
-            $btnStart.Enabled = $false
-            $btnStart.Text = "Scansione in corso..."
-            $lblStatus.Text = "Esecuzione ARP scan + mDNS discovery (max ~15s)..."
-            $lstDevices.Items.Clear()
-            $dlg.Refresh()
+        # ----- v3.8.2 Streaming scan: ping parallelo (Runspace Pool) + popolazione live ListView -----
+        # Stile Advanced IP Scanner: ping sweep, hostname (DNS+NBSTAT), MAC (ARP), vendor da OUI.
+
+        # Helper come scriptblock script-scoped per essere accessibili dai Timer event handler
+        $script:GetMacFromArp = {
+            param([string]$ip)
             try {
-                $arp = Invoke-ArpScan -Subnet $Subnet
-                $mdns = Invoke-MdnsDiscovery
-                $merged = @{}
-                foreach ($e in $arp) { if ($e.mac) { $merged[$e.mac] = $e } }
-                foreach ($e in $mdns) {
-                    if ($e.ip) {
-                        $arpMatch = $arp | Where-Object { $_.ip -eq $e.ip } | Select-Object -First 1
-                        if ($arpMatch -and $merged[$arpMatch.mac]) {
-                            $merged[$arpMatch.mac].discovered_via = "arp+mdns"
-                        }
+                $n = Get-NetNeighbor -IPAddress $ip -ErrorAction SilentlyContinue |
+                     Where-Object { $_.LinkLayerAddress -and $_.LinkLayerAddress -ne "00-00-00-00-00-00" } |
+                     Select-Object -First 1
+                if ($n) { return ($n.LinkLayerAddress -replace "-",":").ToLower() }
+            } catch {}
+            try {
+                $arpOut = & arp -a $ip 2>$null
+                foreach ($line in $arpOut) {
+                    if ($line -match "([0-9a-f]{2}-[0-9a-f]{2}-[0-9a-f]{2}-[0-9a-f]{2}-[0-9a-f]{2}-[0-9a-f]{2})") {
+                        return ($matches[1] -replace "-",":").ToLower()
                     }
                 }
-                $found = @($merged.Values)
-                foreach ($dev in $found) {
-                    $item = New-Object System.Windows.Forms.ListViewItem($dev.ip)
-                    $item.SubItems.Add($dev.mac) | Out-Null
-                    $item.SubItems.Add($dev.discovered_via) | Out-Null
-                    $item.SubItems.Add("") | Out-Null
-                    $item.Checked = $true
-                    $lstDevices.Items.Add($item) | Out-Null
+            } catch {}
+            return ""
+        }
+
+        $script:GetHostnameFromIp = {
+            param([string]$ip)
+            try {
+                $h = [System.Net.Dns]::GetHostEntry($ip)
+                if ($h -and $h.HostName -and $h.HostName -ne $ip) { return $h.HostName.Split('.')[0] }
+            } catch {}
+            try {
+                $nb = & nbtstat -A $ip 2>$null
+                foreach ($line in $nb) {
+                    if ($line -match "^\s*(\S+)\s+<00>\s+UNIQUE") { return $matches[1] }
                 }
-                $lblStatus.Text = "Trovati $($found.Count) dispositivi. Spunta quelli che vuoi importare al Center."
-                $btnImport.Enabled = ($found.Count -gt 0)
-            } catch {
-                $lblStatus.Text = "Errore scansione: $($_.Exception.Message)"
-            } finally {
-                $btnStart.Enabled = $true
-                $btnStart.Text = "Riavvia scansione"
+            } catch {}
+            return ""
+        }
+
+        $script:OuiMap = @{
+            "001D72"="Wistron"; "0019A9"="Cisco"; "001B17"="Cisco"; "0050BA"="DLink";
+            "5C260A"="Dell"; "001CC0"="Intel"; "B827EB"="Raspberry"; "DCA632"="Raspberry";
+            "F4A99A"="Cisco"; "C46516"="Cisco"; "F0BCC8"="Hewlett"; "F4CE46"="HP";
+            "9C8E99"="HP"; "ECB1D7"="HP"; "B499BA"="HP"; "001E0B"="HP"; "78ACC0"="HP";
+            "001CC4"="HP"; "001A4B"="HP"; "0017A4"="HP"; "001321"="HP"; "5065F3"="HP";
+            "70106F"="HP"; "C8D3A3"="HP"; "001B78"="HP"; "9457A5"="HP"; "1062E5"="HP";
+            "00041B"="Synology"; "001132"="Synology"; "B0227A"="HP"; "08002B"="Digital";
+            "00059A"="Cisco"; "00040B"="3Com"; "001195"="Dell"; "001E68"="Cisco";
+            "0030B6"="Cisco"; "AC1F6B"="SuperMicro"; "E454E8"="PEGATRON"; "F46D04"="ASRock";
+            "0017F2"="Apple"; "001451"="Apple"; "F0DCE2"="Apple"; "B8E856"="Apple";
+            "78CA39"="Apple"; "A8866D"="Apple"; "0024C4"="Cisco"; "0024D7"="Intel";
+            "78E700"="Apple"; "F0F61C"="Apple"; "B0A737"="TPLink"; "C04A00"="TPLink";
+            "5404A6"="ASUSTek"; "B06EBF"="ASUSTek"; "AC9E17"="ASUSTek"; "001E8C"="ASUSTek";
+            "DCA904"="Pegatron"; "001517"="Intel"; "0023E7"="Hewlett"; "FC15B4"="Hewlett";
+            "00248C"="ASUSTek"; "001E2A"="NETGEAR"; "9C3DCF"="NETGEAR"; "281878"="MikroTik";
+            "4C5E0C"="MikroTik"; "B8699D"="MikroTik"; "6CF049"="Fortinet"; "9094E4"="Fortinet";
+            "0009F0"="Fortinet"; "F84C77"="Hewlett"; "C03FD5"="Hewlett"; "C8FF77"="Brother";
+            "0080A1"="Brother"; "3CD92B"="Hewlett"; "FCB4E6"="Brother"; "008094"="Brother";
+            "002219"="Dell"; "F8B156"="Dell"; "001E4F"="Dell"; "00188B"="Dell";
+            "0026BB"="Apple"; "00037F"="Atheros"; "000D88"="DLink"; "F0921C"="Hewlett";
+            "F0B1E7"="Hewlett"; "1083D2"="Hewlett"; "001A1E"="Aruba"; "94B40F"="Aruba";
+            "20EA63"="Cisco"; "001583"="HP"; "44A856"="Hewlett"; "00219B"="Dell";
+            "001CB3"="Apple"; "0050BA"="DLink"; "0019A9"="Cisco"
+        }
+        $script:GetVendorFromMac = {
+            param([string]$Mac)
+            if (-not $Mac -or $Mac.Length -lt 8) { return "" }
+            $oui = ($Mac -replace "[:-]","").Substring(0,6).ToUpper()
+            if ($script:OuiMap.ContainsKey($oui)) { return $script:OuiMap[$oui] }
+            return ""
+        }
+
+        # ----- Avvia scansione (streaming + parallel) -----
+        $btnStart.Add_Click({
+            if (-not $Subnet -or $Subnet -notmatch "^\d+\.\d+\.\d+\.\d+/\d+$") {
+                [System.Windows.Forms.MessageBox]::Show(
+                    "Subnet non valida: '$Subnet'.`r`nDeve essere in formato CIDR (es. 192.168.1.0/24).",
+                    $DisplayName, "OK", "Warning") | Out-Null
+                return
             }
+            $btnStart.Enabled = $false
+            $btnStart.Text = "Scansione in corso..."
+            $btnImport.Enabled = $false
+            $lstDevices.Items.Clear()
+
+            # Calcola range IP da subnet (supporta /24 /23 /22 fino a max 1024 host)
+            $base = ($Subnet -split "/")[0]
+            $mask = [int](($Subnet -split "/")[1])
+            $b = $base -split "\."
+            $startIp = ([uint32]$b[0] -shl 24) -bor ([uint32]$b[1] -shl 16) -bor ([uint32]$b[2] -shl 8) -bor [uint32]$b[3]
+            $hostBits = 32 - $mask
+            $count = if ($hostBits -ge 16) { 65534 } else { [int]([math]::Pow(2, $hostBits) - 2) }
+            $startIp = ($startIp -band ([uint32]::MaxValue -shl $hostBits)) + 1
+            if ($count -gt 1024) { $count = 1024 }
+            $ipList = @()
+            for ($i = 0; $i -lt $count; $i++) {
+                $n = $startIp + $i
+                $ipList += "$(($n -shr 24) -band 0xFF).$(($n -shr 16) -band 0xFF).$(($n -shr 8) -band 0xFF).$($n -band 0xFF)"
+            }
+            $lblStatus.Text = "Ping sweep su $($ipList.Count) IP in corso (parallelo, max ~5s)..."
+            $dlg.Refresh()
+
+            # Crea Runspace Pool (32 thread paralleli)
+            $rsPool = [runspacefactory]::CreateRunspacePool(1, 32)
+            $rsPool.Open()
+            $jobs = New-Object System.Collections.ArrayList
+
+            $pingScript = {
+                param($ip)
+                try {
+                    $p = New-Object System.Net.NetworkInformation.Ping
+                    $r = $p.Send($ip, 400)
+                    if ($r.Status -eq "Success") {
+                        return [PSCustomObject]@{ ip = $ip; alive = $true; rtt = $r.RoundtripTime }
+                    }
+                } catch {}
+                return [PSCustomObject]@{ ip = $ip; alive = $false }
+            }
+
+            foreach ($ip in $ipList) {
+                $ps = [powershell]::Create().AddScript($pingScript).AddArgument($ip)
+                $ps.RunspacePool = $rsPool
+                [void]$jobs.Add([PSCustomObject]@{ PS = $ps; Handle = $ps.BeginInvoke(); Ip = $ip; Done = $false })
+            }
+
+            # Timer UI: drena risultati ogni 200ms, popola live la ListView
+            $script:scanFoundCount = 0
+            $script:scanProcessedCount = 0
+            $script:scanJobs = $jobs
+            $script:scanPool = $rsPool
+            $script:scanLst = $lstDevices
+            $script:scanLblStatus = $lblStatus
+            $script:scanBtnStart = $btnStart
+            $script:scanBtnImport = $btnImport
+
+            $timer = New-Object System.Windows.Forms.Timer
+            $timer.Interval = 200
+            $timer.Add_Tick({
+                $totalJobs = $script:scanJobs.Count
+                $completedNow = 0
+                for ($i = 0; $i -lt $script:scanJobs.Count; $i++) {
+                    $job = $script:scanJobs[$i]
+                    if ($job.Done) { continue }
+                    if ($job.Handle.IsCompleted) {
+                        $job.Done = $true
+                        $completedNow++
+                        try {
+                            $res = $job.PS.EndInvoke($job.Handle)
+                            $job.PS.Dispose()
+                            if ($res -and $res.alive) {
+                                $script:scanFoundCount++
+                                $mac = & $script:GetMacFromArp $res.ip
+                                $hn = & $script:GetHostnameFromIp $res.ip
+                                $vendor = if ($mac) { & $script:GetVendorFromMac $mac } else { "" }
+                                $hostDisplay = if ($hn) { $hn } elseif ($vendor) { "($vendor)" } else { "" }
+                                $item = New-Object System.Windows.Forms.ListViewItem($res.ip)
+                                $item.SubItems.Add($mac) | Out-Null
+                                $item.SubItems.Add("ping+arp") | Out-Null
+                                $item.SubItems.Add($hostDisplay) | Out-Null
+                                $item.Checked = $true
+                                $script:scanLst.Items.Add($item) | Out-Null
+                            }
+                        } catch {}
+                    }
+                }
+                $script:scanProcessedCount += $completedNow
+                $script:scanLblStatus.Text = "Scansione: $($script:scanProcessedCount)/$totalJobs IP testati — $($script:scanFoundCount) dispositivi trovati"
+
+                $remaining = ($script:scanJobs | Where-Object { -not $_.Done }).Count
+                if ($remaining -eq 0) {
+                    $this.Stop()
+                    try { $script:scanPool.Close(); $script:scanPool.Dispose() } catch {}
+                    $script:scanBtnStart.Enabled = $true
+                    $script:scanBtnStart.Text = "Riavvia scansione"
+                    $script:scanBtnImport.Enabled = ($script:scanLst.Items.Count -gt 0)
+                    $script:scanLblStatus.Text = "Scansione completata: $($script:scanFoundCount) dispositivi trovati. Deseleziona quelli che NON vuoi importare."
+                }
+            })
+            $timer.Start()
         })
 
         # ----- Importa al Center -----
@@ -1783,10 +1909,16 @@ function Show-InstallerWizard {
             $checked = @()
             foreach ($it in $lstDevices.Items) {
                 if ($it.Checked) {
+                    $hnVendor = $it.SubItems[3].Text
+                    # "(Cisco)" -> vendor=Cisco, hostname=""; "SW01" -> hostname=SW01, vendor=""
+                    $hostname = ""; $vendor = ""
+                    if ($hnVendor -match "^\((.+)\)$") { $vendor = $matches[1] } else { $hostname = $hnVendor }
                     $checked += [PSCustomObject]@{
                         ip = $it.Text
                         mac = $it.SubItems[1].Text
                         discovered_via = $it.SubItems[2].Text
+                        hostname = $hostname
+                        vendor = $vendor
                     }
                 }
             }

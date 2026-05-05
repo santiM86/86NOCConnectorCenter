@@ -407,6 +407,8 @@ async def connector_lan_scan(request: Request, report: LanScanReport):
             update["sys_descr_scanner"] = ep.sys_descr
         if ep.sys_name:
             update["sys_name_scanner"] = ep.sys_name
+        if getattr(ep, "vendor", None):
+            update["vendor_scanner"] = ep.vendor
         if report.vlan_id is not None:
             update["vlan_id"] = report.vlan_id
         await db.discovered_endpoints.update_one(

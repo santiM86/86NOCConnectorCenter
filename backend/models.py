@@ -203,8 +203,9 @@ class LanScanEndpoint(BaseModel):
     hostname: Optional[str] = None
     sys_descr: Optional[str] = None
     sys_name: Optional[str] = None
-    discovered_via: str = "arp"        # arp | mdns | snmp | dhcp
+    discovered_via: str = "arp"        # arp | mdns | snmp | dhcp | ping+arp
     rtt_ms: Optional[float] = None     # latenza ICMP
+    vendor: Optional[str] = None       # v3.8.2: vendor da OUI lookup (es. "Cisco", "HP")
 
 
 class LanScanReport(BaseModel):
