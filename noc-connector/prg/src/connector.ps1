@@ -2858,19 +2858,29 @@ function Start-Connector {
     # salta Start-Connector e $global:Running resta $null -> il loop `while ($global:Running)`
     # esce immediatamente -> job "Completed" dopo 2s -> il health-check lo ripartiva ogni 3 min.
     # Risultato pre-fix: listener UDP morti per 2-3 min ogni 3 min = buco trap/syslog.
-    $snmpJob = Start-Job -ScriptBlock {
-        param($scriptPath, $configPath)
-        . $scriptPath -ConfigPath $configPath
-        $global:Running = $true
-        Start-SNMPListener (Read-Config)
-    } -ArgumentList $PSCommandPath, (Get-ConfigPath)
-    
-    $syslogJob = Start-Job -ScriptBlock {
-        param($scriptPath, $configPath)
-        . $scriptPath -ConfigPath $configPath
-        $global:Running = $true
-        Start-SyslogListener (Read-Config)
-    } -ArgumentList $PSCommandPath, (Get-ConfigPath)
+    #
+    # v3.8.7 FIX: in modalita' SCANNER NON avviamo i listener SNMP/Syslog perche'
+    # quelle porte (162/514) sono di esclusiva pertinenza del Master del cliente.
+    # Tentare di aprirle dallo Scanner causa "address already in use" -> crash -> restart loop.
+    $snmpJob = $null
+    $syslogJob = $null
+    if ($config.mode -ne "scanner") {
+        $snmpJob = Start-Job -ScriptBlock {
+            param($scriptPath, $configPath)
+            . $scriptPath -ConfigPath $configPath
+            $global:Running = $true
+            Start-SNMPListener (Read-Config)
+        } -ArgumentList $PSCommandPath, (Get-ConfigPath)
+
+        $syslogJob = Start-Job -ScriptBlock {
+            param($scriptPath, $configPath)
+            . $scriptPath -ConfigPath $configPath
+            $global:Running = $true
+            Start-SyslogListener (Read-Config)
+        } -ArgumentList $PSCommandPath, (Get-ConfigPath)
+    } else {
+        Write-Log "Modalita' SCANNER: skip avvio listener SNMP Trap (162) e Syslog (514). Quelle porte appartengono al Master." "INFO"
+    }
     
     # Start SNMP polling job
     $pollingJob = $null
