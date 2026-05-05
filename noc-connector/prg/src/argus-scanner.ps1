@@ -271,6 +271,26 @@ function Start-ScannerLoop($Config) {
 
 # ---------- ENTRY POINT ----------
 $config = Get-Config
+# v3.8: se invocato dal connector master con env vars (config.mode=scanner),
+# usa quelle invece di richiedere setup wizard.
+if (-not $config -and $env:ARGUS_SCANNER_CENTER -and $env:ARGUS_SCANNER_APIKEY) {
+    $vlan = $null
+    if ($env:ARGUS_SCANNER_VLAN -and $env:ARGUS_SCANNER_VLAN -match "^\d+$") {
+        $vlan = [int]$env:ARGUS_SCANNER_VLAN
+    }
+    $config = [PSCustomObject]@{
+        center_url = $env:ARGUS_SCANNER_CENTER
+        api_key_encrypted = Protect-String $env:ARGUS_SCANNER_APIKEY
+        mode = "scanner"
+        subnet = $env:ARGUS_SCANNER_SUBNET
+        vlan_id = $vlan
+        hostname = $env:COMPUTERNAME
+        scan_interval_seconds = 300
+        heartbeat_interval_seconds = 60
+        version = "3.8.0"
+    }
+    Write-Host "  [INFO] Scanner avviato dal connector master (env config)" -ForegroundColor DarkCyan
+}
 if ($Setup -or -not $config) {
     $config = Invoke-SetupWizard
 }

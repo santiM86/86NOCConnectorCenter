@@ -1,5 +1,53 @@
 # CHANGELOG — 86BIT ARGUS Center
 
+## 2026-02-13 (sessione successiva) — Mini-scanner cross-VLAN + Fingerbank + auto-rinomina
+
+### MULTI-MODE Connector v3.8.0
+**Problema affrontato**: discovery cross-VLAN bloccata da firewall/ACL. Senza
+deployare un agente RMM su ogni device, era impossibile sapere modello/categoria
+delle stampanti/AP/IPCam in VLAN diverse da quella del Connector master.
+
+**Soluzione**: stesso bundle Windows del Connector con due modalita' di
+funzionamento (master polling completo vs scanner discovery locale). Wizard
+installer (Windows.Forms) invariato per UX, con step "Modalita" + Subnet/VLAN
+nella pagina Config gia' esistente.
+
+### File modificati / creati
+- `noc-connector/prg/src/installer_gui.ps1` — nuovi radio MASTER/SCANNER + Subnet/VLAN
+- `noc-connector/prg/src/connector.ps1` — branch entry-point sulla base config.mode + heartbeat esteso
+- `noc-connector/prg/src/argus-scanner.ps1` (nuovo, 230 righe) — loop ARP+mDNS+SNMP, DPAPI per API key
+- `noc-connector/prg/src/tray_app.ps1` — tooltip e status mostrano modalita' corrente
+- `noc-connector/prg/version.json` — bump a 3.8.0
+- `backend/models.py` — `LanScanReport`, `LanScanEndpoint`, heartbeat esteso (mode/subnet/vlan_id)
+- `backend/routes/connector.py` — endpoint POST /api/connector/lan-scan, chiave composita (client_id, hostname)
+- `backend/server.py` — drop unique index legacy + create composite (client_id, hostname)
+- `frontend/src/pages/ConnectorsPage.js` — raggruppamento master+scanner per cliente, badge MASTER/SCANNER, indentazione visuale
+
+### Fingerbank API integration (Fase 2)
+- `backend/services/fingerbank_service.py` (nuovo) — API client + cifratura + cache 30gg
+- `backend/routes/admin_integrations.py` (nuovo) — endpoint admin GET/PUT/DELETE/POST test
+- `frontend/src/pages/FingerbankSettingsPage.js` (nuovo) — pannello gestione API key con masking
+- API key fornita dall'utente (`69fe2f73...402b`) salvata cifrata AES-256-GCM v2
+
+### Device classification (Fase 1)
+- `backend/routes/oui_lookup.py` — `classify_device()` + 50 vendor single-purpose hint
+  - Categorie: printer, voip_phone, ip_camera, access_point, ups, firewall, router, server, iot
+  - Multi-segnale: sysDescr -> LLDP-MED -> LLDP-caps -> hostname pattern -> OUI + PoE class
+- `backend/routes/topology.py` — neighbor "unknown" arricchiti con device_category/confidence/source
+
+### Test passati
+- 3 connector dello stesso cliente (1 master + 2 scanner VLAN diverse) convivono in DB
+- UI raggruppa scanner indentati sotto master con bordo fucsia (▶ ╰─)
+- Heartbeat scanner + lan-scan POST con 3 endpoint stored 3/3
+- Fingerbank API: salvataggio cifrato + masked key (••••402b) + test reale OK
+- classify_device: 9 test (printer/voip/camera/AP/UPS/firewall/HPE+PoE/unknown/LLDP-cap) passati
+
+### Auto-rinomina device (bonus richiesto utente)
+- `backend/routes/connector.py` — auto-promote name da sys_name SNMP se nome ancora `Auto-{ip}`
+- `backend/routes/devices.py` — PATCH device setta `name_user_locked=true` per evitare override
+
+
+
 ## 2026-02-13 — Fix definitivo "schermata nera" su Porte Switch + auto-promote nome device
 
 ### Problema

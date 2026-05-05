@@ -479,6 +479,10 @@ function Send-Heartbeat($config) {
         uptime_seconds = [int]$uptime
         traps_received = $global:Stats.snmp_received
         syslogs_received = $global:Stats.syslog_received
+        # v3.8: modalita' connector + dati subnet (per UI Center grouping)
+        mode = if ($config.mode) { $config.mode } else { "master" }
+        subnet = $config.subnet
+        vlan_id = $config.vlan_id
     }
     $response = Send-ToNOC $config "connector/heartbeat" $payload
     
@@ -2891,7 +2895,43 @@ function Start-Connector {
     
     # Heartbeat in current thread loop + discovery check + web proxy + memory management
     Write-Log "$global:AppName avviato. Premi Ctrl+C per fermare."
-    
+
+    # ==================== v3.8 SCANNER MODE BRANCH ====================
+    # Se config.mode == "scanner", il connector NON esegue il polling pesante.
+    # Esegue solo heartbeat + discovery LAN locale (ARP/mDNS) e invia i risultati
+    # al Center. Il Center aggrega scanner + master sotto lo stesso client.
+    if ($config.mode -eq "scanner") {
+        Write-Log "MODALITA' SCANNER attiva (subnet: $($config.subnet) VLAN: $($config.vlan_id))" "INFO"
+        $scannerScript = Join-Path $global:ScriptDir "argus-scanner.ps1"
+        if (-not (Test-Path $scannerScript)) {
+            Write-Log "argus-scanner.ps1 non trovato in $global:ScriptDir. Loop scanner inline (heartbeat solo)." "WARN"
+            # Fallback: solo heartbeat ogni 60s (senza scan)
+            $lastHeartbeat = [datetime]::MinValue
+            Send-Heartbeat $config
+            Write-StatusFile "running"
+            $lastHeartbeat = Get-Date
+            while ($global:Running) {
+                $now = Get-Date
+                if (($now - $lastHeartbeat).TotalSeconds -ge 60) {
+                    Send-Heartbeat $config
+                    Write-StatusFile "running"
+                    $lastHeartbeat = $now
+                }
+                Start-Sleep -Seconds 5
+            }
+            return
+        }
+        # Imposta variabili scanner config dal file principale e invoca il loop scanner
+        $env:ARGUS_SCANNER_CENTER = $config.noc_center_url
+        $env:ARGUS_SCANNER_APIKEY = $config.api_key
+        $env:ARGUS_SCANNER_MODE = "scanner"
+        $env:ARGUS_SCANNER_SUBNET = $config.subnet
+        $env:ARGUS_SCANNER_VLAN = "$($config.vlan_id)"
+        & $scannerScript
+        return
+    }
+    # ===================== END SCANNER MODE BRANCH =====================
+
     $lastHeartbeat = [datetime]::MinValue
     $lastDiscovery = [datetime]::MinValue
     $lastMemoryCleanup = [datetime]::MinValue
