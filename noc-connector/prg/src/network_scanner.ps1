@@ -250,8 +250,15 @@ function Show-NetworkScanner {
                 $cfg = Get-Content $ConfigPath -Raw | ConvertFrom-Json
             }
         } catch {}
-        if (-not $cfg -or -not $cfg.api_key -or -not $cfg.center_url) {
+        if (-not $cfg) {
             [System.Windows.Forms.MessageBox]::Show("Config Connector non trovato in $ConfigPath","Scansione di rete","OK","Error") | Out-Null
+            return
+        }
+        # v3.8.11: il config del Connector usa 'noc_center_url' (non 'center_url')
+        $centerUrl = if ($cfg.noc_center_url) { $cfg.noc_center_url } elseif ($cfg.center_url) { $cfg.center_url } else { "" }
+        $apiKey = if ($cfg.api_key) { $cfg.api_key } else { "" }
+        if (-not $centerUrl -or -not $apiKey) {
+            [System.Windows.Forms.MessageBox]::Show("Config Connector incompleto:`r`nnoc_center_url='$centerUrl'`r`napi_key= $(if ($apiKey) { 'presente' } else { 'MANCANTE' })","Scansione di rete","OK","Error") | Out-Null
             return
         }
         $endpoints = @()
@@ -272,10 +279,10 @@ function Show-NetworkScanner {
             hostname = $env:COMPUTERNAME
         } | ConvertTo-Json -Depth 5 -Compress
         try {
-            $r = Invoke-RestMethod -Uri "$($cfg.center_url)/api/connector/lan-scan" `
-                -Method POST -Headers @{ "X-API-Key" = $cfg.api_key } `
+            $r = Invoke-RestMethod -Uri "$centerUrl/api/connector/lan-scan" `
+                -Method POST -Headers @{ "X-API-Key" = $apiKey } `
                 -Body $body -ContentType "application/json" -TimeoutSec 30
-            [System.Windows.Forms.MessageBox]::Show("Inviati $($r.stored)/$($r.total) host al Center.","Scansione di rete","OK","Information") | Out-Null
+            [System.Windows.Forms.MessageBox]::Show("Inviati $($r.stored)/$($r.total) host al Center.`r`n`r`nVerifica nella dashboard Web nella sezione Discovery.","Scansione di rete","OK","Information") | Out-Null
         } catch {
             [System.Windows.Forms.MessageBox]::Show("Errore invio: $($_.Exception.Message)","Scansione di rete","OK","Error") | Out-Null
         }

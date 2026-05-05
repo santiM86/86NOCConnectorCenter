@@ -1,4 +1,4 @@
 {
-  "version": "3.8.10",
-  "changelog": "v3.8.10 - SCANSIONE DI RETE versione minimal funzionante. Riscritto network_scanner.ps1 con pattern PowerShell base: ping sequenziale + Application.DoEvents() per non freezare la UI. Niente Runspace Pool, niente Timer.Tick (eliminate fonti di silent fail). Tre pulsanti che funzionano garantiti: Avvia scansione, Esporta CSV, Invia tutti al Center. ListView con 6 colonne (Stato/IP/Hostname/MAC/Vendor/RTT) si popola riga per riga. Tempo scansione /24: ~60s ma deterministicamente affidabile."
+  "version": "3.8.11",
+  "changelog": "v3.8.11 - FIX 'Invia tutti al Center' nella Scansione di rete. Il config del Connector usa 'noc_center_url' (non 'center_url' come usavo erroneamente). Ora il bottone legge correttamente i campi 'noc_center_url' e 'api_key' dal config.json e fa POST a /api/connector/lan-scan. Aggiunto anche fallback a 'center_url' per retrocompatibilita'. Il resto della finestra Scansione di rete continua a funzionare come nel v3.8.10."
 }
