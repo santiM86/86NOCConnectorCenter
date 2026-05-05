@@ -246,6 +246,25 @@ def _first_not_none(*values):
     return None
 
 
+def _first_meaningful_metric(*values):
+    """Come _first_not_none ma scarta anche zero (CPU/Memoria 0% su switch attivo non ha senso e
+    di solito indica che il poll non ha letto il dato; preferiamo il fallback dal vendor_metrics)."""
+    for v in values:
+        if v is None or v == "":
+            continue
+        try:
+            if float(v) <= 0:
+                continue
+        except (TypeError, ValueError):
+            continue
+        return v
+    # Se davvero tutto e' 0/None, ritorna il primo valore (puo' essere 0 reale)
+    for v in values:
+        if v is not None and v != "":
+            return v
+    return None
+
+
 def _safe_iso(value) -> Optional[str]:
     if value is None:
         return None
@@ -448,9 +467,9 @@ async def build_info_card(device_ip: str) -> Dict[str, Any]:
             "connector_hostname": poll.get("connector_hostname"),
         },
         "hardware": {
-            "cpu_usage": _first_not_none(poll.get("cpu_usage"), sw_metrics.get("cpu_usage")),
-            "memory_usage": _first_not_none(poll.get("memory_usage"), sw_metrics.get("memory_usage")),
-            "temperature": _sanitize_temp(_first_not_none(poll.get("temperature"), sw_metrics.get("temperature"))),
+            "cpu_usage": _first_meaningful_metric(poll.get("cpu_usage"), sw_metrics.get("cpu_usage")),
+            "memory_usage": _first_meaningful_metric(poll.get("memory_usage"), sw_metrics.get("memory_usage")),
+            "temperature": _sanitize_temp(_first_meaningful_metric(poll.get("temperature"), sw_metrics.get("temperature"))),
             "power_watts": ilo.get("power_watts"),
             "fan_count": len(ilo.get("fans") or []) or None,
             "psu_count": len(ilo.get("power_supplies") or []) or None,
