@@ -365,8 +365,55 @@ export default function SwitchPortsPage() {
       : <CaretDown size={9} className="inline ml-0.5 text-cyan-300" />;
   };
 
-  if (loading && !data) return <div className="p-6 text-[var(--text-muted)] text-sm">Caricamento…</div>;
-  if (!data) return <div className="p-6 text-[var(--text-muted)] text-sm">Nessun dato</div>;
+  if (loading && !data) {
+    return (
+      <div className="p-6 md:p-10 max-w-3xl mx-auto" data-testid="switch-ports-loading">
+        <div className="flex items-center gap-3 mb-4">
+          <button onClick={() => navigate(-1)} className="text-[var(--text-muted)] hover:text-[var(--text-primary)] text-lg">←</button>
+          <h1 className="text-base md:text-lg font-bold">Dettagli switch · <span className="font-mono text-cyan-300">{deviceIp}</span></h1>
+        </div>
+        <div className="flex items-center gap-3 p-6 rounded-lg border border-cyan-500/30 bg-cyan-500/5">
+          <ArrowsClockwise size={24} className="animate-spin text-cyan-400" />
+          <div>
+            <div className="text-sm font-semibold text-cyan-100">Caricamento porte in corso…</div>
+            <div className="text-[11px] text-[var(--text-muted)]">Leggo i dati da <code className="font-mono">/api/devices/{deviceIp}/switch-ports</code></div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+  if (!data) {
+    return (
+      <div className="p-6 md:p-10 max-w-3xl mx-auto" data-testid="switch-ports-empty">
+        <div className="flex items-center gap-3 mb-4">
+          <button onClick={() => navigate(-1)} className="text-[var(--text-muted)] hover:text-[var(--text-primary)] text-lg">←</button>
+          <h1 className="text-base md:text-lg font-bold">Dettagli switch · <span className="font-mono text-cyan-300">{deviceIp}</span></h1>
+          <Button onClick={reload} variant="outline" size="sm" className="ml-auto" data-testid="switch-ports-reload">
+            <ArrowsClockwise size={12} className="mr-1" /> Refresh
+          </Button>
+        </div>
+        <div className="p-6 rounded-lg border border-amber-500/40 bg-amber-500/10 space-y-4">
+          <div className="flex items-center gap-3">
+            <Stack size={28} className="text-amber-300" weight="duotone" />
+            <div>
+              <div className="text-sm font-bold text-amber-100">Nessun dato porte per questo switch</div>
+              <div className="text-[11px] text-[var(--text-muted)] mt-0.5">Il Connector non ha ancora raccolto la <code className="font-mono">ifTable</code> per <code className="font-mono">{deviceIp}</code>.</div>
+            </div>
+          </div>
+          <div className="text-[11px] text-amber-50/90 space-y-1 pl-10">
+            <div>Cause più comuni:</div>
+            <ul className="list-disc pl-5 space-y-0.5 text-[var(--text-secondary)]">
+              <li>Il device <strong>non è marcato come switch</strong> in managed_devices (serve <code>device_type</code> switch/router o profilo SNMP Cisco/HPE/ecc.)</li>
+              <li>Il device ha <strong>FONTE: Manuale</strong> (no polling automatico) — passa il device al Connector o aggiungi le credenziali SNMP</li>
+              <li>La <strong>community SNMP</strong> non ha permessi di lettura su 1.3.6.1.2.1.2.2.1 (ifTable)</li>
+              <li>Il Connector non ha ancora eseguito il ciclo di polling dettagliato (attendi 2-5 min)</li>
+              <li>Il device è <strong>offline</strong> o non raggiungibile via SNMP</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   const t = data.totals || {};
 
