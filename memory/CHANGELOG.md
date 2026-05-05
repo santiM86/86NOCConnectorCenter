@@ -1,3 +1,43 @@
+# 2026-02-13 — v3.8.1 SCANNER STABILITY & UX
+
+## 🐛 Bug Fix Critici
+1. **Scanner faceva sparire il Master** (Bug #5): il filtro upsert su `connector_status` usava `(client_id, hostname)`. Quando Master e Scanner giravano sulla stessa macchina (stesso hostname), lo Scanner sovrascriveva la riga del Master.  
+   → Fix: indice unique esteso a `(client_id, hostname, mode)` in `server.py`. Heartbeat e tutti gli `update_one` di `connector.py` ora filtrano la chiave composita completa. Force-update e refresh-requested mirati al `mode=master`.
+2. **Scanner si scollegava continuamente** (Bug #3): `argus-scanner.ps1` usava `ForEach-Object -Parallel` (PS7+ only). Con `$ErrorActionPreference="Stop"` su Windows PS 5.1 lo script terminava al primo loop.  
+   → Fix: ARP scan riscritto con `Start-Job` batch (compatibile PS5.1+). `ErrorActionPreference=Continue` nel loop. Try/catch difensivi su ARP e mDNS. Logging completo in `C:\ProgramData\86NocConnector\scanner.log`.
+
+## ✨ Feature
+- **Pulsante "Scansiona LAN e Importa Dispositivi"** nel wizard installer (visibile solo modalità Scanner). Apre dialog modale con:
+  - ListView IP / MAC / Rilevato via / Hostname
+  - Checkbox per selezione granulare
+  - Pulsante "Importa selezionati al Center" → POST `/api/connector/lan-scan`
+- **Hostname auto-suffix**: lo Scanner durante setup verifica via `/api/connector/by-hostname/...` se esiste già un Master con lo stesso hostname e si registra come `{HOSTNAME}-scanner` per evitare conflitti.
+- **Switch CLI `-ScanOnce` / `-AsLibrary`** in argus-scanner.ps1 per uso esterno (tray, wizard).
+
+## 🎨 UI/UX
+- Badge SCANNER cambiato da fucsia → **azzurro (sky-500)** (richiesta utente).
+- Connector Scanner ora visualizzato come `Connector Scanner — {hostname}` nella lista.
+- Border-l indentazione dei child connector cambiato da fucsia → azzurro.
+
+## 📦 File modificati
+- `backend/server.py` — indice composito esteso a 3 campi
+- `backend/routes/connector.py` — heartbeat, force-update, request-refresh, update-progress, reset-update-status, lan-scan filtri composti
+- `frontend/src/pages/ConnectorsPage.js` — colore azzurro + label "Connector Scanner"
+- `frontend/public/sw.js` — bump cache `noc-center-v15`
+- `noc-connector/prg/src/argus-scanner.ps1` — riscritto con compat PS5.1, logging, library mode
+- `noc-connector/prg/src/installer_gui.ps1` — aggiunto `Show-LanScanDialog` + pulsante "Scansiona LAN e Importa"
+- `noc-connector/prg/version.json` — v3.8.1
+- `connector_updates/86NocConnector_v3.8.1.zip` — pacchetto pubblicato (auto-update attivo)
+- `frontend/public/86NocConnector.zip` — download diretto aggiornato
+
+## 🧪 Validazione
+- **Backend**: heartbeat duplicato (master+scanner stesso hostname) crea 2 righe distinte in `connector_status` ✅
+- **Frontend**: screenshot conferma badge azzurro, etichetta "Connector Scanner — ...", indentazione corretta ✅
+- **Indice DB**: `client_hostname_mode_unique` creato e funzionante ✅
+
+---
+
+
 # CHANGELOG — 86BIT ARGUS Center
 
 ## 2026-02-13 (sessione successiva) — Mini-scanner cross-VLAN + Fingerbank + auto-rinomina

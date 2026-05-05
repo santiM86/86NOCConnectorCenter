@@ -1,34 +1,63 @@
 # =============================================================================
-# 86NocConnector — ARGUS LAN Scanner v3.8.0
+# 86NocConnector — ARGUS LAN Scanner v3.8.1
 # =============================================================================
 # Modalita': SCANNER (discovery LAN passivo via ARP/mDNS/SNMP locale).
 # Si "aggancia" al cliente nel Center via API key.
 # Compatibile con Windows PowerShell 5.1+ e PowerShell 7+.
 # Esegui come Admin per ARP scan completo. Senza Admin = solo SNMP/mDNS.
+#
+# v3.8.1 fix:
+#   - Rimosso ForEach-Object -Parallel (PS7+ only) che faceva morire lo scanner su PS5.1
+#   - ErrorActionPreference = Continue nel loop principale per non terminare a errori
+#   - Logging completo su file (C:\ProgramData\86NocConnector\scanner.log)
+#   - Try/catch difensivi su ARP/mDNS scan
+#   - Esposta funzione Invoke-LanScanOnce per uso esterno (tray app, wizard)
 # =============================================================================
 
 param(
     [switch]$Setup,           # Forza riconfigurazione (anche se config esiste)
     [switch]$Test,            # Test connessione + lista endpoint senza salvare
-    [string]$ConfigPath = "$env:ProgramData\86NocConnector\scanner-config.json"
+    [switch]$ScanOnce,        # Esegue una sola scansione e invia al Center, poi exit
+    [switch]$AsLibrary,       # Carica funzioni senza eseguire entry point (per dot-source)
+    [string]$ConfigPath = "$env:ProgramData\86NocConnector\scanner-config.json",
+    [string]$LogPath = "$env:ProgramData\86NocConnector\scanner.log"
 )
 
+# v3.8.1: nel loop usiamo Continue per non far morire lo script su un errore singolo.
+# Lo lasciamo Stop solo durante setup/wizard (errori critici devono interrompere).
 $ErrorActionPreference = "Stop"
-$Host.UI.RawUI.WindowTitle = "ARGUS LAN Scanner"
+$Host.UI.RawUI.WindowTitle = "ARGUS LAN Scanner v3.8.1"
+
+# ---------- LOGGING ----------
+function Write-Log([string]$Level, [string]$Message) {
+    $ts = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+    $line = "[$ts] [$Level] $Message"
+    try {
+        $dir = Split-Path $LogPath -Parent
+        if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+        Add-Content -Path $LogPath -Value $line -Encoding UTF8 -ErrorAction SilentlyContinue
+    } catch {}
+    $color = switch ($Level) {
+        "ERR"  { "Red" }
+        "WARN" { "Yellow" }
+        "OK"   { "Green" }
+        "INFO" { "Cyan" }
+        default { "Gray" }
+    }
+    Write-Host $line -ForegroundColor $color
+}
 
 # ---------- BANNER ----------
 function Show-Banner {
     Write-Host ""
     Write-Host "  ============================================================" -ForegroundColor Cyan
-    Write-Host "    ARGUS  ::  86NocConnector  Scanner Mode  v3.8.0" -ForegroundColor Cyan
+    Write-Host "    ARGUS  ::  86NocConnector  Scanner Mode  v3.8.1" -ForegroundColor Cyan
     Write-Host "    Discovery LAN cross-VLAN per il Center NOC" -ForegroundColor DarkCyan
     Write-Host "  ============================================================" -ForegroundColor Cyan
     Write-Host ""
 }
 
 # ---------- CRIPTAZIONE LOCALE (DPAPI Windows) ----------
-# Le credenziali vengono cifrate con la chiave macchina Windows.
-# Solo lo stesso utente sulla stessa macchina puo' leggerle.
 function Protect-String([string]$Plain) {
     $secure = ConvertTo-SecureString $Plain -AsPlainText -Force
     return $secure | ConvertFrom-SecureString
@@ -40,7 +69,7 @@ function Unprotect-String([string]$Cipher) {
         $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
         return [Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
     } catch {
-        Write-Warning "Decrypt fallito (config corrotto o eseguito da utente diverso)"
+        Write-Log "WARN" "Decrypt fallito (config corrotto o eseguito da utente diverso)"
         return ""
     }
 }
@@ -72,13 +101,17 @@ function Invoke-SetupWizard {
 
     $subnet = ""
     $vlanId = $null
+    $hostnameOverride = $env:COMPUTERNAME
     if ($mode -eq "scanner") {
         # Auto-detect IP locale + subnet /24
-        $localIp = (Get-NetIPAddress -AddressFamily IPv4 -PrefixOrigin Dhcp,Manual `
-            -ErrorAction SilentlyContinue | Where-Object {$_.IPAddress -notlike "169.254.*"} `
-            | Select-Object -First 1).IPAddress
+        $localIp = $null
+        try {
+            $localIp = (Get-NetIPAddress -AddressFamily IPv4 -PrefixOrigin Dhcp,Manual `
+                -ErrorAction SilentlyContinue | Where-Object {$_.IPAddress -notlike "169.254.*"} `
+                | Select-Object -First 1).IPAddress
+        } catch {}
         if (-not $localIp) {
-            $localIp = (Test-Connection -ComputerName "127.0.0.1" -Count 1).IPV4Address.IPAddressToString
+            try { $localIp = (Test-Connection -ComputerName "127.0.0.1" -Count 1).IPV4Address.IPAddressToString } catch {}
         }
         $defaultSubnet = if ($localIp) { ($localIp -replace "\.\d+$",".0/24") } else { "" }
         Write-Host ""
@@ -86,6 +119,19 @@ function Invoke-SetupWizard {
         if (-not $subnet) { $subnet = $defaultSubnet }
         $vlanInput = Read-Host "  VLAN ID (opzionale, lascia vuoto se non sai)"
         if ($vlanInput -match "^\d+$") { $vlanId = [int]$vlanInput }
+
+        # v3.8.1: se sulla stessa macchina gira gia' un master, suffisso "-scanner"
+        # per evitare collisione di hostname nel Center.
+        $hbCheck = $null
+        try {
+            $hbCheck = Invoke-RestMethod -Uri "$centerUrl/api/connector/by-hostname/$env:COMPUTERNAME" `
+                -Method GET -Headers @{ "X-API-Key" = $apiKeyPlain } -TimeoutSec 5
+        } catch {}
+        if ($hbCheck -and $hbCheck.mode -eq "master") {
+            $hostnameOverride = "$env:COMPUTERNAME-scanner"
+            Write-Host "  [INFO] Master gia' presente con hostname '$env:COMPUTERNAME'." -ForegroundColor DarkCyan
+            Write-Host "         Lo scanner si registrera' come '$hostnameOverride' per evitare conflitti." -ForegroundColor DarkCyan
+        }
     }
 
     $config = @{
@@ -94,10 +140,10 @@ function Invoke-SetupWizard {
         mode = $mode
         subnet = $subnet
         vlan_id = $vlanId
-        hostname = $env:COMPUTERNAME
+        hostname = $hostnameOverride
         scan_interval_seconds = 300
         heartbeat_interval_seconds = 60
-        version = "3.8.0"
+        version = "3.8.1"
         installed_at = (Get-Date -Format "o")
     }
 
@@ -106,10 +152,9 @@ function Invoke-SetupWizard {
     $config | ConvertTo-Json -Depth 5 | Set-Content -Path $ConfigPath -Encoding UTF8
     Write-Host ""
     Write-Host "  [OK] Configurazione salvata in: $ConfigPath" -ForegroundColor Green
-    Write-Host "       (API Key cifrata con DPAPI, leggibile solo da $env:USERNAME su questa macchina)"
+    Write-Host "       Hostname registrato: $hostnameOverride" -ForegroundColor DarkGray
     Write-Host ""
 
-    # Test immediato di aggancio
     Test-Hookup -Config $config
     return $config
 }
@@ -121,7 +166,6 @@ function Get-Config {
 
 # ---------- AGGANCIO + HEARTBEAT ----------
 function Test-Hookup($Config) {
-    Write-Host "  Test aggancio Center..." -NoNewline
     $apiKey = Unprotect-String $Config.api_key_encrypted
     try {
         $body = @{
@@ -137,49 +181,66 @@ function Test-Hookup($Config) {
         $r = Invoke-RestMethod -Uri "$($Config.center_url)/api/connector/heartbeat" `
             -Method POST -Headers @{ "X-API-Key" = $apiKey } `
             -Body $body -ContentType "application/json" -TimeoutSec 10
-        Write-Host " OK" -ForegroundColor Green
-        Write-Host "  [OK] Connector AGGANCIATO al Center come $($Config.mode.ToUpper())" -ForegroundColor Green
-        Write-Host "       Vai su $($Config.center_url)/connectors per vederlo." -ForegroundColor DarkGray
+        Write-Log "OK" "Heartbeat OK ($($Config.mode) - $($Config.hostname))"
         return $true
     } catch {
-        Write-Host " FAIL" -ForegroundColor Red
-        Write-Warning "  Impossibile contattare il Center: $($_.Exception.Message)"
-        Write-Host "  Verifica URL e API Key." -ForegroundColor Yellow
+        Write-Log "ERR" "Heartbeat fallito: $($_.Exception.Message)"
         return $false
     }
 }
 
-# ---------- ARP SCAN LOCALE (no admin: usa cache ARP) ----------
+# ---------- ARP SCAN LOCALE (compat PS5.1: nessun -Parallel) ----------
 function Invoke-ArpScan([string]$Subnet) {
     $endpoints = @()
-    # Trigger ARP refresh: ping broadcast (non sempre risponde)
-    $base = ($Subnet -split "/")[0] -replace "\.0$","."
-    1..254 | ForEach-Object -ThrottleLimit 50 -Parallel {
-        $null = Test-Connection -ComputerName "$using:base$_" -Count 1 -TimeoutSeconds 1 -ErrorAction SilentlyContinue
-    } 2>$null
-
-    # Leggi tabella ARP
-    Get-NetNeighbor -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-        Where-Object { $_.State -in @("Reachable","Stale") -and $_.LinkLayerAddress -ne "00-00-00-00-00-00" } |
-        ForEach-Object {
-            $endpoints += [PSCustomObject]@{
-                mac = ($_.LinkLayerAddress -replace "-",":").ToLower()
-                ip = $_.IPAddress
-                discovered_via = "arp"
+    if (-not $Subnet) { Write-Log "WARN" "ARP scan saltato: subnet vuota"; return $endpoints }
+    try {
+        $base = ($Subnet -split "/")[0] -replace "\.0$","."
+        # Trigger ARP refresh: ping seriale veloce (1 al volo, timeout 1s)
+        # PS5.1-safe: usiamo Start-Job a piccoli batch per non bloccare 250s
+        $jobs = @()
+        1..254 | ForEach-Object {
+            $ip = "$base$_"
+            $jobs += Start-Job -ScriptBlock {
+                param($targetIp)
+                try { Test-Connection -ComputerName $targetIp -Count 1 -BufferSize 16 -Quiet -ErrorAction SilentlyContinue | Out-Null } catch {}
+            } -ArgumentList $ip
+            # Limita 50 job paralleli a rotazione
+            if ($jobs.Count -ge 50) {
+                $jobs | Wait-Job -Timeout 2 | Out-Null
+                $jobs | Remove-Job -Force -ErrorAction SilentlyContinue
+                $jobs = @()
             }
         }
+        if ($jobs.Count -gt 0) {
+            $jobs | Wait-Job -Timeout 3 | Out-Null
+            $jobs | Remove-Job -Force -ErrorAction SilentlyContinue
+        }
+
+        # Leggi tabella ARP
+        Get-NetNeighbor -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+            Where-Object { $_.State -in @("Reachable","Stale","Permanent") -and $_.LinkLayerAddress -and $_.LinkLayerAddress -ne "00-00-00-00-00-00" } |
+            ForEach-Object {
+                $endpoints += [PSCustomObject]@{
+                    mac = ($_.LinkLayerAddress -replace "-",":").ToLower()
+                    ip = $_.IPAddress
+                    discovered_via = "arp"
+                }
+            }
+        Write-Log "INFO" "ARP scan completato: $($endpoints.Count) endpoint trovati"
+    } catch {
+        Write-Log "ERR" "ARP scan exception: $($_.Exception.Message)"
+    }
     return $endpoints
 }
 
 # ---------- mDNS DISCOVERY (224.0.0.251:5353) ----------
 function Invoke-MdnsDiscovery {
     $endpoints = @()
+    $udpClient = $null
     try {
-        # Query mDNS PTR _services._dns-sd._udp.local
         $udpClient = New-Object System.Net.Sockets.UdpClient
         $udpClient.Client.ReceiveTimeout = 3000
         $endpoint = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Parse("224.0.0.251"), 5353)
-        # Pacchetto mDNS minimale (PTR query per _services._dns-sd._udp.local)
         $query = [byte[]](0,0,0,0,0,1,0,0,0,0,0,0,9,0x5f,0x73,0x65,0x72,0x76,0x69,0x63,0x65,0x73,7,0x5f,0x64,0x6e,0x73,0x2d,0x73,0x64,4,0x5f,0x75,0x64,0x70,5,0x6c,0x6f,0x63,0x61,0x6c,0,0,12,0,1)
         $udpClient.Send($query, $query.Length, $endpoint) | Out-Null
         $start = Get-Date
@@ -187,27 +248,51 @@ function Invoke-MdnsDiscovery {
             try {
                 $remote = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Any, 0)
                 $resp = $udpClient.Receive([ref]$remote)
-                # Estrai IP del rispondente (mDNS dice gia' chi e' lui)
                 if ($resp.Length -gt 12) {
                     $endpoints += [PSCustomObject]@{
                         ip = $remote.Address.ToString()
                         discovered_via = "mdns"
-                        # mac sara' aggiunto dopo via ARP table merge
                     }
                 }
             } catch { break }
         }
-        $udpClient.Close()
+        Write-Log "INFO" "mDNS scan completato: $($endpoints.Count) risposte"
     } catch {
-        Write-Warning "mDNS scan failed: $_"
+        Write-Log "WARN" "mDNS scan failed: $($_.Exception.Message)"
+    } finally {
+        if ($udpClient) { try { $udpClient.Close() } catch {} }
+    }
+    return $endpoints
+}
+
+# ---------- SCAN UNIFICATA + INVIO (riusabile da tray/wizard) ----------
+function Invoke-LanScanOnce([object]$Config, [switch]$DryRun) {
+    Write-Log "INFO" "Avvio scan LAN (subnet=$($Config.subnet))"
+    $arp = Invoke-ArpScan -Subnet $Config.subnet
+    $mdns = Invoke-MdnsDiscovery
+    # Merge per MAC (priorita' ARP che ha sia IP che MAC)
+    $merged = @{}
+    foreach ($e in $arp) { if ($e.mac) { $merged[$e.mac] = $e } }
+    foreach ($e in $mdns) {
+        if ($e.ip) {
+            $arpMatch = $arp | Where-Object { $_.ip -eq $e.ip } | Select-Object -First 1
+            if ($arpMatch -and $merged[$arpMatch.mac]) {
+                $merged[$arpMatch.mac].discovered_via = "arp+mdns"
+            }
+        }
+    }
+    $endpoints = @($merged.Values)
+    Write-Log "INFO" "Endpoint deduplicati: $($endpoints.Count)"
+    if (-not $DryRun) {
+        Send-LanScanReport -Config $Config -Endpoints $endpoints
     }
     return $endpoints
 }
 
 # ---------- INVIO REPORT AL CENTER ----------
 function Send-LanScanReport($Config, $Endpoints) {
-    if ($Endpoints.Count -eq 0) {
-        Write-Host "  Nessun endpoint da inviare." -ForegroundColor DarkGray
+    if (-not $Endpoints -or $Endpoints.Count -eq 0) {
+        Write-Log "INFO" "Nessun endpoint da inviare"
         return
     }
     $apiKey = Unprotect-String $Config.api_key_encrypted
@@ -223,56 +308,49 @@ function Send-LanScanReport($Config, $Endpoints) {
         $r = Invoke-RestMethod -Uri "$($Config.center_url)/api/connector/lan-scan" `
             -Method POST -Headers @{ "X-API-Key" = $apiKey } `
             -Body $body -ContentType "application/json" -TimeoutSec 30
-        Write-Host "  [SCAN] Inviati $($r.stored)/$($r.total) endpoint al Center" -ForegroundColor Green
+        Write-Log "OK" "Inviati $($r.stored)/$($r.total) endpoint al Center"
     } catch {
-        Write-Warning "Invio report fallito: $($_.Exception.Message)"
+        Write-Log "ERR" "Invio report fallito: $($_.Exception.Message)"
     }
 }
 
 # ---------- LOOP PRINCIPALE ----------
 function Start-ScannerLoop($Config) {
     Show-Banner
-    Write-Host "  Avvio loop scanner..." -ForegroundColor Cyan
-    Write-Host "  Modalita: $($Config.mode.ToUpper()) | Subnet: $($Config.subnet) | VLAN: $($Config.vlan_id)" -ForegroundColor DarkCyan
+    Write-Log "INFO" "Avvio loop scanner (mode=$($Config.mode), subnet=$($Config.subnet), vlan=$($Config.vlan_id))"
     Write-Host "  Heartbeat ogni $($Config.heartbeat_interval_seconds)s, Scan ogni $($Config.scan_interval_seconds)s"
+    Write-Host "  Log: $LogPath"
     Write-Host "  Premi CTRL+C per uscire."
     Write-Host ""
+
+    # v3.8.1: nel loop non vogliamo mai terminare lo script per un errore.
+    $ErrorActionPreference = "Continue"
 
     $lastHeartbeat = (Get-Date).AddYears(-1)
     $lastScan = (Get-Date).AddYears(-1)
 
     while ($true) {
-        $now = Get-Date
-        if (($now - $lastHeartbeat).TotalSeconds -ge $Config.heartbeat_interval_seconds) {
-            Test-Hookup -Config $Config | Out-Null
-            $lastHeartbeat = $now
-        }
-        if ($Config.mode -eq "scanner" -and ($now - $lastScan).TotalSeconds -ge $Config.scan_interval_seconds) {
-            Write-Host "  [SCAN] Avvio discovery..." -ForegroundColor DarkCyan
-            $arp = Invoke-ArpScan -Subnet $Config.subnet
-            $mdns = Invoke-MdnsDiscovery
-            # Merge per IP (mDNS senza MAC + ARP con MAC)
-            $merged = @{}
-            foreach ($e in $arp) { if ($e.mac) { $merged[$e.mac] = $e } }
-            foreach ($e in $mdns) {
-                if ($e.ip) {
-                    $arpMatch = $arp | Where-Object { $_.ip -eq $e.ip } | Select-Object -First 1
-                    if ($arpMatch) {
-                        $merged[$arpMatch.mac].discovered_via = "arp+mdns"
-                    }
-                }
+        try {
+            $now = Get-Date
+            if (($now - $lastHeartbeat).TotalSeconds -ge $Config.heartbeat_interval_seconds) {
+                Test-Hookup -Config $Config | Out-Null
+                $lastHeartbeat = $now
             }
-            Send-LanScanReport -Config $Config -Endpoints @($merged.Values)
-            $lastScan = $now
+            if ($Config.mode -eq "scanner" -and ($now - $lastScan).TotalSeconds -ge $Config.scan_interval_seconds) {
+                Invoke-LanScanOnce -Config $Config | Out-Null
+                $lastScan = $now
+            }
+        } catch {
+            Write-Log "ERR" "Eccezione nel loop principale: $($_.Exception.Message)"
         }
         Start-Sleep -Seconds 5
     }
 }
 
 # ---------- ENTRY POINT ----------
+if ($AsLibrary) { return }
 $config = Get-Config
-# v3.8: se invocato dal connector master con env vars (config.mode=scanner),
-# usa quelle invece di richiedere setup wizard.
+# v3.8: se invocato dal connector master con env vars, usa quelle invece del wizard.
 if (-not $config -and $env:ARGUS_SCANNER_CENTER -and $env:ARGUS_SCANNER_APIKEY) {
     $vlan = $null
     if ($env:ARGUS_SCANNER_VLAN -and $env:ARGUS_SCANNER_VLAN -match "^\d+$") {
@@ -287,15 +365,21 @@ if (-not $config -and $env:ARGUS_SCANNER_CENTER -and $env:ARGUS_SCANNER_APIKEY) 
         hostname = $env:COMPUTERNAME
         scan_interval_seconds = 300
         heartbeat_interval_seconds = 60
-        version = "3.8.0"
+        version = "3.8.1"
     }
-    Write-Host "  [INFO] Scanner avviato dal connector master (env config)" -ForegroundColor DarkCyan
+    Write-Log "INFO" "Scanner avviato dal connector master (env config)"
 }
 if ($Setup -or -not $config) {
     $config = Invoke-SetupWizard
 }
 if ($Test) {
     Test-Hookup -Config $config | Out-Null
+    exit 0
+}
+if ($ScanOnce) {
+    # Una scansione singola, utile per pulsante "Scansiona ora" da tray/wizard
+    Test-Hookup -Config $config | Out-Null
+    Invoke-LanScanOnce -Config $config | Out-Null
     exit 0
 }
 Start-ScannerLoop -Config $config

@@ -254,9 +254,11 @@ async def connector_sync_active_devices(request: Request):
 @router.post("/connector/heartbeat")
 async def connector_heartbeat(request: Request, heartbeat: ConnectorHeartbeat):
     client_data = await verify_connector_request(request)
-    # Chiave composita (client_id, hostname) per supportare piu' connectors per cliente
-    # (es. 1 master + N scanners su VLAN diverse). Hostname e' univoco per macchina.
-    filter_q = {"client_id": client_data["id"], "hostname": heartbeat.hostname}
+    # v3.8.1: chiave composita (client_id, hostname, mode) per supportare:
+    # - 1 master + N scanner su VLAN/macchine diverse
+    # - Master + Scanner sulla stessa macchina (stesso hostname, mode diverso)
+    hb_mode = (heartbeat.mode or "master").lower()
+    filter_q = {"client_id": client_data["id"], "hostname": heartbeat.hostname, "mode": hb_mode}
     existing = await db.connector_status.find_one(filter_q, {"_id": 0})
     force_update = existing.get("force_update", False) if existing else False
     await db.connector_status.update_one(
@@ -267,7 +269,7 @@ async def connector_heartbeat(request: Request, heartbeat: ConnectorHeartbeat):
             "connector_ip": request.client.host if request.client else "unknown",
             "uptime_seconds": heartbeat.uptime_seconds,
             "traps_received": heartbeat.traps_received, "syslogs_received": heartbeat.syslogs_received,
-            "mode": heartbeat.mode or "master",
+            "mode": hb_mode,
             "subnet": heartbeat.subnet,
             "vlan_id": heartbeat.vlan_id,
             "last_seen": datetime.now(timezone.utc).isoformat()
@@ -292,7 +294,7 @@ async def connector_heartbeat(request: Request, heartbeat: ConnectorHeartbeat):
                 should_clear = True
         if should_clear:
             await db.connector_status.update_one(
-                {"client_id": client_data["id"]},
+                filter_q,
                 {"$unset": {"update_status": "", "force_update": "", "update_progress": "", "update_message": "", "update_timestamp": ""}}
             )
     response = {"status": "ok"}
@@ -313,7 +315,7 @@ async def connector_heartbeat(request: Request, heartbeat: ConnectorHeartbeat):
             response["download_url"] = f"/api/connector/download/{update_info['filename']}"
             response["changelog"] = update_info.get("changelog", "")
             await db.connector_status.update_one(
-                {"client_id": client_data["id"]}, {"$set": {"force_update": False}}
+                filter_q, {"$set": {"force_update": False}}
             )
     # Key rotation check
     if client_data.get("_key_rotation_needed"):
@@ -347,7 +349,7 @@ async def connector_heartbeat(request: Request, heartbeat: ConnectorHeartbeat):
     if existing and existing.get("refresh_requested"):
         response["refresh_now"] = True
         await db.connector_status.update_one(
-            {"client_id": client_data["id"]},
+            filter_q,
             {"$unset": {"refresh_requested": ""}, "$set": {"refresh_fulfilled_at": datetime.now(timezone.utc).isoformat()}}
         )
     return response
@@ -365,10 +367,9 @@ async def connector_lan_scan(request: Request, report: LanScanReport):
     client_id = client_data["id"]
     now_iso = datetime.now(timezone.utc).isoformat()
 
-    # Aggiorna stato connector con subnet/vlan visti.
-    # Se il report contiene hostname, target preciso; altrimenti aggiorna tutti
-    # gli scanner del cliente (compatibilita' v1 mini-scanner).
-    status_filter = {"client_id": client_id}
+    # Aggiorna stato connector scanner con subnet/vlan visti.
+    # v3.8.1: filtriamo per mode=scanner per non sporcare il master.
+    status_filter = {"client_id": client_id, "mode": "scanner"}
     if report.hostname:
         status_filter["hostname"] = report.hostname
     await db.connector_status.update_many(
@@ -434,15 +435,27 @@ async def connector_request_refresh(client_id: str, current_user: dict = Depends
     # Setta il flag nella doc connector_status (upsert se il connector non ha ancora
     # fatto il primo heartbeat — sarà consumato non appena si connette)
     now_iso = datetime.now(timezone.utc).isoformat()
-    await db.connector_status.update_one(
-        {"client_id": client_id},
+    # v3.8.1: il refresh va inviato SOLO al master (lo scanner non gestisce devices SNMP)
+    await db.connector_status.update_many(
+        {"client_id": client_id, "mode": "master"},
         {"$set": {
             "refresh_requested": True,
             "refresh_requested_at": now_iso,
             "refresh_requested_by": current_user.get("email"),
         }},
-        upsert=True,
     )
+    # Se ancora non esiste alcun master per questo cliente (mai un heartbeat),
+    # creiamo una riga placeholder che verra' completata dal primo heartbeat.
+    if await db.connector_status.count_documents({"client_id": client_id, "mode": "master"}) == 0:
+        await db.connector_status.update_one(
+            {"client_id": client_id, "hostname": "_pending_master_", "mode": "master"},
+            {"$set": {
+                "refresh_requested": True,
+                "refresh_requested_at": now_iso,
+                "refresh_requested_by": current_user.get("email"),
+            }},
+            upsert=True,
+        )
     await audit_logger.log(
         AuditAction.UPDATE_CLIENT,
         user_id=current_user["id"], user_email=current_user["email"],
@@ -896,7 +909,11 @@ async def delete_connector_status(hostname: str, current_user: dict = Depends(ge
 
 @router.post("/connector/{client_id}/force-update")
 async def force_connector_update(client_id: str, current_user: dict = Depends(get_current_user)):
-    connector = await db.connector_status.find_one({"client_id": client_id}, {"_id": 0})
+    # v3.8.1: l'aggiornamento forzato si applica solo al MASTER (lo scanner si auto-aggiorna se distribuito separatamente)
+    connector = await db.connector_status.find_one({"client_id": client_id, "mode": "master"}, {"_id": 0})
+    if not connector:
+        # Fallback: se non c'e' un master, prendiamo il primo connector qualsiasi
+        connector = await db.connector_status.find_one({"client_id": client_id}, {"_id": 0})
     if not connector:
         raise HTTPException(status_code=404, detail="Connector non trovato")
     # Block force-update on offline connectors: otherwise the order gets stuck in queued forever
@@ -920,7 +937,7 @@ async def force_connector_update(client_id: str, current_user: dict = Depends(ge
     if not is_newer_version(update_info["version"], connector.get("connector_version", "0.0.0")):
         raise HTTPException(status_code=400, detail="Il connector e' gia' alla versione piu' recente")
     await db.connector_status.update_one(
-        {"client_id": client_id},
+        {"client_id": client_id, "hostname": connector.get("hostname"), "mode": connector.get("mode", "master")},
         {"$set": {
             "force_update": True,
             "update_status": "queued",
@@ -1144,8 +1161,13 @@ async def connector_update_progress(request: Request):
     progress = body.get("progress", 0)
     status = body.get("status", "unknown")
     message = body.get("message", "")
+    hostname = body.get("hostname")
+    # v3.8.1: il progresso di update si applica solo al master (lo scanner non riceve update via NOC)
+    flt = {"client_id": client_data["id"], "mode": "master"}
+    if hostname:
+        flt["hostname"] = hostname
     await db.connector_status.update_one(
-        {"client_id": client_data["id"]},
+        flt,
         {"$set": {
             "update_progress": progress, "update_status": status,
             "update_message": message, "update_timestamp": datetime.now(timezone.utc).isoformat()
@@ -1158,7 +1180,8 @@ async def connector_update_progress(request: Request):
 async def reset_connector_update_status(connector_id: str, current_user: dict = Depends(get_current_user)):
     if current_user.get("role") not in ["admin"]:
         raise HTTPException(status_code=403, detail="Solo admin")
-    result = await db.connector_status.update_one(
+    # Reset si applica a tutti i connector del client (master + eventuali scanner) per pulizia totale.
+    result = await db.connector_status.update_many(
         {"client_id": connector_id},
         {"$unset": {"update_status": "", "force_update": "", "update_progress": "", "update_message": "", "update_timestamp": ""}}
     )

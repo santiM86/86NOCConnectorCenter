@@ -373,10 +373,10 @@ export default function ConnectorsPage() {
             const isChild = c._isChild;
             return (
               <div key={i}
-                className={`noc-panel overflow-hidden ${isChild ? "ml-8 border-l-2 border-l-fuchsia-500/40 relative" : ""}`}
+                className={`noc-panel overflow-hidden ${isChild ? "ml-8 border-l-2 border-l-sky-500/40 relative" : ""}`}
                 data-testid={`connector-${c.client_id}`}>
                 {isChild && (
-                  <div className="absolute -left-4 top-1/2 -translate-y-1/2 w-4 h-px bg-fuchsia-500/40" aria-hidden="true" />
+                  <div className="absolute -left-4 top-1/2 -translate-y-1/2 w-4 h-px bg-sky-500/40" aria-hidden="true" />
                 )}
                 <div className="p-3 flex items-center gap-3">
                   <div className={`w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0 relative group ${online ? "bg-[var(--low-bg)] border border-[var(--low-border)]" : "bg-[var(--critical-bg)] border border-[var(--critical-border)]"}`}>
@@ -392,17 +392,19 @@ export default function ConnectorsPage() {
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
-                      <p className="font-heading font-bold text-sm text-[var(--text-primary)] truncate">{c.hostname || "Server"}</p>
+                      <p className="font-heading font-bold text-sm text-[var(--text-primary)] truncate">
+                        {(c.mode || "master") === "scanner" ? `Connector Scanner — ${c.hostname || "Server"}` : (c.hostname || "Server")}
+                      </p>
                       <span className="text-[10px] text-[var(--text-muted)] font-mono">{clientMap[c.client_id] || ""}</span>
                       <span className={`text-[10px] px-1.5 py-0.5 rounded border ${online ? "text-[var(--ok)] bg-[var(--low-bg)] border-[var(--low-border)]" : "text-[var(--critical)] bg-[var(--critical-bg)] border-[var(--critical-border)]"}`}>
                         {online ? "ONLINE" : "OFFLINE"}
                       </span>
-                      {/* Mode badge: master = full polling, scanner = LAN discovery */}
+                      {/* Mode badge: master = full polling (cyan), scanner = LAN discovery (azzurro/sky) */}
                       <span
                         className={`text-[10px] px-1.5 py-0.5 rounded border font-mono ${
                           (c.mode || "master") === "scanner"
-                            ? "text-fuchsia-300 bg-fuchsia-500/10 border-fuchsia-500/30"
-                            : "text-cyan-300 bg-cyan-500/10 border-cyan-500/30"
+                            ? "text-sky-300 bg-sky-500/10 border-sky-500/40"
+                            : "text-emerald-300 bg-emerald-500/10 border-emerald-500/30"
                         }`}
                         title={(c.mode || "master") === "scanner"
                           ? "Modalita' SCANNER: solo discovery LAN (ARP/mDNS/SNMP locale). Per VLAN remote dove il master non arriva."

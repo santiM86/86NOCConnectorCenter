@@ -1617,6 +1617,215 @@ function Show-InstallerWizard {
         $cleanupTip.Location = New-Object System.Drawing.Point(28, 400)
         $cleanupTip.Size = New-Object System.Drawing.Size(450, 40)
         $contentPanel.Controls.Add($cleanupTip)
+
+        # v3.8.1: Pulsante "Scansiona LAN" disponibile per modalita' SCANNER
+        # Permette all'admin di vedere subito i dispositivi rilevati e importarli nel Center.
+        if ($rdoScanner.Checked) {
+            $btnScanNow = New-Object System.Windows.Forms.Button
+            $btnScanNow.Text = "Scansiona LAN e Importa Dispositivi"
+            $btnScanNow.Size = New-Object System.Drawing.Size(450, 36)
+            $btnScanNow.Location = New-Object System.Drawing.Point(28, 445)
+            $btnScanNow.FlatStyle = "Flat"
+            $btnScanNow.BackColor = [System.Drawing.Color]::FromArgb(56, 132, 222)  # azzurro Scanner
+            $btnScanNow.ForeColor = [System.Drawing.Color]::White
+            $btnScanNow.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+            $btnScanNow.Cursor = [System.Windows.Forms.Cursors]::Hand
+            $btnScanNow.Add_Click({
+                Show-LanScanDialog -Url ($txtUrl.Text.Trim().TrimEnd("/")) -ApiKey ($txtApiKey.Text.Trim()) `
+                    -Subnet ($txtSubnet.Text.Trim()) -VlanId ($txtVlanId.Text.Trim()) -ParentForm $form
+            })
+            $contentPanel.Controls.Add($btnScanNow)
+        }
+    }
+
+    # ==================== LAN SCAN DIALOG (Scanner mode) ====================
+    function Show-LanScanDialog {
+        param([string]$Url, [string]$ApiKey, [string]$Subnet, [string]$VlanId, $ParentForm)
+
+        # Carica le funzioni di scan da argus-scanner.ps1 (AsLibrary = no entry point)
+        $scannerLib = Join-Path $ScriptDir "argus-scanner.ps1"
+        if (-not (Test-Path $scannerLib)) {
+            [System.Windows.Forms.MessageBox]::Show(
+                "argus-scanner.ps1 non trovato in:`r`n$scannerLib`r`n`r`nLa scansione richiede questo file.",
+                $DisplayName, "OK", "Error") | Out-Null
+            return
+        }
+        try { . $scannerLib -AsLibrary } catch {
+            [System.Windows.Forms.MessageBox]::Show(
+                "Errore caricamento scanner: $($_.Exception.Message)",
+                $DisplayName, "OK", "Error") | Out-Null
+            return
+        }
+
+        # Form modale
+        $dlg = New-Object System.Windows.Forms.Form
+        $dlg.Text = "Scansione LAN — $DisplayName"
+        $dlg.Size = New-Object System.Drawing.Size(720, 540)
+        $dlg.StartPosition = "CenterParent"
+        $dlg.FormBorderStyle = "FixedDialog"
+        $dlg.MaximizeBox = $false
+        $dlg.MinimizeBox = $false
+        $dlg.BackColor = [System.Drawing.Color]::FromArgb(245, 247, 250)
+
+        $lblTitle = New-Object System.Windows.Forms.Label
+        $lblTitle.Text = "Dispositivi rilevati nella LAN"
+        $lblTitle.Font = New-Object System.Drawing.Font("Segoe UI", 14, [System.Drawing.FontStyle]::Bold)
+        $lblTitle.ForeColor = [System.Drawing.Color]::FromArgb(56, 132, 222)
+        $lblTitle.Location = New-Object System.Drawing.Point(20, 16)
+        $lblTitle.AutoSize = $true
+        $dlg.Controls.Add($lblTitle)
+
+        $lblHelp = New-Object System.Windows.Forms.Label
+        $lblHelp.Text = "Seleziona i dispositivi da importare nel NOC Center. Il Master prendera' in carico questi endpoint per la classificazione."
+        $lblHelp.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+        $lblHelp.ForeColor = [System.Drawing.Color]::FromArgb(80, 80, 90)
+        $lblHelp.Location = New-Object System.Drawing.Point(20, 50)
+        $lblHelp.Size = New-Object System.Drawing.Size(670, 36)
+        $dlg.Controls.Add($lblHelp)
+
+        $lstDevices = New-Object System.Windows.Forms.ListView
+        $lstDevices.Location = New-Object System.Drawing.Point(20, 92)
+        $lstDevices.Size = New-Object System.Drawing.Size(670, 320)
+        $lstDevices.View = [System.Windows.Forms.View]::Details
+        $lstDevices.CheckBoxes = $true
+        $lstDevices.FullRowSelect = $true
+        $lstDevices.GridLines = $true
+        $lstDevices.Columns.Add("IP", 160) | Out-Null
+        $lstDevices.Columns.Add("MAC", 180) | Out-Null
+        $lstDevices.Columns.Add("Rilevato via", 140) | Out-Null
+        $lstDevices.Columns.Add("Hostname", 165) | Out-Null
+        $dlg.Controls.Add($lstDevices)
+
+        $lblStatus = New-Object System.Windows.Forms.Label
+        $lblStatus.Text = "Premi 'Avvia scansione' per iniziare."
+        $lblStatus.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Italic)
+        $lblStatus.ForeColor = [System.Drawing.Color]::FromArgb(80, 80, 90)
+        $lblStatus.Location = New-Object System.Drawing.Point(20, 420)
+        $lblStatus.Size = New-Object System.Drawing.Size(670, 22)
+        $dlg.Controls.Add($lblStatus)
+
+        $btnStart = New-Object System.Windows.Forms.Button
+        $btnStart.Text = "Avvia scansione"
+        $btnStart.Size = New-Object System.Drawing.Size(160, 34)
+        $btnStart.Location = New-Object System.Drawing.Point(20, 450)
+        $btnStart.FlatStyle = "Flat"
+        $btnStart.BackColor = [System.Drawing.Color]::FromArgb(56, 132, 222)
+        $btnStart.ForeColor = [System.Drawing.Color]::White
+        $btnStart.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+        $btnStart.Cursor = [System.Windows.Forms.Cursors]::Hand
+        $dlg.Controls.Add($btnStart)
+
+        $btnImport = New-Object System.Windows.Forms.Button
+        $btnImport.Text = "Importa selezionati al Center"
+        $btnImport.Size = New-Object System.Drawing.Size(220, 34)
+        $btnImport.Location = New-Object System.Drawing.Point(360, 450)
+        $btnImport.FlatStyle = "Flat"
+        $btnImport.BackColor = [System.Drawing.Color]::FromArgb(22, 163, 74)
+        $btnImport.ForeColor = [System.Drawing.Color]::White
+        $btnImport.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+        $btnImport.Cursor = [System.Windows.Forms.Cursors]::Hand
+        $btnImport.Enabled = $false
+        $dlg.Controls.Add($btnImport)
+
+        $btnClose = New-Object System.Windows.Forms.Button
+        $btnClose.Text = "Chiudi"
+        $btnClose.Size = New-Object System.Drawing.Size(95, 34)
+        $btnClose.Location = New-Object System.Drawing.Point(595, 450)
+        $btnClose.FlatStyle = "Flat"
+        $btnClose.BackColor = [System.Drawing.Color]::White
+        $btnClose.ForeColor = [System.Drawing.Color]::FromArgb(60, 60, 70)
+        $btnClose.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+        $btnClose.Cursor = [System.Windows.Forms.Cursors]::Hand
+        $btnClose.Add_Click({ $dlg.Close() })
+        $dlg.Controls.Add($btnClose)
+
+        # ----- Avvia scansione -----
+        $btnStart.Add_Click({
+            $btnStart.Enabled = $false
+            $btnStart.Text = "Scansione in corso..."
+            $lblStatus.Text = "Esecuzione ARP scan + mDNS discovery (max ~15s)..."
+            $lstDevices.Items.Clear()
+            $dlg.Refresh()
+            try {
+                $arp = Invoke-ArpScan -Subnet $Subnet
+                $mdns = Invoke-MdnsDiscovery
+                $merged = @{}
+                foreach ($e in $arp) { if ($e.mac) { $merged[$e.mac] = $e } }
+                foreach ($e in $mdns) {
+                    if ($e.ip) {
+                        $arpMatch = $arp | Where-Object { $_.ip -eq $e.ip } | Select-Object -First 1
+                        if ($arpMatch -and $merged[$arpMatch.mac]) {
+                            $merged[$arpMatch.mac].discovered_via = "arp+mdns"
+                        }
+                    }
+                }
+                $found = @($merged.Values)
+                foreach ($dev in $found) {
+                    $item = New-Object System.Windows.Forms.ListViewItem($dev.ip)
+                    $item.SubItems.Add($dev.mac) | Out-Null
+                    $item.SubItems.Add($dev.discovered_via) | Out-Null
+                    $item.SubItems.Add("") | Out-Null
+                    $item.Checked = $true
+                    $lstDevices.Items.Add($item) | Out-Null
+                }
+                $lblStatus.Text = "Trovati $($found.Count) dispositivi. Spunta quelli che vuoi importare al Center."
+                $btnImport.Enabled = ($found.Count -gt 0)
+            } catch {
+                $lblStatus.Text = "Errore scansione: $($_.Exception.Message)"
+            } finally {
+                $btnStart.Enabled = $true
+                $btnStart.Text = "Riavvia scansione"
+            }
+        })
+
+        # ----- Importa al Center -----
+        $btnImport.Add_Click({
+            $checked = @()
+            foreach ($it in $lstDevices.Items) {
+                if ($it.Checked) {
+                    $checked += [PSCustomObject]@{
+                        ip = $it.Text
+                        mac = $it.SubItems[1].Text
+                        discovered_via = $it.SubItems[2].Text
+                    }
+                }
+            }
+            if ($checked.Count -eq 0) {
+                [System.Windows.Forms.MessageBox]::Show("Nessun dispositivo selezionato.", $DisplayName, "OK", "Information") | Out-Null
+                return
+            }
+            $btnImport.Enabled = $false
+            $btnImport.Text = "Invio in corso..."
+            $dlg.Refresh()
+            try {
+                $vlanInt = $null
+                if ($VlanId -match "^\d+$") { $vlanInt = [int]$VlanId }
+                $body = @{
+                    subnet = $Subnet
+                    vlan_id = $vlanInt
+                    scan_started_at = (Get-Date).ToUniversalTime().AddSeconds(-30).ToString("o")
+                    scan_ended_at = (Get-Date).ToUniversalTime().ToString("o")
+                    endpoints = $checked
+                    hostname = $env:COMPUTERNAME
+                } | ConvertTo-Json -Depth 5 -Compress
+                $r = Invoke-RestMethod -Uri "$Url/api/connector/lan-scan" `
+                    -Method POST -Headers @{ "X-API-Key" = $ApiKey } `
+                    -Body $body -ContentType "application/json" -TimeoutSec 30
+                [System.Windows.Forms.MessageBox]::Show(
+                    "Importati $($r.stored)/$($r.total) dispositivi nel NOC Center.`r`n`r`nIl Master prendera' in carico questi endpoint per la classificazione automatica.",
+                    $DisplayName, "OK", "Information") | Out-Null
+                $dlg.Close()
+            } catch {
+                [System.Windows.Forms.MessageBox]::Show(
+                    "Errore invio al Center: $($_.Exception.Message)",
+                    $DisplayName, "OK", "Error") | Out-Null
+            } finally {
+                $btnImport.Enabled = $true
+                $btnImport.Text = "Importa selezionati al Center"
+            }
+        })
+
+        $dlg.ShowDialog($ParentForm) | Out-Null
     }
     
     # ==================== NAVIGATION ====================
