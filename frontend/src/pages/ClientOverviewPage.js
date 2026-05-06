@@ -1170,6 +1170,68 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
     }
   };
 
+  // v3.8.15: ri-esegue OUI + Fingerbank + reverse-DNS sui device auto-censiti
+  // dallo Scanner che hanno ancora vendor o nome generici.
+  const recognizeUnknowns = async () => {
+    try {
+      const { data } = await axios.post(`${API}/clients/${clientId}/devices/recognize-unknowns`);
+      const { total_scanned = 0, oui_matched = 0, fingerbank_matched = 0, rdns_matched = 0, private_mac_labeled = 0, no_mac = 0, fingerbank_configured = false } = data || {};
+      if (total_scanned === 0) {
+        toast.info("Nessun device sconosciuto da rivedere", {
+          description: "Tutti i device Scanner hanno gia' vendor e nome valorizzati.",
+        });
+        return;
+      }
+      const enriched = oui_matched + fingerbank_matched + rdns_matched + private_mac_labeled;
+      const lines = [];
+      if (oui_matched) lines.push(`• ${oui_matched} vendor OUI`);
+      if (fingerbank_matched) lines.push(`• ${fingerbank_matched} profili Fingerbank`);
+      if (rdns_matched) lines.push(`• ${rdns_matched} hostname reverse-DNS`);
+      if (private_mac_labeled) lines.push(`• ${private_mac_labeled} dispositivi personali (MAC randomizzato)`);
+      if (no_mac) lines.push(`• ${no_mac} senza MAC`);
+      if (!fingerbank_configured) lines.push(`• Fingerbank non configurato — chiedi all'admin di settare la API key in Amministrazione → Integrazioni`);
+      if (enriched > 0) {
+        toast.success(`Riconosciuti ${enriched}/${total_scanned} device`, {
+          description: lines.join("\n"),
+          duration: 8000,
+        });
+        onRefresh?.();
+      } else {
+        toast.warning(`Nessun arricchimento possibile su ${total_scanned} device`, {
+          description: lines.join("\n") || "Verifica MAC/Fingerbank.",
+          duration: 8000,
+        });
+      }
+    } catch (e) {
+      toast.error(`Errore: ${e.response?.data?.detail || e.message}`);
+    }
+  };
+
+  // v3.8.17: ri-correla LAN/Wi-Fi su tutti i device del cliente leggendo
+  // CAM table degli switch + LLDP neighbors raccolti dal Connector Master.
+  const correlateConnectivity = async () => {
+    try {
+      const { data } = await axios.post(`${API}/clients/${clientId}/devices/correlate-connectivity`);
+      const { total_devices = 0, lan_count = 0, wifi_count = 0, unknown_count = 0,
+              via_lldp_ap = 0, via_cam_lan = 0, via_laa_inference = 0, skipped_no_mac = 0 } = data || {};
+      const lines = [];
+      if (lan_count) lines.push(`• ${lan_count} LAN (cavo)`);
+      if (wifi_count) lines.push(`• ${wifi_count} Wi-Fi`);
+      if (unknown_count) lines.push(`• ${unknown_count} sconosciuti`);
+      if (via_lldp_ap) lines.push(`◦ ${via_lldp_ap} via LLDP-AP (95%)`);
+      if (via_cam_lan) lines.push(`◦ ${via_cam_lan} via CAM table (90%)`);
+      if (via_laa_inference) lines.push(`◦ ${via_laa_inference} via MAC LAA (75%)`);
+      if (skipped_no_mac) lines.push(`◦ ${skipped_no_mac} senza MAC`);
+      toast.success(`Connessione classificata su ${total_devices} device`, {
+        description: lines.join("\n"),
+        duration: 9000,
+      });
+      onRefresh?.();
+    } catch (e) {
+      toast.error(`Errore: ${e.response?.data?.detail || e.message}`);
+    }
+  };
+
   const handleDelete = async (dev) => {
     if (!window.confirm(`Rimuovere "${dev.name}" (${dev.ip_address}) dal monitoraggio?`)) return;
     try {
@@ -1204,6 +1266,22 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
             <MagnifyingGlass size={13} /> Riconosci profili
           </Button>
           <Button
+            onClick={() => recognizeUnknowns()}
+            className="bg-sky-600/90 hover:bg-sky-600 text-white h-8 text-xs gap-1"
+            data-testid="recognize-unknowns-btn"
+            title="Per i device auto-censiti dallo Scanner che hanno ancora vendor/nome generici: ri-esegue OUI lookup, Fingerbank API e reverse-DNS per scoprire vendor, modello e hostname."
+          >
+            <MagnifyingGlass size={13} /> Riconosci sconosciuti
+          </Button>
+          <Button
+            onClick={() => correlateConnectivity()}
+            className="bg-violet-600/90 hover:bg-violet-600 text-white h-8 text-xs gap-1"
+            data-testid="correlate-connectivity-btn"
+            title="Classifica ogni device come LAN (cavo) o Wi-Fi incrociando la CAM table degli switch SNMP con i neighbor LLDP. Identifica gli AP via keyword (Aruba AP, Unifi, Meraki, ecc.) e marca tutti i loro client come Wi-Fi. Confidenza: 99% se l'AP stesso e' un LLDP neighbor; 95% via LLDP-AP; 90% via CAM table; 75% via inferenza MAC randomizzato."
+          >
+            <WifiHigh size={13} /> LAN / Wi-Fi
+          </Button>
+          <Button
             onClick={() => cleanupStaleDevices()}
             className="bg-amber-600/90 hover:bg-amber-600 text-white h-8 text-xs gap-1"
             data-testid="cleanup-stale-btn"
@@ -1224,11 +1302,11 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
       <div className="noc-panel overflow-x-auto">
         <table className="alert-table min-w-[780px]" data-testid="client-devices-table">
           <thead>
-            <tr><th>Nome</th><th>Tipo</th><th>IP</th><th>Metodo</th><th>SNMP</th><th>Community</th><th>Stato</th><th>Fonte</th><th>Ultimo Poll</th><th></th></tr>
+            <tr><th>Nome</th><th>Tipo</th><th>IP</th><th>Metodo</th><th>SNMP</th><th>Community</th><th>Stato</th><th>Conn.</th><th>Fonte</th><th>Ultimo Poll</th><th></th></tr>
           </thead>
           <tbody>
             {devices.length === 0 ? (
-              <tr><td colSpan={10} className="text-center text-[var(--text-muted)] py-8 text-xs">Nessun dispositivo — clicca "Aggiungi Dispositivo" per iniziare</td></tr>
+              <tr><td colSpan={11} className="text-center text-[var(--text-muted)] py-8 text-xs">Nessun dispositivo — clicca "Aggiungi Dispositivo" per iniziare</td></tr>
             ) : devices.map((d, i) => {
               const sc = STATUS_COLOR[d.status] || "#555";
               const monitorType = (d.monitor_type || "snmp").toLowerCase();
@@ -1275,6 +1353,20 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
                     </span>
                     {d.ping_ms && <span className="ml-1 text-[9px] text-[var(--text-muted)]">{d.ping_ms}ms</span>}
                   </td>
+                  <td>{(() => {
+                    const ct = d.connection_type;
+                    const cs = d.connection_source || "";
+                    const conf = d.connection_confidence;
+                    const via = (d.connection_via_switch && d.connection_via_port) ? `${d.connection_via_switch} / ${d.connection_via_port}` : "";
+                    const tip = `Connessione: ${ct || "?"}\nFonte: ${cs}\nConfidenza: ${conf ?? "—"}%${via ? `\nVia: ${via}` : ""}`;
+                    if (ct === "wifi") {
+                      return <span title={tip} className="inline-flex items-center gap-1 text-[8px] px-1.5 py-0.5 rounded bg-sky-500/10 text-sky-300 border border-sky-500/20 font-bold"><WifiHigh size={10} weight="bold"/>WI-FI</span>;
+                    }
+                    if (ct === "lan") {
+                      return <span title={tip} className="inline-flex items-center gap-1 text-[8px] px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-300 border border-indigo-500/20 font-bold"><PlugsConnected size={10} weight="bold"/>LAN</span>;
+                    }
+                    return <span title={tip} className="text-[8px] text-[var(--text-muted)]">—</span>;
+                  })()}</td>
                   <td>{(() => {
                     const src = d.source || "manual";
                     if (src === "connector-scanner") {

@@ -439,6 +439,18 @@ async def connector_lan_scan(request: Request, report: LanScanReport):
             lookup_oui = lambda m: ""  # noqa: E731
             classify_device = lambda **kw: "endpoint"  # noqa: E731
 
+        # v3.8.16: detection MAC LAA (Locally Administered Address). Il secondo bit
+        # meno significativo del primo byte indica se il MAC e' localmente assegnato
+        # (privacy randomization) o globalmente unico (IEEE-registered OUI).
+        # Con MAC randomizzato l'OUI lookup non restituisce mai nulla — diamo
+        # comunque al device un'identita' chiara invece di lasciare vendor/nome vuoti.
+        def _is_laa_mac(mac_normalized: str) -> bool:
+            try:
+                first_byte = int(mac_normalized.split(":")[0], 16)
+                return bool(first_byte & 0x02)
+            except Exception:
+                return False
+
         bg_fingerbank: list = []  # MAC da arricchire in background
 
         for ep in report.endpoints:
@@ -470,13 +482,26 @@ async def connector_lan_scan(request: Request, report: LanScanReport):
                 vendor_guess = lookup_oui(mac_norm) or ""
             except Exception:
                 pass
+            # v3.8.16: se MAC randomizzato (LAA), assegna identita' "MAC privato"
+            mac_is_laa = _is_laa_mac(mac_norm)
+            if mac_is_laa and not vendor_guess:
+                vendor_guess = "MAC randomizzato (privacy)"
             try:
-                dev_type = classify_device(mac=mac_norm, vendor=vendor_guess, sys_descr=ep.sys_descr or "") or "endpoint"
+                if mac_is_laa:
+                    dev_type = "endpoint-private"
+                else:
+                    dev_type = classify_device(mac=mac_norm, vendor=vendor_guess, sys_descr=ep.sys_descr or "") or "endpoint"
             except Exception:
-                dev_type = "endpoint"
-            display_name = (ep.hostname or "").strip() or (
-                f"{vendor_guess} {ep.ip}".strip() if vendor_guess else ep.ip
-            )
+                dev_type = "endpoint-private" if mac_is_laa else "endpoint"
+            # Nome di display: hostname > vendor IP > "Dispositivo personale" (LAA)
+            if (ep.hostname or "").strip():
+                display_name = ep.hostname.strip()
+            elif mac_is_laa:
+                display_name = f"Dispositivo personale {ep.ip}"
+            elif vendor_guess:
+                display_name = f"{vendor_guess} {ep.ip}"
+            else:
+                display_name = ep.ip
 
             new_doc = {
                 "id": __import__("uuid").uuid4().hex,
@@ -485,6 +510,7 @@ async def connector_lan_scan(request: Request, report: LanScanReport):
                 "ip": ep.ip,
                 "ip_address": ep.ip,
                 "mac": mac_norm,
+                "mac_is_random": mac_is_laa,
                 "device_type": dev_type,
                 "monitor_type": "ping",
                 "snmp_community": "public",
@@ -507,6 +533,8 @@ async def connector_lan_scan(request: Request, report: LanScanReport):
             try:
                 await db.managed_devices.insert_one(new_doc)
                 auto_added += 1
+                # Schedule Fingerbank: anche per LAA, perche' Fingerbank con DHCP
+                # fingerprint puo' identificare il device anche senza OUI.
                 bg_fingerbank.append((mac_norm, ep.ip))
             except Exception as e:
                 logger.warning(f"[LAN-SCAN] insert managed_devices failed for {ep.ip}: {e}")

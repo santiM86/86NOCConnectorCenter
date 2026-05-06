@@ -43,6 +43,8 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
     if client_id:
         query["client_id"] = client_id
 
+    now_iso = datetime.now(timezone.utc).isoformat()
+
     # Fetch manually added devices
     devices = await db.devices.find(query, {"_id": 0}).to_list(1000)
     manual_ips = {d["ip_address"] for d in devices}
@@ -203,8 +205,15 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
             "family": md.get("family"),
             "fingerbank_device_name": md.get("fingerbank_device_name"),
             "fingerbank_score": md.get("fingerbank_score"),
+            "mac_is_random": bool(md.get("mac_is_random", False)),
+            "connection_type": md.get("connection_type"),  # lan|wifi|unknown
+            "connection_source": md.get("connection_source"),
+            "connection_via_switch": md.get("connection_via_switch"),
+            "connection_via_port": md.get("connection_via_port"),
+            "connection_confidence": md.get("connection_confidence"),
             "alerts_silenced": bool(md.get("alerts_silenced", False)),
             "alerts_silenced_reason": md.get("alerts_silenced_reason") or "",
+            "created_at": md.get("created_at") or md.get("auto_added_at") or now_iso,
         })
 
     client_ids = list(set(d["client_id"] for d in devices if d.get("client_id")))
@@ -599,6 +608,338 @@ async def rematch_profile_single(
         details={"action": "rematch_profile", "result": res},
     )
     return res
+
+
+@router.post("/clients/{client_id}/devices/recognize-unknowns")
+async def recognize_unknown_devices(
+    client_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Ri-esegue il riconoscimento (OUI + Fingerbank + reverse-DNS) sui device
+    auto-censiti dallo Scanner che hanno ancora vendor/nome generici (es. "192.168.x.y"
+    senza vendor). Utile dopo che Fingerbank è stato configurato a posteriori, o per
+    device il cui MAC è arrivato in un secondo momento.
+    """
+    import socket
+    from datetime import datetime, timezone
+    from routes.oui_lookup import lookup_oui, classify_device
+    from services import fingerbank_service
+
+    fb_configured = await fingerbank_service.is_configured()
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    # v3.8.16: detection MAC LAA (randomizzato per privacy).
+    def _is_laa_mac(mac_normalized: str) -> bool:
+        try:
+            first_byte = int(mac_normalized.split(":")[0], 16)
+            return bool(first_byte & 0x02)
+        except Exception:
+            return False
+
+    # Pesca i device da rivedere: source=connector-scanner E (no vendor OR name=ip OR no fingerbank_at)
+    candidates = await db.managed_devices.find(
+        {
+            "client_id": client_id,
+            "source": "connector-scanner",
+        },
+        {"_id": 0, "id": 1, "ip": 1, "mac": 1, "vendor": 1, "name": 1,
+         "hostname": 1, "fingerbank_at": 1, "device_type": 1, "sys_descr": 1,
+         "mac_is_random": 1},
+    ).to_list(2000)
+
+    summary = {
+        "total_scanned": 0,
+        "oui_matched": 0,
+        "fingerbank_matched": 0,
+        "rdns_matched": 0,
+        "private_mac_labeled": 0,
+        "no_mac": 0,
+        "skipped": 0,
+    }
+
+    for md in candidates:
+        ip = md.get("ip")
+        if not ip:
+            continue
+        # Salta device gia' completi (hanno vendor + name diverso da IP + fingerbank fatto)
+        has_vendor = bool((md.get("vendor") or "").strip())
+        has_decent_name = bool((md.get("name") or "").strip()) and md.get("name") != ip
+        has_fb = bool(md.get("fingerbank_at"))
+        if has_vendor and has_decent_name and (has_fb or not fb_configured):
+            summary["skipped"] += 1
+            continue
+        summary["total_scanned"] += 1
+        update: dict = {}
+
+        mac_norm = (md.get("mac") or "").lower().replace("-", ":").strip()
+        mac_valid = mac_norm and len(mac_norm.replace(":", "")) == 12
+        mac_is_laa = mac_valid and _is_laa_mac(mac_norm)
+
+        if mac_valid:
+            if mac_is_laa:
+                # MAC randomizzato → etichetta chiara, non chiamare OUI/Fingerbank
+                update["mac_is_random"] = True
+                if not has_vendor:
+                    update["vendor"] = "MAC randomizzato (privacy)"
+                if not has_decent_name:
+                    update["name"] = f"Dispositivo personale {ip}"
+                update["device_type"] = "endpoint-private"
+                summary["private_mac_labeled"] += 1
+            else:
+                # OUI lookup classico
+                if not has_vendor:
+                    try:
+                        v = lookup_oui(mac_norm) or ""
+                        if v:
+                            update["vendor"] = v
+                            summary["oui_matched"] += 1
+                            try:
+                                update["device_type"] = classify_device(
+                                    mac=mac_norm, vendor=v, sys_descr=md.get("sys_descr") or ""
+                                ) or md.get("device_type") or "endpoint"
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+                # Fingerbank lookup (solo MAC reali)
+                if fb_configured and not has_fb:
+                    try:
+                        fb = await fingerbank_service.interrogate(mac=mac_norm)
+                        if fb and fb.get("device_name"):
+                            update["fingerbank_device_name"] = fb["device_name"]
+                            update["fingerbank_score"] = fb.get("score")
+                            update["fingerbank_at"] = now_iso
+                            summary["fingerbank_matched"] += 1
+                    except Exception:
+                        pass
+        else:
+            summary["no_mac"] += 1
+
+        # Reverse DNS lookup (sempre tentato per device senza nome decente, anche LAA)
+        if not has_decent_name and "name" not in update:
+            try:
+                old_to = socket.getdefaulttimeout()
+                socket.setdefaulttimeout(2.0)
+                try:
+                    h, _, _ = socket.gethostbyaddr(ip)
+                    if h and h != ip:
+                        update["hostname"] = h
+                        update["name"] = h.split(".")[0] if "." in h else h
+                        summary["rdns_matched"] += 1
+                finally:
+                    socket.setdefaulttimeout(old_to)
+            except Exception:
+                pass
+
+        # Se abbiamo trovato vendor ma name e' ancora ip, miglioriamo il name
+        if "vendor" in update and not has_decent_name and "name" not in update:
+            update["name"] = f"{update['vendor']} {ip}"
+
+        if update:
+            update["updated_at"] = now_iso
+            await db.managed_devices.update_one(
+                {"client_id": client_id, "ip": ip, "source": "connector-scanner"},
+                {"$set": update},
+            )
+
+    await audit_logger.log(
+        AuditAction.UPDATE_DEVICE, user_id=current_user["id"], user_email=current_user["email"],
+        ip_address=current_user.get("_request_ip"),
+        resource_type="client", resource_id=client_id,
+        details={"action": "recognize_unknowns", "summary": summary},
+    )
+    return {
+        "client_id": client_id,
+        "fingerbank_configured": fb_configured,
+        **summary,
+    }
+
+
+# v3.8.17: keyword-set per riconoscere se un LLDP neighbor remote_sys_name/desc
+# rappresenta un Access Point WiFi vs uno switch/router cablato.
+_AP_KEYWORDS = (
+    "ap-", "ap_", " ap ", "wap", "wifi", "wi-fi", "wireless", "wlan",
+    "aruba ap", "unifi ap", "uap", "meraki mr", "cisco air", "ruckus",
+    "aerohive", "extreme ap", "mikrotik cap", "tp-link eap", "netgear wac",
+    "engenius", "edgemax ap",
+)
+
+
+def _is_ap_neighbor(remote_sys_name: str, remote_sys_descr: str = "") -> bool:
+    """Ritorna True se il neighbor LLDP/CDP è probabilmente un Access Point WiFi."""
+    blob = f"{remote_sys_name or ''} {remote_sys_descr or ''}".lower()
+    return any(k in blob for k in _AP_KEYWORDS)
+
+
+@router.post("/clients/{client_id}/devices/correlate-connectivity")
+async def correlate_connectivity(
+    client_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Correla i device del cliente con la CAM table degli switch e i neighbor
+    LLDP per stabilire se ogni device e' connesso via LAN (cavo) o Wi-Fi.
+
+    Workflow:
+    1. Per ogni managed_device con MAC valido del cliente.
+    2. Cerca in `discovered_endpoints` (popolata dal Master via dot1dTpFdbTable)
+       quale switch+port vede quel MAC.
+    3. Risali in `switch_ports` per ottenere il nome porta (Gi1/0/5).
+    4. Risali in `lldp_neighbors` per vedere se quella porta ha come neighbor
+       un Access Point WiFi (matching keyword Aruba AP/Unifi/Meraki/AP-/WAP/...).
+    5. Se neighbor=AP -> connection_type=wifi, altrimenti=lan.
+    6. Fallback: se MAC non trovato in CAM E mac_is_random=True -> wifi (LAA).
+    7. Altrimenti unknown.
+
+    Salva su managed_devices: connection_type, connection_source,
+    connection_via_switch, connection_via_port, connection_confidence.
+    """
+    from datetime import datetime, timezone
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    devices = await db.managed_devices.find(
+        {"client_id": client_id},
+        {"_id": 0, "id": 1, "ip": 1, "mac": 1, "mac_is_random": 1,
+         "source": 1, "connection_type": 1},
+    ).to_list(2000)
+
+    # Index discovered_endpoints by MAC (uppercase as inserted by Master)
+    cam_entries = await db.discovered_endpoints.find(
+        {"client_id": client_id, "mac": {"$ne": ""}, "switch_ip": {"$ne": ""}},
+        {"_id": 0, "mac": 1, "switch_ip": 1, "port": 1},
+    ).to_list(20000)
+    cam_by_mac: dict = {}
+    for e in cam_entries:
+        m = (e.get("mac") or "").upper().replace("-", ":")
+        if m and len(m.replace(":", "")) == 12 and e.get("switch_ip"):
+            cam_by_mac[m] = (e["switch_ip"], e.get("port", 0))
+
+    # Index switch_ports for (switch_ip, idx) -> port_name
+    sp_docs = await db.switch_ports.find(
+        {"client_id": client_id},
+        {"_id": 0, "local_ip": 1, "idx": 1, "name": 1},
+    ).to_list(10000)
+    port_name_by_key: dict = {}
+    for sp in sp_docs:
+        if sp.get("local_ip") and sp.get("idx") is not None:
+            port_name_by_key[(sp["local_ip"], int(sp["idx"]))] = sp.get("name", "")
+
+    # Index lldp_neighbors by (switch_ip, port_id_or_desc)
+    lldp_docs = await db.lldp_neighbors.find(
+        {"client_id": client_id},
+        {"_id": 0, "local_ip": 1, "local_port_id": 1, "local_port_desc": 1,
+         "remote_sys_name": 1, "remote_sys_descr": 1, "remote_chassis_id": 1},
+    ).to_list(5000)
+    lldp_by_port: dict = {}
+    # Set di MAC che sono "device LLDP" stesso (AP/switch/IP-Phone neighbor)
+    # → quei MAC sono dispositivi CABLATI (l'AP usa l'ethernet uplink, non e' un client WiFi).
+    lldp_chassis_macs: set = set()
+
+    def _normalize_chassis_to_mac(chassis: str) -> str:
+        if not chassis:
+            return ""
+        # Cisco format: aabb.ccdd.eeff -> aabbccddeeff -> aa:bb:cc:dd:ee:ff
+        cleaned = "".join(c for c in chassis.lower() if c in "0123456789abcdef")
+        if len(cleaned) == 12:
+            return ":".join(cleaned[i:i+2] for i in range(0, 12, 2)).upper()
+        return ""
+
+    for ln in lldp_docs:
+        for pkey in (ln.get("local_port_id"), ln.get("local_port_desc")):
+            if ln.get("local_ip") and pkey:
+                lldp_by_port[(ln["local_ip"], str(pkey))] = ln
+        chassis_mac = _normalize_chassis_to_mac(ln.get("remote_chassis_id", ""))
+        if chassis_mac:
+            lldp_chassis_macs.add(chassis_mac)
+
+    summary = {
+        "total_devices": len(devices),
+        "lan_count": 0,
+        "wifi_count": 0,
+        "unknown_count": 0,
+        "skipped_no_mac": 0,
+        "via_lldp_ap": 0,
+        "via_cam_lan": 0,
+        "via_laa_inference": 0,
+    }
+
+    for d in devices:
+        mac_norm = (d.get("mac") or "").upper().replace("-", ":").strip()
+        if not mac_norm or len(mac_norm.replace(":", "")) != 12:
+            summary["skipped_no_mac"] += 1
+            # se non abbiamo MAC ma source e' connector-scanner, segna unknown
+            await db.managed_devices.update_one(
+                {"client_id": client_id, "id": d["id"]},
+                {"$set": {
+                    "connection_type": "unknown",
+                    "connection_source": "no_mac",
+                    "connection_correlated_at": now_iso,
+                }},
+            )
+            continue
+
+        ctype = "unknown"
+        csource = "no_data"
+        via_switch = ""
+        via_port = ""
+        confidence = 0  # 0-100
+
+        cam_hit = cam_by_mac.get(mac_norm)
+        if cam_hit:
+            sw_ip, port_idx = cam_hit
+            port_name = port_name_by_key.get((sw_ip, port_idx), str(port_idx))
+            ln = lldp_by_port.get((sw_ip, port_name)) or lldp_by_port.get((sw_ip, str(port_idx)))
+            via_switch = sw_ip
+            via_port = port_name or str(port_idx)
+            # v3.8.17: se il device E' lui stesso un LLDP neighbor (AP/IP-Phone/switch),
+            # allora e' CABLATO per definizione (LLDP gira solo su Ethernet).
+            if mac_norm in lldp_chassis_macs:
+                ctype = "lan"
+                csource = "self_is_lldp_device"
+                confidence = 99
+                summary["via_cam_lan"] += 1
+            elif ln and _is_ap_neighbor(ln.get("remote_sys_name", ""), ln.get("remote_sys_descr", "")):
+                ctype = "wifi"
+                csource = f"lldp:ap={ln.get('remote_sys_name','?')}"
+                confidence = 95
+                summary["via_lldp_ap"] += 1
+            else:
+                ctype = "lan"
+                csource = "cam_table"
+                confidence = 90
+                summary["via_cam_lan"] += 1
+        else:
+            # MAC non in CAM table del Master
+            if d.get("mac_is_random"):
+                ctype = "wifi"
+                csource = "laa_inference"  # MAC randomizzato e' tipicamente Wi-Fi privacy
+                confidence = 75
+                summary["via_laa_inference"] += 1
+            else:
+                ctype = "unknown"
+                csource = "no_cam_match"
+                confidence = 0
+
+        summary[f"{ctype}_count"] += 1
+
+        await db.managed_devices.update_one(
+            {"client_id": client_id, "id": d["id"]},
+            {"$set": {
+                "connection_type": ctype,
+                "connection_source": csource,
+                "connection_via_switch": via_switch,
+                "connection_via_port": via_port,
+                "connection_confidence": confidence,
+                "connection_correlated_at": now_iso,
+            }},
+        )
+
+    await audit_logger.log(
+        AuditAction.UPDATE_DEVICE, user_id=current_user["id"], user_email=current_user["email"],
+        ip_address=current_user.get("_request_ip"),
+        resource_type="client", resource_id=client_id,
+        details={"action": "correlate_connectivity", "summary": summary},
+    )
+    return {"client_id": client_id, **summary}
 
 
 
