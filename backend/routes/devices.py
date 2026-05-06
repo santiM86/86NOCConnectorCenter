@@ -619,6 +619,14 @@ async def recognize_unknown_devices(
     fb_configured = await fingerbank_service.is_configured()
     now_iso = datetime.now(timezone.utc).isoformat()
 
+    # v3.8.16: detection MAC LAA (randomizzato per privacy).
+    def _is_laa_mac(mac_normalized: str) -> bool:
+        try:
+            first_byte = int(mac_normalized.split(":")[0], 16)
+            return bool(first_byte & 0x02)
+        except Exception:
+            return False
+
     # Pesca i device da rivedere: source=connector-scanner E (no vendor OR name=ip OR no fingerbank_at)
     candidates = await db.managed_devices.find(
         {
@@ -626,7 +634,8 @@ async def recognize_unknown_devices(
             "source": "connector-scanner",
         },
         {"_id": 0, "id": 1, "ip": 1, "mac": 1, "vendor": 1, "name": 1,
-         "hostname": 1, "fingerbank_at": 1, "device_type": 1, "sys_descr": 1},
+         "hostname": 1, "fingerbank_at": 1, "device_type": 1, "sys_descr": 1,
+         "mac_is_random": 1},
     ).to_list(2000)
 
     summary = {
@@ -634,6 +643,7 @@ async def recognize_unknown_devices(
         "oui_matched": 0,
         "fingerbank_matched": 0,
         "rdns_matched": 0,
+        "private_mac_labeled": 0,
         "no_mac": 0,
         "skipped": 0,
     }
@@ -653,41 +663,52 @@ async def recognize_unknown_devices(
         update: dict = {}
 
         mac_norm = (md.get("mac") or "").lower().replace("-", ":").strip()
-        if mac_norm and len(mac_norm.replace(":", "")) == 12:
-            # OUI lookup
-            if not has_vendor:
-                try:
-                    v = lookup_oui(mac_norm) or ""
-                    if v:
-                        update["vendor"] = v
-                        summary["oui_matched"] += 1
-                        # ri-classifica device_type
-                        try:
-                            update["device_type"] = classify_device(
-                                mac=mac_norm, vendor=v, sys_descr=md.get("sys_descr") or ""
-                            ) or md.get("device_type") or "endpoint"
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
-            # Fingerbank lookup
-            if fb_configured and not has_fb:
-                try:
-                    fb = await fingerbank_service.interrogate(mac=mac_norm)
-                    if fb and fb.get("device_name"):
-                        update["fingerbank_device_name"] = fb["device_name"]
-                        update["fingerbank_score"] = fb.get("score")
-                        update["fingerbank_at"] = now_iso
-                        summary["fingerbank_matched"] += 1
-                except Exception:
-                    pass
+        mac_valid = mac_norm and len(mac_norm.replace(":", "")) == 12
+        mac_is_laa = mac_valid and _is_laa_mac(mac_norm)
+
+        if mac_valid:
+            if mac_is_laa:
+                # MAC randomizzato → etichetta chiara, non chiamare OUI/Fingerbank
+                update["mac_is_random"] = True
+                if not has_vendor:
+                    update["vendor"] = "MAC randomizzato (privacy)"
+                if not has_decent_name:
+                    update["name"] = f"Dispositivo personale {ip}"
+                update["device_type"] = "endpoint-private"
+                summary["private_mac_labeled"] += 1
+            else:
+                # OUI lookup classico
+                if not has_vendor:
+                    try:
+                        v = lookup_oui(mac_norm) or ""
+                        if v:
+                            update["vendor"] = v
+                            summary["oui_matched"] += 1
+                            try:
+                                update["device_type"] = classify_device(
+                                    mac=mac_norm, vendor=v, sys_descr=md.get("sys_descr") or ""
+                                ) or md.get("device_type") or "endpoint"
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+                # Fingerbank lookup (solo MAC reali)
+                if fb_configured and not has_fb:
+                    try:
+                        fb = await fingerbank_service.interrogate(mac=mac_norm)
+                        if fb and fb.get("device_name"):
+                            update["fingerbank_device_name"] = fb["device_name"]
+                            update["fingerbank_score"] = fb.get("score")
+                            update["fingerbank_at"] = now_iso
+                            summary["fingerbank_matched"] += 1
+                    except Exception:
+                        pass
         else:
             summary["no_mac"] += 1
 
-        # Reverse DNS lookup (sempre tentato per device senza nome decente)
-        if not has_decent_name:
+        # Reverse DNS lookup (sempre tentato per device senza nome decente, anche LAA)
+        if not has_decent_name and "name" not in update:
             try:
-                # short timeout: socket.gethostbyaddr non ha timeout, usiamo socket.setdefaulttimeout temporaneamente
                 old_to = socket.getdefaulttimeout()
                 socket.setdefaulttimeout(2.0)
                 try:

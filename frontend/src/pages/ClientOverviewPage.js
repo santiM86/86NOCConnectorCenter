@@ -1175,19 +1175,20 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
   const recognizeUnknowns = async () => {
     try {
       const { data } = await axios.post(`${API}/clients/${clientId}/devices/recognize-unknowns`);
-      const { total_scanned = 0, oui_matched = 0, fingerbank_matched = 0, rdns_matched = 0, no_mac = 0, fingerbank_configured = false } = data || {};
+      const { total_scanned = 0, oui_matched = 0, fingerbank_matched = 0, rdns_matched = 0, private_mac_labeled = 0, no_mac = 0, fingerbank_configured = false } = data || {};
       if (total_scanned === 0) {
         toast.info("Nessun device sconosciuto da rivedere", {
           description: "Tutti i device Scanner hanno gia' vendor e nome valorizzati.",
         });
         return;
       }
-      const enriched = oui_matched + fingerbank_matched + rdns_matched;
+      const enriched = oui_matched + fingerbank_matched + rdns_matched + private_mac_labeled;
       const lines = [];
       if (oui_matched) lines.push(`• ${oui_matched} vendor OUI`);
       if (fingerbank_matched) lines.push(`• ${fingerbank_matched} profili Fingerbank`);
       if (rdns_matched) lines.push(`• ${rdns_matched} hostname reverse-DNS`);
-      if (no_mac) lines.push(`• ${no_mac} senza MAC (impossibili da arricchire)`);
+      if (private_mac_labeled) lines.push(`• ${private_mac_labeled} dispositivi personali (MAC randomizzato)`);
+      if (no_mac) lines.push(`• ${no_mac} senza MAC`);
       if (!fingerbank_configured) lines.push(`• Fingerbank non configurato — chiedi all'admin di settare la API key in Amministrazione → Integrazioni`);
       if (enriched > 0) {
         toast.success(`Riconosciuti ${enriched}/${total_scanned} device`, {
