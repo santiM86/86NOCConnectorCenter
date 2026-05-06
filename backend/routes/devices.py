@@ -126,7 +126,7 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
                 "location": pd.get("sys_location", ""),
                 "status": "online" if pd.get("reachable") else "offline",
                 "redfish_enabled": False,
-                "source": "connector",
+                "source": "connector-master",
                 "connector_hostname": pd.get("connector_hostname", ""),
                 "last_poll": pd.get("last_poll"),
                 "sys_descr": pd.get("sys_descr", ""),
@@ -154,28 +154,44 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
                 "alerts_silenced_reason": md.get("alerts_silenced_reason") or "",
             })
 
-    # 3rd pass: managed_devices orfani (aggiunti manualmente via UI o dal tray
-    # Apri Web UI, ma non ancora pollati dal connector) - altrimenti sparirebbero
+    # 3rd pass: managed_devices orfani (aggiunti manualmente via UI, dal tray
+    # Apri Web UI, oppure auto-censiti dal Connector Scanner via /lan-scan
+    # con source="connector-scanner") - altrimenti sparirebbero
     # dalla UI del cliente finche' il connector non li vede.
     for md in managed_devices_raw:
         md_ip = md.get("ip") or md.get("ip_address", "")
         if not md_ip or md_ip in manual_ips:
             continue
         manual_ips.add(md_ip)
+        # v3.8.15: preserva il source originale (connector-scanner / connector-master / manual)
+        # cosi' la colonna FONTE in UI distingue MASTER vs SCANNER vs MANUALE.
+        md_source = md.get("source") or "managed"
+        # Status: i device dal Scanner sono "online" (li abbiamo appena visti via ARP/mDNS)
+        # se last_seen_at recente; altrimenti pending.
+        if md_source == "connector-scanner" and md.get("last_seen_at"):
+            md_status = "online"
+        else:
+            md_status = "pending"
         devices.append({
             "id": md.get("id") or f"md_{md_ip.replace('.','_')}",
             "client_id": md.get("client_id", ""),
             "name": md.get("name", md_ip),
             "device_type": md.get("device_type", "server"),
             "ip_address": md_ip,
+            "mac": md.get("mac", ""),
             "hostname": md.get("hostname", ""),
             "location": md.get("location", ""),
-            "status": "pending",  # non ancora pollato
+            "status": md_status,
             "redfish_enabled": False,
-            "source": "managed",
-            "last_poll": md.get("web_console_last_tested"),
+            "source": md_source,
+            "auto_added": bool(md.get("auto_added", False)),
+            "discovered_via": md.get("discovered_via"),
+            "discovered_subnet": md.get("discovered_subnet"),
+            "vlan_id": md.get("vlan_id"),
+            "last_poll": md.get("web_console_last_tested") or md.get("last_seen_at"),
+            "last_seen_at": md.get("last_seen_at"),
             "monitor_type": md.get("monitor_type", ""),
-            "snmp_community": md.get("community", ""),
+            "snmp_community": md.get("community") or md.get("snmp_community", ""),
             "snmp_version": md.get("snmp_version", ""),
             "http_port": md.get("http_port"),
             "web_console_url": md.get("web_console_url"),
@@ -185,6 +201,8 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
             "profile_key": md.get("profile_key"),
             "vendor": md.get("vendor"),
             "family": md.get("family"),
+            "fingerbank_device_name": md.get("fingerbank_device_name"),
+            "fingerbank_score": md.get("fingerbank_score"),
             "alerts_silenced": bool(md.get("alerts_silenced", False)),
             "alerts_silenced_reason": md.get("alerts_silenced_reason") or "",
         })

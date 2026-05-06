@@ -979,7 +979,9 @@ function DeviceGroup({ label, icon: Icon, devices, color }) {
               <span className="font-mono text-[var(--text-muted)]">{d.ip_address}</span>
               {d.snmp_community && <span className="text-[8px] px-1 rounded bg-[var(--bg-card)] text-[var(--text-muted)]">{d.snmp_version || "snmp"}: {d.snmp_community}</span>}
               <span className="ml-auto font-bold text-[8px] uppercase" style={{ color: sc }}>{d.status}</span>
-              {d.source === "connector" && <span className="text-[7px] px-1 rounded bg-indigo-500/10 text-indigo-400">C</span>}
+              {d.source === "connector" && <span className="text-[7px] px-1 rounded bg-indigo-500/10 text-indigo-400">M</span>}
+              {d.source === "connector-master" && <span className="text-[7px] px-1 rounded bg-indigo-500/10 text-indigo-400">M</span>}
+              {d.source === "connector-scanner" && <span className="text-[7px] px-1 rounded bg-sky-500/10 text-sky-400">S</span>}
             </div>
           );
         })}
@@ -1273,7 +1275,16 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
                     </span>
                     {d.ping_ms && <span className="ml-1 text-[9px] text-[var(--text-muted)]">{d.ping_ms}ms</span>}
                   </td>
-                  <td>{d.source === "connector" ? <span className="text-[8px] px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 font-bold">CONNECTOR</span> : <span className="text-[8px] text-[var(--text-muted)]">Manuale</span>}</td>
+                  <td>{(() => {
+                    const src = d.source || "manual";
+                    if (src === "connector-scanner") {
+                      return <span className="text-[8px] px-1.5 py-0.5 rounded bg-sky-500/10 text-sky-400 border border-sky-500/20 font-bold" title="Scoperto e auto-censito dal Connector Scanner">SCANNER</span>;
+                    }
+                    if (src === "connector-master" || src === "connector") {
+                      return <span className="text-[8px] px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 font-bold" title="Censito dal Connector Master (polling SNMP / discovery)">MASTER</span>;
+                    }
+                    return <span className="text-[8px] text-[var(--text-muted)]">Manuale</span>;
+                  })()}</td>
                   <td className="text-[9px] text-[var(--text-muted)]">{d.last_poll ? new Date(d.last_poll).toLocaleString("it-IT", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "—"}</td>
                   <td>
                     <div className="flex items-center gap-1">

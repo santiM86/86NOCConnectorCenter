@@ -419,7 +419,131 @@ async def connector_lan_scan(request: Request, report: LanScanReport):
         stored += 1
 
     logger.info(f"[LAN-SCAN] {client_data.get('name')} subnet={report.subnet} stored={stored}/{len(report.endpoints)} via=scanner")
-    return {"status": "ok", "stored": stored, "total": len(report.endpoints)}
+
+    # ====================================================================
+    # v3.8.15 NEW WORKFLOW: i dispositivi scoperti dallo Scanner vengono
+    # AUTO-CENSITI in `managed_devices` (no piu' approvazione manuale).
+    # - source = "connector-scanner" per distinguerli dai master/manuali
+    # - monitor_type = "ping" (basso impatto, l'utente puo' upgradare a snmp dopo)
+    # - device_type calcolato via OUI (oui_lookup) per categorizzazione iniziale
+    # - vendor calcolato via OUI
+    # - Fingerbank interrogato in background per arricchimento profilo
+    # Se il device esiste gia' (stesso client_id+ip) NON sovrascrive nulla:
+    # rispetta sia i manuali che i master che gli scanner-aggiunti precedenti.
+    # ====================================================================
+    auto_added = 0
+    if report.endpoints:
+        try:
+            from routes.oui_lookup import lookup_oui, classify_device
+        except Exception:
+            lookup_oui = lambda m: ""  # noqa: E731
+            classify_device = lambda **kw: "endpoint"  # noqa: E731
+
+        bg_fingerbank: list = []  # MAC da arricchire in background
+
+        for ep in report.endpoints:
+            mac_norm = (ep.mac or "").lower().replace("-", ":").strip()
+            if not mac_norm or len(mac_norm.replace(":", "")) != 12:
+                continue
+            if not ep.ip:
+                continue
+            # Skip se esiste gia' un device con stesso client_id+ip
+            existing = await db.managed_devices.find_one(
+                {"client_id": client_id, "ip": ep.ip},
+                {"_id": 0, "id": 1, "source": 1},
+            )
+            if existing:
+                # Se gia' aggiunto da scanner in passato, aggiorna last_seen + name se migliorabile
+                if existing.get("source") == "connector-scanner":
+                    upd = {"last_seen_at": now_iso}
+                    if ep.hostname and ep.hostname.strip():
+                        upd["hostname"] = ep.hostname.strip()
+                    await db.managed_devices.update_one(
+                        {"client_id": client_id, "ip": ep.ip, "source": "connector-scanner"},
+                        {"$set": upd},
+                    )
+                continue
+
+            # Nuovo device — classifica via OUI
+            vendor_guess = ""
+            try:
+                vendor_guess = lookup_oui(mac_norm) or ""
+            except Exception:
+                pass
+            try:
+                dev_type = classify_device(mac=mac_norm, vendor=vendor_guess, sys_descr=ep.sys_descr or "") or "endpoint"
+            except Exception:
+                dev_type = "endpoint"
+            display_name = (ep.hostname or "").strip() or (
+                f"{vendor_guess} {ep.ip}".strip() if vendor_guess else ep.ip
+            )
+
+            new_doc = {
+                "id": __import__("uuid").uuid4().hex,
+                "client_id": client_id,
+                "name": display_name,
+                "ip": ep.ip,
+                "ip_address": ep.ip,
+                "mac": mac_norm,
+                "device_type": dev_type,
+                "monitor_type": "ping",
+                "snmp_community": "public",
+                "snmp_version": "v2c",
+                "vendor": vendor_guess,
+                "hostname": (ep.hostname or "").strip(),
+                "sys_descr": ep.sys_descr or "",
+                "source": "connector-scanner",
+                "auto_added": True,
+                "auto_added_at": now_iso,
+                "discovered_via": ep.discovered_via or "scanner",
+                "source_connector_id": client_data.get("connector_id") or client_id,
+                "discovered_subnet": report.subnet,
+                "vlan_id": report.vlan_id,
+                "status": "unknown",
+                "last_seen_at": now_iso,
+                "created_at": now_iso,
+                "updated_at": now_iso,
+            }
+            try:
+                await db.managed_devices.insert_one(new_doc)
+                auto_added += 1
+                bg_fingerbank.append((mac_norm, ep.ip))
+            except Exception as e:
+                logger.warning(f"[LAN-SCAN] insert managed_devices failed for {ep.ip}: {e}")
+
+        # Schedule Fingerbank enrichment in background (non blocca la response)
+        if bg_fingerbank:
+            try:
+                import asyncio
+                from services import fingerbank_service
+
+                async def _enrich_async(items):
+                    if not await fingerbank_service.is_configured():
+                        return
+                    for mac, ip in items[:50]:  # cap 50 per /lan-scan call
+                        try:
+                            fb = await fingerbank_service.interrogate(mac=mac)
+                            if fb and fb.get("device_name"):
+                                await db.managed_devices.update_one(
+                                    {"client_id": client_id, "ip": ip, "source": "connector-scanner"},
+                                    {"$set": {
+                                        "fingerbank_device_name": fb["device_name"],
+                                        "fingerbank_score": fb.get("score"),
+                                        "fingerbank_at": datetime.now(timezone.utc).isoformat(),
+                                        # Promuovi name e device_type se non c'e' hostname migliore
+                                        "profile_key": fb.get("device_id"),
+                                    }},
+                                )
+                        except Exception:
+                            pass
+
+                asyncio.create_task(_enrich_async(bg_fingerbank))
+            except Exception as e:
+                logger.warning(f"[LAN-SCAN] Fingerbank background scheduling failed: {e}")
+
+        logger.info(f"[LAN-SCAN] auto-added {auto_added} new managed_devices for client={client_data.get('name')}")
+
+    return {"status": "ok", "stored": stored, "total": len(report.endpoints), "auto_added": auto_added}
 
 
 @router.post("/connector/{client_id}/request-refresh")
