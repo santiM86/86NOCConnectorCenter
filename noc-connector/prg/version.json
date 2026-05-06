@@ -1,4 +1,4 @@
 {
-  "version": "3.8.11",
-  "changelog": "v3.8.11 - FIX 'Invia tutti al Center' nella Scansione di rete. Il config del Connector usa 'noc_center_url' (non 'center_url' come usavo erroneamente). Ora il bottone legge correttamente i campi 'noc_center_url' e 'api_key' dal config.json e fa POST a /api/connector/lan-scan. Aggiunto anche fallback a 'center_url' per retrocompatibilita'. Il resto della finestra Scansione di rete continua a funzionare come nel v3.8.10."
+  "version": "3.8.12",
+  "changelog": "v3.8.12 - FIX CRITICO crash-loop Connector Scanner (icona rossa). argus-scanner.ps1 moriva sotto NSSM SYSTEM (sessione headless) prima di entrare nel loop principale per: (a) ErrorActionPreference=Stop globale che amplifica eccezioni cosmetiche, (b) Host.UI.RawUI.WindowTitle non disponibile in background, (c) Write-Host su host non interattivo. Ora: ErrorActionPreference=Continue di default (Stop solo nel wizard utente), WindowTitle in try/catch, nuovo Write-HostSafe headless-aware. In connector.ps1 il branch SCANNER ora wrappa la chiamata a argus-scanner in un retry-loop con backoff esponenziale: anche se lo scanner crasha, il main connector resta vivo, manda heartbeat e ritenta - niente piu' restart NSSM ogni 30s."
 }

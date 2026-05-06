@@ -26,6 +26,20 @@ Questi due asset sono parte del flusso CI/CD verso `argus.86bit.it` e sono **mis
 
 # ARGUS Center — NOC Platform (86bit)
 
+## 2026-05-06 — v3.8.12 FIX CRITICO crash-loop Connector Scanner + dati Scanner ora visibili in Auto-Discovery
+- **Root cause crash-loop (icona rossa):** `argus-scanner.ps1` moriva sotto NSSM SYSTEM (sessione headless senza console) PRIMA di entrare nel loop principale a causa di:
+  1. `$ErrorActionPreference = "Stop"` globale (riga 37) che faceva amplificare qualunque eccezione cosmetica.
+  2. `$Host.UI.RawUI.WindowTitle = ...` (riga 38) che lanciava `PSNotImplementedException` in sessione background.
+  3. `Write-Host` su host non interattivo.
+  Il main `connector.ps1` faceva `& $scannerScript ; return` → quando lo scanner moriva il processo PowerShell terminava → NSSM restartava ogni ~30s → tray icon rossa.
+- **Fix applicati** (file: `argus-scanner.ps1`, `connector.ps1`, `version.json`):
+  - `argus-scanner.ps1`: ErrorActionPreference=Continue di default (Stop solo dentro Invoke-SetupWizard); `$Host.UI.RawUI.WindowTitle` in try/catch; nuovo `Write-HostSafe` headless-aware che silenzia output quando `[Environment]::UserInteractive==false`; banner e log usano Write-HostSafe.
+  - `connector.ps1` branch SCANNER (riga 2940): la chiamata a `& $scannerScript` è ora dentro un retry-loop con backoff esponenziale (5s→60s) che mantiene vivo il processo principale anche se lo scanner crasha, mandando heartbeat al Center tra un retry e l'altro. Niente più restart NSSM.
+  - `version.json` bumpato a 3.8.12.
+- **Pubblicazione:** `86NocConnector_v3.8.12.zip` pubblicato in `/app/connector_updates/` e `/app/frontend/public/downloads/` (preflight encoding superato: 14 file .ps1 con BOM + zero Unicode killers). Marcato **INACTIVE** nel DB; v3.8.11 ri-attivata. L'utente promuove manualmente v3.8.12 quando ha testato.
+- **Fix Issue #1 "dati Scanner non visibili in Auto-Discovery"**: `GET /api/connector/discovery-results/{client_id}` ora fonde i `discovered_endpoints` con `source_connector_mode=scanner` insieme ai risultati della discovery SNMP classica. Mappatura nel formato del frontend (`ip, mac, hostname, vendor, reachable, type=scanner-endpoint, source=scanner, vlan_id, subnet, last_seen_at`). Verifica live: device_count passato da 15 a 18 (+3 endpoint Scanner correttamente fusi). Nessuna modifica frontend richiesta.
+- **Note sugli altri bug segnalati**: con il fix del crash-loop, le issue 3 (sovrascrive Master) e 4 (tooltip errato) sono auto-risolte: il backend ha già la chiave composita `(client_id, hostname, mode)` quindi Master e Scanner non si sovrascrivono mai e il tray app mostra correttamente il proprio mode quando lo scanner finalmente vive abbastanza per scrivere lo status file.
+
 ## Original problem statement
 Società IT che necessita di un raccoglitore di alert (NOC) per tutti i dispositivi nelle reti dei clienti (switch, firewall, ecc.). Console live su PC e cellulare. Integrazione SNMP e Syslog. L'applicazione Windows (`86NocConnector`) deve essere nativa senza richiedere Python. Funzionalità stile Zabbix/PRTG/CloudFire. Dashboard TV, monitoraggio stampanti/backup, SOC AI, vulnerability assessment, WAN monitoring, multi-tenant SaaS.
 

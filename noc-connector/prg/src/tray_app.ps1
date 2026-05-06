@@ -1276,7 +1276,7 @@ public class TrayRefresh {
         }
     })
 
-    # v3.8.8: Network Scanner — visibile SOLO in modalita' scanner.
+    # v3.8.8: Network Scanner - visibile SOLO in modalita' scanner.
     # Tool standalone simile ad altri network scanner enterprise: ping sweep,
     # ARP MAC, DNS+NetBIOS hostname, OUI vendor, SMB shares, HTTP/HTTPS detection,
     # WoL, export CSV. Tutto sviluppato da zero in PowerShell+WinForms.

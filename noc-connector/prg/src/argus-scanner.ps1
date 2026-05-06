@@ -1,5 +1,5 @@
-# =============================================================================
-# 86NocConnector — ARGUS LAN Scanner v3.8.6
+﻿# =============================================================================
+# 86NocConnector - ARGUS LAN Scanner v3.8.6
 # =============================================================================
 # Modalita': SCANNER (discovery LAN passivo via ARP/mDNS/SNMP locale).
 # Si "aggancia" al cliente nel Center via API key.
@@ -32,10 +32,38 @@ param(
     [string]$LogPath = "$env:ProgramData\86NocConnector\scanner.log"
 )
 
-# v3.8.1: nel loop usiamo Continue per non far morire lo script su un errore singolo.
-# Lo lasciamo Stop solo durante setup/wizard (errori critici devono interrompere).
-$ErrorActionPreference = "Stop"
-$Host.UI.RawUI.WindowTitle = "ARGUS LAN Scanner v3.8.6"
+# v3.8.12 FIX: in cima al modulo NON forziamo Stop, altrimenti qualunque eccezione
+# (anche cosmetica) uccide lo script PRIMA di entrare nel main loop. Questo era
+# il root cause del crash-loop infinito quando lo Scanner gira sotto NSSM come
+# NT AUTHORITY\SYSTEM (sessione background, nessuna console).
+# Lo Stop lo ri-abilitiamo solo dentro Invoke-SetupWizard (errori utente critici).
+$ErrorActionPreference = "Continue"
+
+# v3.8.12 FIX: WindowTitle setting in try/catch - sotto NSSM SYSTEM
+# $Host.UI.RawUI puo' lanciare PSNotImplementedException se non c'e' console UI.
+try { $Host.UI.RawUI.WindowTitle = "ARGUS LAN Scanner v3.8.12" } catch {}
+
+# v3.8.12: rileva se siamo in modalita' headless (no console interattiva).
+# In headless silenziamo tutti i Write-Host, scriviamo solo su file di log.
+$script:IsHeadless = $false
+try {
+    $script:IsHeadless = -not [Environment]::UserInteractive
+} catch {
+    $script:IsHeadless = $true  # in dubbio, considera headless
+}
+
+# Wrapper safe per Write-Host: in headless non chiama mai l'host UI.
+function Write-HostSafe {
+    param([string]$Text, [string]$ForegroundColor)
+    if ($script:IsHeadless) { return }
+    try {
+        if ($ForegroundColor) {
+            Write-Host $Text -ForegroundColor $ForegroundColor
+        } else {
+            Write-Host $Text
+        }
+    } catch {}
+}
 
 # ---------- LOGGING ----------
 function Write-Log([string]$Level, [string]$Message) {
@@ -53,17 +81,17 @@ function Write-Log([string]$Level, [string]$Message) {
         "INFO" { "Cyan" }
         default { "Gray" }
     }
-    Write-Host $line -ForegroundColor $color
+    Write-HostSafe -Text $line -ForegroundColor $color
 }
 
 # ---------- BANNER ----------
 function Show-Banner {
-    Write-Host ""
-    Write-Host "  ============================================================" -ForegroundColor Cyan
-    Write-Host "    ARGUS  ::  86NocConnector  Scanner Mode  v3.8.1" -ForegroundColor Cyan
-    Write-Host "    Discovery LAN cross-VLAN per il Center NOC" -ForegroundColor DarkCyan
-    Write-Host "  ============================================================" -ForegroundColor Cyan
-    Write-Host ""
+    Write-HostSafe ""
+    Write-HostSafe "  ============================================================" "Cyan"
+    Write-HostSafe "    ARGUS  ::  86NocConnector  Scanner Mode  v3.8.12" "Cyan"
+    Write-HostSafe "    Discovery LAN cross-VLAN per il Center NOC" "DarkCyan"
+    Write-HostSafe "  ============================================================" "Cyan"
+    Write-HostSafe ""
 }
 
 # ---------- CRIPTAZIONE LOCALE (DPAPI Windows) ----------
@@ -85,6 +113,8 @@ function Unprotect-String([string]$Cipher) {
 
 # ---------- WIZARD SETUP ----------
 function Invoke-SetupWizard {
+    # v3.8.12: errori critici nel wizard utente devono interrompere subito.
+    $ErrorActionPreference = "Stop"
     Show-Banner
     Write-Host "  CONFIGURAZIONE INIZIALE" -ForegroundColor Yellow
     Write-Host "  Inserisci i dati che ti ha fornito il NOC Center."
@@ -423,7 +453,7 @@ function Invoke-MdnsDiscovery {
 function Invoke-LanScanOnce([object]$Config, [switch]$DryRun) {
     Write-Log "INFO" "Avvio scan LAN (subnet=$($Config.subnet))"
 
-    # v3.8.6: Step 0 — Masscan fast discovery (se disponibile)
+    # v3.8.6: Step 0 - Masscan fast discovery (se disponibile)
     # Popola la cache ARP del kernel rapidamente toccando tutti gli host vivi,
     # cosi' il successivo Get-NetNeighbor restituisce subito MAC + IP.
     $masscanIps = @()
@@ -433,7 +463,7 @@ function Invoke-LanScanOnce([object]$Config, [switch]$DryRun) {
         Write-Log "INFO" "Masscan ha rilevato $($masscanIps.Count) host. Lascio popolare ARP..."
         Start-Sleep -Seconds 1
     } else {
-        Write-Log "INFO" "Masscan non installato — uso solo ping nativo PS"
+        Write-Log "INFO" "Masscan non installato - uso solo ping nativo PS"
     }
 
     $arp = Invoke-ArpScan -Subnet $Config.subnet
@@ -460,7 +490,7 @@ function Invoke-LanScanOnce([object]$Config, [switch]$DryRun) {
         $known = $false
         foreach ($e in $merged.Values) { if ($e.ip -eq $ip) { $known = $true; break } }
         if (-not $known) {
-            # Host vivo senza MAC ARP visibile — caso raro (es. host fuori subnet locale via gateway)
+            # Host vivo senza MAC ARP visibile - caso raro (es. host fuori subnet locale via gateway)
             $merged["masscan_only_$ip"] = [PSCustomObject]@{
                 ip = $ip
                 mac = ""
@@ -506,14 +536,14 @@ function Start-ScannerLoop($Config) {
     Show-Banner
     Write-Log "INFO" "Avvio loop scanner (mode=$($Config.mode), subnet=$($Config.subnet), vlan=$($Config.vlan_id))"
     if (Test-MasscanAvailable) {
-        Write-Log "OK" "Masscan rilevato in $script:MasscanBin — fast discovery ATTIVO"
+        Write-Log "OK" "Masscan rilevato in $script:MasscanBin - fast discovery ATTIVO"
     } else {
         Write-Log "INFO" "Masscan non installato. Lancia 'argus-scanner.ps1 -InstallMasscan' come Admin per scan ultra-rapido."
     }
-    Write-Host "  Heartbeat ogni $($Config.heartbeat_interval_seconds)s, Scan ogni $($Config.scan_interval_seconds)s"
-    Write-Host "  Log: $LogPath"
-    Write-Host "  Premi CTRL+C per uscire."
-    Write-Host ""
+    Write-HostSafe "  Heartbeat ogni $($Config.heartbeat_interval_seconds)s, Scan ogni $($Config.scan_interval_seconds)s"
+    Write-HostSafe "  Log: $LogPath"
+    Write-HostSafe "  Premi CTRL+C per uscire."
+    Write-HostSafe ""
 
     # v3.8.1: nel loop non vogliamo mai terminare lo script per un errore.
     $ErrorActionPreference = "Continue"
@@ -566,7 +596,7 @@ if (-not $config -and $env:ARGUS_SCANNER_CENTER -and $env:ARGUS_SCANNER_APIKEY) 
         hostname = $env:COMPUTERNAME
         scan_interval_seconds = 300
         heartbeat_interval_seconds = 60
-        version = "3.8.1"
+        version = "3.8.12"
     }
     Write-Log "INFO" "Scanner avviato dal connector master (env config)"
 }

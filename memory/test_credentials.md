@@ -1,17 +1,20 @@
-# Test Credentials - ARGUS Center
+# Test Credentials — ARGUS Center
 
-## Admin (unico)
+## Admin
 - Email: `info@86bit.it`
 - Password: `Ariel17051986@!@86`
-- Role: admin
-- (Aggiornato 2026-02-13 — sostituisce admin@86bit.it/password che è stato rimosso)
+- Role: `admin`
 
-## TV Monitor
-- Email: `tv@86bit.it`
-- Password: `Tv86bit!2026`
-- Role: viewer
+## Backup admin (storico)
+- Email: `admin@86bit.it`
+- Password: `password`
+- Role: `admin`
 
-## TV Dashboard Test
-- Email: `tvdash@86bit.it`
-- Password: `Tv86bit!2026`
-- Role: viewer
+## Endpoint da testare con questi credenziali
+- Login: `POST /api/auth/login`
+- Auto-Discovery aggregata: `GET /api/connector/discovery-results/{client_id}` (ritorna `device_count`, `scanner_endpoints_count`, `scanner_last_seen_at`)
+- Lista connectors: `GET /api/connector/list`
+
+## URL di riferimento
+- Preview env: `https://alert-hub-dev-1.preview.emergentagent.com`
+- Produzione cliente: `https://argus.86bit.it`
