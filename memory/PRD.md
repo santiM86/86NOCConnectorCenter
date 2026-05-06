@@ -26,6 +26,49 @@ Questi due asset sono parte del flusso CI/CD verso `argus.86bit.it` e sono **mis
 
 # ARGUS Center — NOC Platform (86bit)
 
+## 2026-05-06 SERA — INCIDENT RECOVERY + ANTI-VALANGA SCANNER + LISTENER ZOMBIE FIX (v3.8.21)
+**Incidente in produzione (16:00 ITA)**: backend `argus.86bit.it` rispondeva 429/502/timeout a cascata. UI vuota.
+
+**Root cause**: `GlobalRateLimitMiddleware` (600 req/min per IP) re-introdotto contro la richiesta utente del 10/02. Dietro proxy Emergent ingress raggruppava tutte le richieste sotto l'IP del proxy → saturazione globale.
+
+**Fix v3.8.21 applicati nel preview env (da pushare in produzione)**:
+
+### 1. Rimozione rate limiter globale
+- `/app/backend/server.py` riga 373: `GlobalRateLimitMiddleware` commentato con motivazione esplicita.
+- Sicurezza preservata: JWT, HMAC+API key connector, CORS strict, SecurityHeaders, BodySizeLimit, OriginVerify tutti attivi.
+
+### 2. Fix anti-valanga Scanner auto-add (`/api/connector/lan-scan`)
+3 protezioni configurabili via env:
+- **Skip MAC LAA senza hostname**: i privacy MAC di iPhone/Android (bit 0x02 settato) NON vengono auto-aggiunti come `managed_devices` se non hanno hostname valido. Restano solo come `discovered_endpoints` (vista network).
+- **Cap per chiamata** `LAN_SCAN_MAX_AUTO_ADD_PER_CALL=10` (default).
+- **Throttle 24h per cliente** `LAN_SCAN_MAX_AUTO_ADD_PER_DAY=50` (default).
+- Response arricchita con counter skipped + limiti correnti per debugging.
+
+### 3. Endpoint admin cleanup retroattivo
+- `POST /api/admin/cleanup-scanner-rogue-devices`
+- Body: `{ since_iso?, client_id?, confirm: false|true }`
+- `confirm=false` (default) ⇒ **dry-run** restituisce count (sicuro).
+- `confirm=true` ⇒ delete `managed_devices` (source=connector-scanner) + `discovered_endpoints` (mode=scanner) + `alerts` (category=discovery).
+- Idempotente, audit-logged, admin-only (403 senza ruolo admin/security_admin).
+
+### 4. Fix heartbeat auto-clear (gia' incluso da fix mattina)
+- `force-update` salva `target_version`; `heartbeat` resetta lo stato quando `connector_version >= target_version`.
+
+### 5. UI: etichette pill su lista Clienti
+- `/app/frontend/src/pages/ClientsPage.js` riga 285: `StatusPill` ora renderizza il `label` (DISP./WAN/CONN./ALERT) sotto l'icona — riempie l'area vuota sopra le pill nella vista Clienti.
+
+### 6. Fix Connector PowerShell — listener UDP zombie (v3.8.21)
+- `/app/noc-connector/prg/src/connector.ps1`: nuova funzione `Free-UdpPort($port)` che identifica e killa i processi PowerShell orfani (di precedenti restart del connector) che tengono ancora le porte 162/514. Chiamata prima di `New-Object UdpClient`.
+- Try/finally garantisce `$udpClient.Close()` anche in caso di crash, evita socket in CLOSE_WAIT/TIME_WAIT prolungato.
+- Risolve il restart-loop infinito "ERRORE porta SNMP 162: socket gia' in uso" che riempiva i log ogni 60s.
+- `version.json` bumpato a v3.8.21.
+
+**Test pytest**: 12/12 passati
+- `/app/backend/tests/test_lan_scan_anti_valanga.py` (8/8): MAC LAA detection, skip privacy anonimi, keep LAA con hostname, cap, throttle, scenario realistico Galvani 80 endpoints → 10 added.
+- `/app/backend/tests/test_heartbeat_auto_clear.py` (4/4): target reached/below/exceeds, is_newer_version base.
+
+**Backend smoke test**: `/api/` 200 OK, `/api/admin/cleanup-scanner-rogue-devices` 403 senza JWT (corretto), 200 con admin token in dry-run.
+
 ## 2026-05-06 — FIX P0 loop fasullo "Aggiornamento in corso" (Connector heartbeat)
 - **Root cause**: `force-update` impostava `force_update=True` e `update_status="queued"` su `connector_status`, ma NON salvava `target_version`. L'heartbeat dell'endpoint provava a clear lo stato confrontando `update_info.version` (versione attualmente attiva nel DB) con `heartbeat.connector_version` — se nel mentre veniva pubblicata una versione piu' recente come `active`, il confronto restituiva sempre "manca update", lo status non veniva mai resettato e `force_update` ri-triggerava all'infinito anche se il connector era gia' alla versione richiesta.
 - **Fix** in `/app/backend/routes/connector.py`:

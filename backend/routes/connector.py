@@ -6,6 +6,7 @@ from fastapi.responses import FileResponse, Response
 import uuid
 import shutil
 import logging
+import os
 import re
 from pathlib import Path
 from typing import Optional
@@ -452,8 +453,27 @@ async def connector_lan_scan(request: Request, report: LanScanReport):
     # - Fingerbank interrogato in background per arricchimento profilo
     # Se il device esiste gia' (stesso client_id+ip) NON sovrascrive nulla:
     # rispetta sia i manuali che i master che gli scanner-aggiunti precedenti.
+    #
+    # v3.8.21 FIX ANTI-VALANGA (causa incidente produzione 06/05/2026):
+    # 1. SKIP MAC LAA senza hostname:    i MAC randomizzati privacy (iPhone iOS,
+    #    Android moderni) cambiano periodicamente — auto-aggiungerli crea noise
+    #    e duplicati in 24-48h. Restano solo in discovered_endpoints (vista
+    #    network). Se invece l'hostname e' valido (es. "iPhone-Mario") li
+    #    aggiungiamo (utile per BYOD censiti).
+    # 2. CAP per /lan-scan call:         max LAN_SCAN_MAX_AUTO_ADD_PER_CALL device
+    #    aggiunti per singola chiamata (prima scansione di rete grande).
+    # 3. THROTTLE per cliente / 24h:     max LAN_SCAN_MAX_AUTO_ADD_PER_DAY device
+    #    aggiunti totali in 24h per cliente. Oltre soglia il connector continua a
+    #    riportare endpoint in discovered_endpoints, ma non promuove a managed.
     # ====================================================================
+    LAN_SCAN_MAX_AUTO_ADD_PER_CALL = int(os.environ.get("LAN_SCAN_MAX_AUTO_ADD_PER_CALL", "10"))
+    LAN_SCAN_MAX_AUTO_ADD_PER_DAY = int(os.environ.get("LAN_SCAN_MAX_AUTO_ADD_PER_DAY", "50"))
+
     auto_added = 0
+    auto_skipped_laa = 0
+    auto_skipped_cap = 0
+    auto_skipped_throttle = 0
+
     if report.endpoints:
         try:
             from routes.oui_lookup import lookup_oui, classify_device
@@ -473,6 +493,17 @@ async def connector_lan_scan(request: Request, report: LanScanReport):
             except Exception:
                 return False
 
+        # v3.8.21: count auto-added by this client in last 24h (throttle base)
+        try:
+            since_24h_iso = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+            already_added_24h = await db.managed_devices.count_documents({
+                "client_id": client_id,
+                "source": "connector-scanner",
+                "auto_added_at": {"$gte": since_24h_iso},
+            })
+        except Exception:
+            already_added_24h = 0
+
         bg_fingerbank: list = []  # MAC da arricchire in background
 
         for ep in report.endpoints:
@@ -480,6 +511,21 @@ async def connector_lan_scan(request: Request, report: LanScanReport):
             if not mac_norm or len(mac_norm.replace(":", "")) != 12:
                 continue
             if not ep.ip:
+                continue
+            # v3.8.21 ANTI-VALANGA: 3 livelli di protezione
+            mac_is_laa_check = _is_laa_mac(mac_norm)
+            ep_hostname_clean = (ep.hostname or "").strip()
+            # 1. Skip MAC LAA senza hostname (device personale anonimo)
+            if mac_is_laa_check and not ep_hostname_clean:
+                auto_skipped_laa += 1
+                continue
+            # 2. Cap massimo per /lan-scan call
+            if auto_added >= LAN_SCAN_MAX_AUTO_ADD_PER_CALL:
+                auto_skipped_cap += 1
+                continue
+            # 3. Throttle per cliente / 24h
+            if (already_added_24h + auto_added) >= LAN_SCAN_MAX_AUTO_ADD_PER_DAY:
+                auto_skipped_throttle += 1
                 continue
             # Skip se esiste gia' un device con stesso client_id+ip
             existing = await db.managed_devices.find_one(
@@ -619,9 +665,29 @@ async def connector_lan_scan(request: Request, report: LanScanReport):
             except Exception as e:
                 logger.warning(f"[LAN-SCAN] Fingerbank background scheduling failed: {e}")
 
-        logger.info(f"[LAN-SCAN] auto-added {auto_added} new managed_devices for client={client_data.get('name')}")
+        logger.info(
+            f"[LAN-SCAN] client={client_data.get('name')} subnet={report.subnet} "
+            f"endpoints={len(report.endpoints)} stored={stored} auto_added={auto_added} "
+            f"skipped[laa={auto_skipped_laa},cap={auto_skipped_cap},throttle={auto_skipped_throttle}] "
+            f"already_24h={already_added_24h}"
+        )
 
-    return {"status": "ok", "stored": stored, "total": len(report.endpoints), "auto_added": auto_added}
+    return {
+        "status": "ok",
+        "stored": stored,
+        "total": len(report.endpoints),
+        "auto_added": auto_added,
+        "skipped": {
+            "laa_without_hostname": auto_skipped_laa,
+            "cap_per_call": auto_skipped_cap,
+            "throttle_per_day": auto_skipped_throttle,
+        },
+        "limits": {
+            "max_per_call": LAN_SCAN_MAX_AUTO_ADD_PER_CALL,
+            "max_per_day": LAN_SCAN_MAX_AUTO_ADD_PER_DAY,
+            "already_added_24h": already_added_24h,
+        },
+    }
 
 
 @router.post("/connector/{client_id}/request-refresh")
@@ -3920,3 +3986,101 @@ async def import_bmc_candidate(
     except Exception:
         pass
     return {"status": "imported", "device_id": device_id, "name": device_name}
+
+
+# ============================================================================
+# v3.8.21 — ADMIN CLEANUP ENDPOINT
+# Permette di rimuovere in massa i dispositivi/endpoint/alert auto-aggiunti
+# dallo Scanner in una finestra temporale. Idempotente: si puo' eseguire piu'
+# volte senza danni. Default dry-run: deve essere chiamato con `confirm=True`
+# per cancellare davvero. Solo admin.
+# ============================================================================
+@router.post("/admin/cleanup-scanner-rogue-devices")
+async def cleanup_scanner_rogue_devices(
+    payload: dict,
+    current_user: dict = Depends(get_current_user),
+):
+    """Cleanup retroattivo dei device/endpoint/alert auto-aggiunti dallo Scanner.
+
+    Body JSON:
+      - since_iso (str, default: 24h fa): ISO timestamp; cancella documenti con
+        auto_added_at/last_seen_at/created_at >= since_iso
+      - client_id (str, optional): se presente limita al singolo cliente
+      - confirm (bool, default false): se False fa solo dry-run (count); se True cancella
+
+    Risposta: count per ogni collezione + dry_run flag.
+    """
+    if current_user.get("role") not in ["admin", "security_admin"]:
+        raise HTTPException(status_code=403, detail="Admin role required")
+    since_iso = payload.get("since_iso") or (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+    client_id = payload.get("client_id")
+    confirm = bool(payload.get("confirm", False))
+
+    base_filter_md = {"source": "connector-scanner"}
+    base_filter_de = {"source_connector_mode": "scanner"}
+    base_filter_al = {"category": "discovery"}
+    if client_id:
+        base_filter_md["client_id"] = client_id
+        base_filter_de["client_id"] = client_id
+        base_filter_al["client_id"] = client_id
+
+    md_filter = {**base_filter_md, "$or": [
+        {"auto_added_at": {"$gte": since_iso}},
+        {"created_at": {"$gte": since_iso}},
+    ]}
+    de_filter = {**base_filter_de, "last_seen_at": {"$gte": since_iso}}
+    al_filter = {**base_filter_al, "created_at": {"$gte": since_iso}}
+
+    md_count = await db.managed_devices.count_documents(md_filter)
+    de_count = await db.discovered_endpoints.count_documents(de_filter)
+    al_count = await db.alerts.count_documents(al_filter)
+
+    if not confirm:
+        return {
+            "dry_run": True,
+            "since_iso": since_iso,
+            "client_id": client_id,
+            "would_delete": {
+                "managed_devices": md_count,
+                "discovered_endpoints": de_count,
+                "alerts": al_count,
+                "total": md_count + de_count + al_count,
+            },
+            "hint": "Re-invia con confirm=true per cancellare davvero.",
+        }
+
+    md_res = await db.managed_devices.delete_many(md_filter)
+    de_res = await db.discovered_endpoints.delete_many(de_filter)
+    al_res = await db.alerts.delete_many(al_filter)
+
+    try:
+        await audit_logger.log(
+            AuditAction.DELETE_DEVICE,
+            user_id=current_user["id"], user_email=current_user["email"],
+            resource_type="scanner_rogue_cleanup", resource_id="bulk",
+            details={
+                "since_iso": since_iso, "client_id": client_id,
+                "deleted_managed_devices": md_res.deleted_count,
+                "deleted_discovered_endpoints": de_res.deleted_count,
+                "deleted_alerts": al_res.deleted_count,
+            },
+        )
+    except Exception:
+        pass
+
+    logger.warning(
+        f"[CLEANUP-SCANNER-ROGUE] admin={current_user.get('email')} since={since_iso} "
+        f"client_id={client_id or 'ALL'} "
+        f"md={md_res.deleted_count} de={de_res.deleted_count} al={al_res.deleted_count}"
+    )
+    return {
+        "dry_run": False,
+        "since_iso": since_iso,
+        "client_id": client_id,
+        "deleted": {
+            "managed_devices": md_res.deleted_count,
+            "discovered_endpoints": de_res.deleted_count,
+            "alerts": al_res.deleted_count,
+            "total": md_res.deleted_count + de_res.deleted_count + al_res.deleted_count,
+        },
+    }

@@ -1734,21 +1734,62 @@ function Start-PollingLoop($config) {
 
 # ==================== LISTENERS ====================
 
+function Free-UdpPort($port) {
+    # v3.8.21: ANTI-ZOMBIE LISTENER. Prima di tentare il bind sulla porta UDP
+    # killa eventuali processi PowerShell orfani (di precedenti restart del
+    # connector) che tengono ancora la porta. Senza questo, dopo un crash il
+    # connector entra in restart-loop infinito ("ERRORE porta SNMP 162: socket
+    # gia' in uso") perche' un processo powershell.exe figlio resta vivo.
+    try {
+        $endpoints = Get-NetUDPEndpoint -LocalPort $port -ErrorAction SilentlyContinue
+        if (-not $endpoints) { return $true }
+        foreach ($ep in $endpoints) {
+            $owningPid = $ep.OwningProcess
+            if ($owningPid -eq $PID) { continue }  # mai uccidersi
+            try {
+                $proc = Get-Process -Id $owningPid -ErrorAction SilentlyContinue
+                if ($proc -and ($proc.ProcessName -eq "powershell" -or $proc.ProcessName -eq "pwsh")) {
+                    Write-Log "Killo processo zombie PID=$owningPid che tiene UDP/$port" "WARN"
+                    Stop-Process -Id $owningPid -Force -ErrorAction SilentlyContinue
+                    Start-Sleep -Milliseconds 500
+                } else {
+                    $name = if ($proc) { $proc.ProcessName } else { "?" }
+                    Write-Log "Porta UDP/$port tenuta da processo NON-PowerShell: $name (PID=$owningPid). NON la killo per sicurezza." "WARN"
+                    return $false
+                }
+            } catch {
+                Write-Log "Free-UdpPort($port): errore kill PID=$owningPid : $($_.Exception.Message)" "WARN"
+            }
+        }
+        # Verifica finale
+        Start-Sleep -Milliseconds 300
+        $check = Get-NetUDPEndpoint -LocalPort $port -ErrorAction SilentlyContinue
+        return ($null -eq $check)
+    } catch {
+        Write-Log "Free-UdpPort($port) eccezione: $($_.Exception.Message)" "WARN"
+        return $true  # best-effort
+    }
+}
+
 function Start-SNMPListener($config) {
     $port = $config.snmp_trap_port
     Write-Log "Avvio SNMP Trap listener su UDP/$port..."
-    
+
+    # v3.8.21: pulisci porta da eventuali zombie prima di tentare il bind
+    [void](Free-UdpPort $port)
+
+    $udpClient = $null
     try {
         $udpClient = New-Object System.Net.Sockets.UdpClient($port)
         $udpClient.Client.ReceiveTimeout = 2000
         Write-Log "SNMP listener attivo su porta UDP $port"
-        
+
         while ($global:Running) {
             try {
                 $remoteEP = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Any, 0)
                 $data = $udpClient.Receive([ref]$remoteEP)
                 $global:Stats.snmp_received++
-                
+
                 $trap = Parse-SNMPTrap $data $remoteEP.Address.ToString()
                 Write-Log "[SNMP] $($trap.trap_type) da $($trap.device_ip)"
                 Send-SNMPToNOC $config $trap
@@ -1762,27 +1803,33 @@ function Start-SNMPListener($config) {
                 }
             }
         }
-        $udpClient.Close()
     } catch {
-        Write-Log "ERRORE porta SNMP $port : $($_.Exception.Message). Serve Amministratore." "ERROR"
+        Write-Log "ERRORE porta SNMP $port : $($_.Exception.Message). Serve Amministratore o porta gia' in uso da SNMPTRAP service." "ERROR"
+    } finally {
+        # v3.8.21: garantisci la chiusura del socket anche in caso di crash
+        if ($udpClient) { try { $udpClient.Close() } catch {} }
     }
 }
 
 function Start-SyslogListener($config) {
     $port = $config.syslog_port
     Write-Log "Avvio Syslog listener su UDP/$port..."
-    
+
+    # v3.8.21: pulisci porta da eventuali zombie prima di tentare il bind
+    [void](Free-UdpPort $port)
+
+    $udpClient = $null
     try {
         $udpClient = New-Object System.Net.Sockets.UdpClient($port)
         $udpClient.Client.ReceiveTimeout = 2000
         Write-Log "Syslog listener attivo su porta UDP $port"
-        
+
         while ($global:Running) {
             try {
                 $remoteEP = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Any, 0)
                 $data = $udpClient.Receive([ref]$remoteEP)
                 $global:Stats.syslog_received++
-                
+
                 $rawMsg = [System.Text.Encoding]::UTF8.GetString($data)
                 $syslog = Parse-Syslog $rawMsg $remoteEP.Address.ToString()
                 Write-Log "[Syslog] [$($syslog.severity_name)] $($syslog.device_ip): $($syslog.message.Substring(0, [Math]::Min(60, $syslog.message.Length)))"
@@ -1797,9 +1844,11 @@ function Start-SyslogListener($config) {
                 }
             }
         }
-        $udpClient.Close()
     } catch {
-        Write-Log "ERRORE porta Syslog $port : $($_.Exception.Message). Serve Amministratore." "ERROR"
+        Write-Log "ERRORE porta Syslog $port : $($_.Exception.Message). Serve Amministratore o porta gia' in uso." "ERROR"
+    } finally {
+        # v3.8.21: garantisci la chiusura del socket anche in caso di crash
+        if ($udpClient) { try { $udpClient.Close() } catch {} }
     }
 }
 
