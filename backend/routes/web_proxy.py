@@ -30,7 +30,7 @@ audit = logging.getLogger("audit")
 MAX_BODY_BYTES = 10 * 1024 * 1024       # 10 MB body hard limit
 MAX_PATH_LEN = 4096
 CLEANUP_MINUTES = 10                     # cleanup requests più vecchi di 10 min
-LONG_POLL_MAX_SEC = 25
+LONG_POLL_MAX_SEC = 60  # v3.8.22: aumentato da 25 a 60 per ridurre traffico HTTP
 VALID_METHODS = {"GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH"}
 
 # ================= Event bus (in-memory, O(clienti) memory) =================
