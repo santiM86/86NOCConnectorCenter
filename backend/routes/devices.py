@@ -118,6 +118,19 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
             profile_key = md.get("profile_key") or pd.get("profile_key")
             vendor = md.get("vendor") or pd.get("vendor")
             family = md.get("family") or pd.get("family")
+            # v3.8.22: SCANNER OVERRIDE — se il device e' scoperto dallo Scanner
+            # (source=connector-scanner) e visto recentemente (<5min), il Master
+            # NON puo' decidere il suo status: la sua connettivita' L2 non
+            # raggiunge la VLAN remota, quindi pd.reachable=false e' un falso
+            # negativo. Diamo precedenza alla telemetria dello Scanner che lo vede.
+            md_status = "online" if pd.get("reachable") else "offline"
+            try:
+                if md.get("source") == "connector-scanner" and md.get("last_seen_at"):
+                    last_seen_dt = datetime.fromisoformat(md["last_seen_at"].replace("Z", "+00:00"))
+                    if (datetime.now(timezone.utc) - last_seen_dt).total_seconds() < 300:
+                        md_status = "online"
+            except Exception:
+                pass
             devices.append({
                 "id": f"poll_{ip.replace('.','_')}",
                 "client_id": pd.get("client_id", ""),
@@ -126,7 +139,7 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
                 "ip_address": ip,
                 "hostname": pd.get("sys_name", ""),
                 "location": pd.get("sys_location", ""),
-                "status": "online" if pd.get("reachable") else "offline",
+                "status": md_status,
                 "redfish_enabled": False,
                 # v3.8.18: source = chi ha SCOPERTO il device, non chi lo polla.
                 # Se il device esiste in managed_devices con source=connector-scanner,
