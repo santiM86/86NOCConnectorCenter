@@ -1,4 +1,4 @@
 {
-  "version": "3.8.13",
-  "changelog": "v3.8.13 - FIX DEFINITIVO crash-loop Scanner. La v3.8.12 wrappava `& $scannerScript` in retry-loop ma argus-scanner faceva crashare l'intero processo PowerShell padre (CLR/runspace). Ora il main connector dot-sourcia argus-scanner con -AsLibrary per caricare SOLO le funzioni e gestisce il loop heartbeat+scan INLINE nello stesso processo del main, dentro il try/catch globale di Run-Connector. Qualunque eccezione finisce nel catch + finally esistente (riga 3084) e NON puo' piu' crashare il processo. Aggiunto anche send-heartbeat dal main connector cosi' Center vede online lo Scanner SUBITO, indipendentemente da Test-Hookup di argus-scanner."
+  "version": "3.8.14",
+  "changelog": "v3.8.14 - Aggiunto pulsante 'Salva' nella finestra Scansione di rete del Connector Scanner + autosave dopo scansione completata e dopo 'Invia al Center'. Persistenza in C:\\ProgramData\\86NocConnector\\last-scan.json. All'apertura della finestra l'ultimo elenco scansionato viene ricaricato automaticamente, cosi' chiudendo e riaprendo la GUI i dati restano visibili. Lista host conservata tra restart del servizio."
 }
