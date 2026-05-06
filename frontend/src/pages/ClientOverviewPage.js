@@ -1170,6 +1170,42 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
     }
   };
 
+  // v3.8.15: ri-esegue OUI + Fingerbank + reverse-DNS sui device auto-censiti
+  // dallo Scanner che hanno ancora vendor o nome generici.
+  const recognizeUnknowns = async () => {
+    try {
+      const { data } = await axios.post(`${API}/clients/${clientId}/devices/recognize-unknowns`);
+      const { total_scanned = 0, oui_matched = 0, fingerbank_matched = 0, rdns_matched = 0, no_mac = 0, fingerbank_configured = false } = data || {};
+      if (total_scanned === 0) {
+        toast.info("Nessun device sconosciuto da rivedere", {
+          description: "Tutti i device Scanner hanno gia' vendor e nome valorizzati.",
+        });
+        return;
+      }
+      const enriched = oui_matched + fingerbank_matched + rdns_matched;
+      const lines = [];
+      if (oui_matched) lines.push(`• ${oui_matched} vendor OUI`);
+      if (fingerbank_matched) lines.push(`• ${fingerbank_matched} profili Fingerbank`);
+      if (rdns_matched) lines.push(`• ${rdns_matched} hostname reverse-DNS`);
+      if (no_mac) lines.push(`• ${no_mac} senza MAC (impossibili da arricchire)`);
+      if (!fingerbank_configured) lines.push(`• Fingerbank non configurato — chiedi all'admin di settare la API key in Amministrazione → Integrazioni`);
+      if (enriched > 0) {
+        toast.success(`Riconosciuti ${enriched}/${total_scanned} device`, {
+          description: lines.join("\n"),
+          duration: 8000,
+        });
+        onRefresh?.();
+      } else {
+        toast.warning(`Nessun arricchimento possibile su ${total_scanned} device`, {
+          description: lines.join("\n") || "Verifica MAC/Fingerbank.",
+          duration: 8000,
+        });
+      }
+    } catch (e) {
+      toast.error(`Errore: ${e.response?.data?.detail || e.message}`);
+    }
+  };
+
   const handleDelete = async (dev) => {
     if (!window.confirm(`Rimuovere "${dev.name}" (${dev.ip_address}) dal monitoraggio?`)) return;
     try {
@@ -1202,6 +1238,14 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
             title="Ri-esegue il fingerprint vendor (Synology, Xanto, HPE Comware, ecc.) su tutti i device del cliente. Utile dopo che lo SNMP ha iniziato a funzionare — i profili manuali non vengono sovrascritti."
           >
             <MagnifyingGlass size={13} /> Riconosci profili
+          </Button>
+          <Button
+            onClick={() => recognizeUnknowns()}
+            className="bg-sky-600/90 hover:bg-sky-600 text-white h-8 text-xs gap-1"
+            data-testid="recognize-unknowns-btn"
+            title="Per i device auto-censiti dallo Scanner che hanno ancora vendor/nome generici: ri-esegue OUI lookup, Fingerbank API e reverse-DNS per scoprire vendor, modello e hostname."
+          >
+            <MagnifyingGlass size={13} /> Riconosci sconosciuti
           </Button>
           <Button
             onClick={() => cleanupStaleDevices()}

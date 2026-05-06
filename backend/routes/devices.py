@@ -601,6 +601,130 @@ async def rematch_profile_single(
     return res
 
 
+@router.post("/clients/{client_id}/devices/recognize-unknowns")
+async def recognize_unknown_devices(
+    client_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Ri-esegue il riconoscimento (OUI + Fingerbank + reverse-DNS) sui device
+    auto-censiti dallo Scanner che hanno ancora vendor/nome generici (es. "192.168.x.y"
+    senza vendor). Utile dopo che Fingerbank è stato configurato a posteriori, o per
+    device il cui MAC è arrivato in un secondo momento.
+    """
+    import socket
+    from datetime import datetime, timezone
+    from routes.oui_lookup import lookup_oui, classify_device
+    from services import fingerbank_service
+
+    fb_configured = await fingerbank_service.is_configured()
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    # Pesca i device da rivedere: source=connector-scanner E (no vendor OR name=ip OR no fingerbank_at)
+    candidates = await db.managed_devices.find(
+        {
+            "client_id": client_id,
+            "source": "connector-scanner",
+        },
+        {"_id": 0, "id": 1, "ip": 1, "mac": 1, "vendor": 1, "name": 1,
+         "hostname": 1, "fingerbank_at": 1, "device_type": 1, "sys_descr": 1},
+    ).to_list(2000)
+
+    summary = {
+        "total_scanned": 0,
+        "oui_matched": 0,
+        "fingerbank_matched": 0,
+        "rdns_matched": 0,
+        "no_mac": 0,
+        "skipped": 0,
+    }
+
+    for md in candidates:
+        ip = md.get("ip")
+        if not ip:
+            continue
+        # Salta device gia' completi (hanno vendor + name diverso da IP + fingerbank fatto)
+        has_vendor = bool((md.get("vendor") or "").strip())
+        has_decent_name = bool((md.get("name") or "").strip()) and md.get("name") != ip
+        has_fb = bool(md.get("fingerbank_at"))
+        if has_vendor and has_decent_name and (has_fb or not fb_configured):
+            summary["skipped"] += 1
+            continue
+        summary["total_scanned"] += 1
+        update: dict = {}
+
+        mac_norm = (md.get("mac") or "").lower().replace("-", ":").strip()
+        if mac_norm and len(mac_norm.replace(":", "")) == 12:
+            # OUI lookup
+            if not has_vendor:
+                try:
+                    v = lookup_oui(mac_norm) or ""
+                    if v:
+                        update["vendor"] = v
+                        summary["oui_matched"] += 1
+                        # ri-classifica device_type
+                        try:
+                            update["device_type"] = classify_device(
+                                mac=mac_norm, vendor=v, sys_descr=md.get("sys_descr") or ""
+                            ) or md.get("device_type") or "endpoint"
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+            # Fingerbank lookup
+            if fb_configured and not has_fb:
+                try:
+                    fb = await fingerbank_service.interrogate(mac=mac_norm)
+                    if fb and fb.get("device_name"):
+                        update["fingerbank_device_name"] = fb["device_name"]
+                        update["fingerbank_score"] = fb.get("score")
+                        update["fingerbank_at"] = now_iso
+                        summary["fingerbank_matched"] += 1
+                except Exception:
+                    pass
+        else:
+            summary["no_mac"] += 1
+
+        # Reverse DNS lookup (sempre tentato per device senza nome decente)
+        if not has_decent_name:
+            try:
+                # short timeout: socket.gethostbyaddr non ha timeout, usiamo socket.setdefaulttimeout temporaneamente
+                old_to = socket.getdefaulttimeout()
+                socket.setdefaulttimeout(2.0)
+                try:
+                    h, _, _ = socket.gethostbyaddr(ip)
+                    if h and h != ip:
+                        update["hostname"] = h
+                        update["name"] = h.split(".")[0] if "." in h else h
+                        summary["rdns_matched"] += 1
+                finally:
+                    socket.setdefaulttimeout(old_to)
+            except Exception:
+                pass
+
+        # Se abbiamo trovato vendor ma name e' ancora ip, miglioriamo il name
+        if "vendor" in update and not has_decent_name and "name" not in update:
+            update["name"] = f"{update['vendor']} {ip}"
+
+        if update:
+            update["updated_at"] = now_iso
+            await db.managed_devices.update_one(
+                {"client_id": client_id, "ip": ip, "source": "connector-scanner"},
+                {"$set": update},
+            )
+
+    await audit_logger.log(
+        AuditAction.UPDATE_DEVICE, user_id=current_user["id"], user_email=current_user["email"],
+        ip_address=current_user.get("_request_ip"),
+        resource_type="client", resource_id=client_id,
+        details={"action": "recognize_unknowns", "summary": summary},
+    )
+    return {
+        "client_id": client_id,
+        "fingerbank_configured": fb_configured,
+        **summary,
+    }
+
+
 
 @router.get("/clients/{client_id}/ilo-health")
 async def get_client_ilo_health(client_id: str, current_user: dict = Depends(get_current_user)):
