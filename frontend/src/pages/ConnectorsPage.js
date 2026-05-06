@@ -152,12 +152,21 @@ export default function ConnectorsPage() {
     }
   };
 
-  const resetUpdateStatus = async (clientId) => {
+  // v3.8.20: reset stato update bloccato (loop). Resetta selettivamente per hostname+mode.
+  const resetUpdateStatus = async (clientId, hostname, mode) => {
+    if (hostname && !window.confirm(`Resettare lo stato di update bloccato su ${hostname}?\n\nDopo il reset:\n1) Riprova "Aggiorna"\n2) Se ancora non funziona, controlla manualmente il log\n   C:\\ProgramData\\86NocConnector\\logs\\update_check.log\n   sul server dove gira il Connector`)) return;
     try {
-      await axios.post(`${API}/connector/${clientId}/reset-update-status`);
-      toast.success("Stato aggiornamento resettato");
+      const params = new URLSearchParams();
+      if (hostname) params.append("hostname", hostname);
+      if (mode) params.append("mode", mode);
+      const qs = params.toString() ? `?${params.toString()}` : "";
+      const res = await axios.post(`${API}/connector/${clientId}/reset-update-status${qs}`);
+      toast.success(res.data.message || "Stato aggiornamento resettato", {
+        description: hostname ? "Se il loop persiste, controlla update_check.log sul server e mandalo all'admin per debug." : "",
+        duration: 7000,
+      });
       fetchAll();
-    } catch { toast.error("Errore nel reset"); }
+    } catch (e) { toast.error(e.response?.data?.detail || "Errore nel reset"); }
   };
 
   // v3.8.20: Scanner ha soglia online piu' larga (10 min vs 2 min Master).
@@ -455,6 +464,16 @@ export default function ConnectorsPage() {
                         }`}
                         data-testid={`force-update-btn-${c.client_id}-${c.hostname || c.mode || "master"}`}>
                         <ArrowsClockwise size={12} /> Aggiorna
+                      </button>
+                    )}
+                    {/* v3.8.20: pulsante "Reset stato update" se il connector e' bloccato in queued/installing/error */}
+                    {(c.update_status === "queued" || c.update_status === "installing" || c.update_status === "error" || c.update_status === "downloading" || c.update_status === "extracting") && (
+                      <button
+                        onClick={() => resetUpdateStatus(c.client_id, c.hostname, c.mode || "master")}
+                        title={`Stato update: ${c.update_status} (${c.update_progress || 0}%). Clicca per resettare se il connector e' bloccato in loop.`}
+                        className="h-7 px-2 rounded-md flex items-center gap-1 text-[10px] font-medium border transition-colors text-rose-400 bg-rose-500/10 border-rose-500/20 hover:bg-rose-500/20 cursor-pointer"
+                        data-testid={`reset-update-btn-${c.client_id}-${c.hostname || c.mode || "master"}`}>
+                        <Trash size={12} /> Reset
                       </button>
                     )}
                     <button onClick={() => deleteConnector(c.hostname || c.client_name)}

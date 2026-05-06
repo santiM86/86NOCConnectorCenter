@@ -1381,17 +1381,28 @@ async def connector_update_progress(request: Request):
 
 
 @router.post("/connector/{connector_id}/reset-update-status")
-async def reset_connector_update_status(connector_id: str, current_user: dict = Depends(get_current_user)):
+async def reset_connector_update_status(
+    connector_id: str,
+    hostname: Optional[str] = None,
+    mode: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
+):
     if current_user.get("role") not in ["admin"]:
         raise HTTPException(status_code=403, detail="Solo admin")
-    # Reset si applica a tutti i connector del client (master + eventuali scanner) per pulizia totale.
+    # v3.8.20: reset selettivo per hostname/mode (utile per uscire da loop di un solo Scanner
+    # senza toccare il Master). Senza param: reset di tutti i connector del client.
+    query: dict = {"client_id": connector_id}
+    if hostname:
+        query["hostname"] = hostname
+    if mode:
+        query["mode"] = mode
     result = await db.connector_status.update_many(
-        {"client_id": connector_id},
+        query,
         {"$unset": {"update_status": "", "force_update": "", "update_progress": "", "update_message": "", "update_timestamp": ""}}
     )
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Connettore non trovato")
-    return {"status": "ok", "message": "Stato aggiornamento resettato"}
+    return {"status": "ok", "message": f"Stato aggiornamento resettato su {result.matched_count} connector(s)", "matched": result.matched_count}
 
 
 # ==================== DEVICE MANAGEMENT ====================
