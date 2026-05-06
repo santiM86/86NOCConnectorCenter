@@ -129,13 +129,19 @@ export default function ConnectorsPage() {
     }
   };
 
-  const forceUpdate = async (clientId) => {
+  const forceUpdate = async (clientId, hostname, mode) => {
     try {
-      const res = await axios.post(`${API}/connector/${clientId}/force-update`);
+      // v3.8.19: passiamo hostname+mode cosi' il backend aggiorna SOLO quel connector
+      // (utile per pushare update allo Scanner senza toccare il Master).
+      const params = new URLSearchParams();
+      if (hostname) params.append("hostname", hostname);
+      if (mode) params.append("mode", mode);
+      const qs = params.toString() ? `?${params.toString()}` : "";
+      const res = await axios.post(`${API}/connector/${clientId}/force-update${qs}`);
       toast.success(res.data.message);
       // Optimistic UI: set immediate progress state while we wait for the connector to start
       setConnectors(prev => prev.map(c =>
-        c.client_id === clientId
+        c.client_id === clientId && (!hostname || c.hostname === hostname)
           ? { ...c, update_status: "queued", update_progress: 1, update_message: "Aggiornamento forzato inviato — in attesa del prossimo heartbeat..." }
           : c
       ));
@@ -431,15 +437,15 @@ export default function ConnectorsPage() {
                   <div className="flex items-center gap-1.5 flex-shrink-0">
                     {updateInfo?.version && isNewerVersion(updateInfo.version, c.connector_version) && (
                       <button
-                        onClick={() => forceUpdate(c.client_id)}
+                        onClick={() => forceUpdate(c.client_id, c.hostname, c.mode || "master")}
                         disabled={!online}
-                        title={online ? "Forza aggiornamento immediato" : "Connector offline — impossibile aggiornare da remoto"}
+                        title={online ? `Forza aggiornamento immediato di ${c.hostname || c.client_name} (mode=${c.mode || "master"})` : "Connector offline — impossibile aggiornare da remoto"}
                         className={`h-7 px-2 rounded-md flex items-center gap-1 text-[10px] font-medium border transition-colors ${
                           online
                             ? "text-amber-400 bg-amber-500/10 border-amber-500/20 hover:bg-amber-500/20 cursor-pointer"
                             : "text-[var(--text-muted)] bg-[var(--bg-hover)] border-[var(--bg-border)] opacity-50 cursor-not-allowed"
                         }`}
-                        data-testid={`force-update-btn-${c.client_id}`}>
+                        data-testid={`force-update-btn-${c.client_id}-${c.hostname || c.mode || "master"}`}>
                         <ArrowsClockwise size={12} /> Aggiorna
                       </button>
                     )}

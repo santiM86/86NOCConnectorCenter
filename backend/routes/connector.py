@@ -1090,12 +1090,29 @@ async def delete_connector_status(hostname: str, current_user: dict = Depends(ge
 
 
 @router.post("/connector/{client_id}/force-update")
-async def force_connector_update(client_id: str, current_user: dict = Depends(get_current_user)):
-    # v3.8.1: l'aggiornamento forzato si applica solo al MASTER (lo scanner si auto-aggiorna se distribuito separatamente)
-    connector = await db.connector_status.find_one({"client_id": client_id, "mode": "master"}, {"_id": 0})
-    if not connector:
-        # Fallback: se non c'e' un master, prendiamo il primo connector qualsiasi
-        connector = await db.connector_status.find_one({"client_id": client_id}, {"_id": 0})
+async def force_connector_update(
+    client_id: str,
+    hostname: Optional[str] = None,
+    mode: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
+):
+    """v3.8.19: Forza aggiornamento di un connector specifico.
+    Se `hostname` e' fornito si aggiorna SOLO quello (utile per pushare update
+    allo Scanner senza toccare il Master).
+    Se `mode` e' fornito (master|scanner) si aggiorna il connector con quel mode.
+    Senza param: comportamento legacy (master prima, fallback al primo qualsiasi).
+    """
+    query: dict = {"client_id": client_id}
+    if hostname:
+        query["hostname"] = hostname
+    if mode:
+        query["mode"] = mode
+    connector = await db.connector_status.find_one(query, {"_id": 0})
+    if not connector and not hostname and not mode:
+        # Legacy fallback: master first, poi qualsiasi
+        connector = await db.connector_status.find_one({"client_id": client_id, "mode": "master"}, {"_id": 0})
+        if not connector:
+            connector = await db.connector_status.find_one({"client_id": client_id}, {"_id": 0})
     if not connector:
         raise HTTPException(status_code=404, detail="Connector non trovato")
     # Block force-update on offline connectors: otherwise the order gets stuck in queued forever
