@@ -26,6 +26,13 @@ Questi due asset sono parte del flusso CI/CD verso `argus.86bit.it` e sono **mis
 
 # ARGUS Center — NOC Platform (86bit)
 
+## 2026-05-06 — FIX P0 loop fasullo "Aggiornamento in corso" (Connector heartbeat)
+- **Root cause**: `force-update` impostava `force_update=True` e `update_status="queued"` su `connector_status`, ma NON salvava `target_version`. L'heartbeat dell'endpoint provava a clear lo stato confrontando `update_info.version` (versione attualmente attiva nel DB) con `heartbeat.connector_version` — se nel mentre veniva pubblicata una versione piu' recente come `active`, il confronto restituiva sempre "manca update", lo status non veniva mai resettato e `force_update` ri-triggerava all'infinito anche se il connector era gia' alla versione richiesta.
+- **Fix** in `/app/backend/routes/connector.py`:
+  - `POST /api/connector/{client_id}/force-update` (~riga 1145) ora persiste `target_version: update_info["version"]` nel doc connector_status.
+  - `POST /api/connector/heartbeat` (~riga 279): nuova logica di auto-clear. Si attiva se esiste `update_status` OR `force_update`. Confronta in cascata (1) `target_version` salvata vs `heartbeat.connector_version`, (2) fallback legacy versione attiva, (3) timeout 300s. Se il connector ha raggiunto/superato `target_version` => `$unset` di `force_update/update_status/update_progress/update_message/update_timestamp/target_version` + reset locale `force_update=False` per evitare re-trigger nello stesso heartbeat.
+- **Test**: `/app/backend/tests/test_heartbeat_auto_clear.py` (4/4 passati): is_newer_version basic, target reached => clear, below target => preserve, exceeds target => clear.
+
 ## 2026-05-06 — v3.8.12 FIX CRITICO crash-loop Connector Scanner + dati Scanner ora visibili in Auto-Discovery
 - **Root cause crash-loop (icona rossa):** `argus-scanner.ps1` moriva sotto NSSM SYSTEM (sessione headless senza console) PRIMA di entrare nel loop principale a causa di:
   1. `$ErrorActionPreference = "Stop"` globale (riga 37) che faceva amplificare qualunque eccezione cosmetica.
