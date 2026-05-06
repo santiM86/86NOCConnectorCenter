@@ -578,6 +578,62 @@ async def rematch_profiles_bulk(
         if d.get("device_ip"):
             ips.add(d["device_ip"])
 
+    # v3.8.18: propagazione community SNMP corretta del cliente.
+    # I device auto-censiti dallo Scanner partono con community="public" (default).
+    # Calcolo la community piu' usata dai device che il Master polla con SUCCESSO
+    # (device_poll_status.reachable=true) e la propago a tutti i managed_devices
+    # del cliente che hanno ancora "public" o community vuota.
+    from datetime import datetime as _dt2, timezone as _tz2
+    now_iso2 = _dt2.now(_tz2.utc).isoformat()
+    community_counter: dict[str, int] = {}
+    async for pd in db.device_poll_status.find(
+        {"client_id": client_id, "reachable": True},
+        {"_id": 0, "snmp_community": 1, "community": 1},
+    ):
+        c = pd.get("snmp_community") or pd.get("community") or ""
+        c = c.strip()
+        if c and c.lower() != "public":
+            community_counter[c] = community_counter.get(c, 0) + 1
+    # Anche le community manuali in db.devices contano (admin le ha settate a mano)
+    async for dv in db.devices.find(
+        {"client_id": client_id},
+        {"_id": 0, "snmp_community": 1},
+    ):
+        c = (dv.get("snmp_community") or "").strip()
+        if c and c.lower() != "public":
+            community_counter[c] = community_counter.get(c, 0) + 2  # peso doppio: scelta umana
+    # Anche managed_devices con community gia' valorizzata != public
+    async for md in db.managed_devices.find(
+        {"client_id": client_id},
+        {"_id": 0, "community": 1, "snmp_community": 1},
+    ):
+        c = (md.get("community") or md.get("snmp_community") or "").strip()
+        if c and c.lower() != "public":
+            community_counter[c] = community_counter.get(c, 0) + 1
+
+    community_propagated = 0
+    best_community = ""
+    if community_counter:
+        best_community = max(community_counter, key=community_counter.get)
+        # Aggiorna i managed_devices con community=public (o vuota): il Master ritentera'
+        # il poll col valore corretto al prossimo ciclo.
+        upd = await db.managed_devices.update_many(
+            {
+                "client_id": client_id,
+                "$or": [
+                    {"community": {"$in": ["", "public", None]}},
+                    {"community": {"$exists": False}},
+                ],
+            },
+            {"$set": {
+                "community": best_community,
+                "snmp_community": best_community,
+                "community_propagated_at": now_iso2,
+                "community_propagated_from": "rematch-profiles bulk",
+            }},
+        )
+        community_propagated = upd.modified_count
+
     details = []
     matched_count = 0
     skipped_count = 0
@@ -606,6 +662,8 @@ async def rematch_profiles_bulk(
         "total": len(ips),
         "matched": matched_count,
         "skipped": skipped_count,
+        "community_propagated": community_propagated,
+        "community_used": best_community,
         "details": details,
     }
 
