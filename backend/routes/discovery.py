@@ -60,12 +60,70 @@ async def submit_discovery_results(request: Request):
 
 @router.get("/connector/discovery-results/{client_id}")
 async def get_discovery_results(client_id: str, current_user: dict = Depends(get_current_user)):
+    """Auto-Discovery aggregata: fonde i risultati della discovery SNMP classica
+    (lanciata via 'Avvia Scansione') con i dati live raccolti dal Connector
+    Scanner via /api/connector/lan-scan (collection `discovered_endpoints`).
+
+    Cosi' nella UI Auto-Discovery l'admin vede TUTTO: sia gli host SNMP scoperti
+    dal master, sia gli host scoperti dagli scanner remoti su VLAN isolate.
+    """
     results = await db.discovery_results.find_one({"client_id": client_id}, {"_id": 0})
-    if not results:
-        return {"devices": [], "scanned_at": None}
+    devices: list = []
+    scanned_at = None
+    if results:
+        devices = results.get("devices", []) or []
+        scanned_at = results.get("scanned_at")
+
+    # v3.8.12: aggrega dati live dei Connector Scanner.
+    # I record arrivano da POST /api/connector/lan-scan e finiscono in
+    # `discovered_endpoints` con last_seen_via=arp|mdns|scanner-ui.
+    # Mappiamo nel formato del frontend DiscoveryPage.
+    seen_keys = {(d.get("ip") or "").strip(): True for d in devices if d.get("ip")}
+    scanner_eps = await db.discovered_endpoints.find(
+        {"client_id": client_id, "source_connector_mode": "scanner"},
+        {
+            "_id": 0, "ip": 1, "mac": 1, "hostname_scanner": 1,
+            "sys_descr_scanner": 1, "sys_name_scanner": 1, "vendor_scanner": 1,
+            "last_seen_at": 1, "last_seen_via": 1, "vlan_id": 1,
+            "last_seen_subnet": 1, "datto_name": 1,
+        },
+    ).to_list(2000)
+    scanner_count = 0
+    latest_scanner_at = None
+    for ep in scanner_eps:
+        ip = (ep.get("ip") or "").strip()
+        if not ip or ip in seen_keys:
+            continue
+        seen_keys[ip] = True
+        last_seen = ep.get("last_seen_at")
+        if last_seen and (latest_scanner_at is None or last_seen > latest_scanner_at):
+            latest_scanner_at = last_seen
+        devices.append({
+            "ip": ip,
+            "mac": ep.get("mac"),
+            "hostname": ep.get("hostname_scanner") or ep.get("datto_name") or ep.get("sys_name_scanner"),
+            "vendor": ep.get("vendor_scanner"),
+            "reachable": True,  # se l'abbiamo visto via ARP/mDNS e' raggiungibile sul layer-2 della VLAN remota
+            "snmp_available": False,
+            "type": "scanner-endpoint",
+            "discovered_via": ep.get("last_seen_via") or "scanner",
+            "vlan_id": ep.get("vlan_id"),
+            "subnet": ep.get("last_seen_subnet"),
+            "source": "scanner",
+            "last_seen_at": last_seen,
+            "community": "public",
+        })
+        scanner_count += 1
+
     managed = await db.managed_devices.find({"client_id": client_id}, {"_id": 0, "ip": 1}).to_list(500)
-    results["managed_ips"] = [d["ip"] for d in managed]
-    return results
+    return {
+        "devices": devices,
+        "managed_ips": [d["ip"] for d in managed],
+        "scanned_at": scanned_at,
+        "scanner_endpoints_count": scanner_count,
+        "scanner_last_seen_at": latest_scanner_at,
+        "device_count": len(devices),
+    }
 
 
 @router.get("/connector/discovery-status/{client_id}")

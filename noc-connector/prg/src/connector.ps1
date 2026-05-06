@@ -2937,7 +2937,25 @@ function Start-Connector {
         $env:ARGUS_SCANNER_MODE = "scanner"
         $env:ARGUS_SCANNER_SUBNET = $config.subnet
         $env:ARGUS_SCANNER_VLAN = "$($config.vlan_id)"
-        & $scannerScript
+        # v3.8.12 FIX crash-loop: argus-scanner.ps1 puo' uscire per varie ragioni
+        # (eccezione non gestita, exit code, host UI mancante). Se ritorniamo qui
+        # senza guardia, il main termina, NSSM riavvia, e si crea un loop infinito
+        # ogni ~30s che fa apparire la tray icon rossa.
+        # Wrappiamo in retry+backoff per mantenere vivo il processo principale.
+        $scannerRestarts = 0
+        while ($global:Running) {
+            try {
+                & $scannerScript
+            } catch {
+                Write-Log "Scanner crash: $($_.Exception.Message)" "ERR"
+            }
+            $scannerRestarts++
+            $backoff = [Math]::Min(60, 5 + ($scannerRestarts * 5))
+            Write-Log "Scanner uscito (restart #$scannerRestarts) - retry tra ${backoff}s" "WARN"
+            Send-Heartbeat $config
+            Write-StatusFile "running"
+            Start-Sleep -Seconds $backoff
+        }
         return
     }
     # ===================== END SCANNER MODE BRANCH =====================

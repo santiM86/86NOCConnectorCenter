@@ -166,16 +166,32 @@ OUI_DB = {
     # VMware / VirtualBox
     "00:0c:29": "VMware", "00:1c:14": "VMware", "00:50:56": "VMware",
     "08:00:27": "VirtualBox", "52:54:00": "QEMU/KVM",
-    # VoIP (Yealink/Grandstream/Polycom/Snom/Cisco SPA)
+    # VoIP (Yealink/Grandstream/Polycom/Snom/Cisco SPA/Wildix/Audiocodes/Mitel)
     "00:15:65": "Yealink", "24:9a:d8": "Yealink", "80:5e:c0": "Yealink",
     "00:0b:82": "Grandstream", "c0:74:ad": "Grandstream", "00:0d:dd": "Grandstream",
+    "ec:74:d7": "Grandstream", "08:23:b2": "Grandstream",
     "00:04:f2": "Polycom", "00:01:29": "Polycom", "64:16:7f": "Polycom",
-    "00:04:13": "Snom",
-    # IP Camera (Hikvision/Dahua/Axis/Uniview)
+    "48:25:67": "Polycom", "00:04:5a": "Polycom",
+    "00:04:13": "Snom", "00:08:5d": "Snom",
+    # Wildix (telefoni VoIP italiani — molto diffusi nel mercato Italia/EU)
+    "9c:75:14": "Wildix", "f0:1d:78": "Wildix", "70:b3:d5:14": "Wildix",
+    # AudioCodes / Mitel / Aastra / Avaya
+    "00:90:8f": "AudioCodes", "00:01:e3": "Siemens",
+    "00:08:5d": "Aastra", "00:0a:f3": "Mitel", "08:00:0f": "Mitel",
+    "00:04:0d": "Avaya", "00:1b:4f": "Avaya", "f8:15:47": "Avaya",
+    # Fanvil / Htek / Akuvox / 2N (IP phone & door entry)
+    "0c:38:3e": "Fanvil", "70:73:cb": "Fanvil",
+    "00:1f:c1": "Htek", "00:9d:6b": "Akuvox", "0c:6e:05": "Akuvox",
+    "7c:1e:b3": "2N",
+    # IP Camera (Hikvision/Dahua/Axis/Uniview/Vivotek/Foscam)
     "00:40:8c": "Axis", "ac:cc:8e": "Axis", "b8:a4:4f": "Axis",
     "44:19:b6": "Hikvision", "bc:ad:28": "Hikvision", "c0:51:7e": "Hikvision",
+    "f8:4d:fc": "Hikvision", "28:57:be": "Hikvision",
     "3c:ef:8c": "Dahua", "4c:11:bf": "Dahua", "90:02:a9": "Dahua",
+    "00:1c:81": "Dahua", "fc:5f:49": "Dahua",
     "a0:bd:1d": "Uniview",
+    "00:02:d1": "Vivotek",
+    "00:0e:e8": "Foscam",
     # Raspberry Pi
     "b8:27:eb": "Raspberry Pi", "dc:a6:32": "Raspberry Pi", "e4:5f:01": "Raspberry Pi",
     "2c:cf:67": "Raspberry Pi",
@@ -306,11 +322,35 @@ def is_printer_vendor(vendor: str) -> bool:
     return bool(vendor) and vendor in PRINTER_VENDORS
 
 
+# v3.8.12: DB IEEE OUI completo (~39k voci) come fallback secondario.
+# Lazy-load: caricato in memoria solo al primo lookup non trovato nel DB curato.
+# Mantiene priorita' al DB curato (che ha mappature vendor->device_type).
+_OUI_FULL_DB: dict[str, str] | None = None
+_OUI_FULL_PATH = None  # path lazy-resolved
+
+
+def _load_full_oui_db() -> dict:
+    """Carica oui_full.json una sola volta (~1.1 MB, ~39k voci IEEE)."""
+    global _OUI_FULL_DB, _OUI_FULL_PATH
+    if _OUI_FULL_DB is not None:
+        return _OUI_FULL_DB
+    import os, json
+    if _OUI_FULL_PATH is None:
+        _OUI_FULL_PATH = os.path.join(os.path.dirname(__file__), "oui_full.json")
+    try:
+        with open(_OUI_FULL_PATH, "r", encoding="utf-8") as f:
+            _OUI_FULL_DB = json.load(f)
+    except Exception:
+        _OUI_FULL_DB = {}
+    return _OUI_FULL_DB
+
+
 def lookup_oui(mac: str) -> str:
     """Return vendor name for a given MAC address, or '' if unknown.
 
-    Accepts MAC in any common separator format (aa:bb:cc:dd:ee:ff, AA-BB-CC-DD-EE-FF,
-    aabbccddeeff). Only the first 3 bytes (OUI) are matched.
+    Lookup a 2 livelli:
+      1. DB curato locale (OUI_DB) — ha mapping vendor->device_type
+      2. DB IEEE completo (~39k vendor) come fallback se non trovato
     """
     if not mac:
         return ""
@@ -319,7 +359,12 @@ def lookup_oui(mac: str) -> str:
     if len(clean) < 6:
         return ""
     prefix = f"{clean[0:2]}:{clean[2:4]}:{clean[4:6]}"
-    return OUI_DB.get(prefix, "")
+    # 1. DB curato (priorita' alta — ha hint single-purpose)
+    v = OUI_DB.get(prefix, "")
+    if v:
+        return v
+    # 2. Fallback DB IEEE completo (~39k vendor)
+    return _load_full_oui_db().get(prefix, "")
 
 
 
@@ -341,12 +386,23 @@ _OUI_SINGLE_PURPOSE_HINT = {
     "Mitel": "voip_phone",
     "AudioCodes": "voice_gateway",
     "Avaya": "voip_phone",
+    "Wildix": "voip_phone",
+    "Aastra": "voip_phone",
+    "Fanvil": "voip_phone",
+    "Htek": "voip_phone",
+    "Akuvox": "voip_phone",
+    "2N": "voip_phone",
+    "Siemens": "voip_phone",
     # IP Camera (vendor specializzati video sorveglianza)
     "Hikvision": "ip_camera",
     "Dahua": "ip_camera",
     "Axis Communications": "ip_camera",
+    "Axis": "ip_camera",
     "Bosch Security": "ip_camera",
     "Mobotix": "ip_camera",
+    "Uniview": "ip_camera",
+    "Vivotek": "ip_camera",
+    "Foscam": "ip_camera",
     "Vivotek": "ip_camera",
     "Pelco": "ip_camera",
     "Hanwha (Samsung Techwin)": "ip_camera",
