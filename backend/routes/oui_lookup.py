@@ -322,11 +322,35 @@ def is_printer_vendor(vendor: str) -> bool:
     return bool(vendor) and vendor in PRINTER_VENDORS
 
 
+# v3.8.12: DB IEEE OUI completo (~39k voci) come fallback secondario.
+# Lazy-load: caricato in memoria solo al primo lookup non trovato nel DB curato.
+# Mantiene priorita' al DB curato (che ha mappature vendor->device_type).
+_OUI_FULL_DB: dict[str, str] | None = None
+_OUI_FULL_PATH = None  # path lazy-resolved
+
+
+def _load_full_oui_db() -> dict:
+    """Carica oui_full.json una sola volta (~1.1 MB, ~39k voci IEEE)."""
+    global _OUI_FULL_DB, _OUI_FULL_PATH
+    if _OUI_FULL_DB is not None:
+        return _OUI_FULL_DB
+    import os, json
+    if _OUI_FULL_PATH is None:
+        _OUI_FULL_PATH = os.path.join(os.path.dirname(__file__), "oui_full.json")
+    try:
+        with open(_OUI_FULL_PATH, "r", encoding="utf-8") as f:
+            _OUI_FULL_DB = json.load(f)
+    except Exception:
+        _OUI_FULL_DB = {}
+    return _OUI_FULL_DB
+
+
 def lookup_oui(mac: str) -> str:
     """Return vendor name for a given MAC address, or '' if unknown.
 
-    Accepts MAC in any common separator format (aa:bb:cc:dd:ee:ff, AA-BB-CC-DD-EE-FF,
-    aabbccddeeff). Only the first 3 bytes (OUI) are matched.
+    Lookup a 2 livelli:
+      1. DB curato locale (OUI_DB) — ha mapping vendor->device_type
+      2. DB IEEE completo (~39k vendor) come fallback se non trovato
     """
     if not mac:
         return ""
@@ -335,7 +359,12 @@ def lookup_oui(mac: str) -> str:
     if len(clean) < 6:
         return ""
     prefix = f"{clean[0:2]}:{clean[2:4]}:{clean[4:6]}"
-    return OUI_DB.get(prefix, "")
+    # 1. DB curato (priorita' alta — ha hint single-purpose)
+    v = OUI_DB.get(prefix, "")
+    if v:
+        return v
+    # 2. Fallback DB IEEE completo (~39k vendor)
+    return _load_full_oui_db().get(prefix, "")
 
 
 
