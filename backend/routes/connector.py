@@ -1118,17 +1118,22 @@ async def force_connector_update(
     # Block force-update on offline connectors: otherwise the order gets stuck in queued forever
     last_seen_raw = connector.get("last_seen")
     is_offline = True
+    # v3.8.20: Scanner ha soglia offline piu' larga (10 min vs 3 min del Master).
+    # Lo Scanner gira spesso lan-scan che blocca il loop heartbeat per ~30s,
+    # piu' la latenza cross-VLAN. 3 min sono troppo stretti e bloccano il push update.
+    is_scanner = connector.get("mode") == "scanner"
+    offline_threshold = 600 if is_scanner else 180
     if last_seen_raw:
         try:
             last_seen = datetime.fromisoformat(last_seen_raw.replace("Z", "+00:00"))
             elapsed = (datetime.now(timezone.utc) - last_seen).total_seconds()
-            is_offline = elapsed > 180  # 3 minutes threshold
+            is_offline = elapsed > offline_threshold
         except Exception:
             pass
     if is_offline:
         raise HTTPException(
             status_code=409,
-            detail=f"Il connector {connector.get('hostname', client_id)} e' OFFLINE e non puo' ricevere l'ordine di aggiornamento. Attendi che torni online oppure aggiornalo manualmente sul server."
+            detail=f"Il connector {connector.get('hostname', client_id)} e' OFFLINE (>{offline_threshold//60}min) e non puo' ricevere l'ordine di aggiornamento. Attendi che torni online oppure aggiornalo manualmente sul server."
         )
     update_info = await db.connector_updates.find_one({"active": True}, {"_id": 0})
     if not update_info:

@@ -8,6 +8,7 @@ import {
   Lightning, WifiHigh, WifiSlash, PlugsConnected, CaretDown,
   CheckCircle, Warning, ArrowClockwise, Bell, BellSlash, ChartLine, Monitor, Cpu,
   Plus, Trash, Lock, MagnifyingGlass, Info, PencilSimple, NetworkSlash,
+  Phone, DeviceMobile, Desktop,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -109,14 +110,54 @@ export default function ClientOverviewPage() {
   const onlineDevices = devices.filter(d => d.status === "online" || d.status === "active").length;
   const offlineDevices = devices.length - onlineDevices;
   const criticalAlerts = alerts.filter(a => a.severity === "critical").length;
-  const firewalls = devices.filter(d => ["firewall", "zyxel-usg"].includes(d.device_type));
-  const switches = devices.filter(d => d.device_type === "switch");
-  const servers = devices.filter(d => ["server", "ilo"].includes(d.device_type));
-  const upsList = devices.filter(d => d.device_type === "ups");
-  const nasList = devices.filter(d => ["nas", "storage"].includes(d.device_type));
-  const apList = devices.filter(d => ["ap", "access-point"].includes(d.device_type));
-  const tvccList = devices.filter(d => ["tvcc", "camera", "nvr", "dvr"].includes(d.device_type));
-  const printersList = devices.filter(d => d.device_type === "printer");
+  // v3.8.20: classificazione macroaree (PC, VoIP, Mobile, ecc.) per i device dello Scanner.
+  // Anche se device_type non e' specifico, deduciamo da vendor/hostname/MAC randomizzato.
+  const isMulticast = (ip) => {
+    if (!ip) return false;
+    // 224.0.0.0/4 (224-239) e 255.255.255.255
+    return /^(22[4-9]|23\d|255)\./.test(ip);
+  };
+  const macroOf = (d) => {
+    if (isMulticast(d.ip_address)) return "_skip";
+    const dt = (d.device_type || "").toLowerCase();
+    if (["firewall", "zyxel-usg"].includes(dt)) return "firewall";
+    if (dt === "switch") return "switch";
+    if (["server", "ilo"].includes(dt)) return "server";
+    if (["nas", "storage"].includes(dt)) return "nas";
+    if (dt === "ups") return "ups";
+    if (["ap", "access-point"].includes(dt)) return "ap";
+    if (["tvcc", "camera", "nvr", "dvr"].includes(dt)) return "tvcc";
+    if (dt === "printer") return "printer";
+    if (dt === "endpoint-private" || d.mac_is_random) return "mobile";
+    const vendor = (d.vendor || "").toLowerCase();
+    const hostname = ((d.hostname || "") + " " + (d.name || "")).toLowerCase();
+    if (/wildix|yealink|polycom|snom|grandstream|panasonic kx|fanvil/i.test(vendor)) return "voip";
+    if (/phone|telefon|wildix|sip-/i.test(hostname)) return "voip";
+    if (/hikvision|dahua|reolink|axis comm|uniview|hanwha/i.test(vendor)) return "tvcc";
+    if (/canon|brother|epson|kyocera|konica|xerox|ricoh|lexmark|sharp|oki/i.test(vendor)) return "printer";
+    if (vendor === "hp" && /print|laser|inkjet|officejet|deskjet/i.test(hostname)) return "printer";
+    if (/synology|qnap|asustor|netgear sto|drobo/i.test(vendor)) return "nas";
+    // Workstation/PC by vendor (laptop e desktop tipici)
+    if (/msi|micro-star|elitegroup|lcfc|asus|dell|lenovo|gigabyte|asrock|acer|samsung electron|intel|tmc|liteon|wistron|compal|quanta|inventec|pegatron/i.test(vendor)) return "workstation";
+    if (vendor === "hp" || /hewlett.packard|hp inc/i.test(vendor)) return "workstation";
+    if (/apple/i.test(vendor) && !d.mac_is_random) return "workstation";  // Mac/iMac/MacBook con MAC reale
+    if (/raspberry|nvidia jetson|orange pi/i.test(vendor)) return "iot";
+    return "other";
+  };
+
+  const firewalls = devices.filter(d => macroOf(d) === "firewall");
+  const switches = devices.filter(d => macroOf(d) === "switch");
+  const servers = devices.filter(d => macroOf(d) === "server");
+  const upsList = devices.filter(d => macroOf(d) === "ups");
+  const nasList = devices.filter(d => macroOf(d) === "nas");
+  const apList = devices.filter(d => macroOf(d) === "ap");
+  const tvccList = devices.filter(d => macroOf(d) === "tvcc");
+  const printersList = devices.filter(d => macroOf(d) === "printer");
+  const voipList = devices.filter(d => macroOf(d) === "voip");
+  const workstationList = devices.filter(d => macroOf(d) === "workstation");
+  const mobileList = devices.filter(d => macroOf(d) === "mobile");
+  const iotList = devices.filter(d => macroOf(d) === "iot");
+  const skipList = devices.filter(d => macroOf(d) === "_skip");  // multicast/broadcast esclusi dalla UI
   // Tab "Stampanti" = unione di /api/printers (con telemetria toner) + managed_devices con
   // device_type=printer. Match per IP — se entrambi presenti i toner della /api/printers
   // hanno priorità (più specifici).
@@ -145,8 +186,8 @@ export default function ClientOverviewPage() {
     });
     return Array.from(byIp.values());
   })();
-  const knownTypes = new Set(["firewall", "zyxel-usg", "switch", "server", "ilo", "ups", "nas", "storage", "ap", "access-point", "tvcc", "camera", "nvr", "dvr", "printer"]);
-  const others = devices.filter(d => !knownTypes.has(d.device_type));
+  const knownTypes = new Set(["firewall", "zyxel-usg", "switch", "server", "ilo", "ups", "nas", "storage", "ap", "access-point", "tvcc", "camera", "nvr", "dvr", "printer", "endpoint-private"]);
+  const others = devices.filter(d => macroOf(d) === "other");
 
   const tabs = [
     { id: "overview", label: "Panoramica", icon: Monitor },
@@ -261,7 +302,7 @@ export default function ClientOverviewPage() {
 
       {/* Tab Content */}
       <div className="min-h-[400px]">
-        {activeTab === "overview" && <OverviewTab devices={devices} wanTargets={wanTargets} alerts={alerts} connector={connector} printers={printers} backups={backups} firewalls={firewalls} switches={switches} servers={servers} upsList={upsList} nasList={nasList} apList={apList} tvccList={tvccList} printersList={printersList} others={others} iloHealth={iloHealth} />}
+        {activeTab === "overview" && <OverviewTab devices={devices} wanTargets={wanTargets} alerts={alerts} connector={connector} printers={printers} backups={backups} firewalls={firewalls} switches={switches} servers={servers} upsList={upsList} nasList={nasList} apList={apList} tvccList={tvccList} printersList={printersList} voipList={voipList} workstationList={workstationList} mobileList={mobileList} iotList={iotList} skipList={skipList} others={others} iloHealth={iloHealth} />}
         {activeTab === "devices" && <DevicesTab devices={devices} clientId={clientId} onRefresh={fetchAll} onOptimisticUpdate={optimisticUpdateDevice} />}
         {activeTab === "wan" && <WanTab targets={wanTargets} clientId={clientId} clientName={client.name} onRefresh={fetchAll} />}
         {activeTab === "alerts" && <AlertsTab alerts={alerts} navigate={navigate} />}
@@ -276,7 +317,7 @@ export default function ClientOverviewPage() {
 }
 
 /* ==================== OVERVIEW TAB ==================== */
-function OverviewTab({ devices, wanTargets, alerts, connector, printers, backups, firewalls, switches, servers, upsList, nasList, apList, tvccList, printersList, others, iloHealth }) {
+function OverviewTab({ devices, wanTargets, alerts, connector, printers, backups, firewalls, switches, servers, upsList, nasList, apList, tvccList, printersList, voipList = [], workstationList = [], mobileList = [], iotList = [], skipList = [], others, iloHealth }) {
   return (
     <div className="space-y-4">
       {/* iLO Hardware Health Panel (only shown when we have iLO data) */}
@@ -327,8 +368,22 @@ function OverviewTab({ devices, wanTargets, alerts, connector, printers, backups
           {tvccList.length > 0 && <DeviceGroup label="TVCC / Videosorveglianza" icon={Monitor} devices={tvccList} color="#F97316" />}
           {/* Printers */}
           {printersList.length > 0 && <DeviceGroup label="Stampanti" icon={Printer} devices={printersList} color="#EC4899" />}
+          {/* v3.8.20: nuove macroaree per i device dello Scanner */}
+          {voipList.length > 0 && <DeviceGroup label="Telefoni VoIP" icon={Phone} devices={voipList} color="#22C55E" />}
+          {workstationList.length > 0 && <DeviceGroup label="Workstation / PC" icon={Desktop} devices={workstationList} color="#3B82F6" />}
+          {mobileList.length > 0 && <DeviceGroup label="Smartphone / Mobile (MAC randomizzato)" icon={DeviceMobile} devices={mobileList} color="#A855F7" />}
+          {iotList.length > 0 && <DeviceGroup label="IoT / Embedded" icon={Cpu} devices={iotList} color="#F59E0B" />}
           {/* Others / Generic */}
           {others.length > 0 && <DeviceGroup label="Altri Dispositivi" icon={HardDrives} devices={others} color="#64748B" />}
+          {/* Skipped multicast/broadcast (nascosti dalla vista principale) */}
+          {skipList.length > 0 && (
+            <details className="opacity-60 hover:opacity-100 transition-opacity">
+              <summary className="cursor-pointer text-[9px] uppercase tracking-[0.15em] text-[var(--text-muted)] py-2 select-none">
+                ▸ Multicast / broadcast nascosti ({skipList.length})
+              </summary>
+              <DeviceGroup label="Multicast / Broadcast (non gestiti)" icon={NetworkSlash} devices={skipList} color="#6B7280" />
+            </details>
+          )}
         </div>
       </div>
 
