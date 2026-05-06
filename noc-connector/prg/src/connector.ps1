@@ -2969,9 +2969,116 @@ function Start-Connector {
         Send-Heartbeat $config
         Write-StatusFile "running"
 
+        # v3.8.19: helper per filtrare IP nella subnet dello Scanner
+        function Test-IpInSubnet([string]$ip, [string]$cidr) {
+            if (-not $cidr -or -not $ip) { return $false }
+            $parts = $cidr -split '/'
+            if ($parts.Count -ne 2) { return $false }
+            $maskLen = [int]$parts[1]
+            if ($maskLen -lt 1 -or $maskLen -gt 32) { return $false }
+            try {
+                $ipBytes = ([System.Net.IPAddress]::Parse($ip)).GetAddressBytes()
+                $netBytes = ([System.Net.IPAddress]::Parse($parts[0])).GetAddressBytes()
+                [Array]::Reverse($ipBytes); [Array]::Reverse($netBytes)
+                $ipU = [System.BitConverter]::ToUInt32($ipBytes, 0)
+                $netU = [System.BitConverter]::ToUInt32($netBytes, 0)
+                if ($maskLen -eq 32) { return ($ipU -eq $netU) }
+                $shift = 32 - $maskLen
+                return (($ipU -shr $shift) -eq ($netU -shr $shift))
+            } catch { return $false }
+        }
+
+        # v3.8.19: poll SNMP leggero dei device del cliente che cadono dentro la subnet
+        # locale dello Scanner. Usa lo stesso flow del Master:
+        # 1) Recupera lista device da connector/managed-devices
+        # 2) Filtra per subnet
+        # 3) Per ogni device SNMP: ping + 5 OID standard MIB-II (sysDescr/sysName/sysObjectID/sysUptime/sysLocation)
+        # 4) Pusha tutto in batch a connector/device-report con flag polled_by_mode=scanner
+        function Invoke-ScannerSnmpPollOnce {
+            param($Config, $LocalSubnet)
+            try {
+                $resp = Send-ToNOC $Config "connector/managed-devices" @{}
+                if (-not $resp -or -not $resp.devices) {
+                    Write-Log "Scanner SNMP poll: nessun device dal Center" "DEBUG"
+                    return
+                }
+                $matchingDevices = @()
+                foreach ($d in $resp.devices) {
+                    $ip = $d.ip
+                    if (-not $ip) { continue }
+                    if (-not (Test-IpInSubnet $ip $LocalSubnet)) { continue }
+                    $matchingDevices += $d
+                }
+                if ($matchingDevices.Count -eq 0) {
+                    Write-Log "Scanner SNMP poll: nessun device del cliente nella subnet $LocalSubnet" "DEBUG"
+                    return
+                }
+                Write-Log "Scanner SNMP poll: avvio su $($matchingDevices.Count) device della subnet $LocalSubnet" "INFO"
+                $reportDevices = @()
+                $okCount = 0; $failCount = 0
+                foreach ($d in $matchingDevices) {
+                    $ip = $d.ip
+                    $devName = if ($d.name) { $d.name } else { $ip }
+                    $monitorType = if ($d.monitor_type) { $d.monitor_type } else { "snmp" }
+                    $community = if ($d.community) { $d.community } else { "public" }
+                    # Ping reach test (1 packet, 1s timeout)
+                    $reachable = $false
+                    try { $reachable = Test-Connection -ComputerName $ip -Count 1 -Quiet -TimeoutSeconds 2 } catch {}
+                    $sysDescr = ""; $sysName = ""; $sysObjectID = ""; $sysLocation = ""; $sysUptime = ""
+                    if ($reachable -and $monitorType -eq "snmp" -and (Get-Command Get-SnmpValue -ErrorAction SilentlyContinue)) {
+                        try {
+                            $sysDescr    = Get-SnmpValue $ip $community "1.3.6.1.2.1.1.1.0"
+                            $sysName     = Get-SnmpValue $ip $community "1.3.6.1.2.1.1.5.0"
+                            $sysObjectID = Get-SnmpValue $ip $community "1.3.6.1.2.1.1.2.0"
+                            $sysLocation = Get-SnmpValue $ip $community "1.3.6.1.2.1.1.6.0"
+                            $uptimeTicks = Get-SnmpValue $ip $community "1.3.6.1.2.1.1.3.0"
+                            if ($uptimeTicks) {
+                                $secs = [math]::Floor($uptimeTicks / 100)
+                                $dDays = [math]::Floor($secs / 86400)
+                                $hH = [math]::Floor(($secs % 86400) / 3600)
+                                $mM = [math]::Floor(($secs % 3600) / 60)
+                                $sysUptime = "${dDays}g ${hH}h ${mM}m"
+                            }
+                        } catch {
+                            Write-Log "Scanner SNMP $ip ($community): $($_.Exception.Message)" "DEBUG"
+                        }
+                    }
+                    if ($reachable) { $okCount++ } else { $failCount++ }
+                    $reportDevices += @{
+                        device_ip      = $ip
+                        device_name    = $devName
+                        monitor_type   = $monitorType
+                        reachable      = $reachable
+                        ports          = @()
+                        sys_descr      = "$sysDescr"
+                        sys_name       = "$sysName"
+                        sys_object_id  = "$sysObjectID"
+                        sys_location   = "$sysLocation"
+                        sys_uptime     = $sysUptime
+                        community      = $community
+                        snmp_version   = if ($d.snmp_version) { $d.snmp_version } else { "v2c" }
+                        polled_by_mode = "scanner"   # v3.8.19: distingue dal Master
+                        poll_timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+                    }
+                }
+                if ($reportDevices.Count -gt 0) {
+                    $payload = @{
+                        hostname = $env:COMPUTERNAME
+                        devices  = $reportDevices
+                        polled_by_mode = "scanner"
+                    }
+                    Send-ToNOC $Config "connector/device-report" $payload | Out-Null
+                    Write-Log "Scanner SNMP poll: inviati $($reportDevices.Count) device al Center (OK=$okCount FAIL=$failCount)" "INFO"
+                }
+            } catch {
+                Write-Log "Scanner SNMP poll fallito: $($_.Exception.Message)" "WARN"
+            }
+        }
+
         # Loop principale scanner INLINE nel processo del main connector
         $lastSchHb = (Get-Date).AddYears(-1)
         $lastSchScan = (Get-Date).AddYears(-1)
+        $lastSchSnmpPoll = (Get-Date).AddYears(-1)
         $lastMainHb = Get-Date
         while ($global:Running) {
             try {
@@ -2993,6 +3100,12 @@ function Start-Connector {
                         -and (Get-Command Invoke-LanScanOnce -ErrorAction SilentlyContinue)) {
                     try { Invoke-LanScanOnce -Config $scannerCfg | Out-Null } catch { Write-Log "LanScan err: $_" "WARN" }
                     $lastSchScan = $now
+                }
+                # v3.8.19: SNMP poll dei device del cliente nella subnet locale, ogni 5 min
+                # (sfasato di 60s dal lan-scan per non saturare CPU/banda contemporaneamente)
+                if (($now - $lastSchSnmpPoll).TotalSeconds -ge 300 -and $config.subnet) {
+                    Invoke-ScannerSnmpPollOnce $config $config.subnet
+                    $lastSchSnmpPoll = $now
                 }
             } catch {
                 Write-Log "Scanner loop iter exception: $($_.Exception.Message)" "ERROR"
