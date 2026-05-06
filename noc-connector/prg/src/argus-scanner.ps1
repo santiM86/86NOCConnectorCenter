@@ -32,16 +32,21 @@ param(
     [string]$LogPath = "$env:ProgramData\86NocConnector\scanner.log"
 )
 
-# v3.8.12 FIX: in cima al modulo NON forziamo Stop, altrimenti qualunque eccezione
-# (anche cosmetica) uccide lo script PRIMA di entrare nel main loop. Questo era
-# il root cause del crash-loop infinito quando lo Scanner gira sotto NSSM come
-# NT AUTHORITY\SYSTEM (sessione background, nessuna console).
-# Lo Stop lo ri-abilitiamo solo dentro Invoke-SetupWizard (errori utente critici).
-$ErrorActionPreference = "Continue"
+# v3.8.13 FIX: applichiamo le modifiche allo scope SOLO quando lo script viene
+# eseguito come entry-point (NON dot-source da -AsLibrary), altrimenti
+# inquineremmo lo scope del main connector.ps1 (es. ErrorActionPreference).
+if (-not $AsLibrary) {
+    # v3.8.12 FIX: in cima al modulo NON forziamo Stop, altrimenti qualunque eccezione
+    # (anche cosmetica) uccide lo script PRIMA di entrare nel main loop. Questo era
+    # il root cause del crash-loop infinito quando lo Scanner gira sotto NSSM come
+    # NT AUTHORITY\SYSTEM (sessione background, nessuna console).
+    # Lo Stop lo ri-abilitiamo solo dentro Invoke-SetupWizard (errori utente critici).
+    $ErrorActionPreference = "Continue"
 
-# v3.8.12 FIX: WindowTitle setting in try/catch - sotto NSSM SYSTEM
-# $Host.UI.RawUI puo' lanciare PSNotImplementedException se non c'e' console UI.
-try { $Host.UI.RawUI.WindowTitle = "ARGUS LAN Scanner v3.8.12" } catch {}
+    # v3.8.12 FIX: WindowTitle setting in try/catch - sotto NSSM SYSTEM
+    # $Host.UI.RawUI puo' lanciare PSNotImplementedException se non c'e' console UI.
+    try { $Host.UI.RawUI.WindowTitle = "ARGUS LAN Scanner v3.8.13" } catch {}
+}
 
 # v3.8.12: rileva se siamo in modalita' headless (no console interattiva).
 # In headless silenziamo tutti i Write-Host, scriviamo solo su file di log.

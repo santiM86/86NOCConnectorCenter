@@ -2931,30 +2931,73 @@ function Start-Connector {
             }
             return
         }
-        # Imposta variabili scanner config dal file principale e invoca il loop scanner
-        $env:ARGUS_SCANNER_CENTER = $config.noc_center_url
-        $env:ARGUS_SCANNER_APIKEY = $config.api_key
-        $env:ARGUS_SCANNER_MODE = "scanner"
-        $env:ARGUS_SCANNER_SUBNET = $config.subnet
-        $env:ARGUS_SCANNER_VLAN = "$($config.vlan_id)"
-        # v3.8.12 FIX crash-loop: argus-scanner.ps1 puo' uscire per varie ragioni
-        # (eccezione non gestita, exit code, host UI mancante). Se ritorniamo qui
-        # senza guardia, il main termina, NSSM riavvia, e si crea un loop infinito
-        # ogni ~30s che fa apparire la tray icon rossa.
-        # Wrappiamo in retry+backoff per mantenere vivo il processo principale.
-        $scannerRestarts = 0
+        # v3.8.12 -> 3.8.13 FIX DEFINITIVO crash-loop: invece di lanciare argus-scanner
+        # come processo separato (& $scannerScript), che faceva morire il main connector
+        # quando lo scanner usciva per qualunque motivo, ora dot-sourciamo lo script
+        # con -AsLibrary per caricare SOLO le funzioni (l'entry point fa "return" al volo)
+        # e gestiamo l'intero loop heartbeat+scan QUI, dentro il try/catch globale di
+        # Run-Connector. Cosi' qualunque eccezione finisce nel catch di riga ~3084
+        # (Write-Log "Arresto..." + finally cleanup) e NON crasha il processo PS.
+        try {
+            . $scannerScript -AsLibrary -ConfigPath "$env:ProgramData\86NocConnector\scanner-config.json"
+            Write-Log "Funzioni argus-scanner caricate (dot-source -AsLibrary)" "INFO"
+        } catch {
+            Write-Log "Caricamento argus-scanner fallito: $($_.Exception.Message). Fallback heartbeat-only." "ERROR"
+        }
+
+        # Costruisci config compatibile con argus-scanner (Test-Hookup / Invoke-LanScanOnce)
+        $vlanInt = $null
+        if ("$($config.vlan_id)" -match "^\d+$") { $vlanInt = [int]$config.vlan_id }
+        $scannerCfg = [PSCustomObject]@{
+            center_url = $config.noc_center_url
+            api_key_encrypted = $null  # Settato sotto via Protect-String se la funzione esiste
+            mode = "scanner"
+            subnet = $config.subnet
+            vlan_id = $vlanInt
+            hostname = $env:COMPUTERNAME
+            scan_interval_seconds = 300
+            heartbeat_interval_seconds = 60
+            version = "3.8.13"
+        }
+        try {
+            if (Get-Command Protect-String -ErrorAction SilentlyContinue) {
+                $scannerCfg.api_key_encrypted = Protect-String $config.api_key
+            }
+        } catch { Write-Log "Protect-String fallita: $_" "WARN" }
+
+        # Invia primo heartbeat dal main connector cosi' il Center vede SUBITO online lo Scanner
+        Send-Heartbeat $config
+        Write-StatusFile "running"
+
+        # Loop principale scanner INLINE nel processo del main connector
+        $lastSchHb = (Get-Date).AddYears(-1)
+        $lastSchScan = (Get-Date).AddYears(-1)
+        $lastMainHb = Get-Date
         while ($global:Running) {
             try {
-                & $scannerScript
+                $now = Get-Date
+                # Heartbeat principale (master) ogni 60s -> popola connector_status mode=scanner
+                if (($now - $lastMainHb).TotalSeconds -ge 60) {
+                    Send-Heartbeat $config
+                    Write-StatusFile "running"
+                    $lastMainHb = $now
+                }
+                # Heartbeat secondario via argus-scanner Test-Hookup (se caricato) - ridondante,
+                # ma utile per audit e per popolare la riga `last_lan_scan_*` quando manca lo scan.
+                if (($now - $lastSchHb).TotalSeconds -ge 60 -and (Get-Command Test-Hookup -ErrorAction SilentlyContinue)) {
+                    try { Test-Hookup -Config $scannerCfg | Out-Null } catch { Write-Log "Test-Hookup err: $_" "WARN" }
+                    $lastSchHb = $now
+                }
+                # Scan LAN ogni 5 min via argus-scanner Invoke-LanScanOnce (se caricato e subnet OK)
+                if (($now - $lastSchScan).TotalSeconds -ge 300 -and $scannerCfg.subnet `
+                        -and (Get-Command Invoke-LanScanOnce -ErrorAction SilentlyContinue)) {
+                    try { Invoke-LanScanOnce -Config $scannerCfg | Out-Null } catch { Write-Log "LanScan err: $_" "WARN" }
+                    $lastSchScan = $now
+                }
             } catch {
-                Write-Log "Scanner crash: $($_.Exception.Message)" "ERR"
+                Write-Log "Scanner loop iter exception: $($_.Exception.Message)" "ERROR"
             }
-            $scannerRestarts++
-            $backoff = [Math]::Min(60, 5 + ($scannerRestarts * 5))
-            Write-Log "Scanner uscito (restart #$scannerRestarts) - retry tra ${backoff}s" "WARN"
-            Send-Heartbeat $config
-            Write-StatusFile "running"
-            Start-Sleep -Seconds $backoff
+            Start-Sleep -Seconds 5
         }
         return
     }
