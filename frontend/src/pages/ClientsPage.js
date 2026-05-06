@@ -284,9 +284,19 @@ export default function ClientsPage() {
 
 function StatusPill({ icon: Icon, value, color, label }) {
   return (
-    <div className="flex items-center gap-1 px-2 py-1 rounded-md bg-[var(--bg-card)] border border-[var(--bg-border)] min-w-0">
-      <Icon size={11} weight="bold" style={{ color }} />
-      <span className="text-[9px] font-bold font-mono" style={{ color }}>{value}</span>
+    <div
+      className="flex flex-col items-center justify-center gap-0.5 px-2 py-1 rounded-md bg-[var(--bg-card)] border border-[var(--bg-border)] min-w-[52px]"
+      title={label}
+    >
+      <div className="flex items-center gap-1">
+        <Icon size={11} weight="bold" style={{ color }} />
+        <span className="text-[9px] font-bold font-mono" style={{ color }}>{value}</span>
+      </div>
+      {label && (
+        <span className="text-[8px] uppercase tracking-wider text-[var(--text-muted)] leading-none">
+          {label}
+        </span>
+      )}
     </div>
   );
 }
