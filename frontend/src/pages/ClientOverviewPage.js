@@ -1132,8 +1132,8 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
   const rematchProfiles = async () => {
     try {
       const { data } = await axios.post(`${API}/clients/${clientId}/rematch-profiles`);
-      const { total = 0, matched = 0, skipped = 0, details = [] } = data || {};
-      if (matched === 0 && total === 0) {
+      const { total = 0, matched = 0, skipped = 0, details = [], community_propagated = 0, community_used = "" } = data || {};
+      if (matched === 0 && total === 0 && community_propagated === 0) {
         toast.info("Nessun device da riconoscere");
         return;
       }
@@ -1143,11 +1143,17 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
         .map(d => `• ${d.name || d.device_ip} → ${d.vendor || d.profile_key}`)
         .slice(0, 6);
       const extra = details.filter(d => d.matched).length - newMatches.length;
-      const body = newMatches.join("\n") + (extra > 0 ? `\n…e altri ${extra}` : "");
-      if (matched > 0) {
+      const lines = [];
+      if (community_propagated > 0 && community_used) {
+        lines.push(`🔑 Community '${community_used}' propagata su ${community_propagated} device`);
+      }
+      if (newMatches.length) lines.push(...newMatches);
+      if (extra > 0) lines.push(`…e altri ${extra} profili`);
+      const body = lines.join("\n");
+      if (matched > 0 || community_propagated > 0) {
         toast.success(
-          `Profilo agganciato su ${matched}/${total} device`,
-          { description: body || `Skipped: ${skipped}`, duration: 7000 },
+          `Profili ${matched}/${total}${community_propagated ? ` · community su ${community_propagated} dev.` : ""}`,
+          { description: body || `Skipped: ${skipped}`, duration: 8000 },
         );
         onRefresh?.();
       } else {

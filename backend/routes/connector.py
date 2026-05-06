@@ -536,6 +536,34 @@ async def connector_lan_scan(request: Request, report: LanScanReport):
                 # Schedule Fingerbank: anche per LAA, perche' Fingerbank con DHCP
                 # fingerprint puo' identificare il device anche senza OUI.
                 bg_fingerbank.append((mac_norm, ep.ip))
+                # v3.8.19: First-seen alert - notifica admin che e' arrivato
+                # un nuovo device in azienda (entro 5-10 min dalla connessione).
+                try:
+                    await db.alerts.insert_one({
+                        "id": __import__("uuid").uuid4().hex,
+                        "client_id": client_id,
+                        "device_ip": ep.ip,
+                        "device_name": display_name,
+                        "severity": "info",
+                        "category": "discovery",
+                        "title": "Nuovo dispositivo rilevato",
+                        "message": f"Nuovo device sulla rete {report.subnet}: {display_name} (MAC {mac_norm}, vendor: {vendor_guess or 'sconosciuto'}, VLAN {report.vlan_id or 'n/d'})",
+                        "metadata": {
+                            "mac": mac_norm,
+                            "mac_is_random": mac_is_laa,
+                            "vendor": vendor_guess,
+                            "subnet": report.subnet,
+                            "vlan_id": report.vlan_id,
+                            "discovered_via": ep.discovered_via or "scanner",
+                            "first_seen_via": "connector-scanner",
+                        },
+                        "status": "active",
+                        "acknowledged": False,
+                        "created_at": now_iso,
+                        "updated_at": now_iso,
+                    })
+                except Exception as ae:
+                    logger.warning(f"[LAN-SCAN] first-seen alert failed for {ep.ip}: {ae}")
             except Exception as e:
                 logger.warning(f"[LAN-SCAN] insert managed_devices failed for {ep.ip}: {e}")
 

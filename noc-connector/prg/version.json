@@ -1,4 +1,4 @@
 {
-  "version": "3.8.14",
-  "changelog": "v3.8.14 - Aggiunto pulsante 'Salva' nella finestra Scansione di rete del Connector Scanner + autosave dopo scansione completata e dopo 'Invia al Center'. Persistenza in C:\\ProgramData\\86NocConnector\\last-scan.json. All'apertura della finestra l'ultimo elenco scansionato viene ricaricato automaticamente, cosi' chiudendo e riaprendo la GUI i dati restano visibili. Lista host conservata tra restart del servizio."
+  "version": "3.8.19",
+  "changelog": "v3.8.19 - SCANNER SNMP POLLER + FIRST-SEEN ALERT. Lo Scanner ora polla SNMP i device del cliente che cadono dentro la propria subnet (es. 192.168.16.0/24): recupera lista da /api/connector/managed-devices, filtra per subnet locale, esegue Get-SnmpValue su 5 OID standard (sysDescr/sysName/sysObjectID/sysUptime/sysLocation) ogni 5 minuti, e pusha tutto via /api/connector/device-report con flag polled_by_mode=scanner. Cosi' i device sulle VLAN remote isolate vengono finalmente monitorati end-to-end. Backend: alert automatico 'Nuovo dispositivo rilevato' creato in db.alerts ogni volta che lo Scanner scopre un nuovo device. Footprint stimato: 0.14 KB/s di banda + <2% CPU picco ogni 5 min. Niente nuovi processi/servizi: tutto dentro lo stesso PowerShell del main connector."
 }
