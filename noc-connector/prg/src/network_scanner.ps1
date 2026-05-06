@@ -155,6 +155,20 @@ function Show-NetworkScanner {
     $btnExport.Cursor = [System.Windows.Forms.Cursors]::Hand
     $form.Controls.Add($btnExport)
 
+    # v3.8.14: pulsante Salva. Persiste l'ultima scansione su disco
+    # (last-scan.json in ProgramData) cosi' alla riapertura della finestra
+    # la lista non e' piu' vuota.
+    $btnSave = New-Object System.Windows.Forms.Button
+    $btnSave.Text = "Salva"
+    $btnSave.Size = New-Object System.Drawing.Size(120, 32)
+    $btnSave.Location = New-Object System.Drawing.Point(170, 525)
+    $btnSave.FlatStyle = "Flat"
+    $btnSave.BackColor = [System.Drawing.Color]::FromArgb(245, 158, 11)
+    $btnSave.ForeColor = [System.Drawing.Color]::White
+    $btnSave.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+    $btnSave.Cursor = [System.Windows.Forms.Cursors]::Hand
+    $form.Controls.Add($btnSave)
+
     $btnSend = New-Object System.Windows.Forms.Button
     $btnSend.Text = "Invia tutti al Center"
     $btnSend.Size = New-Object System.Drawing.Size(180, 32)
@@ -165,6 +179,81 @@ function Show-NetworkScanner {
     $btnSend.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
     $btnSend.Cursor = [System.Windows.Forms.Cursors]::Hand
     $form.Controls.Add($btnSend)
+
+    # v3.8.14: file persistenza scansione
+    $script:NS_LastScanFile = Join-Path $env:ProgramData "86NocConnector\last-scan.json"
+
+    function NSv2-SaveScan {
+        param($SubnetText, $ListView)
+        try {
+            $dir = Split-Path $script:NS_LastScanFile -Parent
+            if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+            $rows = @()
+            foreach ($it in $ListView.Items) {
+                $rows += [ordered]@{
+                    state    = $it.Text
+                    ip       = $it.SubItems[1].Text
+                    hostname = $it.SubItems[2].Text
+                    mac      = $it.SubItems[3].Text
+                    vendor   = $it.SubItems[4].Text
+                    rtt_ms   = $it.SubItems[5].Text
+                }
+            }
+            @{
+                saved_at = (Get-Date -Format "o")
+                subnet   = $SubnetText
+                count    = $rows.Count
+                rows     = $rows
+            } | ConvertTo-Json -Depth 5 | Set-Content -Path $script:NS_LastScanFile -Encoding UTF8
+            return $true
+        } catch {
+            return $false
+        }
+    }
+
+    function NSv2-LoadScan {
+        param($SubnetTextBox, $StatusLabel, $ListView)
+        try {
+            if (-not (Test-Path $script:NS_LastScanFile)) { return $false }
+            $j = Get-Content $script:NS_LastScanFile -Raw | ConvertFrom-Json
+            if (-not $j.rows) { return $false }
+            $ListView.Items.Clear()
+            foreach ($r in $j.rows) {
+                $item = New-Object System.Windows.Forms.ListViewItem($r.state)
+                $item.SubItems.Add([string]$r.ip)       | Out-Null
+                $item.SubItems.Add([string]$r.hostname) | Out-Null
+                $item.SubItems.Add([string]$r.mac)      | Out-Null
+                $item.SubItems.Add([string]$r.vendor)   | Out-Null
+                $item.SubItems.Add([string]$r.rtt_ms)   | Out-Null
+                $item.ForeColor = [System.Drawing.Color]::FromArgb(22, 163, 74)
+                $ListView.Items.Add($item) | Out-Null
+            }
+            if ($j.subnet) { $SubnetTextBox.Text = $j.subnet }
+            $when = ""
+            try { $when = ([datetime]$j.saved_at).ToLocalTime().ToString("dd/MM HH:mm") } catch {}
+            $StatusLabel.Text = "Caricata ultima scansione salvata ($($j.count) host, $when). Premi 'Avvia scansione' per aggiornare."
+            return $true
+        } catch {
+            return $false
+        }
+    }
+
+    $btnSave.Add_Click({
+        if ($lst.Items.Count -eq 0) {
+            [System.Windows.Forms.MessageBox]::Show("Nessun dato da salvare. Avvia prima una scansione.","Scansione di rete","OK","Information") | Out-Null
+            return
+        }
+        if (NSv2-SaveScan $txtSubnet.Text $lst) {
+            [System.Windows.Forms.MessageBox]::Show("Salvati $($lst.Items.Count) host in:`r`n$($script:NS_LastScanFile)`r`n`r`nAlla prossima apertura della finestra i dati verranno ricaricati automaticamente.","Scansione di rete","OK","Information") | Out-Null
+        } else {
+            [System.Windows.Forms.MessageBox]::Show("Errore salvataggio in $($script:NS_LastScanFile)","Scansione di rete","OK","Error") | Out-Null
+        }
+    })
+
+    # Auto-load all'apertura del form (se esiste un salvataggio precedente)
+    $form.Add_Shown({
+        try { [void](NSv2-LoadScan $txtSubnet $lblStatus $lst) } catch {}
+    })
 
     # ----- AVVIA SCANSIONE: pattern sequenziale + DoEvents -----
     $btnStart.Add_Click({
@@ -214,6 +303,8 @@ function Show-NetworkScanner {
         $lblStatus.Text = "Scansione completata: $found host vivi su $count IP testati."
         $btnStart.Enabled = $true
         $btnStart.Text = "Avvia scansione"
+        # v3.8.14: autosave fine scansione
+        try { [void](NSv2-SaveScan $txtSubnet.Text $lst) } catch {}
     })
 
     # ----- ESPORTA CSV -----
@@ -282,6 +373,8 @@ function Show-NetworkScanner {
             $r = Invoke-RestMethod -Uri "$centerUrl/api/connector/lan-scan" `
                 -Method POST -Headers @{ "X-API-Key" = $apiKey } `
                 -Body $body -ContentType "application/json" -TimeoutSec 30
+            # v3.8.14: autosave dopo invio al Center
+            try { [void](NSv2-SaveScan $txtSubnet.Text $lst) } catch {}
             [System.Windows.Forms.MessageBox]::Show("Inviati $($r.stored)/$($r.total) host al Center.`r`n`r`nVerifica nella dashboard Web nella sezione Discovery.","Scansione di rete","OK","Information") | Out-Null
         } catch {
             [System.Windows.Forms.MessageBox]::Show("Errore invio: $($_.Exception.Message)","Scansione di rete","OK","Error") | Out-Null
