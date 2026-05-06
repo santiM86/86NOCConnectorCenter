@@ -68,6 +68,23 @@ class DeviceResponse(BaseModel):
     has_credentials: bool = False
     last_poll: Optional[str] = None
     health_status: Optional[str] = None
+    # source: where the device record originated
+    source: Optional[str] = None  # manual | connector-master | connector-scanner | managed
+    auto_added: Optional[bool] = False
+    discovered_via: Optional[str] = None
+    discovered_subnet: Optional[str] = None
+    vlan_id: Optional[int] = None
+    last_seen_at: Optional[str] = None
+    sys_descr: Optional[str] = None
+    cpu_usage: Optional[float] = None
+    memory_usage: Optional[float] = None
+    temperature: Optional[float] = None
+    uptime: Optional[str] = None
+    connector_hostname: Optional[str] = None
+    snmp_community: Optional[str] = None
+    snmp_version: Optional[str] = None
+    ports: Optional[list] = None
+    ping_ms: Optional[float] = None
     # Web Console (auto-detected by Connector tray "Apri Web UI")
     web_console_url: Optional[str] = None
     web_console_port: Optional[int] = None
@@ -83,6 +100,17 @@ class DeviceResponse(BaseModel):
     # Alert silencing (admin can silence alerts per-device for noisy/best-effort devices)
     alerts_silenced: Optional[bool] = False
     alerts_silenced_reason: Optional[str] = None
+    # v3.8.16+: Scanner enrichment fields (MAC, randomization flag, Fingerbank)
+    mac: Optional[str] = None
+    mac_is_random: Optional[bool] = False
+    fingerbank_device_name: Optional[str] = None
+    fingerbank_score: Optional[int] = None
+    # v3.8.17: connection classification (LAN cavo / Wi-Fi)
+    connection_type: Optional[str] = None  # "lan" | "wifi" | "unknown"
+    connection_source: Optional[str] = None  # cam_table | lldp:ap=... | laa_inference | self_is_lldp_device | no_mac
+    connection_via_switch: Optional[str] = None
+    connection_via_port: Optional[str] = None
+    connection_confidence: Optional[int] = None  # 0-99
     created_at: str
 
 class AlertCreate(BaseModel):
