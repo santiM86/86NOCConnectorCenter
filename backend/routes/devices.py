@@ -2,7 +2,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from typing import List, Optional
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from database import db
 from models import DeviceCreate, DeviceResponse, DeviceCredentials, RedfishTestRequest
@@ -63,6 +63,24 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
         if md_ip:
             managed_by_ip[md_ip] = md
 
+    # v3.8.22 SCANNER LIVE-SEEN: cross-check con discovered_endpoints.
+    # Lo Scanner aggiorna SEMPRE discovered_endpoints (lan-scan ARP/mDNS) anche
+    # per device aggiunti manualmente (source=manual / connector-master). Usiamo
+    # questa collection come fonte di verita' "device visto recentemente sulla
+    # rete dello Scanner". Se IP visto < 5min => online, prevale sul Master.
+    scanner_seen_recent_ips = set()
+    try:
+        five_min_ago_iso = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+        de_query = query.copy()
+        de_query["source_connector_mode"] = "scanner"
+        de_query["last_seen_at"] = {"$gte": five_min_ago_iso}
+        async for de in db.discovered_endpoints.find(de_query, {"_id": 0, "ip": 1}):
+            de_ip = de.get("ip")
+            if de_ip:
+                scanner_seen_recent_ips.add(de_ip)
+    except Exception:
+        pass
+
     # Enrich manually-added devices with profile_key from managed_devices/poll_status
     for d in devices:
         ip = d.get("ip_address")
@@ -76,6 +94,10 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
         # alerts_silenced flag (managed_devices wins; default False)
         d["alerts_silenced"] = bool(md.get("alerts_silenced", d.get("alerts_silenced", False)))
         d["alerts_silenced_reason"] = md.get("alerts_silenced_reason") or d.get("alerts_silenced_reason") or ""
+        # v3.8.22 LIVE-SEEN: se lo Scanner ha visto questo IP nelle ultime 5min,
+        # forza "online" anche se Master/manual lo davano per offline.
+        if ip in scanner_seen_recent_ips:
+            d["status"] = "online"
 
     # Merge: add connector devices that aren't already in manual list
     for pd in poll_devices:
@@ -131,6 +153,10 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
                         md_status = "online"
             except Exception:
                 pass
+            # v3.8.22 LIVE-SEEN: anche per device manuali, se lo Scanner li vede
+            # recentemente in discovered_endpoints, prevale "online".
+            if ip in scanner_seen_recent_ips:
+                md_status = "online"
             devices.append({
                 "id": f"poll_{ip.replace('.','_')}",
                 "client_id": pd.get("client_id", ""),
@@ -200,7 +226,11 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
         md_source = md.get("source") or "managed"
         # Status: i device dal Scanner sono "online" (li abbiamo appena visti via ARP/mDNS)
         # se last_seen_at recente; altrimenti pending.
-        if md_source == "connector-scanner" and md.get("last_seen_at"):
+        # v3.8.22 LIVE-SEEN: se lo Scanner ha visto questo IP <5min via discovered_endpoints
+        # forza "online" anche se source=manual o source=connector-master.
+        if md_ip in scanner_seen_recent_ips:
+            md_status = "online"
+        elif md_source == "connector-scanner" and md.get("last_seen_at"):
             md_status = "online"
         else:
             md_status = "pending"
