@@ -162,6 +162,14 @@ export default function DiscoveryPage({ scopedClientId = null, scopedClientName 
         </div>
       </div>
 
+      {/* v3.8.15: nuovo workflow info */}
+      <div className="rounded-md border border-sky-500/30 bg-sky-500/10 p-3 flex items-start gap-2" data-testid="auto-add-banner">
+        <svg className="w-4 h-4 mt-0.5 text-sky-400 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" /></svg>
+        <div className="text-[11px] text-[var(--text-secondary)] leading-relaxed">
+          <span className="font-semibold text-sky-300">Nuovo workflow (v3.8.15)</span> — gli endpoint scoperti dal <strong>Connector Scanner</strong> vengono <strong>aggiunti automaticamente</strong> nella sezione <strong>Dispositivi</strong> del cliente con <code className="px-1 rounded bg-sky-500/10">FONTE = SCANNER</code>, riconoscimento OUI immediato e arricchimento Fingerbank in background. Niente piu' approvazione manuale per gli scanner. Questa pagina resta utile per la discovery <strong>SNMP attiva</strong> dal Connector Master e per il match BMC (iLO/iDRAC/IPMI).
+        </div>
+      </div>
+
       {/* Status banner */}
       {status === "in_progress" && (
         <div className="rounded-lg border border-blue-500/30 bg-blue-500/5 p-3 flex items-center gap-2" data-testid="discovery-scanning">
