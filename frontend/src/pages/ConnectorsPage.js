@@ -160,7 +160,15 @@ export default function ConnectorsPage() {
     } catch { toast.error("Errore nel reset"); }
   };
 
-  const isOnline = (lastSeen) => lastSeen && (Date.now() - new Date(lastSeen).getTime()) < 120000;
+  // v3.8.20: Scanner ha soglia online piu' larga (10 min vs 2 min Master).
+  // Il loop scanner viene bloccato dal lan-scan ogni 5 min per ~30s, piu' latenza
+  // cross-VLAN. La soglia stretta del Master li rendeva ingiustamente "OFFLINE".
+  const isOnline = (lastSeen, mode) => {
+    if (!lastSeen) return false;
+    const elapsed = Date.now() - new Date(lastSeen).getTime();
+    const threshold = mode === "scanner" ? 600000 : 120000;
+    return elapsed < threshold;
+  };
 
   const formatUptime = (seconds) => {
     if (!seconds) return "N/A";
@@ -182,7 +190,7 @@ export default function ConnectorsPage() {
     return d.toLocaleDateString("it-IT", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
   };
 
-  const onlineCount = connectors.filter(c => isOnline(c.last_seen)).length;
+  const onlineCount = connectors.filter(c => isOnline(c.last_seen, c.mode)).length;
   const offlineCount = connectors.length - onlineCount;
 
   // Group connectors by client
@@ -375,7 +383,7 @@ export default function ConnectorsPage() {
             }
             return ordered;
           })().map((c, i) => {
-            const online = isOnline(c.last_seen);
+            const online = isOnline(c.last_seen, c.mode);
             const isChild = c._isChild;
             return (
               <div key={i}
