@@ -370,7 +370,13 @@ app.add_middleware(
     max_age=600,
 )
 app.add_middleware(SecurityHeadersMiddleware)
-app.add_middleware(GlobalRateLimitMiddleware)
+# v3.8.21: GlobalRateLimitMiddleware DISABILITATO. Causava 429 a cascata in produzione
+# perche' dietro proxy (Emergent ingress / nginx) request.client.host punta all'IP del
+# proxy stesso, non al client reale: tutte le request finiscono nello stesso bucket
+# e dopo ~600 req/min totali (UI admin + connector heartbeat + device-report + web-proxy
+# long-poll + network-discovery + ecc.) tutti i client vengono rate-limited insieme.
+# L'utente aveva gia' richiesto la rimozione il 10/02/2026 (vedi PRD.md).
+# app.add_middleware(GlobalRateLimitMiddleware)
 app.add_middleware(RequestTimeoutMiddleware)
 app.add_middleware(BodySizeLimitMiddleware)
 app.add_middleware(OriginVerifyMiddleware)
