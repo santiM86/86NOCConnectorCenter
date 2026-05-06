@@ -26,48 +26,49 @@ Questi due asset sono parte del flusso CI/CD verso `argus.86bit.it` e sono **mis
 
 # ARGUS Center — NOC Platform (86bit)
 
-## 2026-05-06 SERA — INCIDENT RECOVERY + ANTI-VALANGA SCANNER + LISTENER ZOMBIE FIX (v3.8.21)
-**Incidente in produzione (16:00 ITA)**: backend `argus.86bit.it` rispondeva 429/502/timeout a cascata. UI vuota.
+## 2026-05-06 SERA — INCIDENT RECOVERY + ANTI-VALANGA + LISTENER ZOMBIE FIX + BACKOFF (v3.8.22)
 
+**Incidente in produzione (16:00 ITA)**: backend `argus.86bit.it` rispondeva 429/502/timeout a cascata. UI vuota.
 **Root cause**: `GlobalRateLimitMiddleware` (600 req/min per IP) re-introdotto contro la richiesta utente del 10/02. Dietro proxy Emergent ingress raggruppava tutte le richieste sotto l'IP del proxy → saturazione globale.
 
-**Fix v3.8.21 applicati nel preview env (da pushare in produzione)**:
+### Fix backend (in `/app/backend/`)
+1. **`server.py` riga 373**: `GlobalRateLimitMiddleware` commentato. Sicurezza preservata (JWT, HMAC+API key, CORS strict, SecurityHeaders, BodySizeLimit, OriginVerify tutti attivi).
+2. **`routes/connector.py` heartbeat auto-clear**: `force-update` salva `target_version`; heartbeat resetta lo stato quando `connector_version >= target_version`.
+3. **`routes/connector.py` /api/connector/lan-scan anti-valanga**: 3 protezioni configurabili via env:
+   - Skip MAC LAA senza hostname (privacy iPhone/Android NON entrano in managed_devices)
+   - Cap `LAN_SCAN_MAX_AUTO_ADD_PER_CALL=10` per chiamata
+   - Throttle `LAN_SCAN_MAX_AUTO_ADD_PER_DAY=50` per cliente / 24h
+   - Response arricchita con counter skipped[laa, cap, throttle]
+4. **`routes/connector.py` POST /api/admin/cleanup-scanner-rogue-devices** (NUOVO, admin-only):
+   - Body: `{ since_iso?, client_id?, confirm:false|true }`
+   - confirm=false → dry-run (count); confirm=true → delete
+   - Cancella `managed_devices` (source=connector-scanner) + `discovered_endpoints` (mode=scanner) + `alerts` (category=discovery)
+   - Idempotente, audit-logged
+5. **`routes/web_proxy.py` LONG_POLL_MAX_SEC**: aumentato da 25 a 60s per supportare il nuovo long-poll del connector.
 
-### 1. Rimozione rate limiter globale
-- `/app/backend/server.py` riga 373: `GlobalRateLimitMiddleware` commentato con motivazione esplicita.
-- Sicurezza preservata: JWT, HMAC+API key connector, CORS strict, SecurityHeaders, BodySizeLimit, OriginVerify tutti attivi.
+### Fix Connector PowerShell `noc-connector/prg/src/connector.ps1` v3.8.22
+6. **Backoff esponenziale** globale per ogni endpoint del Center:
+   - `Test-BackoffSkip` / `Register-BackoffFailure` / `Reset-BackoffState` (riga 331-371)
+   - Cooldown progressivo dopo failure 5xx/timeout/network: 5s → 10s → 20s → 40s → 60s (cap)
+   - Errori CLIENT (401/404/400) NON contano (lasciano la chiamata libera)
+   - Reset automatico su prima chiamata di successo
+   - Risolve i burst di retry che peggiorano la situazione quando il backend ha un problema temporaneo
+7. **Long-poll web-proxy/pending**: portato da `wait=20` a `wait=60` (riduce traffico HTTP del 66%, da 3 a 1 richiesta/min).
+8. **Free-UdpPort($port)**: nuova funzione che identifica e killa processi PowerShell orfani che tengono porte 162/514 dai restart precedenti. Chiamata prima di `New-Object UdpClient`. Risolve il restart-loop infinito "ERRORE porta SNMP 162: socket gia' in uso".
+9. **Try/finally** nei listener UDP: garantisce `$udpClient.Close()` anche su crash → niente più socket in CLOSE_WAIT prolungato.
 
-### 2. Fix anti-valanga Scanner auto-add (`/api/connector/lan-scan`)
-3 protezioni configurabili via env:
-- **Skip MAC LAA senza hostname**: i privacy MAC di iPhone/Android (bit 0x02 settato) NON vengono auto-aggiunti come `managed_devices` se non hanno hostname valido. Restano solo come `discovered_endpoints` (vista network).
-- **Cap per chiamata** `LAN_SCAN_MAX_AUTO_ADD_PER_CALL=10` (default).
-- **Throttle 24h per cliente** `LAN_SCAN_MAX_AUTO_ADD_PER_DAY=50` (default).
-- Response arricchita con counter skipped + limiti correnti per debugging.
+### Fix UI Frontend `frontend/src/pages/ClientsPage.js`
+10. `StatusPill` riga 285: ora renderizza il `label` (DISP./WAN/CONN./ALERT) sotto l'icona.
 
-### 3. Endpoint admin cleanup retroattivo
-- `POST /api/admin/cleanup-scanner-rogue-devices`
-- Body: `{ since_iso?, client_id?, confirm: false|true }`
-- `confirm=false` (default) ⇒ **dry-run** restituisce count (sicuro).
-- `confirm=true` ⇒ delete `managed_devices` (source=connector-scanner) + `discovered_endpoints` (mode=scanner) + `alerts` (category=discovery).
-- Idempotente, audit-logged, admin-only (403 senza ruolo admin/security_admin).
+### Test pytest: 19/19 passati
+- `/app/backend/tests/test_lan_scan_anti_valanga.py` (8/8): MAC LAA detection, skip privacy anonimi, keep LAA con hostname, cap, throttle, scenario realistico Galvani 80→10
+- `/app/backend/tests/test_heartbeat_auto_clear.py` (4/4): target reached/below/exceeds, is_newer_version base
+- `/app/backend/tests/test_connector_backoff_logic.py` (7/7): 5/10/20/40/60 progressivo, skip durante cooldown, isolamento per endpoint, scenario realistico backend giù 90s
 
-### 4. Fix heartbeat auto-clear (gia' incluso da fix mattina)
-- `force-update` salva `target_version`; `heartbeat` resetta lo stato quando `connector_version >= target_version`.
-
-### 5. UI: etichette pill su lista Clienti
-- `/app/frontend/src/pages/ClientsPage.js` riga 285: `StatusPill` ora renderizza il `label` (DISP./WAN/CONN./ALERT) sotto l'icona — riempie l'area vuota sopra le pill nella vista Clienti.
-
-### 6. Fix Connector PowerShell — listener UDP zombie (v3.8.21)
-- `/app/noc-connector/prg/src/connector.ps1`: nuova funzione `Free-UdpPort($port)` che identifica e killa i processi PowerShell orfani (di precedenti restart del connector) che tengono ancora le porte 162/514. Chiamata prima di `New-Object UdpClient`.
-- Try/finally garantisce `$udpClient.Close()` anche in caso di crash, evita socket in CLOSE_WAIT/TIME_WAIT prolungato.
-- Risolve il restart-loop infinito "ERRORE porta SNMP 162: socket gia' in uso" che riempiva i log ogni 60s.
-- `version.json` bumpato a v3.8.21.
-
-**Test pytest**: 12/12 passati
-- `/app/backend/tests/test_lan_scan_anti_valanga.py` (8/8): MAC LAA detection, skip privacy anonimi, keep LAA con hostname, cap, throttle, scenario realistico Galvani 80 endpoints → 10 added.
-- `/app/backend/tests/test_heartbeat_auto_clear.py` (4/4): target reached/below/exceeds, is_newer_version base.
-
-**Backend smoke test**: `/api/` 200 OK, `/api/admin/cleanup-scanner-rogue-devices` 403 senza JWT (corretto), 200 con admin token in dry-run.
+### Riduzione traffico stimata
+- Long-poll wait=20→60: -66% richieste web-proxy/pending (da ~180/h a ~60/h per connector)
+- Backoff esponenziale: in caso di outage server, traffico ridotto del **95%+** (no più burst di retry continuo)
+- Anti-valanga Scanner: previene esplosioni di 80+ device da auto-aggiunte multiple in una scansione
 
 ## 2026-05-06 — FIX P0 loop fasullo "Aggiornamento in corso" (Connector heartbeat)
 - **Root cause**: `force-update` impostava `force_update=True` e `update_status="queued"` su `connector_status`, ma NON salvava `target_version`. L'heartbeat dell'endpoint provava a clear lo stato confrontando `update_info.version` (versione attualmente attiva nel DB) con `heartbeat.connector_version` — se nel mentre veniva pubblicata una versione piu' recente come `active`, il confronto restituiva sempre "manca update", lo status non veniva mai resettato e `force_update` ri-triggerava all'infinito anche se il connector era gia' alla versione richiesta.

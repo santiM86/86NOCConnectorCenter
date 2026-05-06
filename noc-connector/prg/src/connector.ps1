@@ -328,10 +328,55 @@ function Send-WakeOnLAN([string]$macAddress, [string]$targetIP) {
 }
 
 
+# ============================================================================
+# v3.8.22 — BACKOFF ESPONENZIALE
+# Quando una chiamata al Center fallisce per problema server (5xx/timeout/
+# network) il connector entra in cooldown progressivo per quel singolo endpoint:
+#   1° fail = 5s, 2° = 10s, 3° = 20s, 4° = 40s, 5°+ = 60s (cap)
+# Durante il cooldown la chiamata viene SALTATA (return null) senza riprovare.
+# Su prima chiamata di successo, lo stato si resetta a 0.
+# Errori CLIENT (401/404/400) NON contano: il problema e' lato config, non
+# server overload.
+# ============================================================================
+function Test-BackoffSkip($endpoint) {
+    if (-not $global:BackoffState) { $global:BackoffState = @{} }
+    $st = $global:BackoffState[$endpoint]
+    if (-not $st) { return $false }
+    if ((Get-Date) -lt $st.NextRetryAt) { return $true }
+    return $false
+}
+
+function Register-BackoffFailure($endpoint) {
+    if (-not $global:BackoffState) { $global:BackoffState = @{} }
+    $st = $global:BackoffState[$endpoint]
+    if (-not $st) { $st = @{ Failures = 0; NextRetryAt = (Get-Date) } }
+    $st.Failures = [int]$st.Failures + 1
+    # 5s, 10s, 20s, 40s, 60s (cap)
+    $delays = @(5, 10, 20, 40, 60)
+    $idx = [Math]::Min($st.Failures - 1, $delays.Length - 1)
+    $delaySec = $delays[$idx]
+    $st.NextRetryAt = (Get-Date).AddSeconds($delaySec)
+    $global:BackoffState[$endpoint] = $st
+    if ($st.Failures -le 3 -or ($st.Failures % 10) -eq 0) {
+        Write-Log "Backoff $endpoint: fallimento #$($st.Failures), prossimo retry tra ${delaySec}s" "WARN"
+    }
+}
+
+function Reset-BackoffState($endpoint) {
+    if (-not $global:BackoffState) { $global:BackoffState = @{} }
+    if ($global:BackoffState.ContainsKey($endpoint) -and $global:BackoffState[$endpoint] -and $global:BackoffState[$endpoint].Failures -gt 0) {
+        Write-Log "Backoff $endpoint: reset (chiamata riuscita dopo $($global:BackoffState[$endpoint].Failures) fallimenti)" "INFO"
+    }
+    if ($global:BackoffState.ContainsKey($endpoint)) { [void]$global:BackoffState.Remove($endpoint) }
+}
+
+
 function Invoke-SecureGet($config, $endpoint, $timeoutSec = 15) {
     # GET verso il NOC. v3.5.24: HMAC opzionale (config.enable_hmac).
     # Per default mando solo X-API-Key (modalita' legacy retrocompatibile col
     # backend prod che esisteva prima dell'introduzione di HMAC).
+    # v3.8.22: backoff esponenziale per evitare burst di retry su errori
+    if (Test-BackoffSkip $endpoint) { return $null }
     try {
         try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13 } catch { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 }
         $url = "$($config.noc_center_url)/api/$endpoint"
@@ -353,11 +398,16 @@ function Invoke-SecureGet($config, $endpoint, $timeoutSec = 15) {
             $headers["X-Nonce"]          = $nonce
         }
 
-        return Invoke-RestMethod -Uri $url -Method Get -Headers $headers -TimeoutSec $timeoutSec -ErrorAction Stop
+        $result = Invoke-RestMethod -Uri $url -Method Get -Headers $headers -TimeoutSec $timeoutSec -ErrorAction Stop
+        Reset-BackoffState $endpoint
+        return $result
     } catch {
         # v3.5.16: messaggi di errore actionable per 401 (vs 404/500/network)
         $msg = $_.Exception.Message
         $isAuth = ($msg -match "401" -or $msg -match "Non autorizzato" -or $msg -match "Unauthorized")
+        # v3.8.22: registra failure per backoff esponenziale (404/401 NON contano: bug client, non server overload)
+        $isClientErr = ($msg -match "404" -or $msg -match "400" -or $isAuth)
+        if (-not $isClientErr) { Register-BackoffFailure $endpoint }
         if ($isAuth) {
             $global:Stats.auth_failures = [int]($global:Stats.auth_failures) + 1
             # Logga warning DETTAGLIATO solo ogni 10 fallimenti per non inondare il log
@@ -375,6 +425,8 @@ function Invoke-SecureGet($config, $endpoint, $timeoutSec = 15) {
 
 
 function Send-ToNOC($config, $endpoint, $payload) {
+    # v3.8.22: backoff esponenziale per evitare burst di retry su errori server
+    if (Test-BackoffSkip $endpoint) { return $null }
     try {
         # === TLS 1.2/1.3 enforcement ===
         try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13 } catch { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 }
@@ -405,7 +457,8 @@ function Send-ToNOC($config, $endpoint, $payload) {
         }
 
         $response = Invoke-RestMethod -Uri $url -Method Post -Headers $headers -Body $body -TimeoutSec 15 -ErrorAction Stop
-        
+        Reset-BackoffState $endpoint  # v3.8.22
+
         # Handle key rotation from server
         if ($response.key_rotation -and $response.key_rotation.new_api_key) {
             Write-Log "API Key ruotata dal server. Aggiornamento config..." "WARN"
@@ -430,6 +483,9 @@ function Send-ToNOC($config, $endpoint, $payload) {
         $global:Stats.last_error = $errMsg
         # v3.5.16: messaggio chiaro + stop-the-bleed su 401
         $isAuth = ($errMsg -match "401" -or $errMsg -match "Non autorizzato" -or $errMsg -match "Unauthorized")
+        # v3.8.22: registra failure per backoff (escluso 401/404/400 che sono client error)
+        $isClientErr = ($errMsg -match "404" -or $errMsg -match "400" -or $isAuth)
+        if (-not $isClientErr) { Register-BackoffFailure $endpoint }
         if ($isAuth) {
             $global:Stats.auth_failures = [int]($global:Stats.auth_failures) + 1
             if (($global:Stats.auth_failures % 10) -eq 1) {
@@ -2056,9 +2112,10 @@ function Check-DiscoveryRequest($config) {
 
 function Check-WebProxyRequests($config) {
     try {
-        # Long-poll: attende fino a 20s che arrivi una richiesta (hot-trigger server).
-        # TimeoutSec 25 > wait 20 così la richiesta HTTP non scade prima del server.
-        $response = Invoke-SecureGet $config "connector/web-proxy/pending?wait=20" 25
+        # Long-poll: attende fino a 60s che arrivi una richiesta (hot-trigger server).
+        # v3.8.22: passato da wait=20 a wait=60 (riduce traffico HTTP del 66%).
+        # TimeoutSec 65 > wait 60 cosi' la richiesta HTTP non scade prima del server.
+        $response = Invoke-SecureGet $config "connector/web-proxy/pending?wait=60" 65
         
         if ($response.requests -and $response.requests.Count -gt 0) {
             foreach ($req in $response.requests) {
