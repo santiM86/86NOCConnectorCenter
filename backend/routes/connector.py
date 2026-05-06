@@ -276,27 +276,49 @@ async def connector_heartbeat(request: Request, heartbeat: ConnectorHeartbeat):
         }},
         upsert=True
     )
-    if existing and existing.get("update_status"):
+    if existing and (existing.get("update_status") or existing.get("force_update")):
+        # v3.8.21: AUTO-RICONOSCIMENTO COMPLETAMENTO UPDATE.
+        # Se il connector ha raggiunto (o superato) la target_version registrata
+        # al momento del force-update, l'aggiornamento e' avvenuto: resettiamo
+        # tutto lo stato per evitare il loop UI "queued/installing" infinito.
         update_info = await db.connector_updates.find_one({"active": True}, {"_id": 0})
         should_clear = False
-        if update_info:
-            if not is_newer_version(update_info["version"], heartbeat.connector_version):
+        clear_reason = ""
+        target_version = existing.get("target_version")
+        current_version = heartbeat.connector_version or "0.0.0"
+        if target_version:
+            # Connector >= target_version => update riuscito
+            if not is_newer_version(target_version, current_version):
                 should_clear = True
-        update_timestamp = existing.get("update_timestamp")
-        if update_timestamp:
-            try:
-                ts = datetime.fromisoformat(update_timestamp.replace("Z", "+00:00"))
-                elapsed = (datetime.now(timezone.utc) - ts).total_seconds()
-                if elapsed > 300:
+                clear_reason = f"reached target v{target_version} (current v{current_version})"
+        if not should_clear and update_info:
+            # Fallback legacy: la versione attiva non e' piu' recente di quella corrente
+            if not is_newer_version(update_info["version"], current_version):
+                should_clear = True
+                clear_reason = f"current v{current_version} >= active update v{update_info['version']}"
+        if not should_clear:
+            update_timestamp = existing.get("update_timestamp")
+            if update_timestamp:
+                try:
+                    ts = datetime.fromisoformat(update_timestamp.replace("Z", "+00:00"))
+                    elapsed = (datetime.now(timezone.utc) - ts).total_seconds()
+                    if elapsed > 300:
+                        should_clear = True
+                        clear_reason = f"update timeout ({elapsed:.0f}s elapsed)"
+                except Exception:
                     should_clear = True
-                    logger.warning(f"Update status timeout for {client_data.get('name')}: {elapsed:.0f}s elapsed, clearing")
-            except Exception:
-                should_clear = True
+                    clear_reason = "invalid update_timestamp"
         if should_clear:
+            logger.info(f"Auto-clearing update status for {client_data.get('name')} / {heartbeat.hostname}: {clear_reason}")
             await db.connector_status.update_one(
                 filter_q,
-                {"$unset": {"update_status": "", "force_update": "", "update_progress": "", "update_message": "", "update_timestamp": ""}}
+                {"$unset": {
+                    "update_status": "", "force_update": "", "update_progress": "",
+                    "update_message": "", "update_timestamp": "", "target_version": ""
+                }}
             )
+            # Anche force_update locale va azzerato per evitare il re-trigger sotto
+            force_update = False
     response = {"status": "ok"}
     pending_cmds = await db.pending_commands.find({"client_id": client_data["id"], "status": "pending"}, {"_id": 0}).sort("created_at", 1).to_list(10)
     if pending_cmds:
@@ -1148,6 +1170,7 @@ async def force_connector_update(
             "update_progress": 1,
             "update_message": f"Aggiornamento forzato a v{update_info['version']} — in attesa heartbeat",
             "update_timestamp": datetime.now(timezone.utc).isoformat(),
+            "target_version": update_info["version"],  # v3.8.21: persist target so heartbeat can auto-clear when reached
         }}
     )
     return {
