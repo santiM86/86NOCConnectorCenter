@@ -222,6 +222,15 @@ class ConnectorHeartbeat(BaseModel):
     mode: Optional[str] = "master"
     subnet: Optional[str] = None       # subnet visibile dal connector (es. "10.100.61.0/24")
     vlan_id: Optional[int] = None      # opzionale, per UI grouping
+    # v3.8.27 LIVE DIAGNOSTICS: telemetria operativa del connector inviata
+    # ad ogni heartbeat (~60s) per la UI Center. Tutti opzionali per retro-compat
+    # con connettori v3.8.x precedenti (i vecchi non li mandano e quelli rimangono
+    # None nel doc, la UI mostra '—' al posto del valore).
+    bytes_sent_60s: Optional[int] = None   # byte JSON inviati al NOC negli ultimi ~60s
+    bytes_recv_60s: Optional[int] = None   # byte ricevuti dal NOC negli ultimi ~60s
+    jobs_alive: Optional[int] = None       # job PowerShell in stato Running
+    jobs_total: Optional[int] = None       # totale job (alive + completed/failed)
+    ram_mb: Optional[int] = None           # WorkingSet64 del processo connector in MB
 
 
 class LanScanEndpoint(BaseModel):

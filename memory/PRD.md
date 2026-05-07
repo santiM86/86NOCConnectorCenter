@@ -1,3 +1,55 @@
+## 2026-05-07 NOTTE FINE — OPTION B: LIVE DIAGNOSTICS nel heartbeat (v3.8.28)
+
+**Richiesta utente** (option B precedentemente proposta): visibilita' live nella UI Center di traffico/job/RAM di ogni connettore senza dover SSH-are sul server cliente.
+
+### Implementazione full-stack
+
+**Connector PowerShell** (`/app/noc-connector/prg/src/connector.ps1`):
+- `$global:Stats` ha 2 nuovi contatori: `bytes_sent_60s` + `bytes_recv_60s`
+- `Send-ToNOC` accumula `body.Length` (sent) + `(response | ConvertTo-Json -Compress).Length` (recv) ad ogni POST riuscito
+- `Invoke-SecureGet` accumula i bytes ricevuti su ogni GET riuscito
+- `Send-Heartbeat` ad ogni ciclo (~60s):
+  - Legge i contatori, li include nel payload, li resetta a 0
+  - Conta `Get-Job | ? State=Running` (jobs_alive/jobs_total)
+  - Calcola RAM `(Get-Process -Id $PID).WorkingSet64 / 1MB`
+
+**Backend** (`models.py` + `routes/connector.py`):
+- `ConnectorHeartbeat` ha 5 nuovi campi opzionali: `bytes_sent_60s`, `bytes_recv_60s`, `jobs_alive`, `jobs_total`, `ram_mb` (tutti `Optional[int] = None`)
+- `connector_heartbeat` salva i campi nel DB SOLO se forniti dal connector (retro-compat con v3.8.27 e precedenti)
+- `/api/connector/status` automaticamente li include (find con `_id:0` esposto al frontend)
+
+**Frontend** (`pages/ConnectorsPage.js`):
+- Nuovo blocco "live diagnostics chip" sotto la riga InfoItem di ogni connettore. Si mostra SOLO se almeno uno dei campi e' presente (`!== undefined`). Per i connettori vecchi non si vede nulla, niente slot vuoto.
+- 4 chip color-coded:
+  - ↑ `bytes_sent_60s/1024 KB/min` (cyan)
+  - ↓ `bytes_recv_60s/1024 KB/min` (blue)
+  - ⚙ `jobs_alive/jobs_total` job (verde se uguale, ambra se < total)
+  - ▦ `ram_mb` (verde <100, ambra 100-200, rosso >200 = sospetto leak)
+- Tooltip dettagliati su ogni chip
+
+### Verifica end-to-end
+- ✅ `POST /api/connector/heartbeat` con i nuovi campi → 200 + DB salva tutti
+- ✅ `POST /api/connector/heartbeat` LEGACY senza nuovi campi → 200 + DB NON sporca con None (campi `not present`)
+- ✅ `GET /api/connector/status` ritorna i campi nuovi
+- ✅ Smoke screenshot UI: chip visibili e formattati (`↑ 18.0 KB/min` `↓ 2.1 KB/min` `⚙ 3/3 job` `▦ 87 MB`)
+- ✅ Lint frontend pulito
+- ✅ **65 pytest connector PASS** (suite completa, niente regressione)
+
+### ZIP v3.8.28
+- 418.508 byte, 28 file, sha256 `9efecb575d633b35eed6604f891261d49cc342a3d6e4f611a8bac18543b2afe7`
+- Marcato attivo nel DB + copiato in 4 location pubbliche
+
+### Cosa cambia per te al rollout v3.8.28
+Per ogni connettore in /connectors UI vedrai dei chip live sotto la riga del nome:
+```
+↑ 12.5 KB/min   ↓ 850 B/min   ⚙ 3/3 job   ▦ 87 MB
+```
+Se un job muore: `⚙ 2/3 job` diventa AMBRA. Se la RAM passa 200MB: `▦ 245 MB` ROSSA. Se la banda esplode: vedi `↑ 850 KB/min` invece di `12 KB/min` e capisci che qualcosa va storto.
+
+**Niente più necessita' di SSH sul server del cliente per vedere lo stato vivo.**
+
+---
+
 ## 2026-05-07 NOTTE PROFONDA — FIX SISTEMICO "connector continua a disconnettersi" (analisi log v3.8.19 prod)
 
 **Bug segnalato dall'utente** con file `connector003.txt` (log produzione del Connector v3.8.19):
