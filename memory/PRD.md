@@ -1,3 +1,21 @@
+## 2026-05-07 EXTRA FIX — Overview Clienti Vuoti (KeyError 'info')
+
+**Issue**: Pagina `Clienti` mostrava chip DISP/WAN/CONN/ALERT vuoti (—) per tutti i clienti perché l'endpoint `/api/overview/clients` falliva con HTTP 500.
+
+**Root cause**: in `/app/backend/routes/overview.py:287`, il dict `alerts_by_client[cid]` veniva inizializzato solo con le chiavi `critical/high/medium/low/total`. Se un alert in DB aveva `severity == "info"` (o altri valori non standard), `alerts_by_client[cid]["info"] += 1` lanciava `KeyError: 'info'` e crashava l'intero endpoint.
+
+**Fix v3.8.29 (backend-only, retro-compatibile)**:
+- Normalizzo severity null/undefined → `"low"`.
+- Se la severity non è ancora nel dict, la aggiungo dinamicamente con valore 0 prima di incrementare.
+- Aggiunto test di regressione: `/app/backend/tests/test_overview_severity_keyerror.py` (passato).
+
+**Verifica preview**: GET `/api/overview/clients` ora ritorna 200 con dati validi (es. cliente `86BIT_Office`: 6 dispositivi, 61 alerts inclusi 1 con severity `info`).
+
+**Azione richiesta utente**: deploy backend in produzione per vedere i chip riempirsi correttamente per "Galvan" e altri clienti.
+
+---
+
+
 ## 2026-05-07 NOTTE (FINALE) — ROLLBACK A v3.8.19 + LESSONS LEARNED
 
 **Situazione**: durante la sessione di oggi ho fatto MOLTI fix tentando di migliorare il connector, ma ho introdotto regressioni che hanno bloccato l'auto-update. Tre versioni problematiche (v3.8.24, v3.8.25-3.8.28).
