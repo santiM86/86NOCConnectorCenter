@@ -1,3 +1,30 @@
+## 2026-05-07 EXTRA UX — Dettaglio porte/interfacce per Firewall e NAS (v3.8.34)
+
+**Issue UX**: il bottone "Porte switch" (vista Nebula-style con tiles UP/DOWN, traffico Rx/Tx, neighbor LLDP, flap history) era visibile solo per device classificati come switch. Non era utilizzabile per Firewall (Zyxel USG, FortiGate) e NAS (Synology, QNAP), nonostante questi rispondano allo standard MIB-II `ifTable` e il connector PowerShell raccolga già i dati per **qualunque device SNMP** (`Poll-SwitchPortDetails` viene chiamata in loop su tutti i device con `monitor_type=snmp/snmp+http`).
+
+**Implementazione v3.8.34** (frontend-only, no breaking change):
+
+`/app/frontend/src/pages/ClientOverviewPage.js` (riga ~1521):
+- `isSwitchLike` rinominato in `isPortable`. Esteso per includere `dt === "nas"` e keywords NAS (`synology`, `qnap`, `diskstation`, `rackstation`, `ts-`).
+- Tooltip dinamico in base al device_type: "Porte firewall (ifTable: oper/admin/speed, traffico Rx/Tx)" / "Interfacce NAS" / "Porte switch".
+
+`/app/frontend/src/components/DeviceInfoCard.js` (riga ~250):
+- Stessa estensione di `isSwitchLike` con keywords NAS.
+- Etichetta bottone dinamica: "Porte firewall" / "Interfacce NAS" / "Porte router" / "Porte switch".
+
+`/app/backend/routes/topology.py` `GET /api/devices/{ip}/switch-ports`:
+- Response include ora `device_type` (preso da `managed_devices`) per permettere alla UI di adattare il titolo della pagina.
+
+`/app/frontend/src/pages/SwitchPortsPage.js`:
+- Titolo H1 dinamico "Dettagli firewall · {ip}" / "Interfacce NAS · {ip}" / "Dettagli router" / "Dettagli switch" in base a `data.device_type`.
+
+**Verifica preview**: GET `/api/devices/{ip}/switch-ports` ritorna 200 con campo `device_type` aggiunto. Lista Dispositivi cliente: bottone "Porte" ora visibile sulla riga del firewall Zyxel USG Test (precedentemente solo su switch). Lint pulito.
+
+**Nota produzione**: i dati `ifTable` per firewall/NAS sono raccolti dal connector v3.8.19+ (anche legacy). Dopo il deploy del frontend, l'utente potrà vedere immediatamente le interfacce dei firewall/NAS già polleati senza bisogno di aggiornare il connector.
+
+---
+
+
 ## 2026-05-07 EXTRA — WAN tab cliente con "Aggancia esistente" + Profilo Zyxel corretto (v3.8.33)
 
 **Issue 1 (UX)**: nella tab WAN del cliente (es. Galvan) si poteva solo creare nuovi target. Per riassegnare un target già esistente nel sistema (orfano o di un altro cliente), bisognava andare nella pagina globale "Monitoraggio WAN Esterno" e cliccare la matita.

@@ -431,10 +431,15 @@ async def get_switch_ports(device_ip: str, current_user: dict = Depends(get_curr
     # Port_number summary for UI badge
     first_updated = ports[0].get("updated_at") if ports else None
     # v3.6.16: include client_id + device_name per features come Manual MAC Binding nella UI
-    md_local = await db.managed_devices.find_one({"ip": device_ip}, {"_id": 0, "client_id": 1, "device_name": 1, "name": 1}) or {}
+    # v3.8.34: include device_type per adattare titolo/messaggi UI (firewall/nas/switch)
+    md_local = await db.managed_devices.find_one(
+        {"ip": device_ip},
+        {"_id": 0, "client_id": 1, "device_name": 1, "name": 1, "device_type": 1}
+    ) or {}
     return {
         "device_ip": device_ip,
         "device_name": md_local.get("device_name") or md_local.get("name") or "",
+        "device_type": md_local.get("device_type") or "",
         "client_id": md_local.get("client_id") or "",
         "ports": out,
         "totals": {

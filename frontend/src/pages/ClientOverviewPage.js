@@ -1498,7 +1498,10 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
                       >
                         <Info size={13} />
                       </button>
-                      {/* Porte Switch: detection multi-segnale (device_type / model / hostname) */}
+                      {/* v3.8.34: Porte/Interfacce — detection multi-segnale per
+                          switch/router/firewall/NAS. Il connector raccoglie ifTable
+                          standard MIB-II per ogni device SNMP, quindi il bottone si
+                          attiva anche per firewall (Zyxel/Fortinet) e NAS (Synology/QNAP). */}
                       {(() => {
                         const dt = (d.device_type || "").toLowerCase();
                         const modelL = (d.model || d.sys_descr || "").toLowerCase();
@@ -1516,17 +1519,21 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
                           "powerconnect", "n1500", "n2000", "n3000",
                           "huawei", "s5700", "s6700", "ar2200",
                           "pfsense", "opnsense",
+                          "synology", "qnap", "diskstation", "rackstation", "ts-",
                         ];
                         const matches = kw.some((k) => modelL.includes(k) || nameL.includes(k));
-                        const isSwitchLike =
+                        const isPortable =
                           dt.includes("switch") || dt.includes("router") || dt.includes("firewall") ||
-                          dt === "network-device" || matches;
-                        if (!isSwitchLike) return null;
+                          dt === "nas" || dt === "network-device" || matches;
+                        if (!isPortable) return null;
+                        const tip = dt === "firewall" ? "Porte firewall (ifTable: oper/admin/speed, traffico Rx/Tx)"
+                          : dt === "nas" ? "Interfacce NAS (ifTable: speed, traffico Rx/Tx)"
+                          : "Porte switch (tiles UP/DOWN + neighbor LLDP + flap history)";
                         return (
                           <button
                             onClick={() => navigate(`/switch-ports/${encodeURIComponent(d.ip_address)}`)}
                             className="p-1 rounded hover:bg-indigo-500/10 text-indigo-400 transition-colors"
-                            title="Porte switch (tiles UP/DOWN + neighbor LLDP + flap history)"
+                            title={tip}
                             data-testid={`device-switch-ports-${d.ip_address}`}
                           >
                             <NetworkSlash size={13} />

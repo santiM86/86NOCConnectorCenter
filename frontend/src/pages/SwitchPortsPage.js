@@ -443,7 +443,17 @@ export default function SwitchPortsPage() {
       <div className="flex items-center gap-3">
         <button onClick={() => navigate(-1)} className="text-[var(--text-muted)] hover:text-[var(--text-primary)] text-lg" data-testid="switch-ports-back">←</button>
         <div className="min-w-0 flex-1">
-          <h1 className="text-base md:text-lg font-bold truncate">Dettagli switch · <span className="font-mono text-cyan-300">{data.device_ip}</span></h1>
+          {/* v3.8.34: titolo dinamico per firewall/nas/router/switch */}
+          {(() => {
+            const dt = (data.device_type || "").toLowerCase();
+            const lbl = dt === "firewall" ? "Dettagli firewall"
+              : dt === "nas" ? "Interfacce NAS"
+              : dt.includes("router") ? "Dettagli router"
+              : "Dettagli switch";
+            return (
+              <h1 className="text-base md:text-lg font-bold truncate">{lbl} · <span className="font-mono text-cyan-300">{data.device_ip}</span></h1>
+            );
+          })()}
           <p className="text-[10px] text-[var(--text-muted)] flex flex-wrap gap-x-2 gap-y-0.5">
             <span>{t.total} porte</span>
             <span className="text-emerald-300">{t.up} up</span>
