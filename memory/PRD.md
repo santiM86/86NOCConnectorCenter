@@ -1,3 +1,35 @@
+## 2026-05-07 EXTRA UX — Rollout ordinamento tabelle + persistenza
+
+**Espansione v3.8.31** del pattern `useSortableTable` introdotto nella v3.8.30:
+
+**Nuova feature** `/app/frontend/src/utils/tableSort.js`:
+- 4° argomento ora supporta `{ persistKey, accessors }`. Quando `persistKey` è impostato, la coppia `(sortKey, sortDir)` viene salvata in `localStorage` (`tablesort:{key}`) e ripristinata al ricaricamento.
+
+**Tabelle aggiornate con sort + persistenza**:
+| Tabella | persistKey | Default |
+|---|---|---|
+| Dispositivi cliente | `client-devices-tab` | name asc |
+| Total Protection 365 | `hornetsecurity-365-table` | nessuno |
+| VM Backup Altaro | `hornetsecurity-vm-table` | nessuno |
+| Alert globali (`/alerts`) | `alerts-page` | created_at desc |
+| Alert per cliente (tab) | `client-alerts-tab` | created_at desc |
+| Dispositivi globali (`/devices`) | `devices-page-global` | name asc |
+| Audit log (`/audit`) | `audit-page` | timestamp desc |
+
+**Salti consapevoli** (già con sort custom proprio):
+- `InventoryPage.js` (sort by sortBy/sortDir custom)
+- `PrinterDiscoveryPage.js` (toggleSort + useMemo custom)
+- `DashboardPage.js` "Recent alerts" (limit 6, ordinamento cronologico intrinseco)
+
+**Bug fix runtime**: spostate tutte le `useSortableTable` PRIMA degli early-return (`if loading return`) per rispettare le rules-of-hooks.
+
+**Verifica preview**:
+- AlertsPage: 154 alert, header `DATA ▼` attivo. Click su `SEV. ▲` → riordino visibile in tempo reale (LOW in alto).
+- Lint pulito su 5 file modificati.
+
+---
+
+
 ## 2026-05-07 EXTRA UX — Tabelle ordinabili + VM Backup compatto
 
 **Issue UX**:

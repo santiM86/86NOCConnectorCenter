@@ -17,6 +17,7 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { DeviceDetailPanel } from "@/components/DeviceDetailPanel";
+import { useSortableTable, SortableTh } from "@/utils/tableSort";
 
 export default function DevicesPage() {
   const [devices, setDevices] = useState([]);
@@ -72,6 +73,27 @@ export default function DevicesPage() {
     tvcc: { label: "TVCC", color: "#EC4899" },
   };
 
+  // v3.8.31: ordinamento devices globale
+  const STATUS_RANK = { online: 3, active: 2, offline: 1 };
+  const { sorted: sortedDevices, sortKey, sortDir, requestSort } = useSortableTable(
+    devices, "name", "asc",
+    {
+      persistKey: "devices-page-global",
+      accessors: {
+        name: (d) => (d?.name || "").toLowerCase(),
+        device_type: (d) => (d?.device_type || d?.type || "").toLowerCase(),
+        ip_address: (d) => {
+          const ip = d?.ip_address || "";
+          const p = ip.split(".").map(n => parseInt(n, 10));
+          if (p.length === 4 && p.every(n => !isNaN(n))) return p[0]*16777216+p[1]*65536+p[2]*256+p[3];
+          return ip.toLowerCase();
+        },
+        client_name: (d) => (d?.client_name || "").toLowerCase(),
+        status: (d) => STATUS_RANK[d?.status] || 0,
+      },
+    }
+  );
+
   return (
     <div className="p-4 md:p-5 animate-fade-in" data-testid="devices-page">
       <div className="flex items-center justify-between mb-5">
@@ -89,24 +111,24 @@ export default function DevicesPage() {
           <table className="alert-table min-w-[640px]" data-testid="devices-table">
             <thead>
               <tr>
-                <th>Nome</th>
-                <th>Tipo</th>
-                <th>IP</th>
-                <th>Cliente</th>
-                <th>Stato</th>
+                <SortableTh field="name" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Nome</SortableTh>
+                <SortableTh field="device_type" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Tipo</SortableTh>
+                <SortableTh field="ip_address" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>IP</SortableTh>
+                <SortableTh field="client_name" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Cliente</SortableTh>
+                <SortableTh field="status" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Stato</SortableTh>
                 <th>Azioni</th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
                 <tr><td colSpan={6} className="text-center text-[var(--text-muted)] py-8 text-xs">Caricamento...</td></tr>
-              ) : devices.length === 0 ? (
+              ) : sortedDevices.length === 0 ? (
                 <tr><td colSpan={6} className="text-center py-8">
                   <HardDrives size={32} className="mx-auto text-[var(--text-muted)] mb-2" />
                   <p className="text-[var(--text-muted)] text-xs">Nessun dispositivo</p>
                 </td></tr>
               ) : (
-                devices.map(device => {
+                sortedDevices.map(device => {
                   const typeInfo = typeIcons[device.device_type || device.type] || { label: device.device_type || device.type || "?", color: "var(--text-muted)" };
                   const isSelected = selectedDevice?.ip_address === device.ip_address;
                   return (

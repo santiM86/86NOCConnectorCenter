@@ -1055,10 +1055,12 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
   const [saving, setSaving] = useState(false);
   const webConsole = useWebConsoleTabs();
 
-  // v3.8.30: ordinamento tabella dispositivi (default per nome asc)
+  // v3.8.30: ordinamento tabella dispositivi (default per nome asc) + persist v3.8.31
   const { sorted: sortedDevices, sortKey, sortDir, requestSort } = useSortableTable(
     devices, "name", "asc",
     {
+      persistKey: "client-devices-tab",
+      accessors: {
       ip_address: (d) => {
         // Numeric IPv4 sort: 192.168.1.10 viene dopo 192.168.1.2
         const ip = d?.ip_address || "";
@@ -1075,6 +1077,7 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
       connection: (d) => (d?.connection_type || "zzz").toLowerCase(),
       source: (d) => (d?.source || "manual").toLowerCase(),
       last_poll: (d) => d?.last_poll ? Date.parse(d.last_poll) : 0,
+      }
     }
   );
 
@@ -2144,14 +2147,33 @@ function WanTab({ targets, clientId, clientName, onRefresh }) {
 
 /* ==================== ALERTS TAB ==================== */
 function AlertsTab({ alerts, navigate }) {
+  // v3.8.31: ordinamento alert client-side (default: data desc)
+  const SEV_RANK = { critical: 4, high: 3, medium: 2, low: 1 };
+  const { sorted, sortKey, sortDir, requestSort } = useSortableTable(
+    alerts, "created_at", "desc",
+    {
+      persistKey: "client-alerts-tab",
+      accessors: {
+        severity: (a) => SEV_RANK[a?.severity] || 0,
+        title: (a) => (a?.title || "").toLowerCase(),
+        device_name: (a) => (a?.device_name || "").toLowerCase(),
+        created_at: (a) => a?.created_at ? Date.parse(a.created_at) : 0,
+      },
+    }
+  );
   return (
     <div className="noc-panel overflow-x-auto">
       <table className="alert-table min-w-[560px]">
-        <thead><tr><th>Sev.</th><th>Titolo</th><th>Dispositivo</th><th>Data</th></tr></thead>
+        <thead><tr>
+          <SortableTh field="severity" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Sev.</SortableTh>
+          <SortableTh field="title" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Titolo</SortableTh>
+          <SortableTh field="device_name" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Dispositivo</SortableTh>
+          <SortableTh field="created_at" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Data</SortableTh>
+        </tr></thead>
         <tbody>
-          {alerts.length === 0 ? (
+          {sorted.length === 0 ? (
             <tr><td colSpan={4} className="text-center text-emerald-400 py-8 text-xs">Nessun alert attivo</td></tr>
-          ) : alerts.map(a => {
+          ) : sorted.map(a => {
             const sc = a.severity === "critical" ? "#FF3B30" : a.severity === "high" ? "#FF9500" : "#FFCC00";
             return (
               <tr key={a.id} className="cursor-pointer hover:bg-[var(--bg-hover)]" onClick={() => navigate(`/alerts/${a.id}`)}>
@@ -2337,13 +2359,16 @@ function VMBackupPanel({ clientId }) {
   const { sorted: sortedVms, sortKey, sortDir, requestSort } = useSortableTable(
     _filteredItems, null, "asc",
     {
-      vm: (it) => (it?.vm_name || "").toLowerCase(),
-      host: (it) => (it?.host_name || "").toLowerCase(),
-      customer: (it) => (it?.customer_name || "").toLowerCase(),
-      hypervisor: (it) => (it?.host_type || "").toLowerCase(),
-      stato: (it) => _vmAggStatus(it),
-      last_backup: (it) => it?.onsite_time ? Date.parse(it.onsite_time) : 0,
-      size: (it) => Number(it?.onsite_size_bytes || 0),
+      persistKey: "hornetsecurity-vm-table",
+      accessors: {
+        vm: (it) => (it?.vm_name || "").toLowerCase(),
+        host: (it) => (it?.host_name || "").toLowerCase(),
+        customer: (it) => (it?.customer_name || "").toLowerCase(),
+        hypervisor: (it) => (it?.host_type || "").toLowerCase(),
+        stato: (it) => _vmAggStatus(it),
+        last_backup: (it) => it?.onsite_time ? Date.parse(it.onsite_time) : 0,
+        size: (it) => Number(it?.onsite_size_bytes || 0),
+      },
     }
   );
 
@@ -2615,13 +2640,16 @@ function HornetsecurityBackupPanel({ clientId, legacyBackups }) {
   const { sorted: sortedItems, sortKey, sortDir, requestSort } = useSortableTable(
     _filteredItems, null, "asc",
     {
-      workload: (it) => (it?.workload_name || it?.workload_id || "").toLowerCase(),
-      utente: (it) => (it?.workload_user || "").toLowerCase(),
-      tenant: (it) => (it?.tenant || "").toLowerCase(),
-      tipo: (it) => `${it?.workload_type || ""}-${it?.workload_subcategory || ""}`.toLowerCase(),
-      stato: (it) => (it?.status || "").toLowerCase(),
-      last_backup: (it) => it?.last_backup_time ? Date.parse(it.last_backup_time) : 0,
-      note: (it) => (it?.error || "").toLowerCase(),
+      persistKey: "hornetsecurity-365-table",
+      accessors: {
+        workload: (it) => (it?.workload_name || it?.workload_id || "").toLowerCase(),
+        utente: (it) => (it?.workload_user || "").toLowerCase(),
+        tenant: (it) => (it?.tenant || "").toLowerCase(),
+        tipo: (it) => `${it?.workload_type || ""}-${it?.workload_subcategory || ""}`.toLowerCase(),
+        stato: (it) => (it?.status || "").toLowerCase(),
+        last_backup: (it) => it?.last_backup_time ? Date.parse(it.last_backup_time) : 0,
+        note: (it) => (it?.error || "").toLowerCase(),
+      },
     }
   );
 

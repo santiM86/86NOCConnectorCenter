@@ -3,15 +3,46 @@
 //   const { sorted, sortKey, sortDir, requestSort } = useSortableTable(items, "name", "asc");
 //   <SortableTh sortKey={sortKey} sortDir={sortDir} onSort={requestSort} field="name">Nome</SortableTh>
 //
-// Il valore di ordinamento per ogni riga e' di default item[field]. Si puo' passare
-// un getter custom alla hook tramite il parametro accessors:
-//   useSortableTable(items, "name", "asc", { name: it => (it.name || "").toLowerCase() })
+// v3.8.31: persistenza opzionale via localStorage. Passa "persistKey" per ricordare
+// l'ordinamento tra ricaricamenti pagina (chiave univoca per tabella, es. "client-devices").
+//   useSortableTable(items, "name", "asc", { persistKey: "client-devices" })
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
-export function useSortableTable(items, defaultKey = null, defaultDir = "asc", accessors = {}) {
-  const [sortKey, setSortKey] = useState(defaultKey);
-  const [sortDir, setSortDir] = useState(defaultDir);
+const _readPersisted = (key) => {
+  if (!key) return null;
+  try {
+    const raw = localStorage.getItem(`tablesort:${key}`);
+    if (!raw) return null;
+    const o = JSON.parse(raw);
+    if (!o || typeof o !== "object") return null;
+    return o;
+  } catch { return null; }
+};
+
+const _writePersisted = (key, sortKey, sortDir) => {
+  if (!key) return;
+  try {
+    localStorage.setItem(`tablesort:${key}`, JSON.stringify({ sortKey, sortDir }));
+  } catch { /* quota or disabled */ }
+};
+
+export function useSortableTable(items, defaultKey = null, defaultDir = "asc", optsOrAccessors = {}) {
+  // Backward compat: 4° argomento poteva essere solo gli accessors. Ora puo'
+  // contenere anche {persistKey, accessors}.
+  const opts = (optsOrAccessors && (optsOrAccessors.accessors || optsOrAccessors.persistKey))
+    ? optsOrAccessors
+    : { accessors: optsOrAccessors };
+  const accessors = opts.accessors || {};
+  const persistKey = opts.persistKey || null;
+
+  const persisted = persistKey ? _readPersisted(persistKey) : null;
+  const [sortKey, setSortKey] = useState(persisted?.sortKey ?? defaultKey);
+  const [sortDir, setSortDir] = useState(persisted?.sortDir ?? defaultDir);
+
+  useEffect(() => {
+    if (persistKey) _writePersisted(persistKey, sortKey, sortDir);
+  }, [persistKey, sortKey, sortDir]);
 
   const requestSort = (field) => {
     if (sortKey === field) {
