@@ -1302,11 +1302,47 @@ async def connector_update_check(request: Request):
     update_info = await db.connector_updates.find_one({"active": True}, {"_id": 0})
     if not update_info:
         return {"update_available": False, "latest_version": "1.0.0"}
+
+    # v3.8.26 BUG FIX critico: prima `find_one({"client_id": cid})` ritornava IL
+    # PRIMO connector del cliente, indipendentemente dalla mode (master/scanner).
+    # Quando il Master era gia' a vN ma lo Scanner era a vN-K, lo Scanner chiamando
+    # update-check riceveva la versione del Master come "current_version" e il
+    # backend rispondeva update_available=false: lo Scanner non si aggiornava mai
+    # ("fa tutto il processo ma non aggiorna nulla" - segnalato dall'utente).
+    # Fix:
+    #   - Se il connector passa ?hostname=X (e/o ?mode=Y) come query string,
+    #     usiamo quei parametri per trovare il SUO record specifico.
+    #   - Senza query string (connector legacy), prendiamo la versione MINIMA
+    #     tra tutti i connector del cliente: cosi' anche uno solo "indietro"
+    #     vede update_available=true e si aggiorna (compat retro v3.7-3.8.13).
     current_version = "0.0.0"
     if client_data:
-        connector = await db.connector_status.find_one({"client_id": client_data["id"]}, {"_id": 0})
+        cid = client_data["id"]
+        hostname_q = (request.query_params.get("hostname") or "").strip()
+        mode_q = (request.query_params.get("mode") or "").strip()
+        connector = None
+        if hostname_q or mode_q:
+            q: dict = {"client_id": cid}
+            if hostname_q:
+                q["hostname"] = hostname_q
+            if mode_q:
+                q["mode"] = mode_q
+            connector = await db.connector_status.find_one(q, {"_id": 0, "connector_version": 1})
         if connector:
             current_version = connector.get("connector_version", "0.0.0")
+        else:
+            # Legacy fallback: usa la versione MINIMA tra tutti i connector di
+            # questo client. Se anche solo uno e' dietro, ritorna update_available
+            # = true. Cosi' il vecchio Scanner senza query params si aggiorna
+            # comunque correttamente.
+            cursor = db.connector_status.find({"client_id": cid}, {"_id": 0, "connector_version": 1})
+            min_v: Optional[str] = None
+            async for doc in cursor:
+                v = doc.get("connector_version") or "0.0.0"
+                if min_v is None or is_newer_version(min_v, v):
+                    min_v = v
+            current_version = min_v or "0.0.0"
+
     published_version = update_info["version"]
     update_needed = is_newer_version(published_version, current_version)
     return {
@@ -1318,7 +1354,11 @@ async def connector_update_check(request: Request):
         "file_size": update_info.get("file_size", 0),
         # v3.8.25: integrity hash — il connector PowerShell verifica via Get-FileHash
         # SHA256 dopo il download. Se mismatch -> abort senza estrarre/copiare.
-        "sha256": update_info.get("sha256", "")
+        "sha256": update_info.get("sha256", ""),
+        # v3.8.26: aiuto debug per il connector — espone quale versione
+        # il backend pensa che il connector abbia. Se il connector vede una
+        # version diversa dalla propria reale, sa che sta colpendo un altro doc.
+        "current_version_seen_by_center": current_version,
     }
 
 
