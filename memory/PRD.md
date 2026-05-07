@@ -1,3 +1,25 @@
+## 2026-05-07 EXTRA FEATURE — Modifica singolo target WAN + agganciare ai clienti
+
+**Issue UX**: nella pagina "Monitoraggio WAN Esterno" non era possibile modificare un singolo target WAN (solo crearlo o eliminarlo). Per i target con `client_id` orfano (cliente eliminato), l'header mostrava l'UUID grezzo invece di un placeholder leggibile, e non c'era modo di riassegnarli a un cliente esistente (es. "Galvan").
+
+**Fix v3.8.29**:
+
+Backend (`/app/backend/routes/external_monitor.py`):
+- `WanTargetUpdate` ora accetta anche `client_id` e `device_type` per permettere riassegnamento e cambio tipo del target.
+- `PUT /api/external-monitor/targets/{id}` valida che il `client_id` corrisponda a un cliente esistente (400 "Cliente non trovato") e che `device_type` sia `firewall` o `router`.
+- Quando il `client_id` cambia, propaga il nuovo valore in `wan_probe_results` per coerenza immediata nel tab WAN del cliente.
+- Test di regressione (4 casi): `/app/backend/tests/test_external_monitor_update_v3829.py` — tutti passati.
+
+Frontend (`/app/frontend/src/pages/ExternalMonitorPage.js`):
+- Nuovo bottone "matita" (Modifica) accanto al cestino su ogni `DeviceCard`, visibile su hover.
+- Dialog modale "Modifica target WAN" con tutti i campi (Cliente dropdown, Tipo, Label, IP Pubblico, Gateway ISP, Porte TCP, toggle Ping ICMP).
+- Header del gruppo cliente: se il `client_id` non è nella collezione clients, mostra "Senza cliente" + badge "orfano" + suggerimento di usare la matita per riassegnarlo.
+
+**Verifica preview**: target editabile con successo (`{"status":"ok"}`); validazione errori `Cliente non trovato` e `device_type deve essere 'firewall' o 'router'` funzionante; UI dialog visibile con tutti i campi precompilati.
+
+---
+
+
 ## 2026-05-07 EXTRA FIX — Overview Clienti Vuoti (KeyError 'info')
 
 **Issue**: Pagina `Clienti` mostrava chip DISP/WAN/CONN/ALERT vuoti (—) per tutti i clienti perché l'endpoint `/api/overview/clients` falliva con HTTP 500.

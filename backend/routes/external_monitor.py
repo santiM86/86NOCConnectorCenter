@@ -35,7 +35,11 @@ class WanTarget(BaseModel):
 
 
 class WanTargetUpdate(BaseModel):
+    # v3.8.29: aggiunti client_id, device_type per consentire riassegnamento target
+    # senza dover ricreare (utile per agganciare target orfani al cliente corretto).
+    client_id: Optional[str] = None
     label: Optional[str] = None
+    device_type: Optional[str] = None
     public_ip: Optional[str] = None
     gateway_ip: Optional[str] = None
     check_ports: Optional[list] = None
@@ -436,9 +440,22 @@ async def update_target(target_id: str, update: WanTargetUpdate, current_user: d
     fields = {k: v for k, v in update.model_dump().items() if v is not None}
     if not fields:
         raise HTTPException(status_code=400, detail="Nessun campo da aggiornare")
+    # Validate device_type if present
+    if "device_type" in fields and fields["device_type"] not in ("firewall", "router"):
+        raise HTTPException(status_code=400, detail="device_type deve essere 'firewall' o 'router'")
+    # Validate client_id existence if reassigning
+    if "client_id" in fields:
+        cli = await db.clients.find_one({"id": fields["client_id"]}, {"_id": 0, "id": 1})
+        if not cli:
+            raise HTTPException(status_code=400, detail="Cliente non trovato")
     result = await db.wan_targets.update_one({"id": target_id}, {"$set": fields})
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Target non trovato")
+    # If client_id changed, propagate to existing probe results so the per-client view picks them up immediately
+    if "client_id" in fields:
+        await db.wan_probe_results.update_many(
+            {"target_id": target_id}, {"$set": {"client_id": fields["client_id"]}}
+        )
     return {"status": "ok"}
 
 
