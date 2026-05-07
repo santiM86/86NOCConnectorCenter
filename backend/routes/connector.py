@@ -2147,6 +2147,26 @@ async def connector_device_report(request: Request):
         if is_deleted:
             continue
 
+        # v3.8.24 ANTI-FLAP: se il Master polla un device che e' stato scoperto
+        # dallo Scanner (source=connector-scanner), il Master tipicamente NON
+        # puo' raggiungere il device (e' in altra VLAN). Le sue scritture con
+        # reachable=false sono FALSI NEGATIVI che invalidano l'override
+        # scanner_seen_recent_ips e fanno oscillare il device tra online/offline
+        # in UI ogni 5-10 minuti. Skippa solo se il poll e' fallito; se invece
+        # il Master ci e' riuscito (reachable=true) lo accettiamo perche' e' un
+        # segnale piu' affidabile della telemetria Scanner.
+        if not dev.get("reachable"):
+            md = await db.managed_devices.find_one(
+                {"client_id": client_id, "ip": dev["device_ip"]},
+                {"_id": 0, "source": 1},
+            )
+            if md and md.get("source") == "connector-scanner":
+                logger.debug(
+                    f"[anti-flap] Skip device-report del Master per {dev['device_ip']} "
+                    "(source=connector-scanner, reachable=false). Master in altra VLAN."
+                )
+                continue
+
         # Load prev status BEFORE update to detect state changes
         prev_status = await db.device_poll_status.find_one(
             {"client_id": client_id, "device_ip": dev["device_ip"]}, {"_id": 0}

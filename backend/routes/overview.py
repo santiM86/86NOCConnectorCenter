@@ -62,9 +62,12 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
     # v3.8.22 SCANNER LIVE-SEEN: cross-check con discovered_endpoints.
     # Lo Scanner aggiorna sempre discovered_endpoints (lan-scan ARP/mDNS) anche
     # per device aggiunti manualmente. Usiamo questa collection per forzare
-    # "online" sui device che lo Scanner vede da <5 min, anche se il Master
+    # "online" sui device che lo Scanner vede da <10 min, anche se il Master
     # (su altra VLAN) non riesce a pollarli.
-    five_min_ago_iso = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    # v3.8.24 BUMP a 10 min (era 5): lo Scanner a volte ritarda 1-2 cicli
+    # quando e' busy con SNMP poll lungo o e' in backoff su errore Center;
+    # 5 min era troppo stretto e causava flap "online/offline" ogni 5min.
+    five_min_ago_iso = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
     scanner_seen_keys = set()  # set di (client_id, ip) live-seen
     try:
         async for de in db.discovered_endpoints.find(

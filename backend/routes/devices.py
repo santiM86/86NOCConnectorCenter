@@ -67,10 +67,11 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
     # Lo Scanner aggiorna SEMPRE discovered_endpoints (lan-scan ARP/mDNS) anche
     # per device aggiunti manualmente (source=manual / connector-master). Usiamo
     # questa collection come fonte di verita' "device visto recentemente sulla
-    # rete dello Scanner". Se IP visto < 5min => online, prevale sul Master.
+    # rete dello Scanner". Se IP visto < 10min => online, prevale sul Master.
+    # v3.8.24 BUMP a 10 min (era 5): lo Scanner ritardi i cicli quando in backoff
     scanner_seen_recent_ips = set()
     try:
-        five_min_ago_iso = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+        five_min_ago_iso = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
         de_query = query.copy()
         de_query["source_connector_mode"] = "scanner"
         de_query["last_seen_at"] = {"$gte": five_min_ago_iso}

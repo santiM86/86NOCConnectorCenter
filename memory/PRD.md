@@ -26,6 +26,19 @@ Questi due asset sono parte del flusso CI/CD verso `argus.86bit.it` e sono **mis
 
 # ARGUS Center — NOC Platform (86bit)
 
+## 2026-05-07 SERA — FIX ANTI-FLAP DEVICE SCANNER (v3.8.24)
+**Bug residuo**: i device della rete Scanner (192.168.16.x Galvani) oscillavano tra online/offline ogni ~5 minuti sulla UI Center, anche dopo i fix v3.8.22/23.
+
+**Root cause**: il MASTER continuava a pollare via SNMP/ping i device dello Scanner (in altra VLAN, irraggiungibili). I poll fallivano sempre e scrivevano `device_poll_status.reachable=false`. Quando la finestra di 5 min del fix `scanner_seen_recent_ips` scadeva (lo Scanner talvolta ritarda 1-2 cicli durante backoff/SNMP busy), il device cadeva sul `reachable=false` del Master → mostrato OFFLINE → al ciclo successivo dello Scanner tornava ONLINE → flap continuo.
+
+### Fix v3.8.24 (`/app/backend/routes/`)
+1. **Finestra `scanner_seen_recent_ips` 5min → 10min** (`devices.py` + `overview.py`):
+   - Tollera ritardi dello Scanner di 1-2 cicli di backoff
+2. **Anti-flap nel device-report del Master** (`connector.py` riga 2142):
+   - Se il device ha `source=connector-scanner` E il poll del Master e' fallito (`reachable=false`) → SKIP scrittura `device_poll_status` (il Master non puo' raggiungerlo, e' un falso negativo)
+   - Se invece il Master riesce a pollarlo (rare ma possibile se il routing inter-VLAN cambia), accetta normalmente l'update
+3. Niente piu' `device_poll_status` "sporco" che invalida l'override Scanner
+
 ## 2026-05-07 — FIX DEFINITIVO RACE CONDITION TRAY-NSSM (v3.8.23)
 **Bug**: lo Scanner (e occasionalmente il Master) si riavviava ogni 30-60 minuti, con conseguenti dispositivi che andavano **OFFLINE per 2-3 minuti** sulla UI Center prima di tornare online. Pattern dal log scanner001.txt: 7-8 cicli SELF-HEAL al giorno con messaggio "Rilevato Task Scheduler conflittuale '86NocConnectorService' - causa race condition con servizio NSSM. Rimozione...".
 
