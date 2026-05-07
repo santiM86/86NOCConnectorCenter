@@ -12,6 +12,7 @@ import uuid
 from datetime import datetime, timezone
 
 import pytest
+import pytest_asyncio
 from motor.motor_asyncio import AsyncIOMotorClient
 
 # Ensure backend/ is on path so module-relative imports work
@@ -25,7 +26,7 @@ MONGO_URL = os.environ["MONGO_URL"]
 DB_NAME = os.environ["DB_NAME"]
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def db():
     client = AsyncIOMotorClient(MONGO_URL)
     database = client[DB_NAME]
