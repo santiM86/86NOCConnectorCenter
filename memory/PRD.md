@@ -1,3 +1,51 @@
+## 2026-05-07 NOTTE FINE — FIX BUG CRITICO "Scarica ZIP" → file vuoto 4KB in produzione
+
+**Bug segnalato dall'utente** con 2 screenshot:
+1. Browser Downloads: file `86NocConnector (5).zip`, `(4)`, `(2)` tutti **4 KB** ⚠️ vuoti, mentre `86NocConnector_v3.8.24.zip` 407 KB OK
+2. Errore Windows: "Impossibile completare Estrazione guidata cartelle compresse — La cartella compressa è vuota"
+
+### 🎯 Root cause
+Il pulsante "Scarica ZIP" in `ConnectorsPage.js` linea 280 puntava a:
+```jsx
+<a href="/86NocConnector.zip" download>
+```
+Path **STATICO** servito dal frontend SPA. In produzione (`argus.86bit.it`):
+- nginx ingress non trova un file fisico → SPA fallback su `index.html` (3.9 KB di HTML)
+- Browser scarica `index.html` ma lo salva come `.zip`
+- Windows tenta l'estrazione → "cartella compressa vuota" (è HTML, non ZIP!)
+
+**Verifica diretta in PROD**:
+```
+GET https://argus.86bit.it/86NocConnector.zip
+→ HTTP 200, Content-Type: text/html, 3912 byte (= index.html SPA fallback)
+
+GET https://argus.86bit.it/api/connector/public-download/latest
+→ HTTP 200, Content-Type: application/zip, 416005 byte (= ZIP corretto v3.8.24)
+```
+
+### ✅ Fix
+**`/app/frontend/src/pages/ConnectorsPage.js` linea 280**: cambiato href da path statico a endpoint backend FastAPI:
+```jsx
+<a href={`${API}/connector/public-download/latest`} download>
+```
+L'endpoint `/api/connector/public-download/latest` è già implementato (no auth, ritorna sempre lo ZIP attivo da `db.connector_updates.find_one({active:True})`) e non subisce SPA fallback.
+
+### Verifica
+- ✅ Lint frontend pulito
+- ✅ Smoke screenshot conferma: `download button href = .../api/connector/public-download/latest`
+- ✅ UI mostra v3.8.25 con changelog enterprise
+- ✅ Nuovo test `tests/test_connector_download_path.py` (4 test):
+  1. `/api/connector/public-download/latest` ritorna `application/zip` > 50 KB con magic bytes `PK`
+  2. Endpoint pubblico (no auth)
+  3. Documenta che `/86NocConnector.zip` cade in SPA fallback in PROD (skip se non riproducibile in env corrente)
+  4. **Source check**: il sorgente di `ConnectorsPage.js` NON deve mai più contenere `href="/86NocConnector.zip"` per il bottone download (impedisce regressione futura)
+- ✅ Tutti 12 test connector update integrity + download path PASS
+
+### Cosa cambia per l'utente
+**Subito al deploy in produzione**: il pulsante "Scarica ZIP" funzionerà correttamente — scaricherà il vero ZIP da 388 KB (v3.8.25) invece di 3.9 KB di HTML. L'utente può poi estrarre, doppio click su `Installa 86NocConnector.vbs`, UAC prompt → installer GUI parte.
+
+---
+
 ## 2026-05-07 NOTTE TARDA — UPDATE FLOW CONNECTOR CERTIFICATO ENTERPRISE
 
 **Richiesta utente** (con screenshot UI Connectors): "controlla venga inserito ottimizzato correttamente tutto il flusso di update connector dal center. Controlla che la cartella zip contenga tutto il necessario per procedere il center in autonomia ad aggiornare i connettori. Controlla ottimizza migliora e portalo a livello enterprise tutto l'intero processo".

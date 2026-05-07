@@ -277,7 +277,7 @@ export default function ConnectorsPage() {
               className="rounded-md text-xs h-8 text-[var(--text-secondary)]" data-testid="toggle-install-guide-btn">
               {showInstall ? "Nascondi guida" : "Guida installazione"}
             </Button>
-            <a href="/86NocConnector.zip" download>
+            <a href={`${API}/connector/public-download/latest`} download>
               <Button size="sm" className="rounded-md text-xs h-8 bg-indigo-600 hover:bg-indigo-700 text-white" data-testid="download-connector-btn">
                 <HardDrive size={14} className="mr-1.5" /> Scarica ZIP
               </Button>
