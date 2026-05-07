@@ -1,3 +1,52 @@
+## 2026-05-07 EXTRA UX — Badge "down da Xh" sui device offline (v3.8.37)
+
+**Feature**: nelle tabelle Dispositivi (per cliente + globale), aggiunto un badge inline con la durata del downtime per ogni device in stato `offline`. Permette di capire a colpo d'occhio se un device è giù da minuti, ore o giorni — utile per priorizzare gli interventi.
+
+**Backend** (`/app/backend/routes/devices.py`):
+- Il 1° pass (managed_devices con device_poll_status) ora include nel payload anche `last_seen_at` (da managed_devices) e `unreachable_since` (da device_poll_status). Servono al frontend per calcolare il delta.
+- Il 3° pass (managed_devices orfani / scanner-source) già esponeva `last_seen_at`.
+
+**Frontend** (`/app/frontend/src/pages/ClientOverviewPage.js` + `DevicesPage.js`):
+- Sotto la pill "OFFLINE", appare un piccolo testo rosso `down da Xs/Xm/Xh/Xg`.
+- Priorità sorgente: `unreachable_since` (più preciso, dal Master poll) → `last_seen_at` → `last_poll`.
+- Tooltip con la data/ora completa al passaggio del mouse.
+- Format compatto: `45s`, `12m`, `3h`, `2g` (giorni). 100% client-side, zero load aggiuntivo sul backend.
+
+**Verifica preview**: lint pulito, payload `/api/devices` arricchito. Sul preview non ci sono device offline per test visivo, ma in produzione i DATECS LTD (down dalle 12:20) mostreranno "down da 10h" e similmente per altri device offline da tempo.
+
+---
+
+
+## 2026-05-07 P0 BUG FIX — Status fasullo "online" per device scanner-source (v3.8.36)
+
+**Issue P0 segnalato dall'utente**: nello screenshot della tabella Dispositivi, il device `NPIC3C01E` (stampante HP) era mostrato come **ONLINE** nonostante il suo "Ultimo Poll" fosse di 10 ore fa (`07 mag 12:20` con ora corrente `22:46`). La sua fonte era `SCANNER`. Domanda: "come mai metti online allora?".
+
+**Root cause** in `/app/backend/routes/devices.py` riga 267-268 (logica pre-v3.8.36):
+```python
+elif md_source == "connector-scanner" and md.get("last_seen_at"):
+    md_status = "online"   # BUG: nessun controllo di freschezza
+```
+Per qualsiasi device con `source=connector-scanner` che avesse anche un solo `last_seen_at` (anche di 1 mese fa), il sistema lo marcava sempre come "online". Il commento diceva "se last_seen_at recente" ma il codice non lo verificava.
+
+Spiegazione del comportamento: lo Scanner aggiorna `last_seen_at` SOLO quando il device risponde. Quando va offline e smette di apparire nei discovery (ARP/mDNS/SNMP broadcast), `last_seen_at` resta congelato all'ultima volta che ha risposto. La UI lo mostrava online perché questo campo era != null.
+
+**Fix v3.8.36** (`/app/backend/routes/devices.py`):
+- Nuova costante `SCANNER_STALE_SECONDS = 1800` (30 min). Lo Scanner gira ~5min, quindi 30min = 6 cicli persi → device realmente offline.
+- Nuova helper `_scanner_status_from_last_seen(last_seen_iso)`:
+  - `last_seen_at` < 30min fa → `"online"`
+  - `last_seen_at` ≥ 30min fa → `"offline"`
+  - assente / formato invalido → `"pending"`
+- L'`elif md_source == "connector-scanner"` ora usa questa helper invece di un check booleano grossolano.
+
+**Mantenuto invariato**: la finestra `scanner_seen_recent_ips` (10 min) per l'override anti-flap dei device polleati anche dal Master. Quella serve per scenari diversi.
+
+**Test di regressione**: 8 test passati in `/app/backend/tests/test_scanner_status_freshness_v3836.py`, incluso il test esatto del caso reale (10 ore fa → offline) e i casi borderline (29 min, 31 min, formato invalido).
+
+**Effetto produzione (post-deploy)**: dopo il deploy del backend su `argus.86bit.it`, i device come NPIC3C01E che non rispondono da >30min appariranno correttamente come **OFFLINE**. Questo elimina i falsi "online" e dà visibilità reale dello stato della rete.
+
+---
+
+
 ## 2026-05-07 EXTRA UX — Sezione "Interfacce per ruolo" firewall/router (v3.8.35)
 
 **Feature**: aggiunta sezione visiva di raggruppamento delle porte ifTable per ruolo (WAN / LAN / DMZ / MGMT / Altro) nella `SwitchPortsPage`, mostrata solo per device classificati `firewall` / `router` / `gateway`.
