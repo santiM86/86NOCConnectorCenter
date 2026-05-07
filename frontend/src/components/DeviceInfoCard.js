@@ -233,6 +233,9 @@ export default function DeviceInfoCard({ deviceIp, onClose = null, compact = fal
               const vendorL = (id.vendor || "").toLowerCase();
               const hostL = (id.hostname || "").toLowerCase();
               // Keyword match su modello / hostname
+              // v3.8.34: incluso NAS — i NAS Synology/QNAP rispondono a SNMP ifTable
+              // standard (MIB-II) e il connector raccoglie gia' i dati. Estendiamo
+              // semplicemente la UI per mostrare il bottone anche per nas/server.
               const networkKeywords = [
                 "switch", "router", "firewall", "gateway",
                 "catalyst", "nexus", "meraki",                    // Cisco
@@ -246,12 +249,18 @@ export default function DeviceInfoCard({ deviceIp, onClose = null, compact = fal
                 "powerconnect", "n1500", "n2000", "n3000",        // Dell
                 "huawei", "s5700", "s6700", "ar2200",             // Huawei
                 "pfsense", "opnsense",                            // OSS firewall
+                "synology", "qnap", "diskstation", "rackstation", "ts-",  // NAS
               ];
               const matchesKeyword = networkKeywords.some((k) => modelL.includes(k) || hostL.includes(k));
               const isSwitchLike =
                 dt.includes("switch") || dt.includes("router") || dt.includes("firewall") ||
-                dt === "network-device" || matchesKeyword;
+                dt === "nas" || dt === "network-device" || matchesKeyword;
               if (!isSwitchLike) return null;
+              // Etichetta dinamica in base al tipo
+              const btnLabel = dt === "firewall" ? "Porte firewall"
+                : dt === "nas" ? "Interfacce NAS"
+                : dt.includes("router") ? "Porte router"
+                : "Porte switch";
               return (
                 <button
                   onClick={() => {
@@ -262,11 +271,11 @@ export default function DeviceInfoCard({ deviceIp, onClose = null, compact = fal
                     if (onClose) onClose();
                     setTimeout(() => navigate(url), 80);
                   }}
-                  title="Apri vista porte switch (tiles + neighbor LLDP + flap history)"
+                  title={`${btnLabel} (interfacce ifTable SNMP, traffico Rx/Tx, neighbor LLDP, flap history)`}
                   className="px-2.5 py-1.5 text-[11px] rounded-md border border-indigo-500/40 bg-indigo-500/10 text-indigo-300 hover:bg-indigo-500/20 hover:border-indigo-400 flex items-center gap-1.5 transition-colors"
                   data-testid="device-info-card-switch-ports-btn">
                   <NetworkSlash size={13} weight="duotone" />
-                  <span className="hidden sm:inline">Porte switch</span>
+                  <span className="hidden sm:inline">{btnLabel}</span>
                 </button>
               );
             })()}

@@ -1498,7 +1498,10 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
                       >
                         <Info size={13} />
                       </button>
-                      {/* Porte Switch: detection multi-segnale (device_type / model / hostname) */}
+                      {/* v3.8.34: Porte/Interfacce — detection multi-segnale per
+                          switch/router/firewall/NAS. Il connector raccoglie ifTable
+                          standard MIB-II per ogni device SNMP, quindi il bottone si
+                          attiva anche per firewall (Zyxel/Fortinet) e NAS (Synology/QNAP). */}
                       {(() => {
                         const dt = (d.device_type || "").toLowerCase();
                         const modelL = (d.model || d.sys_descr || "").toLowerCase();
@@ -1516,17 +1519,21 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
                           "powerconnect", "n1500", "n2000", "n3000",
                           "huawei", "s5700", "s6700", "ar2200",
                           "pfsense", "opnsense",
+                          "synology", "qnap", "diskstation", "rackstation", "ts-",
                         ];
                         const matches = kw.some((k) => modelL.includes(k) || nameL.includes(k));
-                        const isSwitchLike =
+                        const isPortable =
                           dt.includes("switch") || dt.includes("router") || dt.includes("firewall") ||
-                          dt === "network-device" || matches;
-                        if (!isSwitchLike) return null;
+                          dt === "nas" || dt === "network-device" || matches;
+                        if (!isPortable) return null;
+                        const tip = dt === "firewall" ? "Porte firewall (ifTable: oper/admin/speed, traffico Rx/Tx)"
+                          : dt === "nas" ? "Interfacce NAS (ifTable: speed, traffico Rx/Tx)"
+                          : "Porte switch (tiles UP/DOWN + neighbor LLDP + flap history)";
                         return (
                           <button
                             onClick={() => navigate(`/switch-ports/${encodeURIComponent(d.ip_address)}`)}
                             className="p-1 rounded hover:bg-indigo-500/10 text-indigo-400 transition-colors"
-                            title="Porte switch (tiles UP/DOWN + neighbor LLDP + flap history)"
+                            title={tip}
                             data-testid={`device-switch-ports-${d.ip_address}`}
                           >
                             <NetworkSlash size={13} />
@@ -1936,11 +1943,51 @@ function WanTab({ targets, clientId, clientName, onRefresh }) {
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState(null);
+  // v3.8.33: dialog "Aggancia target esistente" — riassegna target gia'
+  // creati nel sistema (orfani o di altri clienti) al cliente corrente.
+  const [showAttach, setShowAttach] = useState(false);
+  const [allTargets, setAllTargets] = useState([]);  // tutti i target nel sistema
+  const [allClients, setAllClients] = useState({});  // map id->name
+  const [loadingAttach, setLoadingAttach] = useState(false);
+  const [attaching, setAttaching] = useState(null);  // id target in fase di attach
   const emptyForm = {
     label: "", device_type: "firewall", public_ip: "", gateway_ip: "",
     check_ports: "443", check_ping: true,
   };
   const [form, setForm] = useState(emptyForm);
+
+  const openAttach = async () => {
+    setShowAttach(true);
+    setLoadingAttach(true);
+    try {
+      const [tRes, cRes] = await Promise.all([
+        axios.get(`${API}/external-monitor/targets`),
+        axios.get(`${API}/clients`),
+      ]);
+      setAllTargets((tRes.data?.targets || tRes.data || []).filter(t => t.client_id !== clientId));
+      const map = {};
+      (cRes.data || []).forEach(c => { map[c.id] = c.name; });
+      setAllClients(map);
+    } catch (e) {
+      toast.error("Errore caricamento target esistenti");
+    } finally {
+      setLoadingAttach(false);
+    }
+  };
+
+  const attachTarget = async (target) => {
+    setAttaching(target.id);
+    try {
+      await axios.put(`${API}/external-monitor/targets/${target.id}`, { client_id: clientId });
+      toast.success(`Target "${target.label}" agganciato a ${clientName}`);
+      setShowAttach(false);
+      onRefresh?.();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Errore aggancio");
+    } finally {
+      setAttaching(null);
+    }
+  };
 
   const testConnection = async () => {
     if (!form.public_ip) { toast.error("Inserisci un IP pubblico"); return; }
@@ -2011,6 +2058,14 @@ function WanTab({ targets, clientId, clientName, onRefresh }) {
           data-testid="add-wan-target-btn"
         >
           <Plus size={14} weight="bold" /> Aggiungi Target WAN
+        </Button>
+        <Button
+          onClick={openAttach}
+          variant="outline"
+          className="h-8 text-xs gap-1 border-indigo-500/40 hover:bg-indigo-500/10 text-indigo-300 ml-2"
+          data-testid="attach-wan-target-btn"
+        >
+          <Globe size={14} weight="bold" /> Aggancia esistente
         </Button>
       </div>
 
@@ -2138,6 +2193,75 @@ function WanTab({ targets, clientId, clientName, onRefresh }) {
                 {saving ? "Salvataggio..." : "Aggiungi Target"}
               </Button>
             </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* v3.8.33: Dialog Aggancia target WAN esistente al cliente corrente */}
+      <Dialog open={showAttach} onOpenChange={setShowAttach}>
+        <DialogContent className="bg-[var(--bg-card)] border-[var(--bg-border)] max-w-2xl" data-testid="attach-wan-dialog">
+          <DialogHeader>
+            <DialogTitle className="text-[var(--text-primary)] flex items-center gap-2">
+              <Globe size={18} className="text-indigo-400" />
+              Aggancia target WAN a {clientName}
+            </DialogTitle>
+            <p className="text-[10px] text-[var(--text-muted)] mt-1">
+              Mostra tutti i target WAN del sistema NON assegnati a {clientName}. Cliccando su un target lo riassegni a questo cliente (utile per target orfani o creati con cliente errato).
+            </p>
+          </DialogHeader>
+          <div className="max-h-[420px] overflow-y-auto">
+            {loadingAttach ? (
+              <div className="text-center py-8 text-[10px] text-[var(--text-muted)]">Caricamento target...</div>
+            ) : allTargets.length === 0 ? (
+              <div className="text-center py-10 text-[10px] text-[var(--text-muted)]">
+                <Globe size={28} className="mx-auto mb-2 opacity-30" />
+                <p>Nessun target WAN da agganciare.</p>
+                <p className="mt-1">Tutti i target esistenti sono già assegnati a questo cliente o non ci sono target nel sistema.</p>
+              </div>
+            ) : (
+              <table className="w-full text-[11px]">
+                <thead>
+                  <tr className="text-left text-[9px] uppercase tracking-widest text-[var(--text-muted)] border-b border-[var(--bg-border)]">
+                    <th className="py-2 pl-2">Label</th>
+                    <th>IP Pubblico</th>
+                    <th>Tipo</th>
+                    <th>Cliente attuale</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {allTargets.map(t => {
+                    const ownerName = allClients[t.client_id];
+                    const isOrphan = !ownerName;
+                    return (
+                      <tr key={t.id} className="border-b border-[var(--bg-border)]/50 hover:bg-indigo-500/5" data-testid={`attach-row-${t.id}`}>
+                        <td className="py-2 pl-2 font-semibold text-[var(--text-primary)]">{t.label}</td>
+                        <td className="font-mono text-[10px] text-[var(--text-muted)]">{t.public_ip}</td>
+                        <td><span className="text-[9px] px-1 py-0.5 rounded border border-[var(--bg-border)]">{t.device_type || "—"}</span></td>
+                        <td>
+                          {isOrphan ? (
+                            <span className="text-[10px] text-amber-400">Senza cliente <span className="text-[8px] px-1 py-0.5 rounded bg-amber-500/10 border border-amber-500/30 ml-1">orfano</span></span>
+                          ) : (
+                            <span className="text-[10px] text-[var(--text-muted)]">{ownerName}</span>
+                          )}
+                        </td>
+                        <td className="text-right pr-2">
+                          <Button
+                            size="sm"
+                            className="h-7 text-[10px] bg-indigo-600 hover:bg-indigo-700 text-white"
+                            onClick={() => attachTarget(t)}
+                            disabled={attaching === t.id}
+                            data-testid={`attach-btn-${t.id}`}
+                          >
+                            {attaching === t.id ? <ArrowClockwise size={11} className="animate-spin" /> : "Aggancia"}
+                          </Button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
           </div>
         </DialogContent>
       </Dialog>

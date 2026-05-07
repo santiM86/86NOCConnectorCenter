@@ -26,7 +26,7 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
     # Also include connector-discovered devices (device_poll_status) and manually managed devices (managed_devices)
     # Also need reachable + last_poll to infer status
     poll_devices = await db.device_poll_status.find(
-        {}, {"_id": 0, "client_id": 1, "device_ip": 1, "device_name": 1, "status": 1, "device_type": 1, "device_class": 1, "sys_descr": 1, "reachable": 1, "last_poll": 1, "monitor_type": 1}
+        {}, {"_id": 0, "client_id": 1, "device_ip": 1, "device_name": 1, "status": 1, "device_type": 1, "device_class": 1, "sys_descr": 1, "reachable": 1, "last_poll": 1, "monitor_type": 1, "consecutive_failures": 1, "last_reachable_at": 1}
     ).to_list(10000)
     managed_devices_raw = await db.managed_devices.find(
         {}, {"_id": 0, "client_id": 1, "ip": 1, "name": 1, "device_type": 1}
@@ -113,6 +113,23 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
                     is_fresh = (now_utc - last_poll_dt).total_seconds() < 900
                 except Exception:
                     pass
+            # v3.8.32 ANTI-FLAP: applica debounce anche al calcolo dell'overview.
+            # Un singolo poll fallito (UDP packet loss) NON deve far apparire un
+            # dispositivo offline nei contatori del cliente. Marca offline solo se
+            # consecutive_failures >= 3 E last_reachable_at piu' vecchio di 5 min.
+            if reachable is False and is_fresh:
+                consec = int(pd.get("consecutive_failures") or 0)
+                last_ok_raw = pd.get("last_reachable_at")
+                secs_since_ok = 1e9
+                if last_ok_raw:
+                    try:
+                        last_ok_dt = datetime.fromisoformat(last_ok_raw.replace("Z", "+00:00"))
+                        secs_since_ok = (now_utc - last_ok_dt).total_seconds()
+                    except Exception:
+                        pass
+                if last_ok_raw and not (consec >= 3 and secs_since_ok >= 300):
+                    # singolo fail transitorio → trattalo come online
+                    reachable = True
             if reachable is True and is_fresh:
                 status = "online"
             elif reachable is False and is_fresh:

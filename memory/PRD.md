@@ -1,3 +1,128 @@
+## 2026-05-07 EXTRA UX — Sezione "Interfacce per ruolo" firewall/router (v3.8.35)
+
+**Feature**: aggiunta sezione visiva di raggruppamento delle porte ifTable per ruolo (WAN / LAN / DMZ / MGMT / Altro) nella `SwitchPortsPage`, mostrata solo per device classificati `firewall` / `router` / `gateway`.
+
+**Backend** (`/app/backend/routes/topology.py`):
+- Ogni porta restituita ha ora un campo `role` calcolato lato server da `name + alias` (descrizione SNMP).
+- Pattern matching (case-insensitive) prioritizzato:
+  1. **WAN**: keywords `wan, internet, isp, external, uplink, fiber, fttc, ftth`
+  2. **DMZ**: keywords `dmz, opt, untrust`
+  3. **MGMT**: keywords `mgmt, mgt, managem, admin, console, oob`
+  4. **LAN**: keywords `lan, internal, trust, user, client, office`
+  5. **other**: tutto il resto
+- `totals.by_role` ora aggrega per ruolo: `total`, `up`, `down`, `rx_bps`, `tx_bps`.
+
+**Frontend** (`/app/frontend/src/pages/SwitchPortsPage.js`):
+- Nuova sezione "Interfacce per ruolo" sopra i filtri stato. 5 card colorate (rosa=WAN, emerald=LAN, ambra=DMZ, indigo=MGMT, neutral=Altro) con porte totali, up↑/down↓, traffico Rx/Tx aggregato.
+- Click su card → applica `roleFilter` che si combina con i filtri stato esistenti (es. WAN + Down). Bottone "× Mostra tutte" per resettare.
+- Visibile solo per `device_type` = firewall / router / gateway. Nascosta su switch e NAS (non rilevante).
+
+**Test di regressione**: 7 test passati in `/app/backend/tests/test_port_role_classification_v3835.py` (algoritmo classificazione + smoke source-check).
+
+**Verifica preview**: `GET /api/devices/{ip}/switch-ports` ora ritorna `totals.by_role` ({} se nessuna porta) e `port.role` per ogni interfaccia. Lint pulito.
+
+**Compatibilità connector**: nessuna modifica richiesta al connector PowerShell. La classificazione è server-side basata sui campi `name`/`alias` già raccolti dall'ifTable standard.
+
+---
+
+
+## 2026-05-07 EXTRA UX — Dettaglio porte/interfacce per Firewall e NAS (v3.8.34)
+
+**Issue UX**: il bottone "Porte switch" (vista Nebula-style con tiles UP/DOWN, traffico Rx/Tx, neighbor LLDP, flap history) era visibile solo per device classificati come switch. Non era utilizzabile per Firewall (Zyxel USG, FortiGate) e NAS (Synology, QNAP), nonostante questi rispondano allo standard MIB-II `ifTable` e il connector PowerShell raccolga già i dati per **qualunque device SNMP** (`Poll-SwitchPortDetails` viene chiamata in loop su tutti i device con `monitor_type=snmp/snmp+http`).
+
+**Implementazione v3.8.34** (frontend-only, no breaking change):
+
+`/app/frontend/src/pages/ClientOverviewPage.js` (riga ~1521):
+- `isSwitchLike` rinominato in `isPortable`. Esteso per includere `dt === "nas"` e keywords NAS (`synology`, `qnap`, `diskstation`, `rackstation`, `ts-`).
+- Tooltip dinamico in base al device_type: "Porte firewall (ifTable: oper/admin/speed, traffico Rx/Tx)" / "Interfacce NAS" / "Porte switch".
+
+`/app/frontend/src/components/DeviceInfoCard.js` (riga ~250):
+- Stessa estensione di `isSwitchLike` con keywords NAS.
+- Etichetta bottone dinamica: "Porte firewall" / "Interfacce NAS" / "Porte router" / "Porte switch".
+
+`/app/backend/routes/topology.py` `GET /api/devices/{ip}/switch-ports`:
+- Response include ora `device_type` (preso da `managed_devices`) per permettere alla UI di adattare il titolo della pagina.
+
+`/app/frontend/src/pages/SwitchPortsPage.js`:
+- Titolo H1 dinamico "Dettagli firewall · {ip}" / "Interfacce NAS · {ip}" / "Dettagli router" / "Dettagli switch" in base a `data.device_type`.
+
+**Verifica preview**: GET `/api/devices/{ip}/switch-ports` ritorna 200 con campo `device_type` aggiunto. Lista Dispositivi cliente: bottone "Porte" ora visibile sulla riga del firewall Zyxel USG Test (precedentemente solo su switch). Lint pulito.
+
+**Nota produzione**: i dati `ifTable` per firewall/NAS sono raccolti dal connector v3.8.19+ (anche legacy). Dopo il deploy del frontend, l'utente potrà vedere immediatamente le interfacce dei firewall/NAS già polleati senza bisogno di aggiornare il connector.
+
+---
+
+
+## 2026-05-07 EXTRA — WAN tab cliente con "Aggancia esistente" + Profilo Zyxel corretto (v3.8.33)
+
+**Issue 1 (UX)**: nella tab WAN del cliente (es. Galvan) si poteva solo creare nuovi target. Per riassegnare un target già esistente nel sistema (orfano o di un altro cliente), bisognava andare nella pagina globale "Monitoraggio WAN Esterno" e cliccare la matita.
+
+**Fix v3.8.33** (`/app/frontend/src/pages/ClientOverviewPage.js`):
+- Nuovo bottone secondario "🌐 Aggancia esistente" accanto a "+ Aggiungi Target WAN" nella WAN tab.
+- Apre un dialog modale che mostra in tabella (Label, IP Pubblico, Tipo, Cliente attuale + badge "orfano") tutti i target del sistema NON assegnati al cliente corrente.
+- Click su "Aggancia" → `PUT /api/external-monitor/targets/{id}` con `client_id` del cliente corrente, refresh automatico della tab.
+- Funziona sinergicamente con il fix v3.8.29 che aveva esteso `WanTargetUpdate` per accettare `client_id`.
+
+**Issue 2 (Profilo)**: il profilo `zyxel_usg` aveva OID errati per Memory e Active Sessions rispetto alle specifiche Zyxel ZLD MIB.
+
+**Fix v3.8.33** (`/app/backend/device_profiles/__init__.py`):
+| Campo | Prima | Dopo (corretto) |
+|---|---|---|
+| Memory | `1.3.6.1.4.1.890.1.15.3.2.6.0` | `1.3.6.1.4.1.890.1.15.3.2.5.0` |
+| Active Sessions | `.2.8.0` | `.2.1.0` |
+| sysObjectID prefix | solo `1.3.6.1.4.1.890.` | aggiunto specifico `1.3.6.1.4.1.890.1.15.1.` (priorità) |
+| ifSpeed (porte) | mancava | aggiunto `1.3.6.1.2.1.2.2.1.5` |
+| Web console alt_ports | non specificato | `[8443, 80]` |
+| Thresholds session | mancava | `sessions_warn=50000, sessions_crit=100000` |
+| capabilities | `["snmp_basic", "session_count", "nebula_cloud_ready"]` | `+ "interface_traffic", "cpu_memory"` |
+
+`SEED_VERSION` incrementato da 1 → 2 per tracciare l'aggiornamento.
+
+**Verifica preview**: `GET /api/device-profiles` ritorna OID e prefix corretti. UI "Aggancia esistente" testata: bottone visibile, dialog si apre, tabella popolata correttamente per cliente con altri target, messaggio "Nessuno da agganciare" quando i target sono tutti del cliente corrente.
+
+---
+
+
+## 2026-05-07 P0 BUG FIX — Anti-Flap dispositivi online/offline (debounce v3.8.32)
+
+**Issue ricorrente segnalato dall'utente**: dispositivi che vanno offline random per qualche minuto e poi tornano online subito dopo qualche secondo, senza un motivo apparente.
+
+**Root cause analysis**:
+1. Master Connector pollizza i dispositivi via SNMP/ping ogni ~60s.
+2. Quando un singolo poll fallisce (UDP packet loss, timeout transitorio, switch sotto carico), `device-report` scriveva `reachable: false` in `device_poll_status`.
+3. La UI (`/api/devices`) leggeva `online if pd.reachable else offline` → status passava istantaneamente a **offline** anche per un fail singolo.
+4. Al ciclo successivo (poll OK) → tornava online. Risultato: il "flap di pochi minuti" osservato.
+5. **Mancava il debounce** tipico di tutti gli NMS enterprise (Zabbix/PRTG/LibreNMS richiedono N fail consecutivi prima di marcare offline).
+
+**Fix v3.8.32 (backend-only, retro-compatibile)**:
+
+`/app/backend/routes/connector.py` (device-report writer):
+- Ogni `device-report` ora salva in `device_poll_status` due campi nuovi:
+  - `consecutive_failures`: incrementato a ogni `reachable=false`, azzerato a ogni `reachable=true`.
+  - `last_reachable_at`: timestamp ISO dell'ultimo successo (carry-forward su fail).
+
+`/app/backend/routes/devices.py` (UI reader):
+- Nuova funzione `_effective_reachable(pd_doc)`: ritorna offline SOLO se `consecutive_failures >= 3` E `last_reachable_at >= 300s fa`. Sotto soglia ⇒ online (debounce).
+- Backward-compat: se i campi nuovi sono assenti (record legacy), comportamento invariato.
+
+`/app/backend/routes/overview.py` (contatori cliente):
+- Stessa logica anti-flap applicata al calcolo dei contatori `online/offline` per cliente. Single fail transitorio non sposta il device nei contatori "offline" del cliente.
+
+**Soglia scelta**:
+- 3 fail consecutivi (~3-6 min al rate di polling normale ~60-120s)
+- + 5 minuti senza successo confermato
+
+Cosi' un singolo packet loss UDP NON sposta lo status; un device realmente down lo diventa entro 3-5 minuti, in linea con SLA monitoring enterprise.
+
+**Test di regressione**: 3 test passati in `/app/backend/tests/test_device_status_debounce_v3832.py` (logica pura + smoke che il source code contiene i field giusti).
+
+**Verifica preview**: backend riavviato, `GET /api/devices` ritorna 200 con i dispositivi correnti.
+
+**Azione richiesta utente**: deploy backend in produzione. Effetto immediato per tutti i nuovi cicli di polling. Per i record legacy con campi assenti, il debounce inizia ad applicarsi appena il poll successivo aggiorna i campi.
+
+---
+
+
 ## 2026-05-07 EXTRA UX — Rollout ordinamento tabelle + persistenza
 
 **Espansione v3.8.31** del pattern `useSortableTable` introdotto nella v3.8.30:
