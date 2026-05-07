@@ -760,6 +760,49 @@ async def startup_event():
     except Exception as e:
         logger.error(f"Failed to start escalation scheduler: {e}")
 
+    # === Connectivity correlation scheduler (LAN/WiFi inference per device) ===
+    # v3.8.23: chiama periodicamente correlate_connectivity per ogni cliente,
+    # popolando connection_type su tutti i managed_devices senza richiedere
+    # il click manuale dall'utente. Usa CAM table + LLDP + euristica device_type.
+    try:
+        from apscheduler.schedulers.asyncio import AsyncIOScheduler
+        from apscheduler.triggers.interval import IntervalTrigger
+
+        async def _correlate_connectivity_tick():
+            try:
+                # Importa lazy per evitare cicli
+                from routes.devices import correlate_connectivity
+                clients = await db.clients.find({}, {"_id": 0, "id": 1}).to_list(500)
+                fake_user = {"id": "system-scheduler", "email": "scheduler@argus", "role": "admin", "_request_ip": "127.0.0.1"}
+                ok = 0
+                for c in clients:
+                    cid = c.get("id")
+                    if not cid:
+                        continue
+                    try:
+                        await correlate_connectivity(client_id=cid, current_user=fake_user)
+                        ok += 1
+                    except Exception as ce:
+                        logger.warning(f"correlate_connectivity client_id={cid} failed: {ce}")
+                logger.info(f"[connectivity-scheduler] correlated {ok}/{len(clients)} clients")
+            except Exception as e:
+                logger.error(f"connectivity scheduler tick failed: {e}")
+
+        global connectivity_scheduler
+        connectivity_scheduler = AsyncIOScheduler()
+        connectivity_scheduler.add_job(
+            _correlate_connectivity_tick,
+            trigger=IntervalTrigger(minutes=10),
+            id="correlate_connectivity_tick",
+            next_run_time=datetime.now(timezone.utc) + timedelta(minutes=2),  # First run 2 min after startup
+            max_instances=1,
+            coalesce=True,
+        )
+        connectivity_scheduler.start()
+        logger.info("Connectivity correlation scheduler started (tick: 10min)")
+    except Exception as e:
+        logger.error(f"Failed to start connectivity scheduler: {e}")
+
     # === Auto-Dispatch cron (hardware risk + predictive failure → incident) ===
     try:
         from apscheduler.schedulers.asyncio import AsyncIOScheduler
