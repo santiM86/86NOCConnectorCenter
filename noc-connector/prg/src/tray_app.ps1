@@ -137,7 +137,12 @@ function Get-DisplayNameForMode {
 
 $global:ConnectorProcess = $null
 $global:IsRunning = $false
-$global:TaskName = "86NocConnectorService"
+# v3.8.23: rinominato da "86NocConnectorService" a "86NocConnector_TrayTask"
+# per evitare CONFLITTO/RACE CONDITION col servizio NSSM omonimo. Il vecchio
+# nome causava il SELF-HEAL ciclico ogni 30-60 min con conseguenti restart
+# dello Scanner e dispositivi che andavano OFFLINE per 2-3 min sulla UI Center.
+$global:TaskName = "86NocConnector_TrayTask"
+$global:LegacyTaskName = "86NocConnectorService"  # vecchio nome conflittuale, va rimosso una volta sola
 
 <#
 .SYNOPSIS
@@ -175,7 +180,12 @@ function Test-ConnectorTask {
 #>
 function Register-ConnectorTask {
     try {
-        # Rimuovi vecchio task se esiste
+        # v3.8.23: rimuovi PRIMA il vecchio task conflittuale (stesso nome del servizio NSSM)
+        # se esiste da installazioni precedenti — sblocca la race condition definitivamente
+        try {
+            Unregister-ScheduledTask -TaskName $global:LegacyTaskName -Confirm:$false -ErrorAction SilentlyContinue
+        } catch {}
+        # Rimuovi vecchio task con nome corrente (re-registrazione idempotente)
         Unregister-ScheduledTask -TaskName $global:TaskName -Confirm:$false -ErrorAction SilentlyContinue
         
         $action = New-ScheduledTaskAction `

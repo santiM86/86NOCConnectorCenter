@@ -445,9 +445,15 @@ export default function ConnectorsPage() {
                       <InfoItem label="Versione" value={`v${c.connector_version || "?"}`} />
                       <InfoItem label="Uptime" value={formatUptime(c.uptime_seconds)} />
                       <InfoItem label={(c.mode || "master") === "scanner" ? "Endpoint scan" : "SNMP"}
-                        value={(c.mode || "master") === "scanner" ? (c.last_lan_scan_endpoints ?? 0) : (c.traps_received || 0)} />
+                        value={(c.mode || "master") === "scanner" ? (c.last_lan_scan_endpoints ?? 0) : (c.traps_received || 0)}
+                        tooltip={(c.mode || "master") === "scanner"
+                          ? "Endpoint deduplicati nell'ultimo scan ARP+mDNS"
+                          : "SNMP traps spontanee ricevute dal connector. Se 0 puo' essere normale (i device non sono configurati per inviare trap al connector)."} />
                       <InfoItem label={(c.mode || "master") === "scanner" ? "Ultima scan" : "Syslog"}
-                        value={(c.mode || "master") === "scanner" ? formatLastSeen(c.last_lan_scan_at) : (c.syslogs_received || 0)} />
+                        value={(c.mode || "master") === "scanner" ? formatLastSeen(c.last_lan_scan_at) : (c.syslogs_received || 0)}
+                        tooltip={(c.mode || "master") === "scanner"
+                          ? "Quando il connector scanner ha completato l'ultimo lan-scan"
+                          : "Messaggi Syslog ricevuti dal connector. Se 0 puo' essere normale (i device non sono configurati per inviare syslog al connector)."} />
                       <InfoItem label="Ultimo" value={formatLastSeen(c.last_seen)} />
                     </div>
                   </div>
@@ -548,9 +554,9 @@ export default function ConnectorsPage() {
   );
 }
 
-function InfoItem({ label, value }) {
+function InfoItem({ label, value, tooltip }) {
   return (
-    <div className="flex items-center gap-1">
+    <div className="flex items-center gap-1" title={tooltip || undefined}>
       <span className="text-[10px] text-[var(--text-muted)]">{label}:</span>
       <span className="text-[11px] font-mono text-[var(--text-secondary)]">{value}</span>
     </div>
