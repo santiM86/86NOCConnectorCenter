@@ -980,4 +980,2514 @@ function Poll-PingDevice($ip, $name, $httpPort) {
                 $resp = $req.GetResponse()
                 $httpStart.Stop()
                 
-                $httpDetails.status_code = [in
+                $httpDetails.status_code = [int]$resp.StatusCode
+                $httpDetails.response_ms = $httpStart.ElapsedMilliseconds
+                $httpDetails.server_header = $resp.Headers["Server"]
+                $httpDetails.content_type = $resp.ContentType
+                
+                # Try to read page title
+                try {
+                    $stream = $resp.GetResponseStream()
+                    $reader = New-Object System.IO.StreamReader($stream)
+                    $bodyText = $reader.ReadToEnd()
+                    $reader.Close()
+                    $stream.Close()
+                    if ($bodyText.Length -gt 4000) { $bodyText = $bodyText.Substring(0, 4000) }
+                    if ($bodyText -match '<title[^>]*>([^<]+)</title>') {
+                        $httpDetails.title = $Matches[1].Trim()
+                    }
+                } catch {}
+                
+                $resp.Close()
+                
+                # SSL Certificate check
+                if ($protocol -eq "https") {
+                    try {
+                        $cert = $req.ServicePoint.Certificate
+                        if ($cert) {
+                            $cert2 = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($cert)
+                            $httpDetails.ssl_expiry = $cert2.NotAfter.ToString("yyyy-MM-dd")
+                            $httpDetails.ssl_issuer = $cert2.Issuer
+                            
+                            # Alert if SSL expires within 30 days
+                            $daysLeft = ($cert2.NotAfter - (Get-Date)).Days
+                            if ($daysLeft -lt 30 -and $daysLeft -gt 0) {
+                                $alerts += @{
+                                    device_ip   = $ip
+                                    oid         = "ssl.expiry"
+                                    value       = "Certificato SSL di $name ($ip) scade tra $daysLeft giorni ($($cert2.NotAfter.ToString('dd/MM/yyyy')))"
+                                    trap_type   = "sslExpiring"
+                                    severity    = "high"
+                                    device_name = $name
+                                }
+                            }
+                        }
+                    } catch {}
+                }
+            } catch [System.Net.WebException] {
+                $httpStart.Stop()
+                $httpDetails.response_ms = $httpStart.ElapsedMilliseconds
+                if ($_.Exception.Response) {
+                    $httpDetails.status_code = [int]$_.Exception.Response.StatusCode
+                    $httpDetails.server_header = $_.Exception.Response.Headers["Server"]
+                } else {
+                    $httpDetails.status_code = 0
+                }
+            } catch {
+                $httpDetails.status_code = 0
+            }
+            
+            [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $null
+        }
+    }
+    
+    # ========== 5. State change alerts ==========
+    $wasUp = $script:DeviceUp.ContainsKey($ip) -and $script:DeviceUp[$ip]
+    
+    if (-not $reachable -and $wasUp) {
+        $alerts += @{
+            device_ip  = $ip
+            oid        = "ping.monitor"
+            value      = "Dispositivo $name ($ip) NON RAGGIUNGIBILE - ping fallito (packet loss: ${packetLoss}%)"
+            trap_type  = "deviceDown"
+            severity   = "critical"
+            device_name = $name
+        }
+    }
+    if ($reachable -and $script:DeviceUp.ContainsKey($ip) -and -not $wasUp) {
+        $alerts += @{
+            device_ip  = $ip
+            oid        = "ping.monitor"
+            value      = "Dispositivo $name ($ip) di nuovo RAGGIUNGIBILE (latenza: ${pingAvg}ms)"
+            trap_type  = "deviceUp"
+            severity   = "low"
+            device_name = $name
+        }
+    }
+    
+    # Alert on high latency
+    if ($pingAvg -and $pingAvg -gt 200) {
+        $alerts += @{
+            device_ip  = $ip
+            oid        = "ping.latency"
+            value      = "Latenza alta su $name ($ip): ${pingAvg}ms (jitter: ${pingJitter}ms)"
+            trap_type  = "highLatency"
+            severity   = "high"
+            device_name = $name
+        }
+    }
+    
+    # Alert on packet loss
+    if ($packetLoss -gt 0 -and $packetLoss -lt 100) {
+        $plSeverity = "medium"
+        if ($packetLoss -ge 40) { $plSeverity = "high" }
+        $alerts += @{
+            device_ip  = $ip
+            oid        = "ping.packetloss"
+            value      = "Packet loss su $name ($ip): ${packetLoss}% ($totalReceived/$totalSent)"
+            trap_type  = "packetLoss"
+            severity   = $plSeverity
+            device_name = $name
+        }
+    }
+    
+    $script:DeviceUp[$ip] = $reachable
+    
+  } catch {
+    Write-Log "Errore critico in Poll-PingDevice per $name ($ip): $($_.Exception.Message)" "ERROR"
+    $script:DeviceUp[$ip] = $false
+  }
+
+    $httpStatusVal = $null
+    if ($httpDetails -and $httpDetails.status_code) { $httpStatusVal = $httpDetails.status_code }
+
+    return @{
+        alerts      = $alerts
+        reachable   = $reachable
+        ping_ms     = $pingAvg
+        ping_min    = $pingMin
+        ping_max    = $pingMax
+        ping_avg    = $pingAvg
+        ping_jitter = $pingJitter
+        packet_loss = $packetLoss
+        ttl         = $ttl
+        dns_ms      = $dnsMs
+        open_ports  = $openPorts
+        http_details = $httpDetails
+        http_status = $httpStatusVal
+    }
+}
+
+# ==================== SNMP POLLING ====================
+
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$pollerPath = Join-Path $ScriptDir "snmp_poller.ps1"
+if (Test-Path $pollerPath) {
+    . $pollerPath
+}
+
+# ==================== FASE B: VENDOR-SPECIFIC SNMP POLLING ====================
+# Esegue SNMP GET/WALK sugli OID vendor-specific forniti dal backend via heartbeat.
+# Il backend popola $dev.vendor_snmp_targets = @{
+#   scalars: @{ "metricName"="OID"; ... }      # Singolo valore per metrica
+#   tables:  @{ "metricName"="OID_base"; ... } # SNMP walk sotto-albero
+# }
+# Ritorna hashtable { "metricName" = value (scalar) OR { "idx1"=val, "idx2"=val } (table) }
+function Poll-VendorOids([string]$ip, [string]$community, $vendorTargets) {
+    $result = @{}
+    if (-not $vendorTargets) {
+        Write-Log "  [VENDOR] ${ip}: vendorTargets NULL (no profile assigned)" "DEBUG"
+        return $result
+    }
+
+    $scalarsList = @()
+    $tablesList = @()
+    # Supporta sia PSCustomObject (da JSON) sia Hashtable - defensivo
+    try {
+        if ($vendorTargets.scalars) {
+            if ($vendorTargets.scalars -is [System.Collections.IDictionary]) {
+                $scalarsList = @($vendorTargets.scalars.GetEnumerator())
+            } else {
+                $scalarsList = @($vendorTargets.scalars.PSObject.Properties)
+            }
+        }
+        if ($vendorTargets.tables) {
+            if ($vendorTargets.tables -is [System.Collections.IDictionary]) {
+                $tablesList = @($vendorTargets.tables.GetEnumerator())
+            } else {
+                $tablesList = @($vendorTargets.tables.PSObject.Properties)
+            }
+        }
+    } catch {
+        Write-Log "  [VENDOR] ${ip}: errore enum targets: $($_.Exception.Message)" "WARN"
+        return $result
+    }
+    $scalarsCount = $scalarsList.Count
+    $tablesCount = $tablesList.Count
+    Write-Log "  [VENDOR] ${ip}: ricevuti $scalarsCount scalars + $tablesCount tables dal NOC" "INFO"
+
+    # --- Scalars: GET singolo OID
+    $scalarsOk = 0
+    $scalarsFail = 0
+    foreach ($metric in $scalarsList) {
+        $mname = $metric.Name
+        $oid = [string]$metric.Value
+        if (-not $oid) { continue }
+        try {
+            $v = Get-SnmpValue $ip $community $oid
+            if ($null -ne $v -and $v -ne "") {
+                # Try to parse as number if looks numeric
+                $strV = [string]$v
+                if ($strV -match '^-?\d+(\.\d+)?$') {
+                    $result[$mname] = [double]$strV
+                } else {
+                    $result[$mname] = $strV
+                }
+                $scalarsOk++
+            } else {
+                $scalarsFail++
+            }
+        } catch {
+            $scalarsFail++
+            # Non critical, continua
+        }
+    }
+
+    # --- Tables: SNMP walk (Get-SnmpWalk exists in snmp_poller.ps1)
+    $tablesOk = 0
+    $tablesFail = 0
+    foreach ($metric in $tablesList) {
+        $mname = $metric.Name
+        $baseOid = [string]$metric.Value
+        if (-not $baseOid) { continue }
+        try {
+            # Use Get-SnmpTable (GETNEXT walk with correct OID scope check).
+            # Il fallback precedente con 32 GET numerate era errato: i walk reali
+            # hanno indici OID piu' profondi (es. h3cEntityExtCpuUsage usa 1.3.6.1.4.1.25506.2.6.1.1.1.1.6.<slotId>
+            # dove <slotId> puo' essere 1, 2, 9, 10, 65536...). Un loop .1 .2 ...32
+            # non intercettava nulla su device reali come switch Comware.
+            $walkResult = Get-SnmpTable $ip $community $baseOid
+            if ($walkResult -and $walkResult.Count -gt 0) {
+                $table = @{}
+                foreach ($fullOid in $walkResult.Keys) {
+                    # Estrai solo l'indice finale (tutto dopo baseOid.)
+                    $suffix = $fullOid.Substring($baseOid.Length).TrimStart('.')
+                    $v = $walkResult[$fullOid]
+                    $strV = [string]$v
+                    if ($strV -match '^-?\d+(\.\d+)?$') {
+                        $table[$suffix] = [double]$strV
+                    } else {
+                        $table[$suffix] = $strV
+                    }
+                }
+                if ($table.Count -gt 0) {
+                    $result[$mname] = $table
+                    $tablesOk++
+                } else {
+                    $tablesFail++
+                }
+            } else {
+                $tablesFail++
+            }
+        } catch {
+            $tablesFail++
+            Write-Log "  [VENDOR] ${ip}: walk ${mname} failed: $($_.Exception.Message)" "DEBUG"
+        }
+    }
+
+    Write-Log "  [VENDOR] ${ip}: scalars OK=$scalarsOk / FAIL=$scalarsFail | tables OK=$tablesOk / FAIL=$tablesFail -> $($result.Count) metriche totali" "INFO"
+    return $result
+}
+
+function Send-DeviceReport($config, $devices) {
+    $reportDevices = @()
+    foreach ($dev in $devices) {
+        $ip = $dev.ip
+        $devName = if ($dev.name) { $dev.name } else { $ip }
+        $monitorType = if ($dev.monitor_type) { $dev.monitor_type } else { "snmp" }
+        $community = if ($dev.community) { $dev.community } else { "public" }
+        if ($monitorType -eq "ping" -or $monitorType -eq "http") {
+            # Ping/HTTP device - use cached poll results with advanced metrics
+            $reachable = $script:DeviceUp.ContainsKey($ip) -and $script:DeviceUp[$ip]
+            $pingData = if ($script:PingResults.ContainsKey($ip)) { $script:PingResults[$ip] } else { $null }
+            
+            $deviceReport = @{
+                device_ip = $ip
+                device_name = $devName
+                monitor_type = $monitorType
+                reachable = $reachable
+                ping_ms = if ($pingData) { $pingData.ping_ms } else { $null }
+                http_status = if ($pingData) { $pingData.http_status } else { $null }
+                ports = @()
+                sys_descr = ""
+                sys_uptime = ""
+                poll_timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+                # v3.6.18: SNMP config persistita nel Center
+                snmp_version = if ($dev.snmp_version) { $dev.snmp_version } else { "v2c" }
+                community = if ($dev.community) { $dev.community } else { "" }
+                # Advanced ping metrics
+                ping_stats = $null
+                open_ports = $null
+                http_details = $null
+            }
+            
+            if ($pingData) {
+                $deviceReport.ping_stats = @{
+                    min = $pingData.ping_min
+                    max = $pingData.ping_max
+                    avg = $pingData.ping_avg
+                    jitter = $pingData.ping_jitter
+                    packet_loss = $pingData.packet_loss
+                    ttl = $pingData.ttl
+                    dns_ms = $pingData.dns_ms
+                }
+                $deviceReport.open_ports = $pingData.open_ports
+                $deviceReport.http_details = $pingData.http_details
+                
+                # Build sys_descr from collected info
+                $descParts = @()
+                if ($pingData.http_details -and $pingData.http_details.server_header) {
+                    $descParts += $pingData.http_details.server_header
+                }
+                if ($pingData.http_details -and $pingData.http_details.title) {
+                    $descParts += $pingData.http_details.title
+                }
+                if ($pingData.open_ports -and $pingData.open_ports.Count -gt 0) {
+                    $portNames = ($pingData.open_ports | ForEach-Object { $_.name }) -join ", "
+                    $descParts += "Servizi: $portNames"
+                }
+                if ($descParts.Count -gt 0) {
+                    $deviceReport.sys_descr = $descParts -join " | "
+                } else {
+                    $deviceReport.sys_descr = if ($reachable) { "Raggiungibile (ping OK)" } else { "Non raggiungibile" }
+                }
+            }
+            
+            $reportDevices += $deviceReport
+        } else {
+            # SNMP device - full extended metrics
+            $reachable = $script:DeviceUp.ContainsKey($ip) -and $script:DeviceUp[$ip]
+            $ports = @()
+            
+            if ($script:PortStates.ContainsKey($ip)) {
+                foreach ($idx in $script:PortStates[$ip].Keys) {
+                    $operStatus = $script:PortStates[$ip][$idx]
+                    $statusName = if ($script:IfStatusMap.ContainsKey($operStatus)) { $script:IfStatusMap[$operStatus] } else { "unknown" }
+                    $ports += @{
+                        index = $idx
+                        status = $statusName
+                        status_code = $operStatus
+                    }
+                }
+            }
+            
+            $sysDescr = ""
+            $sysName = ""
+            $sysUptime = ""
+            $sysObjectID = ""
+            $extMetrics = $null
+            $trafficData = $null
+            $vendorMetrics = $null
+            if ($reachable) {
+                try {
+                    $sysDescr = Get-SnmpValue $ip $community "1.3.6.1.2.1.1.1.0"
+                    $sysName = Get-SnmpValue $ip $community "1.3.6.1.2.1.1.5.0"
+                    $sysObjectID = Get-SnmpValue $ip $community "1.3.6.1.2.1.1.2.0"
+                    $uptimeTicks = Get-SnmpValue $ip $community "1.3.6.1.2.1.1.3.0"
+                    if ($uptimeTicks) {
+                        $secs = [math]::Floor($uptimeTicks / 100)
+                        $d = [math]::Floor($secs / 86400)
+                        $h = [math]::Floor(($secs % 86400) / 3600)
+                        $m = [math]::Floor(($secs % 3600) / 60)
+                        $sysUptime = "${d}g ${h}h ${m}m"
+                    }
+                } catch {}
+                
+                # Extended metrics (CPU, Memory, Temperature, Hardware health, entity_mib, primary_mac, if_aliases, arp_table)
+                try { $extMetrics = Poll-ExtendedMetrics $ip $community } catch {}
+                
+                # Interface traffic (bandwidth, speed, errors)
+                try { $trafficData = Poll-InterfaceTraffic $ip $community } catch {}
+
+                # FASE B: Vendor-specific OIDs (RAID status, UPS battery, VPN tunnels, etc.)
+                if ($dev.vendor_snmp_targets) {
+                    try {
+                        Write-Log "  Vendor SNMP polling $devName ($ip)..." "DEBUG"
+                        $vendorMetrics = Poll-VendorOids $ip $community $dev.vendor_snmp_targets
+                        if ($vendorMetrics -and $vendorMetrics.Count -gt 0) {
+                            Write-Log "  Vendor metrics raccolte per ${devName}: $($vendorMetrics.Count) metriche" "INFO"
+                        }
+                    } catch {
+                        Write-Log "  Errore vendor polling ${ip}: $($_.Exception.Message)" "WARN"
+                    }
+                }
+            }
+            
+            # Enrich ports with traffic data
+            if ($trafficData) {
+                foreach ($p in $ports) {
+                    $idx = $p.index
+                    if ($trafficData.ContainsKey($idx)) {
+                        $t = $trafficData[$idx]
+                        $p.speed_bps = $t.speed_bps
+                        $p.in_bps = $t.in_bps
+                        $p.out_bps = $t.out_bps
+                        $p.in_errors = $t.in_errors
+                        $p.out_errors = $t.out_errors
+                    }
+                }
+            }
+            
+            $deviceReport = @{
+                device_ip = $ip
+                device_name = $devName
+                monitor_type = $monitorType
+                reachable = $reachable
+                ports = $ports
+                sys_descr = "$sysDescr"
+                sys_name = "$sysName"
+                sys_object_id = "$sysObjectID"
+                sys_uptime = $sysUptime
+                poll_timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+                # v3.6.18: SNMP config persistita nel Center
+                snmp_version = if ($dev.snmp_version) { $dev.snmp_version } else { "v2c" }
+                community = $community
+            }
+            
+            # Add extended metrics if available.
+            # v3.5.13 FIX: passa TUTTI i campi raccolti da Poll-ExtendedMetrics (prima
+            # entity_mib / primary_mac / if_aliases / arp_table venivano raccolti dal
+            # connector ma MAI propagati nel device_report -> il backend li riceveva
+            # sempre $null e l'UI non mostrava mai vendor/modello/firmware ecc.)
+            if ($extMetrics) {
+                $deviceReport.cpu_usage = $extMetrics.cpu_usage
+                $deviceReport.memory_usage = $extMetrics.memory_usage
+                $deviceReport.temperature = $extMetrics.temperature
+                $deviceReport.device_class = $extMetrics.device_class
+                $deviceReport.hardware = $extMetrics.hardware
+                if ($extMetrics.firewall) {
+                    $deviceReport.firewall = $extMetrics.firewall
+                }
+                if ($extMetrics.entity_mib) {
+                    $deviceReport.entity_mib = $extMetrics.entity_mib
+                }
+                if ($extMetrics.primary_mac) {
+                    $deviceReport.primary_mac = $extMetrics.primary_mac
+                }
+                if ($extMetrics.if_aliases) {
+                    $deviceReport.if_aliases = $extMetrics.if_aliases
+                }
+                if ($extMetrics.arp_table) {
+                    $deviceReport.arp_table = $extMetrics.arp_table
+                }
+            }
+
+            # FASE B: Vendor-specific metrics
+            if ($vendorMetrics -and $vendorMetrics.Count -gt 0) {
+                $deviceReport.vendor_metrics = $vendorMetrics
+            }
+            
+            # Redfish/iLO deep polling
+            # Trigger when EITHER:
+            #  - SNMP classified the device as hpe-ilo, OR
+            #  - Device is manually tagged as ilo/server_type, OR
+            #  - Vault contains credentials of type "ilo" for this IP (even without SNMP)
+            $credEntry = $null
+            if ($vaultCreds.ContainsKey($ip)) { $credEntry = $vaultCreds[$ip] }
+            $redfishTrigger = $false
+            if ($credEntry -and ($credEntry.credential_type -eq "ilo" -or $credEntry.credential_type -eq "redfish")) {
+                $redfishTrigger = $true
+            } elseif ($extMetrics -and $extMetrics.device_class -eq "hpe-ilo" -and $credEntry) {
+                $redfishTrigger = $true
+            } elseif ($dev.device_type -eq "ilo" -and $credEntry) {
+                $redfishTrigger = $true
+            }
+
+            if ($redfishTrigger) {
+                # === Enterprise dedup (v3.3.2) ===
+                # Se questa credenziale ha external_url configurata E non ha connector_only=true,
+                # il backend ARGUS polla gia' iLO direttamente. Skippiamo per evitare doppio polling
+                # e rate-limit dell'iLO (iLO 5 max ~30 sessioni concorrenti).
+                $hasExternalUrl = $credEntry.external_url -and $credEntry.external_url.Length -gt 0
+                $connectorOnly = $credEntry.connector_only -eq $true
+                if ($hasExternalUrl -and -not $connectorOnly) {
+                    Write-Log "  Redfish $devName ($ip): skip (backend polla diretto via external_url, modalita' ridondante passiva)" "INFO"
+                    $redfishTrigger = $false
+                }
+            }
+
+            if ($redfishTrigger) {
+                try {
+                    Write-Log "  Redfish polling $devName ($ip) con credenziali dal Vault (type=$($credEntry.credential_type))..."
+                    $rfMetrics = Poll-RedfishMetrics $ip $credEntry
+                    if ($rfMetrics.redfish_ok) {
+                        $deviceReport.redfish = @{
+                            power_watts = $rfMetrics.power_watts
+                            bios_version = $rfMetrics.bios_version
+                            server_model = $rfMetrics.server_model
+                            serial_number = $rfMetrics.serial_number
+                            uuid = $rfMetrics.uuid
+                            ilo_firmware = $rfMetrics.ilo_firmware
+                            ilo_license = $rfMetrics.ilo_license
+                            total_memory_gb = $rfMetrics.total_memory_gb
+                            memory_dimms = $rfMetrics.memory_dimms
+                            network_adapters = $rfMetrics.network_adapters
+                            storage_controllers = $rfMetrics.storage_controllers
+                        }
+                        # Ensure device_class is set so backend/UI recognises it as iLO
+                        if (-not $deviceReport.device_class) { $deviceReport.device_class = "hpe-ilo" }
+                        Write-Log "  Redfish OK: $($rfMetrics.server_model) | Power: $($rfMetrics.power_watts)W | BIOS: $($rfMetrics.bios_version)"
+                    } else {
+                        Write-Log "  Redfish non disponibile per ${ip}: $($rfMetrics.error)" "WARN"
+                    }
+                } catch {
+                    Write-Log "  Errore Redfish $ip : $($_.Exception.Message)" "WARN"
+                }
+            } elseif ($credEntry -and -not $extMetrics) {
+                Write-Log "  $devName ($ip): SNMP non disponibile e credenziali Vault type=$($credEntry.credential_type) non compatibili con Redfish" "INFO"
+            }
+            
+            $reportDevices += $deviceReport
+        }
+    }
+    
+    $payload = @{
+        hostname = $env:COMPUTERNAME
+        devices = $reportDevices
+    }
+    Send-ToNOC $config "connector/device-report" $payload | Out-Null
+    Write-Log "Report stato dispositivi inviato ($($reportDevices.Count) dispositivi)"
+
+    # === v3.5.25: Sincronizzazione inversa Center <- Connector ===
+    # Il Center rimuove i device che esistono nel suo DB ma NON sono piu' configurati
+    # in questo connector (es. admin ha rimosso device dalla tray app). Best-effort:
+    # se fallisce (endpoint non ancora presente sul Center vecchio, 5xx, ecc.) logghiamo
+    # e proseguiamo senza bloccare il heartbeat. Il Center-side e' protetto da:
+    #   - connector online (deve fare heartbeat < 5min)
+    #   - device manuali (source!=connector) e silenziati sono PRESERVATI
+    try {
+        if ($reportDevices.Count -gt 0) {
+            $activeIps = @($reportDevices | ForEach-Object { $_.device_ip } | Where-Object { $_ })
+            $syncPayload = @{
+                active_ips = $activeIps
+                dry_run    = $false
+                source     = "connector_heartbeat"
+            }
+            # NB: niente client_id nell'URL - il Center lo deriva dalla firma HMAC
+            Send-ToNOC $config "connector/sync-active-devices" $syncPayload | Out-Null
+            Write-Log "Sync inversa: inviati $($activeIps.Count) IP attivi al Center" "DEBUG"
+        }
+    } catch {
+        # Non bloccare se il Center e' piu' vecchio e non ha ancora l'endpoint
+        $errMsg = $_.Exception.Message
+        if ($errMsg -match "404") {
+            Write-Log "Sync inversa: endpoint non disponibile sul Center (forse versione < 3.5.27). Salto." "DEBUG"
+        } else {
+            Write-Log "Sync inversa fallita (non bloccante): $errMsg" "WARN"
+        }
+    }
+}
+
+function Fetch-DevicesFromNOC($config) {
+    try {
+        $response = Invoke-SecureGet $config "connector/fetch-devices"
+        if ($response -and $response.Count -gt 0) {
+            Write-Log "Dispositivi ricevuti dal NOC: $($response.Count)"
+            return @($response)
+        }
+    } catch {
+        Write-Log "Errore fetch dispositivi dal NOC: $($_.Exception.Message)" "WARN"
+    }
+    return $null
+}
+
+function Fetch-VaultCredentials($config) {
+    <#
+    .SYNOPSIS
+        Recupera le credenziali cifrate dal Vault del SOC per interrogare iLO via Redfish.
+    #>
+    try {
+        $response = Invoke-SecureGet $config "connector/vault/credentials"
+        if ($response -and $response.Count -gt 0) {
+            Write-Log "Credenziali Vault ricevute: $($response.Count)"
+            # Build lookup table by device IP
+            $credMap = @{}
+            foreach ($c in $response) {
+                if ($c.device_ip) {
+                    $credMap[$c.device_ip] = @{
+                        username = $c.username
+                        password = $c.password
+                        port = $c.port
+                        credential_type = $c.credential_type
+                    }
+                }
+            }
+            return $credMap
+        } else {
+            Write-Log "Vault: nessuna credenziale presente" "INFO"
+        }
+    } catch {
+        Write-Log "Errore fetch credenziali Vault: $($_.Exception.Message)" "WARN"
+    }
+    return @{}
+}
+
+function Start-PollingLoop($config) {
+    # v3.5.16: se client_id nel config è vuoto (wizard pre-v3.5.16 non lo chiedeva),
+    # auto-discovery tramite endpoint /api/connector/identify. Salva il risultato
+    # in config.json così i restart successivi lo trovano già pronto.
+    if (-not $config.client_id -or $config.client_id.ToString().Trim().Length -eq 0) {
+        Write-Log "Config client_id vuoto - auto-discovery in corso..." "WARN"
+        $cid = Ensure-ClientIdInConfig
+        if ($cid) {
+            # Ricarica config da disco (ora contiene il client_id aggiornato)
+            $config = Read-Config
+        } else {
+            Write-Log "Auto-discovery FALLITO: tutte le chiamate HMAC al NOC riceveranno 401." "ERROR"
+            Write-Log "  Cause possibili: (a) API key non valida, (b) NOC irraggiungibile, (c) endpoint /connector/identify non deployato su NOC produzione." "ERROR"
+            Write-Log "  Workaround manuale: copiare il client_id dal Center UI e inserirlo in config.json." "ERROR"
+        }
+    }
+
+    $devices = @()
+    if ($config.devices) {
+        $devices = @($config.devices)
+    }
+
+    # Cleanup flag file residuo da un crash precedente (altrimenti il primo ciclo
+    # di poll triggerebbe un refresh fantasma)
+    try {
+        $_flagBoot = Join-Path (Join-Path $env:ProgramData "86NocConnector") "refresh.flag"
+        if (Test-Path $_flagBoot) { Remove-Item $_flagBoot -Force -ErrorAction SilentlyContinue }
+    } catch {}
+    
+    # Also fetch from NOC (centralized management)
+    $nocDevices = Fetch-DevicesFromNOC $config
+    if ($nocDevices) {
+        # Merge: NOC devices take priority, add local-only devices
+        $nocIPs = $nocDevices | ForEach-Object { $_.ip }
+        foreach ($localDev in $devices) {
+            if ($localDev.ip -notin $nocIPs) {
+                $nocDevices += $localDev
+            }
+        }
+        $devices = $nocDevices
+    }
+    
+    if ($devices.Count -eq 0) {
+        Write-Log "Nessun dispositivo configurato per polling"
+        return
+    }
+
+    # Fetch Vault credentials for Redfish/iLO polling
+    $vaultCreds = Fetch-VaultCredentials $config
+    if ($vaultCreds.Count -gt 0) {
+        Write-Log "Credenziali Vault disponibili per $($vaultCreds.Count) dispositivi"
+    }
+
+    # Separate SNMP, Ping/HTTP, and Printer devices
+    $snmpDevices = @($devices | Where-Object { (-not $_.monitor_type -or $_.monitor_type -eq "snmp" -or $_.monitor_type -eq "snmp+http") -and $_.device_type -ne "printer" })
+    $pingDevices = @($devices | Where-Object { $_.monitor_type -eq "ping" -or $_.monitor_type -eq "http" -or $_.monitor_type -eq "snmp+http" })
+    $printerDevices = @($devices | Where-Object { $_.device_type -eq "printer" })
+    
+    # Initialize ping results cache
+    if (-not $script:PingResults) { $script:PingResults = @{} }
+
+    $interval = if ($config.poll_interval_seconds) { $config.poll_interval_seconds } else { 60 }
+    Write-Log "Polling attivo per $($devices.Count) dispositivi ogni ${interval}s (SNMP: $($snmpDevices.Count), Ping/HTTP: $($pingDevices.Count), Stampanti: $($printerDevices.Count))"
+    foreach ($dev in $devices) {
+        $mType = if ($dev.monitor_type) { $dev.monitor_type } else { "snmp" }
+        $dType = if ($dev.device_type) { $dev.device_type } else { "network" }
+        Write-Log "  - $($dev.name) ($($dev.ip)) tipo=$mType device_type=$dType"
+    }
+
+    # First poll - initialize states and send initial report
+    Write-Log "Prima scansione in corso..."
+    if ($snmpDevices.Count -gt 0) { $null = Poll-AllDevices $snmpDevices $config }
+    if ($printerDevices.Count -gt 0) { Poll-AllPrinters $printerDevices $config }
+    foreach ($pd in $pingDevices) {
+        $httpPort = if ($pd.http_port) { $pd.http_port } else { 80 }
+        $result = Poll-PingDevice $pd.ip $pd.name $httpPort
+        $script:PingResults[$pd.ip] = $result
+    }
+    Write-Log "Stato iniziale acquisito. Invio report al NOC..."
+    Send-DeviceReport $config $devices
+
+    # v3.5.18: inizializza WireGuard (graceful: se WG non installato, no-op)
+    $script:WG_PEER_CONFIG = $null
+    if (Get-Command Initialize-WireGuard -ErrorAction SilentlyContinue) {
+        if (Initialize-WireGuard) {
+            $keys = Get-WireGuardKeys
+            if ($keys -and $keys.public_key) {
+                $script:WG_PEER_CONFIG = Register-WireGuardPeer $config $keys.public_key
+                if ($script:WG_PEER_CONFIG) {
+                    Write-Log "WireGuard pronto: tunnel_ip=$($script:WG_PEER_CONFIG.tunnel_ip)" "INFO"
+                }
+            }
+        }
+    }
+
+    # v3.7.1: Inizializza a 10 (=trigger immediato) cosi' al primo ciclo
+    # del polling loop il connector contatta /fetch-devices E ESEGUE Full
+    # Network Discovery (porte switch + LLDP + MAC). Senza questo fix
+    # bisognerebbe aspettare 10 minuti dopo ogni restart del servizio per
+    # vedere i dati porte nella UI.
+    $refreshCounter = 10
+
+    while ($global:Running) {
+        try {
+            # Poll SNMP devices
+            if ($snmpDevices.Count -gt 0) {
+                $alerts = Poll-AllDevices $snmpDevices $config
+                foreach ($alert in $alerts) {
+                    Write-Log "[POLL] $($alert.trap_type): $($alert.value)" "WARN"
+                    Send-SNMPToNOC $config $alert
+                }
+            }
+            
+            # Poll Ping/HTTP devices
+            foreach ($pd in $pingDevices) {
+                $httpPort = if ($pd.http_port) { $pd.http_port } else { 80 }
+                $result = Poll-PingDevice $pd.ip $pd.name $httpPort
+                $script:PingResults[$pd.ip] = $result
+                foreach ($alert in $result.alerts) {
+                    Write-Log "[PING] $($alert.trap_type): $($alert.value)" "WARN"
+                    Send-SNMPToNOC $config $alert
+                }
+            }
+
+            # Poll Printer devices (SNMP Printer-MIB)
+            if ($printerDevices.Count -gt 0) {
+                Poll-AllPrinters $printerDevices $config
+            }
+            
+            # Send full status report after every poll
+            Send-DeviceReport $config $devices
+
+            # v3.5.18: sync WireGuard session (long-poll throttled internamente a 5s)
+            if (Get-Command Sync-WireGuardSession -ErrorAction SilentlyContinue) {
+                try {
+                    Sync-WireGuardSession $config $script:WG_PEER_CONFIG
+                } catch {
+                    Write-Log "WG sync error: $($_.Exception.Message)" "DEBUG"
+                }
+            }
+
+            # Refresh device list from NOC every 10 cycles,
+            # oppure immediatamente se admin ha cliccato "Applica ora" nel Center.
+            # Il flag arriva via file su disco (IPC cross-job, vedi Send-Heartbeat)
+            # perche' Start-PollingLoop gira in un Start-Job separato e non vede
+            # $global:ForceRefreshPending settato nel processo principale.
+            $refreshCounter++
+            $forceRefresh = $false
+            $flagFile = Join-Path (Join-Path $env:ProgramData "86NocConnector") "refresh.flag"
+            try {
+                if (Test-Path $flagFile) {
+                    $forceRefresh = $true
+                    Remove-Item $flagFile -Force -ErrorAction SilentlyContinue
+                    Write-Log "[REFRESH] Eseguo fetch-devices immediato (trigger: file flag da admin Center)" "INFO"
+                } elseif ($global:ForceRefreshPending) {
+                    # fallback scope locale (se heartbeat e polling sono nello stesso scope)
+                    $forceRefresh = $true
+                    $global:ForceRefreshPending = $false
+                    Write-Log "[REFRESH] Eseguo fetch-devices immediato (trigger: global flag)" "INFO"
+                }
+            } catch {
+                Write-Log "[REFRESH] Errore check flag: $_" "WARN"
+            }
+            if ($refreshCounter -ge 2 -or $forceRefresh) {
+                $refreshCounter = 0
+                $nocDevices = Fetch-DevicesFromNOC $config
+                if ($nocDevices) {
+                    $nocIPs = $nocDevices | ForEach-Object { $_.ip }
+                    $localOnly = @()
+                    if ($config.devices) {
+                        foreach ($localDev in @($config.devices)) {
+                            if ($localDev.ip -notin $nocIPs) { $localOnly += $localDev }
+                        }
+                    }
+                    $devices = @($nocDevices) + $localOnly
+                    $snmpDevices = @($devices | Where-Object { (-not $_.monitor_type -or $_.monitor_type -eq "snmp" -or $_.monitor_type -eq "snmp+http") -and $_.device_type -ne "printer" })
+                    $pingDevices = @($devices | Where-Object { $_.monitor_type -eq "ping" -or $_.monitor_type -eq "http" -or $_.monitor_type -eq "snmp+http" })
+                    $printerDevices = @($devices | Where-Object { $_.device_type -eq "printer" })
+                    Write-Log "Lista dispositivi aggiornata dal NOC: $($devices.Count) totali (SNMP: $($snmpDevices.Count), Ping: $($pingDevices.Count), Stampanti: $($printerDevices.Count))"
+                }
+                
+                # Full Network Discovery - ogni 2 cicli (~2 min)
+                if ($snmpDevices.Count -gt 0) {
+                    try {
+                        Write-Log "Avvio Full Network Discovery (LLDP + MAC + Speed)..." "INFO"
+                        Run-FullDiscovery $config $snmpDevices
+                    } catch {
+                        Write-Log "Errore Network Discovery: $($_.Exception.Message)" "WARN"
+                    }
+
+                    # v3.7.4: Switch Enrichment (ARP + LLDP-MED + DHCP Snooping)
+                    # Cross-VLAN discovery senza probe attivi ai client finali.
+                    try {
+                        $seScript = Join-Path $PSScriptRoot "switch_enrichment.ps1"
+                        if (Test-Path $seScript) {
+                            . $seScript
+                            foreach ($d in $snmpDevices) {
+                                $dType = if ($d.device_type) { [string]$d.device_type } else { "" }
+                                # Enrichment solo su switch/router/firewall L3
+                                if ($dType -match "switch|router|firewall|l3|gateway") {
+                                    $c = if ($d.community) { [string]$d.community } else { "public" }
+                                    Invoke-SwitchEnrichment -Config $config `
+                                        -SwitchIp ([string]$d.ip) -Community $c
+                                }
+                            }
+                        }
+                    } catch {
+                        Write-Log "SwitchEnrichment error: $_" "WARN"
+                    }
+                }
+            }
+        } catch {
+            Write-Log "Errore polling: $($_.Exception.Message)" "ERROR"
+        }
+        Start-Sleep -Seconds $interval
+    }
+}
+
+# ==================== LISTENERS ====================
+
+function Free-UdpPort($port) {
+    # v3.8.21: ANTI-ZOMBIE LISTENER. Prima di tentare il bind sulla porta UDP
+    # killa eventuali processi PowerShell orfani (di precedenti restart del
+    # connector) che tengono ancora la porta. Senza questo, dopo un crash il
+    # connector entra in restart-loop infinito ("ERRORE porta SNMP 162: socket
+    # gia' in uso") perche' un processo powershell.exe figlio resta vivo.
+    #
+    # v3.8.27 ENTERPRISE: oltre ai PowerShell zombie, riconosce e gestisce anche
+    # i servizi Windows nativi che notoriamente bloccano queste porte:
+    #   - SNMPTRAP (servizio Windows "SNMP Trap") binda UDP/162
+    #   - Wireshark/dumpcap.exe binda 162/514 in modalita' capture
+    #   - syslog.exe / rsyslogd.exe / nxlog.exe (collettori syslog terzi)
+    # Per i servizi Windows: tenta lo Stop-Service. Per i processi: Stop-Process.
+    try {
+        $endpoints = Get-NetUDPEndpoint -LocalPort $port -ErrorAction SilentlyContinue
+        if (-not $endpoints) { return $true }
+
+        # Mappa di processi noti che possono bloccare 162/514 -> azione richiesta
+        $knownBlockers = @{
+            "snmptrap"   = @{ kind = "service"; service = "SNMPTRAP" }
+            "dumpcap"    = @{ kind = "process" }
+            "wireshark"  = @{ kind = "process" }
+            "tshark"     = @{ kind = "process" }
+            "syslog"     = @{ kind = "process" }
+            "rsyslogd"   = @{ kind = "process" }
+            "nxlog"      = @{ kind = "service"; service = "nxlog" }
+        }
+
+        foreach ($ep in $endpoints) {
+            $owningPid = $ep.OwningProcess
+            if ($owningPid -eq $PID) { continue }  # mai uccidersi
+            try {
+                $proc = Get-Process -Id $owningPid -ErrorAction SilentlyContinue
+                $name = if ($proc) { $proc.ProcessName.ToLower() } else { "?" }
+
+                if ($name -eq "powershell" -or $name -eq "pwsh") {
+                    Write-Log "Killo processo zombie PID=$owningPid che tiene UDP/$port" "WARN"
+                    Stop-Process -Id $owningPid -Force -ErrorAction SilentlyContinue
+                    Start-Sleep -Milliseconds 500
+                    continue
+                }
+
+                if ($knownBlockers.ContainsKey($name)) {
+                    $info = $knownBlockers[$name]
+                    if ($info.kind -eq "service") {
+                        Write-Log "Porta UDP/$port tenuta dal servizio Windows '$($info.service)' (PID=$owningPid). Stoppo il servizio per liberare la porta." "WARN"
+                        try {
+                            Stop-Service -Name $info.service -Force -ErrorAction Stop
+                            # Disabilito anche AutoStart cosi' al prossimo reboot non riprende la porta
+                            Set-Service -Name $info.service -StartupType Disabled -ErrorAction SilentlyContinue
+                            Write-Log "Servizio '$($info.service)' fermato e disabilitato (AutoStart=Disabled). UDP/$port liberato." "INFO"
+                            Start-Sleep -Seconds 1
+                        } catch {
+                            Write-Log "Impossibile stoppare servizio '$($info.service)': $($_.Exception.Message). Controlla manualmente con 'sc.exe stop $($info.service)'." "ERROR"
+                        }
+                    } else {
+                        Write-Log "Killo processo terzo noto '$name' (PID=$owningPid) che tiene UDP/$port" "WARN"
+                        Stop-Process -Id $owningPid -Force -ErrorAction SilentlyContinue
+                        Start-Sleep -Milliseconds 500
+                    }
+                    continue
+                }
+
+                # Sconosciuto - log esplicito per troubleshooting (non killiamo)
+                Write-Log "Porta UDP/$port tenuta da processo NON gestito: '$name' (PID=$owningPid). Non killo per sicurezza. Per risolvere: 'Stop-Process -Id $owningPid -Force' come admin, oppure identifica il servizio con 'tasklist /SVC | findstr $owningPid'." "WARN"
+                return $false
+            } catch {
+                Write-Log "Free-UdpPort($port): errore kill PID=$owningPid : $($_.Exception.Message)" "WARN"
+            }
+        }
+        # Verifica finale
+        Start-Sleep -Milliseconds 300
+        $check = Get-NetUDPEndpoint -LocalPort $port -ErrorAction SilentlyContinue
+        return ($null -eq $check)
+    } catch {
+        Write-Log "Free-UdpPort($port) eccezione: $($_.Exception.Message)" "WARN"
+        return $true  # best-effort
+    }
+}
+
+function Start-SNMPListener($config) {
+    $port = $config.snmp_trap_port
+    Write-Log "Avvio SNMP Trap listener su UDP/$port..."
+
+    # v3.8.21: pulisci porta da eventuali zombie prima di tentare il bind
+    [void](Free-UdpPort $port)
+
+    $udpClient = $null
+    try {
+        $udpClient = New-Object System.Net.Sockets.UdpClient($port)
+        $udpClient.Client.ReceiveTimeout = 2000
+        Write-Log "SNMP listener attivo su porta UDP $port"
+
+        while ($global:Running) {
+            try {
+                $remoteEP = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Any, 0)
+                $data = $udpClient.Receive([ref]$remoteEP)
+                $global:Stats.snmp_received++
+
+                $trap = Parse-SNMPTrap $data $remoteEP.Address.ToString()
+                Write-Log "[SNMP] $($trap.trap_type) da $($trap.device_ip)"
+                Send-SNMPToNOC $config $trap
+            }
+            catch [System.Net.Sockets.SocketException] {
+                # Timeout - normal
+            }
+            catch {
+                if ($global:Running) {
+                    Write-Log "Errore SNMP: $($_.Exception.Message)" "ERROR"
+                }
+            }
+        }
+    } catch {
+        Write-Log "ERRORE porta SNMP $port : $($_.Exception.Message). Serve Amministratore o porta gia' in uso da SNMPTRAP service." "ERROR"
+    } finally {
+        # v3.8.21: garantisci la chiusura del socket anche in caso di crash
+        if ($udpClient) { try { $udpClient.Close() } catch {} }
+    }
+}
+
+function Start-SyslogListener($config) {
+    $port = $config.syslog_port
+    Write-Log "Avvio Syslog listener su UDP/$port..."
+
+    # v3.8.21: pulisci porta da eventuali zombie prima di tentare il bind
+    [void](Free-UdpPort $port)
+
+    $udpClient = $null
+    try {
+        $udpClient = New-Object System.Net.Sockets.UdpClient($port)
+        $udpClient.Client.ReceiveTimeout = 2000
+        Write-Log "Syslog listener attivo su porta UDP $port"
+
+        while ($global:Running) {
+            try {
+                $remoteEP = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Any, 0)
+                $data = $udpClient.Receive([ref]$remoteEP)
+                $global:Stats.syslog_received++
+
+                $rawMsg = [System.Text.Encoding]::UTF8.GetString($data)
+                $syslog = Parse-Syslog $rawMsg $remoteEP.Address.ToString()
+                Write-Log "[Syslog] [$($syslog.severity_name)] $($syslog.device_ip): $($syslog.message.Substring(0, [Math]::Min(60, $syslog.message.Length)))"
+                Send-SyslogToNOC $config $syslog
+            }
+            catch [System.Net.Sockets.SocketException] {
+                # Timeout - normal
+            }
+            catch {
+                if ($global:Running) {
+                    Write-Log "Errore Syslog: $($_.Exception.Message)" "ERROR"
+                }
+            }
+        }
+    } catch {
+        Write-Log "ERRORE porta Syslog $port : $($_.Exception.Message). Serve Amministratore o porta gia' in uso." "ERROR"
+    } finally {
+        # v3.8.21: garantisci la chiusura del socket anche in caso di crash
+        if ($udpClient) { try { $udpClient.Close() } catch {} }
+    }
+}
+
+function Start-HeartbeatLoop($config) {
+    $interval = if ($config.heartbeat_interval_seconds) { $config.heartbeat_interval_seconds } else { 60 }
+    while ($global:Running) {
+        Send-Heartbeat $config
+        Start-Sleep -Seconds $interval
+    }
+}
+
+# ==================== NETWORK DISCOVERY ====================
+
+function Get-LocalSubnet {
+    try {
+        $adapters = [System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces() | 
+            Where-Object { $_.OperationalStatus -eq "Up" -and $_.NetworkInterfaceType -ne "Loopback" }
+        foreach ($adapter in $adapters) {
+            $props = $adapter.GetIPProperties()
+            foreach ($unicast in $props.UnicastAddresses) {
+                if ($unicast.Address.AddressFamily -eq "InterNetwork") {
+                    $ip = $unicast.Address.ToString()
+                    $mask = $unicast.IPv4Mask.ToString()
+                    if ($ip -notmatch "^169\.254\." -and $ip -ne "127.0.0.1") {
+                        # Calculate network address
+                        $ipBytes = $unicast.Address.GetAddressBytes()
+                        $maskBytes = $unicast.IPv4Mask.GetAddressBytes()
+                        $prefix = 0
+                        foreach ($b in $maskBytes) {
+                            $bits = [Convert]::ToString($b, 2)
+                            $prefix += ($bits.ToCharArray() | Where-Object { $_ -eq '1' }).Count
+                        }
+                        $networkBytes = @()
+                        for ($i = 0; $i -lt 4; $i++) {
+                            $networkBytes += ($ipBytes[$i] -band $maskBytes[$i])
+                        }
+                        $network = ($networkBytes -join ".")
+                        return @{ network = $network; prefix = $prefix; mask = $mask; local_ip = $ip }
+                    }
+                }
+            }
+        }
+    } catch {}
+    return $null
+}
+
+function Start-NetworkDiscovery($config, $subnetOverride) {
+    Write-Log "=== AVVIO SCANSIONE RETE ==="
+    
+    $subnet = $null
+    if ($subnetOverride) {
+        $subnet = @{ network = $subnetOverride; prefix = 24; local_ip = "" }
+        Write-Log "Subnet specificata: $subnetOverride/24"
+    } else {
+        $subnet = Get-LocalSubnet
+        if (-not $subnet) {
+            Write-Log "Impossibile rilevare subnet locale" "ERROR"
+            return
+        }
+        Write-Log "Subnet rilevata: $($subnet.network)/$($subnet.prefix) (IP locale: $($subnet.local_ip))"
+    }
+    
+    # Calculate IP range (support /24 only for safety)
+    $baseParts = $subnet.network.Split(".")
+    $baseNet = "$($baseParts[0]).$($baseParts[1]).$($baseParts[2])"
+    
+    Write-Log "Scansione $baseNet.1 - $baseNet.254..."
+    
+    $discoveredDevices = @()
+    $ping = New-Object System.Net.NetworkInformation.Ping
+    
+    # Phase 1: Ping sweep (fast, parallel using runspaces)
+    $runspacePool = [RunspaceFactory]::CreateRunspacePool(1, 50)
+    $runspacePool.Open()
+    $jobs = @()
+    
+    $scriptBlock = {
+        param($ip)
+        try {
+            $p = New-Object System.Net.NetworkInformation.Ping
+            $reply = $p.Send($ip, 1500)
+            $p.Dispose()
+            if ($reply.Status -eq "Success") {
+                return @{ ip = $ip; ms = $reply.RoundtripTime; alive = $true }
+            }
+        } catch {}
+        return @{ ip = $ip; alive = $false }
+    }
+    
+    for ($i = 1; $i -le 254; $i++) {
+        $targetIP = "$baseNet.$i"
+        $ps = [PowerShell]::Create().AddScript($scriptBlock).AddArgument($targetIP)
+        $ps.RunspacePool = $runspacePool
+        $jobs += @{ ps = $ps; handle = $ps.BeginInvoke(); ip = $targetIP }
+    }
+    
+    # Collect ping results
+    $aliveHosts = @()
+    foreach ($job in $jobs) {
+        try {
+            $result = $job.ps.EndInvoke($job.handle)
+            if ($result -and $result.alive) {
+                $aliveHosts += $result
+            }
+        } catch {}
+        $job.ps.Dispose()
+    }
+    $runspacePool.Close()
+    $runspacePool.Dispose()
+    
+    Write-Log "Ping sweep completato: $($aliveHosts.Count) host attivi su 254"
+    
+    # Phase 2: Port scan on alive hosts
+    $commonPorts = @(
+        @{ port = 80;  name = "HTTP" },
+        @{ port = 443; name = "HTTPS" },
+        @{ port = 161; name = "SNMP" },
+        @{ port = 22;  name = "SSH" },
+        @{ port = 23;  name = "Telnet" },
+        @{ port = 3389; name = "RDP" },
+        @{ port = 8080; name = "HTTP-Alt" },
+        @{ port = 8443; name = "HTTPS-Alt" }
+    )
+    
+    foreach ($host_ in $aliveHosts) {
+        $ip = $host_.ip
+        $openPorts = @()
+        
+        foreach ($portInfo in $commonPorts) {
+            try {
+                $tcp = New-Object System.Net.Sockets.TcpClient
+                $asyncResult = $tcp.BeginConnect($ip, $portInfo.port, $null, $null)
+                $waitResult = $asyncResult.AsyncWaitHandle.WaitOne(800, $false)
+                if ($waitResult -and $tcp.Connected) {
+                    $openPorts += @{ port = $portInfo.port; service = $portInfo.name }
+                }
+                $tcp.Close()
+            } catch {
+                try { $tcp.Close() } catch {}
+            }
+        }
+        
+        # Resolve hostname
+        $hostname = ""
+        try {
+            $dns = [System.Net.Dns]::GetHostEntry($ip)
+            if ($dns.HostName -ne $ip) { $hostname = $dns.HostName }
+        } catch {}
+        
+        # Suggest monitor type
+        $hasSnmp = ($openPorts | Where-Object { $_.port -eq 161 }).Count -gt 0
+        $hasHttp = ($openPorts | Where-Object { $_.port -eq 80 -or $_.port -eq 443 -or $_.port -eq 8080 }).Count -gt 0
+        $suggestedType = if ($hasSnmp) { "snmp" } else { "ping" }
+        $httpPort = if ($hasHttp) { ($openPorts | Where-Object { $_.port -eq 80 -or $_.port -eq 443 -or $_.port -eq 8080 } | Select-Object -First 1).port } else { 0 }
+        
+        # Determine device type guess
+        $deviceType = "unknown"
+        if ($hasSnmp -and $hasHttp) { $deviceType = "switch/router" }
+        elseif ($hasSnmp) { $deviceType = "network-device" }
+        elseif ($hasHttp -and ($openPorts | Where-Object { $_.port -eq 3389 }).Count -gt 0) { $deviceType = "server-windows" }
+        elseif ($hasHttp -and ($openPorts | Where-Object { $_.port -eq 22 }).Count -gt 0) { $deviceType = "server-linux" }
+        elseif ($hasHttp) { $deviceType = "web-device" }
+        elseif (($openPorts | Where-Object { $_.port -eq 22 }).Count -gt 0) { $deviceType = "server-linux" }
+        elseif (($openPorts | Where-Object { $_.port -eq 3389 }).Count -gt 0) { $deviceType = "server-windows" }
+        
+        $discoveredDevices += @{
+            ip = $ip
+            hostname = $hostname
+            ping_ms = $host_.ms
+            open_ports = $openPorts
+            device_type = $deviceType
+            suggested_type = $suggestedType
+            http_port = $httpPort
+        }
+        
+        Write-Log "  $ip ($hostname) - $($openPorts.Count) porte aperte - tipo: $deviceType"
+    }
+    
+    Write-Log "Scansione completata: $($discoveredDevices.Count) dispositivi trovati"
+    
+    # Send results to NOC
+    $payload = @{
+        hostname = $env:COMPUTERNAME
+        devices = $discoveredDevices
+    }
+    $result = Send-ToNOC $config "connector/discovery-results" $payload
+    if ($result) {
+        Write-Log "Risultati discovery inviati al NOC"
+    }
+    
+    Write-Log "=== SCANSIONE RETE COMPLETATA ==="
+}
+
+function Check-DiscoveryRequest($config) {
+    try {
+        $response = Invoke-SecureGet $config "connector/discovery-check"
+        if ($response.scan_requested) {
+            Write-Log "Richiesta di discovery ricevuta dal NOC"
+            Start-NetworkDiscovery $config $response.subnet
+        }
+    } catch {}
+}
+
+# ==================== WEB CONSOLE PROXY ====================
+
+function Check-WebProxyRequests($config) {
+    try {
+        # Long-poll: attende fino a 60s che arrivi una richiesta (hot-trigger server).
+        # v3.8.22: passato da wait=20 a wait=60 (riduce traffico HTTP del 66%).
+        # TimeoutSec 65 > wait 60 cosi' la richiesta HTTP non scade prima del server.
+        $response = Invoke-SecureGet $config "connector/web-proxy/pending?wait=60" 65
+        
+        if ($response.requests -and $response.requests.Count -gt 0) {
+            foreach ($req in $response.requests) {
+                Process-WebProxyRequest $config $req
+            }
+        }
+    } catch {}
+}
+
+function Process-WebProxyRequest($config, $req) {
+    # =========================================================================
+    # Web Console Enterprise B - Binary-safe proxy
+    # - Supporto method GET/POST/PUT/DELETE/HEAD/OPTIONS con request body
+    # - Cookie jar cross-request (sessione persistente)
+    # - Response body inviato in base64 (binary-safe, gestisce NUL byte)
+    # - Response headers + cookies back al backend per cookie jar browser
+    # - Auto fallback HTTPS/HTTP, SSL bypass per self-signed
+    # - Response SEMPRE inviata (anche su error) -> nessun timeout browser
+    # =========================================================================
+    $deviceIp = $req.device_ip
+    $port = if ($req.port) { [int]$req.port } else { 80 }
+    $path = if ($req.path) { [string]$req.path } else { "/" }
+    $method = if ($req.method) { [string]$req.method } else { "GET" }
+    $scheme = if ($req.scheme) { [string]$req.scheme } else { "" }
+    $requestId = $req.request_id
+    $reqBody = if ($req.request_body) { [string]$req.request_body } else { "" }
+    $reqBodyEnc = if ($req.request_body_encoding) { [string]$req.request_body_encoding } else { "text" }
+    $reqHeaders = $req.request_headers
+    $sessionCookies = $req.session_cookies
+    $tStart = [DateTime]::UtcNow
+
+    Write-Log "[WEB-PROXY] IN  $method -> $deviceIp`:$port$path (ID: $($requestId.Substring(0, 8)))"
+
+    $statusCode = 0
+    $contentType = "text/html"
+    $title = ""
+    $errorMsg = $null
+    $respBytes = [byte[]]@()
+    $respHeaders = @{}
+    $respCookies = @{}
+
+    # Whitelist porte - combina default + extra forniti dal backend tramite command config
+    # Il backend può inviare `allowed_ports_extra` (array di int) via endpoint /api/connector/command-poll
+    # così l'admin aggiunge nuove porte da UI senza ricompilare il connector.
+    $defaultAllowedPorts = @(
+        80, 443, 8080, 8443, 8000, 8888, 4443, 4080, 9090, 10000,
+        5000, 5001,        # Synology DSM
+        8006,              # Proxmox PVE
+        81, 8088,          # TrueNAS legacy / QNAP secondary
+        3000, 19999,       # AdGuard/Pihole/Grafana / Netdata
+        4444,              # pfSense/OPNsense alt
+        2222, 8083,        # DirectAdmin / Plesk
+        17988, 17990       # iLO XMLagent / XMLssl
+    )
+    $extraAllowedPorts = @()
+    try {
+        if ($script:DynamicAllowedPorts -and $script:DynamicAllowedPorts.Count -gt 0) {
+            $extraAllowedPorts = $script:DynamicAllowedPorts
+        }
+    } catch {}
+    $allAllowedPorts = $defaultAllowedPorts + $extraAllowedPorts
+    if ($port -notin $allAllowedPorts) {
+        $errorMsg = "Porta $port non consentita per motivi di sicurezza"
+        $statusCode = 403
+        $errHtml = Build-WebProxyErrorPage $deviceIp $port $path $errorMsg
+        $respBytes = [System.Text.Encoding]::UTF8.GetBytes($errHtml)
+        Send-WebProxyResponse $config $requestId $statusCode $contentType $respBytes $title $errorMsg $respHeaders $respCookies $tStart
+        return
+    }
+
+    # Determina schemi da provare
+    $schemes = if ($scheme -in @("http","https")) {
+        @($scheme)
+    } elseif ($port -in @(443, 8443, 4443)) {
+        @("https", "http")
+    } else {
+        @("http", "https")
+    }
+
+    # TLS 1.0-1.3
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = `
+            [Net.SecurityProtocolType]::Tls -bor [Net.SecurityProtocolType]::Tls11 -bor `
+            [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
+    } catch {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    }
+
+    # SSL Bypass (self-signed: iLO/switch/firewall)
+    # IMPORTANTE: l'handler e' GLOBAL (statico in .NET). Per evitare race condition
+    # con altri thread (Redfish polling, SNMP discovery, WAN probe) che fanno Disable()
+    # in parallelo durante la negoziazione TLS di questa request, lo lasciamo SEMPRE ON.
+    # Il connector gira in rete cliente controllata: il rischio MITM interno e' accettato.
+    if (-not ("CertBypass" -as [type])) {
+        Add-Type -TypeDefinition @"
+using System.Net.Security;
+using System.Security.Cryptography.X509Certificates;
+public static class CertBypass {
+    public static void Enable() {
+        System.Net.ServicePointManager.ServerCertificateValidationCallback = (s, c, ch, e) => true;
+    }
+    public static void Disable() {
+        // NO-OP: una volta abilitato il bypass nel connector, lo teniamo on per evitare
+        // race condition con altri thread paralleli (Redfish/SNMP/Web-Proxy).
+    }
+}
+"@
+    }
+    [CertBypass]::Enable()
+
+    # WebSession con cookie jar
+    $webSession = New-Object Microsoft.PowerShell.Commands.WebRequestSession
+    $webSession.UserAgent = "86NocConnector/WebProxy-Ent"
+    if ($sessionCookies -and ($sessionCookies.PSObject.Properties.Count -gt 0 -or $sessionCookies.Keys.Count -gt 0)) {
+        try {
+            $cookieProps = if ($sessionCookies.PSObject -and $sessionCookies.PSObject.Properties) {
+                $sessionCookies.PSObject.Properties
+            } else { $null }
+            if ($cookieProps) {
+                foreach ($p in $cookieProps) {
+                    $c = New-Object System.Net.Cookie($p.Name, [string]$p.Value, "/", $deviceIp)
+                    $webSession.Cookies.Add($c)
+                }
+            } elseif ($sessionCookies -is [hashtable]) {
+                foreach ($k in $sessionCookies.Keys) {
+                    $c = New-Object System.Net.Cookie($k, [string]$sessionCookies[$k], "/", $deviceIp)
+                    $webSession.Cookies.Add($c)
+                }
+            }
+        } catch {
+            Write-Log "[WEB-PROXY] Impossibile caricare session cookies: $($_.Exception.Message)" "DEBUG"
+        }
+    }
+
+    # Headers custom
+    $ihHeaders = @{}
+    if ($reqHeaders) {
+        try {
+            $headerProps = if ($reqHeaders.PSObject -and $reqHeaders.PSObject.Properties) { $reqHeaders.PSObject.Properties } else { $null }
+            if ($headerProps) {
+                foreach ($h in $headerProps) {
+                    $ihHeaders[$h.Name] = [string]$h.Value
+                }
+            } elseif ($reqHeaders -is [hashtable]) {
+                foreach ($k in $reqHeaders.Keys) { $ihHeaders[$k] = [string]$reqHeaders[$k] }
+            }
+        } catch {}
+    }
+
+    # Body request decode
+    $ihBody = $null
+    if ($reqBody) {
+        if ($reqBodyEnc -eq "base64") {
+            try { $ihBody = [Convert]::FromBase64String($reqBody) } catch { $ihBody = $null }
+        } else {
+            $ihBody = $reqBody
+        }
+    }
+
+    # Referer automatico: sempre la home del device ("/") - risolve device paranoici come HP 5130
+    # che restituiscono 404 se non e' presente Referer che punti alla home.
+    if (-not $ihHeaders.ContainsKey("Referer") -and -not $ihHeaders.ContainsKey("referer")) {
+        $refScheme = if ($scheme) { $scheme } else { $schemes[0] }
+        $ihHeaders["Referer"] = "${refScheme}://${deviceIp}:${port}/"
+    }
+    # User-Agent reale (browser standard) - alcuni device rifiutano user-agent custom
+    if (-not $ihHeaders.ContainsKey("User-Agent") -and -not $ihHeaders.ContainsKey("user-agent")) {
+        $ihHeaders["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+    # Accept header realistico
+    if (-not $ihHeaders.ContainsKey("Accept") -and -not $ihHeaders.ContainsKey("accept")) {
+        $ihHeaders["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
+    }
+
+    $lastError = $null
+    $succeeded = $false
+
+    # Strategia anti-404: se il path NON e' "/" e la sessione non ha ancora cookie,
+    # prima fai un warm-up GET sulla home "/" per popolare cookie jar + stabilire Referer,
+    # poi esegui la richiesta reale. Questo risolve device tipo HP 5130 che richiedono
+    # una sessione "viva" iniziata dalla home.
+    $needsWarmup = ($path -ne "/" -and $path -ne "" -and $method -eq "GET" -and $webSession.Cookies.Count -eq 0)
+    if ($needsWarmup) {
+        $warmScheme = if ($scheme) { $scheme } else { $schemes[0] }
+        $homeUrl = "${warmScheme}://${deviceIp}:${port}/"
+        try {
+            Write-Log "[WEB-PROXY] WARMUP GET $homeUrl (prima di $path)" "DEBUG"
+            [CertBypass]::Enable()
+            Invoke-WebRequest -Uri $homeUrl -UseBasicParsing -TimeoutSec 8 `
+                -WebSession $webSession -MaximumRedirection 3 `
+                -UserAgent $ihHeaders["User-Agent"] -ErrorAction SilentlyContinue | Out-Null
+        } catch { } finally { [CertBypass]::Disable() }
+    }
+
+    foreach ($sch in $schemes) {
+        $targetUrl = "${sch}://${deviceIp}:${port}${path}"
+        try {
+            Write-Log "[WEB-PROXY] TRY $method $targetUrl" "DEBUG"
+            $iwrParams = @{
+                Uri             = $targetUrl
+                Method          = $method
+                UseBasicParsing = $true
+                TimeoutSec      = 15
+                WebSession      = $webSession
+                ErrorAction     = "Stop"
+                MaximumRedirection = 5
+            }
+            if ($ihHeaders.Count -gt 0) { $iwrParams.Headers = $ihHeaders }
+            if ($ihBody -and ($method -in @("POST","PUT","PATCH"))) { $iwrParams.Body = $ihBody }
+
+            $wr = Invoke-WebRequest @iwrParams
+
+            # Status + Content-Type
+            $statusCode = [int]$wr.StatusCode
+            if ($wr.Headers.ContainsKey("Content-Type")) {
+                $contentType = [string]$wr.Headers["Content-Type"]
+            }
+
+            # Response body come byte[] (binary-safe)
+            if ($wr.RawContentStream) {
+                $ms = New-Object System.IO.MemoryStream
+                $wr.RawContentStream.Position = 0
+                $wr.RawContentStream.CopyTo($ms)
+                $respBytes = $ms.ToArray()
+                $ms.Dispose()
+            } elseif ($wr.Content -is [byte[]]) {
+                $respBytes = $wr.Content
+            } else {
+                $respBytes = [System.Text.Encoding]::UTF8.GetBytes([string]$wr.Content)
+            }
+
+            # Response headers (filtrati, max 100)
+            $n = 0
+            foreach ($hk in $wr.Headers.Keys) {
+                if ($n++ -ge 100) { break }
+                $respHeaders[[string]$hk] = [string]$wr.Headers[$hk]
+            }
+
+            # Response cookies da WebSession
+            try {
+                foreach ($ckc in $webSession.Cookies.GetCookies($targetUrl)) {
+                    $respCookies[[string]$ckc.Name] = [string]$ckc.Value
+                }
+            } catch {}
+
+            $succeeded = $true
+            break
+        } catch {
+            $lastError = $_.Exception.Message
+            # CRITICAL: se il device ha risposto con status HTTP >= 400 (404, 500, etc.),
+            # non e' un vero fallimento di connettivita' - e' il device che ci ha risposto.
+            # Estraggo la response dall'exception e la rispedisco al browser.
+            # Invoke-WebRequest -ErrorAction Stop lancia WebException con una Response embedded.
+            $httpResp = $null
+            try {
+                $httpResp = $_.Exception.Response
+            } catch { }
+            if ($httpResp) {
+                try {
+                    $statusCode = [int]$httpResp.StatusCode
+                    if ($httpResp.ContentType) { $contentType = [string]$httpResp.ContentType }
+                    # Leggi body dallo stream
+                    $respStream = $httpResp.GetResponseStream()
+                    $msE = New-Object System.IO.MemoryStream
+                    $respStream.CopyTo($msE)
+                    $respBytes = $msE.ToArray()
+                    $msE.Dispose()
+                    $respStream.Close()
+                    # Headers
+                    foreach ($hk in $httpResp.Headers.AllKeys) {
+                        $respHeaders[[string]$hk] = [string]$httpResp.Headers[$hk]
+                    }
+                    # Cookies
+                    try {
+                        foreach ($ckc in $webSession.Cookies.GetCookies($targetUrl)) {
+                            $respCookies[[string]$ckc.Name] = [string]$ckc.Value
+                        }
+                    } catch {}
+                    Write-Log "[WEB-PROXY] Device risponde HTTP $statusCode su $targetUrl ($($respBytes.Length) bytes) - passo al browser" "INFO"
+                    $succeeded = $true
+                    break
+                } catch {
+                    Write-Log "[WEB-PROXY] Impossibile estrarre body da HTTP error: $($_.Exception.Message)" "WARN"
+                }
+            }
+            Write-Log "[WEB-PROXY] FAIL $targetUrl -> $lastError" "WARN"
+            continue
+        }
+    }
+
+    [CertBypass]::Disable()
+
+    if (-not $succeeded) {
+        $errorMsg = "Dispositivo $deviceIp non raggiungibile su porta $port ($method). Dettaglio: $lastError"
+        $statusCode = 502
+        $errHtml = Build-WebProxyErrorPage $deviceIp $port $path $errorMsg
+        $respBytes = [System.Text.Encoding]::UTF8.GetBytes($errHtml)
+        Send-WebProxyResponse $config $requestId $statusCode $contentType $respBytes $title $errorMsg $respHeaders $respCookies $tStart
+        return
+    }
+
+    # Estrai title (solo se content HTML-ish)
+    if ($contentType -match "html|xml" -and $respBytes.Length -lt 2000000) {
+        try {
+            $textPreview = [System.Text.Encoding]::UTF8.GetString($respBytes, 0, [math]::Min(8192, $respBytes.Length))
+            if ($textPreview -match '<title[^>]*>(.*?)</title>') {
+                $title = $Matches[1].Trim()
+            }
+        } catch {}
+    }
+
+    # === AUTO-FOLLOW JS REDIRECT (HP 5130, vecchi device HP/Aruba/Dell) ===
+    # Molti device fanno: <body onload="window.location='frame/login.html'">
+    # L'iframe con srcDoc ha origine null -> window.location fallisce -> pagina vuota.
+    # Soluzione: il connector segue il redirect lato server e restituisce direttamente
+    # il body della destinazione (max 3 hops per evitare loop).
+    if ($contentType -match "html" -and $respBytes.Length -gt 0 -and $respBytes.Length -lt 500000) {
+        try {
+            $maxHops = 3
+            $hopCount = 0
+            $htmlStr = [System.Text.Encoding]::UTF8.GetString($respBytes)
+            $baseUrlForRedir = "${scheme}://${deviceIp}:${port}"
+            if (-not $scheme) { $baseUrlForRedir = "$($schemes[0])://${deviceIp}:${port}" }
+            # Pattern JS redirect (ordinati per specificita')
+            $redirectRegex = @(
+                'window\.location\.(?:href|replace)\s*=\s*["'']([^"''<>]+?)["'']',
+                'window\.location\s*=\s*["'']([^"''<>]+?)["'']',
+                'document\.location\.(?:href|replace)\s*=\s*["'']([^"''<>]+?)["'']',
+                'document\.location\s*=\s*["'']([^"''<>]+?)["'']',
+                'location\.replace\s*\(\s*["'']([^"''<>]+?)["'']',
+                'location\.href\s*=\s*["'']([^"''<>]+?)["'']',
+                '<meta[^>]+http-equiv\s*=\s*["'']?refresh["'']?[^>]+content\s*=\s*["''][^"''<>]*url\s*=\s*([^"''<>]+?)["'']'
+            )
+            while ($hopCount -lt $maxHops) {
+                $foundRedirect = $null
+                foreach ($rx in $redirectRegex) {
+                    $matches2 = [regex]::Matches($htmlStr, $rx, "IgnoreCase")
+                    # Prendi l'ultimo match in ogni pattern (di solito HP 5130 ha ternary; ultimo = https branch)
+                    foreach ($m in $matches2) {
+                        $candidate = $m.Groups[1].Value.Trim()
+                        if ($candidate -and $candidate -notlike "*__ARGUS_PROXY__*" -and $candidate.Length -lt 2048) {
+                            $foundRedirect = $candidate
+                        }
+                    }
+                    if ($foundRedirect) { break }
+                }
+                if (-not $foundRedirect) { break }
+
+                # Risolvi URL relativo
+                $absoluteUrl = $foundRedirect
+                if ($absoluteUrl -like "http*://*") { }
+                elseif ($absoluteUrl.StartsWith("//")) { $absoluteUrl = "${scheme}:$absoluteUrl" }
+                elseif ($absoluteUrl.StartsWith("/")) { $absoluteUrl = "$baseUrlForRedir$absoluteUrl" }
+                else { $absoluteUrl = "$baseUrlForRedir/$absoluteUrl" }
+
+                Write-Log "[WEB-PROXY] AUTO-FOLLOW JS redirect hop $($hopCount+1): $foundRedirect -> $absoluteUrl" "INFO"
+
+                [CertBypass]::Enable()
+                try {
+                    $redirResp = Invoke-WebRequest -Uri $absoluteUrl -UseBasicParsing -TimeoutSec 10 `
+                                 -WebSession $webSession -MaximumRedirection 5 -ErrorAction Stop
+                    # Nuovo status / content-type
+                    $statusCode = [int]$redirResp.StatusCode
+                    if ($redirResp.Headers.ContainsKey("Content-Type")) {
+                        $contentType = [string]$redirResp.Headers["Content-Type"]
+                    }
+                    # Body
+                    if ($redirResp.RawContentStream) {
+                        $ms2 = New-Object System.IO.MemoryStream
+                        $redirResp.RawContentStream.Position = 0
+                        $redirResp.RawContentStream.CopyTo($ms2)
+                        $respBytes = $ms2.ToArray()
+                        $ms2.Dispose()
+                    } elseif ($redirResp.Content -is [byte[]]) {
+                        $respBytes = $redirResp.Content
+                    } else {
+                        $respBytes = [System.Text.Encoding]::UTF8.GetBytes([string]$redirResp.Content)
+                    }
+                    # Aggiorna cookies della WebSession
+                    try {
+                        foreach ($ckc in $webSession.Cookies.GetCookies($absoluteUrl)) {
+                            $respCookies[[string]$ckc.Name] = [string]$ckc.Value
+                        }
+                    } catch {}
+                    # Aggiorna title dal nuovo body
+                    if ($respBytes.Length -lt 2000000) {
+                        try {
+                            $titleStr = [System.Text.Encoding]::UTF8.GetString($respBytes, 0, [math]::Min(8192, $respBytes.Length))
+                            if ($titleStr -match '<title[^>]*>(.*?)</title>') {
+                                $title = $Matches[1].Trim()
+                            }
+                        } catch {}
+                    }
+                    # Aggiorna baseUrl per prossimo hop (se redirect a path assoluto su stesso host)
+                    if ($absoluteUrl -match '^(https?://[^/]+)') { $baseUrlForRedir = $Matches[1] }
+                    # Non-HTML? stop seguendo
+                    if ($contentType -notmatch "html") {
+                        Write-Log "[WEB-PROXY] Redirect finale non-HTML ($contentType), stop follow" "DEBUG"
+                        break
+                    }
+                    # Nuovo HTML per check successivo hop
+                    $htmlStr = [System.Text.Encoding]::UTF8.GetString($respBytes)
+                    $hopCount++
+                } catch {
+                    Write-Log "[WEB-PROXY] Follow redirect fallito: $($_.Exception.Message)" "WARN"
+                    break
+                } finally {
+                    [CertBypass]::Disable()
+                }
+            }
+        } catch {
+            Write-Log "[WEB-PROXY] Errore auto-follow: $($_.Exception.Message)" "DEBUG"
+        }
+    }
+
+    # INJECT <base> TAG per asset proxy automatico (CSS/JS/img/XHR)
+    # Il backend risolvera' i path relativi tramite /api/connector/web-proxy/asset/*
+    if ($contentType -match "html" -and $respBytes.Length -gt 0 -and $respBytes.Length -lt 5000000) {
+        try {
+            $htmlStr = [System.Text.Encoding]::UTF8.GetString($respBytes)
+            $baseUrlForInline = "${scheme}://${deviceIp}:${port}"
+            if (-not $scheme) { $baseUrlForInline = "$($schemes[0])://${deviceIp}:${port}" }
+
+            # --- INLINE CSS (scarica e incorpora <link rel="stylesheet"> come <style>) ---
+            # v3.3.6: supporta sia HTML quoted (href="foo") che HTML5 unquoted (href=foo)
+            [CertBypass]::Enable()
+            try {
+                $cssPattern = '<link[^>]*\srel\s*=\s*["'']?stylesheet["'']?[^>]*>'
+                $cssMatches = [regex]::Matches($htmlStr, $cssPattern, "IgnoreCase")
+                $cssCount = 0
+                foreach ($cssMatch in $cssMatches) {
+                    if ($cssCount -ge 20) { break }
+                    $linkTag = $cssMatch.Value
+                    # Match quoted OR unquoted value (HTML5-compliant)
+                    $cssUrl = $null
+                    if ($linkTag -match 'href\s*=\s*"([^"]+)"') { $cssUrl = $Matches[1] }
+                    elseif ($linkTag -match "href\s*=\s*'([^']+)'") { $cssUrl = $Matches[1] }
+                    elseif ($linkTag -match 'href\s*=\s*([^\s>"''`]+)') { $cssUrl = $Matches[1] }
+                    if ($cssUrl) {
+                        if ($cssUrl.StartsWith("data:")) { continue }
+                        # Risolvi URL
+                        if ($cssUrl -like "http*://*") { }
+                        elseif ($cssUrl.StartsWith("//")) { $cssUrl = "${scheme}:$cssUrl" }
+                        elseif ($cssUrl.StartsWith("/")) { $cssUrl = "$baseUrlForInline$cssUrl" }
+                        else { $cssUrl = "$baseUrlForInline/$cssUrl" }
+                        try {
+                            $cssResp = Invoke-WebRequest -Uri $cssUrl -UseBasicParsing -TimeoutSec 5 `
+                                        -WebSession $webSession -ErrorAction Stop
+                            $cssText = if ($cssResp.Content -is [byte[]]) {
+                                [System.Text.Encoding]::UTF8.GetString($cssResp.Content)
+                            } else { [string]$cssResp.Content }
+                            $styleTag = "<style>/* inlined from $cssUrl */`n$cssText`n</style>"
+                            $htmlStr = $htmlStr.Replace($linkTag, $styleTag)
+                            $cssCount++
+                        } catch {
+                            # CSS non raggiungibile -> skip, il link tag resta (innocuo)
+                        }
+                    }
+                }
+            } catch {
+                Write-Log "[WEB-PROXY] CSS inline error: $($_.Exception.Message)" "DEBUG"
+            }
+
+            # --- INLINE IMG (converti <img src="..."> in data URI per immagini < 500KB) ---
+            # v3.3.6: supporta sia quoted che unquoted (HTML5)
+            try {
+                $imgPattern = '<img\b[^>]*\ssrc\s*=[^>]*/?\s*>'
+                $imgMatches = [regex]::Matches($htmlStr, $imgPattern, "IgnoreCase")
+                $imgCount = 0
+                $mimeMap = @{
+                    "png"="image/png"; "jpg"="image/jpeg"; "jpeg"="image/jpeg";
+                    "gif"="image/gif"; "svg"="image/svg+xml"; "ico"="image/x-icon";
+                    "webp"="image/webp"; "bmp"="image/bmp"
+                }
+                foreach ($imgMatch in $imgMatches) {
+                    if ($imgCount -ge 30) { break }
+                    $imgTag = $imgMatch.Value
+                    $imgUrl = $null
+                    if ($imgTag -match 'src\s*=\s*"([^"]+)"') { $imgUrl = $Matches[1] }
+                    elseif ($imgTag -match "src\s*=\s*'([^']+)'") { $imgUrl = $Matches[1] }
+                    elseif ($imgTag -match 'src\s*=\s*([^\s>"''`]+)') { $imgUrl = $Matches[1] }
+                    if (-not $imgUrl) { continue }
+                    if ($imgUrl.StartsWith("data:")) { continue }
+                    $origImgUrl = $imgUrl
+                    # Risolvi URL
+                    if ($imgUrl -like "http*://*") { }
+                    elseif ($imgUrl.StartsWith("//")) { $imgUrl = "${scheme}:$imgUrl" }
+                    elseif ($imgUrl.StartsWith("/")) { $imgUrl = "$baseUrlForInline$imgUrl" }
+                    else { $imgUrl = "$baseUrlForInline/$imgUrl" }
+                    try {
+                        $imgResp = Invoke-WebRequest -Uri $imgUrl -UseBasicParsing -TimeoutSec 4 `
+                                    -WebSession $webSession -ErrorAction Stop
+                        $imgBytes = if ($imgResp.Content -is [byte[]]) { $imgResp.Content } `
+                                    else { [System.Text.Encoding]::UTF8.GetBytes([string]$imgResp.Content) }
+                        if ($imgBytes.Length -gt 500000) { continue }
+                        $ext = [System.IO.Path]::GetExtension($imgUrl).TrimStart('.').Split('?')[0].ToLower()
+                        $mime = if ($mimeMap.ContainsKey($ext)) { $mimeMap[$ext] } else { "image/png" }
+                        $b64img = [Convert]::ToBase64String($imgBytes)
+                        $dataUri = "data:${mime};base64,$b64img"
+                        # Sostituisci in modo preciso
+                        $newTag = $imgTag.Replace($origImgUrl, $dataUri)
+                        $htmlStr = $htmlStr.Replace($imgTag, $newTag)
+                        $imgCount++
+                    } catch { }
+                }
+            } catch {
+                Write-Log "[WEB-PROXY] IMG inline error: $($_.Exception.Message)" "DEBUG"
+            }
+
+            # --- INLINE JS (scarica e incorpora <script src="..."> come inline) ---
+            # v3.3.6: supporta sia HTML quoted (src="foo") che HTML5 unquoted (src=foo)
+            try {
+                $jsPattern = '<script\b[^>]*\ssrc\s*=[^>]*>\s*</script>'
+                $jsMatches = [regex]::Matches($htmlStr, $jsPattern, "IgnoreCase")
+                $jsCount = 0
+                foreach ($jsMatch in $jsMatches) {
+                    if ($jsCount -ge 15) { break }
+                    $scriptTag = $jsMatch.Value
+                    $jsUrl = $null
+                    if ($scriptTag -match 'src\s*=\s*"([^"]+)"') { $jsUrl = $Matches[1] }
+                    elseif ($scriptTag -match "src\s*=\s*'([^']+)'") { $jsUrl = $Matches[1] }
+                    elseif ($scriptTag -match 'src\s*=\s*([^\s>"''`]+)') { $jsUrl = $Matches[1] }
+                    if (-not $jsUrl) { continue }
+                    $origJsUrl = $jsUrl
+                    if ($jsUrl.StartsWith("data:")) { continue }
+                    if ($jsUrl -like "http*://*") { }
+                    elseif ($jsUrl.StartsWith("//")) { $jsUrl = "${scheme}:$jsUrl" }
+                    elseif ($jsUrl.StartsWith("/")) { $jsUrl = "$baseUrlForInline$jsUrl" }
+                    else { $jsUrl = "$baseUrlForInline/$jsUrl" }
+                    try {
+                        $jsResp = Invoke-WebRequest -Uri $jsUrl -UseBasicParsing -TimeoutSec 5 `
+                                    -WebSession $webSession -ErrorAction Stop
+                        $jsText = if ($jsResp.Content -is [byte[]]) {
+                            [System.Text.Encoding]::UTF8.GetString($jsResp.Content)
+                        } else { [string]$jsResp.Content }
+                        # Limite 2MB per singolo JS
+                        if ($jsText.Length -gt 2000000) { continue }
+                        $inlineScript = "<script>/* inlined from $origJsUrl */`n$jsText`n</script>"
+                        $htmlStr = $htmlStr.Replace($scriptTag, $inlineScript)
+                        $jsCount++
+                    } catch { }
+                }
+            } catch {
+                Write-Log "[WEB-PROXY] JS inline error: $($_.Exception.Message)" "DEBUG"
+            }
+            [CertBypass]::Disable()
+
+            # --- Rewrite link/form/iframe con marker ARGUS per intercettazione frontend ---
+            $htmlStr = [regex]::Replace($htmlStr, '(<a\b[^>]*\shref\s*=\s*)["'']/', "`$1`"__ARGUS_PROXY__/", "IgnoreCase")
+            $htmlStr = [regex]::Replace($htmlStr, '(<form\b[^>]*\saction\s*=\s*)["'']/', "`$1`"__ARGUS_PROXY__/", "IgnoreCase")
+            $htmlStr = [regex]::Replace($htmlStr, '(<(?:iframe|frame)\b[^>]*\ssrc\s*=\s*)["'']/', "`$1`"__ARGUS_PROXY__/", "IgnoreCase")
+
+            # --- Interceptor JS per click/submit/location -> postMessage al parent ---
+            $interceptScript = @"
+<script>
+(function(){
+  // 1. Click intercept
+  document.addEventListener('click', function(e){
+    var a = e.target.closest('a');
+    if (!a || !a.getAttribute) return;
+    var href = a.getAttribute('href');
+    if (!href || href.startsWith('javascript:') || href.startsWith('#') || href.startsWith('mailto:') || href.startsWith('data:')) return;
+    e.preventDefault();
+    window.parent.postMessage({type:'argus-proxy-navigate', path: href, method:'GET'}, '*');
+  }, true);
+  // 2. Form submit intercept
+  document.addEventListener('submit', function(e){
+    var f = e.target;
+    if (!f || f.tagName !== 'FORM') return;
+    var action = f.getAttribute('action') || window.location.pathname || '/';
+    var method = (f.getAttribute('method') || 'GET').toUpperCase();
+    var fd = new FormData(f);
+    var params = '';
+    try { params = new URLSearchParams(fd).toString(); } catch(e) {}
+    e.preventDefault();
+    window.parent.postMessage({type:'argus-proxy-navigate', path: action, method: method, body: params, contentType:'application/x-www-form-urlencoded'}, '*');
+  }, true);
+  // 3. window.location assignment hook (safety net per device che fanno redirect JS)
+  try {
+    var origAssign = window.location.assign ? window.location.assign.bind(window.location) : null;
+    var origReplace = window.location.replace ? window.location.replace.bind(window.location) : null;
+    window.location.assign = function(url) {
+      window.parent.postMessage({type:'argus-proxy-navigate', path: String(url), method:'GET'}, '*');
+    };
+    window.location.replace = function(url) {
+      window.parent.postMessage({type:'argus-proxy-navigate', path: String(url), method:'GET'}, '*');
+    };
+    // Proxy per intercettare setter (window.location = "...")
+    var origLocation = window.location;
+    try {
+      Object.defineProperty(window, 'location', {
+        configurable: true,
+        get: function() { return origLocation; },
+        set: function(v) {
+          window.parent.postMessage({type:'argus-proxy-navigate', path: String(v), method:'GET'}, '*');
+        }
+      });
+    } catch(e) {}
+  } catch(e) {}
+})();
+</script>
+"@
+            if ($htmlStr -match '</body>') {
+                $htmlStr = $htmlStr -replace '</body>', "$interceptScript</body>"
+            } else {
+                $htmlStr = $htmlStr + $interceptScript
+            }
+
+            $respBytes = [System.Text.Encoding]::UTF8.GetBytes($htmlStr)
+        } catch {
+            Write-Log "[WEB-PROXY] HTML processing skip: $($_.Exception.Message)" "DEBUG"
+        }
+    }
+
+    Send-WebProxyResponse $config $requestId $statusCode $contentType $respBytes $title $errorMsg $respHeaders $respCookies $tStart
+}
+
+
+function Build-WebProxyErrorPage($deviceIp, $port, $path, $errorMsg) {
+    $safeErr = $errorMsg -replace '<', '&lt;' -replace '>', '&gt;'
+    return @"
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>Connessione fallita</title>
+<style>
+body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; background:#0d0d12; color:#c9c9d1; margin:0; padding:0; }
+.wrap { max-width:560px; margin:80px auto; padding:32px; background:#12121a; border:1px solid #1e1e2e; border-radius:12px; }
+h1 { color:#ff6b6b; margin:0 0 8px 0; font-size:18px; }
+.detail { color:#8a8a9a; font-size:13px; margin:14px 0; line-height:1.5; }
+.target { background:#0f0f17; padding:10px 14px; border-radius:6px; font-family:monospace; font-size:12px; color:#a78bfa; border:1px solid #2a2a3e; }
+.hint { margin-top:18px; padding:12px; background:#0f0f17; border-left:3px solid #5e5ce6; font-size:12px; color:#8a8a9a; border-radius:4px; }
+</style></head><body><div class="wrap">
+<h1>&#9888; Connessione al dispositivo fallita</h1>
+<div class="detail">Il connector non e' riuscito a raggiungere il dispositivo.</div>
+<div class="target">${deviceIp}:${port}${path}</div>
+<div class="detail"><b>Dettaglio:</b> $safeErr</div>
+<div class="hint">Verifica: (1) il device risponde al ping dalla LAN del connector; (2) la web console e' attiva sulla porta specificata; (3) nessun firewall blocca 86NocConnector verso il device.</div>
+</div></body></html>
+"@
+}
+
+
+function Send-WebProxyResponse($config, $requestId, $statusCode, $contentType, [byte[]]$respBytes, $title, $errorMsg, $respHeaders, $respCookies, $tStart) {
+    # Envio SEMPRE body in base64 -> binary-safe, gestisce NUL byte, caratteri di controllo
+    $bodyB64 = if ($respBytes -and $respBytes.Length -gt 0) { [Convert]::ToBase64String($respBytes) } else { "" }
+    $sizeBytes = if ($respBytes) { $respBytes.Length } else { 0 }
+    $elapsed = [int](([DateTime]::UtcNow - $tStart).TotalMilliseconds)
+
+    $payload = @{
+        request_id       = $requestId
+        status_code      = $statusCode
+        content_type     = $contentType
+        body_b64         = $bodyB64
+        body_encoding    = "base64"
+        title            = $title
+        error            = $errorMsg
+        duration_ms      = $elapsed
+        response_headers = if ($respHeaders) { $respHeaders } else { @{} }
+        response_cookies = if ($respCookies) { $respCookies } else { @{} }
+    }
+    $headers = @{
+        "X-API-Key"    = $config.api_key
+        "Content-Type" = "application/json"
+    }
+    try {
+        $jsonPayload = $payload | ConvertTo-Json -Depth 10 -Compress
+        $url = "$($config.noc_center_url)/api/connector/web-proxy/response"
+        Invoke-RestMethod -Uri $url -Method Post -Headers $headers -Body $jsonPayload -TimeoutSec 45 -ErrorAction Stop | Out-Null
+        $status = if ($statusCode -ge 400) { "FAIL" } else { "OK " }
+        Write-Log "[WEB-PROXY] OUT $status $($payload.status_code) size=$sizeBytes in ${elapsed}ms title='$title'"
+    } catch {
+        Write-Log "[WEB-PROXY] Errore invio risposta: $($_.Exception.Message)" "ERROR"
+    }
+}
+
+# ==================== STATUS FILE ====================
+# Scrive lo stato del connettore su un file JSON leggibile dalla tray app.
+# Questo permette alla tray app di monitorare il connettore anche quando
+# gira come Scheduled Task (fuori dalla sessione utente).
+
+function Write-StatusFile($status = "running") {
+    try {
+        $statusPath = Join-Path (Get-ConfigDir) "status.json"
+        # Raccogli metriche processo
+        $proc = Get-Process -Id $PID -ErrorAction SilentlyContinue
+        $memMB = if ($proc) { [math]::Round($proc.WorkingSet64 / 1048576, 1) } else { 0 }
+        $cpuTime = if ($proc) { $proc.TotalProcessorTime.TotalSeconds } else { 0 }
+        $statusData = @{
+            pid = $PID
+            status = $status
+            version = $global:Version
+            hostname = $env:COMPUTERNAME
+            start_time = if ($global:Stats.start_time) { $global:Stats.start_time.ToString("yyyy-MM-ddTHH:mm:ss") } else { "" }
+            uptime_seconds = if ($global:Stats.start_time) { [int]((Get-Date) - $global:Stats.start_time).TotalSeconds } else { 0 }
+            snmp_received = $global:Stats.snmp_received
+            syslog_received = $global:Stats.syslog_received
+            errors = $global:Stats.errors
+            last_error = $global:Stats.last_error
+            last_update = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ss")
+            memory_mb = $memMB
+            cpu_seconds = [math]::Round($cpuTime, 1)
+        }
+        $statusData | ConvertTo-Json -Compress | Set-Content $statusPath -Encoding UTF8 -Force -ErrorAction SilentlyContinue
+    } catch {}
+}
+
+function Remove-StatusFile {
+    try {
+        $statusPath = Join-Path (Get-ConfigDir) "status.json"
+        if (Test-Path $statusPath) { Remove-Item $statusPath -Force -ErrorAction SilentlyContinue }
+    } catch {}
+}
+
+# ==================== MAIN ====================
+
+# v3.3.7: WATCHDOG AUTO-RECOVERY
+# Registra uno scheduled task Windows che ogni 5 minuti verifica lo stato del servizio
+# 86NocConnectorService. Se è Stopped (es. update bloccato al 45%), lo riavvia.
+# Questo garantisce che anche se un update futuro dovesse fallire, il servizio torni
+# online automaticamente entro 5 minuti senza intervento manuale.
+function Register-ServiceWatchdog {
+    $taskName = "86NocConnector_Watchdog"
+
+    # Verifica se task già esiste ed e' in stato sano
+    $existing = & schtasks.exe /Query /TN $taskName 2>&1 | Out-String
+    if ($existing -match $taskName -and $existing -match "Ready|Running") {
+        return
+    }
+
+    Write-Log "Registrazione Watchdog scheduled task (riavvio automatico servizio ogni 5 min se Stopped)..." "INFO"
+
+    # v3.5.12: usiamo un file .ps1 intermedio in ProgramData invece di inline command.
+    # Il metodo inline con schtasks /TR "... -Name ..." falliva perche' schtasks
+    # parsava "-Name" come argomento del proprio comando (collision di tokenizer).
+    # Il file .ps1 e' robusto contro qualsiasi carattere speciale nel corpo del comando.
+    $watchdogDir = Join-Path $env:ProgramData "86NocConnector"
+    if (-not (Test-Path $watchdogDir)) {
+        try { New-Item -ItemType Directory -Path $watchdogDir -Force | Out-Null } catch {}
+    }
+    $watchdogScript = Join-Path $watchdogDir "watchdog.ps1"
+    $watchdogBody = @'
+# 86NocConnector Service Watchdog - auto-generato
+# Controlla che il servizio sia Running; se Stopped lo riavvia.
+$ErrorActionPreference = "SilentlyContinue"
+$logFile = "$env:ProgramData\86NocConnector\watchdog.log"
+$svc = Get-Service -Name "86NocConnectorService"
+if ($null -eq $svc) {
+    Add-Content -Path $logFile -Value "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Servizio non registrato, skip"
+    exit 0
+}
+if ($svc.Status -eq "Stopped") {
+    try {
+        Start-Service -Name "86NocConnectorService"
+        Add-Content -Path $logFile -Value "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Servizio era Stopped, riavviato"
+    } catch {
+        Add-Content -Path $logFile -Value "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Errore restart: $($_.Exception.Message)"
+    }
+} elseif ($svc.Status -eq "Paused") {
+    try {
+        Resume-Service -Name "86NocConnectorService"
+        Add-Content -Path $logFile -Value "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Servizio era Paused, resumed"
+    } catch {
+        Add-Content -Path $logFile -Value "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Errore resume: $($_.Exception.Message)"
+    }
+}
+'@
+    try {
+        Set-Content -Path $watchdogScript -Value $watchdogBody -Encoding UTF8 -Force
+
+        $ps = Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe"
+        $taskCmd = "`"$ps`" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$watchdogScript`""
+        & schtasks.exe /Create /TN $taskName /SC MINUTE /MO 5 /TR $taskCmd /RU "SYSTEM" /RL HIGHEST /F 2>&1 | Out-String | ForEach-Object { Write-Log "  watchdog: $_" "DEBUG" }
+        if ($LASTEXITCODE -eq 0) {
+            Write-Log "Watchdog registrato (controllo servizio ogni 5 min via $watchdogScript)" "INFO"
+        } else {
+            Write-Log "Watchdog register exit=$LASTEXITCODE - continuo senza" "WARN"
+        }
+    } catch {
+        Write-Log "Watchdog register fallito: $($_.Exception.Message)" "WARN"
+    }
+}
+
+function Start-Connector {
+    $config = Read-Config
+    if (-not $config) {
+        Write-Log "Nessuna configurazione trovata. Esegui install.bat" "ERROR"
+        return
+    }
+    
+    $global:Running = $true
+    $global:Stats.start_time = Get-Date
+    Write-StatusFile "starting"
+    
+    Write-Log "=================================================="
+    Write-Log "  $global:AppName v$global:Version"
+    Write-Log "  NOC: $($config.noc_center_url)"
+    Write-Log "  SNMP: UDP/$($config.snmp_trap_port)  Syslog: UDP/$($config.syslog_port)"
+    Write-Log "  Utente: $([System.Security.Principal.WindowsIdentity]::GetCurrent().Name)"
+    Write-Log "  Sessione: $(if ($env:SESSIONNAME) { $env:SESSIONNAME } else { 'SYSTEM/Background' })"
+    Write-Log "  TLS: $([Net.ServicePointManager]::SecurityProtocol)"
+    Write-Log "  Config: $(Get-ConfigPath)"
+    Write-Log "=================================================="
+    
+    # v3.5.12: Self-heal al boot - rileva e rimuove Task Scheduler conflittuali
+    # con lo stesso nome del servizio NSSM (causa principale di restart ciclici
+    # ogni 60s nelle installazioni che hanno avuto versioni pre-v3.3.0 del connector).
+    try {
+        $svcName = if ($global:ServiceName) { $global:ServiceName } else { "86NocConnectorService" }
+        $conflictTask = Get-ScheduledTask -TaskName $svcName -ErrorAction SilentlyContinue
+        if ($conflictTask) {
+            Write-Log "[SELF-HEAL] Rilevato Task Scheduler conflittuale '$svcName' - causa race condition con servizio NSSM. Rimozione..." "WARN"
+            try {
+                Unregister-ScheduledTask -TaskName $svcName -Confirm:$false -ErrorAction SilentlyContinue
+                & schtasks.exe /Delete /TN $svcName /F 2>$null | Out-Null
+                & schtasks.exe /Delete /TN "\$svcName" /F 2>$null | Out-Null
+                Write-Log "[SELF-HEAL] Task Scheduler conflittuale rimosso - restart ciclici cessati" "INFO"
+            } catch {
+                Write-Log "[SELF-HEAL] Errore rimozione task conflittuale: $($_.Exception.Message)" "ERROR"
+            }
+        }
+    } catch {}
+
+    # Test connettivita' NOC all'avvio
+    Write-Log "Test connettivita' verso il NOC..."
+    try {
+        $testUrl = "$($config.noc_center_url)/api/health"
+        $testResult = Invoke-RestMethod -Uri $testUrl -Method Get -TimeoutSec 10 -ErrorAction Stop
+        Write-Log "  NOC raggiungibile! Stato: $($testResult.status)" "INFO"
+    } catch {
+        $errDetail = $_.Exception.Message
+        if ($_.Exception.InnerException) { $errDetail += " | Inner: $($_.Exception.InnerException.Message)" }
+        Write-Log "  ERRORE: NOC non raggiungibile: $errDetail" "ERROR"
+        Write-Log "  Il connettore continuera' a tentare..." "WARN"
+    }
+
+    # v3.3.7: Watchdog auto-recovery. Se un update si blocca e il servizio rimane stopped,
+    # questo scheduled task Windows riavvia il servizio ogni 5 minuti finché torna Running.
+    # Idempotente: se esiste già, lo aggiorna. Non critico se fallisce.
+    try {
+        Register-ServiceWatchdog
+    } catch {
+        Write-Log "Watchdog setup non critico: $($_.Exception.Message)" "DEBUG"
+    }
+    
+    # Start listeners in background jobs
+    # v3.5.13 FIX: $global:Running va settato ESPLICITAMENTE dentro lo scope del job.
+    # Quando Start-Job dot-source lo script, la guardia "if (InvocationName -ne '.')"
+    # salta Start-Connector e $global:Running resta $null -> il loop `while ($global:Running)`
+    # esce immediatamente -> job "Completed" dopo 2s -> il health-check lo ripartiva ogni 3 min.
+    # Risultato pre-fix: listener UDP morti per 2-3 min ogni 3 min = buco trap/syslog.
+    #
+    # v3.8.7 FIX: in modalita' SCANNER NON avviamo i listener SNMP/Syslog perche'
+    # quelle porte (162/514) sono di esclusiva pertinenza del Master del cliente.
+    # Tentare di aprirle dallo Scanner causa "address already in use" -> crash -> restart loop.
+    $snmpJob = $null
+    $syslogJob = $null
+    if ($config.mode -ne "scanner") {
+        $snmpJob = Start-Job -ScriptBlock {
+            param($scriptPath, $configPath)
+            . $scriptPath -ConfigPath $configPath
+            $global:Running = $true
+            Start-SNMPListener (Read-Config)
+        } -ArgumentList $PSCommandPath, (Get-ConfigPath)
+
+        $syslogJob = Start-Job -ScriptBlock {
+            param($scriptPath, $configPath)
+            . $scriptPath -ConfigPath $configPath
+            $global:Running = $true
+            Start-SyslogListener (Read-Config)
+        } -ArgumentList $PSCommandPath, (Get-ConfigPath)
+    } else {
+        Write-Log "Modalita' SCANNER: skip avvio listener SNMP Trap (162) e Syslog (514). Quelle porte appartengono al Master." "INFO"
+    }
+    
+    # Start SNMP polling job
+    $pollingJob = $null
+    if ($config.devices -and $config.devices.Count -gt 0) {
+        $pollingJob = Start-Job -ScriptBlock {
+            param($scriptPath, $configPath)
+            . $scriptPath -ConfigPath $configPath
+            $pollerFile = Join-Path (Split-Path -Parent $scriptPath) "snmp_poller.ps1"
+            if (Test-Path $pollerFile) { . $pollerFile }
+            $cfg = Read-Config
+            $global:Running = $true
+            Start-PollingLoop $cfg
+        } -ArgumentList $PSCommandPath, (Get-ConfigPath)
+        Write-Log "Polling SNMP avviato in background"
+    }
+    
+    # Auto-update via Windows Task Scheduler (v3.5.0+) - gestito esternamente dal connector
+    # Il task \86BIT\ArgusConnectorUpdater viene creato dall'installer e eseguito ogni 5 minuti.
+    # $updateJob qui e' un Job dummy NoOp per retrocompatibilita' (altre parti del codice ne controllano lo stato).
+    $updateJob = Start-Job -ScriptBlock { Start-Sleep -Seconds 2147483 }
+    Write-Log "Auto-update delegato a Windows Task Scheduler (ArgusConnectorUpdater, ogni 5 minuti)" "INFO"
+    
+    # Heartbeat in current thread loop + discovery check + web proxy + memory management
+    Write-Log "$global:AppName avviato. Premi Ctrl+C per fermare."
+
+    # ==================== v3.8 SCANNER MODE BRANCH ====================
+    # Se config.mode == "scanner", il connector NON esegue il polling pesante.
+    # Esegue solo heartbeat + discovery LAN locale (ARP/mDNS) e invia i risultati
+    # al Center. Il Center aggrega scanner + master sotto lo stesso client.
+    if ($config.mode -eq "scanner") {
+        Write-Log "MODALITA' SCANNER attiva (subnet: $($config.subnet) VLAN: $($config.vlan_id))" "INFO"
+        $scannerScript = Join-Path $global:ScriptDir "argus-scanner.ps1"
+        if (-not (Test-Path $scannerScript)) {
+            Write-Log "argus-scanner.ps1 non trovato in $global:ScriptDir. Loop scanner inline (heartbeat solo)." "WARN"
+            # Fallback: solo heartbeat ogni 60s (senza scan)
+            $lastHeartbeat = [datetime]::MinValue
+            Send-Heartbeat $config
+            Write-StatusFile "running"
+            $lastHeartbeat = Get-Date
+            while ($global:Running) {
+                $now = Get-Date
+                if (($now - $lastHeartbeat).TotalSeconds -ge 60) {
+                    Send-Heartbeat $config
+                    Write-StatusFile "running"
+                    $lastHeartbeat = $now
+                }
+                Start-Sleep -Seconds 5
+            }
+            return
+        }
+        # v3.8.12 -> 3.8.13 FIX DEFINITIVO crash-loop: invece di lanciare argus-scanner
+        # come processo separato (& $scannerScript), che faceva morire il main connector
+        # quando lo scanner usciva per qualunque motivo, ora dot-sourciamo lo script
+        # con -AsLibrary per caricare SOLO le funzioni (l'entry point fa "return" al volo)
+        # e gestiamo l'intero loop heartbeat+scan QUI, dentro il try/catch globale di
+        # Run-Connector. Cosi' qualunque eccezione finisce nel catch di riga ~3084
+        # (Write-Log "Arresto..." + finally cleanup) e NON crasha il processo PS.
+        try {
+            . $scannerScript -AsLibrary -ConfigPath "$env:ProgramData\86NocConnector\scanner-config.json"
+            Write-Log "Funzioni argus-scanner caricate (dot-source -AsLibrary)" "INFO"
+        } catch {
+            Write-Log "Caricamento argus-scanner fallito: $($_.Exception.Message). Fallback heartbeat-only." "ERROR"
+        }
+
+        # Costruisci config compatibile con argus-scanner (Test-Hookup / Invoke-LanScanOnce)
+        $vlanInt = $null
+        if ("$($config.vlan_id)" -match "^\d+$") { $vlanInt = [int]$config.vlan_id }
+        $scannerCfg = [PSCustomObject]@{
+            center_url = $config.noc_center_url
+            api_key_encrypted = $null  # Settato sotto via Protect-String se la funzione esiste
+            mode = "scanner"
+            subnet = $config.subnet
+            vlan_id = $vlanInt
+            hostname = $env:COMPUTERNAME
+            scan_interval_seconds = 300
+            heartbeat_interval_seconds = 60
+            version = "3.8.13"
+        }
+        try {
+            if (Get-Command Protect-String -ErrorAction SilentlyContinue) {
+                $scannerCfg.api_key_encrypted = Protect-String $config.api_key
+            }
+        } catch { Write-Log "Protect-String fallita: $_" "WARN" }
+
+        # Invia primo heartbeat dal main connector cosi' il Center vede SUBITO online lo Scanner
+        Send-Heartbeat $config
+        Write-StatusFile "running"
+
+        # v3.8.19: helper per filtrare IP nella subnet dello Scanner
+        function Test-IpInSubnet([string]$ip, [string]$cidr) {
+            if (-not $cidr -or -not $ip) { return $false }
+            $parts = $cidr -split '/'
+            if ($parts.Count -ne 2) { return $false }
+            $maskLen = [int]$parts[1]
+            if ($maskLen -lt 1 -or $maskLen -gt 32) { return $false }
+            try {
+                $ipBytes = ([System.Net.IPAddress]::Parse($ip)).GetAddressBytes()
+                $netBytes = ([System.Net.IPAddress]::Parse($parts[0])).GetAddressBytes()
+                [Array]::Reverse($ipBytes); [Array]::Reverse($netBytes)
+                $ipU = [System.BitConverter]::ToUInt32($ipBytes, 0)
+                $netU = [System.BitConverter]::ToUInt32($netBytes, 0)
+                if ($maskLen -eq 32) { return ($ipU -eq $netU) }
+                $shift = 32 - $maskLen
+                return (($ipU -shr $shift) -eq ($netU -shr $shift))
+            } catch { return $false }
+        }
+
+        # v3.8.19: poll SNMP leggero dei device del cliente che cadono dentro la subnet
+        # locale dello Scanner. Usa lo stesso flow del Master:
+        # 1) Recupera lista device da connector/managed-devices
+        # 2) Filtra per subnet
+        # 3) Per ogni device SNMP: ping + 5 OID standard MIB-II (sysDescr/sysName/sysObjectID/sysUptime/sysLocation)
+        # 4) Pusha tutto in batch a connector/device-report con flag polled_by_mode=scanner
+        function Invoke-ScannerSnmpPollOnce {
+            param($Config, $LocalSubnet)
+            try {
+                $resp = Send-ToNOC $Config "connector/managed-devices" @{}
+                if (-not $resp -or -not $resp.devices) {
+                    Write-Log "Scanner SNMP poll: nessun device dal Center" "DEBUG"
+                    return
+                }
+                $matchingDevices = @()
+                foreach ($d in $resp.devices) {
+                    $ip = $d.ip
+                    if (-not $ip) { continue }
+                    if (-not (Test-IpInSubnet $ip $LocalSubnet)) { continue }
+                    $matchingDevices += $d
+                }
+                if ($matchingDevices.Count -eq 0) {
+                    Write-Log "Scanner SNMP poll: nessun device del cliente nella subnet $LocalSubnet" "DEBUG"
+                    return
+                }
+                Write-Log "Scanner SNMP poll: avvio su $($matchingDevices.Count) device della subnet $LocalSubnet" "INFO"
+                $reportDevices = @()
+                $okCount = 0; $failCount = 0
+                foreach ($d in $matchingDevices) {
+                    $ip = $d.ip
+                    $devName = if ($d.name) { $d.name } else { $ip }
+                    $monitorType = if ($d.monitor_type) { $d.monitor_type } else { "snmp" }
+                    $community = if ($d.community) { $d.community } else { "public" }
+                    # Ping reach test (1 packet, 1s timeout)
+                    $reachable = $false
+                    try { $reachable = Test-Connection -ComputerName $ip -Count 1 -Quiet -TimeoutSeconds 2 } catch {}
+                    $sysDescr = ""; $sysName = ""; $sysObjectID = ""; $sysLocation = ""; $sysUptime = ""
+                    if ($reachable -and $monitorType -eq "snmp" -and (Get-Command Get-SnmpValue -ErrorAction SilentlyContinue)) {
+                        try {
+                            $sysDescr    = Get-SnmpValue $ip $community "1.3.6.1.2.1.1.1.0"
+                            $sysName     = Get-SnmpValue $ip $community "1.3.6.1.2.1.1.5.0"
+                            $sysObjectID = Get-SnmpValue $ip $community "1.3.6.1.2.1.1.2.0"
+                            $sysLocation = Get-SnmpValue $ip $community "1.3.6.1.2.1.1.6.0"
+                            $uptimeTicks = Get-SnmpValue $ip $community "1.3.6.1.2.1.1.3.0"
+                            if ($uptimeTicks) {
+                                $secs = [math]::Floor($uptimeTicks / 100)
+                                $dDays = [math]::Floor($secs / 86400)
+                                $hH = [math]::Floor(($secs % 86400) / 3600)
+                                $mM = [math]::Floor(($secs % 3600) / 60)
+                                $sysUptime = "${dDays}g ${hH}h ${mM}m"
+                            }
+                        } catch {
+                            Write-Log "Scanner SNMP $ip ($community): $($_.Exception.Message)" "DEBUG"
+                        }
+                    }
+                    if ($reachable) { $okCount++ } else { $failCount++ }
+                    $reportDevices += @{
+                        device_ip      = $ip
+                        device_name    = $devName
+                        monitor_type   = $monitorType
+                        reachable      = $reachable
+                        ports          = @()
+                        sys_descr      = "$sysDescr"
+                        sys_name       = "$sysName"
+                        sys_object_id  = "$sysObjectID"
+                        sys_location   = "$sysLocation"
+                        sys_uptime     = $sysUptime
+                        community      = $community
+                        snmp_version   = if ($d.snmp_version) { $d.snmp_version } else { "v2c" }
+                        polled_by_mode = "scanner"   # v3.8.19: distingue dal Master
+                        poll_timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+                    }
+                }
+                if ($reportDevices.Count -gt 0) {
+                    $payload = @{
+                        hostname = $env:COMPUTERNAME
+                        devices  = $reportDevices
+                        polled_by_mode = "scanner"
+                    }
+                    Send-ToNOC $Config "connector/device-report" $payload | Out-Null
+                    Write-Log "Scanner SNMP poll: inviati $($reportDevices.Count) device al Center (OK=$okCount FAIL=$failCount)" "INFO"
+                }
+            } catch {
+                Write-Log "Scanner SNMP poll fallito: $($_.Exception.Message)" "WARN"
+            }
+        }
+
+        # Loop principale scanner INLINE nel processo del main connector
+        $lastSchHb = (Get-Date).AddYears(-1)
+        $lastSchScan = (Get-Date).AddYears(-1)
+        $lastSchSnmpPoll = (Get-Date).AddYears(-1)
+        $lastMainHb = Get-Date
+        while ($global:Running) {
+            try {
+                $now = Get-Date
+                # Heartbeat principale (master) ogni 60s -> popola connector_status mode=scanner
+                if (($now - $lastMainHb).TotalSeconds -ge 60) {
+                    Send-Heartbeat $config
+                    Write-StatusFile "running"
+                    $lastMainHb = $now
+                }
+                # Heartbeat secondario via argus-scanner Test-Hookup (se caricato) - ridondante,
+                # ma utile per audit e per popolare la riga `last_lan_scan_*` quando manca lo scan.
+                if (($now - $lastSchHb).TotalSeconds -ge 60 -and (Get-Command Test-Hookup -ErrorAction SilentlyContinue)) {
+                    try { Test-Hookup -Config $scannerCfg | Out-Null } catch { Write-Log "Test-Hookup err: $_" "WARN" }
+                    $lastSchHb = $now
+                }
+                # Scan LAN ogni 5 min via argus-scanner Invoke-LanScanOnce (se caricato e subnet OK)
+                if (($now - $lastSchScan).TotalSeconds -ge 300 -and $scannerCfg.subnet `
+                        -and (Get-Command Invoke-LanScanOnce -ErrorAction SilentlyContinue)) {
+                    try { Invoke-LanScanOnce -Config $scannerCfg | Out-Null } catch { Write-Log "LanScan err: $_" "WARN" }
+                    $lastSchScan = $now
+                }
+                # v3.8.19: SNMP poll dei device del cliente nella subnet locale, ogni 5 min
+                # (sfasato di 60s dal lan-scan per non saturare CPU/banda contemporaneamente)
+                if (($now - $lastSchSnmpPoll).TotalSeconds -ge 300 -and $config.subnet) {
+                    Invoke-ScannerSnmpPollOnce $config $config.subnet
+                    $lastSchSnmpPoll = $now
+                }
+            } catch {
+                Write-Log "Scanner loop iter exception: $($_.Exception.Message)" "ERROR"
+            }
+            Start-Sleep -Seconds 5
+        }
+        return
+    }
+    # ===================== END SCANNER MODE BRANCH =====================
+
+    $lastHeartbeat = [datetime]::MinValue
+    $lastDiscovery = [datetime]::MinValue
+    $lastMemoryCleanup = [datetime]::MinValue
+    $lastJobHealthCheck = [datetime]::MinValue
+    $lastPrinterProbe = [datetime]::MinValue
+    $heartbeatIntervalSec = 60
+    $discoveryIntervalSec = 120
+    $memoryCleanupIntervalSec = 300    # Ogni 5 minuti
+    $jobHealthCheckIntervalSec = 180   # Ogni 3 minuti
+    $printerProbeIntervalSec = 900     # Ogni 15 minuti
+    $webProxyIntervalSec = 3
+    # v3.8.27: cap retry per i listener UDP. Se la porta resta bloccata da un
+    # processo terzo che non possiamo killare (es. servizio Windows protetto),
+    # smetti di tentare ad oltranza. Dopo 5 fallimenti consecutivi, log ogni
+    # 30 min invece di ogni 3, finche' qualcuno non risolve manualmente o
+    # finche' il servizio non viene riavviato (NSSM ricreera' i contatori).
+    $listenerMaxConsecutiveFailures = 5
+    $listenerCooldownIntervalSec = 1800   # 30 minuti
+    $snmpListenerFailures = 0
+    $syslogListenerFailures = 0
+    $lastSnmpListenerLogAt = [datetime]::MinValue
+    $lastSyslogListenerLogAt = [datetime]::MinValue
+    
+    # Send first heartbeat immediately
+    Send-Heartbeat $config
+    Write-StatusFile "running"
+    $lastHeartbeat = Get-Date
+    
+    try {
+        while ($global:Running) {
+            $now = Get-Date
+            
+            # Check for web proxy requests (fast, every 3s)
+            Check-WebProxyRequests $config
+            
+            # Send heartbeat (every 60s)
+            if (($now - $lastHeartbeat).TotalSeconds -ge $heartbeatIntervalSec) {
+                Send-Heartbeat $config
+                Write-StatusFile "running"
+                $lastHeartbeat = $now
+            }
+            
+            # Check for discovery (every 2 min)
+            if (($now - $lastDiscovery).TotalSeconds -ge $discoveryIntervalSec) {
+                Check-DiscoveryRequest $config
+                $lastDiscovery = $now
+            }
+
+            # Printer probe TCP+SNMP (every 15 min, solo se il file ps1 esiste)
+            if (($now - $lastPrinterProbe).TotalSeconds -ge $printerProbeIntervalSec) {
+                try {
+                    $ppScript = Join-Path $PSScriptRoot "printer_probe.ps1"
+                    if (Test-Path $ppScript) {
+                        . $ppScript
+                        Invoke-PrinterProbe -Config $config
+                    }
+                } catch {
+                    Write-Log "PrinterProbe error: $_" "WARN"
+                }
+                $lastPrinterProbe = $now
+            }
+            
+            # Memory cleanup (every 5 min) - previene memory leak nei job
+            if (($now - $lastMemoryCleanup).TotalSeconds -ge $memoryCleanupIntervalSec) {
+                try {
+                    [System.GC]::Collect()
+                    [System.GC]::WaitForPendingFinalizers()
+                } catch {}
+                $lastMemoryCleanup = $now
+            }
+            
+            # Job health check (every 3 min) - riavvia job morti
+            if (($now - $lastJobHealthCheck).TotalSeconds -ge $jobHealthCheckIntervalSec) {
+                # Check SNMP listener job
+                if ($snmpJob -and $snmpJob.State -ne "Running") {
+                    Write-Log "SNMP Listener job morto (stato: $($snmpJob.State)), riavvio..." "WARN"
+                    try {
+                        Remove-Job $snmpJob -Force -ErrorAction SilentlyContinue
+                        $snmpJob = Start-Job -ScriptBlock {
+                            param($scriptPath, $configPath)
+                            . $scriptPath -ConfigPath $configPath
+                            $global:Running = $true
+                            Start-SNMPListener (Read-Config)
+                        } -ArgumentList $PSCommandPath, (Get-ConfigPath)
+                        Write-Log "SNMP Listener riavviato" "INFO"
+                    } catch { Write-Log "Errore riavvio SNMP Listener: $($_.Exception.Message)" "ERROR" }
+                }
+                # Check Syslog listener job
+                if ($syslogJob -and $syslogJob.State -ne "Running") {
+                    Write-Log "Syslog Listener job morto (stato: $($syslogJob.State)), riavvio..." "WARN"
+                    try {
+                        Remove-Job $syslogJob -Force -ErrorAction SilentlyContinue
+                        $syslogJob = Start-Job -ScriptBlock {
+                            param($scriptPath, $configPath)
+                            . $scriptPath -ConfigPath $configPath
+                            $global:Running = $true
+                            Start-SyslogListener (Read-Config)
+                        } -ArgumentList $PSCommandPath, (Get-ConfigPath)
+                        Write-Log "Syslog Listener riavviato" "INFO"
+                    } catch { Write-Log "Errore riavvio Syslog Listener: $($_.Exception.Message)" "ERROR" }
+                }
+                # Check Polling job
+                if ($pollingJob -and $pollingJob.State -ne "Running") {
+                    Write-Log "Polling job morto (stato: $($pollingJob.State)), riavvio..." "WARN"
+                    try {
+                        Remove-Job $pollingJob -Force -ErrorAction SilentlyContinue
+                        $pollingJob = Start-Job -ScriptBlock {
+                            param($scriptPath, $configPath)
+                            . $scriptPath -ConfigPath $configPath
+                            $pollerFile = Join-Path (Split-Path -Parent $scriptPath) "snmp_poller.ps1"
+                            if (Test-Path $pollerFile) { . $pollerFile }
+                            $cfg = Read-Config
+                            $global:Running = $true
+                            Start-PollingLoop $cfg
+                        } -ArgumentList $PSCommandPath, (Get-ConfigPath)
+                        Write-Log "Polling riavviato" "INFO"
+                    } catch { Write-Log "Errore riavvio Polling: $($_.Exception.Message)" "ERROR" }
+                }
+                # Drain completed/failed job output to prevent memory accumulation
+                foreach ($j in @($snmpJob, $syslogJob, $pollingJob, $updateJob)) {
+                    if ($j) {
+                        try { Receive-Job $j -ErrorAction SilentlyContinue | Out-Null } catch {}
+                    }
+                }
+                $lastJobHealthCheck = $now
+            }
+            
+            # Check SNMP trap job health first
+            # Note: Check-WebProxyRequests già fa long-poll 20s, quindi non serve Start-Sleep.
+            # Breve pausa solo in caso di errore rete per evitare tight-loop.
+            Start-Sleep -Milliseconds 200
+        }
+    } catch {
+        Write-Log "Arresto..."
+    } finally {
+        $global:Running = $false
+        Write-StatusFile "stopped"
+        Stop-Job $snmpJob -ErrorAction SilentlyContinue
+        Stop-Job $syslogJob -ErrorAction SilentlyContinue
+        Remove-Job $snmpJob -ErrorAction SilentlyContinue
+        Remove-Job $syslogJob -ErrorAction SilentlyContinue
+        if ($pollingJob) {
+            Stop-Job $pollingJob -ErrorAction SilentlyContinue
+            Remove-Job $pollingJob -ErrorAction SilentlyContinue
+        }
+        Stop-Job $updateJob -ErrorAction SilentlyContinue
+        Remove-Job $updateJob -ErrorAction SilentlyContinue
+        Write-Log "$global:AppName fermato."
+    }
+}
+
+# Export for tray_app
+function Get-ConnectorStatus {
+    $uptime = ((Get-Date) - $global:Stats.start_time).TotalSeconds
+    return @{
+        running = $global:Running
+        version = $global:Version
+        uptime = "{0}h {1}m" -f [math]::Floor($uptime / 3600), [math]::Floor(($uptime % 3600) / 60)
+        uptime_seconds = [int]$uptime
+        snmp_received = $global:Stats.snmp_received
+        syslog_received = $global:Stats.syslog_received
+        snmp_sent = $global:Stats.snmp_sent
+        syslog_sent = $global:Stats.syslog_sent
+        errors = $global:Stats.errors
+        last_error = $global:Stats.last_error
+    }
+}
+
+# Run if called directly
+if ($MyInvocation.InvocationName -ne ".") {
+    Start-Connector
+}
+                   if ($j) {
+                        try { Receive-Job $j -ErrorAction SilentlyContinue | Out-Null } catch {}
+                    }
+                }
+                $lastJobHealthCheck = $now
+            }
+            
+            # Check SNMP trap job health first
+            # Note: Check-WebProxyRequests già fa long-poll 20s, quindi non serve Start-Sleep.
+            # Breve pausa solo in caso di errore rete per evitare tight-loop.
+            Start-Sleep -Milliseconds 200
+        }
+    } catch {
+        Write-Log "Arresto..."
+    } finally {
+        $global:Running = $false
+        Write-StatusFile "stopped"
+        Stop-Job $snmpJob -ErrorAction SilentlyContinue
+        Stop-Job $syslogJob -ErrorAction SilentlyContinue
+        Remove-Job $snmpJob -ErrorAction SilentlyContinue
+        Remove-Job $syslogJob -ErrorAction SilentlyContinue
+        if ($pollingJob) {
+            Stop-Job $pollingJob -ErrorAction SilentlyContinue
+            Remove-Job $pollingJob -ErrorAction SilentlyContinue
+        }
+        Stop-Job $updateJob -ErrorAction SilentlyContinue
+        Remove-Job $updateJob -ErrorAction SilentlyContinue
+        Write-Log "$global:AppName fermato."
+    }
+}
+
+# Export for tray_app
+function Get-ConnectorStatus {
+    $uptime = ((Get-Date) - $global:Stats.start_time).TotalSeconds
+    return @{
+        running = $global:Running
+        version = $global:Version
+        uptime = "{0}h {1}m" -f [math]::Floor($uptime / 3600), [math]::Floor(($uptime % 3600) / 60)
+        uptime_seconds = [int]$uptime
+        snmp_received = $global:Stats.snmp_received
+        syslog_received = $global:Stats.syslog_received
+        snmp_sent = $global:Stats.snmp_sent
+        syslog_sent = $global:Stats.syslog_sent
+        errors = $global:Stats.errors
+        last_error = $global:Stats.last_error
+    }
+}
+
+# Run if called directly
+if ($MyInvocation.InvocationName -ne ".") {
+    Start-Connector
+}

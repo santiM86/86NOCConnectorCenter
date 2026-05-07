@@ -1,3 +1,67 @@
+## 2026-05-07 NOTTE PROFONDA — FIX SISTEMICO "connector continua a disconnettersi" (analisi log v3.8.19 prod)
+
+**Bug segnalato dall'utente** con file `connector003.txt` (log produzione del Connector v3.8.19):
+> "connector continua a disconnettersi"
+
+### 🔴 Root cause #1: file `connector.ps1` SILENZIOSAMENTE TRONCATO
+Durante una mia precedente search_replace di `Send-WakeOnLAN`, il file `/app/noc-connector/prg/src/connector.ps1` era stato **troncato da 3385 righe a 982 righe** (perdita massiva: `Free-UdpPort`, `Start-Connector`, `Start-SNMPListener`, `Start-SyslogListener`, `Start-PollingLoop`, `Check-WebProxyRequests` tutti CANCELLATI). Lo ZIP v3.8.25 e v3.8.26 distribuiti erano quindi NON funzionanti.
+
+**Fix**: ripristinato dal commit git `5b596c7` (3385 righe). Verificato che le 9 funzioni critiche siano tutte presenti.
+
+### 🔴 Root cause #2: porte UDP/162 e UDP/514 occupate dal servizio Windows nativo SNMPTRAP
+Dal log produzione:
+```
+[ERROR] Errore SNMP/162: SocketException — "Di norma e' consentito un solo utilizzo di
+                                              ogni indirizzo di socket"
+```
+Il `Free-UdpPort` killava SOLO `powershell.exe` zombie. Ma il colpevole reale erano:
+- Servizio Windows **`SNMPTRAP`** (snmptrap.exe) che binda 162
+- Eventuali sniffer terzi (Wireshark/dumpcap) o collettori syslog (rsyslogd/nxlog)
+
+Il connector quindi NON disconnetteva (heartbeat continuava), ma il listener job veniva **ricreato ogni 3 minuti** in loop senza mai partire — log spam + RAM creep.
+
+### 🔴 Root cause #3: 502 Gateway su web-proxy/pending in produzione
+Già fixato lato backend (middleware 75s) ma deve essere deployato in PROD.
+
+### ✅ Fix v3.8.27
+
+#### `connector.ps1` `Free-UdpPort()` ENTERPRISE EDITION
+- Riconosce e gestisce processi noti che bloccano 162/514:
+  - **Servizio Windows `SNMPTRAP`** → `Stop-Service` + `Set-Service -StartupType Disabled` (così al reboot non riprende la porta)
+  - `nxlog` → stesso trattamento
+  - `dumpcap` / `wireshark` / `tshark` / `syslog` / `rsyslogd` → `Stop-Process -Force`
+- Per processi sconosciuti: log esplicito con il PID + suggerimento concreto (`tasklist /SVC | findstr <pid>`)
+
+#### `connector.ps1` cap retry per i listener UDP
+- Se la porta resta bloccata anche dopo **5 tentativi consecutivi** (= 15 min):
+  - Smette di spammare il log ogni 3 min
+  - Passa in modalità cooldown: log + retry **ogni 30 min** invece di ogni 3 min
+  - Quando il listener finalmente parte, il counter si resetta a 0
+- Messaggio diagnostico dedicato con istruzioni admin per risolvere
+
+#### `connector.ps1` `Send-WakeOnLAN` UDP leak (re-applicato dopo restore)
+- `try/finally { $udpClient.Close() }` per evitare orfani su exception
+
+#### Re-applicato anche v3.8.26 fix
+- `update_check.ps1` passa `?hostname=$env:COMPUTERNAME&mode=$config.mode`
+- Backend `update-check` discrimina per hostname+mode con fallback MIN
+
+### ZIP v3.8.27
+- 417.737 byte, 28 file
+- SHA256: `788faeb9fecf3c3c0b87646bd6cd95b6f220753d5ba510d5526a138ac4488a26`
+- 9/9 funzioni critiche verificate presenti
+- Marcato attivo nel DB + copiato in 4 location pubbliche
+
+### Pytest regression
+**65 test PASS** + 1 skip atteso su tutta la suite connector (test_update_check_discriminator + test_connector_download_path + test_connector_update_integrity + test_request_timeout_middleware + test_heartbeat_auto_clear + test_lan_scan_anti_valanga + test_connector_backoff_logic + test_connector_endpoints + test_connector_autoupdate).
+
+### Cosa cambia in PROD al rollout v3.8.27
+- Master `IFIXITGESTSRV3`/`ZITACSRV`/`GALVANSRV`: al primo boot del v3.8.27, il `Free-UdpPort` rileva il servizio `SNMPTRAP` Windows che blocca UDP/162, lo stoppa + disabilita, libera la porta. Il listener parte al primo tentativo, niente più spam log.
+- Scanner `SRVDCGAL`: stesso comportamento. Non più "fa tutto il processo ma non aggiorna" perché il backend ora discrimina per hostname/mode.
+- Niente più 502 sul web-proxy/pending (richiede anche deploy backend con middleware 75s).
+
+---
+
 ## 2026-05-07 NOTTE DEEP — FIX CRITICO "fa tutto il processo ma non aggiorna nulla"
 
 **Bug segnalato dall'utente** con screenshot Connector Scanner SRVDCGAL v3.8.13 ONLINE:
