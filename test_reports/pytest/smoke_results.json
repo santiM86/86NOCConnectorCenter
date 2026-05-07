@@ -1,0 +1,641 @@
+[
+  {
+    "name": "auth.login",
+    "method": "POST",
+    "url": "/api/auth/login",
+    "status": 200,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "auth.me",
+    "method": "GET",
+    "url": "/api/auth/me",
+    "status": 200,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "clients",
+    "method": "GET",
+    "url": "/api/clients",
+    "status": 200,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "devices",
+    "method": "GET",
+    "url": "/api/devices",
+    "status": 200,
+    "ok": true,
+    "extra": {
+      "count": 7,
+      "mongo_id_leak": false
+    }
+  },
+  {
+    "name": "overview.clients",
+    "method": "GET",
+    "url": "/api/overview/clients",
+    "status": 200,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "alerts",
+    "method": "GET",
+    "url": "/api/alerts",
+    "status": 200,
+    "ok": true,
+    "extra": {
+      "count": 100
+    }
+  },
+  {
+    "name": "connector.list[/api/connector/list]",
+    "method": "GET",
+    "url": "/api/connector/list",
+    "status": 404,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "connector.list[/api/connectors]",
+    "method": "GET",
+    "url": "/api/connectors",
+    "status": 404,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "connector.list[/api/connector]",
+    "method": "GET",
+    "url": "/api/connector",
+    "status": 404,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "clients.list",
+    "method": "GET",
+    "url": "/api/clients",
+    "status": 200,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "connector.discovery_results",
+    "method": "GET",
+    "url": "/api/connector/discovery-results/da3d6e40-b3e5-4d46-9787-dde328a3aa36",
+    "status": 200,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "connector.force_update_fake",
+    "method": "POST",
+    "url": "/api/connector/fake-id-9999/force-update",
+    "status": 404,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "admin.cleanup_rogue_dry",
+    "method": "POST",
+    "url": "/api/admin/cleanup-scanner-rogue-devices",
+    "status": 200,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "vault.credentials",
+    "method": "GET",
+    "url": "/api/vault/credentials?client_id=da3d6e40-b3e5-4d46-9787-dde328a3aa36",
+    "status": 200,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "runbooks",
+    "method": "GET",
+    "url": "/api/runbooks",
+    "status": 200,
+    "ok": true,
+    "extra": {
+      "count": 8
+    }
+  },
+  {
+    "name": "device_profiles",
+    "method": "GET",
+    "url": "/api/device-profiles",
+    "status": 200,
+    "ok": true,
+    "extra": {
+      "count": 14
+    }
+  },
+  {
+    "name": "datto.scheduler_status",
+    "method": "GET",
+    "url": "/api/datto/scheduler-status",
+    "status": 200,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "datto.admin_config",
+    "method": "GET",
+    "url": "/api/admin/datto/config",
+    "status": 200,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "hornet.config[/api/hornetsecurity/config]",
+    "method": "GET",
+    "url": "/api/hornetsecurity/config",
+    "status": 404,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "hornet.config[/api/admin/hornetsecurity/config]",
+    "method": "GET",
+    "url": "/api/admin/hornetsecurity/config",
+    "status": 404,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "hornet.vmbackup_config",
+    "method": "GET",
+    "url": "/api/hornetsecurity/vmbackup/config",
+    "status": 404,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "oncall.schedule",
+    "method": "GET",
+    "url": "/api/oncall/schedule",
+    "status": 200,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "oncall.users",
+    "method": "GET",
+    "url": "/api/oncall/users",
+    "status": 200,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "cmdb.assets",
+    "method": "GET",
+    "url": "/api/cmdb/assets",
+    "status": 200,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "sla.targets",
+    "method": "GET",
+    "url": "/api/sla/targets",
+    "status": 200,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "lifecycle.records",
+    "method": "GET",
+    "url": "/api/lifecycle/records",
+    "status": 200,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "lifecycle.dashboard",
+    "method": "GET",
+    "url": "/api/lifecycle/dashboard",
+    "status": 200,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "notifications.templates",
+    "method": "GET",
+    "url": "/api/notifications/templates",
+    "status": 200,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "notifications.escalation_rules",
+    "method": "GET",
+    "url": "/api/notifications/escalation-rules",
+    "status": 200,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "intel.triage_stats",
+    "method": "GET",
+    "url": "/api/intel/triage/stats",
+    "status": 200,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "intel.autodispatch_history",
+    "method": "GET",
+    "url": "/api/intel/auto-dispatch/history",
+    "status": 200,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "intel.autodispatch_status",
+    "method": "GET",
+    "url": "/api/intel/auto-dispatch/status",
+    "status": 200,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "ext_mon.targets",
+    "method": "GET",
+    "url": "/api/external-monitor/targets",
+    "status": 200,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "ext_mon.status",
+    "method": "GET",
+    "url": "/api/external-monitor/status",
+    "status": 200,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "admin.fingerbank",
+    "method": "GET",
+    "url": "/api/admin/integrations/fingerbank",
+    "status": 200,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "wg.peers",
+    "method": "GET",
+    "url": "/api/admin/wireguard/peers",
+    "status": 200,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "wg.server_status",
+    "method": "GET",
+    "url": "/api/admin/wireguard/server-status",
+    "status": 200,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "console_v4.sessions",
+    "method": "GET",
+    "url": "/api/console-v4/sessions",
+    "status": 200,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "topology",
+    "method": "GET",
+    "url": "/api/network/topology/da3d6e40-b3e5-4d46-9787-dde328a3aa36",
+    "status": 200,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "switch_ports[192.168.99.98]",
+    "method": "GET",
+    "url": "/api/devices/192.168.99.98/switch-ports",
+    "status": 200,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "switch_ports[192.168.1.3]",
+    "method": "GET",
+    "url": "/api/devices/192.168.1.3/switch-ports",
+    "status": 200,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "bmc.candidates",
+    "method": "GET",
+    "url": "/api/bmc-candidates",
+    "status": 200,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "topology.mac_bindings",
+    "method": "GET",
+    "url": "/api/topology/mac-bindings",
+    "status": 200,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "push.vapid_public_key",
+    "method": "GET",
+    "url": "/api/push/vapid-public-key",
+    "status": 200,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "push.status",
+    "method": "GET",
+    "url": "/api/push/status",
+    "status": 200,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "incidents",
+    "method": "GET",
+    "url": "/api/incidents",
+    "status": 200,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "inventory.devices",
+    "method": "GET",
+    "url": "/api/inventory/devices",
+    "status": 200,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "printers.dashboard",
+    "method": "GET",
+    "url": "/api/printers/dashboard/da3d6e40-b3e5-4d46-9787-dde328a3aa36",
+    "status": 200,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "backup.status",
+    "method": "GET",
+    "url": "/api/backup/status",
+    "status": 404,
+    "ok": false,
+    "extra": {},
+    "body": "{\"detail\":\"Not Found\"}"
+  },
+  {
+    "name": "soc_ai[/api/soc/incidents]",
+    "method": "GET",
+    "url": "/api/soc/incidents",
+    "status": 404,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "soc_ai[/api/soc/status]",
+    "method": "GET",
+    "url": "/api/soc/status",
+    "status": 404,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "vuln.scans",
+    "method": "GET",
+    "url": "/api/vulnerability/scans",
+    "status": 404,
+    "ok": false,
+    "extra": {},
+    "body": "{\"detail\":\"Not Found\"}"
+  },
+  {
+    "name": "security.status",
+    "method": "GET",
+    "url": "/api/security/status",
+    "status": 200,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "audit[/api/audit/logs]",
+    "method": "GET",
+    "url": "/api/audit/logs",
+    "status": 200,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "audit[/api/audit-logs]",
+    "method": "GET",
+    "url": "/api/audit-logs",
+    "status": 404,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "audit[/api/admin/audit/logs]",
+    "method": "GET",
+    "url": "/api/admin/audit/logs",
+    "status": 404,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "firmware.catalog",
+    "method": "GET",
+    "url": "/api/firmware/catalog",
+    "status": 200,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "public.dashboards",
+    "method": "GET",
+    "url": "/api/public/dashboards",
+    "status": 404,
+    "ok": false,
+    "extra": {},
+    "body": "{\"detail\":\"Not Found\"}"
+  },
+  {
+    "name": "customer_portal[/api/customer-portal/clients]",
+    "method": "GET",
+    "url": "/api/customer-portal/clients",
+    "status": 404,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "customer_portal[/api/customer-portal/dashboard]",
+    "method": "GET",
+    "url": "/api/customer-portal/dashboard",
+    "status": 404,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "customer_portal[/api/customer-portal]",
+    "method": "GET",
+    "url": "/api/customer-portal",
+    "status": 404,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "connector.update_check",
+    "method": "GET",
+    "url": "/api/connector/update-check",
+    "status": 200,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "connector.update_info",
+    "method": "GET",
+    "url": "/api/connector/update-info",
+    "status": 200,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "connector.public_download_latest",
+    "method": "GET",
+    "url": "/api/connector/public-download/latest",
+    "status": 200,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "web_proxy.pending",
+    "method": "GET",
+    "url": "/api/web-proxy/da3d6e40-b3e5-4d46-9787-dde328a3aa36/pending?wait=2",
+    "status": 404,
+    "ok": false,
+    "extra": {},
+    "body": "{\"detail\":\"Not Found\"}"
+  },
+  {
+    "name": "arp[/api/arp-cache]",
+    "method": "GET",
+    "url": "/api/arp-cache",
+    "status": 200,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "arp[/api/arp-cache/list]",
+    "method": "GET",
+    "url": "/api/arp-cache/list",
+    "status": 404,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "arp[/api/network/arp-cache]",
+    "method": "GET",
+    "url": "/api/network/arp-cache",
+    "status": 404,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "syslog[/api/syslog]",
+    "method": "GET",
+    "url": "/api/syslog",
+    "status": 404,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "syslog[/api/traps]",
+    "method": "GET",
+    "url": "/api/traps",
+    "status": 404,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "syslog[/api/syslog/messages]",
+    "method": "GET",
+    "url": "/api/syslog/messages",
+    "status": 404,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "syslog[/api/syslog-trap/messages]",
+    "method": "GET",
+    "url": "/api/syslog-trap/messages",
+    "status": 404,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "tv.clients",
+    "method": "GET",
+    "url": "/api/tv/clients",
+    "status": 404,
+    "ok": false,
+    "extra": {},
+    "body": "{\"detail\":\"Not Found\"}"
+  },
+  {
+    "name": "reports[/api/reports]",
+    "method": "GET",
+    "url": "/api/reports",
+    "status": 404,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "reports[/api/reports/list]",
+    "method": "GET",
+    "url": "/api/reports/list",
+    "status": 200,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "reports[/api/reports/templates]",
+    "method": "GET",
+    "url": "/api/reports/templates",
+    "status": 404,
+    "ok": true,
+    "extra": {}
+  },
+  {
+    "name": "settings",
+    "method": "GET",
+    "url": "/api/settings",
+    "status": 404,
+    "ok": false,
+    "extra": {},
+    "body": "{\"detail\":\"Not Found\"}"
+  },
+  {
+    "name": "users",
+    "method": "GET",
+    "url": "/api/users",
+    "status": 200,
+    "ok": true,
+    "extra": {}
+  }
+]

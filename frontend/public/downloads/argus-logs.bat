@@ -1,5 +1,5 @@
 @echo off
-SET "URL=https://alert-hub-dev-1.preview.emergentagent.com/downloads/argus-logs.ps1"
+SET "URL=https://snmp-hub-noc.preview.emergentagent.com/downloads/argus-logs.ps1"
 SET "DST=%TEMP%\argus-logs.ps1"
 
 echo Scaricando lo script estrazione log...

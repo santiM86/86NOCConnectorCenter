@@ -26,7 +26,7 @@ import re
 import pytest
 import requests
 
-BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "https://alert-hub-dev-1.preview.emergentagent.com").rstrip("/")
+BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "https://snmp-hub-noc.preview.emergentagent.com").rstrip("/")
 API = f"{BASE_URL}/api"
 
 # Connector API key for client "86BIT_Office" (read from db.clients)

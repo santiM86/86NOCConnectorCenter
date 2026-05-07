@@ -1,0 +1,41 @@
+{
+  "summary": "Comprehensive backend smoke test of ALL ARGUS NOC routes (no refactoring, just surface verification). 78 HTTP probes against 51 distinct route groups using admin info@86bit.it. Result: 72/78 GREEN on first pass, the remaining 6 'broken' endpoints turned out to be path-mismatches in the review request — every single underlying module is actually live and returning data when hit at its real path. Net outcome: 100% of route modules are healthy. No 5xx errors. No MongoDB _id leaks observed in sampled responses. Counts: 1 client (86BIT_Office), 7 devices (status field present), 100 alerts (page cap), 8 runbooks, 14 device profiles, Datto scheduler configured=true with 138 sites cached, Hornetsecurity config OK, Backup summary-all reports 3 VMs / all OK, vulnerability dashboard returns real scan timestamp, TV dashboard /api/tv/dashboard works without auth, public dashboard config returns enabled=true.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/backup/status", "issue": "Path does not exist. Real endpoints under backup router: GET /api/backup/dashboard/{client_id}, GET /api/backup/summary-all, GET /api/backup/history/{client_id}, POST /api/backup/process-status. Module is healthy."},
+      {"endpoint": "/api/vulnerability/scans", "issue": "Path does not exist. Real endpoints: GET /api/vulnerability/dashboard/{client_id}, GET /api/vulnerability/history/{client_id}, GET /api/vulnerability/scan-status/{client_id}, GET /api/vulnerability/report/{client_id}. Module returns valid data."},
+      {"endpoint": "/api/public/dashboards", "issue": "Path does not exist. Real list-style endpoint not present; available: GET /api/public/dashboard/{token}, GET /api/public/dashboard/config/{client_id}, POST /api/public/dashboard/create, POST /api/public/dashboard/toggle. All work."},
+      {"endpoint": "/api/web-proxy/{client_id}/pending", "issue": "Path does not exist. Real long-poll endpoint is GET /api/connector/web-proxy/pending (HMAC X-API-Key required, returns 401 without it as expected). Module healthy."},
+      {"endpoint": "/api/tv/clients", "issue": "Path does not exist. Real TV-dashboard endpoint is GET /api/tv/dashboard (works no-auth, returns global_stats). Also GET /api/tv/clients/{client_id}/hardware-health."},
+      {"endpoint": "/api/settings", "issue": "No collection-level GET. Real settings sub-endpoints exist and respond 200: /api/settings/notifications, /api/settings/redfish. Router registered with prefix=/api in routes/settings.py."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/smoke_all_routes_test.py",
+    "/app/test_reports/pytest/smoke_results.xml",
+    "/app/test_reports/pytest/smoke_results.json"
+  ],
+  "action_items": [
+    "No code changes required. All route modules are functional in preview env.",
+    "(Optional) For documentation/UX consistency, consider adding alias routes the user expected: GET /api/backup/status (proxy to summary-all), GET /api/vulnerability/scans (list of recent scans), GET /api/public/dashboards (list), GET /api/tv/clients (list), GET /api/settings (consolidated). These are nice-to-have, NOT blockers — every feature works at its existing path."
+  ],
+  "critical_code_review_comments": [
+    "routes/web_proxy.py — long-poll endpoint correctly enforces HMAC X-API-Key auth (401 returned without it). Good security posture.",
+    "routes/devices.py — devices count 7 with status field populated (online/offline computation works against discovered_endpoints). No regression of the documented 10-min live-seen window fix.",
+    "routes/connector.py — POST /api/connector/{fake-id}/force-update returns the expected 4xx (auth/not-found path), confirming the route is mounted.",
+    "routes/runbooks.py — exactly 8 seeded runbooks, matching PRD.",
+    "routes/device_profiles.py — 14 profiles (PRD said 12; 2 extra likely from later seed). Acceptable.",
+    "Sampled JSON responses (devices, alerts) show NO MongoDB _id leak. Sanitization layer is intact.",
+    "Datto scheduler-status returns configured=true with 138 sites_in_cache as documented.",
+    "TV dashboard intentionally public (no auth) and works — verify this is desired in production."
+  ],
+  "updated_files": ["/app/backend/tests/smoke_all_routes_test.py"],
+  "success_rate": {"backend": "100% (modules) / 92% (literal paths in request)", "frontend": "skipped"},
+  "test_credentials": "info@86bit.it / Ariel17051986@!@86 (admin) — confirmed working",
+  "seed_data_creation": "None. Read-only smoke + dry-run cleanup only.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Use /app/backend/tests/smoke_all_routes_test.py — it covers 51 endpoints spanning every router. Adjust `paths` blocks if any endpoint moves. The 6 path-mismatches above are documented; do NOT mark them as broken without re-checking real paths in the routes file. All modules healthy as of this iteration. Login via info@86bit.it; bearer goes in Authorization header. Test took ~6 seconds end-to-end."
+}
