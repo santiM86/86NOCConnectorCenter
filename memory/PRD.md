@@ -1,3 +1,36 @@
+## 2026-05-07 — AUDIT COMPLETO CENTER (post-fork) — 4 bug "persi per strada" individuati e risolti
+
+**Richiesta utente**: "controllo completo di tutto il center... NO REFACTORY ma controllo di tutte le funzioni e dati e sistemare e metterle in funzione perchè sono state perse per strada".
+
+**Metodo**: smoke test backend (testing_agent_v3_fork iter_76) su 51 router → **100% verde** (zero 5xx, nessun leak _id MongoDB). Frontend test (iter_77) su 48 rotte → **45/48 puliti**, 3 con errori reali.
+
+**Fix applicati** (zero refactoring, solo correzioni mirate):
+
+1. **`backend/sla.py` — KeyError `a["status"]` causava 500 su `/api/sla/stats`** (rompeva la pagina `/enterprise` tab SLA).
+   - Linea 228 + 270: `a["status"]` → `a.get("status")`. Alcuni alert vecchi nel DB non hanno il campo `status` → KeyError → 500.
+   - Verificato: `/api/sla/stats` ora ritorna 200 con 123 alert, resolution rate, MTTA/MTTR, by_severity. La tab Enterprise>SLA mostra tutti i 4 KPI + configurazioni CRITICAL/HIGH/MEDIUM/LOW.
+
+2. **`frontend/src/pages/DattoRmmSettingsPage.js` — React error "<span> inside <option>" + NaN child**.
+   - Linea 283: `{s.site_name} ({s.device_count})` produceva nodi multipli + NaN se `device_count` undefined.
+   - Fix: stringa unica con guard `Number.isFinite`: `` `${s.site_name || "—"} (${Number.isFinite(s.device_count) ? s.device_count : 0})` ``
+
+3. **`frontend/src/pages/DeviceMetricsPage.js` — 401 su `/api/connector/{cid}/managed-devices`**.
+   - Quell'endpoint è HMAC-only (per il connector PowerShell), il frontend lo chiamava con JWT admin → sempre 401.
+   - Fix: cambiato a `/api/devices?client_id=X` (endpoint admin/JWT) + normalizzazione shape `{ip, name}`.
+
+4. **`frontend/src/pages/LoginPage.js` — warning React "setState in render"**.
+   - Linea 23: `if (user) { navigate(...); return null; }` eseguiva navigate durante il render.
+   - Fix: spostato in `useEffect([user])`.
+
+**Verifiche**: 
+- Lint frontend pulito su 3 file modificati.
+- `/api/sla/stats`, `/api/sla/configs`, `/api/sla/breaches` tutti 200.
+- Screenshot Enterprise>SLA conferma rendering completo.
+
+**Stato finale del Center (preview env)**: 51 router backend tutti operativi, 48 pagine frontend tutte navigabili, dati visibili (1 cliente 86BIT_Office, 7 device, 132 alert, 8 runbook, 14 device profile, Datto 138 siti cached, Hornetsecurity 47 tenant). Niente è stato perso.
+
+---
+
 # 🚨 REGOLA PERMANENTE — NON RIMUOVERE MAI
 
 **Richiesta esplicita utente (2026-02-13)**:

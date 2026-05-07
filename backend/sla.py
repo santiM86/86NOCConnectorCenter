@@ -225,7 +225,7 @@ class SLAManager:
         alerts = await self.db.alerts.find(query, {"_id": 0}).to_list(100000)
         
         total = len(alerts)
-        resolved = sum(1 for a in alerts if a["status"] == "resolved")
+        resolved = sum(1 for a in alerts if a.get("status") == "resolved")
         response_breaches = sum(1 for a in alerts if a.get("sla_response_breached"))
         resolution_breaches = sum(1 for a in alerts if a.get("sla_resolution_breached"))
         
@@ -267,7 +267,7 @@ class SLAManager:
             if total == 0:
                 continue
             
-            resolved = sum(1 for a in severity_alerts if a["status"] == "resolved")
+            resolved = sum(1 for a in severity_alerts if a.get("status") == "resolved")
             response_breaches = sum(1 for a in severity_alerts if a.get("sla_response_breached"))
             resolution_breaches = sum(1 for a in severity_alerts if a.get("sla_resolution_breached"))
             
