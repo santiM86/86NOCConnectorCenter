@@ -1,3 +1,60 @@
+## 2026-05-07 NOTTE DEEP — FIX CRITICO "fa tutto il processo ma non aggiorna nulla"
+
+**Bug segnalato dall'utente** con screenshot Connector Scanner SRVDCGAL v3.8.13 ONLINE:
+> "Fa tutto il processo fino in fondo ma non aggiorna nulla"
+
+L'utente cliccava "Aggiorna" sullo scanner v3.8.13 con master gia' a v3.8.25. Il flusso PowerShell completava (download/extract/copy/restart) MA la versione finale rimaneva v3.8.13.
+
+### 🎯 Root cause
+`/api/backend/routes/connector.py::connector_update_check` linea 1307:
+```python
+connector = await db.connector_status.find_one({"client_id": client_data["id"]}, ...)
+```
+**Filtro mancante per hostname/mode**. Ritornava IL PRIMO connector del cliente. Se il cliente aveva master gia' a v3.8.25 + scanner a v3.8.13:
+- Scanner chiamava `/update-check` con X-API-Key
+- Backend trovava per primo il MASTER (v3.8.25)
+- `current_version = "3.8.25"`, `is_newer_version("3.8.25","3.8.25") = False`
+- **Risposta: `update_available: false`**
+- Lo script `update_check.ps1` usciva con exit 0 (gia' aggiornato)
+- L'utente vedeva "fatto" ma niente era cambiato sul scanner
+
+### ✅ Fix v3.8.26
+**Backend** (`routes/connector.py::connector_update_check`):
+1. Legge `?hostname=X&mode=Y` da query string. Se forniti, cerca il doc specifico di QUEL connector.
+2. Senza query string (connector legacy v3.7-v3.8.13), usa la **MIN version** tra tutti i connector del cliente: cosi' anche solo uno indietro forza `update_available=true`.
+3. Risposta include `current_version_seen_by_center` per debug (cosa ha visto il backend).
+
+**Connector PowerShell** (`update_check.ps1`):
+- Passa `?hostname=$env:COMPUTERNAME&mode=$config.mode` cosi' il backend lo discrimina inequivocabilmente.
+
+### Verifica live (curl + scenario realistico DB)
+Setup: master v3.8.26 (target) + scanner v3.8.13 + cliente comune.
+```
+TEST 1 (legacy, no query) → MIN=v3.8.13 → update_available=TRUE ✅
+TEST 2 (?host=Scanner&mode=scanner) → seen=3.8.13 → update_available=TRUE ✅
+TEST 3 (?host=Master&mode=master) → seen=3.8.26 → update_available=FALSE ✅
+```
+
+### Pytest regression
+**`tests/test_update_check_discriminator.py`** (NEW, 4 test): tutti PASS
+- `test_update_check_with_hostname_and_mode_returns_specific_version`
+- `test_update_check_legacy_no_query_uses_min_version`
+- `test_update_check_unknown_hostname_falls_back_to_min`
+- `test_update_check_response_shape_unchanged`
+
+**Suite completa**: 40/40 PASS (test_update_check_discriminator + test_connector_download_path + test_connector_update_integrity + test_request_timeout_middleware + test_heartbeat_auto_clear + test_lan_scan_anti_valanga + test_connector_backoff_logic).
+
+### ZIP rebuilt
+`v3.8.26` (388.896 byte, sha256 `fe937ad7af0a2d5f...`) gia' in `/app/connector_updates/`, marcato attivo nel DB, copiato in 4 location pubbliche.
+
+### Cosa cambia per l'utente
+**Subito al deploy in produzione** + rollout v3.8.26:
+- Click "Aggiorna" sullo scanner SRVDCGAL → backend riceve correttamente la version v3.8.13 → risponde update_available=true → script scarica + estrae + copia + restart NSSM → scanner finalmente passa a v3.8.26 ✅
+
+**Per i 3 master OFFLINE v3.8.19**: appena tornano online, fanno heartbeat, vedono force_update flag (se l'admin ha cliccato "Aggiorna") o l'auto-update task ogni 5 min, ricevono v3.8.26 e si aggiornano.
+
+---
+
 ## 2026-05-07 NOTTE FINE — FIX BUG CRITICO "Scarica ZIP" → file vuoto 4KB in produzione
 
 **Bug segnalato dall'utente** con 2 screenshot:

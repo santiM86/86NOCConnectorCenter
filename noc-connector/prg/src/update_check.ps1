@@ -236,8 +236,20 @@ function Send-Progress {
 
 # ==================== STEP 1: Check for update ====================
 try {
+    # v3.8.26: passiamo hostname e mode come query string cosi' il backend
+    # discrimina QUESTO connector specifico (master vs scanner) e non rischia
+    # di leggere la version di un altro connector dello stesso cliente.
+    # (Bug noto pre-v3.8.26: scanner non si aggiornava se il master era gia'
+    # alla versione target.)
+    $hostQ = [Uri]::EscapeDataString($env:COMPUTERNAME)
+    $modeQ = "master"
+    try {
+        if ($config.PSObject.Properties['mode'] -and $config.mode) {
+            $modeQ = [string]$config.mode
+        }
+    } catch {}
     $checkResponse = Invoke-RestMethod -Method GET `
-        -Uri "$apiUrl/api/connector/update-check" `
+        -Uri "$apiUrl/api/connector/update-check?hostname=$hostQ&mode=$modeQ" `
         -Headers @{ "X-API-Key" = $apiKey } `
         -TimeoutSec 15
 } catch {
