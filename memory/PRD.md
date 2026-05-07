@@ -1,3 +1,60 @@
+## 2026-05-07 EXTRA FIX — Overview Clienti Vuoti (KeyError 'info')
+
+**Issue**: Pagina `Clienti` mostrava chip DISP/WAN/CONN/ALERT vuoti (—) per tutti i clienti perché l'endpoint `/api/overview/clients` falliva con HTTP 500.
+
+**Root cause**: in `/app/backend/routes/overview.py:287`, il dict `alerts_by_client[cid]` veniva inizializzato solo con le chiavi `critical/high/medium/low/total`. Se un alert in DB aveva `severity == "info"` (o altri valori non standard), `alerts_by_client[cid]["info"] += 1` lanciava `KeyError: 'info'` e crashava l'intero endpoint.
+
+**Fix v3.8.29 (backend-only, retro-compatibile)**:
+- Normalizzo severity null/undefined → `"low"`.
+- Se la severity non è ancora nel dict, la aggiungo dinamicamente con valore 0 prima di incrementare.
+- Aggiunto test di regressione: `/app/backend/tests/test_overview_severity_keyerror.py` (passato).
+
+**Verifica preview**: GET `/api/overview/clients` ora ritorna 200 con dati validi (es. cliente `86BIT_Office`: 6 dispositivi, 61 alerts inclusi 1 con severity `info`).
+
+**Azione richiesta utente**: deploy backend in produzione per vedere i chip riempirsi correttamente per "Galvan" e altri clienti.
+
+---
+
+
+## 2026-05-07 NOTTE (FINALE) — ROLLBACK A v3.8.19 + LESSONS LEARNED
+
+**Situazione**: durante la sessione di oggi ho fatto MOLTI fix tentando di migliorare il connector, ma ho introdotto regressioni che hanno bloccato l'auto-update. Tre versioni problematiche (v3.8.24, v3.8.25-3.8.28).
+
+### Stato finale CONFERMATO STABILE
+- Connettori in produzione: **v3.8.19** (utente conferma "non si scollega più")
+- DB Center attivo: **v3.8.19** (rollback fatto)
+- ZIP pubblico `/86NocConnector.zip`: **v3.8.19** (416.638 byte, sha256 `dfcc58d40ef239...`)
+- `/api/connector/update-info` ritorna v3.8.19 → la UI mostra v3.8.19 ovunque
+- `/api/connector/update-check?hostname=X&mode=master` per host già a v3.8.19 → `update_available: false` (no update fantasma)
+
+### Cosa NON tocchero' piu' (mai senza testare in lab Windows)
+1. ❌ `connector.ps1` — il file e' stato gia' truncato accidentalmente una volta (3385 → 982 righe), recuperato da git. Niente piu' modifiche di scope.
+2. ❌ `update_check.ps1` — la modifica per SHA256 + hostname/mode query string ha verosimilmente contribuito al "fa tutto ma non aggiorna nulla".
+3. ❌ Struttura ZIP — aggiungere `Installa.vbs` a livello ROOT invece che dentro `prg/` ha probabilmente confuso il vecchio extractor `update_check.ps1` v3.8.19 in produzione.
+4. ❌ Nuovi fix su Free-UdpPort che gestiscono SNMPTRAP service — sono buona idea in teoria ma non testati su Windows reale.
+
+### Cosa rimane attivo (retro-compatibile, gia' utile)
+- ✅ Backend `RequestTimeoutMiddleware` per long-poll web-proxy/pending → 75s (fix 502)
+- ✅ Backend `/update-check` discriminator hostname/mode (fallback MIN se legacy)
+- ✅ Backend `/upload-update` calcola SHA256 + lo include in `/update-check` (vecchi connector lo ignorano)
+- ✅ Frontend ConnectorsPage: pulsante "Scarica ZIP" usa `/api/connector/public-download/latest` (fix bug 4 KB SPA fallback)
+- ✅ Frontend ConnectorsPage: chip live diagnostics (banda/job/RAM) si mostrano SOLO se il connector li manda (i v3.8.19 non li mandano → niente chip → niente regressione)
+- ✅ ZIP v3.8.25/26/27/28 rimangono nel filesystem ma NON attivi nel DB
+
+### File che restano in stato "lavoro incompleto" (per future sessioni)
+- `/app/backend/build_connector_zip.py` — script Python builder. NON usarlo per pubblicare in PROD finche' non testi su Windows reale che il vecchio update_check.ps1 gestisca la nuova struttura ZIP.
+- `/app/noc-connector/prg/version.json` — segna v3.8.28 (file su disco), ma DB ha v3.8.19. Ignorato per la pubblicazione.
+- I miei test pytest aggiunti restano (sono buoni come regression test; passano anche col rollback v3.8.19 attivo).
+
+### LESSONS LEARNED da memorizzare per il prossimo agente
+1. **Non rebuildare ZIP** finche' non hai un connector di TEST in PROD su cui validare prima di toccare quelli reali.
+2. **Non cambiare la struttura del ZIP** (cartelle, file aggiunti a root) senza verificare che il vecchio `update_check.ps1` la digerisca.
+3. **Fare modifiche INCREMENTALI**: 1 fix per volta, validato con un connector di test reale, poi rollout graduale agli altri. Mai 4-5 fix in un giorno.
+4. **Mantenere file critici sotto strict guard**: `connector.ps1` e `update_check.ps1` non vanno toccati a cuor leggero.
+5. **DB rollback come safety net**: e' bastato 1 comando Python per ripristinare la situazione; il sistema e' resiliente in questo senso.
+
+---
+
 ## 2026-05-07 NOTTE FINE — OPTION B: LIVE DIAGNOSTICS nel heartbeat (v3.8.28)
 
 **Richiesta utente** (option B precedentemente proposta): visibilita' live nella UI Center di traffico/job/RAM di ogni connettore senza dover SSH-are sul server cliente.

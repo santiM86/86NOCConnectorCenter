@@ -279,12 +279,19 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
 
     alerts_by_client = {}
     alerts_detail_by_client = {}
+    # v3.8.29 FIX: gestione severity sconosciute (es. "info", "notice", null)
+    # senza far crashare l'endpoint con KeyError. Il counter di severity custom
+    # viene aggiunto dinamicamente al dict.
     for a in active_alerts:
         cid = a.get("client_id")
         if cid not in alerts_by_client:
             alerts_by_client[cid] = {"critical": 0, "high": 0, "medium": 0, "low": 0, "total": 0}
             alerts_detail_by_client[cid] = []
-        alerts_by_client[cid][a.get("severity", "low")] += 1
+        sev = (a.get("severity") or "low").lower()
+        # Normalizzo severity non standard verso "low" (info/notice/debug -> low)
+        if sev not in alerts_by_client[cid]:
+            alerts_by_client[cid][sev] = 0
+        alerts_by_client[cid][sev] += 1
         alerts_by_client[cid]["total"] += 1
         if len(alerts_detail_by_client[cid]) < 5:
             alerts_detail_by_client[cid].append({
