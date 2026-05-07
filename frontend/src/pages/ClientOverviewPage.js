@@ -28,6 +28,7 @@ import HealthBadge from "@/components/HealthBadge";
 import { DeviceEditModal } from "@/components/DeviceEditModal";
 import DiscoveryPage from "./DiscoveryPage";
 import VulnerabilityPage from "./VulnerabilityPage";
+import { useSortableTable, SortableTh } from "@/utils/tableSort";
 
 const STATUS_COLOR = { online: "#34C759", offline: "#FF3B30", active: "#FFCC00", degraded: "#FF9500", unknown: "#555" };
 
@@ -1054,6 +1055,29 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
   const [saving, setSaving] = useState(false);
   const webConsole = useWebConsoleTabs();
 
+  // v3.8.30: ordinamento tabella dispositivi (default per nome asc)
+  const { sorted: sortedDevices, sortKey, sortDir, requestSort } = useSortableTable(
+    devices, "name", "asc",
+    {
+      ip_address: (d) => {
+        // Numeric IPv4 sort: 192.168.1.10 viene dopo 192.168.1.2
+        const ip = d?.ip_address || "";
+        const parts = ip.split(".").map(p => parseInt(p, 10));
+        if (parts.length === 4 && parts.every(n => !isNaN(n))) {
+          return parts[0] * 16777216 + parts[1] * 65536 + parts[2] * 256 + parts[3];
+        }
+        return ip.toLowerCase();
+      },
+      monitor_type: (d) => (d?.monitor_type || "snmp").toLowerCase(),
+      snmp: (d) => (d?.snmp_version || "").toLowerCase(),
+      community: (d) => (d?.snmp_community || "").toLowerCase(),
+      status: (d) => (d?.status || "").toLowerCase(),
+      connection: (d) => (d?.connection_type || "zzz").toLowerCase(),
+      source: (d) => (d?.source || "manual").toLowerCase(),
+      last_poll: (d) => d?.last_poll ? Date.parse(d.last_poll) : 0,
+    }
+  );
+
   // 1 click sul pulsante Monitor:
   //  - Apre la Web Console in UNA NUOVA TAB (V4 popup) tramite proxy HTTP diretto del
   //    Center (backend -> device via tunnel WireGuard quando attivo, altrimenti via
@@ -1363,12 +1387,24 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
       <div className="noc-panel overflow-x-auto">
         <table className="alert-table min-w-[780px]" data-testid="client-devices-table">
           <thead>
-            <tr><th>Nome</th><th>Tipo</th><th>IP</th><th>Metodo</th><th>SNMP</th><th>Community</th><th>Stato</th><th>Conn.</th><th>Fonte</th><th>Ultimo Poll</th><th></th></tr>
+            <tr>
+              <SortableTh field="name" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Nome</SortableTh>
+              <SortableTh field="device_type" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Tipo</SortableTh>
+              <SortableTh field="ip_address" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>IP</SortableTh>
+              <SortableTh field="monitor_type" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Metodo</SortableTh>
+              <SortableTh field="snmp" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>SNMP</SortableTh>
+              <SortableTh field="community" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Community</SortableTh>
+              <SortableTh field="status" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Stato</SortableTh>
+              <SortableTh field="connection" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Conn.</SortableTh>
+              <SortableTh field="source" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Fonte</SortableTh>
+              <SortableTh field="last_poll" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Ultimo Poll</SortableTh>
+              <th></th>
+            </tr>
           </thead>
           <tbody>
-            {devices.length === 0 ? (
+            {sortedDevices.length === 0 ? (
               <tr><td colSpan={11} className="text-center text-[var(--text-muted)] py-8 text-xs">Nessun dispositivo — clicca "Aggiungi Dispositivo" per iniziare</td></tr>
-            ) : devices.map((d, i) => {
+            ) : sortedDevices.map((d, i) => {
               const sc = STATUS_COLOR[d.status] || "#555";
               const monitorType = (d.monitor_type || "snmp").toLowerCase();
               const methodBadge = {
@@ -2282,6 +2318,35 @@ function VMBackupPanel({ clientId }) {
     }
   };
 
+  // v3.8.30: hook ordinamento tabella VM. Va PRIMA di qualsiasi early return
+  // per rispettare le regole degli React Hook (chiamate sempre nello stesso ordine).
+  const _vmAggStatus = (vm) => {
+    const vals = [vm?.onsite_status, vm?.offsite_status, vm?.second_offsite_status, vm?.alert_reason]
+      .filter(Boolean).map(s => String(s).toLowerCase());
+    if (vals.includes("failed") || vals.includes("failure")) return "failed";
+    if (vals.includes("warning")) return "warning";
+    if (vals.includes("stale")) return "stale";
+    if (vals.includes("success")) return "success";
+    return "unknown";
+  };
+  const _filteredItems = (status.items || []).filter(it => {
+    if (view === "problems" && it.alert_reason !== "failed" && it.alert_reason !== "warning") return false;
+    if (view === "stale" && it.alert_reason !== "stale") return false;
+    return true;
+  });
+  const { sorted: sortedVms, sortKey, sortDir, requestSort } = useSortableTable(
+    _filteredItems, null, "asc",
+    {
+      vm: (it) => (it?.vm_name || "").toLowerCase(),
+      host: (it) => (it?.host_name || "").toLowerCase(),
+      customer: (it) => (it?.customer_name || "").toLowerCase(),
+      hypervisor: (it) => (it?.host_type || "").toLowerCase(),
+      stato: (it) => _vmAggStatus(it),
+      last_backup: (it) => it?.onsite_time ? Date.parse(it.onsite_time) : 0,
+      size: (it) => Number(it?.onsite_size_bytes || 0),
+    }
+  );
+
   if (loading) return <div className="noc-panel p-5 text-[11px] text-[var(--text-muted)] text-center">Caricamento…</div>;
 
   // Config non presente (no-admin è separato)
@@ -2298,11 +2363,7 @@ function VMBackupPanel({ clientId }) {
   }
 
   const t = status.totals || {};
-  const items = (status.items || []).filter(it => {
-    if (view === "problems" && it.alert_reason !== "failed" && it.alert_reason !== "warning") return false;
-    if (view === "stale" && it.alert_reason !== "stale") return false;
-    return true;
-  });
+  const items = _filteredItems;
 
   return (
     <div className="space-y-3">
@@ -2415,46 +2476,48 @@ function VMBackupPanel({ clientId }) {
           {items.length === 0 ? (
             <div className="noc-panel p-5 text-center text-[11px] text-[var(--text-muted)]">Nessuna VM da mostrare con il filtro corrente.</div>
           ) : (
-            <div className="noc-panel overflow-hidden">
-              <div className="overflow-x-auto">
-                <table className="noc-table w-full text-[11px]" data-testid="vmbackup-table">
-                  <thead>
-                    <tr>
-                      <th>VM</th>
-                      <th>Host</th>
-                      <th>Hypervisor</th>
-                      <th>Customer</th>
-                      <th>Onsite</th>
-                      <th>Offsite</th>
-                      <th>2° Offsite</th>
-                      <th>Ultimo backup</th>
-                      <th>Dim.</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {items.map(vm => (
+            <div className="noc-panel overflow-x-auto">
+              {/* v3.8.30: layout compatto stile Total Protection — meno colonne (rimosse Hypervisor*, Onsite/Offsite/2°Offsite separate; status aggregato in una sola colonna Stato; size in monospace come "Note") */}
+              <table className="noc-table w-full text-[11px]" data-testid="vmbackup-table">
+                <thead>
+                  <tr>
+                    <SortableTh field="vm" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>VM</SortableTh>
+                    <SortableTh field="host" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Host</SortableTh>
+                    <SortableTh field="customer" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Customer</SortableTh>
+                    <SortableTh field="hypervisor" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Tipo</SortableTh>
+                    <SortableTh field="stato" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Stato</SortableTh>
+                    <SortableTh field="last_backup" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Ultimo backup</SortableTh>
+                    <SortableTh field="size" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Dim.</SortableTh>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sortedVms.slice(0, 1000).map(vm => {
+                    const agg = _vmAggStatus(vm);
+                    const sc = agg === "success" ? "#34C759"
+                      : agg === "failed" ? "#FF3B30"
+                      : agg === "warning" ? "#FFB400"
+                      : agg === "stale" ? "#FF9500" : "#8E8E93";
+                    // Mostra dettaglio destinazioni nel tooltip dello stato
+                    const tip = [
+                      vm.onsite_status_raw || vm.onsite_status ? `Onsite: ${vm.onsite_status_raw || vm.onsite_status}` : null,
+                      vm.offsite_status_raw || vm.offsite_status ? `Offsite: ${vm.offsite_status_raw || vm.offsite_status}` : null,
+                      vm.second_offsite_status_raw || vm.second_offsite_status ? `2° Offsite: ${vm.second_offsite_status_raw || vm.second_offsite_status}` : null,
+                    ].filter(Boolean).join("\n");
+                    return (
                       <tr key={`${vm.customer_name}-${vm.vm_id}`} data-testid={`vmbackup-row-${vm.vm_id}`}>
-                        <td className="font-semibold">
-                          {vm.vm_name}
-                          {vm.alert_reason === "failed" && <span className="ml-1 text-[9px] px-1 rounded bg-red-500/20 text-red-300">FAILED</span>}
-                          {vm.alert_reason === "warning" && <span className="ml-1 text-[9px] px-1 rounded bg-amber-500/20 text-amber-300">WARN</span>}
-                          {vm.alert_reason === "stale" && <span className="ml-1 text-[9px] px-1 rounded bg-orange-500/20 text-orange-300">STALE</span>}
-                        </td>
-                        <td className="font-mono text-[10px]">{vm.host_name}</td>
-                        <td className="text-[10px] text-[var(--text-muted)]">{vm.host_type}</td>
-                        <td className="text-[10px] text-[var(--text-muted)]">{vm.customer_name}</td>
-                        <td><StatusPill s={vm.onsite_status_raw || vm.onsite_status} /></td>
-                        <td><StatusPill s={vm.offsite_status_raw || vm.offsite_status} /></td>
-                        <td><StatusPill s={vm.second_offsite_status_raw || vm.second_offsite_status} muted /></td>
-                        <td className="text-[10px] text-[var(--text-muted)] font-mono">
-                          {vm.onsite_time ? new Date(vm.onsite_time).toLocaleString("it-IT", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "—"}
-                        </td>
+                        <td className="font-semibold">{vm.vm_name}</td>
+                        <td className="text-[10px] text-[var(--text-muted)] font-mono">{vm.host_name || "—"}</td>
+                        <td className="text-[10px]">{vm.customer_name}</td>
+                        <td><span className="text-[9px] px-1 py-0.5 rounded border border-[var(--bg-border)]">{vm.host_type || "—"}</span></td>
+                        <td title={tip || ""}><span className="text-[10px] font-bold uppercase" style={{ color: sc }}>{agg}</span></td>
+                        <td className="text-[10px] text-[var(--text-muted)]">{vm.onsite_time ? new Date(vm.onsite_time).toLocaleString("it-IT", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "—"}</td>
                         <td className="text-[10px] text-[var(--text-muted)] font-mono">{_fmtBytes(vm.onsite_size_bytes)}</td>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                    );
+                  })}
+                </tbody>
+              </table>
+              {items.length > 1000 && <p className="text-[9px] text-[var(--text-muted)] text-center py-2">…limitato a 1000 record visualizzati</p>}
             </div>
           )}
         </>
@@ -2537,6 +2600,31 @@ function HornetsecurityBackupPanel({ clientId, legacyBackups }) {
     }
   };
 
+  // v3.8.30: hook ordinamento workload table — DEVE essere chiamata prima
+  // degli early-return (rules-of-hooks).
+  const _filteredItems = (statusData.items || []).filter(it => {
+    if (filterStatus !== "all") {
+      if (filterStatus === "protected_only" && it.status !== "success") return false;
+      if (filterStatus === "issues_only" && !["failed", "warning", "in_progress"].includes(it.status)) return false;
+      if (!["protected_only", "issues_only"].includes(filterStatus) && it.status !== filterStatus) return false;
+    }
+    if (filterType !== "all" && it.workload_type !== filterType) return false;
+    if (filterTenant !== "all" && it.tenant !== filterTenant) return false;
+    return true;
+  });
+  const { sorted: sortedItems, sortKey, sortDir, requestSort } = useSortableTable(
+    _filteredItems, null, "asc",
+    {
+      workload: (it) => (it?.workload_name || it?.workload_id || "").toLowerCase(),
+      utente: (it) => (it?.workload_user || "").toLowerCase(),
+      tenant: (it) => (it?.tenant || "").toLowerCase(),
+      tipo: (it) => `${it?.workload_type || ""}-${it?.workload_subcategory || ""}`.toLowerCase(),
+      stato: (it) => (it?.status || "").toLowerCase(),
+      last_backup: (it) => it?.last_backup_time ? Date.parse(it.last_backup_time) : 0,
+      note: (it) => (it?.error || "").toLowerCase(),
+    }
+  );
+
   if (loading) return <div className="text-center py-8 text-[var(--text-muted)] text-xs">Caricamento backup…</div>;
 
   // Backend non aggiornato → mostra fallback legacy
@@ -2612,16 +2700,7 @@ function HornetsecurityBackupPanel({ clientId, legacyBackups }) {
     );
   }
 
-  const items = (statusData.items || []).filter(it => {
-    if (filterStatus !== "all") {
-      if (filterStatus === "protected_only" && it.status !== "success") return false;
-      if (filterStatus === "issues_only" && !["failed", "warning", "in_progress"].includes(it.status)) return false;
-      if (!["protected_only", "issues_only"].includes(filterStatus) && it.status !== filterStatus) return false;
-    }
-    if (filterType !== "all" && it.workload_type !== filterType) return false;
-    if (filterTenant !== "all" && it.tenant !== filterTenant) return false;
-    return true;
-  });
+  const items = _filteredItems;
   const byStatus = statusData.totals?.by_status || {};
   const byType = statusData.totals?.by_type || {};
   const byTenant = statusData.totals?.by_tenant || {};
@@ -2737,10 +2816,18 @@ function HornetsecurityBackupPanel({ clientId, legacyBackups }) {
         <div className="noc-panel overflow-x-auto">
           <table className="noc-table w-full text-[11px]" data-testid="hornetsecurity-workload-table">
             <thead>
-              <tr><th>Workload</th><th>Utente</th><th>Tenant</th><th>Tipo</th><th>Stato</th><th>Ultimo backup</th><th>Note</th></tr>
+              <tr>
+                <SortableTh field="workload" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Workload</SortableTh>
+                <SortableTh field="utente" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Utente</SortableTh>
+                <SortableTh field="tenant" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Tenant</SortableTh>
+                <SortableTh field="tipo" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Tipo</SortableTh>
+                <SortableTh field="stato" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Stato</SortableTh>
+                <SortableTh field="last_backup" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Ultimo backup</SortableTh>
+                <SortableTh field="note" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Note</SortableTh>
+              </tr>
             </thead>
             <tbody>
-              {items.slice(0, 1000).map((it, i) => {
+              {sortedItems.slice(0, 1000).map((it, i) => {
                 const sc = it.status === "success" ? "#34C759"
                   : it.status === "failed" ? "#FF3B30"
                   : it.status === "in_progress" ? "#FFB400"

@@ -1,3 +1,30 @@
+## 2026-05-07 EXTRA UX — Tabelle ordinabili + VM Backup compatto
+
+**Issue UX**:
+1. Le 3 tabelle principali (Dispositivi, Total Protection, VM Backup) avevano header statici, non era possibile ordinare per colonna.
+2. La tabella VM Backup mostrava troppe colonne ridondanti (Hypervisor + 3 colonne separate Onsite/Offsite/2°Offsite) rendendola "incasinata e complessa".
+
+**Implementazione v3.8.30**:
+
+**Nuova utility riutilizzabile** (`/app/frontend/src/utils/tableSort.js`):
+- `useSortableTable(items, defaultKey, defaultDir, accessors)` — hook React per ordinamento client-side. Gestisce date ISO automaticamente, IPv4 numerico via accessor custom, toggle asc→desc→reset.
+- `<SortableTh>` — componente header cliccabile con freccia direzionale (↕/▲/▼).
+
+**Tabelle aggiornate** (`/app/frontend/src/pages/ClientOverviewPage.js`):
+- **Dispositivi cliente** (DevicesTab): tutte le 10 colonne ordinabili — Nome, Tipo, IP (numerico IPv4), Metodo, SNMP, Community, Stato, Conn., Fonte, Ultimo Poll (cronologico).
+- **Total Protection 365** (HornetsecurityBackupPanel): 7 colonne ordinabili — Workload, Utente, Tenant, Tipo, Stato, Ultimo backup, Note.
+- **VM Backup Altaro** (VMBackupPanel): refactor completo in stile Total Protection.
+  - Colonne ridotte da 9 a 7: VM, Host, Customer, Tipo, **Stato (aggregato)**, Ultimo backup, Dim.
+  - Rimosse 3 colonne ridondanti (Onsite/Offsite/2°Offsite separate); ora una singola colonna Stato mostra il peggiore tra le 3 destinazioni con tooltip che espone il dettaglio.
+  - Stesso text-style compatto di Total Protection.
+
+**Bug fix runtime**: spostate le `useSortableTable` call PRIMA degli early-return per rispettare le rules-of-hooks di React (la prima implementazione causava `React Hook called conditionally`).
+
+**Verifica preview**: tabella Dispositivi mostra le frecce, click sulla colonna "Nome" attiva ordinamento alfabetico (▲), no errori React, lint pulito. Le tabelle backup richiedono mapping tenant configurato per popolare dati (sul preview solo client `86BIT_Office` senza mapping → tabelle vuote come atteso).
+
+---
+
+
 ## 2026-05-07 EXTRA FEATURE — Modifica singolo target WAN + agganciare ai clienti
 
 **Issue UX**: nella pagina "Monitoraggio WAN Esterno" non era possibile modificare un singolo target WAN (solo crearlo o eliminarlo). Per i target con `client_id` orfano (cliente eliminato), l'header mostrava l'UUID grezzo invece di un placeholder leggibile, e non c'era modo di riassegnarli a un cliente esistente (es. "Galvan").
