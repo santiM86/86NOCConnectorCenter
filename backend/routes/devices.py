@@ -917,7 +917,7 @@ async def correlate_connectivity(
     devices = await db.managed_devices.find(
         {"client_id": client_id},
         {"_id": 0, "id": 1, "ip": 1, "mac": 1, "mac_is_random": 1,
-         "source": 1, "connection_type": 1},
+         "source": 1, "connection_type": 1, "device_type": 1, "vendor": 1},
     ).to_list(2000)
 
     # Index discovered_endpoints by MAC (uppercase as inserted by Master)
@@ -1033,9 +1033,35 @@ async def correlate_connectivity(
                 confidence = 75
                 summary["via_laa_inference"] += 1
             else:
-                ctype = "unknown"
-                csource = "no_cam_match"
-                confidence = 0
+                # v3.8.23 EURISTICA DEVICE_TYPE: il Master non polla la CAM table degli
+                # switch in altre VLAN (es. 192.168.16.x dello Scanner Galvani), quindi
+                # cam_hit=None per quei device. Diamo una stima sensata basata sul
+                # device_type: server/switch/firewall/ups/nas/printer sono SEMPRE cablati
+                # in ambiente enterprise (LAN). Phone/tablet/laptop sono tipicamente WiFi.
+                dtype = (d.get("device_type") or "").lower()
+                vendor = (d.get("vendor") or "").lower()
+                LAN_TYPICAL = {
+                    "server", "switch", "firewall", "router", "ups", "nas",
+                    "storage", "printer", "voip-phone", "ipphone", "ipcamera",
+                    "camera", "nvr", "dvr", "videosurveillance", "appliance",
+                }
+                WIFI_TYPICAL = {"phone", "tablet", "smartphone", "iphone", "ipad", "android"}
+                if dtype in LAN_TYPICAL or any(k in vendor for k in ["hp", "hewlett", "cisco", "aruba", "fortinet", "zyxel", "tp-link"]):
+                    ctype = "lan"
+                    csource = "device_type_inference"
+                    confidence = 65
+                    summary.setdefault("via_devtype_lan", 0)
+                    summary["via_devtype_lan"] += 1
+                elif dtype in WIFI_TYPICAL:
+                    ctype = "wifi"
+                    csource = "device_type_inference"
+                    confidence = 55
+                    summary.setdefault("via_devtype_wifi", 0)
+                    summary["via_devtype_wifi"] += 1
+                else:
+                    ctype = "unknown"
+                    csource = "no_cam_match"
+                    confidence = 0
 
         summary[f"{ctype}_count"] += 1
 
