@@ -2355,8 +2355,20 @@ async def connector_device_report(request: Request):
                 doc["unreachable_since"] = prev_status["unreachable_since"]
             else:
                 doc["unreachable_since"] = now_iso
+            # v3.8.32 ANTI-FLAP: tracciamo i fail consecutivi per il debounce status.
+            # Un singolo poll fallito (UDP packet loss, timeout transitorio) NON deve
+            # piu' far oscillare il device tra online/offline in UI: il calcolo dello
+            # status in /api/devices applica una soglia minima di consecutive_failures
+            # e una grace window basata su last_reachable_at.
+            doc["consecutive_failures"] = (prev_status.get("consecutive_failures", 0) if prev_status else 0) + 1
+            # carry forward last_reachable_at (ultimo successo)
+            if prev_status and prev_status.get("last_reachable_at"):
+                doc["last_reachable_at"] = prev_status["last_reachable_at"]
         else:
             doc["unreachable_since"] = None
+            # v3.8.32: reset del counter al primo successo
+            doc["consecutive_failures"] = 0
+            doc["last_reachable_at"] = now_iso
 
         await db.device_poll_status.update_one(
             {"client_id": client_id, "device_ip": dev["device_ip"]},

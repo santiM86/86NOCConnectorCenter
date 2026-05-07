@@ -1,3 +1,43 @@
+## 2026-05-07 P0 BUG FIX — Anti-Flap dispositivi online/offline (debounce v3.8.32)
+
+**Issue ricorrente segnalato dall'utente**: dispositivi che vanno offline random per qualche minuto e poi tornano online subito dopo qualche secondo, senza un motivo apparente.
+
+**Root cause analysis**:
+1. Master Connector pollizza i dispositivi via SNMP/ping ogni ~60s.
+2. Quando un singolo poll fallisce (UDP packet loss, timeout transitorio, switch sotto carico), `device-report` scriveva `reachable: false` in `device_poll_status`.
+3. La UI (`/api/devices`) leggeva `online if pd.reachable else offline` → status passava istantaneamente a **offline** anche per un fail singolo.
+4. Al ciclo successivo (poll OK) → tornava online. Risultato: il "flap di pochi minuti" osservato.
+5. **Mancava il debounce** tipico di tutti gli NMS enterprise (Zabbix/PRTG/LibreNMS richiedono N fail consecutivi prima di marcare offline).
+
+**Fix v3.8.32 (backend-only, retro-compatibile)**:
+
+`/app/backend/routes/connector.py` (device-report writer):
+- Ogni `device-report` ora salva in `device_poll_status` due campi nuovi:
+  - `consecutive_failures`: incrementato a ogni `reachable=false`, azzerato a ogni `reachable=true`.
+  - `last_reachable_at`: timestamp ISO dell'ultimo successo (carry-forward su fail).
+
+`/app/backend/routes/devices.py` (UI reader):
+- Nuova funzione `_effective_reachable(pd_doc)`: ritorna offline SOLO se `consecutive_failures >= 3` E `last_reachable_at >= 300s fa`. Sotto soglia ⇒ online (debounce).
+- Backward-compat: se i campi nuovi sono assenti (record legacy), comportamento invariato.
+
+`/app/backend/routes/overview.py` (contatori cliente):
+- Stessa logica anti-flap applicata al calcolo dei contatori `online/offline` per cliente. Single fail transitorio non sposta il device nei contatori "offline" del cliente.
+
+**Soglia scelta**:
+- 3 fail consecutivi (~3-6 min al rate di polling normale ~60-120s)
+- + 5 minuti senza successo confermato
+
+Cosi' un singolo packet loss UDP NON sposta lo status; un device realmente down lo diventa entro 3-5 minuti, in linea con SLA monitoring enterprise.
+
+**Test di regressione**: 3 test passati in `/app/backend/tests/test_device_status_debounce_v3832.py` (logica pura + smoke che il source code contiene i field giusti).
+
+**Verifica preview**: backend riavviato, `GET /api/devices` ritorna 200 con i dispositivi correnti.
+
+**Azione richiesta utente**: deploy backend in produzione. Effetto immediato per tutti i nuovi cicli di polling. Per i record legacy con campi assenti, il debounce inizia ad applicarsi appena il poll successivo aggiorna i campi.
+
+---
+
+
 ## 2026-05-07 EXTRA UX — Rollout ordinamento tabelle + persistenza
 
 **Espansione v3.8.31** del pattern `useSortableTable` introdotto nella v3.8.30:

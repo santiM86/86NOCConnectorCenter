@@ -69,6 +69,39 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
     # questa collection come fonte di verita' "device visto recentemente sulla
     # rete dello Scanner". Se IP visto < 10min => online, prevale sul Master.
     # v3.8.24 BUMP a 10 min (era 5): lo Scanner ritardi i cicli quando in backoff
+    # v3.8.32 ANTI-FLAP: soglia debounce per evitare oscillazioni online/offline
+    # causate da singoli poll falliti (UDP packet loss, timeout transitori).
+    # Marca offline solo se: 1) consecutive_failures >= MIN_FAILURES OPPURE
+    # 2) last_reachable_at e' piu' vecchio di GRACE_SECONDS.
+    # Cosi' un singolo fail NON sposta il device a offline.
+    DEBOUNCE_MIN_FAILURES = 3      # 3 cicli consecutivi falliti
+    DEBOUNCE_GRACE_SECONDS = 300   # 5 minuti senza nessun successo
+    def _effective_reachable(pd_doc):
+        """True = mostra online, False = mostra offline.
+        pd_doc e' il record di device_poll_status (puo' essere None o {})."""
+        if not pd_doc:
+            return False
+        if pd_doc.get("reachable"):
+            return True
+        # reachable=false: applichiamo debounce
+        consec = int(pd_doc.get("consecutive_failures") or 0)
+        last_ok = pd_doc.get("last_reachable_at")
+        # Se non abbiamo ancora un successo registrato, comportamento legacy
+        # (probabilmente device appena aggiunto o counter non ancora popolato):
+        # se non c'e' last_reachable_at, ci fidiamo del flag reachable=false.
+        if not last_ok:
+            # Backward-compat: campi nuovi assenti → comportamento attuale (offline)
+            return False
+        try:
+            last_ok_dt = datetime.fromisoformat(last_ok.replace("Z", "+00:00"))
+            secs_since = (datetime.now(timezone.utc) - last_ok_dt).total_seconds()
+        except Exception:
+            secs_since = 1e9
+        # offline solo se ENTRAMBE le condizioni sono superate
+        if consec >= DEBOUNCE_MIN_FAILURES and secs_since >= DEBOUNCE_GRACE_SECONDS:
+            return False
+        return True
+
     scanner_seen_recent_ips = set()
     try:
         five_min_ago_iso = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
@@ -146,7 +179,7 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
             # NON puo' decidere il suo status: la sua connettivita' L2 non
             # raggiunge la VLAN remota, quindi pd.reachable=false e' un falso
             # negativo. Diamo precedenza alla telemetria dello Scanner che lo vede.
-            md_status = "online" if pd.get("reachable") else "offline"
+            md_status = "online" if _effective_reachable(pd) else "offline"
             try:
                 if md.get("source") == "connector-scanner" and md.get("last_seen_at"):
                     last_seen_dt = datetime.fromisoformat(md["last_seen_at"].replace("Z", "+00:00"))
