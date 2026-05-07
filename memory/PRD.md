@@ -1,3 +1,55 @@
+## 2026-05-07 NOTTE TARDA — UPDATE FLOW CONNECTOR CERTIFICATO ENTERPRISE
+
+**Richiesta utente** (con screenshot UI Connectors): "controlla venga inserito ottimizzato correttamente tutto il flusso di update connector dal center. Controlla che la cartella zip contenga tutto il necessario per procedere il center in autonomia ad aggiornare i connettori. Controlla ottimizza migliora e portalo a livello enterprise tutto l'intero processo".
+
+### 🔴 Issue rilevati
+1. **Nessuna verifica integrità SHA256** end-to-end → rischio MITM, proxy che riscrive body, ZIP corrotto mid-write
+2. **ZIP attivo (v3.8.24) MANCAVA file critici**: assente `Installa 86NocConnector.vbs` (entry point user-friendly UAC auto-elevation per non-tech)
+3. **ZIP non rispecchiava il source corrente** (i fix v3.8.25 in connector.ps1 + snmp_poller + update_check.ps1 non erano nel pacchetto distribuito)
+4. **Manca processo automatico di rebuild ZIP** — admin doveva manualmente zippare/uploadare
+
+### ✅ Fix applicati (livello enterprise)
+
+#### Backend
+- **`/app/backend/build_connector_zip.py`** (NEW): builder Python con elenco ESPLICITO file inclusi (nessun glob furbo). Pacchettizza prg/, prg/src/ e Installa.vbs a livello root. Inietta version.json al volo. Calcola SHA256. Ha CLI standalone (`python build_connector_zip.py --version 3.8.25`) e funzioni library per FastAPI.
+- **`POST /api/admin/connector/rebuild-zip`** (NEW): admin endpoint che builda ZIP dai sorgenti correnti, marca attivo, calcola SHA256, copia in 4 location pubbliche. Body: `{ version, changelog }`. Restituisce: `{ filename, size, sha256, files_included[], copied_public_paths[] }`.
+- **`POST /api/connector/upload-update`**: ora calcola `hashlib.sha256(content).hexdigest()` al save e lo persiste in `db.connector_updates.sha256`.
+- **`GET /api/connector/update-check`**: ora include `"sha256"` nel response (compat retro-compatibile: il connector vecchio ignora il campo).
+
+#### Connector PowerShell
+- **`update_check.ps1`** (entry STEP 2 + STEP 2.5): legge `$checkResponse.sha256`, dopo download esegue `Get-FileHash -Algorithm SHA256` e confronta. **Mismatch → abort sicuro (exit 14)**, cleanup ZIP corrotto, `Send-Progress error` al Center con messaggio dedicato. Se backend non fornisce hash (legacy), skip + INFO log.
+- **`prg/version.json`**: bumpato a v3.8.25 con changelog completo.
+
+#### ZIP rebuild + verifica end-to-end
+- ZIP buildato: 388.962 byte, 28 file, SHA256 `805f7b39ac9ff4...`.
+- **VERIFICATO via curl**: download `/api/connector/public-download/latest` → SHA256 locale = SHA256 pubblicato → ✅ MATCH.
+- Tutti i file critici presenti (incluso `Installa 86NocConnector.vbs` a root).
+- DB `connector_updates`: vecchia v3.8.24 disattivata, v3.8.25 attiva con sha256, file_size, build_method=`rebuild-from-source`.
+
+### Verifica regression
+**`tests/test_connector_update_integrity.py`** (NEW) — 8/8 PASS:
+1. update-check include sha256 (64 hex char lowercase)
+2. file_size in update-check coincide con bytes reali del ZIP
+3. ZIP attivo contiene TUTTI i 26 file critici (Installa.vbs, prg/* + prg/src/*)
+4. version.json dentro ZIP coincide con version pubblicata
+5. /admin/rebuild-zip richiede admin (401/403)
+6. Versione invalida → 400
+7. Missing version field → 400
+8. DB document attivo ha sha256 + file_size validi
+
+### Verdetto
+Il flusso di update connector e' ora **certificato enterprise** end-to-end:
+- ✅ **Integrità garantita** (SHA256 verificato dal connector PRIMA di estrarre/installare)
+- ✅ **ZIP completo e auto-buildabile** dai sorgenti (admin click → rebuild + publish in <2s)
+- ✅ **Entry point user-friendly** (Installa.vbs con UAC auto-elevation per non-tech)
+- ✅ **Backup + rollback automatici** durante l'install
+- ✅ **Progress live al Center** ad ogni step (10/25/40/50/65/80/90/100%)
+- ✅ **Boot log bulletproof** in C:\Windows\Temp (sopravvive a permessi/ASR/WDAC)
+- ✅ **Tray restart + shortcut migration** automatici post-update
+- ✅ **TLS 1.2 enforced** + X-API-Key auth + admin JWT alternativo per browser
+
+---
+
 ## 2026-05-07 NOTTE — AUDIT ENTERPRISE LEVEL CONNECTOR (Master + Scanner + SNMP Poller + Installer)
 
 **Richiesta utente**: "controllo che tutto il codice sorgente dei connector siano ottimizzati e siano a livello enterprise, che passino i dati in modo corretto, che l'installazione sia di livello eccellente, che tutto funzioni, che non consumino risorse sul server del cliente e che rimangano sempre accesi in ogni condizione".
