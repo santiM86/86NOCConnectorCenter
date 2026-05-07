@@ -1,0 +1,49 @@
+{
+  "summary": "Frontend-only smoke test of ARGUS NOC Center after backend was confirmed 100% healthy in iter_76. Logged in as info@86bit.it, navigated 48 routes, validated Client Overview tabs, and captured all console errors / non-2xx API calls. Result: 45/48 routes render cleanly with no JS errors. 3 routes have issues: /settings/datto (React hydration warning <span> inside <option> + NaN child) — visually renders but emits errors; /enterprise — backend returns 500 on GET /api/sla/stats so widget shows error state; /device-metrics — backend returns 401 on GET /api/connector/{client_id}/managed-devices because route was hit without selecting a device first. LoginPage emits one benign React warning (setState in render of BrowserRouter from LoginPage). Client Overview for 86BIT_Office: tabs present and working = Panoramica, Dispositivi (6), WAN (0), Alert (48), Stampanti (1), Backup (0), Auto-Discovery, Vulnerability, Credenziali. Tabs requested but ABSENT in current UI: Connectors, Switch Ports — those are top-level pages, not tabs (by design, but worth confirming with user). TV Dashboard renders with HEALTH MATRIX. Customer Portal and /portal render their landing forms. /2fa renders. Public Dashboard requires a token in URL (/public/:token) — no list page; matches backend.",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "GET /api/sla/stats", "issue": "Returns 500 — breaks /enterprise page widget. Page renders but SLA card empty/error.", "priority": "HIGH"}
+    ],
+    "minor": [
+      {"endpoint": "GET /api/connector/{client_id}/managed-devices", "issue": "Returns 401 when called from /device-metrics without a connector context. Either /device-metrics must pre-fetch a token or the route must not be loaded without a selected device.", "priority": "MEDIUM"}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "DattoRmmSettingsPage (line ~278)", "issue": "Console error: 'In HTML, <span> cannot be a child of <option>. This will cause a hydration error.' plus 'Received NaN for the children attribute.' Likely caused by JSX expression inside <option> being wrapped in a span by build tooling, and a numeric value coercing to NaN. Page still renders but logs 2 React errors per visit.", "selector": "/settings/datto", "priority": "MEDIUM"},
+      {"component": "LoginPage", "issue": "React warning: 'Cannot update a component (BrowserRouter) while rendering a different component (LoginPage)' — indicates a setState inside render path (likely a navigate() call during render instead of inside useEffect).", "selector": "/login", "priority": "LOW"},
+      {"component": "EnterprisePage", "issue": "Page does not gracefully handle 500 from /api/sla/stats — Axios error surfaces in console; user sees broken SLA widget without an inline error message.", "selector": "/enterprise", "priority": "MEDIUM"},
+      {"component": "DeviceMetricsPage", "issue": "Page calls /api/connector/{client_id}/managed-devices which 401s; no empty-state / 'select a device first' UX. Two console errors logged.", "selector": "/device-metrics", "priority": "MEDIUM"}
+    ],
+    "integration_issues": [
+      {"flow": "Client Overview tabs", "issue": "Review request expected tabs 'Connectors' and 'Switch Ports' inside ClientOverviewPage. They are NOT present as tabs (only as top-level sidebar pages). Tabs that do exist and work: Panoramica, Dispositivi, WAN, Alert, Stampanti, Backup, Auto-Discovery, Vulnerability, Credenziali. Confirm with user whether Connectors/Switch-Ports tabs were dropped intentionally.", "affected_selectors": ["/client/:id"]}
+    ],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/test_reports/iteration_77.json"
+  ],
+  "action_items": [
+    "Investigate GET /api/sla/stats returning 500 — likely causing /enterprise page to look broken. Check backend logs around routes/sla.py stats handler.",
+    "Fix DattoRmmSettingsPage: avoid wrapping option text in extra <span>. Ensure children are plain strings and not NaN. File: /app/frontend/src/pages/DattoRmmSettingsPage.js around line 278 (option/select rendering of sites).",
+    "Fix LoginPage setState-in-render warning: move the post-login navigate() into a useEffect instead of running it during render.",
+    "Add empty-state guard on /device-metrics: do not call managed-devices until a device/client is chosen; render placeholder otherwise.",
+    "Confirm with user whether 'Connectors' and 'Switch Ports' should be tabs inside ClientOverviewPage (review request listed them as tabs)."
+  ],
+  "critical_code_review_comments": [
+    "All 48 sidebar/route entries route correctly through React Router — no white-screen or 404 fallback observed.",
+    "TV Dashboard works without auth (matches backend posture).",
+    "Layout / Sidebar / ErrorBoundary appear robust — no page caused the boundary to trigger.",
+    "Italian labels render correctly across all pages (Dispositivi, Alert, Stampanti, Credenziali, Auto-Discovery).",
+    "Only 2 distinct broken backend calls in the entire UI session (sla/stats, managed-devices), confirming iter_76 backend health claim.",
+    "Switch Ports is parameterized as /switch-ports/:deviceIp — there is intentionally no listing page; main agent may want to add one or document it."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "skipped (verified 100% in iter_76)", "frontend": "94% (45/48 routes clean, 3 with issues; all client-overview tabs that exist work)"},
+  "test_credentials": "info@86bit.it / Ariel17051986@!@86 — confirmed working (admin login + dashboard + all protected routes).",
+  "seed_data_creation": "None — read-only navigation only. No mutating buttons clicked.",
+  "retest_needed": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Use the playwright pattern in this iteration: login → loop over the 48 routes → record console.error + pageerror + 4xx/5xx /api/* responses per route. Routes correctly registered in App.js (some differ from review request: /trends not /trend, /snmp-traps not /traps, /wan-monitor not /external-monitor, /settings/audit not /audit, /settings/encryption not /encryption, /network-status not /client-status, /settings/wireguard not /wireguard, /settings/ip-allowlist not /ip-allowlist, /oncall not /on-call). Public Dashboard needs token (/public/:token) and Switch Ports needs deviceIp (/switch-ports/:deviceIp) — these are NOT broken, they're parameterized. Client Overview client id from API: da3d6e40-b3e5-4d46-9787-dde328a3aa36 (86BIT_Office).",
+  "rca of the issue": "1) /enterprise: GET /api/sla/stats → 500. Need backend log inspection of routes/sla.py — likely a missing aggregation field or unhandled None when SLA collection is empty in preview env. 2) /settings/datto: JSX in DattoRmmSettingsPage maps sites into <option>{...}</option>, but the build tool injects <span> wrappers around dynamic text expressions — React 18 strict-mode then complains because <span> is invalid inside <option>. Mitigation: move dynamic expression to a string concat (`${s.site_name}`) or unwrap with a Fragment, and ensure no numeric NaN gets passed as children. 3) /device-metrics: route mounts and immediately fires API without auth context. Mitigation: gate the fetch on a selected client/device prop, or 401 should be silently handled with a 'Seleziona dispositivo' empty state."
+}
