@@ -456,6 +456,50 @@ export default function ConnectorsPage() {
                           : "Messaggi Syslog ricevuti dal connector. Se 0 puo' essere normale (i device non sono configurati per inviare syslog al connector)."} />
                       <InfoItem label="Ultimo" value={formatLastSeen(c.last_seen)} />
                     </div>
+                    {/* v3.8.27: live diagnostics chip — visibili solo se il connector
+                        e' v3.8.27+ (i campi sono presenti nel doc). I vecchi connettori
+                        non li hanno e mostrano '—'. */}
+                    {(c.bytes_sent_60s !== undefined || c.jobs_total !== undefined || c.ram_mb !== undefined) && (
+                      <div className="flex items-center gap-1.5 flex-wrap mt-1.5"
+                           data-testid={`diag-chips-${c.client_id}-${c.hostname || ""}`}>
+                        {c.bytes_sent_60s !== undefined && (
+                          <span className="text-[9px] px-1.5 py-0.5 rounded border font-mono text-cyan-300 bg-cyan-500/10 border-cyan-500/30"
+                                title={`Banda inviata al Center negli ultimi ~60s: ${(c.bytes_sent_60s/1024).toFixed(1)} KB`}>
+                            ↑ {(c.bytes_sent_60s/1024).toFixed(1)} KB/min
+                          </span>
+                        )}
+                        {c.bytes_recv_60s !== undefined && (
+                          <span className="text-[9px] px-1.5 py-0.5 rounded border font-mono text-blue-300 bg-blue-500/10 border-blue-500/30"
+                                title={`Banda ricevuta dal Center negli ultimi ~60s: ${(c.bytes_recv_60s/1024).toFixed(1)} KB`}>
+                            ↓ {(c.bytes_recv_60s/1024).toFixed(1)} KB/min
+                          </span>
+                        )}
+                        {c.jobs_total !== undefined && (
+                          <span
+                            className={`text-[9px] px-1.5 py-0.5 rounded border font-mono ${
+                              c.jobs_alive === c.jobs_total
+                                ? "text-emerald-300 bg-emerald-500/10 border-emerald-500/30"
+                                : "text-amber-400 bg-amber-500/10 border-amber-500/30"
+                            }`}
+                            title={`Job PowerShell vivi/totali. ${c.jobs_alive === c.jobs_total ? "Tutto OK" : "Alcuni job sono morti — il connector li riavviera' al prossimo health check (3 min)"}`}>
+                            ⚙ {c.jobs_alive ?? 0}/{c.jobs_total} job
+                          </span>
+                        )}
+                        {c.ram_mb !== undefined && c.ram_mb > 0 && (
+                          <span
+                            className={`text-[9px] px-1.5 py-0.5 rounded border font-mono ${
+                              c.ram_mb > 200
+                                ? "text-rose-400 bg-rose-500/10 border-rose-500/30"
+                                : c.ram_mb > 100
+                                ? "text-amber-400 bg-amber-500/10 border-amber-500/30"
+                                : "text-emerald-300 bg-emerald-500/10 border-emerald-500/30"
+                            }`}
+                            title={`RAM working set del processo connector. >200MB indica possibile leak.`}>
+                            ▦ {c.ram_mb} MB
+                          </span>
+                        )}
+                      </div>
+                    )}
                   </div>
                   <div className="flex items-center gap-1.5 flex-shrink-0">
                     {updateInfo?.version && isNewerVersion(updateInfo.version, c.connector_version) && (

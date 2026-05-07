@@ -273,6 +273,12 @@ async def connector_heartbeat(request: Request, heartbeat: ConnectorHeartbeat):
             "mode": hb_mode,
             "subnet": heartbeat.subnet,
             "vlan_id": heartbeat.vlan_id,
+            # v3.8.27 LIVE DIAGNOSTICS — solo se inviati dal connector (retro-compat)
+            **({"bytes_sent_60s": heartbeat.bytes_sent_60s} if heartbeat.bytes_sent_60s is not None else {}),
+            **({"bytes_recv_60s": heartbeat.bytes_recv_60s} if heartbeat.bytes_recv_60s is not None else {}),
+            **({"jobs_alive": heartbeat.jobs_alive} if heartbeat.jobs_alive is not None else {}),
+            **({"jobs_total": heartbeat.jobs_total} if heartbeat.jobs_total is not None else {}),
+            **({"ram_mb": heartbeat.ram_mb} if heartbeat.ram_mb is not None else {}),
             "last_seen": datetime.now(timezone.utc).isoformat()
         }},
         upsert=True

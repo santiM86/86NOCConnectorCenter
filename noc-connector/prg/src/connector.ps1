@@ -265,6 +265,12 @@ $global:Stats = @{
     auth_failures = 0
     last_error = ""
     start_time = Get-Date
+    # v3.8.27 LIVE DIAGNOSTICS: counter accumulati tra un heartbeat e il
+    # successivo (~60s). Reset in Send-Heartbeat dopo aver letto i valori.
+    # bytes_sent_60s = byte JSON inviati al NOC (compressed payload, no header)
+    # bytes_recv_60s = byte ricevuti dal NOC (response body length)
+    bytes_sent_60s = 0
+    bytes_recv_60s = 0
 }
 
 
@@ -402,6 +408,11 @@ function Invoke-SecureGet($config, $endpoint, $timeoutSec = 15) {
 
         $result = Invoke-RestMethod -Uri $url -Method Get -Headers $headers -TimeoutSec $timeoutSec -ErrorAction Stop
         Reset-BackoffState $endpoint
+        # v3.8.27: tracciamo bytes ricevuti per heartbeat live diagnostics
+        try {
+            $approxSize = if ($result) { ($result | ConvertTo-Json -Depth 5 -Compress).Length } else { 0 }
+            $global:Stats.bytes_recv_60s = [int]($global:Stats.bytes_recv_60s) + $approxSize
+        } catch {}
         return $result
     } catch {
         # v3.5.16: messaggi di errore actionable per 401 (vs 404/500/network)
@@ -460,6 +471,13 @@ function Send-ToNOC($config, $endpoint, $payload) {
 
         $response = Invoke-RestMethod -Uri $url -Method Post -Headers $headers -Body $body -TimeoutSec 15 -ErrorAction Stop
         Reset-BackoffState $endpoint  # v3.8.22
+
+        # v3.8.27: tracciamo bytes inviati/ricevuti per heartbeat live diagnostics
+        try {
+            $global:Stats.bytes_sent_60s = [int]($global:Stats.bytes_sent_60s) + $body.Length
+            $approxRecv = if ($response) { ($response | ConvertTo-Json -Depth 5 -Compress).Length } else { 0 }
+            $global:Stats.bytes_recv_60s = [int]($global:Stats.bytes_recv_60s) + $approxRecv
+        } catch {}
 
         # Handle key rotation from server
         if ($response.key_rotation -and $response.key_rotation.new_api_key) {
@@ -531,6 +549,35 @@ function Send-SyslogToNOC($config, $syslog) {
 
 function Send-Heartbeat($config) {
     $uptime = ((Get-Date) - $global:Stats.start_time).TotalSeconds
+
+    # v3.8.27 LIVE DIAGNOSTICS (option B): includiamo nel heartbeat metriche
+    # operative del connector cosi' la UI Center mostra in tempo reale
+    # quanto sta lavorando questa istanza. Servono per:
+    #  - vedere se sta saturando la rete del cliente
+    #  - capire se i job critici sono morti
+    #  - capire se il connector sta consumando troppa RAM
+    # Il timestamp di reset bytes_*_60s e' last_heartbeat -> quindi il valore
+    # rappresenta i byte transitati nei ~60s precedenti (1 ciclo heartbeat).
+    $bytesSent = [int]($global:Stats.bytes_sent_60s)
+    $bytesRecv = [int]($global:Stats.bytes_recv_60s)
+    $global:Stats.bytes_sent_60s = 0
+    $global:Stats.bytes_recv_60s = 0
+
+    # Conta job PowerShell vivi (snmpJob/syslogJob/pollingJob/updateJob)
+    $jobsAlive = 0
+    $jobsTotal = 0
+    try {
+        $allJobs = @(Get-Job -ErrorAction SilentlyContinue)
+        $jobsTotal = $allJobs.Count
+        $jobsAlive = ($allJobs | Where-Object { $_.State -eq "Running" } | Measure-Object).Count
+    } catch {}
+
+    # RAM working set in MB (lasciamo CPU al backend perche' richiede 2 snapshot)
+    $ramMb = 0
+    try {
+        $ramMb = [int]([math]::Round((Get-Process -Id $PID -ErrorAction SilentlyContinue).WorkingSet64 / 1MB))
+    } catch {}
+
     $payload = @{
         connector_version = $global:Version
         hostname = $env:COMPUTERNAME
@@ -541,6 +588,12 @@ function Send-Heartbeat($config) {
         mode = if ($config.mode) { $config.mode } else { "master" }
         subnet = $config.subnet
         vlan_id = $config.vlan_id
+        # v3.8.27: live diagnostics
+        bytes_sent_60s = $bytesSent
+        bytes_recv_60s = $bytesRecv
+        jobs_alive = $jobsAlive
+        jobs_total = $jobsTotal
+        ram_mb = $ramMb
     }
     $response = Send-ToNOC $config "connector/heartbeat" $payload
     
