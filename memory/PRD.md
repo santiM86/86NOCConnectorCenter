@@ -1,3 +1,84 @@
+## 2026-05-07 EXTRA UX — Rollout ordinamento tabelle + persistenza
+
+**Espansione v3.8.31** del pattern `useSortableTable` introdotto nella v3.8.30:
+
+**Nuova feature** `/app/frontend/src/utils/tableSort.js`:
+- 4° argomento ora supporta `{ persistKey, accessors }`. Quando `persistKey` è impostato, la coppia `(sortKey, sortDir)` viene salvata in `localStorage` (`tablesort:{key}`) e ripristinata al ricaricamento.
+
+**Tabelle aggiornate con sort + persistenza**:
+| Tabella | persistKey | Default |
+|---|---|---|
+| Dispositivi cliente | `client-devices-tab` | name asc |
+| Total Protection 365 | `hornetsecurity-365-table` | nessuno |
+| VM Backup Altaro | `hornetsecurity-vm-table` | nessuno |
+| Alert globali (`/alerts`) | `alerts-page` | created_at desc |
+| Alert per cliente (tab) | `client-alerts-tab` | created_at desc |
+| Dispositivi globali (`/devices`) | `devices-page-global` | name asc |
+| Audit log (`/audit`) | `audit-page` | timestamp desc |
+
+**Salti consapevoli** (già con sort custom proprio):
+- `InventoryPage.js` (sort by sortBy/sortDir custom)
+- `PrinterDiscoveryPage.js` (toggleSort + useMemo custom)
+- `DashboardPage.js` "Recent alerts" (limit 6, ordinamento cronologico intrinseco)
+
+**Bug fix runtime**: spostate tutte le `useSortableTable` PRIMA degli early-return (`if loading return`) per rispettare le rules-of-hooks.
+
+**Verifica preview**:
+- AlertsPage: 154 alert, header `DATA ▼` attivo. Click su `SEV. ▲` → riordino visibile in tempo reale (LOW in alto).
+- Lint pulito su 5 file modificati.
+
+---
+
+
+## 2026-05-07 EXTRA UX — Tabelle ordinabili + VM Backup compatto
+
+**Issue UX**:
+1. Le 3 tabelle principali (Dispositivi, Total Protection, VM Backup) avevano header statici, non era possibile ordinare per colonna.
+2. La tabella VM Backup mostrava troppe colonne ridondanti (Hypervisor + 3 colonne separate Onsite/Offsite/2°Offsite) rendendola "incasinata e complessa".
+
+**Implementazione v3.8.30**:
+
+**Nuova utility riutilizzabile** (`/app/frontend/src/utils/tableSort.js`):
+- `useSortableTable(items, defaultKey, defaultDir, accessors)` — hook React per ordinamento client-side. Gestisce date ISO automaticamente, IPv4 numerico via accessor custom, toggle asc→desc→reset.
+- `<SortableTh>` — componente header cliccabile con freccia direzionale (↕/▲/▼).
+
+**Tabelle aggiornate** (`/app/frontend/src/pages/ClientOverviewPage.js`):
+- **Dispositivi cliente** (DevicesTab): tutte le 10 colonne ordinabili — Nome, Tipo, IP (numerico IPv4), Metodo, SNMP, Community, Stato, Conn., Fonte, Ultimo Poll (cronologico).
+- **Total Protection 365** (HornetsecurityBackupPanel): 7 colonne ordinabili — Workload, Utente, Tenant, Tipo, Stato, Ultimo backup, Note.
+- **VM Backup Altaro** (VMBackupPanel): refactor completo in stile Total Protection.
+  - Colonne ridotte da 9 a 7: VM, Host, Customer, Tipo, **Stato (aggregato)**, Ultimo backup, Dim.
+  - Rimosse 3 colonne ridondanti (Onsite/Offsite/2°Offsite separate); ora una singola colonna Stato mostra il peggiore tra le 3 destinazioni con tooltip che espone il dettaglio.
+  - Stesso text-style compatto di Total Protection.
+
+**Bug fix runtime**: spostate le `useSortableTable` call PRIMA degli early-return per rispettare le rules-of-hooks di React (la prima implementazione causava `React Hook called conditionally`).
+
+**Verifica preview**: tabella Dispositivi mostra le frecce, click sulla colonna "Nome" attiva ordinamento alfabetico (▲), no errori React, lint pulito. Le tabelle backup richiedono mapping tenant configurato per popolare dati (sul preview solo client `86BIT_Office` senza mapping → tabelle vuote come atteso).
+
+---
+
+
+## 2026-05-07 EXTRA FEATURE — Modifica singolo target WAN + agganciare ai clienti
+
+**Issue UX**: nella pagina "Monitoraggio WAN Esterno" non era possibile modificare un singolo target WAN (solo crearlo o eliminarlo). Per i target con `client_id` orfano (cliente eliminato), l'header mostrava l'UUID grezzo invece di un placeholder leggibile, e non c'era modo di riassegnarli a un cliente esistente (es. "Galvan").
+
+**Fix v3.8.29**:
+
+Backend (`/app/backend/routes/external_monitor.py`):
+- `WanTargetUpdate` ora accetta anche `client_id` e `device_type` per permettere riassegnamento e cambio tipo del target.
+- `PUT /api/external-monitor/targets/{id}` valida che il `client_id` corrisponda a un cliente esistente (400 "Cliente non trovato") e che `device_type` sia `firewall` o `router`.
+- Quando il `client_id` cambia, propaga il nuovo valore in `wan_probe_results` per coerenza immediata nel tab WAN del cliente.
+- Test di regressione (4 casi): `/app/backend/tests/test_external_monitor_update_v3829.py` — tutti passati.
+
+Frontend (`/app/frontend/src/pages/ExternalMonitorPage.js`):
+- Nuovo bottone "matita" (Modifica) accanto al cestino su ogni `DeviceCard`, visibile su hover.
+- Dialog modale "Modifica target WAN" con tutti i campi (Cliente dropdown, Tipo, Label, IP Pubblico, Gateway ISP, Porte TCP, toggle Ping ICMP).
+- Header del gruppo cliente: se il `client_id` non è nella collezione clients, mostra "Senza cliente" + badge "orfano" + suggerimento di usare la matita per riassegnarlo.
+
+**Verifica preview**: target editabile con successo (`{"status":"ok"}`); validazione errori `Cliente non trovato` e `device_type deve essere 'firewall' o 'router'` funzionante; UI dialog visibile con tutti i campi precompilati.
+
+---
+
+
 ## 2026-05-07 EXTRA FIX — Overview Clienti Vuoti (KeyError 'info')
 
 **Issue**: Pagina `Clienti` mostrava chip DISP/WAN/CONN/ALERT vuoti (—) per tutti i clienti perché l'endpoint `/api/overview/clients` falliva con HTTP 500.

@@ -12,6 +12,7 @@ import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { useSortableTable, SortableTh } from "@/utils/tableSort";
 
 export default function AlertsPage() {
   const [alerts, setAlerts] = useState([]);
@@ -77,6 +78,31 @@ export default function AlertsPage() {
       alert.ip_address?.toLowerCase().includes(s);
   });
 
+  // v3.8.31: ordinamento tabella alert (default: data desc)
+  const SEV_RANK = { critical: 4, high: 3, medium: 2, low: 1 };
+  const STATUS_RANK = { active: 3, acknowledged: 2, resolved: 1 };
+  const { sorted: sortedAlerts, sortKey, sortDir, requestSort } = useSortableTable(
+    filteredAlerts, "created_at", "desc",
+    {
+      persistKey: "alerts-page",
+      accessors: {
+        severity: (a) => SEV_RANK[a?.severity] || 0,
+        status: (a) => STATUS_RANK[a?.status] || 0,
+        title: (a) => (a?.title || "").toLowerCase(),
+        device_name: (a) => (a?.device_name || "").toLowerCase(),
+        client_name: (a) => (a?.client_name || "").toLowerCase(),
+        ip_address: (a) => {
+          const ip = a?.ip_address || "";
+          const p = ip.split(".").map(n => parseInt(n, 10));
+          if (p.length === 4 && p.every(n => !isNaN(n))) return p[0]*16777216+p[1]*65536+p[2]*256+p[3];
+          return ip.toLowerCase();
+        },
+        source_type: (a) => (a?.source_type || "").toLowerCase(),
+        created_at: (a) => a?.created_at ? Date.parse(a.created_at) : 0,
+      },
+    }
+  );
+
   const sevOpts = [{ value: "", label: "Tutte" }, { value: "critical", label: "Critico" }, { value: "high", label: "Alto" }, { value: "medium", label: "Medio" }, { value: "low", label: "Basso" }];
   const statusOpts = [{ value: "", label: "Tutti" }, { value: "active", label: "Attivo" }, { value: "acknowledged", label: "Confermato" }, { value: "resolved", label: "Risolto" }];
   const typeOpts = [{ value: "", label: "Tutti" }, { value: "backup", label: "Backup" }, { value: "firewall", label: "Firewall" }, { value: "switch", label: "Switch" }, { value: "ilo", label: "ILO/iDRAC" }];
@@ -116,24 +142,24 @@ export default function AlertsPage() {
           <table className="alert-table min-w-[900px]" data-testid="alerts-table">
             <thead>
               <tr>
-                <th className="w-20">Sev.</th>
-                <th className="w-20">Stato</th>
-                <th>Titolo</th>
-                <th>Dispositivo</th>
-                <th>Cliente</th>
-                <th className="w-24">IP</th>
-                <th className="w-16">Fonte</th>
-                <th className="w-28">Data</th>
+                <SortableTh field="severity" sortKey={sortKey} sortDir={sortDir} onSort={requestSort} className="w-20">Sev.</SortableTh>
+                <SortableTh field="status" sortKey={sortKey} sortDir={sortDir} onSort={requestSort} className="w-20">Stato</SortableTh>
+                <SortableTh field="title" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Titolo</SortableTh>
+                <SortableTh field="device_name" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Dispositivo</SortableTh>
+                <SortableTh field="client_name" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Cliente</SortableTh>
+                <SortableTh field="ip_address" sortKey={sortKey} sortDir={sortDir} onSort={requestSort} className="w-24">IP</SortableTh>
+                <SortableTh field="source_type" sortKey={sortKey} sortDir={sortDir} onSort={requestSort} className="w-16">Fonte</SortableTh>
+                <SortableTh field="created_at" sortKey={sortKey} sortDir={sortDir} onSort={requestSort} className="w-28">Data</SortableTh>
                 <th className="w-24"></th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
                 <tr><td colSpan={9} className="text-center text-[var(--text-muted)] py-6 text-xs">Caricamento...</td></tr>
-              ) : filteredAlerts.length === 0 ? (
+              ) : sortedAlerts.length === 0 ? (
                 <tr><td colSpan={9} className="text-center text-[var(--text-muted)] py-6 text-xs">Nessun alert</td></tr>
               ) : (
-                filteredAlerts.map(alert => (
+                sortedAlerts.map(alert => (
                   <tr key={alert.id} className="cursor-pointer" onClick={() => navigate(`/alerts/${alert.id}`)} data-testid={`alert-row-${alert.id}`}>
                     <td><span className={`severity-badge severity-${alert.severity}`}>{alert.severity}</span></td>
                     <td><span className={`text-[10px] uppercase tracking-wider status-${alert.status}`}>{alert.status}</span></td>

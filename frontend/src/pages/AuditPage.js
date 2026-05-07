@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
 import { Eye, ShieldWarning, ArrowsClockwise, Trash } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
+import { useSortableTable, SortableTh } from "@/utils/tableSort";
 
 export default function AuditPage() {
   const navigate = useNavigate();
@@ -43,10 +44,36 @@ export default function AuditPage() {
     }
   };
 
+  // v3.8.31: hook ordinamento audit log — DEVE stare prima dell'early-return
+  // per rispettare le rules-of-hooks. items sara' [] al primo render (loading),
+  // ma la hook si ricalcola correttamente quando data si popola.
+  const SEV_RANK = { critical: 3, warning: 2, info: 1 };
+  const _items = data.items || [];
+  const { sorted: sortedAudit, sortKey, sortDir, requestSort } = useSortableTable(
+    _items, "timestamp", "desc",
+    {
+      persistKey: "audit-page",
+      accessors: {
+        timestamp: (it) => it?.timestamp ? Date.parse(it.timestamp) : 0,
+        action: (it) => (it?.action || "").toLowerCase(),
+        severity: (it) => SEV_RANK[it?.severity] || 0,
+        user: (it) => (it?.user_email || it?.user_id || "").toLowerCase(),
+        ip: (it) => {
+          const ip = it?.ip_address || "";
+          const p = ip.split(".").map(n => parseInt(n, 10));
+          if (p.length === 4 && p.every(n => !isNaN(n))) return p[0]*16777216+p[1]*65536+p[2]*256+p[3];
+          return ip.toLowerCase();
+        },
+        resource: (it) => `${it?.resource_type || ""}/${it?.resource_id || ""}`.toLowerCase(),
+        success: (it) => (it?.success === false ? 0 : 1),
+      },
+    }
+  );
+
   if (loading) return <div className="p-6 text-[var(--text-muted)] text-sm">Caricamento…</div>;
 
   const totals = data.totals || {};
-  const items = data.items || [];
+  const items = _items;
 
   return (
     <div className="p-4 md:p-6 max-w-7xl mx-auto space-y-4" data-testid="audit-page">
@@ -128,9 +155,17 @@ export default function AuditPage() {
       {/* Lista eventi */}
       <div className="noc-panel overflow-x-auto">
         <table className="noc-table w-full text-[11px]" data-testid="audit-table">
-          <thead><tr><th>Quando</th><th>Azione</th><th>Severity</th><th>Utente</th><th>IP</th><th>Risorsa</th><th>Esito</th></tr></thead>
+          <thead><tr>
+            <SortableTh field="timestamp" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Quando</SortableTh>
+            <SortableTh field="action" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Azione</SortableTh>
+            <SortableTh field="severity" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Severity</SortableTh>
+            <SortableTh field="user" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Utente</SortableTh>
+            <SortableTh field="ip" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>IP</SortableTh>
+            <SortableTh field="resource" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Risorsa</SortableTh>
+            <SortableTh field="success" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Esito</SortableTh>
+          </tr></thead>
           <tbody>
-            {items.slice(0, 500).map((it, i) => {
+            {sortedAudit.slice(0, 500).map((it, i) => {
               const sc = it.severity === "critical" ? "#FF3B30" : it.severity === "warning" ? "#FFB400" : "#06B6D4";
               const failed = it.success === false;
               return (

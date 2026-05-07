@@ -4,12 +4,13 @@ import axios from "axios";
 import { toast } from "sonner";
 import {
   Globe, WifiHigh, WifiSlash, Plus, Trash, ArrowClockwise,
-  Lightning, ShieldCheck, HardDrives, Warning, CheckCircle, Clock,
+  Lightning, ShieldCheck, HardDrives, Warning, CheckCircle, Clock, PencilSimple, Link as LinkIcon,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 
 const STATUS_CONFIG = {
   online: { color: "#34C759", label: "ONLINE", icon: WifiHigh },
@@ -39,6 +40,10 @@ export default function ExternalMonitorPage() {
   const [form, setForm] = useState({ client_id: "", label: "", device_type: "firewall", public_ip: "", gateway_ip: "", check_ports: "443", check_ping: false });
   const [testResult, setTestResult] = useState(null);
   const [testing, setTesting] = useState(false);
+  // v3.8.29: edit target dialog
+  const [editTarget, setEditTarget] = useState(null);  // null oppure target da modificare
+  const [editForm, setEditForm] = useState({ client_id: "", label: "", device_type: "firewall", public_ip: "", gateway_ip: "", check_ports: "443", check_ping: false });
+  const [savingEdit, setSavingEdit] = useState(false);
 
   const fetchAll = useCallback(async () => {
     try {
@@ -73,6 +78,48 @@ export default function ExternalMonitorPage() {
       toast.success("Target eliminato");
       fetchAll();
     } catch { toast.error("Errore"); }
+  };
+
+  // v3.8.29: open edit dialog pre-filled with target's current values
+  const openEdit = (t) => {
+    setEditTarget(t);
+    setEditForm({
+      client_id: t.client_id || "",
+      label: t.label || "",
+      device_type: t.device_type || "firewall",
+      public_ip: t.public_ip || "",
+      gateway_ip: t.gateway_ip || "",
+      check_ports: (t.check_ports || []).filter(p => typeof p === "number").join(", "),
+      check_ping: !!t.check_ping,
+    });
+  };
+
+  const saveEdit = async () => {
+    if (!editTarget) return;
+    if (!editForm.client_id) { toast.error("Seleziona un cliente"); return; }
+    if (!editForm.label) { toast.error("Inserisci una label"); return; }
+    if (!editForm.public_ip) { toast.error("Inserisci l'IP pubblico"); return; }
+    setSavingEdit(true);
+    try {
+      const ports = (editForm.check_ports || "").split(",").map(p => parseInt(p.trim())).filter(p => !isNaN(p) && p > 0);
+      const payload = {
+        client_id: editForm.client_id,
+        label: editForm.label,
+        device_type: editForm.device_type,
+        public_ip: editForm.public_ip,
+        gateway_ip: editForm.gateway_ip || null,
+        check_ports: ports,
+        check_ping: editForm.check_ping,
+      };
+      await axios.put(`${API}/external-monitor/targets/${editTarget.id}`, payload);
+      toast.success("Target aggiornato");
+      setEditTarget(null);
+      fetchAll();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Errore salvataggio");
+    } finally {
+      setSavingEdit(false);
+    }
   };
 
   const probeNow = async () => {
@@ -262,8 +309,18 @@ export default function ExternalMonitorPage() {
                   <DiagIcon size={18} weight="bold" style={{ color: dc.color }} />
                 </div>
                 <div>
-                  <h3 className="text-base font-bold text-[var(--text-primary)] tracking-tight">{clientMap[cid] || cid}</h3>
+                  <h3 className="text-base font-bold text-[var(--text-primary)] tracking-tight flex items-center gap-2" data-testid={`wan-client-name-${cid}`}>
+                    {clientMap[cid] || (
+                      <>
+                        <span className="text-amber-400">Senza cliente</span>
+                        <span className="text-[10px] text-amber-400/70 font-mono px-1.5 py-0.5 rounded bg-amber-500/10 border border-amber-500/30">orfano</span>
+                      </>
+                    )}
+                  </h3>
                   <p className="text-[10px] mt-0.5" style={{ color: dc.color }}>{diag?.diagnosis_text || "In attesa del primo probe..."}</p>
+                  {!clientMap[cid] && (
+                    <p className="text-[9px] mt-1 text-amber-400/80">Clicca <PencilSimple size={10} weight="bold" className="inline -mt-0.5" /> sul target per assegnarlo a un cliente esistente.</p>
+                  )}
                 </div>
               </div>
               {/* ISP badge from gateway */}
@@ -298,7 +355,7 @@ export default function ExternalMonitorPage() {
                       <span className="text-[9px] font-bold uppercase tracking-[0.15em] text-indigo-400">Firewall</span>
                       <div className="flex-1 h-px bg-indigo-500/20"></div>
                     </div>
-                    {firewalls.map(t => <DeviceCard key={t.id} target={t} result={resultMap[t.id]} onDelete={deleteTarget} />)}
+                    {firewalls.map(t => <DeviceCard key={t.id} target={t} result={resultMap[t.id]} onDelete={deleteTarget} onEdit={openEdit} />)}
                   </div>
                 )}
 
@@ -310,12 +367,12 @@ export default function ExternalMonitorPage() {
                       <span className="text-[9px] font-bold uppercase tracking-[0.15em] text-cyan-400">Router</span>
                       <div className="flex-1 h-px bg-cyan-500/20"></div>
                     </div>
-                    {routers.map(t => <DeviceCard key={t.id} target={t} result={resultMap[t.id]} onDelete={deleteTarget} />)}
+                    {routers.map(t => <DeviceCard key={t.id} target={t} result={resultMap[t.id]} onDelete={deleteTarget} onEdit={openEdit} />)}
                   </div>
                 )}
 
                 {/* Others */}
-                {others.map(t => <DeviceCard key={t.id} target={t} result={resultMap[t.id]} onDelete={deleteTarget} />)}
+                {others.map(t => <DeviceCard key={t.id} target={t} result={resultMap[t.id]} onDelete={deleteTarget} onEdit={openEdit} />)}
               </div>
             </div>
           </div>
@@ -329,13 +386,91 @@ export default function ExternalMonitorPage() {
           <p className="text-xs mt-1">Aggiungi gli IP pubblici dei firewall e router dei clienti per iniziare il monitoraggio</p>
         </div>
       )}
+
+      {/* v3.8.29: Edit target dialog */}
+      <Dialog open={!!editTarget} onOpenChange={(open) => { if (!open) setEditTarget(null); }}>
+        <DialogContent className="bg-[var(--bg-panel)] border-[var(--bg-border)] max-w-2xl" data-testid="edit-target-dialog">
+          <DialogHeader>
+            <DialogTitle className="text-[var(--text-primary)] flex items-center gap-2">
+              <PencilSimple size={16} weight="bold" className="text-indigo-400" />
+              Modifica target WAN
+            </DialogTitle>
+            <DialogDescription className="text-[var(--text-muted)] text-xs">
+              {editTarget && (
+                <span className="font-mono">{editTarget.id}</span>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid grid-cols-2 gap-3 py-2">
+            <div className="space-y-1 col-span-2">
+              <Label className="text-[9px] uppercase tracking-widest text-[var(--text-muted)] flex items-center gap-1">
+                <LinkIcon size={10} weight="bold" /> Cliente *
+              </Label>
+              <Select value={editForm.client_id} onValueChange={v => setEditForm(p => ({ ...p, client_id: v }))}>
+                <SelectTrigger className="h-8 text-xs bg-[var(--bg-card)] border-[var(--bg-border)] text-[var(--text-primary)]" data-testid="edit-target-client-select">
+                  <SelectValue placeholder="Seleziona cliente..." />
+                </SelectTrigger>
+                <SelectContent className="bg-[var(--bg-panel)] border-[var(--bg-border)]">
+                  {clients.map(c => <SelectItem key={c.id} value={c.id} className="text-xs">{c.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <Label className="text-[9px] uppercase tracking-widest text-[var(--text-muted)]">Tipo *</Label>
+              <Select value={editForm.device_type} onValueChange={v => setEditForm(p => ({ ...p, device_type: v }))}>
+                <SelectTrigger className="h-8 text-xs bg-[var(--bg-card)] border-[var(--bg-border)] text-[var(--text-primary)]" data-testid="edit-target-type-select">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="bg-[var(--bg-panel)] border-[var(--bg-border)]">
+                  <SelectItem value="firewall" className="text-xs">Firewall</SelectItem>
+                  <SelectItem value="router" className="text-xs">Router</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <Label className="text-[9px] uppercase tracking-widest text-[var(--text-muted)]">Label *</Label>
+              <Input value={editForm.label} onChange={e => setEditForm(p => ({ ...p, label: e.target.value }))} placeholder="Zyxel USG FLEX 200" className="h-8 text-xs bg-[var(--bg-card)] border-[var(--bg-border)] text-[var(--text-primary)]" data-testid="edit-target-label-input" />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-[9px] uppercase tracking-widest text-[var(--text-muted)]">IP Pubblico *</Label>
+              <Input value={editForm.public_ip} onChange={e => setEditForm(p => ({ ...p, public_ip: e.target.value }))} placeholder="85.42.xxx.xxx" className="h-8 text-xs bg-[var(--bg-card)] border-[var(--bg-border)] text-[var(--text-primary)]" data-testid="edit-target-ip-input" />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-[9px] uppercase tracking-widest text-[var(--text-muted)]">Gateway ISP</Label>
+              <Input value={editForm.gateway_ip} onChange={e => setEditForm(p => ({ ...p, gateway_ip: e.target.value }))} placeholder="85.42.xxx.1 (opzionale)" className="h-8 text-xs bg-[var(--bg-card)] border-[var(--bg-border)] text-[var(--text-primary)]" data-testid="edit-target-gateway-input" />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-[9px] uppercase tracking-widest text-[var(--text-muted)]">Porte TCP</Label>
+              <Input value={editForm.check_ports} onChange={e => setEditForm(p => ({ ...p, check_ports: e.target.value }))} placeholder="443, 80 (vuoto = solo ping)" className="h-8 text-xs bg-[var(--bg-card)] border-[var(--bg-border)] text-[var(--text-primary)]" data-testid="edit-target-ports-input" />
+            </div>
+            <div className="space-y-1 col-span-2">
+              <label className="flex items-center gap-2 cursor-pointer select-none" data-testid="edit-check-ping-toggle">
+                <div
+                  onClick={() => setEditForm(p => ({ ...p, check_ping: !p.check_ping }))}
+                  className={`w-9 h-5 rounded-full transition-colors flex items-center px-0.5 cursor-pointer ${editForm.check_ping ? "bg-emerald-500" : "bg-[var(--bg-border)]"}`}
+                >
+                  <div className={`w-4 h-4 rounded-full bg-white shadow transition-transform ${editForm.check_ping ? "translate-x-4" : "translate-x-0"}`} />
+                </div>
+                <span className="text-[10px] text-[var(--text-secondary)] whitespace-nowrap">Abilita Ping ICMP</span>
+              </label>
+            </div>
+          </div>
+          <DialogFooter className="gap-2">
+            <Button variant="ghost" size="sm" className="h-8 text-xs" onClick={() => setEditTarget(null)} disabled={savingEdit} data-testid="edit-target-cancel-btn">Annulla</Button>
+            <Button size="sm" className="h-8 text-xs" onClick={saveEdit} disabled={savingEdit} data-testid="edit-target-save-btn">
+              {savingEdit ? <ArrowClockwise size={12} className="animate-spin mr-1" /> : null}
+              Salva modifiche
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
 
 
 /* ==================== DEVICE CARD (Expandable) ==================== */
-function DeviceCard({ target: t, result: r, onDelete }) {
+function DeviceCard({ target: t, result: r, onDelete, onEdit }) {
   const [expanded, setExpanded] = useState(false);
   const st = STATUS_CONFIG[r?.status] || STATUS_CONFIG.unknown;
   const StIcon = st.icon;
@@ -379,9 +514,18 @@ function DeviceCard({ target: t, result: r, onDelete }) {
           )}
           {t.check_ping && <span className="text-[8px] px-1 py-0.5 rounded bg-blue-500/10 text-blue-400 font-bold">ICMP</span>}
           <button
+            onClick={(e) => { e.stopPropagation(); onEdit && onEdit(t); }}
+            className="p-1 rounded hover:bg-indigo-500/10 text-[var(--text-muted)] hover:text-indigo-400 transition-all opacity-0 group-hover:opacity-100"
+            title="Modifica target"
+            data-testid={`edit-target-btn-${t.id}`}
+          >
+            <PencilSimple size={12} />
+          </button>
+          <button
             onClick={(e) => { e.stopPropagation(); onDelete(t.id); }}
             className="p-1 rounded hover:bg-red-500/10 text-[var(--text-muted)] hover:text-red-400 transition-all opacity-0 group-hover:opacity-100"
             title="Elimina"
+            data-testid={`delete-target-btn-${t.id}`}
           >
             <Trash size={12} />
           </button>
