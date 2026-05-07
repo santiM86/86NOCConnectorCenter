@@ -26,6 +26,21 @@ Questi due asset sono parte del flusso CI/CD verso `argus.86bit.it` e sono **mis
 
 # ARGUS Center — NOC Platform (86bit)
 
+## 2026-05-07 — FIX OVERVIEW POPULATE + UI POLISH (v3.8.22)
+**Bug**: nella pagina Clienti, anche dopo il fix `devices.py`, i contatori del cliente Galvan apparivano vuoti ("—") perche':
+1. **`/api/overview/clients`** (3rd pass managed_devices) mettava status="unknown" invece di "online" per device scoperti dallo Scanner ma non in poll_status.
+2. **`connector_online`** veniva sovrascritto con False quando un cliente aveva piu' di 1 connector (master + scanner): l'ULTIMO processato vinceva, anche se era offline.
+
+### Fix backend `/app/backend/routes/overview.py`
+- Pre-fetch di `discovered_endpoints` (mode=scanner, last_seen_at <5min) come set `(client_id, ip)` "live-seen".
+- 2nd pass (poll_devices): override status="online" se IP nel set live-seen.
+- 3rd pass (managed_devices orfani): status="online" se nel set, altrimenti "unknown".
+- `connector_online`: ora **OR-merge** sui multipli connector dello stesso cliente. Se almeno UNO e' online → True.
+
+### Fix UI `/app/frontend/src/pages/ConnectorsPage.js`
+- `InfoItem` ora supporta `tooltip` (title attribute).
+- Pill SNMP/Syslog/Endpoint scan/Ultima scan ora hanno tooltip esplicativi che chiariscono perche' un valore "0" puo' essere normale.
+
 ## 2026-05-06 SERA — INCIDENT RECOVERY + ANTI-VALANGA + LISTENER ZOMBIE FIX + BACKOFF (v3.8.22)
 
 **Incidente in produzione (16:00 ITA)**: backend `argus.86bit.it` rispondeva 429/502/timeout a cascata. UI vuota.

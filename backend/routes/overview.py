@@ -59,6 +59,25 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
             return "server"
         return explicit_type or "generic"
 
+    # v3.8.22 SCANNER LIVE-SEEN: cross-check con discovered_endpoints.
+    # Lo Scanner aggiorna sempre discovered_endpoints (lan-scan ARP/mDNS) anche
+    # per device aggiunti manualmente. Usiamo questa collection per forzare
+    # "online" sui device che lo Scanner vede da <5 min, anche se il Master
+    # (su altra VLAN) non riesce a pollarli.
+    five_min_ago_iso = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    scanner_seen_keys = set()  # set di (client_id, ip) live-seen
+    try:
+        async for de in db.discovered_endpoints.find(
+            {"source_connector_mode": "scanner", "last_seen_at": {"$gte": five_min_ago_iso}},
+            {"_id": 0, "client_id": 1, "ip": 1},
+        ):
+            cid_de = de.get("client_id")
+            ip_de = de.get("ip")
+            if cid_de and ip_de:
+                scanner_seen_keys.add((cid_de, ip_de))
+    except Exception:
+        pass
+
     # Merge poll_devices and managed_devices into the unified list (skip duplicates)
     now_utc = datetime.now(timezone.utc)
     for pd in poll_devices:
@@ -100,6 +119,9 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
                 status = "stale"
             else:
                 status = "unknown"
+        # v3.8.22 LIVE-SEEN override: se lo Scanner vede l'IP entro 5min, e' online
+        if (cid, ip) in scanner_seen_keys:
+            status = "online"
         devices.append({
             "client_id": cid,
             "name": md.get("name") or pd.get("device_name") or ip,
@@ -117,11 +139,14 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
         if key in seen_device_keys:
             continue
         seen_device_keys.add(key)
+        # v3.8.22 LIVE-SEEN: managed device "orfano" diventa online se lo
+        # Scanner lo vede; altrimenti unknown (nessuno l'ha pollato).
+        md_status = "online" if (cid, ip) in scanner_seen_keys else "unknown"
         devices.append({
             "client_id": cid,
             "name": md.get("name") or ip,
             "ip_address": ip,
-            "status": "unknown",
+            "status": md_status,
             "device_type": md.get("device_type", "generic"),
         })
 
@@ -344,7 +369,13 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
                     pass
             elif isinstance(last_seen, datetime):
                 is_online = (now - last_seen).total_seconds() < 120
-        connector_by_client[cid] = is_online
+        # v3.8.22: se il cliente ha PIU' connector (master + scanner), basta
+        # che UNO sia online perche' connector_online sia true. Non sovrascrivere
+        # un True con un False successivo.
+        if cid in connector_by_client:
+            connector_by_client[cid] = connector_by_client[cid] or is_online
+        else:
+            connector_by_client[cid] = is_online
 
     # Build response
     result = []
