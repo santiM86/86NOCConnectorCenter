@@ -15,6 +15,13 @@ from starlette.responses import Response
 logger = logging.getLogger("request_timeout")
 
 TIMEOUT_RULES = [
+    # Long-poll endpoints: server attende fino a LONG_POLL_MAX_SEC=60s. Il timeout
+    # middleware DEVE essere > 60s + buffer, altrimenti il middleware uccide la
+    # richiesta con 504 e il reverse proxy nginx lo converte in 502 verso il
+    # connector (errore: "(502) Gateway non valido" sul lato PowerShell).
+    (("/api/connector/web-proxy/pending", "/api/connector/discovery-check"), 75),
+    # Web Console Enterprise (browser → connector long-poll, LONG_POLL_SEC=30s)
+    (("/api/web-console/", "/api/console-v4/", "/api/console-rmt/"), 45),
     (("/api/soc/", "/api/ai/", "/api/vulnerability/report/pdf"), 120),
     (("/api/connector/", "/api/backup/"), 45),
     (("/api/discovery/run",), 180),

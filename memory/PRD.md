@@ -1,3 +1,36 @@
+## 2026-05-07 SERA — FIX 502 GATEWAY su /api/connector/web-proxy/pending
+
+**Bug segnalato dall'utente** (log connector reale):
+```
+[2026-05-07 ...] [ERROR] Errore secure GET (connector/web-proxy/pending?wait=20):
+  Errore del server remoto: (502) Gateway non valido.
+```
+
+**Root cause**: `RequestTimeoutMiddleware` (`/app/backend/middleware/request_timeout.py`) aveva una regola `/api/connector/` con timeout **45s**, ma l'endpoint `/api/connector/web-proxy/pending` long-polla fino a `LONG_POLL_MAX_SEC=60s` (v3.8.22+ del connector usa `wait=60`). Quando passavano i 45s del middleware:
+1. Il middleware uccide la coroutine con 504 Timeout
+2. Il reverse proxy nginx (Emergent ingress) converte il 504 in 502 Bad Gateway verso il connector
+3. Il connector logga "(502) Gateway non valido" e attiva il backoff esponenziale
+
+Anche nel caso del log utente con `wait=20`, in condizioni di alta latenza/burst il server poteva sforare i 45s causando lo stesso 502.
+
+### Fix in `/app/backend/middleware/request_timeout.py`
+Aggiunte due nuove regole **PRIMA** della regola generica `/api/connector/` (l'ordine conta — la prima `startswith()` vince):
+1. `/api/connector/web-proxy/pending` + `/api/connector/discovery-check` → **75s** (60s long-poll + 15s buffer di rete).
+2. `/api/web-console/`, `/api/console-v4/`, `/api/console-rmt/` → **45s** (browser → connector long-poll a 30s).
+
+### Verifiche
+- Live curl `GET /api/connector/web-proxy/pending?wait=60` → **HTTP 200** (prima 502/504).
+- Test pytest regression `tests/test_request_timeout_middleware.py` 5/5 PASS:
+  - long-poll ≥ 75s ✓
+  - web-console ≥ 45s ✓
+  - heartbeat/device-report/lan-scan invariati a 45s ✓
+  - endpoint generici a 20s ✓
+  - regola long-poll precede `/api/connector/` (ordine TIMEOUT_RULES) ✓
+
+**Nessuna modifica al codice del Connector PowerShell necessaria** — è un fix puramente backend.
+
+---
+
 ## 2026-05-07 — AUDIT COMPLETO LOGICA CONNECTOR (Master + Scanner)
 
 **Richiesta utente**: "controlla tutta la parte di logica del connector scanner e connector master che sia pulita e senza errori che comunichi correttamente con center. NON deve mai spegnersi e fermarsi e deve passare dati puliti ottimizzati e senza appesantire center e devono essere live".
