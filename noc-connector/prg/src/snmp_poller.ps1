@@ -3270,6 +3270,7 @@ function Run-VAScan($ip, $community, $deviceName, $riskyPorts) {
     # If SNMP port (161) is not already in open_ports but device responds to SNMP, add it
     $snmpAlreadyFound = $result.open_ports | Where-Object { $_.port -eq 161 }
     if (-not $snmpAlreadyFound) {
+        $udpClient = $null
         try {
             # Quick SNMP GET test using raw UDP
             $udpClient = New-Object System.Net.Sockets.UdpClient
@@ -3300,9 +3301,11 @@ function Run-VAScan($ip, $community, $deviceName, $riskyPorts) {
                 }
                 Write-Host "[VA Scan]   Porta 161 (SNMP) APERTA su $ip"
             }
-            $udpClient.Close()
         } catch {
             # SNMP not responding - that's fine
+        } finally {
+            # v3.8.25: garantito chiusura socket UDP anche su exception (no resource leak)
+            if ($udpClient) { try { $udpClient.Close() } catch {} }
         }
     }
 

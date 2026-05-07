@@ -1315,7 +1315,10 @@ async def connector_update_check(request: Request):
         "download_url": f"/api/connector/download/{update_info['filename']}",
         "changelog": update_info.get("changelog", ""),
         "published_at": update_info.get("published_at", ""),
-        "file_size": update_info.get("file_size", 0)
+        "file_size": update_info.get("file_size", 0),
+        # v3.8.25: integrity hash — il connector PowerShell verifica via Get-FileHash
+        # SHA256 dopo il download. Se mismatch -> abort senza estrarre/copiare.
+        "sha256": update_info.get("sha256", "")
     }
 
 
@@ -1402,10 +1405,16 @@ async def upload_connector_update(request: Request, file: UploadFile = File(...)
         logging.error(f"Errore scrittura ZIP {filepath}: {e}")
         raise HTTPException(status_code=500, detail=f"Errore scrittura ZIP: {e}")
 
+    # v3.8.25: integrity hash — calcoliamo SHA256 del ZIP e lo includiamo in
+    # /update-check cosi' il connector PowerShell verifica il download e abortisce
+    # in caso di MITM / corruzione di rete / proxy che riscrive il body.
+    import hashlib
+    sha256 = hashlib.sha256(content).hexdigest()
+
     await db.connector_updates.update_many({}, {"$set": {"active": False}})
     update_doc = {
         "version": version, "filename": safe_filename, "changelog": changelog,
-        "file_size": len(content), "active": True,
+        "file_size": len(content), "sha256": sha256, "active": True,
         "published_at": datetime.now(timezone.utc).isoformat(),
         "uploaded_by": current_user.get("name", "admin")
     }
@@ -1444,6 +1453,69 @@ async def get_connector_update_info(current_user: dict = Depends(get_current_use
         update_info["updated_connectors"] = updated
         update_info["pending_connectors"] = total_connectors - updated
     return update_info or {"version": "1.0.0", "total_connectors": total_connectors, "updated_connectors": 0, "pending_connectors": 0}
+
+
+@router.post("/admin/connector/rebuild-zip")
+async def admin_rebuild_connector_zip(request: Request, current_user: dict = Depends(get_current_user)):
+    """Builda lo ZIP del connector dai sorgenti correnti in /app/noc-connector/.
+
+    Body JSON: { "version": "3.8.25", "changelog": "..." }
+
+    Cosa fa:
+    1. Pacchettizza i sorgenti (con elenco esplicito di file inclusi — niente glob furbo)
+    2. Inietta il version.json al volo con la versione passata
+    3. Calcola SHA256 dello ZIP
+    4. Marca attivo nel DB (disattiva i precedenti)
+    5. Copia nelle cartelle public per /86NocConnector.zip pubblico
+
+    Restituisce: { version, filename, size, sha256, files_included, copied_public_paths }
+    """
+    if current_user.get("role") not in ["admin", "security_admin"]:
+        raise HTTPException(status_code=403, detail="Admin role required")
+    body = await request.json()
+    version = (body.get("version") or "").strip()
+    changelog = (body.get("changelog") or "").strip()
+    if not version:
+        raise HTTPException(status_code=400, detail="version richiesta (es. '3.8.25')")
+    try:
+        from build_connector_zip import build_connector_zip, copy_to_public_dirs
+        from pathlib import Path as _Path
+    except ImportError as e:
+        raise HTTPException(status_code=500, detail=f"Build module non disponibile: {e}")
+    try:
+        info = build_connector_zip(version, changelog, current_user.get("name", "admin"))
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("rebuild-zip fallito")
+        raise HTTPException(status_code=500, detail=f"Build fallita: {e}")
+
+    # Pubblica nel DB (in-process async, no asyncio.run)
+    await db.connector_updates.update_many({}, {"$set": {"active": False}})
+    await db.connector_updates.insert_one({
+        "version": info["version"],
+        "filename": info["filename"],
+        "changelog": changelog,
+        "file_size": info["size"],
+        "sha256": info["sha256"],
+        "active": True,
+        "published_at": datetime.now(timezone.utc).isoformat(),
+        "uploaded_by": current_user.get("name", "admin"),
+        "build_method": "rebuild-from-source",
+    })
+    copied = copy_to_public_dirs(_Path(info["path"]))
+    return {
+        "status": "ok",
+        "version": info["version"],
+        "filename": info["filename"],
+        "size": info["size"],
+        "sha256": info["sha256"],
+        "files_included": info["files_included"],
+        "copied_public_paths": copied,
+        "message": "ZIP rebuildato dai sorgenti, marcato attivo, connettori si aggiorneranno entro 5 min.",
+    }
 
 
 @router.post(f"/{C}/up")

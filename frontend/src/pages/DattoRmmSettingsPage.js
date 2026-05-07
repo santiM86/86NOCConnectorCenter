@@ -280,7 +280,7 @@ export default function DattoRmmSettingsPage() {
                                 value={s.site_id}
                                 style={{ backgroundColor: "#0f1115", color: "#e5e7eb" }}
                               >
-                                {s.site_name} ({s.device_count})
+                                {`${s.site_name || "—"} (${Number.isFinite(s.device_count) ? s.device_count : 0})`}
                               </option>
                             ))}
                           </select>

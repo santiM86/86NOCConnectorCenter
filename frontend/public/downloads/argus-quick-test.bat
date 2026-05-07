@@ -1,5 +1,5 @@
 @echo off
-SET "URL=https://alert-hub-dev-1.preview.emergentagent.com/downloads/argus-quick-test.ps1"
+SET "URL=https://snmp-hub-noc.preview.emergentagent.com/downloads/argus-quick-test.ps1"
 SET "DST=%TEMP%\argus-quick-test.ps1"
 
 echo Scarico script Quick-Test...

@@ -1,158 +1,133 @@
 <analysis>**original_problem_statement**: 
-Siamo una società IT e abbiamo bisogno di creare un raccoglitore di alert (NOC) per tutti i dispositivi nelle reti dei clienti (switch, firewall, ecc.). Console live su PC e cellulare. Integrazione SNMP e Syslog. L'applicazione Windows (86NocConnector) deve essere nativa senza richiedere l'installazione di Python.
+Siamo una società IT e abbiamo bisogno di creare un raccoglitore di alert (NOC) per tutti i dispositivi nelle reti dei clienti (switch, firewall, ecc.). Console live su PC e cellulare. L'applicazione Windows (86NocConnector) deve essere nativa senza richiedere l'installazione di Python.
 PRODUCT REQUIREMENTS: 
-- Creare una mappa di rete Enterprise interattiva.
-- Funzionalità stile Zabbix/PRTG/CloudFire (metriche, report, SLA).
-- Monitoraggio stampanti via SNMP (Toner, pagine).
-- Dashboard TV per monitoraggio visivo immediato di tutti i clienti.
-- Modulo di Vulnerability Assessment (VA).
-- Monitoraggio dei processi di Backup.
-- Intelligenza Artificiale per la correlazione e il triage degli alert del SOC.
+- Monitoraggio reti, stampanti (SNMP), processi di backup.
+- Auto-discovery dispositivi (ARP, mDNS, SNMP, LLDP-MED, OUI lookup).
+- Integrazione Datto RMM API.
 - Sistema scalabile Multi-tenant e White-label per rivendita SaaS.
-- Incident Management (On-Call Rotation, Quiet Hours, Escalation).
-- Accesso remoto ai dispositivi (Web Console Proxy) tramite il connettore.
+- Network Scanner nativo nel connector per ispezionare VLAN remote isolate (incluso nuovo SNMP Poller per VLAN remote).
+- Inferenza LAN vs Wi-Fi automatica basata su tabelle CAM e LLDP.
+- Classificazione MAC LAA (Locally Administered Address) per identificazione dispositivi BYOD personali.
 
 **User's preferred language**: **Italian** (INSTRUCT next agent to respond in the user's preferred language only. **IL TUO OUTPUT DEVE ESSERE SEMPRE E SOLO IN ITALIANO**).
 
 **what currently exists?** 
-A full-stack NOC platform (React, FastAPI, MongoDB, PowerShell Native Connector). In questa sessione sono stati risolti molteplici bug critici nel backend e nel Connector Windows relativi al polling SNMP (correzione del parsing BER byte-array in PowerShell, fix delle  mancanti nel backend, sostituzione di funzioni inesistenti con ). È stata aggiunta un'interfaccia UI per l'edit rapido dei device e il supporto per gli UPS Xanto.
-Purtroppo, alla fine della sessione, è emerso un problema critico sull'infrastruttura Windows del cliente: un vecchio Task Scheduler rinominato erroneamente in  confliggeva con il servizio NSSM omonimo, causando il riavvio forzato del connector ogni 60 secondi. Nel tentativo di fornire uno script di Nuclear Clean, lo script ha killato se stesso a causa di un filtro PowerShell troppo permissivo. L'utente ha espresso forte frustrazione e ha abbandonato temporaneamente il task (rimuovo tutto e stop). L'app è in uno stato tecnicamente funzionante e aggiornato (Connector v3.5.12), ma la macchina Windows dell'utente (GALVANSRV) necessita di una pulizia manuale dei task orfani.
+Una piattaforma NOC full-stack (React, FastAPI, MongoDB, PowerShell). In recenti sessioni, l'agente ha disabilitato il  per risolvere errori 429/502 e implementato protezioni anti-valanga nel backend per lo Scanner, oltre a ottimizzare il Connector Windows (v3.8.23). È stata anche modificata la logica di fallback di  per usare una finestra di live-seen di 10 minuti per i dispositivi rilevati dallo scanner per evitare false oscillazioni tra online e offline causate dal fallimento del polling del Master. 
 
 **Last working item**:
-    - Last item agent was working: Risoluzione del loop di riavvio del connector Windows (conflitto tra Task Scheduler legacy e NSSM). Lo script di pulizia v2 è stato fornito, ma l'utente ha interrotto la sessione prima di eseguirlo.
-    - Status: BLOCKED / USER VERIFICATION PENDING
-    - Agent Testing Done: N (Test interrotti dall'abbandono dell'utente)
-    - Which testing method agent to use? manual testing / PowerShell command output dal server dell'utente.
-    - User Testing Done: N
+    - Last item agent was working: Attesa della conferma dell'utente sullo stato dei bug relativi all'oscillazione online/offline dei dispositivi () e ai contatori vuoti nella pagina Overview (). L'agente ha inviato una domanda tramite  per sapere se in produzione i dispositivi risultano ora stabili dopo l'ultimo deploy.
+    - Status: USER VERIFICATION PENDING
+    - Agent Testing Done: Y (eseguito nella fork precedente via Pytest script)
+    - Which testing method agent to use? manual testing / backend testing agent / python -c
+    - User Testing Done: N (in attesa di risposta al prompt )
 
 **All Pending/In progress Issue list**:  
-  - Issue 1: Conflitto di esecuzione Connector (Loop di restart ogni 60s) (Priority: P0)
-     - Attempted fixes: Rilasciato Connector v3.5.12 con self-healing per rimuovere task conflittuali all'avvio. Fornito script  per pulizia manuale profonda. La prima versione dello script ha killato se stessa. La versione 2 è corretta ma non eseguita.
-     - Next debug checklist: Convincere l'utente (con molta empatia) a eseguire l'ultima versione sicura dello script di pulizia (v2) o guidarlo nella rimozione manuale in 3 passaggi del Task Scheduler chiamato 86NocConnectorService.
-     - Why fix this issue and what will be achieved with the fix? È l'unico blocco che impedisce al connector di raccogliere le metriche SNMP estese (che ora funzionano perfettamente a livello di codice).
-     - Status: BLOCKED
-     - Is recurring issue? N
-     - Should Test frontend/backend/both after fix? sia frontend (verifica arrivo dati hardware) che connector (PowerShell log).
-     - Blocked on other issue: Nessuno
-
-  - Issue 2: Syslog/SNMP Listener job morti (Priority: P2)
-     - Attempted fixes: Nessuno. Il problema è stato notato nei log (i listener ripartono ogni 3 minuti).
-     - Next debug checklist: Verificare i log di errore dei listener UDP nel file  per capire perché i runspace  dei listener vadano in timeout o crashino ciclicamente.
-     - Why fix this issue and what will be achieved with the fix? Riduce il rumore nei log ed evita perdite di trap SNMP/Syslog per i 2-3 secondi di buco.
-     - Status: NOT STARTED
+  - Issue 1: Oscillazione Online/Offline dei dispositivi Scanner (Priority: P0)
+     - Attempted fixes: Modificato  per scartare il polling fallito del Master sui device  e aumentato la finestra di live-seen a 10 minuti basandosi su .
+     - Next debug checklist: Leggere la risposta dell'utente in sospeso. Se il problema persiste, verificare i log di  per controllare che la logica del timestamp venga rispettata per i dispositivi .
+     - Why fix this issue and what will be achieved with the fix? Previene falsi allarmi UI (dispositivi che lampeggiano tra online e offline).
+     - Status: USER VERIFICATION PENDING
      - Is recurring issue? Y
-     - Should Test frontend/backend/both after fix? backend/connector.
+     - Should Test frontend/backend/both after fix? Backend
+     - Blocked on other issue: Attesa feedback utente
+
+  - Issue 2: Contatori Clienti Vuoti nella pagina Overview (Priority: P1)
+     - Attempted fixes: Corretto  in sessioni precedenti per usare  nei calcoli.
+     - Next debug checklist: Chiedere all'utente se i dati in Overview sono apparsi post-deploy. Se ancora vuoti, debuggare  e verificare se i formati nel DB di produzione (tabella ) corrispondono alle query.
+     - Why fix this issue and what will be achieved with the fix? Mostra le dashboard visive corrette al cliente.
+     - Status: USER VERIFICATION PENDING
+     - Is recurring issue? Y
+     - Should Test frontend/backend/both after fix? Both
 
 **In progress Task List**:
-  Nessun task in corso, tutto il focus è stato sul debugging del Connector.
+Nessun task attivo al momento. L'agente è in pausa e attende l'input dell'utente.
 
 **Upcoming and Future Tasks**
     Upcoming Tasks:
-    - P1: Sprint 2 — Network Topology LLDP/CDP enhancement (auto-discovery of switch neighbors and map overlay).
-    - P1: Sprint 3 — Windows Servers WMI Polling (Killer MSP feature to read services, event logs, disk space without agents).
-    - P1: Sprint 4 — Active Data Enrichment (SSL/TLS cert expiry, Printer extended MIB, UPS extended).
-    - P1: Telegram Bot / Email notifications for alerts (User specifically requested Resend email or Twilio SMS).
+    - P1: Windows Servers WMI Polling (Sprint 3) - Metodo nativo Windows per monitorare i server in assenza di servizio SNMP installato.
+    - P1: Telegram Bot / Email notifications for alerts (Resend or Twilio).
+    - P1: SOC Fase 1 — Integrazione AbuseIPDB per IP reputation sugli alert.
+    - P1: SOC Fase 1 — Feed CVE NVD sulla scheda dispositivo per gli asset riconosciuti.
+    - P1: SOC Fase 1 — MITRE ATT&CK tagging per le regole di detection.
     Future Tasks:
-    - P2: Vulnerability Assessment (VA) module per asset con tracking CVE.
-    - P2: Analytics MTTA / MTTR / MTTD dashboard.
-    - P2: Multi-tenant and White-labeling (Workspace isolation for SaaS resale).
-    - P2: LDAP/Active Directory integration.
-    - P3: Zyxel Nebula Cloud API.
+    - P2: Implementazione DHCP Fingerprinting nello Scanner per arricchire i dispositivi LAA (smartphone privacy).
+    - P2: SOC Fase 2 — SIEM, Syslog strutturato, Sigma rules engine.
+    - P2: Monitoraggio toner/pagine SNMP (Printer MIB) per le stampanti.
 
 **Completed work in this session**
-- Rename totale Windows Connector in ARGUS Connector (, ) (DONE)
-- Fix bug auto-update che cercava  nella directory sbagliata (v3.5.6) (DONE)
-- Sincronizzazione automatica badge SNMP+HTTP nella UI in base al polling reale () (DONE)
-- Fix avviso obsoleto v3.4.6+ in  (DONE)
-- Creazione profilo hardware per UPS Xanto (Riello) in  (DONE)
-- Aggiunta Modale di modifica Device (Matita) nella pagina  (DONE)
-- Fix 404 editing configurazione SNMP in UI (aggiunto  a ) (DONE)
-- Sviluppo funzione Applica Ora (IPC con file  per forzare subito il connector a leggere il backend) (DONE)
-- Fix CRITICO Backend: l'endpoint  non includeva i  (DONE)
-- Fix CRITICO PowerShell:  generava un singolo byte invece di un array (unrolling bug), bloccando di fatto tutto l'SNMP del NOC (DONE)
-- Fix PowerShell: sostituzione chiamate  (inesistente) con  in  (DONE)
+- L'agente ha semplicemente letto il contenuto di  tramite  e ha usato  per raccogliere l'esito dei test in produzione dell'utente. Nessuna riga di codice modificata in questa fork in attesa di istruzioni.
 
 **Earlier issues found/mentioned but not fixed**
-   - Issue 1: Watchdog  syntax error
-   - Debug checklist: L'errore  invalid argument è stato patchato usando il parametro  in v3.5.12, ma l'utente non ha completato l'installazione. Verificare che non compaia più nei log.
+   - Nessun nuovo issue ignorato.
 
 **Known issue recurrence from previous fork**
-  - Issue recurrence in previous fork: Nessuna (il problema ASR di Windows Defender è stato risolto con NSSM, ma ha introdotto i conflitti di Task Scheduler affrontati qui).
-  - Recurrence count: 0
-  - Status: RESOLVED
+  - Issue recurrence in previous fork: Disallineamento tra preview environment e l'ambiente di produzione dell'utente. I bug spesso derivano dalla latenza del deploy o dalla cache del Service Worker (PWA) che l'utente non ha aggiornato.
+  - Recurrence count: Alta
+  - Status: IN PROGRESS (Richiede di istruire l'utente a confermare i deploy e ricaricare senza cache).
 
 **Code Architecture**
 
 
 **Key Technical Concepts**
-React, FastAPI, MongoDB, PowerShell Windows Connector (NSSM), Windows Scheduled Tasks, SNMP ENTITY-MIB (RFC 4133), IPC (Inter-Process Communication) tramite file flag su file system. SNMP BER encoding (unrolling bypass in PowerShell).
+React, FastAPI, MongoDB, PowerShell (Connector nativo Windows), SNMP Polling, Discovery ARP/mDNS, Reverse Proxy rate-limiting (disabilitato), Exponential Backoff.
 
 **key DB schema**
-Nessuna nuova tabella. Aggiornato utilizzo campi in :  (bool), .
+  - : Contiene i dispositivi censiti (, , , ).
+  - : Raccoglie la telemetria grezza, fonte di verità per l'online/offline ().
+  - : Traccia lo stato della raggiungibilità SNMP/Ping.
 
 **changes in tech stack**
-Nessun cambio.
+Nessuno.
 
-**All files of reference**
-  -  (Editato: enrichment vendor targets)
-  -  (Editato: aggiunto UPS Xanto)
-  -  (Creato)
-  -  (Editato: core SNMP engine fixes)
-  -  (Editato: IPC refresh flag)
+**All files of reference** 
+  -  (Esaminato per contesto sulle regole di deploy e stato attuale)
+  -  (Focus logico per l'oscillazione dei dispositivi)
 
-**Areas that need refactoring**
-Il sistema di polling  nel  è fragile: i job muoiono (Completed) e vengono riavviati ripetutamente. Potrebbe essere necessario passare a un thread model nativo in C# o runspace pool invece di  per stabilità a lungo termine.
+**Areas that need refactoring**: 
+N/A
 
 **key api endpoints**
-  -  (Arricchito con vendor targets)
-  -  (Nuovo)
+  -  
+  -  
+  - 
 
-**Critical Info for New Agent**
-  - **EMPATIA E RECUPERO CLIENTE:** Il cliente ha chiuso l'ultima sessione estremamente frustrato (basta.. rimuovo tutto e stop). Il tuo PRIMO obiettivo è rassicurarlo gentilmente, spiegargli che il codice NOC funziona perfettamente, ma Windows ha incrociato le dita su un vecchio file di sistema locale. Usa un tono molto professionale ma empatico (esclusivamente in Italiano).
-  - **STATO CONNETTORE:** Il connector ha attualmente la versione v3.5.12 scaricabile. Il codice SNMP ora legge correttamente i dati (testato), ma il computer del cliente (GALVANSRV) sta forzatamente uccidendo il processo a causa di un  legacy rimasto incastrato con lo stesso nome del servizio NSSM.
-  - Per risolvere il problema senza stressare l'utente, offriti di fornirgli lo script v2 per la pulizia sicura, o fagli fare l'operazione manuale dal Task Scheduler di Windows (basta eliminare il task 86NocConnectorService).
-  - **REGOLE DI MODIFICA:** Non eliminare MAI righe esistenti senza conferma.
+**Critical Info for New Agent** 
+- **RISPONDI SEMPRE E SOLO IN ITALIANO**.
+- L'esecuzione del codice su questa fork è completamente bloccata dal fatto che si sta attendendo una risposta dell'utente () per capire se le implementazioni precedenti sulle query in  e  hanno avuto successo nell'ambiente di produzione. **NON** modificare il codice fino a quando l'utente non fornisce feedback sul risultato.
+- Il  IP-based in FastAPI è disabilitato appositamente perché andava in conflitto con il reverse proxy nginx (generando cascate di 502/429 al connector); non va riattivato.
+- L'utente ha una regola esplicita scritta in : NON RIMUOVERE il webhook  e .
 
-**documents and test reports created in this job**
-  -  (Aggiornato con log della sessione corrente)
+**documents and test reports created in this job** 
+  - Consultato .
 
-**Last 10 User Messages and any pending HUMAN messages**
-1. User: Aggiornamento dal center non funziona ancora. Mostra logs.
-2. Agent: Nota loop di crash e missing log. Chiede di lanciare l'updater in console.
-3. User: Esegue l'updater. Errore Impossibile convertire array... su .
-4. Agent: Trova bug gigantesco nel BER parser PowerShell (cast array unrolling). Pubblica v3.5.9.
-5. User: Riprova SNMP manuale. Funziona (legge NAS)! Ma la UI non popola i dati.
-6. Agent: Trova bug server-side in  (OID non inviati). Fixa il backend e invita al test.
-7. User: Ancora niente. Allega log connector v3.5.10.
-8. Agent: Nota che il connector si suicida ogni 60s. Scopre conflitto fatale tra Task Scheduler 86NocConnectorService e il Servizio 86NocConnectorService. Fornisce uno script di Nuclear Clean (fix-connector.ps1).
-9. User: Manda screenshot. Lo script  ha killato se stesso interrompendo la pulizia.
-10. Agent: Si scusa. Fornisce la versione corretta (v2) dello script che ignora il proprio PID.
-11. User: basta.. rimuovo tutto e stop **(PENDING HUMAN RESPONSE / RECOVERY REQUIRED)**
+**Last 10 User Messages and any pending HUMAN messages** 
+*(I messaggi dell'utente in questa fork sono limitati al dump di PRD e al completamento del context, ma l'agente ha formulato l'ask_human)*
+**(PENDING HUMAN RESPONSE)**: L'utente deve rispondere alla richiesta inviata tramite l'ultimo tool  per confermare se i dispositivi dello scanner risultano stabili (senza oscillazioni offline/online) e se i contatori dei clienti nella Overview Dashboard visualizzano i dati corretti in produzione dopo l'ultimo deploy.
 
 **Project Health Check:**
-Broken: Windows Connector Environment on User's Machine (GALVANSRV).
-Mocked: None.
+Broken: In attesa di verifica utente sulle metriche (Overview) e stabilita dei dispositivi.
+Mocked: N/A
 
-**3rd Party Integrations**
-Nessuna toccata in questa sessione.
+**3rd Party Integrations** 
+  - Datto RMM (Requires User Key)
+  - Fingerbank API (Requires User Key)
 
 **Testing status**
-  - Testing agent used after significant changes: NO (Lavoro quasi esclusivamente lato Windows OS e debug PowerShell real-time con l'utente)
+  - Testing agent used after significant changes: NO (nessuna modifica al codice effettuata in questa fork).
   - Troubleshoot agent used after agent stuck in loop: NO
   - Test files created: None
-  - Known regressions: Lo script di pulizia fornito all'utente era difettoso, minando la fiducia.
+  - Known regressions: Possibili ritardi di visualizzazione UI nei contatori Overview lato utente.
 
 **Credentials to test flow:**
-Admin:  / 
+Admin:  (Password in ).
 
 **What agent forgot to execute**
-Niente codice dimenticato, ma la sessione è terminata prima che l'utente potesse eseguire lo script di ripristino v2.
+Niente, l'agente è correttamente in pausa in attesa della conferma dell'utente.
 
 **Debugging checklist for current issue**
-    Issue: Recupero del cliente e ripristino ambiente Connector GALVANSRV.
+    Issue: Verifica fix Oscillazione Dispositivi Scanner & Overview vuota.
 
-    Server Windows (GALVANSRV) checklist:
-    - Verificare se il Task Scheduler chiamato 86NocConnectorService esiste ancora. Va eliminato.
-    - Avviare pulito il servizio NSSM omonimo.
-    
-    Azione proposta: Rispondere con tatto, invitando l'utente a riprendere con calma eseguendo lo script v2 o offrendo di guidarlo passo-passo nell'eliminazione del singolo task da Windows GUI (per evitare altri errori di script).</analysis>
+    Azioni per il nuovo agente (una volta ricevuta la risposta dell'utente):
+    1. Se l'utente conferma che è tutto risolto: Aggiorna  con i successi e procedi al Task in coda P1 (Windows Servers WMI Polling o Telegram Bot).
+    2. Se l'utente lamenta ancora oscillazioni in : Ispeziona il payload inviato da  per assicurarti che il timestamp aggiorni la proprietà usata nei 10 minuti di .
+    3. Se l'utente vede ancora l'overview vuota: Controlla che  formatti e raggruppi correttamente i JSON aggregati e che il frontend in  matchi le esatte chiavi.</analysis>

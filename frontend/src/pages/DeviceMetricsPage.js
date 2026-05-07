@@ -58,9 +58,15 @@ export default function DeviceMetricsPage({ embeddedIp = null, embeddedClientId 
   useEffect(() => {
     if (embeddedIp) return;
     if (!selectedClient) return;
-    axios.get(`${API}/api/connector/${selectedClient}/managed-devices`, { headers })
+    axios.get(`${API}/api/devices?client_id=${selectedClient}`, { headers })
       .then(r => {
-        const ds = r.data?.devices || r.data || [];
+        const list = Array.isArray(r.data) ? r.data : (r.data?.devices || r.data?.items || []);
+        // normalize to {ip, name} so existing UI keeps working
+        const ds = list.map(d => ({
+          ip: d.ip || d.ip_address || d.device_ip,
+          name: d.name || d.hostname || d.ip_address || d.ip,
+          ...d,
+        })).filter(d => d.ip);
         setDevices(ds);
         if (ds.length > 0 && !selectedIp) setSelectedIp(ds[0].ip);
       }).catch(() => {});

@@ -253,13 +253,14 @@ if (-not $checkResponse.update_available) {
 $newVersion = $checkResponse.latest_version
 $newFilename = $checkResponse.filename
 $newFileSize = $checkResponse.file_size
+$newSha256 = if ($checkResponse.PSObject.Properties['sha256']) { [string]$checkResponse.sha256 } else { "" }
 
 if ($newVersion -eq $currentVersion) {
     Write-UpdateLog "Gia' aggiornato a v$currentVersion"
     exit 0
 }
 
-Write-UpdateLog "Aggiornamento disponibile: v$currentVersion -> v$newVersion (file: $newFilename, size: $newFileSize bytes)" "INFO"
+Write-UpdateLog "Aggiornamento disponibile: v$currentVersion -> v$newVersion (file: $newFilename, size: $newFileSize bytes, sha256: $(if ($newSha256) { $newSha256.Substring(0,16)+'...' } else { 'N/A (legacy)' }))" "INFO"
 Send-Progress 10 "starting" "Preparazione aggiornamento v$newVersion"
 
 # ==================== STEP 2: Download ZIP ====================
@@ -285,6 +286,29 @@ try {
     Write-UpdateLog "Download completato: $actualSize bytes"
     if ($newFileSize -gt 0 -and $actualSize -ne $newFileSize) {
         Write-UpdateLog "ATTENZIONE: size atteso $newFileSize, ricevuto $actualSize" "WARN"
+    }
+
+    # v3.8.25: integrity check SHA256 — se il backend ha pubblicato un hash,
+    # verifichiamo che il download corrisponda. Mismatch = MITM, proxy che
+    # riscrive il body, ZIP corrotto, disco pieno mid-write. In ogni caso NON
+    # estraiamo / installiamo: abort sicuro e cleanup.
+    if ($newSha256) {
+        Send-Progress 40 "verifying" "Verifica integrita' SHA256"
+        try {
+            $localHash = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash.ToLower()
+            $expectedHash = $newSha256.ToLower()
+            if ($localHash -ne $expectedHash) {
+                Write-UpdateLog "FATAL: SHA256 mismatch! atteso=$expectedHash ricevuto=$localHash" "ERROR"
+                Send-Progress 0 "error" "Integrita' ZIP fallita (SHA256 mismatch). Aggiornamento abortito per sicurezza."
+                try { Remove-Item $zipPath -Force -ErrorAction SilentlyContinue } catch {}
+                exit 14
+            }
+            Write-UpdateLog "SHA256 OK: $($localHash.Substring(0,16))..." "INFO"
+        } catch {
+            Write-UpdateLog "Impossibile calcolare SHA256: $($_.Exception.Message). Procedo (size match)." "WARN"
+        }
+    } else {
+        Write-UpdateLog "Backend non ha fornito SHA256 (compat legacy) - skip verifica hash" "INFO"
     }
 } catch {
     Write-UpdateLog "Errore download: $($_.Exception.Message)" "ERROR"

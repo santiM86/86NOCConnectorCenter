@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "@/App";
 import { Button } from "@/components/ui/button";
@@ -20,7 +20,12 @@ export default function LoginPage() {
   const location = useLocation();
   const from = location.state?.from?.pathname || "/";
 
-  if (user) { navigate(from, { replace: true }); return null; }
+  useEffect(() => {
+    if (user) {
+      navigate(from, { replace: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();

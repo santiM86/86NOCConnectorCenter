@@ -1,6 +1,6 @@
 @echo off
 REM Lanciatore con doppio click - apre lo script PS1 con bypass policy
-SET "URL=https://alert-hub-dev-1.preview.emergentagent.com/downloads/argus-diag.ps1"
+SET "URL=https://snmp-hub-noc.preview.emergentagent.com/downloads/argus-diag.ps1"
 SET "DST=%TEMP%\argus-diag.ps1"
 
 echo Scaricando lo script di diagnostica...
