@@ -26,6 +26,21 @@ Questi due asset sono parte del flusso CI/CD verso `argus.86bit.it` e sono **mis
 
 # ARGUS Center — NOC Platform (86bit)
 
+## 2026-05-07 — FIX DEFINITIVO RACE CONDITION TRAY-NSSM (v3.8.23)
+**Bug**: lo Scanner (e occasionalmente il Master) si riavviava ogni 30-60 minuti, con conseguenti dispositivi che andavano **OFFLINE per 2-3 minuti** sulla UI Center prima di tornare online. Pattern dal log scanner001.txt: 7-8 cicli SELF-HEAL al giorno con messaggio "Rilevato Task Scheduler conflittuale '86NocConnectorService' - causa race condition con servizio NSSM. Rimozione...".
+
+**Root cause**: il **tray_app.ps1** (l'icona connector nella system tray di Windows) registrava un **Windows Scheduled Task** chiamato `86NocConnectorService` — **stesso nome del servizio NSSM**. I due processi si uccidevano a vicenda. Il SELF-HEAL al boot del connector rimuoveva il task DOPO il conflitto, ma il tray lo ricreava.
+
+**Fix in `/app/noc-connector/prg/src/tray_app.ps1`**:
+- `$global:TaskName` rinominato da `"86NocConnectorService"` a **`"86NocConnector_TrayTask"`** (nessuna piu' collisione col servizio NSSM)
+- Aggiunto `$global:LegacyTaskName = "86NocConnectorService"` per cleanup retroattivo
+- `Register-ConnectorTask`: ora rimuove ESPLICITAMENTE prima il vecchio task con nome conflittuale, poi registra il nuovo
+
+**Effetti attesi dopo il push v3.8.23**:
+- Niente piu' restart cicli ogni 30-60min sullo Scanner
+- Niente piu' "OFFLINE 2-3min" sui device della rete remota
+- SELF-HEAL al boot continua a rimuovere il vecchio task da installazioni precedenti (zero downtime per le upgrade)
+
 ## 2026-05-07 — FIX OVERVIEW POPULATE + UI POLISH (v3.8.22)
 **Bug**: nella pagina Clienti, anche dopo il fix `devices.py`, i contatori del cliente Galvan apparivano vuoti ("—") perche':
 1. **`/api/overview/clients`** (3rd pass managed_devices) mettava status="unknown" invece di "online" per device scoperti dallo Scanner ma non in poll_status.
