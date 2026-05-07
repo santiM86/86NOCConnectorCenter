@@ -1,3 +1,31 @@
+## 2026-05-07 EXTRA UX — Sezione "Interfacce per ruolo" firewall/router (v3.8.35)
+
+**Feature**: aggiunta sezione visiva di raggruppamento delle porte ifTable per ruolo (WAN / LAN / DMZ / MGMT / Altro) nella `SwitchPortsPage`, mostrata solo per device classificati `firewall` / `router` / `gateway`.
+
+**Backend** (`/app/backend/routes/topology.py`):
+- Ogni porta restituita ha ora un campo `role` calcolato lato server da `name + alias` (descrizione SNMP).
+- Pattern matching (case-insensitive) prioritizzato:
+  1. **WAN**: keywords `wan, internet, isp, external, uplink, fiber, fttc, ftth`
+  2. **DMZ**: keywords `dmz, opt, untrust`
+  3. **MGMT**: keywords `mgmt, mgt, managem, admin, console, oob`
+  4. **LAN**: keywords `lan, internal, trust, user, client, office`
+  5. **other**: tutto il resto
+- `totals.by_role` ora aggrega per ruolo: `total`, `up`, `down`, `rx_bps`, `tx_bps`.
+
+**Frontend** (`/app/frontend/src/pages/SwitchPortsPage.js`):
+- Nuova sezione "Interfacce per ruolo" sopra i filtri stato. 5 card colorate (rosa=WAN, emerald=LAN, ambra=DMZ, indigo=MGMT, neutral=Altro) con porte totali, up↑/down↓, traffico Rx/Tx aggregato.
+- Click su card → applica `roleFilter` che si combina con i filtri stato esistenti (es. WAN + Down). Bottone "× Mostra tutte" per resettare.
+- Visibile solo per `device_type` = firewall / router / gateway. Nascosta su switch e NAS (non rilevante).
+
+**Test di regressione**: 7 test passati in `/app/backend/tests/test_port_role_classification_v3835.py` (algoritmo classificazione + smoke source-check).
+
+**Verifica preview**: `GET /api/devices/{ip}/switch-ports` ora ritorna `totals.by_role` ({} se nessuna porta) e `port.role` per ogni interfaccia. Lint pulito.
+
+**Compatibilità connector**: nessuna modifica richiesta al connector PowerShell. La classificazione è server-side basata sui campi `name`/`alias` già raccolti dall'ifTable standard.
+
+---
+
+
 ## 2026-05-07 EXTRA UX — Dettaglio porte/interfacce per Firewall e NAS (v3.8.34)
 
 **Issue UX**: il bottone "Porte switch" (vista Nebula-style con tiles UP/DOWN, traffico Rx/Tx, neighbor LLDP, flap history) era visibile solo per device classificati come switch. Non era utilizzabile per Firewall (Zyxel USG, FortiGate) e NAS (Synology, QNAP), nonostante questi rispondano allo standard MIB-II `ifTable` e il connector PowerShell raccolga già i dati per **qualunque device SNMP** (`Poll-SwitchPortDetails` viene chiamata in loop su tutti i device con `monitor_type=snmp/snmp+http`).

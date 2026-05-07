@@ -281,6 +281,8 @@ export default function SwitchPortsPage() {
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState(null);
   const [filter, setFilter] = useState("all");
+  // v3.8.35: filtro per ruolo (WAN/LAN/DMZ/MGMT/other) - usato sui firewall/router.
+  const [roleFilter, setRoleFilter] = useState(null);  // null = tutti i ruoli
   const [selected, setSelected] = useState(null);
   const [cableView, setCableView] = useState(null);
   // Ordinamento tabella (header cliccabili)
@@ -344,6 +346,8 @@ export default function SwitchPortsPage() {
   const ports = useMemo(() => {
     if (!data?.ports) return [];
     return data.ports.filter(p => {
+      // v3.8.35: filtro ruolo combinabile con il filtro stato/PoE/LLDP
+      if (roleFilter && (p.role || "other") !== roleFilter) return false;
       if (filter === "up") return p.oper === 1 && p.admin === 1;
       if (filter === "down") return p.oper !== 1 && p.admin === 1;
       if (filter === "admin_down") return p.admin === 2;
@@ -351,7 +355,7 @@ export default function SwitchPortsPage() {
       if (filter === "poe") return p.poe_status === 3;
       return true;
     });
-  }, [data, filter]);
+  }, [data, filter, roleFilter]);
 
   // Ports ordinati + filtrati per la tabella completa (solo-UP toggle)
   const tablePorts = useMemo(() => {
@@ -472,6 +476,73 @@ export default function SwitchPortsPage() {
         <button className="px-4 py-2 text-[var(--text-muted)] cursor-not-allowed" disabled title="Disponibile in futura versione">Reti</button>
         <button className="px-4 py-2 text-[var(--text-muted)] cursor-not-allowed" disabled title="Disponibile in futura versione">Aggregazioni</button>
       </div>
+
+      {/* v3.8.35: Sezione "Interfacce per ruolo" — visibile per firewall/router */}
+      {(() => {
+        const dt = (data.device_type || "").toLowerCase();
+        const isFwOrRouter = dt === "firewall" || dt.includes("router") || dt === "gateway";
+        const byRole = t.by_role || {};
+        // Mostra solo ruoli effettivamente presenti, in ordine logico WAN→LAN→DMZ→MGMT→other
+        const roleOrder = ["wan", "lan", "dmz", "mgmt", "other"];
+        const presentRoles = roleOrder.filter(r => byRole[r]?.total);
+        if (!isFwOrRouter || presentRoles.length === 0) return null;
+        const roleMeta = {
+          wan:   { label: "WAN",  icon: "🌐", color: "rose",     accent: "text-rose-300",     border: "border-rose-500/30",     bg: "bg-rose-500/5" },
+          lan:   { label: "LAN",  icon: "🔌", color: "emerald",  accent: "text-emerald-300",  border: "border-emerald-500/30",  bg: "bg-emerald-500/5" },
+          dmz:   { label: "DMZ",  icon: "🛡", color: "amber",    accent: "text-amber-300",    border: "border-amber-500/30",    bg: "bg-amber-500/5" },
+          mgmt:  { label: "MGMT", icon: "⚙", color: "indigo",   accent: "text-indigo-300",   border: "border-indigo-500/30",   bg: "bg-indigo-500/5" },
+          other: { label: "Altro", icon: "•", color: "neutral", accent: "text-[var(--text-muted)]", border: "border-[var(--bg-border)]", bg: "bg-[var(--bg-card)]" },
+        };
+        const fmt = (bps) => {
+          const b = Number(bps) || 0;
+          if (b >= 1e9) return (b/1e9).toFixed(2)+" Gbps";
+          if (b >= 1e6) return (b/1e6).toFixed(2)+" Mbps";
+          if (b >= 1e3) return (b/1e3).toFixed(1)+" kbps";
+          return b+" bps";
+        };
+        return (
+          <div className="space-y-2" data-testid="ports-by-role-section">
+            <div className="flex items-center gap-2">
+              <h2 className="text-[10px] uppercase tracking-[0.18em] text-[var(--text-muted)] font-bold">Interfacce per ruolo</h2>
+              {roleFilter && (
+                <button
+                  onClick={() => setRoleFilter(null)}
+                  className="text-[9px] px-1.5 py-0.5 rounded bg-cyan-500/10 border border-cyan-500/30 text-cyan-300 hover:bg-cyan-500/20"
+                  data-testid="clear-role-filter"
+                >× Mostra tutte</button>
+              )}
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
+              {presentRoles.map(r => {
+                const m = roleMeta[r];
+                const d = byRole[r];
+                const active = roleFilter === r;
+                return (
+                  <button
+                    key={r}
+                    onClick={() => setRoleFilter(active ? null : r)}
+                    className={`relative text-left p-2.5 rounded-lg border ${m.border} ${m.bg} transition-all hover:scale-[1.02] ${active ? "ring-2 ring-offset-2 ring-offset-[var(--bg-page)] ring-current shadow-lg " + m.accent : ""}`}
+                    data-testid={`role-card-${r}`}
+                  >
+                    <div className={`flex items-center justify-between mb-1.5 ${m.accent}`}>
+                      <span className="text-[10px] font-bold uppercase tracking-widest">{m.label}</span>
+                      <span className="text-[11px] opacity-70">{d.total} {d.total === 1 ? "porta" : "porte"}</span>
+                    </div>
+                    <div className="flex items-center gap-2 text-[10px]">
+                      <span className="text-emerald-300 font-mono">↑{d.up}</span>
+                      <span className="text-red-300 font-mono">↓{d.down}</span>
+                    </div>
+                    <div className="mt-1.5 pt-1.5 border-t border-[var(--bg-border)]/50 flex flex-col gap-0.5 text-[9px] font-mono">
+                      <span className="text-[var(--text-secondary)]">RX <span className="text-cyan-300">{fmt(d.rx_bps)}</span></span>
+                      <span className="text-[var(--text-secondary)]">TX <span className="text-fuchsia-300">{fmt(d.tx_bps)}</span></span>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Filtri */}
       <div className="flex items-center gap-1.5 flex-wrap text-[11px]">

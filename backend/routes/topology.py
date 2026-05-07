@@ -405,10 +405,31 @@ async def get_switch_ports(device_ip: str, current_user: dict = Depends(get_curr
         if int(p.get("poe_status") or 0) == 3:
             poe_active_count += 1
 
+        # v3.8.35: classifica il ruolo dell'interfaccia (firewall/router) basandosi
+        # su name + alias (descrizione). Permette il raggruppamento WAN/LAN/DMZ/MGMT
+        # nella UI quando device_type=firewall|router. Pattern coprono i casi piu' comuni:
+        # - Zyxel/pfSense/OPNsense usano alias custom (wan, lan, opt, dmz)
+        # - FortiGate ha port1..portN + wan1, internal, dmz
+        # - Cisco/HP usano interface description (es. "WAN_TIM", "LAN_USERS")
+        port_role = "other"
+        try:
+            label_src = f"{(p.get('alias') or '')} {(p.get('name') or '')}".lower()
+            if any(k in label_src for k in ("wan", "internet", "isp", "external", "uplink", "fiber", "fttc", "ftth")):
+                port_role = "wan"
+            elif any(k in label_src for k in ("dmz", "opt", "untrust")):
+                port_role = "dmz"
+            elif any(k in label_src for k in ("mgmt", "mgt", "managem", "admin", "console", "oob")):
+                port_role = "mgmt"
+            elif any(k in label_src for k in ("lan", "internal", "trust", "user", "client", "office")):
+                port_role = "lan"
+        except Exception:
+            pass
+
         out.append({
             "idx": p.get("idx"),
             "name": p.get("name"),
             "alias": p.get("alias") or "",
+            "role": port_role,
             "oper": oper,
             "oper_status": IF_OPER_STATUS_MAP.get(oper, "unknown"),
             "admin": admin,
@@ -436,6 +457,19 @@ async def get_switch_ports(device_ip: str, current_user: dict = Depends(get_curr
         {"ip": device_ip},
         {"_id": 0, "client_id": 1, "device_name": 1, "name": 1, "device_type": 1}
     ) or {}
+    # v3.8.35: aggregato per ruolo (WAN/LAN/DMZ/MGMT/other) per la sezione
+    # "Interfacce per ruolo" dei firewall/router. Conteggio porte + traffico totale.
+    by_role: dict = {}
+    for o in out:
+        r = o.get("role") or "other"
+        b = by_role.setdefault(r, {"total": 0, "up": 0, "down": 0, "rx_bps": 0, "tx_bps": 0})
+        b["total"] += 1
+        if o.get("oper") == 1:
+            b["up"] += 1
+        elif o.get("oper") == 2:
+            b["down"] += 1
+        b["rx_bps"] += int(o.get("rx_bps") or 0)
+        b["tx_bps"] += int(o.get("tx_bps") or 0)
     return {
         "device_ip": device_ip,
         "device_name": md_local.get("device_name") or md_local.get("name") or "",
@@ -451,6 +485,7 @@ async def get_switch_ports(device_ip: str, current_user: dict = Depends(get_curr
             "poe_active": poe_active_count,
             "rx_bps": total_rx_bps,
             "tx_bps": total_tx_bps,
+            "by_role": by_role,
         },
         "updated_at": first_updated,
     }
