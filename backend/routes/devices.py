@@ -221,6 +221,9 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
                 "connection_confidence": md.get("connection_confidence"),
                 "connector_hostname": pd.get("connector_hostname", ""),
                 "last_poll": pd.get("last_poll"),
+                # v3.8.37: per badge "down da Xh" della UI quando offline
+                "last_seen_at": md.get("last_seen_at"),
+                "unreachable_since": pd.get("unreachable_since"),
                 "sys_descr": pd.get("sys_descr", ""),
                 "cpu_usage": pd.get("cpu_usage"),
                 "memory_usage": pd.get("memory_usage"),

@@ -1,3 +1,22 @@
+## 2026-05-07 EXTRA UX — Badge "down da Xh" sui device offline (v3.8.37)
+
+**Feature**: nelle tabelle Dispositivi (per cliente + globale), aggiunto un badge inline con la durata del downtime per ogni device in stato `offline`. Permette di capire a colpo d'occhio se un device è giù da minuti, ore o giorni — utile per priorizzare gli interventi.
+
+**Backend** (`/app/backend/routes/devices.py`):
+- Il 1° pass (managed_devices con device_poll_status) ora include nel payload anche `last_seen_at` (da managed_devices) e `unreachable_since` (da device_poll_status). Servono al frontend per calcolare il delta.
+- Il 3° pass (managed_devices orfani / scanner-source) già esponeva `last_seen_at`.
+
+**Frontend** (`/app/frontend/src/pages/ClientOverviewPage.js` + `DevicesPage.js`):
+- Sotto la pill "OFFLINE", appare un piccolo testo rosso `down da Xs/Xm/Xh/Xg`.
+- Priorità sorgente: `unreachable_since` (più preciso, dal Master poll) → `last_seen_at` → `last_poll`.
+- Tooltip con la data/ora completa al passaggio del mouse.
+- Format compatto: `45s`, `12m`, `3h`, `2g` (giorni). 100% client-side, zero load aggiuntivo sul backend.
+
+**Verifica preview**: lint pulito, payload `/api/devices` arricchito. Sul preview non ci sono device offline per test visivo, ma in produzione i DATECS LTD (down dalle 12:20) mostreranno "down da 10h" e similmente per altri device offline da tempo.
+
+---
+
+
 ## 2026-05-07 P0 BUG FIX — Status fasullo "online" per device scanner-source (v3.8.36)
 
 **Issue P0 segnalato dall'utente**: nello screenshot della tabella Dispositivi, il device `NPIC3C01E` (stampante HP) era mostrato come **ONLINE** nonostante il suo "Ultimo Poll" fosse di 10 ore fa (`07 mag 12:20` con ora corrente `22:46`). La sua fonte era `SCANNER`. Domanda: "come mai metti online allora?".

@@ -1452,6 +1452,24 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
                       {d.status?.toUpperCase()}
                     </span>
                     {d.ping_ms && <span className="ml-1 text-[9px] text-[var(--text-muted)]">{d.ping_ms}ms</span>}
+                    {/* v3.8.37: badge "down da Xh" per device offline.
+                        Priorita': unreachable_since (Master poll) > last_seen_at > last_poll */}
+                    {(d.status === "offline") && (() => {
+                      const ref = d.unreachable_since || d.last_seen_at || d.last_poll;
+                      if (!ref) return null;
+                      const t = Date.parse(ref);
+                      if (Number.isNaN(t)) return null;
+                      const ageS = Math.max(0, Math.floor((Date.now() - t) / 1000));
+                      const lbl = ageS < 60 ? `${ageS}s`
+                        : ageS < 3600 ? `${Math.floor(ageS / 60)}m`
+                        : ageS < 86400 ? `${Math.floor(ageS / 3600)}h`
+                        : `${Math.floor(ageS / 86400)}g`;
+                      return (
+                        <div className="text-[9px] mt-0.5 text-red-400/80" title={`${d.unreachable_since ? "Non raggiungibile da" : "Ultima vista"}: ${new Date(t).toLocaleString("it-IT")}`}>
+                          down da {lbl}
+                        </div>
+                      );
+                    })()}
                   </td>
                   <td>{(() => {
                     const ct = d.connection_type;

@@ -156,6 +156,23 @@ export default function DevicesPage() {
                       {device.source === "connector" && (
                         <span className="ml-1.5 text-[8px] px-1 py-0.5 rounded bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 font-bold">CONNECTOR</span>
                       )}
+                      {/* v3.8.37: badge "down da Xh" per offline */}
+                      {device.status === "offline" && (() => {
+                        const ref = device.last_seen_at || device.last_poll;
+                        if (!ref) return null;
+                        const t = Date.parse(ref);
+                        if (Number.isNaN(t)) return null;
+                        const ageS = Math.max(0, Math.floor((Date.now() - t) / 1000));
+                        const lbl = ageS < 60 ? `${ageS}s`
+                          : ageS < 3600 ? `${Math.floor(ageS / 60)}m`
+                          : ageS < 86400 ? `${Math.floor(ageS / 3600)}h`
+                          : `${Math.floor(ageS / 86400)}g`;
+                        return (
+                          <div className="text-[9px] mt-0.5 text-red-400/80" title={`Ultima vista: ${new Date(t).toLocaleString("it-IT")}`}>
+                            down da {lbl}
+                          </div>
+                        );
+                      })()}
                     </td>
                     <td>
                       <div className="flex items-center gap-1">
