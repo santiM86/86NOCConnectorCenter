@@ -1,3 +1,33 @@
+## 2026-05-07 EXTRA — WAN tab cliente con "Aggancia esistente" + Profilo Zyxel corretto (v3.8.33)
+
+**Issue 1 (UX)**: nella tab WAN del cliente (es. Galvan) si poteva solo creare nuovi target. Per riassegnare un target già esistente nel sistema (orfano o di un altro cliente), bisognava andare nella pagina globale "Monitoraggio WAN Esterno" e cliccare la matita.
+
+**Fix v3.8.33** (`/app/frontend/src/pages/ClientOverviewPage.js`):
+- Nuovo bottone secondario "🌐 Aggancia esistente" accanto a "+ Aggiungi Target WAN" nella WAN tab.
+- Apre un dialog modale che mostra in tabella (Label, IP Pubblico, Tipo, Cliente attuale + badge "orfano") tutti i target del sistema NON assegnati al cliente corrente.
+- Click su "Aggancia" → `PUT /api/external-monitor/targets/{id}` con `client_id` del cliente corrente, refresh automatico della tab.
+- Funziona sinergicamente con il fix v3.8.29 che aveva esteso `WanTargetUpdate` per accettare `client_id`.
+
+**Issue 2 (Profilo)**: il profilo `zyxel_usg` aveva OID errati per Memory e Active Sessions rispetto alle specifiche Zyxel ZLD MIB.
+
+**Fix v3.8.33** (`/app/backend/device_profiles/__init__.py`):
+| Campo | Prima | Dopo (corretto) |
+|---|---|---|
+| Memory | `1.3.6.1.4.1.890.1.15.3.2.6.0` | `1.3.6.1.4.1.890.1.15.3.2.5.0` |
+| Active Sessions | `.2.8.0` | `.2.1.0` |
+| sysObjectID prefix | solo `1.3.6.1.4.1.890.` | aggiunto specifico `1.3.6.1.4.1.890.1.15.1.` (priorità) |
+| ifSpeed (porte) | mancava | aggiunto `1.3.6.1.2.1.2.2.1.5` |
+| Web console alt_ports | non specificato | `[8443, 80]` |
+| Thresholds session | mancava | `sessions_warn=50000, sessions_crit=100000` |
+| capabilities | `["snmp_basic", "session_count", "nebula_cloud_ready"]` | `+ "interface_traffic", "cpu_memory"` |
+
+`SEED_VERSION` incrementato da 1 → 2 per tracciare l'aggiornamento.
+
+**Verifica preview**: `GET /api/device-profiles` ritorna OID e prefix corretti. UI "Aggancia esistente" testata: bottone visibile, dialog si apre, tabella popolata correttamente per cliente con altri target, messaggio "Nessuno da agganciare" quando i target sono tutti del cliente corrente.
+
+---
+
+
 ## 2026-05-07 P0 BUG FIX — Anti-Flap dispositivi online/offline (debounce v3.8.32)
 
 **Issue ricorrente segnalato dall'utente**: dispositivi che vanno offline random per qualche minuto e poi tornano online subito dopo qualche secondo, senza un motivo apparente.

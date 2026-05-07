@@ -22,7 +22,7 @@ from typing import Any
 
 # ruff: noqa: E501 — long strings are intentional in OID tables
 
-SEED_VERSION = 1
+SEED_VERSION = 2  # v3.8.33: aggiornato profilo zyxel_usg (OID corretti per CPU/Memory/Sessions)
 
 # Common standard OIDs (usable as fallback for any SNMP device)
 COMMON_OIDS = {
@@ -502,24 +502,33 @@ PROFILES: list[dict[str, Any]] = [
         "vendor": "Zyxel",
         "family": "firewall",
         "label": "Zyxel USG / ATP / Flex",
-        "description": "Firewall Zyxel USG series. SNMP v2c standard + CLI via SSH.",
+        "description": "Firewall Zyxel USG/ATP/Flex (ZLD). Classificazione via sysObjectID Zyxel-MIB (1.3.6.1.4.1.890.1.15.1.x), monitoraggio ifTable standard + OID specifici Zyxel CPU/Memory/Sessions.",
         "fingerprint": {
-            "sysobjectid_prefixes": ["1.3.6.1.4.1.890."],
+            # v3.8.33: prefix specifico USG/ATP/Flex (manteniamo anche il generico
+            # 1.3.6.1.4.1.890. per compat con switch GS/XS Zyxel e altri prodotti).
+            "sysobjectid_prefixes": ["1.3.6.1.4.1.890.1.15.1.", "1.3.6.1.4.1.890."],
             "sysdescr_patterns": [r"zyxel", r"zywall", r"zld", r"usg\s*\d", r"atp\s*\d", r"flex\s*\d"],
         },
         "snmp": {"port": 161, "version": "v2c", "community_suggestion": "public", "timeout_seconds": 5, "retries": 2},
-        "web_console": {"port": 443, "scheme": "https", "path": "/", "notes": "ZyWALL/USG HTTPS 443 (HTTP 80 spesso redirect)."},
+        "web_console": {"port": 443, "scheme": "https", "path": "/", "alt_ports": [8443, 80], "notes": "ZyWALL/USG HTTPS 443 default; alcune installazioni usano 8443. Su HTTP 80 spesso redirect a HTTPS."},
         "oids": {
             **COMMON_OIDS,
-            "zyCpuUsage":     "1.3.6.1.4.1.890.1.15.3.2.4.0",       # ZyXEL ZLD CPU %
-            "zyMemUsage":     "1.3.6.1.4.1.890.1.15.3.2.6.0",
-            "zySessionUsage": "1.3.6.1.4.1.890.1.15.3.2.8.0",
-            "zySysUptime":    "1.3.6.1.2.1.1.3.0",
-            "zyTempC":        "1.3.6.1.4.1.890.1.15.3.2.5.0",
+            # v3.8.33 OID corretti secondo doc utente (Zyxel ZLD MIB):
+            "zyCpuUsage":       "1.3.6.1.4.1.890.1.15.3.2.4.0",   # CPU usage %
+            "zyMemUsage":       "1.3.6.1.4.1.890.1.15.3.2.5.0",   # Memory usage %
+            "zyActiveSessions": "1.3.6.1.4.1.890.1.15.3.2.1.0",   # Numero sessioni attive
+            "zySysUptime":      "1.3.6.1.2.1.1.3.0",
+            # ifTable per monitoraggio porte (standard MIB-II, gia' in COMMON_OIDS
+            # ma esplicitati qui per documentare il polling delle interfacce):
+            "ifSpeed":          "1.3.6.1.2.1.2.2.1.5",   # bps per port (table)
         },
-        "thresholds": {"cpu_warn_pct": 70, "cpu_crit_pct": 90, "mem_warn_pct": 80, "mem_crit_pct": 95, "temp_warn_c": 50, "temp_crit_c": 65},
+        "thresholds": {
+            "cpu_warn_pct": 70, "cpu_crit_pct": 90,
+            "mem_warn_pct": 80, "mem_crit_pct": 95,
+            "sessions_warn": 50000, "sessions_crit": 100000,
+        },
         "polling_interval_seconds": 60,
-        "capabilities": ["snmp_basic", "session_count", "nebula_cloud_ready"],
+        "capabilities": ["snmp_basic", "interface_traffic", "session_count", "cpu_memory", "nebula_cloud_ready"],
     },
 
     # ---------------- APC UPS (PowerNet) ----------------
