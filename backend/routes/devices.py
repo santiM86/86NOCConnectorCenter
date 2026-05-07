@@ -246,6 +246,29 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
                 "alerts_silenced_reason": md.get("alerts_silenced_reason") or "",
             })
 
+    # v3.8.36 FIX bug status fasullo: i device source=connector-scanner venivano
+    # marcati ONLINE anche con last_seen_at di ore/giorni fa (mancava check
+    # freschezza). Definiamo una soglia "scanner stale" oltre la quale il device
+    # passa a offline. Ratio: lo Scanner gira ~5min, quindi 30min = 6 cicli falliti
+    # → realmente offline. La soglia "live" del blocco scanner_seen_recent_ips
+    # (10min) resta separata perché serve a "forzare online" un device che il
+    # Master non vede ma lo Scanner sì (override anti-flap di v3.8.22).
+    SCANNER_STALE_SECONDS = 1800  # 30 minuti — un device non visto da >30min e' offline
+    now_dt = datetime.now(timezone.utc)
+    def _scanner_status_from_last_seen(last_seen_iso):
+        """Ritorna 'online' / 'offline' / 'pending' per device scanner-source
+        in base alla freschezza di last_seen_at."""
+        if not last_seen_iso:
+            return "pending"
+        try:
+            ls = datetime.fromisoformat(last_seen_iso.replace("Z", "+00:00"))
+            age_s = (now_dt - ls).total_seconds()
+        except Exception:
+            return "pending"
+        if age_s < SCANNER_STALE_SECONDS:
+            return "online"
+        return "offline"
+
     # 3rd pass: managed_devices orfani (aggiunti manualmente via UI, dal tray
     # Apri Web UI, oppure auto-censiti dal Connector Scanner via /lan-scan
     # con source="connector-scanner") - altrimenti sparirebbero
@@ -258,14 +281,15 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
         # v3.8.15: preserva il source originale (connector-scanner / connector-master / manual)
         # cosi' la colonna FONTE in UI distingue MASTER vs SCANNER vs MANUALE.
         md_source = md.get("source") or "managed"
-        # Status: i device dal Scanner sono "online" (li abbiamo appena visti via ARP/mDNS)
-        # se last_seen_at recente; altrimenti pending.
-        # v3.8.22 LIVE-SEEN: se lo Scanner ha visto questo IP <5min via discovered_endpoints
-        # forza "online" anche se source=manual o source=connector-master.
+        # Status:
+        # 1. Se lo Scanner lo ha visto negli ultimi 10min via discovered_endpoints
+        #    → online (override anti-flap)
+        # 2. Se source=connector-scanner → calcolo freschezza (online se <30min, offline se piu' vecchio)
+        # 3. Altrimenti pending (manuale mai polleato)
         if md_ip in scanner_seen_recent_ips:
             md_status = "online"
-        elif md_source == "connector-scanner" and md.get("last_seen_at"):
-            md_status = "online"
+        elif md_source == "connector-scanner":
+            md_status = _scanner_status_from_last_seen(md.get("last_seen_at"))
         else:
             md_status = "pending"
         devices.append({
