@@ -446,6 +446,113 @@ $mutex.ReleaseMutex()
     Set-Content -Path $Path -Value $body -Encoding UTF8
 }
 
+function Write-UninstallScript {
+    param([string]$Path)
+    # Disinstallazione completa: nessun residuo dopo l'esecuzione.
+    # Lanciato da Programmi e funzionalita' o dallo shortcut Start Menu.
+    $body = @'
+# 86BIT Argus Connector - disinstallazione completa.
+# Rimuove servizi, binari, config, autostart, shortcut, registry entry.
+$ErrorActionPreference = 'SilentlyContinue'
+
+# Hide console
+try {
+    $sig = @"
+[DllImport("user32.dll")] public static extern bool ShowWindow(System.IntPtr hWnd, int nCmdShow);
+[DllImport("kernel32.dll")] public static extern System.IntPtr GetConsoleWindow();
+"@
+    $w = Add-Type -MemberDefinition $sig -Name 'UninstHider' -Namespace 'NocAgent' -PassThru
+    $h = $w::GetConsoleWindow()
+    if ($h -ne [System.IntPtr]::Zero) { [void]$w::ShowWindow($h, 0) }
+} catch { }
+
+Add-Type -AssemblyName System.Windows.Forms
+
+# Auto-elevation
+$identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+$principal = New-Object System.Security.Principal.WindowsPrincipal($identity)
+if (-not $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = 'powershell.exe'
+    $psi.Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$($MyInvocation.MyCommand.Path)`""
+    $psi.Verb = 'runas'
+    $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+    $psi.UseShellExecute = $true
+    try { [System.Diagnostics.Process]::Start($psi) | Out-Null } catch { }
+    exit 0
+}
+
+$confirm = [System.Windows.Forms.MessageBox]::Show(
+    "Procedere con la disinstallazione completa di 86BIT Argus Connector?`n`nVerranno rimossi servizi, binari, configurazione e log.",
+    '86BIT Argus - Disinstallazione',
+    [System.Windows.Forms.MessageBoxButtons]::YesNo,
+    [System.Windows.Forms.MessageBoxIcon]::Question)
+if ($confirm -ne [System.Windows.Forms.DialogResult]::Yes) { exit 0 }
+
+$installDir = 'C:\Program Files\86NocAgent'
+$dataDir    = 'C:\ProgramData\86NocAgent'
+$startMenu  = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\86BIT Argus Center'
+$logFile    = Join-Path $env:TEMP '86NocAgent-uninstall.log'
+"$(Get-Date -Format o) - uninstall start" | Out-File -FilePath $logFile -Append
+
+function Step($msg) { "$(Get-Date -Format o) - $msg" | Out-File -FilePath $logFile -Append }
+
+# 1) Stop + delete servizi
+Step 'stop services'
+foreach ($s in @('86NocWatchdog','86NocAgent')) {
+    Stop-Service -Name $s -Force -ErrorAction SilentlyContinue
+}
+Start-Sleep -Seconds 1
+foreach ($s in @('86NocWatchdog','86NocAgent')) {
+    & cmd.exe /c "sc.exe delete `"$s`"" | Out-File -FilePath $logFile -Append
+}
+
+# 2) Kill processi tray (powershell che esegue tray.ps1)
+Step 'kill tray processes'
+Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue | ForEach-Object {
+    if ($_.CommandLine -and $_.CommandLine -match 'tray\.ps1') {
+        Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# 3) Rimuovi autostart HKLM Run
+Step 'remove HKLM Run autostart'
+Remove-ItemProperty -Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run' -Name '86BITArgusTray' -Force -ErrorAction SilentlyContinue
+
+# 4) Rimuovi shortcut Start Menu
+Step 'remove start menu folder'
+if (Test-Path $startMenu) {
+    Remove-Item -Path $startMenu -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# 5) Rimuovi entry Programmi e funzionalita'
+Step 'remove Add/Remove Programs registry'
+Remove-Item -Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\86BITArgusAgent' -Recurse -Force -ErrorAction SilentlyContinue
+
+# 6) Rimuovi cartelle binari e dati
+Step 'remove binaries directory'
+# Devo fare la rimozione dell'installDir tramite uno script asincrono
+# perche' uninstall.ps1 e' DENTRO installDir e non puo' cancellare se stesso.
+$cleanupCmd = @"
+Start-Sleep -Seconds 2
+Remove-Item -Path '$installDir' -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -Path '$dataDir' -Recurse -Force -ErrorAction SilentlyContinue
+"@
+$cleanupPath = Join-Path $env:TEMP '86noc-finalcleanup.ps1'
+Set-Content -Path $cleanupPath -Value $cleanupCmd -Encoding UTF8
+Start-Process -FilePath 'powershell.exe' -ArgumentList @(
+    '-NoProfile','-WindowStyle','Hidden','-ExecutionPolicy','Bypass','-File',$cleanupPath
+) -WindowStyle Hidden
+
+[System.Windows.Forms.MessageBox]::Show(
+    "Disinstallazione completata.`n`nServizi, binari, configurazione, autostart e voci di registro sono stati rimossi.`n`nLog: $logFile",
+    '86BIT Argus - Disinstallazione completata',
+    [System.Windows.Forms.MessageBoxButtons]::OK,
+    [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
+'@
+    Set-Content -Path $Path -Value $body -Encoding UTF8
+}
+
 # ================================================================
 # STEP 0 - WELCOME
 # ================================================================
@@ -779,14 +886,14 @@ function Run-Install {
         $url = $script:BackendUrl.TrimEnd('/')
         $tok = $script:Token
 
-        Append-Log "[1/10] Lettura manifest installazione" $ColorAccent
+        Append-Log "[1/11] Lettura manifest installazione" $ColorAccent
         $script:progressBar.Value = 10
         $manifest = Invoke-RestMethod -UseBasicParsing -TimeoutSec 30 `
             -Uri "$url/api/agent/install/manifest?platform=$Platform&role=$($script:Role)&token=$tok"
         $script:ClientId = $manifest.client_id
         Append-Log "      cliente: $($manifest.client_id)  ruolo: $($script:Role)" $ColorSuccess
 
-        Append-Log "[2/10] Stop servizi precedenti (se presenti)" $ColorAccent
+        Append-Log "[2/11] Stop servizi precedenti (se presenti)" $ColorAccent
         foreach ($s in @($WatchdogName, $ServiceName)) {
             $existing = Get-Service -Name $s -ErrorAction SilentlyContinue
             if ($null -ne $existing) {
@@ -798,12 +905,12 @@ function Run-Install {
         }
         $script:progressBar.Value = 20
 
-        Append-Log "[3/10] Creazione directory" $ColorAccent
+        Append-Log "[3/11] Creazione directory" $ColorAccent
         New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
         New-Item -ItemType Directory -Force -Path $DataDir    | Out-Null
         $script:progressBar.Value = 30
 
-        Append-Log "[4/10] Download nocagent.exe" $ColorAccent
+        Append-Log "[4/11] Download nocagent.exe" $ColorAccent
         Invoke-WebRequest -UseBasicParsing -TimeoutSec 120 `
             -Uri "$url/api/agent/binary/$Platform/nocagent.exe?token=$tok" `
             -OutFile (Join-Path $InstallDir "nocagent.exe")
@@ -815,11 +922,11 @@ function Run-Install {
             -OutFile (Join-Path $InstallDir "nocwatchdog.exe")
         $script:progressBar.Value = 70
 
-        Append-Log "[6/10] Scrittura $ConfigPath" $ColorAccent
+        Append-Log "[6/11] Scrittura $ConfigPath" $ColorAccent
         Set-Content -Path $ConfigPath -Value $manifest.config_template -Encoding UTF8
         $script:progressBar.Value = 80
 
-        Append-Log "[7/10] Registrazione servizi Windows" $ColorAccent
+        Append-Log "[7/11] Registrazione servizi Windows" $ColorAccent
         $agentBin    = Join-Path $InstallDir "nocagent.exe"
         $watchdogBin = Join-Path $InstallDir "nocwatchdog.exe"
 
@@ -856,7 +963,7 @@ function Run-Install {
         & cmd.exe /c $recCmd2 | Out-Null
         $script:progressBar.Value = 90
 
-        Append-Log "[8/10] Avvio servizi" $ColorAccent
+        Append-Log "[8/11] Avvio servizi" $ColorAccent
         try {
             Start-Service -Name $ServiceName -ErrorAction Stop
         } catch {
@@ -885,7 +992,7 @@ function Run-Install {
         # [9/10] Icona + Tray + Start Menu shortcut
         # ============================================================
         Append-Log "" $ColorText
-        Append-Log "[9/10] Creazione collegamenti e tray icon" $ColorAccent
+        Append-Log "[9/11] Creazione collegamenti e tray icon" $ColorAccent
         try {
             Build-ArgusIcon (Join-Path $InstallDir "argus.ico")
             Append-Log "      argus.ico generato" $ColorMuted
@@ -921,7 +1028,7 @@ function Run-Install {
         # ============================================================
         # [10/10] Autostart tray (HKLM Run, all users) + lancio immediato
         # ============================================================
-        Append-Log "[10/10] Registrazione autostart tray e avvio" $ColorAccent
+        Append-Log "[10/11] Registrazione autostart tray e avvio" $ColorAccent
         try {
             $runKey = "HKLM:\Software\Microsoft\Windows\CurrentVersion\Run"
             $trayCmd = "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$InstallDir\tray.ps1`""
@@ -945,6 +1052,65 @@ function Run-Install {
             }
         } catch {
             Append-Log "      WARN: avvio tray fallito: $($_.Exception.Message)" $ColorError
+        }
+
+        # ============================================================
+        # [11/11] Registrazione 'Programmi e funzionalita'' + uninstall.ps1
+        # ============================================================
+        Append-Log "[11/11] Registrazione Programmi e funzionalita'" $ColorAccent
+        try {
+            $uninstPath = Join-Path $InstallDir "uninstall.ps1"
+            Write-UninstallScript -Path $uninstPath
+            Append-Log "      uninstall.ps1 scritto" $ColorMuted
+        } catch {
+            Append-Log "      WARN: uninstall.ps1 non scritto: $($_.Exception.Message)" $ColorError
+        }
+        try {
+            $uninstKey = "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\86BITArgusAgent"
+            if (-not (Test-Path $uninstKey)) {
+                New-Item -Path $uninstKey -Force | Out-Null
+            }
+            $uninstCmd = "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$InstallDir\uninstall.ps1`""
+            $sizeKb = 0
+            try {
+                $sizeBytes = (Get-ChildItem -Path $InstallDir -Recurse -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum
+                if ($sizeBytes) { $sizeKb = [int]($sizeBytes / 1024) }
+            } catch { }
+            Set-ItemProperty -Path $uninstKey -Name 'DisplayName'     -Value '86BIT Argus Connector'
+            Set-ItemProperty -Path $uninstKey -Name 'DisplayVersion'  -Value $Version
+            Set-ItemProperty -Path $uninstKey -Name 'Publisher'       -Value '86bit S.r.l.'
+            Set-ItemProperty -Path $uninstKey -Name 'URLInfoAbout'    -Value 'https://www.86bit.it'
+            Set-ItemProperty -Path $uninstKey -Name 'InstallLocation' -Value $InstallDir
+            Set-ItemProperty -Path $uninstKey -Name 'UninstallString' -Value $uninstCmd
+            Set-ItemProperty -Path $uninstKey -Name 'QuietUninstallString' -Value $uninstCmd
+            Set-ItemProperty -Path $uninstKey -Name 'DisplayIcon'     -Value "$InstallDir\argus.ico"
+            Set-ItemProperty -Path $uninstKey -Name 'NoModify'        -Value 1 -Type DWord
+            Set-ItemProperty -Path $uninstKey -Name 'NoRepair'        -Value 1 -Type DWord
+            if ($sizeKb -gt 0) {
+                Set-ItemProperty -Path $uninstKey -Name 'EstimatedSize' -Value $sizeKb -Type DWord
+            }
+            Set-ItemProperty -Path $uninstKey -Name 'InstallDate'     -Value (Get-Date -Format 'yyyyMMdd')
+            Append-Log "      voce 'Programmi e funzionalita'' registrata" $ColorMuted
+        } catch {
+            Append-Log "      WARN: registry Uninstall non scritto: $($_.Exception.Message)" $ColorError
+        }
+        try {
+            # Aggiunge anche shortcut 'Disinstalla' nel menu Start
+            $startMenu = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\86BIT Argus Center"
+            if (-not (Test-Path $startMenu)) {
+                New-Item -ItemType Directory -Force -Path $startMenu | Out-Null
+            }
+            $wsh = New-Object -ComObject WScript.Shell
+            $unLnk = $wsh.CreateShortcut((Join-Path $startMenu "Disinstalla.lnk"))
+            $unLnk.TargetPath = "powershell.exe"
+            $unLnk.Arguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$InstallDir\uninstall.ps1`""
+            $unLnk.WorkingDirectory = $InstallDir
+            $unLnk.IconLocation = "$InstallDir\argus.ico,0"
+            $unLnk.Description = "Disinstalla 86BIT Argus Connector"
+            $unLnk.Save()
+            Append-Log "      shortcut 'Disinstalla' creato" $ColorMuted
+        } catch {
+            Append-Log "      WARN: shortcut Disinstalla non creato: $($_.Exception.Message)" $ColorError
         }
 
         $script:progressBar.Value = 100
@@ -990,7 +1156,7 @@ function Show-Done {
             "Menu Start -> 86BIT Argus Center -> Connector",
             "Tray icon visibile vicino all'orologio (zona notifica)",
             "Apri il NOC Center -> Agents per verificare 'live: true'",
-            "Il primo scan LAN avviene entro 30 secondi"
+            "Per disinstallare: Pannello di controllo -> Programmi"
         )
         for ($i = 0; $i -lt $items.Count; $i++) {
             $l = New-Object System.Windows.Forms.Label
