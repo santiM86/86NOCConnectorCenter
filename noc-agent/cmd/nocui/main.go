@@ -923,30 +923,44 @@ func loadAppIcon() *walk.Icon {
 
 // ----------------------------------------------------------------------------
 
+// init runs before main(): set up logging immediately so any panic in
+// imported packages or in main() init can still be captured.
+func init() {
+	setupLogging()
+	logf("=== init() done; runtime=%s/%s ===", runtime.GOOS, runtime.GOARCH)
+}
+
 // --- File logging -----------------------------------------------------------
 
 var logFile *os.File
 
 func setupLogging() {
-	// Usa LOCALAPPDATA (sempre user-writable, non richiede admin) invece
-	// di ProgramData che puo' avere permission Modify mancanti per Users
-	// quando le cartelle sono create dall'installer admin.
-	base := os.Getenv("LOCALAPPDATA")
-	if base == "" {
-		base = os.TempDir()
+	// Try LOCALAPPDATA, fallback to ProgramData, fallback to USERPROFILE\AppData\Local
+	candidates := []string{
+		os.Getenv("LOCALAPPDATA"),
+		filepath.Join(os.Getenv("USERPROFILE"), "AppData", "Local"),
+		os.Getenv("ProgramData"),
+		os.TempDir(),
 	}
-	dir := filepath.Join(base, "86NocAgent", "logs")
-	_ = os.MkdirAll(dir, 0o755)
-	path := filepath.Join(dir, "nocui.log")
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
+	for _, base := range candidates {
+		if base == "" {
+			continue
+		}
+		dir := filepath.Join(base, "86NocAgent", "logs")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			continue
+		}
+		path := filepath.Join(dir, "nocui.log")
+		f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+		if err != nil {
+			continue
+		}
+		logFile = f
+		exe, _ := os.Executable()
+		logf("=== nocagent-ui start pid=%d args=%v exe=%s log=%s ===",
+			os.Getpid(), os.Args[1:], exe, path)
 		return
 	}
-	logFile = f
-	logf("=== nocagent-ui start pid=%d args=%v exe=%s ===", os.Getpid(), os.Args[1:], func() string {
-		exe, _ := os.Executable()
-		return exe
-	}())
 }
 
 func logf(format string, args ...any) {
