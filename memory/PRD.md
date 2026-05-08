@@ -1,3 +1,57 @@
+## 2026-05-08 ICONS v2 — Standardizzazione totale
+
+**Direttiva utente**: «stai usando icone diverse.. standardizza tutto.. ovunque icone uguali».
+
+### Diagnosi
+Lo screenshot mostrava DUE icone diverse in taskbar:
+1. **SINISTRA**: cerchio teal con "86" bianco → era il **86NocConnector LEGACY** (PowerShell v3.x), file `/app/noc-connector/prg/src/86bit_logo.ico` non rigenerato.
+2. **DESTRA**: la mia argus.ico ma con effetto "pallina dentro pallina" causato dal safe-area al 78% + sfondo bianco quadrato. La A risultava illeggibile in 16-32 px.
+
+### Fixed
+Rigenerato lo script `/tmp/build_all_icons.py` con un **unico stile uniforme**:
+- Cerchio blu solido al **97% del quadrato** (non più 78%) → niente più "pallina dentro pallina".
+- **Sfondo trasparente** fuori dal cerchio → la taskbar (chiara o scura) mostra solo il cerchio nitido.
+- Lettera **A** Bold al **78% del diametro** → leggibile anche a 16×16 px.
+- Sotto i 48 px usa colore solido (no gradiente) → niente artefatti in interpolazione.
+- Sopra i 96 px usa gradiente radiale `#3C82FF→#1040E0` + highlight in alto-sinistra.
+
+Aggiornati TUTTI i punti:
+
+| File | Note |
+|---|---|
+| `/app/noc-agent/cmd/nocui/argus.ico` | Connector Go (walk tray) — 815 byte multi-size |
+| `/app/noc-connector/prg/src/86bit_logo.ico` | **Connector legacy PowerShell** (sostituisce il vecchio teal-86) |
+| `/app/frontend/public/favicon-32.png` | Tab browser |
+| `/app/frontend/public/favicon.ico` | Aggiunto multi-size 16/24/32/48 |
+| `/app/frontend/public/logo-48.png` | Header app |
+| `/app/frontend/public/apple-touch-icon.png` | iOS Home (180) |
+| `/app/frontend/public/icon-192.png` | PWA Android |
+| `/app/frontend/public/icon-512.png` | PWA Android (maskable + splash) |
+| `/app/frontend/public/icon-192-new.png` | Variante alternate |
+| `/app/frontend/public/icon-512-new.png` | Variante alternate |
+
+Il frontend React (`Layout.js` riga 315/397, `LoginPage.js` riga 58) usa già `/icon-192.png` ovunque → aggiornamento automatico con il nuovo asset.
+
+### Cache invalidation
+- Service Worker bumpato `v16 → v17` per forzare refresh PWA.
+- Connector EXE ricompilato (9.96 MB) con nuovo `rsrc_windows_amd64.syso` embeddato.
+
+### Verifica
+- `GET /favicon-32.png` → 1648 byte, corner alpha=0 (trasparente), centro blu ✓
+- `GET /icon-192.png` → 19.753 byte, corner alpha=0, edge blu (cerchio piena ampiezza) ✓
+- `GET /api/agent/binary/.../nocagent-ui.exe` → 9.961.984 byte, sha256 `001971e1...` ✓
+
+### Cosa farà l'utente
+Lato cliente:
+- **Web/PWA**: hard refresh (Ctrl+Shift+R) → SW v17 sovrascrive le icone vecchie.
+- **Connector Windows nuovo (Go)**: reinstall dal wizard → embedded ICO + argus.ico in InstallDir + `ie4uinit.exe -show` per refresh icon-cache.
+- **86NocConnector legacy (PowerShell)**: rigenerato anche `86bit_logo.ico` → al prossimo deploy/reinstall del legacy il "86 verde teal" sparisce e viene sostituito dalla A bianca su cerchio blu.
+
+Per produzione `argus.86bit.it`: solito git pull + `make all-platforms` + `supervisorctl restart frontend backend`.
+
+---
+
+
 ## 2026-05-08 FEATURE — Splash screen di boot del Connector
 
 **Direttiva utente**: «procedi» (sulla proposta di splash screen per dare feedback "professionale" tipo NinjaOne/Atera all'avvio).
