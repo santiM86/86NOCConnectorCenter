@@ -561,19 +561,35 @@ def _config_template(client_id: str, token: str, ws_url: str) -> str:
     )
 
 
+@router.get("/agent/install/wizard-bundle.zip")
+async def wizard_bundle(token: Optional[str] = None) -> FileResponse:
+    """Download a ZIP containing installer_gui.ps1 + Installa-86NocAgent.vbs.
+
+    The user double-clicks the .vbs which silently launches the GUI wizard
+    with the token already baked in. No console window, no PowerShell skill
+    required from the on-site technician.
+    """
+    await _token_or_403(token)
+    bundle = _build_wizard_bundle(token)
+    return FileResponse(bundle, media_type="application/zip", filename="86NocAgent-Installer.zip")
+
+
 @router.get("/agent/install/{platform}.{ext}", response_class=PlainTextResponse)
 async def install_script(platform: str, ext: str, token: Optional[str] = None) -> PlainTextResponse:
     """Serve the install script for a platform inlined with the token.
 
     Usage:
-      Windows: iwr -UseBasicParsing https://argus.86bit.it/api/agent/install/windows.ps1?token=XXX | iex
-      Linux:   curl -fsSL https://argus.86bit.it/api/agent/install/linux.sh?token=XXX | sudo bash
+      Windows CLI : iwr -UseBasicParsing https://argus.86bit.it/api/agent/install/windows.ps1?token=XXX | iex
+      Windows GUI : .../api/agent/install/wizard.ps1?token=XXX  (download + esegui)
+      Linux       : curl -fsSL https://argus.86bit.it/api/agent/install/linux.sh?token=XXX | sudo bash
     """
     await _token_or_403(token)
     if platform == "windows" and ext == "ps1":
         return PlainTextResponse(_render_windows_ps1(token), media_type="text/plain; charset=utf-8")
     if platform == "linux" and ext == "sh":
         return PlainTextResponse(_render_linux_sh(token), media_type="text/plain; charset=utf-8")
+    if platform == "wizard" and ext == "ps1":
+        return PlainTextResponse(_render_wizard_ps1(token), media_type="text/plain; charset=utf-8")
     raise HTTPException(status_code=404, detail="unknown installer")
 
 
@@ -597,3 +613,48 @@ def _render_linux_sh(token: str) -> str:
     return (body
             .replace("__BACKEND_URL__", public_http)
             .replace("__TOKEN__", token))
+
+
+def _render_wizard_ps1(token: str) -> str:
+    public_http = _os.environ.get("AGENT_PUBLIC_HTTP_URL", "https://argus.86bit.it")
+    path = _pathlib.Path("/app/noc-agent/build/installer_gui.ps1.template")
+    if not path.is_file():
+        raise HTTPException(status_code=500, detail="wizard template missing")
+    body = path.read_text(encoding="utf-8")
+    return (body
+            .replace("__BACKEND_URL__", public_http)
+            .replace("__TOKEN__", token))
+
+
+def _build_wizard_bundle(token: str) -> str:
+    """Materialise the wizard ZIP on disk and return its path."""
+    import io as _io
+    import zipfile as _zipfile
+    import tempfile as _tempfile
+
+    out_dir = _pathlib.Path(_tempfile.gettempdir()) / "86nocagent_bundles"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    # One bundle per token (cache); if the file exists we reuse it.
+    safe = "".join(c for c in token if c.isalnum() or c in "-_")[:32]
+    out = out_dir / f"86NocAgent-Installer-{safe}.zip"
+    if out.is_file():
+        return str(out)
+
+    ps1_body = _render_wizard_ps1(token)
+    vbs_path = _pathlib.Path("/app/noc-agent/build/Installa-86NocAgent.vbs")
+    if not vbs_path.is_file():
+        raise HTTPException(status_code=500, detail="vbs launcher missing")
+
+    buf = _io.BytesIO()
+    with _zipfile.ZipFile(buf, "w", _zipfile.ZIP_DEFLATED) as z:
+        z.writestr("installer_gui.ps1", ps1_body)
+        z.writestr("Installa-86NocAgent.vbs", vbs_path.read_text(encoding="utf-8"))
+        z.writestr("LEGGIMI.txt",
+                   "86NocAgent v4.0 - Wizard installazione\r\n"
+                   "============================================\r\n\r\n"
+                   "1) Tasto destro su 'Installa-86NocAgent.vbs' -> Esegui come amministratore\r\n"
+                   "2) Segui il wizard (5 step): Benvenuto -> Configurazione -> Riepilogo -> Installazione -> Completato\r\n"
+                   "3) Verifica nel NOC Center che l'agent risulti 'live'\r\n\r\n"
+                   "Token e URL sono gia' precompilati nel wizard.\r\n")
+    out.write_bytes(buf.getvalue())
+    return str(out)

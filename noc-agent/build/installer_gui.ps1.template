@@ -1,0 +1,705 @@
+﻿<#
+.SYNOPSIS
+    86NocAgent v4.0 - Wizard di Installazione
+
+.DESCRIPTION
+    Interfaccia grafica nativa Windows.Forms per installare e configurare
+    il nuovo agent nativo Go (sostituisce il legacy 86NocConnector v3.8.x).
+
+    Step:
+      1. Welcome
+      2. Configurazione (URL backend + Token cliente)
+      3. Riepilogo
+      4. Installazione (download binari, sc.exe create, start service)
+      5. Fine
+
+.NOTES
+    Auto-elevation UAC. Esegui semplicemente facendo doppio-click sul .vbs,
+    oppure: powershell.exe -ExecutionPolicy Bypass -File installer_gui.ps1
+#>
+
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+
+# ================================================================
+# AUTO-ELEVATION UAC
+# ================================================================
+$identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+$principal = New-Object System.Security.Principal.WindowsPrincipal($identity)
+if (-not $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    try {
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = "powershell.exe"
+        $psi.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$($MyInvocation.MyCommand.Path)`" $args"
+        $psi.Verb = "runas"
+        $psi.UseShellExecute = $true
+        [System.Diagnostics.Process]::Start($psi) | Out-Null
+        exit 0
+    } catch {
+        [System.Windows.Forms.MessageBox]::Show(
+            "Servono privilegi amministratore.`n`nTasto destro sul file -> 'Esegui come amministratore'",
+            "86NocAgent - Privilegi insufficienti",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
+        exit 1
+    }
+}
+
+# ================================================================
+# CONFIG
+# ================================================================
+$AppName        = "86NocAgent"
+$DisplayName    = "ARGUS Agent v4"
+$ServiceName    = "86NocAgent"
+$WatchdogName   = "86NocWatchdog"
+$Version        = "4.0.0"
+$Platform       = "windows-amd64"
+$InstallDir     = Join-Path $env:ProgramFiles $AppName
+$DataDir        = Join-Path $env:ProgramData  $AppName
+$ConfigPath     = Join-Path $DataDir "agent.yaml"
+
+# Pre-fill da parametri querystring se renderizzato dal backend
+$DefaultBackendUrl = "__BACKEND_URL__"
+$DefaultToken      = "__TOKEN__"
+
+# ================================================================
+# COLORI
+# ================================================================
+$ColorDarkBg   = [System.Drawing.Color]::FromArgb(15, 15, 22)
+$ColorLightBg  = [System.Drawing.Color]::FromArgb(245, 245, 248)
+$ColorAccent   = [System.Drawing.Color]::FromArgb(0, 122, 204)
+$ColorSuccess  = [System.Drawing.Color]::FromArgb(40, 167, 69)
+$ColorError    = [System.Drawing.Color]::FromArgb(220, 53, 69)
+$ColorWhite    = [System.Drawing.Color]::White
+$ColorMuted    = [System.Drawing.Color]::FromArgb(128, 128, 144)
+$ColorText     = [System.Drawing.Color]::FromArgb(33, 37, 41)
+
+# ================================================================
+# STATO WIZARD
+# ================================================================
+$script:CurrentStep   = 0
+$script:BackendUrl    = $DefaultBackendUrl
+$script:Token         = $DefaultToken
+$script:ClientId      = ""
+$script:InstallResult = $null
+
+# ================================================================
+# FORM PRINCIPALE
+# ================================================================
+[System.Windows.Forms.Application]::EnableVisualStyles()
+
+$form = New-Object System.Windows.Forms.Form
+$form.Text = "$DisplayName - Installazione v$Version"
+$form.Size = New-Object System.Drawing.Size(750, 580)
+$form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
+$form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedSingle
+$form.MaximizeBox = $false
+$form.BackColor = $ColorLightBg
+
+# ---- Pannello sinistro (sidebar scura) -------------------------
+$leftPanel = New-Object System.Windows.Forms.Panel
+$leftPanel.Size = New-Object System.Drawing.Size(220, 540)
+$leftPanel.Location = New-Object System.Drawing.Point(0, 0)
+$leftPanel.BackColor = $ColorDarkBg
+$leftPanel.Dock = [System.Windows.Forms.DockStyle]::Left
+$leftPanel.Width = 220
+$form.Controls.Add($leftPanel)
+
+$lblBrand = New-Object System.Windows.Forms.Label
+$lblBrand.Text = "ARGUS"
+$lblBrand.Font = New-Object System.Drawing.Font("Segoe UI", 22, [System.Drawing.FontStyle]::Bold)
+$lblBrand.ForeColor = $ColorWhite
+$lblBrand.Location = New-Object System.Drawing.Point(30, 50)
+$lblBrand.Size = New-Object System.Drawing.Size(180, 40)
+$leftPanel.Controls.Add($lblBrand)
+
+$lblProduct = New-Object System.Windows.Forms.Label
+$lblProduct.Text = "NOC Agent"
+$lblProduct.Font = New-Object System.Drawing.Font("Segoe UI", 11)
+$lblProduct.ForeColor = [System.Drawing.Color]::FromArgb(180, 180, 200)
+$lblProduct.Location = New-Object System.Drawing.Point(30, 92)
+$lblProduct.Size = New-Object System.Drawing.Size(180, 22)
+$leftPanel.Controls.Add($lblProduct)
+
+$lblVer = New-Object System.Windows.Forms.Label
+$lblVer.Text = "v$Version - native"
+$lblVer.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+$lblVer.ForeColor = $ColorAccent
+$lblVer.Location = New-Object System.Drawing.Point(30, 116)
+$lblVer.Size = New-Object System.Drawing.Size(180, 18)
+$leftPanel.Controls.Add($lblVer)
+
+# Steps list
+$script:StepLabels = @()
+$stepNames = @("Benvenuto", "Configurazione", "Riepilogo", "Installazione", "Completato")
+for ($i = 0; $i -lt $stepNames.Count; $i++) {
+    $lbl = New-Object System.Windows.Forms.Label
+    $lbl.Text = "  $($i+1).  $($stepNames[$i])"
+    $lbl.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+    $lbl.ForeColor = [System.Drawing.Color]::FromArgb(120, 120, 140)
+    $lbl.Location = New-Object System.Drawing.Point(15, 200 + ($i * 32))
+    $lbl.Size = New-Object System.Drawing.Size(195, 26)
+    $leftPanel.Controls.Add($lbl)
+    $script:StepLabels += $lbl
+}
+
+$lblCompany = New-Object System.Windows.Forms.Label
+$lblCompany.Text = "86bit S.r.l."
+$lblCompany.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+$lblCompany.ForeColor = $ColorWhite
+$lblCompany.Location = New-Object System.Drawing.Point(30, 470)
+$lblCompany.Size = New-Object System.Drawing.Size(180, 18)
+$leftPanel.Controls.Add($lblCompany)
+
+$lblCopy = New-Object System.Windows.Forms.Label
+$lblCopy.Text = ([char]0x00A9) + " 2026 - 86bit.it"
+$lblCopy.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+$lblCopy.ForeColor = $ColorMuted
+$lblCopy.Location = New-Object System.Drawing.Point(30, 492)
+$lblCopy.Size = New-Object System.Drawing.Size(180, 18)
+$leftPanel.Controls.Add($lblCopy)
+
+# ---- Pannello destro (content) ---------------------------------
+$contentPanel = New-Object System.Windows.Forms.Panel
+$contentPanel.Location = New-Object System.Drawing.Point(220, 0)
+$contentPanel.Size = New-Object System.Drawing.Size(514, 480)
+$contentPanel.BackColor = $ColorLightBg
+$form.Controls.Add($contentPanel)
+
+# ---- Barra bottoni in basso ------------------------------------
+$btnBar = New-Object System.Windows.Forms.Panel
+$btnBar.Location = New-Object System.Drawing.Point(220, 480)
+$btnBar.Size = New-Object System.Drawing.Size(514, 60)
+$btnBar.BackColor = [System.Drawing.Color]::FromArgb(230, 230, 235)
+$form.Controls.Add($btnBar)
+
+$btnCancel = New-Object System.Windows.Forms.Button
+$btnCancel.Text = "Annulla"
+$btnCancel.Size = New-Object System.Drawing.Size(110, 32)
+$btnCancel.Location = New-Object System.Drawing.Point(20, 14)
+$btnCancel.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+$btnCancel.BackColor = $ColorWhite
+$btnCancel.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+$btnBar.Controls.Add($btnCancel)
+
+$btnBack = New-Object System.Windows.Forms.Button
+$btnBack.Text = "< Indietro"
+$btnBack.Size = New-Object System.Drawing.Size(110, 32)
+$btnBack.Location = New-Object System.Drawing.Point(270, 14)
+$btnBack.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+$btnBack.BackColor = $ColorWhite
+$btnBack.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+$btnBack.Enabled = $false
+$btnBar.Controls.Add($btnBack)
+
+$btnNext = New-Object System.Windows.Forms.Button
+$btnNext.Text = "Avanti >"
+$btnNext.Size = New-Object System.Drawing.Size(110, 32)
+$btnNext.Location = New-Object System.Drawing.Point(385, 14)
+$btnNext.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+$btnNext.BackColor = $ColorAccent
+$btnNext.ForeColor = $ColorWhite
+$btnNext.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+$btnBar.Controls.Add($btnNext)
+
+# ================================================================
+# HELPER UI
+# ================================================================
+function Reset-Content { $contentPanel.Controls.Clear() }
+
+function Update-Sidebar {
+    for ($i = 0; $i -lt $script:StepLabels.Count; $i++) {
+        if ($i -eq $script:CurrentStep) {
+            $script:StepLabels[$i].ForeColor = $ColorWhite
+            $script:StepLabels[$i].Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+        } elseif ($i -lt $script:CurrentStep) {
+            $script:StepLabels[$i].ForeColor = $ColorSuccess
+            $script:StepLabels[$i].Font = New-Object System.Drawing.Font("Segoe UI", 10)
+        } else {
+            $script:StepLabels[$i].ForeColor = [System.Drawing.Color]::FromArgb(120, 120, 140)
+            $script:StepLabels[$i].Font = New-Object System.Drawing.Font("Segoe UI", 10)
+        }
+    }
+}
+
+function New-Title($text) {
+    $l = New-Object System.Windows.Forms.Label
+    $l.Text = $text
+    $l.Font = New-Object System.Drawing.Font("Segoe UI", 18, [System.Drawing.FontStyle]::Bold)
+    $l.ForeColor = $ColorText
+    $l.Location = New-Object System.Drawing.Point(35, 30)
+    $l.Size = New-Object System.Drawing.Size(450, 36)
+    return $l
+}
+
+function New-Subtitle($text) {
+    $l = New-Object System.Windows.Forms.Label
+    $l.Text = $text
+    $l.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
+    $l.ForeColor = [System.Drawing.Color]::FromArgb(80, 80, 96)
+    $l.Location = New-Object System.Drawing.Point(35, 70)
+    $l.Size = New-Object System.Drawing.Size(450, 60)
+    return $l
+}
+
+# ================================================================
+# STEP 0 - WELCOME
+# ================================================================
+function Show-Welcome {
+    Reset-Content
+    $btnBack.Enabled = $false
+    $btnNext.Text = "Avanti >"
+    $btnNext.Enabled = $true
+
+    $contentPanel.Controls.Add((New-Title "Benvenuto in $DisplayName"))
+    $contentPanel.Controls.Add((New-Subtitle "Questa procedura installera' il nuovo agent nativo della piattaforma 86bit NOC sul server.`n`nL'agent monitora la rete locale (ARP, mDNS, SNMP), si auto-mantiene tramite watchdog dedicato e riceve comandi real-time dal NOC Center."))
+
+    $infoBox = New-Object System.Windows.Forms.GroupBox
+    $infoBox.Text = "Cosa verra' installato"
+    $infoBox.Location = New-Object System.Drawing.Point(35, 150)
+    $infoBox.Size = New-Object System.Drawing.Size(450, 220)
+    $infoBox.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+    $infoBox.ForeColor = $ColorText
+    $contentPanel.Controls.Add($infoBox)
+
+    $items = @(
+        "Servizio Windows  86NocAgent  (auto-start)",
+        "Servizio Windows  86NocWatchdog (supervisore)",
+        "Service Recovery automatico (restart 5/5/15s)",
+        "Configurazione in  $DataDir",
+        "Binari nativi (no Python, no PowerShell residui)"
+    )
+    for ($i = 0; $i -lt $items.Count; $i++) {
+        $l = New-Object System.Windows.Forms.Label
+        $l.Text = ([char]0x2713) + "  " + $items[$i]
+        $l.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
+        $l.ForeColor = $ColorText
+        $l.Location = New-Object System.Drawing.Point(20, 30 + ($i * 28))
+        $l.Size = New-Object System.Drawing.Size(420, 24)
+        $infoBox.Controls.Add($l)
+    }
+
+    $hint = New-Object System.Windows.Forms.Label
+    $hint.Text = "Clicca 'Avanti' per continuare."
+    $hint.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Italic)
+    $hint.ForeColor = $ColorMuted
+    $hint.Location = New-Object System.Drawing.Point(35, 390)
+    $hint.Size = New-Object System.Drawing.Size(450, 24)
+    $contentPanel.Controls.Add($hint)
+}
+
+# ================================================================
+# STEP 1 - CONFIGURAZIONE
+# ================================================================
+$script:txtUrl = $null
+$script:txtToken = $null
+$script:lblValidation = $null
+
+function Show-Configuration {
+    Reset-Content
+    $btnBack.Enabled = $true
+    $btnNext.Text = "Avanti >"
+    $btnNext.Enabled = $true
+
+    $contentPanel.Controls.Add((New-Title "Configurazione NOC Center"))
+    $contentPanel.Controls.Add((New-Subtitle "Inserisci l'URL del NOC Center e il token cliente generato dall'amministratore. Il token determina automaticamente il client_id; non c'e' altro da configurare."))
+
+    # URL
+    $lblUrl = New-Object System.Windows.Forms.Label
+    $lblUrl.Text = "URL NOC Center *"
+    $lblUrl.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+    $lblUrl.Location = New-Object System.Drawing.Point(35, 150)
+    $lblUrl.Size = New-Object System.Drawing.Size(200, 20)
+    $contentPanel.Controls.Add($lblUrl)
+
+    $script:txtUrl = New-Object System.Windows.Forms.TextBox
+    $script:txtUrl.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+    $script:txtUrl.Location = New-Object System.Drawing.Point(35, 172)
+    $script:txtUrl.Size = New-Object System.Drawing.Size(440, 26)
+    $script:txtUrl.Text = $script:BackendUrl
+    $contentPanel.Controls.Add($script:txtUrl)
+
+    $hintUrl = New-Object System.Windows.Forms.Label
+    $hintUrl.Text = "Es: https://argus.86bit.it"
+    $hintUrl.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+    $hintUrl.ForeColor = $ColorMuted
+    $hintUrl.Location = New-Object System.Drawing.Point(35, 202)
+    $hintUrl.Size = New-Object System.Drawing.Size(440, 18)
+    $contentPanel.Controls.Add($hintUrl)
+
+    # Token
+    $lblToken = New-Object System.Windows.Forms.Label
+    $lblToken.Text = "Token cliente *"
+    $lblToken.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+    $lblToken.Location = New-Object System.Drawing.Point(35, 240)
+    $lblToken.Size = New-Object System.Drawing.Size(200, 20)
+    $contentPanel.Controls.Add($lblToken)
+
+    $script:txtToken = New-Object System.Windows.Forms.TextBox
+    $script:txtToken.Font = New-Object System.Drawing.Font("Consolas", 9)
+    $script:txtToken.Location = New-Object System.Drawing.Point(35, 262)
+    $script:txtToken.Size = New-Object System.Drawing.Size(440, 26)
+    $script:txtToken.Text = $script:Token
+    $contentPanel.Controls.Add($script:txtToken)
+
+    $hintTok = New-Object System.Windows.Forms.Label
+    $hintTok.Text = "Generato dall'admin con  POST /api/agents/register"
+    $hintTok.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+    $hintTok.ForeColor = $ColorMuted
+    $hintTok.Location = New-Object System.Drawing.Point(35, 292)
+    $hintTok.Size = New-Object System.Drawing.Size(440, 18)
+    $contentPanel.Controls.Add($hintTok)
+
+    # Bottone test connessione
+    $btnTest = New-Object System.Windows.Forms.Button
+    $btnTest.Text = "Verifica connessione"
+    $btnTest.Size = New-Object System.Drawing.Size(180, 30)
+    $btnTest.Location = New-Object System.Drawing.Point(35, 330)
+    $btnTest.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+    $btnTest.BackColor = $ColorWhite
+    $btnTest.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+    $contentPanel.Controls.Add($btnTest)
+
+    $script:lblValidation = New-Object System.Windows.Forms.Label
+    $script:lblValidation.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+    $script:lblValidation.Location = New-Object System.Drawing.Point(225, 335)
+    $script:lblValidation.Size = New-Object System.Drawing.Size(260, 24)
+    $script:lblValidation.Text = ""
+    $contentPanel.Controls.Add($script:lblValidation)
+
+    $btnTest.Add_Click({
+        $url = $script:txtUrl.Text.TrimEnd('/')
+        $tok = $script:txtToken.Text.Trim()
+        if (-not $url -or -not $tok) {
+            $script:lblValidation.ForeColor = $ColorError
+            $script:lblValidation.Text = "URL e Token obbligatori."
+            return
+        }
+        $script:lblValidation.ForeColor = $ColorMuted
+        $script:lblValidation.Text = "Verifica in corso..."
+        $contentPanel.Refresh()
+        try {
+            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
+            $resp = Invoke-RestMethod -UseBasicParsing -TimeoutSec 15 `
+                -Uri "$url/api/agent/install/manifest?platform=$Platform&token=$tok"
+            $script:ClientId = $resp.client_id
+            $script:lblValidation.ForeColor = $ColorSuccess
+            $script:lblValidation.Text = ([char]0x2713) + " OK - cliente: $($resp.client_id)"
+        } catch {
+            $script:lblValidation.ForeColor = $ColorError
+            $script:lblValidation.Text = ([char]0x2717) + " " + $_.Exception.Message
+        }
+    })
+}
+
+# ================================================================
+# STEP 2 - RIEPILOGO
+# ================================================================
+function Show-Summary {
+    Reset-Content
+    $btnBack.Enabled = $true
+    $btnNext.Text = "Installa"
+    $btnNext.Enabled = $true
+
+    $contentPanel.Controls.Add((New-Title "Riepilogo installazione"))
+    $contentPanel.Controls.Add((New-Subtitle "Verifica i dati prima di procedere. L'installazione sostituisce eventuali servizi 86NocAgent / 86NocWatchdog gia' presenti."))
+
+    $box = New-Object System.Windows.Forms.GroupBox
+    $box.Text = "Configurazione"
+    $box.Location = New-Object System.Drawing.Point(35, 150)
+    $box.Size = New-Object System.Drawing.Size(450, 240)
+    $box.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+    $contentPanel.Controls.Add($box)
+
+    $rows = @(
+        @("URL NOC Center",   $script:BackendUrl),
+        @("Cliente",          $script:ClientId),
+        @("Token (preview)",  ($script:Token.Substring(0, [Math]::Min(8, $script:Token.Length)) + "...")),
+        @("Cartella binari",  $InstallDir),
+        @("Cartella config",  $DataDir),
+        @("Servizio agent",   $ServiceName),
+        @("Servizio watchdog",$WatchdogName)
+    )
+    for ($i = 0; $i -lt $rows.Count; $i++) {
+        $lk = New-Object System.Windows.Forms.Label
+        $lk.Text = $rows[$i][0] + ":"
+        $lk.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+        $lk.ForeColor = $ColorMuted
+        $lk.Location = New-Object System.Drawing.Point(15, 30 + ($i * 28))
+        $lk.Size = New-Object System.Drawing.Size(140, 22)
+        $box.Controls.Add($lk)
+
+        $lv = New-Object System.Windows.Forms.Label
+        $lv.Text = $rows[$i][1]
+        $lv.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+        $lv.ForeColor = $ColorText
+        $lv.Location = New-Object System.Drawing.Point(160, 30 + ($i * 28))
+        $lv.Size = New-Object System.Drawing.Size(280, 22)
+        $box.Controls.Add($lv)
+    }
+}
+
+# ================================================================
+# STEP 3 - INSTALLAZIONE
+# ================================================================
+$script:lstLog = $null
+$script:progressBar = $null
+
+function Append-Log($text, $color) {
+    if (-not $color) { $color = $ColorText }
+    $script:lstLog.SelectionColor = $color
+    $script:lstLog.AppendText("$text`r`n")
+    $script:lstLog.ScrollToCaret()
+    [System.Windows.Forms.Application]::DoEvents()
+}
+
+function Show-Install {
+    Reset-Content
+    $btnBack.Enabled = $false
+    $btnNext.Enabled = $false
+    $btnCancel.Enabled = $false
+
+    $contentPanel.Controls.Add((New-Title "Installazione in corso"))
+    $contentPanel.Controls.Add((New-Subtitle "Download dei binari, configurazione, registrazione servizi e avvio. Attendi il completamento."))
+
+    $script:progressBar = New-Object System.Windows.Forms.ProgressBar
+    $script:progressBar.Location = New-Object System.Drawing.Point(35, 145)
+    $script:progressBar.Size = New-Object System.Drawing.Size(450, 22)
+    $script:progressBar.Style = [System.Windows.Forms.ProgressBarStyle]::Continuous
+    $script:progressBar.Minimum = 0
+    $script:progressBar.Maximum = 100
+    $contentPanel.Controls.Add($script:progressBar)
+
+    $script:lstLog = New-Object System.Windows.Forms.RichTextBox
+    $script:lstLog.Location = New-Object System.Drawing.Point(35, 180)
+    $script:lstLog.Size = New-Object System.Drawing.Size(450, 220)
+    $script:lstLog.ReadOnly = $true
+    $script:lstLog.BackColor = [System.Drawing.Color]::FromArgb(28, 28, 35)
+    $script:lstLog.ForeColor = [System.Drawing.Color]::FromArgb(220, 220, 230)
+    $script:lstLog.Font = New-Object System.Drawing.Font("Consolas", 9)
+    $script:lstLog.WordWrap = $false
+    $contentPanel.Controls.Add($script:lstLog)
+
+    [System.Windows.Forms.Application]::DoEvents()
+    Run-Install
+}
+
+function Run-Install {
+    $script:InstallResult = "fail"
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
+        $url = $script:BackendUrl.TrimEnd('/')
+        $tok = $script:Token
+
+        Append-Log "[1/8] Lettura manifest installazione" $ColorAccent
+        $script:progressBar.Value = 10
+        $manifest = Invoke-RestMethod -UseBasicParsing -TimeoutSec 30 `
+            -Uri "$url/api/agent/install/manifest?platform=$Platform&token=$tok"
+        $script:ClientId = $manifest.client_id
+        Append-Log "      cliente: $($manifest.client_id)" $ColorSuccess
+
+        Append-Log "[2/8] Stop servizi precedenti (se presenti)" $ColorAccent
+        foreach ($s in @($WatchdogName, $ServiceName)) {
+            if (Get-Service -Name $s -ErrorAction SilentlyContinue) {
+                Stop-Service -Name $s -Force -ErrorAction SilentlyContinue
+                & sc.exe delete $s | Out-Null
+                Start-Sleep -Milliseconds 500
+                Append-Log "      $s rimosso" $ColorMuted
+            }
+        }
+        $script:progressBar.Value = 20
+
+        Append-Log "[3/8] Creazione directory" $ColorAccent
+        New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+        New-Item -ItemType Directory -Force -Path $DataDir    | Out-Null
+        $script:progressBar.Value = 30
+
+        Append-Log "[4/8] Download nocagent.exe" $ColorAccent
+        Invoke-WebRequest -UseBasicParsing -TimeoutSec 120 `
+            -Uri "$url/api/agent/binary/$Platform/nocagent.exe?token=$tok" `
+            -OutFile (Join-Path $InstallDir "nocagent.exe")
+        $script:progressBar.Value = 55
+
+        Append-Log "[5/8] Download nocwatchdog.exe" $ColorAccent
+        Invoke-WebRequest -UseBasicParsing -TimeoutSec 120 `
+            -Uri "$url/api/agent/binary/$Platform/nocwatchdog.exe?token=$tok" `
+            -OutFile (Join-Path $InstallDir "nocwatchdog.exe")
+        $script:progressBar.Value = 70
+
+        Append-Log "[6/8] Scrittura $ConfigPath" $ColorAccent
+        Set-Content -Path $ConfigPath -Value $manifest.config_template -Encoding UTF8
+        $script:progressBar.Value = 80
+
+        Append-Log "[7/8] Registrazione servizi Windows" $ColorAccent
+        $agentBin    = Join-Path $InstallDir "nocagent.exe"
+        $watchdogBin = Join-Path $InstallDir "nocwatchdog.exe"
+        $cfgArg      = "--config `"$ConfigPath`""
+
+        & sc.exe create $ServiceName binPath= "`"$agentBin`" $cfgArg" start= auto DisplayName= "86bit NOC Agent" | Out-Null
+        & sc.exe description $ServiceName "Native NOC monitoring agent for the 86bit platform." | Out-Null
+        & sc.exe failure $ServiceName reset= 86400 actions= restart/5000/restart/5000/restart/15000 | Out-Null
+
+        & sc.exe create $WatchdogName binPath= "`"$watchdogBin`" $cfgArg" start= auto DisplayName= "86bit NOC Watchdog" depend= $ServiceName | Out-Null
+        & sc.exe description $WatchdogName "Supervises 86NocAgent and restarts it on hang or crash." | Out-Null
+        & sc.exe failure $WatchdogName reset= 86400 actions= restart/5000/restart/5000/restart/15000 | Out-Null
+        $script:progressBar.Value = 90
+
+        Append-Log "[8/8] Avvio servizi" $ColorAccent
+        Start-Service -Name $ServiceName
+        Start-Sleep -Seconds 2
+        Start-Service -Name $WatchdogName
+        Start-Sleep -Seconds 2
+
+        $ag = Get-Service -Name $ServiceName
+        $wd = Get-Service -Name $WatchdogName
+        Append-Log "" $ColorText
+        Append-Log "      $ServiceName    : $($ag.Status)" $(if ($ag.Status -eq 'Running') {$ColorSuccess} else {$ColorError})
+        Append-Log "      $WatchdogName : $($wd.Status)" $(if ($wd.Status -eq 'Running') {$ColorSuccess} else {$ColorError})
+
+        $script:progressBar.Value = 100
+        if ($ag.Status -eq 'Running' -and $wd.Status -eq 'Running') {
+            $script:InstallResult = "ok"
+            Append-Log ""
+            Append-Log ([char]0x2713) + " Installazione completata con successo." $ColorSuccess
+        } else {
+            Append-Log ""
+            Append-Log ([char]0x26A0) + " Installazione completata ma servizi NON in stato Running." $ColorError
+        }
+    } catch {
+        Append-Log ""
+        Append-Log "ERRORE: $($_.Exception.Message)" $ColorError
+        $script:InstallResult = "fail"
+    }
+    $btnNext.Enabled = $true
+    $btnCancel.Enabled = $true
+    $btnNext.Text = "Avanti >"
+}
+
+# ================================================================
+# STEP 4 - FINE
+# ================================================================
+function Show-Done {
+    Reset-Content
+    $btnBack.Enabled = $false
+    $btnNext.Text = "Chiudi"
+    $btnCancel.Enabled = $false
+
+    if ($script:InstallResult -eq "ok") {
+        $contentPanel.Controls.Add((New-Title "Installazione completata"))
+        $contentPanel.Controls.Add((New-Subtitle "Il connector e' attivo come Windows Service e si connettera' al NOC Center.`n`nIl supervisore (watchdog) lo manterra' in esecuzione anche in caso di crash o blocco di un modulo."))
+
+        $box = New-Object System.Windows.Forms.GroupBox
+        $box.Text = "Prossimi passi"
+        $box.Location = New-Object System.Drawing.Point(35, 170)
+        $box.Size = New-Object System.Drawing.Size(450, 220)
+        $box.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+        $contentPanel.Controls.Add($box)
+
+        $items = @(
+            "Apri il NOC Center -> Agents per verificare 'live: true'",
+            "Il primo scan LAN avviene entro 30 secondi",
+            "Da NOC Center puoi forzare scan/diagnostica real-time",
+            "Logs Windows: Event Viewer -> Application -> source 86Noc*"
+        )
+        for ($i = 0; $i -lt $items.Count; $i++) {
+            $l = New-Object System.Windows.Forms.Label
+            $l.Text = ([char]0x2192) + "  " + $items[$i]
+            $l.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
+            $l.ForeColor = $ColorText
+            $l.Location = New-Object System.Drawing.Point(20, 30 + ($i * 30))
+            $l.Size = New-Object System.Drawing.Size(420, 26)
+            $box.Controls.Add($l)
+        }
+    } else {
+        $contentPanel.Controls.Add((New-Title "Installazione fallita"))
+        $contentPanel.Controls.Add((New-Subtitle "Si e' verificato un errore durante l'installazione.`n`nControlla il log dello step precedente. Eventuali servizi parzialmente registrati possono essere rimossi manualmente."))
+
+        $box = New-Object System.Windows.Forms.GroupBox
+        $box.Text = "Disinstallazione manuale"
+        $box.Location = New-Object System.Drawing.Point(35, 170)
+        $box.Size = New-Object System.Drawing.Size(450, 200)
+        $box.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+        $contentPanel.Controls.Add($box)
+
+        $cmd = New-Object System.Windows.Forms.TextBox
+        $cmd.Multiline = $true
+        $cmd.ReadOnly = $true
+        $cmd.ScrollBars = [System.Windows.Forms.ScrollBars]::Vertical
+        $cmd.Font = New-Object System.Drawing.Font("Consolas", 9)
+        $cmd.Location = New-Object System.Drawing.Point(15, 25)
+        $cmd.Size = New-Object System.Drawing.Size(420, 160)
+        $cmd.Text = @"
+Stop-Service $ServiceName, $WatchdogName -Force -ErrorAction SilentlyContinue
+sc.exe delete $ServiceName
+sc.exe delete $WatchdogName
+Remove-Item -Recurse -Force "$InstallDir","$DataDir"
+"@
+        $box.Controls.Add($cmd)
+    }
+}
+
+# ================================================================
+# NAVIGAZIONE
+# ================================================================
+function Render-Step {
+    Update-Sidebar
+    switch ($script:CurrentStep) {
+        0 { Show-Welcome }
+        1 { Show-Configuration }
+        2 { Show-Summary }
+        3 { Show-Install }
+        4 { Show-Done }
+    }
+}
+
+$btnNext.Add_Click({
+    if ($script:CurrentStep -eq 1) {
+        # Validazione step 1
+        $url = $script:txtUrl.Text.TrimEnd('/')
+        $tok = $script:txtToken.Text.Trim()
+        if (-not $url -or -not $tok) {
+            [System.Windows.Forms.MessageBox]::Show("URL e Token sono obbligatori.", "Configurazione incompleta",
+                [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
+            return
+        }
+        $script:BackendUrl = $url
+        $script:Token = $tok
+        if (-not $script:ClientId) {
+            # Pre-volo automatico
+            try {
+                [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
+                $r = Invoke-RestMethod -UseBasicParsing -TimeoutSec 15 `
+                    -Uri "$url/api/agent/install/manifest?platform=$Platform&token=$tok"
+                $script:ClientId = $r.client_id
+            } catch {
+                [System.Windows.Forms.MessageBox]::Show("Verifica fallita:`n$($_.Exception.Message)", "Errore connessione",
+                    [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
+                return
+            }
+        }
+    }
+    if ($script:CurrentStep -eq 4) { $form.Close(); return }
+    $script:CurrentStep++
+    Render-Step
+})
+
+$btnBack.Add_Click({
+    if ($script:CurrentStep -gt 0) {
+        $script:CurrentStep--
+        Render-Step
+    }
+})
+
+$btnCancel.Add_Click({
+    if ([System.Windows.Forms.MessageBox]::Show("Annullare l'installazione?", "$DisplayName",
+        [System.Windows.Forms.MessageBoxButtons]::YesNo,
+        [System.Windows.Forms.MessageBoxIcon]::Question) -eq [System.Windows.Forms.DialogResult]::Yes) {
+        $form.Close()
+    }
+})
+
+# ================================================================
+# AVVIO
+# ================================================================
+Render-Step
+[void]$form.ShowDialog()
