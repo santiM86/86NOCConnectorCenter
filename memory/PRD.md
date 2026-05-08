@@ -1,3 +1,89 @@
+## 2026-05-08 MILESTONE — `86NocAgent` v4.0 (rewrite nativo Go) — Sprint 1 COMPLETO
+
+**Direttiva utente**: «dobbiamo essere migliori dei nostri competitor.. non dico altro procedi e non pensare a quello che sta funzionando ora.. ricrea completamente il connector»
+
+**Obiettivo**: sostituire il connector legacy `86NocConnector` v3.8.x basato su PowerShell (catena di script con sub-thread che si bloccano in modo silente, polling unidirezionale, no comandi server→agent, no self-update) con un agent nativo cross-platform allineato allo standard professionale del settore (Datto/NinjaOne/Atera/Auvik/Domotz).
+
+### Codebase nuovo: `/app/noc-agent/` (Go 1.23)
+```
+noc-agent/
+├── cmd/agent/             # main agent binary (nocagent / .exe)
+├── cmd/watchdog/          # supervisore process (nocwatchdog / .exe)
+├── internal/
+│   ├── config/            # YAML loader + ENV override
+│   ├── transport/         # WebSocket persistente + reconnect backoff
+│   ├── discovery/         # ARP (/proc/net/arp + arp -an) + mDNS/DNS-SD
+│   ├── poller/            # SNMP v2c con community fallback + parallel fan-out
+│   ├── health/            # self-telemetry (uptime, goroutines, mem, cpu, modules_alive/stuck)
+│   ├── update/            # OTA self-update con manifest firmato Ed25519
+│   └── logging/           # slog JSON + ring buffer canalizzato verso backend
+├── pkg/proto/messages.go  # wire protocol (Frame, AgentHello, ServerCommand, etc.)
+├── service/systemd/       # 86nocagent.service + 86nocwatchdog.service
+├── build/agent.example.yaml
+└── Makefile               # build, all-platforms (linux/win/macos × amd64/arm64)
+```
+
+### Backend (FastAPI): nuovo endpoint WebSocket
+- `/app/backend/routes/agent_ws.py` — registrato in `server.py` come `agent_ws_router`.
+- `WS  /api/agent/ws` — canale bidirezionale persistente.
+- `POST /api/agents/register` — admin emette token bearer per nuovo agent.
+- `GET  /api/agents` — lista agent connessi/storici con `live_count`.
+- `POST /api/agents/{agent_id}/command` — invia comando server→agent in real-time.
+- `GET  /api/agents/{agent_id}/health` — snapshot ultimo heartbeat + staleness.
+
+### Wire protocol (JSON su WebSocket, v=1)
+- agent → server: `agent.hello`, `agent.heartbeat`, `agent.event` (kind: discovery_batch, snmp_poll, module_stuck, crash_recovered), `agent.reply`, `agent.log`.
+- server → agent: `server.welcome`, `server.command` (ping, force_lan_scan, force_snmp_poll, get_metrics, restart_module, run_diagnostics, self_update, shutdown), `server.config`, `server.ping`.
+
+### Persistenza MongoDB
+- `agent_tokens` — bearer registrati per tenant (revocabili).
+- `managed_agents` — un doc per `agent_id` con hello + ultimo heartbeat (uptime_ns, goroutines, mem_alloc_bytes, cpu_percent, errors_last_5min, modules_alive[], modules_stuck[], last_scan_at, last_poll_at).
+- `discovered_endpoints` — eventi `discovery_batch` ribridgati nella collection esistente con `source_connector_mode="agent_v4"` (zero modifiche UI).
+- `device_poll_status` — eventi `snmp_poll` ribridgati (sysName/sysDescr/sysObjectID/uptime/latency).
+- `agent_logs` — solo log warn/error degli agent (capped intent: cap TTL TBD Sprint 2).
+
+### Vantaggi architetturali sopra il legacy v3.8.x
+| Aspetto | Connector v3.8.x | Agent v4.0 |
+|---|---|---|
+| Linguaggio | PowerShell (catena di .ps1) | Go static binary |
+| Footprint | 80MB+ con dipendenze | 6.9 MB agent + 2.6 MB watchdog |
+| Canale | Polling HTTPS unidirezionale | WebSocket persistente bidirezionale |
+| Comandi server→agent | impossibili | real-time (ping, force_lan_scan, get_metrics, restart_module, run_diagnostics, shutdown) |
+| Watchdog | banner UI ambra (l'admin riavvia a mano) | processo supervisore separato che SIGTERM/SIGKILL/respawn entro 90s |
+| Visibilità modulo bloccato | dopo 30/60 min | <30s via `modules_stuck[]` nell'heartbeat |
+| Self-update | manuale via installer | OTA con manifest Ed25519 firmato (wired, off di default) |
+| Cross-platform | solo Windows | linux/amd64, linux/arm64, windows/amd64, darwin/arm64 |
+
+### Verifica end-to-end (smoke test in `/app/backend/tests/`)
+1. **`test_agent_v4_e2e.py`** PASS — agent connette, hello/welcome handshake, heartbeat con telemetria completa, persistenza in `managed_agents`. Bug risolto in DEBUG: il log shipper accumulava frame prima del connect → hello arrivava al server come ~40° frame → server rifiutava per "expected agent.hello". Fix: hello inviato sincronamente fuori dalla coda + log shipping limitato a warn/error.
+2. **`test_agent_v4_commands.py`** PASS — admin login → 3 comandi server→agent invocati con successo:
+   - `ping` → `{ok:true, result:{pong:"..."}}`
+   - `get_metrics` → modules_alive=[transport, discovery, poller, watchdog], goroutines=11
+   - `force_lan_scan` → endpoints=1 (eseguito on-demand, NON polling-based)
+   - `GET /api/agents` → live_count=1
+
+### Build artefatti
+`/app/noc-agent/build/bin/<os-arch>/nocagent[.exe]` + `nocwatchdog[.exe]` per:
+- linux-amd64 (6.9 MB + 2.6 MB)
+- linux-arm64 (6.7 MB + 2.6 MB)
+- windows-amd64 (7.2 MB + 2.8 MB)
+- darwin-arm64 (6.9 MB + 2.6 MB)
+
+Tutti CGO_ENABLED=0 → static binaries, zero dipendenze runtime, no Python, no PowerShell.
+
+### Coesistenza col legacy
+Il connector v3.8.x continua a girare in produzione. La migrazione clienti è incrementale: emetti un `agent_token` per cliente, installi il binary v4 sulla macchina target, l'agent v4 popola `discovered_endpoints` con `source_connector_mode="agent_v4"` e tutta l'UI esistente continua a funzionare senza modifiche. Quando un cliente è migrato, fermi il servizio legacy.
+
+### Sprint 2 (prossimo, non ancora avviato)
+- Pacchetti installer: MSI Windows (con sc.exe registrazione service) + .deb/.rpm Linux + launchd plist macOS.
+- WMI poller per Windows Servers (sostituisce il P1 «Windows Servers WMI Polling» in coda).
+- UI frontend: pagina `/agents` con tabella live, bottoni `force_lan_scan` / `run_diagnostics` per click.
+- Server-side: endpoint pubblico `/api/agent/update/manifest` con firma Ed25519 → abilita OTA su massa.
+- LLDP-MED + SNMP CAM table source per discovery oltre ARP/mDNS.
+
+---
+
+
 ## 2026-05-08 FEATURE — Watchdog Scanner Connector inattivo (v3.8.41)
 
 **Issue**: dopo i fix v3.8.36→40 (logica status corretta + last_seen_at aggiornato), l'utente vedeva ancora i device fermi alle 12:20 perché il sub-thread `Poll-LanEndpoints` PowerShell del Master Connector era bloccato dal 12:20 (probabile residuo UDP socket leak / crash silenzioso). Backend non poteva sbloccare un connector polling-based v3.8.19 da remoto — serviva un meccanismo di **visibilità diagnostica** che inducesse l'admin al restart del servizio Windows.

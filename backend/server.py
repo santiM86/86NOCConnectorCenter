@@ -254,6 +254,7 @@ from routes.hornetsecurity_backup import router as hornetsecurity_backup_router
 from routes.hornetsecurity_vmbackup import router as hornetsecurity_vmbackup_router
 from routes.datto_rmm import router as datto_rmm_router
 from routes.security_admin import router as security_admin_router
+from routes.agent_ws import router as agent_ws_router  # 86NocAgent v4 WS+control plane
 
 app.include_router(auth_router)
 app.include_router(admin_router)
@@ -266,6 +267,7 @@ app.include_router(redfish_router)
 app.include_router(settings_router)
 app.include_router(ingestion_router)
 app.include_router(connector_router)
+app.include_router(agent_ws_router)  # 86NocAgent v4
 app.include_router(discovery_router)
 app.include_router(web_proxy_router)
 app.include_router(web_console_live_router)
