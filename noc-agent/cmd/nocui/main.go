@@ -1002,13 +1002,6 @@ func main() {
 	app := &App{agent: loadAgentInfo(), icon: loadAppIcon()}
 	theApp = app
 
-	// Splash screen di boot (skip se l'utente sta solo chiedendo di
-	// mostrare la console: in quel caso vuole arrivare subito alla
-	// finestra Gestisci Dispositivi).
-	if !*show {
-		showSplash(app, 3*time.Second)
-	}
-
 	if err := setupTray(app); err != nil {
 		walk.MsgBox(nil, "Errore", err.Error(), walk.MsgBoxIconError)
 		return

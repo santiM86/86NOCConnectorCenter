@@ -201,32 +201,53 @@ func probeICMPPing(ctx context.Context, ip string, timeoutMs int) int {
 	return -1
 }
 
-// probeWebUI fa una HEAD request veloce su http(s)://IP/ e ritorna la
-// prima URL che risponde con status < 500.
+// probeWebUI fa probe HTTP/HTTPS PARALLELE su 80/443 e ritorna la
+// prima URL che risponde con status < 500. Timeout aggressivo (700ms)
+// per evitare di rallentare lo scan.
 func probeWebUI(ctx context.Context, ip string) string {
+	cctx, cancel := context.WithTimeout(ctx, 1*time.Second)
+	defer cancel()
+	type res struct{ url string }
+	urls := []string{"http://" + ip + "/", "https://" + ip + "/"}
+	out := make(chan string, len(urls))
 	cli := &http.Client{
-		Timeout: 1500 * time.Millisecond,
+		Timeout: 700 * time.Millisecond,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
 		Transport: &http.Transport{
-			TLSClientConfig:     &tls.Config{InsecureSkipVerify: true},
-			DisableKeepAlives:   true,
-			ResponseHeaderTimeout: 1200 * time.Millisecond,
+			TLSClientConfig:       &tls.Config{InsecureSkipVerify: true},
+			DisableKeepAlives:     true,
+			ResponseHeaderTimeout: 600 * time.Millisecond,
+			TLSHandshakeTimeout:   500 * time.Millisecond,
 		},
 	}
-	for _, scheme := range []string{"http", "https"} {
-		for _, port := range []string{"", ":8080", ":8443"} {
-			u := scheme + "://" + ip + port + "/"
-			req, _ := http.NewRequestWithContext(ctx, "HEAD", u, nil)
+	for _, u := range urls {
+		u := u
+		go func() {
+			req, _ := http.NewRequestWithContext(cctx, "HEAD", u, nil)
 			req.Header.Set("User-Agent", "ArgusScanner/1.0")
 			resp, err := cli.Do(req)
-			if err == nil {
-				resp.Body.Close()
-				if resp.StatusCode < 500 {
-					return u
-				}
+			if err != nil {
+				out <- ""
+				return
 			}
+			resp.Body.Close()
+			if resp.StatusCode < 500 {
+				out <- u
+				return
+			}
+			out <- ""
+		}()
+	}
+	for i := 0; i < len(urls); i++ {
+		select {
+		case u := <-out:
+			if u != "" {
+				return u
+			}
+		case <-cctx.Done():
+			return ""
 		}
 	}
 	return ""
@@ -498,8 +519,10 @@ func runScan(ctx context.Context, cidr string, timeout time.Duration,
 			// web + SNMP solo per host alive (TCP) per non perdere tempo.
 			if _, alive := probeRes.m[ip]; alive {
 				e.web = probeWebUI(ctx, ip)
-				e.snmpOK = probeSNMPv2c(ip, "public", 700*time.Millisecond) ||
-					probeSNMPv2c(ip, "private", 700*time.Millisecond)
+				// SNMP probe: solo community 'public' di default per
+				// mantenere lo scan veloce. Per 'private' usa il pulsante
+				// "+ Aggiungi a SNMP (community personalizzata)".
+				e.snmpOK = probeSNMPv2c(ip, "public", 500*time.Millisecond)
 			}
 			enrichMap.mu.Lock()
 			enrichMap.m[ip] = e
