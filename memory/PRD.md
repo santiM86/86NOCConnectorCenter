@@ -1,3 +1,27 @@
+## 2026-05-07 BUG FIX — Coerenza counter dispositivi (75 vs 67) v3.8.40
+
+**Issue UX**: nello screenshot l'utente vedeva:
+- Card "DISPOSITIVI 74/75" (header)
+- Tab "Dispositivi (75)"
+- Pannello "Infrastruttura di Rete" → 67 device visibili nei gruppi
+
+Discrepanza di 8 device generava confusione.
+
+**Root cause**: il totale `75` includeva 8 IP multicast/broadcast (224.x, 239.x, 255.x) catturati dallo Scanner via ARP table. Sono "false discovery" — non sono veri device, sono gruppi multicast (es. 224.0.0.22 = IGMP, 255.255.255.255 = broadcast). Nel pannello "Infrastruttura di Rete" vengono raccolti in `skipList` e nascosti dietro un `<details>` collassato → utente vedeva 67 nei gruppi visibili. La card e il tab counter invece li conteggiavano.
+
+**Fix v3.8.40** (`/app/frontend/src/pages/ClientOverviewPage.js`):
+- Card `DISPOSITIVI` ora mostra `${onlineDevices}/${realDevicesCount}` con `realDevicesCount` che esclude multicast (regex `/^(22[4-9]|23\d|255)\./`).
+- Tab counter `Dispositivi (X)` allineato a `realDevices.length`.
+- DevicesTab: aggiunto toggle "Mostra/Nascondi multicast (N)" — di default i multicast sono nascosti per coerenza, l'admin può cliccare per vederli a scopo debug.
+- Testo descrittivo: "X dispositivi (8 multicast/broadcast nascosti)" — trasparente sul filtro applicato.
+
+**Verifica preview**: lint pulito.
+
+**Effetto produzione (post-deploy)**: la card mostrerà `66/67` (o simile, escludendo gli 8 multicast) — coerente con i 67 device visibili nel raggruppamento. L'utente avrà inoltre un toggle per inspezionare i multicast quando serve (debug ARP/IGMP).
+
+---
+
+
 ## 2026-05-07 P0 BUG FIX — lan-scan non aggiornava last_seen_at per device non-scanner (v3.8.39)
 
 **Issue P0 segnalato dall'utente**: "il pool rimane fermo alle 12:30 e non si aggiorna SOLO PER LO SCANNER".
