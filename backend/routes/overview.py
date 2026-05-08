@@ -280,7 +280,13 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
     printer_data = await db.printers.find({}, {"_id": 0, "client_id": 1, "toner_levels": 1, "status": 1}).to_list(5000)
 
     # Connector status
-    connectors = await db.connector_status.find({}, {"_id": 0, "client_id": 1, "last_seen": 1}).to_list(500)
+    # v3.8.41 watchdog: includiamo last_lan_scan_at + mode + hostname per
+    # rilevare scanner inattivi (sub-thread Poll-LanEndpoints crashato).
+    connectors = await db.connector_status.find(
+        {},
+        {"_id": 0, "client_id": 1, "last_seen": 1, "last_lan_scan_at": 1,
+         "mode": 1, "hostname": 1, "online": 1},
+    ).to_list(500)
 
     # Index by client_id
     wan_results_map = {}
@@ -382,6 +388,12 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
             printer_by_client[cid]["ok"] += 1
 
     connector_by_client = {}
+    # v3.8.41 watchdog: scanner_health per cliente — rileva quando il sub-thread
+    # Poll-LanEndpoints del Master Connector e' bloccato (last_lan_scan_at >30min).
+    # Permette al frontend di mostrare un banner "Scanner inattivo da Xh, riavvia
+    # il servizio" senza richiedere modifiche al connector PowerShell.
+    SCANNER_HEALTH_STALE_MIN = 30
+    scanner_health_by_client = {}
     now = datetime.now(timezone.utc)
     for c in connectors:
         cid = c.get("client_id")
@@ -403,6 +415,26 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
             connector_by_client[cid] = connector_by_client[cid] or is_online
         else:
             connector_by_client[cid] = is_online
+
+        # v3.8.41 calcolo scanner_health (per ogni connector che fa lan-scan)
+        last_scan_raw = c.get("last_lan_scan_at")
+        if last_scan_raw:
+            try:
+                ls_dt = datetime.fromisoformat(last_scan_raw.replace("Z", "+00:00"))
+                age_min = int((now - ls_dt).total_seconds() / 60)
+                is_stale = age_min > SCANNER_HEALTH_STALE_MIN
+                entry = {
+                    "hostname": c.get("hostname") or "",
+                    "mode": c.get("mode") or "master",
+                    "last_lan_scan_at": last_scan_raw,
+                    "minutes_since_last_scan": age_min,
+                    "is_stale": is_stale,
+                }
+                if cid not in scanner_health_by_client:
+                    scanner_health_by_client[cid] = []
+                scanner_health_by_client[cid].append(entry)
+            except Exception:
+                pass
 
     # Build response
     result = []
@@ -518,6 +550,8 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
             "backup": backup_info,
             "printers": printer_info,
             "connector_online": connector_online,
+            # v3.8.41: lista scanner per cliente con info su staleness (per banner watchdog UI)
+            "scanner_health": scanner_health_by_client.get(cid, []),
             "detail": {
                 "wan_targets": wan_detail,
                 "devices_list": devices_detail_by_client.get(cid, []),

@@ -19,7 +19,7 @@ from audit import AuditAction
 from deps import (
     get_current_user, validate_api_key, audit_logger,
     check_nosql_injection, sanitize_string, is_newer_version,
-    CONNECTOR_STORAGE,
+    CONNECTOR_STORAGE, require_admin,
 )
 from middleware.connector_security import (
     verify_connector_request, rotate_api_key, CONNECTOR_PATH,
@@ -384,6 +384,49 @@ async def connector_heartbeat(request: Request, heartbeat: ConnectorHeartbeat):
     return response
 
 
+@router.get("/connectors/scan-health/{client_id}")
+async def get_scan_health(client_id: str, current_user: dict = Depends(get_current_user)):
+    """v3.8.41 Watchdog endpoint: ritorna lo stato dei connector che fanno
+    lan-scan per il cliente specificato. Permette al frontend di mostrare un
+    banner "Scanner inattivo da Xh — riavvia il servizio Windows" quando il
+    sub-thread Poll-LanEndpoints del Master e' bloccato (scenario noto: socket
+    leak UDP residuo o crash silenzioso del job PowerShell).
+
+    NB: questo endpoint NON tenta di sbloccare il connector da remoto (non
+    possibile sul connector polling-based v3.8.19). Fornisce solo visibilita'
+    diagnostica per indurre l'admin a fare il restart del servizio.
+    """
+    require_admin(current_user)
+    docs = await db.connector_status.find(
+        {"client_id": client_id},
+        {"_id": 0, "client_id": 1, "hostname": 1, "mode": 1, "online": 1,
+         "last_seen": 1, "last_lan_scan_at": 1, "last_heartbeat_at": 1},
+    ).to_list(50)
+    now = datetime.now(timezone.utc)
+    out = []
+    for c in docs:
+        last_scan_raw = c.get("last_lan_scan_at")
+        age_min = None
+        is_stale = False
+        if last_scan_raw:
+            try:
+                ls = datetime.fromisoformat(last_scan_raw.replace("Z", "+00:00"))
+                age_min = int((now - ls).total_seconds() / 60)
+                is_stale = age_min > 30
+            except Exception:
+                pass
+        out.append({
+            "hostname": c.get("hostname") or "",
+            "mode": c.get("mode") or "master",
+            "online": bool(c.get("online")),
+            "last_lan_scan_at": last_scan_raw,
+            "last_heartbeat_at": c.get("last_heartbeat_at"),
+            "minutes_since_last_scan": age_min,
+            "is_stale": is_stale,
+        })
+    return {"connectors": out, "any_stale": any(x["is_stale"] for x in out)}
+
+
 @router.post("/connector/lan-scan")
 async def connector_lan_scan(request: Request, report: LanScanReport):
     """Riceve risultati ARP/mDNS/SNMP locale da un Connector in modalita' scanner.
@@ -395,7 +438,6 @@ async def connector_lan_scan(request: Request, report: LanScanReport):
     client_data = await verify_connector_request(request)
     client_id = client_data["id"]
     now_iso = datetime.now(timezone.utc).isoformat()
-
     # Aggiorna stato connector scanner con subnet/vlan visti.
     # v3.8.1: filtriamo per mode=scanner per non sporcare il master.
     status_filter = {"client_id": client_id, "mode": "scanner"}
