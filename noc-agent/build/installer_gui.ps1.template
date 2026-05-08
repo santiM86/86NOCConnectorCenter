@@ -99,7 +99,7 @@ $form.BackColor = $ColorLightBg
 # ---- Pannello sinistro (sidebar scura) -------------------------
 $leftPanel = New-Object System.Windows.Forms.Panel
 $leftPanel.Size = New-Object System.Drawing.Size(220, 540)
-$leftPanel.Location = New-Object System.Drawing.Point(0, 0)
+$leftPanel.Location = [System.Drawing.Point]::new(0, 0)
 $leftPanel.BackColor = $ColorDarkBg
 $leftPanel.Dock = [System.Windows.Forms.DockStyle]::Left
 $leftPanel.Width = 220
@@ -109,7 +109,7 @@ $lblBrand = New-Object System.Windows.Forms.Label
 $lblBrand.Text = "ARGUS"
 $lblBrand.Font = New-Object System.Drawing.Font("Segoe UI", 22, [System.Drawing.FontStyle]::Bold)
 $lblBrand.ForeColor = $ColorWhite
-$lblBrand.Location = New-Object System.Drawing.Point(30, 50)
+$lblBrand.Location = [System.Drawing.Point]::new(30, 50)
 $lblBrand.Size = New-Object System.Drawing.Size(180, 40)
 $leftPanel.Controls.Add($lblBrand)
 
@@ -117,7 +117,7 @@ $lblProduct = New-Object System.Windows.Forms.Label
 $lblProduct.Text = "NOC Agent"
 $lblProduct.Font = New-Object System.Drawing.Font("Segoe UI", 11)
 $lblProduct.ForeColor = [System.Drawing.Color]::FromArgb(180, 180, 200)
-$lblProduct.Location = New-Object System.Drawing.Point(30, 92)
+$lblProduct.Location = [System.Drawing.Point]::new(30, 92)
 $lblProduct.Size = New-Object System.Drawing.Size(180, 22)
 $leftPanel.Controls.Add($lblProduct)
 
@@ -125,7 +125,7 @@ $lblVer = New-Object System.Windows.Forms.Label
 $lblVer.Text = "v$Version - native"
 $lblVer.Font = New-Object System.Drawing.Font("Segoe UI", 9)
 $lblVer.ForeColor = $ColorAccent
-$lblVer.Location = New-Object System.Drawing.Point(30, 116)
+$lblVer.Location = [System.Drawing.Point]::new(30, 116)
 $lblVer.Size = New-Object System.Drawing.Size(180, 18)
 $leftPanel.Controls.Add($lblVer)
 
@@ -137,7 +137,7 @@ for ($i = 0; $i -lt $stepNames.Count; $i++) {
     $lbl.Text = "  $($i+1).  $($stepNames[$i])"
     $lbl.Font = New-Object System.Drawing.Font("Segoe UI", 10)
     $lbl.ForeColor = [System.Drawing.Color]::FromArgb(120, 120, 140)
-    $lbl.Location = New-Object System.Drawing.Point(15, 200 + ($i * 32))
+    $lbl.Location = [System.Drawing.Point]::new(15, 200 + ($i * 32))
     $lbl.Size = New-Object System.Drawing.Size(195, 26)
     $leftPanel.Controls.Add($lbl)
     $script:StepLabels += $lbl
@@ -147,7 +147,7 @@ $lblCompany = New-Object System.Windows.Forms.Label
 $lblCompany.Text = "86bit S.r.l."
 $lblCompany.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
 $lblCompany.ForeColor = $ColorWhite
-$lblCompany.Location = New-Object System.Drawing.Point(30, 470)
+$lblCompany.Location = [System.Drawing.Point]::new(30, 470)
 $lblCompany.Size = New-Object System.Drawing.Size(180, 18)
 $leftPanel.Controls.Add($lblCompany)
 
@@ -155,20 +155,20 @@ $lblCopy = New-Object System.Windows.Forms.Label
 $lblCopy.Text = ([char]0x00A9) + " 2026 - 86bit.it"
 $lblCopy.Font = New-Object System.Drawing.Font("Segoe UI", 8)
 $lblCopy.ForeColor = $ColorMuted
-$lblCopy.Location = New-Object System.Drawing.Point(30, 492)
+$lblCopy.Location = [System.Drawing.Point]::new(30, 492)
 $lblCopy.Size = New-Object System.Drawing.Size(180, 18)
 $leftPanel.Controls.Add($lblCopy)
 
 # ---- Pannello destro (content) ---------------------------------
 $contentPanel = New-Object System.Windows.Forms.Panel
-$contentPanel.Location = New-Object System.Drawing.Point(220, 0)
+$contentPanel.Location = [System.Drawing.Point]::new(220, 0)
 $contentPanel.Size = New-Object System.Drawing.Size(514, 480)
 $contentPanel.BackColor = $ColorLightBg
 $form.Controls.Add($contentPanel)
 
 # ---- Barra bottoni in basso ------------------------------------
 $btnBar = New-Object System.Windows.Forms.Panel
-$btnBar.Location = New-Object System.Drawing.Point(220, 480)
+$btnBar.Location = [System.Drawing.Point]::new(220, 480)
 $btnBar.Size = New-Object System.Drawing.Size(514, 60)
 $btnBar.BackColor = [System.Drawing.Color]::FromArgb(230, 230, 235)
 $form.Controls.Add($btnBar)
@@ -176,7 +176,7 @@ $form.Controls.Add($btnBar)
 $btnCancel = New-Object System.Windows.Forms.Button
 $btnCancel.Text = "Annulla"
 $btnCancel.Size = New-Object System.Drawing.Size(110, 32)
-$btnCancel.Location = New-Object System.Drawing.Point(20, 14)
+$btnCancel.Location = [System.Drawing.Point]::new(20, 14)
 $btnCancel.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
 $btnCancel.BackColor = $ColorWhite
 $btnCancel.Font = New-Object System.Drawing.Font("Segoe UI", 9)
@@ -185,7 +185,7 @@ $btnBar.Controls.Add($btnCancel)
 $btnBack = New-Object System.Windows.Forms.Button
 $btnBack.Text = "< Indietro"
 $btnBack.Size = New-Object System.Drawing.Size(110, 32)
-$btnBack.Location = New-Object System.Drawing.Point(270, 14)
+$btnBack.Location = [System.Drawing.Point]::new(270, 14)
 $btnBack.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
 $btnBack.BackColor = $ColorWhite
 $btnBack.Font = New-Object System.Drawing.Font("Segoe UI", 9)
@@ -195,7 +195,7 @@ $btnBar.Controls.Add($btnBack)
 $btnNext = New-Object System.Windows.Forms.Button
 $btnNext.Text = "Avanti >"
 $btnNext.Size = New-Object System.Drawing.Size(110, 32)
-$btnNext.Location = New-Object System.Drawing.Point(385, 14)
+$btnNext.Location = [System.Drawing.Point]::new(385, 14)
 $btnNext.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
 $btnNext.BackColor = $ColorAccent
 $btnNext.ForeColor = $ColorWhite
@@ -227,7 +227,7 @@ function New-Title($text) {
     $l.Text = $text
     $l.Font = New-Object System.Drawing.Font("Segoe UI", 18, [System.Drawing.FontStyle]::Bold)
     $l.ForeColor = $ColorText
-    $l.Location = New-Object System.Drawing.Point(35, 30)
+    $l.Location = [System.Drawing.Point]::new(35, 30)
     $l.Size = New-Object System.Drawing.Size(450, 36)
     return $l
 }
@@ -237,7 +237,7 @@ function New-Subtitle($text) {
     $l.Text = $text
     $l.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
     $l.ForeColor = [System.Drawing.Color]::FromArgb(80, 80, 96)
-    $l.Location = New-Object System.Drawing.Point(35, 70)
+    $l.Location = [System.Drawing.Point]::new(35, 70)
     $l.Size = New-Object System.Drawing.Size(450, 60)
     return $l
 }
@@ -256,7 +256,7 @@ function Show-Welcome {
 
     $infoBox = New-Object System.Windows.Forms.GroupBox
     $infoBox.Text = "Cosa verra' installato"
-    $infoBox.Location = New-Object System.Drawing.Point(35, 150)
+    $infoBox.Location = [System.Drawing.Point]::new(35, 150)
     $infoBox.Size = New-Object System.Drawing.Size(450, 220)
     $infoBox.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
     $infoBox.ForeColor = $ColorText
@@ -274,7 +274,7 @@ function Show-Welcome {
         $l.Text = ([char]0x2713) + "  " + $items[$i]
         $l.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
         $l.ForeColor = $ColorText
-        $l.Location = New-Object System.Drawing.Point(20, 30 + ($i * 28))
+        $l.Location = [System.Drawing.Point]::new(20, 30 + ($i * 28))
         $l.Size = New-Object System.Drawing.Size(420, 24)
         $infoBox.Controls.Add($l)
     }
@@ -283,7 +283,7 @@ function Show-Welcome {
     $hint.Text = "Clicca 'Avanti' per continuare."
     $hint.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Italic)
     $hint.ForeColor = $ColorMuted
-    $hint.Location = New-Object System.Drawing.Point(35, 390)
+    $hint.Location = [System.Drawing.Point]::new(35, 390)
     $hint.Size = New-Object System.Drawing.Size(450, 24)
     $contentPanel.Controls.Add($hint)
 }
@@ -308,13 +308,13 @@ function Show-Configuration {
     $lblUrl = New-Object System.Windows.Forms.Label
     $lblUrl.Text = "URL NOC Center *"
     $lblUrl.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
-    $lblUrl.Location = New-Object System.Drawing.Point(35, 150)
+    $lblUrl.Location = [System.Drawing.Point]::new(35, 150)
     $lblUrl.Size = New-Object System.Drawing.Size(200, 20)
     $contentPanel.Controls.Add($lblUrl)
 
     $script:txtUrl = New-Object System.Windows.Forms.TextBox
     $script:txtUrl.Font = New-Object System.Drawing.Font("Segoe UI", 10)
-    $script:txtUrl.Location = New-Object System.Drawing.Point(35, 172)
+    $script:txtUrl.Location = [System.Drawing.Point]::new(35, 172)
     $script:txtUrl.Size = New-Object System.Drawing.Size(440, 26)
     $script:txtUrl.Text = $script:BackendUrl
     $contentPanel.Controls.Add($script:txtUrl)
@@ -323,7 +323,7 @@ function Show-Configuration {
     $hintUrl.Text = "Es: https://argus.86bit.it"
     $hintUrl.Font = New-Object System.Drawing.Font("Segoe UI", 8)
     $hintUrl.ForeColor = $ColorMuted
-    $hintUrl.Location = New-Object System.Drawing.Point(35, 202)
+    $hintUrl.Location = [System.Drawing.Point]::new(35, 202)
     $hintUrl.Size = New-Object System.Drawing.Size(440, 18)
     $contentPanel.Controls.Add($hintUrl)
 
@@ -331,13 +331,13 @@ function Show-Configuration {
     $lblToken = New-Object System.Windows.Forms.Label
     $lblToken.Text = "Token cliente *"
     $lblToken.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
-    $lblToken.Location = New-Object System.Drawing.Point(35, 240)
+    $lblToken.Location = [System.Drawing.Point]::new(35, 240)
     $lblToken.Size = New-Object System.Drawing.Size(200, 20)
     $contentPanel.Controls.Add($lblToken)
 
     $script:txtToken = New-Object System.Windows.Forms.TextBox
     $script:txtToken.Font = New-Object System.Drawing.Font("Consolas", 9)
-    $script:txtToken.Location = New-Object System.Drawing.Point(35, 262)
+    $script:txtToken.Location = [System.Drawing.Point]::new(35, 262)
     $script:txtToken.Size = New-Object System.Drawing.Size(440, 26)
     $script:txtToken.Text = $script:Token
     $contentPanel.Controls.Add($script:txtToken)
@@ -346,7 +346,7 @@ function Show-Configuration {
     $hintTok.Text = "Generato dall'admin con  POST /api/agents/register"
     $hintTok.Font = New-Object System.Drawing.Font("Segoe UI", 8)
     $hintTok.ForeColor = $ColorMuted
-    $hintTok.Location = New-Object System.Drawing.Point(35, 292)
+    $hintTok.Location = [System.Drawing.Point]::new(35, 292)
     $hintTok.Size = New-Object System.Drawing.Size(440, 18)
     $contentPanel.Controls.Add($hintTok)
 
@@ -354,7 +354,7 @@ function Show-Configuration {
     $btnTest = New-Object System.Windows.Forms.Button
     $btnTest.Text = "Verifica connessione"
     $btnTest.Size = New-Object System.Drawing.Size(180, 30)
-    $btnTest.Location = New-Object System.Drawing.Point(35, 330)
+    $btnTest.Location = [System.Drawing.Point]::new(35, 330)
     $btnTest.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
     $btnTest.BackColor = $ColorWhite
     $btnTest.Font = New-Object System.Drawing.Font("Segoe UI", 9)
@@ -362,7 +362,7 @@ function Show-Configuration {
 
     $script:lblValidation = New-Object System.Windows.Forms.Label
     $script:lblValidation.Font = New-Object System.Drawing.Font("Segoe UI", 9)
-    $script:lblValidation.Location = New-Object System.Drawing.Point(225, 335)
+    $script:lblValidation.Location = [System.Drawing.Point]::new(225, 335)
     $script:lblValidation.Size = New-Object System.Drawing.Size(260, 24)
     $script:lblValidation.Text = ""
     $contentPanel.Controls.Add($script:lblValidation)
@@ -406,7 +406,7 @@ function Show-Summary {
 
     $box = New-Object System.Windows.Forms.GroupBox
     $box.Text = "Configurazione"
-    $box.Location = New-Object System.Drawing.Point(35, 150)
+    $box.Location = [System.Drawing.Point]::new(35, 150)
     $box.Size = New-Object System.Drawing.Size(450, 240)
     $box.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
     $contentPanel.Controls.Add($box)
@@ -425,7 +425,7 @@ function Show-Summary {
         $lk.Text = $rows[$i][0] + ":"
         $lk.Font = New-Object System.Drawing.Font("Segoe UI", 9)
         $lk.ForeColor = $ColorMuted
-        $lk.Location = New-Object System.Drawing.Point(15, 30 + ($i * 28))
+        $lk.Location = [System.Drawing.Point]::new(15, 30 + ($i * 28))
         $lk.Size = New-Object System.Drawing.Size(140, 22)
         $box.Controls.Add($lk)
 
@@ -433,7 +433,7 @@ function Show-Summary {
         $lv.Text = $rows[$i][1]
         $lv.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
         $lv.ForeColor = $ColorText
-        $lv.Location = New-Object System.Drawing.Point(160, 30 + ($i * 28))
+        $lv.Location = [System.Drawing.Point]::new(160, 30 + ($i * 28))
         $lv.Size = New-Object System.Drawing.Size(280, 22)
         $box.Controls.Add($lv)
     }
@@ -463,7 +463,7 @@ function Show-Install {
     $contentPanel.Controls.Add((New-Subtitle "Download dei binari, configurazione, registrazione servizi e avvio. Attendi il completamento."))
 
     $script:progressBar = New-Object System.Windows.Forms.ProgressBar
-    $script:progressBar.Location = New-Object System.Drawing.Point(35, 145)
+    $script:progressBar.Location = [System.Drawing.Point]::new(35, 145)
     $script:progressBar.Size = New-Object System.Drawing.Size(450, 22)
     $script:progressBar.Style = [System.Windows.Forms.ProgressBarStyle]::Continuous
     $script:progressBar.Minimum = 0
@@ -471,7 +471,7 @@ function Show-Install {
     $contentPanel.Controls.Add($script:progressBar)
 
     $script:lstLog = New-Object System.Windows.Forms.RichTextBox
-    $script:lstLog.Location = New-Object System.Drawing.Point(35, 180)
+    $script:lstLog.Location = [System.Drawing.Point]::new(35, 180)
     $script:lstLog.Size = New-Object System.Drawing.Size(450, 220)
     $script:lstLog.ReadOnly = $true
     $script:lstLog.BackColor = [System.Drawing.Color]::FromArgb(28, 28, 35)
@@ -590,7 +590,7 @@ function Show-Done {
 
         $box = New-Object System.Windows.Forms.GroupBox
         $box.Text = "Prossimi passi"
-        $box.Location = New-Object System.Drawing.Point(35, 170)
+        $box.Location = [System.Drawing.Point]::new(35, 170)
         $box.Size = New-Object System.Drawing.Size(450, 220)
         $box.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
         $contentPanel.Controls.Add($box)
@@ -606,7 +606,7 @@ function Show-Done {
             $l.Text = ([char]0x2192) + "  " + $items[$i]
             $l.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
             $l.ForeColor = $ColorText
-            $l.Location = New-Object System.Drawing.Point(20, 30 + ($i * 30))
+            $l.Location = [System.Drawing.Point]::new(20, 30 + ($i * 30))
             $l.Size = New-Object System.Drawing.Size(420, 26)
             $box.Controls.Add($l)
         }
@@ -616,7 +616,7 @@ function Show-Done {
 
         $box = New-Object System.Windows.Forms.GroupBox
         $box.Text = "Disinstallazione manuale"
-        $box.Location = New-Object System.Drawing.Point(35, 170)
+        $box.Location = [System.Drawing.Point]::new(35, 170)
         $box.Size = New-Object System.Drawing.Size(450, 200)
         $box.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
         $contentPanel.Controls.Add($box)
@@ -626,7 +626,7 @@ function Show-Done {
         $cmd.ReadOnly = $true
         $cmd.ScrollBars = [System.Windows.Forms.ScrollBars]::Vertical
         $cmd.Font = New-Object System.Drawing.Font("Consolas", 9)
-        $cmd.Location = New-Object System.Drawing.Point(15, 25)
+        $cmd.Location = [System.Drawing.Point]::new(15, 25)
         $cmd.Size = New-Object System.Drawing.Size(420, 160)
         $cmd.Text = @"
 Stop-Service $ServiceName, $WatchdogName -Force -ErrorAction SilentlyContinue
