@@ -563,7 +563,7 @@ def _config_template(client_id: str, token: str, ws_url: str) -> str:
 
 @router.get("/agent/install/wizard-bundle.zip")
 async def wizard_bundle(token: Optional[str] = None) -> FileResponse:
-    """Download a ZIP containing installer_gui.ps1 + Installa-86NocAgent.vbs.
+    """Download a ZIP containing installer_gui.ps1 (PowerShell GUI wizard).
 
     The user double-clicks the .vbs which silently launches the GUI wizard
     with the token already baked in. No console window, no PowerShell skill
@@ -572,6 +572,34 @@ async def wizard_bundle(token: Optional[str] = None) -> FileResponse:
     await _token_or_403(token)
     bundle = _build_wizard_bundle(token)
     return FileResponse(bundle, media_type="application/zip", filename="86NocAgent-Installer.zip")
+
+
+@router.get("/agent/install/exe")
+async def install_exe(token: Optional[str] = None) -> FileResponse:
+    """Stream nocinstall.exe alone. The technician must run with
+    `--token <T> --backend <URL>` or place a nocinstall.cfg next to it.
+    """
+    await _token_or_403(token)
+    path = (_AGENT_BUILD_DIR / "windows-amd64" / "nocinstall.exe").resolve()
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="installer not built")
+    return FileResponse(str(path),
+                        media_type="application/vnd.microsoft.portable-executable",
+                        filename="nocinstall.exe")
+
+
+@router.get("/agent/install/exe-bundle.zip")
+async def exe_bundle(token: Optional[str] = None) -> FileResponse:
+    """ZIP with nocinstall.exe + pre-populated nocinstall.cfg + LEGGIMI.
+
+    This is the recommended download for the on-site technician on Windows
+    boxes with enterprise AV: a single .exe + one config file, no scripts at
+    all. The technician double-clicks nocinstall.exe and just clicks through.
+    """
+    await _token_or_403(token)
+    bundle = _build_exe_bundle(token)
+    return FileResponse(bundle, media_type="application/zip",
+                        filename="86NocAgent-Installer-EXE.zip")
 
 
 @router.get("/agent/install/{platform}.{ext}", response_class=PlainTextResponse)
@@ -627,34 +655,100 @@ def _render_wizard_ps1(token: str) -> str:
 
 
 def _build_wizard_bundle(token: str) -> str:
-    """Materialise the wizard ZIP on disk and return its path."""
+    """Materialise the wizard ZIP on disk and return its path.
+
+    Note: starting from sprint 1.6 we **do not ship a .vbs launcher** anymore
+    because enterprise AV (CrowdStrike, SentinelOne, ESET, Sophos InterceptX)
+    flag .vbs by default and email gateways strip it. The technician opens
+    the .ps1 directly via right-click -> Run with PowerShell as Administrator.
+    For a fully script-free experience use /api/agent/install/exe (the native
+    Go installer with embedded GUI).
+    """
     import io as _io
     import zipfile as _zipfile
     import tempfile as _tempfile
 
     out_dir = _pathlib.Path(_tempfile.gettempdir()) / "86nocagent_bundles"
     out_dir.mkdir(parents=True, exist_ok=True)
-    # One bundle per token (cache); if the file exists we reuse it.
     safe = "".join(c for c in token if c.isalnum() or c in "-_")[:32]
     out = out_dir / f"86NocAgent-Installer-{safe}.zip"
     if out.is_file():
-        return str(out)
+        out.unlink()  # rebuild — content/template may have changed
 
     ps1_body = _render_wizard_ps1(token)
-    vbs_path = _pathlib.Path("/app/noc-agent/build/Installa-86NocAgent.vbs")
-    if not vbs_path.is_file():
-        raise HTTPException(status_code=500, detail="vbs launcher missing")
 
     buf = _io.BytesIO()
     with _zipfile.ZipFile(buf, "w", _zipfile.ZIP_DEFLATED) as z:
         z.writestr("installer_gui.ps1", ps1_body)
-        z.writestr("Installa-86NocAgent.vbs", vbs_path.read_text(encoding="utf-8"))
         z.writestr("LEGGIMI.txt",
                    "86NocAgent v4.0 - Wizard installazione\r\n"
                    "============================================\r\n\r\n"
-                   "1) Tasto destro su 'Installa-86NocAgent.vbs' -> Esegui come amministratore\r\n"
-                   "2) Segui il wizard (5 step): Benvenuto -> Configurazione -> Riepilogo -> Installazione -> Completato\r\n"
-                   "3) Verifica nel NOC Center che l'agent risulti 'live'\r\n\r\n"
-                   "Token e URL sono gia' precompilati nel wizard.\r\n")
+                   "OPZIONE 1 - GUI Wizard (consigliata se non hai AV enterprise restrittivo):\r\n"
+                   "  1. Tasto destro su 'installer_gui.ps1' -> Esegui con PowerShell\r\n"
+                   "  2. Accetta il prompt UAC (auto-elevazione)\r\n"
+                   "  3. Segui i 5 step del wizard\r\n\r\n"
+                   "OPZIONE 2 - One-liner (passa qualsiasi AV, zero file a disco):\r\n"
+                   "  Apri PowerShell come amministratore e incolla:\r\n"
+                   "  iex(iwr -UseBasicParsing 'URL_INSTALLER_PS1')\r\n\r\n"
+                   "OPZIONE 3 - Installer .exe nativo (consigliata per AV enterprise):\r\n"
+                   "  Scarica nocinstall.exe da:\r\n"
+                   "  /api/agent/install/exe?token=...\r\n"
+                   "  Doppio-click, accetta UAC, segui le finestre. Nessuno script.\r\n\r\n"
+                   "Token e URL sono gia' precompilati in tutti gli installer.\r\n")
+    out.write_bytes(buf.getvalue())
+    return str(out)
+
+
+def _build_exe_bundle(token: str) -> str:
+    """Build a ZIP with nocinstall.exe + sidecar config + readme."""
+    import io as _io
+    import zipfile as _zipfile
+    import tempfile as _tempfile
+
+    public_http = _os.environ.get("AGENT_PUBLIC_HTTP_URL", "https://argus.86bit.it")
+    out_dir = _pathlib.Path(_tempfile.gettempdir()) / "86nocagent_bundles"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    safe = "".join(c for c in token if c.isalnum() or c in "-_")[:32]
+    out = out_dir / f"86NocAgent-EXE-{safe}.zip"
+    if out.is_file():
+        out.unlink()
+
+    exe_path = _AGENT_BUILD_DIR / "windows-amd64" / "nocinstall.exe"
+    if not exe_path.is_file():
+        raise HTTPException(status_code=500, detail="nocinstall.exe not built")
+
+    sidecar = (
+        f"# 86NocAgent installer config — generated by /api/agent/install/exe-bundle.zip\n"
+        f"# Lascia questo file accanto a nocinstall.exe e fai doppio-click sull'.exe.\n"
+        f"TOKEN={token}\n"
+        f"BACKEND={public_http}\n"
+    )
+    leggimi = (
+        "86NocAgent v4.0 - Installer EXE\r\n"
+        "==========================================\r\n\r\n"
+        "Procedura semplice (consigliata):\r\n"
+        "  1. Estrai TUTTI i file di questo zip nella stessa cartella.\r\n"
+        "  2. Doppio-click su nocinstall.exe\r\n"
+        "  3. Accetta il prompt UAC (richiesta privilegi amministratore)\r\n"
+        "  4. Conferma la finestra di installazione\r\n"
+        "  5. Attendi il termine + finestra di conferma\r\n\r\n"
+        "Cosa contiene questo zip:\r\n"
+        "  nocinstall.exe   Installer nativo (single binary, no scripting)\r\n"
+        "  nocinstall.cfg   Token + URL del NOC Center\r\n"
+        "  LEGGIMI.txt      Questo file\r\n\r\n"
+        "Avanzato (CLI):\r\n"
+        "  nocinstall.exe --token <T> --backend <URL> [--silent]\r\n\r\n"
+        "Disinstallazione:\r\n"
+        "  Run as admin in PowerShell:\r\n"
+        "    Stop-Service 86NocAgent,86NocWatchdog -Force\r\n"
+        "    sc.exe delete 86NocAgent ; sc.exe delete 86NocWatchdog\r\n"
+        "    Remove-Item -Recurse -Force \"$env:ProgramFiles\\86NocAgent\",\"$env:ProgramData\\86NocAgent\"\r\n"
+    )
+
+    buf = _io.BytesIO()
+    with _zipfile.ZipFile(buf, "w", _zipfile.ZIP_DEFLATED) as z:
+        z.write(str(exe_path), arcname="nocinstall.exe")
+        z.writestr("nocinstall.cfg", sidecar)
+        z.writestr("LEGGIMI.txt", leggimi)
     out.write_bytes(buf.getvalue())
     return str(out)

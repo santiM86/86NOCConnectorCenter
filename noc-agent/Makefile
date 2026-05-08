@@ -45,6 +45,7 @@ windows-amd64:
 	mkdir -p $(BIN)/windows-amd64
 	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 $(GO) build -trimpath -ldflags '$(LDFLAGS)' -o $(BIN)/windows-amd64/nocagent.exe ./cmd/agent
 	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 $(GO) build -trimpath -ldflags '$(LDFLAGS)' -o $(BIN)/windows-amd64/nocwatchdog.exe ./cmd/watchdog
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 $(GO) build -trimpath -ldflags '$(LDFLAGS)' -o $(BIN)/windows-amd64/nocinstall.exe ./cmd/installer
 
 darwin-arm64:
 	mkdir -p $(BIN)/darwin-arm64
