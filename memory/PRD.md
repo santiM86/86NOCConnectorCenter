@@ -1,3 +1,35 @@
+## 2026-05-07 P0 BUG FIX — lan-scan non aggiornava last_seen_at per device non-scanner (v3.8.39)
+
+**Issue P0 segnalato dall'utente**: "il pool rimane fermo alle 12:30 e non si aggiorna SOLO PER LO SCANNER".
+
+**Root cause** in `/app/backend/routes/connector.py` riga 543-551 (lan-scan handler):
+```python
+if existing:
+    if existing.get("source") == "connector-scanner":   # ← FILTRO RESTRITTIVO
+        upd = {"last_seen_at": now_iso}
+        ...update with filter {client_id, ip, source: "connector-scanner"}...
+```
+L'update di `last_seen_at` veniva applicato SOLO se il device esistente in `managed_devices` aveva `source=connector-scanner`. Per device:
+- aggiunti **manualmente** dall'utente (`source=manual`)
+- promossi dal **Master poll** (`source=connector-master`)
+- ereditati da **Datto RMM sync** o altre fonti
+
+→ il `last_seen_at` rimaneva **congelato** all'epoca della prima discovery, anche se lo Scanner continuava a vederli ad ogni ciclo. Da qui il timestamp "12:30" che non si aggiornava mai.
+
+**Fix v3.8.39**: rimosso il filtro restrittivo. L'update di `last_seen_at` ora viene applicato a **qualsiasi** device esistente (manual / master / scanner) che lo Scanner vede in un round di lan-scan. Solo l'aggiornamento dell'hostname rimane scopato a `source=connector-scanner` per non sovrascrivere nomi custom inseriti dall'utente.
+
+**Test di regressione**: 2 test passati in `/app/backend/tests/test_lan_scan_last_seen_v3839.py` (smoke source-check del fix marker e del scoping hostname).
+
+**Effetto produzione (post-deploy)**:
+- Ogni ciclo lan-scan (~5min) aggiorna `last_seen_at` di TUTTI i device visti, indipendentemente dal source originale.
+- Combinato col fix v3.8.36 (soglia 30min staleness) e v3.8.38 (priorità last_seen_at su web_console_last_tested), la colonna "ULTIMO POLL" finalmente:
+  - Si aggiorna ad ogni ciclo Scanner (max gap = scan interval, ~5min)
+  - Mostra il timestamp REALE dell'ultima discovery
+  - Status `online`/`offline` coerente col timestamp visualizzato
+
+---
+
+
 ## 2026-05-07 P0 BUG FIX — "ULTIMO POLL" fuorviante mostrava timestamp errato (v3.8.38)
 
 **Issue**: nello screenshot dell'utente, decine di device scanner-source mostravano:
