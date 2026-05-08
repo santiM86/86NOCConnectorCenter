@@ -512,10 +512,18 @@ $script:progressBar = $null
 
 function Append-Log($text, $color) {
     if (-not $color) { $color = $ColorText }
-    $script:lstLog.SelectionColor = $color
+    try {
+        $script:lstLog.SelectionColor = $color
+    } catch { }
     $script:lstLog.AppendText("$text`r`n")
     $script:lstLog.ScrollToCaret()
     [System.Windows.Forms.Application]::DoEvents()
+}
+
+function fail-service($verb, $name, $err) {
+    $msg = $err.Exception.Message
+    Append-Log "      ERRORE $verb '$name': $msg" $ColorError
+    throw "service $verb $name failed: $msg"
 }
 
 function Show-Install {
@@ -565,10 +573,11 @@ function Run-Install {
 
         Append-Log "[2/8] Stop servizi precedenti (se presenti)" $ColorAccent
         foreach ($s in @($WatchdogName, $ServiceName)) {
-            if (Get-Service -Name $s -ErrorAction SilentlyContinue) {
-                Stop-Service -Name $s -Force -ErrorAction SilentlyContinue
-                & sc.exe delete $s | Out-Null
-                Start-Sleep -Milliseconds 500
+            $existing = Get-Service -Name $s -ErrorAction SilentlyContinue
+            if ($null -ne $existing) {
+                try { Stop-Service -Name $s -Force -ErrorAction SilentlyContinue } catch {}
+                & cmd.exe /c "sc.exe delete `"$s`"" | Out-Null
+                Start-Sleep -Milliseconds 800
                 Append-Log "      $s rimosso" $ColorMuted
             }
         }
@@ -598,37 +607,73 @@ function Run-Install {
         Append-Log "[7/8] Registrazione servizi Windows" $ColorAccent
         $agentBin    = Join-Path $InstallDir "nocagent.exe"
         $watchdogBin = Join-Path $InstallDir "nocwatchdog.exe"
-        $cfgArg      = "--config `"$ConfigPath`""
 
-        & sc.exe create $ServiceName binPath= "`"$agentBin`" $cfgArg" start= auto DisplayName= "86bit NOC Agent" | Out-Null
-        & sc.exe description $ServiceName "Native NOC monitoring agent for the 86bit platform." | Out-Null
-        & sc.exe failure $ServiceName reset= 86400 actions= restart/5000/restart/5000/restart/15000 | Out-Null
+        # Usa New-Service (cmdlet nativo PowerShell) per evitare i problemi di
+        # parsing argomenti che ha sc.exe quando lanciato direttamente da PS.
+        try {
+            New-Service -Name $ServiceName `
+                -BinaryPathName ('"' + $agentBin + '" --config "' + $ConfigPath + '"') `
+                -DisplayName "86bit NOC Agent" `
+                -Description "Native NOC monitoring agent for the 86bit platform." `
+                -StartupType Automatic -ErrorAction Stop | Out-Null
+            Append-Log "      $ServiceName creato" $ColorMuted
+        } catch {
+            fail-service "create" $ServiceName $_
+        }
 
-        & sc.exe create $WatchdogName binPath= "`"$watchdogBin`" $cfgArg" start= auto DisplayName= "86bit NOC Watchdog" depend= $ServiceName | Out-Null
-        & sc.exe description $WatchdogName "Supervises 86NocAgent and restarts it on hang or crash." | Out-Null
-        & sc.exe failure $WatchdogName reset= 86400 actions= restart/5000/restart/5000/restart/15000 | Out-Null
+        try {
+            New-Service -Name $WatchdogName `
+                -BinaryPathName ('"' + $watchdogBin + '" --config "' + $ConfigPath + '"') `
+                -DisplayName "86bit NOC Watchdog" `
+                -Description "Supervises 86NocAgent and restarts it on hang or crash." `
+                -StartupType Automatic `
+                -DependsOn $ServiceName -ErrorAction Stop | Out-Null
+            Append-Log "      $WatchdogName creato" $ColorMuted
+        } catch {
+            fail-service "create" $WatchdogName $_
+        }
+
+        # Service Recovery via sc.exe (no PowerShell-native equivalent).
+        # Uso cmd /c per preservare la sintassi 'reset= 86400'.
+        $recCmd1 = "sc.exe failure `"$ServiceName`" reset= 86400 actions= restart/5000/restart/5000/restart/15000"
+        $recCmd2 = "sc.exe failure `"$WatchdogName`" reset= 86400 actions= restart/5000/restart/5000/restart/15000"
+        & cmd.exe /c $recCmd1 | Out-Null
+        & cmd.exe /c $recCmd2 | Out-Null
         $script:progressBar.Value = 90
 
         Append-Log "[8/8] Avvio servizi" $ColorAccent
-        Start-Service -Name $ServiceName
+        try {
+            Start-Service -Name $ServiceName -ErrorAction Stop
+        } catch {
+            Append-Log "      WARN: avvio $ServiceName fallito: $($_.Exception.Message)" $ColorError
+        }
         Start-Sleep -Seconds 2
-        Start-Service -Name $WatchdogName
+        try {
+            Start-Service -Name $WatchdogName -ErrorAction Stop
+        } catch {
+            Append-Log "      WARN: avvio $WatchdogName fallito: $($_.Exception.Message)" $ColorError
+        }
         Start-Sleep -Seconds 2
 
-        $ag = Get-Service -Name $ServiceName
-        $wd = Get-Service -Name $WatchdogName
+        $ag = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+        $wd = Get-Service -Name $WatchdogName -ErrorAction SilentlyContinue
+        $agStatus = if ($ag) { [string]$ag.Status } else { "MANCANTE" }
+        $wdStatus = if ($wd) { [string]$wd.Status } else { "MANCANTE" }
+
         Append-Log "" $ColorText
-        Append-Log "      $ServiceName    : $($ag.Status)" $(if ($ag.Status -eq 'Running') {$ColorSuccess} else {$ColorError})
-        Append-Log "      $WatchdogName : $($wd.Status)" $(if ($wd.Status -eq 'Running') {$ColorSuccess} else {$ColorError})
+        $agColor = if ($agStatus -eq "Running") { $ColorSuccess } else { $ColorError }
+        $wdColor = if ($wdStatus -eq "Running") { $ColorSuccess } else { $ColorError }
+        Append-Log ("      $ServiceName    : $agStatus") $agColor
+        Append-Log ("      $WatchdogName : $wdStatus") $wdColor
 
         $script:progressBar.Value = 100
-        if ($ag.Status -eq 'Running' -and $wd.Status -eq 'Running') {
+        if ($agStatus -eq 'Running' -and $wdStatus -eq 'Running') {
             $script:InstallResult = "ok"
-            Append-Log ""
-            Append-Log ([char]0x2713) + " Installazione completata con successo." $ColorSuccess
+            Append-Log "" $ColorText
+            Append-Log (([char]0x2713) + " Installazione completata con successo.") $ColorSuccess
         } else {
-            Append-Log ""
-            Append-Log ([char]0x26A0) + " Installazione completata ma servizi NON in stato Running." $ColorError
+            Append-Log "" $ColorText
+            Append-Log (([char]0x26A0) + " Installazione completata ma servizi NON in stato Running.") $ColorError
         }
     } catch {
         Append-Log ""
