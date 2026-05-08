@@ -291,30 +291,286 @@ function Build-ArgusIcon($Path) {
 }
 
 function Write-ConnectorLauncher {
-    param([string]$Path, [string]$BackendUrl)
-    $body = @"
-# 86BIT Argus Connector launcher (avviato dallo shortcut Start Menu).
-# 1) Se la tray icon non e' attiva la avvia in hidden.
-# 2) Apre il NOC Center nel browser di default.
-`$ErrorActionPreference = 'SilentlyContinue'
-`$installDir = Split-Path -Parent `$MyInvocation.MyCommand.Path
-`$trayScript = Join-Path `$installDir 'tray.ps1'
-`$trayRunning = Get-Process -Name powershell -ErrorAction SilentlyContinue |
-    Where-Object { `$_.MainWindowTitle -eq '' -and (`$_.CommandLine -match 'tray\\.ps1' -or `$false) }
-# Process.CommandLine non e' sempre accessibile: usiamo un mutex via file lock.
-`$lock = Join-Path `$env:ProgramData '86NocAgent\\tray.lock'
-`$startTray = `$true
-if (Test-Path `$lock) {
-    `$age = (Get-Date) - (Get-Item `$lock).LastWriteTime
-    if (`$age.TotalSeconds -lt 60) { `$startTray = `$false }
-}
-if (`$startTray -and (Test-Path `$trayScript)) {
-    Start-Process -FilePath 'powershell.exe' -ArgumentList @(
-        '-NoProfile','-WindowStyle','Hidden','-ExecutionPolicy','Bypass','-File',`$trayScript
-    ) -WindowStyle Hidden
-}
-Start-Process '$BackendUrl'
+    param([string]$Path, [string]$BackendUrl, [string]$ClientId, [string]$Role, [string]$Version)
+    # Connector Console: piccola UI nativa Windows.Forms che mostra
+    # stato servizi, dati cliente, e consente avvio/stop/restart, apertura
+    # NOC Center, apertura log. NON apre il browser di default.
+    $body = @'
+# 86BIT Argus Connector - Console locale.
+# Mostra stato dei servizi e consente le operazioni di gestione.
+$ErrorActionPreference = 'SilentlyContinue'
+
+# Hide console (lanciato in -WindowStyle Hidden, ma extra-safe)
+try {
+    $sig = @"
+[DllImport("user32.dll")] public static extern bool ShowWindow(System.IntPtr hWnd, int nCmdShow);
+[DllImport("kernel32.dll")] public static extern System.IntPtr GetConsoleWindow();
 "@
+    $w = Add-Type -MemberDefinition $sig -Name 'ConHider' -Namespace 'NocAgent' -PassThru
+    $h = $w::GetConsoleWindow()
+    if ($h -ne [System.IntPtr]::Zero) { [void]$w::ShowWindow($h, 0) }
+} catch { }
+
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+
+$BackendUrl = '__BACKEND_URL__'
+$ClientId   = '__CLIENT_ID__'
+$RoleVal    = '__ROLE__'
+$VersionVal = '__VERSION__'
+$InstallDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$IconPath   = Join-Path $InstallDir 'argus.ico'
+$LogDir     = Join-Path $env:ProgramData '86NocAgent\logs'
+$ConfigPath = Join-Path $env:ProgramData '86NocAgent\agent.yaml'
+
+# Colori
+$ColDarkBg  = [System.Drawing.Color]::FromArgb(15, 15, 22)
+$ColLightBg = [System.Drawing.Color]::FromArgb(245, 245, 248)
+$ColAccent  = [System.Drawing.Color]::FromArgb(0, 122, 204)
+$ColSuccess = [System.Drawing.Color]::FromArgb(40, 167, 69)
+$ColError   = [System.Drawing.Color]::FromArgb(220, 53, 69)
+$ColMuted   = [System.Drawing.Color]::FromArgb(110, 110, 125)
+$ColText    = [System.Drawing.Color]::FromArgb(33, 37, 41)
+$ColWhite   = [System.Drawing.Color]::White
+
+[System.Windows.Forms.Application]::EnableVisualStyles()
+$form = New-Object System.Windows.Forms.Form
+$form.Text = 'ARGUS Connector - Console'
+$form.Size = New-Object System.Drawing.Size(680, 520)
+$form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
+$form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedSingle
+$form.MaximizeBox = $false
+$form.BackColor = $ColLightBg
+if (Test-Path $IconPath) {
+    try { $form.Icon = New-Object System.Drawing.Icon($IconPath) } catch { }
+}
+
+# Sidebar scura
+$side = New-Object System.Windows.Forms.Panel
+$side.Location = [System.Drawing.Point]::new(0, 0)
+$side.Size = New-Object System.Drawing.Size(200, 480)
+$side.BackColor = $ColDarkBg
+$form.Controls.Add($side)
+
+$lblBrand = New-Object System.Windows.Forms.Label
+$lblBrand.Text = 'ARGUS'
+$lblBrand.Font = New-Object System.Drawing.Font('Segoe UI', 28, [System.Drawing.FontStyle]::Bold)
+$lblBrand.ForeColor = $ColWhite
+$lblBrand.Location = [System.Drawing.Point]::new(20, 30)
+$lblBrand.Size = New-Object System.Drawing.Size(180, 50)
+$side.Controls.Add($lblBrand)
+
+$lblProd = New-Object System.Windows.Forms.Label
+$lblProd.Text = 'Connector Console'
+$lblProd.Font = New-Object System.Drawing.Font('Segoe UI', 10)
+$lblProd.ForeColor = [System.Drawing.Color]::FromArgb(180, 180, 200)
+$lblProd.Location = [System.Drawing.Point]::new(22, 80)
+$lblProd.Size = New-Object System.Drawing.Size(180, 22)
+$side.Controls.Add($lblProd)
+
+$lblVer = New-Object System.Windows.Forms.Label
+$lblVer.Text = 'v' + $VersionVal + ' - native'
+$lblVer.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+$lblVer.ForeColor = $ColAccent
+$lblVer.Location = [System.Drawing.Point]::new(22, 105)
+$lblVer.Size = New-Object System.Drawing.Size(180, 22)
+$side.Controls.Add($lblVer)
+
+$lblFooter = New-Object System.Windows.Forms.Label
+$lblFooter.Text = "86bit S.r.l.`r`n(c) 2026 - 86bit.it"
+$lblFooter.Font = New-Object System.Drawing.Font('Segoe UI', 8.5)
+$lblFooter.ForeColor = [System.Drawing.Color]::FromArgb(150, 150, 170)
+$lblFooter.Location = [System.Drawing.Point]::new(22, 420)
+$lblFooter.Size = New-Object System.Drawing.Size(180, 50)
+$side.Controls.Add($lblFooter)
+
+# Content
+$content = New-Object System.Windows.Forms.Panel
+$content.Location = [System.Drawing.Point]::new(200, 0)
+$content.Size = New-Object System.Drawing.Size(480, 480)
+$content.BackColor = $ColLightBg
+$form.Controls.Add($content)
+
+$title = New-Object System.Windows.Forms.Label
+$title.Text = 'Stato Connector'
+$title.Font = New-Object System.Drawing.Font('Segoe UI', 18, [System.Drawing.FontStyle]::Bold)
+$title.ForeColor = $ColText
+$title.Location = [System.Drawing.Point]::new(25, 22)
+$title.Size = New-Object System.Drawing.Size(440, 50)
+$title.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
+$content.Controls.Add($title)
+
+# Status servizi
+function New-StatusRow($name, $y) {
+    $lbl = New-Object System.Windows.Forms.Label
+    $lbl.Text = $name
+    $lbl.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
+    $lbl.ForeColor = $ColText
+    $lbl.Location = [System.Drawing.Point]::new(25, $y)
+    $lbl.Size = New-Object System.Drawing.Size(180, 24)
+    $content.Controls.Add($lbl)
+
+    $val = New-Object System.Windows.Forms.Label
+    $val.Text = '...'
+    $val.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
+    $val.Location = [System.Drawing.Point]::new(210, $y)
+    $val.Size = New-Object System.Drawing.Size(240, 24)
+    $content.Controls.Add($val)
+    return $val
+}
+
+$lblAgentStatus = New-StatusRow '86NocAgent:'    80
+$lblWdStatus    = New-StatusRow '86NocWatchdog:' 110
+
+# Info cliente
+function New-InfoRow($name, $value, $y) {
+    $k = New-Object System.Windows.Forms.Label
+    $k.Text = $name
+    $k.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+    $k.ForeColor = $ColMuted
+    $k.Location = [System.Drawing.Point]::new(25, $y)
+    $k.Size = New-Object System.Drawing.Size(120, 20)
+    $content.Controls.Add($k)
+
+    $v = New-Object System.Windows.Forms.Label
+    $v.Text = $value
+    $v.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
+    $v.ForeColor = $ColText
+    $v.Location = [System.Drawing.Point]::new(150, $y)
+    $v.Size = New-Object System.Drawing.Size(310, 20)
+    $content.Controls.Add($v)
+}
+
+$roleLabel = if ($RoleVal -eq 'scanner') { 'VLAN Scanner' } else { 'Master Connector' }
+New-InfoRow 'Cliente:'     $ClientId   160
+New-InfoRow 'Ruolo:'       $roleLabel  185
+New-InfoRow 'URL backend:' $BackendUrl 210
+New-InfoRow 'Config:'      $ConfigPath 235
+
+# Pulsanti
+function New-ActionButton($text, $x, $y, $w, $action) {
+    $b = New-Object System.Windows.Forms.Button
+    $b.Text = $text
+    $b.Location = [System.Drawing.Point]::new($x, $y)
+    $b.Size = New-Object System.Drawing.Size($w, 32)
+    $b.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+    $b.BackColor = $ColWhite
+    $b.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+    $b.add_Click($action)
+    $content.Controls.Add($b)
+    return $b
+}
+
+$btnStart = New-ActionButton 'Avvia servizi' 25 285 145 {
+    Start-Service -Name '86NocAgent' -ErrorAction SilentlyContinue
+    Start-Service -Name '86NocWatchdog' -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 500
+    Update-Status
+}
+$btnStop = New-ActionButton 'Ferma servizi' 175 285 145 {
+    Stop-Service -Name '86NocWatchdog' -Force -ErrorAction SilentlyContinue
+    Stop-Service -Name '86NocAgent' -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 500
+    Update-Status
+}
+$btnRestart = New-ActionButton 'Riavvia servizi' 325 285 145 {
+    Stop-Service -Name '86NocWatchdog' -Force -ErrorAction SilentlyContinue
+    Stop-Service -Name '86NocAgent' -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 1
+    Start-Service -Name '86NocAgent' -ErrorAction SilentlyContinue
+    Start-Service -Name '86NocWatchdog' -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 500
+    Update-Status
+}
+
+$btnNOC = New-ActionButton 'Apri NOC Center' 25 325 220 {
+    Start-Process $BackendUrl
+}
+$btnLog = New-ActionButton 'Apri cartella log' 250 325 220 {
+    if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Force -Path $LogDir | Out-Null }
+    Start-Process explorer.exe $LogDir
+}
+
+# Verifica connessione (test ping HTTP al backend)
+$btnTest = New-ActionButton 'Verifica connessione al NOC Center' 25 365 445 {
+    $script:lblTest.ForeColor = $ColMuted
+    $script:lblTest.Text = 'Verifica in corso...'
+    $form.Refresh()
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
+        $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 8 -Uri ($BackendUrl.TrimEnd('/') + '/api/health')
+        if ($r.StatusCode -ge 200 -and $r.StatusCode -lt 400) {
+            $script:lblTest.ForeColor = $ColSuccess
+            $script:lblTest.Text = 'Connessione OK (' + $r.StatusCode + ')'
+        } else {
+            $script:lblTest.ForeColor = $ColError
+            $script:lblTest.Text = 'Risposta inattesa: ' + $r.StatusCode
+        }
+    } catch {
+        $script:lblTest.ForeColor = $ColError
+        $script:lblTest.Text = 'KO: ' + $_.Exception.Message
+    }
+}
+
+$script:lblTest = New-Object System.Windows.Forms.Label
+$script:lblTest.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+$script:lblTest.ForeColor = $ColMuted
+$script:lblTest.Location = [System.Drawing.Point]::new(25, 405)
+$script:lblTest.Size = New-Object System.Drawing.Size(445, 22)
+$script:lblTest.Text = ''
+$content.Controls.Add($script:lblTest)
+
+# Chiudi
+$btnClose = New-Object System.Windows.Forms.Button
+$btnClose.Text = 'Chiudi'
+$btnClose.Location = [System.Drawing.Point]::new(370, 435)
+$btnClose.Size = New-Object System.Drawing.Size(100, 32)
+$btnClose.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+$btnClose.BackColor = $ColAccent
+$btnClose.ForeColor = $ColWhite
+$btnClose.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
+$btnClose.add_Click({ $form.Close() })
+$content.Controls.Add($btnClose)
+
+function Update-Status {
+    foreach ($pair in @(
+        @('86NocAgent',    $script:lblAgentStatus),
+        @('86NocWatchdog', $script:lblWdStatus))) {
+        $name = $pair[0]; $lbl = $pair[1]
+        try {
+            $svc = Get-Service -Name $name -ErrorAction Stop
+            $lbl.Text = [string]$svc.Status
+            if ($svc.Status -eq 'Running') {
+                $lbl.ForeColor = $ColSuccess
+            } elseif ($svc.Status -eq 'Stopped') {
+                $lbl.ForeColor = $ColError
+            } else {
+                $lbl.ForeColor = $ColMuted
+            }
+        } catch {
+            $lbl.Text = 'NON INSTALLATO'
+            $lbl.ForeColor = $ColError
+        }
+    }
+}
+
+$script:lblAgentStatus = $lblAgentStatus
+$script:lblWdStatus = $lblWdStatus
+Update-Status
+
+# Auto-refresh ogni 3s
+$timer = New-Object System.Windows.Forms.Timer
+$timer.Interval = 3000
+$timer.add_Tick({ Update-Status })
+$timer.Start()
+
+[void]$form.ShowDialog()
+$timer.Stop()
+'@
+    $body = $body.Replace('__BACKEND_URL__', $BackendUrl)
+    $body = $body.Replace('__CLIENT_ID__',   $ClientId)
+    $body = $body.Replace('__ROLE__',        $Role)
+    $body = $body.Replace('__VERSION__',     $Version)
     Set-Content -Path $Path -Value $body -Encoding UTF8
 }
 
@@ -1017,8 +1273,13 @@ function Run-Install {
             $lnk.IconLocation = "$InstallDir\argus.ico,0"
             $lnk.Description = "Apri 86BIT Argus NOC Center"
             $lnk.Save()
-            # connector.ps1 = launcher: mostra/avvia tray e apre il NOC nel browser
-            Write-ConnectorLauncher -Path (Join-Path $InstallDir "connector.ps1") -BackendUrl $script:BackendUrl
+            # connector.ps1 = Console locale del Connector (status servizi
+            # + comandi Avvia/Ferma/Riavvia + Apri NOC + Apri log + Test).
+            Write-ConnectorLauncher -Path (Join-Path $InstallDir "connector.ps1") `
+                -BackendUrl $script:BackendUrl `
+                -ClientId   $script:ClientId `
+                -Role       $script:Role `
+                -Version    $Version
             Append-Log "      shortcut '86BIT Argus Center\Connector' creato" $ColorMuted
         } catch {
             Append-Log "      WARN: shortcut non creato: $($_.Exception.Message)" $ColorError
