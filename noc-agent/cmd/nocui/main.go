@@ -903,12 +903,16 @@ func refreshStatus(app *App) {
 // --- Icon embedded ----------------------------------------------------------
 
 func loadAppIcon() *walk.Icon {
-	// fallback: usa un'icona dal sistema (shell32 idx 13 = network)
+	// L'EXE ha argus.ico embedded come ID 1 (fatto da rsrc tool).
+	// NewIconFromResourceId carica quell'icona.
+	if icon, err := walk.NewIconFromResourceId(1); err == nil {
+		return icon
+	}
+	// Fallback su shell32 (icona di default Windows). Solo per dev/test.
 	icon, err := walk.NewIconFromResourceId(13)
 	if err == nil {
 		return icon
 	}
-	// se mai dovessimo embeddare, qui carica da disco
 	return nil
 }
 
@@ -919,7 +923,14 @@ func loadAppIcon() *walk.Icon {
 var logFile *os.File
 
 func setupLogging() {
-	dir := filepath.Join(os.Getenv("ProgramData"), "86NocAgent", "logs")
+	// Usa LOCALAPPDATA (sempre user-writable, non richiede admin) invece
+	// di ProgramData che puo' avere permission Modify mancanti per Users
+	// quando le cartelle sono create dall'installer admin.
+	base := os.Getenv("LOCALAPPDATA")
+	if base == "" {
+		base = os.TempDir()
+	}
+	dir := filepath.Join(base, "86NocAgent", "logs")
 	_ = os.MkdirAll(dir, 0o755)
 	path := filepath.Join(dir, "nocui.log")
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
@@ -927,7 +938,10 @@ func setupLogging() {
 		return
 	}
 	logFile = f
-	logf("=== nocagent-ui start pid=%d args=%v ===", os.Getpid(), os.Args[1:])
+	logf("=== nocagent-ui start pid=%d args=%v exe=%s ===", os.Getpid(), os.Args[1:], func() string {
+		exe, _ := os.Executable()
+		return exe
+	}())
 }
 
 func logf(format string, args ...any) {
