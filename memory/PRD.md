@@ -1,3 +1,40 @@
+## 2026-05-08 FEATURE — Splash screen di boot del Connector
+
+**Direttiva utente**: «procedi» (sulla proposta di splash screen per dare feedback "professionale" tipo NinjaOne/Atera all'avvio).
+
+### Implementato
+Nuovo file `/app/noc-agent/cmd/nocui/splash_windows.go` (~180 righe).
+
+Quando il binario `nocagent-ui.exe` parte (At Logon o doppio-click sullo shortcut), prima di registrare la tray icon mostra una finestra centrata 460×280:
+
+- **Logo Argus** 96×96 (carica `argus.ico` da `InstallDir` se l'installer l'ha messo lì, altrimenti scrive l'embedded `argusIcoBytes` in `%LOCALAPPDATA%\86NocAgent\argus.ico`).
+- **Titolo** "ARGUS Connector" (Segoe UI 16 Bold).
+- **Riga cliente** "Cliente: <id>  -  Ruolo: master  -  v4.0.4" (Segoe UI 9 muted).
+- **ProgressBar marquee** (indeterminata).
+- **Riga status** in colore: blu mentre sta verificando, verde se WS connesso, arancio se WS disconnesso, rosso se backend irraggiungibile.
+
+In parallelo lancia in background un health check `/api/agent/self/health` riusando la `backendGet` già presente. Il dialog si chiude quando arriva la risposta + 1.2s di "leggi-il-messaggio", oppure dopo 3s totali (timeout di sicurezza).
+
+### Skip intelligente
+Lo splash **non viene mostrato** quando il binario è invocato con flag `-show` (cioè quando un'altra istanza chiede tramite IPC di aprire la console "Gestisci Dispositivi"): in quel caso l'utente vuole arrivare subito alla finestra, non vedere di nuovo lo splash.
+
+### Implementazione tecnica
+- `walk.MainWindow` con `Background: SolidColorBrush{walk.RGB(255,255,255)}` per un look pulito su tema Windows scuro/chiaro.
+- Centrato con `GetSystemMetrics(SM_CXSCREEN/SM_CYSCREEN)` via `syscall.NewLazyDLL("user32.dll")`.
+- `dlg.Synchronize()` per marshaling thread-safe degli aggiornamenti UI dal goroutine di background.
+- `recover()` per evitare crash nel main flow se walk fallisce su versioni Windows particolari (Server Core ecc.).
+
+### Build
+`nocagent-ui.exe` ricompilato a 9.96 MB (era 9.8 MB) — diff ~160 KB per il modulo splash.
+
+### Verifica
+- `GET /api/agent/binary/windows-amd64/nocagent-ui.exe?token=...` → 9.961.984 byte ✓
+- SHA256: `e1058aa54c6e1e8823018d7bc6be03a6212f0f33d6905ccff9b1af5194ee6116`
+- Build go cross-compile passata al primo tentativo, vet pulito.
+
+---
+
+
 ## 2026-05-08 ICONS — Riallineamento icone su tutti i touchpoint
 
 **Direttiva utente**: «riallinea tutte le icone in modo che siano ovunque uguali».
