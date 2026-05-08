@@ -471,3 +471,129 @@ async def agent_health(agent_id: str,
     doc["live"] = REGISTRY.get(agent_id) is not None
     doc["heartbeat_age_minutes"] = stale_minutes
     return doc
+
+
+# ---- Binary distribution -----------------------------------------------------
+#
+# The install script hits these endpoints to fetch the binaries with no
+# extra infrastructure. Auth: a valid agent_token. Reusing the same token
+# the agent will use after install keeps the bootstrap one-shot.
+
+import os as _os
+import pathlib as _pathlib
+from fastapi.responses import FileResponse, PlainTextResponse
+
+_AGENT_BUILD_DIR = _pathlib.Path(_os.environ.get(
+    "NOCAGENT_BUILD_DIR", "/app/noc-agent/build/bin"
+)).resolve()
+
+_ALLOWED_PLATFORMS = {"linux-amd64", "linux-arm64", "windows-amd64", "darwin-arm64"}
+_ALLOWED_BINARIES = {
+    "windows-amd64": {"nocagent.exe", "nocwatchdog.exe"},
+    "linux-amd64": {"nocagent", "nocwatchdog"},
+    "linux-arm64": {"nocagent", "nocwatchdog"},
+    "darwin-arm64": {"nocagent", "nocwatchdog"},
+}
+
+
+async def _token_or_403(token: Optional[str]) -> str:
+    """Validate an agent token presented as a query string. Returns client_id."""
+    if not token:
+        raise HTTPException(status_code=401, detail="token required")
+    doc = await db.agent_tokens.find_one({"token": token, "revoked": {"$ne": True}}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=403, detail="invalid token")
+    return doc["client_id"]
+
+
+@router.get("/agent/binary/{platform}/{name}")
+async def download_binary(platform: str, name: str, token: Optional[str] = None) -> FileResponse:
+    """Stream the requested agent binary. Auth via ?token=<agent_token>."""
+    await _token_or_403(token)
+    if platform not in _ALLOWED_PLATFORMS or name not in _ALLOWED_BINARIES.get(platform, set()):
+        raise HTTPException(status_code=404, detail="unknown binary")
+    path = (_AGENT_BUILD_DIR / platform / name).resolve()
+    # Path traversal guard: must stay under the build dir
+    try:
+        path.relative_to(_AGENT_BUILD_DIR)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail="invalid path") from e
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="binary not built")
+    media = "application/vnd.microsoft.portable-executable" if name.endswith(".exe") else "application/octet-stream"
+    return FileResponse(str(path), media_type=media, filename=name)
+
+
+@router.get("/agent/install/manifest")
+async def install_manifest(token: Optional[str] = None,
+                          platform: Optional[str] = None) -> Dict[str, Any]:
+    """Return the install metadata: backend URL, binary URLs, sample yaml.
+
+    The install scripts hit this endpoint first to learn what to download
+    and where to write the configuration.
+    """
+    client_id = await _token_or_403(token)
+    public_ws = _os.environ.get("AGENT_PUBLIC_WS_URL", "wss://argus.86bit.it/api/agent/ws")
+    public_http = _os.environ.get("AGENT_PUBLIC_HTTP_URL", "https://argus.86bit.it")
+    binaries = {}
+    if platform and platform in _ALLOWED_PLATFORMS:
+        for name in _ALLOWED_BINARIES[platform]:
+            binaries[name] = f"{public_http}/api/agent/binary/{platform}/{name}?token={token}"
+    return {
+        "client_id": client_id,
+        "backend_ws": public_ws,
+        "binaries": binaries,
+        "config_template": _config_template(client_id, token, public_ws),
+    }
+
+
+def _config_template(client_id: str, token: str, ws_url: str) -> str:
+    return (
+        f'client_id: "{client_id}"\n'
+        f'token: "{token}"\n'
+        f'backend:\n'
+        f'  url: "{ws_url}"\n'
+        f'heartbeat: 15s\n'
+        f'discovery:\n  enabled: true\n  interval: 5m\n  arp: true\n  mdns: true\n'
+        f'snmp:\n  enabled: true\n  interval: 60s\n  communities: ["public"]\n'
+        f'watchdog:\n  enabled: true\n  stale_after: 90s\n'
+        f'update:\n  enabled: false\n'
+    )
+
+
+@router.get("/agent/install/{platform}.{ext}", response_class=PlainTextResponse)
+async def install_script(platform: str, ext: str, token: Optional[str] = None) -> PlainTextResponse:
+    """Serve the install script for a platform inlined with the token.
+
+    Usage:
+      Windows: iwr -UseBasicParsing https://argus.86bit.it/api/agent/install/windows.ps1?token=XXX | iex
+      Linux:   curl -fsSL https://argus.86bit.it/api/agent/install/linux.sh?token=XXX | sudo bash
+    """
+    await _token_or_403(token)
+    if platform == "windows" and ext == "ps1":
+        return PlainTextResponse(_render_windows_ps1(token), media_type="text/plain; charset=utf-8")
+    if platform == "linux" and ext == "sh":
+        return PlainTextResponse(_render_linux_sh(token), media_type="text/plain; charset=utf-8")
+    raise HTTPException(status_code=404, detail="unknown installer")
+
+
+def _render_windows_ps1(token: str) -> str:
+    public_http = _os.environ.get("AGENT_PUBLIC_HTTP_URL", "https://argus.86bit.it")
+    path = _pathlib.Path("/app/noc-agent/build/install.ps1.template")
+    if not path.is_file():
+        raise HTTPException(status_code=500, detail="installer template missing")
+    body = path.read_text()
+    return (body
+            .replace("__BACKEND_URL__", public_http)
+            .replace("__TOKEN__", token))
+
+
+def _render_linux_sh(token: str) -> str:
+    public_http = _os.environ.get("AGENT_PUBLIC_HTTP_URL", "https://argus.86bit.it")
+    path = _pathlib.Path("/app/noc-agent/build/install.sh.template")
+    if not path.is_file():
+        raise HTTPException(status_code=500, detail="installer template missing")
+    body = path.read_text()
+    return (body
+            .replace("__BACKEND_URL__", public_http)
+            .replace("__TOKEN__", token))

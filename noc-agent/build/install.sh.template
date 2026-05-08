@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# 86NocAgent — Linux installer
+#
+# Rendered dynamically by the backend with the bound token + URL.
+#
+#   curl -fsSL __BACKEND_URL__/api/agent/install/linux.sh?token=XXX | sudo bash
+#
+set -euo pipefail
+
+BACKEND_URL="__BACKEND_URL__"
+TOKEN="__TOKEN__"
+
+if [[ "${EUID}" -ne 0 ]]; then
+  echo "ERRORE: serve root (esegui con sudo)." >&2
+  exit 1
+fi
+
+ARCH="$(uname -m)"
+case "${ARCH}" in
+  x86_64|amd64) PLATFORM="linux-amd64" ;;
+  aarch64|arm64) PLATFORM="linux-arm64" ;;
+  *) echo "ERRORE: arch non supportata: ${ARCH}" >&2; exit 1 ;;
+esac
+
+echo ">> 86NocAgent installer (${PLATFORM})"
+
+INSTALL_DIR="/usr/local/bin"
+CONFIG_DIR="/etc/86nocagent"
+RUN_DIR="/var/run"
+LIB_DIR="/var/lib/86nocagent"
+
+mkdir -p "${CONFIG_DIR}" "${LIB_DIR}"
+
+echo ">> fetching install manifest"
+MANIFEST_URL="${BACKEND_URL}/api/agent/install/manifest?platform=${PLATFORM}&token=${TOKEN}"
+TMP_MANIFEST="$(mktemp)"
+trap 'rm -f "${TMP_MANIFEST}"' EXIT
+curl -fsSL "${MANIFEST_URL}" -o "${TMP_MANIFEST}"
+
+# Extract config_template + client_id with python (pre-installed everywhere)
+python3 -c "
+import json, sys
+m = json.load(open(sys.argv[1]))
+sys.stdout.write(m['config_template'])
+" "${TMP_MANIFEST}" > "${CONFIG_DIR}/agent.yaml"
+echo ">> wrote ${CONFIG_DIR}/agent.yaml"
+
+CLIENT_ID="$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['client_id'])" "${TMP_MANIFEST}")"
+echo "   client_id = ${CLIENT_ID}"
+
+# Stop existing services if present
+systemctl stop 86nocwatchdog.service 2>/dev/null || true
+systemctl stop 86nocagent.service    2>/dev/null || true
+
+# Download binaries
+for bin in nocagent nocwatchdog; do
+  echo ">> downloading ${bin}"
+  curl -fsSL "${BACKEND_URL}/api/agent/binary/${PLATFORM}/${bin}?token=${TOKEN}" -o "${INSTALL_DIR}/${bin}"
+  chmod 0755 "${INSTALL_DIR}/${bin}"
+done
+
+# systemd units
+cat > /etc/systemd/system/86nocagent.service <<'UNIT'
+[Unit]
+Description=86bit NOC Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/bin/nocagent --config /etc/86nocagent/agent.yaml
+Restart=always
+RestartSec=5
+LimitNOFILE=65536
+ProtectSystem=full
+ProtectHome=true
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+cat > /etc/systemd/system/86nocwatchdog.service <<'UNIT'
+[Unit]
+Description=86bit NOC Agent Watchdog
+After=86nocagent.service
+Wants=86nocagent.service
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/bin/nocwatchdog --config /etc/86nocagent/agent.yaml --pidfile /var/run/86nocagent.pid
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+systemctl daemon-reload
+systemctl enable 86nocagent.service 86nocwatchdog.service
+systemctl start  86nocagent.service
+sleep 1
+systemctl start  86nocwatchdog.service
+
+sleep 2
+echo ""
+echo "Status:"
+systemctl is-active 86nocagent.service    | awk '{print "  86nocagent    : " $1}'
+systemctl is-active 86nocwatchdog.service | awk '{print "  86nocwatchdog : " $1}'
+echo ""
+echo "Done. Verifica connessione su ${BACKEND_URL}/api/agents (login admin)."

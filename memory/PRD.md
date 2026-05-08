@@ -1,3 +1,90 @@
+## 2026-05-08 MILESTONE — `86NocAgent` v4.0 — Sprint 1.5 PRODUCTION-READY
+
+**Direttiva utente**: «procedi con quello che è essenziale ora andare in produzione»
+
+Aggiunti i 6 elementi minimi per deployare l'agent v4 sulle macchine dei clienti:
+
+### 1. PID file (fix watchdog)
+`runAgent()` in `/app/noc-agent/cmd/agent/main.go` scrive `os.Getpid()` in:
+- Windows: `C:\ProgramData\86NocAgent\agent.pid`
+- Unix: `/var/run/86nocagent.pid`
+
+Il watchdog ora può davvero `signalProcess(pid, SIGTERM/SIGKILL)`. Bug latente del primo MVP risolto.
+
+### 2. Windows Service mode nativo
+- `/app/noc-agent/cmd/agent/service_windows.go` (build tag windows): handler SCM con `golang.org/x/sys/windows/svc`. Auto-detect via `svc.IsWindowsService()` — se lanciato da Service Control Manager gira come service, altrimenti console. Risponde a `Stop/Shutdown/Interrogate`. Senza questo Windows uccide il processo dopo 30s.
+- `/app/noc-agent/cmd/agent/service_other.go` (no-op su Linux/macOS, gestiti da systemd/launchd).
+- Aggiunta dep `golang.org/x/sys v0.26.0` (era già transitiva).
+
+### 3. Backend: distribuzione binari + installer
+In `/app/backend/routes/agent_ws.py`:
+- `GET /api/agent/install/manifest?platform=<p>&token=<t>` — JSON con `client_id`, `backend_ws`, URL binari firmati, `config_template` pronto.
+- `GET /api/agent/binary/{platform}/{name}?token=<t>` — stream del binario con path-traversal guard + allowlist platform/file.
+- `GET /api/agent/install/windows.ps1?token=<t>` — PowerShell installer renderizzato dinamicamente (TOKEN + URL sostituiti).
+- `GET /api/agent/install/linux.sh?token=<t>` — bash installer renderizzato dinamicamente.
+
+Auth via `?token=<agent_token>` (lo stesso bearer che l'agent userà dopo l'install — bootstrap one-shot).
+
+### 4. Installer Windows PowerShell (idempotente)
+`/app/noc-agent/build/install.ps1.template`:
+1. Verifica privilegi admin.
+2. Stop+delete `86NocAgent` / `86NocWatchdog` se gia' presenti (reinstall sicuro).
+3. Crea `C:\Program Files\86NocAgent\` + `C:\ProgramData\86NocAgent\`.
+4. Scarica `nocagent.exe` + `nocwatchdog.exe` dal backend.
+5. Scrive `agent.yaml`.
+6. `sc.exe create` di entrambi i servizi con **Service Recovery** = `restart/5s/restart/5s/restart/15s`.
+7. Avvia entrambi.
+
+Installazione one-liner sul cliente:
+```
+iwr -UseBasicParsing "https://argus.86bit.it/api/agent/install/windows.ps1?token=<TOKEN>" | iex
+```
+
+### 5. Installer Linux bash
+`/app/noc-agent/build/install.sh.template`:
+1. Auto-detect arch (amd64/arm64).
+2. Download binari in `/usr/local/bin/`.
+3. Scrive `/etc/86nocagent/agent.yaml`.
+4. Crea unit systemd `86nocagent.service` + `86nocwatchdog.service` con `Restart=always`.
+5. `daemon-reload` + `enable` + `start`.
+
+One-liner:
+```
+curl -fsSL "https://argus.86bit.it/api/agent/install/linux.sh?token=<TOKEN>" | sudo bash
+```
+
+### 6. QUICKSTART.md
+`/app/noc-agent/QUICKSTART.md` — flusso completo in 3 step (register token → installer one-liner → verify `/api/agents` + comandi real-time esempio) con sezione troubleshooting.
+
+### Deploy in produzione: cosa serve sul backend produzione
+1. `git pull` per portare i nuovi file backend (`routes/agent_ws.py`, `server.py` aggiornato).
+2. Variabili ambiente backend (opzionali, default sensati):
+   - `AGENT_PUBLIC_WS_URL=wss://argus.86bit.it/api/agent/ws`
+   - `AGENT_PUBLIC_HTTP_URL=https://argus.86bit.it`
+   - `NOCAGENT_BUILD_DIR=/app/noc-agent/build/bin`
+3. `cd /app/noc-agent && make all-platforms` per generare i binari nei 4 OS×arch (i clienti scaricheranno da qui via backend).
+4. Restart backend.
+
+### Verifica end-to-end (smoke retest dopo refactor)
+- `test_agent_v4_e2e.py` ✅ PASS (nessuna regressione dopo PID file + service refactor).
+- `test_agent_v4_commands.py` ✅ PASS.
+- `curl /api/agent/install/manifest` ✅ 200, JSON corretto, token validato.
+- `curl /api/agent/install/windows.ps1` ✅ 200, BackendUrl + Token sostituiti.
+- `curl /api/agent/install/linux.sh` ✅ 200.
+- `curl /api/agent/binary/windows-amd64/nocagent.exe` ✅ 200, 7.2 MB scaricato.
+- `go vet ./...` clean. Cross-build linux/win/macos × amd64/arm64 OK.
+
+### Cosa rimane fuori scope (Sprint 2)
+- UI React `/agents` con bottoni `force_lan_scan` / `run_diagnostics` cliccabili (per ora si pilota via curl).
+- MSI Windows vero (oggi PowerShell installer è sufficiente per deploy uno-a-uno).
+- OTA self-update endpoint con manifest Ed25519 firmato (la plumbing client è gia' wired, manca solo l'endpoint server).
+- Endpoint REST `/api/agents/revoke` per revocare token (oggi si fa via mongo direttamente).
+- LLDP-MED + SNMP CAM-table source (legacy continua a fare il lavoro).
+- WMI poller per Windows Servers.
+
+---
+
+
 ## 2026-05-08 MILESTONE — `86NocAgent` v4.0 (rewrite nativo Go) — Sprint 1 COMPLETO
 
 **Direttiva utente**: «dobbiamo essere migliori dei nostri competitor.. non dico altro procedi e non pensare a quello che sta funzionando ora.. ricrea completamente il connector»

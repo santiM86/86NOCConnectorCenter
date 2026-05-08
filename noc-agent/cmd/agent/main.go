@@ -15,7 +15,9 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -32,11 +34,15 @@ import (
 // Version is injected at build time via -ldflags.
 var Version = "4.0.0-dev"
 
+// ServiceName is the OS service identifier (Windows SCM, systemd, launchd).
+const ServiceName = "86NocAgent"
+
 func main() {
 	var (
 		cfgPath     = flag.String("config", "", "path to agent.yaml (overrides default lookup)")
 		printID     = flag.Bool("print-id", false, "generate a fresh agent_id and exit")
 		showVersion = flag.Bool("version", false, "print version and exit")
+		runService  = flag.Bool("service", false, "run as OS service (Windows SCM / systemd notify)")
 	)
 	flag.Parse()
 
@@ -62,8 +68,33 @@ func main() {
 		rootLog.Warn("agent_id missing in config — generated ephemeral", "agent_id", cfg.AgentID)
 	}
 
+	// On Windows, if launched by SCM (interactive=false) or with --service,
+	// hand off to the platform service runner. Otherwise fall through to
+	// the foreground/console runner.
+	if shouldRunAsService(*runService) {
+		if err := runAsService(cfg, log); err != nil {
+			rootLog.Error("service runner failed", "err", err.Error())
+			os.Exit(3)
+		}
+		return
+	}
+
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
+	runAgent(ctx, cfg, log)
+}
+
+// runAgent is the platform-agnostic entry point. It blocks until ctx done.
+// It is called both from main() (interactive/console) and from the Windows
+// service runner.
+func runAgent(ctx context.Context, cfg config.Config, log *logging.Logger) {
+	rootLog := log.With("agent")
+
+	// Write our PID for the companion watchdog process. Best-effort.
+	pidPath := defaultPidFile()
+	_ = os.MkdirAll(filepath.Dir(pidPath), 0o755)
+	_ = os.WriteFile(pidPath, []byte(strconv.Itoa(os.Getpid())), 0o644)
+	defer func() { _ = os.Remove(pidPath) }()
 
 	// Health reporter + module registration
 	hr := health.New()
@@ -72,7 +103,6 @@ func main() {
 	hr.Register("poller", 2*cfg.SNMP.Interval)
 	hr.Register("watchdog", 3*cfg.Heartbeat)
 
-	// Hello message
 	hostname, _ := os.Hostname()
 	hello := proto.AgentHello{
 		AgentID:      cfg.AgentID,
@@ -90,14 +120,12 @@ func main() {
 
 	client := transport.New(cfg, log, hello)
 
-	// Wire SNMP poller — emits results upstream as they happen.
 	snmp := poller.New(cfg.SNMP, log, func(r proto.SNMPPollResult) {
 		client.PushEvent(proto.EventSNMPPoll, r)
 		hr.SetLastPoll(time.Now().UTC())
 		hr.Tick("poller")
 	})
 
-	// Wire discovery — emits batch on each completed sweep.
 	sources := []discovery.Source{}
 	if cfg.Discovery.ARP {
 		sources = append(sources, discovery.NewARP())
@@ -111,7 +139,6 @@ func main() {
 		hr.Tick("discovery")
 	})
 
-	// Server-initiated commands.
 	client.Register(proto.CmdPing, func(ctx context.Context, _ json.RawMessage) (any, error) {
 		return map[string]any{"pong": time.Now().UTC()}, nil
 	})
@@ -137,22 +164,12 @@ func main() {
 	client.Register(proto.CmdRunDiagnostics, func(ctx context.Context, _ json.RawMessage) (any, error) {
 		return runDiagnostics(cfg), nil
 	})
-	client.Register(proto.CmdShutdown, func(ctx context.Context, _ json.RawMessage) (any, error) {
-		go func() { time.Sleep(200 * time.Millisecond); cancel() }()
-		return map[string]any{"shutting_down": true}, nil
-	})
 
-	// Updater (no-op until cfg.Update.ManifestURL is set).
 	upd := update.New(cfg.Update, Version, log)
 
-	// Self-telemetry pump
 	go heartbeatLoop(ctx, client, hr, cfg.Heartbeat)
-	// Watchdog file pump (read by cmd/watchdog)
 	go watchdogTick(ctx, cfg.Watchdog.HeartbeatFile, hr)
-	// Log shipping pump
 	go logShipper(ctx, client, log)
-
-	// Run workers
 	go disc.Run(ctx)
 	go snmp.Run(ctx)
 	go upd.Run(ctx)
@@ -162,10 +179,17 @@ func main() {
 		"client_id", cfg.ClientID,
 		"agent_id", cfg.AgentID,
 		"backend", cfg.Backend.URL,
+		"pid", strconv.Itoa(os.Getpid()),
 	)
-
-	client.Run(ctx) // blocks until ctx cancelled
+	client.Run(ctx)
 	rootLog.Info("agent stopped")
+}
+
+func defaultPidFile() string {
+	if runtime.GOOS == "windows" {
+		return filepath.Join(os.Getenv("ProgramData"), "86NocAgent", "agent.pid")
+	}
+	return "/var/run/86nocagent.pid"
 }
 
 func capabilities(c config.Config) []string {
