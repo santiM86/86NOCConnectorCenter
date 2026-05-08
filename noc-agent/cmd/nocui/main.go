@@ -465,20 +465,36 @@ func (m *targetTableModel) PublishRowsReset() { m.PublishRowsChanged(0, len(m.it
 // --- Console window ---------------------------------------------------------
 
 func showConsoleWindow() {
+	defer func() {
+		if r := recover(); r != nil {
+			logf("PANIC in showConsoleWindow: %v", r)
+		}
+	}()
 	if theApp == nil {
 		return
 	}
-	if theApp.mw != nil && theApp.mw.AsFormBase() != nil && theApp.mw.AsFormBase().Visible() {
-		win.SetForegroundWindow(theApp.mw.Handle())
-		theApp.mw.SetFocus()
+	if theApp.mw != nil {
+		// gia' creata: mostrala
+		mw := theApp.mw
+		theApp.hiddenMw.Synchronize(func() {
+			win.ShowWindow(mw.Handle(), win.SW_SHOW)
+			win.SetForegroundWindow(mw.Handle())
+		})
 		return
 	}
+	logf("building console window...")
 	go buildConsole(theApp)
 }
 
 func buildConsole(app *App) {
+	defer func() {
+		if r := recover(); r != nil {
+			logf("PANIC in buildConsole: %v", r)
+		}
+	}()
 	cfg, _ := os.ReadFile(app.agent.ConfigPath)
 	app.tableModel = &targetTableModel{items: parseTargets(string(cfg))}
+	logf("buildConsole: parsed %d targets from %s", len(app.tableModel.items), app.agent.ConfigPath)
 
 	var (
 		mw       *walk.MainWindow
@@ -840,12 +856,14 @@ func setupTray(app *App) error {
 	// Polling IPC: se un'altra istanza ha richiesto di mostrare la console
 	go func() {
 		flag := ipcShowFlagPath()
+		logf("ipc poller started, watching %s", flag)
 		for {
 			if _, err := os.Stat(flag); err == nil {
 				os.Remove(flag)
+				logf("ipc flag detected -> showing console")
 				app.hiddenMw.Synchronize(func() { showConsoleWindow() })
 			}
-			time.Sleep(500 * time.Millisecond)
+			time.Sleep(300 * time.Millisecond)
 		}
 	}()
 
@@ -895,6 +913,38 @@ func loadAppIcon() *walk.Icon {
 }
 
 // ----------------------------------------------------------------------------
+
+// --- File logging -----------------------------------------------------------
+
+var logFile *os.File
+
+func setupLogging() {
+	dir := filepath.Join(os.Getenv("ProgramData"), "86NocAgent", "logs")
+	_ = os.MkdirAll(dir, 0o755)
+	path := filepath.Join(dir, "nocui.log")
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	logFile = f
+	logf("=== nocagent-ui start pid=%d args=%v ===", os.Getpid(), os.Args[1:])
+}
+
+func logf(format string, args ...any) {
+	if logFile == nil {
+		return
+	}
+	line := fmt.Sprintf("[%s] ", time.Now().Format("2006-01-02 15:04:05.000")) + fmt.Sprintf(format, args...) + "\n"
+	logFile.WriteString(line)
+	logFile.Sync()
+}
+
+func recoverAndLog() {
+	if r := recover(); r != nil {
+		logf("PANIC: %v", r)
+		panic(r)
+	}
+}
 
 func main() {
 	runtime.LockOSThread()
