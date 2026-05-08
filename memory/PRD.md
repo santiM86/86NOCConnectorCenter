@@ -1,3 +1,60 @@
+## 2026-05-08 FEATURE — OTA self-update Ed25519 signed (post-audit)
+
+**Direttiva utente**: «si procedi e poi dammi link download connector» (post-audit ottimizzazione).
+
+### Implementato
+
+#### Backend — endpoint OTA firmati
+`/app/backend/routes/agent_ws.py`:
+- `GET /api/agent/update/public-key` — restituisce la public key Ed25519 (hex). No auth, da pinnare in `agent.yaml` lato cliente.
+- `GET /api/agent/update/manifest?platform=<p>&token=<t>` — JSON `{version, os, arch, url, sha256, signature}`. La firma è `ed25519(privkey, sha256_raw_bytes)`, formato compatibile 1:1 con `internal/update/updater.go::Manifest` del client Go.
+- Lazy keypair generation: alla prima chiamata viene creato un keypair Ed25519 e persistito in Mongo `agent_signing_key` (singleton `_id="default"`). Privata mai esposta. La cache in-memory evita re-fetch ad ogni request.
+
+Verifica end-to-end:
+```
+GET /api/agent/update/public-key → 554e1eb239f79820...
+GET /api/agent/update/manifest?platform=linux-amd64 → {sha256, signature, ...}
+ed25519.verify(pub, sig, sha256) → ✓ VERIFIED
+```
+
+#### Binari ricompilati con i fix dell'audit
+`make all-platforms` eseguito post-audit. Tutti i binari aggiornati:
+- `nocagent` (Linux amd64/arm64, Windows, macOS arm64) con `os.Exit(0)` corretto + pruning discovery + LRU jar webproxy.
+- `nocwatchdog` cross-build OK.
+- `nocinstall.exe` con verifica SHA256 nativa.
+- `nocagent-ui.exe` (9.6 MB, già funzionante per l'utente).
+
+### Come attivare l'OTA su un cliente esistente
+1. Fetch della public key (una sola volta):
+   ```
+   curl https://argus.86bit.it/api/agent/update/public-key
+   → 554e1eb239f79820b4b63074d78f0a81a473e0664038100943f4ab1bd178ee4c
+   ```
+2. Modifica `C:\ProgramData\86NocAgent\agent.yaml` (o `/etc/86nocagent/agent.yaml`) sezione `update:`:
+   ```yaml
+   update:
+     enabled: true
+     manifest_url: "https://argus.86bit.it/api/agent/update/manifest?platform=windows-amd64&token=<TOKEN>"
+     check_interval: 1h
+     public_key: "554e1eb239f79820b4b63074d78f0a81a473e0664038100943f4ab1bd178ee4c"
+   ```
+3. Restart servizio: `Restart-Service 86NocAgent`. Da ora in poi l'agent self-update OTA quando il backend pubblica una nuova `version`.
+
+### Link download per nuove installazioni
+- **Bundle EXE installer + cfg + LEGGIMI** (raccomandato Windows enterprise):
+  `GET /api/agent/install/exe-bundle.zip?token=<TOKEN>` → ZIP 2.4 MB
+- **Wizard GUI ZIP** (PowerShell installer interattivo):
+  `GET /api/agent/install/wizard-bundle.zip?token=<TOKEN>`
+- **One-liner CLI Windows**:
+  `iwr -UseBasicParsing https://argus.86bit.it/api/agent/install/windows.ps1?token=<TOKEN> | iex`
+- **One-liner CLI Linux**:
+  `curl -fsSL https://argus.86bit.it/api/agent/install/linux.sh?token=<TOKEN> | sudo bash`
+
+Il token si genera lato admin con `POST /api/agents/register` (UI: pagina Connettori → "Nuovo agent v4").
+
+---
+
+
 ## 2026-05-08 OTTIMIZZAZIONE — Audit enterprise `noc-agent` Go (post-fix UI)
 
 **Direttiva utente**: «connector ora lo vedo e si apre... fai un controllo aggiuntivo se siamo ottimizzati al massimo con il connector».

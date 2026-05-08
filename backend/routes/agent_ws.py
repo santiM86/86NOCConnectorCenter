@@ -912,3 +912,121 @@ async def self_health(token: Optional[str] = None) -> Dict[str, Any]:
         "last_heartbeat_at": (ag_doc or {}).get("last_heartbeat_at"),
         "connected_at": conn.connected_at.isoformat(),
     }
+
+
+# ============================================================================
+# OTA self-update — Ed25519 signed manifest
+# ============================================================================
+#
+# Flow lato agent (cmd/agent → internal/update/updater.go):
+#   1. Periodic GET /api/agent/update/manifest?platform=<p>&token=<t>
+#   2. JSON response: { version, os, arch, url, sha256, signature }
+#   3. Agent verifica sig con la public key in agent.yaml (update.public_key)
+#   4. Download binary, ricalcola sha256, atomic-rename, exit(0) → watchdog respawn
+#
+# Keypair: generata lazily al primo accesso e persistita su Mongo
+# (collection `agent_signing_key`, singleton doc id="default"). La chiave
+# privata non lascia mai il backend; la public key è esposta da
+# `/api/agent/update/public-key` (no auth, hex string).
+#
+# Per attivare l'OTA su un cliente esistente, modificare il suo agent.yaml:
+#   update:
+#     enabled: true
+#     manifest_url: "https://argus.86bit.it/api/agent/update/manifest?platform=windows-amd64&token=<TOKEN>"
+#     check_interval: 1h
+#     public_key: "<hex pubkey from /api/agent/update/public-key>"
+
+import hashlib as _hashlib_ota
+from cryptography.hazmat.primitives.asymmetric import ed25519 as _ed25519
+from cryptography.hazmat.primitives import serialization as _ser
+
+
+_signing_keys_cache: Dict[str, Any] = {}
+
+
+async def _get_signing_keys() -> Dict[str, bytes]:
+    """Return {priv: bytes32, pub: bytes32}. Lazy create + persist on first call."""
+    if "priv" in _signing_keys_cache:
+        return _signing_keys_cache
+    doc = await db.agent_signing_key.find_one({"_id": "default"})
+    if not doc:
+        sk = _ed25519.Ed25519PrivateKey.generate()
+        priv_raw = sk.private_bytes(
+            encoding=_ser.Encoding.Raw,
+            format=_ser.PrivateFormat.Raw,
+            encryption_algorithm=_ser.NoEncryption(),
+        )
+        pub_raw = sk.public_key().public_bytes(
+            encoding=_ser.Encoding.Raw, format=_ser.PublicFormat.Raw
+        )
+        await db.agent_signing_key.insert_one({
+            "_id": "default",
+            "priv_hex": priv_raw.hex(),
+            "pub_hex": pub_raw.hex(),
+            "created_at": _now().isoformat(),
+        })
+    else:
+        priv_raw = bytes.fromhex(doc["priv_hex"])
+        pub_raw = bytes.fromhex(doc["pub_hex"])
+    _signing_keys_cache["priv"] = priv_raw
+    _signing_keys_cache["pub"] = pub_raw
+    return _signing_keys_cache
+
+
+@router.get("/agent/update/public-key", response_class=PlainTextResponse)
+async def update_public_key() -> PlainTextResponse:
+    """Return the Ed25519 public key (hex) used to sign OTA manifests.
+
+    Public endpoint (no auth): the public key is meant to be read once and
+    pinned into each agent's agent.yaml under `update.public_key`.
+    """
+    keys = await _get_signing_keys()
+    return PlainTextResponse(keys["pub"].hex(), media_type="text/plain; charset=utf-8")
+
+
+@router.get("/agent/update/manifest")
+async def update_manifest(token: Optional[str] = None,
+                          platform: Optional[str] = None) -> Dict[str, Any]:
+    """Return a signed update manifest for the requested platform.
+
+    Schema (matches /app/noc-agent/internal/update/updater.go::Manifest):
+      { version, os, arch, url, sha256, signature }
+
+    `version` is the build ID injected in the binary (`-X main.Version=...`).
+    The agent compares it to its own `Version` and skips the update when
+    equal. The signature is ed25519(privkey, sha256_raw_bytes).
+    """
+    await _token_or_403(token)
+    if not platform or platform not in _ALLOWED_PLATFORMS:
+        raise HTTPException(status_code=400, detail="platform required")
+    bin_name = "nocagent.exe" if platform.startswith("windows") else "nocagent"
+    path = (_AGENT_BUILD_DIR / platform / bin_name).resolve()
+    try:
+        path.relative_to(_AGENT_BUILD_DIR)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail="invalid path") from e
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="binary not built")
+    digest = _hashlib_ota.sha256(path.read_bytes()).digest()
+    keys = await _get_signing_keys()
+    sk = _ed25519.Ed25519PrivateKey.from_private_bytes(keys["priv"])
+    sig = sk.sign(digest)
+    public_http = _os.environ.get("AGENT_PUBLIC_HTTP_URL", "https://argus.86bit.it")
+    os_part, arch_part = platform.split("-", 1)
+    # Inject the build version by reading it from the binary string table
+    # would require parsing PE/ELF; cheaper: keep a sidecar version.txt next
+    # to the binary on every build. Fallback to mtime-based pseudo-version.
+    version_path = path.with_suffix(".version")
+    if version_path.is_file():
+        version = version_path.read_text().strip()
+    else:
+        st = path.stat()
+        version = f"build-{int(st.st_mtime)}"
+    return {
+        "version": version,
+        "os": os_part,
+        "arch": arch_part,
+        "url": f"{public_http}/api/agent/binary/{platform}/{bin_name}?token={token}",
+        "sha256": digest.hex(),
+        "signature": sig.hex(),
+    }
