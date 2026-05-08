@@ -31,6 +31,10 @@ type Manager struct {
 
 	lastScanAt time.Time
 	tick       time.Duration
+	// retainAfter is how long an IP that we have not seen in any source
+	// scan is kept in the merge cache. Beyond this it is pruned to keep
+	// memory bounded on long-running agents.
+	retainAfter time.Duration
 
 	onBatch func([]proto.DiscoveredEndpoint)
 }
@@ -39,11 +43,12 @@ type Manager struct {
 // every successful sweep.
 func NewManager(log *logging.Logger, tick time.Duration, sources []Source, onBatch func([]proto.DiscoveredEndpoint)) *Manager {
 	return &Manager{
-		log:       log.With("discovery"),
-		sources:   sources,
-		endpoints: make(map[string]proto.DiscoveredEndpoint),
-		tick:      tick,
-		onBatch:   onBatch,
+		log:         log.With("discovery"),
+		sources:     sources,
+		endpoints:   make(map[string]proto.DiscoveredEndpoint),
+		tick:        tick,
+		retainAfter: 60 * time.Minute,
+		onBatch:     onBatch,
 	}
 }
 
@@ -143,6 +148,16 @@ func (m *Manager) merge(batches [][]proto.DiscoveredEndpoint) []proto.Discovered
 			}
 			ep.LastSeenAt = now
 			m.endpoints[ep.IP] = ep
+		}
+	}
+	// Prune endpoints not seen for longer than retainAfter so the merge
+	// cache cannot grow without bound on a long-running agent.
+	if m.retainAfter > 0 {
+		cutoff := now.Add(-m.retainAfter)
+		for ip, ep := range m.endpoints {
+			if ep.LastSeenAt.Before(cutoff) {
+				delete(m.endpoints, ip)
+			}
 		}
 	}
 	out := make([]proto.DiscoveredEndpoint, 0, len(m.endpoints))

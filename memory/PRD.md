@@ -1,3 +1,78 @@
+## 2026-05-08 OTTIMIZZAZIONE — Audit enterprise `noc-agent` Go (post-fix UI)
+
+**Direttiva utente**: «connector ora lo vedo e si apre... fai un controllo aggiuntivo se siamo ottimizzati al massimo con il connector».
+
+### Audit completo (3.500+ righe Go) — fix applicati
+
+#### 🔴 BUG P0 — OTA self-update non terminava il processo
+`/app/noc-agent/internal/update/updater.go:167`:
+```go
+go func() {
+    time.Sleep(500 * time.Millisecond)
+    _ = os.Exit       // ← BUG: riferimento alla funzione, NON la chiama
+}()
+```
+Effetto: l'updater scriveva il binario nuovo via atomic-rename ma il processo vecchio NON terminava mai. Il watchdog non rilevava restart, l'aggiornamento aveva effetto solo dopo reboot manuale.
+**Fix**: `os.Exit(0)`. Ora il watchdog respawna correttamente con la nuova versione.
+
+#### 🔴 BUG P0 — Memory leak silenzioso in discovery manager
+`/app/noc-agent/internal/discovery/manager.go`:
+La mappa `m.endpoints` veniva alimentata ad ogni scan ma MAI ripulita. Su un cliente attivo per mesi, ogni IP visto anche una sola volta restava in memoria + veniva rispedito al backend in ogni batch successivo.
+**Fix**: aggiunto `retainAfter: 60min` con pruning automatico in `merge()` per gli IP non visti da oltre l'ora. Memoria bounded, batch verso il backend dimezzati a regime.
+
+#### 🟠 P1 — WebProxy: transport ricreato per ogni request + LRU non corretto
+`/app/noc-agent/internal/webproxy/webproxy.go`:
+1. `http.Transport` veniva ricreato ad ogni call → ogni asset CSS/JS della Web Console live faceva un handshake TCP+TLS nuovo, niente keep-alive. Performance UI deplorevoli su device LAN.
+2. La cache di `cookiejar.Jar` evictava un jar a caso quando superava 100 sessioni → utenti perdevano la sessione web casualmente.
+
+**Fix**:
+- `sharedTransport` singleton con `MaxIdleConns=50`, `MaxIdleConnsPerHost=8`, `IdleConnTimeout=90s` → connection pool corretto.
+- LRU eviction sui jar (`lastUse` timestamp), evict del meno usato — l'utente attivo non perde mai la sessione.
+
+#### 🟠 P1 — Installer: nessuna verifica integrità binari scaricati
+Backend `/app/backend/routes/agent_ws.py` `install_manifest`:
+- Ora calcola e include `sha256` per ogni binary nel manifest (cache in-memory keyed per `(platform, name, mtime, size)` → ricomputa solo quando il binario viene rebuildato).
+
+Installer aggiornati per verificare l'hash dopo il download:
+- `install.ps1.template` (Windows): `Get-FileHash` con `Remove-Item` + `exit 2` su mismatch.
+- `install.sh.template` (Linux): `sha256sum` con cleanup + `exit 2` su mismatch.
+- `cmd/installer/main.go` (Windows nativo Go): `crypto/sha256` con `MultiWriter` e `strings.EqualFold`.
+
+Verifica end-to-end (preview):
+```
+GET /api/agent/install/manifest?platform=linux-amd64&token=...
+→ 200 con `sha256: { nocagent: "675e1ca8...", nocwatchdog: "c21a0072..." }`
+
+curl /api/agent/binary/linux-amd64/nocagent | sha256sum
+→ MATCH con manifest ✓
+```
+
+### Quel che era già a livello enterprise (verificato durante l'audit)
+- Watchdog process separato con SIGTERM/SIGKILL graduato (10s) + respawn.
+- Reconnect WS con exponential backoff + jitter, header `User-Agent` + `X-Agent-Id`.
+- SCM Windows handler nativo (`golang.org/x/sys/windows/svc`) con response a Stop/Shutdown/Interrogate.
+- Service Recovery `restart/5s/restart/5s/restart/15s` registrato via `sc.exe failure`.
+- Discovery: ARP + mDNS in parallelo, panic-recover per ogni source.
+- SNMP poller: fan-out con semaforo a 16, community fallback in serie.
+- Cookiejar per-sessione (HTTP state preservato per la Web Console live).
+- TLS 1.2+ enforced sul transport client del WS.
+- Logger structured slog su stderr + ring channel `cap=1024` verso il backend (solo warn/error per evitare loop).
+- `nocagent-ui.exe` (UI nativa walk): single-instance via `CreateMutexW` session-local + IPC tramite `%LOCALAPPDATA%\86NocAgent\show.flag`.
+
+### Verifica regressione
+- Backend lint pulito (`ruff` su `agent_ws.py`).
+- Backend riavviato con successo, agent v4 in produzione (`SantiM86`, `client_id=86bit-pilot`) si è riconnesso al WS senza errori.
+- Manifest end-to-end testato: SHA256 corrisponde al binario streamato.
+
+### Effetto in produzione (post-deploy)
+- Agent rilascerà la nuova versione via OTA quando attivata (oggi `update.enabled=false` di default).
+- I clienti che reinstallano via PowerShell installer verificano automaticamente l'integrità del binario scaricato.
+- Memoria del processo agent stabile su long-run (settimane/mesi senza riavvio).
+- Web Console live più reattiva (keep-alive HTTP verso device LAN).
+
+---
+
+
 ## 2026-05-08 MILESTONE — `86NocAgent` v4.0 — Sprint 1.5 PRODUCTION-READY
 
 **Direttiva utente**: «procedi con quello che è essenziale ora andare in produzione»

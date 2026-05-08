@@ -44,12 +44,23 @@ foreach ($s in @($WatchdogName, $AgentName)) {
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 New-Item -ItemType Directory -Force -Path $DataDir    | Out-Null
 
-# 4. Download binaries
+# 4. Download binaries (with SHA256 verification when manifest provides it)
 foreach ($bin in @("nocagent.exe", "nocwatchdog.exe")) {
     $dst = Join-Path $InstallDir $bin
     $url = "$BackendUrl/api/agent/binary/$Platform/$bin`?token=$Token"
     Write-Host ">> downloading $bin"
     Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $dst
+    $expected = $null
+    if ($manifest.sha256 -and $manifest.sha256.$bin) { $expected = $manifest.sha256.$bin }
+    if ($expected) {
+        $actual = (Get-FileHash -Path $dst -Algorithm SHA256).Hash.ToLower()
+        if ($actual -ne $expected.ToLower()) {
+            Write-Host "ERRORE: SHA256 di $bin non corrisponde (atteso $expected, ottenuto $actual)" -ForegroundColor Red
+            Remove-Item -Force $dst -ErrorAction SilentlyContinue
+            exit 2
+        }
+        Write-Host "   sha256 OK ($($actual.Substring(0,12))...)"
+    }
 }
 
 # 5. Write agent.yaml

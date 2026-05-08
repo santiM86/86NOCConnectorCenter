@@ -51,28 +51,61 @@ type Result struct {
 	Error           string              `json:"error,omitempty"`
 }
 
-// per-session cookie jars (last 100 sessions, simple FIFO).
+// per-session cookie jars, capped to keep memory bounded. A single
+// session typically corresponds to one browser tab opened on the live
+// console; we evict the least recently used one when the cap is
+// exceeded.
+const maxJars = 100
+
+type jarEntry struct {
+	jar     *cookiejar.Jar
+	lastUse time.Time
+}
+
 var (
 	jarsMu sync.Mutex
-	jars   = map[string]*cookiejar.Jar{}
+	jars   = map[string]*jarEntry{}
 )
 
 func getJar(sessionID string) *cookiejar.Jar {
 	jarsMu.Lock()
 	defer jarsMu.Unlock()
-	if j, ok := jars[sessionID]; ok {
-		return j
+	if e, ok := jars[sessionID]; ok {
+		e.lastUse = time.Now()
+		return e.jar
 	}
-	j, _ := cookiejar.New(nil)
-	if len(jars) > 100 {
-		// trivial eviction
-		for k := range jars {
-			delete(jars, k)
-			break
+	if len(jars) >= maxJars {
+		// LRU eviction
+		var oldestKey string
+		var oldestAt time.Time
+		first := true
+		for k, e := range jars {
+			if first || e.lastUse.Before(oldestAt) {
+				oldestKey = k
+				oldestAt = e.lastUse
+				first = false
+			}
+		}
+		if oldestKey != "" {
+			delete(jars, oldestKey)
 		}
 	}
-	jars[sessionID] = j
+	j, _ := cookiejar.New(nil)
+	jars[sessionID] = &jarEntry{jar: j, lastUse: time.Now()}
 	return j
+}
+
+// sharedTransport is reused across all webproxy requests so HTTP/HTTPS
+// connections to LAN devices benefit from keep-alive and connection
+// pooling. Building a fresh transport per request — as the original
+// code did — defeated keep-alive and produced a fresh TCP/TLS handshake
+// for every browser asset (CSS, JS, images) loaded through the proxy.
+var sharedTransport = &http.Transport{
+	TLSClientConfig:     &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // device certs are usually self-signed
+	DisableCompression:  false,
+	MaxIdleConns:        50,
+	MaxIdleConnsPerHost: 8,
+	IdleConnTimeout:     90 * time.Second,
 }
 
 // Handle executes the HTTP request and returns a Result.
@@ -135,12 +168,8 @@ func Handle(ctx context.Context, raw json.RawMessage) (any, error) {
 		req.AddCookie(&http.Cookie{Name: name, Value: val})
 	}
 
-	tr := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, // device certs are usually self-signed
-		DisableCompression: false,
-	}
 	cli := &http.Client{
-		Transport: tr,
+		Transport: sharedTransport,
 		Jar:       jar,
 		Timeout:   25 * time.Second,
 		// Don't auto-follow redirects: forward 30x to the browser so it can

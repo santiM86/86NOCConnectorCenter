@@ -543,16 +543,52 @@ async def install_manifest(token: Optional[str] = None,
     if role not in ("master", "scanner"):
         role = "master"
     binaries = {}
+    sha256 = {}
     if platform and platform in _ALLOWED_PLATFORMS:
         for name in _ALLOWED_BINARIES[platform]:
             binaries[name] = f"{public_http}/api/agent/binary/{platform}/{name}?token={token}"
+            digest = _binary_sha256(platform, name)
+            if digest:
+                sha256[name] = digest
     return {
         "client_id": client_id,
         "role": role,
         "backend_ws": public_ws,
         "binaries": binaries,
+        "sha256": sha256,
         "config_template": _config_template(client_id, token, public_ws, role),
     }
+
+
+def _binary_sha256(platform: str, name: str) -> str:
+    """Return the hex sha256 digest of a built binary, or '' if missing.
+
+    The hash is computed lazily and cached in-memory keyed by (platform,
+    name, mtime) so we recompute only when the file is rebuilt.
+    """
+    try:
+        import hashlib as _hashlib
+        path = (_AGENT_BUILD_DIR / platform / name).resolve()
+        path.relative_to(_AGENT_BUILD_DIR)
+        if not path.is_file():
+            return ""
+        st = path.stat()
+        cache_key = (platform, name, st.st_mtime_ns, st.st_size)
+        cached = _BINARY_SHA_CACHE.get(cache_key)
+        if cached:
+            return cached
+        h = _hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                h.update(chunk)
+        digest = h.hexdigest()
+        _BINARY_SHA_CACHE[cache_key] = digest
+        return digest
+    except Exception:
+        return ""
+
+
+_BINARY_SHA_CACHE: Dict[tuple, str] = {}
 
 
 def _config_template(client_id: str, token: str, ws_url: str, role: str = "master") -> str:

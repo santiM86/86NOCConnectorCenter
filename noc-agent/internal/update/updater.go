@@ -160,11 +160,12 @@ func (u *Updater) apply(ctx context.Context, m *Manifest) error {
 		os.Remove(tmp.Name())
 		return err
 	}
-	u.log.Info("update applied", "version", m.Version)
-	// Trigger graceful shutdown; the OS service / watchdog respawns us.
+	u.log.Info("update applied — exiting for supervisor respawn", "version", m.Version)
+	// Trigger graceful shutdown; the OS service / watchdog respawns us with
+	// the new binary. NOTE: must invoke os.Exit, not just reference it.
 	go func() {
 		time.Sleep(500 * time.Millisecond)
-		_ = os.Exit
+		os.Exit(0)
 	}()
 	return nil
 }

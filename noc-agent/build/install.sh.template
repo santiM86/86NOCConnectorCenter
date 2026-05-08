@@ -52,10 +52,20 @@ echo "   client_id = ${CLIENT_ID}"
 systemctl stop 86nocwatchdog.service 2>/dev/null || true
 systemctl stop 86nocagent.service    2>/dev/null || true
 
-# Download binaries
+# Download binaries (with SHA256 verification when manifest provides it)
 for bin in nocagent nocwatchdog; do
   echo ">> downloading ${bin}"
   curl -fsSL "${BACKEND_URL}/api/agent/binary/${PLATFORM}/${bin}?token=${TOKEN}" -o "${INSTALL_DIR}/${bin}"
+  expected="$(python3 -c "import json,sys;print(json.load(open(sys.argv[1])).get('sha256',{}).get(sys.argv[2],''))" "${TMP_MANIFEST}" "${bin}")"
+  if [[ -n "${expected}" ]]; then
+    actual="$(sha256sum "${INSTALL_DIR}/${bin}" | awk '{print $1}')"
+    if [[ "${actual}" != "${expected}" ]]; then
+      echo "ERRORE: SHA256 di ${bin} non corrisponde (atteso ${expected}, ottenuto ${actual})" >&2
+      rm -f "${INSTALL_DIR}/${bin}"
+      exit 2
+    fi
+    echo "   sha256 OK (${actual:0:12}...)"
+  fi
   chmod 0755 "${INSTALL_DIR}/${bin}"
 done
 

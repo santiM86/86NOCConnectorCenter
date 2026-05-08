@@ -25,7 +25,9 @@
 package main
 
 import (
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -59,6 +61,7 @@ type manifest struct {
 	ClientID       string            `json:"client_id"`
 	BackendWS      string            `json:"backend_ws"`
 	Binaries       map[string]string `json:"binaries"`
+	SHA256         map[string]string `json:"sha256"`
 	ConfigTemplate string            `json:"config_template"`
 }
 
@@ -134,12 +137,12 @@ func main() {
 	}
 
 	step("[4/8] Download nocagent.exe")
-	if err := downloadFile(cfg, "nocagent.exe", filepath.Join(installDir(), "nocagent.exe")); err != nil {
+	if err := downloadFile(cfg, "nocagent.exe", filepath.Join(installDir(), "nocagent.exe"), man.SHA256["nocagent.exe"]); err != nil {
 		fail("download nocagent:", err)
 	}
 
 	step("[5/8] Download nocwatchdog.exe")
-	if err := downloadFile(cfg, "nocwatchdog.exe", filepath.Join(installDir(), "nocwatchdog.exe")); err != nil {
+	if err := downloadFile(cfg, "nocwatchdog.exe", filepath.Join(installDir(), "nocwatchdog.exe"), man.SHA256["nocwatchdog.exe"]); err != nil {
 		fail("download nocwatchdog:", err)
 	}
 
@@ -260,7 +263,7 @@ func fetchManifest(c cliCfg) (*manifest, error) {
 	return &m, nil
 }
 
-func downloadFile(c cliCfg, name, dst string) error {
+func downloadFile(c cliCfg, name, dst, expectedSHA string) error {
 	url := fmt.Sprintf("%s/api/agent/binary/%s/%s?token=%s", c.backend, platform, name, c.token)
 	resp, err := httpClient.Get(url)
 	if err != nil {
@@ -275,12 +278,20 @@ func downloadFile(c cliCfg, name, dst string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(f, resp.Body); err != nil {
+	hasher := sha256.New()
+	if _, err := io.Copy(io.MultiWriter(f, hasher), resp.Body); err != nil {
 		f.Close()
 		os.Remove(tmp)
 		return err
 	}
 	f.Close()
+	if expectedSHA != "" {
+		got := hex.EncodeToString(hasher.Sum(nil))
+		if !strings.EqualFold(got, expectedSHA) {
+			os.Remove(tmp)
+			return fmt.Errorf("sha256 mismatch (expected %s, got %s)", expectedSHA, got)
+		}
+	}
 	if err := os.Rename(tmp, dst); err != nil {
 		os.Remove(tmp)
 		return err
