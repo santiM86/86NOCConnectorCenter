@@ -1,3 +1,41 @@
+## 2026-05-08 ICONS — Riallineamento icone su tutti i touchpoint
+
+**Direttiva utente**: «riallinea tutte le icone in modo che siano ovunque uguali».
+
+### Stato precedente
+- Connector Windows: `argus.ico` blu (creato in iterazione precedente).
+- PWA / favicon / Apple touch: vecchie icone `#00D8F8` (cyan/teal con "86" — non allineate).
+
+### Fatto
+Script consolidato `/tmp/build_all_icons.py` rigenera in un solo passaggio:
+
+| File | Size | Uso |
+|---|---|---|
+| `/app/noc-agent/cmd/nocui/argus.ico` | multi-size 16/24/32/48/64/128/256 | Connector Windows tray + shortcut |
+| `/app/frontend/public/favicon-32.png` | 32×32 | Tab del browser |
+| `/app/frontend/public/logo-48.png` | 48×48 | Header app |
+| `/app/frontend/public/apple-touch-icon.png` | 180×180 | iOS Aggiungi a Home |
+| `/app/frontend/public/icon-192.png` | 192×192 | PWA Android |
+| `/app/frontend/public/icon-512.png` | 512×512 | PWA Android maskable / splash |
+
+Tutte le immagini hanno la stessa identità visiva:
+- Sfondo blu pieno `#1040E0` (necessario per i maskable Android, evita la rivelazione di trasparenza al ritaglio rotondo).
+- Cerchio inscritto al 78% del bitmap (safe-area) con gradiente radiale `#3C82FF→#1040E0`.
+- Subtle white highlight in alto-sinistra per dare profondità.
+- Lettera **A** bianca Bold (DejaVuSans-Bold), ~62% del diametro del cerchio.
+
+### Cache invalidation
+- Service Worker: `CACHE_NAME` bumpato `noc-center-v15` → `noc-center-v16` per forzare il refresh delle icone PWA al prossimo `register('/sw.js')`.
+- Connector: `nocagent-ui.exe` ricompilato (9.8 MB) con il nuovo `rsrc_windows_amd64.syso` embedded.
+
+### Verifica
+- `GET /icon-192.png` → screenshot conferma il quadrato blu con A bianca centrata.
+- `argus.ico` 917 byte multi-size, embedded nell'EXE via `rsrc -manifest -ico`.
+- L'utente sui PC già installati vedrà la nuova icona dopo: refresh browser hard (Ctrl+Shift+R) per il web, reinstall connector + `ie4uinit.exe -show` o logoff/logon per Windows.
+
+---
+
+
 ## 2026-05-08 FEATURE — Network Scanner integrato nel Connector UI
 
 **Direttiva utente**: «metti pulsante per fare scansione rete e trovare device — prendi spunto da advanced-ip-scanner.com».
