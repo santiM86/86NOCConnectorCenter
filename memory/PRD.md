@@ -1,3 +1,34 @@
+## 2026-05-07 P0 BUG FIX — "ULTIMO POLL" fuorviante mostrava timestamp errato (v3.8.38)
+
+**Issue**: nello screenshot dell'utente, decine di device scanner-source mostravano:
+- `STATO = ONLINE` (corretto, lo Scanner li sta vedendo recentemente)
+- `ULTIMO POLL = 07 mag 12:20` (8+ ore fa)
+
+L'utente giustamente: "ma come mai c'è il pool alle 12:20 e me li mostri online?".
+
+**Root cause** in `/app/backend/routes/devices.py` (3° pass managed_devices orfani):
+```python
+"last_poll": md.get("web_console_last_tested") or md.get("last_seen_at"),
+```
+La colonna "ULTIMO POLL" mostrava **`web_console_last_tested`** (timestamp di un test della web UI fatto in passato alle 12:20) come fallback prioritario invece del **vero `last_seen_at`** (ultima volta che lo Scanner ha effettivamente visto il device tramite ARP/mDNS, che era recente ~22:40 per i device online).
+
+Conferma del bug: il device "Dispositivo personale 192.168.16.86" mostrava `12:20 + OFFLINE + "down da 20h"`. Se è realmente giù da 20 ore (badge basato su last_seen_at), allora il 12:20 NON era l'ultima vista, era qualcos'altro.
+
+**Fix v3.8.38**:
+```python
+"last_poll": md.get("last_seen_at") or md.get("web_console_last_tested"),
+"last_seen_at": md.get("last_seen_at"),
+"web_console_last_tested": md.get("web_console_last_tested"),
+```
+Inverttita la priorità: `last_seen_at` prima, `web_console_last_tested` come fallback secondario. Aggiunto anche `web_console_last_tested` come campo separato per UI futura che voglia distinguere i due eventi.
+
+**Effetto produzione (post-deploy)**:
+- Device ONLINE → "ULTIMO POLL" mostrerà l'ora reale della discovery scanner (es. `22:40`), coerente con `online`.
+- Device OFFLINE → "ULTIMO POLL" mostrerà l'ora reale dell'ultima vista (es. `02:46`), coerente con il badge `down da 20h`.
+
+---
+
+
 ## 2026-05-07 EXTRA UX — Badge "down da Xh" sui device offline (v3.8.37)
 
 **Feature**: nelle tabelle Dispositivi (per cliente + globale), aggiunto un badge inline con la durata del downtime per ogni device in stato `offline`. Permette di capire a colpo d'occhio se un device è giù da minuti, ore o giorni — utile per priorizzare gli interventi.
