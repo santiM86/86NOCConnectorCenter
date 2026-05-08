@@ -28,6 +28,7 @@ import (
 	"github.com/86bit/noc-agent/internal/poller"
 	"github.com/86bit/noc-agent/internal/transport"
 	"github.com/86bit/noc-agent/internal/update"
+	"github.com/86bit/noc-agent/internal/webproxy"
 	"github.com/86bit/noc-agent/pkg/proto"
 )
 
@@ -164,6 +165,7 @@ func runAgent(ctx context.Context, cfg config.Config, log *logging.Logger) {
 	client.Register(proto.CmdRunDiagnostics, func(ctx context.Context, _ json.RawMessage) (any, error) {
 		return runDiagnostics(cfg), nil
 	})
+	client.Register(proto.CmdWebProxy, webproxy.Handle)
 
 	upd := update.New(cfg.Update, Version, log)
 

@@ -769,3 +769,110 @@ def _build_exe_bundle(token: str) -> str:
         z.writestr("LEGGIMI.txt", leggimi)
     out.write_bytes(buf.getvalue())
     return str(out)
+
+
+
+# ============================================================================
+# SELF endpoints — auth via agent token (used by Connector Console PS1)
+# ============================================================================
+
+async def _connector_by_token(token: Optional[str]) -> _Connection:
+    """Validate an agent bearer token and return the live WS connection
+    of *some* agent of that tenant currently online (preferring master).
+
+    Raises HTTPException 401 on invalid token, 404 if no agent online.
+    """
+    if not token:
+        raise HTTPException(status_code=401, detail="missing token")
+    doc = await db.agent_tokens.find_one({"token": token, "revoked": {"$ne": True}}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=401, detail="invalid token")
+    client_id = doc.get("client_id")
+    candidates: List[_Connection] = [
+        c for c in REGISTRY.list() if c.client_id == client_id
+    ]
+    if not candidates:
+        raise HTTPException(status_code=404, detail="no agent connected for this client")
+    # Prefer agent with master role (looked up from DB)
+    for c in candidates:
+        ag = await db.managed_agents.find_one({"agent_id": c.agent_id}, {"_id": 0, "role": 1})
+        if ag and ag.get("role") == "master":
+            return c
+    return candidates[0]
+
+
+class SnmpTestRequest(BaseModel):
+    ip: str
+    community: Optional[str] = "public"
+    port: Optional[int] = 161
+    version: Optional[str] = "v2c"
+
+
+@router.post("/agent/self/snmp/test")
+async def self_snmp_test(req: SnmpTestRequest, token: Optional[str] = None) -> Dict[str, Any]:
+    """Trigger a real SNMP GET (sysDescr, sysName, sysUpTime, sysObjectID)
+    on the requested device, executed by the live agent of this tenant.
+
+    Auth: ?token=<agent_token>. Returns the SNMPPollResult from the agent.
+    """
+    conn = await _connector_by_token(token)
+    args = {"ip": req.ip, "community": req.community or "public"}
+    try:
+        reply = await conn.send_command("force_snmp_poll", args, timeout=15.0)
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="agent reply timeout")
+    return {
+        "agent_id": conn.agent_id,
+        "client_id": conn.client_id,
+        "ip": req.ip,
+        "reply": reply,
+    }
+
+
+@router.get("/agent/self/health")
+async def self_health(token: Optional[str] = None) -> Dict[str, Any]:
+    """Health-check del canale connector→backend (la 'VPN' WebSocket).
+
+    Auth: ?token=<agent_token>. Verifica che l'agent sia connesso e misura
+    il round-trip-time inviando un comando 'ping' via WS.
+    """
+    if not token:
+        raise HTTPException(status_code=401, detail="missing token")
+    doc = await db.agent_tokens.find_one({"token": token, "revoked": {"$ne": True}}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=401, detail="invalid token")
+    client_id = doc.get("client_id")
+    candidates = [c for c in REGISTRY.list() if c.client_id == client_id]
+    if not candidates:
+        return {
+            "connected": False,
+            "client_id": client_id,
+            "agents_online": 0,
+            "rtt_ms": None,
+            "detail": "no agent connected for this client",
+        }
+    # Use first connection for RTT ping
+    conn = candidates[0]
+    rtt_ms: Optional[float] = None
+    error: Optional[str] = None
+    t0 = _now().timestamp()
+    try:
+        await conn.send_command("ping", None, timeout=5.0)
+        rtt_ms = (_now().timestamp() - t0) * 1000.0
+    except asyncio.TimeoutError:
+        error = "ping timeout"
+    except Exception as e:  # noqa: BLE001
+        error = str(e)
+    ag_doc = await db.managed_agents.find_one({"agent_id": conn.agent_id}, {"_id": 0})
+    return {
+        "connected": True,
+        "client_id": client_id,
+        "agent_id": conn.agent_id,
+        "agents_online": len(candidates),
+        "rtt_ms": rtt_ms,
+        "error": error,
+        "hostname": (ag_doc or {}).get("hostname"),
+        "agent_version": (ag_doc or {}).get("agent_version"),
+        "last_heartbeat_at": (ag_doc or {}).get("last_heartbeat_at"),
+        "connected_at": conn.connected_at.isoformat(),
+    }

@@ -102,6 +102,7 @@ const (
 	CmdRunDiagnostics  = "run_diagnostics"  // collect crash dumps, last logs, port reachability
 	CmdSelfUpdate      = "self_update"      // download + apply new binary
 	CmdShutdown        = "shutdown"         // graceful exit (watchdog will respawn)
+	CmdWebProxy        = "web_proxy"        // proxy HTTP request to an internal device (web console live)
 )
 
 // AgentReply is the response to a ServerCommand. CorrID in the Frame

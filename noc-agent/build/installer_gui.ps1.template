@@ -319,6 +319,7 @@ $BackendUrl = '__BACKEND_URL__'
 $ClientId   = '__CLIENT_ID__'
 $RoleVal    = '__ROLE__'
 $VersionVal = '__VERSION__'
+$AgentToken = '__AGENT_TOKEN__'
 $InstallDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $IconPath   = Join-Path $InstallDir 'argus.ico'
 $ConfigPath = Join-Path $env:ProgramData '86NocAgent\agent.yaml'
@@ -574,6 +575,39 @@ $btnImp = New-Btn 'Importa CSV' 160 545 130 $ColAccent $ColWhite {
     }
 }
 
+# Stato canale (VPN/WS) verso il NOC Center
+$btnHealth = New-Btn 'Stato canale (VPN/WS)' 310 545 200 $ColWhite $ColAccent {
+    $script:lblHealth.ForeColor = $ColMuted
+    $script:lblHealth.Text = 'Verifica canale verso NOC Center...'
+    $form.Refresh()
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
+        $url = $BackendUrl.TrimEnd('/') + '/api/agent/self/health?token=' + $AgentToken
+        $h = Invoke-RestMethod -UseBasicParsing -Method Get -TimeoutSec 10 -Uri $url
+        if ($h.connected -eq $true) {
+            $rtt = if ($h.rtt_ms -ne $null) { ('{0:N0}' -f [double]$h.rtt_ms) + ' ms' } else { 'n/d' }
+            $script:lblHealth.ForeColor = $ColGreen
+            $script:lblHealth.Text = ([char]0x25CF) + " Canale OK - RTT $rtt - host $($h.hostname) - agents online: $($h.agents_online)"
+        } else {
+            $script:lblHealth.ForeColor = $ColRed
+            $script:lblHealth.Text = ([char]0x25CF) + ' Agent NON connesso al NOC Center: ' + $h.detail
+        }
+    } catch {
+        $script:lblHealth.ForeColor = $ColRed
+        $script:lblHealth.Text = ([char]0x25CF) + ' Errore: ' + $_.Exception.Message
+    }
+}
+$btnHealth.FlatAppearance.BorderColor = $ColAccent; $btnHealth.FlatAppearance.BorderSize = 2
+
+$script:lblHealth = New-Object System.Windows.Forms.Label
+$script:lblHealth.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
+$script:lblHealth.ForeColor = $ColMuted
+$script:lblHealth.Location = [System.Drawing.Point]::new(520, 552)
+$script:lblHealth.Size = New-Object System.Drawing.Size(360, 22)
+$script:lblHealth.Anchor = [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
+$script:lblHealth.Text = ''
+$form.Controls.Add($script:lblHealth)
+
 # Pulsanti azione
 $btnRm = New-Btn 'Rimuovi selezionato' 20 595 170 $ColWhite $ColRed {
     if ($lv.SelectedItems.Count -eq 0) { return }
@@ -585,20 +619,56 @@ $btnRm.FlatAppearance.BorderColor = $ColRed; $btnRm.FlatAppearance.BorderSize = 
 
 $btnTest = New-Btn 'Test SNMP' 200 595 130 $ColBlue $ColWhite {
     if ($lv.SelectedItems.Count -eq 0) {
-        [System.Windows.Forms.MessageBox]::Show('Seleziona prima un dispositivo.', '86BIT Argus', 'OK', 'Information') | Out-Null
+        [System.Windows.Forms.MessageBox]::Show('Seleziona prima un dispositivo dalla tabella.', '86BIT Argus', 'OK', 'Information') | Out-Null
         return
     }
     $t = $lv.SelectedItems[0].Tag
-    $port = if ($t.snmp_port) { [int]$t.snmp_port } else { 161 }
+    $script:lblTestSnmp.ForeColor = $ColMuted
+    $script:lblTestSnmp.Text = "Interrogazione SNMP $($t.ip) in corso..."
+    $form.Refresh()
     try {
-        $r = Test-NetConnection -ComputerName $t.ip -Port $port -WarningAction SilentlyContinue -InformationLevel Quiet
-        $ping = Test-Connection -ComputerName $t.ip -Count 2 -Quiet -ErrorAction SilentlyContinue
-        $msg = "IP: $($t.ip)`nPing ICMP: " + $(if ($ping) { 'OK' } else { 'NON RISPONDE' }) + "`nPorta UDP/161: " + $(if ($r) { 'reachable' } else { 'no risposta (UDP non sempre testabile, normale)' })
-        [System.Windows.Forms.MessageBox]::Show($msg, '86BIT Argus - Test SNMP', 'OK', 'Information') | Out-Null
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
+        $body = @{ ip = $t.ip; community = $t.community; port = $t.snmp_port; version = $t.snmp_version } | ConvertTo-Json -Compress
+        $url = $BackendUrl.TrimEnd('/') + '/api/agent/self/snmp/test?token=' + [System.Web.HttpUtility]::UrlEncode($AgentToken)
+        # HttpUtility serve System.Web; fallback:
+        if (-not ([type]'System.Web.HttpUtility' -as [type])) {
+            Add-Type -AssemblyName System.Web | Out-Null
+        }
+        $r = Invoke-RestMethod -UseBasicParsing -Method Post -TimeoutSec 20 -Uri $url -ContentType 'application/json' -Body $body
+        $reply = $r.reply
+        if ($reply.ok -eq $true -and $reply.result) {
+            $res = $reply.result
+            $reachable = if ($res.reachable) { 'OK' } else { 'NON RAGGIUNGIBILE' }
+            $msg = "IP: $($t.ip)`nReachable: $reachable`n"
+            if ($res.sys_name)      { $msg += "sysName:     $($res.sys_name)`n" }
+            if ($res.sys_descr)     { $msg += "sysDescr:    $($res.sys_descr)`n" }
+            if ($res.sys_object_id) { $msg += "sysObjectID: $($res.sys_object_id)`n" }
+            if ($res.uptime_ns)     { $msg += "Uptime:      $([TimeSpan]::FromTicks($res.uptime_ns/100))`n" }
+            if ($res.latency_ns)    { $msg += "Latency:     $([int]($res.latency_ns/1e6)) ms`n" }
+            if ($res.error)         { $msg += "Errore: $($res.error)`n" }
+            [System.Windows.Forms.MessageBox]::Show($msg, '86BIT Argus - Test SNMP (via WS reale)', 'OK', 'Information') | Out-Null
+            $script:lblTestSnmp.ForeColor = if ($res.reachable) { $ColGreen } else { $ColRed }
+            $script:lblTestSnmp.Text = "Test SNMP $($t.ip): $reachable" + $(if ($res.sys_name) { " - $($res.sys_name)" } else { '' })
+        } else {
+            $script:lblTestSnmp.ForeColor = $ColRed
+            $script:lblTestSnmp.Text = "Test fallito: $($reply.error)"
+            [System.Windows.Forms.MessageBox]::Show("Errore agent: $($reply.error)", '86BIT Argus', 'OK', 'Error') | Out-Null
+        }
     } catch {
+        $script:lblTestSnmp.ForeColor = $ColRed
+        $script:lblTestSnmp.Text = 'Errore HTTP: ' + $_.Exception.Message
         [System.Windows.Forms.MessageBox]::Show('Errore: ' + $_.Exception.Message, '86BIT Argus', 'OK', 'Error') | Out-Null
     }
 }
+
+$script:lblTestSnmp = New-Object System.Windows.Forms.Label
+$script:lblTestSnmp.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+$script:lblTestSnmp.ForeColor = $ColMuted
+$script:lblTestSnmp.Location = [System.Drawing.Point]::new(20, 663)
+$script:lblTestSnmp.Size = New-Object System.Drawing.Size(850, 22)
+$script:lblTestSnmp.Text = ''
+$script:lblTestSnmp.Anchor = [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
+$form.Controls.Add($script:lblTestSnmp)
 
 $btnWeb = New-Btn 'Apri Web UI' 340 595 130 $ColPurple $ColWhite {
     if ($lv.SelectedItems.Count -eq 0) { return }
@@ -665,6 +735,7 @@ $form.Controls.Add($lblFoot)
     $body = $body.Replace('__CLIENT_ID__',   $ClientId)
     $body = $body.Replace('__ROLE__',        $Role)
     $body = $body.Replace('__VERSION__',     $Version)
+    $body = $body.Replace('__AGENT_TOKEN__', $Token)
     Set-Content -Path $Path -Value $body -Encoding UTF8
 }
 
@@ -1607,7 +1678,8 @@ function Run-Install {
                 -BackendUrl $script:BackendUrl `
                 -ClientId   $script:ClientId `
                 -Role       $script:Role `
-                -Version    $Version
+                -Version    $Version `
+                -Token      $script:Token
             Append-Log "      shortcut '86BIT Argus Center\Connector' creato" $ColorMuted
         } catch {
             Append-Log "      WARN: shortcut non creato: $($_.Exception.Message)" $ColorError
