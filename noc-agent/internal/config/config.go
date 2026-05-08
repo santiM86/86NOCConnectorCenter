@@ -61,9 +61,12 @@ type SNMPConfig struct {
 }
 
 type SNMPTarget struct {
-	IP        string `yaml:"ip"`
-	Community string `yaml:"community,omitempty"`
-	Profile   string `yaml:"profile,omitempty"` // generic / zyxel / mikrotik / printer ...
+	IP          string `yaml:"ip"`
+	Name        string `yaml:"name,omitempty"`
+	Community   string `yaml:"community,omitempty"`
+	Profile     string `yaml:"profile,omitempty"`      // generic / zyxel / mikrotik / printer ...
+	SNMPVersion string `yaml:"snmp_version,omitempty"` // v1 / v2c / v3
+	SNMPPort    int    `yaml:"snmp_port,omitempty"`    // default 161
 }
 
 type WatchdogConfig struct {

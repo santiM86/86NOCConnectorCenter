@@ -100,6 +100,8 @@ $script:BackendUrl    = $DefaultBackendUrl
 $script:Token         = $DefaultToken
 $script:ClientId      = ""
 $script:Role          = "master"   # master | scanner
+$script:Devices       = @()        # lista SNMPTarget pscustomobjects
+$script:PollingSec    = 60
 $script:InstallResult = $null
 
 # ================================================================
@@ -150,7 +152,7 @@ $leftPanel.Controls.Add($lblVer)
 
 # Steps list
 $script:StepLabels = @()
-$stepNames = @("Benvenuto", "Tipo installazione", "Configurazione", "Riepilogo", "Installazione", "Completato")
+$stepNames = @("Benvenuto", "Tipo installazione", "Configurazione", "Dispositivi", "Riepilogo", "Installazione", "Completato")
 for ($i = 0; $i -lt $stepNames.Count; $i++) {
     $lbl = New-Object System.Windows.Forms.Label
     $lbl.Text = "  $($i+1).  $($stepNames[$i])"
@@ -292,15 +294,14 @@ function Build-ArgusIcon($Path) {
 
 function Write-ConnectorLauncher {
     param([string]$Path, [string]$BackendUrl, [string]$ClientId, [string]$Role, [string]$Version)
-    # Connector Console: piccola UI nativa Windows.Forms che mostra
-    # stato servizi, dati cliente, e consente avvio/stop/restart, apertura
-    # NOC Center, apertura log. NON apre il browser di default.
+    # Connector Console — UI 'Gestisci Dispositivi (SNMP Polling)' nello
+    # stile del legacy v3.8.28. Permette di aggiungere/rimuovere target,
+    # importare/esportare CSV, testare connettivita' e salvare il YAML
+    # del agent con riavvio automatico del servizio. NON contiene piu' i
+    # pulsanti Avvia/Ferma/Riavvia: quelli sono nel menu della tray icon.
     $body = @'
-# 86BIT Argus Connector - Console locale.
-# Mostra stato dei servizi e consente le operazioni di gestione.
 $ErrorActionPreference = 'SilentlyContinue'
 
-# Hide console (lanciato in -WindowStyle Hidden, ma extra-safe)
 try {
     $sig = @"
 [DllImport("user32.dll")] public static extern bool ShowWindow(System.IntPtr hWnd, int nCmdShow);
@@ -320,252 +321,345 @@ $RoleVal    = '__ROLE__'
 $VersionVal = '__VERSION__'
 $InstallDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $IconPath   = Join-Path $InstallDir 'argus.ico'
-$LogDir     = Join-Path $env:ProgramData '86NocAgent\logs'
 $ConfigPath = Join-Path $env:ProgramData '86NocAgent\agent.yaml'
 
-# Colori
-$ColDarkBg  = [System.Drawing.Color]::FromArgb(15, 15, 22)
-$ColLightBg = [System.Drawing.Color]::FromArgb(245, 245, 248)
-$ColAccent  = [System.Drawing.Color]::FromArgb(0, 122, 204)
-$ColSuccess = [System.Drawing.Color]::FromArgb(40, 167, 69)
-$ColError   = [System.Drawing.Color]::FromArgb(220, 53, 69)
+$ColAccent  = [System.Drawing.Color]::FromArgb(99, 102, 241)
+$ColRed     = [System.Drawing.Color]::FromArgb(220, 53, 69)
+$ColBlue    = [System.Drawing.Color]::FromArgb(13, 110, 253)
+$ColPurple  = [System.Drawing.Color]::FromArgb(147, 51, 234)
+$ColGreen   = [System.Drawing.Color]::FromArgb(34, 197, 94)
 $ColMuted   = [System.Drawing.Color]::FromArgb(110, 110, 125)
 $ColText    = [System.Drawing.Color]::FromArgb(33, 37, 41)
 $ColWhite   = [System.Drawing.Color]::White
 
+# ============================================================
+# YAML helpers (markers per il blocco gestito dal Connector)
+# ============================================================
+$BeginMarker = '# === BEGIN MANAGED TARGETS ==='
+$EndMarker   = '# === END MANAGED TARGETS ==='
+
+function Parse-Targets {
+    param([string]$ConfigText)
+    $targets = @()
+    $inBlock = $false
+    $current = $null
+    foreach ($line in $ConfigText -split "`r?`n") {
+        if ($line -match '^\s*' + [regex]::Escape($BeginMarker)) { $inBlock = $true; continue }
+        if ($line -match '^\s*' + [regex]::Escape($EndMarker)) { $inBlock = $false; if ($current) { $targets += [pscustomobject]$current; $current = $null }; continue }
+        if (-not $inBlock) { continue }
+        if ($line -match '^\s*-\s+ip:\s*"?([^"\s]+)"?') {
+            if ($current) { $targets += [pscustomobject]$current }
+            $current = @{ ip = $matches[1]; name=''; community='public'; device_type=''; snmp_version='v2c'; snmp_port=161 }
+        } elseif ($current -and $line -match '^\s*name:\s*"?([^"]*)"?') {
+            $current.name = $matches[1]
+        } elseif ($current -and $line -match '^\s*community:\s*"?([^"]*)"?') {
+            $current.community = $matches[1]
+        } elseif ($current -and $line -match '^\s*profile:\s*"?([^"]*)"?') {
+            $current.device_type = $matches[1]
+        } elseif ($current -and $line -match '^\s*snmp_version:\s*"?([^"]*)"?') {
+            $current.snmp_version = $matches[1]
+        } elseif ($current -and $line -match '^\s*snmp_port:\s*(\d+)') {
+            $current.snmp_port = [int]$matches[1]
+        }
+    }
+    if ($current) { $targets += [pscustomobject]$current }
+    return $targets
+}
+
+function Save-Targets {
+    param([array]$Targets)
+    if (-not (Test-Path $ConfigPath)) {
+        [System.Windows.Forms.MessageBox]::Show("agent.yaml non trovato: $ConfigPath", '86BIT Argus', 'OK', 'Error') | Out-Null
+        return $false
+    }
+    $raw = Get-Content -Raw -Path $ConfigPath
+    $clean = ($raw -replace ('(?s)' + [regex]::Escape($BeginMarker) + '.*?' + [regex]::Escape($EndMarker) + "\r?\n?"), '').TrimEnd("`r","`n")
+
+    $sb = New-Object System.Text.StringBuilder
+    [void]$sb.AppendLine($BeginMarker)
+    [void]$sb.AppendLine('# Gestito da Connector Console - non modificare a mano')
+    [void]$sb.AppendLine('snmp_targets:')
+    foreach ($t in $Targets) {
+        [void]$sb.AppendLine(('  - ip: "' + $t.ip + '"'))
+        if ($t.name)         { [void]$sb.AppendLine(('    name: "' + $t.name + '"')) }
+        if ($t.community)    { [void]$sb.AppendLine(('    community: "' + $t.community + '"')) }
+        if ($t.device_type)  { [void]$sb.AppendLine(('    profile: "' + $t.device_type + '"')) }
+        if ($t.snmp_version) { [void]$sb.AppendLine(('    snmp_version: "' + $t.snmp_version + '"')) }
+        if ($t.snmp_port -and [int]$t.snmp_port -ne 0) { [void]$sb.AppendLine(('    snmp_port: ' + [int]$t.snmp_port)) }
+    }
+    [void]$sb.AppendLine($EndMarker)
+
+    $newContent = $clean + "`r`n" + $sb.ToString()
+    Set-Content -Path $ConfigPath -Value $newContent -Encoding UTF8
+    return $true
+}
+
+# ============================================================
+# FORM
+# ============================================================
 [System.Windows.Forms.Application]::EnableVisualStyles()
 $form = New-Object System.Windows.Forms.Form
-$form.Text = 'ARGUS Connector - Console'
-$form.Size = New-Object System.Drawing.Size(680, 520)
+$form.Text = 'ARGUS Connector - Gestisci Dispositivi'
+$form.Size = New-Object System.Drawing.Size(900, 700)
 $form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
-$form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedSingle
-$form.MaximizeBox = $false
-$form.BackColor = $ColLightBg
-if (Test-Path $IconPath) {
-    try { $form.Icon = New-Object System.Drawing.Icon($IconPath) } catch { }
+$form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::Sizable
+$form.MinimumSize = New-Object System.Drawing.Size(800, 600)
+$form.BackColor = $ColWhite
+if (Test-Path $IconPath) { try { $form.Icon = New-Object System.Drawing.Icon($IconPath) } catch { } }
+
+$lblTitle = New-Object System.Windows.Forms.Label
+$lblTitle.Text = 'Dispositivi Monitorati (SNMP Polling)'
+$lblTitle.Font = New-Object System.Drawing.Font('Segoe UI', 16, [System.Drawing.FontStyle]::Bold)
+$lblTitle.ForeColor = $ColText
+$lblTitle.Location = [System.Drawing.Point]::new(20, 18)
+$lblTitle.Size = New-Object System.Drawing.Size(800, 32)
+$form.Controls.Add($lblTitle)
+
+$lblHint = New-Object System.Windows.Forms.Label
+$lblHint.Text = 'Aggiungi o rimuovi switch, firewall e server da monitorare via SNMP. Cliente: ' + $ClientId
+$lblHint.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+$lblHint.ForeColor = $ColMuted
+$lblHint.Location = [System.Drawing.Point]::new(20, 52)
+$lblHint.Size = New-Object System.Drawing.Size(800, 20)
+$form.Controls.Add($lblHint)
+
+# Form aggiunta
+function New-FieldLabel($text, $x, $y) {
+    $l = New-Object System.Windows.Forms.Label
+    $l.Text = $text
+    $l.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+    $l.ForeColor = $ColMuted
+    $l.Location = [System.Drawing.Point]::new($x, $y)
+    $l.Size = New-Object System.Drawing.Size(180, 18)
+    $form.Controls.Add($l)
+    return $l
+}
+[void](New-FieldLabel 'IP Address' 20 84)
+[void](New-FieldLabel 'Community' 230 84)
+[void](New-FieldLabel 'Nome dispositivo' 380 84)
+
+$txtIp = New-Object System.Windows.Forms.TextBox
+$txtIp.Font = New-Object System.Drawing.Font('Segoe UI', 10)
+$txtIp.Location = [System.Drawing.Point]::new(20, 105)
+$txtIp.Size = New-Object System.Drawing.Size(200, 26)
+$form.Controls.Add($txtIp)
+
+$txtCom = New-Object System.Windows.Forms.TextBox
+$txtCom.Font = New-Object System.Drawing.Font('Segoe UI', 10)
+$txtCom.Location = [System.Drawing.Point]::new(230, 105)
+$txtCom.Size = New-Object System.Drawing.Size(140, 26)
+$txtCom.Text = 'public'
+$form.Controls.Add($txtCom)
+
+$txtName = New-Object System.Windows.Forms.TextBox
+$txtName.Font = New-Object System.Drawing.Font('Segoe UI', 10)
+$txtName.Location = [System.Drawing.Point]::new(380, 105)
+$txtName.Size = New-Object System.Drawing.Size(340, 26)
+$form.Controls.Add($txtName)
+
+$btnAdd = New-Object System.Windows.Forms.Button
+$btnAdd.Text = 'Aggiungi'
+$btnAdd.Location = [System.Drawing.Point]::new(730, 103)
+$btnAdd.Size = New-Object System.Drawing.Size(140, 32)
+$btnAdd.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+$btnAdd.BackColor = $ColAccent
+$btnAdd.ForeColor = $ColWhite
+$btnAdd.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
+$form.Controls.Add($btnAdd)
+
+# ListView
+$lv = New-Object System.Windows.Forms.ListView
+$lv.View = [System.Windows.Forms.View]::Details
+$lv.FullRowSelect = $true
+$lv.GridLines = $true
+$lv.Location = [System.Drawing.Point]::new(20, 150)
+$lv.Size = New-Object System.Drawing.Size(850, 380)
+$lv.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right -bor [System.Windows.Forms.AnchorStyles]::Bottom
+[void]$lv.Columns.Add('IP Address', 150)
+[void]$lv.Columns.Add('Community', 110)
+[void]$lv.Columns.Add('Nome', 280)
+[void]$lv.Columns.Add('Web UI', 280)
+$form.Controls.Add($lv)
+
+function Refresh-List {
+    param([array]$Targets)
+    $lv.Items.Clear()
+    foreach ($t in $Targets) {
+        $it = New-Object System.Windows.Forms.ListViewItem $t.ip
+        [void]$it.SubItems.Add([string]$t.community)
+        [void]$it.SubItems.Add([string]$t.name)
+        [void]$it.SubItems.Add('-')
+        $it.Tag = $t
+        [void]$lv.Items.Add($it)
+    }
 }
 
-# Sidebar scura
-$side = New-Object System.Windows.Forms.Panel
-$side.Location = [System.Drawing.Point]::new(0, 0)
-$side.Size = New-Object System.Drawing.Size(200, 480)
-$side.BackColor = $ColDarkBg
-$form.Controls.Add($side)
-
-$lblBrand = New-Object System.Windows.Forms.Label
-$lblBrand.Text = 'ARGUS'
-$lblBrand.Font = New-Object System.Drawing.Font('Segoe UI', 28, [System.Drawing.FontStyle]::Bold)
-$lblBrand.ForeColor = $ColWhite
-$lblBrand.Location = [System.Drawing.Point]::new(20, 30)
-$lblBrand.Size = New-Object System.Drawing.Size(180, 50)
-$side.Controls.Add($lblBrand)
-
-$lblProd = New-Object System.Windows.Forms.Label
-$lblProd.Text = 'Connector Console'
-$lblProd.Font = New-Object System.Drawing.Font('Segoe UI', 10)
-$lblProd.ForeColor = [System.Drawing.Color]::FromArgb(180, 180, 200)
-$lblProd.Location = [System.Drawing.Point]::new(22, 80)
-$lblProd.Size = New-Object System.Drawing.Size(180, 22)
-$side.Controls.Add($lblProd)
-
-$lblVer = New-Object System.Windows.Forms.Label
-$lblVer.Text = 'v' + $VersionVal + ' - native'
-$lblVer.Font = New-Object System.Drawing.Font('Segoe UI', 9)
-$lblVer.ForeColor = $ColAccent
-$lblVer.Location = [System.Drawing.Point]::new(22, 105)
-$lblVer.Size = New-Object System.Drawing.Size(180, 22)
-$side.Controls.Add($lblVer)
-
-$lblFooter = New-Object System.Windows.Forms.Label
-$lblFooter.Text = "86bit S.r.l.`r`n(c) 2026 - 86bit.it"
-$lblFooter.Font = New-Object System.Drawing.Font('Segoe UI', 8.5)
-$lblFooter.ForeColor = [System.Drawing.Color]::FromArgb(150, 150, 170)
-$lblFooter.Location = [System.Drawing.Point]::new(22, 420)
-$lblFooter.Size = New-Object System.Drawing.Size(180, 50)
-$side.Controls.Add($lblFooter)
-
-# Content
-$content = New-Object System.Windows.Forms.Panel
-$content.Location = [System.Drawing.Point]::new(200, 0)
-$content.Size = New-Object System.Drawing.Size(480, 480)
-$content.BackColor = $ColLightBg
-$form.Controls.Add($content)
-
-$title = New-Object System.Windows.Forms.Label
-$title.Text = 'Stato Connector'
-$title.Font = New-Object System.Drawing.Font('Segoe UI', 18, [System.Drawing.FontStyle]::Bold)
-$title.ForeColor = $ColText
-$title.Location = [System.Drawing.Point]::new(25, 22)
-$title.Size = New-Object System.Drawing.Size(440, 50)
-$title.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
-$content.Controls.Add($title)
-
-# Status servizi
-function New-StatusRow($name, $y) {
-    $lbl = New-Object System.Windows.Forms.Label
-    $lbl.Text = $name
-    $lbl.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
-    $lbl.ForeColor = $ColText
-    $lbl.Location = [System.Drawing.Point]::new(25, $y)
-    $lbl.Size = New-Object System.Drawing.Size(180, 24)
-    $content.Controls.Add($lbl)
-
-    $val = New-Object System.Windows.Forms.Label
-    $val.Text = '...'
-    $val.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
-    $val.Location = [System.Drawing.Point]::new(210, $y)
-    $val.Size = New-Object System.Drawing.Size(240, 24)
-    $content.Controls.Add($val)
-    return $val
+$script:Targets = @()
+if (Test-Path $ConfigPath) {
+    $script:Targets = @(Parse-Targets (Get-Content -Raw -Path $ConfigPath))
 }
+Refresh-List $script:Targets
 
-$lblAgentStatus = New-StatusRow '86NocAgent:'    80
-$lblWdStatus    = New-StatusRow '86NocWatchdog:' 110
+$btnAdd.add_Click({
+    $ip = $txtIp.Text.Trim()
+    if (-not $ip) { return }
+    $script:Targets = @($script:Targets) + @([pscustomobject]@{
+        ip = $ip
+        name = $txtName.Text.Trim()
+        community = if ($txtCom.Text.Trim()) { $txtCom.Text.Trim() } else { 'public' }
+        device_type = ''
+        snmp_version = 'v2c'
+        snmp_port = 161
+    })
+    Refresh-List $script:Targets
+    $txtIp.Text = ''; $txtName.Text = ''
+})
 
-# Info cliente
-function New-InfoRow($name, $value, $y) {
-    $k = New-Object System.Windows.Forms.Label
-    $k.Text = $name
-    $k.Font = New-Object System.Drawing.Font('Segoe UI', 9)
-    $k.ForeColor = $ColMuted
-    $k.Location = [System.Drawing.Point]::new(25, $y)
-    $k.Size = New-Object System.Drawing.Size(120, 20)
-    $content.Controls.Add($k)
-
-    $v = New-Object System.Windows.Forms.Label
-    $v.Text = $value
-    $v.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
-    $v.ForeColor = $ColText
-    $v.Location = [System.Drawing.Point]::new(150, $y)
-    $v.Size = New-Object System.Drawing.Size(310, 20)
-    $content.Controls.Add($v)
-}
-
-$roleLabel = if ($RoleVal -eq 'scanner') { 'VLAN Scanner' } else { 'Master Connector' }
-New-InfoRow 'Cliente:'     $ClientId   160
-New-InfoRow 'Ruolo:'       $roleLabel  185
-New-InfoRow 'URL backend:' $BackendUrl 210
-New-InfoRow 'Config:'      $ConfigPath 235
-
-# Pulsanti
-function New-ActionButton($text, $x, $y, $w, $action) {
+# Pulsanti riga inferiore
+function New-Btn($text, $x, $y, $w, $bg, $fg, $action) {
     $b = New-Object System.Windows.Forms.Button
     $b.Text = $text
     $b.Location = [System.Drawing.Point]::new($x, $y)
-    $b.Size = New-Object System.Drawing.Size($w, 32)
+    $b.Size = New-Object System.Drawing.Size($w, 36)
     $b.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
-    $b.BackColor = $ColWhite
-    $b.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+    $b.BackColor = $bg
+    $b.ForeColor = $fg
+    $b.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
+    $b.Anchor = [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left
     $b.add_Click($action)
-    $content.Controls.Add($b)
+    $form.Controls.Add($b)
     return $b
 }
 
-$btnStart = New-ActionButton 'Avvia servizi' 25 285 145 {
-    Start-Service -Name '86NocAgent' -ErrorAction SilentlyContinue
-    Start-Service -Name '86NocWatchdog' -ErrorAction SilentlyContinue
-    Start-Sleep -Milliseconds 500
-    Update-Status
-}
-$btnStop = New-ActionButton 'Ferma servizi' 175 285 145 {
-    Stop-Service -Name '86NocWatchdog' -Force -ErrorAction SilentlyContinue
-    Stop-Service -Name '86NocAgent' -Force -ErrorAction SilentlyContinue
-    Start-Sleep -Milliseconds 500
-    Update-Status
-}
-$btnRestart = New-ActionButton 'Riavvia servizi' 325 285 145 {
-    Stop-Service -Name '86NocWatchdog' -Force -ErrorAction SilentlyContinue
-    Stop-Service -Name '86NocAgent' -Force -ErrorAction SilentlyContinue
-    Start-Sleep -Seconds 1
-    Start-Service -Name '86NocAgent' -ErrorAction SilentlyContinue
-    Start-Service -Name '86NocWatchdog' -ErrorAction SilentlyContinue
-    Start-Sleep -Milliseconds 500
-    Update-Status
-}
-
-$btnNOC = New-ActionButton 'Apri NOC Center' 25 325 220 {
-    Start-Process $BackendUrl
-}
-$btnLog = New-ActionButton 'Apri cartella log' 250 325 220 {
-    if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Force -Path $LogDir | Out-Null }
-    Start-Process explorer.exe $LogDir
-}
-
-# Verifica connessione (test ping HTTP al backend)
-$btnTest = New-ActionButton 'Verifica connessione al NOC Center' 25 365 445 {
-    $script:lblTest.ForeColor = $ColMuted
-    $script:lblTest.Text = 'Verifica in corso...'
-    $form.Refresh()
-    try {
-        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
-        $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 8 -Uri ($BackendUrl.TrimEnd('/') + '/api/health')
-        if ($r.StatusCode -ge 200 -and $r.StatusCode -lt 400) {
-            $script:lblTest.ForeColor = $ColSuccess
-            $script:lblTest.Text = 'Connessione OK (' + $r.StatusCode + ')'
-        } else {
-            $script:lblTest.ForeColor = $ColError
-            $script:lblTest.Text = 'Risposta inattesa: ' + $r.StatusCode
-        }
-    } catch {
-        $script:lblTest.ForeColor = $ColError
-        $script:lblTest.Text = 'KO: ' + $_.Exception.Message
+# Esporta / Importa CSV
+$btnExp = New-Btn 'Esporta CSV' 20 545 130 $ColAccent $ColWhite {
+    $sd = New-Object System.Windows.Forms.SaveFileDialog
+    $sd.Filter = 'CSV (*.csv)|*.csv'
+    $sd.FileName = '86nocagent-targets.csv'
+    if ($sd.ShowDialog() -eq 'OK') {
+        $script:Targets | Select-Object ip, name, community, device_type, snmp_version, snmp_port |
+            Export-Csv -Path $sd.FileName -NoTypeInformation -Encoding UTF8
+        [System.Windows.Forms.MessageBox]::Show("Esportati $($script:Targets.Count) target.", '86BIT Argus', 'OK', 'Information') | Out-Null
     }
 }
-
-$script:lblTest = New-Object System.Windows.Forms.Label
-$script:lblTest.Font = New-Object System.Drawing.Font('Segoe UI', 9)
-$script:lblTest.ForeColor = $ColMuted
-$script:lblTest.Location = [System.Drawing.Point]::new(25, 405)
-$script:lblTest.Size = New-Object System.Drawing.Size(445, 22)
-$script:lblTest.Text = ''
-$content.Controls.Add($script:lblTest)
-
-# Chiudi
-$btnClose = New-Object System.Windows.Forms.Button
-$btnClose.Text = 'Chiudi'
-$btnClose.Location = [System.Drawing.Point]::new(370, 435)
-$btnClose.Size = New-Object System.Drawing.Size(100, 32)
-$btnClose.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
-$btnClose.BackColor = $ColAccent
-$btnClose.ForeColor = $ColWhite
-$btnClose.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
-$btnClose.add_Click({ $form.Close() })
-$content.Controls.Add($btnClose)
-
-function Update-Status {
-    foreach ($pair in @(
-        @('86NocAgent',    $script:lblAgentStatus),
-        @('86NocWatchdog', $script:lblWdStatus))) {
-        $name = $pair[0]; $lbl = $pair[1]
+$btnImp = New-Btn 'Importa CSV' 160 545 130 $ColAccent $ColWhite {
+    $od = New-Object System.Windows.Forms.OpenFileDialog
+    $od.Filter = 'CSV (*.csv)|*.csv'
+    if ($od.ShowDialog() -eq 'OK') {
         try {
-            $svc = Get-Service -Name $name -ErrorAction Stop
-            $lbl.Text = [string]$svc.Status
-            if ($svc.Status -eq 'Running') {
-                $lbl.ForeColor = $ColSuccess
-            } elseif ($svc.Status -eq 'Stopped') {
-                $lbl.ForeColor = $ColError
-            } else {
-                $lbl.ForeColor = $ColMuted
+            $rows = @()
+            $delim = ','
+            $firstLine = (Get-Content -Path $od.FileName -TotalCount 1)
+            if ($firstLine -match ';') { $delim = ';' } elseif ($firstLine -match "`t") { $delim = "`t" }
+            $rows = Import-Csv -Path $od.FileName -Delimiter $delim
+            $added = 0
+            foreach ($r in $rows) {
+                $ip = ($r.ip, $r.IP, $r.Ip, $r.address | Where-Object { $_ } | Select-Object -First 1)
+                if (-not $ip) { continue }
+                $script:Targets = @($script:Targets) + @([pscustomobject]@{
+                    ip = "$ip".Trim()
+                    name = ("$($r.name)$($r.Name)").Trim()
+                    community = if ("$($r.community)".Trim()) { "$($r.community)".Trim() } else { 'public' }
+                    device_type = "$($r.device_type)".Trim()
+                    snmp_version = if ("$($r.snmp_version)".Trim()) { "$($r.snmp_version)".Trim() } else { 'v2c' }
+                    snmp_port = if ("$($r.snmp_port)".Trim()) { [int]$r.snmp_port } else { 161 }
+                })
+                $added++
             }
+            Refresh-List $script:Targets
+            [System.Windows.Forms.MessageBox]::Show("Importati $added target.", '86BIT Argus', 'OK', 'Information') | Out-Null
         } catch {
-            $lbl.Text = 'NON INSTALLATO'
-            $lbl.ForeColor = $ColError
+            [System.Windows.Forms.MessageBox]::Show('Errore import: ' + $_.Exception.Message, '86BIT Argus', 'OK', 'Error') | Out-Null
         }
     }
 }
 
-$script:lblAgentStatus = $lblAgentStatus
-$script:lblWdStatus = $lblWdStatus
-Update-Status
+# Pulsanti azione
+$btnRm = New-Btn 'Rimuovi selezionato' 20 595 170 $ColWhite $ColRed {
+    if ($lv.SelectedItems.Count -eq 0) { return }
+    $sel = @($lv.SelectedItems | ForEach-Object { $_.Tag.ip })
+    $script:Targets = @($script:Targets | Where-Object { $sel -notcontains $_.ip })
+    Refresh-List $script:Targets
+}
+$btnRm.FlatAppearance.BorderColor = $ColRed; $btnRm.FlatAppearance.BorderSize = 2
 
-# Auto-refresh ogni 3s
-$timer = New-Object System.Windows.Forms.Timer
-$timer.Interval = 3000
-$timer.add_Tick({ Update-Status })
-$timer.Start()
+$btnTest = New-Btn 'Test SNMP' 200 595 130 $ColBlue $ColWhite {
+    if ($lv.SelectedItems.Count -eq 0) {
+        [System.Windows.Forms.MessageBox]::Show('Seleziona prima un dispositivo.', '86BIT Argus', 'OK', 'Information') | Out-Null
+        return
+    }
+    $t = $lv.SelectedItems[0].Tag
+    $port = if ($t.snmp_port) { [int]$t.snmp_port } else { 161 }
+    try {
+        $r = Test-NetConnection -ComputerName $t.ip -Port $port -WarningAction SilentlyContinue -InformationLevel Quiet
+        $ping = Test-Connection -ComputerName $t.ip -Count 2 -Quiet -ErrorAction SilentlyContinue
+        $msg = "IP: $($t.ip)`nPing ICMP: " + $(if ($ping) { 'OK' } else { 'NON RISPONDE' }) + "`nPorta UDP/161: " + $(if ($r) { 'reachable' } else { 'no risposta (UDP non sempre testabile, normale)' })
+        [System.Windows.Forms.MessageBox]::Show($msg, '86BIT Argus - Test SNMP', 'OK', 'Information') | Out-Null
+    } catch {
+        [System.Windows.Forms.MessageBox]::Show('Errore: ' + $_.Exception.Message, '86BIT Argus', 'OK', 'Error') | Out-Null
+    }
+}
+
+$btnWeb = New-Btn 'Apri Web UI' 340 595 130 $ColPurple $ColWhite {
+    if ($lv.SelectedItems.Count -eq 0) { return }
+    $t = $lv.SelectedItems[0].Tag
+    foreach ($scheme in @('https','http')) {
+        $url = "${scheme}://$($t.ip)/"
+        try {
+            $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 5 -Uri $url -ErrorAction SilentlyContinue
+            if ($r -and $r.StatusCode -lt 500) {
+                Start-Process $url
+                $lv.SelectedItems[0].SubItems[3].Text = $url
+                return
+            }
+        } catch { }
+    }
+    [System.Windows.Forms.MessageBox]::Show("Nessuna risposta HTTP/HTTPS dal device $($t.ip).", '86BIT Argus', 'OK', 'Warning') | Out-Null
+}
+
+$btnTestAll = New-Btn 'Test Web UI (tutti)' 480 595 150 $ColWhite $ColPurple {
+    foreach ($it in $lv.Items) {
+        $t = $it.Tag
+        $found = ''
+        foreach ($scheme in @('https','http')) {
+            $url = "${scheme}://$($t.ip)/"
+            try {
+                $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 4 -Uri $url -ErrorAction SilentlyContinue
+                if ($r -and $r.StatusCode -lt 500) { $found = $url; break }
+            } catch { }
+        }
+        $it.SubItems[3].Text = if ($found) { $found } else { '-' }
+        $form.Refresh()
+    }
+}
+$btnTestAll.FlatAppearance.BorderColor = $ColPurple; $btnTestAll.FlatAppearance.BorderSize = 2
+
+$btnSave = New-Btn 'Salva e Riavvia' 700 595 170 $ColGreen $ColWhite {
+    if (Save-Targets $script:Targets) {
+        try {
+            Stop-Service -Name '86NocWatchdog' -Force -ErrorAction SilentlyContinue
+            Stop-Service -Name '86NocAgent' -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 1
+            Start-Service -Name '86NocAgent' -ErrorAction SilentlyContinue
+            Start-Service -Name '86NocWatchdog' -ErrorAction SilentlyContinue
+            [System.Windows.Forms.MessageBox]::Show("Configurazione salvata. Servizi riavviati.`nTotale target: $($script:Targets.Count)", '86BIT Argus', 'OK', 'Information') | Out-Null
+        } catch {
+            [System.Windows.Forms.MessageBox]::Show('Salvato ma errore restart: ' + $_.Exception.Message, '86BIT Argus', 'OK', 'Warning') | Out-Null
+        }
+    }
+}
+
+# Footer hint
+$lblFoot = New-Object System.Windows.Forms.Label
+$lblFoot.Text = "Apri Web UI: testa http/https sul device. Salva e Riavvia: scrive agent.yaml e riavvia il servizio. Per Avvia/Ferma servizi usa il menu della tray icon."
+$lblFoot.Font = New-Object System.Drawing.Font('Segoe UI', 8.5)
+$lblFoot.ForeColor = $ColMuted
+$lblFoot.Location = [System.Drawing.Point]::new(20, 638)
+$lblFoot.Size = New-Object System.Drawing.Size(850, 18)
+$lblFoot.Anchor = [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
+$form.Controls.Add($lblFoot)
 
 [void]$form.ShowDialog()
-$timer.Stop()
 '@
     $body = $body.Replace('__BACKEND_URL__', $BackendUrl)
     $body = $body.Replace('__CLIENT_ID__',   $ClientId)
@@ -624,6 +718,16 @@ $menu = New-Object System.Windows.Forms.ContextMenuStrip
 $openItem = $menu.Items.Add('Apri NOC Center')
 $openItem.add_Click({ Start-Process $BackendUrl })
 
+$mgrItem = $menu.Items.Add('Gestisci Dispositivi...')
+$mgrItem.add_Click({
+    $connector = Join-Path $InstallDir 'connector.ps1'
+    if (Test-Path $connector) {
+        Start-Process -FilePath 'powershell.exe' -ArgumentList @(
+            '-NoProfile','-WindowStyle','Hidden','-ExecutionPolicy','Bypass','-File',$connector
+        ) -WindowStyle Hidden
+    }
+})
+
 $statusItem = $menu.Items.Add('Stato: ...')
 $statusItem.Enabled = $false
 
@@ -668,7 +772,14 @@ $exitItem.add_Click({
 })
 
 $ni.ContextMenuStrip = $menu
-$ni.add_DoubleClick({ Start-Process $BackendUrl })
+$ni.add_DoubleClick({
+    $connector = Join-Path $InstallDir 'connector.ps1'
+    if (Test-Path $connector) {
+        Start-Process -FilePath 'powershell.exe' -ArgumentList @(
+            '-NoProfile','-WindowStyle','Hidden','-ExecutionPolicy','Bypass','-File',$connector
+        ) -WindowStyle Hidden
+    }
+})
 
 # Aggiorna stato ogni 10s
 $script:tickTimer = New-Object System.Windows.Forms.Timer
@@ -771,9 +882,11 @@ Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction Silen
     }
 }
 
-# 3) Rimuovi autostart HKLM Run
+# 3) Rimuovi autostart HKLM Run + Scheduled Task
 Step 'remove HKLM Run autostart'
 Remove-ItemProperty -Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run' -Name '86BITArgusTray' -Force -ErrorAction SilentlyContinue
+Step 'remove scheduled task 86BIT Argus Tray'
+Unregister-ScheduledTask -TaskName '86BIT Argus Tray' -Confirm:$false -ErrorAction SilentlyContinue
 
 # 4) Rimuovi shortcut Start Menu
 Step 'remove start menu folder'
@@ -1024,7 +1137,200 @@ function Show-Configuration {
 }
 
 # ================================================================
-# STEP 2 - RIEPILOGO
+# STEP 3 - DISPOSITIVI DA MONITORARE
+# ================================================================
+$script:lvDevices = $null
+$script:txtPolling = $null
+
+function Refresh-Devices {
+    if (-not $script:lvDevices) { return }
+    $script:lvDevices.Items.Clear()
+    foreach ($d in $script:Devices) {
+        $it = New-Object System.Windows.Forms.ListViewItem $d.ip
+        [void]$it.SubItems.Add([string]$d.community)
+        [void]$it.SubItems.Add([string]$d.name)
+        $it.Tag = $d
+        [void]$script:lvDevices.Items.Add($it)
+    }
+}
+
+function Show-Devices {
+    Reset-Content
+    $btnBack.Enabled = $true
+    $btnNext.Text = "Avanti >"
+    $btnNext.Enabled = $true
+
+    $contentPanel.Controls.Add((New-Title "Dispositivi da Monitorare"))
+    $contentPanel.Controls.Add((New-Subtitle "Aggiungi switch, firewall o server da monitorare via SNMP polling. Puoi anche importare un CSV o saltare e configurarli dopo dal Connector."))
+
+    $lblIp = New-Object System.Windows.Forms.Label
+    $lblIp.Text = "IP Address"
+    $lblIp.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+    $lblIp.ForeColor = $ColorMuted
+    $lblIp.Location = [System.Drawing.Point]::new(35, 145)
+    $lblIp.Size = New-Object System.Drawing.Size(120, 18)
+    $contentPanel.Controls.Add($lblIp)
+
+    $lblCm = New-Object System.Windows.Forms.Label
+    $lblCm.Text = "Community"
+    $lblCm.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+    $lblCm.ForeColor = $ColorMuted
+    $lblCm.Location = [System.Drawing.Point]::new(165, 145)
+    $lblCm.Size = New-Object System.Drawing.Size(100, 18)
+    $contentPanel.Controls.Add($lblCm)
+
+    $lblNm = New-Object System.Windows.Forms.Label
+    $lblNm.Text = "Nome"
+    $lblNm.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+    $lblNm.ForeColor = $ColorMuted
+    $lblNm.Location = [System.Drawing.Point]::new(275, 145)
+    $lblNm.Size = New-Object System.Drawing.Size(140, 18)
+    $contentPanel.Controls.Add($lblNm)
+
+    $tbIp = New-Object System.Windows.Forms.TextBox
+    $tbIp.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+    $tbIp.Location = [System.Drawing.Point]::new(35, 165)
+    $tbIp.Size = New-Object System.Drawing.Size(125, 26)
+    $contentPanel.Controls.Add($tbIp)
+
+    $tbCm = New-Object System.Windows.Forms.TextBox
+    $tbCm.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+    $tbCm.Location = [System.Drawing.Point]::new(165, 165)
+    $tbCm.Size = New-Object System.Drawing.Size(105, 26)
+    $tbCm.Text = "public"
+    $contentPanel.Controls.Add($tbCm)
+
+    $tbNm = New-Object System.Windows.Forms.TextBox
+    $tbNm.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+    $tbNm.Location = [System.Drawing.Point]::new(275, 165)
+    $tbNm.Size = New-Object System.Drawing.Size(140, 26)
+    $contentPanel.Controls.Add($tbNm)
+
+    $btnAddDev = New-Object System.Windows.Forms.Button
+    $btnAddDev.Text = "+ Aggiungi"
+    $btnAddDev.Location = [System.Drawing.Point]::new(420, 162)
+    $btnAddDev.Size = New-Object System.Drawing.Size(85, 30)
+    $btnAddDev.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+    $btnAddDev.BackColor = $ColorAccent
+    $btnAddDev.ForeColor = $ColorWhite
+    $btnAddDev.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+    $btnAddDev.add_Click({
+        $ip = $tbIp.Text.Trim()
+        if (-not $ip) { return }
+        $script:Devices = @($script:Devices) + @([pscustomobject]@{
+            ip = $ip
+            name = $tbNm.Text.Trim()
+            community = if ($tbCm.Text.Trim()) { $tbCm.Text.Trim() } else { "public" }
+            device_type = ''
+            snmp_version = 'v2c'
+            snmp_port = 161
+        })
+        Refresh-Devices
+        $tbIp.Text = ''; $tbNm.Text = ''
+        $tbIp.Focus()
+    })
+    $contentPanel.Controls.Add($btnAddDev)
+
+    # ListView
+    $script:lvDevices = New-Object System.Windows.Forms.ListView
+    $script:lvDevices.View = [System.Windows.Forms.View]::Details
+    $script:lvDevices.FullRowSelect = $true
+    $script:lvDevices.GridLines = $true
+    $script:lvDevices.Location = [System.Drawing.Point]::new(35, 200)
+    $script:lvDevices.Size = New-Object System.Drawing.Size(470, 180)
+    [void]$script:lvDevices.Columns.Add('IP', 130)
+    [void]$script:lvDevices.Columns.Add('Community', 100)
+    [void]$script:lvDevices.Columns.Add('Nome', 220)
+    $contentPanel.Controls.Add($script:lvDevices)
+    Refresh-Devices
+
+    # Rimuovi
+    $btnRm = New-Object System.Windows.Forms.Button
+    $btnRm.Text = "Rimuovi selezionato"
+    $btnRm.Location = [System.Drawing.Point]::new(35, 390)
+    $btnRm.Size = New-Object System.Drawing.Size(160, 30)
+    $btnRm.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+    $btnRm.BackColor = $ColorWhite
+    $btnRm.ForeColor = $ColorError
+    $btnRm.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+    $btnRm.FlatAppearance.BorderColor = $ColorError
+    $btnRm.FlatAppearance.BorderSize = 2
+    $btnRm.add_Click({
+        if ($script:lvDevices.SelectedItems.Count -eq 0) { return }
+        $sel = @($script:lvDevices.SelectedItems | ForEach-Object { $_.Tag.ip })
+        $script:Devices = @($script:Devices | Where-Object { $sel -notcontains $_.ip })
+        Refresh-Devices
+    })
+    $contentPanel.Controls.Add($btnRm)
+
+    # Importa CSV
+    $btnImp = New-Object System.Windows.Forms.Button
+    $btnImp.Text = "Importa CSV..."
+    $btnImp.Location = [System.Drawing.Point]::new(205, 390)
+    $btnImp.Size = New-Object System.Drawing.Size(140, 30)
+    $btnImp.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+    $btnImp.BackColor = $ColorAccent
+    $btnImp.ForeColor = $ColorWhite
+    $btnImp.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+    $btnImp.add_Click({
+        $od = New-Object System.Windows.Forms.OpenFileDialog
+        $od.Filter = 'CSV (*.csv)|*.csv|Tutti (*.*)|*.*'
+        if ($od.ShowDialog() -eq 'OK') {
+            try {
+                $delim = ','
+                $first = (Get-Content -Path $od.FileName -TotalCount 1)
+                if ($first -match ';') { $delim = ';' } elseif ($first -match "`t") { $delim = "`t" }
+                $rows = Import-Csv -Path $od.FileName -Delimiter $delim
+                $added = 0
+                foreach ($r in $rows) {
+                    $ip = ($r.ip, $r.IP, $r.Ip, $r.address | Where-Object { $_ } | Select-Object -First 1)
+                    if (-not $ip) { continue }
+                    $script:Devices = @($script:Devices) + @([pscustomobject]@{
+                        ip = "$ip".Trim()
+                        name = ("$($r.name)$($r.Name)").Trim()
+                        community = if ("$($r.community)".Trim()) { "$($r.community)".Trim() } else { "public" }
+                        device_type = "$($r.device_type)".Trim()
+                        snmp_version = if ("$($r.snmp_version)".Trim()) { "$($r.snmp_version)".Trim() } else { 'v2c' }
+                        snmp_port = if ("$($r.snmp_port)".Trim()) { [int]$r.snmp_port } else { 161 }
+                    })
+                    $added++
+                }
+                Refresh-Devices
+                [System.Windows.Forms.MessageBox]::Show("Importati $added dispositivi.", '86BIT Argus', 'OK', 'Information') | Out-Null
+            } catch {
+                [System.Windows.Forms.MessageBox]::Show('Errore import: ' + $_.Exception.Message, '86BIT Argus', 'OK', 'Error') | Out-Null
+            }
+        }
+    })
+    $contentPanel.Controls.Add($btnImp)
+
+    # Polling
+    $lblP = New-Object System.Windows.Forms.Label
+    $lblP.Text = "Polling (sec):"
+    $lblP.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+    $lblP.ForeColor = $ColorMuted
+    $lblP.Location = [System.Drawing.Point]::new(355, 397)
+    $lblP.Size = New-Object System.Drawing.Size(90, 20)
+    $contentPanel.Controls.Add($lblP)
+
+    $script:txtPolling = New-Object System.Windows.Forms.TextBox
+    $script:txtPolling.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+    $script:txtPolling.Location = [System.Drawing.Point]::new(450, 393)
+    $script:txtPolling.Size = New-Object System.Drawing.Size(55, 26)
+    $script:txtPolling.Text = [string]$script:PollingSec
+    $contentPanel.Controls.Add($script:txtPolling)
+
+    $hint = New-Object System.Windows.Forms.Label
+    $hint.Text = "CSV: header  ip, name, community, device_type, snmp_version, snmp_port  (separatore , ; o tab)"
+    $hint.Font = New-Object System.Drawing.Font("Segoe UI", 8.5)
+    $hint.ForeColor = $ColorMuted
+    $hint.Location = [System.Drawing.Point]::new(35, 430)
+    $hint.Size = New-Object System.Drawing.Size(470, 18)
+    $contentPanel.Controls.Add($hint)
+}
+
+# ================================================================
+# STEP 4 - RIEPILOGO
 # ================================================================
 function Show-Summary {
     Reset-Content
@@ -1058,6 +1364,7 @@ function Show-Summary {
         @("Cliente",          $script:ClientId),
         @("Ruolo",            $(if ($script:Role -eq "scanner") {"VLAN Scanner (solo discovery)"} else {"Master Connector (completo)"})),
         @("Token (preview)",  ($script:Token.Substring(0, [Math]::Min(8, $script:Token.Length)) + "...")),
+        @("Dispositivi SNMP", "$($script:Devices.Count) target  (polling $($script:PollingSec)s)"),
         @("Cartella binari",  $InstallDir),
         @("Cartella config",  $DataDir),
         @("Servizio agent",   $ServiceName),
@@ -1179,7 +1486,28 @@ function Run-Install {
         $script:progressBar.Value = 70
 
         Append-Log "[6/11] Scrittura $ConfigPath" $ColorAccent
-        Set-Content -Path $ConfigPath -Value $manifest.config_template -Encoding UTF8
+        $configContent = $manifest.config_template
+        # Aggiungi blocco gestito target SNMP se l'utente ne ha forniti
+        if ($script:Devices -and $script:Devices.Count -gt 0) {
+            $sb = New-Object System.Text.StringBuilder
+            [void]$sb.AppendLine('# === BEGIN MANAGED TARGETS ===')
+            [void]$sb.AppendLine('# Gestito da Connector Console - non modificare a mano')
+            [void]$sb.AppendLine('snmp_targets:')
+            foreach ($d in $script:Devices) {
+                [void]$sb.AppendLine(('  - ip: "' + $d.ip + '"'))
+                if ($d.name)         { [void]$sb.AppendLine(('    name: "' + $d.name + '"')) }
+                if ($d.community)    { [void]$sb.AppendLine(('    community: "' + $d.community + '"')) }
+                if ($d.device_type)  { [void]$sb.AppendLine(('    profile: "' + $d.device_type + '"')) }
+                if ($d.snmp_version) { [void]$sb.AppendLine(('    snmp_version: "' + $d.snmp_version + '"')) }
+                if ($d.snmp_port -and [int]$d.snmp_port -ne 0) {
+                    [void]$sb.AppendLine(('    snmp_port: ' + [int]$d.snmp_port))
+                }
+            }
+            [void]$sb.AppendLine('# === END MANAGED TARGETS ===')
+            $configContent = $configContent.TrimEnd("`r","`n") + "`r`n" + $sb.ToString()
+            Append-Log "      $($script:Devices.Count) target SNMP scritti nel config" $ColorMuted
+        }
+        Set-Content -Path $ConfigPath -Value $configContent -Encoding UTF8
         $script:progressBar.Value = 80
 
         Append-Log "[7/11] Registrazione servizi Windows" $ColorAccent
@@ -1287,32 +1615,38 @@ function Run-Install {
         $script:progressBar.Value = 95
 
         # ============================================================
-        # [10/10] Autostart tray (HKLM Run, all users) + lancio immediato
+        # [10/11] Autostart tray via Scheduled Task At Logon (sessione
+        # utente interattiva). HKLM\Run non funziona quando l'installer
+        # gira elevato: la tray verrebbe lanciata in contesto admin senza
+        # sessione utente visibile e l'icona non comparirebbe nella zona
+        # notifiche.
         # ============================================================
-        Append-Log "[10/11] Registrazione autostart tray e avvio" $ColorAccent
+        Append-Log "[10/11] Registrazione autostart tray (Scheduled Task) e avvio" $ColorAccent
+        $taskName = '86BIT Argus Tray'
+        $trayPath = Join-Path $InstallDir "tray.ps1"
+        # Cleanup eventuale legacy HKLM\Run autostart
+        Remove-ItemProperty -Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run' -Name '86BITArgusTray' -Force -ErrorAction SilentlyContinue
         try {
-            $runKey = "HKLM:\Software\Microsoft\Windows\CurrentVersion\Run"
-            $trayCmd = "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$InstallDir\tray.ps1`""
-            Set-ItemProperty -Path $runKey -Name "86BITArgusTray" -Value $trayCmd -Force
-            Append-Log "      autostart HKLM\\...\\Run\\86BITArgusTray registrato" $ColorMuted
+            $action = New-ScheduledTaskAction -Execute 'powershell.exe' `
+                -Argument ('-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $trayPath + '"')
+            $trigger = New-ScheduledTaskTrigger -AtLogOn
+            $principal = New-ScheduledTaskPrincipal -GroupId 'BUILTIN\Users' -RunLevel Limited
+            $settings = New-ScheduledTaskSettingsSet `
+                -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+                -ExecutionTimeLimit ([TimeSpan]::Zero)
+            Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
+                -Principal $principal -Settings $settings -Force -ErrorAction Stop | Out-Null
+            Append-Log "      scheduled task '$taskName' registrato (At Logon, Users)" $ColorMuted
+            Start-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+            Append-Log "      tray icon avviata nella sessione utente" $ColorMuted
         } catch {
-            Append-Log "      WARN: autostart non registrato: $($_.Exception.Message)" $ColorError
-        }
-        try {
-            # Avvia subito la tray icon nella sessione utente corrente.
-            # Lo script tray.ps1 rileva da solo se c'e' gia' un'altra
-            # istanza in esecuzione e in tal caso esce.
-            $trayPath = Join-Path $InstallDir "tray.ps1"
-            if (Test-Path $trayPath) {
-                Start-Process -FilePath "powershell.exe" -ArgumentList @(
-                    "-NoProfile", "-WindowStyle", "Hidden",
-                    "-ExecutionPolicy", "Bypass",
-                    "-File", $trayPath
-                ) -WindowStyle Hidden | Out-Null
-                Append-Log "      tray icon avviata" $ColorMuted
-            }
-        } catch {
-            Append-Log "      WARN: avvio tray fallito: $($_.Exception.Message)" $ColorError
+            Append-Log "      WARN: scheduled task non registrato: $($_.Exception.Message)" $ColorError
+            try {
+                $runKey = "HKLM:\Software\Microsoft\Windows\CurrentVersion\Run"
+                $trayCmd = "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$trayPath`""
+                Set-ItemProperty -Path $runKey -Name "86BITArgusTray" -Value $trayCmd -Force
+                Append-Log "      fallback HKLM\\Run registrato (parte al prossimo logon)" $ColorMuted
+            } catch { }
         }
 
         # ============================================================
@@ -1465,9 +1799,10 @@ function Render-Step {
         0 { Show-Welcome }
         1 { Show-Mode }
         2 { Show-Configuration }
-        3 { Show-Summary }
-        4 { Show-Install }
-        5 { Show-Done }
+        3 { Show-Devices }
+        4 { Show-Summary }
+        5 { Show-Install }
+        6 { Show-Done }
     }
 }
 
@@ -1504,7 +1839,16 @@ $btnNext.Add_Click({
             }
         }
     }
-    if ($script:CurrentStep -eq 5) { $form.Close(); return }
+    if ($script:CurrentStep -eq 3) {
+        # Persisti il polling interval dal text box
+        if ($script:txtPolling -and $script:txtPolling.Text) {
+            $p = 0
+            if ([int]::TryParse($script:txtPolling.Text.Trim(), [ref]$p) -and $p -gt 0) {
+                $script:PollingSec = $p
+            }
+        }
+    }
+    if ($script:CurrentStep -eq 6) { $form.Close(); return }
     $script:CurrentStep++
     Render-Step
 })
