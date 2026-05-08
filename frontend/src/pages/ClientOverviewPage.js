@@ -108,8 +108,10 @@ export default function ClientOverviewPage() {
   if (loading) return <div className="p-6 text-center text-[var(--text-muted)]">Caricamento...</div>;
   if (!client) return <div className="p-6 text-center text-[var(--text-muted)]">Cliente non trovato</div>;
 
-  const onlineDevices = devices.filter(d => d.status === "online" || d.status === "active").length;
-  const offlineDevices = devices.length - onlineDevices;
+  const onlineDevices = devices.filter(d => (d.status === "online" || d.status === "active") && !/^(22[4-9]|23\d|255)\./.test(d.ip_address || "")).length;
+  // v3.8.40: offlineDevices conta solo "veri" device (esclusi multicast/broadcast)
+  const realDevicesCount = devices.filter(d => !/^(22[4-9]|23\d|255)\./.test(d.ip_address || "")).length;
+  const offlineDevices = realDevicesCount - onlineDevices;
   const criticalAlerts = alerts.filter(a => a.severity === "critical").length;
   // v3.8.20: classificazione macroaree (PC, VoIP, Mobile, ecc.) per i device dello Scanner.
   // Anche se device_type non e' specifico, deduciamo da vendor/hostname/MAC randomizzato.
@@ -159,6 +161,11 @@ export default function ClientOverviewPage() {
   const mobileList = devices.filter(d => macroOf(d) === "mobile");
   const iotList = devices.filter(d => macroOf(d) === "iot");
   const skipList = devices.filter(d => macroOf(d) === "_skip");  // multicast/broadcast esclusi dalla UI
+  // v3.8.40: il totale "DISPOSITIVI" e il counter del tab non devono includere
+  // i multicast/broadcast (IP 224.x, 239.x, 255.x) che NON sono veri device ma
+  // gruppi multicast catturati dallo Scanner via ARP table. Includerli inflava
+  // il numero (es. 75 in card vs 67 visibili nel raggruppamento Infrastruttura).
+  const realDevices = devices.filter(d => macroOf(d) !== "_skip");
   // Tab "Stampanti" = unione di /api/printers (con telemetria toner) + managed_devices con
   // device_type=printer. Match per IP — se entrambi presenti i toner della /api/printers
   // hanno priorità (più specifici).
@@ -192,7 +199,7 @@ export default function ClientOverviewPage() {
 
   const tabs = [
     { id: "overview", label: "Panoramica", icon: Monitor },
-    { id: "devices", label: `Dispositivi (${devices.length})`, icon: HardDrives },
+    { id: "devices", label: `Dispositivi (${realDevices.length})`, icon: HardDrives },
     { id: "wan", label: `WAN (${wanTargets.length})`, icon: Globe },
     { id: "alerts", label: `Alert (${alerts.length})`, icon: Bell },
     { id: "printers", label: `Stampanti (${mergedPrinters.length})`, icon: Printer },
@@ -239,7 +246,7 @@ export default function ClientOverviewPage() {
 
       {/* Quick Stats */}
       <div className="grid grid-cols-2 md:grid-cols-6 gap-2 mb-4">
-        <StatBox label="Dispositivi" value={`${onlineDevices}/${devices.length}`} color={offlineDevices > 0 ? "#FF9500" : "#34C759"} sub={offlineDevices > 0 ? `${offlineDevices} offline` : "Tutti online"} />
+        <StatBox label="Dispositivi" value={`${onlineDevices}/${realDevicesCount}`} color={offlineDevices > 0 ? "#FF9500" : "#34C759"} sub={offlineDevices > 0 ? `${offlineDevices} offline` : "Tutti online"} />
         <StatBox label="WAN" value={wanTargets.length > 0 ? (wanTargets.every(t => t.result?.status === "online") ? "OK" : "ALERT") : "N/C"} color={wanTargets.every(t => t.result?.status === "online") ? "#34C759" : wanTargets.length > 0 ? "#FF3B30" : "#555"} sub={wanTargets[0]?.result?.ping?.latency_ms ? `${wanTargets[0].result.ping.latency_ms}ms` : ""} />
         <StatBox label="Alert" value={alerts.length} color={criticalAlerts > 0 ? "#FF3B30" : alerts.length > 0 ? "#FF9500" : "#34C759"} sub={criticalAlerts > 0 ? `${criticalAlerts} critici` : "Nessun critico"} />
         <StatBox label="Connettore" value={connector ? "ONLINE" : "OFFLINE"} color={connector ? "#34C759" : "#FF3B30"} sub={connector?.connector_hostname || ""} />
@@ -1053,11 +1060,19 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
   const [infoTarget, setInfoTarget] = useState(null);
   const [editTarget, setEditTarget] = useState(null);
   const [saving, setSaving] = useState(false);
+  // v3.8.40: nasconde multicast/broadcast (224.x, 239.x, 255.x) dalla tabella
+  // di default per coerenza con card "DISPOSITIVI" e Infrastruttura. L'utente
+  // puo' attivare il toggle per mostrarli a fini di debug/visibilita' completa.
+  const [showMulticast, setShowMulticast] = useState(false);
   const webConsole = useWebConsoleTabs();
+  const _isMcast = (d) => /^(22[4-9]|23\d|255)\./.test(d?.ip_address || "");
+  const visibleDevices = showMulticast ? devices : devices.filter(d => !_isMcast(d));
+  const hiddenCount = devices.length - visibleDevices.length;
 
   // v3.8.30: ordinamento tabella dispositivi (default per nome asc) + persist v3.8.31
+  // v3.8.40: usa visibleDevices (filtrati) per escludere multicast quando richiesto
   const { sorted: sortedDevices, sortKey, sortDir, requestSort } = useSortableTable(
-    devices, "name", "asc",
+    visibleDevices, "name", "asc",
     {
       persistKey: "client-devices-tab",
       accessors: {
@@ -1342,9 +1357,21 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
     <div className="space-y-3">
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <p className="text-[10px] text-[var(--text-muted)]">
-          {devices.length} dispositivi totali — i dispositivi manuali vengono interrogati dal connector entro pochi cicli di polling
+          {visibleDevices.length} dispositivi {hiddenCount > 0 && (
+            <span className="text-amber-400/80">({hiddenCount} multicast/broadcast nascosti)</span>
+          )} — i dispositivi manuali vengono interrogati dal connector entro pochi cicli di polling
         </p>
         <div className="flex items-center gap-2">
+          {hiddenCount > 0 && (
+            <button
+              onClick={() => setShowMulticast(s => !s)}
+              className={`text-[9px] px-2 py-1 rounded border transition-colors ${showMulticast ? "bg-amber-500/20 border-amber-500/40 text-amber-300" : "border-[var(--bg-border)] text-[var(--text-muted)] hover:text-[var(--text-primary)]"}`}
+              data-testid="toggle-multicast-btn"
+              title="Mostra/nascondi i multicast/broadcast (gruppi non gestiti, raccolti dallo Scanner via ARP)"
+            >
+              {showMulticast ? "Nascondi" : "Mostra"} multicast ({hiddenCount})
+            </button>
+          )}
           <Button
             onClick={() => rematchProfiles()}
             className="bg-cyan-600/90 hover:bg-cyan-600 text-white h-8 text-xs gap-1"
