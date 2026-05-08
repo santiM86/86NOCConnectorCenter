@@ -57,8 +57,23 @@ func main() {
 		return
 	}
 
+	// On Windows, when launched by SCM, hand off to the service runner so
+	// we respond to control messages. Otherwise run in foreground.
+	if runIfService() {
+		if err := runAsWindowsService(cfg, *pidFile, log); err != nil {
+			log.Errorf("service runner: %v", err)
+			os.Exit(3)
+		}
+		return
+	}
+
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
+	runWatchdog(ctx, cfg, *pidFile)
+}
+
+func runWatchdog(ctx context.Context, cfg config.Config, pidFile string) {
+	log := logging.New().With("watchdog")
 
 	stale := cfg.Watchdog.StaleAfter
 	if stale <= 0 {
@@ -77,7 +92,7 @@ func main() {
 		case <-t.C:
 			if isStale(hbFile, stale) {
 				log.Warn("agent heartbeat stale — restarting", "file", hbFile)
-				restart(log, cfg, *pidFile)
+				restart(log, cfg, pidFile)
 			}
 		}
 	}

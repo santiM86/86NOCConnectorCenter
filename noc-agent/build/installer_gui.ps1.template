@@ -258,8 +258,8 @@ function Show-Welcome {
 
     $infoBox = New-Object System.Windows.Forms.GroupBox
     $infoBox.Text = "Cosa verra' installato"
-    $infoBox.Location = [System.Drawing.Point]::new(35, 150)
-    $infoBox.Size = New-Object System.Drawing.Size(450, 220)
+    $infoBox.Location = [System.Drawing.Point]::new(35, 175)
+    $infoBox.Size = New-Object System.Drawing.Size(450, 200)
     $infoBox.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
     $infoBox.ForeColor = $ColorText
     $contentPanel.Controls.Add($infoBox)
@@ -307,7 +307,7 @@ function Show-Mode {
 
     # Master radio + descrizione
     $boxMaster = New-Object System.Windows.Forms.GroupBox
-    $boxMaster.Location = [System.Drawing.Point]::new(35, 165)
+    $boxMaster.Location = [System.Drawing.Point]::new(35, 175)
     $boxMaster.Size = New-Object System.Drawing.Size(450, 95)
     $boxMaster.Text = ""
     $contentPanel.Controls.Add($boxMaster)
@@ -330,7 +330,7 @@ function Show-Mode {
 
     # Scanner radio + descrizione
     $boxScanner = New-Object System.Windows.Forms.GroupBox
-    $boxScanner.Location = [System.Drawing.Point]::new(35, 270)
+    $boxScanner.Location = [System.Drawing.Point]::new(35, 280)
     $boxScanner.Size = New-Object System.Drawing.Size(450, 100)
     $boxScanner.Text = ""
     $contentPanel.Controls.Add($boxScanner)
@@ -536,7 +536,7 @@ function Show-Install {
     $contentPanel.Controls.Add((New-Subtitle "Download dei binari, configurazione, registrazione servizi e avvio. Attendi il completamento."))
 
     $script:progressBar = New-Object System.Windows.Forms.ProgressBar
-    $script:progressBar.Location = [System.Drawing.Point]::new(35, 145)
+    $script:progressBar.Location = [System.Drawing.Point]::new(35, 175)
     $script:progressBar.Size = New-Object System.Drawing.Size(450, 22)
     $script:progressBar.Style = [System.Windows.Forms.ProgressBarStyle]::Continuous
     $script:progressBar.Minimum = 0
@@ -544,7 +544,7 @@ function Show-Install {
     $contentPanel.Controls.Add($script:progressBar)
 
     $script:lstLog = New-Object System.Windows.Forms.RichTextBox
-    $script:lstLog.Location = [System.Drawing.Point]::new(35, 180)
+    $script:lstLog.Location = [System.Drawing.Point]::new(35, 210)
     $script:lstLog.Size = New-Object System.Drawing.Size(450, 220)
     $script:lstLog.ReadOnly = $true
     $script:lstLog.BackColor = [System.Drawing.Color]::FromArgb(28, 28, 35)
