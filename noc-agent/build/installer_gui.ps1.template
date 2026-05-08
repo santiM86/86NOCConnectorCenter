@@ -1559,6 +1559,19 @@ function Run-Install {
         Invoke-WebRequest -UseBasicParsing -TimeoutSec 120 `
             -Uri "$url/api/agent/binary/$Platform/nocagent-ui.exe?token=$tok" `
             -OutFile (Join-Path $InstallDir "nocagent-ui.exe")
+        # Scarica argus.ico accanto agli eseguibili: gli shortcut del menu
+        # Start lo useranno come IconLocation. Usare un .ico file separato
+        # invece dell'icona embedded nell'EXE evita la icon-cache di
+        # Explorer che tende a non aggiornare l'icona quando l'EXE viene
+        # rebuildato con lo stesso path.
+        try {
+            Invoke-WebRequest -UseBasicParsing -TimeoutSec 30 `
+                -Uri "$url/api/agent/install/argus.ico" `
+                -OutFile (Join-Path $InstallDir "argus.ico")
+            Append-Log "      argus.ico scaricato" $ColorMuted
+        } catch {
+            Append-Log "      WARN: argus.ico non scaricato (uso fallback EXE icon): $($_.Exception.Message)" $ColorMuted
+        }
         $script:progressBar.Value = 70
 
         Append-Log "[6/11] Scrittura $ConfigPath" $ColorAccent
@@ -1675,11 +1688,13 @@ function Run-Install {
             New-Item -ItemType Directory -Force -Path $startMenu | Out-Null
             $wsh = New-Object -ComObject WScript.Shell
             $uiExe = Join-Path $InstallDir "nocagent-ui.exe"
+            $iconFile = Join-Path $InstallDir "argus.ico"
+            $iconLoc = if (Test-Path $iconFile) { $iconFile } else { "$uiExe,0" }
             $lnk = $wsh.CreateShortcut((Join-Path $startMenu "Connector.lnk"))
             $lnk.TargetPath = $uiExe
             $lnk.Arguments = "-show"
             $lnk.WorkingDirectory = $InstallDir
-            $lnk.IconLocation = "$uiExe,0"
+            $lnk.IconLocation = $iconLoc
             $lnk.Description = "Apri Connector Argus - Gestisci Dispositivi"
             $lnk.Save()
             Append-Log "      shortcut '86BIT Argus Center\Connector' creato" $ColorMuted
@@ -1748,7 +1763,8 @@ function Run-Install {
             Set-ItemProperty -Path $uninstKey -Name 'InstallLocation' -Value $InstallDir
             Set-ItemProperty -Path $uninstKey -Name 'UninstallString' -Value $uninstCmd
             Set-ItemProperty -Path $uninstKey -Name 'QuietUninstallString' -Value $uninstCmd
-            Set-ItemProperty -Path $uninstKey -Name 'DisplayIcon'     -Value (Join-Path $InstallDir "nocagent-ui.exe")
+            $displayIcon = if (Test-Path (Join-Path $InstallDir "argus.ico")) { (Join-Path $InstallDir "argus.ico") } else { (Join-Path $InstallDir "nocagent-ui.exe") }
+            Set-ItemProperty -Path $uninstKey -Name 'DisplayIcon'     -Value $displayIcon
             Set-ItemProperty -Path $uninstKey -Name 'NoModify'        -Value 1 -Type DWord
             Set-ItemProperty -Path $uninstKey -Name 'NoRepair'        -Value 1 -Type DWord
             if ($sizeKb -gt 0) {
@@ -1770,13 +1786,19 @@ function Run-Install {
             $unLnk.TargetPath = "powershell.exe"
             $unLnk.Arguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$InstallDir\uninstall.ps1`""
             $unLnk.WorkingDirectory = $InstallDir
-            $unLnk.IconLocation = (Join-Path $InstallDir "nocagent-ui.exe") + ",0"
+            $unLnk.IconLocation = if (Test-Path (Join-Path $InstallDir "argus.ico")) { (Join-Path $InstallDir "argus.ico") } else { (Join-Path $InstallDir "nocagent-ui.exe") + ",0" }
             $unLnk.Description = "Disinstalla 86BIT Argus Connector"
             $unLnk.Save()
             Append-Log "      shortcut 'Disinstalla' creato" $ColorMuted
         } catch {
             Append-Log "      WARN: shortcut Disinstalla non creato: $($_.Exception.Message)" $ColorError
         }
+        # Forza il refresh della icon cache di Windows: senza questo gli
+        # shortcut appena creati possono mostrare l'icona generica fino al
+        # prossimo logon perche' Explorer cachea le icone per path.
+        try {
+            Start-Process -WindowStyle Hidden -FilePath "ie4uinit.exe" -ArgumentList "-show" -ErrorAction SilentlyContinue
+        } catch {}
 
         $script:progressBar.Value = 100
         if ($agStatus -eq 'Running' -and $wdStatus -eq 'Running') {

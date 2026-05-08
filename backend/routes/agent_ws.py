@@ -621,6 +621,18 @@ async def wizard_bundle(token: Optional[str] = None) -> FileResponse:
     return FileResponse(bundle, media_type="application/zip", filename="86NocAgent-Installer.zip")
 
 
+@router.get("/agent/install/argus.ico")
+async def install_argus_ico() -> FileResponse:
+    """Serve the Argus tray icon (multi-size .ico). Public endpoint — the
+    installer fetches this so shortcuts can point to a stable file path
+    instead of an embedded EXE icon (which Windows aggressively caches by
+    path and may not refresh on update)."""
+    path = _pathlib.Path("/app/noc-agent/cmd/nocui/argus.ico").resolve()
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="icon missing")
+    return FileResponse(str(path), media_type="image/vnd.microsoft.icon", filename="argus.ico")
+
+
 @router.get("/agent/install/exe")
 async def install_exe(token: Optional[str] = None) -> FileResponse:
     """Stream nocinstall.exe alone. The technician must run with
