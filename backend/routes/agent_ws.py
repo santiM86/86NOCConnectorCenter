@@ -191,6 +191,7 @@ async def agent_ws(ws: WebSocket) -> None:
 
     # Persist hello snapshot
     now = _now()
+    role_val = (hello.get("labels") or {}).get("role") or "master"
     await db.managed_agents.update_one(
         {"agent_id": agent_id},
         {
@@ -204,6 +205,7 @@ async def agent_ws(ws: WebSocket) -> None:
                 "ips": hello.get("ips") or [],
                 "capabilities": hello.get("capabilities") or [],
                 "labels": hello.get("labels") or {},
+                "role": role_val,
                 "boot_time": hello.get("boot_time"),
                 "last_hello_at": now.isoformat(),
                 "connected": True,
@@ -526,38 +528,47 @@ async def download_binary(platform: str, name: str, token: Optional[str] = None)
 
 @router.get("/agent/install/manifest")
 async def install_manifest(token: Optional[str] = None,
-                          platform: Optional[str] = None) -> Dict[str, Any]:
+                          platform: Optional[str] = None,
+                          role: Optional[str] = None) -> Dict[str, Any]:
     """Return the install metadata: backend URL, binary URLs, sample yaml.
 
     The install scripts hit this endpoint first to learn what to download
-    and where to write the configuration.
+    and where to write the configuration. `role` selects between
+    "master" (default — full agent with SNMP polling) and "scanner"
+    (lightweight — only network discovery, intended for remote VLANs).
     """
     client_id = await _token_or_403(token)
     public_ws = _os.environ.get("AGENT_PUBLIC_WS_URL", "wss://argus.86bit.it/api/agent/ws")
     public_http = _os.environ.get("AGENT_PUBLIC_HTTP_URL", "https://argus.86bit.it")
+    if role not in ("master", "scanner"):
+        role = "master"
     binaries = {}
     if platform and platform in _ALLOWED_PLATFORMS:
         for name in _ALLOWED_BINARIES[platform]:
             binaries[name] = f"{public_http}/api/agent/binary/{platform}/{name}?token={token}"
     return {
         "client_id": client_id,
+        "role": role,
         "backend_ws": public_ws,
         "binaries": binaries,
-        "config_template": _config_template(client_id, token, public_ws),
+        "config_template": _config_template(client_id, token, public_ws, role),
     }
 
 
-def _config_template(client_id: str, token: str, ws_url: str) -> str:
+def _config_template(client_id: str, token: str, ws_url: str, role: str = "master") -> str:
+    snmp_enabled = "true" if role == "master" else "false"
     return (
         f'client_id: "{client_id}"\n'
         f'token: "{token}"\n'
+        f'role: "{role}"\n'
         f'backend:\n'
         f'  url: "{ws_url}"\n'
         f'heartbeat: 15s\n'
         f'discovery:\n  enabled: true\n  interval: 5m\n  arp: true\n  mdns: true\n'
-        f'snmp:\n  enabled: true\n  interval: 60s\n  communities: ["public"]\n'
+        f'snmp:\n  enabled: {snmp_enabled}\n  interval: 60s\n  communities: ["public"]\n'
         f'watchdog:\n  enabled: true\n  stale_after: 90s\n'
         f'update:\n  enabled: false\n'
+        f'labels:\n  role: "{role}"\n'
     )
 
 

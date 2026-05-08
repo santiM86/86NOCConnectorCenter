@@ -81,6 +81,7 @@ $script:CurrentStep   = 0
 $script:BackendUrl    = $DefaultBackendUrl
 $script:Token         = $DefaultToken
 $script:ClientId      = ""
+$script:Role          = "master"   # master | scanner
 $script:InstallResult = $null
 
 # ================================================================
@@ -131,7 +132,7 @@ $leftPanel.Controls.Add($lblVer)
 
 # Steps list
 $script:StepLabels = @()
-$stepNames = @("Benvenuto", "Configurazione", "Riepilogo", "Installazione", "Completato")
+$stepNames = @("Benvenuto", "Tipo installazione", "Configurazione", "Riepilogo", "Installazione", "Completato")
 for ($i = 0; $i -lt $stepNames.Count; $i++) {
     $lbl = New-Object System.Windows.Forms.Label
     $lbl.Text = "  $($i+1).  $($stepNames[$i])"
@@ -238,7 +239,8 @@ function New-Subtitle($text) {
     $l.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
     $l.ForeColor = [System.Drawing.Color]::FromArgb(80, 80, 96)
     $l.Location = [System.Drawing.Point]::new(35, 70)
-    $l.Size = New-Object System.Drawing.Size(450, 60)
+    $l.Size = New-Object System.Drawing.Size(450, 90)
+    $l.AutoSize = $false
     return $l
 }
 
@@ -289,7 +291,69 @@ function Show-Welcome {
 }
 
 # ================================================================
-# STEP 1 - CONFIGURAZIONE
+# STEP 1 - TIPO INSTALLAZIONE (Master / Scanner)
+# ================================================================
+$script:rbMaster  = $null
+$script:rbScanner = $null
+
+function Show-Mode {
+    Reset-Content
+    $btnBack.Enabled = $true
+    $btnNext.Text = "Avanti >"
+    $btnNext.Enabled = $true
+
+    $contentPanel.Controls.Add((New-Title "Tipo di installazione"))
+    $contentPanel.Controls.Add((New-Subtitle "Scegli come l'agent operera' su questo server. Puoi installare due ruoli: Master (completo, monitora la rete e fa SNMP polling) oppure Scanner (leggero, scopre solo dispositivi su VLAN remote isolate)."))
+
+    # Master radio + descrizione
+    $boxMaster = New-Object System.Windows.Forms.GroupBox
+    $boxMaster.Location = [System.Drawing.Point]::new(35, 165)
+    $boxMaster.Size = New-Object System.Drawing.Size(450, 95)
+    $boxMaster.Text = ""
+    $contentPanel.Controls.Add($boxMaster)
+
+    $script:rbMaster = New-Object System.Windows.Forms.RadioButton
+    $script:rbMaster.Text = "Master Connector  (consigliato)"
+    $script:rbMaster.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+    $script:rbMaster.Location = [System.Drawing.Point]::new(15, 10)
+    $script:rbMaster.Size = New-Object System.Drawing.Size(420, 26)
+    $script:rbMaster.Checked = ($script:Role -eq "master")
+    $boxMaster.Controls.Add($script:rbMaster)
+
+    $lblM = New-Object System.Windows.Forms.Label
+    $lblM.Text = "Discovery (ARP, mDNS) + SNMP polling completo + bridge eventi al NOC Center.`nUsalo come unico agent del cliente o sulla VLAN principale."
+    $lblM.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+    $lblM.ForeColor = [System.Drawing.Color]::FromArgb(80, 80, 96)
+    $lblM.Location = [System.Drawing.Point]::new(35, 38)
+    $lblM.Size = New-Object System.Drawing.Size(400, 50)
+    $boxMaster.Controls.Add($lblM)
+
+    # Scanner radio + descrizione
+    $boxScanner = New-Object System.Windows.Forms.GroupBox
+    $boxScanner.Location = [System.Drawing.Point]::new(35, 270)
+    $boxScanner.Size = New-Object System.Drawing.Size(450, 100)
+    $boxScanner.Text = ""
+    $contentPanel.Controls.Add($boxScanner)
+
+    $script:rbScanner = New-Object System.Windows.Forms.RadioButton
+    $script:rbScanner.Text = "VLAN Scanner  (solo discovery)"
+    $script:rbScanner.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+    $script:rbScanner.Location = [System.Drawing.Point]::new(15, 10)
+    $script:rbScanner.Size = New-Object System.Drawing.Size(420, 26)
+    $script:rbScanner.Checked = ($script:Role -eq "scanner")
+    $boxScanner.Controls.Add($script:rbScanner)
+
+    $lblS = New-Object System.Windows.Forms.Label
+    $lblS.Text = "Solo discovery (ARP, mDNS), niente SNMP polling. Footprint minimo.`nUsalo su VLAN remote isolate per scoprire endpoint che il Master non vede."
+    $lblS.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+    $lblS.ForeColor = [System.Drawing.Color]::FromArgb(80, 80, 96)
+    $lblS.Location = [System.Drawing.Point]::new(35, 38)
+    $lblS.Size = New-Object System.Drawing.Size(400, 50)
+    $boxScanner.Controls.Add($lblS)
+}
+
+# ================================================================
+# STEP 2 - CONFIGURAZIONE
 # ================================================================
 $script:txtUrl = $null
 $script:txtToken = $null
@@ -381,7 +445,7 @@ function Show-Configuration {
         try {
             [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
             $resp = Invoke-RestMethod -UseBasicParsing -TimeoutSec 15 `
-                -Uri "$url/api/agent/install/manifest?platform=$Platform&token=$tok"
+                -Uri "$url/api/agent/install/manifest?platform=$Platform&role=$($script:Role)&token=$tok"
             $script:ClientId = $resp.client_id
             $script:lblValidation.ForeColor = $ColorSuccess
             $script:lblValidation.Text = ([char]0x2713) + " OK - cliente: $($resp.client_id)"
@@ -414,6 +478,7 @@ function Show-Summary {
     $rows = @(
         @("URL NOC Center",   $script:BackendUrl),
         @("Cliente",          $script:ClientId),
+        @("Ruolo",            $(if ($script:Role -eq "scanner") {"VLAN Scanner (solo discovery)"} else {"Master Connector (completo)"})),
         @("Token (preview)",  ($script:Token.Substring(0, [Math]::Min(8, $script:Token.Length)) + "...")),
         @("Cartella binari",  $InstallDir),
         @("Cartella config",  $DataDir),
@@ -494,9 +559,9 @@ function Run-Install {
         Append-Log "[1/8] Lettura manifest installazione" $ColorAccent
         $script:progressBar.Value = 10
         $manifest = Invoke-RestMethod -UseBasicParsing -TimeoutSec 30 `
-            -Uri "$url/api/agent/install/manifest?platform=$Platform&token=$tok"
+            -Uri "$url/api/agent/install/manifest?platform=$Platform&role=$($script:Role)&token=$tok"
         $script:ClientId = $manifest.client_id
-        Append-Log "      cliente: $($manifest.client_id)" $ColorSuccess
+        Append-Log "      cliente: $($manifest.client_id)  ruolo: $($script:Role)" $ColorSuccess
 
         Append-Log "[2/8] Stop servizi precedenti (se presenti)" $ColorAccent
         foreach ($s in @($WatchdogName, $ServiceName)) {
@@ -645,16 +710,25 @@ function Render-Step {
     Update-Sidebar
     switch ($script:CurrentStep) {
         0 { Show-Welcome }
-        1 { Show-Configuration }
-        2 { Show-Summary }
-        3 { Show-Install }
-        4 { Show-Done }
+        1 { Show-Mode }
+        2 { Show-Configuration }
+        3 { Show-Summary }
+        4 { Show-Install }
+        5 { Show-Done }
     }
 }
 
 $btnNext.Add_Click({
     if ($script:CurrentStep -eq 1) {
-        # Validazione step 1
+        # Persiste la scelta del ruolo
+        if ($script:rbScanner -ne $null -and $script:rbScanner.Checked) {
+            $script:Role = "scanner"
+        } else {
+            $script:Role = "master"
+        }
+    }
+    if ($script:CurrentStep -eq 2) {
+        # Validazione step Configurazione
         $url = $script:txtUrl.Text.TrimEnd('/')
         $tok = $script:txtToken.Text.Trim()
         if (-not $url -or -not $tok) {
@@ -665,11 +739,10 @@ $btnNext.Add_Click({
         $script:BackendUrl = $url
         $script:Token = $tok
         if (-not $script:ClientId) {
-            # Pre-volo automatico
             try {
                 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
                 $r = Invoke-RestMethod -UseBasicParsing -TimeoutSec 15 `
-                    -Uri "$url/api/agent/install/manifest?platform=$Platform&token=$tok"
+                    -Uri "$url/api/agent/install/manifest?platform=$Platform&role=$($script:Role)&token=$tok"
                 $script:ClientId = $r.client_id
             } catch {
                 [System.Windows.Forms.MessageBox]::Show("Verifica fallita:`n$($_.Exception.Message)", "Errore connessione",
@@ -678,7 +751,7 @@ $btnNext.Add_Click({
             }
         }
     }
-    if ($script:CurrentStep -eq 4) { $form.Close(); return }
+    if ($script:CurrentStep -eq 5) { $form.Close(); return }
     $script:CurrentStep++
     Render-Step
 })
