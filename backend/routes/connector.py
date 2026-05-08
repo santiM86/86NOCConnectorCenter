@@ -539,15 +539,20 @@ async def connector_lan_scan(request: Request, report: LanScanReport):
                 {"_id": 0, "id": 1, "source": 1},
             )
             if existing:
-                # Se gia' aggiunto da scanner in passato, aggiorna last_seen + name se migliorabile
-                if existing.get("source") == "connector-scanner":
-                    upd = {"last_seen_at": now_iso}
-                    if ep.hostname and ep.hostname.strip():
-                        upd["hostname"] = ep.hostname.strip()
-                    await db.managed_devices.update_one(
-                        {"client_id": client_id, "ip": ep.ip, "source": "connector-scanner"},
-                        {"$set": upd},
-                    )
+                # v3.8.39 FIX: aggiorna last_seen_at per QUALSIASI device esistente
+                # (manuale, master, scanner) che lo Scanner vede in questo round.
+                # Pre-fix: l'update era limitato a source=connector-scanner, quindi
+                # device aggiunti manualmente o promossi dal Master mantenevano un
+                # last_seen_at congelato all'epoca della prima discovery.
+                upd = {"last_seen_at": now_iso}
+                if ep.hostname and ep.hostname.strip() and existing.get("source") == "connector-scanner":
+                    # Aggiorna l'hostname solo per device scanner-source per non
+                    # sovrascrivere nomi customizzati manualmente dall'utente.
+                    upd["hostname"] = ep.hostname.strip()
+                await db.managed_devices.update_one(
+                    {"client_id": client_id, "ip": ep.ip},
+                    {"$set": upd},
+                )
                 continue
 
             # Nuovo device — classifica via OUI
