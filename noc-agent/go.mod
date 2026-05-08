@@ -6,6 +6,8 @@ require (
 	github.com/coder/websocket v1.8.13
 	github.com/gosnmp/gosnmp v1.38.0
 	github.com/hashicorp/mdns v1.0.5
+	github.com/lxn/walk v0.0.0-20210112085537-c389da54e794
+	github.com/lxn/win v0.0.0-20210218163916-a377121e959e
 	github.com/shirou/gopsutil/v4 v4.24.11
 	golang.org/x/sys v0.26.0
 	gopkg.in/yaml.v3 v3.0.1
@@ -21,4 +23,5 @@ require (
 	github.com/tklauser/numcpus v0.6.1 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	golang.org/x/net v0.15.0 // indirect
+	gopkg.in/Knetic/govaluate.v3 v3.0.0 // indirect
 )

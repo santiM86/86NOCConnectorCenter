@@ -945,8 +945,10 @@ foreach ($s in @('86NocWatchdog','86NocAgent')) {
     & cmd.exe /c "sc.exe delete `"$s`"" | Out-File -FilePath $logFile -Append
 }
 
-# 2) Kill processi tray (powershell che esegue tray.ps1)
-Step 'kill tray processes'
+# 2) Kill processi Connector UI / legacy tray
+Step 'kill connector UI processes'
+Get-Process -Name 'nocagent-ui' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+# Backward compat: vecchie installazioni con tray.ps1
 Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue | ForEach-Object {
     if ($_.CommandLine -and $_.CommandLine -match 'tray\.ps1') {
         Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
@@ -1550,10 +1552,13 @@ function Run-Install {
             -OutFile (Join-Path $InstallDir "nocagent.exe")
         $script:progressBar.Value = 55
 
-        Append-Log "[5/8] Download nocwatchdog.exe" $ColorAccent
+        Append-Log "[5/11] Download nocwatchdog.exe + nocagent-ui.exe" $ColorAccent
         Invoke-WebRequest -UseBasicParsing -TimeoutSec 120 `
             -Uri "$url/api/agent/binary/$Platform/nocwatchdog.exe?token=$tok" `
             -OutFile (Join-Path $InstallDir "nocwatchdog.exe")
+        Invoke-WebRequest -UseBasicParsing -TimeoutSec 120 `
+            -Uri "$url/api/agent/binary/$Platform/nocagent-ui.exe?token=$tok" `
+            -OutFile (Join-Path $InstallDir "nocagent-ui.exe")
         $script:progressBar.Value = 70
 
         Append-Log "[6/11] Scrittura $ConfigPath" $ColorAccent
@@ -1644,42 +1649,39 @@ function Run-Install {
         Append-Log ("      $WatchdogName : $wdStatus") $wdColor
 
         # ============================================================
-        # [9/10] Icona + Tray + Start Menu shortcut
+        # [9/11] Configurazione Connector UI (nocagent-ui.exe)
+        # nocagent-ui.exe e' la GUI nativa: sostituisce tray.ps1 e
+        # connector.ps1. Niente PowerShell residente, niente console DOS.
         # ============================================================
         Append-Log "" $ColorText
-        Append-Log "[9/11] Creazione collegamenti e tray icon" $ColorAccent
+        Append-Log "[9/11] Configurazione Connector UI" $ColorAccent
         try {
-            Build-ArgusIcon (Join-Path $InstallDir "argus.ico")
-            Append-Log "      argus.ico generato" $ColorMuted
+            $uiCfg = @{
+                backend_url = $script:BackendUrl
+                client_id   = $script:ClientId
+                token       = $script:Token
+                role        = $script:Role
+                install_dir = $InstallDir
+                config_path = $ConfigPath
+                version     = $Version
+            } | ConvertTo-Json -Depth 4
+            Set-Content -Path (Join-Path $InstallDir "agent-ui.json") -Value $uiCfg -Encoding UTF8
+            Append-Log "      agent-ui.json scritto" $ColorMuted
         } catch {
-            Append-Log "      WARN: icona non generata: $($_.Exception.Message)" $ColorError
-        }
-        try {
-            $trayPath = Join-Path $InstallDir "tray.ps1"
-            Write-TrayScript -Path $trayPath -BackendUrl $script:BackendUrl
-            Append-Log "      tray.ps1 scritto" $ColorMuted
-        } catch {
-            Append-Log "      WARN: tray.ps1 non scritto: $($_.Exception.Message)" $ColorError
+            Append-Log "      WARN: agent-ui.json non scritto: $($_.Exception.Message)" $ColorError
         }
         try {
             $startMenu = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\86BIT Argus Center"
             New-Item -ItemType Directory -Force -Path $startMenu | Out-Null
             $wsh = New-Object -ComObject WScript.Shell
+            $uiExe = Join-Path $InstallDir "nocagent-ui.exe"
             $lnk = $wsh.CreateShortcut((Join-Path $startMenu "Connector.lnk"))
-            $lnk.TargetPath = "powershell.exe"
-            $lnk.Arguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$InstallDir\connector.ps1`""
+            $lnk.TargetPath = $uiExe
+            $lnk.Arguments = "-show"
             $lnk.WorkingDirectory = $InstallDir
-            $lnk.IconLocation = "$InstallDir\argus.ico,0"
-            $lnk.Description = "Apri 86BIT Argus NOC Center"
+            $lnk.IconLocation = "$uiExe,0"
+            $lnk.Description = "Apri Connector Argus - Gestisci Dispositivi"
             $lnk.Save()
-            # connector.ps1 = Console locale del Connector (status servizi
-            # + comandi Avvia/Ferma/Riavvia + Apri NOC + Apri log + Test).
-            Write-ConnectorLauncher -Path (Join-Path $InstallDir "connector.ps1") `
-                -BackendUrl $script:BackendUrl `
-                -ClientId   $script:ClientId `
-                -Role       $script:Role `
-                -Version    $Version `
-                -Token      $script:Token
             Append-Log "      shortcut '86BIT Argus Center\Connector' creato" $ColorMuted
         } catch {
             Append-Log "      WARN: shortcut non creato: $($_.Exception.Message)" $ColorError
@@ -1687,36 +1689,32 @@ function Run-Install {
         $script:progressBar.Value = 95
 
         # ============================================================
-        # [10/11] Autostart tray via Scheduled Task At Logon (sessione
-        # utente interattiva). HKLM\Run non funziona quando l'installer
-        # gira elevato: la tray verrebbe lanciata in contesto admin senza
-        # sessione utente visibile e l'icona non comparirebbe nella zona
-        # notifiche.
+        # [10/11] Autostart tray via Scheduled Task At Logon: lancia
+        # nocagent-ui.exe nella sessione utente (no PowerShell, no DOS).
         # ============================================================
-        Append-Log "[10/11] Registrazione autostart tray (Scheduled Task) e avvio" $ColorAccent
+        Append-Log "[10/11] Registrazione autostart Connector UI" $ColorAccent
         $taskName = '86BIT Argus Tray'
-        $trayPath = Join-Path $InstallDir "tray.ps1"
-        # Cleanup eventuale legacy HKLM\Run autostart
+        $uiExe = Join-Path $InstallDir "nocagent-ui.exe"
+        # Cleanup eventuali autostart legacy (PowerShell-based)
         Remove-ItemProperty -Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run' -Name '86BITArgusTray' -Force -ErrorAction SilentlyContinue
         try {
-            $action = New-ScheduledTaskAction -Execute 'powershell.exe' `
-                -Argument ('-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $trayPath + '"')
+            $action = New-ScheduledTaskAction -Execute $uiExe
             $trigger = New-ScheduledTaskTrigger -AtLogOn
             $principal = New-ScheduledTaskPrincipal -GroupId 'BUILTIN\Users' -RunLevel Limited
             $settings = New-ScheduledTaskSettingsSet `
                 -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
-                -ExecutionTimeLimit ([TimeSpan]::Zero)
+                -ExecutionTimeLimit ([TimeSpan]::Zero) `
+                -RestartCount 5 -RestartInterval ([TimeSpan]::FromMinutes(1))
             Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
                 -Principal $principal -Settings $settings -Force -ErrorAction Stop | Out-Null
-            Append-Log "      scheduled task '$taskName' registrato (At Logon, Users)" $ColorMuted
+            Append-Log "      scheduled task '$taskName' -> nocagent-ui.exe (At Logon)" $ColorMuted
             Start-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
             Append-Log "      tray icon avviata nella sessione utente" $ColorMuted
         } catch {
             Append-Log "      WARN: scheduled task non registrato: $($_.Exception.Message)" $ColorError
             try {
                 $runKey = "HKLM:\Software\Microsoft\Windows\CurrentVersion\Run"
-                $trayCmd = "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$trayPath`""
-                Set-ItemProperty -Path $runKey -Name "86BITArgusTray" -Value $trayCmd -Force
+                Set-ItemProperty -Path $runKey -Name "86BITArgusTray" -Value $uiExe -Force
                 Append-Log "      fallback HKLM\\Run registrato (parte al prossimo logon)" $ColorMuted
             } catch { }
         }
@@ -1750,7 +1748,7 @@ function Run-Install {
             Set-ItemProperty -Path $uninstKey -Name 'InstallLocation' -Value $InstallDir
             Set-ItemProperty -Path $uninstKey -Name 'UninstallString' -Value $uninstCmd
             Set-ItemProperty -Path $uninstKey -Name 'QuietUninstallString' -Value $uninstCmd
-            Set-ItemProperty -Path $uninstKey -Name 'DisplayIcon'     -Value "$InstallDir\argus.ico"
+            Set-ItemProperty -Path $uninstKey -Name 'DisplayIcon'     -Value (Join-Path $InstallDir "nocagent-ui.exe")
             Set-ItemProperty -Path $uninstKey -Name 'NoModify'        -Value 1 -Type DWord
             Set-ItemProperty -Path $uninstKey -Name 'NoRepair'        -Value 1 -Type DWord
             if ($sizeKb -gt 0) {
@@ -1772,7 +1770,7 @@ function Run-Install {
             $unLnk.TargetPath = "powershell.exe"
             $unLnk.Arguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$InstallDir\uninstall.ps1`""
             $unLnk.WorkingDirectory = $InstallDir
-            $unLnk.IconLocation = "$InstallDir\argus.ico,0"
+            $unLnk.IconLocation = (Join-Path $InstallDir "nocagent-ui.exe") + ",0"
             $unLnk.Description = "Disinstalla 86BIT Argus Connector"
             $unLnk.Save()
             Append-Log "      shortcut 'Disinstalla' creato" $ColorMuted
