@@ -1,3 +1,62 @@
+## 2026-05-08 FEATURE — Network Scanner integrato nel Connector UI
+
+**Direttiva utente**: «metti pulsante per fare scansione rete e trovare device — prendi spunto da advanced-ip-scanner.com».
+
+### Implementato
+Nuovo file `/app/noc-agent/cmd/nocui/scanner_windows.go` (≈460 righe) — finestra modale "Scansiona Rete" stile Advanced IP Scanner.
+
+#### Pipeline di scansione (no privilegi admin richiesti)
+1. **Auto-detection CIDR**: rileva la prima IPv4 privata bound (10/172.16-31/192.168) e propone `<host>.0/24` come default; espande il range con `expandCIDR` (max /16 per safety).
+2. **TCP probe parallelo** (sem 64): ogni IP testato su 13 porte note (22/23/80/135/139/161/443/445/515/631/3389/8080/9100). Timeout 250 ms per porta. Una sola risposta → host *alive*.
+3. **ARP cache parsing** (`arp -a` con `HideWindow`): cattura anche device che bloccano TCP ma hanno popolato la neighbour cache.
+4. **DNS reverse lookup** parallelo (32 worker, timeout 600 ms per IP) per ottenere l'hostname.
+5. **OUI vendor lookup** con tabella in-memory (≈80 prefissi, copre Cisco/Mikrotik/Zyxel/Ubiquiti/HP/Dell/TP-Link/Synology/QNAP/printer/Hikvision/Apple/Espressif).
+
+#### UI
+Pulsante **"Scansiona Rete"** aggiunto fra "Apri Web UI" e l'`HSpacer` (esattamente dove l'utente ha indicato nello screenshot).
+
+Dialog modale 920×620:
+- **Header**: input CIDR pre-compilato + pulsante "Scansiona Rete" (diventa "Annulla" durante lo scan) + status label live.
+- **ProgressBar**: avanzamento `done/total` aggiornato ogni 4 IP processati.
+- **TableView** ordinabile multi-select: Stato (alive/arp-only) · IP · Hostname · MAC · Vendor.
+- **Action bar**:
+  - `+ Aggiungi (community: public)` — aggiunge le righe selezionate alla tabella SNMP del Connector con community `public`.
+  - `+ Aggiungi (community personalizzata...)` — chiede una community custom via mini-dialog.
+  - `Esporta CSV...` — salva il risultato dello scan.
+  - `Chiudi`.
+
+I duplicati (IP già presenti nella tabella SNMP) vengono saltati.
+
+### File modificati
+- `/app/noc-agent/cmd/nocui/scanner_windows.go` — nuovo
+- `/app/noc-agent/cmd/nocui/main.go` — aggiunto pulsante "Scansiona Rete" nella console
+
+### Build
+`nocagent-ui.exe` ricompilato a 9.8 MB (era 9.6 MB) — diff ~200 KB per il nuovo modulo scanner.
+
+### Verifica
+- `GET /api/agent/binary/windows-amd64/nocagent-ui.exe?token=...` → 9.799.168 byte ✓
+- `GET /api/agent/install/wizard-bundle.zip` → 21 KB con `installer_gui.ps1` aggiornato ✓
+
+---
+
+## 2026-05-08 FEATURE — Icona Connector "blue circle + white A"
+
+**Direttiva utente**: «mancano icone.. usa pallina BLU con A bianca in mezzo».
+
+### Implementato
+- Generato `argus.ico` multi-size (16/24/32/48/64/128/256) con script PIL: gradient blu radiale `#3C82FF→#1040E0` + lettera **A** bianca Bold centrata (62% del diametro).
+- Embeddata nel binario `nocagent-ui.exe` via `rsrc -manifest app.manifest -ico argus.ico` (`rsrc_windows_amd64.syso` 2832 byte vs 1756 prima).
+- Nuovo endpoint backend `GET /api/agent/install/argus.ico` (no auth) — l'installer la scarica come file separato in `Program Files\86NocAgent\`.
+- Wizard installer aggiornato:
+  - Step 5 scarica `argus.ico` accanto ai binari.
+  - Shortcut `Connector.lnk` + `Disinstalla.lnk` usano `argus.ico` come `IconLocation` (più resiliente della icon-cache di Explorer rispetto a `nocagent-ui.exe,0`).
+  - Voce Uninstall in registry usa `argus.ico` come `DisplayIcon`.
+  - `ie4uinit.exe -show` chiamato post-install per forzare il refresh della icon-cache.
+
+---
+
+
 ## 2026-05-08 FEATURE — OTA self-update Ed25519 signed (post-audit)
 
 **Direttiva utente**: «si procedi e poi dammi link download connector» (post-audit ottimizzazione).
