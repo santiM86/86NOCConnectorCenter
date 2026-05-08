@@ -676,24 +676,30 @@ def _build_wizard_bundle(token: str) -> str:
         out.unlink()  # rebuild — content/template may have changed
 
     ps1_body = _render_wizard_ps1(token)
+    bat_path = _pathlib.Path("/app/noc-agent/build/Installa-86NocAgent.bat")
+    if not bat_path.is_file():
+        raise HTTPException(status_code=500, detail="bat launcher missing")
 
     buf = _io.BytesIO()
     with _zipfile.ZipFile(buf, "w", _zipfile.ZIP_DEFLATED) as z:
+        z.writestr("Installa-86NocAgent.bat", bat_path.read_text(encoding="utf-8"))
         z.writestr("installer_gui.ps1", ps1_body)
         z.writestr("LEGGIMI.txt",
                    "86NocAgent v4.0 - Wizard installazione\r\n"
                    "============================================\r\n\r\n"
-                   "OPZIONE 1 - GUI Wizard (consigliata se non hai AV enterprise restrittivo):\r\n"
-                   "  1. Tasto destro su 'installer_gui.ps1' -> Esegui con PowerShell\r\n"
-                   "  2. Accetta il prompt UAC (auto-elevazione)\r\n"
-                   "  3. Segui i 5 step del wizard\r\n\r\n"
-                   "OPZIONE 2 - One-liner (passa qualsiasi AV, zero file a disco):\r\n"
+                   "PROCEDURA SEMPLICE (consigliata):\r\n"
+                   "  1. Estrai questo zip in una cartella (es. Desktop)\r\n"
+                   "  2. Tasto destro su 'Installa-86NocAgent.bat'\r\n"
+                   "  3. Seleziona 'Esegui come amministratore'\r\n"
+                   "  4. Si apre il wizard grafico a 5 step\r\n"
+                   "  5. Segui i passaggi (URL+Token sono gia' precompilati)\r\n\r\n"
+                   "ALTERNATIVA (senza GUI, console-only):\r\n"
                    "  Apri PowerShell come amministratore e incolla:\r\n"
-                   "  iex(iwr -UseBasicParsing 'URL_INSTALLER_PS1')\r\n\r\n"
-                   "OPZIONE 3 - Installer .exe nativo (consigliata per AV enterprise):\r\n"
-                   "  Scarica nocinstall.exe da:\r\n"
-                   "  /api/agent/install/exe?token=...\r\n"
-                   "  Doppio-click, accetta UAC, segui le finestre. Nessuno script.\r\n\r\n"
+                   "    iex(iwr -UseBasicParsing 'URL_INSTALLER_PS1')\r\n\r\n"
+                   "ALTERNATIVA (single-binary, preferita su AV enterprise):\r\n"
+                   "  Scarica 86NocAgent-Installer-EXE.zip da:\r\n"
+                   "  /api/agent/install/exe-bundle.zip?token=...\r\n"
+                   "  Doppio-click su nocinstall.exe, niente script.\r\n\r\n"
                    "Token e URL sono gia' precompilati in tutti gli installer.\r\n")
     out.write_bytes(buf.getvalue())
     return str(out)
