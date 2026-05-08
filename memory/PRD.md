@@ -1,3 +1,44 @@
+## 2026-05-08 FEATURE — Network Scanner v2 (enterprise tooling)
+
+**Direttiva utente**: «tutta la parte di scansione IP sulla rete funziona? copia clona advanced-ip-scanner.com».
+
+**Nota legale**: NON ho clonato UI/codice di Advanced IP Scanner (proprietary). Ho implementato funzionalità standard di networking — protocolli pubblici (TCP, ICMP, ARP cache, WoL magic packet AMD 1995, SNMP v2c RFC) — con UI originale walk + branding Argus + etichette italiane.
+
+### Pipeline di scansione potenziata
+
+1. **TCP probe parallelo** (sem 64): 13 porte note. Ora ritorna anche RTT della connessione TCP e prima porta che ha risposto.
+2. **ARP cache parse** (`arp -a`): cattura device che bloccano TCP.
+3. **DNS reverse** parallelo (sem 32, 600 ms timeout).
+4. **NUOVO — ICMP ping** via `ping.exe -n 1 -w 600`: niente raw socket, niente admin. Parsing `time=Xms` / `durata=Xms` per RTT autentico.
+5. **NUOVO — Web UI auto-detect**: HEAD request HTTP/HTTPS sulle porte 80/443/8080/8443 (timeout 1.5s, TLS skip-verify per device self-signed).
+6. **NUOVO — SNMP v2c probe** (community: `public`, `private`): pacchetto BER hand-crafted per `sysDescr.0`, niente dipendenze esterne. Marca i device SNMP-able con badge "SNMP".
+
+### Tabella risultati estesa (7 colonne)
+| Stato | IP | RTT | Hostname | MAC | Vendor | Servizi |
+|---|---|---|---|---|---|---|
+| `● alive` / `◐ arp` / `○ down` | 192.168.1.10 | 1 ms | switch-core | aa:bb... | Cisco | WEB SNMP |
+
+### Azioni rapide (toolbar dedicata)
+- **Web UI** → apre browser sull'URL HTTP/HTTPS rilevato (o fallback `http://IP/`)
+- **RDP** → `mstsc /v:IP` per connessione Remote Desktop
+- **Cartelle (SMB)** → `explorer \\IP` per share di rete
+- **Ping...** → apre cmd con `ping -t IP` per monitor live
+- **Wake-on-LAN** → invia magic packet UDP/9 broadcast (RFC pubblico AMD)
+- **+ Aggiungi a SNMP (public / personalizzata)** → import target nella tabella SNMP del Connector
+- **Esporta CSV** → con i nuovi campi `rtt_ms, web_url, snmp_ok`
+
+### File modificati
+- `/app/noc-agent/cmd/nocui/scanner_windows.go` — esteso da ~470 a ~720 righe
+  - `ScanResult` ora ha campi `RTTms`, `OpenPort`, `WebURL`, `SNMPok`
+  - Nuove funzioni: `probeICMPPing`, `probeWebUI`, `probeSNMPv2c`, `buildSNMPv2cGetSysDescr`, `sendWoLMagicPacket`, `parseMAC6`
+  - Dialog allargato 1100×660 con toolbar Azioni dedicata
+
+### Build
+`nocagent-ui.exe` ricompilato a 9.99 MB (era 9.96), sha256 `1e008538e86a99e9584add2bfd06ca9bf9913c6e3c9ed8ec70aab8a5953dccbf`. Cross-compile pulito al primo tentativo.
+
+---
+
+
 ## 2026-05-08 ICONS v2 — Standardizzazione totale
 
 **Direttiva utente**: «stai usando icone diverse.. standardizza tutto.. ovunque icone uguali».

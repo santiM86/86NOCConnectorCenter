@@ -12,9 +12,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"sort"
@@ -35,7 +38,11 @@ type ScanResult struct {
 	MAC      string
 	Hostname string
 	Vendor   string
-	Status   string // "alive" | "arp-only"
+	Status   string // "alive" | "arp-only" | "down"
+	RTTms    int    // RTT in millisecondi, -1 se non risposto
+	OpenPort int    // prima porta TCP che ha risposto (0 = nessuna)
+	WebURL   string // url HTTP/HTTPS rilevato
+	SNMPok   bool   // risponde a SNMP v2c con community public/private
 }
 
 type scanResultsModel struct {
@@ -51,15 +58,40 @@ func (m *scanResultsModel) Value(row, col int) interface{} {
 	r := m.items[row]
 	switch col {
 	case 0:
-		return r.Status
+		// Stato visivo: pallini colorati come gli IP scanner enterprise
+		switch r.Status {
+		case "alive":
+			return "● alive"
+		case "arp-only":
+			return "◐ arp"
+		default:
+			return "○ down"
+		}
 	case 1:
 		return r.IP
 	case 2:
-		return r.Hostname
+		if r.RTTms < 0 {
+			return ""
+		}
+		return fmt.Sprintf("%d ms", r.RTTms)
 	case 3:
-		return r.MAC
+		return r.Hostname
 	case 4:
+		return r.MAC
+	case 5:
 		return r.Vendor
+	case 6:
+		extras := ""
+		if r.WebURL != "" {
+			extras += "WEB "
+		}
+		if r.SNMPok {
+			extras += "SNMP "
+		}
+		if r.OpenPort != 0 && extras == "" {
+			extras = fmt.Sprintf(":%d", r.OpenPort)
+		}
+		return strings.TrimSpace(extras)
 	}
 	return ""
 }
@@ -121,18 +153,136 @@ func expandCIDR(cidr string) ([]string, error) {
 	return out, nil
 }
 
-// probeAlive returns true if any of the well-known TCP ports answers
-// within timeout. It does not need elevated privileges.
-func probeAlive(ip string, timeout time.Duration) bool {
+// probeAlive returns whether any of the well-known TCP ports answers
+// within timeout, the first responding port and the RTT in millisec.
+// It does not need elevated privileges.
+func probeAlive(ip string, timeout time.Duration) (alive bool, port int, rttMs int) {
 	ports := []int{135, 445, 139, 80, 22, 443, 8080, 23, 3389, 161, 515, 9100, 631}
 	for _, p := range ports {
+		t0 := time.Now()
 		conn, err := net.DialTimeout("tcp", net.JoinHostPort(ip, strconv.Itoa(p)), timeout)
 		if err == nil {
 			_ = conn.Close()
-			return true
+			return true, p, int(time.Since(t0).Milliseconds())
 		}
 	}
-	return false
+	return false, 0, -1
+}
+
+// probeICMPPing usa il comando 'ping' nativo di Windows con count=1 e
+// timeout breve. Niente raw socket, niente privilege elevation.
+// Ritorna RTT in ms (-1 se nessuna risposta).
+func probeICMPPing(ctx context.Context, ip string, timeoutMs int) int {
+	cctx, cancel := context.WithTimeout(ctx, time.Duration(timeoutMs+200)*time.Millisecond)
+	defer cancel()
+	cmd := exec.CommandContext(cctx, "ping", "-n", "1", "-w", strconv.Itoa(timeoutMs), ip)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	out, err := cmd.Output()
+	if err != nil {
+		return -1
+	}
+	// Output Windows: "Risposta da 192.168.1.1: byte=32 durata=1ms TTL=64"
+	// oppure inglese: "Reply from ...: bytes=32 time=1ms TTL=64"
+	low := strings.ToLower(string(out))
+	for _, key := range []string{"durata=", "time=", "tempo="} {
+		if i := strings.Index(low, key); i >= 0 {
+			rest := low[i+len(key):]
+			j := strings.Index(rest, "ms")
+			if j > 0 {
+				if n, err := strconv.Atoi(strings.TrimSpace(rest[:j])); err == nil {
+					return n
+				}
+			}
+		}
+	}
+	if strings.Contains(low, "ttl=") {
+		return 0 // ha risposto ma non riusciamo a parsare
+	}
+	return -1
+}
+
+// probeWebUI fa una HEAD request veloce su http(s)://IP/ e ritorna la
+// prima URL che risponde con status < 500.
+func probeWebUI(ctx context.Context, ip string) string {
+	cli := &http.Client{
+		Timeout: 1500 * time.Millisecond,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+		Transport: &http.Transport{
+			TLSClientConfig:     &tls.Config{InsecureSkipVerify: true},
+			DisableKeepAlives:   true,
+			ResponseHeaderTimeout: 1200 * time.Millisecond,
+		},
+	}
+	for _, scheme := range []string{"http", "https"} {
+		for _, port := range []string{"", ":8080", ":8443"} {
+			u := scheme + "://" + ip + port + "/"
+			req, _ := http.NewRequestWithContext(ctx, "HEAD", u, nil)
+			req.Header.Set("User-Agent", "ArgusScanner/1.0")
+			resp, err := cli.Do(req)
+			if err == nil {
+				resp.Body.Close()
+				if resp.StatusCode < 500 {
+					return u
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// probeSNMPv2c invia un GET-Request SNMP v2c per sysDescr.0 con la
+// community indicata. Implementazione minimale BER/SNMP per evitare
+// dipendenze esterne. Ritorna true se arriva una risposta valida.
+func probeSNMPv2c(ip string, community string, timeout time.Duration) bool {
+	conn, err := net.DialTimeout("udp", ip+":161", timeout)
+	if err != nil {
+		return false
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(timeout))
+	pkt := buildSNMPv2cGetSysDescr(community)
+	if _, err := conn.Write(pkt); err != nil {
+		return false
+	}
+	buf := make([]byte, 1500)
+	n, err := conn.Read(buf)
+	if err != nil || n < 20 {
+		return false
+	}
+	// Controllo grossolano: BER SEQUENCE (0x30) iniziale + presenza
+	// del marker community echoed.
+	return buf[0] == 0x30 && bytes.Contains(buf[:n], []byte(community))
+}
+
+// buildSNMPv2cGetSysDescr produce un pacchetto SNMPv2c GET-Request
+// minimal per OID 1.3.6.1.2.1.1.1.0 (sysDescr).
+func buildSNMPv2cGetSysDescr(community string) []byte {
+	// Costruzione manuale BER. L'OID e' fisso quindi pre-encodiamo.
+	// 1.3.6.1.2.1.1.1.0 -> 06 08 2b 06 01 02 01 01 01 00
+	oid := []byte{0x06, 0x08, 0x2b, 0x06, 0x01, 0x02, 0x01, 0x01, 0x01, 0x00}
+	// VarBind: SEQUENCE { OID, NULL }
+	vb := append([]byte{0x30, byte(len(oid) + 2)}, oid...)
+	vb = append(vb, 0x05, 0x00)
+	// VarBindList: SEQUENCE { vb }
+	vbl := append([]byte{0x30, byte(len(vb))}, vb...)
+	// PDU GET-Request (0xa0): SEQUENCE { reqID INT, error INT, errorIdx INT, vbl }
+	reqID := []byte{0x02, 0x04, 0x12, 0x34, 0x56, 0x78}
+	zero := []byte{0x02, 0x01, 0x00}
+	pdu := append([]byte{}, reqID...)
+	pdu = append(pdu, zero...)
+	pdu = append(pdu, zero...)
+	pdu = append(pdu, vbl...)
+	pdu = append([]byte{0xa0, byte(len(pdu))}, pdu...)
+	// Message: SEQUENCE { version INT 1, community STR, pdu }
+	ver := []byte{0x02, 0x01, 0x01}
+	comm := append([]byte{0x04, byte(len(community))}, []byte(community)...)
+	msg := append([]byte{}, ver...)
+	msg = append(msg, comm...)
+	msg = append(msg, pdu...)
+	msg = append([]byte{0x30, byte(len(msg))}, msg...)
+	return msg
 }
 
 // readARPTable runs `arp -a` and returns a map ip -> mac (lowercase).
@@ -267,11 +417,17 @@ func runScan(ctx context.Context, cidr string, timeout time.Duration,
 	total := len(ips)
 	var done int32
 
-	// Phase 1: TCP probe in parallel.
-	alive := struct {
+	// Phase 1: TCP probe in parallel — raccoglie alive + first responding
+	// port + RTT TCP connect.
+	type probeOut struct {
+		alive bool
+		port  int
+		rtt   int
+	}
+	probeRes := struct {
 		mu sync.Mutex
-		m  map[string]bool
-	}{m: map[string]bool{}}
+		m  map[string]probeOut
+	}{m: map[string]probeOut{}}
 	sem := make(chan struct{}, 64)
 	var wg sync.WaitGroup
 	for _, ip := range ips {
@@ -286,10 +442,11 @@ func runScan(ctx context.Context, cidr string, timeout time.Duration,
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
-			if probeAlive(ip, timeout) {
-				alive.mu.Lock()
-				alive.m[ip] = true
-				alive.mu.Unlock()
+			a, p, r := probeAlive(ip, timeout)
+			if a {
+				probeRes.mu.Lock()
+				probeRes.m[ip] = probeOut{a, p, r}
+				probeRes.mu.Unlock()
 			}
 			n := atomic.AddInt32(&done, 1)
 			if onProgress != nil && (n%4 == 0 || int(n) == total) {
@@ -305,7 +462,7 @@ func runScan(ctx context.Context, cidr string, timeout time.Duration,
 
 	// Merge: union of alive set + ARP table.
 	merged := map[string]string{} // ip -> mac
-	for ip := range alive.m {
+	for ip := range probeRes.m {
 		merged[ip] = arp[ip]
 	}
 	for ip, mac := range arp {
@@ -314,28 +471,39 @@ func runScan(ctx context.Context, cidr string, timeout time.Duration,
 		}
 	}
 
-	// Phase 3: PTR lookups (parallel, short timeout).
-	type out struct {
-		ip   string
-		host string
+	// Phase 3: PTR lookups + ICMP ping + web detect + SNMP probe — tutto
+	// in parallelo per gli IP che ci interessano.
+	type enrich struct {
+		host   string
+		rtt    int
+		web    string
+		snmpOK bool
 	}
-	hosts := map[string]string{}
-	hostsMu := sync.Mutex{}
+	enrichMap := struct {
+		mu sync.Mutex
+		m  map[string]*enrich
+	}{m: map[string]*enrich{}}
 	wg = sync.WaitGroup{}
-	hostSem := make(chan struct{}, 32)
+	enrichSem := make(chan struct{}, 32)
 	for ip := range merged {
 		ip := ip
 		wg.Add(1)
-		hostSem <- struct{}{}
+		enrichSem <- struct{}{}
 		go func() {
 			defer wg.Done()
-			defer func() { <-hostSem }()
-			h := reverseDNS(ctx, ip)
-			if h != "" {
-				hostsMu.Lock()
-				hosts[ip] = h
-				hostsMu.Unlock()
+			defer func() { <-enrichSem }()
+			e := &enrich{}
+			e.host = reverseDNS(ctx, ip)
+			e.rtt = probeICMPPing(ctx, ip, 600)
+			// web + SNMP solo per host alive (TCP) per non perdere tempo.
+			if _, alive := probeRes.m[ip]; alive {
+				e.web = probeWebUI(ctx, ip)
+				e.snmpOK = probeSNMPv2c(ip, "public", 700*time.Millisecond) ||
+					probeSNMPv2c(ip, "private", 700*time.Millisecond)
 			}
+			enrichMap.mu.Lock()
+			enrichMap.m[ip] = e
+			enrichMap.mu.Unlock()
 		}()
 	}
 	wg.Wait()
@@ -343,15 +511,32 @@ func runScan(ctx context.Context, cidr string, timeout time.Duration,
 	results := make([]*ScanResult, 0, len(merged))
 	for ip, mac := range merged {
 		status := "arp-only"
-		if alive.m[ip] {
+		port := 0
+		rtt := -1
+		if po, ok := probeRes.m[ip]; ok {
 			status = "alive"
+			port = po.port
+			rtt = po.rtt
+		}
+		e := enrichMap.m[ip]
+		if e == nil {
+			e = &enrich{}
+		}
+		// Preferisci RTT ICMP a quello TCP-connect quando disponibile.
+		finalRTT := rtt
+		if e.rtt >= 0 {
+			finalRTT = e.rtt
 		}
 		results = append(results, &ScanResult{
 			IP:       ip,
 			MAC:      mac,
-			Hostname: hosts[ip],
+			Hostname: e.host,
 			Vendor:   ouiVendor(mac),
 			Status:   status,
+			RTTms:    finalRTT,
+			OpenPort: port,
+			WebURL:   e.web,
+			SNMPok:   e.snmpOK,
 		})
 	}
 	sort.Slice(results, func(i, j int) bool { return ipNumeric(results[i].IP) < ipNumeric(results[j].IP) })
@@ -479,15 +664,31 @@ func showScannerDialog(app *App, parent walk.Form) {
 			walk.MsgBoxIconInformation)
 	}
 
+	openSelectedURL := func(getURL func(*ScanResult) string, what string) {
+		sel := tv.SelectedIndexes()
+		if len(sel) == 0 {
+			walk.MsgBox(dlg, "Nessuna selezione",
+				"Seleziona prima un dispositivo dalla lista.", walk.MsgBoxIconInformation)
+			return
+		}
+		r := model.items[sel[0]]
+		u := getURL(r)
+		if u == "" {
+			walk.MsgBox(dlg, what, "Indirizzo non disponibile per questo device.", walk.MsgBoxIconWarning)
+			return
+		}
+		_ = exec.Command("rundll32", "url.dll,FileProtocolHandler", u).Start()
+	}
+
 	wd.Dialog{
 		AssignTo: &dlg,
 		Title:    "ARGUS - Scansiona Rete",
 		Icon:     app.icon,
-		Size:     wd.Size{Width: 920, Height: 620},
-		MinSize:  wd.Size{Width: 800, Height: 500},
+		Size:     wd.Size{Width: 1100, Height: 660},
+		MinSize:  wd.Size{Width: 900, Height: 500},
 		Layout:   wd.VBox{},
 		Children: []wd.Widget{
-			wd.Label{Text: "Scansione rete locale (TCP probe + ARP cache + DNS reverse)",
+			wd.Label{Text: "Scansione rete locale (TCP probe + ICMP + ARP cache + DNS reverse + SNMP probe + Web detect)",
 				Font: wd.Font{Family: "Segoe UI", PointSize: 11, Bold: true}},
 			wd.Composite{
 				Layout: wd.HBox{},
@@ -508,18 +709,77 @@ func showScannerDialog(app *App, parent walk.Form) {
 				Columns: []wd.TableViewColumn{
 					{Title: "Stato", Width: 80},
 					{Title: "IP", Width: 130},
+					{Title: "RTT", Width: 70},
 					{Title: "Hostname", Width: 220},
 					{Title: "MAC", Width: 150},
 					{Title: "Vendor", Width: 140},
+					{Title: "Servizi", Width: 110},
 				},
 				Model: model,
 			},
 			wd.Composite{
+				Layout: wd.HBox{Spacing: 4},
+				Children: []wd.Widget{
+					wd.Label{Text: "Azioni:", Font: wd.Font{Family: "Segoe UI", PointSize: 9, Bold: true}},
+					wd.PushButton{Text: "Web UI", OnClicked: func() {
+						openSelectedURL(func(r *ScanResult) string {
+							if r.WebURL != "" {
+								return r.WebURL
+							}
+							return "http://" + r.IP + "/"
+						}, "Web UI")
+					}},
+					wd.PushButton{Text: "RDP", OnClicked: func() {
+						sel := tv.SelectedIndexes()
+						if len(sel) == 0 {
+							return
+						}
+						r := model.items[sel[0]]
+						_ = exec.Command("mstsc", "/v:"+r.IP).Start()
+					}},
+					wd.PushButton{Text: "Cartelle (SMB)", OnClicked: func() {
+						sel := tv.SelectedIndexes()
+						if len(sel) == 0 {
+							return
+						}
+						r := model.items[sel[0]]
+						_ = exec.Command("explorer", `\\`+r.IP).Start()
+					}},
+					wd.PushButton{Text: "Ping...", OnClicked: func() {
+						sel := tv.SelectedIndexes()
+						if len(sel) == 0 {
+							return
+						}
+						r := model.items[sel[0]]
+						c := exec.Command("cmd", "/c", "start", "cmd", "/k", "ping -t "+r.IP)
+						c.SysProcAttr = &syscall.SysProcAttr{HideWindow: false}
+						_ = c.Start()
+					}},
+					wd.PushButton{Text: "Wake-on-LAN", OnClicked: func() {
+						sel := tv.SelectedIndexes()
+						if len(sel) == 0 {
+							return
+						}
+						r := model.items[sel[0]]
+						if r.MAC == "" {
+							walk.MsgBox(dlg, "WoL", "MAC non disponibile per questo device.", walk.MsgBoxIconWarning)
+							return
+						}
+						if err := sendWoLMagicPacket(r.MAC); err != nil {
+							walk.MsgBox(dlg, "WoL errore", err.Error(), walk.MsgBoxIconError)
+							return
+						}
+						walk.MsgBox(dlg, "Wake-on-LAN", "Magic packet inviato a "+r.MAC, walk.MsgBoxIconInformation)
+					}},
+					wd.HSpacer{},
+				},
+			},
+			wd.Composite{
 				Layout: wd.HBox{},
 				Children: []wd.Widget{
-					wd.PushButton{AssignTo: &btnAdd, Text: "+ Aggiungi (community: public)",
+					wd.PushButton{AssignTo: &btnAdd, Text: "+ Aggiungi a SNMP (community: public)",
 						Enabled: false, OnClicked: func() { addSelectedAsTargets("public") }},
-					wd.PushButton{AssignTo: &btnAddSNMP, Text: "+ Aggiungi (community personalizzata...)",
+					wd.PushButton{AssignTo: &btnAddSNMP, Text: "+ Aggiungi a SNMP (community personalizzata...)",
 						Enabled: false, OnClicked: func() {
 							c, ok := promptString(dlg, "Community SNMP",
 								"Inserisci la community SNMP da usare:", "public")
@@ -539,10 +799,10 @@ func showScannerDialog(app *App, parent walk.Form) {
 							return
 						}
 						var sb strings.Builder
-						sb.WriteString("status,ip,hostname,mac,vendor\n")
+						sb.WriteString("status,ip,rtt_ms,hostname,mac,vendor,web_url,snmp_ok\n")
 						for _, r := range model.items {
-							sb.WriteString(fmt.Sprintf("%s,%s,%q,%s,%q\n",
-								r.Status, r.IP, r.Hostname, r.MAC, r.Vendor))
+							sb.WriteString(fmt.Sprintf("%s,%s,%d,%q,%s,%q,%s,%v\n",
+								r.Status, r.IP, r.RTTms, r.Hostname, r.MAC, r.Vendor, r.WebURL, r.SNMPok))
 						}
 						_ = writeFileText(fd.FilePath, sb.String())
 					}},
@@ -588,4 +848,45 @@ func promptString(parent walk.Form, title, prompt, def string) (string, bool) {
 
 func writeFileText(path, content string) error {
 	return os.WriteFile(path, []byte(content), 0o644)
+}
+
+// sendWoLMagicPacket invia un pacchetto Wake-on-LAN broadcast UDP/9.
+// Il payload e' il magic packet standard: 6 byte 0xFF seguiti da 16
+// ripetizioni dei 6 byte MAC del target.
+func sendWoLMagicPacket(macStr string) error {
+	mac, err := parseMAC6(macStr)
+	if err != nil {
+		return err
+	}
+	conn, err := net.Dial("udp", "255.255.255.255:9")
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	pkt := make([]byte, 0, 6+16*6)
+	for i := 0; i < 6; i++ {
+		pkt = append(pkt, 0xff)
+	}
+	for i := 0; i < 16; i++ {
+		pkt = append(pkt, mac...)
+	}
+	_, err = conn.Write(pkt)
+	return err
+}
+
+func parseMAC6(s string) ([]byte, error) {
+	s = strings.ReplaceAll(s, "-", ":")
+	parts := strings.Split(s, ":")
+	if len(parts) != 6 {
+		return nil, fmt.Errorf("MAC non valido: %q", s)
+	}
+	out := make([]byte, 6)
+	for i, p := range parts {
+		v, err := strconv.ParseUint(p, 16, 8)
+		if err != nil {
+			return nil, fmt.Errorf("MAC byte non valido: %q", p)
+		}
+		out[i] = byte(v)
+	}
+	return out, nil
 }
