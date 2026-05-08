@@ -47,13 +47,25 @@ import (
 // --- IPC tra istanze dello stesso EXE ---------------------------------------
 
 const (
-	mutexName = "Global\\86BITArgusConnectorTray"
+	// Senza prefix "Global\" perche' utenti normali NON hanno il privilegio
+	// SE_CREATE_GLOBAL_NAME e CreateMutexW fallirebbe silenziosamente.
+	// Senza prefix il mutex e' session-local, esattamente quello che vogliamo:
+	// tray + secondo lancio dello shortcut girano nella stessa sessione utente.
+	mutexName = "86BITArgusConnectorTray"
 )
 
 // File marker che la tray polla per sapere se un'altra istanza ha chiesto
-// di mostrare la finestra "Gestisci Dispositivi".
+// di mostrare la finestra "Gestisci Dispositivi". Usiamo %LOCALAPPDATA%
+// (sempre user-writable, identico tra Scheduled Task e shortcut nella stessa
+// sessione) invece di %TEMP% che puo' divergere.
 func ipcShowFlagPath() string {
-	return filepath.Join(os.TempDir(), "argus-tray-show.flag")
+	base := os.Getenv("LOCALAPPDATA")
+	if base == "" {
+		base = os.TempDir()
+	}
+	dir := filepath.Join(base, "86NocAgent")
+	_ = os.MkdirAll(dir, 0o755)
+	return filepath.Join(dir, "show.flag")
 }
 
 func acquireSingleInstance() (release func(), alreadyRunning bool) {
@@ -275,6 +287,16 @@ func writeTargets(configPath string, targets []*Target) error {
 	return os.WriteFile(configPath, b.Bytes(), 0o644)
 }
 
+// runHidden esegue un comando Windows senza mostrare la console parent.
+// Usalo per qualsiasi exec.Command verso CLI tools (sc.exe, ping, rundll32,
+// ecc.). La finestra "vera" del processo target (es. browser) viene
+// comunque mostrata se il programma la apre.
+func runHidden(name string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	return cmd.Start()
+}
+
 // --- Service control --------------------------------------------------------
 
 func runSC(args ...string) error {
@@ -297,7 +319,9 @@ func restartServices() {
 }
 
 func serviceStatus(name string) string {
-	out, err := exec.Command("sc.exe", "query", name).Output()
+	cmd := exec.Command("sc.exe", "query", name)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	out, err := cmd.Output()
 	if err != nil {
 		return "unknown"
 	}
@@ -700,7 +724,7 @@ func buildConsole(app *App) {
 							if err == nil {
 								resp.Body.Close()
 								if resp.StatusCode < 500 {
-									exec.Command("rundll32", "url.dll,FileProtocolHandler", u).Start()
+									runHidden("rundll32", "url.dll,FileProtocolHandler", u)
 									t.WebUI = u
 									app.tableModel.PublishRowsReset()
 									return
@@ -711,7 +735,7 @@ func buildConsole(app *App) {
 					}},
 					wd.HSpacer{},
 					wd.PushButton{Text: "Apri NOC Center", OnClicked: func() {
-						exec.Command("rundll32", "url.dll,FileProtocolHandler", app.agent.BackendURL).Start()
+						runHidden("rundll32", "url.dll,FileProtocolHandler", app.agent.BackendURL)
 					}},
 					wd.PushButton{Text: "Salva e Riavvia", OnClicked: func() {
 						if err := writeTargets(app.agent.ConfigPath, app.tableModel.items); err != nil {
@@ -797,7 +821,7 @@ func setupTray(app *App) error {
 	add("Apri cartella log", func() {
 		dir := filepath.Join(os.Getenv("ProgramData"), "86NocAgent", "logs")
 		os.MkdirAll(dir, 0o755)
-		exec.Command("explorer.exe", dir).Start()
+		runHidden("explorer.exe", dir)
 	})
 	ni.ContextMenu().Actions().Add(walk.NewSeparatorAction())
 	add("Esci", func() {
