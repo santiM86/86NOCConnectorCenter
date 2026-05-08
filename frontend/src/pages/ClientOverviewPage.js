@@ -45,6 +45,8 @@ export default function ClientOverviewPage() {
   const [connector, setConnector] = useState(null);
   const [iloHealth, setIloHealth] = useState([]);
   const [hwHealth, setHwHealth] = useState(null);
+  // v3.8.41 watchdog: stato lan-scan per banner "Scanner inattivo"
+  const [scanHealth, setScanHealth] = useState({ connectors: [], any_stale: false });
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState("overview");
 
@@ -72,6 +74,11 @@ export default function ClientOverviewPage() {
       const connectors = connRes.data?.connectors || connRes.data || [];
       const found = (Array.isArray(connectors) ? connectors : []).find(c => c.client_id === clientId);
       setConnector(found || null);
+    } catch {}
+    // v3.8.41: scan-health per banner watchdog
+    try {
+      const shRes = await axios.get(`${API}/connectors/scan-health/${clientId}`);
+      setScanHealth(shRes.data || { connectors: [], any_stale: false });
     } catch {}
     try {
       const printRes = await axios.get(`${API}/printers/${clientId}`);
@@ -218,6 +225,34 @@ export default function ClientOverviewPage() {
 
   return (
     <div className="p-4 md:p-5 animate-fade-in" data-testid="client-overview-page">
+      {/* v3.8.41 Banner watchdog: Scanner inattivo da Xh */}
+      {scanHealth.any_stale && (
+        <div className="mb-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 flex items-start gap-3" data-testid="scanner-stale-banner">
+          <Warning size={18} weight="bold" className="text-amber-400 mt-0.5 flex-shrink-0" />
+          <div className="flex-1 min-w-0">
+            <p className="text-[12px] font-bold text-amber-300">Scanner inattivo — discovery LAN ferma</p>
+            <p className="text-[10px] text-amber-300/80 mt-0.5">
+              {scanHealth.connectors.filter(c => c.is_stale).map(c => (
+                <span key={c.hostname} className="inline-block mr-3">
+                  <span className="font-mono">{c.hostname}</span> ({c.mode}): ultimo scan {c.minutes_since_last_scan >= 60 ? `${Math.floor(c.minutes_since_last_scan / 60)}h ${c.minutes_since_last_scan % 60}m` : `${c.minutes_since_last_scan}m`} fa
+                </span>
+              ))}
+            </p>
+            <p className="text-[10px] text-amber-300/70 mt-1">
+              Il sub-thread <code className="px-1 py-0.5 rounded bg-amber-500/20">Poll-LanEndpoints</code> del Connector si e' bloccato (UDP socket leak / crash silenzioso). Per ripartire:
+              {" "}<code className="px-1 py-0.5 rounded bg-amber-500/20">Restart-Service "86NocConnector"</code>{" "}
+              sul server cliente. I device tornano fluidi entro ~5 minuti.
+            </p>
+          </div>
+          <button
+            onClick={() => fetchAll()}
+            className="text-[10px] px-2 py-1 rounded bg-amber-500/20 border border-amber-500/40 text-amber-300 hover:bg-amber-500/30 whitespace-nowrap self-start"
+            data-testid="scanner-stale-recheck-btn"
+          >
+            Ricarica stato
+          </button>
+        </div>
+      )}
       {/* Header */}
       <div className="flex items-center gap-3 mb-4">
         <button onClick={() => navigate("/")} className="p-1.5 rounded-md hover:bg-[var(--bg-hover)] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors">

@@ -1,3 +1,29 @@
+## 2026-05-08 FEATURE — Watchdog Scanner Connector inattivo (v3.8.41)
+
+**Issue**: dopo i fix v3.8.36→40 (logica status corretta + last_seen_at aggiornato), l'utente vedeva ancora i device fermi alle 12:20 perché il sub-thread `Poll-LanEndpoints` PowerShell del Master Connector era bloccato dal 12:20 (probabile residuo UDP socket leak / crash silenzioso). Backend non poteva sbloccare un connector polling-based v3.8.19 da remoto — serviva un meccanismo di **visibilità diagnostica** che inducesse l'admin al restart del servizio Windows.
+
+**Fix v3.8.41** (no breaking change al connector legacy, watchdog backend + UI):
+
+Backend (`/app/backend/routes/connector.py`):
+- Nuovo endpoint admin `GET /api/connectors/scan-health/{client_id}` — ritorna lista connector con `hostname, mode, online, last_lan_scan_at, minutes_since_last_scan, is_stale` (soglia 30min).
+
+Backend (`/app/backend/routes/overview.py`):
+- Aggiunto campo `scanner_health` per ogni cliente nel payload `/api/overview/clients` con dettaglio dei connector + flag staleness.
+
+Frontend (`/app/frontend/src/pages/ClientOverviewPage.js`):
+- Nuovo banner ambra "Scanner inattivo — discovery LAN ferma" mostrato in cima alla pagina cliente quando uno o piu' connector hanno scan staleness >30min.
+- Mostra hostname + mode + ultimo scan in formato "Xh Ym fa".
+- Istruzione di recovery in chiaro: `Restart-Service "86NocConnector"`.
+- Bottone "Ricarica stato" per re-fetch dopo l'intervento.
+- Auto-scompare al primo scan ricevuto post-restart.
+
+**Verifica preview**: endpoint risponde 200 ed espone connector di test con `is_stale: true` (2986 min). Banner visibile sulla pagina 86BIT_Office. Lint pulito.
+
+**Limite tecnico**: il backend non puo' inviare comandi al connector polling-based v3.8.19 (l'utente vuole mantenere questa versione per stabilita'). Il restart del servizio Windows resta l'azione di recovery. Il watchdog evita pero' che il blocco passi inosservato per ore.
+
+---
+
+
 ## 2026-05-07 BUG FIX — Coerenza counter dispositivi (75 vs 67) v3.8.40
 
 **Issue UX**: nello screenshot l'utente vedeva:
