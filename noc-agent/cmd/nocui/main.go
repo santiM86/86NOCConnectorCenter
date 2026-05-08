@@ -24,6 +24,7 @@ import (
 	"bytes"
 	"encoding/csv"
 	"encoding/json"
+	_ "embed"
 	"flag"
 	"fmt"
 	"net/http"
@@ -43,6 +44,9 @@ import (
 	wd "github.com/lxn/walk/declarative"
 	"github.com/lxn/win"
 )
+
+//go:embed argus.ico
+var argusIcoBytes []byte
 
 // --- IPC tra istanze dello stesso EXE ---------------------------------------
 
@@ -903,15 +907,16 @@ func refreshStatus(app *App) {
 // --- Icon embedded ----------------------------------------------------------
 
 func loadAppIcon() *walk.Icon {
-	// L'EXE ha argus.ico embedded come ID 1 (fatto da rsrc tool).
-	// NewIconFromResourceId carica quell'icona.
-	if icon, err := walk.NewIconFromResourceId(1); err == nil {
-		return icon
-	}
-	// Fallback su shell32 (icona di default Windows). Solo per dev/test.
-	icon, err := walk.NewIconFromResourceId(13)
-	if err == nil {
-		return icon
+	// Estraggo argus.ico embedded (go:embed) su file temporaneo e
+	// la carico con walk. Cosi' separo l'icona dal manifest .syso
+	// che resta semplice (solo Common-Controls v6 dichiarato).
+	if len(argusIcoBytes) > 0 {
+		tmp := filepath.Join(os.TempDir(), "argus-tray.ico")
+		if err := os.WriteFile(tmp, argusIcoBytes, 0o644); err == nil {
+			if icon, err := walk.NewIconFromFile(tmp); err == nil {
+				return icon
+			}
+		}
 	}
 	return nil
 }
