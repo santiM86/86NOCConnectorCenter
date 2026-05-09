@@ -1,3 +1,537 @@
+## 2026-05-08 FEATURE — Network Scanner v2 (enterprise tooling)
+
+**Direttiva utente**: «tutta la parte di scansione IP sulla rete funziona? copia clona advanced-ip-scanner.com».
+
+**Nota legale**: NON ho clonato UI/codice di Advanced IP Scanner (proprietary). Ho implementato funzionalità standard di networking — protocolli pubblici (TCP, ICMP, ARP cache, WoL magic packet AMD 1995, SNMP v2c RFC) — con UI originale walk + branding Argus + etichette italiane.
+
+### Pipeline di scansione potenziata
+
+1. **TCP probe parallelo** (sem 64): 13 porte note. Ora ritorna anche RTT della connessione TCP e prima porta che ha risposto.
+2. **ARP cache parse** (`arp -a`): cattura device che bloccano TCP.
+3. **DNS reverse** parallelo (sem 32, 600 ms timeout).
+4. **NUOVO — ICMP ping** via `ping.exe -n 1 -w 600`: niente raw socket, niente admin. Parsing `time=Xms` / `durata=Xms` per RTT autentico.
+5. **NUOVO — Web UI auto-detect**: HEAD request HTTP/HTTPS sulle porte 80/443/8080/8443 (timeout 1.5s, TLS skip-verify per device self-signed).
+6. **NUOVO — SNMP v2c probe** (community: `public`, `private`): pacchetto BER hand-crafted per `sysDescr.0`, niente dipendenze esterne. Marca i device SNMP-able con badge "SNMP".
+
+### Tabella risultati estesa (7 colonne)
+| Stato | IP | RTT | Hostname | MAC | Vendor | Servizi |
+|---|---|---|---|---|---|---|
+| `● alive` / `◐ arp` / `○ down` | 192.168.1.10 | 1 ms | switch-core | aa:bb... | Cisco | WEB SNMP |
+
+### Azioni rapide (toolbar dedicata)
+- **Web UI** → apre browser sull'URL HTTP/HTTPS rilevato (o fallback `http://IP/`)
+- **RDP** → `mstsc /v:IP` per connessione Remote Desktop
+- **Cartelle (SMB)** → `explorer \\IP` per share di rete
+- **Ping...** → apre cmd con `ping -t IP` per monitor live
+- **Wake-on-LAN** → invia magic packet UDP/9 broadcast (RFC pubblico AMD)
+- **+ Aggiungi a SNMP (public / personalizzata)** → import target nella tabella SNMP del Connector
+- **Esporta CSV** → con i nuovi campi `rtt_ms, web_url, snmp_ok`
+
+### File modificati
+- `/app/noc-agent/cmd/nocui/scanner_windows.go` — esteso da ~470 a ~720 righe
+  - `ScanResult` ora ha campi `RTTms`, `OpenPort`, `WebURL`, `SNMPok`
+  - Nuove funzioni: `probeICMPPing`, `probeWebUI`, `probeSNMPv2c`, `buildSNMPv2cGetSysDescr`, `sendWoLMagicPacket`, `parseMAC6`
+  - Dialog allargato 1100×660 con toolbar Azioni dedicata
+
+### Build
+`nocagent-ui.exe` ricompilato a 9.99 MB (era 9.96), sha256 `1e008538e86a99e9584add2bfd06ca9bf9913c6e3c9ed8ec70aab8a5953dccbf`. Cross-compile pulito al primo tentativo.
+
+---
+
+
+## 2026-05-08 ICONS v2 — Standardizzazione totale
+
+**Direttiva utente**: «stai usando icone diverse.. standardizza tutto.. ovunque icone uguali».
+
+### Diagnosi
+Lo screenshot mostrava DUE icone diverse in taskbar:
+1. **SINISTRA**: cerchio teal con "86" bianco → era il **86NocConnector LEGACY** (PowerShell v3.x), file `/app/noc-connector/prg/src/86bit_logo.ico` non rigenerato.
+2. **DESTRA**: la mia argus.ico ma con effetto "pallina dentro pallina" causato dal safe-area al 78% + sfondo bianco quadrato. La A risultava illeggibile in 16-32 px.
+
+### Fixed
+Rigenerato lo script `/tmp/build_all_icons.py` con un **unico stile uniforme**:
+- Cerchio blu solido al **97% del quadrato** (non più 78%) → niente più "pallina dentro pallina".
+- **Sfondo trasparente** fuori dal cerchio → la taskbar (chiara o scura) mostra solo il cerchio nitido.
+- Lettera **A** Bold al **78% del diametro** → leggibile anche a 16×16 px.
+- Sotto i 48 px usa colore solido (no gradiente) → niente artefatti in interpolazione.
+- Sopra i 96 px usa gradiente radiale `#3C82FF→#1040E0` + highlight in alto-sinistra.
+
+Aggiornati TUTTI i punti:
+
+| File | Note |
+|---|---|
+| `/app/noc-agent/cmd/nocui/argus.ico` | Connector Go (walk tray) — 815 byte multi-size |
+| `/app/noc-connector/prg/src/86bit_logo.ico` | **Connector legacy PowerShell** (sostituisce il vecchio teal-86) |
+| `/app/frontend/public/favicon-32.png` | Tab browser |
+| `/app/frontend/public/favicon.ico` | Aggiunto multi-size 16/24/32/48 |
+| `/app/frontend/public/logo-48.png` | Header app |
+| `/app/frontend/public/apple-touch-icon.png` | iOS Home (180) |
+| `/app/frontend/public/icon-192.png` | PWA Android |
+| `/app/frontend/public/icon-512.png` | PWA Android (maskable + splash) |
+| `/app/frontend/public/icon-192-new.png` | Variante alternate |
+| `/app/frontend/public/icon-512-new.png` | Variante alternate |
+
+Il frontend React (`Layout.js` riga 315/397, `LoginPage.js` riga 58) usa già `/icon-192.png` ovunque → aggiornamento automatico con il nuovo asset.
+
+### Cache invalidation
+- Service Worker bumpato `v16 → v17` per forzare refresh PWA.
+- Connector EXE ricompilato (9.96 MB) con nuovo `rsrc_windows_amd64.syso` embeddato.
+
+### Verifica
+- `GET /favicon-32.png` → 1648 byte, corner alpha=0 (trasparente), centro blu ✓
+- `GET /icon-192.png` → 19.753 byte, corner alpha=0, edge blu (cerchio piena ampiezza) ✓
+- `GET /api/agent/binary/.../nocagent-ui.exe` → 9.961.984 byte, sha256 `001971e1...` ✓
+
+### Cosa farà l'utente
+Lato cliente:
+- **Web/PWA**: hard refresh (Ctrl+Shift+R) → SW v17 sovrascrive le icone vecchie.
+- **Connector Windows nuovo (Go)**: reinstall dal wizard → embedded ICO + argus.ico in InstallDir + `ie4uinit.exe -show` per refresh icon-cache.
+- **86NocConnector legacy (PowerShell)**: rigenerato anche `86bit_logo.ico` → al prossimo deploy/reinstall del legacy il "86 verde teal" sparisce e viene sostituito dalla A bianca su cerchio blu.
+
+Per produzione `argus.86bit.it`: solito git pull + `make all-platforms` + `supervisorctl restart frontend backend`.
+
+---
+
+
+## 2026-05-08 FEATURE — Splash screen di boot del Connector
+
+**Direttiva utente**: «procedi» (sulla proposta di splash screen per dare feedback "professionale" tipo NinjaOne/Atera all'avvio).
+
+### Implementato
+Nuovo file `/app/noc-agent/cmd/nocui/splash_windows.go` (~180 righe).
+
+Quando il binario `nocagent-ui.exe` parte (At Logon o doppio-click sullo shortcut), prima di registrare la tray icon mostra una finestra centrata 460×280:
+
+- **Logo Argus** 96×96 (carica `argus.ico` da `InstallDir` se l'installer l'ha messo lì, altrimenti scrive l'embedded `argusIcoBytes` in `%LOCALAPPDATA%\86NocAgent\argus.ico`).
+- **Titolo** "ARGUS Connector" (Segoe UI 16 Bold).
+- **Riga cliente** "Cliente: <id>  -  Ruolo: master  -  v4.0.4" (Segoe UI 9 muted).
+- **ProgressBar marquee** (indeterminata).
+- **Riga status** in colore: blu mentre sta verificando, verde se WS connesso, arancio se WS disconnesso, rosso se backend irraggiungibile.
+
+In parallelo lancia in background un health check `/api/agent/self/health` riusando la `backendGet` già presente. Il dialog si chiude quando arriva la risposta + 1.2s di "leggi-il-messaggio", oppure dopo 3s totali (timeout di sicurezza).
+
+### Skip intelligente
+Lo splash **non viene mostrato** quando il binario è invocato con flag `-show` (cioè quando un'altra istanza chiede tramite IPC di aprire la console "Gestisci Dispositivi"): in quel caso l'utente vuole arrivare subito alla finestra, non vedere di nuovo lo splash.
+
+### Implementazione tecnica
+- `walk.MainWindow` con `Background: SolidColorBrush{walk.RGB(255,255,255)}` per un look pulito su tema Windows scuro/chiaro.
+- Centrato con `GetSystemMetrics(SM_CXSCREEN/SM_CYSCREEN)` via `syscall.NewLazyDLL("user32.dll")`.
+- `dlg.Synchronize()` per marshaling thread-safe degli aggiornamenti UI dal goroutine di background.
+- `recover()` per evitare crash nel main flow se walk fallisce su versioni Windows particolari (Server Core ecc.).
+
+### Build
+`nocagent-ui.exe` ricompilato a 9.96 MB (era 9.8 MB) — diff ~160 KB per il modulo splash.
+
+### Verifica
+- `GET /api/agent/binary/windows-amd64/nocagent-ui.exe?token=...` → 9.961.984 byte ✓
+- SHA256: `e1058aa54c6e1e8823018d7bc6be03a6212f0f33d6905ccff9b1af5194ee6116`
+- Build go cross-compile passata al primo tentativo, vet pulito.
+
+---
+
+
+## 2026-05-08 ICONS — Riallineamento icone su tutti i touchpoint
+
+**Direttiva utente**: «riallinea tutte le icone in modo che siano ovunque uguali».
+
+### Stato precedente
+- Connector Windows: `argus.ico` blu (creato in iterazione precedente).
+- PWA / favicon / Apple touch: vecchie icone `#00D8F8` (cyan/teal con "86" — non allineate).
+
+### Fatto
+Script consolidato `/tmp/build_all_icons.py` rigenera in un solo passaggio:
+
+| File | Size | Uso |
+|---|---|---|
+| `/app/noc-agent/cmd/nocui/argus.ico` | multi-size 16/24/32/48/64/128/256 | Connector Windows tray + shortcut |
+| `/app/frontend/public/favicon-32.png` | 32×32 | Tab del browser |
+| `/app/frontend/public/logo-48.png` | 48×48 | Header app |
+| `/app/frontend/public/apple-touch-icon.png` | 180×180 | iOS Aggiungi a Home |
+| `/app/frontend/public/icon-192.png` | 192×192 | PWA Android |
+| `/app/frontend/public/icon-512.png` | 512×512 | PWA Android maskable / splash |
+
+Tutte le immagini hanno la stessa identità visiva:
+- Sfondo blu pieno `#1040E0` (necessario per i maskable Android, evita la rivelazione di trasparenza al ritaglio rotondo).
+- Cerchio inscritto al 78% del bitmap (safe-area) con gradiente radiale `#3C82FF→#1040E0`.
+- Subtle white highlight in alto-sinistra per dare profondità.
+- Lettera **A** bianca Bold (DejaVuSans-Bold), ~62% del diametro del cerchio.
+
+### Cache invalidation
+- Service Worker: `CACHE_NAME` bumpato `noc-center-v15` → `noc-center-v16` per forzare il refresh delle icone PWA al prossimo `register('/sw.js')`.
+- Connector: `nocagent-ui.exe` ricompilato (9.8 MB) con il nuovo `rsrc_windows_amd64.syso` embedded.
+
+### Verifica
+- `GET /icon-192.png` → screenshot conferma il quadrato blu con A bianca centrata.
+- `argus.ico` 917 byte multi-size, embedded nell'EXE via `rsrc -manifest -ico`.
+- L'utente sui PC già installati vedrà la nuova icona dopo: refresh browser hard (Ctrl+Shift+R) per il web, reinstall connector + `ie4uinit.exe -show` o logoff/logon per Windows.
+
+---
+
+
+## 2026-05-08 FEATURE — Network Scanner integrato nel Connector UI
+
+**Direttiva utente**: «metti pulsante per fare scansione rete e trovare device — prendi spunto da advanced-ip-scanner.com».
+
+### Implementato
+Nuovo file `/app/noc-agent/cmd/nocui/scanner_windows.go` (≈460 righe) — finestra modale "Scansiona Rete" stile Advanced IP Scanner.
+
+#### Pipeline di scansione (no privilegi admin richiesti)
+1. **Auto-detection CIDR**: rileva la prima IPv4 privata bound (10/172.16-31/192.168) e propone `<host>.0/24` come default; espande il range con `expandCIDR` (max /16 per safety).
+2. **TCP probe parallelo** (sem 64): ogni IP testato su 13 porte note (22/23/80/135/139/161/443/445/515/631/3389/8080/9100). Timeout 250 ms per porta. Una sola risposta → host *alive*.
+3. **ARP cache parsing** (`arp -a` con `HideWindow`): cattura anche device che bloccano TCP ma hanno popolato la neighbour cache.
+4. **DNS reverse lookup** parallelo (32 worker, timeout 600 ms per IP) per ottenere l'hostname.
+5. **OUI vendor lookup** con tabella in-memory (≈80 prefissi, copre Cisco/Mikrotik/Zyxel/Ubiquiti/HP/Dell/TP-Link/Synology/QNAP/printer/Hikvision/Apple/Espressif).
+
+#### UI
+Pulsante **"Scansiona Rete"** aggiunto fra "Apri Web UI" e l'`HSpacer` (esattamente dove l'utente ha indicato nello screenshot).
+
+Dialog modale 920×620:
+- **Header**: input CIDR pre-compilato + pulsante "Scansiona Rete" (diventa "Annulla" durante lo scan) + status label live.
+- **ProgressBar**: avanzamento `done/total` aggiornato ogni 4 IP processati.
+- **TableView** ordinabile multi-select: Stato (alive/arp-only) · IP · Hostname · MAC · Vendor.
+- **Action bar**:
+  - `+ Aggiungi (community: public)` — aggiunge le righe selezionate alla tabella SNMP del Connector con community `public`.
+  - `+ Aggiungi (community personalizzata...)` — chiede una community custom via mini-dialog.
+  - `Esporta CSV...` — salva il risultato dello scan.
+  - `Chiudi`.
+
+I duplicati (IP già presenti nella tabella SNMP) vengono saltati.
+
+### File modificati
+- `/app/noc-agent/cmd/nocui/scanner_windows.go` — nuovo
+- `/app/noc-agent/cmd/nocui/main.go` — aggiunto pulsante "Scansiona Rete" nella console
+
+### Build
+`nocagent-ui.exe` ricompilato a 9.8 MB (era 9.6 MB) — diff ~200 KB per il nuovo modulo scanner.
+
+### Verifica
+- `GET /api/agent/binary/windows-amd64/nocagent-ui.exe?token=...` → 9.799.168 byte ✓
+- `GET /api/agent/install/wizard-bundle.zip` → 21 KB con `installer_gui.ps1` aggiornato ✓
+
+---
+
+## 2026-05-08 FEATURE — Icona Connector "blue circle + white A"
+
+**Direttiva utente**: «mancano icone.. usa pallina BLU con A bianca in mezzo».
+
+### Implementato
+- Generato `argus.ico` multi-size (16/24/32/48/64/128/256) con script PIL: gradient blu radiale `#3C82FF→#1040E0` + lettera **A** bianca Bold centrata (62% del diametro).
+- Embeddata nel binario `nocagent-ui.exe` via `rsrc -manifest app.manifest -ico argus.ico` (`rsrc_windows_amd64.syso` 2832 byte vs 1756 prima).
+- Nuovo endpoint backend `GET /api/agent/install/argus.ico` (no auth) — l'installer la scarica come file separato in `Program Files\86NocAgent\`.
+- Wizard installer aggiornato:
+  - Step 5 scarica `argus.ico` accanto ai binari.
+  - Shortcut `Connector.lnk` + `Disinstalla.lnk` usano `argus.ico` come `IconLocation` (più resiliente della icon-cache di Explorer rispetto a `nocagent-ui.exe,0`).
+  - Voce Uninstall in registry usa `argus.ico` come `DisplayIcon`.
+  - `ie4uinit.exe -show` chiamato post-install per forzare il refresh della icon-cache.
+
+---
+
+
+## 2026-05-08 FEATURE — OTA self-update Ed25519 signed (post-audit)
+
+**Direttiva utente**: «si procedi e poi dammi link download connector» (post-audit ottimizzazione).
+
+### Implementato
+
+#### Backend — endpoint OTA firmati
+`/app/backend/routes/agent_ws.py`:
+- `GET /api/agent/update/public-key` — restituisce la public key Ed25519 (hex). No auth, da pinnare in `agent.yaml` lato cliente.
+- `GET /api/agent/update/manifest?platform=<p>&token=<t>` — JSON `{version, os, arch, url, sha256, signature}`. La firma è `ed25519(privkey, sha256_raw_bytes)`, formato compatibile 1:1 con `internal/update/updater.go::Manifest` del client Go.
+- Lazy keypair generation: alla prima chiamata viene creato un keypair Ed25519 e persistito in Mongo `agent_signing_key` (singleton `_id="default"`). Privata mai esposta. La cache in-memory evita re-fetch ad ogni request.
+
+Verifica end-to-end:
+```
+GET /api/agent/update/public-key → 554e1eb239f79820...
+GET /api/agent/update/manifest?platform=linux-amd64 → {sha256, signature, ...}
+ed25519.verify(pub, sig, sha256) → ✓ VERIFIED
+```
+
+#### Binari ricompilati con i fix dell'audit
+`make all-platforms` eseguito post-audit. Tutti i binari aggiornati:
+- `nocagent` (Linux amd64/arm64, Windows, macOS arm64) con `os.Exit(0)` corretto + pruning discovery + LRU jar webproxy.
+- `nocwatchdog` cross-build OK.
+- `nocinstall.exe` con verifica SHA256 nativa.
+- `nocagent-ui.exe` (9.6 MB, già funzionante per l'utente).
+
+### Come attivare l'OTA su un cliente esistente
+1. Fetch della public key (una sola volta):
+   ```
+   curl https://argus.86bit.it/api/agent/update/public-key
+   → 554e1eb239f79820b4b63074d78f0a81a473e0664038100943f4ab1bd178ee4c
+   ```
+2. Modifica `C:\ProgramData\86NocAgent\agent.yaml` (o `/etc/86nocagent/agent.yaml`) sezione `update:`:
+   ```yaml
+   update:
+     enabled: true
+     manifest_url: "https://argus.86bit.it/api/agent/update/manifest?platform=windows-amd64&token=<TOKEN>"
+     check_interval: 1h
+     public_key: "554e1eb239f79820b4b63074d78f0a81a473e0664038100943f4ab1bd178ee4c"
+   ```
+3. Restart servizio: `Restart-Service 86NocAgent`. Da ora in poi l'agent self-update OTA quando il backend pubblica una nuova `version`.
+
+### Link download per nuove installazioni
+- **Bundle EXE installer + cfg + LEGGIMI** (raccomandato Windows enterprise):
+  `GET /api/agent/install/exe-bundle.zip?token=<TOKEN>` → ZIP 2.4 MB
+- **Wizard GUI ZIP** (PowerShell installer interattivo):
+  `GET /api/agent/install/wizard-bundle.zip?token=<TOKEN>`
+- **One-liner CLI Windows**:
+  `iwr -UseBasicParsing https://argus.86bit.it/api/agent/install/windows.ps1?token=<TOKEN> | iex`
+- **One-liner CLI Linux**:
+  `curl -fsSL https://argus.86bit.it/api/agent/install/linux.sh?token=<TOKEN> | sudo bash`
+
+Il token si genera lato admin con `POST /api/agents/register` (UI: pagina Connettori → "Nuovo agent v4").
+
+---
+
+
+## 2026-05-08 OTTIMIZZAZIONE — Audit enterprise `noc-agent` Go (post-fix UI)
+
+**Direttiva utente**: «connector ora lo vedo e si apre... fai un controllo aggiuntivo se siamo ottimizzati al massimo con il connector».
+
+### Audit completo (3.500+ righe Go) — fix applicati
+
+#### 🔴 BUG P0 — OTA self-update non terminava il processo
+`/app/noc-agent/internal/update/updater.go:167`:
+```go
+go func() {
+    time.Sleep(500 * time.Millisecond)
+    _ = os.Exit       // ← BUG: riferimento alla funzione, NON la chiama
+}()
+```
+Effetto: l'updater scriveva il binario nuovo via atomic-rename ma il processo vecchio NON terminava mai. Il watchdog non rilevava restart, l'aggiornamento aveva effetto solo dopo reboot manuale.
+**Fix**: `os.Exit(0)`. Ora il watchdog respawna correttamente con la nuova versione.
+
+#### 🔴 BUG P0 — Memory leak silenzioso in discovery manager
+`/app/noc-agent/internal/discovery/manager.go`:
+La mappa `m.endpoints` veniva alimentata ad ogni scan ma MAI ripulita. Su un cliente attivo per mesi, ogni IP visto anche una sola volta restava in memoria + veniva rispedito al backend in ogni batch successivo.
+**Fix**: aggiunto `retainAfter: 60min` con pruning automatico in `merge()` per gli IP non visti da oltre l'ora. Memoria bounded, batch verso il backend dimezzati a regime.
+
+#### 🟠 P1 — WebProxy: transport ricreato per ogni request + LRU non corretto
+`/app/noc-agent/internal/webproxy/webproxy.go`:
+1. `http.Transport` veniva ricreato ad ogni call → ogni asset CSS/JS della Web Console live faceva un handshake TCP+TLS nuovo, niente keep-alive. Performance UI deplorevoli su device LAN.
+2. La cache di `cookiejar.Jar` evictava un jar a caso quando superava 100 sessioni → utenti perdevano la sessione web casualmente.
+
+**Fix**:
+- `sharedTransport` singleton con `MaxIdleConns=50`, `MaxIdleConnsPerHost=8`, `IdleConnTimeout=90s` → connection pool corretto.
+- LRU eviction sui jar (`lastUse` timestamp), evict del meno usato — l'utente attivo non perde mai la sessione.
+
+#### 🟠 P1 — Installer: nessuna verifica integrità binari scaricati
+Backend `/app/backend/routes/agent_ws.py` `install_manifest`:
+- Ora calcola e include `sha256` per ogni binary nel manifest (cache in-memory keyed per `(platform, name, mtime, size)` → ricomputa solo quando il binario viene rebuildato).
+
+Installer aggiornati per verificare l'hash dopo il download:
+- `install.ps1.template` (Windows): `Get-FileHash` con `Remove-Item` + `exit 2` su mismatch.
+- `install.sh.template` (Linux): `sha256sum` con cleanup + `exit 2` su mismatch.
+- `cmd/installer/main.go` (Windows nativo Go): `crypto/sha256` con `MultiWriter` e `strings.EqualFold`.
+
+Verifica end-to-end (preview):
+```
+GET /api/agent/install/manifest?platform=linux-amd64&token=...
+→ 200 con `sha256: { nocagent: "675e1ca8...", nocwatchdog: "c21a0072..." }`
+
+curl /api/agent/binary/linux-amd64/nocagent | sha256sum
+→ MATCH con manifest ✓
+```
+
+### Quel che era già a livello enterprise (verificato durante l'audit)
+- Watchdog process separato con SIGTERM/SIGKILL graduato (10s) + respawn.
+- Reconnect WS con exponential backoff + jitter, header `User-Agent` + `X-Agent-Id`.
+- SCM Windows handler nativo (`golang.org/x/sys/windows/svc`) con response a Stop/Shutdown/Interrogate.
+- Service Recovery `restart/5s/restart/5s/restart/15s` registrato via `sc.exe failure`.
+- Discovery: ARP + mDNS in parallelo, panic-recover per ogni source.
+- SNMP poller: fan-out con semaforo a 16, community fallback in serie.
+- Cookiejar per-sessione (HTTP state preservato per la Web Console live).
+- TLS 1.2+ enforced sul transport client del WS.
+- Logger structured slog su stderr + ring channel `cap=1024` verso il backend (solo warn/error per evitare loop).
+- `nocagent-ui.exe` (UI nativa walk): single-instance via `CreateMutexW` session-local + IPC tramite `%LOCALAPPDATA%\86NocAgent\show.flag`.
+
+### Verifica regressione
+- Backend lint pulito (`ruff` su `agent_ws.py`).
+- Backend riavviato con successo, agent v4 in produzione (`SantiM86`, `client_id=86bit-pilot`) si è riconnesso al WS senza errori.
+- Manifest end-to-end testato: SHA256 corrisponde al binario streamato.
+
+### Effetto in produzione (post-deploy)
+- Agent rilascerà la nuova versione via OTA quando attivata (oggi `update.enabled=false` di default).
+- I clienti che reinstallano via PowerShell installer verificano automaticamente l'integrità del binario scaricato.
+- Memoria del processo agent stabile su long-run (settimane/mesi senza riavvio).
+- Web Console live più reattiva (keep-alive HTTP verso device LAN).
+
+---
+
+
+## 2026-05-08 MILESTONE — `86NocAgent` v4.0 — Sprint 1.5 PRODUCTION-READY
+
+**Direttiva utente**: «procedi con quello che è essenziale ora andare in produzione»
+
+Aggiunti i 6 elementi minimi per deployare l'agent v4 sulle macchine dei clienti:
+
+### 1. PID file (fix watchdog)
+`runAgent()` in `/app/noc-agent/cmd/agent/main.go` scrive `os.Getpid()` in:
+- Windows: `C:\ProgramData\86NocAgent\agent.pid`
+- Unix: `/var/run/86nocagent.pid`
+
+Il watchdog ora può davvero `signalProcess(pid, SIGTERM/SIGKILL)`. Bug latente del primo MVP risolto.
+
+### 2. Windows Service mode nativo
+- `/app/noc-agent/cmd/agent/service_windows.go` (build tag windows): handler SCM con `golang.org/x/sys/windows/svc`. Auto-detect via `svc.IsWindowsService()` — se lanciato da Service Control Manager gira come service, altrimenti console. Risponde a `Stop/Shutdown/Interrogate`. Senza questo Windows uccide il processo dopo 30s.
+- `/app/noc-agent/cmd/agent/service_other.go` (no-op su Linux/macOS, gestiti da systemd/launchd).
+- Aggiunta dep `golang.org/x/sys v0.26.0` (era già transitiva).
+
+### 3. Backend: distribuzione binari + installer
+In `/app/backend/routes/agent_ws.py`:
+- `GET /api/agent/install/manifest?platform=<p>&token=<t>` — JSON con `client_id`, `backend_ws`, URL binari firmati, `config_template` pronto.
+- `GET /api/agent/binary/{platform}/{name}?token=<t>` — stream del binario con path-traversal guard + allowlist platform/file.
+- `GET /api/agent/install/windows.ps1?token=<t>` — PowerShell installer renderizzato dinamicamente (TOKEN + URL sostituiti).
+- `GET /api/agent/install/linux.sh?token=<t>` — bash installer renderizzato dinamicamente.
+
+Auth via `?token=<agent_token>` (lo stesso bearer che l'agent userà dopo l'install — bootstrap one-shot).
+
+### 4. Installer Windows PowerShell (idempotente)
+`/app/noc-agent/build/install.ps1.template`:
+1. Verifica privilegi admin.
+2. Stop+delete `86NocAgent` / `86NocWatchdog` se gia' presenti (reinstall sicuro).
+3. Crea `C:\Program Files\86NocAgent\` + `C:\ProgramData\86NocAgent\`.
+4. Scarica `nocagent.exe` + `nocwatchdog.exe` dal backend.
+5. Scrive `agent.yaml`.
+6. `sc.exe create` di entrambi i servizi con **Service Recovery** = `restart/5s/restart/5s/restart/15s`.
+7. Avvia entrambi.
+
+Installazione one-liner sul cliente:
+```
+iwr -UseBasicParsing "https://argus.86bit.it/api/agent/install/windows.ps1?token=<TOKEN>" | iex
+```
+
+### 5. Installer Linux bash
+`/app/noc-agent/build/install.sh.template`:
+1. Auto-detect arch (amd64/arm64).
+2. Download binari in `/usr/local/bin/`.
+3. Scrive `/etc/86nocagent/agent.yaml`.
+4. Crea unit systemd `86nocagent.service` + `86nocwatchdog.service` con `Restart=always`.
+5. `daemon-reload` + `enable` + `start`.
+
+One-liner:
+```
+curl -fsSL "https://argus.86bit.it/api/agent/install/linux.sh?token=<TOKEN>" | sudo bash
+```
+
+### 6. QUICKSTART.md
+`/app/noc-agent/QUICKSTART.md` — flusso completo in 3 step (register token → installer one-liner → verify `/api/agents` + comandi real-time esempio) con sezione troubleshooting.
+
+### Deploy in produzione: cosa serve sul backend produzione
+1. `git pull` per portare i nuovi file backend (`routes/agent_ws.py`, `server.py` aggiornato).
+2. Variabili ambiente backend (opzionali, default sensati):
+   - `AGENT_PUBLIC_WS_URL=wss://argus.86bit.it/api/agent/ws`
+   - `AGENT_PUBLIC_HTTP_URL=https://argus.86bit.it`
+   - `NOCAGENT_BUILD_DIR=/app/noc-agent/build/bin`
+3. `cd /app/noc-agent && make all-platforms` per generare i binari nei 4 OS×arch (i clienti scaricheranno da qui via backend).
+4. Restart backend.
+
+### Verifica end-to-end (smoke retest dopo refactor)
+- `test_agent_v4_e2e.py` ✅ PASS (nessuna regressione dopo PID file + service refactor).
+- `test_agent_v4_commands.py` ✅ PASS.
+- `curl /api/agent/install/manifest` ✅ 200, JSON corretto, token validato.
+- `curl /api/agent/install/windows.ps1` ✅ 200, BackendUrl + Token sostituiti.
+- `curl /api/agent/install/linux.sh` ✅ 200.
+- `curl /api/agent/binary/windows-amd64/nocagent.exe` ✅ 200, 7.2 MB scaricato.
+- `go vet ./...` clean. Cross-build linux/win/macos × amd64/arm64 OK.
+
+### Cosa rimane fuori scope (Sprint 2)
+- UI React `/agents` con bottoni `force_lan_scan` / `run_diagnostics` cliccabili (per ora si pilota via curl).
+- MSI Windows vero (oggi PowerShell installer è sufficiente per deploy uno-a-uno).
+- OTA self-update endpoint con manifest Ed25519 firmato (la plumbing client è gia' wired, manca solo l'endpoint server).
+- Endpoint REST `/api/agents/revoke` per revocare token (oggi si fa via mongo direttamente).
+- LLDP-MED + SNMP CAM-table source (legacy continua a fare il lavoro).
+- WMI poller per Windows Servers.
+
+---
+
+
+## 2026-05-08 MILESTONE — `86NocAgent` v4.0 (rewrite nativo Go) — Sprint 1 COMPLETO
+
+**Direttiva utente**: «dobbiamo essere migliori dei nostri competitor.. non dico altro procedi e non pensare a quello che sta funzionando ora.. ricrea completamente il connector»
+
+**Obiettivo**: sostituire il connector legacy `86NocConnector` v3.8.x basato su PowerShell (catena di script con sub-thread che si bloccano in modo silente, polling unidirezionale, no comandi server→agent, no self-update) con un agent nativo cross-platform allineato allo standard professionale del settore (Datto/NinjaOne/Atera/Auvik/Domotz).
+
+### Codebase nuovo: `/app/noc-agent/` (Go 1.23)
+```
+noc-agent/
+├── cmd/agent/             # main agent binary (nocagent / .exe)
+├── cmd/watchdog/          # supervisore process (nocwatchdog / .exe)
+├── internal/
+│   ├── config/            # YAML loader + ENV override
+│   ├── transport/         # WebSocket persistente + reconnect backoff
+│   ├── discovery/         # ARP (/proc/net/arp + arp -an) + mDNS/DNS-SD
+│   ├── poller/            # SNMP v2c con community fallback + parallel fan-out
+│   ├── health/            # self-telemetry (uptime, goroutines, mem, cpu, modules_alive/stuck)
+│   ├── update/            # OTA self-update con manifest firmato Ed25519
+│   └── logging/           # slog JSON + ring buffer canalizzato verso backend
+├── pkg/proto/messages.go  # wire protocol (Frame, AgentHello, ServerCommand, etc.)
+├── service/systemd/       # 86nocagent.service + 86nocwatchdog.service
+├── build/agent.example.yaml
+└── Makefile               # build, all-platforms (linux/win/macos × amd64/arm64)
+```
+
+### Backend (FastAPI): nuovo endpoint WebSocket
+- `/app/backend/routes/agent_ws.py` — registrato in `server.py` come `agent_ws_router`.
+- `WS  /api/agent/ws` — canale bidirezionale persistente.
+- `POST /api/agents/register` — admin emette token bearer per nuovo agent.
+- `GET  /api/agents` — lista agent connessi/storici con `live_count`.
+- `POST /api/agents/{agent_id}/command` — invia comando server→agent in real-time.
+- `GET  /api/agents/{agent_id}/health` — snapshot ultimo heartbeat + staleness.
+
+### Wire protocol (JSON su WebSocket, v=1)
+- agent → server: `agent.hello`, `agent.heartbeat`, `agent.event` (kind: discovery_batch, snmp_poll, module_stuck, crash_recovered), `agent.reply`, `agent.log`.
+- server → agent: `server.welcome`, `server.command` (ping, force_lan_scan, force_snmp_poll, get_metrics, restart_module, run_diagnostics, self_update, shutdown), `server.config`, `server.ping`.
+
+### Persistenza MongoDB
+- `agent_tokens` — bearer registrati per tenant (revocabili).
+- `managed_agents` — un doc per `agent_id` con hello + ultimo heartbeat (uptime_ns, goroutines, mem_alloc_bytes, cpu_percent, errors_last_5min, modules_alive[], modules_stuck[], last_scan_at, last_poll_at).
+- `discovered_endpoints` — eventi `discovery_batch` ribridgati nella collection esistente con `source_connector_mode="agent_v4"` (zero modifiche UI).
+- `device_poll_status` — eventi `snmp_poll` ribridgati (sysName/sysDescr/sysObjectID/uptime/latency).
+- `agent_logs` — solo log warn/error degli agent (capped intent: cap TTL TBD Sprint 2).
+
+### Vantaggi architetturali sopra il legacy v3.8.x
+| Aspetto | Connector v3.8.x | Agent v4.0 |
+|---|---|---|
+| Linguaggio | PowerShell (catena di .ps1) | Go static binary |
+| Footprint | 80MB+ con dipendenze | 6.9 MB agent + 2.6 MB watchdog |
+| Canale | Polling HTTPS unidirezionale | WebSocket persistente bidirezionale |
+| Comandi server→agent | impossibili | real-time (ping, force_lan_scan, get_metrics, restart_module, run_diagnostics, shutdown) |
+| Watchdog | banner UI ambra (l'admin riavvia a mano) | processo supervisore separato che SIGTERM/SIGKILL/respawn entro 90s |
+| Visibilità modulo bloccato | dopo 30/60 min | <30s via `modules_stuck[]` nell'heartbeat |
+| Self-update | manuale via installer | OTA con manifest Ed25519 firmato (wired, off di default) |
+| Cross-platform | solo Windows | linux/amd64, linux/arm64, windows/amd64, darwin/arm64 |
+
+### Verifica end-to-end (smoke test in `/app/backend/tests/`)
+1. **`test_agent_v4_e2e.py`** PASS — agent connette, hello/welcome handshake, heartbeat con telemetria completa, persistenza in `managed_agents`. Bug risolto in DEBUG: il log shipper accumulava frame prima del connect → hello arrivava al server come ~40° frame → server rifiutava per "expected agent.hello". Fix: hello inviato sincronamente fuori dalla coda + log shipping limitato a warn/error.
+2. **`test_agent_v4_commands.py`** PASS — admin login → 3 comandi server→agent invocati con successo:
+   - `ping` → `{ok:true, result:{pong:"..."}}`
+   - `get_metrics` → modules_alive=[transport, discovery, poller, watchdog], goroutines=11
+   - `force_lan_scan` → endpoints=1 (eseguito on-demand, NON polling-based)
+   - `GET /api/agents` → live_count=1
+
+### Build artefatti
+`/app/noc-agent/build/bin/<os-arch>/nocagent[.exe]` + `nocwatchdog[.exe]` per:
+- linux-amd64 (6.9 MB + 2.6 MB)
+- linux-arm64 (6.7 MB + 2.6 MB)
+- windows-amd64 (7.2 MB + 2.8 MB)
+- darwin-arm64 (6.9 MB + 2.6 MB)
+
+Tutti CGO_ENABLED=0 → static binaries, zero dipendenze runtime, no Python, no PowerShell.
+
+### Coesistenza col legacy
+Il connector v3.8.x continua a girare in produzione. La migrazione clienti è incrementale: emetti un `agent_token` per cliente, installi il binary v4 sulla macchina target, l'agent v4 popola `discovered_endpoints` con `source_connector_mode="agent_v4"` e tutta l'UI esistente continua a funzionare senza modifiche. Quando un cliente è migrato, fermi il servizio legacy.
+
+### Sprint 2 (prossimo, non ancora avviato)
+- Pacchetti installer: MSI Windows (con sc.exe registrazione service) + .deb/.rpm Linux + launchd plist macOS.
+- WMI poller per Windows Servers (sostituisce il P1 «Windows Servers WMI Polling» in coda).
+- UI frontend: pagina `/agents` con tabella live, bottoni `force_lan_scan` / `run_diagnostics` per click.
+- Server-side: endpoint pubblico `/api/agent/update/manifest` con firma Ed25519 → abilita OTA su massa.
+- LLDP-MED + SNMP CAM table source per discovery oltre ARP/mDNS.
+
+---
+
+
 ## 2026-05-08 FEATURE — Watchdog Scanner Connector inattivo (v3.8.41)
 
 **Issue**: dopo i fix v3.8.36→40 (logica status corretta + last_seen_at aggiornato), l'utente vedeva ancora i device fermi alle 12:20 perché il sub-thread `Poll-LanEndpoints` PowerShell del Master Connector era bloccato dal 12:20 (probabile residuo UDP socket leak / crash silenzioso). Backend non poteva sbloccare un connector polling-based v3.8.19 da remoto — serviva un meccanismo di **visibilità diagnostica** che inducesse l'admin al restart del servizio Windows.

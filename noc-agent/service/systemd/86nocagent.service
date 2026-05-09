@@ -1,0 +1,21 @@
+[Unit]
+Description=86bit NOC Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/bin/nocagent --config /etc/86nocagent/agent.yaml
+Restart=always
+RestartSec=5
+LimitNOFILE=65536
+
+# Hardening
+ProtectSystem=full
+ProtectHome=true
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

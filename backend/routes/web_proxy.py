@@ -194,11 +194,110 @@ async def create_web_proxy_request(request: Request, current_user: dict = Depend
     if ev is not None:
         ev.set()
 
+    # ---- v4 bridge: se c'e' un agent v4 connesso per questo client,
+    # invia la richiesta direttamente via WS (asincrono). L'agent
+    # rispondera' con la response che salviamo in DB esattamente come
+    # farebbe il legacy long-poll. Questo abilita la Web Console LIVE
+    # con il nuovo agent Go senza long-polling.
+    try:
+        from routes.agent_ws import REGISTRY as _AGENT_REGISTRY  # noqa: WPS433
+        v4_conns = [c for c in _AGENT_REGISTRY.list() if c.client_id == client_id]
+        if v4_conns:
+            asyncio.create_task(_dispatch_to_agent_v4(
+                v4_conns[0], request_id, client_id, device_ip, port, scheme,
+                path, method, request_body, request_body_encoding,
+                request_headers, session_cookies, session_id,
+            ))
+    except Exception as _e:  # noqa: BLE001
+        logger.warning("agent v4 bridge dispatch failed: %s", _e)
+
     audit.info(
         f"[AUDIT] web_proxy_request | user={current_user.get('email')} | "
         f"method={method} | device={device_ip}:{port}{path} | client={client_id} | session={session_id}"
     )
     return {"request_id": request_id, "session_id": session_id, "status": "pending"}
+
+
+async def _dispatch_to_agent_v4(
+    conn, request_id: str, client_id: str, device_ip: str, port: int,
+    scheme: str, path: str, method: str, request_body: str,
+    body_encoding: str, request_headers: dict, session_cookies: dict,
+    session_id: str,
+):
+    """Invia la web_proxy request a un agent v4 (WebSocket) e salva la
+    response nel DB. Idempotente rispetto al long-polling: se l'agent
+    risponde dopo che il legacy connector ha gia' completato la richiesta,
+    l'update non avra' effetti (status gia' 'completed')."""
+    try:
+        reply = await conn.send_command(
+            "web_proxy",
+            {
+                "request_id": request_id,
+                "session_id": session_id,
+                "device_ip": device_ip,
+                "port": port,
+                "scheme": scheme,
+                "path": path,
+                "method": method,
+                "request_body": request_body,
+                "request_body_encoding": body_encoding,
+                "request_headers": request_headers or {},
+                "session_cookies": session_cookies or {},
+            },
+            timeout=30.0,
+        )
+        if not reply.get("ok"):
+            await db.web_proxy_requests.update_one(
+                {"request_id": request_id, "status": {"$ne": "completed"}},
+                {"$set": {
+                    "status": "error",
+                    "completed_at": datetime.now(timezone.utc).isoformat(),
+                    "response": {"error": reply.get("error", "agent error")},
+                }},
+            )
+            return
+        result = reply.get("result") or {}
+        await db.web_proxy_requests.update_one(
+            {"request_id": request_id, "status": {"$ne": "completed"}},
+            {"$set": {
+                "status": "completed",
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+                "response": {
+                    "status_code": result.get("status_code", 200),
+                    "content_type": result.get("content_type", ""),
+                    "body": result.get("body", ""),
+                    "body_encoding": result.get("body_encoding", "text"),
+                    "response_headers": result.get("response_headers", {}),
+                    "cookies": result.get("cookies", {}),
+                    "duration_ms": result.get("duration_ms", 0),
+                    "via": "agent-v4-ws",
+                },
+            }},
+        )
+        # Persisti cookie per la session (per i request successivi)
+        cookies = result.get("cookies") or {}
+        if cookies:
+            await db.web_proxy_sessions.update_one(
+                {"session_id": session_id, "client_id": client_id, "device_ip": device_ip},
+                {"$set": {"cookies": cookies, "updated_at": datetime.now(timezone.utc).isoformat()}},
+                upsert=True,
+            )
+        # Notifica response listener
+        ev = _get_response_event(request_id)
+        if ev is not None:
+            ev.set()
+    except asyncio.TimeoutError:
+        logger.warning("agent v4 web_proxy timeout request_id=%s", request_id)
+        await db.web_proxy_requests.update_one(
+            {"request_id": request_id, "status": {"$ne": "completed"}},
+            {"$set": {
+                "status": "error",
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+                "response": {"error": "agent timeout"},
+            }},
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("agent v4 web_proxy dispatch failed: %s", e)
 
 
 @router.get("/connector/web-proxy/pending")

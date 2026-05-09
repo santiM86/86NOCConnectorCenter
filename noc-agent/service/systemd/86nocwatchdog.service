@@ -1,0 +1,14 @@
+[Unit]
+Description=86bit NOC Agent Watchdog
+After=86nocagent.service
+Wants=86nocagent.service
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/bin/nocwatchdog --config /etc/86nocagent/agent.yaml --pidfile /var/run/86nocagent.pid
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
