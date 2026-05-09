@@ -493,6 +493,22 @@ _AGENT_BUILD_DIR = _pathlib.Path(_os.environ.get(
     "NOCAGENT_BUILD_DIR", "/app/noc-agent/build/bin"
 )).resolve()
 
+# Directory che contiene `installer_gui.ps1.template`,
+# `install.ps1.template`, `install.sh.template`, `Installa-86NocAgent.bat`.
+# Su /app (preview/dev) coincide con `_AGENT_BUILD_DIR.parent`. Su
+# /opt/argus/... in produzione il caller la sovrascrive via env.
+_AGENT_TEMPLATE_DIR = _pathlib.Path(_os.environ.get(
+    "NOCAGENT_TEMPLATE_DIR",
+    str(_AGENT_BUILD_DIR.parent),
+)).resolve()
+
+# Path del file `argus.ico` standalone (servito agli installer Windows
+# per gli shortcut menu Start). Default: cmd/nocui/argus.ico nel repo.
+_AGENT_ICO_PATH = _pathlib.Path(_os.environ.get(
+    "NOCAGENT_ICO_PATH",
+    "/app/noc-agent/cmd/nocui/argus.ico",
+)).resolve()
+
 _ALLOWED_PLATFORMS = {"linux-amd64", "linux-arm64", "windows-amd64", "darwin-arm64"}
 _ALLOWED_BINARIES = {
     "windows-amd64": {"nocagent.exe", "nocwatchdog.exe", "nocagent-ui.exe", "nocinstall.exe"},
@@ -652,7 +668,7 @@ async def install_argus_ico() -> FileResponse:
     installer fetches this so shortcuts can point to a stable file path
     instead of an embedded EXE icon (which Windows aggressively caches by
     path and may not refresh on update)."""
-    path = _pathlib.Path("/app/noc-agent/cmd/nocui/argus.ico").resolve()
+    path = _AGENT_ICO_PATH
     if not path.is_file():
         raise HTTPException(status_code=404, detail="icon missing")
     return FileResponse(str(path), media_type="image/vnd.microsoft.icon", filename="argus.ico")
@@ -707,7 +723,7 @@ async def install_script(platform: str, ext: str, token: Optional[str] = None) -
 
 def _render_windows_ps1(token: str) -> str:
     public_http = _os.environ.get("AGENT_PUBLIC_HTTP_URL", "https://argus.86bit.it")
-    path = _pathlib.Path("/app/noc-agent/build/install.ps1.template")
+    path = _AGENT_TEMPLATE_DIR / "install.ps1.template"
     if not path.is_file():
         raise HTTPException(status_code=500, detail="installer template missing")
     body = path.read_text()
@@ -718,7 +734,7 @@ def _render_windows_ps1(token: str) -> str:
 
 def _render_linux_sh(token: str) -> str:
     public_http = _os.environ.get("AGENT_PUBLIC_HTTP_URL", "https://argus.86bit.it")
-    path = _pathlib.Path("/app/noc-agent/build/install.sh.template")
+    path = _AGENT_TEMPLATE_DIR / "install.sh.template"
     if not path.is_file():
         raise HTTPException(status_code=500, detail="installer template missing")
     body = path.read_text()
@@ -729,7 +745,7 @@ def _render_linux_sh(token: str) -> str:
 
 def _render_wizard_ps1(token: str) -> str:
     public_http = _os.environ.get("AGENT_PUBLIC_HTTP_URL", "https://argus.86bit.it")
-    path = _pathlib.Path("/app/noc-agent/build/installer_gui.ps1.template")
+    path = _AGENT_TEMPLATE_DIR / "installer_gui.ps1.template"
     if not path.is_file():
         raise HTTPException(status_code=500, detail="wizard template missing")
     body = path.read_text(encoding="utf-8")
@@ -760,7 +776,7 @@ def _build_wizard_bundle(token: str) -> str:
         out.unlink()  # rebuild — content/template may have changed
 
     ps1_body = _render_wizard_ps1(token)
-    bat_path = _pathlib.Path("/app/noc-agent/build/Installa-86NocAgent.bat")
+    bat_path = _AGENT_TEMPLATE_DIR / "Installa-86NocAgent.bat"
     if not bat_path.is_file():
         raise HTTPException(status_code=500, detail="bat launcher missing")
 
