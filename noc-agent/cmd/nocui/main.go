@@ -651,17 +651,22 @@ func buildConsole(app *App) {
 					}},
 					wd.HSpacer{},
 					wd.PushButton{Text: "Stato canale (VPN/WS)", OnClicked: func() {
-						var hr healthReply
-						err := backendGet("/api/agent/self/health", app.agent, &hr)
-						if err != nil {
-							healthLb.SetText("● Errore: " + err.Error())
-							return
-						}
-						if hr.Connected {
-							healthLb.SetText(fmt.Sprintf("● Canale OK · RTT %.0f ms · host %s · agents online: %d", hr.RTT, hr.Hostname, hr.AgentsOnline))
-						} else {
-							healthLb.SetText("● Agent NON connesso al NOC Center: " + hr.Detail)
-						}
+						healthLb.SetText("● Verifica canale in corso...")
+						go func() {
+							var hr healthReply
+							err := backendGet("/api/agent/self/health", app.agent, &hr)
+							mw.Synchronize(func() {
+								if err != nil {
+									healthLb.SetText("● Errore: " + err.Error())
+									return
+								}
+								if hr.Connected {
+									healthLb.SetText(fmt.Sprintf("● Canale OK · RTT %.0f ms · host %s · agents online: %d", hr.RTT, hr.Hostname, hr.AgentsOnline))
+								} else {
+									healthLb.SetText("● Agent NON connesso al NOC Center: " + hr.Detail)
+								}
+							})
+						}()
 					}},
 				},
 			},
@@ -738,20 +743,31 @@ func buildConsole(app *App) {
 							return
 						}
 						t := app.tableModel.items[sel[0]]
-						for _, sch := range []string{"https", "http"} {
-							u := sch + "://" + t.IP + "/"
-							resp, err := (&http.Client{Timeout: 4 * time.Second}).Get(u)
-							if err == nil {
-								resp.Body.Close()
-								if resp.StatusCode < 500 {
-									runHidden("rundll32", "url.dll,FileProtocolHandler", u)
-									t.WebUI = u
-									app.tableModel.PublishRowsReset()
-									return
+						statusLb.SetText("Verifica Web UI di " + t.IP + " ...")
+						// HTTP probe in goroutine: la net.Get puo' bloccare
+						// fino a 4s e congelerebbe la UI se eseguita qui.
+						go func(target *Target) {
+							for _, sch := range []string{"https", "http"} {
+								u := sch + "://" + target.IP + "/"
+								resp, err := (&http.Client{Timeout: 2 * time.Second}).Get(u)
+								if err == nil {
+									resp.Body.Close()
+									if resp.StatusCode < 500 {
+										runHidden("rundll32", "url.dll,FileProtocolHandler", u)
+										mw.Synchronize(func() {
+											target.WebUI = u
+											app.tableModel.PublishRowsReset()
+											statusLb.SetText("Web UI aperta: " + u)
+										})
+										return
+									}
 								}
 							}
-						}
-						walk.MsgBox(mw, "Web UI", "Nessuna risposta HTTP/HTTPS dal device.", walk.MsgBoxIconWarning)
+							mw.Synchronize(func() {
+								statusLb.SetText("Nessuna risposta HTTP/HTTPS da " + target.IP)
+								walk.MsgBox(mw, "Web UI", "Nessuna risposta HTTP/HTTPS dal device.", walk.MsgBoxIconWarning)
+							})
+						}(t)
 					}},
 					wd.PushButton{Text: "Scansiona Rete", OnClicked: func() {
 						go showScannerDialog(app, mw)
@@ -880,15 +896,22 @@ func setupTray(app *App) error {
 func refreshStatus(app *App) {
 	a := serviceStatus("86NocAgent")
 	w := serviceStatus("86NocWatchdog")
-	if app.statusItem != nil {
-		app.statusItem.SetText(fmt.Sprintf("Stato: agent=%s · watchdog=%s", a, w))
-	}
-	if app.tray != nil {
-		if a == "Running" && w == "Running" {
-			app.tray.SetToolTip("86BIT Argus Connector - Online")
-		} else {
-			app.tray.SetToolTip(fmt.Sprintf("86BIT Argus Connector - agent=%s", a))
-		}
+	// Tutte le operazioni walk DEVONO girare sul thread del message
+	// loop principale, altrimenti la UI puo' corrompersi e i bottoni
+	// smettono di rispondere ai click.
+	if app.hiddenMw != nil {
+		app.hiddenMw.Synchronize(func() {
+			if app.statusItem != nil {
+				app.statusItem.SetText(fmt.Sprintf("Stato: agent=%s · watchdog=%s", a, w))
+			}
+			if app.tray != nil {
+				if a == "Running" && w == "Running" {
+					app.tray.SetToolTip("86BIT Argus Connector - Online")
+				} else {
+					app.tray.SetToolTip(fmt.Sprintf("86BIT Argus Connector - agent=%s", a))
+				}
+			}
+		})
 	}
 	go func() {
 		var hr healthReply
@@ -901,8 +924,10 @@ func refreshStatus(app *App) {
 				txt = "Canale: NON connesso"
 			}
 		}
-		if app.healthItem != nil {
-			app.healthItem.SetText(txt)
+		if app.hiddenMw != nil && app.healthItem != nil {
+			app.hiddenMw.Synchronize(func() {
+				app.healthItem.SetText(txt)
+			})
 		}
 	}()
 }
