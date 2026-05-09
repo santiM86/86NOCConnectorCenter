@@ -1216,7 +1216,41 @@ async def connector_get_vault_credentials(request: Request):
 
 @router.get("/connector/status")
 async def get_connector_status(current_user: dict = Depends(get_current_user)):
+    # Legacy v3.x connectors PowerShell.
     connectors = await db.connector_status.find({}, {"_id": 0}).to_list(100)
+    # v4 Go agents: li mappiamo nel formato del legacy in modo che la UI
+    # li mostri nella stessa pagina senza richiedere fork/refactor del FE.
+    v4_docs = await db.managed_agents.find({}, {"_id": 0}).to_list(500)
+    now = datetime.now(timezone.utc)
+    for a in v4_docs:
+        last_seen = a.get("last_heartbeat_at") or a.get("last_hello_at") or a.get("connected_at")
+        last_lan = a.get("last_scan_at")
+        # Online se heartbeat <120s come i master legacy.
+        online = False
+        if last_seen:
+            try:
+                ls = datetime.fromisoformat(last_seen.replace("Z", "+00:00")) if isinstance(last_seen, str) else last_seen
+                online = (now - ls).total_seconds() < 120
+            except Exception:
+                pass
+        connectors.append({
+            "client_id": a.get("client_id"),
+            "hostname": a.get("hostname") or "v4-agent",
+            "mode": a.get("role") or "master",
+            "online": online,
+            "last_seen": last_seen,
+            "last_heartbeat_at": last_seen,
+            "last_lan_scan_at": last_lan,
+            "connector_version": a.get("agent_version") or "4.0.0",
+            "agent_v4": True,
+            "agent_id": a.get("agent_id"),
+            "platform": a.get("os") or "windows",
+            "ips": a.get("ips") or [],
+            "modules_alive": a.get("modules_alive") or [],
+            "modules_stuck": a.get("modules_stuck") or [],
+            "cpu_percent": a.get("cpu_percent"),
+            "mem_alloc_bytes": a.get("mem_alloc_bytes"),
+        })
     return connectors
 
 
