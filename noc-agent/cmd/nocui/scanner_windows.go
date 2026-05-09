@@ -156,11 +156,17 @@ func expandCIDR(cidr string) ([]string, error) {
 // probeAlive returns whether any of the well-known TCP ports answers
 // within timeout, the first responding port and the RTT in millisec.
 // It does not need elevated privileges.
-func probeAlive(ip string, timeout time.Duration) (alive bool, port int, rttMs int) {
+func probeAlive(ctx context.Context, ip string, timeout time.Duration) (alive bool, port int, rttMs int) {
 	ports := []int{135, 445, 139, 80, 22, 443, 8080, 23, 3389, 161, 515, 9100, 631}
+	d := net.Dialer{Timeout: timeout}
 	for _, p := range ports {
+		select {
+		case <-ctx.Done():
+			return false, 0, -1
+		default:
+		}
 		t0 := time.Now()
-		conn, err := net.DialTimeout("tcp", net.JoinHostPort(ip, strconv.Itoa(p)), timeout)
+		conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(ip, strconv.Itoa(p)))
 		if err == nil {
 			_ = conn.Close()
 			return true, p, int(time.Since(t0).Milliseconds())
@@ -463,14 +469,14 @@ func runScan(ctx context.Context, cidr string, timeout time.Duration,
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
-			a, p, r := probeAlive(ip, timeout)
+			a, p, r := probeAlive(ctx, ip, timeout)
 			if a {
 				probeRes.mu.Lock()
 				probeRes.m[ip] = probeOut{a, p, r}
 				probeRes.mu.Unlock()
 			}
 			n := atomic.AddInt32(&done, 1)
-			if onProgress != nil && (n%4 == 0 || int(n) == total) {
+			if onProgress != nil && (n%16 == 0 || int(n) == total) {
 				onProgress(int(n), total)
 			}
 		}()
@@ -492,38 +498,31 @@ func runScan(ctx context.Context, cidr string, timeout time.Duration,
 		}
 	}
 
-	// Phase 3: PTR lookups + ICMP ping + web detect + SNMP probe — tutto
-	// in parallelo per gli IP che ci interessano.
+	// Phase 3: PTR lookups in parallelo. ICMP/Web/SNMP probe vengono
+	// invocati ON-DEMAND quando l'utente clicca i pulsanti azione, NON
+	// durante lo scan: questo mantiene lo scan veloce e l'UI fluida.
 	type enrich struct {
-		host   string
-		rtt    int
-		web    string
-		snmpOK bool
+		host string
 	}
 	enrichMap := struct {
 		mu sync.Mutex
 		m  map[string]*enrich
 	}{m: map[string]*enrich{}}
 	wg = sync.WaitGroup{}
-	enrichSem := make(chan struct{}, 32)
+	enrichSem := make(chan struct{}, 64)
 	for ip := range merged {
 		ip := ip
+		select {
+		case <-ctx.Done():
+			break
+		default:
+		}
 		wg.Add(1)
 		enrichSem <- struct{}{}
 		go func() {
 			defer wg.Done()
 			defer func() { <-enrichSem }()
-			e := &enrich{}
-			e.host = reverseDNS(ctx, ip)
-			e.rtt = probeICMPPing(ctx, ip, 600)
-			// web + SNMP solo per host alive (TCP) per non perdere tempo.
-			if _, alive := probeRes.m[ip]; alive {
-				e.web = probeWebUI(ctx, ip)
-				// SNMP probe: solo community 'public' di default per
-				// mantenere lo scan veloce. Per 'private' usa il pulsante
-				// "+ Aggiungi a SNMP (community personalizzata)".
-				e.snmpOK = probeSNMPv2c(ip, "public", 500*time.Millisecond)
-			}
+			e := &enrich{host: reverseDNS(ctx, ip)}
 			enrichMap.mu.Lock()
 			enrichMap.m[ip] = e
 			enrichMap.mu.Unlock()
@@ -541,25 +540,18 @@ func runScan(ctx context.Context, cidr string, timeout time.Duration,
 			port = po.port
 			rtt = po.rtt
 		}
-		e := enrichMap.m[ip]
-		if e == nil {
-			e = &enrich{}
-		}
-		// Preferisci RTT ICMP a quello TCP-connect quando disponibile.
-		finalRTT := rtt
-		if e.rtt >= 0 {
-			finalRTT = e.rtt
+		host := ""
+		if e := enrichMap.m[ip]; e != nil {
+			host = e.host
 		}
 		results = append(results, &ScanResult{
 			IP:       ip,
 			MAC:      mac,
-			Hostname: e.host,
+			Hostname: host,
 			Vendor:   ouiVendor(mac),
 			Status:   status,
-			RTTms:    finalRTT,
+			RTTms:    rtt,
 			OpenPort: port,
-			WebURL:   e.web,
-			SNMPok:   e.snmpOK,
 		})
 	}
 	sort.Slice(results, func(i, j int) bool { return ipNumeric(results[i].IP) < ipNumeric(results[j].IP) })
@@ -647,7 +639,7 @@ func showScannerDialog(app *App, parent walk.Form) {
 		if btnScan.Text() == "Annulla" && cancelScan != nil {
 			cancelScan()
 			btnScan.SetText("Scansiona Rete")
-			statusLb.SetText("Scansione annullata.")
+			statusLb.SetText("Annullamento in corso (max 2s)...")
 			return
 		}
 		startScan()
@@ -685,22 +677,6 @@ func showScannerDialog(app *App, parent walk.Form) {
 		walk.MsgBox(dlg, "Aggiunti",
 			fmt.Sprintf("%d dispositivi aggiunti alla lista SNMP.", added),
 			walk.MsgBoxIconInformation)
-	}
-
-	openSelectedURL := func(getURL func(*ScanResult) string, what string) {
-		sel := tv.SelectedIndexes()
-		if len(sel) == 0 {
-			walk.MsgBox(dlg, "Nessuna selezione",
-				"Seleziona prima un dispositivo dalla lista.", walk.MsgBoxIconInformation)
-			return
-		}
-		r := model.items[sel[0]]
-		u := getURL(r)
-		if u == "" {
-			walk.MsgBox(dlg, what, "Indirizzo non disponibile per questo device.", walk.MsgBoxIconWarning)
-			return
-		}
-		_ = exec.Command("rundll32", "url.dll,FileProtocolHandler", u).Start()
 	}
 
 	wd.Dialog{
@@ -745,12 +721,24 @@ func showScannerDialog(app *App, parent walk.Form) {
 				Children: []wd.Widget{
 					wd.Label{Text: "Azioni:", Font: wd.Font{Family: "Segoe UI", PointSize: 9, Bold: true}},
 					wd.PushButton{Text: "Web UI", OnClicked: func() {
-						openSelectedURL(func(r *ScanResult) string {
-							if r.WebURL != "" {
-								return r.WebURL
+						sel := tv.SelectedIndexes()
+						if len(sel) == 0 {
+							walk.MsgBox(dlg, "Web UI", "Seleziona prima un dispositivo.", walk.MsgBoxIconInformation)
+							return
+						}
+						r := model.items[sel[0]]
+						// Probe HTTP/HTTPS on-demand: e' veloce (<1s) e
+						// l'utente sta esplicitamente chiedendo di
+						// aprire la Web UI di QUESTO device.
+						go func(ip string) {
+							ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+							defer cancel()
+							u := probeWebUI(ctx, ip)
+							if u == "" {
+								u = "http://" + ip + "/"
 							}
-							return "http://" + r.IP + "/"
-						}, "Web UI")
+							_ = exec.Command("rundll32", "url.dll,FileProtocolHandler", u).Start()
+						}(r.IP)
 					}},
 					wd.PushButton{Text: "RDP", OnClicked: func() {
 						sel := tv.SelectedIndexes()
@@ -829,11 +817,26 @@ func showScannerDialog(app *App, parent walk.Form) {
 						}
 						_ = writeFileText(fd.FilePath, sb.String())
 					}},
-					wd.PushButton{Text: "Chiudi", OnClicked: func() { dlg.Accept() }},
+					wd.PushButton{Text: "Chiudi", OnClicked: func() {
+						// Termina subito eventuali scan in corso senza
+						// attendere i goroutine residui — i timeout TCP
+						// di 250ms li faranno scadere da soli entro
+						// pochi secondi.
+						if cancelScan != nil {
+							cancelScan()
+						}
+						dlg.Accept()
+					}},
 				},
 			},
 		},
 	}.Run(parent)
+	// Quando il dialog si chiude in qualsiasi modo (X, Esc, Chiudi),
+	// cancella eventuali scan in volo cosi' i goroutine non rimangono
+	// zombie.
+	if cancelScan != nil {
+		cancelScan()
+	}
 }
 
 // promptString shows a tiny single-line input dialog. Returns (value, ok).
