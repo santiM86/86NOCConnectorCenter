@@ -172,14 +172,28 @@ func loadAgentInfo() AgentInfo {
 
 // parseAgentYaml estrae i campi chiave da un file agent.yaml minimale
 // senza dipendere da una libreria YAML completa: cerca riga per riga
-// le chiavi `client_id`, `token`, `backend_ws`, `role`. Sufficiente per
-// popolare la GUI e fare le chiamate self/health.
+// le chiavi `client_id`, `token`, `backend_ws` (legacy) o `backend.url`
+// (nested) e `role`. Sufficiente per popolare la GUI e fare le chiamate
+// self/health.
 func parseAgentYaml(s string) AgentInfo {
 	a := AgentInfo{Role: "master"}
+	inBackend := false
 	for _, line := range strings.Split(s, "\n") {
-		trim := strings.TrimSpace(line)
+		// Detect inside `backend:` block per chiave `url:` indentata.
+		raw := strings.TrimRight(line, "\r")
+		trim := strings.TrimSpace(raw)
 		if trim == "" || strings.HasPrefix(trim, "#") {
 			continue
+		}
+		// Se la riga e' indentata e siamo nel blocco backend, gestisci
+		// le chiavi nested.
+		isIndented := len(raw) > 0 && (raw[0] == ' ' || raw[0] == '\t')
+		if !isIndented {
+			inBackend = false
+			if trim == "backend:" {
+				inBackend = true
+				continue
+			}
 		}
 		idx := strings.Index(trim, ":")
 		if idx < 0 {
@@ -187,6 +201,11 @@ func parseAgentYaml(s string) AgentInfo {
 		}
 		key := strings.TrimSpace(trim[:idx])
 		val := strings.Trim(strings.TrimSpace(trim[idx+1:]), "\"' ")
+		// nested backend.url
+		if inBackend && isIndented && key == "url" && val != "" {
+			a.BackendURL = wsToHttp(val)
+			continue
+		}
 		switch key {
 		case "client_id":
 			if val != "" {
@@ -197,19 +216,8 @@ func parseAgentYaml(s string) AgentInfo {
 				a.Token = val
 			}
 		case "backend_ws":
-			// Converti wss:// -> https:// per la BackendURL HTTP.
 			if val != "" {
-				u := val
-				if strings.HasPrefix(u, "wss://") {
-					u = "https://" + strings.TrimPrefix(u, "wss://")
-				} else if strings.HasPrefix(u, "ws://") {
-					u = "http://" + strings.TrimPrefix(u, "ws://")
-				}
-				// strip path /api/agent/ws
-				if i := strings.Index(u, "/api/"); i > 0 {
-					u = u[:i]
-				}
-				a.BackendURL = u
+				a.BackendURL = wsToHttp(val)
 			}
 		case "role":
 			if val != "" {
@@ -221,6 +229,21 @@ func parseAgentYaml(s string) AgentInfo {
 		a.ClientID = "unknown"
 	}
 	return a
+}
+
+// wsToHttp converte uno schema ws[s]:// nel rispettivo http[s]:// e
+// rimuove il path /api/agent/ws cosi' BackendURL e' una base utilizzabile
+// per le chiamate REST self/health, self/snmp/test.
+func wsToHttp(u string) string {
+	if strings.HasPrefix(u, "wss://") {
+		u = "https://" + strings.TrimPrefix(u, "wss://")
+	} else if strings.HasPrefix(u, "ws://") {
+		u = "http://" + strings.TrimPrefix(u, "ws://")
+	}
+	if i := strings.Index(u, "/api/"); i > 0 {
+		u = u[:i]
+	}
+	return u
 }
 
 // --- SNMP target model ------------------------------------------------------
