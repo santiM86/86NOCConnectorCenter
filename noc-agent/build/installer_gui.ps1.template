@@ -1557,6 +1557,18 @@ function Run-Install {
         $script:ClientId = $manifest.client_id
         Append-Log "      cliente: $($manifest.client_id)  ruolo: $($script:Role)" $ColorSuccess
 
+        # Costruttore URL binario: preferisce gli URL forniti direttamente
+        # dal manifest (campo `binaries`), che il server puo' settare a un
+        # mirror diverso dal NOC Center (es. CDN o ambiente di staging) via
+        # env `AGENT_PUBLIC_HTTP_URL`. Fallback alla costruzione locale per
+        # retro-compatibilita' con backend pre-1.7.
+        function Get-BinaryUrl([string]$name) {
+            if ($manifest.binaries -and $manifest.binaries.$name) {
+                return [string]$manifest.binaries.$name
+            }
+            return "$url/api/agent/binary/$Platform/$name?token=$tok"
+        }
+
         Append-Log "[2/11] Stop servizi precedenti (se presenti)" $ColorAccent
         foreach ($s in @($WatchdogName, $ServiceName)) {
             $existing = Get-Service -Name $s -ErrorAction SilentlyContinue
@@ -1586,17 +1598,25 @@ function Run-Install {
         $script:progressBar.Value = 30
 
         Append-Log "[4/11] Download nocagent.exe" $ColorAccent
-        Invoke-WebRequest -UseBasicParsing -TimeoutSec 120 `
-            -Uri "$url/api/agent/binary/$Platform/nocagent.exe?token=$tok" `
-            -OutFile (Join-Path $InstallDir "nocagent.exe")
+        $binUrl = Get-BinaryUrl 'nocagent.exe'
+        Append-Log "      $binUrl" $ColorMuted
+        try {
+            Invoke-WebRequest -UseBasicParsing -TimeoutSec 120 `
+                -Uri $binUrl -OutFile (Join-Path $InstallDir "nocagent.exe")
+        } catch {
+            $code = if ($_.Exception.Response) { [int]$_.Exception.Response.StatusCode } else { 0 }
+            if ($code -eq 404) {
+                throw "nocagent.exe non disponibile sul server ($binUrl). Il NOC Center non ha i binari Windows depositati. Contatta l'amministratore o usa un'URL alternativa nel campo Configurazione."
+            } else { throw }
+        }
         $script:progressBar.Value = 55
 
         Append-Log "[5/11] Download nocwatchdog.exe + nocagent-ui.exe" $ColorAccent
         Invoke-WebRequest -UseBasicParsing -TimeoutSec 120 `
-            -Uri "$url/api/agent/binary/$Platform/nocwatchdog.exe?token=$tok" `
+            -Uri (Get-BinaryUrl 'nocwatchdog.exe') `
             -OutFile (Join-Path $InstallDir "nocwatchdog.exe")
         Invoke-WebRequest -UseBasicParsing -TimeoutSec 120 `
-            -Uri "$url/api/agent/binary/$Platform/nocagent-ui.exe?token=$tok" `
+            -Uri (Get-BinaryUrl 'nocagent-ui.exe') `
             -OutFile (Join-Path $InstallDir "nocagent-ui.exe")
         # Scarica argus.ico accanto agli eseguibili: gli shortcut del menu
         # Start lo useranno come IconLocation. Usare un .ico file separato
