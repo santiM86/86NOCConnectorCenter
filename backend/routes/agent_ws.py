@@ -767,6 +767,42 @@ async def install_exe(token: Optional[str] = None) -> FileResponse:
                         filename="nocinstall.exe")
 
 
+@router.get("/admin/sync-argus.sh", response_class=PlainTextResponse, include_in_schema=False)
+async def serve_sync_script() -> PlainTextResponse:
+    """Serve sync-argus.sh via API path (bypassa SPA fallback / proxy).
+
+    Risolve il caso in cui scaricare /downloads/sync-argus.sh ritorna
+    l'index.html del frontend (cache di rete intermedi, Cloudflare,
+    proxy aziendali). Path sotto /api e' garantito andare al backend.
+    """
+    candidates = [
+        _pathlib.Path("/app/frontend/public/downloads/sync-argus.sh"),
+        _pathlib.Path("/opt/argus/frontend/public/downloads/sync-argus.sh"),
+    ]
+    for p in candidates:
+        if p.is_file():
+            return PlainTextResponse(p.read_text(),
+                                     media_type="text/x-shellscript")
+    raise HTTPException(status_code=404, detail="sync script not found")
+
+
+@router.get("/admin/argus-deploy-latest.tar.gz", include_in_schema=False)
+async def serve_deploy_bundle() -> FileResponse:
+    """Serve il bundle deploy via API path. Stessa ragione di sync-argus.sh:
+    il path /api/* va dritto al backend, no SPA fallback / proxy.
+    """
+    candidates = [
+        _pathlib.Path("/app/frontend/public/downloads/argus-deploy-latest.tar.gz"),
+        _pathlib.Path("/opt/argus/frontend/public/downloads/argus-deploy-latest.tar.gz"),
+    ]
+    for p in candidates:
+        if p.is_file():
+            return FileResponse(str(p),
+                                media_type="application/gzip",
+                                filename="argus-deploy-latest.tar.gz")
+    raise HTTPException(status_code=404, detail="deploy bundle not found")
+
+
 @router.get("/agent/install/exe-bundle.zip")
 async def exe_bundle(token: Optional[str] = None) -> FileResponse:
     """ZIP with nocinstall.exe + pre-populated nocinstall.cfg + LEGGIMI.

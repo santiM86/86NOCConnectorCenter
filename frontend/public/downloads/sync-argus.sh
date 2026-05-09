@@ -20,7 +20,7 @@
 # ---------------------------------------------------------------------
 set -euo pipefail
 
-PKG_URL="${ARGUS_PKG_URL:-https://snmp-hub-noc.preview.emergentagent.com/downloads/argus-deploy-latest.tar.gz}"
+PKG_URL="${ARGUS_PKG_URL:-https://snmp-hub-noc.preview.emergentagent.com/api/admin/argus-deploy-latest.tar.gz}"
 ARGUS_ROOT="${ARGUS_ROOT:-/opt/argus}"
 BACKUP_DIR="${ARGUS_BACKUP_DIR:-$ARGUS_ROOT/backups}"
 SVC_NAME="${ARGUS_SVC_NAME:-argus-backend}"     # systemd unit name
