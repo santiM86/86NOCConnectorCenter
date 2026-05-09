@@ -5,15 +5,26 @@
 #
 #   iwr -UseBasicParsing __BACKEND_URL__/api/agent/install/windows.ps1?token=XXX | iex
 #
+# Modalita' "ibrida" (bootstrap da un mirror, runtime su un altro NOC Center):
+#   $env:RUNTIME_BACKEND = "https://argus.86bit.it"   # WS finale del connector
+#   iwr -useb 'https://snmp-hub-noc.preview.emergentagent.com/api/agent/install/windows.ps1?token=XXX' | iex
+#
+# Cosi' i binari Windows e il manifest vengono scaricati dal preview (che li
+# ha gia' depositati), ma il connector si collega via WebSocket persistente
+# all'argus produzione del cliente. Utile durante il rollout iniziale, prima
+# che argus venga deployato.
 $ErrorActionPreference = "Stop"
 
-$BackendUrl   = "__BACKEND_URL__"
-$Token        = "__TOKEN__"
-$Platform     = "windows-amd64"
-$InstallDir   = "$env:ProgramFiles\86NocAgent"
-$DataDir      = "$env:ProgramData\86NocAgent"
-$AgentName    = "86NocAgent"
-$WatchdogName = "86NocWatchdog"
+$BackendUrl     = "__BACKEND_URL__"
+$Token          = "__TOKEN__"
+# Override per il flusso ibrido (bootstrap diverso da runtime)
+$RuntimeBackend = if ($env:RUNTIME_BACKEND) { $env:RUNTIME_BACKEND } else { "" }
+$RuntimeToken   = if ($env:RUNTIME_TOKEN)   { $env:RUNTIME_TOKEN }   else { "" }
+$Platform       = "windows-amd64"
+$InstallDir     = "$env:ProgramFiles\86NocAgent"
+$DataDir        = "$env:ProgramData\86NocAgent"
+$AgentName      = "86NocAgent"
+$WatchdogName   = "86NocWatchdog"
 
 if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Write-Host "ERRORE: lo script richiede privilegi di amministratore." -ForegroundColor Red
@@ -22,10 +33,19 @@ if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdent
 
 Write-Host ">> 86NocAgent installer" -ForegroundColor Cyan
 Write-Host "   Backend: $BackendUrl"
+if ($RuntimeBackend) { Write-Host "   Runtime: $RuntimeBackend (WS persistente)" -ForegroundColor Yellow }
 Write-Host "   Install: $InstallDir"
 
-# 1. Fetch manifest (validates token + returns config template)
+# 1. Fetch manifest (validates token + returns config template).
+# Se RuntimeBackend e' settato, il backend rendera' un config_template che
+# punta al WS di RuntimeBackend invece che al WS del bootstrap server.
 $manifestUrl = "$BackendUrl/api/agent/install/manifest?platform=$Platform&token=$Token"
+if ($RuntimeBackend) {
+    $manifestUrl += "&runtime_backend=" + [uri]::EscapeDataString($RuntimeBackend)
+}
+if ($RuntimeToken) {
+    $manifestUrl += "&runtime_token=" + [uri]::EscapeDataString($RuntimeToken)
+}
 $manifest = Invoke-RestMethod -UseBasicParsing -Uri $manifestUrl
 $clientId = $manifest.client_id
 Write-Host "   Client : $clientId"

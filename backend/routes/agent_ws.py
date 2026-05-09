@@ -581,19 +581,34 @@ async def download_binary(platform: str, name: str, token: Optional[str] = None)
 @router.get("/agent/install/manifest")
 async def install_manifest(token: Optional[str] = None,
                           platform: Optional[str] = None,
-                          role: Optional[str] = None) -> Dict[str, Any]:
+                          role: Optional[str] = None,
+                          runtime_backend: Optional[str] = None,
+                          runtime_token: Optional[str] = None) -> Dict[str, Any]:
     """Return the install metadata: backend URL, binary URLs, sample yaml.
 
-    The install scripts hit this endpoint first to learn what to download
-    and where to write the configuration. `role` selects between
-    "master" (default — full agent with SNMP polling) and "scanner"
-    (lightweight — only network discovery, intended for remote VLANs).
+    `runtime_backend` (opt): WS finale del connector se diverso da
+    AGENT_PUBLIC_WS_URL. `runtime_token` (opt): token da scrivere nel
+    config_template se diverso dal token di bootstrap (caso d'uso:
+    bootstrap su preview con api_key preview, ma WS persistente su
+    argus.86bit.it con la sua api_key cliente locale, dato che le 2 DB
+    sono separate). Se runtime_token non e' passato, usiamo il token
+    di bootstrap.
     """
     client_id = await _token_or_403(token)
     public_ws = _os.environ.get("AGENT_PUBLIC_WS_URL", "wss://argus.86bit.it/api/agent/ws")
     public_http = _os.environ.get("AGENT_PUBLIC_HTTP_URL", "https://argus.86bit.it")
     if role not in ("master", "scanner"):
         role = "master"
+    effective_ws = public_ws
+    if runtime_backend:
+        rb = runtime_backend.rstrip("/")
+        if rb.startswith("https://"):
+            effective_ws = "wss://" + rb[len("https://"):] + "/api/agent/ws"
+        elif rb.startswith("http://"):
+            effective_ws = "ws://" + rb[len("http://"):] + "/api/agent/ws"
+        elif rb.startswith(("ws://", "wss://")):
+            effective_ws = rb if rb.endswith("/api/agent/ws") else rb + "/api/agent/ws"
+    effective_token = runtime_token if runtime_token else token
     binaries = {}
     sha256 = {}
     if platform and platform in _ALLOWED_PLATFORMS:
@@ -605,10 +620,10 @@ async def install_manifest(token: Optional[str] = None,
     return {
         "client_id": client_id,
         "role": role,
-        "backend_ws": public_ws,
+        "backend_ws": effective_ws,
         "binaries": binaries,
         "sha256": sha256,
-        "config_template": _config_template(client_id, token, public_ws, role),
+        "config_template": _config_template(client_id, effective_token, effective_ws, role),
     }
 
 
