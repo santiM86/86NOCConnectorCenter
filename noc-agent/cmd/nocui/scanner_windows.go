@@ -645,6 +645,97 @@ func showScannerDialog(app *App, parent walk.Form) {
 		startScan()
 	}
 
+	rescanRow := func(idx int) {
+		if idx < 0 || idx >= len(model.items) {
+			return
+		}
+		r := model.items[idx]
+		statusLb.SetText("Re-scan di " + r.IP + " ...")
+		go func(ip string, idx int) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			alive, port, rtt := probeAlive(ctx, ip, 400*time.Millisecond)
+			host := reverseDNS(ctx, ip)
+			arpMap := readARPTable(ctx)
+			mac := arpMap[ip]
+			dlg.Synchronize(func() {
+				if idx >= len(model.items) {
+					return
+				}
+				r := model.items[idx]
+				if alive {
+					r.Status = "alive"
+					r.OpenPort = port
+					r.RTTms = rtt
+				} else if mac != "" {
+					r.Status = "arp-only"
+				} else {
+					r.Status = "down"
+					r.RTTms = -1
+				}
+				if host != "" {
+					r.Hostname = host
+				}
+				if mac != "" {
+					r.MAC = mac
+					r.Vendor = ouiVendor(mac)
+				}
+				model.publishReset()
+				statusLb.SetText("Re-scan completato per " + ip)
+			})
+		}(r.IP, idx)
+	}
+
+	exportHTML := func() {
+		if len(model.items) == 0 {
+			return
+		}
+		fd := walk.FileDialog{Title: "Esporta scansione (HTML)",
+			Filter: "HTML (*.html)|*.html", FilePath: "argus-scan.html"}
+		if ok, _ := fd.ShowSave(dlg); !ok {
+			return
+		}
+		var sb strings.Builder
+		sb.WriteString(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>ARGUS Scan Report</title>`)
+		sb.WriteString(`<style>body{font-family:Segoe UI,sans-serif;background:#fff;color:#1a1a2a;padding:24px}`)
+		sb.WriteString(`h1{color:#1040e0;border-bottom:2px solid #1040e0;padding-bottom:8px}`)
+		sb.WriteString(`table{border-collapse:collapse;width:100%;font-size:13px;margin-top:16px}`)
+		sb.WriteString(`th,td{padding:8px 10px;text-align:left;border-bottom:1px solid #e5e7eb}`)
+		sb.WriteString(`th{background:#1040e0;color:#fff;font-weight:600}`)
+		sb.WriteString(`tr:nth-child(even){background:#f8fafc} tr:hover{background:#eef2ff}`)
+		sb.WriteString(`.alive{color:#16a34a;font-weight:600} .arp{color:#ca8a04;font-weight:600} .down{color:#dc2626}`)
+		sb.WriteString(`</style></head><body>`)
+		sb.WriteString("<h1>ARGUS - Scan Report</h1>")
+		sb.WriteString(fmt.Sprintf("<p><b>Range:</b> %s &nbsp; <b>Generato:</b> %s &nbsp; <b>Dispositivi trovati:</b> %d</p>",
+			cidrEd.Text(), time.Now().Format("2006-01-02 15:04:05"), len(model.items)))
+		sb.WriteString("<table><thead><tr><th>Stato</th><th>IP</th><th>RTT</th><th>Hostname</th><th>MAC</th><th>Vendor</th><th>Servizi</th></tr></thead><tbody>")
+		for _, r := range model.items {
+			cls := "down"
+			if r.Status == "alive" {
+				cls = "alive"
+			} else if r.Status == "arp-only" {
+				cls = "arp"
+			}
+			rttStr := ""
+			if r.RTTms >= 0 {
+				rttStr = fmt.Sprintf("%d ms", r.RTTms)
+			}
+			services := ""
+			if r.WebURL != "" {
+				services += "WEB "
+			}
+			if r.SNMPok {
+				services += "SNMP "
+			}
+			sb.WriteString(fmt.Sprintf(
+				"<tr><td class=\"%s\">%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>",
+				cls, r.Status, r.IP, rttStr, htmlEscape(r.Hostname), r.MAC, htmlEscape(r.Vendor), strings.TrimSpace(services)))
+		}
+		sb.WriteString("</tbody></table></body></html>")
+		_ = writeFileText(fd.FilePath, sb.String())
+		statusLb.SetText("Report HTML salvato: " + fd.FilePath)
+	}
+
 	addSelectedAsTargets := func(community string) {
 		sel := tv.SelectedIndexes()
 		if len(sel) == 0 {
@@ -727,9 +818,6 @@ func showScannerDialog(app *App, parent walk.Form) {
 							return
 						}
 						r := model.items[sel[0]]
-						// Probe HTTP/HTTPS on-demand: e' veloce (<1s) e
-						// l'utente sta esplicitamente chiedendo di
-						// aprire la Web UI di QUESTO device.
 						go func(ip string) {
 							ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
 							defer cancel()
@@ -756,6 +844,38 @@ func showScannerDialog(app *App, parent walk.Form) {
 						r := model.items[sel[0]]
 						_ = exec.Command("explorer", `\\`+r.IP).Start()
 					}},
+					wd.PushButton{Text: "Telnet", OnClicked: func() {
+						sel := tv.SelectedIndexes()
+						if len(sel) == 0 {
+							return
+						}
+						r := model.items[sel[0]]
+						port := "23"
+						if r.OpenPort == 22 {
+							port = "22"
+						}
+						c := exec.Command("cmd", "/c", "start", "cmd", "/k", "telnet "+r.IP+" "+port)
+						c.SysProcAttr = &syscall.SysProcAttr{HideWindow: false}
+						_ = c.Start()
+					}},
+					wd.PushButton{Text: "FTP", OnClicked: func() {
+						sel := tv.SelectedIndexes()
+						if len(sel) == 0 {
+							return
+						}
+						r := model.items[sel[0]]
+						_ = exec.Command("rundll32", "url.dll,FileProtocolHandler", "ftp://"+r.IP+"/").Start()
+					}},
+					wd.PushButton{Text: "Tracert", OnClicked: func() {
+						sel := tv.SelectedIndexes()
+						if len(sel) == 0 {
+							return
+						}
+						r := model.items[sel[0]]
+						c := exec.Command("cmd", "/c", "start", "cmd", "/k", "tracert "+r.IP)
+						c.SysProcAttr = &syscall.SysProcAttr{HideWindow: false}
+						_ = c.Start()
+					}},
 					wd.PushButton{Text: "Ping...", OnClicked: func() {
 						sel := tv.SelectedIndexes()
 						if len(sel) == 0 {
@@ -765,6 +885,13 @@ func showScannerDialog(app *App, parent walk.Form) {
 						c := exec.Command("cmd", "/c", "start", "cmd", "/k", "ping -t "+r.IP)
 						c.SysProcAttr = &syscall.SysProcAttr{HideWindow: false}
 						_ = c.Start()
+					}},
+					wd.PushButton{Text: "Re-scan host", OnClicked: func() {
+						sel := tv.SelectedIndexes()
+						if len(sel) == 0 {
+							return
+						}
+						rescanRow(sel[0])
 					}},
 					wd.PushButton{Text: "Wake-on-LAN", OnClicked: func() {
 						sel := tv.SelectedIndexes()
@@ -817,6 +944,7 @@ func showScannerDialog(app *App, parent walk.Form) {
 						}
 						_ = writeFileText(fd.FilePath, sb.String())
 					}},
+					wd.PushButton{Text: "Esporta HTML...", OnClicked: exportHTML},
 					wd.PushButton{Text: "Chiudi", OnClicked: func() {
 						// Termina subito eventuali scan in corso senza
 						// attendere i goroutine residui — i timeout TCP
@@ -874,6 +1002,12 @@ func promptString(parent walk.Form, title, prompt, def string) (string, bool) {
 
 func writeFileText(path, content string) error {
 	return os.WriteFile(path, []byte(content), 0o644)
+}
+
+// htmlEscape per il report HTML.
+func htmlEscape(s string) string {
+	r := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", "\"", "&quot;")
+	return r.Replace(s)
 }
 
 // sendWoLMagicPacket invia un pacchetto Wake-on-LAN broadcast UDP/9.
