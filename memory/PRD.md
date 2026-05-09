@@ -1,3 +1,36 @@
+## 2026-05-09 FIX — Wizard installer Argus v4: terminologia + errore tagliato
+
+**Direttiva utente** (con screenshot): «sistema e mostra le parole tagliate. Non scrivere token ma scrivi ApiKey. Mi confermi che APY e URL si agganciano al center?».
+
+### Diagnosi 403 dello screenshot
+- Token mostrato `noc_dfab6ff58942486a904f4cad54519d2d` → non esiste in `agent_tokens` né in `clients.api_key` su nessuno dei due DB (preview + produzione).
+- `argus.86bit.it` risponde correttamente: header `Microsoft-IIS/10.0 + ARR/3.0` davanti a FastAPI v4 → produzione **è deploiata** (smentita la nota dell'handoff precedente "OpenAPI = 0 endpoint").
+- Conferma binomio (URL + API Key) **valido**: test su preview con api_key `noc_35cf39b4d68740b1a981aedef2ee293d` → HTTP 200, client_id "86bit-office", binaries Windows risolti correttamente.
+
+### Modifiche in `/app/noc-agent/build/installer_gui.ps1.template`
+1. **Rinaming user-facing** `Token` → `API Key`:
+   - subtitle step Configurazione, label campo, hint sotto al campo, summary row, MessageBox di errore "Avanti", commento header file.
+2. **Hint cambiato** da «Generato dall'admin con POST /api/agents/register» a «Copia l'API Key del cliente dalla pagina Clienti del NOC Center (pulsante 'API Key')» — riflette lo screenshot della pagina Clienti React.
+3. **Etichetta validazione** spostata sotto al bottone "Verifica connessione" → larghezza 560 px, altezza 60 px, multilinea: il messaggio non viene più tagliato.
+4. **Parser body JSON** sull'errore `Invoke-RestMethod`: legge `$_.Exception.Response`, estrae `{"detail":"..."}` di FastAPI; se HTTP 403 + detail "invalid token" mostra: «API Key non valida o non registrata su questo NOC Center. Verifica di averla copiata dalla pagina Clienti -> API Key.» Stessa logica replicata nel flusso "Avanti" dello step Configurazione.
+
+### Conferma flusso telemetria (no code change)
+Pipeline backend in `/app/backend/routes/agent_ws.py` già completa:
+- `agent.heartbeat` → upsert in `managed_agents`
+- `agent.event kind=discovery_batch` → upsert in `discovered_endpoints` (stessa collection delle dashboard)
+- `agent.event kind=snmp_poll` → upsert in `device_poll_status`
+- `agent.log warn|error` → insert in `agent_logs`
+
+### Smoke test
+- `GET /api/agent/install/wizard.ps1` → 200, 95617 bytes, contiene tutte le stringhe nuove.
+- `GET /api/agent/install/manifest` con api_key valida → 200 con client_id + binaries.
+- Stesso endpoint con token finto → 403 `{"detail":"invalid token"}` (parser PS1 lo intercetta).
+- `GET /api/agent/install/wizard-bundle.zip` → 200, 22481 bytes.
+- `argus.86bit.it/api/agent/install/manifest` → 403 invalid token (FastAPI v4 attivo dietro IIS).
+
+---
+
+
 ## 2026-05-08 FEATURE — Network Scanner v2 (enterprise tooling)
 
 **Direttiva utente**: «tutta la parte di scansione IP sulla rete funziona? copia clona advanced-ip-scanner.com».
