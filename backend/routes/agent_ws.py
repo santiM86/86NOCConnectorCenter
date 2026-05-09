@@ -562,6 +562,17 @@ async def download_binary(platform: str, name: str, token: Optional[str] = None)
     except ValueError as e:
         raise HTTPException(status_code=400, detail="invalid path") from e
     if not path.is_file():
+        # Fallback: redirect 302 verso un mirror noto se l'env e' settata.
+        # Caso d'uso: questo backend (es. argus.86bit.it) e' deployato
+        # senza i binari Windows sul filesystem; il mirror (preview)
+        # li ha gia'. Cosi' il connector si scarica i .exe trasparente.
+        mirror_base = _os.environ.get("BINARY_FALLBACK_URL", "").rstrip("/")
+        if mirror_base:
+            from fastapi.responses import RedirectResponse
+            return RedirectResponse(
+                url=f"{mirror_base}/api/agent/binary/{platform}/{name}?token={token}",
+                status_code=302,
+            )
         raise HTTPException(status_code=404, detail="binary not built")
     media = "application/vnd.microsoft.portable-executable" if name.endswith(".exe") else "application/octet-stream"
     return FileResponse(str(path), media_type=media, filename=name)
@@ -649,6 +660,70 @@ def _config_template(client_id: str, token: str, ws_url: str, role: str = "maste
     )
 
 
+def _fetch_template_from_mirror(filename: str) -> Optional[str]:
+    """Scarica un file template (es. installer_gui.ps1.template) da un
+    mirror remoto se l'env `WIZARD_TEMPLATE_FALLBACK_URL` e' settata.
+
+    Usato come safety-net quando il backend e' deployato senza la
+    cartella `noc-agent/build/` accanto (caso classico: deploy parziale
+    su argus.86bit.it). Cosi' il wizard funziona comunque, scaricando
+    al volo la template dal mirror noto. Cache in-process per evitare
+    una richiesta HTTP per ogni download del wizard.
+    """
+    base = _os.environ.get("WIZARD_TEMPLATE_FALLBACK_URL", "").rstrip("/")
+    if not base:
+        return None
+    cache = getattr(_fetch_template_from_mirror, "_cache", {})
+    if filename in cache:
+        return cache[filename]
+    try:
+        import urllib.request as _ureq
+        url = f"{base}/api/__static-templates__/{filename}"
+        with _ureq.urlopen(url, timeout=15) as r:
+            body = r.read().decode("utf-8")
+    except Exception:
+        return None
+    cache[filename] = body
+    setattr(_fetch_template_from_mirror, "_cache", cache)
+    return body
+
+
+def _read_template_or_fallback(filename: str) -> str:
+    """Legge un template dalla cartella locale; se mancante, ritenta sul
+    mirror remoto (env). Ritorna il contenuto raw del file (placeholder
+    `__BACKEND_URL__` / `__TOKEN__` non sostituiti).
+    """
+    p = _AGENT_TEMPLATE_DIR / filename
+    if p.is_file():
+        return p.read_text(encoding="utf-8")
+    body = _fetch_template_from_mirror(filename)
+    if body is not None:
+        return body
+    raise HTTPException(status_code=500, detail=f"{filename.split('.')[0]} template missing")
+
+
+@router.get("/__static-templates__/{filename}", response_class=PlainTextResponse, include_in_schema=False)
+async def _serve_static_template(filename: str) -> PlainTextResponse:
+    """Serve template raw (no token replacement) per il fallback mirror.
+
+    Whitelist sui nomi per evitare path traversal. Endpoint pubblico
+    cosi' altri NOC Center possono usare questo come mirror se il
+    proprio /opt/argus/noc-agent/build/ non ha tutti i template
+    (cfr. WIZARD_TEMPLATE_FALLBACK_URL env).
+    """
+    allowed = {"installer_gui.ps1.template",
+               "install.ps1.template",
+               "install.sh.template"}
+    if filename not in allowed:
+        raise HTTPException(status_code=404, detail="template not found")
+    p = _AGENT_TEMPLATE_DIR / filename
+    if not p.is_file():
+        raise HTTPException(status_code=404, detail="template not deployed")
+    return PlainTextResponse(p.read_text(encoding="utf-8"),
+                             media_type="text/plain; charset=utf-8")
+
+
+
 @router.get("/agent/install/wizard-bundle.zip")
 async def wizard_bundle(token: Optional[str] = None) -> FileResponse:
     """Download a ZIP containing installer_gui.ps1 (PowerShell GUI wizard).
@@ -670,6 +745,10 @@ async def install_argus_ico() -> FileResponse:
     path and may not refresh on update)."""
     path = _AGENT_ICO_PATH
     if not path.is_file():
+        mirror_base = _os.environ.get("BINARY_FALLBACK_URL", "").rstrip("/")
+        if mirror_base:
+            from fastapi.responses import RedirectResponse
+            return RedirectResponse(url=f"{mirror_base}/api/agent/install/argus.ico", status_code=302)
         raise HTTPException(status_code=404, detail="icon missing")
     return FileResponse(str(path), media_type="image/vnd.microsoft.icon", filename="argus.ico")
 
@@ -742,10 +821,7 @@ async def install_script(platform: str, ext: str, token: Optional[str] = None) -
 
 def _render_windows_ps1(token: str) -> str:
     public_http = _os.environ.get("AGENT_PUBLIC_HTTP_URL", "https://argus.86bit.it")
-    path = _AGENT_TEMPLATE_DIR / "install.ps1.template"
-    if not path.is_file():
-        raise HTTPException(status_code=500, detail="installer template missing")
-    body = path.read_text()
+    body = _read_template_or_fallback("install.ps1.template")
     return (body
             .replace("__BACKEND_URL__", public_http)
             .replace("__TOKEN__", token))
@@ -753,10 +829,7 @@ def _render_windows_ps1(token: str) -> str:
 
 def _render_linux_sh(token: str) -> str:
     public_http = _os.environ.get("AGENT_PUBLIC_HTTP_URL", "https://argus.86bit.it")
-    path = _AGENT_TEMPLATE_DIR / "install.sh.template"
-    if not path.is_file():
-        raise HTTPException(status_code=500, detail="installer template missing")
-    body = path.read_text()
+    body = _read_template_or_fallback("install.sh.template")
     return (body
             .replace("__BACKEND_URL__", public_http)
             .replace("__TOKEN__", token))
@@ -764,10 +837,7 @@ def _render_linux_sh(token: str) -> str:
 
 def _render_wizard_ps1(token: str) -> str:
     public_http = _os.environ.get("AGENT_PUBLIC_HTTP_URL", "https://argus.86bit.it")
-    path = _AGENT_TEMPLATE_DIR / "installer_gui.ps1.template"
-    if not path.is_file():
-        raise HTTPException(status_code=500, detail="wizard template missing")
-    body = path.read_text(encoding="utf-8")
+    body = _read_template_or_fallback("installer_gui.ps1.template")
     return (body
             .replace("__BACKEND_URL__", public_http)
             .replace("__TOKEN__", token))

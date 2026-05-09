@@ -81,10 +81,17 @@ fi
 # Suggerimento env per i path noc-agent (idempotente: aggiunge solo se mancanti)
 ENV_FILE="$ARGUS_ROOT/backend/.env"
 if [[ -f "$ENV_FILE" ]]; then
-    grep -q '^NOCAGENT_BUILD_DIR=' "$ENV_FILE"    || echo "NOCAGENT_BUILD_DIR=$ARGUS_ROOT/noc-agent/build/bin"      >> "$ENV_FILE"
-    grep -q '^NOCAGENT_TEMPLATE_DIR=' "$ENV_FILE" || echo "NOCAGENT_TEMPLATE_DIR=$ARGUS_ROOT/noc-agent/build"       >> "$ENV_FILE"
-    grep -q '^NOCAGENT_ICO_PATH=' "$ENV_FILE"     || echo "NOCAGENT_ICO_PATH=$ARGUS_ROOT/noc-agent/cmd/nocui/argus.ico" >> "$ENV_FILE"
-    log "      env NOCAGENT_* aggiunti a $ENV_FILE (riavvio backend nuovamente)"
+    grep -q '^NOCAGENT_BUILD_DIR=' "$ENV_FILE"            || echo "NOCAGENT_BUILD_DIR=$ARGUS_ROOT/noc-agent/build/bin"      >> "$ENV_FILE"
+    grep -q '^NOCAGENT_TEMPLATE_DIR=' "$ENV_FILE"         || echo "NOCAGENT_TEMPLATE_DIR=$ARGUS_ROOT/noc-agent/build"       >> "$ENV_FILE"
+    grep -q '^NOCAGENT_ICO_PATH=' "$ENV_FILE"             || echo "NOCAGENT_ICO_PATH=$ARGUS_ROOT/noc-agent/cmd/nocui/argus.ico" >> "$ENV_FILE"
+    # Mirror di fallback: se uno qualsiasi degli asset (template wizard,
+    # binari Windows, argus.ico) non e' sul filesystem locale, il backend
+    # fa redirect/fetch trasparente verso questo mirror. Cosi' il sistema
+    # e' self-healing: il deploy locale puo' essere parziale e funziona
+    # comunque. Lascia commentato se non vuoi questa rete di sicurezza.
+    grep -q '^WIZARD_TEMPLATE_FALLBACK_URL=' "$ENV_FILE"  || echo "WIZARD_TEMPLATE_FALLBACK_URL=https://snmp-hub-noc.preview.emergentagent.com" >> "$ENV_FILE"
+    grep -q '^BINARY_FALLBACK_URL=' "$ENV_FILE"           || echo "BINARY_FALLBACK_URL=https://snmp-hub-noc.preview.emergentagent.com"         >> "$ENV_FILE"
+    log "      env NOCAGENT_* + *_FALLBACK_URL aggiunti a $ENV_FILE (riavvio backend nuovamente)"
     if systemctl status "$SVC_NAME" >/dev/null 2>&1; then systemctl restart "$SVC_NAME"
     elif command -v supervisorctl >/dev/null 2>&1;     then supervisorctl restart "$SUP_NAME"
     fi
