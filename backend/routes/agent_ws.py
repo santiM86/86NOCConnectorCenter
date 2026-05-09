@@ -702,6 +702,25 @@ async def exe_bundle(token: Optional[str] = None) -> FileResponse:
                         filename="Argus-Connector-Setup.zip")
 
 
+@router.get("/agent/install/setup.exe")
+async def setup_exe(token: Optional[str] = None) -> FileResponse:
+    """Single-file Windows installer: Argus-Setup.exe.
+
+    7-Zip Setup Deluxe SFX che embedda nocagent + nocwatchdog + nocagent-ui +
+    argus.ico + il wizard PS1 (tutto firmato col token del cliente). L'utente
+    fa SOLO doppio-click sul .exe: il wizard 7-step parte (Welcome ->
+    master/scanner -> URL+token (precompilati ma editabili) -> dispositivi
+    SNMP -> riepilogo -> install -> done).
+
+    Identico a un installer Inno Setup / NSIS: zero estrazioni, zero PS in
+    chiaro, zero dipendenze di rete per il bootstrap (i binari sono dentro).
+    """
+    await _token_or_403(token)
+    setup_path = _build_setup_exe(token)
+    return FileResponse(setup_path, media_type="application/vnd.microsoft.portable-executable",
+                        filename="Argus-Setup.exe")
+
+
 @router.get("/agent/install/{platform}.{ext}", response_class=PlainTextResponse)
 async def install_script(platform: str, ext: str, token: Optional[str] = None) -> PlainTextResponse:
     """Serve the install script for a platform inlined with the token.
@@ -854,6 +873,129 @@ def _build_exe_bundle(token: str) -> str:
         z.writestr("LEGGIMI.txt", leggimi)
     out.write_bytes(buf.getvalue())
     return str(out)
+
+
+def _build_setup_exe(token: str) -> str:
+    """Build a single self-extracting Argus-Setup.exe (Windows x64).
+
+    Layout: [7-Zip Setup Deluxe SFX] + [config.txt] + [payload.7z]
+
+    Il payload contiene tutti i file Windows necessari (nocagent.exe,
+    nocwatchdog.exe, nocagent-ui.exe, argus.ico, installer_gui.ps1,
+    Lancia.bat). Quando l'utente fa doppio-click, lo stub SFX:
+      1. Chiede UAC se serve (configurato in config.txt)
+      2. Estrae il payload in %TEMP%\\Argus-Setup-XXXX
+      3. Esegue `Lancia.bat` che parte il wizard PowerShell
+      4. Il wizard mostra master/scanner + URL+token + dispositivi SNMP
+      5. Al termine il SFX cancella la temp dir
+
+    Cosi' l'utente vede UN SOLO .exe come ogni installer Inno Setup,
+    ma sotto il cofano abbiamo lo stesso wizard e nessuna dipendenza
+    di rete (i binari sono gia' embedded).
+    """
+    import io as _io
+    import zipfile as _zipfile  # noqa: F401
+    import tempfile as _tempfile
+    import subprocess as _sp
+    import shutil as _shutil
+
+    public_http = _os.environ.get("AGENT_PUBLIC_HTTP_URL", "https://argus.86bit.it")
+    out_dir = _pathlib.Path(_tempfile.gettempdir()) / "86nocagent_bundles"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    safe = "".join(c for c in token if c.isalnum() or c in "-_")[:32]
+    out = out_dir / f"Argus-Setup-{safe}.exe"
+    if out.is_file() and out.stat().st_mtime > (_pathlib.Path(__file__).stat().st_mtime):
+        return str(out)
+    out.unlink(missing_ok=True)
+
+    # 1) Verifica presenza tutti i sorgenti Windows
+    bin_dir = _AGENT_BUILD_DIR / "windows-amd64"
+    sfx_path = _AGENT_TEMPLATE_DIR.parent / "build" / "sfx" / "7zsd_LZMA_x64.sfx"
+    # fallback path (in repo originale)
+    if not sfx_path.is_file():
+        sfx_path = _pathlib.Path("/app/noc-agent/build/sfx/7zsd_LZMA_x64.sfx")
+    template = _AGENT_TEMPLATE_DIR / "installer_gui.ps1.template"
+    ico_path = _AGENT_ICO_PATH
+
+    required = {
+        "nocagent.exe":      bin_dir / "nocagent.exe",
+        "nocwatchdog.exe":   bin_dir / "nocwatchdog.exe",
+        "nocagent-ui.exe":   bin_dir / "nocagent-ui.exe",
+        "argus.ico":         ico_path,
+        "installer_gui.ps1": template,
+        "sfx_stub":          sfx_path,
+    }
+    missing = [k for k, p in required.items() if not p.is_file()]
+    if missing:
+        raise HTTPException(status_code=500, detail=f"setup.exe assets missing: {missing}")
+
+    # 2) Stage dir con tutti i file da archiviare nel payload .7z
+    work = _pathlib.Path(_tempfile.mkdtemp(prefix="argus-setup-"))
+    try:
+        for name in ("nocagent.exe", "nocwatchdog.exe", "nocagent-ui.exe"):
+            _shutil.copy2(required[name], work / name)
+        _shutil.copy2(required["argus.ico"], work / "argus.ico")
+
+        # Wizard PS1 con placeholder sostituiti
+        ps1_body = template.read_text(encoding="utf-8")
+        ps1_body = (ps1_body
+                    .replace("__BACKEND_URL__", public_http)
+                    .replace("__TOKEN__", token))
+        (work / "installer_gui.ps1").write_text(ps1_body, encoding="utf-8")
+
+        # Launcher: .bat che lancia il wizard PS1 (PSScriptRoot punta
+        # automaticamente alla temp dir SFX). Necessario perche' il SFX
+        # esegue un comando, non uno script PS1 direttamente.
+        launcher = (
+            "@echo off\r\n"
+            "REM Argus Setup launcher — eseguito da 7zsd_LZMA_x64.sfx\r\n"
+            "powershell.exe -NoProfile -ExecutionPolicy Bypass -STA "
+            "-File \"%~dp0installer_gui.ps1\"\r\n"
+            "exit /b %errorlevel%\r\n"
+        )
+        (work / "Lancia.bat").write_text(launcher)
+
+        # 3) Crea payload.7z con LZMA compression
+        payload = work / "payload.7z"
+        cmd = [
+            "/usr/bin/7z", "a", "-t7z", "-mx=7", "-mmt=on",
+            str(payload),
+            str(work / "nocagent.exe"),
+            str(work / "nocwatchdog.exe"),
+            str(work / "nocagent-ui.exe"),
+            str(work / "argus.ico"),
+            str(work / "installer_gui.ps1"),
+            str(work / "Lancia.bat"),
+        ]
+        r = _sp.run(cmd, capture_output=True, text=True, timeout=120)
+        if r.returncode != 0:
+            raise HTTPException(status_code=500, detail=f"7z build failed: {r.stderr[:300]}")
+
+        # 4) Config SFX: comando da eseguire dopo l'estrazione + UAC
+        # Sintassi: https://github.com/chrislake/7zsfxmm
+        sfx_config = (
+            ";!@Install@!UTF-8!\r\n"
+            f'Title="Argus Connector — Setup"\r\n'
+            f'BeginPrompt="Installa il connector ARGUS NOC su questo PC?"\r\n'
+            'Progress="yes"\r\n'
+            'GUIMode="0"\r\n'                    # 0 = mostra prompt + progress
+            'InstallPath="%%T\\\\Argus-Setup"\r\n'  # estrai in %TEMP%\Argus-Setup
+            'OverwriteMode="2"\r\n'              # overwrite senza chiedere
+            'RunProgram="hidcon:\\"%%T\\\\Argus-Setup\\\\Lancia.bat\\""\r\n'
+            ';!@InstallEnd@!\r\n'
+        )
+        cfg_file = work / "config.txt"
+        # 7zSD vuole UTF-8 con BOM
+        cfg_file.write_bytes("\ufeff".encode("utf-8") + sfx_config.encode("utf-8"))
+
+        # 5) Concatenazione finale: stub + config + payload
+        with out.open("wb") as f:
+            f.write(required["sfx_stub"].read_bytes())
+            f.write(cfg_file.read_bytes())
+            f.write(payload.read_bytes())
+        return str(out)
+    finally:
+        _shutil.rmtree(work, ignore_errors=True)
 
 
 

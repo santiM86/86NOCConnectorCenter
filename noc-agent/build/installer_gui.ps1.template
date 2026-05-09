@@ -80,6 +80,21 @@ $ConfigPath     = Join-Path $DataDir "agent.yaml"
 $DefaultBackendUrl = "__BACKEND_URL__"
 $DefaultToken      = "__TOKEN__"
 
+# Modalita' bundle: se i binari Windows (nocagent.exe, nocagent-ui.exe,
+# nocwatchdog.exe) sono presenti accanto a questo script (caso del SFX
+# self-extracting "Argus-Setup.exe"), li copiamo direttamente invece di
+# scaricarli dal NOC Center. Cosi' il wizard funziona anche offline e
+# non dipende dalla presenza dei binari su argus.86bit.it.
+$script:LocalBinariesDir = $PSScriptRoot
+if (-not $script:LocalBinariesDir) { $script:LocalBinariesDir = (Get-Location).Path }
+$script:HasLocalBinaries = $false
+foreach ($req in @('nocagent.exe','nocwatchdog.exe','nocagent-ui.exe')) {
+    if (-not (Test-Path (Join-Path $script:LocalBinariesDir $req))) {
+        $script:HasLocalBinaries = $false; break
+    }
+    $script:HasLocalBinaries = $true
+}
+
 # ================================================================
 # COLORI
 # ================================================================
@@ -1626,32 +1641,43 @@ function Run-Install {
         }
         $script:progressBar.Value = 30
 
-        Append-Log "[4/11] Download nocagent.exe" $ColorAccent
-        Download-BinaryWithFallback 'nocagent.exe' (Join-Path $InstallDir "nocagent.exe")
+        Append-Log "[4/11] Copia/Download nocagent.exe" $ColorAccent
+        if ($script:HasLocalBinaries) {
+            Copy-Item (Join-Path $script:LocalBinariesDir 'nocagent.exe') (Join-Path $InstallDir "nocagent.exe") -Force
+            Append-Log "      copiato da bundle locale" $ColorMuted
+        } else {
+            Download-BinaryWithFallback 'nocagent.exe' (Join-Path $InstallDir "nocagent.exe")
+        }
         $script:progressBar.Value = 55
 
-        Append-Log "[5/11] Download nocwatchdog.exe + nocagent-ui.exe" $ColorAccent
-        Download-BinaryWithFallback 'nocwatchdog.exe' (Join-Path $InstallDir "nocwatchdog.exe")
-        Download-BinaryWithFallback 'nocagent-ui.exe' (Join-Path $InstallDir "nocagent-ui.exe")
-        # Scarica argus.ico accanto agli eseguibili: gli shortcut del menu
-        # Start lo useranno come IconLocation. Usare un .ico file separato
-        # invece dell'icona embedded nell'EXE evita la icon-cache di
-        # Explorer che tende a non aggiornare l'icona quando l'EXE viene
-        # rebuildato con lo stesso path. Stesso fallback al mirror se
-        # il NOC Center non ha l'asset.
-        try {
-            Invoke-WebRequest -UseBasicParsing -TimeoutSec 30 `
-                -Uri "$url/api/agent/install/argus.ico" `
-                -OutFile (Join-Path $InstallDir "argus.ico")
-            Append-Log "      argus.ico scaricato" $ColorMuted
-        } catch {
+        Append-Log "[5/11] Copia/Download nocwatchdog.exe + nocagent-ui.exe" $ColorAccent
+        if ($script:HasLocalBinaries) {
+            Copy-Item (Join-Path $script:LocalBinariesDir 'nocwatchdog.exe') (Join-Path $InstallDir "nocwatchdog.exe") -Force
+            Copy-Item (Join-Path $script:LocalBinariesDir 'nocagent-ui.exe') (Join-Path $InstallDir "nocagent-ui.exe") -Force
+            Append-Log "      copiati da bundle locale" $ColorMuted
+        } else {
+            Download-BinaryWithFallback 'nocwatchdog.exe' (Join-Path $InstallDir "nocwatchdog.exe")
+            Download-BinaryWithFallback 'nocagent-ui.exe' (Join-Path $InstallDir "nocagent-ui.exe")
+        }
+        # Argus icon: prima da bundle locale, poi mirror.
+        if ($script:HasLocalBinaries -and (Test-Path (Join-Path $script:LocalBinariesDir 'argus.ico'))) {
+            Copy-Item (Join-Path $script:LocalBinariesDir 'argus.ico') (Join-Path $InstallDir "argus.ico") -Force
+            Append-Log "      argus.ico copiato dal bundle" $ColorMuted
+        } else {
             try {
                 Invoke-WebRequest -UseBasicParsing -TimeoutSec 30 `
-                    -Uri "$($script:BinaryMirror)/api/agent/install/argus.ico" `
+                    -Uri "$url/api/agent/install/argus.ico" `
                     -OutFile (Join-Path $InstallDir "argus.ico")
-                Append-Log "      argus.ico scaricato dal mirror" $ColorMuted
+                Append-Log "      argus.ico scaricato" $ColorMuted
             } catch {
-                Append-Log "      WARN: argus.ico non scaricato (uso fallback EXE icon): $($_.Exception.Message)" $ColorMuted
+                try {
+                    Invoke-WebRequest -UseBasicParsing -TimeoutSec 30 `
+                        -Uri "$($script:BinaryMirror)/api/agent/install/argus.ico" `
+                        -OutFile (Join-Path $InstallDir "argus.ico")
+                    Append-Log "      argus.ico scaricato dal mirror" $ColorMuted
+                } catch {
+                    Append-Log "      WARN: argus.ico non scaricato (uso fallback EXE icon): $($_.Exception.Message)" $ColorMuted
+                }
             }
         }
         $script:progressBar.Value = 70

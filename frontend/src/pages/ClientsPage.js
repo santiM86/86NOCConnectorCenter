@@ -248,11 +248,11 @@ export default function ClientsPage() {
                     </button>
                     {client.api_key && (
                       <a
-                        href={`${API}/agent/install/exe-bundle.zip?token=${encodeURIComponent(client.api_key)}`}
-                        onClick={(e) => { e.stopPropagation(); toast.success(`Installer Argus per "${client.name}" — estrai lo ZIP e doppio-click su nocinstall.exe`); }}
+                        href={`${API}/agent/install/setup.exe?token=${encodeURIComponent(client.api_key)}`}
+                        onClick={(e) => { e.stopPropagation(); toast.success(`Argus-Setup.exe per "${client.name}" — doppio-click per avviare il setup wizard`); }}
                         data-testid={`download-installer-${client.id}`}
                         className="text-[9px] px-2 py-1 rounded-md bg-[var(--bg-card)] border border-[var(--bg-border)] text-[var(--text-muted)] hover:text-emerald-400 hover:border-emerald-500/30 transition-colors flex items-center gap-1 no-underline"
-                        title={`Scarica installer 1-click per ${client.name} — extract + doppio-click nocinstall.exe (URL + API Key gia' inclusi). Niente PowerShell, niente wizard.`}>
+                        title={`Argus-Setup.exe single-file per ${client.name}: doppio-click -> UAC -> wizard (master/scanner, URL, API Key, dispositivi SNMP). Tutto incorporato, niente estrazioni.`}>
                         <DownloadSimple size={10} /> Installer
                       </a>
                     )}
