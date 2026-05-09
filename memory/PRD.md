@@ -1,3 +1,30 @@
+## 2026-05-09 FEATURE — One-click installer download dalla pagina Clienti
+
+**Direttiva utente** (post-fix wizard): «si procedi» → implementa il bottone "Scarica installer Argus pre-configurato" già proposto.
+
+### Implementazione
+File: `/app/frontend/src/pages/ClientsPage.js`
+- Aggiunta icona `DownloadSimple` da `@phosphor-icons/react`.
+- Nuovo `<a>` tag accanto a "URL" sulla riga del cliente, hover emerald (`hover:text-emerald-400 hover:border-emerald-500/30`), `data-testid="download-installer-{client.id}"`.
+- `href = ${API}/agent/install/wizard-bundle.zip?token=${encodeURIComponent(client.api_key)}` → invoca l'endpoint esistente `_build_wizard_bundle` di `agent_ws.py`, che già fa replace di `__BACKEND_URL__` (env `AGENT_PUBLIC_HTTP_URL`) e `__TOKEN__` (api_key del cliente) nel template PS1.
+- Toast di conferma «Download installer Argus per "<cliente>" avviato» al click.
+- Nessuna modifica backend richiesta — endpoint riusato.
+
+### Smoke test
+- ZIP scaricato → 22481 bytes (3 file: `Installa-86NocAgent.bat`, `installer_gui.ps1`, `LEGGIMI.txt`).
+- API Key del cliente trovata 1× nel `installer_gui.ps1` estratto (placeholder `__TOKEN__` correttamente rimpiazzato).
+- Screenshot UI: bottone "📥 Installer" visibile e cliccabile sulla riga del cliente.
+
+### Risultato per l'utente
+Onboarding di un connector su un cliente nuovo passa da:
+1. ~~Login~~ ~~Andare in Clienti~~ ~~Cliccare API Key per copiare~~ ~~Download wizard~~ ~~Estrarre ZIP~~ ~~Aprire installer~~ ~~Incollare URL + API Key~~
+
+a:
+1. Login → Clienti → click **Installer** → eseguire l'EXE/BAT scaricato → "Avanti" (URL e API Key gia' compilati).
+
+---
+
+
 ## 2026-05-09 FIX — Wizard installer Argus v4: terminologia + errore tagliato
 
 **Direttiva utente** (con screenshot): «sistema e mostra le parole tagliate. Non scrivere token ma scrivi ApiKey. Mi confermi che APY e URL si agganciano al center?».
