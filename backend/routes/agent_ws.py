@@ -140,12 +140,16 @@ REGISTRY = _Registry()
 async def _validate_token(token: str, claimed_client_id: str) -> Optional[Dict[str, Any]]:
     if not token:
         return None
+    # 1. agent_tokens classico
     doc = await db.agent_tokens.find_one({"token": token, "revoked": {"$ne": True}}, {"_id": 0})
-    if not doc:
-        return None
-    if doc.get("client_id") != claimed_client_id:
-        return None
-    return doc
+    if doc and doc.get("client_id") == claimed_client_id:
+        return doc
+    # 2. fallback: api_key del cliente (mostrata nella pagina Clienti)
+    client = await db.clients.find_one({"api_key": token}, {"_id": 0, "client_id": 1})
+    if client and client.get("client_id") == claimed_client_id:
+        # Costruisci un doc compatibile con quello restituito da agent_tokens
+        return {"token": token, "client_id": client["client_id"], "role": "master"}
+    return None
 
 
 # ---- WebSocket endpoint -----------------------------------------------------
@@ -499,13 +503,27 @@ _ALLOWED_BINARIES = {
 
 
 async def _token_or_403(token: Optional[str]) -> str:
-    """Validate an agent token presented as a query string. Returns client_id."""
+    """Validate an agent token presented as a query string. Returns client_id.
+
+    Accetta indifferentemente:
+      - un agent_token generato via `POST /api/agents/register`
+      - la `api_key` univoca del cliente (mostrata nella pagina Clienti)
+
+    Cosi' l'admin puo' configurare il connector usando direttamente
+    l'API Key del cliente, senza dover prima generare un token agent
+    separato.
+    """
     if not token:
         raise HTTPException(status_code=401, detail="token required")
+    # 1. Tentativo classico: token presente in agent_tokens.
     doc = await db.agent_tokens.find_one({"token": token, "revoked": {"$ne": True}}, {"_id": 0})
-    if not doc:
-        raise HTTPException(status_code=403, detail="invalid token")
-    return doc["client_id"]
+    if doc:
+        return doc["client_id"]
+    # 2. Fallback: api_key univoca del cliente.
+    client = await db.clients.find_one({"api_key": token}, {"_id": 0, "client_id": 1})
+    if client and client.get("client_id"):
+        return client["client_id"]
+    raise HTTPException(status_code=403, detail="invalid token")
 
 
 @router.get("/agent/binary/{platform}/{name}")
