@@ -1,3 +1,28 @@
+## ⚠️ REGOLE PERMANENTI — leggere PRIMA di toccare qualsiasi file
+
+Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
+
+1. **NON installare e NON aggiungere mai** `emergentintegrations` alle
+   dipendenze del backend (`/app/backend/requirements.txt`). Stato
+   attuale: assente. Mantenere cosi'.
+
+2. **NON RIMUOVERE MAI** i seguenti artefatti di deploy, neanche durante
+   refactoring o pulizie. Se sono assenti dal repo significa che non sono
+   ancora stati ricreati, ma se in futuro vengono aggiunti dall'utente o
+   da un altro agent NON vanno cancellati:
+   - Endpoint backend `POST /api/webhooks/github-deploy` (auto-deploy
+     trigger via GitHub webhook)
+   - Script `/app/deploy.sh`
+   - Workflow `/app/.github/workflows/deploy.yml`
+
+   Lo `sync-argus.sh` attuale e' una soluzione complementare (run-on-demand
+   da remoto), NON sostitutiva del webhook auto-deploy.
+
+3. **Linguaggio**: TUTTE le risposte all'utente devono essere in italiano.
+
+---
+
+
 ## 2026-05-09 BRAND — Sostituzione globale icona Argus (nuovo logo blu/A)
 
 **Direttiva utente** (con immagine allegata): «usa questa icona ovunque».
