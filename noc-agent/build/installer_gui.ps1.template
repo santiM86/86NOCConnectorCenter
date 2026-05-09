@@ -1544,6 +1544,17 @@ function Run-Install {
         Append-Log "[3/11] Creazione directory" $ColorAccent
         New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
         New-Item -ItemType Directory -Force -Path $DataDir    | Out-Null
+        # ACL: la GUI nocagent-ui.exe gira come utente normale, deve poter
+        # leggere agent.yaml e scriverlo quando si clicca "Salva e Riavvia".
+        # Concedi Modify al gruppo BUILTIN\Users (SID *S-1-5-32-545,
+        # locale-indipendente) sulla cartella ProgramData. InstallDir
+        # (Program Files) resta read-only per gli Users.
+        try {
+            & icacls.exe $DataDir "/grant" "*S-1-5-32-545:(OI)(CI)M" "/T" "/C" "/Q" 2>&1 | Out-Null
+            Append-Log "      ACL Users:Modify applicate a $DataDir" $ColorMuted
+        } catch {
+            Append-Log "      WARN: icacls ACL fallito: $($_.Exception.Message)" $ColorMuted
+        }
         $script:progressBar.Value = 30
 
         Append-Log "[4/11] Download nocagent.exe" $ColorAccent
