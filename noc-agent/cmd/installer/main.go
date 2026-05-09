@@ -136,6 +136,11 @@ func main() {
 	if err := os.MkdirAll(dataDir(), 0o755); err != nil {
 		fail("mkdir data:", err)
 	}
+	// ACL: lascia che la GUI in user-mode possa leggere agent.yaml e
+	// scriverlo quando si clicca "Salva e Riavvia". Concedi Modify al
+	// gruppo BUILTIN\Users (SID *S-1-5-32-545, locale-indipendente).
+	// Solo dataDir(): gli EXE in installDir() restano write-protected.
+	_ = run("icacls", dataDir(), "/grant", "*S-1-5-32-545:(OI)(CI)M", "/T", "/C", "/Q")
 
 	step("[4/8] Download nocagent.exe")
 	if err := downloadFile(cfg, "nocagent.exe", filepath.Join(installDir(), "nocagent.exe"), man.SHA256["nocagent.exe"]); err != nil {

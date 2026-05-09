@@ -8,7 +8,7 @@
 
     Step:
       1. Welcome
-      2. Configurazione (URL backend + Token cliente)
+      2. Configurazione (URL backend + API Key cliente)
       3. Riepilogo
       4. Installazione (download binari, sc.exe create, start service)
       5. Fine
@@ -1117,7 +1117,7 @@ function Show-Configuration {
     $btnNext.Enabled = $true
 
     $contentPanel.Controls.Add((New-Title "Configurazione NOC Center"))
-    $contentPanel.Controls.Add((New-Subtitle "Inserisci l'URL del NOC Center e il token cliente generato dall'amministratore. Il token determina automaticamente il client_id; non c'e' altro da configurare."))
+    $contentPanel.Controls.Add((New-Subtitle "Inserisci l'URL del NOC Center e l'API Key del cliente. L'API Key determina automaticamente il client_id; non c'e' altro da configurare."))
 
     # URL
     $lblUrl = New-Object System.Windows.Forms.Label
@@ -1143,9 +1143,9 @@ function Show-Configuration {
     $hintUrl.Size = New-Object System.Drawing.Size(440, 18)
     $contentPanel.Controls.Add($hintUrl)
 
-    # Token
+    # API Key
     $lblToken = New-Object System.Windows.Forms.Label
-    $lblToken.Text = "Token cliente *"
+    $lblToken.Text = "API Key cliente *"
     $lblToken.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
     $lblToken.Location = [System.Drawing.Point]::new(35, 235)
     $lblToken.Size = New-Object System.Drawing.Size(220, 28)
@@ -1160,7 +1160,7 @@ function Show-Configuration {
     $contentPanel.Controls.Add($script:txtToken)
 
     $hintTok = New-Object System.Windows.Forms.Label
-    $hintTok.Text = "Generato dall'admin con  POST /api/agents/register"
+    $hintTok.Text = "Copia l'API Key del cliente dalla pagina Clienti del NOC Center (pulsante 'API Key')."
     $hintTok.Font = New-Object System.Drawing.Font("Segoe UI", 8)
     $hintTok.ForeColor = $ColorMuted
     $hintTok.Location = [System.Drawing.Point]::new(35, 292)
@@ -1177,11 +1177,14 @@ function Show-Configuration {
     $btnTest.Font = New-Object System.Drawing.Font("Segoe UI", 9)
     $contentPanel.Controls.Add($btnTest)
 
+    # Etichetta validazione: spostata sotto al bottone su intera larghezza,
+    # multilinea, cosi' messaggi lunghi non vengono troncati.
     $script:lblValidation = New-Object System.Windows.Forms.Label
     $script:lblValidation.Font = New-Object System.Drawing.Font("Segoe UI", 9)
-    $script:lblValidation.Location = [System.Drawing.Point]::new(225, 335)
-    $script:lblValidation.Size = New-Object System.Drawing.Size(260, 24)
+    $script:lblValidation.Location = [System.Drawing.Point]::new(35, 370)
+    $script:lblValidation.Size = New-Object System.Drawing.Size(560, 60)
     $script:lblValidation.Text = ""
+    $script:lblValidation.AutoSize = $false
     $contentPanel.Controls.Add($script:lblValidation)
 
     $btnTest.Add_Click({
@@ -1189,7 +1192,7 @@ function Show-Configuration {
         $tok = $script:txtToken.Text.Trim()
         if (-not $url -or -not $tok) {
             $script:lblValidation.ForeColor = $ColorError
-            $script:lblValidation.Text = "URL e Token obbligatori."
+            $script:lblValidation.Text = "URL e API Key obbligatori."
             return
         }
         $script:lblValidation.ForeColor = $ColorMuted
@@ -1203,8 +1206,33 @@ function Show-Configuration {
             $script:lblValidation.ForeColor = $ColorSuccess
             $script:lblValidation.Text = ([char]0x2713) + " OK - cliente: $($resp.client_id)"
         } catch {
+            # Estrae il body JSON ({"detail":"..."}) restituito da FastAPI
+            # cosi' al posto del generico ".NET 403 Non consentito" l'utente
+            # vede il motivo reale (es. "invalid token", "client not found").
+            $reason = ""
+            try {
+                if ($_.Exception.Response) {
+                    $stream = $_.Exception.Response.GetResponseStream()
+                    $sr = New-Object System.IO.StreamReader($stream)
+                    $body = $sr.ReadToEnd()
+                    $sr.Close()
+                    if ($body) {
+                        try { $j = $body | ConvertFrom-Json; if ($j.detail) { $reason = [string]$j.detail } } catch { $reason = $body }
+                    }
+                    $code = [int]$_.Exception.Response.StatusCode
+                    if ($code -eq 403 -and ($reason -match 'invalid token')) {
+                        $reason = "API Key non valida o non registrata su questo NOC Center. Verifica di averla copiata dalla pagina Clienti -> API Key."
+                    } elseif (-not $reason) {
+                        $reason = "HTTP $code"
+                    }
+                } else {
+                    $reason = $_.Exception.Message
+                }
+            } catch {
+                $reason = $_.Exception.Message
+            }
             $script:lblValidation.ForeColor = $ColorError
-            $script:lblValidation.Text = ([char]0x2717) + " " + $_.Exception.Message
+            $script:lblValidation.Text = ([char]0x2717) + " " + $reason
         }
     })
 }
@@ -1436,7 +1464,7 @@ function Show-Summary {
         @("URL NOC Center",   $script:BackendUrl),
         @("Cliente",          $script:ClientId),
         @("Ruolo",            $(if ($script:Role -eq "scanner") {"VLAN Scanner (solo discovery)"} else {"Master Connector (completo)"})),
-        @("Token (preview)",  ($script:Token.Substring(0, [Math]::Min(8, $script:Token.Length)) + "...")),
+        @("API Key (preview)", ($script:Token.Substring(0, [Math]::Min(8, $script:Token.Length)) + "...")),
         @("Dispositivi SNMP", "$($script:Devices.Count) target  (polling $($script:PollingSec)s)"),
         @("Cartella binari",  $InstallDir),
         @("Cartella config",  $DataDir),
@@ -1544,6 +1572,17 @@ function Run-Install {
         Append-Log "[3/11] Creazione directory" $ColorAccent
         New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
         New-Item -ItemType Directory -Force -Path $DataDir    | Out-Null
+        # ACL: la GUI nocagent-ui.exe gira come utente normale, deve poter
+        # leggere agent.yaml e scriverlo quando si clicca "Salva e Riavvia".
+        # Concedi Modify al gruppo BUILTIN\Users (SID *S-1-5-32-545,
+        # locale-indipendente) sulla cartella ProgramData. InstallDir
+        # (Program Files) resta read-only per gli Users.
+        try {
+            & icacls.exe $DataDir "/grant" "*S-1-5-32-545:(OI)(CI)M" "/T" "/C" "/Q" 2>&1 | Out-Null
+            Append-Log "      ACL Users:Modify applicate a $DataDir" $ColorMuted
+        } catch {
+            Append-Log "      WARN: icacls ACL fallito: $($_.Exception.Message)" $ColorMuted
+        }
         $script:progressBar.Value = 30
 
         Append-Log "[4/11] Download nocagent.exe" $ColorAccent
@@ -1912,7 +1951,7 @@ $btnNext.Add_Click({
         $url = $script:txtUrl.Text.TrimEnd('/')
         $tok = $script:txtToken.Text.Trim()
         if (-not $url -or -not $tok) {
-            [System.Windows.Forms.MessageBox]::Show("URL e Token sono obbligatori.", "Configurazione incompleta",
+            [System.Windows.Forms.MessageBox]::Show("URL e API Key sono obbligatori.", "Configurazione incompleta",
                 [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
             return
         }
@@ -1925,7 +1964,29 @@ $btnNext.Add_Click({
                     -Uri "$url/api/agent/install/manifest?platform=$Platform&role=$($script:Role)&token=$tok"
                 $script:ClientId = $r.client_id
             } catch {
-                [System.Windows.Forms.MessageBox]::Show("Verifica fallita:`n$($_.Exception.Message)", "Errore connessione",
+                # Stesso parsing del bottone "Verifica connessione": estrae il
+                # body JSON ({"detail":"..."}) per mostrare un errore parlante
+                # invece del generico .NET "(403) Non consentito".
+                $reason = ""
+                try {
+                    if ($_.Exception.Response) {
+                        $stream = $_.Exception.Response.GetResponseStream()
+                        $sr = New-Object System.IO.StreamReader($stream)
+                        $body = $sr.ReadToEnd(); $sr.Close()
+                        if ($body) {
+                            try { $j = $body | ConvertFrom-Json; if ($j.detail) { $reason = [string]$j.detail } } catch { $reason = $body }
+                        }
+                        $code = [int]$_.Exception.Response.StatusCode
+                        if ($code -eq 403 -and ($reason -match 'invalid token')) {
+                            $reason = "API Key non valida o non registrata su questo NOC Center.`nVerifica di averla copiata dalla pagina Clienti -> API Key."
+                        } elseif (-not $reason) {
+                            $reason = "HTTP $code"
+                        }
+                    } else {
+                        $reason = $_.Exception.Message
+                    }
+                } catch { $reason = $_.Exception.Message }
+                [System.Windows.Forms.MessageBox]::Show("Verifica fallita:`n$reason", "Errore connessione",
                     [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
                 return
             }

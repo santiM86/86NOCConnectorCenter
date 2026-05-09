@@ -6,7 +6,7 @@ import { toast } from "sonner";
 import {
   Plus, Trash, Buildings, EnvelopeSimple, Key, Copy, ArrowsClockwise,
   Globe, CaretRight, HardDrives, PlugsConnected, Bell, ShieldCheck,
-  WifiHigh, WifiSlash,
+  WifiHigh, WifiSlash, DownloadSimple,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -246,6 +246,16 @@ export default function ClientsPage() {
                       title={`URL: ${nocUrl}`}>
                       <Globe size={10} /> URL
                     </button>
+                    {client.api_key && (
+                      <a
+                        href={`${API}/agent/install/wizard-bundle.zip?token=${encodeURIComponent(client.api_key)}`}
+                        onClick={(e) => { e.stopPropagation(); toast.success(`Download installer Argus per "${client.name}" avviato`); }}
+                        data-testid={`download-installer-${client.id}`}
+                        className="text-[9px] px-2 py-1 rounded-md bg-[var(--bg-card)] border border-[var(--bg-border)] text-[var(--text-muted)] hover:text-emerald-400 hover:border-emerald-500/30 transition-colors flex items-center gap-1 no-underline"
+                        title={`Scarica wizard installer ARGUS pre-configurato per ${client.name} (URL + API Key gia' inseriti)`}>
+                        <DownloadSimple size={10} /> Installer
+                      </a>
+                    )}
                     <button onClick={(e) => { e.stopPropagation(); }}
                       className="hidden">
                     </button>
