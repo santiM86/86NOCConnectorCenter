@@ -95,7 +95,7 @@ func (m *scanResultsModel) Value(row, col int) interface{} {
 	}
 	return ""
 }
-func (m *scanResultsModel) PublishRowsReset() { m.PublishRowsChanged(0, len(m.items)) }
+func (m *scanResultsModel) publishReset() { m.PublishRowsReset() }
 
 // detectLocalCIDR returns a /24 CIDR built from the first private IPv4
 // address bound to a local interface. Falls back to "192.168.1.0/24".

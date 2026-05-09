@@ -59,6 +59,7 @@ type cliCfg struct {
 
 type manifest struct {
 	ClientID       string            `json:"client_id"`
+	Role           string            `json:"role"`
 	BackendWS      string            `json:"backend_ws"`
 	Binaries       map[string]string `json:"binaries"`
 	SHA256         map[string]string `json:"sha256"`
@@ -149,6 +150,35 @@ func main() {
 	step("[6/8] Scrittura agent.yaml")
 	if err := os.WriteFile(configPath(), []byte(man.ConfigTemplate), 0o644); err != nil {
 		fail("write yaml:", err)
+	}
+
+	// Scrivi anche agent-ui.json: la GUI nativa nocagent-ui.exe lo legge
+	// per sapere client_id/role/backend_url da mostrare e per fare le
+	// chiamate alle API self/health, self/snmp/test.
+	uiCfg := map[string]any{
+		"backend_url": cfg.backend,
+		"client_id":   man.ClientID,
+		"token":       cfg.token,
+		"role":        man.Role,
+		"install_dir": installDir(),
+		"config_path": configPath(),
+		"version":     "4.0.0",
+	}
+	if buf, err := json.MarshalIndent(uiCfg, "", "  "); err == nil {
+		_ = os.WriteFile(filepath.Join(installDir(), "agent-ui.json"), buf, 0o644)
+		_ = os.WriteFile(filepath.Join(dataDir(), "agent-ui.json"), buf, 0o644)
+	}
+	// Scarica anche argus.ico per avere icone consistenti negli shortcut
+	// e nelle finestre della UI.
+	icoURL := strings.TrimRight(cfg.backend, "/") + "/api/agent/install/argus.ico"
+	if resp, err := httpClient.Get(icoURL); err == nil {
+		defer resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			if out, err := os.Create(filepath.Join(installDir(), "argus.ico")); err == nil {
+				_, _ = io.Copy(out, resp.Body)
+				out.Close()
+			}
+		}
 	}
 
 	step("[7/8] Registrazione servizi Windows")

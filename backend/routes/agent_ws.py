@@ -491,7 +491,7 @@ _AGENT_BUILD_DIR = _pathlib.Path(_os.environ.get(
 
 _ALLOWED_PLATFORMS = {"linux-amd64", "linux-arm64", "windows-amd64", "darwin-arm64"}
 _ALLOWED_BINARIES = {
-    "windows-amd64": {"nocagent.exe", "nocwatchdog.exe", "nocagent-ui.exe"},
+    "windows-amd64": {"nocagent.exe", "nocwatchdog.exe", "nocagent-ui.exe", "nocinstall.exe"},
     "linux-amd64": {"nocagent", "nocwatchdog"},
     "linux-arm64": {"nocagent", "nocwatchdog"},
     "darwin-arm64": {"nocagent", "nocwatchdog"},

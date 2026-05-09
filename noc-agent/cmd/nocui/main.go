@@ -125,7 +125,7 @@ type AgentInfo struct {
 }
 
 func loadAgentInfo() AgentInfo {
-	// agent-ui.json viene scritto dall'installer accanto al binario
+	// agent-ui.json viene scritto dall'installer accanto al binario.
 	exe, _ := os.Executable()
 	dir := filepath.Dir(exe)
 	for _, p := range []string{
@@ -145,16 +145,82 @@ func loadAgentInfo() AgentInfo {
 			}
 		}
 	}
-	// Fallback (dev/test)
+	// Fallback intelligente: prova a leggere client_id/token/backend_url
+	// direttamente da agent.yaml. Cosi' anche installazioni vecchie che
+	// non hanno agent-ui.json mostrano i dati corretti.
+	yamlPath := filepath.Join(os.Getenv("ProgramData"), "86NocAgent", "agent.yaml")
+	if b, err := os.ReadFile(yamlPath); err == nil {
+		a := parseAgentYaml(string(b))
+		a.InstallDir = dir
+		a.ConfigPath = yamlPath
+		if a.Version == "" {
+			a.Version = "4.0.0"
+		}
+		return a
+	}
+	// Ultimo fallback (dev/test).
 	return AgentInfo{
 		BackendURL: "https://snmp-hub-noc.preview.emergentagent.com",
 		ClientID:   "unknown",
 		Token:      "",
 		Role:       "master",
 		InstallDir: dir,
-		ConfigPath: filepath.Join(os.Getenv("ProgramData"), "86NocAgent", "agent.yaml"),
+		ConfigPath: yamlPath,
 		Version:    "4.0.0",
 	}
+}
+
+// parseAgentYaml estrae i campi chiave da un file agent.yaml minimale
+// senza dipendere da una libreria YAML completa: cerca riga per riga
+// le chiavi `client_id`, `token`, `backend_ws`, `role`. Sufficiente per
+// popolare la GUI e fare le chiamate self/health.
+func parseAgentYaml(s string) AgentInfo {
+	a := AgentInfo{Role: "master"}
+	for _, line := range strings.Split(s, "\n") {
+		trim := strings.TrimSpace(line)
+		if trim == "" || strings.HasPrefix(trim, "#") {
+			continue
+		}
+		idx := strings.Index(trim, ":")
+		if idx < 0 {
+			continue
+		}
+		key := strings.TrimSpace(trim[:idx])
+		val := strings.Trim(strings.TrimSpace(trim[idx+1:]), "\"' ")
+		switch key {
+		case "client_id":
+			if val != "" {
+				a.ClientID = val
+			}
+		case "token":
+			if val != "" {
+				a.Token = val
+			}
+		case "backend_ws":
+			// Converti wss:// -> https:// per la BackendURL HTTP.
+			if val != "" {
+				u := val
+				if strings.HasPrefix(u, "wss://") {
+					u = "https://" + strings.TrimPrefix(u, "wss://")
+				} else if strings.HasPrefix(u, "ws://") {
+					u = "http://" + strings.TrimPrefix(u, "ws://")
+				}
+				// strip path /api/agent/ws
+				if i := strings.Index(u, "/api/"); i > 0 {
+					u = u[:i]
+				}
+				a.BackendURL = u
+			}
+		case "role":
+			if val != "" {
+				a.Role = val
+			}
+		}
+	}
+	if a.ClientID == "" {
+		a.ClientID = "unknown"
+	}
+	return a
 }
 
 // --- SNMP target model ------------------------------------------------------
@@ -464,7 +530,12 @@ func (m *targetTableModel) Value(row, col int) interface{} {
 	}
 	return ""
 }
-func (m *targetTableModel) PublishRowsReset() { m.PublishRowsChanged(0, len(m.items)) }
+
+// publishReset usa il PublishRowsReset() built-in di walk.TableModelBase
+// che ricalcola RowCount e ridisegna la TableView. Custom metodi che
+// chiamano solo PublishRowsChanged NON aggiornano il count -> nuove
+// righe restano invisibili. Wrapper esplicito per chiarezza.
+func (m *targetTableModel) publishReset() { m.PublishRowsReset() }
 
 // --- Console window ---------------------------------------------------------
 
