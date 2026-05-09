@@ -1,3 +1,37 @@
+## 2026-05-09 BRAND — Sostituzione globale icona Argus (nuovo logo blu/A)
+
+**Direttiva utente** (con immagine allegata): «usa questa icona ovunque».
+
+### Asset generati da `/tmp/argus_new.png` (sorgente 1024x559 RGB)
+- Crop automatico al bounding-box del blu, padding 24 px, square-ization a 451x451.
+- Flood-fill dai 4 corners verso lo sfondo off-white (tolleranza r,g,b > 220) -> sfondo trasparente reale (verificato: pixel angoli `(0,0,0,0)`, 36 071 px transparent, 29 465 px opaque).
+- Master ridimensionato a 16/32/48/64/128/180/192/256/512 px con LANCZOS.
+- ICO multi-resolution generato a 16/24/32/48/64/128/256 (73 841 bytes).
+
+### File sostituiti
+| File | Dim | Uso |
+|---|---|---|
+| `/app/frontend/public/favicon.ico` | 73841 B | favicon browser (multi-size) |
+| `/app/frontend/public/favicon-32.png` | 32x32 | tab favicon HiDPI |
+| `/app/frontend/public/apple-touch-icon.png` | 180x180 | home-screen iOS |
+| `/app/frontend/public/icon-192.png` (+ `-new`) | 192x192 | PWA, notification, sidebar Layout, LoginPage |
+| `/app/frontend/public/icon-512.png` (+ `-new`) | 512x512 | PWA, splash |
+| `/app/frontend/public/logo-48.png` | 48x48 | logo legacy |
+| `/app/noc-agent/cmd/nocui/argus.ico` | 73841 B | icona standalone usata da shortcut menu Start (scaricata da `/api/agent/install/argus.ico`) |
+| `/app/noc-agent/cmd/nocui/rsrc_windows_amd64.syso` | 76116 B | resource compilato per Go linker (rigenerato con `rsrc -ico argus.ico -manifest app.manifest`) |
+
+### Smoke test
+- `GET /favicon.ico` -> 200, 73841 B.
+- `GET /icon-192.png` -> 200, 28008 B.
+- `GET /api/agent/install/argus.ico` -> 200, 73841 B.
+- Screenshot login page: nuova icona Argus correttamente renderizzata accanto a "ARGUS Center".
+
+### Limite noto
+I binari Windows gia' compilati in `/app/noc-agent/build/bin/windows-amd64/nocagent-ui.exe` hanno ancora l'icona vecchia embedded perche' il `.syso` viene linkato durante `go build`. Per aggiornare l'icona del .exe serve `go build` su una macchina con toolchain Go (non disponibile in questo container kube). Il `.syso` aggiornato e' pronto: bastera' un rebuild al prossimo deploy.
+
+---
+
+
 ## 2026-05-09 BUG FIX — Auth fallback agent v4 ignorava clienti legacy
 
 **Sintomo riportato dall'utente**: bottone "Installer" sulla pagina Clienti in produzione (`argus.86bit.it`) -> il browser mostra `{"detail":"invalid token"}` invece di scaricare lo zip, **anche se la API Key viene letta dal frontend** dallo stesso documento del cliente.
