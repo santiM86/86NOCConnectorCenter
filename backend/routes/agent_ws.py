@@ -870,13 +870,20 @@ async def _connector_by_token(token: Optional[str]) -> _Connection:
     of *some* agent of that tenant currently online (preferring master).
 
     Raises HTTPException 401 on invalid token, 404 if no agent online.
+
+    Accetta sia `agent_tokens.token` (token v4 emesso da /agents/register)
+    sia `clients.api_key` legacy: il resolver e' lo stesso di
+    `_token_or_403` per evitare disallineamenti tra endpoints di auth.
     """
-    if not token:
-        raise HTTPException(status_code=401, detail="missing token")
-    doc = await db.agent_tokens.find_one({"token": token, "revoked": {"$ne": True}}, {"_id": 0})
-    if not doc:
-        raise HTTPException(status_code=401, detail="invalid token")
-    client_id = doc.get("client_id")
+    # _token_or_403 raises 401 on missing, 403 on invalid: lo riusiamo
+    # per garantire identica semantica di auth tra install/manifest e
+    # self/snmp/test. Preserviamo lo status 401 per coerenza con il
+    # contratto preesistente di _connector_by_token (l'agent UI mostra
+    # "401: invalid token" all'utente).
+    try:
+        client_id = await _token_or_403(token)
+    except HTTPException as e:
+        raise HTTPException(status_code=401, detail=e.detail) from e
     candidates: List[_Connection] = [
         c for c in REGISTRY.list() if c.client_id == client_id
     ]
@@ -922,15 +929,16 @@ async def self_snmp_test(req: SnmpTestRequest, token: Optional[str] = None) -> D
 async def self_health(token: Optional[str] = None) -> Dict[str, Any]:
     """Health-check del canale connector→backend (la 'VPN' WebSocket).
 
-    Auth: ?token=<agent_token>. Verifica che l'agent sia connesso e misura
-    il round-trip-time inviando un comando 'ping' via WS.
+    Auth: ?token=<agent_token | client.api_key>. Verifica che l'agent sia
+    connesso e misura il round-trip-time inviando un comando 'ping' via WS.
     """
-    if not token:
-        raise HTTPException(status_code=401, detail="missing token")
-    doc = await db.agent_tokens.find_one({"token": token, "revoked": {"$ne": True}}, {"_id": 0})
-    if not doc:
-        raise HTTPException(status_code=401, detail="invalid token")
-    client_id = doc.get("client_id")
+    # Stesso resolver multi-fonte degli altri endpoints self/* (token v4
+    # da agent_tokens oppure api_key del cliente). Mappiamo 403 -> 401 per
+    # mantenere la semantica originale di questa route.
+    try:
+        client_id = await _token_or_403(token)
+    except HTTPException as e:
+        raise HTTPException(status_code=401, detail=e.detail) from e
     candidates = [c for c in REGISTRY.list() if c.client_id == client_id]
     if not candidates:
         return {
