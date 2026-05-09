@@ -1,3 +1,34 @@
+## 2026-05-09 BUG FIX — Auth fallback agent v4 ignorava clienti legacy
+
+**Sintomo riportato dall'utente**: bottone "Installer" sulla pagina Clienti in produzione (`argus.86bit.it`) -> il browser mostra `{"detail":"invalid token"}` invece di scaricare lo zip, **anche se la API Key viene letta dal frontend** dallo stesso documento del cliente.
+
+### Root cause
+File: `/app/backend/routes/agent_ws.py` -> `_token_or_403()`.
+
+```python
+client = await db.clients.find_one({"api_key": token}, {"_id": 0, "client_id": 1})
+if client and client.get("client_id"):
+    return client["client_id"]
+```
+
+Lo schema della collection `clients` e' nato con un solo campo identificativo `id` (UUID). Solo successivamente sono stati aggiunti `client_id` (slug stabile) e `slug` come campi opzionali.
+
+I clienti **creati con la versione vecchia di `clients.py:create_client` non hanno `client_id`** (es. tutti i tenant di argus produzione). Quando l'agent v4 cerca via api_key, il documento esiste ma il get di `client_id` restituisce `None` -> raise 403 "invalid token". Falsa diagnosi: token invalido, mentre in realta' e' un campo mancante.
+
+### Fix
+1. **`_token_or_403` cascade**: ora proietta `client_id, slug, id` e ritorna il primo non vuoto -> tenant legacy autenticati col loro UUID.
+2. **`clients.py:create_client`**: i nuovi tenant ora salvano gia' `client_id = id` (UUID), allineando lo schema con `managed_agents` / `discovered_endpoints` / `device_poll_status` che usano tutti `client_id` come chiave di tenant.
+
+### Test (preview)
+- Cliente moderno (`86bit-office` con `client_id: "86bit-office"`): HTTP 200, comportamento preservato.
+- Cliente legacy simulato (solo `id`, senza `client_id` ne' `slug`): prima 403, ora HTTP 200 con `client_id="legacy-uuid-1234"`.
+
+### Deploy
+Il fix va deployato su `argus.86bit.it` per impattare l'errore dell'utente. La preview e' gia' fixata.
+
+---
+
+
 ## 2026-05-09 FEATURE — One-click installer download dalla pagina Clienti
 
 **Direttiva utente** (post-fix wizard): «si procedi» → implementa il bottone "Scarica installer Argus pre-configurato" già proposto.

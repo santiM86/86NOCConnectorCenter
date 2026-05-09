@@ -519,10 +519,17 @@ async def _token_or_403(token: Optional[str]) -> str:
     doc = await db.agent_tokens.find_one({"token": token, "revoked": {"$ne": True}}, {"_id": 0})
     if doc:
         return doc["client_id"]
-    # 2. Fallback: api_key univoca del cliente.
-    client = await db.clients.find_one({"api_key": token}, {"_id": 0, "client_id": 1})
-    if client and client.get("client_id"):
-        return client["client_id"]
+    # 2. Fallback: api_key univoca del cliente. Lo schema di `clients`
+    # e' nato con `id` (UUID) e solo successivamente ha aggiunto i
+    # campi `client_id` (slug stabile) e `slug`. I clienti creati con
+    # versioni vecchie del codice non hanno `client_id`: per non
+    # rifiutare questi tenant facciamo cascade su slug -> id.
+    client = await db.clients.find_one({"api_key": token},
+                                       {"_id": 0, "client_id": 1, "slug": 1, "id": 1})
+    if client:
+        cid = client.get("client_id") or client.get("slug") or client.get("id")
+        if cid:
+            return str(cid)
     raise HTTPException(status_code=403, detail="invalid token")
 
 

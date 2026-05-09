@@ -15,10 +15,17 @@ router = APIRouter(prefix="/api", tags=["clients"])
 @router.post("/clients", response_model=ClientResponse)
 async def create_client(client: ClientCreate, current_user: dict = Depends(get_current_user)):
     api_key = f"noc_{uuid.uuid4().hex}"
+    cid = str(uuid.uuid4())
     client_doc = {
-        "id": str(uuid.uuid4()), "name": client.name,
+        "id": cid, "name": client.name,
         "description": client.description or "", "contact_email": client.contact_email or "",
-        "api_key": api_key, "created_at": datetime.now(timezone.utc).isoformat()
+        "api_key": api_key,
+        # client_id duplica `id` per omogeneita' col resto dello schema
+        # multi-tenant (managed_agents/discovered_endpoints/etc usano
+        # tutti `client_id`). Senza questo campo l'auth dell'agent v4
+        # falliva con 403 su tenant creati dopo lo switch a Go.
+        "client_id": cid,
+        "created_at": datetime.now(timezone.utc).isoformat()
     }
     await db.clients.insert_one(client_doc)
     await audit_logger.log(
