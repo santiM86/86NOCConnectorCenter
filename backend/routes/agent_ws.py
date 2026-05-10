@@ -970,13 +970,30 @@ def _build_wizard_bundle(token: str) -> str:
         out.unlink()  # rebuild — content/template may have changed
 
     ps1_body = _render_wizard_ps1(token)
-    bat_path = _AGENT_TEMPLATE_DIR / "Installa-86NocAgent.bat"
-    if not bat_path.is_file():
-        raise HTTPException(status_code=500, detail="bat launcher missing")
+    # Il launcher .bat e' embedded nel codice (15 righe, ~740 bytes): cosi'
+    # il wizard funziona anche su deploy minimali (solo backend) senza
+    # richiedere il file `Installa-86NocAgent.bat` sul filesystem prod.
+    bat_body = (
+        "@echo off\r\n"
+        "REM ============================================================\r\n"
+        "REM 86NocAgent v4 - Wizard installazione (avvio nascosto)\r\n"
+        "REM ============================================================\r\n"
+        "REM Lancia il wizard PowerShell senza mostrare ne' la console\r\n"
+        "REM nera del .bat (chiusa subito) ne' la finestra blu di PS\r\n"
+        "REM (lanciata in -WindowStyle Hidden). Il wizard grafico viene\r\n"
+        "REM mostrato solo dopo la conferma UAC.\r\n"
+        "REM\r\n"
+        "REM Tasto destro -> \"Esegui come amministratore\" oppure semplice\r\n"
+        "REM doppio-click (la auto-elevazione e' integrata nello script).\r\n"
+        "REM ============================================================\r\n"
+        "start \"\" powershell.exe -NoProfile -ExecutionPolicy Bypass "
+        "-WindowStyle Hidden -File \"%~dp0installer_gui.ps1\"\r\n"
+        "exit /b\r\n"
+    )
 
     buf = _io.BytesIO()
     with _zipfile.ZipFile(buf, "w", _zipfile.ZIP_DEFLATED) as z:
-        z.writestr("Installa-86NocAgent.bat", bat_path.read_text(encoding="utf-8"))
+        z.writestr("Installa-86NocAgent.bat", bat_body)
         z.writestr("installer_gui.ps1", ps1_body)
         z.writestr("LEGGIMI.txt",
                    "86NocAgent v4.0 - Wizard installazione\r\n"
