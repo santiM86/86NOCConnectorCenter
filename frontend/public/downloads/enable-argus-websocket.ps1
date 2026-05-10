@@ -1,4 +1,4 @@
-# =============================================================================
+﻿# =============================================================================
 # enable-argus-websocket.ps1
 # Abilita il supporto WebSocket su IIS + ARR per il path /api/agent/ws
 # di Argus NOC Center. Idempotente: puoi rilanciarlo senza danni.
@@ -120,7 +120,7 @@ if (-not $rules) { $rules = $rewrite.AppendChild($xml.CreateElement("rules")) }
 # Cerca se esiste gia' la rule
 $existing = $rules.SelectSingleNode("rule[@name='ArgusWebSocketAgent']")
 if ($existing) {
-    Write-Warn "Rule 'ArgusWebSocketAgent' gia' esistente — la sostituisco"
+    Write-Warn "Rule 'ArgusWebSocketAgent' gia' esistente - la sostituisco"
     $rules.RemoveChild($existing) | Out-Null
 }
 
@@ -160,7 +160,7 @@ iisreset /restart | Out-Null
 Write-Ok "IIS riavviato"
 
 # ----------------------------------------------------------------------
-# Test finale (HTTP HEAD su /api/agent/ws senza header upgrade — deve dare 4xx
+# Test finale (HTTP HEAD su /api/agent/ws senza header upgrade - deve dare 4xx
 # ma NON 404 ARR)
 # ----------------------------------------------------------------------
 Write-Step "Test smoke (TCP only, no WS handshake reale)"
