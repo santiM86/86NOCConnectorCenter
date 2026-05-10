@@ -73,6 +73,24 @@ func openLogFile(path string) *os.File {
 	return f
 }
 
+// safeMultiWriter scrive su piu' Writer ma **ignora gli errori** di ciascuno e
+// continua con quelli successivi. Necessario perche' quando l'agent gira come
+// Windows Service il SCM chiude os.Stderr: una scrittura su stderr ritorna
+// errore e l'std io.MultiWriter interromperebbe il fan-out al file di log.
+type safeMultiWriter struct {
+	writers []io.Writer
+}
+
+func (s *safeMultiWriter) Write(p []byte) (int, error) {
+	for _, w := range s.writers {
+		if w == nil {
+			continue
+		}
+		_, _ = w.Write(p) // errori intenzionalmente ignorati
+	}
+	return len(p), nil
+}
+
 // New returns a root logger that writes JSON lines to **both** stderr and a
 // rotating-friendly log file (default %ProgramData%\86NocAgent\logs\nocagent.log
 // on Windows). When the agent runs as a Windows service stderr is dropped by
@@ -83,10 +101,11 @@ func openLogFile(path string) *os.File {
 // l'SNMP polling fallisce su un device.
 func New() *Logger {
 	logPath := defaultLogPath()
-	var sink io.Writer = os.Stderr
+	writers := []io.Writer{os.Stderr}
 	if f := openLogFile(logPath); f != nil {
-		sink = io.MultiWriter(os.Stderr, f)
+		writers = append(writers, f)
 	}
+	sink := &safeMultiWriter{writers: writers}
 	level := slog.LevelInfo
 	if lv := os.Getenv("ARGUS_LOG_LEVEL"); lv != "" {
 		switch lv {
