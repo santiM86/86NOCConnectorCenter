@@ -562,6 +562,19 @@ async def download_binary(platform: str, name: str, token: Optional[str] = None)
     except ValueError as e:
         raise HTTPException(status_code=400, detail="invalid path") from e
     if not path.is_file():
+        # Fallback URL: priorita' a BINARY_URLS_BASE (CDN esterno tipo
+        # GitHub Releases), poi BINARY_FALLBACK_URL (mirror NOC Center).
+        ext_base = _os.environ.get("BINARY_URLS_BASE", "").rstrip("/")
+        if ext_base:
+            from fastapi.responses import RedirectResponse
+            return RedirectResponse(url=f"{ext_base}/{name}", status_code=302)
+        mirror_base = _os.environ.get("BINARY_FALLBACK_URL", "").rstrip("/")
+        if mirror_base:
+            from fastapi.responses import RedirectResponse
+            return RedirectResponse(
+                url=f"{mirror_base}/api/agent/binary/{platform}/{name}?token={token}",
+                status_code=302,
+            )
         raise HTTPException(status_code=404, detail="binary not built")
     media = "application/vnd.microsoft.portable-executable" if name.endswith(".exe") else "application/octet-stream"
     return FileResponse(str(path), media_type=media, filename=name)
@@ -570,34 +583,62 @@ async def download_binary(platform: str, name: str, token: Optional[str] = None)
 @router.get("/agent/install/manifest")
 async def install_manifest(token: Optional[str] = None,
                           platform: Optional[str] = None,
-                          role: Optional[str] = None) -> Dict[str, Any]:
+                          role: Optional[str] = None,
+                          runtime_backend: Optional[str] = None,
+                          runtime_token: Optional[str] = None) -> Dict[str, Any]:
     """Return the install metadata: backend URL, binary URLs, sample yaml.
 
-    The install scripts hit this endpoint first to learn what to download
-    and where to write the configuration. `role` selects between
-    "master" (default — full agent with SNMP polling) and "scanner"
-    (lightweight — only network discovery, intended for remote VLANs).
+    `runtime_backend` (opt): WS finale del connector se diverso da
+    AGENT_PUBLIC_WS_URL. `runtime_token` (opt): token da scrivere nel
+    config_template se diverso dal token di bootstrap (caso d'uso:
+    bootstrap su preview con api_key preview, ma WS persistente su
+    argus.86bit.it con la sua api_key cliente locale, dato che le 2 DB
+    sono separate). Se runtime_token non e' passato, usiamo il token
+    di bootstrap.
     """
     client_id = await _token_or_403(token)
     public_ws = _os.environ.get("AGENT_PUBLIC_WS_URL", "wss://argus.86bit.it/api/agent/ws")
     public_http = _os.environ.get("AGENT_PUBLIC_HTTP_URL", "https://argus.86bit.it")
     if role not in ("master", "scanner"):
         role = "master"
+    effective_ws = public_ws
+    if runtime_backend:
+        rb = runtime_backend.rstrip("/")
+        if rb.startswith("https://"):
+            effective_ws = "wss://" + rb[len("https://"):] + "/api/agent/ws"
+        elif rb.startswith("http://"):
+            effective_ws = "ws://" + rb[len("http://"):] + "/api/agent/ws"
+        elif rb.startswith(("ws://", "wss://")):
+            effective_ws = rb if rb.endswith("/api/agent/ws") else rb + "/api/agent/ws"
+    effective_token = runtime_token if runtime_token else token
     binaries = {}
     sha256 = {}
     if platform and platform in _ALLOWED_PLATFORMS:
+        # Mirror esterno (es. GitHub Releases, S3, Cloudflare R2, OneDrive
+        # direct link). Quando questa env e' settata, gli URL dei binari
+        # nel manifest puntano direttamente al CDN esterno invece che a
+        # /api/agent/binary/.../<file>?token=... del NOC Center. Cosi' il
+        # NOC Center non deve avere i binari sul filesystem locale e
+        # nemmeno fare proxy/redirect: il connector scarica direttamente
+        # dal CDN. Formato: URL base senza filename, es:
+        #   https://github.com/86bit/argus-noc/releases/download/v4.0.0
+        # Il backend appende `/<filename>` per ogni .exe richiesto.
+        ext_base = _os.environ.get("BINARY_URLS_BASE", "").rstrip("/")
         for name in _ALLOWED_BINARIES[platform]:
-            binaries[name] = f"{public_http}/api/agent/binary/{platform}/{name}?token={token}"
+            if ext_base:
+                binaries[name] = f"{ext_base}/{name}"
+            else:
+                binaries[name] = f"{public_http}/api/agent/binary/{platform}/{name}?token={token}"
             digest = _binary_sha256(platform, name)
             if digest:
                 sha256[name] = digest
     return {
         "client_id": client_id,
         "role": role,
-        "backend_ws": public_ws,
+        "backend_ws": effective_ws,
         "binaries": binaries,
         "sha256": sha256,
-        "config_template": _config_template(client_id, token, public_ws, role),
+        "config_template": _config_template(client_id, effective_token, effective_ws, role),
     }
 
 
@@ -649,6 +690,70 @@ def _config_template(client_id: str, token: str, ws_url: str, role: str = "maste
     )
 
 
+def _fetch_template_from_mirror(filename: str) -> Optional[str]:
+    """Scarica un file template (es. installer_gui.ps1.template) da un
+    mirror remoto se l'env `WIZARD_TEMPLATE_FALLBACK_URL` e' settata.
+
+    Usato come safety-net quando il backend e' deployato senza la
+    cartella `noc-agent/build/` accanto (caso classico: deploy parziale
+    su argus.86bit.it). Cosi' il wizard funziona comunque, scaricando
+    al volo la template dal mirror noto. Cache in-process per evitare
+    una richiesta HTTP per ogni download del wizard.
+    """
+    base = _os.environ.get("WIZARD_TEMPLATE_FALLBACK_URL", "").rstrip("/")
+    if not base:
+        return None
+    cache = getattr(_fetch_template_from_mirror, "_cache", {})
+    if filename in cache:
+        return cache[filename]
+    try:
+        import urllib.request as _ureq
+        url = f"{base}/api/__static-templates__/{filename}"
+        with _ureq.urlopen(url, timeout=15) as r:
+            body = r.read().decode("utf-8")
+    except Exception:
+        return None
+    cache[filename] = body
+    setattr(_fetch_template_from_mirror, "_cache", cache)
+    return body
+
+
+def _read_template_or_fallback(filename: str) -> str:
+    """Legge un template dalla cartella locale; se mancante, ritenta sul
+    mirror remoto (env). Ritorna il contenuto raw del file (placeholder
+    `__BACKEND_URL__` / `__TOKEN__` non sostituiti).
+    """
+    p = _AGENT_TEMPLATE_DIR / filename
+    if p.is_file():
+        return p.read_text(encoding="utf-8")
+    body = _fetch_template_from_mirror(filename)
+    if body is not None:
+        return body
+    raise HTTPException(status_code=500, detail=f"{filename.split('.')[0]} template missing")
+
+
+@router.get("/__static-templates__/{filename}", response_class=PlainTextResponse, include_in_schema=False)
+async def _serve_static_template(filename: str) -> PlainTextResponse:
+    """Serve template raw (no token replacement) per il fallback mirror.
+
+    Whitelist sui nomi per evitare path traversal. Endpoint pubblico
+    cosi' altri NOC Center possono usare questo come mirror se il
+    proprio /opt/argus/noc-agent/build/ non ha tutti i template
+    (cfr. WIZARD_TEMPLATE_FALLBACK_URL env).
+    """
+    allowed = {"installer_gui.ps1.template",
+               "install.ps1.template",
+               "install.sh.template"}
+    if filename not in allowed:
+        raise HTTPException(status_code=404, detail="template not found")
+    p = _AGENT_TEMPLATE_DIR / filename
+    if not p.is_file():
+        raise HTTPException(status_code=404, detail="template not deployed")
+    return PlainTextResponse(p.read_text(encoding="utf-8"),
+                             media_type="text/plain; charset=utf-8")
+
+
+
 @router.get("/agent/install/wizard-bundle.zip")
 async def wizard_bundle(token: Optional[str] = None) -> FileResponse:
     """Download a ZIP containing installer_gui.ps1 (PowerShell GUI wizard).
@@ -670,6 +775,10 @@ async def install_argus_ico() -> FileResponse:
     path and may not refresh on update)."""
     path = _AGENT_ICO_PATH
     if not path.is_file():
+        mirror_base = _os.environ.get("BINARY_FALLBACK_URL", "").rstrip("/")
+        if mirror_base:
+            from fastapi.responses import RedirectResponse
+            return RedirectResponse(url=f"{mirror_base}/api/agent/install/argus.ico", status_code=302)
         raise HTTPException(status_code=404, detail="icon missing")
     return FileResponse(str(path), media_type="image/vnd.microsoft.icon", filename="argus.ico")
 
@@ -688,6 +797,60 @@ async def install_exe(token: Optional[str] = None) -> FileResponse:
                         filename="nocinstall.exe")
 
 
+@router.get("/admin/sync-argus.sh", response_class=PlainTextResponse, include_in_schema=False)
+async def serve_sync_script() -> PlainTextResponse:
+    """Serve sync-argus.sh via API path (bypassa SPA fallback / proxy).
+
+    Risolve il caso in cui scaricare /downloads/sync-argus.sh ritorna
+    l'index.html del frontend (cache di rete intermedi, Cloudflare,
+    proxy aziendali). Path sotto /api e' garantito andare al backend.
+    """
+    candidates = [
+        _pathlib.Path("/app/frontend/public/downloads/sync-argus.sh"),
+        _pathlib.Path("/opt/argus/frontend/public/downloads/sync-argus.sh"),
+    ]
+    for p in candidates:
+        if p.is_file():
+            return PlainTextResponse(p.read_text(),
+                                     media_type="text/x-shellscript")
+    raise HTTPException(status_code=404, detail="sync script not found")
+
+
+@router.get("/admin/argus-deploy-latest.tar.gz", include_in_schema=False)
+async def serve_deploy_bundle() -> FileResponse:
+    """Serve il bundle deploy via API path. Stessa ragione di sync-argus.sh:
+    il path /api/* va dritto al backend, no SPA fallback / proxy.
+    """
+    candidates = [
+        _pathlib.Path("/app/frontend/public/downloads/argus-deploy-latest.tar.gz"),
+        _pathlib.Path("/opt/argus/frontend/public/downloads/argus-deploy-latest.tar.gz"),
+    ]
+    for p in candidates:
+        if p.is_file():
+            return FileResponse(str(p),
+                                media_type="application/gzip",
+                                filename="argus-deploy-latest.tar.gz")
+    raise HTTPException(status_code=404, detail="deploy bundle not found")
+
+
+@router.get("/admin/argus-binaries.zip", include_in_schema=False)
+async def serve_binaries_zip() -> FileResponse:
+    """Serve l'archivio con tutti i binari Windows + argus.ico + SHA256SUMS.
+
+    Comodo per uploadare in una sola volta una GitHub Release: l'utente
+    fa `curl -o pkg.zip <url>` + `unzip pkg.zip` + drag&drop su release.
+    """
+    candidates = [
+        _pathlib.Path("/app/frontend/public/downloads/argus-binaries-v4.0.0.zip"),
+    ]
+    for p in candidates:
+        if p.is_file():
+            return FileResponse(str(p),
+                                media_type="application/zip",
+                                filename="argus-binaries-v4.0.0.zip")
+    raise HTTPException(status_code=404, detail="binaries zip not found")
+
+
 @router.get("/agent/install/exe-bundle.zip")
 async def exe_bundle(token: Optional[str] = None) -> FileResponse:
     """ZIP with nocinstall.exe + pre-populated nocinstall.cfg + LEGGIMI.
@@ -699,7 +862,26 @@ async def exe_bundle(token: Optional[str] = None) -> FileResponse:
     await _token_or_403(token)
     bundle = _build_exe_bundle(token)
     return FileResponse(bundle, media_type="application/zip",
-                        filename="86NocAgent-Installer-EXE.zip")
+                        filename="Argus-Connector-Setup.zip")
+
+
+@router.get("/agent/install/setup.exe")
+async def setup_exe(token: Optional[str] = None) -> FileResponse:
+    """Single-file Windows installer: Argus-Setup.exe.
+
+    7-Zip Setup Deluxe SFX che embedda nocagent + nocwatchdog + nocagent-ui +
+    argus.ico + il wizard PS1 (tutto firmato col token del cliente). L'utente
+    fa SOLO doppio-click sul .exe: il wizard 7-step parte (Welcome ->
+    master/scanner -> URL+token (precompilati ma editabili) -> dispositivi
+    SNMP -> riepilogo -> install -> done).
+
+    Identico a un installer Inno Setup / NSIS: zero estrazioni, zero PS in
+    chiaro, zero dipendenze di rete per il bootstrap (i binari sono dentro).
+    """
+    await _token_or_403(token)
+    setup_path = _build_setup_exe(token)
+    return FileResponse(setup_path, media_type="application/vnd.microsoft.portable-executable",
+                        filename="Argus-Setup.exe")
 
 
 @router.get("/agent/install/{platform}.{ext}", response_class=PlainTextResponse)
@@ -723,10 +905,7 @@ async def install_script(platform: str, ext: str, token: Optional[str] = None) -
 
 def _render_windows_ps1(token: str) -> str:
     public_http = _os.environ.get("AGENT_PUBLIC_HTTP_URL", "https://argus.86bit.it")
-    path = _AGENT_TEMPLATE_DIR / "install.ps1.template"
-    if not path.is_file():
-        raise HTTPException(status_code=500, detail="installer template missing")
-    body = path.read_text()
+    body = _read_template_or_fallback("install.ps1.template")
     return (body
             .replace("__BACKEND_URL__", public_http)
             .replace("__TOKEN__", token))
@@ -734,10 +913,7 @@ def _render_windows_ps1(token: str) -> str:
 
 def _render_linux_sh(token: str) -> str:
     public_http = _os.environ.get("AGENT_PUBLIC_HTTP_URL", "https://argus.86bit.it")
-    path = _AGENT_TEMPLATE_DIR / "install.sh.template"
-    if not path.is_file():
-        raise HTTPException(status_code=500, detail="installer template missing")
-    body = path.read_text()
+    body = _read_template_or_fallback("install.sh.template")
     return (body
             .replace("__BACKEND_URL__", public_http)
             .replace("__TOKEN__", token))
@@ -745,10 +921,7 @@ def _render_linux_sh(token: str) -> str:
 
 def _render_wizard_ps1(token: str) -> str:
     public_http = _os.environ.get("AGENT_PUBLIC_HTTP_URL", "https://argus.86bit.it")
-    path = _AGENT_TEMPLATE_DIR / "installer_gui.ps1.template"
-    if not path.is_file():
-        raise HTTPException(status_code=500, detail="wizard template missing")
-    body = path.read_text(encoding="utf-8")
+    body = _read_template_or_fallback("installer_gui.ps1.template")
     return (body
             .replace("__BACKEND_URL__", public_http)
             .replace("__TOKEN__", token))
@@ -815,7 +988,7 @@ def _build_exe_bundle(token: str) -> str:
     out_dir = _pathlib.Path(_tempfile.gettempdir()) / "86nocagent_bundles"
     out_dir.mkdir(parents=True, exist_ok=True)
     safe = "".join(c for c in token if c.isalnum() or c in "-_")[:32]
-    out = out_dir / f"86NocAgent-EXE-{safe}.zip"
+    out = out_dir / f"Argus-Connector-Setup-{safe}.zip"
     if out.is_file():
         out.unlink()
 
@@ -824,31 +997,27 @@ def _build_exe_bundle(token: str) -> str:
         raise HTTPException(status_code=500, detail="nocinstall.exe not built")
 
     sidecar = (
-        f"# 86NocAgent installer config — generated by /api/agent/install/exe-bundle.zip\n"
-        f"# Lascia questo file accanto a nocinstall.exe e fai doppio-click sull'.exe.\n"
+        f"# Argus Connector — config installer (auto-generato)\n"
+        f"# Non toccare. Lascia questo file accanto a nocinstall.exe.\n"
         f"TOKEN={token}\n"
         f"BACKEND={public_http}\n"
     )
     leggimi = (
-        "86NocAgent v4.0 - Installer EXE\r\n"
+        "ARGUS Connector — Installer\r\n"
         "==========================================\r\n\r\n"
-        "Procedura semplice (consigliata):\r\n"
-        "  1. Estrai TUTTI i file di questo zip nella stessa cartella.\r\n"
-        "  2. Doppio-click su nocinstall.exe\r\n"
-        "  3. Accetta il prompt UAC (richiesta privilegi amministratore)\r\n"
-        "  4. Conferma la finestra di installazione\r\n"
-        "  5. Attendi il termine + finestra di conferma\r\n\r\n"
-        "Cosa contiene questo zip:\r\n"
-        "  nocinstall.exe   Installer nativo (single binary, no scripting)\r\n"
-        "  nocinstall.cfg   Token + URL del NOC Center\r\n"
-        "  LEGGIMI.txt      Questo file\r\n\r\n"
-        "Avanzato (CLI):\r\n"
-        "  nocinstall.exe --token <T> --backend <URL> [--silent]\r\n\r\n"
-        "Disinstallazione:\r\n"
-        "  Run as admin in PowerShell:\r\n"
-        "    Stop-Service 86NocAgent,86NocWatchdog -Force\r\n"
-        "    sc.exe delete 86NocAgent ; sc.exe delete 86NocWatchdog\r\n"
-        "    Remove-Item -Recurse -Force \"$env:ProgramFiles\\86NocAgent\",\"$env:ProgramData\\86NocAgent\"\r\n"
+        "INSTALLAZIONE IN 3 STEP:\r\n\r\n"
+        "  1. Estrai questo ZIP in una cartella (es. Desktop)\r\n"
+        "  2. Doppio-click su 'nocinstall.exe'\r\n"
+        "  3. Accetta il prompt UAC -> attendi 'Installazione completata'\r\n\r\n"
+        "Fatto. Niente PowerShell, niente wizard, niente da configurare.\r\n"
+        "URL NOC Center e API Key sono gia' precompilati nel file .cfg.\r\n\r\n"
+        "------------------------------------------\r\n"
+        "Disinstallazione (PowerShell admin):\r\n"
+        "  Stop-Service 86NocAgent,86NocWatchdog -Force\r\n"
+        "  sc.exe delete 86NocAgent ; sc.exe delete 86NocWatchdog\r\n"
+        "  Remove-Item -Recurse -Force \"$env:ProgramFiles\\86NocAgent\",\"$env:ProgramData\\86NocAgent\"\r\n\r\n"
+        "Avanzato (CLI silent):\r\n"
+        "  nocinstall.exe --token <T> --backend <URL> --silent\r\n"
     )
 
     buf = _io.BytesIO()
@@ -858,6 +1027,129 @@ def _build_exe_bundle(token: str) -> str:
         z.writestr("LEGGIMI.txt", leggimi)
     out.write_bytes(buf.getvalue())
     return str(out)
+
+
+def _build_setup_exe(token: str) -> str:
+    """Build a single self-extracting Argus-Setup.exe (Windows x64).
+
+    Layout: [7-Zip Setup Deluxe SFX] + [config.txt] + [payload.7z]
+
+    Il payload contiene tutti i file Windows necessari (nocagent.exe,
+    nocwatchdog.exe, nocagent-ui.exe, argus.ico, installer_gui.ps1,
+    Lancia.bat). Quando l'utente fa doppio-click, lo stub SFX:
+      1. Chiede UAC se serve (configurato in config.txt)
+      2. Estrae il payload in %TEMP%\\Argus-Setup-XXXX
+      3. Esegue `Lancia.bat` che parte il wizard PowerShell
+      4. Il wizard mostra master/scanner + URL+token + dispositivi SNMP
+      5. Al termine il SFX cancella la temp dir
+
+    Cosi' l'utente vede UN SOLO .exe come ogni installer Inno Setup,
+    ma sotto il cofano abbiamo lo stesso wizard e nessuna dipendenza
+    di rete (i binari sono gia' embedded).
+    """
+    import io as _io
+    import zipfile as _zipfile  # noqa: F401
+    import tempfile as _tempfile
+    import subprocess as _sp
+    import shutil as _shutil
+
+    public_http = _os.environ.get("AGENT_PUBLIC_HTTP_URL", "https://argus.86bit.it")
+    out_dir = _pathlib.Path(_tempfile.gettempdir()) / "86nocagent_bundles"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    safe = "".join(c for c in token if c.isalnum() or c in "-_")[:32]
+    out = out_dir / f"Argus-Setup-{safe}.exe"
+    if out.is_file() and out.stat().st_mtime > (_pathlib.Path(__file__).stat().st_mtime):
+        return str(out)
+    out.unlink(missing_ok=True)
+
+    # 1) Verifica presenza tutti i sorgenti Windows
+    bin_dir = _AGENT_BUILD_DIR / "windows-amd64"
+    sfx_path = _AGENT_TEMPLATE_DIR.parent / "build" / "sfx" / "7zsd_LZMA_x64.sfx"
+    # fallback path (in repo originale)
+    if not sfx_path.is_file():
+        sfx_path = _pathlib.Path("/app/noc-agent/build/sfx/7zsd_LZMA_x64.sfx")
+    template = _AGENT_TEMPLATE_DIR / "installer_gui.ps1.template"
+    ico_path = _AGENT_ICO_PATH
+
+    required = {
+        "nocagent.exe":      bin_dir / "nocagent.exe",
+        "nocwatchdog.exe":   bin_dir / "nocwatchdog.exe",
+        "nocagent-ui.exe":   bin_dir / "nocagent-ui.exe",
+        "argus.ico":         ico_path,
+        "installer_gui.ps1": template,
+        "sfx_stub":          sfx_path,
+    }
+    missing = [k for k, p in required.items() if not p.is_file()]
+    if missing:
+        raise HTTPException(status_code=500, detail=f"setup.exe assets missing: {missing}")
+
+    # 2) Stage dir con tutti i file da archiviare nel payload .7z
+    work = _pathlib.Path(_tempfile.mkdtemp(prefix="argus-setup-"))
+    try:
+        for name in ("nocagent.exe", "nocwatchdog.exe", "nocagent-ui.exe"):
+            _shutil.copy2(required[name], work / name)
+        _shutil.copy2(required["argus.ico"], work / "argus.ico")
+
+        # Wizard PS1 con placeholder sostituiti
+        ps1_body = template.read_text(encoding="utf-8")
+        ps1_body = (ps1_body
+                    .replace("__BACKEND_URL__", public_http)
+                    .replace("__TOKEN__", token))
+        (work / "installer_gui.ps1").write_text(ps1_body, encoding="utf-8")
+
+        # Launcher: .bat che lancia il wizard PS1 (PSScriptRoot punta
+        # automaticamente alla temp dir SFX). Necessario perche' il SFX
+        # esegue un comando, non uno script PS1 direttamente.
+        launcher = (
+            "@echo off\r\n"
+            "REM Argus Setup launcher — eseguito da 7zsd_LZMA_x64.sfx\r\n"
+            "powershell.exe -NoProfile -ExecutionPolicy Bypass -STA "
+            "-File \"%~dp0installer_gui.ps1\"\r\n"
+            "exit /b %errorlevel%\r\n"
+        )
+        (work / "Lancia.bat").write_text(launcher)
+
+        # 3) Crea payload.7z con LZMA compression
+        payload = work / "payload.7z"
+        cmd = [
+            "/usr/bin/7z", "a", "-t7z", "-mx=7", "-mmt=on",
+            str(payload),
+            str(work / "nocagent.exe"),
+            str(work / "nocwatchdog.exe"),
+            str(work / "nocagent-ui.exe"),
+            str(work / "argus.ico"),
+            str(work / "installer_gui.ps1"),
+            str(work / "Lancia.bat"),
+        ]
+        r = _sp.run(cmd, capture_output=True, text=True, timeout=120)
+        if r.returncode != 0:
+            raise HTTPException(status_code=500, detail=f"7z build failed: {r.stderr[:300]}")
+
+        # 4) Config SFX: comando da eseguire dopo l'estrazione + UAC
+        # Sintassi: https://github.com/chrislake/7zsfxmm
+        sfx_config = (
+            ";!@Install@!UTF-8!\r\n"
+            f'Title="Argus Connector — Setup"\r\n'
+            f'BeginPrompt="Installa il connector ARGUS NOC su questo PC?"\r\n'
+            'Progress="yes"\r\n'
+            'GUIMode="0"\r\n'                    # 0 = mostra prompt + progress
+            'InstallPath="%%T\\\\Argus-Setup"\r\n'  # estrai in %TEMP%\Argus-Setup
+            'OverwriteMode="2"\r\n'              # overwrite senza chiedere
+            'RunProgram="hidcon:\\"%%T\\\\Argus-Setup\\\\Lancia.bat\\""\r\n'
+            ';!@InstallEnd@!\r\n'
+        )
+        cfg_file = work / "config.txt"
+        # 7zSD vuole UTF-8 con BOM
+        cfg_file.write_bytes("\ufeff".encode("utf-8") + sfx_config.encode("utf-8"))
+
+        # 5) Concatenazione finale: stub + config + payload
+        with out.open("wb") as f:
+            f.write(required["sfx_stub"].read_bytes())
+            f.write(cfg_file.read_bytes())
+            f.write(payload.read_bytes())
+        return str(out)
+    finally:
+        _shutil.rmtree(work, ignore_errors=True)
 
 
 
@@ -870,13 +1162,20 @@ async def _connector_by_token(token: Optional[str]) -> _Connection:
     of *some* agent of that tenant currently online (preferring master).
 
     Raises HTTPException 401 on invalid token, 404 if no agent online.
+
+    Accetta sia `agent_tokens.token` (token v4 emesso da /agents/register)
+    sia `clients.api_key` legacy: il resolver e' lo stesso di
+    `_token_or_403` per evitare disallineamenti tra endpoints di auth.
     """
-    if not token:
-        raise HTTPException(status_code=401, detail="missing token")
-    doc = await db.agent_tokens.find_one({"token": token, "revoked": {"$ne": True}}, {"_id": 0})
-    if not doc:
-        raise HTTPException(status_code=401, detail="invalid token")
-    client_id = doc.get("client_id")
+    # _token_or_403 raises 401 on missing, 403 on invalid: lo riusiamo
+    # per garantire identica semantica di auth tra install/manifest e
+    # self/snmp/test. Preserviamo lo status 401 per coerenza con il
+    # contratto preesistente di _connector_by_token (l'agent UI mostra
+    # "401: invalid token" all'utente).
+    try:
+        client_id = await _token_or_403(token)
+    except HTTPException as e:
+        raise HTTPException(status_code=401, detail=e.detail) from e
     candidates: List[_Connection] = [
         c for c in REGISTRY.list() if c.client_id == client_id
     ]
@@ -922,15 +1221,16 @@ async def self_snmp_test(req: SnmpTestRequest, token: Optional[str] = None) -> D
 async def self_health(token: Optional[str] = None) -> Dict[str, Any]:
     """Health-check del canale connector→backend (la 'VPN' WebSocket).
 
-    Auth: ?token=<agent_token>. Verifica che l'agent sia connesso e misura
-    il round-trip-time inviando un comando 'ping' via WS.
+    Auth: ?token=<agent_token | client.api_key>. Verifica che l'agent sia
+    connesso e misura il round-trip-time inviando un comando 'ping' via WS.
     """
-    if not token:
-        raise HTTPException(status_code=401, detail="missing token")
-    doc = await db.agent_tokens.find_one({"token": token, "revoked": {"$ne": True}}, {"_id": 0})
-    if not doc:
-        raise HTTPException(status_code=401, detail="invalid token")
-    client_id = doc.get("client_id")
+    # Stesso resolver multi-fonte degli altri endpoints self/* (token v4
+    # da agent_tokens oppure api_key del cliente). Mappiamo 403 -> 401 per
+    # mantenere la semantica originale di questa route.
+    try:
+        client_id = await _token_or_403(token)
+    except HTTPException as e:
+        raise HTTPException(status_code=401, detail=e.detail) from e
     candidates = [c for c in REGISTRY.list() if c.client_id == client_id]
     if not candidates:
         return {
