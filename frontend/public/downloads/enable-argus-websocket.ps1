@@ -44,7 +44,11 @@ if (-not $target) {
     $target = Get-Website -Name $name
 }
 $siteName = $target.Name
-$sitePath = $target.PhysicalPath
+$sitePath = [System.Environment]::ExpandEnvironmentVariables($target.PhysicalPath)
+if (-not (Test-Path $sitePath)) {
+    Write-Warn "PhysicalPath del sito non esiste: $sitePath  -- lo creo"
+    New-Item -ItemType Directory -Force -Path $sitePath | Out-Null
+}
 Write-Ok "Sito selezionato: $siteName  ($sitePath)"
 
 # ----------------------------------------------------------------------
