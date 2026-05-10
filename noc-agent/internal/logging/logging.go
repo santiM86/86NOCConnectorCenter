@@ -5,8 +5,11 @@ package logging
 
 import (
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
+	"runtime"
 	"sync"
 	"time"
 )
@@ -31,13 +34,89 @@ type Logger struct {
 	module string
 }
 
-// New returns a root logger that writes JSON lines to stderr.
+// defaultLogPath returns the platform-default log file path. On Windows this
+// goes under %ProgramData%\86NocAgent\logs so it survives uninstall and is
+// readable from the tray menu's "Apri cartella log" action. On Linux/macOS we
+// fall back to /var/log or the user cache dir.
+func defaultLogPath() string {
+	if env := os.Getenv("ARGUS_LOG_PATH"); env != "" {
+		return env
+	}
+	switch runtime.GOOS {
+	case "windows":
+		base := os.Getenv("ProgramData")
+		if base == "" {
+			base = `C:\ProgramData`
+		}
+		return filepath.Join(base, "86NocAgent", "logs", "nocagent.log")
+	case "darwin":
+		return "/var/log/86nocagent/nocagent.log"
+	default:
+		return "/var/log/86nocagent/nocagent.log"
+	}
+}
+
+// openLogFile creates the directory and opens the log file in append+create
+// mode. Returns nil if it can't be opened (we degrade gracefully to stderr-only
+// logging — the agent must never fail to start because of a logging issue).
+func openLogFile(path string) *os.File {
+	if path == "" {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return nil
+	}
+	return f
+}
+
+// New returns a root logger that writes JSON lines to **both** stderr and a
+// rotating-friendly log file (default %ProgramData%\86NocAgent\logs\nocagent.log
+// on Windows). When the agent runs as a Windows service stderr is dropped by
+// the SCM, so the file sink is the only persistent diagnostic channel.
+//
+// IMPORTANT: il file log e' fondamentale per il troubleshooting in produzione:
+// lo usiamo per capire perche' un connector non si aggancia al WS, o perche'
+// l'SNMP polling fallisce su un device.
 func New() *Logger {
-	h := slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})
-	return &Logger{
+	logPath := defaultLogPath()
+	var sink io.Writer = os.Stderr
+	if f := openLogFile(logPath); f != nil {
+		sink = io.MultiWriter(os.Stderr, f)
+	}
+	level := slog.LevelInfo
+	if lv := os.Getenv("ARGUS_LOG_LEVEL"); lv != "" {
+		switch lv {
+		case "debug", "DEBUG":
+			level = slog.LevelDebug
+		case "warn", "WARN":
+			level = slog.LevelWarn
+		case "error", "ERROR":
+			level = slog.LevelError
+		}
+	}
+	h := slog.NewJSONHandler(sink, &slog.HandlerOptions{
+		Level:     level,
+		AddSource: false,
+	})
+	l := &Logger{
 		slog: slog.New(h),
 		buf:  make(chan Entry, 1024),
 	}
+	// Banner di avvio: con questa entry sempre presente in cima a ogni
+	// rotazione l'admin sa subito quale path / pid / versione runtime
+	// sta producendo il log.
+	l.With("startup").Info("logger initialized",
+		"log_path", logPath,
+		"goos", runtime.GOOS,
+		"goarch", runtime.GOARCH,
+		"pid", fmt.Sprintf("%d", os.Getpid()),
+		"level", level.String(),
+	)
+	return l
 }
 
 // With returns a child logger that tags every entry with the given module.
