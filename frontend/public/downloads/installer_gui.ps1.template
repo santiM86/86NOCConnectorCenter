@@ -1,0 +1,2097 @@
+﻿<#
+.SYNOPSIS
+    86NocAgent v4.0 - Wizard di Installazione
+
+.DESCRIPTION
+    Interfaccia grafica nativa Windows.Forms per installare e configurare
+    il nuovo agent nativo Go (sostituisce il legacy 86NocConnector v3.8.x).
+
+    Step:
+      1. Welcome
+      2. Configurazione (URL backend + API Key cliente)
+      3. Riepilogo
+      4. Installazione (download binari, sc.exe create, start service)
+      5. Fine
+
+.NOTES
+    Auto-elevation UAC. Esegui semplicemente facendo doppio-click sul .vbs,
+    oppure: powershell.exe -ExecutionPolicy Bypass -File installer_gui.ps1
+#>
+
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+
+# ================================================================
+# NASCONDI CONSOLE POWERSHELL
+# ================================================================
+# Il wizard viene avviato con -WindowStyle Hidden dal .bat, ma se
+# qualcuno lo lancia diversamente (doppio-click sul .ps1, F5 da
+# ISE, ecc.) la console "blu" rimane visibile dietro al wizard.
+# Forziamo l'occultamento via Win32 ShowWindow API.
+try {
+    $hideSig = @'
+[DllImport("user32.dll")] public static extern bool ShowWindow(System.IntPtr hWnd, int nCmdShow);
+[DllImport("kernel32.dll")] public static extern System.IntPtr GetConsoleWindow();
+'@
+    $win = Add-Type -MemberDefinition $hideSig -Name 'NocConsoleHider' -Namespace 'NocAgent' -PassThru -ErrorAction SilentlyContinue
+    $h = $win::GetConsoleWindow()
+    if ($h -ne [System.IntPtr]::Zero) { [void]$win::ShowWindow($h, 0) }
+} catch { }
+
+# ================================================================
+# AUTO-ELEVATION UAC
+# ================================================================
+$identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+$principal = New-Object System.Security.Principal.WindowsPrincipal($identity)
+if (-not $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    try {
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = "powershell.exe"
+        $psi.Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$($MyInvocation.MyCommand.Path)`" $args"
+        $psi.Verb = "runas"
+        $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+        $psi.UseShellExecute = $true
+        [System.Diagnostics.Process]::Start($psi) | Out-Null
+        exit 0
+    } catch {
+        [System.Windows.Forms.MessageBox]::Show(
+            "Servono privilegi amministratore.`n`nTasto destro sul file -> 'Esegui come amministratore'",
+            "86NocAgent - Privilegi insufficienti",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
+        exit 1
+    }
+}
+
+# ================================================================
+# CONFIG
+# ================================================================
+$AppName        = "86NocAgent"
+$DisplayName    = "ARGUS Agent v4"
+$ServiceName    = "86NocAgent"
+$WatchdogName   = "86NocWatchdog"
+$Version        = "4.0.0"
+$Platform       = "windows-amd64"
+$InstallDir     = Join-Path $env:ProgramFiles $AppName
+$DataDir        = Join-Path $env:ProgramData  $AppName
+$ConfigPath     = Join-Path $DataDir "agent.yaml"
+
+# Pre-fill da parametri querystring se renderizzato dal backend
+$DefaultBackendUrl = "__BACKEND_URL__"
+$DefaultToken      = "__TOKEN__"
+
+# Modalita' bundle: se i binari Windows (nocagent.exe, nocagent-ui.exe,
+# nocwatchdog.exe) sono presenti accanto a questo script (caso del SFX
+# self-extracting "Argus-Setup.exe"), li copiamo direttamente invece di
+# scaricarli dal NOC Center. Cosi' il wizard funziona anche offline e
+# non dipende dalla presenza dei binari su argus.86bit.it.
+$script:LocalBinariesDir = $PSScriptRoot
+if (-not $script:LocalBinariesDir) { $script:LocalBinariesDir = (Get-Location).Path }
+$script:HasLocalBinaries = $false
+foreach ($req in @('nocagent.exe','nocwatchdog.exe','nocagent-ui.exe')) {
+    if (-not (Test-Path (Join-Path $script:LocalBinariesDir $req))) {
+        $script:HasLocalBinaries = $false; break
+    }
+    $script:HasLocalBinaries = $true
+}
+
+# ================================================================
+# COLORI
+# ================================================================
+$ColorDarkBg   = [System.Drawing.Color]::FromArgb(15, 15, 22)
+$ColorLightBg  = [System.Drawing.Color]::FromArgb(245, 245, 248)
+$ColorAccent   = [System.Drawing.Color]::FromArgb(0, 122, 204)
+$ColorSuccess  = [System.Drawing.Color]::FromArgb(40, 167, 69)
+$ColorError    = [System.Drawing.Color]::FromArgb(220, 53, 69)
+$ColorWhite    = [System.Drawing.Color]::White
+$ColorMuted    = [System.Drawing.Color]::FromArgb(128, 128, 144)
+$ColorText     = [System.Drawing.Color]::FromArgb(33, 37, 41)
+
+# ================================================================
+# STATO WIZARD
+# ================================================================
+$script:CurrentStep   = 0
+$script:BackendUrl    = $DefaultBackendUrl
+$script:Token         = $DefaultToken
+$script:ClientId      = ""
+$script:Role          = "master"   # master | scanner
+$script:Devices       = @()        # lista SNMPTarget pscustomobjects
+$script:PollingSec    = 60
+$script:InstallResult = $null
+
+# ================================================================
+# FORM PRINCIPALE
+# ================================================================
+[System.Windows.Forms.Application]::EnableVisualStyles()
+
+$form = New-Object System.Windows.Forms.Form
+$form.Text = "$DisplayName - Installazione v$Version"
+$form.Size = New-Object System.Drawing.Size(750, 580)
+$form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
+$form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedSingle
+$form.MaximizeBox = $false
+$form.BackColor = $ColorLightBg
+
+# ---- Pannello sinistro (sidebar scura) -------------------------
+$leftPanel = New-Object System.Windows.Forms.Panel
+$leftPanel.Size = New-Object System.Drawing.Size(220, 540)
+$leftPanel.Location = [System.Drawing.Point]::new(0, 0)
+$leftPanel.BackColor = $ColorDarkBg
+$leftPanel.Dock = [System.Windows.Forms.DockStyle]::Left
+$leftPanel.Width = 220
+$form.Controls.Add($leftPanel)
+
+$lblBrand = New-Object System.Windows.Forms.Label
+$lblBrand.Text = "ARGUS"
+$lblBrand.Font = New-Object System.Drawing.Font("Segoe UI", 22, [System.Drawing.FontStyle]::Bold)
+$lblBrand.ForeColor = $ColorWhite
+$lblBrand.Location = [System.Drawing.Point]::new(30, 50)
+$lblBrand.Size = New-Object System.Drawing.Size(180, 40)
+$leftPanel.Controls.Add($lblBrand)
+
+$lblProduct = New-Object System.Windows.Forms.Label
+$lblProduct.Text = "NOC Agent"
+$lblProduct.Font = New-Object System.Drawing.Font("Segoe UI", 11)
+$lblProduct.ForeColor = [System.Drawing.Color]::FromArgb(180, 180, 200)
+$lblProduct.Location = [System.Drawing.Point]::new(30, 92)
+$lblProduct.Size = New-Object System.Drawing.Size(180, 22)
+$leftPanel.Controls.Add($lblProduct)
+
+$lblVer = New-Object System.Windows.Forms.Label
+$lblVer.Text = "v$Version - native"
+$lblVer.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+$lblVer.ForeColor = $ColorAccent
+$lblVer.Location = [System.Drawing.Point]::new(30, 116)
+$lblVer.Size = New-Object System.Drawing.Size(180, 18)
+$leftPanel.Controls.Add($lblVer)
+
+# Steps list
+$script:StepLabels = @()
+$stepNames = @("Benvenuto", "Tipo installazione", "Configurazione", "Dispositivi", "Riepilogo", "Installazione", "Completato")
+for ($i = 0; $i -lt $stepNames.Count; $i++) {
+    $lbl = New-Object System.Windows.Forms.Label
+    $lbl.Text = "  $($i+1).  $($stepNames[$i])"
+    $lbl.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+    $lbl.ForeColor = [System.Drawing.Color]::FromArgb(120, 120, 140)
+    $lbl.Location = [System.Drawing.Point]::new(15, 200 + ($i * 32))
+    $lbl.Size = New-Object System.Drawing.Size(195, 26)
+    $leftPanel.Controls.Add($lbl)
+    $script:StepLabels += $lbl
+}
+
+$lblCompany = New-Object System.Windows.Forms.Label
+$lblCompany.Text = "86bit S.r.l."
+$lblCompany.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+$lblCompany.ForeColor = $ColorWhite
+$lblCompany.Location = [System.Drawing.Point]::new(30, 470)
+$lblCompany.Size = New-Object System.Drawing.Size(180, 18)
+$leftPanel.Controls.Add($lblCompany)
+
+$lblCopy = New-Object System.Windows.Forms.Label
+$lblCopy.Text = ([char]0x00A9) + " 2026 - 86bit.it"
+$lblCopy.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+$lblCopy.ForeColor = $ColorMuted
+$lblCopy.Location = [System.Drawing.Point]::new(30, 492)
+$lblCopy.Size = New-Object System.Drawing.Size(180, 18)
+$leftPanel.Controls.Add($lblCopy)
+
+# ---- Pannello destro (content) ---------------------------------
+$contentPanel = New-Object System.Windows.Forms.Panel
+$contentPanel.Location = [System.Drawing.Point]::new(220, 0)
+$contentPanel.Size = New-Object System.Drawing.Size(514, 480)
+$contentPanel.BackColor = $ColorLightBg
+$form.Controls.Add($contentPanel)
+
+# ---- Barra bottoni in basso ------------------------------------
+$btnBar = New-Object System.Windows.Forms.Panel
+$btnBar.Location = [System.Drawing.Point]::new(220, 480)
+$btnBar.Size = New-Object System.Drawing.Size(514, 60)
+$btnBar.BackColor = [System.Drawing.Color]::FromArgb(230, 230, 235)
+$form.Controls.Add($btnBar)
+
+$btnCancel = New-Object System.Windows.Forms.Button
+$btnCancel.Text = "Annulla"
+$btnCancel.Size = New-Object System.Drawing.Size(110, 32)
+$btnCancel.Location = [System.Drawing.Point]::new(20, 14)
+$btnCancel.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+$btnCancel.BackColor = $ColorWhite
+$btnCancel.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+$btnBar.Controls.Add($btnCancel)
+
+$btnBack = New-Object System.Windows.Forms.Button
+$btnBack.Text = "< Indietro"
+$btnBack.Size = New-Object System.Drawing.Size(110, 32)
+$btnBack.Location = [System.Drawing.Point]::new(270, 14)
+$btnBack.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+$btnBack.BackColor = $ColorWhite
+$btnBack.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+$btnBack.Enabled = $false
+$btnBar.Controls.Add($btnBack)
+
+$btnNext = New-Object System.Windows.Forms.Button
+$btnNext.Text = "Avanti >"
+$btnNext.Size = New-Object System.Drawing.Size(110, 32)
+$btnNext.Location = [System.Drawing.Point]::new(385, 14)
+$btnNext.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+$btnNext.BackColor = $ColorAccent
+$btnNext.ForeColor = $ColorWhite
+$btnNext.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+$btnBar.Controls.Add($btnNext)
+
+# ================================================================
+# HELPER UI
+# ================================================================
+function Reset-Content { $contentPanel.Controls.Clear() }
+
+function Update-Sidebar {
+    for ($i = 0; $i -lt $script:StepLabels.Count; $i++) {
+        if ($i -eq $script:CurrentStep) {
+            $script:StepLabels[$i].ForeColor = $ColorWhite
+            $script:StepLabels[$i].Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+        } elseif ($i -lt $script:CurrentStep) {
+            $script:StepLabels[$i].ForeColor = $ColorSuccess
+            $script:StepLabels[$i].Font = New-Object System.Drawing.Font("Segoe UI", 10)
+        } else {
+            $script:StepLabels[$i].ForeColor = [System.Drawing.Color]::FromArgb(120, 120, 140)
+            $script:StepLabels[$i].Font = New-Object System.Drawing.Font("Segoe UI", 10)
+        }
+    }
+}
+
+function New-Title($text) {
+    $l = New-Object System.Windows.Forms.Label
+    $l.Text = $text
+    $l.Font = New-Object System.Drawing.Font("Segoe UI", 18, [System.Drawing.FontStyle]::Bold)
+    $l.ForeColor = $ColorText
+    $l.Location = [System.Drawing.Point]::new(35, 24)
+    $l.Size = New-Object System.Drawing.Size(480, 50)
+    $l.AutoSize = $false
+    $l.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
+    return $l
+}
+
+function New-Subtitle($text) {
+    $l = New-Object System.Windows.Forms.Label
+    $l.Text = $text
+    $l.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
+    $l.ForeColor = [System.Drawing.Color]::FromArgb(80, 80, 96)
+    $l.Location = [System.Drawing.Point]::new(35, 70)
+    $l.Size = New-Object System.Drawing.Size(450, 90)
+    $l.AutoSize = $false
+    return $l
+}
+
+# ================================================================
+# HELPERS: ICONA TRAY, SCRIPT TRAY, LAUNCHER CONNECTOR
+# ================================================================
+function Build-ArgusIcon($Path) {
+    # Genera un .ico 32x32 con sfondo blu e "86" bianco bold.
+    # Niente file esterni: tutto disegnato runtime via System.Drawing.
+    $bmp = New-Object System.Drawing.Bitmap 32, 32
+    $g = [System.Drawing.Graphics]::FromImage($bmp)
+    $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+    $g.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::AntiAliasGridFit
+    $brushBg = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::FromArgb(0, 122, 204))
+    $g.FillEllipse($brushBg, 0, 0, 31, 31)
+    $font = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
+    $sf = New-Object System.Drawing.StringFormat
+    $sf.Alignment = [System.Drawing.StringAlignment]::Center
+    $sf.LineAlignment = [System.Drawing.StringAlignment]::Center
+    $rect = New-Object System.Drawing.RectangleF(0, 1, 32, 32)
+    $g.DrawString("86", $font, [System.Drawing.Brushes]::White, $rect, $sf)
+    $g.Dispose()
+    $hIcon = $bmp.GetHicon()
+    $icon = [System.Drawing.Icon]::FromHandle($hIcon)
+    $fs = New-Object System.IO.FileStream($Path, [System.IO.FileMode]::Create)
+    try { $icon.Save($fs) } finally { $fs.Close() }
+    $bmp.Dispose()
+}
+
+function Write-ConnectorLauncher {
+    param([string]$Path, [string]$BackendUrl, [string]$ClientId, [string]$Role, [string]$Version)
+    # Connector Console — UI 'Gestisci Dispositivi (SNMP Polling)' nello
+    # stile del legacy v3.8.28. Permette di aggiungere/rimuovere target,
+    # importare/esportare CSV, testare connettivita' e salvare il YAML
+    # del agent con riavvio automatico del servizio. NON contiene piu' i
+    # pulsanti Avvia/Ferma/Riavvia: quelli sono nel menu della tray icon.
+    $body = @'
+$ErrorActionPreference = 'SilentlyContinue'
+
+try {
+    $sig = @"
+[DllImport("user32.dll")] public static extern bool ShowWindow(System.IntPtr hWnd, int nCmdShow);
+[DllImport("kernel32.dll")] public static extern System.IntPtr GetConsoleWindow();
+"@
+    $w = Add-Type -MemberDefinition $sig -Name 'ConHider' -Namespace 'NocAgent' -PassThru
+    $h = $w::GetConsoleWindow()
+    if ($h -ne [System.IntPtr]::Zero) { [void]$w::ShowWindow($h, 0) }
+} catch { }
+
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+
+$BackendUrl = '__BACKEND_URL__'
+$ClientId   = '__CLIENT_ID__'
+$RoleVal    = '__ROLE__'
+$VersionVal = '__VERSION__'
+$AgentToken = '__AGENT_TOKEN__'
+$InstallDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$IconPath   = Join-Path $InstallDir 'argus.ico'
+$ConfigPath = Join-Path $env:ProgramData '86NocAgent\agent.yaml'
+
+$ColAccent  = [System.Drawing.Color]::FromArgb(99, 102, 241)
+$ColRed     = [System.Drawing.Color]::FromArgb(220, 53, 69)
+$ColBlue    = [System.Drawing.Color]::FromArgb(13, 110, 253)
+$ColPurple  = [System.Drawing.Color]::FromArgb(147, 51, 234)
+$ColGreen   = [System.Drawing.Color]::FromArgb(34, 197, 94)
+$ColMuted   = [System.Drawing.Color]::FromArgb(110, 110, 125)
+$ColText    = [System.Drawing.Color]::FromArgb(33, 37, 41)
+$ColWhite   = [System.Drawing.Color]::White
+
+# ============================================================
+# YAML helpers (markers per il blocco gestito dal Connector)
+# ============================================================
+$BeginMarker = '# === BEGIN MANAGED TARGETS ==='
+$EndMarker   = '# === END MANAGED TARGETS ==='
+
+function Parse-Targets {
+    param([string]$ConfigText)
+    $targets = @()
+    $inBlock = $false
+    $current = $null
+    foreach ($line in $ConfigText -split "`r?`n") {
+        if ($line -match '^\s*' + [regex]::Escape($BeginMarker)) { $inBlock = $true; continue }
+        if ($line -match '^\s*' + [regex]::Escape($EndMarker)) { $inBlock = $false; if ($current) { $targets += [pscustomobject]$current; $current = $null }; continue }
+        if (-not $inBlock) { continue }
+        if ($line -match '^\s*-\s+ip:\s*"?([^"\s]+)"?') {
+            if ($current) { $targets += [pscustomobject]$current }
+            $current = @{ ip = $matches[1]; name=''; community='public'; device_type=''; snmp_version='v2c'; snmp_port=161 }
+        } elseif ($current -and $line -match '^\s*name:\s*"?([^"]*)"?') {
+            $current.name = $matches[1]
+        } elseif ($current -and $line -match '^\s*community:\s*"?([^"]*)"?') {
+            $current.community = $matches[1]
+        } elseif ($current -and $line -match '^\s*profile:\s*"?([^"]*)"?') {
+            $current.device_type = $matches[1]
+        } elseif ($current -and $line -match '^\s*snmp_version:\s*"?([^"]*)"?') {
+            $current.snmp_version = $matches[1]
+        } elseif ($current -and $line -match '^\s*snmp_port:\s*(\d+)') {
+            $current.snmp_port = [int]$matches[1]
+        }
+    }
+    if ($current) { $targets += [pscustomobject]$current }
+    return $targets
+}
+
+function Save-Targets {
+    param([array]$Targets)
+    if (-not (Test-Path $ConfigPath)) {
+        [System.Windows.Forms.MessageBox]::Show("agent.yaml non trovato: $ConfigPath", '86BIT Argus', 'OK', 'Error') | Out-Null
+        return $false
+    }
+    $raw = Get-Content -Raw -Path $ConfigPath
+    $clean = ($raw -replace ('(?s)' + [regex]::Escape($BeginMarker) + '.*?' + [regex]::Escape($EndMarker) + "\r?\n?"), '').TrimEnd("`r","`n")
+
+    $sb = New-Object System.Text.StringBuilder
+    [void]$sb.AppendLine($BeginMarker)
+    [void]$sb.AppendLine('# Gestito da Connector Console - non modificare a mano')
+    [void]$sb.AppendLine('snmp_targets:')
+    foreach ($t in $Targets) {
+        [void]$sb.AppendLine(('  - ip: "' + $t.ip + '"'))
+        if ($t.name)         { [void]$sb.AppendLine(('    name: "' + $t.name + '"')) }
+        if ($t.community)    { [void]$sb.AppendLine(('    community: "' + $t.community + '"')) }
+        if ($t.device_type)  { [void]$sb.AppendLine(('    profile: "' + $t.device_type + '"')) }
+        if ($t.snmp_version) { [void]$sb.AppendLine(('    snmp_version: "' + $t.snmp_version + '"')) }
+        if ($t.snmp_port -and [int]$t.snmp_port -ne 0) { [void]$sb.AppendLine(('    snmp_port: ' + [int]$t.snmp_port)) }
+    }
+    [void]$sb.AppendLine($EndMarker)
+
+    $newContent = $clean + "`r`n" + $sb.ToString()
+    Set-Content -Path $ConfigPath -Value $newContent -Encoding UTF8
+    return $true
+}
+
+# ============================================================
+# FORM
+# ============================================================
+[System.Windows.Forms.Application]::EnableVisualStyles()
+$form = New-Object System.Windows.Forms.Form
+$form.Text = 'ARGUS Connector - Gestisci Dispositivi'
+$form.Size = New-Object System.Drawing.Size(900, 700)
+$form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
+$form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::Sizable
+$form.MinimumSize = New-Object System.Drawing.Size(800, 600)
+$form.BackColor = $ColWhite
+if (Test-Path $IconPath) { try { $form.Icon = New-Object System.Drawing.Icon($IconPath) } catch { } }
+
+$lblTitle = New-Object System.Windows.Forms.Label
+$lblTitle.Text = 'Dispositivi Monitorati (SNMP Polling)'
+$lblTitle.Font = New-Object System.Drawing.Font('Segoe UI', 16, [System.Drawing.FontStyle]::Bold)
+$lblTitle.ForeColor = $ColText
+$lblTitle.Location = [System.Drawing.Point]::new(20, 18)
+$lblTitle.Size = New-Object System.Drawing.Size(800, 32)
+$form.Controls.Add($lblTitle)
+
+$lblHint = New-Object System.Windows.Forms.Label
+$lblHint.Text = 'Aggiungi o rimuovi switch, firewall e server da monitorare via SNMP. Cliente: ' + $ClientId
+$lblHint.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+$lblHint.ForeColor = $ColMuted
+$lblHint.Location = [System.Drawing.Point]::new(20, 52)
+$lblHint.Size = New-Object System.Drawing.Size(800, 20)
+$form.Controls.Add($lblHint)
+
+# Form aggiunta
+function New-FieldLabel($text, $x, $y) {
+    $l = New-Object System.Windows.Forms.Label
+    $l.Text = $text
+    $l.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+    $l.ForeColor = $ColMuted
+    $l.Location = [System.Drawing.Point]::new($x, $y)
+    $l.Size = New-Object System.Drawing.Size(180, 18)
+    $form.Controls.Add($l)
+    return $l
+}
+[void](New-FieldLabel 'IP Address' 20 84)
+[void](New-FieldLabel 'Community' 230 84)
+[void](New-FieldLabel 'Nome dispositivo' 380 84)
+
+$txtIp = New-Object System.Windows.Forms.TextBox
+$txtIp.Font = New-Object System.Drawing.Font('Segoe UI', 10)
+$txtIp.Location = [System.Drawing.Point]::new(20, 105)
+$txtIp.Size = New-Object System.Drawing.Size(200, 26)
+$form.Controls.Add($txtIp)
+
+$txtCom = New-Object System.Windows.Forms.TextBox
+$txtCom.Font = New-Object System.Drawing.Font('Segoe UI', 10)
+$txtCom.Location = [System.Drawing.Point]::new(230, 105)
+$txtCom.Size = New-Object System.Drawing.Size(140, 26)
+$txtCom.Text = 'public'
+$form.Controls.Add($txtCom)
+
+$txtName = New-Object System.Windows.Forms.TextBox
+$txtName.Font = New-Object System.Drawing.Font('Segoe UI', 10)
+$txtName.Location = [System.Drawing.Point]::new(380, 105)
+$txtName.Size = New-Object System.Drawing.Size(340, 26)
+$form.Controls.Add($txtName)
+
+$btnAdd = New-Object System.Windows.Forms.Button
+$btnAdd.Text = 'Aggiungi'
+$btnAdd.Location = [System.Drawing.Point]::new(730, 103)
+$btnAdd.Size = New-Object System.Drawing.Size(140, 32)
+$btnAdd.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+$btnAdd.BackColor = $ColAccent
+$btnAdd.ForeColor = $ColWhite
+$btnAdd.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
+$form.Controls.Add($btnAdd)
+
+# ListView
+$lv = New-Object System.Windows.Forms.ListView
+$lv.View = [System.Windows.Forms.View]::Details
+$lv.FullRowSelect = $true
+$lv.GridLines = $true
+$lv.Location = [System.Drawing.Point]::new(20, 150)
+$lv.Size = New-Object System.Drawing.Size(850, 380)
+$lv.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right -bor [System.Windows.Forms.AnchorStyles]::Bottom
+[void]$lv.Columns.Add('IP Address', 150)
+[void]$lv.Columns.Add('Community', 110)
+[void]$lv.Columns.Add('Nome', 280)
+[void]$lv.Columns.Add('Web UI', 280)
+$form.Controls.Add($lv)
+
+function Refresh-List {
+    param([array]$Targets)
+    $lv.Items.Clear()
+    foreach ($t in $Targets) {
+        $it = New-Object System.Windows.Forms.ListViewItem $t.ip
+        [void]$it.SubItems.Add([string]$t.community)
+        [void]$it.SubItems.Add([string]$t.name)
+        [void]$it.SubItems.Add('-')
+        $it.Tag = $t
+        [void]$lv.Items.Add($it)
+    }
+}
+
+$script:Targets = @()
+if (Test-Path $ConfigPath) {
+    $script:Targets = @(Parse-Targets (Get-Content -Raw -Path $ConfigPath))
+}
+Refresh-List $script:Targets
+
+$btnAdd.add_Click({
+    $ip = $txtIp.Text.Trim()
+    if (-not $ip) { return }
+    $script:Targets = @($script:Targets) + @([pscustomobject]@{
+        ip = $ip
+        name = $txtName.Text.Trim()
+        community = if ($txtCom.Text.Trim()) { $txtCom.Text.Trim() } else { 'public' }
+        device_type = ''
+        snmp_version = 'v2c'
+        snmp_port = 161
+    })
+    Refresh-List $script:Targets
+    $txtIp.Text = ''; $txtName.Text = ''
+})
+
+# Pulsanti riga inferiore
+function New-Btn($text, $x, $y, $w, $bg, $fg, $action) {
+    $b = New-Object System.Windows.Forms.Button
+    $b.Text = $text
+    $b.Location = [System.Drawing.Point]::new($x, $y)
+    $b.Size = New-Object System.Drawing.Size($w, 36)
+    $b.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+    $b.BackColor = $bg
+    $b.ForeColor = $fg
+    $b.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
+    $b.Anchor = [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left
+    $b.add_Click($action)
+    $form.Controls.Add($b)
+    return $b
+}
+
+# Esporta / Importa CSV
+$btnExp = New-Btn 'Esporta CSV' 20 545 130 $ColAccent $ColWhite {
+    $sd = New-Object System.Windows.Forms.SaveFileDialog
+    $sd.Filter = 'CSV (*.csv)|*.csv'
+    $sd.FileName = '86nocagent-targets.csv'
+    if ($sd.ShowDialog() -eq 'OK') {
+        $script:Targets | Select-Object ip, name, community, device_type, snmp_version, snmp_port |
+            Export-Csv -Path $sd.FileName -NoTypeInformation -Encoding UTF8
+        [System.Windows.Forms.MessageBox]::Show("Esportati $($script:Targets.Count) target.", '86BIT Argus', 'OK', 'Information') | Out-Null
+    }
+}
+$btnImp = New-Btn 'Importa CSV' 160 545 130 $ColAccent $ColWhite {
+    $od = New-Object System.Windows.Forms.OpenFileDialog
+    $od.Filter = 'CSV (*.csv)|*.csv'
+    if ($od.ShowDialog() -eq 'OK') {
+        try {
+            $rows = @()
+            $delim = ','
+            $firstLine = (Get-Content -Path $od.FileName -TotalCount 1)
+            if ($firstLine -match ';') { $delim = ';' } elseif ($firstLine -match "`t") { $delim = "`t" }
+            $rows = Import-Csv -Path $od.FileName -Delimiter $delim
+            $added = 0
+            foreach ($r in $rows) {
+                $ip = ($r.ip, $r.IP, $r.Ip, $r.address | Where-Object { $_ } | Select-Object -First 1)
+                if (-not $ip) { continue }
+                $script:Targets = @($script:Targets) + @([pscustomobject]@{
+                    ip = "$ip".Trim()
+                    name = ("$($r.name)$($r.Name)").Trim()
+                    community = if ("$($r.community)".Trim()) { "$($r.community)".Trim() } else { 'public' }
+                    device_type = "$($r.device_type)".Trim()
+                    snmp_version = if ("$($r.snmp_version)".Trim()) { "$($r.snmp_version)".Trim() } else { 'v2c' }
+                    snmp_port = if ("$($r.snmp_port)".Trim()) { [int]$r.snmp_port } else { 161 }
+                })
+                $added++
+            }
+            Refresh-List $script:Targets
+            [System.Windows.Forms.MessageBox]::Show("Importati $added target.", '86BIT Argus', 'OK', 'Information') | Out-Null
+        } catch {
+            [System.Windows.Forms.MessageBox]::Show('Errore import: ' + $_.Exception.Message, '86BIT Argus', 'OK', 'Error') | Out-Null
+        }
+    }
+}
+
+# Stato canale (VPN/WS) verso il NOC Center
+$btnHealth = New-Btn 'Stato canale (VPN/WS)' 310 545 200 $ColWhite $ColAccent {
+    $script:lblHealth.ForeColor = $ColMuted
+    $script:lblHealth.Text = 'Verifica canale verso NOC Center...'
+    $form.Refresh()
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
+        $url = $BackendUrl.TrimEnd('/') + '/api/agent/self/health?token=' + $AgentToken
+        $h = Invoke-RestMethod -UseBasicParsing -Method Get -TimeoutSec 10 -Uri $url
+        if ($h.connected -eq $true) {
+            $rtt = if ($h.rtt_ms -ne $null) { ('{0:N0}' -f [double]$h.rtt_ms) + ' ms' } else { 'n/d' }
+            $script:lblHealth.ForeColor = $ColGreen
+            $script:lblHealth.Text = ([char]0x25CF) + " Canale OK - RTT $rtt - host $($h.hostname) - agents online: $($h.agents_online)"
+        } else {
+            $script:lblHealth.ForeColor = $ColRed
+            $script:lblHealth.Text = ([char]0x25CF) + ' Agent NON connesso al NOC Center: ' + $h.detail
+        }
+    } catch {
+        $script:lblHealth.ForeColor = $ColRed
+        $script:lblHealth.Text = ([char]0x25CF) + ' Errore: ' + $_.Exception.Message
+    }
+}
+$btnHealth.FlatAppearance.BorderColor = $ColAccent; $btnHealth.FlatAppearance.BorderSize = 2
+
+$script:lblHealth = New-Object System.Windows.Forms.Label
+$script:lblHealth.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
+$script:lblHealth.ForeColor = $ColMuted
+$script:lblHealth.Location = [System.Drawing.Point]::new(520, 552)
+$script:lblHealth.Size = New-Object System.Drawing.Size(360, 22)
+$script:lblHealth.Anchor = [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
+$script:lblHealth.Text = ''
+$form.Controls.Add($script:lblHealth)
+
+# Pulsanti azione
+$btnRm = New-Btn 'Rimuovi selezionato' 20 595 170 $ColWhite $ColRed {
+    if ($lv.SelectedItems.Count -eq 0) { return }
+    $sel = @($lv.SelectedItems | ForEach-Object { $_.Tag.ip })
+    $script:Targets = @($script:Targets | Where-Object { $sel -notcontains $_.ip })
+    Refresh-List $script:Targets
+}
+$btnRm.FlatAppearance.BorderColor = $ColRed; $btnRm.FlatAppearance.BorderSize = 2
+
+$btnTest = New-Btn 'Test SNMP' 200 595 130 $ColBlue $ColWhite {
+    if ($lv.SelectedItems.Count -eq 0) {
+        [System.Windows.Forms.MessageBox]::Show('Seleziona prima un dispositivo dalla tabella.', '86BIT Argus', 'OK', 'Information') | Out-Null
+        return
+    }
+    $t = $lv.SelectedItems[0].Tag
+    $script:lblTestSnmp.ForeColor = $ColMuted
+    $script:lblTestSnmp.Text = "Interrogazione SNMP $($t.ip) in corso..."
+    $form.Refresh()
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
+        $body = @{ ip = $t.ip; community = $t.community; port = $t.snmp_port; version = $t.snmp_version } | ConvertTo-Json -Compress
+        $url = $BackendUrl.TrimEnd('/') + '/api/agent/self/snmp/test?token=' + [System.Web.HttpUtility]::UrlEncode($AgentToken)
+        # HttpUtility serve System.Web; fallback:
+        if (-not ([type]'System.Web.HttpUtility' -as [type])) {
+            Add-Type -AssemblyName System.Web | Out-Null
+        }
+        $r = Invoke-RestMethod -UseBasicParsing -Method Post -TimeoutSec 20 -Uri $url -ContentType 'application/json' -Body $body
+        $reply = $r.reply
+        if ($reply.ok -eq $true -and $reply.result) {
+            $res = $reply.result
+            $reachable = if ($res.reachable) { 'OK' } else { 'NON RAGGIUNGIBILE' }
+            $msg = "IP: $($t.ip)`nReachable: $reachable`n"
+            if ($res.sys_name)      { $msg += "sysName:     $($res.sys_name)`n" }
+            if ($res.sys_descr)     { $msg += "sysDescr:    $($res.sys_descr)`n" }
+            if ($res.sys_object_id) { $msg += "sysObjectID: $($res.sys_object_id)`n" }
+            if ($res.uptime_ns)     { $msg += "Uptime:      $([TimeSpan]::FromTicks($res.uptime_ns/100))`n" }
+            if ($res.latency_ns)    { $msg += "Latency:     $([int]($res.latency_ns/1e6)) ms`n" }
+            if ($res.error)         { $msg += "Errore: $($res.error)`n" }
+            [System.Windows.Forms.MessageBox]::Show($msg, '86BIT Argus - Test SNMP (via WS reale)', 'OK', 'Information') | Out-Null
+            $script:lblTestSnmp.ForeColor = if ($res.reachable) { $ColGreen } else { $ColRed }
+            $script:lblTestSnmp.Text = "Test SNMP $($t.ip): $reachable" + $(if ($res.sys_name) { " - $($res.sys_name)" } else { '' })
+        } else {
+            $script:lblTestSnmp.ForeColor = $ColRed
+            $script:lblTestSnmp.Text = "Test fallito: $($reply.error)"
+            [System.Windows.Forms.MessageBox]::Show("Errore agent: $($reply.error)", '86BIT Argus', 'OK', 'Error') | Out-Null
+        }
+    } catch {
+        $script:lblTestSnmp.ForeColor = $ColRed
+        $script:lblTestSnmp.Text = 'Errore HTTP: ' + $_.Exception.Message
+        [System.Windows.Forms.MessageBox]::Show('Errore: ' + $_.Exception.Message, '86BIT Argus', 'OK', 'Error') | Out-Null
+    }
+}
+
+$script:lblTestSnmp = New-Object System.Windows.Forms.Label
+$script:lblTestSnmp.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+$script:lblTestSnmp.ForeColor = $ColMuted
+$script:lblTestSnmp.Location = [System.Drawing.Point]::new(20, 663)
+$script:lblTestSnmp.Size = New-Object System.Drawing.Size(850, 22)
+$script:lblTestSnmp.Text = ''
+$script:lblTestSnmp.Anchor = [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
+$form.Controls.Add($script:lblTestSnmp)
+
+$btnWeb = New-Btn 'Apri Web UI' 340 595 130 $ColPurple $ColWhite {
+    if ($lv.SelectedItems.Count -eq 0) { return }
+    $t = $lv.SelectedItems[0].Tag
+    foreach ($scheme in @('https','http')) {
+        $url = "${scheme}://$($t.ip)/"
+        try {
+            $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 5 -Uri $url -ErrorAction SilentlyContinue
+            if ($r -and $r.StatusCode -lt 500) {
+                Start-Process $url
+                $lv.SelectedItems[0].SubItems[3].Text = $url
+                return
+            }
+        } catch { }
+    }
+    [System.Windows.Forms.MessageBox]::Show("Nessuna risposta HTTP/HTTPS dal device $($t.ip).", '86BIT Argus', 'OK', 'Warning') | Out-Null
+}
+
+$btnTestAll = New-Btn 'Test Web UI (tutti)' 480 595 150 $ColWhite $ColPurple {
+    foreach ($it in $lv.Items) {
+        $t = $it.Tag
+        $found = ''
+        foreach ($scheme in @('https','http')) {
+            $url = "${scheme}://$($t.ip)/"
+            try {
+                $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 4 -Uri $url -ErrorAction SilentlyContinue
+                if ($r -and $r.StatusCode -lt 500) { $found = $url; break }
+            } catch { }
+        }
+        $it.SubItems[3].Text = if ($found) { $found } else { '-' }
+        $form.Refresh()
+    }
+}
+$btnTestAll.FlatAppearance.BorderColor = $ColPurple; $btnTestAll.FlatAppearance.BorderSize = 2
+
+$btnSave = New-Btn 'Salva e Riavvia' 700 595 170 $ColGreen $ColWhite {
+    if (Save-Targets $script:Targets) {
+        try {
+            Stop-Service -Name '86NocWatchdog' -Force -ErrorAction SilentlyContinue
+            Stop-Service -Name '86NocAgent' -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 1
+            Start-Service -Name '86NocAgent' -ErrorAction SilentlyContinue
+            Start-Service -Name '86NocWatchdog' -ErrorAction SilentlyContinue
+            [System.Windows.Forms.MessageBox]::Show("Configurazione salvata. Servizi riavviati.`nTotale target: $($script:Targets.Count)", '86BIT Argus', 'OK', 'Information') | Out-Null
+        } catch {
+            [System.Windows.Forms.MessageBox]::Show('Salvato ma errore restart: ' + $_.Exception.Message, '86BIT Argus', 'OK', 'Warning') | Out-Null
+        }
+    }
+}
+
+# Footer hint
+$lblFoot = New-Object System.Windows.Forms.Label
+$lblFoot.Text = "Apri Web UI: testa http/https sul device. Salva e Riavvia: scrive agent.yaml e riavvia il servizio. Per Avvia/Ferma servizi usa il menu della tray icon."
+$lblFoot.Font = New-Object System.Drawing.Font('Segoe UI', 8.5)
+$lblFoot.ForeColor = $ColMuted
+$lblFoot.Location = [System.Drawing.Point]::new(20, 638)
+$lblFoot.Size = New-Object System.Drawing.Size(850, 18)
+$lblFoot.Anchor = [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
+$form.Controls.Add($lblFoot)
+
+[void]$form.ShowDialog()
+'@
+    $body = $body.Replace('__BACKEND_URL__', $BackendUrl)
+    $body = $body.Replace('__CLIENT_ID__',   $ClientId)
+    $body = $body.Replace('__ROLE__',        $Role)
+    $body = $body.Replace('__VERSION__',     $Version)
+    $body = $body.Replace('__AGENT_TOKEN__', $Token)
+    Set-Content -Path $Path -Value $body -Encoding UTF8
+}
+
+function Write-TrayScript {
+    param([string]$Path, [string]$BackendUrl)
+    # Usiamo here-string single-quoted per non far interpolare $-vars: il
+    # solo placeholder e' __BACKEND_URL__ che sostituiamo a posteriori.
+    $body = @'
+# 86BIT Argus tray icon - residente nella zona di notifica Windows.
+# Avviato all'accesso utente da HKLM\...\Run\86BITArgusTray.
+# Mostra stato del servizio 86NocAgent e consente apertura NOC,
+# avvio/stop servizi e uscita.
+$ErrorActionPreference = 'SilentlyContinue'
+
+# Hide console window
+try {
+    $sig = @"
+[DllImport("user32.dll")] public static extern bool ShowWindow(System.IntPtr hWnd, int nCmdShow);
+[DllImport("kernel32.dll")] public static extern System.IntPtr GetConsoleWindow();
+"@
+    $w = Add-Type -MemberDefinition $sig -Name 'TrayHider' -Namespace 'NocAgent' -PassThru
+    $h = $w::GetConsoleWindow()
+    if ($h -ne [System.IntPtr]::Zero) { [void]$w::ShowWindow($h, 0) }
+} catch { }
+
+# Single-instance lock
+$lockDir = Join-Path $env:ProgramData '86NocAgent'
+if (-not (Test-Path $lockDir)) { New-Item -ItemType Directory -Force -Path $lockDir | Out-Null }
+$lockFile = Join-Path $lockDir 'tray.lock'
+$mutex = New-Object System.Threading.Mutex($false, 'Global\86BITArgusTray')
+if (-not $mutex.WaitOne(0)) { exit 0 }
+
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+
+$BackendUrl = '__BACKEND_URL__'
+$InstallDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$IconPath   = Join-Path $InstallDir 'argus.ico'
+
+$ni = New-Object System.Windows.Forms.NotifyIcon
+if (Test-Path $IconPath) {
+    $ni.Icon = New-Object System.Drawing.Icon($IconPath)
+} else {
+    $ni.Icon = [System.Drawing.SystemIcons]::Application
+}
+$ni.Text = '86BIT Argus Connector'
+$ni.Visible = $true
+
+$menu = New-Object System.Windows.Forms.ContextMenuStrip
+
+$openItem = $menu.Items.Add('Apri NOC Center')
+$openItem.add_Click({ Start-Process $BackendUrl })
+
+$mgrItem = $menu.Items.Add('Gestisci Dispositivi...')
+$mgrItem.add_Click({
+    $connector = Join-Path $InstallDir 'connector.ps1'
+    if (Test-Path $connector) {
+        Start-Process -FilePath 'powershell.exe' -ArgumentList @(
+            '-NoProfile','-WindowStyle','Hidden','-ExecutionPolicy','Bypass','-File',$connector
+        ) -WindowStyle Hidden
+    }
+})
+
+$statusItem = $menu.Items.Add('Stato: ...')
+$statusItem.Enabled = $false
+
+[void]$menu.Items.Add('-')
+
+$startSvc = $menu.Items.Add('Avvia servizi')
+$startSvc.add_Click({
+    Start-Service -Name '86NocAgent' -ErrorAction SilentlyContinue
+    Start-Service -Name '86NocWatchdog' -ErrorAction SilentlyContinue
+})
+$stopSvc = $menu.Items.Add('Ferma servizi')
+$stopSvc.add_Click({
+    Stop-Service -Name '86NocWatchdog' -Force -ErrorAction SilentlyContinue
+    Stop-Service -Name '86NocAgent' -Force -ErrorAction SilentlyContinue
+})
+$restartSvc = $menu.Items.Add('Riavvia servizi')
+$restartSvc.add_Click({
+    Stop-Service -Name '86NocWatchdog' -Force -ErrorAction SilentlyContinue
+    Stop-Service -Name '86NocAgent' -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 1
+    Start-Service -Name '86NocAgent' -ErrorAction SilentlyContinue
+    Start-Service -Name '86NocWatchdog' -ErrorAction SilentlyContinue
+})
+
+[void]$menu.Items.Add('-')
+
+$openLog = $menu.Items.Add('Apri cartella log')
+$openLog.add_Click({
+    $logDir = Join-Path $env:ProgramData '86NocAgent\logs'
+    if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Force -Path $logDir | Out-Null }
+    Start-Process explorer.exe $logDir
+})
+
+[void]$menu.Items.Add('-')
+
+$exitItem = $menu.Items.Add('Esci dalla tray')
+$exitItem.add_Click({
+    $script:tickTimer.Stop()
+    $ni.Visible = $false
+    $ni.Dispose()
+    [System.Windows.Forms.Application]::Exit()
+})
+
+$ni.ContextMenuStrip = $menu
+$ni.add_DoubleClick({
+    $connector = Join-Path $InstallDir 'connector.ps1'
+    if (Test-Path $connector) {
+        Start-Process -FilePath 'powershell.exe' -ArgumentList @(
+            '-NoProfile','-WindowStyle','Hidden','-ExecutionPolicy','Bypass','-File',$connector
+        ) -WindowStyle Hidden
+    }
+})
+
+# Aggiorna stato ogni 10s
+$script:tickTimer = New-Object System.Windows.Forms.Timer
+$script:tickTimer.Interval = 10000
+$script:tickTimer.add_Tick({
+    try {
+        $svc = Get-Service -Name '86NocAgent' -ErrorAction Stop
+        $statusItem.Text = "Stato servizio: $($svc.Status)"
+        if ($svc.Status -eq 'Running') {
+            $ni.Text = '86BIT Argus Connector - Online'
+        } else {
+            $ni.Text = "86BIT Argus Connector - $($svc.Status)"
+        }
+    } catch {
+        $statusItem.Text = 'Servizio non installato'
+        $ni.Text = '86BIT Argus Connector - non installato'
+    }
+    # touch lock per il launcher
+    try { (Get-Item $lockFile -ErrorAction SilentlyContinue) | Out-Null } catch { }
+    [System.IO.File]::WriteAllText($lockFile, [DateTime]::UtcNow.ToString('o'))
+})
+$script:tickTimer.Start()
+
+# Touch lock subito
+[System.IO.File]::WriteAllText($lockFile, [DateTime]::UtcNow.ToString('o'))
+
+[System.Windows.Forms.Application]::Run()
+$mutex.ReleaseMutex()
+'@
+    $body = $body.Replace('__BACKEND_URL__', $BackendUrl)
+    Set-Content -Path $Path -Value $body -Encoding UTF8
+}
+
+function Write-UninstallScript {
+    param([string]$Path)
+    # Disinstallazione completa: nessun residuo dopo l'esecuzione.
+    # Lanciato da Programmi e funzionalita' o dallo shortcut Start Menu.
+    $body = @'
+# 86BIT Argus Connector - disinstallazione completa.
+# Rimuove servizi, binari, config, autostart, shortcut, registry entry.
+$ErrorActionPreference = 'SilentlyContinue'
+
+# Hide console
+try {
+    $sig = @"
+[DllImport("user32.dll")] public static extern bool ShowWindow(System.IntPtr hWnd, int nCmdShow);
+[DllImport("kernel32.dll")] public static extern System.IntPtr GetConsoleWindow();
+"@
+    $w = Add-Type -MemberDefinition $sig -Name 'UninstHider' -Namespace 'NocAgent' -PassThru
+    $h = $w::GetConsoleWindow()
+    if ($h -ne [System.IntPtr]::Zero) { [void]$w::ShowWindow($h, 0) }
+} catch { }
+
+Add-Type -AssemblyName System.Windows.Forms
+
+# Auto-elevation
+$identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+$principal = New-Object System.Security.Principal.WindowsPrincipal($identity)
+if (-not $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = 'powershell.exe'
+    $psi.Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$($MyInvocation.MyCommand.Path)`""
+    $psi.Verb = 'runas'
+    $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+    $psi.UseShellExecute = $true
+    try { [System.Diagnostics.Process]::Start($psi) | Out-Null } catch { }
+    exit 0
+}
+
+$confirm = [System.Windows.Forms.MessageBox]::Show(
+    "Procedere con la disinstallazione completa di 86BIT Argus Connector?`n`nVerranno rimossi servizi, binari, configurazione e log.",
+    '86BIT Argus - Disinstallazione',
+    [System.Windows.Forms.MessageBoxButtons]::YesNo,
+    [System.Windows.Forms.MessageBoxIcon]::Question)
+if ($confirm -ne [System.Windows.Forms.DialogResult]::Yes) { exit 0 }
+
+$installDir = 'C:\Program Files\86NocAgent'
+$dataDir    = 'C:\ProgramData\86NocAgent'
+$startMenu  = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\86BIT Argus Center'
+$logFile    = Join-Path $env:TEMP '86NocAgent-uninstall.log'
+"$(Get-Date -Format o) - uninstall start" | Out-File -FilePath $logFile -Append
+
+function Step($msg) { "$(Get-Date -Format o) - $msg" | Out-File -FilePath $logFile -Append }
+
+# 1) Stop + delete servizi
+Step 'stop services'
+foreach ($s in @('86NocWatchdog','86NocAgent')) {
+    Stop-Service -Name $s -Force -ErrorAction SilentlyContinue
+}
+Start-Sleep -Seconds 1
+foreach ($s in @('86NocWatchdog','86NocAgent')) {
+    & cmd.exe /c "sc.exe delete `"$s`"" | Out-File -FilePath $logFile -Append
+}
+
+# 2) Kill processi Connector UI / legacy tray
+Step 'kill connector UI processes'
+Get-Process -Name 'nocagent-ui' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+# Backward compat: vecchie installazioni con tray.ps1
+Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue | ForEach-Object {
+    if ($_.CommandLine -and $_.CommandLine -match 'tray\.ps1') {
+        Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# 3) Rimuovi autostart HKLM Run + Scheduled Task
+Step 'remove HKLM Run autostart'
+Remove-ItemProperty -Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run' -Name '86BITArgusTray' -Force -ErrorAction SilentlyContinue
+Step 'remove scheduled task 86BIT Argus Tray'
+Unregister-ScheduledTask -TaskName '86BIT Argus Tray' -Confirm:$false -ErrorAction SilentlyContinue
+
+# 4) Rimuovi shortcut Start Menu
+Step 'remove start menu folder'
+if (Test-Path $startMenu) {
+    Remove-Item -Path $startMenu -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# 5) Rimuovi entry Programmi e funzionalita'
+Step 'remove Add/Remove Programs registry'
+Remove-Item -Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\86BITArgusAgent' -Recurse -Force -ErrorAction SilentlyContinue
+
+# 6) Rimuovi cartelle binari e dati
+Step 'remove binaries directory'
+# Devo fare la rimozione dell'installDir tramite uno script asincrono
+# perche' uninstall.ps1 e' DENTRO installDir e non puo' cancellare se stesso.
+$cleanupCmd = @"
+Start-Sleep -Seconds 2
+Remove-Item -Path '$installDir' -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -Path '$dataDir' -Recurse -Force -ErrorAction SilentlyContinue
+"@
+$cleanupPath = Join-Path $env:TEMP '86noc-finalcleanup.ps1'
+Set-Content -Path $cleanupPath -Value $cleanupCmd -Encoding UTF8
+Start-Process -FilePath 'powershell.exe' -ArgumentList @(
+    '-NoProfile','-WindowStyle','Hidden','-ExecutionPolicy','Bypass','-File',$cleanupPath
+) -WindowStyle Hidden
+
+[System.Windows.Forms.MessageBox]::Show(
+    "Disinstallazione completata.`n`nServizi, binari, configurazione, autostart e voci di registro sono stati rimossi.`n`nLog: $logFile",
+    '86BIT Argus - Disinstallazione completata',
+    [System.Windows.Forms.MessageBoxButtons]::OK,
+    [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
+'@
+    Set-Content -Path $Path -Value $body -Encoding UTF8
+}
+
+# ================================================================
+# STEP 0 - WELCOME
+# ================================================================
+function Show-Welcome {
+    Reset-Content
+    $btnBack.Enabled = $false
+    $btnNext.Text = "Avanti >"
+    $btnNext.Enabled = $true
+
+    $contentPanel.Controls.Add((New-Title "Benvenuto in $DisplayName"))
+    $contentPanel.Controls.Add((New-Subtitle "Questa procedura installera' il nuovo agent nativo della piattaforma 86bit NOC sul server.`n`nL'agent monitora la rete locale (ARP, mDNS, SNMP), si auto-mantiene tramite watchdog dedicato e riceve comandi real-time dal NOC Center."))
+
+    $infoBox = New-Object System.Windows.Forms.GroupBox
+    $infoBox.Text = "Cosa verra' installato"
+    $infoBox.Location = [System.Drawing.Point]::new(35, 175)
+    $infoBox.Size = New-Object System.Drawing.Size(450, 200)
+    $infoBox.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+    $infoBox.ForeColor = $ColorText
+    $contentPanel.Controls.Add($infoBox)
+
+    $items = @(
+        "Servizio Windows  86NocAgent  (auto-start)",
+        "Servizio Windows  86NocWatchdog (supervisore)",
+        "Service Recovery automatico (restart 5/5/15s)",
+        "Configurazione in  $DataDir",
+        "Binari nativi (no Python, no PowerShell residui)"
+    )
+    for ($i = 0; $i -lt $items.Count; $i++) {
+        $l = New-Object System.Windows.Forms.Label
+        $l.Text = ([char]0x2713) + "  " + $items[$i]
+        $l.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
+        $l.ForeColor = $ColorText
+        $l.Location = [System.Drawing.Point]::new(20, 30 + ($i * 28))
+        $l.Size = New-Object System.Drawing.Size(420, 24)
+        $infoBox.Controls.Add($l)
+    }
+
+    $hint = New-Object System.Windows.Forms.Label
+    $hint.Text = "Clicca 'Avanti' per continuare."
+    $hint.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Italic)
+    $hint.ForeColor = $ColorMuted
+    $hint.Location = [System.Drawing.Point]::new(35, 390)
+    $hint.Size = New-Object System.Drawing.Size(450, 24)
+    $contentPanel.Controls.Add($hint)
+}
+
+# ================================================================
+# STEP 1 - TIPO INSTALLAZIONE (Master / Scanner)
+# ================================================================
+$script:rbMaster  = $null
+$script:rbScanner = $null
+
+function Show-Mode {
+    Reset-Content
+    $btnBack.Enabled = $true
+    $btnNext.Text = "Avanti >"
+    $btnNext.Enabled = $true
+
+    $contentPanel.Controls.Add((New-Title "Tipo di installazione"))
+    $contentPanel.Controls.Add((New-Subtitle "Scegli come l'agent operera' su questo server. Puoi installare due ruoli: Master (completo, monitora la rete e fa SNMP polling) oppure Scanner (leggero, scopre solo dispositivi su VLAN remote isolate)."))
+
+    # Master radio + descrizione
+    $boxMaster = New-Object System.Windows.Forms.GroupBox
+    $boxMaster.Location = [System.Drawing.Point]::new(35, 175)
+    $boxMaster.Size = New-Object System.Drawing.Size(450, 95)
+    $boxMaster.Text = ""
+    $contentPanel.Controls.Add($boxMaster)
+
+    $script:rbMaster = New-Object System.Windows.Forms.RadioButton
+    $script:rbMaster.Text = "Master Connector  (consigliato)"
+    $script:rbMaster.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+    $script:rbMaster.Location = [System.Drawing.Point]::new(15, 10)
+    $script:rbMaster.Size = New-Object System.Drawing.Size(420, 26)
+    $script:rbMaster.Checked = ($script:Role -eq "master")
+    $boxMaster.Controls.Add($script:rbMaster)
+
+    $lblM = New-Object System.Windows.Forms.Label
+    $lblM.Text = "Discovery (ARP, mDNS) + SNMP polling completo + bridge eventi al NOC Center.`nUsalo come unico agent del cliente o sulla VLAN principale."
+    $lblM.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+    $lblM.ForeColor = [System.Drawing.Color]::FromArgb(80, 80, 96)
+    $lblM.Location = [System.Drawing.Point]::new(35, 38)
+    $lblM.Size = New-Object System.Drawing.Size(400, 50)
+    $boxMaster.Controls.Add($lblM)
+
+    # Scanner radio + descrizione
+    $boxScanner = New-Object System.Windows.Forms.GroupBox
+    $boxScanner.Location = [System.Drawing.Point]::new(35, 280)
+    $boxScanner.Size = New-Object System.Drawing.Size(450, 100)
+    $boxScanner.Text = ""
+    $contentPanel.Controls.Add($boxScanner)
+
+    $script:rbScanner = New-Object System.Windows.Forms.RadioButton
+    $script:rbScanner.Text = "VLAN Scanner  (solo discovery)"
+    $script:rbScanner.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+    $script:rbScanner.Location = [System.Drawing.Point]::new(15, 10)
+    $script:rbScanner.Size = New-Object System.Drawing.Size(420, 26)
+    $script:rbScanner.Checked = ($script:Role -eq "scanner")
+    $boxScanner.Controls.Add($script:rbScanner)
+
+    $lblS = New-Object System.Windows.Forms.Label
+    $lblS.Text = "Solo discovery (ARP, mDNS), niente SNMP polling. Footprint minimo.`nUsalo su VLAN remote isolate per scoprire endpoint che il Master non vede."
+    $lblS.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+    $lblS.ForeColor = [System.Drawing.Color]::FromArgb(80, 80, 96)
+    $lblS.Location = [System.Drawing.Point]::new(35, 38)
+    $lblS.Size = New-Object System.Drawing.Size(400, 50)
+    $boxScanner.Controls.Add($lblS)
+}
+
+# ================================================================
+# STEP 2 - CONFIGURAZIONE
+# ================================================================
+$script:txtUrl = $null
+$script:txtToken = $null
+$script:lblValidation = $null
+
+function Show-Configuration {
+    Reset-Content
+    $btnBack.Enabled = $true
+    $btnNext.Text = "Avanti >"
+    $btnNext.Enabled = $true
+
+    $contentPanel.Controls.Add((New-Title "Configurazione NOC Center"))
+    $contentPanel.Controls.Add((New-Subtitle "Inserisci l'URL del NOC Center e l'API Key del cliente. L'API Key determina automaticamente il client_id; non c'e' altro da configurare."))
+
+    # URL
+    $lblUrl = New-Object System.Windows.Forms.Label
+    $lblUrl.Text = "URL NOC Center *"
+    $lblUrl.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+    $lblUrl.Location = [System.Drawing.Point]::new(35, 145)
+    $lblUrl.Size = New-Object System.Drawing.Size(220, 28)
+    $lblUrl.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
+    $contentPanel.Controls.Add($lblUrl)
+
+    $script:txtUrl = New-Object System.Windows.Forms.TextBox
+    $script:txtUrl.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+    $script:txtUrl.Location = [System.Drawing.Point]::new(35, 172)
+    $script:txtUrl.Size = New-Object System.Drawing.Size(440, 26)
+    $script:txtUrl.Text = $script:BackendUrl
+    $contentPanel.Controls.Add($script:txtUrl)
+
+    $hintUrl = New-Object System.Windows.Forms.Label
+    $hintUrl.Text = "Es: https://argus.86bit.it"
+    $hintUrl.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+    $hintUrl.ForeColor = $ColorMuted
+    $hintUrl.Location = [System.Drawing.Point]::new(35, 202)
+    $hintUrl.Size = New-Object System.Drawing.Size(440, 18)
+    $contentPanel.Controls.Add($hintUrl)
+
+    # API Key
+    $lblToken = New-Object System.Windows.Forms.Label
+    $lblToken.Text = "API Key cliente *"
+    $lblToken.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+    $lblToken.Location = [System.Drawing.Point]::new(35, 235)
+    $lblToken.Size = New-Object System.Drawing.Size(220, 28)
+    $lblToken.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
+    $contentPanel.Controls.Add($lblToken)
+
+    $script:txtToken = New-Object System.Windows.Forms.TextBox
+    $script:txtToken.Font = New-Object System.Drawing.Font("Consolas", 9)
+    $script:txtToken.Location = [System.Drawing.Point]::new(35, 262)
+    $script:txtToken.Size = New-Object System.Drawing.Size(440, 26)
+    $script:txtToken.Text = $script:Token
+    $contentPanel.Controls.Add($script:txtToken)
+
+    $hintTok = New-Object System.Windows.Forms.Label
+    $hintTok.Text = "Copia l'API Key del cliente dalla pagina Clienti del NOC Center (pulsante 'API Key')."
+    $hintTok.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+    $hintTok.ForeColor = $ColorMuted
+    $hintTok.Location = [System.Drawing.Point]::new(35, 292)
+    $hintTok.Size = New-Object System.Drawing.Size(440, 18)
+    $contentPanel.Controls.Add($hintTok)
+
+    # Bottone test connessione
+    $btnTest = New-Object System.Windows.Forms.Button
+    $btnTest.Text = "Verifica connessione"
+    $btnTest.Size = New-Object System.Drawing.Size(180, 30)
+    $btnTest.Location = [System.Drawing.Point]::new(35, 330)
+    $btnTest.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+    $btnTest.BackColor = $ColorWhite
+    $btnTest.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+    $contentPanel.Controls.Add($btnTest)
+
+    # Etichetta validazione: spostata sotto al bottone su intera larghezza,
+    # multilinea, cosi' messaggi lunghi non vengono troncati.
+    $script:lblValidation = New-Object System.Windows.Forms.Label
+    $script:lblValidation.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+    $script:lblValidation.Location = [System.Drawing.Point]::new(35, 370)
+    $script:lblValidation.Size = New-Object System.Drawing.Size(560, 60)
+    $script:lblValidation.Text = ""
+    $script:lblValidation.AutoSize = $false
+    $contentPanel.Controls.Add($script:lblValidation)
+
+    $btnTest.Add_Click({
+        $url = $script:txtUrl.Text.TrimEnd('/')
+        $tok = $script:txtToken.Text.Trim()
+        if (-not $url -or -not $tok) {
+            $script:lblValidation.ForeColor = $ColorError
+            $script:lblValidation.Text = "URL e API Key obbligatori."
+            return
+        }
+        $script:lblValidation.ForeColor = $ColorMuted
+        $script:lblValidation.Text = "Verifica in corso..."
+        $contentPanel.Refresh()
+        try {
+            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
+            $resp = Invoke-RestMethod -UseBasicParsing -TimeoutSec 15 `
+                -Uri "$url/api/agent/install/manifest?platform=$Platform&role=$($script:Role)&token=$tok"
+            $script:ClientId = $resp.client_id
+            $script:lblValidation.ForeColor = $ColorSuccess
+            $script:lblValidation.Text = ([char]0x2713) + " OK - cliente: $($resp.client_id)"
+        } catch {
+            # Estrae il body JSON ({"detail":"..."}) restituito da FastAPI
+            # cosi' al posto del generico ".NET 403 Non consentito" l'utente
+            # vede il motivo reale (es. "invalid token", "client not found").
+            $reason = ""
+            try {
+                if ($_.Exception.Response) {
+                    $stream = $_.Exception.Response.GetResponseStream()
+                    $sr = New-Object System.IO.StreamReader($stream)
+                    $body = $sr.ReadToEnd()
+                    $sr.Close()
+                    if ($body) {
+                        try { $j = $body | ConvertFrom-Json; if ($j.detail) { $reason = [string]$j.detail } } catch { $reason = $body }
+                    }
+                    $code = [int]$_.Exception.Response.StatusCode
+                    if ($code -eq 403 -and ($reason -match 'invalid token')) {
+                        $reason = "API Key non valida o non registrata su questo NOC Center. Verifica di averla copiata dalla pagina Clienti -> API Key."
+                    } elseif (-not $reason) {
+                        $reason = "HTTP $code"
+                    }
+                } else {
+                    $reason = $_.Exception.Message
+                }
+            } catch {
+                $reason = $_.Exception.Message
+            }
+            $script:lblValidation.ForeColor = $ColorError
+            $script:lblValidation.Text = ([char]0x2717) + " " + $reason
+        }
+    })
+}
+
+# ================================================================
+# STEP 3 - DISPOSITIVI DA MONITORARE
+# ================================================================
+$script:lvDevices = $null
+$script:txtPolling = $null
+
+function Refresh-Devices {
+    if (-not $script:lvDevices) { return }
+    $script:lvDevices.Items.Clear()
+    foreach ($d in $script:Devices) {
+        $it = New-Object System.Windows.Forms.ListViewItem $d.ip
+        [void]$it.SubItems.Add([string]$d.community)
+        [void]$it.SubItems.Add([string]$d.name)
+        $it.Tag = $d
+        [void]$script:lvDevices.Items.Add($it)
+    }
+}
+
+function Show-Devices {
+    Reset-Content
+    $btnBack.Enabled = $true
+    $btnNext.Text = "Avanti >"
+    $btnNext.Enabled = $true
+
+    $contentPanel.Controls.Add((New-Title "Dispositivi da Monitorare"))
+    $contentPanel.Controls.Add((New-Subtitle "Aggiungi switch, firewall o server da monitorare via SNMP polling. Puoi anche importare un CSV o saltare e configurarli dopo dal Connector."))
+
+    $lblIp = New-Object System.Windows.Forms.Label
+    $lblIp.Text = "IP Address"
+    $lblIp.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+    $lblIp.ForeColor = $ColorMuted
+    $lblIp.Location = [System.Drawing.Point]::new(35, 145)
+    $lblIp.Size = New-Object System.Drawing.Size(120, 18)
+    $contentPanel.Controls.Add($lblIp)
+
+    $lblCm = New-Object System.Windows.Forms.Label
+    $lblCm.Text = "Community"
+    $lblCm.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+    $lblCm.ForeColor = $ColorMuted
+    $lblCm.Location = [System.Drawing.Point]::new(165, 145)
+    $lblCm.Size = New-Object System.Drawing.Size(100, 18)
+    $contentPanel.Controls.Add($lblCm)
+
+    $lblNm = New-Object System.Windows.Forms.Label
+    $lblNm.Text = "Nome"
+    $lblNm.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+    $lblNm.ForeColor = $ColorMuted
+    $lblNm.Location = [System.Drawing.Point]::new(275, 145)
+    $lblNm.Size = New-Object System.Drawing.Size(140, 18)
+    $contentPanel.Controls.Add($lblNm)
+
+    $tbIp = New-Object System.Windows.Forms.TextBox
+    $tbIp.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+    $tbIp.Location = [System.Drawing.Point]::new(35, 165)
+    $tbIp.Size = New-Object System.Drawing.Size(125, 26)
+    $contentPanel.Controls.Add($tbIp)
+
+    $tbCm = New-Object System.Windows.Forms.TextBox
+    $tbCm.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+    $tbCm.Location = [System.Drawing.Point]::new(165, 165)
+    $tbCm.Size = New-Object System.Drawing.Size(105, 26)
+    $tbCm.Text = "public"
+    $contentPanel.Controls.Add($tbCm)
+
+    $tbNm = New-Object System.Windows.Forms.TextBox
+    $tbNm.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+    $tbNm.Location = [System.Drawing.Point]::new(275, 165)
+    $tbNm.Size = New-Object System.Drawing.Size(140, 26)
+    $contentPanel.Controls.Add($tbNm)
+
+    $btnAddDev = New-Object System.Windows.Forms.Button
+    $btnAddDev.Text = "+ Aggiungi"
+    $btnAddDev.Location = [System.Drawing.Point]::new(420, 162)
+    $btnAddDev.Size = New-Object System.Drawing.Size(85, 30)
+    $btnAddDev.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+    $btnAddDev.BackColor = $ColorAccent
+    $btnAddDev.ForeColor = $ColorWhite
+    $btnAddDev.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+    $btnAddDev.add_Click({
+        $ip = $tbIp.Text.Trim()
+        if (-not $ip) { return }
+        $script:Devices = @($script:Devices) + @([pscustomobject]@{
+            ip = $ip
+            name = $tbNm.Text.Trim()
+            community = if ($tbCm.Text.Trim()) { $tbCm.Text.Trim() } else { "public" }
+            device_type = ''
+            snmp_version = 'v2c'
+            snmp_port = 161
+        })
+        Refresh-Devices
+        $tbIp.Text = ''; $tbNm.Text = ''
+        $tbIp.Focus()
+    })
+    $contentPanel.Controls.Add($btnAddDev)
+
+    # ListView
+    $script:lvDevices = New-Object System.Windows.Forms.ListView
+    $script:lvDevices.View = [System.Windows.Forms.View]::Details
+    $script:lvDevices.FullRowSelect = $true
+    $script:lvDevices.GridLines = $true
+    $script:lvDevices.Location = [System.Drawing.Point]::new(35, 200)
+    $script:lvDevices.Size = New-Object System.Drawing.Size(470, 180)
+    [void]$script:lvDevices.Columns.Add('IP', 130)
+    [void]$script:lvDevices.Columns.Add('Community', 100)
+    [void]$script:lvDevices.Columns.Add('Nome', 220)
+    $contentPanel.Controls.Add($script:lvDevices)
+    Refresh-Devices
+
+    # Rimuovi
+    $btnRm = New-Object System.Windows.Forms.Button
+    $btnRm.Text = "Rimuovi selezionato"
+    $btnRm.Location = [System.Drawing.Point]::new(35, 390)
+    $btnRm.Size = New-Object System.Drawing.Size(160, 30)
+    $btnRm.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+    $btnRm.BackColor = $ColorWhite
+    $btnRm.ForeColor = $ColorError
+    $btnRm.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+    $btnRm.FlatAppearance.BorderColor = $ColorError
+    $btnRm.FlatAppearance.BorderSize = 2
+    $btnRm.add_Click({
+        if ($script:lvDevices.SelectedItems.Count -eq 0) { return }
+        $sel = @($script:lvDevices.SelectedItems | ForEach-Object { $_.Tag.ip })
+        $script:Devices = @($script:Devices | Where-Object { $sel -notcontains $_.ip })
+        Refresh-Devices
+    })
+    $contentPanel.Controls.Add($btnRm)
+
+    # Importa CSV
+    $btnImp = New-Object System.Windows.Forms.Button
+    $btnImp.Text = "Importa CSV..."
+    $btnImp.Location = [System.Drawing.Point]::new(205, 390)
+    $btnImp.Size = New-Object System.Drawing.Size(140, 30)
+    $btnImp.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+    $btnImp.BackColor = $ColorAccent
+    $btnImp.ForeColor = $ColorWhite
+    $btnImp.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+    $btnImp.add_Click({
+        $od = New-Object System.Windows.Forms.OpenFileDialog
+        $od.Filter = 'CSV (*.csv)|*.csv|Tutti (*.*)|*.*'
+        if ($od.ShowDialog() -eq 'OK') {
+            try {
+                $delim = ','
+                $first = (Get-Content -Path $od.FileName -TotalCount 1)
+                if ($first -match ';') { $delim = ';' } elseif ($first -match "`t") { $delim = "`t" }
+                $rows = Import-Csv -Path $od.FileName -Delimiter $delim
+                $added = 0
+                foreach ($r in $rows) {
+                    $ip = ($r.ip, $r.IP, $r.Ip, $r.address | Where-Object { $_ } | Select-Object -First 1)
+                    if (-not $ip) { continue }
+                    $script:Devices = @($script:Devices) + @([pscustomobject]@{
+                        ip = "$ip".Trim()
+                        name = ("$($r.name)$($r.Name)").Trim()
+                        community = if ("$($r.community)".Trim()) { "$($r.community)".Trim() } else { "public" }
+                        device_type = "$($r.device_type)".Trim()
+                        snmp_version = if ("$($r.snmp_version)".Trim()) { "$($r.snmp_version)".Trim() } else { 'v2c' }
+                        snmp_port = if ("$($r.snmp_port)".Trim()) { [int]$r.snmp_port } else { 161 }
+                    })
+                    $added++
+                }
+                Refresh-Devices
+                [System.Windows.Forms.MessageBox]::Show("Importati $added dispositivi.", '86BIT Argus', 'OK', 'Information') | Out-Null
+            } catch {
+                [System.Windows.Forms.MessageBox]::Show('Errore import: ' + $_.Exception.Message, '86BIT Argus', 'OK', 'Error') | Out-Null
+            }
+        }
+    })
+    $contentPanel.Controls.Add($btnImp)
+
+    # Polling
+    $lblP = New-Object System.Windows.Forms.Label
+    $lblP.Text = "Polling (sec):"
+    $lblP.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+    $lblP.ForeColor = $ColorMuted
+    $lblP.Location = [System.Drawing.Point]::new(355, 397)
+    $lblP.Size = New-Object System.Drawing.Size(90, 20)
+    $contentPanel.Controls.Add($lblP)
+
+    $script:txtPolling = New-Object System.Windows.Forms.TextBox
+    $script:txtPolling.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+    $script:txtPolling.Location = [System.Drawing.Point]::new(450, 393)
+    $script:txtPolling.Size = New-Object System.Drawing.Size(55, 26)
+    $script:txtPolling.Text = [string]$script:PollingSec
+    $contentPanel.Controls.Add($script:txtPolling)
+
+    $hint = New-Object System.Windows.Forms.Label
+    $hint.Text = "CSV: header  ip, name, community, device_type, snmp_version, snmp_port  (separatore , ; o tab)"
+    $hint.Font = New-Object System.Drawing.Font("Segoe UI", 8.5)
+    $hint.ForeColor = $ColorMuted
+    $hint.Location = [System.Drawing.Point]::new(35, 430)
+    $hint.Size = New-Object System.Drawing.Size(470, 18)
+    $contentPanel.Controls.Add($hint)
+}
+
+# ================================================================
+# STEP 4 - RIEPILOGO
+# ================================================================
+function Show-Summary {
+    Reset-Content
+    $btnBack.Enabled = $true
+    $btnNext.Text = "Installa"
+    $btnNext.Enabled = $true
+
+    $contentPanel.Controls.Add((New-Title "Riepilogo installazione"))
+    $contentPanel.Controls.Add((New-Subtitle "Verifica i dati prima di procedere. L'installazione sostituisce eventuali servizi 86NocAgent / 86NocWatchdog gia' presenti."))
+
+    # Titolo della tabella riepilogo (Label esterno: il GroupBox tagliava
+    # il testo in alto su HiDPI / scaling 125-150%).
+    $lblBoxTitle = New-Object System.Windows.Forms.Label
+    $lblBoxTitle.Text = "Configurazione"
+    $lblBoxTitle.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+    $lblBoxTitle.ForeColor = $ColorText
+    $lblBoxTitle.Location = [System.Drawing.Point]::new(35, 145)
+    $lblBoxTitle.Size = New-Object System.Drawing.Size(450, 26)
+    $lblBoxTitle.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
+    $contentPanel.Controls.Add($lblBoxTitle)
+
+    $box = New-Object System.Windows.Forms.Panel
+    $box.Location = [System.Drawing.Point]::new(35, 175)
+    $box.Size = New-Object System.Drawing.Size(450, 240)
+    $box.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+    $box.BackColor = [System.Drawing.Color]::White
+    $contentPanel.Controls.Add($box)
+
+    $rows = @(
+        @("URL NOC Center",   $script:BackendUrl),
+        @("Cliente",          $script:ClientId),
+        @("Ruolo",            $(if ($script:Role -eq "scanner") {"VLAN Scanner (solo discovery)"} else {"Master Connector (completo)"})),
+        @("API Key (preview)", ($script:Token.Substring(0, [Math]::Min(8, $script:Token.Length)) + "...")),
+        @("Dispositivi SNMP", "$($script:Devices.Count) target  (polling $($script:PollingSec)s)"),
+        @("Cartella binari",  $InstallDir),
+        @("Cartella config",  $DataDir),
+        @("Servizio agent",   $ServiceName),
+        @("Servizio watchdog",$WatchdogName)
+    )
+    for ($i = 0; $i -lt $rows.Count; $i++) {
+        $lk = New-Object System.Windows.Forms.Label
+        $lk.Text = $rows[$i][0] + ":"
+        $lk.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+        $lk.ForeColor = $ColorMuted
+        $lk.Location = [System.Drawing.Point]::new(15, 15 + ($i * 27))
+        $lk.Size = New-Object System.Drawing.Size(140, 22)
+        $box.Controls.Add($lk)
+
+        $lv = New-Object System.Windows.Forms.Label
+        $lv.Text = $rows[$i][1]
+        $lv.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+        $lv.ForeColor = $ColorText
+        $lv.Location = [System.Drawing.Point]::new(160, 15 + ($i * 27))
+        $lv.Size = New-Object System.Drawing.Size(280, 22)
+        $box.Controls.Add($lv)
+    }
+}
+
+# ================================================================
+# STEP 3 - INSTALLAZIONE
+# ================================================================
+$script:lstLog = $null
+$script:progressBar = $null
+
+function Append-Log($text, $color) {
+    if (-not $color) { $color = $ColorText }
+    try {
+        $script:lstLog.SelectionColor = $color
+    } catch { }
+    $script:lstLog.AppendText("$text`r`n")
+    $script:lstLog.ScrollToCaret()
+    [System.Windows.Forms.Application]::DoEvents()
+}
+
+function fail-service($verb, $name, $err) {
+    $msg = $err.Exception.Message
+    Append-Log "      ERRORE $verb '$name': $msg" $ColorError
+    throw "service $verb $name failed: $msg"
+}
+
+function Show-Install {
+    Reset-Content
+    $btnBack.Enabled = $false
+    $btnNext.Enabled = $false
+    $btnCancel.Enabled = $false
+
+    $contentPanel.Controls.Add((New-Title "Installazione in corso"))
+    $contentPanel.Controls.Add((New-Subtitle "Download dei binari, configurazione, registrazione servizi e avvio. Attendi il completamento."))
+
+    $script:progressBar = New-Object System.Windows.Forms.ProgressBar
+    $script:progressBar.Location = [System.Drawing.Point]::new(35, 175)
+    $script:progressBar.Size = New-Object System.Drawing.Size(450, 22)
+    $script:progressBar.Style = [System.Windows.Forms.ProgressBarStyle]::Continuous
+    $script:progressBar.Minimum = 0
+    $script:progressBar.Maximum = 100
+    $contentPanel.Controls.Add($script:progressBar)
+
+    $script:lstLog = New-Object System.Windows.Forms.RichTextBox
+    $script:lstLog.Location = [System.Drawing.Point]::new(35, 210)
+    $script:lstLog.Size = New-Object System.Drawing.Size(450, 220)
+    $script:lstLog.ReadOnly = $true
+    $script:lstLog.BackColor = [System.Drawing.Color]::FromArgb(28, 28, 35)
+    $script:lstLog.ForeColor = [System.Drawing.Color]::FromArgb(220, 220, 230)
+    $script:lstLog.Font = New-Object System.Drawing.Font("Consolas", 9)
+    $script:lstLog.WordWrap = $false
+    $contentPanel.Controls.Add($script:lstLog)
+
+    [System.Windows.Forms.Application]::DoEvents()
+    Run-Install
+}
+
+function Run-Install {
+    $script:InstallResult = "fail"
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
+        $url = $script:BackendUrl.TrimEnd('/')
+        $tok = $script:Token
+
+        Append-Log "[1/11] Lettura manifest installazione" $ColorAccent
+        $script:progressBar.Value = 10
+        $manifest = Invoke-RestMethod -UseBasicParsing -TimeoutSec 30 `
+            -Uri "$url/api/agent/install/manifest?platform=$Platform&role=$($script:Role)&token=$tok"
+        $script:ClientId = $manifest.client_id
+        Append-Log "      cliente: $($manifest.client_id)  ruolo: $($script:Role)" $ColorSuccess
+
+        # Costruttore URL binario: preferisce gli URL forniti direttamente
+        # dal manifest (campo `binaries`), che il server puo' settare a un
+        # mirror diverso dal NOC Center (es. CDN o ambiente di staging) via
+        # env `AGENT_PUBLIC_HTTP_URL`. Fallback alla costruzione locale per
+        # retro-compatibilita' con backend pre-1.7.
+        function Get-BinaryUrl([string]$name) {
+            if ($manifest.binaries -and $manifest.binaries.$name) {
+                return [string]$manifest.binaries.$name
+            }
+            return "$url/api/agent/binary/$Platform/$name?token=$tok"
+        }
+
+        # Mirror di fallback: se il NOC Center configurato (es. argus.86bit.it)
+        # non ha ancora i binari Windows depositati sul filesystem, ritentiamo
+        # automaticamente il download da un mirror noto. Cosi' l'installazione
+        # va a buon fine anche durante il rollout (deploy backend completato
+        # prima che gli .exe siano stati copiati). Il connector poi gira contro
+        # l'URL configurato dall'utente: il mirror serve SOLO al bootstrap.
+        $script:BinaryMirror = "https://snmp-hub-noc.preview.emergentagent.com"
+
+        function Download-BinaryWithFallback([string]$name, [string]$dst) {
+            $binUrl = Get-BinaryUrl $name
+            Append-Log "      $binUrl" $ColorMuted
+            try {
+                Invoke-WebRequest -UseBasicParsing -TimeoutSec 120 -Uri $binUrl -OutFile $dst
+                return
+            } catch {
+                $code = if ($_.Exception.Response) { [int]$_.Exception.Response.StatusCode } else { 0 }
+                if ($code -ne 404 -and $code -ne 500) { throw }
+                # Fallback al mirror
+                $mirror = "$($script:BinaryMirror)/api/agent/binary/$Platform/$name`?token=$tok"
+                Append-Log "      WARN: 404 sul NOC Center, retry mirror" $ColorMuted
+                Append-Log "      $mirror" $ColorMuted
+                try {
+                    Invoke-WebRequest -UseBasicParsing -TimeoutSec 180 -Uri $mirror -OutFile $dst
+                } catch {
+                    throw "$name non disponibile ne' sul NOC Center ($binUrl) ne' sul mirror ($mirror). Errore mirror: $($_.Exception.Message)"
+                }
+            }
+        }
+
+        Append-Log "[2/11] Stop servizi precedenti (se presenti)" $ColorAccent
+        foreach ($s in @($WatchdogName, $ServiceName)) {
+            $existing = Get-Service -Name $s -ErrorAction SilentlyContinue
+            if ($null -ne $existing) {
+                try { Stop-Service -Name $s -Force -ErrorAction SilentlyContinue } catch {}
+                & cmd.exe /c "sc.exe delete `"$s`"" | Out-Null
+                Start-Sleep -Milliseconds 800
+                Append-Log "      $s rimosso" $ColorMuted
+            }
+        }
+        $script:progressBar.Value = 20
+
+        Append-Log "[3/11] Creazione directory" $ColorAccent
+        New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+        New-Item -ItemType Directory -Force -Path $DataDir    | Out-Null
+        # ACL: la GUI nocagent-ui.exe gira come utente normale, deve poter
+        # leggere agent.yaml e scriverlo quando si clicca "Salva e Riavvia".
+        # Concedi Modify al gruppo BUILTIN\Users (SID *S-1-5-32-545,
+        # locale-indipendente) sulla cartella ProgramData. InstallDir
+        # (Program Files) resta read-only per gli Users.
+        try {
+            & icacls.exe $DataDir "/grant" "*S-1-5-32-545:(OI)(CI)M" "/T" "/C" "/Q" 2>&1 | Out-Null
+            Append-Log "      ACL Users:Modify applicate a $DataDir" $ColorMuted
+        } catch {
+            Append-Log "      WARN: icacls ACL fallito: $($_.Exception.Message)" $ColorMuted
+        }
+        $script:progressBar.Value = 30
+
+        Append-Log "[4/11] Copia/Download nocagent.exe" $ColorAccent
+        if ($script:HasLocalBinaries) {
+            Copy-Item (Join-Path $script:LocalBinariesDir 'nocagent.exe') (Join-Path $InstallDir "nocagent.exe") -Force
+            Append-Log "      copiato da bundle locale" $ColorMuted
+        } else {
+            Download-BinaryWithFallback 'nocagent.exe' (Join-Path $InstallDir "nocagent.exe")
+        }
+        $script:progressBar.Value = 55
+
+        Append-Log "[5/11] Copia/Download nocwatchdog.exe + nocagent-ui.exe" $ColorAccent
+        if ($script:HasLocalBinaries) {
+            Copy-Item (Join-Path $script:LocalBinariesDir 'nocwatchdog.exe') (Join-Path $InstallDir "nocwatchdog.exe") -Force
+            Copy-Item (Join-Path $script:LocalBinariesDir 'nocagent-ui.exe') (Join-Path $InstallDir "nocagent-ui.exe") -Force
+            Append-Log "      copiati da bundle locale" $ColorMuted
+        } else {
+            Download-BinaryWithFallback 'nocwatchdog.exe' (Join-Path $InstallDir "nocwatchdog.exe")
+            Download-BinaryWithFallback 'nocagent-ui.exe' (Join-Path $InstallDir "nocagent-ui.exe")
+        }
+        # Argus icon: prima da bundle locale, poi mirror.
+        if ($script:HasLocalBinaries -and (Test-Path (Join-Path $script:LocalBinariesDir 'argus.ico'))) {
+            Copy-Item (Join-Path $script:LocalBinariesDir 'argus.ico') (Join-Path $InstallDir "argus.ico") -Force
+            Append-Log "      argus.ico copiato dal bundle" $ColorMuted
+        } else {
+            try {
+                Invoke-WebRequest -UseBasicParsing -TimeoutSec 30 `
+                    -Uri "$url/api/agent/install/argus.ico" `
+                    -OutFile (Join-Path $InstallDir "argus.ico")
+                Append-Log "      argus.ico scaricato" $ColorMuted
+            } catch {
+                try {
+                    Invoke-WebRequest -UseBasicParsing -TimeoutSec 30 `
+                        -Uri "$($script:BinaryMirror)/api/agent/install/argus.ico" `
+                        -OutFile (Join-Path $InstallDir "argus.ico")
+                    Append-Log "      argus.ico scaricato dal mirror" $ColorMuted
+                } catch {
+                    Append-Log "      WARN: argus.ico non scaricato (uso fallback EXE icon): $($_.Exception.Message)" $ColorMuted
+                }
+            }
+        }
+        $script:progressBar.Value = 70
+
+        Append-Log "[6/11] Scrittura $ConfigPath" $ColorAccent
+        $configContent = $manifest.config_template
+        # Aggiungi blocco gestito target SNMP se l'utente ne ha forniti
+        if ($script:Devices -and $script:Devices.Count -gt 0) {
+            $sb = New-Object System.Text.StringBuilder
+            [void]$sb.AppendLine('# === BEGIN MANAGED TARGETS ===')
+            [void]$sb.AppendLine('# Gestito da Connector Console - non modificare a mano')
+            [void]$sb.AppendLine('snmp_targets:')
+            foreach ($d in $script:Devices) {
+                [void]$sb.AppendLine(('  - ip: "' + $d.ip + '"'))
+                if ($d.name)         { [void]$sb.AppendLine(('    name: "' + $d.name + '"')) }
+                if ($d.community)    { [void]$sb.AppendLine(('    community: "' + $d.community + '"')) }
+                if ($d.device_type)  { [void]$sb.AppendLine(('    profile: "' + $d.device_type + '"')) }
+                if ($d.snmp_version) { [void]$sb.AppendLine(('    snmp_version: "' + $d.snmp_version + '"')) }
+                if ($d.snmp_port -and [int]$d.snmp_port -ne 0) {
+                    [void]$sb.AppendLine(('    snmp_port: ' + [int]$d.snmp_port))
+                }
+            }
+            [void]$sb.AppendLine('# === END MANAGED TARGETS ===')
+            $configContent = $configContent.TrimEnd("`r","`n") + "`r`n" + $sb.ToString()
+            Append-Log "      $($script:Devices.Count) target SNMP scritti nel config" $ColorMuted
+        }
+        Set-Content -Path $ConfigPath -Value $configContent -Encoding UTF8
+        $script:progressBar.Value = 80
+
+        Append-Log "[7/11] Registrazione servizi Windows" $ColorAccent
+        $agentBin    = Join-Path $InstallDir "nocagent.exe"
+        $watchdogBin = Join-Path $InstallDir "nocwatchdog.exe"
+
+        # Usa New-Service (cmdlet nativo PowerShell) per evitare i problemi di
+        # parsing argomenti che ha sc.exe quando lanciato direttamente da PS.
+        try {
+            New-Service -Name $ServiceName `
+                -BinaryPathName ('"' + $agentBin + '" --config "' + $ConfigPath + '"') `
+                -DisplayName "86bit NOC Agent" `
+                -Description "Native NOC monitoring agent for the 86bit platform." `
+                -StartupType Automatic -ErrorAction Stop | Out-Null
+            Append-Log "      $ServiceName creato" $ColorMuted
+        } catch {
+            fail-service "create" $ServiceName $_
+        }
+
+        try {
+            New-Service -Name $WatchdogName `
+                -BinaryPathName ('"' + $watchdogBin + '" --config "' + $ConfigPath + '"') `
+                -DisplayName "86bit NOC Watchdog" `
+                -Description "Supervises 86NocAgent and restarts it on hang or crash." `
+                -StartupType Automatic `
+                -DependsOn $ServiceName -ErrorAction Stop | Out-Null
+            Append-Log "      $WatchdogName creato" $ColorMuted
+        } catch {
+            fail-service "create" $WatchdogName $_
+        }
+
+        # Service Recovery via sc.exe (no PowerShell-native equivalent).
+        # Uso cmd /c per preservare la sintassi 'reset= 86400'.
+        $recCmd1 = "sc.exe failure `"$ServiceName`" reset= 86400 actions= restart/5000/restart/5000/restart/15000"
+        $recCmd2 = "sc.exe failure `"$WatchdogName`" reset= 86400 actions= restart/5000/restart/5000/restart/15000"
+        & cmd.exe /c $recCmd1 | Out-Null
+        & cmd.exe /c $recCmd2 | Out-Null
+        $script:progressBar.Value = 90
+
+        Append-Log "[8/11] Avvio servizi" $ColorAccent
+        try {
+            Start-Service -Name $ServiceName -ErrorAction Stop
+        } catch {
+            Append-Log "      WARN: avvio $ServiceName fallito: $($_.Exception.Message)" $ColorError
+        }
+        Start-Sleep -Seconds 2
+        try {
+            Start-Service -Name $WatchdogName -ErrorAction Stop
+        } catch {
+            Append-Log "      WARN: avvio $WatchdogName fallito: $($_.Exception.Message)" $ColorError
+        }
+        Start-Sleep -Seconds 2
+
+        $ag = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+        $wd = Get-Service -Name $WatchdogName -ErrorAction SilentlyContinue
+        $agStatus = if ($ag) { [string]$ag.Status } else { "MANCANTE" }
+        $wdStatus = if ($wd) { [string]$wd.Status } else { "MANCANTE" }
+
+        Append-Log "" $ColorText
+        $agColor = if ($agStatus -eq "Running") { $ColorSuccess } else { $ColorError }
+        $wdColor = if ($wdStatus -eq "Running") { $ColorSuccess } else { $ColorError }
+        Append-Log ("      $ServiceName    : $agStatus") $agColor
+        Append-Log ("      $WatchdogName : $wdStatus") $wdColor
+
+        # ============================================================
+        # [9/11] Configurazione Connector UI (nocagent-ui.exe)
+        # nocagent-ui.exe e' la GUI nativa: sostituisce tray.ps1 e
+        # connector.ps1. Niente PowerShell residente, niente console DOS.
+        # ============================================================
+        Append-Log "" $ColorText
+        Append-Log "[9/11] Configurazione Connector UI" $ColorAccent
+        try {
+            $uiCfg = @{
+                backend_url = $script:BackendUrl
+                client_id   = $script:ClientId
+                token       = $script:Token
+                role        = $script:Role
+                install_dir = $InstallDir
+                config_path = $ConfigPath
+                version     = $Version
+            } | ConvertTo-Json -Depth 4
+            Set-Content -Path (Join-Path $InstallDir "agent-ui.json") -Value $uiCfg -Encoding UTF8
+            Append-Log "      agent-ui.json scritto" $ColorMuted
+        } catch {
+            Append-Log "      WARN: agent-ui.json non scritto: $($_.Exception.Message)" $ColorError
+        }
+        try {
+            $startMenu = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\86BIT Argus Center"
+            New-Item -ItemType Directory -Force -Path $startMenu | Out-Null
+            $wsh = New-Object -ComObject WScript.Shell
+            $uiExe = Join-Path $InstallDir "nocagent-ui.exe"
+            $iconFile = Join-Path $InstallDir "argus.ico"
+            $iconLoc = if (Test-Path $iconFile) { $iconFile } else { "$uiExe,0" }
+            $lnk = $wsh.CreateShortcut((Join-Path $startMenu "Connector.lnk"))
+            $lnk.TargetPath = $uiExe
+            $lnk.Arguments = "-show"
+            $lnk.WorkingDirectory = $InstallDir
+            $lnk.IconLocation = $iconLoc
+            $lnk.Description = "Apri Connector Argus - Gestisci Dispositivi"
+            $lnk.Save()
+            Append-Log "      shortcut '86BIT Argus Center\Connector' creato" $ColorMuted
+        } catch {
+            Append-Log "      WARN: shortcut non creato: $($_.Exception.Message)" $ColorError
+        }
+        $script:progressBar.Value = 95
+
+        # ============================================================
+        # [10/11] Autostart tray via Scheduled Task At Logon: lancia
+        # nocagent-ui.exe nella sessione utente (no PowerShell, no DOS).
+        # ============================================================
+        Append-Log "[10/11] Registrazione autostart Connector UI" $ColorAccent
+        $taskName = '86BIT Argus Tray'
+        $uiExe = Join-Path $InstallDir "nocagent-ui.exe"
+        # Cleanup eventuali autostart legacy (PowerShell-based)
+        Remove-ItemProperty -Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run' -Name '86BITArgusTray' -Force -ErrorAction SilentlyContinue
+        try {
+            $action = New-ScheduledTaskAction -Execute $uiExe
+            $trigger = New-ScheduledTaskTrigger -AtLogOn
+            $principal = New-ScheduledTaskPrincipal -GroupId 'BUILTIN\Users' -RunLevel Limited
+            $settings = New-ScheduledTaskSettingsSet `
+                -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+                -ExecutionTimeLimit ([TimeSpan]::Zero) `
+                -RestartCount 5 -RestartInterval ([TimeSpan]::FromMinutes(1))
+            Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
+                -Principal $principal -Settings $settings -Force -ErrorAction Stop | Out-Null
+            Append-Log "      scheduled task '$taskName' -> nocagent-ui.exe (At Logon)" $ColorMuted
+            Start-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+            Append-Log "      tray icon avviata nella sessione utente" $ColorMuted
+        } catch {
+            Append-Log "      WARN: scheduled task non registrato: $($_.Exception.Message)" $ColorError
+            try {
+                $runKey = "HKLM:\Software\Microsoft\Windows\CurrentVersion\Run"
+                Set-ItemProperty -Path $runKey -Name "86BITArgusTray" -Value $uiExe -Force
+                Append-Log "      fallback HKLM\\Run registrato (parte al prossimo logon)" $ColorMuted
+            } catch { }
+        }
+
+        # ============================================================
+        # [11/11] Registrazione 'Programmi e funzionalita'' + uninstall.ps1
+        # ============================================================
+        Append-Log "[11/11] Registrazione Programmi e funzionalita'" $ColorAccent
+        try {
+            $uninstPath = Join-Path $InstallDir "uninstall.ps1"
+            Write-UninstallScript -Path $uninstPath
+            Append-Log "      uninstall.ps1 scritto" $ColorMuted
+        } catch {
+            Append-Log "      WARN: uninstall.ps1 non scritto: $($_.Exception.Message)" $ColorError
+        }
+        try {
+            $uninstKey = "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\86BITArgusAgent"
+            if (-not (Test-Path $uninstKey)) {
+                New-Item -Path $uninstKey -Force | Out-Null
+            }
+            $uninstCmd = "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$InstallDir\uninstall.ps1`""
+            $sizeKb = 0
+            try {
+                $sizeBytes = (Get-ChildItem -Path $InstallDir -Recurse -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum
+                if ($sizeBytes) { $sizeKb = [int]($sizeBytes / 1024) }
+            } catch { }
+            Set-ItemProperty -Path $uninstKey -Name 'DisplayName'     -Value '86BIT Argus Connector'
+            Set-ItemProperty -Path $uninstKey -Name 'DisplayVersion'  -Value $Version
+            Set-ItemProperty -Path $uninstKey -Name 'Publisher'       -Value '86bit S.r.l.'
+            Set-ItemProperty -Path $uninstKey -Name 'URLInfoAbout'    -Value 'https://www.86bit.it'
+            Set-ItemProperty -Path $uninstKey -Name 'InstallLocation' -Value $InstallDir
+            Set-ItemProperty -Path $uninstKey -Name 'UninstallString' -Value $uninstCmd
+            Set-ItemProperty -Path $uninstKey -Name 'QuietUninstallString' -Value $uninstCmd
+            $displayIcon = if (Test-Path (Join-Path $InstallDir "argus.ico")) { (Join-Path $InstallDir "argus.ico") } else { (Join-Path $InstallDir "nocagent-ui.exe") }
+            Set-ItemProperty -Path $uninstKey -Name 'DisplayIcon'     -Value $displayIcon
+            Set-ItemProperty -Path $uninstKey -Name 'NoModify'        -Value 1 -Type DWord
+            Set-ItemProperty -Path $uninstKey -Name 'NoRepair'        -Value 1 -Type DWord
+            if ($sizeKb -gt 0) {
+                Set-ItemProperty -Path $uninstKey -Name 'EstimatedSize' -Value $sizeKb -Type DWord
+            }
+            Set-ItemProperty -Path $uninstKey -Name 'InstallDate'     -Value (Get-Date -Format 'yyyyMMdd')
+            Append-Log "      voce 'Programmi e funzionalita'' registrata" $ColorMuted
+        } catch {
+            Append-Log "      WARN: registry Uninstall non scritto: $($_.Exception.Message)" $ColorError
+        }
+        try {
+            # Aggiunge anche shortcut 'Disinstalla' nel menu Start
+            $startMenu = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\86BIT Argus Center"
+            if (-not (Test-Path $startMenu)) {
+                New-Item -ItemType Directory -Force -Path $startMenu | Out-Null
+            }
+            $wsh = New-Object -ComObject WScript.Shell
+            $unLnk = $wsh.CreateShortcut((Join-Path $startMenu "Disinstalla.lnk"))
+            $unLnk.TargetPath = "powershell.exe"
+            $unLnk.Arguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$InstallDir\uninstall.ps1`""
+            $unLnk.WorkingDirectory = $InstallDir
+            $unLnk.IconLocation = if (Test-Path (Join-Path $InstallDir "argus.ico")) { (Join-Path $InstallDir "argus.ico") } else { (Join-Path $InstallDir "nocagent-ui.exe") + ",0" }
+            $unLnk.Description = "Disinstalla 86BIT Argus Connector"
+            $unLnk.Save()
+            Append-Log "      shortcut 'Disinstalla' creato" $ColorMuted
+        } catch {
+            Append-Log "      WARN: shortcut Disinstalla non creato: $($_.Exception.Message)" $ColorError
+        }
+        # Forza il refresh della icon cache di Windows: senza questo gli
+        # shortcut appena creati possono mostrare l'icona generica fino al
+        # prossimo logon perche' Explorer cachea le icone per path.
+        try {
+            Start-Process -WindowStyle Hidden -FilePath "ie4uinit.exe" -ArgumentList "-show" -ErrorAction SilentlyContinue
+        } catch {}
+
+        $script:progressBar.Value = 100
+        if ($agStatus -eq 'Running' -and $wdStatus -eq 'Running') {
+            $script:InstallResult = "ok"
+            Append-Log "" $ColorText
+            Append-Log (([char]0x2713) + " Installazione completata con successo.") $ColorSuccess
+        } else {
+            Append-Log "" $ColorText
+            Append-Log (([char]0x26A0) + " Installazione completata ma servizi NON in stato Running.") $ColorError
+        }
+    } catch {
+        Append-Log ""
+        Append-Log "ERRORE: $($_.Exception.Message)" $ColorError
+        $script:InstallResult = "fail"
+    }
+    $btnNext.Enabled = $true
+    $btnCancel.Enabled = $true
+    $btnNext.Text = "Avanti >"
+}
+
+# ================================================================
+# STEP 4 - FINE
+# ================================================================
+function Show-Done {
+    Reset-Content
+    $btnBack.Enabled = $false
+    $btnNext.Text = "Chiudi"
+    $btnCancel.Enabled = $false
+
+    if ($script:InstallResult -eq "ok") {
+        $contentPanel.Controls.Add((New-Title "Installazione completata"))
+        $contentPanel.Controls.Add((New-Subtitle "Il connector e' attivo come Windows Service e si connettera' al NOC Center.`n`nIl supervisore (watchdog) lo manterra' in esecuzione anche in caso di crash o blocco di un modulo."))
+
+        $box = New-Object System.Windows.Forms.GroupBox
+        $box.Text = "Prossimi passi"
+        $box.Location = [System.Drawing.Point]::new(35, 170)
+        $box.Size = New-Object System.Drawing.Size(450, 220)
+        $box.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+        $contentPanel.Controls.Add($box)
+
+        $items = @(
+            "Menu Start -> 86BIT Argus Center -> Connector",
+            "Tray icon visibile vicino all'orologio (zona notifica)",
+            "Apri il NOC Center -> Agents per verificare 'live: true'",
+            "Per disinstallare: Pannello di controllo -> Programmi"
+        )
+        for ($i = 0; $i -lt $items.Count; $i++) {
+            $l = New-Object System.Windows.Forms.Label
+            $l.Text = ([char]0x2192) + "  " + $items[$i]
+            $l.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
+            $l.ForeColor = $ColorText
+            $l.Location = [System.Drawing.Point]::new(20, 30 + ($i * 30))
+            $l.Size = New-Object System.Drawing.Size(420, 26)
+            $box.Controls.Add($l)
+        }
+    } else {
+        $contentPanel.Controls.Add((New-Title "Installazione fallita"))
+        $contentPanel.Controls.Add((New-Subtitle "Si e' verificato un errore durante l'installazione.`n`nControlla il log dello step precedente. Eventuali servizi parzialmente registrati possono essere rimossi manualmente."))
+
+        $box = New-Object System.Windows.Forms.GroupBox
+        $box.Text = "Disinstallazione manuale"
+        $box.Location = [System.Drawing.Point]::new(35, 170)
+        $box.Size = New-Object System.Drawing.Size(450, 200)
+        $box.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+        $contentPanel.Controls.Add($box)
+
+        $cmd = New-Object System.Windows.Forms.TextBox
+        $cmd.Multiline = $true
+        $cmd.ReadOnly = $true
+        $cmd.ScrollBars = [System.Windows.Forms.ScrollBars]::Vertical
+        $cmd.Font = New-Object System.Drawing.Font("Consolas", 9)
+        $cmd.Location = [System.Drawing.Point]::new(15, 25)
+        $cmd.Size = New-Object System.Drawing.Size(420, 160)
+        $cmd.Text = @"
+Stop-Service $ServiceName, $WatchdogName -Force -ErrorAction SilentlyContinue
+sc.exe delete $ServiceName
+sc.exe delete $WatchdogName
+Remove-Item -Recurse -Force "$InstallDir","$DataDir"
+"@
+        $box.Controls.Add($cmd)
+    }
+}
+
+# ================================================================
+# NAVIGAZIONE
+# ================================================================
+function Render-Step {
+    Update-Sidebar
+    switch ($script:CurrentStep) {
+        0 { Show-Welcome }
+        1 { Show-Mode }
+        2 { Show-Configuration }
+        3 { Show-Devices }
+        4 { Show-Summary }
+        5 { Show-Install }
+        6 { Show-Done }
+    }
+}
+
+$btnNext.Add_Click({
+    if ($script:CurrentStep -eq 1) {
+        # Persiste la scelta del ruolo
+        if ($script:rbScanner -ne $null -and $script:rbScanner.Checked) {
+            $script:Role = "scanner"
+        } else {
+            $script:Role = "master"
+        }
+    }
+    if ($script:CurrentStep -eq 2) {
+        # Validazione step Configurazione
+        $url = $script:txtUrl.Text.TrimEnd('/')
+        $tok = $script:txtToken.Text.Trim()
+        if (-not $url -or -not $tok) {
+            [System.Windows.Forms.MessageBox]::Show("URL e API Key sono obbligatori.", "Configurazione incompleta",
+                [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
+            return
+        }
+        $script:BackendUrl = $url
+        $script:Token = $tok
+        if (-not $script:ClientId) {
+            try {
+                [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
+                $r = Invoke-RestMethod -UseBasicParsing -TimeoutSec 15 `
+                    -Uri "$url/api/agent/install/manifest?platform=$Platform&role=$($script:Role)&token=$tok"
+                $script:ClientId = $r.client_id
+            } catch {
+                # Stesso parsing del bottone "Verifica connessione": estrae il
+                # body JSON ({"detail":"..."}) per mostrare un errore parlante
+                # invece del generico .NET "(403) Non consentito".
+                $reason = ""
+                try {
+                    if ($_.Exception.Response) {
+                        $stream = $_.Exception.Response.GetResponseStream()
+                        $sr = New-Object System.IO.StreamReader($stream)
+                        $body = $sr.ReadToEnd(); $sr.Close()
+                        if ($body) {
+                            try { $j = $body | ConvertFrom-Json; if ($j.detail) { $reason = [string]$j.detail } } catch { $reason = $body }
+                        }
+                        $code = [int]$_.Exception.Response.StatusCode
+                        if ($code -eq 403 -and ($reason -match 'invalid token')) {
+                            $reason = "API Key non valida o non registrata su questo NOC Center.`nVerifica di averla copiata dalla pagina Clienti -> API Key."
+                        } elseif (-not $reason) {
+                            $reason = "HTTP $code"
+                        }
+                    } else {
+                        $reason = $_.Exception.Message
+                    }
+                } catch { $reason = $_.Exception.Message }
+                [System.Windows.Forms.MessageBox]::Show("Verifica fallita:`n$reason", "Errore connessione",
+                    [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
+                return
+            }
+        }
+    }
+    if ($script:CurrentStep -eq 3) {
+        # Persisti il polling interval dal text box
+        if ($script:txtPolling -and $script:txtPolling.Text) {
+            $p = 0
+            if ([int]::TryParse($script:txtPolling.Text.Trim(), [ref]$p) -and $p -gt 0) {
+                $script:PollingSec = $p
+            }
+        }
+    }
+    if ($script:CurrentStep -eq 6) { $form.Close(); return }
+    $script:CurrentStep++
+    Render-Step
+})
+
+$btnBack.Add_Click({
+    if ($script:CurrentStep -gt 0) {
+        $script:CurrentStep--
+        Render-Step
+    }
+})
+
+$btnCancel.Add_Click({
+    if ([System.Windows.Forms.MessageBox]::Show("Annullare l'installazione?", "$DisplayName",
+        [System.Windows.Forms.MessageBoxButtons]::YesNo,
+        [System.Windows.Forms.MessageBoxIcon]::Question) -eq [System.Windows.Forms.DialogResult]::Yes) {
+        $form.Close()
+    }
+})
+
+# ================================================================
+# AVVIO
+# ================================================================
+Render-Step
+[void]$form.ShowDialog()

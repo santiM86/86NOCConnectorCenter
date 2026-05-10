@@ -692,30 +692,51 @@ def _config_template(client_id: str, token: str, ws_url: str, role: str = "maste
 
 def _fetch_template_from_mirror(filename: str) -> Optional[str]:
     """Scarica un file template (es. installer_gui.ps1.template) da un
-    mirror remoto se l'env `WIZARD_TEMPLATE_FALLBACK_URL` e' settata.
+    mirror remoto.
+
+    Prova in ordine:
+      1) `TEMPLATE_URLS_BASE` (CDN dedicato ai template, raro);
+      2) `BINARY_URLS_BASE` (GitHub Release: i template sono caricati
+         come asset accanto ai .exe — vedi installer_gui.ps1.template);
+      3) `WIZARD_TEMPLATE_FALLBACK_URL` (mirror NOC Center via
+         /api/__static-templates__/<filename>).
 
     Usato come safety-net quando il backend e' deployato senza la
     cartella `noc-agent/build/` accanto (caso classico: deploy parziale
-    su argus.86bit.it). Cosi' il wizard funziona comunque, scaricando
-    al volo la template dal mirror noto. Cache in-process per evitare
-    una richiesta HTTP per ogni download del wizard.
+    su argus.86bit.it). Cache in-process per evitare una richiesta HTTP
+    per ogni download del wizard.
     """
-    base = _os.environ.get("WIZARD_TEMPLATE_FALLBACK_URL", "").rstrip("/")
-    if not base:
-        return None
     cache = getattr(_fetch_template_from_mirror, "_cache", {})
     if filename in cache:
         return cache[filename]
-    try:
-        import urllib.request as _ureq
-        url = f"{base}/api/__static-templates__/{filename}"
-        with _ureq.urlopen(url, timeout=15) as r:
-            body = r.read().decode("utf-8")
-    except Exception:
+
+    candidates: list[str] = []
+    tpl_base = _os.environ.get("TEMPLATE_URLS_BASE", "").rstrip("/")
+    if tpl_base:
+        candidates.append(f"{tpl_base}/{filename}")
+    bin_base = _os.environ.get("BINARY_URLS_BASE", "").rstrip("/")
+    if bin_base:
+        candidates.append(f"{bin_base}/{filename}")
+    mirror = _os.environ.get("WIZARD_TEMPLATE_FALLBACK_URL", "").rstrip("/")
+    if mirror:
+        candidates.append(f"{mirror}/api/__static-templates__/{filename}")
+
+    if not candidates:
         return None
-    cache[filename] = body
-    setattr(_fetch_template_from_mirror, "_cache", cache)
-    return body
+
+    import urllib.request as _ureq
+    headers = {"User-Agent": "argus-noc-center/1.0"}
+    for url in candidates:
+        try:
+            req = _ureq.Request(url, headers=headers)
+            with _ureq.urlopen(req, timeout=15) as r:
+                body = r.read().decode("utf-8")
+        except Exception:
+            continue
+        cache[filename] = body
+        setattr(_fetch_template_from_mirror, "_cache", cache)
+        return body
+    return None
 
 
 def _read_template_or_fallback(filename: str) -> str:
