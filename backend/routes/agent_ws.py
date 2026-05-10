@@ -562,10 +562,12 @@ async def download_binary(platform: str, name: str, token: Optional[str] = None)
     except ValueError as e:
         raise HTTPException(status_code=400, detail="invalid path") from e
     if not path.is_file():
-        # Fallback: redirect 302 verso un mirror noto se l'env e' settata.
-        # Caso d'uso: questo backend (es. argus.86bit.it) e' deployato
-        # senza i binari Windows sul filesystem; il mirror (preview)
-        # li ha gia'. Cosi' il connector si scarica i .exe trasparente.
+        # Fallback URL: priorita' a BINARY_URLS_BASE (CDN esterno tipo
+        # GitHub Releases), poi BINARY_FALLBACK_URL (mirror NOC Center).
+        ext_base = _os.environ.get("BINARY_URLS_BASE", "").rstrip("/")
+        if ext_base:
+            from fastapi.responses import RedirectResponse
+            return RedirectResponse(url=f"{ext_base}/{name}", status_code=302)
         mirror_base = _os.environ.get("BINARY_FALLBACK_URL", "").rstrip("/")
         if mirror_base:
             from fastapi.responses import RedirectResponse
@@ -612,8 +614,21 @@ async def install_manifest(token: Optional[str] = None,
     binaries = {}
     sha256 = {}
     if platform and platform in _ALLOWED_PLATFORMS:
+        # Mirror esterno (es. GitHub Releases, S3, Cloudflare R2, OneDrive
+        # direct link). Quando questa env e' settata, gli URL dei binari
+        # nel manifest puntano direttamente al CDN esterno invece che a
+        # /api/agent/binary/.../<file>?token=... del NOC Center. Cosi' il
+        # NOC Center non deve avere i binari sul filesystem locale e
+        # nemmeno fare proxy/redirect: il connector scarica direttamente
+        # dal CDN. Formato: URL base senza filename, es:
+        #   https://github.com/86bit/argus-noc/releases/download/v4.0.0
+        # Il backend appende `/<filename>` per ogni .exe richiesto.
+        ext_base = _os.environ.get("BINARY_URLS_BASE", "").rstrip("/")
         for name in _ALLOWED_BINARIES[platform]:
-            binaries[name] = f"{public_http}/api/agent/binary/{platform}/{name}?token={token}"
+            if ext_base:
+                binaries[name] = f"{ext_base}/{name}"
+            else:
+                binaries[name] = f"{public_http}/api/agent/binary/{platform}/{name}?token={token}"
             digest = _binary_sha256(platform, name)
             if digest:
                 sha256[name] = digest
@@ -816,6 +831,24 @@ async def serve_deploy_bundle() -> FileResponse:
                                 media_type="application/gzip",
                                 filename="argus-deploy-latest.tar.gz")
     raise HTTPException(status_code=404, detail="deploy bundle not found")
+
+
+@router.get("/admin/argus-binaries.zip", include_in_schema=False)
+async def serve_binaries_zip() -> FileResponse:
+    """Serve l'archivio con tutti i binari Windows + argus.ico + SHA256SUMS.
+
+    Comodo per uploadare in una sola volta una GitHub Release: l'utente
+    fa `curl -o pkg.zip <url>` + `unzip pkg.zip` + drag&drop su release.
+    """
+    candidates = [
+        _pathlib.Path("/app/frontend/public/downloads/argus-binaries-v4.0.0.zip"),
+    ]
+    for p in candidates:
+        if p.is_file():
+            return FileResponse(str(p),
+                                media_type="application/zip",
+                                filename="argus-binaries-v4.0.0.zip")
+    raise HTTPException(status_code=404, detail="binaries zip not found")
 
 
 @router.get("/agent/install/exe-bundle.zip")
