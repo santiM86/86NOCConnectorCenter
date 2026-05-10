@@ -97,6 +97,33 @@ func (m *scanResultsModel) Value(row, col int) interface{} {
 }
 func (m *scanResultsModel) publishReset() { m.PublishRowsReset() }
 
+// insertSortedByIP inserisce r nella posizione corretta per mantenere
+// la tabella ordinata per IP numerico durante lo streaming. Se un IP
+// duplicato arriva (raro: alive emesso poi arp-only), aggiorna la riga
+// invece di duplicarla.
+func insertSortedByIP(m *scanResultsModel, r *ScanResult) {
+	if r == nil {
+		return
+	}
+	target := ipNumeric(r.IP)
+	for i, ex := range m.items {
+		if ex.IP == r.IP {
+			m.items[i] = r
+			m.PublishRowsReset()
+			return
+		}
+		if ipNumeric(ex.IP) > target {
+			m.items = append(m.items, nil)
+			copy(m.items[i+1:], m.items[i:])
+			m.items[i] = r
+			m.PublishRowsReset()
+			return
+		}
+	}
+	m.items = append(m.items, r)
+	m.PublishRowsReset()
+}
+
 // detectLocalCIDR returns a /24 CIDR built from the first private IPv4
 // address bound to a local interface. Falls back to "192.168.1.0/24".
 func detectLocalCIDR() string {
@@ -156,23 +183,56 @@ func expandCIDR(cidr string) ([]string, error) {
 // probeAlive returns whether any of the well-known TCP ports answers
 // within timeout, the first responding port and the RTT in millisec.
 // It does not need elevated privileges.
+//
+// IMPORTANTE: lancia tutti i tentativi di connessione TCP **in parallelo**
+// e ritorna alla prima porta che risponde. Cosi' un host vivo viene
+// rilevato in <RTT> ms (1-50ms su LAN) invece di max(N_ports * timeout)
+// per host morto. Per host morti il caso peggiore resta `timeout`
+// (singolo, non N volte).
 func probeAlive(ctx context.Context, ip string, timeout time.Duration) (alive bool, port int, rttMs int) {
-	ports := []int{135, 445, 139, 80, 22, 443, 8080, 23, 3389, 161, 515, 9100, 631}
-	d := net.Dialer{Timeout: timeout}
-	for _, p := range ports {
-		select {
-		case <-ctx.Done():
-			return false, 0, -1
-		default:
-		}
-		t0 := time.Now()
-		conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(ip, strconv.Itoa(p)))
-		if err == nil {
-			_ = conn.Close()
-			return true, p, int(time.Since(t0).Milliseconds())
-		}
+	// Ordine: porte piu' diffuse prima (Windows SMB, web, Linux SSH).
+	// Le porte stampante (515/9100/631) e SNMP (161) coprono device IoT.
+	ports := []int{445, 135, 139, 80, 443, 22, 3389, 8080, 8443, 161, 23, 9100, 631, 515, 53}
+	cctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	type winT struct {
+		port int
+		rtt  int
 	}
-	return false, 0, -1
+	win := make(chan winT, 1)
+	var wg sync.WaitGroup
+	for _, p := range ports {
+		p := p
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			d := net.Dialer{}
+			t0 := time.Now()
+			conn, err := d.DialContext(cctx, "tcp", net.JoinHostPort(ip, strconv.Itoa(p)))
+			if err != nil {
+				return
+			}
+			_ = conn.Close()
+			rtt := int(time.Since(t0).Milliseconds())
+			select {
+			case win <- winT{p, rtt}:
+			default:
+			}
+		}()
+	}
+	doneAll := make(chan struct{})
+	go func() { wg.Wait(); close(doneAll) }()
+	select {
+	case w := <-win:
+		// Cancella i tentativi residui non appena uno e' andato a buon fine
+		// per liberare le risorse di rete e accelerare lo scan.
+		cancel()
+		return true, w.port, w.rtt
+	case <-doneAll:
+		return false, 0, -1
+	case <-ctx.Done():
+		return false, 0, -1
+	}
 }
 
 // probeICMPPing usa il comando 'ping' nativo di Windows con count=1 e
@@ -432,10 +492,17 @@ func ouiVendor(mac string) string {
 }
 
 // runScan performs the full scan flow and returns the populated results.
-// onProgress is called from the worker goroutine — callers must marshal
-// to the UI thread via MainWindow.Synchronize.
+// `onProgress` viene invocato periodicamente con (done, total). `onResult`
+// viene invocato **per ogni host** appena viene rilevato come alive o
+// arp-only — questo permette alla UI di popolare la tabella in streaming
+// (effetto "live" alla Advanced IP Scanner) invece di aspettare il
+// completamento di tutto lo scan.
+//
+// Tutti i callback vengono chiamati da goroutine worker — il chiamante
+// deve sincronizzarsi sul thread UI via Form.Synchronize.
 func runScan(ctx context.Context, cidr string, timeout time.Duration,
-	onProgress func(done, total int)) ([]*ScanResult, error) {
+	onProgress func(done, total int),
+	onResult func(*ScanResult)) ([]*ScanResult, error) {
 
 	ips, err := expandCIDR(cidr)
 	if err != nil {
@@ -444,24 +511,42 @@ func runScan(ctx context.Context, cidr string, timeout time.Duration,
 	total := len(ips)
 	var done int32
 
-	// Phase 1: TCP probe in parallel — raccoglie alive + first responding
-	// port + RTT TCP connect.
-	type probeOut struct {
-		alive bool
-		port  int
-		rtt   int
+	// Phase 0: leggi ARP cache UPFRONT. E' istantanea (~5-30ms) e
+	// fornisce MAC + vendor anche per host che non rispondono al TCP
+	// probe (silenziosi ma raggiungibili in L2).
+	arp := readARPTable(ctx)
+
+	// emitted tiene traccia degli IP gia' notificati a onResult cosi'
+	// non si duplicano (alive da TCP probe + arp-only successivo).
+	var (
+		mu       sync.Mutex
+		results  []*ScanResult
+		emitted  = map[string]bool{}
+	)
+	emit := func(r *ScanResult) {
+		mu.Lock()
+		if emitted[r.IP] {
+			mu.Unlock()
+			return
+		}
+		emitted[r.IP] = true
+		results = append(results, r)
+		mu.Unlock()
+		if onResult != nil {
+			onResult(r)
+		}
 	}
-	probeRes := struct {
-		mu sync.Mutex
-		m  map[string]probeOut
-	}{m: map[string]probeOut{}}
-	sem := make(chan struct{}, 64)
+
+	// Phase 1: TCP probe parallelo su tutti gli IP. Ogni goroutine
+	// per IP probe le porte in parallelo (cfr. probeAlive) — host
+	// vivi rilevati in <50ms, host morti dopo `timeout` totale.
+	// Concorrenza alta (256) per saturare la rete LAN moderna.
+	sem := make(chan struct{}, 256)
 	var wg sync.WaitGroup
 	for _, ip := range ips {
 		ip := ip
 		select {
 		case <-ctx.Done():
-			break
 		default:
 		}
 		wg.Add(1)
@@ -469,93 +554,83 @@ func runScan(ctx context.Context, cidr string, timeout time.Duration,
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
-			a, p, r := probeAlive(ctx, ip, timeout)
-			if a {
-				probeRes.mu.Lock()
-				probeRes.m[ip] = probeOut{a, p, r}
-				probeRes.mu.Unlock()
-			}
+			alive, port, rtt := probeAlive(ctx, ip, timeout)
 			n := atomic.AddInt32(&done, 1)
-			if onProgress != nil && (n%16 == 0 || int(n) == total) {
+			if onProgress != nil && (n%8 == 0 || int(n) == total) {
 				onProgress(int(n), total)
 			}
+			mac := arp[ip]
+			if !alive && mac == "" {
+				return
+			}
+			// reverseDNS ha gia' timeout interno breve (600ms); lanciato
+			// inline cosi' il risultato emesso contiene gia' hostname.
+			host := reverseDNS(ctx, ip)
+			status := "alive"
+			rttOut := rtt
+			if !alive {
+				status = "arp-only"
+				rttOut = -1
+			}
+			emit(&ScanResult{
+				IP:       ip,
+				MAC:      mac,
+				Hostname: host,
+				Vendor:   ouiVendor(mac),
+				Status:   status,
+				RTTms:    rttOut,
+				OpenPort: port,
+			})
 		}()
 	}
 	wg.Wait()
 
-	// Phase 2: ARP cache (catches devices that block TCP but answered to
-	// our probe attempts so the kernel populated the neighbour cache).
-	arp := readARPTable(ctx)
-
-	// Merge: union of alive set + ARP table.
-	merged := map[string]string{} // ip -> mac
-	for ip := range probeRes.m {
-		merged[ip] = arp[ip]
-	}
-	for ip, mac := range arp {
-		if _, ok := merged[ip]; !ok {
-			merged[ip] = mac
+	// Phase 2 (cleanup): se l'ARP cache cambia durante lo scan (es. ne
+	// arrivano di nuovi grazie ai nostri probe TCP), riemettiamo gli
+	// arp-only rimasti fuori. E' un best-effort, costa pochi ms.
+	arp2 := readARPTable(ctx)
+	for ip, mac := range arp2 {
+		mu.Lock()
+		already := emitted[ip]
+		mu.Unlock()
+		if already {
+			continue
 		}
-	}
-
-	// Phase 3: PTR lookups in parallelo. ICMP/Web/SNMP probe vengono
-	// invocati ON-DEMAND quando l'utente clicca i pulsanti azione, NON
-	// durante lo scan: questo mantiene lo scan veloce e l'UI fluida.
-	type enrich struct {
-		host string
-	}
-	enrichMap := struct {
-		mu sync.Mutex
-		m  map[string]*enrich
-	}{m: map[string]*enrich{}}
-	wg = sync.WaitGroup{}
-	enrichSem := make(chan struct{}, 64)
-	for ip := range merged {
-		ip := ip
-		select {
-		case <-ctx.Done():
-			break
-		default:
+		// Conferma che l'IP appartiene al CIDR scansionato.
+		// (arp -a ritorna anche entry di altre interfacce.)
+		if !cidrContains(cidr, ip) {
+			continue
 		}
-		wg.Add(1)
-		enrichSem <- struct{}{}
-		go func() {
-			defer wg.Done()
-			defer func() { <-enrichSem }()
-			e := &enrich{host: reverseDNS(ctx, ip)}
-			enrichMap.mu.Lock()
-			enrichMap.m[ip] = e
-			enrichMap.mu.Unlock()
-		}()
-	}
-	wg.Wait()
-
-	results := make([]*ScanResult, 0, len(merged))
-	for ip, mac := range merged {
-		status := "arp-only"
-		port := 0
-		rtt := -1
-		if po, ok := probeRes.m[ip]; ok {
-			status = "alive"
-			port = po.port
-			rtt = po.rtt
-		}
-		host := ""
-		if e := enrichMap.m[ip]; e != nil {
-			host = e.host
-		}
-		results = append(results, &ScanResult{
+		emit(&ScanResult{
 			IP:       ip,
 			MAC:      mac,
-			Hostname: host,
+			Hostname: reverseDNS(ctx, ip),
 			Vendor:   ouiVendor(mac),
-			Status:   status,
-			RTTms:    rtt,
-			OpenPort: port,
+			Status:   "arp-only",
+			RTTms:    -1,
 		})
 	}
+
+	// Sort finale per IP (lo streaming arriva in ordine random).
+	mu.Lock()
 	sort.Slice(results, func(i, j int) bool { return ipNumeric(results[i].IP) < ipNumeric(results[j].IP) })
-	return results, nil
+	out := make([]*ScanResult, len(results))
+	copy(out, results)
+	mu.Unlock()
+	return out, nil
+}
+
+// cidrContains verifica se ip appartiene al CIDR (entrambi IPv4).
+func cidrContains(cidr, ip string) bool {
+	_, ipNet, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return false
+	}
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return false
+	}
+	return ipNet.Contains(parsed)
 }
 
 func ipNumeric(s string) uint32 {
@@ -610,22 +685,29 @@ func showScannerDialog(app *App, parent walk.Form) {
 		progressBar.SetValue(0)
 		go func() {
 			t0 := time.Now()
-			res, err := runScan(ctxScan, cidr, 250*time.Millisecond, func(done, total int) {
-				dlg.Synchronize(func() {
-					if total > 0 {
-						progressBar.SetValue(int(float64(done) / float64(total) * 100))
-					}
-					statusLb.SetText(fmt.Sprintf("Probe %d/%d ...", done, total))
+			res, err := runScan(ctxScan, cidr, 400*time.Millisecond,
+				func(d, total int) {
+					dlg.Synchronize(func() {
+						if total > 0 {
+							progressBar.SetValue(int(float64(d) / float64(total) * 100))
+						}
+						statusLb.SetText(fmt.Sprintf("Probe %d/%d  ·  trovati %d", d, total, len(model.items)))
+					})
+				},
+				func(r *ScanResult) {
+					// Streaming: ogni device trovato finisce subito in
+					// tabella, ordinato per IP. L'utente vede i risultati
+					// arrivare LIVE invece di aspettare la fine.
+					dlg.Synchronize(func() {
+						insertSortedByIP(model, r)
+					})
 				})
-			})
 			dlg.Synchronize(func() {
 				btnScan.SetText("Scansiona Rete")
 				if err != nil {
 					statusLb.SetText("Errore: " + err.Error())
 					return
 				}
-				model.items = res
-				model.PublishRowsReset()
 				progressBar.SetValue(100)
 				statusLb.SetText(fmt.Sprintf("Trovati %d dispositivi in %s",
 					len(res), time.Since(t0).Round(time.Second)))
