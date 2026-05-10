@@ -83,7 +83,7 @@ Write-Step "Step 5/5  Rewrite rule per /api/agent/ws"
 $webConfigPath = Join-Path $sitePath "web.config"
 if (-not (Test-Path $webConfigPath)) {
     Write-Warn "web.config non trovato: lo creo nuovo"
-    @'
+    $defaultXml = @'
 <?xml version="1.0" encoding="UTF-8"?>
 <configuration>
   <system.webServer>
@@ -94,7 +94,8 @@ if (-not (Test-Path $webConfigPath)) {
     </rewrite>
   </system.webServer>
 </configuration>
-'@ | Set-Content -Path $webConfigPath -Encoding UTF8
+'@
+    Set-Content -Path $webConfigPath -Value $defaultXml -Encoding UTF8
 }
 
 [xml]$xml = Get-Content $webConfigPath
