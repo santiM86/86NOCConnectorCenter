@@ -35,8 +35,17 @@ Write-Step "Step 2/5  Identificazione sito IIS"
 Import-Module WebAdministration
 
 $sites = Get-Website
-$target = $sites | Where-Object { $_.Bindings.Collection.BindingInformation -match 'argus|443|80' } |
-    Select-Object -First 1
+# Cerca prima un sito che abbia "argus" nel nome o nel binding (es. argus.86bit.it).
+$target = $sites | Where-Object {
+    $_.Name -match 'argus' -or
+    (($_.Bindings.Collection | ForEach-Object { $_.BindingInformation }) -join ' ') -match 'argus'
+} | Select-Object -First 1
+if (-not $target) {
+    # Fallback: cerchiamo siti col binding HTTPS/443 (in pratica tutti tranne Default Web Site).
+    $target = $sites | Where-Object {
+        (($_.Bindings.Collection | ForEach-Object { $_.BindingInformation }) -join ' ') -match ':443:'
+    } | Select-Object -First 1
+}
 if (-not $target) {
     Write-Warn "Sito non trovato automaticamente. Siti disponibili:"
     $sites | Format-Table Name, State, PhysicalPath, @{n='Bindings';e={$_.Bindings.Collection.BindingInformation -join ', '}} -AutoSize
