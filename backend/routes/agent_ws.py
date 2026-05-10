@@ -783,9 +783,38 @@ async def wizard_bundle(token: Optional[str] = None) -> FileResponse:
     with the token already baked in. No console window, no PowerShell skill
     required from the on-site technician.
     """
-    await _token_or_403(token)
+    client_id = await _token_or_403(token)
     bundle = _build_wizard_bundle(token)
-    return FileResponse(bundle, media_type="application/zip", filename="86NocAgent-Installer.zip")
+    # Filename personalizzato col nome del cliente: cosi' i tecnici che
+    # scaricano installer per piu' clienti non confondono i ZIP nella
+    # cartella Download. Ricavo il nome dal client_id risolto sopra.
+    client_label = await _resolve_client_label(client_id)
+    fname = f"86NocAgent-Installer-{client_label}.zip"
+    return FileResponse(bundle, media_type="application/zip", filename=fname)
+
+
+async def _resolve_client_label(client_id: str) -> str:
+    """Return a filesystem-safe label per il cliente da usare nei
+    nomi file scaricabili. Ordine di preferenza: name -> slug -> id.
+    """
+    if not client_id:
+        return "client"
+    try:
+        c = await db.clients.find_one(
+            {"$or": [{"client_id": client_id}, {"slug": client_id}, {"id": client_id}]},
+            {"_id": 0, "name": 1, "slug": 1, "client_id": 1},
+        )
+    except Exception:
+        c = None
+    label = ""
+    if c:
+        label = (c.get("name") or c.get("slug") or c.get("client_id") or "").strip()
+    if not label:
+        label = client_id
+    # Sanitize per filename: solo [A-Za-z0-9._-], spazi -> underscore.
+    safe = "".join(ch if (ch.isalnum() or ch in "._-") else "_" for ch in label)
+    safe = safe.strip("._-") or "client"
+    return safe[:40]
 
 
 @router.get("/agent/install/argus.ico")

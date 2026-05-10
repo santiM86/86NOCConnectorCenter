@@ -128,22 +128,37 @@ func loadAgentInfo() AgentInfo {
 	// agent-ui.json viene scritto dall'installer accanto al binario.
 	exe, _ := os.Executable()
 	dir := filepath.Dir(exe)
-	for _, p := range []string{
+	candidates := []string{
 		filepath.Join(dir, "agent-ui.json"),
 		filepath.Join(os.Getenv("ProgramData"), "86NocAgent", "agent-ui.json"),
-	} {
-		if b, err := os.ReadFile(p); err == nil {
-			var a AgentInfo
-			if json.Unmarshal(b, &a) == nil {
-				if a.InstallDir == "" {
-					a.InstallDir = dir
-				}
-				if a.ConfigPath == "" {
-					a.ConfigPath = filepath.Join(os.Getenv("ProgramData"), "86NocAgent", "agent.yaml")
-				}
-				return a
-			}
+	}
+	logf("loadAgentInfo: exe=%s dir=%s", exe, dir)
+	for _, p := range candidates {
+		st, sterr := os.Stat(p)
+		if sterr != nil {
+			logf("loadAgentInfo: candidate=%s NOT FOUND (%v)", p, sterr)
+			continue
 		}
+		logf("loadAgentInfo: candidate=%s found size=%d", p, st.Size())
+		b, err := os.ReadFile(p)
+		if err != nil {
+			logf("loadAgentInfo: read failed %s: %v", p, err)
+			continue
+		}
+		var a AgentInfo
+		if jerr := json.Unmarshal(b, &a); jerr != nil {
+			logf("loadAgentInfo: json decode %s failed: %v (raw=%s)", p, jerr, string(b))
+			continue
+		}
+		logf("loadAgentInfo: loaded from %s -> client_id=%q role=%q backend=%q version=%q",
+			p, a.ClientID, a.Role, a.BackendURL, a.Version)
+		if a.InstallDir == "" {
+			a.InstallDir = dir
+		}
+		if a.ConfigPath == "" {
+			a.ConfigPath = filepath.Join(os.Getenv("ProgramData"), "86NocAgent", "agent.yaml")
+		}
+		return a
 	}
 	// Fallback intelligente: prova a leggere client_id/token/backend_url
 	// direttamente da agent.yaml. Cosi' anche installazioni vecchie che
@@ -156,9 +171,14 @@ func loadAgentInfo() AgentInfo {
 		if a.Version == "" {
 			a.Version = "4.0.0"
 		}
+		logf("loadAgentInfo: fallback YAML %s -> client_id=%q role=%q backend=%q",
+			yamlPath, a.ClientID, a.Role, a.BackendURL)
 		return a
+	} else {
+		logf("loadAgentInfo: agent.yaml unreadable %s: %v", yamlPath, err)
 	}
 	// Ultimo fallback (dev/test).
+	logf("loadAgentInfo: no config file found, using DEV fallback")
 	return AgentInfo{
 		BackendURL: "https://snmp-hub-noc.preview.emergentagent.com",
 		ClientID:   "unknown",
@@ -523,6 +543,9 @@ type App struct {
 	tableModel *targetTableModel
 	statusItem *walk.Action
 	healthItem *walk.Action
+	startItem  *walk.Action
+	stopItem   *walk.Action
+	restartItem *walk.Action
 	mu         sync.Mutex
 }
 
@@ -947,9 +970,9 @@ func setupTray(app *App) error {
 	app.healthItem = add("Canale: ...", nil)
 	app.healthItem.SetEnabled(false)
 	ni.ContextMenu().Actions().Add(walk.NewSeparatorAction())
-	add("Avvia servizi", func() { go func() { startServices(); refreshStatus(app) }() })
-	add("Ferma servizi", func() { go func() { stopServices(); refreshStatus(app) }() })
-	add("Riavvia servizi", func() { go func() { restartServices(); refreshStatus(app) }() })
+	app.startItem = add("Avvia servizi", func() { go func() { startServices(); refreshStatus(app) }() })
+	app.stopItem = add("Ferma servizi", func() { go func() { stopServices(); refreshStatus(app) }() })
+	app.restartItem = add("Riavvia servizi", func() { go func() { restartServices(); refreshStatus(app) }() })
 	ni.ContextMenu().Actions().Add(walk.NewSeparatorAction())
 	add("Apri cartella log", func() {
 		dir := filepath.Join(os.Getenv("ProgramData"), "86NocAgent", "logs")
@@ -990,16 +1013,38 @@ func setupTray(app *App) error {
 func refreshStatus(app *App) {
 	a := serviceStatus("86NocAgent")
 	w := serviceStatus("86NocWatchdog")
+	bothRunning := a == "Running" && w == "Running"
+	bothStopped := (a == "Stopped" || a == "NotInstalled") && (w == "Stopped" || w == "NotInstalled")
 	// Tutte le operazioni walk DEVONO girare sul thread del message
 	// loop principale, altrimenti la UI puo' corrompersi e i bottoni
 	// smettono di rispondere ai click.
 	if app.hiddenMw != nil {
 		app.hiddenMw.Synchronize(func() {
 			if app.statusItem != nil {
-				app.statusItem.SetText(fmt.Sprintf("Stato: agent=%s · watchdog=%s", a, w))
+				// Sintesi parlante: o stato OK con check, o testo errore.
+				if bothRunning {
+					app.statusItem.SetText("\u2713 Servizi attivi (agent + watchdog)")
+				} else if bothStopped {
+					app.statusItem.SetText("\u2717 Servizi fermi")
+				} else {
+					app.statusItem.SetText(fmt.Sprintf("Stato: agent=%s \u00b7 watchdog=%s", a, w))
+				}
+			}
+			// Voci start/stop/restart: abilita/disabilita per riflettere
+			// lo stato reale. Quando i servizi girano "Avvia servizi" non
+			// ha senso e va disabilitato (grigio); idem "Ferma" se gia'
+			// fermi. Cosi' il menu non da' falsi inviti all'azione.
+			if app.startItem != nil {
+				app.startItem.SetEnabled(!bothRunning)
+			}
+			if app.stopItem != nil {
+				app.stopItem.SetEnabled(!bothStopped)
+			}
+			if app.restartItem != nil {
+				app.restartItem.SetEnabled(!bothStopped)
 			}
 			if app.tray != nil {
-				if a == "Running" && w == "Running" {
+				if bothRunning {
 					app.tray.SetToolTip("86BIT Argus Connector - Online")
 				} else {
 					app.tray.SetToolTip(fmt.Sprintf("86BIT Argus Connector - agent=%s", a))
@@ -1013,10 +1058,15 @@ func refreshStatus(app *App) {
 		txt := "Canale: errore"
 		if err == nil {
 			if hr.Connected {
-				txt = fmt.Sprintf("Canale OK · RTT %.0fms", hr.RTT)
+				txt = fmt.Sprintf("\u2713 Canale OK \u00b7 RTT %.0fms", hr.RTT)
 			} else {
-				txt = "Canale: NON connesso"
+				txt = "\u2717 Canale: NON connesso"
+				if hr.Detail != "" {
+					txt += " (" + hr.Detail + ")"
+				}
 			}
+		} else {
+			logf("self/health error: %v", err)
 		}
 		if app.hiddenMw != nil && app.healthItem != nil {
 			app.hiddenMw.Synchronize(func() {
