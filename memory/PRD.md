@@ -23,6 +23,64 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 ---
 
 
+## 2026-05-11 ✅ MIGRAZIONE WEBSOCKET IN PRODUZIONE — COMPLETATA
+
+**Status finale**: `argus.86bit.it/api/agent/ws` ONLINE. Agent `86BIT_Office` ha ricevuto `welcome` dal backend prod (session_id `ae93670e14d34a06b7aebc9fd975a3d7`).
+
+### Stack verificato funzionante end-to-end:
+```
+Agent v4 (Go, SOCIALSRV)
+   │ wss://argus.86bit.it/api/agent/ws
+   ▼
+Cloudflare (TLS termination)
+   │
+   ▼
+IIS 10 + ARR 3.0 (Windows Server) — proxy_pass http://argus.86bit.it:8188
+   │  config: <proxy enabled="true" preserveHostHeader="true"/>
+   │  config: webSocket section UNLOCKED (era locked → causava 500.19 0x80070021)
+   ▼
+nginx (VM Linux 10.30.0.201:8188) — location /api/agent/ws con proxy_http_version 1.1 + Upgrade headers
+   │
+   ▼
+uvicorn FastAPI (127.0.0.1:8186) — service systemd `noc-backend`
+```
+
+### Fix applicati in questa sessione (chiave per la riuscita):
+1. **nginx** (`/etc/nginx/sites-available/noc-center`): aggiunta `location /api/agent/ws` PRIMA di `/api/` con `proxy_http_version 1.1`, `Upgrade $http_upgrade`, `Connection "Upgrade"`, `proxy_buffering off`, `proxy_read_timeout 86400s`.
+2. **IIS** (`applicationHost.config`): `appcmd unlock config /section:system.webServer/webSocket` (era locked a livello padre → causava 500.19 su tutto il sito). NB: NON aggiungere voci extra a `allowedServerVariables` se non strettamente necessarie (le 4 HTTP_SEC_WEBSOCKET_* avevano causato regressione).
+3. **IIS** (`applicationHost.config`): `<proxy enabled="true" preserveHostHeader="true"/>` deve essere globalmente abilitato (un `clear` rimette default che blocca ARR).
+4. **Backend** (`backend/routes/agent_ws.py` riga 148-152): patch `_validate_token` per accettare sia `client.client_id` sia `client.id` come identificatore tenant — in PROD i documenti clienti hanno solo `id`, mai `client_id`. Codice attuale:
+   ```python
+   client = await db.clients.find_one({"api_key": token}, {"_id": 0, "client_id": 1, "id": 1})
+   if client:
+       resolved_cid = client.get("client_id") or client.get("id")
+       if resolved_cid == claimed_client_id:
+           return {"token": token, "client_id": resolved_cid, "role": "master"}
+   ```
+5. **Agent** (`C:\ProgramData\86NocAgent\agent.yaml` su SOCIALSRV): `client_id` corretto per 86BITOffice = `57cb2e2b-938c-4f6d-a1a3-df5368de00e9`, `token: noc_627c87f4b9114f41b12e7dccefd42325`, `url: wss://argus.86bit.it/api/agent/ws`.
+
+### Trappole / lezioni apprese:
+- `sync-argus.sh` ha **DANNEGGIATO il venv** durante l'estrazione (errori `cannot delete non-empty directory: venv/lib/python3.11`). Backup salva-vita: `/home/arslan/86NOCConnectorCenter/backups/argus-YYYYMMDD-HHMMSS.tar.gz` (~200MB con venv completo). In futuro: lo `sync-argus.sh` va modificato per ESCLUDERE `venv/` dalla sostituzione.
+- Backend uvicorn sulla VM prod ascolta su porta **8186** (non 8001), `--host 127.0.0.1`. nginx fa proxy da `:8188`. WorkingDirectory: `/home/arslan/86NOCConnectorCenter/backend`.
+- VM Linux di prod: `10.30.0.201`, user `arslan`, systemd unit `noc-backend.service`.
+- DB MongoDB di prod è troppo vecchio per aggregation-pipeline negli update (`OperationFailure: Unrecognized pipeline stage name`). Usare loop classico per migrazioni.
+
+### Stato corrente prod:
+- `/api/health` → HTTP 200 ✅
+- `/api/agent/ws` (WS handshake) → HTTP 101 ✅
+- Agent 86BIT_Office connesso e attivo (welcome received)
+- Connector legacy 86NocConnector continua a funzionare in parallelo (`/api/connector/web-proxy/pending` con long-poll 401-then-200)
+
+### TODO follow-up (NON blocker):
+- Migrazione DB clients: aggiungere `client_id = id` ai documenti che ne mancano (loop Python su VM prod). Senza migrazione il backend funziona comunque grazie al fallback nel codice.
+- Patchare `sync-argus.sh` per non toccare `venv/`.
+- Pipeline GitHub Actions release-agent.yml: aspetta primo `git tag v4.1.3` per essere testata.
+
+---
+
+
+
+
 ## 2026-05-09 BRAND — Sostituzione globale icona Argus (nuovo logo blu/A)
 
 **Direttiva utente** (con immagine allegata): «usa questa icona ovunque».
