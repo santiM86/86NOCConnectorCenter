@@ -145,10 +145,12 @@ async def _validate_token(token: str, claimed_client_id: str) -> Optional[Dict[s
     if doc and doc.get("client_id") == claimed_client_id:
         return doc
     # 2. fallback: api_key del cliente (mostrata nella pagina Clienti)
-    client = await db.clients.find_one({"api_key": token}, {"_id": 0, "client_id": 1})
-    if client and client.get("client_id") == claimed_client_id:
-        # Costruisci un doc compatibile con quello restituito da agent_tokens
-        return {"token": token, "client_id": client["client_id"], "role": "master"}
+    # NB: alcuni documenti legacy hanno solo `id`, altri hanno `client_id`.
+    client = await db.clients.find_one({"api_key": token}, {"_id": 0, "client_id": 1, "id": 1})
+    if client:
+        resolved_cid = client.get("client_id") or client.get("id")
+        if resolved_cid == claimed_client_id:
+            return {"token": token, "client_id": resolved_cid, "role": "master"}
     return None
 
 
