@@ -112,6 +112,10 @@ func (m *Manager) runOnce(ctx context.Context) []proto.DiscoveredEndpoint {
 	wg.Wait()
 
 	merged := m.merge(results)
+	// Reverse DNS (PTR) enrichment: fills Hostname for endpoints that
+	// neither ARP nor mDNS could name. Bounded in time/concurrency by
+	// ptrLookupTimeout and ptrWorkers — see ptr.go.
+	merged = enrichPTR(scanCtx, merged)
 	m.mu.Lock()
 	m.lastScanAt = time.Now().UTC()
 	m.mu.Unlock()
