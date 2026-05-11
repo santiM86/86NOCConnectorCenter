@@ -71,7 +71,12 @@ func (a *ARP) scanCmd(ctx context.Context) ([]proto.DiscoveredEndpoint, error) {
 	if err != nil {
 		return nil, errors.New("arp binary not found in PATH")
 	}
-	cmd := exec.CommandContext(ctx, bin, "-an")
+	// Windows uses `arp -a`; BSD/macOS use `arp -an` (numeric, no DNS).
+	flag := "-an"
+	if runtime.GOOS == "windows" {
+		flag = "-a"
+	}
+	cmd := exec.CommandContext(ctx, bin, flag)
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, err
@@ -80,6 +85,14 @@ func (a *ARP) scanCmd(ctx context.Context) ([]proto.DiscoveredEndpoint, error) {
 	for _, line := range strings.Split(string(out), "\n") {
 		ip, mac := parseARPLine(line)
 		if ip == "" || mac == "" {
+			continue
+		}
+		// Skip multicast (01:00:5e:..) and broadcast (ff:ff:..) entries.
+		if strings.HasPrefix(mac, "01:00:5e") || mac == "ff:ff:ff:ff:ff:ff" {
+			continue
+		}
+		// Skip multicast IPv4 ranges (224.0.0.0/4) and broadcast.
+		if pip := net.ParseIP(ip); pip == nil || pip.IsMulticast() || pip.Equal(net.IPv4bcast) {
 			continue
 		}
 		res = append(res, proto.DiscoveredEndpoint{IP: ip, MAC: mac, Source: "arp"})
