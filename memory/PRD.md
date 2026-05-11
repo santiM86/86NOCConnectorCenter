@@ -76,6 +76,18 @@ uvicorn FastAPI (127.0.0.1:8186) — service systemd `noc-backend`
 - Patchare `sync-argus.sh` per non toccare `venv/`.
 - Pipeline GitHub Actions release-agent.yml: aspetta primo `git tag v4.1.3` per essere testata.
 
+### 2026-05-11 (sera) — FIX AGGIUNTIVO: Auto-Discovery UI per agent v4
+**Bug**: gli endpoint scoperti dall'agent v4 (`source_connector_mode="agent_v4"`) NON apparivano in `/api/connector/discovery-results/{client_id}` perché il filtro accettava solo `"scanner"`.
+
+**Fix**: `/app/backend/routes/discovery.py` riga 83 — cambiato filtro da `"source_connector_mode": "scanner"` a `"source_connector_mode": {"$in": ["scanner", "agent_v4"]}`.
+
+**Verificato**: i 4 endpoint mdns scoperti dall'agent v4 di 86BIT_Office (10.10.1.15, 10.10.1.16, 10.10.1.55, 10.10.1.220) ora appaiono correttamente nel tab Auto-Discovery della UI cliente.
+
+### TODO follow-up agent v4:
+- **Auto-promotion**: i record `agent_v4` non vengono auto-promossi in `managed_devices` come fa lo `scanner`. Verificare in `connector.py` (lan-scan handler) se l'auto-promotion cerca `source_connector_mode="scanner"` e estendere anche a `agent_v4`.
+- **MAC enrichment**: i record mdns dell'agent v4 hanno `mac: None`. L'agent v4 dovrebbe arricchire da tabella ARP locale prima di inviare, oppure il backend dovrebbe risolvere via SNMP CAM table.
+- **agent_id ephemeral**: nell'agent.yaml manca `agent_id`, ne viene generato uno nuovo ogni restart. Genera "ghost agents" in `managed_agents`. Fix: scrivere agent_id persistente al primo welcome.
+
 ---
 
 
