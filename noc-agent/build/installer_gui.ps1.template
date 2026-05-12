@@ -596,7 +596,7 @@ $btnHealth = New-Btn 'Stato canale (VPN/WS)' 310 545 200 $ColWhite $ColAccent {
     $script:lblHealth.Text = 'Verifica canale verso NOC Center...'
     $form.Refresh()
     try {
-        $__proto = [Net.SecurityProtocolType]::Tls12; try { $__proto = $__proto -bor [Net.SecurityProtocolType]::Tls13 } catch {}; [Net.ServicePointManager]::SecurityProtocol = $__proto
+        try { if (-not ([Net.ServicePointManager]::SecurityProtocol -band [Net.SecurityProtocolType]::Tls12)) { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } } catch {}
         $url = $BackendUrl.TrimEnd('/') + '/api/agent/self/health?token=' + $AgentToken
         $h = Invoke-RestMethod -UseBasicParsing -Method Get -TimeoutSec 10 -Uri $url
         if ($h.connected -eq $true) {
@@ -642,7 +642,7 @@ $btnTest = New-Btn 'Test SNMP' 200 595 130 $ColBlue $ColWhite {
     $script:lblTestSnmp.Text = "Interrogazione SNMP $($t.ip) in corso..."
     $form.Refresh()
     try {
-        $__proto = [Net.SecurityProtocolType]::Tls12; try { $__proto = $__proto -bor [Net.SecurityProtocolType]::Tls13 } catch {}; [Net.ServicePointManager]::SecurityProtocol = $__proto
+        try { if (-not ([Net.ServicePointManager]::SecurityProtocol -band [Net.SecurityProtocolType]::Tls12)) { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } } catch {}
         $body = @{ ip = $t.ip; community = $t.community; port = $t.snmp_port; version = $t.snmp_version } | ConvertTo-Json -Compress
         $url = $BackendUrl.TrimEnd('/') + '/api/agent/self/snmp/test?token=' + [System.Web.HttpUtility]::UrlEncode($AgentToken)
         # HttpUtility serve System.Web; fallback:
@@ -1214,15 +1214,14 @@ function Show-Configuration {
         $script:lblValidation.Text = "Verifica in corso..."
         $contentPanel.Refresh()
         try {
-            # TLS 1.3 fallback: su Windows Server 2012 R2 / 2016 senza
-            # patch (.NET < 4.7.1) l'enum Tls13 NON esiste e l'intera
-            # riga lancia "Cannot convert value 'Tls13'..." → l'utente
-            # vede "Impossibile effettuare la connessione al server
-            # remoto" anche se in realtà la chiamata HTTP non è
-            # nemmeno partita. Costruiamo l'OR in modo difensivo.
-            $proto = [Net.SecurityProtocolType]::Tls12
-            try { $proto = $proto -bor [Net.SecurityProtocolType]::Tls13 } catch {}
-            [Net.ServicePointManager]::SecurityProtocol = $proto
+            # TLS settings: NON forziamo TLS 1.3 perché su Windows
+            # Server 2022 + PS 5.1 (.NET Framework 4.8) settare
+            # `Tls12 -bor Tls13` provoca SChannel SSPI errors dentro
+            # Invoke-RestMethod ("Impossibile effettuare la
+            # connessione al server remoto"), pur funzionando
+            # Invoke-WebRequest. Il default di SChannel su WS2022 /
+            # Win11 / Win10 21H2+ è già Tls12+, basta assicurarcene.
+            try { if (-not ([Net.ServicePointManager]::SecurityProtocol -band [Net.SecurityProtocolType]::Tls12)) { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } } catch {}
             $resp = Invoke-RestMethod -UseBasicParsing -TimeoutSec 15 `
                 -Uri "$url/api/agent/install/manifest?platform=$Platform&role=$($script:Role)&token=$tok"
             $script:ClientId = $resp.client_id
@@ -1569,7 +1568,7 @@ function Show-Install {
 function Run-Install {
     $script:InstallResult = "fail"
     try {
-        $__proto = [Net.SecurityProtocolType]::Tls12; try { $__proto = $__proto -bor [Net.SecurityProtocolType]::Tls13 } catch {}; [Net.ServicePointManager]::SecurityProtocol = $__proto
+        try { if (-not ([Net.ServicePointManager]::SecurityProtocol -band [Net.SecurityProtocolType]::Tls12)) { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } } catch {}
         $url = $script:BackendUrl.TrimEnd('/')
         $tok = $script:Token
 
@@ -2036,7 +2035,7 @@ $btnNext.Add_Click({
         $script:Token = $tok
         if (-not $script:ClientId) {
             try {
-                $__proto = [Net.SecurityProtocolType]::Tls12; try { $__proto = $__proto -bor [Net.SecurityProtocolType]::Tls13 } catch {}; [Net.ServicePointManager]::SecurityProtocol = $__proto
+                try { if (-not ([Net.ServicePointManager]::SecurityProtocol -band [Net.SecurityProtocolType]::Tls12)) { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } } catch {}
                 $r = Invoke-RestMethod -UseBasicParsing -TimeoutSec 15 `
                     -Uri "$url/api/agent/install/manifest?platform=$Platform&role=$($script:Role)&token=$tok"
                 $script:ClientId = $r.client_id
