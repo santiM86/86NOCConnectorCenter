@@ -309,6 +309,8 @@ async def _on_event(conn: _Connection, evt: Dict[str, Any]) -> None:
         await _bridge_discovery(conn, data)
     elif kind == "snmp_poll" and isinstance(data, dict):
         await _bridge_snmp_poll(conn, data)
+    elif kind == "ping_poll" and isinstance(data, dict):
+        await _bridge_ping_poll(conn, data)
     elif kind == "module_stuck":
         logger.warning("agent v4 module_stuck agent_id=%s data=%s", conn.agent_id, data)
     elif kind == "crash_recovered":
@@ -366,6 +368,89 @@ async def _bridge_discovery(conn: _Connection, batch: List[Dict[str, Any]]) -> N
         await db.discovered_endpoints.update_one(op["filter"], op["update"], upsert=True)
 
 
+async def _bridge_ping_poll(conn: _Connection, r: Dict[str, Any]) -> None:
+    """Bridge a PingPollResult into managed_devices.status.
+
+    Uses a 3-consecutive-failure threshold to flip a device to "offline"
+    so a single dropped ICMP probe (Wi-Fi blip, switch CPU spike, host
+    firewall hiccup) does not flap the UI.
+
+    Counters are kept on `managed_devices.consecutive_ping_failures` so
+    they survive backend restarts without needing a separate store.
+    """
+    target = r.get("target")
+    if not target:
+        return
+    reachable = bool(r.get("reachable"))
+    now_iso = _now().isoformat()
+    latency_ns = r.get("latency_ns") or 0
+    try:
+        latency_ms = float(latency_ns) / 1e6 if latency_ns else None
+    except Exception:
+        latency_ms = None
+    loss_pct = r.get("loss_pct")
+
+    # Always update the raw poll-status doc — it's the source of truth
+    # for "what did the last probe see?".
+    await db.device_poll_status.update_one(
+        {"client_id": conn.client_id, "ip": target},
+        {
+            "$set": {
+                "client_id": conn.client_id,
+                "agent_id": conn.agent_id,
+                "ip": target,
+                "ping_reachable": reachable,
+                "ping_latency_ms": latency_ms,
+                "ping_loss_pct": loss_pct,
+                "ping_error": r.get("error"),
+                "last_ping_at": now_iso,
+                "source": "agent_v4",
+            },
+            "$setOnInsert": {"first_poll_at": now_iso},
+        },
+        upsert=True,
+    )
+
+    # Now reconcile managed_devices.status with the 3-failure threshold.
+    # We pull the current device(s) first so we know the running counter
+    # without a $cond aggregation update (works on every Mongo version).
+    cursor = db.managed_devices.find(
+        {"client_id": conn.client_id, "ip": target},
+        {"_id": 0, "id": 1, "status": 1, "consecutive_ping_failures": 1},
+    )
+    failure_threshold = 3
+    async for dev in cursor:
+        prev_failures = int(dev.get("consecutive_ping_failures") or 0)
+        prev_status = dev.get("status")
+        update: Dict[str, Any] = {
+            "last_poll_at": now_iso,
+            "last_poll_source": "agent_v4",
+            "last_ping_at": now_iso,
+            "ping_latency_ms": latency_ms,
+        }
+        if reachable:
+            update["status"] = "online"
+            update["consecutive_ping_failures"] = 0
+            update["last_seen_at"] = now_iso
+        else:
+            new_failures = prev_failures + 1
+            update["consecutive_ping_failures"] = new_failures
+            if new_failures >= failure_threshold:
+                update["status"] = "offline"
+            else:
+                # Keep current status but flag it as degraded so the UI
+                # can paint an amber dot during the grace window.
+                update["status"] = prev_status or "online"
+                update["degraded"] = True
+        # Clear the degraded flag on recovery
+        if reachable:
+            update["degraded"] = False
+        await db.managed_devices.update_one(
+            {"client_id": conn.client_id, "ip": target, "id": dev.get("id")},
+            {"$set": update},
+        )
+
+
 async def _bridge_snmp_poll(conn: _Connection, r: Dict[str, Any]) -> None:
     """Bridge SNMPPollResult into device_poll_status AND into managed_devices.
 
@@ -415,18 +500,26 @@ async def _bridge_snmp_poll(conn: _Connection, r: Dict[str, Any]) -> None:
 
 
 async def _build_poller_config(client_id: str) -> Dict[str, Any]:
-    """Build SNMPConfig.targets[] from this tenant's managed_devices.
+    """Build poller config for one tenant.
 
-    Returned shape matches `internal/config.SNMPConfig` in the Go agent,
-    so the agent can pass it straight to poller.New() without translation.
+    Two blocks are emitted:
+      - `snmp.targets[]`  → list of devices with an explicit community
+        (or a default `public`) used for sysName / sysDescr polling.
+      - `ping.targets[]`  → list of *every* enabled managed device,
+        regardless of SNMP capability. This is the heartbeat signal
+        that drives UP/DOWN status on the dashboard and replaces the
+        legacy PowerShell Connector polling loop.
+
+    The returned shape matches the JSON tags expected by the Go agent
+    in cmd/agent/main.go::OnWelcome.
 
     Behaviour:
-      - Targets without an explicit community fall back to "public".
       - Devices flagged `disabled` or with no `ip` are skipped.
-      - Empty target list still returns a valid (disabled) config so the
+      - Empty target lists still return a valid (disabled) block so the
         agent doesn't crash on first welcome.
     """
-    targets = []
+    snmp_targets: List[Dict[str, Any]] = []
+    ping_targets: List[Dict[str, Any]] = []
     try:
         cursor = db.managed_devices.find(
             {"client_id": client_id, "ip": {"$ne": None, "$exists": True}},
@@ -440,29 +533,81 @@ async def _build_poller_config(client_id: str) -> Dict[str, Any]:
             ip = d.get("ip")
             if not ip:
                 continue
-            community = d.get("community") or d.get("snmp_community") or "public"
-            target = {
-                "ip": ip,
-                "name": d.get("name") or ip,
-                "community": community,
-                "profile": d.get("device_type") or "generic",
-                "snmp_version": d.get("snmp_version") or "v2c",
-                "snmp_port": int(d.get("snmp_port") or 161),
-            }
-            targets.append(target)
+            name = d.get("name") or ip
+            # Every enabled device gets ping-polled (cheap, no auth).
+            ping_targets.append({"ip": ip, "name": name})
+
+            # SNMP-polled only when an explicit community is set OR the
+            # device is classified as a network appliance/printer (we
+            # try `public` by default for those).
+            community = d.get("community") or d.get("snmp_community")
+            monitor_type = (d.get("monitor_type") or "").lower()
+            dev_type = (d.get("device_type") or "").lower()
+            snmp_eligible = bool(community) or monitor_type == "snmp" or dev_type in (
+                "switch", "firewall", "router", "ap", "printer", "ups", "network",
+            )
+            if snmp_eligible:
+                snmp_targets.append({
+                    "ip": ip,
+                    "name": name,
+                    "community": community or "public",
+                    "profile": d.get("device_type") or "generic",
+                    "snmp_version": d.get("snmp_version") or "v2c",
+                    "snmp_port": int(d.get("snmp_port") or 161),
+                })
     except Exception as e:  # pragma: no cover - degraded mode
         logger.warning("agent_ws: _build_poller_config error client_id=%s err=%s", client_id, e)
 
     return {
         "snmp": {
-            "enabled": len(targets) > 0,
+            "enabled": len(snmp_targets) > 0,
             "interval": "60s",
             "communities": ["public"],
             "timeout": "2s",
             "retries": 1,
-            "targets": targets,
+            "targets": snmp_targets,
+        },
+        "ping": {
+            "enabled": len(ping_targets) > 0,
+            "interval": "60s",
+            "timeout": "2s",
+            "count": 1,
+            "targets": ping_targets,
         },
     }
+
+
+async def push_config_to_client(client_id: str) -> int:
+    """Hot-push a refreshed poller config to every live agent of this tenant.
+
+    Called after a device is approved / added / removed so the agent
+    starts (or stops) polling it within seconds instead of waiting for
+    the next service restart.
+
+    Returns the number of agents successfully notified.
+    """
+    cfg = await _build_poller_config(client_id)
+    payload = {
+        "accepted_at": _now().isoformat(),
+        "config": cfg,
+        "reason": "device_assignment_changed",
+    }
+    sent = 0
+    for c in REGISTRY.list():
+        if c.client_id != client_id:
+            continue
+        try:
+            c.seq += 1
+            # Re-use server.welcome so the existing OnWelcome hot-swap
+            # path in the agent applies the new targets immediately —
+            # zero new code on the agent side.
+            await c.send(make_frame("server.welcome", payload, seq=c.seq))
+            sent += 1
+        except Exception as e:  # noqa: BLE001
+            logger.warning("push_config_to_client: send failed agent=%s err=%s", c.agent_id, e)
+    logger.info("push_config_to_client: client_id=%s notified=%d targets_snmp=%d targets_ping=%d",
+                client_id, sent, len(cfg["snmp"]["targets"]), len(cfg["ping"]["targets"]))
+    return sent
 
 
 async def _on_log(conn: _Connection, log: Dict[str, Any]) -> None:

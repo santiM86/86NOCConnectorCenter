@@ -32,6 +32,7 @@ type Config struct {
 
 	Discovery DiscoveryConfig `yaml:"discovery"`
 	SNMP      SNMPConfig      `yaml:"snmp"`
+	Ping      PingConfig      `yaml:"ping"`
 	Watchdog  WatchdogConfig  `yaml:"watchdog"`
 	Update    UpdateConfig    `yaml:"update"`
 
@@ -69,6 +70,24 @@ type SNMPTarget struct {
 	SNMPPort    int    `yaml:"snmp_port,omitempty"`    // default 161
 }
 
+// PingConfig drives the ICMP live-polling loop. The agent invokes the
+// native `ping` binary of the host OS once per Interval against every
+// Target and reports UP/DOWN + RTT to the backend via an EventPingPoll
+// frame. The backend applies a 3-consecutive-failure threshold before
+// flipping managed_devices.status to "offline" (avoids flapping).
+type PingConfig struct {
+	Enabled  bool          `yaml:"enabled"`
+	Interval time.Duration `yaml:"interval"` // default 60s
+	Timeout  time.Duration `yaml:"timeout"`  // default 2s per probe
+	Count    int           `yaml:"count"`    // probes per cycle, default 1
+	Targets  []PingTarget  `yaml:"targets,omitempty"`
+}
+
+type PingTarget struct {
+	IP   string `yaml:"ip"`
+	Name string `yaml:"name,omitempty"`
+}
+
 type WatchdogConfig struct {
 	Enabled         bool          `yaml:"enabled"`
 	HeartbeatFile   string        `yaml:"heartbeat_file"`   // touched by agent every tick
@@ -101,6 +120,12 @@ func Default() Config {
 			Communities: []string{"public"},
 			Timeout:     2 * time.Second,
 			Retries:     1,
+		},
+		Ping: PingConfig{
+			Enabled:  true,
+			Interval: 60 * time.Second,
+			Timeout:  2 * time.Second,
+			Count:    1,
 		},
 		Watchdog: WatchdogConfig{
 			Enabled:       true,

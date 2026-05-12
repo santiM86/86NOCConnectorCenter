@@ -52,8 +52,8 @@ func (p *Poller) ApplyConfig(cfg config.SNMPConfig) {
 	defer p.mu.Unlock()
 	p.cfg = cfg
 	p.log.Info("snmp config hot-swapped",
-		"enabled", cfg.Enabled,
-		"targets", len(cfg.Targets),
+		"enabled", fmt.Sprintf("%t", cfg.Enabled),
+		"targets", fmt.Sprintf("%d", len(cfg.Targets)),
 		"interval", cfg.Interval.String(),
 	)
 }

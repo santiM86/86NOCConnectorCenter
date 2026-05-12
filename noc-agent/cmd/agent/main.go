@@ -102,6 +102,7 @@ func runAgent(ctx context.Context, cfg config.Config, log *logging.Logger) {
 	hr.Register("transport", 60*time.Second)
 	hr.Register("discovery", 2*cfg.Discovery.Interval)
 	hr.Register("poller", 2*cfg.SNMP.Interval)
+	hr.Register("ping", 2*cfg.Ping.Interval)
 	hr.Register("watchdog", 3*cfg.Heartbeat)
 
 	hostname, _ := os.Hostname()
@@ -125,6 +126,11 @@ func runAgent(ctx context.Context, cfg config.Config, log *logging.Logger) {
 		client.PushEvent(proto.EventSNMPPoll, r)
 		hr.SetLastPoll(time.Now().UTC())
 		hr.Tick("poller")
+	})
+
+	pingP := poller.NewPing(cfg.Ping, log, func(r proto.PingPollResult) {
+		client.PushEvent(proto.EventPingPoll, r)
+		hr.Tick("ping")
 	})
 
 	sources := []discovery.Source{}
@@ -162,6 +168,16 @@ func runAgent(ctx context.Context, cfg config.Config, log *logging.Logger) {
 		}
 		return snmp.PollOne(ctx, a.IP, a.Community), nil
 	})
+	client.Register("force_ping_poll", func(ctx context.Context, args json.RawMessage) (any, error) {
+		var a struct {
+			IP string `json:"ip"`
+		}
+		_ = json.Unmarshal(args, &a)
+		if a.IP == "" {
+			return map[string]any{"polled": len(pingP.Snapshot().Targets)}, nil
+		}
+		return pingP.ProbeOne(ctx, a.IP), nil
+	})
 	client.Register(proto.CmdRunDiagnostics, func(ctx context.Context, _ json.RawMessage) (any, error) {
 		return runDiagnostics(cfg), nil
 	})
@@ -195,6 +211,16 @@ func runAgent(ctx context.Context, cfg config.Config, log *logging.Logger) {
 					SNMPPort    int    `json:"snmp_port"`
 				} `json:"targets"`
 			} `json:"snmp"`
+			Ping struct {
+				Enabled  bool   `json:"enabled"`
+				Interval string `json:"interval"`
+				Timeout  string `json:"timeout"`
+				Count    int    `json:"count"`
+				Targets  []struct {
+					IP   string `json:"ip"`
+					Name string `json:"name"`
+				} `json:"targets"`
+			} `json:"ping"`
 		}
 		if err := json.Unmarshal(w.Config, &wire); err != nil {
 			rootLog.Warn("welcome.config parse failed", "err", err.Error())
@@ -232,6 +258,40 @@ func runAgent(ctx context.Context, cfg config.Config, log *logging.Logger) {
 			})
 		}
 		snmp.ApplyConfig(newCfg)
+
+		// Ping config hot-swap. The backend pushes the full list of
+		// managed_devices for this tenant (not only SNMP-enabled
+		// ones) so every approved device immediately starts emitting
+		// UP/DOWN heartbeats — this is what replaces the legacy
+		// PowerShell Connector polling loop.
+		pingInterval, _ := time.ParseDuration(wire.Ping.Interval)
+		if pingInterval <= 0 {
+			pingInterval = 60 * time.Second
+		}
+		pingTimeout, _ := time.ParseDuration(wire.Ping.Timeout)
+		if pingTimeout <= 0 {
+			pingTimeout = 2 * time.Second
+		}
+		pingCount := wire.Ping.Count
+		if pingCount <= 0 {
+			pingCount = 1
+		}
+		newPing := config.PingConfig{
+			Enabled:  wire.Ping.Enabled,
+			Interval: pingInterval,
+			Timeout:  pingTimeout,
+			Count:    pingCount,
+		}
+		for _, t := range wire.Ping.Targets {
+			if t.IP == "" {
+				continue
+			}
+			newPing.Targets = append(newPing.Targets, config.PingTarget{
+				IP:   t.IP,
+				Name: t.Name,
+			})
+		}
+		pingP.ApplyConfig(newPing)
 	})
 
 	go heartbeatLoop(ctx, client, hr, cfg.Heartbeat)
@@ -239,6 +299,7 @@ func runAgent(ctx context.Context, cfg config.Config, log *logging.Logger) {
 	go logShipper(ctx, client, log)
 	go disc.Run(ctx)
 	go snmp.Run(ctx)
+	go pingP.Run(ctx)
 	go upd.Run(ctx)
 
 	rootLog.Info("agent started",
@@ -270,7 +331,10 @@ func capabilities(c config.Config) []string {
 	if c.SNMP.Enabled {
 		caps = append(caps, "poll.snmp")
 	}
-	caps = append(caps, "cmd.force_lan_scan", "cmd.force_snmp_poll", "cmd.get_metrics", "cmd.run_diagnostics")
+	if c.Ping.Enabled {
+		caps = append(caps, "poll.ping")
+	}
+	caps = append(caps, "cmd.force_lan_scan", "cmd.force_snmp_poll", "cmd.force_ping_poll", "cmd.get_metrics", "cmd.run_diagnostics")
 	return caps
 }
 
