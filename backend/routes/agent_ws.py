@@ -225,11 +225,13 @@ async def agent_ws(ws: WebSocket) -> None:
     conn = _Connection(agent_id, client_id, ws)
     await REGISTRY.add(conn)
 
-    # Send welcome
+    # Send welcome (includes SNMP targets pulled from managed_devices for
+    # this tenant so the agent can self-poll without needing a separate
+    # legacy Connector Master).
     welcome = {
         "accepted_at": now.isoformat(),
         "session_id": uuid.uuid4().hex,
-        "config": {},  # no hot-pushed config yet; agent uses local YAML
+        "config": await _build_poller_config(client_id),
     }
     conn.seq += 1
     try:
@@ -365,16 +367,22 @@ async def _bridge_discovery(conn: _Connection, batch: List[Dict[str, Any]]) -> N
 
 
 async def _bridge_snmp_poll(conn: _Connection, r: Dict[str, Any]) -> None:
-    """Bridge SNMPPollResult into device_poll_status."""
+    """Bridge SNMPPollResult into device_poll_status AND into managed_devices.
+
+    Updates `managed_devices.status` ("online"/"offline") + `last_poll_at`
+    so that the UI Dispositivi page shows live status driven by the
+    self-polling agent v4 (no legacy Connector Master required).
+    """
     target = r.get("target")
     if not target:
         return
     now_iso = _now().isoformat()
+    reachable = bool(r.get("reachable"))
     update = {
         "client_id": conn.client_id,
         "agent_id": conn.agent_id,
         "ip": target,
-        "reachable": bool(r.get("reachable")),
+        "reachable": reachable,
         "latency_ns": r.get("latency_ns"),
         "sys_name": r.get("sys_name"),
         "sys_descr": r.get("sys_descr"),
@@ -389,6 +397,72 @@ async def _bridge_snmp_poll(conn: _Connection, r: Dict[str, Any]) -> None:
         {"$set": update, "$setOnInsert": {"first_poll_at": now_iso}},
         upsert=True,
     )
+    # Reflect live status in managed_devices so dashboards refresh in
+    # real time. Only update fields that the UI cares about.
+    md_set = {
+        "status": "online" if reachable else "offline",
+        "last_poll_at": now_iso,
+        "last_poll_source": "agent_v4",
+    }
+    if r.get("sys_name"):
+        md_set["sys_name"] = r["sys_name"]
+    if r.get("sys_descr"):
+        md_set["sys_descr"] = r["sys_descr"]
+    await db.managed_devices.update_many(
+        {"client_id": conn.client_id, "ip": target},
+        {"$set": md_set},
+    )
+
+
+async def _build_poller_config(client_id: str) -> Dict[str, Any]:
+    """Build SNMPConfig.targets[] from this tenant's managed_devices.
+
+    Returned shape matches `internal/config.SNMPConfig` in the Go agent,
+    so the agent can pass it straight to poller.New() without translation.
+
+    Behaviour:
+      - Targets without an explicit community fall back to "public".
+      - Devices flagged `disabled` or with no `ip` are skipped.
+      - Empty target list still returns a valid (disabled) config so the
+        agent doesn't crash on first welcome.
+    """
+    targets = []
+    try:
+        cursor = db.managed_devices.find(
+            {"client_id": client_id, "ip": {"$ne": None, "$exists": True}},
+            {"_id": 0, "ip": 1, "name": 1, "community": 1, "snmp_community": 1,
+             "snmp_version": 1, "snmp_port": 1, "device_type": 1, "monitor_type": 1,
+             "enabled": 1, "disabled": 1},
+        )
+        async for d in cursor:
+            if d.get("disabled") is True or d.get("enabled") is False:
+                continue
+            ip = d.get("ip")
+            if not ip:
+                continue
+            community = d.get("community") or d.get("snmp_community") or "public"
+            target = {
+                "ip": ip,
+                "name": d.get("name") or ip,
+                "community": community,
+                "profile": d.get("device_type") or "generic",
+                "snmp_version": d.get("snmp_version") or "v2c",
+                "snmp_port": int(d.get("snmp_port") or 161),
+            }
+            targets.append(target)
+    except Exception as e:  # pragma: no cover - degraded mode
+        logger.warning("agent_ws: _build_poller_config error client_id=%s err=%s", client_id, e)
+
+    return {
+        "snmp": {
+            "enabled": len(targets) > 0,
+            "interval": "60s",
+            "communities": ["public"],
+            "timeout": "2s",
+            "retries": 1,
+            "targets": targets,
+        },
+    }
 
 
 async def _on_log(conn: _Connection, log: Dict[str, Any]) -> None:

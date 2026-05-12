@@ -169,6 +169,71 @@ func runAgent(ctx context.Context, cfg config.Config, log *logging.Logger) {
 
 	upd := update.New(cfg.Update, Version, log)
 
+	// Hot-apply the SNMP target list pushed by the backend in the
+	// server.welcome frame. Lets the central console drive what the
+	// agent polls without redeploying the agent or editing agent.yaml.
+	// We parse a JSON-friendly view of welcome.Config rather than
+	// reusing config.SNMPConfig directly (the yaml tags don't match
+	// the JSON shape and time.Duration is not json-decodable).
+	client.OnWelcome(func(w *proto.ServerWelcome) {
+		if len(w.Config) == 0 {
+			return
+		}
+		var wire struct {
+			SNMP struct {
+				Enabled     bool     `json:"enabled"`
+				Interval    string   `json:"interval"`
+				Timeout     string   `json:"timeout"`
+				Retries     int      `json:"retries"`
+				Communities []string `json:"communities"`
+				Targets     []struct {
+					IP          string `json:"ip"`
+					Name        string `json:"name"`
+					Community   string `json:"community"`
+					Profile     string `json:"profile"`
+					SNMPVersion string `json:"snmp_version"`
+					SNMPPort    int    `json:"snmp_port"`
+				} `json:"targets"`
+			} `json:"snmp"`
+		}
+		if err := json.Unmarshal(w.Config, &wire); err != nil {
+			rootLog.Warn("welcome.config parse failed", "err", err.Error())
+			return
+		}
+		interval, _ := time.ParseDuration(wire.SNMP.Interval)
+		if interval <= 0 {
+			interval = 60 * time.Second
+		}
+		timeout, _ := time.ParseDuration(wire.SNMP.Timeout)
+		if timeout <= 0 {
+			timeout = 2 * time.Second
+		}
+		newCfg := config.SNMPConfig{
+			Enabled:     wire.SNMP.Enabled,
+			Interval:    interval,
+			Timeout:     timeout,
+			Retries:     wire.SNMP.Retries,
+			Communities: wire.SNMP.Communities,
+		}
+		if len(newCfg.Communities) == 0 {
+			newCfg.Communities = []string{"public"}
+		}
+		for _, t := range wire.SNMP.Targets {
+			if t.IP == "" {
+				continue
+			}
+			newCfg.Targets = append(newCfg.Targets, config.SNMPTarget{
+				IP:          t.IP,
+				Name:        t.Name,
+				Community:   t.Community,
+				Profile:     t.Profile,
+				SNMPVersion: t.SNMPVersion,
+				SNMPPort:    t.SNMPPort,
+			})
+		}
+		snmp.ApplyConfig(newCfg)
+	})
+
 	go heartbeatLoop(ctx, client, hr, cfg.Heartbeat)
 	go watchdogTick(ctx, cfg.Watchdog.HeartbeatFile, hr)
 	go logShipper(ctx, client, log)

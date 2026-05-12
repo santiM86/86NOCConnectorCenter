@@ -43,6 +43,28 @@ func New(cfg config.SNMPConfig, log *logging.Logger, on func(proto.SNMPPollResul
 	return &Poller{cfg: cfg, log: log.With("snmp"), on: on}
 }
 
+// ApplyConfig hot-swaps the SNMP configuration at runtime. Used when the
+// backend pushes an updated target list via the server.welcome frame.
+// Safe to call concurrently with Run(); the next poll cycle picks up the
+// new targets/interval automatically.
+func (p *Poller) ApplyConfig(cfg config.SNMPConfig) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.cfg = cfg
+	p.log.Info("snmp config hot-swapped",
+		"enabled", cfg.Enabled,
+		"targets", len(cfg.Targets),
+		"interval", cfg.Interval.String(),
+	)
+}
+
+// snapshot returns a copy of the current config under the mutex.
+func (p *Poller) snapshot() config.SNMPConfig {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.cfg
+}
+
 // LastPollAt returns the timestamp of the last completed cycle.
 func (p *Poller) LastPollAt() time.Time {
 	p.mu.Lock()
@@ -51,23 +73,24 @@ func (p *Poller) LastPollAt() time.Time {
 }
 
 // Run blocks until ctx done, polling every cfg.Interval.
+// The configuration is re-read at the start of each cycle so that
+// ApplyConfig() takes effect on the next iteration without restart.
+// If the config is disabled the loop keeps spinning and waits for a hot-
+// swap to enable it (interval falls back to 60 s for the wait tick).
 func (p *Poller) Run(ctx context.Context) {
-	if !p.cfg.Enabled {
-		return
-	}
-	interval := p.cfg.Interval
-	if interval <= 0 {
-		interval = 60 * time.Second
-	}
-	t := time.NewTicker(interval)
-	defer t.Stop()
-	p.runOnce(ctx)
 	for {
+		cfg := p.snapshot()
+		interval := cfg.Interval
+		if interval <= 0 {
+			interval = 60 * time.Second
+		}
+		if cfg.Enabled && len(cfg.Targets) > 0 {
+			p.runOnce(ctx)
+		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-t.C:
-			p.runOnce(ctx)
+		case <-time.After(interval):
 		}
 	}
 }
@@ -88,14 +111,15 @@ func (p *Poller) PollAll(ctx context.Context) []proto.SNMPPollResult {
 }
 
 func (p *Poller) runOnce(ctx context.Context) []proto.SNMPPollResult {
-	if len(p.cfg.Targets) == 0 {
+	cfg := p.snapshot()
+	if len(cfg.Targets) == 0 {
 		return nil
 	}
-	results := make([]proto.SNMPPollResult, 0, len(p.cfg.Targets))
+	results := make([]proto.SNMPPollResult, 0, len(cfg.Targets))
 	var wg sync.WaitGroup
 	mu := sync.Mutex{}
 	sem := make(chan struct{}, 16)
-	for _, t := range p.cfg.Targets {
+	for _, t := range cfg.Targets {
 		t := t
 		wg.Add(1)
 		sem <- struct{}{}
@@ -120,7 +144,8 @@ func (p *Poller) runOnce(ctx context.Context) []proto.SNMPPollResult {
 
 func (p *Poller) poll(ctx context.Context, ip, community string) proto.SNMPPollResult {
 	res := proto.SNMPPollResult{Target: ip, OIDs: map[string]string{}}
-	communities := p.cfg.Communities
+	cfg := p.snapshot()
+	communities := cfg.Communities
 	if community != "" {
 		communities = append([]string{community}, communities...)
 	}
@@ -134,7 +159,7 @@ func (p *Poller) poll(ctx context.Context, ip, community string) proto.SNMPPollR
 		port = "161"
 	}
 
-	timeout := p.cfg.Timeout
+	timeout := cfg.Timeout
 	if timeout <= 0 {
 		timeout = 2 * time.Second
 	}
@@ -153,7 +178,7 @@ func (p *Poller) poll(ctx context.Context, ip, community string) proto.SNMPPollR
 			Community: c,
 			Version:   gosnmp.Version2c,
 			Timeout:   timeout,
-			Retries:   p.cfg.Retries,
+			Retries:   cfg.Retries,
 		}
 		if err := g.Connect(); err != nil {
 			lastErr = err
