@@ -315,27 +315,46 @@ async def _on_event(conn: _Connection, evt: Dict[str, Any]) -> None:
 
 async def _bridge_discovery(conn: _Connection, batch: List[Dict[str, Any]]) -> None:
     """Map agent DiscoveredEndpoint[] into the existing discovered_endpoints
-    collection so all UI pages keep working unchanged."""
+    collection so all UI pages keep working unchanged.
+
+    OUI vendor lookup (offline) is applied here so the Auto-Discovery UI shows
+    the manufacturer label next to each MAC, matching the behaviour of the
+    legacy /lan-scan connector flow.
+    """
     if not batch:
         return
+    # Lazy import to avoid circular dependencies at module load time.
+    try:
+        from routes.oui_lookup import lookup_oui
+    except Exception:  # pragma: no cover - degraded mode
+        lookup_oui = lambda m: ""  # noqa: E731
     now_iso = _now().isoformat()
     ops = []
     for ep in batch:
         ip = ep.get("ip")
         if not ip:
             continue
+        mac = (ep.get("mac") or "").lower() or None
+        vendor_hint = ep.get("vendor") or None
+        oui_vendor = lookup_oui(mac) if mac else ""
         doc = {
             "client_id": conn.client_id,
             "agent_id": conn.agent_id,
             "ip": ip,
-            "mac": (ep.get("mac") or "").lower() or None,
+            "mac": mac,
             "hostname": ep.get("hostname") or None,
-            "vendor": ep.get("vendor") or None,
+            "vendor": vendor_hint or (oui_vendor or None),
             "source": ep.get("source") or "agent_v4",
             "source_connector_mode": "agent_v4",
             "attributes": ep.get("attributes") or {},
             "last_seen_at": now_iso,
         }
+        # Populate the legacy `*_scanner` fields read by the Auto-Discovery
+        # UI so agent_v4 endpoints display vendor/hostname like scanner ones.
+        if oui_vendor:
+            doc["vendor_scanner"] = oui_vendor
+        if ep.get("hostname"):
+            doc["hostname_scanner"] = ep["hostname"]
         ops.append({
             "filter": {"client_id": conn.client_id, "ip": ip},
             "update": {"$set": doc, "$setOnInsert": {"first_seen_at": now_iso}},
