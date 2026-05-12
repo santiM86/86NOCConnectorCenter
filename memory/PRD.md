@@ -22,6 +22,47 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-02-12 ✅ AGENT GO v4.2.0 — LIVE POLLING (ICMP + SNMP)
+
+**Status**: implementato, testato in pre-prod (`/app`), deploy patch pronta
+in `/app/deploy_patches/v4.2.0/` (README incluso).
+
+### Cosa fa
+L'Agent Go ora effettua **autonomamente** ICMP ping + SNMP basic verso
+ogni device gestito del proprio tenant, e invia i risultati al backend via
+WebSocket come evento `ping_poll`. Sostituisce il polling del vecchio
+Connector PowerShell — i device approvati via Auto-Discovery passano
+finalmente da `PENDING` a `ONLINE`/`OFFLINE` con RTT live.
+
+### Componenti
+- **`noc-agent/internal/poller/icmp.go`** (NEW): PingPoller cross-platform
+  (usa `ping.exe`/`ping` nativo dell'OS, zero raw socket, zero deps).
+  Fan-out 32 probe concorrenti. Parser RTT/loss per Win-IT, Win-EN, Linux.
+- **`agent_ws.py::_build_poller_config`**: ora emette anche blocco
+  `ping.targets[]` con tutti i device abilitati (non solo SNMP).
+- **`agent_ws.py::_bridge_ping_poll`**: aggiorna `managed_devices.status`
+  con **threshold 3 fallimenti consecutivi** per evitare flapping. Reset
+  contatore al primo successo. Nuovo campo `consecutive_ping_failures`.
+- **`agent_ws.py::push_config_to_client`** (NEW): hot-push `server.welcome`
+  a tutti gli agent del tenant. Chiamato da `/api/discovery/approve` →
+  il polling sul nuovo device inizia entro pochi secondi.
+
+### Test
+- `go test ./internal/poller/...` → 3/3 PASS.
+- `pytest backend/tests/test_agent_v4_live_polling.py` → 1/1 PASS (3 scenari).
+- `pytest backend/tests/test_advanced_features.py` → 24/24 PASS.
+
+### Deploy in produzione
+Bundle in `/app/deploy_patches/v4.2.0/`:
+- `agent_ws.py` + `advanced_features.py` → `scp` su VM 10.30.0.201 →
+  `install` come `arslan:arslan` → `systemctl restart argus-backend`.
+- `nocagent.exe` (v4.2.0, 7.6 MB) → copia su `C:\Program Files\86NocAgent\`
+  → `Restart-Service 86NocAgent`.
+NON usare `sync-argus.sh` (rompe venv Python).
+
+---
+
+
 
 ## 2026-05-11 ✅ MIGRAZIONE WEBSOCKET IN PRODUZIONE — COMPLETATA
 

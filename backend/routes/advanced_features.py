@@ -262,6 +262,21 @@ async def approve_discovered_device(request: Request, current_user: dict = Depen
         "added_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.managed_devices.insert_one({**device, "_id": device["id"]})
+
+    # Hot-push the refreshed poller config to every connected v4 agent
+    # of this tenant so live ICMP/SNMP probing of the new device starts
+    # within seconds (instead of waiting for the next service restart).
+    try:
+        from routes.agent_ws import push_config_to_client
+        await push_config_to_client(client_id)
+    except Exception as e:
+        # Best-effort — the approval succeeded, polling will catch up on
+        # the next welcome anyway.
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "approve_discovered_device: push_config failed client=%s ip=%s err=%s",
+            client_id, ip, e,
+        )
     return device
 
 
