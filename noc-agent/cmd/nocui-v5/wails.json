@@ -1,0 +1,20 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "ArgusDesktop",
+  "outputfilename": "ArgusDesktop",
+  "frontend:install": "yarn install",
+  "frontend:build": "yarn build",
+  "frontend:dev:watcher": "yarn dev",
+  "frontend:dev:serverUrl": "auto",
+  "author": {
+    "name": "86bit S.r.l.",
+    "email": "info@86bit.it"
+  },
+  "info": {
+    "companyName": "86bit S.r.l.",
+    "productName": "Argus Desktop",
+    "productVersion": "5.0.0",
+    "copyright": "Copyright © 2026 86bit S.r.l.",
+    "comments": "ARGUS NOC — Desktop Connector"
+  }
+}
