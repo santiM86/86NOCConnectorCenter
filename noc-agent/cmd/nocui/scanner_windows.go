@@ -30,6 +30,8 @@ import (
 
 	"github.com/lxn/walk"
 	wd "github.com/lxn/walk/declarative"
+
+	"github.com/86bit/noc-agent/internal/nbns"
 )
 
 // ScanResult is one row in the scanner table.
@@ -537,11 +539,17 @@ func runScan(ctx context.Context, cidr string, timeout time.Duration,
 		}
 	}
 
-	// Phase 1: TCP probe parallelo su tutti gli IP. Ogni goroutine
-	// per IP probe le porte in parallelo (cfr. probeAlive) — host
-	// vivi rilevati in <50ms, host morti dopo `timeout` totale.
-	// Concorrenza alta (256) per saturare la rete LAN moderna.
-	sem := make(chan struct{}, 256)
+	// Phase 1: TCP probe + NBNS NetBIOS query parallelo su tutti gli IP.
+	// Ogni goroutine per IP fa due cose in parallelo:
+	//   - probeAlive: TCP probe sulle 15 porte piu' diffuse (vince la prima
+	//     che risponde, host vivi in <50ms)
+	//   - nbns.Query: UDP/137 NBSTAT con timeout 200ms — risolve l'hostname
+	//     dei PC Windows ANCHE senza record DNS PTR e fornisce workgroup +
+	//     MAC fallback.
+	//
+	// Concorrenza alzata a 512 (era 256) per saturare LAN gigabit su /22 e
+	// /16. Il bottleneck non e' piu' la CPU ma il timeout dei TCP morti.
+	sem := make(chan struct{}, 512)
 	var wg sync.WaitGroup
 	for _, ip := range ips {
 		ip := ip
@@ -554,23 +562,62 @@ func runScan(ctx context.Context, cidr string, timeout time.Duration,
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
+
+			// Lancia NBNS in parallelo al TCP probe — usano risorse di
+			// rete diverse (UDP vs TCP) quindi non si fanno concorrenza.
+			var (
+				nbInfo  *nbns.NodeInfo
+				nbDone  = make(chan struct{})
+			)
+			go func() {
+				defer close(nbDone)
+				if info, err := nbns.Query(ip, nbns.DefaultTimeout); err == nil {
+					nbInfo = info
+				}
+			}()
+
 			alive, port, rtt := probeAlive(ctx, ip, timeout)
+			<-nbDone
+
 			n := atomic.AddInt32(&done, 1)
 			if onProgress != nil && (n%8 == 0 || int(n) == total) {
 				onProgress(int(n), total)
 			}
+
 			mac := arp[ip]
-			if !alive && mac == "" {
+			// MAC fallback dalla NBSTAT response se ARP cache vuota
+			// (capita su VPN / sottoreti diverse dalla nostra).
+			if mac == "" && nbInfo != nil && nbInfo.MAC != "" {
+				mac = nbInfo.MAC
+			}
+			isNetbiosAlive := nbInfo != nil && nbInfo.ComputerName != ""
+
+			if !alive && mac == "" && !isNetbiosAlive {
 				return
 			}
-			// reverseDNS ha gia' timeout interno breve (600ms); lanciato
-			// inline cosi' il risultato emesso contiene gia' hostname.
-			host := reverseDNS(ctx, ip)
+
+			// Hostname resolution priority:
+			//   1. NBNS ComputerName (PC Windows = nome reale)
+			//   2. reverseDNS (PTR) — utile per server/router
+			// Se NBNS dice "DEMO-PC" e PTR dice "10-10-1-55.dyn.example.com"
+			// preferiamo NBNS perche' e' piu' significativo per l'admin.
+			host := ""
+			if nbInfo != nil && nbInfo.ComputerName != "" {
+				host = nbInfo.ComputerName
+			}
+			if host == "" {
+				host = reverseDNS(ctx, ip)
+			}
+
 			status := "alive"
 			rttOut := rtt
 			if !alive {
+				// Anche se TCP probe non risponde, NBNS o ARP visibile = host vivo.
 				status = "arp-only"
 				rttOut = -1
+				if isNetbiosAlive {
+					status = "netbios-only"
+				}
 			}
 			emit(&ScanResult{
 				IP:       ip,

@@ -195,6 +195,48 @@ curl -s -X POST "https://argus.86bit.it/api/agent/scan-report" \
 
 ---
 
+## 2026-02 ✅ NBNS DISCOVERY + CONCORRENZA 512 + HOSTNAME PRIORITY
+
+**Status**: codice committato, build cross-Windows OK, 4 unit test NBNS PASS.
+Obiettivo: superare Advanced IP Scanner in velocita' e affidabilita' nel
+discovery LAN. Richiesta utente: "il connector deve essere migliore di
+Advanced IP Scanner in velocita' e affidabilita'".
+
+### Modulo nuovo: `noc-agent/internal/nbns/`
+- `nbns.go`: client NBSTAT puro Go (zero CGO, zero raw socket). Estrae da
+  UDP/137 il ComputerName (es. "PC-MARCO"), Workgroup, LoggedUser, MAC.
+- `nbns_test.go`: 4 test — encodeNetBIOSName con wildcard "*" (RFC 1002
+  padding-zero), lunghezza richiesta 50 byte, formatMAC, parsing risposta
+  NBSTAT realistica.
+- Default timeout 200ms; latenza LAN tipica 5-50ms.
+
+### Integrazione scanner UI (`cmd/nocui/scanner_windows.go`)
+- Ogni IP ora fa TCP probe + nbns.Query in parallelo (UDP vs TCP, no
+  contesa di risorse).
+- **Concorrenza alzata 256 -> 512** per saturare LAN gigabit su /22 o /16.
+- **Hostname priority: NBNS > reverseDNS**. I PC Windows mostrano il vero
+  computer name anche senza PTR (era il bug #1 vs Advanced IP Scanner).
+- MAC fallback dalla risposta NBSTAT quando ARP cache vuota (VPN, subnet
+  remote).
+- Nuovo stato `netbios-only` per host che rispondono solo a UDP/137.
+
+### Integrazione discovery agent (`internal/discovery/`)
+- `nbns.go` nuovo file: `enrichNBNS()` invocata da `Manager.runOnce()`
+  dopo merge dei source e PTR enrichment.
+- Concorrenza 64 worker (background ogni 5 min).
+- `shouldReplaceWithNetbios()`: sovrascrive l'hostname solo se sembra un
+  FQDN dinamico ("10-10-1-55.example.com") preferendo "PC-MARCO".
+- Effetto: `managed_devices.name` popolato con nomi reali Windows.
+
+### File modificati / creati
+- `noc-agent/internal/nbns/nbns.go` (NEW)
+- `noc-agent/internal/nbns/nbns_test.go` (NEW, 4 test)
+- `noc-agent/internal/discovery/nbns.go` (NEW, enrichNBNS)
+- `noc-agent/internal/discovery/manager.go` (+ enrichNBNS in runOnce)
+- `noc-agent/cmd/nocui/scanner_windows.go` (NBNS parallel + 512 workers)
+
+
+
 
 
 ## 2026-02-12 ✅ ARGUS DESKTOP v5.0.0 — RIscrittura totale connector GUI
