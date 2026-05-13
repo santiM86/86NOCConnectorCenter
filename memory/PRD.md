@@ -22,6 +22,53 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-02-12 ✅ ARGUS DESKTOP v5.0.0 — RIscrittura totale connector GUI
+
+**Status**: MVP funzionante, build OK, preview live, deploy pronto in
+`/app/deploy_patches/v5.0.0/`.
+
+### Motivazione
+`nocagent-ui.exe` (lxn/walk Win32) soffriva di freeze totale ad ogni
+chiamata di rete (single-threaded UI), look anni '90, libreria
+abbandonata da fine 2021. Utente ha richiesto "livello enterprise,
+dobbiamo essere il migliore".
+
+### Nuovo stack
+- Go 1.23 + Wails v2.12 (async, zero blocking)
+- React 18 + TS strict + Vite 6 + Tailwind 3 + 13 Radix UI
+- Framer Motion (page transitions, hover, pulse-dot)
+- WebView2 Edge Chromium nativo Windows
+- Bundle: 3.7 MB binario, 397 KB JS minified
+
+### Componenti in `noc-agent/cmd/nocui-v5/`
+- `main.go` — Wails App opts, lifecycle, tray
+- `app.go` — Bindings esposti a JS (AppVersion, AgentSnapshot,
+  HealthCheck, ListDevices, ListDiscovered, TestPing, StartService,
+  StopService, RestartService, ReadLogs, OpenDashboard, OpenConfig)
+- `helpers.go` — parser agent.yaml, sc.exe wrapper, HTTP JSON generics
+- `frontend/` — Vite + React + 6 pagine + design system
+
+### Pagine implementate
+1. Dashboard — 4 KPI animate, stato agent, activity feed
+2. Dispositivi — search, chip-filter, tabella, ping per device
+3. Auto-Discovery — endpoint ARP/mDNS/PTR
+4. Scanner LAN — UI completa (backend `forceLanScan` da agganciare)
+5. Diagnostica — log live auto-scroll, filter level, export NDJSON
+6. Impostazioni — Agent identity, service control, versioni
+
+### Test
+- ✅ Frontend build: 1981 moduli, 0 errori TS, 2.4s
+- ✅ Go cross-compile windows/amd64: 3.7 MB, clean
+- ✅ Preview live in browser via `/argus-desktop-preview/`
+- 🟡 Test nativo WebView2 su SOCIALSRV: pending utente
+
+### Deploy
+PowerShell one-liner in `/app/deploy_patches/v5.0.0/README.md`. Va a
+fianco di `nocagent.exe` (non lo sostituisce).
+
+---
+
+
 ## 2026-02-12 ✅ AGENT GO v4.2.0 — LIVE POLLING (ICMP + SNMP)
 
 **Status**: implementato, testato in pre-prod (`/app`), deploy patch pronta

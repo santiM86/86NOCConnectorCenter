@@ -1,3 +1,85 @@
+# 2026-02-12 — Argus Desktop v5.0.0 — REWRITE TOTALE GUI CONNECTOR
+
+## 🚀 Bye `nocagent-ui.exe`, hello `ArgusDesktop.exe`
+
+L'app GUI desktop del connector è stata **buttata e riscritta da zero**
+con stack moderno per risolvere il "freeze totale" del vecchio
+`nocagent-ui.exe` (basato su lxn/walk Win32, abbandonato 2021).
+
+**Stack nuovo**:
+- Backend: **Go 1.23** + **Wails v2.12** (tutto async, zero blocking)
+- Frontend: **React 18** + **TypeScript strict** + **Vite 6** + **Tailwind 3**
+  + 13 Radix UI primitives (Button, Card, Tooltip, ScrollArea, Switch, …)
+- Animazioni: **Framer Motion** (page transitions, hover, pulse-dot)
+- WebView nativo: **WebView2** (Edge Chromium, preinstallato Win10 21H2+)
+- Bundle: **3.7 MB** binario Windows, **397 KB** JS minified
+
+## ✨ Features MVP (6 pagine complete)
+
+| Pagina | Status |
+|---|---|
+| **Dashboard** | ✅ 4 KPI cards animate, stato agent, activity feed live |
+| **Dispositivi** | ✅ Tabella filtrabile, search, chip-filter colorati, tasto Ping per device |
+| **Auto-Discovery** | ✅ Tabella endpoint ARP/mDNS/PTR con vendor |
+| **Scanner LAN** | 🟡 UI completa, backend `forceLanScan` da agganciare |
+| **Diagnostica** | ✅ Log live auto-scroll, filter per livello, export NDJSON |
+| **Impostazioni** | ✅ Agent ID, Client ID, Token mascherato + copy, service start/stop/restart |
+
+## 🎨 Design system
+
+- **Dark mode signature** (Linear/Cursor-style): sfondo `#0b0d14`, accent ciano `#38bdf8`
+- **Light mode** alternativo + **System** che segue OS
+- **Theme cycle** dal bottom-left (Dark → Light → System)
+- **Status pills** animate (CENTER ONLINE / AGENT RUN) in topbar drag-region
+- **Custom window controls** (minimize / maximize / close-to-tray)
+- **DPI-aware** (sharp su 4K)
+- **`data-testid` su ogni elemento interattivo** → 100% testabile via Playwright
+
+## 🔧 File creati (29 nuovi)
+
+```
+noc-agent/cmd/nocui-v5/
+├── main.go              (Wails App opts, lifecycle, tray)
+├── app.go               (Bindings esposti a JS, async)
+├── helpers.go           (parser agent.yaml, sc.exe wrapper, HTTP JSON)
+├── wails.json
+└── frontend/ (24 file)
+    ├── package.json, tsconfig.json, tailwind.config.js, vite.config.ts
+    ├── postcss.config.js, index.html, src/vite-env.d.ts
+    └── src/
+        ├── main.tsx, App.tsx, styles.css
+        ├── lib/{bridge.ts, theme.tsx, utils.ts}
+        ├── components/AppShell.tsx
+        ├── components/ui/{button, card, badge, input, tooltip, scroll-area, switch, progress}.tsx
+        └── pages/{Dashboard, Devices, Discovery, Scanner, Logs, Settings}Page.tsx
+```
+
+## 📦 Distribuzione
+
+- **Bundle**: `/app/deploy_patches/v5.0.0/ArgusDesktop.exe` (3.7 MB)
+- **Preview live** (no install): https://snmp-hub-noc.preview.emergentagent.com/argus-desktop-preview/
+- **README deploy**: `/app/deploy_patches/v5.0.0/README.md` (PowerShell one-liner per SOCIALSRV)
+
+## ⚠️ Note
+
+- `ArgusDesktop.exe` **non sostituisce** `nocagent.exe` (servizio). È una
+  GUI separata che gli utenti lanciano quando vogliono — il servizio
+  continua a girare in background indipendentemente.
+- WebView2 è preinstallato su Win10 21H2+ / Win11 / Server 2022. Su
+  Server 2016/2019 va installato manualmente (50 MB, link diretto
+  Microsoft, scarico automatico al primo run dell'app).
+
+## 🧪 Test
+
+- ✅ `tsc -b && vite build` — 1981 modules, 0 errors, 2.4s
+- ✅ `GOOS=windows go build` — clean cross-compile, 3.7 MB output
+- ✅ Smoke test browser (Playwright via preview): rendering OK, fonts OK,
+  dark mode OK, animazioni OK, sidebar nav OK
+- 🟡 Test nativo WebView2 sul server Windows: pending utente
+
+---
+
+
 # 2026-02-12 — Agent Go v4.2.0 — LIVE POLLING (ICMP + SNMP)
 
 ## 🚀 Feature P0
