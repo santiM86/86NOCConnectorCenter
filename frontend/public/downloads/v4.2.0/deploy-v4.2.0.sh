@@ -27,7 +27,7 @@ set -euo pipefail
 PATCH_BASE="${PATCH_BASE:-https://snmp-hub-noc.preview.emergentagent.com/downloads/v4.2.0}"
 BACKEND_DIR="${BACKEND_DIR:-/opt/argus/backend}"
 NOCAGENT_BUILD_DIR="${NOCAGENT_BUILD_DIR:-/opt/argus/noc-agent/build}"
-SERVICE="${SERVICE:-argus-backend}"
+SERVICE="${SERVICE:-noc-backend}"
 HEALTHCHECK_URL="${HEALTHCHECK_URL:-http://localhost:8186/api/agents}"
 EXPECTED_HEALTH_HTTP="${EXPECTED_HEALTH_HTTP:-401 403}"  # space-separated allowed codes
 

@@ -20,6 +20,12 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 3. **Linguaggio**: TUTTE le risposte all'utente devono essere in italiano.
 
+4. **Nome del servizio systemd backend in PROD**: `noc-backend.service`
+   (NON `argus-backend`, NON `noc-center`, NON `fastapi`). Tutti gli
+   script di deploy DEVONO usare `sudo systemctl restart noc-backend`.
+   Path codice: `/opt/argus/backend/`. Path agent build dir:
+   `/opt/argus/noc-agent/build/`. Utente di esecuzione: `arslan`.
+
 ---
 
 ## 2026-02-12 ✅ ARGUS DESKTOP v5.0.0 — RIscrittura totale connector GUI
