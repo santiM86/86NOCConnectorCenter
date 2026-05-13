@@ -225,13 +225,25 @@ Write-Step "Scrittura agent.yaml"
 New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
 $yamlPath = Join-Path $DataDir "agent.yaml"
 
-# Estrai eventuale sezione MANAGED TARGETS esistente per preservare i targets SNMP
-$managedTargets = ""
+# Estrai i target SNMP dalla vecchia sezione MANAGED TARGETS, se presente, e
+# li ri-emette indentati come 'targets:' DENTRO la sezione snmp: del nuovo
+# yaml. Lo schema config Go richiede snmp.targets, NON snmp_targets top-level
+# (vedi internal/config/config.go SNMPConfig.Targets yaml:"targets"). I file
+# storici hanno 'snmp_targets:' top-level: quei target venivano ignorati dal
+# poller v4 e i device restavano in PENDING senza ICMP/SNMP refresh.
+$snmpTargetsBlock = ""
 if (Test-Path $yamlPath) {
     $oldContent = Get-Content $yamlPath -Raw
-    if ($oldContent -match "(?ms)^# === BEGIN MANAGED TARGETS ===.*?^# === END MANAGED TARGETS ===") {
-        $managedTargets = $Matches[0]
-        Write-Ok "Sezione MANAGED TARGETS esistente preservata"
+    if ($oldContent -match "(?ms)^# === BEGIN MANAGED TARGETS ===\s*\r?\n(?:#[^\r\n]*\r?\n)?snmp_targets:\s*\r?\n(?<items>(?:[ \t]+[^\r\n]*\r?\n)+)# === END MANAGED TARGETS ===") {
+        $rawItems = $Matches['items']
+        # Aggiungo 2 spazi di indent a ogni riga non vuota (entra dentro snmp:)
+        $indented = ($rawItems -split "\r?\n" | ForEach-Object {
+            if ($_ -match '^\s*$') { '' } else { '  ' + $_ }
+        }) -join "`n"
+        $snmpTargetsBlock = "  targets:`n$indented"
+        Write-Ok "Sezione MANAGED TARGETS convertita in snmp.targets (formato schema-compliant)"
+    } elseif ($oldContent -match "(?ms)^# === BEGIN MANAGED TARGETS ===.*?^# === END MANAGED TARGETS ===") {
+        Write-Warn2 "Sezione MANAGED TARGETS trovata ma in formato non riconosciuto (verra' scartata)"
     }
 }
 
@@ -251,6 +263,10 @@ snmp:
   enabled: true
   interval: 60s
   communities: ["public"]
+$snmpTargetsBlock
+ping:
+  enabled: true
+  interval: 60s
 watchdog:
   enabled: true
   stale_after: 90s
@@ -259,10 +275,6 @@ update:
 labels:
   role: "$Role"
 "@
-
-if ($managedTargets) {
-    $yaml = "$yaml`n$managedTargets`n"
-}
 
 [System.IO.File]::WriteAllText($yamlPath, $yaml, [System.Text.Encoding]::UTF8)
 Write-Ok "agent.yaml scritto in $yamlPath"
