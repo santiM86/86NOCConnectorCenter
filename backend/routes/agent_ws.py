@@ -1187,8 +1187,85 @@ async def wizard_bundle(token: Optional[str] = None) -> FileResponse:
     # scaricano installer per piu' clienti non confondono i ZIP nella
     # cartella Download. Ricavo il nome dal client_id risolto sopra.
     client_label = await _resolve_client_label(client_id)
-    fname = f"86NocAgent-Installer-{client_label}.zip"
+    # Includo SEMPRE la versione corrente del Connector v4 nel filename cosi'
+    # il tecnico vede a colpo d'occhio quale build sta installando e i
+    # download multipli non si sovrascrivono come "(1).zip" / "(2).zip" senza
+    # contesto. Es: 86NocAgent-Installer-86BITOffice-v4.6.0.zip
+    ver_label = await _resolve_latest_agent_version_safe()
+    fname = f"86NocAgent-Installer-{client_label}-{ver_label}.zip"
     return FileResponse(bundle, media_type="application/zip", filename=fname)
+
+
+# Cache in-process per la latest release GitHub. TTL breve (5 minuti) per
+# evitare di stressare l'API di GitHub (60 req/h unauth) ad ogni download.
+_AGENT_LATEST_CACHE: Dict[str, Any] = {"version": None, "expires_at": None}
+
+
+async def _resolve_latest_agent_version_safe() -> str:
+    """Ritorna il tag della latest GitHub Release per il Go Agent v4 in
+    formato `vMAJ.MIN.PATCH` (es. ``v4.6.0``). Best-effort:
+
+    1. Cache 5 min in memoria.
+    2. Env var ``AGENT_LATEST_VERSION`` (override manuale per deploy
+       offline / repo privati).
+    3. GitHub API `releases/latest` su ``AGENT_GITHUB_REPO``
+       (default ``santiM86/86NOCConnectorCenter``).
+    4. Fallback ``"latest"`` se tutto fallisce (cosi' il filename resta
+       sano anche senza connettivita').
+    """
+    import os as _os
+    now = _now()
+    cached = _AGENT_LATEST_CACHE.get("version")
+    exp = _AGENT_LATEST_CACHE.get("expires_at")
+    if cached and exp and now < exp:
+        return cached
+    override = (_os.environ.get("AGENT_LATEST_VERSION") or "").strip()
+    if override:
+        ver = override if override.startswith("v") else f"v{override}"
+        _AGENT_LATEST_CACHE["version"] = ver
+        _AGENT_LATEST_CACHE["expires_at"] = now + timedelta(minutes=5)
+        return ver
+    repo = (_os.environ.get("AGENT_GITHUB_REPO") or "santiM86/86NOCConnectorCenter").strip()
+    url = f"https://api.github.com/repos/{repo}/releases/latest"
+    headers = {"User-Agent": "86NocCenter-installer", "Accept": "application/vnd.github.v3+json"}
+    gh_token = (_os.environ.get("AGENT_GITHUB_TOKEN") or "").strip()
+    if gh_token:
+        headers["Authorization"] = f"Bearer {gh_token}"
+    try:
+        import urllib.request as _ureq
+        req = _ureq.Request(url, headers=headers)
+        # GitHub API e' bloccante; eseguo in thread executor per non
+        # bloccare l'event loop FastAPI.
+        loop = asyncio.get_running_loop()
+        def _fetch():
+            with _ureq.urlopen(req, timeout=8) as r:
+                return json.loads(r.read().decode("utf-8"))
+        rel = await loop.run_in_executor(None, _fetch)
+        tag = (rel.get("tag_name") or "").strip()
+        if tag:
+            ver = tag if tag.startswith("v") else f"v{tag}"
+            _AGENT_LATEST_CACHE["version"] = ver
+            _AGENT_LATEST_CACHE["expires_at"] = now + timedelta(minutes=5)
+            return ver
+    except Exception as e:  # noqa: BLE001
+        logger.warning("agent latest-version lookup failed: %s", e)
+    # Cache anche il fallback per evitare hammering quando GitHub e' down.
+    _AGENT_LATEST_CACHE["version"] = "latest"
+    _AGENT_LATEST_CACHE["expires_at"] = now + timedelta(minutes=2)
+    return "latest"
+
+
+@router.get("/agent/latest-version")
+async def agent_latest_version() -> Dict[str, str]:
+    """Espone la versione corrente del Connector Go Agent v4 disponibile per
+    download. Usata dalla UI del Center per:
+
+      - mostrare ``v4.6.0`` sul bottone "Installer" per ciascun cliente
+      - confronto con ``managed_agents.agent_version`` per evidenziare i
+        connettori "outdated" (badge giallo)
+    """
+    ver = await _resolve_latest_agent_version_safe()
+    return {"version": ver}
 
 
 async def _resolve_client_label(client_id: str) -> str:
@@ -1307,15 +1384,17 @@ async def exe_bundle(token: Optional[str] = None) -> FileResponse:
     boxes with enterprise AV: a single .exe + one config file, no scripts at
     all. The technician double-clicks nocinstall.exe and just clicks through.
     """
-    await _token_or_403(token)
+    client_id = await _token_or_403(token)
     bundle = _build_exe_bundle(token)
+    client_label = await _resolve_client_label(client_id)
+    ver_label = await _resolve_latest_agent_version_safe()
     return FileResponse(bundle, media_type="application/zip",
-                        filename="Argus-Connector-Setup.zip")
+                        filename=f"86NocAgent-Setup-{client_label}-{ver_label}.zip")
 
 
 @router.get("/agent/install/setup.exe")
 async def setup_exe(token: Optional[str] = None) -> FileResponse:
-    """Single-file Windows installer: Argus-Setup.exe.
+    """Single-file Windows installer: 86NocAgent-Setup.exe.
 
     7-Zip Setup Deluxe SFX che embedda nocagent + nocwatchdog + nocagent-ui +
     argus.ico + il wizard PS1 (tutto firmato col token del cliente). L'utente
@@ -1326,10 +1405,12 @@ async def setup_exe(token: Optional[str] = None) -> FileResponse:
     Identico a un installer Inno Setup / NSIS: zero estrazioni, zero PS in
     chiaro, zero dipendenze di rete per il bootstrap (i binari sono dentro).
     """
-    await _token_or_403(token)
+    client_id = await _token_or_403(token)
     setup_path = _build_setup_exe(token)
+    client_label = await _resolve_client_label(client_id)
+    ver_label = await _resolve_latest_agent_version_safe()
     return FileResponse(setup_path, media_type="application/vnd.microsoft.portable-executable",
-                        filename="Argus-Setup.exe")
+                        filename=f"86NocAgent-Setup-{client_label}-{ver_label}.exe")
 
 
 @router.get("/agent/install/{platform}.{ext}", response_class=PlainTextResponse)

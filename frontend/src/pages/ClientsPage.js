@@ -25,18 +25,48 @@ export default function ClientsPage() {
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [newClient, setNewClient] = useState({ name: "", description: "", contact_email: "" });
+  // Versione del Connector v4 disponibile su GitHub Releases (latest).
+  // Usata per mostrare "Installer v4.6.0" sui bottoni di download e per
+  // confronto con la versione installata su ogni connector del cliente.
+  const [latestAgentVersion, setLatestAgentVersion] = useState("");
+  // Mappa client_id -> versione attualmente in esecuzione (preso dal piu'
+  // recente managed_agents hello del cliente). Usata per disegnare il badge
+  // "v4.5.0 -> v4.6.0" accanto al bottone Installer quando il cliente non
+  // e' aggiornato.
+  const [agentVersionByClient, setAgentVersionByClient] = useState({});
   const navigate = useNavigate();
 
   useEffect(() => { fetchClients(); }, []);
 
   const fetchClients = async () => {
     try {
-      const [clientsRes, overviewRes] = await Promise.allSettled([
+      const [clientsRes, overviewRes, agentsRes, verRes] = await Promise.allSettled([
         axios.get(`${API}/clients`),
         axios.get(`${API}/overview/clients`),
+        axios.get(`${API}/agents`),
+        axios.get(`${API}/agent/latest-version`),
       ]);
       if (clientsRes.status === "fulfilled") setClients(clientsRes.value.data);
       if (overviewRes.status === "fulfilled") setOverview(overviewRes.value.data);
+      if (agentsRes.status === "fulfilled") {
+        // Tengo l'agent_version PIU' RECENTE per ciascun client_id (ordinato
+        // dal last_hello_at). Cosi' se un cliente ha un master v4.6.0 e uno
+        // scanner v4.5.0 mostro la piu' alta (= quella effettiva di
+        // riferimento per stabilire se serve update).
+        const byClient = {};
+        const docs = agentsRes.value.data?.agents || [];
+        docs.forEach(a => {
+          const cid = a.client_id;
+          const v = a.agent_version;
+          if (!cid || !v) return;
+          if (!byClient[cid] || isNewerSemver(v, byClient[cid])) byClient[cid] = v;
+        });
+        setAgentVersionByClient(byClient);
+      }
+      if (verRes.status === "fulfilled") {
+        const v = (verRes.value.data?.version || "").replace(/^v/, "");
+        setLatestAgentVersion(v);
+      }
     } catch { toast.error("Errore nel caricamento"); }
     finally { setLoading(false); }
   };
@@ -76,6 +106,21 @@ export default function ClientsPage() {
       toast.error("Errore nella rigenerazione", { description: err?.response?.data?.detail || err.message });
     }
   };
+
+  // Confronto semver-light (X.Y.Z) restituendo true se `a` > `b`.
+  // Usato per scegliere la versione "piu' alta" tra connector multipli dello
+  // stesso cliente e per evidenziare "outdated" quando installata < latest.
+  function isNewerSemver(a, b) {
+    if (!b) return true;
+    const pa = String(a).replace(/^v/, "").split(".").map(n => parseInt(n, 10) || 0);
+    const pb = String(b).replace(/^v/, "").split(".").map(n => parseInt(n, 10) || 0);
+    for (let i = 0; i < 3; i++) {
+      const ai = pa[i] || 0; const bi = pb[i] || 0;
+      if (ai > bi) return true;
+      if (ai < bi) return false;
+    }
+    return false;
+  }
 
   const nocUrl = window.location.origin;
 
@@ -246,16 +291,53 @@ export default function ClientsPage() {
                       title={`URL: ${nocUrl}`}>
                       <Globe size={10} /> URL
                     </button>
-                    {client.api_key && (
-                      <a
-                        href={`${API}/agent/install/wizard-bundle.zip?token=${encodeURIComponent(client.api_key)}`}
-                        onClick={(e) => { e.stopPropagation(); toast.success(`Wizard installer per "${client.name}" — estrai e tasto destro su Installa-86NocAgent.bat -> Esegui come amministratore`); }}
-                        data-testid={`download-installer-${client.id}`}
-                        className="text-[9px] px-2 py-1 rounded-md bg-[var(--bg-card)] border border-[var(--bg-border)] text-[var(--text-muted)] hover:text-emerald-400 hover:border-emerald-500/30 transition-colors flex items-center gap-1 no-underline"
-                        title={`Scarica wizard installer ARGUS pre-configurato per ${client.name} (URL + API Key gia' inseriti, scelta master/scanner, dispositivi SNMP)`}>
-                        <DownloadSimple size={10} /> Installer
-                      </a>
-                    )}
+                    {client.api_key && (() => {
+                      const installedVer = agentVersionByClient[client.id] || "";
+                      const latestVer = latestAgentVersion || "";
+                      const hasRealLatest = latestVer && latestVer.toLowerCase() !== "latest";
+                      const isOutdated = installedVer && hasRealLatest && isNewerSemver(latestVer, installedVer);
+                      const isUpToDate = installedVer && hasRealLatest && !isOutdated;
+                      const btnLabel = hasRealLatest
+                        ? `Installer v${latestVer}`
+                        : (latestVer ? "Installer (latest)" : "Installer");
+                      const tooltip = hasRealLatest
+                        ? `Scarica installer 86NocAgent v${latestVer} pre-configurato per ${client.name}` +
+                          (installedVer ? ` (attualmente installato: v${installedVer})` : "")
+                        : `Scarica installer 86NocAgent (ultima release GitHub) pre-configurato per ${client.name}`;
+                      return (
+                        <>
+                          {installedVer && (
+                            <span
+                              className="text-[9px] px-2 py-1 rounded-md border flex items-center gap-1"
+                              style={{
+                                borderColor: isOutdated ? "rgba(245,158,11,0.4)" : "rgba(34,197,94,0.3)",
+                                color: isOutdated ? "#F59E0B" : "#22C55E",
+                                background: "var(--bg-card)",
+                              }}
+                              title={isOutdated
+                                ? `Connector installato (v${installedVer}) e' piu' vecchio della release piu' recente (v${latestVer}). Riscarica l'Installer.`
+                                : `Connector installato: v${installedVer}.`}
+                              data-testid={`installed-version-${client.id}`}>
+                              v{installedVer}{isOutdated ? ` → v${latestVer}` : ""}
+                            </span>
+                          )}
+                          <a
+                            href={`${API}/agent/install/wizard-bundle.zip?token=${encodeURIComponent(client.api_key)}`}
+                            onClick={(e) => { e.stopPropagation(); toast.success(`Installer 86NocAgent${hasRealLatest ? ` v${latestVer}` : ""} per "${client.name}" — estrai e tasto destro su Installa-86NocAgent.bat -> Esegui come amministratore`); }}
+                            data-testid={`download-installer-${client.id}`}
+                            className={`text-[9px] px-2 py-1 rounded-md bg-[var(--bg-card)] border transition-colors flex items-center gap-1 no-underline ${
+                              isOutdated
+                                ? "border-amber-500/40 text-amber-400 hover:border-amber-400"
+                                : isUpToDate
+                                ? "border-emerald-500/30 text-emerald-400 hover:border-emerald-400"
+                                : "border-[var(--bg-border)] text-[var(--text-muted)] hover:text-emerald-400 hover:border-emerald-500/30"
+                            }`}
+                            title={tooltip}>
+                            <DownloadSimple size={10} /> {btnLabel}
+                          </a>
+                        </>
+                      );
+                    })()}
                     <button onClick={(e) => { e.stopPropagation(); }}
                       className="hidden">
                     </button>

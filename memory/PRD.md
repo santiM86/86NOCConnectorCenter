@@ -32,6 +32,92 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-02 (oggi) ✅ FIX VERSIONE CONNECTOR UI + NOME ZIP + COLONNA VERSIONE NEL CENTER
+
+**Status**: codice nel preview env, da committare su GitHub e rilasciare
+come `v4.6.1` per propagare il fix dell'agent-ui.json legacy.
+
+### Bug segnalati dall'utente (screenshot multipli)
+
+1. **Connector UI mostra v4.0.0** dopo update riuscito a v4.6.0 (script
+   PowerShell loggava "Installazione 86NocAgent v4.6.0 COMPLETATA" ma la
+   tray window title era ancora "ARGUS Connector v4.0.0 - unknown").
+2. **Nome ZIP installer senza versione** — i file scaricati erano
+   `86NocAgent-Installer-86BITOffice.zip` / `86NocAgent-Installer-86BITOffice (1).zip`
+   e non si distinguevano i download successivi.
+3. **Nessuna colonna versione nel Center** ("Gestione Clienti") — non si
+   capiva al volo quale connector era outdated.
+4. **Pulsante "Installer" non indicava quale versione** stesse scaricando.
+
+### Root cause #1 (UI v4.0.0)
+
+`cmd/installer/main.go` (vecchio installer Go, ora deprecato) scriveva
+`agent-ui.json` SIA in `$InstallDir` SIA in `$DataDir` con
+`version: "4.0.0"` hardcoded. Il nuovo `install-noc-agent.ps1` scrive solo
+in `$DataDir`. La tray UI `cmd/nocui/main.go` cercava PRIMA in
+`$InstallDir/agent-ui.json` → trovava il file stantio v4.0.0 lasciato dal
+vecchio installer e mascherava il vero `version=4.6.0` salvato in
+`$DataDir/agent-ui.json` dal ps1 nuovo.
+
+### Fix applicati
+
+**Go Agent (richiede ricompilazione + nuova GitHub Release v4.6.1):**
+
+- `cmd/nocui/main.go`: invertito ordine lookup → ora `$ProgramData` ha
+  precedenza su `$InstallDir`. Aggiunta variabile `BuildVersion`
+  iniettabile via `-ldflags "-X main.BuildVersion=4.6.1"` come fallback
+  invece dell'hardcoded `"4.0.0"`.
+- `build/install-noc-agent.ps1`: aggiunto step di cleanup che rimuove
+  `$InstallDir\agent-ui.json` se presente (eredita di installer legacy)
+  e ne sovrascrive una copia "fresca" cosi' qualunque ordine di lookup
+  pesca la versione corretta.
+
+**Backend (gia' attivo nel preview env):**
+
+- `routes/agent_ws.py`: nuovo endpoint `GET /api/agent/latest-version`
+  che ritorna `{"version": "v4.6.0"}` con cache 5 min, sorgenti in
+  cascata:
+    1. env `AGENT_LATEST_VERSION` (override manuale, consigliato in prod
+       per evitare rate-limit GitHub API)
+    2. GitHub API `releases/latest` su `AGENT_GITHUB_REPO`
+       (default `santiM86/86NOCConnectorCenter`)
+    3. fallback `"latest"`.
+- Filename ZIP/EXE installer ora include `-{client_label}-v{version}`:
+    - `86NocAgent-Installer-86BITOffice-v4.6.0.zip` (wizard ps1)
+    - `86NocAgent-Setup-86BITOffice-v4.6.0.zip` (exe bundle)
+    - `86NocAgent-Setup-86BITOffice-v4.6.0.exe` (single-file setup)
+
+**Frontend `ClientsPage.js`:**
+
+- Fetch parallelo di `/api/agents` (per `agent_version` per cliente) +
+  `/api/agent/latest-version`.
+- Pill versione installata accanto al bottone Installer:
+    - verde se up-to-date (`v4.6.0`)
+    - amber se outdated (`v4.5.0 → v4.6.0`)
+- Bottone Installer ora mostra "Installer v4.6.0" e cambia colore
+  in base allo stato (amber se cliente outdated, emerald se aggiornato).
+
+### Workaround utente per Connector gia' installato
+
+L'utente ha gia' v4.6.0 su disco ma vede ancora v4.0.0 nella UI. Le
+opzioni sono:
+
+a. Eliminare manualmente `C:\Program Files\86NocAgent\agent-ui.json`
+   e riavviare `nocagent-ui.exe` (la UI riproveerà il lookup e
+   trovera' solo il file v4.6.0 in `$ProgramData`).
+b. Aspettare release v4.6.1 col fix automatico nel ps1.
+
+### Env var da settare in PROD su `/home/arslan/86NOCConnectorCenter/backend/.env`
+
+```
+AGENT_LATEST_VERSION=v4.6.0       # OPPURE
+AGENT_GITHUB_TOKEN=ghp_xxx        # PAT con read:public-repo per evitare rate-limit
+AGENT_GITHUB_REPO=santiM86/86NOCConnectorCenter   # opzionale (default)
+```
+
+---
+
+
 ## 2026-02 ✅ FIX LOG SILENZIOSO Agent Go (v4.3.0)
 
 **Status**: codice committato su GitHub, in attesa deploy produzione e
