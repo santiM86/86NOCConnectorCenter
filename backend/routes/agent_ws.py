@@ -29,7 +29,7 @@ import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, status
+from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect, status
 from pydantic import BaseModel, Field
 
 from database import db
@@ -710,6 +710,130 @@ async def list_agents(client_id: Optional[str] = None,
     for d in docs:
         d["live"] = d.get("agent_id") in live_ids
     return {"agents": docs, "live_count": len(live_ids)}
+
+
+# --------------------------------------------------------------------------- #
+#  POST /api/agent/scan-report
+#
+#  Endpoint per la TRAY UI (`nocagent-ui.exe` / `ArgusDesktop.exe`) per
+#  inviare immediatamente i risultati di una scansione manuale al Center,
+#  senza dover attendere il prossimo ciclo di discovery dell'agent
+#  (default 5m). Lo abbiamo aggiunto su esplicita richiesta dell'utente:
+#  "voglio un pulsante che quando finisce scan passi subito i dati al
+#  center".
+#
+#  Auth: lo stesso `token` agent presente in `agent.yaml` (campo top-level)
+#  passato come `?token=...` o header `Authorization: Bearer ...`.
+#
+#  Riusa la pipeline di `POST /api/connector/lan-scan`: gli endpoint
+#  vengono salvati in `discovered_endpoints` E auto-censiti in
+#  `managed_devices` (v3.8.15 workflow).
+# --------------------------------------------------------------------------- #
+class ScanReportEndpoint(BaseModel):
+    ip: str
+    mac: Optional[str] = None
+    hostname: Optional[str] = None
+    vendor: Optional[str] = None
+    rtt_ms: Optional[float] = None
+    discovered_via: str = "ui_scan"   # default per distinguere scan manuali
+    sys_descr: Optional[str] = None
+
+
+class ScanReportRequest(BaseModel):
+    client_id: str
+    subnet: str
+    endpoints: list[ScanReportEndpoint] = []
+
+
+@router.post("/agent/scan-report")
+async def agent_scan_report(req: ScanReportRequest, request: Request) -> Dict[str, Any]:
+    # Estrai token sia da query (?token=) sia da header Authorization
+    token = request.query_params.get("token", "")
+    if not token:
+        auth = request.headers.get("Authorization", "")
+        if auth.lower().startswith("bearer "):
+            token = auth[7:].strip()
+    if not token:
+        raise HTTPException(status_code=401, detail="missing token")
+
+    # Valida il token come fa la WS hello (agent_tokens o api_key cliente)
+    auth_doc = await _validate_token(token, req.client_id)
+    if not auth_doc:
+        raise HTTPException(status_code=401, detail="invalid token or client_id")
+
+    now_iso = _now().isoformat()
+    stored = 0
+    auto_managed = 0
+    managed_ips = {
+        d["ip"]
+        async for d in db.managed_devices.find(
+            {"client_id": req.client_id}, {"_id": 0, "ip": 1}
+        )
+        if d.get("ip")
+    }
+
+    for ep in req.endpoints:
+        if not ep.ip:
+            continue
+        mac_norm = (ep.mac or "").lower().replace("-", ":").strip()
+        update: Dict[str, Any] = {
+            "client_id": req.client_id,
+            "ip": ep.ip,
+            "last_seen_at": now_iso,
+            "last_seen_via": ep.discovered_via,
+            "last_seen_subnet": req.subnet,
+            "source": "ui_scan_button",
+        }
+        if mac_norm and len(mac_norm.replace(":", "")) == 12:
+            update["mac"] = mac_norm
+        if ep.hostname:
+            update["hostname_scanner"] = ep.hostname
+        if ep.vendor:
+            update["vendor_scanner"] = ep.vendor
+        if ep.sys_descr:
+            update["sys_descr_scanner"] = ep.sys_descr
+
+        # Upsert su (client_id, ip) cosi' funziona anche per device senza MAC
+        await db.discovered_endpoints.update_one(
+            {"client_id": req.client_id, "ip": ep.ip},
+            {"$set": update},
+            upsert=True,
+        )
+        stored += 1
+
+        # Auto-censimento in managed_devices: se l'IP non e' gia' gestito,
+        # creiamo un device "ping" con il nome scoperto. L'admin puo'
+        # promuoverlo a SNMP successivamente.
+        if ep.ip not in managed_ips:
+            display_name = ep.hostname or ep.vendor or ep.ip
+            await db.managed_devices.update_one(
+                {"client_id": req.client_id, "ip": ep.ip},
+                {"$setOnInsert": {
+                    "client_id": req.client_id,
+                    "ip": ep.ip,
+                    "name": display_name,
+                    "monitor_type": "ping",
+                    "source": "ui_scan_button",
+                    "status": "PENDING",
+                    "created_at": now_iso,
+                }},
+                upsert=True,
+            )
+            auto_managed += 1
+            managed_ips.add(ep.ip)
+
+    logger.info(
+        f"[UI-SCAN] client={req.client_id} subnet={req.subnet} stored={stored} "
+        f"auto_managed={auto_managed} via=ui_scan_button"
+    )
+    return {
+        "status": "ok",
+        "client_id": req.client_id,
+        "subnet": req.subnet,
+        "endpoints_stored": stored,
+        "devices_auto_added": auto_managed,
+        "received_at": now_iso,
+    }
 
 
 class CommandRequest(BaseModel):

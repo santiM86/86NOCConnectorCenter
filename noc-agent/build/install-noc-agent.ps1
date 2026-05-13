@@ -279,6 +279,26 @@ labels:
 [System.IO.File]::WriteAllText($yamlPath, $yaml, [System.Text.Encoding]::UTF8)
 Write-Ok "agent.yaml scritto in $yamlPath"
 
+# Scrivi anche agent-ui.json: e' il formato preferito dalla tray UI
+# (nocagent-ui.exe / ArgusDesktop.exe) per popolare i campi "Cliente",
+# "Ruolo", "Backend" senza dover ri-parsare il yaml. Quando manca, la UI
+# mostra "Cliente: unknown" cosi' come visto in produzione.
+$uiInfoPath = Join-Path $DataDir "agent-ui.json"
+# Risalire dalla URL WS a quella HTTPS (ws:// -> http://, wss:// -> https://)
+# perche' la UI usa il backend per chiamate REST self/health.
+$backendHttp = $BackendUrl -replace '^wss://','https://' -replace '^ws://','http://' -replace '/api/agent/ws$',''
+$uiInfo = @{
+    client_id   = $ClientId
+    token       = $Token
+    role        = $Role
+    backend_url = $backendHttp
+    install_dir = $InstallDir
+    config_path = $yamlPath
+    version     = "v4.3.x"
+} | ConvertTo-Json -Depth 3
+[System.IO.File]::WriteAllText($uiInfoPath, $uiInfo, [System.Text.Encoding]::UTF8)
+Write-Ok "agent-ui.json scritto in $uiInfoPath"
+
 # ------------------------------------------------------------------- #
 # 7. Registra/aggiorna servizi via sc.exe
 # ------------------------------------------------------------------- #
@@ -337,8 +357,22 @@ Write-Step "Verifica installazione"
 $svcStatus = Get-Service 86NocAgent, 86NocWatchdog | Select-Object Name, Status
 $svcStatus | Format-Table -AutoSize
 
-$ver = & $nocagentExe --version 2>&1
-Write-Ok "Versione binario: $ver"
+# Versione binario: leggiamo direttamente dalle Win32 file metadata (zero
+# rischio di file lock perche' il servizio sta scrivendo / mappando il PE).
+# Invocare $nocagentExe --version DOPO Start-Service falliva con "Accesso
+# negato" perche' Windows non permette di rilanciare un PE gia' caricato
+# come processo servizio. Usiamo il FileVersionInfo che e' read-only.
+try {
+    $vi = (Get-Item $nocagentExe).VersionInfo
+    $sz = [math]::Round((Get-Item $nocagentExe).Length / 1MB, 2)
+    if ($vi.ProductVersion) {
+        Write-Ok "Versione binario: $($vi.ProductVersion) ($sz MB)"
+    } else {
+        Write-Ok "Binario installato: $nocagentExe ($sz MB) - version string non incorporata nei metadati"
+    }
+} catch {
+    Write-Warn2 "Impossibile leggere metadati binario: $($_.Exception.Message)"
+}
 
 $markerPath = Join-Path $DataDir "log_path.txt"
 if (Test-Path $markerPath) {

@@ -95,6 +95,104 @@ Get-Content $logPath -Tail 30
 - `/app/noc-agent/build/install-noc-agent.ps1` (installer standalone)
 - `/app/.github/workflows/release-agent.yml` (aggiornato: include lo script come asset)
 
+## 2026-02 ✅ FIX POLLING SNMP/ICMP (snmp_targets -> snmp.targets)
+
+**Status**: Verificato in produzione su cliente 86BITOffice
+(client_id `57cb2e2b-938c-4f6d-a1a3-df5368de00e9`). Polling ICMP/SNMP attivo,
+DB `managed_devices.last_poll_at` si aggiorna ad ogni round 60s.
+
+### Root cause
+Lo schema config Go (`internal/config/config.go` SNMPConfig.Targets yaml:"targets")
+si aspetta i target SNMP sotto `snmp.targets:` (indentato). I file
+`agent.yaml` storici li avevano in `snmp_targets:` (top-level), formato
+ignorato dal poller v4 → 0 polling SNMP, device bloccati nello stato
+PENDING perche' nessun `last_poll_at` veniva aggiornato.
+
+### Fix
+- `install-noc-agent.ps1`: regex che estrae i target dalla vecchia sezione
+  `# === BEGIN MANAGED TARGETS === / snmp_targets:` e li ri-emette indentati
+  di +2 spazi dentro `snmp.targets:` nel nuovo yaml. Aggiunge anche
+  `ping.enabled: true / interval: 60s` per attivare ICMP polling.
+
+### Distribuzione completamente GitHub-based
+Il sistema NOC ora supporta install/update agent senza alcun coinvolgimento
+del backend Linux:
+1. Push tag `v*` -> GH Actions compila Windows binaries + lo script
+2. Asset disponibili su `github.com/santiM86/86NOCConnectorCenter/releases`
+3. Su Windows: `iwr <raw script> | iex -Token ... -ClientId ...`
+
+### To-do P1 emersi
+- ~~**Ghost agents**: 14 distinct agent_id nel DB per lo stesso client_id~~ ✅ FIXED 2026-02 sessione successiva (persistenza UUID stabile in `agent_id.txt`).
+- ~~**Bug installer minor**: `nocagent.exe --version` fallisce con Access Denied~~ ✅ FIXED — leggiamo metadata via Get-Item.VersionInfo.
+- **3 device offline** del cliente 86BITOffice (10.10.1.5/15/16):
+  verificare se sono fisicamente down o se la community SNMP nel yaml
+  ("Argus") corrisponde a quella del device.
+
+## 2026-02 ✅ POTENZIAMENTO CONNECTOR GO (sessione successiva)
+
+**Status**: codice committato, in attesa push tag `v4.4.0` per build automatico
+GitHub Actions + reinstall su Windows del cliente.
+
+### Task completati
+
+**1. Ghost Agents Fix (P1)**
+- `internal/config/config.go`: nuova funzione `getOrCreateStableAgentID()` che
+  legge / genera UUID 32-hex e lo persiste in `C:\ProgramData\86NocAgent\agent_id.txt`
+  (separato da agent.yaml per non perdere identita' quando l'installer riscrive il yaml).
+- `cmd/agent/main.go`: il warn "agent_id missing - ephemeral" sostituito da info
+  "agent_id resolved". Rimane come last-resort safety net.
+- `internal/config/agentid_test.go`: 3 unit test — generazione+persistenza,
+  validazione hex, rigenera quando file corrotto. Tutti PASS.
+
+**2. Installer Access Denied Fix**
+- `install-noc-agent.ps1`: `nocagent.exe --version` dopo Start-Service falliva
+  perche' Windows rifiuta exec di un PE gia' caricato come servizio. Ora leggiamo
+  Get-Item(...).VersionInfo (read-only metadata, zero file lock).
+
+**3. UI "Cliente: unknown" Fix**
+- `install-noc-agent.ps1`: ora scrive anche `agent-ui.json` in `C:\ProgramData\86NocAgent\`
+  con client_id, token, role, backend_url, install_dir, config_path, version.
+  La tray UI nocagent-ui.exe preferisce questo formato al parsing yaml.
+
+**4. Bottone "Invia al NOC Center" (richiesta esplicita utente)**
+- Backend: nuovo endpoint `POST /api/agent/scan-report` in `backend/routes/agent_ws.py`.
+  Auth via bearer token agent (riusa `_validate_token`). Riusa pipeline
+  `discovered_endpoints` + auto-censimento in `managed_devices`.
+- UI Go: `cmd/nocui/scanner_windows.go` — nuovo `wd.PushButton{Text: "Invia al NOC Center"}`
+  nella dialog scanner, accanto a "Esporta HTML...".
+- Helper Go: `cmd/nocui/push_scan_results_windows.go` — HTTP POST async con
+  retry/timeout 30s, filtra solo host alive/arp-only, gestisce wss->https.
+
+### Test Backend (curl)
+```bash
+TOKEN="noc_627c87f4b9114f41b12e7dccefd42325"
+CID="57cb2e2b-938c-4f6d-a1a3-df5368de00e9"
+curl -s -X POST "https://argus.86bit.it/api/agent/scan-report" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{\"client_id\":\"$CID\",\"subnet\":\"10.10.1.0/24\",\"endpoints\":[
+    {\"ip\":\"10.10.1.99\",\"hostname\":\"TEST\",\"discovered_via\":\"ui_scan\"}
+  ]}"
+```
+
+### Task rimanenti (prossima sessione)
+- **#4 UI freeze "Non risponde"**: blocking I/O sul thread principale Win32
+  walk. Richiede rework: portare ogni chiamata HTTP / disk fuori dal main
+  thread con mw.Synchronize(). Stima 1-2h.
+- **#6 NetBIOS NBNS UDP 137**: discovery hostname Windows senza PTR.
+  Nuovo file `internal/discovery/nbns.go`.
+- **#7 WMI Polling Windows Servers**: CPU/RAM/Disk/Services/EventLog.
+  Nuovo modulo `internal/poller/wmi_windows.go` con ole32 bindings.
+
+### File modificati / creati
+- `noc-agent/internal/config/config.go` (+ persistenza agent_id)
+- `noc-agent/internal/config/agentid_test.go` (NEW, 3 test)
+- `noc-agent/cmd/agent/main.go` (log message)
+- `noc-agent/cmd/nocui/scanner_windows.go` (bottone)
+- `noc-agent/cmd/nocui/push_scan_results_windows.go` (NEW, HTTP client)
+- `noc-agent/build/install-noc-agent.ps1` (Access Denied + agent-ui.json)
+- `backend/routes/agent_ws.py` (endpoint scan-report)
+
 ---
 
 
