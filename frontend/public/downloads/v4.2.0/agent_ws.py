@@ -403,9 +403,11 @@ async def _bridge_ping_poll(conn: _Connection, r: Dict[str, Any]) -> None:
 
     # Update raw poll-status doc — best-effort, errors logged but never
     # propagated (a stale row here doesn't justify dropping the WS).
+    # NOTE: la collection device_poll_status ha un indice unique su
+    # (client_id, device_ip). Il campo si chiama "device_ip", NON "ip".
     try:
         await db.device_poll_status.update_one(
-            {"client_id": conn.client_id, "agent_id": conn.agent_id, "ip": target},
+            {"client_id": conn.client_id, "agent_id": conn.agent_id, "device_ip": target},
             {
                 "$set": {
                     "ping_reachable": reachable,
@@ -418,7 +420,7 @@ async def _bridge_ping_poll(conn: _Connection, r: Dict[str, Any]) -> None:
                 "$setOnInsert": {
                     "client_id": conn.client_id,
                     "agent_id": conn.agent_id,
-                    "ip": target,
+                    "device_ip": target,
                     "first_poll_at": now_iso,
                 },
             },
@@ -482,10 +484,10 @@ async def _bridge_snmp_poll(conn: _Connection, r: Dict[str, Any]) -> None:
         return
     now_iso = _now().isoformat()
     reachable = bool(r.get("reachable"))
-    update = {
-        "client_id": conn.client_id,
+    # NOTE: collection device_poll_status indice unique su
+    # (client_id, device_ip). Il campo si chiama "device_ip" NON "ip".
+    snmp_set = {
         "agent_id": conn.agent_id,
-        "ip": target,
         "reachable": reachable,
         "latency_ns": r.get("latency_ns"),
         "sys_name": r.get("sys_name"),
@@ -496,11 +498,21 @@ async def _bridge_snmp_poll(conn: _Connection, r: Dict[str, Any]) -> None:
         "last_poll_at": now_iso,
         "source": "agent_v4",
     }
-    await db.device_poll_status.update_one(
-        {"client_id": conn.client_id, "ip": target},
-        {"$set": update, "$setOnInsert": {"first_poll_at": now_iso}},
-        upsert=True,
-    )
+    try:
+        await db.device_poll_status.update_one(
+            {"client_id": conn.client_id, "device_ip": target},
+            {
+                "$set": snmp_set,
+                "$setOnInsert": {
+                    "client_id": conn.client_id,
+                    "device_ip": target,
+                    "first_poll_at": now_iso,
+                },
+            },
+            upsert=True,
+        )
+    except Exception as e:
+        logger.warning("snmp_poll: device_poll_status upsert failed ip=%s err=%s", target, e)
     # Reflect live status in managed_devices so dashboards refresh in
     # real time. Only update fields that the UI cares about.
     md_set = {
@@ -512,10 +524,13 @@ async def _bridge_snmp_poll(conn: _Connection, r: Dict[str, Any]) -> None:
         md_set["sys_name"] = r["sys_name"]
     if r.get("sys_descr"):
         md_set["sys_descr"] = r["sys_descr"]
-    await db.managed_devices.update_many(
-        {"client_id": conn.client_id, "ip": target},
-        {"$set": md_set},
-    )
+    try:
+        await db.managed_devices.update_many(
+            {"client_id": conn.client_id, "ip": target},
+            {"$set": md_set},
+        )
+    except Exception as e:
+        logger.warning("snmp_poll: managed_devices update failed ip=%s err=%s", target, e)
 
 
 async def _build_poller_config(client_id: str) -> Dict[str, Any]:
