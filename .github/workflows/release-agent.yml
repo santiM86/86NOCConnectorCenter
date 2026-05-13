@@ -104,6 +104,7 @@ jobs:
       - name: Stage installer template (5th asset)
         run: |
           cp build/installer_gui.ps1.template build/bin/windows-amd64/installer_gui.ps1.template
+          cp build/install-noc-agent.ps1     build/bin/windows-amd64/install-noc-agent.ps1
           ls -lh build/bin/windows-amd64/
 
       - name: Create or update GitHub Release
@@ -124,7 +125,16 @@ jobs:
             - `nocagent-ui.exe` — GUI tray / console gestione device
             - `nocinstall.exe` — installer CLI standalone
             - `installer_gui.ps1.template` — template PowerShell del wizard installazione
+            - `install-noc-agent.ps1` — **installer STANDALONE** (zero backend Linux, scarica direttamente da questa release)
             - `SHA256SUMS.txt` — hash SHA-256 di tutti i .exe
+
+            **Install / update standalone (zero dipendenze backend)**
+            ```powershell
+            # PowerShell Administrator sul Windows del cliente
+            $u = "https://github.com/${{ github.repository }}/releases/latest/download/install-noc-agent.ps1"
+            iwr $u -OutFile $env:TEMP\install.ps1 -UseBasicParsing
+            & $env:TEMP\install.ps1 -Token "<NOC_TOKEN>" -ClientId "<CLIENT_UUID>"
+            ```
 
             **Come consumare**
             Sul NOC Center setta l'env `BINARY_URLS_BASE` puntando a:
@@ -141,6 +151,7 @@ jobs:
             noc-agent/build/bin/windows-amd64/nocagent-ui.exe
             noc-agent/build/bin/windows-amd64/nocinstall.exe
             noc-agent/build/bin/windows-amd64/installer_gui.ps1.template
+            noc-agent/build/bin/windows-amd64/install-noc-agent.ps1
             noc-agent/build/bin/windows-amd64/SHA256SUMS.txt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
