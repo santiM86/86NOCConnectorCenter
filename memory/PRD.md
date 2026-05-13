@@ -95,6 +95,43 @@ Get-Content $logPath -Tail 30
 - `/app/noc-agent/build/install-noc-agent.ps1` (installer standalone)
 - `/app/.github/workflows/release-agent.yml` (aggiornato: include lo script come asset)
 
+## 2026-02 ✅ FIX POLLING SNMP/ICMP (snmp_targets -> snmp.targets)
+
+**Status**: Verificato in produzione su cliente 86BITOffice
+(client_id `57cb2e2b-938c-4f6d-a1a3-df5368de00e9`). Polling ICMP/SNMP attivo,
+DB `managed_devices.last_poll_at` si aggiorna ad ogni round 60s.
+
+### Root cause
+Lo schema config Go (`internal/config/config.go` SNMPConfig.Targets yaml:"targets")
+si aspetta i target SNMP sotto `snmp.targets:` (indentato). I file
+`agent.yaml` storici li avevano in `snmp_targets:` (top-level), formato
+ignorato dal poller v4 → 0 polling SNMP, device bloccati nello stato
+PENDING perche' nessun `last_poll_at` veniva aggiornato.
+
+### Fix
+- `install-noc-agent.ps1`: regex che estrae i target dalla vecchia sezione
+  `# === BEGIN MANAGED TARGETS === / snmp_targets:` e li ri-emette indentati
+  di +2 spazi dentro `snmp.targets:` nel nuovo yaml. Aggiunge anche
+  `ping.enabled: true / interval: 60s` per attivare ICMP polling.
+
+### Distribuzione completamente GitHub-based
+Il sistema NOC ora supporta install/update agent senza alcun coinvolgimento
+del backend Linux:
+1. Push tag `v*` -> GH Actions compila Windows binaries + lo script
+2. Asset disponibili su `github.com/santiM86/86NOCConnectorCenter/releases`
+3. Su Windows: `iwr <raw script> | iex -Token ... -ClientId ...`
+
+### To-do P1 emersi
+- **Ghost agents**: 14 distinct agent_id nel DB per lo stesso client_id,
+  perche' l'agent genera un UUID effimero ad ogni restart. Va persistito
+  in `agent.yaml` al primo run.
+- **Bug installer minor**: `nocagent.exe --version` fallisce con Access
+  Denied perche' eseguito DOPO Start-Service (file lockato). Spostare il
+  check PRIMA di registrare/avviare i servizi.
+- **3 device offline** del cliente 86BITOffice (10.10.1.5/15/16):
+  verificare se sono fisicamente down o se la community SNMP nel yaml
+  ("Argus") corrisponde a quella del device.
+
 ---
 
 
