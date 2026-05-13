@@ -32,6 +32,56 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-02 ✅ FIX LOG SILENZIOSO Agent Go (v4.3.0)
+
+**Status**: codice committato su GitHub, in attesa deploy produzione e
+re-installazione agent su macchina Windows del cliente.
+
+### Sintomi (pre-fix)
+- Servizio `86NocAgent` su Windows in esecuzione (heartbeat.tick aggiornato)
+- `agent.pid` presente
+- ❌ Nessun file `nocagent.log` in `C:\ProgramData\86NocAgent\logs\`
+- Nessun panic / Event Log applicativo → agent NON crasha, ma il logger
+  fallisce in silenzio
+- Dispositivi bloccati visivamente in stato PENDING nella UI
+
+### Root cause
+In `internal/logging/logging.go` la funzione `openLogFile()` ritornava
+`nil` silenziosamente quando MkdirAll o OpenFile fallivano. Sotto SCM
+(LocalSystem) stderr è chiuso, quindi nessun output visibile.
+
+### Fix implementato
+1. `candidateLogPaths()`: catena ordinata di 4 path da provare (LOCALAPPDATA
+   → USERPROFILE → ProgramData → systemprofile)
+2. `openFirstWritableLog()`: walk dei candidati, prima che apre con
+   successo vince
+3. `writeLogPathMarker()`: scrive il path effettivo in
+   `%ProgramData%\86NocAgent\log_path.txt` per diagnostica cross-process
+4. Banner di startup logga la lista candidates → ovvio quale ha vinto
+5. Tray UI `nocui` aggiornata con `resolveLogDir()` che legge il marker
+6. PowerShell `installer_gui.ps1.template` aggiornato per leggere il marker
+7. 3 unit test Go in `internal/logging/logging_test.go` (tutti PASS)
+
+### Verifica utente richiesta
+Su Windows dopo re-install:
+```powershell
+Get-Content "C:\ProgramData\86NocAgent\log_path.txt"
+# Deve mostrare il path effettivo del log (es. C:\Windows\System32\config\systemprofile\AppData\Local\86NocAgent\logs\nocagent.log)
+$logPath = Get-Content "C:\ProgramData\86NocAgent\log_path.txt"
+Get-Content $logPath -Tail 30
+# Deve mostrare il banner "logger initialized" + entry runtime
+```
+
+### Deploy
+1. `git pull` su `/home/arslan/86NOCConnectorCenter/`
+2. `cd noc-agent && make windows-amd64`
+3. `sudo systemctl restart noc-backend`
+4. Su Windows: re-install via `https://argus.86bit.it/api/agent/install/setup.exe?token=<TOKEN>`
+
+---
+
+
+
 ## 2026-02-12 ✅ ARGUS DESKTOP v5.0.0 — RIscrittura totale connector GUI
 
 **Status**: MVP funzionante, build OK, preview live, deploy pronto in
