@@ -158,13 +158,29 @@ func resolveLogDir() string {
 	return filepath.Join(pd, "86NocAgent", "logs")
 }
 
+// BuildVersion viene iniettata a compile time via:
+//   go build -ldflags "-X main.BuildVersion=4.6.0"
+// e' il fallback usato quando agent-ui.json non riporta la versione,
+// cosi' la UI mostra SEMPRE la versione reale del binario installato
+// (mai un valore hardcoded stantio tipo "4.0.0" residuo di una vecchia
+// installazione che ha lasciato in giro file agent-ui.json obsoleti).
+var BuildVersion = ""
+
 func loadAgentInfo() AgentInfo {
 	// agent-ui.json viene scritto dall'installer accanto al binario.
+	//
+	// Ordine di lookup:
+	//   1. %ProgramData%\86NocAgent\agent-ui.json   <-- sorgente di verita',
+	//      scritta dall'installer ps1 ad ogni run (update incluso).
+	//   2. <InstallDir>\agent-ui.json               <-- legacy: vecchi
+	//      installer (cmd/installer/main.go pre-v4.5) scrivevano in entrambi
+	//      i path. Se rimasto, riportava version=4.0.0 hardcoded mascherando
+	//      l'aggiornamento. Lo usiamo solo come fallback finale.
 	exe, _ := os.Executable()
 	dir := filepath.Dir(exe)
 	candidates := []string{
-		filepath.Join(dir, "agent-ui.json"),
 		filepath.Join(os.Getenv("ProgramData"), "86NocAgent", "agent-ui.json"),
+		filepath.Join(dir, "agent-ui.json"),
 	}
 	logf("loadAgentInfo: exe=%s dir=%s", exe, dir)
 	for _, p := range candidates {
@@ -211,7 +227,7 @@ func loadAgentInfo() AgentInfo {
 		a.InstallDir = dir
 		a.ConfigPath = yamlPath
 		if a.Version == "" {
-			a.Version = "4.0.0"
+			a.Version = BuildVersion
 		}
 		// AgentID stabile dal file persistente
 		if idBytes, ierr := os.ReadFile(filepath.Join(os.Getenv("ProgramData"), "86NocAgent", "agent_id.txt")); ierr == nil {
@@ -232,7 +248,7 @@ func loadAgentInfo() AgentInfo {
 		Role:       "master",
 		InstallDir: dir,
 		ConfigPath: yamlPath,
-		Version:    "4.0.0",
+		Version:    BuildVersion,
 	}
 }
 

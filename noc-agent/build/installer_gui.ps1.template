@@ -962,7 +962,7 @@ if ($confirm -ne [System.Windows.Forms.DialogResult]::Yes) { exit 0 }
 
 $installDir = 'C:\Program Files\86NocAgent'
 $dataDir    = 'C:\ProgramData\86NocAgent'
-$startMenu  = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\86BIT Argus Center'
+$startMenu  = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\86BIT Argus Connector'
 $logFile    = Join-Path $env:TEMP '86NocAgent-uninstall.log'
 "$(Get-Date -Format o) - uninstall start" | Out-File -FilePath $logFile -Append
 
@@ -1817,7 +1817,7 @@ function Run-Install {
             Append-Log "      WARN: agent-ui.json non scritto: $($_.Exception.Message)" $ColorError
         }
         try {
-            $startMenu = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\86BIT Argus Center"
+            $startMenu = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\86BIT Argus Connector"
             New-Item -ItemType Directory -Force -Path $startMenu | Out-Null
             $wsh = New-Object -ComObject WScript.Shell
             $uiExe = Join-Path $InstallDir "nocagent-ui.exe"
@@ -1830,7 +1830,7 @@ function Run-Install {
             $lnk.IconLocation = $iconLoc
             $lnk.Description = "Apri Connector Argus - Gestisci Dispositivi"
             $lnk.Save()
-            Append-Log "      shortcut '86BIT Argus Center\Connector' creato" $ColorMuted
+            Append-Log "      shortcut '86BIT Argus Connector\Connector' creato" $ColorMuted
         } catch {
             Append-Log "      WARN: shortcut non creato: $($_.Exception.Message)" $ColorError
         }
@@ -1910,7 +1910,7 @@ function Run-Install {
         }
         try {
             # Aggiunge anche shortcut 'Disinstalla' nel menu Start
-            $startMenu = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\86BIT Argus Center"
+            $startMenu = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\86BIT Argus Connector"
             if (-not (Test-Path $startMenu)) {
                 New-Item -ItemType Directory -Force -Path $startMenu | Out-Null
             }
@@ -1973,7 +1973,7 @@ function Show-Done {
         $contentPanel.Controls.Add($box)
 
         $items = @(
-            "Menu Start -> 86BIT Argus Center -> Connector",
+            "Menu Start -> 86BIT Argus Connector -> Connector",
             "Tray icon visibile vicino all'orologio (zona notifica)",
             "Apri il NOC Center -> Agents per verificare 'live: true'",
             "Per disinstallare: Pannello di controllo -> Programmi"

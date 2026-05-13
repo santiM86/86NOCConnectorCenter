@@ -320,6 +320,29 @@ $uiInfo = [ordered]@{
 [System.IO.File]::WriteAllText($uiInfoPath, $uiInfo, [System.Text.Encoding]::UTF8)
 Write-Ok "agent-ui.json scritto (version=$resolvedVersion build_date=$buildDate)"
 
+# Cleanup: vecchie versioni dell'installer (cmd/installer/main.go pre-v4.5)
+# scrivevano agent-ui.json ANCHE in $InstallDir con version=4.0.0 hardcoded.
+# Se rimane in giro la tray UI lo trova per primo nel lookup e mostra
+# "ARGUS Connector v4.0.0" anche dopo aver fatto un update a v4.6.0.
+# Lo eliminiamo e riscriviamo la copia "fresca" cosi' qualunque ordine di
+# lookup pesca la versione corretta. -ErrorAction SilentlyContinue per non
+# crashare in caso di permessi/file-lock.
+$legacyUiPath = Join-Path $InstallDir "agent-ui.json"
+if (Test-Path $legacyUiPath) {
+    try {
+        Remove-Item -Path $legacyUiPath -Force -ErrorAction Stop
+        Write-Ok "Rimosso agent-ui.json legacy in $InstallDir"
+    } catch {
+        Write-Warn2 "Impossibile rimuovere $legacyUiPath ($($_.Exception.Message)) - provo a sovrascriverlo"
+    }
+}
+try {
+    [System.IO.File]::WriteAllText($legacyUiPath, $uiInfo, [System.Text.Encoding]::UTF8)
+    Write-Ok "agent-ui.json sincronizzato anche in $InstallDir (legacy compat)"
+} catch {
+    Write-Warn2 "Sovrascrittura $legacyUiPath fallita: $($_.Exception.Message)"
+}
+
 # ------------------------------------------------------------------- #
 # 7. Registra/aggiorna servizi via sc.exe
 # ------------------------------------------------------------------- #
