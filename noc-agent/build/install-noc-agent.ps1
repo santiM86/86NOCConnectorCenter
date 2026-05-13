@@ -281,23 +281,44 @@ Write-Ok "agent.yaml scritto in $yamlPath"
 
 # Scrivi anche agent-ui.json: e' il formato preferito dalla tray UI
 # (nocagent-ui.exe / ArgusDesktop.exe) per popolare i campi "Cliente",
-# "Ruolo", "Backend" senza dover ri-parsare il yaml. Quando manca, la UI
-# mostra "Cliente: unknown" cosi' come visto in produzione.
+# "Ruolo", "Backend", "Versione" senza dover ri-parsare il yaml. Quando
+# manca, la UI mostra "Cliente: unknown" cosi' come visto in produzione.
 $uiInfoPath = Join-Path $DataDir "agent-ui.json"
 # Risalire dalla URL WS a quella HTTPS (ws:// -> http://, wss:// -> https://)
 # perche' la UI usa il backend per chiamate REST self/health.
 $backendHttp = $BackendUrl -replace '^wss://','https://' -replace '^ws://','http://' -replace '/api/agent/ws$',''
-$uiInfo = @{
+
+# Versione: usiamo il tag della release effettivamente scaricata (es. "v4.4.0"
+# o "4.4.0"), stripando l'eventuale prefisso 'v' per uniformita' con i
+# titoli UI (es. "ARGUS v4.4.0"). Cosi' la tray e i metadati riflettono
+# SEMPRE la versione reale presente su disco, non un valore hardcoded.
+$resolvedVersion = $Version
+if ($rel -and $rel.tag_name) { $resolvedVersion = $rel.tag_name }
+$resolvedVersion = $resolvedVersion -replace '^v',''
+$buildDate = if ($rel -and $rel.published_at) { $rel.published_at } else { (Get-Date).ToString('yyyy-MM-ddTHH:mm:ssZ') }
+
+# Persistenza agent_id: leggiamo il file scritto dall'agent al primo run
+# (internal/config/config.go:getOrCreateStableAgentID). Se non esiste
+# ancora - prima installazione - il prossimo Start-Service lo creera'.
+$persistedAgentId = ""
+$aidPath = Join-Path $DataDir "agent_id.txt"
+if (Test-Path $aidPath) {
+    try { $persistedAgentId = (Get-Content $aidPath -Raw).Trim() } catch { }
+}
+
+$uiInfo = [ordered]@{
     client_id   = $ClientId
     token       = $Token
     role        = $Role
     backend_url = $backendHttp
     install_dir = $InstallDir
     config_path = $yamlPath
-    version     = "v4.3.x"
+    version     = $resolvedVersion
+    build_date  = $buildDate
+    agent_id    = $persistedAgentId
 } | ConvertTo-Json -Depth 3
 [System.IO.File]::WriteAllText($uiInfoPath, $uiInfo, [System.Text.Encoding]::UTF8)
-Write-Ok "agent-ui.json scritto in $uiInfoPath"
+Write-Ok "agent-ui.json scritto (version=$resolvedVersion build_date=$buildDate)"
 
 # ------------------------------------------------------------------- #
 # 7. Registra/aggiorna servizi via sc.exe
