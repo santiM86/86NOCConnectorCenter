@@ -36,7 +36,7 @@ STAGE="/tmp/argus-v4.2.0.${TS}"
 mkdir -p "${STAGE}"
 
 declare -A SHA256
-SHA256["agent_ws.py"]="56201815f80b30e68757985f9b79e525c22aa6fbbb29c350a6a5d98f4f938c2d"
+SHA256["agent_ws.py"]="ad61563698c1f7ba14f092b8b4bdb90e37234822ddbd406d537a669f8d626c81"
 SHA256["advanced_features.py"]="20d3fd1a82c13762b3058920fd765c9492fc2b68a89a42fbcc0c3c8270221b70"
 SHA256["installer_gui.ps1.template"]="fe1ebe569319ba6f6a0a8b9302097e0e090bed92c90c3d300af9112ecd2ece40"
 
