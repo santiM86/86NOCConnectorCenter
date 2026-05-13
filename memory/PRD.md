@@ -23,8 +23,12 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 4. **Nome del servizio systemd backend in PROD**: `noc-backend.service`
    (NON `argus-backend`, NON `noc-center`, NON `fastapi`). Tutti gli
    script di deploy DEVONO usare `sudo systemctl restart noc-backend`.
-   Path codice: `/opt/argus/backend/`. Path agent build dir:
-   `/opt/argus/noc-agent/build/`. Utente di esecuzione: `arslan`.
+   Path codice REALE in PROD: `/home/arslan/86NOCConnectorCenter/backend/`
+   (NON `/opt/argus/backend/` — quel path o non esiste o è una directory
+   stale di un vecchio deploy). Path agent build dir:
+   `/home/arslan/86NOCConnectorCenter/noc-agent/build/`. Utente di
+   esecuzione: `arslan`. Hostname VM: `86bitserver`. uvicorn binda
+   `127.0.0.1:8186` con `--workers 1`.
 
 ---
 
