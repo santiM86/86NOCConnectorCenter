@@ -305,16 +305,23 @@ async def _on_heartbeat(conn: _Connection, hb: Dict[str, Any]) -> None:
 async def _on_event(conn: _Connection, evt: Dict[str, Any]) -> None:
     kind = evt.get("kind")
     data = evt.get("data")
-    if kind == "discovery_batch" and isinstance(data, list):
-        await _bridge_discovery(conn, data)
-    elif kind == "snmp_poll" and isinstance(data, dict):
-        await _bridge_snmp_poll(conn, data)
-    elif kind == "ping_poll" and isinstance(data, dict):
-        await _bridge_ping_poll(conn, data)
-    elif kind == "module_stuck":
-        logger.warning("agent v4 module_stuck agent_id=%s data=%s", conn.agent_id, data)
-    elif kind == "crash_recovered":
-        logger.warning("agent v4 crash_recovered agent_id=%s data=%s", conn.agent_id, data)
+    # GUARD: any exception here would propagate up to _handle_frame and
+    # drop the agent's WS connection (crash-loop). All bridges write to
+    # Mongo so transient errors (DuplicateKey, network blip, schema
+    # validation) are normal — log them, keep the session alive.
+    try:
+        if kind == "discovery_batch" and isinstance(data, list):
+            await _bridge_discovery(conn, data)
+        elif kind == "snmp_poll" and isinstance(data, dict):
+            await _bridge_snmp_poll(conn, data)
+        elif kind == "ping_poll" and isinstance(data, dict):
+            await _bridge_ping_poll(conn, data)
+        elif kind == "module_stuck":
+            logger.warning("agent v4 module_stuck agent_id=%s data=%s", conn.agent_id, data)
+        elif kind == "crash_recovered":
+            logger.warning("agent v4 crash_recovered agent_id=%s data=%s", conn.agent_id, data)
+    except Exception as e:
+        logger.warning("_on_event(%s) bridge crashed agent=%s err=%s", kind, conn.agent_id, e)
 
 
 async def _bridge_discovery(conn: _Connection, batch: List[Dict[str, Any]]) -> None:
@@ -377,6 +384,10 @@ async def _bridge_ping_poll(conn: _Connection, r: Dict[str, Any]) -> None:
 
     Counters are kept on `managed_devices.consecutive_ping_failures` so
     they survive backend restarts without needing a separate store.
+
+    All writes are wrapped in try/except so a single Mongo error (e.g.
+    a unique-index conflict or schema validation) cannot crash the WS
+    bridge — the agent stays connected and the next ping_poll retries.
     """
     target = r.get("target")
     if not target:
@@ -390,65 +401,75 @@ async def _bridge_ping_poll(conn: _Connection, r: Dict[str, Any]) -> None:
         latency_ms = None
     loss_pct = r.get("loss_pct")
 
-    # Always update the raw poll-status doc — it's the source of truth
-    # for "what did the last probe see?".
-    await db.device_poll_status.update_one(
-        {"client_id": conn.client_id, "ip": target},
-        {
-            "$set": {
-                "client_id": conn.client_id,
-                "agent_id": conn.agent_id,
-                "ip": target,
-                "ping_reachable": reachable,
-                "ping_latency_ms": latency_ms,
-                "ping_loss_pct": loss_pct,
-                "ping_error": r.get("error"),
-                "last_ping_at": now_iso,
-                "source": "agent_v4",
+    # Update raw poll-status doc — best-effort, errors logged but never
+    # propagated (a stale row here doesn't justify dropping the WS).
+    # NOTE: la collection device_poll_status ha un indice unique su
+    # (client_id, device_ip). Il campo si chiama "device_ip", NON "ip".
+    try:
+        await db.device_poll_status.update_one(
+            {"client_id": conn.client_id, "agent_id": conn.agent_id, "device_ip": target},
+            {
+                "$set": {
+                    "ping_reachable": reachable,
+                    "ping_latency_ms": latency_ms,
+                    "ping_loss_pct": loss_pct,
+                    "ping_error": r.get("error"),
+                    "last_ping_at": now_iso,
+                    "source": "agent_v4",
+                },
+                "$setOnInsert": {
+                    "client_id": conn.client_id,
+                    "agent_id": conn.agent_id,
+                    "device_ip": target,
+                    "first_poll_at": now_iso,
+                },
             },
-            "$setOnInsert": {"first_poll_at": now_iso},
-        },
-        upsert=True,
-    )
-
-    # Now reconcile managed_devices.status with the 3-failure threshold.
-    # We pull the current device(s) first so we know the running counter
-    # without a $cond aggregation update (works on every Mongo version).
-    cursor = db.managed_devices.find(
-        {"client_id": conn.client_id, "ip": target},
-        {"_id": 0, "id": 1, "status": 1, "consecutive_ping_failures": 1},
-    )
-    failure_threshold = 3
-    async for dev in cursor:
-        prev_failures = int(dev.get("consecutive_ping_failures") or 0)
-        prev_status = dev.get("status")
-        update: Dict[str, Any] = {
-            "last_poll_at": now_iso,
-            "last_poll_source": "agent_v4",
-            "last_ping_at": now_iso,
-            "ping_latency_ms": latency_ms,
-        }
-        if reachable:
-            update["status"] = "online"
-            update["consecutive_ping_failures"] = 0
-            update["last_seen_at"] = now_iso
-        else:
-            new_failures = prev_failures + 1
-            update["consecutive_ping_failures"] = new_failures
-            if new_failures >= failure_threshold:
-                update["status"] = "offline"
-            else:
-                # Keep current status but flag it as degraded so the UI
-                # can paint an amber dot during the grace window.
-                update["status"] = prev_status or "online"
-                update["degraded"] = True
-        # Clear the degraded flag on recovery
-        if reachable:
-            update["degraded"] = False
-        await db.managed_devices.update_one(
-            {"client_id": conn.client_id, "ip": target, "id": dev.get("id")},
-            {"$set": update},
+            upsert=True,
         )
+    except Exception as e:
+        logger.warning("ping_poll: device_poll_status upsert failed ip=%s err=%s", target, e)
+
+    # Reconcile managed_devices.status with the 3-failure threshold.
+    try:
+        cursor = db.managed_devices.find(
+            {"client_id": conn.client_id, "ip": target},
+            {"_id": 0, "id": 1, "status": 1, "consecutive_ping_failures": 1},
+        )
+        failure_threshold = 3
+        async for dev in cursor:
+            prev_failures = int(dev.get("consecutive_ping_failures") or 0)
+            prev_status = dev.get("status")
+            update: Dict[str, Any] = {
+                "last_poll_at": now_iso,
+                "last_poll_source": "agent_v4",
+                "last_ping_at": now_iso,
+                "ping_latency_ms": latency_ms,
+            }
+            if reachable:
+                update["status"] = "online"
+                update["consecutive_ping_failures"] = 0
+                update["last_seen_at"] = now_iso
+                update["degraded"] = False
+            else:
+                new_failures = prev_failures + 1
+                update["consecutive_ping_failures"] = new_failures
+                if new_failures >= failure_threshold:
+                    update["status"] = "offline"
+                else:
+                    update["status"] = prev_status or "online"
+                    update["degraded"] = True
+            # Use the unique `id` if present, otherwise match by (client_id, ip)
+            # so devices indexed only by _id (no `id` field) are still handled.
+            dev_id = dev.get("id")
+            flt: Dict[str, Any] = {"client_id": conn.client_id, "ip": target}
+            if dev_id:
+                flt["id"] = dev_id
+            try:
+                await db.managed_devices.update_one(flt, {"$set": update})
+            except Exception as e:
+                logger.warning("ping_poll: managed_devices update failed ip=%s err=%s", target, e)
+    except Exception as e:
+        logger.warning("ping_poll: managed_devices reconcile failed ip=%s err=%s", target, e)
 
 
 async def _bridge_snmp_poll(conn: _Connection, r: Dict[str, Any]) -> None:
@@ -463,10 +484,10 @@ async def _bridge_snmp_poll(conn: _Connection, r: Dict[str, Any]) -> None:
         return
     now_iso = _now().isoformat()
     reachable = bool(r.get("reachable"))
-    update = {
-        "client_id": conn.client_id,
+    # NOTE: collection device_poll_status indice unique su
+    # (client_id, device_ip). Il campo si chiama "device_ip" NON "ip".
+    snmp_set = {
         "agent_id": conn.agent_id,
-        "ip": target,
         "reachable": reachable,
         "latency_ns": r.get("latency_ns"),
         "sys_name": r.get("sys_name"),
@@ -477,11 +498,21 @@ async def _bridge_snmp_poll(conn: _Connection, r: Dict[str, Any]) -> None:
         "last_poll_at": now_iso,
         "source": "agent_v4",
     }
-    await db.device_poll_status.update_one(
-        {"client_id": conn.client_id, "ip": target},
-        {"$set": update, "$setOnInsert": {"first_poll_at": now_iso}},
-        upsert=True,
-    )
+    try:
+        await db.device_poll_status.update_one(
+            {"client_id": conn.client_id, "device_ip": target},
+            {
+                "$set": snmp_set,
+                "$setOnInsert": {
+                    "client_id": conn.client_id,
+                    "device_ip": target,
+                    "first_poll_at": now_iso,
+                },
+            },
+            upsert=True,
+        )
+    except Exception as e:
+        logger.warning("snmp_poll: device_poll_status upsert failed ip=%s err=%s", target, e)
     # Reflect live status in managed_devices so dashboards refresh in
     # real time. Only update fields that the UI cares about.
     md_set = {
@@ -493,10 +524,13 @@ async def _bridge_snmp_poll(conn: _Connection, r: Dict[str, Any]) -> None:
         md_set["sys_name"] = r["sys_name"]
     if r.get("sys_descr"):
         md_set["sys_descr"] = r["sys_descr"]
-    await db.managed_devices.update_many(
-        {"client_id": conn.client_id, "ip": target},
-        {"$set": md_set},
-    )
+    try:
+        await db.managed_devices.update_many(
+            {"client_id": conn.client_id, "ip": target},
+            {"$set": md_set},
+        )
+    except Exception as e:
+        logger.warning("snmp_poll: managed_devices update failed ip=%s err=%s", target, e)
 
 
 async def _build_poller_config(client_id: str) -> Dict[str, Any]:

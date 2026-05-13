@@ -41,7 +41,7 @@ BACKEND_VERSION = os.environ.get("ARGUS_BACKEND_VERSION", "3.5.34-fase2")
 # Fallback URL remoto per gli artefatti di update.
 # Se impostata, questa URL base viene usata quando il download locale fallisce
 # (utile per produzioni con artefatti non ancora pushati sul CDN locale).
-# Es: ARGUS_UPDATE_ARTIFACT_BASE_URL=https://snmp-hub-noc.preview.emergentagent.com
+# Es: ARGUS_UPDATE_ARTIFACT_BASE_URL=https://device-poller-ws.preview.emergentagent.com
 UPDATE_ARTIFACT_BASE_URL = os.environ.get("ARGUS_UPDATE_ARTIFACT_BASE_URL", "").rstrip("/")
 BACKEND_ARTIFACT_PATH = "/downloads/argus-backend-latest.tar.gz"
 

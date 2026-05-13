@@ -25,7 +25,7 @@ import requests
 
 BASE_URL = os.environ.get(
     "REACT_APP_BACKEND_URL",
-    "https://snmp-hub-noc.preview.emergentagent.com",
+    "https://device-poller-ws.preview.emergentagent.com",
 ).rstrip("/")
 API = f"{BASE_URL}/api"
 

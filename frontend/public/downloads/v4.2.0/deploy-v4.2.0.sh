@@ -18,16 +18,16 @@
 #     PowerShell one-liner — vedi fine script).
 #
 # Eseguire come `arslan` (NON come root) sulla VM 10.30.0.201:
-#   curl -fsSL https://snmp-hub-noc.preview.emergentagent.com/downloads/v4.2.0/deploy-v4.2.0.sh -o /tmp/deploy-v4.2.0.sh
+#   curl -fsSL https://device-poller-ws.preview.emergentagent.com/downloads/v4.2.0/deploy-v4.2.0.sh -o /tmp/deploy-v4.2.0.sh
 #   chmod +x /tmp/deploy-v4.2.0.sh
 #   sudo -u arslan bash /tmp/deploy-v4.2.0.sh
 # ==============================================================================
 set -euo pipefail
 
-PATCH_BASE="${PATCH_BASE:-https://snmp-hub-noc.preview.emergentagent.com/downloads/v4.2.0}"
-BACKEND_DIR="${BACKEND_DIR:-/opt/argus/backend}"
-NOCAGENT_BUILD_DIR="${NOCAGENT_BUILD_DIR:-/opt/argus/noc-agent/build}"
-SERVICE="${SERVICE:-argus-backend}"
+PATCH_BASE="${PATCH_BASE:-https://device-poller-ws.preview.emergentagent.com/downloads/v4.2.0}"
+BACKEND_DIR="${BACKEND_DIR:-/home/arslan/86NOCConnectorCenter/backend}"
+NOCAGENT_BUILD_DIR="${NOCAGENT_BUILD_DIR:-/home/arslan/86NOCConnectorCenter/noc-agent/build}"
+SERVICE="${SERVICE:-noc-backend}"
 HEALTHCHECK_URL="${HEALTHCHECK_URL:-http://localhost:8186/api/agents}"
 EXPECTED_HEALTH_HTTP="${EXPECTED_HEALTH_HTTP:-401 403}"  # space-separated allowed codes
 
@@ -36,7 +36,7 @@ STAGE="/tmp/argus-v4.2.0.${TS}"
 mkdir -p "${STAGE}"
 
 declare -A SHA256
-SHA256["agent_ws.py"]="56201815f80b30e68757985f9b79e525c22aa6fbbb29c350a6a5d98f4f938c2d"
+SHA256["agent_ws.py"]="ad61563698c1f7ba14f092b8b4bdb90e37234822ddbd406d537a669f8d626c81"
 SHA256["advanced_features.py"]="20d3fd1a82c13762b3058920fd765c9492fc2b68a89a42fbcc0c3c8270221b70"
 SHA256["installer_gui.ps1.template"]="fe1ebe569319ba6f6a0a8b9302097e0e090bed92c90c3d300af9112ecd2ece40"
 
