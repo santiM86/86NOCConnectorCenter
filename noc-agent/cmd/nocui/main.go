@@ -124,6 +124,37 @@ type AgentInfo struct {
 	Version     string `json:"version"`
 }
 
+// resolveLogDir locates the directory where the agent service actually writes
+// nocagent.log. The agent (running as LocalSystem) writes the resolved path
+// into %ProgramData%\86NocAgent\log_path.txt at startup; we honour that marker
+// when present so the tray opens the right folder even when the resolved path
+// lives under SYSTEM's profile.
+//
+// Fallback chain (mirrors logging.candidateLogPaths but inverted for "read"):
+//  1. marker file written by the agent
+//  2. %LOCALAPPDATA%\86NocAgent\logs (matches new default)
+//  3. %ProgramData%\86NocAgent\logs (legacy)
+func resolveLogDir() string {
+	pd := os.Getenv("ProgramData")
+	if pd == "" {
+		pd = `C:\ProgramData`
+	}
+	marker := filepath.Join(pd, "86NocAgent", "log_path.txt")
+	if b, err := os.ReadFile(marker); err == nil {
+		p := strings.TrimSpace(string(b))
+		if p != "" {
+			return filepath.Dir(p)
+		}
+	}
+	if lad := os.Getenv("LOCALAPPDATA"); lad != "" {
+		candidate := filepath.Join(lad, "86NocAgent", "logs")
+		if st, err := os.Stat(candidate); err == nil && st.IsDir() {
+			return candidate
+		}
+	}
+	return filepath.Join(pd, "86NocAgent", "logs")
+}
+
 func loadAgentInfo() AgentInfo {
 	// agent-ui.json viene scritto dall'installer accanto al binario.
 	exe, _ := os.Executable()
@@ -180,7 +211,7 @@ func loadAgentInfo() AgentInfo {
 	// Ultimo fallback (dev/test).
 	logf("loadAgentInfo: no config file found, using DEV fallback")
 	return AgentInfo{
-		BackendURL: "https://snmp-hub-noc.preview.emergentagent.com",
+		BackendURL: "https://device-poller-ws.preview.emergentagent.com",
 		ClientID:   "unknown",
 		Token:      "",
 		Role:       "master",
@@ -975,7 +1006,7 @@ func setupTray(app *App) error {
 	app.restartItem = add("Riavvia servizi", func() { go func() { restartServices(); refreshStatus(app) }() })
 	ni.ContextMenu().Actions().Add(walk.NewSeparatorAction())
 	add("Apri cartella log", func() {
-		dir := filepath.Join(os.Getenv("ProgramData"), "86NocAgent", "logs")
+		dir := resolveLogDir()
 		os.MkdirAll(dir, 0o755)
 		runHidden("explorer.exe", dir)
 	})

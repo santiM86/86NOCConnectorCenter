@@ -34,25 +34,48 @@ type Logger struct {
 	module string
 }
 
-// defaultLogPath returns the platform-default log file path. On Windows this
-// goes under %ProgramData%\86NocAgent\logs so it survives uninstall and is
-// readable from the tray menu's "Apri cartella log" action. On Linux/macOS we
-// fall back to /var/log or the user cache dir.
-func defaultLogPath() string {
+// candidateLogPaths returns an ordered list of log file paths to try, in
+// priority order. The first one whose parent directory we can MkdirAll AND
+// where OpenFile succeeds wins. The list always ends with stderr-only mode
+// (an empty string) so the agent never refuses to start because of logging.
+//
+// Windows priority (chosen 2026-02 per user request to avoid ACL issues on
+// %ProgramData% when the service runs as LocalSystem with restricted SACL):
+//  1. $ARGUS_LOG_PATH (operator override)
+//  2. %LOCALAPPDATA%\86NocAgent\logs\nocagent.log
+//     - When the service runs as LocalSystem this resolves to
+//       C:\Windows\System32\config\systemprofile\AppData\Local which is always
+//       writable by SYSTEM.
+//     - When started interactively (debug) it falls under the user's profile.
+//  3. %USERPROFILE%\AppData\Local\86NocAgent\logs\nocagent.log
+//     (fallback when LOCALAPPDATA is empty, e.g. some Win Server 2016 service hosts)
+//  4. %ProgramData%\86NocAgent\logs\nocagent.log (legacy, kept for upgrade compat)
+func candidateLogPaths() []string {
 	if env := os.Getenv("ARGUS_LOG_PATH"); env != "" {
-		return env
+		return []string{env}
 	}
 	switch runtime.GOOS {
 	case "windows":
-		base := os.Getenv("ProgramData")
-		if base == "" {
-			base = `C:\ProgramData`
+		var out []string
+		if lad := os.Getenv("LOCALAPPDATA"); lad != "" {
+			out = append(out, filepath.Join(lad, "86NocAgent", "logs", "nocagent.log"))
 		}
-		return filepath.Join(base, "86NocAgent", "logs", "nocagent.log")
+		if up := os.Getenv("USERPROFILE"); up != "" {
+			out = append(out, filepath.Join(up, "AppData", "Local", "86NocAgent", "logs", "nocagent.log"))
+		}
+		if pd := os.Getenv("ProgramData"); pd != "" {
+			out = append(out, filepath.Join(pd, "86NocAgent", "logs", "nocagent.log"))
+		} else {
+			out = append(out, `C:\ProgramData\86NocAgent\logs\nocagent.log`)
+		}
+		// Hard-coded systemprofile path as last-resort when LocalSystem service
+		// has no env vars wired up at all (observed on some hardened Win10).
+		out = append(out, `C:\Windows\System32\config\systemprofile\AppData\Local\86NocAgent\logs\nocagent.log`)
+		return out
 	case "darwin":
-		return "/var/log/86nocagent/nocagent.log"
+		return []string{"/var/log/86nocagent/nocagent.log"}
 	default:
-		return "/var/log/86nocagent/nocagent.log"
+		return []string{"/var/log/86nocagent/nocagent.log"}
 	}
 }
 
@@ -71,6 +94,49 @@ func openLogFile(path string) *os.File {
 		return nil
 	}
 	return f
+}
+
+// openFirstWritableLog walks the candidate paths returned by candidateLogPaths
+// and returns the first successfully opened file together with its absolute
+// path. The returned path is empty if every candidate failed (stderr-only mode).
+//
+// We surface the resolved path so the logger's startup banner can record it as
+// "log_path", crucial when diagnosing "where are my logs?" tickets remotely.
+func openFirstWritableLog(candidates []string) (*os.File, string) {
+	for _, p := range candidates {
+		if f := openLogFile(p); f != nil {
+			return f, p
+		}
+	}
+	return nil, ""
+}
+
+// writeLogPathMarker drops a small text file at a well-known stable location so
+// out-of-process tools (the tray UI nocui, the PowerShell installer, support
+// scripts) can discover where the agent is actually writing logs. This matters
+// now that the resolved path depends on which Windows account the service
+// runs as: LocalSystem → %SystemProfile%, interactive admin → %LOCALAPPDATA%.
+//
+// We intentionally use %ProgramData% (machine-wide, always writable by SYSTEM)
+// for the marker so the tray running as the interactive user can still read it
+// even when the log file itself lives under SYSTEM's profile.
+func writeLogPathMarker(resolvedLogPath string) {
+	if resolvedLogPath == "" {
+		return
+	}
+	if runtime.GOOS != "windows" {
+		return
+	}
+	pd := os.Getenv("ProgramData")
+	if pd == "" {
+		pd = `C:\ProgramData`
+	}
+	markerDir := filepath.Join(pd, "86NocAgent")
+	if err := os.MkdirAll(markerDir, 0o755); err != nil {
+		return
+	}
+	marker := filepath.Join(markerDir, "log_path.txt")
+	_ = os.WriteFile(marker, []byte(resolvedLogPath), 0o644)
 }
 
 // safeMultiWriter scrive su piu' Writer ma **ignora gli errori** di ciascuno e
@@ -92,18 +158,21 @@ func (s *safeMultiWriter) Write(p []byte) (int, error) {
 }
 
 // New returns a root logger that writes JSON lines to **both** stderr and a
-// rotating-friendly log file (default %ProgramData%\86NocAgent\logs\nocagent.log
-// on Windows). When the agent runs as a Windows service stderr is dropped by
-// the SCM, so the file sink is the only persistent diagnostic channel.
+// rotating-friendly log file. The file sink path is selected at runtime from
+// candidateLogPaths() — on Windows we now prefer %LOCALAPPDATA%\86NocAgent\logs
+// (always writable by both LocalSystem and interactive users) and fall back to
+// %USERPROFILE%, %ProgramData% and the systemprofile path before giving up.
 //
-// IMPORTANT: il file log e' fondamentale per il troubleshooting in produzione:
-// lo usiamo per capire perche' un connector non si aggancia al WS, o perche'
-// l'SNMP polling fallisce su un device.
+// When the agent runs as a Windows service stderr is dropped by the SCM, so the
+// file sink is the only persistent diagnostic channel. We MUST always succeed
+// in opening at least one of the candidates, otherwise tickets like "agent
+// crashes silently with no nocagent.log" become impossible to triage.
 func New() *Logger {
-	logPath := defaultLogPath()
+	candidates := candidateLogPaths()
+	fileSink, logPath := openFirstWritableLog(candidates)
 	writers := []io.Writer{os.Stderr}
-	if f := openLogFile(logPath); f != nil {
-		writers = append(writers, f)
+	if fileSink != nil {
+		writers = append(writers, fileSink)
 	}
 	sink := &safeMultiWriter{writers: writers}
 	level := slog.LevelInfo
@@ -127,9 +196,19 @@ func New() *Logger {
 	}
 	// Banner di avvio: con questa entry sempre presente in cima a ogni
 	// rotazione l'admin sa subito quale path / pid / versione runtime
-	// sta producendo il log.
+	// sta producendo il log. Tracciamo anche tutte le candidate provate per
+	// rendere ovvio quale fallback ha vinto.
+	resolved := logPath
+	if resolved == "" {
+		resolved = "(stderr-only, all file candidates failed)"
+	}
+	// Persist the resolved path so the tray UI and installer scripts can
+	// locate the active log file even when the service runs as a different
+	// account than the interactive user.
+	writeLogPathMarker(logPath)
 	l.With("startup").Info("logger initialized",
-		"log_path", logPath,
+		"log_path", resolved,
+		"candidates", fmt.Sprintf("%v", candidates),
 		"goos", runtime.GOOS,
 		"goarch", runtime.GOARCH,
 		"pid", fmt.Sprintf("%d", os.Getpid()),

@@ -842,7 +842,25 @@ $restartSvc.add_Click({
 
 $openLog = $menu.Items.Add('Apri cartella log')
 $openLog.add_Click({
-    $logDir = Join-Path $env:ProgramData '86NocAgent\logs'
+    # The Go agent (running as LocalSystem) writes its actual log path into
+    # %ProgramData%\86NocAgent\log_path.txt on startup. Prefer that marker so
+    # we open the right folder even when logs live under SYSTEM's profile.
+    $marker = Join-Path $env:ProgramData '86NocAgent\log_path.txt'
+    $logDir = $null
+    if (Test-Path $marker) {
+        try {
+            $resolved = (Get-Content $marker -Raw -ErrorAction Stop).Trim()
+            if ($resolved) { $logDir = Split-Path $resolved -Parent }
+        } catch { }
+    }
+    if (-not $logDir) {
+        $localAppData = $env:LOCALAPPDATA
+        if ($localAppData) {
+            $cand = Join-Path $localAppData '86NocAgent\logs'
+            if (Test-Path $cand) { $logDir = $cand }
+        }
+    }
+    if (-not $logDir) { $logDir = Join-Path $env:ProgramData '86NocAgent\logs' }
     if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Force -Path $logDir | Out-Null }
     Start-Process explorer.exe $logDir
 })
