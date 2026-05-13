@@ -167,6 +167,20 @@ foreach ($svc in @("86NocAgent","86NocWatchdog")) {
 }
 Start-Sleep -Seconds 2
 
+# Kill UI processes (tray icon + ArgusDesktop) che bloccano la sovrascrittura
+# del nocagent-ui.exe / ArgusDesktop.exe nella cartella InstallDir.
+# Comunemente girano nella system tray dell'utente loggato e non vengono
+# fermati dal Stop-Service.
+$uiProcs = @("nocagent-ui","ArgusDesktop")
+foreach ($p in $uiProcs) {
+    $procs = Get-Process -Name $p -ErrorAction SilentlyContinue
+    if ($procs) {
+        $procs | Stop-Process -Force -ErrorAction SilentlyContinue
+        Write-Ok "Processo $p.exe terminato ($($procs.Count) istanze)"
+    }
+}
+Start-Sleep -Seconds 2
+
 # ------------------------------------------------------------------- #
 # 4. Pulisci stato vecchio
 # ------------------------------------------------------------------- #
