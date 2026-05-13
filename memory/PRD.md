@@ -32,7 +32,7 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
-## 2026-02 (oggi) ✅ FIX VERSIONE CONNECTOR UI + NOME ZIP + COLONNA VERSIONE NEL CENTER
+## 2026-02 (oggi) ✅ FIX VERSIONE CONNECTOR UI + NOME ZIP + COLONNA VERSIONE NEL CENTER + RENAME SHORTCUT START MENU
 
 **Status**: codice nel preview env, da committare su GitHub e rilasciare
 come `v4.6.1` per propagare il fix dell'agent-ui.json legacy.
@@ -114,6 +114,22 @@ AGENT_LATEST_VERSION=v4.6.0       # OPPURE
 AGENT_GITHUB_TOKEN=ghp_xxx        # PAT con read:public-repo per evitare rate-limit
 AGENT_GITHUB_REPO=santiM86/86NOCConnectorCenter   # opzionale (default)
 ```
+
+### Rebrand cartella Start Menu
+
+Su esplicita richiesta utente la cartella shortcut Start Menu Windows e'
+stata rinominata da:
+
+  `Start Menu > Programs > 86BIT Argus Center > Connector`
+
+a:
+
+  `Start Menu > Programs > 86BIT Argus Connector > Connector`
+
+Modifica applicata in 8 occorrenze in
+`/app/noc-agent/build/installer_gui.ps1.template`. Il titolo finestra
+("ARGUS Connector v...") e il badge alto a destra ("ARGUS v...")
+restano invariati su esplicita scelta utente (opzione "a" in ask_human).
 
 ---
 
