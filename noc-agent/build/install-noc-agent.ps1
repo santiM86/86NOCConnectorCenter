@@ -142,7 +142,7 @@ foreach ($a in $rel.assets) { $assetUrls[$a.name] = $a.browser_download_url }
 $required = @("nocagent.exe","nocwatchdog.exe","nocagent-ui.exe")
 foreach ($f in $required) {
     if (-not $assetUrls.ContainsKey($f)) {
-        Write-Fail "Asset mancante nella release $Version: $f"
+        Write-Fail "Asset mancante nella release ${Version}: $f"
         Write-Fail "Asset trovati: $($assetUrls.Keys -join ', ')"
         exit 3
     }
