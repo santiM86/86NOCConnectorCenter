@@ -78,6 +78,23 @@ Get-Content $logPath -Tail 30
 3. `sudo systemctl restart noc-backend`
 4. Su Windows: re-install via `https://argus.86bit.it/api/agent/install/setup.exe?token=<TOKEN>`
 
+### Deploy STANDALONE (zero backend Linux, via GitHub Releases)
+1. **Push tag**: `git tag -a v4.3.0 -m "fix logger" && git push origin v4.3.0`
+2. **GitHub Actions** compila i 4 binari Windows + pubblica come asset di Release
+3. **Su Windows** (admin PowerShell), una sola riga:
+   ```powershell
+   $u = "https://github.com/santiM86/86NOCConnectorCenter/releases/latest/download/install-noc-agent.ps1"
+   iwr $u -OutFile $env:TEMP\install.ps1 -UseBasicParsing
+   & $env:TEMP\install.ps1 -Token "noc_xxx" -ClientId "57cb2e2b-..." -BackendUrl "wss://argus.86bit.it/api/agent/ws"
+   ```
+4. Lo script scarica i .exe da GitHub, scrive `agent.yaml` (preservando `MANAGED TARGETS`),
+   registra i servizi via `sc.exe` con recovery policy, avvia, e verifica marker + heartbeat.
+   **Il backend Linux non è coinvolto** nell'install/update agent.
+
+### File nuovi creati
+- `/app/noc-agent/build/install-noc-agent.ps1` (installer standalone)
+- `/app/.github/workflows/release-agent.yml` (aggiornato: include lo script come asset)
+
 ---
 
 
