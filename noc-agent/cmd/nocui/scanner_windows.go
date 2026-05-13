@@ -1027,6 +1027,39 @@ func showScannerDialog(app *App, parent walk.Form) {
 						_ = writeFileText(fd.FilePath, sb.String())
 					}},
 					wd.PushButton{Text: "Esporta HTML...", OnClicked: exportHTML},
+					wd.PushButton{Text: "Invia al NOC Center", OnClicked: func() {
+						if len(model.items) == 0 {
+							walk.MsgBox(dlg, "Nessun risultato",
+								"Esegui prima una scansione, poi clicca questo bottone per inviare i risultati al NOC Center.",
+								walk.MsgBoxIconInformation)
+							return
+						}
+						statusLb.SetText("Invio risultati al NOC Center...")
+						snapshot := append([]*ScanResult(nil), model.items...)
+						subnet := strings.TrimSpace(cidrEd.Text())
+						if subnet == "" {
+							subnet = defaultCIDR
+						}
+						go func(items []*ScanResult, sub string) {
+							stored, autoAdded, err := pushScanResultsToCenter(app, items, sub)
+							dlg.Synchronize(func() {
+								if err != nil {
+									walk.MsgBox(dlg, "Errore invio",
+										"Invio al NOC Center fallito:\n\n"+err.Error(),
+										walk.MsgBoxIconError)
+									statusLb.SetText("Invio fallito: " + err.Error())
+									return
+								}
+								statusLb.SetText(fmt.Sprintf(
+									"Inviati al NOC Center: %d endpoint, %d nuovi device aggiunti.",
+									stored, autoAdded))
+								walk.MsgBox(dlg, "Inviato",
+									fmt.Sprintf("Inviati con successo:\n\n  %d endpoint registrati\n  %d nuovi dispositivi aggiunti al cliente",
+										stored, autoAdded),
+									walk.MsgBoxIconInformation)
+							})
+						}(snapshot, subnet)
+					}},
 					wd.PushButton{Text: "Chiudi", OnClicked: func() {
 						// Termina subito eventuali scan in corso senza
 						// attendere i goroutine residui — i timeout TCP

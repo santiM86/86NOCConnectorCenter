@@ -65,8 +65,13 @@ func main() {
 		os.Exit(2)
 	}
 	if cfg.AgentID == "" {
+		// Defensive: Load() now persists a stable agent_id via
+		// getOrCreateStableAgentID, so this branch should never trigger.
+		// We keep it as a last-resort safety net to never start without an id.
 		cfg.AgentID = transport.NewAgentID()
-		rootLog.Warn("agent_id missing in config — generated ephemeral", "agent_id", cfg.AgentID)
+		rootLog.Warn("agent_id still empty after Load — generated ephemeral as fallback", "agent_id", cfg.AgentID)
+	} else {
+		rootLog.Info("agent_id resolved", "agent_id", cfg.AgentID)
 	}
 
 	// On Windows, if launched by SCM (interactive=false) or with --service,
