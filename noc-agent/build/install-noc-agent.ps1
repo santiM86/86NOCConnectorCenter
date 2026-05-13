@@ -190,6 +190,53 @@ Remove-Item (Join-Path $DataDir "log_path.txt") -Force -ErrorAction SilentlyCont
 Write-Ok "logs/ e log_path.txt rimossi"
 
 # ------------------------------------------------------------------- #
+# 4.5 Eccezioni Windows Defender (Real-time + ASR + Controlled Folder)
+# ------------------------------------------------------------------- #
+# Windows Defender SmartScreen / ASR / Controlled Folder Access blocca
+# silenziosamente nocagent.exe come "azione rischiosa" (regola
+# "Use advanced protection against ransomware" - GUID c1db55ab-c21a-4637-
+# bb3f-a12568109d35) perche' e' un binario Go non firmato che apre socket
+# raw e modifica file in $ProgramData. Aggiungiamo le esclusioni in modo
+# best-effort PRIMA del download cosi' Defender non mette in quarantena i
+# .exe appena copiati. Tutti i comandi Add-MpPreference sono idempotenti.
+#
+# NOTA: se Defender e' gestito centralmente via GPO/Intune queste chiamate
+# locali falliscono (silentemente) e bisognera' chiedere all'admin AD di
+# aggiungere le esclusioni sulla policy aziendale.
+Write-Step "Aggiunta esclusioni Windows Defender"
+$mpAvailable = $false
+try {
+    $null = Get-Command Add-MpPreference -ErrorAction Stop
+    $mpAvailable = $true
+} catch {
+    Write-Warn2 "Modulo Defender non disponibile (Server Core senza GUI o Defender disinstallato): salto esclusioni"
+}
+
+if ($mpAvailable) {
+    $exclPaths = @(
+        "C:\Program Files\86NocAgent",
+        "C:\ProgramData\86NocAgent"
+    )
+    $exclProcs = @(
+        "C:\Program Files\86NocAgent\nocagent.exe",
+        "C:\Program Files\86NocAgent\nocwatchdog.exe",
+        "C:\Program Files\86NocAgent\nocagent-ui.exe"
+    )
+
+    foreach ($p in $exclPaths) {
+        try { Add-MpPreference -ExclusionPath $p -ErrorAction Stop } catch { }
+    }
+    foreach ($p in $exclProcs) {
+        try { Add-MpPreference -ExclusionProcess $p -ErrorAction Stop } catch { }
+        # Esclusione SPECIFICA per la regola ASR (Attack Surface Reduction)
+        try { Add-MpPreference -AttackSurfaceReductionOnlyExclusions $p -ErrorAction Stop } catch { }
+        # Permetti accesso anche con Controlled Folder Access attivo
+        try { Add-MpPreference -ControlledFolderAccessAllowedApplications $p -ErrorAction Stop } catch { }
+    }
+    Write-Ok "Esclusioni Defender registrate (path + process + ASR + ControlledFolder)"
+}
+
+# ------------------------------------------------------------------- #
 # 5. Scarica i binari da GitHub Release
 # ------------------------------------------------------------------- #
 Write-Step "Download binari da GitHub Release"
