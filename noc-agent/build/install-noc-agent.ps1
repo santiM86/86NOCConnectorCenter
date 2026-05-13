@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  86bit NOC Agent — installer / updater STANDALONE (zero dipendenze backend).
+  86bit NOC Agent - installer / updater STANDALONE (zero dipendenze backend).
 
 .DESCRIPTION
   Script PowerShell che installa o aggiorna l'agent Windows scaricando i
@@ -38,7 +38,7 @@
   Versione tag della release (es. v4.3.0) oppure "latest". Default: latest.
 
 .PARAMETER GitHubToken
-  PAT GitHub se il repo è privato. Lasciare vuoto per repo pubblici.
+  PAT GitHub se il repo e' privato. Lasciare vuoto per repo pubblici.
 
 .PARAMETER InstallDir
   Cartella binari. Default: C:\Program Files\86NocAgent
@@ -125,7 +125,7 @@ try {
     } else {
         $apiUrl = "https://api.github.com/repos/$Repo/releases/tags/$Version"
         $rel = Invoke-RestMethod -Uri $apiUrl -Headers $ghHeaders -TimeoutSec 30
-        Write-Ok "Release: $($rel.tag_name) — $($rel.name)"
+        Write-Ok "Release: $($rel.tag_name) - $($rel.name)"
     }
 } catch {
     Write-Fail "Impossibile risolvere la release: $($_.Exception.Message)"
@@ -329,7 +329,7 @@ if (Test-Path $markerPath) {
         Write-Warn2 "Marker presente ma log file non trovato a $logPath"
     }
 } else {
-    Write-Warn2 "Marker log_path.txt assente — il binario potrebbe non aver inizializzato il logger"
+    Write-Warn2 "Marker log_path.txt assente - il binario potrebbe non aver inizializzato il logger"
 }
 
 $heartbeat = Join-Path $DataDir "heartbeat.tick"
