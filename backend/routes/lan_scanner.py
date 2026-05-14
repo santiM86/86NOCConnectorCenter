@@ -243,6 +243,10 @@ async def import_to_client(
     """
     client_id = payload.get("client_id")
     devices_in = payload.get("devices") or []
+    # update_existing=true: se IP già presente, aggiorna SOLO i metadati di
+    # discovery (hostname/vendor/mac/mDNS/http/Fingerbank/notes/name se
+    # ancora era IP nudo), MANTENENDO config monitoring esistente.
+    update_existing = bool(payload.get("update_existing"))
     if not client_id or not isinstance(devices_in, list) or not devices_in:
         raise HTTPException(status_code=400, detail="client_id e devices richiesti")
     if not await db.clients.find_one({"id": client_id}, {"_id": 0, "id": 1}):
@@ -252,37 +256,126 @@ async def import_to_client(
 
     imported: List[Dict[str, Any]] = []
     skipped: List[str] = []
+    updated: List[str] = []
     now_iso = _now().isoformat()
+
+    # Carica lo scan run completo: lo usiamo come fonte autorevole per i
+    # metadati (hostname, vendor, mDNS, HTTP banner, Fingerbank) cosi'
+    # qualsiasi frontend ne possa beneficiare anche se invia solo gli IP.
+    scan_doc = await db.lan_scan_runs.find_one(
+        {"scan_id": scan_id}, {"_id": 0, "results": 1}
+    ) or {}
+    scan_by_ip: Dict[str, Dict[str, Any]] = {}
+    for r in scan_doc.get("results") or []:
+        if isinstance(r, dict) and r.get("ip"):
+            scan_by_ip[r["ip"]] = r
+
+    def _best_name(scan_r: Dict[str, Any], override: Optional[str], ip: str) -> str:
+        """Sceglie il nome più "umano" disponibile: override esplicito,
+        hostname NBNS/DNS, mDNS .local, Fingerbank device_name, HTTP
+        banner, infine IP."""
+        if override and override != ip:
+            return override
+        for k in ("hostname", "mdns_name", "device_name"):
+            v = (scan_r.get(k) or "").strip()
+            if v:
+                return v
+        hs = (scan_r.get("http_server") or "").strip()
+        if hs:
+            return f"Web · {hs[:32]}"
+        return ip
+
+    def _build_notes(scan_r: Dict[str, Any]) -> str:
+        """Riga descrittiva auto-generata utile a livello UI."""
+        bits: List[str] = []
+        if scan_r.get("vendor"):
+            bits.append(scan_r["vendor"])
+        if scan_r.get("mdns_name") and scan_r.get("mdns_name") != scan_r.get("hostname"):
+            bits.append(f"mDNS={scan_r['mdns_name']}")
+        if scan_r.get("http_server"):
+            bits.append(f"HTTP={scan_r['http_server'][:48]}")
+        if scan_r.get("device_name"):
+            bits.append(f"Fingerbank={scan_r['device_name']}")
+        srv = scan_r.get("services") or []
+        if isinstance(srv, list) and srv:
+            bits.append("services=" + ",".join(s for s in srv[:3]))
+        return " · ".join(bits)
+
     for d in devices_in:
         ip = (d.get("ip") or "").strip()
         if not ip:
             continue
         # Skip se già presente per il cliente.
         existing = await db.managed_devices.find_one(
-            {"client_id": client_id, "ip": ip}, {"_id": 0, "id": 1}
+            {"client_id": client_id, "ip": ip}, {"_id": 0, "id": 1, "name": 1}
         )
-        if existing:
+        if existing and not update_existing:
             skipped.append(ip)
             continue
+        scan_r = scan_by_ip.get(ip, {})
+        chosen_name = _best_name(scan_r, d.get("name"), ip)
+        if existing and update_existing:
+            # Upsert metadati discovery; mantieni config monitoring.
+            # Aggiorna `name` solo se prima era l'IP nudo (placeholder).
+            set_fields: Dict[str, Any] = {
+                "hostname": scan_r.get("hostname") or d.get("hostname") or "",
+                "mac": scan_r.get("mac") or d.get("mac") or "",
+                "vendor": scan_r.get("vendor") or d.get("vendor") or "",
+                "mdns_name": scan_r.get("mdns_name") or "",
+                "mdns_services": scan_r.get("services") or [],
+                "http_server": scan_r.get("http_server") or "",
+                "fingerbank_device_name": scan_r.get("device_name") or "",
+                "fingerbank_score": scan_r.get("device_score"),
+                "notes": _build_notes(scan_r),
+                "last_enriched_at": now_iso,
+                "last_enriched_from_scan": scan_id,
+            }
+            cur_name = (existing.get("name") or "").strip()
+            if (not cur_name) or cur_name == ip:
+                set_fields["name"] = chosen_name
+            await db.managed_devices.update_one(
+                {"client_id": client_id, "ip": ip}, {"$set": set_fields}
+            )
+            updated.append(ip)
+            continue
+        # Nuovo device.
         doc = {
             "id": uuid.uuid4().hex,
             "client_id": client_id,
             "ip": ip,
-            "name": d.get("name") or d.get("hostname") or ip,
+            "name": chosen_name,
+            # Config monitoring (override UI > default)
             "community": d.get("community") or "public",
             "monitor_type": d.get("monitor_type") or "ping",
             "device_type": d.get("device_type") or "generic",
             "http_port": d.get("http_port") or 80,
             "snmp_version": d.get("snmp_version") or "v2c",
+            # Metadati discovery (da scan_run, fonte autorevole)
+            "hostname": scan_r.get("hostname") or d.get("hostname") or "",
+            "mac": scan_r.get("mac") or d.get("mac") or "",
+            "vendor": scan_r.get("vendor") or d.get("vendor") or "",
+            "mdns_name": scan_r.get("mdns_name") or "",
+            "mdns_services": scan_r.get("services") or [],
+            "http_server": scan_r.get("http_server") or "",
+            "fingerbank_device_name": scan_r.get("device_name") or "",
+            "fingerbank_score": scan_r.get("device_score"),
+            "notes": _build_notes(scan_r),
+            # Audit
             "created_at": now_iso,
             "created_by": user.get("email") or user.get("id") or "lan-scanner-import",
             "imported_from_scan": scan_id,
+            "discovered_via": "lan_scanner_web",
         }
         await db.managed_devices.insert_one(doc)
         # Pulisci blacklist se IP era stato eliminato prima.
         await db.deleted_devices.delete_many({"client_id": client_id, "device_ip": ip})
-        imported.append({"ip": ip, "id": doc["id"], "name": doc["name"]})
-    return {"imported": len(imported), "skipped": skipped, "items": imported}
+        imported.append({
+            "ip": ip,
+            "id": doc["id"],
+            "name": doc["name"],
+            "device_type": doc["device_type"],
+        })
+    return {"imported": len(imported), "skipped": skipped, "updated": updated, "items": imported}
 
 
 # ---- Fingerbank enrichment (best-effort, asincrono) ---------------------
