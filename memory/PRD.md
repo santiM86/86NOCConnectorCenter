@@ -32,6 +32,64 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-02 ✅ MIGRAZIONE UI Scanner a Wails (ArgusDesktop v5)
+
+**Status**: codice completato, Go cross-build OK, frontend Vite build OK,
+workflow CI esteso a 3 job paralleli. Pronto per push tag `v4.8.0`.
+
+### Causa del freeze persistente (v4.7.1 ancora bloccato)
+Lo screenshot utente ha confermato che il bottone "Scansiona" produce
+risultati MA la finestra `ARGUS Connector` finisce in "Non risponde".
+Diagnosi: la GUI legacy basata su `lxn/walk` (Win32) ha un limite noto
+nel pumping della message queue quando arrivano molte `dlg.Synchronize`
+da goroutine concorrenti. Il refactor ICMP nativo aveva eliminato il
+freeze totale, ma la titlebar "(Non risponde)" continua a comparire per
+qualche secondo perche' `walk` serializza i dispatch UI.
+
+### Soluzione: `cmd/nocui-v5` (Wails v2 + React + WebView2)
+- La UI gira nel WebView2 di Edge → renderer disaccoppiato dal worker
+  Go. Nessuna message queue Win32 da saturare.
+- Scanner LAN implementato come binding `StartLanScan(cidr)` che emette
+  eventi `scan:result`, `scan:progress`, `scan:done` consumati dal
+  React `ScannerPage`.
+- Pacchetto condiviso `internal/lanscan/`: ICMP nativo `IcmpSendEcho2` +
+  ARP + NBNS enrichment, stesse fasi di Phase 0/1/2 della v4.7.1 ma
+  senza accoppiamento UI Win32.
+
+### Nuovo binario distribuito: `ArgusDesktop.exe`
+- Job CI `build-wails` su `windows-latest` (Wails CLI v2.12.0).
+- Asset aggiunto alla GitHub Release accanto agli esistenti.
+- Installer PowerShell `install-noc-agent.ps1` preferisce ArgusDesktop
+  se WebView2 Runtime e' presente, altrimenti fallback a
+  `nocagent-ui.exe` legacy.
+- Esclusione Defender aggiunta anche per `ArgusDesktop.exe`.
+
+### Files modificati / creati
+- `noc-agent/internal/lanscan/scanner_windows.go` (nuovo, ~330 righe)
+- `noc-agent/internal/lanscan/icmp_windows.go` (nuovo, ~120 righe)
+- `noc-agent/internal/lanscan/oui_windows.go` (nuovo, ~70 righe)
+- `noc-agent/internal/lanscan/scanner_other.go` (stub Linux)
+- `noc-agent/cmd/nocui-v5/app.go` (+ `StartLanScan` / `CancelLanScan`)
+- `noc-agent/cmd/nocui-v5/frontend/src/lib/bridge.ts` (+ event API)
+- `noc-agent/cmd/nocui-v5/frontend/src/pages/ScannerPage.tsx`
+  (rewrite completo con streaming live)
+- `.github/workflows/release-agent.yml` (3 job: classic + wails + release)
+- `noc-agent/build/install-noc-agent.ps1` (preference WebView2/legacy)
+
+### Test eseguiti in container
+- `go build` cross `GOOS=windows`: OK (4 binari + nocui-v5)
+- `go vet ./cmd/nocui-v5/... ./internal/lanscan/...`: clean
+- `go build ./internal/lanscan` su Linux: OK (stub)
+- `yarn build` frontend: bundle 403 KB con stringhe test-id corrette
+
+### Next user step
+1. Push del codice su GitHub via "Save to GitHub".
+2. Creare tag `v4.8.0` (`git tag v4.8.0 && git push --tags`).
+3. Attendere completamento dei 3 job CI (~5-7 min totali).
+4. Eseguire l'installer dal PC Windows: l'UI partira' come
+   ArgusDesktop.exe se WebView2 e' installato. Verificare scanner LAN.
+
+
 ## 2026-02 (oggi) ✅ SCANNER UI v4.7.1 — ICMP NATIVO Win32 (IcmpSendEcho2)
 
 **Status**: codice scritto, build cross-Windows OK (9.7 MB stripped),
