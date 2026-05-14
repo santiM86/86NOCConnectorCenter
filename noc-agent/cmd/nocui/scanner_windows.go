@@ -653,7 +653,7 @@ func runScan(ctx context.Context, cidr string, timeout time.Duration,
 
 	bumpProgress := func() {
 		n := atomic.AddInt32(&doneCnt, 1)
-		if onProgress != nil && (n%4 == 0 || int(n) == total) {
+		if onProgress != nil && (n%2 == 0 || int(n) == total) {
 			onProgress(int(n), total)
 		}
 	}
@@ -747,7 +747,7 @@ func runScan(ctx context.Context, cidr string, timeout time.Duration,
 			defer func() { <-sem }()
 			defer func() { _ = recover() }()
 
-			rtt := probeICMPPing(ctxScan, ip, 200)
+			rtt := probeICMPNative(ctxScan, ip, 150)
 			bumpProgress()
 			if rtt < 0 {
 				return // IP non risponde ad ICMP — sara' (forse) catturato in Phase 2 via ARP
