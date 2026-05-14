@@ -32,6 +32,35 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-02 ✅ Auto-classificazione device_type da vendor OUI + hostname
+
+**Implementato** in `LanScannerPage.js`:
+- Funzione pure `suggestDeviceType(vendor, hostname)` che mappa pattern
+  noti → tipo device (server/workstation/printer/nas/firewall/switch/
+  ap/camera/ups/iot).
+- Priorità: hostname pattern → vendor OUI → null (usa default modal).
+- Nuova colonna "Tipo (auto)" in tabella risultati (solo modalità
+  scoped-client): pill indaco con tipo inferito o `—` se sconosciuto.
+- Toggle "Auto-classifica" nel modal Import (default ON) con counter
+  `X/Y riconosciuti — gli altri useranno il default sotto`.
+- Quando ON: ogni device viene importato con il proprio tipo inferito
+  (fallback su default solo per non-riconosciuti). Quando OFF: tutti
+  i device usano `defaultDeviceType` come prima.
+
+**Esempi inferenza:**
+- vendor "Microsoft Hyper-V" → server
+- vendor "Synology" → nas
+- vendor "HP Print" → printer
+- vendor "Ubiquiti" → ap
+- hostname `SRVDC01` → server (anche se vendor sconosciuto)
+- hostname `PC006` → workstation
+- hostname `STAMPANTE-CONTAB` → printer
+
+**Test smoke browser**: ✅ colonna "TIPO (AUTO)" visibile in tabella,
+build frontend pulito (lint OK).
+
+
+
 ## 2026-02 ✅ Scanner LAN per-cliente + bulk import dispositivi
 
 **Triggered da feedback user**:
