@@ -7,12 +7,16 @@ const API = process.env.REACT_APP_BACKEND_URL;
 /**
  * Scanner LAN — versione web (NOC Center).
  *
+ * Modi:
+ *   • globale (sidebar): qualsiasi agent live, dropdown completo.
+ *   • per-cliente (tab in ClientOverviewPage): filtra agent del cliente
+ *     e abilita "Importa nel cliente" sui device scoperti.
+ *
  * Avvia uno scan ICMP+ARP+NBNS sull'agent Connector selezionato e
- * mostra i risultati in tempo reale tramite polling REST (1s).
- * Risolve definitivamente i problemi della UI desktop Win32:
- * niente "Non risponde", visibile anche da cellulare/tablet.
+ * mostra i risultati live (polling 1s). Selezione multipla + bulk-import
+ * in `managed_devices` con scelta monitor_type (ping/snmp) + community.
  */
-export default function LanScannerPage() {
+export default function LanScannerPage({ scopedClientId, scopedClientName } = {}) {
   const token = localStorage.getItem("noc_token");
   const headers = useMemo(() => ({ Authorization: `Bearer ${token}` }), [token]);
 
@@ -25,30 +29,37 @@ export default function LanScannerPage() {
   const [run, setRun] = useState(null);
   const [starting, setStarting] = useState(false);
 
+  // Selezione multipla righe (per import)
+  const [selectedIps, setSelectedIps] = useState(() => new Set());
+  // Modal import
+  const [importOpen, setImportOpen] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [defaultMonitorType, setDefaultMonitorType] = useState("ping");
+  const [defaultCommunity, setDefaultCommunity] = useState("public");
+  const [defaultDeviceType, setDefaultDeviceType] = useState("generic");
+
   const pollRef = useRef(null);
 
-  // Carica lista agent connessi.
+  // Carica lista agent connessi (filtrata per cliente se scopedClientId).
   const refreshAgents = useCallback(() => {
-    axios.get(`${API}/api/agents`, { headers })
+    const url = scopedClientId
+      ? `${API}/api/agents?client_id=${encodeURIComponent(scopedClientId)}`
+      : `${API}/api/agents`;
+    axios.get(url, { headers })
       .then((r) => {
         const list = Array.isArray(r.data?.agents) ? r.data.agents : [];
-        // Mostriamo solo quelli "live" (WS connesso) — gli offline non possono scansionare.
         const live = list.filter((a) => a.live);
         setAgents(live);
         if (!selectedAgent && live.length > 0) {
           setSelectedAgent(live[0].agent_id);
         }
       })
-      .catch(() => {
-        toast.error("Impossibile caricare la lista agent. Sei admin?");
-      });
-  }, [headers, selectedAgent]);
+      .catch(() => toast.error("Impossibile caricare la lista agent"));
+  }, [headers, selectedAgent, scopedClientId]);
 
-  useEffect(() => {
-    refreshAgents();
-  }, [refreshAgents]);
+  useEffect(() => { refreshAgents(); }, [refreshAgents]);
 
-  // Polling stato scan ogni 1s finché running.
+  // Polling stato scan.
   useEffect(() => {
     if (!scanId) return undefined;
     let cancelled = false;
@@ -58,37 +69,25 @@ export default function LanScannerPage() {
         if (cancelled) return;
         setRun(r.data);
         if (r.data?.status && r.data.status !== "running") {
-          if (pollRef.current) {
-            clearInterval(pollRef.current);
-            pollRef.current = null;
-          }
+          clearInterval(pollRef.current);
+          pollRef.current = null;
         }
-      } catch (_e) {
-        // ignore singoli fail di polling
-      }
+      } catch (_e) { /* ignore */ }
     };
     tick();
     pollRef.current = setInterval(tick, 1000);
-    return () => {
-      cancelled = true;
-      if (pollRef.current) clearInterval(pollRef.current);
-      pollRef.current = null;
-    };
+    return () => { cancelled = true; if (pollRef.current) clearInterval(pollRef.current); };
   }, [scanId, headers]);
 
   const startScan = async () => {
-    if (!selectedAgent) {
-      toast.error("Seleziona prima un agent");
-      return;
-    }
+    if (!selectedAgent) { toast.error("Seleziona un agent"); return; }
     setStarting(true);
     setRun(null);
+    setSelectedIps(new Set());
     try {
-      const r = await axios.post(
-        `${API}/api/lan-scans`,
+      const r = await axios.post(`${API}/api/lan-scans`,
         { agent_id: selectedAgent, cidr: cidr.trim() },
-        { headers },
-      );
+        { headers });
       setScanId(r.data.scan_id);
       setRun(r.data);
       toast.success(`Scan avviato su ${r.data.cidr || "subnet locale"}`);
@@ -117,63 +116,108 @@ export default function LanScannerPage() {
     const q = filter.toLowerCase();
     return arr.filter((r) =>
       [r.ip, r.hostname, r.mac, r.vendor]
-        .filter(Boolean)
-        .some((v) => String(v).toLowerCase().includes(q)),
-    );
+        .filter(Boolean).some((v) => String(v).toLowerCase().includes(q)));
   }, [run, filter]);
 
   const aliveCount = results.filter((r) => r.status === "alive").length;
   const arpCount = results.filter((r) => r.status === "arp-only").length;
   const pct = run?.progress?.total
-    ? Math.round((run.progress.done / run.progress.total) * 100)
-    : 0;
+    ? Math.round((run.progress.done / run.progress.total) * 100) : 0;
+
+  // Selezione
+  const toggleIp = (ip) => {
+    setSelectedIps((s) => {
+      const n = new Set(s);
+      if (n.has(ip)) n.delete(ip); else n.add(ip);
+      return n;
+    });
+  };
+  const selectAllAlive = () => {
+    const ips = results.filter((r) => r.status === "alive").map((r) => r.ip);
+    setSelectedIps(new Set(ips));
+  };
+  const clearSelection = () => setSelectedIps(new Set());
+  const allAliveSelected = aliveCount > 0 &&
+    results.filter((r) => r.status === "alive").every((r) => selectedIps.has(r.ip));
+
+  // Import
+  const doImport = async () => {
+    if (!scopedClientId) { toast.error("client_id mancante"); return; }
+    if (selectedIps.size === 0) return;
+    setImporting(true);
+    const devices = results.filter((r) => selectedIps.has(r.ip)).map((r) => ({
+      ip: r.ip,
+      name: r.hostname || r.ip,
+      hostname: r.hostname,
+      monitor_type: defaultMonitorType,
+      community: defaultCommunity,
+      device_type: defaultDeviceType,
+    }));
+    try {
+      const res = await axios.post(`${API}/api/lan-scans/${scanId}/import`,
+        { client_id: scopedClientId, devices }, { headers });
+      toast.success(`Importati ${res.data.imported} dispositivi${res.data.skipped?.length ? ` (${res.data.skipped.length} già presenti, saltati)` : ""}`);
+      setImportOpen(false);
+      setSelectedIps(new Set());
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Errore import");
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  // Stili colorTokens condizionali al tab embedded vs full-page.
+  const cardBg = scopedClientId ? "bg-[var(--bg-panel)]" : "bg-white";
+  const borderC = scopedClientId ? "border-[var(--bg-border)]" : "border-[var(--border,#e5e7eb)]";
+  const txtMuted = scopedClientId ? "text-[var(--text-muted)]" : "text-[var(--text-secondary,#64748b)]";
+  const txtPrimary = scopedClientId ? "text-[var(--text-primary)]" : "text-[var(--text-primary,#1a1a2a)]";
 
   return (
-    <div className="p-6 space-y-5 text-[var(--text-primary,#1a1a2a)]" data-testid="lan-scanner-page">
-      <header>
-        <div className="text-[11px] uppercase tracking-[0.18em] text-[var(--text-secondary,#64748b)]">
-          Network discovery on-demand
-        </div>
-        <h1 className="text-2xl font-bold tracking-tight">Scanner LAN</h1>
-        <p className="text-sm text-[var(--text-secondary,#64748b)] mt-1 max-w-2xl">
-          Lancia uno scan attivo (ICMP nativo + ARP + NBNS + reverse DNS) tramite un Connector
-          Windows. Risultati live, niente UI desktop bloccata.
-        </p>
-      </header>
+    <div className={`${scopedClientId ? "p-2" : "p-6"} space-y-5 ${txtPrimary}`} data-testid="lan-scanner-page">
+      {!scopedClientId && (
+        <header>
+          <div className={`text-[11px] uppercase tracking-[0.18em] ${txtMuted}`}>
+            Network discovery on-demand
+          </div>
+          <h1 className="text-2xl font-bold tracking-tight">Scanner LAN</h1>
+          <p className={`text-sm mt-1 max-w-2xl ${txtMuted}`}>
+            Lancia uno scan attivo (ICMP nativo + ARP + NBNS + reverse DNS) tramite un Connector
+            Windows. Risultati live, niente UI desktop bloccata.
+          </p>
+        </header>
+      )}
 
       {/* Controlli */}
-      <div className="rounded-xl border border-[var(--border,#e5e7eb)] bg-white p-5 shadow-sm space-y-4">
+      <div className={`rounded-xl border ${borderC} ${cardBg} p-5 shadow-sm space-y-4`}>
         <div className="grid grid-cols-1 md:grid-cols-[2fr_2fr_auto_auto] gap-3 items-end">
           <div>
-            <label className="text-xs text-[var(--text-secondary,#64748b)]">
-              Agent Connector ({agents.length} live)
+            <label className={`text-xs ${txtMuted}`}>
+              {scopedClientId ? `Connector del cliente${scopedClientName ? ` "${scopedClientName}"` : ""}` : "Agent Connector"} ({agents.length} live)
             </label>
             <select
               data-testid="lan-scan-agent"
               value={selectedAgent}
               onChange={(e) => setSelectedAgent(e.target.value)}
               disabled={running}
-              className="mt-1 w-full rounded-md border border-[var(--border,#e5e7eb)] px-3 py-2 text-sm bg-white"
+              className={`mt-1 w-full rounded-md border ${borderC} px-3 py-2 text-sm ${cardBg}`}
             >
-              {agents.length === 0 && <option value="">(nessun agent connesso)</option>}
+              {agents.length === 0 && <option value="">(nessun connector live)</option>}
               {agents.map((a) => (
                 <option key={a.agent_id} value={a.agent_id}>
-                  {a.hostname || a.agent_id.slice(0, 8)} · {a.client_id?.slice(0, 8) || "no-client"}
+                  {a.hostname || a.agent_id.slice(0, 8)} {!scopedClientId && `· ${a.client_id?.slice(0, 8) || "no-client"}`}
                 </option>
               ))}
             </select>
           </div>
           <div>
-            <label className="text-xs text-[var(--text-secondary,#64748b)]">
-              CIDR target (vuoto = auto-detect)
-            </label>
+            <label className={`text-xs ${txtMuted}`}>CIDR target (vuoto = auto-detect)</label>
             <input
               data-testid="lan-scan-cidr"
               value={cidr}
               onChange={(e) => setCidr(e.target.value)}
               placeholder="es. 192.168.1.0/24"
               disabled={running}
-              className="mt-1 w-full rounded-md border border-[var(--border,#e5e7eb)] px-3 py-2 text-sm font-mono"
+              className={`mt-1 w-full rounded-md border ${borderC} px-3 py-2 text-sm font-mono ${cardBg}`}
             />
           </div>
           {!running ? (
@@ -195,56 +239,75 @@ export default function LanScannerPage() {
             </button>
           )}
           <button
-            onClick={refreshAgents}
-            disabled={running}
-            title="Ricarica lista agent"
-            className="px-3 py-2 rounded-md border border-[var(--border,#e5e7eb)] text-sm hover:bg-slate-50"
-          >
-            ↻
-          </button>
+            onClick={refreshAgents} disabled={running} title="Ricarica lista agent"
+            className={`px-3 py-2 rounded-md border ${borderC} text-sm hover:bg-slate-50 dark:hover:bg-slate-700`}
+          >↻</button>
         </div>
 
-        {/* Progress + stats */}
+        {/* Progress */}
         {(running || run?.status === "done" || run?.status === "error") && (
           <div className="space-y-2" data-testid="lan-scan-progress">
-            <div className="h-2 w-full bg-slate-100 rounded-full overflow-hidden">
-              <div
-                className={`h-full transition-all ${run?.status === "error" ? "bg-red-500" : "bg-emerald-500"}`}
-                style={{ width: `${pct}%` }}
-              />
+            <div className="h-2 w-full bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
+              <div className={`h-full transition-all ${run?.status === "error" ? "bg-red-500" : "bg-emerald-500"}`} style={{ width: `${pct}%` }} />
             </div>
-            <div className="text-xs font-mono flex flex-wrap gap-4 text-[var(--text-secondary,#64748b)]">
-              <span>
-                {running ? "● in corso" : run?.status === "error" ? "✗ errore" : "✓ completato"}
-              </span>
-              <span>
-                {run?.progress?.done ?? 0}/{run?.progress?.total ?? 0} probe
-              </span>
-              <span className="text-emerald-600">● {aliveCount} alive</span>
-              {arpCount > 0 && <span className="text-amber-600">◐ {arpCount} arp-only</span>}
+            <div className={`text-xs font-mono flex flex-wrap gap-4 ${txtMuted}`}>
+              <span>{running ? "● in corso" : run?.status === "error" ? "✗ errore" : "✓ completato"}</span>
+              <span>{run?.progress?.done ?? 0}/{run?.progress?.total ?? 0} probe</span>
+              <span className="text-emerald-500">● {aliveCount} alive</span>
+              {arpCount > 0 && <span className="text-amber-500">◐ {arpCount} arp-only</span>}
               <span>cidr: {run?.cidr || "—"}</span>
-              {run?.error && <span className="text-red-600">errore: {run.error}</span>}
+              {run?.error && <span className="text-red-500">errore: {run.error}</span>}
             </div>
           </div>
         )}
       </div>
 
-      {/* Tabella risultati */}
-      <div className="rounded-xl border border-[var(--border,#e5e7eb)] bg-white shadow-sm">
-        <div className="flex items-center justify-between px-5 py-3 border-b border-[var(--border,#e5e7eb)]">
-          <h2 className="font-semibold">Risultati ({results.length})</h2>
+      {/* Toolbar selezione + tabella */}
+      <div className={`rounded-xl border ${borderC} ${cardBg} shadow-sm`}>
+        <div className={`flex flex-wrap items-center justify-between gap-3 px-5 py-3 border-b ${borderC}`}>
+          <div className="flex items-center gap-3">
+            <h2 className="font-semibold">Risultati ({results.length})</h2>
+            {scopedClientId && results.length > 0 && (
+              <>
+                <button
+                  onClick={selectAllAlive}
+                  className="text-xs px-2.5 py-1 rounded border border-slate-300 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700"
+                  data-testid="lan-scan-select-all"
+                >Seleziona tutti alive ({aliveCount})</button>
+                {selectedIps.size > 0 && (
+                  <>
+                    <span className={`text-xs ${txtMuted}`}>{selectedIps.size} selezionati</span>
+                    <button onClick={clearSelection} className={`text-xs ${txtMuted} hover:underline`}>cancella</button>
+                    <button
+                      onClick={() => setImportOpen(true)}
+                      className="text-xs px-3 py-1.5 rounded-md bg-emerald-600 text-white hover:bg-emerald-700 font-medium"
+                      data-testid="lan-scan-import-btn"
+                    >+ Importa {selectedIps.size} nel cliente</button>
+                  </>
+                )}
+              </>
+            )}
+          </div>
           <input
             data-testid="lan-scan-filter"
-            value={filter}
-            onChange={(e) => setFilter(e.target.value)}
+            value={filter} onChange={(e) => setFilter(e.target.value)}
             placeholder="filtra: ip, hostname, mac…"
-            className="px-3 py-1.5 rounded-md border border-[var(--border,#e5e7eb)] text-xs w-64"
+            className={`px-3 py-1.5 rounded-md border ${borderC} text-xs w-64 ${cardBg}`}
           />
         </div>
         <div className="max-h-[520px] overflow-auto">
           <table className="w-full text-sm" data-testid="lan-scan-table">
-            <thead className="bg-slate-50 sticky top-0 text-xs uppercase tracking-wider text-[var(--text-secondary,#64748b)]">
+            <thead className={`sticky top-0 text-xs uppercase tracking-wider ${txtMuted} ${scopedClientId ? "bg-[var(--bg-card)]" : "bg-slate-50"}`}>
               <tr>
+                {scopedClientId && (
+                  <th className="px-3 py-2 w-10">
+                    <input
+                      type="checkbox" checked={allAliveSelected}
+                      onChange={() => allAliveSelected ? clearSelection() : selectAllAlive()}
+                      data-testid="lan-scan-select-all-cb"
+                    />
+                  </th>
+                )}
                 <th className="text-left px-4 py-2 w-24">Stato</th>
                 <th className="text-left px-4 py-2 font-mono w-36">IP</th>
                 <th className="text-left px-4 py-2 w-20">RTT</th>
@@ -256,49 +319,105 @@ export default function LanScannerPage() {
             <tbody>
               {results.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="text-center py-12 text-[var(--text-secondary,#64748b)]">
-                    {running
-                      ? "Scan in corso, primi risultati in arrivo…"
-                      : run
-                      ? "Nessun host trovato."
-                      : "Avvia uno scan per iniziare."}
+                  <td colSpan={scopedClientId ? 7 : 6} className={`text-center py-12 ${txtMuted}`}>
+                    {running ? "Scan in corso, primi risultati in arrivo…" : run ? "Nessun host trovato." : "Avvia uno scan per iniziare."}
                   </td>
                 </tr>
-              ) : (
-                results.map((r) => (
-                  <tr
-                    key={r.ip}
-                    className="border-t border-[var(--border,#e5e7eb)] hover:bg-slate-50"
-                    data-testid={`lan-scan-row-${r.ip}`}
-                  >
+              ) : results.map((r) => {
+                const sel = selectedIps.has(r.ip);
+                return (
+                  <tr key={r.ip}
+                      className={`border-t ${borderC} cursor-pointer ${sel ? "bg-emerald-50 dark:bg-emerald-900/20" : (scopedClientId ? "hover:bg-slate-700/30" : "hover:bg-slate-50")}`}
+                      onClick={() => scopedClientId && r.status === "alive" && toggleIp(r.ip)}
+                      data-testid={`lan-scan-row-${r.ip}`}>
+                    {scopedClientId && (
+                      <td className="px-3 py-1.5">
+                        <input type="checkbox" checked={sel}
+                          disabled={r.status !== "alive"}
+                          onChange={() => toggleIp(r.ip)}
+                          onClick={(e) => e.stopPropagation()}
+                          data-testid={`lan-scan-cb-${r.ip}`} />
+                      </td>
+                    )}
                     <td className="px-4 py-1.5">
-                      {r.status === "alive" ? (
-                        <span className="text-emerald-600 font-medium">● alive</span>
-                      ) : r.status === "arp-only" ? (
-                        <span className="text-amber-600 font-medium">◐ arp</span>
-                      ) : (
-                        <span className="text-slate-400">○ {r.status}</span>
-                      )}
+                      {r.status === "alive" ? <span className="text-emerald-500 font-medium">● alive</span>
+                        : r.status === "arp-only" ? <span className="text-amber-500 font-medium">◐ arp</span>
+                        : <span className={txtMuted}>○ {r.status}</span>}
                     </td>
                     <td className="px-4 py-1.5 font-mono">{r.ip}</td>
-                    <td className="px-4 py-1.5 font-mono text-xs text-[var(--text-secondary,#64748b)]">
-                      {r.rtt_ms >= 0 ? `${r.rtt_ms} ms` : ""}
-                    </td>
+                    <td className={`px-4 py-1.5 font-mono text-xs ${txtMuted}`}>{r.rtt_ms >= 0 ? `${r.rtt_ms} ms` : ""}</td>
                     <td className="px-4 py-1.5">{r.hostname || ""}</td>
                     <td className="px-4 py-1.5 font-mono text-xs">{r.mac || ""}</td>
                     <td className="px-4 py-1.5 text-xs">{r.vendor || ""}</td>
                   </tr>
-                ))
-              )}
+                );
+              })}
             </tbody>
           </table>
         </div>
       </div>
+
+      {/* Modal Import */}
+      {importOpen && (
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4"
+             onClick={(e) => e.target === e.currentTarget && setImportOpen(false)}
+             data-testid="lan-scan-import-modal">
+          <div className="bg-[var(--bg-panel,#fff)] rounded-xl border border-[var(--bg-border,#e5e7eb)] w-full max-w-md p-5 shadow-2xl">
+            <h3 className="text-lg font-semibold mb-1">Importa {selectedIps.size} dispositivi</h3>
+            <p className={`text-xs ${txtMuted} mb-4`}>
+              I device verranno aggiunti a "{scopedClientName || scopedClientId}". Quelli già presenti vengono saltati.
+            </p>
+            <div className="space-y-3">
+              <div>
+                <label className="text-xs font-medium">Tipo monitor (default per tutti)</label>
+                <select value={defaultMonitorType} onChange={(e) => setDefaultMonitorType(e.target.value)}
+                  className={`mt-1 w-full rounded-md border ${borderC} px-3 py-2 text-sm ${cardBg}`}>
+                  <option value="ping">Ping (ICMP base)</option>
+                  <option value="snmp">SNMP (richiede community)</option>
+                </select>
+              </div>
+              {defaultMonitorType === "snmp" && (
+                <div>
+                  <label className="text-xs font-medium">SNMP Community</label>
+                  <input value={defaultCommunity} onChange={(e) => setDefaultCommunity(e.target.value)}
+                    className={`mt-1 w-full rounded-md border ${borderC} px-3 py-2 text-sm font-mono ${cardBg}`} />
+                </div>
+              )}
+              <div>
+                <label className="text-xs font-medium">Device type (categoria)</label>
+                <select value={defaultDeviceType} onChange={(e) => setDefaultDeviceType(e.target.value)}
+                  className={`mt-1 w-full rounded-md border ${borderC} px-3 py-2 text-sm ${cardBg}`}>
+                  <option value="generic">Generico</option>
+                  <option value="server">Server</option>
+                  <option value="workstation">Workstation</option>
+                  <option value="switch">Switch</option>
+                  <option value="firewall">Firewall</option>
+                  <option value="ap">Access Point</option>
+                  <option value="printer">Stampante</option>
+                  <option value="nas">NAS / Storage</option>
+                  <option value="ups">UPS</option>
+                  <option value="camera">Telecamera</option>
+                </select>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 mt-5">
+              <button onClick={() => setImportOpen(false)} disabled={importing}
+                className={`px-4 py-2 rounded-md text-sm border ${borderC} hover:bg-slate-50 dark:hover:bg-slate-700`}>
+                Annulla
+              </button>
+              <button onClick={doImport} disabled={importing}
+                className="px-4 py-2 rounded-md text-sm bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
+                data-testid="lan-scan-import-confirm">
+                {importing ? "Import…" : `Importa ${selectedIps.size}`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-// Confronto numerico IPv4 per ordinamento stabile.
 function ipNum(s) {
   if (!s) return 0;
   const m = String(s).split(".").map(Number);

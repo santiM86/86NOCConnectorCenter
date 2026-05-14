@@ -32,6 +32,44 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-02 ✅ Scanner LAN per-cliente + bulk import dispositivi
+
+**Triggered da feedback user**:
+- "togli il pulsante Scansiona Rete dalla UI desktop" (ridondante ora)
+- "come importo i dati nel cliente?" (mancava il flow)
+- "scansione lan deve vivere all'interno di ogni cliente" (UX scoping)
+
+### Implementato
+1. **UI desktop walk**: rimosso `wd.PushButton "Scansiona Rete"` da
+   `cmd/nocui/main.go`. Resta solo il flow SNMP polling manuale.
+2. **Tab "Scanner LAN" in ClientOverviewPage**: nuova icon WifiHigh
+   tra "Auto-Discovery" e "Vulnerability". Passa `scopedClientId` +
+   `scopedClientName` al componente.
+3. **Voce sidebar globale rimossa** (`Layout.js`). Rotta `/lan-scanner`
+   resta accessibile via URL diretto per testing ma non più in menu.
+4. **`LanScannerPage` ridisegnato** con prop `scopedClientId`:
+   - filtra `GET /api/agents?client_id=X` (solo connector del cliente)
+   - selezione multipla righe alive (checkbox + "Seleziona tutti alive")
+   - bottone "+ Importa N nel cliente" con modal di configurazione
+     (monitor_type ping/snmp, community, device_type)
+5. **Nuovo endpoint** `POST /api/lan-scans/{scan_id}/import`:
+   - body: `{client_id, devices:[{ip,name,monitor_type,community,...}]}`
+   - inserisce in `managed_devices` (skip se IP già presente)
+   - pulisce `deleted_devices` blacklist per quel IP
+   - risposta: `{imported, skipped[], items[]}`
+
+### Test smoke (browser headless)
+- ✅ Login → `/client/{id}` → click tab "Scanner LAN"
+- ✅ Renderizza form con label scoped "Connector del cliente 86BIT_Office"
+- ✅ Dropdown filtrato (0 live in env test = corretto)
+- ✅ Layout dark coerente con resto Center
+- ✅ Sidebar globale pulita (voce Scanner LAN rimossa)
+
+### Build cross-platform Windows agent
+- `go build ./...` OK: bottone "Scansiona Rete" rimosso senza side-effect
+
+
+
 ## 2026-02 ✅ Scanner LAN via NOC Center (web) — pivot architetturale
 
 **Cambio direzione**: dopo conferma user che lo scanner walk continuava

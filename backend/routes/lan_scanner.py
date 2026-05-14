@@ -222,6 +222,62 @@ async def list_scans(
     return out
 
 
+@router.post("/{scan_id}/import")
+async def import_to_client(
+    scan_id: str,
+    payload: Dict[str, Any],
+    user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Importa selezione di device dai risultati scan nei managed_devices
+    del cliente. Body: {client_id, devices:[{ip,name,monitor_type,community,
+    device_type}]}.
+
+    Skip atomico se l'IP è già presente per quel client_id.
+    """
+    client_id = payload.get("client_id")
+    devices_in = payload.get("devices") or []
+    if not client_id or not isinstance(devices_in, list) or not devices_in:
+        raise HTTPException(status_code=400, detail="client_id e devices richiesti")
+    if not await db.clients.find_one({"id": client_id}, {"_id": 0, "id": 1}):
+        raise HTTPException(status_code=404, detail="client non trovato")
+    if not await db.lan_scan_runs.find_one({"scan_id": scan_id}, {"_id": 0, "scan_id": 1}):
+        raise HTTPException(status_code=404, detail="scan_id non trovato")
+
+    imported: List[Dict[str, Any]] = []
+    skipped: List[str] = []
+    now_iso = _now().isoformat()
+    for d in devices_in:
+        ip = (d.get("ip") or "").strip()
+        if not ip:
+            continue
+        # Skip se già presente per il cliente.
+        existing = await db.managed_devices.find_one(
+            {"client_id": client_id, "ip": ip}, {"_id": 0, "id": 1}
+        )
+        if existing:
+            skipped.append(ip)
+            continue
+        doc = {
+            "id": uuid.uuid4().hex,
+            "client_id": client_id,
+            "ip": ip,
+            "name": d.get("name") or d.get("hostname") or ip,
+            "community": d.get("community") or "public",
+            "monitor_type": d.get("monitor_type") or "ping",
+            "device_type": d.get("device_type") or "generic",
+            "http_port": d.get("http_port") or 80,
+            "snmp_version": d.get("snmp_version") or "v2c",
+            "created_at": now_iso,
+            "created_by": user.get("email") or user.get("id") or "lan-scanner-import",
+            "imported_from_scan": scan_id,
+        }
+        await db.managed_devices.insert_one(doc)
+        # Pulisci blacklist se IP era stato eliminato prima.
+        await db.deleted_devices.delete_many({"client_id": client_id, "device_ip": ip})
+        imported.append({"ip": ip, "id": doc["id"], "name": doc["name"]})
+    return {"imported": len(imported), "skipped": skipped, "items": imported}
+
+
 # ---- Bridge eventi (chiamato da agent_ws._on_event) ---------------------
 
 async def bridge_lan_scan_event(kind: str, data: Dict[str, Any]) -> None:
