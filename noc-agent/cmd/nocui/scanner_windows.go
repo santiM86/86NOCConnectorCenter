@@ -551,26 +551,46 @@ func ouiVendor(mac string) string {
 // deve sincronizzarsi sul thread UI via Form.Synchronize.
 func runScan(ctx context.Context, cidr string, timeout time.Duration,
 	onProgress func(done, total int),
-	onResult func(*ScanResult)) ([]*ScanResult, error) {
+	onResult func(*ScanResult)) (results []*ScanResult, errOut error) {
+
+	// PANIC RECOVERY: se nbns parser, walk callback o probeAlive
+	// vanno in panic (es. response NBSTAT malformata, OOB write),
+	// atterriamo qui senza schiantare la finestra Wails. Era una
+	// causa documentata dei "crash improvvisi" che chiudevano la UI.
+	defer func() {
+		if rv := recover(); rv != nil {
+			errOut = fmt.Errorf("scan panic recovered: %v", rv)
+		}
+	}()
 
 	ips, err := expandCIDR(cidr)
 	if err != nil {
 		return nil, err
 	}
 	total := len(ips)
+	// Hard cap: oltre /20 il driver Windows TCPIP esaurisce le socket
+	// effimere (~16K) e Defender inserisce latenza esponenziale sui
+	// socket UDP NBNS. Meglio fail-fast che simulare un crash.
+	if total > 4096 {
+		return nil, fmt.Errorf("range troppo ampio (%d IP). Usa /20 o piu' piccolo (max 4094 IP)", total)
+	}
+	// Timeout globale 90s: oltre questo limite ritorniamo i risultati
+	// parziali raccolti finora invece di lasciare la UI in "in corso"
+	// a vita (era la causa principale dei "freeze" su /24).
+	ctxScan, cancelScan := context.WithTimeout(ctx, 90*time.Second)
+	defer cancelScan()
 	var done int32
 
 	// Phase 0: leggi ARP cache UPFRONT. E' istantanea (~5-30ms) e
 	// fornisce MAC + vendor anche per host che non rispondono al TCP
 	// probe (silenziosi ma raggiungibili in L2).
-	arp := readARPTable(ctx)
+	arp := readARPTable(ctxScan)
 
 	// emitted tiene traccia degli IP gia' notificati a onResult cosi'
 	// non si duplicano (alive da TCP probe + arp-only successivo).
 	var (
-		mu       sync.Mutex
-		results  []*ScanResult
-		emitted  = map[string]bool{}
+		mu      sync.Mutex
+		emitted = map[string]bool{}
 	)
 	emit := func(r *ScanResult) {
 		mu.Lock()
@@ -582,7 +602,13 @@ func runScan(ctx context.Context, cidr string, timeout time.Duration,
 		results = append(results, r)
 		mu.Unlock()
 		if onResult != nil {
-			onResult(r)
+			// Wrapper recover: una eccezione in onResult (es. Walk
+			// MsgBox chiamata da goroutine errata) non deve abbattere
+			// l'intero scan.
+			func() {
+				defer func() { _ = recover() }()
+				onResult(r)
+			}()
 		}
 	}
 
@@ -594,14 +620,20 @@ func runScan(ctx context.Context, cidr string, timeout time.Duration,
 	//     dei PC Windows ANCHE senza record DNS PTR e fornisce workgroup +
 	//     MAC fallback.
 	//
-	// Concorrenza alzata a 512 (era 256) per saturare LAN gigabit su /22 e
-	// /16. Il bottleneck non e' piu' la CPU ma il timeout dei TCP morti.
-	sem := make(chan struct{}, 512)
+	// Concorrenza RIDOTTA da 512 a 64: il driver Windows TCPIP rallenta
+	// drasticamente sopra ~128 socket aperti contemporaneamente, e
+	// Defender ASR ispeziona ogni socket UDP NBNS in serializzazione.
+	// 64 worker bilanciano performance e stabilita' (su /24: ~6s totali
+	// invece di ~3s — accettabile per evitare freeze e crash).
+	sem := make(chan struct{}, 64)
 	var wg sync.WaitGroup
 	for _, ip := range ips {
 		ip := ip
 		select {
-		case <-ctx.Done():
+		case <-ctxScan.Done():
+			// Timeout globale o utente ha cancellato: smetti di
+			// accodare. Le goroutine gia' partite finiranno da sole.
+			goto waitPhase1
 		default:
 		}
 		wg.Add(1)
@@ -609,25 +641,30 @@ func runScan(ctx context.Context, cidr string, timeout time.Duration,
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
+			// Goroutine-level panic recovery: un IP rotto (es.
+			// nbns parser su pacchetto malformato) non deve far
+			// crashare l'intero scan.
+			defer func() { _ = recover() }()
 
 			// Lancia NBNS in parallelo al TCP probe — usano risorse di
 			// rete diverse (UDP vs TCP) quindi non si fanno concorrenza.
 			var (
-				nbInfo  *nbns.NodeInfo
-				nbDone  = make(chan struct{})
+				nbInfo *nbns.NodeInfo
+				nbDone = make(chan struct{})
 			)
 			go func() {
 				defer close(nbDone)
+				defer func() { _ = recover() }()
 				if info, err := nbns.Query(ip, nbns.DefaultTimeout); err == nil {
 					nbInfo = info
 				}
 			}()
 
-			alive, port, rtt := probeAlive(ctx, ip, timeout)
+			alive, port, rtt := probeAlive(ctxScan, ip, timeout)
 			<-nbDone
 
 			n := atomic.AddInt32(&done, 1)
-			if onProgress != nil && (n%8 == 0 || int(n) == total) {
+			if onProgress != nil && (n%32 == 0 || int(n) == total) {
 				onProgress(int(n), total)
 			}
 
@@ -646,20 +683,17 @@ func runScan(ctx context.Context, cidr string, timeout time.Duration,
 			// Hostname resolution priority:
 			//   1. NBNS ComputerName (PC Windows = nome reale)
 			//   2. reverseDNS (PTR) — utile per server/router
-			// Se NBNS dice "DEMO-PC" e PTR dice "10-10-1-55.dyn.example.com"
-			// preferiamo NBNS perche' e' piu' significativo per l'admin.
 			host := ""
 			if nbInfo != nil && nbInfo.ComputerName != "" {
 				host = nbInfo.ComputerName
 			}
 			if host == "" {
-				host = reverseDNS(ctx, ip)
+				host = reverseDNS(ctxScan, ip)
 			}
 
 			status := "alive"
 			rttOut := rtt
 			if !alive {
-				// Anche se TCP probe non risponde, NBNS o ARP visibile = host vivo.
 				status = "arp-only"
 				rttOut = -1
 				if isNetbiosAlive {
@@ -677,12 +711,13 @@ func runScan(ctx context.Context, cidr string, timeout time.Duration,
 			})
 		}()
 	}
+waitPhase1:
 	wg.Wait()
 
 	// Phase 2 (cleanup): se l'ARP cache cambia durante lo scan (es. ne
 	// arrivano di nuovi grazie ai nostri probe TCP), riemettiamo gli
 	// arp-only rimasti fuori. E' un best-effort, costa pochi ms.
-	arp2 := readARPTable(ctx)
+	arp2 := readARPTable(ctxScan)
 	for ip, mac := range arp2 {
 		mu.Lock()
 		already := emitted[ip]
@@ -698,7 +733,7 @@ func runScan(ctx context.Context, cidr string, timeout time.Duration,
 		emit(&ScanResult{
 			IP:       ip,
 			MAC:      mac,
-			Hostname: reverseDNS(ctx, ip),
+			Hostname: reverseDNS(ctxScan, ip),
 			Vendor:   ouiVendor(mac),
 			Status:   "arp-only",
 			RTTms:    -1,
@@ -711,6 +746,12 @@ func runScan(ctx context.Context, cidr string, timeout time.Duration,
 	out := make([]*ScanResult, len(results))
 	copy(out, results)
 	mu.Unlock()
+	// Se il timeout globale e' scattato ritorniamo i risultati parziali
+	// con un errore segnalato cosi' la UI puo' mostrare "Scan timeout —
+	// X dispositivi trovati" invece di "Scan completato".
+	if ctxScan.Err() == context.DeadlineExceeded {
+		return out, fmt.Errorf("scan timeout dopo 90s (risultati parziali: %d)", len(out))
+	}
 	return out, nil
 }
 
