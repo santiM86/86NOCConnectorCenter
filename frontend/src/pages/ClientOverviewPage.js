@@ -28,6 +28,7 @@ import HealthBadge from "@/components/HealthBadge";
 import { DeviceEditModal } from "@/components/DeviceEditModal";
 import DiscoveryPage from "./DiscoveryPage";
 import VulnerabilityPage from "./VulnerabilityPage";
+import LanScannerPage from "./LanScannerPage";
 import { useSortableTable, SortableTh } from "@/utils/tableSort";
 
 const STATUS_COLOR = { online: "#34C759", offline: "#FF3B30", active: "#FFCC00", degraded: "#FF9500", unknown: "#555" };
@@ -212,6 +213,7 @@ export default function ClientOverviewPage() {
     { id: "printers", label: `Stampanti (${mergedPrinters.length})`, icon: Printer },
     { id: "backup", label: `Backup (${backups.length})`, icon: Database },
     { id: "discovery", label: "Auto-Discovery", icon: MagnifyingGlass },
+    { id: "lan-scan", label: "Scanner LAN", icon: WifiHigh },
     { id: "vulnerability", label: "Vulnerability", icon: ShieldCheck },
     { id: "credentials", label: "Credenziali", icon: Lock },
   ];
@@ -353,6 +355,7 @@ export default function ClientOverviewPage() {
         {activeTab === "backup" && <BackupTab backups={backups} clientId={clientId} />}
         {activeTab === "credentials" && <VaultPage scopedClientId={clientId} scopedClientName={client.name} />}
         {activeTab === "discovery" && <DiscoveryPage scopedClientId={clientId} scopedClientName={client.name} />}
+        {activeTab === "lan-scan" && <LanScannerPage scopedClientId={clientId} scopedClientName={client.name} />}
         {activeTab === "vulnerability" && <VulnerabilityPage scopedClientId={clientId} scopedClientName={client.name} />}
       </div>
     </div>

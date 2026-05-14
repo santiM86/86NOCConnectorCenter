@@ -1010,9 +1010,6 @@ func buildConsole(app *App) {
 							})
 						}(t)
 					}},
-					wd.PushButton{Text: "Scansiona Rete", OnClicked: func() {
-						go showScannerDialog(app, mw)
-					}},
 					wd.HSpacer{},
 					wd.PushButton{Text: "Apri NOC Center", OnClicked: func() {
 						runHidden("rundll32", "url.dll,FileProtocolHandler", app.agent.BackendURL)
