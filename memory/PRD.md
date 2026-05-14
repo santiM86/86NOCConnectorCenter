@@ -32,6 +32,87 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-02 ✅ mDNS + HTTP banner grabbing nello scanner LAN
+
+**Pipeline completa** ora include 6 fonti di intelligence per device:
+1. ARP cache (Phase 0)
+2. ICMP nativo IcmpSendEcho2 (Phase 1)
+3. NBNS query (Phase 2 enrichment)
+4. Reverse DNS (Phase 2)
+5. **mDNS / Bonjour multicast** (Phase 0.5 parallela) — NEW
+6. **HTTP banner grabbing** porte 80/8080/443 (enrichment) — NEW
+7. Fingerbank API (lato Center, background) — collegato in iterazione precedente
+
+### Implementazione
+- `internal/lanscan/mdns_windows.go`: `discoverMDNS(ctx)` riusa
+  `github.com/hashicorp/mdns` per query parallele su 9 service types
+  (`_http._tcp`, `_printer._tcp`, `_airplay._tcp`, `_googlecast._tcp`,
+  `_smb._tcp`, `_workstation._tcp`, ecc.). Ritorna mappa IP →
+  `{hostname, services[]}`. Timeout 3s.
+- `internal/lanscan/http_banner_windows.go`: `httpBanner(ip, timeout)`
+  fa connect TCP veloce (200ms) su 80→8080→443 e legge solo header
+  `Server:` o `WWW-Authenticate: realm=...` come fallback. TLS con
+  `InsecureSkipVerify` per device self-signed. Total <500ms per IP.
+- `Result` esteso con `MDNSName`, `Services[]`, `HTTPServer`.
+- `Run` lancia mDNS in goroutine parallela alla ICMP sweep; ogni
+  `enrich(ip)` legge la mappa shared (RWMutex) e fa HTTP probe.
+
+### Backend & Frontend
+- `ScanResult` Pydantic + bridge `lan_scan_result` propagano i 3 nuovi
+  campi nei doc Mongo `lan_scan_runs`.
+- `LanScannerPage`:
+  - cella Hostname ora ha fallback `hostname → mdns_name (.local) →
+    device_name (Fingerbank) → http_server`
+  - sotto Vendor compaiono **pill chip dei servizi mDNS** (max 3, es.
+    `_airplay`, `_googlecast`, `_smb`) — segnale visivo immediato
+  - `suggestDeviceType` esteso con regole su mDNS services e HTTP
+    Server banner (es. server header `synology|qnap|truenas` → nas;
+    `hp ilo|idrac` → ilo; `laserjet|kyocera|ricoh` → printer; mDNS
+    `_printer._tcp` → printer; ecc.)
+
+### Esempi pratici di identificazione device che PRIMA fallivano
+- Sonos speaker → `mdns_name=Sonos-RoomKitchen` + service `_raop._tcp`
+- HP Color LaserJet senza NBNS → `http_server=lighttpd/HP_LaserJet_M806` → tipo `printer`
+- Synology NAS → `http_server=nginx Synology DSM 7.2` → tipo `nas`
+- iLO HP server → `http_server=HP iLO 5` → tipo `ilo`
+- Chromecast → `mdns service=_googlecast._tcp` → tipo `iot`
+
+### Build cross-platform
+- `go build ./...` GOOS=windows + linux: OK
+- `go vet ./internal/lanscan/... ./cmd/nocui-v5/...`: clean
+- Frontend lint OK, backend restart pulito
+
+
+
+## 2026-02 ✅ Fingerbank collegato al nuovo scanner LAN web
+
+**Risposta a domanda user "Fingerbank lavora subito?"**: prima NO, ora SÌ.
+
+### Stato prima della modifica
+- `services/fingerbank_service.py` funzionante (cache 30gg, AES-256-GCM)
+- API key configurata (suffix `402b`)
+- Già usato da `topology.py`, `devices.py`, vecchio `/api/connector/lan-scan`
+- ❌ NON chiamato dal nuovo `routes/lan_scanner.py` (gap)
+
+### Fix applicato
+- `bridge_lan_scan_event` schedula `_enrich_fingerbank(scan_id, ip, mac)` in
+  background non appena arriva un `lan_scan_result` con MAC e ancora senza
+  `device_name`. Atomico via `results.$.device_name` arrayFilter.
+- `ScanResult` Pydantic esteso con `device_name`, `device_score`.
+- Frontend `LanScannerPage`:
+  - colonna Hostname mostra `device_name` (italic muted + tooltip score)
+    quando NBNS hostname è vuoto
+  - `suggestDeviceType(vendor, hostname, deviceName)` ora considera per
+    primo `deviceName` (es. "HP LaserJet" → printer, "iPhone" → workstation)
+
+### Limite intrinseco
+Fingerbank con SOLO MAC ritorna info di base (score ~20-40, tipicamente
+solo vendor a livello brand). Per identificazione precisa (modello esatto)
+servirebbero `dhcp_fingerprint` e/o `user_agents` che richiedono sniffing
+DHCP/HTTP nell'agent Go. Estensione futura possibile.
+
+
+
 ## 2026-02 ✅ Auto-classificazione device_type da vendor OUI + hostname
 
 **Implementato** in `LanScannerPage.js`:
