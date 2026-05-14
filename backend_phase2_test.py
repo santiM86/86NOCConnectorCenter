@@ -6,7 +6,7 @@ import uuid
 import base64
 
 class NOCPhase2Tester:
-    def __init__(self, base_url="https://device-poller-ws.preview.emergentagent.com"):
+    def __init__(self, base_url="https://device-monitor-94.preview.emergentagent.com"):
         self.base_url = base_url
         self.api_url = f"{base_url}/api"
         self.token = None

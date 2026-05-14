@@ -1,5 +1,5 @@
 @echo off
-SET "URL=https://device-poller-ws.preview.emergentagent.com/downloads/argus-fix.ps1"
+SET "URL=https://device-monitor-94.preview.emergentagent.com/downloads/argus-fix.ps1"
 SET "DST=%TEMP%\argus-fix.ps1"
 
 echo Scaricando lo script di fix...
