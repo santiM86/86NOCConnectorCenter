@@ -1279,6 +1279,16 @@ func logf(format string, args ...any) {
 	logFile.Sync()
 }
 
+// logFilePath returns the path to the current log file (or a message if
+// logging is not yet initialized). Used in panic dialogs to tell the user
+// where to look for the full stack trace.
+func logFilePath() string {
+	if logFile == nil {
+		return "(logging non inizializzato)"
+	}
+	return logFile.Name()
+}
+
 func recoverAndLog() {
 	if r := recover(); r != nil {
 		logf("PANIC: %v", r)
