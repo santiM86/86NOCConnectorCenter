@@ -195,6 +195,19 @@ func loadAgentInfo() AgentInfo {
 			logf("loadAgentInfo: read failed %s: %v", p, err)
 			continue
 		}
+		// HARDENING: rimuovi UTF-8 BOM (EF BB BF) se presente.
+		// Out-File / ConvertTo-Json in alcune versioni di PowerShell
+		// scrive il BOM all'inizio del file. Il decoder json di Go non
+		// lo gestisce e ritorna "invalid character 'Ã¯' looking for
+		// beginning of value", causando il fallback ad agent.yaml che
+		// ha client_id="unknown" e provocando l'errore "invalid token"
+		// nella connessione WebSocket. Stripiamo il BOM upfront cosi'
+		// qualunque variante dell'installer (PS 5.1 / 7.x / Notepad
+		// con encoding mal-impostato) produce un file leggibile.
+		if len(b) >= 3 && b[0] == 0xEF && b[1] == 0xBB && b[2] == 0xBF {
+			b = b[3:]
+			logf("loadAgentInfo: stripped UTF-8 BOM from %s", p)
+		}
 		var a AgentInfo
 		if jerr := json.Unmarshal(b, &a); jerr != nil {
 			logf("loadAgentInfo: json decode %s failed: %v (raw=%s)", p, jerr, string(b))
