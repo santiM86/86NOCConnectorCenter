@@ -40,6 +40,10 @@ export default function LanScannerPage({ scopedClientId, scopedClientName } = {}
   // v4.9.1: auto-classifica device_type da vendor OUI + hostname pattern.
   // ON di default — abbatte il time-to-onboarding sui pattern noti.
   const [autoClassify, setAutoClassify] = useState(true);
+  // v4.10.1: aggiorna metadati anche su device già presenti per client
+  // (fixa import precedenti con name=IP nudo perche' arricchimento async
+  //  non era ancora arrivato al momento del primo import).
+  const [updateExisting, setUpdateExisting] = useState(true);
 
   const pollRef = useRef(null);
 
@@ -154,8 +158,16 @@ export default function LanScannerPage({ scopedClientId, scopedClientName } = {}
         : null;
       return {
         ip: r.ip,
-        name: r.hostname || r.mdns_name || r.device_name || r.ip,
+        // Best-name client-side (il backend ricalcola comunque autorevolmente)
+        name: r.hostname || r.mdns_name || r.device_name || (r.http_server ? `Web · ${r.http_server.slice(0,32)}` : "") || r.ip,
         hostname: r.hostname || r.mdns_name,
+        mac: r.mac,
+        vendor: r.vendor,
+        mdns_name: r.mdns_name,
+        services: r.services || [],
+        http_server: r.http_server,
+        device_name: r.device_name,
+        device_score: r.device_score,
         monitor_type: defaultMonitorType,
         community: defaultCommunity,
         device_type: suggested || defaultDeviceType,
@@ -163,8 +175,12 @@ export default function LanScannerPage({ scopedClientId, scopedClientName } = {}
     });
     try {
       const res = await axios.post(`${API}/api/lan-scans/${scanId}/import`,
-        { client_id: scopedClientId, devices }, { headers });
-      toast.success(`Importati ${res.data.imported} dispositivi${res.data.skipped?.length ? ` (${res.data.skipped.length} già presenti, saltati)` : ""}`);
+        { client_id: scopedClientId, devices, update_existing: updateExisting }, { headers });
+      const parts = [];
+      if (res.data.imported) parts.push(`${res.data.imported} importati`);
+      if (res.data.updated?.length) parts.push(`${res.data.updated.length} aggiornati`);
+      if (res.data.skipped?.length) parts.push(`${res.data.skipped.length} saltati`);
+      toast.success(parts.join(" · ") || "Operazione completata");
       setImportOpen(false);
       setSelectedIps(new Set());
     } catch (err) {
@@ -422,7 +438,7 @@ export default function LanScannerPage({ scopedClientId, scopedClientName } = {}
                 data-testid="lan-scan-import-autoclassify"
               />
               <span className="text-xs">
-                <span className="font-medium">Auto-classifica tipo</span> da vendor + hostname.<br />
+                <span className="font-medium">Auto-classifica tipo</span> da vendor + hostname + mDNS + HTTP banner + Fingerbank.<br />
                 {(() => {
                   const sel = results.filter((r) => selectedIps.has(r.ip));
                   const classified = sel.filter((r) => suggestDeviceType(r.vendor, r.hostname, r.device_name, r.mdns_name, r.services, r.http_server));
@@ -432,6 +448,24 @@ export default function LanScannerPage({ scopedClientId, scopedClientName } = {}
                     </span>
                   );
                 })()}
+              </span>
+            </label>
+
+            <label className={`flex items-start gap-2.5 cursor-pointer p-2.5 rounded-md border ${borderC} mb-4 hover:bg-slate-50 dark:hover:bg-slate-700/40`}>
+              <input
+                type="checkbox"
+                checked={updateExisting}
+                onChange={(e) => setUpdateExisting(e.target.checked)}
+                className="mt-0.5"
+                data-testid="lan-scan-import-update-existing"
+              />
+              <span className="text-xs">
+                <span className="font-medium">Aggiorna anche dispositivi già presenti</span><br />
+                <span className={txtMuted}>
+                  Ri-popola hostname / vendor / MAC / mDNS / HTTP server / Fingerbank
+                  sui device già importati. La config monitoring (community, tipo
+                  monitor) resta invariata. Fixa import vecchi con name=IP nudo.
+                </span>
               </span>
             </label>
 

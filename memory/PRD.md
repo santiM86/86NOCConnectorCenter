@@ -32,6 +32,56 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-02 ✅ Import scan → managed_devices: arricchimento totale metadati
+
+**Problema osservato** (screenshot user): dopo import di 6/36 device, la
+panoramica cliente mostra `● 10.10.1.55  10.10.1.55  snmp: public`
+— IP duplicato come name, NIENTE hostname/vendor/tipo dispositivo
+visibile. L'import buttava via tutta l'intelligence accumulata dallo
+scanner (NBNS, mDNS, HTTP banner, Fingerbank, OUI vendor).
+
+### Fix backend `POST /api/lan-scans/{scan_id}/import`
+1. Carica `lan_scan_runs.results` come **fonte autorevole** dei metadati
+   prima del for-loop (rilettura da Mongo → niente race con enrichment
+   asincrono Fingerbank).
+2. Funzione `_best_name(scan_r, override, ip)` con priorità:
+   - override esplicito (≠ IP)
+   - `hostname` (NBNS / DNS)
+   - `mdns_name` (Bonjour)
+   - `device_name` (Fingerbank)
+   - `"Web · <http_server>"`
+   - IP (ultima istanza)
+3. Funzione `_build_notes(scan_r)` auto-genera riga descrittiva:
+   `vendor · mDNS=name · HTTP=server · Fingerbank=name · services=...`
+4. Doc `managed_devices` ora include:
+   - `hostname`, `mac`, `vendor` (da scan)
+   - `mdns_name`, `mdns_services` (Bonjour)
+   - `http_server` (banner grabbing)
+   - `fingerbank_device_name`, `fingerbank_score`
+   - `notes` (riga descrittiva combinata)
+   - `discovered_via: "lan_scanner_web"` (audit)
+5. **Flag `update_existing: bool`** nel body: se true e IP già presente,
+   aggiorna SOLO i metadati discovery mantenendo config monitoring
+   (community, monitor_type, device_type). `name` aggiornato solo se
+   prima era IP nudo. Restituisce `updated[]` separato da `imported[]`.
+
+### Fix frontend `LanScannerPage`
+- Payload import include ora TUTTI i campi: hostname, mac, vendor,
+  mdns_name, services, http_server, device_name, device_score.
+- Nuovo checkbox **"Aggiorna anche dispositivi già presenti"** nel modal
+  (default ON). Permette di "ri-arricchire" device importati con name=IP
+  nudo senza duplicarli.
+- Toast post-import con conteggi separati: `N importati · M aggiornati ·
+  X saltati`.
+
+### Effetto pratico
+Quando l'utente rifa l'import sullo stesso scan, i device esistenti
+vengono ri-arricchiti: la riga in panoramica passa da
+`10.10.1.55  10.10.1.55  snmp: public` a `DATI  10.10.1.55  Synology DSM
+7.2  snmp: public` (esempio con NAS).
+
+
+
 ## 2026-02 ✅ mDNS + HTTP banner grabbing nello scanner LAN
 
 **Pipeline completa** ora include 6 fonti di intelligence per device:
