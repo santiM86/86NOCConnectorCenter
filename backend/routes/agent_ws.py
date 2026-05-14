@@ -1048,6 +1048,12 @@ async def install_manifest(token: Optional[str] = None,
                 sha256[name] = digest
     return {
         "client_id": client_id,
+        # client_name (nome leggibile cliente, es. "86BIT_Office") usato
+        # dall'installer ps1 per popolare il titolo della tray UI desktop
+        # senza richiedere all'utente di passarlo come parametro -ClientName.
+        # Best-effort: se il cliente non e' nel DB (caso anomalo) ritorna
+        # stringa vuota e l'installer fa fallback su client_id UUID.
+        "client_name": await _resolve_client_label(client_id),
         "role": role,
         "backend_ws": effective_ws,
         "binaries": binaries,
