@@ -24,6 +24,7 @@ package main
 import (
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -100,7 +101,7 @@ exit $LASTEXITCODE
 		log.Error("avvio powershell fallito", "err", err.Error())
 		return
 	}
-	log.Info("installer powershell avviato in background", "pid", cmd.Process.Pid)
+	log.Info("installer powershell avviato in background", "pid", strconv.Itoa(cmd.Process.Pid))
 	// Non aspettiamo cmd.Wait(): il subprocess gira indipendente. Il
 	// nostro processo (nocagent.exe) sara' terminato dallo script poco
 	// dopo, e il watchdog lo rifara' partire quando l'install ha finito.
