@@ -783,11 +783,22 @@ func showScannerDialog(app *App, parent walk.Form) {
 	defer func() {
 		if r := recover(); r != nil {
 			logf("PANIC in showScannerDialog: %v", r)
+			// Mostra il panic all'utente cosi' invece di una dialog
+			// vuota silenziosa sa esattamente cosa e' fallito.
+			if parent != nil {
+				walk.MsgBox(parent,
+					"Errore Scanner",
+					fmt.Sprintf("Si e' verificato un errore inaspettato durante l'apertura della finestra di scansione:\n\n%v\n\nIl log dettagliato e' in:\n%s",
+						r, logFilePath()),
+					walk.MsgBoxIconError)
+			}
 		}
 	}()
 
+	logf("showScannerDialog: invoked, parent=%v", parent != nil)
 	model := &scanResultsModel{}
 	defaultCIDR := detectLocalCIDR()
+	logf("showScannerDialog: defaultCIDR=%q", defaultCIDR)
 
 	var (
 		dlg          *walk.Dialog
