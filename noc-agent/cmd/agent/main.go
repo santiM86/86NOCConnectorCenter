@@ -213,7 +213,7 @@ func runAgent(ctx context.Context, cfg config.Config, log *logging.Logger) {
 		// ferma il nostro stesso servizio. Se rispondessimo dopo il run,
 		// il Center vedrebbe sempre timeout. Rispondiamo subito con ack
 		// e l'install gira detached.
-		go triggerRemoteUpdate(req.Version, cfg, log)
+		go triggerRemoteUpdate(req.Version, &cfg, log)
 		return map[string]any{
 			"status":          "update_started",
 			"version":         req.Version,
