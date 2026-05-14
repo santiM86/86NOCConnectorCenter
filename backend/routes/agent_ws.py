@@ -316,6 +316,11 @@ async def _on_event(conn: _Connection, evt: Dict[str, Any]) -> None:
             await _bridge_snmp_poll(conn, data)
         elif kind == "ping_poll" and isinstance(data, dict):
             await _bridge_ping_poll(conn, data)
+        elif kind in ("lan_scan_result", "lan_scan_progress", "lan_scan_done") and isinstance(data, dict):
+            # Lazy import per evitare cicli (lan_scanner.py importa
+            # questo modulo per REGISTRY).
+            from routes.lan_scanner import bridge_lan_scan_event
+            await bridge_lan_scan_event(kind, data)
         elif kind == "module_stuck":
             logger.warning("agent v4 module_stuck agent_id=%s data=%s", conn.agent_id, data)
         elif kind == "crash_recovered":

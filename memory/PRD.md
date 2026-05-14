@@ -32,6 +32,63 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-02 ✅ Scanner LAN via NOC Center (web) — pivot architetturale
+
+**Cambio direzione**: dopo conferma user che lo scanner walk continuava
+a freezare anche con il fix `PublishRowsReset` batched, abbiamo
+deciso di **spostare lo scanner LAN dalla UI desktop al NOC Center web**.
+Identico pattern di Datto/NinjaOne/Auvik.
+
+### Architettura
+```
+React Center → POST /api/lan-scans → WS cmd "lan_scan" → Agent Go
+                                                              ↓
+React Center ← GET /api/lan-scans/{id} ← Mongo ← agent.event ← lanscan.Run()
+   (poll 1s)                            (bridge)   (streaming)
+```
+
+### Cosa è stato fatto
+1. **Agent Go**:
+   - `cmd/agent/lanscan_windows.go`: handler WS `lan_scan` + `lan_scan_cancel`
+   - `cmd/agent/lanscan_other.go`: stub non-Windows
+   - Riusa `internal/lanscan` (creato per ArgusDesktop)
+   - Streamma via `client.PushEvent("lan_scan_result|progress|done")`
+2. **Backend FastAPI**:
+   - `routes/lan_scanner.py`: 4 endpoint REST + funzione `bridge_lan_scan_event`
+   - `POST /api/lan-scans` (start)
+   - `GET /api/lan-scans/{id}` (poll status)
+   - `DELETE /api/lan-scans/{id}` (cancel)
+   - `GET /api/lan-scans` (history)
+   - `agent_ws.py::_on_event` instrada eventi `lan_scan_*` al bridge
+   - Mongo collection: `lan_scan_runs`
+3. **Frontend React**:
+   - `pages/LanScannerPage.js`: pagina completa con dropdown agent, CIDR,
+     bottone start/cancel, progress bar, tabella live, filtro
+   - `App.js` route `/lan-scanner`
+   - `components/Layout.js` voce sidebar "Scanner LAN" (icon MagnifyingGlass,
+     ruoli admin+operator, sezione Clienti)
+
+### Cosa lasciamo intatto
+- La UI desktop walk legacy (`nocagent-ui.exe`) resta per
+  inserimento IP SNMP manuale + tray icon (decisione user esplicita)
+- Pulsante "Scansiona Rete" desktop può rimanere ma è deprecato
+
+### Validato in container
+- `go build` Windows + Linux: OK
+- `python3 -c "from routes.lan_scanner import router"`: 4 route registrate
+- Backend supervisor: restart pulito, nessun errore startup
+- Frontend smoke screenshot logged-in: pagina "Scanner LAN" visibile,
+  sidebar menu correttamente aggiornato, layout coerente
+
+### Next user step
+1. Push su GitHub via "Save to GitHub"
+2. Tag `v4.9.0` (nuova minor: nuove API e UI)
+3. Attendere CI verde, aggiornare agent su PC Windows via installer
+4. Aprire NOC Center → Scanner LAN → dropdown agent → "Avvia scan"
+5. Verificare risultati live nella tabella
+
+
+
 ## 2026-02 ✅ FIX v4.8.1 — Rendering TableView walk (tabella vuota)
 
 **Sintomo**: dopo aver lanciato lo scanner su `10.10.1.0/24`, lo statusLb
