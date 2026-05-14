@@ -32,7 +32,61 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
-## 2026-02 (oggi) ✅ SCANNER UI v4.7.0 — STRATEGIA ICMP-BURST + FIX SCHTASKS
+## 2026-02 (oggi) ✅ SCANNER UI v4.7.1 — ICMP NATIVO Win32 (IcmpSendEcho2)
+
+**Status**: codice scritto, build cross-Windows OK (9.7 MB stripped),
+go vet clean. Pronto per push tag `v4.7.1`.
+
+### Sintomi v4.7.0 (post primo refactor)
+La pipeline ICMP-burst funzionava (Phase 0 ARP emetteva subito 5 device
+visibili, MAC + vendor corretti) MA la Phase 1 con `exec.Command("ping.exe",
+...)` era lenta:
+- Spawn `ping.exe` su Windows: ~50-150ms per CreateProcess
+- Defender ASR ispeziona ogni nuovo processo figlio
+- 254 IP / 128 worker × ~150ms spawn = 5-10s totali per /24
+- Lo status restava "Scansione in corso..." perche' bumpProgress
+  fireva solo dopo che i primi ICMP completavano
+
+### Fix v4.7.1: `IcmpSendEcho2` via syscall diretto
+Nuovo file `noc-agent/cmd/nocui/icmp_native_windows.go`:
+- Wrapper Win32 IP Helper API (`iphlpapi.dll!IcmpSendEcho2`).
+- Zero process creation: il driver kernel `tcpip.sys` gestisce raw
+  socket ICMP, niente privilegi admin richiesti.
+- Single `IcmpCreateFile` handle riusabile per tutto il processo
+  (kernel-side multiplexing supporta N goroutine concurrent).
+- Timeout aggressivo 150ms (era 200ms con ping.exe).
+- Concurrency invariata 128 (sufficiente, driver dispatch interno).
+
+`scanner_windows.go::runScan` aggiornato per chiamare `probeICMPNative`
+invece di `probeICMPPing` (legacy mantenuto come fallback se
+`IcmpCreateFile` fallisce).
+
+Progress callback ora fira ogni 2 IP (era ogni 4) per UI piu' reattiva.
+
+### Stessa API usata da
+- Advanced IP Scanner (advanced-ip-scanner.com)
+- SoftPerfect Network Scanner
+- nmap su Windows (`-PE`)
+- Microsoft Network Monitor
+
+### Latenza attesa post-fix
+- /24 enterprise: **~500ms** (era 5-10s con ping.exe)
+- Primo IP visibile (Phase 0 ARP): **<50ms**
+- Tabella completa: **~1.5s** (con Phase 3 enrichment NBNS/PTR)
+
+### Deploy
+```bash
+git add noc-agent/cmd/nocui/icmp_native_windows.go \
+        noc-agent/cmd/nocui/scanner_windows.go \
+        memory/PRD.md
+git commit -m "v4.7.1: ICMP nativo Win32 IcmpSendEcho2 (10-20x faster)"
+git tag -a v4.7.1 -m "Native ICMP via iphlpapi.dll - zero CreateProcess overhead"
+git push origin main --tags
+```
+
+---
+
+## 2026-02 ✅ SCANNER UI v4.7.0 — STRATEGIA ICMP-BURST + FIX SCHTASKS
 
 **Status**: codice scritto, build cross-Windows OK (9.7 MB stripped),
 go vet clean. In attesa push tag `v4.7.0` per build automatico GitHub
