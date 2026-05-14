@@ -646,22 +646,52 @@ func runScan(ctx context.Context, cidr string, timeout time.Duration,
 			// crashare l'intero scan.
 			defer func() { _ = recover() }()
 
+			// Bail-out immediato se ctxScan e' gia' scaduto (timeout
+			// globale 90s) — evita di sprecare risorse su IP che non
+			// finiremo mai di processare.
+			select {
+			case <-ctxScan.Done():
+				return
+			default:
+			}
+
 			// Lancia NBNS in parallelo al TCP probe — usano risorse di
 			// rete diverse (UDP vs TCP) quindi non si fanno concorrenza.
 			var (
 				nbInfo *nbns.NodeInfo
-				nbDone = make(chan struct{})
+				nbDone = make(chan struct{}, 1)
 			)
 			go func() {
-				defer close(nbDone)
 				defer func() { _ = recover() }()
 				if info, err := nbns.Query(ip, nbns.DefaultTimeout); err == nil {
 					nbInfo = info
 				}
+				select {
+				case nbDone <- struct{}{}:
+				default:
+				}
 			}()
 
 			alive, port, rtt := probeAlive(ctxScan, ip, timeout)
-			<-nbDone
+
+			// CRUCIAL FIX: select con timeout su nbDone invece di
+			// "<-nbDone" che bloccava infinitamente quando Defender
+			// mette in coda i socket UDP NBNS. Causa documentata dei
+			// freeze "Probe 32/254 - bloccato".
+			//
+			// Aspettiamo massimo 1s (5x il nbns.DefaultTimeout di
+			// 200ms). Se non risponde entro 1s, NBNS e' considerato
+			// fallito e proseguiamo senza hostname Windows.
+			select {
+			case <-nbDone:
+				// NBNS completata (con o senza risultato).
+			case <-time.After(1 * time.Second):
+				// NBNS hangs, ignora e prosegui.
+				nbInfo = nil
+			case <-ctxScan.Done():
+				// Scan globalmente abortito.
+				return
+			}
 
 			n := atomic.AddInt32(&done, 1)
 			if onProgress != nil && (n%32 == 0 || int(n) == total) {
@@ -712,7 +742,27 @@ func runScan(ctx context.Context, cidr string, timeout time.Duration,
 		}()
 	}
 waitPhase1:
-	wg.Wait()
+	// Safety net: wg.Wait() bloccante puo' rimanere appeso se i worker
+	// si bloccano in operazioni di rete che Defender ASR non rilascia
+	// (es. Close() di socket UDP che e' in midst di packet inspection).
+	// Usiamo un done channel + select con ctxScan.Done() come escape
+	// hatch: oltre il timeout globale 90s ritorniamo i risultati
+	// parziali invece di lasciare la UI bloccata a vita.
+	waitDone := make(chan struct{})
+	go func() {
+		defer func() { _ = recover() }()
+		wg.Wait()
+		close(waitDone)
+	}()
+	select {
+	case <-waitDone:
+		// Tutti i worker terminati normalmente.
+	case <-ctxScan.Done():
+		// Timeout globale o cancel utente: smettiamo di aspettare
+		// e ritorniamo i risultati raccolti finora. I worker
+		// rimasti finiranno in background ma i loro risultati
+		// saranno persi (accettabile).
+	}
 
 	// Phase 2 (cleanup): se l'ARP cache cambia durante lo scan (es. ne
 	// arrivano di nuovi grazie ai nostri probe TCP), riemettiamo gli
