@@ -650,7 +650,11 @@ func runScan(ctx context.Context, cidr string, timeout time.Duration,
 
 	bumpProgress := func() {
 		n := atomic.AddInt32(&doneCnt, 1)
-		if onProgress != nil && (n%2 == 0 || int(n) == total) {
+		// Throttling aggressivo: chiamiamo onProgress solo ogni 16 IP
+		// processati o all'ultimo. Cosi' nelle scansioni /24 arrivano
+		// ~16 Synchronize invece di 127 → message queue Win32 respira
+		// e il titolo non va in "Non risponde".
+		if onProgress != nil && (n%16 == 0 || int(n) == total) {
 			onProgress(int(n), total)
 		}
 	}

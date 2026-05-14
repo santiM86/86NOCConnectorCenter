@@ -46,6 +46,7 @@ import DeviceMetricsPage from "@/pages/DeviceMetricsPage";
 import SyslogPage from "@/pages/SyslogPage";
 import TrapsPage from "@/pages/TrapsPage";
 import DiscoveryPage from "@/pages/DiscoveryPage";
+import LanScannerPage from "@/pages/LanScannerPage";
 import MaintenancePage from "@/pages/MaintenancePage";
 import CorrelationPage from "@/pages/CorrelationPage";
 import ThresholdsPage from "@/pages/ThresholdsPage";
@@ -251,6 +252,7 @@ function App() {
               <Route path="syslog" element={<SyslogPage />} />
               <Route path="snmp-traps" element={<TrapsPage />} />
               <Route path="discovery" element={<DiscoveryPage />} />
+              <Route path="lan-scanner" element={<LanScannerPage />} />
               <Route path="maintenance" element={<MaintenancePage />} />
               <Route path="correlation" element={<CorrelationPage />} />
               <Route path="thresholds" element={<ThresholdsPage />} />

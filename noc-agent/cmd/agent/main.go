@@ -188,6 +188,12 @@ func runAgent(ctx context.Context, cfg config.Config, log *logging.Logger) {
 	})
 	client.Register(proto.CmdWebProxy, webproxy.Handle)
 
+	// lan_scan / lan_scan_cancel — scanner LAN streaming via WS.
+	// L'handler avvia in goroutine lo scan ICMP+ARP+NBNS e streamma
+	// i risultati al Center tramite agent.event {kind:lan_scan_*}.
+	// Disponibile SOLO su Windows (richiede iphlpapi.dll).
+	registerLanScanCommand(client, log)
+
 	// "update" — comando remoto inviato dal Center per aggiornare
 	// l'agent. Lancia install-noc-agent.ps1 da GitHub come subprocess
 	// admin; l'install si occupa di stop servizi, kill UI, download
