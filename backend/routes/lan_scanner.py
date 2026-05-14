@@ -62,6 +62,9 @@ class ScanResult(BaseModel):
     vendor: Optional[str] = None
     status: str
     rtt_ms: int = -1
+    # Fingerbank enrichment (best-effort, popolato asincronamente)
+    device_name: Optional[str] = None
+    device_score: Optional[int] = None
 
 
 class ScanRun(BaseModel):
@@ -278,6 +281,39 @@ async def import_to_client(
     return {"imported": len(imported), "skipped": skipped, "items": imported}
 
 
+# ---- Fingerbank enrichment (best-effort, asincrono) ---------------------
+
+async def _enrich_fingerbank(scan_id: str, ip: str, mac: str) -> None:
+    """Interroga Fingerbank con il MAC del device e aggiorna il documento
+    `lan_scan_runs.results.$` con `device_name` + `device_score`.
+
+    Best-effort: se la key non è configurata, no match, rate-limit (429) o
+    qualsiasi altra failure, lascia il record com'è.
+
+    Cap rispetto delle quote: la funzione `fingerbank_service.interrogate`
+    già fa caching 30gg su MAC normalizzato, quindi richiamarla per device
+    già visti non consuma quota gratuita (250 query/giorno).
+    """
+    try:
+        from services import fingerbank_service
+        if not await fingerbank_service.is_configured():
+            return
+        fb = await fingerbank_service.interrogate(mac=mac)
+        if not fb or not fb.get("device_name"):
+            return
+        # Update inline del result nell'array. Usiamo arrayFilters per
+        # essere atomici anche se nuovi result vengono pushati intanto.
+        await db.lan_scan_runs.update_one(
+            {"scan_id": scan_id, "results.ip": ip},
+            {"$set": {
+                "results.$.device_name": fb["device_name"],
+                "results.$.device_score": fb.get("score"),
+            }},
+        )
+    except Exception as e:
+        logger.warning("fingerbank enrichment failed scan=%s ip=%s err=%s", scan_id, ip, e)
+
+
 # ---- Bridge eventi (chiamato da agent_ws._on_event) ---------------------
 
 async def bridge_lan_scan_event(kind: str, data: Dict[str, Any]) -> None:
@@ -295,12 +331,7 @@ async def bridge_lan_scan_event(kind: str, data: Dict[str, Any]) -> None:
         r = data.get("result") or {}
         if not isinstance(r, dict) or not r.get("ip"):
             return
-        # Upsert per-IP: se l'agent emette 2 volte lo stesso IP (alive poi
-        # arp-only o viceversa) facciamo merge invece di duplicare.
         ip = r["ip"]
-        # Prima rimuoviamo eventuale entry esistente con lo stesso IP,
-        # poi ri-append con il merged migliore. Operazione atomica via
-        # pull + push:
         existing = await db.lan_scan_runs.find_one(
             {"scan_id": scan_id, "results.ip": ip},
             {"_id": 0, "results.$": 1},
@@ -315,6 +346,9 @@ async def bridge_lan_scan_event(kind: str, data: Dict[str, Any]) -> None:
                 "vendor": r.get("vendor") or prev.get("vendor"),
                 "status": "alive" if "alive" in (r.get("status"), prev.get("status")) else r.get("status") or prev.get("status"),
                 "rtt_ms": r.get("rtt_ms") if r.get("rtt_ms", -1) >= 0 else prev.get("rtt_ms", -1),
+                # Conserva eventuale enrichment Fingerbank precedente
+                "device_name": prev.get("device_name") or r.get("device_name"),
+                "device_score": prev.get("device_score") or r.get("device_score"),
             }
             await db.lan_scan_runs.update_one(
                 {"scan_id": scan_id},
@@ -324,6 +358,10 @@ async def bridge_lan_scan_event(kind: str, data: Dict[str, Any]) -> None:
             {"scan_id": scan_id},
             {"$push": {"results": merged}},
         )
+        # Schedula Fingerbank enrichment in background se MAC presente.
+        if merged.get("mac") and not merged.get("device_name"):
+            import asyncio as _aio  # lazy
+            _aio.create_task(_enrich_fingerbank(scan_id, ip, merged["mac"]))
 
     elif kind == "lan_scan_progress":
         await db.lan_scan_runs.update_one(

@@ -32,6 +32,35 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-02 ✅ Fingerbank collegato al nuovo scanner LAN web
+
+**Risposta a domanda user "Fingerbank lavora subito?"**: prima NO, ora SÌ.
+
+### Stato prima della modifica
+- `services/fingerbank_service.py` funzionante (cache 30gg, AES-256-GCM)
+- API key configurata (suffix `402b`)
+- Già usato da `topology.py`, `devices.py`, vecchio `/api/connector/lan-scan`
+- ❌ NON chiamato dal nuovo `routes/lan_scanner.py` (gap)
+
+### Fix applicato
+- `bridge_lan_scan_event` schedula `_enrich_fingerbank(scan_id, ip, mac)` in
+  background non appena arriva un `lan_scan_result` con MAC e ancora senza
+  `device_name`. Atomico via `results.$.device_name` arrayFilter.
+- `ScanResult` Pydantic esteso con `device_name`, `device_score`.
+- Frontend `LanScannerPage`:
+  - colonna Hostname mostra `device_name` (italic muted + tooltip score)
+    quando NBNS hostname è vuoto
+  - `suggestDeviceType(vendor, hostname, deviceName)` ora considera per
+    primo `deviceName` (es. "HP LaserJet" → printer, "iPhone" → workstation)
+
+### Limite intrinseco
+Fingerbank con SOLO MAC ritorna info di base (score ~20-40, tipicamente
+solo vendor a livello brand). Per identificazione precisa (modello esatto)
+servirebbero `dhcp_fingerprint` e/o `user_agents` che richiedono sniffing
+DHCP/HTTP nell'agent Go. Estensione futura possibile.
+
+
+
 ## 2026-02 ✅ Auto-classificazione device_type da vendor OUI + hostname
 
 **Implementato** in `LanScannerPage.js`:

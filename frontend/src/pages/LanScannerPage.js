@@ -149,10 +149,10 @@ export default function LanScannerPage({ scopedClientId, scopedClientName } = {}
     if (selectedIps.size === 0) return;
     setImporting(true);
     const devices = results.filter((r) => selectedIps.has(r.ip)).map((r) => {
-      const suggested = autoClassify ? suggestDeviceType(r.vendor, r.hostname) : null;
+      const suggested = autoClassify ? suggestDeviceType(r.vendor, r.hostname, r.device_name) : null;
       return {
         ip: r.ip,
-        name: r.hostname || r.ip,
+        name: r.hostname || r.device_name || r.ip,
         hostname: r.hostname,
         monitor_type: defaultMonitorType,
         community: defaultCommunity,
@@ -353,11 +353,11 @@ export default function LanScannerPage({ scopedClientId, scopedClientName } = {}
                     </td>
                     <td className="px-4 py-1.5 font-mono">{r.ip}</td>
                     <td className={`px-4 py-1.5 font-mono text-xs ${txtMuted}`}>{r.rtt_ms >= 0 ? `${r.rtt_ms} ms` : ""}</td>
-                    <td className="px-4 py-1.5">{r.hostname || ""}</td>
+                    <td className="px-4 py-1.5">{r.hostname || (r.device_name && <span className={`${txtMuted} italic`} title={`Fingerbank score: ${r.device_score ?? "?"}`}>{r.device_name}</span>) || ""}</td>
                     <td className="px-4 py-1.5 font-mono text-xs">{r.mac || ""}</td>
                     <td className="px-4 py-1.5 text-xs">{r.vendor || ""}</td>
                     {scopedClientId && (() => {
-                      const sug = suggestDeviceType(r.vendor, r.hostname);
+                      const sug = suggestDeviceType(r.vendor, r.hostname, r.device_name);
                       return (
                         <td className="px-4 py-1.5 text-xs">
                           {sug ? (
@@ -402,7 +402,7 @@ export default function LanScannerPage({ scopedClientId, scopedClientName } = {}
                 <span className="font-medium">Auto-classifica tipo</span> da vendor + hostname.<br />
                 {(() => {
                   const sel = results.filter((r) => selectedIps.has(r.ip));
-                  const classified = sel.filter((r) => suggestDeviceType(r.vendor, r.hostname));
+                  const classified = sel.filter((r) => suggestDeviceType(r.vendor, r.hostname, r.device_name));
                   return (
                     <span className={txtMuted}>
                       {classified.length}/{sel.length} riconosciuti — gli altri useranno il default sotto.
@@ -480,9 +480,24 @@ function ipNum(s) {
  * fallisce (vendor sconosciuto + hostname senza pattern noti), ritorna null
  * e l'UI usa il default scelto nel modal.
  */
-function suggestDeviceType(vendor, hostname) {
+function suggestDeviceType(vendor, hostname, deviceName) {
   const v = (vendor || "").toLowerCase();
   const h = (hostname || "").toLowerCase();
+  const d = (deviceName || "").toLowerCase();
+
+  // 0. Fingerbank device_name è la fonte più ricca quando presente
+  if (d) {
+    if (/printer|laserjet|deskjet|officejet|brother|canon|epson|kyocera|lexmark/i.test(d)) return "printer";
+    if (/iphone|ipad|android|smartphone|mobile|google pixel|samsung galaxy/i.test(d)) return "workstation";
+    if (/server|esxi|vmware|hyper-?v|proxmox|xenserver/i.test(d)) return "server";
+    if (/synology|qnap|nas|truenas/i.test(d)) return "nas";
+    if (/firewall|fortigate|sonicwall|sophos|palo alto|usg/i.test(d)) return "firewall";
+    if (/switch|catalyst|nexus|meraki|aruba/i.test(d)) return "switch";
+    if (/access point|unifi|aruba ap|ruckus|wifi/i.test(d)) return "ap";
+    if (/camera|ipcam|nvr|dvr|hikvision|dahua/i.test(d)) return "camera";
+    if (/macbook|imac|mac mini|mac pro/i.test(d)) return "workstation";
+    if (/ups|smart-ups|riello/i.test(d)) return "ups";
+  }
 
   // 1. Hostname pattern check (prevale sul vendor: il nome è scelto dall'IT)
   if (/^(srv|server|dc|ad|adc|backup|vm|hv|host)[\W_-]?/i.test(h)) return "server";
