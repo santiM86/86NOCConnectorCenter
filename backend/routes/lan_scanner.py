@@ -65,6 +65,10 @@ class ScanResult(BaseModel):
     # Fingerbank enrichment (best-effort, popolato asincronamente)
     device_name: Optional[str] = None
     device_score: Optional[int] = None
+    # mDNS / HTTP banner enrichment dall'agent
+    mdns_name: Optional[str] = None
+    services: List[str] = Field(default_factory=list)
+    http_server: Optional[str] = None
 
 
 class ScanRun(BaseModel):
@@ -349,6 +353,10 @@ async def bridge_lan_scan_event(kind: str, data: Dict[str, Any]) -> None:
                 # Conserva eventuale enrichment Fingerbank precedente
                 "device_name": prev.get("device_name") or r.get("device_name"),
                 "device_score": prev.get("device_score") or r.get("device_score"),
+                # mDNS / HTTP banner: best of two
+                "mdns_name": r.get("mdns_name") or prev.get("mdns_name"),
+                "services": r.get("services") or prev.get("services") or [],
+                "http_server": r.get("http_server") or prev.get("http_server"),
             }
             await db.lan_scan_runs.update_one(
                 {"scan_id": scan_id},

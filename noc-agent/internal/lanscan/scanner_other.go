@@ -12,12 +12,15 @@ import (
 
 // Result rappresenta un dispositivo trovato sulla LAN.
 type Result struct {
-	IP       string `json:"ip"`
-	MAC      string `json:"mac,omitempty"`
-	Hostname string `json:"hostname,omitempty"`
-	Vendor   string `json:"vendor,omitempty"`
-	Status   string `json:"status"`
-	RTTms    int    `json:"rtt_ms"`
+	IP         string   `json:"ip"`
+	MAC        string   `json:"mac,omitempty"`
+	Hostname   string   `json:"hostname,omitempty"`
+	Vendor     string   `json:"vendor,omitempty"`
+	Status     string   `json:"status"`
+	RTTms      int      `json:"rtt_ms"`
+	MDNSName   string   `json:"mdns_name,omitempty"`
+	Services   []string `json:"services,omitempty"`
+	HTTPServer string   `json:"http_server,omitempty"`
 }
 
 // Progress traccia lo stato avanzamento per la UI.

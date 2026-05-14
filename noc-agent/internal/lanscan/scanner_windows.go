@@ -30,12 +30,15 @@ import (
 
 // Result rappresenta un dispositivo trovato sulla LAN.
 type Result struct {
-	IP       string `json:"ip"`
-	MAC      string `json:"mac,omitempty"`
-	Hostname string `json:"hostname,omitempty"`
-	Vendor   string `json:"vendor,omitempty"`
-	Status   string `json:"status"` // "alive" | "arp-only"
-	RTTms    int    `json:"rtt_ms"` // -1 = non risposto
+	IP         string   `json:"ip"`
+	MAC        string   `json:"mac,omitempty"`
+	Hostname   string   `json:"hostname,omitempty"`
+	Vendor     string   `json:"vendor,omitempty"`
+	Status     string   `json:"status"` // "alive" | "arp-only"
+	RTTms      int      `json:"rtt_ms"` // -1 = non risposto
+	MDNSName   string   `json:"mdns_name,omitempty"`
+	Services   []string `json:"services,omitempty"`
+	HTTPServer string   `json:"http_server,omitempty"`
 }
 
 // Progress traccia lo stato avanzamento per la UI.
@@ -211,6 +214,25 @@ func Run(
 		doneCnt int32
 	)
 
+	// Phase 0-mDNS: lancio multicast discovery in goroutine separata.
+	// I risultati arrivano in 1-3s e popolano la mappa shared. Quando
+	// l'enrich di un IP gira, usa eventuali hint mDNS (hostname .local,
+	// servizi annunciati) per arricchire l'output.
+	var mdnsMu sync.RWMutex
+	mdnsMap := map[string]mdnsInfo{}
+	var mdnsWg sync.WaitGroup
+	mdnsWg.Add(1)
+	go func() {
+		defer mdnsWg.Done()
+		defer func() { _ = recover() }()
+		m := discoverMDNS(ctxScan)
+		mdnsMu.Lock()
+		for ip, info := range m {
+			mdnsMap[ip] = info
+		}
+		mdnsMu.Unlock()
+	}()
+
 	emit := func(r Result) {
 		if r.IP == "" {
 			return
@@ -222,7 +244,6 @@ func Run(
 		}
 		mu.Lock()
 		if prev, ok := found[r.IP]; ok {
-			// Merge intelligente: tieni il dato migliore.
 			if r.Hostname == "" {
 				r.Hostname = prev.Hostname
 			}
@@ -231,6 +252,15 @@ func Run(
 			}
 			if r.Vendor == "" {
 				r.Vendor = prev.Vendor
+			}
+			if r.MDNSName == "" {
+				r.MDNSName = prev.MDNSName
+			}
+			if len(r.Services) == 0 {
+				r.Services = prev.Services
+			}
+			if r.HTTPServer == "" {
+				r.HTTPServer = prev.HTTPServer
 			}
 			if r.Status == "arp-only" && prev.Status == "alive" {
 				r.Status = prev.Status
@@ -278,7 +308,8 @@ func Run(
 		})
 	}
 
-	// Enrichment goroutine: NBNS + reverse DNS in background.
+	// Enrichment goroutine: NBNS + reverse DNS + HTTP banner + mDNS in
+	// background per ogni IP scoperto.
 	var enrichWg sync.WaitGroup
 	enrich := func(ip string) {
 		enrichWg.Add(1)
@@ -294,7 +325,24 @@ func Run(
 			if host == "" {
 				host = reverseDNS(ctxScan, ip)
 			}
-			if host == "" && macFromNbns == "" {
+
+			// mDNS lookup (no-op se discovery non ancora ritornato)
+			var mdnsName string
+			var services []string
+			mdnsMu.RLock()
+			if mi, ok := mdnsMap[ip]; ok {
+				mdnsName = mi.Hostname
+				services = mi.Services
+			}
+			mdnsMu.RUnlock()
+			if host == "" && mdnsName != "" {
+				host = mdnsName
+			}
+
+			// HTTP banner probe (best-effort, <500ms total)
+			httpSrv := httpBanner(ctxScan, ip, 500*time.Millisecond)
+
+			if host == "" && macFromNbns == "" && mdnsName == "" && httpSrv == "" {
 				return
 			}
 			mu.Lock()
@@ -307,12 +355,15 @@ func Run(
 				rtt = prev.RTTms
 			}
 			emit(Result{
-				IP:       ip,
-				Hostname: host,
-				MAC:      macFromNbns,
-				Vendor:   ouiVendor(macFromNbns),
-				Status:   status,
-				RTTms:    rtt,
+				IP:         ip,
+				Hostname:   host,
+				MAC:        macFromNbns,
+				Vendor:     ouiVendor(macFromNbns),
+				Status:     status,
+				RTTms:      rtt,
+				MDNSName:   mdnsName,
+				Services:   services,
+				HTTPServer: httpSrv,
 			})
 		}()
 	}
@@ -413,6 +464,8 @@ donePhase1:
 	case <-time.After(2 * time.Second):
 	case <-ctxScan.Done():
 	}
+	// mDNS goroutine completion (no-block: ha gia' timeout 3s interno)
+	mdnsWg.Wait()
 
 	mu.Lock()
 	out := make([]Result, len(results))

@@ -149,11 +149,13 @@ export default function LanScannerPage({ scopedClientId, scopedClientName } = {}
     if (selectedIps.size === 0) return;
     setImporting(true);
     const devices = results.filter((r) => selectedIps.has(r.ip)).map((r) => {
-      const suggested = autoClassify ? suggestDeviceType(r.vendor, r.hostname, r.device_name) : null;
+      const suggested = autoClassify
+        ? suggestDeviceType(r.vendor, r.hostname, r.device_name, r.mdns_name, r.services, r.http_server)
+        : null;
       return {
         ip: r.ip,
-        name: r.hostname || r.device_name || r.ip,
-        hostname: r.hostname,
+        name: r.hostname || r.mdns_name || r.device_name || r.ip,
+        hostname: r.hostname || r.mdns_name,
         monitor_type: defaultMonitorType,
         community: defaultCommunity,
         device_type: suggested || defaultDeviceType,
@@ -353,11 +355,32 @@ export default function LanScannerPage({ scopedClientId, scopedClientName } = {}
                     </td>
                     <td className="px-4 py-1.5 font-mono">{r.ip}</td>
                     <td className={`px-4 py-1.5 font-mono text-xs ${txtMuted}`}>{r.rtt_ms >= 0 ? `${r.rtt_ms} ms` : ""}</td>
-                    <td className="px-4 py-1.5">{r.hostname || (r.device_name && <span className={`${txtMuted} italic`} title={`Fingerbank score: ${r.device_score ?? "?"}`}>{r.device_name}</span>) || ""}</td>
+                    <td className="px-4 py-1.5">
+                      {r.hostname ? (
+                        <span>{r.hostname}</span>
+                      ) : r.mdns_name ? (
+                        <span title="mDNS / Bonjour">{r.mdns_name}<span className={`ml-1 ${txtMuted} text-[10px]`}>.local</span></span>
+                      ) : r.device_name ? (
+                        <span className={`${txtMuted} italic`} title={`Fingerbank score: ${r.device_score ?? "?"}`}>{r.device_name}</span>
+                      ) : r.http_server ? (
+                        <span className={`${txtMuted} italic text-xs`} title="HTTP Server banner">{r.http_server}</span>
+                      ) : ""}
+                    </td>
                     <td className="px-4 py-1.5 font-mono text-xs">{r.mac || ""}</td>
-                    <td className="px-4 py-1.5 text-xs">{r.vendor || ""}</td>
+                    <td className="px-4 py-1.5 text-xs">
+                      {r.vendor || ""}
+                      {Array.isArray(r.services) && r.services.length > 0 && (
+                        <div className="flex flex-wrap gap-1 mt-0.5">
+                          {r.services.slice(0, 3).map((s) => (
+                            <span key={s} className="inline-block px-1 py-0 text-[9px] rounded bg-sky-500/15 text-sky-400 font-mono">
+                              {s.replace(/^_/, "").replace(/\._tcp$|\._udp$/, "")}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </td>
                     {scopedClientId && (() => {
-                      const sug = suggestDeviceType(r.vendor, r.hostname, r.device_name);
+                      const sug = suggestDeviceType(r.vendor, r.hostname, r.device_name, r.mdns_name, r.services, r.http_server);
                       return (
                         <td className="px-4 py-1.5 text-xs">
                           {sug ? (
@@ -402,7 +425,7 @@ export default function LanScannerPage({ scopedClientId, scopedClientName } = {}
                 <span className="font-medium">Auto-classifica tipo</span> da vendor + hostname.<br />
                 {(() => {
                   const sel = results.filter((r) => selectedIps.has(r.ip));
-                  const classified = sel.filter((r) => suggestDeviceType(r.vendor, r.hostname, r.device_name));
+                  const classified = sel.filter((r) => suggestDeviceType(r.vendor, r.hostname, r.device_name, r.mdns_name, r.services, r.http_server));
                   return (
                     <span className={txtMuted}>
                       {classified.length}/{sel.length} riconosciuti — gli altri useranno il default sotto.
@@ -480,26 +503,50 @@ function ipNum(s) {
  * fallisce (vendor sconosciuto + hostname senza pattern noti), ritorna null
  * e l'UI usa il default scelto nel modal.
  */
-function suggestDeviceType(vendor, hostname, deviceName) {
+function suggestDeviceType(vendor, hostname, deviceName, mdnsName, services, httpServer) {
   const v = (vendor || "").toLowerCase();
-  const h = (hostname || "").toLowerCase();
+  const h = (hostname || mdnsName || "").toLowerCase();
   const d = (deviceName || "").toLowerCase();
+  const srv = (services || []).join(",").toLowerCase();
+  const hs = (httpServer || "").toLowerCase();
 
-  // 0. Fingerbank device_name è la fonte più ricca quando presente
-  if (d) {
-    if (/printer|laserjet|deskjet|officejet|brother|canon|epson|kyocera|lexmark/i.test(d)) return "printer";
-    if (/iphone|ipad|android|smartphone|mobile|google pixel|samsung galaxy/i.test(d)) return "workstation";
-    if (/server|esxi|vmware|hyper-?v|proxmox|xenserver/i.test(d)) return "server";
-    if (/synology|qnap|nas|truenas/i.test(d)) return "nas";
-    if (/firewall|fortigate|sonicwall|sophos|palo alto|usg/i.test(d)) return "firewall";
-    if (/switch|catalyst|nexus|meraki|aruba/i.test(d)) return "switch";
-    if (/access point|unifi|aruba ap|ruckus|wifi/i.test(d)) return "ap";
-    if (/camera|ipcam|nvr|dvr|hikvision|dahua/i.test(d)) return "camera";
-    if (/macbook|imac|mac mini|mac pro/i.test(d)) return "workstation";
-    if (/ups|smart-ups|riello/i.test(d)) return "ups";
+  // 0a. mDNS services — segnale fortissimo (annuncio nativo del device)
+  if (srv) {
+    if (/_printer|_ipp/.test(srv)) return "printer";
+    if (/_airplay|_raop|_companion-link/.test(srv)) return "workstation"; // Apple ecosystem
+    if (/_googlecast/.test(srv)) return "iot"; // Chromecast / Google Home
+    if (/_smb/.test(srv) && /_workstation/.test(srv)) return "workstation";
+    if (/_smb/.test(srv)) return "nas";
   }
 
-  // 1. Hostname pattern check (prevale sul vendor: il nome è scelto dall'IT)
+  // 0b. HTTP Server banner (es. "lighttpd Synology DSM/...", "Apache iLO")
+  if (hs) {
+    if (/synology|qnap|truenas|openmediavault/.test(hs)) return "nas";
+    if (/hp ilo|integrated lights-out|idrac|ibm imm|supermicro/.test(hs)) return "ilo";
+    if (/laserjet|deskjet|officejet|kyocera|kserver|epson|brother|canon|ricoh/.test(hs)) return "printer";
+    if (/hikvision|dvrdvs|dahua|axis|avigilon/.test(hs)) return "camera";
+    if (/mikrotik|routeros/.test(hs)) return "switch";
+    if (/fortinet|sonicwall|sophos|pfsense|opnsense|fortios|fortigate/.test(hs)) return "firewall";
+    if (/openresty|unifi|edgeos|cisco|aruba|ruckus/.test(hs)) return "ap";
+    if (/microsoft-iis|kestrel|nginx ubuntu|apache.* (debian|ubuntu)/.test(hs)) return "server";
+    if (/ups web|riello|apc/.test(hs)) return "ups";
+  }
+
+  // 1. Fingerbank device_name
+  if (d) {
+    if (/printer|laserjet|deskjet|officejet|brother|canon|epson|kyocera|lexmark/.test(d)) return "printer";
+    if (/iphone|ipad|android|smartphone|mobile|google pixel|samsung galaxy/.test(d)) return "workstation";
+    if (/server|esxi|vmware|hyper-?v|proxmox|xenserver/.test(d)) return "server";
+    if (/synology|qnap|nas|truenas/.test(d)) return "nas";
+    if (/firewall|fortigate|sonicwall|sophos|palo alto|usg/.test(d)) return "firewall";
+    if (/switch|catalyst|nexus|meraki|aruba/.test(d)) return "switch";
+    if (/access point|unifi|aruba ap|ruckus|wifi/.test(d)) return "ap";
+    if (/camera|ipcam|nvr|dvr|hikvision|dahua/.test(d)) return "camera";
+    if (/macbook|imac|mac mini|mac pro/.test(d)) return "workstation";
+    if (/ups|smart-ups|riello/.test(d)) return "ups";
+  }
+
+  // 2. Hostname pattern check
   if (/^(srv|server|dc|ad|adc|backup|vm|hv|host)[\W_-]?/i.test(h)) return "server";
   if (/^(fw|firewall|fortigate|fortinet|usg|sophos)[\W_-]?/i.test(h)) return "firewall";
   if (/^(sw|switch|core|access|cisco)[\W_-]?/i.test(h)) return "switch";
