@@ -37,6 +37,9 @@ export default function LanScannerPage({ scopedClientId, scopedClientName } = {}
   const [defaultMonitorType, setDefaultMonitorType] = useState("ping");
   const [defaultCommunity, setDefaultCommunity] = useState("public");
   const [defaultDeviceType, setDefaultDeviceType] = useState("generic");
+  // v4.9.1: auto-classifica device_type da vendor OUI + hostname pattern.
+  // ON di default — abbatte il time-to-onboarding sui pattern noti.
+  const [autoClassify, setAutoClassify] = useState(true);
 
   const pollRef = useRef(null);
 
@@ -145,14 +148,17 @@ export default function LanScannerPage({ scopedClientId, scopedClientName } = {}
     if (!scopedClientId) { toast.error("client_id mancante"); return; }
     if (selectedIps.size === 0) return;
     setImporting(true);
-    const devices = results.filter((r) => selectedIps.has(r.ip)).map((r) => ({
-      ip: r.ip,
-      name: r.hostname || r.ip,
-      hostname: r.hostname,
-      monitor_type: defaultMonitorType,
-      community: defaultCommunity,
-      device_type: defaultDeviceType,
-    }));
+    const devices = results.filter((r) => selectedIps.has(r.ip)).map((r) => {
+      const suggested = autoClassify ? suggestDeviceType(r.vendor, r.hostname) : null;
+      return {
+        ip: r.ip,
+        name: r.hostname || r.ip,
+        hostname: r.hostname,
+        monitor_type: defaultMonitorType,
+        community: defaultCommunity,
+        device_type: suggested || defaultDeviceType,
+      };
+    });
     try {
       const res = await axios.post(`${API}/api/lan-scans/${scanId}/import`,
         { client_id: scopedClientId, devices }, { headers });
@@ -314,12 +320,13 @@ export default function LanScannerPage({ scopedClientId, scopedClientName } = {}
                 <th className="text-left px-4 py-2">Hostname</th>
                 <th className="text-left px-4 py-2 font-mono">MAC</th>
                 <th className="text-left px-4 py-2">Vendor</th>
+                {scopedClientId && <th className="text-left px-4 py-2 w-28">Tipo (auto)</th>}
               </tr>
             </thead>
             <tbody>
               {results.length === 0 ? (
                 <tr>
-                  <td colSpan={scopedClientId ? 7 : 6} className={`text-center py-12 ${txtMuted}`}>
+                  <td colSpan={scopedClientId ? 8 : 6} className={`text-center py-12 ${txtMuted}`}>
                     {running ? "Scan in corso, primi risultati in arrivo…" : run ? "Nessun host trovato." : "Avvia uno scan per iniziare."}
                   </td>
                 </tr>
@@ -349,6 +356,20 @@ export default function LanScannerPage({ scopedClientId, scopedClientName } = {}
                     <td className="px-4 py-1.5">{r.hostname || ""}</td>
                     <td className="px-4 py-1.5 font-mono text-xs">{r.mac || ""}</td>
                     <td className="px-4 py-1.5 text-xs">{r.vendor || ""}</td>
+                    {scopedClientId && (() => {
+                      const sug = suggestDeviceType(r.vendor, r.hostname);
+                      return (
+                        <td className="px-4 py-1.5 text-xs">
+                          {sug ? (
+                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-indigo-500/15 text-indigo-400 font-medium">
+                              {sug}
+                            </span>
+                          ) : (
+                            <span className={txtMuted}>—</span>
+                          )}
+                        </td>
+                      );
+                    })()}
                   </tr>
                 );
               })}
@@ -367,6 +388,30 @@ export default function LanScannerPage({ scopedClientId, scopedClientName } = {}
             <p className={`text-xs ${txtMuted} mb-4`}>
               I device verranno aggiunti a "{scopedClientName || scopedClientId}". Quelli già presenti vengono saltati.
             </p>
+
+            {/* Auto-classifica toggle */}
+            <label className={`flex items-start gap-2.5 cursor-pointer p-2.5 rounded-md border ${borderC} mb-4 hover:bg-slate-50 dark:hover:bg-slate-700/40`}>
+              <input
+                type="checkbox"
+                checked={autoClassify}
+                onChange={(e) => setAutoClassify(e.target.checked)}
+                className="mt-0.5"
+                data-testid="lan-scan-import-autoclassify"
+              />
+              <span className="text-xs">
+                <span className="font-medium">Auto-classifica tipo</span> da vendor + hostname.<br />
+                {(() => {
+                  const sel = results.filter((r) => selectedIps.has(r.ip));
+                  const classified = sel.filter((r) => suggestDeviceType(r.vendor, r.hostname));
+                  return (
+                    <span className={txtMuted}>
+                      {classified.length}/{sel.length} riconosciuti — gli altri useranno il default sotto.
+                    </span>
+                  );
+                })()}
+              </span>
+            </label>
+
             <div className="space-y-3">
               <div>
                 <label className="text-xs font-medium">Tipo monitor (default per tutti)</label>
@@ -384,7 +429,9 @@ export default function LanScannerPage({ scopedClientId, scopedClientName } = {}
                 </div>
               )}
               <div>
-                <label className="text-xs font-medium">Device type (categoria)</label>
+                <label className="text-xs font-medium">
+                  Device type {autoClassify ? "(default per non riconosciuti)" : "(per tutti)"}
+                </label>
                 <select value={defaultDeviceType} onChange={(e) => setDefaultDeviceType(e.target.value)}
                   className={`mt-1 w-full rounded-md border ${borderC} px-3 py-2 text-sm ${cardBg}`}>
                   <option value="generic">Generico</option>
@@ -423,4 +470,44 @@ function ipNum(s) {
   const m = String(s).split(".").map(Number);
   if (m.length !== 4 || m.some((n) => Number.isNaN(n))) return 0;
   return ((m[0] << 24) >>> 0) + ((m[1] << 16) >>> 0) + ((m[2] << 8) >>> 0) + m[3];
+}
+
+/**
+ * suggestDeviceType — inferenza tipo device da vendor OUI + hint hostname.
+ *
+ * Riduce drasticamente l'attrito di onboarding: l'utente importa decine di
+ * device senza dover classificare manualmente ognuno. Quando l'inferenza
+ * fallisce (vendor sconosciuto + hostname senza pattern noti), ritorna null
+ * e l'UI usa il default scelto nel modal.
+ */
+function suggestDeviceType(vendor, hostname) {
+  const v = (vendor || "").toLowerCase();
+  const h = (hostname || "").toLowerCase();
+
+  // 1. Hostname pattern check (prevale sul vendor: il nome è scelto dall'IT)
+  if (/^(srv|server|dc|ad|adc|backup|vm|hv|host)[\W_-]?/i.test(h)) return "server";
+  if (/^(fw|firewall|fortigate|fortinet|usg|sophos)[\W_-]?/i.test(h)) return "firewall";
+  if (/^(sw|switch|core|access|cisco)[\W_-]?/i.test(h)) return "switch";
+  if (/^(ap|wap|wifi|aplab|airwave|unifi)[\W_-]?/i.test(h)) return "ap";
+  if (/^(nas|storage|qnap|synology|ds[0-9])/i.test(h)) return "nas";
+  if (/^(stampante|printer|prn|brother|hpprt|epson|canon)/i.test(h)) return "printer";
+  if (/^(ups|riello|apc|eaton)/i.test(h)) return "ups";
+  if (/^(cam|tvcc|camera|nvr|dvr|hik)/i.test(h)) return "camera";
+  if (/^(pc|wks|ws|notebook|laptop|nb|mac|imac)[\W_-]?/i.test(h)) return "workstation";
+
+  // 2. Vendor OUI match
+  if (/hyper-v|vmware|virtualbox|qemu/i.test(v)) return "server";
+  if (/synology|qnap|netgear readynas/i.test(v)) return "nas";
+  if (/hp print|brother|canon|epson|ricoh|konica|kyocera|lexmark/i.test(v)) return "printer";
+  if (/cisco meraki|aruba|ruckus|extreme/i.test(v)) return "switch";
+  if (/ubiquiti|tp-link|netgear|aruba ap|d-link/i.test(v)) return "ap";
+  if (/fritz|zyxel|fortinet|paloalto|sophos|sonicwall/i.test(v)) return "firewall";
+  if (/mikrotik|routerboard/i.test(v)) return "switch"; // spesso usati come switch L3 in PMI
+  if (/hikvision|dahua|axis|bosch security/i.test(v)) return "camera";
+  if (/espressif|raspberry|particle|tuya|shelly/i.test(v)) return "iot";
+  if (/apple/i.test(v)) return "workstation";
+  if (/dell|lenovo|asus|acer|samsung|gigabyte/i.test(v)) return "workstation";
+  if (/hp\b/i.test(v)) return "workstation"; // HP generico (computer), HP Print è già sopra
+
+  return null;
 }
