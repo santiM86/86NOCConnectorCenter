@@ -63,6 +63,12 @@ param(
     [Parameter(Mandatory=$true)][string]$ClientId,
     [string]$BackendUrl = "wss://argus.86bit.it/api/agent/ws",
     [ValidateSet("master","scanner")][string]$Role = "master",
+    # Nome leggibile del cliente (es. "86BIT_Office"). Mostrato nella
+    # titolo della finestra UI ("ARGUS Connector vX.Y.Z - {ClientName}").
+    # Se vuoto, lo script prova a preservarlo dal precedente
+    # agent-ui.json o, in ultima istanza, lo risolve via API REST al
+    # Center (https endpoint /api/agent/install/manifest?token=...).
+    [string]$ClientName = "",
     [string]$Repo = "santiM86/86NOCConnectorCenter",
     [string]$Version = "latest",
     [string]$GitHubToken = "",
@@ -353,8 +359,49 @@ if (Test-Path $aidPath) {
     try { $persistedAgentId = (Get-Content $aidPath -Raw).Trim() } catch { }
 }
 
+# Risoluzione $ClientName (in cascata, primo non-vuoto vince):
+#   1. Parametro -ClientName esplicito
+#   2. agent-ui.json esistente (preserva tra update successivi)
+#   3. agent-ui.json legacy in $InstallDir
+#   4. API REST /api/agent/install/manifest?token=... sul backend
+#      (best-effort, timeout 5s, fallisce silente)
+#   5. fallback: usa $ClientId (UUID) - meglio "57cb..." che "unknown"
+$resolvedClientName = $ClientName
+if (-not $resolvedClientName) {
+    foreach ($candidatePath in @($uiInfoPath, (Join-Path $InstallDir "agent-ui.json"))) {
+        if (Test-Path $candidatePath) {
+            try {
+                $existing = Get-Content $candidatePath -Raw | ConvertFrom-Json
+                if ($existing.client_name) {
+                    $resolvedClientName = $existing.client_name
+                    Write-Ok "client_name preservato da $candidatePath = '$resolvedClientName'"
+                    break
+                }
+            } catch { }
+        }
+    }
+}
+if (-not $resolvedClientName) {
+    # Best-effort: chiedi al Center il nome leggibile via /manifest endpoint
+    try {
+        $manifestUrl = "$backendHttp/api/agent/install/manifest?token=$Token"
+        $manifest = Invoke-RestMethod -Uri $manifestUrl -TimeoutSec 5 -UseBasicParsing -ErrorAction Stop
+        if ($manifest.client_name) {
+            $resolvedClientName = $manifest.client_name
+            Write-Ok "client_name risolto via API = '$resolvedClientName'"
+        }
+    } catch {
+        Write-Warn2 "client_name non risolvibile via API: $($_.Exception.Message)"
+    }
+}
+if (-not $resolvedClientName) {
+    $resolvedClientName = $ClientId
+    Write-Warn2 "client_name non disponibile: uso ClientId UUID come fallback"
+}
+
 $uiInfo = [ordered]@{
     client_id   = $ClientId
+    client_name = $resolvedClientName
     token       = $Token
     role        = $Role
     backend_url = $backendHttp
@@ -500,6 +547,66 @@ Write-Host "=========================================================" -Foregrou
 Write-Host " Installazione 86NocAgent $Version COMPLETATA" -ForegroundColor Green
 Write-Host "=========================================================" -ForegroundColor Green
 Write-Host ""
+
+# ------------------------------------------------------------------- #
+# 10. Rilancia la UI desktop come UTENTE LOGGATO
+# ------------------------------------------------------------------- #
+# nocagent-ui.exe e' una GUI Wails/Walk che gira come utente normale
+# (NON come servizio Windows). Lo script l'ha killata al passo 3 per
+# poter sovrascrivere il binario in $InstallDir. La rilanciamo qui
+# cosi' la tray icon riappare immediatamente con la versione e il
+# cliente aggiornati - senza richiedere il workaround manuale
+# "Stop-Process + Start-Process" che e' stato necessario fino ad oggi.
+#
+# IMPORTANTE: lo script gira come Administrator (UAC), ma nocagent-ui
+# deve girare nel contesto dell'utente desktop interattivo per poter
+# accedere alla session dell'utente loggato (tray icon, notifiche,
+# clipboard, ecc.). Usiamo `explorer.exe` come launcher: explorer
+# eredita il contesto dell'utente interattivo e Start-Process tramite
+# explorer lancia il figlio come quell'utente.
+$uiExe = Join-Path $InstallDir "nocagent-ui.exe"
+if (Test-Path $uiExe) {
+    Write-Step "Avvio UI desktop (nocagent-ui)"
+    $launched = $false
+    # Strategia 1: schtasks one-shot con /RU INTERACTIVE per spawn nella
+    # sessione utente corrente (funziona anche da UAC elevato).
+    try {
+        $taskName = "86NocAgent-UI-Launch-$([guid]::NewGuid().ToString('N').Substring(0,8))"
+        $tmpXml = [System.IO.Path]::GetTempFileName() + ".xml"
+        $sd = (Get-Date).AddSeconds(5).ToString('yyyy-MM-ddTHH:mm:ss')
+        # Task XML minimale: trigger una volta a t+5s, action = uiExe,
+        # principal = INTERACTIVE (cosi' apre tray nella sessione utente).
+        @"
+<?xml version='1.0' encoding='UTF-16'?>
+<Task version='1.4' xmlns='http://schemas.microsoft.com/windows/2004/02/mit/task'>
+  <Triggers><TimeTrigger><StartBoundary>$sd</StartBoundary><Enabled>true</Enabled></TimeTrigger></Triggers>
+  <Principals><Principal id='Author'><GroupId>S-1-5-4</GroupId><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>
+  <Settings><AllowHardTerminate>true</AllowHardTerminate><DeleteExpiredTaskAfter>PT1M</DeleteExpiredTaskAfter><StartWhenAvailable>false</StartWhenAvailable></Settings>
+  <Actions Context='Author'><Exec><Command>$uiExe</Command></Exec></Actions>
+</Task>
+"@ | Out-File -FilePath $tmpXml -Encoding Unicode
+        & schtasks.exe /Create /TN $taskName /XML $tmpXml /F | Out-Null
+        & schtasks.exe /Run /TN $taskName | Out-Null
+        Remove-Item $tmpXml -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 7
+        & schtasks.exe /Delete /TN $taskName /F 2>$null | Out-Null
+        $launched = $true
+        Write-Ok "UI desktop avviata nella sessione utente loggato"
+    } catch {
+        Write-Warn2 "Launch via schtasks fallita: $($_.Exception.Message)"
+    }
+    # Strategia 2 (fallback): Start-Process diretto. Funziona se lo
+    # script gira gia' nella sessione utente (non SYSTEM).
+    if (-not $launched) {
+        try {
+            Start-Process -FilePath $uiExe -ErrorAction Stop
+            Write-Ok "UI desktop avviata (fallback Start-Process diretto)"
+        } catch {
+            Write-Warn2 "Start-Process diretto fallito: $($_.Exception.Message) - apri manualmente dal menu Start"
+        }
+    }
+}
+
 Write-Host "Per controllare i log in tempo reale:" -ForegroundColor Gray
 Write-Host "  Get-Content `"`$((Get-Content '$markerPath' -Raw).Trim())`" -Wait -Tail 50" -ForegroundColor Gray
 Write-Host ""
