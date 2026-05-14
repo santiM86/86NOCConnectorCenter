@@ -80,7 +80,7 @@ async def get_discovery_results(client_id: str, current_user: dict = Depends(get
     # Mappiamo nel formato del frontend DiscoveryPage.
     seen_keys = {(d.get("ip") or "").strip(): True for d in devices if d.get("ip")}
     scanner_eps = await db.discovered_endpoints.find(
-        {"client_id": client_id, "source_connector_mode": "scanner"},
+        {"client_id": client_id, "source_connector_mode": {"$in": ["scanner", "agent_v4"]}},
         {
             "_id": 0, "ip": 1, "mac": 1, "hostname_scanner": 1,
             "sys_descr_scanner": 1, "sys_name_scanner": 1, "vendor_scanner": 1,

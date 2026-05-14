@@ -29,7 +29,7 @@ import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, status
+from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect, status
 from pydantic import BaseModel, Field
 
 from database import db
@@ -145,10 +145,12 @@ async def _validate_token(token: str, claimed_client_id: str) -> Optional[Dict[s
     if doc and doc.get("client_id") == claimed_client_id:
         return doc
     # 2. fallback: api_key del cliente (mostrata nella pagina Clienti)
-    client = await db.clients.find_one({"api_key": token}, {"_id": 0, "client_id": 1})
-    if client and client.get("client_id") == claimed_client_id:
-        # Costruisci un doc compatibile con quello restituito da agent_tokens
-        return {"token": token, "client_id": client["client_id"], "role": "master"}
+    # NB: alcuni documenti legacy hanno solo `id`, altri hanno `client_id`.
+    client = await db.clients.find_one({"api_key": token}, {"_id": 0, "client_id": 1, "id": 1})
+    if client:
+        resolved_cid = client.get("client_id") or client.get("id")
+        if resolved_cid == claimed_client_id:
+            return {"token": token, "client_id": resolved_cid, "role": "master"}
     return None
 
 
@@ -223,11 +225,13 @@ async def agent_ws(ws: WebSocket) -> None:
     conn = _Connection(agent_id, client_id, ws)
     await REGISTRY.add(conn)
 
-    # Send welcome
+    # Send welcome (includes SNMP targets pulled from managed_devices for
+    # this tenant so the agent can self-poll without needing a separate
+    # legacy Connector Master).
     welcome = {
         "accepted_at": now.isoformat(),
         "session_id": uuid.uuid4().hex,
-        "config": {},  # no hot-pushed config yet; agent uses local YAML
+        "config": await _build_poller_config(client_id),
     }
     conn.seq += 1
     try:
@@ -301,39 +305,67 @@ async def _on_heartbeat(conn: _Connection, hb: Dict[str, Any]) -> None:
 async def _on_event(conn: _Connection, evt: Dict[str, Any]) -> None:
     kind = evt.get("kind")
     data = evt.get("data")
-    if kind == "discovery_batch" and isinstance(data, list):
-        await _bridge_discovery(conn, data)
-    elif kind == "snmp_poll" and isinstance(data, dict):
-        await _bridge_snmp_poll(conn, data)
-    elif kind == "module_stuck":
-        logger.warning("agent v4 module_stuck agent_id=%s data=%s", conn.agent_id, data)
-    elif kind == "crash_recovered":
-        logger.warning("agent v4 crash_recovered agent_id=%s data=%s", conn.agent_id, data)
+    # GUARD: any exception here would propagate up to _handle_frame and
+    # drop the agent's WS connection (crash-loop). All bridges write to
+    # Mongo so transient errors (DuplicateKey, network blip, schema
+    # validation) are normal — log them, keep the session alive.
+    try:
+        if kind == "discovery_batch" and isinstance(data, list):
+            await _bridge_discovery(conn, data)
+        elif kind == "snmp_poll" and isinstance(data, dict):
+            await _bridge_snmp_poll(conn, data)
+        elif kind == "ping_poll" and isinstance(data, dict):
+            await _bridge_ping_poll(conn, data)
+        elif kind == "module_stuck":
+            logger.warning("agent v4 module_stuck agent_id=%s data=%s", conn.agent_id, data)
+        elif kind == "crash_recovered":
+            logger.warning("agent v4 crash_recovered agent_id=%s data=%s", conn.agent_id, data)
+    except Exception as e:
+        logger.warning("_on_event(%s) bridge crashed agent=%s err=%s", kind, conn.agent_id, e)
 
 
 async def _bridge_discovery(conn: _Connection, batch: List[Dict[str, Any]]) -> None:
     """Map agent DiscoveredEndpoint[] into the existing discovered_endpoints
-    collection so all UI pages keep working unchanged."""
+    collection so all UI pages keep working unchanged.
+
+    OUI vendor lookup (offline) is applied here so the Auto-Discovery UI shows
+    the manufacturer label next to each MAC, matching the behaviour of the
+    legacy /lan-scan connector flow.
+    """
     if not batch:
         return
+    # Lazy import to avoid circular dependencies at module load time.
+    try:
+        from routes.oui_lookup import lookup_oui
+    except Exception:  # pragma: no cover - degraded mode
+        lookup_oui = lambda m: ""  # noqa: E731
     now_iso = _now().isoformat()
     ops = []
     for ep in batch:
         ip = ep.get("ip")
         if not ip:
             continue
+        mac = (ep.get("mac") or "").lower() or None
+        vendor_hint = ep.get("vendor") or None
+        oui_vendor = lookup_oui(mac) if mac else ""
         doc = {
             "client_id": conn.client_id,
             "agent_id": conn.agent_id,
             "ip": ip,
-            "mac": (ep.get("mac") or "").lower() or None,
+            "mac": mac,
             "hostname": ep.get("hostname") or None,
-            "vendor": ep.get("vendor") or None,
+            "vendor": vendor_hint or (oui_vendor or None),
             "source": ep.get("source") or "agent_v4",
             "source_connector_mode": "agent_v4",
             "attributes": ep.get("attributes") or {},
             "last_seen_at": now_iso,
         }
+        # Populate the legacy `*_scanner` fields read by the Auto-Discovery
+        # UI so agent_v4 endpoints display vendor/hostname like scanner ones.
+        if oui_vendor:
+            doc["vendor_scanner"] = oui_vendor
+        if ep.get("hostname"):
+            doc["hostname_scanner"] = ep["hostname"]
         ops.append({
             "filter": {"client_id": conn.client_id, "ip": ip},
             "update": {"$set": doc, "$setOnInsert": {"first_seen_at": now_iso}},
@@ -343,17 +375,120 @@ async def _bridge_discovery(conn: _Connection, batch: List[Dict[str, Any]]) -> N
         await db.discovered_endpoints.update_one(op["filter"], op["update"], upsert=True)
 
 
+async def _bridge_ping_poll(conn: _Connection, r: Dict[str, Any]) -> None:
+    """Bridge a PingPollResult into managed_devices.status.
+
+    Uses a 3-consecutive-failure threshold to flip a device to "offline"
+    so a single dropped ICMP probe (Wi-Fi blip, switch CPU spike, host
+    firewall hiccup) does not flap the UI.
+
+    Counters are kept on `managed_devices.consecutive_ping_failures` so
+    they survive backend restarts without needing a separate store.
+
+    All writes are wrapped in try/except so a single Mongo error (e.g.
+    a unique-index conflict or schema validation) cannot crash the WS
+    bridge — the agent stays connected and the next ping_poll retries.
+    """
+    target = r.get("target")
+    if not target:
+        return
+    reachable = bool(r.get("reachable"))
+    now_iso = _now().isoformat()
+    latency_ns = r.get("latency_ns") or 0
+    try:
+        latency_ms = float(latency_ns) / 1e6 if latency_ns else None
+    except Exception:
+        latency_ms = None
+    loss_pct = r.get("loss_pct")
+
+    # Update raw poll-status doc — best-effort, errors logged but never
+    # propagated (a stale row here doesn't justify dropping the WS).
+    # NOTE: la collection device_poll_status ha un indice unique su
+    # (client_id, device_ip). Il campo si chiama "device_ip", NON "ip".
+    try:
+        await db.device_poll_status.update_one(
+            {"client_id": conn.client_id, "agent_id": conn.agent_id, "device_ip": target},
+            {
+                "$set": {
+                    "ping_reachable": reachable,
+                    "ping_latency_ms": latency_ms,
+                    "ping_loss_pct": loss_pct,
+                    "ping_error": r.get("error"),
+                    "last_ping_at": now_iso,
+                    "source": "agent_v4",
+                },
+                "$setOnInsert": {
+                    "client_id": conn.client_id,
+                    "agent_id": conn.agent_id,
+                    "device_ip": target,
+                    "first_poll_at": now_iso,
+                },
+            },
+            upsert=True,
+        )
+    except Exception as e:
+        logger.warning("ping_poll: device_poll_status upsert failed ip=%s err=%s", target, e)
+
+    # Reconcile managed_devices.status with the 3-failure threshold.
+    try:
+        cursor = db.managed_devices.find(
+            {"client_id": conn.client_id, "ip": target},
+            {"_id": 0, "id": 1, "status": 1, "consecutive_ping_failures": 1},
+        )
+        failure_threshold = 3
+        async for dev in cursor:
+            prev_failures = int(dev.get("consecutive_ping_failures") or 0)
+            prev_status = dev.get("status")
+            update: Dict[str, Any] = {
+                "last_poll_at": now_iso,
+                "last_poll_source": "agent_v4",
+                "last_ping_at": now_iso,
+                "ping_latency_ms": latency_ms,
+            }
+            if reachable:
+                update["status"] = "online"
+                update["consecutive_ping_failures"] = 0
+                update["last_seen_at"] = now_iso
+                update["degraded"] = False
+            else:
+                new_failures = prev_failures + 1
+                update["consecutive_ping_failures"] = new_failures
+                if new_failures >= failure_threshold:
+                    update["status"] = "offline"
+                else:
+                    update["status"] = prev_status or "online"
+                    update["degraded"] = True
+            # Use the unique `id` if present, otherwise match by (client_id, ip)
+            # so devices indexed only by _id (no `id` field) are still handled.
+            dev_id = dev.get("id")
+            flt: Dict[str, Any] = {"client_id": conn.client_id, "ip": target}
+            if dev_id:
+                flt["id"] = dev_id
+            try:
+                await db.managed_devices.update_one(flt, {"$set": update})
+            except Exception as e:
+                logger.warning("ping_poll: managed_devices update failed ip=%s err=%s", target, e)
+    except Exception as e:
+        logger.warning("ping_poll: managed_devices reconcile failed ip=%s err=%s", target, e)
+
+
 async def _bridge_snmp_poll(conn: _Connection, r: Dict[str, Any]) -> None:
-    """Bridge SNMPPollResult into device_poll_status."""
+    """Bridge SNMPPollResult into device_poll_status AND into managed_devices.
+
+    Updates `managed_devices.status` ("online"/"offline") + `last_poll_at`
+    so that the UI Dispositivi page shows live status driven by the
+    self-polling agent v4 (no legacy Connector Master required).
+    """
     target = r.get("target")
     if not target:
         return
     now_iso = _now().isoformat()
-    update = {
-        "client_id": conn.client_id,
+    reachable = bool(r.get("reachable"))
+    # NOTE: collection device_poll_status indice unique su
+    # (client_id, device_ip). Il campo si chiama "device_ip" NON "ip".
+    snmp_set = {
         "agent_id": conn.agent_id,
-        "ip": target,
-        "reachable": bool(r.get("reachable")),
+        "reachable": reachable,
         "latency_ns": r.get("latency_ns"),
         "sys_name": r.get("sys_name"),
         "sys_descr": r.get("sys_descr"),
@@ -363,11 +498,150 @@ async def _bridge_snmp_poll(conn: _Connection, r: Dict[str, Any]) -> None:
         "last_poll_at": now_iso,
         "source": "agent_v4",
     }
-    await db.device_poll_status.update_one(
-        {"client_id": conn.client_id, "ip": target},
-        {"$set": update, "$setOnInsert": {"first_poll_at": now_iso}},
-        upsert=True,
-    )
+    try:
+        await db.device_poll_status.update_one(
+            {"client_id": conn.client_id, "device_ip": target},
+            {
+                "$set": snmp_set,
+                "$setOnInsert": {
+                    "client_id": conn.client_id,
+                    "device_ip": target,
+                    "first_poll_at": now_iso,
+                },
+            },
+            upsert=True,
+        )
+    except Exception as e:
+        logger.warning("snmp_poll: device_poll_status upsert failed ip=%s err=%s", target, e)
+    # Reflect live status in managed_devices so dashboards refresh in
+    # real time. Only update fields that the UI cares about.
+    md_set = {
+        "status": "online" if reachable else "offline",
+        "last_poll_at": now_iso,
+        "last_poll_source": "agent_v4",
+    }
+    if r.get("sys_name"):
+        md_set["sys_name"] = r["sys_name"]
+    if r.get("sys_descr"):
+        md_set["sys_descr"] = r["sys_descr"]
+    try:
+        await db.managed_devices.update_many(
+            {"client_id": conn.client_id, "ip": target},
+            {"$set": md_set},
+        )
+    except Exception as e:
+        logger.warning("snmp_poll: managed_devices update failed ip=%s err=%s", target, e)
+
+
+async def _build_poller_config(client_id: str) -> Dict[str, Any]:
+    """Build poller config for one tenant.
+
+    Two blocks are emitted:
+      - `snmp.targets[]`  → list of devices with an explicit community
+        (or a default `public`) used for sysName / sysDescr polling.
+      - `ping.targets[]`  → list of *every* enabled managed device,
+        regardless of SNMP capability. This is the heartbeat signal
+        that drives UP/DOWN status on the dashboard and replaces the
+        legacy PowerShell Connector polling loop.
+
+    The returned shape matches the JSON tags expected by the Go agent
+    in cmd/agent/main.go::OnWelcome.
+
+    Behaviour:
+      - Devices flagged `disabled` or with no `ip` are skipped.
+      - Empty target lists still return a valid (disabled) block so the
+        agent doesn't crash on first welcome.
+    """
+    snmp_targets: List[Dict[str, Any]] = []
+    ping_targets: List[Dict[str, Any]] = []
+    try:
+        cursor = db.managed_devices.find(
+            {"client_id": client_id, "ip": {"$ne": None, "$exists": True}},
+            {"_id": 0, "ip": 1, "name": 1, "community": 1, "snmp_community": 1,
+             "snmp_version": 1, "snmp_port": 1, "device_type": 1, "monitor_type": 1,
+             "enabled": 1, "disabled": 1},
+        )
+        async for d in cursor:
+            if d.get("disabled") is True or d.get("enabled") is False:
+                continue
+            ip = d.get("ip")
+            if not ip:
+                continue
+            name = d.get("name") or ip
+            # Every enabled device gets ping-polled (cheap, no auth).
+            ping_targets.append({"ip": ip, "name": name})
+
+            # SNMP-polled only when an explicit community is set OR the
+            # device is classified as a network appliance/printer (we
+            # try `public` by default for those).
+            community = d.get("community") or d.get("snmp_community")
+            monitor_type = (d.get("monitor_type") or "").lower()
+            dev_type = (d.get("device_type") or "").lower()
+            snmp_eligible = bool(community) or monitor_type == "snmp" or dev_type in (
+                "switch", "firewall", "router", "ap", "printer", "ups", "network",
+            )
+            if snmp_eligible:
+                snmp_targets.append({
+                    "ip": ip,
+                    "name": name,
+                    "community": community or "public",
+                    "profile": d.get("device_type") or "generic",
+                    "snmp_version": d.get("snmp_version") or "v2c",
+                    "snmp_port": int(d.get("snmp_port") or 161),
+                })
+    except Exception as e:  # pragma: no cover - degraded mode
+        logger.warning("agent_ws: _build_poller_config error client_id=%s err=%s", client_id, e)
+
+    return {
+        "snmp": {
+            "enabled": len(snmp_targets) > 0,
+            "interval": "60s",
+            "communities": ["public"],
+            "timeout": "2s",
+            "retries": 1,
+            "targets": snmp_targets,
+        },
+        "ping": {
+            "enabled": len(ping_targets) > 0,
+            "interval": "60s",
+            "timeout": "2s",
+            "count": 1,
+            "targets": ping_targets,
+        },
+    }
+
+
+async def push_config_to_client(client_id: str) -> int:
+    """Hot-push a refreshed poller config to every live agent of this tenant.
+
+    Called after a device is approved / added / removed so the agent
+    starts (or stops) polling it within seconds instead of waiting for
+    the next service restart.
+
+    Returns the number of agents successfully notified.
+    """
+    cfg = await _build_poller_config(client_id)
+    payload = {
+        "accepted_at": _now().isoformat(),
+        "config": cfg,
+        "reason": "device_assignment_changed",
+    }
+    sent = 0
+    for c in REGISTRY.list():
+        if c.client_id != client_id:
+            continue
+        try:
+            c.seq += 1
+            # Re-use server.welcome so the existing OnWelcome hot-swap
+            # path in the agent applies the new targets immediately —
+            # zero new code on the agent side.
+            await c.send(make_frame("server.welcome", payload, seq=c.seq))
+            sent += 1
+        except Exception as e:  # noqa: BLE001
+            logger.warning("push_config_to_client: send failed agent=%s err=%s", c.agent_id, e)
+    logger.info("push_config_to_client: client_id=%s notified=%d targets_snmp=%d targets_ping=%d",
+                client_id, sent, len(cfg["snmp"]["targets"]), len(cfg["ping"]["targets"]))
+    return sent
 
 
 async def _on_log(conn: _Connection, log: Dict[str, Any]) -> None:
@@ -436,6 +710,130 @@ async def list_agents(client_id: Optional[str] = None,
     for d in docs:
         d["live"] = d.get("agent_id") in live_ids
     return {"agents": docs, "live_count": len(live_ids)}
+
+
+# --------------------------------------------------------------------------- #
+#  POST /api/agent/scan-report
+#
+#  Endpoint per la TRAY UI (`nocagent-ui.exe` / `ArgusDesktop.exe`) per
+#  inviare immediatamente i risultati di una scansione manuale al Center,
+#  senza dover attendere il prossimo ciclo di discovery dell'agent
+#  (default 5m). Lo abbiamo aggiunto su esplicita richiesta dell'utente:
+#  "voglio un pulsante che quando finisce scan passi subito i dati al
+#  center".
+#
+#  Auth: lo stesso `token` agent presente in `agent.yaml` (campo top-level)
+#  passato come `?token=...` o header `Authorization: Bearer ...`.
+#
+#  Riusa la pipeline di `POST /api/connector/lan-scan`: gli endpoint
+#  vengono salvati in `discovered_endpoints` E auto-censiti in
+#  `managed_devices` (v3.8.15 workflow).
+# --------------------------------------------------------------------------- #
+class ScanReportEndpoint(BaseModel):
+    ip: str
+    mac: Optional[str] = None
+    hostname: Optional[str] = None
+    vendor: Optional[str] = None
+    rtt_ms: Optional[float] = None
+    discovered_via: str = "ui_scan"   # default per distinguere scan manuali
+    sys_descr: Optional[str] = None
+
+
+class ScanReportRequest(BaseModel):
+    client_id: str
+    subnet: str
+    endpoints: list[ScanReportEndpoint] = []
+
+
+@router.post("/agent/scan-report")
+async def agent_scan_report(req: ScanReportRequest, request: Request) -> Dict[str, Any]:
+    # Estrai token sia da query (?token=) sia da header Authorization
+    token = request.query_params.get("token", "")
+    if not token:
+        auth = request.headers.get("Authorization", "")
+        if auth.lower().startswith("bearer "):
+            token = auth[7:].strip()
+    if not token:
+        raise HTTPException(status_code=401, detail="missing token")
+
+    # Valida il token come fa la WS hello (agent_tokens o api_key cliente)
+    auth_doc = await _validate_token(token, req.client_id)
+    if not auth_doc:
+        raise HTTPException(status_code=401, detail="invalid token or client_id")
+
+    now_iso = _now().isoformat()
+    stored = 0
+    auto_managed = 0
+    managed_ips = {
+        d["ip"]
+        async for d in db.managed_devices.find(
+            {"client_id": req.client_id}, {"_id": 0, "ip": 1}
+        )
+        if d.get("ip")
+    }
+
+    for ep in req.endpoints:
+        if not ep.ip:
+            continue
+        mac_norm = (ep.mac or "").lower().replace("-", ":").strip()
+        update: Dict[str, Any] = {
+            "client_id": req.client_id,
+            "ip": ep.ip,
+            "last_seen_at": now_iso,
+            "last_seen_via": ep.discovered_via,
+            "last_seen_subnet": req.subnet,
+            "source": "ui_scan_button",
+        }
+        if mac_norm and len(mac_norm.replace(":", "")) == 12:
+            update["mac"] = mac_norm
+        if ep.hostname:
+            update["hostname_scanner"] = ep.hostname
+        if ep.vendor:
+            update["vendor_scanner"] = ep.vendor
+        if ep.sys_descr:
+            update["sys_descr_scanner"] = ep.sys_descr
+
+        # Upsert su (client_id, ip) cosi' funziona anche per device senza MAC
+        await db.discovered_endpoints.update_one(
+            {"client_id": req.client_id, "ip": ep.ip},
+            {"$set": update},
+            upsert=True,
+        )
+        stored += 1
+
+        # Auto-censimento in managed_devices: se l'IP non e' gia' gestito,
+        # creiamo un device "ping" con il nome scoperto. L'admin puo'
+        # promuoverlo a SNMP successivamente.
+        if ep.ip not in managed_ips:
+            display_name = ep.hostname or ep.vendor or ep.ip
+            await db.managed_devices.update_one(
+                {"client_id": req.client_id, "ip": ep.ip},
+                {"$setOnInsert": {
+                    "client_id": req.client_id,
+                    "ip": ep.ip,
+                    "name": display_name,
+                    "monitor_type": "ping",
+                    "source": "ui_scan_button",
+                    "status": "PENDING",
+                    "created_at": now_iso,
+                }},
+                upsert=True,
+            )
+            auto_managed += 1
+            managed_ips.add(ep.ip)
+
+    logger.info(
+        f"[UI-SCAN] client={req.client_id} subnet={req.subnet} stored={stored} "
+        f"auto_managed={auto_managed} via=ui_scan_button"
+    )
+    return {
+        "status": "ok",
+        "client_id": req.client_id,
+        "subnet": req.subnet,
+        "endpoints_stored": stored,
+        "devices_auto_added": auto_managed,
+        "received_at": now_iso,
+    }
 
 
 class CommandRequest(BaseModel):
@@ -789,8 +1187,85 @@ async def wizard_bundle(token: Optional[str] = None) -> FileResponse:
     # scaricano installer per piu' clienti non confondono i ZIP nella
     # cartella Download. Ricavo il nome dal client_id risolto sopra.
     client_label = await _resolve_client_label(client_id)
-    fname = f"86NocAgent-Installer-{client_label}.zip"
+    # Includo SEMPRE la versione corrente del Connector v4 nel filename cosi'
+    # il tecnico vede a colpo d'occhio quale build sta installando e i
+    # download multipli non si sovrascrivono come "(1).zip" / "(2).zip" senza
+    # contesto. Es: 86NocAgent-Installer-86BITOffice-v4.6.0.zip
+    ver_label = await _resolve_latest_agent_version_safe()
+    fname = f"86NocAgent-Installer-{client_label}-{ver_label}.zip"
     return FileResponse(bundle, media_type="application/zip", filename=fname)
+
+
+# Cache in-process per la latest release GitHub. TTL breve (5 minuti) per
+# evitare di stressare l'API di GitHub (60 req/h unauth) ad ogni download.
+_AGENT_LATEST_CACHE: Dict[str, Any] = {"version": None, "expires_at": None}
+
+
+async def _resolve_latest_agent_version_safe() -> str:
+    """Ritorna il tag della latest GitHub Release per il Go Agent v4 in
+    formato `vMAJ.MIN.PATCH` (es. ``v4.6.0``). Best-effort:
+
+    1. Cache 5 min in memoria.
+    2. Env var ``AGENT_LATEST_VERSION`` (override manuale per deploy
+       offline / repo privati).
+    3. GitHub API `releases/latest` su ``AGENT_GITHUB_REPO``
+       (default ``santiM86/86NOCConnectorCenter``).
+    4. Fallback ``"latest"`` se tutto fallisce (cosi' il filename resta
+       sano anche senza connettivita').
+    """
+    import os as _os
+    now = _now()
+    cached = _AGENT_LATEST_CACHE.get("version")
+    exp = _AGENT_LATEST_CACHE.get("expires_at")
+    if cached and exp and now < exp:
+        return cached
+    override = (_os.environ.get("AGENT_LATEST_VERSION") or "").strip()
+    if override:
+        ver = override if override.startswith("v") else f"v{override}"
+        _AGENT_LATEST_CACHE["version"] = ver
+        _AGENT_LATEST_CACHE["expires_at"] = now + timedelta(minutes=5)
+        return ver
+    repo = (_os.environ.get("AGENT_GITHUB_REPO") or "santiM86/86NOCConnectorCenter").strip()
+    url = f"https://api.github.com/repos/{repo}/releases/latest"
+    headers = {"User-Agent": "86NocCenter-installer", "Accept": "application/vnd.github.v3+json"}
+    gh_token = (_os.environ.get("AGENT_GITHUB_TOKEN") or "").strip()
+    if gh_token:
+        headers["Authorization"] = f"Bearer {gh_token}"
+    try:
+        import urllib.request as _ureq
+        req = _ureq.Request(url, headers=headers)
+        # GitHub API e' bloccante; eseguo in thread executor per non
+        # bloccare l'event loop FastAPI.
+        loop = asyncio.get_running_loop()
+        def _fetch():
+            with _ureq.urlopen(req, timeout=8) as r:
+                return json.loads(r.read().decode("utf-8"))
+        rel = await loop.run_in_executor(None, _fetch)
+        tag = (rel.get("tag_name") or "").strip()
+        if tag:
+            ver = tag if tag.startswith("v") else f"v{tag}"
+            _AGENT_LATEST_CACHE["version"] = ver
+            _AGENT_LATEST_CACHE["expires_at"] = now + timedelta(minutes=5)
+            return ver
+    except Exception as e:  # noqa: BLE001
+        logger.warning("agent latest-version lookup failed: %s", e)
+    # Cache anche il fallback per evitare hammering quando GitHub e' down.
+    _AGENT_LATEST_CACHE["version"] = "latest"
+    _AGENT_LATEST_CACHE["expires_at"] = now + timedelta(minutes=2)
+    return "latest"
+
+
+@router.get("/agent/latest-version")
+async def agent_latest_version() -> Dict[str, str]:
+    """Espone la versione corrente del Connector Go Agent v4 disponibile per
+    download. Usata dalla UI del Center per:
+
+      - mostrare ``v4.6.0`` sul bottone "Installer" per ciascun cliente
+      - confronto con ``managed_agents.agent_version`` per evidenziare i
+        connettori "outdated" (badge giallo)
+    """
+    ver = await _resolve_latest_agent_version_safe()
+    return {"version": ver}
 
 
 async def _resolve_client_label(client_id: str) -> str:
@@ -909,15 +1384,17 @@ async def exe_bundle(token: Optional[str] = None) -> FileResponse:
     boxes with enterprise AV: a single .exe + one config file, no scripts at
     all. The technician double-clicks nocinstall.exe and just clicks through.
     """
-    await _token_or_403(token)
+    client_id = await _token_or_403(token)
     bundle = _build_exe_bundle(token)
+    client_label = await _resolve_client_label(client_id)
+    ver_label = await _resolve_latest_agent_version_safe()
     return FileResponse(bundle, media_type="application/zip",
-                        filename="Argus-Connector-Setup.zip")
+                        filename=f"86NocAgent-Setup-{client_label}-{ver_label}.zip")
 
 
 @router.get("/agent/install/setup.exe")
 async def setup_exe(token: Optional[str] = None) -> FileResponse:
-    """Single-file Windows installer: Argus-Setup.exe.
+    """Single-file Windows installer: 86NocAgent-Setup.exe.
 
     7-Zip Setup Deluxe SFX che embedda nocagent + nocwatchdog + nocagent-ui +
     argus.ico + il wizard PS1 (tutto firmato col token del cliente). L'utente
@@ -928,10 +1405,12 @@ async def setup_exe(token: Optional[str] = None) -> FileResponse:
     Identico a un installer Inno Setup / NSIS: zero estrazioni, zero PS in
     chiaro, zero dipendenze di rete per il bootstrap (i binari sono dentro).
     """
-    await _token_or_403(token)
+    client_id = await _token_or_403(token)
     setup_path = _build_setup_exe(token)
+    client_label = await _resolve_client_label(client_id)
+    ver_label = await _resolve_latest_agent_version_safe()
     return FileResponse(setup_path, media_type="application/vnd.microsoft.portable-executable",
-                        filename="Argus-Setup.exe")
+                        filename=f"86NocAgent-Setup-{client_label}-{ver_label}.exe")
 
 
 @router.get("/agent/install/{platform}.{ext}", response_class=PlainTextResponse)

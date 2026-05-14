@@ -289,7 +289,24 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
         #    → online (override anti-flap)
         # 2. Se source=connector-scanner → calcolo freschezza (online se <30min, offline se piu' vecchio)
         # 3. Altrimenti pending (manuale mai polleato)
-        if md_ip in scanner_seen_recent_ips:
+        # v4.2.0 AGENT GO LIVE POLLING: prima di tutto, se l'agent v4 ha
+        # scritto un device_poll_status fresco (<3 min) per questo IP,
+        # quello è la verità più recente. Sostituisce il vecchio
+        # Connector Master per device approvati via Auto-Discovery.
+        pd_v4 = poll_by_ip.get(md_ip)
+        v4_age = None
+        if pd_v4 and pd_v4.get("source") == "agent_v4":
+            last_seen_str = pd_v4.get("last_ping_at") or pd_v4.get("last_poll_at")
+            if last_seen_str:
+                try:
+                    lp_dt = datetime.fromisoformat(last_seen_str.replace("Z", "+00:00"))
+                    v4_age = (now_dt - lp_dt).total_seconds()
+                except Exception:
+                    v4_age = None
+        if v4_age is not None and v4_age < 180:
+            reachable_v4 = bool(pd_v4.get("ping_reachable") or pd_v4.get("reachable"))
+            md_status = "online" if reachable_v4 else "offline"
+        elif md_ip in scanner_seen_recent_ips:
             md_status = "online"
         elif md_source == "connector-scanner":
             md_status = _scanner_status_from_last_seen(md.get("last_seen_at"))

@@ -1,133 +1,89 @@
 <analysis>**original_problem_statement**: 
-Siamo una società IT e abbiamo bisogno di creare un raccoglitore di alert (NOC) per tutti i dispositivi nelle reti dei clienti (switch, firewall, ecc.). Console live su PC e cellulare. L'applicazione Windows (86NocConnector) deve essere nativa senza richiedere l'installazione di Python.
+Siamo una società IT e abbiamo bisogno di creare un raccoglitore di alert (NOC) per tutti i dispositivi nelle reti dei clienti (switch, firewall, ecc.). Console live su PC e cellulare.
 PRODUCT REQUIREMENTS: 
 - Monitoraggio reti, stampanti (SNMP), processi di backup.
-- Auto-discovery dispositivi (ARP, mDNS, SNMP, LLDP-MED, OUI lookup).
-- Integrazione Datto RMM API.
+- Auto-discovery dispositivi (ARP, mDNS, SNMP, LLDP-MED, OUI lookup, PTR).
 - Sistema scalabile Multi-tenant e White-label per rivendita SaaS.
-- Network Scanner nativo nel connector per ispezionare VLAN remote isolate (incluso nuovo SNMP Poller per VLAN remote).
-- Inferenza LAN vs Wi-Fi automatica basata su tabelle CAM e LLDP.
-- Classificazione MAC LAA (Locally Administered Address) per identificazione dispositivi BYOD personali.
+- Architettura enterprise-grade: Agent in Go (Golang) nativo, WebSockets persistenti per comandi real-time e streaming.
+- Network Scanner nativo nel connector (streaming live, scan parallelo).
 
-**User's preferred language**: **Italian** (INSTRUCT next agent to respond in the user's preferred language only. **IL TUO OUTPUT DEVE ESSERE SEMPRE E SOLO IN ITALIANO**).
+**User's preferred language**: **Italian** (INSTRUCT NEXT AGENT: IL TUO OUTPUT DEVE ESSERE SEMPRE E SOLO IN ITALIANO. RISPONDI ESCLUSIVAMENTE IN ITALIANO).
 
 **what currently exists?** 
-Una piattaforma NOC full-stack (React, FastAPI, MongoDB, PowerShell). In recenti sessioni, l'agente ha disabilitato il  per risolvere errori 429/502 e implementato protezioni anti-valanga nel backend per lo Scanner, oltre a ottimizzare il Connector Windows (v3.8.23). È stata anche modificata la logica di fallback di  per usare una finestra di live-seen di 10 minuti per i dispositivi rilevati dallo scanner per evitare false oscillazioni tra online e offline causate dal fallimento del polling del Master. 
+Un sistema NOC full-stack con backend FastAPI, frontend React e un Agent nativo in Go (v4.2.0). Il sistema supporta il Live Polling (ICMP Ping e SNMP) tramite l'Agent Go con WebSockets, ma attualmente i dispositivi restano visivamente bloccati nello stato PENDING nella UI. Inoltre, l'eseguibile Go su Windows non genera file di log () dopo l'avvio come servizio, rendendo difficile il debug dei crash silenti. 
 
 **Last working item**:
-    - Last item agent was working: Attesa della conferma dell'utente sullo stato dei bug relativi all'oscillazione online/offline dei dispositivi () e ai contatori vuoti nella pagina Overview (). L'agente ha inviato una domanda tramite  per sapere se in produzione i dispositivi risultano ora stabili dopo l'ultimo deploy.
+    - Last item agent was working: In attesa della risposta dell'utente per eseguire il debug del crash silente dell'Agent Go. L'agente ha letto il  e ha inviato una richiesta tramite  per far avviare manualmente l'eseguibile  da terminale Windows, così da intercettare eventuali errori standard (stdout/panic) legati a permessi di scrittura dei log.
     - Status: USER VERIFICATION PENDING
-    - Agent Testing Done: Y (eseguito nella fork precedente via Pytest script)
-    - Which testing method agent to use? manual testing / backend testing agent / python -c
-    - User Testing Done: N (in attesa di risposta al prompt )
+    - Agent Testing Done: N/A (nessuna modifica al codice in questa sessione)
+    - Which testing method agent to use? manual testing via lettura log Agent Go o esecuzione manuale
+    - User Testing Done: N (in attesa di risposta)
 
 **All Pending/In progress Issue list**:  
-  - Issue 1: Oscillazione Online/Offline dei dispositivi Scanner (Priority: P0)
-     - Attempted fixes: Modificato  per scartare il polling fallito del Master sui device  e aumentato la finestra di live-seen a 10 minuti basandosi su .
-     - Next debug checklist: Leggere la risposta dell'utente in sospeso. Se il problema persiste, verificare i log di  per controllare che la logica del timestamp venga rispettata per i dispositivi .
-     - Why fix this issue and what will be achieved with the fix? Previene falsi allarmi UI (dispositivi che lampeggiano tra online e offline).
-     - Status: USER VERIFICATION PENDING
-     - Is recurring issue? Y
-     - Should Test frontend/backend/both after fix? Backend
-     - Blocked on other issue: Attesa feedback utente
-
-  - Issue 2: Contatori Clienti Vuoti nella pagina Overview (Priority: P1)
-     - Attempted fixes: Corretto  in sessioni precedenti per usare  nei calcoli.
-     - Next debug checklist: Chiedere all'utente se i dati in Overview sono apparsi post-deploy. Se ancora vuoti, debuggare  e verificare se i formati nel DB di produzione (tabella ) corrispondono alle query.
-     - Why fix this issue and what will be achieved with the fix? Mostra le dashboard visive corrette al cliente.
-     - Status: USER VERIFICATION PENDING
-     - Is recurring issue? Y
-     - Should Test frontend/backend/both after fix? Both
-
-**In progress Task List**:
-Nessun task attivo al momento. L'agente è in pausa e attende l'input dell'utente.
-
-**Upcoming and Future Tasks**
-    Upcoming Tasks:
-    - P1: Windows Servers WMI Polling (Sprint 3) - Metodo nativo Windows per monitorare i server in assenza di servizio SNMP installato.
-    - P1: Telegram Bot / Email notifications for alerts (Resend or Twilio).
-    - P1: SOC Fase 1 — Integrazione AbuseIPDB per IP reputation sugli alert.
-    - P1: SOC Fase 1 — Feed CVE NVD sulla scheda dispositivo per gli asset riconosciuti.
-    - P1: SOC Fase 1 — MITRE ATT&CK tagging per le regole di detection.
-    Future Tasks:
-    - P2: Implementazione DHCP Fingerprinting nello Scanner per arricchire i dispositivi LAA (smartphone privacy).
-    - P2: SOC Fase 2 — SIEM, Syslog strutturato, Sigma rules engine.
-    - P2: Monitoraggio toner/pagine SNMP (Printer MIB) per le stampanti.
-
-**Completed work in this session**
-- L'agente ha semplicemente letto il contenuto di  tramite  e ha usato  per raccogliere l'esito dei test in produzione dell'utente. Nessuna riga di codice modificata in questa fork in attesa di istruzioni.
-
-**Earlier issues found/mentioned but not fixed**
-   - Nessun nuovo issue ignorato.
-
-**Known issue recurrence from previous fork**
-  - Issue recurrence in previous fork: Disallineamento tra preview environment e l'ambiente di produzione dell'utente. I bug spesso derivano dalla latenza del deploy o dalla cache del Service Worker (PWA) che l'utente non ha aggiornato.
-  - Recurrence count: Alta
-  - Status: IN PROGRESS (Richiede di istruire l'utente a confermare i deploy e ricaricare senza cache).
-
-**Code Architecture**
-
-
-**Key Technical Concepts**
-React, FastAPI, MongoDB, PowerShell (Connector nativo Windows), SNMP Polling, Discovery ARP/mDNS, Reverse Proxy rate-limiting (disabilitato), Exponential Backoff.
-
-**key DB schema**
-  - : Contiene i dispositivi censiti (, , , ).
-  - : Raccoglie la telemetria grezza, fonte di verità per l'online/offline ().
-  - : Traccia lo stato della raggiungibilità SNMP/Ping.
-
-**changes in tech stack**
-Nessuno.
-
-**All files of reference** 
-  -  (Esaminato per contesto sulle regole di deploy e stato attuale)
-  -  (Focus logico per l'oscillazione dei dispositivi)
-
-**Areas that need refactoring**: 
-N/A
+  - Issue 1: Dispositivi bloccati in PENDING e log dell'Agent Windows scomparso (Priority: P0)
+     - Attempted fixes: Identificato in precedenza il problema, in questa sessione l'agente ha richiesto all'utente l'esecuzione manuale dell'agent tramite console.
+     - Next debug checklist: 
+       1. Leggere l'output fornito dall'utente in risposta alla richiesta .
+       2. Se ci sono errori di permessi per noc-agent/internal/logger//api/devicesagent_idagent.yamlmanaged_agents/api/webhooks/github-deploydeploy.shagent_v4/app/memory/PRD.mdask_human/home/arslan/86NOCConnectorCenter/backend//opt/argus/
+/app/
+├── backend/
+│   ├── routes/
+│   │   ├── agent_ws.py (Controller WebSockets, smista i poll ai collection MongoDB)
+│   │   ├── devices.py (Endpoint dati frontend - implementa la logica < 3 minuti per status Online)
+│   ├── tests/
+├── noc-agent/
+│   ├── build/
+│   │   ├── installer_gui.ps1.template
+│   ├── internal/
+│   │   ├── poller/ (icmp.go cross-platform)
+│   ├── cmd/
+│   │   ├── nocui-v5/ (Sottoprogetto Wails per Desktop UI nativa Windows, React based)
+managed_devicesipstatusping_latency_mslast_poll_source: 'agent_v4'device_poll_statusdevice_ipipsource: 'agent_v4'managed_agents/app/memory/PRD.md/app/backend/routes/agent_ws.py/app/backend/routes/devices.py/app/noc-agent/internal/poller/icmp.goC:\ProgramData\86NocAgent\logs` non sia creabile per mancanza di permessi Administrator in ambiente Windows.
 
 **key api endpoints**
-  -  
-  -  
-  - 
+- 
+- 
+- 
 
 **Critical Info for New Agent** 
-- **RISPONDI SEMPRE E SOLO IN ITALIANO**.
-- L'esecuzione del codice su questa fork è completamente bloccata dal fatto che si sta attendendo una risposta dell'utente () per capire se le implementazioni precedenti sulle query in  e  hanno avuto successo nell'ambiente di produzione. **NON** modificare il codice fino a quando l'utente non fornisce feedback sul risultato.
-- Il  IP-based in FastAPI è disabilitato appositamente perché andava in conflitto con il reverse proxy nginx (generando cascate di 502/429 al connector); non va riattivato.
-- L'utente ha una regola esplicita scritta in : NON RIMUOVERE il webhook  e .
+- **IL TUO OUTPUT DEVE ESSERE SEMPRE E SOLO IN ITALIANO**. Parla con il cliente in Italiano ed esegui ragionamenti chiari.
+- **NON PROSEGUIRE** finché l'utente non risponde al prompt  con l'output dell'esecuzione manuale dell'agent.
+- Il percorso corretto per i file di produzione del backend sul server Linux è **ESCLUSIVAMENTE** . Ignora qualsiasi altro path legacy .
+- Assicurati di non usare script distruttivi.
 
 **documents and test reports created in this job** 
-  - Consultato .
+- Nessun nuovo test report, visualizzato solo .
 
 **Last 10 User Messages and any pending HUMAN messages** 
-*(I messaggi dell'utente in questa fork sono limitati al dump di PRD e al completamento del context, ma l'agente ha formulato l'ask_human)*
-**(PENDING HUMAN RESPONSE)**: L'utente deve rispondere alla richiesta inviata tramite l'ultimo tool  per confermare se i dispositivi dello scanner risultano stabili (senza oscillazioni offline/online) e se i contatori dei clienti nella Overview Dashboard visualizzano i dati corretti in produzione dopo l'ultimo deploy.
+1. **(PENDING HUMAN MESSAGE)**: In attesa dell'output della richiesta . L'utente deve fornire il risultato dell'esecuzione manuale da terminale:  seguito da .
+2. Utente fornisce il risultato JSON e il contenuto tramite .
+3. Informazioni iniziali (Problem Statement / Handoff analysis).
 
 **Project Health Check:**
-Broken: In attesa di verifica utente sulle metriche (Overview) e stabilita dei dispositivi.
-Mocked: N/A
+- Broken: Il servizio Go su Windows  non produce log o va in crash silente. L'UI React mostra dispositivi bloccati in stato PENDING.
+- Mocked: N/A
 
 **3rd Party Integrations** 
-  - Datto RMM (Requires User Key)
-  - Fingerbank API (Requires User Key)
+- Datto RMM (Requires User Key)
+- Fingerbank API (Requires User Key)
 
 **Testing status**
-  - Testing agent used after significant changes: NO (nessuna modifica al codice effettuata in questa fork).
+  - Testing agent used after significant changes: NO (nessuna modifica effettuata)
   - Troubleshoot agent used after agent stuck in loop: NO
   - Test files created: None
-  - Known regressions: Possibili ritardi di visualizzazione UI nei contatori Overview lato utente.
+  - Known regressions: Agent Go non avvia il logger correttamente / Cache front-end maschera la risoluzione del backend.
 
 **Credentials to test flow:**
-Admin:  (Password in ).
+Admin:  (Password nel  / .env locale).
 
 **What agent forgot to execute**
-Niente, l'agente è correttamente in pausa in attesa della conferma dell'utente.
+Niente, l'agente è bloccato e aspetta correttamente l'input dell'utente.
 
 **Debugging checklist for current issue**
-    Issue: Verifica fix Oscillazione Dispositivi Scanner & Overview vuota.
-
-    Azioni per il nuovo agente (una volta ricevuta la risposta dell'utente):
-    1. Se l'utente conferma che è tutto risolto: Aggiorna  con i successi e procedi al Task in coda P1 (Windows Servers WMI Polling o Telegram Bot).
-    2. Se l'utente lamenta ancora oscillazioni in : Ispeziona il payload inviato da  per assicurarti che il timestamp aggiorni la proprietà usata nei 10 minuti di .
-    3. Se l'utente vede ancora l'overview vuota: Controlla che  formatti e raggruppi correttamente i JSON aggregati e che il frontend in  matchi le esatte chiavi.</analysis>
+    Issue: Debug crash silente Go Agent / Risoluzione PENDING stato device.
+    
+    Backend/Go Agent check:
+    - Aspetta l'output dell'utente. Se vedi un panic (mkdir log: access denied o similari), modifica il bootstrap del log in Go per gestire correttamente gli ACL o per fallback senza arrestarsi.
+    
+    Frontend files to check:
+    - Se l'agent funziona e invia WS, ma l'UI è PENDING, verifica  o la tabella dispositivi per assicurarti che lo stato  o il campo aggiornato (< 3 minuti) venga mappato correttamente. Chiedi sempre all'utente di ricaricare scavalcando la cache.</analysis>
