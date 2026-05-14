@@ -65,8 +65,13 @@ func main() {
 		os.Exit(2)
 	}
 	if cfg.AgentID == "" {
+		// Defensive: Load() now persists a stable agent_id via
+		// getOrCreateStableAgentID, so this branch should never trigger.
+		// We keep it as a last-resort safety net to never start without an id.
 		cfg.AgentID = transport.NewAgentID()
-		rootLog.Warn("agent_id missing in config — generated ephemeral", "agent_id", cfg.AgentID)
+		rootLog.Warn("agent_id still empty after Load — generated ephemeral as fallback", "agent_id", cfg.AgentID)
+	} else {
+		rootLog.Info("agent_id resolved", "agent_id", cfg.AgentID)
 	}
 
 	// On Windows, if launched by SCM (interactive=false) or with --service,
@@ -102,6 +107,7 @@ func runAgent(ctx context.Context, cfg config.Config, log *logging.Logger) {
 	hr.Register("transport", 60*time.Second)
 	hr.Register("discovery", 2*cfg.Discovery.Interval)
 	hr.Register("poller", 2*cfg.SNMP.Interval)
+	hr.Register("ping", 2*cfg.Ping.Interval)
 	hr.Register("watchdog", 3*cfg.Heartbeat)
 
 	hostname, _ := os.Hostname()
@@ -125,6 +131,11 @@ func runAgent(ctx context.Context, cfg config.Config, log *logging.Logger) {
 		client.PushEvent(proto.EventSNMPPoll, r)
 		hr.SetLastPoll(time.Now().UTC())
 		hr.Tick("poller")
+	})
+
+	pingP := poller.NewPing(cfg.Ping, log, func(r proto.PingPollResult) {
+		client.PushEvent(proto.EventPingPoll, r)
+		hr.Tick("ping")
 	})
 
 	sources := []discovery.Source{}
@@ -162,6 +173,16 @@ func runAgent(ctx context.Context, cfg config.Config, log *logging.Logger) {
 		}
 		return snmp.PollOne(ctx, a.IP, a.Community), nil
 	})
+	client.Register("force_ping_poll", func(ctx context.Context, args json.RawMessage) (any, error) {
+		var a struct {
+			IP string `json:"ip"`
+		}
+		_ = json.Unmarshal(args, &a)
+		if a.IP == "" {
+			return map[string]any{"polled": len(pingP.Snapshot().Targets)}, nil
+		}
+		return pingP.ProbeOne(ctx, a.IP), nil
+	})
 	client.Register(proto.CmdRunDiagnostics, func(ctx context.Context, _ json.RawMessage) (any, error) {
 		return runDiagnostics(cfg), nil
 	})
@@ -169,11 +190,121 @@ func runAgent(ctx context.Context, cfg config.Config, log *logging.Logger) {
 
 	upd := update.New(cfg.Update, Version, log)
 
+	// Hot-apply the SNMP target list pushed by the backend in the
+	// server.welcome frame. Lets the central console drive what the
+	// agent polls without redeploying the agent or editing agent.yaml.
+	// We parse a JSON-friendly view of welcome.Config rather than
+	// reusing config.SNMPConfig directly (the yaml tags don't match
+	// the JSON shape and time.Duration is not json-decodable).
+	client.OnWelcome(func(w *proto.ServerWelcome) {
+		if len(w.Config) == 0 {
+			return
+		}
+		var wire struct {
+			SNMP struct {
+				Enabled     bool     `json:"enabled"`
+				Interval    string   `json:"interval"`
+				Timeout     string   `json:"timeout"`
+				Retries     int      `json:"retries"`
+				Communities []string `json:"communities"`
+				Targets     []struct {
+					IP          string `json:"ip"`
+					Name        string `json:"name"`
+					Community   string `json:"community"`
+					Profile     string `json:"profile"`
+					SNMPVersion string `json:"snmp_version"`
+					SNMPPort    int    `json:"snmp_port"`
+				} `json:"targets"`
+			} `json:"snmp"`
+			Ping struct {
+				Enabled  bool   `json:"enabled"`
+				Interval string `json:"interval"`
+				Timeout  string `json:"timeout"`
+				Count    int    `json:"count"`
+				Targets  []struct {
+					IP   string `json:"ip"`
+					Name string `json:"name"`
+				} `json:"targets"`
+			} `json:"ping"`
+		}
+		if err := json.Unmarshal(w.Config, &wire); err != nil {
+			rootLog.Warn("welcome.config parse failed", "err", err.Error())
+			return
+		}
+		interval, _ := time.ParseDuration(wire.SNMP.Interval)
+		if interval <= 0 {
+			interval = 60 * time.Second
+		}
+		timeout, _ := time.ParseDuration(wire.SNMP.Timeout)
+		if timeout <= 0 {
+			timeout = 2 * time.Second
+		}
+		newCfg := config.SNMPConfig{
+			Enabled:     wire.SNMP.Enabled,
+			Interval:    interval,
+			Timeout:     timeout,
+			Retries:     wire.SNMP.Retries,
+			Communities: wire.SNMP.Communities,
+		}
+		if len(newCfg.Communities) == 0 {
+			newCfg.Communities = []string{"public"}
+		}
+		for _, t := range wire.SNMP.Targets {
+			if t.IP == "" {
+				continue
+			}
+			newCfg.Targets = append(newCfg.Targets, config.SNMPTarget{
+				IP:          t.IP,
+				Name:        t.Name,
+				Community:   t.Community,
+				Profile:     t.Profile,
+				SNMPVersion: t.SNMPVersion,
+				SNMPPort:    t.SNMPPort,
+			})
+		}
+		snmp.ApplyConfig(newCfg)
+
+		// Ping config hot-swap. The backend pushes the full list of
+		// managed_devices for this tenant (not only SNMP-enabled
+		// ones) so every approved device immediately starts emitting
+		// UP/DOWN heartbeats — this is what replaces the legacy
+		// PowerShell Connector polling loop.
+		pingInterval, _ := time.ParseDuration(wire.Ping.Interval)
+		if pingInterval <= 0 {
+			pingInterval = 60 * time.Second
+		}
+		pingTimeout, _ := time.ParseDuration(wire.Ping.Timeout)
+		if pingTimeout <= 0 {
+			pingTimeout = 2 * time.Second
+		}
+		pingCount := wire.Ping.Count
+		if pingCount <= 0 {
+			pingCount = 1
+		}
+		newPing := config.PingConfig{
+			Enabled:  wire.Ping.Enabled,
+			Interval: pingInterval,
+			Timeout:  pingTimeout,
+			Count:    pingCount,
+		}
+		for _, t := range wire.Ping.Targets {
+			if t.IP == "" {
+				continue
+			}
+			newPing.Targets = append(newPing.Targets, config.PingTarget{
+				IP:   t.IP,
+				Name: t.Name,
+			})
+		}
+		pingP.ApplyConfig(newPing)
+	})
+
 	go heartbeatLoop(ctx, client, hr, cfg.Heartbeat)
 	go watchdogTick(ctx, cfg.Watchdog.HeartbeatFile, hr)
 	go logShipper(ctx, client, log)
 	go disc.Run(ctx)
 	go snmp.Run(ctx)
+	go pingP.Run(ctx)
 	go upd.Run(ctx)
 
 	rootLog.Info("agent started",
@@ -205,7 +336,10 @@ func capabilities(c config.Config) []string {
 	if c.SNMP.Enabled {
 		caps = append(caps, "poll.snmp")
 	}
-	caps = append(caps, "cmd.force_lan_scan", "cmd.force_snmp_poll", "cmd.get_metrics", "cmd.run_diagnostics")
+	if c.Ping.Enabled {
+		caps = append(caps, "poll.ping")
+	}
+	caps = append(caps, "cmd.force_lan_scan", "cmd.force_snmp_poll", "cmd.force_ping_poll", "cmd.get_metrics", "cmd.run_diagnostics")
 	return caps
 }
 

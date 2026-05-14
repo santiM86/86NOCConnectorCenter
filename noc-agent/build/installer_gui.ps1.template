@@ -596,7 +596,7 @@ $btnHealth = New-Btn 'Stato canale (VPN/WS)' 310 545 200 $ColWhite $ColAccent {
     $script:lblHealth.Text = 'Verifica canale verso NOC Center...'
     $form.Refresh()
     try {
-        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
+        try { if (-not ([Net.ServicePointManager]::SecurityProtocol -band [Net.SecurityProtocolType]::Tls12)) { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } } catch {}
         $url = $BackendUrl.TrimEnd('/') + '/api/agent/self/health?token=' + $AgentToken
         $h = Invoke-RestMethod -UseBasicParsing -Method Get -TimeoutSec 10 -Uri $url
         if ($h.connected -eq $true) {
@@ -642,7 +642,7 @@ $btnTest = New-Btn 'Test SNMP' 200 595 130 $ColBlue $ColWhite {
     $script:lblTestSnmp.Text = "Interrogazione SNMP $($t.ip) in corso..."
     $form.Refresh()
     try {
-        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
+        try { if (-not ([Net.ServicePointManager]::SecurityProtocol -band [Net.SecurityProtocolType]::Tls12)) { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } } catch {}
         $body = @{ ip = $t.ip; community = $t.community; port = $t.snmp_port; version = $t.snmp_version } | ConvertTo-Json -Compress
         $url = $BackendUrl.TrimEnd('/') + '/api/agent/self/snmp/test?token=' + [System.Web.HttpUtility]::UrlEncode($AgentToken)
         # HttpUtility serve System.Web; fallback:
@@ -842,7 +842,25 @@ $restartSvc.add_Click({
 
 $openLog = $menu.Items.Add('Apri cartella log')
 $openLog.add_Click({
-    $logDir = Join-Path $env:ProgramData '86NocAgent\logs'
+    # The Go agent (running as LocalSystem) writes its actual log path into
+    # %ProgramData%\86NocAgent\log_path.txt on startup. Prefer that marker so
+    # we open the right folder even when logs live under SYSTEM's profile.
+    $marker = Join-Path $env:ProgramData '86NocAgent\log_path.txt'
+    $logDir = $null
+    if (Test-Path $marker) {
+        try {
+            $resolved = (Get-Content $marker -Raw -ErrorAction Stop).Trim()
+            if ($resolved) { $logDir = Split-Path $resolved -Parent }
+        } catch { }
+    }
+    if (-not $logDir) {
+        $localAppData = $env:LOCALAPPDATA
+        if ($localAppData) {
+            $cand = Join-Path $localAppData '86NocAgent\logs'
+            if (Test-Path $cand) { $logDir = $cand }
+        }
+    }
+    if (-not $logDir) { $logDir = Join-Path $env:ProgramData '86NocAgent\logs' }
     if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Force -Path $logDir | Out-Null }
     Start-Process explorer.exe $logDir
 })
@@ -944,7 +962,7 @@ if ($confirm -ne [System.Windows.Forms.DialogResult]::Yes) { exit 0 }
 
 $installDir = 'C:\Program Files\86NocAgent'
 $dataDir    = 'C:\ProgramData\86NocAgent'
-$startMenu  = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\86BIT Argus Center'
+$startMenu  = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\86BIT Argus Connector'
 $logFile    = Join-Path $env:TEMP '86NocAgent-uninstall.log'
 "$(Get-Date -Format o) - uninstall start" | Out-File -FilePath $logFile -Append
 
@@ -1214,7 +1232,14 @@ function Show-Configuration {
         $script:lblValidation.Text = "Verifica in corso..."
         $contentPanel.Refresh()
         try {
-            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
+            # TLS settings: NON forziamo TLS 1.3 perché su Windows
+            # Server 2022 + PS 5.1 (.NET Framework 4.8) settare
+            # `Tls12 -bor Tls13` provoca SChannel SSPI errors dentro
+            # Invoke-RestMethod ("Impossibile effettuare la
+            # connessione al server remoto"), pur funzionando
+            # Invoke-WebRequest. Il default di SChannel su WS2022 /
+            # Win11 / Win10 21H2+ è già Tls12+, basta assicurarcene.
+            try { if (-not ([Net.ServicePointManager]::SecurityProtocol -band [Net.SecurityProtocolType]::Tls12)) { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } } catch {}
             $resp = Invoke-RestMethod -UseBasicParsing -TimeoutSec 15 `
                 -Uri "$url/api/agent/install/manifest?platform=$Platform&role=$($script:Role)&token=$tok"
             $script:ClientId = $resp.client_id
@@ -1561,7 +1586,7 @@ function Show-Install {
 function Run-Install {
     $script:InstallResult = "fail"
     try {
-        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
+        try { if (-not ([Net.ServicePointManager]::SecurityProtocol -band [Net.SecurityProtocolType]::Tls12)) { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } } catch {}
         $url = $script:BackendUrl.TrimEnd('/')
         $tok = $script:Token
 
@@ -1792,7 +1817,7 @@ function Run-Install {
             Append-Log "      WARN: agent-ui.json non scritto: $($_.Exception.Message)" $ColorError
         }
         try {
-            $startMenu = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\86BIT Argus Center"
+            $startMenu = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\86BIT Argus Connector"
             New-Item -ItemType Directory -Force -Path $startMenu | Out-Null
             $wsh = New-Object -ComObject WScript.Shell
             $uiExe = Join-Path $InstallDir "nocagent-ui.exe"
@@ -1805,7 +1830,7 @@ function Run-Install {
             $lnk.IconLocation = $iconLoc
             $lnk.Description = "Apri Connector Argus - Gestisci Dispositivi"
             $lnk.Save()
-            Append-Log "      shortcut '86BIT Argus Center\Connector' creato" $ColorMuted
+            Append-Log "      shortcut '86BIT Argus Connector\Connector' creato" $ColorMuted
         } catch {
             Append-Log "      WARN: shortcut non creato: $($_.Exception.Message)" $ColorError
         }
@@ -1885,7 +1910,7 @@ function Run-Install {
         }
         try {
             # Aggiunge anche shortcut 'Disinstalla' nel menu Start
-            $startMenu = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\86BIT Argus Center"
+            $startMenu = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\86BIT Argus Connector"
             if (-not (Test-Path $startMenu)) {
                 New-Item -ItemType Directory -Force -Path $startMenu | Out-Null
             }
@@ -1948,7 +1973,7 @@ function Show-Done {
         $contentPanel.Controls.Add($box)
 
         $items = @(
-            "Menu Start -> 86BIT Argus Center -> Connector",
+            "Menu Start -> 86BIT Argus Connector -> Connector",
             "Tray icon visibile vicino all'orologio (zona notifica)",
             "Apri il NOC Center -> Agents per verificare 'live: true'",
             "Per disinstallare: Pannello di controllo -> Programmi"
@@ -2028,7 +2053,7 @@ $btnNext.Add_Click({
         $script:Token = $tok
         if (-not $script:ClientId) {
             try {
-                [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
+                try { if (-not ([Net.ServicePointManager]::SecurityProtocol -band [Net.SecurityProtocolType]::Tls12)) { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } } catch {}
                 $r = Invoke-RestMethod -UseBasicParsing -TimeoutSec 15 `
                     -Uri "$url/api/agent/install/manifest?platform=$Platform&role=$($script:Role)&token=$tok"
                 $script:ClientId = $r.client_id

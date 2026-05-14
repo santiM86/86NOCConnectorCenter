@@ -55,6 +55,18 @@ type Client struct {
         // last welcome (config push from server) is exposed for the orchestrator
         welcomeMu sync.Mutex
         welcome   *proto.ServerWelcome
+        // onWelcome is invoked (in the dispatch goroutine) every time the
+        // server sends a server.welcome frame. Lets the orchestrator hot-apply
+        // config without polling LastWelcome().
+        onWelcome func(*proto.ServerWelcome)
+}
+
+// OnWelcome registers a callback fired when the server sends server.welcome.
+// The handler runs in the dispatch goroutine, so keep it cheap.
+func (c *Client) OnWelcome(fn func(*proto.ServerWelcome)) {
+        c.welcomeMu.Lock()
+        c.onWelcome = fn
+        c.welcomeMu.Unlock()
 }
 
 // New builds a Client. hello must contain identity + capabilities; backend
@@ -274,8 +286,12 @@ func (c *Client) dispatch(ctx context.Context, f proto.Frame) {
                 if err := json.Unmarshal(f.Payload, &w); err == nil {
                         c.welcomeMu.Lock()
                         c.welcome = &w
+                        cb := c.onWelcome
                         c.welcomeMu.Unlock()
                         c.log.Info("welcome received", "session_id", w.SessionID)
+                        if cb != nil {
+                                cb(&w)
+                        }
                 }
         case proto.TypeServerPing:
                 // reply with an empty heartbeat; backend uses it as RTT measurement

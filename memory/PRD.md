@@ -20,7 +20,484 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 3. **Linguaggio**: TUTTE le risposte all'utente devono essere in italiano.
 
+4. **Nome del servizio systemd backend in PROD**: `noc-backend.service`
+   (NON `argus-backend`, NON `noc-center`, NON `fastapi`). Tutti gli
+   script di deploy DEVONO usare `sudo systemctl restart noc-backend`.
+   Path codice REALE in PROD: `/home/arslan/86NOCConnectorCenter/backend/`
+   (NON `/opt/argus/backend/` — quel path o non esiste o è una directory
+   stale di un vecchio deploy). Path agent build dir:
+   `/home/arslan/86NOCConnectorCenter/noc-agent/build/`. Utente di
+   esecuzione: `arslan`. Hostname VM: `86bitserver`. uvicorn binda
+   `127.0.0.1:8186` con `--workers 1`.
+
 ---
+
+## 2026-02 (oggi) ✅ FIX VERSIONE CONNECTOR UI + NOME ZIP + COLONNA VERSIONE NEL CENTER + RENAME SHORTCUT START MENU
+
+**Status**: codice nel preview env, da committare su GitHub e rilasciare
+come `v4.6.1` per propagare il fix dell'agent-ui.json legacy.
+
+### Bug segnalati dall'utente (screenshot multipli)
+
+1. **Connector UI mostra v4.0.0** dopo update riuscito a v4.6.0 (script
+   PowerShell loggava "Installazione 86NocAgent v4.6.0 COMPLETATA" ma la
+   tray window title era ancora "ARGUS Connector v4.0.0 - unknown").
+2. **Nome ZIP installer senza versione** — i file scaricati erano
+   `86NocAgent-Installer-86BITOffice.zip` / `86NocAgent-Installer-86BITOffice (1).zip`
+   e non si distinguevano i download successivi.
+3. **Nessuna colonna versione nel Center** ("Gestione Clienti") — non si
+   capiva al volo quale connector era outdated.
+4. **Pulsante "Installer" non indicava quale versione** stesse scaricando.
+
+### Root cause #1 (UI v4.0.0)
+
+`cmd/installer/main.go` (vecchio installer Go, ora deprecato) scriveva
+`agent-ui.json` SIA in `$InstallDir` SIA in `$DataDir` con
+`version: "4.0.0"` hardcoded. Il nuovo `install-noc-agent.ps1` scrive solo
+in `$DataDir`. La tray UI `cmd/nocui/main.go` cercava PRIMA in
+`$InstallDir/agent-ui.json` → trovava il file stantio v4.0.0 lasciato dal
+vecchio installer e mascherava il vero `version=4.6.0` salvato in
+`$DataDir/agent-ui.json` dal ps1 nuovo.
+
+### Fix applicati
+
+**Go Agent (richiede ricompilazione + nuova GitHub Release v4.6.1):**
+
+- `cmd/nocui/main.go`: invertito ordine lookup → ora `$ProgramData` ha
+  precedenza su `$InstallDir`. Aggiunta variabile `BuildVersion`
+  iniettabile via `-ldflags "-X main.BuildVersion=4.6.1"` come fallback
+  invece dell'hardcoded `"4.0.0"`.
+- `build/install-noc-agent.ps1`: aggiunto step di cleanup che rimuove
+  `$InstallDir\agent-ui.json` se presente (eredita di installer legacy)
+  e ne sovrascrive una copia "fresca" cosi' qualunque ordine di lookup
+  pesca la versione corretta.
+
+**Backend (gia' attivo nel preview env):**
+
+- `routes/agent_ws.py`: nuovo endpoint `GET /api/agent/latest-version`
+  che ritorna `{"version": "v4.6.0"}` con cache 5 min, sorgenti in
+  cascata:
+    1. env `AGENT_LATEST_VERSION` (override manuale, consigliato in prod
+       per evitare rate-limit GitHub API)
+    2. GitHub API `releases/latest` su `AGENT_GITHUB_REPO`
+       (default `santiM86/86NOCConnectorCenter`)
+    3. fallback `"latest"`.
+- Filename ZIP/EXE installer ora include `-{client_label}-v{version}`:
+    - `86NocAgent-Installer-86BITOffice-v4.6.0.zip` (wizard ps1)
+    - `86NocAgent-Setup-86BITOffice-v4.6.0.zip` (exe bundle)
+    - `86NocAgent-Setup-86BITOffice-v4.6.0.exe` (single-file setup)
+
+**Frontend `ClientsPage.js`:**
+
+- Fetch parallelo di `/api/agents` (per `agent_version` per cliente) +
+  `/api/agent/latest-version`.
+- Pill versione installata accanto al bottone Installer:
+    - verde se up-to-date (`v4.6.0`)
+    - amber se outdated (`v4.5.0 → v4.6.0`)
+- Bottone Installer ora mostra "Installer v4.6.0" e cambia colore
+  in base allo stato (amber se cliente outdated, emerald se aggiornato).
+
+### Workaround utente per Connector gia' installato
+
+L'utente ha gia' v4.6.0 su disco ma vede ancora v4.0.0 nella UI. Le
+opzioni sono:
+
+a. Eliminare manualmente `C:\Program Files\86NocAgent\agent-ui.json`
+   e riavviare `nocagent-ui.exe` (la UI riproveerà il lookup e
+   trovera' solo il file v4.6.0 in `$ProgramData`).
+b. Aspettare release v4.6.1 col fix automatico nel ps1.
+
+### Env var da settare in PROD su `/home/arslan/86NOCConnectorCenter/backend/.env`
+
+```
+AGENT_LATEST_VERSION=v4.6.0       # OPPURE
+AGENT_GITHUB_TOKEN=ghp_xxx        # PAT con read:public-repo per evitare rate-limit
+AGENT_GITHUB_REPO=santiM86/86NOCConnectorCenter   # opzionale (default)
+```
+
+### Rebrand cartella Start Menu
+
+Su esplicita richiesta utente la cartella shortcut Start Menu Windows e'
+stata rinominata da:
+
+  `Start Menu > Programs > 86BIT Argus Center > Connector`
+
+a:
+
+  `Start Menu > Programs > 86BIT Argus Connector > Connector`
+
+Modifica applicata in 8 occorrenze in
+`/app/noc-agent/build/installer_gui.ps1.template`. Il titolo finestra
+("ARGUS Connector v...") e il badge alto a destra ("ARGUS v...")
+restano invariati su esplicita scelta utente (opzione "a" in ask_human).
+
+---
+
+
+## 2026-02 ✅ FIX LOG SILENZIOSO Agent Go (v4.3.0)
+
+**Status**: codice committato su GitHub, in attesa deploy produzione e
+re-installazione agent su macchina Windows del cliente.
+
+### Sintomi (pre-fix)
+- Servizio `86NocAgent` su Windows in esecuzione (heartbeat.tick aggiornato)
+- `agent.pid` presente
+- ❌ Nessun file `nocagent.log` in `C:\ProgramData\86NocAgent\logs\`
+- Nessun panic / Event Log applicativo → agent NON crasha, ma il logger
+  fallisce in silenzio
+- Dispositivi bloccati visivamente in stato PENDING nella UI
+
+### Root cause
+In `internal/logging/logging.go` la funzione `openLogFile()` ritornava
+`nil` silenziosamente quando MkdirAll o OpenFile fallivano. Sotto SCM
+(LocalSystem) stderr è chiuso, quindi nessun output visibile.
+
+### Fix implementato
+1. `candidateLogPaths()`: catena ordinata di 4 path da provare (LOCALAPPDATA
+   → USERPROFILE → ProgramData → systemprofile)
+2. `openFirstWritableLog()`: walk dei candidati, prima che apre con
+   successo vince
+3. `writeLogPathMarker()`: scrive il path effettivo in
+   `%ProgramData%\86NocAgent\log_path.txt` per diagnostica cross-process
+4. Banner di startup logga la lista candidates → ovvio quale ha vinto
+5. Tray UI `nocui` aggiornata con `resolveLogDir()` che legge il marker
+6. PowerShell `installer_gui.ps1.template` aggiornato per leggere il marker
+7. 3 unit test Go in `internal/logging/logging_test.go` (tutti PASS)
+
+### Verifica utente richiesta
+Su Windows dopo re-install:
+```powershell
+Get-Content "C:\ProgramData\86NocAgent\log_path.txt"
+# Deve mostrare il path effettivo del log (es. C:\Windows\System32\config\systemprofile\AppData\Local\86NocAgent\logs\nocagent.log)
+$logPath = Get-Content "C:\ProgramData\86NocAgent\log_path.txt"
+Get-Content $logPath -Tail 30
+# Deve mostrare il banner "logger initialized" + entry runtime
+```
+
+### Deploy
+1. `git pull` su `/home/arslan/86NOCConnectorCenter/`
+2. `cd noc-agent && make windows-amd64`
+3. `sudo systemctl restart noc-backend`
+4. Su Windows: re-install via `https://argus.86bit.it/api/agent/install/setup.exe?token=<TOKEN>`
+
+### Deploy STANDALONE (zero backend Linux, via GitHub Releases)
+1. **Push tag**: `git tag -a v4.3.0 -m "fix logger" && git push origin v4.3.0`
+2. **GitHub Actions** compila i 4 binari Windows + pubblica come asset di Release
+3. **Su Windows** (admin PowerShell), una sola riga:
+   ```powershell
+   $u = "https://github.com/santiM86/86NOCConnectorCenter/releases/latest/download/install-noc-agent.ps1"
+   iwr $u -OutFile $env:TEMP\install.ps1 -UseBasicParsing
+   & $env:TEMP\install.ps1 -Token "noc_xxx" -ClientId "57cb2e2b-..." -BackendUrl "wss://argus.86bit.it/api/agent/ws"
+   ```
+4. Lo script scarica i .exe da GitHub, scrive `agent.yaml` (preservando `MANAGED TARGETS`),
+   registra i servizi via `sc.exe` con recovery policy, avvia, e verifica marker + heartbeat.
+   **Il backend Linux non è coinvolto** nell'install/update agent.
+
+### File nuovi creati
+- `/app/noc-agent/build/install-noc-agent.ps1` (installer standalone)
+- `/app/.github/workflows/release-agent.yml` (aggiornato: include lo script come asset)
+
+## 2026-02 ✅ FIX POLLING SNMP/ICMP (snmp_targets -> snmp.targets)
+
+**Status**: Verificato in produzione su cliente 86BITOffice
+(client_id `57cb2e2b-938c-4f6d-a1a3-df5368de00e9`). Polling ICMP/SNMP attivo,
+DB `managed_devices.last_poll_at` si aggiorna ad ogni round 60s.
+
+### Root cause
+Lo schema config Go (`internal/config/config.go` SNMPConfig.Targets yaml:"targets")
+si aspetta i target SNMP sotto `snmp.targets:` (indentato). I file
+`agent.yaml` storici li avevano in `snmp_targets:` (top-level), formato
+ignorato dal poller v4 → 0 polling SNMP, device bloccati nello stato
+PENDING perche' nessun `last_poll_at` veniva aggiornato.
+
+### Fix
+- `install-noc-agent.ps1`: regex che estrae i target dalla vecchia sezione
+  `# === BEGIN MANAGED TARGETS === / snmp_targets:` e li ri-emette indentati
+  di +2 spazi dentro `snmp.targets:` nel nuovo yaml. Aggiunge anche
+  `ping.enabled: true / interval: 60s` per attivare ICMP polling.
+
+### Distribuzione completamente GitHub-based
+Il sistema NOC ora supporta install/update agent senza alcun coinvolgimento
+del backend Linux:
+1. Push tag `v*` -> GH Actions compila Windows binaries + lo script
+2. Asset disponibili su `github.com/santiM86/86NOCConnectorCenter/releases`
+3. Su Windows: `iwr <raw script> | iex -Token ... -ClientId ...`
+
+### To-do P1 emersi
+- ~~**Ghost agents**: 14 distinct agent_id nel DB per lo stesso client_id~~ ✅ FIXED 2026-02 sessione successiva (persistenza UUID stabile in `agent_id.txt`).
+- ~~**Bug installer minor**: `nocagent.exe --version` fallisce con Access Denied~~ ✅ FIXED — leggiamo metadata via Get-Item.VersionInfo.
+- **3 device offline** del cliente 86BITOffice (10.10.1.5/15/16):
+  verificare se sono fisicamente down o se la community SNMP nel yaml
+  ("Argus") corrisponde a quella del device.
+
+## 2026-02 ✅ POTENZIAMENTO CONNECTOR GO (sessione successiva)
+
+**Status**: codice committato, in attesa push tag `v4.4.0` per build automatico
+GitHub Actions + reinstall su Windows del cliente.
+
+### Task completati
+
+**1. Ghost Agents Fix (P1)**
+- `internal/config/config.go`: nuova funzione `getOrCreateStableAgentID()` che
+  legge / genera UUID 32-hex e lo persiste in `C:\ProgramData\86NocAgent\agent_id.txt`
+  (separato da agent.yaml per non perdere identita' quando l'installer riscrive il yaml).
+- `cmd/agent/main.go`: il warn "agent_id missing - ephemeral" sostituito da info
+  "agent_id resolved". Rimane come last-resort safety net.
+- `internal/config/agentid_test.go`: 3 unit test — generazione+persistenza,
+  validazione hex, rigenera quando file corrotto. Tutti PASS.
+
+**2. Installer Access Denied Fix**
+- `install-noc-agent.ps1`: `nocagent.exe --version` dopo Start-Service falliva
+  perche' Windows rifiuta exec di un PE gia' caricato come servizio. Ora leggiamo
+  Get-Item(...).VersionInfo (read-only metadata, zero file lock).
+
+**3. UI "Cliente: unknown" Fix**
+- `install-noc-agent.ps1`: ora scrive anche `agent-ui.json` in `C:\ProgramData\86NocAgent\`
+  con client_id, token, role, backend_url, install_dir, config_path, version.
+  La tray UI nocagent-ui.exe preferisce questo formato al parsing yaml.
+
+**4. Bottone "Invia al NOC Center" (richiesta esplicita utente)**
+- Backend: nuovo endpoint `POST /api/agent/scan-report` in `backend/routes/agent_ws.py`.
+  Auth via bearer token agent (riusa `_validate_token`). Riusa pipeline
+  `discovered_endpoints` + auto-censimento in `managed_devices`.
+- UI Go: `cmd/nocui/scanner_windows.go` — nuovo `wd.PushButton{Text: "Invia al NOC Center"}`
+  nella dialog scanner, accanto a "Esporta HTML...".
+- Helper Go: `cmd/nocui/push_scan_results_windows.go` — HTTP POST async con
+  retry/timeout 30s, filtra solo host alive/arp-only, gestisce wss->https.
+
+### Test Backend (curl)
+```bash
+TOKEN="noc_627c87f4b9114f41b12e7dccefd42325"
+CID="57cb2e2b-938c-4f6d-a1a3-df5368de00e9"
+curl -s -X POST "https://argus.86bit.it/api/agent/scan-report" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{\"client_id\":\"$CID\",\"subnet\":\"10.10.1.0/24\",\"endpoints\":[
+    {\"ip\":\"10.10.1.99\",\"hostname\":\"TEST\",\"discovered_via\":\"ui_scan\"}
+  ]}"
+```
+
+### Task rimanenti (prossima sessione)
+- **#4 UI freeze "Non risponde"**: blocking I/O sul thread principale Win32
+  walk. Richiede rework: portare ogni chiamata HTTP / disk fuori dal main
+  thread con mw.Synchronize(). Stima 1-2h.
+- **#6 NetBIOS NBNS UDP 137**: discovery hostname Windows senza PTR.
+  Nuovo file `internal/discovery/nbns.go`.
+- **#7 WMI Polling Windows Servers**: CPU/RAM/Disk/Services/EventLog.
+  Nuovo modulo `internal/poller/wmi_windows.go` con ole32 bindings.
+
+### File modificati / creati
+- `noc-agent/internal/config/config.go` (+ persistenza agent_id)
+- `noc-agent/internal/config/agentid_test.go` (NEW, 3 test)
+- `noc-agent/cmd/agent/main.go` (log message)
+- `noc-agent/cmd/nocui/scanner_windows.go` (bottone)
+- `noc-agent/cmd/nocui/push_scan_results_windows.go` (NEW, HTTP client)
+- `noc-agent/build/install-noc-agent.ps1` (Access Denied + agent-ui.json)
+- `backend/routes/agent_ws.py` (endpoint scan-report)
+
+---
+
+## 2026-02 ✅ NBNS DISCOVERY + CONCORRENZA 512 + HOSTNAME PRIORITY
+
+**Status**: codice committato, build cross-Windows OK, 4 unit test NBNS PASS.
+Obiettivo: superare Advanced IP Scanner in velocita' e affidabilita' nel
+discovery LAN. Richiesta utente: "il connector deve essere migliore di
+Advanced IP Scanner in velocita' e affidabilita'".
+
+### Modulo nuovo: `noc-agent/internal/nbns/`
+- `nbns.go`: client NBSTAT puro Go (zero CGO, zero raw socket). Estrae da
+  UDP/137 il ComputerName (es. "PC-MARCO"), Workgroup, LoggedUser, MAC.
+- `nbns_test.go`: 4 test — encodeNetBIOSName con wildcard "*" (RFC 1002
+  padding-zero), lunghezza richiesta 50 byte, formatMAC, parsing risposta
+  NBSTAT realistica.
+- Default timeout 200ms; latenza LAN tipica 5-50ms.
+
+### Integrazione scanner UI (`cmd/nocui/scanner_windows.go`)
+- Ogni IP ora fa TCP probe + nbns.Query in parallelo (UDP vs TCP, no
+  contesa di risorse).
+- **Concorrenza alzata 256 -> 512** per saturare LAN gigabit su /22 o /16.
+- **Hostname priority: NBNS > reverseDNS**. I PC Windows mostrano il vero
+  computer name anche senza PTR (era il bug #1 vs Advanced IP Scanner).
+- MAC fallback dalla risposta NBSTAT quando ARP cache vuota (VPN, subnet
+  remote).
+- Nuovo stato `netbios-only` per host che rispondono solo a UDP/137.
+
+### Integrazione discovery agent (`internal/discovery/`)
+- `nbns.go` nuovo file: `enrichNBNS()` invocata da `Manager.runOnce()`
+  dopo merge dei source e PTR enrichment.
+- Concorrenza 64 worker (background ogni 5 min).
+- `shouldReplaceWithNetbios()`: sovrascrive l'hostname solo se sembra un
+  FQDN dinamico ("10-10-1-55.example.com") preferendo "PC-MARCO".
+- Effetto: `managed_devices.name` popolato con nomi reali Windows.
+
+### File modificati / creati
+- `noc-agent/internal/nbns/nbns.go` (NEW)
+- `noc-agent/internal/nbns/nbns_test.go` (NEW, 4 test)
+- `noc-agent/internal/discovery/nbns.go` (NEW, enrichNBNS)
+- `noc-agent/internal/discovery/manager.go` (+ enrichNBNS in runOnce)
+- `noc-agent/cmd/nocui/scanner_windows.go` (NBNS parallel + 512 workers)
+
+
+
+
+
+## 2026-02-12 ✅ ARGUS DESKTOP v5.0.0 — RIscrittura totale connector GUI
+
+**Status**: MVP funzionante, build OK, preview live, deploy pronto in
+`/app/deploy_patches/v5.0.0/`.
+
+### Motivazione
+`nocagent-ui.exe` (lxn/walk Win32) soffriva di freeze totale ad ogni
+chiamata di rete (single-threaded UI), look anni '90, libreria
+abbandonata da fine 2021. Utente ha richiesto "livello enterprise,
+dobbiamo essere il migliore".
+
+### Nuovo stack
+- Go 1.23 + Wails v2.12 (async, zero blocking)
+- React 18 + TS strict + Vite 6 + Tailwind 3 + 13 Radix UI
+- Framer Motion (page transitions, hover, pulse-dot)
+- WebView2 Edge Chromium nativo Windows
+- Bundle: 3.7 MB binario, 397 KB JS minified
+
+### Componenti in `noc-agent/cmd/nocui-v5/`
+- `main.go` — Wails App opts, lifecycle, tray
+- `app.go` — Bindings esposti a JS (AppVersion, AgentSnapshot,
+  HealthCheck, ListDevices, ListDiscovered, TestPing, StartService,
+  StopService, RestartService, ReadLogs, OpenDashboard, OpenConfig)
+- `helpers.go` — parser agent.yaml, sc.exe wrapper, HTTP JSON generics
+- `frontend/` — Vite + React + 6 pagine + design system
+
+### Pagine implementate
+1. Dashboard — 4 KPI animate, stato agent, activity feed
+2. Dispositivi — search, chip-filter, tabella, ping per device
+3. Auto-Discovery — endpoint ARP/mDNS/PTR
+4. Scanner LAN — UI completa (backend `forceLanScan` da agganciare)
+5. Diagnostica — log live auto-scroll, filter level, export NDJSON
+6. Impostazioni — Agent identity, service control, versioni
+
+### Test
+- ✅ Frontend build: 1981 moduli, 0 errori TS, 2.4s
+- ✅ Go cross-compile windows/amd64: 3.7 MB, clean
+- ✅ Preview live in browser via `/argus-desktop-preview/`
+- 🟡 Test nativo WebView2 su SOCIALSRV: pending utente
+
+### Deploy
+PowerShell one-liner in `/app/deploy_patches/v5.0.0/README.md`. Va a
+fianco di `nocagent.exe` (non lo sostituisce).
+
+---
+
+
+## 2026-02-12 ✅ AGENT GO v4.2.0 — LIVE POLLING (ICMP + SNMP)
+
+**Status**: implementato, testato in pre-prod (`/app`), deploy patch pronta
+in `/app/deploy_patches/v4.2.0/` (README incluso).
+
+### Cosa fa
+L'Agent Go ora effettua **autonomamente** ICMP ping + SNMP basic verso
+ogni device gestito del proprio tenant, e invia i risultati al backend via
+WebSocket come evento `ping_poll`. Sostituisce il polling del vecchio
+Connector PowerShell — i device approvati via Auto-Discovery passano
+finalmente da `PENDING` a `ONLINE`/`OFFLINE` con RTT live.
+
+### Componenti
+- **`noc-agent/internal/poller/icmp.go`** (NEW): PingPoller cross-platform
+  (usa `ping.exe`/`ping` nativo dell'OS, zero raw socket, zero deps).
+  Fan-out 32 probe concorrenti. Parser RTT/loss per Win-IT, Win-EN, Linux.
+- **`agent_ws.py::_build_poller_config`**: ora emette anche blocco
+  `ping.targets[]` con tutti i device abilitati (non solo SNMP).
+- **`agent_ws.py::_bridge_ping_poll`**: aggiorna `managed_devices.status`
+  con **threshold 3 fallimenti consecutivi** per evitare flapping. Reset
+  contatore al primo successo. Nuovo campo `consecutive_ping_failures`.
+- **`agent_ws.py::push_config_to_client`** (NEW): hot-push `server.welcome`
+  a tutti gli agent del tenant. Chiamato da `/api/discovery/approve` →
+  il polling sul nuovo device inizia entro pochi secondi.
+
+### Test
+- `go test ./internal/poller/...` → 3/3 PASS.
+- `pytest backend/tests/test_agent_v4_live_polling.py` → 1/1 PASS (3 scenari).
+- `pytest backend/tests/test_advanced_features.py` → 24/24 PASS.
+
+### Deploy in produzione
+Bundle in `/app/deploy_patches/v4.2.0/`:
+- `agent_ws.py` + `advanced_features.py` → `scp` su VM 10.30.0.201 →
+  `install` come `arslan:arslan` → `systemctl restart argus-backend`.
+- `nocagent.exe` (v4.2.0, 7.6 MB) → copia su `C:\Program Files\86NocAgent\`
+  → `Restart-Service 86NocAgent`.
+NON usare `sync-argus.sh` (rompe venv Python).
+
+---
+
+
+
+## 2026-05-11 ✅ MIGRAZIONE WEBSOCKET IN PRODUZIONE — COMPLETATA
+
+**Status finale**: `argus.86bit.it/api/agent/ws` ONLINE. Agent `86BIT_Office` ha ricevuto `welcome` dal backend prod (session_id `ae93670e14d34a06b7aebc9fd975a3d7`).
+
+### Stack verificato funzionante end-to-end:
+```
+Agent v4 (Go, SOCIALSRV)
+   │ wss://argus.86bit.it/api/agent/ws
+   ▼
+Cloudflare (TLS termination)
+   │
+   ▼
+IIS 10 + ARR 3.0 (Windows Server) — proxy_pass http://argus.86bit.it:8188
+   │  config: <proxy enabled="true" preserveHostHeader="true"/>
+   │  config: webSocket section UNLOCKED (era locked → causava 500.19 0x80070021)
+   ▼
+nginx (VM Linux 10.30.0.201:8188) — location /api/agent/ws con proxy_http_version 1.1 + Upgrade headers
+   │
+   ▼
+uvicorn FastAPI (127.0.0.1:8186) — service systemd `noc-backend`
+```
+
+### Fix applicati in questa sessione (chiave per la riuscita):
+1. **nginx** (`/etc/nginx/sites-available/noc-center`): aggiunta `location /api/agent/ws` PRIMA di `/api/` con `proxy_http_version 1.1`, `Upgrade $http_upgrade`, `Connection "Upgrade"`, `proxy_buffering off`, `proxy_read_timeout 86400s`.
+2. **IIS** (`applicationHost.config`): `appcmd unlock config /section:system.webServer/webSocket` (era locked a livello padre → causava 500.19 su tutto il sito). NB: NON aggiungere voci extra a `allowedServerVariables` se non strettamente necessarie (le 4 HTTP_SEC_WEBSOCKET_* avevano causato regressione).
+3. **IIS** (`applicationHost.config`): `<proxy enabled="true" preserveHostHeader="true"/>` deve essere globalmente abilitato (un `clear` rimette default che blocca ARR).
+4. **Backend** (`backend/routes/agent_ws.py` riga 148-152): patch `_validate_token` per accettare sia `client.client_id` sia `client.id` come identificatore tenant — in PROD i documenti clienti hanno solo `id`, mai `client_id`. Codice attuale:
+   ```python
+   client = await db.clients.find_one({"api_key": token}, {"_id": 0, "client_id": 1, "id": 1})
+   if client:
+       resolved_cid = client.get("client_id") or client.get("id")
+       if resolved_cid == claimed_client_id:
+           return {"token": token, "client_id": resolved_cid, "role": "master"}
+   ```
+5. **Agent** (`C:\ProgramData\86NocAgent\agent.yaml` su SOCIALSRV): `client_id` corretto per 86BITOffice = `57cb2e2b-938c-4f6d-a1a3-df5368de00e9`, `token: noc_627c87f4b9114f41b12e7dccefd42325`, `url: wss://argus.86bit.it/api/agent/ws`.
+
+### Trappole / lezioni apprese:
+- `sync-argus.sh` ha **DANNEGGIATO il venv** durante l'estrazione (errori `cannot delete non-empty directory: venv/lib/python3.11`). Backup salva-vita: `/home/arslan/86NOCConnectorCenter/backups/argus-YYYYMMDD-HHMMSS.tar.gz` (~200MB con venv completo). In futuro: lo `sync-argus.sh` va modificato per ESCLUDERE `venv/` dalla sostituzione.
+- Backend uvicorn sulla VM prod ascolta su porta **8186** (non 8001), `--host 127.0.0.1`. nginx fa proxy da `:8188`. WorkingDirectory: `/home/arslan/86NOCConnectorCenter/backend`.
+- VM Linux di prod: `10.30.0.201`, user `arslan`, systemd unit `noc-backend.service`.
+- DB MongoDB di prod è troppo vecchio per aggregation-pipeline negli update (`OperationFailure: Unrecognized pipeline stage name`). Usare loop classico per migrazioni.
+
+### Stato corrente prod:
+- `/api/health` → HTTP 200 ✅
+- `/api/agent/ws` (WS handshake) → HTTP 101 ✅
+- Agent 86BIT_Office connesso e attivo (welcome received)
+- Connector legacy 86NocConnector continua a funzionare in parallelo (`/api/connector/web-proxy/pending` con long-poll 401-then-200)
+
+### TODO follow-up (NON blocker):
+- Migrazione DB clients: aggiungere `client_id = id` ai documenti che ne mancano (loop Python su VM prod). Senza migrazione il backend funziona comunque grazie al fallback nel codice.
+- Patchare `sync-argus.sh` per non toccare `venv/`.
+- Pipeline GitHub Actions release-agent.yml: aspetta primo `git tag v4.1.3` per essere testata.
+
+### 2026-05-11 (sera) — FIX AGGIUNTIVO: Auto-Discovery UI per agent v4
+**Bug**: gli endpoint scoperti dall'agent v4 (`source_connector_mode="agent_v4"`) NON apparivano in `/api/connector/discovery-results/{client_id}` perché il filtro accettava solo `"scanner"`.
+
+**Fix**: `/app/backend/routes/discovery.py` riga 83 — cambiato filtro da `"source_connector_mode": "scanner"` a `"source_connector_mode": {"$in": ["scanner", "agent_v4"]}`.
+
+**Verificato**: i 4 endpoint mdns scoperti dall'agent v4 di 86BIT_Office (10.10.1.15, 10.10.1.16, 10.10.1.55, 10.10.1.220) ora appaiono correttamente nel tab Auto-Discovery della UI cliente.
+
+### TODO follow-up agent v4:
+- **Auto-promotion**: i record `agent_v4` non vengono auto-promossi in `managed_devices` come fa lo `scanner`. Verificare in `connector.py` (lan-scan handler) se l'auto-promotion cerca `source_connector_mode="scanner"` e estendere anche a `agent_v4`.
+- **MAC enrichment**: i record mdns dell'agent v4 hanno `mac: None`. L'agent v4 dovrebbe arricchire da tabella ARP locale prima di inviare, oppure il backend dovrebbe risolvere via SNMP CAM table.
+- **agent_id ephemeral**: nell'agent.yaml manca `agent_id`, ne viene generato uno nuovo ogni restart. Genera "ghost agents" in `managed_agents`. Fix: scrivere agent_id persistente al primo welcome.
+
+---
+
+
 
 
 ## 2026-05-09 BRAND — Sostituzione globale icona Argus (nuovo logo blu/A)
@@ -2194,14 +2671,14 @@ CHANGELOG.md per dettagli. 14/14 backend + 3/3 frontend test PASS.
 **Test**: lint Python OK (i 4 warning pre-esistenti sono di altre sezioni). Test end-to-end richiede device target reale con HTTP.sys server (non riproducibile nel preview container).
 
 ### 2026-02-10 (sera tardi): Custom Tarball URL field nel dialog Self-Update
-**Razionale**: lo script di self-update scarica il tarball backend da `https://<center-host>/downloads/argus-backend-latest.tar.gz`, ma se quella build frontend non e` aggiornata (chicken-and-egg) il file e` vecchio o 404. Aggiunto un input opzionale "URL pacchetto custom" nel dialog per puntare a una build remota raggiungibile (es. `https://snmp-hub-noc.preview.emergentagent.com/downloads/argus-backend-latest.tar.gz` quando si vuole bypassare la build locale).
+**Razionale**: lo script di self-update scarica il tarball backend da `https://<center-host>/downloads/argus-backend-latest.tar.gz`, ma se quella build frontend non e` aggiornata (chicken-and-egg) il file e` vecchio o 404. Aggiunto un input opzionale "URL pacchetto custom" nel dialog per puntare a una build remota raggiungibile (es. `https://device-poller-ws.preview.emergentagent.com/downloads/argus-backend-latest.tar.gz` quando si vuole bypassare la build locale).
 
 **File toccati**:
 - `/app/frontend/src/pages/WireGuardPage.js` `triggerUpdate(enableWireguard, customUrl)` ora accetta secondo arg opzionale → invia `package_url` al POST `/api/admin/system/self-update`. Dialog ha sezione `<details>` "Opzioni avanzate" con input mono-spaced + hint che mostra il default URL.
 - Backend `system_admin.py` gia` gestiva `package_url` opzionale (nessuna modifica necessaria).
 
 **Note operative**: per il PRIMO update post-fix l'utente puo` o:
-1. SSH al prod, `curl -o /home/arslan/86NOCConnectorCenter/frontend/build/downloads/argus-backend-latest.tar.gz https://snmp-hub-noc.preview.emergentagent.com/downloads/argus-backend-latest.tar.gz`, poi click "Riprova" sull'UI.
+1. SSH al prod, `curl -o /home/arslan/86NOCConnectorCenter/frontend/build/downloads/argus-backend-latest.tar.gz https://device-poller-ws.preview.emergentagent.com/downloads/argus-backend-latest.tar.gz`, poi click "Riprova" sull'UI.
 2. Aspettare che la nuova frontend sia deployata, poi usare il campo "URL pacchetto custom" direttamente.
 
 ### 2026-02-10 (notte): Per-device alert silencing + auto-classifier stampanti

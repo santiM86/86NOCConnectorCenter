@@ -13,14 +13,14 @@
 # Richiede: bash, curl, tar, sudo, supervisorctl o systemctl.
 #
 # Usage:
-#   curl -fsSL https://snmp-hub-noc.preview.emergentagent.com/downloads/sync-argus.sh | sudo bash
+#   curl -fsSL https://device-poller-ws.preview.emergentagent.com/downloads/sync-argus.sh | sudo bash
 #
 # oppure salva il file e:
 #   sudo bash sync-argus.sh
 # ---------------------------------------------------------------------
 set -euo pipefail
 
-PKG_URL="${ARGUS_PKG_URL:-https://snmp-hub-noc.preview.emergentagent.com/api/admin/argus-deploy-latest.tar.gz}"
+PKG_URL="${ARGUS_PKG_URL:-https://device-poller-ws.preview.emergentagent.com/api/admin/argus-deploy-latest.tar.gz}"
 ARGUS_ROOT="${ARGUS_ROOT:-/opt/argus}"
 BACKUP_DIR="${ARGUS_BACKUP_DIR:-$ARGUS_ROOT/backups}"
 SVC_NAME="${ARGUS_SVC_NAME:-argus-backend}"     # systemd unit name
@@ -89,8 +89,8 @@ if [[ -f "$ENV_FILE" ]]; then
     # fa redirect/fetch trasparente verso questo mirror. Cosi' il sistema
     # e' self-healing: il deploy locale puo' essere parziale e funziona
     # comunque. Lascia commentato se non vuoi questa rete di sicurezza.
-    grep -q '^WIZARD_TEMPLATE_FALLBACK_URL=' "$ENV_FILE"  || echo "WIZARD_TEMPLATE_FALLBACK_URL=https://snmp-hub-noc.preview.emergentagent.com" >> "$ENV_FILE"
-    grep -q '^BINARY_FALLBACK_URL=' "$ENV_FILE"           || echo "BINARY_FALLBACK_URL=https://snmp-hub-noc.preview.emergentagent.com"         >> "$ENV_FILE"
+    grep -q '^WIZARD_TEMPLATE_FALLBACK_URL=' "$ENV_FILE"  || echo "WIZARD_TEMPLATE_FALLBACK_URL=https://device-poller-ws.preview.emergentagent.com" >> "$ENV_FILE"
+    grep -q '^BINARY_FALLBACK_URL=' "$ENV_FILE"           || echo "BINARY_FALLBACK_URL=https://device-poller-ws.preview.emergentagent.com"         >> "$ENV_FILE"
     log "      env NOCAGENT_* + *_FALLBACK_URL aggiunti a $ENV_FILE (riavvio backend nuovamente)"
     if systemctl status "$SVC_NAME" >/dev/null 2>&1; then systemctl restart "$SVC_NAME"
     elif command -v supervisorctl >/dev/null 2>&1;     then supervisorctl restart "$SUP_NAME"

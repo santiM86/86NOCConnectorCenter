@@ -112,6 +112,16 @@ func (m *Manager) runOnce(ctx context.Context) []proto.DiscoveredEndpoint {
 	wg.Wait()
 
 	merged := m.merge(results)
+	// Reverse DNS (PTR) enrichment: fills Hostname for endpoints that
+	// neither ARP nor mDNS could name. Bounded in time/concurrency by
+	// ptrLookupTimeout and ptrWorkers — see ptr.go.
+	merged = enrichPTR(scanCtx, merged)
+	// NetBIOS NBNS enrichment: per gli host Windows risolve hostname
+	// (es. "PC-MARCO") quando il DNS aziendale non ha PTR. Per molti PC
+	// Windows e' l'UNICA via di risoluzione, quindi senza questo step
+	// la lista dispositivi mostra "10.10.1.55" invece di "PC-MARCO" — vedi
+	// internal/nbns/. Operazione cheap: UDP/137 con 200ms timeout per host.
+	merged = enrichNBNS(scanCtx, merged)
 	m.mu.Lock()
 	m.lastScanAt = time.Now().UTC()
 	m.mu.Unlock()

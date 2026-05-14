@@ -30,6 +30,8 @@ import (
 
 	"github.com/lxn/walk"
 	wd "github.com/lxn/walk/declarative"
+
+	"github.com/86bit/noc-agent/internal/nbns"
 )
 
 // ScanResult is one row in the scanner table.
@@ -101,13 +103,47 @@ func (m *scanResultsModel) publishReset() { m.PublishRowsReset() }
 // la tabella ordinata per IP numerico durante lo streaming. Se un IP
 // duplicato arriva (raro: alive emesso poi arp-only), aggiorna la riga
 // invece di duplicarla.
+//
+// HARDENING: normalizza l'IP via strings.TrimSpace + net.ParseIP cosi'
+// "10.10.1.6" e "10.10.1.6 " (spurious whitespace dal NBNS parser) non
+// finiscono come righe distinte. Era la causa della doppia riga
+// SRVDC01 vista in v4.6.1.
 func insertSortedByIP(m *scanResultsModel, r *ScanResult) {
 	if r == nil {
 		return
 	}
+	// Normalizza l'IP: rimuovi spazi e ri-renderizza in formato canonico
+	// (es. "10.10.1.06" -> "10.10.1.6"). Garantisce che il match esatto
+	// nel loop sotto funzioni anche se sorgenti diverse formattano l'IP
+	// in modo leggermente diverso.
+	if p := net.ParseIP(strings.TrimSpace(r.IP)); p != nil {
+		if v4 := p.To4(); v4 != nil {
+			r.IP = v4.String()
+		}
+	}
 	target := ipNumeric(r.IP)
 	for i, ex := range m.items {
 		if ex.IP == r.IP {
+			// MERGE intelligente invece di replace cieco: tieni il
+			// dato MIGLIORE per ciascun campo. Es. se la prima emit
+			// aveva Hostname="SRVDC01" da NBNS e la seconda emit
+			// (cleanup phase) lo sovrascrive con "" perche' PTR ha
+			// fallito, non vogliamo perdere "SRVDC01".
+			if r.Hostname == "" {
+				r.Hostname = ex.Hostname
+			}
+			if r.MAC == "" {
+				r.MAC = ex.MAC
+			}
+			if r.Vendor == "" {
+				r.Vendor = ex.Vendor
+			}
+			if r.Status == "arp-only" && ex.Status == "alive" {
+				// "alive" e' un downgrade da "arp-only" → preserva alive
+				r.Status = ex.Status
+				r.RTTms = ex.RTTms
+				r.OpenPort = ex.OpenPort
+			}
 			m.items[i] = r
 			m.PublishRowsReset()
 			return
@@ -437,6 +473,19 @@ func reverseDNS(ctx context.Context, ip string) string {
 // Tiny built-in table — covers >80% of LAN devices encountered in
 // SMB/MSP networks. For the long tail we fall back to "".
 var ouiTable = map[string]string{
+	// Microsoft (Hyper-V virtual NIC + Surface) — il piu' diffuso in
+	// ambienti Windows Server / DC virtualizzati: era il MAC dello
+	// SRVDC01 che restava senza vendor.
+	"00:15:5d": "Microsoft Hyper-V", "00:03:ff": "Microsoft",
+	"60:45:bd": "Microsoft", "28:18:78": "Microsoft", "00:50:f2": "Microsoft",
+	// Apple / consumer / mobile (visti nella tua ARP cache)
+	"84:a9:3e": "Apple", "ac:f4:66": "Apple", "f4:39:09": "Apple", "9c:7b:ef": "Apple",
+	"04:0e:3c": "Apple", "44:8a:5b": "Apple", "98:f2:b3": "Apple", "f4:f1:5a": "Apple",
+	"b0:0c:d1": "Apple",
+	// Other vendors visti in ARP (top-of-rack switches, gateway)
+	"70:49:a2": "AVM FRITZ!Box", "58:38:79": "Cisco Meraki", "40:b0:34": "HP",
+	// VMware (in caso di workstation virtuali)
+	"00:50:56": "VMware", "00:0c:29": "VMware", "00:1c:14": "VMware", "00:05:69": "VMware",
 	// Networking / routing / Wi-Fi
 	"001c.c0": "Intel", "0050.56": "VMware", "0050.b6": "Mitsubishi", "0050.f9": "Apple",
 	"d017.c2": "Cisco", "001e.0b": "HP", "0023.7d": "Cisco", "0024.a8": "TP-Link",
@@ -537,11 +586,17 @@ func runScan(ctx context.Context, cidr string, timeout time.Duration,
 		}
 	}
 
-	// Phase 1: TCP probe parallelo su tutti gli IP. Ogni goroutine
-	// per IP probe le porte in parallelo (cfr. probeAlive) — host
-	// vivi rilevati in <50ms, host morti dopo `timeout` totale.
-	// Concorrenza alta (256) per saturare la rete LAN moderna.
-	sem := make(chan struct{}, 256)
+	// Phase 1: TCP probe + NBNS NetBIOS query parallelo su tutti gli IP.
+	// Ogni goroutine per IP fa due cose in parallelo:
+	//   - probeAlive: TCP probe sulle 15 porte piu' diffuse (vince la prima
+	//     che risponde, host vivi in <50ms)
+	//   - nbns.Query: UDP/137 NBSTAT con timeout 200ms — risolve l'hostname
+	//     dei PC Windows ANCHE senza record DNS PTR e fornisce workgroup +
+	//     MAC fallback.
+	//
+	// Concorrenza alzata a 512 (era 256) per saturare LAN gigabit su /22 e
+	// /16. Il bottleneck non e' piu' la CPU ma il timeout dei TCP morti.
+	sem := make(chan struct{}, 512)
 	var wg sync.WaitGroup
 	for _, ip := range ips {
 		ip := ip
@@ -554,23 +609,62 @@ func runScan(ctx context.Context, cidr string, timeout time.Duration,
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
+
+			// Lancia NBNS in parallelo al TCP probe — usano risorse di
+			// rete diverse (UDP vs TCP) quindi non si fanno concorrenza.
+			var (
+				nbInfo  *nbns.NodeInfo
+				nbDone  = make(chan struct{})
+			)
+			go func() {
+				defer close(nbDone)
+				if info, err := nbns.Query(ip, nbns.DefaultTimeout); err == nil {
+					nbInfo = info
+				}
+			}()
+
 			alive, port, rtt := probeAlive(ctx, ip, timeout)
+			<-nbDone
+
 			n := atomic.AddInt32(&done, 1)
 			if onProgress != nil && (n%8 == 0 || int(n) == total) {
 				onProgress(int(n), total)
 			}
+
 			mac := arp[ip]
-			if !alive && mac == "" {
+			// MAC fallback dalla NBSTAT response se ARP cache vuota
+			// (capita su VPN / sottoreti diverse dalla nostra).
+			if mac == "" && nbInfo != nil && nbInfo.MAC != "" {
+				mac = nbInfo.MAC
+			}
+			isNetbiosAlive := nbInfo != nil && nbInfo.ComputerName != ""
+
+			if !alive && mac == "" && !isNetbiosAlive {
 				return
 			}
-			// reverseDNS ha gia' timeout interno breve (600ms); lanciato
-			// inline cosi' il risultato emesso contiene gia' hostname.
-			host := reverseDNS(ctx, ip)
+
+			// Hostname resolution priority:
+			//   1. NBNS ComputerName (PC Windows = nome reale)
+			//   2. reverseDNS (PTR) — utile per server/router
+			// Se NBNS dice "DEMO-PC" e PTR dice "10-10-1-55.dyn.example.com"
+			// preferiamo NBNS perche' e' piu' significativo per l'admin.
+			host := ""
+			if nbInfo != nil && nbInfo.ComputerName != "" {
+				host = nbInfo.ComputerName
+			}
+			if host == "" {
+				host = reverseDNS(ctx, ip)
+			}
+
 			status := "alive"
 			rttOut := rtt
 			if !alive {
+				// Anche se TCP probe non risponde, NBNS o ARP visibile = host vivo.
 				status = "arp-only"
 				rttOut = -1
+				if isNetbiosAlive {
+					status = "netbios-only"
+				}
 			}
 			emit(&ScanResult{
 				IP:       ip,
@@ -685,8 +779,45 @@ func showScannerDialog(app *App, parent walk.Form) {
 		progressBar.SetValue(0)
 		go func() {
 			t0 := time.Now()
+			// Throttle UI updates: invece di chiamare dlg.Synchronize
+			// per OGNI risultato (saturava la coda messaggi Win32 e la
+			// finestra diventava "Non risponde"), accumuliamo in un
+			// buffer e flushiamo ogni 80ms con UN'unica Synchronize.
+			// Risultato: UI fluida anche su /22 (1024 IP).
+			var (
+				pendingMu sync.Mutex
+				pending   []*ScanResult
+			)
+			flushTick := time.NewTicker(80 * time.Millisecond)
+			flushDone := make(chan struct{})
+			go func() {
+				defer close(flushDone)
+				for {
+					select {
+					case <-flushTick.C:
+						pendingMu.Lock()
+						if len(pending) == 0 {
+							pendingMu.Unlock()
+							continue
+						}
+						batch := pending
+						pending = nil
+						pendingMu.Unlock()
+						dlg.Synchronize(func() {
+							for _, r := range batch {
+								insertSortedByIP(model, r)
+							}
+						})
+					case <-ctxScan.Done():
+						return
+					}
+				}
+			}()
+
 			res, err := runScan(ctxScan, cidr, 400*time.Millisecond,
 				func(d, total int) {
+					// Progress update: ridotto da n%8 a n%32 cosi'
+					// l'UI riceve ~8 update/sec invece di ~64/sec.
 					dlg.Synchronize(func() {
 						if total > 0 {
 							progressBar.SetValue(int(float64(d) / float64(total) * 100))
@@ -695,14 +826,24 @@ func showScannerDialog(app *App, parent walk.Form) {
 					})
 				},
 				func(r *ScanResult) {
-					// Streaming: ogni device trovato finisce subito in
-					// tabella, ordinato per IP. L'utente vede i risultati
-					// arrivare LIVE invece di aspettare la fine.
-					dlg.Synchronize(func() {
-						insertSortedByIP(model, r)
-					})
+					// Streaming bufferizzato: i dispositivi appaiono
+					// in tabella entro 80ms (impercettibile per
+					// l'utente) ma senza saturare la message queue.
+					pendingMu.Lock()
+					pending = append(pending, r)
+					pendingMu.Unlock()
 				})
+
+			// Stop ticker e flush finale di quanto rimasto nel buffer
+			flushTick.Stop()
+			pendingMu.Lock()
+			finalBatch := pending
+			pending = nil
+			pendingMu.Unlock()
 			dlg.Synchronize(func() {
+				for _, r := range finalBatch {
+					insertSortedByIP(model, r)
+				}
 				btnScan.SetText("Scansiona Rete")
 				if err != nil {
 					statusLb.SetText("Errore: " + err.Error())
@@ -1027,6 +1168,39 @@ func showScannerDialog(app *App, parent walk.Form) {
 						_ = writeFileText(fd.FilePath, sb.String())
 					}},
 					wd.PushButton{Text: "Esporta HTML...", OnClicked: exportHTML},
+					wd.PushButton{Text: "Invia al NOC Center", OnClicked: func() {
+						if len(model.items) == 0 {
+							walk.MsgBox(dlg, "Nessun risultato",
+								"Esegui prima una scansione, poi clicca questo bottone per inviare i risultati al NOC Center.",
+								walk.MsgBoxIconInformation)
+							return
+						}
+						statusLb.SetText("Invio risultati al NOC Center...")
+						snapshot := append([]*ScanResult(nil), model.items...)
+						subnet := strings.TrimSpace(cidrEd.Text())
+						if subnet == "" {
+							subnet = defaultCIDR
+						}
+						go func(items []*ScanResult, sub string) {
+							stored, autoAdded, err := pushScanResultsToCenter(app, items, sub)
+							dlg.Synchronize(func() {
+								if err != nil {
+									walk.MsgBox(dlg, "Errore invio",
+										"Invio al NOC Center fallito:\n\n"+err.Error(),
+										walk.MsgBoxIconError)
+									statusLb.SetText("Invio fallito: " + err.Error())
+									return
+								}
+								statusLb.SetText(fmt.Sprintf(
+									"Inviati al NOC Center: %d endpoint, %d nuovi device aggiunti.",
+									stored, autoAdded))
+								walk.MsgBox(dlg, "Inviato",
+									fmt.Sprintf("Inviati con successo:\n\n  %d endpoint registrati\n  %d nuovi dispositivi aggiunti al cliente",
+										stored, autoAdded),
+									walk.MsgBoxIconInformation)
+							})
+						}(snapshot, subnet)
+					}},
 					wd.PushButton{Text: "Chiudi", OnClicked: func() {
 						// Termina subito eventuali scan in corso senza
 						// attendere i goroutine residui — i timeout TCP

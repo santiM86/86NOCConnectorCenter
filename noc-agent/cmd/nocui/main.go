@@ -117,20 +117,70 @@ func windowsGetLastError() uintptr {
 type AgentInfo struct {
 	BackendURL  string `json:"backend_url"`
 	ClientID    string `json:"client_id"`
+	ClientName  string `json:"client_name,omitempty"`  // ragione sociale per UI friendly
 	Token       string `json:"token"`
 	Role        string `json:"role"`
 	InstallDir  string `json:"install_dir"`
 	ConfigPath  string `json:"config_path"`
-	Version     string `json:"version"`
+	Version     string `json:"version"`                 // tag GitHub Release (es. "4.4.0")
+	AgentID     string `json:"agent_id,omitempty"`      // UUID stabile dal file agent_id.txt
+	BuildDate   string `json:"build_date,omitempty"`    // ISO date della release
 }
+
+// resolveLogDir locates the directory where the agent service actually writes
+// nocagent.log. The agent (running as LocalSystem) writes the resolved path
+// into %ProgramData%\86NocAgent\log_path.txt at startup; we honour that marker
+// when present so the tray opens the right folder even when the resolved path
+// lives under SYSTEM's profile.
+//
+// Fallback chain (mirrors logging.candidateLogPaths but inverted for "read"):
+//  1. marker file written by the agent
+//  2. %LOCALAPPDATA%\86NocAgent\logs (matches new default)
+//  3. %ProgramData%\86NocAgent\logs (legacy)
+func resolveLogDir() string {
+	pd := os.Getenv("ProgramData")
+	if pd == "" {
+		pd = `C:\ProgramData`
+	}
+	marker := filepath.Join(pd, "86NocAgent", "log_path.txt")
+	if b, err := os.ReadFile(marker); err == nil {
+		p := strings.TrimSpace(string(b))
+		if p != "" {
+			return filepath.Dir(p)
+		}
+	}
+	if lad := os.Getenv("LOCALAPPDATA"); lad != "" {
+		candidate := filepath.Join(lad, "86NocAgent", "logs")
+		if st, err := os.Stat(candidate); err == nil && st.IsDir() {
+			return candidate
+		}
+	}
+	return filepath.Join(pd, "86NocAgent", "logs")
+}
+
+// BuildVersion viene iniettata a compile time via:
+//   go build -ldflags "-X main.BuildVersion=4.6.0"
+// e' il fallback usato quando agent-ui.json non riporta la versione,
+// cosi' la UI mostra SEMPRE la versione reale del binario installato
+// (mai un valore hardcoded stantio tipo "4.0.0" residuo di una vecchia
+// installazione che ha lasciato in giro file agent-ui.json obsoleti).
+var BuildVersion = ""
 
 func loadAgentInfo() AgentInfo {
 	// agent-ui.json viene scritto dall'installer accanto al binario.
+	//
+	// Ordine di lookup:
+	//   1. %ProgramData%\86NocAgent\agent-ui.json   <-- sorgente di verita',
+	//      scritta dall'installer ps1 ad ogni run (update incluso).
+	//   2. <InstallDir>\agent-ui.json               <-- legacy: vecchi
+	//      installer (cmd/installer/main.go pre-v4.5) scrivevano in entrambi
+	//      i path. Se rimasto, riportava version=4.0.0 hardcoded mascherando
+	//      l'aggiornamento. Lo usiamo solo come fallback finale.
 	exe, _ := os.Executable()
 	dir := filepath.Dir(exe)
 	candidates := []string{
-		filepath.Join(dir, "agent-ui.json"),
 		filepath.Join(os.Getenv("ProgramData"), "86NocAgent", "agent-ui.json"),
+		filepath.Join(dir, "agent-ui.json"),
 	}
 	logf("loadAgentInfo: exe=%s dir=%s", exe, dir)
 	for _, p := range candidates {
@@ -158,6 +208,14 @@ func loadAgentInfo() AgentInfo {
 		if a.ConfigPath == "" {
 			a.ConfigPath = filepath.Join(os.Getenv("ProgramData"), "86NocAgent", "agent.yaml")
 		}
+		// Popola AgentID dal file di persistenza se non e' gia' in agent-ui.json.
+		// L'installer recente lo include, ma per backward compat con
+		// installazioni precedenti leggiamo agent_id.txt manualmente.
+		if a.AgentID == "" {
+			if idBytes, ierr := os.ReadFile(filepath.Join(os.Getenv("ProgramData"), "86NocAgent", "agent_id.txt")); ierr == nil {
+				a.AgentID = strings.TrimSpace(string(idBytes))
+			}
+		}
 		return a
 	}
 	// Fallback intelligente: prova a leggere client_id/token/backend_url
@@ -169,10 +227,14 @@ func loadAgentInfo() AgentInfo {
 		a.InstallDir = dir
 		a.ConfigPath = yamlPath
 		if a.Version == "" {
-			a.Version = "4.0.0"
+			a.Version = BuildVersion
 		}
-		logf("loadAgentInfo: fallback YAML %s -> client_id=%q role=%q backend=%q",
-			yamlPath, a.ClientID, a.Role, a.BackendURL)
+		// AgentID stabile dal file persistente
+		if idBytes, ierr := os.ReadFile(filepath.Join(os.Getenv("ProgramData"), "86NocAgent", "agent_id.txt")); ierr == nil {
+			a.AgentID = strings.TrimSpace(string(idBytes))
+		}
+		logf("loadAgentInfo: fallback YAML %s -> client_id=%q role=%q backend=%q agent_id=%q",
+			yamlPath, a.ClientID, a.Role, a.BackendURL, a.AgentID)
 		return a
 	} else {
 		logf("loadAgentInfo: agent.yaml unreadable %s: %v", yamlPath, err)
@@ -180,13 +242,13 @@ func loadAgentInfo() AgentInfo {
 	// Ultimo fallback (dev/test).
 	logf("loadAgentInfo: no config file found, using DEV fallback")
 	return AgentInfo{
-		BackendURL: "https://snmp-hub-noc.preview.emergentagent.com",
+		BackendURL: "https://device-poller-ws.preview.emergentagent.com",
 		ClientID:   "unknown",
 		Token:      "",
 		Role:       "master",
 		InstallDir: dir,
 		ConfigPath: yamlPath,
-		Version:    "4.0.0",
+		Version:    BuildVersion,
 	}
 }
 
@@ -546,6 +608,8 @@ type App struct {
 	startItem  *walk.Action
 	stopItem   *walk.Action
 	restartItem *walk.Action
+	updateItem *walk.Action          // menu item "Aggiorna ora..."
+	update     *latestReleaseInfo    // stato auto-updater (vedi updater_windows.go)
 	mu         sync.Mutex
 }
 
@@ -646,16 +710,56 @@ func buildConsole(app *App) {
 		ipEd.SetFocus()
 	}
 
+	// Cliente friendly per il titolo: preferiamo l'eventuale label
+	// "client_name" se presente (mostriamo ragione sociale), altrimenti
+	// il client_id grezzo. La versione viene dalla agent-ui.json scritta
+	// dall'installer (formato "4.4.0", senza prefisso v).
+	versionLabel := app.agent.Version
+	if versionLabel == "" {
+		versionLabel = "?"
+	}
+	titleClient := app.agent.ClientName
+	if titleClient == "" {
+		titleClient = app.agent.ClientID
+	}
+	if titleClient == "" {
+		titleClient = "unknown"
+	}
+	winTitle := fmt.Sprintf("ARGUS Connector v%s - %s", versionLabel, titleClient)
+
+	// Sottotitolo dettagliato: 1 riga per il cliente, 1 per build info.
+	// L'agent_id viene troncato a 8 caratteri perche' 32-hex e' troppo verboso.
+	shortAgentID := app.agent.AgentID
+	if len(shortAgentID) > 8 {
+		shortAgentID = shortAgentID[:8]
+	}
+	subtitleLine1 := fmt.Sprintf("Cliente: %s · Ruolo: %s · Backend: %s",
+		titleClient, app.agent.Role, app.agent.BackendURL)
+	subtitleLine2 := fmt.Sprintf("Agent v%s · ID %s · %s",
+		versionLabel, shortAgentID, runtime.GOOS+"/"+runtime.GOARCH)
+
 	wd.MainWindow{
 		AssignTo: &mw,
-		Title:    "ARGUS Connector - Gestisci Dispositivi",
+		Title:    winTitle,
 		Size:     wd.Size{Width: 920, Height: 700},
 		MinSize:  wd.Size{Width: 800, Height: 600},
 		Icon:     app.icon,
 		Layout:   wd.VBox{MarginsZero: false},
 		Children: []wd.Widget{
-			wd.Label{Text: "Dispositivi Monitorati (SNMP Polling)", Font: wd.Font{Family: "Segoe UI", PointSize: 14, Bold: true}},
-			wd.Label{Text: fmt.Sprintf("Cliente: %s · Ruolo: %s · Backend: %s", app.agent.ClientID, app.agent.Role, app.agent.BackendURL), TextColor: walk.RGB(110, 110, 125)},
+			wd.Composite{
+				Layout: wd.HBox{},
+				Children: []wd.Widget{
+					wd.Label{Text: "Dispositivi Monitorati (SNMP Polling)", Font: wd.Font{Family: "Segoe UI", PointSize: 14, Bold: true}},
+					wd.HSpacer{},
+					wd.Label{
+						Text:      fmt.Sprintf("ARGUS v%s", versionLabel),
+						TextColor: walk.RGB(16, 64, 224), // brand blue
+						Font:      wd.Font{Family: "Segoe UI", PointSize: 10, Bold: true},
+					},
+				},
+			},
+			wd.Label{Text: subtitleLine1, TextColor: walk.RGB(110, 110, 125)},
+			wd.Label{Text: subtitleLine2, TextColor: walk.RGB(150, 150, 165), Font: wd.Font{Family: "Segoe UI", PointSize: 8}},
 			wd.Composite{
 				Layout: wd.HBox{},
 				Children: []wd.Widget{
@@ -939,7 +1043,11 @@ func setupTray(app *App) error {
 	if app.icon != nil {
 		ni.SetIcon(app.icon)
 	}
-	ni.SetToolTip("86BIT Argus Connector")
+	ver := app.agent.Version
+	if ver == "" {
+		ver = "?"
+	}
+	ni.SetToolTip(fmt.Sprintf("86bit NOC Agent v%s", ver))
 	ni.SetVisible(true)
 	app.tray = ni
 
@@ -975,10 +1083,18 @@ func setupTray(app *App) error {
 	app.restartItem = add("Riavvia servizi", func() { go func() { restartServices(); refreshStatus(app) }() })
 	ni.ContextMenu().Actions().Add(walk.NewSeparatorAction())
 	add("Apri cartella log", func() {
-		dir := filepath.Join(os.Getenv("ProgramData"), "86NocAgent", "logs")
+		dir := resolveLogDir()
 		os.MkdirAll(dir, 0o755)
 		runHidden("explorer.exe", dir)
 	})
+	ni.ContextMenu().Actions().Add(walk.NewSeparatorAction())
+	// Menu item "Aggiorna ora": disabilitato all'inizio, viene abilitato dal
+	// watcher quando trova una versione GitHub piu' recente. Quando cliccato,
+	// scarica install-noc-agent.ps1 da main e lo esegue elevato (UAC) cosi'
+	// puo' sovrascrivere C:\Program Files\86NocAgent\*.exe.
+	app.updateItem = add("Aggiorna ora...", func() { go runUpdateNow(app) })
+	app.updateItem.SetEnabled(false)
+	add("Info versione", func() { showVersionDialog(app) })
 	ni.ContextMenu().Actions().Add(walk.NewSeparatorAction())
 	add("Esci", func() {
 		ni.SetVisible(false)
@@ -990,6 +1106,18 @@ func setupTray(app *App) error {
 		for {
 			refreshStatus(app)
 			time.Sleep(8 * time.Second)
+		}
+	}()
+
+	// Auto-updater: poll GitHub Releases ogni ora per latest version.
+	// Quando trova una versione piu' nuova abilita il menu "Aggiorna ora"
+	// e mostra un balloon (una sola volta per tag).
+	startUpdateWatcher(app)
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			refreshUpdateMenuItem(app)
 		}
 	}()
 
@@ -1044,10 +1172,17 @@ func refreshStatus(app *App) {
 				app.restartItem.SetEnabled(!bothStopped)
 			}
 			if app.tray != nil {
+				// Tooltip tray: includiamo SEMPRE la versione cosi' l'admin
+				// che passa il mouse sulla tray vede subito quale build
+				// sta girando ("fammi capire che versione e' installata").
+				ver := app.agent.Version
+				if ver == "" {
+					ver = "?"
+				}
 				if bothRunning {
-					app.tray.SetToolTip("86BIT Argus Connector - Online")
+					app.tray.SetToolTip(fmt.Sprintf("86bit NOC Agent v%s - Online", ver))
 				} else {
-					app.tray.SetToolTip(fmt.Sprintf("86BIT Argus Connector - agent=%s", a))
+					app.tray.SetToolTip(fmt.Sprintf("86bit NOC Agent v%s - agent=%s", ver, a))
 				}
 			}
 		})

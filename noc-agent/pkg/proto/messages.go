@@ -122,6 +122,7 @@ type AgentEvent struct {
 const (
 	EventDiscoveryBatch = "discovery_batch" // []DiscoveredEndpoint
 	EventSNMPPoll       = "snmp_poll"       // SNMPPollResult
+	EventPingPoll       = "ping_poll"       // PingPollResult (ICMP/TCP reachability)
 	EventModuleStuck    = "module_stuck"    // module name + last deadline
 	EventCrashRecovered = "crash_recovered" // agent recovered after a panic
 )
@@ -150,6 +151,19 @@ type SNMPPollResult struct {
 	Uptime      time.Duration     `json:"uptime_ns,omitempty"`
 	Error       string            `json:"error,omitempty"`
 	OIDs        map[string]string `json:"oids,omitempty"`
+}
+
+// PingPollResult is the outcome of probing a single device with ICMP
+// echo (and an optional TCP fallback). It is the lightweight liveness
+// signal used by the backend to drive UP/DOWN state of every managed
+// device, replacing the legacy PowerShell Connector polling loop.
+type PingPollResult struct {
+	Target    string        `json:"target"`              // IP address
+	Reachable bool          `json:"reachable"`           // true if any probe succeeded
+	Method    string        `json:"method,omitempty"`    // icmp / tcp
+	Latency   time.Duration `json:"latency_ns,omitempty"`// best RTT observed
+	LossPct   float64       `json:"loss_pct,omitempty"`  // 0..100 across probes
+	Error     string        `json:"error,omitempty"`
 }
 
 // AgentLog is a structured log line shipped to the backend.

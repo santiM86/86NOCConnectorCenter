@@ -59,8 +59,14 @@ export default function DiscoveryPage({ scopedClientId = null, scopedClientName 
   };
 
   const approveDevice = (device) => {
-    const name = prompt("Nome dispositivo:", device.hostname || device.ip);
-    if (!name) return;
+    // Se il dispositivo ha gia' un hostname rilevato (mDNS/PTR/NetBIOS),
+    // approva direttamente senza chiedere conferma all'utente.
+    // Mostra il prompt solo per IP "anonimi" senza alcun nome.
+    let name = device.hostname;
+    if (!name) {
+      name = prompt("Nome dispositivo:", device.ip);
+      if (!name) return;
+    }
     axios.post(`${API}/api/discovery/approve`, {
       client_id: selectedClient,
       ip: device.ip,

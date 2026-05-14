@@ -1,3 +1,137 @@
+# 2026-02-12 — Argus Desktop v5.0.0 — REWRITE TOTALE GUI CONNECTOR
+
+## 🚀 Bye `nocagent-ui.exe`, hello `ArgusDesktop.exe`
+
+L'app GUI desktop del connector è stata **buttata e riscritta da zero**
+con stack moderno per risolvere il "freeze totale" del vecchio
+`nocagent-ui.exe` (basato su lxn/walk Win32, abbandonato 2021).
+
+**Stack nuovo**:
+- Backend: **Go 1.23** + **Wails v2.12** (tutto async, zero blocking)
+- Frontend: **React 18** + **TypeScript strict** + **Vite 6** + **Tailwind 3**
+  + 13 Radix UI primitives (Button, Card, Tooltip, ScrollArea, Switch, …)
+- Animazioni: **Framer Motion** (page transitions, hover, pulse-dot)
+- WebView nativo: **WebView2** (Edge Chromium, preinstallato Win10 21H2+)
+- Bundle: **3.7 MB** binario Windows, **397 KB** JS minified
+
+## ✨ Features MVP (6 pagine complete)
+
+| Pagina | Status |
+|---|---|
+| **Dashboard** | ✅ 4 KPI cards animate, stato agent, activity feed live |
+| **Dispositivi** | ✅ Tabella filtrabile, search, chip-filter colorati, tasto Ping per device |
+| **Auto-Discovery** | ✅ Tabella endpoint ARP/mDNS/PTR con vendor |
+| **Scanner LAN** | 🟡 UI completa, backend `forceLanScan` da agganciare |
+| **Diagnostica** | ✅ Log live auto-scroll, filter per livello, export NDJSON |
+| **Impostazioni** | ✅ Agent ID, Client ID, Token mascherato + copy, service start/stop/restart |
+
+## 🎨 Design system
+
+- **Dark mode signature** (Linear/Cursor-style): sfondo `#0b0d14`, accent ciano `#38bdf8`
+- **Light mode** alternativo + **System** che segue OS
+- **Theme cycle** dal bottom-left (Dark → Light → System)
+- **Status pills** animate (CENTER ONLINE / AGENT RUN) in topbar drag-region
+- **Custom window controls** (minimize / maximize / close-to-tray)
+- **DPI-aware** (sharp su 4K)
+- **`data-testid` su ogni elemento interattivo** → 100% testabile via Playwright
+
+## 🔧 File creati (29 nuovi)
+
+```
+noc-agent/cmd/nocui-v5/
+├── main.go              (Wails App opts, lifecycle, tray)
+├── app.go               (Bindings esposti a JS, async)
+├── helpers.go           (parser agent.yaml, sc.exe wrapper, HTTP JSON)
+├── wails.json
+└── frontend/ (24 file)
+    ├── package.json, tsconfig.json, tailwind.config.js, vite.config.ts
+    ├── postcss.config.js, index.html, src/vite-env.d.ts
+    └── src/
+        ├── main.tsx, App.tsx, styles.css
+        ├── lib/{bridge.ts, theme.tsx, utils.ts}
+        ├── components/AppShell.tsx
+        ├── components/ui/{button, card, badge, input, tooltip, scroll-area, switch, progress}.tsx
+        └── pages/{Dashboard, Devices, Discovery, Scanner, Logs, Settings}Page.tsx
+```
+
+## 📦 Distribuzione
+
+- **Bundle**: `/app/deploy_patches/v5.0.0/ArgusDesktop.exe` (3.7 MB)
+- **Preview live** (no install): https://device-poller-ws.preview.emergentagent.com/argus-desktop-preview/
+- **README deploy**: `/app/deploy_patches/v5.0.0/README.md` (PowerShell one-liner per SOCIALSRV)
+
+## ⚠️ Note
+
+- `ArgusDesktop.exe` **non sostituisce** `nocagent.exe` (servizio). È una
+  GUI separata che gli utenti lanciano quando vogliono — il servizio
+  continua a girare in background indipendentemente.
+- WebView2 è preinstallato su Win10 21H2+ / Win11 / Server 2022. Su
+  Server 2016/2019 va installato manualmente (50 MB, link diretto
+  Microsoft, scarico automatico al primo run dell'app).
+
+## 🧪 Test
+
+- ✅ `tsc -b && vite build` — 1981 modules, 0 errors, 2.4s
+- ✅ `GOOS=windows go build` — clean cross-compile, 3.7 MB output
+- ✅ Smoke test browser (Playwright via preview): rendering OK, fonts OK,
+  dark mode OK, animazioni OK, sidebar nav OK
+- 🟡 Test nativo WebView2 sul server Windows: pending utente
+
+---
+
+
+# 2026-02-12 — Agent Go v4.2.0 — LIVE POLLING (ICMP + SNMP)
+
+## 🚀 Feature P0
+- **Live Polling nativo nell'Agent Go**: il binario ora effettua autonomamente
+  ICMP ping (e SNMP basic) verso i device gestiti del tenant e invia i
+  risultati via WebSocket. Sostituisce completamente il polling del vecchio
+  Connector PowerShell per i device approvati via Auto-Discovery.
+- **3-failure threshold anti-flapping**: i device passano a `offline` solo
+  dopo 3 fallimenti ICMP consecutivi (~3 min con interval 60s). Reset
+  automatico al primo successo. Nuovo campo `consecutive_ping_failures`
+  in `managed_devices`.
+- **Hot-push config su approval**: appena un device viene approvato dalla
+  pagina Auto-Discovery, il backend ri-pusha `server.welcome` a tutti gli
+  agent del tenant → l'agent aggiunge il target alla coda di polling
+  entro pochi secondi (zero restart richiesto).
+
+## ✨ Nuovi file
+- `noc-agent/internal/poller/icmp.go` — PingPoller (cross-platform via
+  comando `ping` nativo OS, concorrenza limitata a 32 probe simultanei,
+  parser RTT/loss per Windows EN+IT e Linux/macOS).
+- `noc-agent/internal/poller/icmp_windows.go` + `icmp_other.go` — build
+  tags per nascondere la finestra console su Windows.
+- `noc-agent/internal/poller/icmp_test.go` — 3 unit test parser.
+- `backend/tests/test_agent_v4_live_polling.py` — 3 scenari pytest.
+- `deploy_patches/v4.2.0/` — bundle deploy (2 .py + nocagent.exe + README).
+
+## 🔧 File modificati
+- `noc-agent/pkg/proto/messages.go` — `EventPingPoll` + `PingPollResult`.
+- `noc-agent/internal/config/config.go` — `PingConfig` + `PingTarget`,
+  default Interval=60s, Count=1.
+- `noc-agent/cmd/agent/main.go` — istanzia PingPoller, registra
+  `force_ping_poll`, parsa il blocco `ping` nel `server.welcome`.
+- `backend/routes/agent_ws.py` — `_build_poller_config` emette anche
+  `ping`; nuovo `_bridge_ping_poll` con threshold; nuovo
+  `push_config_to_client` (re-usa `server.welcome`).
+- `backend/routes/advanced_features.py` — `/api/discovery/approve` chiama
+  `push_config_to_client` post-insert.
+
+## 🧪 Test
+- `go test ./internal/poller/...` → 3/3 PASS (parser Linux/Win-IT/Win-EN).
+- `pytest backend/tests/test_agent_v4_live_polling.py` → 1/1 PASS
+  (3 scenari coperti).
+- `pytest backend/tests/test_advanced_features.py` → 24/24 PASS (nessuna
+  regressione su `/api/discovery/approve`).
+
+## ⚠️ Deploy
+Patch file in `/app/deploy_patches/v4.2.0/` (README incluso). NON usare
+`sync-argus.sh` (rompe venv). `scp` mirato dei 2 .py + nocagent.exe.
+
+---
+
+
 # 2026-02-13 — v3.8.1 SCANNER STABILITY & UX
 
 ## 🐛 Bug Fix Critici

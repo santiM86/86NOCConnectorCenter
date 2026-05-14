@@ -16,5 +16,5 @@
 - Lista connectors: `GET /api/connector/list`
 
 ## URL di riferimento
-- Preview env: `https://snmp-hub-noc.preview.emergentagent.com`
+- Preview env: `https://device-poller-ws.preview.emergentagent.com`
 - Produzione cliente: `https://argus.86bit.it`

@@ -111,7 +111,7 @@
   {
     "name": "vault.credentials",
     "method": "GET",
-    "url": "/api/vault/credentials?client_id=da3d6e40-b3e5-4d46-9787-dde328a3aa36",
+    "url": "/api/vault/credentials?client_id=device-poller-ws",
     "status": 200,
     "ok": true,
     "extra": {}

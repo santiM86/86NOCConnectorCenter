@@ -8,11 +8,14 @@
 package config
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -32,6 +35,7 @@ type Config struct {
 
 	Discovery DiscoveryConfig `yaml:"discovery"`
 	SNMP      SNMPConfig      `yaml:"snmp"`
+	Ping      PingConfig      `yaml:"ping"`
 	Watchdog  WatchdogConfig  `yaml:"watchdog"`
 	Update    UpdateConfig    `yaml:"update"`
 
@@ -69,6 +73,24 @@ type SNMPTarget struct {
 	SNMPPort    int    `yaml:"snmp_port,omitempty"`    // default 161
 }
 
+// PingConfig drives the ICMP live-polling loop. The agent invokes the
+// native `ping` binary of the host OS once per Interval against every
+// Target and reports UP/DOWN + RTT to the backend via an EventPingPoll
+// frame. The backend applies a 3-consecutive-failure threshold before
+// flipping managed_devices.status to "offline" (avoids flapping).
+type PingConfig struct {
+	Enabled  bool          `yaml:"enabled"`
+	Interval time.Duration `yaml:"interval"` // default 60s
+	Timeout  time.Duration `yaml:"timeout"`  // default 2s per probe
+	Count    int           `yaml:"count"`    // probes per cycle, default 1
+	Targets  []PingTarget  `yaml:"targets,omitempty"`
+}
+
+type PingTarget struct {
+	IP   string `yaml:"ip"`
+	Name string `yaml:"name,omitempty"`
+}
+
 type WatchdogConfig struct {
 	Enabled         bool          `yaml:"enabled"`
 	HeartbeatFile   string        `yaml:"heartbeat_file"`   // touched by agent every tick
@@ -101,6 +123,12 @@ func Default() Config {
 			Communities: []string{"public"},
 			Timeout:     2 * time.Second,
 			Retries:     1,
+		},
+		Ping: PingConfig{
+			Enabled:  true,
+			Interval: 60 * time.Second,
+			Timeout:  2 * time.Second,
+			Count:    1,
 		},
 		Watchdog: WatchdogConfig{
 			Enabled:       true,
@@ -136,6 +164,14 @@ func Load(path string) (Config, error) {
 	}
 
 	applyEnv(&cfg)
+
+	// Persist a stable agent_id across restarts. Senza questo l'agent
+	// genera un UUID nuovo ogni reboot/restart del servizio, e il backend
+	// finisce con N ghost record in managed_agents per lo stesso cliente.
+	// Si era arrivati a 14 ghost per il cliente 86BITOffice prima del fix.
+	if cfg.AgentID == "" {
+		cfg.AgentID = getOrCreateStableAgentID()
+	}
 
 	if cfg.Backend.URL == "" {
 		return cfg, errors.New("backend.url is required (set in YAML or NOCAGENT_BACKEND_URL)")
@@ -183,4 +219,68 @@ func defaultHeartbeatFile() string {
 		return filepath.Join(os.Getenv("ProgramData"), "86NocAgent", "heartbeat.tick")
 	}
 	return "/var/lib/86nocagent/heartbeat.tick"
+}
+
+// defaultAgentIDFile is the well-known location used to persist the stable
+// agent UUID across restarts. Kept separate from agent.yaml so the
+// installer/PowerShell wrapper can freely rewrite the yaml without losing
+// the identity (the yaml is regenerated at every install/update).
+func defaultAgentIDFile() string {
+	if runtime.GOOS == "windows" {
+		return filepath.Join(os.Getenv("ProgramData"), "86NocAgent", "agent_id.txt")
+	}
+	return "/var/lib/86nocagent/agent_id"
+}
+
+// getOrCreateStableAgentID returns a UUID that survives restarts.
+//
+// Lookup order:
+//  1. existing content of defaultAgentIDFile (a hex UUID without dashes)
+//  2. generate a brand new UUID via transport.NewAgentID() and persist it
+//
+// On failure to write the file the function still returns a valid (ephemeral)
+// UUID — the agent must never refuse to start because of a missing identity
+// file. The next successful write will make the ID stable from then on.
+//
+// Importing transport here would create a cycle (transport imports config),
+// so we inline the generation: 16 random bytes, hex-encoded.
+func getOrCreateStableAgentID() string {
+	path := defaultAgentIDFile()
+	if b, err := os.ReadFile(path); err == nil {
+		id := strings.TrimSpace(string(b))
+		if isValidAgentID(id) {
+			return id
+		}
+	}
+	id := newRandomAgentID()
+	_ = os.MkdirAll(filepath.Dir(path), 0o755)
+	_ = os.WriteFile(path, []byte(id), 0o644)
+	return id
+}
+
+// isValidAgentID accepts 32-char hex strings (UUID without dashes), which is
+// the canonical format used by transport.NewAgentID().
+func isValidAgentID(s string) bool {
+	if len(s) != 32 {
+		return false
+	}
+	for _, c := range s {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+	return true
+}
+
+func newRandomAgentID() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		// crypto/rand failure is so rare we fall back to a timestamp-derived
+		// id rather than panicking; still 16 bytes so the format is preserved.
+		ts := time.Now().UnixNano()
+		for i := 0; i < 16; i++ {
+			b[i] = byte(ts >> (i * 8))
+		}
+	}
+	return hex.EncodeToString(b)
 }
