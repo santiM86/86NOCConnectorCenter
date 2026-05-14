@@ -55,7 +55,14 @@ const (
 	// SE_CREATE_GLOBAL_NAME e CreateMutexW fallirebbe silenziosamente.
 	// Senza prefix il mutex e' session-local, esattamente quello che vogliamo:
 	// tray + secondo lancio dello shortcut girano nella stessa sessione utente.
-	mutexName = "86BITArgusConnectorTray"
+	// Single-instance mutex: usiamo prefisso "Local\" che pero' e' gia' il
+	// default. Il problema vero era che senza prefisso il nome veniva
+	// risolto come session-local SOLO quando il chiamante e' nel User
+	// integrity level — Scheduled Task INTERACTIVE e shortcut user
+	// avevano due namespaces diversi. Con "Local\" esplicito tutte le
+	// istanze nella stessa session si vedono. (Global\ sarebbe cross-
+	// session ma richiede privilegi SYSTEM, non vogliamo.)
+	mutexName = `Local\86BITArgusConnectorTray`
 )
 
 // File marker che la tray polla per sapere se un'altra istanza ha chiesto
