@@ -568,42 +568,40 @@ $uiExe = Join-Path $InstallDir "nocagent-ui.exe"
 if (Test-Path $uiExe) {
     Write-Step "Avvio UI desktop (nocagent-ui)"
     $launched = $false
-    # Strategia 1: schtasks one-shot con /RU INTERACTIVE per spawn nella
-    # sessione utente corrente (funziona anche da UAC elevato).
+    # Strategia 1: Start-Process diretto. Funziona quando l'installer
+    # gira nella sessione utente (PowerShell admin lanciato dall'utente
+    # via UAC) — caso largamente maggioritario in produzione MSP. Il
+    # processo figlio eredita il contesto interattivo e la tray icon
+    # appare correttamente nella session dell'utente loggato.
     try {
-        $taskName = "86NocAgent-UI-Launch-$([guid]::NewGuid().ToString('N').Substring(0,8))"
-        $tmpXml = [System.IO.Path]::GetTempFileName() + ".xml"
-        $sd = (Get-Date).AddSeconds(5).ToString('yyyy-MM-ddTHH:mm:ss')
-        # Task XML minimale: trigger una volta a t+5s, action = uiExe,
-        # principal = INTERACTIVE (cosi' apre tray nella sessione utente).
-        @"
-<?xml version='1.0' encoding='UTF-16'?>
-<Task version='1.4' xmlns='http://schemas.microsoft.com/windows/2004/02/mit/task'>
-  <Triggers><TimeTrigger><StartBoundary>$sd</StartBoundary><Enabled>true</Enabled></TimeTrigger></Triggers>
-  <Principals><Principal id='Author'><GroupId>S-1-5-4</GroupId><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>
-  <Settings><AllowHardTerminate>true</AllowHardTerminate><DeleteExpiredTaskAfter>PT1M</DeleteExpiredTaskAfter><StartWhenAvailable>false</StartWhenAvailable></Settings>
-  <Actions Context='Author'><Exec><Command>$uiExe</Command></Exec></Actions>
-</Task>
-"@ | Out-File -FilePath $tmpXml -Encoding Unicode
-        & schtasks.exe /Create /TN $taskName /XML $tmpXml /F | Out-Null
-        & schtasks.exe /Run /TN $taskName | Out-Null
-        Remove-Item $tmpXml -Force -ErrorAction SilentlyContinue
-        Start-Sleep -Seconds 7
-        & schtasks.exe /Delete /TN $taskName /F 2>$null | Out-Null
+        Start-Process -FilePath $uiExe -ErrorAction Stop
+        Write-Ok "UI desktop avviata (Start-Process diretto)"
         $launched = $true
-        Write-Ok "UI desktop avviata nella sessione utente loggato"
     } catch {
-        Write-Warn2 "Launch via schtasks fallita: $($_.Exception.Message)"
+        Write-Warn2 "Start-Process diretto fallito: $($_.Exception.Message)"
     }
-    # Strategia 2 (fallback): Start-Process diretto. Funziona se lo
-    # script gira gia' nella sessione utente (non SYSTEM).
+    # Strategia 2 (fallback per SYSTEM session, es. RMM-deployed): usa
+    # schtasks CLI nativo (NON XML — l'XML schema 1.4 richiedeva
+    # EndBoundary obbligatorio non gestito → errore "(7,4):EndBoundary").
+    # Crea un task one-shot, lo esegue, lo elimina. /RU INTERACTIVE
+    # forza l'esecuzione nella sessione utente interattivo corrente.
     if (-not $launched) {
         try {
-            Start-Process -FilePath $uiExe -ErrorAction Stop
-            Write-Ok "UI desktop avviata (fallback Start-Process diretto)"
+            $taskName = "86NocAgent-UI-Launch-$([guid]::NewGuid().ToString('N').Substring(0,8))"
+            & schtasks.exe /Create /TN $taskName /TR "`"$uiExe`"" /SC ONCE /ST "23:59" /SD "01/01/2030" /RU "INTERACTIVE" /RL LIMITED /F | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+                & schtasks.exe /Run /TN $taskName | Out-Null
+                Start-Sleep -Seconds 3
+                & schtasks.exe /Delete /TN $taskName /F 2>$null | Out-Null
+                Write-Ok "UI desktop avviata via schtasks INTERACTIVE"
+                $launched = $true
+            }
         } catch {
-            Write-Warn2 "Start-Process diretto fallito: $($_.Exception.Message) - apri manualmente dal menu Start"
+            Write-Warn2 "Launch via schtasks fallita: $($_.Exception.Message)"
         }
+    }
+    if (-not $launched) {
+        Write-Warn2 "Impossibile avviare UI desktop automaticamente. Apri manualmente dal menu Start: '86BIT Argus Connector > Connector'."
     }
 }
 

@@ -86,8 +86,11 @@ jobs:
           # nocwatchdog.exe (riavvia il servizio in caso di hang/crash)
           go build -trimpath -ldflags "${LDFLAGS}" \
             -o build/bin/windows-amd64/nocwatchdog.exe ./cmd/watchdog
-          # nocagent-ui.exe (tray + console gestione device, GUI)
-          go build -trimpath -ldflags "${LDFLAGS} -H=windowsgui" \
+          # nocagent-ui.exe (tray + console gestione device, GUI).
+          # nocui usa la variabile `main.BuildVersion` (non `main.Version`)
+          # per popolare il titolo finestra e l'header "ARGUS v..." quando
+          # agent-ui.json non riporta la versione corrente.
+          go build -trimpath -ldflags "${LDFLAGS} -X main.BuildVersion=${VERSION} -H=windowsgui" \
             -o build/bin/windows-amd64/nocagent-ui.exe ./cmd/nocui
           # nocinstall.exe (installer CLI standalone)
           go build -trimpath -ldflags "${LDFLAGS}" \

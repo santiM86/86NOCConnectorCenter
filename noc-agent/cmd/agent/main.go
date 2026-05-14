@@ -188,6 +188,39 @@ func runAgent(ctx context.Context, cfg config.Config, log *logging.Logger) {
 	})
 	client.Register(proto.CmdWebProxy, webproxy.Handle)
 
+	// "update" — comando remoto inviato dal Center per aggiornare
+	// l'agent. Lancia install-noc-agent.ps1 da GitHub come subprocess
+	// admin; l'install si occupa di stop servizi, kill UI, download
+	// binari, restart. L'ACK al Center e' immediato — l'update gira
+	// in background, e quando i servizi ripartono il connettore si
+	// riconnette in WS e il Center vede la nuova versione.
+	//
+	// Disponibile SOLO su Windows: su altri OS ritorna errore.
+	client.Register("update", func(_ context.Context, args json.RawMessage) (any, error) {
+		if runtime.GOOS != "windows" {
+			return nil, fmt.Errorf("update non supportato su %s (solo windows)", runtime.GOOS)
+		}
+		var req struct {
+			Version string `json:"version,omitempty"`
+		}
+		if len(args) > 0 {
+			_ = json.Unmarshal(args, &req)
+		}
+		if req.Version == "" {
+			req.Version = "latest"
+		}
+		// Lancio in goroutine separata: il processo install-noc-agent.ps1
+		// ferma il nostro stesso servizio. Se rispondessimo dopo il run,
+		// il Center vedrebbe sempre timeout. Rispondiamo subito con ack
+		// e l'install gira detached.
+		go triggerRemoteUpdate(req.Version, cfg, log)
+		return map[string]any{
+			"status":          "update_started",
+			"version":         req.Version,
+			"current_version": Version,
+		}, nil
+	})
+
 	upd := update.New(cfg.Update, Version, log)
 
 	// Hot-apply the SNMP target list pushed by the backend in the
