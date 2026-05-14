@@ -415,6 +415,16 @@ async def _bridge_ping_poll(conn: _Connection, r: Dict[str, Any]) -> None:
                     "ping_loss_pct": loss_pct,
                     "ping_error": r.get("error"),
                     "last_ping_at": now_iso,
+                    # FRONTEND COMPAT: la pagina dispositivi (ClientOverviewPage)
+                    # e overview.py leggono `reachable` + `last_poll` (legacy,
+                    # senza `_at`) per popolare la colonna "Ultimo Poll" e per
+                    # derivare lo status del device. Il Connector v4 in origine
+                    # scriveva solo i campi ping_*/_at "nuovi" → la colonna
+                    # restava vuota anche con un dispositivo che rispondeva.
+                    # Scriviamo entrambi i nomi: cosi' la UI vecchia funziona
+                    # e quella nuova continua a leggere i campi `_at`/`ping_*`.
+                    "reachable": reachable,
+                    "last_poll": now_iso,
                     "source": "agent_v4",
                 },
                 "$setOnInsert": {
@@ -496,6 +506,12 @@ async def _bridge_snmp_poll(conn: _Connection, r: Dict[str, Any]) -> None:
         "uptime_ns": r.get("uptime_ns"),
         "error": r.get("error"),
         "last_poll_at": now_iso,
+        # FRONTEND COMPAT: vedi nota in _bridge_ping_poll. Scriviamo anche
+        # last_poll (legacy, senza `_at`) cosi' overview.py / ClientOverviewPage
+        # popolano la colonna "Ultimo Poll" anche per i target SNMP del Go Agent
+        # v4 (prima restava vuota perche' il campo letto era last_poll vs scritto
+        # last_poll_at).
+        "last_poll": now_iso,
         "source": "agent_v4",
     }
     try:
