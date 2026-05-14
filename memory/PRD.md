@@ -32,6 +32,35 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-02 ✅ FIX v4.8.1 — Rendering TableView walk (tabella vuota)
+
+**Sintomo**: dopo aver lanciato lo scanner su `10.10.1.0/24`, lo statusLb
+mostrava "Probe 4/254 · trovati 34" MA la TableView sotto era completamente
+vuota. I dati c'erano in `model.items` (count corretto = 34), ma walk
+non li renderizzava.
+
+**Root cause**: `insertSortedByIP` chiamava `m.PublishRowsReset()` PER
+OGNI inserzione. Il flusher batch elaborava 30+ risultati nello stesso
+`dlg.Synchronize`, generando 30+ Publish back-to-back. Walk (lxn/walk
+v0.0.0-20210112) ha un bug noto: troppi Publish consecutivi nello
+stesso ciclo di message pump confondono `*walk.TableView` che resta in
+stato "empty". Il workaround Advanced IP Scanner & nmap-style è
+chiamare Publish UNA sola volta a fine batch.
+
+**Fix in `cmd/nocui/scanner_windows.go`**:
+1. Rimosse le 3 chiamate `m.PublishRowsReset()` da `insertSortedByIP`.
+2. Aggiunta `model.PublishRowsReset()` UNA volta nel ticker `flushTick.C`
+   dopo aver completato il loop di insert (riga ~940).
+3. Aggiunta `model.PublishRowsReset()` UNA volta nel flush finale dopo
+   il completamento di `runScan` (riga ~982).
+
+**Test**: `go build ./...` + `go vet ./...` cross-GOOS=windows clean.
+
+**Risultato atteso**: tabella popolata in streaming dal primo risultato
+ARP (Phase 0) e arricchita progressivamente dai burst ICMP (Phase 1+2).
+
+
+
 ## 2026-02 ✅ MIGRAZIONE UI Scanner a Wails (ArgusDesktop v5)
 
 **Status**: codice completato, Go cross-build OK, frontend Vite build OK,

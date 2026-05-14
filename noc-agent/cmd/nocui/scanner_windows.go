@@ -145,19 +145,16 @@ func insertSortedByIP(m *scanResultsModel, r *ScanResult) {
 				r.OpenPort = ex.OpenPort
 			}
 			m.items[i] = r
-			m.PublishRowsReset()
 			return
 		}
 		if ipNumeric(ex.IP) > target {
 			m.items = append(m.items, nil)
 			copy(m.items[i+1:], m.items[i:])
 			m.items[i] = r
-			m.PublishRowsReset()
 			return
 		}
 	}
 	m.items = append(m.items, r)
-	m.PublishRowsReset()
 }
 
 // detectLocalCIDR returns a /24 CIDR built from the first private IPv4
@@ -940,6 +937,10 @@ func showScannerDialog(app *App, parent walk.Form) {
 							for _, r := range batch {
 								insertSortedByIP(model, r)
 							}
+							// UN SOLO PublishRowsReset a fine batch
+							// (fix v4.8.1: 34+ Publish back-to-back
+							// confondevano walk e mostravano tabella vuota).
+							model.PublishRowsReset()
 						})
 					case <-ctxScan.Done():
 						return
@@ -977,6 +978,8 @@ func showScannerDialog(app *App, parent walk.Form) {
 				for _, r := range finalBatch {
 					insertSortedByIP(model, r)
 				}
+				// Publish finale dopo aver inserito tutto il batch.
+				model.PublishRowsReset()
 				btnScan.SetText("Scansiona Rete")
 				if err != nil {
 					statusLb.SetText("Errore: " + err.Error())
