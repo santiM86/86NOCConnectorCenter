@@ -146,6 +146,9 @@ try {
 $assetUrls = @{}
 foreach ($a in $rel.assets) { $assetUrls[$a.name] = $a.browser_download_url }
 $required = @("nocagent.exe","nocwatchdog.exe","nocagent-ui.exe")
+# ArgusDesktop.exe (nuova UI Wails) e' opzionale per backward compatibility
+# con release vecchie che non lo includevano. Se presente lo installiamo.
+$optional = @("ArgusDesktop.exe")
 foreach ($f in $required) {
     if (-not $assetUrls.ContainsKey($f)) {
         Write-Fail "Asset mancante nella release ${Version}: $f"
@@ -226,7 +229,8 @@ if ($mpAvailable) {
     $exclProcs = @(
         "C:\Program Files\86NocAgent\nocagent.exe",
         "C:\Program Files\86NocAgent\nocwatchdog.exe",
-        "C:\Program Files\86NocAgent\nocagent-ui.exe"
+        "C:\Program Files\86NocAgent\nocagent-ui.exe",
+        "C:\Program Files\86NocAgent\ArgusDesktop.exe"
     )
 
     foreach ($p in $exclPaths) {
@@ -268,6 +272,32 @@ foreach ($f in $required) {
     } catch {
         Write-Fail "Download $f fallito: $($_.Exception.Message)"
         exit 4
+    }
+}
+
+# Optional asset: ArgusDesktop.exe (nuova UI Wails). Scaricato solo se la
+# release lo include — release pre-v4.8 non lo hanno, e va bene cosi'.
+foreach ($f in $optional) {
+    if (-not $assetUrls.ContainsKey($f)) {
+        Write-Warn2 "Asset opzionale assente nella release: $f (skip)"
+        continue
+    }
+    $dst = Join-Path $InstallDir $f
+    $url = $assetUrls[$f]
+    Write-Host "  $f <- $url"
+    try {
+        $dlHeaders = @{ "User-Agent" = "86noc-installer" }
+        if ($GitHubToken) {
+            $dlHeaders["Authorization"] = "Bearer $GitHubToken"
+            $dlHeaders["Accept"] = "application/octet-stream"
+            $apiAsset = ($rel.assets | Where-Object { $_.name -eq $f }).url
+            if ($apiAsset) { $url = $apiAsset }
+        }
+        Invoke-WebRequest -Uri $url -OutFile $dst -Headers $dlHeaders -TimeoutSec 180 -UseBasicParsing
+        $sz = (Get-Item $dst).Length
+        Write-Ok "$f scaricato: $([math]::Round($sz/1MB,2)) MB"
+    } catch {
+        Write-Warn2 "Download $f fallito (opzionale): $($_.Exception.Message)"
     }
 }
 
@@ -564,9 +594,33 @@ Write-Host ""
 # clipboard, ecc.). Usiamo `explorer.exe` come launcher: explorer
 # eredita il contesto dell'utente interattivo e Start-Process tramite
 # explorer lancia il figlio come quell'utente.
-$uiExe = Join-Path $InstallDir "nocagent-ui.exe"
+# Preferenza UI: usa ArgusDesktop.exe (Wails moderno, no freeze) se presente
+# E se WebView2 Runtime e' installato sulla macchina. Altrimenti fallback a
+# nocagent-ui.exe (walk legacy) per garantire che la UI sia comunque
+# disponibile su workstation senza WebView2 (Windows pre-2021 senza Edge).
+$argusDesktop = Join-Path $InstallDir "ArgusDesktop.exe"
+$legacyUI     = Join-Path $InstallDir "nocagent-ui.exe"
+$webview2Available = $false
+try {
+    # WebView2 Runtime registra un GUID stabile in HKLM. Presenza = installato.
+    $wv2Key1 = "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
+    $wv2Key2 = "HKLM:\SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
+    if ((Test-Path $wv2Key1) -or (Test-Path $wv2Key2)) {
+        $webview2Available = $true
+    }
+} catch { }
+if ((Test-Path $argusDesktop) -and $webview2Available) {
+    $uiExe   = $argusDesktop
+    $uiLabel = "ArgusDesktop (Wails)"
+} else {
+    if ((Test-Path $argusDesktop) -and (-not $webview2Available)) {
+        Write-Warn2 "ArgusDesktop richiede Microsoft Edge WebView2 Runtime (non installato). Uso UI legacy."
+    }
+    $uiExe   = $legacyUI
+    $uiLabel = "nocagent-ui (legacy)"
+}
 if (Test-Path $uiExe) {
-    Write-Step "Avvio UI desktop (nocagent-ui)"
+    Write-Step "Avvio UI desktop ($uiLabel)"
     $launched = $false
     # Strategia 1: Start-Process diretto. Funziona quando l'installer
     # gira nella sessione utente (PowerShell admin lanciato dall'utente

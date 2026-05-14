@@ -34,7 +34,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 
 BASE_URL = os.environ.get(
     "REACT_APP_BACKEND_URL",
-    "https://device-poller-ws.preview.emergentagent.com",
+    "https://device-monitor-94.preview.emergentagent.com",
 ).rstrip("/")
 API = f"{BASE_URL}/api"
 CONNECTOR_API_KEY = "noc_35cf39b4d68740b1a981aedef2ee293d"

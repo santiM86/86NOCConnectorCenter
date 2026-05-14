@@ -16,6 +16,8 @@ import (
 	"time"
 
 	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
+
+	"github.com/86bit/noc-agent/internal/lanscan"
 )
 
 // App è il "controller" esposto al frontend tramite il binding Wails.
@@ -27,6 +29,10 @@ type App struct {
 	mu            sync.RWMutex
 	agentInfo     AgentInfo
 	agentInfoTime time.Time
+
+	// Cancellazione scan in corso. Solo uno scan alla volta.
+	scanMu     sync.Mutex
+	scanCancel context.CancelFunc
 }
 
 // AgentInfo è lo stato statico letto da agent.yaml + dinamico via HTTP/WS.
@@ -266,6 +272,91 @@ func (a *App) OpenConfig() error {
 	dir := filepath.Join(os.Getenv("ProgramData"), "86NocAgent")
 	cmd := exec.Command("explorer.exe", dir)
 	return cmd.Start()
+}
+
+// =======================================================================
+// LAN Scanner (streaming via Wails events)
+// =======================================================================
+
+// DefaultScanCIDR ritorna il CIDR di default basato sull'IP locale.
+func (a *App) DefaultScanCIDR() string {
+	return lanscan.DetectLocalCIDR()
+}
+
+// StartLanScan avvia uno scan async sul CIDR indicato. I risultati
+// vengono emessi via eventi Wails:
+//   - "scan:started"  -> { cidr }
+//   - "scan:result"   -> lanscan.Result (uno per device)
+//   - "scan:progress" -> lanscan.Progress { done, total, found }
+//   - "scan:done"     -> { cidr, total, error? }
+//
+// Solo uno scan alla volta: se uno è già in corso ritorna errore.
+func (a *App) StartLanScan(cidr string) error {
+	cidr = strings.TrimSpace(cidr)
+	if cidr == "" {
+		cidr = lanscan.DetectLocalCIDR()
+	}
+	a.scanMu.Lock()
+	if a.scanCancel != nil {
+		a.scanMu.Unlock()
+		return fmt.Errorf("uno scan è già in corso")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	a.scanCancel = cancel
+	a.scanMu.Unlock()
+
+	uiCtx := a.ctx
+	go func() {
+		defer func() {
+			a.scanMu.Lock()
+			a.scanCancel = nil
+			a.scanMu.Unlock()
+		}()
+		if uiCtx != nil {
+			wruntime.EventsEmit(uiCtx, "scan:started", map[string]any{"cidr": cidr})
+		}
+		res, err := lanscan.Run(ctx, cidr,
+			func(p lanscan.Progress) {
+				if uiCtx != nil {
+					wruntime.EventsEmit(uiCtx, "scan:progress", p)
+				}
+			},
+			func(r lanscan.Result) {
+				if uiCtx != nil {
+					wruntime.EventsEmit(uiCtx, "scan:result", r)
+				}
+			},
+		)
+		payload := map[string]any{
+			"cidr":  cidr,
+			"total": len(res),
+		}
+		if err != nil {
+			payload["error"] = err.Error()
+		}
+		if uiCtx != nil {
+			wruntime.EventsEmit(uiCtx, "scan:done", payload)
+		}
+	}()
+	return nil
+}
+
+// CancelLanScan ferma lo scan in corso. No-op se nessuno scan è attivo.
+func (a *App) CancelLanScan() {
+	a.scanMu.Lock()
+	c := a.scanCancel
+	a.scanCancel = nil
+	a.scanMu.Unlock()
+	if c != nil {
+		c()
+	}
+}
+
+// IsScanning ritorna true se uno scan è attualmente in corso.
+func (a *App) IsScanning() bool {
+	a.scanMu.Lock()
+	defer a.scanMu.Unlock()
+	return a.scanCancel != nil
 }
 
 // =======================================================================

@@ -1,24 +1,20 @@
-name: Release Argus Agent (Windows binaries + installer template)
+name: Release Argus Agent (Windows binaries + installer template + Wails desktop)
 
 # ============================================================================
-# Pipeline che ricostruisce i 4 binari Windows del NOC Agent (nocagent.exe,
-# nocwatchdog.exe, nocagent-ui.exe, nocinstall.exe) + il template del wizard
-# PowerShell, e li pubblica come asset di una GitHub Release pronta per essere
-# consumata dal NOC Center via la env BINARY_URLS_BASE.
+# Pipeline che ricostruisce TUTTI i binari Windows del NOC Agent in 2 job
+# paralleli + 1 job finale di release:
+#
+#   1. build-windows   (ubuntu-latest)  → nocagent.exe, nocwatchdog.exe,
+#                                          nocagent-ui.exe LEGACY (walk),
+#                                          nocinstall.exe
+#   2. build-wails     (windows-latest) → ArgusDesktop.exe (nuova UI v5)
+#   3. release         (ubuntu-latest)  → crea GitHub Release con tutti gli
+#                                          asset scaricati dagli artifact dei
+#                                          job precedenti.
 #
 # Trigger:
-#   - push di un tag SemVer "v*" (es. `git tag v4.1.2 && git push --tags`)
-#   - manuale dalla tab "Actions" (workflow_dispatch) — utile per ribuildare
-#     senza creare un nuovo tag.
-#
-# Output: una Release con 5 asset:
-#   - nocagent.exe
-#   - nocwatchdog.exe
-#   - nocagent-ui.exe
-#   - nocinstall.exe
-#   - installer_gui.ps1.template
-#
-# Il job richiede unicamente il GITHUB_TOKEN (gia' fornito dal runner).
+#   - push di un tag SemVer "v*" (es. `git tag v4.8.0 && git push --tags`)
+#   - manuale dalla tab "Actions" (workflow_dispatch).
 # ============================================================================
 
 on:
@@ -28,17 +24,22 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag della release (es. v4.1.2). Se vuoto usa il commit corrente con un tag generato.'
+        description: 'Tag della release (es. v4.8.0). Vuoto = rolling.'
         required: false
         default: ''
 
 permissions:
-  contents: write   # serve per creare/aggiornare la Release
+  contents: write
 
 jobs:
+  # --------------------------------------------------------------------------
+  # JOB 1 — Binari classici (Go cross-compile su Linux)
+  # --------------------------------------------------------------------------
   build-windows:
     name: Build Windows binaries (amd64)
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
 
     defaults:
       run:
@@ -80,81 +81,153 @@ jobs:
           set -euo pipefail
           mkdir -p build/bin/windows-amd64
           LDFLAGS="-s -w -X main.Version=${VERSION}"
-          # nocagent.exe (servizio principale)
           go build -trimpath -ldflags "${LDFLAGS}" \
             -o build/bin/windows-amd64/nocagent.exe ./cmd/agent
-          # nocwatchdog.exe (riavvia il servizio in caso di hang/crash)
           go build -trimpath -ldflags "${LDFLAGS}" \
             -o build/bin/windows-amd64/nocwatchdog.exe ./cmd/watchdog
-          # nocagent-ui.exe (tray + console gestione device, GUI).
-          # nocui usa la variabile `main.BuildVersion` (non `main.Version`)
-          # per popolare il titolo finestra e l'header "ARGUS v..." quando
-          # agent-ui.json non riporta la versione corrente.
+          # nocagent-ui.exe — LEGACY walk UI (mantenuta come fallback).
           go build -trimpath -ldflags "${LDFLAGS} -X main.BuildVersion=${VERSION} -H=windowsgui" \
             -o build/bin/windows-amd64/nocagent-ui.exe ./cmd/nocui
-          # nocinstall.exe (installer CLI standalone)
           go build -trimpath -ldflags "${LDFLAGS}" \
             -o build/bin/windows-amd64/nocinstall.exe ./cmd/installer
           ls -lh build/bin/windows-amd64/
 
-      - name: Compute SHA256 sums
-        working-directory: noc-agent/build/bin/windows-amd64
-        run: |
-          sha256sum nocagent.exe nocwatchdog.exe nocagent-ui.exe nocinstall.exe \
-            > SHA256SUMS.txt
-          cat SHA256SUMS.txt
-
-      - name: Stage installer template (5th asset)
+      - name: Stage installer template
         run: |
           cp build/installer_gui.ps1.template build/bin/windows-amd64/installer_gui.ps1.template
           cp build/install-noc-agent.ps1     build/bin/windows-amd64/install-noc-agent.ps1
-          ls -lh build/bin/windows-amd64/
+
+      - name: Upload classic binaries artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: classic-binaries
+          path: noc-agent/build/bin/windows-amd64/
+
+  # --------------------------------------------------------------------------
+  # JOB 2 — UI Wails (build nativo su windows-latest)
+  # --------------------------------------------------------------------------
+  build-wails:
+    name: Build Wails desktop (ArgusDesktop.exe)
+    runs-on: windows-latest
+    needs: build-windows
+
+    defaults:
+      run:
+        working-directory: noc-agent/cmd/nocui-v5
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+          cache-dependency-path: noc-agent/go.sum
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Wails CLI
+        shell: bash
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
+
+      - name: Install frontend deps
+        shell: bash
+        working-directory: noc-agent/cmd/nocui-v5/frontend
+        run: |
+          corepack enable
+          yarn install --frozen-lockfile
+
+      - name: Wails build
+        shell: bash
+        env:
+          VERSION: ${{ needs.build-windows.outputs.version }}
+        run: |
+          set -euo pipefail
+          "$(go env GOPATH)/bin/wails.exe" build \
+            -platform windows/amd64 \
+            -ldflags "-s -w -X main.Version=${VERSION}" \
+            -trimpath \
+            -o ArgusDesktop.exe
+          ls -lh build/bin/
+
+      - name: Upload Wails artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wails-binary
+          path: noc-agent/cmd/nocui-v5/build/bin/ArgusDesktop.exe
+
+  # --------------------------------------------------------------------------
+  # JOB 3 — Pubblicazione Release (riunisce gli artifact dei 2 job)
+  # --------------------------------------------------------------------------
+  release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs: [build-windows, build-wails]
+
+    steps:
+      - name: Download classic binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: classic-binaries
+          path: dist/
+
+      - name: Download Wails binary
+        uses: actions/download-artifact@v4
+        with:
+          name: wails-binary
+          path: dist/
+
+      - name: Compute SHA256 sums
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          sha256sum nocagent.exe nocwatchdog.exe nocagent-ui.exe nocinstall.exe ArgusDesktop.exe \
+            > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          ls -lh
 
       - name: Create or update GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          # Se il workflow e' stato lanciato manuale senza tag, creiamo
-          # comunque una release "rolling" con tag generato.
-          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || (inputs.tag != '' && inputs.tag || format('v{0}', steps.ver.outputs.version)) }}
-          name: Argus Agent ${{ steps.ver.outputs.version }}
+          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || (inputs.tag != '' && inputs.tag || format('v{0}', needs.build-windows.outputs.version)) }}
+          name: Argus Agent ${{ needs.build-windows.outputs.version }}
           body: |
-            ## Argus NOC Agent — release ${{ steps.ver.outputs.version }}
+            ## Argus NOC Agent — release ${{ needs.build-windows.outputs.version }}
 
-            Binari Windows (amd64) compilati cross-platform da GitHub Actions.
+            Binari Windows (amd64) compilati su GitHub Actions.
 
             **Asset inclusi**
             - `nocagent.exe` — servizio principale
             - `nocwatchdog.exe` — watchdog di riavvio
-            - `nocagent-ui.exe` — GUI tray / console gestione device
+            - `nocagent-ui.exe` — GUI LEGACY (walk Win32, mantenuta come fallback)
+            - `ArgusDesktop.exe` — **nuova GUI Wails** (no freeze, scanner LAN streaming)
             - `nocinstall.exe` — installer CLI standalone
-            - `installer_gui.ps1.template` — template PowerShell del wizard installazione
-            - `install-noc-agent.ps1` — **installer STANDALONE** (zero backend Linux, scarica direttamente da questa release)
-            - `SHA256SUMS.txt` — hash SHA-256 di tutti i .exe
+            - `installer_gui.ps1.template` — template PowerShell wizard
+            - `install-noc-agent.ps1` — installer STANDALONE
+            - `SHA256SUMS.txt` — hash SHA-256
 
-            **Install / update standalone (zero dipendenze backend)**
+            **Install / update standalone**
             ```powershell
-            # PowerShell Administrator sul Windows del cliente
             $u = "https://github.com/${{ github.repository }}/releases/latest/download/install-noc-agent.ps1"
             iwr $u -OutFile $env:TEMP\install.ps1 -UseBasicParsing
             & $env:TEMP\install.ps1 -Token "<NOC_TOKEN>" -ClientId "<CLIENT_UUID>"
             ```
-
-            **Come consumare**
-            Sul NOC Center setta l'env `BINARY_URLS_BASE` puntando a:
-            ```
-            https://github.com/${{ github.repository }}/releases/download/${{ github.ref_type == 'tag' && github.ref_name || format('v{0}', steps.ver.outputs.version) }}
-            ```
-            Il backend FastAPI scaricherà sia i binari sia il template direttamente da qui.
           draft: false
           prerelease: false
           fail_on_unmatched_files: true
           files: |
-            noc-agent/build/bin/windows-amd64/nocagent.exe
-            noc-agent/build/bin/windows-amd64/nocwatchdog.exe
-            noc-agent/build/bin/windows-amd64/nocagent-ui.exe
-            noc-agent/build/bin/windows-amd64/nocinstall.exe
-            noc-agent/build/bin/windows-amd64/installer_gui.ps1.template
-            noc-agent/build/bin/windows-amd64/install-noc-agent.ps1
-            noc-agent/build/bin/windows-amd64/SHA256SUMS.txt
+            dist/nocagent.exe
+            dist/nocwatchdog.exe
+            dist/nocagent-ui.exe
+            dist/nocinstall.exe
+            dist/ArgusDesktop.exe
+            dist/installer_gui.ps1.template
+            dist/install-noc-agent.ps1
+            dist/SHA256SUMS.txt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

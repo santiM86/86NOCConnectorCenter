@@ -60,6 +60,27 @@ export interface LogLine {
   message: string
 }
 
+export interface ScanResult {
+  ip: string
+  mac?: string
+  hostname?: string
+  vendor?: string
+  status: 'alive' | 'arp-only' | string
+  rtt_ms: number
+}
+
+export interface ScanProgress {
+  done: number
+  total: number
+  found: number
+}
+
+export interface ScanDone {
+  cidr: string
+  total: number
+  error?: string
+}
+
 // ----- private helpers -------------------------------------------------
 
 const hasWails = (): boolean =>
@@ -146,6 +167,28 @@ export const api = {
   openDashboard: () => call<void>('OpenDashboard'),
   openExternal: (url: string) => call<void>('OpenExternal', url),
   openConfig: () => call<void>('OpenConfig'),
+  defaultScanCIDR: () => call<string>('DefaultScanCIDR'),
+  startLanScan: (cidr: string) => call<void>('StartLanScan', cidr),
+  cancelLanScan: () => call<void>('CancelLanScan'),
+  isScanning: () => call<boolean>('IsScanning'),
+}
+
+/**
+ * Sottoscrive un evento Wails (es. "scan:result", "scan:progress").
+ * Ritorna una funzione di unsubscribe. Quando non siamo in WebView2
+ * (browser dev) la subscription è no-op.
+ */
+export function on(event: string, handler: (data: unknown) => void): () => void {
+  const rt = typeof window !== 'undefined' ? window.runtime : undefined
+  if (!rt || typeof rt.EventsOn !== 'function') {
+    return () => {}
+  }
+  rt.EventsOn(event, handler)
+  return () => {
+    if (typeof rt.EventsOff === 'function') {
+      rt.EventsOff(event)
+    }
+  }
 }
 
 export const isWails = hasWails
