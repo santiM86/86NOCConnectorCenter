@@ -378,6 +378,118 @@ async def import_to_client(
     return {"imported": len(imported), "skipped": skipped, "updated": updated, "items": imported}
 
 
+@router.post("/clients/{client_id}/re-enrich")
+async def re_enrich_client_devices(
+    client_id: str,
+    user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Ri-arricchisce i metadati di TUTTI i managed_devices del cliente
+    usando l'ULTIMO scan disponibile (status=done) per quel cliente.
+
+    Risolve il caso d'uso: device importati prima del completamento
+    dell'enrichment (Fingerbank/NBNS/mDNS asincrono) e quindi salvati
+    con name=IP nudo. Senza dover rifare la scansione, prende i dati
+    già presenti in lan_scan_runs e aggiorna solo i metadati discovery
+    dei device esistenti.
+
+    Sicurezza: tocca SOLO device con name nullo o uguale all'IP
+    (non sovrascrive nomi assegnati manualmente dall'utente).
+    """
+    if not await db.clients.find_one({"id": client_id}, {"_id": 0, "id": 1}):
+        raise HTTPException(status_code=404, detail="client non trovato")
+
+    # Carica ultimo scan con status=done per il cliente.
+    scan_doc = await db.lan_scan_runs.find_one(
+        {"client_id": client_id, "status": "done"},
+        sort=[("ended_at", -1)],
+        projection={"_id": 0, "scan_id": 1, "results": 1, "ended_at": 1},
+    )
+    if not scan_doc:
+        raise HTTPException(
+            status_code=404,
+            detail="Nessuna scansione completata trovata per questo cliente. Lancia uno scan dal tab Scanner LAN.",
+        )
+    scan_id = scan_doc["scan_id"]
+    scan_by_ip: Dict[str, Dict[str, Any]] = {}
+    for r in scan_doc.get("results") or []:
+        if isinstance(r, dict) and r.get("ip"):
+            scan_by_ip[r["ip"]] = r
+
+    if not scan_by_ip:
+        raise HTTPException(status_code=400, detail="Lo scan non ha risultati")
+
+    now_iso = _now().isoformat()
+    updated: List[str] = []
+    skipped: List[str] = []
+
+    def _best_name(scan_r: Dict[str, Any], ip: str) -> str:
+        for k in ("hostname", "mdns_name", "device_name"):
+            v = (scan_r.get(k) or "").strip()
+            if v:
+                return v
+        hs = (scan_r.get("http_server") or "").strip()
+        if hs:
+            return f"Web · {hs[:32]}"
+        return ip
+
+    def _build_notes(scan_r: Dict[str, Any]) -> str:
+        bits: List[str] = []
+        if scan_r.get("vendor"):
+            bits.append(scan_r["vendor"])
+        if scan_r.get("mdns_name") and scan_r.get("mdns_name") != scan_r.get("hostname"):
+            bits.append(f"mDNS={scan_r['mdns_name']}")
+        if scan_r.get("http_server"):
+            bits.append(f"HTTP={scan_r['http_server'][:48]}")
+        if scan_r.get("device_name"):
+            bits.append(f"Fingerbank={scan_r['device_name']}")
+        srv = scan_r.get("services") or []
+        if isinstance(srv, list) and srv:
+            bits.append("services=" + ",".join(s for s in srv[:3]))
+        return " · ".join(bits)
+
+    # Itera sui managed_devices del cliente che hanno match nello scan.
+    cursor = db.managed_devices.find(
+        {"client_id": client_id},
+        {"_id": 0, "id": 1, "ip": 1, "name": 1},
+    )
+    async for md in cursor:
+        ip = md.get("ip")
+        if not ip or ip not in scan_by_ip:
+            skipped.append(ip or "?")
+            continue
+        scan_r = scan_by_ip[ip]
+        set_fields: Dict[str, Any] = {
+            "hostname": scan_r.get("hostname") or "",
+            "mac": scan_r.get("mac") or "",
+            "vendor": scan_r.get("vendor") or "",
+            "mdns_name": scan_r.get("mdns_name") or "",
+            "mdns_services": scan_r.get("services") or [],
+            "http_server": scan_r.get("http_server") or "",
+            "fingerbank_device_name": scan_r.get("device_name") or "",
+            "fingerbank_score": scan_r.get("device_score"),
+            "notes": _build_notes(scan_r),
+            "last_enriched_at": now_iso,
+            "last_enriched_from_scan": scan_id,
+        }
+        # Aggiorna `name` solo se ancora era placeholder (IP o vuoto).
+        cur_name = (md.get("name") or "").strip()
+        if (not cur_name) or cur_name == ip:
+            set_fields["name"] = _best_name(scan_r, ip)
+        await db.managed_devices.update_one(
+            {"client_id": client_id, "ip": ip}, {"$set": set_fields}
+        )
+        updated.append(ip)
+
+    return {
+        "updated": len(updated),
+        "updated_ips": updated,
+        "skipped_ips": skipped,
+        "from_scan_id": scan_id,
+        "from_scan_at": scan_doc.get("ended_at"),
+        "initiated_by": user.get("email") or user.get("id") or "system",
+    }
+
+
 # ---- Fingerbank enrichment (best-effort, asincrono) ---------------------
 
 async def _enrich_fingerbank(scan_id: str, ip: str, mac: str) -> None:

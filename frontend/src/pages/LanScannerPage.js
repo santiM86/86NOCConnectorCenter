@@ -115,6 +115,29 @@ export default function LanScannerPage({ scopedClientId, scopedClientName } = {}
     }
   };
 
+  // v4.10.2: ri-arricchimento massivo dei device già importati per il
+  // cliente, usando l'ULTIMO scan completato. Non richiede selezione
+  // né nuovo scan: fixa i device con name=IP nudo importati prima del
+  // completamento dell'enrichment asincrono.
+  const [reEnriching, setReEnriching] = useState(false);
+  const doReEnrich = async () => {
+    if (!scopedClientId) return;
+    if (!confirm("Aggiornare hostname, vendor, MAC, mDNS, HTTP banner e Fingerbank su TUTTI i dispositivi gestiti del cliente, usando l'ultimo scan completato?")) return;
+    setReEnriching(true);
+    try {
+      const r = await axios.post(
+        `${API}/api/lan-scans/clients/${scopedClientId}/re-enrich`,
+        {},
+        { headers },
+      );
+      toast.success(`Aggiornati ${r.data.updated} dispositivi · Skipped ${r.data.skipped_ips?.length || 0}`);
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Errore re-enrich");
+    } finally {
+      setReEnriching(false);
+    }
+  };
+
   const running = run?.status === "running";
   const results = useMemo(() => {
     const arr = Array.isArray(run?.results) ? run.results.slice() : [];
@@ -291,6 +314,17 @@ export default function LanScannerPage({ scopedClientId, scopedClientName } = {}
         <div className={`flex flex-wrap items-center justify-between gap-3 px-5 py-3 border-b ${borderC}`}>
           <div className="flex items-center gap-3">
             <h2 className="font-semibold">Risultati ({results.length})</h2>
+            {scopedClientId && (
+              <button
+                onClick={doReEnrich}
+                disabled={reEnriching}
+                className="text-xs px-3 py-1.5 rounded-md border border-amber-500/40 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20 font-medium disabled:opacity-50"
+                title="Ri-applica hostname / vendor / mDNS / HTTP banner / Fingerbank sui device già gestiti del cliente, usando l'ultimo scan completato"
+                data-testid="lan-scan-reenrich-btn"
+              >
+                {reEnriching ? "Aggiornamento…" : "⟳ Ri-arricchisci esistenti"}
+              </button>
+            )}
             {scopedClientId && results.length > 0 && (
               <>
                 <button
