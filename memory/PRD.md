@@ -32,6 +32,44 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-02 ✅ FIX BUG P0: "Installer (latest)" scaricava sempre v4.0.0
+
+**Bug reportato dall'utente** (screenshot): l'agent installato sul PC
+del cliente mostrava `Versione: v4.0.0-dev+4755a03` invece di v4.10.x,
+nonostante il Center indicasse v4.10.2 come "latest".
+
+### Root cause (doppia)
+1. **`_render_wizard_ps1` in `agent_ws.py`** sostituiva `__BACKEND_URL__`
+   e `__TOKEN__` ma NON `__VERSION__`. Il placeholder rimaneva nel PS1.
+2. **`installer_gui.ps1.template` riga 73**: `$Version = "4.0.0"` come
+   default hardcoded. Quando il placeholder non veniva sostituito (caso
+   1), il PS1 cadeva su questo valore antichissimo.
+
+### Fix
+- `_render_wizard_ps1` ora è **async** e chiama
+  `_resolve_latest_agent_version_safe()` per ottenere l'ultima release
+  GitHub. Esegue `.replace("__VERSION__", ver_naked)` sul template.
+- Tutti i call site (`_build_wizard_bundle`, endpoint
+  `/api/agent/install/ps1`) aggiornati con `await`.
+- Template `installer_gui.ps1.template` riga 73:
+  - `$Version = "__VERSION__"` (sostituito dal backend)
+  - Safety net: `if ($Version -like "*VERSION*") { $Version = "4.10.3" }`
+    per coprire eventuali fork/copy manuali senza sostituzione.
+
+### Test
+```
+GitHub /api/agent/latest-version → {"version":"v4.10.3"}
+_render_wizard_ps1 output line 73 → $Version = "4.10.3" ✅
+```
+
+### Note
+- Funziona anche senza `AGENT_GITHUB_TOKEN`: il backend usa l'API
+  pubblica GitHub Releases (rate limit 60/h è ampio per il NOC).
+- Aggiungere `AGENT_GITHUB_TOKEN` in `.env` resta utile per repo
+  privati o produzione con molti tenant (raise a 5000/h).
+
+
+
 ## 2026-02 ✅ "Ri-arricchisci esistenti" — fix retroattivo metadati
 
 **Problema osservato** (screenshot confronto user): cliente 86BITOffice

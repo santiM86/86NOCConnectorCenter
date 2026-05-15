@@ -70,7 +70,10 @@ $AppName        = "86NocAgent"
 $DisplayName    = "ARGUS Agent v4"
 $ServiceName    = "86NocAgent"
 $WatchdogName   = "86NocWatchdog"
-$Version        = "4.0.0"
+$Version        = "__VERSION__"  # iniettata dal backend (vedi _render_wizard_ps1)
+# Safety net: se il template viene rinominato/copiato senza sostituzione
+# (es. fork manuale), forza un default ragionevole.
+if ($Version -like "*VERSION*") { $Version = "4.10.3" }
 $Platform       = "windows-amd64"
 $InstallDir     = Join-Path $env:ProgramFiles $AppName
 $DataDir        = Join-Path $env:ProgramData  $AppName
