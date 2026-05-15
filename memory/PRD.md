@@ -32,6 +32,39 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-02 ✅ "Ri-arricchisci esistenti" — fix retroattivo metadati
+
+**Problema osservato** (screenshot confronto user): cliente 86BITOffice
+mostra `10.10.1.55  10.10.1.55  snmp: public` mentre altri clienti
+mostrano `SRVDATIGAL · 192.168.16.22`. La Panoramica usa `d.name` come
+display name (vedi `DeviceGroup` riga 1079 ClientOverviewPage). Quando
+i device sono stati importati prima del completamento dell'enrichment
+asincrono (Fingerbank ~1-2s post-scan, NBNS sul singolo IP), il `name`
+e` stato salvato come IP nudo.
+
+### Nuovo endpoint backend
+`POST /api/lan-scans/clients/{client_id}/re-enrich`
+- Trova ULTIMO `lan_scan_runs` con `status=done` per quel client_id
+- Per ogni `managed_devices` del cliente con IP presente nello scan:
+  - Aggiorna `hostname`, `mac`, `vendor`, `mdns_name`, `mdns_services`,
+    `http_server`, `fingerbank_device_name`, `fingerbank_score`, `notes`
+  - Aggiorna `name` SOLO se ancora era IP nudo (preserva nomi assegnati
+    manualmente)
+- Risposta: `{updated, updated_ips[], skipped_ips[], from_scan_id, from_scan_at}`
+
+### Frontend: bottone "⟳ Ri-arricchisci esistenti"
+Visibile nella toolbar risultati Scanner LAN solo in modalità
+scoped-client (tab del cliente). Pill ambra, confirm() dialog.
+Funziona indipendentemente da selezione/scan in corso — usa l'ultimo
+scan completato a DB.
+
+**Caso d'uso del fix:** l'utente ha già 6 device importati con name=IP.
+Senza rilanciare scan: tab Scanner LAN → click "⟳ Ri-arricchisci
+esistenti" → conferma → toast "Aggiornati N · Skipped M" → Panoramica
+mostra immediatamente nomi reali.
+
+
+
 ## 2026-02 ✅ Import scan → managed_devices: arricchimento totale metadati
 
 **Problema osservato** (screenshot user): dopo import di 6/36 device, la
