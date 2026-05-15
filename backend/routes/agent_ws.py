@@ -1209,7 +1209,7 @@ async def wizard_bundle(token: Optional[str] = None) -> FileResponse:
     required from the on-site technician.
     """
     client_id = await _token_or_403(token)
-    bundle = _build_wizard_bundle(token)
+    bundle = await _build_wizard_bundle(token)
     # Filename personalizzato col nome del cliente: cosi' i tecnici che
     # scaricano installer per piu' clienti non confondono i ZIP nella
     # cartella Download. Ricavo il nome dal client_id risolto sopra.
@@ -1455,7 +1455,7 @@ async def install_script(platform: str, ext: str, token: Optional[str] = None) -
     if platform == "linux" and ext == "sh":
         return PlainTextResponse(_render_linux_sh(token), media_type="text/plain; charset=utf-8")
     if platform == "wizard" and ext == "ps1":
-        return PlainTextResponse(_render_wizard_ps1(token), media_type="text/plain; charset=utf-8")
+        return PlainTextResponse(await _render_wizard_ps1(token), media_type="text/plain; charset=utf-8")
     raise HTTPException(status_code=404, detail="unknown installer")
 
 
@@ -1475,15 +1475,26 @@ def _render_linux_sh(token: str) -> str:
             .replace("__TOKEN__", token))
 
 
-def _render_wizard_ps1(token: str) -> str:
+async def _render_wizard_ps1(token: str) -> str:
     public_http = _os.environ.get("AGENT_PUBLIC_HTTP_URL", "https://argus.86bit.it")
     body = _read_template_or_fallback("installer_gui.ps1.template")
+    # FIX v4.10.3: sostituiamo anche __VERSION__ con la latest release
+    # risolta da GitHub. Senza questo il template cade sul default
+    # hardcoded `$Version = "4.0.0"` (riga 73) e il PS1 scarica binari
+    # v4.0.0 invece dell'ultima release disponibile. Era la causa del
+    # bug reportato dall'utente: pulsante "Installer (latest)" che
+    # installava sempre v4.0.0-dev.
+    ver_label = await _resolve_latest_agent_version_safe()
+    # Rimuovi prefisso "v" perche' il template usa il formato semver
+    # nudo "4.10.2" come default di $Version.
+    ver_naked = ver_label.lstrip("v") if ver_label and ver_label != "latest" else "4.0.0"
     return (body
             .replace("__BACKEND_URL__", public_http)
-            .replace("__TOKEN__", token))
+            .replace("__TOKEN__", token)
+            .replace("__VERSION__", ver_naked))
 
 
-def _build_wizard_bundle(token: str) -> str:
+async def _build_wizard_bundle(token: str) -> str:
     """Materialise the wizard ZIP on disk and return its path.
 
     Note: starting from sprint 1.6 we **do not ship a .vbs launcher** anymore
@@ -1504,7 +1515,7 @@ def _build_wizard_bundle(token: str) -> str:
     if out.is_file():
         out.unlink()  # rebuild — content/template may have changed
 
-    ps1_body = _render_wizard_ps1(token)
+    ps1_body = await _render_wizard_ps1(token)
     # Il launcher .bat e' embedded nel codice (15 righe, ~740 bytes): cosi'
     # il wizard funziona anche su deploy minimali (solo backend) senza
     # richiedere il file `Installa-86NocAgent.bat` sul filesystem prod.
