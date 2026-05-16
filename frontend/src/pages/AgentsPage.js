@@ -128,12 +128,16 @@ export default function AgentsPage() {
       toast.error("L'agent non è connesso (LIVE). Aspetta che torni online e ritenta.");
       return;
     }
-    if (!confirm(`Aggiornare ${a.hostname || a.agent_id.slice(0, 8)} a ${latest || "latest"}?`)) return;
+    if (!latest || latest === "latest") {
+      toast.error("Versione target non risolvibile: il Center non riesce a leggere l'ultima release da GitHub. Imposta AGENT_GITHUB_TOKEN nel .env del backend o forza con AGENT_LATEST_VERSION.");
+      return;
+    }
+    if (!confirm(`Aggiornare ${a.hostname || a.agent_id.slice(0, 8)} a ${latest}?`)) return;
     setBusyIds((s) => new Set([...s, a.agent_id]));
     try {
       const r = await axios.post(`${API}/agents/bulk-update`, {
         agent_ids: [a.agent_id],
-        version: latest || undefined,
+        version: latest,
       });
       if (r.data.sent_count > 0) {
         toast.success(`Comando inviato a ${a.hostname || a.agent_id.slice(0, 8)}`);
@@ -152,6 +156,10 @@ export default function AgentsPage() {
   const updateAllOutdated = async () => {
     if (outdatedLive.length === 0) {
       toast.error("Nessun agent obsoleto è attualmente connesso.");
+      return;
+    }
+    if (!latest || latest === "latest") {
+      toast.error("Versione target non risolvibile dal Center (GitHub API). Imposta AGENT_GITHUB_TOKEN nel backend.");
       return;
     }
     if (!confirm(`Aggiornare ${outdatedLive.length} connector LIVE a ${latest}?\n\nGli agent si riavvieranno autonomamente.`)) return;
@@ -259,6 +267,27 @@ export default function AgentsPage() {
              sub={outdatedLive.length > 0 ? `${outdatedLive.length} aggiornabili ora` : ""}
              icon={Warning} color={outdated.length > 0 ? "amber" : "zinc"} testId="kpi-outdated" />
       </div>
+
+      {/* Warning banner: latest version non risolta → updates impossibili */}
+      {(!latest || latest === "latest") && agents.length > 0 && (
+        <div className="noc-panel p-3 border-red-500/40 bg-red-500/5 flex items-start gap-2.5"
+          data-testid="latest-version-warning">
+          <Warning size={18} weight="fill" className="text-red-400 flex-shrink-0 mt-0.5" />
+          <div className="flex-1 text-xs">
+            <p className="font-bold text-red-300">Versione target non risolvibile</p>
+            <p className="text-red-200/70 text-[11px] mt-0.5">
+              Il Center non riesce a leggere l'ultima release da GitHub
+              (rate-limit unauth = 60/h). Senza una versione concreta, gli
+              update remoti falliranno con "timeout". Imposta uno dei due
+              env nel <span className="font-mono">.env</span> del backend:
+            </p>
+            <ul className="text-[10px] mt-1.5 font-mono text-red-200/80 space-y-0.5">
+              <li>• <span className="text-amber-400">AGENT_GITHUB_TOKEN</span>=ghp_xxx  (Personal Access Token, scope: <span className="font-bold">public_repo</span> sufficiente)</li>
+              <li>• <span className="text-amber-400">AGENT_LATEST_VERSION</span>=v4.11.0  (override manuale - sconsigliato se hai CI/CD)</li>
+            </ul>
+          </div>
+        </div>
+      )}
 
       {/* Bulk action banner */}
       {outdated.length > 0 && (
@@ -438,11 +467,17 @@ export default function AgentsPage() {
                             ✓ aggiornato
                           </span>
                         ) : a.update_status === "failed" || a.update_status === "timeout" ? (
-                          <div className="inline-flex flex-col items-end gap-0.5">
-                            <span className="text-[9px] text-red-400 px-2 py-0.5 rounded bg-red-500/10 border border-red-500/20"
-                              title={a.update_error}>
+                          <div className="inline-flex flex-col items-end gap-0.5 min-w-[120px]">
+                            <span className="text-[9px] text-red-400 px-2 py-0.5 rounded bg-red-500/10 border border-red-500/20 cursor-help"
+                              title={a.update_error || "Errore sconosciuto"}>
                               ✕ {a.update_status === "timeout" ? "timeout" : "fallito"}
                             </span>
+                            {a.update_error && (
+                              <span className="text-[8px] text-[var(--text-muted)] truncate max-w-[200px]"
+                                title={a.update_error}>
+                                {a.update_error.length > 40 ? a.update_error.slice(0, 40) + "…" : a.update_error}
+                              </span>
+                            )}
                             <button onClick={() => updateOne(a)}
                               className="text-[9px] text-amber-400 hover:underline"
                               data-testid={`agent-retry-${a.agent_id}`}>
