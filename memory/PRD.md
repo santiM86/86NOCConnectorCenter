@@ -32,6 +32,95 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-02 ✅ FEATURE BUNDLE — Rimozione legacy v3, Ghost Cleanup, WMI Polling
+
+**Status**: implementato, testato 14/14 (backend + frontend, 100%). Pronto
+per push GitHub.
+
+### A) Rimozione pagina legacy `/connectors` (86NocConnector v3 PowerShell)
+
+- `frontend/src/pages/ConnectorsPage.js` ELIMINATO (era la UI del vecchio
+  PowerShell v3.8.x, sostituito dall'Agent Go v4 ovunque).
+- `frontend/src/App.js`: rimosso import + Route.
+- `frontend/src/components/Layout.js`: rimosso link "Connettori" dalla
+  sidebar (sezione Clienti).
+- `frontend/src/components/RemoteBrowserModal.js`: link "Vai a Connettori"
+  ora punta a `/clients` (la nuova entry-point).
+- Backend `/api/connector/*` lasciato intatto (potrebbero esserci ancora
+  installazioni v3 in produzione che pollano questi endpoint — nessuna
+  breaking change lato server).
+
+### B) Ghost Agents cleanup
+
+**Backend** (`routes/agent_ws.py`):
+- `GET /api/agents/stale?stale_days=7` — lista agent ghost. Criteri:
+  - mai heartbeat AND `first_seen_at` più vecchio della soglia, OR
+  - `last_heartbeat_at` più vecchio della soglia AND not currently live
+- `POST /api/agents/cleanup` con body:
+  - `{agent_ids: [...]}` → cancella SOLO quegli ID (skip live)
+  - `{cleanup_all_stale: true, stale_days: N, client_id?}` → cancella tutti
+    gli stale (skip live)
+- Audit in `agent_cleanup_audit` (deleted_by, deleted_at, criteria, ids).
+- Helper `_parse_iso` per le ISO datetime persistite come string.
+
+**Frontend** (`pages/SettingsPage.js`):
+- Nuovo componente `GhostAgentsPanel` admin-only (mostrato solo se
+  `user.role==="admin"`).
+- Tabella con soglia configurabile (1..365 giorni), conteggio live,
+  cancellazione singola (icona trash) o massiva ("Pulisci tutti N").
+- Testid: `ghost-agents-panel`, `ghost-cleanup-all-btn`, `ghost-days-input`,
+  `ghost-refresh-btn`, `ghost-del-{agent_id}`.
+
+**Effetto**: storicamente nel DB della preview c'erano 20 ghost agents
+(`pytest-agent`, vari `agent-env-XXX` di smoke test, e installazioni
+pre-fix-UUID-persistente v4.4.0). L'admin può ora ripulirli con un click.
+
+### C) WMI/SysMetrics polling — Windows servers nativo
+
+**Agent Go** (`internal/poller/sysmetrics.go` + `pkg/proto/messages.go`):
+- Nuovo `SysMetricsPoller` cross-platform basato su `gopsutil/v4`
+  (già in `go.mod`). Su Windows usa WMI counters natively (CPU, RAM,
+  Disk, Network, processi), su Linux usa `/proc`.
+- Default: enabled=true, interval=60s. Hot-swap via `server.welcome`.
+- Nuovo `proto.EventSysMetrics = "sys_metrics"` con payload `SysMetricsResult`
+  (CPU%, RAM%, swap, disks[], net counters, uptime, proc_count, platform).
+- `cmd/agent/main.go`: aggiunto registration health, goroutine `sysm.Run(ctx)`,
+  capability `"poll.sysmetrics"`, hot-swap nel `OnWelcome`.
+
+**Backend** (`routes/agent_ws.py`):
+- `_bridge_sys_metrics` → upsert in `sys_metrics_latest` (one per
+  agent_id) + insert in `sys_metrics_history` (time series).
+- `GET /api/agents/{agent_id}/sys-metrics/latest` (admin)
+- `GET /api/agents/{agent_id}/sys-metrics/history?hours=24` (admin, 1..168)
+- `GET /api/sys-metrics/overview?client_id=?` — lista tutti gli agent con
+  stato `live/stale`, `age_seconds`, `disk_max_pct` precomputati per UI.
+- `_build_poller_config` ora emette anche `sysmetrics: {enabled:true, interval:60s}`.
+- Indici Mongo in `server.py`: `(agent_id)` unique su latest, `(agent_id,
+  sampled_at -1)` + `(client_id, sampled_at -1)` su history.
+
+**Frontend** (`pages/ServerMetricsPage.js`, route `/server-metrics`):
+- Nuova voce sidebar "Server con Agent" in Operazioni (admin+operator).
+- Card per ogni server con CPU/RAM/Disk in pillole verticali, badge
+  LIVE/STALE/ONLINE, uptime fmt, proc count, last sample relative time.
+- Filtro testuale, polling 30s, empty-state esplicito.
+- Testid: `server-metrics-page`, `server-card-{agent_id}`,
+  `server-metrics-refresh`, `server-metrics-filter`.
+
+### Build / vet
+
+```bash
+GOOS=windows go build ./... 2>&1 → OK
+GOOS=linux   go build ./... 2>&1 → OK
+go vet ./... 2>&1 → clean
+```
+
+### Test report iteration_78
+- backend: 14/14 PASS (test_ghost_agents_sysmetrics.py)
+- frontend: 100% (Playwright E2E sulle nuove pagine)
+- Nessun issue critico, minor design hint optional su NotFound route.
+
+
+
 ## 2026-02 ✅ Banner upgrade agenti + bulk update
 
 **Implementato:**
