@@ -3,7 +3,7 @@ import axios from "axios";
 import { API, useAuth } from "@/App";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
-import { Gear, ShieldCheck, Bell, Key, BellRinging, BellSlash, Moon, Ghost, Trash, ArrowClockwise } from "@phosphor-icons/react";
+import { Gear, ShieldCheck, Bell, Key, BellRinging, BellSlash, Moon, Ghost, Trash, ArrowClockwise, Tag } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
@@ -367,6 +367,7 @@ export default function SettingsPage() {
         </div>
 
         {user?.role === "admin" && <GhostAgentsPanel />}
+        {user?.role === "admin" && <AgentLatestVersionPanel />}
       </div>
     </div>
   );
@@ -522,3 +523,154 @@ function GhostAgentsPanel() {
     </div>
   );
 }
+
+/**
+ * AgentLatestVersionPanel — admin override versione latest Agent.
+ *
+ * Quando il backend non riesce a leggere la latest release da GitHub
+ * (rate-limit unauth = 60/h IP), gli aggiornamenti remoti falliscono
+ * con timeout. Questo pannello permette di:
+ *   1) Vedere lo stato corrente di risoluzione (DB / env / GitHub)
+ *   2) Forzare una versione manualmente (es. "v4.11.0")
+ *   3) Cancellare l'override e tornare alla risoluzione automatica
+ */
+function AgentLatestVersionPanel() {
+  const [status, setStatus] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [draftVersion, setDraftVersion] = useState("");
+
+  const fetchStatus = async () => {
+    setLoading(true);
+    try {
+      const r = await axios.get(`${API}/admin/agent-latest-override`);
+      setStatus(r.data);
+      setDraftVersion(r.data.db_override || r.data.env_override || (r.data.resolved !== "latest" ? r.data.resolved : ""));
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Errore caricamento stato override");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { fetchStatus(); }, []);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const r = await axios.post(`${API}/admin/agent-latest-override`, { version: draftVersion });
+      toast.success(`Override salvato: ${r.data.resolved}`);
+      await fetchStatus();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Errore salvataggio");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const clear = async () => {
+    if (!confirm("Cancellare l'override DB? Tornerà a risolvere via env/GitHub API.")) return;
+    setSaving(true);
+    try {
+      await axios.post(`${API}/admin/agent-latest-override`, { version: "" });
+      toast.success("Override rimosso");
+      await fetchStatus();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Errore");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="noc-panel p-5" data-testid="agent-latest-panel">
+      <h3 className="text-[var(--text-muted)] text-[10px] font-medium uppercase tracking-widest mb-3 flex items-center gap-1.5">
+        <Tag size={13} /> Versione Agent latest (override)
+      </h3>
+      <p className="text-[var(--text-muted)] text-xs mb-3">
+        Forza la versione target degli aggiornamenti remoti quando il Center
+        non riesce a leggere automaticamente l'ultima release da GitHub
+        (rate-limit, repo privato, ecc.). L'effetto è immediato — non serve
+        riavviare il backend.
+      </p>
+
+      {loading ? (
+        <p className="text-[var(--text-muted)] text-xs">Caricamento…</p>
+      ) : status && (
+        <>
+          <div className="grid grid-cols-2 gap-2 mb-3 text-[10px]">
+            <StateRow label="Override DB" value={status.db_override || "—"}
+              mono active={!!status.db_override} testId="state-db-override" />
+            <StateRow label="Env AGENT_LATEST_VERSION" value={status.env_override || "—"}
+              mono active={!!status.env_override} testId="state-env-override" />
+            <StateRow label="AGENT_GITHUB_TOKEN" value={status.github_token_set ? "configurato" : "MANCANTE"}
+              ok={status.github_token_set} testId="state-gh-token" />
+            <StateRow label="Repository" value={status.repo} mono testId="state-repo" />
+          </div>
+
+          <div className={`p-2.5 rounded mb-3 border text-[11px] ${
+            status.is_unresolved
+              ? "bg-red-500/10 border-red-500/30 text-red-300"
+              : "bg-emerald-500/10 border-emerald-500/30 text-emerald-300"
+          }`} data-testid="resolved-banner">
+            <span className="font-semibold">Versione risolta attualmente:</span>{" "}
+            <span className="font-mono font-bold">{status.resolved}</span>
+            {status.is_unresolved && (
+              <span className="block text-[10px] mt-1">
+                ⚠ Impossibile risolvere — gli update remoti falliranno. Imposta un override sotto.
+              </span>
+            )}
+          </div>
+
+          <div className="flex items-center gap-2">
+            <Input
+              type="text"
+              value={draftVersion}
+              onChange={(e) => setDraftVersion(e.target.value)}
+              placeholder="v4.11.0"
+              className="flex-1 h-8 text-xs font-mono"
+              data-testid="version-input"
+            />
+            <Button size="sm" onClick={save} disabled={saving || !draftVersion}
+              className="h-8 text-[11px]"
+              data-testid="version-save-btn">
+              <Tag size={11} className="mr-1" />
+              {saving ? "..." : "Forza versione"}
+            </Button>
+            {status.db_override && (
+              <Button size="sm" variant="outline" onClick={clear} disabled={saving}
+                className="h-8 text-[11px]"
+                data-testid="version-clear-btn">
+                <Trash size={11} className="mr-1" />
+                Rimuovi
+              </Button>
+            )}
+            <Button size="sm" variant="outline" onClick={fetchStatus} disabled={loading}
+              className="h-8 w-8 p-0"
+              data-testid="version-refresh-btn">
+              <ArrowClockwise size={12} className={loading ? "animate-spin" : ""} />
+            </Button>
+          </div>
+
+          {status.db_override_updated_at && (
+            <p className="text-[9px] text-[var(--text-muted)] mt-2">
+              Ultimo update: {new Date(status.db_override_updated_at).toLocaleString()} · da {status.db_override_updated_by}
+            </p>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function StateRow({ label, value, mono, ok, active, testId }) {
+  return (
+    <div className="flex items-center justify-between bg-[var(--bg-card)] p-2 rounded border border-[var(--bg-border)]" data-testid={testId}>
+      <span className="text-[var(--text-muted)]">{label}</span>
+      <span className={`${mono ? "font-mono" : ""} ${
+        ok === true ? "text-emerald-400" : ok === false ? "text-red-400" : active ? "text-amber-400" : "text-[var(--text-primary)]"
+      } truncate ml-2 max-w-[60%] text-right`}>{value}</span>
+    </div>
+  );
+}
+
