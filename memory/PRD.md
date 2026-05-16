@@ -32,6 +32,38 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-02 ✅ Banner upgrade agenti + bulk update
+
+**Implementato:**
+
+### Backend (`agent_ws.py`)
+- `GET /api/agents/upgrade-status` ritorna:
+  - `latest` (v4.10.3 da GitHub)
+  - `total_agents`, `live_agents`, `outdated_count`
+  - `outdated[]`: lista con `agent_id`, `hostname`, `client_id`,
+    `client_name`, `current_version`, `last_seen_at`, `live`
+- `POST /api/agents/bulk-update` con body `{agent_ids?, only_outdated?,
+  version?}` → invia comando WS `update` agli agent indicati.
+  Risposta: `{target_version, sent_count, failed_count, sent[], failed[]}`
+- Helper `_normalize_ver(v)` che gestisce semver con build metadata
+  (es. `"4.0.0-dev+4755a03"` → `"4.0.0"`)
+
+### Frontend (`components/AgentUpgradeBanner.js`)
+- Banner sticky ambra in cima a tutte le pagine
+- Polling ogni 5min + iniziale al mount
+- Visibile solo se `outdated_count > 0`
+- Bottone "Aggiorna N ora": conferma → POST bulk-update solo agent live
+- Dismiss per sessione (sessionStorage)
+- Auto-fetch dopo 30s per riflettere il nuovo stato
+- Montato in `Layout.js` sopra `<Outlet/>`
+
+### Test smoke screenshot
+Mostra correttamente "↑ v4.10.3 disponibile. 38 connectors su versione
+precedente [Aggiorna ora] ✕" — endpoint risponde, normalizzazione
+versione funziona, UI coerente con tema dark.
+
+
+
 ## 2026-02 ✅ FIX BUG P0: "Installer (latest)" scaricava sempre v4.0.0
 
 **Bug reportato dall'utente** (screenshot): l'agent installato sul PC

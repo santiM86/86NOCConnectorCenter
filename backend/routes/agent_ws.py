@@ -1295,6 +1295,148 @@ async def agent_latest_version() -> Dict[str, str]:
     return {"version": ver}
 
 
+def _normalize_ver(v: Optional[str]) -> str:
+    """Normalizza una version string per confronto (rimuove 'v', spazi, +metadata).
+    Esempi: 'v4.10.3' -> '4.10.3', '4.0.0-dev+4755a03' -> '4.0.0'.
+    """
+    if not v:
+        return ""
+    v = v.strip().lstrip("vV")
+    # tronca al primo '+' (build metadata semver) ed elimina '-dev/-beta'
+    for sep in ("+", "-"):
+        i = v.find(sep)
+        if i >= 0:
+            v = v[:i]
+    return v
+
+
+@router.get("/agents/upgrade-status")
+async def agents_upgrade_status(
+    user: Dict[str, Any] = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """Ritorna lista agent con versione obsoleta rispetto alla latest.
+
+    Output:
+      {
+        "latest": "v4.10.3",
+        "total_agents": 42,
+        "live_agents": 35,
+        "outdated_count": 7,
+        "outdated": [
+           {"agent_id":..., "hostname":..., "client_id":..., "client_name":...,
+            "current_version":..., "live": true/false},
+           ...
+        ]
+      }
+    """
+    latest_raw = await _resolve_latest_agent_version_safe()
+    latest_n = _normalize_ver(latest_raw)
+    live_agent_ids = {c.agent_id for c in REGISTRY.list()}
+
+    # Cache client_id -> name in batch
+    client_ids: set[str] = set()
+    cursor = db.managed_agents.find(
+        {}, {"_id": 0, "agent_id": 1, "hostname": 1, "client_id": 1,
+             "agent_version": 1, "last_seen_at": 1}
+    )
+    docs: List[Dict[str, Any]] = []
+    async for d in cursor:
+        docs.append(d)
+        if d.get("client_id"):
+            client_ids.add(d["client_id"])
+    name_by_id: Dict[str, str] = {}
+    if client_ids:
+        async for c in db.clients.find(
+            {"id": {"$in": list(client_ids)}}, {"_id": 0, "id": 1, "name": 1}
+        ):
+            name_by_id[c["id"]] = c.get("name") or c["id"][:8]
+
+    outdated: List[Dict[str, Any]] = []
+    for d in docs:
+        cur_n = _normalize_ver(d.get("agent_version"))
+        if not cur_n or not latest_n:
+            continue
+        if cur_n == latest_n:
+            continue
+        outdated.append({
+            "agent_id": d.get("agent_id"),
+            "hostname": d.get("hostname") or "",
+            "client_id": d.get("client_id") or "",
+            "client_name": name_by_id.get(d.get("client_id") or "", ""),
+            "current_version": d.get("agent_version") or "",
+            "last_seen_at": d.get("last_seen_at"),
+            "live": d.get("agent_id") in live_agent_ids,
+        })
+    return {
+        "latest": latest_raw,
+        "total_agents": len(docs),
+        "live_agents": len(live_agent_ids),
+        "outdated_count": len(outdated),
+        "outdated": outdated,
+    }
+
+
+@router.post("/agents/bulk-update")
+async def agents_bulk_update(
+    payload: Dict[str, Any],
+    user: Dict[str, Any] = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """Invia comando `update` agli agent indicati.
+
+    Body:
+      {
+        "agent_ids": [...],          # opzionale: subset specifico
+        "only_outdated": true,       # opzionale: filtra solo obsoleti vs latest
+        "version": "v4.10.3"         # opzionale: target (default latest)
+      }
+
+    Se né agent_ids né only_outdated sono passati, ritorna 400.
+    """
+    agent_ids = payload.get("agent_ids") or []
+    only_outdated = bool(payload.get("only_outdated"))
+    target_version = (payload.get("version") or "").strip()
+
+    if not agent_ids and not only_outdated:
+        raise HTTPException(status_code=400, detail="Specifica agent_ids o only_outdated=true")
+    require_admin(user)
+
+    if not target_version:
+        target_version = await _resolve_latest_agent_version_safe()
+    target_n = _normalize_ver(target_version)
+
+    # Se only_outdated, calcola la lista
+    if only_outdated:
+        async for d in db.managed_agents.find(
+            {}, {"_id": 0, "agent_id": 1, "agent_version": 1}
+        ):
+            cur_n = _normalize_ver(d.get("agent_version"))
+            if cur_n and target_n and cur_n != target_n:
+                if d.get("agent_id") and d["agent_id"] not in agent_ids:
+                    agent_ids.append(d["agent_id"])
+
+    sent: List[str] = []
+    failed: List[Dict[str, str]] = []
+    for aid in agent_ids:
+        conn = REGISTRY.get(aid)
+        if conn is None:
+            failed.append({"agent_id": aid, "reason": "agent non connesso"})
+            continue
+        try:
+            await conn.send_command("update", {"version": target_version}, timeout=10.0)
+            sent.append(aid)
+        except Exception as e:
+            failed.append({"agent_id": aid, "reason": str(e)[:160]})
+
+    return {
+        "target_version": target_version,
+        "sent_count": len(sent),
+        "sent": sent,
+        "failed_count": len(failed),
+        "failed": failed,
+        "initiated_by": user.get("email") or user.get("id") or "system",
+    }
+
+
 async def _resolve_client_label(client_id: str) -> str:
     """Return a filesystem-safe label per il cliente da usare nei
     nomi file scaricabili. Ordine di preferenza: name -> slug -> id.
