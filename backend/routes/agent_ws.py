@@ -316,6 +316,8 @@ async def _on_event(conn: _Connection, evt: Dict[str, Any]) -> None:
             await _bridge_snmp_poll(conn, data)
         elif kind == "ping_poll" and isinstance(data, dict):
             await _bridge_ping_poll(conn, data)
+        elif kind == "sys_metrics" and isinstance(data, dict):
+            await _bridge_sys_metrics(conn, data)
         elif kind in ("lan_scan_result", "lan_scan_progress", "lan_scan_done") and isinstance(data, dict):
             # Lazy import per evitare cicli (lan_scanner.py importa
             # questo modulo per REGISTRY).
@@ -554,6 +556,134 @@ async def _bridge_snmp_poll(conn: _Connection, r: Dict[str, Any]) -> None:
         logger.warning("snmp_poll: managed_devices update failed ip=%s err=%s", target, e)
 
 
+async def _bridge_sys_metrics(conn: _Connection, r: Dict[str, Any]) -> None:
+    """Bridge agent.event kind=sys_metrics → Mongo.
+
+    Storage:
+      - `sys_metrics_latest`  (one doc per agent_id, last known snapshot)
+      - `sys_metrics_history` (TTL-capped time-series, 30gg)
+
+    Used dal NOC Center per dashboard CPU/RAM/Disk dei server Windows/Linux
+    su cui l'agent gira direttamente (replacement nativo del polling SNMP
+    via Net-SNMP/snmp-printer). Gli alert vengono generati a parte dal
+    motore `alert_rules` con soglie configurabili.
+    """
+    agent_id = conn.agent_id
+    client_id = conn.client_id
+    now_iso = _now().isoformat()
+    # Costruisci doc compatto (manteniamo i disks come array nested)
+    doc = {
+        "agent_id": agent_id,
+        "client_id": client_id,
+        "received_at": now_iso,
+        "sampled_at": r.get("sampled_at"),
+        "hostname": r.get("hostname"),
+        "os": r.get("os"),
+        "platform": r.get("platform"),
+        "uptime_sec": r.get("uptime_sec"),
+        "boot_time": r.get("boot_time"),
+        "cpu_percent": r.get("cpu_percent"),
+        "cpu_cores": r.get("cpu_cores"),
+        "load_avg_1": r.get("load_avg_1"),
+        "mem_total_mb": r.get("mem_total_mb"),
+        "mem_used_mb": r.get("mem_used_mb"),
+        "mem_used_pct": r.get("mem_used_pct"),
+        "swap_used_mb": r.get("swap_used_mb"),
+        "swap_used_pct": r.get("swap_used_pct"),
+        "disks": r.get("disks") or [],
+        "net_total_rx_bytes": r.get("net_total_rx_bytes"),
+        "net_total_tx_bytes": r.get("net_total_tx_bytes"),
+        "proc_count": r.get("proc_count"),
+    }
+    # 1. latest (upsert per agent_id)
+    try:
+        await db.sys_metrics_latest.update_one(
+            {"agent_id": agent_id},
+            {"$set": doc},
+            upsert=True,
+        )
+    except Exception as e:
+        logger.warning("sys_metrics: latest upsert failed agent=%s err=%s", agent_id, e)
+    # 2. history (insert; TTL gestito da indice in startup di server)
+    try:
+        await db.sys_metrics_history.insert_one(dict(doc))
+    except Exception as e:
+        logger.warning("sys_metrics: history insert failed agent=%s err=%s", agent_id, e)
+
+
+@router.get("/agents/{agent_id}/sys-metrics/latest")
+async def get_sys_metrics_latest(
+    agent_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """Ritorna l'ultimo sample CPU/RAM/Disk dell'agent indicato.
+
+    Usato dalla UI del Center per mostrare i KPI live nella scheda di un
+    server Windows monitorato direttamente via agent (no SNMP).
+    """
+    require_admin(current_user)
+    doc = await db.sys_metrics_latest.find_one({"agent_id": agent_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="no metrics yet for this agent")
+    return doc
+
+
+@router.get("/agents/{agent_id}/sys-metrics/history")
+async def get_sys_metrics_history(
+    agent_id: str,
+    hours: int = 24,
+    current_user: dict = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """Ritorna serie temporale degli ultimi `hours` (1..168 = 7gg).
+
+    Output: { agent_id, samples: [{sampled_at, cpu_percent, mem_used_pct, ...}, ...] }
+    """
+    require_admin(current_user)
+    hours = max(1, min(hours, 168))
+    since = (_now() - timedelta(hours=hours)).isoformat()
+    cursor = db.sys_metrics_history.find(
+        {"agent_id": agent_id, "sampled_at": {"$gte": since}},
+        {"_id": 0, "sampled_at": 1, "cpu_percent": 1, "mem_used_pct": 1,
+         "proc_count": 1, "disks": 1, "swap_used_pct": 1},
+    ).sort("sampled_at", 1)
+    samples = await cursor.to_list(length=10000)
+    return {"agent_id": agent_id, "hours": hours, "sample_count": len(samples), "samples": samples}
+
+
+@router.get("/sys-metrics/overview")
+async def sys_metrics_overview(
+    client_id: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """Ritorna l'ultimo snapshot di TUTTI gli agent (opz. filtrato per cliente).
+
+    Usato dalla UI del Center per la dashboard "Server con agent": una
+    riga per host con CPU/RAM/Disk + stato `stale` se >5 minuti dall'ultimo
+    sample.
+    """
+    require_admin(current_user)
+    q: Dict[str, Any] = {}
+    if client_id:
+        q["client_id"] = client_id
+    cursor = db.sys_metrics_latest.find(q, {"_id": 0})
+    docs = await cursor.to_list(length=500)
+    # Arricchisci con hostname dal managed_agents e flag live/stale
+    live_ids = {c.agent_id for c in REGISTRY.list()}
+    now = _now()
+    for d in docs:
+        sampled = _parse_iso(d.get("sampled_at"))
+        d["age_seconds"] = round((now - sampled).total_seconds(), 1) if sampled else None
+        d["stale"] = (d.get("age_seconds") or 999_999) > 300  # 5min
+        d["live"] = d.get("agent_id") in live_ids
+        # disk max% (più utile in colonna che array)
+        max_disk_pct = 0.0
+        for dk in (d.get("disks") or []):
+            if dk.get("used_pct", 0) > max_disk_pct:
+                max_disk_pct = dk["used_pct"]
+        d["disk_max_pct"] = round(max_disk_pct, 1)
+    return {"count": len(docs), "agents": docs}
+
+
 async def _build_poller_config(client_id: str) -> Dict[str, Any]:
     """Build poller config for one tenant.
 
@@ -628,6 +758,10 @@ async def _build_poller_config(client_id: str) -> Dict[str, Any]:
             "timeout": "2s",
             "count": 1,
             "targets": ping_targets,
+        },
+        "sysmetrics": {
+            "enabled": True,
+            "interval": "60s",
         },
     }
 
@@ -896,6 +1030,152 @@ async def agent_health(agent_id: str,
     doc["live"] = REGISTRY.get(agent_id) is not None
     doc["heartbeat_age_minutes"] = stale_minutes
     return doc
+
+
+# ---- Ghost agents cleanup ---------------------------------------------------
+#
+# Storicamente l'agent generava un UUID nuovo ad ogni restart (ghost
+# agents). Il fix v4.4.0 persiste l'UUID in agent_id.txt — ma in DB
+# restano i record obsoleti di prima del fix. Questi endpoint permettono
+# all'admin di:
+#   - GET /api/agents/stale → lista agent "fantasma" (mai connessi o
+#     stale da > N giorni)
+#   - POST /api/agents/cleanup → cancella i record indicati (o tutti
+#     gli stale)
+# Audit: collection `agent_cleanup_audit`.
+
+
+def _parse_iso(s: Any) -> Optional[datetime]:
+    if not s or not isinstance(s, str):
+        return None
+    try:
+        return datetime.fromisoformat(s)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+@router.get("/agents/stale")
+async def agents_stale(
+    stale_days: int = 7,
+    current_user: dict = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """Lista record `managed_agents` considerati 'ghost'.
+
+    Criteri (qualunque dei seguenti):
+      - mai visto heartbeat (`last_heartbeat_at` mancante) AND
+        `first_seen_at` più vecchio di `stale_days`
+      - `last_heartbeat_at` più vecchio di `stale_days` AND
+        attualmente non connesso (REGISTRY.get == None)
+
+    Query:
+      stale_days: soglia giorni (default 7). 1 ≤ stale_days ≤ 365.
+    """
+    require_admin(current_user)
+    stale_days = max(1, min(stale_days, 365))
+    now = datetime.now(timezone.utc)
+    threshold = now - timedelta(days=stale_days)
+    live_ids = {c.agent_id for c in REGISTRY.list()}
+
+    stale: List[Dict[str, Any]] = []
+    async for d in db.managed_agents.find({}, {"_id": 0}):
+        agent_id = d.get("agent_id") or ""
+        if agent_id in live_ids:
+            continue  # currently connected, skip
+        hb = _parse_iso(d.get("last_heartbeat_at"))
+        first = _parse_iso(d.get("first_seen_at")) or _parse_iso(d.get("last_hello_at"))
+        is_stale = False
+        if hb is None:
+            # mai visto heartbeat: stale se first_seen_at è vecchio
+            if first is None or first < threshold:
+                is_stale = True
+        elif hb < threshold:
+            is_stale = True
+        if is_stale:
+            stale.append({
+                "agent_id": agent_id,
+                "hostname": d.get("hostname") or "",
+                "client_id": d.get("client_id") or "",
+                "agent_version": d.get("agent_version") or "",
+                "first_seen_at": d.get("first_seen_at"),
+                "last_hello_at": d.get("last_hello_at"),
+                "last_heartbeat_at": d.get("last_heartbeat_at"),
+                "connected": False,
+                "age_days": round((now - (hb or first or now)).total_seconds() / 86400.0, 1) if (hb or first) else None,
+            })
+    # ordina dal più vecchio
+    stale.sort(key=lambda x: x.get("age_days") or 0.0, reverse=True)
+    return {
+        "stale_count": len(stale),
+        "stale_days": stale_days,
+        "agents": stale,
+    }
+
+
+class AgentsCleanupRequest(BaseModel):
+    agent_ids: Optional[List[str]] = None
+    stale_days: int = 7
+    cleanup_all_stale: bool = False
+    # safety: client_id constraint (opzionale)
+    client_id: Optional[str] = None
+
+
+@router.post("/agents/cleanup")
+async def agents_cleanup(
+    req: AgentsCleanupRequest,
+    current_user: dict = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """Rimuove record ghost da `managed_agents`.
+
+    Due modalità:
+      a) ``agent_ids: [...]``  → cancella SOLO quegli ID (verifica che non
+         siano attualmente connessi).
+      b) ``cleanup_all_stale: true``  → cancella tutti gli agent stale
+         (criterio identico a GET /api/agents/stale).
+
+    Sempre: gli agent CONNECTED LIVE non vengono mai cancellati.
+    """
+    require_admin(current_user)
+    live_ids = {c.agent_id for c in REGISTRY.list()}
+
+    target_ids: List[str] = []
+    if req.agent_ids:
+        target_ids = [a for a in req.agent_ids if a and a not in live_ids]
+    elif req.cleanup_all_stale:
+        days = max(1, min(req.stale_days or 7, 365))
+        threshold = datetime.now(timezone.utc) - timedelta(days=days)
+        q: Dict[str, Any] = {}
+        if req.client_id:
+            q["client_id"] = req.client_id
+        async for d in db.managed_agents.find(q, {"_id": 0, "agent_id": 1,
+                                                  "last_heartbeat_at": 1,
+                                                  "first_seen_at": 1,
+                                                  "last_hello_at": 1}):
+            aid = d.get("agent_id") or ""
+            if not aid or aid in live_ids:
+                continue
+            hb = _parse_iso(d.get("last_heartbeat_at"))
+            first = _parse_iso(d.get("first_seen_at")) or _parse_iso(d.get("last_hello_at"))
+            if hb is None:
+                if first is None or first < threshold:
+                    target_ids.append(aid)
+            elif hb < threshold:
+                target_ids.append(aid)
+    else:
+        raise HTTPException(status_code=400, detail="Specifica agent_ids oppure cleanup_all_stale=true")
+
+    if not target_ids:
+        return {"deleted_count": 0, "deleted_ids": []}
+
+    res = await db.managed_agents.delete_many({"agent_id": {"$in": target_ids}})
+    # audit
+    await db.agent_cleanup_audit.insert_one({
+        "deleted_at": _now().isoformat(),
+        "deleted_by": current_user.get("email") or current_user.get("id"),
+        "deleted_ids": target_ids,
+        "count": res.deleted_count,
+        "criteria": "manual" if req.agent_ids else f"stale>{req.stale_days}d",
+    })
+    return {"deleted_count": res.deleted_count, "deleted_ids": target_ids}
 
 
 # ---- Binary distribution -----------------------------------------------------

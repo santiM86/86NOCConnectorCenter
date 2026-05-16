@@ -433,6 +433,18 @@ async def startup_event():
 
         await db.network_changes.create_index([("client_id", 1), ("timestamp", -1)])
 
+        # sys_metrics — telemetria nativa CPU/RAM/Disk dei server con agent
+        await db.sys_metrics_latest.create_index([("agent_id", 1)], unique=True)
+        await db.sys_metrics_history.create_index([("agent_id", 1), ("sampled_at", -1)])
+        try:
+            # TTL su sampled_at: 30gg = 2592000s. sampled_at è ISO string,
+            # MongoDB richiede BSON date per il TTL → manteniamo solo
+            # l'indice composito; per ora pulizia via job (cleanup_old).
+            # Indice secondario per query per client
+            await db.sys_metrics_history.create_index([("client_id", 1), ("sampled_at", -1)])
+        except Exception:
+            pass
+
         await db.incidents.create_index([("client_id", 1), ("status", 1)])
         await db.incidents.create_index([("status", 1), ("priority", 1)])
         await db.incidents.create_index([("created_at", -1)])

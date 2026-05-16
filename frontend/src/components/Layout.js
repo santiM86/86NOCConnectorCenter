@@ -47,6 +47,7 @@ import {
   Brain,
   Heartbeat,
   Cpu,
+  Desktop,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import {
@@ -72,7 +73,6 @@ const navConfig = [
     label: "Clienti",
     items: [
       { path: "/clients", icon: Buildings, label: "Gestione Clienti", roles: ["admin", "operator", "viewer"] },
-      { path: "/connectors", icon: PlugsConnected, label: "Connettori", roles: ["admin", "operator"] },
       { path: "/wan-monitor", icon: Globe, label: "Monitor WAN", roles: ["admin", "operator"] },
       { path: "/cmdb", icon: Database, label: "CMDB (Asset)", roles: ["admin", "operator", "viewer"] },
       { path: "/lifecycle", icon: HardDrives, label: "Hardware Lifecycle", roles: ["admin", "operator", "viewer"] },
@@ -86,6 +86,7 @@ const navConfig = [
     items: [
       { path: "/incidents", icon: Ticket, label: "Incidenti", roles: ["admin", "operator"] },
       { path: "/device-metrics", icon: ChartLine, label: "Trend Metriche", roles: ["admin", "operator", "viewer"] },
+      { path: "/server-metrics", icon: Desktop, label: "Server con Agent", roles: ["admin", "operator"] },
       { path: "/syslog", icon: ListChecks, label: "Syslog Viewer", roles: ["admin", "operator"] },
       { path: "/snmp-traps", icon: Pulse, label: "SNMP Traps", roles: ["admin", "operator"] },
       { path: "/remediation", icon: Robot, label: "Auto Remediation", roles: ["admin", "operator"] },
