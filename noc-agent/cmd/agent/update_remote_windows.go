@@ -66,9 +66,14 @@ func triggerRemoteUpdate(version string, cfg *config.Config, log *logging.Logger
 
 	// Costruisco il blocco PowerShell che fa: download + run installer
 	// con i parametri presi da agent.yaml.
+	//
+	// Source=center: l'installer scarica i binari attraverso il Center
+	// (reverse-proxy verso GitHub) usando lo stesso $Token agent. Evita
+	// il rate-limit GitHub unauth sui PC dei clienti — il PAT GitHub
+	// resta solo sul Center (env AGENT_GITHUB_TOKEN).
 	psScript := fmt.Sprintf(`
 $ErrorActionPreference = 'Continue'
-Write-Host "=== 86NocAgent Remote Update -> %s ===" -ForegroundColor Cyan
+Write-Host "=== 86NocAgent Remote Update -> %s (Source=center) ===" -ForegroundColor Cyan
 $installerPath = "$env:TEMP\install-noc-agent.ps1"
 try {
     Invoke-WebRequest -Uri "%s" -OutFile $installerPath -UseBasicParsing -ErrorAction Stop
@@ -76,7 +81,7 @@ try {
     Write-Host "Download installer fallito: $($_.Exception.Message)" -ForegroundColor Red
     exit 1
 }
-& $installerPath -Token "%s" -ClientId "%s" -BackendUrl "%s" -Role "%s" -Version "%s" -Quiet
+& $installerPath -Token "%s" -ClientId "%s" -BackendUrl "%s" -Role "%s" -Version "%s" -Source center -Quiet
 exit $LASTEXITCODE
 `,
 		version,

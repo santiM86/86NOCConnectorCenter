@@ -72,6 +72,13 @@ param(
     [string]$Repo = "santiM86/86NOCConnectorCenter",
     [string]$Version = "latest",
     [string]$GitHubToken = "",
+    # Source: "github" (default, scarica binari direttamente da GitHub
+    # Releases) o "center" (scarica via reverse-proxy del NOC Center,
+    # endpoint /api/agent-builds/{ver}/{file}). La modalità "center" è
+    # raccomandata in produzione perché evita il rate-limit GitHub
+    # unauth (60 req/h) sui PC dei clienti — il PAT viene usato solo
+    # lato server. Auth: stesso $Token agent.
+    [ValidateSet("github","center")][string]$Source = "github",
     [string]$InstallDir = "C:\Program Files\86NocAgent",
     [string]$DataDir = "C:\ProgramData\86NocAgent",
     [switch]$Quiet
@@ -111,19 +118,39 @@ Write-Host "Versione:    $Version"
 Write-Host "BackendURL:  $BackendUrl"
 Write-Host "ClientId:    $ClientId"
 Write-Host "Role:        $Role"
+Write-Host "Source:      $Source"
 Write-Host "InstallDir:  $InstallDir"
 Write-Host "DataDir:     $DataDir"
 
 # ------------------------------------------------------------------- #
 # 2. Risolvi il tag della release (latest -> tag concreto)
 # ------------------------------------------------------------------- #
-Write-Step "Risoluzione versione GitHub Release"
+Write-Step "Risoluzione versione ($Source)"
+
+# Per Source=center, costruisco l'URL HTTPS del Center partendo dal
+# BackendUrl WebSocket. Es. wss://argus.86bit.it/api/agent/ws → https://argus.86bit.it
+$centerBaseUrl = ""
+if ($Source -eq "center") {
+    $centerBaseUrl = $BackendUrl
+    if ($centerBaseUrl.StartsWith("wss://")) { $centerBaseUrl = "https://" + $centerBaseUrl.Substring(6) }
+    elseif ($centerBaseUrl.StartsWith("ws://")) { $centerBaseUrl = "http://" + $centerBaseUrl.Substring(5) }
+    # Strip trailing /api/agent/ws → base url
+    $centerBaseUrl = $centerBaseUrl -replace "/api/agent/ws.*$", ""
+    $centerBaseUrl = $centerBaseUrl.TrimEnd("/")
+    Write-Host "Center proxy: $centerBaseUrl"
+}
 
 $ghHeaders = @{ "User-Agent" = "86noc-installer" }
 if ($GitHubToken) { $ghHeaders["Authorization"] = "Bearer $GitHubToken" }
 
 try {
-    if ($Version -eq "latest") {
+    if ($Source -eq "center") {
+        # Manifest dal Center (gia' risolve "latest" lato server)
+        $manifestUrl = "$centerBaseUrl/api/agent-builds/$Version/manifest.json?token=$([Uri]::EscapeDataString($Token))"
+        $rel = Invoke-RestMethod -Uri $manifestUrl -Headers @{ "User-Agent" = "86noc-installer" } -TimeoutSec 30
+        $Version = $rel.version
+        Write-Ok "Manifest dal Center: release $Version, $($rel.assets.Count) asset"
+    } elseif ($Version -eq "latest") {
         $apiUrl = "https://api.github.com/repos/$Repo/releases/latest"
         $rel = Invoke-RestMethod -Uri $apiUrl -Headers $ghHeaders -TimeoutSec 30
         $Version = $rel.tag_name
@@ -142,9 +169,17 @@ try {
     exit 2
 }
 
-# Map filename -> asset URL
+# Map filename -> URL (cambia formato in base a Source).
+# - github: usa rel.assets[].browser_download_url (https://github.com/.../download/...)
+# - center: usa rel.assets[].url (relativa /api/agent-builds/...) + base URL
 $assetUrls = @{}
-foreach ($a in $rel.assets) { $assetUrls[$a.name] = $a.browser_download_url }
+if ($Source -eq "center") {
+    foreach ($a in $rel.assets) {
+        $assetUrls[$a.name] = "$centerBaseUrl$($a.url)?token=$([Uri]::EscapeDataString($Token))"
+    }
+} else {
+    foreach ($a in $rel.assets) { $assetUrls[$a.name] = $a.browser_download_url }
+}
 $required = @("nocagent.exe","nocwatchdog.exe","nocagent-ui.exe")
 # ArgusDesktop.exe (nuova UI Wails) e' opzionale per backward compatibility
 # con release vecchie che non lo includevano. Se presente lo installiamo.
@@ -259,7 +294,10 @@ foreach ($f in $required) {
     try {
         # Per asset privati l'auth bearer va passato; per pubblici e' innocua.
         $dlHeaders = @{ "User-Agent" = "86noc-installer" }
-        if ($GitHubToken) {
+        if ($Source -eq "center") {
+            # Il Center accetta il token come query string (vedi backend
+            # _token_or_403), nessun header Authorization necessario qui.
+        } elseif ($GitHubToken) {
             $dlHeaders["Authorization"] = "Bearer $GitHubToken"
             $dlHeaders["Accept"] = "application/octet-stream"
             # Per il download di asset privati GitHub richiede l'API URL, non browser_download_url
@@ -287,7 +325,9 @@ foreach ($f in $optional) {
     Write-Host "  $f <- $url"
     try {
         $dlHeaders = @{ "User-Agent" = "86noc-installer" }
-        if ($GitHubToken) {
+        if ($Source -eq "center") {
+            # token gia' nella query string
+        } elseif ($GitHubToken) {
             $dlHeaders["Authorization"] = "Bearer $GitHubToken"
             $dlHeaders["Accept"] = "application/octet-stream"
             $apiAsset = ($rel.assets | Where-Object { $_.name -eq $f }).url
