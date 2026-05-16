@@ -198,25 +198,55 @@ async def agent_ws(ws: WebSocket) -> None:
     # Persist hello snapshot
     now = _now()
     role_val = (hello.get("labels") or {}).get("role") or "master"
+
+    # Auto-completa l'update in progresso quando l'agent torna online con la
+    # versione target: la pipeline è installa→stop service→spawn nuovo binario
+    # che si riconnette → qui possiamo dire "fatto" alla UI.
+    update_complete_patch: Dict[str, Any] = {}
+    try:
+        existing = await db.managed_agents.find_one(
+            {"agent_id": agent_id},
+            {"_id": 0, "update_status": 1, "update_target_version": 1},
+        )
+        if existing and existing.get("update_status") == "in_progress":
+            target_n = _normalize_ver(existing.get("update_target_version"))
+            current_n = _normalize_ver(hello.get("agent_version"))
+            if target_n and current_n and current_n == target_n:
+                update_complete_patch = {
+                    "update_status": "completed",
+                    "update_completed_at": now.isoformat(),
+                }
+            elif target_n and current_n and current_n != target_n:
+                # L'agent è tornato ma con versione diversa dalla target → fallita
+                update_complete_patch = {
+                    "update_status": "failed",
+                    "update_completed_at": now.isoformat(),
+                    "update_error": f"versione attuale {current_n} != target {target_n}",
+                }
+    except Exception:  # noqa: BLE001
+        pass
+
+    set_fields: Dict[str, Any] = {
+        "agent_id": agent_id,
+        "client_id": client_id,
+        "hostname": hello.get("hostname"),
+        "os": hello.get("os"),
+        "arch": hello.get("arch"),
+        "agent_version": hello.get("agent_version"),
+        "ips": hello.get("ips") or [],
+        "capabilities": hello.get("capabilities") or [],
+        "labels": hello.get("labels") or {},
+        "role": role_val,
+        "boot_time": hello.get("boot_time"),
+        "last_hello_at": now.isoformat(),
+        "connected": True,
+        "connected_at": now.isoformat(),
+    }
+    set_fields.update(update_complete_patch)
     await db.managed_agents.update_one(
         {"agent_id": agent_id},
         {
-            "$set": {
-                "agent_id": agent_id,
-                "client_id": client_id,
-                "hostname": hello.get("hostname"),
-                "os": hello.get("os"),
-                "arch": hello.get("arch"),
-                "agent_version": hello.get("agent_version"),
-                "ips": hello.get("ips") or [],
-                "capabilities": hello.get("capabilities") or [],
-                "labels": hello.get("labels") or {},
-                "role": role_val,
-                "boot_time": hello.get("boot_time"),
-                "last_hello_at": now.isoformat(),
-                "connected": True,
-                "connected_at": now.isoformat(),
-            },
+            "$set": set_fields,
             "$setOnInsert": {"first_seen_at": now.isoformat()},
         },
         upsert=True,
@@ -862,8 +892,26 @@ async def list_agents(client_id: Optional[str] = None,
         q["client_id"] = client_id
     docs = await db.managed_agents.find(q, {"_id": 0}).to_list(length=500)
     live_ids = {c.agent_id for c in REGISTRY.list()}
+    now = datetime.now(timezone.utc)
+    update_timeout = timedelta(minutes=5)
     for d in docs:
         d["live"] = d.get("agent_id") in live_ids
+        # Calcola progress dell'update in corso (per progress bar UI)
+        if d.get("update_status") == "in_progress":
+            started = _parse_iso(d.get("update_started_at"))
+            if started:
+                elapsed = (now - started).total_seconds()
+                # Stima progress 0..95% sui 5 minuti previsti (download+install+restart)
+                d["update_progress"] = min(95, max(5, int(elapsed / 3.0)))  # cap 95% finché non confermato
+                d["update_elapsed_sec"] = round(elapsed, 1)
+                # Auto-timeout dopo 5min
+                if elapsed > update_timeout.total_seconds():
+                    d["update_status"] = "timeout"
+                    d["update_error"] = "Agent non riconnesso entro 5 min"
+        elif d.get("update_status") == "completed":
+            d["update_progress"] = 100
+        elif d.get("update_status") == "failed" or d.get("update_status") == "timeout":
+            d["update_progress"] = -1
     return {"agents": docs, "live_count": len(live_ids)}
 
 
@@ -1696,6 +1744,7 @@ async def agents_bulk_update(
 
     sent: List[str] = []
     failed: List[Dict[str, str]] = []
+    now_iso = _now().isoformat()
     for aid in agent_ids:
         conn = REGISTRY.get(aid)
         if conn is None:
@@ -1704,6 +1753,16 @@ async def agents_bulk_update(
         try:
             await conn.send_command("update", {"version": target_version}, timeout=10.0)
             sent.append(aid)
+            # Traccia stato update per progress bar UI
+            await db.managed_agents.update_one(
+                {"agent_id": aid},
+                {"$set": {
+                    "update_status": "in_progress",
+                    "update_started_at": now_iso,
+                    "update_target_version": target_version,
+                    "update_initiated_by": user.get("email") or user.get("id") or "system",
+                }},
+            )
         except Exception as e:
             failed.append({"agent_id": aid, "reason": str(e)[:160]})
 

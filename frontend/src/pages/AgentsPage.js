@@ -53,9 +53,15 @@ export default function AgentsPage() {
 
   useEffect(() => {
     fetchAll();
-    const id = setInterval(fetchAll, 15000);
-    return () => clearInterval(id);
   }, []);
+
+  // Adaptive polling: 3s se c'è un update in corso, altrimenti 15s
+  useEffect(() => {
+    const anyUpdating = agents.some((a) => a.update_status === "in_progress");
+    const id = setInterval(fetchAll, anyUpdating ? 3000 : 15000);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agents.some((a) => a.update_status === "in_progress")]);
 
   // Versione normalizzata per confronto (rimuove 'v', +metadata, -dev)
   const normVer = (v) => {
@@ -69,9 +75,33 @@ export default function AgentsPage() {
   };
   const latestN = normVer(latest);
 
+  // Deduplicazione "ghost agents": per ciascuna coppia (client_id, hostname)
+  // tieni SOLO il record più recente (live > last_hello_at desc). I duplicati
+  // sono UUID generati prima del fix v4.4.0 di persistenza agent_id.txt.
+  // Toggle "Mostra tutti" per vedere comunque l'intera cronologia.
+  const [showAllGhosts, setShowAllGhosts] = useState(false);
+  const dedupedAgents = useMemo(() => {
+    if (showAllGhosts) return agents;
+    const byKey = new Map();
+    const tsOf = (a) => {
+      const v = a.last_heartbeat_at || a.last_hello_at || a.first_seen_at || "";
+      return v ? new Date(v).getTime() : 0;
+    };
+    for (const a of agents) {
+      const key = `${a.client_id || ""}::${(a.hostname || a.agent_id || "").toLowerCase()}`;
+      const prev = byKey.get(key);
+      if (!prev) { byKey.set(key, a); continue; }
+      // priorità: live, poi ts più recente
+      if (a.live && !prev.live) { byKey.set(key, a); continue; }
+      if (!a.live && prev.live) continue;
+      if (tsOf(a) > tsOf(prev)) byKey.set(key, a);
+    }
+    return Array.from(byKey.values());
+  }, [agents, showAllGhosts]);
+
   const filtered = useMemo(() => {
     const s = search.toLowerCase().trim();
-    return agents.filter((a) => {
+    return dedupedAgents.filter((a) => {
       if (clientFilter && a.client_id !== clientFilter) return false;
       if (!s) return true;
       return (
@@ -82,10 +112,12 @@ export default function AgentsPage() {
         (a.ips || []).join(" ").toLowerCase().includes(s)
       );
     });
-  }, [agents, search, clientFilter, clients]);
+  }, [dedupedAgents, search, clientFilter, clients]);
 
-  const liveCount = agents.filter((a) => a.live).length;
-  const outdated = agents.filter((a) => {
+  const hiddenGhostsCount = agents.length - dedupedAgents.length;
+
+  const liveCount = dedupedAgents.filter((a) => a.live).length;
+  const outdated = dedupedAgents.filter((a) => {
     const an = normVer(a.agent_version);
     return latestN && an && an !== latestN;
   });
@@ -153,7 +185,7 @@ export default function AgentsPage() {
   };
 
   const uniqueClients = Object.entries(
-    agents.reduce((acc, a) => { acc[a.client_id] = (acc[a.client_id] || 0) + 1; return acc; }, {})
+    dedupedAgents.reduce((acc, a) => { acc[a.client_id] = (acc[a.client_id] || 0) + 1; return acc; }, {})
   );
 
   return (
@@ -176,7 +208,8 @@ export default function AgentsPage() {
 
       {/* KPI Summary */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <KPI label="Totale" value={agents.length} icon={Cpu} color="indigo" testId="kpi-total" />
+        <KPI label="Totale" value={dedupedAgents.length} icon={Cpu} color="indigo" testId="kpi-total"
+             sub={hiddenGhostsCount > 0 ? `${hiddenGhostsCount} ghost nascosti` : ""} />
         <KPI label="Live" value={liveCount} icon={WifiHigh} color="emerald" testId="kpi-live" />
         <KPI label="Versione corrente" value={latest || "—"} icon={ArrowCircleUp} color="sky" testId="kpi-latest" mono />
         <KPI label="Obsoleti" value={outdated.length}
@@ -241,6 +274,14 @@ export default function AgentsPage() {
             ✕ pulisci
           </button>
         )}
+        <label className="flex items-center gap-1.5 text-[10px] text-[var(--text-muted)] cursor-pointer ml-2"
+          title="Mostra anche record obsoleti con UUID vecchi (pre-fix persistenza agent_id v4.4.0)"
+          data-testid="agents-show-ghosts-label">
+          <input type="checkbox" checked={showAllGhosts}
+            onChange={(e) => setShowAllGhosts(e.target.checked)}
+            data-testid="agents-show-ghosts-toggle" />
+          Mostra ghost ({hiddenGhostsCount})
+        </label>
       </div>
 
       {/* Table */}
@@ -333,23 +374,59 @@ export default function AgentsPage() {
                         )}
                       </td>
                       <td className="p-2.5 text-right whitespace-nowrap">
-                        <button
-                          onClick={() => updateOne(a)}
-                          disabled={!a.live || !isOutdated || busyIds.has(a.agent_id)}
-                          className="text-[10px] px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 border border-amber-500/20 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-                          title={!a.live ? "Agent offline" : !isOutdated ? "Già aggiornato" : "Aggiorna"}
-                          data-testid={`agent-update-${a.agent_id}`}>
-                          <ArrowCircleUp size={10} className="inline mr-0.5" />
-                          {busyIds.has(a.agent_id) ? "…" : "Update"}
-                        </button>
-                        <button
-                          onClick={() => runDiagnostics(a)}
-                          disabled={!a.live || busyIds.has(a.agent_id)}
-                          className="ml-1 text-[10px] px-2 py-0.5 rounded bg-sky-500/10 text-sky-400 hover:bg-sky-500/20 border border-sky-500/20 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-                          title="Esegui diagnostica live"
-                          data-testid={`agent-diag-${a.agent_id}`}>
-                          <Stethoscope size={10} />
-                        </button>
+                        {a.update_status === "in_progress" ? (
+                          <div className="inline-flex flex-col items-end gap-0.5 min-w-[100px]" data-testid={`agent-progress-${a.agent_id}`}>
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-[9px] text-amber-400 font-mono animate-pulse">
+                                aggiornando… {a.update_progress || 0}%
+                              </span>
+                            </div>
+                            <div className="w-full h-1 bg-[var(--bg-input)] rounded-full overflow-hidden">
+                              <div className="h-full bg-amber-500 transition-all duration-500"
+                                style={{ width: `${a.update_progress || 0}%` }} />
+                            </div>
+                            <span className="text-[8px] text-[var(--text-muted)]">
+                              → {a.update_target_version} · {Math.floor(a.update_elapsed_sec || 0)}s
+                            </span>
+                          </div>
+                        ) : a.update_status === "completed" ? (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 text-[9px] border border-emerald-500/20"
+                            data-testid={`agent-update-done-${a.agent_id}`}>
+                            ✓ aggiornato
+                          </span>
+                        ) : a.update_status === "failed" || a.update_status === "timeout" ? (
+                          <div className="inline-flex flex-col items-end gap-0.5">
+                            <span className="text-[9px] text-red-400 px-2 py-0.5 rounded bg-red-500/10 border border-red-500/20"
+                              title={a.update_error}>
+                              ✕ {a.update_status === "timeout" ? "timeout" : "fallito"}
+                            </span>
+                            <button onClick={() => updateOne(a)}
+                              className="text-[9px] text-amber-400 hover:underline"
+                              data-testid={`agent-retry-${a.agent_id}`}>
+                              ↻ ritenta
+                            </button>
+                          </div>
+                        ) : (
+                          <>
+                            <button
+                              onClick={() => updateOne(a)}
+                              disabled={!a.live || !isOutdated || busyIds.has(a.agent_id)}
+                              className="text-[10px] px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 border border-amber-500/20 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                              title={!a.live ? "Agent offline" : !isOutdated ? "Già aggiornato" : "Aggiorna"}
+                              data-testid={`agent-update-${a.agent_id}`}>
+                              <ArrowCircleUp size={10} className="inline mr-0.5" />
+                              {busyIds.has(a.agent_id) ? "…" : "Update"}
+                            </button>
+                            <button
+                              onClick={() => runDiagnostics(a)}
+                              disabled={!a.live || busyIds.has(a.agent_id)}
+                              className="ml-1 text-[10px] px-2 py-0.5 rounded bg-sky-500/10 text-sky-400 hover:bg-sky-500/20 border border-sky-500/20 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                              title="Esegui diagnostica live"
+                              data-testid={`agent-diag-${a.agent_id}`}>
+                              <Stethoscope size={10} />
+                            </button>
+                          </>
+                        )}
                       </td>
                     </tr>
                   );
