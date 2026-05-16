@@ -1,0 +1,38 @@
+{
+  "summary": "Tested DELETE /api/agents/{agent_id} clean removal feature end-to-end. 9/9 backend pytest cases pass (auth gating, viewer 403, 404, delete-only DB purge, uninstall_remote offline branch, audit collection criteria, GET /agents excludes deleted, short-id 400). Frontend Playwright run confirms the Trash button, RemoveAgentModal, radio modes (center default + full disabled for offline), Cancel close, Confirm DELETE, success toast, and row disappearance — all work as expected.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "AgentsPage (/agents)", "issues": ["React console warning: '<span> cannot be a child of <option>' due to instrumentation wrapping option text — harmless but produces noisy hydration warnings on every render. Pre-existing, not related to the new RemoveAgent feature."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_agent_delete_remote_uninstall.py",
+    "/app/test_reports/pytest/iteration_79_agent_delete.xml"
+  ],
+  "action_items": [
+    "(optional) Tighten the validation in DELETE /api/agents/{agent_id}: an agent_id of length 3 (e.g. 'abc') currently returns 404 instead of 400 because FastAPI path-param length check is bypassed by the find_one() short-circuit. Not a real bug — both are acceptable error codes.",
+    "(optional) Add a return-status of 200 vs 207 differentiation when uninstall_remote=true but WS command fails (currently both 'agent_offline' and 'command_failed' return 200 with status in body — clients must inspect uninstall_status to detect partial failure)."
+  ],
+  "critical_code_review_comments": [
+    "delete_agent() loops over six hardcoded collections — fine, but consider extracting to a module-level constant AGENT_OWNED_COLLECTIONS so the cleanup_ghost_agents endpoint and delete_agent stay in sync if a new agent-scoped collection is added.",
+    "agent_cleanup_audit insert is fire-and-forget without await ordering with the deletes; if Mongo write fails the user still sees deleted:true. Acceptable for an audit log but worth a try/except wrap to log failures.",
+    "Frontend confirmRemove uses setTimeout(fetchAll, 1500) to refresh — works in preview, but consider awaiting the next adaptive-poll cycle or doing an optimistic local state filter so the row disappears immediately (currently it remains visible for ~1.5s after the toast).",
+    "uninstall_error is exposed verbatim to the client (sliced to 200 chars). Low risk but consider sanitizing to avoid leaking internal exception details to operators."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_agent_delete_remote_uninstall.py"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "test_credentials": "Admin info@86bit.it / Ariel17051986@!@86 — works. Viewer user created on-the-fly via POST /api/admin/users with example.com email (test.local rejected by validator).",
+  "seed_data_creation": "Backend tests insert TEST_-prefixed docs into managed_agents, sys_metrics_latest, sys_metrics_history, device_poll_status, agent_log_buffer, agent_command_audit and clean them up via the module teardown + post-DELETE verification. Frontend test seeded one TEST_uiseed_* agent via /tmp/seed_ui_agent.py which the test itself deleted through the UI. agent_cleanup_audit rows are intentionally retained for audit-trail verification.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend regression suite: /app/backend/tests/test_agent_delete_remote_uninstall.py — 9 tests covering DELETE /api/agents/{id} feature. Seeds fake offline agents via direct Mongo writes (no real WS agent runs in preview). The 'command_sent' branch (uninstall_remote=true on LIVE agent) is NOT testable here — needs a real Go agent connected via WS, deferred to prod. UI testids: agent-remove-{agent_id} (Trash btn), remove-agent-modal, remove-mode-center, remove-mode-full, remove-cancel-btn, remove-confirm-btn, remove-modal-close. To show offline agents in /agents, toggle agents-show-ghosts-toggle ON.",
+  "rca_of_the_issue": "N/A — no failures. Initial test_delete_agent_viewer_forbidden was SKIPPED because the admin user-creation endpoint rejects emails with .local TLD (email-validator considers it reserved). Switched to example.com — viewer creation + 403 check now passes."
+}
