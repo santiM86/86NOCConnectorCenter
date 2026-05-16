@@ -1226,6 +1226,89 @@ async def agents_cleanup(
     return {"deleted_count": res.deleted_count, "deleted_ids": target_ids}
 
 
+@router.delete("/agents/{agent_id}")
+async def delete_agent(
+    agent_id: str,
+    uninstall_remote: bool = False,
+    purge_data: bool = True,
+    current_user: dict = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """Rimuove un Agent dal Center, pulendo TUTTE le tracce dal DB.
+
+    Modalità:
+      - **Solo dal Center** (`uninstall_remote=False`): cancella le tracce
+        DB dell'agent (managed_agents, sys_metrics_latest/history,
+        device_poll_status filtrato per agent_id, agent_log_buffer,
+        agent_command_audit). Se l'agent rimane installato sul PC, alla
+        prossima riconnessione ricreerà il record (con lo stesso UUID se
+        agent_id.txt è persistito).
+      - **Rimozione completa** (`uninstall_remote=True`): se l'agent è
+        LIVE, invia il comando WS `uninstall` (che lancia uninstall.ps1
+        sul PC: stop service, remove binari, remove ProgramData) e poi
+        cancella le tracce DB. Se l'agent è offline, esegue solo la
+        pulizia DB e segnala `uninstall_status=agent_offline`.
+
+    Audit completo in `agent_cleanup_audit`.
+    """
+    require_admin(current_user)
+
+    if not agent_id or len(agent_id) < 4:
+        raise HTTPException(status_code=400, detail="agent_id non valido")
+
+    doc = await db.managed_agents.find_one({"agent_id": agent_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="agent_id non trovato")
+
+    uninstall_status = "skipped"
+    uninstall_error: Optional[str] = None
+
+    if uninstall_remote:
+        conn = REGISTRY.get(agent_id)
+        if conn is None:
+            uninstall_status = "agent_offline"
+            uninstall_error = "Agent non connesso: rimosso solo dal Center. Per disinstallare anche dal PC esegui uninstall.ps1 manualmente o aspetta che torni online."
+        else:
+            try:
+                await conn.send_command("uninstall", {"purge_data": purge_data}, timeout=10.0)
+                uninstall_status = "command_sent"
+            except Exception as e:  # noqa: BLE001
+                uninstall_status = "command_failed"
+                uninstall_error = str(e)[:200]
+
+    deleted: Dict[str, int] = {}
+    for col in ("managed_agents", "sys_metrics_latest", "sys_metrics_history",
+                "device_poll_status", "agent_log_buffer", "agent_command_audit"):
+        try:
+            r = await db[col].delete_many({"agent_id": agent_id})
+            if r.deleted_count > 0:
+                deleted[col] = r.deleted_count
+        except Exception as e:  # noqa: BLE001
+            logger.warning("delete_agent: %s err=%s", col, e)
+
+    await db.agent_cleanup_audit.insert_one({
+        "deleted_at": _now().isoformat(),
+        "deleted_by": current_user.get("email") or current_user.get("id"),
+        "deleted_ids": [agent_id],
+        "count": deleted.get("managed_agents", 0),
+        "criteria": "delete-with-uninstall" if uninstall_remote else "delete-only",
+        "hostname": doc.get("hostname"),
+        "client_id": doc.get("client_id"),
+        "uninstall_status": uninstall_status,
+        "uninstall_error": uninstall_error,
+        "collections_purged": deleted,
+    })
+
+    return {
+        "agent_id": agent_id,
+        "hostname": doc.get("hostname"),
+        "deleted": True,
+        "uninstall_remote": uninstall_remote,
+        "uninstall_status": uninstall_status,
+        "uninstall_error": uninstall_error,
+        "collections_purged": deleted,
+    }
+
+
 # ---- Binary distribution -----------------------------------------------------
 #
 # The install script hits these endpoints to fetch the binaries with no

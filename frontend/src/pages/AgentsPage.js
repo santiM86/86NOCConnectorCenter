@@ -5,7 +5,7 @@ import { Link } from "react-router-dom";
 import { toast } from "sonner";
 import {
   PlugsConnected, ArrowClockwise, ArrowCircleUp, MagnifyingGlass, Buildings,
-  Cpu, Clock, WifiHigh, WifiSlash, Warning, Stethoscope,
+  Cpu, Clock, WifiHigh, WifiSlash, Warning, Stethoscope, Trash, X,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 
@@ -181,6 +181,47 @@ export default function AgentsPage() {
       toast.error(err.response?.data?.detail || "Errore diagnostica");
     } finally {
       setBusyIds((s) => { const x = new Set(s); x.delete(a.agent_id); return x; });
+    }
+  };
+
+  // Stato modale rimozione
+  const [removeTarget, setRemoveTarget] = useState(null); // l'agent corrente
+  const [removeMode, setRemoveMode] = useState("center"); // "center" | "full"
+  const [removing, setRemoving] = useState(false);
+
+  const openRemove = (a) => {
+    setRemoveTarget(a);
+    setRemoveMode(a.live ? "full" : "center");
+  };
+
+  const confirmRemove = async () => {
+    if (!removeTarget) return;
+    const a = removeTarget;
+    const isFull = removeMode === "full";
+    setRemoving(true);
+    try {
+      const r = await axios.delete(`${API}/agents/${a.agent_id}`, {
+        params: { uninstall_remote: isFull, purge_data: true },
+      });
+      const purged = Object.entries(r.data.collections_purged || {})
+        .map(([c, n]) => `${c}=${n}`).join(", ") || "-";
+      if (isFull) {
+        if (r.data.uninstall_status === "command_sent") {
+          toast.success(`${a.hostname || a.agent_id}: comando uninstall inviato + DB pulito (${purged})`);
+        } else if (r.data.uninstall_status === "agent_offline") {
+          toast.warning(`${a.hostname}: agent offline, rimosso solo dal Center (${purged}). Esegui uninstall.ps1 manualmente sul PC.`);
+        } else {
+          toast.error(`${a.hostname}: ${r.data.uninstall_error || "errore uninstall"}`);
+        }
+      } else {
+        toast.success(`${a.hostname || a.agent_id}: rimosso dal Center (${purged})`);
+      }
+      setRemoveTarget(null);
+      setTimeout(fetchAll, 1500);
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Errore rimozione");
+    } finally {
+      setRemoving(false);
     }
   };
 
@@ -425,6 +466,13 @@ export default function AgentsPage() {
                               data-testid={`agent-diag-${a.agent_id}`}>
                               <Stethoscope size={10} />
                             </button>
+                            <button
+                              onClick={() => openRemove(a)}
+                              className="ml-1 text-[10px] px-2 py-0.5 rounded bg-red-500/10 text-red-400 hover:bg-red-500/20 border border-red-500/20 transition-colors"
+                              title="Rimuovi agent (Center + opzionale uninstall remoto)"
+                              data-testid={`agent-remove-${a.agent_id}`}>
+                              <Trash size={10} />
+                            </button>
                           </>
                         )}
                       </td>
@@ -436,6 +484,107 @@ export default function AgentsPage() {
           </div>
         </div>
       )}
+      {/* Modale rimozione agent */}
+      {removeTarget && (
+        <RemoveAgentModal
+          agent={removeTarget}
+          clientName={clients[removeTarget.client_id]}
+          mode={removeMode}
+          setMode={setRemoveMode}
+          removing={removing}
+          onConfirm={confirmRemove}
+          onClose={() => setRemoveTarget(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+function RemoveAgentModal({ agent, clientName, mode, setMode, removing, onConfirm, onClose }) {
+  const canFull = agent.live;
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+      data-testid="remove-agent-modal">
+      <div className="bg-[var(--bg-panel)] border border-red-500/30 rounded-lg max-w-lg w-full p-5 shadow-2xl">
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-base font-heading font-bold text-red-400 flex items-center gap-2">
+            <Trash size={18} /> Rimozione Connector
+          </h2>
+          <button onClick={onClose} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+            data-testid="remove-modal-close">
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="mb-4 p-3 bg-[var(--bg-card)] rounded border border-[var(--bg-border)]">
+          <p className="text-xs text-[var(--text-muted)]">Stai per rimuovere:</p>
+          <p className="font-heading font-bold text-[var(--text-primary)] mt-1">
+            {agent.hostname || agent.agent_id.slice(0, 12)}
+            {agent.labels?.role && <span className="text-[10px] text-[var(--text-muted)] ml-2">[{agent.labels.role}]</span>}
+          </p>
+          <p className="text-[10px] text-[var(--text-muted)] mt-0.5">
+            cliente: <span className="text-sky-400">{clientName || agent.client_id?.slice(0, 8)}</span> ·
+            versione: <span className="font-mono">{agent.agent_version}</span> ·
+            stato: {agent.live ? <span className="text-emerald-400">LIVE</span> : <span className="text-zinc-400">offline</span>}
+          </p>
+        </div>
+
+        <div className="space-y-2 mb-4">
+          <label className={`flex items-start gap-2.5 p-3 rounded border cursor-pointer transition-colors ${
+            mode === "center" ? "border-sky-500/40 bg-sky-500/5" : "border-[var(--bg-border)] hover:border-[var(--text-muted)]"
+          }`} data-testid="remove-mode-center">
+            <input type="radio" name="remove-mode" value="center" checked={mode === "center"}
+              onChange={() => setMode("center")} className="mt-0.5" />
+            <div className="flex-1">
+              <p className="text-xs font-bold text-[var(--text-primary)]">Solo dal Center</p>
+              <p className="text-[10px] text-[var(--text-muted)] mt-0.5">
+                Cancella TUTTE le tracce dal database NOC: <span className="font-mono">managed_agents,
+                sys_metrics_latest/history, device_poll_status, agent_log_buffer</span>. L'agent sul PC
+                resta installato — se è ancora attivo e si riconnette, ricreerà un record. Utile per
+                pulire ghost agents senza toccare la macchina.
+              </p>
+            </div>
+          </label>
+
+          <label className={`flex items-start gap-2.5 p-3 rounded border transition-colors ${
+            canFull ? "cursor-pointer" : "opacity-50 cursor-not-allowed"
+          } ${
+            mode === "full" ? "border-red-500/40 bg-red-500/5" : "border-[var(--bg-border)] hover:border-[var(--text-muted)]"
+          }`} data-testid="remove-mode-full">
+            <input type="radio" name="remove-mode" value="full" checked={mode === "full"}
+              disabled={!canFull}
+              onChange={() => setMode("full")} className="mt-0.5" />
+            <div className="flex-1">
+              <p className="text-xs font-bold text-[var(--text-primary)] flex items-center gap-1.5">
+                Rimozione completa (uninstall remoto)
+                {!canFull && <span className="text-[9px] px-1.5 py-0.5 rounded bg-zinc-500/20 text-zinc-400">solo agent LIVE</span>}
+              </p>
+              <p className="text-[10px] text-[var(--text-muted)] mt-0.5">
+                Invia comando WS <span className="font-mono">uninstall</span> all'agent:
+                stop service <span className="font-mono">86NocAgent/86NocWatchdog</span>, rimozione
+                binari <span className="font-mono">C:\Program Files\86NocAgent</span>, rimozione config
+                <span className="font-mono">ProgramData\86NocAgent</span>, rimozione voce
+                "Programmi e funzionalità", rimozione shortcut. Poi pulizia DB.
+                <span className="block text-amber-400 mt-1">⚠ Operazione irreversibile sul PC del cliente.</span>
+              </p>
+            </div>
+          </label>
+        </div>
+
+        <div className="flex justify-end gap-2 pt-3 border-t border-[var(--bg-border)]">
+          <Button variant="outline" size="sm" onClick={onClose} disabled={removing}
+            data-testid="remove-cancel-btn" className="h-8 text-xs">
+            Annulla
+          </Button>
+          <Button size="sm" onClick={onConfirm} disabled={removing}
+            className="h-8 text-xs bg-red-600 hover:bg-red-500 text-white font-bold"
+            data-testid="remove-confirm-btn">
+            <Trash size={12} className="mr-1.5" />
+            {removing ? "Rimozione…" : (mode === "full" ? "Rimuovi tutto" : "Rimuovi dal Center")}
+          </Button>
+        </div>
+      </div>
     </div>
   );
 }

@@ -233,6 +233,33 @@ func runAgent(ctx context.Context, cfg config.Config, log *logging.Logger) {
 		}, nil
 	})
 
+	// "uninstall" — comando remoto che disinstalla completamente l'agent
+	// dal cliente. Il Center lo invia quando l'admin clicca "Rimuovi"
+	// nella pagina /agents (modalità "rimozione completa con uninstall
+	// remoto"). Analogamente a "update", risponde ACK immediato e gira
+	// detached, perché lo script PowerShell stoppa noi stessi.
+	//
+	// args: { "purge_data": true|false } — se true cancella anche
+	// ProgramData (logs/agent.yaml), altrimenti li tiene per debugging.
+	//
+	// Disponibile SOLO su Windows.
+	client.Register("uninstall", func(_ context.Context, args json.RawMessage) (any, error) {
+		if runtime.GOOS != "windows" {
+			return nil, fmt.Errorf("uninstall non supportato su %s (solo windows)", runtime.GOOS)
+		}
+		var req struct {
+			PurgeData bool `json:"purge_data,omitempty"`
+		}
+		if len(args) > 0 {
+			_ = json.Unmarshal(args, &req)
+		}
+		go triggerRemoteUninstall(req.PurgeData, &cfg, log)
+		return map[string]any{
+			"status":     "uninstall_started",
+			"purge_data": req.PurgeData,
+		}, nil
+	})
+
 	upd := update.New(cfg.Update, Version, log)
 
 	// Hot-apply the SNMP target list pushed by the backend in the
@@ -404,7 +431,7 @@ func capabilities(c config.Config) []string {
 	if c.SysMetrics.Enabled {
 		caps = append(caps, "poll.sysmetrics")
 	}
-	caps = append(caps, "cmd.force_lan_scan", "cmd.force_snmp_poll", "cmd.force_ping_poll", "cmd.get_metrics", "cmd.run_diagnostics")
+	caps = append(caps, "cmd.force_lan_scan", "cmd.force_snmp_poll", "cmd.force_ping_poll", "cmd.get_metrics", "cmd.run_diagnostics", "cmd.uninstall")
 	return caps
 }
 

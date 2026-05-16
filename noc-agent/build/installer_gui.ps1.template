@@ -1022,11 +1022,19 @@ Start-Process -FilePath 'powershell.exe' -ArgumentList @(
     '-NoProfile','-WindowStyle','Hidden','-ExecutionPolicy','Bypass','-File',$cleanupPath
 ) -WindowStyle Hidden
 
-[System.Windows.Forms.MessageBox]::Show(
-    "Disinstallazione completata.`n`nServizi, binari, configurazione, autostart e voci di registro sono stati rimossi.`n`nLog: $logFile",
-    '86BIT Argus - Disinstallazione completata',
-    [System.Windows.Forms.MessageBoxButtons]::OK,
-    [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
+# Quando l'uninstall viene avviato in remoto (via comando WS dal Center, o
+# come SYSTEM via service) NON e' interattivo: niente MessageBox, l'admin
+# vedra' lo stato direttamente nella console NOC.
+if ([System.Environment]::UserInteractive) {
+    Add-Type -AssemblyName System.Windows.Forms -ErrorAction SilentlyContinue
+    [System.Windows.Forms.MessageBox]::Show(
+        "Disinstallazione completata.`n`nServizi, binari, configurazione, autostart e voci di registro sono stati rimossi.`n`nLog: $logFile",
+        '86BIT Argus - Disinstallazione completata',
+        [System.Windows.Forms.MessageBoxButtons]::OK,
+        [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
+} else {
+    Step 'completed (non-interactive, no MessageBox)'
+}
 '@
     Set-Content -Path $Path -Value $body -Encoding UTF8
 }
