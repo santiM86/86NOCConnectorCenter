@@ -202,27 +202,44 @@ async def agent_ws(ws: WebSocket) -> None:
     # Auto-completa l'update in progresso quando l'agent torna online con la
     # versione target: la pipeline è installa→stop service→spawn nuovo binario
     # che si riconnette → qui possiamo dire "fatto" alla UI.
+    #
+    # Detection a 2 livelli per robustezza:
+    #   a) Match esatto con target version → ✓ completato
+    #   b) target == "latest" o impossibile da risolvere → consideriamo
+    #      "completato" se la versione attuale e' DIVERSA da quella registrata
+    #      pre-update (`update_started_version`). Qualsiasi cambio di versione
+    #      = update effettivo, anche se non possiamo sapere quale era il target.
+    #   c) Versione invariata → assumiamo "in progress" o "failed" — non
+    #      cambiamo lo status (sara' il timeout o il prossimo trigger admin).
     update_complete_patch: Dict[str, Any] = {}
     try:
         existing = await db.managed_agents.find_one(
             {"agent_id": agent_id},
-            {"_id": 0, "update_status": 1, "update_target_version": 1},
+            {"_id": 0, "update_status": 1, "update_target_version": 1, "update_started_version": 1},
         )
         if existing and existing.get("update_status") == "in_progress":
             target_n = _normalize_ver(existing.get("update_target_version"))
             current_n = _normalize_ver(hello.get("agent_version"))
-            if target_n and current_n and current_n == target_n:
+            started_n = _normalize_ver(existing.get("update_started_version"))
+            completed = False
+            err_msg = None
+            if target_n and current_n and target_n != "latest" and current_n == target_n:
+                completed = True
+            elif (not target_n or target_n == "latest") and started_n and current_n and started_n != current_n:
+                # Heuristic: target ambiguo + versione cambiata = ok
+                completed = True
+            elif target_n and current_n and target_n != "latest" and current_n != target_n and started_n and current_n != started_n:
+                # Versione cambiata MA non corrisponde al target richiesto.
+                # Marca completato (l'update e' avvenuto) ma con warning.
+                completed = True
+                err_msg = f"versione attuale {current_n} != target {target_n} ma update e' stato applicato"
+            if completed:
                 update_complete_patch = {
                     "update_status": "completed",
                     "update_completed_at": now.isoformat(),
                 }
-            elif target_n and current_n and current_n != target_n:
-                # L'agent è tornato ma con versione diversa dalla target → fallita
-                update_complete_patch = {
-                    "update_status": "failed",
-                    "update_completed_at": now.isoformat(),
-                    "update_error": f"versione attuale {current_n} != target {target_n}",
-                }
+                if err_msg:
+                    update_complete_patch["update_error"] = err_msg
     except Exception:  # noqa: BLE001
         pass
 
@@ -904,10 +921,32 @@ async def list_agents(client_id: Optional[str] = None,
                 # Stima progress 0..95% sui 5 minuti previsti (download+install+restart)
                 d["update_progress"] = min(95, max(5, int(elapsed / 3.0)))  # cap 95% finché non confermato
                 d["update_elapsed_sec"] = round(elapsed, 1)
-                # Auto-timeout dopo 5min
+                # Auto-timeout dopo 5min. Distinguiamo due casi:
+                #  a) Agent NON live → install-noc-agent.ps1 e' probabilmente
+                #     crashato durante stop/install. Aspettiamo o failed.
+                #  b) Agent live MA versione invariata rispetto a
+                #     update_started_version → install e' partito, ma il
+                #     nuovo binario gira con la stessa versione. Probabili
+                #     cause: download GitHub fallito (rate-limit), errore
+                #     di estrazione zip, target era "latest" e il latest era
+                #     gia' la versione corrente.
                 if elapsed > update_timeout.total_seconds():
-                    d["update_status"] = "timeout"
-                    d["update_error"] = "Agent non riconnesso entro 5 min"
+                    if d.get("live"):
+                        started_ver = d.get("update_started_version")
+                        cur_ver = d.get("agent_version")
+                        if started_ver and cur_ver and started_ver == cur_ver:
+                            d["update_status"] = "failed"
+                            d["update_error"] = (
+                                f"Agent riconnesso ma versione invariata ({cur_ver}). "
+                                "Probabili cause: download release fallito (verifica AGENT_GITHUB_TOKEN), "
+                                "rete bloccata sul PC, oppure target gia' = versione corrente."
+                            )
+                        else:
+                            d["update_status"] = "timeout"
+                            d["update_error"] = "Timeout 5 min (agent live ma stato inconsistente)"
+                    else:
+                        d["update_status"] = "timeout"
+                        d["update_error"] = "Agent non riconnesso entro 5 min (install probabilmente fallito)"
         elif d.get("update_status") == "completed":
             d["update_progress"] = 100
         elif d.get("update_status") == "failed" or d.get("update_status") == "timeout":
@@ -1828,22 +1867,47 @@ async def agents_bulk_update(
     sent: List[str] = []
     failed: List[Dict[str, str]] = []
     now_iso = _now().isoformat()
+    # Refuse to send the literal string "latest" — è un sintomo che il
+    # lookup di GitHub e' fallito (rate-limit / no PAT). Se passassimo
+    # "latest" a install-noc-agent.ps1, potrebbe risolverlo via API
+    # GitHub a sua volta (e fallire allo stesso modo), oppure scaricare
+    # la stessa versione gia' installata → l'utente vede "timeout" senza
+    # capire perche'. Restituiamo invece un errore chiaro.
+    if target_version in ("latest", ""):
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Impossibile determinare la versione corrente dal repo GitHub "
+                "(rate-limit raggiunto?). Imposta AGENT_GITHUB_TOKEN nel .env "
+                "del backend, oppure forza la versione con AGENT_LATEST_VERSION."
+            ),
+        )
     for aid in agent_ids:
         conn = REGISTRY.get(aid)
         if conn is None:
             failed.append({"agent_id": aid, "reason": "agent non connesso"})
             continue
+        # Snapshot della versione attuale PRIMA dell'update, per detection
+        # del completamento via hello (anche se il target era "latest"
+        # impossibile da risolvere lato Center, qualsiasi cambio di
+        # versione conta come successo).
+        try:
+            cur = await db.managed_agents.find_one({"agent_id": aid}, {"_id": 0, "agent_version": 1})
+            started_ver = cur.get("agent_version") if cur else None
+        except Exception:  # noqa: BLE001
+            started_ver = None
         try:
             await conn.send_command("update", {"version": target_version}, timeout=10.0)
             sent.append(aid)
-            # Traccia stato update per progress bar UI
             await db.managed_agents.update_one(
                 {"agent_id": aid},
                 {"$set": {
                     "update_status": "in_progress",
                     "update_started_at": now_iso,
+                    "update_started_version": started_ver,
                     "update_target_version": target_version,
                     "update_initiated_by": user.get("email") or user.get("id") or "system",
+                    "update_error": None,
                 }},
             )
         except Exception as e:
