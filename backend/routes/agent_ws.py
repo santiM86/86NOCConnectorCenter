@@ -1775,13 +1775,23 @@ async def _fetch_release_meta(version: str) -> Dict[str, Any]:
 
     Risolve `latest` → tag concreto via _resolve_latest_agent_version_safe.
     Usa AGENT_GITHUB_TOKEN per evitare il rate-limit unauth.
+
+    Robustezza al rate-limit:
+      - cache 1 ora sui successi
+      - se l'API GitHub fallisce (rate-limit, 403) MA abbiamo gia' una
+        cache (anche scaduta), la riutilizziamo
+      - se la cache e' assente E l'API fallisce, costruiamo una manifest
+        sintetica con i nomi asset NOTI (lista hardcoded) e gli URL
+        browser_download_url che NON richiedono auth ne' API call.
+        Funziona perche' il repo e' pubblico e gli asset hanno nomi
+        deterministici per ogni release v4.x.
     """
     if version in ("latest", "", None):
         version = await _resolve_latest_agent_version_safe()
         if version == "latest":
             raise HTTPException(
                 status_code=503,
-                detail="Impossibile risolvere 'latest' (rate-limit GitHub). Imposta AGENT_GITHUB_TOKEN.",
+                detail="Impossibile risolvere 'latest' (rate-limit GitHub). Imposta AGENT_GITHUB_TOKEN o usa l'override in Settings.",
             )
     now = _now()
     cached = _AGENT_RELEASE_CACHE.get(version)
@@ -1793,6 +1803,7 @@ async def _fetch_release_meta(version: str) -> Dict[str, Any]:
     gh_token = (_os.environ.get("AGENT_GITHUB_TOKEN") or "").strip()
     if gh_token:
         headers["Authorization"] = f"Bearer {gh_token}"
+    api_error = None
     try:
         import urllib.request as _ureq
         req = _ureq.Request(api_url, headers=headers)
@@ -1801,25 +1812,73 @@ async def _fetch_release_meta(version: str) -> Dict[str, Any]:
             with _ureq.urlopen(req, timeout=15) as r:
                 return json.loads(r.read().decode("utf-8"))
         rel = await loop.run_in_executor(None, _fetch)
+        meta = {
+            "version": rel.get("tag_name") or version,
+            "name": rel.get("name"),
+            "published_at": rel.get("published_at"),
+            "assets": [
+                {
+                    "name": a.get("name"),
+                    "size": a.get("size"),
+                    "download_url": a.get("url"),  # API URL per asset
+                    "browser_download_url": a.get("browser_download_url"),
+                    "content_type": a.get("content_type"),
+                }
+                for a in (rel.get("assets") or [])
+            ],
+            "source": "github_api",
+        }
+        # Cache lunga (1h) — riduce hit a GitHub a ~1/h per versione
+        _AGENT_RELEASE_CACHE[version] = {"meta": meta, "expires_at": now + timedelta(hours=1)}
+        return meta
     except Exception as e:  # noqa: BLE001
-        logger.warning("fetch_release_meta(%s): %s", version, e)
-        raise HTTPException(status_code=502, detail=f"GitHub release fetch fallito: {e}")
+        api_error = str(e)[:200]
+        logger.warning("fetch_release_meta(%s) API fail: %s — using fallback", version, api_error)
+
+    # Fallback 1: cache stale anche scaduta — meglio che 502
+    if cached and cached.get("meta"):
+        return cached["meta"]
+
+    # Fallback 2: manifest sintetica costruita da nomi noti.
+    # Gli asset standard di una release v4.x. Se la lista cambia in
+    # futuro, basta aggiornare _KNOWN_RELEASE_ASSETS.
+    synthetic_assets = []
+    for asset_name in _KNOWN_RELEASE_ASSETS:
+        url = f"https://github.com/{repo}/releases/download/{version}/{asset_name}"
+        synthetic_assets.append({
+            "name": asset_name,
+            "size": None,  # sconosciuta senza API
+            "download_url": url,
+            "browser_download_url": url,
+            "content_type": None,
+        })
     meta = {
-        "version": rel.get("tag_name") or version,
-        "name": rel.get("name"),
-        "published_at": rel.get("published_at"),
-        "assets": [
-            {
-                "name": a.get("name"),
-                "size": a.get("size"),
-                "download_url": a.get("url"),  # API URL, non browser_download
-                "content_type": a.get("content_type"),
-            }
-            for a in (rel.get("assets") or [])
-        ],
+        "version": version,
+        "name": f"{version} (fallback synthetic)",
+        "published_at": None,
+        "assets": synthetic_assets,
+        "source": "synthetic",
+        "api_error": api_error,
     }
-    _AGENT_RELEASE_CACHE[version] = {"meta": meta, "expires_at": now + timedelta(minutes=5)}
+    # Cache la sintetica con TTL piu' breve (10 min) cosi' se l'API
+    # torna disponibile, prendiamo il dato reale.
+    _AGENT_RELEASE_CACHE[version] = {"meta": meta, "expires_at": now + timedelta(minutes=10)}
     return meta
+
+
+# Asset standard di ogni release v4.x del Connector. La build CI/CD
+# (`.github/workflows/release-agent.yml`) attacca sempre questi 8 file
+# alla release. Se cambia, aggiorna questa lista.
+_KNOWN_RELEASE_ASSETS = [
+    "nocagent.exe",
+    "nocwatchdog.exe",
+    "nocinstall.exe",
+    "nocagent-ui.exe",
+    "ArgusDesktop.exe",
+    "install-noc-agent.ps1",
+    "installer_gui.ps1.template",
+    "SHA256SUMS.txt",
+]
 
 
 @router.get("/agent-builds/{version}/manifest.json")
@@ -1882,19 +1941,30 @@ async def agent_builds_asset(version: str, filename: str, token: Optional[str] =
     cache_path = _cache_path(real_ver, filename)
     _os.makedirs(_os.path.dirname(cache_path), exist_ok=True)
 
-    if not _os.path.exists(cache_path) or _os.path.getsize(cache_path) != (asset.get("size") or -1):
-        # Cache miss: scarica dal GitHub API asset URL (Accept: octet-stream
-        # → segue il redirect e serve i byte) usando il PAT server-side.
+    if not _os.path.exists(cache_path) or (
+        asset.get("size") and _os.path.getsize(cache_path) != asset["size"]
+    ):
+        # Cache miss: scarica dal GitHub. Preferiamo browser_download_url
+        # (CDN pubblico, no auth, no rate-limit api) per asset di release
+        # PUBBLICHE; usiamo asset API URL solo se browser_download non e'
+        # disponibile (es. repo privato). Questo evita di avere bisogno
+        # di AGENT_GITHUB_TOKEN per il download dei binari.
         gh_token = (_os.environ.get("AGENT_GITHUB_TOKEN") or "").strip()
-        headers = {
-            "User-Agent": "86NocCenter-buildproxy",
-            "Accept": "application/octet-stream",
-        }
-        if gh_token:
-            headers["Authorization"] = f"Bearer {gh_token}"
+        prefer_browser = bool(asset.get("browser_download_url"))
+        if prefer_browser:
+            download_url = asset["browser_download_url"]
+            headers = {"User-Agent": "86NocCenter-buildproxy"}
+        else:
+            download_url = asset["download_url"]
+            headers = {
+                "User-Agent": "86NocCenter-buildproxy",
+                "Accept": "application/octet-stream",
+            }
+            if gh_token:
+                headers["Authorization"] = f"Bearer {gh_token}"
         try:
             import urllib.request as _ureq
-            req = _ureq.Request(asset["download_url"], headers=headers)
+            req = _ureq.Request(download_url, headers=headers)
             loop = asyncio.get_running_loop()
             def _dl():
                 tmp_path = cache_path + ".tmp"
