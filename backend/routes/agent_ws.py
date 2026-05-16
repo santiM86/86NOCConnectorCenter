@@ -1696,6 +1696,25 @@ async def _resolve_latest_agent_version_safe() -> str:
     exp = _AGENT_LATEST_CACHE.get("expires_at")
     if cached and exp and now < exp:
         return cached
+    # 1.5 — Override via DB (collection `system_settings`, key
+    # `agent_latest_version_override`). Permette all'admin di
+    # impostare la versione direttamente dalla UI Settings senza
+    # SSH-are sul server. Ha priorità sull'env (cosi' un admin
+    # puo' anche sovrascrivere temporaneamente AGENT_LATEST_VERSION).
+    try:
+        db_override_doc = await db.system_settings.find_one(
+            {"_id": "agent_latest_version_override"}, {"_id": 0, "value": 1}
+        )
+        db_override = (db_override_doc or {}).get("value")
+        if db_override and isinstance(db_override, str) and db_override.strip():
+            ver = db_override.strip()
+            if not ver.startswith("v"):
+                ver = f"v{ver}"
+            _AGENT_LATEST_CACHE["version"] = ver
+            _AGENT_LATEST_CACHE["expires_at"] = now + timedelta(minutes=5)
+            return ver
+    except Exception:  # noqa: BLE001
+        pass
     override = (_os.environ.get("AGENT_LATEST_VERSION") or "").strip()
     if override:
         ver = override if override.startswith("v") else f"v{override}"
@@ -1901,6 +1920,96 @@ async def agent_builds_asset(version: str, filename: str, token: Optional[str] =
 
 
 _ = _hashlib  # reserved per future SHA verification
+
+
+# ---- Admin config: override versione latest da UI ---------------------------
+#
+# Permette all'admin di sbloccare gli aggiornamenti remoti SENZA SSH-are sul
+# server. Salva su Mongo `system_settings._id=agent_latest_version_override`.
+# Ha priorità su env AGENT_LATEST_VERSION (vedi _resolve_latest_agent_version_safe).
+
+class AgentLatestOverridePayload(BaseModel):
+    version: Optional[str] = None  # e.g. "v4.11.0" o "" per rimuovere
+
+
+@router.get("/admin/agent-latest-override")
+async def get_agent_latest_override(current_user: dict = Depends(get_current_user)) -> Dict[str, Any]:
+    """Stato corrente del meccanismo di risoluzione latest version.
+
+    Ritorna:
+      - ``db_override`` valore in Mongo (priorità massima)
+      - ``env_override`` AGENT_LATEST_VERSION da .env
+      - ``github_token_set`` true se AGENT_GITHUB_TOKEN è configurato
+      - ``resolved`` versione attuale risolta (cache-aware)
+    """
+    require_admin(current_user)
+    doc = await db.system_settings.find_one(
+        {"_id": "agent_latest_version_override"}, {"_id": 0}
+    )
+    db_override = (doc or {}).get("value")
+    env_override = (_os.environ.get("AGENT_LATEST_VERSION") or "").strip() or None
+    gh_token_set = bool((_os.environ.get("AGENT_GITHUB_TOKEN") or "").strip())
+    resolved = await _resolve_latest_agent_version_safe()
+    return {
+        "db_override": db_override,
+        "db_override_updated_at": (doc or {}).get("updated_at"),
+        "db_override_updated_by": (doc or {}).get("updated_by"),
+        "env_override": env_override,
+        "github_token_set": gh_token_set,
+        "resolved": resolved,
+        "is_unresolved": (resolved in ("latest", "", None)),
+        "repo": (_os.environ.get("AGENT_GITHUB_REPO") or "santiM86/86NOCConnectorCenter"),
+    }
+
+
+@router.post("/admin/agent-latest-override")
+async def set_agent_latest_override(
+    payload: AgentLatestOverridePayload,
+    current_user: dict = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """Imposta o rimuove l'override DB della versione latest.
+
+    - ``version="v4.11.0"`` (con o senza prefisso v) → salva in DB
+    - ``version=""`` o null → cancella l'override (torna a env/GitHub API)
+
+    L'effetto è IMMEDIATO (cache 5 min viene invalidata in memoria).
+    """
+    require_admin(current_user)
+    v = (payload.version or "").strip()
+    now_iso = _now().isoformat()
+    by = current_user.get("email") or current_user.get("id") or "system"
+    if not v:
+        await db.system_settings.delete_one({"_id": "agent_latest_version_override"})
+        # Invalida cache in memoria
+        _AGENT_LATEST_CACHE["version"] = None
+        _AGENT_LATEST_CACHE["expires_at"] = None
+        return {"db_override": None, "cleared": True, "updated_by": by, "updated_at": now_iso}
+    if not v.startswith("v"):
+        v = f"v{v}"
+    # Validation minima del formato semver
+    import re as _re
+    if not _re.match(r"^v\d+\.\d+\.\d+(-[a-zA-Z0-9._-]+)?(\+[a-zA-Z0-9._-]+)?$", v):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Formato versione non valido: '{v}'. Atteso es. 'v4.11.0' o 'v4.11.0-rc1'",
+        )
+    await db.system_settings.update_one(
+        {"_id": "agent_latest_version_override"},
+        {"$set": {"value": v, "updated_at": now_iso, "updated_by": by}},
+        upsert=True,
+    )
+    # Invalida cache in memoria → la prossima _resolve_latest_agent_version_safe rileggerà
+    _AGENT_LATEST_CACHE["version"] = None
+    _AGENT_LATEST_CACHE["expires_at"] = None
+    # Resolve subito per dare conferma
+    resolved = await _resolve_latest_agent_version_safe()
+    return {
+        "db_override": v,
+        "cleared": False,
+        "updated_by": by,
+        "updated_at": now_iso,
+        "resolved": resolved,
+    }
 
 
 @router.get("/agent/latest-version")
