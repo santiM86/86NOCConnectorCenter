@@ -260,11 +260,11 @@ export function RemoteBrowserModal({ session, onClose }) {
                 <h2 className="text-amber-300 text-lg font-bold mb-3">Aggiornamento connector richiesto</h2>
                 <p className="text-white/70 text-xs leading-relaxed">{message}</p>
                 <button
-                  onClick={() => { window.location.href = "/connectors"; }}
+                  onClick={() => { window.location.href = "/clients"; }}
                   className="mt-5 px-4 py-2 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-200 text-xs font-medium rounded"
                   data-testid="rmt-goto-connectors"
                 >
-                  Vai a Connettori →
+                  Vai a Clienti →
                 </button>
               </div>
             ) : state === "error" ? (

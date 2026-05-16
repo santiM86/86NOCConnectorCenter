@@ -1,0 +1,36 @@
+{
+  "summary": "Tested ghost-agent cleanup, sys-metrics endpoints, /server-metrics page, SettingsPage GhostAgentsPanel, AgentUpgradeBanner, removal of /connectors UI, and legacy /api/connector/status reachability. 14/14 backend pytest cases pass; frontend Playwright run confirms all required UI elements/testids render correctly with proper empty/populated states.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "/connectors (route removed)", "issues": ["Navigating to /connectors renders an empty layout body (no catch-all NotFound route under the protected `/` parent). Acceptable per current SPA pattern but consider adding a generic 404 page for removed routes."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_ghost_agents_sysmetrics.py",
+    "/app/test_reports/pytest/iteration_78_ghost_sysmetrics.xml"
+  ],
+  "action_items": [
+    "Optional: add a catch-all `<Route path='*' element={<NotFound />} />` so removed pages like /connectors don't render a blank screen.",
+    "Optional: surface 'last_heartbeat_at' column in the GhostAgentsPanel table — currently only hostname/client/version/age are shown, but the API returns last_heartbeat_at which is useful context."
+  ],
+  "critical_code_review_comments": [
+    "`_bridge_sys_metrics` always writes to `sys_metrics_history` without TTL field — relies on a `received_at`/`sampled_at` index w/ expireAfterSeconds defined in server.py startup; if that index is missing, the collection can grow unbounded. Worth double-checking startup logs on prod.",
+    "`agents_cleanup` allows `agent_ids: []` (empty list) silently returning deleted_count=0 — fine, but the 400-vs-200 boundary differs from `cleanup_all_stale: false + no ids` (which 400s). Slight inconsistency.",
+    "`sys_metrics_overview` returns up to 500 docs without pagination; OK at current scale but flag for >500-agent tenants.",
+    "`/api/agents/stale` iterates *all* managed_agents docs in Python (no Mongo $expr filter). Acceptable today, but for 10k+ rows consider pushing the staleness filter into the aggregation pipeline."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "test_credentials": "Admin info@86bit.it / Ariel17051986@!@86 (from /app/memory/test_credentials.md) — works.",
+  "seed_data_creation": "Backend tests insert/cleanup TEST_-prefixed docs into managed_agents and sys_metrics_latest; all are removed in fixture teardown. agent_cleanup_audit gains audit rows that are intentionally retained.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend module test_ghost_agents_sysmetrics.py is a regression suite for the ghost-cleanup + sys-metrics feature. The /server-metrics page testids are: server-metrics-page, server-metrics-refresh, server-metrics-filter, server-card-{agent_id}. SettingsPage testid: ghost-agents-panel. The Go agent does not run inside this Linux container (Windows-only), so sys_metrics_latest is normally empty unless seeded directly in Mongo.",
+  "rca_of_the_issue": "N/A — no failures."
+}

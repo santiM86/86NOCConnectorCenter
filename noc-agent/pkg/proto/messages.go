@@ -125,6 +125,7 @@ const (
 	EventPingPoll       = "ping_poll"       // PingPollResult (ICMP/TCP reachability)
 	EventModuleStuck    = "module_stuck"    // module name + last deadline
 	EventCrashRecovered = "crash_recovered" // agent recovered after a panic
+	EventSysMetrics     = "sys_metrics"     // SysMetricsResult (CPU/RAM/Disk host)
 )
 
 // DiscoveredEndpoint is one endpoint observed on the LAN by any discovery
@@ -164,6 +165,40 @@ type PingPollResult struct {
 	Latency   time.Duration `json:"latency_ns,omitempty"`// best RTT observed
 	LossPct   float64       `json:"loss_pct,omitempty"`  // 0..100 across probes
 	Error     string        `json:"error,omitempty"`
+}
+
+// SysMetricsResult is the periodic snapshot of the agent host (Windows /
+// Linux). Replaces SNMP polling for Windows servers where the agent runs
+// directly: CPU/RAM/Disk are sampled via gopsutil (WMI counters on Windows
+// natively, /proc on Linux).
+type SysMetricsResult struct {
+	SampledAt    time.Time            `json:"sampled_at"`
+	Hostname     string               `json:"hostname"`
+	OS           string               `json:"os"`
+	Platform     string               `json:"platform,omitempty"`     // e.g. "Microsoft Windows Server 2019"
+	UptimeSec    uint64               `json:"uptime_sec"`
+	BootTime     time.Time            `json:"boot_time"`
+	CPUPercent   float64              `json:"cpu_percent"`            // averaged across all cores
+	CPUCores     int                  `json:"cpu_cores"`
+	LoadAvg1     float64              `json:"load_avg_1,omitempty"`   // unix only
+	MemTotalMB   uint64               `json:"mem_total_mb"`
+	MemUsedMB    uint64               `json:"mem_used_mb"`
+	MemUsedPct   float64              `json:"mem_used_pct"`
+	SwapUsedMB   uint64               `json:"swap_used_mb,omitempty"`
+	SwapUsedPct  float64              `json:"swap_used_pct,omitempty"`
+	Disks        []SysMetricsDisk     `json:"disks,omitempty"`
+	NetTotalRX   uint64               `json:"net_total_rx_bytes,omitempty"`
+	NetTotalTX   uint64               `json:"net_total_tx_bytes,omitempty"`
+	ProcCount    int                  `json:"proc_count,omitempty"`
+}
+
+// SysMetricsDisk is the per-volume snapshot embedded in SysMetricsResult.
+type SysMetricsDisk struct {
+	Mount      string  `json:"mount"`        // "C:" / "/" / "/var"
+	FSType     string  `json:"fs_type,omitempty"`
+	TotalGB    float64 `json:"total_gb"`
+	UsedGB     float64 `json:"used_gb"`
+	UsedPct    float64 `json:"used_pct"`
 }
 
 // AgentLog is a structured log line shipped to the backend.

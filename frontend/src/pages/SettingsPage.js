@@ -3,7 +3,7 @@ import axios from "axios";
 import { API, useAuth } from "@/App";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
-import { Gear, ShieldCheck, Bell, Key, BellRinging, BellSlash, Moon } from "@phosphor-icons/react";
+import { Gear, ShieldCheck, Bell, Key, BellRinging, BellSlash, Moon, Ghost, Trash, ArrowClockwise } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
@@ -365,6 +365,8 @@ export default function SettingsPage() {
             Usa le API keys dei clienti per inviare trap SNMP e syslog al sistema.
           </p>
         </div>
+
+        {user?.role === "admin" && <GhostAgentsPanel />}
       </div>
     </div>
   );
@@ -375,6 +377,148 @@ function SettingRow({ label, value, mono }) {
     <div className="flex items-center justify-between py-2 border-b border-[var(--bg-border)] last:border-0">
       <span className="text-[var(--text-muted)] text-xs">{label}</span>
       <span className={`text-[var(--text-primary)] text-xs ${mono ? "font-mono" : ""}`}>{value}</span>
+    </div>
+  );
+}
+
+/**
+ * GhostAgentsPanel — admin-only.
+ *
+ * Mostra i record `managed_agents` "ghost" (mai connessi o stale > 7gg).
+ * Storicamente l'agent generava un UUID nuovo ad ogni restart prima del
+ * fix v4.4.0 → si arrivava a 14 record orfani per singolo cliente.
+ *
+ * Usa POST /api/agents/cleanup con `cleanup_all_stale: true`.
+ */
+function GhostAgentsPanel() {
+  const [staleDays, setStaleDays] = useState(7);
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [cleaning, setCleaning] = useState(false);
+
+  const fetchStale = async (days = staleDays) => {
+    setLoading(true);
+    try {
+      const r = await axios.get(`${API}/agents/stale`, { params: { stale_days: days } });
+      setData(r.data);
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Errore caricamento ghost agents");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { fetchStale(staleDays); /* eslint-disable-next-line */ }, []);
+
+  const cleanupAll = async () => {
+    if (!data?.stale_count) return;
+    if (!confirm(`Cancellare definitivamente ${data.stale_count} ghost agents (più vecchi di ${staleDays} giorni)?\n\nNB: gli agent attualmente connessi non vengono toccati.`)) return;
+    setCleaning(true);
+    try {
+      const r = await axios.post(`${API}/agents/cleanup`, {
+        cleanup_all_stale: true,
+        stale_days: staleDays,
+      });
+      toast.success(`${r.data.deleted_count} ghost agents rimossi`);
+      await fetchStale(staleDays);
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Errore cleanup");
+    } finally {
+      setCleaning(false);
+    }
+  };
+
+  const deleteOne = async (agent_id, hostname) => {
+    if (!confirm(`Cancellare ghost agent "${hostname || agent_id}"?`)) return;
+    try {
+      const r = await axios.post(`${API}/agents/cleanup`, { agent_ids: [agent_id] });
+      toast.success(`Rimosso (${r.data.deleted_count})`);
+      await fetchStale(staleDays);
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Errore");
+    }
+  };
+
+  return (
+    <div className="noc-panel p-5" data-testid="ghost-agents-panel">
+      <h3 className="text-[var(--text-muted)] text-[10px] font-medium uppercase tracking-widest mb-3 flex items-center gap-1.5">
+        <Ghost size={13} /> Pulizia Ghost Agents
+      </h3>
+      <p className="text-[var(--text-muted)] text-xs mb-3">
+        Record orfani in <code className="font-mono text-indigo-400">managed_agents</code> generati da
+        vecchie versioni del Connector che cambiavano UUID ad ogni restart.
+        Gli agent attualmente connessi non vengono mai toccati.
+      </p>
+
+      <div className="flex items-center gap-2 mb-3">
+        <Label className="text-xs text-[var(--text-muted)]">Soglia giorni:</Label>
+        <Input
+          type="number"
+          min={1}
+          max={365}
+          value={staleDays}
+          onChange={(e) => setStaleDays(parseInt(e.target.value || "7", 10))}
+          className="w-20 h-7 text-xs"
+          data-testid="ghost-days-input"
+        />
+        <Button size="sm" variant="outline" onClick={() => fetchStale(staleDays)}
+          disabled={loading} className="h-7 text-[10px]"
+          data-testid="ghost-refresh-btn">
+          <ArrowClockwise size={12} className={`mr-1 ${loading ? "animate-spin" : ""}`} />
+          Aggiorna
+        </Button>
+        <div className="flex-1" />
+        <Button size="sm" onClick={cleanupAll}
+          disabled={cleaning || !data?.stale_count}
+          className="h-7 text-[10px] bg-red-600/90 hover:bg-red-600 text-white"
+          data-testid="ghost-cleanup-all-btn">
+          <Trash size={12} className="mr-1" />
+          Pulisci tutti ({data?.stale_count || 0})
+        </Button>
+      </div>
+
+      {loading ? (
+        <p className="text-[var(--text-muted)] text-xs">Caricamento…</p>
+      ) : data?.stale_count === 0 ? (
+        <p className="text-[var(--ok)] text-xs">✓ Nessun ghost agent. DB pulito.</p>
+      ) : (
+        <div className="max-h-72 overflow-y-auto border border-[var(--bg-border)] rounded">
+          <table className="w-full text-[10px]">
+            <thead className="bg-[var(--bg-card)] text-[var(--text-muted)] uppercase tracking-wider">
+              <tr>
+                <th className="text-left p-1.5">Hostname</th>
+                <th className="text-left p-1.5">Client</th>
+                <th className="text-left p-1.5">Versione</th>
+                <th className="text-right p-1.5">Età (gg)</th>
+                <th className="p-1.5"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {(data?.agents || []).map((a) => (
+                <tr key={a.agent_id} className="border-t border-[var(--bg-border)]"
+                  data-testid={`ghost-row-${a.agent_id}`}>
+                  <td className="p-1.5 font-mono text-[var(--text-primary)]">
+                    {a.hostname || <span className="text-[var(--text-muted)]">—</span>}
+                  </td>
+                  <td className="p-1.5 font-mono text-[var(--text-muted)]" title={a.client_id}>
+                    {(a.client_id || "").slice(0, 8)}
+                  </td>
+                  <td className="p-1.5 text-[var(--text-muted)] font-mono">{a.agent_version || "—"}</td>
+                  <td className="p-1.5 text-right text-amber-400">{a.age_days ?? "—"}</td>
+                  <td className="p-1.5 text-right">
+                    <button onClick={() => deleteOne(a.agent_id, a.hostname)}
+                      className="text-red-400 hover:text-red-300"
+                      data-testid={`ghost-del-${a.agent_id}`}
+                      title="Cancella questo record">
+                      <Trash size={11} />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }

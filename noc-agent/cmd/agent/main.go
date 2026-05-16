@@ -108,6 +108,7 @@ func runAgent(ctx context.Context, cfg config.Config, log *logging.Logger) {
 	hr.Register("discovery", 2*cfg.Discovery.Interval)
 	hr.Register("poller", 2*cfg.SNMP.Interval)
 	hr.Register("ping", 2*cfg.Ping.Interval)
+	hr.Register("sysmetrics", 3*cfg.SysMetrics.Interval)
 	hr.Register("watchdog", 3*cfg.Heartbeat)
 
 	hostname, _ := os.Hostname()
@@ -136,6 +137,11 @@ func runAgent(ctx context.Context, cfg config.Config, log *logging.Logger) {
 	pingP := poller.NewPing(cfg.Ping, log, func(r proto.PingPollResult) {
 		client.PushEvent(proto.EventPingPoll, r)
 		hr.Tick("ping")
+	})
+
+	sysm := poller.NewSysMetrics(cfg.SysMetrics, log, func(r proto.SysMetricsResult) {
+		client.PushEvent(proto.EventSysMetrics, r)
+		hr.Tick("sysmetrics")
 	})
 
 	sources := []discovery.Source{}
@@ -265,6 +271,10 @@ func runAgent(ctx context.Context, cfg config.Config, log *logging.Logger) {
 					Name string `json:"name"`
 				} `json:"targets"`
 			} `json:"ping"`
+			SysMetrics struct {
+				Enabled  bool   `json:"enabled"`
+				Interval string `json:"interval"`
+			} `json:"sysmetrics"`
 		}
 		if err := json.Unmarshal(w.Config, &wire); err != nil {
 			rootLog.Warn("welcome.config parse failed", "err", err.Error())
@@ -336,6 +346,18 @@ func runAgent(ctx context.Context, cfg config.Config, log *logging.Logger) {
 			})
 		}
 		pingP.ApplyConfig(newPing)
+
+		// SysMetrics hot-swap (Windows server / linux host monitoring).
+		// Default: enabled=true / interval=60s; il backend può overrider
+		// per ridurre il rumore o spegnere completamente.
+		smInterval, _ := time.ParseDuration(wire.SysMetrics.Interval)
+		if smInterval <= 0 {
+			smInterval = 60 * time.Second
+		}
+		sysm.ApplyConfig(config.SysMetricsConfig{
+			Enabled:  wire.SysMetrics.Enabled,
+			Interval: smInterval,
+		})
 	})
 
 	go heartbeatLoop(ctx, client, hr, cfg.Heartbeat)
@@ -344,6 +366,7 @@ func runAgent(ctx context.Context, cfg config.Config, log *logging.Logger) {
 	go disc.Run(ctx)
 	go snmp.Run(ctx)
 	go pingP.Run(ctx)
+	go sysm.Run(ctx)
 	go upd.Run(ctx)
 
 	rootLog.Info("agent started",
@@ -377,6 +400,9 @@ func capabilities(c config.Config) []string {
 	}
 	if c.Ping.Enabled {
 		caps = append(caps, "poll.ping")
+	}
+	if c.SysMetrics.Enabled {
+		caps = append(caps, "poll.sysmetrics")
 	}
 	caps = append(caps, "cmd.force_lan_scan", "cmd.force_snmp_poll", "cmd.force_ping_poll", "cmd.get_metrics", "cmd.run_diagnostics")
 	return caps

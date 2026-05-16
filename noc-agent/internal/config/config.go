@@ -36,6 +36,7 @@ type Config struct {
 	Discovery DiscoveryConfig `yaml:"discovery"`
 	SNMP      SNMPConfig      `yaml:"snmp"`
 	Ping      PingConfig      `yaml:"ping"`
+	SysMetrics SysMetricsConfig `yaml:"sysmetrics"`
 	Watchdog  WatchdogConfig  `yaml:"watchdog"`
 	Update    UpdateConfig    `yaml:"update"`
 
@@ -91,6 +92,15 @@ type PingTarget struct {
 	Name string `yaml:"name,omitempty"`
 }
 
+// SysMetricsConfig drives the local-host monitoring loop. When the agent
+// runs ON the box you want to monitor (typical for Windows servers), use
+// this instead of SNMP — gopsutil reads WMI counters natively on Windows
+// and /proc on Linux. Enabled è ON di default (low-cost: 1 sample/min).
+type SysMetricsConfig struct {
+	Enabled  bool          `yaml:"enabled"`
+	Interval time.Duration `yaml:"interval"` // default 60s
+}
+
 type WatchdogConfig struct {
 	Enabled         bool          `yaml:"enabled"`
 	HeartbeatFile   string        `yaml:"heartbeat_file"`   // touched by agent every tick
@@ -129,6 +139,10 @@ func Default() Config {
 			Interval: 60 * time.Second,
 			Timeout:  2 * time.Second,
 			Count:    1,
+		},
+		SysMetrics: SysMetricsConfig{
+			Enabled:  true,
+			Interval: 60 * time.Second,
 		},
 		Watchdog: WatchdogConfig{
 			Enabled:       true,

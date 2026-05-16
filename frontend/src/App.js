@@ -27,7 +27,7 @@ import EncryptionPage from "@/pages/EncryptionPage";
 import AuditPage from "@/pages/AuditPage";
 import TwoFactorPage from "@/pages/TwoFactorPage";
 import EnterprisePage from "@/pages/EnterprisePage";
-import ConnectorsPage from "@/pages/ConnectorsPage";
+import ServerMetricsPage from "@/pages/ServerMetricsPage";
 import ClientStatusPage from "@/pages/ClientStatusPage";
 import UsersPage from "@/pages/UsersPage";
 import VaultPage from "@/pages/VaultPage";
@@ -226,7 +226,7 @@ function App() {
               <Route path="client/:clientId" element={<ClientOverviewPage />} />
               <Route path="devices" element={<DevicesPage />} />
               <Route path="enterprise" element={<EnterprisePage />} />
-              <Route path="connectors" element={<ConnectorsPage />} />
+              <Route path="server-metrics" element={<ServerMetricsPage />} />
               <Route path="network-status" element={<ClientStatusPage />} />
               <Route path="users" element={<UsersPage />} />
               <Route path="settings" element={<SettingsPage />} />
