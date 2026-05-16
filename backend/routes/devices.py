@@ -191,10 +191,23 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
             # recentemente in discovered_endpoints, prevale "online".
             if ip in scanner_seen_recent_ips:
                 md_status = "online"
+            # display name: priorità sys_name (SNMP) → hostname (NBNS) →
+            # mdns_name → device_name (Fingerbank) → ip nudo. Vedi nota
+            # nel branch managed_devices sotto.
+            _pd_name = (pd.get("device_name") or "").strip()
+            if not _pd_name or _pd_name == ip:
+                for _k_pd in (pd.get("sys_name"), md.get("hostname"),
+                              md.get("mdns_name"), md.get("fingerbank_device_name")):
+                    _kv = (_k_pd or "").strip()
+                    if _kv and _kv != ip:
+                        _pd_name = _kv
+                        break
+                if not _pd_name or _pd_name == ip:
+                    _pd_name = ip
             devices.append({
                 "id": f"poll_{ip.replace('.','_')}",
                 "client_id": pd.get("client_id", ""),
-                "name": pd.get("device_name", ip),
+                "name": _pd_name,
                 "device_type": dev_type,
                 "ip_address": ip,
                 "hostname": pd.get("sys_name", ""),
@@ -214,6 +227,10 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
                 "mac_is_random": bool(md.get("mac_is_random", False)),
                 "fingerbank_device_name": md.get("fingerbank_device_name"),
                 "fingerbank_score": md.get("fingerbank_score"),
+                "mdns_name": md.get("mdns_name"),
+                "mdns_services": md.get("mdns_services") or [],
+                "http_server": md.get("http_server"),
+                "notes": md.get("notes"),
                 "connection_type": md.get("connection_type"),
                 "connection_source": md.get("connection_source"),
                 "connection_via_switch": md.get("connection_via_switch"),
@@ -312,10 +329,24 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
             md_status = _scanner_status_from_last_seen(md.get("last_seen_at"))
         else:
             md_status = "pending"
+        # display name: se name è vuoto o == IP, usa il "best available" tra
+        # hostname/mdns_name/fingerbank_device_name (in ordine di affidabilità).
+        # Questo evita la UI con righe "10.10.1.55  10.10.1.55  snmp:public"
+        # quando i metadati di enrichment esistono ma il name non è stato
+        # aggiornato dall'import iniziale.
+        raw_name = (md.get("name") or "").strip()
+        if not raw_name or raw_name == md_ip:
+            for _k in ("hostname", "mdns_name", "fingerbank_device_name"):
+                _v = (md.get(_k) or "").strip()
+                if _v and _v != md_ip:
+                    raw_name = _v
+                    break
+            if not raw_name or raw_name == md_ip:
+                raw_name = md_ip
         devices.append({
             "id": md.get("id") or f"md_{md_ip.replace('.','_')}",
             "client_id": md.get("client_id", ""),
-            "name": md.get("name", md_ip),
+            "name": raw_name,
             "device_type": md.get("device_type", "server"),
             "ip_address": md_ip,
             "mac": md.get("mac", ""),
@@ -344,6 +375,10 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
             "family": md.get("family"),
             "fingerbank_device_name": md.get("fingerbank_device_name"),
             "fingerbank_score": md.get("fingerbank_score"),
+            "mdns_name": md.get("mdns_name"),
+            "mdns_services": md.get("mdns_services") or [],
+            "http_server": md.get("http_server"),
+            "notes": md.get("notes"),
             "mac_is_random": bool(md.get("mac_is_random", False)),
             "connection_type": md.get("connection_type"),  # lan|wifi|unknown
             "connection_source": md.get("connection_source"),

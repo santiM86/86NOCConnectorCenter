@@ -1064,6 +1064,17 @@ function MiniMetric({ label, value, sub, color }) {
 
 /* ==================== DEVICE GROUP ==================== */
 function DeviceGroup({ label, icon: Icon, devices, color }) {
+  // displayName: priorità hostname → mdns_name → fingerbank_device_name → name (se != IP) → IP nudo
+  const _displayName = (d) => {
+    const ip = d.ip_address || "";
+    for (const k of ["hostname", "mdns_name", "fingerbank_device_name"]) {
+      const v = (d[k] || "").trim();
+      if (v && v !== ip) return v;
+    }
+    const n = (d.name || "").trim();
+    if (n && n !== ip) return n;
+    return ip || "—";
+  };
   return (
     <div>
       <div className="flex items-center gap-1.5 mb-1">
@@ -1073,11 +1084,14 @@ function DeviceGroup({ label, icon: Icon, devices, color }) {
       <div className="space-y-1">
         {devices.map((d, i) => {
           const sc = STATUS_COLOR[d.status] || "#555";
+          const name = _displayName(d);
+          const nameIsIP = name === (d.ip_address || "");
           return (
             <div key={i} className="flex items-center gap-2 px-2.5 py-1.5 rounded-md border text-[10px]" style={{ borderColor: `${sc}20`, background: `${sc}04` }}>
               <div className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: sc }}></div>
-              <span className="font-medium text-[var(--text-primary)] truncate">{d.name}</span>
-              <span className="font-mono text-[var(--text-muted)]">{d.ip_address}</span>
+              <span className={`font-medium truncate ${nameIsIP ? "text-[var(--text-muted)] italic" : "text-[var(--text-primary)]"}`} title={d.notes || ""}>{name}</span>
+              {!nameIsIP && <span className="font-mono text-[var(--text-muted)]">{d.ip_address}</span>}
+              {d.vendor && <span className="text-[8px] px-1 rounded bg-[var(--bg-card)] text-[var(--text-muted)] truncate max-w-[120px]" title={d.vendor}>{d.vendor}</span>}
               {d.snmp_community && <span className="text-[8px] px-1 rounded bg-[var(--bg-card)] text-[var(--text-muted)]">{d.snmp_version || "snmp"}: {d.snmp_community}</span>}
               <span className="ml-auto font-bold text-[8px] uppercase" style={{ color: sc }}>{d.status}</span>
               {d.source === "connector" && <span className="text-[7px] px-1 rounded bg-indigo-500/10 text-indigo-400">M</span>}
