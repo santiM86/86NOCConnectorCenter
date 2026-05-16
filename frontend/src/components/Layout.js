@@ -73,6 +73,7 @@ const navConfig = [
     label: "Clienti",
     items: [
       { path: "/clients", icon: Buildings, label: "Gestione Clienti", roles: ["admin", "operator", "viewer"] },
+      { path: "/agents", icon: PlugsConnected, label: "Connector v4 (Agent)", roles: ["admin", "operator"] },
       { path: "/wan-monitor", icon: Globe, label: "Monitor WAN", roles: ["admin", "operator"] },
       { path: "/cmdb", icon: Database, label: "CMDB (Asset)", roles: ["admin", "operator", "viewer"] },
       { path: "/lifecycle", icon: HardDrives, label: "Hardware Lifecycle", roles: ["admin", "operator", "viewer"] },

@@ -27,6 +27,7 @@ import EncryptionPage from "@/pages/EncryptionPage";
 import AuditPage from "@/pages/AuditPage";
 import TwoFactorPage from "@/pages/TwoFactorPage";
 import EnterprisePage from "@/pages/EnterprisePage";
+import AgentsPage from "@/pages/AgentsPage";
 import ServerMetricsPage from "@/pages/ServerMetricsPage";
 import ClientStatusPage from "@/pages/ClientStatusPage";
 import UsersPage from "@/pages/UsersPage";
@@ -226,6 +227,7 @@ function App() {
               <Route path="client/:clientId" element={<ClientOverviewPage />} />
               <Route path="devices" element={<DevicesPage />} />
               <Route path="enterprise" element={<EnterprisePage />} />
+              <Route path="agents" element={<AgentsPage />} />
               <Route path="server-metrics" element={<ServerMetricsPage />} />
               <Route path="network-status" element={<ClientStatusPage />} />
               <Route path="users" element={<UsersPage />} />
