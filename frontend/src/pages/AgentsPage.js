@@ -216,6 +216,8 @@ export default function AgentsPage() {
       } else {
         toast.success(`${a.hostname || a.agent_id}: rimosso dal Center (${purged})`);
       }
+      // optimistic UI: rimuovi subito la riga locale invece di aspettare il refetch
+      setAgents((prev) => prev.filter((x) => x.agent_id !== a.agent_id));
       setRemoveTarget(null);
       setTimeout(fetchAll, 1500);
     } catch (err) {
