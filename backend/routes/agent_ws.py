@@ -1732,6 +1732,177 @@ async def _resolve_latest_agent_version_safe() -> str:
     return "latest"
 
 
+# ---- GitHub Release proxy (Center → GitHub) ----------------------------------
+#
+# Permette ai connector remoti di scaricare i binari della release SENZA
+# accedere a GitHub direttamente (e quindi senza prendere rate-limit
+# unauth). Il Center fa da reverse-proxy: gli agent autenticano con il
+# loro `token` (Bearer), il Center inoltra a GitHub usando il proprio
+# AGENT_GITHUB_TOKEN. I file scaricati vengono cachati su disco
+# (`AGENT_BUILDS_CACHE_DIR` o `/tmp/agent-builds-cache`) per non ri-scaricare
+# 50 MB di binari ad ogni richiesta multi-cliente.
+
+import hashlib as _hashlib
+
+_AGENT_BUILDS_CACHE_DIR = _os.environ.get(
+    "AGENT_BUILDS_CACHE_DIR", "/tmp/agent-builds-cache"
+)
+# Cache in-memory delle manifest GitHub (release JSON), TTL 5 min.
+_AGENT_RELEASE_CACHE: Dict[str, Dict[str, Any]] = {}
+
+
+async def _fetch_release_meta(version: str) -> Dict[str, Any]:
+    """Recupera (e cacha) la manifest di una release GitHub.
+
+    Risolve `latest` → tag concreto via _resolve_latest_agent_version_safe.
+    Usa AGENT_GITHUB_TOKEN per evitare il rate-limit unauth.
+    """
+    if version in ("latest", "", None):
+        version = await _resolve_latest_agent_version_safe()
+        if version == "latest":
+            raise HTTPException(
+                status_code=503,
+                detail="Impossibile risolvere 'latest' (rate-limit GitHub). Imposta AGENT_GITHUB_TOKEN.",
+            )
+    now = _now()
+    cached = _AGENT_RELEASE_CACHE.get(version)
+    if cached and cached.get("expires_at") and now < cached["expires_at"]:
+        return cached["meta"]
+    repo = (_os.environ.get("AGENT_GITHUB_REPO") or "santiM86/86NOCConnectorCenter").strip()
+    api_url = f"https://api.github.com/repos/{repo}/releases/tags/{version}"
+    headers = {"User-Agent": "86NocCenter-buildproxy", "Accept": "application/vnd.github.v3+json"}
+    gh_token = (_os.environ.get("AGENT_GITHUB_TOKEN") or "").strip()
+    if gh_token:
+        headers["Authorization"] = f"Bearer {gh_token}"
+    try:
+        import urllib.request as _ureq
+        req = _ureq.Request(api_url, headers=headers)
+        loop = asyncio.get_running_loop()
+        def _fetch():
+            with _ureq.urlopen(req, timeout=15) as r:
+                return json.loads(r.read().decode("utf-8"))
+        rel = await loop.run_in_executor(None, _fetch)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("fetch_release_meta(%s): %s", version, e)
+        raise HTTPException(status_code=502, detail=f"GitHub release fetch fallito: {e}")
+    meta = {
+        "version": rel.get("tag_name") or version,
+        "name": rel.get("name"),
+        "published_at": rel.get("published_at"),
+        "assets": [
+            {
+                "name": a.get("name"),
+                "size": a.get("size"),
+                "download_url": a.get("url"),  # API URL, non browser_download
+                "content_type": a.get("content_type"),
+            }
+            for a in (rel.get("assets") or [])
+        ],
+    }
+    _AGENT_RELEASE_CACHE[version] = {"meta": meta, "expires_at": now + timedelta(minutes=5)}
+    return meta
+
+
+@router.get("/agent-builds/{version}/manifest.json")
+async def agent_builds_manifest(version: str, token: Optional[str] = None) -> Dict[str, Any]:
+    """Ritorna l'elenco asset di una release Agent, con URL relativi al Center.
+
+    Auth: ?token=<agent_token> | <client.api_key>
+    URL pubblica: ``GET /api/agent-builds/{version}/manifest.json?token=...``
+    Per ``version=latest`` viene risolto al tag concreto via cache.
+    """
+    await _token_or_403(token)
+    meta = await _fetch_release_meta(version)
+    # Riscrivi le URL per puntare al Center (proxy) invece che a GitHub
+    real_ver = meta["version"]
+    public_assets = []
+    for a in meta["assets"]:
+        public_assets.append({
+            "name": a["name"],
+            "size": a.get("size"),
+            "content_type": a.get("content_type"),
+            "url": f"/api/agent-builds/{real_ver}/{a['name']}",
+        })
+    return {
+        "version": real_ver,
+        "name": meta.get("name"),
+        "published_at": meta.get("published_at"),
+        "assets": public_assets,
+    }
+
+
+def _cache_path(version: str, filename: str) -> str:
+    """Path locale dove cacheare un asset binario. Sanitizza filename."""
+    safe_name = "".join(c for c in filename if c.isalnum() or c in "._-")
+    safe_ver = "".join(c for c in version if c.isalnum() or c in "._-+")
+    if not safe_name or not safe_ver:
+        raise HTTPException(status_code=400, detail="filename/version invalido")
+    return _os.path.join(_AGENT_BUILDS_CACHE_DIR, safe_ver, safe_name)
+
+
+@router.get("/agent-builds/{version}/{filename}")
+async def agent_builds_asset(version: str, filename: str, token: Optional[str] = None):
+    """Streama un asset di release dal Center (proxy verso GitHub).
+
+    L'agent autentica con ?token=<agent_token>. Il Center scarica da GitHub
+    usando AGENT_GITHUB_TOKEN (PAT server-side). I file vengono cachati su
+    disco in AGENT_BUILDS_CACHE_DIR (default /tmp/agent-builds-cache).
+
+    Hit di cache → file servito direttamente (zero overhead).
+    Miss → download da GitHub, salva su disco, serve.
+    """
+    await _token_or_403(token)
+    # Risolvi version
+    meta = await _fetch_release_meta(version)
+    real_ver = meta["version"]
+    # Trova l'asset corrispondente
+    asset = next((a for a in meta["assets"] if a["name"] == filename), None)
+    if not asset:
+        raise HTTPException(status_code=404, detail=f"asset {filename} non trovato in release {real_ver}")
+
+    cache_path = _cache_path(real_ver, filename)
+    _os.makedirs(_os.path.dirname(cache_path), exist_ok=True)
+
+    if not _os.path.exists(cache_path) or _os.path.getsize(cache_path) != (asset.get("size") or -1):
+        # Cache miss: scarica dal GitHub API asset URL (Accept: octet-stream
+        # → segue il redirect e serve i byte) usando il PAT server-side.
+        gh_token = (_os.environ.get("AGENT_GITHUB_TOKEN") or "").strip()
+        headers = {
+            "User-Agent": "86NocCenter-buildproxy",
+            "Accept": "application/octet-stream",
+        }
+        if gh_token:
+            headers["Authorization"] = f"Bearer {gh_token}"
+        try:
+            import urllib.request as _ureq
+            req = _ureq.Request(asset["download_url"], headers=headers)
+            loop = asyncio.get_running_loop()
+            def _dl():
+                tmp_path = cache_path + ".tmp"
+                with _ureq.urlopen(req, timeout=60) as r:
+                    with open(tmp_path, "wb") as f:
+                        while True:
+                            chunk = r.read(1024 * 64)
+                            if not chunk:
+                                break
+                            f.write(chunk)
+                _os.replace(tmp_path, cache_path)
+            await loop.run_in_executor(None, _dl)
+        except Exception as e:  # noqa: BLE001
+            logger.error("agent-builds proxy download fail ver=%s name=%s err=%s",
+                         real_ver, filename, e)
+            raise HTTPException(status_code=502, detail=f"download asset GitHub fallito: {e}")
+
+    return FileResponse(
+        path=cache_path,
+        filename=filename,
+        media_type=asset.get("content_type") or "application/octet-stream",
+    )
+
+
+_ = _hashlib  # reserved per future SHA verification
+
+
 @router.get("/agent/latest-version")
 async def agent_latest_version() -> Dict[str, str]:
     """Espone la versione corrente del Connector Go Agent v4 disponibile per

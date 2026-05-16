@@ -1,0 +1,34 @@
+{
+  "summary": "Backend-only testing of the new Center GitHub-release proxy endpoints (NOC con agent Go v4 iteration 80). All 11 pytest cases pass: manifest auth gating (401/403/200 for agent_token + client api_key), URL rewriting to /api/agent-builds/{ver}/{name} (no browser_download_url leaked), latest→v4.11.0 resolution, PS1 ~29KB download, on-disk cache HIT verified via mtime, 404 on missing asset, path-traversal blocked (400/404, /etc/passwd not exfiltrated), bulk-update target='latest' refused with 503 + clear message, hello-handler completion-detection logic flips update_status to 'completed' when current_version != update_started_version.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_agent_builds_proxy.py",
+    "/app/test_reports/pytest/iteration_80_agent_builds.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "agent_builds_asset() compares cache_size to asset.get('size'); good integrity check but no SHA verification despite SHA256SUMS.txt being shipped in the release. The _hashlib import is reserved 'per future SHA verification' — recommend wiring this up so a corrupted cache file gets re-fetched even if size matches.",
+    "_cache_path sanitizes characters but does NOT normalize the resolved absolute path. Since filename comes from a FastAPI path parameter, Starlette already strips '..' segments before routing; however a defense-in-depth os.path.realpath() check that the resolved path stays under _AGENT_BUILDS_CACHE_DIR would harden against future routing changes.",
+    "_fetch_release_meta caches GitHub API failures only implicitly (via HTTPException propagation, no negative cache). If GitHub returns 5xx, every incoming /manifest.json request re-hits GitHub with a 15s urlopen timeout. Consider caching transient errors for ~30s.",
+    "agent_builds_asset cache miss path uses asset['download_url'] (the GitHub API asset URL, not browser_download_url) which requires Accept: application/octet-stream + the PAT to follow the redirect. Already correct, but worth a comment that this WILL fail on private repos without AGENT_GITHUB_TOKEN.",
+    "_resolve_latest_agent_version_safe caches the literal string 'latest' for 2 minutes on fetch failure. The proxy then raises 503 from _fetch_release_meta — good — but the existing /api/agent-builds endpoint never logs WHY the resolution failed at request time (only at the original lookup). Adding the cached failure timestamp to the 503 detail would help operators diagnose."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_agent_builds_proxy.py"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "n/a (not requested)"},
+  "test_credentials": "Admin info@86bit.it / Ariel17051986@!@86 works. Used existing agent_token from db.agent_tokens (pytest-* token) and client.api_key (noc_35cf...) from db.clients — both accepted by _token_or_403 as expected.",
+  "seed_data_creation": "test_completion_db_flip_via_seed inserts a TEST_iter80_completion_agent doc into managed_agents to verify update_status='completed' patch logic, then cleans it up in the same coroutine (try/finally delete_one). No persistent test data left behind. Cache files in /tmp/agent-builds-cache/v4.11.0/install-noc-agent.ps1 are intentionally kept after the run (used by the cache-hit test).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Regression suite: /app/backend/tests/test_agent_builds_proxy.py — 11 tests, runs in ~3s. Live preview resolves 'latest' to v4.11.0 (GitHub API reachable from this pod even without AGENT_GITHUB_TOKEN — currently NOT set in /app/backend/.env). If GitHub rate-limits the unauth IP, the manifest tests will flap with 502/503; set AGENT_GITHUB_TOKEN to harden. The Go agent does NOT run in preview (Windows only) so end-to-end update completion via real WS hello was simulated via Mongo seed + same logical branch from agent_ws.py lines 215-244.",
+  "rca_of_the_issue": "N/A — original issue (update timeouts) was caused by agents hitting GitHub directly and getting rate-limited. The fix (Center as proxy under /api/agent-builds/*) is verified working: agents now authenticate with their existing agent_token, the Center streams from its on-disk cache (mtime unchanged across requests = true cache hit), and the literal string 'latest' can never propagate to install-noc-agent.ps1 because both bulk-update and the proxy refuse it with 503 when AGENT_GITHUB_TOKEN/AGENT_LATEST_VERSION are unavailable."
+}
