@@ -72,17 +72,32 @@ param(
     [string]$Repo = "santiM86/86NOCConnectorCenter",
     [string]$Version = "latest",
     [string]$GitHubToken = "",
-    # Source: "github" (default, scarica binari direttamente da GitHub
-    # Releases) o "center" (scarica via reverse-proxy del NOC Center,
-    # endpoint /api/agent-builds/{ver}/{file}). La modalità "center" è
-    # raccomandata in produzione perché evita il rate-limit GitHub
-    # unauth (60 req/h) sui PC dei clienti — il PAT viene usato solo
-    # lato server. Auth: stesso $Token agent.
-    [ValidateSet("github","center")][string]$Source = "github",
+    # Source: "github" (default per back-compat se chiamato senza -Token o
+    # senza -BackendUrl) o "center" (scarica via reverse-proxy del NOC
+    # Center, endpoint /api/agent-builds/{ver}/{file}). La modalità
+    # "center" è raccomandata in produzione perché evita il rate-limit
+    # GitHub unauth (60 req/h) sui PC dei clienti — il PAT viene usato
+    # solo lato server. Auth: stesso $Token agent.
+    #
+    # AUTO-FALLBACK INTELLIGENTE: se $Source è vuoto, $Token e
+    # $BackendUrl sono presenti → usa "center" di default. Questo
+    # permette ai VECCHI binari Go (v4.10.x e precedenti) che lanciano
+    # questo script con i soli parametri base di beneficiare comunque
+    # del proxy Center senza aggiornare il loro binario.
+    [ValidateSet("","github","center")][string]$Source = "",
     [string]$InstallDir = "C:\Program Files\86NocAgent",
     [string]$DataDir = "C:\ProgramData\86NocAgent",
     [switch]$Quiet
 )
+
+# --- Auto-detect Source quando non specificato esplicitamente ---
+if (-not $Source) {
+    if ($Token -and $BackendUrl) {
+        $Source = "center"
+    } else {
+        $Source = "github"
+    }
+}
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"   # accelera Invoke-WebRequest
