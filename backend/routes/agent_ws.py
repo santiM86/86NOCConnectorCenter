@@ -911,9 +911,47 @@ async def list_agents(client_id: Optional[str] = None,
     live_ids = {c.agent_id for c in REGISTRY.list()}
     now = datetime.now(timezone.utc)
     update_timeout = timedelta(minutes=5)
+    uninstall_timeout = timedelta(minutes=3)
+    # Lista degli agent_id per cui dobbiamo finalizzare la pulizia DB
+    # (uninstall completato o timeout) dopo aver collezionato lo stato.
+    to_finalize: List[Dict[str, Any]] = []
     for d in docs:
         d["live"] = d.get("agent_id") in live_ids
-        # Calcola progress dell'update in corso (per progress bar UI)
+        # ---- UNINSTALL progress / completion ----
+        if d.get("uninstall_status") == "in_progress":
+            started = _parse_iso(d.get("uninstall_started_at"))
+            if started:
+                elapsed = (now - started).total_seconds()
+                # Stima progress 0..95% lineare sui 3 min attesi (l'uninstall
+                # e' piu' veloce dell'update perche' non scarica binari)
+                d["uninstall_progress"] = min(95, max(5, int(elapsed / 1.8)))
+                d["uninstall_elapsed_sec"] = round(elapsed, 1)
+                # Detection completamento:
+                # - agent NON live da > 30s + uninstall_started_at presente
+                #   → SUCCESSO (il servizio e' stato rimosso, niente reconnect)
+                # - agent ancora live dopo 60s dall'invio comando → probabile
+                #   FALLIMENTO (script non ha potuto stoppare il service)
+                # - timeout 3 min senza esito → marca timeout
+                if not d["live"] and elapsed > 30:
+                    d["uninstall_status"] = "completed"
+                    d["uninstall_progress"] = 100
+                    to_finalize.append({
+                        "agent_id": d["agent_id"],
+                        "outcome": "completed",
+                        "hostname": d.get("hostname"),
+                        "client_id": d.get("client_id"),
+                    })
+                elif d["live"] and elapsed > 90:
+                    d["uninstall_status"] = "failed"
+                    d["uninstall_error"] = (
+                        "Agent ancora live dopo 90s dal comando — uninstall non eseguito. "
+                        "Probabili cause: il PC del cliente esegue la versione legacy che non supporta "
+                        "il magic version e va aggiornato prima, oppure permessi insufficienti."
+                    )
+                elif elapsed > uninstall_timeout.total_seconds():
+                    d["uninstall_status"] = "timeout"
+                    d["uninstall_error"] = "Timeout 3 min — verifica manuale sul PC del cliente"
+        # ---- UPDATE progress / completion (logica gia' esistente) ----
         if d.get("update_status") == "in_progress":
             started = _parse_iso(d.get("update_started_at"))
             if started:
@@ -951,6 +989,32 @@ async def list_agents(client_id: Optional[str] = None,
             d["update_progress"] = 100
         elif d.get("update_status") == "failed" or d.get("update_status") == "timeout":
             d["update_progress"] = -1
+
+    # Finalizza pulizia DB per gli uninstall completati con successo.
+    # Lo facciamo fuori dal loop per non mutare la collection durante la
+    # find. Manteniamo un audit completo.
+    for it in to_finalize:
+        try:
+            deleted: Dict[str, int] = {}
+            for col in ("managed_agents", "sys_metrics_latest", "sys_metrics_history",
+                        "device_poll_status", "agent_log_buffer", "agent_command_audit"):
+                r = await db[col].delete_many({"agent_id": it["agent_id"]})
+                if r.deleted_count > 0:
+                    deleted[col] = r.deleted_count
+            await db.agent_cleanup_audit.insert_one({
+                "deleted_at": _now().isoformat(),
+                "deleted_by": "uninstall-watcher",
+                "deleted_ids": [it["agent_id"]],
+                "count": deleted.get("managed_agents", 0),
+                "criteria": "uninstall-finalized",
+                "hostname": it.get("hostname"),
+                "client_id": it.get("client_id"),
+                "outcome": it["outcome"],
+                "collections_purged": deleted,
+            })
+        except Exception as e:  # noqa: BLE001
+            logger.warning("uninstall finalize failed agent_id=%s err=%s", it["agent_id"], e)
+
     return {"agents": docs, "live_count": len(live_ids)}
 
 
@@ -1300,6 +1364,7 @@ async def delete_agent(
 
     uninstall_status = "skipped"
     uninstall_error: Optional[str] = None
+    track_progress = False
 
     if uninstall_remote:
         conn = REGISTRY.get(agent_id)
@@ -1307,13 +1372,77 @@ async def delete_agent(
             uninstall_status = "agent_offline"
             uninstall_error = "Agent non connesso: rimosso solo dal Center. Per disinstallare anche dal PC esegui uninstall.ps1 manualmente o aspetta che torni online."
         else:
+            # Strategia: prima prova il comando WS nativo "uninstall" (nuovi
+            # agent v4.11+). Se l'agent non lo conosce (error "unknown
+            # command" o timeout), fallback su "update" con magic version
+            # "__uninstall__" che il NUOVO install-noc-agent.ps1 sul branch
+            # main intercetta e devia su uninstall.ps1. Cosi' anche i
+            # vecchi binari (v4.10.x) si disinstallano senza dover essere
+            # ricompilati.
             try:
-                await conn.send_command("uninstall", {"purge_data": purge_data}, timeout=10.0)
+                await conn.send_command("uninstall", {"purge_data": purge_data}, timeout=8.0)
                 uninstall_status = "command_sent"
-            except Exception as e:  # noqa: BLE001
-                uninstall_status = "command_failed"
-                uninstall_error = str(e)[:200]
+                track_progress = True
+            except Exception as e1:  # noqa: BLE001
+                err1 = str(e1).lower()
+                # Fallback se "unknown" oppure timeout
+                is_unknown = "unknown" in err1 or "no handler" in err1 or "not registered" in err1 or "timeout" in err1
+                if is_unknown:
+                    try:
+                        await conn.send_command("update", {"version": "__uninstall__"}, timeout=8.0)
+                        uninstall_status = "command_sent_legacy"
+                        track_progress = True
+                    except Exception as e2:  # noqa: BLE001
+                        uninstall_status = "command_failed"
+                        uninstall_error = f"native: {str(e1)[:80]}; legacy: {str(e2)[:80]}"
+                else:
+                    uninstall_status = "command_failed"
+                    uninstall_error = str(e1)[:200]
 
+    # NB: per il tracking del progresso, scriviamo i campi PRIMA di
+    # cancellare il record (altrimenti la UI non vede nessuna progress
+    # bar). Le pulizie DB avvengono solo DOPO che lo status finale
+    # (completed/timeout) è stato registrato dal job watcher OPPURE
+    # immediatamente se uninstall_remote=False.
+    if track_progress and uninstall_remote:
+        # Marca in_progress, NON cancellare ancora. Il job di completamento
+        # (vedi list_agents) marchera' "completed" quando l'agent sara'
+        # offline da > 60s, oppure "failed" se torna online (uninstall
+        # fallito → service auto-restarted).
+        await db.managed_agents.update_one(
+            {"agent_id": agent_id},
+            {"$set": {
+                "uninstall_status": "in_progress",
+                "uninstall_started_at": _now().isoformat(),
+                "uninstall_initiated_by": current_user.get("email") or current_user.get("id") or "system",
+                "uninstall_method": "native" if uninstall_status == "command_sent" else "legacy_update",
+                "uninstall_purge_data": purge_data,
+                "uninstall_error": None,
+            }},
+        )
+        # Audit immediato dell'invio del comando
+        await db.agent_cleanup_audit.insert_one({
+            "deleted_at": _now().isoformat(),
+            "deleted_by": current_user.get("email") or current_user.get("id"),
+            "deleted_ids": [agent_id],
+            "count": 0,  # ancora nessun delete
+            "criteria": "delete-with-uninstall-tracked",
+            "hostname": doc.get("hostname"),
+            "client_id": doc.get("client_id"),
+            "uninstall_status": uninstall_status,
+            "uninstall_error": uninstall_error,
+        })
+        return {
+            "agent_id": agent_id,
+            "hostname": doc.get("hostname"),
+            "deleted": False,
+            "tracking_uninstall": True,
+            "uninstall_remote": uninstall_remote,
+            "uninstall_status": uninstall_status,
+            "uninstall_error": uninstall_error,
+        }
+
+    # Cleanup DB esteso: cancella tutto cio' che riferisce a quell'agent_id
     deleted: Dict[str, int] = {}
     for col in ("managed_agents", "sys_metrics_latest", "sys_metrics_history",
                 "device_poll_status", "agent_log_buffer", "agent_command_audit"):

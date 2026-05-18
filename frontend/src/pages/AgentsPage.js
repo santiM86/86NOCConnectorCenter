@@ -55,13 +55,15 @@ export default function AgentsPage() {
     fetchAll();
   }, []);
 
-  // Adaptive polling: 3s se c'è un update in corso, altrimenti 15s
+  // Adaptive polling: 3s se c'è un update/uninstall in corso, altrimenti 15s
   useEffect(() => {
-    const anyUpdating = agents.some((a) => a.update_status === "in_progress");
-    const id = setInterval(fetchAll, anyUpdating ? 3000 : 15000);
+    const anyBusy = agents.some(
+      (a) => a.update_status === "in_progress" || a.uninstall_status === "in_progress"
+    );
+    const id = setInterval(fetchAll, anyBusy ? 3000 : 15000);
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [agents.some((a) => a.update_status === "in_progress")]);
+  }, [agents.some((a) => a.update_status === "in_progress" || a.uninstall_status === "in_progress")]);
 
   // Versione normalizzata per confronto (rimuove 'v', +metadata, -dev)
   const normVer = (v) => {
@@ -214,7 +216,10 @@ export default function AgentsPage() {
       const purged = Object.entries(r.data.collections_purged || {})
         .map(([c, n]) => `${c}=${n}`).join(", ") || "-";
       if (isFull) {
-        if (r.data.uninstall_status === "command_sent") {
+        if (r.data.tracking_uninstall) {
+          // Uninstall avviato — progress bar la traccia, NON rimuovere ottimisticamente
+          toast.success(`${a.hostname || a.agent_id}: comando uninstall inviato (${r.data.uninstall_status}). Attendi 30-60s per la conferma.`);
+        } else if (r.data.uninstall_status === "command_sent") {
           toast.success(`${a.hostname || a.agent_id}: comando uninstall inviato + DB pulito (${purged})`);
         } else if (r.data.uninstall_status === "agent_offline") {
           toast.warning(`${a.hostname}: agent offline, rimosso solo dal Center (${purged}). Esegui uninstall.ps1 manualmente sul PC.`);
@@ -224,8 +229,10 @@ export default function AgentsPage() {
       } else {
         toast.success(`${a.hostname || a.agent_id}: rimosso dal Center (${purged})`);
       }
-      // optimistic UI: rimuovi subito la riga locale invece di aspettare il refetch
-      setAgents((prev) => prev.filter((x) => x.agent_id !== a.agent_id));
+      // Optimistic UI SOLO se non c'è tracking_uninstall (altrimenti voglio vedere progress)
+      if (!r.data.tracking_uninstall) {
+        setAgents((prev) => prev.filter((x) => x.agent_id !== a.agent_id));
+      }
       setRemoveTarget(null);
       setTimeout(fetchAll, 1500);
     } catch (err) {
@@ -446,7 +453,41 @@ export default function AgentsPage() {
                         )}
                       </td>
                       <td className="p-2.5 text-right whitespace-nowrap">
-                        {a.update_status === "in_progress" ? (
+                        {a.uninstall_status === "in_progress" ? (
+                          <div className="inline-flex flex-col items-end gap-0.5 min-w-[120px]" data-testid={`agent-uninstall-progress-${a.agent_id}`}>
+                            <span className="text-[9px] text-red-400 font-mono animate-pulse">
+                              disinstallando… {a.uninstall_progress || 0}%
+                            </span>
+                            <div className="w-full h-1 bg-[var(--bg-input)] rounded-full overflow-hidden">
+                              <div className="h-full bg-red-500 transition-all duration-500"
+                                style={{ width: `${a.uninstall_progress || 0}%` }} />
+                            </div>
+                            <span className="text-[8px] text-[var(--text-muted)]">
+                              {a.uninstall_method === "legacy_update" ? "via magic update" : "via WS"} · {Math.floor(a.uninstall_elapsed_sec || 0)}s
+                            </span>
+                          </div>
+                        ) : a.uninstall_status === "completed" ? (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 text-[9px] border border-emerald-500/20"
+                            data-testid={`agent-uninstall-done-${a.agent_id}`}>
+                            ✓ disinstallato
+                          </span>
+                        ) : a.uninstall_status === "failed" || a.uninstall_status === "timeout" ? (
+                          <div className="inline-flex flex-col items-end gap-0.5 min-w-[120px]">
+                            <span className="text-[9px] text-red-400 px-2 py-0.5 rounded bg-red-500/10 border border-red-500/20 cursor-help"
+                              title={a.uninstall_error || ""}>
+                              ✕ uninstall {a.uninstall_status}
+                            </span>
+                            {a.uninstall_error && (
+                              <span className="text-[8px] text-[var(--text-muted)] truncate max-w-[200px]" title={a.uninstall_error}>
+                                {a.uninstall_error.slice(0, 50)}…
+                              </span>
+                            )}
+                            <button onClick={() => openRemove(a)}
+                              className="text-[9px] text-amber-400 hover:underline">
+                              ↻ ritenta
+                            </button>
+                          </div>
+                        ) : a.update_status === "in_progress" ? (
                           <div className="inline-flex flex-col items-end gap-0.5 min-w-[100px]" data-testid={`agent-progress-${a.agent_id}`}>
                             <div className="flex items-center gap-1.5">
                               <span className="text-[9px] text-amber-400 font-mono animate-pulse">
