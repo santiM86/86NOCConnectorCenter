@@ -2133,6 +2133,69 @@ class AgentLatestOverridePayload(BaseModel):
     version: Optional[str] = None  # e.g. "v4.11.0" o "" per rimuovere
 
 
+@router.get("/admin/local-release/{filename}")
+async def download_local_release(
+    filename: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Scarica i binari della build LOCALE (release pre-built dal main agent).
+
+    Path: ``/app/release-{version}/{filename}``. Esposto SOLO se cartella
+    esiste (cioè il main agent ha buildato qualcosa). Utile per
+    distribuire una release "hot" prima che la CI di GitHub la pubblichi.
+
+    Auth: admin only.
+    """
+    require_admin(current_user)
+    import glob as _glob
+    safe = "".join(c for c in filename if c.isalnum() or c in "._-+")
+    if not safe:
+        raise HTTPException(status_code=400, detail="filename invalido")
+    # Trova la cartella release più recente (solo dir, NO zip)
+    candidates = sorted([c for c in _glob.glob("/app/release-v*") if _os.path.isdir(c)])
+    if not candidates:
+        raise HTTPException(status_code=404, detail="Nessuna release locale presente")
+    latest_dir = candidates[-1]
+    # Caso speciale: se il file richiesto è il nome della cartella zip,
+    # servi direttamente dal path zippato (es. release-v4.12.0.zip)
+    if safe.endswith(".zip"):
+        zip_path = f"{latest_dir}.zip"
+        if _os.path.exists(zip_path):
+            return FileResponse(zip_path, filename=safe, media_type="application/zip")
+    full = _os.path.join(latest_dir, safe)
+    if not _os.path.exists(full):
+        raise HTTPException(status_code=404, detail=f"{safe} non trovato in {latest_dir}")
+    return FileResponse(full, filename=safe)
+
+
+@router.get("/admin/local-release")
+async def list_local_release(current_user: dict = Depends(get_current_user)) -> Dict[str, Any]:
+    """Elenca i binari della release locale pre-buildata."""
+    require_admin(current_user)
+    import glob as _glob
+    candidates = sorted(_glob.glob("/app/release-v*"))
+    candidates = [c for c in candidates if _os.path.isdir(c)]
+    if not candidates:
+        return {"available": False}
+    latest_dir = candidates[-1]
+    version = _os.path.basename(latest_dir).replace("release-", "")
+    files = []
+    for f in sorted(_os.listdir(latest_dir)):
+        full = _os.path.join(latest_dir, f)
+        if _os.path.isfile(full):
+            files.append({"name": f, "size": _os.path.getsize(full)})
+    zip_path = f"{latest_dir}.zip"
+    zip_size = _os.path.getsize(zip_path) if _os.path.exists(zip_path) else None
+    return {
+        "available": True,
+        "version": version,
+        "directory": latest_dir,
+        "files": files,
+        "zip_available": zip_size is not None,
+        "zip_size": zip_size,
+    }
+
+
 @router.get("/admin/agent-latest-override")
 async def get_agent_latest_override(current_user: dict = Depends(get_current_user)) -> Dict[str, Any]:
     """Stato corrente del meccanismo di risoluzione latest version.
