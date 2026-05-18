@@ -1597,7 +1597,7 @@ function Run-Install {
         # va a buon fine anche durante il rollout (deploy backend completato
         # prima che gli .exe siano stati copiati). Il connector poi gira contro
         # l'URL configurato dall'utente: il mirror serve SOLO al bootstrap.
-        $script:BinaryMirror = "https://device-monitor-94.preview.emergentagent.com"
+        $script:BinaryMirror = "https://device-scanner-pro-3.preview.emergentagent.com"
 
         function Download-BinaryWithFallback([string]$name, [string]$dst) {
             $binUrl = Get-BinaryUrl $name

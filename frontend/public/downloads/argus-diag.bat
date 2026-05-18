@@ -1,6 +1,6 @@
 @echo off
 REM Lanciatore con doppio click - apre lo script PS1 con bypass policy
-SET "URL=https://device-monitor-94.preview.emergentagent.com/downloads/argus-diag.ps1"
+SET "URL=https://device-scanner-pro-3.preview.emergentagent.com/downloads/argus-diag.ps1"
 SET "DST=%TEMP%\argus-diag.ps1"
 
 echo Scaricando lo script di diagnostica...

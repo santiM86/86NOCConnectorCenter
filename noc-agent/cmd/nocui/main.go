@@ -262,7 +262,7 @@ func loadAgentInfo() AgentInfo {
 	// Ultimo fallback (dev/test).
 	logf("loadAgentInfo: no config file found, using DEV fallback")
 	return AgentInfo{
-		BackendURL: "https://device-monitor-94.preview.emergentagent.com",
+		BackendURL: "https://device-scanner-pro-3.preview.emergentagent.com",
 		ClientID:   "unknown",
 		Token:      "",
 		Role:       "master",
