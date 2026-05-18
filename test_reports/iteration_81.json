@@ -1,0 +1,38 @@
+{
+  "summary": "Backend-only verification of the 3 combined fixes for the argus.86bit.it remote-agent-update bug. 21/21 pytest cases green (11 baseline regression + 10 new iter-81 cases). New file: tests/test_agent_builds_synthetic_fallback.py exercises (a) auto-detect Source block in install-noc-agent.ps1, (b) manifest cache TTL hit on 2nd call, (c) bulk-update resolving via DB override without 503, (d) path-traversal still blocked, (e) negative cache for unknown versions (no retry loop), and (f) full synthetic-fallback flow under a forged AGENT_GITHUB_TOKEN=ghp_FAKE_... which makes the GitHub API 401 — proving the Center proxy continues to serve manifest + PS1 (29KB) + nocagent.exe (7.6MB) via browser_download_url public CDN, and that disk cache survives a 2nd hit. Backend was hot-restarted with the fake token, all flows asserted, then env was fully restored and disk cache cleared.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/agent-builds/{ver}/manifest.json", "issue": "Public response strips meta['source'] (github_api vs synthetic) — caller cannot distinguish if fallback was used. The internal _fetch_release_meta populates a 'source' field but agent_builds_manifest does not echo it. Recommend: add 'source' to the public manifest payload so the front-end / agents can warn when running on synthetic fallback (degraded mode)."},
+      {"endpoint": "GET /api/agent-builds/{ver}/manifest.json", "issue": "Synthetic-fallback manifest sets size=null for every asset, so the integrity check in agent_builds_asset (`asset.get('size') and getsize != size`) cannot re-fetch a corrupted file when running under fallback. Acceptable trade-off until SHA256SUMS.txt verification is wired up via _hashlib (already reserved)."},
+      {"endpoint": "GET /api/agent-builds/v9.99.99-nonexistent/manifest.json", "issue": "Returns 200 with a synthetic manifest even for non-existent tags. The actual 404 only surfaces when the agent tries to download a single asset (browser_download_url -> 404). Not a functional bug (the agent will fail fast), but the manifest endpoint losing its 'asset really exists' guarantee is worth a comment in the OpenAPI description."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_agent_builds_proxy.py",
+    "/app/backend/tests/test_agent_builds_synthetic_fallback.py",
+    "/app/test_reports/pytest/iteration_81_results.xml"
+  ],
+  "action_items": [
+    "(Optional) Expose meta['source'] in agent_builds_manifest response so the UI can show a 'GitHub API unreachable, using synthetic fallback' warning on /agents.",
+    "(Optional) Implement SHA256SUMS.txt verification using the already-reserved _hashlib import — needed for cache-integrity when synthetic manifests don't carry asset sizes."
+  ],
+  "critical_code_review_comments": [
+    "install-noc-agent.ps1 auto-detect block at lines 93-100 is correctly idempotent: defaulting Source='' + the explicit (-not $Source) check survive both old Go binaries (only Token+BackendUrl) and new ones that already pass -Source explicitly. The ValidateSet('','github','center') properly accepts the empty default.",
+    "Center proxy correctly prefers browser_download_url when available (lines 1953-1962 of agent_ws.py): public CDN, no Authorization header, no rate-limit cost. The fallback to asset['download_url'] + Bearer is only used for private repos. Verified by forging AGENT_GITHUB_TOKEN=ghp_FAKE_... and seeing the 7.6MB nocagent.exe still stream via the CDN.",
+    "Synthetic-fallback (_KNOWN_RELEASE_ASSETS list at lines 1872-1881) is a clean defense-in-depth: the proxy keeps working even when GitHub returns 401 on every API call, as long as the public-release URL pattern (github.com/{repo}/releases/download/{tag}/{name}) holds. The 10-min TTL on synthetic entries is sensible.",
+    "Bulk-update endpoint now correctly resolves via _resolve_latest_agent_version_safe which checks DB override BEFORE GitHub API (verified). The 'literal latest' refusal at line 2226 remains as a safety net for the unlikely case where no override AND no PAT AND no env var are configured.",
+    "Cache-TTL test confirms _AGENT_RELEASE_CACHE 1h hit: second manifest call comes back in <1s (vs ~1.5-3s for cold). No regression vs iteration 80."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_agent_builds_synthetic_fallback.py (NEW)"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "n/a (not requested)"},
+  "test_credentials": "Admin info@86bit.it / Ariel17051986@!@86 OK. Used existing pytest-* token from db.agent_tokens; the same agent_token survives the backend restart since auth state lives in Mongo.",
+  "seed_data_creation": "TestBulkUpdateWithDBOverride writes system_settings._id='agent_latest_version_override' = v4.11.0 then deletes it in finally:. TestSyntheticFallback temporarily appends AGENT_GITHUB_TOKEN=ghp_FAKE_FAKE_FAKE_FAKE_FAKE_iter81test to /app/backend/.env, restarts backend, and reverts it via finally:. No persistent state left after the run — verified via `grep AGENT_GITHUB_TOKEN .env` returning 0 matches and /tmp/agent-builds-cache being empty.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Regression suite for the GitHub-release proxy is now in TWO files: tests/test_agent_builds_proxy.py (11 tests, baseline iter-80) + tests/test_agent_builds_synthetic_fallback.py (10 tests, iter-81). Total runtime ~10s. The synthetic-fallback test PATCHES /app/backend/.env in-place and restarts the backend via supervisorctl — if you run the suite concurrently with another test that touches .env you may race. Run them serially. The fake token test takes ~9s on its own (env patch + restart wait + 7.6MB binary download).",
+  "rca_of_the_issue": "Original prod issue: agents calling 'install-noc-agent.ps1' from old Go v4.10.x binaries did NOT pass -Source, so the PS1 defaulted to Source='github' and hit GitHub directly → rate-limited (60 req/h unauth from same NAT) → 'VERSIONE CORRENTE: latest' + timeout on Update click. Combined fix verified: (1) PS1 now auto-selects Source='center' whenever Token+BackendUrl are present → 100% of remote agents route through Center proxy regardless of binary version. (2) Center proxy uses browser_download_url (no GitHub API call, no rate-limit) → no PAT required for public-repo downloads. (3) _fetch_release_meta has a synthetic-manifest fallback so even if GitHub API is rate-limited, the manifest endpoint returns 200 and assets are still reachable via the public CDN. End result: the /agents page on argus.86bit.it can resolve 'latest' via DB override (set via the new admin endpoint) and bulk-update works without ever touching GitHub.com from the customer's PC."
+}
