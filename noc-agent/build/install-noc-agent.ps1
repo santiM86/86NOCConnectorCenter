@@ -160,6 +160,82 @@ if (-not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Adm
     exit $LASTEXITCODE
 }
 
+# ------------------------------------------------------------------- #
+# 1b. DIAGNOSTIC LOGGING - $env:TEMP transcript + best-effort upload
+# ------------------------------------------------------------------- #
+# Lo script cancella la cartella $DataDir\logs durante l'update (passo 4 -
+# "Pulizia stato precedente"). Se qualcosa crasha tra Stop-Service e il
+# completamento del download, l'agent.log e' gia' distrutto e non abbiamo
+# modo di sapere cosa sia successo dal Center.
+#
+# Soluzione: Start-Transcript scrive su $env:TEMP\noc_upgrade_<ts>.log,
+# che vive FUORI dalla cartella ProgramData e sopravvive al cleanup. A
+# fine script (sia su success che su error tramite trap) facciamo
+# best-effort POST del file al backend in modo che l'admin lo veda dalla
+# dashboard "Agents" senza dover collegarsi al PC del cliente.
+$script:UpgradeLogPath = Join-Path $env:TEMP ("noc_upgrade_{0}.log" -f (Get-Date -Format "yyyyMMdd_HHmmss"))
+$script:UpgradeLogStatus = "running"
+$script:UpgradeLogUploaded = $false
+try {
+    Start-Transcript -Path $script:UpgradeLogPath -Force -ErrorAction Stop | Out-Null
+    Write-Host "==> Transcript attivo: $($script:UpgradeLogPath)" -ForegroundColor Cyan
+} catch {
+    Write-Host "==> [WARN] Start-Transcript fallito: $($_.Exception.Message)" -ForegroundColor Yellow
+}
+
+function Send-UpgradeLogToCenter {
+    param([string]$Status)
+    if ($script:UpgradeLogUploaded) { return }
+    if (-not (Test-Path $script:UpgradeLogPath)) { return }
+    # Costruisce l'URL HTTPS del Center partendo da $BackendUrl (wss://.../api/agent/ws)
+    $http = $BackendUrl
+    if ($http.StartsWith("wss://")) { $http = "https://" + $http.Substring(6) }
+    elseif ($http.StartsWith("ws://")) { $http = "http://" + $http.Substring(5) }
+    $http = $http -replace "/api/agent/ws.*$", ""
+    $http = $http.TrimEnd("/")
+    if (-not $http) { return }
+    try {
+        $body = Get-Content -Path $script:UpgradeLogPath -Raw -Encoding UTF8 -ErrorAction Stop
+    } catch {
+        return
+    }
+    if (-not $body) { return }
+    $hostName = $env:COMPUTERNAME
+    $verEnc = [Uri]::EscapeDataString($Version)
+    $tokEnc = [Uri]::EscapeDataString($Token)
+    $hostEnc = [Uri]::EscapeDataString($hostName)
+    $stEnc  = [Uri]::EscapeDataString($Status)
+    $url = "$http/api/agent/upgrade-log?token=$tokEnc&version=$verEnc&status=$stEnc&hostname=$hostEnc"
+    try {
+        Invoke-RestMethod -Uri $url -Method Post -Body $body -ContentType "text/plain; charset=utf-8" -TimeoutSec 20 -ErrorAction Stop | Out-Null
+        Write-Host "==> [OK] Upgrade log uploaded to Center ($($body.Length) bytes, status=$Status)" -ForegroundColor Green
+        $script:UpgradeLogUploaded = $true
+    } catch {
+        Write-Host "==> [WARN] Upload upgrade-log fallito: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+}
+
+# Trap globale: cattura QUALSIASI errore terminating non gestito dai try/catch
+# annidati. Cosi' i crash silenziosi (es. Stop-Service che lancia eccezione
+# perche' un altro processo tiene il file aperto, oppure Remove-Item su una
+# DLL bloccata) vengono comunque registrati e uploadati prima dell'exit.
+trap {
+    Write-Host "" -ErrorAction SilentlyContinue
+    Write-Host "===================== UNHANDLED ERROR =====================" -ForegroundColor Red
+    Write-Host "Message:    $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "Type:       $($_.Exception.GetType().FullName)" -ForegroundColor Red
+    Write-Host "ScriptLine: $($_.InvocationInfo.ScriptLineNumber)" -ForegroundColor Red
+    Write-Host "Position:   $($_.InvocationInfo.PositionMessage)" -ForegroundColor Red
+    Write-Host "StackTrace:" -ForegroundColor Red
+    Write-Host $_.ScriptStackTrace -ForegroundColor Red
+    Write-Host "FullRecord:" -ForegroundColor Red
+    Write-Host ($_ | Out-String) -ForegroundColor Red
+    Write-Host "===========================================================" -ForegroundColor Red
+    try { Stop-Transcript -ErrorAction SilentlyContinue | Out-Null } catch {}
+    try { Send-UpgradeLogToCenter -Status "error" } catch {}
+    exit 99
+}
+
 Write-Step "86NocAgent Installer (standalone, GitHub Release)"
 Write-Host "Repo:        $Repo"
 Write-Host "Versione:    $Version"
@@ -245,16 +321,20 @@ foreach ($f in $required) {
 # ------------------------------------------------------------------- #
 Write-Step "Stop servizi esistenti"
 foreach ($svc in @("86NocAgent","86NocWatchdog")) {
-    $s = Get-Service -Name $svc -ErrorAction SilentlyContinue
-    if ($s) {
-        if ($s.Status -ne "Stopped") {
-            Stop-Service -Name $svc -Force -ErrorAction SilentlyContinue
-            Write-Ok "Stop $svc"
+    try {
+        $s = Get-Service -Name $svc -ErrorAction SilentlyContinue
+        if ($s) {
+            if ($s.Status -ne "Stopped") {
+                Stop-Service -Name $svc -Force -ErrorAction Stop
+                Write-Ok "Stop $svc"
+            } else {
+                Write-Ok "$svc gia' fermo"
+            }
         } else {
-            Write-Ok "$svc gia' fermo"
+            Write-Ok "$svc non installato (prima installazione)"
         }
-    } else {
-        Write-Ok "$svc non installato (prima installazione)"
+    } catch {
+        Write-Warn2 "Stop-Service $svc fallito (continuo comunque): $($_.Exception.Message)"
     }
 }
 Start-Sleep -Seconds 2
@@ -265,10 +345,14 @@ Start-Sleep -Seconds 2
 # fermati dal Stop-Service.
 $uiProcs = @("nocagent-ui","ArgusDesktop")
 foreach ($p in $uiProcs) {
-    $procs = Get-Process -Name $p -ErrorAction SilentlyContinue
-    if ($procs) {
-        $procs | Stop-Process -Force -ErrorAction SilentlyContinue
-        Write-Ok "Processo $p.exe terminato ($($procs.Count) istanze)"
+    try {
+        $procs = Get-Process -Name $p -ErrorAction SilentlyContinue
+        if ($procs) {
+            $procs | Stop-Process -Force -ErrorAction SilentlyContinue
+            Write-Ok "Processo $p.exe terminato ($($procs.Count) istanze)"
+        }
+    } catch {
+        Write-Warn2 "Kill processo $p fallito (continuo): $($_.Exception.Message)"
     }
 }
 Start-Sleep -Seconds 2
@@ -276,10 +360,18 @@ Start-Sleep -Seconds 2
 # ------------------------------------------------------------------- #
 # 4. Pulisci stato vecchio
 # ------------------------------------------------------------------- #
+# DIAG: questo era il candidato principale del "silent crash" - se la
+# Remove-Item su logs fallisce (es. agent.log ancora in handle dal processo)
+# senza un try/catch generiamo un terminating error che NON viene catturato
+# dal trap se ErrorActionPreference=Stop nella sezione successiva.
 Write-Step "Pulizia stato precedente"
-Remove-Item (Join-Path $DataDir "logs") -Recurse -Force -ErrorAction SilentlyContinue
-Remove-Item (Join-Path $DataDir "log_path.txt") -Force -ErrorAction SilentlyContinue
-Write-Ok "logs/ e log_path.txt rimossi"
+try {
+    Remove-Item (Join-Path $DataDir "logs") -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $DataDir "log_path.txt") -Force -ErrorAction SilentlyContinue
+    Write-Ok "logs/ e log_path.txt rimossi"
+} catch {
+    Write-Warn2 "Cleanup logs/ fallito (continuo): $($_.Exception.Message)"
+}
 
 # ------------------------------------------------------------------- #
 # 4.5 Eccezioni Windows Defender (Real-time + ASR + Controlled Folder)
@@ -755,3 +847,13 @@ if (-not $Quiet) {
     Write-Host "Premi un tasto per chiudere..." -ForegroundColor Gray
     $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
 }
+
+# ------------------------------------------------------------------- #
+# 11. Stop-Transcript + upload diagnostico al Center (success path)
+# ------------------------------------------------------------------- #
+# Lo script e' arrivato in fondo senza errori terminating: status=success.
+# Il trap gestisce gia' il caso error. Usiamo try/catch best-effort cosi'
+# eventuali fail di rete non rompono l'installazione che e' gia' OK.
+$script:UpgradeLogStatus = "success"
+try { Stop-Transcript -ErrorAction SilentlyContinue | Out-Null } catch {}
+try { Send-UpgradeLogToCenter -Status "success" } catch {}

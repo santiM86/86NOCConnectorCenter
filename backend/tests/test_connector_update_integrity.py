@@ -24,7 +24,7 @@ import requests
 
 BASE_URL = os.environ.get(
     "REACT_APP_BACKEND_URL",
-    "https://device-monitor-94.preview.emergentagent.com",
+    "https://device-scanner-pro-3.preview.emergentagent.com",
 ).rstrip("/")
 API = f"{BASE_URL}/api"
 ADMIN_EMAIL = "info@86bit.it"

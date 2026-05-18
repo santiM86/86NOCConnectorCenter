@@ -1547,6 +1547,114 @@ async def _token_or_403(token: Optional[str]) -> str:
     raise HTTPException(status_code=403, detail="invalid token")
 
 
+# ---------------------------------------------------------------------------
+# /api/agent/upgrade-log : Diagnostic upload for the PowerShell installer.
+#
+# Il PS1 di installazione (install-noc-agent.ps1) durante un update remoto
+# cancella la cartella $DataDir\logs PRIMA di scaricare i nuovi binari. Se lo
+# script crasha tra Stop-Service e Start-Service, l'agent.log e' gia' stato
+# distrutto e non abbiamo modo di sapere cosa sia successo sul PC client.
+#
+# Questo endpoint accetta il contenuto del Start-Transcript (scritto in
+# $env:TEMP\noc_upgrade_*.log, che NON viene cancellato dallo script perche'
+# fuori da $DataDir) e lo persiste in MongoDB cosi' l'admin puo' visualizzarlo
+# dalla dashboard del Center senza dover collegarsi al PC del cliente.
+#
+# Auth: token agent come query string (stesso meccanismo di /agent-builds/*).
+# Body: testo plain (max ~2MB).
+# ---------------------------------------------------------------------------
+
+# Cap dimensione body per evitare di riempire MongoDB se il transcript e'
+# anomalo (es. loop infinito che genera GB di righe).
+_UPGRADE_LOG_MAX_BYTES = 2 * 1024 * 1024  # 2 MB
+
+
+@router.post("/agent/upgrade-log")
+async def upload_upgrade_log(
+    request: Request,
+    token: Optional[str] = None,
+    agent_id: Optional[str] = None,
+    version: Optional[str] = None,
+    status: Optional[str] = "unknown",
+    hostname: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Receive the PowerShell installer transcript from a client PC.
+
+    Chiamato in 2 punti del PS1:
+      1. Al termine SUCCESS (Stop-Transcript + POST con status=success)
+      2. Dentro il trap di errore (Stop-Transcript + POST con status=error)
+
+    Persistiamo in `agent_upgrade_logs` con timestamp UTC. L'admin puo'
+    interrogare gli ultimi log via GET /api/admin/agents/{aid}/upgrade-logs.
+    """
+    client_id = await _token_or_403(token)
+    raw = await request.body()
+    if not raw:
+        raise HTTPException(status_code=400, detail="empty log body")
+    if len(raw) > _UPGRADE_LOG_MAX_BYTES:
+        # Troncamento a fine file (le ultime righe sono quelle interessanti
+        # per diagnosticare un crash).
+        raw = raw[-_UPGRADE_LOG_MAX_BYTES:]
+    try:
+        log_text = raw.decode("utf-8", errors="replace")
+    except Exception:
+        log_text = raw.decode("latin-1", errors="replace")
+
+    doc = {
+        "id": str(uuid.uuid4()),
+        "client_id": client_id,
+        "agent_id": agent_id or "",
+        "hostname": hostname or "",
+        "version": version or "",
+        "status": (status or "unknown").lower(),
+        "log_text": log_text,
+        "log_size": len(raw),
+        "received_at": _now(),
+    }
+    await db.agent_upgrade_logs.insert_one(doc)
+    logger.warning(
+        "agent upgrade-log received client=%s agent=%s host=%s ver=%s status=%s size=%d",
+        client_id, doc["agent_id"], doc["hostname"], doc["version"],
+        doc["status"], doc["log_size"],
+    )
+    # Best-effort: aggiorna managed_agents con l'ultimo esito
+    if agent_id:
+        try:
+            await db.managed_agents.update_one(
+                {"agent_id": agent_id},
+                {"$set": {
+                    "last_upgrade_status": doc["status"],
+                    "last_upgrade_version": doc["version"],
+                    "last_upgrade_at": doc["received_at"],
+                }},
+            )
+        except Exception:
+            pass
+    return {"ok": True, "id": doc["id"], "size": doc["log_size"]}
+
+
+@router.get("/admin/agents/{agent_id}/upgrade-logs")
+async def list_upgrade_logs(
+    agent_id: str,
+    limit: int = 20,
+    current_user: dict = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """Admin: list the last upgrade transcripts for an agent."""
+    require_admin(current_user)
+    limit = max(1, min(int(limit or 20), 100))
+    cursor = db.agent_upgrade_logs.find(
+        {"agent_id": agent_id},
+        {"_id": 0},
+    ).sort("received_at", -1).limit(limit)
+    items = []
+    async for doc in cursor:
+        # Converti datetime in ISO per JSON
+        if isinstance(doc.get("received_at"), datetime):
+            doc["received_at"] = doc["received_at"].isoformat()
+        items.append(doc)
+    return {"agent_id": agent_id, "count": len(items), "items": items}
+
+
 @router.get("/agent/binary/{platform}/{name}")
 async def download_binary(platform: str, name: str, token: Optional[str] = None) -> FileResponse:
     """Stream the requested agent binary. Auth via ?token=<agent_token>."""

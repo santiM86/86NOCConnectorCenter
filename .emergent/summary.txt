@@ -10,80 +10,125 @@ PRODUCT REQUIREMENTS:
 **User's preferred language**: **Italian** (INSTRUCT NEXT AGENT: IL TUO OUTPUT DEVE ESSERE SEMPRE E SOLO IN ITALIANO. RISPONDI ESCLUSIVAMENTE IN ITALIANO).
 
 **what currently exists?** 
-Un sistema NOC full-stack con backend FastAPI, frontend React e un Agent nativo in Go (v4.2.0). Il sistema supporta il Live Polling (ICMP Ping e SNMP) tramite l'Agent Go con WebSockets, ma attualmente i dispositivi restano visivamente bloccati nello stato PENDING nella UI. Inoltre, l'eseguibile Go su Windows non genera file di log () dopo l'avvio come servizio, rendendo difficile il debug dei crash silenti. 
+A full-stack NOC system (FastAPI backend, React frontend) with a headless native Go agent for Windows. Features include an Agents page for remote fleet management, an internal backend proxy for GitHub release downloads (to bypass rate limits), WMI polling (SysMetrics) for server resource monitoring, remote uninstall via WebSocket, and manual version overrides in the DB.
 
 **Last working item**:
-    - Last item agent was working: In attesa della risposta dell'utente per eseguire il debug del crash silente dell'Agent Go. L'agente ha letto il  e ha inviato una richiesta tramite  per far avviare manualmente l'eseguibile  da terminale Windows, così da intercettare eventuali errori standard (stdout/panic) legati a permessi di scrittura dei log.
+    - Last item agent was working: Debugging the remote Go Agent update failure in production (times out at 95%). The agent discovered that the expected log file () does not exist on the client's PC, indicating that the  script likely crashes mid-execution (possibly after deleting the folder). The agent has proposed a plan to the user to enhance the PowerShell script with robust temporary logging () and try/catch blocks.
     - Status: USER VERIFICATION PENDING
-    - Agent Testing Done: N/A (nessuna modifica al codice in questa sessione)
-    - Which testing method agent to use? manual testing via lettura log Agent Go o esecuzione manuale
-    - User Testing Done: N (in attesa di risposta)
+    - Agent Testing Done: N
+    - Which testing method agent to use? manual testing by backend logs investigation / manual PS1 execution testing
+    - User Testing Done: N
 
 **All Pending/In progress Issue list**:  
-  - Issue 1: Dispositivi bloccati in PENDING e log dell'Agent Windows scomparso (Priority: P0)
-     - Attempted fixes: Identificato in precedenza il problema, in questa sessione l'agente ha richiesto all'utente l'esecuzione manuale dell'agent tramite console.
-     - Next debug checklist: 
-       1. Leggere l'output fornito dall'utente in risposta alla richiesta .
-       2. Se ci sono errori di permessi per noc-agent/internal/logger//api/devicesagent_idagent.yamlmanaged_agents/api/webhooks/github-deploydeploy.shagent_v4/app/memory/PRD.mdask_human/home/arslan/86NOCConnectorCenter/backend//opt/argus/
-/app/
-├── backend/
-│   ├── routes/
-│   │   ├── agent_ws.py (Controller WebSockets, smista i poll ai collection MongoDB)
-│   │   ├── devices.py (Endpoint dati frontend - implementa la logica < 3 minuti per status Online)
-│   ├── tests/
-├── noc-agent/
-│   ├── build/
-│   │   ├── installer_gui.ps1.template
-│   ├── internal/
-│   │   ├── poller/ (icmp.go cross-platform)
-│   ├── cmd/
-│   │   ├── nocui-v5/ (Sottoprogetto Wails per Desktop UI nativa Windows, React based)
-managed_devicesipstatusping_latency_mslast_poll_source: 'agent_v4'device_poll_statusdevice_ipipsource: 'agent_v4'managed_agents/app/memory/PRD.md/app/backend/routes/agent_ws.py/app/backend/routes/devices.py/app/noc-agent/internal/poller/icmp.goC:\ProgramData\86NocAgent\logs` non sia creabile per mancanza di permessi Administrator in ambiente Windows.
+  - Issue 1: Remote Connector update fails and log file is missing (Priority: P0)
+     - Attempted fixes: Previously created a proxy backend to bypass GitHub rate limits and updated the PS script to use . Fails in production. The agent has now proposed adding  logging to  to catch silent crashes.
+     - Next debug checklist: Modify  to redirect output to  and Event Viewer (). Wrap the critical section (Stop-Service → folder clear → download) in a try/catch with stack trace dumps.
+     - Why fix this issue and what will be achieved with the fix? It is a critical blocker. Without this fix, admins cannot remotely update connectors installed on client networks (Zero-touch fleet rollout is broken).
+     - Status: BLOCKED (Waiting for user approval of the plan via ask_human)
+     - Is recurring issue? Y
+     - Should Test frontend/backend/both after fix? Backend / Go script
+     - Blocked on other issue: None.
+
+**In progress Task List**: 
+None currently active. 100% focus is on the P0 update failure issue.
+
+**Upcoming and Future Tasks**
+    Upcoming Tasks:
+    - P1: Webhooks GitHub Auto-deploy ().
+    - P1: Telegram Bot / Email notifications for alerts (Resend or Twilio).
+    Future Tasks:
+    - P2: DHCP Fingerprinting implementation in the Scanner.
+    - P2: SOC Phase 1 — AbuseIPDB integration, NVD CVE feeds, MITRE ATT&CK tagging.
+    - P2: SNMP Printer MIB monitoring (toner/pages).
+    - P2: Desktop UI Refactoring - Completely remove the old  UI.
+    - P2: Refactoring  - Split the 3000+ line file into  and .
+
+**Completed work in this session**
+- Sent a detailed debugging plan to the user via  tool regarding the  logging enhancement (DONE).
+
+**Earlier issues found/mentioned but not fixed**
+   - Issue 1: Legacy red banner in Center UI (25 connettori offline / v3.8.28).
+     - Debug checklist: It is a remnant of the old Python v3 version. Remove it or filter it from the frontend.
+     - Why to solve this issue and what will be achieved with this? Reduces user confusion, especially since there is now a dedicated UI for upgrades.
+     - Should Test frontend/backend/both after fix: Frontend
+     - Is recurring issue? N
+
+**Known issue recurrence from previous fork**
+  - Issue recurrence in previous fork: Remote agent update failure. Causes varied from obsolete cache to GitHub rate-limiting, and now appears to be a silent PowerShell script crash on the client PC.
+  - Recurrence count: > 4
+  - Status: IN PROGRESS
+
+**Code Architecture**
+
+
+**Key Technical Concepts**
+React, FastAPI, Headless Go Agent, WebSockets, WMI (Windows Management Instrumentation), PowerShell scripting (), Architectural proxy for GitHub API, Cascading name identification (mDNS, Fingerbank).
+
+**key DB schema**
+  - : 
+  - : Time-series with TTL index (30 days) for CPU/RAM logs.
+  - :  (For manual DB version override).
+
+**changes in tech stack**
+Consolidated Proxy architecture on the Center for releases, detaching the Agent from GitHub APIs directly.
+
+**All files of reference** 
+-  
+-  
+-  
+-  
+-  
+-  
+
+**Areas that need refactoring**: 
+-  has exceeded 3000 lines of code. The proxy download logics () and remote update logics should be extracted into dedicated controllers (, ) to maintain scalability.
 
 **key api endpoints**
 - 
+-  (Proxy for downloading binaries bypassing GitHub API)
 - 
-- 
+-  (Triggers remote uninstall)
 
 **Critical Info for New Agent** 
-- **IL TUO OUTPUT DEVE ESSERE SEMPRE E SOLO IN ITALIANO**. Parla con il cliente in Italiano ed esegui ragionamenti chiari.
-- **NON PROSEGUIRE** finché l'utente non risponde al prompt  con l'output dell'esecuzione manuale dell'agent.
-- Il percorso corretto per i file di produzione del backend sul server Linux è **ESCLUSIVAMENTE** . Ignora qualsiasi altro path legacy .
-- Assicurati di non usare script distruttivi.
+- **IL TUO OUTPUT DEVE ESSERE SEMPRE E SOLO IN ITALIANO**.
+- The user is NOT using the local preview; they are testing the fix directly in PRODUCTION ().
+- The  tool was just triggered to get user approval on adding  and  to . You **must wait** for the user's response to this message before making script changes.
+- Do not assume  is accessible during an update. If the service is stopped and the folder is deleted by the script, logs are destroyed.
 
 **documents and test reports created in this job** 
-- Nessun nuovo test report, visualizzato solo .
+-  through  (from previous forks).
+-  (Updated with new features).
 
 **Last 10 User Messages and any pending HUMAN messages** 
-1. **(PENDING HUMAN MESSAGE)**: In attesa dell'output della richiesta . L'utente deve fornire il risultato dell'esecuzione manuale da terminale:  seguito da .
-2. Utente fornisce il risultato JSON e il contenuto tramite .
-3. Informazioni iniziali (Problem Statement / Handoff analysis).
+1. User (from previous fork): (PENDING ISSUE) Provided output of CMD commands. Reported that  provides  (correct), but requesting PowerShell logs returns: 
+2. Assistant: Evaluated the handoff summary and proposed a plan to modify  to dump logs into  and Event Viewer to catch the silent crash. Used .
+3. **(PENDING HUMAN MESSAGE)**: Waiting for the user to respond to the proposed diagnostic plan.
 
 **Project Health Check:**
-- Broken: Il servizio Go su Windows  non produce log o va in crash silente. L'UI React mostra dispositivi bloccati in stato PENDING.
-- Mocked: N/A
+- Broken: Workflow of remote update for Go Agent on client PCs.
+- Mocked: None.
 
 **3rd Party Integrations** 
+- GitHub Actions / Releases (Auto-update and backend proxy) - Requires User Key
 - Datto RMM (Requires User Key)
 - Fingerbank API (Requires User Key)
 
 **Testing status**
-  - Testing agent used after significant changes: NO (nessuna modifica effettuata)
+  - Testing agent used after significant changes: NO (Waiting for user approval before making changes).
   - Troubleshoot agent used after agent stuck in loop: NO
   - Test files created: None
-  - Known regressions: Agent Go non avvia il logger correttamente / Cache front-end maschera la risoluzione del backend.
+  - Known regressions: Proper startup and logging of the  script when triggered by an older remote agent.
 
 **Credentials to test flow:**
-Admin:  (Password nel  / .env locale).
+Admin Login:  (Password in ).
 
 **What agent forgot to execute**
-Niente, l'agente è bloccato e aspetta correttamente l'input dell'utente.
+- Still pending the removal of the legacy red banner in the UI mentioned in previous forks, as priority is strictly on the P0 update blocker.
 
 **Debugging checklist for current issue**
-    Issue: Debug crash silente Go Agent / Risoluzione PENDING stato device.
-    
-    Backend/Go Agent check:
-    - Aspetta l'output dell'utente. Se vedi un panic (mkdir log: access denied o similari), modifica il bootstrap del log in Go per gestire correttamente gli ACL o per fallback senza arrestarsi.
-    
-    Frontend files to check:
-    - Se l'agent funziona e invia WS, ma l'UI è PENDING, verifica  o la tabella dispositivi per assicurarti che lo stato  o il campo aggiornato (< 3 minuti) venga mappato correttamente. Chiedi sempre all'utente di ricaricare scavalcando la cache.</analysis>
+    Issue: Agent update fails and  doesn't exist on client disk.
+
+    Backend / Go files to check: 
+    - : Check where output is piped. Add  at the top.
+    - Check the exact lines in  where  is called and the installation directory is cleared. Wrap this in a  block. If it fails here, the watchdog is stopped, the folder is cleared, and the log is lost forever.
+    - Once the user approves the plan, implement the  logging and ask the user to attempt the update again, then retrieve the temp log.</analysis>

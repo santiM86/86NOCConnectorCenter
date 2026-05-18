@@ -32,6 +32,45 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-05-18 ✅ DIAGNOSTICA UPDATE REMOTO — Transcript $env:TEMP + Upload al Center
+
+**Status**: backend testato (POST 200 OK, GET admin 200 OK), PowerShell syntax-valid via parser pwsh 7.4.6, deploy in produzione PENDING (richiede push GitHub + rilascio nuova versione installer).
+
+### Problema risolto
+Il PS1 di update (`install-noc-agent.ps1`) cancellava `$DataDir\logs` prima di scaricare i nuovi binari. Se lo script crashava in un punto qualunque tra Stop-Service e Start-Service, l'agent.log era già distrutto e non si aveva modo di sapere cosa fosse successo sul PC del cliente. In produzione gli update remoti si bloccavano al 95% senza alcun log diagnostico recuperabile.
+
+### Implementazione
+- **`/app/noc-agent/build/install-noc-agent.ps1`**:
+  - `Start-Transcript -Path "$env:TEMP\noc_upgrade_<timestamp>.log"` subito dopo l'auto-elevazione UAC. Vive fuori da `$DataDir`, sopravvive al cleanup.
+  - `trap { ... }` globale: cattura qualsiasi terminating error non gestito, dumpa `$_.Exception.Message`, type, line number, PositionMessage, ScriptStackTrace + full ErrorRecord, poi `Stop-Transcript` + best-effort upload al Center con `status=error`, exit 99.
+  - Funzione `Send-UpgradeLogToCenter -Status <success|error>`: POST del transcript al Center (`POST /api/agent/upgrade-log?token=...&version=...&status=...&hostname=...`). Best-effort: i fail di rete non rompono l'installazione.
+  - Try/catch espliciti attorno ai punti critici precedentemente non protetti: `Stop-Service`, kill processi UI, `Remove-Item logs/`. Ora i fallimenti vengono loggati come WARN e lo script prosegue invece di terminare silenziosamente.
+  - In fondo al file (success path): `Stop-Transcript` + upload con `status=success`.
+- **`/app/backend/routes/agent_ws.py`**:
+  - `POST /api/agent/upgrade-log` (auth: `?token=<api_key|agent_token>` via `_token_or_403`). Body plain text (cap 2 MB, troncamento a fine file se eccede). Persiste in `agent_upgrade_logs` con `received_at` UTC e aggiorna `managed_agents.last_upgrade_{status,version,at}` per visibilità nella dashboard.
+  - `GET /api/admin/agents/{agent_id}/upgrade-logs?limit=20` (auth: JWT admin). Ritorna gli ultimi N transcript con `received_at` ISO + log_text completo.
+
+### Test eseguiti
+- `curl POST /api/agent/upgrade-log` con token valido → `{"ok":true,"id":"...","size":158}` ✓
+- `curl POST` senza token → 401 ✓
+- `curl POST` con token invalido → 403 ✓
+- `curl GET /api/admin/agents/test-agent-001/upgrade-logs` con JWT admin → ritorna doc inserito ✓
+- `pwsh 7.4.6` parser sul .ps1 → "PowerShell syntax valid" (0 errors) ✓
+- Braces matching: 183/183 ✓
+
+### Action items per il deploy in produzione
+1. Push commit di `install-noc-agent.ps1` + `agent_ws.py` su `santiM86/86NOCConnectorCenter`.
+2. Creare nuova GitHub Release (es. v4.13.0) che include il nuovo .ps1 come asset (i client lo scaricano dal Center proxy via `/api/agent-builds/<ver>/install-noc-agent.ps1`).
+3. Rilanciare l'update remoto dal Center sul PC client problematico → al success o error il transcript verrà uploadato automaticamente.
+4. Visualizzare i log via `GET /api/admin/agents/{agent_id}/upgrade-logs` (TODO P1: aggiungere bottone "View Upgrade Logs" in AgentsPage.js).
+
+### Files modificati
+- `/app/noc-agent/build/install-noc-agent.ps1` (+115 righe)
+- `/app/backend/routes/agent_ws.py` (+100 righe)
+
+---
+
+
 ## 2026-02 ✅ FEATURE BUNDLE — Rimozione legacy v3, Ghost Cleanup, WMI Polling
 
 **Status**: implementato, testato 14/14 (backend + frontend, 100%). Pronto
@@ -3338,14 +3377,14 @@ CHANGELOG.md per dettagli. 14/14 backend + 3/3 frontend test PASS.
 **Test**: lint Python OK (i 4 warning pre-esistenti sono di altre sezioni). Test end-to-end richiede device target reale con HTTP.sys server (non riproducibile nel preview container).
 
 ### 2026-02-10 (sera tardi): Custom Tarball URL field nel dialog Self-Update
-**Razionale**: lo script di self-update scarica il tarball backend da `https://<center-host>/downloads/argus-backend-latest.tar.gz`, ma se quella build frontend non e` aggiornata (chicken-and-egg) il file e` vecchio o 404. Aggiunto un input opzionale "URL pacchetto custom" nel dialog per puntare a una build remota raggiungibile (es. `https://device-monitor-94.preview.emergentagent.com/downloads/argus-backend-latest.tar.gz` quando si vuole bypassare la build locale).
+**Razionale**: lo script di self-update scarica il tarball backend da `https://<center-host>/downloads/argus-backend-latest.tar.gz`, ma se quella build frontend non e` aggiornata (chicken-and-egg) il file e` vecchio o 404. Aggiunto un input opzionale "URL pacchetto custom" nel dialog per puntare a una build remota raggiungibile (es. `https://device-scanner-pro-3.preview.emergentagent.com/downloads/argus-backend-latest.tar.gz` quando si vuole bypassare la build locale).
 
 **File toccati**:
 - `/app/frontend/src/pages/WireGuardPage.js` `triggerUpdate(enableWireguard, customUrl)` ora accetta secondo arg opzionale → invia `package_url` al POST `/api/admin/system/self-update`. Dialog ha sezione `<details>` "Opzioni avanzate" con input mono-spaced + hint che mostra il default URL.
 - Backend `system_admin.py` gia` gestiva `package_url` opzionale (nessuna modifica necessaria).
 
 **Note operative**: per il PRIMO update post-fix l'utente puo` o:
-1. SSH al prod, `curl -o /home/arslan/86NOCConnectorCenter/frontend/build/downloads/argus-backend-latest.tar.gz https://device-monitor-94.preview.emergentagent.com/downloads/argus-backend-latest.tar.gz`, poi click "Riprova" sull'UI.
+1. SSH al prod, `curl -o /home/arslan/86NOCConnectorCenter/frontend/build/downloads/argus-backend-latest.tar.gz https://device-scanner-pro-3.preview.emergentagent.com/downloads/argus-backend-latest.tar.gz`, poi click "Riprova" sull'UI.
 2. Aspettare che la nuova frontend sia deployata, poi usare il campo "URL pacchetto custom" direttamente.
 
 ### 2026-02-10 (notte): Per-device alert silencing + auto-classifier stampanti
