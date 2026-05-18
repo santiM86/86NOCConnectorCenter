@@ -111,6 +111,39 @@ function Write-Warn2($msg){ Write-Host "  [!!] $msg" -ForegroundColor Yellow }
 function Write-Fail($msg) { Write-Host "  [XX] $msg" -ForegroundColor Red }
 
 # ------------------------------------------------------------------- #
+# 0. MAGIC TRIGGER: -Version "__uninstall__" → esegue uninstall.ps1
+# ------------------------------------------------------------------- #
+#
+# I vecchi binari agent (v4.10.x e precedenti) non conoscono il comando
+# WS "uninstall". Il Center sfrutta il comando "update" già supportato
+# passando un valore magico nella -Version. Lo script qui sopra lo
+# intercetta PRIMA di toccare GitHub e devia su uninstall.
+#
+# Funziona perché il file uninstall.ps1 è già installato in
+# $InstallDir dal setup iniziale (vedi installer_gui.ps1.template).
+if ($Version -eq "__uninstall__") {
+    Write-Step "MAGIC TRIGGER: __uninstall__ ricevuto dal Center"
+    $uninst = Join-Path $InstallDir "uninstall.ps1"
+    if (Test-Path $uninst) {
+        Write-Ok "Eseguo $uninst (in modalità non-interattiva)"
+        & $uninst
+        Write-Ok "uninstall.ps1 terminato (exit=$LASTEXITCODE)"
+        exit $LASTEXITCODE
+    } else {
+        Write-Warn2 "$uninst non presente, fallback inline"
+        try { Stop-Service '86NocAgent'    -Force -ErrorAction SilentlyContinue } catch {}
+        try { Stop-Service '86NocWatchdog' -Force -ErrorAction SilentlyContinue } catch {}
+        try { sc.exe delete '86NocAgent'    | Out-Null } catch {}
+        try { sc.exe delete '86NocWatchdog' | Out-Null } catch {}
+        try { Get-Process 'nocagent-ui' -ErrorAction SilentlyContinue | Stop-Process -Force } catch {}
+        try { Remove-Item -Path $InstallDir -Recurse -Force -ErrorAction SilentlyContinue } catch {}
+        try { Remove-Item -Path "$env:ProgramData\86NocAgent" -Recurse -Force -ErrorAction SilentlyContinue } catch {}
+        Write-Ok "Uninstall inline completato"
+        exit 0
+    }
+}
+
+# ------------------------------------------------------------------- #
 # 1. Auto-elevazione (UAC)
 # ------------------------------------------------------------------- #
 $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())

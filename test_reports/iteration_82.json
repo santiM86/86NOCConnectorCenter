@@ -1,0 +1,46 @@
+{
+  "summary": "Iteration 82 — Verified the remote-uninstall tracking flow (8 new pytest cases + 9 regression cases of iter-79 = 17/17 green). New file: tests/test_agent_uninstall_tracking.py covers (a) progress calc 0..95% lineare at 5s/10s/90s seed offsets, (b) auto-completion (NOT live + elapsed>30s) → cleanup of 6 collections + uninstall-finalized audit row with outcome='completed', (c) offline DELETE path does NOT enable tracking_uninstall (immediate purge), (d) PS1 install-noc-agent.ps1 contains the MAGIC TRIGGER block with uninstall.ps1 invocation + inline fallback (Stop-Service/sc.exe delete/Remove-Item ProgramData), (e) uninstall_method persisted (native|legacy_update) and exposed by GET /api/agents. Frontend rendering verified by code inspection of AgentsPage.js lines 456-489 (red progress bar with data-testid=agent-uninstall-progress-{id}, label 'disinstallando… X%', method label 'via WS'/'via magic update', completed/failed/timeout badges + retry button) and adaptive polling at lines 58-66 (3s when any uninstall_status==='in_progress', 15s otherwise). Direct API verification confirmed payload exposes uninstall_progress=5, uninstall_method='legacy_update', uninstall_elapsed_sec=8.3, live=false for a freshly-seeded in_progress agent.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/agents", "issue": "Branch 'auto-failure' (agent ancora LIVE dopo 90s → status='failed') NON è coperto da pytest perché REGISTRY.live è in-process e non controllabile via Mongo seed dal test client. Verificato solo via code review (linea 944-950 agent_ws.py). Per coverage 100% serve un monkeypatch in-process via pytest-asyncio + import del modulo."},
+      {"endpoint": "DELETE /api/agents/{id}?uninstall_remote=true", "issue": "Il path fallback 'legacy_update' (linea 1391-1394 agent_ws.py) NON è coperto end-to-end perché serve un mock di REGISTRY.get().send_command() che lanci 'unknown command' alla prima call. Stesso motivo: il REGISTRY è in-process, non patchabile da requests-based pytest. Verificato solo via code review: il branch is_unknown gestisce 'unknown'/'no handler'/'not registered'/'timeout' nelle eccezioni."},
+      {"endpoint": "GET /api/agents", "issue": "Documentale: nel branch auto-completion (linea 935-943) il record nel response viene marcato status='completed' progress=100 e POI cancellato nel finalize loop — la PROSSIMA chiamata GET /api/agents non lo vedrà più. Il comportamento è corretto ma il frontend deve sapere che lo stato 'completed' è transitorio (un tick). Acceptable: la UI mostra '✓ disinstallato' per quel singolo tick e poi l'agent sparisce dall'elenco."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "AgentsPage", "issues": ["Console hydration warning (preesistente, non legato a iter-82): '<span> cannot be a child of <option>' nei <select> generati dal compilatore JSX di runtime. Non ha impatto funzionale ma andrebbe sistemato in un giro di pulizia."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_agent_uninstall_tracking.py",
+    "/app/backend/tests/test_agent_delete_remote_uninstall.py",
+    "/app/test_reports/pytest/iteration_82_results.xml"
+  ],
+  "action_items": [
+    "(Optional) Aggiungere monkeypatch in-process per coprire il branch 'auto-failure' (live + elapsed>90s) e il fallback legacy DELETE (REGISTRY.send_command che raise 'unknown command'). Richiede un test file pytest-asyncio che importa direttamente backend.routes.agent_ws e patcha REGISTRY.",
+    "(Optional) Esporre 'uninstall_method' anche nel response immediato del DELETE (oggi ritorna solo uninstall_status); attualmente la UI lo legge dal /api/agents successivo, ma per il primo render del progress bar serve aspettare il polling."
+  ],
+  "critical_code_review_comments": [
+    "delete_agent (linee 1369-1400 agent_ws.py): l'ordine try-native → catch → try-legacy è corretto. is_unknown matcha 'unknown', 'no handler', 'not registered' e 'timeout' — copre i casi standard dei vecchi binari v4.10.x che ignorano comandi sconosciuti. Buona difesa-in-profondità: anche se il send_command native lancia un'eccezione generica, il timeout fa scattare comunque il fallback.",
+    "list_agents auto-completion (linee 920-953): logica corretta. Three-way decision basata su (live, elapsed): not-live+>30s = success, live+>90s = failed, elapsed>180s = timeout. Le soglie sono coerenti con i 3 minuti tipici di uninstall (no download). La progress 0..95% con clamp è esatta.",
+    "Finalize loop (linee 996-1016): viene eseguito DOPO che il response è stato preparato, evitando race condition sulle find() iniziali. L'audit con criteria='uninstall-finalized' deleted_by='uninstall-watcher' è ben distinto dagli audit di DELETE manuali.",
+    "tracking_uninstall flag (linea 1439): correttamente settato a True solo se track_progress AND uninstall_remote AND comando inviato. Il response NON contiene deleted=True in questo caso, perché la pulizia avverrà asincrona. UI gestisce questo flag correttamente in AgentsPage.js linea 219-235 (skip optimistic UI).",
+    "install-noc-agent.ps1 MAGIC TRIGGER (linee 113-144): l'intercept di `if ($Version -eq \"__uninstall__\")` viene eseguito PRIMA di qualsiasi altro check (auto-elevazione, GitHub fetch, etc) → idempotente per qualunque versione del PS1 lanciata. Il fallback inline (Stop-Service + sc.exe delete + Remove-Item ProgramData) è robusto anche se uninstall.ps1 manca. Exit code propagato a $LASTEXITCODE.",
+    "Adaptive polling AgentsPage.js linee 58-66: la dipendenza `agents.some(a => a.uninstall_status==='in_progress' || a.update_status==='in_progress')` nel useEffect è scritta inline nell'array di dipendenze (boolean). React la riconosce come primitivo e ri-esegue solo quando il bool cambia → niente loop di polling. Buon pattern.",
+    "Progress UI (AgentsPage.js linee 456-489): tutti i campi obbligatori sono in data-testid (`agent-uninstall-progress-{id}`, `agent-uninstall-done-{id}`). La barra rossa con animate-pulse + width dinamica + label metodo è coerente con il pattern dell'update bar."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_agent_uninstall_tracking.py (NEW)"
+  ],
+  "success_rate": {"backend": "100% (8/8 new + 9/9 regression = 17/17)", "frontend": "code-review only (UI structure verified; live render not captured because seeded test agent is filtered as ghost by AgentsPage hostname rules)"},
+  "test_credentials": "Admin info@86bit.it / Ariel17051986@!@86 OK",
+  "seed_data_creation": "8 test cases each seed un TEST_iter82_*_<uuid> agent in managed_agents + 5 collezioni correlate, poi cleanup nel finally:. Una fixture module-scope mongo() esegue cleanup finale via regex ^TEST_iter82 su tutte le collezioni + agent_cleanup_audit. Verificato: post-run zero docs TEST_iter82_* in DB.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "La suite iter-82 (test_agent_uninstall_tracking.py) gira in ~3.3s e copre tutto il flusso uninstall tracking testabile via HTTP. I 2 branch non coperti (live+>90s=failed e legacy fallback DELETE) richiedono un test in-process con monkeypatch su backend.routes.agent_ws.REGISTRY — se vuoi coprirli, importa il modulo, patcha REGISTRY.get() per ritornare un FakeConn che raise 'unknown command' alla prima send_command, e usa httpx.AsyncClient con app=app. Le collezioni TEST_iter82_* sono auto-pulite via fixture module-scope. La PS1 magic-trigger viene letta direttamente da /app/noc-agent/build/install-noc-agent.ps1 — se il file viene riorganizzato (split in più file), aggiornare PS1_PATH nel test.",
+  "rca_of_the_issue": "Bug originale prod argus.86bit.it: i vecchi agent v4.10.x non conoscono il comando WS 'uninstall'. La fix combinata implementata: (1) Backend delete_agent prova prima 'uninstall' native (8s timeout), catch su 'unknown'/'no handler'/'timeout' → fallback su 'update' con version='__uninstall__'. (2) install-noc-agent.ps1 ha un MAGIC TRIGGER all'inizio: se $Version='__uninstall__' devia su uninstall.ps1 (con fallback inline). (3) Lo status uninstall viene tracciato in managed_agents con progress 0..95% lineare sui 3 min; auto-completion quando l'agent va offline >30s; auto-fail quando rimane online >90s; auto-timeout a 3min. (4) UI AgentsPage mostra progress bar rossa + label metodo, polling adattivo 3s. Tutto verificato green ad eccezione dei 2 branch in-process descritti sopra."
+}
