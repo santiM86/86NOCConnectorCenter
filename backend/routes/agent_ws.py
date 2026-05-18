@@ -1905,6 +1905,8 @@ async def agent_builds_manifest(version: str, token: Optional[str] = None) -> Di
         "version": real_ver,
         "name": meta.get("name"),
         "published_at": meta.get("published_at"),
+        "source": meta.get("source", "github_api"),
+        "api_error": meta.get("api_error"),
         "assets": public_assets,
     }
 
