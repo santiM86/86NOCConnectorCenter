@@ -32,6 +32,82 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-02-19 ✅ Connector UI — Tab "Dispositivi rilevati" locale (offline-first)
+
+**Feature**: la UI desktop del connector Go (Wails) ora mostra i
+dispositivi scoperti **localmente** dal connector (ARP/mDNS/PTR/NBNS),
+non più solo quelli sincronizzati al Center. Funziona anche in totale
+offline / WAN giù.
+
+### Architettura
+Comunicazione UI ↔ servizio agent **file-based** (zero socket loopback,
+zero IPC, funziona anche con UI lanciata come utente non-admin):
+
+- `C:\ProgramData\86NocAgent\discovery_cache.json` — snapshot scritto
+  atomicamente dal servizio agent dopo ogni sweep di discovery.
+- `C:\ProgramData\86NocAgent\discovery_rescan.tick` — flag one-shot
+  droppato dalla UI per richiedere un sweep immediato. Il servizio
+  watcha il file ogni 3s, lo consuma e cancella.
+
+### Backend Go agent (`internal/discovery/manager.go`)
+- `SetCachePath()`, `SetForceTriggerPath()` — config opzionale.
+- `Snapshot()` — copy sicura della map endpoints, ordinata per IP.
+- `WriteCache()` — scrittura atomica (tmp file + rename), versionata
+  JSON (`{version:1, written_at, last_scan_at, count, endpoints[]}`).
+- `LoadCache()` — ripopola la mappa al boot, droppa entry stale
+  (`> retainAfter`).
+- `consumeForceTrigger()` — one-shot consume + delete.
+- Hook in `Run()`: secondo ticker 3s polla il trigger file e fira un
+  sweep extra se presente.
+- Hook in `runOnce()`: chiama `WriteCache()` dopo `onBatch` (best-effort,
+  errore solo loggato).
+
+### Servizio agent (`cmd/agent/main.go`)
+- All'avvio configura paths in `%ProgramData%\86NocAgent\` + `LoadCache()`
+  → la mappa in-memory è già piena prima del primo sweep.
+
+### UI Wails (`cmd/nocui-v5/app.go`)
+- `ListDiscovered()` — **prima legge la cache locale**, fallback al
+  Center solo se assente/illeggibile.
+- `DiscoveryStatus()` — espone alla UI source (`local|center|none`),
+  count, written_at, last_scan_at, cache_path.
+- `ForceRescan()` — scrive il trigger file.
+
+### Frontend Wails (`DiscoveryPage.tsx`)
+- Colonne minimal: IP, Hostname, MAC, Vendor, Last seen (come richiesto
+  dall'utente — più pulito su monitor piccoli).
+- StatusStrip in alto: badge sorgente dati (HardDrive=local /
+  Cloud=center / AlertCircle=none) + counter + timestamps relativi.
+- Pulsante "Re-scan ora" con icona Radar animata durante lo sweep
+  (4.5s di attesa poi reload).
+- Filtro live IP/hostname/MAC/vendor.
+- Auto-refresh ogni 5s (era 20s).
+- Bridge `bridge.ts` aggiornato + mock dev browser.
+
+### Test
+- `internal/discovery/cache_test.go` — 3 test:
+  - `TestWriteAndLoadCacheRoundtrip` — write atomico + load corretto.
+  - `TestForceTriggerConsumed` — file flag one-shot, idempotente.
+  - `TestLoadCacheDropsStaleEntries` — entry oltre retainAfter scartate.
+- Tutti i build OK: windows/amd64 (agent + UI) + linux/amd64 (agent).
+
+### Files toccati
+- `/app/noc-agent/internal/discovery/manager.go` (+ persistenza + trigger)
+- `/app/noc-agent/internal/discovery/cache_test.go` (NUOVO)
+- `/app/noc-agent/cmd/agent/main.go` (+ config paths)
+- `/app/noc-agent/cmd/nocui-v5/app.go` (+ 3 binding: ListDiscovered local, DiscoveryStatus, ForceRescan)
+- `/app/noc-agent/cmd/nocui-v5/frontend/src/lib/bridge.ts` (+ tipi + api)
+- `/app/noc-agent/cmd/nocui-v5/frontend/src/pages/DiscoveryPage.tsx` (rewrite)
+
+### Per produzione
+Stesso flusso del fix precedente (logging upgrade): Save to GitHub → tag
+`v4.13.1` → GitHub Action → DB override → update remoto agent. La nuova
+UI compare automaticamente dopo l'update perché ArgusDesktop.exe viene
+sostituito dall'installer.
+
+---
+
+
 ## 2026-02-19 ✅ Remote Upgrade Diagnostics — Persistent Logs + WS log retrieval
 
 **Problema risolto (P0)**: l'aggiornamento remoto dell'Agent dal Center

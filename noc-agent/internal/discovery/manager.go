@@ -6,7 +6,10 @@ package discovery
 
 import (
 	"context"
+	"encoding/json"
 	"net"
+	"os"
+	"path/filepath"
 	"sort"
 	"sync"
 	"time"
@@ -36,6 +39,18 @@ type Manager struct {
 	// memory bounded on long-running agents.
 	retainAfter time.Duration
 
+	// cachePath is the disk location where the discovery snapshot is
+	// persisted after every successful sweep. The Wails desktop UI reads
+	// this file directly to render the "Dispositivi rilevati" tab even
+	// when the Center is unreachable. Empty = persistence disabled.
+	cachePath string
+	// forceTriggerPath is the optional file path watched on each tick:
+	// if it exists, the manager treats it as an external "re-scan now"
+	// trigger (used by the Wails UI to request an immediate sweep
+	// without exposing a loopback socket). The file is deleted right
+	// after being honored so the trigger is one-shot.
+	forceTriggerPath string
+
 	onBatch func([]proto.DiscoveredEndpoint)
 }
 
@@ -64,13 +79,17 @@ func (m *Manager) ForceScan(ctx context.Context) []proto.DiscoveredEndpoint {
 	return m.runOnce(ctx)
 }
 
-// Run blocks until ctx is done, sweeping every tick.
+// Run blocks until ctx is done, sweeping every tick. A secondary 3s
+// poll watches forceTriggerPath: if the Wails UI drops the trigger
+// file the next sweep is fired immediately (one-shot, file removed).
 func (m *Manager) Run(ctx context.Context) {
 	if m.tick <= 0 {
 		m.tick = 5 * time.Minute
 	}
 	t := time.NewTicker(m.tick)
 	defer t.Stop()
+	trig := time.NewTicker(3 * time.Second)
+	defer trig.Stop()
 	m.runOnce(ctx)
 	for {
 		select {
@@ -78,6 +97,11 @@ func (m *Manager) Run(ctx context.Context) {
 			return
 		case <-t.C:
 			m.runOnce(ctx)
+		case <-trig.C:
+			if m.consumeForceTrigger() {
+				m.log.Info("force-trigger consumed: running discovery sweep")
+				m.runOnce(ctx)
+			}
 		}
 	}
 }
@@ -128,6 +152,12 @@ func (m *Manager) runOnce(ctx context.Context) []proto.DiscoveredEndpoint {
 
 	if m.onBatch != nil && len(merged) > 0 {
 		m.onBatch(merged)
+	}
+	// Persist on disk so the Wails UI can read the snapshot directly.
+	// Best-effort: log the error but never fail the sweep — the in-memory
+	// state is still authoritative for the next tick.
+	if err := m.WriteCache(); err != nil {
+		m.log.Warn("discovery cache write failed", "err", err.Error())
 	}
 	m.log.Info("scan completed", "endpoints", itoa(len(merged)))
 	return merged
@@ -190,6 +220,143 @@ func ipLess(a, b string) bool {
 		}
 	}
 	return false
+}
+
+// SetCachePath configures the on-disk snapshot location. Call ONCE at
+// startup before Run(). Empty string disables persistence.
+func (m *Manager) SetCachePath(p string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cachePath = p
+}
+
+// SetForceTriggerPath configures the path watched on each tick for an
+// external "re-scan now" file flag. Empty disables.
+func (m *Manager) SetForceTriggerPath(p string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.forceTriggerPath = p
+}
+
+// Snapshot returns a copy of all endpoints currently tracked in memory,
+// sorted by IPv4 ascending. Safe for concurrent use.
+func (m *Manager) Snapshot() []proto.DiscoveredEndpoint {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]proto.DiscoveredEndpoint, 0, len(m.endpoints))
+	for _, ep := range m.endpoints {
+		out = append(out, ep)
+	}
+	sort.Slice(out, func(i, j int) bool { return ipLess(out[i].IP, out[j].IP) })
+	return out
+}
+
+// snapshotPayload is the on-disk format of discovery_cache.json. We
+// keep it explicit (vs. dumping the internal struct) so the file is
+// self-describing for downstream tools and we can evolve the in-memory
+// representation without breaking readers.
+type snapshotPayload struct {
+	Version    int                          `json:"version"`
+	WrittenAt  string                       `json:"written_at"`
+	LastScanAt string                       `json:"last_scan_at,omitempty"`
+	Count      int                          `json:"count"`
+	Endpoints  []proto.DiscoveredEndpoint   `json:"endpoints"`
+}
+
+// WriteCache atomically writes the current snapshot to m.cachePath.
+// No-op if cachePath is empty. Returns nil on success or wraps the
+// first I/O error encountered. Atomicity: writes to a temp file in
+// the same directory and renames over the target.
+func (m *Manager) WriteCache() error {
+	m.mu.Lock()
+	path := m.cachePath
+	lastScan := m.lastScanAt
+	eps := make([]proto.DiscoveredEndpoint, 0, len(m.endpoints))
+	for _, ep := range m.endpoints {
+		eps = append(eps, ep)
+	}
+	m.mu.Unlock()
+	if path == "" {
+		return nil
+	}
+	sort.Slice(eps, func(i, j int) bool { return ipLess(eps[i].IP, eps[j].IP) })
+	payload := snapshotPayload{
+		Version:   1,
+		WrittenAt: time.Now().UTC().Format(time.RFC3339),
+		Count:     len(eps),
+		Endpoints: eps,
+	}
+	if !lastScan.IsZero() {
+		payload.LastScanAt = lastScan.UTC().Format(time.RFC3339)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(&payload, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+// LoadCache repopulates the in-memory endpoint map from a snapshot file
+// written by a previous run. Used at agent startup so the Wails UI is
+// not empty for the first 5 minutes of a fresh process. Stale entries
+// (older than retainAfter) are dropped at load time.
+func (m *Manager) LoadCache() error {
+	m.mu.Lock()
+	path := m.cachePath
+	retain := m.retainAfter
+	m.mu.Unlock()
+	if path == "" {
+		return nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	var payload snapshotPayload
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	cutoff := now.Add(-retain)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, ep := range payload.Endpoints {
+		if ep.IP == "" {
+			continue
+		}
+		if retain > 0 && !ep.LastSeenAt.IsZero() && ep.LastSeenAt.Before(cutoff) {
+			continue
+		}
+		m.endpoints[ep.IP] = ep
+	}
+	return nil
+}
+
+// consumeForceTrigger returns true once if the trigger file exists; in
+// that case the file is removed so the trigger is one-shot. Safe to
+// call from runOnce without locking m.mu (the file is the lock).
+func (m *Manager) consumeForceTrigger() bool {
+	m.mu.Lock()
+	path := m.forceTriggerPath
+	m.mu.Unlock()
+	if path == "" {
+		return false
+	}
+	if _, err := os.Stat(path); err != nil {
+		return false
+	}
+	_ = os.Remove(path)
+	return true
 }
 
 func itoa(n int) string {

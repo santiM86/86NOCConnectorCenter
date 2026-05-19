@@ -157,6 +157,22 @@ func runAgent(ctx context.Context, cfg config.Config, log *logging.Logger) {
 		hr.Tick("discovery")
 	})
 
+	// Persistenza on-disk del discovery snapshot. La UI desktop Wails
+	// legge questo file (zero IPC, zero socket loopback) per popolare
+	// la tab "Dispositivi rilevati" anche quando il Center e' offline
+	// o l'agent appena ripartito (LoadCache ripopola l'in-memory map).
+	// ForceTrigger: la UI puo' dropparci un file flag per richiedere
+	// un sweep immediato senza dover esporre socket locali.
+	if pd := os.Getenv("ProgramData"); pd != "" {
+		disc.SetCachePath(filepath.Join(pd, "86NocAgent", "discovery_cache.json"))
+		disc.SetForceTriggerPath(filepath.Join(pd, "86NocAgent", "discovery_rescan.tick"))
+		if err := disc.LoadCache(); err != nil {
+			log.Warn("discovery cache load failed", "err", err.Error())
+		} else {
+			log.Info("discovery cache loaded (in-memory map prefilled)")
+		}
+	}
+
 	client.Register(proto.CmdPing, func(ctx context.Context, _ json.RawMessage) (any, error) {
 		return map[string]any{"pong": time.Now().UTC()}, nil
 	})
