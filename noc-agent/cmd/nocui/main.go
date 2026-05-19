@@ -1099,12 +1099,13 @@ func setupTray(app *App) error {
 	app.stopItem = add("Ferma servizi", func() { go func() { stopServices(); refreshStatus(app) }() })
 	app.restartItem = add("Riavvia servizi", func() { go func() { restartServices(); refreshStatus(app) }() })
 	ni.ContextMenu().Actions().Add(walk.NewSeparatorAction())
-	add("Apri cartella log", func() {
-		dir := resolveLogDir()
-		os.MkdirAll(dir, 0o755)
-		runHidden("explorer.exe", dir)
-	})
-	ni.ContextMenu().Actions().Add(walk.NewSeparatorAction())
+	// NOTA: "Apri cartella log" rimosso intenzionalmente. I log
+	// ora si leggono SOLO dal Center (route /agents -> 📋 pulsante).
+	// Motivazione: la cartella log e' sotto il profilo SYSTEM
+	// (C:\Windows\System32\config\systemprofile\AppData\...) e
+	// non e' accessibile agli utenti standard senza elevation.
+	// Esponendola dal tray confondeva gli utenti con errori
+	// "Accesso negato". Per visualizzarli, l'admin usa il Center.
 	// Menu item "Aggiorna ora": disabilitato all'inizio, viene abilitato dal
 	// watcher quando trova una versione GitHub piu' recente. Quando cliccato,
 	// scarica install-noc-agent.ps1 da main e lo esegue elevato (UAC) cosi'

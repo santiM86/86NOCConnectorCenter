@@ -1266,6 +1266,53 @@ async def get_agent_upgrade_log(
     return {"agent_id": agent_id, "supported": True, "source": "ws_command", "reply": reply}
 
 
+@router.get("/agents/{agent_id}/agent-logs")
+async def get_agent_runtime_logs(
+    agent_id: str,
+    tail_kb: int = 0,
+    current_user: dict = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """
+    Restituisce il contenuto del file `nocagent.log` del servizio agent
+    sul PC client. Richiede agent v4.13+ e LIVE (legge il file via WS
+    command get_agent_logs e lo streamma indietro).
+
+    Sostituisce il vecchio menu "Apri cartella log" del tray UI: ora i
+    log si consultano SOLO dal Center per evitare errori di accesso al
+    profilo SYSTEM (C:\\Windows\\System32\\config\\systemprofile\\...).
+
+    Query string:
+      tail_kb: 0 = tutto fino a 256KB; >0 = solo ultime N KB del log
+    """
+    require_admin(current_user)
+    conn = REGISTRY.get(agent_id)
+    if conn is None:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "Agent non connesso. Per leggere il log nocagent.log l'agent "
+                "deve essere LIVE. Verifica che il servizio sia attivo e "
+                "riconnesso al Center."
+            ),
+        )
+    args = {"tail_kb": int(tail_kb)} if tail_kb and tail_kb > 0 else {}
+    try:
+        reply = await conn.send_command("get_agent_logs", args, timeout=20.0)
+    except asyncio.TimeoutError as e:
+        raise HTTPException(status_code=504, detail="agent reply timeout (20s)") from e
+    if isinstance(reply, dict) and "base_dir" not in reply and reply.get("error"):
+        return {
+            "agent_id": agent_id,
+            "supported": False,
+            "error": reply.get("error"),
+            "hint": (
+                "Agent troppo vecchio: aggiorna a v4.13+ per abilitare la "
+                "lettura remota dei log."
+            ),
+        }
+    return {"agent_id": agent_id, "supported": True, "reply": reply}
+
+
 @router.get("/agents/{agent_id}/health")
 async def agent_health(agent_id: str,
                       current_user: dict = Depends(get_current_user)) -> Dict[str, Any]:

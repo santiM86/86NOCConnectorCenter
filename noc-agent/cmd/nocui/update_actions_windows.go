@@ -175,13 +175,6 @@ func showVersionDialog(app *App) {
 			}
 		}
 
-		logPath := "—"
-		if b, err := os.ReadFile(filepath.Join(os.Getenv("ProgramData"), "86NocAgent", "log_path.txt")); err == nil {
-			if p := strings.TrimSpace(string(b)); p != "" {
-				logPath = p
-			}
-		}
-
 		agentID := app.agent.AgentID
 		clientID := app.agent.ClientID
 		backend := app.agent.BackendURL
@@ -303,19 +296,12 @@ func showVersionDialog(app *App) {
 								fieldRow("Backend", backend, labelFont, value)...,
 							),
 						},
-						// Sezione LOG
-						wd.Label{
-							Text:      "LOG",
-							Font:      wd.Font{Family: "Segoe UI", PointSize: 8, Bold: true},
-							TextColor: label,
-						},
-						wd.LineEdit{
-							Text:       logPath,
-							Font:       mono,
-							TextColor:  value,
-							ReadOnly:   true,
-							Background: wd.SolidColorBrush{Color: body},
-						},
+						// NOTA: sezione "LOG" rimossa intenzionalmente. I log
+						// dell'agent ora si consultano ESCLUSIVAMENTE dal Center
+						// (route /agents -> pulsante 📋 sulla riga del connector).
+						// Mostrare il path qui era fuorviante: l'utente non puo'
+						// aprirlo perche' sta sotto C:\Windows\System32\config\
+						// systemprofile\AppData\ del profilo SYSTEM.
 						wd.VSpacer{},
 					},
 				},
