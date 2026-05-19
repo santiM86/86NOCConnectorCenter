@@ -44,7 +44,7 @@ trap {
 }
 
 # ====== TARGET PREVIEW ======
-$PREVIEW_URL = "https://device-monitor-94.preview.emergentagent.com"
+$PREVIEW_URL = "https://device-scanner-pro-3.preview.emergentagent.com"
 $PREVIEW_CLIENT_ID = "da3d6e40-b3e5-4d46-9787-dde328a3aa36"
 $PREVIEW_API_KEY = "noc_35cf39b4d68740b1a981aedef2ee293d"
 

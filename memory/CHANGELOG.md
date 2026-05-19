@@ -57,7 +57,7 @@ noc-agent/cmd/nocui-v5/
 ## 📦 Distribuzione
 
 - **Bundle**: `/app/deploy_patches/v5.0.0/ArgusDesktop.exe` (3.7 MB)
-- **Preview live** (no install): https://device-monitor-94.preview.emergentagent.com/argus-desktop-preview/
+- **Preview live** (no install): https://device-scanner-pro-3.preview.emergentagent.com/argus-desktop-preview/
 - **README deploy**: `/app/deploy_patches/v5.0.0/README.md` (PowerShell one-liner per SOCIALSRV)
 
 ## ⚠️ Note
