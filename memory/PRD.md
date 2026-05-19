@@ -32,6 +32,96 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-02-19 ✅ Remote Upgrade Diagnostics — Persistent Logs + WS log retrieval
+
+**Problema risolto (P0)**: l'aggiornamento remoto dell'Agent dal Center
+falliva con timeout a circa 95%, e l'utente non poteva diagnosticare la
+causa perché il file `C:\ProgramData\86NocAgent\logs\agent.log` veniva
+**cancellato dallo script `install-noc-agent.ps1` stesso al step 4
+("Pulizia stato precedente")** prima del download della nuova release.
+Se l'upgrade crashava tra Stop-Service e Start-Service, nessun log
+restava sul disco → debug impossibile.
+
+### A) `noc-agent/build/install-noc-agent.ps1` — Logging persistente
+- **Start-Transcript** all'inizio dello script su
+  `%TEMP%\86noc-upgrade-logs\noc_upgrade_<ts>_pid<n>.log`
+  (per servizio SYSTEM = `C:\Windows\Temp\86noc-upgrade-logs\`).
+  Mirror automatico in `noc_upgrade_latest.log`.
+- **Write-EventLog** su Source `86NocAgent` (Event IDs:
+  `1001`=started, `1099`=failed con stack trace, `1100`=completed).
+- **Marker JSON** `noc_upgrade_marker.txt` con status / PID / timestamps.
+- **`trap` globale** cattura crash terminating e dumpa stack trace nel
+  transcript + Event Viewer.
+- **Backup `agent.log` precedente**: copiato in
+  `%TEMP%\86noc-upgrade-logs\agent.log.pre_upgrade_<ts>.log` PRIMA della
+  cancellazione di `C:\ProgramData\86NocAgent\logs` — preserva il log
+  dell'agent vecchio anche in caso di failure dell'upgrade.
+
+### B) `cmd/agent/update_remote_windows.go` — Wrapper logging
+Il wrapper PS spawn-ato dal Go agent ora apre il proprio Start-Transcript
+PRIMA del download dello script (`wrapper_<ts>_pid<n>.log` nella stessa
+cartella). Diagnostica anche failure di Invoke-WebRequest verso GitHub
+raw (rete bloccata, DNS, certificati).
+
+### C) Nuovo comando WS `get_upgrade_log`
+- `cmd/agent/upgrade_log_windows.go` (+ stub `_other.go`).
+- Legge `noc_upgrade_latest.log` (cap 256KB tail, parametro `tail_kb`).
+- Restituisce marker JSON + lista cronologica file (max 10).
+- Build cross-platform validato (windows/amd64 + linux/amd64).
+
+### D) Backend endpoint `GET /api/agents/{id}/upgrade-log`
+- Admin-only, invia WS command, timeout 15s.
+- 404 con hint utile su path manual recovery (Event Viewer + TEMP).
+- 501-graceful per agent troppo vecchi (pre v4.13).
+
+### E) UI `AgentsPage.js` — `UpgradeLogModal`
+- Pulsante "📜 vedi log" accanto a "↻ ritenta" nei casi failed/timeout.
+- Pulsante "📜" sempre disponibile (azioni normali, abilitato se LIVE).
+- Modale: marker status colorato, info path/size/mtime,
+  contenuto log scrollabile con copy-to-clipboard, lista cronologica file.
+- Suggerimento Event Viewer in footer.
+
+### F) Backend error messages — Path hint
+Tutti gli errori di `update_status=failed/timeout` ora includono:
+`Log di diagnostica sul PC client: %TEMP%\86noc-upgrade-logs\` +
+Event Viewer hint.
+
+### Path log persistenti sul PC client (cheatsheet utente)
+- Cartella (servizio SYSTEM): `C:\Windows\Temp\86noc-upgrade-logs\`
+- File principali:
+  - `noc_upgrade_latest.log` — symlink ultimo tentativo
+  - `noc_upgrade_<ts>_pid<n>.log` — uno per tentativo
+  - `wrapper_<ts>_pid<n>.log` — log del wrapper PS lanciato da Go
+  - `agent.log.pre_upgrade_<ts>.log` — backup log agent prima upgrade
+  - `noc_upgrade_marker.txt` — JSON stato corrente
+- Event Viewer: Application → Source `86NocAgent` (1001/1099/1100)
+
+### Steps per attivare in produzione
+1. "Save to GitHub" (push delle modifiche su `main`).
+2. Creare tag `v4.13.1` → GitHub Action genera la release.
+3. Settings → Agent Latest Version Override → `v4.13.1` (oppure attendere
+   refresh cache).
+4. Update remoto su un PC client di test.
+5. Se fallisce, cliccare 📜 in AgentsPage → log direttamente nel Center.
+
+**NOTA**: Lo SCRIPT prende effetto IMMEDIATAMENTE al prossimo update remoto
+dopo il push su `main` (è scaricato live da `raw.githubusercontent.com`),
+ANCHE senza rilasciare la nuova versione dell'agent binario. La feature
+`get_upgrade_log` (pulsante 📜) richiede invece l'upgrade dei binari a
+v4.13.1+.
+
+### Files toccati
+- `/app/noc-agent/build/install-noc-agent.ps1` (rewriting logging blocks)
+- `/app/noc-agent/cmd/agent/update_remote_windows.go`
+- `/app/noc-agent/cmd/agent/upgrade_log_windows.go` (NUOVO)
+- `/app/noc-agent/cmd/agent/upgrade_log_other.go` (NUOVO stub)
+- `/app/noc-agent/cmd/agent/main.go` (+1 registerUpgradeLogCommand call)
+- `/app/backend/routes/agent_ws.py` (+ endpoint upgrade-log, error hints)
+- `/app/frontend/src/pages/AgentsPage.js` (+ UpgradeLogModal + 2 pulsanti)
+
+---
+
+
 ## 2026-02 ✅ FEATURE BUNDLE — Rimozione legacy v3, Ghost Cleanup, WMI Polling
 
 **Status**: implementato, testato 14/14 (backend + frontend, 100%). Pronto

@@ -969,6 +969,10 @@ async def list_agents(client_id: Optional[str] = None,
                 #     di estrazione zip, target era "latest" e il latest era
                 #     gia' la versione corrente.
                 if elapsed > update_timeout.total_seconds():
+                    log_hint = (
+                        " Log di diagnostica sul PC client: %TEMP%\\86noc-upgrade-logs\\ "
+                        "(noc_upgrade_latest.log + wrapper_*.log). Event Viewer -> Application -> Source=86NocAgent."
+                    )
                     if d.get("live"):
                         started_ver = d.get("update_started_version")
                         cur_ver = d.get("agent_version")
@@ -978,13 +982,17 @@ async def list_agents(client_id: Optional[str] = None,
                                 f"Agent riconnesso ma versione invariata ({cur_ver}). "
                                 "Probabili cause: download release fallito (verifica AGENT_GITHUB_TOKEN), "
                                 "rete bloccata sul PC, oppure target gia' = versione corrente."
+                                + log_hint
                             )
                         else:
                             d["update_status"] = "timeout"
-                            d["update_error"] = "Timeout 5 min (agent live ma stato inconsistente)"
+                            d["update_error"] = "Timeout 5 min (agent live ma stato inconsistente)." + log_hint
                     else:
                         d["update_status"] = "timeout"
-                        d["update_error"] = "Agent non riconnesso entro 5 min (install probabilmente fallito)"
+                        d["update_error"] = (
+                            "Agent non riconnesso entro 5 min (install probabilmente fallito)."
+                            + log_hint
+                        )
         elif d.get("update_status") == "completed":
             d["update_progress"] = 100
         elif d.get("update_status") == "failed" or d.get("update_status") == "timeout":
@@ -1160,6 +1168,57 @@ async def send_command(agent_id: str, req: CommandRequest,
     except asyncio.TimeoutError as e:
         raise HTTPException(status_code=504, detail="agent reply timeout") from e
     return {"agent_id": agent_id, "command": req.name, "reply": reply}
+
+
+@router.get("/agents/{agent_id}/upgrade-log")
+async def get_agent_upgrade_log(
+    agent_id: str,
+    tail_kb: int = 0,
+    current_user: dict = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """
+    Recupera dal PC client il transcript dell'ultimo tentativo di upgrade
+    + marker JSON di stato + lista cronologica dei log recenti.
+
+    Richiede un agent Go >= v4.13 (comando WS `get_upgrade_log` registrato).
+    Per agent piu' vecchi ritorna 501 / "command not supported" e l'admin
+    deve recuperare i log manualmente da %TEMP%\\86noc-upgrade-logs\\ sul PC.
+
+    Query string:
+      tail_kb: 0 = tutto fino a 256KB; >0 = solo ultime N KB del log
+    """
+    require_admin(current_user)
+    conn = REGISTRY.get(agent_id)
+    if conn is None:
+        # Agent offline: forniamo comunque info utile per recupero manuale.
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "agent non connesso — recupera i log manualmente sul PC: "
+                "C:\\Windows\\Temp\\86noc-upgrade-logs\\noc_upgrade_latest.log "
+                "(o %TEMP%\\86noc-upgrade-logs\\). Event Viewer -> Application -> "
+                "Source=86NocAgent."
+            ),
+        )
+    args = {"tail_kb": int(tail_kb)} if tail_kb and tail_kb > 0 else {}
+    try:
+        reply = await conn.send_command("get_upgrade_log", args, timeout=15.0)
+    except asyncio.TimeoutError as e:
+        raise HTTPException(status_code=504, detail="agent reply timeout (15s)") from e
+    # Se l'agent e' troppo vecchio e non conosce il comando, il transport
+    # restituisce un payload con error string anziche' lanciare eccezione.
+    # Espressione amichevole: se non c'e' base_dir, suggerisci upgrade.
+    if isinstance(reply, dict) and "base_dir" not in reply and reply.get("error"):
+        return {
+            "agent_id": agent_id,
+            "supported": False,
+            "error": reply.get("error"),
+            "hint": (
+                "Agent troppo vecchio: aggiorna a v4.13+ per abilitare il recupero "
+                "remoto dei log di upgrade."
+            ),
+        }
+    return {"agent_id": agent_id, "supported": True, "reply": reply}
 
 
 @router.get("/agents/{agent_id}/health")

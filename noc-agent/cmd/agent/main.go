@@ -200,6 +200,12 @@ func runAgent(ctx context.Context, cfg config.Config, log *logging.Logger) {
 	// Disponibile SOLO su Windows (richiede iphlpapi.dll).
 	registerLanScanCommand(client, log)
 
+	// get_upgrade_log — restituisce al Center il contenuto degli ultimi
+	// log di upgrade (transcript persistente in %TEMP%\86noc-upgrade-logs\)
+	// cosi' l'admin puo' diagnosticare un crash di update remoto SENZA
+	// RDP-are sul PC del cliente. Disponibile SOLO su Windows.
+	registerUpgradeLogCommand(client, log)
+
 	// "update" — comando remoto inviato dal Center per aggiornare
 	// l'agent. Lancia install-noc-agent.ps1 da GitHub come subprocess
 	// admin; l'install si occupa di stop servizi, kill UI, download
