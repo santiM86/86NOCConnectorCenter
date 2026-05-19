@@ -32,41 +32,92 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
-## 2026-05-18 ✅ DIAGNOSTICA UPDATE REMOTO — Transcript $env:TEMP + Upload al Center
+## 2026-02-19 ✅ Remote Upgrade Diagnostics — Persistent Logs + WS log retrieval
 
-**Status**: backend testato (POST 200 OK, GET admin 200 OK), PowerShell syntax-valid via parser pwsh 7.4.6, deploy in produzione PENDING (richiede push GitHub + rilascio nuova versione installer).
+**Problema risolto (P0)**: l'aggiornamento remoto dell'Agent dal Center
+falliva con timeout a circa 95%, e l'utente non poteva diagnosticare la
+causa perché il file `C:\ProgramData\86NocAgent\logs\agent.log` veniva
+**cancellato dallo script `install-noc-agent.ps1` stesso al step 4
+("Pulizia stato precedente")** prima del download della nuova release.
+Se l'upgrade crashava tra Stop-Service e Start-Service, nessun log
+restava sul disco → debug impossibile.
 
-### Problema risolto
-Il PS1 di update (`install-noc-agent.ps1`) cancellava `$DataDir\logs` prima di scaricare i nuovi binari. Se lo script crashava in un punto qualunque tra Stop-Service e Start-Service, l'agent.log era già distrutto e non si aveva modo di sapere cosa fosse successo sul PC del cliente. In produzione gli update remoti si bloccavano al 95% senza alcun log diagnostico recuperabile.
+### A) `noc-agent/build/install-noc-agent.ps1` — Logging persistente
+- **Start-Transcript** all'inizio dello script su
+  `%TEMP%\86noc-upgrade-logs\noc_upgrade_<ts>_pid<n>.log`
+  (per servizio SYSTEM = `C:\Windows\Temp\86noc-upgrade-logs\`).
+  Mirror automatico in `noc_upgrade_latest.log`.
+- **Write-EventLog** su Source `86NocAgent` (Event IDs:
+  `1001`=started, `1099`=failed con stack trace, `1100`=completed).
+- **Marker JSON** `noc_upgrade_marker.txt` con status / PID / timestamps.
+- **`trap` globale** cattura crash terminating e dumpa stack trace nel
+  transcript + Event Viewer.
+- **Backup `agent.log` precedente**: copiato in
+  `%TEMP%\86noc-upgrade-logs\agent.log.pre_upgrade_<ts>.log` PRIMA della
+  cancellazione di `C:\ProgramData\86NocAgent\logs` — preserva il log
+  dell'agent vecchio anche in caso di failure dell'upgrade.
 
-### Implementazione
-- **`/app/noc-agent/build/install-noc-agent.ps1`**:
-  - `Start-Transcript -Path "$env:TEMP\noc_upgrade_<timestamp>.log"` subito dopo l'auto-elevazione UAC. Vive fuori da `$DataDir`, sopravvive al cleanup.
-  - `trap { ... }` globale: cattura qualsiasi terminating error non gestito, dumpa `$_.Exception.Message`, type, line number, PositionMessage, ScriptStackTrace + full ErrorRecord, poi `Stop-Transcript` + best-effort upload al Center con `status=error`, exit 99.
-  - Funzione `Send-UpgradeLogToCenter -Status <success|error>`: POST del transcript al Center (`POST /api/agent/upgrade-log?token=...&version=...&status=...&hostname=...`). Best-effort: i fail di rete non rompono l'installazione.
-  - Try/catch espliciti attorno ai punti critici precedentemente non protetti: `Stop-Service`, kill processi UI, `Remove-Item logs/`. Ora i fallimenti vengono loggati come WARN e lo script prosegue invece di terminare silenziosamente.
-  - In fondo al file (success path): `Stop-Transcript` + upload con `status=success`.
-- **`/app/backend/routes/agent_ws.py`**:
-  - `POST /api/agent/upgrade-log` (auth: `?token=<api_key|agent_token>` via `_token_or_403`). Body plain text (cap 2 MB, troncamento a fine file se eccede). Persiste in `agent_upgrade_logs` con `received_at` UTC e aggiorna `managed_agents.last_upgrade_{status,version,at}` per visibilità nella dashboard.
-  - `GET /api/admin/agents/{agent_id}/upgrade-logs?limit=20` (auth: JWT admin). Ritorna gli ultimi N transcript con `received_at` ISO + log_text completo.
+### B) `cmd/agent/update_remote_windows.go` — Wrapper logging
+Il wrapper PS spawn-ato dal Go agent ora apre il proprio Start-Transcript
+PRIMA del download dello script (`wrapper_<ts>_pid<n>.log` nella stessa
+cartella). Diagnostica anche failure di Invoke-WebRequest verso GitHub
+raw (rete bloccata, DNS, certificati).
 
-### Test eseguiti
-- `curl POST /api/agent/upgrade-log` con token valido → `{"ok":true,"id":"...","size":158}` ✓
-- `curl POST` senza token → 401 ✓
-- `curl POST` con token invalido → 403 ✓
-- `curl GET /api/admin/agents/test-agent-001/upgrade-logs` con JWT admin → ritorna doc inserito ✓
-- `pwsh 7.4.6` parser sul .ps1 → "PowerShell syntax valid" (0 errors) ✓
-- Braces matching: 183/183 ✓
+### C) Nuovo comando WS `get_upgrade_log`
+- `cmd/agent/upgrade_log_windows.go` (+ stub `_other.go`).
+- Legge `noc_upgrade_latest.log` (cap 256KB tail, parametro `tail_kb`).
+- Restituisce marker JSON + lista cronologica file (max 10).
+- Build cross-platform validato (windows/amd64 + linux/amd64).
 
-### Action items per il deploy in produzione
-1. Push commit di `install-noc-agent.ps1` + `agent_ws.py` su `santiM86/86NOCConnectorCenter`.
-2. Creare nuova GitHub Release (es. v4.13.0) che include il nuovo .ps1 come asset (i client lo scaricano dal Center proxy via `/api/agent-builds/<ver>/install-noc-agent.ps1`).
-3. Rilanciare l'update remoto dal Center sul PC client problematico → al success o error il transcript verrà uploadato automaticamente.
-4. Visualizzare i log via `GET /api/admin/agents/{agent_id}/upgrade-logs` (TODO P1: aggiungere bottone "View Upgrade Logs" in AgentsPage.js).
+### D) Backend endpoint `GET /api/agents/{id}/upgrade-log`
+- Admin-only, invia WS command, timeout 15s.
+- 404 con hint utile su path manual recovery (Event Viewer + TEMP).
+- 501-graceful per agent troppo vecchi (pre v4.13).
 
-### Files modificati
-- `/app/noc-agent/build/install-noc-agent.ps1` (+115 righe)
-- `/app/backend/routes/agent_ws.py` (+100 righe)
+### E) UI `AgentsPage.js` — `UpgradeLogModal`
+- Pulsante "📜 vedi log" accanto a "↻ ritenta" nei casi failed/timeout.
+- Pulsante "📜" sempre disponibile (azioni normali, abilitato se LIVE).
+- Modale: marker status colorato, info path/size/mtime,
+  contenuto log scrollabile con copy-to-clipboard, lista cronologica file.
+- Suggerimento Event Viewer in footer.
+
+### F) Backend error messages — Path hint
+Tutti gli errori di `update_status=failed/timeout` ora includono:
+`Log di diagnostica sul PC client: %TEMP%\86noc-upgrade-logs\` +
+Event Viewer hint.
+
+### Path log persistenti sul PC client (cheatsheet utente)
+- Cartella (servizio SYSTEM): `C:\Windows\Temp\86noc-upgrade-logs\`
+- File principali:
+  - `noc_upgrade_latest.log` — symlink ultimo tentativo
+  - `noc_upgrade_<ts>_pid<n>.log` — uno per tentativo
+  - `wrapper_<ts>_pid<n>.log` — log del wrapper PS lanciato da Go
+  - `agent.log.pre_upgrade_<ts>.log` — backup log agent prima upgrade
+  - `noc_upgrade_marker.txt` — JSON stato corrente
+- Event Viewer: Application → Source `86NocAgent` (1001/1099/1100)
+
+### Steps per attivare in produzione
+1. "Save to GitHub" (push delle modifiche su `main`).
+2. Creare tag `v4.13.1` → GitHub Action genera la release.
+3. Settings → Agent Latest Version Override → `v4.13.1` (oppure attendere
+   refresh cache).
+4. Update remoto su un PC client di test.
+5. Se fallisce, cliccare 📜 in AgentsPage → log direttamente nel Center.
+
+**NOTA**: Lo SCRIPT prende effetto IMMEDIATAMENTE al prossimo update remoto
+dopo il push su `main` (è scaricato live da `raw.githubusercontent.com`),
+ANCHE senza rilasciare la nuova versione dell'agent binario. La feature
+`get_upgrade_log` (pulsante 📜) richiede invece l'upgrade dei binari a
+v4.13.1+.
+
+### Files toccati
+- `/app/noc-agent/build/install-noc-agent.ps1` (rewriting logging blocks)
+- `/app/noc-agent/cmd/agent/update_remote_windows.go`
+- `/app/noc-agent/cmd/agent/upgrade_log_windows.go` (NUOVO)
+- `/app/noc-agent/cmd/agent/upgrade_log_other.go` (NUOVO stub)
+- `/app/noc-agent/cmd/agent/main.go` (+1 registerUpgradeLogCommand call)
+- `/app/backend/routes/agent_ws.py` (+ endpoint upgrade-log, error hints)
+- `/app/frontend/src/pages/AgentsPage.js` (+ UpgradeLogModal + 2 pulsanti)
 
 ---
 

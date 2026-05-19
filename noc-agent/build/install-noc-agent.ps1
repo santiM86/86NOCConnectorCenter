@@ -102,6 +102,112 @@ if (-not $Source) {
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"   # accelera Invoke-WebRequest
 
+# ------------------------------------------------------------------- #
+# 0.PRE  LOGGING PERSISTENTE (Start-Transcript + Event Viewer fallback)
+# ------------------------------------------------------------------- #
+# CRITICAL: durante un update remoto triggerato dal Center, lo script
+# gira come subprocess detached di nocagent.exe e *cancella* la cartella
+# C:\ProgramData\86NocAgent\logs come pulizia di stato (step 4). Se lo
+# script crasha tra lo stop service e il start service, l'utente NON
+# trova NESSUN log da nessuna parte ("agent.log non esiste") rendendo
+# impossibile la diagnosi remota.
+#
+# Soluzione: triplice ridondanza dei log fin dal byte 1 dell'esecuzione:
+#  A) Start-Transcript in $env:TEMP\noc_upgrade.log (TEMP non viene
+#     mai svuotata dallo script, sopravvive a crash, riavvio servizi,
+#     remove-item recursivo, ed e' leggibile da ANY user perche' i
+#     temp per SYSTEM stanno in C:\Windows\Temp).
+#  B) Write-EventLog su source "86NocAgent" (visibile in Event Viewer
+#     -> Application -> con filter Source=86NocAgent).
+#  C) Marker file fisso "$env:TEMP\noc_upgrade_marker.txt" con
+#     PID + start time + outcome - per diagnostica veloce con dir.
+#
+# La cartella scelta e' "$env:TEMP\86noc-upgrade-logs" cosi' non
+# inquina la root temp e si auto-pulisce con la rotazione TEMP di
+# Windows (90 giorni di default).
+
+$script:UpgradeStarted = Get-Date
+$script:UpgradeLogDir  = Join-Path $env:TEMP "86noc-upgrade-logs"
+try { New-Item -ItemType Directory -Force -Path $script:UpgradeLogDir -ErrorAction SilentlyContinue | Out-Null } catch {}
+$script:UpgradeLogTimestamp = $script:UpgradeStarted.ToString("yyyyMMdd-HHmmss")
+$script:UpgradeLogFile = Join-Path $script:UpgradeLogDir "noc_upgrade_$($script:UpgradeLogTimestamp)_pid$PID.log"
+$script:UpgradeLatestLog = Join-Path $script:UpgradeLogDir "noc_upgrade_latest.log"
+$script:UpgradeMarker = Join-Path $script:UpgradeLogDir "noc_upgrade_marker.txt"
+
+# Start-Transcript cattura TUTTO (Write-Host, Write-Output, Write-Error,
+# Write-Warning, stderr di processi esterni come schtasks/sc) finche'
+# non viene Stop-Transcript-ato. -IncludeInvocationHeader prefissa ogni
+# riga col timestamp; UseMinimalHeader rende il file piu' leggibile.
+try {
+    Start-Transcript -Path $script:UpgradeLogFile -IncludeInvocationHeader -Force -ErrorAction Stop | Out-Null
+    $script:TranscriptActive = $true
+} catch {
+    # Caso raro: transcript gia' attivo (es. script eseguito da padre con
+    # Start-Transcript). Stop-pa quello precedente e ritenta.
+    try { Stop-Transcript -ErrorAction SilentlyContinue | Out-Null } catch {}
+    try {
+        Start-Transcript -Path $script:UpgradeLogFile -IncludeInvocationHeader -Force -ErrorAction Stop | Out-Null
+        $script:TranscriptActive = $true
+    } catch {
+        $script:TranscriptActive = $false
+    }
+}
+
+# Event Viewer source: registriamolo se non esiste (idempotente).
+try {
+    if (-not [System.Diagnostics.EventLog]::SourceExists("86NocAgent")) {
+        New-EventLog -LogName "Application" -Source "86NocAgent" -ErrorAction Stop
+    }
+    $script:EventLogReady = $true
+} catch {
+    $script:EventLogReady = $false
+}
+
+function Write-UpgradeEvent {
+    param(
+        [Parameter(Mandatory)][string]$Message,
+        [ValidateSet("Information","Warning","Error")][string]$EntryType = "Information",
+        [int]$EventId = 1000
+    )
+    if ($script:EventLogReady) {
+        try { Write-EventLog -LogName "Application" -Source "86NocAgent" -EventId $EventId -EntryType $EntryType -Message $Message -ErrorAction Stop } catch {}
+    }
+}
+
+function Update-UpgradeMarker {
+    param([string]$Status, [string]$Extra = "")
+    try {
+        $payload = @{
+            pid       = $PID
+            started   = $script:UpgradeStarted.ToString("o")
+            updated   = (Get-Date).ToString("o")
+            status    = $Status
+            log_file  = $script:UpgradeLogFile
+            extra     = $Extra
+        } | ConvertTo-Json -Compress
+        [System.IO.File]::WriteAllText($script:UpgradeMarker, $payload, [System.Text.Encoding]::UTF8)
+        # Mirror "latest" per accesso rapido senza listare la cartella
+        if (Test-Path $script:UpgradeLogFile) {
+            try { Copy-Item -Path $script:UpgradeLogFile -Destination $script:UpgradeLatestLog -Force -ErrorAction SilentlyContinue } catch {}
+        }
+    } catch {}
+}
+
+Update-UpgradeMarker -Status "started" -Extra "version=$Version source=$Source"
+Write-UpgradeEvent -Message "Upgrade installer started (PID=$PID, log=$script:UpgradeLogFile, version=$Version, source=$Source)" -EntryType Information -EventId 1001
+
+Write-Host ("=" * 78) -ForegroundColor DarkCyan
+Write-Host "86NocAgent Installer/Updater" -ForegroundColor Cyan
+Write-Host "  Started:    $($script:UpgradeStarted.ToString('o'))"
+Write-Host "  PID:        $PID"
+Write-Host "  LogFile:    $script:UpgradeLogFile"
+Write-Host "  LogDir:     $script:UpgradeLogDir"
+Write-Host "  Marker:     $script:UpgradeMarker"
+Write-Host "  PSVersion:  $($PSVersionTable.PSVersion)"
+Write-Host "  Computer:   $env:COMPUTERNAME"
+Write-Host ("=" * 78) -ForegroundColor DarkCyan
+Write-Host ""
+
 function Write-Step($msg) {
     Write-Host ""
     Write-Host "==> $msg" -ForegroundColor Cyan
@@ -109,6 +215,36 @@ function Write-Step($msg) {
 function Write-Ok($msg)   { Write-Host "  [OK] $msg" -ForegroundColor Green }
 function Write-Warn2($msg){ Write-Host "  [!!] $msg" -ForegroundColor Yellow }
 function Write-Fail($msg) { Write-Host "  [XX] $msg" -ForegroundColor Red }
+
+# ------------------------------------------------------------------- #
+# 0.POST  TRAP GLOBALE — cattura ogni errore terminating non gestito,
+# logga lo stack trace nel transcript+EventLog, chiude pulitamente.
+# DEVE essere dichiarato qui prima del body — PowerShell trap copre
+# solo il codice che SEGUE la sua dichiarazione nello stesso scope.
+# ------------------------------------------------------------------- #
+trap {
+    $errMsg = $_.Exception.Message
+    $errLine = $_.InvocationInfo.ScriptLineNumber
+    $errStack = $_.ScriptStackTrace
+    Write-Host ""
+    Write-Host ("=" * 78) -ForegroundColor Red
+    Write-Host "==> ERRORE FATALE (linea $errLine):" -ForegroundColor Red
+    Write-Host "    $errMsg" -ForegroundColor Red
+    Write-Host ""
+    Write-Host "Stack trace:" -ForegroundColor DarkGray
+    Write-Host $errStack -ForegroundColor DarkGray
+    Write-Host ("=" * 78) -ForegroundColor Red
+    Update-UpgradeMarker -Status "failed" -Extra "line=$errLine error=$errMsg"
+    Write-UpgradeEvent -Message "Upgrade FAILED line=$errLine error=$errMsg`nLogFile=$script:UpgradeLogFile`nStack:`n$errStack" -EntryType Error -EventId 1099
+    if ($script:TranscriptActive) {
+        try { Stop-Transcript -ErrorAction SilentlyContinue | Out-Null } catch {}
+        $script:TranscriptActive = $false
+    }
+    if (Test-Path $script:UpgradeLogFile) {
+        try { Copy-Item -Path $script:UpgradeLogFile -Destination $script:UpgradeLatestLog -Force -ErrorAction SilentlyContinue } catch {}
+    }
+    exit 99
+}
 
 # ------------------------------------------------------------------- #
 # 0. MAGIC TRIGGER: -Version "__uninstall__" → esegue uninstall.ps1
@@ -358,20 +494,34 @@ foreach ($p in $uiProcs) {
 Start-Sleep -Seconds 2
 
 # ------------------------------------------------------------------- #
-# 4. Pulisci stato vecchio
+# 4. Pulizia stato vecchio (preservando il log per la diagnosi)
 # ------------------------------------------------------------------- #
 # DIAG: questo era il candidato principale del "silent crash" - se la
 # Remove-Item su logs fallisce (es. agent.log ancora in handle dal processo)
 # senza un try/catch generiamo un terminating error che NON viene catturato
 # dal trap se ErrorActionPreference=Stop nella sezione successiva.
 Write-Step "Pulizia stato precedente"
-try {
-    Remove-Item (Join-Path $DataDir "logs") -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Item (Join-Path $DataDir "log_path.txt") -Force -ErrorAction SilentlyContinue
-    Write-Ok "logs/ e log_path.txt rimossi"
-} catch {
-    Write-Warn2 "Cleanup logs/ fallito (continuo): $($_.Exception.Message)"
+# CRITICAL: PRIMA di rimuovere logs/, salviamo agent.log nel TEMP cosi'
+# se l'upgrade fallisce l'utente puo' comunque ispezionare i messaggi
+# dell'agent vecchio (errori di shutdown, last heartbeat, ecc.). Senza
+# questo backup il log scompariva insieme alla cartella e la diagnosi
+# era impossibile.
+$prevLogsDir = Join-Path $DataDir "logs"
+$prevAgentLog = Join-Path $prevLogsDir "agent.log"
+if (Test-Path $prevAgentLog) {
+    try {
+        $bakName = "agent.log.pre_upgrade_$($script:UpgradeLogTimestamp).log"
+        $bakPath = Join-Path $script:UpgradeLogDir $bakName
+        Copy-Item -Path $prevAgentLog -Destination $bakPath -Force -ErrorAction Stop
+        $bakSize = [math]::Round((Get-Item $bakPath).Length / 1KB, 1)
+        Write-Ok "agent.log precedente preservato in $bakPath ($bakSize KB)"
+    } catch {
+        Write-Warn2 "Backup agent.log precedente fallito: $($_.Exception.Message)"
+    }
 }
+Remove-Item $prevLogsDir -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item (Join-Path $DataDir "log_path.txt") -Force -ErrorAction SilentlyContinue
+Write-Ok "logs/ e log_path.txt rimossi (backup precedente in $script:UpgradeLogDir)"
 
 # ------------------------------------------------------------------- #
 # 4.5 Eccezioni Windows Defender (Real-time + ASR + Controlled Folder)
@@ -842,6 +992,31 @@ if (Test-Path $uiExe) {
 Write-Host "Per controllare i log in tempo reale:" -ForegroundColor Gray
 Write-Host "  Get-Content `"`$((Get-Content '$markerPath' -Raw).Trim())`" -Wait -Tail 50" -ForegroundColor Gray
 Write-Host ""
+
+# ------------------------------------------------------------------- #
+# OUTCOME / TEARDOWN — viene SEMPRE eseguito anche su errore terminating
+# ------------------------------------------------------------------- #
+# La logica delle eccezioni e' gestita dal $ErrorActionPreference="Stop"
+# all'inizio: qualunque eccezione fa uscire lo script SUBITO. Per
+# garantire che il transcript venga chiuso e che il marker rifletta
+# l'esito (success/failed), usiamo `trap` (Powershell e' single-threaded
+# quindi sicuro). trap esegue il blocco quando un errore terminating
+# bubble-up oltre tutti i try/catch — perfetto come safety net.
+#
+# Note: trap viene attivato anche su Ctrl+C / kill.
+
+# Path felice: success — marcatura finale + chiusura transcript pulita.
+Update-UpgradeMarker -Status "completed" -Extra "version=$resolvedVersion"
+Write-UpgradeEvent -Message "Upgrade COMPLETED version=$resolvedVersion`nLogFile=$script:UpgradeLogFile" -EntryType Information -EventId 1100
+
+if ($script:TranscriptActive) {
+    try { Stop-Transcript -ErrorAction SilentlyContinue | Out-Null } catch {}
+}
+# Mirror "latest" anche su success — i tool che cercano l'ultimo log
+# (es. agent stesso per upload via WS) leggono solo da noc_upgrade_latest.log
+if (Test-Path $script:UpgradeLogFile) {
+    try { Copy-Item -Path $script:UpgradeLogFile -Destination $script:UpgradeLatestLog -Force -ErrorAction SilentlyContinue } catch {}
+}
 
 if (-not $Quiet) {
     Write-Host "Premi un tasto per chiudere..." -ForegroundColor Gray

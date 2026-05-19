@@ -71,18 +71,45 @@ func triggerRemoteUpdate(version string, cfg *config.Config, log *logging.Logger
 	// (reverse-proxy verso GitHub) usando lo stesso $Token agent. Evita
 	// il rate-limit GitHub unauth sui PC dei clienti — il PAT GitHub
 	// resta solo sul Center (env AGENT_GITHUB_TOKEN).
+	//
+	// LOGGING PERSISTENTE: redirigiamo TUTTO l'output del wrapper su
+	// %TEMP%\86noc-upgrade-logs\wrapper_<ts>.log (Start-Transcript)
+	// PRIMA di provare il download dello script. Cosi' anche se la
+	// raw GitHub URL fallisce (rete bloccata, DNS, certificati) non
+	// perdiamo la diagnosi. Lo script vero scrive su un suo log a
+	// parte ma con la stessa cartella (vedi install-noc-agent.ps1
+	// step 0.PRE). Tutta la storia di un upgrade vive in un posto
+	// solo: %TEMP%\86noc-upgrade-logs\ .
 	psScript := fmt.Sprintf(`
 $ErrorActionPreference = 'Continue'
-Write-Host "=== 86NocAgent Remote Update -> %s (Source=center) ===" -ForegroundColor Cyan
+$ProgressPreference = 'SilentlyContinue'
+$wrapperLogDir = Join-Path $env:TEMP '86noc-upgrade-logs'
+try { New-Item -ItemType Directory -Force -Path $wrapperLogDir -ErrorAction SilentlyContinue | Out-Null } catch {}
+$ts = (Get-Date).ToString('yyyyMMdd-HHmmss')
+$wrapperLog = Join-Path $wrapperLogDir "wrapper_${ts}_pid$PID.log"
+try { Start-Transcript -Path $wrapperLog -Force -ErrorAction Stop | Out-Null } catch {}
+Write-Host "=== 86NocAgent Remote Update wrapper (target=%s, Source=center) ===" -ForegroundColor Cyan
+Write-Host "Wrapper log: $wrapperLog"
+Write-Host "Started:     $((Get-Date).ToString('o'))"
 $installerPath = "$env:TEMP\install-noc-agent.ps1"
 try {
-    Invoke-WebRequest -Uri "%s" -OutFile $installerPath -UseBasicParsing -ErrorAction Stop
+    Invoke-WebRequest -Uri "%s" -OutFile $installerPath -UseBasicParsing -ErrorAction Stop -TimeoutSec 60
+    Write-Host "Installer scaricato in $installerPath ($([math]::Round((Get-Item $installerPath).Length/1KB,1)) KB)"
 } catch {
     Write-Host "Download installer fallito: $($_.Exception.Message)" -ForegroundColor Red
+    try { Stop-Transcript -ErrorAction SilentlyContinue | Out-Null } catch {}
     exit 1
 }
-& $installerPath -Token "%s" -ClientId "%s" -BackendUrl "%s" -Role "%s" -Version "%s" -Source center -Quiet
-exit $LASTEXITCODE
+try {
+    & $installerPath -Token "%s" -ClientId "%s" -BackendUrl "%s" -Role "%s" -Version "%s" -Source center -Quiet
+    $rc = $LASTEXITCODE
+    Write-Host "Installer exit code: $rc"
+} catch {
+    Write-Host "Esecuzione installer fallita: $($_.Exception.Message)" -ForegroundColor Red
+    $rc = 98
+}
+try { Stop-Transcript -ErrorAction SilentlyContinue | Out-Null } catch {}
+exit $rc
 `,
 		version,
 		remoteInstallerURL,

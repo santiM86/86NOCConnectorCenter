@@ -194,6 +194,25 @@ export default function AgentsPage() {
     }
   };
 
+  // ---- Vedi log upgrade (recupera transcript installer dal PC client) ----
+  const [logTarget, setLogTarget] = useState(null);    // l'agent per cui mostriamo il log
+  const [logBusy, setLogBusy] = useState(false);
+  const [logData, setLogData] = useState(null);        // reply dal backend
+
+  const fetchUpgradeLog = async (a) => {
+    setLogTarget(a);
+    setLogBusy(true);
+    setLogData(null);
+    try {
+      const r = await axios.get(`${API}/agents/${a.agent_id}/upgrade-log`);
+      setLogData(r.data);
+    } catch (err) {
+      setLogData({ error: err.response?.data?.detail || err.message || "Errore" });
+    } finally {
+      setLogBusy(false);
+    }
+  };
+
   // Stato modale rimozione
   const [removeTarget, setRemoveTarget] = useState(null); // l'agent corrente
   const [removeMode, setRemoveMode] = useState("center"); // "center" | "full"
@@ -524,6 +543,11 @@ export default function AgentsPage() {
                               data-testid={`agent-retry-${a.agent_id}`}>
                               ↻ ritenta
                             </button>
+                            <button onClick={() => fetchUpgradeLog(a)}
+                              className="text-[9px] text-sky-400 hover:underline"
+                              data-testid={`agent-viewlog-${a.agent_id}`}>
+                              📜 vedi log
+                            </button>
                           </div>
                         ) : (
                           <>
@@ -543,6 +567,14 @@ export default function AgentsPage() {
                               title="Esegui diagnostica live"
                               data-testid={`agent-diag-${a.agent_id}`}>
                               <Stethoscope size={10} />
+                            </button>
+                            <button
+                              onClick={() => fetchUpgradeLog(a)}
+                              disabled={!a.live}
+                              className="ml-1 text-[10px] px-2 py-0.5 rounded bg-violet-500/10 text-violet-400 hover:bg-violet-500/20 border border-violet-500/20 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                              title="Vedi log ultimo tentativo di upgrade"
+                              data-testid={`agent-viewlog-btn-${a.agent_id}`}>
+                              📜
                             </button>
                             <button
                               onClick={() => openRemove(a)}
@@ -572,6 +604,17 @@ export default function AgentsPage() {
           removing={removing}
           onConfirm={confirmRemove}
           onClose={() => setRemoveTarget(null)}
+        />
+      )}
+
+      {logTarget && (
+        <UpgradeLogModal
+          agent={logTarget}
+          clientName={clients[logTarget.client_id]}
+          loading={logBusy}
+          data={logData}
+          onRefresh={() => fetchUpgradeLog(logTarget)}
+          onClose={() => { setLogTarget(null); setLogData(null); }}
         />
       )}
     </div>
@@ -661,6 +704,181 @@ function RemoveAgentModal({ agent, clientName, mode, setMode, removing, onConfir
             <Trash size={12} className="mr-1.5" />
             {removing ? "Rimozione…" : (mode === "full" ? "Rimuovi tutto" : "Rimuovi dal Center")}
           </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function UpgradeLogModal({ agent, clientName, loading, data, onRefresh, onClose }) {
+  // Estrae il body utile dalla reply nidificata del backend
+  const reply = data?.reply || null;
+  const marker = reply?.marker || null;
+  const latestLog = reply?.latest_log || "";
+  const latestPath = reply?.latest_path || "";
+  const latestSize = reply?.latest_size || 0;
+  const latestMtime = reply?.latest_mtime || "";
+  const files = reply?.files || [];
+  const baseDir = reply?.base_dir || "";
+  const supported = data?.supported !== false;
+
+  const copyLog = () => {
+    if (!latestLog) return;
+    try {
+      navigator.clipboard.writeText(latestLog);
+      toast.success("Log copiato negli appunti");
+    } catch {
+      toast.error("Clipboard non disponibile");
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+      data-testid="upgrade-log-modal">
+      <div className="bg-[var(--bg-panel)] border border-violet-500/30 rounded-lg max-w-4xl w-full max-h-[90vh] flex flex-col shadow-2xl">
+        {/* Header */}
+        <div className="flex items-center justify-between p-4 border-b border-[var(--bg-border)]">
+          <div>
+            <h2 className="text-base font-heading font-bold text-violet-400 flex items-center gap-2">
+              📜 Log Upgrade Connector
+            </h2>
+            <p className="text-[10px] text-[var(--text-muted)] mt-0.5 font-mono">
+              {agent.hostname || agent.agent_id?.slice(0, 12)} · {clientName || agent.client_id?.slice(0, 8)} · v{agent.agent_version}
+            </p>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <button onClick={onRefresh} disabled={loading}
+              className="text-[10px] px-2 py-1 rounded bg-sky-500/10 text-sky-400 hover:bg-sky-500/20 border border-sky-500/20 disabled:opacity-30"
+              data-testid="upgrade-log-refresh">
+              <ArrowClockwise size={11} className="inline mr-1" />
+              {loading ? "Carico…" : "Ricarica"}
+            </button>
+            <button onClick={onClose} className="text-[var(--text-muted)] hover:text-[var(--text-primary)] p-1"
+              data-testid="upgrade-log-close">
+              <X size={18} />
+            </button>
+          </div>
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto p-4 space-y-3">
+          {loading && (
+            <div className="text-center py-8 text-[var(--text-muted)] text-xs">
+              Recupero log dal PC client (timeout 15s)…
+            </div>
+          )}
+
+          {!loading && data?.error && (
+            <div className="p-3 rounded bg-red-500/10 border border-red-500/30 text-red-400 text-xs">
+              <p className="font-bold mb-1">Errore</p>
+              <p className="whitespace-pre-wrap">{data.error}</p>
+              <p className="text-[10px] text-[var(--text-muted)] mt-2">
+                Suggerimento: se l&apos;agent &egrave; offline, recupera il log manualmente sul PC:
+                <span className="font-mono ml-1">C:\Windows\Temp\86noc-upgrade-logs\noc_upgrade_latest.log</span>
+              </p>
+            </div>
+          )}
+
+          {!loading && !supported && (
+            <div className="p-3 rounded bg-amber-500/10 border border-amber-500/30 text-amber-400 text-xs">
+              <p className="font-bold mb-1">Comando non supportato</p>
+              <p>L&apos;agent &egrave; troppo vecchio (richiede v4.13+). Aggiorna il connector e riprova.</p>
+            </div>
+          )}
+
+          {!loading && supported && reply && (
+            <>
+              {/* Status marker */}
+              {marker && (
+                <div className={`p-3 rounded border text-xs ${
+                  marker.status === "completed" ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400" :
+                  marker.status === "failed" ? "bg-red-500/10 border-red-500/30 text-red-400" :
+                  marker.status === "started" ? "bg-amber-500/10 border-amber-500/30 text-amber-400" :
+                  "bg-zinc-500/10 border-zinc-500/30 text-zinc-400"
+                }`}>
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="font-bold uppercase text-[11px] tracking-wider">
+                      Stato ultimo upgrade: {marker.status || "sconosciuto"}
+                    </span>
+                    {marker.started && (
+                      <span className="text-[10px] font-mono opacity-70">avviato {marker.started}</span>
+                    )}
+                  </div>
+                  {marker.extra && (
+                    <p className="text-[10px] font-mono mt-1 opacity-80 break-all">{marker.extra}</p>
+                  )}
+                  {marker.log_file && (
+                    <p className="text-[10px] font-mono mt-1 opacity-70 break-all">file: {marker.log_file}</p>
+                  )}
+                </div>
+              )}
+
+              {/* Info */}
+              <div className="text-[10px] text-[var(--text-muted)] font-mono flex flex-wrap gap-x-4 gap-y-1">
+                <span>BaseDir: <span className="text-[var(--text-primary)]">{baseDir}</span></span>
+                {latestPath && <span>Latest: <span className="text-[var(--text-primary)]">{latestPath}</span></span>}
+                {latestSize > 0 && <span>Size: <span className="text-[var(--text-primary)]">{(latestSize / 1024).toFixed(1)} KB</span></span>}
+                {latestMtime && <span>MTime: <span className="text-[var(--text-primary)]">{latestMtime}</span></span>}
+              </div>
+
+              {!reply.exists && (
+                <div className="p-3 rounded bg-zinc-500/10 border border-zinc-500/30 text-zinc-400 text-xs">
+                  <p>Nessuna cartella <span className="font-mono">{baseDir}</span> sul PC client.</p>
+                  <p className="mt-1 text-[10px]">
+                    Probabile: questo agent non ha mai eseguito un upgrade dopo l&apos;introduzione dello script con logging persistente (v4.13). Esegui un update e riprova.
+                  </p>
+                </div>
+              )}
+
+              {/* Content log */}
+              {latestLog ? (
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-[10px] uppercase tracking-wider text-[var(--text-muted)]">noc_upgrade_latest.log</span>
+                    <button onClick={copyLog}
+                      className="text-[10px] text-sky-400 hover:underline"
+                      data-testid="upgrade-log-copy">
+                      📋 copia tutto
+                    </button>
+                  </div>
+                  <pre className="text-[10px] leading-tight font-mono bg-black/40 p-3 rounded border border-[var(--bg-border)] overflow-x-auto max-h-[50vh] whitespace-pre-wrap break-words"
+                    data-testid="upgrade-log-content">
+                    {latestLog}
+                  </pre>
+                </div>
+              ) : reply.exists ? (
+                <div className="p-3 rounded bg-zinc-500/10 border border-zinc-500/30 text-zinc-400 text-xs">
+                  Cartella presente ma <span className="font-mono">noc_upgrade_latest.log</span> assente. Esegui un nuovo update e riprova.
+                </div>
+              ) : null}
+
+              {/* File list */}
+              {files.length > 0 && (
+                <div>
+                  <p className="text-[10px] uppercase tracking-wider text-[var(--text-muted)] mb-1.5">
+                    Ultimi {files.length} file in {baseDir}
+                  </p>
+                  <div className="space-y-0.5 text-[10px] font-mono">
+                    {files.map((f) => (
+                      <div key={f.name} className="flex items-center gap-3 px-2 py-0.5 hover:bg-[var(--bg-card)]/50 rounded">
+                        <span className="text-[var(--text-muted)] w-32 truncate">{f.mtime?.slice(0, 19).replace("T", " ")}</span>
+                        <span className="text-amber-400 w-16 text-right">{(f.size / 1024).toFixed(1)} KB</span>
+                        <span className="text-[var(--text-primary)] flex-1 truncate">{f.name}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="px-4 py-2.5 border-t border-[var(--bg-border)] text-[10px] text-[var(--text-muted)]">
+          Suggerimento: in caso di crash dell&apos;installer su Windows controlla anche
+          <span className="font-mono text-[var(--text-primary)] mx-1">Event Viewer → Application → Source=86NocAgent</span>
+          (Event ID 1001/1099/1100).
         </div>
       </div>
     </div>
