@@ -721,6 +721,12 @@ function UpgradeLogModal({ agent, clientName, loading, data, onRefresh, onClose 
   const files = reply?.files || [];
   const baseDir = reply?.base_dir || "";
   const supported = data?.supported !== false;
+  const source = data?.source || ""; // db_upload | ws_command | ws_unsupported
+
+  const sourceLabel =
+    source === "db_upload" ? "📤 dall'installer (POST al Center)"
+    : source === "ws_command" ? "📡 dall'agent (live via WebSocket)"
+    : "";
 
   const copyLog = () => {
     if (!latestLog) return;
@@ -746,6 +752,11 @@ function UpgradeLogModal({ agent, clientName, loading, data, onRefresh, onClose 
             <p className="text-[10px] text-[var(--text-muted)] mt-0.5 font-mono">
               {agent.hostname || agent.agent_id?.slice(0, 12)} · {clientName || agent.client_id?.slice(0, 8)} · v{agent.agent_version}
             </p>
+            {sourceLabel && (
+              <p className="text-[10px] text-violet-400 mt-1" data-testid="upgrade-log-source">
+                Sorgente log: {sourceLabel}
+              </p>
+            )}
           </div>
           <div className="flex items-center gap-1.5">
             <button onClick={onRefresh} disabled={loading}

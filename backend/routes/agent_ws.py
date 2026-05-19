@@ -1180,24 +1180,68 @@ async def get_agent_upgrade_log(
     Recupera dal PC client il transcript dell'ultimo tentativo di upgrade
     + marker JSON di stato + lista cronologica dei log recenti.
 
-    Richiede un agent Go >= v4.13 (comando WS `get_upgrade_log` registrato).
-    Per agent piu' vecchi ritorna 501 / "command not supported" e l'admin
-    deve recuperare i log manualmente da %TEMP%\\86noc-upgrade-logs\\ sul PC.
+    Strategia a 3 livelli (più affidabile a meno affidabile):
+      1. **DB upload** — lo script install-noc-agent.ps1 POSTa il log a
+         fine upgrade su /api/agent/upgrade-report. Funziona anche con
+         agent OFFLINE o vecchi (pre-v4.13). Preferito.
+      2. **WS comando get_upgrade_log** — agent v4.13+ legge il file
+         direttamente dal disco e lo restituisce. Real-time.
+      3. **Fallback hint** — 404 con istruzioni manuali (path TEMP +
+         Event Viewer).
 
     Query string:
       tail_kb: 0 = tutto fino a 256KB; >0 = solo ultime N KB del log
     """
     require_admin(current_user)
+
+    # 1) Cerca prima il log uploadato dal PC (DB-side, niente WS round trip)
+    doc = await db.managed_agents.find_one({"agent_id": agent_id}, {"_id": 0, "client_id": 1, "hostname": 1})
+    if doc:
+        latest = await db.agent_upgrade_logs.find_one(
+            {"client_id": doc.get("client_id"), "hostname": doc.get("hostname")},
+            {"_id": 0},
+            sort=[("received_at", -1)],
+        )
+        if latest:
+            # Normalizzo il received_at datetime → ISO string JSON-safe
+            recv = latest.get("received_at")
+            if isinstance(recv, datetime):
+                latest["received_at"] = recv.isoformat()
+            return {
+                "agent_id": agent_id,
+                "supported": True,
+                "source": "db_upload",
+                "reply": {
+                    "exists": True,
+                    "base_dir": "(uploaded by installer)",
+                    "marker": {
+                        "status": latest.get("status"),
+                        "started": latest.get("started_at"),
+                        "extra": (
+                            f"target={latest.get('target_version')} "
+                            f"resolved={latest.get('resolved_version')}"
+                        ),
+                        "log_file": f"uploaded {latest.get('received_at')}",
+                    },
+                    "latest_log": latest.get("log_excerpt", ""),
+                    "latest_path": "(POST /api/agent/upgrade-report)",
+                    "latest_size": latest.get("log_size", 0),
+                    "latest_mtime": latest.get("finished_at") or latest.get("received_at"),
+                    "files": [],
+                },
+            }
+
+    # 2) Fallback al comando WS (agent v4.13+ e LIVE)
     conn = REGISTRY.get(agent_id)
     if conn is None:
-        # Agent offline: forniamo comunque info utile per recupero manuale.
         raise HTTPException(
             status_code=404,
             detail=(
-                "agent non connesso — recupera i log manualmente sul PC: "
-                "C:\\Windows\\Temp\\86noc-upgrade-logs\\noc_upgrade_latest.log "
-                "(o %TEMP%\\86noc-upgrade-logs\\). Event Viewer -> Application -> "
-                "Source=86NocAgent."
+                "Nessun log nel Center e agent non connesso. Il PC client "
+                "deve eseguire almeno un upgrade DOPO il fix logging "
+                "(install-noc-agent.ps1 v2026-02-19+). Path manuale sul "
+                "PC: C:\\Windows\\Temp\\86noc-upgrade-logs\\noc_upgrade_latest.log. "
+                "Event Viewer -> Application -> Source=86NocAgent."
             ),
         )
     args = {"tail_kb": int(tail_kb)} if tail_kb and tail_kb > 0 else {}
@@ -1205,20 +1249,21 @@ async def get_agent_upgrade_log(
         reply = await conn.send_command("get_upgrade_log", args, timeout=15.0)
     except asyncio.TimeoutError as e:
         raise HTTPException(status_code=504, detail="agent reply timeout (15s)") from e
-    # Se l'agent e' troppo vecchio e non conosce il comando, il transport
-    # restituisce un payload con error string anziche' lanciare eccezione.
-    # Espressione amichevole: se non c'e' base_dir, suggerisci upgrade.
     if isinstance(reply, dict) and "base_dir" not in reply and reply.get("error"):
         return {
             "agent_id": agent_id,
             "supported": False,
+            "source": "ws_unsupported",
             "error": reply.get("error"),
             "hint": (
-                "Agent troppo vecchio: aggiorna a v4.13+ per abilitare il recupero "
-                "remoto dei log di upgrade."
+                "Agent troppo vecchio per il comando WS (richiede v4.13+). "
+                "Esegui un upgrade: lo script PowerShell aggiornato (preso "
+                "fresh da GitHub raw) POSTa automaticamente il log al "
+                "Center al termine, e questo pulsante funzionera' anche "
+                "se l'agent rimane vecchio."
             ),
         }
-    return {"agent_id": agent_id, "supported": True, "reply": reply}
+    return {"agent_id": agent_id, "supported": True, "source": "ws_command", "reply": reply}
 
 
 @router.get("/agents/{agent_id}/health")
@@ -1534,6 +1579,77 @@ async def delete_agent(
         "uninstall_error": uninstall_error,
         "collections_purged": deleted,
     }
+
+
+# ---- Upgrade log upload from installer script -------------------------------
+#
+# Lo script PowerShell `install-noc-agent.ps1` POST-a alla fine
+# (success/fail/trap) il transcript del proprio run su questo endpoint.
+# Funziona anche con agent v4.10.x VECCHI perche' il binario non e'
+# coinvolto: lo script vive in GitHub raw e viene scaricato fresh ad
+# ogni upgrade. Il Center colleziona i log nella collection
+# `agent_upgrade_logs` cosi' l'admin puo' diagnosticare l'upgrade dal
+# pulsante 📜 in AgentsPage senza dover RDP-are sul PC del cliente.
+
+class UpgradeReportRequest(BaseModel):
+    client_id: str
+    hostname: str = ""
+    pid: int = 0
+    status: str = "unknown"  # started | completed | failed | trap
+    started_at: str = ""
+    finished_at: str = ""
+    target_version: str = ""
+    resolved_version: str = ""
+    error: str = ""
+    log_excerpt: str = ""    # cap 256KB lato client (Start-Transcript tail)
+
+
+@router.post("/agent/upgrade-report")
+async def receive_upgrade_report(
+    req: UpgradeReportRequest, token: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Endpoint chiamato da install-noc-agent.ps1 al termine dell'upgrade
+    (anche su crash, grazie al trap PowerShell). Auth via agent token —
+    NON serve un user JWT perche' chi chiama e' lo script remoto sul PC
+    del cliente. Salva il report in collection MongoDB e lo mantiene 30
+    giorni (TTL index).
+
+    Nessun rate-limit perche' uno script POST-a al massimo 1 volta per
+    upgrade. Cap log_excerpt a 256KB lato server come safety net.
+    """
+    if not token:
+        raise HTTPException(status_code=401, detail="token mancante")
+    info = await _validate_token(token, req.client_id)
+    if info is None:
+        raise HTTPException(status_code=403, detail="token invalido")
+
+    excerpt = (req.log_excerpt or "")[-262144:]  # cap 256KB
+    doc = {
+        "client_id": req.client_id,
+        "hostname": req.hostname or "",
+        "pid": req.pid,
+        "status": req.status,
+        "started_at": req.started_at,
+        "finished_at": req.finished_at or datetime.now(timezone.utc).isoformat(),
+        "target_version": req.target_version,
+        "resolved_version": req.resolved_version,
+        "error": req.error,
+        "log_excerpt": excerpt,
+        "received_at": datetime.now(timezone.utc),
+        "log_size": len(excerpt),
+    }
+    await db.agent_upgrade_logs.insert_one(doc)
+    # Best-effort TTL index (idempotente)
+    try:
+        await db.agent_upgrade_logs.create_index(
+            "received_at", expireAfterSeconds=30 * 24 * 3600
+        )
+        await db.agent_upgrade_logs.create_index([("client_id", 1), ("hostname", 1), ("received_at", -1)])
+    except Exception:  # noqa: BLE001
+        pass
+
+    return {"received": True, "status": req.status, "log_size": len(excerpt)}
 
 
 # ---- Binary distribution -----------------------------------------------------

@@ -217,6 +217,67 @@ function Write-Warn2($msg){ Write-Host "  [!!] $msg" -ForegroundColor Yellow }
 function Write-Fail($msg) { Write-Host "  [XX] $msg" -ForegroundColor Red }
 
 # ------------------------------------------------------------------- #
+# 0.UPLOAD  Send-UpgradeReport — POSTa al Center il transcript completo
+# alla fine dell'upgrade (success/failed/trap). Funziona ANCHE su agent
+# v4.10.x perche' lo script PowerShell vive in GitHub raw e viene
+# scaricato fresh ad ogni upgrade — quindi NON serve aggiornare il
+# binario per beneficiarne. Quando l'admin clicca 📜 "vedi log" nel
+# Center, l'endpoint /api/agents/{id}/upgrade-log prende SEMPRE il log
+# dal DB (collection agent_upgrade_logs) prima di provare il comando WS.
+#
+# Best-effort: errori di rete vengono ignorati per non bloccare l'upgrade.
+# ------------------------------------------------------------------- #
+function Send-UpgradeReport {
+    param(
+        [Parameter(Mandatory)][string]$Status,   # completed | failed | trap
+        [string]$ErrorMsg = "",
+        [string]$ResolvedVersion = ""
+    )
+    try {
+        # Backend HTTPS dal $BackendUrl WS
+        $backendHttp = $BackendUrl `
+            -replace '^wss://','https://' `
+            -replace '^ws://','http://' `
+            -replace '/api/agent/ws$',''
+        $backendHttp = $backendHttp.TrimEnd('/')
+        if (-not $backendHttp) { return }
+
+        # Tail del transcript: ultimi 256KB
+        $excerpt = ""
+        try {
+            if (Test-Path $script:UpgradeLogFile) {
+                $data = Get-Content $script:UpgradeLogFile -Raw -ErrorAction Stop
+                if ($data.Length -gt 262144) {
+                    $excerpt = "...[truncated head]...`n" + $data.Substring($data.Length - 262144)
+                } else {
+                    $excerpt = $data
+                }
+            }
+        } catch {}
+
+        $body = @{
+            client_id        = $ClientId
+            hostname         = $env:COMPUTERNAME
+            pid              = $PID
+            status           = $Status
+            started_at       = $script:UpgradeStarted.ToString('o')
+            finished_at      = (Get-Date).ToString('o')
+            target_version   = $Version
+            resolved_version = $ResolvedVersion
+            error            = $ErrorMsg
+            log_excerpt      = $excerpt
+        } | ConvertTo-Json -Compress -Depth 4
+
+        $url = "$backendHttp/api/agent/upgrade-report?token=$([Uri]::EscapeDataString($Token))"
+        Invoke-RestMethod -Uri $url -Method Post -Body $body -ContentType 'application/json' -TimeoutSec 30 -UseBasicParsing | Out-Null
+        Write-Host "  [OK] Upgrade report uploaded to Center ($Status, $($excerpt.Length) bytes)" -ForegroundColor DarkGray
+    } catch {
+        # Non-fatale. Lo script ha gia' loggato tutto in $env:TEMP.
+        Write-Host "  [!!] Upload upgrade report fallito (non bloccante): $($_.Exception.Message)" -ForegroundColor DarkGray
+    }
+}
+
+# ------------------------------------------------------------------- #
 # 0.POST  TRAP GLOBALE — cattura ogni errore terminating non gestito,
 # logga lo stack trace nel transcript+EventLog, chiude pulitamente.
 # DEVE essere dichiarato qui prima del body — PowerShell trap copre
@@ -236,6 +297,8 @@ trap {
     Write-Host ("=" * 78) -ForegroundColor Red
     Update-UpgradeMarker -Status "failed" -Extra "line=$errLine error=$errMsg"
     Write-UpgradeEvent -Message "Upgrade FAILED line=$errLine error=$errMsg`nLogFile=$script:UpgradeLogFile`nStack:`n$errStack" -EntryType Error -EventId 1099
+    # IMPORTANT: ferma transcript PRIMA di inviare al Center cosi' il
+    # tail include anche il messaggio di errore appena loggato.
     if ($script:TranscriptActive) {
         try { Stop-Transcript -ErrorAction SilentlyContinue | Out-Null } catch {}
         $script:TranscriptActive = $false
@@ -243,6 +306,9 @@ trap {
     if (Test-Path $script:UpgradeLogFile) {
         try { Copy-Item -Path $script:UpgradeLogFile -Destination $script:UpgradeLatestLog -Force -ErrorAction SilentlyContinue } catch {}
     }
+    # Upload best-effort al Center prima di uscire — cosi' l'admin
+    # vede il log da remoto anche senza aggiornare il binario agent.
+    Send-UpgradeReport -Status "failed" -ErrorMsg "line=$errLine $errMsg"
     exit 99
 }
 
@@ -929,6 +995,11 @@ if ($script:TranscriptActive) {
 if (Test-Path $script:UpgradeLogFile) {
     try { Copy-Item -Path $script:UpgradeLogFile -Destination $script:UpgradeLatestLog -Force -ErrorAction SilentlyContinue } catch {}
 }
+
+# Upload best-effort al Center: cosi' l'admin vede il transcript completo
+# (success) dal pulsante "📜 vedi log" nella pagina /agents — anche se
+# l'agent installato e' troppo vecchio per il comando WS get_upgrade_log.
+Send-UpgradeReport -Status "completed" -ResolvedVersion $resolvedVersion
 
 if (-not $Quiet) {
     Write-Host "Premi un tasto per chiudere..." -ForegroundColor Gray
