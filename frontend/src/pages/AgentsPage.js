@@ -548,6 +548,11 @@ export default function AgentsPage() {
                               data-testid={`agent-viewlog-${a.agent_id}`}>
                               📜 vedi log
                             </button>
+                            <button onClick={() => openRemove(a)}
+                              className="text-[9px] text-red-400 hover:underline"
+                              data-testid={`agent-remove-failed-${a.agent_id}`}>
+                              🗑 rimuovi
+                            </button>
                           </div>
                         ) : (
                           <>
