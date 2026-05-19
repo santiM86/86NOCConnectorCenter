@@ -25,6 +25,7 @@ import (
 	"unsafe"
 
 	"github.com/lxn/walk"
+	wd "github.com/lxn/walk/declarative"
 )
 
 // uiSync esegue fn sul thread UI Win32. La NotifyIcon e i message box devono
@@ -137,49 +138,221 @@ func showUpdateError(app *App, msg string) {
 	})
 }
 
-// showVersionDialog popola una dialog con tutte le info di build/runtime per
-// facilitare il supporto remoto. Accessibile dal menu tray "Info versione".
+// showVersionDialog apre una dialog moderna con tutte le info di
+// build/runtime — usata dal menu tray "Info versione" e dal supporto
+// remoto. Layout enterprise: header brandizzato 86bit / ARGUS,
+// sezioni Sistema + Identita' + Collegamento, footer con link al
+// portale 86bit e pulsanti Apri Center / Chiudi.
+//
+// L'implementazione usa lxn/walk/declarative al posto di walk.MsgBox
+// per avere controllo completo su font, colori, padding, e per
+// supportare un layout multi-colonna con valori monospace selezionabili
+// (utile per copiare l'AgentID e mandarlo al supporto).
 func showVersionDialog(app *App) {
 	uiSync(app, func() {
 		ver := app.agent.Version
 		if ver == "" {
 			ver = "?"
 		}
-		latest := ""
+		buildDate := app.agent.BuildDate
+		if buildDate == "" {
+			buildDate = "—"
+		}
+		platform := fmt.Sprintf("%s/%s", runtime.GOOS, runtime.GOARCH)
+
+		latestStatus := "—"
+		latestColor := walk.RGB(0x6B, 0x72, 0x80)
 		if app != nil && app.update != nil {
 			s := app.update.Snapshot()
 			if s.latestVer != "" {
-				latest = fmt.Sprintf("\n  Latest su GitHub: v%s%s",
-					s.latestVer,
-					ternary(s.available, " (aggiornamento disponibile)", " (gia' installata)"))
+				if s.available {
+					latestStatus = fmt.Sprintf("v%s — aggiornamento disponibile", s.latestVer)
+					latestColor = walk.RGB(0xD9, 0x77, 0x06) // amber
+				} else {
+					latestStatus = fmt.Sprintf("v%s — gia' allineato", s.latestVer)
+					latestColor = walk.RGB(0x05, 0x96, 0x69) // emerald
+				}
 			}
 		}
-		buildDate := app.agent.BuildDate
-		if buildDate == "" {
-			buildDate = "?"
+
+		agentID := app.agent.AgentID
+		clientID := app.agent.ClientID
+		backend := app.agent.BackendURL
+		if agentID == "" {
+			agentID = "—"
 		}
-		logPath := ""
-		if b, err := os.ReadFile(filepath.Join(os.Getenv("ProgramData"), "86NocAgent", "log_path.txt")); err == nil {
-			logPath = strings.TrimSpace(string(b))
+		if clientID == "" {
+			clientID = "—"
 		}
-		msg := fmt.Sprintf(
-			"86bit NOC Agent\n\n"+
-				"  Versione installata: v%s\n"+
-				"  Build date: %s\n"+
-				"  Piattaforma: %s/%s\n"+
-				"  Agent ID: %s\n"+
-				"  Cliente ID: %s\n"+
-				"  Backend: %s\n"+
-				"  Log path: %s%s",
-			ver, buildDate, runtime.GOOS, runtime.GOARCH,
-			app.agent.AgentID, app.agent.ClientID, app.agent.BackendURL,
-			logPath, latest,
-		)
+		if backend == "" {
+			backend = "—"
+		}
+
+		var dlg *walk.Dialog
+		var acceptBtn *walk.PushButton
 		var parent walk.Form
 		if app != nil && app.mw != nil {
 			parent = app.mw
 		}
-		walk.MsgBox(parent, "Info versione 86bit NOC Agent", msg, walk.MsgBoxIconInformation)
+
+		// Palette enterprise (coerente con il dark navy del Center web)
+		darkNavy := walk.RGB(0x0C, 0x1A, 0x2E)
+		mutedText := walk.RGB(0xB7, 0xC2, 0xD6)
+		body := walk.RGB(0xF7, 0xF8, 0xFB)
+		label := walk.RGB(0x6B, 0x72, 0x80)
+		value := walk.RGB(0x11, 0x18, 0x27)
+
+		mono := wd.Font{Family: "Consolas", PointSize: 9}
+		labelFont := wd.Font{Family: "Segoe UI", PointSize: 9}
+		valueFont := wd.Font{Family: "Segoe UI", PointSize: 9, Bold: true}
+
+		fieldRow := func(name, val string, valFont wd.Font, valColor walk.Color) []wd.Widget {
+			return []wd.Widget{
+				wd.Label{Text: name, Font: labelFont, TextColor: label, MinSize: wd.Size{Width: 110}},
+				wd.LineEdit{Text: val, Font: valFont, TextColor: valColor, ReadOnly: true, Background: wd.SolidColorBrush{Color: body}},
+			}
+		}
+
+		copyToClipboard := func(s string) {
+			_ = walk.Clipboard().SetText(s)
+		}
+
+		_ = valueFont
+		_ = mono
+
+		err := (wd.Dialog{
+			AssignTo:      &dlg,
+			Title:         "ARGUS Connector · Informazioni",
+			DefaultButton: &acceptBtn,
+			CancelButton:  &acceptBtn,
+			MinSize:       wd.Size{Width: 540, Height: 480},
+			Size:          wd.Size{Width: 560, Height: 500},
+			Icon:          loadAppIcon(),
+			Background:    wd.SolidColorBrush{Color: body},
+			Layout:        wd.VBox{MarginsZero: true, SpacingZero: true},
+			Children: []wd.Widget{
+				// ===== HEADER (banda scura con logo + product name) =====
+				wd.Composite{
+					Background: wd.SolidColorBrush{Color: darkNavy},
+					Layout:     wd.HBox{Margins: wd.Margins{Left: 20, Top: 16, Right: 20, Bottom: 16}, Spacing: 14},
+					Children: []wd.Widget{
+						wd.ImageView{
+							Image:     loadAppIcon(),
+							MinSize:   wd.Size{Width: 40, Height: 40},
+							MaxSize:   wd.Size{Width: 40, Height: 40},
+							Mode:      wd.ImageViewModeZoom,
+							Alignment: wd.AlignHCenterVCenter,
+						},
+						wd.Composite{
+							Background: wd.SolidColorBrush{Color: darkNavy},
+							Layout:     wd.VBox{MarginsZero: true, Spacing: 2},
+							Children: []wd.Widget{
+								wd.Label{
+									Text:      "ARGUS Connector",
+									Font:      wd.Font{Family: "Segoe UI", PointSize: 14, Bold: true},
+									TextColor: walk.RGB(0xFF, 0xFF, 0xFF),
+								},
+								wd.Label{
+									Text:      "by 86bit · Endpoint Monitoring & Discovery",
+									Font:      wd.Font{Family: "Segoe UI", PointSize: 8},
+									TextColor: mutedText,
+								},
+							},
+						},
+					},
+				},
+				// ===== BODY: sezioni Sistema / Identita' / Collegamento =====
+				wd.Composite{
+					Background: wd.SolidColorBrush{Color: body},
+					Layout:     wd.VBox{Margins: wd.Margins{Left: 20, Top: 18, Right: 20, Bottom: 8}, Spacing: 14},
+					Children: []wd.Widget{
+						// Sezione SISTEMA
+						wd.Label{
+							Text:      "SISTEMA",
+							Font:      wd.Font{Family: "Segoe UI", PointSize: 8, Bold: true},
+							TextColor: label,
+						},
+						wd.Composite{
+							Layout: wd.Grid{Columns: 2, Margins: wd.Margins{Top: 2}, Spacing: 8},
+							Children: append(append(append(
+								fieldRow("Versione", "v"+ver, valueFont, value),
+								fieldRow("Build date", buildDate, labelFont, value)...),
+								fieldRow("Piattaforma", platform, labelFont, value)...),
+								wd.Label{Text: "Aggiornamento", Font: labelFont, TextColor: label, MinSize: wd.Size{Width: 110}},
+								wd.Label{Text: latestStatus, Font: valueFont, TextColor: latestColor},
+							),
+						},
+						// Sezione IDENTITA' e COLLEGAMENTO
+						wd.Label{
+							Text:      "IDENTITA' E COLLEGAMENTO",
+							Font:      wd.Font{Family: "Segoe UI", PointSize: 8, Bold: true},
+							TextColor: label,
+						},
+						wd.Composite{
+							Layout: wd.Grid{Columns: 2, Margins: wd.Margins{Top: 2}, Spacing: 8},
+							Children: append(append(
+								fieldRow("Agent ID", agentID, mono, value),
+								fieldRow("Cliente ID", clientID, mono, value)...),
+								fieldRow("Backend", backend, labelFont, value)...,
+							),
+						},
+						// NOTA: sezione "LOG" rimossa intenzionalmente. I log
+						// dell'agent ora si consultano ESCLUSIVAMENTE dal Center
+						// (route /agents -> pulsante 📋 sulla riga del connector).
+						// Mostrare il path qui era fuorviante: l'utente non puo'
+						// aprirlo perche' sta sotto C:\Windows\System32\config\
+						// systemprofile\AppData\ del profilo SYSTEM.
+						wd.VSpacer{},
+					},
+				},
+				// ===== FOOTER (separator + link + buttons) =====
+				wd.Composite{
+					Background: wd.SolidColorBrush{Color: walk.RGB(0xEE, 0xF1, 0xF6)},
+					Layout:     wd.HBox{Margins: wd.Margins{Left: 20, Top: 12, Right: 20, Bottom: 12}, Spacing: 8},
+					Children: []wd.Widget{
+						wd.Label{
+							Text:      "© 86bit S.r.l. · supporto: info@86bit.it",
+							Font:      wd.Font{Family: "Segoe UI", PointSize: 8},
+							TextColor: label,
+						},
+						wd.HSpacer{},
+						wd.PushButton{
+							Text: "Copia Agent ID",
+							OnClicked: func() {
+								copyToClipboard(agentID)
+							},
+						},
+						wd.PushButton{
+							Text: "Apri Center",
+							OnClicked: func() {
+								if backend != "" && backend != "—" {
+									openInBrowser(backend)
+								}
+							},
+						},
+						wd.PushButton{
+							AssignTo: &acceptBtn,
+							Text:     "Chiudi",
+							OnClicked: func() {
+								if dlg != nil {
+									dlg.Accept()
+								}
+							},
+						},
+					},
+				},
+			},
+		}).Create(parent)
+		if err != nil {
+			// Fallback alla MsgBox legacy se per qualche ragione il
+			// dialog declarative fallisce (es. assenza di font).
+			walk.MsgBox(parent, "Info versione 86bit NOC Agent",
+				fmt.Sprintf("v%s · %s · %s\nAgentID: %s\nBackend: %s",
+					ver, buildDate, platform, agentID, backend),
+				walk.MsgBoxIconInformation)
+			return
+		}
+		dlg.Run()
 	})
 }
 
@@ -188,6 +361,20 @@ func ternary(cond bool, a, b string) string {
 		return a
 	}
 	return b
+}
+
+// openInBrowser apre un URL nel browser di default usando ShellExecute.
+// Best-effort: nessun errore propagato — se fallisce (es. sandbox), il
+// dialog rimane comunque utilizzabile.
+func openInBrowser(url string) {
+	if url == "" {
+		return
+	}
+	u16, _ := syscall.UTF16PtrFromString(url)
+	verb, _ := syscall.UTF16PtrFromString("open")
+	shell32 := syscall.NewLazyDLL("shell32.dll")
+	shellExec := shell32.NewProc("ShellExecuteW")
+	_, _, _ = shellExec.Call(0, uintptr(unsafe.Pointer(verb)), uintptr(unsafe.Pointer(u16)), 0, 0, 1)
 }
 
 // runElevated invoca un programma con ShellExecuteW verb=runas (UAC).

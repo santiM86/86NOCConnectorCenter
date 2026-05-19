@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import axios from "axios";
 import { API } from "@/App";
 import { Link } from "react-router-dom";
@@ -191,6 +191,25 @@ export default function AgentsPage() {
       toast.error(err.response?.data?.detail || "Errore diagnostica");
     } finally {
       setBusyIds((s) => { const x = new Set(s); x.delete(a.agent_id); return x; });
+    }
+  };
+
+  // ---- Vedi log agent (nocagent.log live dal PC client) ----
+  const [agentLogTarget, setAgentLogTarget] = useState(null);
+  const [agentLogBusy, setAgentLogBusy] = useState(false);
+  const [agentLogData, setAgentLogData] = useState(null);
+
+  const fetchAgentLog = async (a) => {
+    setAgentLogTarget(a);
+    setAgentLogBusy(true);
+    setAgentLogData(null);
+    try {
+      const r = await axios.get(`${API}/agents/${a.agent_id}/agent-logs`);
+      setAgentLogData(r.data);
+    } catch (err) {
+      setAgentLogData({ error: err.response?.data?.detail || err.message || "Errore" });
+    } finally {
+      setAgentLogBusy(false);
     }
   };
 
@@ -582,6 +601,14 @@ export default function AgentsPage() {
                               📜
                             </button>
                             <button
+                              onClick={() => fetchAgentLog(a)}
+                              disabled={!a.live}
+                              className="ml-1 text-[10px] px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 border border-emerald-500/20 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                              title="Vedi nocagent.log (log live del servizio)"
+                              data-testid={`agent-runtime-log-btn-${a.agent_id}`}>
+                              📋
+                            </button>
+                            <button
                               onClick={() => openRemove(a)}
                               className="ml-1 text-[10px] px-2 py-0.5 rounded bg-red-500/10 text-red-400 hover:bg-red-500/20 border border-red-500/20 transition-colors"
                               title="Rimuovi agent (Center + opzionale uninstall remoto)"
@@ -620,6 +647,17 @@ export default function AgentsPage() {
           data={logData}
           onRefresh={() => fetchUpgradeLog(logTarget)}
           onClose={() => { setLogTarget(null); setLogData(null); }}
+        />
+      )}
+
+      {agentLogTarget && (
+        <AgentLogsModal
+          agent={agentLogTarget}
+          clientName={clients[agentLogTarget.client_id]}
+          loading={agentLogBusy}
+          data={agentLogData}
+          onRefresh={() => fetchAgentLog(agentLogTarget)}
+          onClose={() => { setAgentLogTarget(null); setAgentLogData(null); }}
         />
       )}
     </div>
@@ -895,6 +933,148 @@ function UpgradeLogModal({ agent, clientName, loading, data, onRefresh, onClose 
           Suggerimento: in caso di crash dell&apos;installer su Windows controlla anche
           <span className="font-mono text-[var(--text-primary)] mx-1">Event Viewer → Application → Source=86NocAgent</span>
           (Event ID 1001/1099/1100).
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AgentLogsModal({ agent, clientName, loading, data, onRefresh, onClose }) {
+  const reply = data?.reply || null;
+  const latestLog = reply?.latest_log || "";
+  const latestSize = reply?.latest_size || 0;
+  const latestMtime = reply?.latest_mtime || "";
+  const files = reply?.files || [];
+  const baseDir = reply?.base_dir || "";
+  const logPath = reply?.log_path || "";
+  const supported = data?.supported !== false;
+  const exists = reply?.exists;
+
+  const copyLog = () => {
+    if (!latestLog) return;
+    try {
+      navigator.clipboard.writeText(latestLog);
+      toast.success("Log copiato negli appunti");
+    } catch {
+      toast.error("Clipboard non disponibile");
+    }
+  };
+
+  // Auto-scroll to bottom on first load (live tail UX)
+  const logRef = useRef(null);
+  useEffect(() => {
+    if (logRef.current && latestLog) {
+      logRef.current.scrollTop = logRef.current.scrollHeight;
+    }
+  }, [latestLog]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+      data-testid="agent-logs-modal">
+      <div className="bg-[var(--bg-panel)] border border-emerald-500/30 rounded-lg max-w-5xl w-full max-h-[90vh] flex flex-col shadow-2xl">
+        <div className="flex items-center justify-between p-4 border-b border-[var(--bg-border)]">
+          <div>
+            <h2 className="text-base font-heading font-bold text-emerald-400 flex items-center gap-2">
+              📋 Log Connector (nocagent.log)
+            </h2>
+            <p className="text-[10px] text-[var(--text-muted)] mt-0.5 font-mono">
+              {agent.hostname || agent.agent_id?.slice(0, 12)} · {clientName || agent.client_id?.slice(0, 8)} · v{agent.agent_version}
+            </p>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <button onClick={onRefresh} disabled={loading}
+              className="text-[10px] px-2 py-1 rounded bg-sky-500/10 text-sky-400 hover:bg-sky-500/20 border border-sky-500/20 disabled:opacity-30"
+              data-testid="agent-logs-refresh">
+              <ArrowClockwise size={11} className="inline mr-1" />
+              {loading ? "Carico…" : "Ricarica"}
+            </button>
+            <button onClick={onClose} className="text-[var(--text-muted)] hover:text-[var(--text-primary)] p-1"
+              data-testid="agent-logs-close">
+              <X size={18} />
+            </button>
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-hidden p-4 space-y-3 flex flex-col">
+          {loading && (
+            <div className="text-center py-8 text-[var(--text-muted)] text-xs">
+              Recupero log dal PC client (timeout 20s)…
+            </div>
+          )}
+
+          {!loading && data?.error && (
+            <div className="p-3 rounded bg-red-500/10 border border-red-500/30 text-red-400 text-xs">
+              <p className="font-bold mb-1">Errore</p>
+              <p className="whitespace-pre-wrap">{data.error}</p>
+            </div>
+          )}
+
+          {!loading && !supported && (
+            <div className="p-3 rounded bg-amber-500/10 border border-amber-500/30 text-amber-400 text-xs">
+              <p className="font-bold mb-1">Comando non supportato</p>
+              <p>L&apos;agent è troppo vecchio (richiede v4.13+). Aggiorna il connector e riprova.</p>
+            </div>
+          )}
+
+          {!loading && supported && reply && (
+            <>
+              <div className="text-[10px] text-[var(--text-muted)] font-mono flex flex-wrap gap-x-4 gap-y-1 shrink-0">
+                {logPath && <span>File: <span className="text-[var(--text-primary)] break-all">{logPath}</span></span>}
+                {latestSize > 0 && <span>Size: <span className="text-[var(--text-primary)]">{(latestSize / 1024).toFixed(1)} KB</span></span>}
+                {latestMtime && <span>Updated: <span className="text-[var(--text-primary)]">{latestMtime}</span></span>}
+              </div>
+
+              {!exists && (
+                <div className="p-3 rounded bg-zinc-500/10 border border-zinc-500/30 text-zinc-400 text-xs">
+                  File <span className="font-mono">{logPath || "nocagent.log"}</span> non trovato sul PC client.
+                  Verifica che il servizio sia attivo e abbia scritto almeno una riga.
+                </div>
+              )}
+
+              {latestLog && (
+                <>
+                  <div className="flex items-center justify-between shrink-0">
+                    <span className="text-[10px] uppercase tracking-wider text-[var(--text-muted)]">
+                      Ultime righe (tail di {(latestSize / 1024).toFixed(1)} KB)
+                    </span>
+                    <button onClick={copyLog}
+                      className="text-[10px] text-sky-400 hover:underline"
+                      data-testid="agent-logs-copy">
+                      📋 copia tutto
+                    </button>
+                  </div>
+                  <pre ref={logRef}
+                    className="text-[10px] leading-snug font-mono bg-black/40 p-3 rounded border border-[var(--bg-border)] overflow-y-auto flex-1 whitespace-pre break-normal"
+                    data-testid="agent-logs-content">
+                    {latestLog}
+                  </pre>
+                </>
+              )}
+
+              {files.length > 1 && (
+                <div className="shrink-0">
+                  <p className="text-[10px] uppercase tracking-wider text-[var(--text-muted)] mb-1">
+                    File ruotati ({files.length})
+                  </p>
+                  <div className="space-y-0.5 text-[10px] font-mono max-h-24 overflow-y-auto">
+                    {files.map((f) => (
+                      <div key={f.name} className="flex items-center gap-3 px-2 py-0.5 hover:bg-[var(--bg-card)]/50 rounded">
+                        <span className="text-[var(--text-muted)] w-32 truncate">{f.mtime?.slice(0, 19).replace("T", " ")}</span>
+                        <span className="text-amber-400 w-16 text-right">{(f.size / 1024).toFixed(1)} KB</span>
+                        <span className="text-[var(--text-primary)] flex-1 truncate">{f.name}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+
+        <div className="px-4 py-2.5 border-t border-[var(--bg-border)] text-[10px] text-[var(--text-muted)]">
+          Path log: <span className="font-mono text-[var(--text-primary)]">{baseDir || "—"}</span>
+          {" · "}I log sono leggibili SOLO dal Center: l&apos;accesso diretto dal PC è bloccato (profilo SYSTEM).
         </div>
       </div>
     </div>

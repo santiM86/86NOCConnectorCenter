@@ -222,6 +222,13 @@ func runAgent(ctx context.Context, cfg config.Config, log *logging.Logger) {
 	// RDP-are sul PC del cliente. Disponibile SOLO su Windows.
 	registerUpgradeLogCommand(client, log)
 
+	// get_agent_logs — restituisce il contenuto del file nocagent.log
+	// del servizio agent. Sostituisce il vecchio menu "Apri cartella
+	// log" del tray UI: ora i log si leggono SOLO dal Center (route
+	// /agents -> pulsante 📋), evitando i problemi di "Accesso negato"
+	// sul profilo SYSTEM.
+	registerAgentLogCommand(client, log)
+
 	// "update" — comando remoto inviato dal Center per aggiornare
 	// l'agent. Lancia install-noc-agent.ps1 da GitHub come subprocess
 	// admin; l'install si occupa di stop servizi, kill UI, download
