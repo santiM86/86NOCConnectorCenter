@@ -241,14 +241,32 @@ func runAgent(ctx context.Context, cfg config.Config, log *logging.Logger) {
 		if runtime.GOOS != "windows" {
 			return nil, fmt.Errorf("update non supportato su %s (solo windows)", runtime.GOOS)
 		}
+		// Log raw args per diagnostica: se in futuro il Center invia un
+		// payload malformato lo si vede subito qui.
+		log.Info("update command received", "raw_args", string(args))
 		var req struct {
 			Version string `json:"version,omitempty"`
 		}
 		if len(args) > 0 {
-			_ = json.Unmarshal(args, &req)
+			if err := json.Unmarshal(args, &req); err != nil {
+				return nil, fmt.Errorf("update: payload JSON invalido: %w", err)
+			}
 		}
-		if req.Version == "" {
-			req.Version = "latest"
+		// FIX 2026-02-19: rifiuto categorico di "latest" / vuoto.
+		// Prima, il fallback "latest" mascherava bug di routing dal
+		// Center: lo script PS si auto-risolveva all'ultima GitHub
+		// release che spesso era la stessa gia' installata, facendo
+		// l'upgrade dichiarare COMPLETED senza sostituire il binario.
+		// L'admin vedeva "Agent riconnesso ma versione invariata" e
+		// non capiva perche'.
+		//
+		// Ora pretendo un target esplicito: il Center DEVE risolvere
+		// la latest version (via AGENT_GITHUB_TOKEN) PRIMA di emettere
+		// il comando WS. Vedi backend agents_bulk_update che fa
+		// proprio quello e rigetta "latest"/"" con 503.
+		if req.Version == "" || req.Version == "latest" {
+			return nil, fmt.Errorf("update: version mancante o 'latest' non risolta dal Center (got %q). "+
+				"Verifica AGENT_GITHUB_TOKEN nel backend o usa l'override DB da Settings", req.Version)
 		}
 		// Lancio in goroutine separata: il processo install-noc-agent.ps1
 		// ferma il nostro stesso servizio. Se rispondessimo dopo il run,
