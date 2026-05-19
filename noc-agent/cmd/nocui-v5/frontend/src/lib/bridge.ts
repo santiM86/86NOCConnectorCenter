@@ -53,6 +53,14 @@ export interface DiscoveredEndpoint {
   first_seen_at?: string
 }
 
+export interface DiscoveryStatus {
+  source: 'local' | 'center' | 'none' | string
+  count: number
+  written_at?: string
+  last_scan_at?: string
+  cache_path?: string
+}
+
 export interface LogLine {
   timestamp: string
   level: string
@@ -140,6 +148,14 @@ function mock<T>(method: string): T {
       { ip: '192.168.1.105', mac: 'aa:bb:cc:11:22:33', hostname: 'pc-fabio', vendor: 'Intel Corporate', source: 'arp', last_seen_at: new Date().toISOString() },
       { ip: '192.168.1.110', mac: '00:1a:2b:3c:4d:5e', hostname: '', vendor: 'Apple, Inc.', source: 'mdns', last_seen_at: new Date().toISOString() },
     ] as DiscoveredEndpoint[],
+    DiscoveryStatus: {
+      source: 'local',
+      count: 2,
+      written_at: new Date().toISOString(),
+      last_scan_at: new Date(Date.now() - 60000).toISOString(),
+      cache_path: 'C:\\ProgramData\\86NocAgent\\discovery_cache.json',
+    } as DiscoveryStatus,
+    ForceRescan: undefined as never,
     ReadLogs: Array.from({ length: 20 }, (_, i) => ({
       timestamp: new Date(Date.now() - i * 4000).toISOString(),
       level: i % 7 === 0 ? 'warn' : 'info',
@@ -159,6 +175,8 @@ export const api = {
   healthCheck: () => call<HealthSnapshot>('HealthCheck'),
   listDevices: () => call<Device[]>('ListDevices'),
   listDiscovered: () => call<DiscoveredEndpoint[]>('ListDiscovered'),
+  discoveryStatus: () => call<DiscoveryStatus>('DiscoveryStatus'),
+  forceRescan: () => call<void>('ForceRescan'),
   testPing: (ip: string) => call<Record<string, unknown>>('TestPing', ip),
   startService: () => call<void>('StartService'),
   stopService: () => call<void>('StopService'),

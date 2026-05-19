@@ -169,11 +169,26 @@ func (a *App) ListDevices() ([]Device, error) {
 	return out, nil
 }
 
-// ListDiscovered chiama il Center per gli endpoint scoperti.
+// ListDiscovered ritorna gli endpoint scoperti dal connector locale.
+//
+// Strategia a 2 livelli:
+//
+//   1. Legge il file di cache che il servizio agent persiste a ogni
+//      sweep: %ProgramData%\86NocAgent\discovery_cache.json. Funziona
+//      anche se il Center e' offline / WAN down.
+//
+//   2. Fallback al Center (/api/discovery/endpoints) SOLO se la cache
+//      locale e' assente o vuota.
+//
+// In questo modo la tab "Dispositivi rilevati" della UI Wails e'
+// utilizzabile sia per diagnostica on-site sia in totale offline.
 func (a *App) ListDiscovered() ([]DiscoveredEndpoint, error) {
+	if eps, ok := a.readLocalDiscoveryCache(); ok {
+		return eps, nil
+	}
 	info := a.AgentSnapshot()
 	if info.BackendURL == "" || info.Token == "" {
-		return nil, fmt.Errorf("agent non configurato")
+		return nil, fmt.Errorf("agent non configurato e nessuna cache locale")
 	}
 	url := strings.TrimRight(info.BackendURL, "/") + "/api/discovery/endpoints?token=" + info.Token
 	out, err := httpGetJSON[[]DiscoveredEndpoint](url, 10*time.Second)
@@ -181,6 +196,90 @@ func (a *App) ListDiscovered() ([]DiscoveredEndpoint, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+// DiscoveryStatus espone alla UI metadati sulla cache locale: timestamp
+// di ultima scrittura, ultimo sweep, conteggio endpoint, sorgente di
+// dati corrente (local|center|none). Cosi' la tab "Dispositivi" puo'
+// mostrare badge "Online (cache locale)" o "Stale" senza chiamate
+// extra.
+type DiscoveryStatus struct {
+	Source     string `json:"source"`        // "local" | "center" | "none"
+	Count      int    `json:"count"`
+	WrittenAt  string `json:"written_at,omitempty"`
+	LastScanAt string `json:"last_scan_at,omitempty"`
+	CachePath  string `json:"cache_path,omitempty"`
+}
+
+func (a *App) DiscoveryStatus() DiscoveryStatus {
+	pd := os.Getenv("ProgramData")
+	if pd == "" {
+		return DiscoveryStatus{Source: "none"}
+	}
+	cache := filepath.Join(pd, "86NocAgent", "discovery_cache.json")
+	data, err := os.ReadFile(cache)
+	if err != nil {
+		return DiscoveryStatus{Source: "none", CachePath: cache}
+	}
+	var payload struct {
+		WrittenAt  string               `json:"written_at"`
+		LastScanAt string               `json:"last_scan_at"`
+		Count      int                  `json:"count"`
+		Endpoints  []DiscoveredEndpoint `json:"endpoints"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return DiscoveryStatus{Source: "none", CachePath: cache}
+	}
+	n := payload.Count
+	if n == 0 {
+		n = len(payload.Endpoints)
+	}
+	return DiscoveryStatus{
+		Source:     "local",
+		Count:      n,
+		WrittenAt:  payload.WrittenAt,
+		LastScanAt: payload.LastScanAt,
+		CachePath:  cache,
+	}
+}
+
+// readLocalDiscoveryCache legge il file persistito dal servizio agent.
+// Ritorna (lista, true) se la cache esiste anche vuota; (nil, false)
+// solo se il file e' assente o malformato.
+func (a *App) readLocalDiscoveryCache() ([]DiscoveredEndpoint, bool) {
+	pd := os.Getenv("ProgramData")
+	if pd == "" {
+		return nil, false
+	}
+	path := filepath.Join(pd, "86NocAgent", "discovery_cache.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false
+	}
+	var payload struct {
+		Endpoints []DiscoveredEndpoint `json:"endpoints"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return nil, false
+	}
+	return payload.Endpoints, true
+}
+
+// ForceRescan richiede al servizio agent di eseguire un sweep di
+// discovery IMMEDIATAMENTE — senza aspettare il prossimo tick (default
+// 5 min). Comunicazione file-based: la UI scrive un flag, il servizio
+// lo intercetta entro 3s, fa lo scan e cancella il flag.
+func (a *App) ForceRescan() error {
+	pd := os.Getenv("ProgramData")
+	if pd == "" {
+		return fmt.Errorf("variabile ambiente ProgramData mancante")
+	}
+	dir := filepath.Join(pd, "86NocAgent")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	path := filepath.Join(dir, "discovery_rescan.tick")
+	return os.WriteFile(path, []byte(time.Now().UTC().Format(time.RFC3339)), 0o644)
 }
 
 // TestPing invoca il comando `force_ping_poll` sull'agent via Center.
