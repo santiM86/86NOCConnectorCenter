@@ -901,6 +901,22 @@ function UpgradeLogModal({ agent, clientName, loading, data, onRefresh, onClose 
                     {latestLog}
                   </pre>
                 </div>
+              ) : source === "db_upload" ? (
+                <div className="p-3 rounded bg-amber-500/10 border border-amber-500/30 text-amber-400 text-xs">
+                  <p className="font-bold mb-1">Upload ricevuto ma transcript vuoto</p>
+                  <p>
+                    L&apos;installer ha confermato lo stato dell&apos;upgrade ma il body del transcript &egrave; vuoto.
+                    Cause possibili:
+                  </p>
+                  <ul className="list-disc list-inside mt-1 text-[10px] text-amber-300/80">
+                    <li>File del transcript non flushato prima di <span className="font-mono">Stop-Transcript</span></li>
+                    <li>Encoding UTF-16 (default <span className="font-mono">Start-Transcript</span>) non letto correttamente</li>
+                    <li>Script eseguito senza <span className="font-mono">-Version</span> (vedi target=None)</li>
+                  </ul>
+                  <p className="mt-2 text-[10px]">
+                    Fix: prossima release dello script forzer&agrave; encoding UTF-8 e flush esplicito. Nel frattempo riprova l&apos;upgrade.
+                  </p>
+                </div>
               ) : reply.exists ? (
                 <div className="p-3 rounded bg-zinc-500/10 border border-zinc-500/30 text-zinc-400 text-xs">
                   Cartella presente ma <span className="font-mono">noc_upgrade_latest.log</span> assente. Esegui un nuovo update e riprova.

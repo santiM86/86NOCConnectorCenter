@@ -242,34 +242,66 @@ function Send-UpgradeReport {
         $backendHttp = $backendHttp.TrimEnd('/')
         if (-not $backendHttp) { return }
 
-        # Tail del transcript: ultimi 256KB
+        # Tail del transcript: ultimi 256KB.
+        # CRITICAL: Start-Transcript scrive in UTF-16 LE con BOM. Per
+        # leggere il contenuto correttamente PRIMA dell'upload usiamo
+        # ReadAllText con detection automatica BOM. In passato usavamo
+        # Get-Content -Raw ma su file ancora aperti dal transcript
+        # ritornava stringhe troncate / vuote per buffering. Quindi:
+        #   1. Stop-Transcript subito qui (releases file handle)
+        #   2. Force flush del file (giro l'handle con FileShare.Read)
+        #   3. Read con .NET ReadAllText (gestisce BOM UTF-16 nativamente)
         $excerpt = ""
         try {
+            if ($script:TranscriptActive) {
+                try { Stop-Transcript -ErrorAction SilentlyContinue | Out-Null } catch {}
+                $script:TranscriptActive = $false
+            }
             if (Test-Path $script:UpgradeLogFile) {
-                $data = Get-Content $script:UpgradeLogFile -Raw -ErrorAction Stop
-                if ($data.Length -gt 262144) {
-                    $excerpt = "...[truncated head]...`n" + $data.Substring($data.Length - 262144)
-                } else {
-                    $excerpt = $data
+                # Piccola pausa per dare al filesystem il tempo di
+                # flushare il buffer di Stop-Transcript.
+                Start-Sleep -Milliseconds 250
+                $data = [System.IO.File]::ReadAllText($script:UpgradeLogFile)
+                if ($data) {
+                    if ($data.Length -gt 262144) {
+                        $excerpt = "...[truncated head]...`n" + $data.Substring($data.Length - 262144)
+                    } else {
+                        $excerpt = $data
+                    }
                 }
             }
-        } catch {}
+        } catch {
+            # Salviamo almeno il motivo del fallimento nel campo error
+            # cosi' nella UI vediamo perche' il log e' vuoto.
+            $ErrorMsg = "$ErrorMsg | log-read-failed: $($_.Exception.Message)"
+        }
+
+        # Coerce a stringhe SEMPRE (mai $null) per evitare che
+        # ConvertTo-Json emetta `"target":null` (poi Pydantic lo
+        # interpreta come None e f-string mostra "None").
+        $targetVer = if ($Version) { [string]$Version } else { "" }
+        $resVer    = if ($ResolvedVersion) { [string]$ResolvedVersion } else { "" }
+        $errStr    = if ($ErrorMsg) { [string]$ErrorMsg } else { "" }
+        $cid       = if ($ClientId) { [string]$ClientId } else { "" }
+        $startedISO = if ($script:UpgradeStarted) { $script:UpgradeStarted.ToString('o') } else { "" }
 
         $body = @{
-            client_id        = $ClientId
-            hostname         = $env:COMPUTERNAME
-            pid              = $PID
-            status           = $Status
-            started_at       = $script:UpgradeStarted.ToString('o')
+            client_id        = $cid
+            hostname         = [string]$env:COMPUTERNAME
+            pid              = [int]$PID
+            status           = [string]$Status
+            started_at       = $startedISO
             finished_at      = (Get-Date).ToString('o')
-            target_version   = $Version
-            resolved_version = $ResolvedVersion
-            error            = $ErrorMsg
+            target_version   = $targetVer
+            resolved_version = $resVer
+            error            = $errStr
             log_excerpt      = $excerpt
         } | ConvertTo-Json -Compress -Depth 4
 
         $url = "$backendHttp/api/agent/upgrade-report?token=$([Uri]::EscapeDataString($Token))"
-        Invoke-RestMethod -Uri $url -Method Post -Body $body -ContentType 'application/json' -TimeoutSec 30 -UseBasicParsing | Out-Null
+        # Forziamo UTF-8 per il body cosi' i caratteri accentati e i
+        # box-drawing dei separatori sopravvivono al transit.
+        Invoke-RestMethod -Uri $url -Method Post -Body $body -ContentType 'application/json; charset=utf-8' -TimeoutSec 30 -UseBasicParsing | Out-Null
         Write-Host "  [OK] Upgrade report uploaded to Center ($Status, $($excerpt.Length) bytes)" -ForegroundColor DarkGray
     } catch {
         # Non-fatale. Lo script ha gia' loggato tutto in $env:TEMP.
@@ -297,18 +329,13 @@ trap {
     Write-Host ("=" * 78) -ForegroundColor Red
     Update-UpgradeMarker -Status "failed" -Extra "line=$errLine error=$errMsg"
     Write-UpgradeEvent -Message "Upgrade FAILED line=$errLine error=$errMsg`nLogFile=$script:UpgradeLogFile`nStack:`n$errStack" -EntryType Error -EventId 1099
-    # IMPORTANT: ferma transcript PRIMA di inviare al Center cosi' il
-    # tail include anche il messaggio di errore appena loggato.
-    if ($script:TranscriptActive) {
-        try { Stop-Transcript -ErrorAction SilentlyContinue | Out-Null } catch {}
-        $script:TranscriptActive = $false
-    }
+    # Upload best-effort al Center — Send-UpgradeReport fa internamente
+    # Stop-Transcript + read flushato, quindi il transcript include
+    # anche il messaggio di errore appena loggato.
+    Send-UpgradeReport -Status "failed" -ErrorMsg "line=$errLine $errMsg"
     if (Test-Path $script:UpgradeLogFile) {
         try { Copy-Item -Path $script:UpgradeLogFile -Destination $script:UpgradeLatestLog -Force -ErrorAction SilentlyContinue } catch {}
     }
-    # Upload best-effort al Center prima di uscire — cosi' l'admin
-    # vede il log da remoto anche senza aggiornare il binario agent.
-    Send-UpgradeReport -Status "failed" -ErrorMsg "line=$errLine $errMsg"
     exit 99
 }
 
@@ -1075,19 +1102,17 @@ Write-Host ""
 Update-UpgradeMarker -Status "completed" -Extra "version=$resolvedVersion"
 Write-UpgradeEvent -Message "Upgrade COMPLETED version=$resolvedVersion`nLogFile=$script:UpgradeLogFile" -EntryType Information -EventId 1100
 
-if ($script:TranscriptActive) {
-    try { Stop-Transcript -ErrorAction SilentlyContinue | Out-Null } catch {}
-}
-# Mirror "latest" anche su success — i tool che cercano l'ultimo log
-# (es. agent stesso per upload via WS) leggono solo da noc_upgrade_latest.log
+# Upload best-effort al Center: Send-UpgradeReport chiude internamente
+# il transcript, attende il flush e legge il file con UTF-16/BOM-aware
+# ReadAllText. Cosi' l'admin vede il transcript completo nel modale
+# anche se l'agent installato e' troppo vecchio per il comando WS.
+Send-UpgradeReport -Status "completed" -ResolvedVersion $resolvedVersion
+
+# Mirror "latest" — fatto DOPO Send-UpgradeReport perche' il transcript
+# e' stato chiuso dentro quella funzione.
 if (Test-Path $script:UpgradeLogFile) {
     try { Copy-Item -Path $script:UpgradeLogFile -Destination $script:UpgradeLatestLog -Force -ErrorAction SilentlyContinue } catch {}
 }
-
-# Upload best-effort al Center: cosi' l'admin vede il transcript completo
-# (success) dal pulsante "📜 vedi log" nella pagina /agents — anche se
-# l'agent installato e' troppo vecchio per il comando WS get_upgrade_log.
-Send-UpgradeReport -Status "completed" -ResolvedVersion $resolvedVersion
 
 if (-not $Quiet) {
     Write-Host "Premi un tasto per chiudere..." -ForegroundColor Gray
