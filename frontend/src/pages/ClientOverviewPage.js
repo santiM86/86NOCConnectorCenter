@@ -1405,6 +1405,84 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
     }
   };
 
+  // ---- Test SNMP live (WS round-trip al connector) ----
+  const [testingId, setTestingId] = useState(null);
+  const [testReport, setTestReport] = useState(null);
+  const handleTestSNMP = async (dev) => {
+    if (!dev.id) {
+      toast.error("Device senza ID — modifica prima per assegnare un ID");
+      return;
+    }
+    setTestingId(dev.id);
+    setTestReport(null);
+    try {
+      const r = await axios.post(
+        `${API}/connector/${clientId}/managed-devices/${dev.id}/test-snmp`
+      );
+      setTestReport({ device: dev, ...r.data });
+    } catch (e) {
+      setTestReport({
+        device: dev,
+        error: e.response?.data?.detail || e.message || "Errore",
+      });
+    } finally {
+      setTestingId(null);
+    }
+  };
+
+  // ---- CSV Import / Export ----
+  const csvInputRef = useRef(null);
+  const handleExportCSV = async () => {
+    try {
+      const r = await axios.get(
+        `${API}/connector/${clientId}/managed-devices/export-csv`,
+        { responseType: "blob" }
+      );
+      const url = window.URL.createObjectURL(new Blob([r.data]));
+      const a = document.createElement("a");
+      a.href = url;
+      const cd = r.headers["content-disposition"] || "";
+      const m = cd.match(/filename="([^"]+)"/);
+      a.download = m ? m[1] : `argus_devices_${clientId.slice(0, 8)}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+      toast.success("CSV scaricato");
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Export fallito");
+    }
+  };
+
+  const handleImportCSV = async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    if (!window.confirm(
+      `Importare device da "${file.name}"? Saranno saltati gli IP gia' presenti.`
+    )) {
+      event.target.value = "";
+      return;
+    }
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const r = await axios.post(
+        `${API}/connector/${clientId}/managed-devices/import-csv`,
+        form
+      );
+      const { inserted, skipped_ips = [], errors = [] } = r.data;
+      let msg = `Importati ${inserted} device`;
+      if (skipped_ips.length > 0) msg += ` · saltati ${skipped_ips.length} IP duplicati`;
+      if (errors.length > 0) msg += ` · ${errors.length} errori`;
+      toast.success(msg);
+      onRefresh?.();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Import fallito");
+    } finally {
+      event.target.value = "";
+    }
+  };
+
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between gap-2 flex-wrap">
@@ -1456,6 +1534,32 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
           >
             <Trash size={13} /> Rimuovi scomparsi
           </Button>
+          <Button
+            onClick={handleExportCSV}
+            variant="outline"
+            className="border-emerald-500/30 hover:bg-emerald-500/10 text-emerald-300 h-8 text-xs gap-1"
+            data-testid="export-csv-btn"
+            title="Scarica la lista dispositivi del cliente in formato CSV"
+          >
+            ⬇️ Esporta CSV
+          </Button>
+          <Button
+            onClick={() => csvInputRef.current?.click()}
+            variant="outline"
+            className="border-sky-500/30 hover:bg-sky-500/10 text-sky-300 h-8 text-xs gap-1"
+            data-testid="import-csv-btn"
+            title="Importa dispositivi da CSV (skip su IP gia' esistenti)"
+          >
+            ⬆️ Importa CSV
+          </Button>
+          <input
+            ref={csvInputRef}
+            type="file"
+            accept=".csv,text/csv"
+            className="hidden"
+            onChange={handleImportCSV}
+            data-testid="csv-input"
+          />
           <Button
             onClick={() => { setForm(emptyForm); setShowAdd(true); }}
             className="bg-indigo-600 hover:bg-indigo-700 text-white h-8 text-xs gap-1"
@@ -1644,6 +1748,19 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
                         data-testid={`device-trend-${d.ip_address}`}
                       >
                         <ChartLine size={13} />
+                      </button>
+                      <button
+                        onClick={() => handleTestSNMP(d)}
+                        disabled={testingId === d.id}
+                        className="p-1 rounded hover:bg-emerald-500/10 text-emerald-400 transition-colors disabled:opacity-30 disabled:cursor-wait"
+                        title="Test SNMP live (round-trip al connector)"
+                        data-testid={`test-snmp-${d.ip_address}`}
+                      >
+                        {testingId === d.id ? (
+                          <span className="inline-block animate-spin">⟳</span>
+                        ) : (
+                          <span>⚡</span>
+                        )}
                       </button>
                       <button
                         onClick={() => setEditTarget(d)}
