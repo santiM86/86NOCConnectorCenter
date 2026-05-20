@@ -1218,8 +1218,8 @@ async def get_agent_upgrade_log(
                         "status": latest.get("status"),
                         "started": latest.get("started_at"),
                         "extra": (
-                            f"target={latest.get('target_version')} "
-                            f"resolved={latest.get('resolved_version')}"
+                            f"target={latest.get('target_version') or '—'} "
+                            f"resolved={latest.get('resolved_version') or '—'}"
                         ),
                         "log_file": f"uploaded {latest.get('received_at')}",
                     },
@@ -1626,6 +1626,115 @@ async def delete_agent(
         "uninstall_error": uninstall_error,
         "collections_purged": deleted,
     }
+
+
+@router.post("/agents/{agent_id}/force-cleanup")
+async def force_cleanup_agent_state(
+    agent_id: str,
+    purge_db: bool = False,
+    current_user: dict = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """Sblocco emergency di un Agent rimasto stuck in `in_progress`
+    (update o uninstall). Usalo quando il watcher non scatta più
+    (es. agent crashato senza heartbeat, fork del wrapper morto,
+    rete che fluttua) e il record resta a "aggiornando…" / "uninstall…"
+    per più tempo del timeout previsto.
+
+    Modalità:
+      - `purge_db=False` (default): resetta soltanto i campi
+        update_status / uninstall_status e relativi attributi. L'agent
+        rimane nel DB; alla prossima riconnessione viene "ri-rinfrescato".
+      - `purge_db=True`: oltre al reset elimina anche il record da
+        managed_agents + collezioni collegate (uguale a DELETE classico
+        senza uninstall_remote).
+
+    Audit completo in `agent_cleanup_audit`.
+    """
+    require_admin(current_user)
+
+    if not agent_id or len(agent_id) < 4:
+        raise HTTPException(status_code=400, detail="agent_id non valido")
+
+    doc = await db.managed_agents.find_one({"agent_id": agent_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="agent_id non trovato")
+
+    previous = {
+        "update_status": doc.get("update_status"),
+        "uninstall_status": doc.get("uninstall_status"),
+    }
+    now_iso = _now().isoformat()
+    actor = current_user.get("email") or current_user.get("id") or "system"
+
+    if purge_db:
+        deleted: Dict[str, int] = {}
+        for col in ("managed_agents", "sys_metrics_latest", "sys_metrics_history",
+                    "device_poll_status", "agent_log_buffer", "agent_command_audit"):
+            try:
+                r = await db[col].delete_many({"agent_id": agent_id})
+                if r.deleted_count > 0:
+                    deleted[col] = r.deleted_count
+            except Exception as e:  # noqa: BLE001
+                logger.warning("force_cleanup purge col=%s err=%s", col, e)
+        await db.agent_cleanup_audit.insert_one({
+            "deleted_at": now_iso,
+            "deleted_by": actor,
+            "deleted_ids": [agent_id],
+            "count": deleted.get("managed_agents", 0),
+            "criteria": "force-cleanup-purge",
+            "hostname": doc.get("hostname"),
+            "client_id": doc.get("client_id"),
+            "previous_state": previous,
+            "collections_purged": deleted,
+        })
+        return {
+            "agent_id": agent_id,
+            "hostname": doc.get("hostname"),
+            "purged": True,
+            "previous_state": previous,
+            "collections_purged": deleted,
+        }
+
+    # Reset soft: ripulisce campi stuck mantenendo il record
+    reset_fields = {
+        "update_status": None,
+        "update_progress": None,
+        "update_started_at": None,
+        "update_started_version": None,
+        "update_target_version": None,
+        "update_initiated_by": None,
+        "update_error": None,
+        "uninstall_status": None,
+        "uninstall_started_at": None,
+        "uninstall_initiated_by": None,
+        "uninstall_method": None,
+        "uninstall_purge_data": None,
+        "uninstall_error": None,
+    }
+    await db.managed_agents.update_one(
+        {"agent_id": agent_id},
+        {"$set": {"force_cleanup_at": now_iso, "force_cleanup_by": actor},
+         "$unset": {k: "" for k in reset_fields.keys()}},
+    )
+    await db.agent_cleanup_audit.insert_one({
+        "deleted_at": now_iso,
+        "deleted_by": actor,
+        "deleted_ids": [agent_id],
+        "count": 0,
+        "criteria": "force-cleanup-soft-reset",
+        "hostname": doc.get("hostname"),
+        "client_id": doc.get("client_id"),
+        "previous_state": previous,
+    })
+    return {
+        "agent_id": agent_id,
+        "hostname": doc.get("hostname"),
+        "purged": False,
+        "reset": True,
+        "previous_state": previous,
+    }
+
+
 
 
 # ---- Upgrade log upload from installer script -------------------------------

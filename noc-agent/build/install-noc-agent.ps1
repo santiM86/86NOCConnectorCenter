@@ -102,6 +102,13 @@ if (-not $Source) {
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"   # accelera Invoke-WebRequest
 
+# Snapshot IMMEDIATO della -Version richiesta dal Center (prima di
+# qualsiasi riassegnazione successiva quando si risolve "latest" via
+# GitHub/Center manifest). Cosi' nel report finale al Center sappiamo
+# distinguere target (cosa l'admin ha chiesto) da resolved (cosa lo
+# script ha effettivamente installato).
+$script:TargetVersionRaw = if ($Version) { [string]$Version } else { "" }
+
 # ------------------------------------------------------------------- #
 # 0.PRE  LOGGING PERSISTENTE (Start-Transcript + Event Viewer fallback)
 # ------------------------------------------------------------------- #
@@ -195,6 +202,9 @@ function Update-UpgradeMarker {
 
 Update-UpgradeMarker -Status "started" -Extra "version=$Version source=$Source"
 Write-UpgradeEvent -Message "Upgrade installer started (PID=$PID, log=$script:UpgradeLogFile, version=$Version, source=$Source)" -EntryType Information -EventId 1001
+# NB: l'heartbeat "started" verso il Center viene inviato DOPO la
+# definizione di Send-UpgradeReport (qualche riga sotto). PowerShell
+# non permette forward-reference di funzioni.
 
 Write-Host ("=" * 78) -ForegroundColor DarkCyan
 Write-Host "86NocAgent Installer/Updater" -ForegroundColor Cyan
@@ -252,16 +262,50 @@ function Send-UpgradeReport {
         #   2. Force flush del file (giro l'handle con FileShare.Read)
         #   3. Read con .NET ReadAllText (gestisce BOM UTF-16 nativamente)
         $excerpt = ""
+        # Per status "started" NON chiudiamo il transcript: l'upgrade
+        # è appena iniziato e dobbiamo continuare a loggare. Per
+        # completed/failed/trap invece chiudiamo e leggiamo il file.
+        if ($Status -ne "started") {
         try {
             if ($script:TranscriptActive) {
                 try { Stop-Transcript -ErrorAction SilentlyContinue | Out-Null } catch {}
                 $script:TranscriptActive = $false
             }
             if (Test-Path $script:UpgradeLogFile) {
-                # Piccola pausa per dare al filesystem il tempo di
-                # flushare il buffer di Stop-Transcript.
-                Start-Sleep -Milliseconds 250
-                $data = [System.IO.File]::ReadAllText($script:UpgradeLogFile)
+                # Pausa più generosa per dare a Stop-Transcript tempo di
+                # flushare l'IOBuffer su disco (era 250ms → su disk lenti
+                # del cliente alcune volte non bastava). 1000ms costa poco
+                # rispetto alla durata totale dell'upgrade (~ 30-60s).
+                Start-Sleep -Milliseconds 1000
+                # PRIMARIO: .NET ReadAllText con autodetect BOM (UTF-16
+                # LE = default Start-Transcript). Funziona nella stragrande
+                # maggioranza dei casi.
+                try { $data = [System.IO.File]::ReadAllText($script:UpgradeLogFile) } catch { $data = "" }
+                # FALLBACK 1: ReadAllBytes + decoding UTF-16 LE esplicito
+                # (utile se il file è ancora locked da PowerShell e ReadAllText
+                # ha aperto un handle corrotto).
+                if ([string]::IsNullOrWhiteSpace($data)) {
+                    try {
+                        $raw = [System.IO.File]::ReadAllBytes($script:UpgradeLogFile)
+                        if ($raw -and $raw.Length -gt 2) {
+                            # UTF-16 LE BOM = FF FE
+                            if ($raw[0] -eq 0xFF -and $raw[1] -eq 0xFE) {
+                                $data = [System.Text.Encoding]::Unicode.GetString($raw, 2, $raw.Length - 2)
+                            } elseif ($raw[0] -eq 0xFE -and $raw[1] -eq 0xFF) {
+                                $data = [System.Text.Encoding]::BigEndianUnicode.GetString($raw, 2, $raw.Length - 2)
+                            } elseif ($raw.Length -gt 3 -and $raw[0] -eq 0xEF -and $raw[1] -eq 0xBB -and $raw[2] -eq 0xBF) {
+                                $data = [System.Text.Encoding]::UTF8.GetString($raw, 3, $raw.Length - 3)
+                            } else {
+                                # Default tentativo UTF-16 LE (Start-Transcript
+                                # storicamente lo usa anche senza BOM su alcune
+                                # versioni PS).
+                                $data = [System.Text.Encoding]::Unicode.GetString($raw)
+                            }
+                        }
+                    } catch {
+                        $data = ""
+                    }
+                }
                 if ($data) {
                     if ($data.Length -gt 262144) {
                         $excerpt = "...[truncated head]...`n" + $data.Substring($data.Length - 262144)
@@ -275,12 +319,65 @@ function Send-UpgradeReport {
             # cosi' nella UI vediamo perche' il log e' vuoto.
             $ErrorMsg = "$ErrorMsg | log-read-failed: $($_.Exception.Message)"
         }
+        } # end if Status -ne "started"
+
+        # FALLBACK 2: se il transcript è comunque vuoto, sintetizza un
+        # summary minimo dai dati che abbiamo in memoria. Cosi' la UI nel
+        # Center non vede MAI un "log vuoto" privo di info. Questo
+        # è il fix per i casi in cui Stop-Transcript non flusha (PS
+        # constrained, antivirus che ispeziona il file, ecc.).
+        # Per "started" inviamo solo un summary minimo (transcript ancora
+        # aperto) cosi' la UI registra il nuovo run subito.
+        if ([string]::IsNullOrWhiteSpace($excerpt)) {
+            $summary = @()
+            if ($Status -eq "started") {
+                $summary += "[Upgrade STARTED — transcript in scrittura, il log completo arrivera' al termine]"
+            } else {
+                $summary += "[SUMMARY auto-generated, transcript non disponibile o vuoto]"
+            }
+            $summary += "PID=$PID"
+            $summary += "Computer=$env:COMPUTERNAME"
+            $summary += "Started=$($script:UpgradeStarted.ToString('o'))"
+            $summary += "Finished=$((Get-Date).ToString('o'))"
+            $summary += "TargetVersion=$($script:TargetVersionRaw)"
+            $summary += "ResolvedVersion=$ResolvedVersion"
+            $summary += "Status=$Status"
+            $summary += "Source=$Source"
+            $summary += "Role=$Role"
+            $summary += "BackendUrl=$BackendUrl"
+            $summary += "ClientId=$ClientId"
+            if ($ErrorMsg) { $summary += "ErrorMsg=$ErrorMsg" }
+            # Includi marker JSON se presente
+            try {
+                if (Test-Path $script:UpgradeMarker) {
+                    $summary += ""
+                    $summary += "[Marker $($script:UpgradeMarker)]"
+                    $summary += (Get-Content $script:UpgradeMarker -Raw -ErrorAction SilentlyContinue)
+                }
+            } catch {}
+            # Includi listing della cartella log (per diagnostica filesystem)
+            try {
+                $files = Get-ChildItem -Path $script:UpgradeLogDir -ErrorAction SilentlyContinue |
+                    Sort-Object LastWriteTime -Descending | Select-Object -First 10
+                if ($files) {
+                    $summary += ""
+                    $summary += "[Cartella $($script:UpgradeLogDir)]"
+                    foreach ($f in $files) {
+                        $summary += "  $($f.LastWriteTime.ToString('o'))  $([math]::Round($f.Length/1KB,1))KB  $($f.Name)"
+                    }
+                }
+            } catch {}
+            $excerpt = ($summary -join "`r`n")
+        }
 
         # Coerce a stringhe SEMPRE (mai $null) per evitare che
         # ConvertTo-Json emetta `"target":null` (poi Pydantic lo
-        # interpreta come None e f-string mostra "None").
-        $targetVer = if ($Version) { [string]$Version } else { "" }
-        $resVer    = if ($ResolvedVersion) { [string]$ResolvedVersion } else { "" }
+        # interpreta come None e f-string mostra "None"). Usiamo
+        # $script:TargetVersionRaw (snapshot iniziale del -Version)
+        # invece di $Version corrente che a questo punto potrebbe essere
+        # stato riassegnato dalla risoluzione manifest.
+        $targetVer = if ($script:TargetVersionRaw) { [string]$script:TargetVersionRaw } else { "" }
+        $resVer    = if ($ResolvedVersion) { [string]$ResolvedVersion } else { [string]$Version }
         $errStr    = if ($ErrorMsg) { [string]$ErrorMsg } else { "" }
         $cid       = if ($ClientId) { [string]$ClientId } else { "" }
         $startedISO = if ($script:UpgradeStarted) { $script:UpgradeStarted.ToString('o') } else { "" }
@@ -308,6 +405,12 @@ function Send-UpgradeReport {
         Write-Host "  [!!] Upload upgrade report fallito (non bloccante): $($_.Exception.Message)" -ForegroundColor DarkGray
     }
 }
+
+# Heartbeat "started" verso il Center: rimpiazza eventuali report
+# precedenti nella UI cosi' l'admin non vede mai un report stantio
+# riferito ad un upgrade vecchio. Best-effort. La function deve essere
+# gia' definita (sopra) — non possiamo forward-reference.
+try { Send-UpgradeReport -Status "started" -ResolvedVersion "" } catch {}
 
 # ------------------------------------------------------------------- #
 # 0.POST  TRAP GLOBALE — cattura ogni errore terminating non gestito,

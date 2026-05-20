@@ -32,6 +32,92 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-02-21 ✅ Sblocco Update + Rimozione Connector dal Center (P0)
+
+**Problema utente**: «dobbiamo assolutamente sbloccare update e rimozione
+connector dal center che ora è bloccato e non riusciamo ad evolverci».
+Screenshot fornito: `target=None resolved=None` + "Upload ricevuto ma
+transcript vuoto" sul log upgrade di SOCIALSRV (86BITOffice v4.13.1).
+
+### Cause individuate
+1. **Transcript PowerShell vuoto**: `Start-Transcript` scrive UTF-16 LE
+   con BOM ma `Stop-Transcript` non flusha sempre prima del read
+   (250ms troppo poco su disk lenti / antivirus che ispezionano).
+2. **target/resolved=None**: `$Version` veniva riassegnato dalla
+   risoluzione del manifest (riga `$Version = $rel.version`), quindi
+   nel `Send-UpgradeReport` finale non riflette più il target richiesto.
+3. **Record stuck in `in_progress`**: se il wrapper PS muore senza
+   heartbeat e l'agent non si riconnette, il watcher di completamento
+   (offline > 30s) non scatta — il record resta a "aggiornando…"
+   indefinitamente, senza UI per sbloccarlo.
+
+### Fix applicati
+
+#### A) Backend (`/app/backend/routes/agent_ws.py`)
+
+- **Nuovo endpoint `POST /api/agents/{id}/force-cleanup`** admin-only:
+  - `purge_db=false` (default): reset soft dei campi `update_*` /
+    `uninstall_*` mantenendo il record. Audit in `agent_cleanup_audit`.
+  - `purge_db=true`: cancellazione completa (= DELETE classico senza
+    uninstall_remote) per record zombie irreparabili.
+- Display log marker: `target=` / `resolved=` ora mostrano `—` invece
+  di `None` quando il campo è assente nel doc.
+
+#### B) Script PowerShell (`/app/noc-agent/build/install-noc-agent.ps1`)
+
+- **Snapshot immediato `$script:TargetVersionRaw`** subito dopo il
+  param block, PRIMA di qualsiasi riassegnazione di `$Version`. Usato
+  in `Send-UpgradeReport` per il campo `target_version`.
+- **`Send-UpgradeReport` robusto**:
+  - Pausa post `Stop-Transcript` aumentata da 250ms → 1000ms.
+  - Tre livelli di fallback per leggere il transcript:
+    1. `[System.IO.File]::ReadAllText` (auto-detect BOM)
+    2. `ReadAllBytes` + decoding esplicito UTF-16 LE / BE / UTF-8 / default
+    3. Summary auto-generato (PID, hostname, started/finished, target,
+       resolved, status, source, role, marker JSON, listing cartella
+       log) — garantisce che il `log_excerpt` non sia MAI vuoto.
+  - Nuovo parametro `Status="started"`: invia heartbeat al Center
+    SENZA chiudere il transcript (continua a loggare durante upgrade).
+- **Heartbeat "started"** alla riga 408 (dopo definizione function):
+  rimpiazza eventuali report stantii nella UI così l'admin vede subito
+  il nuovo run, non un report di 3 mesi fa.
+
+#### C) Frontend (`/app/frontend/src/pages/AgentsPage.js`)
+
+- Nuova funzione `forceCleanup(agent, purge)` con confirm dialog.
+- Pulsante "⚠ sblocca stato" appare automaticamente nelle progress bar
+  di:
+  - update_status=in_progress quando `update_elapsed_sec > 300` (5 min)
+  - uninstall_status=in_progress quando `uninstall_elapsed_sec > 180` (3 min)
+- Pulsante "⚠" persistente nelle azioni standard quando l'agent ha
+  `update_status` o `uninstall_status` valorizzato (anche
+  completed/failed) — emergency escape per qualsiasi stato anomalo.
+
+### Validazione
+
+- Backend: endpoint testato via curl con JWT admin (404 su ID inesistente,
+  400 su ID invalido, comportamento previsto su agent reale).
+- Ruff/ESLint: 0 nuovi errori. Bilanciamento `{}` PS script: 237/237.
+- Screenshot AgentsPage: UI renderizza, banner "v4.13.4 disponibile"
+  visibile (utente già aggiornato a v4.13.4).
+- Ordine definizione/chiamata `Send-UpgradeReport` verificato:
+  function definita a offset 10743, prima chiamata "started" a offset 20040
+  (no forward-reference).
+
+### Steps utente per attivare in produzione
+
+1. **Save to GitHub** (push delle modifiche su `main`). Lo script PS
+   prende effetto **immediatamente** al prossimo update remoto (scarico
+   da `raw.githubusercontent.com`), nessun bisogno di nuovo tag.
+2. L'endpoint backend `/api/agents/{id}/force-cleanup` è attivo
+   automaticamente al prossimo restart di `noc-backend` in produzione.
+3. Frontend: hot-reload via deploy abituale.
+4. Per sbloccare manualmente record stuck già esistenti: AgentsPage →
+   pulsante "⚠" → conferma → record resettato in 1 click.
+
+---
+
+
 ## 2026-02-21 ✅ Connector UI "headless-style" — Dashboard + Impostazioni only
 
 **Direttiva utente**: «voglio solo che le funzionalità che abbiamo in
