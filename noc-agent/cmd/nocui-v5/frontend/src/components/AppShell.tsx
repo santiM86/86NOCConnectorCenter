@@ -2,11 +2,8 @@ import React from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   Activity,
-  Boxes,
-  Compass,
   Cpu,
   ExternalLink,
-  FileText,
   Globe,
   Minus,
   Moon,
@@ -16,7 +13,6 @@ import {
   Wifi,
   WifiOff,
   X,
-  Zap,
 } from 'lucide-react'
 import { cn, timeAgo } from '@/lib/utils'
 import { useTheme } from '@/lib/theme'
@@ -24,7 +20,7 @@ import { api, type AgentInfo, type HealthSnapshot } from '@/lib/bridge'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { Badge } from '@/components/ui/badge'
 
-type NavKey = 'dashboard' | 'devices' | 'discovery' | 'scanner' | 'logs' | 'settings'
+type NavKey = 'dashboard' | 'settings'
 
 interface NavItem {
   key: NavKey
@@ -35,11 +31,7 @@ interface NavItem {
 
 const NAV: NavItem[] = [
   { key: 'dashboard', label: 'Dashboard', icon: Activity, hint: 'Stato real-time agent' },
-  { key: 'devices', label: 'Dispositivi', icon: Boxes, hint: 'Live polling ICMP/SNMP' },
-  { key: 'discovery', label: 'Auto-Discovery', icon: Compass, hint: 'Endpoint scoperti su LAN' },
-  { key: 'scanner', label: 'Scanner LAN', icon: Zap, hint: 'Scansione attiva on-demand' },
-  { key: 'logs', label: 'Diagnostica', icon: FileText, hint: 'Log live, ping/SNMP test' },
-  { key: 'settings', label: 'Impostazioni', icon: SettingsIcon, hint: 'Token, intervalli, servizio' },
+  { key: 'settings', label: 'Impostazioni', icon: SettingsIcon, hint: 'Token, servizio, identità' },
 ]
 
 interface ShellProps {
