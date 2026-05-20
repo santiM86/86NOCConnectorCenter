@@ -3,13 +3,14 @@ Security: HMAC-SHA256, Anti-Replay, Obfuscated paths, TLS 1.2+
 """
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
 from fastapi.responses import FileResponse, Response
+import asyncio
 import uuid
 import shutil
 import logging
 import os
 import re
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict, Any, List
 from datetime import datetime, timezone, timedelta
 
 from database import db
@@ -2811,6 +2812,8 @@ async def add_managed_device(client_id: str, device: ManagedDevice, current_user
         "snmpv3_priv_protocol": device.snmpv3_priv_protocol,
         "snmpv3_priv_password": device.snmpv3_priv_password,
         "snmpv3_security_level": device.snmpv3_security_level,
+        "polling_interval": device.polling_interval,
+        "notes": device.notes,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "created_by": current_user.get("name", "admin")
     }
@@ -3253,6 +3256,242 @@ async def update_device_snmp_config(client_id: str, device_id: str, request: Req
         details={"action": "snmp_config_updated", "version": snmp_version},
     )
     return {"status": "ok", "snmp_version": snmp_version, "device_ip": device_ip}
+
+
+# ============================================================
+# 2026-02-19 — Estensioni Center per il refactor "tutto da web"
+# (Polling interval, Notes, CSV import/export, Test SNMP live)
+# ============================================================
+
+@router.put("/connector/{client_id}/managed-devices/{device_id}/meta")
+async def update_device_meta(
+    client_id: str, device_id: str, request: Request,
+    current_user: dict = Depends(get_current_user),
+):
+    """Aggiorna campi metadata del device: polling_interval, notes.
+    Separato dall'endpoint /snmp per non rischiare di toccare credenziali
+    quando si modifica solo una nota.
+    """
+    body = await request.json()
+    check_nosql_injection(body)
+    update: Dict[str, Any] = {}
+    if "polling_interval" in body:
+        pi = body.get("polling_interval")
+        if pi in (None, ""):
+            update["polling_interval"] = None
+        else:
+            try:
+                pi_int = int(pi)
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="polling_interval deve essere intero (secondi)")
+            if pi_int < 15 or pi_int > 3600:
+                raise HTTPException(status_code=400, detail="polling_interval deve essere tra 15s e 3600s")
+            update["polling_interval"] = pi_int
+    if "notes" in body:
+        update["notes"] = sanitize_string(body.get("notes") or "", 1024)
+    if not update:
+        return {"status": "no_change"}
+    device_ip, _, _ = await _resolve_or_upsert_managed_device(client_id, device_id)
+    await db.managed_devices.update_one(
+        {"client_id": client_id, "ip": device_ip},
+        {"$set": update},
+    )
+    await audit_logger.log(
+        AuditAction.UPDATE_DEVICE,
+        user_id=current_user["id"], user_email=current_user["email"],
+        resource_type="device", resource_id=device_id,
+        details={"action": "meta_updated", "fields": list(update.keys())},
+    )
+    return {"status": "ok", "device_ip": device_ip, "updated": list(update.keys())}
+
+
+@router.get("/connector/{client_id}/managed-devices/export-csv")
+async def export_devices_csv(client_id: str, current_user: dict = Depends(get_current_user)):
+    """Esporta la lista device del cliente in CSV (header standard).
+    Utile per backup config / migrazione tra installazioni.
+    Restituisce il file con Content-Type: text/csv.
+    """
+    devices = await db.managed_devices.find(
+        {"client_id": client_id}, {"_id": 0}
+    ).sort("name", 1).to_list(5000)
+    import csv
+    import io
+    buf = io.StringIO()
+    cols = [
+        "name", "ip", "device_type", "monitor_type", "http_port",
+        "snmp_version", "community",
+        "snmpv3_username", "snmpv3_auth_protocol", "snmpv3_auth_password",
+        "snmpv3_priv_protocol", "snmpv3_priv_password", "snmpv3_security_level",
+        "polling_interval", "notes",
+    ]
+    w = csv.DictWriter(buf, fieldnames=cols, extrasaction="ignore")
+    w.writeheader()
+    for d in devices:
+        # Forziamo str e quote per i campi notes che possono avere newline
+        row = {k: (d.get(k) if d.get(k) is not None else "") for k in cols}
+        w.writerow(row)
+    csv_data = buf.getvalue()
+    filename = f"argus_devices_{client_id[:8]}_{datetime.now(timezone.utc).strftime('%Y%m%d')}.csv"
+    return Response(
+        content=csv_data,
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.post("/connector/{client_id}/managed-devices/import-csv")
+async def import_devices_csv(
+    client_id: str, request: Request,
+    current_user: dict = Depends(get_current_user),
+):
+    """Importa device da CSV. Skip device con IP gia' esistente (no overwrite).
+    Body: form-data con file CSV, OPPURE raw text/csv.
+    Header obbligatori: name, ip (gli altri sono opzionali).
+    """
+    content_type = request.headers.get("content-type", "")
+    if "multipart" in content_type or "form-data" in content_type:
+        form = await request.form()
+        upload = form.get("file")
+        if upload is None:
+            raise HTTPException(status_code=400, detail="Manca il file CSV (campo 'file')")
+        raw = (await upload.read()).decode("utf-8", errors="replace")
+    else:
+        raw = (await request.body()).decode("utf-8", errors="replace")
+    import csv
+    import io
+    reader = csv.DictReader(io.StringIO(raw))
+    if not reader.fieldnames or "ip" not in reader.fieldnames or "name" not in reader.fieldnames:
+        raise HTTPException(status_code=400, detail="CSV deve avere almeno colonne 'name' e 'ip'")
+    inserted = 0
+    skipped: list[str] = []
+    errors: list[str] = []
+    existing_ips = {
+        d["ip"] for d in await db.managed_devices.find(
+            {"client_id": client_id}, {"ip": 1, "_id": 0}
+        ).to_list(5000)
+    }
+    for line_no, row in enumerate(reader, start=2):
+        ip = (row.get("ip") or "").strip()
+        name = (row.get("name") or "").strip()
+        if not ip or not name:
+            errors.append(f"riga {line_no}: ip o name mancante")
+            continue
+        if ip in existing_ips:
+            skipped.append(ip)
+            continue
+        try:
+            polling = row.get("polling_interval")
+            polling_int = int(polling) if polling and str(polling).strip() else None
+        except ValueError:
+            polling_int = None
+        doc = {
+            "id": str(uuid.uuid4()),
+            "client_id": client_id,
+            "name": sanitize_string(name, 128),
+            "ip": ip,
+            "community": sanitize_string(row.get("community") or "public", 128),
+            "monitor_type": (row.get("monitor_type") or "snmp").strip() or "snmp",
+            "device_type": (row.get("device_type") or "network").strip() or "network",
+            "http_port": int(row.get("http_port") or 80) if (row.get("http_port") or "").strip().isdigit() else 80,
+            "snmp_version": (row.get("snmp_version") or "v2c").strip() or "v2c",
+            "snmpv3_username": row.get("snmpv3_username") or None,
+            "snmpv3_auth_protocol": row.get("snmpv3_auth_protocol") or None,
+            "snmpv3_auth_password": row.get("snmpv3_auth_password") or None,
+            "snmpv3_priv_protocol": row.get("snmpv3_priv_protocol") or None,
+            "snmpv3_priv_password": row.get("snmpv3_priv_password") or None,
+            "snmpv3_security_level": row.get("snmpv3_security_level") or "authPriv",
+            "polling_interval": polling_int,
+            "notes": sanitize_string(row.get("notes") or "", 1024),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "created_by": f"csv-import:{current_user.get('email', 'admin')}",
+        }
+        try:
+            await db.managed_devices.insert_one(doc)
+            inserted += 1
+            existing_ips.add(ip)
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"riga {line_no}: {e}")
+    await audit_logger.log(
+        AuditAction.UPDATE_DEVICE,
+        user_id=current_user["id"], user_email=current_user["email"],
+        resource_type="client", resource_id=client_id,
+        details={"action": "csv_import", "inserted": inserted, "skipped": len(skipped), "errors": len(errors)},
+    )
+    return {
+        "status": "ok",
+        "inserted": inserted,
+        "skipped_ips": skipped,
+        "errors": errors,
+    }
+
+
+@router.post("/connector/{client_id}/managed-devices/{device_id}/test-snmp")
+async def test_snmp_live(
+    client_id: str, device_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Esegue un test SNMP live sul device — chiede al connector di
+    fare uno snmpget di sysDescr (1.3.6.1.2.1.1.1.0) + sysUpTime
+    (1.3.6.1.2.1.1.3.0). Round trip via WS, timeout 8s.
+
+    Richiede connector v4.14+ (handler `snmp_test` registrato).
+    Per agent piu' vecchi ritorna `supported=false` con hint.
+    """
+    # Risolvi device → IP + community + version
+    device_ip, _, _ = await _resolve_or_upsert_managed_device(client_id, device_id)
+    dev = await db.managed_devices.find_one(
+        {"client_id": client_id, "ip": device_ip},
+        {"_id": 0},
+    )
+    if not dev:
+        raise HTTPException(status_code=404, detail="device non trovato")
+    # Trova un connector LIVE per questo cliente
+    from .agent_ws import REGISTRY  # local import per evitare cycle
+    conn = None
+    target_agent_id: Optional[str] = None
+    for ag in await db.managed_agents.find(
+        {"client_id": client_id, "live": True}, {"agent_id": 1, "_id": 0}
+    ).to_list(20):
+        c = REGISTRY.get(ag["agent_id"])
+        if c is not None:
+            conn = c
+            target_agent_id = ag["agent_id"]
+            break
+    if conn is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Nessun connector LIVE per questo cliente. Il test SNMP richiede un agent online.",
+        )
+    args = {
+        "ip": device_ip,
+        "community": dev.get("community") or "public",
+        "snmp_version": dev.get("snmp_version") or "v2c",
+        # SNMPv3 credentials se presenti
+        "snmpv3_username": dev.get("snmpv3_username"),
+        "snmpv3_auth_protocol": dev.get("snmpv3_auth_protocol"),
+        "snmpv3_auth_password": dev.get("snmpv3_auth_password"),
+        "snmpv3_priv_protocol": dev.get("snmpv3_priv_protocol"),
+        "snmpv3_priv_password": dev.get("snmpv3_priv_password"),
+        "snmpv3_security_level": dev.get("snmpv3_security_level") or "authPriv",
+    }
+    try:
+        reply = await conn.send_command("snmp_test", args, timeout=8.0)
+    except asyncio.TimeoutError as e:
+        raise HTTPException(status_code=504, detail="connector reply timeout (8s)") from e
+    if isinstance(reply, dict) and reply.get("error") and "sys_descr" not in reply and "sysDescr" not in reply:
+        return {
+            "supported": False,
+            "device_ip": device_ip,
+            "agent_id": target_agent_id,
+            "error": reply.get("error"),
+            "hint": "Connector troppo vecchio (richiede v4.14+) o errore di comunicazione SNMP.",
+        }
+    return {
+        "supported": True,
+        "device_ip": device_ip,
+        "agent_id": target_agent_id,
+        "reply": reply,
+    }
 
 
 

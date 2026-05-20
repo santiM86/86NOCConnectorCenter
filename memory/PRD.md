@@ -32,6 +32,60 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-02-21 ✅ Connector UI "headless-style" — Dashboard + Impostazioni only
+
+**Direttiva utente**: «voglio solo che le funzionalità che abbiamo in
+connector vengano messe in center e non si vedano piu in connector».
+Nessun refactor strutturale — solo nascondere le pagine già duplicate
+nel Center dalla UI Wails locale.
+
+### Funzionalità già presenti nel Center (nessuna duplicazione necessaria)
+- Dispositivi → `DevicesPage.js` + tab in `ClientOverviewPage.js`
+- Auto-Discovery → `DiscoveryPage.js`
+- Scanner LAN → `LanScannerPage.js` (anche scoped per cliente)
+- Diagnostica / Log → `AgentLogsModal` + `UpgradeLogModal` in `AgentsPage.js`
+- Service control (start/stop/restart) → `AgentsPage.js`
+
+### Modifiche minime applicate
+- `cmd/nocui-v5/frontend/src/components/AppShell.tsx`: NAV ridotto a
+  `['dashboard', 'settings']`; tipo `NavKey` aggiornato; rimossi import
+  icone non più usate (Boxes, Compass, FileText, Zap).
+- `cmd/nocui-v5/frontend/src/App.tsx`: rimossi import e routing di
+  `DevicesPage`, `DiscoveryPage`, `ScannerPage`, `LogsPage`. Tipo
+  `NavKey` ristretto. Commento di intestazione spiega la scelta
+  headless-style.
+- `cmd/nocui-v5/frontend/src/pages/DashboardPage.tsx`: rewrite minimale.
+  - Rimosse KPI navigabili verso Dispositivi/Auto-Discovery (sostituite
+    da 4 card di stato puramente locali: CENTER, SERVIZIO AGENT, LATENZA
+    CENTER, AGENT VERSIONE).
+  - Rimossi `ActivityFeed`, pulsante "Vai ai log", prop `goto`.
+  - Aggiunto banner informativo: "Gestione dispositivi, scansioni e log
+    sono ora disponibili nel NOC Center".
+  - Pulsante "Apri NOC Center" nella card Stato Agent come scorciatoia.
+  - Mantenuti "Riavvia servizio" e "agent.yaml" come emergency tool
+    locali (se Center irraggiungibile).
+
+### File NON eliminati (tenuti per opzionale rollback)
+- `pages/DevicesPage.tsx`, `pages/DiscoveryPage.tsx`,
+  `pages/ScannerPage.tsx`, `pages/LogsPage.tsx` rimangono nel repo ma
+  non sono più importati né raggiungibili dalla UI. Tree-shaking li
+  esclude dal bundle finale (verificato: 360 KB JS vs 397 KB precedenti).
+- Bindings Go (`ListDevices`, `ListDiscovered`, `StartLanScan`,
+  `ReadLogs`, ecc.) in `cmd/nocui-v5/app.go` mantenuti — chiamati
+  internamente solo dal background; nessuna API rotta.
+
+### Build verificati in container
+- `yarn build` frontend: 1969 moduli, **0 errori TS**, 2.3s, bundle 360 KB.
+- `GOOS=windows go build ./cmd/nocui-v5`: OK, nessun warning.
+
+### Steps per produzione
+1. "Save to GitHub" → push su `main`.
+2. Tag `v4.13.4` → GitHub Action genera nuovo `ArgusDesktop.exe`.
+3. Update remoto dal Center sui PC client.
+
+---
+
+
 ## 2026-02-19 ✅ Connector UI — Tab "Dispositivi rilevati" locale (offline-first)
 
 **Feature**: la UI desktop del connector Go (Wails) ora mostra i

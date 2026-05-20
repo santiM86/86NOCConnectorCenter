@@ -282,3 +282,6 @@ class ManagedDevice(BaseModel):
     snmpv3_priv_protocol: Optional[str] = None   # "DES", "AES", "AES256", None
     snmpv3_priv_password: Optional[str] = None
     snmpv3_security_level: Optional[str] = "authPriv"  # "noAuthNoPriv", "authNoPriv", "authPriv"
+    # 2026-02-19: nuovi campi opzionali esposti dal Center
+    polling_interval: Optional[int] = None   # secondi; None = usa default device-profile (120s)
+    notes: Optional[str] = None              # campo libero admin (max ~1KB lato UI)

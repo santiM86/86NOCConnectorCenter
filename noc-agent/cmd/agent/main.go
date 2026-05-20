@@ -229,6 +229,11 @@ func runAgent(ctx context.Context, cfg config.Config, log *logging.Logger) {
 	// sul profilo SYSTEM.
 	registerAgentLogCommand(client, log)
 
+	// snmp_test — quick snmpget di sysDescr+sysUpTime+sysName+sysContact
+	// per validare credenziali e raggiungibilita' di un device direttamente
+	// dalla UI Center (pulsante "Test SNMP" nel tab Devices del cliente).
+	registerSNMPTestCommand(client, log)
+
 	// "update" — comando remoto inviato dal Center per aggiornare
 	// l'agent. Lancia install-noc-agent.ps1 da GitHub come subprocess
 	// admin; l'install si occupa di stop servizi, kill UI, download

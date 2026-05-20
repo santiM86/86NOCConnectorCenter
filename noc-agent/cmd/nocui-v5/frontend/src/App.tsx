@@ -1,14 +1,14 @@
 import { useEffect, useState } from 'react'
 import { AppShell } from './components/AppShell'
 import { DashboardPage } from './pages/DashboardPage'
-import { DevicesPage } from './pages/DevicesPage'
-import { DiscoveryPage } from './pages/DiscoveryPage'
-import { ScannerPage } from './pages/ScannerPage'
-import { LogsPage } from './pages/LogsPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { api, type AgentInfo, type HealthSnapshot } from './lib/bridge'
 
-type NavKey = 'dashboard' | 'devices' | 'discovery' | 'scanner' | 'logs' | 'settings'
+// Connector "headless-style" UI: tutta la gestione operativa (Dispositivi,
+// Auto-Discovery, Scanner LAN, Diagnostica/Log) vive ora nel NOC Center web.
+// Localmente esponiamo solo Dashboard (stato connessione + identità) e
+// Impostazioni (controllo servizio come lifeline se il Center è giù).
+type NavKey = 'dashboard' | 'settings'
 
 export function App() {
   const [active, setActive] = useState<NavKey>('dashboard')
@@ -52,13 +52,8 @@ export function App() {
           agent={agent}
           health={health}
           onRefresh={() => api.healthCheck().then(setHealth)}
-          goto={(k) => setActive(k)}
         />
       )}
-      {active === 'devices' && <DevicesPage />}
-      {active === 'discovery' && <DiscoveryPage />}
-      {active === 'scanner' && <ScannerPage />}
-      {active === 'logs' && <LogsPage />}
       {active === 'settings' && <SettingsPage agent={agent} />}
     </AppShell>
   )
