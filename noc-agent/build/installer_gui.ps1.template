@@ -72,8 +72,10 @@ $ServiceName    = "86NocAgent"
 $WatchdogName   = "86NocWatchdog"
 $Version        = "__VERSION__"  # iniettata dal backend (vedi _render_wizard_ps1)
 # Safety net: se il template viene rinominato/copiato senza sostituzione
-# (es. fork manuale), forza un default ragionevole.
-if ($Version -like "*VERSION*") { $Version = "4.10.3" }
+# (es. fork manuale o template stantio in produzione), forza un default
+# che corrisponda all'ULTIMA versione stabile nota al momento del commit
+# di questo template. Aggiornare ad ogni release del Connector.
+if ($Version -like "*VERSION*") { $Version = "4.13.4" }
 $Platform       = "windows-amd64"
 $InstallDir     = Join-Path $env:ProgramFiles $AppName
 $DataDir        = Join-Path $env:ProgramData  $AppName

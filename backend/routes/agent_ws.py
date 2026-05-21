@@ -2984,13 +2984,34 @@ async def _render_wizard_ps1(token: str) -> str:
     # FIX v4.10.3: sostituiamo anche __VERSION__ con la latest release
     # risolta da GitHub. Senza questo il template cade sul default
     # hardcoded `$Version = "4.0.0"` (riga 73) e il PS1 scarica binari
-    # v4.0.0 invece dell'ultima release disponibile. Era la causa del
-    # bug reportato dall'utente: pulsante "Installer (latest)" che
-    # installava sempre v4.0.0-dev.
+    # v4.0.0 invece dell'ultima release disponibile.
     ver_label = await _resolve_latest_agent_version_safe()
+    # FIX 2026-02-21: se la risoluzione GitHub fallisce (rate-limit
+    # unauth, repo privato senza PAT, AGENT_LATEST_VERSION non settato),
+    # `_resolve_latest_agent_version_safe` ritorna "latest" come fallback.
+    # PRIMA cadevamo su "4.0.0" hardcoded → il PS1 installava la
+    # PRIMA versione disponibile su GitHub (v4.0.0-dev) invece dell'
+    # ultima. L'admin scaricava il bundle "Installer v4.13.3" ma il PS
+    # interno aveva $Version="4.0.0" e installava v4.0.0. Ora rifiutiamo
+    # esplicitamente con 503 cosi' l'admin sa subito che deve mettere
+    # AGENT_GITHUB_TOKEN o AGENT_LATEST_VERSION nel .env del backend
+    # invece di scaricare silentemente la versione sbagliata.
+    if not ver_label or ver_label.lower().lstrip("v") in ("", "latest"):
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Impossibile determinare l'ultima versione del Connector dal "
+                "repo GitHub (rate-limit unauth = 60/h raggiunto, oppure repo "
+                "privato senza PAT). Senza una versione concreta il bundle "
+                "installerebbe v4.0.0 al posto dell'ultima release. Imposta "
+                "AGENT_GITHUB_TOKEN o AGENT_LATEST_VERSION nel .env del "
+                "backend, oppure usa l'override DB da Settings → Agent Latest "
+                "Version Override."
+            ),
+        )
     # Rimuovi prefisso "v" perche' il template usa il formato semver
     # nudo "4.10.2" come default di $Version.
-    ver_naked = ver_label.lstrip("v") if ver_label and ver_label != "latest" else "4.0.0"
+    ver_naked = ver_label.lstrip("v")
     return (body
             .replace("__BACKEND_URL__", public_http)
             .replace("__TOKEN__", token)

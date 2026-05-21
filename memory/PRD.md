@@ -32,6 +32,66 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-02-21 ✅ FIX P0 — "Installer scarica la prima versione (v4.0.0)"
+
+**Problema reportato dall'utente** (screenshot ClientsPage): cliccando
+"Installer v4.13.3" il download partiva, ma il PS1 dentro lo zip aveva
+`$Version = "4.0.0"` e installava silentemente la PRIMA release v4.0.0-dev
+invece dell'ultima. Il pulsante UI mostrava la versione corretta perché
+veniva risolta da `/api/agent/latest-version`, ma `_render_wizard_ps1`
+aveva un percorso di fallback diverso.
+
+### Root cause
+`backend/routes/agent_ws.py::_render_wizard_ps1` (riga 2993):
+```python
+ver_naked = ver_label.lstrip("v") if ver_label and ver_label != "latest" else "4.0.0"
+```
+Quando `_resolve_latest_agent_version_safe()` ritornava "latest" come
+fallback finale (GitHub API rate-limit unauth = 60/h raggiunto, repo
+privato senza PAT, override DB con valore "latest"), `ver_naked` diventava
+"4.0.0" → il template iniettava quel valore in `$Version` → il PS1
+scaricava da GitHub i binari della release v4.0.0 (la prima mai pubblicata)
+e li installava come "ultima versione".
+
+### Fix applicato
+- **`_render_wizard_ps1`**: invece di fallback silenzioso a "4.0.0",
+  ora ritorna HTTP 503 con messaggio esplicito che indica all'admin
+  cosa fare:
+  > *"Impossibile determinare l'ultima versione del Connector dal repo
+  > GitHub. Imposta AGENT_GITHUB_TOKEN o AGENT_LATEST_VERSION nel .env
+  > del backend, oppure usa l'override DB da Settings → Agent Latest
+  > Version Override."*
+- Check robusto: rifiuta sia `""` che `"latest"` che `"vlatest"`
+  (case-insensitive, lstrip("v") gestisce override DB "v" + valore).
+- **`installer_gui.ps1.template`**: safety-net interno (riga 76)
+  aggiornato da `"4.10.3"` → `"4.13.4"` come ulteriore protezione
+  contro template stantii in produzione.
+
+### Testato in container
+```
+[caso fallback ver=latest]
+  HTTP 503 → detail con istruzioni esplicite ✅
+[caso normale]
+  HTTP 200 → zip con $Version = "4.13.4" ✅
+```
+
+### Steps per attivare in produzione
+1. **Save to GitHub** (push del backend modificato).
+2. `sudo systemctl restart noc-backend` sulla VM Linux.
+3. Test: dalla UI clicca "Installer vX.Y.Z" sul cliente di test e
+   verifica che dentro lo zip `installer_gui.ps1` riga 73 contenga
+   la versione corrente, non "4.0.0".
+4. Se vedi 503 in produzione → vai in `Settings → Agent Latest
+   Version Override` e inserisci la versione manualmente (es. `v4.13.4`)
+   oppure aggiungi `AGENT_GITHUB_TOKEN` al `.env` del backend.
+
+### File toccati
+- `/app/backend/routes/agent_ws.py` (funzione `_render_wizard_ps1`)
+- `/app/noc-agent/build/installer_gui.ps1.template` (safety-net 4.13.4)
+
+---
+
+
 ## 2026-02-21 ✅ Sblocco Update + Rimozione Connector dal Center (P0)
 
 **Problema utente**: «dobbiamo assolutamente sbloccare update e rimozione
