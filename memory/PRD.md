@@ -38,7 +38,7 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 versione del connector mettere le mani al server linux».
 
 ### Soluzione implementata
-Webhook GitHub → endpoint backend `/api/webhooks/github-deploy` che
+Webhook GitHub → endpoint backend `/api/deploy/github` che
 esegue `git pull && pip install && yarn build && systemctl restart` in
 background. Ogni "Save to GitHub" da Emergent attiva auto-deploy in
 30-60 secondi.
