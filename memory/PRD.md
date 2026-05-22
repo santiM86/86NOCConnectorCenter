@@ -32,6 +32,62 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-02-21 ✅ Connector "Datto-style" — Start Menu + autostart minimizzato
+
+**Direttiva utente** (con screenshot di Datto/CentraStage):
+«mi confermi che anche argus sarà cosi? e vedrò tutto nello stesso modo?»
+→ scelta opzione A: replica Datto-style con voci Start Menu + autostart
+minimizzato in taskbar al login.
+
+### Modifiche
+
+#### A) `installer_gui.ps1.template` — wizard nuove install
+- **[9/11]**: cleanup shortcut legacy `Connector.lnk` + creazione cartella
+  Start Menu **86BIT Argus** con voce **"Agent Status"** che lancia
+  `ArgusDesktop.exe` (fallback `nocagent-ui.exe`). Voce dedicata al solo
+  stato/info, la gestione completa resta nel NOC Center.
+- **[11/11]**: voce **"Disinstalla"** mantenuta (lifeline IT).
+- **[10/11]**: Scheduled Task **`86BIT Argus Tray`** At Logon → lancia
+  `ArgusDesktop.exe --minimized`. Al login del cliente l'icona Argus
+  appare nella taskbar minimizzata (conferma visiva "monitoraggio
+  attivo"), niente popup di finestra.
+
+#### B) `cmd/nocui-v5/main.go` — Argus Desktop
+- Aggiunto parser CLI args (`hasFlag`) per riconoscere `--minimized` e
+  `--tray` (alias).
+- Se presente uno dei due → `WindowStartState: options.Minimised`.
+  Lanciato senza flag (es. dal click su "Agent Status" nello Start Menu),
+  parte normale e mostra subito Dashboard + Impostazioni.
+- `HideWindowOnClose: true` mantenuto: chiusura finestra non killa il
+  processo, resta in background fino a logout/reboot.
+
+### UX finale sul PC client (post-update v4.13.5+)
+| Elemento | Stato |
+|---|---|
+| Servizi Windows (`86NocAgent`, `86NocWatchdog`) | Running in background |
+| Start Menu → "86BIT Argus" → "Agent Status" | ✅ Mostra mini-finestra (Dashboard + Impostazioni read-only) |
+| Start Menu → "86BIT Argus" → "Disinstalla" | ✅ Lifeline IT |
+| Autostart al logon | ✅ ArgusDesktop minimizzato in taskbar (icona Argus visibile) |
+| Click su icona taskbar minimizzata | ✅ Apre la mini-finestra Status |
+| Finestre Dispositivi/SNMP/Scanner/Logs locali | ❌ Spostate nel NOC Center web |
+
+### Note tecniche
+- **Tray icon nativa (Win32 systray, come "86" di Datto)**: non
+  implementata in questa iterazione. Wails v2 non ha systray nativa per
+  Windows; servirebbe un binario dedicato `argus-tray.exe` con
+  `getlantern/systray` (~200 righe). Compromesso attuale: icona
+  ArgusDesktop minimizzata in taskbar (gruppo barra delle applicazioni)
+  — visivamente molto simile alla Datto Agent Monitor.
+- Per propagare le modifiche serve: **Save to GitHub** → al prossimo
+  update remoto i client ricevono cartella Start Menu + autostart task.
+
+### Validati in container
+- `installer_gui.ps1.template`: bilanciamento `{}` 386/386 ✅
+- Go cross-compile Windows `nocui-v5`: OK ✅
+
+---
+
+
 ## 2026-02-21 ✅ Connector 100% Headless + Gestione Update da Center
 
 **Direttiva utente**: «dal connector dovevamo nascondere questa finestra

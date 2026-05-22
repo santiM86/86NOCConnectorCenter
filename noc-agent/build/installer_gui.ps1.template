@@ -1830,14 +1830,17 @@ function Run-Install {
             Append-Log "      WARN: agent-ui.json non scritto: $($_.Exception.Message)" $ColorError
         }
         try {
-            # 2026-02-21: HEADLESS MODE — il Connector non deve più
-            # esporre la UI desktop locale. Tutta la gestione (dispositivi
-            # SNMP, scansioni, log, update) avviene dal NOC Center web.
-            # Niente shortcut Start Menu per "Connector" (l'utente sul PC
-            # client non deve mai vedere la finestra Win32 legacy).
-            # Manteniamo SOLO lo shortcut "Disinstalla" (creato sotto) come
-            # via di fuga per IT in caso di disinstallazione manuale.
-            # Cleanup di eventuali shortcut creati da versioni precedenti.
+            # 2026-02-21 HEADLESS DATTO-STYLE: il Connector resta gestito
+            # 100% da NOC Center web. Sul PC client manteniamo SOLO:
+            #   1) Cartella Start Menu "86BIT Argus" con voce "Agent Status"
+            #      che apre la mini-finestra (Dashboard + Impostazioni
+            #      read-only). Niente Dispositivi/Discovery/Scanner: quelli
+            #      stanno nel Center.
+            #   2) Voce "Disinstalla" (lifeline IT)
+            #   3) Niente tray icon nativa per ora (sarebbe un binario
+            #      dedicato — feature successiva).
+            # Cleanup di eventuali shortcut legacy "Connector.lnk" creati
+            # da versioni precedenti del wizard.
             $startMenuLegacy1 = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\86BIT Argus Connector\Connector.lnk"
             $startMenuLegacy2 = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\86BIT Argus Center\Connector.lnk"
             foreach ($lp in @($startMenuLegacy1, $startMenuLegacy2)) {
@@ -1845,35 +1848,63 @@ function Run-Install {
                     try { Remove-Item -Path $lp -Force -ErrorAction SilentlyContinue } catch {}
                 }
             }
-            Append-Log "      headless mode: nessuno shortcut UI nel Start Menu" $ColorMuted
+            # Creazione voce "Agent Status" — preferisce ArgusDesktop
+            # (Wails moderno, no freeze), fallback a nocagent-ui.exe legacy
+            # solo se Wails non e' presente / WebView2 non installato.
+            $startMenu = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\86BIT Argus"
+            New-Item -ItemType Directory -Force -Path $startMenu | Out-Null
+            $wsh = New-Object -ComObject WScript.Shell
+            $argusDesktop = Join-Path $InstallDir "ArgusDesktop.exe"
+            $legacyUI     = Join-Path $InstallDir "nocagent-ui.exe"
+            $uiExe = if (Test-Path $argusDesktop) { $argusDesktop } else { $legacyUI }
+            $iconFile = Join-Path $InstallDir "argus.ico"
+            $iconLoc = if (Test-Path $iconFile) { $iconFile } else { "$uiExe,0" }
+            $lnkStatus = $wsh.CreateShortcut((Join-Path $startMenu "Agent Status.lnk"))
+            $lnkStatus.TargetPath = $uiExe
+            $lnkStatus.WorkingDirectory = $InstallDir
+            $lnkStatus.IconLocation = $iconLoc
+            $lnkStatus.Description = "Stato Agent Argus - Apre mini-finestra (gestione completa nel NOC Center)"
+            $lnkStatus.Save()
+            Append-Log "      shortcut '86BIT Argus\Agent Status' creato (Datto-style)" $ColorMuted
         } catch {
-            Append-Log "      WARN: cleanup shortcut legacy fallito: $($_.Exception.Message)" $ColorError
+            Append-Log "      WARN: shortcut Agent Status non creato: $($_.Exception.Message)" $ColorError
         }
         $script:progressBar.Value = 95
 
         # ============================================================
-        # [10/11] HEADLESS — niente autostart UI. Il Connector gira come
-        # servizio in background. Le finestre Win32 / Wails non vengono
-        # piu' lanciate automaticamente. L'admin gestisce tutto dal
-        # NOC Center (argus.86bit.it).
+        # [10/11] Autostart Datto-style: ArgusDesktop parte minimizzato
+        # in taskbar (--minimized) al logon dell'utente. Non appare la
+        # finestra, solo l'icona nella taskbar (= conferma visiva al
+        # cliente che il monitoraggio e' attivo). Click → mostra finestra.
         # ============================================================
-        Append-Log "[10/11] Modalita' headless: skip autostart UI" $ColorAccent
+        Append-Log "[10/11] Autostart ArgusDesktop minimizzato (Datto-style)" $ColorAccent
         $taskName = '86BIT Argus Tray'
-        # Cleanup completo di autostart legacy:
-        #   - Scheduled Task "86BIT Argus Tray" (creato dalle versioni
-        #     precedenti del wizard)
-        #   - HKLM\..\Run\86BITArgusTray
-        #   - HKLM\..\Run\86BITArgusConnector
-        try {
-            Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
-            Append-Log "      scheduled task '$taskName' rimosso (era legacy)" $ColorMuted
-        } catch { }
+        $uiExe = Join-Path $InstallDir "ArgusDesktop.exe"
+        if (-not (Test-Path $uiExe)) {
+            $uiExe = Join-Path $InstallDir "nocagent-ui.exe"
+        }
+        # Cleanup vecchi autostart registry-based
         Remove-ItemProperty -Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run' -Name '86BITArgusTray' -Force -ErrorAction SilentlyContinue
         Remove-ItemProperty -Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run' -Name '86BITArgusConnector' -Force -ErrorAction SilentlyContinue
-        # Stoppiamo anche eventuali processi UI gia' in memoria.
         try {
-            Get-Process -Name 'nocagent-ui' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-            Get-Process -Name 'ArgusDesktop' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+            $action = New-ScheduledTaskAction -Execute $uiExe -Argument "--minimized"
+            $trigger = New-ScheduledTaskTrigger -AtLogOn
+            $principal = New-ScheduledTaskPrincipal -GroupId 'BUILTIN\Users' -RunLevel Limited
+            $settings = New-ScheduledTaskSettingsSet `
+                -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+                -ExecutionTimeLimit ([TimeSpan]::Zero) `
+                -RestartCount 5 -RestartInterval ([TimeSpan]::FromMinutes(1))
+            Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
+                -Principal $principal -Settings $settings -Force -ErrorAction Stop | Out-Null
+            Append-Log "      scheduled task '$taskName' -> $uiExe --minimized (At Logon)" $ColorMuted
+        } catch {
+            Append-Log "      WARN: scheduled task non registrato: $($_.Exception.Message)" $ColorError
+        }
+        # Stoppiamo eventuali processi UI gia' in memoria (sara' rilanciato
+        # all'avvio dell'install/update con --minimized).
+        try {
+            Get-Process -Name 'nocagent-ui'   -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+            Get-Process -Name 'ArgusDesktop'  -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
         } catch { }
         Append-Log "      autostart UI disabilitato, processi UI terminati" $ColorMuted
 
