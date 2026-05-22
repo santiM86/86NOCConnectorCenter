@@ -283,7 +283,12 @@ async def github_deploy_health() -> Dict[str, Any]:
     repo_ok = Path(REPO_DIR).exists()
     script_ok = Path(DEPLOY_SCRIPT).exists()
     script_exec = script_ok and os.access(DEPLOY_SCRIPT, os.X_OK)
-    git_ok = shutil.which("git") is not None
+    git_ok = (
+        shutil.which("git") is not None
+        or any(os.path.exists(p) for p in (
+            "/usr/bin/git", "/usr/local/bin/git", "/bin/git",
+        ))
+    )
     return {
         "ok": has_secret and repo_ok and script_ok and script_exec and git_ok,
         "webhook_secret_configured": has_secret,
