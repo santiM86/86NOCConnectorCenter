@@ -1,4 +1,4 @@
-# 86NocAgent — Windows installer
+# 86NocAgent - Windows installer
 #
 # Renders dynamically by the backend with the bound token + URL substituted in.
 # Run as Administrator. Idempotent: stops + replaces existing services.

@@ -314,7 +314,7 @@ function Build-ArgusIcon($Path) {
 
 function Write-ConnectorLauncher {
     param([string]$Path, [string]$BackendUrl, [string]$ClientId, [string]$Role, [string]$Version)
-    # Connector Console — UI 'Gestisci Dispositivi (SNMP Polling)' nello
+    # Connector Console - UI 'Gestisci Dispositivi (SNMP Polling)' nello
     # stile del legacy v3.8.28. Permette di aggiungere/rimuovere target,
     # importare/esportare CSV, testare connettivita' e salvare il YAML
     # del agent con riavvio automatico del servizio. NON contiene piu' i
@@ -1839,7 +1839,7 @@ function Run-Install {
             #      stanno nel Center.
             #   2) Voce "Disinstalla" (lifeline IT)
             #   3) Niente tray icon nativa per ora (sarebbe un binario
-            #      dedicato — feature successiva).
+            #      dedicato - feature successiva).
             # Cleanup di eventuali shortcut legacy "Connector.lnk" creati
             # da versioni precedenti del wizard.
             $startMenuLegacy1 = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\86BIT Argus Connector\Connector.lnk"
@@ -1849,7 +1849,7 @@ function Run-Install {
                     try { Remove-Item -Path $lp -Force -ErrorAction SilentlyContinue } catch {}
                 }
             }
-            # Creazione voce "Agent Status" — preferisce ArgusDesktop
+            # Creazione voce "Agent Status" - preferisce ArgusDesktop
             # (Wails moderno, no freeze), fallback a nocagent-ui.exe legacy
             # solo se Wails non e' presente / WebView2 non installato.
             $startMenu = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\86BIT Argus"
