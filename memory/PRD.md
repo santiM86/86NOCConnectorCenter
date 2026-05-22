@@ -32,6 +32,76 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-02-21 ✅ Systray nativa Win32 (argus-tray.exe) — stile Datto/CentraStage
+
+**Direttiva utente**: «procedi con La systray nativa Win32 (l'icona "86"
+piccola in basso a destra, come Datto). E non cambiare assolutamente
+questo metodo» (riferito al bundle wizard ZIP: `Installa-86NocAgent.bat`
++ `installer_gui.ps1` + `LEGGIMI.txt`).
+
+### Nuovo binario `cmd/argus-tray/main.go`
+- Systray nativa Win32 via `github.com/getlantern/systray@v1.2.2`.
+- Icona `argus.ico` embed (no file esterno richiesto a runtime).
+- `-H=windowsgui` ldflags → niente console window.
+- Tooltip dinamico: `"Argus Agent vX.Y.Z — <hostname> — <client_name>"`.
+- Menu contestuale (right-click sull'icona):
+  - **Apri NOC Center** → `rundll32 url.dll,FileProtocolHandler https://argus.86bit.it`
+  - **Stato Agent** → lancia `ArgusDesktop.exe` (mini-finestra Dashboard/Settings) o fallback `nocagent-ui.exe`
+  - **Apri agent.yaml** → Notepad sul file di config
+  - **Riavvia servizio** → PowerShell elevato `Stop/Start-Service 86NocAgent`
+  - **Informazioni** → dump versione+hostname+cliente in `%TEMP%\argus-info.txt`
+  - **Esci dal tray** → chiude solo l'icona, **il servizio resta attivo**
+- Reload `agent-ui.json` ogni 60s per riflettere cambi versione/cliente
+  fatti dall'update remoto senza bisogno di restart del tray.
+- Lookup `agent-ui.json` in cascata: `%ProgramData%\86NocAgent\` →
+  accanto all'exe → `%ProgramFiles%\86NocAgent\` (compat).
+
+### `installer_gui.ps1.template` step [10/11]
+- Scheduled Task `86BIT Argus Tray` At Logon → `argus-tray.exe` (no
+  argument). Fallback automatico per release < v4.13.5:
+  `ArgusDesktop.exe --minimized` → `nocagent-ui.exe`.
+- `Start-ScheduledTask` immediato così l'utente che sta installando ORA
+  vede subito la tray icon senza aspettare il prossimo logon.
+- Aggiunto `client_name` (= `DisplayName` del cliente) in `agent-ui.json`
+  per tooltip leggibile invece dell'UUID grezzo.
+
+### `install-noc-agent.ps1`
+- `argus-tray.exe` aggiunto a `$optional` (download best-effort dalla
+  release GitHub).
+- Process kill esteso: `argus-tray` aggiunto a `$uiProcs` per evitare
+  lock-file durante update.
+
+### Workflow CI `.github/workflows/release-agent.yml`
+- Step `go build argus-tray.exe` (ldflags `-H=windowsgui -s -w`).
+- `argus-tray.exe` aggiunto a `SHA256SUMS.txt` + `files:` release.
+- Release notes documentano il nuovo asset come "systray nativa Win32".
+
+### Bundle ZIP wizard ⚠️ INTATTO
+Come richiesto dall'utente, NON ho modificato:
+- `Installa-86NocAgent.bat` (1 KB, batch launcher con UAC prompt)
+- `installer_gui.ps1` (97 KB, render in real-time del template)
+- `LEGGIMI.txt` (1 KB, istruzioni one-liner)
+La logica di wizard install resta identica — argus-tray viene
+automaticamente incluso a partire dalla release v4.13.5+.
+
+### Validati in container
+- Cross-compile Windows argus-tray: **4.6 MB**, OK ✅
+- Cross-compile Windows nocui-v5 (regressione): 4.7 MB, OK ✅
+- Cross-compile Windows agent: 12.1 MB, OK ✅
+- Bilanciamento `{}` PS: install-noc-agent.ps1 231/231, template 389/389 ✅
+
+### Steps per produzione
+1. **Save to GitHub** → push branch `main`.
+2. Crea tag `v4.13.5` → GitHub Action compila anche `argus-tray.exe`
+   e lo allega alla release.
+3. Dal Center → AgentsPage → "⟳ Aggiorna" su ogni connector. Lo script
+   scarica `argus-tray.exe`, registra il Scheduled Task At Logon, e
+   avvia subito la tray icon (senza bisogno di logout/login).
+4. Il cliente vede l'icona Argus accanto all'orologio (come Datto "86").
+
+---
+
+
 ## 2026-02-21 ✅ Connector "Datto-style" — Start Menu + autostart minimizzato
 
 **Direttiva utente** (con screenshot di Datto/CentraStage):

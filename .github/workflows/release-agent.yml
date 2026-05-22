@@ -88,6 +88,13 @@ jobs:
           # nocagent-ui.exe — LEGACY walk UI (mantenuta come fallback).
           go build -trimpath -ldflags "${LDFLAGS} -X main.BuildVersion=${VERSION} -H=windowsgui" \
             -o build/bin/windows-amd64/nocagent-ui.exe ./cmd/nocui
+          # argus-tray.exe — systray nativa Win32 stile Datto/CentraStage.
+          # Icona "Argus" in system tray (lato destro taskbar) con menu
+          # contestuale (Apri Center, Stato, Restart servizio, Esci).
+          # -H=windowsgui: niente console window. NB: include argus.ico
+          # via go:embed quindi nessun file esterno richiesto a runtime.
+          go build -trimpath -ldflags "${LDFLAGS} -H=windowsgui" \
+            -o build/bin/windows-amd64/argus-tray.exe ./cmd/argus-tray
           go build -trimpath -ldflags "${LDFLAGS}" \
             -o build/bin/windows-amd64/nocinstall.exe ./cmd/installer
           ls -lh build/bin/windows-amd64/
@@ -186,7 +193,7 @@ jobs:
         working-directory: dist
         run: |
           set -euo pipefail
-          sha256sum nocagent.exe nocwatchdog.exe nocagent-ui.exe nocinstall.exe ArgusDesktop.exe \
+          sha256sum nocagent.exe nocwatchdog.exe nocagent-ui.exe argus-tray.exe nocinstall.exe ArgusDesktop.exe \
             > SHA256SUMS.txt
           cat SHA256SUMS.txt
           ls -lh
@@ -205,6 +212,7 @@ jobs:
             - `nocagent.exe` — servizio principale
             - `nocwatchdog.exe` — watchdog di riavvio
             - `nocagent-ui.exe` — GUI LEGACY (walk Win32, mantenuta come fallback)
+            - `argus-tray.exe` — **systray nativa Win32** (icona Argus in tray, stile Datto)
             - `ArgusDesktop.exe` — **nuova GUI Wails** (no freeze, scanner LAN streaming)
             - `nocinstall.exe` — installer CLI standalone
             - `installer_gui.ps1.template` — template PowerShell wizard
@@ -224,6 +232,7 @@ jobs:
             dist/nocagent.exe
             dist/nocwatchdog.exe
             dist/nocagent-ui.exe
+            dist/argus-tray.exe
             dist/nocinstall.exe
             dist/ArgusDesktop.exe
             dist/installer_gui.ps1.template

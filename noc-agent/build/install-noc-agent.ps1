@@ -561,9 +561,10 @@ if ($Source -eq "center") {
     foreach ($a in $rel.assets) { $assetUrls[$a.name] = $a.browser_download_url }
 }
 $required = @("nocagent.exe","nocwatchdog.exe","nocagent-ui.exe")
-# ArgusDesktop.exe (nuova UI Wails) e' opzionale per backward compatibility
-# con release vecchie che non lo includevano. Se presente lo installiamo.
-$optional = @("ArgusDesktop.exe")
+# ArgusDesktop.exe (nuova UI Wails) e argus-tray.exe (systray Datto-style)
+# sono opzionali per backward compatibility con release vecchie che non
+# li includevano. Se presenti li installiamo.
+$optional = @("ArgusDesktop.exe","argus-tray.exe")
 foreach ($f in $required) {
     if (-not $assetUrls.ContainsKey($f)) {
         Write-Fail "Asset mancante nella release ${Version}: $f"
@@ -595,7 +596,7 @@ Start-Sleep -Seconds 2
 # del nocagent-ui.exe / ArgusDesktop.exe nella cartella InstallDir.
 # Comunemente girano nella system tray dell'utente loggato e non vengono
 # fermati dal Stop-Service.
-$uiProcs = @("nocagent-ui","ArgusDesktop")
+$uiProcs = @("nocagent-ui","ArgusDesktop","argus-tray")
 foreach ($p in $uiProcs) {
     $procs = Get-Process -Name $p -ErrorAction SilentlyContinue
     if ($procs) {

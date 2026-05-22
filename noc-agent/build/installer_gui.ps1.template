@@ -1818,6 +1818,7 @@ function Run-Install {
             $uiCfg = @{
                 backend_url = $script:BackendUrl
                 client_id   = $script:ClientId
+                client_name = $script:DisplayName
                 token       = $script:Token
                 role        = $script:Role
                 install_dir = $InstallDir
@@ -1872,22 +1873,34 @@ function Run-Install {
         $script:progressBar.Value = 95
 
         # ============================================================
-        # [10/11] Autostart Datto-style: ArgusDesktop parte minimizzato
-        # in taskbar (--minimized) al logon dell'utente. Non appare la
-        # finestra, solo l'icona nella taskbar (= conferma visiva al
-        # cliente che il monitoraggio e' attivo). Click → mostra finestra.
+        # [10/11] Autostart Datto-style: argus-tray.exe parte al logon
+        # dell'utente. E' un piccolo binario (~4MB) senza WebView, niente
+        # finestra, solo systray nativa Win32 con icona "Argus" accanto
+        # all'orologio (esattamente come Datto Agent Monitor "86").
+        # Fallback per release vecchie: ArgusDesktop minimizzato.
         # ============================================================
-        Append-Log "[10/11] Autostart ArgusDesktop minimizzato (Datto-style)" $ColorAccent
+        Append-Log "[10/11] Autostart Argus tray (Datto-style)" $ColorAccent
         $taskName = '86BIT Argus Tray'
-        $uiExe = Join-Path $InstallDir "ArgusDesktop.exe"
-        if (-not (Test-Path $uiExe)) {
-            $uiExe = Join-Path $InstallDir "nocagent-ui.exe"
+        $trayExe = Join-Path $InstallDir "argus-tray.exe"
+        $fallbackArg = ""
+        if (-not (Test-Path $trayExe)) {
+            # Backward compat: release < v4.13.5 non ha argus-tray.exe
+            $trayExe = Join-Path $InstallDir "ArgusDesktop.exe"
+            $fallbackArg = "--minimized"
+        }
+        if (-not (Test-Path $trayExe)) {
+            $trayExe = Join-Path $InstallDir "nocagent-ui.exe"
+            $fallbackArg = ""
         }
         # Cleanup vecchi autostart registry-based
         Remove-ItemProperty -Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run' -Name '86BITArgusTray' -Force -ErrorAction SilentlyContinue
         Remove-ItemProperty -Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run' -Name '86BITArgusConnector' -Force -ErrorAction SilentlyContinue
         try {
-            $action = New-ScheduledTaskAction -Execute $uiExe -Argument "--minimized"
+            if ($fallbackArg) {
+                $action = New-ScheduledTaskAction -Execute $trayExe -Argument $fallbackArg
+            } else {
+                $action = New-ScheduledTaskAction -Execute $trayExe
+            }
             $trigger = New-ScheduledTaskTrigger -AtLogOn
             $principal = New-ScheduledTaskPrincipal -GroupId 'BUILTIN\Users' -RunLevel Limited
             $settings = New-ScheduledTaskSettingsSet `
@@ -1896,15 +1909,19 @@ function Run-Install {
                 -RestartCount 5 -RestartInterval ([TimeSpan]::FromMinutes(1))
             Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
                 -Principal $principal -Settings $settings -Force -ErrorAction Stop | Out-Null
-            Append-Log "      scheduled task '$taskName' -> $uiExe --minimized (At Logon)" $ColorMuted
+            Append-Log "      scheduled task '$taskName' -> $trayExe $fallbackArg (At Logon)" $ColorMuted
+            # Avvio immediato per l'utente che sta installando ORA
+            Start-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+            Append-Log "      tray icon avviata nella sessione utente" $ColorMuted
         } catch {
             Append-Log "      WARN: scheduled task non registrato: $($_.Exception.Message)" $ColorError
         }
         # Stoppiamo eventuali processi UI gia' in memoria (sara' rilanciato
-        # all'avvio dell'install/update con --minimized).
+        # all'avvio dell'install/update tramite il task At Logon).
         try {
             Get-Process -Name 'nocagent-ui'   -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
             Get-Process -Name 'ArgusDesktop'  -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+            Get-Process -Name 'argus-tray'    -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
         } catch { }
         Append-Log "      autostart UI disabilitato, processi UI terminati" $ColorMuted
 
