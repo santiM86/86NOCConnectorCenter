@@ -32,6 +32,423 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-02-21 ✅ GitHub Webhook Auto-Deploy — fine SSH manuali
+
+**Direttiva utente**: «collega non posso ogni volta che faccio una nuova
+versione del connector mettere le mani al server linux».
+
+### Soluzione implementata
+Webhook GitHub → endpoint backend `/api/webhooks/github-deploy` che
+esegue `git pull && pip install && yarn build && systemctl restart` in
+background. Ogni "Save to GitHub" da Emergent attiva auto-deploy in
+30-60 secondi.
+
+### File creati
+- **`/app/backend/routes/github_deploy.py`** (310 righe)
+  - `POST /api/webhooks/github-deploy` — endpoint pubblico per GitHub
+    con verifica HMAC-SHA256 obbligatoria. Filtra eventi `push` su
+    branch `main`. Risponde 202 in <100ms (fire-and-forget background).
+  - `POST /api/webhooks/github-deploy/trigger` — trigger manuale
+    admin-only (per ri-tentare deploy falliti senza push).
+  - `GET /api/webhooks/github-deploy/audit?limit=N` — storico deploy
+    con log + exit_code + duration.
+  - `GET /api/webhooks/github-deploy/health` — pre-flight check pubblico
+    (secret configurato, script presente, git disponibile, ecc.).
+- **`/app/scripts/auto-deploy.sh`** (140 righe, eseguibile)
+  - `git fetch + reset --hard origin/main` (no merge conflicts)
+  - `pip install` SOLO se `requirements.txt` cambiato
+  - `yarn install + build` SOLO se `frontend/` cambiato
+  - `sudo systemctl restart noc-backend` + healthcheck post-restart
+  - Restart `noc-frontend` opzionale se l'unit esiste
+  - Exit codes precisi per troubleshooting
+- **`/app/docs/setup-github-auto-deploy.md`** — guida step-by-step
+  per setup one-time (genera secret, .env, sudoer, webhook GitHub).
+
+### Sicurezza
+- HMAC-SHA256 obbligatorio: senza `GITHUB_WEBHOOK_SECRET` nel .env
+  l'endpoint risponde 503. Senza firma valida → 401.
+- `hmac.compare_digest` per timing-attack-safe comparison.
+- Branch whitelist (`NOC_DEPLOY_REFS=refs/heads/main` di default,
+  override-abile via env).
+- Audit completo di ogni invocazione (firma invalida, branch skip,
+  deploy started/finished/failed) in collection MongoDB
+  `github_deploy_audit`.
+- Trigger manuale gated da `Depends(get_current_user)` + role check.
+
+### Server.py
+- `from routes.github_deploy import router as github_deploy_router`
+- `app.include_router(github_deploy_router)`
+
+### Validato in container
+- ✅ Endpoint `/health`: ritorna struttura corretta, mostra
+  setup mancante (perché siamo in Emergent, non in prod).
+- ✅ POST senza secret → 503 con messaggio chiaro.
+- ✅ POST con firma invalida → 401.
+- ✅ POST ping con firma valida → 200 + `{pong: true}`.
+- ✅ POST push su branch `develop` con firma valida → 200 + skipped.
+
+### Setup richiesto in produzione (one-time, ~10 min)
+1. Genera secret: `openssl rand -hex 32`
+2. Aggiungi in `/home/arslan/86NOCConnectorCenter/backend/.env`:
+   `GITHUB_WEBHOOK_SECRET=<secret>`
+3. Crea `/etc/sudoers.d/noc-deploy` con NOPASSWD su `systemctl restart
+   noc-backend.service`.
+4. `chmod +x scripts/auto-deploy.sh`
+5. `sudo systemctl restart noc-backend`
+6. Verifica `curl https://argus.86bit.it/api/webhooks/github-deploy/health`
+7. GitHub repo → Settings → Webhooks → Add: URL
+   `https://argus.86bit.it/api/webhooks/github-deploy`, secret stesso,
+   event `push` solo.
+
+### Risultato finale per l'utente
+- Modifico codice in Emergent
+- Click "Save to GitHub"
+- GitHub manda webhook a argus.86bit.it
+- 30-60s dopo: il fix è in produzione, nessun SSH richiesto
+
+---
+
+
+## 2026-02-21 ✅ Systray nativa Win32 (argus-tray.exe) — stile Datto/CentraStage
+
+**Direttiva utente**: «procedi con La systray nativa Win32 (l'icona "86"
+piccola in basso a destra, come Datto). E non cambiare assolutamente
+questo metodo» (riferito al bundle wizard ZIP: `Installa-86NocAgent.bat`
++ `installer_gui.ps1` + `LEGGIMI.txt`).
+
+### Nuovo binario `cmd/argus-tray/main.go`
+- Systray nativa Win32 via `github.com/getlantern/systray@v1.2.2`.
+- Icona `argus.ico` embed (no file esterno richiesto a runtime).
+- `-H=windowsgui` ldflags → niente console window.
+- Tooltip dinamico: `"Argus Agent vX.Y.Z — <hostname> — <client_name>"`.
+- Menu contestuale (right-click sull'icona):
+  - **Apri NOC Center** → `rundll32 url.dll,FileProtocolHandler https://argus.86bit.it`
+  - **Stato Agent** → lancia `ArgusDesktop.exe` (mini-finestra Dashboard/Settings) o fallback `nocagent-ui.exe`
+  - **Apri agent.yaml** → Notepad sul file di config
+  - **Riavvia servizio** → PowerShell elevato `Stop/Start-Service 86NocAgent`
+  - **Informazioni** → dump versione+hostname+cliente in `%TEMP%\argus-info.txt`
+  - **Esci dal tray** → chiude solo l'icona, **il servizio resta attivo**
+- Reload `agent-ui.json` ogni 60s per riflettere cambi versione/cliente
+  fatti dall'update remoto senza bisogno di restart del tray.
+- Lookup `agent-ui.json` in cascata: `%ProgramData%\86NocAgent\` →
+  accanto all'exe → `%ProgramFiles%\86NocAgent\` (compat).
+
+### `installer_gui.ps1.template` step [10/11]
+- Scheduled Task `86BIT Argus Tray` At Logon → `argus-tray.exe` (no
+  argument). Fallback automatico per release < v4.13.5:
+  `ArgusDesktop.exe --minimized` → `nocagent-ui.exe`.
+- `Start-ScheduledTask` immediato così l'utente che sta installando ORA
+  vede subito la tray icon senza aspettare il prossimo logon.
+- Aggiunto `client_name` (= `DisplayName` del cliente) in `agent-ui.json`
+  per tooltip leggibile invece dell'UUID grezzo.
+
+### `install-noc-agent.ps1`
+- `argus-tray.exe` aggiunto a `$optional` (download best-effort dalla
+  release GitHub).
+- Process kill esteso: `argus-tray` aggiunto a `$uiProcs` per evitare
+  lock-file durante update.
+
+### Workflow CI `.github/workflows/release-agent.yml`
+- Step `go build argus-tray.exe` (ldflags `-H=windowsgui -s -w`).
+- `argus-tray.exe` aggiunto a `SHA256SUMS.txt` + `files:` release.
+- Release notes documentano il nuovo asset come "systray nativa Win32".
+
+### Bundle ZIP wizard ⚠️ INTATTO
+Come richiesto dall'utente, NON ho modificato:
+- `Installa-86NocAgent.bat` (1 KB, batch launcher con UAC prompt)
+- `installer_gui.ps1` (97 KB, render in real-time del template)
+- `LEGGIMI.txt` (1 KB, istruzioni one-liner)
+La logica di wizard install resta identica — argus-tray viene
+automaticamente incluso a partire dalla release v4.13.5+.
+
+### Validati in container
+- Cross-compile Windows argus-tray: **4.6 MB**, OK ✅
+- Cross-compile Windows nocui-v5 (regressione): 4.7 MB, OK ✅
+- Cross-compile Windows agent: 12.1 MB, OK ✅
+- Bilanciamento `{}` PS: install-noc-agent.ps1 231/231, template 389/389 ✅
+
+### Steps per produzione
+1. **Save to GitHub** → push branch `main`.
+2. Crea tag `v4.13.5` → GitHub Action compila anche `argus-tray.exe`
+   e lo allega alla release.
+3. Dal Center → AgentsPage → "⟳ Aggiorna" su ogni connector. Lo script
+   scarica `argus-tray.exe`, registra il Scheduled Task At Logon, e
+   avvia subito la tray icon (senza bisogno di logout/login).
+4. Il cliente vede l'icona Argus accanto all'orologio (come Datto "86").
+
+---
+
+
+## 2026-02-21 ✅ Connector "Datto-style" — Start Menu + autostart minimizzato
+
+**Direttiva utente** (con screenshot di Datto/CentraStage):
+«mi confermi che anche argus sarà cosi? e vedrò tutto nello stesso modo?»
+→ scelta opzione A: replica Datto-style con voci Start Menu + autostart
+minimizzato in taskbar al login.
+
+### Modifiche
+
+#### A) `installer_gui.ps1.template` — wizard nuove install
+- **[9/11]**: cleanup shortcut legacy `Connector.lnk` + creazione cartella
+  Start Menu **86BIT Argus** con voce **"Agent Status"** che lancia
+  `ArgusDesktop.exe` (fallback `nocagent-ui.exe`). Voce dedicata al solo
+  stato/info, la gestione completa resta nel NOC Center.
+- **[11/11]**: voce **"Disinstalla"** mantenuta (lifeline IT).
+- **[10/11]**: Scheduled Task **`86BIT Argus Tray`** At Logon → lancia
+  `ArgusDesktop.exe --minimized`. Al login del cliente l'icona Argus
+  appare nella taskbar minimizzata (conferma visiva "monitoraggio
+  attivo"), niente popup di finestra.
+
+#### B) `cmd/nocui-v5/main.go` — Argus Desktop
+- Aggiunto parser CLI args (`hasFlag`) per riconoscere `--minimized` e
+  `--tray` (alias).
+- Se presente uno dei due → `WindowStartState: options.Minimised`.
+  Lanciato senza flag (es. dal click su "Agent Status" nello Start Menu),
+  parte normale e mostra subito Dashboard + Impostazioni.
+- `HideWindowOnClose: true` mantenuto: chiusura finestra non killa il
+  processo, resta in background fino a logout/reboot.
+
+### UX finale sul PC client (post-update v4.13.5+)
+| Elemento | Stato |
+|---|---|
+| Servizi Windows (`86NocAgent`, `86NocWatchdog`) | Running in background |
+| Start Menu → "86BIT Argus" → "Agent Status" | ✅ Mostra mini-finestra (Dashboard + Impostazioni read-only) |
+| Start Menu → "86BIT Argus" → "Disinstalla" | ✅ Lifeline IT |
+| Autostart al logon | ✅ ArgusDesktop minimizzato in taskbar (icona Argus visibile) |
+| Click su icona taskbar minimizzata | ✅ Apre la mini-finestra Status |
+| Finestre Dispositivi/SNMP/Scanner/Logs locali | ❌ Spostate nel NOC Center web |
+
+### Note tecniche
+- **Tray icon nativa (Win32 systray, come "86" di Datto)**: non
+  implementata in questa iterazione. Wails v2 non ha systray nativa per
+  Windows; servirebbe un binario dedicato `argus-tray.exe` con
+  `getlantern/systray` (~200 righe). Compromesso attuale: icona
+  ArgusDesktop minimizzata in taskbar (gruppo barra delle applicazioni)
+  — visivamente molto simile alla Datto Agent Monitor.
+- Per propagare le modifiche serve: **Save to GitHub** → al prossimo
+  update remoto i client ricevono cartella Start Menu + autostart task.
+
+### Validati in container
+- `installer_gui.ps1.template`: bilanciamento `{}` 386/386 ✅
+- Go cross-compile Windows `nocui-v5`: OK ✅
+
+---
+
+
+## 2026-02-21 ✅ Connector 100% Headless + Gestione Update da Center
+
+**Direttiva utente**: «dal connector dovevamo nascondere questa finestra
+e tutti i comandi devono essere lanciarli dal center».
+Screenshot: finestra Win32 `nocagent-ui.exe` con tabs "Dispositivi
+Monitorati SNMP Polling / Esporta CSV / Importa CSV / Test SNMP /
+Apri Web UI / ..." visibile sul PC del cliente.
+
+### Modifiche applicate
+
+#### A) Wizard installer `installer_gui.ps1.template`
+- **[9/11]**: rimossa creazione `Start Menu\86BIT Argus Connector\Connector.lnk`.
+  Cleanup automatico di shortcut creati da versioni precedenti.
+  L'utente sul PC client non vede piu' la voce "Connector" nello Start Menu.
+- **[10/11]**: rimosso Scheduled Task `86BIT Argus Tray` (At Logon) e
+  cleanup di `HKLM\..\Run\86BITArgusTray` / `86BITArgusConnector`.
+  La UI desktop NON parte piu' automaticamente al login.
+  Kill di eventuali processi `nocagent-ui` / `ArgusDesktop` rimasti
+  in memoria dopo install.
+
+#### B) Update remoto `install-noc-agent.ps1` (step 10)
+- Rimossa la strategia di "Avvio UI desktop dopo install" (Start-Process,
+  schtasks /RU INTERACTIVE, fallback HKLM Run). Lo script al termine
+  dell'update **non riapre piu' la finestra Wails/Win32**. Solo cleanup
+  dei processi UI in memoria per evitare lock sui binari aggiornati.
+
+#### C) Comando Update dal Center (gia' esistente, ora documentato)
+Il flusso "lanciare il PS dal Center senza collegarsi al PC client"
+**esiste gia'** dalla v4.6+ del Connector. Ogni Agent ≥ v4.13.4 risponde
+al comando WS `update {"version":"vX.Y.Z"}` lanciando esattamente lo
+stesso `install-noc-agent.ps1` che l'admin lanciava manualmente in
+PowerShell. Pulsanti UI:
+- **`AgentsPage` → "↻ Aggiorna"** (per singolo agent): chiama
+  `POST /api/agents/bulk-update {agent_ids:[id]}` che invia WS `update`.
+- **`AgentsPage` → banner "Aggiorna N obsoleti"**: bulk-update con
+  `only_outdated=true, version=latest_resolved`.
+
+Per agent legacy (v4.0.x-dev installato per il bug `_render_wizard_ps1`):
+il comando WS "update" non e' ancora supportato dal binario v4.0.x → unica
+soluzione manuale PowerShell una tantum (vedi script `iwr ... | & ...
+-Version v4.13.4`) per portarli alla v4.13.4+; da li in poi tutto via Center.
+
+### Cosa vede ora l'utente sul PC client (post-update v4.13.4)
+- Servizi Windows: `86NocAgent` + `86NocWatchdog` in running (background).
+- Start Menu: solo "Disinstalla.lnk" (lifeline IT).
+- Tray icon: assente.
+- Finestra Win32/Wails: NON si apre piu' automaticamente. Se l'utente
+  finale lancia manualmente `C:\Program Files\86NocAgent\ArgusDesktop.exe`
+  vede solo Dashboard + Impostazioni (gia' nascoste Dispositivi/Discovery/
+  Scanner/Logs dal fix del 21/02 mattina).
+
+### Validati in container
+- Bilanciamento `{}`: install-noc-agent.ps1 = 231/231, installer_gui.ps1.template = 381/381 ✅
+- Go agent cross-compile Windows: OK ✅
+
+### Steps per propagare in produzione
+1. **Save to GitHub** (push branch `main`).
+2. La modifica `install-noc-agent.ps1` ha effetto al **prossimo update
+   remoto** (lo script viene scaricato live da raw.github.com): qualsiasi
+   PC su cui clicchi "Aggiorna" da Center riceve la versione headless.
+3. La modifica `installer_gui.ps1.template` ha effetto solo per NUOVE
+   installazioni iniziali (wizard ZIP). Per i client gia' installati con
+   shortcut/scheduled task vecchi, lo step 10 dell'update script fa
+   gia' cleanup automatico di quei residui.
+
+---
+
+
+## 2026-02-21 ✅ FIX P0 — "Installer scarica la prima versione (v4.0.0)"
+
+**Problema reportato dall'utente** (screenshot ClientsPage): cliccando
+"Installer v4.13.3" il download partiva, ma il PS1 dentro lo zip aveva
+`$Version = "4.0.0"` e installava silentemente la PRIMA release v4.0.0-dev
+invece dell'ultima. Il pulsante UI mostrava la versione corretta perché
+veniva risolta da `/api/agent/latest-version`, ma `_render_wizard_ps1`
+aveva un percorso di fallback diverso.
+
+### Root cause
+`backend/routes/agent_ws.py::_render_wizard_ps1` (riga 2993):
+```python
+ver_naked = ver_label.lstrip("v") if ver_label and ver_label != "latest" else "4.0.0"
+```
+Quando `_resolve_latest_agent_version_safe()` ritornava "latest" come
+fallback finale (GitHub API rate-limit unauth = 60/h raggiunto, repo
+privato senza PAT, override DB con valore "latest"), `ver_naked` diventava
+"4.0.0" → il template iniettava quel valore in `$Version` → il PS1
+scaricava da GitHub i binari della release v4.0.0 (la prima mai pubblicata)
+e li installava come "ultima versione".
+
+### Fix applicato
+- **`_render_wizard_ps1`**: invece di fallback silenzioso a "4.0.0",
+  ora ritorna HTTP 503 con messaggio esplicito che indica all'admin
+  cosa fare:
+  > *"Impossibile determinare l'ultima versione del Connector dal repo
+  > GitHub. Imposta AGENT_GITHUB_TOKEN o AGENT_LATEST_VERSION nel .env
+  > del backend, oppure usa l'override DB da Settings → Agent Latest
+  > Version Override."*
+- Check robusto: rifiuta sia `""` che `"latest"` che `"vlatest"`
+  (case-insensitive, lstrip("v") gestisce override DB "v" + valore).
+- **`installer_gui.ps1.template`**: safety-net interno (riga 76)
+  aggiornato da `"4.10.3"` → `"4.13.4"` come ulteriore protezione
+  contro template stantii in produzione.
+
+### Testato in container
+```
+[caso fallback ver=latest]
+  HTTP 503 → detail con istruzioni esplicite ✅
+[caso normale]
+  HTTP 200 → zip con $Version = "4.13.4" ✅
+```
+
+### Steps per attivare in produzione
+1. **Save to GitHub** (push del backend modificato).
+2. `sudo systemctl restart noc-backend` sulla VM Linux.
+3. Test: dalla UI clicca "Installer vX.Y.Z" sul cliente di test e
+   verifica che dentro lo zip `installer_gui.ps1` riga 73 contenga
+   la versione corrente, non "4.0.0".
+4. Se vedi 503 in produzione → vai in `Settings → Agent Latest
+   Version Override` e inserisci la versione manualmente (es. `v4.13.4`)
+   oppure aggiungi `AGENT_GITHUB_TOKEN` al `.env` del backend.
+
+### File toccati
+- `/app/backend/routes/agent_ws.py` (funzione `_render_wizard_ps1`)
+- `/app/noc-agent/build/installer_gui.ps1.template` (safety-net 4.13.4)
+
+---
+
+
+## 2026-02-21 ✅ Sblocco Update + Rimozione Connector dal Center (P0)
+
+**Problema utente**: «dobbiamo assolutamente sbloccare update e rimozione
+connector dal center che ora è bloccato e non riusciamo ad evolverci».
+Screenshot fornito: `target=None resolved=None` + "Upload ricevuto ma
+transcript vuoto" sul log upgrade di SOCIALSRV (86BITOffice v4.13.1).
+
+### Cause individuate
+1. **Transcript PowerShell vuoto**: `Start-Transcript` scrive UTF-16 LE
+   con BOM ma `Stop-Transcript` non flusha sempre prima del read
+   (250ms troppo poco su disk lenti / antivirus che ispezionano).
+2. **target/resolved=None**: `$Version` veniva riassegnato dalla
+   risoluzione del manifest (riga `$Version = $rel.version`), quindi
+   nel `Send-UpgradeReport` finale non riflette più il target richiesto.
+3. **Record stuck in `in_progress`**: se il wrapper PS muore senza
+   heartbeat e l'agent non si riconnette, il watcher di completamento
+   (offline > 30s) non scatta — il record resta a "aggiornando…"
+   indefinitamente, senza UI per sbloccarlo.
+
+### Fix applicati
+
+#### A) Backend (`/app/backend/routes/agent_ws.py`)
+
+- **Nuovo endpoint `POST /api/agents/{id}/force-cleanup`** admin-only:
+  - `purge_db=false` (default): reset soft dei campi `update_*` /
+    `uninstall_*` mantenendo il record. Audit in `agent_cleanup_audit`.
+  - `purge_db=true`: cancellazione completa (= DELETE classico senza
+    uninstall_remote) per record zombie irreparabili.
+- Display log marker: `target=` / `resolved=` ora mostrano `—` invece
+  di `None` quando il campo è assente nel doc.
+
+#### B) Script PowerShell (`/app/noc-agent/build/install-noc-agent.ps1`)
+
+- **Snapshot immediato `$script:TargetVersionRaw`** subito dopo il
+  param block, PRIMA di qualsiasi riassegnazione di `$Version`. Usato
+  in `Send-UpgradeReport` per il campo `target_version`.
+- **`Send-UpgradeReport` robusto**:
+  - Pausa post `Stop-Transcript` aumentata da 250ms → 1000ms.
+  - Tre livelli di fallback per leggere il transcript:
+    1. `[System.IO.File]::ReadAllText` (auto-detect BOM)
+    2. `ReadAllBytes` + decoding esplicito UTF-16 LE / BE / UTF-8 / default
+    3. Summary auto-generato (PID, hostname, started/finished, target,
+       resolved, status, source, role, marker JSON, listing cartella
+       log) — garantisce che il `log_excerpt` non sia MAI vuoto.
+  - Nuovo parametro `Status="started"`: invia heartbeat al Center
+    SENZA chiudere il transcript (continua a loggare durante upgrade).
+- **Heartbeat "started"** alla riga 408 (dopo definizione function):
+  rimpiazza eventuali report stantii nella UI così l'admin vede subito
+  il nuovo run, non un report di 3 mesi fa.
+
+#### C) Frontend (`/app/frontend/src/pages/AgentsPage.js`)
+
+- Nuova funzione `forceCleanup(agent, purge)` con confirm dialog.
+- Pulsante "⚠ sblocca stato" appare automaticamente nelle progress bar
+  di:
+  - update_status=in_progress quando `update_elapsed_sec > 300` (5 min)
+  - uninstall_status=in_progress quando `uninstall_elapsed_sec > 180` (3 min)
+- Pulsante "⚠" persistente nelle azioni standard quando l'agent ha
+  `update_status` o `uninstall_status` valorizzato (anche
+  completed/failed) — emergency escape per qualsiasi stato anomalo.
+
+### Validazione
+
+- Backend: endpoint testato via curl con JWT admin (404 su ID inesistente,
+  400 su ID invalido, comportamento previsto su agent reale).
+- Ruff/ESLint: 0 nuovi errori. Bilanciamento `{}` PS script: 237/237.
+- Screenshot AgentsPage: UI renderizza, banner "v4.13.4 disponibile"
+  visibile (utente già aggiornato a v4.13.4).
+- Ordine definizione/chiamata `Send-UpgradeReport` verificato:
+  function definita a offset 10743, prima chiamata "started" a offset 20040
+  (no forward-reference).
+
+### Steps utente per attivare in produzione
+
+1. **Save to GitHub** (push delle modifiche su `main`). Lo script PS
+   prende effetto **immediatamente** al prossimo update remoto (scarico
+   da `raw.githubusercontent.com`), nessun bisogno di nuovo tag.
+2. L'endpoint backend `/api/agents/{id}/force-cleanup` è attivo
+   automaticamente al prossimo restart di `noc-backend` in produzione.
+3. Frontend: hot-reload via deploy abituale.
+4. Per sbloccare manualmente record stuck già esistenti: AgentsPage →
+   pulsante "⚠" → conferma → record resettato in 1 click.
+
+---
+
+
 ## 2026-02-21 ✅ Connector UI "headless-style" — Dashboard + Impostazioni only
 
 **Direttiva utente**: «voglio solo che le funzionalità che abbiamo in

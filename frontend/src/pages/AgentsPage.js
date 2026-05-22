@@ -280,6 +280,38 @@ export default function AgentsPage() {
     }
   };
 
+  // Sblocca stato bloccato: reset campi update_* / uninstall_* in DB.
+  // Usato quando un agent resta in "in_progress" per più tempo del
+  // timeout (es. wrapper PS crashato senza heartbeat, agent crashato
+  // post-update, rete instabile). Endpoint admin-only su backend.
+  const forceCleanup = async (a, purge = false) => {
+    if (!a) return;
+    const label = a.hostname || a.agent_id;
+    const msg = purge
+      ? `Eliminare COMPLETAMENTE l'agent ${label} dal Center (DB + storico)?\n\nQuesto NON disinstalla il software dal PC client. Usalo solo se sei sicuro che il record è uno zombie.`
+      : `Sbloccare lo stato dell'agent ${label}?\n\nVerranno azzerati i campi update_* e uninstall_* (record mantenuto, l'agent può riconnettersi normalmente).`;
+    if (!window.confirm(msg)) return;
+    setBusyIds((s) => new Set(s).add(a.agent_id));
+    try {
+      const r = await axios.post(
+        `${API}/agents/${a.agent_id}/force-cleanup`,
+        null,
+        { params: { purge_db: purge } },
+      );
+      if (r.data.purged) {
+        toast.success(`${label}: rimosso dal Center (purge_db=true)`);
+        setAgents((prev) => prev.filter((x) => x.agent_id !== a.agent_id));
+      } else {
+        toast.success(`${label}: stato sbloccato (campi update_*/uninstall_* azzerati)`);
+      }
+      setTimeout(fetchAll, 1000);
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Errore sblocco stato");
+    } finally {
+      setBusyIds((s) => { const x = new Set(s); x.delete(a.agent_id); return x; });
+    }
+  };
+
   const uniqueClients = Object.entries(
     dedupedAgents.reduce((acc, a) => { acc[a.client_id] = (acc[a.client_id] || 0) + 1; return acc; }, {})
   );
@@ -503,6 +535,14 @@ export default function AgentsPage() {
                             <span className="text-[8px] text-[var(--text-muted)]">
                               {a.uninstall_method === "legacy_update" ? "via magic update" : "via WS"} · {Math.floor(a.uninstall_elapsed_sec || 0)}s
                             </span>
+                            {a.uninstall_elapsed_sec > 180 && (
+                              <button onClick={() => forceCleanup(a, false)}
+                                className="text-[9px] text-amber-400 hover:underline"
+                                data-testid={`agent-force-unblock-uninstall-${a.agent_id}`}
+                                title="Stato bloccato da > 3 min — azzera campi uninstall_*">
+                                ⚠ sblocca stato
+                              </button>
+                            )}
                           </div>
                         ) : a.uninstall_status === "completed" ? (
                           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 text-[9px] border border-emerald-500/20"
@@ -539,6 +579,14 @@ export default function AgentsPage() {
                             <span className="text-[8px] text-[var(--text-muted)]">
                               → {a.update_target_version} · {Math.floor(a.update_elapsed_sec || 0)}s
                             </span>
+                            {a.update_elapsed_sec > 300 && (
+                              <button onClick={() => forceCleanup(a, false)}
+                                className="text-[9px] text-amber-400 hover:underline"
+                                data-testid={`agent-force-unblock-update-${a.agent_id}`}
+                                title="Stato bloccato da > 5 min — azzera campi update_*">
+                                ⚠ sblocca stato
+                              </button>
+                            )}
                           </div>
                         ) : a.update_status === "completed" ? (
                           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 text-[9px] border border-emerald-500/20"
@@ -615,6 +663,15 @@ export default function AgentsPage() {
                               data-testid={`agent-remove-${a.agent_id}`}>
                               <Trash size={10} />
                             </button>
+                            {(a.update_status || a.uninstall_status) && (
+                              <button
+                                onClick={() => forceCleanup(a, false)}
+                                className="ml-1 text-[10px] px-2 py-0.5 rounded bg-zinc-500/10 text-zinc-400 hover:bg-amber-500/10 hover:text-amber-400 border border-zinc-500/20 transition-colors"
+                                title={`Sblocca stato (update=${a.update_status || '—'} uninstall=${a.uninstall_status || '—'})`}
+                                data-testid={`agent-force-cleanup-${a.agent_id}`}>
+                                ⚠
+                              </button>
+                            )}
                           </>
                         )}
                       </td>

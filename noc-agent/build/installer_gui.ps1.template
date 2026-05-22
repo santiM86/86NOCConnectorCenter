@@ -72,8 +72,10 @@ $ServiceName    = "86NocAgent"
 $WatchdogName   = "86NocWatchdog"
 $Version        = "__VERSION__"  # iniettata dal backend (vedi _render_wizard_ps1)
 # Safety net: se il template viene rinominato/copiato senza sostituzione
-# (es. fork manuale), forza un default ragionevole.
-if ($Version -like "*VERSION*") { $Version = "4.10.3" }
+# (es. fork manuale o template stantio in produzione), forza un default
+# che corrisponda all'ULTIMA versione stabile nota al momento del commit
+# di questo template. Aggiornare ad ogni release del Connector.
+if ($Version -like "*VERSION*") { $Version = "4.13.4" }
 $Platform       = "windows-amd64"
 $InstallDir     = Join-Path $env:ProgramFiles $AppName
 $DataDir        = Join-Path $env:ProgramData  $AppName
@@ -1816,6 +1818,7 @@ function Run-Install {
             $uiCfg = @{
                 backend_url = $script:BackendUrl
                 client_id   = $script:ClientId
+                client_name = $script:DisplayName
                 token       = $script:Token
                 role        = $script:Role
                 install_dir = $InstallDir
@@ -1828,36 +1831,76 @@ function Run-Install {
             Append-Log "      WARN: agent-ui.json non scritto: $($_.Exception.Message)" $ColorError
         }
         try {
-            $startMenu = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\86BIT Argus Connector"
+            # 2026-02-21 HEADLESS DATTO-STYLE: il Connector resta gestito
+            # 100% da NOC Center web. Sul PC client manteniamo SOLO:
+            #   1) Cartella Start Menu "86BIT Argus" con voce "Agent Status"
+            #      che apre la mini-finestra (Dashboard + Impostazioni
+            #      read-only). Niente Dispositivi/Discovery/Scanner: quelli
+            #      stanno nel Center.
+            #   2) Voce "Disinstalla" (lifeline IT)
+            #   3) Niente tray icon nativa per ora (sarebbe un binario
+            #      dedicato — feature successiva).
+            # Cleanup di eventuali shortcut legacy "Connector.lnk" creati
+            # da versioni precedenti del wizard.
+            $startMenuLegacy1 = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\86BIT Argus Connector\Connector.lnk"
+            $startMenuLegacy2 = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\86BIT Argus Center\Connector.lnk"
+            foreach ($lp in @($startMenuLegacy1, $startMenuLegacy2)) {
+                if (Test-Path $lp) {
+                    try { Remove-Item -Path $lp -Force -ErrorAction SilentlyContinue } catch {}
+                }
+            }
+            # Creazione voce "Agent Status" — preferisce ArgusDesktop
+            # (Wails moderno, no freeze), fallback a nocagent-ui.exe legacy
+            # solo se Wails non e' presente / WebView2 non installato.
+            $startMenu = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\86BIT Argus"
             New-Item -ItemType Directory -Force -Path $startMenu | Out-Null
             $wsh = New-Object -ComObject WScript.Shell
-            $uiExe = Join-Path $InstallDir "nocagent-ui.exe"
+            $argusDesktop = Join-Path $InstallDir "ArgusDesktop.exe"
+            $legacyUI     = Join-Path $InstallDir "nocagent-ui.exe"
+            $uiExe = if (Test-Path $argusDesktop) { $argusDesktop } else { $legacyUI }
             $iconFile = Join-Path $InstallDir "argus.ico"
             $iconLoc = if (Test-Path $iconFile) { $iconFile } else { "$uiExe,0" }
-            $lnk = $wsh.CreateShortcut((Join-Path $startMenu "Connector.lnk"))
-            $lnk.TargetPath = $uiExe
-            $lnk.Arguments = "-show"
-            $lnk.WorkingDirectory = $InstallDir
-            $lnk.IconLocation = $iconLoc
-            $lnk.Description = "Apri Connector Argus - Gestisci Dispositivi"
-            $lnk.Save()
-            Append-Log "      shortcut '86BIT Argus Connector\Connector' creato" $ColorMuted
+            $lnkStatus = $wsh.CreateShortcut((Join-Path $startMenu "Agent Status.lnk"))
+            $lnkStatus.TargetPath = $uiExe
+            $lnkStatus.WorkingDirectory = $InstallDir
+            $lnkStatus.IconLocation = $iconLoc
+            $lnkStatus.Description = "Stato Agent Argus - Apre mini-finestra (gestione completa nel NOC Center)"
+            $lnkStatus.Save()
+            Append-Log "      shortcut '86BIT Argus\Agent Status' creato (Datto-style)" $ColorMuted
         } catch {
-            Append-Log "      WARN: shortcut non creato: $($_.Exception.Message)" $ColorError
+            Append-Log "      WARN: shortcut Agent Status non creato: $($_.Exception.Message)" $ColorError
         }
         $script:progressBar.Value = 95
 
         # ============================================================
-        # [10/11] Autostart tray via Scheduled Task At Logon: lancia
-        # nocagent-ui.exe nella sessione utente (no PowerShell, no DOS).
+        # [10/11] Autostart Datto-style: argus-tray.exe parte al logon
+        # dell'utente. E' un piccolo binario (~4MB) senza WebView, niente
+        # finestra, solo systray nativa Win32 con icona "Argus" accanto
+        # all'orologio (esattamente come Datto Agent Monitor "86").
+        # Fallback per release vecchie: ArgusDesktop minimizzato.
         # ============================================================
-        Append-Log "[10/11] Registrazione autostart Connector UI" $ColorAccent
+        Append-Log "[10/11] Autostart Argus tray (Datto-style)" $ColorAccent
         $taskName = '86BIT Argus Tray'
-        $uiExe = Join-Path $InstallDir "nocagent-ui.exe"
-        # Cleanup eventuali autostart legacy (PowerShell-based)
+        $trayExe = Join-Path $InstallDir "argus-tray.exe"
+        $fallbackArg = ""
+        if (-not (Test-Path $trayExe)) {
+            # Backward compat: release < v4.13.5 non ha argus-tray.exe
+            $trayExe = Join-Path $InstallDir "ArgusDesktop.exe"
+            $fallbackArg = "--minimized"
+        }
+        if (-not (Test-Path $trayExe)) {
+            $trayExe = Join-Path $InstallDir "nocagent-ui.exe"
+            $fallbackArg = ""
+        }
+        # Cleanup vecchi autostart registry-based
         Remove-ItemProperty -Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run' -Name '86BITArgusTray' -Force -ErrorAction SilentlyContinue
+        Remove-ItemProperty -Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run' -Name '86BITArgusConnector' -Force -ErrorAction SilentlyContinue
         try {
-            $action = New-ScheduledTaskAction -Execute $uiExe
+            if ($fallbackArg) {
+                $action = New-ScheduledTaskAction -Execute $trayExe -Argument $fallbackArg
+            } else {
+                $action = New-ScheduledTaskAction -Execute $trayExe
+            }
             $trigger = New-ScheduledTaskTrigger -AtLogOn
             $principal = New-ScheduledTaskPrincipal -GroupId 'BUILTIN\Users' -RunLevel Limited
             $settings = New-ScheduledTaskSettingsSet `
@@ -1866,17 +1909,21 @@ function Run-Install {
                 -RestartCount 5 -RestartInterval ([TimeSpan]::FromMinutes(1))
             Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
                 -Principal $principal -Settings $settings -Force -ErrorAction Stop | Out-Null
-            Append-Log "      scheduled task '$taskName' -> nocagent-ui.exe (At Logon)" $ColorMuted
+            Append-Log "      scheduled task '$taskName' -> $trayExe $fallbackArg (At Logon)" $ColorMuted
+            # Avvio immediato per l'utente che sta installando ORA
             Start-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
             Append-Log "      tray icon avviata nella sessione utente" $ColorMuted
         } catch {
             Append-Log "      WARN: scheduled task non registrato: $($_.Exception.Message)" $ColorError
-            try {
-                $runKey = "HKLM:\Software\Microsoft\Windows\CurrentVersion\Run"
-                Set-ItemProperty -Path $runKey -Name "86BITArgusTray" -Value $uiExe -Force
-                Append-Log "      fallback HKLM\\Run registrato (parte al prossimo logon)" $ColorMuted
-            } catch { }
         }
+        # Stoppiamo eventuali processi UI gia' in memoria (sara' rilanciato
+        # all'avvio dell'install/update tramite il task At Logon).
+        try {
+            Get-Process -Name 'nocagent-ui'   -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+            Get-Process -Name 'ArgusDesktop'  -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+            Get-Process -Name 'argus-tray'    -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+        } catch { }
+        Append-Log "      autostart UI disabilitato, processi UI terminati" $ColorMuted
 
         # ============================================================
         # [11/11] Registrazione 'Programmi e funzionalita'' + uninstall.ps1
