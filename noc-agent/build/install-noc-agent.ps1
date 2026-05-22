@@ -1057,45 +1057,17 @@ if ((Test-Path $argusDesktop) -and $webview2Available) {
     $uiExe   = $legacyUI
     $uiLabel = "nocagent-ui (legacy)"
 }
-if (Test-Path $uiExe) {
-    Write-Step "Avvio UI desktop ($uiLabel)"
-    $launched = $false
-    # Strategia 1: Start-Process diretto. Funziona quando l'installer
-    # gira nella sessione utente (PowerShell admin lanciato dall'utente
-    # via UAC) — caso largamente maggioritario in produzione MSP. Il
-    # processo figlio eredita il contesto interattivo e la tray icon
-    # appare correttamente nella session dell'utente loggato.
-    try {
-        Start-Process -FilePath $uiExe -ErrorAction Stop
-        Write-Ok "UI desktop avviata (Start-Process diretto)"
-        $launched = $true
-    } catch {
-        Write-Warn2 "Start-Process diretto fallito: $($_.Exception.Message)"
-    }
-    # Strategia 2 (fallback per SYSTEM session, es. RMM-deployed): usa
-    # schtasks CLI nativo (NON XML — l'XML schema 1.4 richiedeva
-    # EndBoundary obbligatorio non gestito → errore "(7,4):EndBoundary").
-    # Crea un task one-shot, lo esegue, lo elimina. /RU INTERACTIVE
-    # forza l'esecuzione nella sessione utente interattivo corrente.
-    if (-not $launched) {
-        try {
-            $taskName = "86NocAgent-UI-Launch-$([guid]::NewGuid().ToString('N').Substring(0,8))"
-            & schtasks.exe /Create /TN $taskName /TR "`"$uiExe`"" /SC ONCE /ST "23:59" /SD "01/01/2030" /RU "INTERACTIVE" /RL LIMITED /F | Out-Null
-            if ($LASTEXITCODE -eq 0) {
-                & schtasks.exe /Run /TN $taskName | Out-Null
-                Start-Sleep -Seconds 3
-                & schtasks.exe /Delete /TN $taskName /F 2>$null | Out-Null
-                Write-Ok "UI desktop avviata via schtasks INTERACTIVE"
-                $launched = $true
-            }
-        } catch {
-            Write-Warn2 "Launch via schtasks fallita: $($_.Exception.Message)"
-        }
-    }
-    if (-not $launched) {
-        Write-Warn2 "Impossibile avviare UI desktop automaticamente. Apri manualmente dal menu Start: '86BIT Argus Connector > Connector'."
-    }
-}
+# 2026-02-21 HEADLESS: il Connector non deve piu' aprire UI desktop sul
+# PC client. Tutta la gestione (dispositivi SNMP, scansioni, log, update)
+# avviene da NOC Center (argus.86bit.it). Skippiamo il launch della UI
+# in TUTTI i casi - sia install iniziale dal wizard ZIP, sia update
+# remoto (-Source center). Manteniamo solo il cleanup di processi UI
+# residui per evitare conflitti di file lock sul binario aggiornato.
+try {
+    Get-Process -Name 'nocagent-ui'   -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    Get-Process -Name 'ArgusDesktop'  -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+} catch {}
+Write-Step "Headless mode: UI desktop NON avviata. Gestione via NOC Center."
 
 Write-Host "Per controllare i log in tempo reale:" -ForegroundColor Gray
 Write-Host "  Get-Content `"`$((Get-Content '$markerPath' -Raw).Trim())`" -Wait -Tail 50" -ForegroundColor Gray

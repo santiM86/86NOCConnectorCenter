@@ -32,6 +32,74 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-02-21 ✅ Connector 100% Headless + Gestione Update da Center
+
+**Direttiva utente**: «dal connector dovevamo nascondere questa finestra
+e tutti i comandi devono essere lanciarli dal center».
+Screenshot: finestra Win32 `nocagent-ui.exe` con tabs "Dispositivi
+Monitorati SNMP Polling / Esporta CSV / Importa CSV / Test SNMP /
+Apri Web UI / ..." visibile sul PC del cliente.
+
+### Modifiche applicate
+
+#### A) Wizard installer `installer_gui.ps1.template`
+- **[9/11]**: rimossa creazione `Start Menu\86BIT Argus Connector\Connector.lnk`.
+  Cleanup automatico di shortcut creati da versioni precedenti.
+  L'utente sul PC client non vede piu' la voce "Connector" nello Start Menu.
+- **[10/11]**: rimosso Scheduled Task `86BIT Argus Tray` (At Logon) e
+  cleanup di `HKLM\..\Run\86BITArgusTray` / `86BITArgusConnector`.
+  La UI desktop NON parte piu' automaticamente al login.
+  Kill di eventuali processi `nocagent-ui` / `ArgusDesktop` rimasti
+  in memoria dopo install.
+
+#### B) Update remoto `install-noc-agent.ps1` (step 10)
+- Rimossa la strategia di "Avvio UI desktop dopo install" (Start-Process,
+  schtasks /RU INTERACTIVE, fallback HKLM Run). Lo script al termine
+  dell'update **non riapre piu' la finestra Wails/Win32**. Solo cleanup
+  dei processi UI in memoria per evitare lock sui binari aggiornati.
+
+#### C) Comando Update dal Center (gia' esistente, ora documentato)
+Il flusso "lanciare il PS dal Center senza collegarsi al PC client"
+**esiste gia'** dalla v4.6+ del Connector. Ogni Agent ≥ v4.13.4 risponde
+al comando WS `update {"version":"vX.Y.Z"}` lanciando esattamente lo
+stesso `install-noc-agent.ps1` che l'admin lanciava manualmente in
+PowerShell. Pulsanti UI:
+- **`AgentsPage` → "↻ Aggiorna"** (per singolo agent): chiama
+  `POST /api/agents/bulk-update {agent_ids:[id]}` che invia WS `update`.
+- **`AgentsPage` → banner "Aggiorna N obsoleti"**: bulk-update con
+  `only_outdated=true, version=latest_resolved`.
+
+Per agent legacy (v4.0.x-dev installato per il bug `_render_wizard_ps1`):
+il comando WS "update" non e' ancora supportato dal binario v4.0.x → unica
+soluzione manuale PowerShell una tantum (vedi script `iwr ... | & ...
+-Version v4.13.4`) per portarli alla v4.13.4+; da li in poi tutto via Center.
+
+### Cosa vede ora l'utente sul PC client (post-update v4.13.4)
+- Servizi Windows: `86NocAgent` + `86NocWatchdog` in running (background).
+- Start Menu: solo "Disinstalla.lnk" (lifeline IT).
+- Tray icon: assente.
+- Finestra Win32/Wails: NON si apre piu' automaticamente. Se l'utente
+  finale lancia manualmente `C:\Program Files\86NocAgent\ArgusDesktop.exe`
+  vede solo Dashboard + Impostazioni (gia' nascoste Dispositivi/Discovery/
+  Scanner/Logs dal fix del 21/02 mattina).
+
+### Validati in container
+- Bilanciamento `{}`: install-noc-agent.ps1 = 231/231, installer_gui.ps1.template = 381/381 ✅
+- Go agent cross-compile Windows: OK ✅
+
+### Steps per propagare in produzione
+1. **Save to GitHub** (push branch `main`).
+2. La modifica `install-noc-agent.ps1` ha effetto al **prossimo update
+   remoto** (lo script viene scaricato live da raw.github.com): qualsiasi
+   PC su cui clicchi "Aggiorna" da Center riceve la versione headless.
+3. La modifica `installer_gui.ps1.template` ha effetto solo per NUOVE
+   installazioni iniziali (wizard ZIP). Per i client gia' installati con
+   shortcut/scheduled task vecchi, lo step 10 dell'update script fa
+   gia' cleanup automatico di quei residui.
+
+---
+
+
 ## 2026-02-21 ✅ FIX P0 — "Installer scarica la prima versione (v4.0.0)"
 
 **Problema reportato dall'utente** (screenshot ClientsPage): cliccando

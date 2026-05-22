@@ -1830,55 +1830,52 @@ function Run-Install {
             Append-Log "      WARN: agent-ui.json non scritto: $($_.Exception.Message)" $ColorError
         }
         try {
-            $startMenu = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\86BIT Argus Connector"
-            New-Item -ItemType Directory -Force -Path $startMenu | Out-Null
-            $wsh = New-Object -ComObject WScript.Shell
-            $uiExe = Join-Path $InstallDir "nocagent-ui.exe"
-            $iconFile = Join-Path $InstallDir "argus.ico"
-            $iconLoc = if (Test-Path $iconFile) { $iconFile } else { "$uiExe,0" }
-            $lnk = $wsh.CreateShortcut((Join-Path $startMenu "Connector.lnk"))
-            $lnk.TargetPath = $uiExe
-            $lnk.Arguments = "-show"
-            $lnk.WorkingDirectory = $InstallDir
-            $lnk.IconLocation = $iconLoc
-            $lnk.Description = "Apri Connector Argus - Gestisci Dispositivi"
-            $lnk.Save()
-            Append-Log "      shortcut '86BIT Argus Connector\Connector' creato" $ColorMuted
+            # 2026-02-21: HEADLESS MODE — il Connector non deve più
+            # esporre la UI desktop locale. Tutta la gestione (dispositivi
+            # SNMP, scansioni, log, update) avviene dal NOC Center web.
+            # Niente shortcut Start Menu per "Connector" (l'utente sul PC
+            # client non deve mai vedere la finestra Win32 legacy).
+            # Manteniamo SOLO lo shortcut "Disinstalla" (creato sotto) come
+            # via di fuga per IT in caso di disinstallazione manuale.
+            # Cleanup di eventuali shortcut creati da versioni precedenti.
+            $startMenuLegacy1 = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\86BIT Argus Connector\Connector.lnk"
+            $startMenuLegacy2 = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\86BIT Argus Center\Connector.lnk"
+            foreach ($lp in @($startMenuLegacy1, $startMenuLegacy2)) {
+                if (Test-Path $lp) {
+                    try { Remove-Item -Path $lp -Force -ErrorAction SilentlyContinue } catch {}
+                }
+            }
+            Append-Log "      headless mode: nessuno shortcut UI nel Start Menu" $ColorMuted
         } catch {
-            Append-Log "      WARN: shortcut non creato: $($_.Exception.Message)" $ColorError
+            Append-Log "      WARN: cleanup shortcut legacy fallito: $($_.Exception.Message)" $ColorError
         }
         $script:progressBar.Value = 95
 
         # ============================================================
-        # [10/11] Autostart tray via Scheduled Task At Logon: lancia
-        # nocagent-ui.exe nella sessione utente (no PowerShell, no DOS).
+        # [10/11] HEADLESS — niente autostart UI. Il Connector gira come
+        # servizio in background. Le finestre Win32 / Wails non vengono
+        # piu' lanciate automaticamente. L'admin gestisce tutto dal
+        # NOC Center (argus.86bit.it).
         # ============================================================
-        Append-Log "[10/11] Registrazione autostart Connector UI" $ColorAccent
+        Append-Log "[10/11] Modalita' headless: skip autostart UI" $ColorAccent
         $taskName = '86BIT Argus Tray'
-        $uiExe = Join-Path $InstallDir "nocagent-ui.exe"
-        # Cleanup eventuali autostart legacy (PowerShell-based)
-        Remove-ItemProperty -Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run' -Name '86BITArgusTray' -Force -ErrorAction SilentlyContinue
+        # Cleanup completo di autostart legacy:
+        #   - Scheduled Task "86BIT Argus Tray" (creato dalle versioni
+        #     precedenti del wizard)
+        #   - HKLM\..\Run\86BITArgusTray
+        #   - HKLM\..\Run\86BITArgusConnector
         try {
-            $action = New-ScheduledTaskAction -Execute $uiExe
-            $trigger = New-ScheduledTaskTrigger -AtLogOn
-            $principal = New-ScheduledTaskPrincipal -GroupId 'BUILTIN\Users' -RunLevel Limited
-            $settings = New-ScheduledTaskSettingsSet `
-                -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
-                -ExecutionTimeLimit ([TimeSpan]::Zero) `
-                -RestartCount 5 -RestartInterval ([TimeSpan]::FromMinutes(1))
-            Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
-                -Principal $principal -Settings $settings -Force -ErrorAction Stop | Out-Null
-            Append-Log "      scheduled task '$taskName' -> nocagent-ui.exe (At Logon)" $ColorMuted
-            Start-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
-            Append-Log "      tray icon avviata nella sessione utente" $ColorMuted
-        } catch {
-            Append-Log "      WARN: scheduled task non registrato: $($_.Exception.Message)" $ColorError
-            try {
-                $runKey = "HKLM:\Software\Microsoft\Windows\CurrentVersion\Run"
-                Set-ItemProperty -Path $runKey -Name "86BITArgusTray" -Value $uiExe -Force
-                Append-Log "      fallback HKLM\\Run registrato (parte al prossimo logon)" $ColorMuted
-            } catch { }
-        }
+            Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+            Append-Log "      scheduled task '$taskName' rimosso (era legacy)" $ColorMuted
+        } catch { }
+        Remove-ItemProperty -Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run' -Name '86BITArgusTray' -Force -ErrorAction SilentlyContinue
+        Remove-ItemProperty -Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run' -Name '86BITArgusConnector' -Force -ErrorAction SilentlyContinue
+        # Stoppiamo anche eventuali processi UI gia' in memoria.
+        try {
+            Get-Process -Name 'nocagent-ui' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+            Get-Process -Name 'ArgusDesktop' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+        } catch { }
+        Append-Log "      autostart UI disabilitato, processi UI terminati" $ColorMuted
 
         # ============================================================
         # [11/11] Registrazione 'Programmi e funzionalita'' + uninstall.ps1
