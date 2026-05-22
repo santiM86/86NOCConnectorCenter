@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   86bit NOC Agent - installer / updater STANDALONE (zero dipendenze backend).
 
@@ -76,7 +76,7 @@ param(
     # senza -BackendUrl) o "center" (scarica via reverse-proxy del NOC
     # Center, endpoint /api/agent-builds/{ver}/{file}). La modalità
     # "center" è raccomandata in produzione perché evita il rate-limit
-    # GitHub unauth (60 req/h) sui PC dei clienti — il PAT viene usato
+    # GitHub unauth (60 req/h) sui PC dei clienti - il PAT viene usato
     # solo lato server. Auth: stesso $Token agent.
     #
     # AUTO-FALLBACK INTELLIGENTE: se $Source è vuoto, $Token e
@@ -227,10 +227,10 @@ function Write-Warn2($msg){ Write-Host "  [!!] $msg" -ForegroundColor Yellow }
 function Write-Fail($msg) { Write-Host "  [XX] $msg" -ForegroundColor Red }
 
 # ------------------------------------------------------------------- #
-# 0.UPLOAD  Send-UpgradeReport — POSTa al Center il transcript completo
+# 0.UPLOAD  Send-UpgradeReport - POSTa al Center il transcript completo
 # alla fine dell'upgrade (success/failed/trap). Funziona ANCHE su agent
 # v4.10.x perche' lo script PowerShell vive in GitHub raw e viene
-# scaricato fresh ad ogni upgrade — quindi NON serve aggiornare il
+# scaricato fresh ad ogni upgrade - quindi NON serve aggiornare il
 # binario per beneficiarne. Quando l'admin clicca 📜 "vedi log" nel
 # Center, l'endpoint /api/agents/{id}/upgrade-log prende SEMPRE il log
 # dal DB (collection agent_upgrade_logs) prima di provare il comando WS.
@@ -331,7 +331,7 @@ function Send-UpgradeReport {
         if ([string]::IsNullOrWhiteSpace($excerpt)) {
             $summary = @()
             if ($Status -eq "started") {
-                $summary += "[Upgrade STARTED — transcript in scrittura, il log completo arrivera' al termine]"
+                $summary += "[Upgrade STARTED - transcript in scrittura, il log completo arrivera' al termine]"
             } else {
                 $summary += "[SUMMARY auto-generated, transcript non disponibile o vuoto]"
             }
@@ -409,13 +409,13 @@ function Send-UpgradeReport {
 # Heartbeat "started" verso il Center: rimpiazza eventuali report
 # precedenti nella UI cosi' l'admin non vede mai un report stantio
 # riferito ad un upgrade vecchio. Best-effort. La function deve essere
-# gia' definita (sopra) — non possiamo forward-reference.
+# gia' definita (sopra) - non possiamo forward-reference.
 try { Send-UpgradeReport -Status "started" -ResolvedVersion "" } catch {}
 
 # ------------------------------------------------------------------- #
-# 0.POST  TRAP GLOBALE — cattura ogni errore terminating non gestito,
+# 0.POST  TRAP GLOBALE - cattura ogni errore terminating non gestito,
 # logga lo stack trace nel transcript+EventLog, chiude pulitamente.
-# DEVE essere dichiarato qui prima del body — PowerShell trap copre
+# DEVE essere dichiarato qui prima del body - PowerShell trap copre
 # solo il codice che SEGUE la sua dichiarazione nello stesso scope.
 # ------------------------------------------------------------------- #
 trap {
@@ -432,7 +432,7 @@ trap {
     Write-Host ("=" * 78) -ForegroundColor Red
     Update-UpgradeMarker -Status "failed" -Extra "line=$errLine error=$errMsg"
     Write-UpgradeEvent -Message "Upgrade FAILED line=$errLine error=$errMsg`nLogFile=$script:UpgradeLogFile`nStack:`n$errStack" -EntryType Error -EventId 1099
-    # Upload best-effort al Center — Send-UpgradeReport fa internamente
+    # Upload best-effort al Center - Send-UpgradeReport fa internamente
     # Stop-Transcript + read flushato, quindi il transcript include
     # anche il messaggio di errore appena loggato.
     Send-UpgradeReport -Status "failed" -ErrorMsg "line=$errLine $errMsg"
@@ -801,7 +801,7 @@ foreach ($f in $required) {
 }
 
 # Optional asset: ArgusDesktop.exe (nuova UI Wails). Scaricato solo se la
-# release lo include — release pre-v4.8 non lo hanno, e va bene cosi'.
+# release lo include - release pre-v4.8 non lo hanno, e va bene cosi'.
 foreach ($f in $optional) {
     if (-not $assetUrls.ContainsKey($f)) {
         Write-Warn2 "Asset opzionale assente nella release: $f (skip)"
@@ -1163,18 +1163,18 @@ Write-Host "  Get-Content `"`$((Get-Content '$markerPath' -Raw).Trim())`" -Wait 
 Write-Host ""
 
 # ------------------------------------------------------------------- #
-# OUTCOME / TEARDOWN — viene SEMPRE eseguito anche su errore terminating
+# OUTCOME / TEARDOWN - viene SEMPRE eseguito anche su errore terminating
 # ------------------------------------------------------------------- #
 # La logica delle eccezioni e' gestita dal $ErrorActionPreference="Stop"
 # all'inizio: qualunque eccezione fa uscire lo script SUBITO. Per
 # garantire che il transcript venga chiuso e che il marker rifletta
 # l'esito (success/failed), usiamo `trap` (Powershell e' single-threaded
 # quindi sicuro). trap esegue il blocco quando un errore terminating
-# bubble-up oltre tutti i try/catch — perfetto come safety net.
+# bubble-up oltre tutti i try/catch - perfetto come safety net.
 #
 # Note: trap viene attivato anche su Ctrl+C / kill.
 
-# Path felice: success — marcatura finale + chiusura transcript pulita.
+# Path felice: success - marcatura finale + chiusura transcript pulita.
 Update-UpgradeMarker -Status "completed" -Extra "version=$resolvedVersion"
 Write-UpgradeEvent -Message "Upgrade COMPLETED version=$resolvedVersion`nLogFile=$script:UpgradeLogFile" -EntryType Information -EventId 1100
 
@@ -1184,7 +1184,7 @@ Write-UpgradeEvent -Message "Upgrade COMPLETED version=$resolvedVersion`nLogFile
 # anche se l'agent installato e' troppo vecchio per il comando WS.
 Send-UpgradeReport -Status "completed" -ResolvedVersion $resolvedVersion
 
-# Mirror "latest" — fatto DOPO Send-UpgradeReport perche' il transcript
+# Mirror "latest" - fatto DOPO Send-UpgradeReport perche' il transcript
 # e' stato chiuso dentro quella funzione.
 if (Test-Path $script:UpgradeLogFile) {
     try { Copy-Item -Path $script:UpgradeLogFile -Destination $script:UpgradeLatestLog -Force -ErrorAction SilentlyContinue } catch {}
