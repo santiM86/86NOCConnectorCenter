@@ -56,7 +56,7 @@ sudo systemctl restart noc-backend
 ## 6) Verifica la pre-flight check
 
 ```bash
-curl https://argus.86bit.it/api/webhooks/github-deploy/health
+curl https://argus.86bit.it/api/deploy/github/health
 ```
 
 Atteso:
@@ -78,7 +78,7 @@ Se `"ok": false`, leggi i campi: ti dice esattamente cosa manca.
 1. Vai su https://github.com/santiM86/86NOCConnectorCenter
 2. Settings → Webhooks → **Add webhook**
 3. Compila:
-   - **Payload URL**: `https://argus.86bit.it/api/webhooks/github-deploy`
+   - **Payload URL**: `https://argus.86bit.it/api/deploy/github`
    - **Content type**: `application/json`
    - **Secret**: incolla il valore generato al punto 1
    - **SSL verification**: Enable SSL verification
@@ -107,7 +107,7 @@ E nel Center: il fix è live entro 30-60s **senza nessun SSH**.
 
 Se il webhook fallisce o vuoi forzare un re-deploy senza push:
 ```bash
-curl -X POST https://argus.86bit.it/api/webhooks/github-deploy/trigger \
+curl -X POST https://argus.86bit.it/api/deploy/github/trigger \
   -H "Authorization: Bearer <JWT_ADMIN>"
 ```
 
@@ -116,7 +116,7 @@ curl -X POST https://argus.86bit.it/api/webhooks/github-deploy/trigger \
 Tutti i deploy (success/skip/fail) vengono salvati in Mongo collection
 `github_deploy_audit`. Leggibili via:
 ```bash
-curl https://argus.86bit.it/api/webhooks/github-deploy/audit?limit=10 \
+curl https://argus.86bit.it/api/deploy/github/audit?limit=10 \
   -H "Authorization: Bearer <JWT_ADMIN>"
 ```
 
