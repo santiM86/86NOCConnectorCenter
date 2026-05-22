@@ -32,6 +32,83 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-02-21 ✅ GitHub Webhook Auto-Deploy — fine SSH manuali
+
+**Direttiva utente**: «collega non posso ogni volta che faccio una nuova
+versione del connector mettere le mani al server linux».
+
+### Soluzione implementata
+Webhook GitHub → endpoint backend `/api/webhooks/github-deploy` che
+esegue `git pull && pip install && yarn build && systemctl restart` in
+background. Ogni "Save to GitHub" da Emergent attiva auto-deploy in
+30-60 secondi.
+
+### File creati
+- **`/app/backend/routes/github_deploy.py`** (310 righe)
+  - `POST /api/webhooks/github-deploy` — endpoint pubblico per GitHub
+    con verifica HMAC-SHA256 obbligatoria. Filtra eventi `push` su
+    branch `main`. Risponde 202 in <100ms (fire-and-forget background).
+  - `POST /api/webhooks/github-deploy/trigger` — trigger manuale
+    admin-only (per ri-tentare deploy falliti senza push).
+  - `GET /api/webhooks/github-deploy/audit?limit=N` — storico deploy
+    con log + exit_code + duration.
+  - `GET /api/webhooks/github-deploy/health` — pre-flight check pubblico
+    (secret configurato, script presente, git disponibile, ecc.).
+- **`/app/scripts/auto-deploy.sh`** (140 righe, eseguibile)
+  - `git fetch + reset --hard origin/main` (no merge conflicts)
+  - `pip install` SOLO se `requirements.txt` cambiato
+  - `yarn install + build` SOLO se `frontend/` cambiato
+  - `sudo systemctl restart noc-backend` + healthcheck post-restart
+  - Restart `noc-frontend` opzionale se l'unit esiste
+  - Exit codes precisi per troubleshooting
+- **`/app/docs/setup-github-auto-deploy.md`** — guida step-by-step
+  per setup one-time (genera secret, .env, sudoer, webhook GitHub).
+
+### Sicurezza
+- HMAC-SHA256 obbligatorio: senza `GITHUB_WEBHOOK_SECRET` nel .env
+  l'endpoint risponde 503. Senza firma valida → 401.
+- `hmac.compare_digest` per timing-attack-safe comparison.
+- Branch whitelist (`NOC_DEPLOY_REFS=refs/heads/main` di default,
+  override-abile via env).
+- Audit completo di ogni invocazione (firma invalida, branch skip,
+  deploy started/finished/failed) in collection MongoDB
+  `github_deploy_audit`.
+- Trigger manuale gated da `Depends(get_current_user)` + role check.
+
+### Server.py
+- `from routes.github_deploy import router as github_deploy_router`
+- `app.include_router(github_deploy_router)`
+
+### Validato in container
+- ✅ Endpoint `/health`: ritorna struttura corretta, mostra
+  setup mancante (perché siamo in Emergent, non in prod).
+- ✅ POST senza secret → 503 con messaggio chiaro.
+- ✅ POST con firma invalida → 401.
+- ✅ POST ping con firma valida → 200 + `{pong: true}`.
+- ✅ POST push su branch `develop` con firma valida → 200 + skipped.
+
+### Setup richiesto in produzione (one-time, ~10 min)
+1. Genera secret: `openssl rand -hex 32`
+2. Aggiungi in `/home/arslan/86NOCConnectorCenter/backend/.env`:
+   `GITHUB_WEBHOOK_SECRET=<secret>`
+3. Crea `/etc/sudoers.d/noc-deploy` con NOPASSWD su `systemctl restart
+   noc-backend.service`.
+4. `chmod +x scripts/auto-deploy.sh`
+5. `sudo systemctl restart noc-backend`
+6. Verifica `curl https://argus.86bit.it/api/webhooks/github-deploy/health`
+7. GitHub repo → Settings → Webhooks → Add: URL
+   `https://argus.86bit.it/api/webhooks/github-deploy`, secret stesso,
+   event `push` solo.
+
+### Risultato finale per l'utente
+- Modifico codice in Emergent
+- Click "Save to GitHub"
+- GitHub manda webhook a argus.86bit.it
+- 30-60s dopo: il fix è in produzione, nessun SSH richiesto
+
+---
+
+
 ## 2026-02-21 ✅ Systray nativa Win32 (argus-tray.exe) — stile Datto/CentraStage
 
 **Direttiva utente**: «procedi con La systray nativa Win32 (l'icona "86"

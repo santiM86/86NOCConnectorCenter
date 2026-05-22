@@ -255,6 +255,7 @@ from routes.hornetsecurity_vmbackup import router as hornetsecurity_vmbackup_rou
 from routes.datto_rmm import router as datto_rmm_router
 from routes.security_admin import router as security_admin_router
 from routes.agent_ws import router as agent_ws_router  # 86NocAgent v4 WS+control plane
+from routes.github_deploy import router as github_deploy_router  # Auto-deploy webhook
 from routes.lan_scanner import router as lan_scanner_router  # Scanner LAN via WS
 
 app.include_router(auth_router)
@@ -269,6 +270,7 @@ app.include_router(settings_router)
 app.include_router(ingestion_router)
 app.include_router(connector_router)
 app.include_router(agent_ws_router)  # 86NocAgent v4
+app.include_router(github_deploy_router)  # Auto-deploy webhook GitHub
 app.include_router(lan_scanner_router)  # Scanner LAN on-demand via WS
 app.include_router(discovery_router)
 app.include_router(web_proxy_router)
