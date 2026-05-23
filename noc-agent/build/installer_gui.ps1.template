@@ -1902,7 +1902,12 @@ function Run-Install {
                 $action = New-ScheduledTaskAction -Execute $trayExe
             }
             $trigger = New-ScheduledTaskTrigger -AtLogOn
-            $principal = New-ScheduledTaskPrincipal -GroupId 'BUILTIN\Users' -RunLevel Limited
+            # FIX 2026-02-21: usiamo 'INTERACTIVE' (= chiunque sta facendo
+            # logon interattivo, indipendentemente dal gruppo). Il precedente
+            # 'BUILTIN\Users' non scattava sui PC dove l'utente loggato e'
+            # solo Administrator (Administrator NON e' membro di Users di
+            # default su Windows Server e su alcune workstation).
+            $principal = New-ScheduledTaskPrincipal -GroupId 'INTERACTIVE' -RunLevel Limited
             $settings = New-ScheduledTaskSettingsSet `
                 -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
                 -ExecutionTimeLimit ([TimeSpan]::Zero) `
