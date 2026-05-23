@@ -2443,6 +2443,7 @@ _KNOWN_RELEASE_ASSETS = [
     "nocinstall.exe",
     "nocagent-ui.exe",
     "ArgusDesktop.exe",
+    "argus-tray.exe",  # systray Datto-style (introdotto in v4.13.6)
     "install-noc-agent.ps1",
     "installer_gui.ps1.template",
     "SHA256SUMS.txt",
