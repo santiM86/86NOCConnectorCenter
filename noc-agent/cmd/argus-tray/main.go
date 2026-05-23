@@ -34,6 +34,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unsafe"
 
 	_ "embed"
 
@@ -42,6 +43,9 @@ import (
 
 //go:embed argus.ico
 var iconBytes []byte
+
+//go:embed update_gui.ps1
+var updateGUITemplate string
 
 // agentUIConfig riflette il JSON scritto dall'installer.
 // Vedi installer_gui.ps1.template step [9/11].
@@ -133,6 +137,52 @@ func startProcess(path string, args ...string) {
 	_ = cmd.Start()
 }
 
+// startProcessVisible lancia un binario MOSTRANDO la sua finestra.
+// Usato per powershell con GUI script che vogliamo l'utente veda.
+func startProcessVisible(path string, args ...string) {
+	cmd := exec.Command(path, args...)
+	_ = cmd.Start()
+}
+
+// messageBoxW chiama l'API Win32 MessageBoxW per mostrare una popup nativa
+// (stile Datto/Windows). Niente Notepad, niente file temp.
+// Flag MB_ICONINFORMATION (0x40) + MB_OK (0x00).
+func messageBoxW(title, text string) {
+	user32 := syscall.NewLazyDLL("user32.dll")
+	mbox := user32.NewProc("MessageBoxW")
+	titlePtr, _ := syscall.UTF16PtrFromString(title)
+	textPtr, _ := syscall.UTF16PtrFromString(text)
+	_, _, _ = mbox.Call(0, uintptr(unsafe.Pointer(textPtr)), uintptr(unsafe.Pointer(titlePtr)), 0x40)
+}
+
+// runUpdateGUI lancia un PowerShell con uno script che mostra una
+// finestra WinForms (titolo, label di stato, progress bar) e in
+// background esegue install-noc-agent.ps1 catturandone l'output.
+// Datto/CentraStage style: GUI nativa Windows, niente console blu.
+func runUpdateGUI(cfg agentUIConfig) {
+	if cfg.Token == "" || cfg.ClientID == "" {
+		messageBoxW("Argus - Aggiorna Connector",
+			"Configurazione incompleta: manca token o client_id in agent-ui.json.\n"+
+				"Apri il NOC Center e usa il pulsante Aggiorna da li.")
+		return
+	}
+	// Lo script GUI vive embedded come stringa Go. Vedi argus-update-gui.ps1
+	// per un file leggibile (e' una copia identica).
+	ps := buildUpdateGUIScript(cfg)
+	tmp := filepath.Join(os.TempDir(), fmt.Sprintf("argus-update-%d.ps1", time.Now().Unix()))
+	if err := os.WriteFile(tmp, []byte(ps), 0644); err != nil {
+		messageBoxW("Argus - Errore", "Impossibile scrivere lo script di update:\n"+err.Error())
+		return
+	}
+	// `-WindowStyle Hidden` nasconde la console di PowerShell.
+	// Lo script poi mostra la sua WinForms.
+	cmd := exec.Command("powershell.exe",
+		"-NoProfile", "-ExecutionPolicy", "Bypass",
+		"-WindowStyle", "Hidden", "-File", tmp)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000}
+	_ = cmd.Start()
+}
+
 // restartService — sc.exe stop + start 86NocAgent. Richiede admin.
 // Lanciato via ShellExecute "runas" per UAC prompt.
 func restartService() {
@@ -185,7 +235,7 @@ func onReady() {
 	mOpenCenter := systray.AddMenuItem("Apri NOC Center", "Apre il NOC Center nel browser")
 	mStatus := systray.AddMenuItem("Stato Agent", "Mini-finestra con stato connessione")
 	systray.AddSeparator()
-	mConfig := systray.AddMenuItem("Apri agent.yaml", "Apre il file di configurazione locale")
+	mUpdate := systray.AddMenuItem("Aggiorna Connector", "Avvia procedura di aggiornamento con GUI")
 	mRestart := systray.AddMenuItem("Riavvia servizio", "Riavvia 86NocAgent (richiede admin)")
 	systray.AddSeparator()
 	mAbout := systray.AddMenuItem("Informazioni", "Versione e info agent")
@@ -217,19 +267,23 @@ func onReady() {
 			} else if _, err := os.Stat(legacy); err == nil {
 				startProcess(legacy)
 			}
-		case <-mConfig.ClickedCh:
-			openFile(currentCfg().ConfigPath)
+		case <-mUpdate.ClickedCh:
+			runUpdateGUI(currentCfg())
 		case <-mRestart.ClickedCh:
 			restartService()
 		case <-mAbout.ClickedCh:
 			c := currentCfg()
-			info := fmt.Sprintf("Argus Agent\nVersione: %s\nHost: %s\nCliente: %s\nInstall: %s\n\n%s",
-				c.Version, hostname(), c.ClientName, c.InstallDir, dashboardURL(c))
-			// Nessuna messagebox nativa "leggera" senza dipendenze extra:
-			// scriviamo su un file temp e lo apriamo con Notepad.
-			tmp := filepath.Join(os.TempDir(), "argus-info.txt")
-			_ = os.WriteFile(tmp, []byte(info), 0644)
-			startProcess("notepad.exe", tmp)
+			info := fmt.Sprintf(
+				"Argus Connector\n\n"+
+					"Versione:   v%s\n"+
+					"Host:       %s\n"+
+					"Cliente:    %s\n"+
+					"Backend:    %s\n"+
+					"Install:    %s",
+				c.Version, hostname(), c.ClientName,
+				dashboardURL(c), c.InstallDir,
+			)
+			messageBoxW("Argus Connector - Informazioni", info)
 		case <-mQuit.ClickedCh:
 			systray.Quit()
 			return
@@ -239,6 +293,23 @@ func onReady() {
 
 func onExit() {
 	// Cleanup placeholder: nessuna risorsa da liberare.
+}
+
+// buildUpdateGUIScript ritorna lo script PowerShell embedded (update_gui.ps1)
+// con i placeholder sostituiti dai valori di agent-ui.json.
+func buildUpdateGUIScript(cfg agentUIConfig) string {
+	scriptURL := "https://raw.githubusercontent.com/santiM86/86NOCConnectorCenter/main/noc-agent/build/install-noc-agent.ps1"
+	esc := func(s string) string {
+		// Escape single-quote per PowerShell single-quoted string literal.
+		return strings.ReplaceAll(s, "'", "''")
+	}
+	s := updateGUITemplate
+	s = strings.ReplaceAll(s, "__TOKEN__", esc(cfg.Token))
+	s = strings.ReplaceAll(s, "__CLIENT_ID__", esc(cfg.ClientID))
+	s = strings.ReplaceAll(s, "__BACKEND_URL__", esc(cfg.BackendURL))
+	s = strings.ReplaceAll(s, "__CLIENT_NAME__", esc(cfg.ClientName))
+	s = strings.ReplaceAll(s, "__SCRIPT_URL__", esc(scriptURL))
+	return s
 }
 
 func min(a, b int) int {
