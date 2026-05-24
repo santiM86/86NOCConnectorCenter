@@ -2067,6 +2067,14 @@ async def install_manifest(token: Optional[str] = None,
         #   https://github.com/86bit/argus-noc/releases/download/v4.0.0
         # Il backend appende `/<filename>` per ogni .exe richiesto.
         ext_base = _os.environ.get("BINARY_URLS_BASE", "").rstrip("/")
+        if ext_base:
+            # Se BINARY_URLS_BASE punta a una release pinnata (es. ".../releases/download/v4.0.0"),
+            # sostituisci il tag pinnato con la latest risolta dinamicamente.
+            # Cosi' l'env in produzione (legacy v4.0.0) continua a funzionare ma
+            # serve sempre l'ultima release. Bug v4.x: installer GUI scaricava
+            # v4.0.0 da GitHub release pinnata invece di latest tag.
+            import re as _re
+            ext_base = _re.sub(r"/v\d+\.\d+\.\d+/?$", f"/{latest_ver}", ext_base)
         for name in _ALLOWED_BINARIES[platform]:
             if ext_base:
                 binaries[name] = f"{ext_base}/{name}"
