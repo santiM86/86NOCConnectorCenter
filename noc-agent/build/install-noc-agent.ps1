@@ -492,6 +492,30 @@ if (-not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Adm
     exit $LASTEXITCODE
 }
 
+# ------------------------------------------------------------------- #
+# 1.5  Normalizzazione $BackendUrl
+# ------------------------------------------------------------------- #
+# REGRESSIONE v4.14.0: il binario nocagent.exe v4.14.0 fa
+# `websocket.Dial(c.cfg.Backend.URL)` direttamente, SENZA appendere
+# il path /api/agent/ws. Se l'installer riceve un BackendUrl "naked"
+# (es. "https://argus.86bit.it" senza suffisso, come quando l'utente
+# o un wrapper lo prende da agent-ui.json.backend_url che strippa il
+# path), agent.yaml viene scritto con backend.url HTTPS-root e
+# l'agent fallisce con: "expected handshake response status code 101
+# but got 200" (riceve l'HTML del frontend invece dell'upgrade WS).
+#
+# Normalizziamo sempre $BackendUrl in formato wss:// + /api/agent/ws
+# PRIMA di proseguire. Idempotente: se gia' completo lascia invariato.
+$BackendUrlOrig = $BackendUrl
+if ($BackendUrl.StartsWith("https://")) { $BackendUrl = "wss://"  + $BackendUrl.Substring(8) }
+elseif ($BackendUrl.StartsWith("http://"))  { $BackendUrl = "ws://"   + $BackendUrl.Substring(7) }
+if ($BackendUrl -notmatch '/api/agent/ws$') {
+    $BackendUrl = $BackendUrl.TrimEnd('/') + "/api/agent/ws"
+}
+if ($BackendUrl -ne $BackendUrlOrig) {
+    Write-Host "BackendURL normalizzato: $BackendUrlOrig -> $BackendUrl" -ForegroundColor Yellow
+}
+
 Write-Step "86NocAgent Installer (standalone, GitHub Release)"
 Write-Host "Repo:        $Repo"
 Write-Host "Versione:    $Version"

@@ -23,6 +23,7 @@ import (
         "net"
         "net/http"
         "runtime"
+        "strings"
         "sync"
         "sync/atomic"
         "time"
@@ -181,23 +182,34 @@ func (c *Client) session(parent context.Context) error {
         hdr.Set("X-Client-Id", c.cfg.ClientID)
         hdr.Set("User-Agent", fmt.Sprintf("86NocAgent/%s (%s/%s)", c.hello.AgentVersion, runtime.GOOS, runtime.GOARCH))
 
+        // Difesa contro agent.yaml "naked" (es. "https://argus.86bit.it" o
+        // "wss://argus.86bit.it" senza il path /api/agent/ws). E' una
+        // regressione che si manifesta come "expected handshake response
+        // status code 101 but got 200" (server risponde con HTML del
+        // frontend). Normalizziamo l'URL appendendo /api/agent/ws se
+        // manca. La WebSocket library accetta sia http:// che ws://.
+        wsURL := c.cfg.Backend.URL
+        if !strings.HasSuffix(wsURL, "/api/agent/ws") {
+                wsURL = strings.TrimRight(wsURL, "/") + "/api/agent/ws"
+        }
+
         // Log DETTAGLIATO del tentativo di connessione: utile per debug
         // in produzione (perche' il WS non si aggancia? wrong URL? token
         // scaduto? proxy aziendale che blocca?).
         c.log.Info("ws dial attempt",
-                "url", c.cfg.Backend.URL,
+                "url", wsURL,
                 "client_id", c.cfg.ClientID,
                 "agent_id", c.hello.AgentID,
                 "token_prefix", tokenPrefix(c.cfg.Token),
                 "insecure_skip_tls", fmt.Sprintf("%t", c.cfg.Backend.InsecureSkip),
         )
-        conn, _, err := websocket.Dial(dialCtx, c.cfg.Backend.URL, &websocket.DialOptions{
+        conn, _, err := websocket.Dial(dialCtx, wsURL, &websocket.DialOptions{
                 HTTPClient: httpClient,
                 HTTPHeader: hdr,
         })
         if err != nil {
                 c.log.Error("ws dial failed",
-                        "url", c.cfg.Backend.URL,
+                        "url", wsURL,
                         "err", err.Error(),
                 )
                 return fmt.Errorf("dial: %w", err)
@@ -205,7 +217,7 @@ func (c *Client) session(parent context.Context) error {
         conn.SetReadLimit(1 << 20) // 1 MiB
 
         c.connected.Store(true)
-        c.log.Info("connected", "url", c.cfg.Backend.URL)
+        c.log.Info("connected", "url", wsURL)
         defer func() {
                 c.connected.Store(false)
                 _ = conn.Close(websocket.StatusNormalClosure, "bye")
