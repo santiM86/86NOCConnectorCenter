@@ -428,6 +428,27 @@ async def _bridge_discovery(conn: _Connection, batch: List[Dict[str, Any]]) -> N
     for op in ops:
         await db.discovered_endpoints.update_one(op["filter"], op["update"], upsert=True)
 
+    # v4.14.x AUTO-ENRICHMENT: dopo aver popolato discovered_endpoints, scatena
+    # in background l'enrichment dei managed_devices del cliente con MAC +
+    # OUI + Fingerbank usando i dati appena ricevuti dal connector. Cosi'
+    # ogni device managed senza MAC viene auto-arricchito al prossimo scan
+    # del connector (~5 min) senza richiedere intervento manuale.
+    # Throttle: max 1 enrichment per cliente ogni 5 minuti (evita di
+    # martellare Fingerbank API se il connector pusha batch frequenti).
+    # Eseguito best-effort: errori loggati ma non propagati per non rompere
+    # il bridge WS (un errore di Fingerbank non deve scollegare l'agent).
+    if conn.client_id and ops:
+        try:
+            from routes.devices import _enrich_devices_for_client
+            import asyncio as _asyncio
+            import time as _time
+            _last = _ENRICH_LAST_RUN_PER_CLIENT.get(conn.client_id, 0.0)
+            if (_time.time() - _last) >= 300:  # 5 min throttle
+                _ENRICH_LAST_RUN_PER_CLIENT[conn.client_id] = _time.time()
+                _asyncio.create_task(_enrich_devices_for_client(conn.client_id))
+        except Exception as _e:
+            logger.warning("auto-enrichment skip client=%s err=%s", conn.client_id, _e)
+
 
 async def _bridge_ping_poll(conn: _Connection, r: Dict[str, Any]) -> None:
     """Bridge a PingPollResult into managed_devices.status.
@@ -1821,6 +1842,13 @@ from fastapi.responses import FileResponse, PlainTextResponse
 _AGENT_BUILD_DIR = _pathlib.Path(_os.environ.get(
     "NOCAGENT_BUILD_DIR", "/app/noc-agent/build/bin"
 )).resolve()
+
+# v4.14.x AUTO-ENRICHMENT throttle: timestamp dell'ultima esecuzione di
+# _enrich_devices_for_client() per ogni client_id. Evita di scatenare la
+# pipeline Fingerbank ad ogni discovery_batch (il connector pusha ogni
+# ~5min ma la pipeline costa qualche secondo + chiamate API esterne).
+_ENRICH_LAST_RUN_PER_CLIENT: dict = {}
+
 
 # Directory che contiene `installer_gui.ps1.template`,
 # `install.ps1.template`, `install.sh.template`, `Installa-86NocAgent.bat`.
