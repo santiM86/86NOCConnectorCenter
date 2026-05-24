@@ -904,7 +904,11 @@ $uiInfo = [ordered]@{
     build_date  = $buildDate
     agent_id    = $persistedAgentId
 } | ConvertTo-Json -Depth 3
-[System.IO.File]::WriteAllText($uiInfoPath, $uiInfo, [System.Text.Encoding]::UTF8)
+# UTF-8 NO BOM: Go json.Unmarshal fallisce silente sul BOM lasciando
+# struct a zero-value (popup tray con campi vuoti). UTF8Encoding(false)
+# = senza BOM. Vale anche per [System.IO.File]::WriteAllText sotto.
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+[System.IO.File]::WriteAllText($uiInfoPath, $uiInfo, $utf8NoBom)
 Write-Ok "agent-ui.json scritto (version=$resolvedVersion build_date=$buildDate)"
 
 # Cleanup: vecchie versioni dell'installer (cmd/installer/main.go pre-v4.5)
@@ -924,7 +928,7 @@ if (Test-Path $legacyUiPath) {
     }
 }
 try {
-    [System.IO.File]::WriteAllText($legacyUiPath, $uiInfo, [System.Text.Encoding]::UTF8)
+    [System.IO.File]::WriteAllText($legacyUiPath, $uiInfo, $utf8NoBom)
     Write-Ok "agent-ui.json sincronizzato anche in $InstallDir (legacy compat)"
 } catch {
     Write-Warn2 "Sovrascrittura $legacyUiPath fallita: $($_.Exception.Message)"

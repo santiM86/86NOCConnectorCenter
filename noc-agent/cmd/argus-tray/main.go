@@ -85,6 +85,15 @@ func loadConfig() agentUIConfig {
 	)
 	for _, p := range candidates {
 		if b, err := os.ReadFile(p); err == nil {
+			// Strip UTF-8 BOM (EF BB BF). PowerShell scrive
+			// [System.IO.File]::WriteAllText(..., UTF8) che emette
+			// BOM; Go json.Unmarshal fallisce silente sul BOM lasciando
+			// la struct a zero-value. Diagnosticato in v4.14.x: popup
+			// "Argus Connector" mostrava Versione/Cliente vuoti anche se
+			// agent-ui.json era popolato correttamente.
+			if len(b) >= 3 && b[0] == 0xEF && b[1] == 0xBB && b[2] == 0xBF {
+				b = b[3:]
+			}
 			_ = json.Unmarshal(b, &c)
 			if c.InstallDir != "" {
 				return c
