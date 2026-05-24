@@ -32,6 +32,78 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-02-24 ✅ FIX P0 — "Profili non si agganciano" (regressione enrichment)
+
+**Problema reportato dall'utente** (screenshot Dispositivi cliente):
+nomi device come `Hardware Manufacturer/Hewlett Packard`,
+`Switch and Wireless Controller/HP Switches`, `Hardware Manufacturer/Zyxel
+Communications Corporation` — Fingerbank/OUI sovrascriveva il
+device_type e vendor scelti manualmente dall'admin tramite "Riconosci
+profili" e dal dropdown "Tipo dispositivo".
+
+### Root cause (doppia)
+
+1. **`backend/routes/device_profiles.py::apply_profile` (riga 192)**:
+   l'`update_one({"ip": device_ip})` aggiornava SOLO 1 device se ce
+   n'erano duplicati cross-tenant + NON settava nessun flag protettivo.
+   Quando l'enrichment automatico Fingerbank scattava (5 min throttle),
+   sovrascriveva subito `device_type` e `vendor` con `classify_device()`
+   (OUI lookup) → il profilo applicato dall'admin "svaniva".
+
+2. **`backend/routes/devices.py::_enrich_devices_for_client`
+   (riga 1042)**: il loop OUI/Fingerbank impostava `update["device_type"]
+   = classify_device(...)` SEMPRE, senza controllare se l'admin aveva
+   gia' applicato un profilo manuale (`profile_key` valorizzato senza
+   `profile_auto_matched=True`) o aveva impostato `device_type_user_locked`.
+
+### Fix applicati
+
+#### A) `device_profiles.py` apply_profile
+- Cambiato `update_one` → `update_many` (cross-tenant safe se IP duplicato
+  con doc ghosts).
+- Aggiunti 2 flag protettivi nel patch:
+  - `device_type_user_locked: True` → enrichment auto non sovrascrive piu'
+    device_type.
+  - `profile_auto_matched: False` → marca esplicita "scelta umana".
+
+#### B) `devices.py` _enrich_devices_for_client
+- Estesa la projection MongoDB con `profile_key`,
+  `name_user_locked`, `device_type_user_locked`, `profile_auto_matched`.
+- Aggiunte 3 variabili di scope per ogni device:
+  - `has_manual_profile = bool(profile_key) and not profile_auto_matched`
+  - `name_locked = name_user_locked`
+  - `device_type_locked = device_type_user_locked or has_manual_profile`
+- Logica di update:
+  - `device_type` NON viene piu' sovrascritto se `device_type_locked`
+  - `vendor` NON viene piu' sovrascritto se `has_manual_profile`
+  - `name` NON viene piu' sovrascritto se `name_locked`
+- Fingerbank `fingerbank_device_name` resta scrivibile perche' e' un
+  field separato (info-only) e non confligge con il vendor scelto.
+
+### Validato in container
+- POST `/api/device-profiles/apply` con `profile_key=synology_dsm` →
+  device ottiene `profile_key=synology_dsm`, `device_type=nas`,
+  `vendor=Synology`, `device_type_user_locked=True`.
+- Chiamata successiva a `_enrich_devices_for_client(client_id)` →
+  device NON viene modificato (lock funzionante).
+
+### Steps per attivare in produzione
+1. **Save to GitHub** → auto-deploy webhook propaga in ~30-60s.
+2. Sui device gia' inquinati dall'enrichment precedente, l'admin riapplica
+   il profilo dal pulsante "Riconosci profili" — questa volta il lock
+   permane.
+
+### Disconnessioni continue (P0 — investigation pending)
+- Issue separata: 8/9 device OFFLINE simultaneamente nello screenshot.
+- **NON e' regressione dei fix auto-enrichment** (confermato dall'utente
+  "era cosi' anche prima").
+- Per debug servono i log backend: AgentsPage → 📜 vedi log su uno dei
+  device offline, oppure stato live di `device_poll_status` per quei IP.
+- Investigation rimandata al prossimo round con log live.
+
+---
+
+
 ## 2026-02-24 ✅ Auto-trigger Fingerbank/OUI enrichment (P0)
 
 **Direttiva utente**: «voglio che l'arricchimento avvenga in automatico

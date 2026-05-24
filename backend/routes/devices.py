@@ -954,7 +954,14 @@ async def _enrich_devices_for_client(client_id: str) -> Dict[str, Any]:
         },
         {"_id": 0, "id": 1, "ip": 1, "ip_address": 1, "mac": 1, "vendor": 1, "name": 1,
          "hostname": 1, "fingerbank_at": 1, "device_type": 1, "sys_descr": 1,
-         "mac_is_random": 1},
+         "mac_is_random": 1,
+         # v4.14.x BUG-FIX "profili non si agganciano": proteggi i field gia'
+         # configurati manualmente dall'utente (profile_key, name_user_locked,
+         # device_type_user_locked). Altrimenti l'enrichment automatico
+         # sovrascrive il device_type scelto dall'admin (es. "stampante")
+         # con la classificazione OUI (es. "endpoint" o "Apple").
+         "profile_key": 1, "name_user_locked": 1, "device_type_user_locked": 1,
+         "profile_auto_matched": 1},
     ).to_list(2000)
 
     # Pre-carica ARP-cache da discovered_endpoints (auto-scan del connector)
@@ -984,6 +991,14 @@ async def _enrich_devices_for_client(client_id: str) -> Dict[str, Any]:
         ip = md.get("ip") or md.get("ip_address")
         if not ip:
             continue
+        # v4.14.x BUG-FIX "profili non si agganciano": se l'admin ha applicato
+        # un profilo manuale (POST /api/device-profiles/apply), `profile_key`
+        # e' valorizzato e `profile_auto_matched=False` → NON sovrascrivere
+        # device_type/vendor/name con l'enrichment automatico.
+        has_manual_profile = bool(md.get("profile_key")) and not md.get("profile_auto_matched", False)
+        name_locked = bool(md.get("name_user_locked"))
+        device_type_locked = bool(md.get("device_type_user_locked")) or has_manual_profile
+
         # Salta device gia' completi (hanno vendor + name diverso da IP + fingerbank fatto)
         has_vendor = bool((md.get("vendor") or "").strip())
         has_decent_name = bool((md.get("name") or "").strip()) and md.get("name") != ip
@@ -1017,29 +1032,32 @@ async def _enrich_devices_for_client(client_id: str) -> Dict[str, Any]:
             if mac_is_laa:
                 # MAC randomizzato → etichetta chiara, non chiamare OUI/Fingerbank
                 update["mac_is_random"] = True
-                if not has_vendor:
+                if not has_vendor and not has_manual_profile:
                     update["vendor"] = "MAC randomizzato (privacy)"
-                if not has_decent_name:
+                if not has_decent_name and not name_locked:
                     update["name"] = f"Dispositivo personale {ip}"
-                update["device_type"] = "endpoint-private"
+                if not device_type_locked:
+                    update["device_type"] = "endpoint-private"
                 summary["private_mac_labeled"] += 1
             else:
                 # OUI lookup classico
-                if not has_vendor:
+                if not has_vendor and not has_manual_profile:
                     try:
                         v = lookup_oui(mac_norm) or ""
                         if v:
                             update["vendor"] = v
                             summary["oui_matched"] += 1
-                            try:
-                                update["device_type"] = classify_device(
-                                    mac=mac_norm, vendor=v, sys_descr=md.get("sys_descr") or ""
-                                ) or md.get("device_type") or "endpoint"
-                            except Exception:
-                                pass
+                            if not device_type_locked:
+                                try:
+                                    update["device_type"] = classify_device(
+                                        mac=mac_norm, vendor=v, sys_descr=md.get("sys_descr") or ""
+                                    ) or md.get("device_type") or "endpoint"
+                                except Exception:
+                                    pass
                     except Exception:
                         pass
-                # Fingerbank lookup (solo MAC reali)
+                # Fingerbank lookup (solo MAC reali) — fingerbank_device_name e' un
+                # field separato, non sovrascrive il name dell'admin: safe da chiamare.
                 if fb_configured and not has_fb:
                     try:
                         fb = await fingerbank_service.interrogate(mac=mac_norm)
@@ -1054,7 +1072,7 @@ async def _enrich_devices_for_client(client_id: str) -> Dict[str, Any]:
             summary["no_mac"] += 1
 
         # Reverse DNS lookup (sempre tentato per device senza nome decente, anche LAA)
-        if not has_decent_name and "name" not in update:
+        if not has_decent_name and "name" not in update and not name_locked:
             try:
                 old_to = socket.getdefaulttimeout()
                 socket.setdefaulttimeout(2.0)
@@ -1070,7 +1088,7 @@ async def _enrich_devices_for_client(client_id: str) -> Dict[str, Any]:
                 pass
 
         # Se abbiamo trovato vendor ma name e' ancora ip, miglioriamo il name
-        if "vendor" in update and not has_decent_name and "name" not in update:
+        if "vendor" in update and not has_decent_name and "name" not in update and not name_locked:
             update["name"] = f"{update['vendor']} {ip}"
 
         if update:
