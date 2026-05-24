@@ -23,10 +23,10 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
-	"syscall"
 
 	"github.com/86bit/noc-agent/internal/config"
 	"github.com/86bit/noc-agent/internal/logging"
@@ -120,31 +120,61 @@ exit $rc
 		version,
 	)
 
-	// Subprocess detached: cosi' sopravvive al Stop-Service di noi stessi.
-	cmd := exec.Command("powershell.exe",
-		"-NoProfile", "-ExecutionPolicy", "Bypass",
-		"-Command", psScript)
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		// CREATE_NEW_PROCESS_GROUP  = 0x00000200
-		// DETACHED_PROCESS          = 0x00000008
-		// CREATE_BREAKAWAY_FROM_JOB = 0x01000000
-		//
-		// CREATE_BREAKAWAY_FROM_JOB e' CRITICO: i servizi Windows
-		// girano dentro un Job Object e i child di default vengono
-		// killati col job. Senza questo flag, quando Stop-Service
-		// 86NocAgent viene chiamato dallo script PowerShell, lo
-		// SCM termina sia nocagent.exe SIA il subprocess powershell
-		// -> l'upgrade muore al 95% PRIMA di aver scritto i binari.
-		// Diagnosticato in v4.14.x: cartella TEMP log SYSTEM vuota
-		// = script morto prima del transcript.
-		CreationFlags: 0x00000200 | 0x00000008 | 0x01000000,
-	}
-	if err := cmd.Start(); err != nil {
-		log.Error("avvio powershell fallito", "err", err.Error())
+	// ===================================================================
+	// EXEC VIA TASK SCHEDULER (NOT subprocess)
+	// ===================================================================
+	// Diagnosticato in v4.14.x: subprocess detached (anche con
+	// CREATE_BREAKAWAY_FROM_JOB) muore PRIMA di scrivere il transcript.
+	// La cartella SYSTEM TEMP \86noc-upgrade-logs resta vuota.
+	// Cause possibili: Windows ASR blocca PowerShell lanciato da
+	// servizio non firmato; oppure le pipe ereditate da nocagent.exe
+	// chiudono al Stop-Service e powershell.exe esce con broken-pipe.
+	//
+	// SOLUZIONE: scriviamo lo script su disco e lo lanciamo tramite
+	// schtasks.exe come task one-shot. Task Scheduler crea il processo
+	// nella SUA sessione di servizio, completamente disaccoppiato dal
+	// 86NocAgent service. Stop-Service 86NocAgent NON intacca il task.
+	scriptPath := `C:\ProgramData\86NocAgent\update_oneshot.ps1`
+	if err := os.MkdirAll(`C:\ProgramData\86NocAgent`, 0o755); err != nil {
+		log.Error("mkdir ProgramData fallita", "err", err.Error())
 		return
 	}
-	log.Info("installer powershell avviato in background", "pid", strconv.Itoa(cmd.Process.Pid))
-	// Non aspettiamo cmd.Wait(): il subprocess gira indipendente. Il
-	// nostro processo (nocagent.exe) sara' terminato dallo script poco
-	// dopo, e il watchdog lo rifara' partire quando l'install ha finito.
+	if err := os.WriteFile(scriptPath, []byte(psScript), 0o644); err != nil {
+		log.Error("scrittura script oneshot fallita", "err", err.Error())
+		return
+	}
+	taskName := "86NocAgent_OneshotUpdate"
+	// Cleanup task precedente (idempotente, ignora errori).
+	_ = exec.Command("schtasks.exe", "/Delete", "/TN", taskName, "/F").Run()
+	// Crea task SYSTEM HIGHEST. /SC ONCE + /ST 23:59 = trigger placeholder
+	// (lo lanciamo subito a mano con /Run, il trigger non si attiva mai).
+	taskCmd := fmt.Sprintf(`powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%s"`, scriptPath)
+	createCmd := exec.Command("schtasks.exe", "/Create",
+		"/TN", taskName,
+		"/TR", taskCmd,
+		"/SC", "ONCE",
+		"/ST", "23:59",
+		"/RU", "SYSTEM",
+		"/RL", "HIGHEST",
+		"/F",
+	)
+	if out, err := createCmd.CombinedOutput(); err != nil {
+		log.Error("schtasks /Create fallita", "err", err.Error(), "output", string(out))
+		return
+	}
+	// Esegui subito il task: Task Scheduler crea il processo in sessione
+	// 0 indipendente. Sopravvive al Stop-Service 86NocAgent perche' NON
+	// e' child del servizio.
+	runCmd := exec.Command("schtasks.exe", "/Run", "/TN", taskName)
+	if out, err := runCmd.CombinedOutput(); err != nil {
+		log.Error("schtasks /Run fallita", "err", err.Error(), "output", string(out))
+		return
+	}
+	log.Info("installer schedulato via Task Scheduler",
+		"task", taskName,
+		"script", scriptPath,
+		"target_version", version,
+	)
+	_ = strconv.Itoa // mantieni import strconv compat (potrebbe non servire piu')
 }
+
