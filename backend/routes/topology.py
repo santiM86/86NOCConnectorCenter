@@ -1503,6 +1503,21 @@ async def add_endpoint_to_monitoring(body: dict, current_user: dict = Depends(ge
         )
 
     device_doc.pop("_id", None)
+
+    # v4.14.x AUTO-ENRICHMENT: scatena in background l'arricchimento Fingerbank/OUI
+    # per il nuovo device cosi' che vendor/hostname/device_type vengano popolati
+    # automaticamente senza richiedere l'azione manuale "recognize-unknowns".
+    # Best-effort: errori non bloccano l'inserimento.
+    try:
+        from routes.devices import _enrich_devices_for_client
+        import asyncio as _asyncio
+        _asyncio.create_task(_enrich_devices_for_client(client_id))
+    except Exception as _e:
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "auto-enrichment trigger skip on manual add client=%s err=%s", client_id, _e,
+        )
+
     return {"status": "ok", "message": f"Dispositivo {ip} aggiunto al monitoraggio", "device": device_doc}
 
 
