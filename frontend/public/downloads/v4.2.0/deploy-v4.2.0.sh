@@ -18,13 +18,13 @@
 #     PowerShell one-liner — vedi fine script).
 #
 # Eseguire come `arslan` (NON come root) sulla VM 10.30.0.201:
-#   curl -fsSL https://device-monitor-94.preview.emergentagent.com/downloads/v4.2.0/deploy-v4.2.0.sh -o /tmp/deploy-v4.2.0.sh
+#   curl -fsSL https://device-scanner-pro-3.preview.emergentagent.com/downloads/v4.2.0/deploy-v4.2.0.sh -o /tmp/deploy-v4.2.0.sh
 #   chmod +x /tmp/deploy-v4.2.0.sh
 #   sudo -u arslan bash /tmp/deploy-v4.2.0.sh
 # ==============================================================================
 set -euo pipefail
 
-PATCH_BASE="${PATCH_BASE:-https://device-monitor-94.preview.emergentagent.com/downloads/v4.2.0}"
+PATCH_BASE="${PATCH_BASE:-https://device-scanner-pro-3.preview.emergentagent.com/downloads/v4.2.0}"
 BACKEND_DIR="${BACKEND_DIR:-/home/arslan/86NOCConnectorCenter/backend}"
 NOCAGENT_BUILD_DIR="${NOCAGENT_BUILD_DIR:-/home/arslan/86NOCConnectorCenter/noc-agent/build}"
 SERVICE="${SERVICE:-noc-backend}"

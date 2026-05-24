@@ -602,16 +602,20 @@ foreach ($f in $required) {
 # ------------------------------------------------------------------- #
 Write-Step "Stop servizi esistenti"
 foreach ($svc in @("86NocAgent","86NocWatchdog")) {
-    $s = Get-Service -Name $svc -ErrorAction SilentlyContinue
-    if ($s) {
-        if ($s.Status -ne "Stopped") {
-            Stop-Service -Name $svc -Force -ErrorAction SilentlyContinue
-            Write-Ok "Stop $svc"
+    try {
+        $s = Get-Service -Name $svc -ErrorAction SilentlyContinue
+        if ($s) {
+            if ($s.Status -ne "Stopped") {
+                Stop-Service -Name $svc -Force -ErrorAction Stop
+                Write-Ok "Stop $svc"
+            } else {
+                Write-Ok "$svc gia' fermo"
+            }
         } else {
-            Write-Ok "$svc gia' fermo"
+            Write-Ok "$svc non installato (prima installazione)"
         }
-    } else {
-        Write-Ok "$svc non installato (prima installazione)"
+    } catch {
+        Write-Warn2 "Stop-Service $svc fallito (continuo comunque): $($_.Exception.Message)"
     }
 }
 Start-Sleep -Seconds 2
@@ -622,10 +626,14 @@ Start-Sleep -Seconds 2
 # fermati dal Stop-Service.
 $uiProcs = @("nocagent-ui","ArgusDesktop","argus-tray")
 foreach ($p in $uiProcs) {
-    $procs = Get-Process -Name $p -ErrorAction SilentlyContinue
-    if ($procs) {
-        $procs | Stop-Process -Force -ErrorAction SilentlyContinue
-        Write-Ok "Processo $p.exe terminato ($($procs.Count) istanze)"
+    try {
+        $procs = Get-Process -Name $p -ErrorAction SilentlyContinue
+        if ($procs) {
+            $procs | Stop-Process -Force -ErrorAction SilentlyContinue
+            Write-Ok "Processo $p.exe terminato ($($procs.Count) istanze)"
+        }
+    } catch {
+        Write-Warn2 "Kill processo $p fallito (continuo): $($_.Exception.Message)"
     }
 }
 Start-Sleep -Seconds 2
@@ -633,6 +641,10 @@ Start-Sleep -Seconds 2
 # ------------------------------------------------------------------- #
 # 4. Pulizia stato vecchio (preservando il log per la diagnosi)
 # ------------------------------------------------------------------- #
+# DIAG: questo era il candidato principale del "silent crash" - se la
+# Remove-Item su logs fallisce (es. agent.log ancora in handle dal processo)
+# senza un try/catch generiamo un terminating error che NON viene catturato
+# dal trap se ErrorActionPreference=Stop nella sezione successiva.
 Write-Step "Pulizia stato precedente"
 # CRITICAL: PRIMA di rimuovere logs/, salviamo agent.log nel TEMP cosi'
 # se l'upgrade fallisce l'utente puo' comunque ispezionare i messaggi
@@ -1130,3 +1142,13 @@ if (-not $Quiet) {
     Write-Host "Premi un tasto per chiudere..." -ForegroundColor Gray
     $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
 }
+
+# ------------------------------------------------------------------- #
+# 11. Stop-Transcript + upload diagnostico al Center (success path)
+# ------------------------------------------------------------------- #
+# Lo script e' arrivato in fondo senza errori terminating: status=success.
+# Il trap gestisce gia' il caso error. Usiamo try/catch best-effort cosi'
+# eventuali fail di rete non rompono l'installazione che e' gia' OK.
+$script:UpgradeLogStatus = "success"
+try { Stop-Transcript -ErrorAction SilentlyContinue | Out-Null } catch {}
+try { Send-UpgradeLogToCenter -Status "success" } catch {}

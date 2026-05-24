@@ -12,7 +12,7 @@ import pytest
 import requests
 import os
 
-BASE_URL = os.environ.get('REACT_APP_BACKEND_URL', 'https://device-monitor-94.preview.emergentagent.com')
+BASE_URL = os.environ.get('REACT_APP_BACKEND_URL', 'https://device-scanner-pro-3.preview.emergentagent.com')
 CLIENT_ID = "da3d6e40-b3e5-4d46-9787-dde328a3aa36"
 PUBLIC_TOKEN = "15ec0bf5b908af5d"
 

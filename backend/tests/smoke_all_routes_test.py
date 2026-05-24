@@ -7,7 +7,7 @@ import json
 import requests
 import pytest
 
-BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "https://device-monitor-94.preview.emergentagent.com").rstrip("/")
+BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "https://device-scanner-pro-3.preview.emergentagent.com").rstrip("/")
 ADMIN_EMAIL = "info@86bit.it"
 ADMIN_PASSWORD = "Ariel17051986@!@86"
 
