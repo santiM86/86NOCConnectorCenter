@@ -59,6 +59,8 @@ type cliCfg struct {
 
 type manifest struct {
 	ClientID       string            `json:"client_id"`
+	ClientName     string            `json:"client_name"`
+	Version        string            `json:"version"`
 	Role           string            `json:"role"`
 	BackendWS      string            `json:"backend_ws"`
 	Binaries       map[string]string `json:"binaries"`
@@ -167,7 +169,7 @@ func main() {
 		"role":        man.Role,
 		"install_dir": installDir(),
 		"config_path": configPath(),
-		"version":     "4.0.0",
+		"version":     man.Version, // latest resolved server-side
 	}
 	if buf, err := json.MarshalIndent(uiCfg, "", "  "); err == nil {
 		_ = os.WriteFile(filepath.Join(installDir(), "agent-ui.json"), buf, 0o644)
