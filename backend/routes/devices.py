@@ -1,6 +1,6 @@
 """Device CRUD and credentials routes."""
 from fastapi import APIRouter, Depends, HTTPException
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 import uuid
 from datetime import datetime, timezone, timedelta
 
@@ -868,16 +868,35 @@ async def recognize_unknown_devices(
         except Exception:
             return False
 
-    # Pesca i device da rivedere: source=connector-scanner E (no vendor OR name=ip OR no fingerbank_at)
+    # Pesca i device da rivedere: qualunque source "scanner-like" (auto-discovery
+    # del connector) o "master" (aggiunti dal connector master). v4.14.x: i
+    # dispositivi del Center hanno source=connector-master, con MAC null perche'
+    # aggiunti manualmente da UI o sync iniziale senza ARP. Includiamo anche
+    # quelli cosi' che Fingerbank possa arricchirli leggendo il MAC dalla
+    # collection discovered_endpoints (popolata dal scanner LAN del connector).
     candidates = await db.managed_devices.find(
         {
             "client_id": client_id,
-            "source": "connector-scanner",
+            "source": {"$in": [
+                "connector-scanner", "connector-master",
+                "scanner", "agent_v4", "auto-discovery",
+            ]},
         },
         {"_id": 0, "id": 1, "ip": 1, "mac": 1, "vendor": 1, "name": 1,
          "hostname": 1, "fingerbank_at": 1, "device_type": 1, "sys_descr": 1,
          "mac_is_random": 1},
     ).to_list(2000)
+
+    # Pre-carica ARP-cache da discovered_endpoints (auto-scan del connector)
+    # per arricchire i device managed che non hanno MAC. Indicizzato per IP.
+    arp_by_ip: Dict[str, Dict[str, Any]] = {}
+    async for ep in db.discovered_endpoints.find(
+        {"client_id": client_id, "mac": {"$ne": None}},
+        {"_id": 0, "ip": 1, "mac": 1, "vendor": 1, "hostname": 1},
+    ):
+        ip_key = (ep.get("ip") or "").strip()
+        if ip_key:
+            arp_by_ip[ip_key] = ep
 
     summary = {
         "total_scanned": 0,
@@ -905,6 +924,21 @@ async def recognize_unknown_devices(
 
         mac_norm = (md.get("mac") or "").lower().replace("-", ":").strip()
         mac_valid = mac_norm and len(mac_norm.replace(":", "")) == 12
+
+        # FALLBACK ARP: se questo managed_device non ha MAC ma il connector
+        # scanner ne ha scoperto uno per lo stesso IP, recupero MAC da
+        # discovered_endpoints (arp_by_ip). Cosi' Fingerbank/OUI possono
+        # funzionare anche su dispositivi inseriti senza MAC.
+        if not mac_valid:
+            ep = arp_by_ip.get((ip or "").strip())
+            if ep and ep.get("mac"):
+                mac_norm = ep["mac"].lower().replace("-", ":").strip()
+                mac_valid = bool(mac_norm) and len(mac_norm.replace(":", "")) == 12
+                if mac_valid:
+                    update["mac"] = mac_norm
+                    if not (md.get("hostname") or "").strip() and ep.get("hostname"):
+                        update["hostname"] = ep["hostname"]
+
         mac_is_laa = mac_valid and _is_laa_mac(mac_norm)
 
         if mac_valid:
