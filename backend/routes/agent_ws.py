@@ -1943,10 +1943,16 @@ async def install_manifest(token: Optional[str] = None,
     binaries = {}
     sha256 = {}
     if platform and platform in _ALLOWED_PLATFORMS:
+        # Risolvi LATEST release dinamicamente (GitHub releases /latest +
+        # cache 5 min). Cosi' l'installer GUI scarica SEMPRE l'ultima
+        # versione invece di binari locali datati. Precedente bug v4.x:
+        # /api/agent/binary/... serviva binari di build pre-v4.0 hardcoded
+        # sul filesystem del Center, ignorando le release recenti.
+        latest_ver = await _resolve_latest_agent_version_safe()
         # Mirror esterno (es. GitHub Releases, S3, Cloudflare R2, OneDrive
         # direct link). Quando questa env e' settata, gli URL dei binari
         # nel manifest puntano direttamente al CDN esterno invece che a
-        # /api/agent/binary/.../<file>?token=... del NOC Center. Cosi' il
+        # /api/agent-builds/.../<file>?token=... del NOC Center. Cosi' il
         # NOC Center non deve avere i binari sul filesystem locale e
         # nemmeno fare proxy/redirect: il connector scarica direttamente
         # dal CDN. Formato: URL base senza filename, es:
@@ -1957,7 +1963,10 @@ async def install_manifest(token: Optional[str] = None,
             if ext_base:
                 binaries[name] = f"{ext_base}/{name}"
             else:
-                binaries[name] = f"{public_http}/api/agent/binary/{platform}/{name}?token={token}"
+                # Proxy al GitHub Release tag risolto. /api/agent-builds/...
+                # restituisce 302 alla URL effettiva di download del CDN
+                # GitHub (https://objects.githubusercontent.com/...).
+                binaries[name] = f"{public_http}/api/agent-builds/{latest_ver}/{name}?token={token}"
             digest = _binary_sha256(platform, name)
             if digest:
                 sha256[name] = digest
@@ -1969,6 +1978,10 @@ async def install_manifest(token: Optional[str] = None,
         # Best-effort: se il cliente non e' nel DB (caso anomalo) ritorna
         # stringa vuota e l'installer fa fallback su client_id UUID.
         "client_name": await _resolve_client_label(client_id),
+        # version: tag della latest release risolto. Usato dall'installer.exe
+        # per scrivere agent-ui.json con la versione effettiva invece di
+        # "4.0.0" hardcoded (popup "Argus Connector" con Versione vuota).
+        "version": (latest_ver if (platform and platform in _ALLOWED_PLATFORMS) else ""),
         "role": role,
         "backend_ws": effective_ws,
         "binaries": binaries,
