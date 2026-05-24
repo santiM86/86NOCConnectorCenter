@@ -862,10 +862,14 @@ async def recognize_unknown_devices_debug(
     total = await db.managed_devices.count_documents({"client_id": client_id})
     matching = await db.managed_devices.count_documents({
         "client_id": client_id,
-        "source": {"$in": [
-            "connector-scanner", "connector-master",
-            "scanner", "agent_v4", "auto-discovery",
-        ]},
+        "$or": [
+            {"source": {"$in": [
+                "connector-scanner", "connector-master",
+                "scanner", "agent_v4", "auto-discovery",
+            ]}},
+            {"source": None},
+            {"source": {"$exists": False}},
+        ],
     })
     sample = await db.managed_devices.find_one(
         {"client_id": client_id},
@@ -912,18 +916,22 @@ async def recognize_unknown_devices(
             return False
 
     # Pesca i device da rivedere: qualunque source "scanner-like" (auto-discovery
-    # del connector) o "master" (aggiunti dal connector master). v4.14.x: i
-    # dispositivi del Center hanno source=connector-master, con MAC null perche'
-    # aggiunti manualmente da UI o sync iniziale senza ARP. Includiamo anche
-    # quelli cosi' che Fingerbank possa arricchirli leggendo il MAC dalla
-    # collection discovered_endpoints (popolata dal scanner LAN del connector).
+    # del connector), "master", oppure source NULL/missing (device legacy o
+    # importati prima che il campo source fosse introdotto). v4.14.x: il
+    # cliente 86BITOffice aveva 35 device con source=null, quindi il filtro
+    # $in non li includeva e total_scanned=0. Includiamo $exists:false e null
+    # per processare anche quelli.
     candidates = await db.managed_devices.find(
         {
             "client_id": client_id,
-            "source": {"$in": [
-                "connector-scanner", "connector-master",
-                "scanner", "agent_v4", "auto-discovery",
-            ]},
+            "$or": [
+                {"source": {"$in": [
+                    "connector-scanner", "connector-master",
+                    "scanner", "agent_v4", "auto-discovery",
+                ]}},
+                {"source": None},
+                {"source": {"$exists": False}},
+            ],
         },
         {"_id": 0, "id": 1, "ip": 1, "ip_address": 1, "mac": 1, "vendor": 1, "name": 1,
          "hostname": 1, "fingerbank_at": 1, "device_type": 1, "sys_descr": 1,
