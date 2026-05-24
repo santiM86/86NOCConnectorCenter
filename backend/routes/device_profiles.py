@@ -187,9 +187,14 @@ async def apply_profile(body: dict, current_user: dict = Depends(get_current_use
         "polling_interval_seconds": eff.get("polling_interval_seconds"),
         "profile_applied_at": datetime.now(timezone.utc).isoformat(),
         "profile_applied_by": current_user.get("email"),
+        # v4.14.x BUG-FIX "profili non si agganciano": flag che proteggono il
+        # device_type/vendor scelto manualmente dall'enrichment OUI/Fingerbank
+        # automatico (che altrimenti rimette device_type="endpoint" e vendor=OUI).
+        "device_type_user_locked": True,
+        "profile_auto_matched": False,
     }
 
-    md_res = await db.managed_devices.update_one(
+    md_res = await db.managed_devices.update_many(
         {"ip": device_ip},
         {"$set": md_patch},
     )
