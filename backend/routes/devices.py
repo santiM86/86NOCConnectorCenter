@@ -842,6 +842,49 @@ async def rematch_profile_single(
     return res
 
 
+@router.get("/clients/{client_id}/devices/recognize-debug")
+async def recognize_unknown_devices_debug(
+    client_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """DIAG endpoint: ritorna i conteggi delle source dei managed_devices del
+    cliente, e quanti entrerebbero nel pipeline recognize-unknowns. Utile per
+    capire se il filtro source matchi i dati reali. Aggiunto in v4.14.x per
+    debuggare il caso "total_scanned: 0" con 40 device esistenti."""
+    pipeline = [
+        {"$match": {"client_id": client_id}},
+        {"$group": {"_id": "$source", "count": {"$sum": 1}}},
+        {"$sort": {"count": -1}},
+    ]
+    sources_count = []
+    async for doc in db.managed_devices.aggregate(pipeline):
+        sources_count.append({"source": doc["_id"], "count": doc["count"]})
+    total = await db.managed_devices.count_documents({"client_id": client_id})
+    matching = await db.managed_devices.count_documents({
+        "client_id": client_id,
+        "source": {"$in": [
+            "connector-scanner", "connector-master",
+            "scanner", "agent_v4", "auto-discovery",
+        ]},
+    })
+    sample = await db.managed_devices.find_one(
+        {"client_id": client_id},
+        {"_id": 0, "id": 1, "source": 1, "ip": 1, "ip_address": 1, "mac": 1, "name": 1, "vendor": 1},
+    )
+    arp_count = await db.discovered_endpoints.count_documents(
+        {"client_id": client_id, "mac": {"$ne": None}},
+    )
+    return {
+        "total_managed_devices": total,
+        "matching_filter": matching,
+        "by_source": sources_count,
+        "sample_device": sample,
+        "arp_cache_discovered": arp_count,
+    }
+
+
+
+
 @router.post("/clients/{client_id}/devices/recognize-unknowns")
 async def recognize_unknown_devices(
     client_id: str,
