@@ -899,6 +899,25 @@ async def recognize_unknown_devices(
     senza vendor). Utile dopo che Fingerbank è stato configurato a posteriori, o per
     device il cui MAC è arrivato in un secondo momento.
     """
+    summary = await _enrich_devices_for_client(client_id)
+    await audit_logger.log(
+        AuditAction.UPDATE_DEVICE, user_id=current_user["id"], user_email=current_user["email"],
+        ip_address=current_user.get("_request_ip"),
+        resource_type="client", resource_id=client_id,
+        details={"action": "recognize_unknowns_manual", "summary": summary},
+    )
+    return {"client_id": client_id, **summary}
+
+
+async def _enrich_devices_for_client(client_id: str) -> Dict[str, Any]:
+    """Helper riutilizzabile: arricchisce i managed_devices del cliente con
+    MAC (da discovered_endpoints ARP-cache), OUI vendor + Fingerbank + reverse
+    DNS. Chiamato sia da:
+      - POST /recognize-unknowns (trigger manuale dell'admin)
+      - _bridge_discovery (auto-trigger quando il connector pusha discovery_batch)
+      - POST /api/devices (auto-trigger quando un nuovo device viene aggiunto)
+    Ritorna il summary del processo (total_scanned, fingerbank_matched, ...).
+    """
     import socket
     from datetime import datetime, timezone
     from routes.oui_lookup import lookup_oui, classify_device
@@ -1056,22 +1075,22 @@ async def recognize_unknown_devices(
 
         if update:
             update["updated_at"] = now_iso
+            # v4.14.x: usa id per il match (univoco) invece di filtro su source
+            # che pre-fix era hardcoded a "connector-scanner" e mai matchava i
+            # device con source=null/connector-master (35 device del cliente
+            # 86BITOffice rimanevano senza enrichment Fingerbank).
             await db.managed_devices.update_one(
-                {"client_id": client_id, "ip": ip, "source": "connector-scanner"},
+                {"client_id": client_id, "id": md.get("id")},
                 {"$set": update},
             )
 
     await audit_logger.log(
-        AuditAction.UPDATE_DEVICE, user_id=current_user["id"], user_email=current_user["email"],
-        ip_address=current_user.get("_request_ip"),
+        AuditAction.UPDATE_DEVICE, user_id="system", user_email="system@argus",
+        ip_address=None,
         resource_type="client", resource_id=client_id,
-        details={"action": "recognize_unknowns", "summary": summary},
+        details={"action": "recognize_unknowns_auto", "summary": summary},
     )
-    return {
-        "client_id": client_id,
-        "fingerbank_configured": fb_configured,
-        **summary,
-    }
+    return {"fingerbank_configured": fb_configured, **summary}
 
 
 # v3.8.17: keyword-set per riconoscere se un LLDP neighbor remote_sys_name/desc
