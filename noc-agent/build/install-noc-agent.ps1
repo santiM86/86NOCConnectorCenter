@@ -993,6 +993,61 @@ foreach ($svc in @("86NocAgent","86NocWatchdog")) {
 Start-Sleep -Seconds 10
 
 # ------------------------------------------------------------------- #
+# 8.5  Autostart Argus Tray (Datto-style) — Scheduled Task At Logon
+# ------------------------------------------------------------------- #
+# argus-tray.exe e' un piccolo binario ~4MB (Win32 systray nativa) che
+# vive accanto all'orologio. Lo registriamo come Scheduled Task
+# 'At Logon' dell'utente INTERACTIVE (gruppo built-in che cattura
+# qualunque utente sta facendo logon interattivo, indipendentemente
+# da Users/Administrators). Trigger:
+#
+#   * Al prossimo logon  → automatico
+#   * AVVIO IMMEDIATO     → Start-ScheduledTask (cosi' l'utente loggato
+#                            ORA vede l'icona senza dover sloggare)
+#
+# CRITICAL: senza questa sezione l'icona Tray spariva ad OGNI upgrade
+# automatico perche' lo Stop-Process la uccideva e niente la rilanciava
+# fino al prossimo logon utente. Vedi installer_gui.ps1.template
+# [10/11] per la stessa logica nell'installer GUI.
+Write-Step "Autostart Argus Tray (At Logon)"
+$trayExe   = Join-Path $InstallDir "argus-tray.exe"
+$taskName  = "86BIT Argus Tray"
+$trayArg   = ""
+if (-not (Test-Path $trayExe)) {
+    # Fallback per release vecchie: usa ArgusDesktop minimizzato
+    $trayExe = Join-Path $InstallDir "ArgusDesktop.exe"
+    $trayArg = "--minimized"
+}
+if (-not (Test-Path $trayExe)) {
+    Write-Warn2 "argus-tray.exe e ArgusDesktop.exe assenti, autostart UI saltato"
+} else {
+    # Cleanup registry-based autostart legacy (pre-v4.13.5)
+    Remove-ItemProperty -Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run' -Name '86BITArgusTray'      -Force -ErrorAction SilentlyContinue
+    Remove-ItemProperty -Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run' -Name '86BITArgusConnector' -Force -ErrorAction SilentlyContinue
+    try {
+        if ($trayArg) {
+            $action = New-ScheduledTaskAction -Execute $trayExe -Argument $trayArg
+        } else {
+            $action = New-ScheduledTaskAction -Execute $trayExe
+        }
+        $trigger   = New-ScheduledTaskTrigger -AtLogOn
+        $principal = New-ScheduledTaskPrincipal -GroupId 'INTERACTIVE' -RunLevel Limited
+        $settings  = New-ScheduledTaskSettingsSet `
+            -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+            -ExecutionTimeLimit ([TimeSpan]::Zero) `
+            -RestartCount 5 -RestartInterval ([TimeSpan]::FromMinutes(1))
+        Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
+            -Principal $principal -Settings $settings -Force -ErrorAction Stop | Out-Null
+        Write-Ok "Scheduled task '$taskName' -> $([System.IO.Path]::GetFileName($trayExe)) $trayArg (At Logon)"
+        # Avvio immediato nella sessione utente loggato ORA
+        Start-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+        Write-Ok "Tray icon avviata nella sessione utente corrente"
+    } catch {
+        Write-Warn2 "Scheduled task tray non registrato: $($_.Exception.Message)"
+    }
+}
+
+# ------------------------------------------------------------------- #
 # 9. Verifica
 # ------------------------------------------------------------------- #
 Write-Step "Verifica installazione"
