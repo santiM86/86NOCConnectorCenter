@@ -125,9 +125,19 @@ exit $rc
 		"-NoProfile", "-ExecutionPolicy", "Bypass",
 		"-Command", psScript)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		// CREATE_NEW_PROCESS_GROUP = 0x00000200
-		// DETACHED_PROCESS         = 0x00000008
-		CreationFlags: 0x00000200 | 0x00000008,
+		// CREATE_NEW_PROCESS_GROUP  = 0x00000200
+		// DETACHED_PROCESS          = 0x00000008
+		// CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+		//
+		// CREATE_BREAKAWAY_FROM_JOB e' CRITICO: i servizi Windows
+		// girano dentro un Job Object e i child di default vengono
+		// killati col job. Senza questo flag, quando Stop-Service
+		// 86NocAgent viene chiamato dallo script PowerShell, lo
+		// SCM termina sia nocagent.exe SIA il subprocess powershell
+		// -> l'upgrade muore al 95% PRIMA di aver scritto i binari.
+		// Diagnosticato in v4.14.x: cartella TEMP log SYSTEM vuota
+		// = script morto prima del transcript.
+		CreationFlags: 0x00000200 | 0x00000008 | 0x01000000,
 	}
 	if err := cmd.Start(); err != nil {
 		log.Error("avvio powershell fallito", "err", err.Error())
