@@ -154,7 +154,7 @@ exit $rc
 		"/TR", taskCmd,
 		"/SC", "ONCE",
 		"/ST", "23:59",
-		"/RU", "SYSTEM",
+		"/RU", "NT AUTHORITY\\SYSTEM",
 		"/RL", "HIGHEST",
 		"/F",
 	)

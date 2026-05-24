@@ -478,8 +478,19 @@ if ($Version -eq "__uninstall__") {
 # ------------------------------------------------------------------- #
 # 1. Auto-elevazione (UAC)
 # ------------------------------------------------------------------- #
-$currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
-if (-not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+# Check 1: token Administrator elevato (UAC accettato)
+# Check 2: account SYSTEM (SID S-1-5-18) — usato quando lo script gira
+#          via Task Scheduler /RU SYSTEM (auto-update remoto dal Center).
+# Senza il check SYSTEM lo script tentava di rilanciarsi via UAC che in
+# subprocess NON interattivo (Task Scheduler / service) muore silente:
+# diagnosticato in v4.14.x sul flow "Aggiorna dal Center" che non si
+# completava mai. Il log mostrava "Privilegi admin mancanti" e poi
+# silenzio totale.
+$currentIdentity  = [Security.Principal.WindowsIdentity]::GetCurrent()
+$currentPrincipal = New-Object Security.Principal.WindowsPrincipal($currentIdentity)
+$isSystem  = ($currentIdentity.User.Value -eq "S-1-5-18")
+$isAdmin   = $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not ($isSystem -or $isAdmin)) {
     Write-Warn2 "Privilegi admin mancanti, rilancio con UAC..."
     $scriptPath = $MyInvocation.MyCommand.Path
     if (-not $scriptPath) { Write-Fail "Impossibile auto-elevare: lo script deve essere salvato su disco prima."; exit 1 }
@@ -491,6 +502,7 @@ if (-not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Adm
     Start-Process powershell.exe -Verb RunAs -ArgumentList $argList -Wait
     exit $LASTEXITCODE
 }
+Write-Host "  Eseguo come: $($currentIdentity.Name) (SYSTEM=$isSystem Admin=$isAdmin)" -ForegroundColor DarkGray
 
 # ------------------------------------------------------------------- #
 # 1.5  Normalizzazione $BackendUrl
