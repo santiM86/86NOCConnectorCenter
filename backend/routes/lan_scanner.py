@@ -375,6 +375,21 @@ async def import_to_client(
             "name": doc["name"],
             "device_type": doc["device_type"],
         })
+    # v4.14.x AUTO-ENRICHMENT: dopo import, scatena enrichment Fingerbank/OUI
+    # in background per arricchire ulteriormente i device appena importati
+    # (es. classificazione device_type, fingerbank_score, reverse DNS).
+    if imported or updated:
+        try:
+            from routes.devices import _enrich_devices_for_client
+            import asyncio as _asyncio
+            _asyncio.create_task(_enrich_devices_for_client(client_id))
+        except Exception as _e:
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "auto-enrichment trigger skip on scan import client=%s err=%s",
+                client_id, _e,
+            )
+
     return {"imported": len(imported), "skipped": skipped, "updated": updated, "items": imported}
 
 

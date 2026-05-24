@@ -32,6 +32,59 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-02-24 ✅ Auto-trigger Fingerbank/OUI enrichment (P0)
+
+**Direttiva utente**: «voglio che l'arricchimento avvenga in automatico
+(sia all'arrivo dei dati dallo scanner, sia all'inserimento manuale)»
+— evita di dover lanciare manualmente `recognize-unknowns` dalla UI.
+
+### Modifiche
+
+#### `backend/routes/agent_ws.py` (già presente da v4.14.x, validato)
+- Throttle dict `_ENRICH_LAST_RUN_PER_CLIENT` (riga 1850) attivo.
+- `_bridge_discovery` (riga 440-450): dopo upsert in `discovered_endpoints`,
+  schedula `_enrich_devices_for_client(client_id)` in background con
+  throttle di **5 minuti per cliente** per evitare di martellare l'API
+  Fingerbank quando il connector pusha batch frequenti.
+
+#### `backend/routes/topology.py` (NUOVO — `add_endpoint_to_monitoring`)
+- Dopo `db.managed_devices.insert_one()`, scatena
+  `_enrich_devices_for_client` in background. Cosi' i device promossi
+  manualmente da Auto-Discovery (Devices/Network) ricevono subito
+  vendor/hostname/device_type da Fingerbank+OUI senza richiedere
+  l'azione manuale "Ri-arricchisci".
+
+#### `backend/routes/lan_scanner.py` (NUOVO — import bulk dispositivi)
+- In `/api/lan-scans/{id}/import` (endpoint usato dal pulsante "+ Importa
+  N nel cliente"), dopo l'inserimento/aggiornamento dei device viene
+  scatenato `_enrich_devices_for_client` per arricchire ulteriormente
+  i device appena importati (classificazione `device_type`,
+  `fingerbank_score`, reverse DNS).
+
+### Pattern usato
+Lazy-import dentro la funzione + `asyncio.create_task` fire-and-forget
++ try/except con log warning. Zero rischio di import circolari e zero
+impatto sulla risposta HTTP (l'enrichment gira in background).
+
+### Validato in container
+- `python3 -c "from routes.agent_ws import _ENRICH_LAST_RUN_PER_CLIENT"`: OK
+- `python3 -c "from routes.devices import _enrich_devices_for_client"`: OK
+- Trigger manuale `/api/clients/{id}/devices/recognize-unknowns` testato
+  con admin token → ritorna summary corretto (`total_scanned`,
+  `fingerbank_matched`, ecc.).
+- Backend supervisor running senza errori dopo le modifiche.
+
+### Effetto sul flusso utente
+- **Scanner Connector** push discovery_batch → enrichment automatico
+  in 5min throttle (no API spam).
+- **Admin clicca "Promuovi a monitoraggio"** in Auto-Discovery →
+  enrichment immediato in background.
+- **Admin clicca "+ Importa N nel cliente"** in Scanner LAN →
+  enrichment immediato in background.
+
+---
+
+
 ## 2026-02-21 ✅ GitHub Webhook Auto-Deploy — fine SSH manuali
 
 **Direttiva utente**: «collega non posso ogni volta che faccio una nuova
