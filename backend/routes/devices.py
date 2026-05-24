@@ -882,7 +882,7 @@ async def recognize_unknown_devices(
                 "scanner", "agent_v4", "auto-discovery",
             ]},
         },
-        {"_id": 0, "id": 1, "ip": 1, "mac": 1, "vendor": 1, "name": 1,
+        {"_id": 0, "id": 1, "ip": 1, "ip_address": 1, "mac": 1, "vendor": 1, "name": 1,
          "hostname": 1, "fingerbank_at": 1, "device_type": 1, "sys_descr": 1,
          "mac_is_random": 1},
     ).to_list(2000)
@@ -909,7 +909,9 @@ async def recognize_unknown_devices(
     }
 
     for md in candidates:
-        ip = md.get("ip")
+        # v4.14.x: i device del Center usano `ip_address` (managed_devices schema),
+        # mentre i device da connector-scanner legacy usano `ip`. Supportiamo entrambi.
+        ip = md.get("ip") or md.get("ip_address")
         if not ip:
             continue
         # Salta device gia' completi (hanno vendor + name diverso da IP + fingerbank fatto)
