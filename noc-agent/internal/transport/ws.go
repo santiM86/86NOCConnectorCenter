@@ -248,11 +248,41 @@ func (c *Client) session(parent context.Context) error {
         sessCtx, cancelSess := context.WithCancel(parent)
         defer cancelSess()
 
-        errCh := make(chan error, 2)
+        errCh := make(chan error, 3)
         go func() { errCh <- c.writeLoop(sessCtx, conn) }()
         go func() { errCh <- c.readLoop(sessCtx, conn) }()
+        // v4.14.x: client-side keepalive — WebSocket protocol-level Ping ogni
+        // 25 sec. Critico per LAN con NAT/firewall (es. Galvan) che killano
+        // connessioni TCP idle dopo 60-120 sec. Senza traffico WS visibile
+        // (es. nessun command, nessun event), il dispositivo intermedio
+        // chiude la sessione → "read tcp: failed to read frame header"
+        // → reconnect + bounce dei dispositivi monitorati per 5-10 sec.
+        go func() { errCh <- c.keepaliveLoop(sessCtx, conn) }()
 
         return <-errCh
+}
+
+// keepaliveLoop invia un Ping WebSocket protocol-level ogni 25 secondi per
+// mantenere viva la TCP connection contro idle-timeout di NAT/firewall.
+// Se Pong non arriva entro 10 sec, restituisce errore -> readLoop/writeLoop
+// vengono interrotti e la sessione si chiude pulita -> reconnect immediato.
+func (c *Client) keepaliveLoop(ctx context.Context, conn *websocket.Conn) error {
+        tk := time.NewTicker(25 * time.Second)
+        defer tk.Stop()
+        for {
+                select {
+                case <-ctx.Done():
+                        return ctx.Err()
+                case <-tk.C:
+                        pctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+                        if err := conn.Ping(pctx); err != nil {
+                                cancel()
+                                c.log.Warn("ws keepalive ping failed", "err", err.Error())
+                                return fmt.Errorf("keepalive ping: %w", err)
+                        }
+                        cancel()
+                }
+        }
 }
 
 func (c *Client) writeLoop(ctx context.Context, conn *websocket.Conn) error {
