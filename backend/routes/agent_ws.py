@@ -274,11 +274,12 @@ async def agent_ws(ws: WebSocket) -> None:
 
     # Send welcome (includes SNMP targets pulled from managed_devices for
     # this tenant so the agent can self-poll without needing a separate
-    # legacy Connector Master).
+    # legacy Connector Master). v4.15.x: passa il role per filtrare i
+    # target nel multi-connector (scanner = no polling).
     welcome = {
         "accepted_at": now.isoformat(),
         "session_id": uuid.uuid4().hex,
-        "config": await _build_poller_config(client_id),
+        "config": await _build_poller_config(client_id, agent_role=role_val),
     }
     conn.seq += 1
     try:
@@ -752,7 +753,7 @@ async def sys_metrics_overview(
     return {"count": len(docs), "agents": docs}
 
 
-async def _build_poller_config(client_id: str) -> Dict[str, Any]:
+async def _build_poller_config(client_id: str, agent_role: str = "master") -> Dict[str, Any]:
     """Build poller config for one tenant.
 
     Two blocks are emitted:
@@ -770,9 +771,17 @@ async def _build_poller_config(client_id: str) -> Dict[str, Any]:
       - Devices flagged `disabled` or with no `ip` are skipped.
       - Empty target lists still return a valid (disabled) block so the
         agent doesn't crash on first welcome.
+      - v4.15.x BUG-FIX multi-connector: gli agent con `role="scanner"`
+        ricevono targets ping/SNMP VUOTI. Solo il `master` polla i device
+        managed. Questo evita falsi-positivi OFFLINE quando 2 connector
+        sullo stesso cliente vivono in subnet diverse e l'agent
+        "sbagliato" non riesce a raggiungere device cross-VLAN. Lo
+        scanner continua a fare auto-discovery LAN (ARP/mDNS) e
+        sys_metrics del server su cui gira.
     """
     snmp_targets: List[Dict[str, Any]] = []
     ping_targets: List[Dict[str, Any]] = []
+    is_polling_agent = (agent_role or "master").lower() == "master"
     try:
         cursor = db.managed_devices.find(
             {"client_id": client_id, "ip": {"$ne": None, "$exists": True}},
@@ -785,6 +794,10 @@ async def _build_poller_config(client_id: str) -> Dict[str, Any]:
                 continue
             ip = d.get("ip")
             if not ip:
+                continue
+            # v4.15.x: solo agent master ricevono targets. Gli scanner
+            # restano con liste vuote (fanno solo discovery LAN).
+            if not is_polling_agent:
                 continue
             name = d.get("name") or ip
             # Every enabled device gets ping-polled (cheap, no auth).
@@ -841,18 +854,32 @@ async def push_config_to_client(client_id: str) -> int:
     starts (or stops) polling it within seconds instead of waiting for
     the next service restart.
 
+    v4.15.x BUG-FIX multi-connector: per ogni agent calcoliamo la config
+    in base al SUO role (master/scanner). Gli scanner ricevono targets
+    vuoti (fanno solo discovery), il master riceve la lista completa.
+
     Returns the number of agents successfully notified.
     """
-    cfg = await _build_poller_config(client_id)
-    payload = {
-        "accepted_at": _now().isoformat(),
-        "config": cfg,
-        "reason": "device_assignment_changed",
-    }
+    # Cache role per agent_id per evitare round-trip multipli al DB
+    role_by_agent: Dict[str, str] = {}
     sent = 0
+    total_targets_sent = 0
     for c in REGISTRY.list():
         if c.client_id != client_id:
             continue
+        role = role_by_agent.get(c.agent_id)
+        if role is None:
+            ag = await db.managed_agents.find_one(
+                {"agent_id": c.agent_id}, {"_id": 0, "role": 1},
+            )
+            role = (ag or {}).get("role") or "master"
+            role_by_agent[c.agent_id] = role
+        cfg = await _build_poller_config(client_id, agent_role=role)
+        payload = {
+            "accepted_at": _now().isoformat(),
+            "config": cfg,
+            "reason": "device_assignment_changed",
+        }
         try:
             c.seq += 1
             # Re-use server.welcome so the existing OnWelcome hot-swap
@@ -860,10 +887,11 @@ async def push_config_to_client(client_id: str) -> int:
             # zero new code on the agent side.
             await c.send(make_frame("server.welcome", payload, seq=c.seq))
             sent += 1
+            total_targets_sent += len(cfg["ping"]["targets"])
         except Exception as e:  # noqa: BLE001
             logger.warning("push_config_to_client: send failed agent=%s err=%s", c.agent_id, e)
-    logger.info("push_config_to_client: client_id=%s notified=%d targets_snmp=%d targets_ping=%d",
-                client_id, sent, len(cfg["snmp"]["targets"]), len(cfg["ping"]["targets"]))
+    logger.info("push_config_to_client: client_id=%s notified=%d total_ping_targets_sent=%d",
+                client_id, sent, total_targets_sent)
     return sent
 
 

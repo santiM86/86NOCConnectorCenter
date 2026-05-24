@@ -32,6 +32,72 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-02-24 ✅ FIX P0 — Multi-connector / "dispositivi offline cross-VLAN"
+
+**Problema reportato dall'utente** (cliente Galvan): dopo aver installato
+un secondo connector Go "scanner" (SRVDCGAL su 192.168.16.21) in una
+VLAN diversa rispetto al master esistente (GALVANSRV su 10.100.61.37),
+i device managed `10.100.61.x` sono finiti tutti OFFLINE da pochi secondi
+nonostante il master GALVANSRV fosse LIVE. 58/58 device offline simultanei
+= chiaramente non era "device spenti" ma race condition.
+
+### Root cause
+`backend/routes/agent_ws.py::_build_poller_config(client_id)` ritornava
+la STESSA lista di 58 targets per OGNI connector del cliente, senza
+filtrare per role/subnet. `push_config_to_client` ciclava su tutti gli
+agent del client_id e mandava `server.welcome` con la lista completa.
+
+Conseguenza: ENTRAMBI gli agent provavano a pingare TUTTI i 58 device:
+- GALVANSRV (10.100.61.37) pingava ok i 10.100.61.x ma falliva sui 192.168.16.x
+- SRVDCGAL (192.168.16.21) pingava ok i 192.168.16.x ma falliva sui 10.100.61.x
+
+In `_bridge_ping_poll` (riga 519): `managed_devices` viene scritto
+filtrando solo `{client_id, ip}` → **NON filtra per agent_id**.
+L'ultimo `ping_poll` (quello con `reachable=false` dall'agent cross-VLAN)
+sovrascriveva lo stato del device → dopo 3 cicli consecutivi → OFFLINE.
+
+### Fix applicato
+
+#### `_build_poller_config(client_id, agent_role="master")`
+- Aggiunto parametro `agent_role`.
+- Se `agent_role != "master"` → ping_targets vuoto, snmp_targets vuoto.
+- Gli agent `role="scanner"` ricevono comunque la welcome (per `discovery`
+  e `sys_metrics`) ma non fanno polling sui device managed.
+
+#### `push_config_to_client(client_id)`
+- Per ogni connector live del cliente, lookup `managed_agents.role` in DB.
+- Costruisce la config customizzata in base al role (master/scanner).
+- Logga `total_ping_targets_sent` aggregato.
+
+#### Welcome iniziale (riga 281)
+- `_build_poller_config(client_id, agent_role=role_val)` dove `role_val`
+  proviene da `hello.labels.role`.
+
+### Architettura supportata
+- **1 master + N scanner**: master polla tutto, scanner fanno solo
+  discovery LAN del proprio segmento. Funziona out-of-the-box.
+- **2+ master cross-VLAN**: caso edge non ancora gestito; richiederebbe
+  subnet-aware dispatching (futuro). Per ora se serve un secondo
+  "master" su altra VLAN, l'utente deve segmentare la config manualmente
+  oppure usare 1 master scanner-only finche' non implementiamo
+  subnet matching.
+
+### Validato in container
+- `python3 -c "from routes.agent_ws import _build_poller_config"`: signature
+  `(client_id, agent_role='master')`.
+- Hot reload backend, nessun errore log.
+
+### Steps utente per attivare in prod
+1. **Save to GitHub** → auto-deploy in ~30-60s.
+2. I 2 agent Galvan reconnect alla welcome successiva (entro 15s).
+3. SRVDCGAL (scanner) smette di pingare i 10.100.61.x → niente piu'
+   sovrascritture cross-VLAN.
+4. GALVANSRV (master) torna a essere l'unico polling authority sui
+   10.100.61.x → device riportati ONLINE entro 60s.
+
+---
+
+
 ## 2026-02-24 ✅ FIX P0 — "Profili non si agganciano" (regressione enrichment)
 
 **Problema reportato dall'utente** (screenshot Dispositivi cliente):
