@@ -183,11 +183,32 @@ func (p *PingPoller) probe(ctx context.Context, ip string, cfg config.PingConfig
 			if bestRTT > 0 {
 				res.Latency = time.Duration(bestRTT) * time.Millisecond
 			}
-		} else {
-			res.Reachable = false
-			res.LossPct = 100
-			res.Error = lastErr
+			res.Method = "icmp_native"
+			return res
 		}
+		// v4.16.x TCP FALLBACK: ICMP fallito → prova TCP probe su porte
+		// comuni. Molti firewall enterprise (Zyxel, FortiGate) e host
+		// Windows con Firewall "Public" bloccano ICMP ma rispondono a
+		// connect TCP sulle porte applicative. Senza questo fallback,
+		// TUTTI i device che bloccano ICMP vengono marcati offline pur
+		// essendo perfettamente raggiungibili.
+		tcpTimeout := timeout
+		if tcpTimeout < 500*time.Millisecond {
+			tcpTimeout = 500 * time.Millisecond
+		}
+		ok, rtt, port := probeTCPFallback(ctx, ip, tcpTimeout)
+		if ok {
+			res.Reachable = true
+			res.LossPct = 0
+			res.Latency = time.Duration(rtt) * time.Millisecond
+			res.Method = "tcp_probe"
+			res.Error = "icmp_blocked,tcp_port_" + strconv.Itoa(port)
+			return res
+		}
+		// Tutto fallito
+		res.Reachable = false
+		res.LossPct = 100
+		res.Error = lastErr
 		res.Method = "icmp_native"
 		return res
 	}
@@ -237,6 +258,17 @@ func (p *PingPoller) probe(ctx context.Context, ip string, cfg config.PingConfig
 		res.Error = msg
 		// Try to refine RTT/loss anyway (e.g. partial loss).
 		applyParsed(&res, string(out), count)
+		// v4.16.x TCP FALLBACK anche su path legacy fork-ping.
+		// Stesso ragionamento del path native: device che bloccano ICMP
+		// ma rispondono su porte TCP standard sono comunque "online".
+		ok, rtt, port := probeTCPFallback(ctx, ip, timeout)
+		if ok {
+			res.Reachable = true
+			res.LossPct = 0
+			res.Latency = time.Duration(rtt) * time.Millisecond
+			res.Method = "tcp_probe"
+			res.Error = "icmp_blocked,tcp_port_" + strconv.Itoa(port)
+		}
 		return res
 	}
 

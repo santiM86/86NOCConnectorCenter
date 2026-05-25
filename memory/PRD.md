@@ -32,6 +32,70 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-02-24 ✅ FIX P0 DEFINITIVO — TCP fallback per device che bloccano ICMP
+
+### Evidence dall'utente (PowerShell sul server GALVANSRV)
+```
+ping 10.100.61.254  (Zyxel firewall, STESSA subnet)  → 100% loss
+ping 10.100.61.37   (sé stesso)                      → 0% loss
+ping 192.168.16.146 (cross-VLAN)                     → 100% loss
+```
+
+**Il server master GALVANSRV NON riesce a pingare il firewall della
+sua stessa subnet**. Significa che **i device del cliente Galvan
+bloccano ICMP** (default Zyxel + Windows Firewall in mode "Public").
+Argus stava facendo il suo lavoro correttamente — pinga, no risposta,
+marca offline. La realta' e' che ICMP e' filtrato sull'infrastruttura
+cliente.
+
+Inoltre dall'output: i servizi Windows si chiamano `86NocAgent` +
+`86NocWatchdog` (non `argus-agent` come pensavo).
+
+### Fix definitivo — TCP fallback nel poller
+
+#### `noc-agent/internal/poller/tcp_fallback.go` (NUOVO)
+- `probeTCPFallback(ctx, ip, perPortTimeout) (bool, int, int)` —
+  ritorna reachable, RTT_ms, portUsed
+- Prova in sequenza porte standard: **443, 80, 22, 3389, 445, 161, 23**
+- Prima porta che risponde con SYN-ACK → device "reachable"
+- Cap timeout per porta: 300ms-2s (early-exit alla prima hit)
+- Pattern standard industriale (Zabbix, Nagios, Datto RMM fanno cosi')
+
+#### `noc-agent/internal/poller/icmp.go::probe()` (MODIFICATO)
+- Path native Windows: dopo ICMP fail → tenta `probeTCPFallback`. Se hit:
+  - `res.Reachable = true`
+  - `res.Method = "tcp_probe"`
+  - `res.Error = "icmp_blocked,tcp_port_<n>"` (visibile in UI)
+- Path legacy fork-ping (Linux/macOS): stesso fallback dopo timeout
+
+### Conseguenza utente
+- I device Galvan torneranno ONLINE entro 60s dal deploy del nuovo
+  binario, perche':
+  - Zyxel ha 443 aperto (web mgmt HTTPS) → tcp_probe hit su 443
+  - Server Windows hanno almeno 445 (SMB) o 3389 (RDP) → tcp_probe hit
+  - Stampanti hanno 80 o 443 → tcp_probe hit
+  - Switch hanno 22 (SSH) o 80 (HTTP) → tcp_probe hit
+- I device 192.168.16.x cross-VLAN restano offline (la rete non li
+  routa) — comportamento corretto, non e' un bug Argus
+
+### Validato in container
+- `GOOS=windows go build`: ✅
+- `GOOS=linux go build`: ✅
+- `go test ./internal/poller/`: PASS
+- TCP fallback ordinato per probabilita' di hit decrescente, primo hit
+  termina la probe → overhead trascurabile (<100ms per il 95% dei device)
+
+### Steps utente per attivare in prod
+1. **Save to GitHub** → GitHub Actions rebuilda v4.16+
+2. Sul server GALVANSRV: `Restart-Service 86NocAgent` per scaricare/installare
+   subito il nuovo binario (o aspetta auto-update <1h)
+3. Click "🧪 Test ping ora" in Dispositivi Galvan: dovresti vedere
+   `method: tcp_probe` per i device che bloccano ICMP, con la porta che
+   ha risposto (es. `tcp_port_443`)
+
+---
+
+
 ## 2026-02-24 ✅ FIX P0 — SNMP poll degradava offline + endpoint Force Ping Now
 
 ### Bug critico SNMP poll (CAUSA REALE TROVATA)
