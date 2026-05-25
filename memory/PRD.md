@@ -32,6 +32,84 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-02-24 ✅ FIX P0 — CAUSA ROOT FINALE: poller usa ping.exe (bloccato da Defender ASR)
+
+**Indagine approfondita**: l'utente ha confermato che gli agent v4 sono
+LIVE (2 agent per Galvan) ma TUTTI i 58 device sono OFFLINE incluso
+GALVANSRV (10.100.61.37) che e' lo stesso server su cui gira il master.
+**Impossibile** che il server non riesca a pingare se stesso.
+
+### Root cause definitiva
+`noc-agent/internal/poller/icmp.go::probe()` lancia **`ping.exe` come
+processo esterno** (riga 173: `exec.CommandContext(cctx, "ping", args...)`).
+Su Windows con Defender ASR (Attack Surface Reduction) attivo,
+`ping.exe` viene bloccato/ritardato/ucciso. Esattamente lo stesso
+problema gia' risolto in `lanscan` migrandolo a `IcmpSendEcho2` API
+native — ma il **modulo poller principale** era rimasto col vecchio
+codice `os/exec`. Risultato: ogni ping cycle timeout → reachable=false
+per tutti i target → TUTTI i device OFFLINE.
+
+### Conferma dall'evidenza
+- Multipli fix backend gia' applicati (multi-VLAN, v3 zombie, ecc.)
+  non risolvevano il problema → significa che la causa root e' a livello
+  Go agent, non backend.
+- GALVANSRV (l'IP del server stesso) era offline → impossibile per
+  problema rete → conferma che il ping fallisce per ASR, non per
+  irraggiungibilita'.
+- L'handoff summary lo aveva gia' segnalato per il lanscan, ma il fix
+  non era stato propagato al poller.
+
+### Fix applicato
+
+#### `noc-agent/internal/poller/icmp_native_windows.go` (NUOVO)
+Wrapper API Win32 `IcmpSendEcho2` per il package poller (stessa
+implementazione gia' in lanscan, duplicata per evitare dependency
+cross-package).
+- `nativeProbeICMP(ctx, ip, timeoutMs) (bool, int, string)` — ritorna
+  reachable, RTT_ms, error message.
+- Usa `IcmpCreateFile` singleton + `IcmpSendEcho2` con timeout +
+  payload 32-byte "ARGUS-POLL".
+
+#### `noc-agent/internal/poller/icmp_native_other.go` (NUOVO)
+Stub non-windows. `nativeICMPSupported = false`. Su Linux/macOS il fork
+di `ping` non e' bloccato → continuiamo a usare il path classico.
+
+#### `noc-agent/internal/poller/icmp.go::probe()` (MODIFICATO)
+Aggiunto FAST PATH:
+```go
+if nativeICMPSupported {
+    // Usa IcmpSendEcho2 native (no fork di ping.exe)
+    ok, rtt, err := nativeProbeICMP(ctx, ip, timeoutMs)
+    res.Method = "icmp_native"
+    return res
+}
+// FALLBACK: fork ping (Linux/macOS o Windows senza native API)
+```
+
+### Validato in container
+- `GOOS=windows GOARCH=amd64 go build ./internal/poller/ ./cmd/agent/`:
+  exit 0 (compila pulito)
+- `GOOS=linux GOARCH=amd64 go build ...`: exit 0 (fallback funziona)
+- `go test ./internal/poller/`: PASS (no regressioni)
+
+### Steps utente per attivare in prod
+1. **Save to GitHub** → GitHub Actions buildera' il nuovo binario v4.16.0
+   (o successiva) con il poller nativo
+2. Sul server cliente Galvan, l'agent si auto-aggiornera' via task
+   scheduler entro l'ora successiva al deploy
+3. **Subito dopo l'update**, il polling iniziera' a funzionare e i 58
+   device dovrebbero tornare ONLINE entro 1-2 cicli (60-120s)
+4. Se vuoi accelerare: dalla UI "Connector v4 Agent" → click "Update"
+   sul connector di Galvan per forzare l'aggiornamento immediato
+
+### Note operative
+Il `proto.PingPollResult.Method` ora vale `"icmp_native"` (vs `"icmp"`
+del path legacy). Utile per filtrare in UI quali ping sono stati fatti
+con la nuova API. Nessuna modifica al backend necessaria.
+
+---
+
+
 ## 2026-02-24 ✅ HOTFIX P0 — Diagnostica diceva "0 agent v4 LIVE" anche con 2 agent live
 
 **Sintomo**: utente ha pushato i fix, in AgentsPage Galvan ha **2 agent
