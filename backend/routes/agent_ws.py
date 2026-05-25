@@ -648,11 +648,22 @@ async def _bridge_snmp_poll(conn: _Connection, r: Dict[str, Any]) -> None:
         logger.warning("snmp_poll: device_poll_status upsert failed ip=%s err=%s", target, e)
     # Reflect live status in managed_devices so dashboards refresh in
     # real time. Only update fields that the UI cares about.
+    # v4.16.x BUG-FIX critico: NON sovrascrivere `status` se SNMP fallisce.
+    # SNMP puo' fallire per mille motivi (no community, ACL, device non SNMP,
+    # timeout transitorio) — non significa che il device sia offline. Lo
+    # status offline deve essere determinato SOLO dal ping_poll, che e' una
+    # check piu' affidabile (ICMP layer 3 vs SNMP application).
     md_set = {
-        "status": "online" if reachable else "offline",
         "last_poll_at": now_iso,
         "last_poll_source": "agent_v4",
+        "snmp_reachable": bool(reachable),
+        "snmp_last_check_at": now_iso,
     }
+    if reachable:
+        # Solo se SNMP risponde correttamente promuoviamo a "online" e
+        # popoliamo i metadati. Mai degradare a offline da qui.
+        md_set["status"] = "online"
+        md_set["last_seen_at"] = now_iso
     if r.get("sys_name"):
         md_set["sys_name"] = r["sys_name"]
     if r.get("sys_descr"):
@@ -1237,6 +1248,91 @@ async def agent_scan_report(req: ScanReportRequest, request: Request) -> Dict[st
         "endpoints_stored": stored,
         "devices_auto_added": auto_managed,
         "received_at": now_iso,
+    }
+
+
+@router.post("/clients/{client_id}/devices/force-ping-now")
+async def force_ping_now(client_id: str, current_user: dict = Depends(get_current_user)) -> Dict[str, Any]:
+    """v4.16.x: forza un ping immediato di TUTTI i target del cliente
+    sull'agent v4 master LIVE. Ritorna i risultati REAL TIME (raw dal
+    poller, niente persistenza intermedia) cosi' l'admin puo' diagnosticare
+    se il polling lato Go agent funziona.
+
+    Utile per validare:
+      - se il poller v4.16+ con IcmpSendEcho2 nativo funziona (vs ping.exe bloccato da ASR)
+      - se ci sono device irraggiungibili per problemi rete vs problemi agent
+      - confronto online/offline tra cio' che dice il poller VS cio' che e' in UI
+    """
+    require_admin(current_user)
+    # Trova il primo master live per questo cliente
+    three_min_ago = (datetime.now(timezone.utc) - timedelta(minutes=3)).isoformat()
+    master = await db.managed_agents.find_one(
+        {"client_id": client_id, "role": "master",
+         "$or": [
+             {"last_heartbeat_at": {"$gte": three_min_ago}},
+             {"last_seen_at": {"$gte": three_min_ago}},
+         ]},
+        {"_id": 0, "agent_id": 1, "hostname": 1, "agent_version": 1},
+    )
+    if not master:
+        raise HTTPException(status_code=404, detail="Nessun agent v4 master LIVE per questo cliente")
+    agent_id = master["agent_id"]
+    conn = REGISTRY.get(agent_id)
+    if conn is None:
+        raise HTTPException(status_code=404, detail=f"Agent {master.get('hostname')} non e' connesso al WS")
+
+    # Lista dei target managed_devices con ip
+    targets = []
+    async for d in db.managed_devices.find(
+        {"client_id": client_id, "ip": {"$ne": None, "$exists": True}, "disabled": {"$ne": True}},
+        {"_id": 0, "ip": 1, "name": 1},
+    ):
+        if d.get("ip"):
+            targets.append({"ip": d["ip"], "name": d.get("name") or d["ip"]})
+
+    if not targets:
+        return {"agent": master, "targets": 0, "results": [], "summary": "no targets"}
+
+    # Esegui force_ping_poll per ogni target IN PARALLELO ma con cap a 10
+    sem = asyncio.Semaphore(10)
+    results: List[Dict[str, Any]] = []
+
+    async def _probe(t):
+        async with sem:
+            try:
+                reply = await conn.send_command("force_ping_poll", {"ip": t["ip"]}, timeout=8.0)
+                results.append({
+                    "ip": t["ip"], "name": t["name"],
+                    "reachable": bool(reply.get("reachable") or reply.get("Reachable")),
+                    "latency_ms": reply.get("latency_ms") or reply.get("Latency"),
+                    "loss_pct": reply.get("loss_pct") or reply.get("LossPct"),
+                    "method": reply.get("method") or reply.get("Method") or "?",
+                    "error": reply.get("error") or reply.get("Error"),
+                })
+            except asyncio.TimeoutError:
+                results.append({"ip": t["ip"], "name": t["name"], "reachable": False, "error": "WS timeout"})
+            except Exception as e:
+                results.append({"ip": t["ip"], "name": t["name"], "reachable": False, "error": str(e)})
+
+    await asyncio.gather(*[_probe(t) for t in targets])
+
+    reachable = sum(1 for r in results if r.get("reachable"))
+    unreachable = len(results) - reachable
+    methods_used = {}
+    for r in results:
+        m = r.get("method") or "?"
+        methods_used[m] = methods_used.get(m, 0) + 1
+
+    return {
+        "agent": master,
+        "client_id": client_id,
+        "targets": len(targets),
+        "summary": {
+            "reachable": reachable,
+            "unreachable": unreachable,
+            "methods": methods_used,
+        },
+        "results": results,
     }
 
 

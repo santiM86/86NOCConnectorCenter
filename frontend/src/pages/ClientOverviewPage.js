@@ -1436,6 +1436,34 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
     }
   };
 
+  const forcePingNow = async () => {
+    try {
+      toast.info("Avvio test ping su tutti i device... attendi 5-15s");
+      const { data } = await axios.post(`${API}/clients/${clientId}/devices/force-ping-now`);
+      const s = data.summary || {};
+      const methods = Object.entries(s.methods || {}).map(([m, c]) => `${m}: ${c}`).join(", ");
+      // Estrai sample dei primi offline per debug
+      const offlineSample = (data.results || []).filter(r => !r.reachable).slice(0, 10).map(r =>
+        `  • ${r.ip} (${r.name || ""}) → ${r.error || "no reply"}`,
+      ).join("\n");
+      const onlineSample = (data.results || []).filter(r => r.reachable).slice(0, 5).map(r =>
+        `  • ${r.ip} → ${r.latency_ms || "?"}ms (${r.method})`,
+      ).join("\n");
+      const msg = `🧪 TEST PING LIVE — Agent: ${data.agent?.hostname} v${data.agent?.agent_version}\n\n` +
+        `Target totali: ${data.targets}\n` +
+        `✅ Reachable: ${s.reachable || 0}\n` +
+        `❌ Unreachable: ${s.unreachable || 0}\n` +
+        `Metodi usati: ${methods || "?"}\n\n` +
+        (onlineSample ? `▼ Sample ONLINE:\n${onlineSample}\n\n` : "") +
+        (offlineSample ? `▼ Sample OFFLINE (primi 10):\n${offlineSample}` : "");
+      alert(msg);
+      // Refresh table dopo il test
+      onRefresh?.();
+    } catch (e) {
+      toast.error(`Errore test ping: ${e.response?.data?.detail || e.message}`);
+    }
+  };
+
   const diagnoseOffline = async () => {
     try {
       const { data } = await axios.get(
@@ -1636,6 +1664,14 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
             title="Classifica ogni device come LAN (cavo) o Wi-Fi incrociando la CAM table degli switch SNMP con i neighbor LLDP. Identifica gli AP via keyword (Aruba AP, Unifi, Meraki, ecc.) e marca tutti i loro client come Wi-Fi. Confidenza: 99% se l'AP stesso e' un LLDP neighbor; 95% via LLDP-AP; 90% via CAM table; 75% via inferenza MAC randomizzato."
           >
             <WifiHigh size={13} /> LAN / Wi-Fi
+          </Button>
+          <Button
+            onClick={() => forcePingNow()}
+            className="bg-emerald-600/90 hover:bg-emerald-600 text-white h-8 text-xs gap-1"
+            data-testid="force-ping-now-btn"
+            title="Esegue un ping REAL TIME su TUTTI i device del cliente tramite l'agent v4 master LIVE. Mostra i risultati raw del poller (no persistenza DB intermedia)."
+          >
+            🧪 Test ping ora
           </Button>
           <Button
             onClick={() => diagnoseOffline()}
