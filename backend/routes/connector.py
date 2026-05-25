@@ -2350,7 +2350,10 @@ async def connector_device_report(request: Request):
         three_min_ago_iso = (datetime.now(timezone.utc) - timedelta(minutes=3)).isoformat()
         v4_master = await db.managed_agents.find_one(
             {"client_id": client_id, "role": "master",
-             "last_seen_at": {"$gte": three_min_ago_iso}},
+             "$or": [
+                 {"last_heartbeat_at": {"$gte": three_min_ago_iso}},
+                 {"last_seen_at": {"$gte": three_min_ago_iso}},
+             ]},
             {"_id": 0, "hostname": 1, "agent_id": 1},
         )
     except Exception:

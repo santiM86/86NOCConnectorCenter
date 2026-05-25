@@ -68,13 +68,20 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
     # OFFLINE con `unreachable_since=now` che cambia in tempo reale
     # nonostante un connector v4 sia LIVE. I record v4 hanno
     # `source="agent_v4"`. I record v3 hanno `source` assente o diverso.
+    # NB: il campo per heartbeat e' `last_heartbeat_at` (impostato in
+    # `_on_heartbeat`), non `last_seen_at`. Match con $or per essere
+    # tolleranti se uno dei due e' stato impostato (e.g. da
+    # registration vs heartbeat).
     v4_master_alive = False
     if client_id:
         try:
             three_min_ago_iso = (datetime.now(timezone.utc) - timedelta(minutes=3)).isoformat()
             v4_master = await db.managed_agents.find_one(
                 {"client_id": client_id, "role": "master",
-                 "last_seen_at": {"$gte": three_min_ago_iso}},
+                 "$or": [
+                     {"last_heartbeat_at": {"$gte": three_min_ago_iso}},
+                     {"last_seen_at": {"$gte": three_min_ago_iso}},
+                 ]},
                 {"_id": 0, "agent_id": 1, "hostname": 1},
             )
             v4_master_alive = v4_master is not None
@@ -624,12 +631,16 @@ async def diagnose_offline_devices(
     now = datetime.now(timezone.utc)
     three_min_iso = (now - timedelta(minutes=3)).isoformat()
 
-    # 1. agent v4 live
+    # 1. agent v4 live (heartbeat o last_seen entro 3 min)
     live_agents = []
     async for ag in db.managed_agents.find(
-        {"client_id": client_id, "last_seen_at": {"$gte": three_min_iso}},
+        {"client_id": client_id,
+         "$or": [
+             {"last_heartbeat_at": {"$gte": three_min_iso}},
+             {"last_seen_at": {"$gte": three_min_iso}},
+         ]},
         {"_id": 0, "agent_id": 1, "hostname": 1, "role": 1, "last_seen_at": 1,
-         "last_ip": 1, "agent_version": 1},
+         "last_heartbeat_at": 1, "last_ip": 1, "agent_version": 1},
     ):
         live_agents.append(ag)
 
