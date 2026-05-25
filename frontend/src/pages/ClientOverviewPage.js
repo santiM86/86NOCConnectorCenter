@@ -8,7 +8,7 @@ import {
   Lightning, WifiHigh, WifiSlash, PlugsConnected, CaretDown,
   CheckCircle, Warning, ArrowClockwise, Bell, BellSlash, ChartLine, Monitor, Cpu,
   Plus, Trash, Lock, MagnifyingGlass, Info, PencilSimple, NetworkSlash,
-  Phone, DeviceMobile, Desktop,
+  Phone, DeviceMobile, Desktop, Network,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -50,6 +50,8 @@ export default function ClientOverviewPage() {
   const [scanHealth, setScanHealth] = useState({ connectors: [], any_stale: false });
   // v4.15.x: diagnosi auto delle cause di offline (rileva v3 zombie, master morto, ecc.)
   const [diagnosis, setDiagnosis] = useState(null);
+  // v4.17.x: coverage subnet per mini-card header
+  const [coverage, setCoverage] = useState(null);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState("overview");
 
@@ -87,6 +89,11 @@ export default function ClientOverviewPage() {
     try {
       const diagRes = await axios.get(`${API}/clients/${clientId}/devices/diagnose-offline`);
       setDiagnosis(diagRes.data || null);
+    } catch {}
+    // v4.17.x: coverage subnet
+    try {
+      const covRes = await axios.get(`${API}/clients/${clientId}/agents-coverage`);
+      setCoverage(covRes.data || null);
     } catch {}
     try {
       const printRes = await axios.get(`${API}/printers/${clientId}`);
@@ -273,6 +280,48 @@ export default function ClientOverviewPage() {
             >
               Ricarica
             </button>
+          </div>
+        </div>
+      )}
+      {/* v4.17.x Mini-card coverage subnet — mostra distribuzione device per connector */}
+      {coverage && coverage.total_devices > 0 && (coverage.agents.length > 0 || coverage.orphan_count > 0) && (
+        <div className="mb-3 rounded-lg border border-sky-500/20 bg-sky-500/5 px-3 py-2" data-testid="coverage-card">
+          <div className="flex items-center gap-2 mb-1.5">
+            <Network size={14} className="text-sky-400" />
+            <span className="text-[11px] font-bold text-sky-300">Distribuzione polling per subnet</span>
+            <span className="text-[9px] text-[var(--text-muted)] ml-auto">{coverage.total_devices} device totali</span>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {coverage.agents.map((a) => {
+              const color = a.role === "master"
+                ? "bg-sky-500/10 text-sky-200 border-sky-500/40"
+                : "bg-violet-500/10 text-violet-200 border-violet-500/40";
+              return (
+                <div
+                  key={a.agent_id}
+                  className={`flex items-center gap-1.5 text-[10px] px-2 py-1 rounded border ${color}`}
+                  title={`Agent ${a.hostname} [${a.role}] · IP ${a.last_ip || "?"} · v${a.agent_version || "?"}`}
+                >
+                  <span className="font-bold">{a.hostname}</span>
+                  <span className="text-[9px] opacity-70">[{a.role}]</span>
+                  <span className="text-[9px] opacity-90">→ {a.subnet || "no subnet"}</span>
+                  <span className="text-[9px] font-bold ml-1">{a.device_count} dev</span>
+                </div>
+              );
+            })}
+            {coverage.orphan_count > 0 && (
+              <div
+                className="flex items-center gap-1.5 text-[10px] px-2 py-1 rounded border bg-amber-500/10 text-amber-200 border-amber-500/40"
+                title={`Device fuori da qualsiasi subnet coperta: ${coverage.orphan_sample.join(", ")}${coverage.orphan_count > 10 ? "..." : ""}`}
+              >
+                <Warning size={11} weight="bold" />
+                <span className="font-bold">{coverage.orphan_count} orfani</span>
+                <span className="text-[9px] opacity-90">→ pollati dal master (fallback)</span>
+              </div>
+            )}
+            {coverage.agents.length === 0 && coverage.orphan_count > 0 && (
+              <span className="text-[10px] text-amber-300">⚠️ Nessun agent LIVE — tutti i device sono orfani</span>
+            )}
           </div>
         </div>
       )}
@@ -1744,6 +1793,8 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
               <SortableTh field="snmp" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>SNMP</SortableTh>
               <SortableTh field="community" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Community</SortableTh>
               <SortableTh field="status" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Stato</SortableTh>
+              <SortableTh field="live_evidence" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Vivo via</SortableTh>
+              <th className="text-left text-[10px] uppercase tracking-wider text-[var(--text-muted)] font-semibold py-2 px-2">Visto da</th>
               <SortableTh field="connection" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Conn.</SortableTh>
               <SortableTh field="source" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Fonte</SortableTh>
               <SortableTh field="last_poll" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Ultimo Poll</SortableTh>
@@ -1752,7 +1803,7 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
           </thead>
           <tbody>
             {sortedDevices.length === 0 ? (
-              <tr><td colSpan={11} className="text-center text-[var(--text-muted)] py-8 text-xs">Nessun dispositivo — clicca "Aggiungi Dispositivo" per iniziare</td></tr>
+              <tr><td colSpan={13} className="text-center text-[var(--text-muted)] py-8 text-xs">Nessun dispositivo — clicca "Aggiungi Dispositivo" per iniziare</td></tr>
             ) : sortedDevices.map((d, i) => {
               const sc = STATUS_COLOR[d.status] || "#555";
               const monitorType = (d.monitor_type || "snmp").toLowerCase();
@@ -1817,6 +1868,61 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
                       );
                     })()}
                   </td>
+                  <td>{(() => {
+                    // v4.16.x: "Vivo via" badge — mostra COME il device e' stato
+                    // dichiarato online. Aiuta a capire perche' un device
+                    // appare online anche se ICMP fallisce.
+                    const ev = d.live_evidence;
+                    if (!ev || d.status === "offline" || d.status === "pending") {
+                      return <span className="text-[8px] text-[var(--text-muted)]" data-testid={`live-evidence-${d.ip_address}`}>—</span>;
+                    }
+                    const m = String(ev).toLowerCase();
+                    if (m.includes("mac_table") || m.includes("snmp")) {
+                      return <span title="Visto nella MAC table dello switch SNMP (L2). Device fisicamente collegato anche se ICMP bloccato." className="inline-flex items-center gap-1 text-[8px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-300 border border-emerald-500/30 font-bold" data-testid={`live-evidence-${d.ip_address}`}>🔌 FDB</span>;
+                    }
+                    if (m.includes("tcp_probe") || m.startsWith("tcp_port_")) {
+                      const port = (ev.match(/tcp_port_(\d+)/) || [])[1];
+                      return <span title={`TCP probe ha risposto${port ? ` su porta ${port}` : ""}. ICMP probabilmente bloccato (firewall/WF).`} className="inline-flex items-center gap-1 text-[8px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/30 font-bold" data-testid={`live-evidence-${d.ip_address}`}>⚡ TCP{port ? `:${port}` : ""}</span>;
+                    }
+                    if (m.includes("icmp_native") || m === "icmp" || m === "ping") {
+                      return <span title="Ping ICMP standard" className="inline-flex items-center gap-1 text-[8px] px-1.5 py-0.5 rounded bg-sky-500/10 text-sky-300 border border-sky-500/30 font-bold" data-testid={`live-evidence-${d.ip_address}`}>📡 PING</span>;
+                    }
+                    if (m.includes("scanner") || m.includes("arp")) {
+                      return <span title="Scoperto dallo scanner LAN (ARP/mDNS)" className="inline-flex items-center gap-1 text-[8px] px-1.5 py-0.5 rounded bg-violet-500/10 text-violet-300 border border-violet-500/30 font-bold" data-testid={`live-evidence-${d.ip_address}`}>🔍 SCAN</span>;
+                    }
+                    if (m.includes("agent_v4")) {
+                      return <span title="Visto dall'agent v4 Go (auto-discovery interno)" className="inline-flex items-center gap-1 text-[8px] px-1.5 py-0.5 rounded bg-cyan-500/10 text-cyan-300 border border-cyan-500/30 font-bold" data-testid={`live-evidence-${d.ip_address}`}>🤖 v4</span>;
+                    }
+                    return <span title={`Metodo: ${ev}`} className="text-[8px] text-[var(--text-muted)]" data-testid={`live-evidence-${d.ip_address}`}>{ev}</span>;
+                  })()}</td>
+                  <td>{(() => {
+                    // v4.17.x: "Visto da" — lista agent che hanno effettivamente
+                    // pollato questo device negli ultimi 5 min. Aiuta a capire
+                    // la distribuzione subnet-aware.
+                    const sb = d.seen_by || [];
+                    if (sb.length === 0) {
+                      return <span className="text-[8px] text-[var(--text-muted)]" data-testid={`seen-by-${d.ip_address}`}>—</span>;
+                    }
+                    return (
+                      <div className="flex flex-wrap gap-0.5" data-testid={`seen-by-${d.ip_address}`}>
+                        {sb.map((a, i) => {
+                          const color = a.role === "master"
+                            ? "bg-sky-500/10 text-sky-300 border-sky-500/30"
+                            : "bg-violet-500/10 text-violet-300 border-violet-500/30";
+                          const reachIcon = a.reachable ? "✓" : "✗";
+                          return (
+                            <span
+                              key={i}
+                              title={`${a.hostname} [${a.role}] · ${a.reachable ? "raggiunge" : "non raggiunge"} (method: ${a.method || "?"})`}
+                              className={`inline-flex items-center gap-0.5 text-[8px] px-1 py-0.5 rounded border ${color}`}
+                            >
+                              {reachIcon} {a.hostname.slice(0, 10)}
+                            </span>
+                          );
+                        })}
+                      </div>
+                    );
+                  })()}</td>
                   <td>{(() => {
                     const ct = d.connection_type;
                     const cs = d.connection_source || "";

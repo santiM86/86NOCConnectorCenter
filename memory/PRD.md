@@ -32,6 +32,175 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-02-24 ✅ Mini-card "Distribuzione polling per subnet"
+
+### Backend `devices.py`
+Nuovo endpoint `GET /api/clients/{client_id}/agents-coverage`:
+- Per ogni agent v4 LIVE del cliente, ritorna `{agent_id, hostname,
+  role, last_ip, subnet, device_count}`.
+- `device_count` = numero di managed_devices del cliente la cui IP cade
+  nella subnet `/24` dell'agent.
+- Lista `orphan_count` + `orphan_sample` per i device fuori da qualsiasi
+  subnet coperta.
+
+### Frontend `ClientOverviewPage.js`
+Mini-card sky-blue subito sotto il banner diagnose, mostrata solo se:
+- `total_devices > 0` E (ci sono agent live OR orfani)
+
+Layout:
+- Header: 🌐 "Distribuzione polling per subnet" · "N device totali"
+- Per ogni agent: badge color-coded (master sky / scanner violet) con:
+  `<hostname> [role] → <subnet> · <count> dev`
+- Badge ambra extra se ci sono orfani: `⚠️ N orfani → pollati dal master (fallback)`
+- Tooltip: hostname + role + IP + version
+
+### Esempio per Galvan
+```
+🌐 Distribuzione polling per subnet           58 device totali
+  [sky]    GALVANSRV [master] → 10.100.61.0/24 · 9 dev
+  [violet] SRVDCGAL [scanner] → 192.168.16.0/24 · 49 dev
+```
+
+### Validato in container
+- Endpoint testato: ritorna struttura corretta con cliente preview
+  (agents=[], orphan_count=1)
+- Lint JS/Python pulito
+- Smoke screenshot dashboard OK
+
+---
+
+
+## 2026-02-24 ✅ v4.17.x — Subnet-aware dispatching + colonna "Visto da"
+
+### Architettura
+Ogni connector polla SOLO i `managed_devices` la cui IP rientra nella
+sua **subnet /24**, dedotta dall'`last_ip` dell'agent. Risolve
+definitivamente il problema multi-VLAN: zero overlap, zero flap,
+zero configurazione manuale.
+
+### Backend `agent_ws.py`
+
+#### Helper nuovi
+- `_primary_ip_from_hello(hello)`: estrae l'IP IPv4 "primario"
+  dall'array `hello.ips`. Priorita': 10.x > 192.168.x > 172.16-31.x.
+  Salta loopback, link-local, multicast.
+- `_agent_subnet_from_ip(ip, mask=24)`: ritorna `"10.100.61.0/24"` da
+  `"10.100.61.37"`. Mask configurabile.
+- `_ip_in_subnet(ip, cidr)`: matching robusto via `ipaddress`.
+- `_get_client_agents_subnets(client_id)`: ritorna lista
+  `[{agent_id, hostname, role, last_ip, subnet}]` degli agent LIVE.
+
+#### `_Connection.last_ip`
+Aggiunto field cached settato dopo `hello`. Usato per re-build config
+veloce.
+
+#### `_build_poller_config(client_id, agent_role, agent_ip)`
+Riscritto:
+- Calcola `agent_subnet = _agent_subnet_from_ip(agent_ip, 24)`.
+- Se l'agent non e' master: include solo target con `ip ∈ subnet`.
+- Se l'agent e' master: include target con `ip ∈ subnet` + **target
+  orfani** (IP non coperti da NESSUNA subnet di peer agent live).
+- `managed_agents.last_ip` ora persistito in DB.
+
+#### `push_config_to_client(client_id)`
+Per ogni connector live recupera `role` E `last_ip` da DB, costruisce
+config customizzata, manda welcome aggiornata.
+
+### Backend `devices.py` — campo `seen_by`
+Per ogni device managed, aggiunge nel JSON response:
+```
+seen_by: [
+  {agent_id, hostname, role, reachable, method},
+  ...
+]
+```
+Sorgente: `device_poll_status` last_ping_at < 5min, grouped by agent_id.
+Permette alla UI di mostrare quali agent hanno effettivamente pollato
+il device.
+
+### Frontend `ClientOverviewPage.js`
+- Nuova colonna **"Visto da"** tra "Vivo via" e "Conn."
+- Mostra badge stacked per ogni agent in `seen_by`:
+  - Master = badge sky blue (`✓ GALVANSRV`)
+  - Scanner = badge violet (`✓ SRVDCGAL`)
+  - `✓` se reachable, `✗` se irraggiungibile
+  - Tooltip completo: hostname + role + method + reachable
+- "—" se nessun agent ha pollato di recente.
+
+### Validato in container
+- Test helper Python: tutti i 9 test pass (priority IP selection,
+  subnet derivation, IP-in-subnet matching, CIDR support).
+- Lint Python + JS pulito.
+- Backend hot-reload OK.
+
+### Effetto per l'utente Galvan
+1. Save to GitHub → deploy
+2. Al primo heartbeat dei 2 agent (entro 30s), il backend rilevera':
+   - GALVANSRV `last_ip=10.100.61.37` → subnet `10.100.61.0/24`
+   - SRVDCGAL `last_ip=192.168.16.21` → subnet `192.168.16.0/24`
+3. Welcome aggiornata via WS distribuisce:
+   - GALVANSRV: 9 target 10.100.61.x + eventuali orfani
+   - SRVDCGAL: 49 target 192.168.16.x
+4. Entro 60s i 49 device 192.168.16.x risulteranno
+   pollati dallo scanner (source=SCANNER), e nella colonna "Visto da"
+   vedrai `✓ SRVDCGAL` per loro.
+5. Zero cross-VLAN flap (nessun agent prova a pingare ip fuori subnet).
+
+### Limiti noti
+- Subnet hardcoded a `/24` (default sano per la maggior parte LAN).
+  Se serve `/16` o `/22` custom, va aggiunto field
+  `managed_agents.subnet_mask` configurabile.
+- Per un cliente con 2 master nello stesso /24, ENTRAMBI riceveranno
+  gli stessi target (overlap). Caso edge raro, da risolvere in futuro
+  con "master primario" election.
+
+---
+
+
+## 2026-02-24 ✅ Colonna "Vivo via" — trasparenza evidence-based liveness
+
+### Modifiche
+#### Backend `devices.py` — populate `live_evidence` con dettagli
+- `scanner_seen_recent_ips` / `scanner_seen_recent_macs` cambiati da set
+  a dict {key: evidence_label}.
+- Evidence label dedotta in base a:
+  - `switch_ip` presente OR `last_seen_via=snmp` → `mac_table_switch`
+  - `source_connector_mode=agent_v4` → `agent_v4_arp`
+  - `source_connector_mode=scanner` → `scanner_lan`
+  - altrimenti fallback al `last_seen_via` raw
+- Quando il device viene mostrato online via ping_poll, popola
+  `live_evidence` con `pd.method` (`icmp_native` / `tcp_probe:<port>` /
+  `ping`).
+- Applicato in 3 punti: manuali, poll_devices, managed_devices.
+
+#### Frontend `ClientOverviewPage.js` — nuova colonna "Vivo via"
+Inserita tra "Stato" e "Conn." nella tabella Dispositivi.
+
+Badge colorati con icone:
+- 🟢 **🔌 FDB** (verde): Visto nella MAC table dello switch SNMP (L2)
+- 🟡 **⚡ TCP:<port>** (ambra): TCP probe ha risposto su porta specifica
+  (es. `TCP:443`); ICMP probabilmente bloccato da firewall
+- 🔵 **📡 PING** (azzurro): Ping ICMP standard
+- 🟣 **🔍 SCAN** (viola): Visto dallo scanner LAN (ARP/mDNS)
+- 🩵 **🤖 v4** (cyan): Visto dall'agent v4 Go via heartbeat
+- "—": Device offline o pending
+
+Ogni badge ha tooltip esplicativo. Ordinabile via `SortableTh`.
+
+### Validato in container
+- Lint Python/JS pulito
+- API ritorna `live_evidence` per i device managed
+- Smoke screenshot OK
+
+### Effetto utente
+A colpo d'occhio sai PERCHE' un device e' online (anche se ICMP fallisce).
+Esempio Wildix VoIP phones: badge 🔌 FDB → "ah, lo vedo perche' lo switch
+li ha nella MAC table". Esempio Zyxel: badge ⚡ TCP:443 → "ICMP bloccato
+ma rispondo su HTTPS mgmt".
+
+---
+
+
 ## 2026-02-24 ✅ FIX P0 EVIDENCE-BASED LIVENESS (sintesi dati ping + L2)
 
 ### Insight dell'utente

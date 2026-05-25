@@ -176,23 +176,85 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
             return False
         return True
 
-    scanner_seen_recent_ips = set()
-    scanner_seen_recent_macs = set()
+    # v4.16.x EVIDENCE TRACKING: per ogni IP / MAC visto recentemente,
+    # tieni traccia di COME e' stato visto (via SNMP FDB switch, via scanner
+    # ARP, via agent_v4 heartbeat). Cosi' la UI puo' mostrare "Vivo via"
+    # con il metodo esatto, facilitando il debug.
+    scanner_seen_recent_ips = {}   # ip -> evidence string
+    scanner_seen_recent_macs = {}  # mac_lower -> evidence string
     try:
         fifteen_min_ago_iso = (datetime.now(timezone.utc) - timedelta(minutes=15)).isoformat()
         de_query = query.copy()
-        # v4.16.x: NESSUN filtro per source_connector_mode → considera TUTTI
-        # i record recenti (scanner ARP/mDNS, agent_v4, MAC table SNMP).
         de_query["last_seen_at"] = {"$gte": fifteen_min_ago_iso}
-        async for de in db.discovered_endpoints.find(de_query, {"_id": 0, "ip": 1, "mac": 1}):
+        async for de in db.discovered_endpoints.find(
+            de_query,
+            {"_id": 0, "ip": 1, "mac": 1, "source_connector_mode": 1,
+             "last_seen_via": 1, "switch_ip": 1},
+        ):
             de_ip = de.get("ip")
             de_mac = (de.get("mac") or "").lower().replace("-", ":")
-            if de_ip:
-                scanner_seen_recent_ips.add(de_ip)
-            if de_mac:
-                scanner_seen_recent_macs.add(de_mac)
+            # Determine evidence label
+            mode = (de.get("source_connector_mode") or "").lower()
+            seen_via = (de.get("last_seen_via") or "").lower()
+            has_switch = bool(de.get("switch_ip"))
+            if has_switch or seen_via == "snmp":
+                evidence = "mac_table_switch"
+            elif mode == "agent_v4":
+                evidence = "agent_v4_arp"
+            elif mode == "scanner":
+                evidence = "scanner_lan"
+            else:
+                evidence = seen_via or mode or "scanner"
+            if de_ip and de_ip not in scanner_seen_recent_ips:
+                scanner_seen_recent_ips[de_ip] = evidence
+            if de_mac and de_mac not in scanner_seen_recent_macs:
+                scanner_seen_recent_macs[de_mac] = evidence
     except Exception:
         pass
+
+    # v4.17.x SEEN-BY: per ogni device managed, costruisci la lista degli
+    # agent v4 che lo hanno effettivamente pollato/visto negli ultimi
+    # 5 minuti. Usato per la colonna UI "Visto da".
+    # Source 1: device_poll_status grouped by agent_id
+    # Source 2: discovered_endpoints recenti del cliente
+    seen_by_ip: Dict[str, List[Dict[str, str]]] = {}
+    if client_id:
+        try:
+            five_min_iso = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+            # Mappa agent_id → hostname/role per il display
+            agent_meta: Dict[str, Dict[str, str]] = {}
+            async for a in db.managed_agents.find(
+                {"client_id": client_id},
+                {"_id": 0, "agent_id": 1, "hostname": 1, "role": 1},
+            ):
+                if a.get("agent_id"):
+                    agent_meta[a["agent_id"]] = {
+                        "hostname": a.get("hostname") or a["agent_id"][:8],
+                        "role": a.get("role") or "master",
+                    }
+            # Source: device_poll_status (chi polla attualmente)
+            async for ps in db.device_poll_status.find(
+                {"client_id": client_id, "agent_id": {"$ne": None},
+                 "last_ping_at": {"$gte": five_min_iso}},
+                {"_id": 0, "device_ip": 1, "agent_id": 1, "ping_reachable": 1,
+                 "reachable": 1, "method": 1},
+            ):
+                ip = ps.get("device_ip")
+                aid = ps.get("agent_id")
+                if not ip or not aid:
+                    continue
+                meta = agent_meta.get(aid)
+                if not meta:
+                    continue
+                seen_by_ip.setdefault(ip, []).append({
+                    "agent_id": aid,
+                    "hostname": meta["hostname"],
+                    "role": meta["role"],
+                    "reachable": bool(ps.get("ping_reachable") or ps.get("reachable")),
+                    "method": ps.get("method") or "",
+                })
+        except Exception:
+            pass
 
     # Enrich manually-added devices with profile_key from managed_devices/poll_status
     for d in devices:
@@ -215,9 +277,17 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
         # via FDB switch (Wildix phone, GALV-UFF, ecc.) vengono mostrati ONLINE
         # come dovrebbero.
         md_mac = ((md.get("mac") or "")).lower().replace("-", ":")
-        if ip in scanner_seen_recent_ips or (md_mac and md_mac in scanner_seen_recent_macs):
+        ip_ev = scanner_seen_recent_ips.get(ip)
+        mac_ev = scanner_seen_recent_macs.get(md_mac) if md_mac else None
+        evidence = ip_ev or mac_ev
+        if evidence:
             d["status"] = "online"
-            d["live_evidence"] = "scanner_or_mac_table"
+            d["live_evidence"] = evidence
+        elif pd.get("reachable"):
+            # Niente evidence L2 ma il ping_poll dice raggiungibile → mostra il method
+            d["live_evidence"] = (pd.get("method") or pd.get("ping_method") or "ping").strip()
+        # v4.17.x SEEN-BY: lista agent che vedono questo device
+        d["seen_by"] = seen_by_ip.get(ip, [])
 
     # Merge: add connector devices that aren't already in manual list
     for pd in poll_devices:
@@ -277,8 +347,13 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
             # recentemente in discovered_endpoints, prevale "online".
             # v4.16.x EXTEND: anche match per MAC (FDB switch SNMP).
             md_mac_norm = ((md.get("mac") or "")).lower().replace("-", ":")
-            if ip in scanner_seen_recent_ips or (md_mac_norm and md_mac_norm in scanner_seen_recent_macs):
+            ip_ev2 = scanner_seen_recent_ips.get(ip)
+            mac_ev2 = scanner_seen_recent_macs.get(md_mac_norm) if md_mac_norm else None
+            live_evidence2 = ip_ev2 or mac_ev2
+            if live_evidence2:
                 md_status = "online"
+            elif _effective_reachable(pd):
+                live_evidence2 = (pd.get("method") or pd.get("ping_method") or "ping").strip()
             # display name: priorità sys_name (SNMP) → hostname (NBNS) →
             # mdns_name → device_name (Fingerbank) → ip nudo. Vedi nota
             # nel branch managed_devices sotto.
@@ -301,6 +376,8 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
                 "hostname": pd.get("sys_name", ""),
                 "location": pd.get("sys_location", ""),
                 "status": md_status,
+                "live_evidence": live_evidence2,
+                "seen_by": seen_by_ip.get(ip, []),
                 "redfish_enabled": False,
                 # v3.8.18: source = chi ha SCOPERTO il device, non chi lo polla.
                 # Se il device esiste in managed_devices con source=connector-scanner,
@@ -408,18 +485,20 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
                     v4_age = (now_dt - lp_dt).total_seconds()
                 except Exception:
                     v4_age = None
+        # v4.16.x EVIDENCE-BASED LIVENESS
+        md_mac_x = ((md.get("mac") or "")).lower().replace("-", ":")
+        ip_ev3 = scanner_seen_recent_ips.get(md_ip)
+        mac_ev3 = scanner_seen_recent_macs.get(md_mac_x) if md_mac_x else None
+        live_evidence3 = ip_ev3 or mac_ev3
         if v4_age is not None and v4_age < 180:
             reachable_v4 = bool(pd_v4.get("ping_reachable") or pd_v4.get("reachable"))
             md_status = "online" if reachable_v4 else "offline"
-            # v4.16.x: anche se v4 dice offline, controlla MAC table / discovered_endpoints
-            # cosi' i device che bloccano ICMP ma sono vivi a L2 risultano ONLINE.
-            if md_status == "offline":
-                md_mac_x = ((md.get("mac") or "")).lower().replace("-", ":")
-                if md_ip in scanner_seen_recent_ips or (md_mac_x and md_mac_x in scanner_seen_recent_macs):
-                    md_status = "online"
-        elif md_ip in scanner_seen_recent_ips:
-            md_status = "online"
-        elif md.get("mac") and md["mac"].lower().replace("-", ":") in scanner_seen_recent_macs:
+            if reachable_v4 and not live_evidence3:
+                live_evidence3 = (pd_v4.get("method") or pd_v4.get("ping_method") or "ping").strip()
+            # anche se v4 dice offline, se L2 evidence presente → ONLINE
+            if md_status == "offline" and live_evidence3:
+                md_status = "online"
+        elif live_evidence3:
             md_status = "online"
         elif md_source == "connector-scanner":
             md_status = _scanner_status_from_last_seen(md.get("last_seen_at"))
@@ -449,6 +528,8 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
             "hostname": md.get("hostname", ""),
             "location": md.get("location", ""),
             "status": md_status,
+            "live_evidence": live_evidence3,
+            "seen_by": seen_by_ip.get(md_ip, []),
             "redfish_enabled": False,
             "source": md_source,
             "auto_added": bool(md.get("auto_added", False)),
@@ -635,6 +716,69 @@ async def test_device_redfish(device_id: str, current_user: dict = Depends(get_c
 async def test_redfish_connection(test: RedfishTestRequest, current_user: dict = Depends(get_current_user)):
     result = await redfish_poller.test_connection(test.ip_address, test.username, test.password)
     return result
+
+
+@router.get("/clients/{client_id}/agents-coverage")
+async def get_agents_coverage(
+    client_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """v4.17.x: ritorna la coverage subnet di un cliente.
+
+    Per ogni connector v4 LIVE, calcola:
+      - subnet /24 dedotta da last_ip
+      - quanti managed_devices del cliente cadono in quella subnet
+      - quanti device "orfani" (fuori da qualsiasi subnet coperta)
+
+    Usato dalla mini-card "Subnet coperte" nell'header del cliente.
+    """
+    # Lazy import per evitare circular deps
+    from routes.agent_ws import _agent_subnet_from_ip, _ip_in_subnet
+
+    three_min_iso = (datetime.now(timezone.utc) - timedelta(minutes=3)).isoformat()
+    agents = []
+    async for a in db.managed_agents.find(
+        {"client_id": client_id,
+         "$or": [
+             {"last_heartbeat_at": {"$gte": three_min_iso}},
+             {"last_seen_at": {"$gte": three_min_iso}},
+         ]},
+        {"_id": 0, "agent_id": 1, "hostname": 1, "role": 1, "last_ip": 1,
+         "agent_version": 1},
+    ):
+        a["subnet"] = _agent_subnet_from_ip(a.get("last_ip"))
+        a["device_count"] = 0
+        agents.append(a)
+
+    # Conta device per subnet di ogni agent
+    all_ips: List[str] = []
+    async for d in db.managed_devices.find(
+        {"client_id": client_id, "ip": {"$ne": None, "$exists": True},
+         "disabled": {"$ne": True}},
+        {"_id": 0, "ip": 1},
+    ):
+        ip = d.get("ip")
+        if ip:
+            all_ips.append(ip)
+
+    orphan_ips: List[str] = []
+    for ip in all_ips:
+        matched = False
+        for a in agents:
+            if a.get("subnet") and _ip_in_subnet(ip, a["subnet"]):
+                a["device_count"] += 1
+                matched = True
+                break
+        if not matched:
+            orphan_ips.append(ip)
+
+    return {
+        "client_id": client_id,
+        "total_devices": len(all_ips),
+        "agents": agents,
+        "orphan_count": len(orphan_ips),
+        "orphan_sample": orphan_ips[:10],
+    }
 
 
 @router.get("/clients/{client_id}/devices/diagnose-offline")
