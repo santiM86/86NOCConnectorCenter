@@ -32,6 +32,83 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-02-24 ✅ FIX P0 EVIDENCE-BASED LIVENESS (sintesi dati ping + L2)
+
+### Insight dell'utente
+Screenshot Topology di Galvan mostrava chiaramente che lo SWITCH SNMP
+riportava le porte UP con traffico live e MAC visibili nella FDB:
+- Wildix VoIP phones (MAC 9C:75:14:50:C1:45)
+- GALVNUC-MSI, GALVUFF-10, GALV-UFF04 con Datto badges
+- Datecs LTD, Adura Technologies, ecc.
+
+Quindi i device erano FISICAMENTE COLLEGATI e ATTIVI (porta UP + MAC in
+FDB + traffico Mbps). Pero' nella vista "Dispositivi" risultavano
+OFFLINE perche' il backend si basava SOLO sul ping (che fallisce per
+Windows Firewall che blocca ICMP).
+
+### Fix `get_devices`
+
+**Estesa la logica "scanner live-seen" da puramente IP-based a
+evidence-based multi-source.**
+
+#### A) `discovered_endpoints` filter — rimosso il filtro restrittivo
+Era:
+```python
+de_query["source_connector_mode"] = "scanner"  # solo scanner mode
+five_min_ago_iso  # 5 min (poi 10)
+```
+Ora:
+```python
+# NO filter su source_connector_mode → considera TUTTE le sources:
+#   - "scanner" (ARP/mDNS scan del connector Go)
+#   - "agent_v4" (heartbeat dell'agent Go)
+#   - record da MAC table SNMP degli switch managed (switch_ip + last_seen_via=snmp)
+de_query["last_seen_at"] = {"$gte": fifteen_min_ago_iso}  # finestra 15 min
+```
+
+#### B) Cross-correlazione MAC (NUOVO)
+Oltre a `scanner_seen_recent_ips`, aggiunta `scanner_seen_recent_macs`.
+Match per OGNI managed_device:
+- Se `device.ip` ∈ scanner_seen_recent_ips → ONLINE
+- O se `device.mac` ∈ scanner_seen_recent_macs → ONLINE
+
+Significato: anche se il device cambia IP (DHCP) o ha IP non
+raggiungibile via ping/TCP, finche' lo switch lo vede nella sua FDB
+con quel MAC negli ultimi 15 min, viene mostrato ONLINE.
+
+#### C) Applicato in 3 punti
+- Loop devices manuali (riga 218)
+- Loop poll_devices (riga 280)
+- Loop managed_devices senza poll record (riga 414-417)
+
+#### Campo nuovo `live_evidence`
+Aggiunto al device JSON quando viene forzato online via MAC/scanner.
+Utile per debug futuro ("perche' questo device e' online se ping
+fallisce?" → live_evidence="scanner_or_mac_table").
+
+### Conseguenza
+- I device che bloccano ICMP ma sono visibili dallo switch SNMP (Wildix
+  phones, server Windows con WF, ecc.) ora risultano ONLINE come
+  fisicamente sono.
+- I device VERAMENTE offline (porta UP=DOWN, nessuna FDB, nessun
+  recente discovered_endpoints) restano OFFLINE.
+
+### Validato in container
+- Lint pulito
+- Backend hot-reload OK
+- Test su discovered_endpoints sample: filter rimosso accetta sia
+  `source_connector_mode=scanner` che `agent_v4`.
+
+### Steps utente per attivare in prod
+1. **Save to GitHub** → auto-deploy backend (~30-60s)
+2. NESSUN binario Go nuovo necessario (fix puramente backend)
+3. Refresh pagina Galvan → i device collegati agli switch dovrebbero
+   risultare ONLINE entro 15s
+4. Stessa logica applicata cross-tenant (vale per tutti i clienti)
+
+---
+
+
 ## 2026-02-24 ✅ FIX P0 DEFINITIVO — TCP fallback per device che bloccano ICMP
 
 ### Evidence dall'utente (PowerShell sul server GALVANSRV)

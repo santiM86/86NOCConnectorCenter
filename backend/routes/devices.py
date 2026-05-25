@@ -138,13 +138,16 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
     # Lo Scanner aggiorna SEMPRE discovered_endpoints (lan-scan ARP/mDNS) anche
     # per device aggiunti manualmente (source=manual / connector-master). Usiamo
     # questa collection come fonte di verita' "device visto recentemente sulla
-    # rete dello Scanner". Se IP visto < 10min => online, prevale sul Master.
-    # v3.8.24 BUMP a 10 min (era 5): lo Scanner ritardi i cicli quando in backoff
-    # v3.8.32 ANTI-FLAP: soglia debounce per evitare oscillazioni online/offline
-    # causate da singoli poll falliti (UDP packet loss, timeout transitori).
-    # Marca offline solo se: 1) consecutive_failures >= MIN_FAILURES OPPURE
-    # 2) last_reachable_at e' piu' vecchio di GRACE_SECONDS.
-    # Cosi' un singolo fail NON sposta il device a offline.
+    # rete dello Scanner". Se IP visto < 15min => online, prevale sul Master.
+    # v4.16.x EVIDENCE-BASED LIVENESS: rimosso il filtro
+    # `source_connector_mode=scanner` perche' escludeva i record dell'agent_v4
+    # (Go connector) e quelli dalla MAC table SNMP degli switch (`switch_ip`,
+    # `last_seen_via=snmp`). Ora consideriamo ONLINE qualsiasi IP che:
+    #   - ha record in discovered_endpoints con last_seen_at < 15 min
+    #   - O ha un MAC presente nella MAC table di uno switch managed
+    #     (= la porta dello switch ha quel MAC nella sua FDB attiva)
+    # Questo allinea la vista "Dispositivi" con quella "Switch ports" che
+    # mostra UP/DOWN reale + traffico bps.
     DEBOUNCE_MIN_FAILURES = 3      # 3 cicli consecutivi falliti
     DEBOUNCE_GRACE_SECONDS = 300   # 5 minuti senza nessun successo
     def _effective_reachable(pd_doc):
@@ -174,15 +177,20 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
         return True
 
     scanner_seen_recent_ips = set()
+    scanner_seen_recent_macs = set()
     try:
-        five_min_ago_iso = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+        fifteen_min_ago_iso = (datetime.now(timezone.utc) - timedelta(minutes=15)).isoformat()
         de_query = query.copy()
-        de_query["source_connector_mode"] = "scanner"
-        de_query["last_seen_at"] = {"$gte": five_min_ago_iso}
-        async for de in db.discovered_endpoints.find(de_query, {"_id": 0, "ip": 1}):
+        # v4.16.x: NESSUN filtro per source_connector_mode → considera TUTTI
+        # i record recenti (scanner ARP/mDNS, agent_v4, MAC table SNMP).
+        de_query["last_seen_at"] = {"$gte": fifteen_min_ago_iso}
+        async for de in db.discovered_endpoints.find(de_query, {"_id": 0, "ip": 1, "mac": 1}):
             de_ip = de.get("ip")
+            de_mac = (de.get("mac") or "").lower().replace("-", ":")
             if de_ip:
                 scanner_seen_recent_ips.add(de_ip)
+            if de_mac:
+                scanner_seen_recent_macs.add(de_mac)
     except Exception:
         pass
 
@@ -199,10 +207,17 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
         # alerts_silenced flag (managed_devices wins; default False)
         d["alerts_silenced"] = bool(md.get("alerts_silenced", d.get("alerts_silenced", False)))
         d["alerts_silenced_reason"] = md.get("alerts_silenced_reason") or d.get("alerts_silenced_reason") or ""
-        # v3.8.22 LIVE-SEEN: se lo Scanner ha visto questo IP nelle ultime 5min,
+        # v3.8.22 LIVE-SEEN: se lo Scanner ha visto questo IP nelle ultime 15min,
         # forza "online" anche se Master/manual lo davano per offline.
-        if ip in scanner_seen_recent_ips:
+        # v4.16.x EXTEND: anche se il MAC e' nella MAC table SNMP recente di
+        # uno switch managed (= device fisicamente collegato e attivo a livello L2)
+        # forziamo "online". Cosi' i device che bloccano ICMP ma sono visibili
+        # via FDB switch (Wildix phone, GALV-UFF, ecc.) vengono mostrati ONLINE
+        # come dovrebbero.
+        md_mac = ((md.get("mac") or "")).lower().replace("-", ":")
+        if ip in scanner_seen_recent_ips or (md_mac and md_mac in scanner_seen_recent_macs):
             d["status"] = "online"
+            d["live_evidence"] = "scanner_or_mac_table"
 
     # Merge: add connector devices that aren't already in manual list
     for pd in poll_devices:
@@ -260,7 +275,9 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
                 pass
             # v3.8.22 LIVE-SEEN: anche per device manuali, se lo Scanner li vede
             # recentemente in discovered_endpoints, prevale "online".
-            if ip in scanner_seen_recent_ips:
+            # v4.16.x EXTEND: anche match per MAC (FDB switch SNMP).
+            md_mac_norm = ((md.get("mac") or "")).lower().replace("-", ":")
+            if ip in scanner_seen_recent_ips or (md_mac_norm and md_mac_norm in scanner_seen_recent_macs):
                 md_status = "online"
             # display name: priorità sys_name (SNMP) → hostname (NBNS) →
             # mdns_name → device_name (Fingerbank) → ip nudo. Vedi nota
@@ -394,7 +411,15 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
         if v4_age is not None and v4_age < 180:
             reachable_v4 = bool(pd_v4.get("ping_reachable") or pd_v4.get("reachable"))
             md_status = "online" if reachable_v4 else "offline"
+            # v4.16.x: anche se v4 dice offline, controlla MAC table / discovered_endpoints
+            # cosi' i device che bloccano ICMP ma sono vivi a L2 risultano ONLINE.
+            if md_status == "offline":
+                md_mac_x = ((md.get("mac") or "")).lower().replace("-", ":")
+                if md_ip in scanner_seen_recent_ips or (md_mac_x and md_mac_x in scanner_seen_recent_macs):
+                    md_status = "online"
         elif md_ip in scanner_seen_recent_ips:
+            md_status = "online"
+        elif md.get("mac") and md["mac"].lower().replace("-", ":") in scanner_seen_recent_macs:
             md_status = "online"
         elif md_source == "connector-scanner":
             md_status = _scanner_status_from_last_seen(md.get("last_seen_at"))
