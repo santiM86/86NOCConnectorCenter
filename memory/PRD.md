@@ -32,6 +32,66 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-02-24 ✅ FIX P0 — SNMP poll degradava offline + endpoint Force Ping Now
+
+### Bug critico SNMP poll (CAUSA REALE TROVATA)
+`_bridge_snmp_poll` (riga 651-664) faceva
+`md_set["status"] = "online" if reachable else "offline"` SEMPRE.
+
+Significato: ogni volta che il Go agent provava un SNMP poll su un device
+che non supportava SNMP (o community sbagliata, ACL chiuse, timeout
+transitorio), il backend sovrascriveva il device a `status="offline"`,
+**anche se il ping_poll dello stesso ciclo diceva "online"**.
+
+Questo spiega perfettamente lo screenshot Galvan dove TUTTI i 58 device
+SNMP erano OFFLINE: il poller mandava SNMP query, falliva (no community
+giusta o ACL), e il backend metteva offline.
+
+#### Fix `_bridge_snmp_poll`
+- `status` viene scritto SOLO se `reachable=true` (promozione a online)
+- NEVER degrada a offline da SNMP poll (degrade rimane responsabilita'
+  esclusiva del ping_poll, che usa ICMP layer 3 = piu' affidabile di SNMP
+  application)
+- Aggiunti campi separati `snmp_reachable` e `snmp_last_check_at` per
+  tracciare lo stato SNMP senza inquinare lo stato di vita del device
+
+### Nuovo endpoint diagnostico in tempo reale
+
+#### `POST /api/clients/{client_id}/devices/force-ping-now`
+- Trova il primo agent v4 master LIVE del cliente
+- Invia `force_ping_poll` via WS per OGNI managed_device.ip in parallelo
+  (cap 10 concorrenti)
+- Aggrega i risultati raw del poller: reachable, latency_ms, loss_pct,
+  method, error
+- Ritorna summary con count reachable/unreachable e quali metodi (icmp
+  vs icmp_native) sono stati usati
+
+#### UI pulsante "🧪 Test ping ora"
+- Toolbar tab Dispositivi
+- Click → invoca endpoint → mostra modale con risultati
+- Sample primi 5 online + primi 10 offline con error message
+- **Funziona col binario v4.x esistente** (force_ping_poll era gia'
+  registrato in main.go): no bisogno di rebuild Go per usarlo
+
+### Effetto sull'utente
+1. **Subito dopo deploy backend**:
+   - Dispositivi che erano offline SOLO per fallimento SNMP tornano
+     online entro il prossimo ping_poll cycle (60s)
+   - Pulsante "🧪 Test ping ora" funziona immediatamente per debug
+2. **Test ping immediato**:
+   - Se il binario corrente usa ping.exe (legacy), il method sara'
+     "icmp" e su Windows con ASR molti falliranno
+   - Se il binario e' stato aggiornato a v4.16+, method=icmp_native e
+     funzionera' regolarmente
+
+### Validato in container
+- Lint Python/JS pulito
+- Endpoint registrato: `POST /api/clients/{id}/devices/force-ping-now`
+- Backend hot-reload OK
+
+---
+
+
 ## 2026-02-24 ✅ FIX P0 — CAUSA ROOT FINALE: poller usa ping.exe (bloccato da Defender ASR)
 
 **Indagine approfondita**: l'utente ha confermato che gli agent v4 sono
