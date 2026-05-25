@@ -32,6 +32,159 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-02-24 ✅ FIX P0 — Anti-flap multi-connector e soglia offline
+
+**Problema persistente Galvan**: nonostante i 3 fix precedenti (role-aware
+dispatching, best-record `poll_by_ip`, endpoint cleanup), i device
+continuavano ad andare OFFLINE.
+
+### Root cause approfondita (4° livello)
+`backend/routes/agent_ws.py::_bridge_ping_poll` (riga 519-558) aggiornava
+`managed_devices.status` con filtro `{client_id, ip}` SENZA isolare per
+agent_id, e con `failure_threshold = 3` (= 3 min consecutivi).
+
+Scenario reale Galvan:
+1. Master GALVANSRV pinga 10.100.61.34 → reachable=true → status="online"
+2. Scanner SRVDCGAL pinga 10.100.61.34 → reachable=false (cross-VLAN)
+   → consecutive_ping_failures++
+3. Dopo 3 cycli dello scanner senza che il master sovrascriva in modo
+   atomico (race) → status="offline" pur essendo raggiungibile dal master.
+
+Inoltre l'indice unique `(client_id, device_ip)` su `device_poll_status`
+causava `DuplicateKey` quando 2 agent provavano a scrivere lo stesso IP
+con `agent_id` diverso (verificato con test asyncio in container) →
+solo uno vinceva a turno.
+
+### Fix applicato
+
+#### `_bridge_ping_poll` — anti-flap multi-connector
+1. **Soglia alzata** `failure_threshold = 5` (era 3). 5 cycli a 60s = 5 min
+   di fail consecutivi reali prima di marcare offline. Riduce falsi
+   negativi su reti con packet loss occasionale (WiFi, link congestionati).
+2. **Cross-agent verification**: prima di degradare a offline, controlla
+   se un ALTRO agent (`agent_id != conn.agent_id`) ha pingato OK lo
+   stesso IP negli ultimi 90s. Se si', skippa il degrade. Cosi' un
+   master "buono" protegge il device anche se uno scanner "cieco"
+   riporta failure.
+
+### Validato in container
+Test E2E con due agent simulati:
+- Master inserisce `reachable=true` per 10.100.61.34
+- Scanner riporta `reachable=false` (cross-VLAN simulato)
+- Risultato dopo `_bridge_ping_poll`: device rimane `status='online'`,
+  `consecutive_ping_failures=0` → fix funzionante.
+
+### Architettura difensiva — 4 livelli di protezione totale
+Ora il sistema ha 4 fix indipendenti contro il flap multi-connector:
+1. **Push-time** (`_build_poller_config`): scanner non riceve targets
+2. **Read-time** (`poll_by_ip`): best-record dispatching (reachable wins)
+3. **Cleanup-time** (`/cleanup-stale-poll-status`): rimuove record fantasma
+4. **Write-time** (`_bridge_ping_poll`): anti-degrade cross-agent + soglia 5
+
+Ognuno di questi 4 fix, da solo, basta a risolvere il caso standard. Tutti
+insieme rendono il sistema robusto contro race conditions, fallback,
+agent reboot, e architetture multi-VLAN complesse.
+
+### Steps utente per attivare in prod
+1. **Save to GitHub** → auto-deploy
+2. (Opzionale) Tab Dispositivi → "🔄 Sblocca offline" se vedi record vecchi
+3. I device dovrebbero stabilizzarsi entro 1-2 cicli (60-120s)
+
+---
+
+
+## 2026-02-24 ✅ FIX P0 — Device offline cross-VLAN: poll_by_ip race condition
+
+**Problema reportato dall'utente**: nonostante il fix
+`_build_poller_config` per role-aware dispatching (gli scanner non
+ricevono piu' targets), i device di Galvan continuavano a essere
+OFFLINE in UI.
+
+### Root cause (la vera)
+`backend/routes/devices.py::get_devices` (riga 55):
+```python
+poll_by_ip = {pd.get("device_ip"): pd for pd in poll_devices if pd.get("device_ip")}
+```
+Quando ci sono MULTIPLI record `device_poll_status` per lo stesso IP
+(uno per agent_id), questo dict ne tiene **uno random**. Se viene
+"scelto" il record dello scanner SRVDCGAL (con `reachable=false` perche'
+cross-VLAN), il device appare OFFLINE pur essendo pollato OK dal master
+GALVANSRV.
+
+Inoltre, anche dopo il fix di `_build_poller_config` (scanner non polla
+piu'), **i record vecchi scritti dallo scanner non vengono cancellati**:
+restano fantasma con `reachable=false` indefinitamente.
+
+### Fix
+
+#### A) `devices.py::get_devices` — best-record dispatching
+Sostituito il dict-comprehension naive con una scelta deterministica:
+1. **Reachable wins**: se uno e' `reachable=true` e l'altro no, vince il primo.
+2. **Stessi reachable**: vince il piu' recente (`last_ping_at` desc).
+Cosi' anche se ci sono record duplicati cross-VLAN, in UI vediamo il
+verdetto del connector che effettivamente raggiunge il device.
+
+#### B) `devices.py` nuovo endpoint
+`POST /api/clients/{client_id}/devices/cleanup-stale-poll-status`
+- Body opzionale `{"dry_run": true}` per preview.
+- Per ogni IP con piu' di 1 record: tiene il piu' recente, cancella gli
+  altri.
+- Audit log + ritorna `{removed, ips_with_duplicates, candidates: [...]}`.
+
+#### C) `ClientOverviewPage.js` — pulsante "🔄 Sblocca offline"
+Toolbar tab Dispositivi: nuovo pulsante rosa accanto a "Rimuovi
+scomparsi". Flusso:
+1. Click → dry-run via API, mostra confirm con i primi 5 IP affected.
+2. User conferma → cancellazione effettiva.
+3. Toast "Rimossi N record stale su M IP" + refresh.
+
+### Validato in container
+- POST endpoint `cleanup-stale-poll-status` con `dry_run=true`:
+  - Cliente senza duplicati → `{ips_with_duplicates: 0, removed: 0}`. OK
+- Lint JS/Python: pulito.
+
+### Steps utente per attivare in prod
+1. **Save to GitHub** → auto-deploy in ~30-60s.
+2. Vai su Galvan → tab Dispositivi → click **"🔄 Sblocca offline"**.
+3. La modale mostra quanti IP hanno record duplicati (probabilmente
+   8-9 dei 10.100.61.x, scritti da SRVDCGAL prima del fix role-aware).
+4. Conferma → i record fantasma vengono rimossi.
+5. Al successivo refresh, `poll_by_ip` pesca il record buono di
+   GALVANSRV → device tornano ONLINE.
+
+---
+
+
+## 2026-02-24 ✅ AgentsPage — Vista ad albero per cliente
+
+**Direttiva utente**: «nella zona Agent v4 in center metti disposizione
+ad albero per i connector dello stesso cliente».
+
+### Modifiche `frontend/src/pages/AgentsPage.js`
+- Nuovo stato `groupByClient` (default `true`, persistito in localStorage
+  `agents.groupByClient`).
+- Toggle UI nei filtri: «🌲 Vista albero per cliente» (con tooltip che
+  spiega "utile per clienti multi-VLAN con piu' connector").
+- Nuovo stato `collapsedClients` (Set) per espandere/comprimere
+  individualmente ogni cliente. Click sull'header → toggle.
+- `tbody` ora renderizza:
+  - Riga header con `colSpan=9` contenente `🏢 <NomeCliente>` + counter
+    "N connector". Linkato a `/client/{id}`.
+  - Sotto, le righe agent del cliente con `pl-7` (indentazione).
+- Ordinamento del gruppo: per nome cliente (alfabetico), poi per role
+  (`master` prima dello `scanner`), poi per hostname stabile.
+- Toggle `▼`/`▶` per ogni gruppo, click chiude/apre senza nascondere
+  l'header.
+
+### Validato in container
+- Lint JS: 0 errori
+- Smoke screenshot (preview env): visualizza correttamente 8 gruppi
+  (86BIT_Office, 86bit-pi con 3 connector, ecc.) ordinati alfabeticamente
+  con header sticky-like in azzurro.
+
+---
+
+
 ## 2026-02-24 ✅ FIX P0 — Multi-connector / "dispositivi offline cross-VLAN"
 
 **Problema reportato dall'utente** (cliente Galvan): dopo aver installato

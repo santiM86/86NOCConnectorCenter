@@ -1,5 +1,5 @@
 """Device CRUD and credentials routes."""
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from typing import List, Optional, Dict, Any
 import uuid
 from datetime import datetime, timezone, timedelta
@@ -49,10 +49,43 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
     devices = await db.devices.find(query, {"_id": 0}).to_list(1000)
     manual_ips = {d["ip_address"] for d in devices}
 
-    # Fetch connector-reported devices (device_poll_status)
+    # Fetch connector-reported devices (device_poll_status).
+    # v4.15.x BUG-FIX multi-connector: ci possono essere PIU' record per
+    # lo stesso IP (uno per agent_id) — es. master + scanner sullo stesso
+    # cliente. Se prendiamo random, il record "sbagliato" (cross-VLAN,
+    # reachable=false) puo' mascherare quello "buono" del master.
+    # Strategia di scelta:
+    #   1) Preferisci record reachable=true e con last_ping_at piu' recente
+    #   2) In caso di pareggio, prendi il last_ping_at piu' recente in assoluto
     poll_query = query.copy()
     poll_devices = await db.device_poll_status.find(poll_query, {"_id": 0}).to_list(5000)
-    poll_by_ip = {pd.get("device_ip"): pd for pd in poll_devices if pd.get("device_ip")}
+
+    def _pd_ts(pd_doc):
+        ts = (pd_doc.get("last_ping_at") or pd_doc.get("last_poll_at")
+              or pd_doc.get("last_poll") or "")
+        return ts or ""
+
+    poll_by_ip: Dict[str, Any] = {}
+    for pd in poll_devices:
+        ip = pd.get("device_ip")
+        if not ip:
+            continue
+        cur = poll_by_ip.get(ip)
+        if cur is None:
+            poll_by_ip[ip] = pd
+            continue
+        # Decidi quale tenere: reachable wins; se entrambi reachable o
+        # entrambi non reachable, prendi quello piu' recente.
+        cur_ok = bool(cur.get("ping_reachable") or cur.get("reachable"))
+        new_ok = bool(pd.get("ping_reachable") or pd.get("reachable"))
+        if new_ok and not cur_ok:
+            poll_by_ip[ip] = pd
+        elif cur_ok and not new_ok:
+            pass  # tieni quello vecchio (reachable)
+        else:
+            # Stesso "reachable" → vince il piu' recente
+            if _pd_ts(pd) > _pd_ts(cur):
+                poll_by_ip[ip] = pd
 
     # Fetch managed devices for community/snmp info
     managed_query = query.copy()
@@ -617,6 +650,101 @@ async def delete_device(device_id: str, current_user: dict = Depends(get_current
         resource_type="device", resource_id=device_id
     )
     return {"message": "Device deleted"}
+
+
+@router.post("/clients/{client_id}/devices/cleanup-stale-poll-status")
+async def cleanup_stale_poll_status(
+    client_id: str,
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+):
+    """v4.15.x: pulisce i record fantasma `device_poll_status` scritti da
+    agent che hanno smesso di pollare il device (es. scanner che pingava
+    cross-VLAN e ora ha targets=[] dopo il fix multi-connector).
+
+    Strategia: per ogni IP del cliente, mantieni SOLO il record con
+    `last_ping_at` piu' recente. Gli altri vengono cancellati.
+
+    Cosi' il dropdown `poll_by_ip` in `get_devices` smette di pescare
+    record stantii con `reachable=false` che mascherano lo stato reale.
+
+    Body opzionale: `{"dry_run": true}` per anteprima.
+
+    Restituisce `{candidates: [...], removed: N, dry_run: bool}`.
+    """
+    if current_user.get("role") not in ("admin", "superadmin", "operator"):
+        raise HTTPException(status_code=403, detail="Permessi insufficienti")
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+    dry_run = bool((body or {}).get("dry_run", False))
+
+    # Raggruppa record di device_poll_status per (client_id, device_ip)
+    pipeline = [
+        {"$match": {"client_id": client_id, "device_ip": {"$ne": None}}},
+        {"$group": {
+            "_id": "$device_ip",
+            "count": {"$sum": 1},
+            "docs": {"$push": {
+                "agent_id": "$agent_id",
+                "last_ping_at": "$last_ping_at",
+                "last_poll_at": "$last_poll_at",
+                "reachable": "$reachable",
+                "ping_reachable": "$ping_reachable",
+            }},
+        }},
+        {"$match": {"count": {"$gt": 1}}},  # solo IP con > 1 record
+    ]
+    candidates = []
+    removed = 0
+    async for grp in db.device_poll_status.aggregate(pipeline):
+        ip = grp["_id"]
+        docs = grp["docs"]
+        # ordina per timestamp desc
+        def _ts(d):
+            return d.get("last_ping_at") or d.get("last_poll_at") or ""
+        docs_sorted = sorted(docs, key=_ts, reverse=True)
+        winner = docs_sorted[0]
+        losers = docs_sorted[1:]
+        candidates.append({
+            "ip": ip,
+            "kept_agent_id": winner.get("agent_id"),
+            "kept_last": _ts(winner),
+            "kept_reachable": bool(winner.get("ping_reachable") or winner.get("reachable")),
+            "deleted": [
+                {"agent_id": loser.get("agent_id"), "last_ping": _ts(loser),
+                 "reachable": bool(loser.get("ping_reachable") or loser.get("reachable"))}
+                for loser in losers
+            ],
+        })
+        if not dry_run:
+            for loser in losers:
+                if loser.get("agent_id"):
+                    r = await db.device_poll_status.delete_many({
+                        "client_id": client_id,
+                        "device_ip": ip,
+                        "agent_id": loser["agent_id"],
+                    })
+                    removed += r.deleted_count
+
+    if not dry_run:
+        await audit_logger.log(
+            AuditAction.UPDATE_DEVICE, user_id=current_user["id"], user_email=current_user["email"],
+            ip_address=current_user.get("_request_ip"),
+            resource_type="client", resource_id=client_id,
+            details={"action": "cleanup_stale_poll_status", "removed": removed,
+                     "ips_affected": len(candidates)},
+        )
+
+    return {
+        "client_id": client_id,
+        "dry_run": dry_run,
+        "ips_with_duplicates": len(candidates),
+        "removed": removed,
+        "candidates": candidates,
+    }
 
 
 # ============================================================================
