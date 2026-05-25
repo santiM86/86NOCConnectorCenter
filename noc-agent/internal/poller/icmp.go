@@ -136,6 +136,13 @@ func (p *PingPoller) ProbeOne(ctx context.Context, ip string) proto.PingPollResu
 }
 
 // probe runs the native `ping` once against ip. Cross-platform.
+// v4.16.x BUG-FIX critico: su Windows, Defender ASR puo' bloccare lo
+// spawn di `ping.exe` (Attack Surface Reduction rule "Block executable
+// content from email client and webmail" applicata a `\Windows\System32\PING.EXE`
+// in alcune deployment Group Policy). Il modulo lanscan e' gia' stato
+// migrato a IcmpSendEcho2 API; ora migriamo anche il poller principale
+// per evitare che TUTTI i device managed vadano OFFLINE per timeout
+// del fork.
 func (p *PingPoller) probe(ctx context.Context, ip string, cfg config.PingConfig) proto.PingPollResult {
 	res := proto.PingPollResult{Target: ip, Method: "icmp"}
 	count := cfg.Count
@@ -147,6 +154,45 @@ func (p *PingPoller) probe(ctx context.Context, ip string, cfg config.PingConfig
 		timeout = 2 * time.Second
 	}
 
+	// === FAST PATH: Windows native ICMP (IcmpSendEcho2) ===
+	// Evita lo spawn di ping.exe (bloccato da Defender ASR su alcuni
+	// Windows). Stessa API gia' usata e collaudata in lanscan.
+	if nativeICMPSupported {
+		timeoutMs := int(timeout.Milliseconds())
+		if timeoutMs < 100 {
+			timeoutMs = 100
+		}
+		// Esegui count probe in serie (count=1 di default)
+		var anyOK bool
+		var bestRTT int = -1
+		var lastErr string
+		for i := 0; i < count; i++ {
+			ok, rtt, errMsg := nativeProbeICMP(ctx, ip, timeoutMs)
+			if ok {
+				anyOK = true
+				if bestRTT < 0 || rtt < bestRTT {
+					bestRTT = rtt
+				}
+			} else {
+				lastErr = errMsg
+			}
+		}
+		if anyOK {
+			res.Reachable = true
+			res.LossPct = 0
+			if bestRTT > 0 {
+				res.Latency = time.Duration(bestRTT) * time.Millisecond
+			}
+		} else {
+			res.Reachable = false
+			res.LossPct = 100
+			res.Error = lastErr
+		}
+		res.Method = "icmp_native"
+		return res
+	}
+
+	// === FALLBACK: fork ping.exe (Linux/macOS o Windows senza native API) ===
 	var args []string
 	switch runtime.GOOS {
 	case "windows":
