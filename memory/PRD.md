@@ -32,6 +32,35 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-02-24 ✅ Banner auto-diagnose offline in ClientOverviewPage
+
+### Modifiche `frontend/src/pages/ClientOverviewPage.js`
+- Nuovo stato `diagnosis` (default `null`).
+- `fetchAll` fa GET `/api/clients/{id}/devices/diagnose-offline` ad ogni
+  refresh (ogni 30s).
+- Banner rosa che appare AUTOMATICAMENTE in cima alla pagina quando:
+  - `devices.length > 0` (cliente ha device da monitorare)
+  - E (`v3_zombie.active === true` OPPURE `recommendations.length > 0`)
+- Mostra:
+  - Titolo dinamico: "Connector v3 obsoleto attivo" / "Problema di
+    polling dispositivi"
+  - Dettagli del v3 zombie se presente (records_written, last_v3_write)
+  - Lista delle recommendations actionable dal server
+  - Lista degli agent v4 LIVE con role
+  - Pulsanti "🩺 Dettagli" (apre alert modale completa) e "Ricarica"
+
+### Effetto utente
+Aprendo qualsiasi pagina cliente, se c'e' un problema di polling
+(v3 zombie, master morto, gap coverage), il banner balza subito
+all'occhio senza richiedere azione manuale.
+
+### Validato in container
+- Lint JS pulito
+- Smoke screenshot dashboard OK (preview env)
+
+---
+
+
 ## 2026-02-24 ✅ FIX P0 — Zombie Connector v3 PowerShell
 
 **Indizio risolutivo** (dallo screenshot Galvan): **TUTTI** i 58 device
