@@ -1387,6 +1387,35 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
     }
   };
 
+  const diagnoseOffline = async () => {
+    try {
+      const { data } = await axios.get(
+        `${API}/clients/${clientId}/devices/diagnose-offline`,
+      );
+      // Costruisci summary leggibile
+      const liveCount = (data.live_v4_agents || []).length;
+      const live = (data.live_v4_agents || []).map(a =>
+        `  • ${a.hostname} [${a.role || "?"}] · v${a.agent_version || "?"} · ip=${a.last_ip || "?"}`
+      ).join("\n");
+      const breakdown = (data.poll_status_breakdown || []).map(b =>
+        `  • ${b.source}/${(b.agent_id || "").slice(0, 12)}: ${b.count} record (${b.reachable_count} OK) · last=${b.latest_poll || "n/a"}`
+      ).join("\n");
+      const recs = (data.recommendations || []).map(r => `→ ${r}`).join("\n");
+      const zombie = data.v3_zombie
+        ? `\n\n⚠️ V3 ZOMBIE RILEVATO:\n${data.v3_zombie.message}\nUltima scrittura v3: ${data.v3_zombie.last_v3_write}`
+        : "";
+      const msg = `🩺 DIAGNOSI OFFLINE — ${data.now}\n\n` +
+        `▼ Agent v4 LIVE (${liveCount}):\n${live || "  (nessuno)"}\n\n` +
+        `▼ Poll status breakdown:\n${breakdown || "  (nessun record)"}\n` +
+        zombie +
+        `\n\n▼ Recommendations:\n${recs || "  (nessuna)"}`;
+      // Mostra in alert (poi spostiamo in modale piu' bella)
+      alert(msg);
+    } catch (e) {
+      toast.error(`Errore diagnosi: ${e.response?.data?.detail || e.message}`);
+    }
+  };
+
   const cleanupStalePollStatus = async () => {
     try {
       // Dry-run prima per mostrare la preview
@@ -1558,6 +1587,14 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
             title="Classifica ogni device come LAN (cavo) o Wi-Fi incrociando la CAM table degli switch SNMP con i neighbor LLDP. Identifica gli AP via keyword (Aruba AP, Unifi, Meraki, ecc.) e marca tutti i loro client come Wi-Fi. Confidenza: 99% se l'AP stesso e' un LLDP neighbor; 95% via LLDP-AP; 90% via CAM table; 75% via inferenza MAC randomizzato."
           >
             <WifiHigh size={13} /> LAN / Wi-Fi
+          </Button>
+          <Button
+            onClick={() => diagnoseOffline()}
+            className="bg-cyan-700/90 hover:bg-cyan-600 text-white h-8 text-xs gap-1"
+            data-testid="diagnose-offline-btn"
+            title="Diagnostica perche' i device sono OFFLINE: rileva agent v4 LIVE, connector v3 zombie, e mostra recommendation actionable."
+          >
+            🩺 Diagnosi offline
           </Button>
           <Button
             onClick={() => cleanupStaleDevices()}
