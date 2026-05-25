@@ -1745,6 +1745,7 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
               <SortableTh field="community" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Community</SortableTh>
               <SortableTh field="status" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Stato</SortableTh>
               <SortableTh field="live_evidence" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Vivo via</SortableTh>
+              <th className="text-left text-[10px] uppercase tracking-wider text-[var(--text-muted)] font-semibold py-2 px-2">Visto da</th>
               <SortableTh field="connection" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Conn.</SortableTh>
               <SortableTh field="source" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Fonte</SortableTh>
               <SortableTh field="last_poll" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Ultimo Poll</SortableTh>
@@ -1753,7 +1754,7 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
           </thead>
           <tbody>
             {sortedDevices.length === 0 ? (
-              <tr><td colSpan={12} className="text-center text-[var(--text-muted)] py-8 text-xs">Nessun dispositivo — clicca "Aggiungi Dispositivo" per iniziare</td></tr>
+              <tr><td colSpan={13} className="text-center text-[var(--text-muted)] py-8 text-xs">Nessun dispositivo — clicca "Aggiungi Dispositivo" per iniziare</td></tr>
             ) : sortedDevices.map((d, i) => {
               const sc = STATUS_COLOR[d.status] || "#555";
               const monitorType = (d.monitor_type || "snmp").toLowerCase();
@@ -1844,6 +1845,34 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
                       return <span title="Visto dall'agent v4 Go (auto-discovery interno)" className="inline-flex items-center gap-1 text-[8px] px-1.5 py-0.5 rounded bg-cyan-500/10 text-cyan-300 border border-cyan-500/30 font-bold" data-testid={`live-evidence-${d.ip_address}`}>🤖 v4</span>;
                     }
                     return <span title={`Metodo: ${ev}`} className="text-[8px] text-[var(--text-muted)]" data-testid={`live-evidence-${d.ip_address}`}>{ev}</span>;
+                  })()}</td>
+                  <td>{(() => {
+                    // v4.17.x: "Visto da" — lista agent che hanno effettivamente
+                    // pollato questo device negli ultimi 5 min. Aiuta a capire
+                    // la distribuzione subnet-aware.
+                    const sb = d.seen_by || [];
+                    if (sb.length === 0) {
+                      return <span className="text-[8px] text-[var(--text-muted)]" data-testid={`seen-by-${d.ip_address}`}>—</span>;
+                    }
+                    return (
+                      <div className="flex flex-wrap gap-0.5" data-testid={`seen-by-${d.ip_address}`}>
+                        {sb.map((a, i) => {
+                          const color = a.role === "master"
+                            ? "bg-sky-500/10 text-sky-300 border-sky-500/30"
+                            : "bg-violet-500/10 text-violet-300 border-violet-500/30";
+                          const reachIcon = a.reachable ? "✓" : "✗";
+                          return (
+                            <span
+                              key={i}
+                              title={`${a.hostname} [${a.role}] · ${a.reachable ? "raggiunge" : "non raggiunge"} (method: ${a.method || "?"})`}
+                              className={`inline-flex items-center gap-0.5 text-[8px] px-1 py-0.5 rounded border ${color}`}
+                            >
+                              {reachIcon} {a.hostname.slice(0, 10)}
+                            </span>
+                          );
+                        })}
+                      </div>
+                    );
                   })()}</td>
                   <td>{(() => {
                     const ct = d.connection_type;

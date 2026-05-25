@@ -212,6 +212,50 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
     except Exception:
         pass
 
+    # v4.17.x SEEN-BY: per ogni device managed, costruisci la lista degli
+    # agent v4 che lo hanno effettivamente pollato/visto negli ultimi
+    # 5 minuti. Usato per la colonna UI "Visto da".
+    # Source 1: device_poll_status grouped by agent_id
+    # Source 2: discovered_endpoints recenti del cliente
+    seen_by_ip: Dict[str, List[Dict[str, str]]] = {}
+    if client_id:
+        try:
+            five_min_iso = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+            # Mappa agent_id → hostname/role per il display
+            agent_meta: Dict[str, Dict[str, str]] = {}
+            async for a in db.managed_agents.find(
+                {"client_id": client_id},
+                {"_id": 0, "agent_id": 1, "hostname": 1, "role": 1},
+            ):
+                if a.get("agent_id"):
+                    agent_meta[a["agent_id"]] = {
+                        "hostname": a.get("hostname") or a["agent_id"][:8],
+                        "role": a.get("role") or "master",
+                    }
+            # Source: device_poll_status (chi polla attualmente)
+            async for ps in db.device_poll_status.find(
+                {"client_id": client_id, "agent_id": {"$ne": None},
+                 "last_ping_at": {"$gte": five_min_iso}},
+                {"_id": 0, "device_ip": 1, "agent_id": 1, "ping_reachable": 1,
+                 "reachable": 1, "method": 1},
+            ):
+                ip = ps.get("device_ip")
+                aid = ps.get("agent_id")
+                if not ip or not aid:
+                    continue
+                meta = agent_meta.get(aid)
+                if not meta:
+                    continue
+                seen_by_ip.setdefault(ip, []).append({
+                    "agent_id": aid,
+                    "hostname": meta["hostname"],
+                    "role": meta["role"],
+                    "reachable": bool(ps.get("ping_reachable") or ps.get("reachable")),
+                    "method": ps.get("method") or "",
+                })
+        except Exception:
+            pass
+
     # Enrich manually-added devices with profile_key from managed_devices/poll_status
     for d in devices:
         ip = d.get("ip_address")
@@ -242,6 +286,8 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
         elif pd.get("reachable"):
             # Niente evidence L2 ma il ping_poll dice raggiungibile → mostra il method
             d["live_evidence"] = (pd.get("method") or pd.get("ping_method") or "ping").strip()
+        # v4.17.x SEEN-BY: lista agent che vedono questo device
+        d["seen_by"] = seen_by_ip.get(ip, [])
 
     # Merge: add connector devices that aren't already in manual list
     for pd in poll_devices:
@@ -331,6 +377,7 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
                 "location": pd.get("sys_location", ""),
                 "status": md_status,
                 "live_evidence": live_evidence2,
+                "seen_by": seen_by_ip.get(ip, []),
                 "redfish_enabled": False,
                 # v3.8.18: source = chi ha SCOPERTO il device, non chi lo polla.
                 # Se il device esiste in managed_devices con source=connector-scanner,
@@ -482,6 +529,7 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
             "location": md.get("location", ""),
             "status": md_status,
             "live_evidence": live_evidence3,
+            "seen_by": seen_by_ip.get(md_ip, []),
             "redfish_enabled": False,
             "source": md_source,
             "auto_added": bool(md.get("auto_added", False)),

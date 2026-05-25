@@ -32,6 +32,93 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-02-24 ✅ v4.17.x — Subnet-aware dispatching + colonna "Visto da"
+
+### Architettura
+Ogni connector polla SOLO i `managed_devices` la cui IP rientra nella
+sua **subnet /24**, dedotta dall'`last_ip` dell'agent. Risolve
+definitivamente il problema multi-VLAN: zero overlap, zero flap,
+zero configurazione manuale.
+
+### Backend `agent_ws.py`
+
+#### Helper nuovi
+- `_primary_ip_from_hello(hello)`: estrae l'IP IPv4 "primario"
+  dall'array `hello.ips`. Priorita': 10.x > 192.168.x > 172.16-31.x.
+  Salta loopback, link-local, multicast.
+- `_agent_subnet_from_ip(ip, mask=24)`: ritorna `"10.100.61.0/24"` da
+  `"10.100.61.37"`. Mask configurabile.
+- `_ip_in_subnet(ip, cidr)`: matching robusto via `ipaddress`.
+- `_get_client_agents_subnets(client_id)`: ritorna lista
+  `[{agent_id, hostname, role, last_ip, subnet}]` degli agent LIVE.
+
+#### `_Connection.last_ip`
+Aggiunto field cached settato dopo `hello`. Usato per re-build config
+veloce.
+
+#### `_build_poller_config(client_id, agent_role, agent_ip)`
+Riscritto:
+- Calcola `agent_subnet = _agent_subnet_from_ip(agent_ip, 24)`.
+- Se l'agent non e' master: include solo target con `ip ∈ subnet`.
+- Se l'agent e' master: include target con `ip ∈ subnet` + **target
+  orfani** (IP non coperti da NESSUNA subnet di peer agent live).
+- `managed_agents.last_ip` ora persistito in DB.
+
+#### `push_config_to_client(client_id)`
+Per ogni connector live recupera `role` E `last_ip` da DB, costruisce
+config customizzata, manda welcome aggiornata.
+
+### Backend `devices.py` — campo `seen_by`
+Per ogni device managed, aggiunge nel JSON response:
+```
+seen_by: [
+  {agent_id, hostname, role, reachable, method},
+  ...
+]
+```
+Sorgente: `device_poll_status` last_ping_at < 5min, grouped by agent_id.
+Permette alla UI di mostrare quali agent hanno effettivamente pollato
+il device.
+
+### Frontend `ClientOverviewPage.js`
+- Nuova colonna **"Visto da"** tra "Vivo via" e "Conn."
+- Mostra badge stacked per ogni agent in `seen_by`:
+  - Master = badge sky blue (`✓ GALVANSRV`)
+  - Scanner = badge violet (`✓ SRVDCGAL`)
+  - `✓` se reachable, `✗` se irraggiungibile
+  - Tooltip completo: hostname + role + method + reachable
+- "—" se nessun agent ha pollato di recente.
+
+### Validato in container
+- Test helper Python: tutti i 9 test pass (priority IP selection,
+  subnet derivation, IP-in-subnet matching, CIDR support).
+- Lint Python + JS pulito.
+- Backend hot-reload OK.
+
+### Effetto per l'utente Galvan
+1. Save to GitHub → deploy
+2. Al primo heartbeat dei 2 agent (entro 30s), il backend rilevera':
+   - GALVANSRV `last_ip=10.100.61.37` → subnet `10.100.61.0/24`
+   - SRVDCGAL `last_ip=192.168.16.21` → subnet `192.168.16.0/24`
+3. Welcome aggiornata via WS distribuisce:
+   - GALVANSRV: 9 target 10.100.61.x + eventuali orfani
+   - SRVDCGAL: 49 target 192.168.16.x
+4. Entro 60s i 49 device 192.168.16.x risulteranno
+   pollati dallo scanner (source=SCANNER), e nella colonna "Visto da"
+   vedrai `✓ SRVDCGAL` per loro.
+5. Zero cross-VLAN flap (nessun agent prova a pingare ip fuori subnet).
+
+### Limiti noti
+- Subnet hardcoded a `/24` (default sano per la maggior parte LAN).
+  Se serve `/16` o `/22` custom, va aggiunto field
+  `managed_agents.subnet_mask` configurabile.
+- Per un cliente con 2 master nello stesso /24, ENTRAMBI riceveranno
+  gli stessi target (overlap). Caso edge raro, da risolvere in futuro
+  con "master primario" election.
+
+---
+
+
 ## 2026-02-24 ✅ Colonna "Vivo via" — trasparenza evidence-based liveness
 
 ### Modifiche

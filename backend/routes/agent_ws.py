@@ -27,7 +27,7 @@ import logging
 import secrets
 import uuid
 from datetime import datetime, timezone, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect, status
 from pydantic import BaseModel, Field
@@ -69,6 +69,9 @@ class _Connection:
         self.seq = 0
         self.connected_at = _now()
         self.pending: Dict[str, asyncio.Future] = {}
+        # v4.17.x: cached IP "primario" dell'agent (per subnet-aware
+        # dispatching). Settato dopo l'hello.
+        self.last_ip: Optional[str] = None
 
     async def send(self, frame: Dict[str, Any]) -> None:
         await self.ws.send_text(json.dumps(frame, default=str))
@@ -259,6 +262,10 @@ async def agent_ws(ws: WebSocket) -> None:
         "connected": True,
         "connected_at": now.isoformat(),
     }
+    # v4.17.x: settiamo last_ip per subnet-aware dispatching
+    _primary_ip = _primary_ip_from_hello(hello)
+    if _primary_ip:
+        set_fields["last_ip"] = _primary_ip
     set_fields.update(update_complete_patch)
     await db.managed_agents.update_one(
         {"agent_id": agent_id},
@@ -270,16 +277,22 @@ async def agent_ws(ws: WebSocket) -> None:
     )
 
     conn = _Connection(agent_id, client_id, ws)
+    if _primary_ip:
+        conn.last_ip = _primary_ip
     await REGISTRY.add(conn)
 
     # Send welcome (includes SNMP targets pulled from managed_devices for
     # this tenant so the agent can self-poll without needing a separate
-    # legacy Connector Master). v4.15.x: passa il role per filtrare i
-    # target nel multi-connector (scanner = no polling).
+    # legacy Connector Master). v4.17.x: passa role + agent_ip per
+    # subnet-aware target dispatching.
     welcome = {
         "accepted_at": now.isoformat(),
         "session_id": uuid.uuid4().hex,
-        "config": await _build_poller_config(client_id, agent_role=role_val),
+        "config": await _build_poller_config(
+            client_id,
+            agent_role=role_val,
+            agent_ip=_primary_ip,
+        ),
     }
     conn.seq += 1
     try:
@@ -805,35 +818,145 @@ async def sys_metrics_overview(
     return {"count": len(docs), "agents": docs}
 
 
-async def _build_poller_config(client_id: str, agent_role: str = "master") -> Dict[str, Any]:
-    """Build poller config for one tenant.
+def _primary_ip_from_hello(hello: Dict[str, Any]) -> Optional[str]:
+    """Estrae l'IP IPv4 "primario" dell'agent dalla lista ips dell'hello.
 
-    Two blocks are emitted:
-      - `snmp.targets[]`  → list of devices with an explicit community
-        (or a default `public`) used for sysName / sysDescr polling.
-      - `ping.targets[]`  → list of *every* enabled managed device,
-        regardless of SNMP capability. This is the heartbeat signal
-        that drives UP/DOWN status on the dashboard and replaces the
-        legacy PowerShell Connector polling loop.
+    Saltiamo loopback, link-local (169.254.x.x), e indirizzi di scope
+    privato di VPN/docker. Prendiamo il primo IPv4 RFC1918 valido.
 
-    The returned shape matches the JSON tags expected by the Go agent
-    in cmd/agent/main.go::OnWelcome.
+    Ordine di preferenza: 10.x > 192.168.x > 172.16-31.x > qualsiasi
+    altro IPv4.
+    """
+    ips = hello.get("ips") or []
+    if not isinstance(ips, list):
+        return None
+    import ipaddress as _ipaddr
+    candidates: List[Tuple[int, str]] = []  # (priority, ip)
+    for raw in ips:
+        if not isinstance(raw, str):
+            continue
+        s = raw.strip()
+        # supporta sia "1.2.3.4" che "1.2.3.4/24"
+        if "/" in s:
+            s = s.split("/", 1)[0]
+        try:
+            ip = _ipaddr.ip_address(s)
+            if ip.version != 4:
+                continue
+            if ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_unspecified:
+                continue
+            # Priorita': 10.x = 1, 192.168.x = 2, 172.16-31.x = 3, altro = 4
+            octets = str(ip).split(".")
+            first = int(octets[0])
+            second = int(octets[1])
+            if first == 10:
+                prio = 1
+            elif first == 192 and second == 168:
+                prio = 2
+            elif first == 172 and 16 <= second <= 31:
+                prio = 3
+            else:
+                prio = 4
+            candidates.append((prio, str(ip)))
+        except Exception:
+            continue
+    if not candidates:
+        return None
+    candidates.sort(key=lambda x: x[0])
+    return candidates[0][1]
 
-    Behaviour:
-      - Devices flagged `disabled` or with no `ip` are skipped.
-      - Empty target lists still return a valid (disabled) block so the
-        agent doesn't crash on first welcome.
-      - v4.15.x BUG-FIX multi-connector: gli agent con `role="scanner"`
-        ricevono targets ping/SNMP VUOTI. Solo il `master` polla i device
-        managed. Questo evita falsi-positivi OFFLINE quando 2 connector
-        sullo stesso cliente vivono in subnet diverse e l'agent
-        "sbagliato" non riesce a raggiungere device cross-VLAN. Lo
-        scanner continua a fare auto-discovery LAN (ARP/mDNS) e
-        sys_metrics del server su cui gira.
+
+def _agent_subnet_from_ip(agent_ip: Optional[str], mask: int = 24) -> Optional[str]:
+    """Calcola la subnet CIDR (default /24) dall'IP dell'agent.
+
+    Es: 10.100.61.37 → "10.100.61.0/24"
+    Es: 192.168.16.21 → "192.168.16.0/24"
+
+    Ritorna None se l'IP non e' parsabile.
+    """
+    if not agent_ip:
+        return None
+    try:
+        import ipaddress as _ipaddr
+        ip = _ipaddr.ip_address(agent_ip.strip())
+        if ip.version != 4:
+            return None
+        net = _ipaddr.ip_network(f"{ip}/{mask}", strict=False)
+        return str(net)
+    except Exception:
+        return None
+
+
+def _ip_in_subnet(ip: str, cidr: Optional[str]) -> bool:
+    """True se ip ∈ cidr. Robusto contro input malformati."""
+    if not ip or not cidr:
+        return False
+    try:
+        import ipaddress as _ipaddr
+        return _ipaddr.ip_address(ip.strip()) in _ipaddr.ip_network(cidr, strict=False)
+    except Exception:
+        return False
+
+
+async def _get_client_agents_subnets(client_id: str) -> List[Dict[str, Any]]:
+    """Ritorna la lista degli agent LIVE del cliente con la loro subnet
+    dedotta dall'`last_ip`. Usato per subnet-aware target dispatching.
+
+    Output: [{agent_id, hostname, role, last_ip, subnet}]
+    """
+    three_min_ago_iso = (datetime.now(timezone.utc) - timedelta(minutes=3)).isoformat()
+    agents: List[Dict[str, Any]] = []
+    async for a in db.managed_agents.find(
+        {"client_id": client_id,
+         "$or": [
+             {"last_heartbeat_at": {"$gte": three_min_ago_iso}},
+             {"last_seen_at": {"$gte": three_min_ago_iso}},
+         ]},
+        {"_id": 0, "agent_id": 1, "hostname": 1, "role": 1, "last_ip": 1},
+    ):
+        a["subnet"] = _agent_subnet_from_ip(a.get("last_ip"))
+        agents.append(a)
+    return agents
+
+
+async def _build_poller_config(
+    client_id: str,
+    agent_role: str = "master",
+    agent_ip: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Build poller config for one tenant — SUBNET-AWARE dispatching.
+
+    v4.17.x ARCHITETTURA SUBNET-AWARE: ogni connector riceve SOLO i target
+    della sua subnet `/24` (dedotta da last_ip). Cosi':
+      - Master GALVANSRV (10.100.61.37/24) → polla 10.100.61.x
+      - Scanner SRVDCGAL (192.168.16.21/24) → polla 192.168.16.x
+      - Nessun overlap, nessun flap cross-VLAN
+      - Load distribuito naturalmente
+
+    Fallback rules:
+      - Se l'agent non ha IP (subnet=None) → riceve targets vuoti
+      - Se ci sono device fuori da QUALSIASI subnet conosciuta (orfani),
+        vengono assegnati AL MASTER del cliente (best effort)
     """
     snmp_targets: List[Dict[str, Any]] = []
     ping_targets: List[Dict[str, Any]] = []
-    is_polling_agent = (agent_role or "master").lower() == "master"
+    agent_subnet = _agent_subnet_from_ip(agent_ip)
+    is_master = (agent_role or "master").lower() == "master"
+
+    # Per i target "orfani" (fuori da qualsiasi subnet di agent vivo) il
+    # master riceve il fallback. Calcolo l'insieme di subnet coperte da
+    # ALTRI agent live del cliente (per sapere se un IP e' "scoperto" o no).
+    other_subnets: List[str] = []
+    if is_master:
+        try:
+            peers = await _get_client_agents_subnets(client_id)
+            for p in peers:
+                ps = p.get("subnet")
+                if ps and ps != agent_subnet:
+                    other_subnets.append(ps)
+        except Exception:
+            pass
+
     try:
         cursor = db.managed_devices.find(
             {"client_id": client_id, "ip": {"$ne": None, "$exists": True}},
@@ -847,17 +970,24 @@ async def _build_poller_config(client_id: str, agent_role: str = "master") -> Di
             ip = d.get("ip")
             if not ip:
                 continue
-            # v4.15.x: solo agent master ricevono targets. Gli scanner
-            # restano con liste vuote (fanno solo discovery LAN).
-            if not is_polling_agent:
-                continue
+
+            # SUBNET MATCH: assegna il target SOLO se l'IP rientra nella
+            # subnet di questo agent. Eccezione: il master prende anche
+            # i target "orfani" (fuori da qualsiasi subnet conosciuta).
+            in_my_subnet = _ip_in_subnet(ip, agent_subnet)
+            if not in_my_subnet:
+                if not is_master:
+                    # Lo scanner ignora tutto cio' che non e' nella sua subnet
+                    continue
+                # Master: prende solo se il target NON e' nella subnet
+                # di un altro agent (cioe' e' "orfano")
+                covered_by_peer = any(_ip_in_subnet(ip, s) for s in other_subnets)
+                if covered_by_peer:
+                    continue
+
             name = d.get("name") or ip
-            # Every enabled device gets ping-polled (cheap, no auth).
             ping_targets.append({"ip": ip, "name": name})
 
-            # SNMP-polled only when an explicit community is set OR the
-            # device is classified as a network appliance/printer (we
-            # try `public` by default for those).
             community = d.get("community") or d.get("snmp_community")
             monitor_type = (d.get("monitor_type") or "").lower()
             dev_type = (d.get("device_type") or "").lower()
@@ -873,7 +1003,7 @@ async def _build_poller_config(client_id: str, agent_role: str = "master") -> Di
                     "snmp_version": d.get("snmp_version") or "v2c",
                     "snmp_port": int(d.get("snmp_port") or 161),
                 })
-    except Exception as e:  # pragma: no cover - degraded mode
+    except Exception as e:
         logger.warning("agent_ws: _build_poller_config error client_id=%s err=%s", client_id, e)
 
     return {
@@ -906,27 +1036,34 @@ async def push_config_to_client(client_id: str) -> int:
     starts (or stops) polling it within seconds instead of waiting for
     the next service restart.
 
-    v4.15.x BUG-FIX multi-connector: per ogni agent calcoliamo la config
-    in base al SUO role (master/scanner). Gli scanner ricevono targets
-    vuoti (fanno solo discovery), il master riceve la lista completa.
+    v4.17.x SUBNET-AWARE: per ogni agent calcoliamo la config in base al
+    SUO role (master/scanner) E alla sua subnet (last_ip /24). Gli
+    scanner ricevono solo i target nella loro subnet; il master prende
+    quelli della sua + gli orfani.
 
     Returns the number of agents successfully notified.
     """
-    # Cache role per agent_id per evitare round-trip multipli al DB
-    role_by_agent: Dict[str, str] = {}
+    info_by_agent: Dict[str, Dict[str, Any]] = {}
     sent = 0
     total_targets_sent = 0
     for c in REGISTRY.list():
         if c.client_id != client_id:
             continue
-        role = role_by_agent.get(c.agent_id)
-        if role is None:
+        info = info_by_agent.get(c.agent_id)
+        if info is None:
             ag = await db.managed_agents.find_one(
-                {"agent_id": c.agent_id}, {"_id": 0, "role": 1},
+                {"agent_id": c.agent_id}, {"_id": 0, "role": 1, "last_ip": 1},
             )
-            role = (ag or {}).get("role") or "master"
-            role_by_agent[c.agent_id] = role
-        cfg = await _build_poller_config(client_id, agent_role=role)
+            info = {
+                "role": (ag or {}).get("role") or "master",
+                "last_ip": (ag or {}).get("last_ip") or c.last_ip,
+            }
+            info_by_agent[c.agent_id] = info
+        cfg = await _build_poller_config(
+            client_id,
+            agent_role=info["role"],
+            agent_ip=info["last_ip"],
+        )
         payload = {
             "accepted_at": _now().isoformat(),
             "config": cfg,
@@ -934,13 +1071,10 @@ async def push_config_to_client(client_id: str) -> int:
         }
         try:
             c.seq += 1
-            # Re-use server.welcome so the existing OnWelcome hot-swap
-            # path in the agent applies the new targets immediately —
-            # zero new code on the agent side.
             await c.send(make_frame("server.welcome", payload, seq=c.seq))
             sent += 1
             total_targets_sent += len(cfg["ping"]["targets"])
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             logger.warning("push_config_to_client: send failed agent=%s err=%s", c.agent_id, e)
     logger.info("push_config_to_client: client_id=%s notified=%d total_ping_targets_sent=%d",
                 client_id, sent, total_targets_sent)
