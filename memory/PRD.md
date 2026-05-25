@@ -32,6 +32,49 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-02-24 ✅ HOTFIX P0 — Diagnostica diceva "0 agent v4 LIVE" anche con 2 agent live
+
+**Sintomo**: utente ha pushato i fix, in AgentsPage Galvan ha **2 agent
+v4 LIVE** (master + scanner). Ma il banner di diagnostica diceva
+"NESSUN agent v4 LIVE" e la card "Connettore ONLINE" mostrava ONLINE
+(perche' leggeva da `db.connectors` v3, non da `db.managed_agents` v4).
+
+### Root cause
+Il mio endpoint `/diagnose-offline` (e il filtro v3-zombie in
+`get_devices`/`connector_device_report`) cercava il campo **`last_seen_at`**.
+Verificato con query DB:
+```
+Total managed_agents: 37
+  with last_heartbeat_at: 35
+  with last_seen_at: 0
+```
+
+Tutti gli agent v4 aggiornano **`last_heartbeat_at`** (vedi
+`agent_ws.py::_on_heartbeat`), non `last_seen_at`. Quindi il match
+"LIVE" non funzionava mai → diagnostica sempre rotta → fix v3-zombie
+mai applicato → device sempre offline.
+
+### Fix
+Sostituito il filter `{"last_seen_at": {"$gte": cutoff}}` con
+`$or: [{last_heartbeat_at}, {last_seen_at}]` in 3 punti:
+- `devices.py::get_devices` (zombie v3 protection lato READ)
+- `devices.py::diagnose_offline_devices` (endpoint diagnostica)
+- `connector.py::connector_device_report` (deprecation v3 lato WRITE)
+
+### Validato in container
+- Query DB: 35/37 agent hanno `last_heartbeat_at`, 0/37 `last_seen_at`
+- Fix `$or` cattura entrambi i campi → live detection ora funziona
+
+### Steps utente
+1. **Save to GitHub** (ancora una volta) → deploy
+2. Apri Galvan → il banner dovrebbe SCOMPARIRE (agent v4 ora rilevati)
+3. Se appare invece il messaggio "v3 zombie attivo" → l'hostname che
+   scrive verra' mostrato, e sara' chiaro dove disinstallare il vecchio
+   Connector PowerShell.
+
+---
+
+
 ## 2026-02-24 ✅ Banner auto-diagnose offline in ClientOverviewPage
 
 ### Modifiche `frontend/src/pages/ClientOverviewPage.js`
