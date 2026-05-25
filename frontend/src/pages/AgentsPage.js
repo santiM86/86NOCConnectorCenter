@@ -31,6 +31,25 @@ export default function AgentsPage() {
   const [loading, setLoading] = useState(true);
   const [busyIds, setBusyIds] = useState(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
+  // v4.15.x: vista albero raggruppata per cliente (default ON). Persistita
+  // in localStorage cosi' la preferenza resta sui reload.
+  const [groupByClient, setGroupByClient] = useState(() => {
+    try { return localStorage.getItem("agents.groupByClient") !== "0"; }
+    catch { return true; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem("agents.groupByClient", groupByClient ? "1" : "0"); }
+    catch {}
+  }, [groupByClient]);
+  // Toggle apertura/chiusura per singolo cliente nella vista albero.
+  const [collapsedClients, setCollapsedClients] = useState(new Set());
+  const toggleClientCollapse = (cid) => {
+    setCollapsedClients((prev) => {
+      const next = new Set(prev);
+      if (next.has(cid)) next.delete(cid); else next.add(cid);
+      return next;
+    });
+  };
 
   const fetchAll = async () => {
     try {
@@ -431,6 +450,14 @@ export default function AgentsPage() {
             data-testid="agents-show-ghosts-toggle" />
           Mostra ghost ({hiddenGhostsCount})
         </label>
+        <label className="flex items-center gap-1.5 text-[10px] text-[var(--text-muted)] cursor-pointer ml-2"
+          title="Raggruppa gli agent per cliente in una vista ad albero (utile per clienti multi-VLAN con piu' connector)"
+          data-testid="agents-group-by-client-label">
+          <input type="checkbox" checked={groupByClient}
+            onChange={(e) => setGroupByClient(e.target.checked)}
+            data-testid="agents-group-by-client-toggle" />
+          🌲 Vista albero per cliente
+        </label>
       </div>
 
       {/* Table */}
@@ -463,15 +490,71 @@ export default function AgentsPage() {
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((a) => {
+                {(() => {
+                  // v4.15.x: vista ad albero — ordina per cliente e poi
+                  // per role (master prima), insert header row al cambio
+                  // di client_id. Sintesi: ricalcolo qui per non creare
+                  // un'altra useMemo che cambia gli hook in render.
+                  const sorted = groupByClient
+                    ? [...filtered].sort((x, y) => {
+                        const cx = (clients[x.client_id] || x.client_id || "").toLowerCase();
+                        const cy = (clients[y.client_id] || y.client_id || "").toLowerCase();
+                        if (cx !== cy) return cx.localeCompare(cy);
+                        // master prima dello scanner all'interno del cliente
+                        const rx = (x.labels?.role || "master").toLowerCase();
+                        const ry = (y.labels?.role || "master").toLowerCase();
+                        if (rx !== ry) return rx === "master" ? -1 : 1;
+                        // poi hostname stabile
+                        return (x.hostname || "").localeCompare(y.hostname || "");
+                      })
+                    : filtered;
+                  const nodes = [];
+                  let lastCid = null;
+                  // Conta gli agent per client_id sui filtered (per la pillola)
+                  const counts = sorted.reduce((acc, a) => {
+                    acc[a.client_id] = (acc[a.client_id] || 0) + 1; return acc;
+                  }, {});
+                  sorted.forEach((a) => {
+                    if (groupByClient && a.client_id !== lastCid) {
+                      lastCid = a.client_id;
+                      const cName = clients[a.client_id] || a.client_id?.slice(0, 8) || "—";
+                      const isCollapsed = collapsedClients.has(a.client_id);
+                      const cnt = counts[a.client_id] || 0;
+                      nodes.push(
+                        <tr key={`group-${a.client_id || "none"}`}
+                          className="bg-[var(--bg-card)]/40 border-t border-[var(--bg-border)]"
+                          data-testid={`agents-group-header-${a.client_id || "none"}`}>
+                          <td colSpan={9} className="p-1.5 px-2.5">
+                            <button
+                              type="button"
+                              onClick={() => toggleClientCollapse(a.client_id)}
+                              className="flex items-center gap-2 text-[11px] font-bold text-sky-300 hover:text-sky-200 transition-colors"
+                              data-testid={`agents-group-toggle-${a.client_id || "none"}`}
+                            >
+                              <span className="text-[var(--text-muted)] font-mono w-3 text-center">
+                                {isCollapsed ? "▶" : "▼"}
+                              </span>
+                              <Buildings size={13} />
+                              <Link to={`/client/${a.client_id}`} className="hover:underline" onClick={(e) => e.stopPropagation()}>
+                                {cName}
+                              </Link>
+                              <span className="text-[9px] font-normal text-[var(--text-muted)] ml-1">
+                                {cnt} {cnt === 1 ? "connector" : "connector"}
+                              </span>
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    }
+                    if (groupByClient && collapsedClients.has(a.client_id)) return;
                   const verN = normVer(a.agent_version);
                   const isOutdated = latestN && verN && verN !== latestN;
                   const stuck = (a.modules_stuck || []).length;
                   const alive = (a.modules_alive || []).length;
-                  return (
-                    <tr key={a.agent_id} className="border-t border-[var(--bg-border)] hover:bg-[var(--bg-card)]/30 transition-colors"
+                  nodes.push(
+                    <tr key={a.agent_id} className={`border-t border-[var(--bg-border)] hover:bg-[var(--bg-card)]/30 transition-colors ${groupByClient ? "bg-transparent" : ""}`}
                       data-testid={`agent-row-${a.agent_id}`}>
-                      <td className="p-2.5">
+                      <td className={`p-2.5 ${groupByClient ? "pl-7" : ""}`}>
                         {a.live ? (
                           <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
                             <WifiHigh size={10} weight="fill" /> LIVE
@@ -677,7 +760,9 @@ export default function AgentsPage() {
                       </td>
                     </tr>
                   );
-                })}
+                  });
+                  return nodes;
+                })()}
               </tbody>
             </table>
           </div>

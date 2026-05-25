@@ -1387,6 +1387,39 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
     }
   };
 
+  const cleanupStalePollStatus = async () => {
+    try {
+      // Dry-run prima per mostrare la preview
+      const { data: preview } = await axios.post(
+        `${API}/clients/${clientId}/devices/cleanup-stale-poll-status`,
+        { dry_run: true },
+      );
+      const dupCount = preview?.ips_with_duplicates || 0;
+      if (dupCount === 0) {
+        toast.info("Nessun record duplicato da pulire — i poll status sono gia' coerenti");
+        return;
+      }
+      const sample = (preview.candidates || []).slice(0, 5).map(c => {
+        const losers = (c.deleted || []).map(d =>
+          `${(d.agent_id || "?").slice(0,8)} (${d.reachable ? "ok" : "down"})`,
+        ).join(", ");
+        return `• ${c.ip}: tieni ${(c.kept_agent_id || "?").slice(0,8)} · rimuovi ${losers}`;
+      }).join("\n");
+      const extra = dupCount > 5 ? `\n…e altri ${dupCount - 5} IP` : "";
+      if (!window.confirm(
+        `Rilevati ${dupCount} IP con record device_poll_status duplicati (multi-connector).\n\n${sample}${extra}\n\nProcedo con la pulizia?`,
+      )) return;
+      const { data } = await axios.post(
+        `${API}/clients/${clientId}/devices/cleanup-stale-poll-status`,
+        { dry_run: false },
+      );
+      toast.success(`Rimossi ${data.removed} record stale su ${data.ips_with_duplicates} IP`);
+      onRefresh?.();
+    } catch (e) {
+      toast.error(`Errore cleanup: ${e.response?.data?.detail || e.message}`);
+    }
+  };
+
   const handleDelete = async (dev) => {
     if (!window.confirm(`Rimuovere "${dev.name}" (${dev.ip_address}) dal monitoraggio?`)) return;
     try {
@@ -1533,6 +1566,14 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
             title="Rimuove dal Center tutti i device attualmente sconosciuti al connector (sincronizzazione inversa). Chiede conferma prima di cancellare."
           >
             <Trash size={13} /> Rimuovi scomparsi
+          </Button>
+          <Button
+            onClick={() => cleanupStalePollStatus()}
+            className="bg-rose-600/90 hover:bg-rose-600 text-white h-8 text-xs gap-1"
+            data-testid="cleanup-poll-status-btn"
+            title="Multi-VLAN: pulisce i record device_poll_status duplicati lasciati da connector che non pollano piu' un IP (es. scanner cross-VLAN). Risolve i device che restano OFFLINE in UI nonostante il master li raggiunga."
+          >
+            <ArrowClockwise size={13} /> Sblocca offline
           </Button>
           <Button
             onClick={handleExportCSV}
