@@ -515,13 +515,17 @@ async def _bridge_ping_poll(conn: _Connection, r: Dict[str, Any]) -> None:
     except Exception as e:
         logger.warning("ping_poll: device_poll_status upsert failed ip=%s err=%s", target, e)
 
-    # Reconcile managed_devices.status with the 3-failure threshold.
+    # Reconcile managed_devices.status with the 5-failure threshold.
+    # v4.15.x ANTI-FLAP: alzata da 3 a 5 per ridurre falsi offline su
+    # reti con packet loss occasionale (WiFi, link congestionati).
+    # 5 cycle a 60s = 5 minuti di fail consecutivi reali.
     try:
         cursor = db.managed_devices.find(
             {"client_id": conn.client_id, "ip": target},
-            {"_id": 0, "id": 1, "status": 1, "consecutive_ping_failures": 1},
+            {"_id": 0, "id": 1, "status": 1, "consecutive_ping_failures": 1,
+             "last_seen_at": 1},
         )
-        failure_threshold = 3
+        failure_threshold = 5
         async for dev in cursor:
             prev_failures = int(dev.get("consecutive_ping_failures") or 0)
             prev_status = dev.get("status")
@@ -537,13 +541,50 @@ async def _bridge_ping_poll(conn: _Connection, r: Dict[str, Any]) -> None:
                 update["last_seen_at"] = now_iso
                 update["degraded"] = False
             else:
-                new_failures = prev_failures + 1
-                update["consecutive_ping_failures"] = new_failures
-                if new_failures >= failure_threshold:
-                    update["status"] = "offline"
+                # v4.15.x MULTI-CONNECTOR PROTECTION: prima di degradare a
+                # offline, verifica se un ALTRO agent ha pingato OK lo
+                # stesso device negli ultimi 90s. Se si', non
+                # incrementiamo il counter — l'altro agent (es. master
+                # in altra subnet) dice che il device e' online.
+                fresh_ok_exists = False
+                try:
+                    cutoff_dt = _now() - timedelta(seconds=90)
+                    cur2 = db.device_poll_status.find({
+                        "client_id": conn.client_id,
+                        "device_ip": target,
+                        "agent_id": {"$ne": conn.agent_id},
+                    }, {"_id": 0, "ping_reachable": 1, "reachable": 1,
+                        "last_ping_at": 1, "agent_id": 1})
+                    async for r in cur2:
+                        lp = r.get("last_ping_at")
+                        if not lp:
+                            continue
+                        try:
+                            lp_dt = datetime.fromisoformat(str(lp).replace("Z", "+00:00"))
+                        except Exception:
+                            continue
+                        if lp_dt < cutoff_dt:
+                            continue
+                        if r.get("ping_reachable") or r.get("reachable"):
+                            fresh_ok_exists = True
+                            break
+                except Exception:
+                    pass
+                if fresh_ok_exists:
+                    # Altro agent dice "online" entro 90s → non degradare
+                    update.pop("status", None)
+                    update.pop("consecutive_ping_failures", None)
+                    logger.debug(
+                        "ping_poll: skip degrade ip=%s (other agent says reachable)", target,
+                    )
                 else:
-                    update["status"] = prev_status or "online"
-                    update["degraded"] = True
+                    new_failures = prev_failures + 1
+                    update["consecutive_ping_failures"] = new_failures
+                    if new_failures >= failure_threshold:
+                        update["status"] = "offline"
+                    else:
+                        update["status"] = prev_status or "online"
+                        update["degraded"] = True
             # Use the unique `id` if present, otherwise match by (client_id, ip)
             # so devices indexed only by _id (no `id` field) are still handled.
             dev_id = dev.get("id")

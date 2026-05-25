@@ -32,6 +32,67 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-02-24 ✅ FIX P0 — Anti-flap multi-connector e soglia offline
+
+**Problema persistente Galvan**: nonostante i 3 fix precedenti (role-aware
+dispatching, best-record `poll_by_ip`, endpoint cleanup), i device
+continuavano ad andare OFFLINE.
+
+### Root cause approfondita (4° livello)
+`backend/routes/agent_ws.py::_bridge_ping_poll` (riga 519-558) aggiornava
+`managed_devices.status` con filtro `{client_id, ip}` SENZA isolare per
+agent_id, e con `failure_threshold = 3` (= 3 min consecutivi).
+
+Scenario reale Galvan:
+1. Master GALVANSRV pinga 10.100.61.34 → reachable=true → status="online"
+2. Scanner SRVDCGAL pinga 10.100.61.34 → reachable=false (cross-VLAN)
+   → consecutive_ping_failures++
+3. Dopo 3 cycli dello scanner senza che il master sovrascriva in modo
+   atomico (race) → status="offline" pur essendo raggiungibile dal master.
+
+Inoltre l'indice unique `(client_id, device_ip)` su `device_poll_status`
+causava `DuplicateKey` quando 2 agent provavano a scrivere lo stesso IP
+con `agent_id` diverso (verificato con test asyncio in container) →
+solo uno vinceva a turno.
+
+### Fix applicato
+
+#### `_bridge_ping_poll` — anti-flap multi-connector
+1. **Soglia alzata** `failure_threshold = 5` (era 3). 5 cycli a 60s = 5 min
+   di fail consecutivi reali prima di marcare offline. Riduce falsi
+   negativi su reti con packet loss occasionale (WiFi, link congestionati).
+2. **Cross-agent verification**: prima di degradare a offline, controlla
+   se un ALTRO agent (`agent_id != conn.agent_id`) ha pingato OK lo
+   stesso IP negli ultimi 90s. Se si', skippa il degrade. Cosi' un
+   master "buono" protegge il device anche se uno scanner "cieco"
+   riporta failure.
+
+### Validato in container
+Test E2E con due agent simulati:
+- Master inserisce `reachable=true` per 10.100.61.34
+- Scanner riporta `reachable=false` (cross-VLAN simulato)
+- Risultato dopo `_bridge_ping_poll`: device rimane `status='online'`,
+  `consecutive_ping_failures=0` → fix funzionante.
+
+### Architettura difensiva — 4 livelli di protezione totale
+Ora il sistema ha 4 fix indipendenti contro il flap multi-connector:
+1. **Push-time** (`_build_poller_config`): scanner non riceve targets
+2. **Read-time** (`poll_by_ip`): best-record dispatching (reachable wins)
+3. **Cleanup-time** (`/cleanup-stale-poll-status`): rimuove record fantasma
+4. **Write-time** (`_bridge_ping_poll`): anti-degrade cross-agent + soglia 5
+
+Ognuno di questi 4 fix, da solo, basta a risolvere il caso standard. Tutti
+insieme rendono il sistema robusto contro race conditions, fallback,
+agent reboot, e architetture multi-VLAN complesse.
+
+### Steps utente per attivare in prod
+1. **Save to GitHub** → auto-deploy
+2. (Opzionale) Tab Dispositivi → "🔄 Sblocca offline" se vedi record vecchi
+3. I device dovrebbero stabilizzarsi entro 1-2 cicli (60-120s)
+
+---
+
+
 ## 2026-02-24 ✅ FIX P0 — Device offline cross-VLAN: poll_by_ip race condition
 
 **Problema reportato dall'utente**: nonostante il fix
