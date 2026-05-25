@@ -2339,6 +2339,39 @@ async def connector_device_report(request: Request):
     hostname = sanitize_string(body.get("hostname", "unknown"), 256)
     devices = body.get("devices", [])
     now_iso = datetime.now(timezone.utc).isoformat()
+
+    # v4.15.x ZOMBIE V3 PROTECTION: se per questo cliente esiste un agent
+    # v4 master LIVE (heartbeat negli ultimi 3 min), allora il Connector v3
+    # PowerShell e' obsoleto e NON deve piu' scrivere su device_poll_status.
+    # Restituisco 200 OK + warning log, cosi' lo script v3 non spamma
+    # errori ma il sysadmin vede chiaramente che c'e' un v3 fantasma da
+    # disinstallare.
+    try:
+        three_min_ago_iso = (datetime.now(timezone.utc) - timedelta(minutes=3)).isoformat()
+        v4_master = await db.managed_agents.find_one(
+            {"client_id": client_id, "role": "master",
+             "last_seen_at": {"$gte": three_min_ago_iso}},
+            {"_id": 0, "hostname": 1, "agent_id": 1},
+        )
+    except Exception:
+        v4_master = None
+
+    if v4_master:
+        logger.warning(
+            "[v3 zombie] device-report da hostname=%s ignorato: client_id=%s ha gia' agent v4 LIVE "
+            "(hostname=%s). DISINSTALLA il vecchio Connector v3 PowerShell su %s.",
+            hostname, client_id, v4_master.get("hostname"), hostname,
+        )
+        return {
+            "status": "deprecated",
+            "message": (
+                f"Connector v3 ignorato: il cliente ha gia' un agent v4 LIVE "
+                f"({v4_master.get('hostname')}). Disinstalla il v3 da {hostname}."
+            ),
+            "active_v4_agent": v4_master.get("hostname"),
+            "devices_processed": 0,
+        }
+
     for dev in devices:
         # Skip devices that were deleted by the user
         is_deleted = await db.deleted_devices.find_one({

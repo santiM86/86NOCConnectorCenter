@@ -60,6 +60,37 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
     poll_query = query.copy()
     poll_devices = await db.device_poll_status.find(poll_query, {"_id": 0}).to_list(5000)
 
+    # v4.15.x ZOMBIE V3 PROTECTION: se per questo cliente esiste un agent v4
+    # master LIVE (heartbeat negli ultimi 3 min), allora **ignoriamo
+    # completamente i record `device_poll_status` scritti dal vecchio
+    # Connector v3 PowerShell** (che potrebbe ancora girare su un PC
+    # dismenticato). Sintomo classico del v3 fantasma: tutti i device
+    # OFFLINE con `unreachable_since=now` che cambia in tempo reale
+    # nonostante un connector v4 sia LIVE. I record v4 hanno
+    # `source="agent_v4"`. I record v3 hanno `source` assente o diverso.
+    v4_master_alive = False
+    if client_id:
+        try:
+            three_min_ago_iso = (datetime.now(timezone.utc) - timedelta(minutes=3)).isoformat()
+            v4_master = await db.managed_agents.find_one(
+                {"client_id": client_id, "role": "master",
+                 "last_seen_at": {"$gte": three_min_ago_iso}},
+                {"_id": 0, "agent_id": 1, "hostname": 1},
+            )
+            v4_master_alive = v4_master is not None
+        except Exception:
+            v4_master_alive = False
+
+    if v4_master_alive:
+        before = len(poll_devices)
+        poll_devices = [pd for pd in poll_devices if pd.get("source") == "agent_v4"]
+        if before != len(poll_devices):
+            import logging as _logging
+            _logging.getLogger(__name__).info(
+                "get_devices: zombie v3 protection for client %s — filtrati %d record legacy (rimasti %d v4)",
+                client_id, before - len(poll_devices), len(poll_devices),
+            )
+
     def _pd_ts(pd_doc):
         ts = (pd_doc.get("last_ping_at") or pd_doc.get("last_poll_at")
               or pd_doc.get("last_poll") or "")
@@ -572,6 +603,117 @@ async def test_device_redfish(device_id: str, current_user: dict = Depends(get_c
 async def test_redfish_connection(test: RedfishTestRequest, current_user: dict = Depends(get_current_user)):
     result = await redfish_poller.test_connection(test.ip_address, test.username, test.password)
     return result
+
+
+@router.get("/clients/{client_id}/devices/diagnose-offline")
+async def diagnose_offline_devices(
+    client_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """v4.15.x: diagnostica per capire perche' i device sono OFFLINE.
+
+    Ritorna:
+      - quanti agent v4 live e quale role
+      - quanti record device_poll_status raggruppati per source/agent_id
+      - se esiste un Connector v3 zombie che spara `device-report` legacy
+      - sample dei device con `last_poll_at` piu' vecchio di 1h
+    """
+    if current_user.get("role") not in ("admin", "superadmin", "operator"):
+        raise HTTPException(status_code=403, detail="Permessi insufficienti")
+
+    now = datetime.now(timezone.utc)
+    three_min_iso = (now - timedelta(minutes=3)).isoformat()
+
+    # 1. agent v4 live
+    live_agents = []
+    async for ag in db.managed_agents.find(
+        {"client_id": client_id, "last_seen_at": {"$gte": three_min_iso}},
+        {"_id": 0, "agent_id": 1, "hostname": 1, "role": 1, "last_seen_at": 1,
+         "last_ip": 1, "agent_version": 1},
+    ):
+        live_agents.append(ag)
+
+    # 2. group device_poll_status by source
+    pipeline = [
+        {"$match": {"client_id": client_id}},
+        {"$group": {
+            "_id": {"source": "$source", "agent_id": "$agent_id"},
+            "count": {"$sum": 1},
+            "reachable_count": {"$sum": {"$cond": [
+                {"$or": [{"$eq": ["$reachable", True]},
+                         {"$eq": ["$ping_reachable", True]}]},
+                1, 0,
+            ]}},
+            "latest": {"$max": {"$ifNull": ["$last_ping_at", "$last_poll_at"]}},
+        }},
+        {"$sort": {"count": -1}},
+    ]
+    poll_breakdown = []
+    async for grp in db.device_poll_status.aggregate(pipeline):
+        poll_breakdown.append({
+            "source": grp["_id"].get("source") or "legacy_v3",
+            "agent_id": grp["_id"].get("agent_id") or "(none)",
+            "count": grp["count"],
+            "reachable_count": grp["reachable_count"],
+            "latest_poll": grp.get("latest"),
+        })
+
+    # 3. detect v3 zombie
+    v3_zombie_warning = None
+    v4_master_live = any(a.get("role") == "master" for a in live_agents)
+    for b in poll_breakdown:
+        if b["source"] == "legacy_v3" and b["count"] > 0:
+            # ha senso solo se v4 e' attivo: significa che il v3 sta ancora scrivendo
+            if v4_master_live and b.get("latest_poll") and b["latest_poll"] > three_min_iso:
+                v3_zombie_warning = {
+                    "active": True,
+                    "message": (
+                        "Rilevato Connector v3 PowerShell ATTIVO che continua a scrivere "
+                        "su device_poll_status nonostante esista un agent v4 master LIVE. "
+                        "Disinstalla il vecchio Connector v3 dal server cliente per evitare "
+                        "conflitti di polling."
+                    ),
+                    "last_v3_write": b["latest_poll"],
+                    "records_written_by_v3": b["count"],
+                }
+                break
+
+    # 4. sample device con poll stantio
+    stale_devices = []
+    async for d in db.managed_devices.find(
+        {"client_id": client_id, "status": "offline"},
+        {"_id": 0, "ip": 1, "name": 1, "last_poll_at": 1, "last_seen_at": 1,
+         "consecutive_ping_failures": 1, "source": 1, "last_poll_source": 1},
+    ).limit(10):
+        stale_devices.append(d)
+
+    return {
+        "client_id": client_id,
+        "now": now.isoformat(),
+        "live_v4_agents": live_agents,
+        "poll_status_breakdown": poll_breakdown,
+        "v3_zombie": v3_zombie_warning,
+        "stale_offline_sample": stale_devices,
+        "recommendations": _build_recommendations(live_agents, poll_breakdown, v3_zombie_warning),
+    }
+
+
+def _build_recommendations(live_agents, poll_breakdown, v3_zombie):
+    recs = []
+    if not live_agents:
+        recs.append("NESSUN agent v4 LIVE. Verifica che il connector Go sia avviato sul server cliente.")
+    masters = [a for a in live_agents if a.get("role") == "master"]
+    if live_agents and not masters:
+        recs.append("Ci sono agent LIVE ma NESSUNO ha role=master. Almeno un agent deve essere master per pollare i device.")
+    if v3_zombie:
+        recs.append(v3_zombie["message"])
+    v4_records = sum(b["count"] for b in poll_breakdown if b["source"] == "agent_v4")
+    if masters and v4_records == 0:
+        recs.append(
+            "Master v4 LIVE ma 0 record device_poll_status da agent_v4: il modulo di polling "
+            "interno del Go agent potrebbe essere bloccato. Riavvia il servizio Argus sul server."
+        )
+    return recs
 
 
 @router.patch("/devices/{device_id}")

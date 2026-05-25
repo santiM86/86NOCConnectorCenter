@@ -32,6 +32,103 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-02-24 ✅ Banner auto-diagnose offline in ClientOverviewPage
+
+### Modifiche `frontend/src/pages/ClientOverviewPage.js`
+- Nuovo stato `diagnosis` (default `null`).
+- `fetchAll` fa GET `/api/clients/{id}/devices/diagnose-offline` ad ogni
+  refresh (ogni 30s).
+- Banner rosa che appare AUTOMATICAMENTE in cima alla pagina quando:
+  - `devices.length > 0` (cliente ha device da monitorare)
+  - E (`v3_zombie.active === true` OPPURE `recommendations.length > 0`)
+- Mostra:
+  - Titolo dinamico: "Connector v3 obsoleto attivo" / "Problema di
+    polling dispositivi"
+  - Dettagli del v3 zombie se presente (records_written, last_v3_write)
+  - Lista delle recommendations actionable dal server
+  - Lista degli agent v4 LIVE con role
+  - Pulsanti "🩺 Dettagli" (apre alert modale completa) e "Ricarica"
+
+### Effetto utente
+Aprendo qualsiasi pagina cliente, se c'e' un problema di polling
+(v3 zombie, master morto, gap coverage), il banner balza subito
+all'occhio senza richiedere azione manuale.
+
+### Validato in container
+- Lint JS pulito
+- Smoke screenshot dashboard OK (preview env)
+
+---
+
+
+## 2026-02-24 ✅ FIX P0 — Zombie Connector v3 PowerShell
+
+**Indizio risolutivo** (dallo screenshot Galvan): **TUTTI** i 58 device
+OFFLINE incluso GALVANSRV (il server master stesso), con `last_poll_at =
+"25 mag, 18:27"` (9 mesi fa) ma `down da Xs` recente che si aggiorna in
+tempo reale. Impossibile che sia il v4 Go agent (che aggiornerebbe
+last_poll_at). L'unico endpoint che scrive `unreachable_since=now()` ad
+ogni ciclo e' il vecchio `/api/connector/device-report` (Connector v3
+PowerShell).
+
+### Root cause
+Da qualche parte su Galvan c'e' un vecchio **Connector v3 PowerShell**
+ancora attivo (presumibilmente in un PC dismenticato) che continua a
+fare POST a `/api/connector/device-report` con `reachable=false` per
+tutti gli IP che non riesce a raggiungere → sovrascrive
+`device_poll_status.unreachable_since` continuamente, sovrascrive
+`managed_devices.status="offline"`, ignora il fatto che il v4 Go agent
+nuovo sia LIVE.
+
+### Fix applicati
+
+#### A) `connector.py::connector_device_report` — deprecation v3
+Se per il client_id che chiama il legacy `/connector/device-report`
+esiste un agent v4 master LIVE (heartbeat < 3 min), il backend:
+- **Non scrive nulla su DB** (zero side-effects)
+- Log warning chiaro: "DISINSTALLA il vecchio Connector v3 PowerShell su
+  {hostname}"
+- Risponde 200 OK con `{status: "deprecated", message: ..., active_v4_agent: ...}`
+- Lo script v3 non spamma errori (200 OK), ma il sysadmin vede il
+  warning nel log lato server.
+
+#### B) `devices.py::get_devices` — zombie v3 protection lato READ
+Se per il client_id richiesto esiste un agent v4 master LIVE, il
+backend **filtra i record `device_poll_status` per `source="agent_v4"`
+only**. Cosi' anche se il v3 zombie continuasse a scrivere (cache,
+versioni vecchie del backend, ecc.), la UI non lo vedrebbe piu'.
+
+#### C) `devices.py::GET /api/clients/{id}/devices/diagnose-offline` — NUOVO
+Endpoint diagnostico che ritorna:
+- Lista degli agent v4 LIVE (con role, version, IP)
+- Breakdown `device_poll_status` per source/agent_id
+- Flag `v3_zombie` se rileva un v3 ancora attivo
+- Sample dei device offline con last_poll
+- **Recommendations actionable** (lista azioni specifiche per il sysadmin)
+
+#### D) UI `ClientOverviewPage` — pulsante "🩺 Diagnosi offline"
+Toolbar tab Dispositivi: chiama l'endpoint diagnose-offline e mostra
+un alert formattato con i risultati. (TODO: spostare in modale piu'
+bella nel prossimo ciclo).
+
+### Validato in container
+- `GET /diagnose-offline` su cliente preview senza agent live →
+  ritorna `recommendations: ["NESSUN agent v4 LIVE. Verifica..."]`. OK.
+- Backend hot-reload pulito, lint OK.
+
+### Steps utente per attivare in prod
+1. **Save to GitHub** → auto-deploy in ~30-60s.
+2. Vai su Galvan → tab Dispositivi → click **"🩺 Diagnosi offline"**.
+3. Sara' subito chiaro se c'e' un v3 zombie attivo (campo `v3_zombie`)
+   e quale e' la recommendation.
+4. Subito dopo, anche senza disinstallare il v3, la UI cessera' di
+   leggere i suoi record (fix B). I device tornano ONLINE.
+5. Poi va comunque disinstallato il v3 sul server cliente per cessare
+   il polling inutile.
+
+---
+
+
 ## 2026-02-24 ✅ FIX P0 — Anti-flap multi-connector e soglia offline
 
 **Problema persistente Galvan**: nonostante i 3 fix precedenti (role-aware

@@ -48,6 +48,8 @@ export default function ClientOverviewPage() {
   const [hwHealth, setHwHealth] = useState(null);
   // v3.8.41 watchdog: stato lan-scan per banner "Scanner inattivo"
   const [scanHealth, setScanHealth] = useState({ connectors: [], any_stale: false });
+  // v4.15.x: diagnosi auto delle cause di offline (rileva v3 zombie, master morto, ecc.)
+  const [diagnosis, setDiagnosis] = useState(null);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState("overview");
 
@@ -80,6 +82,11 @@ export default function ClientOverviewPage() {
     try {
       const shRes = await axios.get(`${API}/connectors/scan-health/${clientId}`);
       setScanHealth(shRes.data || { connectors: [], any_stale: false });
+    } catch {}
+    // v4.15.x: auto-diagnose offline (rileva zombie v3 / master morto / coverage gap)
+    try {
+      const diagRes = await axios.get(`${API}/clients/${clientId}/devices/diagnose-offline`);
+      setDiagnosis(diagRes.data || null);
     } catch {}
     try {
       const printRes = await axios.get(`${API}/printers/${clientId}`);
@@ -227,6 +234,48 @@ export default function ClientOverviewPage() {
 
   return (
     <div className="p-4 md:p-5 animate-fade-in" data-testid="client-overview-page">
+      {/* v4.15.x Banner ZOMBIE V3 / coverage issues — mostrato solo se ci sono
+          device da monitorare (devices.length>0) e c'e' un problema actionable */}
+      {diagnosis && devices.length > 0 && (diagnosis.v3_zombie?.active || (diagnosis.recommendations || []).length > 0) && (
+        <div className="mb-3 rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2 flex items-start gap-3" data-testid="diagnosis-banner">
+          <Warning size={18} weight="bold" className="text-rose-400 mt-0.5 flex-shrink-0" />
+          <div className="flex-1 min-w-0">
+            <p className="text-[12px] font-bold text-rose-300">
+              {diagnosis.v3_zombie?.active ? "Connector v3 obsoleto attivo" : "Problema di polling dispositivi"}
+            </p>
+            {diagnosis.v3_zombie?.active && (
+              <p className="text-[10px] text-rose-300/90 mt-0.5">
+                Un vecchio Connector v3 PowerShell sta ancora inviando report ({diagnosis.v3_zombie.records_written_by_v3} record).
+                I device risultano OFFLINE per colpa sua. Ultimo write: {diagnosis.v3_zombie.last_v3_write}.
+              </p>
+            )}
+            {(diagnosis.recommendations || []).map((r, i) => (
+              <p key={i} className="text-[10px] text-rose-300/80 mt-1">→ {r}</p>
+            ))}
+            {(diagnosis.live_v4_agents || []).length > 0 && (
+              <p className="text-[10px] text-rose-300/60 mt-1">
+                Agent v4 LIVE: {diagnosis.live_v4_agents.map(a => `${a.hostname} [${a.role}]`).join(", ")}
+              </p>
+            )}
+          </div>
+          <div className="flex flex-col gap-1">
+            <button
+              onClick={() => diagnoseOffline()}
+              className="text-[10px] px-2 py-1 rounded bg-rose-500/20 border border-rose-500/40 text-rose-300 hover:bg-rose-500/30 whitespace-nowrap"
+              data-testid="diagnosis-detail-btn"
+            >
+              🩺 Dettagli
+            </button>
+            <button
+              onClick={() => fetchAll()}
+              className="text-[10px] px-2 py-1 rounded bg-rose-500/20 border border-rose-500/40 text-rose-300 hover:bg-rose-500/30 whitespace-nowrap"
+              data-testid="diagnosis-recheck-btn"
+            >
+              Ricarica
+            </button>
+          </div>
+        </div>
+      )}
       {/* v3.8.41 Banner watchdog: Scanner inattivo da Xh */}
       {scanHealth.any_stale && (
         <div className="mb-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 flex items-start gap-3" data-testid="scanner-stale-banner">
@@ -1387,6 +1436,35 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
     }
   };
 
+  const diagnoseOffline = async () => {
+    try {
+      const { data } = await axios.get(
+        `${API}/clients/${clientId}/devices/diagnose-offline`,
+      );
+      // Costruisci summary leggibile
+      const liveCount = (data.live_v4_agents || []).length;
+      const live = (data.live_v4_agents || []).map(a =>
+        `  • ${a.hostname} [${a.role || "?"}] · v${a.agent_version || "?"} · ip=${a.last_ip || "?"}`
+      ).join("\n");
+      const breakdown = (data.poll_status_breakdown || []).map(b =>
+        `  • ${b.source}/${(b.agent_id || "").slice(0, 12)}: ${b.count} record (${b.reachable_count} OK) · last=${b.latest_poll || "n/a"}`
+      ).join("\n");
+      const recs = (data.recommendations || []).map(r => `→ ${r}`).join("\n");
+      const zombie = data.v3_zombie
+        ? `\n\n⚠️ V3 ZOMBIE RILEVATO:\n${data.v3_zombie.message}\nUltima scrittura v3: ${data.v3_zombie.last_v3_write}`
+        : "";
+      const msg = `🩺 DIAGNOSI OFFLINE — ${data.now}\n\n` +
+        `▼ Agent v4 LIVE (${liveCount}):\n${live || "  (nessuno)"}\n\n` +
+        `▼ Poll status breakdown:\n${breakdown || "  (nessun record)"}\n` +
+        zombie +
+        `\n\n▼ Recommendations:\n${recs || "  (nessuna)"}`;
+      // Mostra in alert (poi spostiamo in modale piu' bella)
+      alert(msg);
+    } catch (e) {
+      toast.error(`Errore diagnosi: ${e.response?.data?.detail || e.message}`);
+    }
+  };
+
   const cleanupStalePollStatus = async () => {
     try {
       // Dry-run prima per mostrare la preview
@@ -1558,6 +1636,14 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
             title="Classifica ogni device come LAN (cavo) o Wi-Fi incrociando la CAM table degli switch SNMP con i neighbor LLDP. Identifica gli AP via keyword (Aruba AP, Unifi, Meraki, ecc.) e marca tutti i loro client come Wi-Fi. Confidenza: 99% se l'AP stesso e' un LLDP neighbor; 95% via LLDP-AP; 90% via CAM table; 75% via inferenza MAC randomizzato."
           >
             <WifiHigh size={13} /> LAN / Wi-Fi
+          </Button>
+          <Button
+            onClick={() => diagnoseOffline()}
+            className="bg-cyan-700/90 hover:bg-cyan-600 text-white h-8 text-xs gap-1"
+            data-testid="diagnose-offline-btn"
+            title="Diagnostica perche' i device sono OFFLINE: rileva agent v4 LIVE, connector v3 zombie, e mostra recommendation actionable."
+          >
+            🩺 Diagnosi offline
           </Button>
           <Button
             onClick={() => cleanupStaleDevices()}
