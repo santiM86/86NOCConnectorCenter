@@ -718,6 +718,69 @@ async def test_redfish_connection(test: RedfishTestRequest, current_user: dict =
     return result
 
 
+@router.get("/clients/{client_id}/agents-coverage")
+async def get_agents_coverage(
+    client_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """v4.17.x: ritorna la coverage subnet di un cliente.
+
+    Per ogni connector v4 LIVE, calcola:
+      - subnet /24 dedotta da last_ip
+      - quanti managed_devices del cliente cadono in quella subnet
+      - quanti device "orfani" (fuori da qualsiasi subnet coperta)
+
+    Usato dalla mini-card "Subnet coperte" nell'header del cliente.
+    """
+    # Lazy import per evitare circular deps
+    from routes.agent_ws import _agent_subnet_from_ip, _ip_in_subnet
+
+    three_min_iso = (datetime.now(timezone.utc) - timedelta(minutes=3)).isoformat()
+    agents = []
+    async for a in db.managed_agents.find(
+        {"client_id": client_id,
+         "$or": [
+             {"last_heartbeat_at": {"$gte": three_min_iso}},
+             {"last_seen_at": {"$gte": three_min_iso}},
+         ]},
+        {"_id": 0, "agent_id": 1, "hostname": 1, "role": 1, "last_ip": 1,
+         "agent_version": 1},
+    ):
+        a["subnet"] = _agent_subnet_from_ip(a.get("last_ip"))
+        a["device_count"] = 0
+        agents.append(a)
+
+    # Conta device per subnet di ogni agent
+    all_ips: List[str] = []
+    async for d in db.managed_devices.find(
+        {"client_id": client_id, "ip": {"$ne": None, "$exists": True},
+         "disabled": {"$ne": True}},
+        {"_id": 0, "ip": 1},
+    ):
+        ip = d.get("ip")
+        if ip:
+            all_ips.append(ip)
+
+    orphan_ips: List[str] = []
+    for ip in all_ips:
+        matched = False
+        for a in agents:
+            if a.get("subnet") and _ip_in_subnet(ip, a["subnet"]):
+                a["device_count"] += 1
+                matched = True
+                break
+        if not matched:
+            orphan_ips.append(ip)
+
+    return {
+        "client_id": client_id,
+        "total_devices": len(all_ips),
+        "agents": agents,
+        "orphan_count": len(orphan_ips),
+        "orphan_sample": orphan_ips[:10],
+    }
+
+
 @router.get("/clients/{client_id}/devices/diagnose-offline")
 async def diagnose_offline_devices(
     client_id: str,

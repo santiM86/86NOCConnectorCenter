@@ -8,7 +8,7 @@ import {
   Lightning, WifiHigh, WifiSlash, PlugsConnected, CaretDown,
   CheckCircle, Warning, ArrowClockwise, Bell, BellSlash, ChartLine, Monitor, Cpu,
   Plus, Trash, Lock, MagnifyingGlass, Info, PencilSimple, NetworkSlash,
-  Phone, DeviceMobile, Desktop,
+  Phone, DeviceMobile, Desktop, Network,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -50,6 +50,8 @@ export default function ClientOverviewPage() {
   const [scanHealth, setScanHealth] = useState({ connectors: [], any_stale: false });
   // v4.15.x: diagnosi auto delle cause di offline (rileva v3 zombie, master morto, ecc.)
   const [diagnosis, setDiagnosis] = useState(null);
+  // v4.17.x: coverage subnet per mini-card header
+  const [coverage, setCoverage] = useState(null);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState("overview");
 
@@ -87,6 +89,11 @@ export default function ClientOverviewPage() {
     try {
       const diagRes = await axios.get(`${API}/clients/${clientId}/devices/diagnose-offline`);
       setDiagnosis(diagRes.data || null);
+    } catch {}
+    // v4.17.x: coverage subnet
+    try {
+      const covRes = await axios.get(`${API}/clients/${clientId}/agents-coverage`);
+      setCoverage(covRes.data || null);
     } catch {}
     try {
       const printRes = await axios.get(`${API}/printers/${clientId}`);
@@ -273,6 +280,48 @@ export default function ClientOverviewPage() {
             >
               Ricarica
             </button>
+          </div>
+        </div>
+      )}
+      {/* v4.17.x Mini-card coverage subnet — mostra distribuzione device per connector */}
+      {coverage && coverage.total_devices > 0 && (coverage.agents.length > 0 || coverage.orphan_count > 0) && (
+        <div className="mb-3 rounded-lg border border-sky-500/20 bg-sky-500/5 px-3 py-2" data-testid="coverage-card">
+          <div className="flex items-center gap-2 mb-1.5">
+            <Network size={14} className="text-sky-400" />
+            <span className="text-[11px] font-bold text-sky-300">Distribuzione polling per subnet</span>
+            <span className="text-[9px] text-[var(--text-muted)] ml-auto">{coverage.total_devices} device totali</span>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {coverage.agents.map((a) => {
+              const color = a.role === "master"
+                ? "bg-sky-500/10 text-sky-200 border-sky-500/40"
+                : "bg-violet-500/10 text-violet-200 border-violet-500/40";
+              return (
+                <div
+                  key={a.agent_id}
+                  className={`flex items-center gap-1.5 text-[10px] px-2 py-1 rounded border ${color}`}
+                  title={`Agent ${a.hostname} [${a.role}] · IP ${a.last_ip || "?"} · v${a.agent_version || "?"}`}
+                >
+                  <span className="font-bold">{a.hostname}</span>
+                  <span className="text-[9px] opacity-70">[{a.role}]</span>
+                  <span className="text-[9px] opacity-90">→ {a.subnet || "no subnet"}</span>
+                  <span className="text-[9px] font-bold ml-1">{a.device_count} dev</span>
+                </div>
+              );
+            })}
+            {coverage.orphan_count > 0 && (
+              <div
+                className="flex items-center gap-1.5 text-[10px] px-2 py-1 rounded border bg-amber-500/10 text-amber-200 border-amber-500/40"
+                title={`Device fuori da qualsiasi subnet coperta: ${coverage.orphan_sample.join(", ")}${coverage.orphan_count > 10 ? "..." : ""}`}
+              >
+                <Warning size={11} weight="bold" />
+                <span className="font-bold">{coverage.orphan_count} orfani</span>
+                <span className="text-[9px] opacity-90">→ pollati dal master (fallback)</span>
+              </div>
+            )}
+            {coverage.agents.length === 0 && coverage.orphan_count > 0 && (
+              <span className="text-[10px] text-amber-300">⚠️ Nessun agent LIVE — tutti i device sono orfani</span>
+            )}
           </div>
         </div>
       )}

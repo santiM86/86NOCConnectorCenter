@@ -32,6 +32,44 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-02-24 ✅ Mini-card "Distribuzione polling per subnet"
+
+### Backend `devices.py`
+Nuovo endpoint `GET /api/clients/{client_id}/agents-coverage`:
+- Per ogni agent v4 LIVE del cliente, ritorna `{agent_id, hostname,
+  role, last_ip, subnet, device_count}`.
+- `device_count` = numero di managed_devices del cliente la cui IP cade
+  nella subnet `/24` dell'agent.
+- Lista `orphan_count` + `orphan_sample` per i device fuori da qualsiasi
+  subnet coperta.
+
+### Frontend `ClientOverviewPage.js`
+Mini-card sky-blue subito sotto il banner diagnose, mostrata solo se:
+- `total_devices > 0` E (ci sono agent live OR orfani)
+
+Layout:
+- Header: 🌐 "Distribuzione polling per subnet" · "N device totali"
+- Per ogni agent: badge color-coded (master sky / scanner violet) con:
+  `<hostname> [role] → <subnet> · <count> dev`
+- Badge ambra extra se ci sono orfani: `⚠️ N orfani → pollati dal master (fallback)`
+- Tooltip: hostname + role + IP + version
+
+### Esempio per Galvan
+```
+🌐 Distribuzione polling per subnet           58 device totali
+  [sky]    GALVANSRV [master] → 10.100.61.0/24 · 9 dev
+  [violet] SRVDCGAL [scanner] → 192.168.16.0/24 · 49 dev
+```
+
+### Validato in container
+- Endpoint testato: ritorna struttura corretta con cliente preview
+  (agents=[], orphan_count=1)
+- Lint JS/Python pulito
+- Smoke screenshot dashboard OK
+
+---
+
+
 ## 2026-02-24 ✅ v4.17.x — Subnet-aware dispatching + colonna "Visto da"
 
 ### Architettura
