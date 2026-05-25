@@ -1744,6 +1744,7 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
               <SortableTh field="snmp" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>SNMP</SortableTh>
               <SortableTh field="community" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Community</SortableTh>
               <SortableTh field="status" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Stato</SortableTh>
+              <SortableTh field="live_evidence" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Vivo via</SortableTh>
               <SortableTh field="connection" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Conn.</SortableTh>
               <SortableTh field="source" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Fonte</SortableTh>
               <SortableTh field="last_poll" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Ultimo Poll</SortableTh>
@@ -1752,7 +1753,7 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
           </thead>
           <tbody>
             {sortedDevices.length === 0 ? (
-              <tr><td colSpan={11} className="text-center text-[var(--text-muted)] py-8 text-xs">Nessun dispositivo — clicca "Aggiungi Dispositivo" per iniziare</td></tr>
+              <tr><td colSpan={12} className="text-center text-[var(--text-muted)] py-8 text-xs">Nessun dispositivo — clicca "Aggiungi Dispositivo" per iniziare</td></tr>
             ) : sortedDevices.map((d, i) => {
               const sc = STATUS_COLOR[d.status] || "#555";
               const monitorType = (d.monitor_type || "snmp").toLowerCase();
@@ -1817,6 +1818,33 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
                       );
                     })()}
                   </td>
+                  <td>{(() => {
+                    // v4.16.x: "Vivo via" badge — mostra COME il device e' stato
+                    // dichiarato online. Aiuta a capire perche' un device
+                    // appare online anche se ICMP fallisce.
+                    const ev = d.live_evidence;
+                    if (!ev || d.status === "offline" || d.status === "pending") {
+                      return <span className="text-[8px] text-[var(--text-muted)]" data-testid={`live-evidence-${d.ip_address}`}>—</span>;
+                    }
+                    const m = String(ev).toLowerCase();
+                    if (m.includes("mac_table") || m.includes("snmp")) {
+                      return <span title="Visto nella MAC table dello switch SNMP (L2). Device fisicamente collegato anche se ICMP bloccato." className="inline-flex items-center gap-1 text-[8px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-300 border border-emerald-500/30 font-bold" data-testid={`live-evidence-${d.ip_address}`}>🔌 FDB</span>;
+                    }
+                    if (m.includes("tcp_probe") || m.startsWith("tcp_port_")) {
+                      const port = (ev.match(/tcp_port_(\d+)/) || [])[1];
+                      return <span title={`TCP probe ha risposto${port ? ` su porta ${port}` : ""}. ICMP probabilmente bloccato (firewall/WF).`} className="inline-flex items-center gap-1 text-[8px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/30 font-bold" data-testid={`live-evidence-${d.ip_address}`}>⚡ TCP{port ? `:${port}` : ""}</span>;
+                    }
+                    if (m.includes("icmp_native") || m === "icmp" || m === "ping") {
+                      return <span title="Ping ICMP standard" className="inline-flex items-center gap-1 text-[8px] px-1.5 py-0.5 rounded bg-sky-500/10 text-sky-300 border border-sky-500/30 font-bold" data-testid={`live-evidence-${d.ip_address}`}>📡 PING</span>;
+                    }
+                    if (m.includes("scanner") || m.includes("arp")) {
+                      return <span title="Scoperto dallo scanner LAN (ARP/mDNS)" className="inline-flex items-center gap-1 text-[8px] px-1.5 py-0.5 rounded bg-violet-500/10 text-violet-300 border border-violet-500/30 font-bold" data-testid={`live-evidence-${d.ip_address}`}>🔍 SCAN</span>;
+                    }
+                    if (m.includes("agent_v4")) {
+                      return <span title="Visto dall'agent v4 Go (auto-discovery interno)" className="inline-flex items-center gap-1 text-[8px] px-1.5 py-0.5 rounded bg-cyan-500/10 text-cyan-300 border border-cyan-500/30 font-bold" data-testid={`live-evidence-${d.ip_address}`}>🤖 v4</span>;
+                    }
+                    return <span title={`Metodo: ${ev}`} className="text-[8px] text-[var(--text-muted)]" data-testid={`live-evidence-${d.ip_address}`}>{ev}</span>;
+                  })()}</td>
                   <td>{(() => {
                     const ct = d.connection_type;
                     const cs = d.connection_source || "";

@@ -32,6 +32,50 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-02-24 ✅ Colonna "Vivo via" — trasparenza evidence-based liveness
+
+### Modifiche
+#### Backend `devices.py` — populate `live_evidence` con dettagli
+- `scanner_seen_recent_ips` / `scanner_seen_recent_macs` cambiati da set
+  a dict {key: evidence_label}.
+- Evidence label dedotta in base a:
+  - `switch_ip` presente OR `last_seen_via=snmp` → `mac_table_switch`
+  - `source_connector_mode=agent_v4` → `agent_v4_arp`
+  - `source_connector_mode=scanner` → `scanner_lan`
+  - altrimenti fallback al `last_seen_via` raw
+- Quando il device viene mostrato online via ping_poll, popola
+  `live_evidence` con `pd.method` (`icmp_native` / `tcp_probe:<port>` /
+  `ping`).
+- Applicato in 3 punti: manuali, poll_devices, managed_devices.
+
+#### Frontend `ClientOverviewPage.js` — nuova colonna "Vivo via"
+Inserita tra "Stato" e "Conn." nella tabella Dispositivi.
+
+Badge colorati con icone:
+- 🟢 **🔌 FDB** (verde): Visto nella MAC table dello switch SNMP (L2)
+- 🟡 **⚡ TCP:<port>** (ambra): TCP probe ha risposto su porta specifica
+  (es. `TCP:443`); ICMP probabilmente bloccato da firewall
+- 🔵 **📡 PING** (azzurro): Ping ICMP standard
+- 🟣 **🔍 SCAN** (viola): Visto dallo scanner LAN (ARP/mDNS)
+- 🩵 **🤖 v4** (cyan): Visto dall'agent v4 Go via heartbeat
+- "—": Device offline o pending
+
+Ogni badge ha tooltip esplicativo. Ordinabile via `SortableTh`.
+
+### Validato in container
+- Lint Python/JS pulito
+- API ritorna `live_evidence` per i device managed
+- Smoke screenshot OK
+
+### Effetto utente
+A colpo d'occhio sai PERCHE' un device e' online (anche se ICMP fallisce).
+Esempio Wildix VoIP phones: badge 🔌 FDB → "ah, lo vedo perche' lo switch
+li ha nella MAC table". Esempio Zyxel: badge ⚡ TCP:443 → "ICMP bloccato
+ma rispondo su HTTPS mgmt".
+
+---
+
+
 ## 2026-02-24 ✅ FIX P0 EVIDENCE-BASED LIVENESS (sintesi dati ping + L2)
 
 ### Insight dell'utente
