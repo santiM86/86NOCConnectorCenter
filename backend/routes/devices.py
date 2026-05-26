@@ -286,6 +286,12 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
         elif pd.get("reachable"):
             # Niente evidence L2 ma il ping_poll dice raggiungibile → mostra il method
             d["live_evidence"] = (pd.get("method") or pd.get("ping_method") or "ping").strip()
+        # v4.17.x STATUS NORMALIZATION: i device manuali legacy (collection
+        # `db.devices`) hanno default `status="active"`. La panoramica
+        # considerava active=online, la tabella no → inconsistenza visiva.
+        # Normalizziamo sempre a "online" se evidence/reachable/active.
+        if d.get("status") == "active":
+            d["status"] = "online"
         # v4.17.x SEEN-BY: lista agent che vedono questo device
         d["seen_by"] = seen_by_ip.get(ip, [])
 
