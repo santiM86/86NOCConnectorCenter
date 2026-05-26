@@ -30,7 +30,7 @@ import DiscoveryPage from "./DiscoveryPage";
 import VulnerabilityPage from "./VulnerabilityPage";
 import LanScannerPage from "./LanScannerPage";
 import { useSortableTable, SortableTh } from "@/utils/tableSort";
-import { macroOf, macroLabel, MACRO_DEFS } from "@/utils/deviceCategory";
+import { macroOf, macroLabel, MACRO_DEFS, pickDeviceName } from "@/utils/deviceCategory";
 
 const STATUS_COLOR = { online: "#34C759", offline: "#FF3B30", active: "#FFCC00", degraded: "#FF9500", unknown: "#555" };
 
@@ -1135,17 +1135,10 @@ function MiniMetric({ label, value, sub, color }) {
 
 /* ==================== DEVICE GROUP ==================== */
 function DeviceGroup({ label, icon: Icon, devices, color, onInfoClick, renderActions }) {
-  // displayName: priorità hostname → mdns_name → fingerbank_device_name → name (se != IP) → IP nudo
-  const _displayName = (d) => {
-    const ip = d.ip_address || "";
-    for (const k of ["hostname", "mdns_name", "fingerbank_device_name"]) {
-      const v = (d[k] || "").trim();
-      if (v && v !== ip) return v;
-    }
-    const n = (d.name || "").trim();
-    if (n && n !== ip) return n;
-    return ip || "—";
-  };
+  // Use centralized pickDeviceName (mirror di best_display_name backend):
+  // priorita' name → hostname → sys_name → mdns → fingerbank → ip.
+  // Filtra automaticamente nomi "categoriali" Fingerbank (es. "Foo/Bar").
+  const _displayName = (d) => pickDeviceName(d, d.ip_address || "—");
   return (
     <div>
       <div className="flex items-center gap-1.5 mb-1">
@@ -2087,8 +2080,8 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
                 <tr key={i} className={d.alerts_silenced ? "opacity-70" : ""}>
                   <td className="text-[var(--text-primary)] text-xs font-medium">
                     <span className="inline-flex items-center gap-1.5 flex-wrap">
-                      {d.name}
-                      {d.datto_name && d.datto_name !== d.name && (
+                      {pickDeviceName(d)}
+                      {d.datto_name && d.datto_name !== d.name && d.datto_name !== pickDeviceName(d) && (
                         <span
                           className="inline-flex items-center gap-0.5 text-[9px] px-1 py-px rounded bg-fuchsia-500/20 text-fuchsia-200 border border-fuchsia-500/40 font-bold"
                           title={`Datto RMM: ${d.datto_name}${d.datto_match ? ` (match via ${d.datto_match.toUpperCase()})` : ""}`}
@@ -2548,7 +2541,7 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
             <DialogHeader>
               <DialogTitle className="flex items-center gap-2 text-[var(--text-primary)]">
                 <Info size={18} className="text-cyan-400" />
-                Scheda Dispositivo — {infoTarget.name || infoTarget.hostname || infoTarget.ip_address}
+                Scheda Dispositivo — {pickDeviceName(infoTarget)}
               </DialogTitle>
             </DialogHeader>
             <ErrorBoundary

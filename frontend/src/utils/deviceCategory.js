@@ -112,3 +112,47 @@ export function compareByMacro(a, b) {
   if (oa !== ob) return oa - ob;
   return (a.name || "").localeCompare(b.name || "");
 }
+
+
+
+/* ============ pickDeviceName ============
+   Mirror JS di backend/display_name.py::best_display_name.
+
+   Usato OVUNQUE nel frontend dove serve mostrare il "nome corretto" del
+   device (mai IP nudo, mai categoria Fingerbank, mai placeholder generico).
+
+   Priorita' (alto -> basso):
+     1. d.name (se non-vuoto, non == ip, non "category-like" con "/")
+     2. d.hostname (SNMP sys_name / NBNS)
+     3. d.sys_name
+     4. d.mdns_name
+     5. d.fingerbank_device_name (categoria, last resort prima di ip)
+     6. ip address
+
+   Nota: backend gia' applica best_display_name su /api/devices, ma questo
+   helper FE serve come defense-in-depth per i posti dove l'API ritorna
+   ancora il vecchio "name" (es. prima del deploy in produzione).
+*/
+function _isCategorical(name) {
+  if (!name || typeof name !== "string") return false;
+  if (!name.includes("/")) return false;
+  // FQDN tipo "switch.local/admin" → no
+  if (name.includes(".") && !name.includes(" ")) return false;
+  return true;
+}
+
+export function pickDeviceName(d, fallback = "") {
+  if (!d) return fallback;
+  const ip = d.ip_address || d.ip || d.device_ip || "";
+  const tryFields = ["name", "hostname", "sys_name", "mdns_name"];
+  for (const k of tryFields) {
+    const v = (d[k] || "").trim();
+    if (v && v !== ip && !_isCategorical(v)) return v;
+  }
+  const fb = (d.fingerbank_device_name || "").trim();
+  if (fb && fb !== ip) return fb;
+  // Anche se "name" è category-like, meglio che ip nudo
+  const nm = (d.name || "").trim();
+  if (nm && nm !== ip) return nm;
+  return ip || fallback;
+}
