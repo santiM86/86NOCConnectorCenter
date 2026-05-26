@@ -10,6 +10,7 @@ from security import security_manager
 from audit import AuditAction
 from deps import get_current_user, audit_logger, redfish_poller
 from display_name import best_display_name
+from device_type_resolver import best_device_type
 
 router = APIRouter(prefix="/api", tags=["devices"])
 
@@ -301,38 +302,14 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
         ip = pd.get("device_ip", "")
         if ip and ip not in manual_ips:
             manual_ips.add(ip)
-            # Determine device type from poll data, class, and name
-            dev_type = pd.get("device_type", "")
-            if not dev_type or dev_type == "?":
-                dev_class = (pd.get("device_class") or "").lower()
-                dev_name = (pd.get("device_name") or "").lower()
-                sys_descr = (pd.get("sys_descr") or "").lower()
-                combined = f"{dev_name} {sys_descr} {dev_class}"
-
-                if any(k in combined for k in ["firewall", "zyxel", "usg", "fortigate", "pfsense", "sonicwall"]):
-                    dev_type = "firewall"
-                elif any(k in combined for k in ["ilo", "idrac", "ipmi", "bmc"]):
-                    dev_type = "ilo"
-                elif any(k in combined for k in ["ups", "xanto", "apc", "eaton", "liebert"]):
-                    dev_type = "ups"
-                elif any(k in combined for k in ["nas", "synology", "qnap"]):
-                    dev_type = "nas"
-                elif any(k in combined for k in ["printer", "laser", "stampante", "mfp", "laserjet", "officejet"]):
-                    dev_type = "printer"
-                elif any(k in combined for k in ["tvcc", "camera", "telecamera", "hikvision", "dahua", "nvr", "dvr"]):
-                    dev_type = "tvcc"
-                elif any(k in combined for k in ["ap ", "wifi", "ubiquiti", "unifi", "access point"]):
-                    dev_type = "access-point"
-                elif any(k in combined for k in ["router", "mikrotik", "draytek", "fritzbox", "vodafone station"]):
-                    dev_type = "router"
-                elif any(k in combined for k in ["switch", "hp 5130", "hp 5120", "officeconnect", "aruba", "netgear gs", "cisco catalyst", "gs110"]):
-                    dev_type = "switch"
-                elif any(k in combined for k in ["srv", "server", "proliant", "poweredge", "esxi", "vmware", "backup", "veeam"]):
-                    dev_type = "server"
-                else:
-                    dev_type = dev_class if dev_class and dev_class != "generic" else "server"
             # Get managed device config (community, snmp version, etc.)
             md = managed_by_ip.get(ip, {})
+            # Device type centralizzato: best_device_type rispetta md.lock,
+            # poi prova md.device_type, classifier (Printer-MIB OID + regex
+            # multi-vendor), OUI vendor hint, infine "generic".
+            # Risolve le incoerenze tra Panoramica e lista Dispositivi e
+            # garantisce che es. tutte le stampanti finiscano sotto "printer".
+            dev_type = best_device_type(md, pd)
             # Profile key: managed_devices wins over poll_status (manual override > auto-detect)
             profile_key = md.get("profile_key") or pd.get("profile_key")
             vendor = md.get("vendor") or pd.get("vendor")
@@ -510,11 +487,16 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
         # Fingerbank (es. "Switch and Wireless Controller/HP Switches")
         # mascheri il sysName reale ("Switch02 HP 5130 52G").
         raw_name = best_display_name(md, pd_v4, md_ip)
+        # Device type centralizzato anche nel branch managed-only.
+        # Prima qui ritornava "server" hard-coded come default → stampanti
+        # senza device_type DB apparivano nella card "Server" invece che
+        # in "Stampanti".
+        raw_dev_type = best_device_type(md, pd_v4)
         devices.append({
             "id": md.get("id") or f"md_{md_ip.replace('.','_')}",
             "client_id": md.get("client_id", ""),
             "name": raw_name,
-            "device_type": md.get("device_type", "server"),
+            "device_type": raw_dev_type,
             "ip_address": md_ip,
             "mac": md.get("mac", ""),
             "hostname": md.get("hostname", ""),

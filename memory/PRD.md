@@ -24,6 +24,13 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
    "nome migliore" del device. Se serve estendere la priorita' (es. nuova
    fonte SNMP/LLDP), modificare SOLO il helper.
 
+4. **Device type centralizzato** (2026-02-13): tutta la classificazione
+   del device_type deve passare da
+   `backend/device_type_resolver.py::best_device_type`. Non duplicare
+   regex/keyword in altri endpoint (es. overview, dispositivi). Per
+   aggiungere nuovi pattern modificare `device_classifier.py` (regex/OID)
+   o l'OUI hint map nel resolver.
+
 
 3. **Linguaggio**: TUTTE le risposte all'utente devono essere in italiano.
 

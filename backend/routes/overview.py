@@ -4,6 +4,7 @@ from database import db
 from deps import get_current_user
 from datetime import datetime, timezone, timedelta
 from display_name import best_display_name
+from device_type_resolver import best_device_type
 
 router = APIRouter(prefix="/api", tags=["overview"])
 
@@ -27,38 +28,14 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
     # Also include connector-discovered devices (device_poll_status) and manually managed devices (managed_devices)
     # Also need reachable + last_poll to infer status
     poll_devices = await db.device_poll_status.find(
-        {}, {"_id": 0, "client_id": 1, "device_ip": 1, "device_name": 1, "sys_name": 1, "status": 1, "device_type": 1, "device_class": 1, "sys_descr": 1, "reachable": 1, "last_poll": 1, "monitor_type": 1, "consecutive_failures": 1, "last_reachable_at": 1}
+        {}, {"_id": 0, "client_id": 1, "device_ip": 1, "device_name": 1, "sys_name": 1, "sys_descr": 1, "sys_object_id": 1, "status": 1, "device_type": 1, "device_class": 1, "reachable": 1, "last_poll": 1, "monitor_type": 1, "consecutive_failures": 1, "last_reachable_at": 1, "vendor": 1, "model": 1}
     ).to_list(10000)
     managed_devices_raw = await db.managed_devices.find(
-        {}, {"_id": 0, "client_id": 1, "ip": 1, "name": 1, "name_locked": 1, "hostname": 1, "mdns_name": 1, "fingerbank_device_name": 1, "device_type": 1}
+        {}, {"_id": 0, "client_id": 1, "ip": 1, "name": 1, "name_locked": 1, "hostname": 1, "mdns_name": 1, "fingerbank_device_name": 1, "device_type": 1, "device_type_user_locked": 1, "vendor": 1, "model": 1, "sys_descr": 1, "sys_object_id": 1, "mac_is_random": 1}
     ).to_list(10000)
     # Build maps for dedup merging by (client_id, ip)
     seen_device_keys = {(d.get("client_id"), d.get("ip_address")) for d in devices if d.get("ip_address")}
     managed_by_key = {(m.get("client_id"), m.get("ip")): m for m in managed_devices_raw if m.get("ip")}
-
-    def _infer_device_type(name, sys_descr, device_class, explicit_type):
-        if explicit_type and explicit_type not in ("", "?", "network", "generic"):
-            return explicit_type
-        combined = f"{name or ''} {sys_descr or ''} {device_class or ''}".lower()
-        if any(k in combined for k in ["firewall", "zyxel", "usg", "fortigate", "pfsense", "sonicwall"]):
-            return "firewall"
-        if any(k in combined for k in ["ilo", "idrac", "ipmi", "bmc", "integrated lights"]):
-            return "ilo"
-        if any(k in combined for k in ["ups", "xanto", "apc", "eaton", "liebert", "riello"]):
-            return "ups"
-        if any(k in combined for k in ["nas", "synology", "qnap", "truenas", "freenas"]):
-            return "nas"
-        if any(k in combined for k in ["printer", "stampa", "brother", "xerox", "kyocera", "ricoh"]):
-            return "printer"
-        if any(k in combined for k in ["tvcc", "nvr", "dvr", "camera", "hikvision", "dahua"]):
-            return "tvcc"
-        if any(k in combined for k in ["ubiquiti", "unifi", "aruba ap", "access point", "wifi"]):
-            return "ap"
-        if any(k in combined for k in ["switch", "catalyst", "procurve", "aruba", "5130", "5120", "netgear"]):
-            return "switch"
-        if any(k in combined for k in ["server", "proliant", "poweredge", "dell "]):
-            return "server"
-        return explicit_type or "generic"
 
     # v3.8.22 SCANNER LIVE-SEEN: cross-check con discovered_endpoints.
     # Lo Scanner aggiorna sempre discovered_endpoints (lan-scan ARP/mDNS) anche
@@ -96,12 +73,10 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
         # Look up name/type from managed_devices if available
         md = managed_by_key.get(key, {})
         display_name = best_display_name(md, pd, ip)
-        dev_type = _infer_device_type(
-            display_name,
-            pd.get("sys_descr", ""),
-            pd.get("device_class", ""),
-            md.get("device_type") or pd.get("device_type"),
-        )
+        # Device type centralizzato: stessa logica di /api/devices, cosi'
+        # Panoramica e lista Dispositivi smistano i device sotto la stessa
+        # categoria (es. stampanti tutte sotto "printer").
+        dev_type = best_device_type(md, pd, name_hint=display_name)
         # Derive status from reachable + last_poll freshness (poll should happen within last 5 min)
         status = pd.get("status")
         if not status or status == "unknown":
@@ -169,7 +144,7 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
             "name": best_display_name(md, None, ip),
             "ip_address": ip,
             "status": md_status,
-            "device_type": md.get("device_type", "generic"),
+            "device_type": best_device_type(md, None),
         })
 
     # Backup status (legacy)

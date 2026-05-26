@@ -1,3 +1,58 @@
+# 2026-02-13 — Device Type Resolver Centralizzato (consistency fix #2)
+
+## 🏷️ "Smista già per categoria, in panoramica e dispositivi"
+
+Stesso pattern del fix display name: prima c'erano **tre** posti diversi
+dove un device veniva classificato (Printer / Switch / Firewall / NAS /
+ecc.), ciascuno con regex e keyword leggermente diverse:
+
+- `routes/devices.py` (~30 righe di if/elif sui sysDescr al volo)
+- `routes/overview.py::_infer_device_type` (regex semplificate)
+- `device_classifier.py::classify_device_type` (il piu' robusto, ma
+  chiamato solo durante l'ingestion in `managed_devices.device_type`)
+
+Risultato: una stampante apparsa come "server" nella lista Dispositivi,
+"printer" in Panoramica, oppure non smistata correttamente sotto la
+card "Stampanti" del cliente.
+
+### Soluzione
+Nuovo modulo `/app/backend/device_type_resolver.py` con helper unico
+`best_device_type(md, pd, name_hint=None)`.
+
+Priorita':
+1. `md.device_type_user_locked == True` → rispetta scelta admin
+2. `md.device_type` se gia' specifico (CANONICAL_TYPES whitelist)
+3. `device_classifier.classify_device_type()` su sysDescr/OID/hostname
+4. OUI vendor single-purpose hint (Brother → printer, Hikvision → tvcc, ecc.)
+5. `mac_is_random` → endpoint-private
+6. fallback "generic"
+
+Output normalizzato (alias map): `ap` → `access-point`, `ip_camera` →
+`tvcc`, `voip_phone` → `voip`, `storage` → `nas`, ecc.
+
+### Migliorato classifier Canon
+Aggiunto pattern `ir-?adv|ir[\s-]?c?\d{4,}` ai _PRINTER_PATTERNS in
+`device_classifier.py` (Canon imageRUNNER ADV C3530, ecc.).
+
+### File modificati
+- `backend/device_type_resolver.py` — nuovo (CANONICAL_TYPES, alias map,
+  OUI single-purpose hints)
+- `backend/device_classifier.py` — esteso _PRINTER_PATTERNS per Canon iR-ADV
+- `backend/routes/devices.py` — sostituito 30 righe di regex inline (branch
+  polled) + sostituito default hard-coded "server" (branch managed-only)
+- `backend/routes/overview.py` — rimosso `_infer_device_type` locale,
+  proiezioni Mongo allargate (sys_descr, sys_object_id, vendor, model,
+  device_type_user_locked, mac_is_random)
+
+### Test
+`backend/tests/test_device_type_resolver.py` — 19 unit test (printer via
+Printer-MIB OID, switch HPE Comware, firewall FortiGate, NAS Synology,
+UPS APC, OUI vendor hint, locked override, alias normalization, ecc.).
+✅ 19/19 PASS. Totale suite: 29/29 PASS.
+
+---
+
+
 # 2026-02-13 — Display Name Centralizzato (consistency fix)
 
 ## 🔤 "Se riconosci il nome del dispositivo usa quello ovunque"
