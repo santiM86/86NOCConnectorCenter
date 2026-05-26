@@ -31,6 +31,14 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
    aggiungere nuovi pattern modificare `device_classifier.py` (regex/OID)
    o l'OUI hint map nel resolver.
 
+5. **Liveness/status centralizzato** (2026-02-13): tutto il calcolo dello
+   status online/offline deve passare da
+   `backend/liveness_resolver.py` (`build_evidence_maps`,
+   `compute_status`, `effective_reachable`). Non duplicare la logica
+   anti-flap / evidence override in altri endpoint. Modificare SOLO il
+   resolver per cambiare le soglie debounce o aggiungere nuove fonti
+   evidence (es. nuovo poller, nuova MIB).
+
 
 3. **Linguaggio**: TUTTE le risposte all'utente devono essere in italiano.
 

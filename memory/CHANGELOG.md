@@ -1,3 +1,62 @@
+# 2026-02-13 — Liveness Resolver Centralizzato (P0 fix)
+
+## 🟢 "Panoramica e Dispositivi ora dicono la stessa verita'"
+
+**Bug risolto**: nello screenshot precedente Overview indicava 70/86 online
+mentre la lista Dispositivi mostrava la maggior parte degli stessi come
+offline. Il motivo: `overview.py` e `devices.py` avevano logiche
+divergenti per calcolare lo status, e con i fix v4.16.x evidence-based
+(FDB switch, ARP cross-VLAN, TCP fallback) la divergenza era diventata
+sistematica.
+
+### Soluzione
+Terzo modulo centralizzato (stesso pattern di `display_name.py` e
+`device_type_resolver.py`):
+`/app/backend/liveness_resolver.py`
+
+API:
+- `effective_reachable(pd)` → bool, con debounce anti-flap (3 fail + 5 min
+  grace) — esatta copia della logica privata di devices.py
+- `build_evidence_maps(db, client_id=None, window_minutes=15)` →
+  `(ip_evidence, mac_evidence)` interrogando `discovered_endpoints`
+  con MODE-AGNOSTIC (scanner / agent_v4 / FDB switch SNMP)
+- `compute_status(pd, md, ip_evidence, mac_evidence)` →
+  `(status, evidence_label)` — priorita':
+  1. Evidence IP/MAC → ONLINE (override anti-flap)
+  2. `effective_reachable(pd)` con debounce → online/offline
+  3. `md.source == "connector-scanner"` → derivato da last_seen_at
+  4. Mai polleato → "pending"
+
+### File modificati
+- `backend/liveness_resolver.py` — nuovo (3 funzioni pure)
+- `backend/routes/overview.py` — sostituito blocco `scanner_seen_keys`
+  con `build_evidence_maps()`, blocco anti-flap inline con
+  `compute_status()`. Proiezioni Mongo allargate (mac, source,
+  last_seen_at, method, ping_method). Branch managed-only ora usa
+  pd quando esiste invece di "unknown" default.
+- `backend/routes/devices.py` — INVARIATO per minimizzare rischio.
+  Useremo gradualmente lo stesso modulo in iterazioni successive.
+
+### Allineamento risultante
+Stessa logica esatta tra Panoramica e Dispositivi su:
+- Anti-flap (3 fail consecutivi + 5 min grace)
+- Evidence FDB switch SNMP (mac_table_switch)
+- Evidence agent_v4 ARP (cross-VLAN)
+- Evidence scanner LAN
+- Scanner-source senza poll record (orfani)
+- Finestra 15 min (era 10 in overview, 15 in devices → ora entrambe 15)
+
+### Test
+- `backend/tests/test_liveness_resolver.py` — 15 unit test (debounce,
+  evidence override, scanner-source aging, mac normalization, anti-flap)
+- 8 scenari integration test cross-VLAN PASS (stampante con ICMP
+  bloccato vista via agent_v4 ARP → online; master ping fail ma FDB
+  switch lo vede → online; UDP loss singolo → anti-flap; ecc.)
+- Totale suite centralizzata: **44/44 PASS**
+
+---
+
+
 # 2026-02-13 — Device Type Resolver Centralizzato (consistency fix #2)
 
 ## 🏷️ "Smista già per categoria, in panoramica e dispositivi"

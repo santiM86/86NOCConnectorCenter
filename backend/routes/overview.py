@@ -5,6 +5,7 @@ from deps import get_current_user
 from datetime import datetime, timezone, timedelta
 from display_name import best_display_name
 from device_type_resolver import best_device_type
+from liveness_resolver import build_evidence_maps, compute_status
 
 router = APIRouter(prefix="/api", tags=["overview"])
 
@@ -28,39 +29,24 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
     # Also include connector-discovered devices (device_poll_status) and manually managed devices (managed_devices)
     # Also need reachable + last_poll to infer status
     poll_devices = await db.device_poll_status.find(
-        {}, {"_id": 0, "client_id": 1, "device_ip": 1, "device_name": 1, "sys_name": 1, "sys_descr": 1, "sys_object_id": 1, "status": 1, "device_type": 1, "device_class": 1, "reachable": 1, "last_poll": 1, "monitor_type": 1, "consecutive_failures": 1, "last_reachable_at": 1, "vendor": 1, "model": 1}
+        {}, {"_id": 0, "client_id": 1, "device_ip": 1, "device_name": 1, "sys_name": 1, "sys_descr": 1, "sys_object_id": 1, "status": 1, "device_type": 1, "device_class": 1, "reachable": 1, "last_poll": 1, "monitor_type": 1, "consecutive_failures": 1, "last_reachable_at": 1, "vendor": 1, "model": 1, "method": 1, "ping_method": 1}
     ).to_list(10000)
     managed_devices_raw = await db.managed_devices.find(
-        {}, {"_id": 0, "client_id": 1, "ip": 1, "name": 1, "name_locked": 1, "hostname": 1, "mdns_name": 1, "fingerbank_device_name": 1, "device_type": 1, "device_type_user_locked": 1, "vendor": 1, "model": 1, "sys_descr": 1, "sys_object_id": 1, "mac_is_random": 1}
+        {}, {"_id": 0, "client_id": 1, "ip": 1, "mac": 1, "name": 1, "name_locked": 1, "hostname": 1, "mdns_name": 1, "fingerbank_device_name": 1, "device_type": 1, "device_type_user_locked": 1, "vendor": 1, "model": 1, "sys_descr": 1, "sys_object_id": 1, "mac_is_random": 1, "source": 1, "last_seen_at": 1}
     ).to_list(10000)
     # Build maps for dedup merging by (client_id, ip)
     seen_device_keys = {(d.get("client_id"), d.get("ip_address")) for d in devices if d.get("ip_address")}
     managed_by_key = {(m.get("client_id"), m.get("ip")): m for m in managed_devices_raw if m.get("ip")}
 
-    # v3.8.22 SCANNER LIVE-SEEN: cross-check con discovered_endpoints.
-    # Lo Scanner aggiorna sempre discovered_endpoints (lan-scan ARP/mDNS) anche
-    # per device aggiunti manualmente. Usiamo questa collection per forzare
-    # "online" sui device che lo Scanner vede da <10 min, anche se il Master
-    # (su altra VLAN) non riesce a pollarli.
-    # v3.8.24 BUMP a 10 min (era 5): lo Scanner a volte ritarda 1-2 cicli
-    # quando e' busy con SNMP poll lungo o e' in backoff su errore Center;
-    # 5 min era troppo stretto e causava flap "online/offline" ogni 5min.
-    five_min_ago_iso = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
-    scanner_seen_keys = set()  # set di (client_id, ip) live-seen
-    try:
-        async for de in db.discovered_endpoints.find(
-            {"source_connector_mode": "scanner", "last_seen_at": {"$gte": five_min_ago_iso}},
-            {"_id": 0, "client_id": 1, "ip": 1},
-        ):
-            cid_de = de.get("client_id")
-            ip_de = de.get("ip")
-            if cid_de and ip_de:
-                scanner_seen_keys.add((cid_de, ip_de))
-    except Exception:
-        pass
+    # v4.17.x EVIDENCE-BASED LIVENESS UNIFICATO: stessa logica di /api/devices.
+    # Prima qui filtravamo solo source_connector_mode=scanner ed entro 10 min.
+    # Ora usiamo build_evidence_maps() che include anche agent_v4 ARP e FDB
+    # switch SNMP, con finestra 15 min, allineando esattamente Panoramica
+    # e lista Dispositivi.
+    ip_evidence, mac_evidence = await build_evidence_maps(db, window_minutes=15)
+    poll_by_key = {(p.get("client_id"), p.get("device_ip")): p for p in poll_devices}
 
     # Merge poll_devices and managed_devices into the unified list (skip duplicates)
-    now_utc = datetime.now(timezone.utc)
     for pd in poll_devices:
         ip = pd.get("device_ip")
         cid = pd.get("client_id")
@@ -70,55 +56,12 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
         if key in seen_device_keys:
             continue
         seen_device_keys.add(key)
-        # Look up name/type from managed_devices if available
         md = managed_by_key.get(key, {})
         display_name = best_display_name(md, pd, ip)
-        # Device type centralizzato: stessa logica di /api/devices, cosi'
-        # Panoramica e lista Dispositivi smistano i device sotto la stessa
-        # categoria (es. stampanti tutte sotto "printer").
         dev_type = best_device_type(md, pd, name_hint=display_name)
-        # Derive status from reachable + last_poll freshness (poll should happen within last 5 min)
-        status = pd.get("status")
-        if not status or status == "unknown":
-            reachable = pd.get("reachable")
-            last_poll_raw = pd.get("last_poll")
-            is_fresh = False
-            if last_poll_raw:
-                try:
-                    last_poll_dt = datetime.fromisoformat(last_poll_raw.replace("Z", "+00:00"))
-                    # Considera fresh fino a 15 minuti (intervallo polling normale è ~60s)
-                    is_fresh = (now_utc - last_poll_dt).total_seconds() < 900
-                except Exception:
-                    pass
-            # v3.8.32 ANTI-FLAP: applica debounce anche al calcolo dell'overview.
-            # Un singolo poll fallito (UDP packet loss) NON deve far apparire un
-            # dispositivo offline nei contatori del cliente. Marca offline solo se
-            # consecutive_failures >= 3 E last_reachable_at piu' vecchio di 5 min.
-            if reachable is False and is_fresh:
-                consec = int(pd.get("consecutive_failures") or 0)
-                last_ok_raw = pd.get("last_reachable_at")
-                secs_since_ok = 1e9
-                if last_ok_raw:
-                    try:
-                        last_ok_dt = datetime.fromisoformat(last_ok_raw.replace("Z", "+00:00"))
-                        secs_since_ok = (now_utc - last_ok_dt).total_seconds()
-                    except Exception:
-                        pass
-                if last_ok_raw and not (consec >= 3 and secs_since_ok >= 300):
-                    # singolo fail transitorio → trattalo come online
-                    reachable = True
-            if reachable is True and is_fresh:
-                status = "online"
-            elif reachable is False and is_fresh:
-                status = "offline"
-            elif reachable is True and not is_fresh:
-                # Connector offline da tempo — stato incerto ma dispositivo era up all'ultimo poll
-                status = "stale"
-            else:
-                status = "unknown"
-        # v3.8.22 LIVE-SEEN override: se lo Scanner vede l'IP entro 5min, e' online
-        if (cid, ip) in scanner_seen_keys:
-            status = "online"
+        # Status centralizzato: identico a /api/devices
+        # (evidence override -> debounce -> scanner-source -> pending)
+        status, _evidence = compute_status(pd, md, ip_evidence, mac_evidence)
         devices.append({
             "client_id": cid,
             "name": display_name,
@@ -136,15 +79,16 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
         if key in seen_device_keys:
             continue
         seen_device_keys.add(key)
-        # v3.8.22 LIVE-SEEN: managed device "orfano" diventa online se lo
-        # Scanner lo vede; altrimenti unknown (nessuno l'ha pollato).
-        md_status = "online" if (cid, ip) in scanner_seen_keys else "unknown"
+        # Status centralizzato: stessa logica del branch polled
+        # (gestisce scanner-source + evidence FDB/ARP cross-VLAN).
+        pd = poll_by_key.get(key)
+        md_status, _ev = compute_status(pd, md, ip_evidence, mac_evidence)
         devices.append({
             "client_id": cid,
-            "name": best_display_name(md, None, ip),
+            "name": best_display_name(md, pd, ip),
             "ip_address": ip,
             "status": md_status,
-            "device_type": best_device_type(md, None),
+            "device_type": best_device_type(md, pd),
         })
 
     # Backup status (legacy)
