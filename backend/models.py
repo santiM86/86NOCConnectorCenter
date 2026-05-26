@@ -111,6 +111,10 @@ class DeviceResponse(BaseModel):
     connection_via_switch: Optional[str] = None
     connection_via_port: Optional[str] = None
     connection_confidence: Optional[int] = None  # 0-99
+    # v2026-02-13: Datto RMM match (popolato da _match_with_center)
+    datto_name: Optional[str] = ""        # nome ufficiale RMM matchato
+    datto_match: Optional[str] = ""       # "mac" | "ip" | ""
+    datto_matched_at: Optional[str] = ""
     created_at: str
 
 class AlertCreate(BaseModel):

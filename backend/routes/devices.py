@@ -404,6 +404,10 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
                 "profile_auto_matched": pd.get("profile_auto_matched", False) if not md.get("profile_key") else False,
                 "alerts_silenced": bool(md.get("alerts_silenced", False)),
                 "alerts_silenced_reason": md.get("alerts_silenced_reason") or "",
+                # Datto RMM match (popolato da _match_with_center)
+                "datto_name": md.get("datto_name") or "",
+                "datto_match": md.get("datto_match") or "",
+                "datto_matched_at": md.get("datto_matched_at") or "",
             })
 
     # v3.8.36 FIX bug status fasullo: i device source=connector-scanner venivano
@@ -538,6 +542,12 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
             "connection_confidence": md.get("connection_confidence"),
             "alerts_silenced": bool(md.get("alerts_silenced", False)),
             "alerts_silenced_reason": md.get("alerts_silenced_reason") or "",
+            # Datto RMM match (popolato da _match_with_center quando il device
+            # e' presente anche nell'inventario Datto del cliente). Permette alla
+            # UI di mostrare il nome ufficiale RMM accanto al device.
+            "datto_name": md.get("datto_name") or "",
+            "datto_match": md.get("datto_match") or "",  # "mac" | "ip" | ""
+            "datto_matched_at": md.get("datto_matched_at") or "",
             "created_at": md.get("created_at") or md.get("auto_added_at") or now_iso,
         })
 

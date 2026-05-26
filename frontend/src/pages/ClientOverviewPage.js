@@ -1169,6 +1169,15 @@ function DeviceGroup({ label, icon: Icon, devices, color, onInfoClick, renderAct
               <div className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: sc }}></div>
               <span className={`font-medium truncate ${nameIsIP ? "text-[var(--text-muted)] italic" : "text-[var(--text-primary)]"}`} title={d.notes || ""}>{name}</span>
               {!nameIsIP && <span className="font-mono text-[var(--text-muted)]">{d.ip_address}</span>}
+              {d.datto_name && d.datto_name !== name && (
+                <span
+                  className="inline-flex items-center gap-0.5 text-[8px] px-1 py-0.5 rounded bg-fuchsia-500/20 text-fuchsia-200 border border-fuchsia-500/40 font-bold"
+                  title={`Datto RMM: ${d.datto_name}${d.datto_match ? ` (match via ${d.datto_match.toUpperCase()})` : ""}`}
+                  data-testid={`datto-badge-${d.ip_address}`}
+                >
+                  DATTO: {d.datto_name}
+                </span>
+              )}
               {d.vendor && <span className="text-[8px] px-1 rounded bg-[var(--bg-card)] text-[var(--text-muted)] truncate max-w-[120px]" title={d.vendor}>{d.vendor}</span>}
               {d.snmp_community && <span className="text-[8px] px-1 rounded bg-[var(--bg-card)] text-[var(--text-muted)]">{d.snmp_version || "snmp"}: {d.snmp_community}</span>}
               <span className="ml-auto font-bold text-[8px] uppercase" style={{ color: sc }}>{d.status}</span>
@@ -1924,6 +1933,26 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
             <MagnifyingGlass size={13} /> Riconosci sconosciuti
           </Button>
           <Button
+            onClick={async () => {
+              try {
+                const { data } = await axios.post(`${API}/clients/${clientId}/datto/rematch`);
+                if (data.ok) {
+                  toast.success(data.message);
+                  onRefresh?.();
+                } else {
+                  toast.warning(data.message, { duration: 8000 });
+                }
+              } catch (e) {
+                toast.error(`Errore re-match Datto: ${e.response?.data?.detail || e.message}`, { duration: 7000 });
+              }
+            }}
+            className="bg-fuchsia-600/90 hover:bg-fuchsia-600 text-white h-8 text-xs gap-1"
+            data-testid="datto-rematch-btn"
+            title="Ri-esegue il match Datto RMM ↔ Center per questo cliente (incrocio su MAC e IP). Scrive il nome ufficiale Datto sui device matchati, visibile come badge fucsia."
+          >
+            🔗 Match Datto
+          </Button>
+          <Button
             onClick={() => correlateConnectivity()}
             className="bg-violet-600/90 hover:bg-violet-600 text-white h-8 text-xs gap-1"
             data-testid="correlate-connectivity-btn"
@@ -2057,8 +2086,17 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
               return (
                 <tr key={i} className={d.alerts_silenced ? "opacity-70" : ""}>
                   <td className="text-[var(--text-primary)] text-xs font-medium">
-                    <span className="inline-flex items-center gap-1.5">
+                    <span className="inline-flex items-center gap-1.5 flex-wrap">
                       {d.name}
+                      {d.datto_name && d.datto_name !== d.name && (
+                        <span
+                          className="inline-flex items-center gap-0.5 text-[9px] px-1 py-px rounded bg-fuchsia-500/20 text-fuchsia-200 border border-fuchsia-500/40 font-bold"
+                          title={`Datto RMM: ${d.datto_name}${d.datto_match ? ` (match via ${d.datto_match.toUpperCase()})` : ""}`}
+                          data-testid={`table-datto-badge-${d.ip_address}`}
+                        >
+                          DATTO: {d.datto_name}
+                        </span>
+                      )}
                       {d.alerts_silenced && (
                         <span
                           className="inline-flex items-center gap-0.5 text-[9px] px-1 py-px rounded bg-amber-500/15 text-amber-300 border border-amber-500/40"

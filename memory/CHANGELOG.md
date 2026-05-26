@@ -1,3 +1,54 @@
+# 2026-02-13 — Match Datto RMM su lista Dispositivi (come Switch Ports)
+
+## 🔗 "Match con Datto RMM anche nella lista dispositivi"
+
+Il match Datto era già attivo lato backend (`_match_with_center` aggiorna
+`datto_name` su `managed_devices` Pass 3) ma il dato NON veniva esposto
+nell'API `/api/devices` né mostrato in UI. Solo Switch Ports mostrava il
+badge fucsia "DATTO" sulla cable view.
+
+### Soluzione
+1. **Backend `/api/devices`**: espongo i 3 campi Datto su entrambi i
+   branch (polled + managed-only):
+   - `datto_name` (nome ufficiale RMM)
+   - `datto_match` ("mac" | "ip" | "")
+   - `datto_matched_at` (timestamp ISO)
+
+2. **Backend `models.py::DeviceResponse`**: aggiunti i 3 nuovi campi
+   Optional (default "") per esposizione pulita lato Pydantic.
+
+3. **Nuovo endpoint** `POST /api/clients/{client_id}/datto/rematch`
+   (admin-only): re-esegue `_match_with_center()` per UN solo cliente
+   riutilizzando i `datto_devices` cached (no fetch API esterna, no
+   rate limit). Audit log + risposta con `{datto_total, datto_matched}`.
+
+4. **Frontend ClientOverviewPage**: badge fucsia `DATTO: <nome>` mostrato
+   accanto al nome device in entrambe le viste:
+   - **Vista raggruppata**: dentro `DeviceGroup` riga, prima del vendor
+   - **Vista tabella**: dentro colonna Nome, accanto a badge ALERT OFF
+   Tooltip mostra il metodo di match ("via MAC" / "via IP").
+
+5. **Frontend bottone "🔗 Match Datto"** nell'header tab Dispositivi
+   (fucsia, accanto a "Riconosci sconosciuti"): chiama il nuovo endpoint
+   e fa toast del risultato + refresh lista.
+
+### File modificati
+- `backend/routes/devices.py` — esposizione campi Datto in entrambi i branch
+- `backend/models.py::DeviceResponse` — 3 campi Datto opzionali
+- `backend/routes/datto_rmm.py` — nuovo endpoint `/datto/rematch`
+- `frontend/src/pages/ClientOverviewPage.js` — badge fucsia + bottone
+
+### Test
+- Endpoint live `POST /api/clients/<id>/datto/rematch` con auth admin: ✅
+  risponde 200 con messaggio chiaro (in DB locale 0 device Datto → ok=false
+  con istruzioni utili)
+- `/api/devices` response include `datto_name`, `datto_match`: ✅
+- Lint JS: ✅ No issues
+- Backend restart: nessun errore
+
+---
+
+
 # 2026-02-13 — Vista Raggruppata: ripristinati comandi device
 
 ## 🔧 "Mi hai tolto tutti i pulsantini dei comandi a destra"
