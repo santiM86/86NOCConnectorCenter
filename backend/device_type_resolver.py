@@ -41,7 +41,8 @@ CANONICAL_TYPES = {
     "nas", "ups", "ilo", "server",
     "access-point", "tvcc", "voip",
     "endpoint", "endpoint-private",
-    "iot",
+    "workstation", "mobile", "iot",
+    "generic",
 }
 
 # Tipi "generici" che vanno ri-classificati: il classifier puo' migliorare.
@@ -97,7 +98,7 @@ _OUI_VENDOR_HINTS = {
     ),
     "voip": (
         "polycom", "yealink", "snom", "grandstream", "mitel",
-        "avaya", "wildix", "fanvil",
+        "avaya", "wildix", "fanvil", "panasonic kx",
     ),
     "tvcc": (
         "hikvision", "dahua", "axis communications", "mobotix",
@@ -112,6 +113,19 @@ _OUI_VENDOR_HINTS = {
     ),
     "ups": (
         "american power conversion", "eaton", "cyberpower", "riello",
+    ),
+    "iot": (
+        "raspberry", "nvidia jetson", "orange pi", "espressif",
+        "particle industries", "sonoff", "shelly", "tasmota",
+        "ring", "nest labs", "tuya",
+    ),
+    "workstation": (
+        "msi", "micro-star", "elitegroup", "lcfc", "asustek",
+        "dell inc", "lenovo", "gigabyte", "asrock", "acer",
+        "samsung electronics co", "intel corporate", "tmc",
+        "liteon", "wistron", "compal", "quanta", "inventec",
+        "pegatron", "hewlett-packard", "hp inc",
+        "apple, inc", "apple inc",
     ),
 }
 
@@ -187,6 +201,9 @@ def best_device_type(
         return vhint
 
     # 5. MAC randomizzato -> dispositivo personale (smartphone tipico)
+    # Mantengo "endpoint-private" come distinta da "mobile" (vendor noto)
+    # cosi' la UI puo' differenziare "iPhone con MAC reale" da "smartphone
+    # in privacy mode che vediamo solo come LAA random".
     if md.get("mac_is_random"):
         return "endpoint-private"
 

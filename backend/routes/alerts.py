@@ -214,3 +214,77 @@ async def get_alert_notification_log(
         {"alert_id": alert_id}, {"_id": 0, "created_at_ts": 0}
     ).sort("created_at", 1).to_list(length=500)
     return entries
+
+
+
+@router.delete("/alerts/clear-all")
+async def clear_all_alerts(
+    scope: str = "active",
+    client_id: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
+):
+    """Admin-only: cancella massivamente gli alert.
+
+    Query params:
+      - scope = "active" (default) → solo gli alert ancora attivi
+      - scope = "resolved"         → solo gli alert risolti/storici
+      - scope = "all"              → tutto, attivi + storici
+      - client_id (opzionale)      → limita lo scope a un singolo cliente
+
+    Audit: registra in `audit_log` l'eliminazione (admin, count, scope).
+
+    Sicurezza: hard delete su collection `alerts`, soft delete sarebbe
+    over-engineering (gli admin che cliccano "Elimina tutti" lo vogliono
+    davvero — il restore va fatto da backup MongoDB).
+    """
+    if current_user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Solo admin")
+    if scope not in ("active", "resolved", "all"):
+        raise HTTPException(status_code=400, detail="scope deve essere active|resolved|all")
+
+    query: dict = {}
+    if scope == "active":
+        query["status"] = "active"
+    elif scope == "resolved":
+        query["status"] = {"$in": ["resolved", "acknowledged"]}
+    if client_id:
+        query["client_id"] = client_id
+
+    # Conta prima per audit + risposta
+    count = await db.alerts.count_documents(query)
+    if count == 0:
+        return {"deleted": 0, "scope": scope, "client_id": client_id, "message": "Nessun alert da eliminare"}
+
+    result = await db.alerts.delete_many(query)
+
+    await audit_logger.log(
+        AuditAction.DELETE_ALERT,
+        user_id=current_user["id"], user_email=current_user["email"],
+        ip_address=current_user.get("_request_ip"),
+        resource_type="alert",
+        resource_id=f"bulk:{scope}",
+        details={
+            "scope": scope,
+            "client_id": client_id,
+            "deleted_count": result.deleted_count,
+        },
+    )
+
+    # Broadcast WS per refresh real-time UI
+    try:
+        await manager.broadcast({
+            "type": "alerts_cleared",
+            "scope": scope,
+            "client_id": client_id,
+            "deleted": result.deleted_count,
+        })
+    except Exception:
+        pass
+
+    return {
+        "deleted": result.deleted_count,
+        "scope": scope,
+        "client_id": client_id,
+        "message": f"Eliminati {result.deleted_count} alert ({scope})",
+    }
+

@@ -4,13 +4,20 @@ import { API } from "@/App";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import { 
-  FunnelSimple, MagnifyingGlass, CaretDown, Check
+  FunnelSimple, MagnifyingGlass, CaretDown, Check, Trash
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle
+} from "@/components/ui/dialog";
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue
+} from "@/components/ui/select";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useSortableTable, SortableTh } from "@/utils/tableSort";
 
@@ -26,6 +33,10 @@ export default function AlertsPage() {
     device_type: searchParams.get("device_type") || "",
     search: "",
   });
+  // v2026-02-13: clear-all alerts
+  const [confirmClearOpen, setConfirmClearOpen] = useState(false);
+  const [clearScope, setClearScope] = useState("active");
+  const [clearing, setClearing] = useState(false);
   const navigate = useNavigate();
 
   // Sync filters -> URL so the state is shareable and the back button works as expected
@@ -70,6 +81,22 @@ export default function AlertsPage() {
     catch { toast.error("Errore"); }
   };
 
+  const doClearAll = async () => {
+    setClearing(true);
+    try {
+      const url = `${API}/alerts/clear-all?scope=${clearScope}` + (filters.client_id ? `&client_id=${filters.client_id}` : "");
+      const { data } = await axios.delete(url);
+      toast.success(`Eliminati ${data.deleted} alert (${data.scope})`);
+      setConfirmClearOpen(false);
+      fetchAlerts();
+    } catch (e) {
+      const detail = e.response?.data?.detail || e.message;
+      toast.error(`Errore: ${detail}`, { duration: 7000 });
+    } finally {
+      setClearing(false);
+    }
+  };
+
   const filteredAlerts = alerts.filter(alert => {
     if (!filters.search) return true;
     const s = filters.search.toLowerCase();
@@ -109,9 +136,22 @@ export default function AlertsPage() {
 
   return (
     <div className="p-4 md:p-5 animate-fade-in" data-testid="alerts-page">
-      <div className="mb-4">
-        <h1 className="font-heading text-xl font-bold text-[var(--text-primary)] tracking-tight">Alert</h1>
-        <p className="text-[var(--text-muted)] text-xs mt-0.5">Gestione e monitoraggio alert</p>
+      <div className="mb-4 flex items-start justify-between gap-3">
+        <div>
+          <h1 className="font-heading text-xl font-bold text-[var(--text-primary)] tracking-tight">Alert</h1>
+          <p className="text-[var(--text-muted)] text-xs mt-0.5">Gestione e monitoraggio alert</p>
+        </div>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => setConfirmClearOpen(true)}
+          disabled={alerts.length === 0}
+          className="h-8 text-xs border-red-500/40 text-red-300 hover:bg-red-500/10 hover:border-red-500"
+          data-testid="alerts-global-clear-all-btn"
+          title={alerts.length === 0 ? "Nessun alert da eliminare" : "Elimina tutti gli alert (admin only)"}
+        >
+          <Trash size={13} className="mr-1.5" /> Elimina tutti
+        </Button>
       </div>
 
       <div className="filter-bar mb-3">
@@ -193,6 +233,51 @@ export default function AlertsPage() {
           </div>
         </ScrollArea>
       </div>
+
+      <Dialog open={confirmClearOpen} onOpenChange={setConfirmClearOpen}>
+        <DialogContent className="bg-[var(--bg-card)] border-[var(--bg-border)]" data-testid="alerts-global-clear-dialog">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-red-300">
+              <Trash size={18} /> Elimina alert
+            </DialogTitle>
+            <DialogDescription className="text-[var(--text-muted)] text-xs">
+              L'eliminazione è <strong className="text-red-400">definitiva</strong> (hard delete su MongoDB).
+              Per ripristinare serve un backup. L'operazione viene loggata in audit.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3 py-2">
+            <Label className="text-xs">Quali alert eliminare?</Label>
+            <Select value={clearScope} onValueChange={setClearScope}>
+              <SelectTrigger data-testid="global-clear-scope-select"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="active">Solo attivi (raccomandato)</SelectItem>
+                <SelectItem value="resolved">Solo risolti/acknowledged (storico)</SelectItem>
+                <SelectItem value="all">Tutti (attivi + storico) ⚠️</SelectItem>
+              </SelectContent>
+            </Select>
+            <div className="text-[10px] text-amber-300/80 bg-amber-500/10 border border-amber-500/30 rounded p-2">
+              {filters.client_id
+                ? `Scope limitato al cliente selezionato nei filtri. Gli alert degli altri clienti NON saranno toccati.`
+                : "ATTENZIONE: nessun filtro cliente attivo — gli alert di TUTTI i clienti saranno coinvolti."}
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirmClearOpen(false)} disabled={clearing} data-testid="global-clear-cancel-btn">
+              Annulla
+            </Button>
+            <Button
+              onClick={doClearAll}
+              disabled={clearing}
+              className="bg-red-600 hover:bg-red-700 text-white"
+              data-testid="global-clear-confirm-btn"
+            >
+              {clearing ? "Eliminazione..." : `Elimina ${clearScope === "all" ? "tutti" : clearScope === "active" ? "attivi" : "storici"}`}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
