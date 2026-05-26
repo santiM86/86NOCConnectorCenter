@@ -1,3 +1,46 @@
+# 2026-02-13 — Vista Raggruppata: ripristinati comandi device
+
+## 🔧 "Mi hai tolto tutti i pulsantini dei comandi a destra"
+
+Bug introdotto dal fix precedente: la nuova vista "Raggruppata" della
+tab Dispositivi non aveva più le 8 azioni che la tabella aveva sulla
+destra (Web Console, Info card, Switch Ports, Trend, Test SNMP, Edit,
+Profilo, Delete).
+
+### Soluzione
+1. **Nuovo componente `DeviceActionsBar`** in ClientOverviewPage.js —
+   clone identico delle 8 azioni della tabella tradizionale (stessi
+   colori, stesse condizioni di display: WebConsole solo se applicabile,
+   SwitchPorts solo per device portable).
+
+2. **`DeviceGroup` esteso** con prop opzionale `renderActions(d)`,
+   renderizzato in fondo a ogni riga device dentro un wrapper con
+   `stopPropagation` per non triggerare il click "Scheda Dispositivo"
+   della riga stessa.
+
+3. **`DevicesGroupedView` esteso** per propagare `renderActions` ai
+   suoi DeviceGroup interni (incluso il gruppo collassabile Multicast).
+
+4. **`DevicesTab`** wrappa tutto: passa una closure `renderActions=(d)`
+   che istanzia `DeviceActionsBar` legato agli state/callback locali
+   (testingId, openConsoleWithVpn, setEditTarget, setProfileTarget,
+   handleDelete, handleTestSNMP, ecc.).
+
+### File modificati
+- `frontend/src/pages/ClientOverviewPage.js` — nuovo componente
+  DeviceActionsBar (~110 righe) + propagazione renderActions in
+  DevicesGroupedView e DeviceGroup + wiring closure in DevicesTab
+
+### Test
+- Lint JS: ✅ No issues found
+- Self-test: 8 azioni renderizzate correttamente in ogni riga della
+  vista raggruppata, click su azione NON triggera il click riga
+  (stopPropagation), tutti i data-testid prefissati `grouped-*` per
+  evitare collisione con quelli della tabella.
+
+---
+
+
 # 2026-02-13 — Tab Dispositivi: vista Raggruppata (clone Panoramica)
 
 ## 📋 "Voglio struttura identica come clone"
