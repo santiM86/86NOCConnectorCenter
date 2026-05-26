@@ -125,6 +125,76 @@ def test_mac_normalization():
     assert status == "online"
 
 
+# ============ Cascata connector offline → stale ============
+
+def test_cascade_connector_offline_demotes_offline_to_stale():
+    """Galvan caso reale: ZITACSRV offline → device "offline" → STALE."""
+    pd = {
+        "reachable": False,
+        "consecutive_failures": 10,
+        "last_reachable_at": _iso_ago(3600),
+        "client_id": "galvan-uuid",
+    }
+    md = {"ip": "10.10.5.5", "client_id": "galvan-uuid"}
+    offline_clients = {"galvan-uuid"}
+    status, label = compute_status(pd, md, {}, {}, offline_clients)
+    assert status == "stale"
+    assert label == "agent_offline"
+
+
+def test_cascade_evidence_overrides_cascade_stale():
+    """Stessa cascata MA evidence FDB switch → ONLINE (override)."""
+    pd = {
+        "reachable": False,
+        "consecutive_failures": 10,
+        "last_reachable_at": _iso_ago(3600),
+        "client_id": "galvan-uuid",
+    }
+    md = {"ip": "10.10.5.5", "mac": "aa:bb:cc:dd:ee:ff", "client_id": "galvan-uuid"}
+    ip_ev = {"10.10.5.5": "mac_table_switch"}
+    offline_clients = {"galvan-uuid"}
+    status, _ = compute_status(pd, md, ip_ev, {}, offline_clients)
+    assert status == "online"
+
+
+def test_cascade_other_client_unaffected():
+    """Solo i device del cliente con connector offline sono "stale".
+    Altri clienti restano "offline" reali."""
+    pd = {
+        "reachable": False,
+        "consecutive_failures": 10,
+        "last_reachable_at": _iso_ago(3600),
+        "client_id": "altro-cliente",
+    }
+    md = {"ip": "10.10.5.5", "client_id": "altro-cliente"}
+    offline_clients = {"galvan-uuid"}
+    status, _ = compute_status(pd, md, {}, {}, offline_clients)
+    assert status == "offline"
+
+
+def test_cascade_reachable_true_with_offline_clients_still_online():
+    """Se il device E' reachable (qualche connector funziona), niente stale."""
+    pd = {"reachable": True, "client_id": "galvan-uuid"}
+    md = {"ip": "10.10.5.5", "client_id": "galvan-uuid"}
+    offline_clients = {"galvan-uuid"}
+    status, _ = compute_status(pd, md, {}, {}, offline_clients)
+    assert status == "online"
+
+
+def test_cascade_no_offline_clients_set_works_normally():
+    """Senza il parametro offline_clients tutto funziona come prima."""
+    pd = {
+        "reachable": False,
+        "consecutive_failures": 10,
+        "last_reachable_at": _iso_ago(3600),
+        "client_id": "galvan-uuid",
+    }
+    md = {"ip": "10.10.5.5", "client_id": "galvan-uuid"}
+    status, _ = compute_status(pd, md, {}, {})
+    assert status == "offline"
+
+
+
 def test_debounce_grace_combined_anti_flap():
     # 2 fail, 10 min senza OK → fail count <3 → online (anti-flap dominante)
     pd = {

@@ -29,6 +29,49 @@ from typing import Any, Mapping, Optional
 DEBOUNCE_MIN_FAILURES = 3      # 3 cicli consecutivi falliti
 DEBOUNCE_GRACE_SECONDS = 300   # 5 minuti senza nessun successo
 EVIDENCE_WINDOW_MINUTES = 15   # quanto considerare "recente" un discovered_endpoint
+AGENT_HEARTBEAT_STALE_SECONDS = 180  # 3 min, allineato a agent_ws.py
+
+
+async def build_clients_without_online_agent(db) -> set:
+    """
+    Ritorna l'insieme dei client_id che NON hanno alcun connector con
+    heartbeat fresco (entro 3 minuti).
+
+    Usato per evitare falsi positivi "offline" durante un blackout del
+    connector: se il monitor (agent) e' giu', i device su cui non puo'
+    pollare non sono "offline" ma "stale" (stato incerto). Vedi
+    compute_status() param `offline_clients`.
+
+    Mitiga l'effetto cascata "connector down -> 36 device falsi offline -> card cliente
+    tutta rossa" mostrato nello screenshot Galvan / ZITACSRV.
+
+    Returns:
+        set di client_id (str) i cui connector sono TUTTI offline.
+    """
+    cutoff = (
+        datetime.now(timezone.utc)
+        - timedelta(seconds=AGENT_HEARTBEAT_STALE_SECONDS)
+    ).isoformat()
+
+    clients_with_online: set = set()
+    async for ag in db.managed_agents.find(
+        {"last_heartbeat_at": {"$gte": cutoff}},
+        {"_id": 0, "client_id": 1},
+    ):
+        cid = ag.get("client_id")
+        if cid:
+            clients_with_online.add(cid)
+
+    clients_with_any: set = set()
+    async for ag in db.managed_agents.find(
+        {}, {"_id": 0, "client_id": 1},
+    ):
+        cid = ag.get("client_id")
+        if cid:
+            clients_with_any.add(cid)
+
+    return clients_with_any - clients_with_online
+
 
 
 def effective_reachable(pd: Optional[Mapping[str, Any]]) -> bool:
@@ -140,13 +183,17 @@ def compute_status(
     md: Optional[Mapping[str, Any]],
     ip_evidence: Optional[Mapping[str, str]] = None,
     mac_evidence: Optional[Mapping[str, str]] = None,
-) -> tuple[str, Optional[str]]:
+    offline_clients: Optional[set] = None,
+) -> tuple:
     """
     Calcolo unificato dello status di un device.
 
     Priorita':
       1. Evidence-based override (IP o MAC visti < 15 min)  → ONLINE
       2. effective_reachable(pd) con debounce               → ONLINE / OFFLINE
+         MA: se debounce dice OFFLINE e il connector del cliente e' giu'
+             (client_id in offline_clients), ritorna "stale" invece di
+             "offline" — mitigazione cascata blackout connector.
       3. md.source == "connector-scanner"                   → derivato da last_seen
       4. Nessun poll  → "pending" (manuale mai polleato)
 
@@ -155,10 +202,16 @@ def compute_status(
         md: managed_devices doc (puo' essere None)
         ip_evidence: mappa ip→label da build_evidence_maps()
         mac_evidence: mappa mac→label da build_evidence_maps()
+        offline_clients: set di client_id i cui connector sono TUTTI offline
+                         (da build_clients_without_online_agent()). Quando
+                         un client e' in questo set, lo status calcolato come
+                         "offline" per debounce viene degradato a "stale"
+                         perche' lo abbiamo perso di vista, non e' certo
+                         che sia un fault.
 
     Returns:
         Tuple (status, evidence_label).
-        status ∈ {"online","offline","pending","unknown"}
+        status ∈ {"online","offline","stale","pending","unknown"}
         evidence_label = stringa ("scanner_lan", "agent_v4_arp",
         "mac_table_switch", "ping", "tcp", ecc.) o None.
     """
@@ -166,9 +219,11 @@ def compute_status(
     pd = pd or {}
     ip_evidence = ip_evidence or {}
     mac_evidence = mac_evidence or {}
+    offline_clients = offline_clients or set()
 
     ip = md.get("ip") or md.get("ip_address") or pd.get("device_ip") or ""
     mac = (md.get("mac") or "").lower().replace("-", ":")
+    cid = md.get("client_id") or pd.get("client_id") or ""
 
     # 1. Evidence override
     ip_ev = ip_evidence.get(ip) if ip else None
@@ -182,7 +237,11 @@ def compute_status(
         if effective_reachable(pd):
             label = (pd.get("method") or pd.get("ping_method") or "ping")
             return "online", str(label).strip() if label else "ping"
-        # debounce dice offline
+        # debounce dice offline → ma se il connector del cliente e' giu',
+        # non possiamo dire con certezza che il device sia in fault →
+        # marca "stale" (stato incerto)
+        if cid and cid in offline_clients:
+            return "stale", "agent_offline"
         return "offline", None
 
     # 3. Scanner-source senza poll: deriva da last_seen_at

@@ -1,3 +1,59 @@
+# 2026-02-13 — Cascade fix "connector down → falsi 36 offline"
+
+## 🌪️ "Come mai mi mostri tutto rosso?"
+
+**Bug operativo Galvan**: ZITACSRV connector OFFLINE → i 36 device che
+venivano polleati solo da lui appaiono `offline` per debounce → contatore
+overview `devices.offline = 36` → card Galvan tutta rossa con
+`50/86 — 36 off` + bordo critical.
+
+I 36 device NON sono davvero in fault, sono solo "non valutabili" perche'
+abbiamo perso il monitor. Datto RMM e PRTG distinguono questo come stato
+diverso ("monitoring down" ≠ "device down").
+
+## ✅ Fix implementato
+
+**Nuovo helper** `liveness_resolver.build_clients_without_online_agent(db)`:
+- Query veloce su `managed_agents`: confronta i client con almeno un
+  connector con `last_heartbeat_at` fresco (entro 3 min) vs quelli con
+  almeno un connector registrato.
+- Ritorna `set[client_id]` dei clienti BLACKOUT (tutti i loro connector
+  sono giù).
+
+**`compute_status()` esteso** con parametro `offline_clients`:
+- Se `pd.reachable=False` (debounce dice offline) E `cid in offline_clients`
+  → ritorna `("stale", "agent_offline")` invece di `("offline", None)`.
+- Evidence override (FDB switch / agent_v4 ARP / scanner LAN) ha sempre
+  precedenza: se il device E' visto da QUALCUNO, resta `online`.
+
+**Logica `health` in overview.py rivista**:
+- `devices_stale > 0` → ora `warning` (giallo), NON `critical` (rosso)
+- `devices_offline > 0` → resta `critical` (rosso) — sono i fault REALI
+- `connector_online = false` → resta `critical` (giustamente, e' il
+  problema vero da risolvere → l'utente vede subito che il connector è giù)
+
+### Risultato atteso su Galvan
+- Bordo card → ROSSO solo per "CONNETTORE OFFLINE: ZITACSRV" (problema reale)
+- Riga DISPOSITIVI → GIALLO `50/86 — 36 stale` (monitor incerto)
+- Quando ZITACSRV torna online → i 36 device tornano automaticamente "online"
+  senza che il sistema abbia mai dichiarato falsi positivi di fault
+
+### File modificati
+- `backend/liveness_resolver.py` — aggiunto `build_clients_without_online_agent()`
+  + estesa `compute_status()` con `offline_clients`
+- `backend/routes/overview.py` — chiama `build_clients_without_online_agent()`,
+  conta `devices_stale`, esclude stale da health="critical"
+- `backend/tests/test_liveness_resolver.py` — +5 test cascade
+
+### Test
+- `tests/test_liveness_resolver.py`: 20/20 PASS (di cui 5 nuovi cascade)
+- Suite centralizzata totale: 56/56 PASS
+- Live API `/api/overview/clients` ritorna correttamente i nuovi campi
+- Lint Python: ✅ No issues
+
+---
+
+
 # 2026-02-13 — Nome rilevato OVUNQUE in Argus (display_name globale)
 
 ## 🏷️ "Se hai il nome rilevato del dispositivo, usalo ovunque in Argus"
