@@ -1,3 +1,50 @@
+# 2026-02-13 — Nome rilevato OVUNQUE in Argus (display_name globale)
+
+## 🏷️ "Se hai il nome rilevato del dispositivo, usalo ovunque in Argus"
+
+L'utente ha mostrato 2 screenshot dove il nome ricco SNMP ("Switch01 HP
+5130 52G") esiste ma non viene mostrato in:
+- Header modal Scheda Dispositivo (mostra "Switch and Wireless Controller/HP Switches")
+- Pagina Vulnerability (mostra solo IP nudi "192.168.16.9")
+
+### Soluzione
+
+**Backend** — esteso `best_display_name` a `vulnerability.py`:
+- Tutte le 4 location dove veniva fatto `dev.get("device_name", ip)` ora
+  usano `best_display_name(managed_dev, dev, ip)`. Risultato:
+  `device_scores`, `all_vulns`, `device_vulnerabilities` (singolo device),
+  e il report PDF, espongono il nome SNMP autoritativo invece di IP nudi.
+
+**Frontend** — nuovo helper centralizzato `pickDeviceName(d, fallback)`
+in `utils/deviceCategory.js`:
+- Mirror esatto della logica backend (priorita: name pulito → hostname →
+  sys_name → mdns_name → fingerbank → ip).
+- Filtra automaticamente nomi "categorial" Fingerbank (es. "Foo/Bar").
+- Defense-in-depth: pulisce eventuali nomi categoriali residui anche
+  prima che il deploy in produzione aggiorni il backend.
+
+Applicato in:
+- `ClientOverviewPage.js` — title modal "Scheda Dispositivo" (image 1)
+- `ClientOverviewPage.js` — tabella tradizionale colonna Nome
+- `ClientOverviewPage.js` — `DeviceGroup._displayName()` nelle viste raggruppate
+- `VulnerabilityPage.js` — header card device + lista vulnerabilità (image 2)
+
+### File modificati
+- `backend/routes/vulnerability.py` — import + 4 sostituzioni
+- `frontend/src/utils/deviceCategory.js` — nuovo `pickDeviceName()`
+- `frontend/src/pages/ClientOverviewPage.js` — 3 sostituzioni
+- `frontend/src/pages/VulnerabilityPage.js` — import + 2 sostituzioni
+
+### Test
+- Backend `/api/vulnerability/dashboard/<cid>` live: device_scores ora
+  ritorna nomi reali ("Vendor-Details-Test", "Zyxel USG Test") invece
+  di IP nudi ✅
+- Lint JS: ✅ No issues (4 file)
+- Backend riavviato senza errori
+
+---
+
+
 # 2026-02-13 — Match Datto RMM su lista Dispositivi (come Switch Ports)
 
 ## 🔗 "Match con Datto RMM anche nella lista dispositivi"
