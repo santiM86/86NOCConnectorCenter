@@ -5,7 +5,9 @@ from deps import get_current_user
 from datetime import datetime, timezone, timedelta
 from display_name import best_display_name
 from device_type_resolver import best_device_type
-from liveness_resolver import build_evidence_maps, compute_status
+from liveness_resolver import (
+    build_evidence_maps, compute_status, build_clients_without_online_agent,
+)
 
 router = APIRouter(prefix="/api", tags=["overview"])
 
@@ -44,6 +46,12 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
     # switch SNMP, con finestra 15 min, allineando esattamente Panoramica
     # e lista Dispositivi.
     ip_evidence, mac_evidence = await build_evidence_maps(db, window_minutes=15)
+    # v2026-02-13 CASCADE FIX: identifica i client con TUTTI i connector
+    # offline. I device "offline" per debounce di questi client vengono
+    # marcati "stale" (stato incerto) invece di "offline" (fault confermato).
+    # Mitiga il bug Galvan dove ZITACSRV offline → 36 device "offline" cascade
+    # → card cliente tutta rossa anche se i device probabilmente sono OK.
+    offline_clients = await build_clients_without_online_agent(db)
     poll_by_key = {(p.get("client_id"), p.get("device_ip")): p for p in poll_devices}
 
     # Merge poll_devices and managed_devices into the unified list (skip duplicates)
@@ -60,8 +68,8 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
         display_name = best_display_name(md, pd, ip)
         dev_type = best_device_type(md, pd, name_hint=display_name)
         # Status centralizzato: identico a /api/devices
-        # (evidence override -> debounce -> scanner-source -> pending)
-        status, _evidence = compute_status(pd, md, ip_evidence, mac_evidence)
+        # (evidence override -> debounce -> cascade-stale -> scanner-source -> pending)
+        status, _evidence = compute_status(pd, md, ip_evidence, mac_evidence, offline_clients)
         devices.append({
             "client_id": cid,
             "name": display_name,
@@ -80,9 +88,9 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
             continue
         seen_device_keys.add(key)
         # Status centralizzato: stessa logica del branch polled
-        # (gestisce scanner-source + evidence FDB/ARP cross-VLAN).
+        # (gestisce scanner-source + evidence FDB/ARP cross-VLAN + cascade-stale).
         pd = poll_by_key.get(key)
-        md_status, _ev = compute_status(pd, md, ip_evidence, mac_evidence)
+        md_status, _ev = compute_status(pd, md, ip_evidence, mac_evidence, offline_clients)
         devices.append({
             "client_id": cid,
             "name": best_display_name(md, pd, ip),
@@ -420,6 +428,7 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
         # Se devices/connector/wan sono tutti OK -> verde, anche con alert in coda.
         # Gli alert hanno il loro pill dedicato con conteggio rosso nella UI.
         devices_offline = devices_info.get("offline", 0) if isinstance(devices_info, dict) else 0
+        devices_stale = devices_info.get("stale", 0) if isinstance(devices_info, dict) else 0
         backup_errors = backup_info.get("error", 0) if isinstance(backup_info, dict) else 0
         backup_warnings = backup_info.get("warning", 0) if isinstance(backup_info, dict) else 0
         backup_stale = backup_info.get("stale", 0) if isinstance(backup_info, dict) else 0
@@ -427,13 +436,19 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
 
         health = "ok"
         # CRITICAL: qualcosa di importante non funziona ORA
+        # NOTA: devices_stale NON e' critical (mitiga cascata "connector down ->
+        # 36 device cascata-offline -> card rossa", vedi liveness_resolver
+        # build_clients_without_online_agent). Quando il connector e' giu'
+        # il connector_online=False fa scattare comunque critical per il
+        # CONNETTORE, evitando di nascondere il problema reale.
         if (devices_offline > 0
                 or connector_online is False
                 or wan_status in ("isp_down", "firewall_down", "router_down", "offline")):
             health = "critical"
-        # WARNING: degradi noti
+        # WARNING: degradi noti + device stale (monitor offline)
         elif (wan_status in ("firewall_degraded", "router_degraded", "degraded")
-                or backup_errors > 0 or backup_warnings > 0 or backup_stale > 0):
+                or backup_errors > 0 or backup_warnings > 0 or backup_stale > 0
+                or devices_stale > 0):
             health = "warning"
         # ATTENTION: piccole anomalie da monitorare (toner basso)
         elif toner_low > 0:
