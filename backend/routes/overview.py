@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends
 from database import db
 from deps import get_current_user
 from datetime import datetime, timezone, timedelta
+from display_name import best_display_name
 
 router = APIRouter(prefix="/api", tags=["overview"])
 
@@ -26,10 +27,10 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
     # Also include connector-discovered devices (device_poll_status) and manually managed devices (managed_devices)
     # Also need reachable + last_poll to infer status
     poll_devices = await db.device_poll_status.find(
-        {}, {"_id": 0, "client_id": 1, "device_ip": 1, "device_name": 1, "status": 1, "device_type": 1, "device_class": 1, "sys_descr": 1, "reachable": 1, "last_poll": 1, "monitor_type": 1, "consecutive_failures": 1, "last_reachable_at": 1}
+        {}, {"_id": 0, "client_id": 1, "device_ip": 1, "device_name": 1, "sys_name": 1, "status": 1, "device_type": 1, "device_class": 1, "sys_descr": 1, "reachable": 1, "last_poll": 1, "monitor_type": 1, "consecutive_failures": 1, "last_reachable_at": 1}
     ).to_list(10000)
     managed_devices_raw = await db.managed_devices.find(
-        {}, {"_id": 0, "client_id": 1, "ip": 1, "name": 1, "device_type": 1}
+        {}, {"_id": 0, "client_id": 1, "ip": 1, "name": 1, "name_locked": 1, "hostname": 1, "mdns_name": 1, "fingerbank_device_name": 1, "device_type": 1}
     ).to_list(10000)
     # Build maps for dedup merging by (client_id, ip)
     seen_device_keys = {(d.get("client_id"), d.get("ip_address")) for d in devices if d.get("ip_address")}
@@ -94,8 +95,9 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
         seen_device_keys.add(key)
         # Look up name/type from managed_devices if available
         md = managed_by_key.get(key, {})
+        display_name = best_display_name(md, pd, ip)
         dev_type = _infer_device_type(
-            md.get("name") or pd.get("device_name", ""),
+            display_name,
             pd.get("sys_descr", ""),
             pd.get("device_class", ""),
             md.get("device_type") or pd.get("device_type"),
@@ -144,7 +146,7 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
             status = "online"
         devices.append({
             "client_id": cid,
-            "name": md.get("name") or pd.get("device_name") or ip,
+            "name": display_name,
             "ip_address": ip,
             "status": status,
             "device_type": dev_type,
@@ -164,7 +166,7 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
         md_status = "online" if (cid, ip) in scanner_seen_keys else "unknown"
         devices.append({
             "client_id": cid,
-            "name": md.get("name") or ip,
+            "name": best_display_name(md, None, ip),
             "ip_address": ip,
             "status": md_status,
             "device_type": md.get("device_type", "generic"),

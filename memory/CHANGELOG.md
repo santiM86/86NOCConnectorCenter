@@ -1,3 +1,39 @@
+# 2026-02-13 — Display Name Centralizzato (consistency fix)
+
+## 🔤 "Se riconosci il nome del dispositivo usa quello ovunque"
+
+L'utente aveva segnalato che la Scheda Dispositivo mostrava
+"Switch and Wireless Controller/HP Switches" (categoria Fingerbank) come
+titolo, mentre il sysName SNMP reale era "Switch02 HP 5130 52G".
+Discrepanza analoga tra lista Dispositivi, Overview e modal.
+
+### Soluzione
+Creato `/app/backend/display_name.py` con helper unico `best_display_name(md, pd, ip)`.
+
+Priorità (unificata in tutto il backend):
+1. `md.name` se `name_locked` (admin ha bloccato esplicitamente)
+2. `pd.sys_name` (SNMP sysName — autoritativo per network gear)
+3. `md.hostname` (NBNS / reverse DNS)
+4. `md.mdns_name` (mDNS Bonjour)
+5. `pd.device_name` se NON è "category-like" (contiene "/")
+6. `md.name` se NON è "category-like"
+7. `md.fingerbank_device_name` (es. "Switch and Wireless Controller/HP Switches")
+8. fallback ip
+
+### File modificati
+- `backend/display_name.py` — nuovo helper centralizzato + detection categoria
+- `backend/routes/devices.py` — entrambi i branch (polled v4 + managed-only)
+- `backend/routes/overview.py` — proiezioni Mongo allargate + helper applicato
+- `backend/routes/device_info_card.py` — hostname identity unificato
+- `frontend/src/pages/ClientOverviewPage.js` — modal title fallback su hostname
+
+### Test
+`backend/tests/test_display_name.py` — 10 unit test (sys_name vince su Fingerbank,
+name_locked rispettato, mdns fallback, IP last-resort, ecc.) — ✅ 10/10 PASS.
+
+---
+
+
 # 2026-02-12 — Argus Desktop v5.0.0 — REWRITE TOTALE GUI CONNECTOR
 
 ## 🚀 Bye `nocagent-ui.exe`, hello `ArgusDesktop.exe`

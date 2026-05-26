@@ -9,6 +9,7 @@ from models import DeviceCreate, DeviceResponse, DeviceCredentials, RedfishTestR
 from security import security_manager
 from audit import AuditAction
 from deps import get_current_user, audit_logger, redfish_poller
+from display_name import best_display_name
 
 router = APIRouter(prefix="/api", tags=["devices"])
 
@@ -360,19 +361,10 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
                 md_status = "online"
             elif _effective_reachable(pd):
                 live_evidence2 = (pd.get("method") or pd.get("ping_method") or "ping").strip()
-            # display name: priorità sys_name (SNMP) → hostname (NBNS) →
-            # mdns_name → device_name (Fingerbank) → ip nudo. Vedi nota
-            # nel branch managed_devices sotto.
-            _pd_name = (pd.get("device_name") or "").strip()
-            if not _pd_name or _pd_name == ip:
-                for _k_pd in (pd.get("sys_name"), md.get("hostname"),
-                              md.get("mdns_name"), md.get("fingerbank_device_name")):
-                    _kv = (_k_pd or "").strip()
-                    if _kv and _kv != ip:
-                        _pd_name = _kv
-                        break
-                if not _pd_name or _pd_name == ip:
-                    _pd_name = ip
+            # display name: priorità centralizzata su best_display_name():
+            # sys_name (SNMP) → hostname (NBNS) → mdns_name → name → fingerbank.
+            # Vedi nota nel branch managed_devices sotto.
+            _pd_name = best_display_name(md, pd, ip)
             devices.append({
                 "id": f"poll_{ip.replace('.','_')}",
                 "client_id": pd.get("client_id", ""),
@@ -510,20 +502,14 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
             md_status = _scanner_status_from_last_seen(md.get("last_seen_at"))
         else:
             md_status = "pending"
-        # display name: se name è vuoto o == IP, usa il "best available" tra
-        # hostname/mdns_name/fingerbank_device_name (in ordine di affidabilità).
+        # display name: priorità centralizzata su best_display_name():
+        # sys_name (SNMP) → hostname (NBNS) → mdns_name → name → fingerbank.
         # Questo evita la UI con righe "10.10.1.55  10.10.1.55  snmp:public"
         # quando i metadati di enrichment esistono ma il name non è stato
-        # aggiornato dall'import iniziale.
-        raw_name = (md.get("name") or "").strip()
-        if not raw_name or raw_name == md_ip:
-            for _k in ("hostname", "mdns_name", "fingerbank_device_name"):
-                _v = (md.get(_k) or "").strip()
-                if _v and _v != md_ip:
-                    raw_name = _v
-                    break
-            if not raw_name or raw_name == md_ip:
-                raw_name = md_ip
+        # aggiornato dall'import iniziale, e impedisce che la categoria
+        # Fingerbank (es. "Switch and Wireless Controller/HP Switches")
+        # mascheri il sysName reale ("Switch02 HP 5130 52G").
+        raw_name = best_display_name(md, pd_v4, md_ip)
         devices.append({
             "id": md.get("id") or f"md_{md_ip.replace('.','_')}",
             "client_id": md.get("client_id", ""),

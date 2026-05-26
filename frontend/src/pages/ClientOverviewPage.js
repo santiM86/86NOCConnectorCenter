@@ -2263,7 +2263,7 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
             <DialogHeader>
               <DialogTitle className="flex items-center gap-2 text-[var(--text-primary)]">
                 <Info size={18} className="text-cyan-400" />
-                Scheda Dispositivo — {infoTarget.name || infoTarget.ip_address}
+                Scheda Dispositivo — {infoTarget.name || infoTarget.hostname || infoTarget.ip_address}
               </DialogTitle>
             </DialogHeader>
             <ErrorBoundary

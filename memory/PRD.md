@@ -18,6 +18,13 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
    Lo `sync-argus.sh` attuale e' una soluzione complementare (run-on-demand
    da remoto), NON sostitutiva del webhook auto-deploy.
 
+3. **Display name centralizzato** (2026-02-13): tutta la risoluzione del
+   nome device deve passare da `backend/display_name.py::best_display_name`.
+   Non aggiungere logiche ad-hoc nei singoli endpoint che ricostruiscono il
+   "nome migliore" del device. Se serve estendere la priorita' (es. nuova
+   fonte SNMP/LLDP), modificare SOLO il helper.
+
+
 3. **Linguaggio**: TUTTE le risposte all'utente devono essere in italiano.
 
 4. **Nome del servizio systemd backend in PROD**: `noc-backend.service`
