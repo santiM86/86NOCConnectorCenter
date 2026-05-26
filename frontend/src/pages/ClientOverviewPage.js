@@ -30,6 +30,7 @@ import DiscoveryPage from "./DiscoveryPage";
 import VulnerabilityPage from "./VulnerabilityPage";
 import LanScannerPage from "./LanScannerPage";
 import { useSortableTable, SortableTh } from "@/utils/tableSort";
+import { macroOf, macroLabel, MACRO_DEFS } from "@/utils/deviceCategory";
 
 const STATUS_COLOR = { online: "#34C759", offline: "#FF3B30", active: "#FFCC00", degraded: "#FF9500", unknown: "#555" };
 
@@ -137,40 +138,10 @@ export default function ClientOverviewPage() {
   const realDevicesCount = devices.filter(d => !/^(22[4-9]|23\d|255)\./.test(d.ip_address || "")).length;
   const offlineDevices = realDevicesCount - onlineDevices;
   const criticalAlerts = alerts.filter(a => a.severity === "critical").length;
-  // v3.8.20: classificazione macroaree (PC, VoIP, Mobile, ecc.) per i device dello Scanner.
-  // Anche se device_type non e' specifico, deduciamo da vendor/hostname/MAC randomizzato.
-  const isMulticast = (ip) => {
-    if (!ip) return false;
-    // 224.0.0.0/4 (224-239) e 255.255.255.255
-    return /^(22[4-9]|23\d|255)\./.test(ip);
-  };
-  const macroOf = (d) => {
-    if (isMulticast(d.ip_address)) return "_skip";
-    const dt = (d.device_type || "").toLowerCase();
-    if (["firewall", "zyxel-usg"].includes(dt)) return "firewall";
-    if (dt === "switch") return "switch";
-    if (["server", "ilo"].includes(dt)) return "server";
-    if (["nas", "storage"].includes(dt)) return "nas";
-    if (dt === "ups") return "ups";
-    if (["ap", "access-point"].includes(dt)) return "ap";
-    if (["tvcc", "camera", "nvr", "dvr"].includes(dt)) return "tvcc";
-    if (dt === "printer") return "printer";
-    if (dt === "endpoint-private" || d.mac_is_random) return "mobile";
-    const vendor = (d.vendor || "").toLowerCase();
-    const hostname = ((d.hostname || "") + " " + (d.name || "")).toLowerCase();
-    if (/wildix|yealink|polycom|snom|grandstream|panasonic kx|fanvil/i.test(vendor)) return "voip";
-    if (/phone|telefon|wildix|sip-/i.test(hostname)) return "voip";
-    if (/hikvision|dahua|reolink|axis comm|uniview|hanwha/i.test(vendor)) return "tvcc";
-    if (/canon|brother|epson|kyocera|konica|xerox|ricoh|lexmark|sharp|oki/i.test(vendor)) return "printer";
-    if (vendor === "hp" && /print|laser|inkjet|officejet|deskjet/i.test(hostname)) return "printer";
-    if (/synology|qnap|asustor|netgear sto|drobo/i.test(vendor)) return "nas";
-    // Workstation/PC by vendor (laptop e desktop tipici)
-    if (/msi|micro-star|elitegroup|lcfc|asus|dell|lenovo|gigabyte|asrock|acer|samsung electron|intel|tmc|liteon|wistron|compal|quanta|inventec|pegatron/i.test(vendor)) return "workstation";
-    if (vendor === "hp" || /hewlett.packard|hp inc/i.test(vendor)) return "workstation";
-    if (/apple/i.test(vendor) && !d.mac_is_random) return "workstation";  // Mac/iMac/MacBook con MAC reale
-    if (/raspberry|nvidia jetson|orange pi/i.test(vendor)) return "iot";
-    return "other";
-  };
+  // v3.8.20 + 2026-02-13 UNIFIED: classificazione macroaree (PC, VoIP, Mobile,
+  // ecc.) per i device. Estratta in `utils/deviceCategory.js` per essere usata
+  // identica anche dalla pagina Dispositivi (allineamento Panoramica/Dispositivi).
+  // Mantenuto qui l'alias per minimizzare il diff sui filtri.
 
   const firewalls = devices.filter(d => macroOf(d) === "firewall");
   const switches = devices.filter(d => macroOf(d) === "switch");
@@ -450,7 +421,7 @@ export default function ClientOverviewPage() {
         {activeTab === "overview" && <OverviewTab devices={devices} wanTargets={wanTargets} alerts={alerts} connector={connector} printers={printers} backups={backups} firewalls={firewalls} switches={switches} servers={servers} upsList={upsList} nasList={nasList} apList={apList} tvccList={tvccList} printersList={printersList} voipList={voipList} workstationList={workstationList} mobileList={mobileList} iotList={iotList} skipList={skipList} others={others} iloHealth={iloHealth} />}
         {activeTab === "devices" && <DevicesTab devices={devices} clientId={clientId} onRefresh={fetchAll} onOptimisticUpdate={optimisticUpdateDevice} />}
         {activeTab === "wan" && <WanTab targets={wanTargets} clientId={clientId} clientName={client.name} onRefresh={fetchAll} />}
-        {activeTab === "alerts" && <AlertsTab alerts={alerts} navigate={navigate} />}
+        {activeTab === "alerts" && <AlertsTab alerts={alerts} navigate={navigate} clientId={clientId} clientName={client.name} onRefresh={fetchAll} />}
         {activeTab === "printers" && <PrintersTab printers={mergedPrinters} />}
         {activeTab === "backup" && <BackupTab backups={backups} clientId={clientId} />}
         {activeTab === "credentials" && <VaultPage scopedClientId={clientId} scopedClientName={client.name} />}
@@ -1163,7 +1134,7 @@ function MiniMetric({ label, value, sub, color }) {
 }
 
 /* ==================== DEVICE GROUP ==================== */
-function DeviceGroup({ label, icon: Icon, devices, color }) {
+function DeviceGroup({ label, icon: Icon, devices, color, onInfoClick }) {
   // displayName: priorità hostname → mdns_name → fingerbank_device_name → name (se != IP) → IP nudo
   const _displayName = (d) => {
     const ip = d.ip_address || "";
@@ -1186,8 +1157,15 @@ function DeviceGroup({ label, icon: Icon, devices, color }) {
           const sc = STATUS_COLOR[d.status] || "#555";
           const name = _displayName(d);
           const nameIsIP = name === (d.ip_address || "");
+          const clickable = !!onInfoClick;
           return (
-            <div key={i} className="flex items-center gap-2 px-2.5 py-1.5 rounded-md border text-[10px]" style={{ borderColor: `${sc}20`, background: `${sc}04` }}>
+            <div
+              key={i}
+              onClick={clickable ? () => onInfoClick(d) : undefined}
+              className={`flex items-center gap-2 px-2.5 py-1.5 rounded-md border text-[10px] ${clickable ? "cursor-pointer hover:brightness-125 transition-all" : ""}`}
+              style={{ borderColor: `${sc}20`, background: `${sc}04` }}
+              data-testid={clickable ? `grouped-device-row-${d.ip_address}` : undefined}
+            >
               <div className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: sc }}></div>
               <span className={`font-medium truncate ${nameIsIP ? "text-[var(--text-muted)] italic" : "text-[var(--text-primary)]"}`} title={d.notes || ""}>{name}</span>
               {!nameIsIP && <span className="font-mono text-[var(--text-muted)]">{d.ip_address}</span>}
@@ -1205,6 +1183,87 @@ function DeviceGroup({ label, icon: Icon, devices, color }) {
   );
 }
 
+/* ==================== DEVICES GROUPED VIEW (clone Panoramica) ====================
+   Stesse macroaree, stessi colori/icone, stesso DeviceGroup component, ma con
+   click su riga → apre Scheda Dispositivo (info card completa).
+   v2026-02-13: richiesto dall'utente "voglio struttura identica come clone"
+*/
+function DevicesGroupedView({ devices, skipList, onInfoClick }) {
+  // Partizionamento via macroOf (utils/deviceCategory)
+  const buckets = {
+    firewall: [], switch: [], router: [], server: [], nas: [], ups: [], ap: [],
+    tvcc: [], printer: [], voip: [], workstation: [], mobile: [], iot: [], other: [],
+  };
+  devices.forEach(d => {
+    const m = macroOf(d);
+    if (m === "_skip") return;
+    if (buckets[m]) buckets[m].push(d);
+    else buckets.other.push(d);
+  });
+
+  const GROUPS = [
+    { key: "firewall",    label: "Firewall",                                   icon: ShieldCheck, color: "#FF3B30" },
+    { key: "switch",      label: "Switch",                                     icon: HardDrives,  color: "#6366F1" },
+    { key: "router",      label: "Router",                                     icon: Network,     color: "#0EA5E9" },
+    { key: "server",      label: "Server / iLO",                               icon: Monitor,     color: "#06B6D4" },
+    { key: "nas",         label: "NAS / Storage",                              icon: Database,    color: "#14B8A6" },
+    { key: "ups",         label: "UPS",                                        icon: Lightning,   color: "#EAB308" },
+    { key: "ap",          label: "Access Point / WiFi",                        icon: WifiHigh,    color: "#8B5CF6" },
+    { key: "tvcc",        label: "TVCC / Videosorveglianza",                   icon: Monitor,     color: "#F97316" },
+    { key: "printer",     label: "Stampanti",                                  icon: Printer,     color: "#EC4899" },
+    { key: "voip",        label: "Telefoni VoIP",                              icon: Phone,       color: "#22C55E" },
+    { key: "workstation", label: "Workstation / PC",                           icon: Desktop,     color: "#3B82F6" },
+    { key: "mobile",      label: "Smartphone / Mobile (MAC randomizzato)",     icon: DeviceMobile,color: "#A855F7" },
+    { key: "iot",         label: "IoT / Embedded",                             icon: Cpu,         color: "#F59E0B" },
+    { key: "other",       label: "Altri Dispositivi",                          icon: HardDrives,  color: "#64748B" },
+  ];
+
+  const totalShown = devices.length;
+  if (totalShown === 0) {
+    return (
+      <div className="noc-panel p-8 text-center text-[var(--text-muted)] text-xs">
+        Nessun dispositivo — clicca "Aggiungi Dispositivo" per iniziare
+      </div>
+    );
+  }
+
+  return (
+    <div className="noc-panel p-4" data-testid="devices-grouped-view">
+      <p className="text-[9px] font-bold uppercase tracking-[0.15em] text-indigo-400 mb-3">
+        Infrastruttura di rete · {totalShown} dispositivi
+      </p>
+      <div className="space-y-3">
+        {GROUPS.map(g => (
+          buckets[g.key].length > 0 ? (
+            <DeviceGroup
+              key={g.key}
+              label={g.label}
+              icon={g.icon}
+              devices={buckets[g.key]}
+              color={g.color}
+              onInfoClick={onInfoClick}
+            />
+          ) : null
+        ))}
+        {skipList && skipList.length > 0 && (
+          <details className="opacity-60 hover:opacity-100 transition-opacity">
+            <summary className="cursor-pointer text-[9px] uppercase tracking-[0.15em] text-[var(--text-muted)] py-2 select-none">
+              ▸ Multicast / broadcast nascosti ({skipList.length})
+            </summary>
+            <DeviceGroup
+              label="Multicast / Broadcast (non gestiti)"
+              icon={NetworkSlash}
+              devices={skipList}
+              color="#6B7280"
+              onInfoClick={onInfoClick}
+            />
+          </details>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /* ==================== DEVICES TAB ==================== */
 function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
   const [showAdd, setShowAdd] = useState(false);
@@ -1216,6 +1275,16 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
   // di default per coerenza con card "DISPOSITIVI" e Infrastruttura. L'utente
   // puo' attivare il toggle per mostrarli a fini di debug/visibilita' completa.
   const [showMulticast, setShowMulticast] = useState(false);
+  // v2026-02-13: vista raggruppata per categoria (clone struttura Panoramica)
+  // default "grouped" come richiesto dall'utente ("voglio struttura identica clone")
+  const [viewMode, setViewMode] = useState(() => {
+    try {
+      return localStorage.getItem("client-devices-view") || "grouped";
+    } catch { return "grouped"; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem("client-devices-view", viewMode); } catch { /* ignore */ }
+  }, [viewMode]);
   const webConsole = useWebConsoleTabs();
   const _isMcast = (d) => /^(22[4-9]|23\d|255)\./.test(d?.ip_address || "");
   const visibleDevices = showMulticast ? devices : devices.filter(d => !_isMcast(d));
@@ -1681,7 +1750,26 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
             <span className="text-amber-400/80">({hiddenCount} multicast/broadcast nascosti)</span>
           )} — i dispositivi manuali vengono interrogati dal connector entro pochi cicli di polling
         </p>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* v2026-02-13: toggle vista raggruppata/tabella */}
+          <div className="inline-flex rounded-md border border-[var(--bg-border)] overflow-hidden" data-testid="devices-view-toggle">
+            <button
+              onClick={() => setViewMode("grouped")}
+              className={`text-[10px] px-2.5 py-1 transition-colors ${viewMode === "grouped" ? "bg-indigo-600 text-white" : "bg-transparent text-[var(--text-muted)] hover:text-[var(--text-primary)]"}`}
+              data-testid="devices-view-grouped-btn"
+              title="Mostra dispositivi raggruppati per categoria (clone Panoramica)"
+            >
+              📋 Raggruppata
+            </button>
+            <button
+              onClick={() => setViewMode("table")}
+              className={`text-[10px] px-2.5 py-1 transition-colors ${viewMode === "table" ? "bg-indigo-600 text-white" : "bg-transparent text-[var(--text-muted)] hover:text-[var(--text-primary)]"}`}
+              data-testid="devices-view-table-btn"
+              title="Mostra dispositivi in tabella tradizionale (azioni edit/info/web console)"
+            >
+              📊 Tabella
+            </button>
+          </div>
           {hiddenCount > 0 && (
             <button
               onClick={() => setShowMulticast(s => !s)}
@@ -1784,6 +1872,9 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
         </div>
       </div>
 
+      {viewMode === "grouped" ? (
+        <DevicesGroupedView devices={visibleDevices} skipList={showMulticast ? [] : devices.filter(d => _isMcast(d))} onInfoClick={(d) => setInfoTarget(d)} />
+      ) : (
       <div className="noc-panel overflow-x-auto">
         <table className="alert-table min-w-[780px]" data-testid="client-devices-table">
           <thead>
@@ -1832,7 +1923,15 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
                       )}
                     </span>
                   </td>
-                  <td><span className="text-[10px] px-1.5 py-0.5 rounded border border-[var(--bg-border)]">{d.device_type}</span></td>
+                  <td>
+                    <span
+                      className="text-[10px] px-1.5 py-0.5 rounded border border-[var(--bg-border)]"
+                      title={`Categoria: ${macroLabel(d)} · device_type: ${d.device_type || "—"}`}
+                      data-testid={`device-category-${d.ip_address}`}
+                    >
+                      {macroLabel(d)}
+                    </span>
+                  </td>
                   <td className="font-mono text-[var(--text-muted)] text-xs">{d.ip_address}</td>
                   <td>
                     <span className={`text-[9px] px-1.5 py-0.5 rounded border font-bold ${methodBadge.bg} ${methodBadge.color}`}>
@@ -2075,6 +2174,7 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
           </tbody>
         </table>
       </div>
+      )}
 
       {/* Add Device Dialog */}
       <Dialog open={showAdd} onOpenChange={setShowAdd}>
@@ -2755,7 +2855,7 @@ function WanTab({ targets, clientId, clientName, onRefresh }) {
 }
 
 /* ==================== ALERTS TAB ==================== */
-function AlertsTab({ alerts, navigate }) {
+function AlertsTab({ alerts, navigate, clientId, clientName, onRefresh }) {
   // v3.8.31: ordinamento alert client-side (default: data desc)
   const SEV_RANK = { critical: 4, high: 3, medium: 2, low: 1 };
   const { sorted, sortKey, sortDir, requestSort } = useSortableTable(
@@ -2770,8 +2870,45 @@ function AlertsTab({ alerts, navigate }) {
       },
     }
   );
+
+  // v2026-02-13: pulsante "Elimina tutti" — admin-only sul backend
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [clearScope, setClearScope] = useState("active");
+  const [clearing, setClearing] = useState(false);
+  const doClear = async () => {
+    setClearing(true);
+    try {
+      const url = `${API}/alerts/clear-all?scope=${clearScope}` + (clientId ? `&client_id=${clientId}` : "");
+      const { data } = await axios.delete(url);
+      toast.success(`Eliminati ${data.deleted} alert (${data.scope})`);
+      setConfirmOpen(false);
+      onRefresh?.();
+    } catch (e) {
+      const detail = e.response?.data?.detail || e.message;
+      toast.error(`Errore eliminazione alert: ${detail}`, { duration: 7000 });
+    } finally {
+      setClearing(false);
+    }
+  };
+
   return (
     <div className="noc-panel overflow-x-auto">
+      <div className="flex items-center justify-between mb-3 px-1">
+        <div className="text-[10px] uppercase tracking-wider text-[var(--text-muted)]">
+          {alerts.length} alert {clientName ? `· ${clientName}` : ""}
+        </div>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => setConfirmOpen(true)}
+          disabled={alerts.length === 0}
+          className="text-[10px] h-7 border-red-500/40 text-red-300 hover:bg-red-500/10 hover:border-red-500"
+          data-testid="alerts-clear-all-btn"
+          title={alerts.length === 0 ? "Nessun alert da eliminare" : "Elimina tutti gli alert (admin only)"}
+        >
+          <Trash size={12} className="mr-1" /> Elimina tutti
+        </Button>
+      </div>
       <table className="alert-table min-w-[560px]">
         <thead><tr>
           <SortableTh field="severity" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Sev.</SortableTh>
@@ -2795,6 +2932,52 @@ function AlertsTab({ alerts, navigate }) {
           })}
         </tbody>
       </table>
+
+      <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <DialogContent className="bg-[var(--bg-card)] border-[var(--bg-border)]" data-testid="alerts-clear-confirm-dialog">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-red-300">
+              <Trash size={18} /> Elimina alert {clientName ? `— ${clientName}` : ""}
+            </DialogTitle>
+            <DialogDescription className="text-[var(--text-muted)] text-xs">
+              L'eliminazione è <strong className="text-red-400">definitiva</strong> (hard delete su MongoDB).
+              Per ripristinare serve un backup. L'operazione viene loggata in audit con
+              utente e timestamp.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3 py-2">
+            <Label className="text-xs">Quali alert eliminare?</Label>
+            <Select value={clearScope} onValueChange={setClearScope}>
+              <SelectTrigger data-testid="alerts-clear-scope-select"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="active">Solo attivi (raccomandato)</SelectItem>
+                <SelectItem value="resolved">Solo risolti/acknowledged (storico)</SelectItem>
+                <SelectItem value="all">Tutti (attivi + storico) ⚠️</SelectItem>
+              </SelectContent>
+            </Select>
+            <div className="text-[10px] text-amber-300/80 bg-amber-500/10 border border-amber-500/30 rounded p-2">
+              {clientId
+                ? `Lo scope è limitato al cliente "${clientName}". Gli alert degli altri clienti NON saranno toccati.`
+                : "ATTENZIONE: nessun client_id — gli alert di TUTTI i clienti saranno coinvolti."}
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirmOpen(false)} disabled={clearing} data-testid="alerts-clear-cancel-btn">
+              Annulla
+            </Button>
+            <Button
+              onClick={doClear}
+              disabled={clearing}
+              className="bg-red-600 hover:bg-red-700 text-white"
+              data-testid="alerts-clear-confirm-btn"
+            >
+              {clearing ? "Eliminazione..." : `Elimina ${clearScope === "all" ? "tutti" : clearScope === "active" ? "attivi" : "storici"}`}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
