@@ -130,7 +130,9 @@ export default function ClientOverviewPage() {
   if (loading) return <div className="p-6 text-center text-[var(--text-muted)]">Caricamento...</div>;
   if (!client) return <div className="p-6 text-center text-[var(--text-muted)]">Cliente non trovato</div>;
 
-  const onlineDevices = devices.filter(d => (d.status === "online" || d.status === "active") && !/^(22[4-9]|23\d|255)\./.test(d.ip_address || "")).length;
+  // v4.17.x: status normalizzato lato backend ("active" → "online").
+  // Ora panoramica e tabella usano la STESSA definizione di online.
+  const onlineDevices = devices.filter(d => d.status === "online" && !/^(22[4-9]|23\d|255)\./.test(d.ip_address || "")).length;
   // v3.8.40: offlineDevices conta solo "veri" device (esclusi multicast/broadcast)
   const realDevicesCount = devices.filter(d => !/^(22[4-9]|23\d|255)\./.test(d.ip_address || "")).length;
   const offlineDevices = realDevicesCount - onlineDevices;

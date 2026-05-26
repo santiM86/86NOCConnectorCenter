@@ -32,6 +32,50 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-02-24 ✅ FIX — Inconsistenza Panoramica vs Tabella Dispositivi (status legacy "active")
+
+### Bug
+Lo screenshot utente mostrava:
+- **Panoramica**: "70/86 device · 16 offline" + tutti i badge ONLINE
+- **Tab Dispositivi**: molti device marcati offline
+
+### Root cause
+I device manuali creati via `POST /devices` (collection legacy `db.devices`)
+nascono con `status="active"` (default storico). Ma:
+- Panoramica filtrava `onlineDevices = devices.filter(d => d.status === "online" || d.status === "active")` → li contava online
+- Tabella Dispositivi mostrava il valore raw → "ACTIVE" in giallo, percepito come "non online" dall'utente
+- STATUS_COLOR mappava `active → "#FFCC00"` (giallo) ma `online → "#34C759"` (verde)
+
+### Fix
+
+#### Backend `devices.py::get_devices`
+Aggiunta normalizzazione globale subito dopo il merge dei device con
+poll_status:
+```python
+if d.get("status") == "active":
+    d["status"] = "online"
+```
+Cosi' qualsiasi consumer downstream (panoramica, tabella, API esterne)
+vede lo stesso valore.
+
+#### Frontend `ClientOverviewPage.js`
+Semplificato il filter `onlineDevices` rimuovendo il check legacy `|| active`
+(non piu' necessario, mai arrivera' "active" dal backend). I check
+`|| d.status === "active"` in altri 2 punti restano come safety net per
+device dalla cache.
+
+### Validato in container
+- Test API: tutti i 6 device del cliente preview ora ritornano `status="online"`
+  (erano `"active"` prima del fix)
+- Lint Python + JS pulito
+
+### Effetto utente
+Panoramica e Tab Dispositivi ora sono SEMPRE coerenti. Lo stato "ACTIVE"
+giallo non appare piu' nella UI (normalizzato a online verde).
+
+---
+
+
 ## 2026-02-24 ✅ Mini-card "Distribuzione polling per subnet"
 
 ### Backend `devices.py`
