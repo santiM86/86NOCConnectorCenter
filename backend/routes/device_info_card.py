@@ -20,6 +20,7 @@ import re
 
 from database import db
 from deps import get_current_user
+from display_name import best_display_name
 
 router = APIRouter(prefix="/api", tags=["device-info-card"])
 
@@ -383,12 +384,7 @@ async def build_info_card(device_ip: str) -> Dict[str, Any]:
     )
     bios = ilo.get("bios_version")
 
-    hostname = _first_not_none(
-        poll.get("sys_name"),
-        poll.get("device_name"),
-        managed.get("name"),
-        cmdb.get("hostname"),
-    )
+    hostname = best_display_name(managed, poll, device_ip)
 
     # MAC: prefer primary MAC if exposed; else first from device_macs list; else ARP-cache lookup
     macs = poll.get("device_macs") or []

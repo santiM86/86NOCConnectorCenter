@@ -1,3 +1,153 @@
+# 2026-02-13 — Liveness Resolver Centralizzato (P0 fix)
+
+## 🟢 "Panoramica e Dispositivi ora dicono la stessa verita'"
+
+**Bug risolto**: nello screenshot precedente Overview indicava 70/86 online
+mentre la lista Dispositivi mostrava la maggior parte degli stessi come
+offline. Il motivo: `overview.py` e `devices.py` avevano logiche
+divergenti per calcolare lo status, e con i fix v4.16.x evidence-based
+(FDB switch, ARP cross-VLAN, TCP fallback) la divergenza era diventata
+sistematica.
+
+### Soluzione
+Terzo modulo centralizzato (stesso pattern di `display_name.py` e
+`device_type_resolver.py`):
+`/app/backend/liveness_resolver.py`
+
+API:
+- `effective_reachable(pd)` → bool, con debounce anti-flap (3 fail + 5 min
+  grace) — esatta copia della logica privata di devices.py
+- `build_evidence_maps(db, client_id=None, window_minutes=15)` →
+  `(ip_evidence, mac_evidence)` interrogando `discovered_endpoints`
+  con MODE-AGNOSTIC (scanner / agent_v4 / FDB switch SNMP)
+- `compute_status(pd, md, ip_evidence, mac_evidence)` →
+  `(status, evidence_label)` — priorita':
+  1. Evidence IP/MAC → ONLINE (override anti-flap)
+  2. `effective_reachable(pd)` con debounce → online/offline
+  3. `md.source == "connector-scanner"` → derivato da last_seen_at
+  4. Mai polleato → "pending"
+
+### File modificati
+- `backend/liveness_resolver.py` — nuovo (3 funzioni pure)
+- `backend/routes/overview.py` — sostituito blocco `scanner_seen_keys`
+  con `build_evidence_maps()`, blocco anti-flap inline con
+  `compute_status()`. Proiezioni Mongo allargate (mac, source,
+  last_seen_at, method, ping_method). Branch managed-only ora usa
+  pd quando esiste invece di "unknown" default.
+- `backend/routes/devices.py` — INVARIATO per minimizzare rischio.
+  Useremo gradualmente lo stesso modulo in iterazioni successive.
+
+### Allineamento risultante
+Stessa logica esatta tra Panoramica e Dispositivi su:
+- Anti-flap (3 fail consecutivi + 5 min grace)
+- Evidence FDB switch SNMP (mac_table_switch)
+- Evidence agent_v4 ARP (cross-VLAN)
+- Evidence scanner LAN
+- Scanner-source senza poll record (orfani)
+- Finestra 15 min (era 10 in overview, 15 in devices → ora entrambe 15)
+
+### Test
+- `backend/tests/test_liveness_resolver.py` — 15 unit test (debounce,
+  evidence override, scanner-source aging, mac normalization, anti-flap)
+- 8 scenari integration test cross-VLAN PASS (stampante con ICMP
+  bloccato vista via agent_v4 ARP → online; master ping fail ma FDB
+  switch lo vede → online; UDP loss singolo → anti-flap; ecc.)
+- Totale suite centralizzata: **44/44 PASS**
+
+---
+
+
+# 2026-02-13 — Device Type Resolver Centralizzato (consistency fix #2)
+
+## 🏷️ "Smista già per categoria, in panoramica e dispositivi"
+
+Stesso pattern del fix display name: prima c'erano **tre** posti diversi
+dove un device veniva classificato (Printer / Switch / Firewall / NAS /
+ecc.), ciascuno con regex e keyword leggermente diverse:
+
+- `routes/devices.py` (~30 righe di if/elif sui sysDescr al volo)
+- `routes/overview.py::_infer_device_type` (regex semplificate)
+- `device_classifier.py::classify_device_type` (il piu' robusto, ma
+  chiamato solo durante l'ingestion in `managed_devices.device_type`)
+
+Risultato: una stampante apparsa come "server" nella lista Dispositivi,
+"printer" in Panoramica, oppure non smistata correttamente sotto la
+card "Stampanti" del cliente.
+
+### Soluzione
+Nuovo modulo `/app/backend/device_type_resolver.py` con helper unico
+`best_device_type(md, pd, name_hint=None)`.
+
+Priorita':
+1. `md.device_type_user_locked == True` → rispetta scelta admin
+2. `md.device_type` se gia' specifico (CANONICAL_TYPES whitelist)
+3. `device_classifier.classify_device_type()` su sysDescr/OID/hostname
+4. OUI vendor single-purpose hint (Brother → printer, Hikvision → tvcc, ecc.)
+5. `mac_is_random` → endpoint-private
+6. fallback "generic"
+
+Output normalizzato (alias map): `ap` → `access-point`, `ip_camera` →
+`tvcc`, `voip_phone` → `voip`, `storage` → `nas`, ecc.
+
+### Migliorato classifier Canon
+Aggiunto pattern `ir-?adv|ir[\s-]?c?\d{4,}` ai _PRINTER_PATTERNS in
+`device_classifier.py` (Canon imageRUNNER ADV C3530, ecc.).
+
+### File modificati
+- `backend/device_type_resolver.py` — nuovo (CANONICAL_TYPES, alias map,
+  OUI single-purpose hints)
+- `backend/device_classifier.py` — esteso _PRINTER_PATTERNS per Canon iR-ADV
+- `backend/routes/devices.py` — sostituito 30 righe di regex inline (branch
+  polled) + sostituito default hard-coded "server" (branch managed-only)
+- `backend/routes/overview.py` — rimosso `_infer_device_type` locale,
+  proiezioni Mongo allargate (sys_descr, sys_object_id, vendor, model,
+  device_type_user_locked, mac_is_random)
+
+### Test
+`backend/tests/test_device_type_resolver.py` — 19 unit test (printer via
+Printer-MIB OID, switch HPE Comware, firewall FortiGate, NAS Synology,
+UPS APC, OUI vendor hint, locked override, alias normalization, ecc.).
+✅ 19/19 PASS. Totale suite: 29/29 PASS.
+
+---
+
+
+# 2026-02-13 — Display Name Centralizzato (consistency fix)
+
+## 🔤 "Se riconosci il nome del dispositivo usa quello ovunque"
+
+L'utente aveva segnalato che la Scheda Dispositivo mostrava
+"Switch and Wireless Controller/HP Switches" (categoria Fingerbank) come
+titolo, mentre il sysName SNMP reale era "Switch02 HP 5130 52G".
+Discrepanza analoga tra lista Dispositivi, Overview e modal.
+
+### Soluzione
+Creato `/app/backend/display_name.py` con helper unico `best_display_name(md, pd, ip)`.
+
+Priorità (unificata in tutto il backend):
+1. `md.name` se `name_locked` (admin ha bloccato esplicitamente)
+2. `pd.sys_name` (SNMP sysName — autoritativo per network gear)
+3. `md.hostname` (NBNS / reverse DNS)
+4. `md.mdns_name` (mDNS Bonjour)
+5. `pd.device_name` se NON è "category-like" (contiene "/")
+6. `md.name` se NON è "category-like"
+7. `md.fingerbank_device_name` (es. "Switch and Wireless Controller/HP Switches")
+8. fallback ip
+
+### File modificati
+- `backend/display_name.py` — nuovo helper centralizzato + detection categoria
+- `backend/routes/devices.py` — entrambi i branch (polled v4 + managed-only)
+- `backend/routes/overview.py` — proiezioni Mongo allargate + helper applicato
+- `backend/routes/device_info_card.py` — hostname identity unificato
+- `frontend/src/pages/ClientOverviewPage.js` — modal title fallback su hostname
+
+### Test
+`backend/tests/test_display_name.py` — 10 unit test (sys_name vince su Fingerbank,
+name_locked rispettato, mdns fallback, IP last-resort, ecc.) — ✅ 10/10 PASS.
+
+---
+
+
 # 2026-02-12 — Argus Desktop v5.0.0 — REWRITE TOTALE GUI CONNECTOR
 
 ## 🚀 Bye `nocagent-ui.exe`, hello `ArgusDesktop.exe`

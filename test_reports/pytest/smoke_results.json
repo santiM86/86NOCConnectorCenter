@@ -49,7 +49,7 @@
     "status": 200,
     "ok": true,
     "extra": {
-      "count": 100
+      "count": 99
     }
   },
   {
@@ -111,7 +111,7 @@
   {
     "name": "vault.credentials",
     "method": "GET",
-    "url": "/api/vault/credentials?client_id=device-poller-ws",
+    "url": "/api/vault/credentials?client_id=da3d6e40-b3e5-4d46-9787-dde328a3aa36",
     "status": 200,
     "ok": true,
     "extra": {}

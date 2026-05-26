@@ -46,7 +46,7 @@ _PRINTER_PATTERNS = re.compile(
     # Sharp / Sharp MFP (MX-, BP-, AR-)
     r"sharp|mx-[a-z]?\d|bp-[a-z]?\d|ar-[a-z]?\d|"
     # Canon
-    r"imagerunner|imageclass|pixma|maxify|i-?sensys|color\s?image|"
+    r"imagerunner|imageclass|pixma|maxify|i-?sensys|color\s?image|ir-?adv|ir[\s-]?c?\d{4,}|"
     # Epson
     r"workforce|ecotank|stylus|expression\s?premium|surecolor|"
     # Lexmark
