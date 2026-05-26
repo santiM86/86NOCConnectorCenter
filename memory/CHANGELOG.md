@@ -1,3 +1,57 @@
+# 2026-02-13 — Tab Dispositivi: vista Raggruppata (clone Panoramica)
+
+## 📋 "Voglio struttura identica come clone"
+
+L'utente ha richiesto che la tab Dispositivi mostri la stessa struttura
+visuale della Panoramica Cliente: dispositivi raggruppati per categoria
+con header colorati (FIREWALL, SWITCH, STAMPANTI, TELEFONI VoIP, ecc.),
+icone, count tra parentesi, righe device pulite con pallino stato.
+
+### Soluzione
+Aggiunti due elementi a `ClientOverviewPage.js`:
+
+1. **Toggle vista** in alto alla tab Dispositivi: due bottoni
+   "📋 Raggruppata" / "📊 Tabella". Default = `grouped`, persistito
+   in localStorage (`client-devices-view`).
+
+2. **Nuovo componente `DevicesGroupedView`** — riusa lo stesso
+   `DeviceGroup` della Panoramica, partiziona i device via
+   `macroOf(d)` (utils/deviceCategory.js condiviso), itera su 14
+   macroaree canoniche (firewall, switch, router, server, nas, ups,
+   ap, tvcc, printer, voip, workstation, mobile, iot, other) +
+   sezione collassabile per multicast/broadcast nascosti.
+
+3. **Click su device** in vista raggruppata → apre Scheda Dispositivo
+   (modal AllMetricsDialog), stessa logica del click sulla tabella.
+
+4. **Vista Tabella** (alternativa) preserva tutte le azioni
+   originali (edit, info card, web console, ports, copy IP, ecc.).
+
+### File modificati
+- `frontend/src/pages/ClientOverviewPage.js`:
+  - state `viewMode` con localStorage persist
+  - toggle UI in header tab Dispositivi
+  - rendering condizionale `<DevicesGroupedView>` vs `<table>`
+  - nuovo componente `DevicesGroupedView` a fondo file (~80 righe)
+  - update `DeviceGroup` con prop opzionale `onInfoClick` (clickable rows)
+
+### Test
+- Testing agent v3 fork iter-83: **100% backend + 100% frontend**,
+  zero issues, retest_needed=false. Validati:
+  - Login admin + navigation client overview
+  - Toggle vista presente + funzionante
+  - Vista raggruppata renderizzata con categorie corrette
+  - Click su device → Scheda Dispositivo modal
+  - Toggle a Tabella → vista tradizionale preservata
+  - localStorage persistence funziona
+  - Backend DELETE /api/alerts/clear-all admin-only OK
+  - Dialog Elimina tutti in entrambe le viste alert OK
+- Lint JS: ✅ No issues found
+- Suite pytest centralizzata: 51/51 PASS
+
+---
+
+
 # 2026-02-13 — Unificazione Categorie UI + Bulk Delete Alerts
 
 ## 🎯 "Stessa categoria in Panoramica e Dispositivi"
