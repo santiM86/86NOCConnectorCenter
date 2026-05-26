@@ -1134,7 +1134,7 @@ function MiniMetric({ label, value, sub, color }) {
 }
 
 /* ==================== DEVICE GROUP ==================== */
-function DeviceGroup({ label, icon: Icon, devices, color, onInfoClick }) {
+function DeviceGroup({ label, icon: Icon, devices, color, onInfoClick, renderActions }) {
   // displayName: priorità hostname → mdns_name → fingerbank_device_name → name (se != IP) → IP nudo
   const _displayName = (d) => {
     const ip = d.ip_address || "";
@@ -1169,12 +1169,26 @@ function DeviceGroup({ label, icon: Icon, devices, color, onInfoClick }) {
               <div className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: sc }}></div>
               <span className={`font-medium truncate ${nameIsIP ? "text-[var(--text-muted)] italic" : "text-[var(--text-primary)]"}`} title={d.notes || ""}>{name}</span>
               {!nameIsIP && <span className="font-mono text-[var(--text-muted)]">{d.ip_address}</span>}
+              {d.datto_name && d.datto_name !== name && (
+                <span
+                  className="inline-flex items-center gap-0.5 text-[8px] px-1 py-0.5 rounded bg-fuchsia-500/20 text-fuchsia-200 border border-fuchsia-500/40 font-bold"
+                  title={`Datto RMM: ${d.datto_name}${d.datto_match ? ` (match via ${d.datto_match.toUpperCase()})` : ""}`}
+                  data-testid={`datto-badge-${d.ip_address}`}
+                >
+                  DATTO: {d.datto_name}
+                </span>
+              )}
               {d.vendor && <span className="text-[8px] px-1 rounded bg-[var(--bg-card)] text-[var(--text-muted)] truncate max-w-[120px]" title={d.vendor}>{d.vendor}</span>}
               {d.snmp_community && <span className="text-[8px] px-1 rounded bg-[var(--bg-card)] text-[var(--text-muted)]">{d.snmp_version || "snmp"}: {d.snmp_community}</span>}
               <span className="ml-auto font-bold text-[8px] uppercase" style={{ color: sc }}>{d.status}</span>
               {d.source === "connector" && <span className="text-[7px] px-1 rounded bg-indigo-500/10 text-indigo-400">M</span>}
               {d.source === "connector-master" && <span className="text-[7px] px-1 rounded bg-indigo-500/10 text-indigo-400">M</span>}
               {d.source === "connector-scanner" && <span className="text-[7px] px-1 rounded bg-sky-500/10 text-sky-400">S</span>}
+              {renderActions && (
+                <div className="flex items-center gap-0.5 ml-1 pl-1.5 border-l border-[var(--bg-border)]" onClick={(e) => e.stopPropagation()}>
+                  {renderActions(d)}
+                </div>
+              )}
             </div>
           );
         })}
@@ -1188,7 +1202,7 @@ function DeviceGroup({ label, icon: Icon, devices, color, onInfoClick }) {
    click su riga → apre Scheda Dispositivo (info card completa).
    v2026-02-13: richiesto dall'utente "voglio struttura identica come clone"
 */
-function DevicesGroupedView({ devices, skipList, onInfoClick }) {
+function DevicesGroupedView({ devices, skipList, onInfoClick, renderActions }) {
   // Partizionamento via macroOf (utils/deviceCategory)
   const buckets = {
     firewall: [], switch: [], router: [], server: [], nas: [], ups: [], ap: [],
@@ -1242,6 +1256,7 @@ function DevicesGroupedView({ devices, skipList, onInfoClick }) {
               devices={buckets[g.key]}
               color={g.color}
               onInfoClick={onInfoClick}
+              renderActions={renderActions}
             />
           ) : null
         ))}
@@ -1256,6 +1271,7 @@ function DevicesGroupedView({ devices, skipList, onInfoClick }) {
               devices={skipList}
               color="#6B7280"
               onInfoClick={onInfoClick}
+              renderActions={renderActions}
             />
           </details>
         )}
@@ -1263,6 +1279,126 @@ function DevicesGroupedView({ devices, skipList, onInfoClick }) {
     </div>
   );
 }
+
+/* ============ DEVICE ACTIONS BAR (stesso set di icone della tabella) ============
+   8 azioni cliccabili: Web Console (se applicabile) · Info card · Switch Ports
+   (se device è portable) · Trend · Test SNMP · Edit · Profilo · Delete.
+   Stesso identico stile/colori della tabella tradizionale, in modo che chi
+   cambia vista non perda nulla.
+   v2026-02-13: aggiunto per ripristinare i comandi rimossi nella vista
+   raggruppata.
+*/
+function DeviceActionsBar({ d, testingId, onWebConsole, showWebConsole, webPort, onInfo, onSwitchPorts, onTrend, onTestSnmp, onEdit, onProfile, onDelete }) {
+  const dt = (d.device_type || "").toLowerCase();
+  const modelL = (d.model || d.sys_descr || "").toLowerCase();
+  const nameL = (d.name || "").toLowerCase();
+  const portsKw = [
+    "switch", "router", "firewall", "gateway",
+    "catalyst", "nexus", "meraki",
+    "procurve", "aruba", "5130", "5140", "5900",
+    "ex2300", "ex3400", "ex4300", "srx",
+    "fortigate", "fortiswitch", "fortiap",
+    "zyxel", "xgs", "gs1900", "gs2200",
+    "mikrotik", "routerboard", "ccr", "crs",
+    "unifi", "edgerouter", "edgeswitch", "usg",
+    "dgs-", "dxs-",
+    "powerconnect", "n1500", "n2000", "n3000",
+    "huawei", "s5700", "s6700", "ar2200",
+    "pfsense", "opnsense",
+    "synology", "qnap", "diskstation", "rackstation", "ts-",
+  ];
+  const portsMatches = portsKw.some(k => modelL.includes(k) || nameL.includes(k));
+  const isPortable =
+    dt.includes("switch") || dt.includes("router") || dt.includes("firewall") ||
+    dt === "nas" || dt === "network-device" || portsMatches;
+  const portsTip = dt === "firewall" ? "Porte firewall (ifTable)"
+    : dt === "nas" ? "Interfacce NAS (ifTable)"
+    : "Porte switch (UP/DOWN + LLDP + flap)";
+
+  const profileClass = d.profile_key
+    ? (d.profile_auto_matched
+        ? "hover:bg-emerald-500/10 text-emerald-400"
+        : "hover:bg-cyan-500/10 text-cyan-400")
+    : "hover:bg-amber-500/10 text-amber-400 animate-pulse";
+  const profileTitle = d.profile_key
+    ? `Profilo: ${d.profile_key}${d.profile_auto_matched ? " (auto)" : " (manuale)"}`
+    : "Nessun profilo — clicca per configurare";
+
+  return (
+    <>
+      {showWebConsole && (
+        <button
+          onClick={onWebConsole}
+          className="p-1 rounded hover:bg-indigo-500/10 text-indigo-400 transition-colors"
+          title={`Apri Web Console (porta ${webPort})${d.profile_key ? ` · profilo ${d.profile_key}` : ""}`}
+          data-testid={`grouped-web-console-${d.ip_address}`}
+        >
+          <Monitor size={11} />
+        </button>
+      )}
+      <button
+        onClick={onInfo}
+        className="p-1 rounded hover:bg-cyan-500/10 text-cyan-400 transition-colors"
+        title="Scheda dispositivo completa"
+        data-testid={`grouped-device-info-${d.ip_address}`}
+      >
+        <Info size={11} />
+      </button>
+      {isPortable && (
+        <button
+          onClick={onSwitchPorts}
+          className="p-1 rounded hover:bg-indigo-500/10 text-indigo-400 transition-colors"
+          title={portsTip}
+          data-testid={`grouped-switch-ports-${d.ip_address}`}
+        >
+          <NetworkSlash size={11} />
+        </button>
+      )}
+      <button
+        onClick={onTrend}
+        className="p-1 rounded hover:bg-indigo-500/10 text-indigo-400 transition-colors"
+        title="Trend metriche storiche"
+        data-testid={`grouped-device-trend-${d.ip_address}`}
+      >
+        <ChartLine size={11} />
+      </button>
+      <button
+        onClick={onTestSnmp}
+        disabled={testingId === d.id}
+        className="p-1 rounded hover:bg-emerald-500/10 text-emerald-400 transition-colors disabled:opacity-30 disabled:cursor-wait"
+        title="Test SNMP live"
+        data-testid={`grouped-test-snmp-${d.ip_address}`}
+      >
+        {testingId === d.id ? <span className="inline-block animate-spin text-[10px]">⟳</span> : <span className="text-[10px]">⚡</span>}
+      </button>
+      <button
+        onClick={onEdit}
+        className="p-1 rounded hover:bg-violet-500/10 text-violet-400 transition-colors"
+        title="Modifica dispositivo"
+        data-testid={`grouped-edit-device-${d.ip_address}`}
+      >
+        <PencilSimple size={11} />
+      </button>
+      <button
+        onClick={onProfile}
+        className={`p-1 rounded transition-colors ${profileClass}`}
+        title={profileTitle}
+        data-testid={`grouped-configure-profile-${d.ip_address}`}
+      >
+        <Cpu size={11} />
+      </button>
+      <button
+        onClick={onDelete}
+        className="p-1 rounded hover:bg-[var(--critical-bg)] text-[var(--critical)] transition-colors"
+        title="Rimuovi"
+        data-testid={`grouped-delete-device-${d.ip_address}`}
+      >
+        <Trash size={10} />
+      </button>
+    </>
+  );
+}
+
 
 /* ==================== DEVICES TAB ==================== */
 function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
@@ -1797,6 +1933,26 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
             <MagnifyingGlass size={13} /> Riconosci sconosciuti
           </Button>
           <Button
+            onClick={async () => {
+              try {
+                const { data } = await axios.post(`${API}/clients/${clientId}/datto/rematch`);
+                if (data.ok) {
+                  toast.success(data.message);
+                  onRefresh?.();
+                } else {
+                  toast.warning(data.message, { duration: 8000 });
+                }
+              } catch (e) {
+                toast.error(`Errore re-match Datto: ${e.response?.data?.detail || e.message}`, { duration: 7000 });
+              }
+            }}
+            className="bg-fuchsia-600/90 hover:bg-fuchsia-600 text-white h-8 text-xs gap-1"
+            data-testid="datto-rematch-btn"
+            title="Ri-esegue il match Datto RMM ↔ Center per questo cliente (incrocio su MAC e IP). Scrive il nome ufficiale Datto sui device matchati, visibile come badge fucsia."
+          >
+            🔗 Match Datto
+          </Button>
+          <Button
             onClick={() => correlateConnectivity()}
             className="bg-violet-600/90 hover:bg-violet-600 text-white h-8 text-xs gap-1"
             data-testid="correlate-connectivity-btn"
@@ -1873,7 +2029,27 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
       </div>
 
       {viewMode === "grouped" ? (
-        <DevicesGroupedView devices={visibleDevices} skipList={showMulticast ? [] : devices.filter(d => _isMcast(d))} onInfoClick={(d) => setInfoTarget(d)} />
+        <DevicesGroupedView
+          devices={visibleDevices}
+          skipList={showMulticast ? [] : devices.filter(d => _isMcast(d))}
+          onInfoClick={(d) => setInfoTarget(d)}
+          renderActions={(d) => (
+            <DeviceActionsBar
+              d={d}
+              testingId={testingId}
+              onWebConsole={() => openConsoleWithVpn(d)}
+              showWebConsole={canOpenWebConsole(d)}
+              webPort={defaultWebPort(d)}
+              onInfo={() => setInfoTarget(d)}
+              onSwitchPorts={() => navigate(`/switch-ports/${encodeURIComponent(d.ip_address)}`)}
+              onTrend={() => navigate(`/device-metrics?ip=${d.ip_address}`)}
+              onTestSnmp={() => handleTestSNMP(d)}
+              onEdit={() => setEditTarget(d)}
+              onProfile={() => setProfileTarget(d)}
+              onDelete={() => handleDelete(d)}
+            />
+          )}
+        />
       ) : (
       <div className="noc-panel overflow-x-auto">
         <table className="alert-table min-w-[780px]" data-testid="client-devices-table">
@@ -1910,8 +2086,17 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
               return (
                 <tr key={i} className={d.alerts_silenced ? "opacity-70" : ""}>
                   <td className="text-[var(--text-primary)] text-xs font-medium">
-                    <span className="inline-flex items-center gap-1.5">
+                    <span className="inline-flex items-center gap-1.5 flex-wrap">
                       {d.name}
+                      {d.datto_name && d.datto_name !== d.name && (
+                        <span
+                          className="inline-flex items-center gap-0.5 text-[9px] px-1 py-px rounded bg-fuchsia-500/20 text-fuchsia-200 border border-fuchsia-500/40 font-bold"
+                          title={`Datto RMM: ${d.datto_name}${d.datto_match ? ` (match via ${d.datto_match.toUpperCase()})` : ""}`}
+                          data-testid={`table-datto-badge-${d.ip_address}`}
+                        >
+                          DATTO: {d.datto_name}
+                        </span>
+                      )}
                       {d.alerts_silenced && (
                         <span
                           className="inline-flex items-center gap-0.5 text-[9px] px-1 py-px rounded bg-amber-500/15 text-amber-300 border border-amber-500/40"

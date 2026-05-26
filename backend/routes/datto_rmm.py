@@ -863,6 +863,51 @@ async def list_datto_devices_for_client(
         "matched": matched_count,
     }
 
+
+@router.post("/clients/{client_id}/datto/rematch")
+async def rematch_datto_for_client(
+    client_id: str, current_user: dict = Depends(get_current_user),
+):
+    """Forza un re-match Datto RMM ↔ Center per UN singolo cliente.
+
+    Riutilizza i `datto_devices` gia' cached (no fetch API Datto, no rate limit).
+    Riapplica `_match_with_center` per scrivere `datto_name`/`datto_match`/
+    `datto_matched_at` sui managed_devices e discovered_endpoints.
+
+    Returns:
+        {ok, client_id, datto_total, datto_matched, message}
+    """
+    require_admin(current_user)
+    # Recupera datto_devices cached per il cliente
+    datto_devs = await db.datto_devices.find(
+        {"client_id": client_id},
+        {"_id": 0, "uid": 1, "name": 1, "mac_list": 1, "ip_list": 1},
+    ).to_list(10000)
+    if not datto_devs:
+        return {
+            "ok": False,
+            "client_id": client_id,
+            "datto_total": 0,
+            "datto_matched": 0,
+            "message": "Nessun device Datto in cache per questo cliente. "
+                       "Esegui prima una sync globale (POST /api/datto/sync-now) "
+                       "o collega il sito Datto al cliente.",
+        }
+    # Re-applica il match
+    matched = await _match_with_center(client_id, datto_devs)
+    audit.info(
+        f"datto_rematch by={current_user.get('email')} client_id={client_id} "
+        f"total={len(datto_devs)} matched={matched}"
+    )
+    return {
+        "ok": True,
+        "client_id": client_id,
+        "datto_total": len(datto_devs),
+        "datto_matched": matched,
+        "message": f"Re-match Datto eseguito: {matched}/{len(datto_devs)} device matchati.",
+    }
+
+
 # ---------------------------------------------------------------------------
 # Endpoint BROWSE paginato — UI Prev/Next
 # ---------------------------------------------------------------------------
