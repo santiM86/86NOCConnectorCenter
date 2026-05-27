@@ -1,3 +1,62 @@
+# 2026-02-14 — Printer Monitoring Fase 1 (MPS Monitor parity quick wins)
+
+## 🎯 Obiettivo
+Portare Argus al livello di [MPS Monitor](https://www.mpsmonitor.it/caratteristiche-monitoraggio-stampanti/)
+per il monitoraggio stampanti. Fase 1 = 5 quick wins (Forecast, Breakdown, CPP, Asset, CSV).
+
+## 🆕 Backend `routes/printer_advanced.py`
+Nuovi endpoint (registrati PRIMA di `printers_router` per priorità routing):
+- **`GET /api/printers/{client_id}/{ip}/forecast`** — calcolo realistico giorni
+  rimanenti per ogni supply (consumo medio % giornaliero su trend ultimi 30gg).
+  Gestisce edge case: ricarica recente, livello stabile, dati insufficienti.
+- **`PUT /api/printers/{client_id}/{ip}/metadata`** — salva: asset_tag,
+  location (sede/piano/ufficio), cost_center, cpp_bw, cpp_color,
+  contract_ref, notes. `null`/`""` cancella il field.
+- **`GET /api/printers/{client_id}/dashboard-extended`** — KPI aggregati:
+  page_breakdown (BW/Color/Duplex/Large/Scan/Fax), estimated_monthly_cost,
+  cost_breakdown_top10, supplies_critical (≤10gg), locations_summary.
+- **`GET /api/printers/{client_id}/export-csv`** — CSV 23 colonne (volumi,
+  supplies, CPP, costi 30gg, asset, sede, contratto).
+
+### Estensioni `printers.py::process-poll`
+Accetta i nuovi counter opzionali da Printer MIB RFC 3805:
+- `large_format_count` (prtSubunitLifeCount large)
+- `scan_count`
+- `fax_count`
+
+Aggiunto commento `$set` ora NON tocca i metadata utente (asset_tag, location, ecc.).
+
+## 🆕 Frontend `pages/PrintersPage.js`
+- 6 StatCard (incluso nuovo **"Costo 30gg"** in euro)
+- **3 panel KPI extended**:
+  - "Pagine per Tipo" (BW/Color/Duplex/Large/Scan/Fax con % colore)
+  - "Top Stampanti per Costo" (top 5 cost breakdown 30gg)
+  - "Esaurimento Imminente" (supplies ≤10gg con colore brand)
+- **Pulsante Export CSV** in toolbar (download diretto blob)
+- **Icona ✏️ Edit Metadata** su ogni card stampante → apre modal con form completo
+- **Forecast badge inline** accanto a ogni TonerBar (es. "~18gg" rosso/ambra/verde a seconda dei giorni)
+- **Card espansa**: contatori breakdown completi, badge CPP in evidenza, badge sede/asset
+
+## ✅ Test backend (4 endpoint, tutti OK)
+```
+GET /api/printers/{client_id}/dashboard-extended
+  → total_printers=7, page_breakdown.total=266580, color_ratio=39.5%
+PUT /api/printers/{client_id}/{ip}/metadata
+  → ok=true, updated_fields=[asset_tag, location, cpp_bw, cpp_color]
+GET /api/printers/{client_id}/{ip}/forecast
+  → supplies=[{name:"Black Toner CF259A", level=70%, days=None, reason:"insufficient_history"}]
+GET /api/printers/{client_id}/export-csv
+  → CSV scaricato (header con 23 colonne + 1 riga per stampante)
+```
+
+## 🛠️ Fix tecnico
+- `printer_advanced_router` registrato PRIMA di `printers_router` in `server.py`
+  per evitare conflitto con `/{client_id}/{device_ip}` catch-all che matchava
+  "dashboard-extended" come device_ip.
+
+---
+
+
 # 2026-02-14 — Rename manuale device (propagato ovunque) + Tab "Server" + WAN status verde con ping OK
 
 ## ✅ Feat A — Rename manuale device dalla Scheda Dispositivo
