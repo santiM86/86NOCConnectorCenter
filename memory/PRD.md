@@ -54,6 +54,88 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-03-01 ✅ WAN Client Tab — FASE 1 (clone hero ISP + intelligence MSP-grade)
+
+### Richiesta utente
+«clonare la card ISP/Firewall (vista globale ExternalMonitorPage) dentro il tab WAN del cliente, con migliorie da competitor Datto/NinjaOne/Auvik».
+
+### Bug critico fixato
+`get_target_insights` leggeva da `h["ping"]["latency_ms"]` ma `run_probe_cycle`
+salva history FLAT (`latency_ms`, `packet_loss_pct`, `status`). Risultato: tutti
+gli insight ritornavano `None` per stats. Schema unificato a FLAT + fallback
+legacy nested per backward compat. Aggiunto anche `reachable`, `gateway_reachable`,
+`gateway_latency_ms` al top-level history.
+
+### Nuovi endpoint backend `/api/external-monitor/`
+- `GET /insights/{target_id}?days=30` — uptime today/7d/30d, sparkline 24h
+  (max 200 punti), latency stats (avg/min/max/p95/jitter), loss avg, down
+  periods, MTTR, samples count.
+- `GET /geo-ip/{ip}` — lookup ISP+ASN+geo via ip-api.com (free, 45 req/min).
+  Cache 30 giorni in `wan_geoip_cache`.
+- `GET /dns-health/{target_id}` — probe UDP DNS verso Google/Cloudflare/Quad9/
+  Gateway ISP, query A su google.com + microsoft.com, misura latency_ms per
+  resolver.
+- `GET /public-ip-history/{target_id}` — storico cambi IP del target (auto-detect
+  in `run_probe_cycle` → record in `wan_public_ip_changes` + alert severity
+  high).
+- `POST /speedtest/{client_id}` — invia comando WS `speedtest` al primo
+  agent v4 master LIVE. Insert record `running` in `wan_speedtest_history`
+  con cmd_id UUID. 503 se nessun agent.
+- `GET /speedtest-history/{client_id}` — ultimi N speedtest (default 20).
+- `POST /speedtest-result` — callback per registrare risultato
+  (download_mbps, upload_mbps, ping_ms, jitter_ms, server, isp).
+
+### Frontend `frontend/src/components/WanClientTab.jsx` (NUOVO, ~600 righe)
+Sostituisce il vecchio `WanTab` inline rimosso da `ClientOverviewPage.js`
+(330 righe in meno).
+
+Componenti:
+- **HeroCard**: card emerald/red con nome cliente, diagnosis text, badge ISP
+  ONLINE/DOWN con IP+latency (clone fedele dello screenshot utente).
+- **TargetCard**: per ogni firewall/router — pallino animato, badge status,
+  IP, latency live, metodo (ICMP/TCP), pulsante delete.
+- **InsightsPanel**: 3 SLA bars (today/7d/30d) color-coded, 4 metriche
+  (Avg/P95/Jitter/Loss), sparkline 24h recharts AreaChart con tooltip
+  italiano + reference line avg, riga "N interruzioni · MTTR Xmin".
+- **GeoIspCard**: badge MapPin emerald — ISP, Org, ASN, Località.
+- **DnsHealthCard**: on-demand "Esegui" → tabella resolver con pallino
+  green/red, IP, latency_ms.
+- **PublicIpHistoryCard**: amber se cambi detectati, altrimenti stable.
+- **SpeedtestCard**: pulsante "Esegui ora", mostra last result (Download/
+  Upload/Ping) + storico ultimi 5.
+
+### Integrazioni nuove
+- **ip-api.com** (GeoIP gratuito, no key, cache 30gg) — `_fetch_geoip()`
+- **UDP DNS resolver custom** (no library) — `_resolve_dns()` query A
+  diretta su porta 53.
+- **WS speedtest command** — agent v4.18+ deve supportare il comando
+  "speedtest" (TODO Fase 2: implementare lato Go).
+
+### Validato
+- 19/19 test backend PASS (iter-84): insights flat fix, geo-ip cache,
+  dns health 3 resolver, speedtest 503 senza agent, history endpoints,
+  non-regressione targets/status/test-connection.
+- Lint Python + JS pulito.
+
+### Code review (suggerimenti per future iterazioni)
+- `external_monitor.py` ora 1193 righe → split candidato per la prossima
+  refactor pass (targets/probe/insights/geoip/dns/speedtest).
+- TTL index Mongo su `wan_geoip_cache.cached_at` per evitare crescita.
+- Pydantic schema per `POST /speedtest-result`.
+
+### Fase 2 — pianificata (next round)
+- Agent Go comando `speedtest` (speedtest-cli/Ookla via exec).
+- Multi-ISP failover detection.
+- Cloud SaaS reachability (M365/Google/AWS).
+- MTR/traceroute on-demand.
+- Grafici storici 7d/30d dettagliati.
+- Alert configurabili lat/loss threshold.
+- Bandwidth via SNMP IF-MIB.
+
+---
+
+
+
 ## 2026-02-24 ✅ FIX — Inconsistenza Panoramica vs Tabella Dispositivi (status legacy "active")
 
 ### Bug
