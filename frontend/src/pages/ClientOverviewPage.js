@@ -615,11 +615,16 @@ function IloHealthPanel({ iloHealth }) {
    e azioni rapide (poll-now, espandi tutti).
 */
 function ServersTab({ iloHealth, clientId, clientName, onRefresh }) {
-  const [filter, setFilter] = useState("all"); // all | issues | ok
+  const [filter, setFilter] = useState("all"); // all | issues | ok | needs_setup
   const [polling, setPolling] = useState(false);
   const healthColor = (h) => ({ ok: "#34C759", warning: "#FFCC00", critical: "#FF3B30" }[(h || "").toLowerCase()] || "#64748B");
 
-  const filtered = (iloHealth || []).filter((s) => {
+  // v2026-02-14: separazione tra server con dati Redfish live e server che
+  // richiedono ancora la configurazione delle credenziali iLO.
+  const configuredServers = (iloHealth || []).filter(s => s.has_redfish_data);
+  const pendingServers = (iloHealth || []).filter(s => s.needs_ilo_setup || (!s.has_redfish_data && !s.ilo_configured));
+
+  const filtered = configuredServers.filter((s) => {
     if (filter === "all") return true;
     const h = (s.health_status || "").toLowerCase();
     if (filter === "issues") return h === "warning" || h === "critical";
@@ -627,21 +632,21 @@ function ServersTab({ iloHealth, clientId, clientName, onRefresh }) {
     return true;
   });
 
-  // KPI aggregati top-bar
-  const totalRamGb = (iloHealth || []).reduce((sum, s) => sum + (Number(s.total_memory_gb) || 0), 0);
-  const totalPowerW = (iloHealth || []).reduce((sum, s) => sum + (Number(s.power_watts) || 0), 0);
-  const totalDrives = (iloHealth || []).reduce((sum, s) => sum + (s.storage_controllers || []).reduce((a, c) => a + (c.drives?.length || 0), 0), 0);
-  const failingDrives = (iloHealth || []).reduce((sum, s) => sum + (s.storage_controllers || []).reduce((a, c) =>
+  // KPI aggregati top-bar (solo server configurati)
+  const totalRamGb = configuredServers.reduce((sum, s) => sum + (Number(s.total_memory_gb) || 0), 0);
+  const totalPowerW = configuredServers.reduce((sum, s) => sum + (Number(s.power_watts) || 0), 0);
+  const totalDrives = configuredServers.reduce((sum, s) => sum + (s.storage_controllers || []).reduce((a, c) => a + (c.drives?.length || 0), 0), 0);
+  const failingDrives = configuredServers.reduce((sum, s) => sum + (s.storage_controllers || []).reduce((a, c) =>
     a + (c.drives || []).filter(d => (d.health || "").toLowerCase() !== "ok" || d.failure_predicted).length, 0), 0);
-  const totalDimms = (iloHealth || []).reduce((sum, s) => sum + ((s.memory_dimms || []).filter(d => (d.size_gb || d.capacity_mb) > 0)).length, 0);
-  const okServers = (iloHealth || []).filter(s => (s.health_status || "").toLowerCase() === "ok").length;
-  const warnServers = (iloHealth || []).filter(s => (s.health_status || "").toLowerCase() === "warning").length;
-  const critServers = (iloHealth || []).filter(s => (s.health_status || "").toLowerCase() === "critical").length;
+  const totalDimms = configuredServers.reduce((sum, s) => sum + ((s.memory_dimms || []).filter(d => (d.size_gb || d.capacity_mb) > 0)).length, 0);
+  const okServers = configuredServers.filter(s => (s.health_status || "").toLowerCase() === "ok").length;
+  const warnServers = configuredServers.filter(s => (s.health_status || "").toLowerCase() === "warning").length;
+  const critServers = configuredServers.filter(s => (s.health_status || "").toLowerCase() === "critical").length;
 
   const pollAllNow = async () => {
     setPolling(true);
     try {
-      const ips = (iloHealth || []).map(s => s.device_ip).filter(Boolean);
+      const ips = configuredServers.map(s => s.device_ip).filter(Boolean);
       if (ips.length === 0) {
         toast.warning("Nessun server iLO configurato per questo cliente");
         return;
@@ -661,10 +666,11 @@ function ServersTab({ iloHealth, clientId, clientName, onRefresh }) {
     return (
       <div className="noc-panel p-8 text-center" data-testid="servers-tab-empty">
         <Cpu size={36} className="mx-auto mb-3 opacity-30 text-[var(--text-muted)]" />
-        <p className="text-sm text-[var(--text-primary)] font-semibold mb-1">Nessun server con iLO configurato</p>
+        <p className="text-sm text-[var(--text-primary)] font-semibold mb-1">Nessun server rilevato</p>
         <p className="text-xs text-[var(--text-muted)] mb-4 max-w-md mx-auto">
-          Configura le credenziali iLO/Redfish nei dispositivi del cliente <b>{clientName}</b> per
-          vedere qui CPU, RAM, dischi, sensori e stato hardware in tempo reale.
+          Argus non ha ancora trovato server (HP ProLiant, Dell, ecc.) o iLO controller nei dispositivi
+          gestiti del cliente <b>{clientName}</b>. Aggiungi i server manualmente dalla tab Dispositivi
+          o attendi il prossimo ciclo di Auto-Discovery.
         </p>
         <Button
           size="sm"
@@ -684,21 +690,21 @@ function ServersTab({ iloHealth, clientId, clientName, onRefresh }) {
       {/* KPI bar */}
       <div className="noc-panel p-3">
         <div className="grid grid-cols-2 md:grid-cols-6 gap-2">
-          <ServerKpi label="Server totali" value={iloHealth.length} sub={`${okServers} OK · ${warnServers} warn · ${critServers} crit`} color="#06B6D4" testid="kpi-total-servers" />
+          <ServerKpi label="Server con iLO" value={configuredServers.length} sub={`${okServers} OK · ${warnServers} warn · ${critServers} crit`} color="#06B6D4" testid="kpi-total-servers" />
           <ServerKpi label="RAM Totale" value={`${totalRamGb} GB`} sub={`${totalDimms} DIMM popolati`} color="#8B5CF6" testid="kpi-total-ram" />
           <ServerKpi label="Dischi" value={totalDrives} sub={failingDrives ? `${failingDrives} in errore` : "Tutti OK"} color={failingDrives ? "#FF3B30" : "#34C759"} testid="kpi-total-drives" />
           <ServerKpi label="Potenza" value={totalPowerW ? `${totalPowerW} W` : "—"} sub="consumo live" color="#F59E0B" testid="kpi-total-power" />
-          <ServerKpi label="Warning" value={warnServers} sub="server in degradato" color="#FFCC00" testid="kpi-warn-servers" />
+          <ServerKpi label="Da configurare" value={pendingServers.length} sub="credenziali iLO mancanti" color={pendingServers.length ? "#FFCC00" : "#34C759"} testid="kpi-pending-servers" />
           <ServerKpi label="Critical" value={critServers} sub="richiede intervento" color="#FF3B30" testid="kpi-crit-servers" />
         </div>
       </div>
 
       {/* Toolbar */}
       <div className="flex items-center justify-between flex-wrap gap-2 px-1">
-        <div className="flex items-center gap-1 text-xs">
+        <div className="flex items-center gap-1 text-xs flex-wrap">
           <span className="text-[var(--text-muted)] mr-2">Filtra:</span>
           {[
-            { id: "all", label: `Tutti (${iloHealth.length})` },
+            { id: "all", label: `Tutti (${configuredServers.length})` },
             { id: "issues", label: `Solo problemi (${warnServers + critServers})` },
             { id: "ok", label: `Solo OK (${okServers})` },
           ].map(f => (
@@ -722,7 +728,7 @@ function ServersTab({ iloHealth, clientId, clientName, onRefresh }) {
             variant="outline"
             className="h-7 text-xs gap-1 border-cyan-500/30 text-cyan-300 hover:bg-cyan-500/10"
             onClick={pollAllNow}
-            disabled={polling}
+            disabled={polling || configuredServers.length === 0}
             data-testid="servers-poll-all-btn"
             title="Forza polling iLO immediato su tutti i server"
           >
@@ -742,15 +748,55 @@ function ServersTab({ iloHealth, clientId, clientName, onRefresh }) {
       </div>
 
       {/* Server cards (riusa IloServerCard) */}
-      {filtered.length === 0 ? (
-        <div className="noc-panel p-6 text-center text-xs text-[var(--text-muted)]">
-          Nessun server corrisponde al filtro selezionato.
-        </div>
-      ) : (
-        <div className="space-y-3">
-          {filtered.map((s, idx) => (
-            <IloServerCard key={s.device_ip || idx} s={s} healthColor={healthColor} />
-          ))}
+      {configuredServers.length > 0 && (
+        filtered.length === 0 ? (
+          <div className="noc-panel p-6 text-center text-xs text-[var(--text-muted)]">
+            Nessun server corrisponde al filtro selezionato.
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {filtered.map((s, idx) => (
+              <IloServerCard key={s.device_ip || idx} s={s} healthColor={healthColor} />
+            ))}
+          </div>
+        )
+      )}
+
+      {/* Pending servers (need iLO setup) */}
+      {pendingServers.length > 0 && (
+        <div className="noc-panel p-4 border-yellow-500/30" data-testid="pending-ilo-servers">
+          <div className="flex items-center gap-2 mb-3">
+            <Lock size={14} weight="bold" className="text-yellow-400" />
+            <h3 className="text-[10px] font-bold uppercase tracking-[0.15em] text-yellow-400">
+              Server senza credenziali iLO ({pendingServers.length})
+            </h3>
+          </div>
+          <p className="text-[11px] text-[var(--text-muted)] mb-3">
+            Questi server sono stati rilevati ma non hanno credenziali iLO/Redfish configurate.
+            Aggiungile dalla tab <b>Credenziali</b> per vedere CPU, RAM, dischi e sensori hardware.
+          </p>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
+            {pendingServers.map((s) => (
+              <div
+                key={s.device_ip}
+                className="rounded-md border border-yellow-500/20 bg-yellow-500/5 p-2.5 hover:border-yellow-500/40 transition-colors"
+                data-testid={`pending-server-${s.device_ip}`}
+              >
+                <div className="flex items-start justify-between gap-2 mb-1">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-bold text-[var(--text-primary)] truncate">{s.device_name}</p>
+                    <p className="text-[10px] text-[var(--text-muted)] font-mono">{s.device_ip}</p>
+                  </div>
+                  <span className="text-[8px] px-1.5 py-0.5 rounded bg-yellow-500/15 text-yellow-300 font-bold uppercase whitespace-nowrap">
+                    No iLO
+                  </span>
+                </div>
+                {s.server_model && (
+                  <p className="text-[10px] text-[var(--text-muted)] mt-1 truncate">{s.server_model}</p>
+                )}
+              </div>
+            ))}
+          </div>
         </div>
       )}
     </div>
