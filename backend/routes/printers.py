@@ -174,6 +174,15 @@ async def process_printer_poll(request: Request):
         "page_count": body.get("page_count", 0),
         "color_page_count": body.get("color_page_count", 0),
         "duplex_count": body.get("duplex_count", 0),
+        # v2026-02-14: page counter breakdown extended (MPS Monitor parity).
+        # Tutti opzionali — il connector v4 puo' iniziare a popolarli
+        # leggendo gli OID Printer MIB RFC 3805:
+        #   prtMarkerLifeCount (.1.3.6.1.2.1.43.10.2.1.4.1.1) → total
+        #   prtMarkerLifeCount color/bw via prtMarkerColorantId
+        #   prtSubunitLifeCount per scan/fax/large
+        "large_format_count": body.get("large_format_count", 0),
+        "scan_count": body.get("scan_count", 0),
+        "fax_count": body.get("fax_count", 0),
         "supplies": supplies,
         "trays": body.get("trays", []),
         "alert_messages": body.get("alert_messages", []),
@@ -181,6 +190,9 @@ async def process_printer_poll(request: Request):
         "updated_at": now,
     }
 
+    # v2026-02-14: usa $set sui campi del poll ma NON tocca i metadata utente
+    # (asset_tag, location, cost_center, cpp_bw, cpp_color, contract_ref, notes)
+    # che vengono salvati separatamente via PUT /api/printers/{id}/{ip}/metadata.
     await db.printer_status.update_one(
         {"client_id": client_id, "device_ip": device_ip},
         {"$set": doc},

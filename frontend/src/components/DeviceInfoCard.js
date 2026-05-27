@@ -407,11 +407,24 @@ export default function DeviceInfoCard({ deviceIp, onClose = null, compact = fal
         {/* Data sources badges */}
         <div className="flex items-center gap-1 flex-wrap mt-3">
           <span className="text-[10px] uppercase text-[var(--text-secondary)]">Dati raccolti da:</span>
-          {(card.data_sources || []).map((s) => {
-            const b = sourcesBadges[s] || { label: s, color: "bg-slate-500/20 text-slate-300" };
+          {(card.data_sources_status || (card.data_sources || []).map(s => ({ key: s, present: true }))).map((s) => {
+            const b = sourcesBadges[s.key] || { label: s.key, color: "bg-slate-500/20 text-slate-300 border-slate-500/40" };
+            if (s.present) {
+              return (
+                <span key={s.key} className={`px-2 py-0.5 text-[10px] rounded border ${b.color}`} data-testid={`source-${s.key}`}>
+                  {b.label}
+                </span>
+              );
+            }
+            // Fonte MANCANTE: badge grigio "spento" con tooltip diagnostico
             return (
-              <span key={s} className={`px-2 py-0.5 text-[10px] rounded border ${b.color}`} data-testid={`source-${s}`}>
-                {b.label}
+              <span
+                key={s.key}
+                className="px-2 py-0.5 text-[10px] rounded border border-dashed border-[var(--bg-border)] text-[var(--text-muted)] opacity-50 hover:opacity-100 cursor-help transition-opacity"
+                title={s.reason || "Fonte non attiva"}
+                data-testid={`source-missing-${s.key}`}
+              >
+                {b.label} <span className="text-[8px]">⊘</span>
               </span>
             );
           })}

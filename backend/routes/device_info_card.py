@@ -335,6 +335,41 @@ async def build_info_card(device_ip: str) -> Dict[str, Any]:
     if parsed.get("matched"):
         sources.append("sys_descr_parser")
 
+    # v2026-02-14: detail con motivo per le fonti MANCANTI.
+    # Cosi' l'admin capisce QUALE pezzo configurare per attivare quel badge.
+    sys_descr_raw = (poll.get("sys_descr") or managed.get("sys_descr") or "").strip()
+    sources_status = []
+    for key, present, reason_missing in [
+        ("connector", bool(poll), "Il connector v4 non ha mai pollato questo device. Verifica che sia registrato e attivo per il cliente."),
+        ("managed_devices", bool(managed), "Device non presente in managed_devices. Aggiungilo manualmente o attendi che il connector lo scopra."),
+        ("entity_mib", bool(entity), (
+            "ENTITY-MIB (OID 1.3.6.1.2.1.47.*) non e' stato letto. "
+            "Verifica: (1) credenziali SNMP configurate e funzionanti, "
+            "(2) il device espone ENTITY-MIB (la maggior parte di switch/firewall enterprise sì, alcuni CPE consumer no), "
+            "(3) il connector v4 ha aggiornato la sua lista profili."
+        )),
+        ("sys_descr_parser", bool(parsed.get("matched")), (
+            "sysDescr non riconosciuto dal parser. " + (
+                f"Stringa ricevuta: \"{sys_descr_raw[:80]}{'...' if len(sys_descr_raw)>80 else ''}\". "
+                "Aggiungi una regola al parser in backend/sys_descr_parser.py."
+                if sys_descr_raw else
+                "sysDescr vuoto: verifica credenziali SNMP e che il device risponda all'OID 1.3.6.1.2.1.1.1.0."
+            )
+        )),
+        ("device_profile", bool(profile_doc), (
+            f"Nessun profilo vendor assegnato (profile_key='{profile_key or 'generic'}'). "
+            "Il classifier non ha riconosciuto modello/vendor; il device usera' OID base senza metriche specifiche."
+        )),
+        ("cmdb", bool(cmdb), "Nessuna scheda CMDB associata (ubicazione, owner, costo)."),
+        ("lifecycle", bool(lifecycle), "Nessun record di lifecycle (acquisto, garanzia, EOL)."),
+        ("redfish_ilo", bool(ilo), "iLO/Redfish non configurato. Per server HP/Dell aggiungi credenziali iLO dalla tab Credenziali."),
+    ]:
+        sources_status.append({
+            "key": key,
+            "present": present,
+            "reason": reason_missing if not present else None,
+        })
+
     # Resolve identity (priority: ilo > entity_mib > firewall metadata > lifecycle > cmdb > profile > parsed > poll)
     vendor = _first_not_none(
         ilo.get("manufacturer"),
@@ -534,6 +569,7 @@ async def build_info_card(device_ip: str) -> Dict[str, Any]:
         } if poll else {},
         "sys_descr_raw": poll.get("sys_descr"),
         "data_sources": sources,
+        "data_sources_status": sources_status,
     }
 
 

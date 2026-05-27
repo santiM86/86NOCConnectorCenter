@@ -247,9 +247,42 @@ async def _fetch_devices_list_all(timeout: float = 60.0) -> list[dict]:
                 data = resp.json()
             except Exception:
                 raise HTTPException(status_code=502, detail="Risposta Datto non JSON")
-            dd = data.get("dattoDevices") if isinstance(data, dict) else None
-            devs = (dd or {}).get("devices") or []
-            if not isinstance(devs, list) or not devs:
+            # v2026-02-14: parser robusto. Il wrapper portal.86bit.it puo' ritornare:
+            #   1) {"dattoDevices": {"devices": [...]}}  ← schema legacy
+            #   2) {"devices": [...]}                    ← schema flat
+            #   3) [...] (array diretto)
+            #   4) {"data": {"devices": [...]}}          ← wrapper generico
+            #   5) {"results": [...]}                    ← qualche API REST
+            devs = None
+            if isinstance(data, list):
+                devs = data
+            elif isinstance(data, dict):
+                # Tenta in ordine di priorita'
+                for path in [
+                    lambda d: (d.get("dattoDevices") or {}).get("devices"),
+                    lambda d: d.get("devices"),
+                    lambda d: (d.get("data") or {}).get("devices") if isinstance(d.get("data"), dict) else None,
+                    lambda d: d.get("results"),
+                    lambda d: (d.get("data") or {}).get("dattoDevices", {}).get("devices") if isinstance(d.get("data"), dict) else None,
+                    lambda d: d.get("data") if isinstance(d.get("data"), list) else None,
+                ]:
+                    try:
+                        v = path(data)
+                        if isinstance(v, list):
+                            devs = v
+                            break
+                    except Exception:
+                        continue
+            if not isinstance(devs, list):
+                devs = []
+            if not devs:
+                # Log la prima pagina con keys top-level per debug
+                if page == 0 and isinstance(data, dict):
+                    logger.warning(
+                        "datto_no_devices_found: top_keys=%s sample=%s",
+                        list(data.keys()),
+                        str(data)[:300],
+                    )
                 break
             first_uid = str(devs[0].get("uid") or devs[0].get("id") or "")
             if prev_first_uid is not None and first_uid == prev_first_uid:
@@ -702,7 +735,90 @@ async def test_datto_connection(current_user: dict = Depends(get_current_user)):
         "sites_from_sites_endpoint": len(portal_sites),
         "devices_found": len(devices),
         "sites": summary,
+        # v2026-02-14: hint se zero device → suggerisci debug endpoint
+        "warning": (
+            "Trovati 0 device. Possibile schema response inatteso dal wrapper. "
+            "Usa POST /api/admin/datto/raw-debug per vedere la struttura RAW della risposta."
+        ) if len(devices) == 0 and len(portal_sites) > 0 else None,
     }
+
+
+@router.post("/admin/datto/raw-debug")
+async def datto_raw_debug(current_user: dict = Depends(get_current_user)):
+    """Diagnostica: ritorna la struttura RAW della prima pagina del wrapper Datto.
+
+    Utile quando `test` ritorna 0 device ma piu' siti: significa che il wrapper
+    `portal.86bit.it` ha cambiato schema (es. `{devices:[...]}` invece di
+    `{dattoDevices:{devices:[...]}}`). Da qui si vede cosa serve.
+    Non espone valori sensibili: solo struttura JSON, sample del primo elem,
+    e dimensioni.
+    """
+    require_admin(current_user)
+    api_key, user_id, base_url, _ = await _get_datto_creds()
+    params = {"api_key": api_key, "userId": user_id, "json": "true", "page": 0, "max": 10}
+    async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+        try:
+            resp = await client.get(base_url, params=params)
+        except httpx.RequestError as e:
+            raise HTTPException(status_code=502, detail=f"Errore rete Datto: {e}")
+    out: dict[str, Any] = {
+        "status_code": resp.status_code,
+        "content_type": resp.headers.get("content-type"),
+        "content_length_bytes": len(resp.content),
+        "url_called": str(resp.request.url).replace(api_key, "***").replace(user_id, "***"),
+    }
+    try:
+        data = resp.json()
+    except Exception:
+        out["raw_preview"] = resp.text[:500]
+        out["parse_error"] = "Risposta non JSON valido"
+        return out
+
+    if isinstance(data, list):
+        out["top_level_type"] = "list"
+        out["top_level_length"] = len(data)
+        out["first_item_keys"] = list((data[0] or {}).keys()) if data else []
+    elif isinstance(data, dict):
+        out["top_level_type"] = "dict"
+        out["top_level_keys"] = list(data.keys())
+        # Esplora 2 livelli in profondita' alla ricerca di "devices"
+        def _shape(obj, depth=0):
+            if depth > 3:
+                return "..."
+            if isinstance(obj, dict):
+                return {k: _shape(v, depth + 1) for k, v in obj.items()}
+            if isinstance(obj, list):
+                return [f"list[{len(obj)}]"] + ([_shape(obj[0], depth + 1)] if obj else [])
+            return type(obj).__name__
+        out["shape"] = _shape(data)
+        # Tenta di estrarre il primo device per mostrarne le chiavi
+        devs = None
+        for path in [
+            lambda d: (d.get("dattoDevices") or {}).get("devices"),
+            lambda d: d.get("devices"),
+            lambda d: (d.get("data") or {}).get("devices") if isinstance(d.get("data"), dict) else None,
+            lambda d: d.get("results"),
+        ]:
+            try:
+                v = path(data)
+                if isinstance(v, list):
+                    devs = v
+                    break
+            except Exception:
+                pass
+        if devs is not None:
+            out["devices_path_resolved"] = True
+            out["devices_count"] = len(devs)
+            if devs:
+                out["first_device_keys"] = list((devs[0] or {}).keys())[:30]
+        else:
+            out["devices_path_resolved"] = False
+            out["hint"] = (
+                "Nessuno dei path standard (dattoDevices.devices, devices, data.devices, results) "
+                "ha matchato. Controlla 'shape' per capire dove sono i device e aggiorna "
+                "_fetch_devices_list_all() nel codice."
+            )
+    return out
 
 
 @router.post("/datto/sync-now")
