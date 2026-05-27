@@ -1110,12 +1110,27 @@ async def trigger_speedtest(client_id: str, current_user: dict = Depends(get_cur
         if conn is None:
             raise HTTPException(status_code=503, detail=f"Agent {agent['hostname']} non connesso al WS")
         cmd_id = str(uuid.uuid4())
-        # fire-and-forget: l'agent rispondera' via callback /speedtest-result
-        # quando lo speedtest e' completato (puo' richiedere 30-60s).
-        try:
-            asyncio.create_task(conn.send_command("speedtest", {"command_id": cmd_id, "client_id": client_id}, timeout=90.0))
-        except Exception as e:
-            logger.warning(f"speedtest dispatch warning: {e}")
+
+        # async dispatch: traccia l'eventuale fallimento del send_command
+        async def _dispatch_speedtest():
+            try:
+                reply = await conn.send_command("speedtest", {"command_id": cmd_id, "client_id": client_id}, timeout=90.0)
+                logger.info(f"speedtest WS ack from {agent.get('hostname')}: {reply}")
+            except Exception as exc:
+                # Se l'agent rifiuta il comando (es. cmd non registrato in versioni <v4.18),
+                # marchiamo il record come failed cosi' l'UI non resta a 'running' per sempre.
+                err = str(exc)
+                logger.warning(f"speedtest WS dispatch failed for {agent.get('hostname')}: {err}")
+                await db.wan_speedtest_history.update_one(
+                    {"id": cmd_id},
+                    {"$set": {
+                        "status": "failed",
+                        "completed_at": datetime.now(timezone.utc).isoformat(),
+                        "error": f"WS dispatch: {err[:200]}",
+                    }},
+                )
+
+        asyncio.create_task(_dispatch_speedtest())
     except ImportError:
         raise HTTPException(status_code=500, detail="Modulo agent_ws non disponibile")
     except HTTPException:
@@ -1154,13 +1169,31 @@ async def get_speedtest_history(client_id: str, limit: int = 20, current_user: d
 
 
 @router.post("/speedtest-result")
-async def submit_speedtest_result(payload: dict, current_user: dict = Depends(get_current_user)):
-    """Endpoint chiamato dall'agent (o da admin per test) per registrare il
-    risultato di uno speedtest. Aggiorna il record pending corrispondente.
+async def submit_speedtest_result(payload: dict, request: Request):
+    """Endpoint callback chiamato DALL'AGENT per registrare il risultato di
+    uno speedtest. Auth: Bearer token dell'agent (validato contro
+    `agent_tokens`) — NON richiede JWT utente perche' il chiamante e' un
+    binario Go installato dal cliente.
+
     Payload atteso:
       {command_id, client_id, agent_id, download_mbps, upload_mbps,
        ping_ms, jitter_ms, server, isp, error?}
     """
+    # Estrai token dall'header Authorization
+    auth = request.headers.get("Authorization", "")
+    token = None
+    if auth.lower().startswith("bearer "):
+        token = auth[7:].strip()
+    if not token:
+        raise HTTPException(status_code=401, detail="Bearer token mancante")
+    # Valida contro agent_tokens (token v4) o client api_keys
+    tok_doc = await db.agent_tokens.find_one({"token": token, "revoked": {"$ne": True}}, {"_id": 0})
+    if not tok_doc:
+        # Fallback: api_key di un cliente (legacy)
+        cli_doc = await db.clients.find_one({"api_key": token}, {"_id": 0, "id": 1})
+        if not cli_doc:
+            raise HTTPException(status_code=401, detail="Token non valido")
+
     cmd_id = payload.get("command_id")
     if not cmd_id:
         raise HTTPException(status_code=400, detail="command_id mancante")
@@ -1188,5 +1221,6 @@ async def submit_speedtest_result(payload: dict, current_user: dict = Depends(ge
             "requested_at": now_iso,
             **update_fields,
         })
+    logger.info(f"speedtest-result accepted cmd_id={cmd_id} down={payload.get('download_mbps')} up={payload.get('upload_mbps')} err={payload.get('error')}")
     return {"status": "ok", "command_id": cmd_id}
 
