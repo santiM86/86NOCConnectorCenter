@@ -72,3 +72,30 @@ def test_fingerbank_fallback_when_only_category_available():
 def test_pd_only():
     pd = {"sys_name": "core-router-01"}
     assert best_display_name(None, pd, "10.0.0.1") == "core-router-01"
+
+
+def test_vendor_ip_beats_fingerbank_category():
+    """v2026-02-14: vendor+IP e' piu' leggibile di una categoria Fingerbank."""
+    md = {
+        "name": "Switch and Wireless Controller/HP Switches",
+        "fingerbank_device_name": "Switch and Wireless Controller/HP Switches",
+        "vendor": "HPE",
+    }
+    assert best_display_name(md, None, "10.100.61.220") == "HPE 10.100.61.220"
+
+
+def test_vendor_slash_takes_first_part():
+    """Se vendor e' 'HPE/H3C', prende solo 'HPE' per pulizia."""
+    md = {
+        "name": "Switch and Wireless Controller/HP Switches",
+        "fingerbank_device_name": "Switch and Wireless Controller/HP Switches",
+        "vendor": "HPE/H3C",
+    }
+    assert best_display_name(md, None, "10.100.61.221") == "HPE 10.100.61.221"
+
+
+def test_sys_name_still_beats_vendor_ip():
+    """sys_name SNMP fresco e' SEMPRE preferito a vendor+IP."""
+    md = {"vendor": "HPE", "name": "auto-named"}
+    pd = {"sys_name": "Switch02 HP 5130 52G"}
+    assert best_display_name(md, pd, "10.100.61.221") == "Switch02 HP 5130 52G"
