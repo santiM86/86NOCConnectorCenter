@@ -596,14 +596,20 @@ function OverviewTab({ devices, wanTargets, alerts, connector, printers, backups
 /* ==================== ILO HEALTH PANEL ==================== */
 function IloHealthPanel({ iloHealth }) {
   const healthColor = (h) => ({ ok: "#34C759", warning: "#FFCC00", critical: "#FF3B30" }[(h || "").toLowerCase()] || "#64748B");
+  // v2026-02-14: nel pannello Panoramica mostriamo SOLO i server con dati
+  // Redfish live (BIOS/iLO/serial popolati). I server senza credenziali
+  // sono visibili nella tab dedicata "Server" (sezione gialla "da configurare"),
+  // ma qui rovinerebbero la vista mostrando 10 card vuote con "N/D" ovunque.
+  const real = (iloHealth || []).filter(s => s.has_redfish_data || s.server_model || s.bios_version);
+  if (real.length === 0) return null;
   return (
     <div className="noc-panel p-4" data-testid="ilo-health-panel">
       <div className="flex items-center gap-2 mb-3">
         <Monitor size={14} weight="bold" className="text-cyan-400" />
-        <h3 className="text-[10px] font-bold uppercase tracking-[0.15em] text-cyan-400">Hardware iLO (Redfish) — {iloHealth.length} server</h3>
+        <h3 className="text-[10px] font-bold uppercase tracking-[0.15em] text-cyan-400">Hardware iLO (Redfish) — {real.length} server</h3>
       </div>
       <div className="space-y-3">
-        {iloHealth.map((s, idx) => <IloServerCard key={idx} s={s} healthColor={healthColor} />)}
+        {real.map((s, idx) => <IloServerCard key={idx} s={s} healthColor={healthColor} />)}
       </div>
     </div>
   );
