@@ -134,7 +134,7 @@ def _ping_once(ip: str, seq: int, timeout: int = 3):
         return False, 0
 
 
-async def check_tcp_port(ip: str, port: int, timeout: int = 6) -> dict:
+async def check_tcp_port(ip: str, port: int, timeout: int = 8) -> dict:
     """
     TCP probe con stati distinti (RFC 793 / nmap-like).
 
@@ -143,27 +143,60 @@ async def check_tcp_port(ip: str, port: int, timeout: int = 6) -> dict:
       - "closed"      → RST esplicito (porta non in ascolto)
       - "filtered"    → timeout (firewall droppa silente, geo-IP, IPS)
       - "unreachable" → routing/network error (ENETUNREACH/EHOSTUNREACH)
-      - "error"       → altro errore
+      - "error"       → altro errore (DNS, SSL handshake, ecc.)
 
     v2026-02-13: prima ritornava sempre `open: False` per qualunque errore,
     causando falso "CLOSED" rosso quando in realta' il firewall del
     cliente droppa silenziosamente i probe (es. Zyxel USG con
     whitelist geo-IP/source: le connessioni accepted da IP autorizzati
     funzionano, ma il probe da Argus arriva da rete diversa → drop →
-    timeout → falso closed).
+    timeout → falso closed). UI deve mostrare "FILTERED" giallo, NON
+    "CLOSED" rosso.
 
-    Aggiunto 1 retry su timeout (dare al firewall una seconda chance,
-    abbatte rumore su WAN traballanti).
+    v2026-02-14:
+      - Forzato IPv4 (AF_INET): nel container K8s lo stack IPv6 non e'
+        sempre routable, evita falsi `unreachable` quando getaddrinfo
+        ritorna AAAA prima di A.
+      - Timeout default 6s → 8s: alcuni Zyxel/Fortinet WAN ad alto
+        carico rispondono al SYN dopo 5-7s.
+      - Aggiunto error_detail per debugging UI.
+      - Risoluzione DNS esplicita: cosi' un host non risolto
+        ritorna "error" con detail "DNS resolution failed" invece
+        di un generico OSError fuorviante.
     """
     start = time.monotonic()
     last_exc_kind = None
+    last_detail = None
+    _ = start  # reserved per future telemetry (overall probe duration)
+
+    # Esplicita risoluzione DNS in IPv4 (forziamo AF_INET).
+    # Se ip e' gia' un literal IPv4, getaddrinfo lo ritorna immediato.
+    target_ip = ip
+    try:
+        loop = asyncio.get_event_loop()
+        infos = await asyncio.wait_for(
+            loop.getaddrinfo(ip, port, family=socket.AF_INET, type=socket.SOCK_STREAM),
+            timeout=4,
+        )
+        if infos:
+            target_ip = infos[0][4][0]
+    except (socket.gaierror, asyncio.TimeoutError, OSError) as e:
+        return {
+            "port": port,
+            "open": False,
+            "status": "error",
+            "response_ms": None,
+            "error_detail": f"DNS resolution failed: {e}",
+        }
+
     for attempt in range(2):  # 1 retry su timeout
         try:
+            attempt_start = time.monotonic()
             _, writer = await asyncio.wait_for(
-                asyncio.open_connection(ip, port),
+                asyncio.open_connection(target_ip, port),
                 timeout=timeout,
             )
-            elapsed = round((time.monotonic() - start) * 1000, 1)
+            elapsed = round((time.monotonic() - attempt_start) * 1000, 1)
             writer.close()
             try:
                 await writer.wait_closed()
@@ -174,25 +207,33 @@ async def check_tcp_port(ip: str, port: int, timeout: int = 6) -> dict:
                 "open": True,
                 "status": "open",
                 "response_ms": elapsed,
+                "resolved_ip": target_ip if target_ip != ip else None,
             }
         except asyncio.TimeoutError:
             last_exc_kind = "filtered"
+            last_detail = f"TCP SYN timeout dopo {timeout}s (probabile firewall drop / geo-IP filter)"
             if attempt == 0:
                 continue  # retry
         except ConnectionRefusedError:
             last_exc_kind = "closed"
+            last_detail = "RST esplicito (porta non in ascolto sul server)"
             break
         except OSError as e:
+            errno = getattr(e, "errno", None)
             # ENETUNREACH=101, EHOSTUNREACH=113, ECONNRESET=104
-            if getattr(e, "errno", None) in (101, 113):
+            if errno in (101, 113):
                 last_exc_kind = "unreachable"
-            elif getattr(e, "errno", None) == 104:
+                last_detail = f"Network/host unreachable (errno={errno})"
+            elif errno == 104:
                 last_exc_kind = "closed"
+                last_detail = "ECONNRESET (server ha chiuso bruscamente)"
             else:
                 last_exc_kind = "error"
+                last_detail = f"OSError errno={errno}: {e}"
             break
-        except Exception:
+        except Exception as e:
             last_exc_kind = "error"
+            last_detail = f"{type(e).__name__}: {e}"
             break
 
     return {
@@ -200,6 +241,8 @@ async def check_tcp_port(ip: str, port: int, timeout: int = 6) -> dict:
         "open": False,
         "status": last_exc_kind or "error",
         "response_ms": None,
+        "error_detail": last_detail,
+        "resolved_ip": target_ip if target_ip != ip else None,
     }
 
 
@@ -237,6 +280,10 @@ async def probe_target(target: dict) -> dict:
 
     # Determine status
     any_port_open = any(p["open"] for p in port_checks) if port_checks else False
+    # v2026-02-14: distingui "filtered" (firewall drop silente) da "closed" reale.
+    # Se nessuna porta open ma almeno una filtered → status filtered (non offline rosso).
+    any_port_filtered = any(p.get("status") == "filtered" for p in port_checks) if port_checks else False
+    any_port_closed = any(p.get("status") == "closed" for p in port_checks) if port_checks else False
 
     if use_ping and not ports:
         # Ping-only mode: status depends entirely on ping
@@ -244,9 +291,16 @@ async def probe_target(target: dict) -> dict:
     elif ping_result["reachable"] and (any_port_open or not ports):
         status = "online"
     elif ping_result["reachable"] and ports and not any_port_open:
-        status = "degraded"  # Ping OK but services down
+        # Ping OK ma porte non aperte: distinguiamo se filtered o closed
+        if any_port_filtered and not any_port_closed:
+            status = "filtered"  # giallo: il device risponde ma il fw blocca i probe
+        else:
+            status = "degraded"  # rosso/giallo: servizio realmente non risponde
     elif not ping_result["reachable"] and any_port_open:
         status = "online"  # ICMP blocked but TCP works
+    elif not ping_result["reachable"] and any_port_filtered and not any_port_closed:
+        # ICMP filtered + TCP filtered: device probabilmente vivo ma firewall droppa tutto
+        status = "filtered"
     else:
         status = "offline"
 
@@ -273,10 +327,14 @@ async def diagnose_client(client_id: str, results: list) -> dict:
     fw_results = [r for r in results if r["device_type"] == "firewall"]
     rt_results = [r for r in results if r["device_type"] == "router"]
 
-    fw_online = any(r["status"] in ("online", "degraded") for r in fw_results) if fw_results else None
-    rt_online = any(r["status"] in ("online", "degraded") for r in rt_results) if rt_results else None
-    fw_reachable = any(r["ping"]["reachable"] or any(p.get("open") for p in r.get("ports", [])) for r in fw_results) if fw_results else None
-    rt_reachable = any(r["ping"]["reachable"] or any(p.get("open") for p in r.get("ports", [])) for r in rt_results) if rt_results else None
+    # v2026-02-14: "filtered" e' uno stato valido di raggiungibilita' (device risponde
+    # ma il firewall droppa silente i probe). Lo trattiamo come "online" per il calcolo
+    # del raggiungibile, ma lo segnaliamo separatamente per la diagnosi.
+    _online_states = ("online", "degraded", "filtered")
+    fw_online = any(r["status"] in _online_states for r in fw_results) if fw_results else None
+    rt_online = any(r["status"] in _online_states for r in rt_results) if rt_results else None
+    fw_reachable = any(r["ping"]["reachable"] or any(p.get("open") for p in r.get("ports", [])) or r["status"] == "filtered" for r in fw_results) if fw_results else None
+    rt_reachable = any(r["ping"]["reachable"] or any(p.get("open") for p in r.get("ports", [])) or r["status"] == "filtered" for r in rt_results) if rt_results else None
 
     # Check gateway ISP status (from any target that has it)
     gateway_reachable = None
@@ -566,7 +624,7 @@ async def test_connection(req: TestConnectionRequest, current_user: dict = Depen
         tasks.append(("ping", ping_host(ip, count=3, timeout=3)))
     # TCP port checks
     for p in ports:
-        tasks.append(("tcp", check_tcp_port(ip, p, timeout=5)))
+        tasks.append(("tcp", check_tcp_port(ip, p, timeout=8)))
     # Gateway ping
     if gateway_ip:
         tasks.append(("gateway", ping_host(gateway_ip, count=2, timeout=3)))
@@ -590,6 +648,7 @@ async def test_connection(req: TestConnectionRequest, current_user: dict = Depen
             gateway_result = r if isinstance(r, dict) else {"reachable": False, "latency_ms": None, "packet_loss_pct": 100}
 
     any_open = any(p["open"] for p in port_checks) if port_checks else False
+    any_filtered = any(p.get("status") == "filtered" for p in port_checks) if port_checks else False
     ping_ok = ping_result["reachable"] if ping_result else None
     gw_ok = gateway_result["reachable"] if gateway_result else None
 
@@ -603,10 +662,20 @@ async def test_connection(req: TestConnectionRequest, current_user: dict = Depen
     if gateway_result:
         parts.append(f"Gateway ISP: {'OK' if gw_ok else 'NON RAGGIUNGIBILE'}")
     if port_checks:
-        parts.append(f"Porte: {sum(1 for p in port_checks if p['open'])}/{len(port_checks)} aperte")
+        n_open = sum(1 for p in port_checks if p['open'])
+        n_filtered = sum(1 for p in port_checks if p.get('status') == 'filtered')
+        n_closed = sum(1 for p in port_checks if p.get('status') == 'closed')
+        port_summary = f"Porte: {n_open}/{len(port_checks)} aperte"
+        if n_filtered:
+            port_summary += f", {n_filtered} filtered"
+        if n_closed:
+            port_summary += f", {n_closed} closed"
+        parts.append(port_summary)
 
     if reachable:
         summary = "Raggiungibile — " + ", ".join(parts)
+    elif any_filtered and not reachable:
+        summary = "Filtrato dal firewall — Probabilmente vivo ma blocca probe esterni: " + ", ".join(parts)
     elif not reachable and gw_ok:
         summary = "Linea OK ma dispositivo non raggiungibile — " + ", ".join(parts)
     elif not reachable and gw_ok is False:
