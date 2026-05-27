@@ -128,6 +128,27 @@ export default function ClientOverviewPage() {
 
   useEffect(() => { fetchAll(); const i = setInterval(fetchAll, 30000); return () => clearInterval(i); }, [fetchAll]);
 
+  // v2026-02-14: ascolto evento globale "argus:device-renamed" emesso da
+  // DeviceInfoCard quando l'admin rinomina manualmente un device.
+  // Aggiorna la lista locale + il bersaglio del Dialog senza aspettare
+  // il prossimo poll automatico.
+  useEffect(() => {
+    const handler = (ev) => {
+      const { device_ip, new_name } = ev.detail || {};
+      if (!device_ip || !new_name) return;
+      // Patch optimistico devices array
+      setDevices(prev => prev.map(d =>
+        d.ip_address === device_ip
+          ? { ...d, name: new_name, hostname: new_name, name_locked: true }
+          : d
+      ));
+      // Forza fetchAll per coerenza con backend (display_name resolver)
+      fetchAll();
+    };
+    window.addEventListener("argus:device-renamed", handler);
+    return () => window.removeEventListener("argus:device-renamed", handler);
+  }, [fetchAll]);
+
   if (loading) return <div className="p-6 text-center text-[var(--text-muted)]">Caricamento...</div>;
   if (!client) return <div className="p-6 text-center text-[var(--text-muted)]">Cliente non trovato</div>;
 
@@ -2817,7 +2838,7 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
             <DialogHeader>
               <DialogTitle className="flex items-center gap-2 text-[var(--text-primary)]">
                 <Info size={18} className="text-cyan-400" />
-                Scheda Dispositivo — {pickDeviceName(infoTarget)}
+                Scheda Dispositivo — {pickDeviceName(devices.find(d => d.ip_address === infoTarget.ip_address) || infoTarget)}
               </DialogTitle>
             </DialogHeader>
             <ErrorBoundary

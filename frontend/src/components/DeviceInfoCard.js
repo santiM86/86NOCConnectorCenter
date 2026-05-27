@@ -1,10 +1,11 @@
 import { useState, useEffect } from "react";
 import axios from "axios";
 import { useNavigate } from "react-router-dom";
+import { toast } from "sonner";
 import {
   Desktop, Cpu, HardDrives, Thermometer, Info, MapPin, Package, Shield, Barcode,
   Calendar, Globe, ArrowsClockwise, Warning, CheckCircle, CircleNotch,
-  ChartLineUp, NetworkSlash,
+  ChartLineUp, NetworkSlash, PencilSimple, FloppyDisk, X as XIcon,
 } from "@phosphor-icons/react";
 import AllMetricsDialog from "@/components/AllMetricsDialog";
 import { VendorDetailsPanel } from "@/components/VendorDetailsPanel";
@@ -98,6 +99,10 @@ export default function DeviceInfoCard({ deviceIp, onClose = null, compact = fal
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [showAllMetrics, setShowAllMetrics] = useState(false);
+  // v2026-02-14: rename inline manuale del device (propaga ovunque)
+  const [editingName, setEditingName] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [savingName, setSavingName] = useState(false);
   const token = localStorage.getItem("noc_token");
 
   const fetchCard = () => {
@@ -108,6 +113,45 @@ export default function DeviceInfoCard({ deviceIp, onClose = null, compact = fal
       .then((r) => setCard(r.data))
       .catch((e) => setError(e.response?.data?.detail || "Errore caricamento scheda"))
       .finally(() => setLoading(false));
+  };
+
+  const startEditName = (currentName) => {
+    setNewName(currentName || "");
+    setEditingName(true);
+  };
+
+  const saveName = async () => {
+    const trimmed = (newName || "").trim();
+    if (!trimmed) {
+      toast.error("Il nome non puo' essere vuoto");
+      return;
+    }
+    setSavingName(true);
+    try {
+      const res = await axios.post(
+        `${API}/api/devices/by-ip/${deviceIp}/rename`,
+        { name: trimmed },
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+      toast.success(res.data?.message || `Device rinominato in "${trimmed}"`);
+      setEditingName(false);
+      // Trigger refresh della card e segnala al parent (se vuole ricaricare)
+      fetchCard();
+      // Custom event globale: la lista dispositivi/panoramica puo' ascoltarlo
+      // per refresh immediato senza dipendenza diretta.
+      window.dispatchEvent(new CustomEvent("argus:device-renamed", {
+        detail: { device_ip: deviceIp, new_name: trimmed }
+      }));
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Errore salvataggio nome");
+    } finally {
+      setSavingName(false);
+    }
+  };
+
+  const cancelEditName = () => {
+    setEditingName(false);
+    setNewName("");
   };
 
   useEffect(() => {
@@ -198,9 +242,58 @@ export default function DeviceInfoCard({ deviceIp, onClose = null, compact = fal
           <div className="flex-1 min-w-[200px]">
             <div className="flex items-center gap-2 mb-1">
               <Desktop size={18} className="text-cyan-400" weight="duotone" />
-              <h3 className="text-base font-bold text-[var(--text-primary)]">
-                {id.hostname || id.ip}
-              </h3>
+              {editingName ? (
+                <div className="flex items-center gap-1.5 flex-1 min-w-0" data-testid="device-name-edit-row">
+                  <input
+                    type="text"
+                    value={newName}
+                    autoFocus
+                    onChange={(e) => setNewName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") saveName();
+                      if (e.key === "Escape") cancelEditName();
+                    }}
+                    disabled={savingName}
+                    placeholder="Nome leggibile (es. USGFlex 100H)"
+                    maxLength={200}
+                    className="h-7 px-2 text-sm font-bold rounded border border-cyan-500/50 bg-[var(--bg-card)] text-[var(--text-primary)] focus:outline-none focus:ring-1 focus:ring-cyan-500 min-w-[200px] flex-1"
+                    data-testid="device-name-input"
+                  />
+                  <button
+                    onClick={saveName}
+                    disabled={savingName || !newName.trim()}
+                    className="h-7 px-2 rounded border border-emerald-500/40 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20 disabled:opacity-50 flex items-center gap-1 text-[11px]"
+                    title="Salva (Enter)"
+                    data-testid="device-name-save-btn"
+                  >
+                    {savingName ? <CircleNotch size={12} className="animate-spin" /> : <FloppyDisk size={12} weight="bold" />}
+                    Salva
+                  </button>
+                  <button
+                    onClick={cancelEditName}
+                    disabled={savingName}
+                    className="h-7 px-2 rounded border border-[var(--bg-border)] text-[var(--text-muted)] hover:text-red-300 hover:border-red-500/40 flex items-center gap-1 text-[11px]"
+                    title="Annulla (Esc)"
+                    data-testid="device-name-cancel-btn"
+                  >
+                    <XIcon size={12} weight="bold" />
+                  </button>
+                </div>
+              ) : (
+                <>
+                  <h3 className="text-base font-bold text-[var(--text-primary)]" data-testid="device-name-display">
+                    {id.hostname || id.ip}
+                  </h3>
+                  <button
+                    onClick={() => startEditName(id.hostname || "")}
+                    title="Rinomina manualmente il dispositivo (il nuovo nome sara' usato ovunque in Argus)"
+                    className="p-1 rounded hover:bg-cyan-500/15 text-[var(--text-muted)] hover:text-cyan-300 transition-colors"
+                    data-testid="device-name-edit-btn"
+                  >
+                    <PencilSimple size={13} weight="bold" />
+                  </button>
+                </>
+              )}
               {st.reachable === true && (
                 <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
                   <CheckCircle size={10} weight="fill" /> ONLINE

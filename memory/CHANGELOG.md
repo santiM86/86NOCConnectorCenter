@@ -1,3 +1,104 @@
+# 2026-02-14 — Rename manuale device (propagato ovunque) + Tab "Server" + WAN status verde con ping OK
+
+## ✅ Feat A — Rename manuale device dalla Scheda Dispositivo
+
+L'utente vuole sostituire il sysDescr brutto ("Hardware Manufacturer/Zyxel
+Communications Corporation") con un nome leggibile ("USGFlex 100H"), e
+vederlo SUBITO ovunque.
+
+### Backend nuovo endpoint
+- `POST /api/devices/by-ip/{device_ip}/rename` (`device_info_card.py`)
+- Body: `{"name": "Nuovo nome"}`
+- Cascade atomico su:
+  - `managed_devices`: name, device_name, `name_locked=True`, `name_user_locked=True`, `_by`, `_at`
+  - `devices`: name + `name_user_locked` (se record esiste)
+  - `device_poll_status`: device_name
+- Crea ghost record in `managed_devices` se il device era solo in poll_status
+- Audit log completo
+- Validazione: nome non vuoto, max 200 char
+
+### Resolver display_name allineato
+- `display_name.py::best_display_name()` ora rispetta **entrambe** le chiavi
+  `name_locked` (legacy) e `name_user_locked` (nuovo).
+- Il nuovo nome diventa autoritativo in: Panoramica, Dispositivi, Modal,
+  Alert, Topology, Vulnerability — ovunque usi `best_display_name`/`pickDeviceName`.
+
+### Frontend `DeviceInfoCard`
+- Icona ✏️ accanto al titolo del device → apre input inline
+- Save con Enter / Cancel con Esc / save button verde / cancel grigio
+- Loading spinner durante save
+- Toast con messaggio backend
+- Evento `window.dispatchEvent("argus:device-renamed")` per refresh globale
+
+### Frontend `ClientOverviewPage`
+- Listener su `argus:device-renamed`:
+  - Patch optimistico devices array (`name`, `hostname`, `name_locked: true`)
+  - Trigger `fetchAll()` per consistenza backend
+- Dialog title usa il device aggiornato da `devices[]` (non snapshot)
+
+### Test backend
+```
+POST /api/devices/by-ip/192.168.1.3/rename {"name":"MIO_FIREWALL_TEST_RENAMED"}
+→ ok=true, collections_updated=[devices, device_poll_status, managed_devices(created)]
+GET /api/devices/by-ip/192.168.1.3/info-card
+→ identity.hostname: "MIO_FIREWALL_TEST_RENAMED" ✓
+```
+
+---
+
+## ✅ Feat B — Tab "Server" dedicata nella ClientOverviewPage
+
+Nuova tab tra "Dispositivi" e "WAN" con label `Server (N)` icona CPU.
+
+### KPI top-bar (6 metriche)
+- Server totali (OK/warn/crit breakdown)
+- RAM Totale (somma `total_memory_gb`) + DIMM popolati
+- Dischi totali + in errore
+- Potenza istantanea aggregata (W)
+- Server in warning
+- Server in critical
+
+### Toolbar
+- Filtri: Tutti / Solo problemi / Solo OK
+- Pulsante "⚡ Polla iLO ora" → forza ciclo Redfish + refresh dopo 10s
+- Pulsante "Aggiorna"
+
+### Card per server (riusa `IloServerCard` esistente)
+- Modello, Serial, BIOS, iLO FW, License
+- Live sparkline 15s (CPU, temp, power)
+- Top 3 sensori più caldi (cliccabili → timeline 24h)
+- DIMM popolati, controller storage con drive RAID, NIC link status
+
+### Empty state
+- Icon CPU + spiegazione su come configurare credenziali iLO
+- Pulsante Aggiorna
+
+---
+
+## ✅ Fix C — WAN status verde quando ping OK anche se porte filtered
+
+Quando il ping ICMP risponde dal nostro IP, il device è vivo. Il fatto che
+TCP 443 sia `filtered` (firewall whitelist) NON deve degradare lo stato
+globale a giallo "FILTRATO".
+
+### Backend `external_monitor.py::probe_target`
+- Nuova logica: `ping OK + porte non-open` →
+  - se `filtered` o `open` esistono → `online` ✅
+  - se `closed` (RST esplicito) → `degraded` (servizio realmente spento)
+- Solo quando `!ping_reachable AND filtered` lasciamo `filtered` come hint
+
+### Backend `test-connection` summary
+- "Raggiungibile (ping OK) — porte filtrate dal firewall: ..." (positivo)
+- Banner verde lato UI con messaggio informativo non-warning
+
+### Frontend `ExternalMonitorPage`
+- Banner verde "ℹ️ Il device risponde al ping dal nostro IP → vivo e
+  raggiungibile" quando ping OK + porte filtered
+- Toast `success` (non warning) per questo scenario
+
+---
+
+
 # 2026-02-14 — External Monitor: UI stati distinti per porte TCP + DNS IPv4 + retry esteso
 
 ## 🎯 Problema reale residuo
