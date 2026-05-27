@@ -158,9 +158,11 @@ export default function ExternalMonitorPage() {
       });
       setTestResult(res.data);
       const anyFiltered = (res.data.ports || []).some(p => p?.status === "filtered");
+      const pingOk = res.data.ping?.reachable === true;
       if (res.data.reachable) {
+        // Ping OK o porta open → device raggiungibile
         toast.success("Connessione OK — Dispositivo raggiungibile");
-      } else if (anyFiltered) {
+      } else if (anyFiltered && !pingOk) {
         toast.warning("Probe filtrato dal firewall — Possibile falso negativo");
       } else {
         toast.error("Non raggiungibile — Verifica IP e configurazione");
@@ -275,11 +277,18 @@ export default function ExternalMonitorPage() {
           {/* Test result */}
           {testResult && (() => {
             const anyFiltered = (testResult.ports || []).some(p => p?.status === "filtered");
+            const anyOpen = (testResult.ports || []).some(p => p?.open);
+            const pingOk = testResult.ping?.reachable === true;
             const success = testResult.reachable;
-            const warn = !success && anyFiltered;
+            // v2026-02-14-bis: warn solo se filtered E ping fail. Se ping OK e
+            // porta filtered → device vivo, mostra success verde (banner ambra
+            // sarebbe fuorviante: il monitor e' OK).
+            const warn = !success && anyFiltered && !pingOk;
             const bg = success ? "bg-emerald-500/10 border-emerald-500/30" : warn ? "bg-amber-500/10 border-amber-500/30" : "bg-red-500/10 border-red-500/30";
             const tone = success ? "text-emerald-400" : warn ? "text-amber-400" : "text-red-400";
             const Icon = success ? CheckCircle : Warning;
+            // Nota informativa quando le porte sono filtered ma device raggiungibile via ping
+            const showFilteredInfo = success && anyFiltered && !anyOpen;
             return (
             <div className={`rounded-md p-3 border text-xs ${bg}`} data-testid="test-result">
               <div className="flex items-center gap-2 mb-1.5">
@@ -290,6 +299,11 @@ export default function ExternalMonitorPage() {
               {warn && (
                 <div className="text-[10px] text-amber-300/80 mb-2 leading-snug">
                   Almeno una porta risulta <b>filtered</b>: significa che il firewall del cliente sta scartando silenziosamente i nostri probe (timeout senza RST). La porta potrebbe essere realmente aperta ma irraggiungibile dall'IP del NOC (geo-IP, whitelist, DDoS protection).
+                </div>
+              )}
+              {showFilteredInfo && (
+                <div className="text-[10px] text-emerald-300/70 mb-2 leading-snug">
+                  ℹ️ Il device risponde al ping ICMP dal nostro IP → è vivo e raggiungibile. Le porte marcate <b>filtered</b> indicano solo che il firewall non risponde sui probe TCP dalla nostra rete (whitelist normale).
                 </div>
               )}
               <div className="flex gap-4 flex-wrap">

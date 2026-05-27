@@ -291,15 +291,26 @@ async def probe_target(target: dict) -> dict:
     elif ping_result["reachable"] and (any_port_open or not ports):
         status = "online"
     elif ping_result["reachable"] and ports and not any_port_open:
-        # Ping OK ma porte non aperte: distinguiamo se filtered o closed
-        if any_port_filtered and not any_port_closed:
-            status = "filtered"  # giallo: il device risponde ma il fw blocca i probe
+        # v2026-02-14-bis: se il ping risponde dal nostro IP, il device e' VIVO
+        # e raggiungibile. Anche se la porta TCP risulta filtered o closed, lo
+        # STATO GLOBALE resta ONLINE verde. Il dettaglio sulla porta (giallo
+        # filtered / rosso closed) e' visibile a livello di porta singola, ma
+        # non deve degradare il device che e' chiaramente raggiungibile.
+        # Eccezione: se TUTTE le porte sono `closed` (RST esplicito) E nessuna
+        # filtered, allora il device sta dicendo esplicitamente "il servizio non
+        # c'e' piu'" → degraded (giallo, servizio davvero spento).
+        if any_port_filtered or any_port_open:
+            status = "online"  # firewall drop volontario, device vivo
+        elif any_port_closed:
+            status = "degraded"  # servizio spento ma device raggiungibile
         else:
-            status = "degraded"  # rosso/giallo: servizio realmente non risponde
+            status = "online"
     elif not ping_result["reachable"] and any_port_open:
         status = "online"  # ICMP blocked but TCP works
     elif not ping_result["reachable"] and any_port_filtered and not any_port_closed:
-        # ICMP filtered + TCP filtered: device probabilmente vivo ma firewall droppa tutto
+        # No ping + tutto filtered: il device potrebbe esistere ma il firewall
+        # blocca completamente i nostri probe. Lasciamo "filtered" giallo per
+        # invitare l'operatore a verificare la whitelist.
         status = "filtered"
     else:
         status = "offline"
@@ -652,7 +663,10 @@ async def test_connection(req: TestConnectionRequest, current_user: dict = Depen
     ping_ok = ping_result["reachable"] if ping_result else None
     gw_ok = gateway_result["reachable"] if gateway_result else None
 
-    # Determine reachability
+    # v2026-02-14-bis: se il ping risponde dal nostro IP, il device e' VIVO
+    # e raggiungibile, anche se le porte TCP sono filtered (firewall drop
+    # volontario). Il "reachable" globale deve riflettere il device, non la
+    # singola porta.
     reachable = any_open or (ping_ok is True)
 
     # Build summary
@@ -672,7 +686,12 @@ async def test_connection(req: TestConnectionRequest, current_user: dict = Depen
             port_summary += f", {n_closed} closed"
         parts.append(port_summary)
 
-    if reachable:
+    if reachable and any_filtered and not any_open:
+        # Device vivo (ping OK) ma porte tutte filtrate: messaggio positivo,
+        # NON un warning. La porta puo' essere realmente aperta lato firewall
+        # ma con whitelist sul nostro IP.
+        summary = "Raggiungibile (ping OK) — porte filtrate dal firewall: " + ", ".join(parts)
+    elif reachable:
         summary = "Raggiungibile — " + ", ".join(parts)
     elif any_filtered and not reachable:
         summary = "Filtrato dal firewall — Probabilmente vivo ma blocca probe esterni: " + ", ".join(parts)
