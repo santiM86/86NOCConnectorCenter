@@ -54,6 +54,38 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-03-01 🐛 HOTFIX speedtest #2 — KeyError 'id' → agent_id
+
+### Bug
+L'utente segnalava toast "Errore invio comando: 'id'" cliccando Esegui ora.
+Root cause: la collection `managed_agents` usa il campo **`agent_id`**
+(non `id`). La mia query proiettava `{"id": 1, ...}` e poi `agent["id"]`
+faceva KeyError perche' il campo `id` non esiste mai → 500 con dettaglio
+KeyError esposto all'utente.
+
+### Fix
+- Query proiection cambiata da `id` → `agent_id` in entrambe le branch
+  (master + fallback any-live).
+- Aggiunta variabile locale `agent_id = agent.get("agent_id")` + check
+  esplicito che ritorna 500 chiaro se manca (record corrotto).
+- Tutti i riferimenti `agent["id"]` → `agent_id` nel pending record,
+  REGISTRY.get, response payload.
+- `version` letto come `agent_version` (campo reale DB) con fallback su
+  `version` per backward compat.
+
+### Test
+- POST /speedtest/{client_id} con client che ha agent ma NON LIVE → 503
+  pulito (no piu' KeyError) ✓
+- Lint pulito ✓
+
+### Steps utente
+1. **Save to GitHub** — solo backend, no rebuild agent.
+2. Hard refresh argus.86bit.it.
+3. WAN tab del cliente → "Esegui ora" speedtest.
+
+---
+
+
 ## 2026-03-01 🐛 HOTFIX speedtest — auth callback + dispatch tracking
 
 ### Bug riportato dall'utente
