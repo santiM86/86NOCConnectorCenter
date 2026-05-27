@@ -134,9 +134,14 @@ export default function DeviceInfoCard({ deviceIp, onClose = null, compact = fal
     }
     setSavingName(true);
     try {
+      // v2026-02-14: passa client_id per disambiguare in scenari multi-tenant
+      // dove piu' clienti hanno lo stesso IP (es. 192.168.x.x).
+      const clientId = card?.client?.id || card?.client_id || null;
+      const body = { name: trimmed };
+      if (clientId) body.client_id = clientId;
       const res = await axios.post(
         `${API}/api/devices/by-ip/${deviceIp}/rename`,
-        { name: trimmed },
+        body,
         { headers: { Authorization: `Bearer ${token}` } },
       );
       toast.success(res.data?.message || `Device rinominato in "${trimmed}"`);
@@ -146,7 +151,7 @@ export default function DeviceInfoCard({ deviceIp, onClose = null, compact = fal
       // Custom event globale: la lista dispositivi/panoramica puo' ascoltarlo
       // per refresh immediato senza dipendenza diretta.
       window.dispatchEvent(new CustomEvent("argus:device-renamed", {
-        detail: { device_ip: deviceIp, new_name: trimmed }
+        detail: { device_ip: deviceIp, new_name: trimmed, client_id: clientId }
       }));
     } catch (e) {
       toast.error(e.response?.data?.detail || "Errore salvataggio nome");
