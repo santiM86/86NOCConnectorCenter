@@ -54,6 +54,44 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-03-01 ✨ FIX RESPONSIVE WAN Tab + uptime calculation bug
+
+### Bug riportati dall'utente (screenshot)
+1. **Layout sprecato**: con un solo firewall (no router), la card sinistra
+   occupava metà schermo lasciando vuoto a destra → `grid-cols-1 lg:grid-cols-2`
+   senza gruppi paritari.
+2. **Uptime 17.1% sospetto** in card OGGI/7gg/30gg sebbene il firewall
+   risponde online stabile (211 sample).
+
+### Fix layout (WanClientTab.jsx)
+- **Single-group layout**: quando esiste solo firewall O solo router, uso
+  un grid `[minmax(260px,380px),1fr]` con target cards a sinistra e
+  InsightsPanel a destra. Riempie tutta la larghezza del viewport.
+- **Two-group layout**: quando ci sono ENTRAMBI firewall+router, layout
+  `xl:grid-cols-2` (era `lg:` → ora xl: per dare più spazio sui laptop).
+- **Hero Card responsive**: `flex-wrap`, `truncate` su titoli, `min-w-0`
+  su flex children, padding `sm:` breakpoint per evitare overflow.
+- **Intelligence grid**: cambiato da `md:grid-cols-2 xl:grid-cols-4` →
+  `sm:grid-cols-2 lg:grid-cols-4` (più aggressivo, sfrutta meglio i
+  laptop standard 1366-1920px).
+
+### Fix bug uptime (external_monitor.py + wan_advanced.py)
+Il fallback `_is_online()` per i sample LEGACY (pre-v2026-03-01 history
+flat) considerava `reachable` mancante come `False` → uptime fittizio 17%.
+Aggiunto livello 3 di fallback: se manca sia `reachable` flat che nested,
+usa lo `status` legacy salvato — `online`/`filtered`/`degraded` contano
+come "raggiungibili" ai fini SLA.
+
+Risultato: uptime cambiato da 17.1% → **99.46% (oggi) / 99.92% (7gg) /
+99.98% (30gg)** — coerente con il fatto che il firewall è up da settimane.
+
+### Test
+- GET /insights/{target}: uptime_today=99.46, samples=11813 ✓
+- Lint Python + JS pulito ✓
+
+---
+
+
 ## 2026-03-01 🐛 HOTFIX speedtest #2 — KeyError 'id' → agent_id
 
 ### Bug
