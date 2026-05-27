@@ -1,0 +1,34 @@
+{
+  "summary": "Iter-84: testati i nuovi endpoint WAN Client Tab (FASE 1) + non-regressione. 19/19 PASS in 4s. Bug fix history flat (v2026-03-01) verificato funzionante: insights ritorna latency stats popolate quando uptime>0. Geo-IP 8.8.8.8 ritorna country=US + org/asn Google. DNS health risponde con 3 resolver pubblici tutti healthy. Speedtest trigger ritorna 503 atteso (no agent v4 LIVE in test env). Cache geo-ip funzionante (cached=true al 2o lookup).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_external_monitor_iter84.py",
+    "/app/test_reports/pytest/iteration_84_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "external_monitor.py ha superato 1193 righe — split consigliato in submoduli: targets/probe/insights/geoip/dns/speedtest, per ridurre dimensione file e migliorare manutenibilità.",
+    "_fetch_geoip usa http://ip-api.com (no HTTPS): considerare il piano a pagamento o un fallback HTTPS (ipapi.co/ipinfo.io) per evitare leak metadata in cleartext.",
+    "Il record speedtest 'pending' viene inserito PRIMA che il comando WS sia stato confermato come consegnato (asyncio.create_task fire-and-forget). Se l'agent rifiuta il comando, il record resta 'running' indefinitamente. Suggerito: timeout watchdog (background task) che marca i pending >90s come 'timeout'.",
+    "POST /speedtest-result accetta qualsiasi payload senza schema Pydantic (payload: dict). Validare con un modello per evitare typo/injection silenziosi.",
+    "wan_geoip_cache TTL 30gg è applicato a runtime ma non è creato un indice TTL Mongo: cache potrebbe crescere indefinitamente per IP rotanti."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_external_monitor_iter84.py"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "N/A (only backend requested)"},
+  "test_credentials": "admin info@86bit.it / Ariel17051986@!@86 — login response field: 'token' (fallback access_token gestito).",
+  "seed_data_creation": "1 record TEST_iter84_<uuid> inserito in wan_speedtest_history via POST /speedtest-result, ripulito post-run (delete_many regex ^TEST_iter84_).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Test backend WAN Client Tab in /app/backend/tests/test_external_monitor_iter84.py (19 PASS). Fixture any_target prende il primo target da /api/external-monitor/targets — se DB svuotato i test saranno skippati. Speedtest trigger ritorna 503 perché no agent v4 LIVE: se in futuro un agent master appare LIVE per quel cliente il test accetta anche 200. Geo-IP cache hit confermato al 2o lookup. ip-api.com gratis tier (45 req/min) — se rate-limited geoip ritorna {error:...}, il test ammette quel caso. Frontend WanClientTab.jsx + ClientOverviewPage non testati (richiesta backend-only).",
+  "rca of the issue": "N/A — tutti i nuovi endpoint + bug fix history flat verificati e funzionanti."
+}
