@@ -205,6 +205,32 @@ func runAgent(ctx context.Context, cfg config.Config, log *logging.Logger) {
 		}
 		return pingP.ProbeOne(ctx, a.IP), nil
 	})
+	// speedtest — esegue download/upload/ping via Cloudflare speed endpoint.
+	// Risultato POSTed al Center via /api/external-monitor/speedtest-result.
+	client.Register("speedtest", func(ctx context.Context, args json.RawMessage) (any, error) {
+		var a speedtestArgs
+		_ = json.Unmarshal(args, &a)
+		if a.CommandID == "" {
+			return nil, fmt.Errorf("speedtest: command_id mancante")
+		}
+		log.Info("speedtest started", "command_id", a.CommandID, "client_id", a.ClientID)
+		go func() {
+			bgCtx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+			defer cancel()
+			res := runSpeedtest(bgCtx, a.CommandID, a.ClientID, cfg.AgentID)
+			if err := sendSpeedtestResult(bgCtx, cfg.Backend.URL, cfg.AgentID, cfg.Token, res); err != nil {
+				log.Warn("speedtest result POST failed", "command_id", a.CommandID, "err", err.Error())
+				return
+			}
+			log.Info("speedtest completed",
+				"command_id", a.CommandID,
+				"down_mbps", fmt.Sprintf("%.1f", res.DownloadMbps),
+				"up_mbps", fmt.Sprintf("%.1f", res.UploadMbps),
+				"ping_ms", fmt.Sprintf("%.1f", res.PingMs),
+			)
+		}()
+		return map[string]any{"status": "started", "command_id": a.CommandID}, nil
+	})
 	client.Register(proto.CmdRunDiagnostics, func(ctx context.Context, _ json.RawMessage) (any, error) {
 		return runDiagnostics(cfg), nil
 	})
@@ -483,7 +509,7 @@ func capabilities(c config.Config) []string {
 	if c.SysMetrics.Enabled {
 		caps = append(caps, "poll.sysmetrics")
 	}
-	caps = append(caps, "cmd.force_lan_scan", "cmd.force_snmp_poll", "cmd.force_ping_poll", "cmd.get_metrics", "cmd.run_diagnostics", "cmd.uninstall")
+	caps = append(caps, "cmd.force_lan_scan", "cmd.force_snmp_poll", "cmd.force_ping_poll", "cmd.get_metrics", "cmd.run_diagnostics", "cmd.uninstall", "cmd.speedtest")
 	return caps
 }
 

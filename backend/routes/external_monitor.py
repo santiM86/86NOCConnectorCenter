@@ -459,15 +459,26 @@ async def run_probe_cycle():
                 upsert=True,
             )
 
-            # Store history point (every 5 min only to save space)
+            # Store history point (every probe cycle, ~60s)
+            # v2026-03-01: aggiunto `reachable` flat + `jitter_ms` per insights.
+            ping_doc = r.get("ping", {}) or {}
             await db.wan_probe_history.insert_one({
                 "target_id": tid,
                 "client_id": cid,
                 "status": r["status"],
-                "latency_ms": r["ping"]["latency_ms"],
-                "packet_loss_pct": r["ping"]["packet_loss_pct"],
+                "reachable": bool(ping_doc.get("reachable")),
+                "latency_ms": ping_doc.get("latency_ms"),
+                "packet_loss_pct": ping_doc.get("packet_loss_pct"),
+                "gateway_reachable": (r.get("gateway_ping") or {}).get("reachable") if r.get("gateway_ping") else None,
+                "gateway_latency_ms": (r.get("gateway_ping") or {}).get("latency_ms") if r.get("gateway_ping") else None,
                 "timestamp": now_iso,
             })
+
+            # Public IP / ASN change detection
+            try:
+                await _detect_public_ip_change(tid, cid, r.get("public_ip"))
+            except Exception as e:
+                logger.debug(f"public_ip change detection failed for {tid}: {e}")
 
             # Alert on status change
             if prev_status and prev_status != r["status"]:
@@ -736,3 +747,446 @@ async def get_probe_history(target_id: str, hours: int = 24, current_user: dict 
         {"_id": 0}
     ).sort("timestamp", 1).to_list(5000)
     return {"history": history}
+
+
+@router.get("/insights/{target_id}")
+async def get_target_insights(
+    target_id: str, days: int = 30,
+    current_user: dict = Depends(get_current_user),
+):
+    """Insight aggregati per target WAN: uptime %, jitter medio, sparkline 24h,
+    SLA tracking, latenza min/max/avg/p95, periodi di down.
+
+    v2026-02-14: clone delle metriche MSP enterprise (Datto, NinjaOne, Auvik).
+    v2026-03-01: fix lettura history flat (era nested errata).
+    """
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    history = await db.wan_probe_history.find(
+        {"target_id": target_id, "timestamp": {"$gte": cutoff}},
+        {"_id": 0},
+    ).sort("timestamp", 1).to_list(20000)
+
+    def _is_online(h):
+        # Schema flat (post v2026-03-01) OR legacy nested
+        if "reachable" in h:
+            return bool(h.get("reachable"))
+        return bool((h.get("ping") or {}).get("reachable"))
+
+    def _lat(h):
+        if "latency_ms" in h:
+            return h.get("latency_ms")
+        return (h.get("ping") or {}).get("latency_ms")
+
+    def _loss(h):
+        if "packet_loss_pct" in h:
+            return h.get("packet_loss_pct")
+        return (h.get("ping") or {}).get("packet_loss_pct")
+
+    if not history:
+        return {
+            "target_id": target_id, "days": days,
+            "samples": 0, "uptime_pct": None, "sla_target": 99.9,
+            "latency": {"avg": None, "min": None, "max": None, "p95": None, "jitter": None},
+            "loss_pct_avg": None, "sparkline_24h": [], "down_periods": [],
+            "uptime_today": None, "uptime_7d": None, "uptime_30d": None,
+            "down_count": 0, "total_down_minutes": 0, "mttr_min": 0,
+        }
+
+    total = len(history)
+    online = sum(1 for h in history if _is_online(h))
+    uptime_pct = round(online * 100 / max(total, 1), 2)
+
+    # Multi-window uptime: today, 7d, 30d
+    now_dt = datetime.now(timezone.utc)
+    cutoff_today = now_dt.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    cutoff_7d = (now_dt - timedelta(days=7)).isoformat()
+    cutoff_30d = (now_dt - timedelta(days=30)).isoformat()
+
+    def _uptime_in(after_iso):
+        bucket = [h for h in history if h.get("timestamp", "") >= after_iso]
+        if not bucket:
+            return None
+        ok = sum(1 for h in bucket if _is_online(h))
+        return round(ok * 100 / len(bucket), 2)
+
+    uptime_today = _uptime_in(cutoff_today)
+    uptime_7d = _uptime_in(cutoff_7d)
+    uptime_30d = _uptime_in(cutoff_30d)
+
+    # Latency stats
+    latencies = [_lat(h) for h in history if _is_online(h) and _lat(h) is not None]
+    latency_stats = {"avg": None, "min": None, "max": None, "p95": None, "jitter": None}
+    if latencies:
+        # Jitter PRIMA dell'ordinamento (deviazione tra sample consecutivi temporali)
+        diffs = [abs(latencies[i] - latencies[i-1]) for i in range(1, len(latencies))]
+        jitter = round(sum(diffs) / len(diffs), 1) if diffs else 0
+        sorted_lat = sorted(latencies)
+        avg = sum(sorted_lat) / len(sorted_lat)
+        latency_stats = {
+            "avg": round(avg, 1),
+            "min": round(sorted_lat[0], 1),
+            "max": round(sorted_lat[-1], 1),
+            "p95": round(sorted_lat[min(int(len(sorted_lat) * 0.95), len(sorted_lat) - 1)], 1),
+            "jitter": jitter,
+        }
+
+    # Loss avg
+    losses = [_loss(h) for h in history if _loss(h) is not None]
+    loss_avg = round(sum(losses) / len(losses), 2) if losses else 0
+
+    # Sparkline ultime 24h
+    cutoff_24h = (now_dt - timedelta(hours=24)).isoformat()
+    sparkline = []
+    for h in history:
+        if h.get("timestamp", "") < cutoff_24h:
+            continue
+        sparkline.append({
+            "t": h.get("timestamp"),
+            "latency": _lat(h),
+            "loss": _loss(h),
+            "online": _is_online(h),
+        })
+
+    # Down periods
+    down_periods = []
+    cur_start = None
+    for h in history:
+        ok = _is_online(h)
+        ts = h.get("timestamp")
+        if not ok and cur_start is None:
+            cur_start = ts
+        elif ok and cur_start is not None:
+            try:
+                d1 = datetime.fromisoformat(cur_start.replace("Z", "+00:00"))
+                d2 = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                duration_min = (d2 - d1).total_seconds() / 60.0
+                if duration_min >= 1:
+                    down_periods.append({
+                        "start": cur_start, "end": ts,
+                        "duration_min": round(duration_min, 1),
+                    })
+            except Exception:
+                pass
+            cur_start = None
+
+    sla_target = 99.9
+    n_down = len(down_periods)
+    total_down_min = sum(p["duration_min"] for p in down_periods)
+
+    return {
+        "target_id": target_id,
+        "days": days,
+        "samples": total,
+        "uptime_pct": uptime_pct,
+        "uptime_today": uptime_today,
+        "uptime_7d": uptime_7d,
+        "uptime_30d": uptime_30d,
+        "sla_target": sla_target,
+        "sla_breach": uptime_pct < sla_target,
+        "latency": latency_stats,
+        "loss_pct_avg": loss_avg,
+        "sparkline_24h": sparkline[-200:],
+        "down_periods": down_periods[-10:],
+        "down_count": n_down,
+        "total_down_minutes": round(total_down_min, 1),
+        "mttr_min": round(total_down_min / n_down, 1) if n_down else 0,
+    }
+
+
+# ==================== ADVANCED WAN INTELLIGENCE (v2026-03-01) ====================
+
+async def _detect_public_ip_change(target_id: str, client_id: str, current_ip: str):
+    """Rileva quando l'IP pubblico configurato per il target cambia (cambio ISP,
+    fallover, riconfig DNS). Tiene storico in `wan_public_ip_changes`.
+    """
+    if not current_ip:
+        return
+    last = await db.wan_public_ip_changes.find_one(
+        {"target_id": target_id},
+        sort=[("changed_at", -1)],
+        projection={"_id": 0},
+    )
+    if last and last.get("public_ip") == current_ip:
+        return
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.wan_public_ip_changes.insert_one({
+        "id": str(uuid.uuid4()),
+        "target_id": target_id,
+        "client_id": client_id,
+        "public_ip": current_ip,
+        "previous_ip": last.get("public_ip") if last else None,
+        "changed_at": now_iso,
+    })
+    if last:
+        # alert solo se NON e' il primo record (init)
+        _alert = {
+            "id": str(uuid.uuid4()),
+            "client_id": client_id,
+            "device_id": target_id,
+            "severity": "high",
+            "source_type": "wan_public_ip_change",
+            "title": f"IP pubblico cambiato: {last.get('public_ip')} → {current_ip}",
+            "message": f"L'IP pubblico del target WAN {target_id} e' cambiato. Probabile failover ISP, DHCP renew o riconfig manuale.",
+            "status": "active",
+            "created_at": now_iso,
+        }
+        try:
+            await insert_alert_if_emit(db, _alert)
+        except Exception:
+            pass
+
+
+@router.get("/public-ip-history/{target_id}")
+async def get_public_ip_history(target_id: str, limit: int = 50, current_user: dict = Depends(get_current_user)):
+    """Storico cambi IP pubblico del target."""
+    hist = await db.wan_public_ip_changes.find(
+        {"target_id": target_id}, {"_id": 0}
+    ).sort("changed_at", -1).to_list(min(limit, 200))
+    return {"target_id": target_id, "changes": hist, "count": len(hist)}
+
+
+async def _fetch_geoip(ip: str) -> dict:
+    """Lookup geo/ASN per un IP pubblico via ip-api.com (gratuito, 45 req/min)."""
+    import aiohttp
+    url = f"http://ip-api.com/json/{ip}?fields=status,message,country,countryCode,region,regionName,city,zip,lat,lon,timezone,isp,org,as,asname,query"
+    try:
+        timeout = aiohttp.ClientTimeout(total=6)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(url) as resp:
+                data = await resp.json()
+                if data.get("status") == "success":
+                    return {
+                        "ip": ip,
+                        "country": data.get("country"),
+                        "country_code": data.get("countryCode"),
+                        "region": data.get("regionName"),
+                        "city": data.get("city"),
+                        "lat": data.get("lat"),
+                        "lon": data.get("lon"),
+                        "isp": data.get("isp"),
+                        "org": data.get("org"),
+                        "asn": data.get("as"),
+                        "asn_name": data.get("asname"),
+                    }
+                return {"ip": ip, "error": data.get("message", "geoip lookup failed")}
+    except Exception as e:
+        return {"ip": ip, "error": str(e)}
+
+
+@router.get("/geo-ip/{ip}")
+async def get_geo_ip(ip: str, current_user: dict = Depends(get_current_user)):
+    """Geo-IP + ISP/ASN lookup con cache TTL 30 giorni."""
+    cached = await db.wan_geoip_cache.find_one({"ip": ip}, {"_id": 0})
+    if cached and cached.get("cached_at"):
+        try:
+            cached_dt = datetime.fromisoformat(cached["cached_at"].replace("Z", "+00:00"))
+            if (datetime.now(timezone.utc) - cached_dt) < timedelta(days=30):
+                return {"cached": True, **{k: v for k, v in cached.items() if k != "cached_at"}}
+        except Exception:
+            pass
+    info = await _fetch_geoip(ip)
+    info["cached_at"] = datetime.now(timezone.utc).isoformat()
+    await db.wan_geoip_cache.update_one({"ip": ip}, {"$set": info}, upsert=True)
+    return {"cached": False, **{k: v for k, v in info.items() if k != "cached_at"}}
+
+
+async def _resolve_dns(server: str, hostname: str, timeout: float = 3.0) -> dict:
+    """Esegue una query DNS A verso `server` per `hostname`. Misura latenza."""
+    import struct as _struct
+    import random as _random
+
+    def _query():
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.settimeout(timeout)
+            txid = _random.randint(0, 0xFFFF)
+            # DNS header: id, flags=0x0100 (standard query rec), qdcount=1
+            header = _struct.pack(">HHHHHH", txid, 0x0100, 1, 0, 0, 0)
+            # QNAME
+            qname = b""
+            for part in hostname.split("."):
+                qname += bytes([len(part)]) + part.encode("ascii")
+            qname += b"\x00"
+            question = qname + _struct.pack(">HH", 1, 1)  # type A, class IN
+            packet = header + question
+            t0 = time.monotonic()
+            s.sendto(packet, (server, 53))
+            data, _ = s.recvfrom(512)
+            elapsed = round((time.monotonic() - t0) * 1000, 1)
+            s.close()
+            # parse simple: ancount in header at offset 6
+            ancount = _struct.unpack(">H", data[6:8])[0]
+            return {"server": server, "hostname": hostname, "ok": ancount > 0, "answers": ancount, "latency_ms": elapsed}
+        except (socket.timeout, OSError) as e:
+            return {"server": server, "hostname": hostname, "ok": False, "answers": 0, "latency_ms": None, "error": str(e)}
+
+    loop = asyncio.get_event_loop()
+    try:
+        return await asyncio.wait_for(loop.run_in_executor(None, _query), timeout=timeout + 1)
+    except asyncio.TimeoutError:
+        return {"server": server, "hostname": hostname, "ok": False, "answers": 0, "latency_ms": None, "error": "timeout"}
+
+
+@router.get("/dns-health/{target_id}")
+async def dns_health_check(target_id: str, current_user: dict = Depends(get_current_user)):
+    """Salute DNS — test risoluzione su 8.8.8.8, 1.1.1.1, gateway ISP, 9.9.9.9.
+    Misura latenza UDP DNS verso ciascun resolver.
+    """
+    target = await db.wan_targets.find_one({"id": target_id}, {"_id": 0})
+    if not target:
+        raise HTTPException(status_code=404, detail="Target non trovato")
+
+    servers = [
+        {"name": "Google DNS", "ip": "8.8.8.8"},
+        {"name": "Cloudflare", "ip": "1.1.1.1"},
+        {"name": "Quad9", "ip": "9.9.9.9"},
+    ]
+    gw = target.get("gateway_ip")
+    if gw:
+        servers.insert(0, {"name": "Gateway ISP", "ip": gw})
+
+    # query target: google.com (standard probe)
+    hostnames = ["google.com", "microsoft.com"]
+    results = []
+    for srv in servers:
+        per_hostname = []
+        for host in hostnames:
+            r = await _resolve_dns(srv["ip"], host)
+            per_hostname.append(r)
+        avg_lat = [x["latency_ms"] for x in per_hostname if x.get("latency_ms") is not None]
+        all_ok = all(x.get("ok") for x in per_hostname)
+        results.append({
+            "name": srv["name"],
+            "ip": srv["ip"],
+            "ok": all_ok,
+            "latency_ms": round(sum(avg_lat) / len(avg_lat), 1) if avg_lat else None,
+            "queries": per_hostname,
+        })
+    healthy = sum(1 for r in results if r["ok"])
+    return {
+        "target_id": target_id,
+        "tested_at": datetime.now(timezone.utc).isoformat(),
+        "summary": {"healthy_resolvers": healthy, "total_resolvers": len(results), "all_ok": healthy == len(results)},
+        "resolvers": results,
+    }
+
+
+@router.post("/speedtest/{client_id}")
+async def trigger_speedtest(client_id: str, current_user: dict = Depends(get_current_user)):
+    """Trigger speedtest via primo agent v4 master LIVE del cliente.
+    Salva il risultato (download Mbps, upload Mbps, ping ms, jitter ms, isp,
+    server) in `wan_speedtest_history`.
+    Richiede agent v4.18+ con comando WS `speedtest`.
+    """
+    require_admin(current_user)
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    agent = await db.managed_agents.find_one(
+        {
+            "client_id": client_id,
+            "$or": [
+                {"last_heartbeat_at": {"$gte": cutoff}},
+                {"last_seen_at": {"$gte": cutoff}},
+            ],
+            "labels.role": "master",
+        },
+        {"_id": 0, "id": 1, "hostname": 1, "version": 1},
+    )
+    if not agent:
+        # fallback: qualsiasi master live
+        agent = await db.managed_agents.find_one(
+            {"client_id": client_id, "$or": [
+                {"last_heartbeat_at": {"$gte": cutoff}},
+                {"last_seen_at": {"$gte": cutoff}},
+            ]},
+            {"_id": 0, "id": 1, "hostname": 1, "version": 1},
+        )
+    if not agent:
+        raise HTTPException(status_code=503, detail="Nessun agent v4 LIVE per questo cliente. Speedtest richiede un connector attivo.")
+
+    # Invio comando WS speedtest via REGISTRY
+    try:
+        from routes.agent_ws import REGISTRY
+        conn = REGISTRY.get(agent["id"])
+        if conn is None:
+            raise HTTPException(status_code=503, detail=f"Agent {agent['hostname']} non connesso al WS")
+        cmd_id = str(uuid.uuid4())
+        # fire-and-forget: l'agent rispondera' via callback /speedtest-result
+        # quando lo speedtest e' completato (puo' richiedere 30-60s).
+        try:
+            asyncio.create_task(conn.send_command("speedtest", {"command_id": cmd_id, "client_id": client_id}, timeout=90.0))
+        except Exception as e:
+            logger.warning(f"speedtest dispatch warning: {e}")
+    except ImportError:
+        raise HTTPException(status_code=500, detail="Modulo agent_ws non disponibile")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"speedtest dispatch failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Errore invio comando: {e}")
+
+    # Inserisce un record pending in storico — l'agent rispondera' via ws_reply
+    pending = {
+        "id": cmd_id,
+        "client_id": client_id,
+        "agent_id": agent["id"],
+        "agent_hostname": agent.get("hostname"),
+        "agent_version": agent.get("version"),
+        "status": "running",
+        "requested_at": datetime.now(timezone.utc).isoformat(),
+        "requested_by": current_user.get("email"),
+    }
+    await db.wan_speedtest_history.insert_one(pending)
+    return {
+        "status": "started",
+        "command_id": cmd_id,
+        "agent": {"id": agent["id"], "hostname": agent.get("hostname"), "version": agent.get("version")},
+        "message": "Speedtest in corso. Il risultato apparira' entro 30-60s.",
+    }
+
+
+@router.get("/speedtest-history/{client_id}")
+async def get_speedtest_history(client_id: str, limit: int = 20, current_user: dict = Depends(get_current_user)):
+    """Storico speedtest del cliente (ultimi N)."""
+    items = await db.wan_speedtest_history.find(
+        {"client_id": client_id}, {"_id": 0}
+    ).sort("requested_at", -1).to_list(min(limit, 100))
+    return {"client_id": client_id, "history": items, "count": len(items)}
+
+
+@router.post("/speedtest-result")
+async def submit_speedtest_result(payload: dict, current_user: dict = Depends(get_current_user)):
+    """Endpoint chiamato dall'agent (o da admin per test) per registrare il
+    risultato di uno speedtest. Aggiorna il record pending corrispondente.
+    Payload atteso:
+      {command_id, client_id, agent_id, download_mbps, upload_mbps,
+       ping_ms, jitter_ms, server, isp, error?}
+    """
+    cmd_id = payload.get("command_id")
+    if not cmd_id:
+        raise HTTPException(status_code=400, detail="command_id mancante")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    update_fields = {
+        "status": "failed" if payload.get("error") else "completed",
+        "completed_at": now_iso,
+        "download_mbps": payload.get("download_mbps"),
+        "upload_mbps": payload.get("upload_mbps"),
+        "ping_ms": payload.get("ping_ms"),
+        "jitter_ms": payload.get("jitter_ms"),
+        "server": payload.get("server"),
+        "isp": payload.get("isp"),
+        "error": payload.get("error"),
+    }
+    res = await db.wan_speedtest_history.update_one(
+        {"id": cmd_id}, {"$set": update_fields}
+    )
+    if res.matched_count == 0:
+        # crea record nuovo se non esiste (es. test manuale)
+        await db.wan_speedtest_history.insert_one({
+            "id": cmd_id,
+            "client_id": payload.get("client_id"),
+            "agent_id": payload.get("agent_id"),
+            "requested_at": now_iso,
+            **update_fields,
+        })
+    return {"status": "ok", "command_id": cmd_id}
+

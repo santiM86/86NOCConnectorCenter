@@ -257,6 +257,7 @@ from routes.soc_ai import router as soc_ai_router
 from routes.security_status import router as security_status_router
 from routes.security_advanced import router as security_advanced_router
 from routes.external_monitor import router as external_monitor_router
+from routes.wan_advanced import router as wan_advanced_router
 from routes.push import router as push_router
 from routes.oncall import router as oncall_router
 from routes.escalation import router as escalation_router
@@ -320,6 +321,7 @@ app.include_router(soc_ai_router)
 app.include_router(security_status_router)
 app.include_router(security_advanced_router)
 app.include_router(external_monitor_router)
+app.include_router(wan_advanced_router)
 app.include_router(push_router)
 app.include_router(oncall_router)
 app.include_router(escalation_router)

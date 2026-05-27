@@ -54,6 +54,165 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-03-01 ✅ WAN Client Tab — FASE 2 (intelligence avanzata MSP)
+
+### Aggiunte rispetto a Fase 1
+1. **Speedtest lato Agent Go** — `noc-agent/cmd/agent/speedtest.go`: nuovo
+   comando WS `speedtest` che esegue download (25MB)/upload (8MB)/ping
+   verso endpoint Cloudflare `speed.cloudflare.com`. Risultato POSTato al
+   Center via `/api/external-monitor/speedtest-result`. Async + go-routine
+   per non bloccare il WS reply (timeout 90s lato Center).
+   Conversione automatica `wss://` → `https://` per la base URL HTTP.
+   Capability registrata: `cmd.speedtest`. Compila Windows+Linux OK.
+
+2. **Multi-ISP failover detection** — `GET /multi-isp/{client_id}`:
+   raggruppa target per `gateway_ip`, mostra count linee, status reachable
+   per ognuna, eventi failover ultime 24h (transition reachable→down e
+   viceversa). UI: `MultiIspCard` (visibile solo se ≥2 ISP rilevati).
+
+3. **Cloud SaaS Reachability** — `GET /saas-reachability/{client_id}`:
+   probe TCP 443 + DNS resolve in parallelo verso 8 servizi critici
+   (M365, Teams, Google Workspace/Drive, AWS, Azure, Cloudflare,
+   GitHub). UI: `SaasReachabilityCard` con badge verde/rosso e latency.
+
+4. **MTR/Traceroute on-demand** — `POST /traceroute`: subprocess
+   `traceroute` (Linux/macOS) o `tracert` (Windows) cross-platform.
+   Output parsato in array `[{hop, ip, rtt_ms, raw}]` (max 30 hop).
+   UI: `TracerouteCard` con input target editabile (default = IP
+   pubblico del primo target). Installato `traceroute` nel container.
+
+5. **Alert rules per target** — `GET/PUT/DELETE /alert-rules/{target_id}`:
+   regole soglie personalizzate `latency_warn/crit_ms`,
+   `loss_warn/crit_pct`, `uptime_warn_pct`, `notify_email`,
+   `notify_telegram_chat_id`. UI: `AlertRulesButton` su ogni target con
+   dialog dedicato.
+
+6. **Storico bucket-aggregated 1d/7d/30d** — `GET /history-bucket/{target_id}`:
+   bucket dinamici (5min/1h/6h) con `avg_latency`, `avg_loss`,
+   `uptime_pct`, `samples`. UI: `HistoryChartDialog` modal con 2 grafici
+   Recharts (latenza area chart + uptime area chart) e tabs 1d/7d/30d.
+
+### File modificati
+- **NUOVO** `backend/routes/wan_advanced.py` (~350 righe): 5 endpoint
+  multi-isp/saas/traceroute/alert-rules/history-bucket.
+- `backend/server.py`: registrato `wan_advanced_router`.
+- **NUOVO** `noc-agent/cmd/agent/speedtest.go` (~180 righe): speedtest
+  Cloudflare + POST callback.
+- `noc-agent/cmd/agent/main.go`: registrato comando `speedtest`,
+  capability `cmd.speedtest` aggiunta al hello.
+- `frontend/src/components/WanClientTab.jsx`: +5 nuovi componenti
+  (SaasReachabilityCard, MultiIspCard, TracerouteCard, AlertRulesButton,
+  HistoryChartDialog), pulsante "Storico" e "Alert" per ogni target.
+
+### Validato in container
+- Backend: tutti gli endpoint ritornano JSON corretto.
+  - saas-reachability: 8/8 servizi healthy in 11ms (M365 outlook).
+  - traceroute 1.1.1.1: 6 hop con RTT.
+  - history-bucket 7d: 2307 sample → 59 bucket di 1h.
+  - alert-rules PUT/GET: persistenza + audit `updated_by`.
+- Go agent: cross-compile Windows+Linux OK con nuovo file speedtest.go.
+- Lint Python + JS pulito.
+
+### Steps utente per attivare in produzione
+1. **Save to GitHub** → auto-deploy backend
+2. Crea nuovo tag agent (es. **v4.18.0**) → GitHub Actions buildera'
+   automaticamente il binario con il comando `speedtest`.
+3. Agent v4.18.0+ riceve il comando WS `speedtest` dal Center e
+   risponde via HTTP POST in 60-90s.
+
+### Limiti noti / Fase 3 (futura)
+- Bandwidth SNMP IF-MIB monitoring (non implementato — richiede MIB
+  walking del firewall, va in P2 backlog).
+- Alert engine threshold rules collega le regole `wan_alert_rules` al
+  ciclo di probe → da fare nell'`run_probe_cycle` per consumare le
+  soglie configurate (al momento sono salvate ma non attive — engine
+  da aggiungere in Fase 3 quando si fa il notifier Telegram/Email).
+
+---
+
+
+## 2026-03-01 ✅ WAN Client Tab — FASE 1 (clone hero ISP + intelligence MSP-grade)
+
+### Richiesta utente
+«clonare la card ISP/Firewall (vista globale ExternalMonitorPage) dentro il tab WAN del cliente, con migliorie da competitor Datto/NinjaOne/Auvik».
+
+### Bug critico fixato
+`get_target_insights` leggeva da `h["ping"]["latency_ms"]` ma `run_probe_cycle`
+salva history FLAT (`latency_ms`, `packet_loss_pct`, `status`). Risultato: tutti
+gli insight ritornavano `None` per stats. Schema unificato a FLAT + fallback
+legacy nested per backward compat. Aggiunto anche `reachable`, `gateway_reachable`,
+`gateway_latency_ms` al top-level history.
+
+### Nuovi endpoint backend `/api/external-monitor/`
+- `GET /insights/{target_id}?days=30` — uptime today/7d/30d, sparkline 24h
+  (max 200 punti), latency stats (avg/min/max/p95/jitter), loss avg, down
+  periods, MTTR, samples count.
+- `GET /geo-ip/{ip}` — lookup ISP+ASN+geo via ip-api.com (free, 45 req/min).
+  Cache 30 giorni in `wan_geoip_cache`.
+- `GET /dns-health/{target_id}` — probe UDP DNS verso Google/Cloudflare/Quad9/
+  Gateway ISP, query A su google.com + microsoft.com, misura latency_ms per
+  resolver.
+- `GET /public-ip-history/{target_id}` — storico cambi IP del target (auto-detect
+  in `run_probe_cycle` → record in `wan_public_ip_changes` + alert severity
+  high).
+- `POST /speedtest/{client_id}` — invia comando WS `speedtest` al primo
+  agent v4 master LIVE. Insert record `running` in `wan_speedtest_history`
+  con cmd_id UUID. 503 se nessun agent.
+- `GET /speedtest-history/{client_id}` — ultimi N speedtest (default 20).
+- `POST /speedtest-result` — callback per registrare risultato
+  (download_mbps, upload_mbps, ping_ms, jitter_ms, server, isp).
+
+### Frontend `frontend/src/components/WanClientTab.jsx` (NUOVO, ~600 righe)
+Sostituisce il vecchio `WanTab` inline rimosso da `ClientOverviewPage.js`
+(330 righe in meno).
+
+Componenti:
+- **HeroCard**: card emerald/red con nome cliente, diagnosis text, badge ISP
+  ONLINE/DOWN con IP+latency (clone fedele dello screenshot utente).
+- **TargetCard**: per ogni firewall/router — pallino animato, badge status,
+  IP, latency live, metodo (ICMP/TCP), pulsante delete.
+- **InsightsPanel**: 3 SLA bars (today/7d/30d) color-coded, 4 metriche
+  (Avg/P95/Jitter/Loss), sparkline 24h recharts AreaChart con tooltip
+  italiano + reference line avg, riga "N interruzioni · MTTR Xmin".
+- **GeoIspCard**: badge MapPin emerald — ISP, Org, ASN, Località.
+- **DnsHealthCard**: on-demand "Esegui" → tabella resolver con pallino
+  green/red, IP, latency_ms.
+- **PublicIpHistoryCard**: amber se cambi detectati, altrimenti stable.
+- **SpeedtestCard**: pulsante "Esegui ora", mostra last result (Download/
+  Upload/Ping) + storico ultimi 5.
+
+### Integrazioni nuove
+- **ip-api.com** (GeoIP gratuito, no key, cache 30gg) — `_fetch_geoip()`
+- **UDP DNS resolver custom** (no library) — `_resolve_dns()` query A
+  diretta su porta 53.
+- **WS speedtest command** — agent v4.18+ deve supportare il comando
+  "speedtest" (TODO Fase 2: implementare lato Go).
+
+### Validato
+- 19/19 test backend PASS (iter-84): insights flat fix, geo-ip cache,
+  dns health 3 resolver, speedtest 503 senza agent, history endpoints,
+  non-regressione targets/status/test-connection.
+- Lint Python + JS pulito.
+
+### Code review (suggerimenti per future iterazioni)
+- `external_monitor.py` ora 1193 righe → split candidato per la prossima
+  refactor pass (targets/probe/insights/geoip/dns/speedtest).
+- TTL index Mongo su `wan_geoip_cache.cached_at` per evitare crescita.
+- Pydantic schema per `POST /speedtest-result`.
+
+### Fase 2 — pianificata (next round)
+- Agent Go comando `speedtest` (speedtest-cli/Ookla via exec).
+- Multi-ISP failover detection.
+- Cloud SaaS reachability (M365/Google/AWS).
+- MTR/traceroute on-demand.
+- Grafici storici 7d/30d dettagliati.
+- Alert configurabili lat/loss threshold.
+- Bandwidth via SNMP IF-MIB.
+
+---
+
+
+
 ## 2026-02-24 ✅ FIX — Inconsistenza Panoramica vs Tabella Dispositivi (status legacy "active")
 
 ### Bug
