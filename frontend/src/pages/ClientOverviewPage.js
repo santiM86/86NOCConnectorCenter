@@ -142,6 +142,12 @@ export default function ClientOverviewPage() {
           ? { ...d, name: new_name, hostname: new_name, name_locked: true }
           : d
       ));
+      // Se il rename riguarda il device aperto nel Dialog, aggiorna anche
+      // il titolo immediatamente.
+      setInfoCardName(prev => {
+        // Solo se stiamo guardando proprio quel device
+        return device_ip ? new_name : prev;
+      });
       // Forza fetchAll per coerenza con backend (display_name resolver)
       fetchAll();
     };
@@ -1721,6 +1727,7 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
   const [showAdd, setShowAdd] = useState(false);
   const [profileTarget, setProfileTarget] = useState(null);
   const [infoTarget, setInfoTarget] = useState(null);
+  const [infoCardName, setInfoCardName] = useState(null);
   const [editTarget, setEditTarget] = useState(null);
   const [saving, setSaving] = useState(false);
   // v3.8.40: nasconde multicast/broadcast (224.x, 239.x, 255.x) dalla tabella
@@ -2879,19 +2886,29 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
 
       {/* Device Info Card Modal */}
       {infoTarget && (
-        <Dialog open={!!infoTarget} onOpenChange={(o) => !o && setInfoTarget(null)}>
+        <Dialog open={!!infoTarget} onOpenChange={(o) => { if (!o) { setInfoTarget(null); setInfoCardName(null); } }}>
           <DialogContent className="bg-[var(--bg-card)] border-[var(--bg-border)] max-w-6xl max-h-[90vh] overflow-y-auto">
             <DialogHeader>
-              <DialogTitle className="flex items-center gap-2 text-[var(--text-primary)]">
+              <DialogTitle className="flex items-center gap-2 text-[var(--text-primary)]" data-testid="device-card-dialog-title">
                 <Info size={18} className="text-cyan-400" />
-                Scheda Dispositivo — {pickDeviceName(devices.find(d => d.ip_address === infoTarget.ip_address) || infoTarget)}
+                Scheda Dispositivo — {
+                  infoCardName
+                  || pickDeviceName(devices.find(d => d.ip_address === infoTarget.ip_address) || infoTarget)
+                }
               </DialogTitle>
             </DialogHeader>
-            <ErrorBoundary
-              label="scheda dispositivo"
-              hint="Possibile dato malformato dal connector. Verifica i log o riprova; se persiste, controlla la console browser per dettagli."
-            >
-              <DeviceInfoCard deviceIp={infoTarget.ip_address} onClose={() => setInfoTarget(null)} />
+            <ErrorBoundary fallback={<div className="text-sm text-red-400 p-4">Errore caricamento scheda.</div>}>
+              <DeviceInfoCard
+                deviceIp={infoTarget.ip_address}
+                onClose={() => { setInfoTarget(null); setInfoCardName(null); }}
+                onCardLoaded={(c) => {
+                  // v2026-02-14: titolo Dialog si allinea sempre al nome
+                  // canonical lato backend (best_display_name) → no piu'
+                  // "HP 10.100.61.221" nel titolo quando in card e' "Switch02 HP 5130 52G".
+                  const display = c?.identity?.hostname || c?.identity?.ip;
+                  if (display) setInfoCardName(display);
+                }}
+              />
             </ErrorBoundary>
           </DialogContent>
         </Dialog>

@@ -93,7 +93,7 @@ function safe(value, fallback = "—") {
   return String(value);
 }
 
-export default function DeviceInfoCard({ deviceIp, onClose = null, compact = false }) {
+export default function DeviceInfoCard({ deviceIp, onClose = null, compact = false, onCardLoaded = null }) {
   const navigate = useNavigate();
   const [card, setCard] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -110,7 +110,13 @@ export default function DeviceInfoCard({ deviceIp, onClose = null, compact = fal
     setError(null);
     axios
       .get(`${API}/api/devices/by-ip/${deviceIp}/info-card`, { headers: { Authorization: `Bearer ${token}` } })
-      .then((r) => setCard(r.data))
+      .then((r) => {
+        setCard(r.data);
+        // v2026-02-14: notifica al parent il display name corretto per
+        // sincronizzare il titolo del Dialog (Scheda Dispositivo) e altri
+        // posti che ricevono lo stesso device da liste non aggiornate.
+        try { onCardLoaded?.(r.data); } catch {}
+      })
       .catch((e) => setError(e.response?.data?.detail || "Errore caricamento scheda"))
       .finally(() => setLoading(false));
   };
