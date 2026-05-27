@@ -2709,9 +2709,9 @@ async def connector_device_report(request: Request):
                 # 2) Aggiorna managed_devices (collezione del connector, FONTE: CONNECTOR)
                 md_dev = await db.managed_devices.find_one(
                     {"client_id": client_id, "ip": d_ip},
-                    {"_id": 0, "device_name": 1, "name": 1, "name_user_locked": 1},
+                    {"_id": 0, "device_name": 1, "name": 1, "name_locked": 1, "name_user_locked": 1},
                 )
-                if md_dev and not md_dev.get("name_user_locked"):
+                if md_dev and not (md_dev.get("name_user_locked") or md_dev.get("name_locked")):
                     cur_name = (md_dev.get("device_name") or md_dev.get("name") or "").strip()
                     if cur_name in default_patterns and sys_name_val != cur_name:
                         await db.managed_devices.update_one(
@@ -3182,6 +3182,21 @@ async def _resolve_or_upsert_managed_device(
 
     now_iso = datetime.now(timezone.utc).isoformat()
 
+    # v2026-02-14: helper per costruire update set rispettando name_locked.
+    # Se l'admin ha rinominato manualmente (name_locked|name_user_locked=True),
+    # NON sovrascriviamo `name` nell'upsert — solo gli altri campi.
+    async def _build_safe_set(target_ip: str, candidate_name: str):
+        existing = await db.managed_devices.find_one(
+            {"client_id": client_id, "ip": target_ip},
+            {"_id": 0, "name_locked": 1, "name_user_locked": 1, "name": 1},
+        )
+        base = {"ip": target_ip, "client_id": client_id}
+        if existing and (existing.get("name_locked") or existing.get("name_user_locked")):
+            # Lock attivo: preserva il nome esistente
+            return base, existing.get("name") or candidate_name
+        base["name"] = candidate_name
+        return base, candidate_name
+
     # Fallback 1: db.devices (manualmente aggiunti)
     manual = await db.devices.find_one(
         {"id": device_id, "client_id": client_id},
@@ -3189,16 +3204,17 @@ async def _resolve_or_upsert_managed_device(
     )
     if manual and manual.get("ip_address"):
         ip = manual["ip_address"]
-        name = manual.get("name") or ""
+        name_candidate = manual.get("name") or ""
+        set_doc, effective_name = await _build_safe_set(ip, name_candidate)
         await db.managed_devices.update_one(
             {"client_id": client_id, "ip": ip},
             {
-                "$set": {"name": name, "ip": ip, "client_id": client_id},
+                "$set": set_doc,
                 "$setOnInsert": {"id": device_id, "created_at": now_iso, "created_by": "auto-resolver"},
             },
             upsert=True,
         )
-        return ip, name, True
+        return ip, effective_name, True
 
     # Fallback 2: device_id sintetico `poll_<ip-with-underscores>`
     if device_id.startswith("poll_"):
@@ -3209,16 +3225,17 @@ async def _resolve_or_upsert_managed_device(
         )
         if pd:
             ip = pd.get("device_ip") or synth_ip
-            name = pd.get("device_name") or synth_ip
+            name_candidate = pd.get("device_name") or synth_ip
+            set_doc, effective_name = await _build_safe_set(ip, name_candidate)
             await db.managed_devices.update_one(
                 {"client_id": client_id, "ip": ip},
                 {
-                    "$set": {"name": name, "ip": ip, "client_id": client_id},
+                    "$set": set_doc,
                     "$setOnInsert": {"id": device_id, "created_at": now_iso, "created_by": "auto-resolver"},
                 },
                 upsert=True,
             )
-            return ip, name, True
+            return ip, effective_name, True
 
     raise HTTPException(status_code=404, detail="Device non trovato in managed_devices, devices, o device_poll_status")
 
