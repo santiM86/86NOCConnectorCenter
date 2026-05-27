@@ -54,6 +54,44 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-03-01 📥 Datto Seed — Import device come managed_devices
+
+### Cosa fa
+Nuovo endpoint `POST /api/clients/{client_id}/datto/seed-managed`:
+- Per ogni `datto_devices` del cliente, cerca match esistente
+  (MAC/IP/hostname) in `managed_devices`.
+- Se gia' presente: **enrichisce** con `datto_name` + `datto_match=seed-existing`.
+- Se nuovo: **crea managed_device placeholder** con hostname=name Datto,
+  IP/MAC Datto, `source=datto-seed`, `device_type=endpoint`,
+  `monitor_type=ping`.
+- Idempotente: re-run non crea duplicati.
+
+### Skip rules
+- Device Datto senza IP → skippato (managed_devices ha indice unique
+  `(client_id, ip)` NON sparse, ip=null sarebbe duplicate key dopo il
+  primo).
+- IP gia' esistente → enrichisce invece di creare.
+
+### Test container preview
+- 25 device Datto 86BIT_Office → 24 creati + 1 enrichito (SantiM86 era
+  gia' nel Center) ✓
+- Re-run idempotente: 0 created + 25 enriched ✓
+
+### UI: nuovo pulsante "📥 Seed Datto"
+In `ClientOverviewPage.js` toolbar dispositivi, vicino a "Match Datto".
+Confirm dialog + toast con conteggio risultati.
+
+### Benefici
+1. **Inventario istantaneo** per clienti senza SNMP/FDB attivo
+2. Una volta che lo scanner LAN o lo switch SNMP rilevano il device,
+   il match per MAC auto-collega tutte le info (porta switch, IP corrente,
+   ecc.) al record gia' creato dal seed.
+3. Datto coerente in tutte le zone di Argus (tabella dispositivi, card
+   device, report, badge porta switch quando MAC sara' visto dal FDB).
+
+---
+
+
 ## 2026-03-01 ✨ Datto Diagnostics UI (completa la fix Datto RMM)
 
 ### Nuova UI in `DattoRmmSettingsPage.js`
