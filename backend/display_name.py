@@ -78,7 +78,9 @@ def best_display_name(
         ip = _clean(md.get("ip") or md.get("ip_address") or pd.get("device_ip"))
 
     # 1) Locked dall'admin: rispetta sempre la sua scelta.
-    if md.get("name_locked"):
+    # Supporta entrambe le chiavi: `name_locked` (legacy) e `name_user_locked`
+    # (v2026-02-14 endpoint /devices/by-ip/{ip}/rename) per retrocompat.
+    if md.get("name_locked") or md.get("name_user_locked"):
         locked = _clean(md.get("name"), ip)
         if locked:
             return locked

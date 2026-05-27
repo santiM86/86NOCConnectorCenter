@@ -14,12 +14,14 @@ Parser sys_descr regex multi-vendor per estrarre modello+firmware
 anche da device non profilati (Cisco IOS, HP ProCurve, Aruba, Allied,
 Ubiquiti, Juniper, D-Link, TP-Link, ecc.).
 """
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from typing import Optional, List, Dict, Any
+from datetime import datetime, timezone
 import re
 
 from database import db
-from deps import get_current_user
+from deps import get_current_user, audit_logger
+from audit import AuditAction
 from display_name import best_display_name
 
 router = APIRouter(prefix="/api", tags=["device-info-card"])
@@ -556,3 +558,153 @@ async def parse_sys_descr_debug(payload: dict, current_user: dict = Depends(get_
     """Debug endpoint: prova il parser sys_descr su una stringa arbitraria."""
     sd = (payload or {}).get("sys_descr", "")
     return {"input": sd, "parsed": parse_sys_descr(sd)}
+
+
+@router.post("/devices/by-ip/{device_ip}/rename")
+async def rename_device_by_ip(
+    device_ip: str,
+    payload: dict,
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+):
+    """Rinomina manualmente un dispositivo per IP, propagando il nuovo nome in
+    TUTTE le collezioni e bloccando il classifier dal sovrascrivere la scelta
+    al prossimo poll.
+
+    Body: {"name": "Nuovo nome leggibile"}
+
+    Effetti (atomici per quanto possibile, cascade best-effort):
+      - managed_devices: name, device_name, name_user_locked=True, _by, _at
+      - devices: name + name_user_locked (se record presente)
+      - device_poll_status: device_name (per coerenza display backend)
+      - best_display_name() rispetta SEMPRE name_user_locked, quindi il nuovo
+        nome sara' usato in:
+          * Panoramica (raggruppamento)
+          * Tab Dispositivi
+          * DeviceInfoCard
+          * Alerts (display)
+          * Vulnerability
+          * Topology
+      - Audit log completo
+
+    v2026-02-14: richiesto dall'utente "voglio scrivere io il nome del device
+    e averlo ovunque" — i firewall Zyxel ritornano sysDescr brutto
+    ("Hardware Manufacturer/Zyxel Communications Corporation") e l'admin
+    vuole forzare un display name leggibile come "USGFlex 100H".
+    """
+    new_name = (payload.get("name") or "").strip()
+    if not new_name:
+        raise HTTPException(status_code=400, detail="name e' obbligatorio")
+    if len(new_name) > 200:
+        raise HTTPException(status_code=400, detail="name troppo lungo (max 200 char)")
+
+    # Verifica che il device esista almeno in una collezione
+    exists_in = []
+    md = await db.managed_devices.find_one({"ip": device_ip}, {"_id": 0, "id": 1, "name": 1, "client_id": 1})
+    if md:
+        exists_in.append("managed_devices")
+    dv = await db.devices.find_one({"ip_address": device_ip}, {"_id": 0, "id": 1, "name": 1, "client_id": 1})
+    if dv:
+        exists_in.append("devices")
+    ps = await db.device_poll_status.find_one({"device_ip": device_ip}, {"_id": 0, "device_name": 1, "client_id": 1})
+    if ps:
+        exists_in.append("device_poll_status")
+
+    if not exists_in:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Device {device_ip} non trovato in alcuna collezione",
+        )
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    user_email = current_user.get("email")
+
+    # 1. managed_devices: crea se manca, altrimenti update
+    lock_fields = {
+        "name": new_name,
+        "device_name": new_name,
+        "name_locked": True,           # legacy key letta da display_name.py
+        "name_user_locked": True,      # nuovo key (allineato a device_type_user_locked)
+        "name_user_locked_by": user_email,
+        "name_user_locked_at": now_iso,
+    }
+    old_name = None
+    client_id = None
+    if md:
+        old_name = md.get("name")
+        client_id = md.get("client_id")
+        await db.managed_devices.update_one(
+            {"ip": device_ip},
+            {"$set": lock_fields},
+        )
+    else:
+        # Crea entry ghost in managed_devices cosi' il lock sia rispettato
+        from uuid import uuid4
+        client_id = (ps or {}).get("client_id") or (dv or {}).get("client_id")
+        if client_id:
+            await db.managed_devices.insert_one({
+                "id": str(uuid4()),
+                "client_id": client_id,
+                "ip": device_ip,
+                "source": "user_rename",
+                "created_at": now_iso,
+                **lock_fields,
+            })
+            exists_in.append("managed_devices(created)")
+
+    # 2. devices (vecchia collezione, mantenuta per backwards compat)
+    if dv:
+        if old_name is None:
+            old_name = dv.get("name")
+        await db.devices.update_one(
+            {"ip_address": device_ip},
+            {"$set": {
+                "name": new_name,
+                "name_user_locked": True,
+                "updated_at": now_iso,
+            }},
+        )
+
+    # 3. device_poll_status: aggiorna solo device_name (no lock perche' poll
+    # status e' rigenerato dal connector; il display name backend usa
+    # best_display_name() che gia' preferisce managed_devices.name quando
+    # name_user_locked=True).
+    if ps:
+        await db.device_poll_status.update_one(
+            {"device_ip": device_ip},
+            {"$set": {"device_name": new_name}},
+        )
+
+    # 4. Audit log
+    try:
+        await audit_logger.log(
+            AuditAction.UPDATE_DEVICE,
+            user_id=current_user["id"],
+            user_email=user_email,
+            ip_address=current_user.get("_request_ip"),
+            resource_type="device",
+            resource_id=device_ip,
+            details={
+                "action": "rename_by_ip",
+                "device_ip": device_ip,
+                "old_name": old_name,
+                "new_name": new_name,
+                "client_id": client_id,
+                "collections_updated": exists_in,
+            },
+        )
+    except Exception:
+        pass
+
+    return {
+        "ok": True,
+        "device_ip": device_ip,
+        "old_name": old_name,
+        "new_name": new_name,
+        "locked": True,
+        "collections_updated": exists_in,
+        "message": (
+            f"Device rinominato in '{new_name}'. Il nuovo nome sara' visibile "
+            "in Panoramica, Dispositivi, Alert e Topology dopo il refresh."
+        ),
+    }

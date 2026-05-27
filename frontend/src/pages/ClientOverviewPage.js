@@ -128,6 +128,27 @@ export default function ClientOverviewPage() {
 
   useEffect(() => { fetchAll(); const i = setInterval(fetchAll, 30000); return () => clearInterval(i); }, [fetchAll]);
 
+  // v2026-02-14: ascolto evento globale "argus:device-renamed" emesso da
+  // DeviceInfoCard quando l'admin rinomina manualmente un device.
+  // Aggiorna la lista locale + il bersaglio del Dialog senza aspettare
+  // il prossimo poll automatico.
+  useEffect(() => {
+    const handler = (ev) => {
+      const { device_ip, new_name } = ev.detail || {};
+      if (!device_ip || !new_name) return;
+      // Patch optimistico devices array
+      setDevices(prev => prev.map(d =>
+        d.ip_address === device_ip
+          ? { ...d, name: new_name, hostname: new_name, name_locked: true }
+          : d
+      ));
+      // Forza fetchAll per coerenza con backend (display_name resolver)
+      fetchAll();
+    };
+    window.addEventListener("argus:device-renamed", handler);
+    return () => window.removeEventListener("argus:device-renamed", handler);
+  }, [fetchAll]);
+
   if (loading) return <div className="p-6 text-center text-[var(--text-muted)]">Caricamento...</div>;
   if (!client) return <div className="p-6 text-center text-[var(--text-muted)]">Cliente non trovato</div>;
 
@@ -195,6 +216,7 @@ export default function ClientOverviewPage() {
   const tabs = [
     { id: "overview", label: "Panoramica", icon: Monitor },
     { id: "devices", label: `Dispositivi (${realDevices.length})`, icon: HardDrives },
+    { id: "servers", label: `Server (${iloHealth.length})`, icon: Cpu },
     { id: "wan", label: `WAN (${wanTargets.length})`, icon: Globe },
     { id: "alerts", label: `Alert (${alerts.length})`, icon: Bell },
     { id: "printers", label: `Stampanti (${mergedPrinters.length})`, icon: Printer },
@@ -420,6 +442,7 @@ export default function ClientOverviewPage() {
       <div className="min-h-[400px]">
         {activeTab === "overview" && <OverviewTab devices={devices} wanTargets={wanTargets} alerts={alerts} connector={connector} printers={printers} backups={backups} firewalls={firewalls} switches={switches} servers={servers} upsList={upsList} nasList={nasList} apList={apList} tvccList={tvccList} printersList={printersList} voipList={voipList} workstationList={workstationList} mobileList={mobileList} iotList={iotList} skipList={skipList} others={others} iloHealth={iloHealth} />}
         {activeTab === "devices" && <DevicesTab devices={devices} clientId={clientId} onRefresh={fetchAll} onOptimisticUpdate={optimisticUpdateDevice} />}
+        {activeTab === "servers" && <ServersTab iloHealth={iloHealth} clientId={clientId} clientName={client.name} onRefresh={fetchAll} />}
         {activeTab === "wan" && <WanTab targets={wanTargets} clientId={clientId} clientName={client.name} onRefresh={fetchAll} />}
         {activeTab === "alerts" && <AlertsTab alerts={alerts} navigate={navigate} clientId={clientId} clientName={client.name} onRefresh={fetchAll} />}
         {activeTab === "printers" && <PrintersTab printers={mergedPrinters} />}
@@ -576,6 +599,170 @@ function IloHealthPanel({ iloHealth }) {
       <div className="space-y-3">
         {iloHealth.map((s, idx) => <IloServerCard key={idx} s={s} healthColor={healthColor} />)}
       </div>
+    </div>
+  );
+}
+
+/* ==================== SERVERS TAB (dedicated full view) ====================
+   v2026-02-14: tab dedicata "Server" che mostra TUTTI i dati Redfish/iLO
+   per i server del cliente:
+     - CPU/RAM totale + DIMM
+     - Storage (controller, drive, RAID, predict-fail)
+     - PSU, Ventole, Sensori temperature
+     - Network adapter con link status
+     - BIOS, iLO firmware, license
+   Riusa il componente IloServerCard (gia' completo) con filtri di salute
+   e azioni rapide (poll-now, espandi tutti).
+*/
+function ServersTab({ iloHealth, clientId, clientName, onRefresh }) {
+  const [filter, setFilter] = useState("all"); // all | issues | ok
+  const [polling, setPolling] = useState(false);
+  const healthColor = (h) => ({ ok: "#34C759", warning: "#FFCC00", critical: "#FF3B30" }[(h || "").toLowerCase()] || "#64748B");
+
+  const filtered = (iloHealth || []).filter((s) => {
+    if (filter === "all") return true;
+    const h = (s.health_status || "").toLowerCase();
+    if (filter === "issues") return h === "warning" || h === "critical";
+    if (filter === "ok") return h === "ok";
+    return true;
+  });
+
+  // KPI aggregati top-bar
+  const totalRamGb = (iloHealth || []).reduce((sum, s) => sum + (Number(s.total_memory_gb) || 0), 0);
+  const totalPowerW = (iloHealth || []).reduce((sum, s) => sum + (Number(s.power_watts) || 0), 0);
+  const totalDrives = (iloHealth || []).reduce((sum, s) => sum + (s.storage_controllers || []).reduce((a, c) => a + (c.drives?.length || 0), 0), 0);
+  const failingDrives = (iloHealth || []).reduce((sum, s) => sum + (s.storage_controllers || []).reduce((a, c) =>
+    a + (c.drives || []).filter(d => (d.health || "").toLowerCase() !== "ok" || d.failure_predicted).length, 0), 0);
+  const totalDimms = (iloHealth || []).reduce((sum, s) => sum + ((s.memory_dimms || []).filter(d => (d.size_gb || d.capacity_mb) > 0)).length, 0);
+  const okServers = (iloHealth || []).filter(s => (s.health_status || "").toLowerCase() === "ok").length;
+  const warnServers = (iloHealth || []).filter(s => (s.health_status || "").toLowerCase() === "warning").length;
+  const critServers = (iloHealth || []).filter(s => (s.health_status || "").toLowerCase() === "critical").length;
+
+  const pollAllNow = async () => {
+    setPolling(true);
+    try {
+      const ips = (iloHealth || []).map(s => s.device_ip).filter(Boolean);
+      if (ips.length === 0) {
+        toast.warning("Nessun server iLO configurato per questo cliente");
+        return;
+      }
+      // Single global poll cycle (covers all iLO devices)
+      await axios.post(`${API}/redfish/poll-now`, {});
+      toast.success(`Polling iLO avviato su ${ips.length} server — risultati tra 10-30s`);
+      setTimeout(() => onRefresh?.(), 10000);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Errore avvio polling iLO");
+    } finally {
+      setPolling(false);
+    }
+  };
+
+  if (!iloHealth || iloHealth.length === 0) {
+    return (
+      <div className="noc-panel p-8 text-center" data-testid="servers-tab-empty">
+        <Cpu size={36} className="mx-auto mb-3 opacity-30 text-[var(--text-muted)]" />
+        <p className="text-sm text-[var(--text-primary)] font-semibold mb-1">Nessun server con iLO configurato</p>
+        <p className="text-xs text-[var(--text-muted)] mb-4 max-w-md mx-auto">
+          Configura le credenziali iLO/Redfish nei dispositivi del cliente <b>{clientName}</b> per
+          vedere qui CPU, RAM, dischi, sensori e stato hardware in tempo reale.
+        </p>
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-7 text-xs gap-1"
+          onClick={() => onRefresh?.()}
+          data-testid="servers-tab-refresh-empty-btn"
+        >
+          <ArrowClockwise size={12} weight="bold" /> Aggiorna
+        </Button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4" data-testid="servers-tab">
+      {/* KPI bar */}
+      <div className="noc-panel p-3">
+        <div className="grid grid-cols-2 md:grid-cols-6 gap-2">
+          <ServerKpi label="Server totali" value={iloHealth.length} sub={`${okServers} OK · ${warnServers} warn · ${critServers} crit`} color="#06B6D4" testid="kpi-total-servers" />
+          <ServerKpi label="RAM Totale" value={`${totalRamGb} GB`} sub={`${totalDimms} DIMM popolati`} color="#8B5CF6" testid="kpi-total-ram" />
+          <ServerKpi label="Dischi" value={totalDrives} sub={failingDrives ? `${failingDrives} in errore` : "Tutti OK"} color={failingDrives ? "#FF3B30" : "#34C759"} testid="kpi-total-drives" />
+          <ServerKpi label="Potenza" value={totalPowerW ? `${totalPowerW} W` : "—"} sub="consumo live" color="#F59E0B" testid="kpi-total-power" />
+          <ServerKpi label="Warning" value={warnServers} sub="server in degradato" color="#FFCC00" testid="kpi-warn-servers" />
+          <ServerKpi label="Critical" value={critServers} sub="richiede intervento" color="#FF3B30" testid="kpi-crit-servers" />
+        </div>
+      </div>
+
+      {/* Toolbar */}
+      <div className="flex items-center justify-between flex-wrap gap-2 px-1">
+        <div className="flex items-center gap-1 text-xs">
+          <span className="text-[var(--text-muted)] mr-2">Filtra:</span>
+          {[
+            { id: "all", label: `Tutti (${iloHealth.length})` },
+            { id: "issues", label: `Solo problemi (${warnServers + critServers})` },
+            { id: "ok", label: `Solo OK (${okServers})` },
+          ].map(f => (
+            <button
+              key={f.id}
+              onClick={() => setFilter(f.id)}
+              className={`h-7 px-2.5 rounded border text-xs transition-colors ${
+                filter === f.id
+                  ? "bg-cyan-500/15 border-cyan-500/50 text-cyan-300"
+                  : "border-[var(--bg-border)] text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+              }`}
+              data-testid={`servers-filter-${f.id}-btn`}
+            >
+              {f.label}
+            </button>
+          ))}
+        </div>
+        <div className="flex items-center gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 text-xs gap-1 border-cyan-500/30 text-cyan-300 hover:bg-cyan-500/10"
+            onClick={pollAllNow}
+            disabled={polling}
+            data-testid="servers-poll-all-btn"
+            title="Forza polling iLO immediato su tutti i server"
+          >
+            {polling ? <ArrowClockwise size={12} className="animate-spin" /> : <Lightning size={12} weight="bold" />}
+            {polling ? "Polling..." : "Polla iLO ora"}
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7 text-xs gap-1"
+            onClick={() => onRefresh?.()}
+            data-testid="servers-refresh-btn"
+          >
+            <ArrowClockwise size={12} weight="bold" /> Aggiorna
+          </Button>
+        </div>
+      </div>
+
+      {/* Server cards (riusa IloServerCard) */}
+      {filtered.length === 0 ? (
+        <div className="noc-panel p-6 text-center text-xs text-[var(--text-muted)]">
+          Nessun server corrisponde al filtro selezionato.
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {filtered.map((s, idx) => (
+            <IloServerCard key={s.device_ip || idx} s={s} healthColor={healthColor} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ServerKpi({ label, value, sub, color, testid }) {
+  return (
+    <div className="rounded-md px-2.5 py-2 bg-[var(--bg-card)] border border-[var(--bg-border)]" data-testid={testid}>
+      <p className="text-[8px] uppercase tracking-[0.15em] text-[var(--text-muted)] mb-0.5">{label}</p>
+      <p className="text-lg font-bold font-mono leading-none" style={{ color }}>{value}</p>
+      {sub && <p className="text-[9px] text-[var(--text-muted)] mt-0.5 opacity-70 truncate" title={sub}>{sub}</p>}
     </div>
   );
 }
@@ -2651,7 +2838,7 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
             <DialogHeader>
               <DialogTitle className="flex items-center gap-2 text-[var(--text-primary)]">
                 <Info size={18} className="text-cyan-400" />
-                Scheda Dispositivo — {pickDeviceName(infoTarget)}
+                Scheda Dispositivo — {pickDeviceName(devices.find(d => d.ip_address === infoTarget.ip_address) || infoTarget)}
               </DialogTitle>
             </DialogHeader>
             <ErrorBoundary
