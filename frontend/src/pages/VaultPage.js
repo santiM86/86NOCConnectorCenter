@@ -351,7 +351,13 @@ export default function VaultPage({ scopedClientId = null, scopedClientName = ""
       if (res.data.success) {
         toast.success(`Connessione OK: ${res.data.model || res.data.product} | Health: ${res.data.health}`);
       } else {
-        toast.error(`Connessione fallita: ${res.data.error}`);
+        // v2026-02-13: mostra anche il "tip" diagnostico se presente
+        const detail = res.data.error || "errore sconosciuto";
+        if (res.data.tip) {
+          toast.error(`${detail}\n💡 ${res.data.tip}`, { duration: 15000 });
+        } else {
+          toast.error(`Connessione fallita: ${detail}`, { duration: 8000 });
+        }
       }
     } catch (e) {
       toast.error("Errore nel test connessione: " + (e.response?.data?.detail || e.message));
