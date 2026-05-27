@@ -15,10 +15,23 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 const STATUS_CONFIG = {
   online: { color: "#34C759", label: "ONLINE", icon: WifiHigh },
   degraded: { color: "#FFCC00", label: "DEGRADATO", icon: Warning },
+  filtered: { color: "#FFCC00", label: "FILTRATO", icon: ShieldCheck },
   offline: { color: "#FF3B30", label: "OFFLINE", icon: WifiSlash },
   unknown: { color: "#555", label: "---", icon: Clock },
   not_configured: { color: "#555", label: "NON CONFIG.", icon: Clock },
 };
+
+// v2026-02-14: stati distinti per ogni porta TCP (RFC 793 / nmap-like).
+// Prima si mostrava sempre "OPEN" o "CLOSED": ora distinguiamo
+// chiuso reale (RST) da firewall drop silente (timeout = filtered).
+const PORT_STATUS_CONFIG = {
+  open:        { color: "#34C759", label: "OPEN",        tooltip: "Connessione TCP accettata (SYN/ACK ricevuto)" },
+  closed:      { color: "#FF3B30", label: "CLOSED",      tooltip: "Porta non in ascolto (RST esplicito ricevuto)" },
+  filtered:    { color: "#FFCC00", label: "FILTERED",    tooltip: "Firewall blocca silenziosamente i probe (timeout senza risposta) — la porta puo' essere aperta ma e' irraggiungibile da Argus per geo-IP / whitelist / DDoS protection" },
+  unreachable: { color: "#FF9500", label: "UNREACHABLE", tooltip: "Network/host unreachable (errore di routing ICMP)" },
+  error:       { color: "#888",    label: "ERROR",       tooltip: "Errore durante il probe (DNS, SSL, ecc.)" },
+};
+const portStatus = (p) => PORT_STATUS_CONFIG[p?.status] || (p?.open ? PORT_STATUS_CONFIG.open : PORT_STATUS_CONFIG.closed);
 
 const DIAG_CONFIG = {
   ok: { color: "#34C759", icon: CheckCircle },
@@ -27,6 +40,7 @@ const DIAG_CONFIG = {
   router_down: { color: "#FF3B30", icon: HardDrives },
   firewall_degraded: { color: "#FFCC00", icon: Warning },
   router_degraded: { color: "#FFCC00", icon: Warning },
+  filtered: { color: "#FFCC00", icon: ShieldCheck },
   unknown: { color: "#555", icon: Clock },
   not_configured: { color: "#555", icon: Clock },
 };
@@ -143,8 +157,11 @@ export default function ExternalMonitorPage() {
         check_ping: form.check_ping,
       });
       setTestResult(res.data);
+      const anyFiltered = (res.data.ports || []).some(p => p?.status === "filtered");
       if (res.data.reachable) {
         toast.success("Connessione OK — Dispositivo raggiungibile");
+      } else if (anyFiltered) {
+        toast.warning("Probe filtrato dal firewall — Possibile falso negativo");
       } else {
         toast.error("Non raggiungibile — Verifica IP e configurazione");
       }
@@ -256,13 +273,25 @@ export default function ExternalMonitorPage() {
           </div>
 
           {/* Test result */}
-          {testResult && (
-            <div className={`rounded-md p-3 border text-xs ${testResult.reachable ? "bg-emerald-500/10 border-emerald-500/30" : "bg-red-500/10 border-red-500/30"}`} data-testid="test-result">
+          {testResult && (() => {
+            const anyFiltered = (testResult.ports || []).some(p => p?.status === "filtered");
+            const success = testResult.reachable;
+            const warn = !success && anyFiltered;
+            const bg = success ? "bg-emerald-500/10 border-emerald-500/30" : warn ? "bg-amber-500/10 border-amber-500/30" : "bg-red-500/10 border-red-500/30";
+            const tone = success ? "text-emerald-400" : warn ? "text-amber-400" : "text-red-400";
+            const Icon = success ? CheckCircle : Warning;
+            return (
+            <div className={`rounded-md p-3 border text-xs ${bg}`} data-testid="test-result">
               <div className="flex items-center gap-2 mb-1.5">
-                {testResult.reachable ? <CheckCircle size={14} weight="bold" className="text-emerald-400" /> : <Warning size={14} weight="bold" className="text-red-400" />}
-                <span className={`font-semibold ${testResult.reachable ? "text-emerald-400" : "text-red-400"}`}>{testResult.summary}</span>
+                <Icon size={14} weight="bold" className={tone} />
+                <span className={`font-semibold ${tone}`}>{testResult.summary}</span>
                 <span className="text-[var(--text-muted)] ml-auto font-mono">{testResult.ip}</span>
               </div>
+              {warn && (
+                <div className="text-[10px] text-amber-300/80 mb-2 leading-snug">
+                  Almeno una porta risulta <b>filtered</b>: significa che il firewall del cliente sta scartando silenziosamente i nostri probe (timeout senza RST). La porta potrebbe essere realmente aperta ma irraggiungibile dall'IP del NOC (geo-IP, whitelist, DDoS protection).
+                </div>
+              )}
               <div className="flex gap-4 flex-wrap">
                 {testResult.ping && (
                   <span className="text-[var(--text-muted)]">
@@ -276,15 +305,22 @@ export default function ExternalMonitorPage() {
                     {testResult.gateway.latency_ms != null && <span> ({testResult.gateway.latency_ms}ms)</span>}
                   </span>
                 )}
-                {testResult.ports?.map((p, i) => (
-                  <span key={i} className="text-[var(--text-muted)]">
-                    TCP {p.port}: <b style={{ color: p.open ? "#34C759" : "#FF3B30" }}>{p.open ? "OPEN" : "CLOSED"}</b>
-                    {p.response_ms ? <span className="text-[var(--text-muted)]"> ({p.response_ms}ms)</span> : ""}
-                  </span>
-                ))}
+                {testResult.ports?.map((p, i) => {
+                  const ps = portStatus(p);
+                  return (
+                    <span key={i} className="text-[var(--text-muted)]" title={ps.tooltip + (p.error_detail ? `\n${p.error_detail}` : "")}>
+                      TCP {p.port}: <b style={{ color: ps.color }}>{ps.label}</b>
+                      {p.response_ms ? <span className="text-[var(--text-muted)]"> ({p.response_ms}ms)</span> : ""}
+                      {p.resolved_ip && p.resolved_ip !== testResult.ip && (
+                        <span className="text-[8px] opacity-60 ml-1 font-mono">→ {p.resolved_ip}</span>
+                      )}
+                    </span>
+                  );
+                })}
               </div>
             </div>
-          )}
+            );
+          })()}
         </div>
       )}
 
@@ -559,15 +595,22 @@ function DeviceCard({ target: t, result: r, onDelete, onEdit }) {
             <div className="mt-2">
               <p className="text-[8px] uppercase tracking-widest text-[var(--text-muted)] mb-1">Porte TCP</p>
               <div className="flex gap-2 flex-wrap">
-                {r.ports.map((p, i) => (
-                  <div key={i} className="flex items-center gap-1.5 px-2 py-1 rounded-md border text-[10px] font-mono"
-                    style={{ borderColor: p.open ? "#34C75930" : "#FF3B3030", background: p.open ? "#34C75908" : "#FF3B3008" }}>
-                    <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: p.open ? "#34C759" : "#FF3B30" }}></div>
-                    <span className="text-[var(--text-primary)] font-bold">{p.port}</span>
-                    <span style={{ color: p.open ? "#34C759" : "#FF3B30" }}>{p.open ? "OPEN" : "CLOSED"}</span>
-                    {p.response_ms && <span className="text-[var(--text-muted)] opacity-60">{p.response_ms}ms</span>}
-                  </div>
-                ))}
+                {r.ports.map((p, i) => {
+                  const ps = portStatus(p);
+                  return (
+                    <div key={i}
+                      className="flex items-center gap-1.5 px-2 py-1 rounded-md border text-[10px] font-mono"
+                      style={{ borderColor: `${ps.color}30`, background: `${ps.color}08` }}
+                      title={ps.tooltip + (p.error_detail ? `\n\n${p.error_detail}` : "")}
+                      data-testid={`port-status-${p.port}`}
+                    >
+                      <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: ps.color }}></div>
+                      <span className="text-[var(--text-primary)] font-bold">{p.port}</span>
+                      <span style={{ color: ps.color }}>{ps.label}</span>
+                      {p.response_ms && <span className="text-[var(--text-muted)] opacity-60">{p.response_ms}ms</span>}
+                    </div>
+                  );
+                })}
               </div>
             </div>
           )}

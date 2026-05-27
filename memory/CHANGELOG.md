@@ -1,3 +1,57 @@
+# 2026-02-14 — External Monitor: UI stati distinti per porte TCP + DNS IPv4 + retry esteso
+
+## 🎯 Problema reale residuo
+Dopo il fix v2026-02-13 (backend `check_tcp_port` distingueva già 4 stati), la UI
+mostrava ancora **"CLOSED" rosso** per qualsiasi caso non-open, perché il
+frontend ignorava completamente il campo `status` e si basava solo su `p.open`.
+Risultato: monitor TCP/443 verso Zyxel del cliente continuava a sembrare
+"PORTA CHIUSA" anche quando in realtà era un **filtered** (firewall drop
+silente con geo-IP/whitelist) → falso positivo gravissimo per MSP.
+
+## ✅ Fix Frontend `pages/ExternalMonitorPage.js`
+- Aggiunto `PORT_STATUS_CONFIG` con label/colore/tooltip distinti:
+  - `open` → verde **OPEN** "SYN/ACK ricevuto"
+  - `closed` → rosso **CLOSED** "RST esplicito, porta non in ascolto"
+  - `filtered` → giallo **FILTERED** "Firewall blocca silenziosamente"
+  - `unreachable` → arancio **UNREACHABLE** "Errore routing"
+  - `error` → grigio **ERROR** "DNS, SSL, ecc."
+- Sostituito hardcoded OPEN/CLOSED in 2 punti (test result + DeviceCard expanded).
+- Banner ambra dedicato quando `filtered`: spiega che la porta **può essere
+  realmente aperta** ma irraggiungibile dall'IP del NOC (geo-IP, whitelist,
+  DDoS protection).
+- Toast cambia tono in base allo stato (success / warning / error).
+- Stato target globale `filtered` con icona scudo + giallo nella DeviceCard.
+
+## ✅ Fix Backend `routes/external_monitor.py`
+- Forzata risoluzione DNS in **IPv4** (`AF_INET`): nel container K8s lo stack
+  IPv6 non è sempre routable, evita falsi `unreachable` quando getaddrinfo
+  ritorna AAAA prima di A.
+- Timeout default 6s → **8s** (alcuni Zyxel/Fortinet WAN rispondono al SYN
+  dopo 5-7s in caso di carico alto).
+- Aggiunto campo `error_detail` (errno + descrizione) per debugging UI.
+- Aggiunto campo `resolved_ip` quando il target è un hostname.
+- Risoluzione DNS esplicita: ritorna `status="error"` con detail
+  "DNS resolution failed" invece di un generico OSError fuorviante.
+- Nuovo stato `filtered` a livello target (non più tutto offline rosso):
+  se il ping risponde ma le porte sono filtered → giallo, non rosso.
+- `diagnose_client` ora considera `filtered` come stato di raggiungibilità
+  intermedia.
+- `test-connection`: summary riflette esplicitamente N filtered / N closed,
+  e messaggio dedicato "Filtrato dal firewall — Probabilmente vivo ma blocca
+  probe esterni".
+
+## ✅ Test backend (5 scenari, tutti OK via curl)
+| Scenario | Risultato atteso | Risultato ottenuto |
+|---|---|---|
+| `8.8.8.8:443` | open | ✅ open, 0.7ms |
+| `8.8.8.8:9999` | filtered (timeout) | ✅ filtered con error_detail |
+| `127.0.0.1:9999` | closed (RST) | ✅ closed con error_detail |
+| `www.google.com:443` | open + resolved_ip | ✅ open, resolved=142.251.157.119 |
+| `nonexistent.example` | error (DNS) | ✅ error "DNS resolution failed" |
+
+---
+
+
 # 2026-02-13 — TCP Probe accurato + Test Vault iLO hardened
 
 ## 🎯 "Mi dai porta 443 closed quando in realtà è aperta"
