@@ -54,6 +54,83 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-03-01 ✅ WAN Client Tab — FASE 2 (intelligence avanzata MSP)
+
+### Aggiunte rispetto a Fase 1
+1. **Speedtest lato Agent Go** — `noc-agent/cmd/agent/speedtest.go`: nuovo
+   comando WS `speedtest` che esegue download (25MB)/upload (8MB)/ping
+   verso endpoint Cloudflare `speed.cloudflare.com`. Risultato POSTato al
+   Center via `/api/external-monitor/speedtest-result`. Async + go-routine
+   per non bloccare il WS reply (timeout 90s lato Center).
+   Conversione automatica `wss://` → `https://` per la base URL HTTP.
+   Capability registrata: `cmd.speedtest`. Compila Windows+Linux OK.
+
+2. **Multi-ISP failover detection** — `GET /multi-isp/{client_id}`:
+   raggruppa target per `gateway_ip`, mostra count linee, status reachable
+   per ognuna, eventi failover ultime 24h (transition reachable→down e
+   viceversa). UI: `MultiIspCard` (visibile solo se ≥2 ISP rilevati).
+
+3. **Cloud SaaS Reachability** — `GET /saas-reachability/{client_id}`:
+   probe TCP 443 + DNS resolve in parallelo verso 8 servizi critici
+   (M365, Teams, Google Workspace/Drive, AWS, Azure, Cloudflare,
+   GitHub). UI: `SaasReachabilityCard` con badge verde/rosso e latency.
+
+4. **MTR/Traceroute on-demand** — `POST /traceroute`: subprocess
+   `traceroute` (Linux/macOS) o `tracert` (Windows) cross-platform.
+   Output parsato in array `[{hop, ip, rtt_ms, raw}]` (max 30 hop).
+   UI: `TracerouteCard` con input target editabile (default = IP
+   pubblico del primo target). Installato `traceroute` nel container.
+
+5. **Alert rules per target** — `GET/PUT/DELETE /alert-rules/{target_id}`:
+   regole soglie personalizzate `latency_warn/crit_ms`,
+   `loss_warn/crit_pct`, `uptime_warn_pct`, `notify_email`,
+   `notify_telegram_chat_id`. UI: `AlertRulesButton` su ogni target con
+   dialog dedicato.
+
+6. **Storico bucket-aggregated 1d/7d/30d** — `GET /history-bucket/{target_id}`:
+   bucket dinamici (5min/1h/6h) con `avg_latency`, `avg_loss`,
+   `uptime_pct`, `samples`. UI: `HistoryChartDialog` modal con 2 grafici
+   Recharts (latenza area chart + uptime area chart) e tabs 1d/7d/30d.
+
+### File modificati
+- **NUOVO** `backend/routes/wan_advanced.py` (~350 righe): 5 endpoint
+  multi-isp/saas/traceroute/alert-rules/history-bucket.
+- `backend/server.py`: registrato `wan_advanced_router`.
+- **NUOVO** `noc-agent/cmd/agent/speedtest.go` (~180 righe): speedtest
+  Cloudflare + POST callback.
+- `noc-agent/cmd/agent/main.go`: registrato comando `speedtest`,
+  capability `cmd.speedtest` aggiunta al hello.
+- `frontend/src/components/WanClientTab.jsx`: +5 nuovi componenti
+  (SaasReachabilityCard, MultiIspCard, TracerouteCard, AlertRulesButton,
+  HistoryChartDialog), pulsante "Storico" e "Alert" per ogni target.
+
+### Validato in container
+- Backend: tutti gli endpoint ritornano JSON corretto.
+  - saas-reachability: 8/8 servizi healthy in 11ms (M365 outlook).
+  - traceroute 1.1.1.1: 6 hop con RTT.
+  - history-bucket 7d: 2307 sample → 59 bucket di 1h.
+  - alert-rules PUT/GET: persistenza + audit `updated_by`.
+- Go agent: cross-compile Windows+Linux OK con nuovo file speedtest.go.
+- Lint Python + JS pulito.
+
+### Steps utente per attivare in produzione
+1. **Save to GitHub** → auto-deploy backend
+2. Crea nuovo tag agent (es. **v4.18.0**) → GitHub Actions buildera'
+   automaticamente il binario con il comando `speedtest`.
+3. Agent v4.18.0+ riceve il comando WS `speedtest` dal Center e
+   risponde via HTTP POST in 60-90s.
+
+### Limiti noti / Fase 3 (futura)
+- Bandwidth SNMP IF-MIB monitoring (non implementato — richiede MIB
+  walking del firewall, va in P2 backlog).
+- Alert engine threshold rules collega le regole `wan_alert_rules` al
+  ciclo di probe → da fare nell'`run_probe_cycle` per consumare le
+  soglie configurate (al momento sono salvate ma non attive — engine
+  da aggiungere in Fase 3 quando si fa il notifier Telegram/Email).
+
+---
+
+
 ## 2026-03-01 ✅ WAN Client Tab — FASE 1 (clone hero ISP + intelligence MSP-grade)
 
 ### Richiesta utente

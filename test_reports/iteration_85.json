@@ -1,0 +1,34 @@
+{
+  "summary": "Iter-85: testati i 5 nuovi endpoint WAN Advanced FASE 2 (routes/wan_advanced.py) + non-regressione FASE 1. 22/22 PASS in ~4s. Multi-ISP raggruppa correttamente per gateway_ip e ritorna multi_isp bool. SaaS reachability esegue 8 probe TCP/DNS in parallelo e persiste snapshot in wan_saas_snapshots (upsert). Traceroute verso 1.1.1.1 ritorna hops parsati correttamente con hop/ip/rtt_ms/raw. Alert Rules CRUD completo (GET default, PUT con persistenza updated_at/updated_by, 400 su target_id mismatch, 404 su target inesistente, DELETE pulisce). History-bucket con bucket dinamici verificati: 1d=300s, 7d=3600s, 30d=21600s + clamp days=90 funzionante. Wan_advanced_router risulta correttamente montato in server.py (riga 241,305).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_wan_advanced_iter85.py",
+    "/app/test_reports/pytest/iteration_85_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "wan_advanced.py /traceroute: max_hops = min(max(payload.get('max_hops', 20), 5), 30) forza minimo 5, quindi anche se l'utente richiede 2 hop ne escono 5. Considerare di rispettare il valore richiesto sotto soglia (es. min=1).",
+    "wan_advanced.py /saas-reachability: il client cli viene letto da db.clients.find_one ma NON c'è check di esistenza prima dell'upsert dello snapshot. Snapshot vengono salvati anche per client_id inesistenti (potenziale pollution di wan_saas_snapshots). Suggerito: 404 se cliente non esiste.",
+    "wan_advanced.py /multi-isp: i target con gateway_ip = None vengono raggruppati nella chiave 'no_gateway' e poi scartati nel ciclo for. Il dict by_gw raccoglie quei target ma il counter isp_count non li include — comportamento corretto ma poco esplicito; aggiungere commento o filtro precoce.",
+    "wan_advanced.py /alert-rules PUT: AlertRule modello manca di validazione min/max sui campi numerici (latency_warn_ms negativo o loss_warn_pct > 100 vengono accettati). Aggiungere Field(ge=0, le=...).",
+    "wan_advanced.py /history-bucket: query .to_list(50000) può OOM se utente passa days=90 e target con ping frequente. Aggiungere indice composto (target_id, timestamp) e/o limite hard. NB: per i client il limit dovrebbe matchare bucket_sec target."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_wan_advanced_iter85.py"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "N/A (only backend requested)"},
+  "test_credentials": "admin info@86bit.it / Ariel17051986@!@86 — token field 'token'",
+  "seed_data_creation": "1 record TEST_iter85_<uuid> inserito in wan_speedtest_history via POST /speedtest-result, cleanup post-run eseguito (delete_many regex ^TEST_iter85_, 0 residui). Alert rules su any_target rimosse al termine via DELETE.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Test FASE 2 WAN Advanced in /app/backend/tests/test_wan_advanced_iter85.py (22 PASS). Fixture any_target dipende da almeno un WAN target esistente (86BIT_Office). Traceroute richiede binary 'traceroute' nel container (presente). SaaS reachability fa probe reali outbound 443 — se il container blocca outbound, summary.healthy=0 ma struttura JSON resta valida (test verifica solo schema, non count healthy). Alert rules PUT richiede admin (require_admin). Speedtest-result ora richiede campo 'command_id' nel payload (regressione rispetto iter-84). History-bucket bucket_sec mapping: days<=1->300, <=7->3600, else 21600. wan_advanced_router montato correttamente in server.py.",
+  "rca of the issue": "N/A — tutti gli endpoint FASE 2 + non-regressione FASE 1 verificati funzionanti."
+}

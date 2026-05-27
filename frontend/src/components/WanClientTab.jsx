@@ -6,6 +6,7 @@ import {
   Globe, ShieldCheck, HardDrives, WifiHigh, Lightning, Plus, Trash,
   ArrowClockwise, CheckCircle, Warning, MapPin, Pulse, Gauge,
   ArrowsClockwise, ChartLine, Clock, ArrowsLeftRight, PencilSimple,
+  Cloud, Path, Bell, X, XCircle,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -85,7 +86,7 @@ function HeroCard({ clientName, diagnosis, gateway, isOnline }) {
 }
 
 // =================== TARGET CARD (firewall/router) ===================
-function TargetCard({ target, onDelete }) {
+function TargetCard({ target, onDelete, onHistory }) {
   const r = target.result;
   const color = STATUS_COLOR[r?.status] || "#555";
   const Icon = target.device_type === "firewall" ? ShieldCheck : HardDrives;
@@ -113,9 +114,15 @@ function TargetCard({ target, onDelete }) {
             {r?.ping?.reachable ? "ICMP" : r?.ports?.find(p => p.open) ? `TCP:${r.ports.find(p => p.open).port}` : "—"}
           </div>
         </div>
-        <button onClick={() => onDelete(target)} className="p-1 rounded hover:bg-red-500/15 text-red-400 ml-1" title="Rimuovi" data-testid={`wan-target-delete-${target.id}`}>
-          <Trash size={12} />
-        </button>
+        <div className="flex items-center gap-1 ml-1">
+          <button onClick={() => onHistory(target)} className="text-[9px] px-2 py-0.5 rounded border border-indigo-500/40 hover:bg-indigo-500/10 text-indigo-300" title="Storico" data-testid={`wan-history-btn-${target.id}`}>
+            <ChartLine size={11} weight="bold" />
+          </button>
+          <AlertRulesButton target={target} />
+          <button onClick={() => onDelete(target)} className="p-1 rounded hover:bg-red-500/15 text-red-400" title="Rimuovi" data-testid={`wan-target-delete-${target.id}`}>
+            <Trash size={12} />
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -466,6 +473,341 @@ function SpeedtestCard({ clientId }) {
   );
 }
 
+// =================== SAAS REACHABILITY ===================
+function SaasReachabilityCard({ clientId }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const run = useCallback(async () => {
+    setLoading(true);
+    try {
+      const r = await axios.get(`${API}/external-monitor/saas-reachability/${clientId}`);
+      setData(r.data);
+    } catch (e) {
+      toast.error("Errore SaaS reachability");
+    } finally { setLoading(false); }
+  }, [clientId]);
+
+  useEffect(() => { run(); /* once on mount */ }, [run]);
+
+  return (
+    <div className="rounded-xl border border-[var(--bg-border)] bg-[var(--bg-panel)] p-3" data-testid="wan-saas-card">
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-2">
+          <Cloud size={13} weight="bold" className="text-sky-400" />
+          <span className="text-[10px] font-bold uppercase tracking-wider text-sky-300">Cloud SaaS Reachability</span>
+        </div>
+        <button onClick={run} disabled={loading} className="text-[9px] px-2 py-0.5 rounded border border-sky-500/40 hover:bg-sky-500/10 text-sky-300 disabled:opacity-50" data-testid="wan-saas-refresh">
+          {loading ? "Check…" : "Re-check"}
+        </button>
+      </div>
+      {data && (
+        <>
+          <div className="text-[9px] text-[var(--text-muted)] mb-2">
+            {data.summary.healthy}/{data.summary.total} servizi raggiungibili
+          </div>
+          <div className="grid grid-cols-2 gap-1.5">
+            {data.services.map((s, i) => (
+              <div key={i} className="flex items-center gap-2 text-[10px] p-1.5 rounded border" style={{ borderColor: s.ok ? "#34C75930" : "#FF3B3030", background: s.ok ? "#34C75908" : "#FF3B3008" }} data-testid={`wan-saas-${s.icon}`}>
+                <div className="w-1.5 h-1.5 rounded-full" style={{ background: s.ok ? "#34C759" : "#FF3B30" }}></div>
+                <span className="flex-1 truncate font-bold text-[var(--text-primary)]">{s.name}</span>
+                <span className="tabular-nums font-mono" style={{ color: s.ok ? "#34C759" : "#FF3B30" }}>
+                  {s.ok ? `${s.tcp_ms}ms` : "DOWN"}
+                </span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+      {!data && !loading && (
+        <div className="text-[10px] text-[var(--text-muted)] py-2 text-center">Caricamento…</div>
+      )}
+    </div>
+  );
+}
+
+// =================== MULTI-ISP ===================
+function MultiIspCard({ clientId }) {
+  const [data, setData] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    axios.get(`${API}/external-monitor/multi-isp/${clientId}`)
+      .then(r => alive && setData(r.data))
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [clientId]);
+
+  if (!data || !data.multi_isp) return null;
+  return (
+    <div className="rounded-xl border border-purple-500/30 bg-purple-500/5 p-3" data-testid="wan-multi-isp">
+      <div className="flex items-center gap-2 mb-2">
+        <ArrowsLeftRight size={13} weight="bold" className="text-purple-400" />
+        <span className="text-[10px] font-bold uppercase tracking-wider text-purple-300">Multi-ISP ({data.isp_count})</span>
+      </div>
+      <div className="space-y-1.5">
+        {data.isps.map((isp, i) => (
+          <div key={i} className="flex items-center justify-between text-[10px] p-1.5 rounded bg-[var(--bg-card)]" data-testid={`wan-isp-line-${i}`}>
+            <span className="font-mono text-[var(--text-primary)]">{isp.gateway_ip}</span>
+            <div className="flex items-center gap-2">
+              <span className="text-[9px] text-[var(--text-muted)]">{isp.target_labels.join(", ")}</span>
+              <span className="tabular-nums font-bold" style={{ color: isp.reachable ? "#34C759" : "#FF3B30" }}>
+                {isp.reachable ? `${isp.latency_ms ?? "?"}ms` : "DOWN"}
+              </span>
+            </div>
+          </div>
+        ))}
+      </div>
+      {data.failover_events.length > 0 && (
+        <div className="mt-2 pt-2 border-t border-purple-500/20 text-[9px] text-purple-300/80">
+          {data.failover_events.length} eventi failover ultime 24h
+        </div>
+      )}
+    </div>
+  );
+}
+
+// =================== TRACEROUTE ===================
+function TracerouteCard({ targets }) {
+  const [hops, setHops] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [selTarget, setSelTarget] = useState(targets[0]?.public_ip || "1.1.1.1");
+
+  const run = async () => {
+    setLoading(true);
+    setHops(null);
+    try {
+      const r = await axios.post(`${API}/external-monitor/traceroute`, { target: selTarget, max_hops: 20 });
+      setHops(r.data.hops || []);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Errore traceroute");
+    } finally { setLoading(false); }
+  };
+
+  return (
+    <div className="rounded-xl border border-[var(--bg-border)] bg-[var(--bg-panel)] p-3" data-testid="wan-traceroute-card">
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-2">
+          <Path size={13} weight="bold" className="text-orange-400" />
+          <span className="text-[10px] font-bold uppercase tracking-wider text-orange-300">Traceroute (dal NOC)</span>
+        </div>
+      </div>
+      <div className="flex gap-2 mb-2">
+        <Input value={selTarget} onChange={e => setSelTarget(e.target.value)} placeholder="IP o hostname" className="h-7 text-[10px] font-mono bg-[var(--bg-card)] border-[var(--bg-border)]" data-testid="wan-traceroute-input" />
+        <button onClick={run} disabled={loading || !selTarget} className="text-[9px] px-2 rounded border border-orange-500/40 hover:bg-orange-500/10 text-orange-300 disabled:opacity-50" data-testid="wan-traceroute-run">
+          {loading ? "…" : "Esegui"}
+        </button>
+      </div>
+      {hops && hops.length > 0 && (
+        <div className="space-y-0.5 max-h-48 overflow-y-auto">
+          {hops.map((h, i) => (
+            <div key={i} className="flex items-center gap-2 text-[10px] font-mono py-0.5 border-b border-[var(--bg-border)]/40 last:border-0">
+              <span className="w-5 text-orange-400">{h.hop || "?"}</span>
+              <span className="flex-1 text-[var(--text-primary)]">{h.ip || "*"}</span>
+              <span className="tabular-nums text-[var(--text-muted)]">{h.rtt_ms != null ? `${h.rtt_ms}ms` : ""}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      {hops && hops.length === 1 && hops[0].error && (
+        <div className="text-[10px] text-red-400 text-center py-2">{hops[0].error}</div>
+      )}
+    </div>
+  );
+}
+
+// =================== ALERT RULES DIALOG ===================
+function AlertRulesButton({ target }) {
+  const [open, setOpen] = useState(false);
+  const [rule, setRule] = useState({
+    target_id: target.id, enabled: false,
+    latency_warn_ms: null, latency_crit_ms: null,
+    loss_warn_pct: null, loss_crit_pct: null,
+    uptime_warn_pct: null,
+    notify_email: null, notify_telegram_chat_id: null,
+  });
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    axios.get(`${API}/external-monitor/alert-rules/${target.id}`)
+      .then(r => setRule({ ...rule, ...r.data, target_id: target.id }))
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, target.id]);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await axios.put(`${API}/external-monitor/alert-rules/${target.id}`, rule);
+      toast.success("Regole alert salvate");
+      setOpen(false);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Errore salvataggio");
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <>
+      <button onClick={() => setOpen(true)} className="text-[9px] px-2 py-0.5 rounded border border-amber-500/40 hover:bg-amber-500/10 text-amber-300" title="Configura alert" data-testid={`wan-alert-rules-btn-${target.id}`}>
+        <Bell size={11} weight="bold" className="inline -mt-0.5 mr-1" /> Alert
+      </button>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="bg-[var(--bg-card)] border-[var(--bg-border)] max-w-lg" data-testid="wan-alert-rules-dialog">
+          <DialogHeader>
+            <DialogTitle className="text-[var(--text-primary)] flex items-center gap-2">
+              <Bell size={16} weight="bold" className="text-amber-400" /> Alert rules — {target.label}
+            </DialogTitle>
+            <DialogDescription className="text-[var(--text-muted)] text-xs">
+              Soglie personalizzate per latenza / packet loss / uptime. Genera alert quando superate per 3 cicli consecutivi.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <label className="flex items-center gap-2 text-[11px] text-[var(--text-primary)] cursor-pointer">
+              <input type="checkbox" checked={rule.enabled} onChange={e => setRule({ ...rule, enabled: e.target.checked })} data-testid="alert-rules-enabled" />
+              Abilita regole personalizzate (sovrascrive default)
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              <NumField label="Latenza WARN (ms)" value={rule.latency_warn_ms} onChange={v => setRule({ ...rule, latency_warn_ms: v })} placeholder="50" />
+              <NumField label="Latenza CRIT (ms)" value={rule.latency_crit_ms} onChange={v => setRule({ ...rule, latency_crit_ms: v })} placeholder="200" />
+              <NumField label="Loss WARN (%)" value={rule.loss_warn_pct} onChange={v => setRule({ ...rule, loss_warn_pct: v })} placeholder="2" step="0.1" />
+              <NumField label="Loss CRIT (%)" value={rule.loss_crit_pct} onChange={v => setRule({ ...rule, loss_crit_pct: v })} placeholder="10" step="0.1" />
+              <NumField label="Uptime WARN < (%)" value={rule.uptime_warn_pct} onChange={v => setRule({ ...rule, uptime_warn_pct: v })} placeholder="99.5" step="0.1" />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-[10px] uppercase text-[var(--text-muted)]">Email notifiche</Label>
+              <Input value={rule.notify_email || ""} onChange={e => setRule({ ...rule, notify_email: e.target.value || null })} placeholder="alerts@cliente.it" className="h-8 text-xs bg-[var(--bg-panel)] border-[var(--bg-border)]" data-testid="alert-rules-email" />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-[10px] uppercase text-[var(--text-muted)]">Telegram chat_id</Label>
+              <Input value={rule.notify_telegram_chat_id || ""} onChange={e => setRule({ ...rule, notify_telegram_chat_id: e.target.value || null })} placeholder="-100123456789" className="h-8 text-xs font-mono bg-[var(--bg-panel)] border-[var(--bg-border)]" data-testid="alert-rules-telegram" />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button onClick={() => setOpen(false)} variant="outline">Annulla</Button>
+            <Button onClick={save} disabled={saving} className="bg-amber-600 hover:bg-amber-700 text-white" data-testid="alert-rules-save">
+              {saving ? "Salvataggio…" : "Salva"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
+
+function NumField({ label, value, onChange, placeholder, step }) {
+  return (
+    <div>
+      <Label className="text-[10px] uppercase text-[var(--text-muted)]">{label}</Label>
+      <Input
+        type="number" step={step || "1"}
+        value={value ?? ""}
+        onChange={e => onChange(e.target.value === "" ? null : Number(e.target.value))}
+        placeholder={placeholder}
+        className="h-8 text-xs font-mono bg-[var(--bg-panel)] border-[var(--bg-border)]"
+      />
+    </div>
+  );
+}
+
+// =================== HISTORY CHART 7d/30d ===================
+function HistoryChartDialog({ target, open, onOpenChange }) {
+  const [days, setDays] = useState(7);
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    setLoading(true);
+    axios.get(`${API}/external-monitor/history-bucket/${target.id}?days=${days}`)
+      .then(r => setData(r.data))
+      .catch(() => setData(null))
+      .finally(() => setLoading(false));
+  }, [open, target.id, days]);
+
+  const chartData = useMemo(() => {
+    if (!data?.buckets) return [];
+    return data.buckets.map(b => ({
+      t: new Date(b.t).getTime(),
+      latency: b.avg_latency,
+      uptime: b.uptime_pct,
+      loss: b.avg_loss,
+    }));
+  }, [data]);
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="bg-[var(--bg-card)] border-[var(--bg-border)] max-w-4xl" data-testid="wan-history-dialog">
+        <DialogHeader>
+          <DialogTitle className="text-[var(--text-primary)] flex items-center gap-2">
+            <ChartLine size={16} weight="bold" className="text-indigo-400" /> Storico — {target.label}
+          </DialogTitle>
+          <DialogDescription className="text-[var(--text-muted)] text-xs">
+            Aggregati per bucket: 1d=5min, 7d=1h, 30d=6h
+          </DialogDescription>
+        </DialogHeader>
+        <div className="flex gap-2 mb-3">
+          {[1, 7, 30].map(d => (
+            <button key={d} onClick={() => setDays(d)} className={`text-[10px] px-3 py-1 rounded border ${days === d ? "bg-indigo-600 text-white border-indigo-700" : "border-[var(--bg-border)] text-[var(--text-muted)] hover:bg-indigo-500/10"}`} data-testid={`wan-history-days-${d}`}>
+              {d === 1 ? "Oggi" : `${d}gg`}
+            </button>
+          ))}
+        </div>
+        {loading && <div className="text-center py-12 text-[var(--text-muted)] text-xs">Caricamento…</div>}
+        {!loading && data && (
+          <>
+            <div className="text-[10px] text-[var(--text-muted)] mb-2">
+              {data.total_samples} sample totali · {data.buckets.length} bucket
+            </div>
+            <div className="space-y-3">
+              {/* Latenza */}
+              <div>
+                <div className="text-[10px] uppercase tracking-wider text-indigo-300 mb-1">Latenza media (ms)</div>
+                <div className="h-32">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={chartData} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
+                      <defs>
+                        <linearGradient id="g1" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor="#6366F1" stopOpacity={0.5} />
+                          <stop offset="100%" stopColor="#6366F1" stopOpacity={0} />
+                        </linearGradient>
+                      </defs>
+                      <XAxis dataKey="t" tickFormatter={t => new Date(t).toLocaleDateString("it-IT", { day: "2-digit", month: "2-digit", hour: "2-digit" })} stroke="#666" fontSize={9} />
+                      <YAxis stroke="#666" fontSize={9} />
+                      <CartesianGrid stroke="#1f2937" />
+                      <RTooltip contentStyle={{ background: "#0a0d14", border: "1px solid #1f2937", borderRadius: 6, fontSize: 10 }} labelFormatter={v => new Date(v).toLocaleString("it-IT")} />
+                      <Area type="monotone" dataKey="latency" stroke="#6366F1" fill="url(#g1)" strokeWidth={1.5} isAnimationActive={false} />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+              {/* Uptime */}
+              <div>
+                <div className="text-[10px] uppercase tracking-wider text-emerald-300 mb-1">Uptime (%)</div>
+                <div className="h-32">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={chartData} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
+                      <defs>
+                        <linearGradient id="g2" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor="#10B981" stopOpacity={0.5} />
+                          <stop offset="100%" stopColor="#10B981" stopOpacity={0} />
+                        </linearGradient>
+                      </defs>
+                      <XAxis dataKey="t" tickFormatter={t => new Date(t).toLocaleDateString("it-IT", { day: "2-digit", month: "2-digit" })} stroke="#666" fontSize={9} />
+                      <YAxis stroke="#666" fontSize={9} domain={[0, 100]} />
+                      <CartesianGrid stroke="#1f2937" />
+                      <RTooltip contentStyle={{ background: "#0a0d14", border: "1px solid #1f2937", borderRadius: 6, fontSize: 10 }} labelFormatter={v => new Date(v).toLocaleString("it-IT")} />
+                      <Area type="monotone" dataKey="uptime" stroke="#10B981" fill="url(#g2)" strokeWidth={1.5} isAnimationActive={false} />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+            </div>
+          </>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 // =================== MAIN COMPONENT ===================
 export default function WanClientTab({ targets, clientId, clientName, onRefresh }) {
   const [showAdd, setShowAdd] = useState(false);
@@ -481,6 +823,7 @@ export default function WanClientTab({ targets, clientId, clientName, onRefresh 
     check_ports: "443", check_ping: true,
   };
   const [form, setForm] = useState(emptyForm);
+  const [historyTarget, setHistoryTarget] = useState(null);
 
   const fetchDiagnosis = useCallback(async () => {
     try {
@@ -623,7 +966,7 @@ export default function WanClientTab({ targets, clientId, clientName, onRefresh 
                   <span className="text-[9px] text-indigo-300/70">{firewalls.length}</span>
                 </div>
                 <div className="space-y-2">
-                  {firewalls.map(t => <TargetCard key={t.id} target={t} onDelete={handleDelete} />)}
+                  {firewalls.map(t => <TargetCard key={t.id} target={t} onDelete={handleDelete} onHistory={setHistoryTarget} />)}
                 </div>
                 {firewalls.map(t => <InsightsPanel key={`ins-${t.id}`} target={t} />)}
               </div>
@@ -637,7 +980,7 @@ export default function WanClientTab({ targets, clientId, clientName, onRefresh 
                   <span className="text-[9px] text-cyan-300/70">{routers.length}</span>
                 </div>
                 <div className="space-y-2">
-                  {routers.map(t => <TargetCard key={t.id} target={t} onDelete={handleDelete} />)}
+                  {routers.map(t => <TargetCard key={t.id} target={t} onDelete={handleDelete} onHistory={setHistoryTarget} />)}
                 </div>
                 {routers.map(t => <InsightsPanel key={`ins-${t.id}`} target={t} />)}
               </div>
@@ -649,11 +992,14 @@ export default function WanClientTab({ targets, clientId, clientName, onRefresh 
             <div className="space-y-2">
               {others.map(t => (
                 <div key={t.id} className="rounded-xl border border-[var(--bg-border)] bg-[var(--bg-panel)] p-3">
-                  <TargetCard target={t} onDelete={handleDelete} />
+                  <TargetCard target={t} onDelete={handleDelete} onHistory={setHistoryTarget} />
                 </div>
               ))}
             </div>
           )}
+
+          {/* MULTI-ISP (mostrato solo se >=2 linee) */}
+          <MultiIspCard clientId={clientId} />
 
           {/* INTELLIGENCE GRID: GEO / DNS / IP HISTORY / SPEEDTEST */}
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
@@ -667,6 +1013,12 @@ export default function WanClientTab({ targets, clientId, clientName, onRefresh 
               <PublicIpHistoryCard key={`iph-${t.id}`} targetId={t.id} currentIp={t.public_ip} />
             ))}
             <SpeedtestCard clientId={clientId} />
+          </div>
+
+          {/* FASE 2: SaaS Reachability + Traceroute */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+            <SaasReachabilityCard clientId={clientId} />
+            <TracerouteCard targets={targets} />
           </div>
         </>
       )}
@@ -756,6 +1108,15 @@ export default function WanClientTab({ targets, clientId, clientName, onRefresh 
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* HISTORY CHART DIALOG */}
+      {historyTarget && (
+        <HistoryChartDialog
+          target={historyTarget}
+          open={!!historyTarget}
+          onOpenChange={(o) => { if (!o) setHistoryTarget(null); }}
+        />
+      )}
     </div>
   );
 }
