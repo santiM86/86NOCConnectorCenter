@@ -1,3 +1,75 @@
+# 2026-02-13 — TCP Probe accurato + Test Vault iLO hardened
+
+## 🎯 "Mi dai porta 443 closed quando in realtà è aperta"
+
+**Bug**: il TCP probe esterno di Argus dichiarava `CLOSED` rosso quando
+il firewall Zyxel del cliente accettava regolarmente connessioni
+sull'iLO (visibili nei log del firewall come "Argus_iLO accept TCP
+79.63.97.129 -> 10.100.61.35:443"). Causa: il timeout di 3s era troppo
+basso e TUTTI gli errori (timeout, refused, ENETUNREACH, OSError)
+venivano trattati come "porta chiusa".
+
+## ✅ Fix A — TCP Probe accurato (nmap-like)
+
+`routes/external_monitor.py::check_tcp_port()` ora distingue 4 stati:
+
+| Stato | Significato | Causa tipica |
+|---|---|---|
+| `open` | SYN/ACK ricevuto | porta in ascolto |
+| `closed` | RST esplicito | porta non in ascolto |
+| `filtered` | timeout silente | firewall droppa silenzioso (whitelist geo-IP / source) |
+| `unreachable` | ENETUNREACH/EHOSTUNREACH | no rotta |
+
+Migliorie:
+- Timeout 3s → **6s** (raddoppiato per WAN)
+- **1 retry** automatico su timeout (mitiga packet loss singolo)
+- Mantenuto campo `open: bool` per backwards compat + aggiunto `status: str`
+
+## ✅ Fix B — Test Vault iLO con tip operativi
+
+`redfish.py::test_connection()` riscritto:
+
+**STEP 0** — TCP probe preflight: distingue subito filtered/closed/unreachable
+con tip dettagliato. Risparmia 15s di timeout HTTPS quando il problema
+è di rete/firewall.
+
+**STEP 1** — Redfish HTTPS hardened:
+- Timeout 10s → **15s** per WAN/SSL warmup
+- Fallback `/Systems/1/` → `/Systems/1S/` → `/Systems/` (collection) per
+  iDRAC Dell / Lenovo XCC con UUID custom
+- Distingue HTTP 401 (cred), 403 (priv insuff), 404 (Redfish disabilitato)
+- Guard JSON: se 200 ma `Content-Type: text/html` → identifica URL puntato
+  al sistema operativo invece che al BMC
+- Cattura SSL/cert errors con tip TLS 1.0 obsoleto
+- Ogni esito ha un **tip operativo** per il troubleshoot 86bit:
+  - filtered → "aggiungi IP Argus alla whitelist firewall Zyxel/FortiGate"
+  - closed → "verifica URL/porta HTTPS"
+  - 401 → "su HPE iLO l'utente è 'Administrator' (case sensitive)"
+  - 403 → "abilita Redfish in iLO Security → Encryption"
+  - 404 → "iLO 3 legacy oppure Redfish disabilitato"
+
+## ✅ Fix C — UI VaultPage mostra tip
+
+Toast error ora include `tip` (con icona 💡) e duration 15s per dare
+tempo all'admin di leggere il suggerimento.
+
+## File modificati
+- `backend/routes/external_monitor.py::check_tcp_port` — 4 stati + retry
+- `backend/redfish.py::test_connection` — preflight TCP + tip
+- `frontend/src/pages/VaultPage.js` — toast con tip esteso
+- `backend/tests/test_tcp_probe.py` — nuovo (4 test PASS)
+
+## Test
+- Suite TCP probe: 4/4 PASS (open, closed, filtered, unreachable)
+- Suite centralizzata totale: **60/60 PASS**
+- Test live `/api/redfish/test-connection` con 4 scenari distinti:
+  - `https://10.255.255.1` (TEST-NET) → status=filtered + tip Zyxel/FortiGate ✅
+  - `https://127.0.0.1:1` (porta libera) → status=closed + tip URL/porta ✅
+  - Frontend URL HTML → tcp_status=open + tip "URL al sistema, non al BMC" ✅
+
+---
+
+
 # 2026-02-13 — Cascade fix "connector down → falsi 36 offline"
 
 ## 🌪️ "Come mai mi mostri tutto rosso?"

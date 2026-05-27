@@ -134,22 +134,73 @@ def _ping_once(ip: str, seq: int, timeout: int = 3):
         return False, 0
 
 
-async def check_tcp_port(ip: str, port: int, timeout: int = 3) -> dict:
-    """Check TCP port connectivity."""
+async def check_tcp_port(ip: str, port: int, timeout: int = 6) -> dict:
+    """
+    TCP probe con stati distinti (RFC 793 / nmap-like).
+
+    Stati possibili:
+      - "open"        → connect OK (SYN/ACK ricevuto)
+      - "closed"      → RST esplicito (porta non in ascolto)
+      - "filtered"    → timeout (firewall droppa silente, geo-IP, IPS)
+      - "unreachable" → routing/network error (ENETUNREACH/EHOSTUNREACH)
+      - "error"       → altro errore
+
+    v2026-02-13: prima ritornava sempre `open: False` per qualunque errore,
+    causando falso "CLOSED" rosso quando in realta' il firewall del
+    cliente droppa silenziosamente i probe (es. Zyxel USG con
+    whitelist geo-IP/source: le connessioni accepted da IP autorizzati
+    funzionano, ma il probe da Argus arriva da rete diversa → drop →
+    timeout → falso closed).
+
+    Aggiunto 1 retry su timeout (dare al firewall una seconda chance,
+    abbatte rumore su WAN traballanti).
+    """
     start = time.monotonic()
-    try:
-        _, writer = await asyncio.wait_for(
-            asyncio.open_connection(ip, port),
-            timeout=timeout,
-        )
-        elapsed = round((time.monotonic() - start) * 1000, 1)
-        writer.close()
-        await writer.wait_closed()
-        return {"port": port, "open": True, "response_ms": elapsed}
-    except (asyncio.TimeoutError, ConnectionRefusedError, OSError):
-        return {"port": port, "open": False, "response_ms": None}
-    except Exception:
-        return {"port": port, "open": False, "response_ms": None}
+    last_exc_kind = None
+    for attempt in range(2):  # 1 retry su timeout
+        try:
+            _, writer = await asyncio.wait_for(
+                asyncio.open_connection(ip, port),
+                timeout=timeout,
+            )
+            elapsed = round((time.monotonic() - start) * 1000, 1)
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except Exception:
+                pass
+            return {
+                "port": port,
+                "open": True,
+                "status": "open",
+                "response_ms": elapsed,
+            }
+        except asyncio.TimeoutError:
+            last_exc_kind = "filtered"
+            if attempt == 0:
+                continue  # retry
+        except ConnectionRefusedError:
+            last_exc_kind = "closed"
+            break
+        except OSError as e:
+            # ENETUNREACH=101, EHOSTUNREACH=113, ECONNRESET=104
+            if getattr(e, "errno", None) in (101, 113):
+                last_exc_kind = "unreachable"
+            elif getattr(e, "errno", None) == 104:
+                last_exc_kind = "closed"
+            else:
+                last_exc_kind = "error"
+            break
+        except Exception:
+            last_exc_kind = "error"
+            break
+
+    return {
+        "port": port,
+        "open": False,
+        "status": last_exc_kind or "error",
+        "response_ms": None,
+    }
 
 
 async def probe_target(target: dict) -> dict:

@@ -1098,15 +1098,130 @@ class RedfishPoller:
     # ==================== PUBLIC API ====================
 
     async def test_connection(self, url: str, username: str, password: str) -> dict:
-        """Test Redfish connection from the SOC backend."""
+        """Test Redfish connection from the SOC backend.
+
+        v2026-02-13 hardening:
+          - STEP 0: TCP probe preliminare per distinguere "porta filtrata dal
+            firewall" (timeout silente) da "porta chiusa" (RST) prima ancora
+            di provare HTTPS. Risparmia 15s di timeout su falsi positivi.
+          - Timeout 15s (era 10) per WAN lente / SSL warmup
+          - Tenta /Systems/1/ ma anche fallback /Systems/ (lista Members) per
+            iDRAC Dell / Lenovo XCC che usano UUID/ID diversi
+          - Distingue HTTP 401 (credenziali) da 403 (privilegio insufficiente)
+            da 404 (endpoint non esiste, Redfish potrebbe essere disabilitato)
+          - Aggiunge `tip` operativo nel risultato per i casi comuni
+          - Restituisce `attempted_url` per debug
+        """
+        attempted_url = f"{url}/redfish/v1/"
+        # STEP 0: TCP probe per diagnosticare presto problemi di rete/firewall
         try:
-            async with httpx.AsyncClient(verify=False, timeout=10.0) as client:
-                r = await client.get(f"{url}/redfish/v1/", auth=(username, password))
+            from urllib.parse import urlparse
+            from routes.external_monitor import check_tcp_port
+            parsed = urlparse(url)
+            probe_host = parsed.hostname
+            probe_port = parsed.port or (443 if parsed.scheme == "https" else 80)
+            if probe_host:
+                tcp = await check_tcp_port(probe_host, probe_port, timeout=6)
+                tcp_status = tcp.get("status")
+                if tcp_status == "filtered":
+                    return {
+                        "success": False,
+                        "error": f"Porta {probe_port} filtrata dal firewall (timeout)",
+                        "tip": (
+                            "Il TCP probe è andato in timeout, ma la porta NON è "
+                            "chiusa: il firewall sta droppando silenziosamente i "
+                            "pacchetti da questa fonte. Tipico con whitelist geo-IP "
+                            "o source-IP su Zyxel/FortiGate. Aggiungi l'IP pubblico "
+                            "di Argus alla whitelist firewall del cliente."
+                        ),
+                        "tcp_status": tcp_status,
+                        "attempted_url": attempted_url,
+                    }
+                elif tcp_status == "closed":
+                    return {
+                        "success": False,
+                        "error": f"Porta {probe_port} chiusa (RST esplicito)",
+                        "tip": (
+                            "Il dispositivo ha esplicitamente rifiutato la connessione: "
+                            "verifica che l'URL sia corretto, che HTTPS sia abilitato "
+                            "sull'iLO, e che la porta sia quella giusta (443 standard, "
+                            "8443 alcuni iLO 5)."
+                        ),
+                        "tcp_status": tcp_status,
+                        "attempted_url": attempted_url,
+                    }
+                elif tcp_status == "unreachable":
+                    return {
+                        "success": False,
+                        "error": f"Host {probe_host} non raggiungibile",
+                        "tip": (
+                            "Routing/rete: il backend Argus non ha rotta verso l'IP. "
+                            "Se il dispositivo è in LAN privata serve il connector come "
+                            "tunnel (modalità connector_only)."
+                        ),
+                        "tcp_status": tcp_status,
+                        "attempted_url": attempted_url,
+                    }
+        except Exception as _e:
+            logger.debug(f"tcp probe pre-flight failed: {_e}")
+
+        # STEP 1: full Redfish probe HTTPS
+        try:
+            async with httpx.AsyncClient(verify=False, timeout=15.0) as client:
+                r = await client.get(attempted_url, auth=(username, password))
                 if r.status_code == 200:
-                    data = r.json()
-                    # Also try to get system info
-                    sys_r = await client.get(f"{url}/redfish/v1/Systems/1/", auth=(username, password))
-                    sys_info = sys_r.json() if sys_r.status_code == 200 else {}
+                    # Guard: la risposta deve essere JSON Redfish, non HTML
+                    ctype = (r.headers.get("content-type") or "").lower()
+                    if "json" not in ctype:
+                        return {
+                            "success": False,
+                            "error": f"Risposta non JSON (Content-Type: {ctype or 'sconosciuto'})",
+                            "tip": (
+                                "La porta è aperta e il server risponde HTTP 200, ma "
+                                "il contenuto non è JSON Redfish. Probabilmente l'URL "
+                                "punta a un web server normale (pagina HTML), non a "
+                                "un BMC. Verifica che l'URL sia quello del management "
+                                "controller (iLO/iDRAC/XCC), non del sistema operativo."
+                            ),
+                            "tcp_status": "open",
+                            "attempted_url": attempted_url,
+                        }
+                    try:
+                        data = r.json()
+                    except Exception as je:
+                        return {
+                            "success": False,
+                            "error": f"JSON malformato: {je}",
+                            "tip": "Il server risponde 200 ma il payload non è JSON valido. Probabilmente un proxy intermedio sta riscrivendo la risposta.",
+                            "attempted_url": attempted_url,
+                        }
+                    sys_info = {}
+                    # Tenta /Systems/1/ → fallback su /Systems/ per
+                    # iDRAC/XCC che usano UUID o ID custom
+                    for sys_path in ("/Systems/1/", "/Systems/1S/", "/Systems/"):
+                        try:
+                            sys_r = await client.get(
+                                f"{url}/redfish/v1{sys_path}",
+                                auth=(username, password),
+                            )
+                            if sys_r.status_code == 200:
+                                sys_data = sys_r.json()
+                                if "Members" in sys_data and sys_data["Members"]:
+                                    # collection → segui il primo member
+                                    first = sys_data["Members"][0].get("@odata.id")
+                                    if first:
+                                        sys_r2 = await client.get(
+                                            f"{url}{first}",
+                                            auth=(username, password),
+                                        )
+                                        if sys_r2.status_code == 200:
+                                            sys_info = sys_r2.json()
+                                            break
+                                else:
+                                    sys_info = sys_data
+                                    break
+                        except Exception:
+                            continue
                     return {
                         "success": True,
                         "redfish_version": data.get("RedfishVersion"),
@@ -1114,17 +1229,54 @@ class RedfishPoller:
                         "model": sys_info.get("Model"),
                         "serial": sys_info.get("SerialNumber"),
                         "health": sys_info.get("Status", {}).get("Health"),
+                        "attempted_url": attempted_url,
                     }
                 elif r.status_code == 401:
-                    return {"success": False, "error": "Credenziali non valide"}
+                    return {
+                        "success": False,
+                        "error": "Credenziali non valide (HTTP 401)",
+                        "tip": "Verifica username/password. Su HPE iLO l'utente di default è 'Administrator' (case sensitive).",
+                        "attempted_url": attempted_url,
+                    }
+                elif r.status_code == 403:
+                    return {
+                        "success": False,
+                        "error": "Permessi insufficienti (HTTP 403)",
+                        "tip": "L'utente esiste ma non ha privilegi Redfish. Su iLO assegna il ruolo 'Administrator' o abilita 'iLO Settings' → 'User Administration' → 'Redfish'.",
+                        "attempted_url": attempted_url,
+                    }
+                elif r.status_code == 404:
+                    return {
+                        "success": False,
+                        "error": "Endpoint Redfish non trovato (HTTP 404)",
+                        "tip": "Il dispositivo risponde HTTPS ma /redfish/v1/ non esiste. Possibile: iLO 3 legacy, Redfish disabilitato (iLO → Security → Encryption → 'Enable Redfish'), oppure URL errato (controlla porta).",
+                        "attempted_url": attempted_url,
+                    }
                 else:
-                    return {"success": False, "error": f"HTTP {r.status_code}"}
+                    return {
+                        "success": False,
+                        "error": f"HTTP {r.status_code}",
+                        "tip": "Server raggiunto ma risposta inattesa. Verifica che l'URL punti al BMC e che non ci sia un reverse-proxy nel mezzo.",
+                        "attempted_url": attempted_url,
+                    }
         except httpx.TimeoutException:
-            return {"success": False, "error": "Timeout connessione"}
-        except httpx.ConnectError:
-            return {"success": False, "error": "Connessione rifiutata"}
+            return {
+                "success": False,
+                "error": "Timeout connessione (15s)",
+                "tip": "Il dispositivo non risponde entro 15s. Possibile firewall che droppa il probe (verifica che Argus IP sia in whitelist) oppure iLO in stato di standby/SSL warmup. Prova a riavviare l'iLO.",
+                "attempted_url": attempted_url,
+            }
+        except httpx.ConnectError as e:
+            err_str = str(e).lower()
+            if "ssl" in err_str or "certificate" in err_str:
+                tip = "Errore SSL: il certificato del BMC è probabilmente self-signed o scaduto. Argus accetta self-signed (verify=False), quindi l'errore può indicare cifratura troppo vecchia (iLO 3 con TLS 1.0). Aggiorna il firmware iLO."
+            elif "refused" in err_str:
+                tip = "TCP RST esplicito: la porta non è in ascolto. Verifica che l'URL sia corretto e che HTTPS sia abilitato sull'iLO (di default sì)."
+            else:
+                tip = "Routing/rete: il backend Argus non raggiunge l'IP. Se l'iLO è in LAN privata serve il connector come tunnel."
+            return {"success": False, "error": f"Connessione rifiutata: {e}", "tip": tip, "attempted_url": attempted_url}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {"success": False, "error": str(e), "attempted_url": attempted_url}
 
     async def get_failover_status(self, client_id: Optional[str] = None) -> list:
         """Get failover status for all iLO devices (or for a single client when
