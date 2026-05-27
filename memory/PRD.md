@@ -54,6 +54,71 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-03-01 🏗️ SERVER INTELLIGENCE HUB — Fasi 1+2+3+4 (backend complete)
+
+### Modulo `backend/routes/server_intelligence.py` (NUOVO, ~570 righe, 12 endpoint)
+
+**FASE 1 — iLO/Redfish DEEP**
+- `POST /api/servers/probe-vendor` — probe anonimo `/redfish/v1/` per
+  identificare vendor (HP/Dell/Lenovo/Fujitsu/Supermicro/Cisco) anche
+  senza autenticazione, via parsing JSON o header `Server`.
+- `POST /api/servers/try-default-credentials` — tenta 13 credenziali
+  OEM di default (HP Administrator/admin, Dell root/calvin, Lenovo
+  USERID/PASSW0RD, Supermicro ADMIN/ADMIN, ecc.). Logga warning di
+  sicurezza se trovata cred factory.
+- `POST /api/servers/bulk-credentials` — applica stessa cred a N
+  server in 1 click (max 50), upsert in `vault_credentials` con
+  cifratura via `security_manager`.
+- `GET /api/servers/ilo-events/{device_ip}` — IML/SEL events da
+  LogService Redfish (prova 6 path HP/Dell/Lenovo): severity,
+  created, subject, message, sensor.
+
+**FASE 2 — Hyper-V intelligence**
+- `POST /api/servers/hyperv/poll-now/{client_id}` — invia comando WS
+  `hyperv_collect` agli agent Windows v4 LIVE.
+- `POST /api/servers/hyperv/snapshot` — callback agent (Bearer
+  agent_token), salva snapshot.
+- `GET /api/servers/hyperv/{client_id}` — ultimi snapshot Hyper-V.
+
+**Agent Go**: NUOVO `noc-agent/cmd/agent/hyperv_windows.go` (~180 righe)
++ stub Linux. Esegue PowerShell `Get-VMHost`, `Get-VM`, `Get-Cluster`,
+`Get-VMReplication`. Capability `cmd.hyperv_collect` registrata.
+Cross-compile Windows+Linux OK.
+
+**FASE 3 — VMware vSphere/ESXi**
+- `POST /api/servers/vcenter/configure` — salva cred vCenter
+  (cifrate) per client_id.
+- `POST /api/servers/vcenter/poll-now/{client_id}` — fa login REST
+  API vCenter (`/api/session`), pulla hosts/VMs/datastores/clusters,
+  salva in `vcenter_snapshots`.
+- `GET /api/servers/vcenter/{client_id}` — ultimi snapshot + configs.
+
+**FASE 4 — Server Health Score + Lifecycle**
+- `GET /api/servers/health-score/{client_id}` — score 0-100 + grade
+  A-F per ogni server iLO del cliente. Algoritmo: global_health 40%,
+  sensors 25% (temp/fan/PSU), drives 20%, memory 10%, firmware 5%.
+  Output con recommendations actionable per ogni server.
+- `GET /api/servers/lifecycle/{client_id}` — età server (da
+  first_polled_at), warranty status euristica (5y=warn, 7y=EOL),
+  raccomandazioni sostituzione.
+
+### Validato in container
+- Lint Python pulito ✓
+- Cross-compile Go Windows+Linux pulito ✓
+- Tutti gli endpoint ritornano JSON corretto:
+  - probe-vendor 1.1.1.1 → ok=false (no Redfish, atteso) ✓
+  - hyperv/{client} → hosts=[] count=0 (nessun snapshot yet) ✓
+  - health-score → servers=[] avg_score=null (no telemetry yet) ✓
+  - lifecycle → servers=[] total=0 ✓
+
+### Da fare nel prossimo round
+- UI Frontend per le nuove sezioni: pulsanti probe-vendor / bulk-creds
+  / try-default in "Server senza credenziali iLO" card; tabs Hyper-V e
+  VMware nella tab Server; widget Health Score + Lifecycle.
+
+---
+
+
 ## 2026-03-01 📥 Datto Seed — Import device come managed_devices
 
 ### Cosa fa

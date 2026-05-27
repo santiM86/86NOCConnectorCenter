@@ -245,7 +245,7 @@ func runAgent(ctx context.Context, cfg config.Config, log *logging.Logger) {
 		go func() {
 			bgCtx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 			defer cancel()
-			hostname, _ := getHostname()
+			hostname, _ := os.Hostname()
 			snap := collectHyperV(bgCtx, a.CommandID, a.ClientID, cfg.AgentID, hostname)
 			if err := sendHyperVSnapshot(bgCtx, cfg.Backend.URL, cfg.AgentID, cfg.Token, snap); err != nil {
 				log.Warn("hyperv snapshot POST failed", "command_id", a.CommandID, "err", err.Error())
@@ -537,7 +537,7 @@ func capabilities(c config.Config) []string {
 	if c.SysMetrics.Enabled {
 		caps = append(caps, "poll.sysmetrics")
 	}
-	caps = append(caps, "cmd.force_lan_scan", "cmd.force_snmp_poll", "cmd.force_ping_poll", "cmd.get_metrics", "cmd.run_diagnostics", "cmd.uninstall", "cmd.speedtest")
+	caps = append(caps, "cmd.force_lan_scan", "cmd.force_snmp_poll", "cmd.force_ping_poll", "cmd.get_metrics", "cmd.run_diagnostics", "cmd.uninstall", "cmd.speedtest", "cmd.hyperv_collect")
 	return caps
 }
 

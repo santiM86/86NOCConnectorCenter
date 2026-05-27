@@ -23,6 +23,7 @@ import httpx
 
 from database import db
 from deps import get_current_user, require_admin
+from security import security_manager
 
 logger = logging.getLogger("server_intel")
 router = APIRouter(prefix="/api/servers", tags=["server-intelligence"])
@@ -209,15 +210,10 @@ async def bulk_credentials(payload: BulkCredPayload, current_user: dict = Depend
     if len(payload.ips) > 50:
         raise HTTPException(status_code=400, detail="max 50 IP per bulk")
 
-    # Import locali per non creare cicli
-    try:
-        from security_manager import SecurityManager
-        sm = SecurityManager(db)
-    except Exception:
-        sm = None
-
+    # Import locale gia' fatto a livello modulo
+    sm = security_manager
     if not sm:
-        raise HTTPException(status_code=500, detail="SecurityManager non disponibile")
+        raise HTTPException(status_code=500, detail="security_manager non disponibile")
 
     now_iso = datetime.now(timezone.utc).isoformat()
     ok_ips, fail_ips = [], []
@@ -272,10 +268,8 @@ async def get_ilo_events(device_ip: str, limit: int = 50, current_user: dict = D
         raise HTTPException(status_code=404, detail="Credenziali iLO non trovate per questo server")
 
     try:
-        from security_manager import SecurityManager
-        sm = SecurityManager(db)
-        username = sm.decrypt_credential(cred["username_enc"])
-        password = sm.decrypt_credential(cred["password_enc"])
+        username = security_manager.decrypt_credential(cred["username_enc"])
+        password = security_manager.decrypt_credential(cred["password_enc"])
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Decrypt failed: {e}")
 
@@ -431,15 +425,13 @@ async def configure_vcenter(cfg: VCenterConfig, current_user: dict = Depends(get
     """Salva credenziali vCenter per un cliente (cifrate)."""
     require_admin(current_user)
     try:
-        from security_manager import SecurityManager
-        sm = SecurityManager(db)
         doc = {
             "id": uuid.uuid4().hex,
             "client_id": cfg.client_id,
             "vcenter_host": cfg.vcenter_host,
             "port": cfg.port,
-            "username_enc": sm.encrypt_credential(cfg.username),
-            "password_enc": sm.encrypt_credential(cfg.password),
+            "username_enc": security_manager.encrypt_credential(cfg.username),
+            "password_enc": security_manager.encrypt_credential(cfg.password),
             "verify_ssl": cfg.verify_ssl,
             "created_by": current_user.get("email"),
             "created_at": datetime.now(timezone.utc).isoformat(),
@@ -456,10 +448,8 @@ async def configure_vcenter(cfg: VCenterConfig, current_user: dict = Depends(get
 
 async def _vcenter_login(cfg: dict) -> dict:
     """Login vCenter REST API e ritorna session token."""
-    from security_manager import SecurityManager
-    sm = SecurityManager(db)
-    username = sm.decrypt_credential(cfg["username_enc"])
-    password = sm.decrypt_credential(cfg["password_enc"])
+    username = security_manager.decrypt_credential(cfg["username_enc"])
+    password = security_manager.decrypt_credential(cfg["password_enc"])
     host = cfg["vcenter_host"]
     port = cfg.get("port", 443)
     verify = cfg.get("verify_ssl", False)

@@ -15,12 +15,13 @@ type hyperVArgs struct {
 }
 
 type hyperVSnapshot struct {
-	CommandID     string `json:"command_id"`
-	ClientID      string `json:"client_id"`
-	AgentID       string `json:"agent_id"`
-	Hostname      string `json:"hostname"`
-	HyperVPresent bool   `json:"hyperv_present"`
-	Error         string `json:"error,omitempty"`
+	CommandID     string                   `json:"command_id"`
+	ClientID      string                   `json:"client_id"`
+	AgentID       string                   `json:"agent_id"`
+	Hostname      string                   `json:"hostname"`
+	HyperVPresent bool                     `json:"hyperv_present"`
+	VMs           []map[string]interface{} `json:"vms"`
+	Error         string                   `json:"error,omitempty"`
 }
 
 func collectHyperV(_ context.Context, cmdID, clientID, agentID, hostname string) hyperVSnapshot {
