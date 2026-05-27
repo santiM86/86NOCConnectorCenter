@@ -54,6 +54,52 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-03-01 🐛 HOTFIX speedtest — auth callback + dispatch tracking
+
+### Bug riportato dall'utente
+Agent v4.18.0 LIVE su Galvan + 86BITOffice ma cliccando "Esegui ora" sul
+pulsante Speedtest il risultato non appariva mai → record `running`
+fantasma in `wan_speedtest_history`.
+
+### Root causes (2 bug distinti)
+1. **AUTH BUG su `/speedtest-result`**: l'endpoint richiedeva `Depends(get_current_user)`
+   = JWT utente, ma l'agent Go invia il proprio Bearer token (agent_tokens
+   o api_key cliente) → 401 silenzioso → l'agent loggava errore POST ma
+   il record restava `running` per sempre.
+2. **DISPATCH SILENZIOSO**: il `conn.send_command("speedtest", …)` era in
+   `asyncio.create_task` fire-and-forget — se l'agent rifiutava il
+   comando (es. versioni <v4.18 senza handler), il record restava
+   `running` senza essere mai aggiornato.
+
+### Fix applicato
+- `POST /api/external-monitor/speedtest-result`: rimossa dipendenza
+  `get_current_user`, sostituita con validazione manuale Bearer token
+  contro `agent_tokens.token` (pattern v4) o `clients.api_key`
+  (legacy fallback). Coerente con gli altri endpoint agent callback.
+- `POST /api/external-monitor/speedtest/{client_id}`: dispatch async
+  wrapped in `_dispatch_speedtest()` con try/except — se l'agent
+  rifiuta o timeout, marchiamo il record come `failed` con
+  `error: "WS dispatch: ..."` cosi' l'UI non resta "in corso" per
+  sempre.
+
+### Test backend
+- `POST /speedtest-result` senza token → 401 ✓
+- con JWT utente → 401 (non agent token) ✓
+- con `clients.api_key` → 200 OK con persistenza ✓
+- con `agent_tokens.token` v4 → 200 OK ✓
+- `POST /speedtest/{client_id}` senza agent LIVE → 503 ✓
+
+### Steps utente per produzione
+1. **Save to GitHub** → il backend Argus si aggiorna con il nuovo
+   `/speedtest-result` (no più 401 per l'agent).
+2. **NON SERVE** rebuildare l'agent Go — il v4.18.0 manda già il
+   suo Bearer token, basta che il backend lo accetti (fix backend-only).
+3. Hard refresh UI → "Esegui ora" Speedtest funzionera' (60-90s di
+   attesa per il primo round-trip Cloudflare).
+
+---
+
+
 ## 2026-03-01 ✅ WAN Client Tab — FASE 2 (intelligence avanzata MSP)
 
 ### Aggiunte rispetto a Fase 1
