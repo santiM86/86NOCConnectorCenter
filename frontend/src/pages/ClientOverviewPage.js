@@ -1134,16 +1134,37 @@ function MiniMetric({ label, value, sub, color }) {
 }
 
 /* ==================== DEVICE GROUP ==================== */
-function DeviceGroup({ label, icon: Icon, devices, color, onInfoClick, renderActions }) {
+function DeviceGroup({ label, icon: Icon, devices, color, onInfoClick, renderActions, macroKey, onDeviceDrop }) {
   // Use centralized pickDeviceName (mirror di best_display_name backend):
   // priorita' name → hostname → sys_name → mdns → fingerbank → ip.
   // Filtra automaticamente nomi "categoriali" Fingerbank (es. "Foo/Bar").
   const _displayName = (d) => pickDeviceName(d, d.ip_address || "—");
+  // v2026-02-13 DRAG & DROP: highlight visivo quando un device viene trascinato sopra
+  const [isDragOver, setIsDragOver] = useState(false);
+  const dropEnabled = !!(macroKey && onDeviceDrop);
   return (
-    <div>
+    <div
+      onDragOver={dropEnabled ? (e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; setIsDragOver(true); } : undefined}
+      onDragLeave={dropEnabled ? () => setIsDragOver(false) : undefined}
+      onDrop={dropEnabled ? (e) => {
+        e.preventDefault();
+        setIsDragOver(false);
+        try {
+          const payload = JSON.parse(e.dataTransfer.getData("application/x-argus-device") || "{}");
+          if (payload.ip && payload.fromMacro !== macroKey) {
+            onDeviceDrop(payload, macroKey);
+          }
+        } catch { /* malformed payload */ }
+      } : undefined}
+      className={dropEnabled && isDragOver ? "rounded-lg ring-2 ring-offset-1 ring-offset-transparent" : ""}
+      style={dropEnabled && isDragOver ? { ringColor: color } : undefined}
+      data-testid={dropEnabled ? `drop-target-${macroKey}` : undefined}
+    >
       <div className="flex items-center gap-1.5 mb-1">
         <Icon size={11} weight="bold" style={{ color }} />
-        <p className="text-[8px] uppercase tracking-widest" style={{ color }}>{label} ({devices.length})</p>
+        <p className="text-[8px] uppercase tracking-widest" style={{ color }}>
+          {label} ({devices.length}){isDragOver ? " — rilascia qui" : ""}
+        </p>
       </div>
       <div className="space-y-1">
         {devices.map((d, i) => {
@@ -1154,10 +1175,18 @@ function DeviceGroup({ label, icon: Icon, devices, color, onInfoClick, renderAct
           return (
             <div
               key={i}
+              draggable={dropEnabled}
+              onDragStart={dropEnabled ? (e) => {
+                e.dataTransfer.effectAllowed = "move";
+                e.dataTransfer.setData("application/x-argus-device", JSON.stringify({
+                  ip: d.ip_address, name: d.name, fromMacro: macroKey,
+                }));
+              } : undefined}
               onClick={clickable ? () => onInfoClick(d) : undefined}
-              className={`flex items-center gap-2 px-2.5 py-1.5 rounded-md border text-[10px] ${clickable ? "cursor-pointer hover:brightness-125 transition-all" : ""}`}
+              className={`flex items-center gap-2 px-2.5 py-1.5 rounded-md border text-[10px] ${clickable ? "cursor-pointer hover:brightness-125 transition-all" : ""} ${dropEnabled ? "active:cursor-grabbing" : ""}`}
               style={{ borderColor: `${sc}20`, background: `${sc}04` }}
               data-testid={clickable ? `grouped-device-row-${d.ip_address}` : undefined}
+              title={dropEnabled ? "Trascina su un'altra categoria per riclassificare" : (d.notes || "")}
             >
               <div className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: sc }}></div>
               <span className={`font-medium truncate ${nameIsIP ? "text-[var(--text-muted)] italic" : "text-[var(--text-primary)]"}`} title={d.notes || ""}>{name}</span>
@@ -1195,7 +1224,38 @@ function DeviceGroup({ label, icon: Icon, devices, color, onInfoClick, renderAct
    click su riga → apre Scheda Dispositivo (info card completa).
    v2026-02-13: richiesto dall'utente "voglio struttura identica come clone"
 */
-function DevicesGroupedView({ devices, skipList, onInfoClick, renderActions }) {
+
+/* ============ EMPTY MACRO DROP TARGET ============
+   Drop zone "ghost" per una macroarea che attualmente non ha device,
+   cosi' l'admin puo' creare il primo device nella categoria via drag.
+*/
+function EmptyMacroDropTarget({ macroKey, label, color, icon: Icon, onDeviceDrop }) {
+  const [over, setOver] = useState(false);
+  return (
+    <div
+      onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; setOver(true); }}
+      onDragLeave={() => setOver(false)}
+      onDrop={(e) => {
+        e.preventDefault();
+        setOver(false);
+        try {
+          const payload = JSON.parse(e.dataTransfer.getData("application/x-argus-device") || "{}");
+          if (payload.ip && payload.fromMacro !== macroKey) {
+            onDeviceDrop(payload, macroKey);
+          }
+        } catch { /* ignore */ }
+      }}
+      className={`flex items-center gap-1.5 px-2 py-1 rounded border border-dashed text-[9px] transition-all ${over ? "border-solid scale-105" : "opacity-50 hover:opacity-100"}`}
+      style={{ borderColor: color, color }}
+      data-testid={`drop-target-empty-${macroKey}`}
+    >
+      <Icon size={10} weight="bold" />
+      <span className="uppercase tracking-wider">{label}</span>
+    </div>
+  );
+}
+
+function DevicesGroupedView({ devices, skipList, onInfoClick, renderActions, onDeviceMove }) {
   // Partizionamento via macroOf (utils/deviceCategory)
   const buckets = {
     firewall: [], switch: [], router: [], server: [], nas: [], ups: [], ap: [],
@@ -1236,8 +1296,13 @@ function DevicesGroupedView({ devices, skipList, onInfoClick, renderActions }) {
 
   return (
     <div className="noc-panel p-4" data-testid="devices-grouped-view">
-      <p className="text-[9px] font-bold uppercase tracking-[0.15em] text-indigo-400 mb-3">
-        Infrastruttura di rete · {totalShown} dispositivi
+      <p className="text-[9px] font-bold uppercase tracking-[0.15em] text-indigo-400 mb-3 flex items-center justify-between">
+        <span>Infrastruttura di rete · {totalShown} dispositivi</span>
+        {onDeviceMove && (
+          <span className="text-[8px] text-[var(--text-muted)] font-normal tracking-normal normal-case italic">
+            💡 Trascina un device per spostarlo in un'altra categoria
+          </span>
+        )}
       </p>
       <div className="space-y-3">
         {GROUPS.map(g => (
@@ -1250,9 +1315,34 @@ function DevicesGroupedView({ devices, skipList, onInfoClick, renderActions }) {
               color={g.color}
               onInfoClick={onInfoClick}
               renderActions={renderActions}
+              macroKey={g.key}
+              onDeviceDrop={onDeviceMove}
             />
           ) : null
         ))}
+        {/* Drop targets per macroaree VUOTE: visibili come "ghosts" sottili
+            in fondo, cosi' l'admin puo' "popolare" una categoria che oggi
+            e' vuota (es. trascinare il primo Server in una rete che fino
+            a ieri aveva solo workstation). */}
+        {onDeviceMove && GROUPS.filter(g => buckets[g.key].length === 0).length > 0 && (
+          <div className="pt-3 mt-3 border-t border-dashed border-[var(--bg-border)]">
+            <p className="text-[8px] uppercase tracking-widest text-[var(--text-muted)] mb-1.5">
+              ↓ Categorie disponibili (trascina qui per spostare)
+            </p>
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-1">
+              {GROUPS.filter(g => buckets[g.key].length === 0).map(g => (
+                <EmptyMacroDropTarget
+                  key={g.key}
+                  macroKey={g.key}
+                  label={g.label}
+                  color={g.color}
+                  icon={g.icon}
+                  onDeviceDrop={onDeviceMove}
+                />
+              ))}
+            </div>
+          </div>
+        )}
         {skipList && skipList.length > 0 && (
           <details className="opacity-60 hover:opacity-100 transition-opacity">
             <summary className="cursor-pointer text-[9px] uppercase tracking-[0.15em] text-[var(--text-muted)] py-2 select-none">
@@ -2026,6 +2116,26 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
           devices={visibleDevices}
           skipList={showMulticast ? [] : devices.filter(d => _isMcast(d))}
           onInfoClick={(d) => setInfoTarget(d)}
+          onDeviceMove={async (payload, newMacro) => {
+            // v2026-02-13: drag&drop riclassificazione manuale.
+            // POST .../move-category con macro target. Lockerà
+            // device_type_user_locked così il classifier rispetta la scelta.
+            try {
+              const { data } = await axios.post(
+                `${API}/clients/${clientId}/devices/${encodeURIComponent(payload.ip)}/move-category`,
+                { macro: newMacro }
+              );
+              if (data.noop) {
+                toast.info(data.message);
+              } else {
+                toast.success(`${pickDeviceName(payload, payload.ip)}: ${data.old_type || "—"} → ${data.new_type}`);
+              }
+              onRefresh?.();
+            } catch (e) {
+              const detail = e.response?.data?.detail || e.message;
+              toast.error(`Spostamento fallito: ${detail}`, { duration: 7000 });
+            }
+          }}
           renderActions={(d) => (
             <DeviceActionsBar
               d={d}
