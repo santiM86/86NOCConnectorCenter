@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { ArrowLeft, ShieldCheck, Trash, Plug, Sparkle, ArrowsClockwise } from "@phosphor-icons/react";
+import { ArrowLeft, ShieldCheck, Trash, Plug, Sparkle, ArrowsClockwise, Stethoscope, CheckCircle, WarningCircle } from "@phosphor-icons/react";
 import DattoBrowser from "@/components/DattoBrowser";
 import ErrorBoundary from "@/components/ErrorBoundary";
 
@@ -26,6 +26,21 @@ export default function DattoRmmSettingsPage() {
   const [testing, setTesting] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [diag, setDiag] = useState(null);
+  const [loadingDiag, setLoadingDiag] = useState(false);
+
+  const runDiagnostics = useCallback(async () => {
+    setLoadingDiag(true);
+    try {
+      const r = await axios.get(`${API}/api/datto/diagnostics`, { headers });
+      setDiag(r.data);
+    } catch (e) {
+      toast.error(`Diagnostica fallita: ${e.response?.data?.detail || e.message}`);
+    } finally {
+      setLoadingDiag(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const reload = useCallback(async () => {
     try {
@@ -212,6 +227,9 @@ export default function DattoRmmSettingsPage() {
               <Button size="sm" variant="outline" onClick={sync} disabled={syncing} className="text-xs h-8" data-testid="datto-sync-btn">
                 <ArrowsClockwise size={14} className="mr-1" /> {syncing ? "Sync…" : "Sync ora"}
               </Button>
+              <Button size="sm" variant="outline" onClick={runDiagnostics} disabled={loadingDiag} className="text-xs h-8 border-cyan-500/40 hover:bg-cyan-500/10 text-cyan-300" data-testid="datto-diag-btn">
+                <Stethoscope size={14} className="mr-1" /> {loadingDiag ? "Analisi…" : "Diagnostica"}
+              </Button>
               <Button size="sm" variant="outline" onClick={removeConfig} className="text-xs h-8 text-red-400 ml-auto" data-testid="datto-remove-btn">
                 <Trash size={14} className="mr-1" /> Rimuovi
               </Button>
@@ -219,6 +237,60 @@ export default function DattoRmmSettingsPage() {
           )}
         </div>
       </div>
+
+      {/* Diagnostica risultati */}
+      {diag && (
+        <div className="rounded-xl border border-cyan-500/30 bg-cyan-500/5 p-4 space-y-3" data-testid="datto-diag-card">
+          <div className="flex items-center gap-2">
+            <Stethoscope size={16} className="text-cyan-300" weight="bold" />
+            <h3 className="text-sm font-bold text-cyan-200">Diagnostica integrazione Datto RMM</h3>
+            <span className={`ml-auto text-[10px] px-2 py-0.5 rounded-full font-bold ${diag.healthy ? "bg-emerald-500/20 text-emerald-300" : "bg-amber-500/20 text-amber-300"}`} data-testid="datto-diag-health">
+              {diag.healthy ? "HEALTHY" : "ATTENZIONE"}
+            </span>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
+            {diag.checks.map((c, i) => (
+              <div key={i} className="rounded-lg border border-[var(--bg-border)] bg-[var(--bg-card)] p-2.5">
+                <div className="flex items-center gap-2">
+                  {c.ok ? <CheckCircle size={14} className="text-emerald-400" weight="bold" /> : <WarningCircle size={14} className="text-amber-400" weight="bold" />}
+                  <span className="text-[10px] uppercase tracking-wider text-[var(--text-muted)]">{c.step.replace(/^\d+_/, "").replace(/_/g, " ")}</span>
+                </div>
+                <p className="text-[11px] text-[var(--text-primary)] mt-1">{c.detail}</p>
+                {c.sites_in_cache !== undefined && <div className="text-[10px] mt-1 font-mono text-cyan-300">{c.sites_in_cache} site</div>}
+                {c.linked_clients !== undefined && <div className="text-[10px] mt-1 font-mono text-cyan-300">{c.linked_clients} client linkati</div>}
+                {c.total_in_db !== undefined && <div className="text-[10px] mt-1 font-mono text-cyan-300">{c.total_in_db} device</div>}
+              </div>
+            ))}
+          </div>
+          {diag.links_summary && diag.links_summary.length > 0 && (
+            <div className="rounded-lg border border-[var(--bg-border)] bg-[var(--bg-card)] p-2.5">
+              <div className="text-[10px] uppercase tracking-wider text-[var(--text-muted)] mb-2">Stato per cliente</div>
+              <div className="space-y-1">
+                {diag.links_summary.map((l, i) => (
+                  <div key={i} className="flex items-center justify-between text-[11px] py-1 border-b border-[var(--bg-border)]/40 last:border-0" data-testid={`datto-diag-link-${i}`}>
+                    <span className="font-bold text-[var(--text-primary)]">{l.client_name}</span>
+                    <div className="flex items-center gap-3 font-mono text-[10px]">
+                      <span className="text-emerald-300">{l.persisted_in_db} dev</span>
+                      <span className={l.matched_count > 0 ? "text-emerald-300" : "text-amber-300"}>{l.matched_count} match</span>
+                      <span className="text-[var(--text-muted)]">{l.last_sync_at ? new Date(l.last_sync_at).toLocaleString("it-IT", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "mai"}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {diag.actions_suggested && diag.actions_suggested.length > 0 && (
+            <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-2.5">
+              <div className="text-[10px] uppercase tracking-wider text-amber-300 mb-2">📋 Azioni suggerite</div>
+              <ul className="text-[11px] text-[var(--text-primary)] space-y-1">
+                {diag.actions_suggested.map((a, i) => (
+                  <li key={i} className="flex gap-2"><span className="text-amber-400">•</span>{a}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Linking matrix */}
       {config?.configured && schedStatus && (
