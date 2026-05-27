@@ -736,3 +736,115 @@ async def get_probe_history(target_id: str, hours: int = 24, current_user: dict 
         {"_id": 0}
     ).sort("timestamp", 1).to_list(5000)
     return {"history": history}
+
+
+@router.get("/insights/{target_id}")
+async def get_target_insights(
+    target_id: str, days: int = 30,
+    current_user: dict = Depends(get_current_user),
+):
+    """Insight aggregati per target WAN: uptime %, jitter medio, sparkline 24h,
+    SLA tracking, latenza min/max/avg/p95, periodi di down.
+
+    v2026-02-14: clone delle metriche MSP enterprise (Datto, NinjaOne, Auvik).
+    """
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    history = await db.wan_probe_history.find(
+        {"target_id": target_id, "timestamp": {"$gte": cutoff}},
+        {"_id": 0},
+    ).sort("timestamp", 1).to_list(20000)
+
+    if not history:
+        return {
+            "target_id": target_id, "days": days,
+            "samples": 0, "uptime_pct": None, "sla_target": 99.9,
+            "latency": {"avg": None, "min": None, "max": None, "p95": None, "jitter": None},
+            "loss_pct_avg": None, "sparkline_24h": [], "down_periods": [],
+        }
+
+    # Uptime: % di sample con reachable=True
+    total = len(history)
+    online = sum(1 for h in history if h.get("ping", {}).get("reachable"))
+    uptime_pct = round(online * 100 / max(total, 1), 2)
+
+    # Latency stats
+    latencies = [
+        h["ping"].get("latency_ms") for h in history
+        if h.get("ping", {}).get("reachable") and h["ping"].get("latency_ms") is not None
+    ]
+    latency_stats = {"avg": None, "min": None, "max": None, "p95": None, "jitter": None}
+    if latencies:
+        latencies.sort()
+        avg = sum(latencies) / len(latencies)
+        # Jitter = deviazione media assoluta tra sample consecutivi
+        diffs = [abs(latencies[i] - latencies[i-1]) for i in range(1, len(latencies))]
+        latency_stats = {
+            "avg": round(avg, 1),
+            "min": round(latencies[0], 1),
+            "max": round(latencies[-1], 1),
+            "p95": round(latencies[int(len(latencies) * 0.95)], 1),
+            "jitter": round(sum(diffs) / len(diffs), 1) if diffs else 0,
+        }
+
+    # Loss avg
+    losses = [h["ping"].get("packet_loss_pct") for h in history if h.get("ping", {}).get("packet_loss_pct") is not None]
+    loss_avg = round(sum(losses) / len(losses), 2) if losses else 0
+
+    # Sparkline ultime 24h (~ 60 punti)
+    cutoff_24h = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+    sparkline = []
+    for h in history:
+        if h.get("timestamp", "") < cutoff_24h:
+            continue
+        ping = h.get("ping", {})
+        sparkline.append({
+            "t": h.get("timestamp"),
+            "latency": ping.get("latency_ms"),
+            "loss": ping.get("packet_loss_pct"),
+            "online": bool(ping.get("reachable")),
+        })
+
+    # Down periods (consecutive offline samples)
+    down_periods = []
+    cur_start = None
+    for h in history:
+        ok = h.get("ping", {}).get("reachable")
+        ts = h.get("timestamp")
+        if not ok and cur_start is None:
+            cur_start = ts
+        elif ok and cur_start is not None:
+            try:
+                d1 = datetime.fromisoformat(cur_start.replace("Z", "+00:00"))
+                d2 = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                duration_min = (d2 - d1).total_seconds() / 60.0
+                if duration_min >= 1:  # ignora micro-flap
+                    down_periods.append({
+                        "start": cur_start, "end": ts,
+                        "duration_min": round(duration_min, 1),
+                    })
+            except Exception:
+                pass
+            cur_start = None
+
+    sla_target = 99.9
+    sla_breach = uptime_pct < sla_target
+    # MTBF / MTTR semplificati
+    n_down = len(down_periods)
+    total_down_min = sum(p["duration_min"] for p in down_periods)
+
+    return {
+        "target_id": target_id,
+        "days": days,
+        "samples": total,
+        "uptime_pct": uptime_pct,
+        "sla_target": sla_target,
+        "sla_breach": sla_breach,
+        "latency": latency_stats,
+        "loss_pct_avg": loss_avg,
+        "sparkline_24h": sparkline[-120:],  # max 120 punti
+        "down_periods": down_periods[-10:],
+        "down_count": n_down,
+        "total_down_minutes": round(total_down_min, 1),
+        "mttr_min": round(total_down_min / n_down, 1) if n_down else 0,
+    }
+
