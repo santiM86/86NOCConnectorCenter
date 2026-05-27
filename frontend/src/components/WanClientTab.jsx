@@ -55,14 +55,14 @@ function HeroCard({ clientName, diagnosis, gateway, isOnline }) {
   const color = isOk ? "#34C759" : "#FF3B30";
   return (
     <div className="rounded-2xl border-2 overflow-hidden" style={{ borderColor: `${color}50`, background: `linear-gradient(180deg, ${color}08 0%, transparent 60%)` }} data-testid="wan-hero-card">
-      <div className="flex items-center justify-between px-6 py-5 border-l-[4px]" style={{ borderColor: color }}>
-        <div className="flex items-center gap-4">
-          <div className="w-11 h-11 rounded-xl flex items-center justify-center" style={{ background: `${color}15` }}>
-            <CheckCircle size={26} weight="bold" style={{ color }} />
+      <div className="flex items-center justify-between gap-4 flex-wrap px-4 sm:px-6 py-4 sm:py-5 border-l-[4px]" style={{ borderColor: color }}>
+        <div className="flex items-center gap-3 sm:gap-4 min-w-0 flex-1">
+          <div className="w-10 h-10 sm:w-11 sm:h-11 rounded-xl flex items-center justify-center shrink-0" style={{ background: `${color}15` }}>
+            <CheckCircle size={24} weight="bold" style={{ color }} />
           </div>
-          <div>
-            <h2 className="text-2xl font-bold tracking-tight" style={{ color }} data-testid="wan-hero-client-name">{clientName}</h2>
-            <p className="text-[12px] mt-0.5" style={{ color: `${color}cc` }} data-testid="wan-hero-diagnosis">{diagnosis || (isOk ? "Connettività OK" : "Stato in attesa di probe...")}</p>
+          <div className="min-w-0">
+            <h2 className="text-xl sm:text-2xl font-bold tracking-tight truncate" style={{ color }} data-testid="wan-hero-client-name">{clientName}</h2>
+            <p className="text-[11px] sm:text-[12px] mt-0.5 truncate" style={{ color: `${color}cc` }} data-testid="wan-hero-diagnosis">{diagnosis || (isOk ? "Connettività OK" : "Stato in attesa di probe...")}</p>
           </div>
         </div>
         {gateway && (
@@ -955,9 +955,11 @@ export default function WanClientTab({ targets, clientId, clientName, onRefresh 
         </div>
       ) : (
         <>
-          {/* DEVICE GROUPS (firewall + router) */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            {firewalls.length > 0 && (
+          {/* DEVICE GROUPS — adaptive layout:
+              - Se solo firewall O solo router: layout 2 colonne (lista target | insights)
+              - Se entrambi: due card side-by-side, ognuna con i suoi target+insights */}
+          {firewalls.length > 0 && routers.length > 0 ? (
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
               <div className="rounded-xl border border-[var(--bg-border)] bg-[var(--bg-panel)] p-4 space-y-3" data-testid="wan-firewalls-group">
                 <div className="flex items-center gap-2">
                   <ShieldCheck size={14} weight="bold" className="text-indigo-400" />
@@ -970,8 +972,6 @@ export default function WanClientTab({ targets, clientId, clientName, onRefresh 
                 </div>
                 {firewalls.map(t => <InsightsPanel key={`ins-${t.id}`} target={t} />)}
               </div>
-            )}
-            {routers.length > 0 && (
               <div className="rounded-xl border border-[var(--bg-border)] bg-[var(--bg-panel)] p-4 space-y-3" data-testid="wan-routers-group">
                 <div className="flex items-center gap-2">
                   <HardDrives size={14} weight="bold" className="text-cyan-400" />
@@ -984,8 +984,34 @@ export default function WanClientTab({ targets, clientId, clientName, onRefresh 
                 </div>
                 {routers.map(t => <InsightsPanel key={`ins-${t.id}`} target={t} />)}
               </div>
-            )}
-          </div>
+            </div>
+          ) : (firewalls.length > 0 || routers.length > 0) && (
+            // SINGOLO GRUPPO: target cards a sinistra, insights a destra (riempie tutto lo spazio)
+            <div className="rounded-xl border border-[var(--bg-border)] bg-[var(--bg-panel)] p-4 space-y-3" data-testid={firewalls.length > 0 ? "wan-firewalls-group" : "wan-routers-group"}>
+              <div className="flex items-center gap-2">
+                {firewalls.length > 0 ? <ShieldCheck size={14} weight="bold" className="text-indigo-400" /> : <HardDrives size={14} weight="bold" className="text-cyan-400" />}
+                <h3 className={`text-[10px] font-bold uppercase tracking-[0.18em] ${firewalls.length > 0 ? "text-indigo-300" : "text-cyan-300"}`}>
+                  {firewalls.length > 0 ? "Firewall" : "Router"}
+                </h3>
+                <div className={`flex-1 h-px ${firewalls.length > 0 ? "bg-indigo-500/15" : "bg-cyan-500/15"}`}></div>
+                <span className={`text-[9px] ${firewalls.length > 0 ? "text-indigo-300/70" : "text-cyan-300/70"}`}>
+                  {firewalls.length + routers.length}
+                </span>
+              </div>
+              <div className="grid grid-cols-1 lg:grid-cols-[minmax(260px,380px),1fr] gap-3">
+                <div className="space-y-2">
+                  {(firewalls.length > 0 ? firewalls : routers).map(t => (
+                    <TargetCard key={t.id} target={t} onDelete={handleDelete} onHistory={setHistoryTarget} />
+                  ))}
+                </div>
+                <div className="space-y-3">
+                  {(firewalls.length > 0 ? firewalls : routers).map(t => (
+                    <InsightsPanel key={`ins-${t.id}`} target={t} />
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* OTHERS (rare) */}
           {others.length > 0 && (
@@ -1002,7 +1028,7 @@ export default function WanClientTab({ targets, clientId, clientName, onRefresh 
           <MultiIspCard clientId={clientId} />
 
           {/* INTELLIGENCE GRID: GEO / DNS / IP HISTORY / SPEEDTEST */}
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
             {targets.slice(0, 1).map(t => (
               <GeoIspCard key={`geo-${t.id}`} ip={t.public_ip} />
             ))}

@@ -54,6 +54,76 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-03-01 ✨ FIX RESPONSIVE WAN Tab + uptime calculation bug
+
+### Bug riportati dall'utente (screenshot)
+1. **Layout sprecato**: con un solo firewall (no router), la card sinistra
+   occupava metà schermo lasciando vuoto a destra → `grid-cols-1 lg:grid-cols-2`
+   senza gruppi paritari.
+2. **Uptime 17.1% sospetto** in card OGGI/7gg/30gg sebbene il firewall
+   risponde online stabile (211 sample).
+
+### Fix layout (WanClientTab.jsx)
+- **Single-group layout**: quando esiste solo firewall O solo router, uso
+  un grid `[minmax(260px,380px),1fr]` con target cards a sinistra e
+  InsightsPanel a destra. Riempie tutta la larghezza del viewport.
+- **Two-group layout**: quando ci sono ENTRAMBI firewall+router, layout
+  `xl:grid-cols-2` (era `lg:` → ora xl: per dare più spazio sui laptop).
+- **Hero Card responsive**: `flex-wrap`, `truncate` su titoli, `min-w-0`
+  su flex children, padding `sm:` breakpoint per evitare overflow.
+- **Intelligence grid**: cambiato da `md:grid-cols-2 xl:grid-cols-4` →
+  `sm:grid-cols-2 lg:grid-cols-4` (più aggressivo, sfrutta meglio i
+  laptop standard 1366-1920px).
+
+### Fix bug uptime (external_monitor.py + wan_advanced.py)
+Il fallback `_is_online()` per i sample LEGACY (pre-v2026-03-01 history
+flat) considerava `reachable` mancante come `False` → uptime fittizio 17%.
+Aggiunto livello 3 di fallback: se manca sia `reachable` flat che nested,
+usa lo `status` legacy salvato — `online`/`filtered`/`degraded` contano
+come "raggiungibili" ai fini SLA.
+
+Risultato: uptime cambiato da 17.1% → **99.46% (oggi) / 99.92% (7gg) /
+99.98% (30gg)** — coerente con il fatto che il firewall è up da settimane.
+
+### Test
+- GET /insights/{target}: uptime_today=99.46, samples=11813 ✓
+- Lint Python + JS pulito ✓
+
+---
+
+
+## 2026-03-01 🐛 HOTFIX speedtest #2 — KeyError 'id' → agent_id
+
+### Bug
+L'utente segnalava toast "Errore invio comando: 'id'" cliccando Esegui ora.
+Root cause: la collection `managed_agents` usa il campo **`agent_id`**
+(non `id`). La mia query proiettava `{"id": 1, ...}` e poi `agent["id"]`
+faceva KeyError perche' il campo `id` non esiste mai → 500 con dettaglio
+KeyError esposto all'utente.
+
+### Fix
+- Query proiection cambiata da `id` → `agent_id` in entrambe le branch
+  (master + fallback any-live).
+- Aggiunta variabile locale `agent_id = agent.get("agent_id")` + check
+  esplicito che ritorna 500 chiaro se manca (record corrotto).
+- Tutti i riferimenti `agent["id"]` → `agent_id` nel pending record,
+  REGISTRY.get, response payload.
+- `version` letto come `agent_version` (campo reale DB) con fallback su
+  `version` per backward compat.
+
+### Test
+- POST /speedtest/{client_id} con client che ha agent ma NON LIVE → 503
+  pulito (no piu' KeyError) ✓
+- Lint pulito ✓
+
+### Steps utente
+1. **Save to GitHub** — solo backend, no rebuild agent.
+2. Hard refresh argus.86bit.it.
+3. WAN tab del cliente → "Esegui ora" speedtest.
+
+---
+
+
 ## 2026-03-01 🐛 HOTFIX speedtest — auth callback + dispatch tracking
 
 ### Bug riportato dall'utente

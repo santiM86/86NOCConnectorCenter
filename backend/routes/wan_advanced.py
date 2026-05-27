@@ -367,7 +367,11 @@ async def history_bucket(
     def _is_online(h):
         if "reachable" in h:
             return bool(h.get("reachable"))
-        return bool((h.get("ping") or {}).get("reachable"))
+        nested = (h.get("ping") or {}).get("reachable")
+        if nested is not None:
+            return bool(nested)
+        status = (h.get("status") or "").lower()
+        return status in ("online", "filtered", "degraded")
 
     def _lat(h):
         if "latency_ms" in h:

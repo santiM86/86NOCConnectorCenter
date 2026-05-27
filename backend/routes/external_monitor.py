@@ -767,10 +767,17 @@ async def get_target_insights(
     ).sort("timestamp", 1).to_list(20000)
 
     def _is_online(h):
-        # Schema flat (post v2026-03-01) OR legacy nested
+        # Schema FLAT (post v2026-03-01): reachable diretto
         if "reachable" in h:
             return bool(h.get("reachable"))
-        return bool((h.get("ping") or {}).get("reachable"))
+        # Schema NESTED legacy
+        nested = (h.get("ping") or {}).get("reachable")
+        if nested is not None:
+            return bool(nested)
+        # Fallback ultimo livello: usa lo `status` salvato (online/filtered/degraded
+        # sono comunque raggiungibili dal POV dell'uptime SLA)
+        status = (h.get("status") or "").lower()
+        return status in ("online", "filtered", "degraded")
 
     def _lat(h):
         if "latency_ms" in h:
@@ -1089,7 +1096,7 @@ async def trigger_speedtest(client_id: str, current_user: dict = Depends(get_cur
             ],
             "labels.role": "master",
         },
-        {"_id": 0, "id": 1, "hostname": 1, "version": 1},
+        {"_id": 0, "agent_id": 1, "hostname": 1, "agent_version": 1, "version": 1},
     )
     if not agent:
         # fallback: qualsiasi master live
@@ -1098,17 +1105,22 @@ async def trigger_speedtest(client_id: str, current_user: dict = Depends(get_cur
                 {"last_heartbeat_at": {"$gte": cutoff}},
                 {"last_seen_at": {"$gte": cutoff}},
             ]},
-            {"_id": 0, "id": 1, "hostname": 1, "version": 1},
+            {"_id": 0, "agent_id": 1, "hostname": 1, "agent_version": 1, "version": 1},
         )
     if not agent:
         raise HTTPException(status_code=503, detail="Nessun agent v4 LIVE per questo cliente. Speedtest richiede un connector attivo.")
 
+    agent_id = agent.get("agent_id")
+    if not agent_id:
+        raise HTTPException(status_code=500, detail="agent senza agent_id in DB (record corrotto)")
+    agent_version = agent.get("agent_version") or agent.get("version")
+
     # Invio comando WS speedtest via REGISTRY
     try:
         from routes.agent_ws import REGISTRY
-        conn = REGISTRY.get(agent["id"])
+        conn = REGISTRY.get(agent_id)
         if conn is None:
-            raise HTTPException(status_code=503, detail=f"Agent {agent['hostname']} non connesso al WS")
+            raise HTTPException(status_code=503, detail=f"Agent {agent.get('hostname')} non connesso al WS (id={agent_id[:8]}…)")
         cmd_id = str(uuid.uuid4())
 
         # async dispatch: traccia l'eventuale fallimento del send_command
@@ -1117,8 +1129,6 @@ async def trigger_speedtest(client_id: str, current_user: dict = Depends(get_cur
                 reply = await conn.send_command("speedtest", {"command_id": cmd_id, "client_id": client_id}, timeout=90.0)
                 logger.info(f"speedtest WS ack from {agent.get('hostname')}: {reply}")
             except Exception as exc:
-                # Se l'agent rifiuta il comando (es. cmd non registrato in versioni <v4.18),
-                # marchiamo il record come failed cosi' l'UI non resta a 'running' per sempre.
                 err = str(exc)
                 logger.warning(f"speedtest WS dispatch failed for {agent.get('hostname')}: {err}")
                 await db.wan_speedtest_history.update_one(
@@ -1143,9 +1153,9 @@ async def trigger_speedtest(client_id: str, current_user: dict = Depends(get_cur
     pending = {
         "id": cmd_id,
         "client_id": client_id,
-        "agent_id": agent["id"],
+        "agent_id": agent_id,
         "agent_hostname": agent.get("hostname"),
-        "agent_version": agent.get("version"),
+        "agent_version": agent_version,
         "status": "running",
         "requested_at": datetime.now(timezone.utc).isoformat(),
         "requested_by": current_user.get("email"),
@@ -1154,7 +1164,7 @@ async def trigger_speedtest(client_id: str, current_user: dict = Depends(get_cur
     return {
         "status": "started",
         "command_id": cmd_id,
-        "agent": {"id": agent["id"], "hostname": agent.get("hostname"), "version": agent.get("version")},
+        "agent": {"id": agent_id, "hostname": agent.get("hostname"), "version": agent_version},
         "message": "Speedtest in corso. Il risultato apparira' entro 30-60s.",
     }
 
