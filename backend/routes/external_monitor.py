@@ -590,6 +590,7 @@ async def delete_target(target_id: str, current_user: dict = Depends(get_current
 @router.get("/status")
 async def get_all_status(current_user: dict = Depends(get_current_user)):
     """Stato attuale di tutti i target con diagnosi per cliente."""
+    targets = await db.wan_targets.find({}, {"_id": 0}).to_list(500)
     results = await db.wan_probe_results.find({}, {"_id": 0}).to_list(500)
     diagnoses = await db.wan_client_diagnosis.find({}, {"_id": 0}).to_list(100)
 
@@ -600,8 +601,14 @@ async def get_all_status(current_user: dict = Depends(get_current_user)):
         d["client_name"] = cmap.get(d["client_id"], d["client_id"])
     for r in results:
         r["client_name"] = cmap.get(r["client_id"], r["client_id"])
+    for t in targets:
+        t["client_name"] = cmap.get(t.get("client_id"), t.get("client_id"))
 
-    return {"results": results, "diagnoses": diagnoses}
+    # v2026-02-14: include `targets` cosi' la WanTab di ClientOverviewPage
+    # puo' filtrare per client_id (prima ricavava la lista solo da `results`
+    # cosa che falliva quando il probe non aveva ancora girato — fix per
+    # "WAN(0)" su Galvan nonostante il target fosse in DB).
+    return {"targets": targets, "results": results, "diagnoses": diagnoses}
 
 
 @router.get("/status/{client_id}")

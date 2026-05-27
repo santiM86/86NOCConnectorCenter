@@ -1917,8 +1917,14 @@ async def correlate_connectivity(
 
 @router.get("/clients/{client_id}/ilo-health")
 async def get_client_ilo_health(client_id: str, current_user: dict = Depends(get_current_user)):
-    """Return Redfish/iLO hardware telemetry for all iLO servers of a client."""
-    # Fetch poll_status docs that contain actual Redfish data (not null/empty)
+    """Return Redfish/iLO hardware telemetry for all iLO servers of a client.
+
+    v2026-02-14: estesa per includere anche i server senza credenziali iLO
+    configurate (`ilo_configured: false`), cosi' l'admin vede TUTTI i server
+    del cliente nella tab Server e puo' identificare quali necessitano di
+    configurazione iLO (placeholder con CTA "Configura credenziali iLO").
+    """
+    # 1) Server con dati Redfish gia' raccolti
     docs = await db.device_poll_status.find(
         {
             "client_id": client_id,
@@ -1931,16 +1937,27 @@ async def get_client_ilo_health(client_id: str, current_user: dict = Depends(get
         },
         {"_id": 0}
     ).to_list(100)
-    # Resolve managed_device names for display
+    # 2) Lista nomi dai managed_devices per arricchimento
     managed = await db.managed_devices.find(
-        {"client_id": client_id}, {"_id": 0, "ip": 1, "name": 1}
-    ).to_list(200)
+        {"client_id": client_id}, {"_id": 0, "ip": 1, "name": 1, "device_type": 1, "vendor": 1, "model": 1}
+    ).to_list(500)
     name_map = {m["ip"]: m.get("name") for m in managed}
+
+    # 3) Credenziali iLO esistenti per questo client (per flag ilo_configured)
+    ilo_creds = await db.device_credentials.find(
+        {"client_id": client_id, "credential_type": "ilo"},
+        {"_id": 0, "device_ip": 1, "external_url": 1, "connector_only": 1}
+    ).to_list(500)
+    ilo_creds_map = {c.get("device_ip"): c for c in ilo_creds if c.get("device_ip")}
+
     result = []
+    seen_ips = set()
     for d in docs:
         ip = d.get("device_ip")
+        seen_ips.add(ip)
         rf = d.get("redfish", {}) or {}
         hw = d.get("hardware", {}) or {}
+        cred = ilo_creds_map.get(ip)
         result.append({
             "device_ip": ip,
             "device_name": name_map.get(ip) or d.get("device_name") or ip,
@@ -1961,5 +1978,56 @@ async def get_client_ilo_health(client_id: str, current_user: dict = Depends(get
             "temperatures": hw.get("temperatures", []),
             "fans": hw.get("fans", []),
             "power_supplies": hw.get("power_supplies", []),
+            "ilo_configured": bool(cred),
+            "ilo_external_url": (cred or {}).get("external_url"),
+            "ilo_connector_only": bool((cred or {}).get("connector_only")),
+            "has_redfish_data": bool(rf.get("server_model") or rf.get("bios_version")),
         })
+
+    # 4) Server senza dati Redfish ma classificati come server in managed_devices
+    #    (es. HP ProLiant scoperti via SNMP ma senza credenziali iLO ancora salvate).
+    for m in managed:
+        ip = m.get("ip")
+        if not ip or ip in seen_ips:
+            continue
+        dtype = (m.get("device_type") or "").lower()
+        vendor = (m.get("vendor") or "").lower()
+        model = (m.get("model") or "").lower()
+        is_server_like = (
+            dtype in ("server", "ilo")
+            or "proliant" in model
+            or "ilo" in model
+            or ("hp" in vendor or "hewlett" in vendor or "dell" in vendor or "lenovo" in vendor)
+            and dtype not in ("workstation", "endpoint-private", "printer", "switch", "firewall", "router", "ap", "nas", "ups", "tvcc", "voip", "mobile", "iot")
+        )
+        if not is_server_like:
+            continue
+        cred = ilo_creds_map.get(ip)
+        result.append({
+            "device_ip": ip,
+            "device_name": m.get("name") or ip,
+            "polling_mode": "not_configured",
+            "last_poll": None,
+            "reachable": None,
+            "server_model": m.get("model"),
+            "serial_number": None,
+            "bios_version": None,
+            "ilo_firmware": None,
+            "ilo_license": None,
+            "power_watts": None,
+            "total_memory_gb": None,
+            "memory_dimms": [],
+            "network_adapters": [],
+            "storage_controllers": [],
+            "health_status": "unknown",
+            "temperatures": [],
+            "fans": [],
+            "power_supplies": [],
+            "ilo_configured": bool(cred),
+            "ilo_external_url": (cred or {}).get("external_url"),
+            "ilo_connector_only": bool((cred or {}).get("connector_only")),
+            "has_redfish_data": False,
+            "needs_ilo_setup": not bool(cred),
+        })
+
     return result
