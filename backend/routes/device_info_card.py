@@ -598,15 +598,41 @@ async def rename_device_by_ip(
     if len(new_name) > 200:
         raise HTTPException(status_code=400, detail="name troppo lungo (max 200 char)")
 
+    # v2026-02-14: scope esplicito per client_id quando piu' tenant hanno
+    # lo stesso IP (192.168.x.x, 10.0.x.x sono comuni). Senza scope, il rename
+    # potrebbe aggiornare il device del client sbagliato. Accettiamo client_id
+    # opzionale dal body per safety.
+    explicit_client_id = (payload.get("client_id") or "").strip() or None
+
     # Verifica che il device esista almeno in una collezione
     exists_in = []
-    md = await db.managed_devices.find_one({"ip": device_ip}, {"_id": 0, "id": 1, "name": 1, "client_id": 1})
+    md_query = {"ip": device_ip}
+    if explicit_client_id:
+        md_query["client_id"] = explicit_client_id
+    md = await db.managed_devices.find_one(md_query, {"_id": 0, "id": 1, "name": 1, "client_id": 1})
+
+    # Se piu' device matchano (multi-tenant), seleziona quello del client_id
+    # esplicito; altrimenti se ne esiste piu' di uno → errore.
+    if not explicit_client_id:
+        cnt = await db.managed_devices.count_documents({"ip": device_ip})
+        if cnt > 1:
+            raise HTTPException(
+                status_code=409,
+                detail=f"IP {device_ip} appartiene a {cnt} client diversi. Includi client_id nel body per disambiguare.",
+            )
+
     if md:
         exists_in.append("managed_devices")
-    dv = await db.devices.find_one({"ip_address": device_ip}, {"_id": 0, "id": 1, "name": 1, "client_id": 1})
+    dv_query = {"ip_address": device_ip}
+    if explicit_client_id:
+        dv_query["client_id"] = explicit_client_id
+    dv = await db.devices.find_one(dv_query, {"_id": 0, "id": 1, "name": 1, "client_id": 1})
     if dv:
         exists_in.append("devices")
-    ps = await db.device_poll_status.find_one({"device_ip": device_ip}, {"_id": 0, "device_name": 1, "client_id": 1})
+    ps_query = {"device_ip": device_ip}
+    if explicit_client_id:
+        ps_query["client_id"] = explicit_client_id
+    ps = await db.device_poll_status.find_one(ps_query, {"_id": 0, "device_name": 1, "client_id": 1})
     if ps:
         exists_in.append("device_poll_status")
 
@@ -634,13 +660,13 @@ async def rename_device_by_ip(
         old_name = md.get("name")
         client_id = md.get("client_id")
         await db.managed_devices.update_one(
-            {"ip": device_ip},
+            {"ip": device_ip, "client_id": client_id},
             {"$set": lock_fields},
         )
     else:
         # Crea entry ghost in managed_devices cosi' il lock sia rispettato
         from uuid import uuid4
-        client_id = (ps or {}).get("client_id") or (dv or {}).get("client_id")
+        client_id = explicit_client_id or (ps or {}).get("client_id") or (dv or {}).get("client_id")
         if client_id:
             await db.managed_devices.insert_one({
                 "id": str(uuid4()),
@@ -656,10 +682,14 @@ async def rename_device_by_ip(
     if dv:
         if old_name is None:
             old_name = dv.get("name")
+        dv_filter = {"ip_address": device_ip}
+        if client_id:
+            dv_filter["client_id"] = client_id
         await db.devices.update_one(
-            {"ip_address": device_ip},
+            dv_filter,
             {"$set": {
                 "name": new_name,
+                "name_locked": True,
                 "name_user_locked": True,
                 "updated_at": now_iso,
             }},
@@ -668,10 +698,14 @@ async def rename_device_by_ip(
     # 3. device_poll_status: aggiorna solo device_name (no lock perche' poll
     # status e' rigenerato dal connector; il display name backend usa
     # best_display_name() che gia' preferisce managed_devices.name quando
-    # name_user_locked=True).
+    # name_user_locked=True). Inoltre il connector/device-report ora rispetta
+    # name_locked e NON sovrascrive device_name al prossimo heartbeat.
     if ps:
+        ps_filter = {"device_ip": device_ip}
+        if client_id:
+            ps_filter["client_id"] = client_id
         await db.device_poll_status.update_one(
-            {"device_ip": device_ip},
+            ps_filter,
             {"$set": {"device_name": new_name}},
         )
 

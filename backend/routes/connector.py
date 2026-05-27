@@ -2408,6 +2408,20 @@ async def connector_device_report(request: Request):
             {"client_id": client_id, "device_ip": dev["device_ip"]}, {"_id": 0}
         )
 
+        # v2026-02-14: se l'admin ha rinominato manualmente il device (name_locked
+        # / name_user_locked = True), NON sovrascrivere il `device_name` salvato
+        # con quello che il connector ha pollato. Altrimenti il display name si
+        # resetterebbe dopo ogni heartbeat del connector.
+        md_lock = await db.managed_devices.find_one(
+            {"client_id": client_id, "ip": dev["device_ip"]},
+            {"_id": 0, "name": 1, "name_locked": 1, "name_user_locked": 1},
+        )
+        if md_lock and (md_lock.get("name_locked") or md_lock.get("name_user_locked")):
+            locked_name = (md_lock.get("name") or "").strip()
+            if locked_name:
+                dev = dict(dev)  # copy per non mutare l'input
+                dev["device_name"] = locked_name
+
         doc = {
             "client_id": client_id, "connector_hostname": hostname,
             "device_ip": dev["device_ip"], "device_name": dev["device_name"],
