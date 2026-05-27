@@ -2264,6 +2264,25 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
           </Button>
           <Button
             onClick={async () => {
+              if (!window.confirm("Importare i device Datto come managed_devices del cliente?\n\nCrea SOLO i device Datto non gia' presenti nel Center. Quelli esistenti vengono arricchiti con nome Datto. Operazione idempotente.")) return;
+              try {
+                const { data } = await axios.post(`${API}/clients/${clientId}/datto/seed-managed`);
+                if (data.ok) {
+                  toast.success(`Seed Datto: ${data.created_managed_devices} creati, ${data.enriched_existing} arricchiti${data.skipped_no_ip ? `, ${data.skipped_no_ip} senza IP saltati` : ""}`, { duration: 8000 });
+                  onRefresh?.();
+                }
+              } catch (e) {
+                toast.error(`Errore seed Datto: ${e.response?.data?.detail || e.message}`, { duration: 7000 });
+              }
+            }}
+            className="bg-fuchsia-500/90 hover:bg-fuchsia-500 text-white h-8 text-xs gap-1"
+            data-testid="datto-seed-btn"
+            title="Importa i device Datto come managed_devices nel Center. Crea solo quelli non già presenti (idempotente). Utile per popolare l'inventario di un cliente nuovo senza dover aspettare lo Scanner LAN."
+          >
+            📥 Seed Datto
+          </Button>
+          <Button
+            onClick={async () => {
               try {
                 const { data } = await axios.post(`${API}/clients/${clientId}/datto/rematch`);
                 if (data.ok) {

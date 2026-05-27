@@ -360,6 +360,19 @@ async def _fetch_all_sites_from_portal(timeout: float = 60.0) -> list[dict]:
             except Exception:
                 break
             if not isinstance(data, dict):
+                # v2026-03-01 hardening: alcuni REST endpoint ritornano lista diretta
+                if isinstance(data, list) and data:
+                    arr = data
+                    first_id = str((arr[0] or {}).get("siteUid") or (arr[0] or {}).get("uid")
+                                   or (arr[0] or {}).get("site_id") or (arr[0] or {}).get("id") or "")
+                    if prev_first_id is not None and first_id == prev_first_id:
+                        break
+                    prev_first_id = first_id
+                    collected.extend(arr)
+                    if len(arr) < MAX_PER_PAGE:
+                        break
+                    page += 1
+                    continue
                 break
             arr = None
             for k in ("sites", "data", "items", "result", "devices"):
@@ -670,9 +683,10 @@ async def _match_with_center(client_id: str, datto_devices: list[dict]) -> int:
     # arricchiamo con datto_name cosi che UI/Report abbiano il nome allineato.
     managed = await db.managed_devices.find(
         {"client_id": client_id},
-        {"_id": 0, "id": 1, "name": 1, "ip_address": 1, "mac_address": 1},
+        {"_id": 0, "id": 1, "name": 1, "hostname": 1, "ip_address": 1, "mac_address": 1},
     ).to_list(10000)
     md_ops: list = []
+    matched_md_ids: set = set()
     for md in managed:
         ip = md.get("ip_address") or ""
         mac = (md.get("mac_address") or "").upper()
@@ -684,6 +698,7 @@ async def _match_with_center(client_id: str, datto_devices: list[dict]) -> int:
             d, mt = ip_to_dev[ip], "ip"
         if d:
             matched_uids.add(d["uid"])
+            matched_md_ids.add(md["id"])
             md_ops.append(UpdateOne(
                 {"id": md["id"]},
                 {"$set": {
@@ -692,6 +707,44 @@ async def _match_with_center(client_id: str, datto_devices: list[dict]) -> int:
                     "datto_matched_at": now,
                 }},
             ))
+
+    # v2026-03-01 Pass 4: fallback HOSTNAME match.
+    # Quando il connector LAN scanner non ha SNMP attivo, discovered_endpoints
+    # puo' essere quasi vuoto → match MAC/IP fallisce. Tuttavia molti device
+    # Datto hanno `name` (hostname computer) che spesso coincide con
+    # `hostname` o `name` in managed_devices. Tentiamo questo match come
+    # ultimo livello, normalizzando: lowercase, trim whitespace.
+    def _norm_name(s: str) -> str:
+        return (s or "").strip().lower()
+
+    name_to_dev: dict[str, dict] = {}
+    for d in datto_devices:
+        n = _norm_name(d.get("name"))
+        if n and n not in name_to_dev:
+            name_to_dev[n] = d
+
+    if name_to_dev:
+        for md in managed:
+            if md["id"] in matched_md_ids:
+                continue  # gia' matchato via MAC/IP
+            for cand_field in ("hostname", "name"):
+                cand = _norm_name(md.get(cand_field))
+                if cand and cand in name_to_dev:
+                    d = name_to_dev[cand]
+                    if d["uid"] in matched_uids:
+                        continue
+                    matched_uids.add(d["uid"])
+                    matched_md_ids.add(md["id"])
+                    md_ops.append(UpdateOne(
+                        {"id": md["id"]},
+                        {"$set": {
+                            "datto_name": d["name"],
+                            "datto_match": "hostname",
+                            "datto_matched_at": now,
+                        }},
+                    ))
+                    break
+
     if md_ops:
         await db.managed_devices.bulk_write(md_ops, ordered=False)
 
@@ -829,6 +882,106 @@ async def datto_sync_now(current_user: dict = Depends(get_current_user)):
     return {"ok": True, **result}
 
 
+@router.get("/datto/diagnostics")
+async def datto_diagnostics(current_user: dict = Depends(get_current_user)):
+    """Diagnostica completa Datto RMM: stato config, cache, link clienti,
+    ultimo sync. Aiuta a capire perche' il sync "non trova nulla".
+    Output volutamente compatto, NESSUN dato sensibile esposto.
+
+    Causa tipica "non trova nulla":
+      1. Config Datto non presente o api_key invalida → sites_in_cache=0
+      2. Sites endpoint funziona ma nessun client linkato → linked_clients=0
+      3. Sites linkati ma sync mai eseguito → last_sync_at=None
+      4. Sync eseguito ma 0 device persisted → wrapper schema cambiato
+      5. Device persisted ma 0 matched → MAC/IP non coincidono con Center
+    """
+    require_admin(current_user)
+    out: dict[str, Any] = {
+        "checks": [],
+        "actions_suggested": [],
+    }
+
+    # 1. Config presente?
+    cfg = await db.datto_settings.find_one({"id": "global"}, {"_id": 0, "api_key_enc": 0})
+    cfg_ok = bool(cfg and cfg.get("user_id"))
+    out["checks"].append({
+        "step": "1_config",
+        "ok": cfg_ok,
+        "detail": "Config Datto presente" if cfg_ok else "Config Datto MANCANTE — configura api_key+user_id in PUT /api/admin/datto/config",
+    })
+    if not cfg_ok:
+        out["actions_suggested"].append("Vai a Settings → Datto RMM → configura api_key e user_id")
+        return out
+
+    # 2. Cache siti
+    n_sites = await db.datto_sites_cache.count_documents({})
+    last_site = await db.datto_sites_cache.find_one({}, {"_id": 0, "fetched_at": 1}, sort=[("fetched_at", -1)])
+    out["checks"].append({
+        "step": "2_sites_cache",
+        "ok": n_sites > 0,
+        "sites_in_cache": n_sites,
+        "last_fetched_at": (last_site or {}).get("fetched_at"),
+        "detail": f"{n_sites} siti in cache" if n_sites > 0 else "Cache siti VUOTA — clicca 'Sync now' o /api/datto/sync-now",
+    })
+    if n_sites == 0:
+        out["actions_suggested"].append("Esegui POST /api/datto/sync-now (popolera' la cache siti)")
+        out["actions_suggested"].append("Se ancora 0, usa POST /api/admin/datto/raw-debug per ispezionare la response del wrapper")
+
+    # 3. Client links
+    links_cursor = db.datto_client_links.find({}, {"_id": 0})
+    links = await links_cursor.to_list(500)
+    n_links = len(links)
+    out["checks"].append({
+        "step": "3_client_links",
+        "ok": n_links > 0,
+        "linked_clients": n_links,
+        "detail": f"{n_links} clienti collegati a siti Datto" if n_links > 0 else "Nessun cliente collegato — devi mappare cliente→sito Datto via PUT /api/clients/{id}/datto/link",
+    })
+    if n_links == 0:
+        out["actions_suggested"].append("Per ogni cliente vai in: Clienti → seleziona cliente → tab 'Datto RMM' → scegli il sito Datto associato")
+
+    # 4. Last sync per link + matched stats
+    links_summary = []
+    for link in links:
+        cid = link.get("client_id")
+        cli = await db.clients.find_one({"id": cid}, {"_id": 0, "name": 1}) if cid else None
+        n_persisted = await db.datto_devices.count_documents({"client_id": cid})
+        links_summary.append({
+            "client_id": cid,
+            "client_name": (cli or {}).get("name", "(eliminato?)"),
+            "site_id": link.get("site_id"),
+            "last_sync_at": link.get("last_sync_at"),
+            "device_count": link.get("device_count", 0),
+            "matched_count": link.get("matched_count", 0),
+            "persisted_in_db": n_persisted,
+        })
+    out["links_summary"] = links_summary
+
+    # 5. Datto devices totali persisted
+    total_persisted = await db.datto_devices.count_documents({})
+    out["checks"].append({
+        "step": "5_devices_persisted",
+        "total_in_db": total_persisted,
+        "detail": f"{total_persisted} device Datto persisted nel DB" if total_persisted > 0 else "Zero device persisted — sync probabilmente fallito o link mai sincronizzato",
+    })
+
+    # 6. Discovered endpoints (per matching)
+    n_disco = await db.discovered_endpoints.count_documents({})
+    out["checks"].append({
+        "step": "6_discovered_endpoints",
+        "total": n_disco,
+        "detail": f"{n_disco} discovered_endpoints disponibili per match",
+    })
+
+    if n_sites > 0 and n_links > 0 and total_persisted == 0:
+        out["actions_suggested"].append("Sito linkato ma 0 device persisted: probabile errore di audit (timeout o credenziali errate). Vedi log backend per 'datto_list_fetched' e 'datto_no_devices_found'.")
+    if total_persisted > 0 and all(li.get("matched_count", 0) == 0 for li in links):
+        out["actions_suggested"].append("Device persisted ma matched=0: i MAC/IP Datto non coincidono con discovered_endpoints. Verifica che il connector LAN scanner sia attivo nei clienti linkati.")
+
+    out["healthy"] = cfg_ok and n_sites > 0 and n_links > 0 and total_persisted > 0
+    return out
+
+
 @router.get("/datto/sites")
 async def list_datto_sites(current_user: dict = Depends(get_current_user)):
     sites = await db.datto_sites_cache.find({}, {"_id": 0}).sort("site_name", 1).to_list(2000)
@@ -925,6 +1078,177 @@ async def set_datto_link(
             "device_count": device_count, "matched_count": matched_count}
 
 
+@router.post("/clients/{client_id}/datto/seed-managed")
+async def seed_managed_from_datto(
+    client_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Importa device Datto come `managed_devices` placeholder.
+
+    Per ogni `datto_devices` del cliente che NON ha gia' un managed_device
+    associato (via MAC, IP o hostname), crea un nuovo `managed_devices`
+    con:
+      - name = nome Datto (hostname)
+      - hostname = nome Datto
+      - ip_address = ip Datto (primary)
+      - mac_address = mac Datto (primary)
+      - device_type = "endpoint"
+      - source = "datto-seed"
+      - datto_name, datto_match=hostname-seed, datto_matched_at
+
+    Una volta importati, il connector LAN scanner li arricchisce
+    automaticamente con IP corrente, porta switch, etc.
+
+    Idempotente: ri-eseguibile senza creare duplicati. NON sovrascrive
+    device esistenti.
+    """
+    require_admin(current_user)
+
+    client = await db.clients.find_one({"id": client_id}, {"_id": 0, "name": 1})
+    if not client:
+        raise HTTPException(status_code=404, detail="Client non trovato")
+
+    datto_devs = await db.datto_devices.find(
+        {"client_id": client_id}, {"_id": 0}
+    ).to_list(5000)
+    if not datto_devs:
+        raise HTTPException(
+            status_code=400,
+            detail="Nessun device Datto per questo cliente. Esegui prima il sync.",
+        )
+
+    # Index dei managed_devices esistenti per match (NO duplicati)
+    existing = await db.managed_devices.find(
+        {"client_id": client_id},
+        {"_id": 0, "id": 1, "name": 1, "hostname": 1, "ip_address": 1, "mac_address": 1},
+    ).to_list(20000)
+
+    by_mac: dict[str, dict] = {}
+    by_ip: dict[str, dict] = {}
+    by_hostname: dict[str, dict] = {}
+    for md in existing:
+        for m in [(md.get("mac_address") or "").upper(), (md.get("mac") or "").upper()]:
+            if m:
+                by_mac[m] = md
+        for ip_field in (md.get("ip_address"), md.get("ip")):
+            if ip_field:
+                by_ip[ip_field] = md
+        for h in (md.get("hostname"), md.get("name")):
+            if h:
+                by_hostname[h.strip().lower()] = md
+
+    import uuid as _uuid
+    now_iso = datetime.now(timezone.utc).isoformat()
+    created: list[str] = []
+    enriched: list[str] = []  # esistenti aggiornati con datto_name
+    skipped_duplicates = 0
+    skipped_no_ip = 0
+    seen_ips: set = set()  # evita duplicati su (client_id, ip) interni alla run
+
+    inserts: list[dict] = []
+    md_updates: list = []
+    from pymongo import UpdateOne
+
+    for d in datto_devs:
+        name = (d.get("name") or "").strip()
+        if not name:
+            continue
+        mac_primary = (d.get("mac") or "").upper()
+        ip_primary = d.get("ip") or ""
+        hostname_key = name.lower()
+
+        # 1. Cerca match su MAC/IP/hostname esistenti
+        match_md = None
+        if mac_primary and mac_primary in by_mac:
+            match_md = by_mac[mac_primary]
+        elif ip_primary and ip_primary in by_ip:
+            match_md = by_ip[ip_primary]
+        elif hostname_key in by_hostname:
+            match_md = by_hostname[hostname_key]
+
+        if match_md:
+            # Aggiorna datto_name sul managed_device esistente (non duplicare)
+            md_updates.append(UpdateOne(
+                {"id": match_md["id"]},
+                {"$set": {
+                    "datto_name": name,
+                    "datto_match": "seed-existing",
+                    "datto_matched_at": now_iso,
+                }},
+            ))
+            enriched.append(name)
+            skipped_duplicates += 1
+            continue
+
+        # v2026-03-01: managed_devices ha indice unique (client_id, ip).
+        # Skippa device Datto senza IP (non monitorabili) o con IP duplicato.
+        if not ip_primary:
+            skipped_no_ip += 1
+            continue
+        if ip_primary in seen_ips or ip_primary in by_ip:
+            skipped_duplicates += 1
+            continue
+        seen_ips.add(ip_primary)
+
+        # 2. Nessun match: crea managed_device placeholder
+        new_doc = {
+            "id": _uuid.uuid4().hex,
+            "client_id": client_id,
+            "name": name,
+            "hostname": name,
+            "ip": ip_primary,
+            "ip_address": ip_primary,
+            "mac": mac_primary or None,
+            "mac_address": mac_primary or None,
+            "device_type": "endpoint",
+            "monitor_type": "ping",
+            "source": "datto-seed",
+            "datto_name": name,
+            "datto_match": "seed-imported",
+            "datto_matched_at": now_iso,
+            "auto_added": True,
+            "auto_added_at": now_iso,
+            "created_by": current_user.get("email"),
+            "name_user_locked": False,
+            "device_type_user_locked": False,
+        }
+        inserts.append(new_doc)
+        created.append(name)
+        # Aggiungi a by_hostname per evitare duplicati interni alla stessa run
+        by_hostname[hostname_key] = new_doc
+
+    if inserts:
+        await db.managed_devices.insert_many(inserts)
+    if md_updates:
+        await db.managed_devices.bulk_write(md_updates, ordered=False)
+
+    # Marca i datto_devices coinvolti come matched=True
+    matched_names = created + enriched
+    if matched_names:
+        await db.datto_devices.update_many(
+            {"client_id": client_id, "name": {"$in": matched_names}},
+            {"$set": {"matched": True, "matched_at": now_iso, "match_via": "seed"}},
+        )
+
+    audit.info(
+        f"datto_seed client={client_id} created={len(created)} "
+        f"enriched={len(enriched)} skipped_dup={skipped_duplicates} "
+        f"by={current_user.get('email')}"
+    )
+    return {
+        "ok": True,
+        "client_id": client_id,
+        "client_name": client.get("name"),
+        "total_datto_devices": len(datto_devs),
+        "created_managed_devices": len(created),
+        "enriched_existing": len(enriched),
+        "skipped_no_ip": skipped_no_ip,
+        "skipped_duplicates": skipped_duplicates,
+        "created_names": created[:20],
+        "enriched_names": enriched[:20],
+    }
+
+
 @router.delete("/clients/{client_id}/datto/link")
 async def remove_datto_link(
     client_id: str, current_user: dict = Depends(get_current_user),
@@ -939,8 +1263,7 @@ async def remove_datto_link(
                     "datto_ip": ""}},
     )
     await db.managed_devices.update_many(
-        {"client_id": client_id, "datto_name": {"$exists": True}},
-        {"$unset": {"datto_name": "", "datto_match": "", "datto_matched_at": ""}},
+        {"client_id": client_id, "datto_name": {"$exists": True}},        {"$unset": {"datto_name": "", "datto_match": "", "datto_matched_at": ""}},
     )
     audit.info(f"datto_unlink client={client_id} by={current_user.get('email')}")
     return {"unlinked": r1.deleted_count, "devices_removed": r2.deleted_count}

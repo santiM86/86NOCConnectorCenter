@@ -598,14 +598,18 @@ async def connector_lan_scan(request: Request, report: LanScanReport):
                 )
                 continue
 
-            # Nuovo device — classifica via OUI
-            vendor_guess = ""
-            try:
-                vendor_guess = lookup_oui(mac_norm) or ""
-            except Exception:
-                pass
-            # v3.8.16: se MAC randomizzato (LAA), assegna identita' "MAC privato"
+            # v3.8.16: detection MAC randomizzato (LAA) PRIMA del lookup OUI.
+            # Per spec IEEE, l'OUI e' valido solo se LAA=0. Se LAA=1 il MAC e'
+            # localmente assegnato (privacy randomization) → ignoriamo
+            # qualsiasi match OUI accidentale per evitare false "Apple"/"Cisco"
+            # quando in realta' e' un iPhone/Android in modalita' privacy.
             mac_is_laa = _is_laa_mac(mac_norm)
+            vendor_guess = ""
+            if not mac_is_laa:
+                try:
+                    vendor_guess = lookup_oui(mac_norm) or ""
+                except Exception:
+                    pass
             if mac_is_laa and not vendor_guess:
                 vendor_guess = "MAC randomizzato (privacy)"
             try:

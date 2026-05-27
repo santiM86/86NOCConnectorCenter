@@ -54,6 +54,135 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-03-01 📥 Datto Seed — Import device come managed_devices
+
+### Cosa fa
+Nuovo endpoint `POST /api/clients/{client_id}/datto/seed-managed`:
+- Per ogni `datto_devices` del cliente, cerca match esistente
+  (MAC/IP/hostname) in `managed_devices`.
+- Se gia' presente: **enrichisce** con `datto_name` + `datto_match=seed-existing`.
+- Se nuovo: **crea managed_device placeholder** con hostname=name Datto,
+  IP/MAC Datto, `source=datto-seed`, `device_type=endpoint`,
+  `monitor_type=ping`.
+- Idempotente: re-run non crea duplicati.
+
+### Skip rules
+- Device Datto senza IP → skippato (managed_devices ha indice unique
+  `(client_id, ip)` NON sparse, ip=null sarebbe duplicate key dopo il
+  primo).
+- IP gia' esistente → enrichisce invece di creare.
+
+### Test container preview
+- 25 device Datto 86BIT_Office → 24 creati + 1 enrichito (SantiM86 era
+  gia' nel Center) ✓
+- Re-run idempotente: 0 created + 25 enriched ✓
+
+### UI: nuovo pulsante "📥 Seed Datto"
+In `ClientOverviewPage.js` toolbar dispositivi, vicino a "Match Datto".
+Confirm dialog + toast con conteggio risultati.
+
+### Benefici
+1. **Inventario istantaneo** per clienti senza SNMP/FDB attivo
+2. Una volta che lo scanner LAN o lo switch SNMP rilevano il device,
+   il match per MAC auto-collega tutte le info (porta switch, IP corrente,
+   ecc.) al record gia' creato dal seed.
+3. Datto coerente in tutte le zone di Argus (tabella dispositivi, card
+   device, report, badge porta switch quando MAC sara' visto dal FDB).
+
+---
+
+
+## 2026-03-01 ✨ Datto Diagnostics UI (completa la fix Datto RMM)
+
+### Nuova UI in `DattoRmmSettingsPage.js`
+- Pulsante toolbar 🩺 **Diagnostica** (data-testid `datto-diag-btn`)
+- Card dei risultati con:
+  - Badge globale HEALTHY/ATTENZIONE
+  - Grid 3 colonne con i 6 step di check (config, sites_cache, links,
+    devices_persisted, discovered_endpoints) — ognuno con icona
+    Check/Warning + dettaglio
+  - Tabella "Stato per cliente": persisted_in_db, matched_count,
+    last_sync_at per ogni link
+  - Box giallo "Azioni suggerite" — bullet list azionabili
+
+L'utente puo' diagnosticare in 1 click se il sync funziona e perche'
+matched_count e' 0 senza dover usare curl.
+
+### NOTA
+Alert Engine + Notifiche Telegram/Email messo in **standby** su
+richiesta utente per studio approfondito (necessita scelte su canali,
+throttling, eventi da alertare, credenziali Telegram/Resend).
+
+---
+
+
+## 2026-03-01 ✨ Datto RMM Sync + Bug Vendor "Apple" — entrambi fixati
+
+### C) Bug "vendor Apple come default" — root cause + fix
+Root cause: in `oui_lookup.lookup_oui()` non si controllava il bit LAA
+(Locally Administered Address). Per spec IEEE, l'OUI e' significativo
+SOLO per MAC globalmente unici (bit LAA=0). Per i MAC randomizzati
+privacy (iPhone iOS 15+, Android 10+ MAC randomization), il prefix puo'
+casualmente coincidere con uno dei 50+ prefissi Apple in OUI_DB → ritorno
+falso "Apple".
+
+Fix: check LAA bit dentro `lookup_oui()` stesso → se LAA=1 ritorna "".
+Beneficio: tutti i call sites (connector, topology, agent_ws,
+printer_discovery, ecc.) ora ricevono "" per MAC random anziche' vendor
+falsi. Inoltre rimosso il check ridondante in `connector.py` (vendor
+identity "MAC randomizzato (privacy)" applicato correttamente).
+
+Verifica: lookup_oui("00:25:00:11:22:33") → "Apple" ✓
+         lookup_oui("02:25:00:11:22:33") → "" (LAA, prima ritornava "Apple") ✓
+         lookup_oui("f2:18:98:a1:b2:c3") → "" (iPhone privacy) ✓
+         lookup_oui("00:00:0c:11:22:33") → "Cisco" ✓
+
+### A) Datto RMM Sync — root cause + fix
+Diagnostica live (POST /api/datto/diagnostics) ha mostrato:
+- ✅ Config OK, 151 siti in cache, 1 client linkato (86BIT_Office)
+- ✅ 25 device Datto persisted dopo sync
+- ❌ matched_count = 0 → discovered_endpoints/managed_devices non
+  matchano i MAC/IP Datto
+
+Root cause: i MAC Datto sono interfacce di laptop (es. WiFi del
+notebook), mentre `discovered_endpoints` raccoglie i MAC dallo switch
+FDB SNMP. Se SNMP non e' configurato/attivo sui clienti, FDB e' vuoto
+→ nessun MAC da matchare. Il match per IP fallisce perche' Datto vede
+IP privati che il NOC non ha mai osservato dal connector.
+
+Fix: aggiunto **Pass 4 — match per hostname** (normalizzato lowercase,
+trim). I device Datto hanno sempre il campo `name` (hostname computer)
+che spesso coincide con `hostname` o `name` in `managed_devices`.
+Questo match permette al MSP di vedere associazioni Datto anche quando
+SNMP non e' attivo (la maggior parte degli SMB).
+
+### Nuovo endpoint diagnostico
+- `GET /api/datto/diagnostics` — snapshot completo: config presente,
+  siti in cache, client links, ultimo sync, persisted vs matched, hint
+  azioni suggerite step-by-step. Risponde "healthy": true/false.
+
+### Robustezza
+- `_fetch_all_sites_from_portal`: ora accetta anche risposta come
+  `list[...]` diretta (alcuni endpoint REST non wrappano in dict).
+
+### Steps utente per testare in produzione
+1. **Save to GitHub** → deploy backend
+2. Hard refresh `argus.86bit.it`
+3. Pannello Datto RMM → **clicca "Sync now"**
+4. Nuovo endpoint diagnostico: `GET /api/datto/diagnostics` (anche da
+   curl)
+5. I device Datto con hostname coincidente con managed_devices del
+   cliente saranno automaticamente matchati con `datto_match=hostname`
+
+### Cosa fare se ancora matched_count=0 in produzione
+- Verifica `managed_devices.hostname` o `.name` siano popolati. Se sono
+  vuoti per quel cliente, importa nomi da Datto manualmente, oppure
+  attiva SNMP/FDB sui dispositivi di rete per popolare
+  `discovered_endpoints.mac`.
+
+---
+
+
 ## 2026-03-01 ✨ FIX RESPONSIVE WAN Tab + uptime calculation bug
 
 ### Bug riportati dall'utente (screenshot)

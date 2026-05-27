@@ -351,12 +351,26 @@ def lookup_oui(mac: str) -> str:
     Lookup a 2 livelli:
       1. DB curato locale (OUI_DB) — ha mapping vendor->device_type
       2. DB IEEE completo (~39k vendor) come fallback se non trovato
+
+    v2026-03-01: skip lookup se MAC e' LAA (Locally Administered, bit 1
+    del primo byte = 1). Per spec IEEE l'OUI e' significativo SOLO per i
+    MAC globalmente unici. Per i MAC randomizzati privacy (iPhone iOS 15+,
+    Android 10+), un match accidentale in OUI_DB ritornava "Apple"/"Cisco"
+    falso → bug "Apple come default".
     """
     if not mac:
         return ""
     # Normalize: lowercase, remove separators, keep first 6 hex chars
     clean = "".join(c for c in mac.lower() if c in "0123456789abcdef")
     if len(clean) < 6:
+        return ""
+    # Check LAA bit (2nd LSB of first byte). Se LAA=1, MAC random/private:
+    # OUI non e' valido, ritorna stringa vuota.
+    try:
+        first_byte = int(clean[0:2], 16)
+        if first_byte & 0x02:
+            return ""
+    except ValueError:
         return ""
     prefix = f"{clean[0:2]}:{clean[2:4]}:{clean[4:6]}"
     # 1. DB curato (priorita' alta — ha hint single-purpose)
