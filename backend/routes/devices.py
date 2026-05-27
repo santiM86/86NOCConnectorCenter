@@ -1984,23 +1984,20 @@ async def get_client_ilo_health(client_id: str, current_user: dict = Depends(get
             "has_redfish_data": bool(rf.get("server_model") or rf.get("bios_version")),
         })
 
-    # 4) Server senza dati Redfish ma classificati come server in managed_devices
-    #    (es. HP ProLiant scoperti via SNMP ma senza credenziali iLO ancora salvate).
+    # 4) Server senza dati Redfish ma classificati come server in managed_devices.
+    # v2026-02-14: filtro STRETTO. Solo device_type esplicitamente "server"
+    # o "ilo" (settato dall'admin o dal classifier). Niente euristiche
+    # su vendor HP/Dell/Lenovo perche' includerebbero workstation
+    # (GALVAN-UFF002), stampanti (NPIC3C01E con OUI HP), notebook, NAS HP, ecc.
+    # L'admin puo' sempre trascinare un device nella macro "server" dalla tab
+    # Dispositivi → move-category, e il device apparira' anche qui.
+    SERVER_LIKE_TYPES = {"server", "ilo", "hpe-ilo"}
     for m in managed:
         ip = m.get("ip")
         if not ip or ip in seen_ips:
             continue
         dtype = (m.get("device_type") or "").lower()
-        vendor = (m.get("vendor") or "").lower()
-        model = (m.get("model") or "").lower()
-        is_server_like = (
-            dtype in ("server", "ilo")
-            or "proliant" in model
-            or "ilo" in model
-            or ("hp" in vendor or "hewlett" in vendor or "dell" in vendor or "lenovo" in vendor)
-            and dtype not in ("workstation", "endpoint-private", "printer", "switch", "firewall", "router", "ap", "nas", "ups", "tvcc", "voip", "mobile", "iot")
-        )
-        if not is_server_like:
+        if dtype not in SERVER_LIKE_TYPES:
             continue
         cred = ilo_creds_map.get(ip)
         result.append({
