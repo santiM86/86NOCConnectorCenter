@@ -110,18 +110,33 @@ def best_display_name(
     if md_name and not _looks_categorical(md_name):
         return md_name
 
-    # 7) Fingerbank category come tag di fallback.
+    # 7) "Vendor IP" composto (es. "HPE/H3C 10.100.61.220"):
+    # e' MOLTO piu' leggibile di una categoria Fingerbank tipo
+    # "Switch and Wireless Controller/HP Switches".
+    # v2026-02-14: introdotto perche' l'admin vedeva nella tab Dispositivi
+    # raggruppata righe tipo "Switch and Wireless Controller/HP Switches
+    # 10.100.61.220" e voleva un nome utile da subito.
+    vendor = _clean(md.get("vendor") or pd.get("vendor"))
+    if vendor and ip:
+        # Pulisci eventuali categorie Fingerbank rimaste nel campo vendor
+        # (raro, ma piu' sicuro).
+        vendor_clean = vendor.split("/")[0].strip() if "/" in vendor else vendor
+        # Es: "HPE", "Cisco", "Zyxel" → "HPE 10.100.61.220"
+        if vendor_clean and not _looks_categorical(vendor_clean):
+            return f"{vendor_clean} {ip}"
+
+    # 8) Fingerbank category come tag di fallback (DOPO il vendor+IP).
     fb_name = _clean(md.get("fingerbank_device_name"), ip)
     if fb_name:
         return fb_name
 
-    # 8) Se md.name esiste ma e' "category-like", meglio averlo che niente.
+    # 9) Se md.name esiste ma e' "category-like", meglio averlo che niente.
     if md_name:
         return md_name
 
-    # 9) pd_name anche se category-like.
+    # 10) pd_name anche se category-like.
     if pd_name:
         return pd_name
 
-    # 10) ip address as last resort.
+    # 11) ip address as last resort.
     return ip or "?"

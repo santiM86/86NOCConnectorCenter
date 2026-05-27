@@ -149,6 +149,15 @@ export function pickDeviceName(d, fallback = "") {
     const v = (d[k] || "").trim();
     if (v && v !== ip && !_isCategorical(v)) return v;
   }
+  // v2026-02-14: "Vendor IP" composto preferibile a una categoria
+  // Fingerbank tipo "Switch and Wireless Controller/HP Switches".
+  const vendor = (d.vendor || "").trim();
+  if (vendor && ip) {
+    const vendorClean = vendor.includes("/") ? vendor.split("/")[0].trim() : vendor;
+    if (vendorClean && !_isCategorical(vendorClean)) {
+      return `${vendorClean} ${ip}`;
+    }
+  }
   const fb = (d.fingerbank_device_name || "").trim();
   if (fb && fb !== ip) return fb;
   // Anche se "name" è category-like, meglio che ip nudo
