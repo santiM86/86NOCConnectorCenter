@@ -54,6 +54,30 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-03-01 ✨ Datto Diagnostics UI (completa la fix Datto RMM)
+
+### Nuova UI in `DattoRmmSettingsPage.js`
+- Pulsante toolbar 🩺 **Diagnostica** (data-testid `datto-diag-btn`)
+- Card dei risultati con:
+  - Badge globale HEALTHY/ATTENZIONE
+  - Grid 3 colonne con i 6 step di check (config, sites_cache, links,
+    devices_persisted, discovered_endpoints) — ognuno con icona
+    Check/Warning + dettaglio
+  - Tabella "Stato per cliente": persisted_in_db, matched_count,
+    last_sync_at per ogni link
+  - Box giallo "Azioni suggerite" — bullet list azionabili
+
+L'utente puo' diagnosticare in 1 click se il sync funziona e perche'
+matched_count e' 0 senza dover usare curl.
+
+### NOTA
+Alert Engine + Notifiche Telegram/Email messo in **standby** su
+richiesta utente per studio approfondito (necessita scelte su canali,
+throttling, eventi da alertare, credenziali Telegram/Resend).
+
+---
+
+
 ## 2026-03-01 ✨ Datto RMM Sync + Bug Vendor "Apple" — entrambi fixati
 
 ### C) Bug "vendor Apple come default" — root cause + fix
