@@ -1323,6 +1323,162 @@ async def recognize_unknown_devices_debug(
 
 
 
+
+
+# Macro → device_type canonico (mirror di frontend/utils/deviceCategory.js)
+_MACRO_TO_TYPE = {
+    "firewall": "firewall",
+    "switch": "switch",
+    "router": "router",
+    "server": "server",
+    "nas": "nas",
+    "ups": "ups",
+    "ap": "access-point",
+    "tvcc": "tvcc",
+    "printer": "printer",
+    "voip": "voip",
+    "workstation": "workstation",
+    "mobile": "mobile",
+    "iot": "iot",
+    "other": "generic",
+}
+
+
+@router.post("/clients/{client_id}/devices/{device_ip}/move-category")
+async def move_device_category(
+    client_id: str,
+    device_ip: str,
+    payload: dict,
+    current_user: dict = Depends(get_current_user),
+):
+    """Sposta manualmente un device in una macroarea diversa via drag&drop UI.
+
+    v2026-02-13: richiesto dall'utente per riclassificare i device che
+    Argus mette in workstation ma in realta' sono server (es. GALVANSRV
+    con vendor HP, che il classifier vede come PC perche' HP fa anche
+    workstation HP EliteDesk, ma in realta' e' un ProLiant DL).
+
+    Body:
+        {"macro": "<firewall|switch|server|nas|ups|ap|tvcc|printer|voip|"
+                  "workstation|mobile|iot|other>"}
+
+    Effetti:
+      - managed_devices.device_type = <type canonico>
+      - managed_devices.device_type_user_locked = True
+        (cosi' best_device_type() rispetta la scelta e non la sovrascrive
+         al prossimo classifier run / scanner refresh)
+      - audit log con utente, ip, old → new
+    """
+    macro = (payload.get("macro") or "").strip().lower()
+    new_type = _MACRO_TO_TYPE.get(macro)
+    if not new_type:
+        raise HTTPException(
+            status_code=400,
+            detail=f"macro non valida. Ammesse: {sorted(_MACRO_TO_TYPE.keys())}",
+        )
+
+    md = await db.managed_devices.find_one(
+        {"client_id": client_id, "ip": device_ip},
+        {"_id": 0, "id": 1, "device_type": 1, "name": 1, "client_id": 1},
+    )
+
+    # Se il device esiste solo in device_poll_status (auto-scoperto, non
+    # ancora promosso a managed_devices), creiamo l'entry "ghost" per
+    # poter applicare il lock. Cosi' il classifier non lo riportera' alla
+    # categoria automatica al prossimo run dello scanner.
+    if not md:
+        pd = await db.device_poll_status.find_one(
+            {"client_id": client_id, "device_ip": device_ip},
+            {"_id": 0, "device_name": 1, "sys_name": 1, "vendor": 1, "model": 1, "sys_descr": 1, "sys_object_id": 1},
+        )
+        if not pd:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Device {device_ip} non trovato per cliente {client_id} (ne' managed_devices ne' device_poll_status)",
+            )
+        # Crea record managed_devices con device_type forzato + lock.
+        from uuid import uuid4
+        await db.managed_devices.insert_one({
+            "id": str(uuid4()),
+            "client_id": client_id,
+            "ip": device_ip,
+            "name": pd.get("sys_name") or pd.get("device_name") or device_ip,
+            "hostname": pd.get("sys_name") or "",
+            "vendor": pd.get("vendor") or "",
+            "model": pd.get("model") or "",
+            "sys_descr": pd.get("sys_descr") or "",
+            "sys_object_id": pd.get("sys_object_id") or "",
+            "device_type": new_type,
+            "device_type_user_locked": True,
+            "device_type_user_locked_by": current_user.get("email"),
+            "device_type_user_locked_at": datetime.now(timezone.utc).isoformat(),
+            "source": "user_drag_and_drop",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+        await audit_logger.log(
+            AuditAction.UPDATE_DEVICE,
+            user_id=current_user["id"], user_email=current_user["email"],
+            ip_address=current_user.get("_request_ip"),
+            resource_type="device", resource_id=device_ip,
+            details={
+                "action": "move_category_create",
+                "client_id": client_id,
+                "new_type": new_type,
+                "macro": macro,
+            },
+        )
+        return {
+            "ok": True, "ip": device_ip, "old_type": "", "new_type": new_type,
+            "macro": macro, "locked": True, "created": True,
+            "message": f"Device promosso e classificato come {new_type}",
+        }
+
+    old_type = md.get("device_type") or ""
+    if old_type == new_type and md.get("device_type_user_locked"):
+        return {
+            "ok": True,
+            "ip": device_ip,
+            "old_type": old_type,
+            "new_type": new_type,
+            "noop": True,
+            "message": "Gia' bloccato su questa categoria",
+        }
+
+    await db.managed_devices.update_one(
+        {"client_id": client_id, "ip": device_ip},
+        {"$set": {
+            "device_type": new_type,
+            "device_type_user_locked": True,
+            "device_type_user_locked_by": current_user.get("email"),
+            "device_type_user_locked_at": datetime.now(timezone.utc).isoformat(),
+        }},
+    )
+
+    await audit_logger.log(
+        AuditAction.UPDATE_DEVICE,
+        user_id=current_user["id"], user_email=current_user["email"],
+        ip_address=current_user.get("_request_ip"),
+        resource_type="device", resource_id=device_ip,
+        details={
+            "action": "move_category",
+            "client_id": client_id,
+            "device_name": md.get("name"),
+            "old_type": old_type,
+            "new_type": new_type,
+            "macro": macro,
+        },
+    )
+
+    return {
+        "ok": True,
+        "ip": device_ip,
+        "old_type": old_type,
+        "new_type": new_type,
+        "macro": macro,
+        "locked": True,
+        "message": f"Categoria aggiornata: {old_type} → {new_type}",
+    }
+
 @router.post("/clients/{client_id}/devices/recognize-unknowns")
 async def recognize_unknown_devices(
     client_id: str,
