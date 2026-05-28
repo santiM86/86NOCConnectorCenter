@@ -6,6 +6,8 @@ Rifiuta richieste da origini sconosciute su endpoint sensibili.
 import os
 import re
 import logging
+import fnmatch
+from urllib.parse import urlparse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
@@ -30,6 +32,38 @@ ALLOWED_ORIGIN_RE = re.compile(
 )
 
 
+def _is_origin_allowed(origin: str) -> bool:
+    if not origin:
+        return True
+
+    # Estrae scheme://netloc per evitare che la parte di path (es. referer) infici il matching
+    try:
+        parsed = urlparse(origin)
+        if parsed.scheme and parsed.netloc:
+            origin_base = f"{parsed.scheme}://{parsed.netloc}"
+        else:
+            origin_base = origin
+    except Exception:
+        origin_base = origin
+
+    # 1. Verifica regex predefinita
+    if ALLOWED_ORIGIN_RE.match(origin_base):
+        return True
+
+    # 2. Verifica dinamica tramite CORS_ORIGINS caricato dall'ambiente
+    cors_raw = os.environ.get('CORS_ORIGINS', '')
+    cors_origins = [o.strip() for o in cors_raw.split(',') if o.strip()]
+
+    origin_clean = origin_base.strip().lower()
+    for pattern in cors_origins:
+        pattern_clean = pattern.strip().lower()
+        if fnmatch.fnmatch(origin_clean, pattern_clean):
+            return True
+
+    return False
+
+
+
 class OriginVerifyMiddleware(BaseHTTPMiddleware):
     """Verifica Origin su operazioni sensibili (CSRF-like)."""
 
@@ -50,7 +84,7 @@ class OriginVerifyMiddleware(BaseHTTPMiddleware):
         if not origin:
             return await call_next(request)
 
-        if origin and not ALLOWED_ORIGIN_RE.match(origin):
+        if not _is_origin_allowed(origin):
             client_ip = request.client.host if request.client else "unknown"
             logger.warning(
                 f"Origin non autorizzato: {origin} da {client_ip} su {request.method} {path}"

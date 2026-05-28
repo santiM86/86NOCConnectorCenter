@@ -71,14 +71,21 @@ def _normalize_cidr(value: str) -> str:
 
 
 def _client_ip(request: Request) -> str:
-    """Estrae l'IP client gestendo proxy/load balancer (X-Forwarded-For)."""
-    # Trust X-Forwarded-For solo se viene da localhost/proxy interno
+    """Estrae l'IP client gestendo proxy/load balancer (X-Forwarded-For o X-Real-IP)."""
+    # 1. Prova X-Forwarded-For
     xff = request.headers.get("X-Forwarded-For", "")
     if xff:
         # Prendi il PRIMO IP (client originale, non il proxy chain)
         first = xff.split(",")[0].strip()
         if first:
             return first
+            
+    # 2. Prova X-Real-IP (comune in proxy Nginx)
+    xri = request.headers.get("X-Real-IP", "")
+    if xri:
+        return xri.strip()
+        
+    # 3. Fallback all'host del client
     if request.client and request.client.host:
         return request.client.host
     return ""
