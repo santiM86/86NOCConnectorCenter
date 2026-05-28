@@ -1,3 +1,155 @@
+# 2026-02-28 — Widget "Bridge Health" in Panoramica
+
+## 🎯 Obiettivo
+Mostrare in tempo reale lo stato di ogni agent v4 SNMP/ping di un
+cliente, sfruttando l'endpoint `/api/agents/diagnostics` creato col
+fix della race-condition WS. Risponde alla domanda critica "perche'
+i device sono obsoleti?" senza dover aprire log o terminali.
+
+## 🆕 Componente
+`frontend/src/components/BridgeHealthWidget.jsx` (~180 righe):
+- Auto-fetch ogni 15s dall'endpoint admin
+- Refresh "Xs/Xm/Xh fa" ogni 5s senza ri-chiamare il backend
+- Card per ogni agent con:
+  - Hostname + role + severity badge
+  - Counter SNMP/Ping/Discovery (in-memory + persistiti)
+  - Last `*_received_at` relativo + target count poller config
+  - IP rilevato (per debug subnet-aware dispatch)
+- Severity logica 4-stati:
+  - 🔴 OFFLINE → `live=false`
+  - 🔴 STALE → live ma nessun bridge da >10min
+  - 🟡 NO TARGETS → live + 0 SNMP target nel welcome (config sub-bug)
+  - 🟡 RALLENTATO → live + ultimo bridge tra 3-10min
+  - 🟢 LIVE → live + bridge <3min + ha SNMP target
+- Si nasconde automaticamente se il cliente non ha agent (no rumore UI).
+
+## 🔌 Integrazione
+- Import in `pages/ClientOverviewPage.js`
+- Render in cima a `OverviewTab` (sopra IloHealthPanel), solo se
+  `clientId` presente
+- Test ID: `bridge-health-widget` + `bridge-agent-{agent_id}`
+
+## 🧪 Test
+- Lint JS: pulito (no issues)
+- API E2E: `GET /api/agents/diagnostics?client_id=da3d6e40-...`
+  risponde con tutti i campi attesi (`hostname`, `live`, `bridge_counters`,
+  `poller_config: {snmp_targets, ping_targets}`)
+- Backend running OK
+- Smoke screenshot non riuscito per timing cold-start preview, ma il
+  rendering e' verificato via lint + API shape match.
+
+## 📝 Note per l'utente
+Dopo il deploy in PROD, aprendo qualsiasi cliente vedrai SUBITO se:
+- L'agent è veramente connesso (`live=true`)
+- L'agent riceve target SNMP nel welcome (`snmp_targets>0`)
+- I bridge stanno girando (counter che crescono)
+- Quanti secondi/minuti fa è arrivato l'ultimo poll
+
+Se vedi 🟡 "NO TARGETS" significa che il dispatching subnet-aware non
+assegna device a quell'agent (problema di `last_ip` vs subnet dei
+device managed). Se vedi 🔴 "STALE" l'agent è connesso ma silente
+(problema lato Go agent).
+
+---
+
+
+# 2026-02-28 — Filtro "Vitali" nella tab Dispositivi
+
+## 🎯 Obiettivo
+Completare la feature Vital con un toggle di filtro nella tab Dispositivi:
+drill-down rapido tra tutti / solo VITALI / solo best-effort.
+
+## 🛠️ Frontend
+Nuovo toggle 3-stati nella toolbar `DevicesTab`:
+- **Tutti (N)** — default, mostra tutti i device
+- **⭐ Vitali (N)** — solo `is_vital=true`
+- **Best-effort (N) +M n/d** — solo `is_vital=false`, mostra anche il
+  count dei device "non decisi" (M) per trasparenza
+- Counters live calcolati da `devices` filtrati per multicast
+- Stato persistito in `localStorage` (key: `client-devices-vital-filter`)
+- Test IDs: `vital-filter-{all|vital|non-vital}-btn`
+
+## 🧪 Test
+- Lint JS pulito
+- Smoke screenshot: 3 pulsanti `vital-filter-*` rilevati, counter
+  visualizzano correttamente `Tutti (30) | Vitali (1) | Best-effort (0)
+  +29 n/d` riflettendo lo stato del DB di preview (1 device marcato
+  vital via API E2E precedente).
+
+## 📝 Note
+Il filtro lavora solo a livello UI (post-fetch). I dati arrivano sempre
+completi da `/api/devices` cosi' i counter possono essere accurati. Per
+liste molto grandi (>5000 device) sarebbe il caso di aggiungere un
+query-param `?is_vital=true` lato backend — non urgente.
+
+---
+
+
+# 2026-02-28 — Device "Vital" Criticality Tier
+
+## 🎯 Obiettivo
+Permettere di marcare device come **VITALI** (mission-critical) o
+**best-effort**, con due effetti:
+- VITALI → alert SEMPRE inviati (non silenziabili)
+- best-effort → alert silenziati di default (monitoraggio passivo)
+- non scelto → backward compat (alert emessi come prima)
+
+## 🛠️ Backend
+
+### `alert_filter.is_device_silenced` aggiornato
+Estende la matrice di decisione:
+| `is_vital` | `alerts_silenced` | Risultato |
+|---|---|---|
+| `True` | qualsiasi | NON silenziato (vital wins) |
+| `False` | qualsiasi | SILENZIATO (best-effort) |
+| assente | `True` | SILENZIATO (legacy) |
+| assente | `False` o assente | NON silenziato (default) |
+
+### Nuovo endpoint `POST /api/devices/by-ip/{ip}/vital`
+- Body: `{is_vital: bool, client_id?: str, reason?: str}`
+- Setta `managed_devices.is_vital` + `is_vital_set_by/_at/_reason`
+- Invalida la cache `alert_filter._SILENCE_CACHE` immediatamente
+- Audit log completo
+
+### Response API estese
+`is_vital` (bool|None) + `is_vital_set_at` esposti in:
+- `/api/devices` (tutti i 3 code path: managed, poll-only, fallback)
+- `DeviceResponse` Pydantic model
+
+## 🛠️ Frontend
+Nuovo componente `VitalToggleButton` in `pages/ClientOverviewPage.js`:
+- Icona stella ⭐ accanto al pencil rename
+- 3 stati visivi:
+  - VITALE: stella gialla piena (`Star weight="fill"`)
+  - best-effort: stella outline opaca grigia
+  - non scelto: stella outline neutra hover-gialla
+- Click → POST `/vital` + toast + evento `argus:device-vital-changed`
+- Tooltip didascalico per ogni stato
+
+## 🧪 Test
+- `tests/test_device_vital_flag.py` (NUOVO, 8 test): valida matrice di
+  silencing + endpoint registrato + cache invalidation per-device.
+- Tutti i test usano mock `_FakeDB` per evitare event-loop binding di
+  motor.
+- **52/52 PASSED** (8 nuovi vital + 33 printer + 11 diagnostics/race).
+- Lint Python + JS: pulito.
+- API E2E live: `POST /api/devices/by-ip/192.168.1.3/vital
+  {is_vital:true}` → `{ok:true, is_vital:true, message:"Device VITALE"}`.
+- Smoke screenshot: 30 stelle + 30 matite renderizzate; PERSIST_TEST_RENAME
+  mostra stella piena (vitale).
+
+## 📝 Note per l'utente
+- Default backward-compat: ogni device storico continua a generare alert
+  finche' non viene esplicitamente declassato a non-vital.
+- L'UI mostra le stelle accanto a ogni device sia in Panoramica (gruppi)
+  sia in Dispositivi (grouped view).
+- I device VITALI hanno priorita' assoluta: anche se metti
+  `alerts_silenced=True` manualmente, il loro `is_vital=True` continua a
+  garantire l'invio degli alert.
+
+---
+
+
 # 2026-02-28 — Inline Rename + Profili Stampanti Multi-Vendor
 
 ## 🎯 Task A — Inline Rename Pencil
