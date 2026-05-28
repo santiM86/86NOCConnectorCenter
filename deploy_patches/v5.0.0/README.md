@@ -108,11 +108,7 @@ PowerShell come Admin:
 Get-Process nocagent-ui -ErrorAction SilentlyContinue | Stop-Process -Force
 
 # Download del nuovo eseguibile (3.7 MB)
-<<<<<<< HEAD
 Invoke-WebRequest "https://network-monitor-hub-2.preview.emergentagent.com/downloads/v4.2.0/ArgusDesktop.exe" -OutFile "C:\Program Files\86NocAgent\ArgusDesktop.exe" -UseBasicParsing
-=======
-Invoke-WebRequest "https://device-scanner-pro-3.preview.emergentagent.com/downloads/v4.2.0/ArgusDesktop.exe" -OutFile "C:\Program Files\86NocAgent\ArgusDesktop.exe" -UseBasicParsing
->>>>>>> origin/main
 
 # Backup della vecchia
 if (Test-Path "C:\Program Files\86NocAgent\nocagent-ui.exe") {
