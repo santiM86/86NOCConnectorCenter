@@ -58,15 +58,32 @@ export default function BridgeHealthWidget({ clientId }) {
     if (!clientId) return;
     setLoading(true);
     try {
-      const token = localStorage.getItem("token");
+      const token = localStorage.getItem("noc_token");
       const res = await axios.get(
         `${API}/api/agents/diagnostics?client_id=${encodeURIComponent(clientId)}`,
         { headers: { Authorization: `Bearer ${token}` } }
       );
-      setData(res.data);
-      setErr(null);
+      // v2026-02-28 GUARD: validate response shape. Se il backend non ha
+      // ancora deployato l'endpoint (deploy parziale frontend-only) ritorna
+      // HTML/string invece di JSON — NON crashare il render.
+      if (res.data && typeof res.data === "object" && Array.isArray(res.data.agents)) {
+        setData(res.data);
+        setErr(null);
+      } else {
+        // Backend non aggiornato o risposta inattesa: nasconde silenziosamente.
+        setData({ agents: [], total_count: 0, live_count: 0 });
+        setErr(null);
+      }
     } catch (e) {
-      setErr(e.response?.data?.detail || e.message);
+      const status = e.response?.status;
+      // 404/405/501 = endpoint non presente in backend (deploy parziale) →
+      // nasconde silenziosamente, non e' un errore utente.
+      if (status === 404 || status === 405 || status === 501) {
+        setData({ agents: [], total_count: 0, live_count: 0 });
+        setErr(null);
+      } else {
+        setErr(e.response?.data?.detail || e.message);
+      }
     } finally {
       setLoading(false);
     }

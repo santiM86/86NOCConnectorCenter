@@ -37,6 +37,7 @@ import {
   HyperVPanel, VCenterPanel,
 } from "@/components/ServerIntelligenceHub";
 import BridgeHealthWidget from "@/components/BridgeHealthWidget";
+import SafeBoundary from "@/components/SafeBoundary";
 import { useSortableTable, SortableTh } from "@/utils/tableSort";
 import { macroOf, macroLabel, MACRO_DEFS, pickDeviceName } from "@/utils/deviceCategory";
 
@@ -475,7 +476,11 @@ function OverviewTab({ devices, wanTargets, alerts, connector, printers, backups
   return (
     <div className="space-y-4">
       {/* v2026-02-28: Bridge Health Widget — diagnostica live degli agent SNMP/ping */}
-      {clientId && <BridgeHealthWidget clientId={clientId} />}
+      {clientId && (
+        <SafeBoundary label="Bridge Health">
+          <BridgeHealthWidget clientId={clientId} />
+        </SafeBoundary>
+      )}
 
       {/* iLO Hardware Health Panel (only shown when we have iLO data) */}
       {iloHealth && iloHealth.length > 0 && <IloHealthPanel iloHealth={iloHealth} />}
@@ -1463,7 +1468,7 @@ function VitalToggleButton({ device, clientId, currentVital }) {
     const target = !isVital; // toggle: null/false → true ; true → false
     setSaving(true);
     try {
-      const token = localStorage.getItem("token");
+      const token = localStorage.getItem("noc_token");
       const API = process.env.REACT_APP_BACKEND_URL;
       await axios.post(
         `${API}/api/devices/by-ip/${encodeURIComponent(ip)}/vital`,
@@ -1543,7 +1548,7 @@ function InlineRenameButton({ device, clientId, currentName }) {
     }
     setSaving(true);
     try {
-      const token = localStorage.getItem("token");
+      const token = localStorage.getItem("noc_token");
       const API = process.env.REACT_APP_BACKEND_URL;
       await axios.post(
         `${API}/api/devices/by-ip/${encodeURIComponent(ip)}/rename`,
