@@ -1,3 +1,35 @@
+# 2026-02-28 — Filtro "Vitali" nella tab Dispositivi
+
+## 🎯 Obiettivo
+Completare la feature Vital con un toggle di filtro nella tab Dispositivi:
+drill-down rapido tra tutti / solo VITALI / solo best-effort.
+
+## 🛠️ Frontend
+Nuovo toggle 3-stati nella toolbar `DevicesTab`:
+- **Tutti (N)** — default, mostra tutti i device
+- **⭐ Vitali (N)** — solo `is_vital=true`
+- **Best-effort (N) +M n/d** — solo `is_vital=false`, mostra anche il
+  count dei device "non decisi" (M) per trasparenza
+- Counters live calcolati da `devices` filtrati per multicast
+- Stato persistito in `localStorage` (key: `client-devices-vital-filter`)
+- Test IDs: `vital-filter-{all|vital|non-vital}-btn`
+
+## 🧪 Test
+- Lint JS pulito
+- Smoke screenshot: 3 pulsanti `vital-filter-*` rilevati, counter
+  visualizzano correttamente `Tutti (30) | Vitali (1) | Best-effort (0)
+  +29 n/d` riflettendo lo stato del DB di preview (1 device marcato
+  vital via API E2E precedente).
+
+## 📝 Note
+Il filtro lavora solo a livello UI (post-fetch). I dati arrivano sempre
+completi da `/api/devices` cosi' i counter possono essere accurati. Per
+liste molto grandi (>5000 device) sarebbe il caso di aggiungere un
+query-param `?is_vital=true` lato backend — non urgente.
+
+---
+
+
 # 2026-02-28 — Device "Vital" Criticality Tier
 
 ## 🎯 Obiettivo

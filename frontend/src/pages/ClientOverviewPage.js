@@ -1995,6 +1995,15 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
   // di default per coerenza con card "DISPOSITIVI" e Infrastruttura. L'utente
   // puo' attivare il toggle per mostrarli a fini di debug/visibilita' completa.
   const [showMulticast, setShowMulticast] = useState(false);
+  // v2026-02-28: filtro per criticality tier — "all" | "vital" | "non_vital"
+  const [vitalFilter, setVitalFilter] = useState(() => {
+    try { return localStorage.getItem("client-devices-vital-filter") || "all"; }
+    catch { return "all"; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem("client-devices-vital-filter", vitalFilter); }
+    catch { /* ignore */ }
+  }, [vitalFilter]);
   // v2026-02-13: vista raggruppata per categoria (clone struttura Panoramica)
   // default "grouped" come richiesto dall'utente ("voglio struttura identica clone")
   const [viewMode, setViewMode] = useState(() => {
@@ -2007,8 +2016,17 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
   }, [viewMode]);
   const webConsole = useWebConsoleTabs();
   const _isMcast = (d) => /^(22[4-9]|23\d|255)\./.test(d?.ip_address || "");
-  const visibleDevices = showMulticast ? devices : devices.filter(d => !_isMcast(d));
-  const hiddenCount = devices.length - visibleDevices.length;
+  const baseFiltered = showMulticast ? devices : devices.filter(d => !_isMcast(d));
+  // v2026-02-28: counters per i toggle (calcolati prima del filtro vital)
+  const vitalCount = baseFiltered.filter(d => d.is_vital === true).length;
+  const nonVitalCount = baseFiltered.filter(d => d.is_vital === false).length;
+  const undecidedCount = baseFiltered.filter(d => d.is_vital !== true && d.is_vital !== false).length;
+  // Applica filtro vital
+  const visibleDevices =
+    vitalFilter === "vital"     ? baseFiltered.filter(d => d.is_vital === true)
+  : vitalFilter === "non_vital" ? baseFiltered.filter(d => d.is_vital === false)
+  : baseFiltered;
+  const hiddenCount = devices.length - baseFiltered.length;
 
   // v3.8.30: ordinamento tabella dispositivi (default per nome asc) + persist v3.8.31
   // v3.8.40: usa visibleDevices (filtrati) per escludere multicast quando richiesto
@@ -2471,6 +2489,35 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
           )} — i dispositivi manuali vengono interrogati dal connector entro pochi cicli di polling
         </p>
         <div className="flex items-center gap-2 flex-wrap">
+          {/* v2026-02-28: filtro per criticality tier */}
+          <div className="inline-flex rounded-md border border-[var(--bg-border)] overflow-hidden" data-testid="devices-vital-filter">
+            <button
+              onClick={() => setVitalFilter("all")}
+              className={`text-[10px] px-2.5 py-1 transition-colors ${vitalFilter === "all" ? "bg-slate-600 text-white" : "bg-transparent text-[var(--text-muted)] hover:text-[var(--text-primary)]"}`}
+              data-testid="vital-filter-all-btn"
+              title="Tutti i dispositivi (default)"
+            >
+              Tutti ({baseFiltered.length})
+            </button>
+            <button
+              onClick={() => setVitalFilter("vital")}
+              className={`text-[10px] px-2.5 py-1 transition-colors ${vitalFilter === "vital" ? "bg-yellow-500 text-black" : "bg-transparent text-yellow-400 hover:bg-yellow-500/10"}`}
+              data-testid="vital-filter-vital-btn"
+              title="Solo VITALI — mission-critical, alert sempre attivi"
+            >
+              <Star size={10} weight={vitalFilter === "vital" ? "fill" : "bold"} className="inline mr-0.5" />
+              Vitali ({vitalCount})
+            </button>
+            <button
+              onClick={() => setVitalFilter("non_vital")}
+              className={`text-[10px] px-2.5 py-1 transition-colors ${vitalFilter === "non_vital" ? "bg-slate-700 text-slate-300" : "bg-transparent text-[var(--text-muted)] hover:text-[var(--text-primary)]"}`}
+              data-testid="vital-filter-non-vital-btn"
+              title="Solo best-effort — alert silenziati di default"
+            >
+              Best-effort ({nonVitalCount})
+              {undecidedCount > 0 && <span className="ml-1 opacity-50">+{undecidedCount} n/d</span>}
+            </button>
+          </div>
           {/* v2026-02-13: toggle vista raggruppata/tabella */}
           <div className="inline-flex rounded-md border border-[var(--bg-border)] overflow-hidden" data-testid="devices-view-toggle">
             <button
