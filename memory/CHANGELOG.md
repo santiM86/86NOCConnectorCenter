@@ -1,3 +1,178 @@
+# 2026-02-28 — Filtro "Vitali" nella tab Dispositivi
+
+## 🎯 Obiettivo
+Completare la feature Vital con un toggle di filtro nella tab Dispositivi:
+drill-down rapido tra tutti / solo VITALI / solo best-effort.
+
+## 🛠️ Frontend
+Nuovo toggle 3-stati nella toolbar `DevicesTab`:
+- **Tutti (N)** — default, mostra tutti i device
+- **⭐ Vitali (N)** — solo `is_vital=true`
+- **Best-effort (N) +M n/d** — solo `is_vital=false`, mostra anche il
+  count dei device "non decisi" (M) per trasparenza
+- Counters live calcolati da `devices` filtrati per multicast
+- Stato persistito in `localStorage` (key: `client-devices-vital-filter`)
+- Test IDs: `vital-filter-{all|vital|non-vital}-btn`
+
+## 🧪 Test
+- Lint JS pulito
+- Smoke screenshot: 3 pulsanti `vital-filter-*` rilevati, counter
+  visualizzano correttamente `Tutti (30) | Vitali (1) | Best-effort (0)
+  +29 n/d` riflettendo lo stato del DB di preview (1 device marcato
+  vital via API E2E precedente).
+
+## 📝 Note
+Il filtro lavora solo a livello UI (post-fetch). I dati arrivano sempre
+completi da `/api/devices` cosi' i counter possono essere accurati. Per
+liste molto grandi (>5000 device) sarebbe il caso di aggiungere un
+query-param `?is_vital=true` lato backend — non urgente.
+
+---
+
+
+# 2026-02-28 — Device "Vital" Criticality Tier
+
+## 🎯 Obiettivo
+Permettere di marcare device come **VITALI** (mission-critical) o
+**best-effort**, con due effetti:
+- VITALI → alert SEMPRE inviati (non silenziabili)
+- best-effort → alert silenziati di default (monitoraggio passivo)
+- non scelto → backward compat (alert emessi come prima)
+
+## 🛠️ Backend
+
+### `alert_filter.is_device_silenced` aggiornato
+Estende la matrice di decisione:
+| `is_vital` | `alerts_silenced` | Risultato |
+|---|---|---|
+| `True` | qualsiasi | NON silenziato (vital wins) |
+| `False` | qualsiasi | SILENZIATO (best-effort) |
+| assente | `True` | SILENZIATO (legacy) |
+| assente | `False` o assente | NON silenziato (default) |
+
+### Nuovo endpoint `POST /api/devices/by-ip/{ip}/vital`
+- Body: `{is_vital: bool, client_id?: str, reason?: str}`
+- Setta `managed_devices.is_vital` + `is_vital_set_by/_at/_reason`
+- Invalida la cache `alert_filter._SILENCE_CACHE` immediatamente
+- Audit log completo
+
+### Response API estese
+`is_vital` (bool|None) + `is_vital_set_at` esposti in:
+- `/api/devices` (tutti i 3 code path: managed, poll-only, fallback)
+- `DeviceResponse` Pydantic model
+
+## 🛠️ Frontend
+Nuovo componente `VitalToggleButton` in `pages/ClientOverviewPage.js`:
+- Icona stella ⭐ accanto al pencil rename
+- 3 stati visivi:
+  - VITALE: stella gialla piena (`Star weight="fill"`)
+  - best-effort: stella outline opaca grigia
+  - non scelto: stella outline neutra hover-gialla
+- Click → POST `/vital` + toast + evento `argus:device-vital-changed`
+- Tooltip didascalico per ogni stato
+
+## 🧪 Test
+- `tests/test_device_vital_flag.py` (NUOVO, 8 test): valida matrice di
+  silencing + endpoint registrato + cache invalidation per-device.
+- Tutti i test usano mock `_FakeDB` per evitare event-loop binding di
+  motor.
+- **52/52 PASSED** (8 nuovi vital + 33 printer + 11 diagnostics/race).
+- Lint Python + JS: pulito.
+- API E2E live: `POST /api/devices/by-ip/192.168.1.3/vital
+  {is_vital:true}` → `{ok:true, is_vital:true, message:"Device VITALE"}`.
+- Smoke screenshot: 30 stelle + 30 matite renderizzate; PERSIST_TEST_RENAME
+  mostra stella piena (vitale).
+
+## 📝 Note per l'utente
+- Default backward-compat: ogni device storico continua a generare alert
+  finche' non viene esplicitamente declassato a non-vital.
+- L'UI mostra le stelle accanto a ogni device sia in Panoramica (gruppi)
+  sia in Dispositivi (grouped view).
+- I device VITALI hanno priorita' assoluta: anche se metti
+  `alerts_silenced=True` manualmente, il loro `is_vital=True` continua a
+  garantire l'invio degli alert.
+
+---
+
+
+# 2026-02-28 — Inline Rename + Profili Stampanti Multi-Vendor
+
+## 🎯 Task A — Inline Rename Pencil
+Rinominare velocemente un device senza dover aprire la Scheda Dispositivo.
+
+### Cosa cambia
+- Nuovo componente `InlineRenameButton` in `pages/ClientOverviewPage.js`:
+  matita inline → Popover con Input + Salva/Annulla.
+- Chiama l'endpoint `POST /api/devices/by-ip/{ip}/rename` (gia' esistente)
+  che setta `name_user_locked: True` E `name_locked: True` su
+  `managed_devices` E `devices`, propagando il nome in tutta l'app.
+- Emette evento `argus:device-renamed` → la pagina si auto-aggiorna.
+- Pulsante visibile sia in **Panoramica** (tab Overview, raggruppamento
+  per macroaree) sia in **Dispositivi** (vista grouped o tabella).
+- Protezione: anche stoppropagation per non triggerare il click sulla
+  riga che apre la scheda completa.
+
+### Files modificati
+- `frontend/src/pages/ClientOverviewPage.js`
+  (+ `Popover` import; nuovo componente `InlineRenameButton`; prop
+  `clientId` propagato a `OverviewTab` → `DeviceGroup` e a
+  `DevicesGroupedView` → `DeviceGroup`)
+
+## 🎯 Task B — Profili Stampanti Multi-Vendor (RFC 3805)
+Auto-classificazione di stampanti SNMP HP/Epson/Kyocera/Xerox/Brother/Canon.
+
+### Cosa cambia
+- 6 nuovi profili in `backend/device_profiles/__init__.py` con
+  `family='printer'`:
+  - `printer_hp`        Enterprise OID `1.3.6.1.4.1.11.*`
+  - `printer_epson`     Enterprise OID `1.3.6.1.4.1.1248.*`
+  - `printer_kyocera`   Enterprise OID `1.3.6.1.4.1.1347.*`
+  - `printer_xerox`     Enterprise OID `1.3.6.1.4.1.128.*` + `253.*`
+  - `printer_brother`   Enterprise OID `1.3.6.1.4.1.2435.*`
+  - `printer_canon`     Enterprise OID `1.3.6.1.4.1.1602.*`
+- Ogni profilo include OID standard RFC 3805 (Printer-MIB) +
+  HR-MIB cross-vendor:
+  - `hrPrinterStatus` (.1.3.6.1.2.1.25.3.5.1.1.1)
+  - `hrPrinterDetectedErrorState` (.1.3.6.1.2.1.25.3.5.1.2.1)
+  - `prtMarkerLifeCount` (.1.3.6.1.2.1.43.10.2.1.4.1.1)
+  - `prtMarkerSuppliesLevel` (.1.3.6.1.2.1.43.11.1.1.9.1.1)
+  - `prtMarkerSuppliesMaxCapacity` (.1.3.6.1.2.1.43.11.1.1.8.1.1)
+  - `prtMarkerSuppliesDescription` (.1.3.6.1.2.1.43.11.1.1.6.1.1)
+- Enterprise OID vendor-specific per modello/seriale.
+- Thresholds standard: toner_warn_pct=15, toner_crit_pct=5,
+  page_jam_alert=True, printer_error_alert=True.
+- `SEED_VERSION` bumped da 2 → 3 per forzare re-seed in DB su deploy.
+- Classifier `fingerprint()` esistente in `device_profiles/__init__.py`
+  riconosce automaticamente le stampanti via sysObjectID prefix +
+  sysDescr regex (case-insensitive) — score 100 per OID match, 40 per
+  sysDescr match.
+
+### Files modificati / nuovi
+- `backend/device_profiles/__init__.py` (+ 6 profili, ~250 righe)
+- `backend/tests/test_printer_profiles_multivendor.py` (nuovo, 33 test)
+
+## 🧪 Test
+- Lint Python + JS: ✅ pulito
+- Pytest: **44/44 PASSED** (33 nuovi printer + 11 esistenti
+  diagnostics/race-condition)
+- Smoke screenshot UI: ✅ trovati 30 pulsanti matita nel rendering
+- API end-to-end live:
+  - `GET /api/device-profiles` → seed_version=3, 6/6 printer profiles
+  - `POST /api/device-profiles/fingerprint {sysobjectid, sysdescr}`
+    → match corretto su tutti i 6 vendor
+
+## 📝 Note per l'utente
+- Nel rename: il nome impostato viene protetto da
+  `name_user_locked: True` → SNMP/Discovery/Datto/Connector NON
+  sovrascrivono mai il nome scelto.
+- Per le stampanti: al primo SNMP poll dopo il deploy, le stampanti
+  HP/Epson/Kyocera/Xerox/Brother/Canon con SNMP attivo verranno
+  auto-classificate sotto la categoria "Stampanti" con i giusti OID di
+  monitoraggio. Poll consigliato 5min (RFC 3805 metriche stabili).
+
+---
+
+
 # 2026-05-28 — Server Intelligence Hub UI (Opzione A completata)
 
 ## 🎯 Obiettivo

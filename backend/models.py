@@ -100,6 +100,10 @@ class DeviceResponse(BaseModel):
     # Alert silencing (admin can silence alerts per-device for noisy/best-effort devices)
     alerts_silenced: Optional[bool] = False
     alerts_silenced_reason: Optional[str] = None
+    # v2026-02-28: criticality tier — True=mission critical (alert sempre),
+    # False=best-effort (alert silenziati di default), None=non scelto
+    is_vital: Optional[bool] = None
+    is_vital_set_at: Optional[str] = None
     # v3.8.16+: Scanner enrichment fields (MAC, randomization flag, Fingerbank)
     mac: Optional[str] = None
     mac_is_random: Optional[bool] = False
