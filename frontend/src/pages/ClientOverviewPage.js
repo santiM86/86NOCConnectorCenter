@@ -8,7 +8,7 @@ import {
   Lightning, WifiHigh, WifiSlash, PlugsConnected, CaretDown,
   CheckCircle, Warning, ArrowClockwise, Bell, BellSlash, ChartLine, Monitor, Cpu,
   Plus, Trash, Lock, MagnifyingGlass, Info, PencilSimple, NetworkSlash,
-  Phone, DeviceMobile, Desktop, Network,
+  Phone, DeviceMobile, Desktop, Network, Key,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -635,6 +635,7 @@ function IloHealthPanel({ iloHealth }) {
 function ServersTab({ iloHealth, clientId, clientName, onRefresh }) {
   const [filter, setFilter] = useState("all"); // all | issues | ok | needs_setup
   const [polling, setPolling] = useState(false);
+  const [bulkCredsOpen, setBulkCredsOpen] = useState(false);
   const healthColor = (h) => ({ ok: "#34C759", warning: "#FFCC00", critical: "#FF3B30" }[(h || "").toLowerCase()] || "#64748B");
 
   // v2026-02-14: separazione tra server con dati Redfish live e server che
@@ -717,6 +718,14 @@ function ServersTab({ iloHealth, clientId, clientName, onRefresh }) {
         </div>
       </div>
 
+      {/* v4.18.x Server Intelligence Hub: Health Score + Lifecycle Forecast */}
+      {configuredServers.length > 0 && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3" data-testid="server-intelligence-grid">
+          <HealthScoreWidget clientId={clientId} />
+          <LifecyclePanel clientId={clientId} />
+        </div>
+      )}
+
       {/* Toolbar */}
       <div className="flex items-center justify-between flex-wrap gap-2 px-1">
         <div className="flex items-center gap-1 text-xs flex-wrap">
@@ -783,15 +792,33 @@ function ServersTab({ iloHealth, clientId, clientName, onRefresh }) {
       {/* Pending servers (need iLO setup) */}
       {pendingServers.length > 0 && (
         <div className="noc-panel p-4 border-yellow-500/30" data-testid="pending-ilo-servers">
-          <div className="flex items-center gap-2 mb-3">
-            <Lock size={14} weight="bold" className="text-yellow-400" />
-            <h3 className="text-[10px] font-bold uppercase tracking-[0.15em] text-yellow-400">
-              Server senza credenziali iLO ({pendingServers.length})
-            </h3>
+          <div className="flex items-center justify-between gap-2 mb-3 flex-wrap">
+            <div className="flex items-center gap-2">
+              <Lock size={14} weight="bold" className="text-yellow-400" />
+              <h3 className="text-[10px] font-bold uppercase tracking-[0.15em] text-yellow-400">
+                Server senza credenziali iLO ({pendingServers.length})
+              </h3>
+            </div>
+            {/* v4.18.x: Probe Vendor + Bulk Credentials per accelerare il setup */}
+            <div className="flex items-center gap-2 flex-wrap">
+              <ProbeVendorButton
+                servers={pendingServers.map(p => ({ ip: p.device_ip, name: p.device_name }))}
+                onComplete={() => onRefresh?.()}
+              />
+              <Button
+                onClick={() => setBulkCredsOpen(true)}
+                className="bg-indigo-600 hover:bg-indigo-700 text-white h-8 text-xs gap-1"
+                data-testid="open-bulk-creds-btn"
+                title="Applica le stesse credenziali iLO/Redfish a piu' server in un click"
+              >
+                <Key size={13} weight="bold" />
+                Bulk Credentials
+              </Button>
+            </div>
           </div>
           <p className="text-[11px] text-[var(--text-muted)] mb-3">
             Questi server sono stati rilevati ma non hanno credenziali iLO/Redfish configurate.
-            Aggiungile dalla tab <b>Credenziali</b> per vedere CPU, RAM, dischi e sensori hardware.
+            Usa <b>Probe Vendor</b> per identificare il marchio, poi <b>Bulk Credentials</b> per applicare cred a piu' server insieme.
           </p>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
             {pendingServers.map((s) => (
@@ -812,11 +839,37 @@ function ServersTab({ iloHealth, clientId, clientName, onRefresh }) {
                 {s.server_model && (
                   <p className="text-[10px] text-[var(--text-muted)] mt-1 truncate">{s.server_model}</p>
                 )}
+                <div className="mt-2 flex items-center gap-1.5">
+                  <TryDefaultCredsButton
+                    server={{ ip: s.device_ip, vendor_guess: s.vendor_guess || s.server_vendor }}
+                    onSuccess={() => onRefresh?.()}
+                  />
+                </div>
               </div>
             ))}
           </div>
         </div>
       )}
+
+      {/* v4.18.x Hyper-V & vCenter intelligence panels */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3" data-testid="server-hypervisor-grid">
+        <HyperVPanel clientId={clientId} />
+        <VCenterPanel clientId={clientId} />
+      </div>
+
+      {/* Bulk Credentials dialog */}
+      <BulkCredentialsDialog
+        servers={pendingServers.map(p => ({
+          ip: p.device_ip,
+          name: p.device_name,
+          hostname: p.device_name,
+          vendor_guess: p.vendor_guess || p.server_vendor,
+        }))}
+        clientId={clientId}
+        open={bulkCredsOpen}
+        onOpenChange={setBulkCredsOpen}
+        onSaved={() => onRefresh?.()}
+      />
     </div>
   );
 }
@@ -892,6 +945,8 @@ function IloServerCard({ s, healthColor }) {
             <span className="text-[9px] px-2 py-1 rounded font-bold uppercase" style={{ color: hc, background: `${hc}18` }}>
               {s.health_status || "?"}
             </span>
+            {/* v4.18.x: accesso rapido a IML/SEL events del server */}
+            <IloEventsButton deviceIp={s.device_ip} />
             <button
               onClick={() => setExpanded(!expanded)}
               className="text-[9px] px-2 py-1 rounded border border-[var(--bg-border)] text-[var(--text-muted)] hover:text-cyan-400 hover:border-cyan-500/30 transition-colors"

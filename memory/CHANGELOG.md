@@ -1,3 +1,52 @@
+# 2026-05-28 — Server Intelligence Hub UI (Opzione A completata)
+
+## 🎯 Obiettivo
+Wiring frontend dei componenti `ServerIntelligenceHub.jsx` nella ServersTab
+(`pages/ClientOverviewPage.js`). Il backend per le Fasi 1-4 era gia' pronto
+(`routes/server_intelligence.py`); l'UI era stata creata ma non integrata.
+
+## 🆕 Integrazioni nella ServersTab
+1. **`HealthScoreWidget`** + **`LifecyclePanel`** in griglia 2-col sotto la
+   KPI bar. Visibili solo quando ci sono server iLO configurati.
+2. **`ProbeVendorButton`** nel toolbar del blocco "Server senza credenziali
+   iLO" — identifica HP/Dell/Lenovo/Supermicro via probe Redfish anonimo.
+3. **`BulkCredentialsDialog`** apribile da un nuovo pulsante "Bulk
+   Credentials" nello stesso toolbar — applica stesse credenziali a piu'
+   server in un click.
+4. **`TryDefaultCredsButton`** dentro ogni card di server senza iLO —
+   tenta credenziali OEM factory (audit-loggato).
+5. **`IloEventsButton`** dentro ogni `IloServerCard` — apre IML/SEL events
+   dal LogService Redfish (PSU, fan, drive, BIOS, ecc.).
+6. **`HyperVPanel`** + **`VCenterPanel`** in griglia 2-col alla fine della
+   ServersTab — visibili sempre con placeholder se non ci sono dati.
+
+## 📦 Import update
+`@phosphor-icons/react`: aggiunto `Key` per il pulsante Bulk Credentials.
+
+## 📍 Files modificati
+- `frontend/src/pages/ClientOverviewPage.js` — wiring 8 componenti + nuovo
+  state `bulkCredsOpen` + import icona `Key`.
+
+## 🧪 Test
+- Lint JS: ✅ No issues su entrambi i file
+- Smoke screenshot: ✅ pagina carica, tab Server mostra empty state
+  correttamente (no server iLO in preview DB)
+- Backend pytest (regressione): ✅ 11/11 PASSED (test diagnostics + race
+  condition WS rimangono validi)
+
+## 📝 Note per l'utente
+Dopo il deploy in PROD (argus.86bit.it) il cliente con server iLO
+(quelli mostrati nello screenshot recente: 10.100.61.37, 10.100.61.38,
+GALVANSRV, SRVPALMOGAL, ecc.) vedra' nuova UI:
+- Health Score badge per ogni server + media flotta
+- Forecast lifecycle (eta' + raccomandazione EOL)
+- Pulsanti Probe Vendor / Bulk Creds / Try Default per accelerare il
+  censimento delle credenziali iLO
+- Pulsante "Events" su ogni server iLO → apre log IML/SEL
+
+---
+
+
 # 2026-05-28 — v4.18.x WS Race-Condition Fix + Diagnostica Bridge SNMP/Ping
 
 ## 🚨 Bug P0 segnalato dall'utente
