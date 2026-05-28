@@ -38,8 +38,6 @@ import {
 import { useSortableTable, SortableTh } from "@/utils/tableSort";
 import { macroOf, macroLabel, MACRO_DEFS, pickDeviceName } from "@/utils/deviceCategory";
 
-const STATUS_COLOR = { online: "#34C759", offline: "#FF3B30", active: "#FFCC00", degraded: "#FF9500", unknown: "#555" };
-
 export default function ClientOverviewPage() {
   const { clientId } = useParams();
   const navigate = useNavigate();
@@ -4023,8 +4021,6 @@ import WanClientTab from "@/components/WanClientTab";
 import { useSortableTable, SortableTh } from "@/utils/tableSort";
 import { macroOf, macroLabel, MACRO_DEFS, pickDeviceName } from "@/utils/deviceCategory";
 
-const STATUS_COLOR = { online: "#34C759", offline: "#FF3B30", active: "#FFCC00", degraded: "#FF9500", unknown: "#555" };
-
 export default function ClientOverviewPage() {
   const { clientId } = useParams();
   const navigate = useNavigate();
@@ -4046,6 +4042,7 @@ export default function ClientOverviewPage() {
   const [coverage, setCoverage] = useState(null);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState("overview");
+  const STATUS_COLOR = { online: "#34C759", offline: "#FF3B30", active: "#FFCC00", degraded: "#FF9500", unknown: "#555" };
 
   const fetchAll = useCallback(async () => {
     try {
