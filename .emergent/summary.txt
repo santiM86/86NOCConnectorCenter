@@ -1,134 +1,19 @@
-<analysis>**original_problem_statement**: 
-Siamo una società IT e abbiamo bisogno di creare un raccoglitore di alert (NOC) per tutti i dispositivi nelle reti dei clienti (switch, firewall, ecc.). Console live su PC e cellulare.
-PRODUCT REQUIREMENTS: 
-- Monitoraggio reti, stampanti (SNMP), processi di backup.
-- Auto-discovery dispositivi (ARP, mDNS, SNMP, LLDP-MED, OUI lookup, PTR).
-- Sistema scalabile Multi-tenant e White-label per rivendita SaaS.
-- Architettura enterprise-grade: Agent in Go (Golang) nativo, WebSockets persistenti per comandi real-time e streaming.
-- Network Scanner nativo nel connector (streaming live, scan parallelo).
-
-**User's preferred language**: **Italian** (INSTRUCT NEXT AGENT: IL TUO OUTPUT DEVE ESSERE SEMPRE E SOLO IN ITALIANO. RISPONDI ESCLUSIVAMENTE IN ITALIANO).
-
-**what currently exists?** 
-A full-stack NOC system (FastAPI backend, React frontend) with a headless native Go agent for Windows. Features include an Agents page for remote fleet management, an internal backend proxy for GitHub release downloads (to bypass rate limits), WMI polling (SysMetrics) for server resource monitoring, remote uninstall via WebSocket, and manual version overrides in the DB.
-
-**Last working item**:
-    - Last item agent was working: Debugging the remote Go Agent update failure in production (times out at 95%). The agent discovered that the expected log file () does not exist on the client's PC, indicating that the  script likely crashes mid-execution (possibly after deleting the folder). The agent has proposed a plan to the user to enhance the PowerShell script with robust temporary logging () and try/catch blocks.
-    - Status: USER VERIFICATION PENDING
-    - Agent Testing Done: N
-    - Which testing method agent to use? manual testing by backend logs investigation / manual PS1 execution testing
-    - User Testing Done: N
-
-**All Pending/In progress Issue list**:  
-  - Issue 1: Remote Connector update fails and log file is missing (Priority: P0)
-     - Attempted fixes: Previously created a proxy backend to bypass GitHub rate limits and updated the PS script to use . Fails in production. The agent has now proposed adding  logging to  to catch silent crashes.
-     - Next debug checklist: Modify  to redirect output to  and Event Viewer (). Wrap the critical section (Stop-Service → folder clear → download) in a try/catch with stack trace dumps.
-     - Why fix this issue and what will be achieved with the fix? It is a critical blocker. Without this fix, admins cannot remotely update connectors installed on client networks (Zero-touch fleet rollout is broken).
-     - Status: BLOCKED (Waiting for user approval of the plan via ask_human)
-     - Is recurring issue? Y
-     - Should Test frontend/backend/both after fix? Backend / Go script
-     - Blocked on other issue: None.
-
-**In progress Task List**: 
-None currently active. 100% focus is on the P0 update failure issue.
-
-**Upcoming and Future Tasks**
-    Upcoming Tasks:
-    - P1: Webhooks GitHub Auto-deploy ().
-    - P1: Telegram Bot / Email notifications for alerts (Resend or Twilio).
-    Future Tasks:
-    - P2: DHCP Fingerprinting implementation in the Scanner.
-    - P2: SOC Phase 1 — AbuseIPDB integration, NVD CVE feeds, MITRE ATT&CK tagging.
-    - P2: SNMP Printer MIB monitoring (toner/pages).
-    - P2: Desktop UI Refactoring - Completely remove the old  UI.
-    - P2: Refactoring  - Split the 3000+ line file into  and .
-
-**Completed work in this session**
-- Sent a detailed debugging plan to the user via  tool regarding the  logging enhancement (DONE).
-
-**Earlier issues found/mentioned but not fixed**
-   - Issue 1: Legacy red banner in Center UI (25 connettori offline / v3.8.28).
-     - Debug checklist: It is a remnant of the old Python v3 version. Remove it or filter it from the frontend.
-     - Why to solve this issue and what will be achieved with this? Reduces user confusion, especially since there is now a dedicated UI for upgrades.
-     - Should Test frontend/backend/both after fix: Frontend
-     - Is recurring issue? N
-
-**Known issue recurrence from previous fork**
-  - Issue recurrence in previous fork: Remote agent update failure. Causes varied from obsolete cache to GitHub rate-limiting, and now appears to be a silent PowerShell script crash on the client PC.
-  - Recurrence count: > 4
-  - Status: IN PROGRESS
-
-**Code Architecture**
-
-
-**Key Technical Concepts**
-React, FastAPI, Headless Go Agent, WebSockets, WMI (Windows Management Instrumentation), PowerShell scripting (), Architectural proxy for GitHub API, Cascading name identification (mDNS, Fingerbank).
-
-**key DB schema**
-  - : 
-  - : Time-series with TTL index (30 days) for CPU/RAM logs.
-  - :  (For manual DB version override).
-
-**changes in tech stack**
-Consolidated Proxy architecture on the Center for releases, detaching the Agent from GitHub APIs directly.
-
-**All files of reference** 
--  
--  
--  
--  
--  
--  
-
-**Areas that need refactoring**: 
--  has exceeded 3000 lines of code. The proxy download logics () and remote update logics should be extracted into dedicated controllers (, ) to maintain scalability.
-
-**key api endpoints**
-- 
--  (Proxy for downloading binaries bypassing GitHub API)
-- 
--  (Triggers remote uninstall)
-
-**Critical Info for New Agent** 
-- **IL TUO OUTPUT DEVE ESSERE SEMPRE E SOLO IN ITALIANO**.
-- The user is NOT using the local preview; they are testing the fix directly in PRODUCTION ().
-- The  tool was just triggered to get user approval on adding  and  to . You **must wait** for the user's response to this message before making script changes.
-- Do not assume  is accessible during an update. If the service is stopped and the folder is deleted by the script, logs are destroyed.
-
-**documents and test reports created in this job** 
--  through  (from previous forks).
--  (Updated with new features).
-
-**Last 10 User Messages and any pending HUMAN messages** 
-1. User (from previous fork): (PENDING ISSUE) Provided output of CMD commands. Reported that  provides  (correct), but requesting PowerShell logs returns: 
-2. Assistant: Evaluated the handoff summary and proposed a plan to modify  to dump logs into  and Event Viewer to catch the silent crash. Used .
-3. **(PENDING HUMAN MESSAGE)**: Waiting for the user to respond to the proposed diagnostic plan.
-
-**Project Health Check:**
-- Broken: Workflow of remote update for Go Agent on client PCs.
-- Mocked: None.
-
-**3rd Party Integrations** 
-- GitHub Actions / Releases (Auto-update and backend proxy) - Requires User Key
-- Datto RMM (Requires User Key)
-- Fingerbank API (Requires User Key)
-
-**Testing status**
-  - Testing agent used after significant changes: NO (Waiting for user approval before making changes).
-  - Troubleshoot agent used after agent stuck in loop: NO
-  - Test files created: None
-  - Known regressions: Proper startup and logging of the  script when triggered by an older remote agent.
-
-**Credentials to test flow:**
-Admin Login:  (Password in ).
-
-**What agent forgot to execute**
-- Still pending the removal of the legacy red banner in the UI mentioned in previous forks, as priority is strictly on the P0 update blocker.
-
-**Debugging checklist for current issue**
-    Issue: Agent update fails and  doesn't exist on client disk.
-
-    Backend / Go files to check: 
-    - : Check where output is piped. Add  at the top.
-    - Check the exact lines in  where  is called and the installation directory is cleared. Wrap this in a  block. If it fails here, the watchdog is stopped, the folder is cleared, and the log is lost forever.
-    - Once the user approves the plan, implement the  logging and ask the user to attempt the update again, then retrieve the temp log.</analysis>
+<analysis>backend/routes/connector.pybackend/routes/agent_ws.pysnmp_poll_resultlast_seen_atlast_poll_at/var/log/supervisor/backend.err.log.envAGENT_GITHUB_TOKENServerIntelligenceHub.jsxClientOverviewPage.jsserver_intelligence.pybackend/routes/agent_ws.pyfrontend/src/components/WanClientTab.jsxbackend/routes/wan_advanced.pynoc-agent/cmd/agent/speedtest.gobackend/routes/external_monitor.pyagent_ws.pyagent_idbackend/routes/oui_lookup.pybackend/routes/datto_rmm.pybackend/routes/server_intelligence.pynoc-agent/cmd/agent/hyperv_windows.goargus.86bit.itCtrl+Shift+Rmanaged_devices
+/app/
+├── backend/
+│   ├── routes/
+│   │   ├── external_monitor.py (WAN logic core)
+│   │   ├── wan_advanced.py (Nuove logiche WAN)
+│   │   ├── datto_rmm.py (Datto Sync & Seed)
+│   │   ├── server_intelligence.py (API Server Fasi 1-4 - appena creato)
+│   │   ├── connector.py (Agent sync logic)
+│   │   ├── agent_ws.py (Controller WebSockets, focus per il bug SNMP)
+├── frontend/
+│   ├── src/components/
+│   │   ├── WanClientTab.jsx
+│   │   ├── ServerIntelligenceHub.jsx (UI Server incompleta)
+├── noc-agent/
+│   ├── cmd/agent/
+│   │   ├── speedtest.go
+│   │   ├── hyperv_windows.go
+managed_devicesdevice_poll_statuswan_targetsdatto_devicesbackend/routes/connector.pybackend/routes/agent_ws.pybackend/routes/server_intelligence.pyfrontend/src/components/ServerIntelligenceHub.jsxbackend/routes/datto_rmm.pyfrontend/src/components/WanClientTab.jsxbackend/routes/agent_ws.pyexternal_monitor.pywan_advanced.pyWS /api/agent/wsPOST /api/external-monitor/speedtest/{client_id}POST /api/datto/seed-managed/api/server-intelligence/*connector.pyagent_ws.pyServerIntelligenceHub.jsx/app/memory/PRD.mdCHANGELOG.md/app/test_reports/iteration_84.jsoniteration_85.json/app/backend/tests/test_external_monitor_iter84.pyinfo@86bit.ittest_credentials.mdServerIntelligenceHub.jsxbackend/routes/connector.pybackend/routes/agent_ws.pysnmp_poll_resultdiscovered_endpointsbackend/routes/devices.py/var/log/supervisor/backend.err.logmanaged_devicesdevice_poll_status</analysis>

@@ -37,5 +37,5 @@ _load_env_file("/app/frontend/.env")
 # Default sicuro per i test che chiamano l'API HTTP esterna
 os.environ.setdefault(
     "REACT_APP_BACKEND_URL",
-    "https://device-scanner-pro-3.preview.emergentagent.com",
+    "https://network-monitor-hub-2.preview.emergentagent.com",
 )

@@ -1,0 +1,37 @@
+{
+  "summary": "Validated v4.18.x backend fixes: (1) /api/agents/diagnostics endpoint live with correct shape and admin gating, (2) race-condition fix in agent_ws disconnect, (3) ping_poll upsert filter fix avoiding DuplicateKey across agent_id rotation. 11/11 pytest tests PASSED, no tracebacks in backend.err.log.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_agent_ws_disconnect_race.py",
+    "/app/backend/tests/test_agents_diagnostics_iter86.py",
+    "/app/test_reports/pytest/iter86_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "backend/routes/agent_ws.py is now ~4014 lines — well above the 700-line guideline; consider splitting into agent_ws_handlers / agent_ws_bridges / agent_ws_admin modules to keep maintainability.",
+    "BRIDGE_STATS is an in-memory dict that grows unbounded by agent_id; on long-lived backends with many short-lived agents (re-installs) this leaks memory. Consider a TTL/LRU cap (e.g. keep last 500 agents).",
+    "_build_poller_config is invoked per agent inside the GET /api/agents/diagnostics loop — for clients with many agents this can amplify DB queries. Consider caching cfg per (client_id, role) within the request.",
+    "In agents_diagnostics the bare-except around _build_poller_config silently maps any error to snmp_n/ping_n = -1; at minimum log the exception (logger.exception) so the diagnostic endpoint itself becomes self-diagnosing."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_agents_diagnostics_iter86.py (new)"
+  ],
+  "success_rate": {
+    "backend": "100%",
+    "frontend": "not tested (scope = backend only)"
+  },
+  "test_credentials": "Admin info@86bit.it / Ariel17051986@!@86 (login via POST /api/auth/login -> access_token).",
+  "seed_data_creation": "Test creates and cleans up a TEST_ITER86_CLIENT device_poll_status row inside test_two_agents_same_target_upserts_once.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "v4.18.x agent_ws changes are fully covered by tests/test_agent_ws_disconnect_race.py (race-condition unit tests) + tests/test_agents_diagnostics_iter86.py (HTTP-level diagnostics, auth gating, ping_poll DB filter fix, /api/agents and /api/devices regression). The diagnostics endpoint returns {agents:[...], live_count, total_count} with all promised per-agent fields including bridge_counters and poller_config.{snmp_targets, ping_targets}. No live Go Agent is required — endpoint correctly returns DB agents with live=False/connected_db=False when no WS sessions are present.",
+  "rca of the issue": "Pre-fix: (a) when an agent re-connected the OLD WS handler's finally block ran AFTER the NEW session had already overwritten REGISTRY/managed_agents.connected, so it wrote connected=False on top of a live session — downstream 'zombie-v3 protection' in routes/devices.py judged devices as stale by last_heartbeat_at and the UI showed OBSOLETI. (b) device_poll_status upsert filter included agent_id but the unique index is (client_id, device_ip); when the agent_id rotated (re-install / new token) the filter no longer matched the existing row → upsert tried INSERT → DuplicateKey silenced → the row stayed frozen with stale ping data. Fix verified: race-condition unit tests show the replaced session is preserved; the new pytest TestPingPollFilterFix proves that two _bridge_ping_poll calls with different agent_ids on the same (client_id, device_ip) result in exactly ONE row whose agent_id == latest caller and whose reachable flag is updated."
+}
