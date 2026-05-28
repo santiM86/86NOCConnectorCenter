@@ -36,6 +36,7 @@ import {
   HyperVPanel, VCenterPanel,
 } from "@/components/ServerIntelligenceHub";
 import BridgeHealthWidget from "@/components/BridgeHealthWidget";
+import SafeBoundary from "@/components/SafeBoundary";
 import { useSortableTable, SortableTh } from "@/utils/tableSort";
 import { macroOf, macroLabel, MACRO_DEFS, pickDeviceName } from "@/utils/deviceCategory";
 
@@ -473,7 +474,11 @@ function OverviewTab({ devices, wanTargets, alerts, connector, printers, backups
   return (
     <div className="space-y-4">
       {/* v2026-02-28: Bridge Health Widget — diagnostica live degli agent SNMP/ping */}
-      {clientId && <BridgeHealthWidget clientId={clientId} />}
+      {clientId && (
+        <SafeBoundary label="Bridge Health">
+          <BridgeHealthWidget clientId={clientId} />
+        </SafeBoundary>
+      )}
 
       {/* iLO Hardware Health Panel (only shown when we have iLO data) */}
       {iloHealth && iloHealth.length > 0 && <IloHealthPanel iloHealth={iloHealth} />}
@@ -1387,6 +1392,13 @@ function MiniMetric({ label, value, sub, color }) {
   );
 }
 
+/* ==================== VITAL TOGGLE BUTTON ====================
+   v2026-02-28: toggle 3-stati per il criticality tier di un device:
+   - vital=true (stella piena gialla)  → alert SEMPRE inviati
+   - vital=false (stella vuota grigia) → alert silenziati di default
+   - vital=null (stella outline neutra) → backward compat (non scelto)
+   Endpoint backend: POST /api/devices/by-ip/{ip}/vital body
+   {is_vital: bool, client_id: str, reason?: str}
 /* ==================== DEVICE GROUP ==================== */
 function DeviceGroup({ label, icon: Icon, devices, color, onInfoClick, renderActions, macroKey, onDeviceDrop }) {
   // Use centralized pickDeviceName (mirror di best_display_name backend):
