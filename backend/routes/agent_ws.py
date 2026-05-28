@@ -137,15 +137,27 @@ REGISTRY = _Registry()
 # l'endpoint admin GET /api/agents/diagnostics per debug rapido in
 # produzione (rispondere alla domanda "perche' i device sono obsoleti?").
 BRIDGE_STATS: Dict[str, Dict[str, Any]] = {}
+_BRIDGE_STATS_MAX_AGENTS = 500  # LRU cap per evitare leak su agent_id rotation
 
 
 def _bridge_stat_tick(agent_id: str, kind: str, target: Optional[str] = None,
                       reachable: Optional[bool] = None, extra: Optional[Dict[str, Any]] = None) -> None:
-    """Update in-memory bridge activity stats for an agent."""
+    """Update in-memory bridge activity stats for an agent. LRU-capped."""
     if not agent_id:
         return
     now_iso = _now().isoformat()
-    bucket = BRIDGE_STATS.setdefault(agent_id, {})
+    bucket = BRIDGE_STATS.get(agent_id)
+    if bucket is None:
+        # LRU cap: se siamo al limite, drop l'entry piu' vecchia per
+        # last_event_at (evita memory leak in caso di rotazione agent_id).
+        if len(BRIDGE_STATS) >= _BRIDGE_STATS_MAX_AGENTS:
+            try:
+                oldest = min(BRIDGE_STATS.items(),
+                             key=lambda kv: kv[1].get("last_event_at") or "")
+                BRIDGE_STATS.pop(oldest[0], None)
+            except ValueError:
+                pass
+        bucket = BRIDGE_STATS.setdefault(agent_id, {})
     counters = bucket.setdefault("counters", {})
     counters[kind] = int(counters.get(kind, 0)) + 1
     bucket["last_event_at"] = now_iso
@@ -1270,6 +1282,7 @@ async def agents_diagnostics(
             snmp_n = len(cfg.get("snmp", {}).get("targets") or [])
             ping_n = len(cfg.get("ping", {}).get("targets") or [])
         except Exception:
+            logger.exception("agents_diagnostics: _build_poller_config failed agent_id=%s client_id=%s", aid, d.get("client_id"))
             snmp_n = -1
             ping_n = -1
         out.append({

@@ -1,3 +1,71 @@
+# 2026-05-28 — v4.18.x WS Race-Condition Fix + Diagnostica Bridge SNMP/Ping
+
+## 🚨 Bug P0 segnalato dall'utente
+"abbiamo problemi sicuramente con il connector perchè tutti i dispositivi
+hanno questo quindi non è reale ma è obsoleto. inoltre lato switch
+secondo me connector non sta funzionando con snmp perchè non riceve dati
+freschi"
+
+## 🔥 Root Cause Analysis
+1. **Race condition disconnect WS** (`agent_ws.py`): quando l'agent v4
+   si riconnetteva con stesso `agent_id`, `_Registry.add` chiudeva la
+   vecchia WS. La vecchia coroutine arrivava nel `finally` e sovrascriveva
+   `managed_agents.connected = False` ANCHE se la nuova sessione era già
+   attiva. Cascata: `_get_client_agents_subnets` vuoto, devices.py
+   "zombie-v3 protection" disattivata, UI mostrava device stale.
+2. **Filtro device_poll_status non allineato all'indice unique**
+   (`_bridge_ping_poll`): il filtro `{client_id, agent_id, device_ip}`
+   non corrispondeva all'indice unique `(client_id, device_ip)`. Quando
+   l'agent_id ruotava (re-install / nuovo token) l'upsert tentava INSERT
+   → DuplicateKey silenzioso → riga rimaneva CONGELATA con dati vecchi.
+
+## 🛠️ Fix backend `routes/agent_ws.py`
+- **finally robusto**: check `REGISTRY.get(agent_id)` prima di marcare
+  `connected=False`. Se la conn è stata rimpiazzata, NON tocchiamo lo
+  stato della nuova sessione.
+- **Filtro ping_poll**: rimosso `agent_id` dal filtro (resta in `$set`).
+- **Diagnostica in-memory**: `BRIDGE_STATS` (LRU cap 500) traccia per
+  ogni agent l'ultimo `snmp_poll`/`ping_poll`/`discovery_batch` con
+  target e reachable.
+- **Persistenza bridge stats**: salvati anche su `managed_agents`
+  (`last_snmp_poll_received_at`, `last_ping_poll_received_at`,
+  `last_discovery_received_at`) per debug cross-process.
+- **Log INFO `_build_poller_config`**: stampa per ogni welcome
+  `snmp_targets=N ping_targets=N subnet=X` → permette di vedere subito
+  se l'agent riceve targets vuoti (config subnet-aware errata).
+
+## 🆕 Endpoint admin `GET /api/agents/diagnostics`
+Ritorna per ogni agent: `live`, `connected_db`, `last_*_received_at`,
+`bridge_counters`, `poller_config: {snmp_targets, ping_targets}`. Usato
+per rispondere live alla domanda "perché i device sono obsoleti?".
+
+## 🧪 Test
+- `backend/tests/test_agent_ws_disconnect_race.py` (4 test): valida fix
+  race-condition + counter in-memory.
+- `backend/tests/test_agents_diagnostics_iter86.py` (7 test): valida
+  endpoint diagnostica, auth gating, regressione `/api/agents` e
+  `/api/devices`, e il filtro ping_poll (upsert unico anche con
+  agent_id diversi sullo stesso target).
+- **Risultato**: 11/11 PASSED, no traceback in backend.err.log.
+
+## 📍 Files modificati
+- `backend/routes/agent_ws.py` (race-condition finally + ping_poll
+  filter + BRIDGE_STATS + endpoint diagnostics + log INFO targets)
+- `backend/tests/test_agent_ws_disconnect_race.py` (nuovo)
+- `backend/tests/test_agents_diagnostics_iter86.py` (nuovo)
+
+## 📝 Note per il deploy in PROD
+- Dopo "Save to GitHub" + build, l'utente potra' verificare lo stato in
+  produzione chiamando `GET /api/agents/diagnostics` (richiede admin):
+  - `live=True` + `connected_db=True` → agent veramente attivo
+  - `bridge_counters.snmp_poll > 0` + `last_snmp_poll_received_at`
+    recente → SNMP funzionante
+  - `poller_config.snmp_targets == 0` → config subnet-aware non assegna
+    target a questo agent (indagare last_ip)
+
+---
+
+
 # 2026-02-14 — Printer Monitoring Fase 1 (MPS Monitor parity quick wins)
 
 ## 🎯 Obiettivo
