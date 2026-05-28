@@ -30,6 +30,11 @@ import DiscoveryPage from "./DiscoveryPage";
 import VulnerabilityPage from "./VulnerabilityPage";
 import LanScannerPage from "./LanScannerPage";
 import WanClientTab from "@/components/WanClientTab";
+import {
+  ProbeVendorButton, TryDefaultCredsButton, BulkCredentialsDialog,
+  HealthScoreWidget, LifecyclePanel, IloEventsButton,
+  HyperVPanel, VCenterPanel,
+} from "@/components/ServerIntelligenceHub";
 import { useSortableTable, SortableTh } from "@/utils/tableSort";
 import { macroOf, macroLabel, MACRO_DEFS, pickDeviceName } from "@/utils/deviceCategory";
 
