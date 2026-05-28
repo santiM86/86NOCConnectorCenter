@@ -1,3 +1,81 @@
+# 2026-02-28 — Inline Rename + Profili Stampanti Multi-Vendor
+
+## 🎯 Task A — Inline Rename Pencil
+Rinominare velocemente un device senza dover aprire la Scheda Dispositivo.
+
+### Cosa cambia
+- Nuovo componente `InlineRenameButton` in `pages/ClientOverviewPage.js`:
+  matita inline → Popover con Input + Salva/Annulla.
+- Chiama l'endpoint `POST /api/devices/by-ip/{ip}/rename` (gia' esistente)
+  che setta `name_user_locked: True` E `name_locked: True` su
+  `managed_devices` E `devices`, propagando il nome in tutta l'app.
+- Emette evento `argus:device-renamed` → la pagina si auto-aggiorna.
+- Pulsante visibile sia in **Panoramica** (tab Overview, raggruppamento
+  per macroaree) sia in **Dispositivi** (vista grouped o tabella).
+- Protezione: anche stoppropagation per non triggerare il click sulla
+  riga che apre la scheda completa.
+
+### Files modificati
+- `frontend/src/pages/ClientOverviewPage.js`
+  (+ `Popover` import; nuovo componente `InlineRenameButton`; prop
+  `clientId` propagato a `OverviewTab` → `DeviceGroup` e a
+  `DevicesGroupedView` → `DeviceGroup`)
+
+## 🎯 Task B — Profili Stampanti Multi-Vendor (RFC 3805)
+Auto-classificazione di stampanti SNMP HP/Epson/Kyocera/Xerox/Brother/Canon.
+
+### Cosa cambia
+- 6 nuovi profili in `backend/device_profiles/__init__.py` con
+  `family='printer'`:
+  - `printer_hp`        Enterprise OID `1.3.6.1.4.1.11.*`
+  - `printer_epson`     Enterprise OID `1.3.6.1.4.1.1248.*`
+  - `printer_kyocera`   Enterprise OID `1.3.6.1.4.1.1347.*`
+  - `printer_xerox`     Enterprise OID `1.3.6.1.4.1.128.*` + `253.*`
+  - `printer_brother`   Enterprise OID `1.3.6.1.4.1.2435.*`
+  - `printer_canon`     Enterprise OID `1.3.6.1.4.1.1602.*`
+- Ogni profilo include OID standard RFC 3805 (Printer-MIB) +
+  HR-MIB cross-vendor:
+  - `hrPrinterStatus` (.1.3.6.1.2.1.25.3.5.1.1.1)
+  - `hrPrinterDetectedErrorState` (.1.3.6.1.2.1.25.3.5.1.2.1)
+  - `prtMarkerLifeCount` (.1.3.6.1.2.1.43.10.2.1.4.1.1)
+  - `prtMarkerSuppliesLevel` (.1.3.6.1.2.1.43.11.1.1.9.1.1)
+  - `prtMarkerSuppliesMaxCapacity` (.1.3.6.1.2.1.43.11.1.1.8.1.1)
+  - `prtMarkerSuppliesDescription` (.1.3.6.1.2.1.43.11.1.1.6.1.1)
+- Enterprise OID vendor-specific per modello/seriale.
+- Thresholds standard: toner_warn_pct=15, toner_crit_pct=5,
+  page_jam_alert=True, printer_error_alert=True.
+- `SEED_VERSION` bumped da 2 → 3 per forzare re-seed in DB su deploy.
+- Classifier `fingerprint()` esistente in `device_profiles/__init__.py`
+  riconosce automaticamente le stampanti via sysObjectID prefix +
+  sysDescr regex (case-insensitive) — score 100 per OID match, 40 per
+  sysDescr match.
+
+### Files modificati / nuovi
+- `backend/device_profiles/__init__.py` (+ 6 profili, ~250 righe)
+- `backend/tests/test_printer_profiles_multivendor.py` (nuovo, 33 test)
+
+## 🧪 Test
+- Lint Python + JS: ✅ pulito
+- Pytest: **44/44 PASSED** (33 nuovi printer + 11 esistenti
+  diagnostics/race-condition)
+- Smoke screenshot UI: ✅ trovati 30 pulsanti matita nel rendering
+- API end-to-end live:
+  - `GET /api/device-profiles` → seed_version=3, 6/6 printer profiles
+  - `POST /api/device-profiles/fingerprint {sysobjectid, sysdescr}`
+    → match corretto su tutti i 6 vendor
+
+## 📝 Note per l'utente
+- Nel rename: il nome impostato viene protetto da
+  `name_user_locked: True` → SNMP/Discovery/Datto/Connector NON
+  sovrascrivono mai il nome scelto.
+- Per le stampanti: al primo SNMP poll dopo il deploy, le stampanti
+  HP/Epson/Kyocera/Xerox/Brother/Canon con SNMP attivo verranno
+  auto-classificate sotto la categoria "Stampanti" con i giusti OID di
+  monitoraggio. Poll consigliato 5min (RFC 3805 metriche stabili).
+
+---
+
+
 # 2026-05-28 — Server Intelligence Hub UI (Opzione A completata)
 
 ## 🎯 Obiettivo
