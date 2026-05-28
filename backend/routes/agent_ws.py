@@ -132,6 +132,31 @@ class _Registry:
 
 REGISTRY = _Registry()
 
+# v4.18.x DIAGNOSTIC: contatori in-memory per le ultime attivita' dei
+# bridge SNMP/ping/discovery/sysmetrics per agent_id. Esposti via
+# l'endpoint admin GET /api/agents/diagnostics per debug rapido in
+# produzione (rispondere alla domanda "perche' i device sono obsoleti?").
+BRIDGE_STATS: Dict[str, Dict[str, Any]] = {}
+
+
+def _bridge_stat_tick(agent_id: str, kind: str, target: Optional[str] = None,
+                      reachable: Optional[bool] = None, extra: Optional[Dict[str, Any]] = None) -> None:
+    """Update in-memory bridge activity stats for an agent."""
+    if not agent_id:
+        return
+    now_iso = _now().isoformat()
+    bucket = BRIDGE_STATS.setdefault(agent_id, {})
+    counters = bucket.setdefault("counters", {})
+    counters[kind] = int(counters.get(kind, 0)) + 1
+    bucket["last_event_at"] = now_iso
+    bucket[f"last_{kind}_at"] = now_iso
+    if target:
+        bucket[f"last_{kind}_target"] = target
+    if reachable is not None:
+        bucket[f"last_{kind}_reachable"] = bool(reachable)
+    if extra:
+        bucket.setdefault("extra", {}).update(extra)
+
 
 # ---- Auth: registration tokens ----------------------------------------------
 #
@@ -316,12 +341,34 @@ async def agent_ws(ws: WebSocket) -> None:
                 continue
             await _handle_frame(conn, frame)
     finally:
+        # v4.18.x RACE-CONDITION FIX: prima di marcare connected=False in
+        # DB, verifica che il registry non abbia gia' rimpiazzato questa
+        # connection con una nuova (caso classico: agent riconnette con
+        # stesso agent_id, _Registry.add chiude la vecchia WS, la vecchia
+        # coroutine arriva qui e MARCAVA connected=False sovrascrivendo
+        # la nuova sessione viva). Il risultato era `managed_agents.
+        # connected=False` anche per agent attivi, con cascata:
+        # - _get_client_agents_subnets ritornava vuoto
+        # - devices.py disattivava la zombie-v3-protection
+        # - i dati apparivano stale anche con agent funzionante.
+        current = REGISTRY.get(agent_id)
         await REGISTRY.remove(agent_id, conn)
-        await db.managed_agents.update_one(
-            {"agent_id": agent_id},
-            {"$set": {"connected": False, "disconnected_at": _now().isoformat()}},
-        )
-        logger.info("agent v4 disconnected agent_id=%s", agent_id)
+        if current is None or current is conn:
+            # Questa era l'ultima sessione attiva: ora l'agent e' davvero
+            # disconnesso. Aggiorna la collection.
+            await db.managed_agents.update_one(
+                {"agent_id": agent_id},
+                {"$set": {"connected": False, "disconnected_at": _now().isoformat()}},
+            )
+            logger.info("agent v4 disconnected agent_id=%s", agent_id)
+        else:
+            # Una nuova sessione e' gia' attiva per questo agent_id (es.
+            # riconnessione veloce). NON tocchiamo `connected` per non
+            # sovrascrivere lo stato attuale.
+            logger.info(
+                "agent v4 old session closed (replaced) agent_id=%s — keeping connected=True",
+                agent_id,
+            )
 
 
 async def _handle_frame(conn: _Connection, frame: Dict[str, Any]) -> None:
@@ -442,6 +489,17 @@ async def _bridge_discovery(conn: _Connection, batch: List[Dict[str, Any]]) -> N
     for op in ops:
         await db.discovered_endpoints.update_one(op["filter"], op["update"], upsert=True)
 
+    # v4.18.x DIAGNOSTIC
+    _bridge_stat_tick(conn.agent_id, "discovery_batch", extra={"batch_size": len(ops)})
+    try:
+        await db.managed_agents.update_one(
+            {"agent_id": conn.agent_id},
+            {"$set": {"last_discovery_received_at": now_iso,
+                      "last_discovery_batch_size": len(ops)}},
+        )
+    except Exception:
+        pass
+
     # v4.14.x AUTO-ENRICHMENT: dopo aver popolato discovered_endpoints, scatena
     # in background l'enrichment dei managed_devices del cliente con MAC +
     # OUI + Fingerbank usando i dati appena ricevuti dal connector. Cosi'
@@ -494,11 +552,17 @@ async def _bridge_ping_poll(conn: _Connection, r: Dict[str, Any]) -> None:
     # propagated (a stale row here doesn't justify dropping the WS).
     # NOTE: la collection device_poll_status ha un indice unique su
     # (client_id, device_ip). Il campo si chiama "device_ip", NON "ip".
+    # v4.18.x BUG-FIX: il filtro NON deve includere agent_id (non fa parte
+    # dell'indice unique). Se l'agent_id cambia (re-install / nuovo token /
+    # rotazione token) l'upsert "non match → insert" andava in DuplicateKey
+    # silente e NON aggiornava piu' la riga, lasciandola congelata. agent_id
+    # va in $set per sapere quale agent ha fatto l'ultimo poll.
     try:
         await db.device_poll_status.update_one(
-            {"client_id": conn.client_id, "agent_id": conn.agent_id, "device_ip": target},
+            {"client_id": conn.client_id, "device_ip": target},
             {
                 "$set": {
+                    "agent_id": conn.agent_id,
                     "ping_reachable": reachable,
                     "ping_latency_ms": latency_ms,
                     "ping_loss_pct": loss_pct,
@@ -518,7 +582,6 @@ async def _bridge_ping_poll(conn: _Connection, r: Dict[str, Any]) -> None:
                 },
                 "$setOnInsert": {
                     "client_id": conn.client_id,
-                    "agent_id": conn.agent_id,
                     "device_ip": target,
                     "first_poll_at": now_iso,
                 },
@@ -610,6 +673,17 @@ async def _bridge_ping_poll(conn: _Connection, r: Dict[str, Any]) -> None:
                 logger.warning("ping_poll: managed_devices update failed ip=%s err=%s", target, e)
     except Exception as e:
         logger.warning("ping_poll: managed_devices reconcile failed ip=%s err=%s", target, e)
+    # v4.18.x DIAGNOSTIC
+    _bridge_stat_tick(conn.agent_id, "ping_poll", target=target, reachable=reachable)
+    try:
+        await db.managed_agents.update_one(
+            {"agent_id": conn.agent_id},
+            {"$set": {"last_ping_poll_received_at": now_iso,
+                      "last_ping_poll_target": target,
+                      "last_ping_poll_reachable": bool(reachable)}},
+        )
+    except Exception:
+        pass
 
 
 async def _bridge_snmp_poll(conn: _Connection, r: Dict[str, Any]) -> None:
@@ -688,6 +762,18 @@ async def _bridge_snmp_poll(conn: _Connection, r: Dict[str, Any]) -> None:
         )
     except Exception as e:
         logger.warning("snmp_poll: managed_devices update failed ip=%s err=%s", target, e)
+    # v4.18.x DIAGNOSTIC: traccia ultima attivita' SNMP per agent
+    _bridge_stat_tick(conn.agent_id, "snmp_poll", target=target, reachable=reachable)
+    # Persistiamo anche su managed_agents per averlo cross-process
+    try:
+        await db.managed_agents.update_one(
+            {"agent_id": conn.agent_id},
+            {"$set": {"last_snmp_poll_received_at": now_iso,
+                      "last_snmp_poll_target": target,
+                      "last_snmp_poll_reachable": bool(reachable)}},
+        )
+    except Exception:
+        pass
 
 
 async def _bridge_sys_metrics(conn: _Connection, r: Dict[str, Any]) -> None:
@@ -1006,6 +1092,14 @@ async def _build_poller_config(
     except Exception as e:
         logger.warning("agent_ws: _build_poller_config error client_id=%s err=%s", client_id, e)
 
+    # v4.18.x DIAGNOSTIC: log targets count so we can debug "agent connected
+    # but no SNMP polls". If subnet-aware dispatching mismatches subnet, the
+    # agent receives empty targets → no polls → devices appear stale.
+    logger.info(
+        "agent_ws: poller_config built client_id=%s role=%s agent_ip=%s subnet=%s snmp_targets=%d ping_targets=%d",
+        client_id, agent_role, agent_ip, agent_subnet, len(snmp_targets), len(ping_targets),
+    )
+
     return {
         "snmp": {
             "enabled": len(snmp_targets) > 0,
@@ -1133,6 +1227,83 @@ async def register_agent(req: RegisterRequest, current_user: dict = Depends(get_
         backend_url=backend or "wss://argus.86bit.it/api/agent/ws",
         issued_at=issued_at,
     )
+
+
+@router.get("/agents/diagnostics")
+async def agents_diagnostics(
+    client_id: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """v4.18.x: diagnostica rapida del flusso WS / bridge ingestion.
+
+    Restituisce per ogni agent (filtrato per `client_id` se passato):
+      - live (TRUE se WS attivo nel registry in-process)
+      - connected (campo DB managed_agents)
+      - hostname, role, last_ip
+      - last_heartbeat_at / last_hello_at / last_event_at
+      - last_snmp_poll_received_at / last_ping_poll_received_at /
+        last_discovery_received_at (campi DB)
+      - bridge_counters (contatori in-memory dei bridge dall'ultimo restart)
+      - last_*_target / last_*_reachable (dal contatore in-memory)
+      - poller_config_targets (numero di target SNMP/ping nel welcome
+        attualmente in produzione per questo agent — calcolato live)
+    """
+    require_admin(current_user)
+    q: Dict[str, Any] = {}
+    if client_id:
+        q["client_id"] = client_id
+    docs = await db.managed_agents.find(q, {"_id": 0}).to_list(length=500)
+    live_ids = {c.agent_id: c for c in REGISTRY.list()}
+    out = []
+    for d in docs:
+        aid = d.get("agent_id")
+        is_live = aid in live_ids
+        live_conn = live_ids.get(aid) if is_live else None
+        stat = BRIDGE_STATS.get(aid, {}) if aid else {}
+        # Calcola targets in welcome che riceverebbe ora
+        try:
+            cfg = await _build_poller_config(
+                d.get("client_id") or "",
+                agent_role=d.get("role") or "master",
+                agent_ip=(live_conn.last_ip if live_conn else d.get("last_ip")),
+            )
+            snmp_n = len(cfg.get("snmp", {}).get("targets") or [])
+            ping_n = len(cfg.get("ping", {}).get("targets") or [])
+        except Exception:
+            snmp_n = -1
+            ping_n = -1
+        out.append({
+            "agent_id": aid,
+            "client_id": d.get("client_id"),
+            "hostname": d.get("hostname"),
+            "role": d.get("role"),
+            "last_ip": d.get("last_ip"),
+            "live": is_live,
+            "connected_db": bool(d.get("connected")),
+            "agent_version": d.get("agent_version"),
+            "last_hello_at": d.get("last_hello_at"),
+            "last_heartbeat_at": d.get("last_heartbeat_at"),
+            "last_snmp_poll_received_at": d.get("last_snmp_poll_received_at"),
+            "last_snmp_poll_target": d.get("last_snmp_poll_target"),
+            "last_snmp_poll_reachable": d.get("last_snmp_poll_reachable"),
+            "last_ping_poll_received_at": d.get("last_ping_poll_received_at"),
+            "last_ping_poll_target": d.get("last_ping_poll_target"),
+            "last_ping_poll_reachable": d.get("last_ping_poll_reachable"),
+            "last_discovery_received_at": d.get("last_discovery_received_at"),
+            "last_discovery_batch_size": d.get("last_discovery_batch_size"),
+            "bridge_counters": stat.get("counters") or {},
+            "bridge_last_event_at": stat.get("last_event_at"),
+            "poller_config": {
+                "snmp_targets": snmp_n,
+                "ping_targets": ping_n,
+            },
+        })
+    return {
+        "agents": out,
+        "live_count": sum(1 for x in out if x["live"]),
+        "total_count": len(out),
+    }
+
 
 
 @router.get("/agents")
