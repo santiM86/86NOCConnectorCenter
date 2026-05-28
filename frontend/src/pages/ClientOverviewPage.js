@@ -8,7 +8,7 @@ import {
   Lightning, WifiHigh, WifiSlash, PlugsConnected, CaretDown,
   CheckCircle, Warning, ArrowClockwise, Bell, BellSlash, ChartLine, Monitor, Cpu,
   Plus, Trash, Lock, MagnifyingGlass, Info, PencilSimple, NetworkSlash,
-  Phone, DeviceMobile, Desktop, Network, Key,
+  Phone, DeviceMobile, Desktop, Network, Key, Star,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -1440,6 +1440,73 @@ function MiniMetric({ label, value, sub, color }) {
   );
 }
 
+/* ==================== VITAL TOGGLE BUTTON ====================
+   v2026-02-28: toggle 3-stati per il criticality tier di un device:
+   - vital=true (stella piena gialla)  → alert SEMPRE inviati
+   - vital=false (stella vuota grigia) → alert silenziati di default
+   - vital=null (stella outline neutra) → backward compat (non scelto)
+   Endpoint backend: POST /api/devices/by-ip/{ip}/vital body
+   {is_vital: bool, client_id: str, reason?: str}
+==================================================================== */
+function VitalToggleButton({ device, clientId, currentVital }) {
+  const [saving, setSaving] = useState(false);
+  const ip = device.ip_address || device.ip;
+  const isVital = currentVital === true;
+  const isNonVital = currentVital === false;
+
+  const toggle = async (e) => {
+    e?.stopPropagation?.();
+    const target = !isVital; // toggle: null/false → true ; true → false
+    setSaving(true);
+    try {
+      const token = localStorage.getItem("token");
+      const API = process.env.REACT_APP_BACKEND_URL;
+      await axios.post(
+        `${API}/api/devices/by-ip/${encodeURIComponent(ip)}/vital`,
+        { is_vital: target, client_id: clientId },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      toast.success(target
+        ? `Device VITALE — alert sempre attivi`
+        : `Device best-effort — alert silenziati di default`
+      );
+      window.dispatchEvent(new CustomEvent("argus:device-vital-changed", {
+        detail: { ip, is_vital: target, client_id: clientId }
+      }));
+    } catch (err) {
+      const detail = err.response?.data?.detail || err.message || "Errore sconosciuto";
+      toast.error(`Toggle vital fallito: ${detail}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Tooltip dinamico
+  const title = isVital
+    ? "VITALE: alert sempre attivi. Clicca per declassare a best-effort."
+    : isNonVital
+      ? "Best-effort: alert silenziati di default. Clicca per marcare come VITALE."
+      : "Marca come VITALE (alert sempre attivi).";
+
+  return (
+    <button
+      onClick={toggle}
+      disabled={saving}
+      className={`p-1 rounded transition-colors flex-shrink-0 ${
+        isVital
+          ? "text-yellow-400 hover:bg-yellow-500/15"
+          : isNonVital
+            ? "text-[var(--text-muted)] opacity-40 hover:opacity-100 hover:bg-slate-500/15"
+            : "text-[var(--text-muted)] hover:text-yellow-400 hover:bg-yellow-500/10"
+      }`}
+      title={title}
+      data-testid={`vital-toggle-${ip}`}
+    >
+      <Star size={11} weight={isVital ? "fill" : "bold"} />
+    </button>
+  );
+}
+
 /* ==================== INLINE RENAME BUTTON ====================
    v2026-02-28: pencil-icon inline che apre un Popover per rinominare
    velocemente un device senza dover aprire la scheda completa.
@@ -1631,12 +1698,14 @@ function DeviceGroup({ label, icon: Icon, devices, color, onInfoClick, renderAct
               {d.source === "connector-scanner" && <span className="text-[7px] px-1 rounded bg-sky-500/10 text-sky-400">S</span>}
               {renderActions && (
                 <div className="flex items-center gap-0.5 ml-1 pl-1.5 border-l border-[var(--bg-border)]" onClick={(e) => e.stopPropagation()}>
+                  {clientId && <VitalToggleButton device={d} clientId={clientId} currentVital={d.is_vital} />}
                   {clientId && <InlineRenameButton device={d} clientId={clientId} currentName={name} />}
                   {renderActions(d)}
                 </div>
               )}
               {!renderActions && clientId && (
                 <div className="flex items-center gap-0.5 pl-1" onClick={(e) => e.stopPropagation()}>
+                  <VitalToggleButton device={d} clientId={clientId} currentVital={d.is_vital} />
                   <InlineRenameButton device={d} clientId={clientId} currentName={name} />
                 </div>
               )}

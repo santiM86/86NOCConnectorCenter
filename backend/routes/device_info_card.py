@@ -778,3 +778,100 @@ async def rename_device_by_ip(
             "in Panoramica, Dispositivi, Alert e Topology dopo il refresh."
         ),
     }
+
+# ==================== VITAL FLAG ENDPOINT ====================
+# v2026-02-28: device "vitali" (mission-critical) vs "best-effort":
+# - is_vital=True  → priorita' MAX, alert SEMPRE inviati (non silenziabili)
+# - is_vital=False → device monitorato ma alert NON inviati di default
+# - is_vital missing → backward compat, alert come prima (emit)
+# Vedi alert_filter.is_device_silenced per la semantica completa.
+# ============================================================
+@router.post("/devices/by-ip/{device_ip}/vital")
+async def set_device_vital(
+    device_ip: str,
+    payload: dict,
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+):
+    """Toggle del flag `is_vital` per un device.
+
+    Body: {"is_vital": bool, "client_id"?: str, "reason"?: str}
+
+    Effetti:
+      - managed_devices.is_vital = bool
+      - managed_devices.is_vital_set_by / _at = metadata audit
+      - cache alert_filter invalidata immediatamente
+      - audit log
+    """
+    from alert_filter import invalidate_silence_cache
+
+    if "is_vital" not in (payload or {}):
+        raise HTTPException(status_code=400, detail="is_vital (bool) e' obbligatorio")
+    is_vital = bool(payload.get("is_vital"))
+    explicit_client_id = (payload.get("client_id") or "").strip() or None
+    reason = (payload.get("reason") or "").strip()[:200]
+
+    md_query = {"ip": device_ip}
+    if explicit_client_id:
+        md_query["client_id"] = explicit_client_id
+
+    if not explicit_client_id:
+        cnt = await db.managed_devices.count_documents({"ip": device_ip})
+        if cnt > 1:
+            raise HTTPException(
+                status_code=409,
+                detail=f"IP {device_ip} appartiene a {cnt} client diversi. Includi client_id nel body per disambiguare.",
+            )
+
+    md = await db.managed_devices.find_one(md_query, {"_id": 0, "id": 1, "client_id": 1, "name": 1, "is_vital": 1})
+    if not md:
+        raise HTTPException(status_code=404, detail=f"Device {device_ip} non trovato in managed_devices")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    user_email = current_user.get("email")
+
+    await db.managed_devices.update_one(
+        md_query,
+        {"$set": {
+            "is_vital": is_vital,
+            "is_vital_set_by": user_email,
+            "is_vital_set_at": now_iso,
+            "is_vital_reason": reason or None,
+        }},
+    )
+
+    # Invalida cache immediatamente cosi' il prossimo alert riflette il nuovo stato
+    invalidate_silence_cache(client_id=md.get("client_id"), device_ip=device_ip)
+
+    # Audit
+    try:
+        await audit_logger.log(
+            user_email=user_email,
+            action=AuditAction.UPDATE_DEVICE if hasattr(AuditAction, "UPDATE_DEVICE") else AuditAction.OTHER,
+            resource_type="device",
+            resource_id=md.get("id"),
+            metadata={
+                "action": "set_vital_by_ip",
+                "device_ip": device_ip,
+                "is_vital": is_vital,
+                "previous_value": md.get("is_vital"),
+                "client_id": md.get("client_id"),
+                "device_name": md.get("name"),
+                "reason": reason,
+            },
+            request=request,
+        )
+    except Exception:
+        pass
+
+    return {
+        "ok": True,
+        "device_ip": device_ip,
+        "is_vital": is_vital,
+        "previous_value": md.get("is_vital"),
+        "message": (
+            f"Device {'VITALE' if is_vital else 'best-effort (alert silenziati di default)'}: "
+            f"{md.get('name') or device_ip}"
+        ),
+    }
+
