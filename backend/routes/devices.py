@@ -271,6 +271,14 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
         # alerts_silenced flag (managed_devices wins; default False)
         d["alerts_silenced"] = bool(md.get("alerts_silenced", d.get("alerts_silenced", False)))
         d["alerts_silenced_reason"] = md.get("alerts_silenced_reason") or d.get("alerts_silenced_reason") or ""
+        # v2026-02-28: criticality tier (is_vital). True = mission critical
+        # (alert sempre inviati). False = best-effort (alert silenziati di
+        # default). Missing = backward compat (treat as undecided → emit).
+        if "is_vital" in md:
+            d["is_vital"] = bool(md.get("is_vital"))
+        elif "is_vital" in d:
+            d["is_vital"] = bool(d.get("is_vital"))
+        # else: NOT setting is_vital → frontend distingue "non scelto" vs False
         # v3.8.22 LIVE-SEEN: se lo Scanner ha visto questo IP nelle ultime 15min,
         # forza "online" anche se Master/manual lo davano per offline.
         # v4.16.x EXTEND: anche se il MAC e' nella MAC table SNMP recente di
@@ -404,6 +412,8 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
                 "profile_auto_matched": pd.get("profile_auto_matched", False) if not md.get("profile_key") else False,
                 "alerts_silenced": bool(md.get("alerts_silenced", False)),
                 "alerts_silenced_reason": md.get("alerts_silenced_reason") or "",
+                "is_vital": md.get("is_vital"),  # bool|None (None = non scelto)
+                "is_vital_set_at": md.get("is_vital_set_at") or "",
                 # Datto RMM match (popolato da _match_with_center)
                 "datto_name": md.get("datto_name") or "",
                 "datto_match": md.get("datto_match") or "",
@@ -542,6 +552,8 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
             "connection_confidence": md.get("connection_confidence"),
             "alerts_silenced": bool(md.get("alerts_silenced", False)),
             "alerts_silenced_reason": md.get("alerts_silenced_reason") or "",
+            "is_vital": md.get("is_vital"),
+            "is_vital_set_at": md.get("is_vital_set_at") or "",
             # Datto RMM match (popolato da _match_with_center quando il device
             # e' presente anche nell'inventario Datto del cliente). Permette alla
             # UI di mostrare il nome ufficiale RMM accanto al device.

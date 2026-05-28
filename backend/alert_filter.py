@@ -24,8 +24,20 @@ _CACHE_TTL = 30.0
 
 
 async def is_device_silenced(db, client_id: Optional[str], device_ip: Optional[str]) -> bool:
-    """True se il device ha alerts_silenced=true. False altrimenti (incluso device
-    sconosciuto, mancante client_id/ip, errore DB)."""
+    """True se il device deve essere silenziato dal motore di alert.
+
+    Silenziato significa: NON inviare alert.
+    Logica unificata (v2026-02-28):
+      - `alerts_silenced=True`           → silenziato (override esplicito di
+                                           maintenance / finestra silenziata)
+      - `is_vital=False`                 → silenziato (device "best-effort":
+                                           monitorato ma NON allerta di default)
+      - `is_vital=True` (anche con alerts_silenced=True) → NON silenziato
+        (i device vitali NON possono essere silenziati per evitare missed alert
+        critici — `is_vital` ha precedenza).
+      - default (entrambi i campi assenti) → NON silenziato (backward compat:
+        ogni device storico genera alert come prima del fix v2026-02-28).
+    """
     if not client_id or not device_ip:
         return False
     key = (client_id, device_ip)
@@ -35,10 +47,21 @@ async def is_device_silenced(db, client_id: Optional[str], device_ip: Optional[s
         return cached[0]
     try:
         doc = await db.managed_devices.find_one(
-            {"client_id": client_id, "ip": device_ip, "alerts_silenced": True},
-            {"_id": 0, "id": 1},
+            {"client_id": client_id, "ip": device_ip},
+            {"_id": 0, "alerts_silenced": 1, "is_vital": 1},
         )
-        silenced = doc is not None
+        if not doc:
+            silenced = False
+        else:
+            # Vital ha precedenza: i device vitali NON si silenziano.
+            if doc.get("is_vital") is True:
+                silenced = False
+            elif doc.get("alerts_silenced") is True:
+                silenced = True
+            elif doc.get("is_vital") is False:
+                silenced = True
+            else:
+                silenced = False
     except Exception:
         silenced = False
     _SILENCE_CACHE[key] = (silenced, now)
