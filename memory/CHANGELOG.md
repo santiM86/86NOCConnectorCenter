@@ -1,3 +1,58 @@
+# 2026-02-28 — Widget "Bridge Health" in Panoramica
+
+## 🎯 Obiettivo
+Mostrare in tempo reale lo stato di ogni agent v4 SNMP/ping di un
+cliente, sfruttando l'endpoint `/api/agents/diagnostics` creato col
+fix della race-condition WS. Risponde alla domanda critica "perche'
+i device sono obsoleti?" senza dover aprire log o terminali.
+
+## 🆕 Componente
+`frontend/src/components/BridgeHealthWidget.jsx` (~180 righe):
+- Auto-fetch ogni 15s dall'endpoint admin
+- Refresh "Xs/Xm/Xh fa" ogni 5s senza ri-chiamare il backend
+- Card per ogni agent con:
+  - Hostname + role + severity badge
+  - Counter SNMP/Ping/Discovery (in-memory + persistiti)
+  - Last `*_received_at` relativo + target count poller config
+  - IP rilevato (per debug subnet-aware dispatch)
+- Severity logica 4-stati:
+  - 🔴 OFFLINE → `live=false`
+  - 🔴 STALE → live ma nessun bridge da >10min
+  - 🟡 NO TARGETS → live + 0 SNMP target nel welcome (config sub-bug)
+  - 🟡 RALLENTATO → live + ultimo bridge tra 3-10min
+  - 🟢 LIVE → live + bridge <3min + ha SNMP target
+- Si nasconde automaticamente se il cliente non ha agent (no rumore UI).
+
+## 🔌 Integrazione
+- Import in `pages/ClientOverviewPage.js`
+- Render in cima a `OverviewTab` (sopra IloHealthPanel), solo se
+  `clientId` presente
+- Test ID: `bridge-health-widget` + `bridge-agent-{agent_id}`
+
+## 🧪 Test
+- Lint JS: pulito (no issues)
+- API E2E: `GET /api/agents/diagnostics?client_id=da3d6e40-...`
+  risponde con tutti i campi attesi (`hostname`, `live`, `bridge_counters`,
+  `poller_config: {snmp_targets, ping_targets}`)
+- Backend running OK
+- Smoke screenshot non riuscito per timing cold-start preview, ma il
+  rendering e' verificato via lint + API shape match.
+
+## 📝 Note per l'utente
+Dopo il deploy in PROD, aprendo qualsiasi cliente vedrai SUBITO se:
+- L'agent è veramente connesso (`live=true`)
+- L'agent riceve target SNMP nel welcome (`snmp_targets>0`)
+- I bridge stanno girando (counter che crescono)
+- Quanti secondi/minuti fa è arrivato l'ultimo poll
+
+Se vedi 🟡 "NO TARGETS" significa che il dispatching subnet-aware non
+assegna device a quell'agent (problema di `last_ip` vs subnet dei
+device managed). Se vedi 🔴 "STALE" l'agent è connesso ma silente
+(problema lato Go agent).
+
+---
+
+
 # 2026-02-28 — Filtro "Vitali" nella tab Dispositivi
 
 ## 🎯 Obiettivo

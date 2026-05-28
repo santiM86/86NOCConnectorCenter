@@ -36,6 +36,7 @@ import {
   HealthScoreWidget, LifecyclePanel, IloEventsButton,
   HyperVPanel, VCenterPanel,
 } from "@/components/ServerIntelligenceHub";
+import BridgeHealthWidget from "@/components/BridgeHealthWidget";
 import { useSortableTable, SortableTh } from "@/utils/tableSort";
 import { macroOf, macroLabel, MACRO_DEFS, pickDeviceName } from "@/utils/deviceCategory";
 
@@ -473,6 +474,9 @@ export default function ClientOverviewPage() {
 function OverviewTab({ devices, wanTargets, alerts, connector, printers, backups, firewalls, switches, servers, upsList, nasList, apList, tvccList, printersList, voipList = [], workstationList = [], mobileList = [], iotList = [], skipList = [], others, iloHealth, clientId }) {
   return (
     <div className="space-y-4">
+      {/* v2026-02-28: Bridge Health Widget — diagnostica live degli agent SNMP/ping */}
+      {clientId && <BridgeHealthWidget clientId={clientId} />}
+
       {/* iLO Hardware Health Panel (only shown when we have iLO data) */}
       {iloHealth && iloHealth.length > 0 && <IloHealthPanel iloHealth={iloHealth} />}
 
