@@ -472,7 +472,13 @@ export default function ClientOverviewPage() {
 }
 
 /* ==================== OVERVIEW TAB ==================== */
-function OverviewTab({ devices, wanTargets, alerts, connector, printers, backups, firewalls, switches, servers, upsList, nasList, apList, tvccList, printersList, voipList = [], workstationList = [], mobileList = [], iotList = [], skipList = [], others, iloHealth, clientId }) {
+function OverviewTab({ devices, wanTargets, alerts, connector, printers, backups, firewalls, switches, servers, upsList, nasList, apList, tvccList, printersList, voipList = [], workstationList = [], mobileList = [], iotList = [], skipList = [], others, iloHealth, clientId: clientIdProp }) {
+  // v2026-02-28 SAFETY: fallback su useParams se il prop non viene passato.
+  // Evita ReferenceError "clientId is not defined" in caso di build parziali
+  // dove un commit pre-fix dimentica di passare il prop ma usa la variabile
+  // nei figli (es. <DeviceGroup clientId={clientId} />).
+  const { clientId: clientIdParam } = useParams();
+  const clientId = clientIdProp || clientIdParam;
   return (
     <div className="space-y-4">
       {/* v2026-02-28: Bridge Health Widget — diagnostica live degli agent SNMP/ping */}
@@ -1633,7 +1639,10 @@ function InlineRenameButton({ device, clientId, currentName }) {
 }
 
 /* ==================== DEVICE GROUP ==================== */
-function DeviceGroup({ label, icon: Icon, devices, color, onInfoClick, renderActions, macroKey, onDeviceDrop, clientId }) {
+function DeviceGroup({ label, icon: Icon, devices, color, onInfoClick, renderActions, macroKey, onDeviceDrop, clientId: clientIdProp }) {
+  // v2026-02-28 SAFETY: fallback su useParams (vedi commento in OverviewTab)
+  const { clientId: clientIdParam } = useParams();
+  const clientId = clientIdProp || clientIdParam;
   // Use centralized pickDeviceName (mirror di best_display_name backend):
   // priorita' name → hostname → sys_name → mdns → fingerbank → ip.
   // Filtra automaticamente nomi "categoriali" Fingerbank (es. "Foo/Bar").
