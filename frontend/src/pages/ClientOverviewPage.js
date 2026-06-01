@@ -42,6 +42,16 @@ import { useSortableTable, SortableTh } from "@/utils/tableSort";
 import { macroOf, macroLabel, MACRO_DEFS, pickDeviceName } from "@/utils/deviceCategory";
 
 const STATUS_COLOR = { online: "#34C759", offline: "#FF3B30", active: "#FFCC00", degraded: "#FF9500", unknown: "#555" };
+// v2026-02-28 SAFETY: getter difensivo. Se per qualche motivo STATUS_COLOR
+// non e' in scope (commit intermedio rotto / minifier overzelo), getStatusColor
+// ritorna comunque un fallback grigio invece di lanciare ReferenceError.
+function getStatusColor(status) {
+  try {
+    return (STATUS_COLOR && STATUS_COLOR[status]) || "#555";
+  } catch (e) {
+    return "#555";
+  }
+}
 
 export default function ClientOverviewPage() {
   const { clientId } = useParams();
@@ -502,7 +512,7 @@ function OverviewTab({ devices, wanTargets, alerts, connector, printers, backups
               <p className="text-[8px] uppercase tracking-widest text-[var(--text-muted)]">Connettivita' WAN</p>
               {wanTargets.map(t => {
                 const r = t.result;
-                const sc = STATUS_COLOR[r?.status] || "#555";
+                const sc = getStatusColor(r?.status);
                 return (
                   <div key={t.id} className="flex items-center gap-2 px-3 py-2 rounded-lg border text-[11px]" style={{ borderColor: `${sc}30`, background: `${sc}06` }}>
                     {t.device_type === "firewall" ? <ShieldCheck size={14} weight="bold" style={{ color: sc }} /> : <HardDrives size={14} weight="bold" style={{ color: sc }} />}
@@ -1676,7 +1686,7 @@ function DeviceGroup({ label, icon: Icon, devices, color, onInfoClick, renderAct
       </div>
       <div className="space-y-1">
         {devices.map((d, i) => {
-          const sc = STATUS_COLOR[d.status] || "#555";
+          const sc = getStatusColor(d.status);
           const name = _displayName(d);
           const nameIsIP = name === (d.ip_address || "");
           const clickable = !!onInfoClick;
@@ -2763,7 +2773,7 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
             {sortedDevices.length === 0 ? (
               <tr><td colSpan={13} className="text-center text-[var(--text-muted)] py-8 text-xs">Nessun dispositivo — clicca "Aggiungi Dispositivo" per iniziare</td></tr>
             ) : sortedDevices.map((d, i) => {
-              const sc = STATUS_COLOR[d.status] || "#555";
+              const sc = getStatusColor(d.status);
               const monitorType = (d.monitor_type || "snmp").toLowerCase();
               const methodBadge = {
                 snmp: { label: "SNMP", color: "text-purple-400", bg: "bg-purple-500/10 border-purple-500/20" },
