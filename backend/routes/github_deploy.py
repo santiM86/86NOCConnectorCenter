@@ -64,7 +64,7 @@ _db_name = os.environ.get("DB_NAME", "test_database")
 _client = AsyncIOMotorClient(_mongo_url) if _mongo_url else None
 _db = _client[_db_name] if _client is not None else None
 
-router = APIRouter(prefix="/api/deploy", tags=["deploy"])
+router = APIRouter(tags=["deploy"])
 
 # Path del repo. Override-abile via env per chi installa fuori /home/arslan.
 REPO_DIR = os.environ.get("NOC_REPO_DIR", "/home/arslan/86NOCConnectorCenter")
@@ -167,7 +167,13 @@ async def _run_deploy(reason: str, actor: str, ref: str = "main") -> None:
                 pass
 
 
-@router.post("/github")
+# v2026-02-28: il router espone i path COMPLETI (no prefix) per supportare
+# due URL diverse senza dover ri-configurare il webhook GitHub:
+#  - /api/webhooks/github-deploy   (URL storica funzionante — preserva config GitHub esistente)
+#  - /api/deploy/github            (alias "nuovo" stile REST — chiamato da admin UI / CLI tools)
+# Entrambi puntano allo stesso handler. Stessa cosa per trigger/audit/health.
+@router.post("/api/webhooks/github-deploy")
+@router.post("/api/deploy/github")
 async def github_deploy_webhook(
     request: Request,
     x_hub_signature_256: Optional[str] = Header(default=None),
@@ -239,7 +245,8 @@ async def github_deploy_webhook(
     )
 
 
-@router.post("/github/trigger")
+@router.post("/api/webhooks/github-deploy/trigger")
+@router.post("/api/deploy/github/trigger")
 async def github_deploy_manual_trigger(
     current_user: dict = Depends(get_current_user),
 ) -> JSONResponse:
@@ -254,7 +261,8 @@ async def github_deploy_manual_trigger(
     return JSONResponse({"ok": True, "queued": True, "actor": actor}, status_code=202)
 
 
-@router.get("/github/audit")
+@router.get("/api/webhooks/github-deploy/audit")
+@router.get("/api/deploy/github/audit")
 async def github_deploy_audit(
     limit: int = 20,
     current_user: dict = Depends(get_current_user),
@@ -274,7 +282,8 @@ async def github_deploy_audit(
     return {"items": items, "count": len(items)}
 
 
-@router.get("/github/health")
+@router.get("/api/webhooks/github-deploy/health")
+@router.get("/api/deploy/github/health")
 async def github_deploy_health() -> Dict[str, Any]:
     """Pubblico: verifica setup. Comodo come pre-flight prima di
     configurare il webhook su GitHub.
