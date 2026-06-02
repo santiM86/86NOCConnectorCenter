@@ -1,3 +1,37 @@
+# 2026-06-02 — Fix bug colonna "CONN." sempre OFF anche con Go Agent v4 attivo
+
+## 🐛 Problema segnalato
+Utente segnala via screenshot che in `Gestione Clienti` la colonna **CONN.**
+mostra `OFF` rosso per **tutti** i client (86BITOffice, Galvan, Zitac) anche
+quando WAN è green (`OK`), gli agent v4 inviano regolarmente heartbeat e i
+dispositivi sono freschi.
+
+## 🔍 Root cause
+`backend/routes/overview.py::get_clients_overview()` calcolava `connector_online`
+leggendo **solo** `db.connector_status.last_seen` (legacy PowerShell connector,
+soglia 120s). Il nuovo Go Agent v4.x via WebSocket (`/api/agent/ws`) salva il
+suo heartbeat in `db.managed_agents.last_heartbeat_at`, mai consultato
+dall'endpoint overview. → I client migrati al nuovo agent risultavano
+sempre offline nella card "Clienti".
+
+## ✅ Fix (`backend/routes/overview.py`)
+- Aggiunta lettura di `db.managed_agents` con i campi `last_heartbeat_at`,
+  `last_seen_at`, `last_hello_at`, `connected`, `hostname`, `agent_id`.
+- Calcolo `connector_online` ora considera entrambe le sorgenti con OR
+  logico: se ALMENO un agent (legacy O v4) ha heartbeat fresco, il badge
+  CONN. diventa verde `ON`.
+- Soglia v4: `AGENT_V4_FRESH_SECONDS = 300` (5 min) — coerente con
+  heartbeat 15s + tolleranza network jitter.
+
+## 🧪 Test regressione
+`backend/tests/test_overview_connector_online_v4_agent.py`:
+- ✅ Fresh v4 heartbeat → `connector_online=True`
+- ✅ Stale v4 heartbeat (30 min) → NON promuove a True
+Validato live via curl su preview env.
+
+---
+
+
 # 2026-02-28 — Widget "Bridge Health" in Panoramica
 
 ## 🎯 Obiettivo
