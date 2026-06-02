@@ -142,6 +142,43 @@ async def github_webhook_deploy(request: Request):
         logger.error(f"Failed to start deploy script: {e}")
         return Response(content='{"detail":"Internal Server Error starting script"}', status_code=500, media_type="application/json")
 
+from fastapi.responses import HTMLResponse
+
+@app.get("/api/webhooks/github-deploy-logs")
+async def github_deploy_logs():
+    log_path = "/home/arslan/86NOCConnectorCenter/deploy.log"
+    content = "Log file not found."
+    if os.path.exists(log_path):
+        try:
+            with open(log_path, "r", encoding="utf-8") as f:
+                content = f.read()
+        except Exception as e:
+            content = f"Error reading log: {e}"
+            
+    html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Deploy Logs</title>
+        <meta http-equiv="refresh" content="3">
+        <style>
+            body {{ background-color: #1e1e1e; color: #00ff00; font-family: monospace; padding: 20px; }}
+            pre {{ white-space: pre-wrap; word-wrap: break-word; }}
+        </style>
+        <script>
+            window.onload = function() {{
+                window.scrollTo(0, document.body.scrollHeight);
+            }}
+        </script>
+    </head>
+    <body>
+        <h2>Deployment Logs (auto-refreshing)</h2>
+        <pre>{content}</pre>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=html)
+
 # ==================== ROOT ROUTES ====================
 
 @app.get("/api/")
