@@ -1,3 +1,50 @@
+# 2026-06-02 — Audit freshness pipeline telemetria + endpoint admin
+
+## 🎯 Obiettivo
+Garantire che ogni pipeline dati (heartbeat agent, SNMP, ICMP, discovery,
+WAN, LAN scan, connector legacy) aggiorni le informazioni entro le soglie
+SLA concordate. Senza questo audit, problemi silenziosi (es. il bug della
+race condition WS già fixato) potevano passare inosservati per giorni
+mostrando dati obsoleti in dashboard.
+
+## 🆕 Endpoint
+`GET /api/admin/freshness-audit` (auth admin) — ritorna JSON con:
+- `overall_status`: ok | warning | critical
+- `pipelines[]`: stato per ciascuna pipeline (`agent_heartbeat`, `snmp_poll`,
+  `icmp_reachable`, `discovery_seen`, `wan_probe`, `lan_scan`,
+  `connector_legacy`) con `total`, `fresh`, `stale`, `no_timestamp`,
+  `oldest_stale_seconds`, `threshold_seconds`
+- `per_client[]`: breakdown per cliente con stessi conteggi
+
+### Soglie SLA configurate (secondi)
+| Pipeline | Soglia |
+|---|---|
+| agent_heartbeat (Go v4 WS) | 300 |
+| connector_legacy (PowerShell) | 120 |
+| snmp_poll | 600 |
+| icmp_reachable | 300 |
+| discovery_seen (managed_devices) | 900 |
+| wan_probe | 300 |
+| lan_scan (watchdog scanner) | 1800 |
+
+### File creati
+- `backend/routes/freshness_audit.py` (router)
+- `backend/tests/audit_freshness.py` (script CLI standalone)
+- `backend/tests/test_freshness_audit_endpoint.py` (smoke test)
+
+### Esclusioni intelligenti
+I `managed_devices` con `source` in {`datto-seed`, `user_rename`, `manual`,
+`imported`} sono esclusi dal conteggio `discovery_seen`: sono device
+placeholder per cui `last_seen_at` mancante è normale.
+
+## 🧪 Test in preview
+- Endpoint risponde 200 con admin token, 401/403 senza
+- 7 pipeline, 7 client riconosciuti
+- Status `critical` in preview perché nessun agent live (heartbeat>21d) → CORRETTO
+
+---
+
+
 # 2026-06-02 — Fix bug colonna "CONN." sempre OFF anche con Go Agent v4 attivo
 
 ## 🐛 Problema segnalato
