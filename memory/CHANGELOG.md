@@ -1,3 +1,52 @@
+# 2026-06-02 — Fix bug 500 /api/device-profiles in PROD (override corrotti)
+
+## 🐛 Problema segnalato
+Utente segnala via screenshot in PROD (`argus.86bit.it`): pagina **Device Profiles**
+mostra toast `Errore caricamento profili: Request failed with status code 500`.
+L'endpoint funziona perfettamente in preview (200, 20 profili) — quindi il bug
+era specifico dei dati in PROD.
+
+## 🔍 Root cause sospettata
+`backend/routes/device_profiles.py::list_profiles()` faceva merge dei profili
+seed con `device_profile_overrides` da DB usando una comprehension che
+SOLLEVAVA eccezione se:
+- un documento aveva campo `overrides` non dict (string, list, ecc.)
+- un documento mancava del campo `key`
+- un singolo profilo seed aveva struttura inattesa
+
+Un solo documento corrotto in collection → 500 su TUTTO l'endpoint → UI
+intera bloccata. Difficile diagnosticare perché l'errore non era nei log
+visibili all'utente.
+
+## ✅ Fix (`backend/routes/device_profiles.py`)
+- `_get_overrides_map()` ora tollera documenti malformati: log warning e
+  skip selettivo per `overrides` non-dict, key mancanti, ecc.
+- `_merge()` reso difensivo: try/except totale, mai solleva
+- `list_profiles()` cicla con try/except per profilo individuale; quelli
+  che falliscono vengono accumulati in `errors[]` invece di abortire
+  l'intera response
+- Nuovo campo response `errors: []` — vuoto = tutto ok, popolato = inspect
+  immediato di quale profilo/override sta dando problemi
+- Aggiunto logger dedicato `device_profiles` per traceback dettagliati
+
+## 🧪 Test regressione
+`backend/tests/test_device_profiles_resilient.py`:
+Inietta 4 override patologici (string, None, doc senza key, override valido)
+e verifica che l'endpoint:
+- risponda 200 (non 500)
+- restituisca tutti i 20 profili seed
+- applichi correttamente l'override valido (hpe_ilo polling=42)
+- popoli `errors[]` come array
+
+## 🚀 Deploy in PROD
+Solo backend, hot-reload preview attivo. Dopo "Save to GitHub" + deploy,
+chiamare `/api/device-profiles` in PROD funzionerà SUBITO E mostrerà
+nel campo `errors[]` quali override DB sono corrotti, permettendo
+all'admin di ripulirli con `DELETE /api/device-profiles/{key}/override`.
+
+---
+
+
 # 2026-06-02 — Audit freshness pipeline telemetria + endpoint admin
 
 ## 🎯 Obiettivo

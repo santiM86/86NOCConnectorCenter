@@ -10,6 +10,8 @@ Endpoints:
                                             to managed_devices/device_poll_status
 """
 from __future__ import annotations
+import logging
+import traceback
 from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, Depends
 from typing import Any
@@ -19,31 +21,83 @@ from deps import get_current_user
 from device_profiles import PROFILES, fingerprint as _fingerprint, get_profile, SEED_VERSION
 
 router = APIRouter(prefix="/api/device-profiles", tags=["device-profiles"])
+logger = logging.getLogger("device_profiles")
 
 
 async def _get_overrides_map() -> dict[str, dict]:
-    """Return {key: overrides_dict} from Mongo."""
-    cursor = db.device_profile_overrides.find({}, {"_id": 0})
-    return {doc["key"]: doc.get("overrides") or {} async for doc in cursor}
+    """Return {key: overrides_dict} from Mongo, sanitizzando documenti corrotti."""
+    out: dict[str, dict] = {}
+    try:
+        cursor = db.device_profile_overrides.find({}, {"_id": 0})
+        async for doc in cursor:
+            try:
+                key = doc.get("key")
+                if not key or not isinstance(key, str):
+                    logger.warning("device_profile_overrides: doc senza key valida, skip: %r", doc)
+                    continue
+                ov = doc.get("overrides")
+                # Tollera overrides null o malformati: trattiamo come dict vuoto
+                if ov is None:
+                    out[key] = {}
+                elif isinstance(ov, dict):
+                    out[key] = ov
+                else:
+                    logger.warning("device_profile_overrides[%s]: overrides non dict (%s), skip", key, type(ov).__name__)
+                    out[key] = {}
+            except Exception as e_doc:
+                logger.exception("device_profile_overrides: errore parsing doc %r: %s", doc, e_doc)
+    except Exception as e:
+        logger.exception("device_profile_overrides: errore fetch collection: %s", e)
+    return out
 
 
 def _merge(seed: dict, overrides: dict) -> dict:
-    """Shallow-merge overrides into seed (overrides wins)."""
-    merged = dict(seed)
-    for k, v in (overrides or {}).items():
-        merged[k] = v
-    merged["_has_overrides"] = bool(overrides)
+    """Shallow-merge overrides into seed (overrides wins). Difensivo: non solleva mai."""
+    merged = dict(seed) if isinstance(seed, dict) else {}
+    try:
+        if isinstance(overrides, dict):
+            for k, v in overrides.items():
+                merged[k] = v
+        merged["_has_overrides"] = bool(overrides)
+    except Exception as e:
+        logger.exception("Errore merge profilo %r: %s", seed.get("key") if isinstance(seed, dict) else "?", e)
+        merged["_has_overrides"] = False
+        merged["_merge_error"] = str(e)
     return merged
 
 
 @router.get("")
 async def list_profiles(current_user: dict = Depends(get_current_user)):
+    """Ritorna la lista completa dei profili effettivi.
+
+    Resiliente: se UN profilo fallisce nel merge, continua con gli altri e
+    riporta gli errori nel campo `errors` invece di 500. Indispensabile
+    perché un singolo override corrotto in DB non oscuri tutta la UI.
+    """
     overrides_map = await _get_overrides_map()
-    effective = [_merge(p, overrides_map.get(p["key"], {})) for p in PROFILES]
+    effective: list[dict] = []
+    errors: list[dict] = []
+    for p in PROFILES:
+        try:
+            key = p.get("key") if isinstance(p, dict) else None
+            if not key:
+                errors.append({"key": None, "error": "seed profile senza key"})
+                continue
+            merged = _merge(p, overrides_map.get(key, {}))
+            effective.append(merged)
+        except Exception as e:
+            tb = traceback.format_exc()
+            logger.error("list_profiles: errore su profilo %r: %s\n%s",
+                         p.get("key") if isinstance(p, dict) else "?", e, tb)
+            errors.append({
+                "key": p.get("key") if isinstance(p, dict) else None,
+                "error": str(e),
+            })
     return {
         "seed_version": SEED_VERSION,
         "count": len(effective),
         "profiles": effective,
+        "errors": errors,  # vuoto = tutto ok; pieno = inspect su quali profili falliscono
     }
 
 
