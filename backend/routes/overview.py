@@ -217,6 +217,20 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
          "mode": 1, "hostname": 1, "online": 1},
     ).to_list(500)
 
+    # v2026-02-feb FIX CRITICO: il nuovo Go Agent v4.x scrive l'heartbeat in
+    # `managed_agents.last_heartbeat_at` (via WebSocket /api/agent/ws), NON
+    # in `connector_status`. I client che hanno migrato al nuovo agent (es.
+    # Galvan, Zitac) risultavano sempre "CONN. OFF" anche se in realtà
+    # l'agent v4 era online e i dati SNMP/discovery erano freschi. Carichiamo
+    # anche gli agent v4 e li uniamo all'elenco connector per il calcolo di
+    # `connector_online`.
+    v4_agents = await db.managed_agents.find(
+        {},
+        {"_id": 0, "client_id": 1, "hostname": 1, "agent_id": 1,
+         "last_heartbeat_at": 1, "last_seen_at": 1, "last_hello_at": 1,
+         "connected": 1},
+    ).to_list(1000)
+
     # Index by client_id
     wan_results_map = {}
     for r in wan_results_raw:
@@ -364,6 +378,40 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
                 scanner_health_by_client[cid].append(entry)
             except Exception:
                 pass
+
+    # v2026-02-feb FIX CRITICO (continua): include heartbeat dei Go Agent v4
+    # nel calcolo di connector_online. Soglia 300s (5 min) coerente con il
+    # watchdog SNMP del nuovo agent (heartbeat: 15s, tolleranza per network
+    # jitter / brief disconnects). Se ALMENO un agent (legacy O v4) è online
+    # per il cliente, connector_online=True.
+    AGENT_V4_FRESH_SECONDS = 300
+    for a in v4_agents:
+        cid = a.get("client_id")
+        if not cid:
+            continue
+        # Prendi il timestamp più recente disponibile tra heartbeat / hello / seen
+        candidates = [a.get("last_heartbeat_at"), a.get("last_seen_at"), a.get("last_hello_at")]
+        is_online = False
+        for ts in candidates:
+            if not ts:
+                continue
+            try:
+                if isinstance(ts, str):
+                    dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                elif isinstance(ts, datetime):
+                    dt = ts
+                else:
+                    continue
+                if (now - dt).total_seconds() < AGENT_V4_FRESH_SECONDS:
+                    is_online = True
+                    break
+            except Exception:
+                continue
+        # Stesso pattern del legacy: True ha priorità su False (OR logico)
+        if cid in connector_by_client:
+            connector_by_client[cid] = connector_by_client[cid] or is_online
+        else:
+            connector_by_client[cid] = is_online
 
     # Build response
     result = []
