@@ -1,3 +1,86 @@
+# 2026-06-02 — FIX ARCHITETTURALE CRITICO: agent SNMP polla solo 4 OID base
+
+## 🔴 Root cause CONFERMATA dal codice
+L'utente aveva ragione: il **Go Agent v4.x non comunica correttamente con SNMP**.
+Il poller in `noc-agent/internal/poller/snmp.go` faceva SOLO 4 OID base per
+ogni target (sysDescr, sysObjectID, sysUpTime, sysName) e **ignorava
+completamente il campo `Profile`** ricevuto dal backend.
+
+Il commento al codice (linee 5-9) lo conferma esplicitamente:
+> *"The implementation is intentionally minimal — sysName / sysDescr /
+> sysObjectID / sysUpTime — because the backend already owns the rich
+> device-profile catalogue. Once the agent ships a poll result with
+> sys_object_id, the backend can decide which extra OIDs to request via
+> a follow-up server.command."*
+
+Quel "follow-up server.command" **non è mai stato implementato**. Quindi:
+- ✅ L'agent v4 polla: sysName, sysDescr, sysObjectID, sysUpTime
+- ❌ L'agent v4 NON polla: CPU, memoria, temperatura, supplies stampante,
+  fan, power, qualsiasi OID vendor-specific
+
+Le metriche estese (CPU, memoria, temp) che ancora apparivano in alcune
+schede device sono **residui del vecchio connector PowerShell** scritti
+settimane fa. Da quando si è passati a solo agent v4 → zero metriche
+fresche.
+
+## ✅ Fix completo (5 file modificati)
+
+### Backend
+1. **`backend/routes/agent_ws.py::_build_poller_config()`** — per ogni
+   `snmp_target` arricchisce con:
+   - `profile_key`: letto da `managed_devices.profile_key` o (fallback)
+     da `device_poll_status.profile_key` (fingerprint precedente)
+   - `extra_oids`: dict `{name: oid}` estratti dal profilo applicato,
+     escludendo i COMMON_OIDS che l'agent già polla
+2. **`backend/routes/agent_ws.py::_bridge_snmp_poll()`** — salva il
+   campo `oids` ricevuto dall'agent in `device_poll_status.metrics`
+   (+ `metrics_count`, `metrics_updated_at`)
+
+### Go Agent
+3. **`noc-agent/internal/config/config.go`** — `SNMPTarget` ha ora
+   `ProfileKey string` e `ExtraOIDs map[string]string`
+4. **`noc-agent/cmd/agent/main.go`** — wire struct decodifica i nuovi
+   campi `profile_key` + `extra_oids` da JSON e li copia in config
+5. **`noc-agent/internal/poller/snmp.go`** — nuova funzione
+   `pollTarget(ctx, t)` che dopo il GET base esegue GET batched (20 OID
+   per batch per restare sotto MTU SNMP) di tutti gli ExtraOIDs e popola
+   `res.OIDs[name] = value`. Skip silenzioso di NoSuchObject /
+   EndOfMibView (varbinds NULL legittimi).
+
+## 🧪 Validazione
+- `go build ./...` ✅ (agent compila)
+- `go test ./...` ✅ (tutti i test poller/config/discovery passano)
+- `_build_poller_config()` testata in preview: per uno switch
+  `profile_key=hpe_comware` ora ritorna 5 extra OID
+  (h3cEntityExtCpuUsage, MemUsage, Temperature, FanState, PowerState)
+- Lint Python pulito
+
+## 🚀 Deploy in PROD
+Questo è un fix **architetturale** quindi:
+1. **Save to GitHub** + deploy backend (preview hot-reload già OK)
+2. **Build nuova versione agent** (la pipeline esistente compila il
+   binario per Windows/Linux) e bump `Version` in agent
+3. Push del nuovo binario su GitHub release (auto-deploy via webhook)
+4. Gli agent ricevono auto-update e nel prossimo cycle SNMP (60s)
+   iniziano a popolare metrics
+
+⚠️ **Pre-requisito agent:** ogni device monitorato deve avere
+`profile_key` valorizzato in `managed_devices` (es. `hpe_comware`,
+`hpe_ilo`, `printer_epson`). Per i device senza profile_key,
+l'agent continuerà a fare solo i 4 OID base (zero metriche, ma
+nessuna regressione).
+
+## 📝 Impatto utente atteso
+Dopo aver aggiornato gli agent in PROD:
+- Switch HP 5130 (ZITAC) → CPU%, MEM%, temperatura, fan, power
+  popolati ogni 60s
+- iLO HPE → entries CPQ-MIB temperatura/power supplies fresche
+- Stampanti Epson/HP/Kyocera → contatori pagine, livelli toner,
+  status supplies fresche
+
+---
+
+
 # 2026-06-02 — Diagnosi agent enrichment: lista agent con status nell'alert
 
 ## 🎯 Feedback utente

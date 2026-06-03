@@ -126,7 +126,10 @@ func (p *Poller) runOnce(ctx context.Context) []proto.SNMPPollResult {
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
-			res := p.poll(ctx, t.IP, t.Community)
+			// v2026-06-02: pollTarget riceve l'intero SNMPTarget
+			// (con ExtraOIDs del profilo). Senza ExtraOIDs ricade
+			// nei 4 OID base (compat con PollOne/force_snmp_poll).
+			res := p.pollTarget(ctx, t)
 			mu.Lock()
 			results = append(results, res)
 			mu.Unlock()
@@ -143,6 +146,12 @@ func (p *Poller) runOnce(ctx context.Context) []proto.SNMPPollResult {
 }
 
 func (p *Poller) poll(ctx context.Context, ip, community string) proto.SNMPPollResult {
+	return p.pollTarget(ctx, config.SNMPTarget{IP: ip, Community: community})
+}
+
+func (p *Poller) pollTarget(ctx context.Context, t config.SNMPTarget) proto.SNMPPollResult {
+	ip := t.IP
+	community := t.Community
 	res := proto.SNMPPollResult{Target: ip, OIDs: map[string]string{}}
 	cfg := p.snapshot()
 	communities := cfg.Communities
@@ -204,6 +213,61 @@ func (p *Poller) poll(ctx context.Context, ip, community string) proto.SNMPPollR
 				}
 			case "." + oidSysName:
 				res.SysName = asString(v)
+			}
+		}
+		// v2026-06-02 fix critico: polla anche gli ExtraOIDs del profilo
+		// (CPU, memoria, temperatura, supplies stampante, ecc.). Senza
+		// questi il backend non ha metriche da mostrare e la UI rimane
+		// con valori 0 anche se il device e' SNMP-attivo. Eseguiti in
+		// batch da 20 OID per non sforare il packet size SNMP.
+		if len(t.ExtraOIDs) > 0 {
+			// Ricrea connessione (la precedente e' stata chiusa)
+			gExtra := &gosnmp.GoSNMP{
+				Target:    host,
+				Port:      portU16(port),
+				Community: c,
+				Version:   gosnmp.Version2c,
+				Timeout:   timeout,
+				Retries:   cfg.Retries,
+			}
+			if errC := gExtra.Connect(); errC == nil {
+				oidList := make([]string, 0, len(t.ExtraOIDs))
+				nameByOID := make(map[string]string, len(t.ExtraOIDs))
+				for name, oid := range t.ExtraOIDs {
+					if oid == "" {
+						continue
+					}
+					oidList = append(oidList, oid)
+					nameByOID["."+oid] = name
+				}
+				// Batch da 20 OID per stare sotto la MTU SNMP standard
+				const batchSize = 20
+				for i := 0; i < len(oidList); i += batchSize {
+					end := i + batchSize
+					if end > len(oidList) {
+						end = len(oidList)
+					}
+					ePkt, errE := gExtra.Get(oidList[i:end])
+					if errE != nil {
+						p.log.Warn("snmp extra oids batch failed",
+							"ip", ip, "batch_start", fmt.Sprintf("%d", i),
+							"err", errE.Error())
+						continue
+					}
+					for _, v := range ePkt.Variables {
+						if v.Type == gosnmp.NoSuchObject ||
+							v.Type == gosnmp.NoSuchInstance ||
+							v.Type == gosnmp.EndOfMibView {
+							continue
+						}
+						label := nameByOID[v.Name]
+						if label == "" {
+							label = v.Name
+						}
+						res.OIDs[label] = asString(v)
+					}
+				}
+				_ = gExtra.Conn.Close()
 			}
 		}
 		res.Reachable = true

@@ -386,12 +386,14 @@ func runAgent(ctx context.Context, cfg config.Config, log *logging.Logger) {
 				Retries     int      `json:"retries"`
 				Communities []string `json:"communities"`
 				Targets     []struct {
-					IP          string `json:"ip"`
-					Name        string `json:"name"`
-					Community   string `json:"community"`
-					Profile     string `json:"profile"`
-					SNMPVersion string `json:"snmp_version"`
-					SNMPPort    int    `json:"snmp_port"`
+					IP          string            `json:"ip"`
+					Name        string            `json:"name"`
+					Community   string            `json:"community"`
+					Profile     string            `json:"profile"`
+					ProfileKey  string            `json:"profile_key"`
+					SNMPVersion string            `json:"snmp_version"`
+					SNMPPort    int               `json:"snmp_port"`
+					ExtraOIDs   map[string]string `json:"extra_oids"`
 				} `json:"targets"`
 			} `json:"snmp"`
 			Ping struct {
@@ -440,8 +442,10 @@ func runAgent(ctx context.Context, cfg config.Config, log *logging.Logger) {
 				Name:        t.Name,
 				Community:   t.Community,
 				Profile:     t.Profile,
+				ProfileKey:  t.ProfileKey,
 				SNMPVersion: t.SNMPVersion,
 				SNMPPort:    t.SNMPPort,
+				ExtraOIDs:   t.ExtraOIDs,
 			})
 		}
 		snmp.ApplyConfig(newCfg)
