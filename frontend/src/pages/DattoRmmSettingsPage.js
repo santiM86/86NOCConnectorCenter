@@ -101,6 +101,18 @@ export default function DattoRmmSettingsPage() {
     setTesting(true);
     try {
       const r = await axios.post(`${API}/api/admin/datto/test`, {}, { headers });
+      // v2026-06-02: endpoint resiliente — non lancia piu' 500, ritorna
+      // {ok:true, ...} o {ok:false, stage_failed, error_type, error, hint}
+      if (r.data.ok === false) {
+        const stage = r.data.stage_failed || "?";
+        const errType = r.data.error_type || "Error";
+        const hint = r.data.hint || "";
+        toast.error(
+          `Test fallito @ ${stage} [${errType}]: ${hint}\nDettaglio: ${r.data.error?.slice(0, 200)}`,
+          { duration: 12000 }
+        );
+        return;
+      }
       toast.success(`Connessione OK: ${r.data.sites_found} site Datto, ${r.data.sites.reduce((a, s) => a + s.device_count, 0)} device totali`);
       await reload();
     } catch (e) {

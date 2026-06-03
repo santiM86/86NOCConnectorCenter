@@ -1,3 +1,84 @@
+# 2026-06-02 — Datto RMM "Test connessione" 500 → ora resiliente con dettaglio errore
+
+## 🐛 Problema segnalato
+Utente segnala via screenshot in PROD: pulsante "Test connessione" Datto
+RMM → toast `Test fallito: Request failed with status code 500`. L'utente
+conferma che lato API tutto funziona (auto-sync 6h ha sincronizzato 53
+device, 151 site, 5 clienti linkati).
+
+## 🔍 Diagnosi
+In **preview** lo stesso endpoint `POST /api/admin/datto/test` risponde
+200 OK con 152 sites e 982 devices. Quindi il 500 è specifico
+all'ambiente PROD — possibili cause:
+- Timeout: `portal.86bit.it` impiega >20s dal server PROD (rete più lenta)
+- Errore di parsing su qualche site/device con dati malformati
+- Risposta HTTP 5xx transitoria dal wrapper portal
+
+Il problema era che l'endpoint **non aveva error handling**: qualsiasi
+eccezione → FastAPI 500 generico → toast `status code 500` senza dettaglio.
+L'utente non poteva capire cosa correggere.
+
+## ✅ Fix
+### Backend (`backend/routes/datto_rmm.py::test_datto_connection`)
+- Wrap totale try/except con tracking dello `stage` corrente
+  (`fetch_devices` → `group_devices` → `fetch_portal_sites` → `merge`)
+- Su errore: log traceback completo lato server, e ritorno HTTP 200 con
+  JSON `{ok: false, stage_failed, error_type, error, hint}`
+- Classificazione automatica errore: timeout, ConnectError, 401/403,
+  5xx upstream, JSON parse error → ognuno ha un `hint` italiano
+
+### Frontend (`frontend/src/pages/DattoRmmSettingsPage.js`)
+- `test()` ora gestisce `ok === false`: mostra toast con stage + tipo
+  errore + hint + dettaglio (12 secondi durata, vs 4 default)
+- Esempio toast risultante in caso di timeout:
+  `"Test fallito @ fetch_devices [TimeoutException]: Il portal portal.86bit.it
+  ha impiegato troppo a rispondere..."`
+
+## 🚀 Dopo deploy in PROD
+Cliccando "Test connessione" l'utente vedrà SUBITO la vera causa del
+fallimento (es. "Connect failed: name resolution error" oppure
+"Timeout >20s") invece del generico `500`. Da lì può fare il fix mirato
+(es. aprire firewall, aumentare timeout, ecc.).
+
+## 🧪 Validazione
+- Lint backend+frontend puliti
+- Endpoint in preview risponde 200 OK con 152 sites, 982 devices
+  (regressione confermata)
+
+---
+
+
+# 2026-06-02 — Fix "ghosting" nel dialog Scheda Dispositivo (video utente)
+
+## 🐛 Problema segnalato (video chrome_Xud74utbI4.mp4)
+Quando l'utente apre la scheda dettagli di un device A, la chiude e poi
+apre quella di un device B, **per un istante** vede i dati del device A
+(titolo "Scheda Dispositivo — Switch 01 HP 5130 52G" + metriche/identity
+in memoria) prima che il fetch del device B completi e sostituisca il
+contenuto. Effetto "ghosting"/flicker visivamente confondente.
+
+## 🔍 Root cause
+1. Il componente `<DeviceInfoCard>` non aveva una `key` prop legata
+   all'IP del device → React lo riutilizzava al cambio device invece di
+   smontarlo+rimontarlo, mantenendo in memoria lo state (metriche,
+   sensori, identity) del device precedente fino al nuovo fetch.
+2. Lo state `infoCardName` (usato per il titolo del Dialog) veniva
+   resettato SOLO alla chiusura del modal, non al cambio device aperto.
+
+## ✅ Fix (`frontend/src/pages/ClientOverviewPage.js`)
+- Aggiunta `key={infoTarget.ip_address}` al `<DeviceInfoCard>` → forza
+  unmount+remount ad ogni cambio device → state pulito da zero
+- Nuovo `useEffect(() => setInfoCardName(null), [infoTarget?.ip_address])`
+  per resettare immediatamente il titolo quando cambia il device
+
+## 🧪 Validazione
+Lint frontend pulito. Il fix è puramente di React lifecycle, non altera
+API né state esterno. Il pattern `key={ip}` è la soluzione canonica
+React per "reset stato componente al cambio prop chiave".
+
+---
+
+
 # 2026-06-02 — Fix "[errore decifratura]" credenziali vault (post rotazione salt)
 
 ## 🐛 Problema segnalato

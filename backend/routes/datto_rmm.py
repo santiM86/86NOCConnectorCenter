@@ -770,30 +770,66 @@ async def _match_with_center(client_id: str, datto_devices: list[dict]) -> int:
 # ---------------------------------------------------------------------------
 @router.post("/admin/datto/test")
 async def test_datto_connection(current_user: dict = Depends(get_current_user)):
-    """Chiama il portal e ritorna SOLO il conteggio site/device. Nessun dato sensibile."""
+    """Chiama il portal e ritorna SOLO il conteggio site/device. Nessun dato sensibile.
+
+    v2026-06-02: reso resiliente — invece di 500 generico, in caso di errore
+    ritorna 200 con `{"ok": false, "error": "...", "stage": "..."}` cosi'
+    l'utente vede subito QUALE step e' fallito (devices vs sites vs grouping)
+    e con QUALE dettaglio (es. timeout, http_500, parse_error).
+    """
     require_admin(current_user)
-    devices = await _fetch_devices_list_all(timeout=20.0)
-    device_sites = _group_devices_by_site(devices)
-    portal_sites = await _fetch_all_sites_from_portal(timeout=10.0)
-    merged_ids = set(s["site_id"] for s in device_sites) | set(s["site_id"] for s in portal_sites)
-    summary = [
-        {"site_id": s["site_id"], "site_name": s["site_name"],
-         "device_count": len(s["devices"])}
-        for s in sorted(device_sites, key=lambda x: x["site_name"].lower())
-    ]
-    return {
-        "ok": True,
-        "sites_found": len(merged_ids),
-        "sites_from_devices_endpoint": len(device_sites),
-        "sites_from_sites_endpoint": len(portal_sites),
-        "devices_found": len(devices),
-        "sites": summary,
-        # v2026-02-14: hint se zero device → suggerisci debug endpoint
-        "warning": (
-            "Trovati 0 device. Possibile schema response inatteso dal wrapper. "
-            "Usa POST /api/admin/datto/raw-debug per vedere la struttura RAW della risposta."
-        ) if len(devices) == 0 and len(portal_sites) > 0 else None,
-    }
+    import traceback
+
+    stage = "fetch_devices"
+    try:
+        devices = await _fetch_devices_list_all(timeout=20.0)
+        stage = "group_devices"
+        device_sites = _group_devices_by_site(devices)
+        stage = "fetch_portal_sites"
+        portal_sites = await _fetch_all_sites_from_portal(timeout=10.0)
+        stage = "merge"
+        merged_ids = set(s["site_id"] for s in device_sites) | set(s["site_id"] for s in portal_sites)
+        summary = [
+            {"site_id": s["site_id"], "site_name": s["site_name"],
+             "device_count": len(s["devices"])}
+            for s in sorted(device_sites, key=lambda x: x["site_name"].lower())
+        ]
+        return {
+            "ok": True,
+            "sites_found": len(merged_ids),
+            "sites_from_devices_endpoint": len(device_sites),
+            "sites_from_sites_endpoint": len(portal_sites),
+            "devices_found": len(devices),
+            "sites": summary,
+            "warning": (
+                "Trovati 0 device. Possibile schema response inatteso dal wrapper. "
+                "Usa POST /api/admin/datto/raw-debug per vedere la struttura RAW della risposta."
+            ) if len(devices) == 0 and len(portal_sites) > 0 else None,
+        }
+    except Exception as e:
+        tb = traceback.format_exc()
+        logger.error(f"datto_test_failed stage={stage} error={e!r}\n{tb}")
+        # Try to classify error type for human-readable response
+        err_str = str(e)
+        err_type = type(e).__name__
+        hint = None
+        if "timeout" in err_str.lower() or "TimeoutException" in err_type:
+            hint = "Il portal portal.86bit.it ha impiegato troppo a rispondere. Riprova fra qualche secondo o aumenta il timeout."
+        elif "ConnectError" in err_type or "ConnectionError" in err_type:
+            hint = "Impossibile raggiungere portal.86bit.it dal server NOC. Verifica firewall/DNS in PROD."
+        elif "401" in err_str or "403" in err_str:
+            hint = "API key o User ID non validi: il portal ha rifiutato l'autenticazione."
+        elif "500" in err_str or "502" in err_str or "503" in err_str:
+            hint = "Il portal portal.86bit.it ha risposto con errore server. Riprova fra poco."
+        elif "json" in err_str.lower() or "decode" in err_str.lower():
+            hint = "Risposta del portal non in JSON valido. Usa /api/admin/datto/raw-debug per ispezionare."
+        return {
+            "ok": False,
+            "stage_failed": stage,
+            "error_type": err_type,
+            "error": err_str[:500],
+            "hint": hint or "Errore inatteso — controlla i log del backend per traceback completo.",
+        }
 
 
 @router.post("/admin/datto/raw-debug")

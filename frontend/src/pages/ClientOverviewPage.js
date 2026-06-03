@@ -1776,6 +1776,14 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
   const [profileTarget, setProfileTarget] = useState(null);
   const [infoTarget, setInfoTarget] = useState(null);
   const [infoCardName, setInfoCardName] = useState(null);
+  // v2026-06-02 fix ghosting: quando l'utente clicca su un device diverso
+  // mentre il dialog Scheda Dispositivo e' gia' aperto, il titolo non deve
+  // mostrare il nome del device precedente. Resettiamo subito infoCardName
+  // appena cambia infoTarget.ip_address; verra' ripopolato da onCardLoaded
+  // del nuovo device (DeviceInfoCard remountato grazie alla key prop).
+  useEffect(() => {
+    setInfoCardName(null);
+  }, [infoTarget?.ip_address]);
   const [editTarget, setEditTarget] = useState(null);
   const [saving, setSaving] = useState(false);
   // v3.8.40: nasconde multicast/broadcast (224.x, 239.x, 255.x) dalla tabella
@@ -2965,7 +2973,14 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
               </DialogTitle>
             </DialogHeader>
             <ErrorBoundary fallback={<div className="text-sm text-red-400 p-4">Errore caricamento scheda.</div>}>
+              {/* v2026-06-02 fix ghosting: la `key={infoTarget.ip_address}`
+                  forza React a smontare+rimontare DeviceInfoCard ogni volta
+                  che cambia il device selezionato. Senza key il componente
+                  conservava lo state vecchio (metriche/identity del device
+                  precedente) finché il nuovo fetch non completava, dando
+                  l'effetto "ghosting" tra device A e device B. */}
               <DeviceInfoCard
+                key={infoTarget.ip_address}
                 deviceIp={infoTarget.ip_address}
                 onClose={() => { setInfoTarget(null); setInfoCardName(null); }}
                 onCardLoaded={(c) => {
