@@ -65,8 +65,28 @@ def test_mdns_used_when_no_better():
 
 
 def test_fingerbank_fallback_when_only_category_available():
+    """v2026-06-02: estrae la parte piu' informativa dalla categoria Fingerbank
+    invece di mostrare la stringa tassonomica intera."""
     md = {"fingerbank_device_name": "Printer/HP LaserJet"}
-    assert best_display_name(md, None, "10.0.0.11") == "Printer/HP LaserJet"
+    assert best_display_name(md, None, "10.0.0.11") == "HP LaserJet · 10.0.0.11"
+
+
+def test_fingerbank_long_category_shortened():
+    """'Switch and Wireless Controller/HP Switches' -> 'HP Switches · IP'."""
+    md = {"fingerbank_device_name": "Switch and Wireless Controller/HP Switches"}
+    assert best_display_name(md, None, "10.10.41.221") == "HP Switches · 10.10.41.221"
+
+
+def test_fingerbank_hardware_manufacturer_shortened():
+    """'Hardware Manufacturer/Hewlett Packard' -> 'Hewlett Packard · IP'."""
+    md = {"fingerbank_device_name": "Hardware Manufacturer/Hewlett Packard"}
+    assert best_display_name(md, None, "10.10.41.222") == "Hewlett Packard · 10.10.41.222"
+
+
+def test_fingerbank_no_slash_kept_as_is():
+    """Se la fingerbank non contiene '/', viene mostrata identica."""
+    md = {"fingerbank_device_name": "Apple iPad"}
+    assert best_display_name(md, None, "10.0.0.50") == "Apple iPad"
 
 
 def test_pd_only():

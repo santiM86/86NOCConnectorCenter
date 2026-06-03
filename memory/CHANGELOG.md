@@ -1,3 +1,48 @@
+# 2026-06-02 — Migliore display name device: estrai segmento utile da categorie Fingerbank
+
+## 🎯 Problema
+Utente segnala via screenshot Zitac: 3 switch HP mostravano nomi non
+identici a quelli interni (sysName SNMP):
+- "Hardware Manufacturer/Hewlett Packard 10.10.41.222"
+- "HP 10.10.41.220"
+- "Switch and Wireless Controller/HP Switches 10.10.41.221"
+
+## 🔍 Root cause
+Quando l'agent non ha (ancora) popolato `pd.sys_name` per quei device,
+`best_display_name` cadeva sul fallback Fingerbank tassonomico e
+restituiva la **stringa intera tipo "X/Y"** ("Switch and Wireless
+Controller/HP Switches"). Brutto e confuso.
+
+## ✅ Fix
+- `backend/display_name.py` step 8: se la stringa Fingerbank contiene "/",
+  estrae l'**ultimo segmento** (la parte più informativa) e affianca l'IP
+  con bullet separator: `"HP Switches · 10.10.41.221"`,
+  `"Hewlett Packard · 10.10.41.222"`
+- `frontend/src/utils/deviceCategory.js::pickDeviceName()` allineato (stessa
+  logica mirror) sia per `fingerbank_device_name` che per `name`
+  category-like — defense in depth se l'API ritorna ancora vecchi nomi
+
+## 🧪 Test regressione
+`backend/tests/test_display_name.py`: 16/16 passati con 3 nuovi casi:
+- `test_fingerbank_long_category_shortened`
+- `test_fingerbank_hardware_manufacturer_shortened`
+- `test_fingerbank_no_slash_kept_as_is`
+
+## 📝 Nota importante per l'utente
+Per vedere i **veri hostname SNMP** (sysName configurato sullo switch)
+e non solo il vendor+IP, serve che l'agent SNMP polli correttamente
+l'OID `1.3.6.1.2.1.1.5.0` (sysName) sui device. Se dopo il deploy del
+fix continui a vedere "HP Switches · IP" invece di
+"Switch02 HP 5130 52G", significa che il polling SNMP non sta
+estraendo il sysName — possibili cause:
+1. Credenziali SNMP non corrette per quel device (verifica nella
+   scheda Credenziali)
+2. ACL SNMP sul firewall dello switch che blocca il connector
+3. SNMP disabilitato a livello device
+
+---
+
+
 # 2026-06-02 — Fix bug 500 /api/device-profiles in PROD (override corrotti)
 
 ## 🐛 Problema segnalato
