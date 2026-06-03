@@ -259,3 +259,87 @@ async def snmp_poll_now(client_id: str, device_ip: str,
         "executed_by_agent": chosen.agent_id,
         "reply": reply,
     }
+
+
+@router.get("/agent-registry/{client_id}")
+async def agent_registry(client_id: str,
+                         current_user: dict = Depends(get_current_user)):
+    """Lista TUTTO cio' che il backend sa sugli agent di un cliente:
+      - token emessi (con created_at, revoked)
+      - record managed_agents (anche storici, offline)
+      - hello recenti dal audit_log
+
+    Usato per capire: l'agent e' mai stato registrato? Quale token usa?
+    Quando si e' connesso l'ultima volta? Senza dover frugare in DB.
+    """
+    if current_user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin only")
+
+    client = await db.clients.find_one({"id": client_id}, {"_id": 0, "id": 1, "name": 1})
+    tokens = await db.agent_tokens.find(
+        {"client_id": client_id},
+        {"_id": 0, "token": 0},  # MAI ritornare il token raw
+    ).to_list(50)
+    # Maschera token_hash
+    for t in tokens:
+        if "token_hash" in t:
+            t["token_hash"] = (t["token_hash"][:8] + "...") if t["token_hash"] else None
+    agents = await db.managed_agents.find(
+        {"client_id": client_id},
+        {"_id": 0},
+    ).to_list(50)
+    # Audit log recenti (hello/install)
+    audit_recent: List[Dict[str, Any]] = []
+    try:
+        audit_recent = await db.audit_log.find(
+            {"client_id": client_id,
+             "$or": [{"action": {"$regex": "agent"}},
+                     {"event": {"$regex": "agent"}}]},
+            {"_id": 0},
+        ).sort("created_at", -1).limit(20).to_list(20)
+    except Exception:
+        pass
+
+    online_ids = {c.agent_id for c in REGISTRY.list() if c.client_id == client_id}
+    for a in agents:
+        a["is_online_now"] = a.get("agent_id") in online_ids
+        a["last_heartbeat_age_seconds"] = _age_seconds(
+            a.get("last_heartbeat_at") or a.get("last_seen_at"))
+
+    diagnosis = []
+    if not client:
+        diagnosis.append("🔴 Client non esiste in `clients` collection")
+    if not tokens:
+        diagnosis.append(
+            "🔴 NESSUN TOKEN agent emesso per questo cliente. "
+            "Vai a POST /api/agents/register e crea un token, poi reinstalla "
+            "l'agent sul server con quel token nuovo."
+        )
+    elif not agents:
+        diagnosis.append(
+            f"🟠 {len(tokens)} token emessi ma NESSUN agent ha mai fatto "
+            f"hello al backend. L'installer e' stato lanciato sul server "
+            f"target? Verifica con `Get-Service 86NocAgent` e "
+            f"`Get-Content C:\\ProgramData\\86NocAgent\\logs\\agent.log -Tail 50`."
+        )
+    elif not online_ids:
+        ages = [(a.get("hostname"), a.get("last_heartbeat_age_seconds"))
+                for a in agents]
+        oldest_min = min((x[1] for x in ages if x[1] is not None), default=None)
+        if oldest_min is not None:
+            diagnosis.append(
+                f"🟠 Agent registrato in passato ma offline da "
+                f"{int(oldest_min/60)} minuti. Sul server vai a "
+                f"`Restart-Service 86NocAgent` e controlla i log."
+            )
+
+    return {
+        "client": client,
+        "tokens_count": len(tokens),
+        "tokens": tokens,
+        "agents_count": len(agents),
+        "agents": agents,
+        "online_now": len(online_ids),
+        "audit_recent": audit_recent,
+        "diagnosis": diagnosis,
+    }
