@@ -1,3 +1,34 @@
+# 2026-06-02 — Fix "ghosting" nel dialog Scheda Dispositivo (video utente)
+
+## 🐛 Problema segnalato (video chrome_Xud74utbI4.mp4)
+Quando l'utente apre la scheda dettagli di un device A, la chiude e poi
+apre quella di un device B, **per un istante** vede i dati del device A
+(titolo "Scheda Dispositivo — Switch 01 HP 5130 52G" + metriche/identity
+in memoria) prima che il fetch del device B completi e sostituisca il
+contenuto. Effetto "ghosting"/flicker visivamente confondente.
+
+## 🔍 Root cause
+1. Il componente `<DeviceInfoCard>` non aveva una `key` prop legata
+   all'IP del device → React lo riutilizzava al cambio device invece di
+   smontarlo+rimontarlo, mantenendo in memoria lo state (metriche,
+   sensori, identity) del device precedente fino al nuovo fetch.
+2. Lo state `infoCardName` (usato per il titolo del Dialog) veniva
+   resettato SOLO alla chiusura del modal, non al cambio device aperto.
+
+## ✅ Fix (`frontend/src/pages/ClientOverviewPage.js`)
+- Aggiunta `key={infoTarget.ip_address}` al `<DeviceInfoCard>` → forza
+  unmount+remount ad ogni cambio device → state pulito da zero
+- Nuovo `useEffect(() => setInfoCardName(null), [infoTarget?.ip_address])`
+  per resettare immediatamente il titolo quando cambia il device
+
+## 🧪 Validazione
+Lint frontend pulito. Il fix è puramente di React lifecycle, non altera
+API né state esterno. Il pattern `key={ip}` è la soluzione canonica
+React per "reset stato componente al cambio prop chiave".
+
+---
+
+
 # 2026-06-02 — Fix "[errore decifratura]" credenziali vault (post rotazione salt)
 
 ## 🐛 Problema segnalato
