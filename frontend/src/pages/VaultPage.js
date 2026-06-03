@@ -168,6 +168,10 @@ export default function VaultPage({ scopedClientId = null, scopedClientName = ""
   const [filterClient, setFilterClient] = useState("all");
   const [failoverStatus, setFailoverStatus] = useState([]);
   const [testingConn, setTestingConn] = useState(null);
+  // v2026-06-02: health check vault per rilevare credenziali corrotte
+  // (errore decifratura post-rotazione salt). Mostra banner + bottone purge.
+  const [vaultHealth, setVaultHealth] = useState(null);
+  const [purging, setPurging] = useState(false);
 
   const [form, setForm] = useState({
     device_ip: "", device_name: "", credential_type: "ilo",
@@ -210,7 +214,38 @@ export default function VaultPage({ scopedClientId = null, scopedClientName = ""
     } catch {}
   }, [scopedClientId]);
 
-  useEffect(() => { fetchCreds(); fetchClients(); fetchFailover(); }, [fetchCreds, fetchClients, fetchFailover]);
+  const fetchVaultHealth = useCallback(async () => {
+    try {
+      const res = await axios.get(`${API}/admin/vault-health-check`);
+      setVaultHealth(res.data);
+    } catch {
+      // silenzioso: non admin -> 403, ok
+    }
+  }, []);
+
+  const purgeCorrupted = async () => {
+    if (!vaultHealth?.corrupted_count) return;
+    const n = vaultHealth.corrupted_count;
+    if (!window.confirm(
+      `Eliminare in modo PERMANENTE ${n} credenziali non più decifrabili?\n\n` +
+      `Le password originali NON sono recuperabili — questa operazione ripulisce ` +
+      `solo il DB. Dovrai poi ricrearle manualmente con 'Aggiungi Credenziale'.`)) {
+      return;
+    }
+    setPurging(true);
+    try {
+      const res = await axios.delete(`${API}/admin/vault-purge-corrupted`);
+      toast.success(`✅ ${res.data.purged_count} credenziali corrotte eliminate. Ricreale ora.`);
+      await fetchCreds();
+      await fetchVaultHealth();
+    } catch (e) {
+      toast.error(`Errore purge: ${e.response?.data?.detail || e.message}`);
+    } finally {
+      setPurging(false);
+    }
+  };
+
+  useEffect(() => { fetchCreds(); fetchClients(); fetchFailover(); fetchVaultHealth(); }, [fetchCreds, fetchClients, fetchFailover, fetchVaultHealth]);
   useEffect(() => {
     const interval = setInterval(fetchFailover, 30000);
     return () => clearInterval(interval);
@@ -502,6 +537,57 @@ export default function VaultPage({ scopedClientId = null, scopedClientName = ""
         )}
         <span className="text-[10px] text-[var(--text-muted)] ml-auto">{filtered.length} credenziali</span>
       </div>
+
+      {/* v2026-06-02: Banner credenziali corrotte (errore decifratura) */}
+      {vaultHealth && vaultHealth.corrupted_count > 0 && (
+        <div
+          data-testid="vault-corrupted-banner"
+          className="mb-3 p-3 rounded-lg border border-red-500/40 bg-red-500/10"
+        >
+          <div className="flex items-start gap-3">
+            <Warning size={20} className="text-red-400 mt-0.5 shrink-0" />
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-semibold text-red-300">
+                {vaultHealth.corrupted_count} credenzial{vaultHealth.corrupted_count === 1 ? "e non decifrabile" : "i non decifrabili"} — rilevato dopo rotazione chiave/salt
+              </p>
+              <p className="text-xs text-red-200/80 mt-1 leading-relaxed">
+                Le credenziali cifrate AES-256-GCM con il salt precedente <strong>non sono più recuperabili</strong> (è un design di sicurezza, non un bug).
+                <br />
+                <strong>Causa più probabile:</strong> il file <code className="text-amber-300">/app/backend/data/encryption_salt.bin</code> è stato rigenerato durante un restart del container senza volume persistente.
+                <br />
+                <strong>Fix permanente:</strong> nel tuo <code>docker-compose</code> / k8s manifest aggiungi un volume persistente per <code>/app/backend/data/</code>.
+              </p>
+              <div className="mt-3 flex gap-2 flex-wrap">
+                <Button
+                  data-testid="vault-purge-corrupted-btn"
+                  size="sm"
+                  variant="destructive"
+                  onClick={purgeCorrupted}
+                  disabled={purging}
+                  className="h-7 text-xs"
+                >
+                  <Trash size={12} className="mr-1" />
+                  {purging ? "Eliminazione…" : `Elimina ${vaultHealth.corrupted_count} credenzial${vaultHealth.corrupted_count === 1 ? "e" : "i"} e ricreale`}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => fetchVaultHealth()}
+                  className="h-7 text-xs border-red-500/30"
+                >
+                  <ArrowClockwise size={12} className="mr-1" />
+                  Ri-verifica
+                </Button>
+              </div>
+              {vaultHealth.encryption_status?.salt_file_mtime_utc && (
+                <p className="text-[10px] text-red-200/60 mt-2">
+                  Salt corrente generato il: {new Date(vaultHealth.encryption_status.salt_file_mtime_utc).toLocaleString("it-IT")}
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Credentials List */}
       {filtered.length === 0 ? (

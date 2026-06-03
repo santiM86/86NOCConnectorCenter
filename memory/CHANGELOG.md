@@ -1,3 +1,65 @@
+# 2026-06-02 — Fix "[errore decifratura]" credenziali vault (post rotazione salt)
+
+## 🐛 Problema segnalato
+Utente segnala screenshot Vault Credenziali del cliente Zitac in PROD:
+- 1 credenziale iLO ZITACSRV mostra `Username: [errore decifratura]`
+- Click su "Mostra" → toast `Errore nel caricamento credenziale` (HTTP 500)
+
+## 🔍 Root cause CONFERMATA
+Le credenziali sono cifrate AES-256-GCM con:
+- `ENCRYPTION_KEY` da `.env`
+- **Salt random persistente** in `/app/backend/data/encryption_salt.bin`
+
+Se il file salt viene rigenerato (es. restart container PROD senza volume
+persistente per `/app/backend/data/`), la chiave derivata cambia → le
+credenziali cifrate con il salt vecchio NON sono più decifrabili. È un
+design di sicurezza intrinseco di AES-GCM — il plaintext è perso.
+
+Stesso problema rilevato anche in **PREVIEW** (1/1 credenziale corrotta,
+salt rigenerato il 30/04/2026, credenziale creata il 27/03/2026).
+
+## ✅ Fix in due parti
+
+### Backend — endpoint diagnostici (`backend/routes/vault.py`)
+- `GET /api/admin/vault-health-check` — verifica decifratura di TUTTE le
+  credenziali, ritorna conteggio corrotte/totali + dettagli (id, device,
+  client, created_at, error) + stato salt file (path, mtime, size) +
+  suggestion human-readable
+- `DELETE /api/admin/vault-purge-corrupted` — elimina in batch tutte le
+  credenziali non decifrabili (con audit log)
+
+### Frontend — banner di warning prominente (`frontend/src/pages/VaultPage.js`)
+- Stato `vaultHealth` con auto-fetch al mount
+- Banner rosso sopra la lista quando `corrupted_count > 0`:
+  - Spiega la root cause in italiano
+  - Mostra path file salt + mtime (per diagnosi)
+  - Bottone "Elimina N credenziali e ricreale" → conferma → DELETE bulk
+  - Bottone "Ri-verifica" per refresh
+
+## 🛡 Fix permanente (azione utente PROD)
+Nel `docker-compose.yml` (o k8s manifest) di `argus.86bit.it` aggiungere un
+**volume persistente** per `/app/backend/data/`:
+```yaml
+services:
+  argus-backend:
+    volumes:
+      - argus-data:/app/backend/data
+volumes:
+  argus-data:
+```
+Questo previene la rigenerazione del salt ad ogni restart container.
+
+Inoltre **backup** del file `encryption_salt.bin` + variabile
+`ENCRYPTION_KEY` in `.env`: se uno dei due si perde, le credenziali
+non sono più recuperabili.
+
+## 🧪 Smoke test preview
+Screenshot in preview conferma banner visibile con tutti i dettagli +
+data salt corretta (30/04/2026 13:51).
+
+---
+
+
 # 2026-06-02 — Migliore display name device: estrai segmento utile da categorie Fingerbank
 
 ## 🎯 Problema
