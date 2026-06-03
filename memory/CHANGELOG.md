@@ -1,3 +1,41 @@
+# 2026-06-02 — Diagnosi agent enrichment: lista agent con status nell'alert
+
+## 🎯 Feedback utente
+Dopo il deploy del fix "Re-poll SNMP", l'utente ha cliccato il bottone
+sullo Switch ZITAC e ha visto l'alert dire:
+> ❌ Poll fallito: Nessun agent online per questo client.
+> Ultimo poll SNMP 40366 minuti fa (28 giorni).
+> NESSUN AGENT ONLINE ha subnet contenente questo device.
+
+Confermando la root cause architetturale. L'utente però voleva sapere
+SUBITO **quale agent** è offline e da quanto, senza dover navigare alla
+pagina Gestione Agent.
+
+## ✅ Fix (`frontend/src/components/DeviceInfoCard.js`)
+Esteso il messaggio alert della diagnosi SNMP per includere la
+**tabella agent del cliente** con:
+- 🟢 ONLINE / 🔴 OFFLINE
+- hostname (role)
+- agent_ip, subnet, ✓/✗ device_ip_in_subnet
+- last_heartbeat (formattato locale italiano)
+
+In questo modo l'utente vede a colpo d'occhio:
+- Quanti agent ci sono per il cliente
+- Quale è offline e da quanti minuti/giorni
+- Se il problema è "agent installato ma servizio crashato" vs
+  "agent mai installato" vs "agent in subnet sbagliata"
+
+## 🚀 Prossimo step utente
+1. **Save to GitHub** + deploy
+2. Re-poll SNMP sullo Switch ZITAC → alert mostrerà ora la lista
+   agent + status
+3. Sapendo quale agent è offline: SSH/RDP sul PC del client e
+   `Restart-Service NocAgent` (o riavvia il container Docker
+   dell'agent se containerizzato)
+
+---
+
+
 # 2026-06-02 — Switch SNMP non aggiornato: diagnosi + re-poll on demand
 
 ## 🐛 Problema segnalato

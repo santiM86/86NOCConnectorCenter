@@ -151,7 +151,29 @@ export default function DeviceInfoCard({ deviceIp, onClose = null, compact = fal
           { headers: { Authorization: `Bearer ${token}` } },
         );
         const d = diag.data;
-        const msg = `❌ Poll fallito: ${reason}\n\n📋 Diagnosi:\n${d.diagnosis}\n\n` +
+        // v2026-06-02: include anche tabella agent del cliente per
+        // capire QUALE e' offline e da quanto tempo (caso ZITAC: utente
+        // pensa che l'agent sia online ma in realta' e' disconnesso da
+        // settimane).
+        let agentsBlock = "";
+        if (Array.isArray(d.agents) && d.agents.length > 0) {
+          const lines = d.agents.map(a => {
+            const status = a.online ? "🟢 ONLINE" : "🔴 OFFLINE";
+            const hb = a.last_heartbeat_at
+              ? new Date(a.last_heartbeat_at).toLocaleString("it-IT")
+              : "mai";
+            const inSub = a.device_ip_in_subnet ? "✓ in subnet" : "✗ fuori subnet";
+            return `   ${status} ${a.hostname || a.agent_id?.slice(0, 8)} (${a.role}) ` +
+                   `IP=${a.agent_ip || "?"} subnet=${a.subnet || "?"} ${inSub} ` +
+                   `last_hb=${hb}`;
+          }).join("\n");
+          agentsBlock = `\n\n👥 Agent del cliente (${d.agents.length}):\n${lines}`;
+        } else {
+          agentsBlock = "\n\n👥 Nessun agent registrato in DB per questo cliente.";
+        }
+        const msg = `❌ Poll fallito: ${reason}\n\n📋 Diagnosi:\n${d.diagnosis}` +
+          agentsBlock +
+          "\n\n💡 Suggerimenti:\n" +
           (d.suggestions || []).map(s => `• ${s}`).join("\n");
         window.alert(msg);
       } catch {
