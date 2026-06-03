@@ -66,12 +66,21 @@ type SNMPConfig struct {
 }
 
 type SNMPTarget struct {
-	IP          string `yaml:"ip"`
-	Name        string `yaml:"name,omitempty"`
-	Community   string `yaml:"community,omitempty"`
-	Profile     string `yaml:"profile,omitempty"`      // generic / zyxel / mikrotik / printer ...
-	SNMPVersion string `yaml:"snmp_version,omitempty"` // v1 / v2c / v3
-	SNMPPort    int    `yaml:"snmp_port,omitempty"`    // default 161
+	IP          string            `yaml:"ip"`
+	Name        string            `yaml:"name,omitempty"`
+	Community   string            `yaml:"community,omitempty"`
+	Profile     string            `yaml:"profile,omitempty"`      // generic / zyxel / mikrotik / printer ...
+	ProfileKey  string            `yaml:"profile_key,omitempty"`  // canonical profile id (hpe_comware, ...)
+	SNMPVersion string            `yaml:"snmp_version,omitempty"` // v1 / v2c / v3
+	SNMPPort    int               `yaml:"snmp_port,omitempty"`    // default 161
+	// v2026-06-02 fix dati SNMP stale: il backend ora popola questa mappa
+	// con OID specifici del profilo (es. CPU/mem/temp per switch HP,
+	// supplies per stampanti). Senza questi l'agent polla solo i 4 OID
+	// base (sysName/Descr/ObjectID/UpTime) e le metriche risultano
+	// sempre vuote. Map e' name → oid: il name e' una label leggibile
+	// (es. "h3cEntityExtCpuUsage") che il backend salva in
+	// device_poll_status.metrics per essere mostrata in UI.
+	ExtraOIDs map[string]string `yaml:"extra_oids,omitempty"`
 }
 
 // PingConfig drives the ICMP live-polling loop. The agent invokes the

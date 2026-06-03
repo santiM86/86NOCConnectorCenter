@@ -730,6 +730,15 @@ async def _bridge_snmp_poll(conn: _Connection, r: Dict[str, Any]) -> None:
         "last_poll": now_iso,
         "source": "agent_v4",
     }
+    # v2026-06-02 fix critico: salviamo anche le metriche extra (CPU,
+    # memoria, temperatura, supplies, ecc.) che ora l'agent v4.x polla
+    # grazie al campo `extra_oids` ricevuto nel poller_config. Prima
+    # questi OID venivano IGNORATI dal bridge e la UI mostrava sempre 0%
+    # per CPU/mem anche se il device era SNMP-attivo.
+    if isinstance(r.get("oids"), dict) and r["oids"]:
+        snmp_set["metrics"] = r["oids"]
+        snmp_set["metrics_count"] = len(r["oids"])
+        snmp_set["metrics_updated_at"] = now_iso
     try:
         await db.device_poll_status.update_one(
             {"client_id": conn.client_id, "device_ip": target},
@@ -1060,8 +1069,26 @@ async def _build_poller_config(
             {"client_id": client_id, "ip": {"$ne": None, "$exists": True}},
             {"_id": 0, "ip": 1, "name": 1, "community": 1, "snmp_community": 1,
              "snmp_version": 1, "snmp_port": 1, "device_type": 1, "monitor_type": 1,
-             "enabled": 1, "disabled": 1},
+             "enabled": 1, "disabled": 1, "profile_key": 1},
         )
+        # v2026-06-02: carica anche profile_key dalla collection
+        # device_poll_status (fingerprint risultato del precedente poll),
+        # come fallback se managed_devices non lo ha
+        pd_profile_keys: Dict[str, str] = {}
+        async for ps in db.device_poll_status.find(
+            {"client_id": client_id}, {"_id": 0, "device_ip": 1, "profile_key": 1}
+        ):
+            if ps.get("profile_key"):
+                pd_profile_keys[ps["device_ip"]] = ps["profile_key"]
+
+        # Importa profili per estrarre extra OID
+        try:
+            from device_profiles import get_profile, COMMON_OIDS
+        except Exception:
+            def get_profile(_k):  # type: ignore[no-redef]
+                return None
+            COMMON_OIDS = {}  # type: ignore[assignment]
+
         async for d in cursor:
             if d.get("disabled") is True or d.get("enabled") is False:
                 continue
@@ -1093,13 +1120,39 @@ async def _build_poller_config(
                 "switch", "firewall", "router", "ap", "printer", "ups", "network",
             )
             if snmp_eligible:
+                # v2026-06-02 fix critico: aggiungiamo `extra_oids` al
+                # target SNMP. Senza questo l'agent Go v4.x polla SOLO
+                # i 4 OID base (sysName/Descr/ObjectID/UpTime) e mai
+                # CPU/memoria/temperatura/contatori stampante. Risultato:
+                # device sempre "online" ma metriche stale per settimane.
+                profile_key = (
+                    d.get("profile_key")
+                    or pd_profile_keys.get(ip)
+                    or ""
+                )
+                extra_oids: Dict[str, str] = {}
+                if profile_key:
+                    prof = get_profile(profile_key) or {}
+                    full_oids = prof.get("oids", {}) or {}
+                    # Escludi i COMMON_OIDS che l'agent gia' polla.
+                    common_set = set(COMMON_OIDS.values()) if COMMON_OIDS else set()
+                    for name, oid in full_oids.items():
+                        if not isinstance(oid, str):
+                            # Skip tabular OIDs (lista, dict) — l'agent
+                            # supporta solo GET singoli per ora
+                            continue
+                        if oid in common_set:
+                            continue
+                        extra_oids[name] = oid
                 snmp_targets.append({
                     "ip": ip,
                     "name": name,
                     "community": community or "public",
                     "profile": d.get("device_type") or "generic",
+                    "profile_key": profile_key,
                     "snmp_version": d.get("snmp_version") or "v2c",
                     "snmp_port": int(d.get("snmp_port") or 161),
+                    "extra_oids": extra_oids,
                 })
     except Exception as e:
         logger.warning("agent_ws: _build_poller_config error client_id=%s err=%s", client_id, e)
