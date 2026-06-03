@@ -1,3 +1,75 @@
+# 2026-06-02 — Switch SNMP non aggiornato: diagnosi + re-poll on demand
+
+## 🐛 Problema segnalato
+Screenshot Scheda Dispositivo: Switch 01 HP 5130 52G (10.10.41.221,
+client Zitac) mostra:
+- ONLINE, raggiungibile (snmp+http monitor)
+- Connector: ZITACSRV
+- **ULTIMO POLL: 06/05/2026** = ~27 giorni fa
+- CPU 0, MEMORIA 0, MAC non disponibile
+- Profilo `hpe_comware` applicato
+
+Il device è online ma il polling SNMP è fermo da quasi un mese.
+
+## 🔍 Root cause architetturale identificata
+In `agent_ws.py::_build_poller_config()` (linea 1039-1130) il backend
+calcola gli SNMP targets PER OGNI agent del cliente filtrando per
+**subnet-aware dispatching**: l'agent riceve solo i target la cui IP
+ricade nella sua subnet (`_agent_subnet_from_ip`). Eccezione: il master
+del cliente prende i target "orfani" (fuori da QUALSIASI subnet di
+agent live).
+
+→ Se ZITACSRV ha `agent_ip` in subnet diversa da 10.10.41.0/24 (es.
+si trova in .40.x o .16.x) E non ha role=master, NON riceve target per
+gli switch della .41.x → 0 SNMP polls → device stale.
+
+Il commento alla riga 1107-1113 documenta esattamente questo caso:
+> *"DIAGNOSTIC: log targets count so we can debug 'agent connected but
+> no SNMP polls'. If subnet-aware dispatching mismatches subnet, the
+> agent receives empty targets → no polls → devices appear stale."*
+
+## ✅ Fix — 2 endpoint admin + bottone UI
+
+### Backend (`backend/routes/snmp_diagnostics.py`, nuovo)
+- `GET /api/admin/snmp-diagnosis/{client_id}/{device_ip}` — replica
+  la logica dispatcher e mostra:
+  - device info (managed_devices + device_poll_status)
+  - tutti gli agent del cliente con role, agent_ip, subnet, online,
+    `device_ip_in_subnet`
+  - `dispatch_winner`: chi DOVREBBE pollare e perché
+  - `issues[]` + `suggestions[]` human-readable
+- `POST /api/admin/snmp-poll-now/{client_id}/{device_ip}` — bypassa
+  la subnet-dispatch logic e invia `force_snmp_poll` DIRETTAMENTE
+  all'agent online (preferenza master) via WS. Esegue un poll ad-hoc
+  per debug immediato.
+
+### Frontend (`frontend/src/components/DeviceInfoCard.js`)
+- Nuovo bottone **"Re-poll SNMP"** nell'header della Scheda Dispositivo
+- Click → invia POST snmp-poll-now → toast con sysName ricevuto +
+  auto-refresh della card dopo 1.5s
+- Se il poll fallisce → **diagnosi automatica** via GET snmp-diagnosis
+  + alert con `diagnosis` + `suggestions` (es. "promuovi agent a master",
+  "installa agent in subnet X")
+
+## 🚀 Workflow utente per risolvere il caso ZITAC
+1. **Save to GitHub** + deploy
+2. Apri scheda Switch 01 → click **"Re-poll SNMP"**
+3. Scenario A: poll OK → ULTIMO POLL aggiornato, dati freschi
+4. Scenario B: poll fallisce → alert mostra
+   `🔴 NESSUN AGENT ONLINE ha subnet matchante, ne' master fallback`
+   + suggerimento: "promuovi ZITACSRV a master" oppure "verifica
+   perché agent in subnet 10.10.41.x è OFFLINE"
+5. Applica fix suggerito → al prossimo cycle (60s) il device riceve poll
+   regolari
+
+## 🧪 Validazione preview
+- Lint backend+frontend puliti
+- Endpoint diagnosi risponde 200 anche per device inesistenti
+- Endpoint poll-now risponde 404 device-non-trovato correttamente
+
+---
+
+
 # 2026-06-02 — Fix profili Stampante nascosti nella dropdown "Applica profilo"
 
 ## 🐛 Problema segnalato
