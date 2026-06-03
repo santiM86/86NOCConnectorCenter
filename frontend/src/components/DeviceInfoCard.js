@@ -121,6 +121,47 @@ export default function DeviceInfoCard({ deviceIp, onClose = null, compact = fal
       .finally(() => setLoading(false));
   };
 
+  // v2026-06-02: force re-poll SNMP + diagnosi sul perche' lo SNMP non
+  // arriva fresco. Caso d'uso: switch HP 10.10.41.221 (ZITAC) con ultimo
+  // poll vecchio di settimane perche' subnet-aware dispatcher non manda
+  // i target nell'agent giusto.
+  const [snmpPolling, setSnmpPolling] = useState(false);
+  const forceSnmpPoll = async () => {
+    const clientId = card?.client?.id || card?.client_id || card?.identity?.client_id;
+    if (!clientId) {
+      toast.error("client_id non disponibile in scheda");
+      return;
+    }
+    setSnmpPolling(true);
+    try {
+      const r = await axios.post(
+        `${API}/api/admin/snmp-poll-now/${clientId}/${deviceIp}`, {},
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+      const reply = r.data?.reply || {};
+      const sysName = reply?.sys_name || reply?.sysName || "—";
+      toast.success(`✅ Poll SNMP eseguito da ${r.data.executed_by_agent}. sysName=${sysName}`, { duration: 8000 });
+      setTimeout(fetchCard, 1500);
+    } catch (e) {
+      // Se il poll fallisce, esegui automaticamente la diagnosi
+      const reason = e.response?.data?.detail || e.message;
+      try {
+        const diag = await axios.get(
+          `${API}/api/admin/snmp-diagnosis/${clientId}/${deviceIp}`,
+          { headers: { Authorization: `Bearer ${token}` } },
+        );
+        const d = diag.data;
+        const msg = `❌ Poll fallito: ${reason}\n\n📋 Diagnosi:\n${d.diagnosis}\n\n` +
+          (d.suggestions || []).map(s => `• ${s}`).join("\n");
+        window.alert(msg);
+      } catch {
+        toast.error(`Poll SNMP fallito: ${reason}`);
+      }
+    } finally {
+      setSnmpPolling(false);
+    }
+  };
+
   const startEditName = (currentName) => {
     setNewName(currentName || "");
     setEditingName(true);
@@ -396,6 +437,16 @@ export default function DeviceInfoCard({ deviceIp, onClose = null, compact = fal
             </button>
             <button onClick={fetchCard} title="Aggiorna" className="p-2 rounded-md hover:bg-white/5 text-[var(--text-secondary)]" data-testid="device-info-card-refresh">
               <ArrowsClockwise size={14} />
+            </button>
+            {/* v2026-06-02: Re-poll SNMP + auto-diagnosi se fallisce */}
+            <button
+              onClick={forceSnmpPoll}
+              disabled={snmpPolling}
+              title="Forza re-poll SNMP via agent online (con diagnosi automatica se fallisce)"
+              className="px-2.5 py-1.5 text-[11px] rounded-md border border-emerald-500/40 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20 hover:border-emerald-400 flex items-center gap-1.5 transition-colors disabled:opacity-50"
+              data-testid="device-info-card-snmp-repoll">
+              <ArrowsClockwise size={13} weight="duotone" className={snmpPolling ? "animate-spin" : ""} />
+              <span className="hidden sm:inline">{snmpPolling ? "Polling…" : "Re-poll SNMP"}</span>
             </button>
             {onClose && (
               <button onClick={onClose} className="px-3 py-1 text-xs rounded-md border border-[var(--bg-border)] hover:bg-white/5" data-testid="device-info-card-close">

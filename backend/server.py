@@ -261,6 +261,7 @@ from routes.agent_ws import router as agent_ws_router  # 86NocAgent v4 WS+contro
 from routes.github_deploy import router as github_deploy_router  # Auto-deploy webhook
 from routes.lan_scanner import router as lan_scanner_router  # Scanner LAN via WS
 from routes.freshness_audit import router as freshness_audit_router  # Audit pipeline telemetria
+from routes.snmp_diagnostics import router as snmp_diagnostics_router  # Diagnosi SNMP per device
 
 app.include_router(auth_router)
 app.include_router(admin_router)
@@ -277,6 +278,7 @@ app.include_router(agent_ws_router)  # 86NocAgent v4
 app.include_router(github_deploy_router)  # Auto-deploy webhook GitHub
 app.include_router(lan_scanner_router)  # Scanner LAN on-demand via WS
 app.include_router(freshness_audit_router)  # GET /api/admin/freshness-audit
+app.include_router(snmp_diagnostics_router)  # SNMP diagnosis + force poll
 app.include_router(discovery_router)
 app.include_router(web_proxy_router)
 app.include_router(web_console_live_router)
