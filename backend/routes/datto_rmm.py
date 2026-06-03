@@ -918,6 +918,179 @@ async def datto_sync_now(current_user: dict = Depends(get_current_user)):
     return {"ok": True, **result}
 
 
+# v2026-06-02: nuovi endpoint per debug e risoluzione del caso "Galvan/Zitac
+# 0 device sync nonostante site Datto linkato e popolato".
+# Root cause tipica: mismatch tra site_id salvato in datto_client_links e
+# siteUid restituito dall'endpoint /devices Datto, oppure link orfani
+# (datto_client_links.client_id punta a un client eliminato/ricreato).
+
+@router.get("/admin/datto/client-debug/{client_id}")
+async def datto_client_debug(client_id: str,
+                              current_user: dict = Depends(get_current_user)):
+    """Diagnosi PER-CLIENT: spiega ESATTAMENTE perche' un cliente specifico
+    ha 0 device sincronizzati. Mostra:
+      - se il client esiste in `clients`
+      - il link Datto salvato (site_id, site_name, last_sync_at, counters)
+      - i contatori device nel DB (datto_devices)
+      - i contatori device dal portal LIVE (devices_endpoint + sites_endpoint)
+      - rilevamento mismatch site_id automatico
+    """
+    require_admin(current_user)
+
+    client_doc = await db.clients.find_one({"id": client_id}, {"_id": 0, "id": 1, "name": 1})
+    link = await db.datto_client_links.find_one({"client_id": client_id}, {"_id": 0})
+    persisted_devices = await db.datto_devices.count_documents({"client_id": client_id})
+    matched_devices = await db.datto_devices.count_documents({"client_id": client_id, "matched": True})
+
+    out: dict[str, Any] = {
+        "client_id": client_id,
+        "client_exists": client_doc is not None,
+        "client_name": (client_doc or {}).get("name"),
+        "link": link,
+        "datto_devices_in_db": persisted_devices,
+        "matched_in_db": matched_devices,
+    }
+
+    if not link:
+        out["diagnosis"] = "Nessun link Datto per questo client. Vai a Impostazioni → Datto RMM → mappa il cliente a un site."
+        return out
+
+    site_id_linked = link.get("site_id")
+    # Conta device LIVE dal portal per il site linkato
+    try:
+        devices = await _fetch_devices_list_all(timeout=20.0)
+    except Exception as e:
+        out["diagnosis"] = f"Errore fetch devices Datto: {e!r}"
+        return out
+
+    # Quanti device hanno siteUid == site_id_linked?
+    matching_devices = []
+    site_ids_seen: set[str] = set()
+    for d in devices:
+        sid = str(d.get("siteUid") or d.get("siteId") or "")
+        if sid:
+            site_ids_seen.add(sid)
+        if sid == site_id_linked:
+            matching_devices.append({
+                "hostname": d.get("hostname"),
+                "intIpAddress": d.get("intIpAddress"),
+                "siteUid": sid,
+                "siteName": d.get("siteName"),
+            })
+
+    out["live_devices_for_linked_site"] = len(matching_devices)
+    out["sample_devices"] = matching_devices[:5]
+
+    # Cerca tutti i siti che hanno nome simile al site_name linkato
+    sname_linked = (link.get("site_name") or "").strip().lower()
+    siblings = []
+    if sname_linked:
+        for d in devices:
+            n = (d.get("siteName") or "").strip().lower()
+            sid = str(d.get("siteUid") or d.get("siteId") or "")
+            if n and n == sname_linked and sid != site_id_linked:
+                if not any(s["site_id"] == sid for s in siblings):
+                    siblings.append({"site_id": sid, "site_name": d.get("siteName")})
+    out["sites_with_same_name_but_different_id"] = siblings
+
+    # Diagnosi
+    if not client_doc:
+        out["diagnosis"] = (
+            "🔴 Link Datto orfano: punta a un client che non esiste piu' in "
+            "`clients`. Pulisci con POST /api/admin/datto/cleanup-orphan-links."
+        )
+    elif len(matching_devices) == 0 and siblings:
+        out["diagnosis"] = (
+            f"🟠 MISMATCH SITE_ID: il link punta a '{site_id_linked}' ma "
+            f"esistono {len(siblings)} altri site Datto con lo STESSO NOME "
+            f"'{link.get('site_name')}' e site_id diverso. Probabilmente "
+            f"il site originale e' stato eliminato/ricreato lato Datto. "
+            f"Vai in Impostazioni → Datto RMM → rilinka il cliente "
+            f"selezionando di nuovo il site dalla dropdown."
+        )
+    elif len(matching_devices) == 0:
+        out["diagnosis"] = (
+            f"🟠 Il site '{link.get('site_name')}' ({site_id_linked}) non "
+            f"ha alcun device nell'endpoint /devices Datto. Verifica sul "
+            f"portal portal.86bit.it se il site contiene effettivamente "
+            f"device attivi."
+        )
+    elif persisted_devices < len(matching_devices):
+        out["diagnosis"] = (
+            f"🟡 {len(matching_devices)} device disponibili lato Datto ma "
+            f"solo {persisted_devices} in DB. Esegui un re-sync con "
+            f"POST /api/admin/datto/sync-client/{client_id} per forzarne "
+            f"l'allineamento."
+        )
+    else:
+        out["diagnosis"] = "✅ Allineato"
+
+    return out
+
+
+@router.post("/admin/datto/sync-client/{client_id}")
+async def datto_sync_single_client(
+    client_id: str, current_user: dict = Depends(get_current_user),
+):
+    """Forza il re-sync dei device Datto per UN solo client. Utile dopo aver
+    rilinkato il site (es. quando il site Datto e' stato ricreato e il
+    site_id e' cambiato). Esegue gli stessi step del sync globale ma
+    SOLO per il client specificato."""
+    require_admin(current_user)
+    link = await db.datto_client_links.find_one({"client_id": client_id}, {"_id": 0})
+    if not link:
+        raise HTTPException(status_code=404, detail="Link Datto non trovato per questo client")
+
+    # Esegui un refresh completo (re-fetch + match) — semplice e affidabile.
+    # Per ottimizzazioni future si puo' fare un sync per-site, ma il volume
+    # di dati Datto e' modesto (982 device totali) → la chiamata massimale
+    # gira in ~15s.
+    result = await _refresh_sites_cache()
+
+    # Riprendi i contatori aggiornati
+    devices_count = await db.datto_devices.count_documents({"client_id": client_id})
+    matched_count = await db.datto_devices.count_documents({"client_id": client_id, "matched": True})
+    link_after = await db.datto_client_links.find_one({"client_id": client_id}, {"_id": 0})
+    audit.info(f"datto_sync_single_client client={client_id} -> {devices_count}/{matched_count} by={current_user.get('email')}")
+    return {
+        "ok": True,
+        "client_id": client_id,
+        "devices_count": devices_count,
+        "matched_count": matched_count,
+        "last_sync_at": (link_after or {}).get("last_sync_at"),
+        "global_sync_result": result,
+    }
+
+
+@router.post("/admin/datto/cleanup-orphan-links")
+async def datto_cleanup_orphan_links(current_user: dict = Depends(get_current_user)):
+    """Rimuove `datto_client_links` che puntano a client_id non piu' esistenti
+    in `clients` collection, e i relativi `datto_devices`. Da usare quando
+    la UI Diagnostica mostra "(eliminato?)" nello "Stato per cliente"."""
+    require_admin(current_user)
+
+    links = await db.datto_client_links.find({}, {"_id": 0, "client_id": 1, "client_name": 1}).to_list(500)
+    existing_ids = {c["id"] async for c in db.clients.find({}, {"_id": 0, "id": 1})}
+
+    orphan_ids = [link["client_id"] for link in links if link["client_id"] not in existing_ids]
+    orphan_links = [link for link in links if link["client_id"] in orphan_ids]
+
+    if orphan_ids:
+        await db.datto_client_links.delete_many({"client_id": {"$in": orphan_ids}})
+        dev_del = await db.datto_devices.delete_many({"client_id": {"$in": orphan_ids}})
+        audit.warning(
+            f"datto_cleanup_orphan_links removed_links={len(orphan_ids)} "
+            f"removed_devices={dev_del.deleted_count} by={current_user.get('email')}"
+        )
+        return {
+            "ok": True,
+            "removed_links": len(orphan_ids),
+            "removed_devices": dev_del.deleted_count,
+            "orphan_links": orphan_links,
+        }
+    return {"ok": True, "removed_links": 0, "removed_devices": 0, "orphan_links": []}
+
+
 @router.get("/datto/diagnostics")
 async def datto_diagnostics(current_user: dict = Depends(get_current_user)):
     """Diagnostica completa Datto RMM: stato config, cache, link clienti,
