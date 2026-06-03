@@ -1,3 +1,32 @@
+# 2026-06-02 — Fix profili Stampante nascosti nella dropdown "Applica profilo"
+
+## 🐛 Problema segnalato
+Screenshot utente: modal "Applica profilo SNMP" in ClientOverviewPage mostra
+solo Switch, Firewall, NAS, UPS, Server OOB, UniFi — i **6 profili
+Stampante** (HP, Epson, Kyocera, Xerox, Brother, Canon) sono **invisibili**
+anche se esistono in `backend/device_profiles/__init__.py`.
+
+## 🔍 Root cause
+In `frontend/src/pages/ClientOverviewPage.js` linea ~3356 la whitelist
+`familyOrder` non includeva `"printer"`. I 6 profili venivano caricati
+correttamente da `/api/device-profiles` e raggruppati in `byFamily.printer`,
+ma poi filtrati dalla `.filter(f => familyOrder.includes(f))` implicita
+del `.map`.
+
+## ✅ Fix (1 riga)
+Aggiunto `"printer"` (e in più anche `"generic"` che era mancante) a
+`familyOrder` e label corrispondente "Stampante" in `familyLabels`.
+
+## 📝 Nota sui dati stampante non visibili
+Il secondo problema utente ("non vedo loro dati") si risolverà
+applicando uno dei 6 profili stampante via la dropdown ora visibile.
+I profili includono OID RFC 3805 standard (`prtMarkerLifeCount`,
+`prtMarkerSuppliesLevel`, ecc.) che faranno popolare le metriche
+contatori toner/inchiostro/pagine.
+
+---
+
+
 # 2026-06-02 — Datto RMM: Galvan/Zitac 0 device sync — tool diagnosi + fix
 
 ## 🐛 Problema segnalato
