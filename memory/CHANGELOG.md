@@ -1,3 +1,159 @@
+# 2026-06-02 — Fix "[errore decifratura]" credenziali vault (post rotazione salt)
+
+## 🐛 Problema segnalato
+Utente segnala screenshot Vault Credenziali del cliente Zitac in PROD:
+- 1 credenziale iLO ZITACSRV mostra `Username: [errore decifratura]`
+- Click su "Mostra" → toast `Errore nel caricamento credenziale` (HTTP 500)
+
+## 🔍 Root cause CONFERMATA
+Le credenziali sono cifrate AES-256-GCM con:
+- `ENCRYPTION_KEY` da `.env`
+- **Salt random persistente** in `/app/backend/data/encryption_salt.bin`
+
+Se il file salt viene rigenerato (es. restart container PROD senza volume
+persistente per `/app/backend/data/`), la chiave derivata cambia → le
+credenziali cifrate con il salt vecchio NON sono più decifrabili. È un
+design di sicurezza intrinseco di AES-GCM — il plaintext è perso.
+
+Stesso problema rilevato anche in **PREVIEW** (1/1 credenziale corrotta,
+salt rigenerato il 30/04/2026, credenziale creata il 27/03/2026).
+
+## ✅ Fix in due parti
+
+### Backend — endpoint diagnostici (`backend/routes/vault.py`)
+- `GET /api/admin/vault-health-check` — verifica decifratura di TUTTE le
+  credenziali, ritorna conteggio corrotte/totali + dettagli (id, device,
+  client, created_at, error) + stato salt file (path, mtime, size) +
+  suggestion human-readable
+- `DELETE /api/admin/vault-purge-corrupted` — elimina in batch tutte le
+  credenziali non decifrabili (con audit log)
+
+### Frontend — banner di warning prominente (`frontend/src/pages/VaultPage.js`)
+- Stato `vaultHealth` con auto-fetch al mount
+- Banner rosso sopra la lista quando `corrupted_count > 0`:
+  - Spiega la root cause in italiano
+  - Mostra path file salt + mtime (per diagnosi)
+  - Bottone "Elimina N credenziali e ricreale" → conferma → DELETE bulk
+  - Bottone "Ri-verifica" per refresh
+
+## 🛡 Fix permanente (azione utente PROD)
+Nel `docker-compose.yml` (o k8s manifest) di `argus.86bit.it` aggiungere un
+**volume persistente** per `/app/backend/data/`:
+```yaml
+services:
+  argus-backend:
+    volumes:
+      - argus-data:/app/backend/data
+volumes:
+  argus-data:
+```
+Questo previene la rigenerazione del salt ad ogni restart container.
+
+Inoltre **backup** del file `encryption_salt.bin` + variabile
+`ENCRYPTION_KEY` in `.env`: se uno dei due si perde, le credenziali
+non sono più recuperabili.
+
+## 🧪 Smoke test preview
+Screenshot in preview conferma banner visibile con tutti i dettagli +
+data salt corretta (30/04/2026 13:51).
+
+---
+
+
+# 2026-06-02 — Migliore display name device: estrai segmento utile da categorie Fingerbank
+
+## 🎯 Problema
+Utente segnala via screenshot Zitac: 3 switch HP mostravano nomi non
+identici a quelli interni (sysName SNMP):
+- "Hardware Manufacturer/Hewlett Packard 10.10.41.222"
+- "HP 10.10.41.220"
+- "Switch and Wireless Controller/HP Switches 10.10.41.221"
+
+## 🔍 Root cause
+Quando l'agent non ha (ancora) popolato `pd.sys_name` per quei device,
+`best_display_name` cadeva sul fallback Fingerbank tassonomico e
+restituiva la **stringa intera tipo "X/Y"** ("Switch and Wireless
+Controller/HP Switches"). Brutto e confuso.
+
+## ✅ Fix
+- `backend/display_name.py` step 8: se la stringa Fingerbank contiene "/",
+  estrae l'**ultimo segmento** (la parte più informativa) e affianca l'IP
+  con bullet separator: `"HP Switches · 10.10.41.221"`,
+  `"Hewlett Packard · 10.10.41.222"`
+- `frontend/src/utils/deviceCategory.js::pickDeviceName()` allineato (stessa
+  logica mirror) sia per `fingerbank_device_name` che per `name`
+  category-like — defense in depth se l'API ritorna ancora vecchi nomi
+
+## 🧪 Test regressione
+`backend/tests/test_display_name.py`: 16/16 passati con 3 nuovi casi:
+- `test_fingerbank_long_category_shortened`
+- `test_fingerbank_hardware_manufacturer_shortened`
+- `test_fingerbank_no_slash_kept_as_is`
+
+## 📝 Nota importante per l'utente
+Per vedere i **veri hostname SNMP** (sysName configurato sullo switch)
+e non solo il vendor+IP, serve che l'agent SNMP polli correttamente
+l'OID `1.3.6.1.2.1.1.5.0` (sysName) sui device. Se dopo il deploy del
+fix continui a vedere "HP Switches · IP" invece di
+"Switch02 HP 5130 52G", significa che il polling SNMP non sta
+estraendo il sysName — possibili cause:
+1. Credenziali SNMP non corrette per quel device (verifica nella
+   scheda Credenziali)
+2. ACL SNMP sul firewall dello switch che blocca il connector
+3. SNMP disabilitato a livello device
+
+---
+
+
+# 2026-06-02 — Fix bug 500 /api/device-profiles in PROD (override corrotti)
+
+## 🐛 Problema segnalato
+Utente segnala via screenshot in PROD (`argus.86bit.it`): pagina **Device Profiles**
+mostra toast `Errore caricamento profili: Request failed with status code 500`.
+L'endpoint funziona perfettamente in preview (200, 20 profili) — quindi il bug
+era specifico dei dati in PROD.
+
+## 🔍 Root cause sospettata
+`backend/routes/device_profiles.py::list_profiles()` faceva merge dei profili
+seed con `device_profile_overrides` da DB usando una comprehension che
+SOLLEVAVA eccezione se:
+- un documento aveva campo `overrides` non dict (string, list, ecc.)
+- un documento mancava del campo `key`
+- un singolo profilo seed aveva struttura inattesa
+
+Un solo documento corrotto in collection → 500 su TUTTO l'endpoint → UI
+intera bloccata. Difficile diagnosticare perché l'errore non era nei log
+visibili all'utente.
+
+## ✅ Fix (`backend/routes/device_profiles.py`)
+- `_get_overrides_map()` ora tollera documenti malformati: log warning e
+  skip selettivo per `overrides` non-dict, key mancanti, ecc.
+- `_merge()` reso difensivo: try/except totale, mai solleva
+- `list_profiles()` cicla con try/except per profilo individuale; quelli
+  che falliscono vengono accumulati in `errors[]` invece di abortire
+  l'intera response
+- Nuovo campo response `errors: []` — vuoto = tutto ok, popolato = inspect
+  immediato di quale profilo/override sta dando problemi
+- Aggiunto logger dedicato `device_profiles` per traceback dettagliati
+
+## 🧪 Test regressione
+`backend/tests/test_device_profiles_resilient.py`:
+Inietta 4 override patologici (string, None, doc senza key, override valido)
+e verifica che l'endpoint:
+- risponda 200 (non 500)
+- restituisca tutti i 20 profili seed
+- applichi correttamente l'override valido (hpe_ilo polling=42)
+- popoli `errors[]` come array
+
+## 🚀 Deploy in PROD
+Solo backend, hot-reload preview attivo. Dopo "Save to GitHub" + deploy,
+chiamare `/api/device-profiles` in PROD funzionerà SUBITO E mostrerà
+nel campo `errors[]` quali override DB sono corrotti, permettendo
+all'admin di ripulirli con `DELETE /api/device-profiles/{key}/override`.
+
+---
+
+
 # 2026-06-02 — Audit freshness pipeline telemetria + endpoint admin
 
 ## 🎯 Obiettivo

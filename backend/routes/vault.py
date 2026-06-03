@@ -153,3 +153,128 @@ async def delete_credential(cred_id: str, current_user: dict = Depends(get_curre
         details={"action": "credential_deleted", "cred_id": cred_id}, severity="warning"
     )
     return {"status": "ok", "message": "Credenziale eliminata"}
+
+
+# v2026-06-02: Health check vault — utile per diagnosticare il problema
+# "[errore decifratura]" osservato in PROD dopo restart container che ha
+# rigenerato /app/backend/data/encryption_salt.bin. Le credenziali con
+# salt vecchio NON sono piu' recuperabili (per design AES-GCM) e vanno
+# ricreate.
+@router.get("/admin/vault-health-check")
+async def vault_health_check(current_user: dict = Depends(get_current_user)):
+    """Verifica decifratura di TUTTE le credenziali nel vault.
+
+    Returns:
+      - total: numero totale credenziali in DB
+      - decryptable: quante sono decifrabili con la chiave/salt corrente
+      - corrupted: lista credenziali NON decifrabili (id, device_name,
+                   device_ip, client_id, created_at) da ricreare
+      - encryption_status: snapshot di chiave / salt attivi (no segreti)
+      - suggestion: testo human-readable con prossima azione
+    """
+    if current_user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Solo admin")
+
+    creds = await db.device_credentials.find({}, {"_id": 0}).to_list(2000)
+    decryptable = 0
+    corrupted: list[dict] = []
+    for c in creds:
+        try:
+            _ = security_manager.decrypt_credential(c["username_enc"])
+            _ = security_manager.decrypt_credential(c["password_enc"])
+            decryptable += 1
+        except Exception as e:
+            corrupted.append({
+                "id": c.get("id"),
+                "device_name": c.get("device_name"),
+                "device_ip": c.get("device_ip"),
+                "credential_type": c.get("credential_type"),
+                "client_id": c.get("client_id"),
+                "created_at": c.get("created_at"),
+                "created_by": c.get("created_by"),
+                "error": str(e)[:120],
+            })
+
+    # Snapshot chiave/salt (zero leak di segreti)
+    import os
+    from pathlib import Path
+    salt_path = Path(os.environ.get('ARGUS_DATA_DIR', '/app/backend/data')) / "encryption_salt.bin"
+    salt_exists = salt_path.exists()
+    salt_size = salt_path.stat().st_size if salt_exists else 0
+    salt_mtime = None
+    if salt_exists:
+        from datetime import datetime, timezone
+        salt_mtime = datetime.fromtimestamp(
+            salt_path.stat().st_mtime, tz=timezone.utc).isoformat()
+
+    enc_status = {
+        "encryption_key_set": bool(os.environ.get("ENCRYPTION_KEY")),
+        "salt_file_path": str(salt_path),
+        "salt_file_exists": salt_exists,
+        "salt_file_size_bytes": salt_size,
+        "salt_file_mtime_utc": salt_mtime,
+    }
+
+    if corrupted:
+        suggestion = (
+            f"🔴 {len(corrupted)} credenziali NON decifrabili: vanno "
+            f"ELIMINATE e RICREATE. Le credenziali AES-256-GCM con salt "
+            f"vecchio NON sono recuperabili (è un design di sicurezza). "
+            f"Causa più probabile: il file '{salt_path}' è stato rigenerato "
+            f"durante un restart container senza volume persistente. "
+            f"FIX permanente: monta /app/backend/data/ come volume "
+            f"persistente nel tuo docker-compose / k8s manifest."
+        )
+    else:
+        suggestion = "✅ Tutte le credenziali sono decifrabili. Vault healthy."
+
+    return {
+        "total": len(creds),
+        "decryptable": decryptable,
+        "corrupted_count": len(corrupted),
+        "corrupted": corrupted,
+        "encryption_status": enc_status,
+        "suggestion": suggestion,
+    }
+
+
+@router.delete("/admin/vault-purge-corrupted")
+async def purge_corrupted_credentials(current_user: dict = Depends(get_current_user)):
+    """Elimina in batch tutte le credenziali non decifrabili (post conferma).
+
+    Da usare DOPO aver visto l'output di /admin/vault-health-check ed
+    essersi resi conto che le credenziali corrotte vanno ricreate. Pulisce
+    il DB in modo sicuro (audit log per ciascuna).
+    """
+    if current_user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Solo admin")
+
+    creds = await db.device_credentials.find({}, {"_id": 0}).to_list(2000)
+    purged_ids: list[str] = []
+    for c in creds:
+        try:
+            security_manager.decrypt_credential(c["username_enc"])
+            security_manager.decrypt_credential(c["password_enc"])
+        except Exception:
+            purged_ids.append(c.get("id"))
+
+    if purged_ids:
+        await db.device_credentials.delete_many({"id": {"$in": purged_ids}})
+        await audit_logger.log(
+            AuditAction.SUSPICIOUS_ACTIVITY,
+            user_id=current_user.get("id"), user_email=current_user.get("email"),
+            details={
+                "action": "vault_purge_corrupted",
+                "purged_count": len(purged_ids),
+                "purged_ids": purged_ids,
+            },
+            severity="warning",
+        )
+
+    return {
+        "status": "ok",
+        "purged_count": len(purged_ids),
+        "purged_ids": purged_ids,
+        "message": (f"Eliminate {len(purged_ids)} credenziali non decifrabili. "
+                    f"Vanno ricreate manualmente con 'Aggiungi Credenziale'."),
+    }

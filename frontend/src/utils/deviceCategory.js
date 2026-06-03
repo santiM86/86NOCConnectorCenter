@@ -159,9 +159,28 @@ export function pickDeviceName(d, fallback = "") {
     }
   }
   const fb = (d.fingerbank_device_name || "").trim();
-  if (fb && fb !== ip) return fb;
-  // Anche se "name" è category-like, meglio che ip nudo
+  if (fb && fb !== ip) {
+    // v2026-06-02: estrai il segmento piu' informativo da categorie
+    // tassonomiche tipo "Switch and Wireless Controller/HP Switches" ->
+    // "HP Switches · 10.10.41.221". Mantieni la stringa intera se NON
+    // contiene "/".
+    if (fb.includes("/")) {
+      const parts = fb.split("/").map(s => s.trim()).filter(Boolean);
+      const short = parts.length ? parts[parts.length - 1] : fb;
+      return ip ? `${short} · ${ip}` : short;
+    }
+    return fb;
+  }
+  // Anche se "name" è category-like, meglio che ip nudo: ma applichiamo
+  // lo stesso shortening per uniformita' visiva.
   const nm = (d.name || "").trim();
-  if (nm && nm !== ip) return nm;
+  if (nm && nm !== ip) {
+    if (_isCategorical(nm)) {
+      const parts = nm.split("/").map(s => s.trim()).filter(Boolean);
+      const short = parts.length ? parts[parts.length - 1] : nm;
+      return ip ? `${short} · ${ip}` : short;
+    }
+    return nm;
+  }
   return ip || fallback;
 }

@@ -126,8 +126,22 @@ def best_display_name(
             return f"{vendor_clean} {ip}"
 
     # 8) Fingerbank category come tag di fallback (DOPO il vendor+IP).
+    # v2026-06-02: NON restituire la stringa tassonomica completa tipo
+    # "Switch and Wireless Controller/HP Switches"; estrai la parte piu'
+    # informativa (a destra dell'ultimo "/") e affianca l'IP per
+    # identificare il device. Esempi:
+    #   "Switch and Wireless Controller/HP Switches" -> "HP Switches · 10.10.41.221"
+    #   "Hardware Manufacturer/Hewlett Packard"      -> "Hewlett Packard · 10.10.41.222"
+    #   "Operating System/Linux"                     -> "Linux · 10.10.41.50"
     fb_name = _clean(md.get("fingerbank_device_name"), ip)
     if fb_name:
+        if "/" in fb_name:
+            # Prendi ultimo segmento, fallback al primo se quello e' vuoto
+            parts = [p.strip() for p in fb_name.split("/") if p.strip()]
+            short = parts[-1] if parts else fb_name
+            if ip:
+                return f"{short} · {ip}"
+            return short
         return fb_name
 
     # 9) Se md.name esiste ma e' "category-like", meglio averlo che niente.
