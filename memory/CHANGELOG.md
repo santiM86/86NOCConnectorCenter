@@ -1,3 +1,96 @@
+# 2026-06-02 — Fix profili Stampante nascosti nella dropdown "Applica profilo"
+
+## 🐛 Problema segnalato
+Screenshot utente: modal "Applica profilo SNMP" in ClientOverviewPage mostra
+solo Switch, Firewall, NAS, UPS, Server OOB, UniFi — i **6 profili
+Stampante** (HP, Epson, Kyocera, Xerox, Brother, Canon) sono **invisibili**
+anche se esistono in `backend/device_profiles/__init__.py`.
+
+## 🔍 Root cause
+In `frontend/src/pages/ClientOverviewPage.js` linea ~3356 la whitelist
+`familyOrder` non includeva `"printer"`. I 6 profili venivano caricati
+correttamente da `/api/device-profiles` e raggruppati in `byFamily.printer`,
+ma poi filtrati dalla `.filter(f => familyOrder.includes(f))` implicita
+del `.map`.
+
+## ✅ Fix (1 riga)
+Aggiunto `"printer"` (e in più anche `"generic"` che era mancante) a
+`familyOrder` e label corrispondente "Stampante" in `familyLabels`.
+
+## 📝 Nota sui dati stampante non visibili
+Il secondo problema utente ("non vedo loro dati") si risolverà
+applicando uno dei 6 profili stampante via la dropdown ora visibile.
+I profili includono OID RFC 3805 standard (`prtMarkerLifeCount`,
+`prtMarkerSuppliesLevel`, ecc.) che faranno popolare le metriche
+contatori toner/inchiostro/pagine.
+
+---
+
+
+# 2026-06-02 — Datto RMM: Galvan/Zitac 0 device sync — tool diagnosi + fix
+
+## 🐛 Problema segnalato
+Screenshot Diagnostica Datto in PROD:
+- 5 client linkati, 53 device persisted, ma "Stato per cliente" mostra:
+  - 3 record `(eliminato?)` con 13 dev, 40 dev, 0 dev (link orfani a
+    client UUID non più esistenti)
+  - **Galvan: 0 dev, 0 match** nonostante site Galvan(40) linkato
+  - **Zitac: 0 dev, 0 match** nonostante site Zitac(13) linkato
+
+## 🔍 Root cause ipotizzate
+1. **Link orfani**: i 3 record `(eliminato?)` puntano a `client_id` UUID
+   non più in `clients` collection (probabilmente client ricreati o
+   eliminati da admin) — i loro `datto_devices` esistono ancora ma
+   inutili
+2. **Mismatch site_id**: Galvan e Zitac sono linkati per nome, ma il
+   `site_id` salvato in `datto_client_links` potrebbe non corrispondere
+   al `siteUid` ritornato dall'endpoint `/devices` Datto (es. site
+   ricreato lato Datto con nuovo UUID, link puntante a UUID vecchio
+   sopravvissuto)
+
+## ✅ Fix — 3 nuovi endpoint admin + UI
+
+### Backend (`backend/routes/datto_rmm.py`)
+- `GET /api/admin/datto/client-debug/{client_id}` — diagnosi
+  PER-CLIENTE: confronta `link.site_id` con i `siteUid` LIVE
+  dall'endpoint Datto `/devices`, conta device disponibili vs
+  persisted, segnala automaticamente **mismatch site_id** se trova
+  altri site Datto con lo STESSO NOME ma site_id diverso → indica
+  "Rilinka via dropdown"
+- `POST /api/admin/datto/sync-client/{client_id}` — force re-sync
+  per UN solo cliente (utile dopo aver rilinkato)
+- `POST /api/admin/datto/cleanup-orphan-links` — rimuove link a
+  client eliminati + datto_devices orfani in batch (audit logged)
+
+### Frontend (`frontend/src/pages/DattoRmmSettingsPage.js`)
+- Bottone **"Pulisci link orfani"** appare automaticamente nella
+  sezione "Stato per cliente" quando rileva client `(eliminato?)`
+- Per i client NON orfani ma con 0 dev / 0 match: appaiono mini
+  bottoni **"Debug"** (mostra alert con diagnosi) e **"Re-sync"**
+  (forza sync solo per quel cliente)
+- Auto-refresh diagnostica dopo ogni azione
+
+## 🚀 Soluzione step-by-step per l'utente in PROD
+1. **Save to GitHub** + deploy
+2. Apri Impostazioni → Datto RMM → tab Diagnostica
+3. Clicca **"Pulisci link orfani"** → conferma → eliminerà i 3
+   `(eliminato?)` e i loro datto_devices
+4. Sulla riga **Galvan**: clicca **"Debug"** → vedrai se è un mismatch
+   site_id (e quali altri site hanno lo stesso nome)
+5. Se è mismatch: vai sotto in "Mappatura Cliente Center ↔ Site Datto"
+   → dropdown Galvan → seleziona di nuovo "Galvan (40)" dalla lista
+   (forza salvataggio del NUOVO site_id)
+6. Clicca **"Re-sync"** sulla riga Galvan → ~15s → contatore aggiornato
+7. Ripeti per Zitac
+
+## 🧪 Validazione preview
+- Lint backend+frontend puliti
+- `POST /api/admin/datto/cleanup-orphan-links` risponde 200
+  (0 orfani in preview, atteso)
+
+---
+
+
 # 2026-06-02 — Datto RMM "Test connessione" 500 → ora resiliente con dettaglio errore
 
 ## 🐛 Problema segnalato

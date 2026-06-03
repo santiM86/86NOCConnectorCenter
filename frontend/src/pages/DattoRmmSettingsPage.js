@@ -42,6 +42,47 @@ export default function DattoRmmSettingsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // v2026-06-02: tool per risolvere il caso "Galvan/Zitac 0 device sync".
+  // Pulizia link orfani + force re-sync per singolo client + diagnosi.
+  const cleanupOrphans = async () => {
+    if (!window.confirm("Eliminare i link Datto a clienti non più esistenti (mostrati come '(eliminato?)')?")) return;
+    try {
+      const r = await axios.post(`${API}/api/admin/datto/cleanup-orphan-links`, {}, { headers });
+      toast.success(`✅ ${r.data.removed_links} link orfani eliminati, ${r.data.removed_devices} datto_devices puliti`);
+      await runDiagnostics();
+    } catch (e) {
+      toast.error(`Cleanup fallito: ${e.response?.data?.detail || e.message}`);
+    }
+  };
+
+  const debugClient = async (clientId, clientName) => {
+    try {
+      const r = await axios.get(`${API}/api/admin/datto/client-debug/${clientId}`, { headers });
+      const d = r.data;
+      const msg = `${clientName}: ${d.diagnosis}\n\n` +
+        `Link site: ${d.link?.site_name || "—"} (${d.link?.site_id?.slice(0, 8)}...)\n` +
+        `In DB: ${d.datto_devices_in_db} dev (${d.matched_in_db} matched)\n` +
+        `Live Datto: ${d.live_devices_for_linked_site} dev` +
+        (d.sites_with_same_name_but_different_id?.length
+          ? `\n\n⚠️ ${d.sites_with_same_name_but_different_id.length} altri site Datto con stesso nome ma site_id diverso — RILINKA via dropdown!` : "");
+      window.alert(msg);
+    } catch (e) {
+      toast.error(`Debug fallito: ${e.response?.data?.detail || e.message}`);
+    }
+  };
+
+  const forceSyncClient = async (clientId, clientName) => {
+    if (!window.confirm(`Forzare re-sync Datto per ${clientName}?\n(Esegue un refresh globale, può richiedere ~15s)`)) return;
+    const tId = toast.loading(`Re-sync ${clientName} in corso…`);
+    try {
+      const r = await axios.post(`${API}/api/admin/datto/sync-client/${clientId}`, {}, { headers });
+      toast.success(`✅ ${clientName}: ${r.data.devices_count} device, ${r.data.matched_count} match`, { id: tId, duration: 6000 });
+      await runDiagnostics();
+    } catch (e) {
+      toast.error(`Re-sync fallito: ${e.response?.data?.detail || e.message}`, { id: tId });
+    }
+  };
+
   const reload = useCallback(async () => {
     try {
       const [c, s, cl, sched] = await Promise.all([
@@ -276,18 +317,56 @@ export default function DattoRmmSettingsPage() {
           </div>
           {diag.links_summary && diag.links_summary.length > 0 && (
             <div className="rounded-lg border border-[var(--bg-border)] bg-[var(--bg-card)] p-2.5">
-              <div className="text-[10px] uppercase tracking-wider text-[var(--text-muted)] mb-2">Stato per cliente</div>
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-[10px] uppercase tracking-wider text-[var(--text-muted)]">Stato per cliente</div>
+                {diag.links_summary.some(l => (l.client_name || "").toLowerCase().includes("eliminato")) && (
+                  <Button
+                    data-testid="datto-cleanup-orphans-btn"
+                    size="sm"
+                    variant="outline"
+                    onClick={cleanupOrphans}
+                    className="h-6 text-[10px] border-red-500/40 text-red-300 hover:bg-red-500/10"
+                  >
+                    <Trash size={10} className="mr-1" />
+                    Pulisci link orfani
+                  </Button>
+                )}
+              </div>
               <div className="space-y-1">
-                {diag.links_summary.map((l, i) => (
-                  <div key={i} className="flex items-center justify-between text-[11px] py-1 border-b border-[var(--bg-border)]/40 last:border-0" data-testid={`datto-diag-link-${i}`}>
-                    <span className="font-bold text-[var(--text-primary)]">{l.client_name}</span>
-                    <div className="flex items-center gap-3 font-mono text-[10px]">
-                      <span className="text-emerald-300">{l.persisted_in_db} dev</span>
-                      <span className={l.matched_count > 0 ? "text-emerald-300" : "text-amber-300"}>{l.matched_count} match</span>
-                      <span className="text-[var(--text-muted)]">{l.last_sync_at ? new Date(l.last_sync_at).toLocaleString("it-IT", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "mai"}</span>
+                {diag.links_summary.map((l, i) => {
+                  const isOrphan = (l.client_name || "").toLowerCase().includes("eliminato");
+                  const noSyncOrZeroMatch = l.persisted_in_db === 0 || l.matched_count === 0;
+                  return (
+                    <div key={i} className="flex items-center justify-between text-[11px] py-1 border-b border-[var(--bg-border)]/40 last:border-0" data-testid={`datto-diag-link-${i}`}>
+                      <span className={`font-bold ${isOrphan ? "text-red-300 italic" : "text-[var(--text-primary)]"}`}>{l.client_name}</span>
+                      <div className="flex items-center gap-2 font-mono text-[10px]">
+                        <span className="text-emerald-300">{l.persisted_in_db} dev</span>
+                        <span className={l.matched_count > 0 ? "text-emerald-300" : "text-amber-300"}>{l.matched_count} match</span>
+                        <span className="text-[var(--text-muted)]">{l.last_sync_at ? new Date(l.last_sync_at).toLocaleString("it-IT", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "mai"}</span>
+                        {!isOrphan && noSyncOrZeroMatch && l.client_id && (
+                          <>
+                            <button
+                              data-testid={`datto-debug-client-${i}`}
+                              onClick={() => debugClient(l.client_id, l.client_name)}
+                              className="px-1.5 py-0.5 rounded border border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/10 text-[9px]"
+                              title="Diagnosi: perché 0 device?"
+                            >
+                              Debug
+                            </button>
+                            <button
+                              data-testid={`datto-force-sync-client-${i}`}
+                              onClick={() => forceSyncClient(l.client_id, l.client_name)}
+                              className="px-1.5 py-0.5 rounded border border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/10 text-[9px]"
+                              title="Forza re-sync per questo cliente"
+                            >
+                              Re-sync
+                            </button>
+                          </>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           )}

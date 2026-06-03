@@ -3064,8 +3064,12 @@ function DeviceProfileModal({ device, onClose, onApplied }) {
     acc[f].push(p);
     return acc;
   }, {});
-  const familyOrder = ["switch", "firewall", "nas", "ups", "server_oob", "unifi", "generic"];
-  const familyLabels = { switch: "Switch", firewall: "Firewall", nas: "NAS", ups: "UPS", server_oob: "Server OOB (iLO/iDRAC)", unifi: "UniFi", generic: "Generico" };
+  // v2026-06-02: aggiunti "printer" (6 profili HP/Epson/Kyocera/Xerox/
+  // Brother/Canon) e "generic" all'elenco visibile — prima erano filtrati
+  // perche' non presenti in familyOrder, anche se esistevano nei seed
+  // backend. UX bug segnalato via screenshot utente.
+  const familyOrder = ["switch", "firewall", "nas", "ups", "server_oob", "printer", "unifi", "generic"];
+  const familyLabels = { switch: "Switch", firewall: "Firewall", nas: "NAS", ups: "UPS", server_oob: "Server OOB (iLO/iDRAC)", printer: "Stampante", unifi: "UniFi", generic: "Generico" };
 
   return (
     <Dialog open onOpenChange={onClose}>
