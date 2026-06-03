@@ -33,7 +33,7 @@ import (
 	"github.com/86bit/noc-agent/internal/logging"
 )
 
-var Version = "4.0.0-dev"
+var Version = "4.1.0"
 
 func main() {
 	cfgPath := flag.String("config", "", "path to agent.yaml")
