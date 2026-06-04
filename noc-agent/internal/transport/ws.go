@@ -60,6 +60,13 @@ type Client struct {
         // server sends a server.welcome frame. Lets the orchestrator hot-apply
         // config without polling LastWelcome().
         onWelcome func(*proto.ServerWelcome)
+
+        // v2026-06-04: rate-limited drop logging quando la queue `out` si
+        // satura sotto burst. Senza questo i poll SNMP venivano persi
+        // silenziosamente e il backend mostrava device come stale.
+        dropMu      sync.Mutex
+        dropCount   int
+        lastDropLog time.Time
 }
 
 // OnWelcome registers a callback fired when the server sends server.welcome.
@@ -77,7 +84,7 @@ func New(cfg config.Config, log *logging.Logger, hello proto.AgentHello) *Client
                 cfg:      cfg,
                 log:      log.With("transport"),
                 hello:    hello,
-                out:      make(chan proto.Frame, 256),
+                out:      make(chan proto.Frame, 2048),
                 commands: make(map[string]CommandHandler),
         }
 }
@@ -136,10 +143,35 @@ func (c *Client) enqueue(typ string, payload json.RawMessage, corrID string) boo
                 SentAt:  time.Now().UTC(),
                 Payload: payload,
         }
+        // v2026-06-04 fix critico "silenzio backend": prima il drop su queue
+        // piena era silenzioso e i poll result SNMP venivano persi → backend
+        // non riceveva mai update di last_poll → device apparivano stale per
+        // settimane. Ora: fast-path → slow-path 5s → drop con log
+        // aggregato (rate-limit 30s per evitare flood).
         select {
         case c.out <- f:
                 return true
         default:
+        }
+        select {
+        case c.out <- f:
+                return true
+        case <-time.After(5 * time.Second):
+                c.dropMu.Lock()
+                c.dropCount++
+                shouldLog := time.Since(c.lastDropLog) > 30*time.Second
+                cnt := c.dropCount
+                if shouldLog {
+                        c.lastDropLog = time.Now()
+                        c.dropCount = 0
+                }
+                c.dropMu.Unlock()
+                if shouldLog {
+                        c.log.Warn("ws send queue saturated, dropping frames",
+                                "dropped_in_window", fmt.Sprintf("%d", cnt),
+                                "frame_type", typ,
+                                "queue_capacity", fmt.Sprintf("%d", cap(c.out)))
+                }
                 return false
         }
 }

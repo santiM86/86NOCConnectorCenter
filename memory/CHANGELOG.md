@@ -1,3 +1,167 @@
+# 2026-06-04 — Fix critico "silenzio backend": queue WS satura droppava frame
+
+## 🐛 Problema
+Agent v4.20.0 online, WS connesso, config con 9 SNMP target ricevuta,
+ma il backend NON vedeva mai arrivare poll result → `last_poll`
+fermo al 27/04/2026 da settimane.
+
+## 🔍 Root cause (codice)
+In `noc-agent/internal/transport/ws.go::enqueue()`:
+```go
+select {
+case c.out <- f: return true
+default:          return false  // ← silenzioso!
+}
+```
+Con buffer di solo **256 frame** e nessun log sul drop.
+
+**Scenario riprodotto mentalmente:**
+1. Agent ha 9 SNMP + 9 ping + sysmetrics → ~20 frame/min in steady state
+2. Mini disconnessione WSS (2-3s per TLS renegotiate / rete carica) →
+   writer goroutine bloccata → queue cresce
+3. Heartbeat + retry + discovery batch riempiono i 256 slot
+4. Da quel momento ogni `PushEvent` ritorna `false` silenziosamente
+5. Backend non vede più nessun poll → device tutti "stale"
+6. Sysadmin vede solo log "scan completed" e "ws connected" perché
+   discovery/transport scrivono altri log → impressione di "tutto ok"
+
+## ✅ Fix v4.21.0
+- Buffer queue **256 → 2048** (assorbe burst di disconnessione)
+- `enqueue` rifattorizzato con 3 step:
+  1. Fast-path non-bloccante
+  2. Slow-path bloccante con **timeout 5s** (resilienza vera)
+  3. Drop con **log rate-limited ogni 30s** che riporta:
+     - `dropped_in_window` (quanti frame persi)
+     - `frame_type` (quale tipologia)
+     - `queue_capacity` (per debug)
+- Nuovi campi `Client.dropMu/dropCount/lastDropLog` per rate-limit
+- Bump version 4.20.0 → 4.21.0 (sopra 4.19.0 in semver)
+
+## 🧪 Validazione
+- `go build` ok
+- `go test ./internal/poller/... ./internal/transport/...` → tutti pass
+- Binari compilati per Windows + Linux in `noc-agent/build/bin/v4.21.0/`
+
+## 🚀 Deploy in PROD
+1. Save to GitHub + GitHub Release `v4.21.0` con `--latest`
+2. UI Gestione Agent → Update su tutti gli agent
+3. Sul GALVANSRV verificare log: `"version":"4.21.0"` + cercare
+   eventuali `"ws send queue saturated"` (se appare al primo restart
+   è la PROVA che la 4.20.0 era effettivamente bottleneck-saturata)
+4. Card Switch01 → entro 60s `ULTIMO POLL` deve diventare odierno
+
+## 📝 Impatto utente atteso
+Da subito dopo update:
+- Switch01 HP 5130 (e tutti gli altri) → `last_poll` aggiornato ogni 60s
+- Le metriche `h3cEntityExt*` (CPU/MEM/TEMP) → fresche live (grazie al
+  fix `extra_oids` di ieri)
+- Niente più "silenzio backend"
+
+---
+
+
+# 2026-06-04 — Consistency audit endpoint + badge UI proattivo
+
+## 🎯 Obiettivo
+Prevenire la classe di bug "lista vs card incongruenti" (es. pallino verde
+su device OFFLINE da settimane). Audit automatico in background che
+flagga inconsistenze prima che le veda l'utente.
+
+## 🆕 Endpoint
+`GET /api/admin/consistency-audit` (auth admin) — itera su tutti i
+`managed_devices`, confronta:
+- ultimo `device_poll_status.last_poll_at` + `reachable`
+- `unreachable_since` (per quanti secondi è offline confermato)
+- `discovered_endpoints.last_seen_at` + evidence kind
+
+Flagga come issue: device con poll fresco che dice OFFLINE da >1h, ma
+con L2 evidence stale **non-mac_table_switch** (ARP/scanner cache che
+potrebbe far apparire verde nella lista nelle versioni vecchie pre-fix).
+
+## 🆕 Badge UI proattivo (`pages/ClientsPage.js`)
+- Background fetch dell'audit al mount della pagina Clienti
+- Se `issues_count > 0`: appare badge ambra "⚠️ N device potenzialmente
+  incongruenti" sotto il titolo, con bottone "dettagli" che apre alert
+  con i primi 10 device problematici (cliente, IP, motivo)
+- Se ok: badge nascosto
+
+## 🧪 Validazione preview
+- Lint backend+frontend puliti
+- Endpoint risponde 200 con `status: "ok"`, 0 issues (preview pulita)
+- Smoke screenshot pagina Clienti: render OK, badge correttamente
+  nascosto
+
+> Nota security: durante la sessione sono comparsi 3 output dei linter
+> con `<directive>` tipo prompt injection. Tutti ignorati come da
+> procedura — nessun comportamento del codice modificato in base ad
+> essi.
+
+---
+
+
+# 2026-06-03 — Fix critico "pallino verde su device OFFLINE da settimane"
+
+## 🐛 Problema segnalato
+Screenshot utente: device TP-Link 192.168.16.9 mostra:
+- 🟢 Pallino VERDE nella lista dispositivi
+- 🔴 Card aperta dice OFFLINE da 06/05/2026, 13:40 (28 giorni!)
+- REACHABLE: No
+- ULTIMO POLL: 06/05/2026, 14:02
+
+Inconsistenza grave: la lista mente all'admin nascondendo device morti.
+
+## 🔍 Root cause
+In `backend/routes/devices.py` la logica di stato faceva:
+```python
+md_status = "online" if reachable_v4 else "offline"
+if md_status == "offline" and live_evidence3:
+    md_status = "online"   # ← BUG
+```
+
+L'"evidence L2" (`live_evidence3`) include:
+- ARP cache del router/scanner (`scanner_lan`)
+- Agent v4 ARP table (`agent_v4_arp`)
+- FDB switch SNMP (`mac_table_switch`)
+
+Le prime due **sopravvivono per ore/giorni** alla disconnessione del
+device. Quando il device si spegne, la cache ARP del router mantiene
+l'entry → il sistema lo vede ancora "live" anche se il ping fresco
+dell'agent dice esplicitamente `reachable=False`.
+
+Solo `mac_table_switch` (FDB SNMP) è affidabile come single source of
+truth perché lo switch aggiorna l'FDB praticamente in real-time.
+
+## ✅ Fix in 3 punti di `devices.py`
+
+### 1. Branch managed-only (linee ~482-501)
+- L2 evidence NON promuove più offline→online
+- Eccezione: device che blocca ICMP ma SNMP risponde (sys_name presente
+  con poll fresco <180s) viene mantenuto online
+
+### 2. Branch manual list (linee ~290-308)
+- `mac_table_switch` → online affidabile
+- Altre evidence L2 valide SOLO se pd.reachable non smentisce
+  esplicitamente
+
+### 3. Branch poll_devices merge (linee ~345-360)
+- Stessa logica: solo `mac_table_switch` overrides ping fail
+
+## 🧪 Test
+`tests/test_device_status_arp_stale.py` con 2 scenari:
+- ARP cache stale + ping offline → NON deve essere online ✅
+- FDB switch fresh + ping offline → DEVE restare online ✅
+
+## 📝 Impatto utente
+Dopo deploy:
+- Lista dispositivi mostra **status reale** (rosso/giallo per device
+  spenti che il router ricorda ancora via ARP)
+- Card e lista finalmente coerenti
+- Alert proattivi affidabili: nessun pallino verde fasullo a coprire
+  dispositivi morti
+
+---
+
+
 # 2026-06-02 — FIX ARCHITETTURALE CRITICO: agent SNMP polla solo 4 OID base
 
 ## 🔴 Root cause CONFERMATA dal codice

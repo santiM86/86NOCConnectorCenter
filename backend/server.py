@@ -335,6 +335,8 @@ app.include_router(github_deploy_router)  # Auto-deploy webhook GitHub
 app.include_router(lan_scanner_router)  # Scanner LAN on-demand via WS
 app.include_router(freshness_audit_router)  # GET /api/admin/freshness-audit
 app.include_router(snmp_diagnostics_router)  # SNMP diagnosis + force poll
+from routes.consistency_audit import router as consistency_audit_router
+app.include_router(consistency_audit_router)  # GET /api/admin/consistency-audit
 app.include_router(discovery_router)
 app.include_router(web_proxy_router)
 app.include_router(web_console_live_router)
