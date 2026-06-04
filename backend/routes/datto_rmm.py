@@ -202,7 +202,26 @@ async def _get_datto_creds() -> tuple[str, str, str, str]:
     cfg = await db.datto_settings.find_one({"id": "global"}, {"_id": 0})
     if not cfg:
         raise HTTPException(status_code=400, detail="Datto RMM API non configurata")
-    api_key = security_manager.decrypt_credential(cfg["api_key_enc"])
+    try:
+        api_key = security_manager.decrypt_credential(cfg["api_key_enc"])
+    except Exception as dec_err:
+        # Vault mismatch: salt AES-GCM diverso da quello con cui era cifrata
+        # la api_key. Marca lo stato in DB e ritorna 503 con messaggio chiaro
+        # invece di propagare un traceback generico (UX migliore).
+        from datetime import datetime, timezone as _tz
+        await db.datto_settings.update_one(
+            {"id": "global"},
+            {"$set": {
+                "last_status": "vault_mismatch",
+                "last_error": f"Decryption failed: {dec_err}. Re-save the API key from /settings/datto to re-encrypt with current vault.",
+                "last_error_at": datetime.now(_tz.utc).isoformat(),
+            }},
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="Datto RMM API key non decifrabile col vault corrente. "
+                   "Vai in Impostazioni → Datto RMM, re-incolla la API key e clicca 'Salva (cifrata)' per ri-cifrarla.",
+        )
     return (
         api_key,
         cfg.get("user_id", ""),
