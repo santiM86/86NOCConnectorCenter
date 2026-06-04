@@ -1,3 +1,66 @@
+# 2026-06-03 — Fix critico "pallino verde su device OFFLINE da settimane"
+
+## 🐛 Problema segnalato
+Screenshot utente: device TP-Link 192.168.16.9 mostra:
+- 🟢 Pallino VERDE nella lista dispositivi
+- 🔴 Card aperta dice OFFLINE da 06/05/2026, 13:40 (28 giorni!)
+- REACHABLE: No
+- ULTIMO POLL: 06/05/2026, 14:02
+
+Inconsistenza grave: la lista mente all'admin nascondendo device morti.
+
+## 🔍 Root cause
+In `backend/routes/devices.py` la logica di stato faceva:
+```python
+md_status = "online" if reachable_v4 else "offline"
+if md_status == "offline" and live_evidence3:
+    md_status = "online"   # ← BUG
+```
+
+L'"evidence L2" (`live_evidence3`) include:
+- ARP cache del router/scanner (`scanner_lan`)
+- Agent v4 ARP table (`agent_v4_arp`)
+- FDB switch SNMP (`mac_table_switch`)
+
+Le prime due **sopravvivono per ore/giorni** alla disconnessione del
+device. Quando il device si spegne, la cache ARP del router mantiene
+l'entry → il sistema lo vede ancora "live" anche se il ping fresco
+dell'agent dice esplicitamente `reachable=False`.
+
+Solo `mac_table_switch` (FDB SNMP) è affidabile come single source of
+truth perché lo switch aggiorna l'FDB praticamente in real-time.
+
+## ✅ Fix in 3 punti di `devices.py`
+
+### 1. Branch managed-only (linee ~482-501)
+- L2 evidence NON promuove più offline→online
+- Eccezione: device che blocca ICMP ma SNMP risponde (sys_name presente
+  con poll fresco <180s) viene mantenuto online
+
+### 2. Branch manual list (linee ~290-308)
+- `mac_table_switch` → online affidabile
+- Altre evidence L2 valide SOLO se pd.reachable non smentisce
+  esplicitamente
+
+### 3. Branch poll_devices merge (linee ~345-360)
+- Stessa logica: solo `mac_table_switch` overrides ping fail
+
+## 🧪 Test
+`tests/test_device_status_arp_stale.py` con 2 scenari:
+- ARP cache stale + ping offline → NON deve essere online ✅
+- FDB switch fresh + ping offline → DEVE restare online ✅
+
+## 📝 Impatto utente
+Dopo deploy:
+- Lista dispositivi mostra **status reale** (rosso/giallo per device
+  spenti che il router ricorda ancora via ARP)
+- Card e lista finalmente coerenti
+- Alert proattivi affidabili: nessun pallino verde fasullo a coprire
+  dispositivi morti
+
+---
+
+
 # 2026-06-02 — FIX ARCHITETTURALE CRITICO: agent SNMP polla solo 4 OID base
 
 ## 🔴 Root cause CONFERMATA dal codice

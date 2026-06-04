@@ -290,7 +290,16 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
         ip_ev = scanner_seen_recent_ips.get(ip)
         mac_ev = scanner_seen_recent_macs.get(md_mac) if md_mac else None
         evidence = ip_ev or mac_ev
-        if evidence:
+        # v2026-06-03 fix bug "pallino verde su device spento": NON promuovere
+        # online via L2 evidence se il device_poll_status fresco dice
+        # reachable=False (entry ARP/scanner cache stale del router). Solo
+        # mac_table_switch (FDB SNMP) e' affidabile come single-source-of-truth.
+        pd_reachable_explicit = pd.get("reachable") is not None
+        if evidence == "mac_table_switch":
+            d["status"] = "online"
+            d["live_evidence"] = evidence
+        elif evidence and (not pd_reachable_explicit or pd.get("reachable")):
+            # ARP/scanner OK ed il ping non smentisce
             d["status"] = "online"
             d["live_evidence"] = evidence
         elif pd.get("reachable"):
@@ -342,7 +351,12 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
             ip_ev2 = scanner_seen_recent_ips.get(ip)
             mac_ev2 = scanner_seen_recent_macs.get(md_mac_norm) if md_mac_norm else None
             live_evidence2 = ip_ev2 or mac_ev2
-            if live_evidence2:
+            # v2026-06-03 fix bug "pallino verde su device spento": stessa
+            # logica del branch manual. mac_table_switch = single source of
+            # truth, altre evidence L2 valide solo se ping NON smentisce.
+            if live_evidence2 == "mac_table_switch":
+                md_status = "online"
+            elif live_evidence2 and _effective_reachable(pd):
                 md_status = "online"
             elif _effective_reachable(pd):
                 live_evidence2 = (pd.get("method") or pd.get("ping_method") or "ping").strip()
@@ -484,11 +498,32 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
             md_status = "online" if reachable_v4 else "offline"
             if reachable_v4 and not live_evidence3:
                 live_evidence3 = (pd_v4.get("method") or pd_v4.get("ping_method") or "ping").strip()
-            # anche se v4 dice offline, se L2 evidence presente → ONLINE
-            if md_status == "offline" and live_evidence3:
-                md_status = "online"
+            # v2026-06-03 fix bug "pallino verde per device offline da settimane":
+            # NON promuovere offline → online via L2 evidence quando il poll v4
+            # fresco dice reachable=false. La cache ARP del router/switch puo'
+            # mantenere la entry per ore/giorni anche dopo lo spegnimento del
+            # device, e prima questo "magic upgrade" rendeva la card OFFLINE
+            # (ping reale) ma la lista mostrava pallino verde (ARP cache).
+            # Eccezione legittima: il device blocca ICMP ma risponde a SNMP →
+            # se sys_name e' presente nel poll fresco, lo consideriamo online.
+            if md_status == "offline":
+                snmp_alive_recent = bool(
+                    pd_v4.get("sys_name")
+                    and pd_v4.get("last_poll_at")
+                    and v4_age is not None and v4_age < 180
+                )
+                if snmp_alive_recent:
+                    md_status = "online"
         elif live_evidence3:
-            md_status = "online"
+            # v2026-06-03 fix bug "pallino verde": senza poll v4 recente,
+            # la sola L2 evidence (ARP cache stale) non basta per dire
+            # online. Tuttavia se l'evidenza arriva dalla mac_table del
+            # switch (che si pulisce molto piu' rapidamente di ARP/scanner)
+            # E' un indicatore affidabile.
+            if live_evidence3 == "mac_table_switch":
+                md_status = "online"
+            else:
+                md_status = "pending"
         elif md_source == "connector-scanner":
             md_status = _scanner_status_from_last_seen(md.get("last_seen_at"))
         else:
