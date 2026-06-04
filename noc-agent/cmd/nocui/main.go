@@ -780,6 +780,40 @@ func buildConsole(app *App) {
 			},
 			wd.Label{Text: subtitleLine1, TextColor: walk.RGB(110, 110, 125)},
 			wd.Label{Text: subtitleLine2, TextColor: walk.RGB(150, 150, 165), Font: wd.Font{Family: "Segoe UI", PointSize: 8}},
+			// v2026-06-04 fix UX: banner per modalita' HEADLESS quando la
+			// lista locale e' vuota. Senza questo banner l'admin vedeva
+			// tabella vuota dopo update v4.21.0 e pensava che il connector
+			// non funzionasse, mentre in realta' i 9 SNMP target sono
+			// push-ati via WS dal backend e l'agent polla regolarmente.
+			func() wd.Widget {
+				if len(app.tableModel.items) > 0 {
+					return wd.Composite{Visible: false}
+				}
+				return wd.Composite{
+					Background: wd.SolidColorBrush{Color: walk.RGB(240, 248, 255)},
+					Layout:     wd.VBox{Margins: wd.Margins{Left: 12, Top: 8, Right: 12, Bottom: 8}},
+					Children: []wd.Widget{
+						wd.Label{
+							Text:      "i  Modalita' HEADLESS (target gestiti dal NOC Center)",
+							TextColor: walk.RGB(16, 64, 224),
+							Font:      wd.Font{Family: "Segoe UI", PointSize: 10, Bold: true},
+						},
+						wd.Label{
+							Text:      "I dispositivi SNMP sono configurati centralmente da argus.86bit.it.",
+							TextColor: walk.RGB(80, 80, 95),
+						},
+						wd.Label{
+							Text:      "Questa lista locale rimane vuota: e' atteso. Aggiungi i device dal NOC Center -> cliente -> Dispositivi.",
+							TextColor: walk.RGB(80, 80, 95),
+						},
+						wd.Label{
+							Text:      "Per verificare il polling controlla 'Stato canale (VPN/WS)' in basso a destra.",
+							TextColor: walk.RGB(120, 120, 140),
+							Font:      wd.Font{Family: "Segoe UI", PointSize: 8},
+						},
+					},
+				}
+			}(),
 			wd.Composite{
 				Layout: wd.HBox{},
 				Children: []wd.Widget{
