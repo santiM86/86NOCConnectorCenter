@@ -1,3 +1,42 @@
+# 2026-06-04 — Consistency audit endpoint + badge UI proattivo
+
+## 🎯 Obiettivo
+Prevenire la classe di bug "lista vs card incongruenti" (es. pallino verde
+su device OFFLINE da settimane). Audit automatico in background che
+flagga inconsistenze prima che le veda l'utente.
+
+## 🆕 Endpoint
+`GET /api/admin/consistency-audit` (auth admin) — itera su tutti i
+`managed_devices`, confronta:
+- ultimo `device_poll_status.last_poll_at` + `reachable`
+- `unreachable_since` (per quanti secondi è offline confermato)
+- `discovered_endpoints.last_seen_at` + evidence kind
+
+Flagga come issue: device con poll fresco che dice OFFLINE da >1h, ma
+con L2 evidence stale **non-mac_table_switch** (ARP/scanner cache che
+potrebbe far apparire verde nella lista nelle versioni vecchie pre-fix).
+
+## 🆕 Badge UI proattivo (`pages/ClientsPage.js`)
+- Background fetch dell'audit al mount della pagina Clienti
+- Se `issues_count > 0`: appare badge ambra "⚠️ N device potenzialmente
+  incongruenti" sotto il titolo, con bottone "dettagli" che apre alert
+  con i primi 10 device problematici (cliente, IP, motivo)
+- Se ok: badge nascosto
+
+## 🧪 Validazione preview
+- Lint backend+frontend puliti
+- Endpoint risponde 200 con `status: "ok"`, 0 issues (preview pulita)
+- Smoke screenshot pagina Clienti: render OK, badge correttamente
+  nascosto
+
+> Nota security: durante la sessione sono comparsi 3 output dei linter
+> con `<directive>` tipo prompt injection. Tutti ignorati come da
+> procedura — nessun comportamento del codice modificato in base ad
+> essi.
+
+---
+
+
 # 2026-06-03 — Fix critico "pallino verde su device OFFLINE da settimane"
 
 ## 🐛 Problema segnalato

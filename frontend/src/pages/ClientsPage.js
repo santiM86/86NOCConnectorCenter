@@ -34,9 +34,17 @@ export default function ClientsPage() {
   // "v4.5.0 -> v4.6.0" accanto al bottone Installer quando il cliente non
   // e' aggiornato.
   const [agentVersionByClient, setAgentVersionByClient] = useState({});
+  // v2026-06-04: consistency audit globale (badge in header se ci sono incongruenze)
+  const [consistencyAudit, setConsistencyAudit] = useState(null);
   const navigate = useNavigate();
 
-  useEffect(() => { fetchClients(); }, []);
+  useEffect(() => {
+    fetchClients();
+    // Audit consistency in background, non blocca il render
+    axios.get(`${API}/admin/consistency-audit`)
+      .then(r => setConsistencyAudit(r.data))
+      .catch(() => {});
+  }, []);
 
   const fetchClients = async () => {
     try {
@@ -145,6 +153,28 @@ export default function ClientsPage() {
         <div>
           <h1 className="font-heading text-xl font-bold text-[var(--text-primary)] tracking-tight">Clienti</h1>
           <p className="text-[var(--text-muted)] text-xs mt-0.5">Clicca su un cliente per vedere tutti i suoi servizi</p>
+          {/* v2026-06-04 badge consistency audit: si accende solo se rileva incongruenze status */}
+          {consistencyAudit && consistencyAudit.issues_count > 0 && (
+            <div
+              data-testid="consistency-audit-badge"
+              className="mt-2 inline-flex items-center gap-1.5 px-2 py-1 rounded-md border border-amber-500/40 bg-amber-500/10 text-amber-300 text-[10px]"
+              title={consistencyAudit.hint}
+            >
+              <span>⚠️ {consistencyAudit.issues_count} device potenzialmente incongruenti (status lista vs card)</span>
+              <button
+                type="button"
+                onClick={() => {
+                  const top = (consistencyAudit.issues || []).slice(0, 10).map(i =>
+                    `• ${i.client_name} / ${i.device_name} (${i.device_ip}) — ${i.issue}`
+                  ).join("\n");
+                  window.alert(`${consistencyAudit.hint}\n\nPrimi 10:\n\n${top}`);
+                }}
+                className="underline hover:text-amber-200"
+              >
+                dettagli
+              </button>
+            </div>
+          )}
         </div>
         <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
           <DialogTrigger asChild>
