@@ -33,7 +33,7 @@ import (
 )
 
 // Version is injected at build time via -ldflags.
-var Version = "4.21.0"
+var Version = "4.22.0"
 
 // ServiceName is the OS service identifier (Windows SCM, systemd, launchd).
 const ServiceName = "86NocAgent"
