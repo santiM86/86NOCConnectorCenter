@@ -1,3 +1,65 @@
+# 2026-06-04 — Fix critico "silenzio backend": queue WS satura droppava frame
+
+## 🐛 Problema
+Agent v4.20.0 online, WS connesso, config con 9 SNMP target ricevuta,
+ma il backend NON vedeva mai arrivare poll result → `last_poll`
+fermo al 27/04/2026 da settimane.
+
+## 🔍 Root cause (codice)
+In `noc-agent/internal/transport/ws.go::enqueue()`:
+```go
+select {
+case c.out <- f: return true
+default:          return false  // ← silenzioso!
+}
+```
+Con buffer di solo **256 frame** e nessun log sul drop.
+
+**Scenario riprodotto mentalmente:**
+1. Agent ha 9 SNMP + 9 ping + sysmetrics → ~20 frame/min in steady state
+2. Mini disconnessione WSS (2-3s per TLS renegotiate / rete carica) →
+   writer goroutine bloccata → queue cresce
+3. Heartbeat + retry + discovery batch riempiono i 256 slot
+4. Da quel momento ogni `PushEvent` ritorna `false` silenziosamente
+5. Backend non vede più nessun poll → device tutti "stale"
+6. Sysadmin vede solo log "scan completed" e "ws connected" perché
+   discovery/transport scrivono altri log → impressione di "tutto ok"
+
+## ✅ Fix v4.21.0
+- Buffer queue **256 → 2048** (assorbe burst di disconnessione)
+- `enqueue` rifattorizzato con 3 step:
+  1. Fast-path non-bloccante
+  2. Slow-path bloccante con **timeout 5s** (resilienza vera)
+  3. Drop con **log rate-limited ogni 30s** che riporta:
+     - `dropped_in_window` (quanti frame persi)
+     - `frame_type` (quale tipologia)
+     - `queue_capacity` (per debug)
+- Nuovi campi `Client.dropMu/dropCount/lastDropLog` per rate-limit
+- Bump version 4.20.0 → 4.21.0 (sopra 4.19.0 in semver)
+
+## 🧪 Validazione
+- `go build` ok
+- `go test ./internal/poller/... ./internal/transport/...` → tutti pass
+- Binari compilati per Windows + Linux in `noc-agent/build/bin/v4.21.0/`
+
+## 🚀 Deploy in PROD
+1. Save to GitHub + GitHub Release `v4.21.0` con `--latest`
+2. UI Gestione Agent → Update su tutti gli agent
+3. Sul GALVANSRV verificare log: `"version":"4.21.0"` + cercare
+   eventuali `"ws send queue saturated"` (se appare al primo restart
+   è la PROVA che la 4.20.0 era effettivamente bottleneck-saturata)
+4. Card Switch01 → entro 60s `ULTIMO POLL` deve diventare odierno
+
+## 📝 Impatto utente atteso
+Da subito dopo update:
+- Switch01 HP 5130 (e tutti gli altri) → `last_poll` aggiornato ogni 60s
+- Le metriche `h3cEntityExt*` (CPU/MEM/TEMP) → fresche live (grazie al
+  fix `extra_oids` di ieri)
+- Niente più "silenzio backend"
+
+---
+
+
 # 2026-06-04 — Consistency audit endpoint + badge UI proattivo
 
 ## 🎯 Obiettivo
