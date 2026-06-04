@@ -1,3 +1,36 @@
+# 2026-06-04 — Pulizia DB device orfani per client_id morti (PROD)
+
+## 🐛 Problema (rilevato sul server PROD `86bitserver`)
+La UI Dispositivi del cliente Galvan mostrava 171 device con "Ultimo Poll"
+fermo al 27/04/2026 (mentre gli switch erano effettivamente attivi).
+
+Root cause: il cliente "Galvan" era stato cancellato e ricreato più volte
+in aprile/maggio. Ogni volta i device esistenti restavano "appesi" al vecchio
+`client_id`, generando 4 `client_id` orfani (90f83b9b, 272820a7, 8b5afc29,
+26ccbd70) + 5 in device_poll_status. Gli agent GALVANSRV pollavano correttamente
+sotto il nuovo `client_id` (c783b8db), ma la UI mostrava i record vecchi.
+
+## ✅ Fix (one-shot data migration)
+Script eseguito direttamente in PROD:
+- managed_devices: 144 DELETE (duplicati IP già su Galvan) + 27 MIGRATE → Galvan
+- device_poll_status: 144 DELETE (duplicati + stessi-IP-orfani) + 15 MIGRATE → Galvan
+- Verifica finale: 0 orfani rimasti in entrambe le collection
+- Backup completo salvato in `/tmp/orphans_backup_20260604_*.json`
+
+## 🐛 Bug strutturale da risolvere (BACKLOG P1)
+La DELETE di un Client non fa cleanup cascade su `managed_devices` e
+`device_poll_status`. Questo lascia "device fantasma" che la UI continua a
+mostrare. Da implementare in `backend/routes/clients.py` (delete endpoint):
+- on_delete_client → cascade delete su managed_devices, device_poll_status,
+  managed_agents, agent_poller_config, snmp_device_state filtrati per client_id.
+
+## 📋 Note
+Effettuato anche fix Hornetsecurity poller `vault_mismatch` (commit fa2baa8 → 113916d).
+Backend PROD attivo come `noc-backend.service` su uvicorn 127.0.0.1:8186.
+
+---
+
+
 # 2026-06-04 — Fix Hornetsecurity poller crash su credenziale corrotta (vault_mismatch)
 
 ## 🐛 Problema (rilevato dai log PROD `noc-backend.service`)

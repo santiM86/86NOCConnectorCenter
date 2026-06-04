@@ -686,6 +686,17 @@ async def _bridge_snmp_poll(conn: _Connection, r: Dict[str, Any]) -> None:
         # popoliamo i metadati. Mai degradare a offline da qui.
         md_set["status"] = "online"
         md_set["last_seen_at"] = now_iso
+        # v2026-06-04 FIX CRITICO ANTI-FLAP: quando SNMP conferma che il
+        # device e' raggiungibile, azzeriamo il counter dei ping consecutivi
+        # falliti. Senza questo reset il counter ICMP continuava a salire
+        # (es. su Windows con firewall ICMP bloccato o switch con ICMP rate
+        # -limited): ogni ping fallito dopo i primi 5 ri-marcava il device
+        # OFFLINE pochi secondi dopo che SNMP lo aveva promosso ONLINE,
+        # generando flapping continuo nella UI ("38/38 device offline
+        # nonostante poll SNMP freschi"). Reset → il device resta ONLINE
+        # stabile e servono nuovi 5 ping fail per tornare offline.
+        md_set["consecutive_ping_failures"] = 0
+        md_set["degraded"] = False
     if r.get("sys_name"):
         md_set["sys_name"] = r["sys_name"]
     if r.get("sys_descr"):
@@ -3747,8 +3758,8 @@ def _build_setup_exe(token: str) -> str:
         # Sintassi: https://github.com/chrislake/7zsfxmm
         sfx_config = (
             ";!@Install@!UTF-8!\r\n"
-            f'Title="Argus Connector — Setup"\r\n'
-            f'BeginPrompt="Installa il connector ARGUS NOC su questo PC?"\r\n'
+            'Title="Argus Connector — Setup"\r\n'
+            'BeginPrompt="Installa il connector ARGUS NOC su questo PC?"\r\n'
             'Progress="yes"\r\n'
             'GUIMode="0"\r\n'                    # 0 = mostra prompt + progress
             'InstallPath="%%T\\\\Argus-Setup"\r\n'  # estrai in %TEMP%\Argus-Setup
