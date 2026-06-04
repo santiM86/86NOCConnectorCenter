@@ -1,3 +1,27 @@
+# 2026-06-04 — Fix Hornetsecurity poller crash su credenziale corrotta (vault_mismatch)
+
+## 🐛 Problema (rilevato dai log PROD `noc-backend.service`)
+`ValueError: Decryption failed` ogni minuto dal job `hornetsecurity_polling_tick`.
+La credenziale `api_key_enc` nel DB era cifrata con un salt AES-GCM diverso
+da quello attualmente in `.env` (vault rigenerato in passato).
+Il poller risollevava l'eccezione causando spam di traceback infinito.
+
+## ✅ Fix
+`backend/services/hornetsecurity_poller.py`:
+- `_tick_global` e `_tick_per_client` ora catturano l'errore di
+  `decrypt_credential` separatamente PRIMA della chiamata HTTP.
+- In caso di fallimento, la config viene marcata in DB con
+  `last_poll_status="vault_mismatch"` e un messaggio chiaro che invita
+  l'utente a re-salvare l'API key dalla UI.
+- Nessuna richiesta HTTP viene effettuata con credenziale corrotta.
+- Lo stato è visibile in dashboard tramite il banner Vault già implementato.
+
+## 🧪 Test
+`backend/tests/test_hornetsecurity_vault_mismatch.py` — 2/2 PASS.
+
+---
+
+
 # 2026-06-04 — Fix critico "silenzio backend": queue WS satura droppava frame
 
 ## 🐛 Problema

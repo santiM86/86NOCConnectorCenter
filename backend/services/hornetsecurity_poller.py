@@ -53,7 +53,23 @@ async def _tick_global(now: datetime) -> None:
 
     now_iso = now.isoformat()
     try:
-        api_key = security_manager.decrypt_credential(cfg["api_key_enc"])
+        try:
+            api_key = security_manager.decrypt_credential(cfg["api_key_enc"])
+        except Exception as dec_err:
+            await db.hornetsecurity_global_config.update_one(
+                {"_id": GLOBAL_CONFIG_ID},
+                {"$set": {
+                    "last_polled_at": now_iso,
+                    "last_poll_status": "vault_mismatch",
+                    "last_poll_error": f"Decryption failed: {dec_err}. "
+                                       f"Re-save the API key from the UI to re-encrypt with current vault.",
+                }},
+            )
+            logger.warning(
+                "[hornetsecurity-global-poll] credential decryption failed — "
+                "config marked vault_mismatch (no further attempts until re-save)"
+            )
+            return
         code, body = await _fetch_backup_report(cfg["api_url"], api_key)
         if code == 200 and isinstance(body, dict):
             summary = await _persist_poll_results_global(body)
@@ -94,7 +110,23 @@ async def _tick_per_client(now: datetime) -> None:
             continue
         now_iso = now.isoformat()
         try:
-            api_key = security_manager.decrypt_credential(cfg["api_key_enc"])
+            try:
+                api_key = security_manager.decrypt_credential(cfg["api_key_enc"])
+            except Exception as dec_err:
+                await db.hornetsecurity_configs.update_one(
+                    {"client_id": client_id},
+                    {"$set": {
+                        "last_polled_at": now_iso,
+                        "last_poll_status": "vault_mismatch",
+                        "last_poll_error": f"Decryption failed: {dec_err}. "
+                                           f"Re-save the API key from the UI to re-encrypt with current vault.",
+                    }},
+                )
+                logger.warning(
+                    f"[hornetsecurity-poll] client={client_id} credential decryption failed — "
+                    f"config marked vault_mismatch (no further attempts until re-save)"
+                )
+                continue
             code, body = await _fetch_backup_report(cfg["api_url"], api_key)
             if code == 200 and isinstance(body, dict):
                 summary = await _persist_poll_results(client_id, body)
