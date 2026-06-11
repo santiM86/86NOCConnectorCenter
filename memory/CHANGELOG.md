@@ -1,3 +1,82 @@
+# 2026-06-11 — v4.23 Connector: Store-and-Forward + Worker Pool (stile Zabbix Proxy)
+
+## 🎯 Obiettivo
+Trasformare l'Argus Connector (Go Agent) da "push best-effort" a "Zabbix-Proxy-
+style store-and-forward". Quando la connessione WS al backend NOC cade o la
+queue in-memory si satura, le metriche/poll/log vengono persistiti localmente
+su disco e rispedite in FIFO quando il link torna su. Zero perdita di
+telemetria durante outage di rete cliente.
+
+## 🏗️ Architettura
+
+### Nuovo modulo `internal/spool/`  (BBolt embedded, pure-Go, cross-compile OK)
+- Bucket "pending" con frames serializzati JSON, chiave monotonica big-endian
+- `Open(path, maxFrames)` apre/crea il DB, rispetta cap (default 100k)
+- `Enqueue(type, payload)` — drop oldest se al cap
+- `Drain(N)` — preleva N più vecchi senza eliminare
+- `Ack([]ids)` — rimuove dopo forward riuscito (at-least-once)
+- `Stats()` — depth, oldest, dropped/enqueued/acked totals per heartbeat
+- Persistente across restart (nextID salvato in bucket meta)
+
+### `internal/transport/ws.go` arricchito
+- `Client.SetSpool(sp)` inietta il buffer al boot
+- `enqueue()` ora: WS down → spool direttamente; WS up + queue satura → spool
+  fallback prima del drop
+- `spoolForwarderLoop()` goroutine dedicata, drena ogni 2s (default) quando WS
+  è connesso, ack solo dopo che `out <- frame` accetta
+
+### `internal/poller/snmp.go` — worker pool configurabile
+- Era hard-coded a 16. Ora `cfg.Pollers` (4-128, default 16) hot-swappabile
+  via `server.welcome`. Più throughput SNMP su reti grandi.
+
+### `internal/config/config.go`
+- Nuova `SpoolConfig{Enabled, Path, MaxFrames, BatchSize, FlushInterval}`
+- Nuovo campo `SNMPConfig.Pollers`
+- `DefaultStateDir()` esportato (ProgramData / /var/lib/86nocagent)
+
+### `pkg/proto/messages.go`
+- `AgentHeartbeat` aggiunge `spool_depth`, `spool_oldest_at`,
+  `spool_dropped_total`, `spool_acked_total`
+
+### Backend `backend/routes/agent_ws.py`
+- `_on_heartbeat` persiste i nuovi campi su `managed_agents`
+- Default a 0/None per agent legacy v4.22 (no KeyError)
+
+### Frontend `frontend/src/pages/AgentsPage.js`
+- Badge ⇪N giallo se buffer locale ha frame in coda
+- Badge ✕N rosso se ci sono dropped totali (saturation)
+- Tooltip dettagliato con oldest_at e dropped_total
+
+## 🧪 Test
+- `internal/spool/spool_test.go` — 4/4 PASS (round-trip, drop-oldest, persistence, stats)
+- `internal/transport/ws_spool_test.go` — 2/2 PASS (offline → spool, heartbeat in spool)
+- `backend/tests/test_agent_ws_spool_heartbeat.py` — 2/2 PASS (campi v4.23 e back-compat v4.22)
+- Cross-compile Linux amd64 + Windows amd64 OK (~11.4 / 11.9 MB)
+
+## 🚀 Deploy
+1. **Save to GitHub** → PR si chiude su main
+2. PROD: `cd /home/arslan/86NOCConnectorCenter && git pull && systemctl restart noc-backend`
+3. Compile binari v4.23.0 per client: `GOOS=windows go build -ldflags "-X main.Version=4.23.0" ./cmd/agent`
+4. Pubblica GitHub Release `v4.23.0` con binari + checksums
+5. Aggiorna i client (auto-update se abilitato, altrimenti push manuale)
+
+## ✨ Cosa cambia per l'utente
+- Switch HP / Server Windows con ICMP bloccato: stesso fix anti-flap, ma ora
+  i loro polling result non si perdono mai durante un riavvio backend / outage
+- Network grandi: aumenti `pollers: 32` (o 64) nella config → poll round
+  completati in metà tempo
+- Visibilità: nella pagina Agents vedi a colpo d'occhio quali connector stanno
+  buffering localmente (ritardo telemetria) vs droppando (cap esaurita)
+
+## 📦 Backlog Fase 2 (futuro)
+- Trapper SNMP/syslog passivo (riceve traps locali → forward)
+- IPMI / JMX checks
+- Batch + compressione gzip nel WS write
+- TLS PSK come Zabbix (alternativo a Bearer token)
+
+---
+
+
 # 2026-06-04 — Pulizia DB device orfani per client_id morti (PROD)
 
 ## 🐛 Problema (rilevato sul server PROD `86bitserver`)

@@ -118,7 +118,18 @@ func (p *Poller) runOnce(ctx context.Context) []proto.SNMPPollResult {
 	results := make([]proto.SNMPPollResult, 0, len(cfg.Targets))
 	var wg sync.WaitGroup
 	mu := sync.Mutex{}
-	sem := make(chan struct{}, 16)
+	// v4.23 Zabbix-Proxy-style worker pool: poller count is now
+	// configurable (cfg.Pollers). 0/negative falls back to 16 (legacy
+	// default) — never go above 128 to avoid socket exhaustion on
+	// small Windows hosts.
+	pollers := cfg.Pollers
+	if pollers <= 0 {
+		pollers = 16
+	}
+	if pollers > 128 {
+		pollers = 128
+	}
+	sem := make(chan struct{}, pollers)
 	for _, t := range cfg.Targets {
 		t := t
 		wg.Add(1)

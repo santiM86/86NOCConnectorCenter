@@ -604,6 +604,29 @@ export default function AgentsPage() {
                             · {stuck} stuck
                           </span>
                         )}
+                        {/* v4.23 — Store-and-forward visibility badge.
+                            Si accende solo se il connector ha buffer locale
+                            non vuoto (link WS instabile o queue satura).
+                            Aiuta a capire se i ritardi nelle metriche sono
+                            "in transito" o "persi". */}
+                        {a.spool_depth > 0 && (
+                          <span
+                            className="ml-1 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-mono bg-amber-900/40 text-amber-300 border border-amber-700/40"
+                            title={`Buffer locale (Zabbix-style): ${a.spool_depth} frame in coda${a.spool_oldest_at ? `, piu' vecchio: ${a.spool_oldest_at}` : ""}${a.spool_dropped_total ? `, droppati totali: ${a.spool_dropped_total}` : ""}`}
+                            data-testid={`agent-spool-badge-${a.agent_id}`}
+                          >
+                            ⇪ {a.spool_depth}
+                          </span>
+                        )}
+                        {a.spool_dropped_total > 0 && a.spool_depth === 0 && (
+                          <span
+                            className="ml-1 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-mono bg-red-900/30 text-red-300 border border-red-700/40"
+                            title={`Frame droppati totali per saturazione: ${a.spool_dropped_total}. Considera di aumentare Spool.MaxFrames o ridurre il polling interval.`}
+                            data-testid={`agent-spool-dropped-${a.agent_id}`}
+                          >
+                            ✕ {a.spool_dropped_total}
+                          </span>
+                        )}
                       </td>
                       <td className="p-2.5 text-right whitespace-nowrap">
                         {a.uninstall_status === "in_progress" ? (

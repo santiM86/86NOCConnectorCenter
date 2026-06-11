@@ -84,6 +84,17 @@ type AgentHeartbeat struct {
 	ModulesStuck   []string      `json:"modules_stuck"` // any module whose worker missed deadline
 	LastScanAt     *time.Time    `json:"last_scan_at,omitempty"`
 	LastPollAt     *time.Time    `json:"last_poll_at,omitempty"`
+	// v4.23 — Zabbix-Proxy-style store-and-forward visibility. The
+	// backend renders these on the connector page so an operator can
+	// see at a glance whether telemetry is buffering up locally.
+	// SpoolDepth is the current number of pending frames on disk.
+	// SpoolOldestAt is the timestamp of the oldest pending entry.
+	// SpoolDroppedTotal counts frames dropped due to capacity overflow
+	// since the agent process started.
+	SpoolDepth        int        `json:"spool_depth,omitempty"`
+	SpoolOldestAt     *time.Time `json:"spool_oldest_at,omitempty"`
+	SpoolDroppedTotal uint64     `json:"spool_dropped_total,omitempty"`
+	SpoolAckedTotal   uint64     `json:"spool_acked_total,omitempty"`
 }
 
 // ServerCommand is an imperative instruction sent from the backend.

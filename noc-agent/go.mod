@@ -9,6 +9,7 @@ require (
 	github.com/lxn/walk v0.0.0-20210112085537-c389da54e794
 	github.com/lxn/win v0.0.0-20210218163916-a377121e959e
 	github.com/shirou/gopsutil/v4 v4.24.11
+	go.etcd.io/bbolt v1.3.10
 	golang.org/x/sys v0.30.0
 	gopkg.in/yaml.v3 v3.0.1
 )

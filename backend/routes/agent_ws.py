@@ -358,6 +358,16 @@ async def _on_heartbeat(conn: _Connection, hb: Dict[str, Any]) -> None:
                 "modules_stuck": hb.get("modules_stuck") or [],
                 "last_scan_at": hb.get("last_scan_at"),
                 "last_poll_at": hb.get("last_poll_at"),
+                # v4.23 — Zabbix-Proxy-style store-and-forward visibility.
+                # Quando il connector (Go agent v4.23+) bufferizza dati
+                # in locale (link WS down o queue satura), questi campi
+                # mostrano quanti frames sono in coda e quanti sono stati
+                # droppati per capacita'. La UI Connector li rende come
+                # banner "Buffer locale: N frames pending".
+                "spool_depth": hb.get("spool_depth", 0),
+                "spool_oldest_at": hb.get("spool_oldest_at"),
+                "spool_dropped_total": hb.get("spool_dropped_total", 0),
+                "spool_acked_total": hb.get("spool_acked_total", 0),
             }
         },
     )
