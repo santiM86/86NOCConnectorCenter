@@ -26,6 +26,7 @@ import (
 	"github.com/86bit/noc-agent/internal/health"
 	"github.com/86bit/noc-agent/internal/logging"
 	"github.com/86bit/noc-agent/internal/poller"
+	"github.com/86bit/noc-agent/internal/spool"
 	"github.com/86bit/noc-agent/internal/transport"
 	"github.com/86bit/noc-agent/internal/update"
 	"github.com/86bit/noc-agent/internal/webproxy"
@@ -33,7 +34,7 @@ import (
 )
 
 // Version is injected at build time via -ldflags.
-var Version = "4.22.0"
+var Version = "4.23.0"
 
 // ServiceName is the OS service identifier (Windows SCM, systemd, launchd).
 const ServiceName = "86NocAgent"
@@ -127,6 +128,34 @@ func runAgent(ctx context.Context, cfg config.Config, log *logging.Logger) {
 	}
 
 	client := transport.New(cfg, log, hello)
+
+	// v4.23 — Apri lo store-and-forward spool (BBolt embedded). Quando
+	// la WS e' disconnessa, gli eventi di polling vengono persistiti
+	// qui invece di essere droppati, e replayed al reconnect (modello
+	// Zabbix Proxy "OfflineBuffer"). Errore non fatale: l'agent
+	// continua col fallback in-memory legacy.
+	if cfg.Spool.Enabled {
+		spoolPath := cfg.Spool.Path
+		if spoolPath == "" {
+			spoolPath = filepath.Join(config.DefaultStateDir(), "spool.db")
+		}
+		sp, err := spool.Open(spoolPath, cfg.Spool.MaxFrames)
+		if err != nil {
+			log.Warn("spool open failed, falling back to in-memory only",
+				"err", err.Error(), "path", spoolPath)
+		} else {
+			log.Info("spool ready",
+				"path", spoolPath,
+				"depth", fmt.Sprintf("%d", sp.Depth()),
+				"max_frames", fmt.Sprintf("%d", cfg.Spool.MaxFrames),
+				"flush_interval", cfg.Spool.FlushInterval.String(),
+			)
+			client.SetSpool(sp)
+			defer sp.Close()
+		}
+	} else {
+		log.Info("spool disabled by config (legacy in-memory buffer only)")
+	}
 
 	snmp := poller.New(cfg.SNMP, log, func(r proto.SNMPPollResult) {
 		client.PushEvent(proto.EventSNMPPoll, r)
@@ -569,7 +598,18 @@ func heartbeatLoop(ctx context.Context, c *transport.Client, hr *health.Reporter
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			c.PushHeartbeat(hr.Snapshot())
+			hb := hr.Snapshot()
+			// v4.23: enrich heartbeat with spool visibility so the NOC
+			// can render "buffered X frames, oldest Ys ago" per agent.
+			st := c.SpoolStats()
+			hb.SpoolDepth = st.Depth
+			hb.SpoolDroppedTotal = st.DroppedTotal
+			hb.SpoolAckedTotal = st.AckedTotal
+			if !st.OldestAt.IsZero() {
+				oldest := st.OldestAt
+				hb.SpoolOldestAt = &oldest
+			}
+			c.PushHeartbeat(hb)
 			hr.Tick("transport")
 		}
 	}

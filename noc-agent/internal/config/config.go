@@ -39,8 +39,27 @@ type Config struct {
 	SysMetrics SysMetricsConfig `yaml:"sysmetrics"`
 	Watchdog  WatchdogConfig  `yaml:"watchdog"`
 	Update    UpdateConfig    `yaml:"update"`
+	Spool     SpoolConfig     `yaml:"spool"`
 
 	Labels map[string]string `yaml:"labels,omitempty"`
+}
+
+// SpoolConfig drives the on-disk store-and-forward buffer that holds
+// frames (poll results, logs, events) when the WS link is down or the
+// in-memory queue saturates. Inspired by Zabbix Proxy's ProxyOfflineBuffer.
+// When disabled the agent falls back to the legacy in-memory drop-when-full
+// behaviour.
+type SpoolConfig struct {
+	Enabled   bool   `yaml:"enabled"`             // default true
+	Path      string `yaml:"path,omitempty"`      // default <ConfigDir>/spool.db
+	MaxFrames int    `yaml:"max_frames,omitempty"` // default 100000
+	// BatchSize is the max number of frames the forwarder drains per
+	// flush cycle (defaults to 256). Larger values trade higher latency
+	// for fewer WS round-trips.
+	BatchSize int `yaml:"batch_size,omitempty"`
+	// FlushInterval is the cadence of the spool drain loop when the
+	// WS link is up (defaults to 2s).
+	FlushInterval time.Duration `yaml:"flush_interval,omitempty"`
 }
 
 type Backend struct {
@@ -63,6 +82,13 @@ type SNMPConfig struct {
 	Timeout     time.Duration `yaml:"timeout"`      // default 2s
 	Retries     int           `yaml:"retries"`      // default 1
 	Targets     []SNMPTarget  `yaml:"targets,omitempty"`
+	// v4.23 — Zabbix-Proxy-style worker pool.
+	// Number of concurrent goroutines that poll SNMP targets in
+	// parallel within a single cycle. Higher values reduce the time
+	// to complete one full polling round but cost more sockets/CPU.
+	// Default 16 (matches the previous hard-coded value); reasonable
+	// range is 4 .. 64. Backend can hot-swap this via server.welcome.
+	Pollers int `yaml:"pollers,omitempty"`
 }
 
 type SNMPTarget struct {
@@ -142,6 +168,7 @@ func Default() Config {
 			Communities: []string{"public"},
 			Timeout:     2 * time.Second,
 			Retries:     1,
+			Pollers:     16,
 		},
 		Ping: PingConfig{
 			Enabled:  true,
@@ -161,6 +188,12 @@ func Default() Config {
 		Update: UpdateConfig{
 			Enabled:       true,
 			CheckInterval: 1 * time.Hour,
+		},
+		Spool: SpoolConfig{
+			Enabled:       true,
+			MaxFrames:     100_000,
+			BatchSize:     256,
+			FlushInterval: 2 * time.Second,
 		},
 	}
 }
@@ -242,6 +275,17 @@ func defaultHeartbeatFile() string {
 		return filepath.Join(os.Getenv("ProgramData"), "86NocAgent", "heartbeat.tick")
 	}
 	return "/var/lib/86nocagent/heartbeat.tick"
+}
+
+// DefaultStateDir returns the platform-conventional directory where the
+// agent persists state (spool DB, agent_id, heartbeat tick).
+//   - Windows: %ProgramData%\86NocAgent
+//   - Linux/macOS: /var/lib/86nocagent
+func DefaultStateDir() string {
+	if runtime.GOOS == "windows" {
+		return filepath.Join(os.Getenv("ProgramData"), "86NocAgent")
+	}
+	return "/var/lib/86nocagent"
 }
 
 // defaultAgentIDFile is the well-known location used to persist the stable

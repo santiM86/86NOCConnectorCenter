@@ -28,11 +28,12 @@ import (
         "sync/atomic"
         "time"
 
-        "github.com/coder/websocket"
+	"github.com/coder/websocket"
 
-        "github.com/86bit/noc-agent/internal/config"
-        "github.com/86bit/noc-agent/internal/logging"
-        "github.com/86bit/noc-agent/pkg/proto"
+	"github.com/86bit/noc-agent/internal/config"
+	"github.com/86bit/noc-agent/internal/logging"
+	"github.com/86bit/noc-agent/internal/spool"
+	"github.com/86bit/noc-agent/pkg/proto"
 )
 
 // CommandHandler reacts to a server.command frame and returns the payload
@@ -67,6 +68,27 @@ type Client struct {
         dropMu      sync.Mutex
         dropCount   int
         lastDropLog time.Time
+
+        // v4.23 — Zabbix-Proxy-style store-and-forward fallback.
+        // Used whenever (a) the WS link is down, or (b) the in-memory
+        // `out` channel is saturated. A forwarder goroutine drains
+        // the spool back into `out` whenever the link is up again.
+        spool *spool.Spool
+}
+
+// SetSpool installs the persistent store-and-forward buffer. Must be
+// called BEFORE Run() — otherwise frames produced during early start
+// will be dropped on disconnect. Pass nil to keep the legacy in-memory
+// only behaviour.
+func (c *Client) SetSpool(sp *spool.Spool) { c.spool = sp }
+
+// SpoolStats exposes spool depth/oldest entry for the heartbeat.
+// Returns zero value if no spool is wired.
+func (c *Client) SpoolStats() spool.Stats {
+        if c.spool == nil {
+                return spool.Stats{}
+        }
+        return c.spool.Stats()
 }
 
 // OnWelcome registers a callback fired when the server sends server.welcome.
@@ -143,11 +165,25 @@ func (c *Client) enqueue(typ string, payload json.RawMessage, corrID string) boo
                 SentAt:  time.Now().UTC(),
                 Payload: payload,
         }
+        // v4.23 store-and-forward path: if the WS link is currently down,
+        // skip the in-memory queue entirely and persist to spool. This
+        // prevents the in-mem queue from being filled with stale frames
+        // and lets the forwarder replay them in FIFO order on resume.
+        if c.spool != nil && !c.connected.Load() {
+                if data, err := json.Marshal(f); err == nil {
+                        if e := c.spool.Enqueue(typ, data); e == nil {
+                                return true
+                        } else {
+                                c.log.Warn("spool enqueue failed (offline)", "err", e.Error())
+                        }
+                }
+                // fall through to in-mem queue as last-resort buffer
+        }
         // v2026-06-04 fix critico "silenzio backend": prima il drop su queue
         // piena era silenzioso e i poll result SNMP venivano persi → backend
         // non riceveva mai update di last_poll → device apparivano stale per
-        // settimane. Ora: fast-path → slow-path 5s → drop con log
-        // aggregato (rate-limit 30s per evitare flood).
+        // settimane. Ora: fast-path → slow-path 5s → spool fallback → drop
+        // con log aggregato (rate-limit 30s per evitare flood).
         select {
         case c.out <- f:
                 return true
@@ -157,6 +193,15 @@ func (c *Client) enqueue(typ string, payload json.RawMessage, corrID string) boo
         case c.out <- f:
                 return true
         case <-time.After(5 * time.Second):
+                // v4.23: prima del drop, prova a persistere su spool.
+                // Cosi' anche sotto burst saturanti i dati non si perdono.
+                if c.spool != nil {
+                        if data, err := json.Marshal(f); err == nil {
+                                if e := c.spool.Enqueue(typ, data); e == nil {
+                                        return true
+                                }
+                        }
+                }
                 c.dropMu.Lock()
                 c.dropCount++
                 shouldLog := time.Since(c.lastDropLog) > 30*time.Second
@@ -179,6 +224,11 @@ func (c *Client) enqueue(typ string, payload json.RawMessage, corrID string) boo
 // Run connects to the backend and blocks until ctx is done. It loops
 // forever, reconnecting with backoff after every failure.
 func (c *Client) Run(ctx context.Context) {
+        // v4.23: avvia il forwarder dello spool in parallelo al loop di
+        // reconnect. E' safe se spool e' nil (la goroutine esce subito).
+        if c.spool != nil {
+                go c.spoolForwarderLoop(ctx)
+        }
         backoff := c.cfg.ReconnectMin
         for {
                 if ctx.Err() != nil {
@@ -408,6 +458,85 @@ func (c *Client) handleCommand(ctx context.Context, f proto.Frame) {
 func (c *Client) replyErr(corrID string, err error) {
         reply, _ := json.Marshal(proto.AgentReply{OK: false, Error: err.Error()})
         c.enqueue(proto.TypeAgentReply, reply, corrID)
+}
+
+// spoolForwarderLoop periodically drains the persistent spool into the
+// in-memory `out` channel whenever the WS link is up. Each frame is
+// removed from the spool only AFTER it has been accepted into `out`
+// (handing off ownership to writeLoop). If the channel is saturated,
+// the frame stays in the spool and is retried next cycle.
+//
+// This is the at-least-once forwarder: a writeLoop crash mid-flight
+// will resurface the frame on the next session (TCP-level), but the
+// duplicate window is bounded by FlushInterval (~2s by default).
+func (c *Client) spoolForwarderLoop(ctx context.Context) {
+        if c.spool == nil {
+                return
+        }
+        flush := c.cfg.Spool.FlushInterval
+        if flush <= 0 {
+                flush = 2 * time.Second
+        }
+        batchSize := c.cfg.Spool.BatchSize
+        if batchSize <= 0 {
+                batchSize = 256
+        }
+        tk := time.NewTicker(flush)
+        defer tk.Stop()
+        for {
+                select {
+                case <-ctx.Done():
+                        return
+                case <-tk.C:
+                }
+                if !c.connected.Load() {
+                        continue
+                }
+                frames, err := c.spool.Drain(batchSize)
+                if err != nil {
+                        c.log.Warn("spool drain failed", "err", err.Error())
+                        continue
+                }
+                if len(frames) == 0 {
+                        continue
+                }
+                acked := make([]uint64, 0, len(frames))
+                for _, sf := range frames {
+                        var pf proto.Frame
+                        if err := json.Unmarshal(sf.Payload, &pf); err != nil {
+                                // Corrupted spool entry — ack to remove it so
+                                // it doesn't block the queue forever.
+                                acked = append(acked, sf.ID)
+                                continue
+                        }
+                        select {
+                        case c.out <- pf:
+                                acked = append(acked, sf.ID)
+                        case <-ctx.Done():
+                                // best-effort ack what we got so far and exit
+                                if len(acked) > 0 {
+                                        _, _ = c.spool.Ack(acked)
+                                }
+                                return
+                        case <-time.After(200 * time.Millisecond):
+                                // give up on this frame for now; will retry next cycle
+                        }
+                        if !c.connected.Load() {
+                                // session dropped mid-flush; stop pushing
+                                break
+                        }
+                }
+                if len(acked) > 0 {
+                        if _, err := c.spool.Ack(acked); err != nil {
+                                c.log.Warn("spool ack failed", "err", err.Error(), "count", fmt.Sprintf("%d", len(acked)))
+                        } else {
+                                c.log.Debug("spool flushed",
+                                        "acked", fmt.Sprintf("%d", len(acked)),
+                                        "remaining", fmt.Sprintf("%d", c.spool.Depth()),
+                                )
+                        }
+                }
+        }
 }
 
 func nextBackoff(cur, max time.Duration) time.Duration {
