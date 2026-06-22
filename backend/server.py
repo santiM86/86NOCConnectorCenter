@@ -266,6 +266,7 @@ from routes.redfish_routes import router as redfish_router
 from routes.settings import router as settings_router
 from routes.ingestion import router as ingestion_router
 from routes.connector import router as connector_router
+from routes.preview_releases import router as preview_releases_router
 from routes.discovery import router as discovery_router
 from routes.web_proxy import router as web_proxy_router
 from routes.web_console_live import router as web_console_live_router
@@ -330,6 +331,7 @@ app.include_router(redfish_router)
 app.include_router(settings_router)
 app.include_router(ingestion_router)
 app.include_router(connector_router)
+app.include_router(preview_releases_router)  # TEMP: mirror download Connector pre-release per GitHub Release
 app.include_router(agent_ws_router)  # 86NocAgent v4
 app.include_router(github_deploy_router)  # Auto-deploy webhook GitHub
 app.include_router(lan_scanner_router)  # Scanner LAN on-demand via WS
