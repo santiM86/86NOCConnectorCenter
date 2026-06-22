@@ -152,13 +152,36 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
     # mostra UP/DOWN reale + traffico bps.
     DEBOUNCE_MIN_FAILURES = 3      # 3 cicli consecutivi falliti
     DEBOUNCE_GRACE_SECONDS = 300   # 5 minuti senza nessun successo
+    SNMP_FRESHNESS_SECONDS = 600   # SNMP poll < 10 min = device raggiungibile
     def _effective_reachable(pd_doc):
         """True = mostra online, False = mostra offline.
-        pd_doc e' il record di device_poll_status (puo' essere None o {})."""
+        pd_doc e' il record di device_poll_status (puo' essere None o {}).
+
+        v2026-06-12 fix critico "device sempre offline ma SNMP fresco":
+        prima questa funzione guardava SOLO `reachable` (che e' il flag
+        del ping ICMP). Su switch HP Comware, server Windows con firewall
+        ICMP bloccato, ecc., il ping fallisce sempre ma SNMP funziona
+        perfettamente -> la UI mostrava OFFLINE nonostante il connector
+        passasse dati freschi. Ora consideriamo ONLINE anche un device
+        che ha snmp_reachable=True con poll recente, indipendentemente
+        dal ping. Lo stesso pattern di Zabbix: SNMP-only checks rendono
+        l'host "Available SNMP", senza richiedere ICMP.
+        """
         if not pd_doc:
             return False
         if pd_doc.get("reachable"):
             return True
+        # v2026-06-12: SNMP-only liveness — se il poll SNMP e' fresco e
+        # reachable=True, il device E' raggiungibile anche se ping fallisce.
+        if pd_doc.get("snmp_reachable"):
+            snmp_at = pd_doc.get("snmp_last_check_at") or pd_doc.get("last_poll_at")
+            if snmp_at:
+                try:
+                    snmp_dt = datetime.fromisoformat(str(snmp_at).replace("Z", "+00:00"))
+                    if (datetime.now(timezone.utc) - snmp_dt).total_seconds() < SNMP_FRESHNESS_SECONDS:
+                        return True
+                except Exception:
+                    pass
         # reachable=false: applichiamo debounce
         consec = int(pd_doc.get("consecutive_failures") or 0)
         last_ok = pd_doc.get("last_reachable_at")
