@@ -1,3 +1,34 @@
+# 2026-06-23 — FIX update connector "build full vs minimal stessa versione"
+
+## 🐛 Problema (utente)
+Il NOC Center mostra i connector come "✓ aggiornato" perché confronta SOLO la
+stringa di versione (4.25.0 == 4.25.0). Ma esistono due build della stessa
+v4.25.0 (full con GUI vs minimal). Avendo lo stesso numero, il Center non le
+distingue → mostra "aggiornato" anche dove il binario è quello sbagliato, e il
+bottone Update è DISABILITATO ("Già aggiornato") → impossibile forzare il
+re-deploy della build corretta.
+
+## ✅ Fix "a" — Forza re-deploy (solo frontend, nessun rebuild agent)
+- `AgentsPage.js`: quando un agent è LIVE e già all'ultima versione, al posto
+  del bottone disabilitato compare **"Forza re-deploy"**: richiama
+  /api/agents/bulk-update con la versione corrente → l'agent riesegue
+  install-noc-agent.ps1 e ri-scarica l'asset pubblicato corrente (la minimal),
+  anche a parità di numero. (data-testid agent-force-redeploy-{id})
+- Backend già pronto: bulk-update invia a qualsiasi agent_id esplicito (il gate
+  "outdated" era solo lato UI). Completamento rilevato a parità di versione
+  (agent_ws.py riga 266: current_n == target_n → completed).
+- updateOne(a, force) con conferma dedicata.
+
+## ⏳ Fix "c" — Build fingerprint (DA FARE, richiede rebuild agent Go)
+Per rendere "aggiornato" VERITIERO: l'agent deve riportare nell'hello un
+`build_variant` ("minimal"/"full") e/o build_id/commit (ldflags
+-X main.BuildVariant=minimal). Il Center salva il campo, definisce la variante
+desiderata e segnala i mismatch. Lato Center lo implemento io quando confermato.
+
+---
+
+
+
 # 2026-06-23 — NAGIOS CLONE #2 (Soft/Hard configurabili) + #3 (Dipendenze parent-child)
 
 ## #2 — Stati Soft/Hard configurabili (max_check_attempts, stile Nagios)

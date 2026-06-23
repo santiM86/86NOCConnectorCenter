@@ -144,7 +144,7 @@ export default function AgentsPage() {
   });
   const outdatedLive = outdated.filter((a) => a.live);
 
-  const updateOne = async (a) => {
+  const updateOne = async (a, force = false) => {
     if (!a.live) {
       toast.error("L'agent non è connesso (LIVE). Aspetta che torni online e ritenta.");
       return;
@@ -153,15 +153,21 @@ export default function AgentsPage() {
       toast.error("Versione target non risolvibile: il Center non riesce a leggere l'ultima release da GitHub. Imposta AGENT_GITHUB_TOKEN nel .env del backend o forza con AGENT_LATEST_VERSION.");
       return;
     }
-    if (!confirm(`Aggiornare ${a.hostname || a.agent_id.slice(0, 8)} a ${latest}?`)) return;
+    // force = re-deploy dell'asset pubblicato corrente anche a parità di
+    // versione (es. build full installata al posto della minimal).
+    const targetV = force ? (a.agent_version || latest) : latest;
+    const msg = force
+      ? `FORZA RE-DEPLOY su ${a.hostname || a.agent_id.slice(0, 8)}?\n\nReinstalla l'asset pubblicato corrente (v${targetV}) anche se la versione installata è identica. Usalo se la build installata è quella sbagliata (es. full invece di minimal). L'agent si riavvierà.`
+      : `Aggiornare ${a.hostname || a.agent_id.slice(0, 8)} a ${latest}?`;
+    if (!confirm(msg)) return;
     setBusyIds((s) => new Set([...s, a.agent_id]));
     try {
       const r = await axios.post(`${API}/agents/bulk-update`, {
         agent_ids: [a.agent_id],
-        version: latest,
+        version: targetV,
       });
       if (r.data.sent_count > 0) {
-        toast.success(`Comando inviato a ${a.hostname || a.agent_id.slice(0, 8)}`);
+        toast.success(`${force ? "Re-deploy" : "Comando"} inviato a ${a.hostname || a.agent_id.slice(0, 8)}`);
       } else {
         toast.error(`Failed: ${(r.data.failed?.[0]?.reason) || "agent non risponde"}`);
       }
@@ -729,15 +735,27 @@ export default function AgentsPage() {
                           </div>
                         ) : (
                           <>
-                            <button
-                              onClick={() => updateOne(a)}
-                              disabled={!a.live || !isOutdated || busyIds.has(a.agent_id)}
-                              className="text-[10px] px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 border border-amber-500/20 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-                              title={!a.live ? "Agent offline" : !isOutdated ? "Già aggiornato" : "Aggiorna"}
-                              data-testid={`agent-update-${a.agent_id}`}>
-                              <ArrowCircleUp size={10} className="inline mr-0.5" />
-                              {busyIds.has(a.agent_id) ? "…" : "Update"}
-                            </button>
+                            {isOutdated ? (
+                              <button
+                                onClick={() => updateOne(a)}
+                                disabled={!a.live || busyIds.has(a.agent_id)}
+                                className="text-[10px] px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 border border-amber-500/20 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                                title={!a.live ? "Agent offline" : "Aggiorna"}
+                                data-testid={`agent-update-${a.agent_id}`}>
+                                <ArrowCircleUp size={10} className="inline mr-0.5" />
+                                {busyIds.has(a.agent_id) ? "…" : "Update"}
+                              </button>
+                            ) : (
+                              <button
+                                onClick={() => updateOne(a, true)}
+                                disabled={!a.live || busyIds.has(a.agent_id)}
+                                className="text-[10px] px-2 py-0.5 rounded bg-zinc-500/10 text-zinc-300 hover:bg-amber-500/20 hover:text-amber-300 border border-zinc-500/20 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                                title={!a.live ? "Agent offline" : "Forza re-deploy: reinstalla l'asset pubblicato corrente anche se la versione è identica (utile se la build installata è quella sbagliata, es. full vs minimal)"}
+                                data-testid={`agent-force-redeploy-${a.agent_id}`}>
+                                <ArrowCircleUp size={10} className="inline mr-0.5" />
+                                {busyIds.has(a.agent_id) ? "…" : "Forza re-deploy"}
+                              </button>
+                            )}
                             <button
                               onClick={() => runDiagnostics(a)}
                               disabled={!a.live || busyIds.has(a.agent_id)}
