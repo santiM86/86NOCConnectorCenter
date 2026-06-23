@@ -1,3 +1,56 @@
+# 2026-06-23 — FIX P0 AFFIDABILITÀ LIVENESS: unificazione ICMP vs SNMP + trasparenza
+
+## 🐛 Problema (screenshot utente: Switch HP 10.10.41.222 Zitac)
+Scheda Dispositivo mostrava OFFLINE / REACHABLE=No nonostante ULTIMO POLL
+fresco (oggi) e nota "il connector sta comunicando via SNMP". L'utente non
+si fidava più dei dati: "non sappiamo se sono realmente online o offline".
+
+## 🔍 Root cause (3 bug concatenati)
+1. **Campo `reachable` conteso (race)**: SIA `_bridge_ping_poll` SIA
+   `_bridge_snmp_poll` scrivevano lo stesso `device_poll_status.reachable`.
+   Per uno switch che blocca ICMP, ping scriveva False e SNMP True a turno
+   → valore flappante.
+2. **`snmp_reachable` nel posto sbagliato**: il bridge SNMP lo scriveva solo
+   in `managed_devices`, ma il fix "SNMP-only liveness" in devices.py lo
+   leggeva da `device_poll_status` → non scattava MAI.
+3. **3 implementazioni liveness divergenti**: overview.py (liveness_resolver,
+   senza SNMP-only), devices.py (copia locale CON SNMP-only), 
+   device_info_card.py (poll.reachable GREZZO, zero logica). Viola PRD #5.
+
+## ✅ Fix (backend + frontend, NO rebuild Go agent)
+- `agent_ws.py::_bridge_snmp_poll`: scrive `snmp_reachable`+`snmp_last_check_at`
+  in device_poll_status; NON sovrascrive più `reachable` (ora = sola verità ICMP).
+  Errore SNMP rinominato `snmp_error` (separato da `ping_error`).
+- `liveness_resolver.py`: `effective_reachable()` ora include SNMP-only liveness
+  via nuovo `_snmp_fresh()` (snmp_reachable + freschezza <10min). `compute_status`
+  etichetta evidence `snmp`. Sorgente UNICA di verità (PRD #5).
+- `devices.py`: rimossa copia locale `_effective_reachable`, ora importa quella
+  centralizzata. Lista == Panoramica == Scheda.
+- `device_info_card.py`: lo status è calcolato via liveness_resolver. Nuovi campi:
+  effective_status, icmp_reachable, snmp_reachable, snmp_fresh, snmp_last_check_at,
+  live_reason, live_reason_label. `reachable` (legacy) ora mappa lo stato EFFETTIVO.
+- `DeviceInfoCard.js`: badge da effective_status (ONLINE/ONLINE (SNMP)/INCERTO/
+  OFFLINE, data-testid=device-status-badge); sezione "Stato Live" mostra ICMP e
+  SNMP SEPARATI + Motivo ("Risponde a SNMP — ICMP bloccato dal firewall").
+
+## 🧪 Test
+- Sintetico end-to-end: switch HP ICMP-bloccato/SNMP-fresco → ONLINE via SNMP ✓
+- pytest regressione: test_devices_snmp_only_liveness, test_device_status_arp_stale,
+  test_snmp_bridge_antiflap → tutti PASS
+- Testing agent iter-87: backend 100% (4/4 + 24/24 regressione), frontend 100%,
+  zero issue. Coerenza lista/scheda confermata.
+
+## 🚀 Deploy (SOLO backend+frontend, no Go agent)
+1. **Save to GitHub**
+2. PROD: `cd /home/arslan/86NOCConnectorCenter && git pull origin main && sudo systemctl restart noc-backend`
+   ⚠️ NOTA: i device esistenti con poll SNMP popoleranno `snmp_reachable` in
+   device_poll_status al prossimo ciclo SNMP (60s). Da subito dopo il deploy
+   la Scheda Dispositivo userà la logica unificata.
+
+---
+
+
+
 # 2026-06-11 — v4.23 Connector: Store-and-Forward + Worker Pool (stile Zabbix Proxy)
 
 ## 🎯 Obiettivo

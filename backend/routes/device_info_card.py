@@ -18,6 +18,9 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from typing import Optional, List, Dict, Any
 from datetime import datetime, timezone
 import re
+import logging
+
+logger = logging.getLogger("device_info_card")
 
 from database import db
 from deps import get_current_user, audit_logger
@@ -480,7 +483,9 @@ async def build_info_card(device_ip: str) -> Dict[str, Any]:
             poll, managed, ip_ev, mac_ev, offline_clients,
         )
     except Exception:
-        # Fallback prudente: ICMP OR SNMP fresco
+        # Fallback prudente: ICMP OR SNMP fresco. Logghiamo per non mascherare
+        # regressioni silenziose su build_evidence_maps / offline_clients.
+        logger.exception("compute_status fallito per %s, uso fallback ICMP/SNMP", device_ip)
         if icmp_reachable or snmp_is_fresh:
             effective_status = "online"
             live_reason = "snmp" if (not icmp_reachable and snmp_is_fresh) else "ping"
