@@ -104,7 +104,46 @@ export default function DeviceInfoCard({ deviceIp, onClose = null, compact = fal
   const [newName, setNewName] = useState("");
   const [savingName, setSavingName] = useState(false);
   const [lastUpdated, setLastUpdated] = useState(null);
+  const [mcaInput, setMcaInput] = useState("");
+  const [savingMca, setSavingMca] = useState(false);
+  const [parentInput, setParentInput] = useState("");
+  const [savingParent, setSavingParent] = useState(false);
   const token = localStorage.getItem("noc_token");
+
+  const saveParent = async () => {
+    setSavingParent(true);
+    try {
+      const cid = card?.identity?.client_id || card?.status?.client_id;
+      await axios.post(
+        `${API}/api/devices/by-ip/${deviceIp}/parent`,
+        { parent_ip: parentInput.trim() || null, client_id: cid },
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+      setParentInput("");
+      fetchCard(true);
+    } catch (e) {
+      // noop
+    } finally {
+      setSavingParent(false);
+    }
+  };
+
+  const saveMaxCheckAttempts = async () => {
+    setSavingMca(true);
+    try {
+      const cid = card?.identity?.client_id || card?.status?.client_id;
+      await axios.post(
+        `${API}/api/devices/by-ip/${deviceIp}/monitoring-config`,
+        { max_check_attempts: mcaInput === "" ? null : parseInt(mcaInput, 10), client_id: cid },
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+      fetchCard(true);
+    } catch (e) {
+      // noop: errore mostrato dal refresh
+    } finally {
+      setSavingMca(false);
+    }
+  };
 
   const fetchCard = (silent = false) => {
     if (!silent) setLoading(true);
@@ -383,8 +422,26 @@ export default function DeviceInfoCard({ deviceIp, onClose = null, compact = fal
                   <Wrench size={10} weight="fill" /> IN MANUTENZIONE
                 </span>
               )}
+              {(st.state_type === "soft" || st.degraded) && st.effective_status !== "offline" && !st.in_maintenance && (
+                <span
+                  className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40"
+                  title={`Stato SOFT (in verifica): ${st.failed_attempts || 0}/${st.max_check_attempts || 5} ping falliti. Nessun alert finche' non si conferma OFFLINE.`}
+                  data-testid="device-soft-state-badge">
+                  <Warning size={10} weight="fill" /> IN VERIFICA {st.failed_attempts || 0}/{st.max_check_attempts || 5}
+                </span>
+              )}
               {(() => {
                 const eff = st.effective_status || (st.reachable === true ? "online" : st.reachable === false ? "offline" : null);
+                if (st.unreachable_dependency) {
+                  return (
+                    <span
+                      className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] rounded-full bg-orange-500/20 text-orange-300 border border-orange-500/40"
+                      title={`Irraggiungibile: il padre ${st.parent_name || st.parent_ip || ""} è offline`}
+                      data-testid="device-status-badge">
+                      <NetworkSlash size={10} weight="fill" /> IRRAGGIUNGIBILE
+                    </span>
+                  );
+                }
                 const snmpOnly = eff === "online" && st.icmp_reachable === false && st.snmp_reachable === true;
                 if (eff === "online") {
                   return (
@@ -413,8 +470,7 @@ export default function DeviceInfoCard({ deviceIp, onClose = null, compact = fal
                     <span
                       className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] rounded-full bg-red-500/20 text-red-300 border border-red-500/40"
                       title="Nessuna risposta a ICMP ne' SNMP"
-                      data-testid="device-status-badge"
-                    >
+                      data-testid="device-status-badge">
                       <Warning size={10} weight="fill" /> OFFLINE
                     </span>
                   );
@@ -609,6 +665,50 @@ export default function DeviceInfoCard({ deviceIp, onClose = null, compact = fal
             <Field label="ICMP (ping)" value={st.icmp_reachable === true ? "Risponde" : st.icmp_reachable === false ? "Nessuna risposta" : "n/d"} />
             <Field label="SNMP" value={st.snmp_reachable === true ? (st.snmp_fresh ? "Risponde (fresco)" : "Risponde (stale)") : st.snmp_reachable === false ? "Nessuna risposta" : "n/d"} />
             {st.snmp_last_check_at && <Field label="Ultimo check SNMP" value={fmtDateTime(st.snmp_last_check_at)} />}
+            <Field label="Conferma stato" value={st.state_type === "soft" || st.degraded ? `SOFT — in verifica (${st.failed_attempts || 0}/${st.max_check_attempts || 5})` : "HARD — confermato"} highlight={st.state_type === "soft" || st.degraded} />
+            <div className="flex items-center justify-between py-1.5 border-b border-white/5 last:border-0" data-testid="device-mca-row">
+              <span className="text-xs text-[var(--text-secondary)]">Soglia tentativi (Soft→Hard)</span>
+              <span className="inline-flex items-center gap-1">
+                <input
+                  type="number" min={1} max={20}
+                  value={mcaInput !== "" ? mcaInput : (st.max_check_attempts ?? "")}
+                  onChange={(e) => setMcaInput(e.target.value)}
+                  className="w-14 bg-white/5 border border-white/10 rounded px-1.5 py-0.5 text-xs text-right text-[var(--text-primary)]"
+                  data-testid="device-mca-input" />
+                <button
+                  onClick={saveMaxCheckAttempts} disabled={savingMca}
+                  className="px-2 py-0.5 text-[10px] rounded-md bg-blue-500/20 text-blue-300 border border-blue-500/40 hover:bg-blue-500/30 disabled:opacity-50"
+                  title="Quanti ping falliti consecutivi prima di confermare OFFLINE. Vuoto = default globale."
+                  data-testid="device-mca-save">
+                  {savingMca ? "..." : "Salva"}
+                </button>
+              </span>
+            </div>
+            <div className="flex items-center justify-between py-1.5 border-b border-white/5 last:border-0" data-testid="device-parent-row">
+              <span className="text-xs text-[var(--text-secondary)]">
+                Padre (dipendenza)
+                {st.parent_ip && (
+                  <span className={`ml-1 ${st.parent_status === "offline" ? "text-orange-400" : "text-emerald-400"}`}>
+                    · {st.parent_name || st.parent_ip} ({st.parent_status === "offline" ? "OFFLINE" : st.parent_status || "?"})
+                  </span>
+                )}
+              </span>
+              <span className="inline-flex items-center gap-1">
+                <input
+                  type="text" placeholder={st.parent_ip || "IP switch/gateway"}
+                  value={parentInput}
+                  onChange={(e) => setParentInput(e.target.value)}
+                  className="w-32 bg-white/5 border border-white/10 rounded px-1.5 py-0.5 text-xs text-right text-[var(--text-primary)]"
+                  data-testid="device-parent-input" />
+                <button
+                  onClick={saveParent} disabled={savingParent}
+                  className="px-2 py-0.5 text-[10px] rounded-md bg-blue-500/20 text-blue-300 border border-blue-500/40 hover:bg-blue-500/30 disabled:opacity-50"
+                  title="IP del device a monte. Se il padre è offline, questo device è 'irraggiungibile' e non genera alert. Vuoto = auto da topologia."
+                  data-testid="device-parent-save">
+                  {savingParent ? "..." : "Salva"}
+                </button>
+              </span>
+            </div>
             <Field label="Monitor tipo" value={isSnmpMonitored && !monitorHasSnmp ? `${st.monitor_type || "http"} + snmp (attivo)` : st.monitor_type} highlight={isSnmpMonitored} />
             <Field label="Ultimo poll" value={fmtDateTime(st.last_poll)} />
             <Field label="Ultimo update" value={fmtDateTime(st.last_update)} />

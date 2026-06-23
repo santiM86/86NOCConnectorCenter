@@ -81,6 +81,78 @@ def invalidate_maintenance_cache(client_id=None) -> None:
         _MAINT_CACHE.pop(client_id, None)
 
 
+# v2026-06-23 PARENT-CHILD DEPENDENCIES (stile Nagios "down vs unreachable").
+# Se il PADRE di un device (lo switch/gateway a monte) e' OFFLINE, il device
+# non e' "down per colpa sua" ma "UNREACHABLE" (irraggiungibile): non ha senso
+# allertare su 50 device dietro uno switch morto → 1 solo alert (lo switch).
+# Parent risolto da: 1) override manuale managed_devices.parent_ip,
+# 2) auto da discovered_endpoints.switch_ip (FDB/MAC table).
+_PARENT_CACHE: dict[tuple, tuple] = {}
+_PARENT_TTL = 60.0
+
+
+async def resolve_parent_ip(db, client_id, device_ip):
+    """IP del device 'padre' (switch/gateway a monte) o None. Cache 60s."""
+    if not client_id or not device_ip:
+        return None
+    key = (client_id, device_ip)
+    cached = _PARENT_CACHE.get(key)
+    if cached and (time.time() - cached[1]) < _PARENT_TTL:
+        return cached[0]
+    parent_ip = None
+    try:
+        md = await db.managed_devices.find_one(
+            {"client_id": client_id, "ip": device_ip},
+            {"_id": 0, "parent_ip": 1, "parent_ip_auto": 1},
+        )
+        if md:
+            # override manuale ha priorita'
+            parent_ip = (md.get("parent_ip") or "").strip() or None
+        if not parent_ip:
+            ep = await db.discovered_endpoints.find_one(
+                {"client_id": client_id, "ip": device_ip, "switch_ip": {"$nin": [None, "", device_ip]}},
+                {"_id": 0, "switch_ip": 1},
+            )
+            if ep:
+                parent_ip = ep.get("switch_ip") or None
+    except Exception:
+        parent_ip = None
+    _PARENT_CACHE[key] = (parent_ip, time.time())
+    return parent_ip
+
+
+async def get_dependency_state(db, client_id, device_ip):
+    """Ritorna (parent_ip, parent_name, parent_status). parent_status puo'
+    essere 'online'/'offline'/None (parent sconosciuto)."""
+    parent_ip = await resolve_parent_ip(db, client_id, device_ip)
+    if not parent_ip or parent_ip == device_ip:
+        return None, None, None
+    try:
+        p = await db.managed_devices.find_one(
+            {"client_id": client_id, "ip": parent_ip},
+            {"_id": 0, "name": 1, "device_name": 1, "status": 1},
+        )
+    except Exception:
+        p = None
+    if not p:
+        return parent_ip, None, None
+    return parent_ip, (p.get("name") or p.get("device_name") or parent_ip), p.get("status")
+
+
+async def is_dependency_unreachable(db, client_id, device_ip) -> bool:
+    """True se il PADRE del device e' OFFLINE → device irraggiungibile
+    (dependency). Gli alert vanno soppressi (Nagios "unreachable host")."""
+    _, _, parent_status = await get_dependency_state(db, client_id, device_ip)
+    return parent_status == "offline"
+
+
+def invalidate_parent_cache(client_id=None, device_ip=None) -> None:
+    if client_id is None:
+        _PARENT_CACHE.clear()
+    else:
+        _PARENT_CACHE.pop((client_id, device_ip), None)
+
+
 async def is_device_silenced(db, client_id: Optional[str], device_ip: Optional[str]) -> bool:
     """True se il device deve essere silenziato dal motore di alert.
 
@@ -103,6 +175,12 @@ async def is_device_silenced(db, client_id: Optional[str], device_ip: Optional[s
     # per i device vitali (stai lavorando tu su quel device, non e' un fault).
     # NON cacheato nel _SILENCE_CACHE perche' time-sensitive ai boundary.
     if await is_in_maintenance(db, client_id, device_ip):
+        return True
+    # v2026-06-23 PARENT DEPENDENCY: se il padre (switch/gateway a monte) e'
+    # OFFLINE, questo device e' UNREACHABLE (non down per colpa sua) → niente
+    # alert (Nagios sopprime le notifiche per host unreachable). Evita le
+    # tempeste di alert quando muore uno switch con 50 device a valle.
+    if await is_dependency_unreachable(db, client_id, device_ip):
         return True
     key = (client_id, device_ip)
     now = time.time()

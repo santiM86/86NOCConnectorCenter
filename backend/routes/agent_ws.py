@@ -544,6 +544,28 @@ async def _bridge_discovery(conn: _Connection, batch: List[Dict[str, Any]]) -> N
             logger.warning("auto-enrichment skip client=%s err=%s", conn.client_id, _e)
 
 
+_MAX_CHECK_ATTEMPTS_CACHE: Dict[str, Any] = {"value": 5, "ts": 0.0}
+_MCA_TTL = 60.0
+
+
+async def _get_global_max_check_attempts(db) -> int:
+    """Soglia globale di fallimenti consecutivi prima dell'OFFLINE confermato
+    (HARD). Configurabile via db.settings.max_check_attempts. Cache 60s."""
+    import time as _t
+    now_t = _t.time()
+    if (now_t - _MAX_CHECK_ATTEMPTS_CACHE["ts"]) < _MCA_TTL:
+        return int(_MAX_CHECK_ATTEMPTS_CACHE["value"])
+    try:
+        doc = await db.settings.find_one({"key": "max_check_attempts"}, {"_id": 0, "value": 1})
+        val = int(doc.get("value")) if doc and doc.get("value") else 5
+    except Exception:
+        val = 5
+    _MAX_CHECK_ATTEMPTS_CACHE["value"] = val
+    _MAX_CHECK_ATTEMPTS_CACHE["ts"] = now_t
+    return val
+
+
+
 async def _bridge_ping_poll(conn: _Connection, r: Dict[str, Any]) -> None:
     """Bridge a PingPollResult into managed_devices.status.
 
@@ -613,18 +635,20 @@ async def _bridge_ping_poll(conn: _Connection, r: Dict[str, Any]) -> None:
     except Exception as e:
         logger.warning("ping_poll: device_poll_status upsert failed ip=%s err=%s", target, e)
 
-    # Reconcile managed_devices.status with the 5-failure threshold.
-    # v4.15.x ANTI-FLAP: alzata da 3 a 5 per ridurre falsi offline su
-    # reti con packet loss occasionale (WiFi, link congestionati).
-    # 5 cycle a 60s = 5 minuti di fail consecutivi reali.
+    # v2026-06-23 SOFT/HARD STATE (stile Nagios): la soglia di fallimenti
+    # consecutivi prima di confermare OFFLINE (HARD) ora e' CONFIGURABILE.
+    # Default globale in db.settings.max_check_attempts (cache 60s), override
+    # per-device su managed_devices.max_check_attempts. Sotto soglia il device
+    # e' in stato SOFT (degraded) e NON genera alert → niente falsi allarmi.
     try:
         cursor = db.managed_devices.find(
             {"client_id": conn.client_id, "ip": target},
             {"_id": 0, "id": 1, "status": 1, "consecutive_ping_failures": 1,
-             "last_seen_at": 1},
+             "last_seen_at": 1, "max_check_attempts": 1},
         )
-        failure_threshold = 5
+        global_threshold = await _get_global_max_check_attempts(db)
         async for dev in cursor:
+            failure_threshold = int(dev.get("max_check_attempts") or global_threshold)
             prev_failures = int(dev.get("consecutive_ping_failures") or 0)
             prev_status = dev.get("status")
             update: Dict[str, Any] = {
@@ -638,6 +662,7 @@ async def _bridge_ping_poll(conn: _Connection, r: Dict[str, Any]) -> None:
                 update["consecutive_ping_failures"] = 0
                 update["last_seen_at"] = now_iso
                 update["degraded"] = False
+                update["state_type"] = "hard"  # online confermato
             else:
                 # v4.15.x MULTI-CONNECTOR PROTECTION: prima di degradare a
                 # offline, verifica se un ALTRO agent ha pingato OK lo
@@ -680,9 +705,12 @@ async def _bridge_ping_poll(conn: _Connection, r: Dict[str, Any]) -> None:
                     update["consecutive_ping_failures"] = new_failures
                     if new_failures >= failure_threshold:
                         update["status"] = "offline"
+                        update["degraded"] = False
+                        update["state_type"] = "hard"  # OFFLINE confermato
                     else:
                         update["status"] = prev_status or "online"
                         update["degraded"] = True
+                        update["state_type"] = "soft"  # in verifica, no alert
             # Use the unique `id` if present, otherwise match by (client_id, ip)
             # so devices indexed only by _id (no `id` field) are still handled.
             dev_id = dev.get("id")
