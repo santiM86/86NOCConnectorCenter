@@ -31,6 +31,50 @@ export default function AgentsPage() {
   const [loading, setLoading] = useState(true);
   const [busyIds, setBusyIds] = useState(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
+  // Generatore comando d'installazione per nuovi connector
+  const [showInstall, setShowInstall] = useState(false);
+  const [instClient, setInstClient] = useState("");
+  const [instRole, setInstRole] = useState("master");
+  const [instLabel, setInstLabel] = useState("");
+  const [instVersion, setInstVersion] = useState("v4.25.1");
+  const [instBusy, setInstBusy] = useState(false);
+  const [instResult, setInstResult] = useState(null);
+
+  const REPO = "santiM86/86NOCConnectorCenter";
+  const buildInstallCmd = (token, cid, backend, role, version) => {
+    const dl = version && version !== "latest"
+      ? `releases/download/${version}`
+      : "releases/latest/download";
+    const ver = version || "latest";
+    return [
+      `iwr "https://github.com/${REPO}/${dl}/install-noc-agent.ps1" -OutFile "$env:TEMP\\install.ps1"`,
+      `& "$env:TEMP\\install.ps1" -Token "${token}" -ClientId "${cid}" -BackendUrl "${backend}" -Role "${role}" -Version "${ver}"`,
+    ].join("; ");
+  };
+
+  const generateInstall = async () => {
+    if (!instClient) { toast.error("Seleziona un cliente"); return; }
+    setInstBusy(true);
+    try {
+      const r = await axios.post(`${API}/agents/register`, { client_id: instClient, label: instLabel || `${instRole} connector` });
+      const cmd = buildInstallCmd(r.data.token, r.data.client_id, r.data.backend_url, instRole, instVersion);
+      setInstResult({ ...r.data, role: instRole, version: instVersion, cmd });
+      toast.success("Comando generato — token nuovo emesso");
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Errore generazione comando");
+    } finally {
+      setInstBusy(false);
+    }
+  };
+
+  const copyInstall = () => {
+    if (!instResult?.cmd) return;
+    navigator.clipboard.writeText(instResult.cmd).then(
+      () => toast.success("Comando copiato negli appunti"),
+      () => toast.error("Copia non riuscita"),
+    );
+  };
+
   // v4.15.x: vista albero raggruppata per cliente (default ON). Persistita
   // in localStorage cosi' la preferenza resta sui reload.
   const [groupByClient, setGroupByClient] = useState(() => {
@@ -379,11 +423,84 @@ export default function AgentsPage() {
             Gestione centralizzata: aggiornamenti remoti, stato live, diagnostica
           </p>
         </div>
-        <Button variant="outline" size="sm" onClick={fetchAll}
-          className="rounded-md text-xs h-8" data-testid="agents-refresh">
-          <ArrowClockwise size={14} className="mr-1.5" /> Aggiorna
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button size="sm" onClick={() => { setShowInstall(true); setInstResult(null); }}
+            className="rounded-md text-xs h-8 bg-indigo-500/90 hover:bg-indigo-500 text-white font-bold" data-testid="open-install-modal-btn">
+            <PlugsConnected size={14} className="mr-1.5" /> Installa connector
+          </Button>
+          <Button variant="outline" size="sm" onClick={fetchAll}
+            className="rounded-md text-xs h-8" data-testid="agents-refresh">
+            <ArrowClockwise size={14} className="mr-1.5" /> Aggiorna
+          </Button>
+        </div>
       </div>
+
+      {/* Modale: genera comando d'installazione per un nuovo connector */}
+      {showInstall && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" data-testid="install-modal"
+          onClick={() => setShowInstall(false)}>
+          <div className="noc-panel w-full max-w-2xl p-5 space-y-4" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between">
+              <h2 className="font-heading text-base font-bold text-[var(--text-primary)] flex items-center gap-2">
+                <PlugsConnected size={18} /> Installa nuovo connector
+              </h2>
+              <button onClick={() => { setShowInstall(false); setInstResult(null); }} className="p-1.5 rounded hover:bg-white/5" data-testid="install-modal-close">
+                <X size={16} />
+              </button>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <label className="text-xs text-[var(--text-secondary)] space-y-1">
+                <span>Cliente</span>
+                <select value={instClient} onChange={(e) => { setInstClient(e.target.value); setInstResult(null); }}
+                  className="w-full bg-white/5 border border-white/10 rounded px-2 py-1.5 text-xs text-[var(--text-primary)]" data-testid="install-client-select">
+                  <option value="">— seleziona —</option>
+                  {Object.entries(clients).map(([cid, name]) => (
+                    <option key={cid} value={cid}>{name}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="text-xs text-[var(--text-secondary)] space-y-1">
+                <span>Ruolo</span>
+                <select value={instRole} onChange={(e) => { setInstRole(e.target.value); setInstResult(null); }}
+                  className="w-full bg-white/5 border border-white/10 rounded px-2 py-1.5 text-xs text-[var(--text-primary)]" data-testid="install-role-select">
+                  <option value="master">master</option>
+                  <option value="scanner">scanner</option>
+                </select>
+              </label>
+              <label className="text-xs text-[var(--text-secondary)] space-y-1">
+                <span>Etichetta (opzionale)</span>
+                <input value={instLabel} onChange={(e) => setInstLabel(e.target.value)} placeholder="es. SRV principale"
+                  className="w-full bg-white/5 border border-white/10 rounded px-2 py-1.5 text-xs text-[var(--text-primary)]" data-testid="install-label-input" />
+              </label>
+              <label className="text-xs text-[var(--text-secondary)] space-y-1">
+                <span>Versione</span>
+                <select value={instVersion} onChange={(e) => { setInstVersion(e.target.value); setInstResult(null); }}
+                  className="w-full bg-white/5 border border-white/10 rounded px-2 py-1.5 text-xs text-[var(--text-primary)]" data-testid="install-version-select">
+                  <option value="v4.25.1">v4.25.1 (consigliata)</option>
+                  <option value="latest">latest</option>
+                </select>
+              </label>
+            </div>
+            <Button size="sm" onClick={generateInstall} disabled={instBusy || !instClient}
+              className="rounded-md h-8 text-xs bg-indigo-500/90 hover:bg-indigo-500 text-white font-bold" data-testid="install-generate-btn">
+              {instBusy ? "Genero…" : "Genera comando (emette token)"}
+            </Button>
+            {instResult && (
+              <div className="space-y-2" data-testid="install-result">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] text-[var(--text-muted)]">Esegui in PowerShell come Amministratore sul PC del cliente:</span>
+                  <button onClick={copyInstall} className="text-[10px] px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/25" data-testid="install-copy-btn">
+                    Copia
+                  </button>
+                </div>
+                <pre className="text-[10px] bg-black/40 border border-white/10 rounded p-2.5 overflow-x-auto whitespace-pre-wrap break-all text-emerald-200 font-mono" data-testid="install-command-text">{instResult.cmd}</pre>
+                <p className="text-[10px] text-amber-300/70">⚠️ Il token è valido per questo cliente. Non condividerlo. Layout uniforme: solo tray, nessuna GUI legacy.</p>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
 
       {/* KPI Summary */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
