@@ -1,3 +1,51 @@
+# 2026-06-23 — NAGIOS CLONE #2 (Soft/Hard configurabili) + #3 (Dipendenze parent-child)
+
+## #2 — Stati Soft/Hard configurabili (max_check_attempts, stile Nagios)
+Prima la soglia di fallimenti consecutivi prima dell'OFFLINE era HARDCODED (5 nel
+ping bridge, 3 nel resolver) e non esposta. Ora:
+- `settings.py`: GET/POST /api/settings/monitoring (max_check_attempts globale, default 5, 1..20).
+- `agent_ws.py::_bridge_ping_poll`: soglia risolta da override per-device
+  (managed_devices.max_check_attempts) → fallback globale (cache 60s via
+  _get_global_max_check_attempts). Scrive `state_type`: "soft" mentre degrada
+  (sotto soglia, NESSUN alert), "hard" quando OFFLINE confermato o ONLINE stabile.
+- `device_info_card.py`: espone state_type, degraded, failed_attempts,
+  max_check_attempts. Endpoint POST /api/devices/by-ip/{ip}/monitoring-config
+  per override per-device (null = default globale).
+- `DeviceInfoCard.js`: badge ambra "IN VERIFICA n/N", riga "Conferma stato"
+  (SOFT/HARD), input editabile "Soglia tentativi".
+
+## #3 — Dipendenze parent-child: "down vs unreachable" (anti alert-storm)
+Se il PADRE (switch/gateway a monte) è OFFLINE, i device a valle sono
+IRRAGGIUNGIBILI (non down per colpa loro) → alert soppressi (1 solo alert: lo
+switch). Stile Nagios "unreachable host".
+- `alert_filter.py`: resolve_parent_ip (override manuale managed_devices.parent_ip
+  → auto da discovered_endpoints.switch_ip via FDB, cache 60s), get_dependency_state,
+  is_dependency_unreachable. Agganciato a is_device_silenced (priorità dopo
+  manutenzione). invalidate_parent_cache.
+- `device_info_card.py`: espone parent_ip/parent_name/parent_status/
+  unreachable_dependency. Endpoint POST /api/devices/by-ip/{ip}/parent (override).
+- `DeviceInfoCard.js`: badge arancione "IRRAGGIUNGIBILE" (priorità su qualsiasi
+  stato quando unreachable_dependency), riga "Padre (dipendenza)" con stato +
+  input editabile.
+
+## 🧪 Test
+- Unit diretti: #2 soft/hard + override, #3 padre offline→figlio soppresso e
+  recupero a padre online → PASS.
+- Testing agent iter-88: backend 100% (10/10), frontend 100% (4/4), zero issue
+  critici. Regressione liveness (SNMP-only) verde.
+
+## ⏳ Follow-up
+- Auto-derivazione parent richiede topologia FDB popolata (switch_ip su
+  discovered_endpoints): in PROD funziona dove c'è LLDP/FDB, altrimenti usare
+  l'override manuale dalla Scheda.
+- Esclusione SLA dei periodi di manutenzione (da #1) ancora aperta.
+
+## 🚀 Deploy: Save to GitHub + git pull + restart noc-backend (solo backend+frontend)
+
+---
+
+
+
 # 2026-06-23 — NAGIOS CLONE #1: Scheduled Downtime ora ENFORCED (sopprime alert)
 
 ## 🎯 Contesto

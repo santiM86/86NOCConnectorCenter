@@ -695,8 +695,8 @@ export default function DeviceInfoCard({ deviceIp, onClose = null, compact = fal
               </span>
               <span className="inline-flex items-center gap-1">
                 <input
-                  type="text" placeholder={st.parent_ip || "IP switch/gateway"}
-                  value={parentInput}
+                  type="text" placeholder="IP switch/gateway (vuoto = auto)"
+                  value={parentInput !== "" ? parentInput : (st.parent_ip ?? "")}
                   onChange={(e) => setParentInput(e.target.value)}
                   className="w-32 bg-white/5 border border-white/10 rounded px-1.5 py-0.5 text-xs text-right text-[var(--text-primary)]"
                   data-testid="device-parent-input" />
