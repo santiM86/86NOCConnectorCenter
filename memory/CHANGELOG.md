@@ -1,3 +1,42 @@
+# 2026-06-23 — LAYOUT CONNECTOR UNIFORME (tutti uguali) + tray senza "Stato Agent"
+
+## Scelta utente: A — tray nativa unica (argus-tray.exe), rimuovere "Stato Agent"
+
+## Causa disuniformità (trovata)
+install-noc-agent.ps1 trattava le GUI come "opzionali" (scaricate solo se
+presenti nella release del momento) e l'autostart tray usava QUALUNQUE binario
+GUI trovasse (argus-tray → fallback ArgusDesktop → legacy). Macchine installate
+in momenti/release diversi → mix di GUI diverse, pur con stessa versione 4.25.0.
+
+## Modifiche (sorgente; build/publish = GitHub Action dell'utente)
+- `noc-agent/build/install-noc-agent.ps1`:
+  * $required ora = nocagent.exe + nocwatchdog.exe + **argus-tray.exe** (unica GUI).
+  * $optional = vuoto (niente piu' ArgusDesktop.exe / nocagent-ui.exe).
+  * NUOVO step "Cleanup GUI legacy": rimuove ArgusDesktop.exe e nocagent-ui.exe
+    dalle installazioni precedenti → flotta uniforme.
+  * Autostart tray: SEMPRE argus-tray.exe, rimosso il fallback ad ArgusDesktop.
+- `noc-agent/cmd/argus-tray/main.go`: rimossa la voce di menu "Stato Agent"
+  (e il suo handler, unico utilizzatore di ArgusDesktop/UI legacy). Menu finale:
+  Apri NOC Center · Aggiorna Connector · Riavvia servizio · Informazioni · Esci.
+
+## ⚠️ NON testabile in questo ambiente (no Go toolchain, no Windows). Richiede
+## build+publish via GitHub Action + re-deploy sui connector.
+
+## Cosa deve fare l'utente
+1. **Save to GitHub** (push su main). → l'installer aggiornato e' subito live
+   (lo script viene letto da raw main): un re-deploy installa gia' solo la tray
+   e rimuove le GUI legacy, USANDO l'argus-tray.exe gia' presente nella release
+   v4.25.0 attuale.
+2. Per applicare ANCHE la rimozione di "Stato Agent" dal menu (modifica Go),
+   creare un **nuovo tag release** (es. v4.25.1) → la Action ricompila
+   argus-tray.exe → poi re-deploy.
+3. Allineare la flotta con **"Forza re-deploy"** (pulsante nuovo in pagina Agenti)
+   su ogni connector live.
+
+---
+
+
+
 # 2026-06-23 — FIX update connector "build full vs minimal stessa versione"
 
 ## 🐛 Problema (utente)
