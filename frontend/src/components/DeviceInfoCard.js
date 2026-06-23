@@ -103,22 +103,24 @@ export default function DeviceInfoCard({ deviceIp, onClose = null, compact = fal
   const [editingName, setEditingName] = useState(false);
   const [newName, setNewName] = useState("");
   const [savingName, setSavingName] = useState(false);
+  const [lastUpdated, setLastUpdated] = useState(null);
   const token = localStorage.getItem("noc_token");
 
-  const fetchCard = () => {
-    setLoading(true);
+  const fetchCard = (silent = false) => {
+    if (!silent) setLoading(true);
     setError(null);
     axios
       .get(`${API}/api/devices/by-ip/${deviceIp}/info-card`, { headers: { Authorization: `Bearer ${token}` } })
       .then((r) => {
         setCard(r.data);
+        setLastUpdated(Date.now());
         // v2026-02-14: notifica al parent il display name corretto per
         // sincronizzare il titolo del Dialog (Scheda Dispositivo) e altri
         // posti che ricevono lo stesso device da liste non aggiornate.
         try { onCardLoaded?.(r.data); } catch {}
       })
-      .catch((e) => setError(e.response?.data?.detail || "Errore caricamento scheda"))
-      .finally(() => setLoading(false));
+      .catch((e) => { if (!silent) setError(e.response?.data?.detail || "Errore caricamento scheda"); })
+      .finally(() => { if (!silent) setLoading(false); });
   };
 
   // v2026-06-02: force re-poll SNMP + diagnosi sul perche' lo SNMP non
@@ -230,6 +232,11 @@ export default function DeviceInfoCard({ deviceIp, onClose = null, compact = fal
 
   useEffect(() => {
     fetchCard();
+    // v2026-06-23: auto-refresh LIVE ogni 30s mentre la scheda e' aperta
+    // (silent = niente spinner, aggiornamento in background) cosi' lo
+    // STATO LIVE resta sempre fresco senza dover cliccare Aggiorna.
+    const i = setInterval(() => fetchCard(true), 30000);
+    return () => clearInterval(i);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deviceIp]);
 
@@ -485,7 +492,14 @@ export default function DeviceInfoCard({ deviceIp, onClose = null, compact = fal
                 <span className="px-1 py-0 text-[9px] rounded bg-cyan-400/20 font-mono">{card.vendor_metrics_summary.count}</span>
               )}
             </button>
-            <button onClick={fetchCard} title="Aggiorna" className="p-2 rounded-md hover:bg-white/5 text-[var(--text-secondary)]" data-testid="device-info-card-refresh">
+            <span
+              className="hidden md:inline-flex items-center gap-1 px-2 py-1 text-[10px] rounded-md border border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+              title="La scheda si aggiorna automaticamente ogni 30 secondi"
+              data-testid="device-info-card-live-indicator">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+              LIVE{lastUpdated ? ` · ${new Date(lastUpdated).toLocaleTimeString("it-IT")}` : ""}
+            </span>
+            <button onClick={() => fetchCard()} title="Aggiorna ora" className="p-2 rounded-md hover:bg-white/5 text-[var(--text-secondary)]" data-testid="device-info-card-refresh">
               <ArrowsClockwise size={14} />
             </button>
             {/* v2026-06-02: Re-poll SNMP + auto-diagnosi se fallisce */}
