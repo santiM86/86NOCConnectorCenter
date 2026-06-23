@@ -513,6 +513,25 @@ async def build_info_card(device_ip: str) -> Dict[str, Any]:
         else (False if effective_status == "offline" else None)
     )
 
+    # v2026-06-23: stato manutenzione (scheduled downtime) per badge UI
+    in_maintenance = False
+    maintenance_window = None
+    try:
+        if client_id:
+            from alert_filter import get_active_maintenance_windows
+            for w in await get_active_maintenance_windows(db, client_id):
+                ips = w.get("device_ips") or []
+                if not ips or device_ip in ips:
+                    in_maintenance = True
+                    maintenance_window = {
+                        "title": w.get("title"),
+                        "end_time": w.get("end_time"),
+                        "scope": "client" if not ips else "device",
+                    }
+                    break
+    except Exception:
+        pass
+
     return {
         "device_ip": device_ip,
         "client": {
@@ -555,6 +574,8 @@ async def build_info_card(device_ip: str) -> Dict[str, Any]:
             "effective_status": effective_status,
             "live_reason": live_reason,
             "live_reason_label": live_reason_label,
+            "in_maintenance": in_maintenance,
+            "maintenance_window": maintenance_window,
             "monitor_type": poll.get("monitor_type"),
             "last_poll": _safe_iso(poll.get("last_poll") or poll.get("updated_at") or poll.get("last_poll_at")),
             "last_update": _safe_iso(poll.get("updated_at") or poll.get("last_update")),

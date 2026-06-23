@@ -22,6 +22,64 @@ import time
 _SILENCE_CACHE: dict[tuple, tuple[bool, float]] = {}
 _CACHE_TTL = 30.0
 
+# v2026-06-23 SCHEDULED DOWNTIME (stile Nagios): cache separata per lo stato
+# "in finestra di manutenzione". Le finestre stanno in db.maintenance_windows
+# (CRUD in routes/advanced_features.py) ma PRIMA non venivano mai consultate
+# dal motore di alert → si creavano ma non sopprimevano nulla. Ora is_device_
+# silenced le controlla con priorita' massima (la manutenzione programmata
+# sopprime TUTTO, anche i device vitali — come lo "scheduled downtime" Nagios).
+_MAINT_CACHE: dict[str, tuple[list, float]] = {}
+_MAINT_TTL = 20.0
+
+
+async def get_active_maintenance_windows(db, client_id):
+    """Ritorna la lista delle finestre di manutenzione ATTIVE adesso per il
+    cliente (suppress_alerts=True, start<=now<=end). Cache 20s per client."""
+    if not client_id:
+        return []
+    now_t = time.time()
+    cached = _MAINT_CACHE.get(client_id)
+    if cached and (now_t - cached[1]) < _MAINT_TTL:
+        return cached[0]
+    from datetime import datetime, timezone
+    now_iso = datetime.now(timezone.utc).isoformat()
+    windows = []
+    try:
+        cursor = db.maintenance_windows.find({
+            "client_id": client_id,
+            "suppress_alerts": True,
+            "start_time": {"$lte": now_iso},
+            "end_time": {"$gte": now_iso},
+        }, {"_id": 0})
+        windows = await cursor.to_list(50)
+    except Exception:
+        windows = []
+    _MAINT_CACHE[client_id] = (windows, now_t)
+    return windows
+
+
+async def is_in_maintenance(db, client_id, device_ip) -> bool:
+    """True se il device (o l'intero cliente) e' dentro una finestra di
+    manutenzione attiva. Una finestra con device_ips vuoto = TUTTO il cliente;
+    altrimenti vale solo per gli IP elencati."""
+    if not client_id:
+        return False
+    for w in await get_active_maintenance_windows(db, client_id):
+        ips = w.get("device_ips") or []
+        if not ips:
+            return True  # finestra a livello cliente → copre tutti i device
+        if device_ip and device_ip in ips:
+            return True
+    return False
+
+
+def invalidate_maintenance_cache(client_id=None) -> None:
+    """Invalida la cache manutenzione dopo create/update/delete di una finestra."""
+    if client_id is None:
+        _MAINT_CACHE.clear()
+    else:
+        _MAINT_CACHE.pop(client_id, None)
+
 
 async def is_device_silenced(db, client_id: Optional[str], device_ip: Optional[str]) -> bool:
     """True se il device deve essere silenziato dal motore di alert.
@@ -40,6 +98,12 @@ async def is_device_silenced(db, client_id: Optional[str], device_ip: Optional[s
     """
     if not client_id or not device_ip:
         return False
+    # v2026-06-23 SCHEDULED DOWNTIME ha priorita' massima (Nagios-style):
+    # se il device o il cliente sono in manutenzione, NESSUN alert — neanche
+    # per i device vitali (stai lavorando tu su quel device, non e' un fault).
+    # NON cacheato nel _SILENCE_CACHE perche' time-sensitive ai boundary.
+    if await is_in_maintenance(db, client_id, device_ip):
+        return True
     key = (client_id, device_ip)
     now = time.time()
     cached = _SILENCE_CACHE.get(key)

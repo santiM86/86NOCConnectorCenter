@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import {
   Desktop, Cpu, HardDrives, Thermometer, Info, MapPin, Package, Shield, Barcode,
   Calendar, Globe, ArrowsClockwise, Warning, CheckCircle, CircleNotch,
-  ChartLineUp, NetworkSlash, PencilSimple, FloppyDisk, X as XIcon,
+  ChartLineUp, NetworkSlash, PencilSimple, FloppyDisk, X as XIcon, Wrench,
 } from "@phosphor-icons/react";
 import AllMetricsDialog from "@/components/AllMetricsDialog";
 import { VendorDetailsPanel } from "@/components/VendorDetailsPanel";
@@ -374,6 +374,14 @@ export default function DeviceInfoCard({ deviceIp, onClose = null, compact = fal
                     <PencilSimple size={13} weight="bold" />
                   </button>
                 </>
+              )}
+              {st.in_maintenance && (
+                <span
+                  className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] rounded-full bg-sky-500/20 text-sky-300 border border-sky-500/40"
+                  title={st.maintenance_window ? `Manutenzione: ${st.maintenance_window.title || ""}${st.maintenance_window.end_time ? " · fino a " + st.maintenance_window.end_time : ""}` : "In finestra di manutenzione — alert soppressi"}
+                  data-testid="device-maintenance-badge">
+                  <Wrench size={10} weight="fill" /> IN MANUTENZIONE
+                </span>
               )}
               {(() => {
                 const eff = st.effective_status || (st.reachable === true ? "online" : st.reachable === false ? "offline" : null);

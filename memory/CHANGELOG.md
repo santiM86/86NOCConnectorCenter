@@ -1,3 +1,40 @@
+# 2026-06-23 — NAGIOS CLONE #1: Scheduled Downtime ora ENFORCED (sopprime alert)
+
+## 🎯 Contesto
+Gap analysis vs Nagios. La feature "Maintenance Windows" ESISTEVA già (CRUD in
+advanced_features.py + MaintenancePage.js con scope device_ips, suppress_alerts,
+ricorrenza) MA NON era agganciata al motore di alert → le finestre si creavano
+ma non sopprimevano nulla, e nessun badge in UI. Altro "dato non affidabile".
+
+## ✅ Fix (evoluzione, non riscrittura)
+- `alert_filter.py`: nuove `get_active_maintenance_windows()` (cache 20s/client),
+  `is_in_maintenance(db, client_id, device_ip)` (scope: device_ips vuoto = tutto
+  il cliente; altrimenti solo gli IP elencati), `invalidate_maintenance_cache()`.
+  `is_device_silenced()` ora controlla la manutenzione con PRIORITÀ MASSIMA
+  (sopprime anche i device vitali — come lo scheduled downtime Nagios). Tutti i
+  call site esistenti (alerts, connector, external_monitor, printers, ingestion,
+  backup) ereditano la soppressione automaticamente via insert_alert_if_emit.
+- `advanced_features.py`: invalidazione cache su create/update/delete finestra.
+- `device_info_card.py`: status.in_maintenance + status.maintenance_window per UI.
+- `DeviceInfoCard.js`: badge azzurro "IN MANUTENZIONE" (data-testid=device-maintenance-badge).
+
+## 🧪 Test
+- Unit end-to-end: senza finestra→non silenziato; finestra device→soppresso;
+  finestra client-wide→copre altri device; finestra scaduta→non soppone. PASS.
+- MaintenancePage render OK (smoke). Backend+frontend compilano.
+
+## ⏳ Follow-up (non in questo step)
+- Esclusione dei periodi di manutenzione dal calcolo SLA/uptime: oggi l'uptime
+  usa contatori cumulativi su device_poll_status (total_polls/online_polls) che
+  non distinguono i poll fatti in manutenzione. Serve un contatore
+  maintenance_polls nel bridge poll → rinviato.
+
+## 🚀 Deploy: Save to GitHub + git pull + restart noc-backend (solo backend+frontend, no agent Go)
+
+---
+
+
+
 # 2026-06-23 — FIX P0 AFFIDABILITÀ LIVENESS: unificazione ICMP vs SNMP + trasparenza
 
 ## 🐛 Problema (screenshot utente: Switch HP 10.10.41.222 Zitac)
