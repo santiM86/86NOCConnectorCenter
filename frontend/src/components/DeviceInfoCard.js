@@ -696,8 +696,14 @@ export default function DeviceInfoCard({ deviceIp, onClose = null, compact = fal
         </div>
       )}
 
-      {/* Warning B: SNMP configurato ma nessun dato dettagliato raccolto */}
-      {isSnmpMonitored && !hasEntityMib && !hasVendorMetrics && hw.cpu_usage == null && hw.memory_usage == null && hw.temperature == null && !fw.current && (
+      {/* Warning B: SNMP configurato ma nessun dato dettagliato raccolto.
+          v2026-06-23: skip questo banner se il device è dichiarato unreachable
+          (`st.reachable === false`). Prima il messaggio "il connector sta
+          comunicando via SNMP" era ingannevole su device offline: il connector
+          NON sta comunicando, sta solo "tentando". Il banner deve mostrarsi
+          solo quando SNMP rispondeva ma le metriche dettagliate mancano (cosa
+          tipica di profilo SNMP errato o community con vista ristretta). */}
+      {isSnmpMonitored && st.reachable !== false && !hasEntityMib && !hasVendorMetrics && hw.cpu_usage == null && hw.memory_usage == null && hw.temperature == null && !fw.current && (
         <div className="rounded-lg border border-sky-500/40 bg-sky-500/10 p-3 flex items-start gap-3" data-testid="warning-snmp-no-data">
           <Info size={18} className="text-sky-400 flex-shrink-0 mt-0.5" weight="duotone" />
           <div className="flex-1">

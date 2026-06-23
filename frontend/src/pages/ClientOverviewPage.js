@@ -1709,6 +1709,25 @@ function DeviceGroup({ label, icon: Icon, devices, color, onInfoClick, renderAct
               <div className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: sc }}></div>
               <span className={`font-medium truncate ${nameIsIP ? "text-[var(--text-muted)] italic" : "text-[var(--text-primary)]"}`} title={d.notes || ""}>{name}</span>
               {!nameIsIP && <span className="font-mono text-[var(--text-muted)]">{d.ip_address}</span>}
+              {/* v2026-06-23: badge "Visto via" mostra la fonte di liveness
+                  quando il device È online grazie a evidence diversa dal
+                  ping (es. ARP broadcast scanner, FDB switch, sysName SNMP).
+                  Aiuta l'operatore a capire perché il NOC dichiara online
+                  un device che potrebbe sembrare "offline" nel poll regolare
+                  (Windows Firewall ICMP rate-limit, switch ICMP rate-limit). */}
+              {d.status === "online" && d.live_evidence && d.live_evidence !== "ping" && (
+                <span
+                  className="inline-flex items-center gap-0.5 text-[8px] px-1 py-0.5 rounded bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 font-mono"
+                  title={`Liveness confermata via: ${d.live_evidence.replace(/_/g, ' ')}. Lo Scanner LAN del Connector ha visto questo device alive recentemente anche se ICMP/SNMP poll regolare potrebbe fallire (es. firewall ICMP rate-limited).`}
+                  data-testid={`grouped-live-evidence-${d.ip_address}`}
+                >
+                  via {d.live_evidence === "agent_v4_arp" ? "ARP" :
+                       d.live_evidence === "mac_table_switch" ? "FDB" :
+                       d.live_evidence === "scanner_lan" ? "scan" :
+                       d.live_evidence === "snmp_sysname" ? "SNMP" :
+                       d.live_evidence}
+                </span>
+              )}
               {d.datto_name && d.datto_name !== name && (
                 <span
                   className="inline-flex items-center gap-0.5 text-[8px] px-1 py-0.5 rounded bg-fuchsia-500/20 text-fuchsia-200 border border-fuchsia-500/40 font-bold"
