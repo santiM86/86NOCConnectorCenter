@@ -180,6 +180,32 @@ export default function AgentsPage() {
     }
   };
 
+  const forceRedeployFleet = async () => {
+    const liveAll = dedupedAgents.filter((a) => a.live);
+    if (liveAll.length === 0) {
+      toast.error("Nessun connector è attualmente LIVE.");
+      return;
+    }
+    if (!latest || latest === "latest") {
+      toast.error("Versione target non risolvibile dal Center (GitHub API). Imposta AGENT_GITHUB_TOKEN nel backend.");
+      return;
+    }
+    if (!confirm(`FORZA RE-DEPLOY su TUTTA la flotta: ${liveAll.length} connector LIVE.\n\nReinstalla l'asset pubblicato corrente (v${latest}) su TUTTI, anche quelli già "aggiornati" — utile per uniformare la build (es. full → minimal). Gli agent si riavvieranno.`)) return;
+    setBulkBusy(true);
+    try {
+      const r = await axios.post(`${API}/agents/bulk-update`, {
+        agent_ids: liveAll.map((a) => a.agent_id),
+        version: latest,
+      });
+      toast.success(`Re-deploy inviato a ${r.data.sent_count} connector. Failed: ${r.data.failed_count}`);
+      setTimeout(fetchAll, 5000);
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Errore force re-deploy flotta");
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
   const updateAllOutdated = async () => {
     if (outdatedLive.length === 0) {
       toast.error("Nessun agent obsoleto è attualmente connesso.");
@@ -414,6 +440,31 @@ export default function AgentsPage() {
           </Button>
         </div>
       )}
+
+      {/* Force re-deploy fleet: uniforma la build su TUTTI i connector live */}
+      {liveCount > 0 && (
+        <div className="noc-panel p-3 border-sky-500/30 bg-sky-500/5 flex items-center justify-between"
+          data-testid="fleet-redeploy-banner">
+          <div className="flex items-center gap-2.5">
+            <ArrowCircleUp size={18} weight="fill" className="text-sky-400" />
+            <div>
+              <p className="text-xs text-sky-200 font-semibold">
+                Uniforma la flotta — Forza re-deploy
+              </p>
+              <p className="text-[10px] text-sky-300/70">
+                Reinstalla l'asset pubblicato corrente su tutti i {liveCount} connector LIVE, anche se già "aggiornati" (utile per allineare la build, es. full → minimal)
+              </p>
+            </div>
+          </div>
+          <Button size="sm" onClick={forceRedeployFleet} disabled={bulkBusy || liveCount === 0 || !latest || latest === "latest"}
+            className="rounded-md h-8 text-xs bg-sky-500/90 hover:bg-sky-500 text-sky-950 font-bold"
+            data-testid="fleet-redeploy-btn">
+            <ArrowCircleUp size={13} className="mr-1.5" />
+            {bulkBusy ? "Invio…" : `Forza re-deploy su ${liveCount} connector`}
+          </Button>
+        </div>
+      )}
+
 
       {/* Filters */}
       <div className="noc-panel p-3 flex flex-wrap gap-2 items-center">
