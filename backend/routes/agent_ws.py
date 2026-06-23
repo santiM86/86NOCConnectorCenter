@@ -636,15 +636,26 @@ async def _bridge_snmp_poll(conn: _Connection, r: Dict[str, Any]) -> None:
     reachable = bool(r.get("reachable"))
     # NOTE: collection device_poll_status indice unique su
     # (client_id, device_ip). Il campo si chiama "device_ip" NON "ip".
+    # v2026-06-23 FIX RACE-CONDITION reachable conteso:
+    # PRIMA snmp_set scriveva il campo condiviso `reachable`, lo STESSO che
+    # scrive _bridge_ping_poll. Per uno switch HP che blocca ICMP ma risponde
+    # a SNMP, il ping scriveva reachable=False e l'SNMP reachable=True a turno
+    # → il valore flappava a seconda di quale poll finiva per ultimo, e la
+    # Scheda Dispositivo (che legge poll.reachable grezzo) mostrava OFFLINE.
+    # ORA: `reachable` resta verita' ICMP (scritto solo da ping_poll), mentre
+    # qui salviamo `snmp_reachable` + `snmp_last_check_at` come campi SNMP
+    # dedicati. Lo status effettivo (online se ICMP OR SNMP-fresco) e' calcolato
+    # in modo centralizzato da liveness_resolver.effective_reachable().
     snmp_set = {
         "agent_id": conn.agent_id,
-        "reachable": reachable,
+        "snmp_reachable": reachable,
+        "snmp_last_check_at": now_iso,
         "latency_ns": r.get("latency_ns"),
         "sys_name": r.get("sys_name"),
         "sys_descr": r.get("sys_descr"),
         "sys_object_id": r.get("sys_object_id"),
         "uptime_ns": r.get("uptime_ns"),
-        "error": r.get("error"),
+        "snmp_error": r.get("error"),
         "last_poll_at": now_iso,
         # FRONTEND COMPAT: vedi nota in _bridge_ping_poll. Scriviamo anche
         # last_poll (legacy, senza `_at`) cosi' overview.py / ClientOverviewPage

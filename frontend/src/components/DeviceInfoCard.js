@@ -368,16 +368,44 @@ export default function DeviceInfoCard({ deviceIp, onClose = null, compact = fal
                   </button>
                 </>
               )}
-              {st.reachable === true && (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
-                  <CheckCircle size={10} weight="fill" /> ONLINE
-                </span>
-              )}
-              {st.reachable === false && (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] rounded-full bg-red-500/20 text-red-300 border border-red-500/40">
-                  <Warning size={10} weight="fill" /> OFFLINE
-                </span>
-              )}
+              {(() => {
+                const eff = st.effective_status || (st.reachable === true ? "online" : st.reachable === false ? "offline" : null);
+                const snmpOnly = eff === "online" && st.icmp_reachable === false && st.snmp_reachable === true;
+                if (eff === "online") {
+                  return (
+                    <span
+                      className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
+                      title={st.live_reason_label || "Online"}
+                      data-testid="device-status-badge"
+                    >
+                      <CheckCircle size={10} weight="fill" /> ONLINE{snmpOnly ? " (SNMP)" : ""}
+                    </span>
+                  );
+                }
+                if (eff === "stale") {
+                  return (
+                    <span
+                      className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40"
+                      title={st.live_reason_label || "Connector offline — stato incerto"}
+                      data-testid="device-status-badge"
+                    >
+                      <Warning size={10} weight="fill" /> INCERTO
+                    </span>
+                  );
+                }
+                if (eff === "offline") {
+                  return (
+                    <span
+                      className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] rounded-full bg-red-500/20 text-red-300 border border-red-500/40"
+                      title="Nessuna risposta a ICMP ne' SNMP"
+                      data-testid="device-status-badge"
+                    >
+                      <Warning size={10} weight="fill" /> OFFLINE
+                    </span>
+                  );
+                }
+                return null;
+              })()}
             </div>
             <div className="flex items-center gap-3 text-xs text-[var(--text-secondary)] flex-wrap">
               <span className="font-mono">{id.ip}</span>
@@ -554,13 +582,17 @@ export default function DeviceInfoCard({ deviceIp, onClose = null, compact = fal
 
           {/* Status */}
           <Section title="Stato Live" icon={ArrowsClockwise} testid="info-section-status" color="text-emerald-300">
-            <Field label="Reachable" value={st.reachable === true ? "Sì" : st.reachable === false ? "No" : null} />
+            <Field label="Stato effettivo" value={st.effective_status ? st.effective_status.toUpperCase() : (st.reachable === true ? "ONLINE" : st.reachable === false ? "OFFLINE" : null)} highlight />
+            {st.live_reason_label && <Field label="Motivo" value={st.live_reason_label} />}
+            <Field label="ICMP (ping)" value={st.icmp_reachable === true ? "Risponde" : st.icmp_reachable === false ? "Nessuna risposta" : "n/d"} />
+            <Field label="SNMP" value={st.snmp_reachable === true ? (st.snmp_fresh ? "Risponde (fresco)" : "Risponde (stale)") : st.snmp_reachable === false ? "Nessuna risposta" : "n/d"} />
+            {st.snmp_last_check_at && <Field label="Ultimo check SNMP" value={fmtDateTime(st.snmp_last_check_at)} />}
             <Field label="Monitor tipo" value={isSnmpMonitored && !monitorHasSnmp ? `${st.monitor_type || "http"} + snmp (attivo)` : st.monitor_type} highlight={isSnmpMonitored} />
             <Field label="Ultimo poll" value={fmtDateTime(st.last_poll)} />
             <Field label="Ultimo update" value={fmtDateTime(st.last_update)} />
             <Field label="Uptime (gg)" value={st.uptime_days} />
             <Field label="Connector" value={st.connector_hostname} mono />
-            {st.unreachable_since && <Field label="Offline da" value={fmtDateTime(st.unreachable_since)} />}
+            {st.unreachable_since && st.effective_status === "offline" && <Field label="Offline da" value={fmtDateTime(st.unreachable_since)} />}
           </Section>
 
           {/* Hardware */}
