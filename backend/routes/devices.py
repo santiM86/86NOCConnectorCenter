@@ -535,8 +535,21 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
                     and pd_v4.get("last_poll_at")
                     and v4_age is not None and v4_age < 180
                 )
-                if snmp_alive_recent:
+                # v2026-06-23 fix bug "alive 1ms in scanner ma OFFLINE nella
+                # scheda": il poll ICMP del Connector puo' fallire su Windows
+                # Server con firewall ICMP rate-limited, MA lo scanner LAN
+                # broadcast (ARP + mini-ping in burst) vede il device come
+                # vivo. Se discovered_endpoints ha evidence fresca (<15min) di
+                # tipo ARP/mac_table/scanner_lan promuoviamo a online. Senza
+                # questo i 192.168.16.20 (SRVPALMOGAL) finivano "OFFLINE HARD
+                # confermato" pur essendo `alive 1ms` nella tab scanner.
+                arp_alive_recent = live_evidence3 in (
+                    "agent_v4_arp", "mac_table_switch", "scanner_lan"
+                )
+                if snmp_alive_recent or arp_alive_recent:
                     md_status = "online"
+                    if not live_evidence3 and snmp_alive_recent:
+                        live_evidence3 = "snmp_sysname"
         elif live_evidence3:
             # v2026-06-03 fix bug "pallino verde": senza poll v4 recente,
             # la sola L2 evidence (ARP cache stale) non basta per dire
