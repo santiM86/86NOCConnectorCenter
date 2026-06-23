@@ -181,6 +181,29 @@ async def github_deploy_logs():
 
 # ==================== ROOT ROUTES ====================
 
+import hashlib
+
+@app.get("/ping")
+async def ping():
+    hasher = hashlib.md5()
+    # Walk through the ROOT_DIR to compute the checksum of all project files
+    for root_dir, dirs, files in os.walk(ROOT_DIR):
+        # Exclude common cache and version control directories to avoid unstable checksums
+        dirs[:] = [d for d in dirs if d not in ('.git', '__pycache__', 'venv', 'env', 'node_modules', '.pytest_cache')]
+        for file in sorted(files):
+            filepath = os.path.join(root_dir, file)
+            try:
+                with open(filepath, 'rb') as f:
+                    hasher.update(f.read())
+            except Exception:
+                pass
+    
+    return {
+        "message": "pong",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "checksum": hasher.hexdigest()
+    }
+
 @app.get("/api/")
 async def root():
     return {
