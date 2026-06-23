@@ -513,6 +513,55 @@ async def build_info_card(device_ip: str) -> Dict[str, Any]:
         else (False if effective_status == "offline" else None)
     )
 
+    # v2026-06-23: stato manutenzione (scheduled downtime) per badge UI
+    in_maintenance = False
+    maintenance_window = None
+    try:
+        if client_id:
+            from alert_filter import get_active_maintenance_windows
+            for w in await get_active_maintenance_windows(db, client_id):
+                ips = w.get("device_ips") or []
+                if not ips or device_ip in ips:
+                    in_maintenance = True
+                    maintenance_window = {
+                        "title": w.get("title"),
+                        "end_time": w.get("end_time"),
+                        "scope": "client" if not ips else "device",
+                    }
+                    break
+    except Exception:
+        pass
+
+    # v2026-06-23 SOFT/HARD STATE: espone lo stato di conferma per la UI.
+    # state_type: hard=confermato (online stabile o offline confermato),
+    # soft=in verifica (degrading, sotto soglia, nessun alert).
+    state_type = managed.get("state_type")
+    degraded = bool(managed.get("degraded", False))
+    failed_attempts = int(managed.get("consecutive_ping_failures") or 0)
+    try:
+        if managed.get("max_check_attempts"):
+            max_check_attempts = int(managed.get("max_check_attempts"))
+        else:
+            _mca = await db.settings.find_one({"key": "max_check_attempts"}, {"_id": 0, "value": 1})
+            max_check_attempts = int(_mca.get("value")) if _mca and _mca.get("value") else 5
+    except Exception:
+        max_check_attempts = 5
+
+    # v2026-06-23 PARENT DEPENDENCY: se il device e' offline ma il suo padre
+    # e' offline, e' IRRAGGIUNGIBILE (non down per colpa sua).
+    parent_ip = managed.get("parent_ip") or None
+    parent_name = None
+    parent_status = None
+    unreachable_dependency = False
+    try:
+        from alert_filter import get_dependency_state
+        p_ip, p_name, p_status = await get_dependency_state(db, client_id, device_ip)
+        parent_ip, parent_name, parent_status = p_ip, p_name, p_status
+        if p_status == "offline" and effective_status != "online":
+            unreachable_dependency = True
+    except Exception:
+        pass
+
     return {
         "device_ip": device_ip,
         "client": {
@@ -555,6 +604,16 @@ async def build_info_card(device_ip: str) -> Dict[str, Any]:
             "effective_status": effective_status,
             "live_reason": live_reason,
             "live_reason_label": live_reason_label,
+            "in_maintenance": in_maintenance,
+            "maintenance_window": maintenance_window,
+            "state_type": state_type,
+            "degraded": degraded,
+            "failed_attempts": failed_attempts,
+            "max_check_attempts": max_check_attempts,
+            "parent_ip": parent_ip,
+            "parent_name": parent_name,
+            "parent_status": parent_status,
+            "unreachable_dependency": unreachable_dependency,
             "monitor_type": poll.get("monitor_type"),
             "last_poll": _safe_iso(poll.get("last_poll") or poll.get("updated_at") or poll.get("last_poll_at")),
             "last_update": _safe_iso(poll.get("updated_at") or poll.get("last_update")),
@@ -937,4 +996,97 @@ async def set_device_vital(
             f"{md.get('name') or device_ip}"
         ),
     }
+
+
+
+@router.post("/devices/by-ip/{device_ip}/monitoring-config")
+async def set_device_monitoring_config(
+    device_ip: str,
+    payload: dict,
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+):
+    """Override per-device della soglia max_check_attempts (Soft/Hard).
+
+    Body: {"max_check_attempts": int|null, "client_id"?: str}
+    - null/0 → rimuove l'override (usa il default globale).
+    - 1..20 → imposta l'override per questo device.
+    """
+    raw = payload.get("max_check_attempts")
+    explicit_client_id = (payload.get("client_id") or "").strip() or None
+    md_query = {"ip": device_ip}
+    if explicit_client_id:
+        md_query["client_id"] = explicit_client_id
+    elif await db.managed_devices.count_documents({"ip": device_ip}) > 1:
+        raise HTTPException(status_code=409, detail=f"IP {device_ip} su piu' client: includi client_id.")
+
+    md = await db.managed_devices.find_one(md_query, {"_id": 0, "id": 1, "client_id": 1, "name": 1})
+    if not md:
+        raise HTTPException(status_code=404, detail=f"Device {device_ip} non trovato")
+
+    if raw in (None, "", 0, "0"):
+        await db.managed_devices.update_one(md_query, {"$unset": {"max_check_attempts": ""}})
+        new_val = None
+    else:
+        new_val = max(1, min(20, int(raw)))
+        await db.managed_devices.update_one(md_query, {"$set": {"max_check_attempts": new_val}})
+
+    try:
+        await audit_logger.log(
+            user_email=current_user.get("email"),
+            action=AuditAction.UPDATE_DEVICE if hasattr(AuditAction, "UPDATE_DEVICE") else AuditAction.OTHER,
+            resource_type="device", resource_id=md.get("id"),
+            metadata={"action": "set_max_check_attempts", "device_ip": device_ip, "value": new_val},
+            request=request,
+        )
+    except Exception:
+        pass
+    return {"ok": True, "device_ip": device_ip, "max_check_attempts": new_val}
+
+
+@router.post("/devices/by-ip/{device_ip}/parent")
+async def set_device_parent(
+    device_ip: str,
+    payload: dict,
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+):
+    """Imposta/rimuove il PADRE (switch/gateway a monte) di un device per la
+    logica di dipendenza 'down vs unreachable'.
+
+    Body: {"parent_ip": str|null, "client_id"?: str}
+    - null/"" → rimuove l'override manuale (torna all'auto da topologia).
+    """
+    parent_ip = (payload.get("parent_ip") or "").strip() or None
+    explicit_client_id = (payload.get("client_id") or "").strip() or None
+    md_query = {"ip": device_ip}
+    if explicit_client_id:
+        md_query["client_id"] = explicit_client_id
+    elif await db.managed_devices.count_documents({"ip": device_ip}) > 1:
+        raise HTTPException(status_code=409, detail=f"IP {device_ip} su piu' client: includi client_id.")
+
+    md = await db.managed_devices.find_one(md_query, {"_id": 0, "id": 1, "client_id": 1})
+    if not md:
+        raise HTTPException(status_code=404, detail=f"Device {device_ip} non trovato")
+    if parent_ip == device_ip:
+        raise HTTPException(status_code=400, detail="Un device non puo' essere padre di se stesso")
+
+    if parent_ip:
+        await db.managed_devices.update_one(md_query, {"$set": {"parent_ip": parent_ip}})
+    else:
+        await db.managed_devices.update_one(md_query, {"$unset": {"parent_ip": ""}})
+
+    from alert_filter import invalidate_parent_cache
+    invalidate_parent_cache(md.get("client_id"), device_ip)
+    try:
+        await audit_logger.log(
+            user_email=current_user.get("email"),
+            action=AuditAction.UPDATE_DEVICE if hasattr(AuditAction, "UPDATE_DEVICE") else AuditAction.OTHER,
+            resource_type="device", resource_id=md.get("id"),
+            metadata={"action": "set_parent", "device_ip": device_ip, "parent_ip": parent_ip},
+            request=request,
+        )
+    except Exception:
+        pass
+    return {"ok": True, "device_ip": device_ip, "parent_ip": parent_ip}
 

@@ -1,3 +1,119 @@
+# 2026-06-23 — FIX update connector "build full vs minimal stessa versione"
+
+## 🐛 Problema (utente)
+Il NOC Center mostra i connector come "✓ aggiornato" perché confronta SOLO la
+stringa di versione (4.25.0 == 4.25.0). Ma esistono due build della stessa
+v4.25.0 (full con GUI vs minimal). Avendo lo stesso numero, il Center non le
+distingue → mostra "aggiornato" anche dove il binario è quello sbagliato, e il
+bottone Update è DISABILITATO ("Già aggiornato") → impossibile forzare il
+re-deploy della build corretta.
+
+## ✅ Fix "a" — Forza re-deploy (solo frontend, nessun rebuild agent)
+- `AgentsPage.js`: quando un agent è LIVE e già all'ultima versione, al posto
+  del bottone disabilitato compare **"Forza re-deploy"**: richiama
+  /api/agents/bulk-update con la versione corrente → l'agent riesegue
+  install-noc-agent.ps1 e ri-scarica l'asset pubblicato corrente (la minimal),
+  anche a parità di numero. (data-testid agent-force-redeploy-{id})
+- Backend già pronto: bulk-update invia a qualsiasi agent_id esplicito (il gate
+  "outdated" era solo lato UI). Completamento rilevato a parità di versione
+  (agent_ws.py riga 266: current_n == target_n → completed).
+- updateOne(a, force) con conferma dedicata.
+
+## ⏳ Fix "c" — Build fingerprint (DA FARE, richiede rebuild agent Go)
+Per rendere "aggiornato" VERITIERO: l'agent deve riportare nell'hello un
+`build_variant` ("minimal"/"full") e/o build_id/commit (ldflags
+-X main.BuildVariant=minimal). Il Center salva il campo, definisce la variante
+desiderata e segnala i mismatch. Lato Center lo implemento io quando confermato.
+
+---
+
+
+
+# 2026-06-23 — NAGIOS CLONE #2 (Soft/Hard configurabili) + #3 (Dipendenze parent-child)
+
+## #2 — Stati Soft/Hard configurabili (max_check_attempts, stile Nagios)
+Prima la soglia di fallimenti consecutivi prima dell'OFFLINE era HARDCODED (5 nel
+ping bridge, 3 nel resolver) e non esposta. Ora:
+- `settings.py`: GET/POST /api/settings/monitoring (max_check_attempts globale, default 5, 1..20).
+- `agent_ws.py::_bridge_ping_poll`: soglia risolta da override per-device
+  (managed_devices.max_check_attempts) → fallback globale (cache 60s via
+  _get_global_max_check_attempts). Scrive `state_type`: "soft" mentre degrada
+  (sotto soglia, NESSUN alert), "hard" quando OFFLINE confermato o ONLINE stabile.
+- `device_info_card.py`: espone state_type, degraded, failed_attempts,
+  max_check_attempts. Endpoint POST /api/devices/by-ip/{ip}/monitoring-config
+  per override per-device (null = default globale).
+- `DeviceInfoCard.js`: badge ambra "IN VERIFICA n/N", riga "Conferma stato"
+  (SOFT/HARD), input editabile "Soglia tentativi".
+
+## #3 — Dipendenze parent-child: "down vs unreachable" (anti alert-storm)
+Se il PADRE (switch/gateway a monte) è OFFLINE, i device a valle sono
+IRRAGGIUNGIBILI (non down per colpa loro) → alert soppressi (1 solo alert: lo
+switch). Stile Nagios "unreachable host".
+- `alert_filter.py`: resolve_parent_ip (override manuale managed_devices.parent_ip
+  → auto da discovered_endpoints.switch_ip via FDB, cache 60s), get_dependency_state,
+  is_dependency_unreachable. Agganciato a is_device_silenced (priorità dopo
+  manutenzione). invalidate_parent_cache.
+- `device_info_card.py`: espone parent_ip/parent_name/parent_status/
+  unreachable_dependency. Endpoint POST /api/devices/by-ip/{ip}/parent (override).
+- `DeviceInfoCard.js`: badge arancione "IRRAGGIUNGIBILE" (priorità su qualsiasi
+  stato quando unreachable_dependency), riga "Padre (dipendenza)" con stato +
+  input editabile.
+
+## 🧪 Test
+- Unit diretti: #2 soft/hard + override, #3 padre offline→figlio soppresso e
+  recupero a padre online → PASS.
+- Testing agent iter-88: backend 100% (10/10), frontend 100% (4/4), zero issue
+  critici. Regressione liveness (SNMP-only) verde.
+
+## ⏳ Follow-up
+- Auto-derivazione parent richiede topologia FDB popolata (switch_ip su
+  discovered_endpoints): in PROD funziona dove c'è LLDP/FDB, altrimenti usare
+  l'override manuale dalla Scheda.
+- Esclusione SLA dei periodi di manutenzione (da #1) ancora aperta.
+
+## 🚀 Deploy: Save to GitHub + git pull + restart noc-backend (solo backend+frontend)
+
+---
+
+
+
+# 2026-06-23 — NAGIOS CLONE #1: Scheduled Downtime ora ENFORCED (sopprime alert)
+
+## 🎯 Contesto
+Gap analysis vs Nagios. La feature "Maintenance Windows" ESISTEVA già (CRUD in
+advanced_features.py + MaintenancePage.js con scope device_ips, suppress_alerts,
+ricorrenza) MA NON era agganciata al motore di alert → le finestre si creavano
+ma non sopprimevano nulla, e nessun badge in UI. Altro "dato non affidabile".
+
+## ✅ Fix (evoluzione, non riscrittura)
+- `alert_filter.py`: nuove `get_active_maintenance_windows()` (cache 20s/client),
+  `is_in_maintenance(db, client_id, device_ip)` (scope: device_ips vuoto = tutto
+  il cliente; altrimenti solo gli IP elencati), `invalidate_maintenance_cache()`.
+  `is_device_silenced()` ora controlla la manutenzione con PRIORITÀ MASSIMA
+  (sopprime anche i device vitali — come lo scheduled downtime Nagios). Tutti i
+  call site esistenti (alerts, connector, external_monitor, printers, ingestion,
+  backup) ereditano la soppressione automaticamente via insert_alert_if_emit.
+- `advanced_features.py`: invalidazione cache su create/update/delete finestra.
+- `device_info_card.py`: status.in_maintenance + status.maintenance_window per UI.
+- `DeviceInfoCard.js`: badge azzurro "IN MANUTENZIONE" (data-testid=device-maintenance-badge).
+
+## 🧪 Test
+- Unit end-to-end: senza finestra→non silenziato; finestra device→soppresso;
+  finestra client-wide→copre altri device; finestra scaduta→non soppone. PASS.
+- MaintenancePage render OK (smoke). Backend+frontend compilano.
+
+## ⏳ Follow-up (non in questo step)
+- Esclusione dei periodi di manutenzione dal calcolo SLA/uptime: oggi l'uptime
+  usa contatori cumulativi su device_poll_status (total_polls/online_polls) che
+  non distinguono i poll fatti in manutenzione. Serve un contatore
+  maintenance_polls nel bridge poll → rinviato.
+
+## 🚀 Deploy: Save to GitHub + git pull + restart noc-backend (solo backend+frontend, no agent Go)
+
+---
+
+
+
 # 2026-06-23 — FIX P0 AFFIDABILITÀ LIVENESS: unificazione ICMP vs SNMP + trasparenza
 
 ## 🐛 Problema (screenshot utente: Switch HP 10.10.41.222 Zitac)
