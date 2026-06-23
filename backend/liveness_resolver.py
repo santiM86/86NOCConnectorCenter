@@ -203,6 +203,20 @@ async def build_evidence_maps(
     return ip_evidence, mac_evidence
 
 
+def _poll_fresh(pd: Optional[Mapping[str, Any]], minutes: int = 15) -> bool:
+    """True se l'ultimo poll attivo (ICMP/SNMP) e' recente (< minutes)."""
+    if not pd:
+        return False
+    at = pd.get("last_poll_at") or pd.get("last_poll") or pd.get("last_ping_at")
+    if not at:
+        return False
+    try:
+        dt = datetime.fromisoformat(str(at).replace("Z", "+00:00"))
+        return (datetime.now(timezone.utc) - dt).total_seconds() < minutes * 60
+    except Exception:
+        return False
+
+
 def compute_status(
     pd: Optional[Mapping[str, Any]],
     md: Optional[Mapping[str, Any]],
@@ -255,7 +269,25 @@ def compute_status(
     mac_ev = mac_evidence.get(mac) if mac else None
     evidence = ip_ev or mac_ev
     if evidence:
-        return "online", evidence
+        # v2026-06-23 FIX falso ONLINE da ARP stantio: l'evidenza DEBOLE
+        # (ARP locale agent / scanner mDNS) NON deve vincere su un fallimento
+        # ATTIVO e FRESCO. Caso reale (SRVPALMOGAL): ICMP=no, SNMP=no, poll
+        # fresco → ma "visto in ARP" forzava ONLINE. La cache ARP pero' resta
+        # 15-20 min dopo lo spegnimento → falso positivo. Se SNMP e' stato
+        # tentato (snmp_last_check_at presente) e fallisce, ICMP fallisce, il
+        # poll e' fresco e il debounce conferma OFFLINE → le sonde attive
+        # vincono. L'evidenza FORTE (mac_table_switch, FDB via SNMP dello
+        # switch = L2 reale) continua a valere.
+        weak = evidence in ("agent_v4_arp", "scanner_lan", "scanner")
+        snmp_attempted = bool(pd.get("snmp_last_check_at")) if pd else False
+        icmp_failed = (pd.get("reachable") is False) if pd else False
+        active_fresh_fail = (
+            _poll_fresh(pd) and icmp_failed and snmp_attempted
+            and not _snmp_fresh(pd) and not effective_reachable(pd)
+        )
+        if not (weak and active_fresh_fail):
+            return "online", evidence
+        # altrimenti: cadi nel ramo poll-based (sotto) → offline/stale
 
     # 2. Poll-based
     if pd:

@@ -1,3 +1,43 @@
+# 2026-06-23 — FIX falso ONLINE da ARP stantio (Galvan: SRVPALMOGAL ecc.)
+
+## 🐛 Problema (utente)
+Server (es. SRVPALMOGAL 192.168.16.28) mostrati ONLINE nella Scheda (motivo
+"Visto nella tabella ARP dell'agent") ma ICMP=Nessuna risposta E SNMP=Nessuna
+risposta, e nella LISTA rossi (offline). Contraddizione → sfiducia.
+
+## 🔍 Root cause
+compute_status (liveness_resolver) applicava l'Evidence override come STEP 1
+assoluto: se l'IP era visto in discovered_endpoints (ARP/MAC < 15 min) →
+"online" SEMPRE, prima di guardare ICMP/SNMP. La cache ARP pero' resta 15-20
+min dopo lo spegnimento → falso positivo. La lista (devices.py → effective_
+reachable, senza evidence) mostrava correttamente offline → mismatch.
+
+## ✅ Fix
+compute_status: l'evidenza DEBOLE (agent_v4_arp, scanner_lan, scanner) NON
+sovrascrive piu' un fallimento ATTIVO e FRESCO. Se SNMP e' stato tentato
+(snmp_last_check_at presente) e non risponde, ICMP fallisce, il poll e' fresco
+(<15min) e il debounce conferma → vincono le sonde attive → OFFLINE. L'evidenza
+FORTE (mac_table_switch = FDB via SNMP dello switch, L2 reale) continua a
+vincere. Nuovo helper _poll_fresh(). Card/overview ora concordano con la lista.
+
+## 🧪 Test
+4 scenari diretti: (1) server ICMP+SNMP fail+ARP debole→offline ✓ (2) FDB
+switch→online ✓ (3) stampante ARP-only senza SNMP→online (nessuna regressione)
+✓ (4) SNMP-only+ARP→online ✓. Pytest regressione (snmp-only, arp-stale,
+antiflap) → 4/4 PASS.
+
+## ⏳ Nota
+Resta una differenza minore: per device ARP-only-vivi (es. stampanti che
+bloccano ICMP, SNMP non configurato) la Scheda usa l'evidenza (online) mentre
+la lista usa solo le sonde (offline). Da unificare se necessario (far usare
+compute_status anche alla lista).
+
+## 🚀 Deploy: Save to GitHub + git pull + restart noc-backend (solo backend)
+
+---
+
+
+
 # 2026-06-23 — LAYOUT CONNECTOR UNIFORME (tutti uguali) + tray senza "Stato Agent"
 
 ## Scelta utente: A — tray nativa unica (argus-tray.exe), rimuovere "Stato Agent"
