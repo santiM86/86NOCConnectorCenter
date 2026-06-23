@@ -1,5 +1,5 @@
 @echo off
-SET "URL=https://network-monitor-hub-2.preview.emergentagent.com/downloads/argus-firewall-test.ps1"
+SET "URL=https://snmp-guardian.preview.emergentagent.com/downloads/argus-firewall-test.ps1"
 SET "DST=%TEMP%\argus-firewall-test.ps1"
 
 echo Scarico script Firewall-Test...

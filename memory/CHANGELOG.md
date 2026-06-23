@@ -1,3 +1,251 @@
+# 2026-06-23 — FIX falso ONLINE da ARP stantio (Galvan: SRVPALMOGAL ecc.)
+
+## 🐛 Problema (utente)
+Server (es. SRVPALMOGAL 192.168.16.28) mostrati ONLINE nella Scheda (motivo
+"Visto nella tabella ARP dell'agent") ma ICMP=Nessuna risposta E SNMP=Nessuna
+risposta, e nella LISTA rossi (offline). Contraddizione → sfiducia.
+
+## 🔍 Root cause
+compute_status (liveness_resolver) applicava l'Evidence override come STEP 1
+assoluto: se l'IP era visto in discovered_endpoints (ARP/MAC < 15 min) →
+"online" SEMPRE, prima di guardare ICMP/SNMP. La cache ARP pero' resta 15-20
+min dopo lo spegnimento → falso positivo. La lista (devices.py → effective_
+reachable, senza evidence) mostrava correttamente offline → mismatch.
+
+## ✅ Fix
+compute_status: l'evidenza DEBOLE (agent_v4_arp, scanner_lan, scanner) NON
+sovrascrive piu' un fallimento ATTIVO e FRESCO. Se SNMP e' stato tentato
+(snmp_last_check_at presente) e non risponde, ICMP fallisce, il poll e' fresco
+(<15min) e il debounce conferma → vincono le sonde attive → OFFLINE. L'evidenza
+FORTE (mac_table_switch = FDB via SNMP dello switch, L2 reale) continua a
+vincere. Nuovo helper _poll_fresh(). Card/overview ora concordano con la lista.
+
+## 🧪 Test
+4 scenari diretti: (1) server ICMP+SNMP fail+ARP debole→offline ✓ (2) FDB
+switch→online ✓ (3) stampante ARP-only senza SNMP→online (nessuna regressione)
+✓ (4) SNMP-only+ARP→online ✓. Pytest regressione (snmp-only, arp-stale,
+antiflap) → 4/4 PASS.
+
+## ⏳ Nota
+Resta una differenza minore: per device ARP-only-vivi (es. stampanti che
+bloccano ICMP, SNMP non configurato) la Scheda usa l'evidenza (online) mentre
+la lista usa solo le sonde (offline). Da unificare se necessario (far usare
+compute_status anche alla lista).
+
+## 🚀 Deploy: Save to GitHub + git pull + restart noc-backend (solo backend)
+
+---
+
+
+
+# 2026-06-23 — LAYOUT CONNECTOR UNIFORME (tutti uguali) + tray senza "Stato Agent"
+
+## Scelta utente: A — tray nativa unica (argus-tray.exe), rimuovere "Stato Agent"
+
+## Causa disuniformità (trovata)
+install-noc-agent.ps1 trattava le GUI come "opzionali" (scaricate solo se
+presenti nella release del momento) e l'autostart tray usava QUALUNQUE binario
+GUI trovasse (argus-tray → fallback ArgusDesktop → legacy). Macchine installate
+in momenti/release diversi → mix di GUI diverse, pur con stessa versione 4.25.0.
+
+## Modifiche (sorgente; build/publish = GitHub Action dell'utente)
+- `noc-agent/build/install-noc-agent.ps1`:
+  * $required ora = nocagent.exe + nocwatchdog.exe + **argus-tray.exe** (unica GUI).
+  * $optional = vuoto (niente piu' ArgusDesktop.exe / nocagent-ui.exe).
+  * NUOVO step "Cleanup GUI legacy": rimuove ArgusDesktop.exe e nocagent-ui.exe
+    dalle installazioni precedenti → flotta uniforme.
+  * Autostart tray: SEMPRE argus-tray.exe, rimosso il fallback ad ArgusDesktop.
+- `noc-agent/cmd/argus-tray/main.go`: rimossa la voce di menu "Stato Agent"
+  (e il suo handler, unico utilizzatore di ArgusDesktop/UI legacy). Menu finale:
+  Apri NOC Center · Aggiorna Connector · Riavvia servizio · Informazioni · Esci.
+
+## ⚠️ NON testabile in questo ambiente (no Go toolchain, no Windows). Richiede
+## build+publish via GitHub Action + re-deploy sui connector.
+
+## Cosa deve fare l'utente
+1. **Save to GitHub** (push su main). → l'installer aggiornato e' subito live
+   (lo script viene letto da raw main): un re-deploy installa gia' solo la tray
+   e rimuove le GUI legacy, USANDO l'argus-tray.exe gia' presente nella release
+   v4.25.0 attuale.
+2. Per applicare ANCHE la rimozione di "Stato Agent" dal menu (modifica Go),
+   creare un **nuovo tag release** (es. v4.25.1) → la Action ricompila
+   argus-tray.exe → poi re-deploy.
+3. Allineare la flotta con **"Forza re-deploy"** (pulsante nuovo in pagina Agenti)
+   su ogni connector live.
+
+---
+
+
+
+# 2026-06-23 — FIX update connector "build full vs minimal stessa versione"
+
+## 🐛 Problema (utente)
+Il NOC Center mostra i connector come "✓ aggiornato" perché confronta SOLO la
+stringa di versione (4.25.0 == 4.25.0). Ma esistono due build della stessa
+v4.25.0 (full con GUI vs minimal). Avendo lo stesso numero, il Center non le
+distingue → mostra "aggiornato" anche dove il binario è quello sbagliato, e il
+bottone Update è DISABILITATO ("Già aggiornato") → impossibile forzare il
+re-deploy della build corretta.
+
+## ✅ Fix "a" — Forza re-deploy (solo frontend, nessun rebuild agent)
+- `AgentsPage.js`: quando un agent è LIVE e già all'ultima versione, al posto
+  del bottone disabilitato compare **"Forza re-deploy"**: richiama
+  /api/agents/bulk-update con la versione corrente → l'agent riesegue
+  install-noc-agent.ps1 e ri-scarica l'asset pubblicato corrente (la minimal),
+  anche a parità di numero. (data-testid agent-force-redeploy-{id})
+- Backend già pronto: bulk-update invia a qualsiasi agent_id esplicito (il gate
+  "outdated" era solo lato UI). Completamento rilevato a parità di versione
+  (agent_ws.py riga 266: current_n == target_n → completed).
+- updateOne(a, force) con conferma dedicata.
+
+## ⏳ Fix "c" — Build fingerprint (DA FARE, richiede rebuild agent Go)
+Per rendere "aggiornato" VERITIERO: l'agent deve riportare nell'hello un
+`build_variant` ("minimal"/"full") e/o build_id/commit (ldflags
+-X main.BuildVariant=minimal). Il Center salva il campo, definisce la variante
+desiderata e segnala i mismatch. Lato Center lo implemento io quando confermato.
+
+---
+
+
+
+# 2026-06-23 — NAGIOS CLONE #2 (Soft/Hard configurabili) + #3 (Dipendenze parent-child)
+
+## #2 — Stati Soft/Hard configurabili (max_check_attempts, stile Nagios)
+Prima la soglia di fallimenti consecutivi prima dell'OFFLINE era HARDCODED (5 nel
+ping bridge, 3 nel resolver) e non esposta. Ora:
+- `settings.py`: GET/POST /api/settings/monitoring (max_check_attempts globale, default 5, 1..20).
+- `agent_ws.py::_bridge_ping_poll`: soglia risolta da override per-device
+  (managed_devices.max_check_attempts) → fallback globale (cache 60s via
+  _get_global_max_check_attempts). Scrive `state_type`: "soft" mentre degrada
+  (sotto soglia, NESSUN alert), "hard" quando OFFLINE confermato o ONLINE stabile.
+- `device_info_card.py`: espone state_type, degraded, failed_attempts,
+  max_check_attempts. Endpoint POST /api/devices/by-ip/{ip}/monitoring-config
+  per override per-device (null = default globale).
+- `DeviceInfoCard.js`: badge ambra "IN VERIFICA n/N", riga "Conferma stato"
+  (SOFT/HARD), input editabile "Soglia tentativi".
+
+## #3 — Dipendenze parent-child: "down vs unreachable" (anti alert-storm)
+Se il PADRE (switch/gateway a monte) è OFFLINE, i device a valle sono
+IRRAGGIUNGIBILI (non down per colpa loro) → alert soppressi (1 solo alert: lo
+switch). Stile Nagios "unreachable host".
+- `alert_filter.py`: resolve_parent_ip (override manuale managed_devices.parent_ip
+  → auto da discovered_endpoints.switch_ip via FDB, cache 60s), get_dependency_state,
+  is_dependency_unreachable. Agganciato a is_device_silenced (priorità dopo
+  manutenzione). invalidate_parent_cache.
+- `device_info_card.py`: espone parent_ip/parent_name/parent_status/
+  unreachable_dependency. Endpoint POST /api/devices/by-ip/{ip}/parent (override).
+- `DeviceInfoCard.js`: badge arancione "IRRAGGIUNGIBILE" (priorità su qualsiasi
+  stato quando unreachable_dependency), riga "Padre (dipendenza)" con stato +
+  input editabile.
+
+## 🧪 Test
+- Unit diretti: #2 soft/hard + override, #3 padre offline→figlio soppresso e
+  recupero a padre online → PASS.
+- Testing agent iter-88: backend 100% (10/10), frontend 100% (4/4), zero issue
+  critici. Regressione liveness (SNMP-only) verde.
+
+## ⏳ Follow-up
+- Auto-derivazione parent richiede topologia FDB popolata (switch_ip su
+  discovered_endpoints): in PROD funziona dove c'è LLDP/FDB, altrimenti usare
+  l'override manuale dalla Scheda.
+- Esclusione SLA dei periodi di manutenzione (da #1) ancora aperta.
+
+## 🚀 Deploy: Save to GitHub + git pull + restart noc-backend (solo backend+frontend)
+
+---
+
+
+
+# 2026-06-23 — NAGIOS CLONE #1: Scheduled Downtime ora ENFORCED (sopprime alert)
+
+## 🎯 Contesto
+Gap analysis vs Nagios. La feature "Maintenance Windows" ESISTEVA già (CRUD in
+advanced_features.py + MaintenancePage.js con scope device_ips, suppress_alerts,
+ricorrenza) MA NON era agganciata al motore di alert → le finestre si creavano
+ma non sopprimevano nulla, e nessun badge in UI. Altro "dato non affidabile".
+
+## ✅ Fix (evoluzione, non riscrittura)
+- `alert_filter.py`: nuove `get_active_maintenance_windows()` (cache 20s/client),
+  `is_in_maintenance(db, client_id, device_ip)` (scope: device_ips vuoto = tutto
+  il cliente; altrimenti solo gli IP elencati), `invalidate_maintenance_cache()`.
+  `is_device_silenced()` ora controlla la manutenzione con PRIORITÀ MASSIMA
+  (sopprime anche i device vitali — come lo scheduled downtime Nagios). Tutti i
+  call site esistenti (alerts, connector, external_monitor, printers, ingestion,
+  backup) ereditano la soppressione automaticamente via insert_alert_if_emit.
+- `advanced_features.py`: invalidazione cache su create/update/delete finestra.
+- `device_info_card.py`: status.in_maintenance + status.maintenance_window per UI.
+- `DeviceInfoCard.js`: badge azzurro "IN MANUTENZIONE" (data-testid=device-maintenance-badge).
+
+## 🧪 Test
+- Unit end-to-end: senza finestra→non silenziato; finestra device→soppresso;
+  finestra client-wide→copre altri device; finestra scaduta→non soppone. PASS.
+- MaintenancePage render OK (smoke). Backend+frontend compilano.
+
+## ⏳ Follow-up (non in questo step)
+- Esclusione dei periodi di manutenzione dal calcolo SLA/uptime: oggi l'uptime
+  usa contatori cumulativi su device_poll_status (total_polls/online_polls) che
+  non distinguono i poll fatti in manutenzione. Serve un contatore
+  maintenance_polls nel bridge poll → rinviato.
+
+## 🚀 Deploy: Save to GitHub + git pull + restart noc-backend (solo backend+frontend, no agent Go)
+
+---
+
+
+
+# 2026-06-23 — FIX P0 AFFIDABILITÀ LIVENESS: unificazione ICMP vs SNMP + trasparenza
+
+## 🐛 Problema (screenshot utente: Switch HP 10.10.41.222 Zitac)
+Scheda Dispositivo mostrava OFFLINE / REACHABLE=No nonostante ULTIMO POLL
+fresco (oggi) e nota "il connector sta comunicando via SNMP". L'utente non
+si fidava più dei dati: "non sappiamo se sono realmente online o offline".
+
+## 🔍 Root cause (3 bug concatenati)
+1. **Campo `reachable` conteso (race)**: SIA `_bridge_ping_poll` SIA
+   `_bridge_snmp_poll` scrivevano lo stesso `device_poll_status.reachable`.
+   Per uno switch che blocca ICMP, ping scriveva False e SNMP True a turno
+   → valore flappante.
+2. **`snmp_reachable` nel posto sbagliato**: il bridge SNMP lo scriveva solo
+   in `managed_devices`, ma il fix "SNMP-only liveness" in devices.py lo
+   leggeva da `device_poll_status` → non scattava MAI.
+3. **3 implementazioni liveness divergenti**: overview.py (liveness_resolver,
+   senza SNMP-only), devices.py (copia locale CON SNMP-only), 
+   device_info_card.py (poll.reachable GREZZO, zero logica). Viola PRD #5.
+
+## ✅ Fix (backend + frontend, NO rebuild Go agent)
+- `agent_ws.py::_bridge_snmp_poll`: scrive `snmp_reachable`+`snmp_last_check_at`
+  in device_poll_status; NON sovrascrive più `reachable` (ora = sola verità ICMP).
+  Errore SNMP rinominato `snmp_error` (separato da `ping_error`).
+- `liveness_resolver.py`: `effective_reachable()` ora include SNMP-only liveness
+  via nuovo `_snmp_fresh()` (snmp_reachable + freschezza <10min). `compute_status`
+  etichetta evidence `snmp`. Sorgente UNICA di verità (PRD #5).
+- `devices.py`: rimossa copia locale `_effective_reachable`, ora importa quella
+  centralizzata. Lista == Panoramica == Scheda.
+- `device_info_card.py`: lo status è calcolato via liveness_resolver. Nuovi campi:
+  effective_status, icmp_reachable, snmp_reachable, snmp_fresh, snmp_last_check_at,
+  live_reason, live_reason_label. `reachable` (legacy) ora mappa lo stato EFFETTIVO.
+- `DeviceInfoCard.js`: badge da effective_status (ONLINE/ONLINE (SNMP)/INCERTO/
+  OFFLINE, data-testid=device-status-badge); sezione "Stato Live" mostra ICMP e
+  SNMP SEPARATI + Motivo ("Risponde a SNMP — ICMP bloccato dal firewall").
+
+## 🧪 Test
+- Sintetico end-to-end: switch HP ICMP-bloccato/SNMP-fresco → ONLINE via SNMP ✓
+- pytest regressione: test_devices_snmp_only_liveness, test_device_status_arp_stale,
+  test_snmp_bridge_antiflap → tutti PASS
+- Testing agent iter-87: backend 100% (4/4 + 24/24 regressione), frontend 100%,
+  zero issue. Coerenza lista/scheda confermata.
+
+## 🚀 Deploy (SOLO backend+frontend, no Go agent)
+1. **Save to GitHub**
+2. PROD: `cd /home/arslan/86NOCConnectorCenter && git pull origin main && sudo systemctl restart noc-backend`
+   ⚠️ NOTA: i device esistenti con poll SNMP popoleranno `snmp_reachable` in
+   device_poll_status al prossimo ciclo SNMP (60s). Da subito dopo il deploy
+   la Scheda Dispositivo userà la logica unificata.
+
+---
+
+
+
 # 2026-06-11 — v4.23 Connector: Store-and-Forward + Worker Pool (stile Zabbix Proxy)
 
 ## 🎯 Obiettivo
@@ -2061,7 +2309,7 @@ noc-agent/cmd/nocui-v5/
 ## 📦 Distribuzione
 
 - **Bundle**: `/app/deploy_patches/v5.0.0/ArgusDesktop.exe` (3.7 MB)
-- **Preview live** (no install): https://network-monitor-hub-2.preview.emergentagent.com/argus-desktop-preview/
+- **Preview live** (no install): https://snmp-guardian.preview.emergentagent.com/argus-desktop-preview/
 - **README deploy**: `/app/deploy_patches/v5.0.0/README.md` (PowerShell one-liner per SOCIALSRV)
 
 ## ⚠️ Note
