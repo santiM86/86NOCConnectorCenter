@@ -596,11 +596,14 @@ if ($Source -eq "center") {
 } else {
     foreach ($a in $rel.assets) { $assetUrls[$a.name] = $a.browser_download_url }
 }
-$required = @("nocagent.exe","nocwatchdog.exe","nocagent-ui.exe")
-# ArgusDesktop.exe (nuova UI Wails) e argus-tray.exe (systray Datto-style)
-# sono opzionali per backward compatibility con release vecchie che non
-# li includevano. Se presenti li installiamo.
-$optional = @("ArgusDesktop.exe","argus-tray.exe")
+$required = @("nocagent.exe","nocwatchdog.exe","argus-tray.exe")
+# v2026-06-23 LAYOUT UNIFORME: ogni connector ha lo STESSO identico set di
+# componenti → servizio + watchdog + UNICA systray nativa (argus-tray.exe).
+# Le vecchie GUI (nocagent-ui.exe legacy walk, ArgusDesktop.exe Wails) NON
+# vengono piu' installate e vengono RIMOSSE se presenti da installazioni
+# precedenti (vedi cleanup sotto). Niente piu' mix full/minimal.
+$optional = @()
+$legacyToRemove = @("ArgusDesktop.exe","nocagent-ui.exe")
 foreach ($f in $required) {
     if (-not $assetUrls.ContainsKey($f)) {
         Write-Fail "Asset mancante nella release ${Version}: $f"
@@ -775,6 +778,24 @@ foreach ($f in $optional) {
         Write-Warn2 "Download $f fallito (opzionale): $($_.Exception.Message)"
     }
 }
+
+# v2026-06-23 LAYOUT UNIFORME — rimuovi GUI legacy da installazioni precedenti
+# (ArgusDesktop.exe Wails + nocagent-ui.exe walk). Da ora la UNICA GUI ammessa
+# e' argus-tray.exe, identica su tutti i connector. I processi sono gia' stati
+# killati nello step di stop servizi; qui eliminiamo i file residui.
+Write-Step "Cleanup GUI legacy (layout uniforme)"
+foreach ($leg in $legacyToRemove) {
+    $legPath = Join-Path $InstallDir $leg
+    if (Test-Path $legPath) {
+        try {
+            Remove-Item -Path $legPath -Force -ErrorAction Stop
+            Write-Ok "Rimosso componente legacy: $leg"
+        } catch {
+            Write-Warn2 "Impossibile rimuovere $leg (in uso?): $($_.Exception.Message)"
+        }
+    }
+}
+
 
 # ------------------------------------------------------------------- #
 # 6. Scrivi agent.yaml (preserva snmp_targets se gia' presente)
@@ -1017,13 +1038,10 @@ Write-Step "Autostart Argus Tray (At Logon)"
 $trayExe   = Join-Path $InstallDir "argus-tray.exe"
 $taskName  = "86BIT Argus Tray"
 $trayArg   = ""
+# v2026-06-23 LAYOUT UNIFORME: UNICA tray (argus-tray.exe), nessun fallback ad
+# ArgusDesktop. argus-tray.exe e' ora un asset REQUIRED quindi e' sempre presente.
 if (-not (Test-Path $trayExe)) {
-    # Fallback per release vecchie: usa ArgusDesktop minimizzato
-    $trayExe = Join-Path $InstallDir "ArgusDesktop.exe"
-    $trayArg = "--minimized"
-}
-if (-not (Test-Path $trayExe)) {
-    Write-Warn2 "argus-tray.exe e ArgusDesktop.exe assenti, autostart UI saltato"
+    Write-Warn2 "argus-tray.exe assente, autostart UI saltato"
 } else {
     # Cleanup registry-based autostart legacy (pre-v4.13.5)
     Remove-ItemProperty -Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run' -Name '86BITArgusTray'      -Force -ErrorAction SilentlyContinue
