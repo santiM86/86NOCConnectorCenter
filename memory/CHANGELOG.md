@@ -1,3 +1,52 @@
+# 2026-06-24 — HOTFIX P0 deploy PROD: vault_mismatch in `hornetsecurity_vmbackup_poller`
+
+## Sintomo
+Dopo il `git pull origin main` + restart `noc-backend` su PROD
+(`/home/arslan/86NOCConnectorCenter`), il job apscheduler
+`vmbackup_polling_tick` lanciava ogni minuto:
+```
+services.hornetsecurity_vmbackup_poller - ERROR - [vmbackup-poll] exception: Decryption failed
+File "/home/arslan/.../backend/security.py", line 137, in decrypt_credential
+cryptography.exceptions.InvalidTag
+ValueError: Decryption failed
+```
+
+## Root cause
+Il fix `vault_mismatch` era stato applicato a `hornetsecurity_poller.py`
+(365 backup) e a `datto_rmm.py`, ma il **secondo poller**
+`backend/services/hornetsecurity_vmbackup_poller.py` (VM backup)
+chiamava `security_manager.decrypt_credential(cfg["api_key_enc"])` SENZA
+try/except. La chiave AES-GCM era stata ruotata → `InvalidTag` →
+crash continuo del job (ma resto del backend OK).
+
+## Fix
+Wrappato il decrypt in try/except identico al pattern degli altri 2 poller:
+1. status `vault_mismatch` + messaggio chiaro "Re-save the API key from the UI"
+2. **enabled = False** → il job smette di provare finche' l'utente non
+   ri-salva la chiave dalla UI (PUT `/api/admin/hornetsecurity-vm/config`,
+   che rimette `enabled=True` automaticamente).
+
+## File modificati
+- `backend/services/hornetsecurity_vmbackup_poller.py` (+25 righe, fix decrypt)
+- `backend/tests/test_vmbackup_vault_mismatch.py` (NUOVO, regressione pytest)
+- `scripts/verify-prod-deploy.sh` (check dedicato al vmbackup poller)
+
+## Validato
+- pytest tests/test_vmbackup_vault_mismatch.py → 1 passed ✓
+- Mock: decrypt raise → status `vault_mismatch` + enabled=False + 2 update_one chiamate ✓
+- Backend restart in container: scheduler `vmbackup_polling_tick` registrato senza crash ✓
+
+## Steps per PROD
+1. **Save to GitHub**
+2. `cd /home/arslan/86NOCConnectorCenter && git pull origin main`
+3. `sudo systemctl restart noc-backend`
+4. Verifica log: `sudo journalctl -u noc-backend -f` — niente più traceback `Decryption failed` ogni minuto
+5. Dalla UI: Settings → Hornetsecurity VM Backup → re-incolla l'API key → Salva
+6. Al successivo tick il poller torna a `success`
+
+---
+
+
 # 2026-06-11 — v4.23 Connector: Store-and-Forward + Worker Pool (stile Zabbix Proxy)
 
 ## 🎯 Obiettivo

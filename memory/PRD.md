@@ -54,6 +54,39 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-06-24 🔥 HOTFIX P0 — vmbackup_polling_tick crashava ogni minuto in PROD
+
+Dopo il deploy PROD (git pull + restart) l'utente ha mostrato i log con
+`ValueError: Decryption failed / cryptography.exceptions.InvalidTag` sul
+job `vmbackup_polling_tick`. Il fix `vault_mismatch` era stato applicato
+SOLO a `hornetsecurity_poller.py` (365 backup) ma il poller separato
+`hornetsecurity_vmbackup_poller.py` (VM backup) era rimasto col decrypt
+nudo. Aggiunto try/except identico:
+- status `vault_mismatch` + `enabled=False` (stop polling)
+- L'utente re-salva la chiave dalla UI (`PUT /admin/hornetsecurity-vm/config`
+  rimette `enabled=True`) → polling riparte da solo
+
+Regression test: `backend/tests/test_vmbackup_vault_mismatch.py` (PASSED).
+Verify script `scripts/verify-prod-deploy.sh` aggiornato con check dedicato.
+
+## 2026-06-24 ✅ Script di verifica deployment PROD
+
+NUOVO `/app/scripts/verify-prod-deploy.sh` (220 righe, exit code 0/1).
+6 sezioni di check con marker grep specifici:
+1. Repo + git fetch + diff vs origin/main
+2. Backend liveness fixes (arp_alive_recent, snmp_alive_recent, snmp_reachable)
+3. Vault AES-GCM (hornetsecurity 365 + VM backup + datto)
+4. Endpoint /api/agent/install/setup.zip + ROLE opzionale
+5. Go Agent BBolt spool + fix hardcode v4.0.0 installer
+6. systemctl is-active noc-backend + curl health
+
+L'utente lo lancia sul server PROD per confermare 1-shot che il
+`git pull` ha portato effettivamente tutti i fix. Output stdout codificato
+verde/giallo/rosso, sezione finale con conteggio OK/WARN/FAIL e
+azione di rimedio se incomplete.
+
+
+
 ## 2026-03-01 🏗️ SERVER INTELLIGENCE HUB — Fasi 1+2+3+4 (backend complete)
 
 ### Modulo `backend/routes/server_intelligence.py` (NUOVO, ~570 righe, 12 endpoint)

@@ -101,10 +101,18 @@ section "2. Backend — FIX vault AES-GCM (Hornetsecurity + Datto)"
 # ────────────────────────────────────────────────────────────────────────────
 if [ -f "$BACKEND/services/hornetsecurity_poller.py" ]; then
   grep -q "vault_mismatch" "$BACKEND/services/hornetsecurity_poller.py" \
-    && pass "FIX vault_mismatch Hornetsecurity presente" \
-    || fail "FIX Hornetsecurity vault MANCA — 500 al primo poll dopo rotation"
+    && pass "FIX vault_mismatch Hornetsecurity (365 backup) presente" \
+    || fail "FIX Hornetsecurity 365 vault MANCA — 500 al primo poll dopo rotation"
 else
   fail "backend/services/hornetsecurity_poller.py MANCA"
+fi
+
+if [ -f "$BACKEND/services/hornetsecurity_vmbackup_poller.py" ]; then
+  grep -q "vault_mismatch" "$BACKEND/services/hornetsecurity_vmbackup_poller.py" \
+    && pass "FIX vault_mismatch Hornetsecurity VM backup presente" \
+    || fail "FIX Hornetsecurity VM backup vault MANCA — Decryption failed ogni minuto nei log"
+else
+  warn "backend/services/hornetsecurity_vmbackup_poller.py MANCA (modulo opzionale)"
 fi
 
 if [ -f "$BACKEND/routes/datto_rmm.py" ]; then
