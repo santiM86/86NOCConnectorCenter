@@ -43,7 +43,7 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-var Version = "4.25.1"
+var Version = "4.25.2"
 
 const (
 	platform     = "windows-amd64"
