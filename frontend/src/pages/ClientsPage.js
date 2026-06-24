@@ -365,6 +365,18 @@ export default function ClientsPage() {
                             title={tooltip}>
                             <DownloadSimple size={10} /> {btnLabel}
                           </a>
+                          {/* v2026-06-24: Setup .exe GUI personalizzato (no PowerShell).
+                              Genera uno ZIP con setup.exe + sidecar nocinstall.cfg
+                              pre-compilato col token del cliente. Il tecnico fa solo
+                              doppio click su setup.exe → installer GUI Windows nativo. */}
+                          <a
+                            href={`${API}/agent/install/setup.zip?token=${encodeURIComponent(client.api_key)}&client_id=${encodeURIComponent(client.id)}&role=master&label=${encodeURIComponent(client.name)}${hasRealLatest ? `&version=v${latestVer}` : ""}`}
+                            onClick={(e) => { e.stopPropagation(); toast.success(`Setup .exe per "${client.name}" — estrai ZIP, click destro su setup.exe → Esegui come amministratore. Nessun PowerShell.`); }}
+                            data-testid={`download-setup-exe-${client.id}`}
+                            className="text-[9px] px-2 py-1 rounded-md bg-[var(--bg-card)] border border-cyan-500/30 text-cyan-300 hover:border-cyan-400 hover:text-cyan-200 transition-colors flex items-center gap-1 no-underline"
+                            title={`Scarica Setup .exe GUI per ${client.name} (nessun PowerShell). Doppio click su setup.exe per installare.`}>
+                            <DownloadSimple size={10} /> Setup .exe
+                          </a>
                         </>
                       );
                     })()}
