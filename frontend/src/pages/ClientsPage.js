@@ -326,7 +326,6 @@ export default function ClientsPage() {
                       const latestVer = latestAgentVersion || "";
                       const hasRealLatest = latestVer && latestVer.toLowerCase() !== "latest";
                       const isOutdated = installedVer && hasRealLatest && isNewerSemver(latestVer, installedVer);
-                      const isUpToDate = installedVer && hasRealLatest && !isOutdated;
                       const btnLabel = hasRealLatest
                         ? `Setup GUI v${latestVer}`
                         : (latestVer ? "Setup GUI (latest)" : "Setup GUI");
