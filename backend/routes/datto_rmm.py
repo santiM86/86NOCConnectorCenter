@@ -31,6 +31,7 @@ from __future__ import annotations
 import logging
 import asyncio
 import json
+import re
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -164,11 +165,44 @@ async def put_datto_config(
     audit_url = (payload.audit_url or DEFAULT_AUDIT_URL).strip()
     if not base_url.startswith("http") or not audit_url.startswith("http"):
         raise HTTPException(status_code=400, detail="Gli URL devono iniziare con http(s)")
+
+    # v2026-06-29: Hardening validation per evitare gli errori di compilazione
+    # ricorrenti del form (USER ID con email, BASE URL con query string).
+    user_id_clean = payload.user_id.strip()
+    if "@" in user_id_clean:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "USER ID non valido: hai inserito un'email. Il portal richiede l'ObjectId Mongo "
+                "(24 caratteri esadecimali, es. 5ec7affa4cdcd40b443d5c38). "
+                "Chiedi al provider del portal.86bit.it l'userId del tuo account."
+            ),
+        )
+    # Tipicamente ObjectId = 24 hex chars; tolleriamo anche eventuali altri formati
+    # custom del portal ma rifiutiamo email/url ovviamente sbagliati.
+    if not re.fullmatch(r"[A-Za-z0-9_.\-]+", user_id_clean):
+        raise HTTPException(
+            status_code=400,
+            detail="USER ID contiene caratteri non validi (ammessi: alfanumerici, '_', '.', '-').",
+        )
+
+    # BASE URL non deve contenere query string: i parametri (api_key, userId,
+    # page, max) sono aggiunti dal backend al momento del fetch.
+    if "?" in base_url or "&" in base_url:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "BASE URL non valida: non includere parametri ?api_key=... o &userId=... — "
+                "il backend li aggiunge automaticamente. "
+                f"Usa solo l'endpoint, es: {DEFAULT_BASE_URL}"
+            ),
+        )
+
     doc = {
         "id": "global",
         "api_key_enc": encrypted,
         "api_key_preview": _mask_key(payload.api_key),
-        "user_id": payload.user_id.strip(),
+        "user_id": user_id_clean,
         "base_url": base_url,
         "audit_url": audit_url,
         "updated_at": now,
