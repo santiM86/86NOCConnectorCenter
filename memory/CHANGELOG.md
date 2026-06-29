@@ -1,3 +1,64 @@
+# 2026-06-29 — v4.25.4 hardening download: PE/size validation per ERROR_FILE_CORRUPT 1392
+
+## Sintomo dall'utente (screenshot)
+Installer v4.25.2 (vecchio binario, fix ruolo non ancora deployato in PROD) → conferma "Procedere?" → step [8/8] Avvio servizi fallisce con:
+```
+sc.exe start 86NocAgent: exit status 1392
+La directory o il file e' danneggiato e illeggibile.
+```
+Watchdog poi non parte (status 1068 = "dependency failed") perche' dipende dal master.
+
+## Root cause analisi
+ERROR_FILE_CORRUPT (1392) lanciato da `sc.exe start` significa che `nocagent.exe`
+nel target dir non e' un PE valido. Cause probabili:
+1. Manifest backend non ha SHA256 per quel binario → installer scarica silenziosamente
+   anche se il body e' una error page HTML (HTTP 200 dal proxy `/api/agent-builds`).
+2. Windows Defender / SmartScreen ha quarantinato post-install.
+3. File 0-byte da CDN scaduto / token revocato.
+
+Il v4.25.2 (e v4.25.3 prima del fix corrente) accettava il download silenziosamente
+se SHA256 era vuoto, propagando il file rotto fino a `sc.exe start`.
+
+## Fix applicato in `cmd/installer/main.go`
+1. **Size floor**: tutti i binari sotto 500KB sono rifiutati con errore esplicito
+   ("download X troppo piccolo (Y byte), probabile errore di proxy/CDN").
+2. **PE header check**: nuovo helper `validatePEHeader(path)` che legge i primi 2
+   byte e verifica la signature 'MZ'. Se manca → errore chiaro:
+   "signature PE non valida (atteso 'MZ', trovato 0x??): il backend ha servito una
+    error page invece del binario".
+3. **HTTP non-200**: il body (max 512 byte) viene incluso nel messaggio d'errore,
+   cosi' si vede subito se il backend ha restituito JSON di errore o HTML.
+4. **MOTW cleanup**: best-effort `os.Remove(dst + ":Zone.Identifier")` per
+   rimuovere ADS che potrebbe essere stato aggiunto da SmartScreen in reverse
+   proxy con `Content-Disposition: attachment`.
+
+## Bumped to v4.25.4
+- `Version = "4.25.4"` in `cmd/installer/main.go`
+- Cross-compile: `GOOS=windows GOARCH=amd64 go build ... -ldflags "-X main.Version=4.25.4"` → 6.1 MB PE ✓
+- `_resolve_version("latest")` → v4.25.4 automatic
+- SHA256SUMS.txt rigenerato
+
+## Beneficio per troubleshooting futuro
+Se l'utente ri-lancia il setup.exe e vede ancora 1392, ora avra' un MessageBox
+chiaro che dice "validazione PE nocagent.exe: signature PE non valida (atteso
+'MZ', trovato 0x3c21)" → diagnosi immediata che il backend sta servendo HTML
+(0x3c21 = '<!') invece del binario. Diventa subito chiaro che:
+- Il token GitHub e' scaduto/revocato
+- O la GitHub Release non esiste
+- O il proxy `/api/agent-builds/...` ha un bug
+
+Senza il fix l'errore appariva DOPO al boot del servizio Windows, perdendo info.
+
+## Steps utente per PROD
+1. **Save to GitHub**
+2. `cd /home/arslan/86NOCConnectorCenter && git pull origin main && sudo systemctl restart noc-backend`
+3. Hard refresh `argus.86bit.it` (Ctrl+Shift+R)
+4. Dalla UI Clienti scarica un NUOVO Setup .exe (titolo dialog dira' "v4.25.4")
+5. Se ancora 1392 → ora vedrai esattamente quale file e' rotto e perche'
+
+---
+
+
 # 2026-06-29 — 🔥 HOTFIX P0 Setup .exe: prompt MASTER/SCANNER nella GUI dell'installer
 
 ## Problema riportato dall'utente
