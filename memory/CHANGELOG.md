@@ -1,3 +1,96 @@
+# 2026-06-29 — Datto RMM Sync: fix HTTP 500 isolato per device + diagnostico match-debug
+
+## Sintomi screenshot PROD
+- Cache popolata: 153 site, 40 device Datto Galvan persistiti
+- ❌ Toast "Sync fallito: Request failed with status code 500"
+- ❌ Galvan: 40 dev / **0 match** (i MAC Datto non combaciano con discovered_endpoints)
+
+## Root cause #1 (HTTP 500 sul sync)
+In `_refresh_sites_cache` il ciclo `asyncio.gather(*tasks, return_exceptions=False)`
+propagava qualsiasi eccezione di UN singolo device facendo crashare l'intero
+sync. Cause tipiche:
+- `_fetch_device_audit_raw` httpx timeout su 1 device su 982
+- `_extract_nics` su schema NIC inatteso
+- `_encrypt_blob` su payload con caratteri non UTF-8
+
+## Fix #1: error isolation per device
+`return_exceptions=True` + log per device + continue del batch:
+```python
+results = await asyncio.gather(*tasks, return_exceptions=True)
+persisted: list[dict] = []
+failed = 0
+for r in results:
+    if isinstance(r, Exception):
+        failed += 1
+        logger.warning("[datto-sync] device process failed ...")
+        continue
+    if r: persisted.append(r)
+```
+Un device problematico non rompe più i restanti 981.
+
+## Root cause #2 (40 dev / 0 match)
+Possibili cause con probabilità diverse:
+- **(A)** Connector LAN scanner del cliente NON attivo o non sta scoprendo nulla → 0 discovered_endpoints per il client_id
+- **(B)** Switch ritornano solo IP senza MAC nelle FDB → match MAC impossibile
+- **(C)** Audit endpoint Datto non restituisce NIC info → datto_devices con `mac=""`
+- **(D)** Formati MAC differenti (improbabile, `_norm_mac` normalizza tutto)
+- **(E)** VLAN differenti: Datto vede device su rete VPN/Wifi, scanner vede LAN cablata
+
+## Fix #2: NUOVO endpoint diagnostico `GET /api/admin/datto/match-debug/{client_id}`
+Spiega ESATTAMENTE qual è la causa del 0 match. Ritorna:
+```json
+{
+  "datto_devices_persisted": 40,
+  "datto_devices_with_mac": 0,           ← se 0 → causa (C)
+  "datto_devices_without_mac": 40,
+  "datto_devices_with_ip": 40,
+  "discovered_endpoints_total": 0,       ← se 0 → causa (A)
+  "discovered_endpoints_with_mac": 0,
+  "discovered_endpoints_with_ip": 0,
+  "intersection_mac": 0,
+  "intersection_ip": 0,
+  "sample_datto_no_mac": ["SRVDC", "PC01", ...],
+  "sample_eps_with_mac": [...],
+  "diagnosis": "🔴 (A) Il client ha 0 discovered_endpoints. Il connector
+                LAN scanner non sta scoprendo MAC/IP dagli switch del cliente.
+                Verifica: (1) connector ONLINE, (2) switch in scan list,
+                (3) connector ha lanciato almeno 1 scan."
+}
+```
+
+## Logging in `_match_with_center`
+Ora ogni chiamata logga il match summary:
+```
+[datto-match] client=galvan-id: eps=120 (mac=80, ip=120) datto=40 (mac=35, ip=40)
+```
+Cosi' dal `journalctl -u noc-backend` si vede a colpo d'occhio dove sta lo squilibrio.
+
+## Test pytest (7/7 PASSED)
+- `test_match_debug_diagnoses_zero_endpoints` ✓ (caso A)
+- `test_match_debug_diagnoses_no_mac_in_datto` ✓ (caso C)
+- `test_match_debug_diagnoses_intersection_ok` ✓ (✅ allineato)
+- 4 test pre-esistenti `test_datto_config_validation.py` ✓
+
+## Steps PROD per debug "40 dev / 0 match" Galvan
+1. `git pull origin main && sudo systemctl restart noc-backend`
+2. Re-sync Galvan: dal browser, su Argus aperto, prendi il token JWT dal localStorage
+   chiave `token` (es. via DevTools Console: `localStorage.getItem('token')`),
+   poi:
+   ```bash
+   GALVAN_ID="<id-cliente-Galvan>"  # lo trovi in URL della pagina client o in DB
+   TOK="<jwt-token>"
+   curl -s "https://argus.86bit.it/api/admin/datto/match-debug/$GALVAN_ID" \
+        -H "Authorization: Bearer $TOK" | python3 -m json.tool
+   ```
+3. Il campo `diagnosis` ti dice esattamente cosa fixare.
+
+## File modificati
+- `backend/routes/datto_rmm.py` (+105 righe: error isolation + match-debug endpoint + logging)
+- `backend/tests/test_datto_match_debug.py` (NUOVO, 3 test di regressione)
+
+---
+
+
 # 2026-06-29 — Fix Datto RMM Settings: validation USER ID + BASE URL + hint inline UI
 
 ## Sintomo riportato dallo screenshot utente
