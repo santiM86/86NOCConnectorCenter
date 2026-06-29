@@ -258,6 +258,7 @@ from routes.connector_settings import router as connector_settings_router
 from routes.hornetsecurity_backup import router as hornetsecurity_backup_router
 from routes.hornetsecurity_vmbackup import router as hornetsecurity_vmbackup_router
 from routes.datto_rmm import router as datto_rmm_router
+from routes.portal86_datto import router as portal86_datto_router
 from routes.security_admin import router as security_admin_router
 from routes.agent_ws import router as agent_ws_router  # 86NocAgent v4 WS+control plane
 from routes.github_deploy import router as github_deploy_router  # Auto-deploy webhook
@@ -331,6 +332,7 @@ app.include_router(connector_settings_router)
 app.include_router(hornetsecurity_backup_router)
 app.include_router(hornetsecurity_vmbackup_router)
 app.include_router(datto_rmm_router)
+app.include_router(portal86_datto_router)
 app.include_router(security_admin_router)
 from routes.security_admin import audit_router as audit_dashboard_router
 app.include_router(audit_dashboard_router)
