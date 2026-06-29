@@ -43,7 +43,7 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-var Version = "4.25.2"
+var Version = "4.25.3"
 
 const (
 	platform     = "windows-amd64"
@@ -54,6 +54,7 @@ const (
 type cliCfg struct {
 	token   string
 	backend string
+	role    string // "master" | "scanner" | "" (chiede via MessageBox)
 	silent  bool
 }
 
@@ -88,15 +89,48 @@ func main() {
 	}()
 
 	if cfg.token == "" || cfg.backend == "" {
-		if t, b, ok := readSidecar(); ok {
+		if t, b, r, ok := readSidecar(); ok {
 			cfg.token, cfg.backend = t, b
+			if cfg.role == "" {
+				cfg.role = r
+			}
 		}
 	}
 	if cfg.token == "" || cfg.backend == "" {
 		messageBoxError("Configurazione mancante",
 			"Esegui con:  nocinstall.exe --token <TOKEN> --backend <URL>\n\n"+
 				"Oppure crea un file 'nocinstall.cfg' nella stessa cartella, contenente:\n"+
-				"  TOKEN=...\n  BACKEND=https://argus.86bit.it")
+				"  TOKEN=...\n  BACKEND=https://argus.86bit.it\n  ROLE=master|scanner (opzionale)")
+		os.Exit(1)
+	}
+
+	// Se il ruolo non e' stato fornito (CLI/sidecar) e non siamo in silent,
+	// chiediamolo all'utente via MessageBox YesNoCancel.
+	//   Yes (6)    -> master   |  No (7) -> scanner  |  Cancel (2) -> abort
+	if cfg.role == "" && !cfg.silent {
+		choice := messageBox("86NocAgent Installer - Ruolo connector",
+			"Scegli il ruolo di questo connector:\n\n"+
+				"  SI'      = MASTER  (polla i dispositivi, gestisce SNMP/ping/comandi del NOC)\n"+
+				"  NO       = SCANNER (solo discovery LAN del proprio segmento di rete)\n"+
+				"  ANNULLA  = Esci dall'installazione\n\n"+
+				"Suggerimento: usa MASTER se e' il primo/unico connector del cliente,\n"+
+				"SCANNER se devi coprire una VLAN aggiuntiva con un connector gia' presente.",
+			mbYesNoCancel|mbIconQuestion)
+		switch choice {
+		case idYes:
+			cfg.role = "master"
+		case idNo:
+			cfg.role = "scanner"
+		default:
+			os.Exit(0)
+		}
+	}
+	if cfg.role == "" {
+		cfg.role = "master" // safety-net per silent senza --role
+	}
+	if cfg.role != "master" && cfg.role != "scanner" {
+		messageBoxError("Ruolo non valido",
+			"Valori ammessi per --role: master | scanner. Ricevuto: "+cfg.role)
 		os.Exit(1)
 	}
 
@@ -105,11 +139,12 @@ func main() {
 			fmt.Sprintf(
 				"Verra' installato 86NocAgent v%s su questo computer.\n\n"+
 					"Backend: %s\n"+
+					"Ruolo  : %s\n"+
 					"Cartella: %s\n\n"+
 					"Verranno creati 2 servizi Windows (auto-start + Service Recovery):\n"+
 					"  - 86NocAgent\n  - 86NocWatchdog\n\n"+
 					"Procedere con l'installazione?",
-				Version, cfg.backend, installDir(),
+				Version, cfg.backend, strings.ToUpper(cfg.role), installDir(),
 			))
 		if !ok {
 			os.Exit(0)
@@ -236,6 +271,7 @@ func main() {
 func parseFlags() cliCfg {
 	t := flag.String("token", "", "agent token (registered via /api/agents/register)")
 	b := flag.String("backend", "", "backend HTTPS URL, es: https://argus.86bit.it")
+	r := flag.String("role", "", "agent role: master | scanner (vuoto = prompt GUI)")
 	s := flag.Bool("silent", false, "no MessageBox dialogs")
 	v := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
@@ -243,20 +279,25 @@ func parseFlags() cliCfg {
 		fmt.Printf("86NocInstall %s (windows/amd64)\n", Version)
 		os.Exit(0)
 	}
-	return cliCfg{token: strings.TrimSpace(*t), backend: strings.TrimRight(strings.TrimSpace(*b), "/"), silent: *s}
+	return cliCfg{
+		token:   strings.TrimSpace(*t),
+		backend: strings.TrimRight(strings.TrimSpace(*b), "/"),
+		role:    strings.ToLower(strings.TrimSpace(*r)),
+		silent:  *s,
+	}
 }
 
-func readSidecar() (string, string, bool) {
+func readSidecar() (string, string, string, bool) {
 	exe, err := os.Executable()
 	if err != nil {
-		return "", "", false
+		return "", "", "", false
 	}
 	cfg := filepath.Join(filepath.Dir(exe), "nocinstall.cfg")
 	data, err := os.ReadFile(cfg)
 	if err != nil {
-		return "", "", false
+		return "", "", "", false
 	}
-	var token, backend string
+	var token, backend, role string
 	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		k, v, ok := strings.Cut(line, "=")
@@ -268,9 +309,11 @@ func readSidecar() (string, string, bool) {
 			token = strings.TrimSpace(v)
 		case "BACKEND":
 			backend = strings.TrimRight(strings.TrimSpace(v), "/")
+		case "ROLE":
+			role = strings.ToLower(strings.TrimSpace(v))
 		}
 	}
-	return token, backend, token != "" && backend != ""
+	return token, backend, role, token != "" && backend != ""
 }
 
 // ---- Network ----------------------------------------------------------------
@@ -283,7 +326,8 @@ var httpClient = &http.Client{
 }
 
 func fetchManifest(c cliCfg) (*manifest, error) {
-	url := fmt.Sprintf("%s/api/agent/install/manifest?platform=%s&token=%s", c.backend, platform, c.token)
+	url := fmt.Sprintf("%s/api/agent/install/manifest?platform=%s&token=%s&role=%s",
+		c.backend, platform, c.token, c.role)
 	resp, err := httpClient.Get(url)
 	if err != nil {
 		return nil, err
@@ -375,11 +419,14 @@ func serviceStatus(name string) string {
 
 const (
 	mbOK             = 0x00000000
+	mbYesNoCancel    = 0x00000003
 	mbYesNo          = 0x00000004
 	mbIconError      = 0x00000010
 	mbIconQuestion   = 0x00000020
 	mbIconInfo       = 0x00000040
+	idCancel         = 2
 	idYes            = 6
+	idNo             = 7
 	swShowNormal     = 1
 )
 

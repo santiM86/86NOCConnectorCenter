@@ -1,3 +1,82 @@
+# 2026-06-29 — 🔥 HOTFIX P0 Setup .exe: prompt MASTER/SCANNER nella GUI dell'installer
+
+## Problema riportato dall'utente
+> "non riesco ad avere un installer funzionante GUI con master o client da installare su nuovo cliente"
+
+## Root cause (3 bug nell'installer Go `cmd/installer/main.go`)
+1. `readSidecar()` leggeva SOLO `TOKEN=` e `BACKEND=` dal `nocinstall.cfg` →
+   **ignorava completamente `ROLE=` scritto dal backend** in
+   `install_setup.py`.
+2. `parseFlags()` non aveva il flag `-role` → impossibile passare il ruolo
+   da CLI.
+3. **Nessun MessageBox** chiedeva master/scanner all'utente: la GUI
+   mostrava solo "Procedere?" e poi il summary finale. Il ruolo finale
+   arrivava SEMPRE dal manifest server-side via `agent_tokens.role` (di
+   default `master`), quindi lo zip "Setup .exe (Scanner)" generava
+   comunque un master.
+
+Risultato pratico: i 3 bottoni del menu a tendina (GUI / Master / Scanner)
+nella ClientsPage producevano TUTTI lo stesso comportamento (= master).
+
+## Fix
+File: `noc-agent/cmd/installer/main.go` (v4.25.2 → **v4.25.3**)
+
+1. `cliCfg` esteso con `role string`.
+2. `parseFlags()` accetta `--role master|scanner` (vuoto = chiede via
+   GUI).
+3. `readSidecar()` ora ritorna 4 valori `(token, backend, role, ok)` e
+   parsa anche `ROLE=` dal cfg.
+4. **NUOVO**: subito dopo aver acquisito token+backend, se `role` e' ancora
+   vuoto e non siamo in silent, l'installer mostra un MessageBox
+   `MB_YESNOCANCEL`:
+     - **Si'** → master
+     - **No** → scanner
+     - **Annulla** → exit 0 pulito
+5. Il MessageBox di conferma "Procedere con l'installazione?" ora mostra
+   anche il ruolo scelto (es. `Ruolo: SCANNER`).
+6. `fetchManifest()` appende `&role=<master|scanner>` alla URL del
+   manifest, cosi' il backend lo onora invece di default-are a master.
+7. Aggiunte constants Win32: `mbYesNoCancel = 0x03`, `idCancel = 2`,
+   `idNo = 7`.
+8. `Version` bumped a `4.25.3`.
+
+## Validazione in container
+- `go vet ./cmd/installer/` → OK (no errori statici)
+- `GOOS=windows GOARCH=amd64 go build -ldflags "-X main.Version=4.25.3"
+  -o backend/static/release-bin/v4.25.3/nocinstall.exe ./cmd/installer/`
+  → 6.1 MB PE/Win32 binary
+- `install_setup._resolve_version("latest")` → `v4.25.3` ✓
+- Smoke test endpoint setup.zip:
+  - `role=""`   → `nocinstall.cfg` NON contiene `ROLE=` (installer chiedera') ✓
+  - `role=master` → `nocinstall.cfg` ha `ROLE=master` ✓
+  - `role=scanner` → `nocinstall.cfg` ha `ROLE=scanner` ✓
+- SHA256SUMS.txt aggiornato per v4.25.3
+
+## Comportamento ora visibile all'utente
+
+Bottone UI → cfg → comportamento installer:
+- **📥 Setup .exe**             → cfg senza ROLE → GUI mostra MessageBox 3 pulsanti
+- **📥 Setup .exe (Master)**    → cfg con ROLE=master → GUI salta il prompt, va dritto al summary
+- **📥 Setup .exe (Scanner)**   → cfg con ROLE=scanner → GUI salta il prompt, va dritto al summary
+
+## Steps per PROD
+1. **Save to GitHub**
+2. `cd /home/arslan/86NOCConnectorCenter && git pull origin main && sudo systemctl restart noc-backend`
+3. Scarica un nuovo Setup .exe dalla UI Clienti (uno dei 3 link)
+4. Su una VM Windows pulita: estrai zip → click destro su setup.exe → "Esegui come amministratore"
+5. Verifica: se hai scelto il link senza ruolo → appare MessageBox "Scegli ruolo: Si'=Master / No=Scanner / Annulla"
+
+## Note tecniche
+- Il manifest backend (`agent_ws.py:2497`) accettava gia' `?role=` come
+  query param — bastava farglielo passare dall'installer. Nessuna modifica
+  backend necessaria oltre al fix gia' applicato in `install_setup.py`.
+- Il binario v4.25.2 esistente sul filesystem `release-bin/` NON viene
+  rimosso (backward-compat per chi linka direttamente quella versione);
+  v4.25.3 diventa solo il default di `latest`.
+
+---
+
+
 # 2026-06-24 — HOTFIX P0 deploy PROD: vault_mismatch in `hornetsecurity_vmbackup_poller`
 
 ## Sintomo
