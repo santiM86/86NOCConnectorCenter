@@ -45,7 +45,29 @@ async def run_vmbackup_tick(force: bool = False) -> dict:
         return {"error": "API key o User ID mancanti nella configurazione."}
     now_iso = now.isoformat()
     try:
-        api_key = security_manager.decrypt_credential(cfg["api_key_enc"])
+        try:
+            api_key = security_manager.decrypt_credential(cfg["api_key_enc"])
+        except Exception as dec_err:
+            await db.hornetsecurity_vmbackup_config.update_one(
+                {"_id": GLOBAL_CONFIG_ID},
+                {"$set": {
+                    "last_polled_at": now_iso,
+                    "last_poll_status": "vault_mismatch",
+                    "last_poll_error": f"Decryption failed: {dec_err}. "
+                                       f"Re-save the API key from the UI to re-encrypt with current vault.",
+                }},
+            )
+            # Disabilita ulteriori tentativi automatici finche' la chiave non viene re-salvata
+            # cosi' il log non si riempie di traceback ogni minuto.
+            await db.hornetsecurity_vmbackup_config.update_one(
+                {"_id": GLOBAL_CONFIG_ID},
+                {"$set": {"enabled": False}},
+            )
+            logger.warning(
+                "[vmbackup-poll] credential decryption failed (vault key mismatch). "
+                "Polling disabled — re-save the API key from the UI to re-enable."
+            )
+            return {"error": "vault_mismatch: re-save the API key from the UI to re-encrypt."}
         code, body = await _fetch_vmbackup_report(cfg["api_url"], api_key, cfg["user_id"])
         if code == 200 and isinstance(body, dict) and body.get("success"):
             summary = await _persist_vmbackup_poll(body)

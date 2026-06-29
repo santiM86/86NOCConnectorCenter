@@ -367,15 +367,34 @@ export default function ClientsPage() {
                           </a>
                           {/* v2026-06-24: Setup .exe GUI personalizzato (no PowerShell).
                               Genera uno ZIP con setup.exe + sidecar nocinstall.cfg
-                              pre-compilato col token del cliente. Il tecnico fa solo
-                              doppio click su setup.exe → installer GUI Windows nativo. */}
+                              pre-compilato col token del cliente. 3 varianti:
+                              - "Setup .exe" (default): ROLE NON baked-in → installer
+                                  chiede master/scanner durante la GUI Windows nativa.
+                              - "Setup Master" / "Setup Scanner": ROLE baked-in →
+                                  installer silenzioso per quel ruolo specifico. */}
                           <a
-                            href={`${API}/agent/install/setup.zip?token=${encodeURIComponent(client.api_key)}&client_id=${encodeURIComponent(client.id)}&role=master&label=${encodeURIComponent(client.name)}${hasRealLatest ? `&version=v${latestVer}` : ""}`}
-                            onClick={(e) => { e.stopPropagation(); toast.success(`Setup .exe per "${client.name}" — estrai ZIP, click destro su setup.exe → Esegui come amministratore. Nessun PowerShell.`); }}
+                            href={`${API}/agent/install/setup.zip?token=${encodeURIComponent(client.api_key)}&client_id=${encodeURIComponent(client.id)}&label=${encodeURIComponent(client.name)}${hasRealLatest ? `&version=v${latestVer}` : ""}`}
+                            onClick={(e) => { e.stopPropagation(); toast.success(`Setup .exe per "${client.name}" — estrai ZIP, click destro su setup.exe → Esegui come amministratore. La GUI ti fara' scegliere master/scanner.`); }}
                             data-testid={`download-setup-exe-${client.id}`}
                             className="text-[9px] px-2 py-1 rounded-md bg-[var(--bg-card)] border border-cyan-500/30 text-cyan-300 hover:border-cyan-400 hover:text-cyan-200 transition-colors flex items-center gap-1 no-underline"
-                            title={`Scarica Setup .exe GUI per ${client.name} (nessun PowerShell). Doppio click su setup.exe per installare.`}>
+                            title={`Scarica Setup .exe GUI per ${client.name}. Doppio click su setup.exe: la GUI chiedera' Master o Scanner.`}>
                             <DownloadSimple size={10} /> Setup .exe
+                          </a>
+                          <a
+                            href={`${API}/agent/install/setup.zip?token=${encodeURIComponent(client.api_key)}&client_id=${encodeURIComponent(client.id)}&role=master&label=${encodeURIComponent(client.name)}${hasRealLatest ? `&version=v${latestVer}` : ""}`}
+                            onClick={(e) => { e.stopPropagation(); toast.success(`Setup MASTER per "${client.name}" — installer silenzioso, ruolo gia' baked-in.`); }}
+                            data-testid={`download-setup-master-${client.id}`}
+                            className="text-[9px] px-1.5 py-1 rounded-md bg-[var(--bg-card)] border border-cyan-500/20 text-cyan-400/70 hover:border-cyan-400 hover:text-cyan-300 transition-colors no-underline"
+                            title={`Setup .exe per ${client.name} con ruolo MASTER pre-baked (no prompt GUI).`}>
+                            M
+                          </a>
+                          <a
+                            href={`${API}/agent/install/setup.zip?token=${encodeURIComponent(client.api_key)}&client_id=${encodeURIComponent(client.id)}&role=scanner&label=${encodeURIComponent(client.name)}${hasRealLatest ? `&version=v${latestVer}` : ""}`}
+                            onClick={(e) => { e.stopPropagation(); toast.success(`Setup SCANNER per "${client.name}" — installer silenzioso, ruolo gia' baked-in.`); }}
+                            data-testid={`download-setup-scanner-${client.id}`}
+                            className="text-[9px] px-1.5 py-1 rounded-md bg-[var(--bg-card)] border border-cyan-500/20 text-cyan-400/70 hover:border-cyan-400 hover:text-cyan-300 transition-colors no-underline"
+                            title={`Setup .exe per ${client.name} con ruolo SCANNER pre-baked (no prompt GUI).`}>
+                            S
                           </a>
                         </>
                       );

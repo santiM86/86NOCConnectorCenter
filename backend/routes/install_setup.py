@@ -54,7 +54,8 @@ def _resolve_version(requested: str) -> str:
 async def download_setup_zip(
     token: str = Query(..., description="Client install token (server-side issued)"),
     client_id: str = Query("", description="Client UUID, opzionale ma consigliato"),
-    role: str = Query("master", regex=r"^(master|scanner)$"),
+    role: str = Query("", regex=r"^(|master|scanner)$",
+                      description="Vuoto=GUI chiede ruolo; master/scanner=silenzioso"),
     label: str = Query("", description="Etichetta libera (es. SRV principale)"),
     version: str = Query("latest", description="Versione (latest oppure v4.25.2)"),
     backend: str = Query("", description="Backend URL override (default: REACT_APP_BACKEND_URL)"),
@@ -87,7 +88,7 @@ async def download_setup_zip(
         "Argus NOC — Setup connector\n"
         "============================\n\n"
         f"Versione binario : {ver}\n"
-        f"Ruolo            : {role}\n"
+        f"Ruolo            : {role or 'da scegliere durante installazione'}\n"
         f"Backend          : {backend_url}\n"
         f"Cliente          : {client_id or '(token-based)'}\n\n"
         "Come installare\n"
