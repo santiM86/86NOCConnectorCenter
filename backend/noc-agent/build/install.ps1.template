@@ -1,0 +1,99 @@
+# 86NocAgent — Windows installer
+#
+# Renders dynamically by the backend with the bound token + URL substituted in.
+# Run as Administrator. Idempotent: stops + replaces existing services.
+#
+#   iwr -UseBasicParsing __BACKEND_URL__/api/agent/install/windows.ps1?token=XXX | iex
+#
+$ErrorActionPreference = "Stop"
+
+$BackendUrl   = "__BACKEND_URL__"
+$Token        = "__TOKEN__"
+$Platform     = "windows-amd64"
+$InstallDir   = "$env:ProgramFiles\86NocAgent"
+$DataDir      = "$env:ProgramData\86NocAgent"
+$AgentName    = "86NocAgent"
+$WatchdogName = "86NocWatchdog"
+
+if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    Write-Host "ERRORE: lo script richiede privilegi di amministratore." -ForegroundColor Red
+    exit 1
+}
+
+Write-Host ">> 86NocAgent installer" -ForegroundColor Cyan
+Write-Host "   Backend: $BackendUrl"
+Write-Host "   Install: $InstallDir"
+
+# 1. Fetch manifest (validates token + returns config template)
+$manifestUrl = "$BackendUrl/api/agent/install/manifest?platform=$Platform&token=$Token"
+$manifest = Invoke-RestMethod -UseBasicParsing -Uri $manifestUrl
+$clientId = $manifest.client_id
+Write-Host "   Client : $clientId"
+
+# 2. Stop existing services (idempotent reinstall)
+foreach ($s in @($WatchdogName, $AgentName)) {
+    if (Get-Service -Name $s -ErrorAction SilentlyContinue) {
+        Write-Host ">> stopping existing $s ..."
+        Stop-Service -Name $s -Force -ErrorAction SilentlyContinue
+        sc.exe delete $s | Out-Null
+        Start-Sleep -Seconds 1
+    }
+}
+
+# 3. Create directories
+New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+New-Item -ItemType Directory -Force -Path $DataDir    | Out-Null
+
+# 4. Download binaries (with SHA256 verification when manifest provides it)
+foreach ($bin in @("nocagent.exe", "nocwatchdog.exe")) {
+    $dst = Join-Path $InstallDir $bin
+    $url = "$BackendUrl/api/agent/binary/$Platform/$bin`?token=$Token"
+    Write-Host ">> downloading $bin"
+    Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $dst
+    $expected = $null
+    if ($manifest.sha256 -and $manifest.sha256.$bin) { $expected = $manifest.sha256.$bin }
+    if ($expected) {
+        $actual = (Get-FileHash -Path $dst -Algorithm SHA256).Hash.ToLower()
+        if ($actual -ne $expected.ToLower()) {
+            Write-Host "ERRORE: SHA256 di $bin non corrisponde (atteso $expected, ottenuto $actual)" -ForegroundColor Red
+            Remove-Item -Force $dst -ErrorAction SilentlyContinue
+            exit 2
+        }
+        Write-Host "   sha256 OK ($($actual.Substring(0,12))...)"
+    }
+}
+
+# 5. Write agent.yaml
+$cfgPath = Join-Path $DataDir "agent.yaml"
+Set-Content -Path $cfgPath -Value $manifest.config_template -Encoding UTF8
+Write-Host ">> wrote $cfgPath"
+
+# 6. Register services with Service Recovery
+$agentBin    = Join-Path $InstallDir "nocagent.exe"
+$watchdogBin = Join-Path $InstallDir "nocwatchdog.exe"
+$cfgArg      = "--config `"$cfgPath`""
+
+Write-Host ">> registering $AgentName"
+sc.exe create $AgentName binPath= "`"$agentBin`" $cfgArg" start= auto DisplayName= "86bit NOC Agent" | Out-Null
+sc.exe description $AgentName "Native NOC monitoring agent for the 86bit platform." | Out-Null
+sc.exe failure $AgentName reset= 86400 actions= restart/5000/restart/5000/restart/15000 | Out-Null
+
+Write-Host ">> registering $WatchdogName"
+sc.exe create $WatchdogName binPath= "`"$watchdogBin`" $cfgArg" start= auto DisplayName= "86bit NOC Watchdog" depend= $AgentName | Out-Null
+sc.exe description $WatchdogName "Supervises 86NocAgent and restarts it on hang or crash." | Out-Null
+sc.exe failure $WatchdogName reset= 86400 actions= restart/5000/restart/5000/restart/15000 | Out-Null
+
+# 7. Start services
+Write-Host ">> starting services"
+Start-Service -Name $AgentName
+Start-Service -Name $WatchdogName
+
+Start-Sleep -Seconds 3
+$ag = Get-Service -Name $AgentName
+$wd = Get-Service -Name $WatchdogName
+Write-Host ""
+Write-Host "Status:" -ForegroundColor Green
+Write-Host "  $AgentName    : $($ag.Status)"
+Write-Host "  $WatchdogName : $($wd.Status)"
+Write-Host ""
+Write-Host "Done. Verifica connessione su $BackendUrl/api/agents (richiede login admin)." -ForegroundColor Cyan
