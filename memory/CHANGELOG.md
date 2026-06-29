@@ -1,3 +1,90 @@
+# 2026-06-29 — NEW: Integrazione `portal.86bit.it` Datto Sites (cifrata)
+
+## Richiesta utente
+> "Queste sono le API per datto sono funzionanti:
+> https://portal.86bit.it/api/v1/reports/datto/getDattoSites?api_key=...&userId=...&fetchLive=true
+> Inserisci tutto criptato e controlla che i dati arrivino."
+
+## Implementazione
+
+### NUOVO `backend/routes/portal86_datto.py`
+Wrapper proxy verso il portal proprietario 86bit (gia' usato per
+Hornetsecurity VM Backup). Stesso pattern AES-GCM degli altri 3 integratori.
+
+**Storage** (`portal86_datto_config` singleton `_id="global"`):
+- `api_url` (default `https://portal.86bit.it/api/v1/reports/datto/getDattoSites`)
+- `api_key_enc` — cifrato AES-GCM via `security_manager.encrypt_credential`
+- `user_id_enc` — cifrato AES-GCM (anche il userId e' considerato segreto)
+- `enabled`, `last_polled_at`, `last_poll_status`, `last_poll_error`, `last_sites_count`
+
+**Endpoint registrati** (tutti `Depends(get_current_user)` + `require_admin`):
+- `GET    /api/admin/portal86-datto/config` — config con `api_key_masked`, `user_id_masked`
+- `PUT    /api/admin/portal86-datto/config` — salva cifrando api_key + user_id
+- `DELETE /api/admin/portal86-datto/config` — rimuove credenziali
+- `POST   /api/admin/portal86-datto/test-connection` — fetch live + preview primi 5 siti
+- `GET    /api/portal86-datto/sites?limit=N` — fetch live di tutti (o primi N) siti
+
+Registrato in `server.py` accanto a `datto_rmm_router`.
+
+### Vault_mismatch tolerance (lezione delle 3 sessioni precedenti)
+`_load_decrypted_config()` se decrypt fallisce:
+1. Imposta `last_poll_status: "vault_mismatch"`, `last_poll_error: <descrizione>`
+2. **Disabilita** la config (`enabled: False`) per evitare loop di chiamate
+3. Solleva `HTTPException(500, detail="vault_mismatch: ... Re-salva la config dalla UI.")`
+
+L'utente che re-salva via PUT setta automaticamente `enabled=True` e
+nuove credenziali cifrate con la chiave corrente.
+
+### Test E2E completo (in preview con credenziali reali)
+```
+[1] Config salvata cifrata in portal86_datto_config:
+    api_key_enc = v2:A3gixRSIijABGkA3ZzOzE6F/3XNla... [79 byte]
+    user_id_enc = v2:gLXxtkZAM9HLDJHPwKV7+tWIA5V7u... [75 byte]
+[2] Round-trip decrypt OK
+[3] GET portal.86bit.it → HTTP 200
+    success=True, count=153, sites_in_payload=153
+[4] Anteprima:
+    86BIT                  devices:  25 (on= 17 off=  8)
+    Arch.Bassani Valeria   devices:   1 (on=  1 off=  0)
+    Autociceri             devices:   2 (on=  2 off=  0)
+    Carrozzeria Manfredi   devices:   1 (on=  1 off=  0)
+    Cisana                 devices:  19 (on= 11 off=  8)
+[5] Totale siti con device attivi: 140/153
+```
+
+### Test pytest di regressione (6/6 PASSED)
+`backend/tests/test_portal86_datto.py`:
+- `test_load_config_raises_vault_mismatch_on_decrypt_failure` ✓
+- `test_load_config_raises_400_if_not_configured` ✓
+- `test_load_config_raises_400_if_disabled` ✓
+- `test_fetch_sites_parses_json_response` ✓
+- `test_mask_helper` ✓
+- `test_encrypt_decrypt_roundtrip` ✓
+
+### Endpoint registrati (verifica HTTP)
+```
+GET  /api/admin/portal86-datto/config         → 403 (auth richiesta)
+PUT  /api/admin/portal86-datto/config         → 403 (auth richiesta)
+POST /api/admin/portal86-datto/test-connection → 403 (auth richiesta)
+GET  /api/portal86-datto/sites                → 403 (auth richiesta)
+```
+
+## SICUREZZA
+- La API key e' stata incollata in chat → l'utente dovrebbe **ruotarla**
+  e re-incollarla nella UI di PROD via PUT.
+- Lato preview/dev: gia' salvata cifrata nel DB del container preview.
+- Lato PROD: dopo `git pull` + restart, basta fare:
+  ```
+  curl -X PUT https://argus.86bit.it/api/admin/portal86-datto/config \
+       -H "Authorization: Bearer <ADMIN_TOKEN>" \
+       -H "Content-Type: application/json" \
+       -d '{"api_key":"<NEW_KEY>","user_id":"5ec7affa4cdcd40b443d5c38"}'
+  ```
+  Poi: `curl https://argus.86bit.it/api/portal86-datto/sites -H "Authorization: Bearer ..."`
+
+---
+
+
 # 2026-06-29 — v4.25.4 hardening download: PE/size validation per ERROR_FILE_CORRUPT 1392
 
 ## Sintomo dall'utente (screenshot)
