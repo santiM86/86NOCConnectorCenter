@@ -6,7 +6,7 @@ import { toast } from "sonner";
 import {
   Plus, Trash, Buildings, EnvelopeSimple, Key, Copy, ArrowsClockwise,
   Globe, CaretRight, HardDrives, PlugsConnected, Bell, ShieldCheck,
-  WifiHigh, WifiSlash, DownloadSimple,
+  WifiHigh, WifiSlash, DownloadSimple, Cloud,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -143,6 +143,47 @@ export default function ClientsPage() {
     }
   };
 
+  // v2026-06-29: Sync Datto sites → managed_clients. Prima fa dry-run per
+  // mostrare anteprima (chiede conferma), poi se confermato applica.
+  // Non distruttivo: aggiorna solo i campi datto_* sui clienti esistenti.
+  const [dattoSyncing, setDattoSyncing] = useState(false);
+  const handleSyncDatto = async () => {
+    if (dattoSyncing) return;
+    setDattoSyncing(true);
+    try {
+      const dr = await axios.post(`${API}/portal86-datto/sync-to-clients?dry_run=true`);
+      const s = dr.data?.summary || {};
+      const confirmMsg =
+        `Sync Datto (anteprima):\n\n` +
+        `  • Da creare : ${s.to_create || 0}\n` +
+        `  • Da aggiornare : ${s.to_update || 0}\n` +
+        `  • Invariati : ${s.no_change || 0}\n` +
+        `  • Filtrati (sistema/vuoti) : ${s.filtered || 0}\n\n` +
+        `Procedere con l'applicazione?`;
+      if (!window.confirm(confirmMsg)) {
+        toast.info("Sync Datto annullata");
+        return;
+      }
+      const ap = await axios.post(`${API}/portal86-datto/sync-to-clients?dry_run=false`);
+      const r = ap.data?.summary || {};
+      toast.success(
+        `Sync Datto OK — creati ${r.to_create || 0}, aggiornati ${r.to_update || 0}, invariati ${r.no_change || 0}`
+      );
+      fetchClients();
+    } catch (e) {
+      const msg = e.response?.data?.detail || e.message;
+      if (String(msg).includes("non configurato")) {
+        toast.error("Sync Datto: configurazione mancante. Apri Impostazioni → Integrazioni Portal 86bit.");
+      } else if (String(msg).includes("vault_mismatch")) {
+        toast.error("Sync Datto: chiave vault ruotata. Re-salva la API key in Impostazioni.");
+      } else {
+        toast.error(`Sync Datto fallita: ${msg}`);
+      }
+    } finally {
+      setDattoSyncing(false);
+    }
+  };
+
   // Build overview map by client id
   const overviewMap = {};
   (overview.clients || []).forEach(c => { overviewMap[c.id] = c; });
@@ -176,7 +217,19 @@ export default function ClientsPage() {
             </div>
           )}
         </div>
-        <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+        <div className="flex items-center gap-2">
+          <Button
+            onClick={handleSyncDatto}
+            disabled={dattoSyncing}
+            variant="outline"
+            className="rounded-lg gap-1.5 text-xs h-8 border-[var(--bg-border)] text-[var(--text-primary)] hover:bg-indigo-600/10"
+            data-testid="sync-datto-btn"
+            title="Sincronizza i siti Datto dal portal 86bit. Mostra anteprima prima di applicare."
+          >
+            <Cloud size={14} className={dattoSyncing ? "animate-pulse" : ""} />
+            {dattoSyncing ? "Sync in corso..." : "Sync Datto"}
+          </Button>
+          <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
           <DialogTrigger asChild>
             <Button className="rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white gap-1.5 text-xs h-8" data-testid="add-client-btn">
               <Plus size={14} /> Nuovo Cliente
@@ -207,6 +260,7 @@ export default function ClientsPage() {
             </form>
           </DialogContent>
         </Dialog>
+        </div>
       </div>
 
       {/* Client List */}
@@ -277,6 +331,25 @@ export default function ClientsPage() {
                     <StatusPill icon={PlugsConnected} value={ov.connector_online === true ? "ON" : ov.connector_online === false ? "OFF" : "—"} color={ov.connector_online ? "#34C759" : ov.connector_online === false ? "#FF3B30" : "#555"} label="Conn." />
                     {/* Alerts */}
                     <StatusPill icon={Bell} value={ov.alerts?.total || 0} color={ov.alerts?.critical > 0 ? "#FF3B30" : ov.alerts?.total > 0 ? "#FF9500" : "#34C759"} label="Alert" />
+                    {/* Datto sync — visibile solo se il cliente e' Datto-linked */}
+                    {client.datto_site_uid && (
+                      <a
+                        href={client.datto_portal_url || "#"}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={(e) => e.stopPropagation()}
+                        className="pointer-events-auto"
+                        data-testid={`datto-pill-${client.id}`}
+                        title={`Apri sito Datto: ${client.name}${client.datto_last_sync_at ? `\nUltima sync: ${client.datto_last_sync_at}` : ""}`}
+                      >
+                        <StatusPill
+                          icon={Cloud}
+                          value={`${client.datto_devices_online ?? 0}/${client.datto_devices_total ?? 0}`}
+                          color={(client.datto_devices_offline ?? 0) > 0 ? "#FF9500" : "#34C759"}
+                          label="Datto"
+                        />
+                      </a>
+                    )}
                   </div>
 
                   {/* Connector Info — pointer-events-auto + z-10 per stare sopra il Link overlay */}

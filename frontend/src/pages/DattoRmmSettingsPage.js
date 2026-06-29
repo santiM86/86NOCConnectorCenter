@@ -255,6 +255,9 @@ export default function DattoRmmSettingsPage() {
               className="mt-1 h-9 text-xs font-mono"
               data-testid="datto-user-id-input"
             />
+            <p className="text-[10px] text-[var(--text-muted)] mt-1 leading-tight">
+              ObjectId Mongo del portal (24 hex). <span className="text-red-400">NON</span> l&apos;email.
+            </p>
           </div>
           <div className="md:col-span-2">
             <Label className="text-[10px] uppercase tracking-wider">Base URL (opzionale)</Label>
@@ -266,6 +269,10 @@ export default function DattoRmmSettingsPage() {
               className="mt-1 h-9 text-xs font-mono"
               data-testid="datto-base-url-input"
             />
+            <p className="text-[10px] text-[var(--text-muted)] mt-1 leading-tight">
+              Solo l&apos;endpoint, <span className="text-red-400">SENZA</span> <code className="text-amber-400">?api_key=...&amp;userId=...</code> — i parametri li aggiunge il backend automaticamente.
+              Endpoint corretto: <code className="text-cyan-400">/api/v1/reports/datto/getDattoDevices</code> (lista devices), non <code>getDattoSites</code>.
+            </p>
           </div>
         </div>
         <div className="flex items-center gap-2 pt-3 mt-3 border-t border-[var(--bg-border)]">

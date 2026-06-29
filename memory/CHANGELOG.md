@@ -1,3 +1,148 @@
+# 2026-06-29 — Fix Datto RMM Settings: validation USER ID + BASE URL + hint inline UI
+
+## Sintomo riportato dallo screenshot utente
+PROD `argus.86bit.it/settings/datto` mostrava errore "Test fallito @ fetch_devices [HTTPException]: API key o User ID non validi: il portal ha rifiutato l'autenticazione. Dettaglio: 401: Datto API ha risposto 401".
+
+## Root cause
+Compilando il form l'utente aveva inserito:
+1. **USER ID = `info@86bit.it`** (email) invece dell'ObjectId Mongo
+   `5ec7affa4cdcd40b443d5c38` richiesto dal portal 86bit.
+2. **BASE URL = `https://portal.86bit.it/api/v1/reports/datto/getDattoSites?api_key=...&userId=...`**
+   con query string giâ inclusa. Il backend `_fetch_devices_list_all()` aggiunge
+   `params={"api_key": ..., "userId": ..., "page": ..., "max": ...}` via httpx →
+   URL finale aveva 2 set di parametri → portal restituiva 401.
+3. **Endpoint sbagliato**: `getDattoSites` ritorna i SITI, non i devices.
+   Il backend chiama `_fetch_devices_list_all` che vuole `getDattoDevices`.
+
+Nessuna validation server-side prima del fix → l'errore appariva solo a runtime
+sul test connessione, senza spiegare cosa fosse sbagliato.
+
+## Fix server-side (`backend/routes/datto_rmm.py`)
+`PUT /api/admin/datto/config` ora rifiuta con **HTTP 400 e messaggio chiaro**:
+- USER ID con `@` → "USER ID non valido: hai inserito un'email. Il portal richiede
+  l'ObjectId Mongo (24 caratteri esadecimali, es. 5ec7affa4cdcd40b443d5c38)."
+- USER ID con caratteri non `[A-Za-z0-9_.\-]` → "USER ID contiene caratteri non validi"
+- BASE URL con `?` o `&` → "BASE URL non valida: non includere parametri ?api_key=
+  o &userId= — il backend li aggiunge automaticamente. Usa solo l'endpoint."
+
+## Fix UI (`frontend/src/pages/DattoRmmSettingsPage.js`)
+Aggiunti 2 hint inline grigi sotto i campi:
+- Sotto USER ID: "ObjectId Mongo del portal (24 hex). **NON** l'email."
+- Sotto BASE URL: "Solo l'endpoint, **SENZA** `?api_key=...&userId=...` — i parametri
+  li aggiunge il backend automaticamente. Endpoint corretto:
+  `/api/v1/reports/datto/getDattoDevices` (lista devices), non `getDattoSites`."
+
+## Test pytest (4/4 PASSED)
+`backend/tests/test_datto_config_validation.py`:
+- `test_user_id_with_email_rejected_with_clear_message` ✓
+- `test_base_url_with_query_string_rejected` ✓
+- `test_valid_payload_accepted` ✓ (ObjectId 24-hex + URL pulito)
+- `test_user_id_with_invalid_chars_rejected` ✓
+
+## Smoke screenshot preview
+Pagina `settings/datto` mostra:
+- USER ID = `5ec7affa4cdcd40b443d5c38` + hint rosso "NON l'email"
+- BASE URL = `getDattoDevices` (senza query) + hint "SENZA ?api_key=..."
+- Auto-sync attivo: **153 site, 1 cliente linkato, 25 device sincronizzati**
+- Mappatura: 86BIT_Office → 86BIT (25 device sync, 23/25 matched)
+
+## Steps utente per PROD
+1. Save to GitHub
+2. `cd /home/arslan/86NOCConnectorCenter && git pull origin main && sudo systemctl restart noc-backend`
+3. Hard refresh `argus.86bit.it/settings/datto` (Ctrl+Shift+R)
+4. Correggi il form:
+   - **API KEY**: lascia quella salvata (`****5c38` è già OK)
+   - **USER ID**: scrivi `5ec7affa4cdcd40b443d5c38` (NON l'email!)
+   - **BASE URL**: lascia vuoto (verrà usato il default `getDattoDevices`)
+     oppure scrivi: `https://portal.86bit.it/api/v1/reports/datto/getDattoDevices`
+     SENZA nient'altro dopo.
+5. "Salva (cifrata)" → "Test connessione" → deve dire "OK"
+
+---
+
+
+# 2026-06-29 — Sync Datto Sites → managed_clients + UI badge
+
+## Feature
+Endpoint **`POST /api/portal86-datto/sync-to-clients`** che importa/aggiorna i
+clienti NOC partendo dai 153 siti del portal 86bit.
+
+### Caratteristiche
+- **`dry_run=true`** (default): mostra anteprima senza scrivere a DB
+- **`dry_run=false`**: applica le modifiche
+- **`create_missing=true`** (default): crea i clienti mancanti
+- **`skip_system_sites=true`** (default): filtra container Datto interni
+  `Managed`, `OnDemand`, `Deleted Devices`
+- **`skip_empty=true`** (default): filtra siti con 0 device (placeholder)
+
+### Matching strategy (ordine priorita')
+1. `datto_site_uid` gia' presente sul cliente NOC (re-link sicuro)
+2. nome normalizzato (lower + collapse whitespace) uguale
+3. nessun match → create nuovo cliente
+
+### Garanzie
+- **Non distruttivo**: mai cancella clienti, mai tocca `name`/`description`/
+  `api_key` dell'utente. Aggiorna solo i campi `datto_*` e `autotask_*`.
+- **Idempotente**: re-sync di un DB gia' sincronizzato ritorna
+  `to_create=0, to_update=0, no_change=N` (verificato).
+- **Audit**: ogni sync con apply scrive su `audit` logger.
+
+### Campi aggiunti a `clients` (e a `ClientResponse` model)
+- `datto_site_id` (int)
+- `datto_site_uid` (str)
+- `datto_account_uid` (str)
+- `datto_portal_url` (str — link diretto a Datto RMM)
+- `datto_devices_total` / `_online` / `_offline` (int)
+- `datto_on_demand` / `datto_splashtop_auto_install` (bool)
+- `autotask_company_name` / `autotask_company_id`
+- `datto_last_sync_at` (ISO 8601)
+
+## UI — ClientsPage.js
+- NUOVO bottone **"Sync Datto"** in header (icona `Cloud` di Phosphor)
+  vicino a "Nuovo Cliente". Click → dry-run + window.confirm di anteprima
+  con conteggi → POST live → toast con risultato → refetch clienti.
+- NUOVO pill **"Datto X/Y"** nelle card desktop, visibile solo se
+  `client.datto_site_uid` presente. Click → apre `datto_portal_url` in
+  nuovo tab (link diretto al sito Datto RMM).
+- data-testid: `sync-datto-btn` + `datto-pill-{client.id}`.
+
+## Test E2E (preview, credenziali reali)
+```
+[0] Clienti pre-sync : 1
+=== DRY RUN con filtri default ===
+  fetched     : 153 siti
+  to_create   : 140
+  to_update   : 0
+  no_change   : 0
+  filtered    : 13   (Managed/OnDemand/Deleted Devices + 10 siti vuoti)
+=== APPLY ===
+  → to_create=140, to_update=0, no_change=0, filtered=13
+=== APPLY #2 (idempotency) ===
+  → to_create=0, to_update=0, no_change=140, filtered=13
+  ✓ IDEMPOTENTE
+[4] DB finale: 141 clienti, di cui 140 Datto-linked
+```
+
+## Smoke screenshot UI
+- Bottone "Sync Datto" visibile in header
+- 140 pill "Datto X/Y" su 141 card cliente
+- Esempi: 86BIT 18/25, Cisana 12/19, EuroPizzi 43/69 (link al portalUrl)
+
+## File modificati
+- `backend/routes/portal86_datto.py` (+165 righe — sync endpoint + filtri)
+- `backend/models.py` (+10 campi opzionali in `ClientResponse`)
+- `frontend/src/pages/ClientsPage.js` (handleSyncDatto + Cloud icon + pill datto)
+
+## Steps PROD
+1. Save to GitHub
+2. `cd /home/arslan/86NOCConnectorCenter && git pull origin main && sudo systemctl restart noc-backend`
+3. Hard refresh argus.86bit.it
+4. PUT `/api/admin/portal86-datto/config` con la API key (vedi CHANGELOG precedente)
+5. Click su nuovo bottone "Sync Datto" → conferma → 140+ clienti importati
+
+---
+
+
 # 2026-06-29 — NEW: Integrazione `portal.86bit.it` Datto Sites (cifrata)
 
 ## Richiesta utente
