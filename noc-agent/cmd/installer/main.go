@@ -43,7 +43,7 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-var Version = "4.25.3"
+var Version = "4.25.4"
 
 const (
 	platform     = "windows-amd64"
@@ -344,6 +344,11 @@ func fetchManifest(c cliCfg) (*manifest, error) {
 	return &m, nil
 }
 
+// minBinarySize: floor reasonable size per binari agent (~8MB di base,
+// blocchiamo errori di download silenziosi che producono file 0-byte
+// o pagine HTML di redirect/error servite con HTTP 200).
+const minBinarySize = 500 * 1024 // 500 KB
+
 func downloadFile(c cliCfg, name, dst, expectedSHA string) error {
 	url := fmt.Sprintf("%s/api/agent/binary/%s/%s?token=%s", c.backend, platform, name, c.token)
 	resp, err := httpClient.Get(url)
@@ -352,7 +357,8 @@ func downloadFile(c cliCfg, name, dst, expectedSHA string) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("HTTP %d", resp.StatusCode)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return fmt.Errorf("HTTP %d on %s: %s", resp.StatusCode, name, strings.TrimSpace(string(body)))
 	}
 	tmp := dst + ".tmp"
 	f, err := os.Create(tmp)
@@ -360,22 +366,65 @@ func downloadFile(c cliCfg, name, dst, expectedSHA string) error {
 		return err
 	}
 	hasher := sha256.New()
-	if _, err := io.Copy(io.MultiWriter(f, hasher), resp.Body); err != nil {
-		f.Close()
+	n, err := io.Copy(io.MultiWriter(f, hasher), resp.Body)
+	f.Close()
+	if err != nil {
 		os.Remove(tmp)
 		return err
 	}
-	f.Close()
+
+	// 1) Validazione SHA256 se il manifest l'ha fornito
 	if expectedSHA != "" {
 		got := hex.EncodeToString(hasher.Sum(nil))
 		if !strings.EqualFold(got, expectedSHA) {
 			os.Remove(tmp)
-			return fmt.Errorf("sha256 mismatch (expected %s, got %s)", expectedSHA, got)
+			return fmt.Errorf("sha256 mismatch su %s (expected %s, got %s)", name, expectedSHA, got)
 		}
 	}
+
+	// 2) Validazione dimensione minima (binari Go agent ~8MB, mai meno di 500KB).
+	// Evita che HTTP 200 con body HTML di error page / 0-byte producano file
+	// che poi sc.exe rifiuta con ERROR_FILE_CORRUPT (1392).
+	if n < minBinarySize {
+		os.Remove(tmp)
+		return fmt.Errorf("download %s troppo piccolo (%d byte < %d), probabile errore di proxy/CDN", name, n, minBinarySize)
+	}
+
+	// 3) Validazione PE header (MZ): se il body e' HTML o testo di errore,
+	// l'header non sara' 'MZ' e sc.exe fallirebbe con 1392. Meglio bloccare qui.
+	if err := validatePEHeader(tmp); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("validazione PE %s: %w", name, err)
+	}
+
+	// Rinomina tmp -> dst (atomic su NTFS)
 	if err := os.Rename(tmp, dst); err != nil {
 		os.Remove(tmp)
 		return err
+	}
+
+	// 4) Pulizia MOTW: rimuovi Zone.Identifier ADS se presente (es. quando il
+	// reverse proxy serve i binari con Content-Disposition attachment e
+	// SmartScreen aggiunge MOTW). Best-effort: silenzioso se non esiste.
+	_ = os.Remove(dst + ":Zone.Identifier")
+	return nil
+}
+
+// validatePEHeader verifica che il file inizi con la signature 'MZ' (0x4D5A),
+// caratteristica di tutti i PE Windows. Cosi' un file HTML o vuoto viene
+// scartato subito invece di propagare l'errore al servizio Windows.
+func validatePEHeader(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	var head [2]byte
+	if _, err := io.ReadFull(f, head[:]); err != nil {
+		return fmt.Errorf("impossibile leggere header: %w", err)
+	}
+	if head[0] != 'M' || head[1] != 'Z' {
+		return fmt.Errorf("signature PE non valida (atteso 'MZ', trovato 0x%02x%02x): il backend probabilmente ha servito una error page invece del binario", head[0], head[1])
 	}
 	return nil
 }
