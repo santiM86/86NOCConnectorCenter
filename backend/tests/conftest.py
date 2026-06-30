@@ -37,5 +37,5 @@ _load_env_file("/app/frontend/.env")
 # Default sicuro per i test che chiamano l'API HTTP esterna
 os.environ.setdefault(
     "REACT_APP_BACKEND_URL",
-    "https://snmp-guardian.preview.emergentagent.com",
+    "https://network-monitor-pro.preview.emergentagent.com",
 )

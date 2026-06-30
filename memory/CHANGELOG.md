@@ -1,467 +1,45 @@
-# 2026-06-29 — Datto RMM Sync: fix HTTP 500 isolato per device + diagnostico match-debug
-
-## Sintomi screenshot PROD
-- Cache popolata: 153 site, 40 device Datto Galvan persistiti
-- ❌ Toast "Sync fallito: Request failed with status code 500"
-- ❌ Galvan: 40 dev / **0 match** (i MAC Datto non combaciano con discovered_endpoints)
-
-## Root cause #1 (HTTP 500 sul sync)
-In `_refresh_sites_cache` il ciclo `asyncio.gather(*tasks, return_exceptions=False)`
-propagava qualsiasi eccezione di UN singolo device facendo crashare l'intero
-sync. Cause tipiche:
-- `_fetch_device_audit_raw` httpx timeout su 1 device su 982
-- `_extract_nics` su schema NIC inatteso
-- `_encrypt_blob` su payload con caratteri non UTF-8
-
-## Fix #1: error isolation per device
-`return_exceptions=True` + log per device + continue del batch:
-```python
-results = await asyncio.gather(*tasks, return_exceptions=True)
-persisted: list[dict] = []
-failed = 0
-for r in results:
-    if isinstance(r, Exception):
-        failed += 1
-        logger.warning("[datto-sync] device process failed ...")
-        continue
-    if r: persisted.append(r)
-```
-Un device problematico non rompe più i restanti 981.
-
-## Root cause #2 (40 dev / 0 match)
-Possibili cause con probabilità diverse:
-- **(A)** Connector LAN scanner del cliente NON attivo o non sta scoprendo nulla → 0 discovered_endpoints per il client_id
-- **(B)** Switch ritornano solo IP senza MAC nelle FDB → match MAC impossibile
-- **(C)** Audit endpoint Datto non restituisce NIC info → datto_devices con `mac=""`
-- **(D)** Formati MAC differenti (improbabile, `_norm_mac` normalizza tutto)
-- **(E)** VLAN differenti: Datto vede device su rete VPN/Wifi, scanner vede LAN cablata
-
-## Fix #2: NUOVO endpoint diagnostico `GET /api/admin/datto/match-debug/{client_id}`
-Spiega ESATTAMENTE qual è la causa del 0 match. Ritorna:
-```json
-{
-  "datto_devices_persisted": 40,
-  "datto_devices_with_mac": 0,           ← se 0 → causa (C)
-  "datto_devices_without_mac": 40,
-  "datto_devices_with_ip": 40,
-  "discovered_endpoints_total": 0,       ← se 0 → causa (A)
-  "discovered_endpoints_with_mac": 0,
-  "discovered_endpoints_with_ip": 0,
-  "intersection_mac": 0,
-  "intersection_ip": 0,
-  "sample_datto_no_mac": ["SRVDC", "PC01", ...],
-  "sample_eps_with_mac": [...],
-  "diagnosis": "🔴 (A) Il client ha 0 discovered_endpoints. Il connector
-                LAN scanner non sta scoprendo MAC/IP dagli switch del cliente.
-                Verifica: (1) connector ONLINE, (2) switch in scan list,
-                (3) connector ha lanciato almeno 1 scan."
-}
-```
-
-## Logging in `_match_with_center`
-Ora ogni chiamata logga il match summary:
-```
-[datto-match] client=galvan-id: eps=120 (mac=80, ip=120) datto=40 (mac=35, ip=40)
-```
-Cosi' dal `journalctl -u noc-backend` si vede a colpo d'occhio dove sta lo squilibrio.
-
-## Test pytest (7/7 PASSED)
-- `test_match_debug_diagnoses_zero_endpoints` ✓ (caso A)
-- `test_match_debug_diagnoses_no_mac_in_datto` ✓ (caso C)
-- `test_match_debug_diagnoses_intersection_ok` ✓ (✅ allineato)
-- 4 test pre-esistenti `test_datto_config_validation.py` ✓
-
-## Steps PROD per debug "40 dev / 0 match" Galvan
-1. `git pull origin main && sudo systemctl restart noc-backend`
-2. Re-sync Galvan: dal browser, su Argus aperto, prendi il token JWT dal localStorage
-   chiave `token` (es. via DevTools Console: `localStorage.getItem('token')`),
-   poi:
-   ```bash
-   GALVAN_ID="<id-cliente-Galvan>"  # lo trovi in URL della pagina client o in DB
-   TOK="<jwt-token>"
-   curl -s "https://argus.86bit.it/api/admin/datto/match-debug/$GALVAN_ID" \
-        -H "Authorization: Bearer $TOK" | python3 -m json.tool
-   ```
-3. Il campo `diagnosis` ti dice esattamente cosa fixare.
-
-## File modificati
-- `backend/routes/datto_rmm.py` (+105 righe: error isolation + match-debug endpoint + logging)
-- `backend/tests/test_datto_match_debug.py` (NUOVO, 3 test di regressione)
-
----
-
-
-# 2026-06-29 — Fix Datto RMM Settings: validation USER ID + BASE URL + hint inline UI
-
-## Sintomo riportato dallo screenshot utente
-PROD `argus.86bit.it/settings/datto` mostrava errore "Test fallito @ fetch_devices [HTTPException]: API key o User ID non validi: il portal ha rifiutato l'autenticazione. Dettaglio: 401: Datto API ha risposto 401".
-
-## Root cause
-Compilando il form l'utente aveva inserito:
-1. **USER ID = `info@86bit.it`** (email) invece dell'ObjectId Mongo
-   `5ec7affa4cdcd40b443d5c38` richiesto dal portal 86bit.
-2. **BASE URL = `https://portal.86bit.it/api/v1/reports/datto/getDattoSites?api_key=...&userId=...`**
-   con query string giâ inclusa. Il backend `_fetch_devices_list_all()` aggiunge
-   `params={"api_key": ..., "userId": ..., "page": ..., "max": ...}` via httpx →
-   URL finale aveva 2 set di parametri → portal restituiva 401.
-3. **Endpoint sbagliato**: `getDattoSites` ritorna i SITI, non i devices.
-   Il backend chiama `_fetch_devices_list_all` che vuole `getDattoDevices`.
-
-Nessuna validation server-side prima del fix → l'errore appariva solo a runtime
-sul test connessione, senza spiegare cosa fosse sbagliato.
-
-## Fix server-side (`backend/routes/datto_rmm.py`)
-`PUT /api/admin/datto/config` ora rifiuta con **HTTP 400 e messaggio chiaro**:
-- USER ID con `@` → "USER ID non valido: hai inserito un'email. Il portal richiede
-  l'ObjectId Mongo (24 caratteri esadecimali, es. 5ec7affa4cdcd40b443d5c38)."
-- USER ID con caratteri non `[A-Za-z0-9_.\-]` → "USER ID contiene caratteri non validi"
-- BASE URL con `?` o `&` → "BASE URL non valida: non includere parametri ?api_key=
-  o &userId= — il backend li aggiunge automaticamente. Usa solo l'endpoint."
-
-## Fix UI (`frontend/src/pages/DattoRmmSettingsPage.js`)
-Aggiunti 2 hint inline grigi sotto i campi:
-- Sotto USER ID: "ObjectId Mongo del portal (24 hex). **NON** l'email."
-- Sotto BASE URL: "Solo l'endpoint, **SENZA** `?api_key=...&userId=...` — i parametri
-  li aggiunge il backend automaticamente. Endpoint corretto:
-  `/api/v1/reports/datto/getDattoDevices` (lista devices), non `getDattoSites`."
-
-## Test pytest (4/4 PASSED)
-`backend/tests/test_datto_config_validation.py`:
-- `test_user_id_with_email_rejected_with_clear_message` ✓
-- `test_base_url_with_query_string_rejected` ✓
-- `test_valid_payload_accepted` ✓ (ObjectId 24-hex + URL pulito)
-- `test_user_id_with_invalid_chars_rejected` ✓
-
-## Smoke screenshot preview
-Pagina `settings/datto` mostra:
-- USER ID = `5ec7affa4cdcd40b443d5c38` + hint rosso "NON l'email"
-- BASE URL = `getDattoDevices` (senza query) + hint "SENZA ?api_key=..."
-- Auto-sync attivo: **153 site, 1 cliente linkato, 25 device sincronizzati**
-- Mappatura: 86BIT_Office → 86BIT (25 device sync, 23/25 matched)
-
-## Steps utente per PROD
-1. Save to GitHub
-2. `cd /home/arslan/86NOCConnectorCenter && git pull origin main && sudo systemctl restart noc-backend`
-3. Hard refresh `argus.86bit.it/settings/datto` (Ctrl+Shift+R)
-4. Correggi il form:
-   - **API KEY**: lascia quella salvata (`****5c38` è già OK)
-   - **USER ID**: scrivi `5ec7affa4cdcd40b443d5c38` (NON l'email!)
-   - **BASE URL**: lascia vuoto (verrà usato il default `getDattoDevices`)
-     oppure scrivi: `https://portal.86bit.it/api/v1/reports/datto/getDattoDevices`
-     SENZA nient'altro dopo.
-5. "Salva (cifrata)" → "Test connessione" → deve dire "OK"
-
----
-
-
-# 2026-06-29 — Sync Datto Sites → managed_clients + UI badge
-
-## Feature
-Endpoint **`POST /api/portal86-datto/sync-to-clients`** che importa/aggiorna i
-clienti NOC partendo dai 153 siti del portal 86bit.
-
-### Caratteristiche
-- **`dry_run=true`** (default): mostra anteprima senza scrivere a DB
-- **`dry_run=false`**: applica le modifiche
-- **`create_missing=true`** (default): crea i clienti mancanti
-- **`skip_system_sites=true`** (default): filtra container Datto interni
-  `Managed`, `OnDemand`, `Deleted Devices`
-- **`skip_empty=true`** (default): filtra siti con 0 device (placeholder)
-
-### Matching strategy (ordine priorita')
-1. `datto_site_uid` gia' presente sul cliente NOC (re-link sicuro)
-2. nome normalizzato (lower + collapse whitespace) uguale
-3. nessun match → create nuovo cliente
-
-### Garanzie
-- **Non distruttivo**: mai cancella clienti, mai tocca `name`/`description`/
-  `api_key` dell'utente. Aggiorna solo i campi `datto_*` e `autotask_*`.
-- **Idempotente**: re-sync di un DB gia' sincronizzato ritorna
-  `to_create=0, to_update=0, no_change=N` (verificato).
-- **Audit**: ogni sync con apply scrive su `audit` logger.
-
-### Campi aggiunti a `clients` (e a `ClientResponse` model)
-- `datto_site_id` (int)
-- `datto_site_uid` (str)
-- `datto_account_uid` (str)
-- `datto_portal_url` (str — link diretto a Datto RMM)
-- `datto_devices_total` / `_online` / `_offline` (int)
-- `datto_on_demand` / `datto_splashtop_auto_install` (bool)
-- `autotask_company_name` / `autotask_company_id`
-- `datto_last_sync_at` (ISO 8601)
-
-## UI — ClientsPage.js
-- NUOVO bottone **"Sync Datto"** in header (icona `Cloud` di Phosphor)
-  vicino a "Nuovo Cliente". Click → dry-run + window.confirm di anteprima
-  con conteggi → POST live → toast con risultato → refetch clienti.
-- NUOVO pill **"Datto X/Y"** nelle card desktop, visibile solo se
-  `client.datto_site_uid` presente. Click → apre `datto_portal_url` in
-  nuovo tab (link diretto al sito Datto RMM).
-- data-testid: `sync-datto-btn` + `datto-pill-{client.id}`.
-
-## Test E2E (preview, credenziali reali)
-```
-[0] Clienti pre-sync : 1
-=== DRY RUN con filtri default ===
-  fetched     : 153 siti
-  to_create   : 140
-  to_update   : 0
-  no_change   : 0
-  filtered    : 13   (Managed/OnDemand/Deleted Devices + 10 siti vuoti)
-=== APPLY ===
-  → to_create=140, to_update=0, no_change=0, filtered=13
-=== APPLY #2 (idempotency) ===
-  → to_create=0, to_update=0, no_change=140, filtered=13
-  ✓ IDEMPOTENTE
-[4] DB finale: 141 clienti, di cui 140 Datto-linked
-```
-
-## Smoke screenshot UI
-- Bottone "Sync Datto" visibile in header
-- 140 pill "Datto X/Y" su 141 card cliente
-- Esempi: 86BIT 18/25, Cisana 12/19, EuroPizzi 43/69 (link al portalUrl)
-
-## File modificati
-- `backend/routes/portal86_datto.py` (+165 righe — sync endpoint + filtri)
-- `backend/models.py` (+10 campi opzionali in `ClientResponse`)
-- `frontend/src/pages/ClientsPage.js` (handleSyncDatto + Cloud icon + pill datto)
-
-## Steps PROD
-1. Save to GitHub
-2. `cd /home/arslan/86NOCConnectorCenter && git pull origin main && sudo systemctl restart noc-backend`
-3. Hard refresh argus.86bit.it
-4. PUT `/api/admin/portal86-datto/config` con la API key (vedi CHANGELOG precedente)
-5. Click su nuovo bottone "Sync Datto" → conferma → 140+ clienti importati
-
----
-
-
-# 2026-06-29 — NEW: Integrazione `portal.86bit.it` Datto Sites (cifrata)
+# 2026-06-25 — Setup GUI dedicato + fix errore 1392 (file corrotto) installer
 
 ## Richiesta utente
-> "Queste sono le API per datto sono funzionanti:
-> https://portal.86bit.it/api/v1/reports/datto/getDattoSites?api_key=...&userId=...&fetchLive=true
-> Inserisci tutto criptato e controlla che i dati arrivino."
+«Dobbiamo avere un setup GUI come era prima dedicato per installazione… deve
+installare sempre l'ultima versione.» Screenshot: console installer
+(nocinstall.exe) fallisce con errore Windows **1392 ERROR_FILE_CORRUPT**
+all'avvio di 86NocAgent.
 
-## Implementazione
+## Causa root del 1392
+I binari Windows `noc-agent/build/bin/windows-amd64/*.exe` sono COMMITTATI in
+git (build stantia v4.13, 13 mag) e presenti anche in PROD. L'endpoint
+`/api/agent/binary/windows-amd64/{name}` serviva QUESTI file vecchi, mentre il
+manifest dichiarava v4.25.2. Risultato: installazioni di un binario vecchio/
+incoerente → 1392 all'avvio servizio. Inoltre lo SHA256 del manifest era
+calcolato dal binario locale stantio (≠ binario servito dalla release) →
+verifica d'integrità di fatto disabilitata.
 
-### NUOVO `backend/routes/portal86_datto.py`
-Wrapper proxy verso il portal proprietario 86bit (gia' usato per
-Hornetsecurity VM Backup). Stesso pattern AES-GCM degli altri 3 integratori.
+## Fix (4 punti)
+1. **`download_binary` (agent_ws.py)**: per `windows-amd64` reindirizza SEMPRE
+   (302) al proxy `/api/agent-builds/{latest}/{name}` → console-installer, script
+   CLI e wizard installano TUTTI l'ultima release. Stop ai binari locali stantii.
+2. **`install_manifest`**: SHA256 ora preso dal `SHA256SUMS.txt` della release
+   risolta (`_release_sha256_map`), coerente coi binari serviti. Verificato:
+   manifest sha == release sha (5d2f5576… per nocagent.exe v4.25.2).
+3. **Wizard GUI (`installer_gui.ps1.template`)**: nuova `Verify-DownloadedBinary`
+   chiamata dopo ogni download/copia — controlla header PE "MZ", dimensione
+   minima (>500KB) e SHA256 (se presente nel manifest). Un download corrotto
+   ora si ferma con messaggio chiaro PRIMA di registrare il servizio (no 1392).
+4. **Console installer Go (`cmd/installer/main.go`)**: stesso check PE+size come
+   rete di sicurezza dopo lo SHA.
 
-**Storage** (`portal86_datto_config` singleton `_id="global"`):
-- `api_url` (default `https://portal.86bit.it/api/v1/reports/datto/getDattoSites`)
-- `api_key_enc` — cifrato AES-GCM via `security_manager.encrypt_credential`
-- `user_id_enc` — cifrato AES-GCM (anche il userId e' considerato segreto)
-- `enabled`, `last_polled_at`, `last_poll_status`, `last_poll_error`, `last_sites_count`
+## UI (`ClientsPage.js`)
+- **Wizard GUI** reso pulsante PRIMARIO evidenziato: "Setup GUI v{latest}"
+  (emerald, → `wizard-bundle.zip`). Installa sempre l'ultima versione dal manifest.
+- "Setup .exe" console DECLASSATO a "Setup .exe (CLI)" (stile muted, fallback AV).
 
-**Endpoint registrati** (tutti `Depends(get_current_user)` + `require_admin`):
-- `GET    /api/admin/portal86-datto/config` — config con `api_key_masked`, `user_id_masked`
-- `PUT    /api/admin/portal86-datto/config` — salva cifrando api_key + user_id
-- `DELETE /api/admin/portal86-datto/config` — rimuove credenziali
-- `POST   /api/admin/portal86-datto/test-connection` — fetch live + preview primi 5 siti
-- `GET    /api/portal86-datto/sites?limit=N` — fetch live di tutti (o primi N) siti
-
-Registrato in `server.py` accanto a `datto_rmm_router`.
-
-### Vault_mismatch tolerance (lezione delle 3 sessioni precedenti)
-`_load_decrypted_config()` se decrypt fallisce:
-1. Imposta `last_poll_status: "vault_mismatch"`, `last_poll_error: <descrizione>`
-2. **Disabilita** la config (`enabled: False`) per evitare loop di chiamate
-3. Solleva `HTTPException(500, detail="vault_mismatch: ... Re-salva la config dalla UI.")`
-
-L'utente che re-salva via PUT setta automaticamente `enabled=True` e
-nuove credenziali cifrate con la chiave corrente.
-
-### Test E2E completo (in preview con credenziali reali)
-```
-[1] Config salvata cifrata in portal86_datto_config:
-    api_key_enc = v2:A3gixRSIijABGkA3ZzOzE6F/3XNla... [79 byte]
-    user_id_enc = v2:gLXxtkZAM9HLDJHPwKV7+tWIA5V7u... [75 byte]
-[2] Round-trip decrypt OK
-[3] GET portal.86bit.it → HTTP 200
-    success=True, count=153, sites_in_payload=153
-[4] Anteprima:
-    86BIT                  devices:  25 (on= 17 off=  8)
-    Arch.Bassani Valeria   devices:   1 (on=  1 off=  0)
-    Autociceri             devices:   2 (on=  2 off=  0)
-    Carrozzeria Manfredi   devices:   1 (on=  1 off=  0)
-    Cisana                 devices:  19 (on= 11 off=  8)
-[5] Totale siti con device attivi: 140/153
-```
-
-### Test pytest di regressione (6/6 PASSED)
-`backend/tests/test_portal86_datto.py`:
-- `test_load_config_raises_vault_mismatch_on_decrypt_failure` ✓
-- `test_load_config_raises_400_if_not_configured` ✓
-- `test_load_config_raises_400_if_disabled` ✓
-- `test_fetch_sites_parses_json_response` ✓
-- `test_mask_helper` ✓
-- `test_encrypt_decrypt_roundtrip` ✓
-
-### Endpoint registrati (verifica HTTP)
-```
-GET  /api/admin/portal86-datto/config         → 403 (auth richiesta)
-PUT  /api/admin/portal86-datto/config         → 403 (auth richiesta)
-POST /api/admin/portal86-datto/test-connection → 403 (auth richiesta)
-GET  /api/portal86-datto/sites                → 403 (auth richiesta)
-```
-
-## SICUREZZA
-- La API key e' stata incollata in chat → l'utente dovrebbe **ruotarla**
-  e re-incollarla nella UI di PROD via PUT.
-- Lato preview/dev: gia' salvata cifrata nel DB del container preview.
-- Lato PROD: dopo `git pull` + restart, basta fare:
-  ```
-  curl -X PUT https://argus.86bit.it/api/admin/portal86-datto/config \
-       -H "Authorization: Bearer <ADMIN_TOKEN>" \
-       -H "Content-Type: application/json" \
-       -d '{"api_key":"<NEW_KEY>","user_id":"5ec7affa4cdcd40b443d5c38"}'
-  ```
-  Poi: `curl https://argus.86bit.it/api/portal86-datto/sites -H "Authorization: Bearer ..."`
-
----
-
-
-# 2026-06-29 — v4.25.4 hardening download: PE/size validation per ERROR_FILE_CORRUPT 1392
-
-## Sintomo dall'utente (screenshot)
-Installer v4.25.2 (vecchio binario, fix ruolo non ancora deployato in PROD) → conferma "Procedere?" → step [8/8] Avvio servizi fallisce con:
-```
-sc.exe start 86NocAgent: exit status 1392
-La directory o il file e' danneggiato e illeggibile.
-```
-Watchdog poi non parte (status 1068 = "dependency failed") perche' dipende dal master.
-
-## Root cause analisi
-ERROR_FILE_CORRUPT (1392) lanciato da `sc.exe start` significa che `nocagent.exe`
-nel target dir non e' un PE valido. Cause probabili:
-1. Manifest backend non ha SHA256 per quel binario → installer scarica silenziosamente
-   anche se il body e' una error page HTML (HTTP 200 dal proxy `/api/agent-builds`).
-2. Windows Defender / SmartScreen ha quarantinato post-install.
-3. File 0-byte da CDN scaduto / token revocato.
-
-Il v4.25.2 (e v4.25.3 prima del fix corrente) accettava il download silenziosamente
-se SHA256 era vuoto, propagando il file rotto fino a `sc.exe start`.
-
-## Fix applicato in `cmd/installer/main.go`
-1. **Size floor**: tutti i binari sotto 500KB sono rifiutati con errore esplicito
-   ("download X troppo piccolo (Y byte), probabile errore di proxy/CDN").
-2. **PE header check**: nuovo helper `validatePEHeader(path)` che legge i primi 2
-   byte e verifica la signature 'MZ'. Se manca → errore chiaro:
-   "signature PE non valida (atteso 'MZ', trovato 0x??): il backend ha servito una
-    error page invece del binario".
-3. **HTTP non-200**: il body (max 512 byte) viene incluso nel messaggio d'errore,
-   cosi' si vede subito se il backend ha restituito JSON di errore o HTML.
-4. **MOTW cleanup**: best-effort `os.Remove(dst + ":Zone.Identifier")` per
-   rimuovere ADS che potrebbe essere stato aggiunto da SmartScreen in reverse
-   proxy con `Content-Disposition: attachment`.
-
-## Bumped to v4.25.4
-- `Version = "4.25.4"` in `cmd/installer/main.go`
-- Cross-compile: `GOOS=windows GOARCH=amd64 go build ... -ldflags "-X main.Version=4.25.4"` → 6.1 MB PE ✓
-- `_resolve_version("latest")` → v4.25.4 automatic
-- SHA256SUMS.txt rigenerato
-
-## Beneficio per troubleshooting futuro
-Se l'utente ri-lancia il setup.exe e vede ancora 1392, ora avra' un MessageBox
-chiaro che dice "validazione PE nocagent.exe: signature PE non valida (atteso
-'MZ', trovato 0x3c21)" → diagnosi immediata che il backend sta servendo HTML
-(0x3c21 = '<!') invece del binario. Diventa subito chiaro che:
-- Il token GitHub e' scaduto/revocato
-- O la GitHub Release non esiste
-- O il proxy `/api/agent-builds/...` ha un bug
-
-Senza il fix l'errore appariva DOPO al boot del servizio Windows, perdendo info.
-
-## Steps utente per PROD
-1. **Save to GitHub**
-2. `cd /home/arslan/86NOCConnectorCenter && git pull origin main && sudo systemctl restart noc-backend`
-3. Hard refresh `argus.86bit.it` (Ctrl+Shift+R)
-4. Dalla UI Clienti scarica un NUOVO Setup .exe (titolo dialog dira' "v4.25.4")
-5. Se ancora 1392 → ora vedrai esattamente quale file e' rotto e perche'
-
----
-
-
-# 2026-06-29 — 🔥 HOTFIX P0 Setup .exe: prompt MASTER/SCANNER nella GUI dell'installer
-
-## Problema riportato dall'utente
-> "non riesco ad avere un installer funzionante GUI con master o client da installare su nuovo cliente"
-
-## Root cause (3 bug nell'installer Go `cmd/installer/main.go`)
-1. `readSidecar()` leggeva SOLO `TOKEN=` e `BACKEND=` dal `nocinstall.cfg` →
-   **ignorava completamente `ROLE=` scritto dal backend** in
-   `install_setup.py`.
-2. `parseFlags()` non aveva il flag `-role` → impossibile passare il ruolo
-   da CLI.
-3. **Nessun MessageBox** chiedeva master/scanner all'utente: la GUI
-   mostrava solo "Procedere?" e poi il summary finale. Il ruolo finale
-   arrivava SEMPRE dal manifest server-side via `agent_tokens.role` (di
-   default `master`), quindi lo zip "Setup .exe (Scanner)" generava
-   comunque un master.
-
-Risultato pratico: i 3 bottoni del menu a tendina (GUI / Master / Scanner)
-nella ClientsPage producevano TUTTI lo stesso comportamento (= master).
-
-## Fix
-File: `noc-agent/cmd/installer/main.go` (v4.25.2 → **v4.25.3**)
-
-1. `cliCfg` esteso con `role string`.
-2. `parseFlags()` accetta `--role master|scanner` (vuoto = chiede via
-   GUI).
-3. `readSidecar()` ora ritorna 4 valori `(token, backend, role, ok)` e
-   parsa anche `ROLE=` dal cfg.
-4. **NUOVO**: subito dopo aver acquisito token+backend, se `role` e' ancora
-   vuoto e non siamo in silent, l'installer mostra un MessageBox
-   `MB_YESNOCANCEL`:
-     - **Si'** → master
-     - **No** → scanner
-     - **Annulla** → exit 0 pulito
-5. Il MessageBox di conferma "Procedere con l'installazione?" ora mostra
-   anche il ruolo scelto (es. `Ruolo: SCANNER`).
-6. `fetchManifest()` appende `&role=<master|scanner>` alla URL del
-   manifest, cosi' il backend lo onora invece di default-are a master.
-7. Aggiunte constants Win32: `mbYesNoCancel = 0x03`, `idCancel = 2`,
-   `idNo = 7`.
-8. `Version` bumped a `4.25.3`.
-
-## Validazione in container
-- `go vet ./cmd/installer/` → OK (no errori statici)
-- `GOOS=windows GOARCH=amd64 go build -ldflags "-X main.Version=4.25.3"
-  -o backend/static/release-bin/v4.25.3/nocinstall.exe ./cmd/installer/`
-  → 6.1 MB PE/Win32 binary
-- `install_setup._resolve_version("latest")` → `v4.25.3` ✓
-- Smoke test endpoint setup.zip:
-  - `role=""`   → `nocinstall.cfg` NON contiene `ROLE=` (installer chiedera') ✓
-  - `role=master` → `nocinstall.cfg` ha `ROLE=master` ✓
-  - `role=scanner` → `nocinstall.cfg` ha `ROLE=scanner` ✓
-- SHA256SUMS.txt aggiornato per v4.25.3
-
-## Comportamento ora visibile all'utente
-
-Bottone UI → cfg → comportamento installer:
-- **📥 Setup .exe**             → cfg senza ROLE → GUI mostra MessageBox 3 pulsanti
-- **📥 Setup .exe (Master)**    → cfg con ROLE=master → GUI salta il prompt, va dritto al summary
-- **📥 Setup .exe (Scanner)**   → cfg con ROLE=scanner → GUI salta il prompt, va dritto al summary
-
-## Steps per PROD
-1. **Save to GitHub**
-2. `cd /home/arslan/86NOCConnectorCenter && git pull origin main && sudo systemctl restart noc-backend`
-3. Scarica un nuovo Setup .exe dalla UI Clienti (uno dei 3 link)
-4. Su una VM Windows pulita: estrai zip → click destro su setup.exe → "Esegui come amministratore"
-5. Verifica: se hai scelto il link senza ruolo → appare MessageBox "Scegli ruolo: Si'=Master / No=Scanner / Annulla"
-
-## Note tecniche
-- Il manifest backend (`agent_ws.py:2497`) accettava gia' `?role=` come
-  query param — bastava farglielo passare dall'installer. Nessuna modifica
-  backend necessaria oltre al fix gia' applicato in `install_setup.py`.
-- Il binario v4.25.2 esistente sul filesystem `release-bin/` NON viene
-  rimosso (backward-compat per chi linka direttamente quella versione);
-  v4.25.3 diventa solo il default di `latest`.
-
----
-
+## Validazione container
+- python syntax OK; Go cross-compile windows/amd64 OK; braces PS bilanciate (399/399).
+- Live: binary endpoint → 302 a v4.25.2; sha scaricato == manifest == SHA256SUMS;
+  header MZ ok; wizard-bundle/exe-bundle HTTP 200; nessun errore backend.
+- NB: la GUI PowerShell gira solo su Windows (PROD): l'utente deve testare il
+  download "Setup GUI" su un client reale dopo Save to GitHub + deploy PROD.
 
 # 2026-06-24 — HOTFIX P0 deploy PROD: vault_mismatch in `hornetsecurity_vmbackup_poller`
 
@@ -2575,7 +2153,7 @@ noc-agent/cmd/nocui-v5/
 ## 📦 Distribuzione
 
 - **Bundle**: `/app/deploy_patches/v5.0.0/ArgusDesktop.exe` (3.7 MB)
-- **Preview live** (no install): https://snmp-guardian.preview.emergentagent.com/argus-desktop-preview/
+- **Preview live** (no install): https://network-monitor-pro.preview.emergentagent.com/argus-desktop-preview/
 - **README deploy**: `/app/deploy_patches/v5.0.0/README.md` (PowerShell one-liner per SOCIALSRV)
 
 ## ⚠️ Note

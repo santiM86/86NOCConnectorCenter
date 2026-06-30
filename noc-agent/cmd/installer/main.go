@@ -381,23 +381,24 @@ func downloadFile(c cliCfg, name, dst, expectedSHA string) error {
 			return fmt.Errorf("sha256 mismatch su %s (expected %s, got %s)", name, expectedSHA, got)
 		}
 	}
-
-	// 2) Validazione dimensione minima (binari Go agent ~8MB, mai meno di 500KB).
-	// Evita che HTTP 200 con body HTML di error page / 0-byte producano file
-	// che poi sc.exe rifiuta con ERROR_FILE_CORRUPT (1392).
-	if n < minBinarySize {
-		os.Remove(tmp)
-		return fmt.Errorf("download %s troppo piccolo (%d byte < %d), probabile errore di proxy/CDN", name, n, minBinarySize)
+	// Sanity check anti-1392: il binario deve essere un PE Windows valido
+	// (header "MZ") e di dimensione plausibile. Cattura download troncati o
+	// pagine HTML d'errore salvate come .exe PRIMA di registrare il servizio.
+	if strings.HasSuffix(strings.ToLower(name), ".exe") {
+		if fi, statErr := os.Stat(tmp); statErr == nil && fi.Size() < 500_000 {
+			os.Remove(tmp)
+			return fmt.Errorf("file corrotto/incompleto (%d byte, atteso > 500KB)", fi.Size())
+		}
+		hdr := make([]byte, 2)
+		if fh, oErr := os.Open(tmp); oErr == nil {
+			_, _ = fh.Read(hdr)
+			fh.Close()
+		}
+		if hdr[0] != 'M' || hdr[1] != 'Z' {
+			os.Remove(tmp)
+			return fmt.Errorf("non e' un eseguibile Windows valido (header PE 'MZ' mancante): download corrotto")
+		}
 	}
-
-	// 3) Validazione PE header (MZ): se il body e' HTML o testo di errore,
-	// l'header non sara' 'MZ' e sc.exe fallirebbe con 1392. Meglio bloccare qui.
-	if err := validatePEHeader(tmp); err != nil {
-		os.Remove(tmp)
-		return fmt.Errorf("validazione PE %s: %w", name, err)
-	}
-
-	// Rinomina tmp -> dst (atomic su NTFS)
 	if err := os.Rename(tmp, dst); err != nil {
 		os.Remove(tmp)
 		return err
