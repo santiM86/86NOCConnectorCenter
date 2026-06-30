@@ -584,17 +584,43 @@ async def _refresh_sites_cache() -> dict:
                 }
 
             tasks = [_process(d) for d in client_devices]
-            results = await asyncio.gather(*tasks, return_exceptions=False)
-            persisted = [r for r in results if r]
+            # Resilienza: un singolo device problematico (audit/parsing/encrypt
+            # fallito) NON deve abortire l'intera sync con un 500. Raccogliamo
+            # le eccezioni, le logghiamo e proseguiamo coi device validi.
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            persisted = []
+            errors = 0
+            for r in results:
+                if isinstance(r, dict):
+                    persisted.append(r)
+                elif isinstance(r, BaseException):
+                    errors += 1
+            if errors:
+                logger.warning(
+                    "datto_sync client=%s: %d/%d device skippati per errore audit/parsing",
+                    cid, errors, len(results),
+                )
 
-            # Replace datto_devices per questo client
-            await db.datto_devices.delete_many({"client_id": cid})
-            if persisted:
-                await db.datto_devices.insert_many(persisted)
+            # Replace datto_devices per questo client. Isolato in try/except:
+            # un errore DB su un client (es. documento troppo grande, batch
+            # malformato) non deve abortire la sync degli altri client.
+            try:
+                await db.datto_devices.delete_many({"client_id": cid})
+                if persisted:
+                    await db.datto_devices.insert_many(persisted)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("datto_sync client=%s persist fallito: %r", cid, e)
+                continue
             total_persisted += len(persisted)
 
-            # Match 100% con discovered_endpoints + managed_devices
-            matched = await _match_with_center(cid, persisted)
+            # Match 100% con discovered_endpoints + managed_devices.
+            # Isolato in try/except: il fallimento del match di un client non
+            # deve impedire il sync degli altri client linkati.
+            try:
+                matched = await _match_with_center(cid, persisted)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("datto_sync client=%s match fallito: %r", cid, e)
+                matched = 0
             total_matched += matched
 
             await db.datto_client_links.update_one(
