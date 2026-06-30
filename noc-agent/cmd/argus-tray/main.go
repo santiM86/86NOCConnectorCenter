@@ -242,7 +242,6 @@ func onReady() {
 	updateTooltip()
 
 	mOpenCenter := systray.AddMenuItem("Apri NOC Center", "Apre il NOC Center nel browser")
-	mStatus := systray.AddMenuItem("Stato Agent", "Mini-finestra con stato connessione")
 	systray.AddSeparator()
 	mUpdate := systray.AddMenuItem("Aggiorna Connector", "Avvia procedura di aggiornamento con GUI")
 	mRestart := systray.AddMenuItem("Riavvia servizio", "Riavvia 86NocAgent (richiede admin)")
@@ -267,15 +266,6 @@ func onReady() {
 		select {
 		case <-mOpenCenter.ClickedCh:
 			openBrowser(dashboardURL(currentCfg()))
-		case <-mStatus.ClickedCh:
-			c := currentCfg()
-			argus := filepath.Join(c.InstallDir, "ArgusDesktop.exe")
-			legacy := filepath.Join(c.InstallDir, "nocagent-ui.exe")
-			if _, err := os.Stat(argus); err == nil {
-				startProcess(argus)
-			} else if _, err := os.Stat(legacy); err == nil {
-				startProcess(legacy)
-			}
 		case <-mUpdate.ClickedCh:
 			runUpdateGUI(currentCfg())
 		case <-mRestart.ClickedCh:

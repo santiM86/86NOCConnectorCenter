@@ -93,7 +93,7 @@ $DefaultToken      = "__TOKEN__"
 $script:LocalBinariesDir = $PSScriptRoot
 if (-not $script:LocalBinariesDir) { $script:LocalBinariesDir = (Get-Location).Path }
 $script:HasLocalBinaries = $false
-foreach ($req in @('nocagent.exe','nocwatchdog.exe','nocagent-ui.exe')) {
+foreach ($req in @('nocagent.exe','nocwatchdog.exe','argus-tray.exe')) {
     if (-not (Test-Path (Join-Path $script:LocalBinariesDir $req))) {
         $script:HasLocalBinaries = $false; break
     }
@@ -1630,11 +1630,47 @@ function Run-Install {
         # l'URL configurato dall'utente: il mirror serve SOLO al bootstrap.
         $script:BinaryMirror = "https://snmp-hub-noc.preview.emergentagent.com"
 
+        # Verifica integrita' del binario scaricato: previene l'errore
+        # Windows 1392 (ERROR_FILE_CORRUPT) all'avvio del servizio quando il
+        # download e' troncato o restituisce una pagina HTML d'errore salvata
+        # come .exe. Controlli: header PE "MZ", dimensione minima, e (se il
+        # manifest fornisce lo sha256) confronto hash. In caso di fallimento
+        # lancia un'eccezione che ferma l'installazione PRIMA di registrare il
+        # servizio, con messaggio chiaro per il tecnico.
+        function Verify-DownloadedBinary([string]$name, [string]$dst) {
+            if (-not (Test-Path $dst)) {
+                throw "$name non scaricato (file mancante: $dst)"
+            }
+            $len = (Get-Item $dst).Length
+            if ($len -lt 500000) {
+                throw "$name corrotto/incompleto: solo $len byte (atteso > 500KB). Probabile pagina HTML d'errore o download interrotto."
+            }
+            $fs = [System.IO.File]::OpenRead($dst)
+            try { $b0 = $fs.ReadByte(); $b1 = $fs.ReadByte() } finally { $fs.Close() }
+            if ($b0 -ne 0x4D -or $b1 -ne 0x5A) {
+                throw "$name non e' un eseguibile Windows valido (header PE 'MZ' mancante). Download corrotto: NON installo per evitare l'errore 1392."
+            }
+            $expected = $null
+            if ($manifest.sha256 -and $manifest.sha256.$name) {
+                $expected = ([string]$manifest.sha256.$name).ToLower()
+            }
+            if ($expected) {
+                $got = (Get-FileHash -Algorithm SHA256 -Path $dst).Hash.ToLower()
+                if ($got -ne $expected) {
+                    throw "$name SHA256 non corrisponde (atteso $expected, ottenuto $got). Binario manomesso o versione errata: installazione annullata."
+                }
+                Append-Log "      integrita' OK ($name sha256 verificato)" $ColorSuccess
+            } else {
+                Append-Log "      integrita' OK ($name PE valido, $([math]::Round($len/1MB,1)) MB)" $ColorSuccess
+            }
+        }
+
         function Download-BinaryWithFallback([string]$name, [string]$dst) {
             $binUrl = Get-BinaryUrl $name
             Append-Log "      $binUrl" $ColorMuted
             try {
                 Invoke-WebRequest -UseBasicParsing -TimeoutSec 120 -Uri $binUrl -OutFile $dst
+                Verify-DownloadedBinary $name $dst
                 return
             } catch {
                 $code = if ($_.Exception.Response) { [int]$_.Exception.Response.StatusCode } else { 0 }
@@ -1645,8 +1681,9 @@ function Run-Install {
                 Append-Log "      $mirror" $ColorMuted
                 try {
                     Invoke-WebRequest -UseBasicParsing -TimeoutSec 180 -Uri $mirror -OutFile $dst
+                    Verify-DownloadedBinary $name $dst
                 } catch {
-                    throw "$name non disponibile ne' sul NOC Center ($binUrl) ne' sul mirror ($mirror). Errore mirror: $($_.Exception.Message)"
+                    throw "$name non disponibile o corrotto. NOC Center ($binUrl) / mirror ($mirror). Dettaglio: $($_.Exception.Message)"
                 }
             }
         }
@@ -1682,20 +1719,29 @@ function Run-Install {
         Append-Log "[4/11] Copia/Download nocagent.exe" $ColorAccent
         if ($script:HasLocalBinaries) {
             Copy-Item (Join-Path $script:LocalBinariesDir 'nocagent.exe') (Join-Path $InstallDir "nocagent.exe") -Force
+            Verify-DownloadedBinary 'nocagent.exe' (Join-Path $InstallDir "nocagent.exe")
             Append-Log "      copiato da bundle locale" $ColorMuted
         } else {
             Download-BinaryWithFallback 'nocagent.exe' (Join-Path $InstallDir "nocagent.exe")
         }
         $script:progressBar.Value = 55
 
-        Append-Log "[5/11] Copia/Download nocwatchdog.exe + nocagent-ui.exe" $ColorAccent
+        Append-Log "[5/11] Copia/Download nocwatchdog.exe + argus-tray.exe" $ColorAccent
         if ($script:HasLocalBinaries) {
             Copy-Item (Join-Path $script:LocalBinariesDir 'nocwatchdog.exe') (Join-Path $InstallDir "nocwatchdog.exe") -Force
             Copy-Item (Join-Path $script:LocalBinariesDir 'nocagent-ui.exe') (Join-Path $InstallDir "nocagent-ui.exe") -Force
+            Verify-DownloadedBinary 'nocwatchdog.exe' (Join-Path $InstallDir "nocwatchdog.exe")
             Append-Log "      copiati da bundle locale" $ColorMuted
         } else {
             Download-BinaryWithFallback 'nocwatchdog.exe' (Join-Path $InstallDir "nocwatchdog.exe")
-            Download-BinaryWithFallback 'nocagent-ui.exe' (Join-Path $InstallDir "nocagent-ui.exe")
+            Download-BinaryWithFallback 'argus-tray.exe' (Join-Path $InstallDir "argus-tray.exe")
+        }
+        # v2026-06-23 LAYOUT UNIFORME: rimuovi GUI legacy se presenti da installazioni precedenti
+        foreach ($leg in @('ArgusDesktop.exe','nocagent-ui.exe')) {
+            $legPath = Join-Path $InstallDir $leg
+            if (Test-Path $legPath) {
+                try { Remove-Item -Path $legPath -Force -ErrorAction Stop; Append-Log "      rimosso legacy $leg" $ColorMuted } catch {}
+            }
         }
         # Argus icon: prima da bundle locale, poi mirror.
         if ($script:HasLocalBinaries -and (Test-Path (Join-Path $script:LocalBinariesDir 'argus.ico'))) {
@@ -1849,24 +1895,22 @@ function Run-Install {
                     try { Remove-Item -Path $lp -Force -ErrorAction SilentlyContinue } catch {}
                 }
             }
-            # Creazione voce "Agent Status" - preferisce ArgusDesktop
-            # (Wails moderno, no freeze), fallback a nocagent-ui.exe legacy
-            # solo se Wails non e' presente / WebView2 non installato.
+            # v2026-06-23 LAYOUT UNIFORME: unica GUI = argus-tray.exe (systray).
+            # ArgusDesktop/nocagent-ui rimossi → la voce "Agent Status" punta
+            # alla tray (che apre il menu / NOC Center).
             $startMenu = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\86BIT Argus"
             New-Item -ItemType Directory -Force -Path $startMenu | Out-Null
             $wsh = New-Object -ComObject WScript.Shell
-            $argusDesktop = Join-Path $InstallDir "ArgusDesktop.exe"
-            $legacyUI     = Join-Path $InstallDir "nocagent-ui.exe"
-            $uiExe = if (Test-Path $argusDesktop) { $argusDesktop } else { $legacyUI }
+            $uiExe = Join-Path $InstallDir "argus-tray.exe"
             $iconFile = Join-Path $InstallDir "argus.ico"
             $iconLoc = if (Test-Path $iconFile) { $iconFile } else { "$uiExe,0" }
-            $lnkStatus = $wsh.CreateShortcut((Join-Path $startMenu "Agent Status.lnk"))
+            $lnkStatus = $wsh.CreateShortcut((Join-Path $startMenu "Argus Connector.lnk"))
             $lnkStatus.TargetPath = $uiExe
             $lnkStatus.WorkingDirectory = $InstallDir
             $lnkStatus.IconLocation = $iconLoc
-            $lnkStatus.Description = "Stato Agent Argus - Apre mini-finestra (gestione completa nel NOC Center)"
+            $lnkStatus.Description = "Argus Connector (systray) - gestione completa nel NOC Center"
             $lnkStatus.Save()
-            Append-Log "      shortcut '86BIT Argus\Agent Status' creato (Datto-style)" $ColorMuted
+            Append-Log "      shortcut '86BIT Argus\Argus Connector' creato (tray)" $ColorMuted
         } catch {
             Append-Log "      WARN: shortcut Agent Status non creato: $($_.Exception.Message)" $ColorError
         }
@@ -1883,15 +1927,8 @@ function Run-Install {
         $taskName = '86BIT Argus Tray'
         $trayExe = Join-Path $InstallDir "argus-tray.exe"
         $fallbackArg = ""
-        if (-not (Test-Path $trayExe)) {
-            # Backward compat: release < v4.13.5 non ha argus-tray.exe
-            $trayExe = Join-Path $InstallDir "ArgusDesktop.exe"
-            $fallbackArg = "--minimized"
-        }
-        if (-not (Test-Path $trayExe)) {
-            $trayExe = Join-Path $InstallDir "nocagent-ui.exe"
-            $fallbackArg = ""
-        }
+        # v2026-06-23 LAYOUT UNIFORME: solo argus-tray.exe, nessun fallback
+        # ad ArgusDesktop/nocagent-ui (rimossi).
         # Cleanup vecchi autostart registry-based
         Remove-ItemProperty -Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run' -Name '86BITArgusTray' -Force -ErrorAction SilentlyContinue
         Remove-ItemProperty -Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run' -Name '86BITArgusConnector' -Force -ErrorAction SilentlyContinue

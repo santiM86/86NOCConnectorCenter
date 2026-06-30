@@ -399,14 +399,13 @@ export default function ClientsPage() {
                       const latestVer = latestAgentVersion || "";
                       const hasRealLatest = latestVer && latestVer.toLowerCase() !== "latest";
                       const isOutdated = installedVer && hasRealLatest && isNewerSemver(latestVer, installedVer);
-                      const isUpToDate = installedVer && hasRealLatest && !isOutdated;
                       const btnLabel = hasRealLatest
-                        ? `Installer v${latestVer}`
-                        : (latestVer ? "Installer (latest)" : "Installer");
+                        ? `Setup GUI v${latestVer}`
+                        : (latestVer ? "Setup GUI (latest)" : "Setup GUI");
                       const tooltip = hasRealLatest
-                        ? `Scarica installer 86NocAgent v${latestVer} pre-configurato per ${client.name}` +
+                        ? `Scarica il wizard grafico 86NocAgent v${latestVer} pre-configurato per ${client.name} (installa SEMPRE l'ultima versione)` +
                           (installedVer ? ` (attualmente installato: v${installedVer})` : "")
-                        : `Scarica installer 86NocAgent (ultima release GitHub) pre-configurato per ${client.name}`;
+                        : `Scarica il wizard grafico 86NocAgent (ultima release) pre-configurato per ${client.name}`;
                       return (
                         <>
                           {installedVer && (
@@ -426,17 +425,15 @@ export default function ClientsPage() {
                           )}
                           <a
                             href={`${API}/agent/install/wizard-bundle.zip?token=${encodeURIComponent(client.api_key)}`}
-                            onClick={(e) => { e.stopPropagation(); toast.success(`Installer 86NocAgent${hasRealLatest ? ` v${latestVer}` : ""} per "${client.name}" — estrai e tasto destro su Installa-86NocAgent.bat -> Esegui come amministratore`); }}
+                            onClick={(e) => { e.stopPropagation(); toast.success(`Wizard GUI 86NocAgent${hasRealLatest ? ` v${latestVer}` : ""} per "${client.name}" — estrai lo ZIP e tasto destro su Installa-86NocAgent.bat → Esegui come amministratore. Si apre il wizard grafico.`); }}
                             data-testid={`download-installer-${client.id}`}
-                            className={`text-[9px] px-2 py-1 rounded-md bg-[var(--bg-card)] border transition-colors flex items-center gap-1 no-underline ${
+                            className={`text-[10px] font-semibold px-2.5 py-1 rounded-md border transition-colors flex items-center gap-1 no-underline ${
                               isOutdated
-                                ? "border-amber-500/40 text-amber-400 hover:border-amber-400"
-                                : isUpToDate
-                                ? "border-emerald-500/30 text-emerald-400 hover:border-emerald-400"
-                                : "border-[var(--bg-border)] text-[var(--text-muted)] hover:text-emerald-400 hover:border-emerald-500/30"
+                                ? "bg-amber-500/15 border-amber-500/50 text-amber-300 hover:bg-amber-500/25"
+                                : "bg-emerald-500/15 border-emerald-500/50 text-emerald-300 hover:bg-emerald-500/25"
                             }`}
                             title={tooltip}>
-                            <DownloadSimple size={10} /> {btnLabel}
+                            <DownloadSimple size={11} weight="bold" /> {btnLabel}
                           </a>
                           {/* v2026-06-24: Setup .exe GUI personalizzato (no PowerShell).
                               Genera uno ZIP con setup.exe + sidecar nocinstall.cfg
@@ -445,13 +442,16 @@ export default function ClientsPage() {
                                   chiede master/scanner durante la GUI Windows nativa.
                               - "Setup Master" / "Setup Scanner": ROLE baked-in →
                                   installer silenzioso per quel ruolo specifico. */}
+                          {/* Alternativa CLI (console): SFX con nocinstall.exe.
+                              Declassato — il metodo consigliato e' il Wizard GUI
+                              qui sopra. Tenuto come fallback per AV enterprise. */}
                           <a
                             href={`${API}/agent/install/setup.zip?token=${encodeURIComponent(client.api_key)}&client_id=${encodeURIComponent(client.id)}&label=${encodeURIComponent(client.name)}${hasRealLatest ? `&version=v${latestVer}` : ""}`}
-                            onClick={(e) => { e.stopPropagation(); toast.success(`Setup .exe per "${client.name}" — estrai ZIP, click destro su setup.exe → Esegui come amministratore. La GUI ti fara' scegliere master/scanner.`); }}
+                            onClick={(e) => { e.stopPropagation(); toast.success(`Setup .exe (CLI) per "${client.name}" — alternativa alla GUI. Estrai ZIP, click destro su setup.exe → Esegui come amministratore.`); }}
                             data-testid={`download-setup-exe-${client.id}`}
-                            className="text-[9px] px-2 py-1 rounded-md bg-[var(--bg-card)] border border-cyan-500/30 text-cyan-300 hover:border-cyan-400 hover:text-cyan-200 transition-colors flex items-center gap-1 no-underline"
-                            title={`Scarica Setup .exe GUI per ${client.name}. Doppio click su setup.exe: la GUI chiedera' Master o Scanner.`}>
-                            <DownloadSimple size={10} /> Setup .exe
+                            className="text-[9px] px-2 py-1 rounded-md bg-[var(--bg-card)] border border-[var(--bg-border)] text-[var(--text-muted)] hover:text-cyan-300 hover:border-cyan-500/30 transition-colors flex items-center gap-1 no-underline"
+                            title={`Alternativa CLI (console) per ${client.name}. Usa il Wizard GUI come metodo principale.`}>
+                            <DownloadSimple size={10} /> Setup .exe (CLI)
                           </a>
                           <a
                             href={`${API}/agent/install/setup.zip?token=${encodeURIComponent(client.api_key)}&client_id=${encodeURIComponent(client.id)}&role=master&label=${encodeURIComponent(client.name)}${hasRealLatest ? `&version=v${latestVer}` : ""}`}

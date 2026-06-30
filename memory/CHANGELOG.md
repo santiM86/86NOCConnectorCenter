@@ -292,229 +292,45 @@ clienti NOC partendo dai 153 siti del portal 86bit.
 # 2026-06-29 — NEW: Integrazione `portal.86bit.it` Datto Sites (cifrata)
 
 ## Richiesta utente
-> "Queste sono le API per datto sono funzionanti:
-> https://portal.86bit.it/api/v1/reports/datto/getDattoSites?api_key=...&userId=...&fetchLive=true
-> Inserisci tutto criptato e controlla che i dati arrivino."
+«Dobbiamo avere un setup GUI come era prima dedicato per installazione… deve
+installare sempre l'ultima versione.» Screenshot: console installer
+(nocinstall.exe) fallisce con errore Windows **1392 ERROR_FILE_CORRUPT**
+all'avvio di 86NocAgent.
 
-## Implementazione
+## Causa root del 1392
+I binari Windows `noc-agent/build/bin/windows-amd64/*.exe` sono COMMITTATI in
+git (build stantia v4.13, 13 mag) e presenti anche in PROD. L'endpoint
+`/api/agent/binary/windows-amd64/{name}` serviva QUESTI file vecchi, mentre il
+manifest dichiarava v4.25.2. Risultato: installazioni di un binario vecchio/
+incoerente → 1392 all'avvio servizio. Inoltre lo SHA256 del manifest era
+calcolato dal binario locale stantio (≠ binario servito dalla release) →
+verifica d'integrità di fatto disabilitata.
 
-### NUOVO `backend/routes/portal86_datto.py`
-Wrapper proxy verso il portal proprietario 86bit (gia' usato per
-Hornetsecurity VM Backup). Stesso pattern AES-GCM degli altri 3 integratori.
+## Fix (4 punti)
+1. **`download_binary` (agent_ws.py)**: per `windows-amd64` reindirizza SEMPRE
+   (302) al proxy `/api/agent-builds/{latest}/{name}` → console-installer, script
+   CLI e wizard installano TUTTI l'ultima release. Stop ai binari locali stantii.
+2. **`install_manifest`**: SHA256 ora preso dal `SHA256SUMS.txt` della release
+   risolta (`_release_sha256_map`), coerente coi binari serviti. Verificato:
+   manifest sha == release sha (5d2f5576… per nocagent.exe v4.25.2).
+3. **Wizard GUI (`installer_gui.ps1.template`)**: nuova `Verify-DownloadedBinary`
+   chiamata dopo ogni download/copia — controlla header PE "MZ", dimensione
+   minima (>500KB) e SHA256 (se presente nel manifest). Un download corrotto
+   ora si ferma con messaggio chiaro PRIMA di registrare il servizio (no 1392).
+4. **Console installer Go (`cmd/installer/main.go`)**: stesso check PE+size come
+   rete di sicurezza dopo lo SHA.
 
-**Storage** (`portal86_datto_config` singleton `_id="global"`):
-- `api_url` (default `https://portal.86bit.it/api/v1/reports/datto/getDattoSites`)
-- `api_key_enc` — cifrato AES-GCM via `security_manager.encrypt_credential`
-- `user_id_enc` — cifrato AES-GCM (anche il userId e' considerato segreto)
-- `enabled`, `last_polled_at`, `last_poll_status`, `last_poll_error`, `last_sites_count`
+## UI (`ClientsPage.js`)
+- **Wizard GUI** reso pulsante PRIMARIO evidenziato: "Setup GUI v{latest}"
+  (emerald, → `wizard-bundle.zip`). Installa sempre l'ultima versione dal manifest.
+- "Setup .exe" console DECLASSATO a "Setup .exe (CLI)" (stile muted, fallback AV).
 
-**Endpoint registrati** (tutti `Depends(get_current_user)` + `require_admin`):
-- `GET    /api/admin/portal86-datto/config` — config con `api_key_masked`, `user_id_masked`
-- `PUT    /api/admin/portal86-datto/config` — salva cifrando api_key + user_id
-- `DELETE /api/admin/portal86-datto/config` — rimuove credenziali
-- `POST   /api/admin/portal86-datto/test-connection` — fetch live + preview primi 5 siti
-- `GET    /api/portal86-datto/sites?limit=N` — fetch live di tutti (o primi N) siti
-
-Registrato in `server.py` accanto a `datto_rmm_router`.
-
-### Vault_mismatch tolerance (lezione delle 3 sessioni precedenti)
-`_load_decrypted_config()` se decrypt fallisce:
-1. Imposta `last_poll_status: "vault_mismatch"`, `last_poll_error: <descrizione>`
-2. **Disabilita** la config (`enabled: False`) per evitare loop di chiamate
-3. Solleva `HTTPException(500, detail="vault_mismatch: ... Re-salva la config dalla UI.")`
-
-L'utente che re-salva via PUT setta automaticamente `enabled=True` e
-nuove credenziali cifrate con la chiave corrente.
-
-### Test E2E completo (in preview con credenziali reali)
-```
-[1] Config salvata cifrata in portal86_datto_config:
-    api_key_enc = v2:A3gixRSIijABGkA3ZzOzE6F/3XNla... [79 byte]
-    user_id_enc = v2:gLXxtkZAM9HLDJHPwKV7+tWIA5V7u... [75 byte]
-[2] Round-trip decrypt OK
-[3] GET portal.86bit.it → HTTP 200
-    success=True, count=153, sites_in_payload=153
-[4] Anteprima:
-    86BIT                  devices:  25 (on= 17 off=  8)
-    Arch.Bassani Valeria   devices:   1 (on=  1 off=  0)
-    Autociceri             devices:   2 (on=  2 off=  0)
-    Carrozzeria Manfredi   devices:   1 (on=  1 off=  0)
-    Cisana                 devices:  19 (on= 11 off=  8)
-[5] Totale siti con device attivi: 140/153
-```
-
-### Test pytest di regressione (6/6 PASSED)
-`backend/tests/test_portal86_datto.py`:
-- `test_load_config_raises_vault_mismatch_on_decrypt_failure` ✓
-- `test_load_config_raises_400_if_not_configured` ✓
-- `test_load_config_raises_400_if_disabled` ✓
-- `test_fetch_sites_parses_json_response` ✓
-- `test_mask_helper` ✓
-- `test_encrypt_decrypt_roundtrip` ✓
-
-### Endpoint registrati (verifica HTTP)
-```
-GET  /api/admin/portal86-datto/config         → 403 (auth richiesta)
-PUT  /api/admin/portal86-datto/config         → 403 (auth richiesta)
-POST /api/admin/portal86-datto/test-connection → 403 (auth richiesta)
-GET  /api/portal86-datto/sites                → 403 (auth richiesta)
-```
-
-## SICUREZZA
-- La API key e' stata incollata in chat → l'utente dovrebbe **ruotarla**
-  e re-incollarla nella UI di PROD via PUT.
-- Lato preview/dev: gia' salvata cifrata nel DB del container preview.
-- Lato PROD: dopo `git pull` + restart, basta fare:
-  ```
-  curl -X PUT https://argus.86bit.it/api/admin/portal86-datto/config \
-       -H "Authorization: Bearer <ADMIN_TOKEN>" \
-       -H "Content-Type: application/json" \
-       -d '{"api_key":"<NEW_KEY>","user_id":"5ec7affa4cdcd40b443d5c38"}'
-  ```
-  Poi: `curl https://argus.86bit.it/api/portal86-datto/sites -H "Authorization: Bearer ..."`
-
----
-
-
-# 2026-06-29 — v4.25.4 hardening download: PE/size validation per ERROR_FILE_CORRUPT 1392
-
-## Sintomo dall'utente (screenshot)
-Installer v4.25.2 (vecchio binario, fix ruolo non ancora deployato in PROD) → conferma "Procedere?" → step [8/8] Avvio servizi fallisce con:
-```
-sc.exe start 86NocAgent: exit status 1392
-La directory o il file e' danneggiato e illeggibile.
-```
-Watchdog poi non parte (status 1068 = "dependency failed") perche' dipende dal master.
-
-## Root cause analisi
-ERROR_FILE_CORRUPT (1392) lanciato da `sc.exe start` significa che `nocagent.exe`
-nel target dir non e' un PE valido. Cause probabili:
-1. Manifest backend non ha SHA256 per quel binario → installer scarica silenziosamente
-   anche se il body e' una error page HTML (HTTP 200 dal proxy `/api/agent-builds`).
-2. Windows Defender / SmartScreen ha quarantinato post-install.
-3. File 0-byte da CDN scaduto / token revocato.
-
-Il v4.25.2 (e v4.25.3 prima del fix corrente) accettava il download silenziosamente
-se SHA256 era vuoto, propagando il file rotto fino a `sc.exe start`.
-
-## Fix applicato in `cmd/installer/main.go`
-1. **Size floor**: tutti i binari sotto 500KB sono rifiutati con errore esplicito
-   ("download X troppo piccolo (Y byte), probabile errore di proxy/CDN").
-2. **PE header check**: nuovo helper `validatePEHeader(path)` che legge i primi 2
-   byte e verifica la signature 'MZ'. Se manca → errore chiaro:
-   "signature PE non valida (atteso 'MZ', trovato 0x??): il backend ha servito una
-    error page invece del binario".
-3. **HTTP non-200**: il body (max 512 byte) viene incluso nel messaggio d'errore,
-   cosi' si vede subito se il backend ha restituito JSON di errore o HTML.
-4. **MOTW cleanup**: best-effort `os.Remove(dst + ":Zone.Identifier")` per
-   rimuovere ADS che potrebbe essere stato aggiunto da SmartScreen in reverse
-   proxy con `Content-Disposition: attachment`.
-
-## Bumped to v4.25.4
-- `Version = "4.25.4"` in `cmd/installer/main.go`
-- Cross-compile: `GOOS=windows GOARCH=amd64 go build ... -ldflags "-X main.Version=4.25.4"` → 6.1 MB PE ✓
-- `_resolve_version("latest")` → v4.25.4 automatic
-- SHA256SUMS.txt rigenerato
-
-## Beneficio per troubleshooting futuro
-Se l'utente ri-lancia il setup.exe e vede ancora 1392, ora avra' un MessageBox
-chiaro che dice "validazione PE nocagent.exe: signature PE non valida (atteso
-'MZ', trovato 0x3c21)" → diagnosi immediata che il backend sta servendo HTML
-(0x3c21 = '<!') invece del binario. Diventa subito chiaro che:
-- Il token GitHub e' scaduto/revocato
-- O la GitHub Release non esiste
-- O il proxy `/api/agent-builds/...` ha un bug
-
-Senza il fix l'errore appariva DOPO al boot del servizio Windows, perdendo info.
-
-## Steps utente per PROD
-1. **Save to GitHub**
-2. `cd /home/arslan/86NOCConnectorCenter && git pull origin main && sudo systemctl restart noc-backend`
-3. Hard refresh `argus.86bit.it` (Ctrl+Shift+R)
-4. Dalla UI Clienti scarica un NUOVO Setup .exe (titolo dialog dira' "v4.25.4")
-5. Se ancora 1392 → ora vedrai esattamente quale file e' rotto e perche'
-
----
-
-
-# 2026-06-29 — 🔥 HOTFIX P0 Setup .exe: prompt MASTER/SCANNER nella GUI dell'installer
-
-## Problema riportato dall'utente
-> "non riesco ad avere un installer funzionante GUI con master o client da installare su nuovo cliente"
-
-## Root cause (3 bug nell'installer Go `cmd/installer/main.go`)
-1. `readSidecar()` leggeva SOLO `TOKEN=` e `BACKEND=` dal `nocinstall.cfg` →
-   **ignorava completamente `ROLE=` scritto dal backend** in
-   `install_setup.py`.
-2. `parseFlags()` non aveva il flag `-role` → impossibile passare il ruolo
-   da CLI.
-3. **Nessun MessageBox** chiedeva master/scanner all'utente: la GUI
-   mostrava solo "Procedere?" e poi il summary finale. Il ruolo finale
-   arrivava SEMPRE dal manifest server-side via `agent_tokens.role` (di
-   default `master`), quindi lo zip "Setup .exe (Scanner)" generava
-   comunque un master.
-
-Risultato pratico: i 3 bottoni del menu a tendina (GUI / Master / Scanner)
-nella ClientsPage producevano TUTTI lo stesso comportamento (= master).
-
-## Fix
-File: `noc-agent/cmd/installer/main.go` (v4.25.2 → **v4.25.3**)
-
-1. `cliCfg` esteso con `role string`.
-2. `parseFlags()` accetta `--role master|scanner` (vuoto = chiede via
-   GUI).
-3. `readSidecar()` ora ritorna 4 valori `(token, backend, role, ok)` e
-   parsa anche `ROLE=` dal cfg.
-4. **NUOVO**: subito dopo aver acquisito token+backend, se `role` e' ancora
-   vuoto e non siamo in silent, l'installer mostra un MessageBox
-   `MB_YESNOCANCEL`:
-     - **Si'** → master
-     - **No** → scanner
-     - **Annulla** → exit 0 pulito
-5. Il MessageBox di conferma "Procedere con l'installazione?" ora mostra
-   anche il ruolo scelto (es. `Ruolo: SCANNER`).
-6. `fetchManifest()` appende `&role=<master|scanner>` alla URL del
-   manifest, cosi' il backend lo onora invece di default-are a master.
-7. Aggiunte constants Win32: `mbYesNoCancel = 0x03`, `idCancel = 2`,
-   `idNo = 7`.
-8. `Version` bumped a `4.25.3`.
-
-## Validazione in container
-- `go vet ./cmd/installer/` → OK (no errori statici)
-- `GOOS=windows GOARCH=amd64 go build -ldflags "-X main.Version=4.25.3"
-  -o backend/static/release-bin/v4.25.3/nocinstall.exe ./cmd/installer/`
-  → 6.1 MB PE/Win32 binary
-- `install_setup._resolve_version("latest")` → `v4.25.3` ✓
-- Smoke test endpoint setup.zip:
-  - `role=""`   → `nocinstall.cfg` NON contiene `ROLE=` (installer chiedera') ✓
-  - `role=master` → `nocinstall.cfg` ha `ROLE=master` ✓
-  - `role=scanner` → `nocinstall.cfg` ha `ROLE=scanner` ✓
-- SHA256SUMS.txt aggiornato per v4.25.3
-
-## Comportamento ora visibile all'utente
-
-Bottone UI → cfg → comportamento installer:
-- **📥 Setup .exe**             → cfg senza ROLE → GUI mostra MessageBox 3 pulsanti
-- **📥 Setup .exe (Master)**    → cfg con ROLE=master → GUI salta il prompt, va dritto al summary
-- **📥 Setup .exe (Scanner)**   → cfg con ROLE=scanner → GUI salta il prompt, va dritto al summary
-
-## Steps per PROD
-1. **Save to GitHub**
-2. `cd /home/arslan/86NOCConnectorCenter && git pull origin main && sudo systemctl restart noc-backend`
-3. Scarica un nuovo Setup .exe dalla UI Clienti (uno dei 3 link)
-4. Su una VM Windows pulita: estrai zip → click destro su setup.exe → "Esegui come amministratore"
-5. Verifica: se hai scelto il link senza ruolo → appare MessageBox "Scegli ruolo: Si'=Master / No=Scanner / Annulla"
-
-## Note tecniche
-- Il manifest backend (`agent_ws.py:2497`) accettava gia' `?role=` come
-  query param — bastava farglielo passare dall'installer. Nessuna modifica
-  backend necessaria oltre al fix gia' applicato in `install_setup.py`.
-- Il binario v4.25.2 esistente sul filesystem `release-bin/` NON viene
-  rimosso (backward-compat per chi linka direttamente quella versione);
-  v4.25.3 diventa solo il default di `latest`.
-
----
-
+## Validazione container
+- python syntax OK; Go cross-compile windows/amd64 OK; braces PS bilanciate (399/399).
+- Live: binary endpoint → 302 a v4.25.2; sha scaricato == manifest == SHA256SUMS;
+  header MZ ok; wizard-bundle/exe-bundle HTTP 200; nessun errore backend.
+- NB: la GUI PowerShell gira solo su Windows (PROD): l'utente deve testare il
+  download "Setup GUI" su un client reale dopo Save to GitHub + deploy PROD.
 
 # 2026-06-24 — HOTFIX P0 deploy PROD: vault_mismatch in `hornetsecurity_vmbackup_poller`
 
@@ -2628,7 +2444,7 @@ noc-agent/cmd/nocui-v5/
 ## 📦 Distribuzione
 
 - **Bundle**: `/app/deploy_patches/v5.0.0/ArgusDesktop.exe` (3.7 MB)
-- **Preview live** (no install): https://network-monitor-hub-2.preview.emergentagent.com/argus-desktop-preview/
+- **Preview live** (no install): https://network-monitor-pro.preview.emergentagent.com/argus-desktop-preview/
 - **README deploy**: `/app/deploy_patches/v5.0.0/README.md` (PowerShell one-liner per SOCIALSRV)
 
 ## ⚠️ Note
