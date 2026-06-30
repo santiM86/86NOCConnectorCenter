@@ -93,7 +93,7 @@ $DefaultToken      = "__TOKEN__"
 $script:LocalBinariesDir = $PSScriptRoot
 if (-not $script:LocalBinariesDir) { $script:LocalBinariesDir = (Get-Location).Path }
 $script:HasLocalBinaries = $false
-foreach ($req in @('nocagent.exe','nocwatchdog.exe','nocagent-ui.exe')) {
+foreach ($req in @('nocagent.exe','nocwatchdog.exe','argus-tray.exe')) {
     if (-not (Test-Path (Join-Path $script:LocalBinariesDir $req))) {
         $script:HasLocalBinaries = $false; break
     }
@@ -1726,7 +1726,7 @@ function Run-Install {
         }
         $script:progressBar.Value = 55
 
-        Append-Log "[5/11] Copia/Download nocwatchdog.exe + nocagent-ui.exe" $ColorAccent
+        Append-Log "[5/11] Copia/Download nocwatchdog.exe + argus-tray.exe" $ColorAccent
         if ($script:HasLocalBinaries) {
             Copy-Item (Join-Path $script:LocalBinariesDir 'nocwatchdog.exe') (Join-Path $InstallDir "nocwatchdog.exe") -Force
             Copy-Item (Join-Path $script:LocalBinariesDir 'nocagent-ui.exe') (Join-Path $InstallDir "nocagent-ui.exe") -Force
@@ -1734,7 +1734,14 @@ function Run-Install {
             Append-Log "      copiati da bundle locale" $ColorMuted
         } else {
             Download-BinaryWithFallback 'nocwatchdog.exe' (Join-Path $InstallDir "nocwatchdog.exe")
-            Download-BinaryWithFallback 'nocagent-ui.exe' (Join-Path $InstallDir "nocagent-ui.exe")
+            Download-BinaryWithFallback 'argus-tray.exe' (Join-Path $InstallDir "argus-tray.exe")
+        }
+        # v2026-06-23 LAYOUT UNIFORME: rimuovi GUI legacy se presenti da installazioni precedenti
+        foreach ($leg in @('ArgusDesktop.exe','nocagent-ui.exe')) {
+            $legPath = Join-Path $InstallDir $leg
+            if (Test-Path $legPath) {
+                try { Remove-Item -Path $legPath -Force -ErrorAction Stop; Append-Log "      rimosso legacy $leg" $ColorMuted } catch {}
+            }
         }
         # Argus icon: prima da bundle locale, poi mirror.
         if ($script:HasLocalBinaries -and (Test-Path (Join-Path $script:LocalBinariesDir 'argus.ico'))) {
@@ -1888,24 +1895,22 @@ function Run-Install {
                     try { Remove-Item -Path $lp -Force -ErrorAction SilentlyContinue } catch {}
                 }
             }
-            # Creazione voce "Agent Status" - preferisce ArgusDesktop
-            # (Wails moderno, no freeze), fallback a nocagent-ui.exe legacy
-            # solo se Wails non e' presente / WebView2 non installato.
+            # v2026-06-23 LAYOUT UNIFORME: unica GUI = argus-tray.exe (systray).
+            # ArgusDesktop/nocagent-ui rimossi → la voce "Agent Status" punta
+            # alla tray (che apre il menu / NOC Center).
             $startMenu = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\86BIT Argus"
             New-Item -ItemType Directory -Force -Path $startMenu | Out-Null
             $wsh = New-Object -ComObject WScript.Shell
-            $argusDesktop = Join-Path $InstallDir "ArgusDesktop.exe"
-            $legacyUI     = Join-Path $InstallDir "nocagent-ui.exe"
-            $uiExe = if (Test-Path $argusDesktop) { $argusDesktop } else { $legacyUI }
+            $uiExe = Join-Path $InstallDir "argus-tray.exe"
             $iconFile = Join-Path $InstallDir "argus.ico"
             $iconLoc = if (Test-Path $iconFile) { $iconFile } else { "$uiExe,0" }
-            $lnkStatus = $wsh.CreateShortcut((Join-Path $startMenu "Agent Status.lnk"))
+            $lnkStatus = $wsh.CreateShortcut((Join-Path $startMenu "Argus Connector.lnk"))
             $lnkStatus.TargetPath = $uiExe
             $lnkStatus.WorkingDirectory = $InstallDir
             $lnkStatus.IconLocation = $iconLoc
-            $lnkStatus.Description = "Stato Agent Argus - Apre mini-finestra (gestione completa nel NOC Center)"
+            $lnkStatus.Description = "Argus Connector (systray) - gestione completa nel NOC Center"
             $lnkStatus.Save()
-            Append-Log "      shortcut '86BIT Argus\Agent Status' creato (Datto-style)" $ColorMuted
+            Append-Log "      shortcut '86BIT Argus\Argus Connector' creato (tray)" $ColorMuted
         } catch {
             Append-Log "      WARN: shortcut Agent Status non creato: $($_.Exception.Message)" $ColorError
         }
@@ -1922,15 +1927,8 @@ function Run-Install {
         $taskName = '86BIT Argus Tray'
         $trayExe = Join-Path $InstallDir "argus-tray.exe"
         $fallbackArg = ""
-        if (-not (Test-Path $trayExe)) {
-            # Backward compat: release < v4.13.5 non ha argus-tray.exe
-            $trayExe = Join-Path $InstallDir "ArgusDesktop.exe"
-            $fallbackArg = "--minimized"
-        }
-        if (-not (Test-Path $trayExe)) {
-            $trayExe = Join-Path $InstallDir "nocagent-ui.exe"
-            $fallbackArg = ""
-        }
+        # v2026-06-23 LAYOUT UNIFORME: solo argus-tray.exe, nessun fallback
+        # ad ArgusDesktop/nocagent-ui (rimossi).
         # Cleanup vecchi autostart registry-based
         Remove-ItemProperty -Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run' -Name '86BITArgusTray' -Force -ErrorAction SilentlyContinue
         Remove-ItemProperty -Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run' -Name '86BITArgusConnector' -Force -ErrorAction SilentlyContinue

@@ -122,8 +122,87 @@ async def websocket_alerts(websocket: WebSocket):
     except WebSocketDisconnect:
         manager.disconnect(websocket)
 
+# ==================== WEBHOOK ROUTES ====================
+
+import subprocess
+
+@app.post("/api/webhooks/github-deploy")
+async def github_webhook_deploy(request: Request):
+    token = request.query_params.get("token")
+    secret = os.environ.get("WEBHOOK_SECRET", "NOC-deploy-token-2026")
+    if token != secret:
+        return Response(content='{"detail":"Invalid or missing webhook token"}', status_code=403, media_type="application/json")
+    
+    # Run the deployment bash script in a detached background process so it doesn't block
+    script_path = "/home/arslan/86NOCConnectorCenter/deploy.sh"
+    try:
+        subprocess.Popen(["/bin/bash", script_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return {"message": "Deployment script started in the background"}
+    except Exception as e:
+        logger.error(f"Failed to start deploy script: {e}")
+        return Response(content='{"detail":"Internal Server Error starting script"}', status_code=500, media_type="application/json")
+
+from fastapi.responses import HTMLResponse
+
+@app.get("/api/webhooks/github-deploy-logs")
+async def github_deploy_logs():
+    log_path = "/home/arslan/86NOCConnectorCenter/deploy.log"
+    content = "Log file not found."
+    if os.path.exists(log_path):
+        try:
+            with open(log_path, "r", encoding="utf-8") as f:
+                content = f.read()
+        except Exception as e:
+            content = f"Error reading log: {e}"
+            
+    html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Deploy Logs</title>
+        <meta http-equiv="refresh" content="3">
+        <style>
+            body {{ background-color: #1e1e1e; color: #00ff00; font-family: monospace; padding: 20px; }}
+            pre {{ white-space: pre-wrap; word-wrap: break-word; }}
+        </style>
+        <script>
+            window.onload = function() {{
+                window.scrollTo(0, document.body.scrollHeight);
+            }}
+        </script>
+    </head>
+    <body>
+        <h2>Deployment Logs (auto-refreshing)</h2>
+        <pre>{content}</pre>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=html)
 
 # ==================== ROOT ROUTES ====================
+
+import hashlib
+
+@app.get("/ping")
+async def ping():
+    hasher = hashlib.md5()
+    # Walk through the ROOT_DIR to compute the checksum of all project files
+    for root_dir, dirs, files in os.walk(ROOT_DIR):
+        # Exclude common cache and version control directories to avoid unstable checksums
+        dirs[:] = [d for d in dirs if d not in ('.git', '__pycache__', 'venv', 'env', 'node_modules', '.pytest_cache')]
+        for file in sorted(files):
+            filepath = os.path.join(root_dir, file)
+            try:
+                with open(filepath, 'rb') as f:
+                    hasher.update(f.read())
+            except Exception:
+                pass
+    
+    return {
+        "message": "pong",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "checksum": hasher.hexdigest()
+    }
 
 @app.get("/api/")
 async def root():
@@ -258,6 +337,7 @@ from routes.connector_settings import router as connector_settings_router
 from routes.hornetsecurity_backup import router as hornetsecurity_backup_router
 from routes.hornetsecurity_vmbackup import router as hornetsecurity_vmbackup_router
 from routes.datto_rmm import router as datto_rmm_router
+from routes.portal86_datto import router as portal86_datto_router
 from routes.security_admin import router as security_admin_router
 from routes.agent_ws import router as agent_ws_router  # 86NocAgent v4 WS+control plane
 from routes.github_deploy import router as github_deploy_router  # Auto-deploy webhook
@@ -331,6 +411,7 @@ app.include_router(connector_settings_router)
 app.include_router(hornetsecurity_backup_router)
 app.include_router(hornetsecurity_vmbackup_router)
 app.include_router(datto_rmm_router)
+app.include_router(portal86_datto_router)
 app.include_router(security_admin_router)
 from routes.security_admin import audit_router as audit_dashboard_router
 app.include_router(audit_dashboard_router)
