@@ -1,3 +1,56 @@
+# 2026-06-29 — UI Match Debug bottone (no più curl manuale)
+
+## Aggiunto bottone UI "Match"
+Nella pagina `Settings → Datto RMM API → STATO PER CLIENTE`, accanto ai
+bottoni esistenti **Debug** (cyan) e **Re-sync** (verde), ora c'e' anche
+**Match** (fucsia).
+
+Click su "Match" → chiama `GET /api/admin/datto/match-debug/{client_id}`
+→ window.alert con:
+```
+🔎 Match Debug — Galvan
+
+🔴 (A) Il client ha 0 discovered_endpoints. Il connector LAN scanner
+non sta scoprendo MAC/IP dagli switch del cliente. Verifica: (1) connector
+ONLINE in Argus, (2) switch del cliente nella scan list con credenziali
+SNMP valide, (3) il connector ha lanciato almeno 1 scan.
+
+📊 Numeri:
+  Datto persisted    : 40
+  Datto con MAC      : 35
+  Datto senza MAC    : 5
+  Datto con IP       : 40
+  Discovered eps     : 0           ← BINGO il problema
+  Eps con MAC        : 0
+  Eps con IP         : 0
+  Intersezione MAC   : 0
+  Intersezione IP    : 0
+
+📦 Sample Datto:
+  • SRVDC  MAC=AA:BB:CC:DD:EE:01 IP=192.168.1.240
+  • PC-CONTABILITA  MAC=...
+
+🔌 Sample Endpoints:
+  (vuoto)
+```
+
+## File modificati
+- `frontend/src/pages/DattoRmmSettingsPage.js`:
+  - Aggiunta funzione `matchDebugClient(clientId, clientName)`
+  - Aggiunto `<button data-testid="datto-match-debug-client-{i}">` accanto a Debug/Re-sync
+  - Stile fucsia per distinguerlo (Debug=cyan, Re-sync=verde, Match=fucsia)
+
+## Steps PROD
+1. Save to GitHub
+2. `cd /home/arslan/86NOCConnectorCenter && git pull origin main && sudo systemctl restart noc-backend`
+3. Hard refresh `argus.86bit.it/settings/datto`
+4. Click "Diagnostica" per caricare lo STATO PER CLIENTE
+5. Click su nuovo bottone **"Match"** (fucsia) accanto a Galvan
+6. Leggi la diagnosi → fai il fix indicato → manda screenshot
+
+---
+
+
 # 2026-06-29 — Datto RMM Sync: fix HTTP 500 isolato per device + diagnostico match-debug
 
 ## Sintomi screenshot PROD
