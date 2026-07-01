@@ -875,3 +875,81 @@ async def set_device_vital(
         ),
     }
 
+
+@router.post("/devices/bulk-vital")
+async def set_devices_vital_bulk(
+    payload: dict,
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+):
+    """Marca/rimuove in blocco il flag `is_vital` su piu' device.
+
+    Body: {"ips": [str, ...], "is_vital": bool, "client_id": str, "reason"?: str}
+
+    `client_id` e' obbligatorio: la selezione multipla avviene sempre nel
+    contesto di un cliente, quindi evitiamo ambiguita' cross-tenant.
+    """
+    from alert_filter import invalidate_silence_cache
+
+    ips = payload.get("ips")
+    if not isinstance(ips, list) or not ips:
+        raise HTTPException(status_code=400, detail="ips (lista non vuota) e' obbligatorio")
+    if "is_vital" not in (payload or {}):
+        raise HTTPException(status_code=400, detail="is_vital (bool) e' obbligatorio")
+    client_id = (payload.get("client_id") or "").strip()
+    if not client_id:
+        raise HTTPException(status_code=400, detail="client_id e' obbligatorio per l'azione multipla")
+    is_vital = bool(payload.get("is_vital"))
+    reason = (payload.get("reason") or "").strip()[:200]
+    # Normalizza + dedup gli IP
+    ip_list = list({str(i).strip() for i in ips if str(i).strip()})
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    user_email = current_user.get("email")
+
+    res = await db.managed_devices.update_many(
+        {"client_id": client_id, "ip": {"$in": ip_list}},
+        {"$set": {
+            "is_vital": is_vital,
+            "is_vital_set_by": user_email,
+            "is_vital_set_at": now_iso,
+            "is_vital_reason": reason or None,
+        }},
+    )
+
+    # Invalida la cache silence per ogni IP toccato
+    for ip in ip_list:
+        invalidate_silence_cache(client_id=client_id, device_ip=ip)
+
+    try:
+        await audit_logger.log(
+            user_email=user_email,
+            action=AuditAction.UPDATE_DEVICE if hasattr(AuditAction, "UPDATE_DEVICE") else AuditAction.OTHER,
+            resource_type="device",
+            resource_id=None,
+            metadata={
+                "action": "set_vital_bulk",
+                "client_id": client_id,
+                "ips": ip_list,
+                "is_vital": is_vital,
+                "matched": res.matched_count,
+                "modified": res.modified_count,
+                "reason": reason,
+            },
+            request=request,
+        )
+    except Exception:
+        pass
+
+    return {
+        "ok": True,
+        "client_id": client_id,
+        "is_vital": is_vital,
+        "requested": len(ip_list),
+        "matched": res.matched_count,
+        "modified": res.modified_count,
+        "message": (
+            f"{res.modified_count} dispositivi {'marcati VITALI' if is_vital else 'rimossi dai vitali'}"
+        ),
+    }
+

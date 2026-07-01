@@ -34,7 +34,7 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
         {}, {"_id": 0, "client_id": 1, "device_ip": 1, "device_name": 1, "sys_name": 1, "sys_descr": 1, "sys_object_id": 1, "status": 1, "device_type": 1, "device_class": 1, "reachable": 1, "last_poll": 1, "monitor_type": 1, "consecutive_failures": 1, "last_reachable_at": 1, "vendor": 1, "model": 1, "method": 1, "ping_method": 1}
     ).to_list(10000)
     managed_devices_raw = await db.managed_devices.find(
-        {}, {"_id": 0, "client_id": 1, "ip": 1, "mac": 1, "name": 1, "name_locked": 1, "hostname": 1, "mdns_name": 1, "fingerbank_device_name": 1, "device_type": 1, "device_type_user_locked": 1, "vendor": 1, "model": 1, "sys_descr": 1, "sys_object_id": 1, "mac_is_random": 1, "source": 1, "last_seen_at": 1}
+        {}, {"_id": 0, "client_id": 1, "ip": 1, "mac": 1, "name": 1, "name_locked": 1, "hostname": 1, "mdns_name": 1, "fingerbank_device_name": 1, "device_type": 1, "device_type_user_locked": 1, "vendor": 1, "model": 1, "sys_descr": 1, "sys_object_id": 1, "mac_is_random": 1, "source": 1, "last_seen_at": 1, "is_vital": 1}
     ).to_list(10000)
     # Build maps for dedup merging by (client_id, ip)
     seen_device_keys = {(d.get("client_id"), d.get("ip_address")) for d in devices if d.get("ip_address")}
@@ -76,6 +76,7 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
             "ip_address": ip,
             "status": status,
             "device_type": dev_type,
+            "is_vital": md.get("is_vital"),
         })
     # Also add managed_devices that never polled yet
     for md in managed_devices_raw:
@@ -97,6 +98,7 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
             "ip_address": ip,
             "status": md_status,
             "device_type": best_device_type(md, pd),
+            "is_vital": md.get("is_vital"),
         })
 
     # Backup status (legacy)
@@ -270,7 +272,7 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
     for d in devices:
         cid = d.get("client_id")
         if cid not in devices_by_client:
-            devices_by_client[cid] = {"total": 0, "online": 0, "offline": 0, "stale": 0, "unknown": 0}
+            devices_by_client[cid] = {"total": 0, "online": 0, "offline": 0, "stale": 0, "unknown": 0, "vital_total": 0, "vital_online": 0}
             devices_detail_by_client[cid] = []
         devices_by_client[cid]["total"] += 1
         status = d.get("status")
@@ -282,6 +284,16 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
             devices_by_client[cid]["stale"] += 1
         else:
             devices_by_client[cid]["unknown"] += 1
+        # Conteggio VITALI: is_vital dal merge, fallback lookup managed_devices
+        # (per i device legacy della collection `devices` che non lo portano).
+        _iv = d.get("is_vital")
+        if _iv is None:
+            _mv = managed_by_key.get((cid, d.get("ip_address")))
+            _iv = _mv.get("is_vital") if _mv else None
+        if _iv is True:
+            devices_by_client[cid]["vital_total"] += 1
+            if status == "online":
+                devices_by_client[cid]["vital_online"] += 1
         devices_detail_by_client[cid].append({
             "name": d.get("name", "?"), "ip": d.get("ip_address", ""), "status": status or "unknown",
             "type": d.get("device_type", ""),
@@ -418,7 +430,7 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
     for c in clients:
         cid = c.get("id")
         alerts_info = alerts_by_client.get(cid, {"critical": 0, "high": 0, "medium": 0, "low": 0, "total": 0})
-        devices_info = devices_by_client.get(cid, {"total": 0, "online": 0, "offline": 0, "stale": 0, "unknown": 0})
+        devices_info = devices_by_client.get(cid, {"total": 0, "online": 0, "offline": 0, "stale": 0, "unknown": 0, "vital_total": 0, "vital_online": 0})
         backup_info = backup_by_client.get(cid, {"ok": 0, "warning": 0, "error": 0, "total": 0, "stale": 0})
         printer_info = printer_by_client.get(cid, {"total": 0, "low_toner": 0, "ok": 0})
         wan_tgts = wan_targets_by_client.get(cid, [])
