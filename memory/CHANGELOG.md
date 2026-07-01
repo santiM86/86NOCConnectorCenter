@@ -1,295 +1,35 @@
-# 2026-06-29 — UI Match Debug bottone (no più curl manuale)
+# 2026-07-01 — Dispositivi VITALI: selezione multipla + contatore card basato sui vitali
 
-## Aggiunto bottone UI "Match"
-Nella pagina `Settings → Datto RMM API → STATO PER CLIENTE`, accanto ai
-bottoni esistenti **Debug** (cyan) e **Re-sync** (verde), ora c'e' anche
-**Match** (fucsia).
+## Richiesta utente
+Poter selezionare in modo MULTIPLO quali dispositivi sono "vitali" e avere gli
+alert focalizzati su questi. Il contatore "DISP." nella card cliente non deve
+mostrare 40/49 quando 39 non sono vitali.
 
-Click su "Match" → chiama `GET /api/admin/datto/match-debug/{client_id}`
-→ window.alert con:
-```
-🔎 Match Debug — Galvan
+## Implementato
+BACKEND
+- `POST /api/devices/bulk-vital` (device_info_card.py): marca/rimuove is_vital in
+  blocco su piu' IP {ips:[], is_vital:bool, client_id}. Invalida silence-cache +
+  audit log. Testato: matched/modified corretti.
+- `overview.py`: aggiunti contatori `vital_total` e `vital_online` per cliente
+  (proiezione is_vital + conteggio con fallback lookup managed_devices per i
+  device legacy). Endpoint `/api/overview/clients` verificato: ritorna i conteggi.
 
-🔴 (A) Il client ha 0 discovered_endpoints. Il connector LAN scanner
-non sta scoprendo MAC/IP dagli switch del cliente. Verifica: (1) connector
-ONLINE in Argus, (2) switch del cliente nella scan list con credenziali
-SNMP valide, (3) il connector ha lanciato almeno 1 scan.
+FRONTEND
+- ClientOverviewPage (tab Dispositivi): checkbox di selezione su OGNI device in
+  ENTRAMBE le viste (Raggruppata + Tabella) + "seleziona tutti i visibili" in
+  tabella. Toolbar bulk che appare alla selezione: "Marca come VITALI",
+  "Rimuovi dai vitali", "Deseleziona tutto". Dopo l'azione: refresh automatico.
+- ClientsPage: contatore "DISP." ora mostra i VITALI quando presenti — badge
+  principale "vitali_online/vitali_totali" + secondario "N tot" (es. "0/2 · 30
+  tot VITALI"). Se nessun vitale e' marcato, fallback al totale con avviso.
+- Alert invariati: solo i device VITALI generano alert (com'era, confermato).
 
-📊 Numeri:
-  Datto persisted    : 40
-  Datto con MAC      : 35
-  Datto senza MAC    : 5
-  Datto con IP       : 40
-  Discovered eps     : 0           ← BINGO il problema
-  Eps con MAC        : 0
-  Eps con IP         : 0
-  Intersezione MAC   : 0
-  Intersezione IP    : 0
+## Validazione
+- Parse Python OK; endpoint bulk e overview testati via curl; screenshot UI:
+  checkbox + toolbar bulk visibili in vista Raggruppata, card mostra "0/2 · 30 tot".
+- Dati di test preview ripristinati a non-vitale dopo il test.
 
-📦 Sample Datto:
-  • SRVDC  MAC=AA:BB:CC:DD:EE:01 IP=192.168.1.240
-  • PC-CONTABILITA  MAC=...
-
-🔌 Sample Endpoints:
-  (vuoto)
-```
-
-## File modificati
-- `frontend/src/pages/DattoRmmSettingsPage.js`:
-  - Aggiunta funzione `matchDebugClient(clientId, clientName)`
-  - Aggiunto `<button data-testid="datto-match-debug-client-{i}">` accanto a Debug/Re-sync
-  - Stile fucsia per distinguerlo (Debug=cyan, Re-sync=verde, Match=fucsia)
-
-## Steps PROD
-1. Save to GitHub
-2. `cd /home/arslan/86NOCConnectorCenter && git pull origin main && sudo systemctl restart noc-backend`
-3. Hard refresh `argus.86bit.it/settings/datto`
-4. Click "Diagnostica" per caricare lo STATO PER CLIENTE
-5. Click su nuovo bottone **"Match"** (fucsia) accanto a Galvan
-6. Leggi la diagnosi → fai il fix indicato → manda screenshot
-
----
-
-
-# 2026-06-29 — Datto RMM Sync: fix HTTP 500 isolato per device + diagnostico match-debug
-
-## Sintomi screenshot PROD
-- Cache popolata: 153 site, 40 device Datto Galvan persistiti
-- ❌ Toast "Sync fallito: Request failed with status code 500"
-- ❌ Galvan: 40 dev / **0 match** (i MAC Datto non combaciano con discovered_endpoints)
-
-## Root cause #1 (HTTP 500 sul sync)
-In `_refresh_sites_cache` il ciclo `asyncio.gather(*tasks, return_exceptions=False)`
-propagava qualsiasi eccezione di UN singolo device facendo crashare l'intero
-sync. Cause tipiche:
-- `_fetch_device_audit_raw` httpx timeout su 1 device su 982
-- `_extract_nics` su schema NIC inatteso
-- `_encrypt_blob` su payload con caratteri non UTF-8
-
-## Fix #1: error isolation per device
-`return_exceptions=True` + log per device + continue del batch:
-```python
-results = await asyncio.gather(*tasks, return_exceptions=True)
-persisted: list[dict] = []
-failed = 0
-for r in results:
-    if isinstance(r, Exception):
-        failed += 1
-        logger.warning("[datto-sync] device process failed ...")
-        continue
-    if r: persisted.append(r)
-```
-Un device problematico non rompe più i restanti 981.
-
-## Root cause #2 (40 dev / 0 match)
-Possibili cause con probabilità diverse:
-- **(A)** Connector LAN scanner del cliente NON attivo o non sta scoprendo nulla → 0 discovered_endpoints per il client_id
-- **(B)** Switch ritornano solo IP senza MAC nelle FDB → match MAC impossibile
-- **(C)** Audit endpoint Datto non restituisce NIC info → datto_devices con `mac=""`
-- **(D)** Formati MAC differenti (improbabile, `_norm_mac` normalizza tutto)
-- **(E)** VLAN differenti: Datto vede device su rete VPN/Wifi, scanner vede LAN cablata
-
-## Fix #2: NUOVO endpoint diagnostico `GET /api/admin/datto/match-debug/{client_id}`
-Spiega ESATTAMENTE qual è la causa del 0 match. Ritorna:
-```json
-{
-  "datto_devices_persisted": 40,
-  "datto_devices_with_mac": 0,           ← se 0 → causa (C)
-  "datto_devices_without_mac": 40,
-  "datto_devices_with_ip": 40,
-  "discovered_endpoints_total": 0,       ← se 0 → causa (A)
-  "discovered_endpoints_with_mac": 0,
-  "discovered_endpoints_with_ip": 0,
-  "intersection_mac": 0,
-  "intersection_ip": 0,
-  "sample_datto_no_mac": ["SRVDC", "PC01", ...],
-  "sample_eps_with_mac": [...],
-  "diagnosis": "🔴 (A) Il client ha 0 discovered_endpoints. Il connector
-                LAN scanner non sta scoprendo MAC/IP dagli switch del cliente.
-                Verifica: (1) connector ONLINE, (2) switch in scan list,
-                (3) connector ha lanciato almeno 1 scan."
-}
-```
-
-## Logging in `_match_with_center`
-Ora ogni chiamata logga il match summary:
-```
-[datto-match] client=galvan-id: eps=120 (mac=80, ip=120) datto=40 (mac=35, ip=40)
-```
-Cosi' dal `journalctl -u noc-backend` si vede a colpo d'occhio dove sta lo squilibrio.
-
-## Test pytest (7/7 PASSED)
-- `test_match_debug_diagnoses_zero_endpoints` ✓ (caso A)
-- `test_match_debug_diagnoses_no_mac_in_datto` ✓ (caso C)
-- `test_match_debug_diagnoses_intersection_ok` ✓ (✅ allineato)
-- 4 test pre-esistenti `test_datto_config_validation.py` ✓
-
-## Steps PROD per debug "40 dev / 0 match" Galvan
-1. `git pull origin main && sudo systemctl restart noc-backend`
-2. Re-sync Galvan: dal browser, su Argus aperto, prendi il token JWT dal localStorage
-   chiave `token` (es. via DevTools Console: `localStorage.getItem('token')`),
-   poi:
-   ```bash
-   GALVAN_ID="<id-cliente-Galvan>"  # lo trovi in URL della pagina client o in DB
-   TOK="<jwt-token>"
-   curl -s "https://argus.86bit.it/api/admin/datto/match-debug/$GALVAN_ID" \
-        -H "Authorization: Bearer $TOK" | python3 -m json.tool
-   ```
-3. Il campo `diagnosis` ti dice esattamente cosa fixare.
-
-## File modificati
-- `backend/routes/datto_rmm.py` (+105 righe: error isolation + match-debug endpoint + logging)
-- `backend/tests/test_datto_match_debug.py` (NUOVO, 3 test di regressione)
-
----
-
-
-# 2026-06-29 — Fix Datto RMM Settings: validation USER ID + BASE URL + hint inline UI
-
-## Sintomo riportato dallo screenshot utente
-PROD `argus.86bit.it/settings/datto` mostrava errore "Test fallito @ fetch_devices [HTTPException]: API key o User ID non validi: il portal ha rifiutato l'autenticazione. Dettaglio: 401: Datto API ha risposto 401".
-
-## Root cause
-Compilando il form l'utente aveva inserito:
-1. **USER ID = `info@86bit.it`** (email) invece dell'ObjectId Mongo
-   `5ec7affa4cdcd40b443d5c38` richiesto dal portal 86bit.
-2. **BASE URL = `https://portal.86bit.it/api/v1/reports/datto/getDattoSites?api_key=...&userId=...`**
-   con query string giâ inclusa. Il backend `_fetch_devices_list_all()` aggiunge
-   `params={"api_key": ..., "userId": ..., "page": ..., "max": ...}` via httpx →
-   URL finale aveva 2 set di parametri → portal restituiva 401.
-3. **Endpoint sbagliato**: `getDattoSites` ritorna i SITI, non i devices.
-   Il backend chiama `_fetch_devices_list_all` che vuole `getDattoDevices`.
-
-Nessuna validation server-side prima del fix → l'errore appariva solo a runtime
-sul test connessione, senza spiegare cosa fosse sbagliato.
-
-## Fix server-side (`backend/routes/datto_rmm.py`)
-`PUT /api/admin/datto/config` ora rifiuta con **HTTP 400 e messaggio chiaro**:
-- USER ID con `@` → "USER ID non valido: hai inserito un'email. Il portal richiede
-  l'ObjectId Mongo (24 caratteri esadecimali, es. 5ec7affa4cdcd40b443d5c38)."
-- USER ID con caratteri non `[A-Za-z0-9_.\-]` → "USER ID contiene caratteri non validi"
-- BASE URL con `?` o `&` → "BASE URL non valida: non includere parametri ?api_key=
-  o &userId= — il backend li aggiunge automaticamente. Usa solo l'endpoint."
-
-## Fix UI (`frontend/src/pages/DattoRmmSettingsPage.js`)
-Aggiunti 2 hint inline grigi sotto i campi:
-- Sotto USER ID: "ObjectId Mongo del portal (24 hex). **NON** l'email."
-- Sotto BASE URL: "Solo l'endpoint, **SENZA** `?api_key=...&userId=...` — i parametri
-  li aggiunge il backend automaticamente. Endpoint corretto:
-  `/api/v1/reports/datto/getDattoDevices` (lista devices), non `getDattoSites`."
-
-## Test pytest (4/4 PASSED)
-`backend/tests/test_datto_config_validation.py`:
-- `test_user_id_with_email_rejected_with_clear_message` ✓
-- `test_base_url_with_query_string_rejected` ✓
-- `test_valid_payload_accepted` ✓ (ObjectId 24-hex + URL pulito)
-- `test_user_id_with_invalid_chars_rejected` ✓
-
-## Smoke screenshot preview
-Pagina `settings/datto` mostra:
-- USER ID = `5ec7affa4cdcd40b443d5c38` + hint rosso "NON l'email"
-- BASE URL = `getDattoDevices` (senza query) + hint "SENZA ?api_key=..."
-- Auto-sync attivo: **153 site, 1 cliente linkato, 25 device sincronizzati**
-- Mappatura: 86BIT_Office → 86BIT (25 device sync, 23/25 matched)
-
-## Steps utente per PROD
-1. Save to GitHub
-2. `cd /home/arslan/86NOCConnectorCenter && git pull origin main && sudo systemctl restart noc-backend`
-3. Hard refresh `argus.86bit.it/settings/datto` (Ctrl+Shift+R)
-4. Correggi il form:
-   - **API KEY**: lascia quella salvata (`****5c38` è già OK)
-   - **USER ID**: scrivi `5ec7affa4cdcd40b443d5c38` (NON l'email!)
-   - **BASE URL**: lascia vuoto (verrà usato il default `getDattoDevices`)
-     oppure scrivi: `https://portal.86bit.it/api/v1/reports/datto/getDattoDevices`
-     SENZA nient'altro dopo.
-5. "Salva (cifrata)" → "Test connessione" → deve dire "OK"
-
----
-
-
-# 2026-06-29 — Sync Datto Sites → managed_clients + UI badge
-
-## Feature
-Endpoint **`POST /api/portal86-datto/sync-to-clients`** che importa/aggiorna i
-clienti NOC partendo dai 153 siti del portal 86bit.
-
-### Caratteristiche
-- **`dry_run=true`** (default): mostra anteprima senza scrivere a DB
-- **`dry_run=false`**: applica le modifiche
-- **`create_missing=true`** (default): crea i clienti mancanti
-- **`skip_system_sites=true`** (default): filtra container Datto interni
-  `Managed`, `OnDemand`, `Deleted Devices`
-- **`skip_empty=true`** (default): filtra siti con 0 device (placeholder)
-
-### Matching strategy (ordine priorita')
-1. `datto_site_uid` gia' presente sul cliente NOC (re-link sicuro)
-2. nome normalizzato (lower + collapse whitespace) uguale
-3. nessun match → create nuovo cliente
-
-### Garanzie
-- **Non distruttivo**: mai cancella clienti, mai tocca `name`/`description`/
-  `api_key` dell'utente. Aggiorna solo i campi `datto_*` e `autotask_*`.
-- **Idempotente**: re-sync di un DB gia' sincronizzato ritorna
-  `to_create=0, to_update=0, no_change=N` (verificato).
-- **Audit**: ogni sync con apply scrive su `audit` logger.
-
-### Campi aggiunti a `clients` (e a `ClientResponse` model)
-- `datto_site_id` (int)
-- `datto_site_uid` (str)
-- `datto_account_uid` (str)
-- `datto_portal_url` (str — link diretto a Datto RMM)
-- `datto_devices_total` / `_online` / `_offline` (int)
-- `datto_on_demand` / `datto_splashtop_auto_install` (bool)
-- `autotask_company_name` / `autotask_company_id`
-- `datto_last_sync_at` (ISO 8601)
-
-## UI — ClientsPage.js
-- NUOVO bottone **"Sync Datto"** in header (icona `Cloud` di Phosphor)
-  vicino a "Nuovo Cliente". Click → dry-run + window.confirm di anteprima
-  con conteggi → POST live → toast con risultato → refetch clienti.
-- NUOVO pill **"Datto X/Y"** nelle card desktop, visibile solo se
-  `client.datto_site_uid` presente. Click → apre `datto_portal_url` in
-  nuovo tab (link diretto al sito Datto RMM).
-- data-testid: `sync-datto-btn` + `datto-pill-{client.id}`.
-
-## Test E2E (preview, credenziali reali)
-```
-[0] Clienti pre-sync : 1
-=== DRY RUN con filtri default ===
-  fetched     : 153 siti
-  to_create   : 140
-  to_update   : 0
-  no_change   : 0
-  filtered    : 13   (Managed/OnDemand/Deleted Devices + 10 siti vuoti)
-=== APPLY ===
-  → to_create=140, to_update=0, no_change=0, filtered=13
-=== APPLY #2 (idempotency) ===
-  → to_create=0, to_update=0, no_change=140, filtered=13
-  ✓ IDEMPOTENTE
-[4] DB finale: 141 clienti, di cui 140 Datto-linked
-```
-
-## Smoke screenshot UI
-- Bottone "Sync Datto" visibile in header
-- 140 pill "Datto X/Y" su 141 card cliente
-- Esempi: 86BIT 18/25, Cisana 12/19, EuroPizzi 43/69 (link al portalUrl)
-
-## File modificati
-- `backend/routes/portal86_datto.py` (+165 righe — sync endpoint + filtri)
-- `backend/models.py` (+10 campi opzionali in `ClientResponse`)
-- `frontend/src/pages/ClientsPage.js` (handleSyncDatto + Cloud icon + pill datto)
-
-## Steps PROD
-1. Save to GitHub
-2. `cd /home/arslan/86NOCConnectorCenter && git pull origin main && sudo systemctl restart noc-backend`
-3. Hard refresh argus.86bit.it
-4. PUT `/api/admin/portal86-datto/config` con la API key (vedi CHANGELOG precedente)
-5. Click su nuovo bottone "Sync Datto" → conferma → 140+ clienti importati
-
----
-
-
-# 2026-06-29 — NEW: Integrazione `portal.86bit.it` Datto Sites (cifrata)
+# 2026-06-25 — Setup GUI dedicato + fix errore 1392 (file corrotto) installer
 
 ## Richiesta utente
 «Dobbiamo avere un setup GUI come era prima dedicato per installazione… deve

@@ -1418,7 +1418,7 @@ function MiniMetric({ label, value, sub, color }) {
    Endpoint backend: POST /api/devices/by-ip/{ip}/vital body
    {is_vital: bool, client_id: str, reason?: str}
 /* ==================== DEVICE GROUP ==================== */
-function DeviceGroup({ label, icon: Icon, devices, color, onInfoClick, renderActions, macroKey, onDeviceDrop, clientId: clientIdProp }) {
+function DeviceGroup({ label, icon: Icon, devices, color, onInfoClick, renderActions, macroKey, onDeviceDrop, clientId: clientIdProp, selectedIps, onToggleSelect }) {
   // v2026-02-28 SAFETY: fallback su useParams (vedi commento in OverviewTab)
   const { clientId: clientIdParam } = useParams();
   const clientId = clientIdProp || clientIdParam;
@@ -1475,6 +1475,17 @@ function DeviceGroup({ label, icon: Icon, devices, color, onInfoClick, renderAct
               data-testid={clickable ? `grouped-device-row-${d.ip_address}` : undefined}
               title={dropEnabled ? "Trascina su un'altra categoria per riclassificare" : (d.notes || "")}
             >
+              {onToggleSelect && (
+                <input
+                  type="checkbox"
+                  checked={selectedIps?.has(d.ip_address) || false}
+                  onClick={(e) => e.stopPropagation()}
+                  onChange={(e) => { e.stopPropagation(); onToggleSelect(d.ip_address); }}
+                  className="w-3.5 h-3.5 accent-yellow-500 cursor-pointer flex-shrink-0"
+                  data-testid={`select-device-${d.ip_address}`}
+                  title="Seleziona per azione multipla (vitali)"
+                />
+              )}
               <div className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: sc }}></div>
               <span className={`font-medium truncate ${nameIsIP ? "text-[var(--text-muted)] italic" : "text-[var(--text-primary)]"}`} title={d.notes || ""}>{name}</span>
               {!nameIsIP && <span className="font-mono text-[var(--text-muted)]">{d.ip_address}</span>}
@@ -1561,7 +1572,7 @@ function EmptyMacroDropTarget({ macroKey, label, color, icon: Icon, onDeviceDrop
   );
 }
 
-function DevicesGroupedView({ devices, skipList, onInfoClick, renderActions, onDeviceMove }) {
+function DevicesGroupedView({ devices, skipList, onInfoClick, renderActions, onDeviceMove, clientId, selectedIps, onToggleSelect }) {
   // Partizionamento via macroOf (utils/deviceCategory)
   const buckets = {
     firewall: [], switch: [], router: [], server: [], nas: [], ups: [], ap: [],
@@ -1623,6 +1634,9 @@ function DevicesGroupedView({ devices, skipList, onInfoClick, renderActions, onD
               renderActions={renderActions}
               macroKey={g.key}
               onDeviceDrop={onDeviceMove}
+              clientId={clientId}
+              selectedIps={selectedIps}
+              onToggleSelect={onToggleSelect}
             />
           ) : null
         ))}
@@ -1661,6 +1675,9 @@ function DevicesGroupedView({ devices, skipList, onInfoClick, renderActions, onD
               color="#6B7280"
               onInfoClick={onInfoClick}
               renderActions={renderActions}
+              clientId={clientId}
+              selectedIps={selectedIps}
+              onToggleSelect={onToggleSelect}
             />
           </details>
         )}
@@ -1819,11 +1836,45 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
   useEffect(() => {
     try { localStorage.setItem("client-devices-view", viewMode); } catch { /* ignore */ }
   }, [viewMode]);
+  // v2026-06: selezione multipla per marcare/rimuovere VITALI in blocco.
+  const [selectedIps, setSelectedIps] = useState(() => new Set());
+  const [bulkSaving, setBulkSaving] = useState(false);
+  const toggleSelect = (ip) => setSelectedIps(prev => {
+    const n = new Set(prev);
+    if (n.has(ip)) n.delete(ip); else n.add(ip);
+    return n;
+  });
+  const clearSelection = () => setSelectedIps(new Set());
   const webConsole = useWebConsoleTabs();
   const _isMcast = (d) => /^(22[4-9]|23\d|255)\./.test(d?.ip_address || "");
   const visibleDevices = showMulticast ? devices : devices.filter(d => !_isMcast(d));
   const hiddenCount = devices.length - visibleDevices.length;
 
+  // v2026-06: azione multipla vitali. Le checkbox operano sui device visibili.
+  const visibleIps = visibleDevices.map(d => d.ip_address).filter(Boolean);
+  const allVisibleSelected = visibleIps.length > 0 && visibleIps.every(ip => selectedIps.has(ip));
+  const toggleSelectAllVisible = () => setSelectedIps(prev => {
+    if (allVisibleSelected) return new Set();
+    return new Set(visibleIps);
+  });
+  const bulkSetVital = async (isVital) => {
+    const ips = Array.from(selectedIps);
+    if (!ips.length) return;
+    setBulkSaving(true);
+    try {
+      const { data } = await axios.post(`${API}/devices/bulk-vital`, {
+        ips, is_vital: isVital, client_id: clientId,
+      });
+      toast.success(data.message || `${data.modified} dispositivi aggiornati`);
+      clearSelection();
+      onRefresh?.();
+    } catch (err) {
+      const detail = err.response?.data?.detail || err.message || "Errore sconosciuto";
+      toast.error(`Azione multipla fallita: ${detail}`);
+    } finally {
+      setBulkSaving(false);
+    }
+  };
   // v3.8.30: ordinamento tabella dispositivi (default per nome asc) + persist v3.8.31
   // v3.8.40: usa visibleDevices (filtrati) per escludere multicast quando richiesto
   const { sorted: sortedDevices, sortKey, sortDir, requestSort } = useSortableTable(
@@ -2445,11 +2496,48 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
         </div>
       </div>
 
+      {/* v2026-06: toolbar azione multipla VITALI. Compare quando selezioni
+          almeno un device (checkbox in vista Tabella e Raggruppata). */}
+      {selectedIps.size > 0 && (
+        <div className="flex items-center gap-2 flex-wrap mb-2 px-3 py-2 rounded-lg bg-yellow-500/10 border border-yellow-500/40" data-testid="bulk-vital-toolbar">
+          <Star size={14} weight="fill" className="text-yellow-400" />
+          <span className="text-xs font-semibold text-yellow-200">{selectedIps.size} selezionati</span>
+          <div className="h-4 w-px bg-yellow-500/30 mx-1" />
+          <button
+            onClick={() => bulkSetVital(true)}
+            disabled={bulkSaving}
+            className="text-[11px] font-bold px-3 py-1 rounded-md bg-yellow-500 text-black hover:bg-yellow-400 transition-colors disabled:opacity-50 flex items-center gap-1"
+            data-testid="bulk-mark-vital-btn"
+          >
+            <Star size={11} weight="fill" /> Marca come VITALI
+          </button>
+          <button
+            onClick={() => bulkSetVital(false)}
+            disabled={bulkSaving}
+            className="text-[11px] font-semibold px-3 py-1 rounded-md bg-[var(--bg-card)] border border-[var(--bg-border)] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors disabled:opacity-50"
+            data-testid="bulk-unmark-vital-btn"
+          >
+            Rimuovi dai vitali
+          </button>
+          <button
+            onClick={clearSelection}
+            disabled={bulkSaving}
+            className="text-[11px] px-2 py-1 rounded-md text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors ml-auto"
+            data-testid="bulk-clear-selection-btn"
+          >
+            Deseleziona tutto
+          </button>
+        </div>
+      )}
+
       {viewMode === "grouped" ? (
         <DevicesGroupedView
           devices={visibleDevices}
           skipList={showMulticast ? [] : devices.filter(d => _isMcast(d))}
           onInfoClick={(d) => setInfoTarget(d)}
+          clientId={clientId}
+          selectedIps={selectedIps}
+          onToggleSelect={toggleSelect}
           onDeviceMove={async (payload, newMacro) => {
             // v2026-02-13: drag&drop riclassificazione manuale.
             // POST .../move-category con macro target. Lockerà
@@ -2492,6 +2580,16 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
         <table className="alert-table min-w-[780px]" data-testid="client-devices-table">
           <thead>
             <tr>
+              <th className="py-2 px-2 w-8">
+                <input
+                  type="checkbox"
+                  checked={allVisibleSelected}
+                  onChange={toggleSelectAllVisible}
+                  className="w-3.5 h-3.5 accent-yellow-500 cursor-pointer"
+                  title="Seleziona/deseleziona tutti i visibili"
+                  data-testid="select-all-devices"
+                />
+              </th>
               <SortableTh field="name" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Nome</SortableTh>
               <SortableTh field="device_type" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Tipo</SortableTh>
               <SortableTh field="ip_address" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>IP</SortableTh>
@@ -2509,7 +2607,7 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
           </thead>
           <tbody>
             {sortedDevices.length === 0 ? (
-              <tr><td colSpan={13} className="text-center text-[var(--text-muted)] py-8 text-xs">Nessun dispositivo — clicca "Aggiungi Dispositivo" per iniziare</td></tr>
+              <tr><td colSpan={14} className="text-center text-[var(--text-muted)] py-8 text-xs">Nessun dispositivo — clicca "Aggiungi Dispositivo" per iniziare</td></tr>
             ) : sortedDevices.map((d, i) => {
               const sc = getStatusColor(d.status);
               const monitorType = (d.monitor_type || "snmp").toLowerCase();
@@ -2522,6 +2620,15 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
               }[monitorType] || { label: monitorType.toUpperCase(), color: "text-[var(--text-muted)]", bg: "bg-[var(--bg-hover)] border-[var(--bg-border)]" };
               return (
                 <tr key={i} className={d.alerts_silenced ? "opacity-70" : ""}>
+                  <td className="px-2">
+                    <input
+                      type="checkbox"
+                      checked={selectedIps.has(d.ip_address) || false}
+                      onChange={() => toggleSelect(d.ip_address)}
+                      className="w-3.5 h-3.5 accent-yellow-500 cursor-pointer"
+                      data-testid={`select-device-row-${d.ip_address}`}
+                    />
+                  </td>
                   <td className="text-[var(--text-primary)] text-xs font-medium">
                     <span className="inline-flex items-center gap-1.5 flex-wrap">
                       {pickDeviceName(d)}

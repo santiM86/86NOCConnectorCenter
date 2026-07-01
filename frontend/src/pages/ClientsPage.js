@@ -305,8 +305,10 @@ export default function ClientsPage() {
                     </div>
                     {/* Compact status pills on mobile */}
                     <div className="flex items-center gap-1.5 mt-1 md:hidden text-[10px]">
-                      <span className="font-mono" style={{ color: ov.devices?.offline > 0 ? "#FF9500" : "#34C759" }}>
-                        {ov.devices?.total > 0 ? `${ov.devices.online}/${ov.devices.total}` : "—"} disp.
+                      <span className="font-mono" style={{ color: (ov.devices?.vital_total > 0 ? ((ov.devices?.vital_online || 0) < ov.devices.vital_total) : ov.devices?.offline > 0) ? "#FF9500" : "#34C759" }}>
+                        {ov.devices?.vital_total > 0
+                          ? `${ov.devices.vital_online || 0}/${ov.devices.vital_total} vitali`
+                          : (ov.devices?.total > 0 ? `${ov.devices.online}/${ov.devices.total} disp.` : "— disp.")}
                       </span>
                       <span className="text-[var(--text-muted)]">·</span>
                       <span style={{ color: ov.connector_online ? "#34C759" : ov.connector_online === false ? "#FF3B30" : "#888" }}>
@@ -323,8 +325,30 @@ export default function ClientsPage() {
 
                   {/* Quick Status Pills (desktop only — cliccabili per dettagli future, ora pass-through) */}
                   <div className="flex items-center gap-2 flex-shrink-0 hidden md:flex">
-                    {/* Devices */}
-                    <StatusPill icon={HardDrives} value={ov.devices?.total > 0 ? `${ov.devices.online}/${ov.devices.total}` : "—"} color={ov.devices?.offline > 0 ? "#FF9500" : "#34C759"} label="Disp." />
+                    {/* Devices — se ci sono VITALI mostra vitali online/tot + totale secondario */}
+                    {(() => {
+                      const dv = ov.devices || {};
+                      const hasVital = (dv.vital_total || 0) > 0;
+                      if (hasVital) {
+                        const vitalDown = (dv.vital_online || 0) < (dv.vital_total || 0);
+                        return (
+                          <StatusPill icon={HardDrives}
+                            value={`${dv.vital_online || 0}/${dv.vital_total}`}
+                            sub={`${dv.total || 0} tot`}
+                            color={vitalDown ? "#FF3B30" : "#34C759"}
+                            label="Vitali"
+                            titleText={`Vitali online: ${dv.vital_online || 0}/${dv.vital_total} · ${dv.total || 0} dispositivi totali (${dv.online || 0} online)`} />
+                        );
+                      }
+                      return (
+                        <StatusPill icon={HardDrives}
+                          value={dv.total > 0 ? `${dv.online}/${dv.total}` : "—"}
+                          sub={dv.total > 0 ? "no vitali" : undefined}
+                          color={dv.offline > 0 ? "#FF9500" : "#34C759"}
+                          label="Disp."
+                          titleText={dv.total > 0 ? `${dv.online}/${dv.total} online. Nessun dispositivo marcato VITALE: seleziona i vitali dalla tab Dispositivi.` : "Nessun dispositivo"} />
+                      );
+                    })()}
                     {/* WAN */}
                     <StatusPill icon={Globe} value={ov.wan?.status === "ok" ? "OK" : ov.wan?.status === "not_configured" ? "N/C" : (ov.wan?.status || "—").toUpperCase()} color={ov.wan?.status === "ok" ? "#34C759" : ov.wan?.status === "not_configured" ? "#555" : "#FF3B30"} label="WAN" />
                     {/* Connector */}
@@ -508,16 +532,19 @@ export default function ClientsPage() {
   );
 }
 
-function StatusPill({ icon: Icon, value, color, label }) {
+function StatusPill({ icon: Icon, value, color, label, sub, titleText }) {
   return (
     <div
       className="flex flex-col items-center justify-center gap-0.5 px-2 py-1 rounded-md bg-[var(--bg-card)] border border-[var(--bg-border)] min-w-[52px]"
-      title={label}
+      title={titleText || label}
     >
       <div className="flex items-center gap-1">
         <Icon size={11} weight="bold" style={{ color }} />
         <span className="text-[9px] font-bold font-mono" style={{ color }}>{value}</span>
       </div>
+      {sub && (
+        <span className="text-[8px] font-mono text-[var(--text-muted)] leading-none">{sub}</span>
+      )}
       {label && (
         <span className="text-[8px] uppercase tracking-wider text-[var(--text-muted)] leading-none">
           {label}
