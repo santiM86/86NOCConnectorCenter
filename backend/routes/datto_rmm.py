@@ -743,16 +743,19 @@ async def _match_with_center(client_id: str, datto_devices: list[dict]) -> int:
         ep_mac = (ep.get("mac") or "").upper()
         if ep_mac and ep_mac in mac_to_dev:
             d = mac_to_dev[ep_mac]
-            matched_uids.add(d["uid"])
+            uid = d.get("uid")
+            if not uid:
+                continue
+            matched_uids.add(uid)
             key = (ep.get("switch_ip"), ep.get("port"), ep.get("mac"))
             if key in matched_eps:
                 continue
             matched_eps.add(key)
             ops.append(UpdateOne(
-                {"client_id": client_id, "switch_ip": ep["switch_ip"],
-                 "port": ep["port"], "mac": ep["mac"]},
+                {"client_id": client_id, "switch_ip": ep.get("switch_ip"),
+                 "port": ep.get("port"), "mac": ep.get("mac")},
                 {"$set": {
-                    "datto_name": d["name"],
+                    "datto_name": d.get("name"),
                     "datto_match": "mac",
                     "datto_matched_at": now,
                 }},
@@ -763,18 +766,19 @@ async def _match_with_center(client_id: str, datto_devices: list[dict]) -> int:
         ep_ip = ep.get("ip") or ""
         if ep_ip and ep_ip in ip_to_dev:
             d = ip_to_dev[ep_ip]
-            if d["uid"] in matched_uids:
-                continue  # gia' matchato via MAC
+            uid = d.get("uid")
+            if not uid or uid in matched_uids:
+                continue  # gia' matchato via MAC o uid mancante
             key = (ep.get("switch_ip"), ep.get("port"), ep.get("mac"))
             if key in matched_eps:
                 continue
             matched_eps.add(key)
-            matched_uids.add(d["uid"])
+            matched_uids.add(uid)
             ops.append(UpdateOne(
-                {"client_id": client_id, "switch_ip": ep["switch_ip"],
-                 "port": ep["port"], "mac": ep["mac"]},
+                {"client_id": client_id, "switch_ip": ep.get("switch_ip"),
+                 "port": ep.get("port"), "mac": ep.get("mac")},
                 {"$set": {
-                    "datto_name": d["name"],
+                    "datto_name": d.get("name"),
                     "datto_match": "ip",
                     "datto_matched_at": now,
                 }},
@@ -791,6 +795,9 @@ async def _match_with_center(client_id: str, datto_devices: list[dict]) -> int:
     md_ops: list = []
     matched_md_ids: set = set()
     for md in managed:
+        md_id = md.get("id")
+        if not md_id:
+            continue
         ip = md.get("ip_address") or ""
         mac = (md.get("mac_address") or "").upper()
         d = None
@@ -799,13 +806,13 @@ async def _match_with_center(client_id: str, datto_devices: list[dict]) -> int:
             d, mt = mac_to_dev[mac], "mac"
         elif ip and ip in ip_to_dev:
             d, mt = ip_to_dev[ip], "ip"
-        if d:
+        if d and d.get("uid"):
             matched_uids.add(d["uid"])
-            matched_md_ids.add(md["id"])
+            matched_md_ids.add(md_id)
             md_ops.append(UpdateOne(
-                {"id": md["id"]},
+                {"id": md_id},
                 {"$set": {
-                    "datto_name": d["name"],
+                    "datto_name": d.get("name"),
                     "datto_match": mt,
                     "datto_matched_at": now,
                 }},
@@ -828,20 +835,21 @@ async def _match_with_center(client_id: str, datto_devices: list[dict]) -> int:
 
     if name_to_dev:
         for md in managed:
-            if md["id"] in matched_md_ids:
-                continue  # gia' matchato via MAC/IP
+            md_id = md.get("id")
+            if not md_id or md_id in matched_md_ids:
+                continue  # gia' matchato via MAC/IP o id mancante
             for cand_field in ("hostname", "name"):
                 cand = _norm_name(md.get(cand_field))
                 if cand and cand in name_to_dev:
                     d = name_to_dev[cand]
-                    if d["uid"] in matched_uids:
+                    if not d.get("uid") or d["uid"] in matched_uids:
                         continue
                     matched_uids.add(d["uid"])
-                    matched_md_ids.add(md["id"])
+                    matched_md_ids.add(md_id)
                     md_ops.append(UpdateOne(
-                        {"id": md["id"]},
+                        {"id": md_id},
                         {"$set": {
-                            "datto_name": d["name"],
+                            "datto_name": d.get("name"),
                             "datto_match": "hostname",
                             "datto_matched_at": now,
                         }},

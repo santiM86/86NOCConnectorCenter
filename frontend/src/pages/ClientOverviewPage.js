@@ -1476,15 +1476,21 @@ function DeviceGroup({ label, icon: Icon, devices, color, onInfoClick, renderAct
               title={dropEnabled ? "Trascina su un'altra categoria per riclassificare" : (d.notes || "")}
             >
               {onToggleSelect && (
-                <input
-                  type="checkbox"
-                  checked={selectedIps?.has(d.ip_address) || false}
+                <label
                   onClick={(e) => e.stopPropagation()}
-                  onChange={(e) => { e.stopPropagation(); onToggleSelect(d.ip_address); }}
-                  className="w-3.5 h-3.5 accent-yellow-500 cursor-pointer flex-shrink-0"
-                  data-testid={`select-device-${d.ip_address}`}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  className="flex items-center justify-center -my-1.5 -ml-1 py-1.5 px-1.5 cursor-pointer flex-shrink-0"
                   title="Seleziona per azione multipla (vitali)"
-                />
+                >
+                  <input
+                    type="checkbox"
+                    checked={selectedIps?.has(d.ip_address) || false}
+                    onClick={(e) => e.stopPropagation()}
+                    onChange={(e) => { e.stopPropagation(); onToggleSelect(d.ip_address); }}
+                    className="w-4 h-4 accent-yellow-500 cursor-pointer"
+                    data-testid={`select-device-${d.ip_address}`}
+                  />
+                </label>
               )}
               <div className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: sc }}></div>
               <span className={`font-medium truncate ${nameIsIP ? "text-[var(--text-muted)] italic" : "text-[var(--text-primary)]"}`} title={d.notes || ""}>{name}</span>
