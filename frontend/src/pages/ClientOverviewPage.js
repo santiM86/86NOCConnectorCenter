@@ -1476,21 +1476,21 @@ function DeviceGroup({ label, icon: Icon, devices, color, onInfoClick, renderAct
               title={dropEnabled ? "Trascina su un'altra categoria per riclassificare" : (d.notes || "")}
             >
               {onToggleSelect && (
-                <label
-                  onClick={(e) => e.stopPropagation()}
+                <div
+                  onClick={(e) => { e.stopPropagation(); onToggleSelect(d.ip_address); }}
                   onMouseDown={(e) => e.stopPropagation()}
                   className="flex items-center justify-center -my-1.5 -ml-1 py-1.5 px-1.5 cursor-pointer flex-shrink-0"
                   title="Seleziona per azione multipla (vitali)"
+                  data-testid={`select-device-${d.ip_address}`}
                 >
                   <input
                     type="checkbox"
                     checked={selectedIps?.has(d.ip_address) || false}
-                    onClick={(e) => e.stopPropagation()}
-                    onChange={(e) => { e.stopPropagation(); onToggleSelect(d.ip_address); }}
-                    className="w-4 h-4 accent-yellow-500 cursor-pointer"
-                    data-testid={`select-device-${d.ip_address}`}
+                    readOnly
+                    tabIndex={-1}
+                    className="w-4 h-4 accent-yellow-500 pointer-events-none"
                   />
-                </label>
+                </div>
               )}
               <div className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: sc }}></div>
               <span className={`font-medium truncate ${nameIsIP ? "text-[var(--text-muted)] italic" : "text-[var(--text-primary)]"}`} title={d.notes || ""}>{name}</span>
@@ -2627,13 +2627,19 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
               return (
                 <tr key={i} className={d.alerts_silenced ? "opacity-70" : ""}>
                   <td className="px-2">
-                    <input
-                      type="checkbox"
-                      checked={selectedIps.has(d.ip_address) || false}
-                      onChange={() => toggleSelect(d.ip_address)}
-                      className="w-3.5 h-3.5 accent-yellow-500 cursor-pointer"
-                      data-testid={`select-device-row-${d.ip_address}`}
-                    />
+                    <div
+                      onClick={(e) => { e.stopPropagation(); toggleSelect(d.ip_address); }}
+                      className="inline-flex items-center justify-center p-1 cursor-pointer"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedIps.has(d.ip_address) || false}
+                        readOnly
+                        tabIndex={-1}
+                        className="w-4 h-4 accent-yellow-500 pointer-events-none"
+                        data-testid={`select-device-row-${d.ip_address}`}
+                      />
+                    </div>
                   </td>
                   <td className="text-[var(--text-primary)] text-xs font-medium">
                     <span className="inline-flex items-center gap-1.5 flex-wrap">
