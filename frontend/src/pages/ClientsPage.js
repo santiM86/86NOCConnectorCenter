@@ -6,7 +6,7 @@ import { toast } from "sonner";
 import {
   Plus, Trash, Buildings, EnvelopeSimple, Key, Copy, ArrowsClockwise,
   Globe, CaretRight, HardDrives, PlugsConnected, Bell, ShieldCheck,
-  WifiHigh, WifiSlash, DownloadSimple,
+  WifiHigh, WifiSlash, DownloadSimple, Cloud,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -143,6 +143,47 @@ export default function ClientsPage() {
     }
   };
 
+  // v2026-06-29: Sync Datto sites → managed_clients. Prima fa dry-run per
+  // mostrare anteprima (chiede conferma), poi se confermato applica.
+  // Non distruttivo: aggiorna solo i campi datto_* sui clienti esistenti.
+  const [dattoSyncing, setDattoSyncing] = useState(false);
+  const handleSyncDatto = async () => {
+    if (dattoSyncing) return;
+    setDattoSyncing(true);
+    try {
+      const dr = await axios.post(`${API}/portal86-datto/sync-to-clients?dry_run=true`);
+      const s = dr.data?.summary || {};
+      const confirmMsg =
+        `Sync Datto (anteprima):\n\n` +
+        `  • Da creare : ${s.to_create || 0}\n` +
+        `  • Da aggiornare : ${s.to_update || 0}\n` +
+        `  • Invariati : ${s.no_change || 0}\n` +
+        `  • Filtrati (sistema/vuoti) : ${s.filtered || 0}\n\n` +
+        `Procedere con l'applicazione?`;
+      if (!window.confirm(confirmMsg)) {
+        toast.info("Sync Datto annullata");
+        return;
+      }
+      const ap = await axios.post(`${API}/portal86-datto/sync-to-clients?dry_run=false`);
+      const r = ap.data?.summary || {};
+      toast.success(
+        `Sync Datto OK — creati ${r.to_create || 0}, aggiornati ${r.to_update || 0}, invariati ${r.no_change || 0}`
+      );
+      fetchClients();
+    } catch (e) {
+      const msg = e.response?.data?.detail || e.message;
+      if (String(msg).includes("non configurato")) {
+        toast.error("Sync Datto: configurazione mancante. Apri Impostazioni → Integrazioni Portal 86bit.");
+      } else if (String(msg).includes("vault_mismatch")) {
+        toast.error("Sync Datto: chiave vault ruotata. Re-salva la API key in Impostazioni.");
+      } else {
+        toast.error(`Sync Datto fallita: ${msg}`);
+      }
+    } finally {
+      setDattoSyncing(false);
+    }
+  };
+
   // Build overview map by client id
   const overviewMap = {};
   (overview.clients || []).forEach(c => { overviewMap[c.id] = c; });
@@ -176,7 +217,19 @@ export default function ClientsPage() {
             </div>
           )}
         </div>
-        <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+        <div className="flex items-center gap-2">
+          <Button
+            onClick={handleSyncDatto}
+            disabled={dattoSyncing}
+            variant="outline"
+            className="rounded-lg gap-1.5 text-xs h-8 border-[var(--bg-border)] text-[var(--text-primary)] hover:bg-indigo-600/10"
+            data-testid="sync-datto-btn"
+            title="Sincronizza i siti Datto dal portal 86bit. Mostra anteprima prima di applicare."
+          >
+            <Cloud size={14} className={dattoSyncing ? "animate-pulse" : ""} />
+            {dattoSyncing ? "Sync in corso..." : "Sync Datto"}
+          </Button>
+          <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
           <DialogTrigger asChild>
             <Button className="rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white gap-1.5 text-xs h-8" data-testid="add-client-btn">
               <Plus size={14} /> Nuovo Cliente
@@ -207,6 +260,7 @@ export default function ClientsPage() {
             </form>
           </DialogContent>
         </Dialog>
+        </div>
       </div>
 
       {/* Client List */}
@@ -251,8 +305,10 @@ export default function ClientsPage() {
                     </div>
                     {/* Compact status pills on mobile */}
                     <div className="flex items-center gap-1.5 mt-1 md:hidden text-[10px]">
-                      <span className="font-mono" style={{ color: ov.devices?.offline > 0 ? "#FF9500" : "#34C759" }}>
-                        {ov.devices?.total > 0 ? `${ov.devices.online}/${ov.devices.total}` : "—"} disp.
+                      <span className="font-mono" style={{ color: (ov.devices?.vital_total > 0 ? ((ov.devices?.vital_online || 0) < ov.devices.vital_total) : ov.devices?.offline > 0) ? "#FF9500" : "#34C759" }}>
+                        {ov.devices?.vital_total > 0
+                          ? `${ov.devices.vital_online || 0}/${ov.devices.vital_total} vitali`
+                          : (ov.devices?.total > 0 ? `${ov.devices.online}/${ov.devices.total} disp.` : "— disp.")}
                       </span>
                       <span className="text-[var(--text-muted)]">·</span>
                       <span style={{ color: ov.connector_online ? "#34C759" : ov.connector_online === false ? "#FF3B30" : "#888" }}>
@@ -269,14 +325,55 @@ export default function ClientsPage() {
 
                   {/* Quick Status Pills (desktop only — cliccabili per dettagli future, ora pass-through) */}
                   <div className="flex items-center gap-2 flex-shrink-0 hidden md:flex">
-                    {/* Devices */}
-                    <StatusPill icon={HardDrives} value={ov.devices?.total > 0 ? `${ov.devices.online}/${ov.devices.total}` : "—"} color={ov.devices?.offline > 0 ? "#FF9500" : "#34C759"} label="Disp." />
+                    {/* Devices — se ci sono VITALI mostra vitali online/tot + totale secondario */}
+                    {(() => {
+                      const dv = ov.devices || {};
+                      const hasVital = (dv.vital_total || 0) > 0;
+                      if (hasVital) {
+                        const vitalDown = (dv.vital_online || 0) < (dv.vital_total || 0);
+                        return (
+                          <StatusPill icon={HardDrives}
+                            value={`${dv.vital_online || 0}/${dv.vital_total}`}
+                            sub={`${dv.total || 0} tot`}
+                            color={vitalDown ? "#FF3B30" : "#34C759"}
+                            label="Vitali"
+                            titleText={`Vitali online: ${dv.vital_online || 0}/${dv.vital_total} · ${dv.total || 0} dispositivi totali (${dv.online || 0} online)`} />
+                        );
+                      }
+                      return (
+                        <StatusPill icon={HardDrives}
+                          value={dv.total > 0 ? `${dv.online}/${dv.total}` : "—"}
+                          sub={dv.total > 0 ? "no vitali" : undefined}
+                          color={dv.offline > 0 ? "#FF9500" : "#34C759"}
+                          label="Disp."
+                          titleText={dv.total > 0 ? `${dv.online}/${dv.total} online. Nessun dispositivo marcato VITALE: seleziona i vitali dalla tab Dispositivi.` : "Nessun dispositivo"} />
+                      );
+                    })()}
                     {/* WAN */}
                     <StatusPill icon={Globe} value={ov.wan?.status === "ok" ? "OK" : ov.wan?.status === "not_configured" ? "N/C" : (ov.wan?.status || "—").toUpperCase()} color={ov.wan?.status === "ok" ? "#34C759" : ov.wan?.status === "not_configured" ? "#555" : "#FF3B30"} label="WAN" />
                     {/* Connector */}
                     <StatusPill icon={PlugsConnected} value={ov.connector_online === true ? "ON" : ov.connector_online === false ? "OFF" : "—"} color={ov.connector_online ? "#34C759" : ov.connector_online === false ? "#FF3B30" : "#555"} label="Conn." />
                     {/* Alerts */}
                     <StatusPill icon={Bell} value={ov.alerts?.total || 0} color={ov.alerts?.critical > 0 ? "#FF3B30" : ov.alerts?.total > 0 ? "#FF9500" : "#34C759"} label="Alert" />
+                    {/* Datto sync — visibile solo se il cliente e' Datto-linked */}
+                    {client.datto_site_uid && (
+                      <a
+                        href={client.datto_portal_url || "#"}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={(e) => e.stopPropagation()}
+                        className="pointer-events-auto"
+                        data-testid={`datto-pill-${client.id}`}
+                        title={`Apri sito Datto: ${client.name}${client.datto_last_sync_at ? `\nUltima sync: ${client.datto_last_sync_at}` : ""}`}
+                      >
+                        <StatusPill
+                          icon={Cloud}
+                          value={`${client.datto_devices_online ?? 0}/${client.datto_devices_total ?? 0}`}
+                          color={(client.datto_devices_offline ?? 0) > 0 ? "#FF9500" : "#34C759"}
+                          label="Datto"
+                        />
+                      </a>
+                    )}
                   </div>
 
                   {/* Connector Info — pointer-events-auto + z-10 per stare sopra il Link overlay */}
@@ -326,7 +423,6 @@ export default function ClientsPage() {
                       const latestVer = latestAgentVersion || "";
                       const hasRealLatest = latestVer && latestVer.toLowerCase() !== "latest";
                       const isOutdated = installedVer && hasRealLatest && isNewerSemver(latestVer, installedVer);
-                      const isUpToDate = installedVer && hasRealLatest && !isOutdated;
                       const btnLabel = hasRealLatest
                         ? `Setup GUI v${latestVer}`
                         : (latestVer ? "Setup GUI (latest)" : "Setup GUI");
@@ -436,16 +532,19 @@ export default function ClientsPage() {
   );
 }
 
-function StatusPill({ icon: Icon, value, color, label }) {
+function StatusPill({ icon: Icon, value, color, label, sub, titleText }) {
   return (
     <div
       className="flex flex-col items-center justify-center gap-0.5 px-2 py-1 rounded-md bg-[var(--bg-card)] border border-[var(--bg-border)] min-w-[52px]"
-      title={label}
+      title={titleText || label}
     >
       <div className="flex items-center gap-1">
         <Icon size={11} weight="bold" style={{ color }} />
         <span className="text-[9px] font-bold font-mono" style={{ color }}>{value}</span>
       </div>
+      {sub && (
+        <span className="text-[8px] font-mono text-[var(--text-muted)] leading-none">{sub}</span>
+      )}
       {label && (
         <span className="text-[8px] uppercase tracking-wider text-[var(--text-muted)] leading-none">
           {label}
