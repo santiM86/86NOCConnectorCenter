@@ -417,6 +417,24 @@ func downloadFile(c cliCfg, name, dst, expectedSHA string) error {
 			return fmt.Errorf("non e' un eseguibile Windows valido (header PE 'MZ' mancante): download corrotto")
 		}
 	}
+	// Sanity check anti-1392: il binario deve essere un PE Windows valido
+	// (header "MZ") e di dimensione plausibile. Cattura download troncati o
+	// pagine HTML d'errore salvate come .exe PRIMA di registrare il servizio.
+	if strings.HasSuffix(strings.ToLower(name), ".exe") {
+		if fi, statErr := os.Stat(tmp); statErr == nil && fi.Size() < 500_000 {
+			os.Remove(tmp)
+			return fmt.Errorf("file corrotto/incompleto (%d byte, atteso > 500KB)", fi.Size())
+		}
+		hdr := make([]byte, 2)
+		if fh, oErr := os.Open(tmp); oErr == nil {
+			_, _ = fh.Read(hdr)
+			fh.Close()
+		}
+		if hdr[0] != 'M' || hdr[1] != 'Z' {
+			os.Remove(tmp)
+			return fmt.Errorf("non e' un eseguibile Windows valido (header PE 'MZ' mancante): download corrotto")
+		}
+	}
 	if err := os.Rename(tmp, dst); err != nil {
 		os.Remove(tmp)
 		return err
