@@ -1,34 +1,3 @@
-# 2026-07-01 — Dispositivi VITALI: selezione multipla + contatore card basato sui vitali
-
-## Richiesta utente
-Poter selezionare in modo MULTIPLO quali dispositivi sono "vitali" e avere gli
-alert focalizzati su questi. Il contatore "DISP." nella card cliente non deve
-mostrare 40/49 quando 39 non sono vitali.
-
-## Implementato
-BACKEND
-- `POST /api/devices/bulk-vital` (device_info_card.py): marca/rimuove is_vital in
-  blocco su piu' IP {ips:[], is_vital:bool, client_id}. Invalida silence-cache +
-  audit log. Testato: matched/modified corretti.
-- `overview.py`: aggiunti contatori `vital_total` e `vital_online` per cliente
-  (proiezione is_vital + conteggio con fallback lookup managed_devices per i
-  device legacy). Endpoint `/api/overview/clients` verificato: ritorna i conteggi.
-
-FRONTEND
-- ClientOverviewPage (tab Dispositivi): checkbox di selezione su OGNI device in
-  ENTRAMBE le viste (Raggruppata + Tabella) + "seleziona tutti i visibili" in
-  tabella. Toolbar bulk che appare alla selezione: "Marca come VITALI",
-  "Rimuovi dai vitali", "Deseleziona tutto". Dopo l'azione: refresh automatico.
-- ClientsPage: contatore "DISP." ora mostra i VITALI quando presenti — badge
-  principale "vitali_online/vitali_totali" + secondario "N tot" (es. "0/2 · 30
-  tot VITALI"). Se nessun vitale e' marcato, fallback al totale con avviso.
-- Alert invariati: solo i device VITALI generano alert (com'era, confermato).
-
-## Validazione
-- Parse Python OK; endpoint bulk e overview testati via curl; screenshot UI:
-  checkbox + toolbar bulk visibili in vista Raggruppata, card mostra "0/2 · 30 tot".
-- Dati di test preview ripristinati a non-vitale dopo il test.
-
 # 2026-06-25 — Setup GUI dedicato + fix errore 1392 (file corrotto) installer
 
 ## Richiesta utente
