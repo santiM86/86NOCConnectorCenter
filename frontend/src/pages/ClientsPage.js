@@ -466,16 +466,13 @@ export default function ClientsPage() {
                                   chiede master/scanner durante la GUI Windows nativa.
                               - "Setup Master" / "Setup Scanner": ROLE baked-in →
                                   installer silenzioso per quel ruolo specifico. */}
-                          {/* Alternativa CLI (console): SFX con nocinstall.exe.
-                              Declassato — il metodo consigliato e' il Wizard GUI
-                              qui sopra. Tenuto come fallback per AV enterprise. */}
                           <a
                             href={`${API}/agent/install/setup.zip?token=${encodeURIComponent(client.api_key)}&client_id=${encodeURIComponent(client.id)}&label=${encodeURIComponent(client.name)}${hasRealLatest ? `&version=v${latestVer}` : ""}`}
-                            onClick={(e) => { e.stopPropagation(); toast.success(`Setup .exe (CLI) per "${client.name}" — alternativa alla GUI. Estrai ZIP, click destro su setup.exe → Esegui come amministratore.`); }}
+                            onClick={(e) => { e.stopPropagation(); toast.success(`Setup .exe per "${client.name}" — estrai ZIP, click destro su setup.exe → Esegui come amministratore. La GUI ti fara' scegliere master/scanner.`); }}
                             data-testid={`download-setup-exe-${client.id}`}
-                            className="text-[9px] px-2 py-1 rounded-md bg-[var(--bg-card)] border border-[var(--bg-border)] text-[var(--text-muted)] hover:text-cyan-300 hover:border-cyan-500/30 transition-colors flex items-center gap-1 no-underline"
-                            title={`Alternativa CLI (console) per ${client.name}. Usa il Wizard GUI come metodo principale.`}>
-                            <DownloadSimple size={10} /> Setup .exe (CLI)
+                            className="text-[9px] px-2 py-1 rounded-md bg-[var(--bg-card)] border border-cyan-500/30 text-cyan-300 hover:border-cyan-400 hover:text-cyan-200 transition-colors flex items-center gap-1 no-underline"
+                            title={`Scarica Setup .exe GUI per ${client.name}. Doppio click su setup.exe: la GUI chiedera' Master o Scanner.`}>
+                            <DownloadSimple size={10} /> Setup .exe
                           </a>
                           <a
                             href={`${API}/agent/install/setup.zip?token=${encodeURIComponent(client.api_key)}&client_id=${encodeURIComponent(client.id)}&role=master&label=${encodeURIComponent(client.name)}${hasRealLatest ? `&version=v${latestVer}` : ""}`}
