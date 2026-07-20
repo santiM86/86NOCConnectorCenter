@@ -998,95 +998,80 @@ async def set_device_vital(
     }
 
 
-
-@router.post("/devices/by-ip/{device_ip}/monitoring-config")
-async def set_device_monitoring_config(
-    device_ip: str,
+@router.post("/devices/bulk-vital")
+async def set_devices_vital_bulk(
     payload: dict,
     request: Request,
     current_user: dict = Depends(get_current_user),
 ):
-    """Override per-device della soglia max_check_attempts (Soft/Hard).
+    """Marca/rimuove in blocco il flag `is_vital` su piu' device.
 
-    Body: {"max_check_attempts": int|null, "client_id"?: str}
-    - null/0 → rimuove l'override (usa il default globale).
-    - 1..20 → imposta l'override per questo device.
+    Body: {"ips": [str, ...], "is_vital": bool, "client_id": str, "reason"?: str}
+
+    `client_id` e' obbligatorio: la selezione multipla avviene sempre nel
+    contesto di un cliente, quindi evitiamo ambiguita' cross-tenant.
     """
-    raw = payload.get("max_check_attempts")
-    explicit_client_id = (payload.get("client_id") or "").strip() or None
-    md_query = {"ip": device_ip}
-    if explicit_client_id:
-        md_query["client_id"] = explicit_client_id
-    elif await db.managed_devices.count_documents({"ip": device_ip}) > 1:
-        raise HTTPException(status_code=409, detail=f"IP {device_ip} su piu' client: includi client_id.")
+    from alert_filter import invalidate_silence_cache
 
-    md = await db.managed_devices.find_one(md_query, {"_id": 0, "id": 1, "client_id": 1, "name": 1})
-    if not md:
-        raise HTTPException(status_code=404, detail=f"Device {device_ip} non trovato")
+    ips = payload.get("ips")
+    if not isinstance(ips, list) or not ips:
+        raise HTTPException(status_code=400, detail="ips (lista non vuota) e' obbligatorio")
+    if "is_vital" not in (payload or {}):
+        raise HTTPException(status_code=400, detail="is_vital (bool) e' obbligatorio")
+    client_id = (payload.get("client_id") or "").strip()
+    if not client_id:
+        raise HTTPException(status_code=400, detail="client_id e' obbligatorio per l'azione multipla")
+    is_vital = bool(payload.get("is_vital"))
+    reason = (payload.get("reason") or "").strip()[:200]
+    # Normalizza + dedup gli IP
+    ip_list = list({str(i).strip() for i in ips if str(i).strip()})
 
-    if raw in (None, "", 0, "0"):
-        await db.managed_devices.update_one(md_query, {"$unset": {"max_check_attempts": ""}})
-        new_val = None
-    else:
-        new_val = max(1, min(20, int(raw)))
-        await db.managed_devices.update_one(md_query, {"$set": {"max_check_attempts": new_val}})
+    now_iso = datetime.now(timezone.utc).isoformat()
+    user_email = current_user.get("email")
+
+    res = await db.managed_devices.update_many(
+        {"client_id": client_id, "ip": {"$in": ip_list}},
+        {"$set": {
+            "is_vital": is_vital,
+            "is_vital_set_by": user_email,
+            "is_vital_set_at": now_iso,
+            "is_vital_reason": reason or None,
+        }},
+    )
+
+    # Invalida la cache silence per ogni IP toccato
+    for ip in ip_list:
+        invalidate_silence_cache(client_id=client_id, device_ip=ip)
 
     try:
         await audit_logger.log(
-            user_email=current_user.get("email"),
+            user_email=user_email,
             action=AuditAction.UPDATE_DEVICE if hasattr(AuditAction, "UPDATE_DEVICE") else AuditAction.OTHER,
-            resource_type="device", resource_id=md.get("id"),
-            metadata={"action": "set_max_check_attempts", "device_ip": device_ip, "value": new_val},
+            resource_type="device",
+            resource_id=None,
+            metadata={
+                "action": "set_vital_bulk",
+                "client_id": client_id,
+                "ips": ip_list,
+                "is_vital": is_vital,
+                "matched": res.matched_count,
+                "modified": res.modified_count,
+                "reason": reason,
+            },
             request=request,
         )
     except Exception:
         pass
-    return {"ok": True, "device_ip": device_ip, "max_check_attempts": new_val}
 
-
-@router.post("/devices/by-ip/{device_ip}/parent")
-async def set_device_parent(
-    device_ip: str,
-    payload: dict,
-    request: Request,
-    current_user: dict = Depends(get_current_user),
-):
-    """Imposta/rimuove il PADRE (switch/gateway a monte) di un device per la
-    logica di dipendenza 'down vs unreachable'.
-
-    Body: {"parent_ip": str|null, "client_id"?: str}
-    - null/"" → rimuove l'override manuale (torna all'auto da topologia).
-    """
-    parent_ip = (payload.get("parent_ip") or "").strip() or None
-    explicit_client_id = (payload.get("client_id") or "").strip() or None
-    md_query = {"ip": device_ip}
-    if explicit_client_id:
-        md_query["client_id"] = explicit_client_id
-    elif await db.managed_devices.count_documents({"ip": device_ip}) > 1:
-        raise HTTPException(status_code=409, detail=f"IP {device_ip} su piu' client: includi client_id.")
-
-    md = await db.managed_devices.find_one(md_query, {"_id": 0, "id": 1, "client_id": 1})
-    if not md:
-        raise HTTPException(status_code=404, detail=f"Device {device_ip} non trovato")
-    if parent_ip == device_ip:
-        raise HTTPException(status_code=400, detail="Un device non puo' essere padre di se stesso")
-
-    if parent_ip:
-        await db.managed_devices.update_one(md_query, {"$set": {"parent_ip": parent_ip}})
-    else:
-        await db.managed_devices.update_one(md_query, {"$unset": {"parent_ip": ""}})
-
-    from alert_filter import invalidate_parent_cache
-    invalidate_parent_cache(md.get("client_id"), device_ip)
-    try:
-        await audit_logger.log(
-            user_email=current_user.get("email"),
-            action=AuditAction.UPDATE_DEVICE if hasattr(AuditAction, "UPDATE_DEVICE") else AuditAction.OTHER,
-            resource_type="device", resource_id=md.get("id"),
-            metadata={"action": "set_parent", "device_ip": device_ip, "parent_ip": parent_ip},
-            request=request,
-        )
-    except Exception:
-        pass
-    return {"ok": True, "device_ip": device_ip, "parent_ip": parent_ip}
+    return {
+        "ok": True,
+        "client_id": client_id,
+        "is_vital": is_vital,
+        "requested": len(ip_list),
+        "matched": res.matched_count,
+        "modified": res.modified_count,
+        "message": (
+            f"{res.modified_count} dispositivi {'marcati VITALI' if is_vital else 'rimossi dai vitali'}"
+        ),
+    }
 
