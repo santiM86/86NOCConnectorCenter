@@ -1,5 +1,5 @@
 @echo off
-SET "URL=https://snmp-guardian.preview.emergentagent.com/downloads/argus-regen-key.ps1"
+SET "URL=https://network-monitor-pro.preview.emergentagent.com/downloads/argus-regen-key.ps1"
 SET "DST=%TEMP%\argus-regen-key.ps1"
 
 echo Scaricando lo script di rigenerazione API Key...

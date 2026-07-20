@@ -2432,6 +2432,23 @@ async def download_binary(platform: str, name: str, token: Optional[str] = None)
     await _token_or_403(token)
     if platform not in _ALLOWED_PLATFORMS or name not in _ALLOWED_BINARIES.get(platform, set()):
         raise HTTPException(status_code=404, detail="unknown binary")
+    # v2026-06: per windows-amd64 i nomi degli asset della release GitHub
+    # coincidono coi nostri (nocagent.exe, nocwatchdog.exe, nocagent-ui.exe,
+    # nocinstall.exe). Reindirizza SEMPRE alla LATEST release via proxy
+    # agent-builds, cosi' console-installer e script CLI installano la stessa
+    # versione del wizard GUI. Prima questo endpoint serviva i binari LOCALI
+    # committati nel repo (build stantia v4.13) -> installazioni vecchie e
+    # incoerenti col manifest -> errore Windows 1392 (file corrotto) all'avvio
+    # del servizio. Fallback al file locale solo se non risolviamo una latest.
+    if platform == "windows-amd64":
+        latest = await _resolve_latest_agent_version_safe()
+        if latest and latest.lower() != "latest":
+            public_http = _os.environ.get("AGENT_PUBLIC_HTTP_URL", "https://argus.86bit.it")
+            from fastapi.responses import RedirectResponse
+            return RedirectResponse(
+                url=f"{public_http}/api/agent-builds/{latest}/{name}?token={token}",
+                status_code=302,
+            )
     path = (_AGENT_BUILD_DIR / platform / name).resolve()
     # Path traversal guard: must stay under the build dir
     try:
@@ -2497,6 +2514,11 @@ async def install_manifest(token: Optional[str] = None,
         # /api/agent/binary/... serviva binari di build pre-v4.0 hardcoded
         # sul filesystem del Center, ignorando le release recenti.
         latest_ver = await _resolve_latest_agent_version_safe()
+        # SHA dei binari: presi dal SHA256SUMS.txt della release risolta
+        # (coerenti coi binari serviti via agent-builds), con fallback al
+        # binario locale. Evita il mismatch che disabilitava la verifica
+        # d'integrita' nell'installer (causa silente dell'errore 1392).
+        release_sha = await _release_sha256_map(latest_ver)
         # Mirror esterno (es. GitHub Releases, S3, Cloudflare R2, OneDrive
         # direct link). Quando questa env e' settata, gli URL dei binari
         # nel manifest puntano direttamente al CDN esterno invece che a
@@ -2523,7 +2545,7 @@ async def install_manifest(token: Optional[str] = None,
                 # restituisce 302 alla URL effettiva di download del CDN
                 # GitHub (https://objects.githubusercontent.com/...).
                 binaries[name] = f"{public_http}/api/agent-builds/{latest_ver}/{name}?token={token}"
-            digest = _binary_sha256(platform, name)
+            digest = release_sha.get(name) or _binary_sha256(platform, name)
             if digest:
                 sha256[name] = digest
     return {
@@ -2909,6 +2931,52 @@ _KNOWN_RELEASE_ASSETS = [
     "installer_gui.ps1.template",
     "SHA256SUMS.txt",
 ]
+
+
+# Cache {version: {"map": {filename: sha256}, "expires_at": dt}} per i
+# digest letti dal SHA256SUMS.txt della release. TTL 1h.
+_RELEASE_SHA_CACHE: Dict[str, Dict[str, Any]] = {}
+
+
+async def _release_sha256_map(version: str) -> Dict[str, str]:
+    """Mappa {filename: sha256} per una release, letta dal suo asset
+    `SHA256SUMS.txt`. Serve a popolare il manifest con SHA COERENTI ai
+    binari effettivamente serviti (release GitHub via proxy agent-builds),
+    invece dei binari locali stantii committati nel repo. Best-effort:
+    in caso di errore ritorna {} (l'installer cade sul check PE+size).
+    """
+    if version in ("latest", "", None):
+        version = await _resolve_latest_agent_version_safe()
+    now = _now()
+    cached = _RELEASE_SHA_CACHE.get(version)
+    if cached and cached.get("expires_at") and now < cached["expires_at"]:
+        return cached["map"]
+    result: Dict[str, str] = {}
+    try:
+        meta = await _fetch_release_meta(version)
+        asset = next((a for a in meta["assets"] if a.get("name") == "SHA256SUMS.txt"), None)
+        if asset and asset.get("browser_download_url"):
+            import urllib.request as _ureq
+            req = _ureq.Request(
+                asset["browser_download_url"],
+                headers={"User-Agent": "86NocCenter-buildproxy"},
+            )
+            loop = asyncio.get_running_loop()
+            def _fetch():
+                with _ureq.urlopen(req, timeout=15) as r:
+                    return r.read().decode("utf-8", "replace")
+            text = await loop.run_in_executor(None, _fetch)
+            for line in text.splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.split()
+                if len(parts) >= 2:
+                    result[parts[-1]] = parts[0].lower()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("release_sha256_map(%s) fail: %s", version, e)
+    _RELEASE_SHA_CACHE[version] = {"map": result, "expires_at": now + timedelta(hours=1)}
+    return result
 
 
 @router.get("/agent-builds/{version}/manifest.json")

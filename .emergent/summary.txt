@@ -1,19 +1,18 @@
-<analysis>backend/routes/connector.pybackend/routes/agent_ws.pysnmp_poll_resultlast_seen_atlast_poll_at/var/log/supervisor/backend.err.log.envAGENT_GITHUB_TOKENServerIntelligenceHub.jsxClientOverviewPage.jsserver_intelligence.pybackend/routes/agent_ws.pyfrontend/src/components/WanClientTab.jsxbackend/routes/wan_advanced.pynoc-agent/cmd/agent/speedtest.gobackend/routes/external_monitor.pyagent_ws.pyagent_idbackend/routes/oui_lookup.pybackend/routes/datto_rmm.pybackend/routes/server_intelligence.pynoc-agent/cmd/agent/hyperv_windows.goargus.86bit.itCtrl+Shift+Rmanaged_devices
+<analysis>InvalidTaghornetsecurity_vmbackup_poller.pyhornetsecurity_poller.pyvault_mismatchcryptography.exceptions.InvalidTaghornetsecurity_vmbackup_poller.pyvault_mismatchgit pullsudo systemctl restart noc-backend/home/arslan/86NOCConnectorCenterbackend/services/essentialtime_ftp.pyServerIntelligenceHub.jsxBasePollerbackend/routes/agent_ws.pyfrontend/src/pages/ClientOverviewPage.jsscripts/verify-prod-deploy.shbackend/services/hornetsecurity_vmbackup_poller.pyvault_mismatchbackend/tests/test_vmbackup_vault_mismatch.py/app/memory/PRD.mdCHANGELOG.md/home/arslan/86NOCConnectorCentergit pullsystemctl restart noc-backendscripts/verify-prod-deploy.sh
 /app/
 ├── backend/
 │   ├── routes/
-│   │   ├── external_monitor.py (WAN logic core)
-│   │   ├── wan_advanced.py (Nuove logiche WAN)
-│   │   ├── datto_rmm.py (Datto Sync & Seed)
-│   │   ├── server_intelligence.py (API Server Fasi 1-4 - appena creato)
-│   │   ├── connector.py (Agent sync logic)
-│   │   ├── agent_ws.py (Controller WebSockets, focus per il bug SNMP)
+│   │   ├── agent_ws.py 
+│   │   ├── hornetsecurity_vmbackup.py (Endpoint di configurazione)
+│   ├── services/
+│   │   ├── hornetsecurity_poller.py 
+│   │   ├── hornetsecurity_vmbackup_poller.py (Fixato in questa sessione)
+│   ├── tests/
+│   │   ├── test_vmbackup_vault_mismatch.py (Nuovo)
 ├── frontend/
-│   ├── src/components/
-│   │   ├── WanClientTab.jsx
-│   │   ├── ServerIntelligenceHub.jsx (UI Server incompleta)
+│   ├── src/pages/ClientOverviewPage.js 
+│   ├── src/pages/ClientsPage.js 
 ├── noc-agent/
-│   ├── cmd/agent/
-│   │   ├── speedtest.go
-│   │   ├── hyperv_windows.go
-managed_devicesdevice_poll_statuswan_targetsdatto_devicesbackend/routes/connector.pybackend/routes/agent_ws.pybackend/routes/server_intelligence.pyfrontend/src/components/ServerIntelligenceHub.jsxbackend/routes/datto_rmm.pyfrontend/src/components/WanClientTab.jsxbackend/routes/agent_ws.pyexternal_monitor.pywan_advanced.pyWS /api/agent/wsPOST /api/external-monitor/speedtest/{client_id}POST /api/datto/seed-managed/api/server-intelligence/*connector.pyagent_ws.pyServerIntelligenceHub.jsx/app/memory/PRD.mdCHANGELOG.md/app/test_reports/iteration_84.jsoniteration_85.json/app/backend/tests/test_external_monitor_iter84.pyinfo@86bit.ittest_credentials.mdServerIntelligenceHub.jsxbackend/routes/connector.pybackend/routes/agent_ws.pysnmp_poll_resultdiscovered_endpointsbackend/routes/devices.py/var/log/supervisor/backend.err.logmanaged_devicesdevice_poll_status</analysis>
+├── scripts/
+│   ├── verify-prod-deploy.sh (Nuovo)
+managed_devicesdevice_poll_status/app/backend/services/hornetsecurity_vmbackup_poller.py/app/backend/routes/hornetsecurity_vmbackup.py/app/scripts/verify-prod-deploy.sh/app/backend/tests/test_vmbackup_vault_mismatch.pybackend/routes/agent_ws.pyfrontend/src/pages/ClientOverviewPage.jsBasePollerPUT /admin/hornetsecurity-vm/configgit pull1tL*yj11eHocask_human/app/memory/PRD.md/app/memory/CHANGELOG.md/app/scripts/verify-prod-deploy.shask_humanverify-prod-deploy.shcryptography.exceptions.InvalidTaghornetsecurity_vmbackup_poller.pyvault_mismatchgit pull/app/backend/tests/test_vmbackup_vault_mismatch.pyinfo@86bit.it/app/memory/test_credentials.mdfinish</analysis>

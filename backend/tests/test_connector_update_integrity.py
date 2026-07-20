@@ -24,7 +24,7 @@ import requests
 
 BASE_URL = os.environ.get(
     "REACT_APP_BACKEND_URL",
-    "https://snmp-guardian.preview.emergentagent.com",
+    "https://network-monitor-pro.preview.emergentagent.com",
 ).rstrip("/")
 API = f"{BASE_URL}/api"
 ADMIN_EMAIL = "info@86bit.it"
