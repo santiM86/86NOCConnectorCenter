@@ -79,6 +79,21 @@ _ALIAS_MAP = {
 }
 
 
+# Tipi "endpoint" (PC consumer / device personali): NON sono infrastruttura
+# di rete/server monitorata. Vanno contati e mostrati in una sezione dedicata
+# "Endpoints" cosi' un PC/laptop/smartphone offline NON influenza le statistiche
+# e la salute dell'infrastruttura del cliente.
+ENDPOINT_TYPES = {
+    "endpoint", "endpoint-private", "workstation", "mobile", "iot",
+}
+
+
+def is_endpoint_type(device_type: Optional[str]) -> bool:
+    """True se il device_type canonico appartiene alla categoria Endpoints
+    (PC/laptop/mobile/IoT), False per l'infrastruttura di rete/server."""
+    return _normalize(device_type) in ENDPOINT_TYPES
+
+
 def _normalize(t: Optional[str]) -> str:
     if not t:
         return ""

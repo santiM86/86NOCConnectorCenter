@@ -1,3 +1,40 @@
+# 2026-07-21 — Categorizzazione automatica Endpoint (PC/Mobile/IoT) vs Infrastruttura
+
+## Richiesta utente (P1 upcoming)
+I PC consumer (PC/Laptop/smartphone/IoT) NON devono influenzare le statistiche
+e la salute dell'"infrastruttura", ma avere una sezione "Endpoints" separata.
+
+## Implementato
+BACKEND
+- `device_type_resolver.py`: nuovo set `ENDPOINT_TYPES` = {endpoint,
+  endpoint-private, workstation, mobile, iot} + helper `is_endpoint_type()`.
+- `overview.py` (`GET /api/overview/clients`): il conteggio device e' ora
+  splittato in due blocchi per cliente: `devices` (infrastruttura) e nuovo
+  `endpoints` (PC/mobile/IoT). I VITALI restano trasversali (un PC vitale conta
+  comunque nei vitali). La SALUTE del cliente usa SOLO `devices` infra
+  (endpoints offline non fanno diventare rosso il cliente). `global` ora espone
+  anche `total_endpoints` / `endpoints_online`. detail.endpoints_list aggiunto.
+  Verificato via curl: infra=6, endpoints=24 su 86BIT_Office.
+
+FRONTEND
+- `utils/deviceCategory.js`: `macroOf` ora mappa il device_type canonico
+  `"endpoint"` -> macro "workstation" (prima cadeva in "other"→infra, causando
+  disallineamento FE/BE). Allineamento completo FE/BE.
+- `ClientOverviewPage.js`: nuova StatBox "Endpoints", StatBox "Dispositivi" ora
+  conta SOLO infrastruttura; pannello dedicato "ENDPOINTS — PC / MOBILE / IOT"
+  (data-testid=endpoints-panel) con nota "esclusi dalla salute infrastruttura".
+  Workstation/Mobile/IoT rimossi dal pannello "Infrastruttura di Rete".
+- `ClientsPage.js`: nuova pill "Endpoint" (icona Desktop) nella card cliente.
+- `DashboardPage.js`: KPI "Dispositivi" -> "Infrastruttura", sub mostra anche
+  il numero di endpoint.
+
+## Testing
+Self-test: curl su /api/overview/clients (split corretto) + screenshot su
+Overview (6/6 infra, 0/24 endpoint, pannello Endpoints), Gestione Clienti
+(pill 0/24 ENDPOINT), Dashboard. Nessun errore di compilazione frontend.
+
+---
+
 # 2026-07-01 — Dispositivi VITALI: selezione multipla + contatore card basato sui vitali
 
 ## Richiesta utente
@@ -2184,7 +2221,7 @@ noc-agent/cmd/nocui-v5/
 ## 📦 Distribuzione
 
 - **Bundle**: `/app/deploy_patches/v5.0.0/ArgusDesktop.exe` (3.7 MB)
-- **Preview live** (no install): https://network-monitor-pro.preview.emergentagent.com/argus-desktop-preview/
+- **Preview live** (no install): https://noc-alert-hub-1.preview.emergentagent.com/argus-desktop-preview/
 - **README deploy**: `/app/deploy_patches/v5.0.0/README.md` (PowerShell one-liner per SOCIALSRV)
 
 ## ⚠️ Note

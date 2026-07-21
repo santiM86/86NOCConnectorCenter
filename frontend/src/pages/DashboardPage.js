@@ -170,7 +170,7 @@ export default function DashboardPage() {
         <KpiCard label="Clienti" value={g.total_clients || 0} sub={`${g.clients_ok || 0} OK`} color="#34C759" testId="kpi-clients" />
         <KpiCard label="Problemi" value={(g.clients_warning || 0) + (g.clients_critical || 0)} sub={`${g.clients_critical || 0} critici`} color={g.clients_critical > 0 ? "#FF3B30" : "#FF9500"} testId="kpi-problems" />
         <KpiCard label="Alert Attivi" value={g.total_alerts || 0} sub={`${g.critical_alerts || 0} critici`} color={g.critical_alerts > 0 ? "#FF3B30" : "#34C759"} testId="kpi-alerts" />
-        <KpiCard label="Dispositivi" value={g.total_devices || 0} sub={`${g.devices_online || 0} online`} color="#6366F1" testId="kpi-devices" />
+        <KpiCard label="Infrastruttura" value={g.total_devices || 0} sub={`${g.devices_online || 0} online · ${g.total_endpoints || 0} endpoint`} color="#6366F1" testId="kpi-devices" />
         <div className="noc-panel p-3 lg:col-span-2">
           <div className="flex items-center gap-2">
             <MagnifyingGlass size={14} className="text-[var(--text-muted)]" />

@@ -1,18 +1,17 @@
-<analysis>InvalidTaghornetsecurity_vmbackup_poller.pyhornetsecurity_poller.pyvault_mismatchcryptography.exceptions.InvalidTaghornetsecurity_vmbackup_poller.pyvault_mismatchgit pullsudo systemctl restart noc-backend/home/arslan/86NOCConnectorCenterbackend/services/essentialtime_ftp.pyServerIntelligenceHub.jsxBasePollerbackend/routes/agent_ws.pyfrontend/src/pages/ClientOverviewPage.jsscripts/verify-prod-deploy.shbackend/services/hornetsecurity_vmbackup_poller.pyvault_mismatchbackend/tests/test_vmbackup_vault_mismatch.py/app/memory/PRD.mdCHANGELOG.md/home/arslan/86NOCConnectorCentergit pullsystemctl restart noc-backendscripts/verify-prod-deploy.sh
+<analysis>git pullmain200726_1653yarn buildmaingit checkout 200726_1653git pullyarn buildsystemctl restart noc-backendmainServerIntelligenceHub.jsxBasePollerbackend/routes/agent_ws.pyfrontend/src/pages/ClientOverviewPage.jsbackend/routes/agent_ws.pynoc-agent/cmd/installer/main.gonoc-agent/build/installer_gui.ps1.templatefrontend/src/pages/ClientsPage.jsbackend/routes/datto_rmm.pyreturn_exceptions=Trueasyncio.gatherbackend/routes/datto_rmm.pyKeyError: 'switch_ip'backend/routes/device_info_card.pyPOST /devices/bulk-vitalbackend/routes/overview.pyvital_onlinevital_totalfrontend/src/pages/ClientOverviewPage.jsClientsPage.js/home/arslan/86NOCConnectorCenteryarn build200726_1653git pullmain
 /app/
 ├── backend/
 │   ├── routes/
 │   │   ├── agent_ws.py 
-│   │   ├── hornetsecurity_vmbackup.py (Endpoint di configurazione)
-│   ├── services/
-│   │   ├── hornetsecurity_poller.py 
-│   │   ├── hornetsecurity_vmbackup_poller.py (Fixato in questa sessione)
-│   ├── tests/
-│   │   ├── test_vmbackup_vault_mismatch.py (Nuovo)
+│   │   ├── datto_rmm.py 
+│   │   ├── device_info_card.py (Endpoint bulk vital)
+│   │   ├── overview.py
 ├── frontend/
-│   ├── src/pages/ClientOverviewPage.js 
-│   ├── src/pages/ClientsPage.js 
+│   ├── src/pages/ClientOverviewPage.js (Componenti dispositivi e checkbox vitali)
+│   ├── src/pages/ClientsPage.js (Badge clienti vitali)
 ├── noc-agent/
+│   ├── build/installer_gui.ps1.template
+│   ├── cmd/installer/main.go
 ├── scripts/
-│   ├── verify-prod-deploy.sh (Nuovo)
-managed_devicesdevice_poll_status/app/backend/services/hornetsecurity_vmbackup_poller.py/app/backend/routes/hornetsecurity_vmbackup.py/app/scripts/verify-prod-deploy.sh/app/backend/tests/test_vmbackup_vault_mismatch.pybackend/routes/agent_ws.pyfrontend/src/pages/ClientOverviewPage.jsBasePollerPUT /admin/hornetsecurity-vm/configgit pull1tL*yj11eHocask_human/app/memory/PRD.md/app/memory/CHANGELOG.md/app/scripts/verify-prod-deploy.shask_humanverify-prod-deploy.shcryptography.exceptions.InvalidTaghornetsecurity_vmbackup_poller.pyvault_mismatchgit pull/app/backend/tests/test_vmbackup_vault_mismatch.pyinfo@86bit.it/app/memory/test_credentials.mdfinish</analysis>
+│   ├── auto-deploy.sh
+managed_devicesis_vitaldiscovered_endpoints/app/backend/routes/agent_ws.py/app/noc-agent/build/installer_gui.ps1.template/app/noc-agent/cmd/installer/main.go/app/frontend/src/pages/ClientsPage.js/app/frontend/src/pages/ClientOverviewPage.js/app/backend/routes/datto_rmm.py/app/backend/routes/device_info_card.py/app/backend/routes/overview.py/app/backend/routes/app_version.pybackend/routes/agent_ws.pyfrontend/src/pages/ClientOverviewPage.jsPOST /api/devices/bulk-vitalPOST /datto/sync-nowPOST /clients/{client_id}/datto/rematchStar is not defined200726_1653mainyarn build/app/memory/CHANGELOG.mdStar is not definedyarn build200726_1653maininfo@86bit.it/app/memory/test_credentials.mdmainmain</analysis>
