@@ -6,7 +6,7 @@ import { toast } from "sonner";
 import {
   Plus, Trash, Buildings, EnvelopeSimple, Key, Copy, ArrowsClockwise,
   Globe, CaretRight, HardDrives, PlugsConnected, Bell, ShieldCheck,
-  WifiHigh, WifiSlash, DownloadSimple, Cloud,
+  WifiHigh, WifiSlash, DownloadSimple, Desktop,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -349,6 +349,14 @@ export default function ClientsPage() {
                           titleText={dv.total > 0 ? `${dv.online}/${dv.total} online. Nessun dispositivo marcato VITALE: seleziona i vitali dalla tab Dispositivi.` : "Nessun dispositivo"} />
                       );
                     })()}
+                    {/* Endpoints (PC/Mobile/IoT) — separati, non influenzano salute infra */}
+                    {(ov.endpoints?.total || 0) > 0 && (
+                      <StatusPill icon={Desktop}
+                        value={`${ov.endpoints.online || 0}/${ov.endpoints.total}`}
+                        color="#3B82F6"
+                        label="Endpoint"
+                        titleText={`${ov.endpoints.online || 0}/${ov.endpoints.total} endpoint online (PC/Mobile/IoT). Non influenzano lo stato dell'infrastruttura.`} />
+                    )}
                     {/* WAN */}
                     <StatusPill icon={Globe} value={ov.wan?.status === "ok" ? "OK" : ov.wan?.status === "not_configured" ? "N/C" : (ov.wan?.status || "—").toUpperCase()} color={ov.wan?.status === "ok" ? "#34C759" : ov.wan?.status === "not_configured" ? "#555" : "#FF3B30"} label="WAN" />
                     {/* Connector */}

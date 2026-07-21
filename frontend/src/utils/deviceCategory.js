@@ -66,7 +66,7 @@ export function macroOf(d) {
   if (dt === "printer") return "printer";
   if (["tvcc", "camera", "nvr", "dvr"].includes(dt)) return "tvcc";
   if (dt === "voip") return "voip";
-  if (dt === "workstation") return "workstation";
+  if (dt === "workstation" || dt === "endpoint") return "workstation";
   if (dt === "mobile") return "mobile";
   if (dt === "iot") return "iot";
 

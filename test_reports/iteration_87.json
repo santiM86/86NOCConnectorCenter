@@ -1,32 +1,30 @@
 {
-  "summary": "Iter 87 — Validato il fix di unificazione liveness ICMP vs SNMP (liveness_resolver + device_info_card). Coerenza lista/scheda confermata sia per il device SNMP-only seedato (10.99.99.222 TEST-SNMP-ONLY-HP) sia per device ICMP-ok (192.168.1.3). Backend + Frontend: tutto verde.",
-  "backend_issues": { "critical": [], "minor": [] },
+  "summary": "Regression testing on device selection checkboxes in ARGUS Center (client 86BIT_Office, tab Dispositivi). Tested checkbox behavior in grouped view, table view, select-all, bulk mark/unmark VITAL, and clear-selection. All flows work correctly with ZERO JS errors and ZERO ReferenceError (no 'Star is not defined'). No black-screen or modal-opening regression when clicking checkboxes.",
+  "backend_issues": {"critical": [], "minor": []},
   "frontend_issues": {
     "ui_bugs": [],
     "integration_issues": [],
     "design_issues": []
   },
-  "test_report_links": [
-    "/app/backend/tests/test_liveness_unification_iter87.py",
-    "/app/test_reports/pytest/iter87_results.xml",
-    "/app/backend/tests/test_devices_snmp_only_liveness.py",
-    "/app/backend/tests/test_liveness_resolver.py",
-    "/app/backend/tests/test_snmp_bridge_antiflap.py"
-  ],
+  "detailed_results": {
+    "grouped_view_single_click": "PASS - Clicking select-device-192.168.1.254 shows toolbar '1 selezionati', no modal opens, 0 JS errors",
+    "grouped_view_multi_select": "PASS - Second checkbox (10.100.61.100) increments to '2 selezionati'",
+    "grouped_view_deselect": "PASS - Re-clicking first checkbox decrements to '1 selezionati'",
+    "isolation_from_row_click": "PASS - Checkbox click does NOT open device detail modal (stopPropagation works)",
+    "table_view_row_checkbox": "PASS - select-device-row-* toggles selection; toolbar reflects count",
+    "select_all_devices": "PASS - Header checkbox selects all 30 devices ('30 selezionati'); re-click deselects all (toolbar hidden)",
+    "bulk_mark_vital": "PASS - Toast '1 dispositivi marcati VITALI' shown; VITALI counter went from 0 to 1",
+    "bulk_clear_selection": "PASS - bulk-clear-selection-btn hides toolbar",
+    "console_errors": "PASS - 0 pageerrors, 0 ReferenceError, 0 'Star is not defined' during all interactions (only unrelated WebSocket warning)"
+  },
+  "test_report_links": [],
   "action_items": [],
-  "critical_code_review_comments": [
-    "device_info_card.py: il fallback nel try/except (linee ~482-488) usa 'reachable=icmp OR snmp_fresh' senza considerare il debounce — accettabile come safety net ma andrebbe loggato (logger.exception) per evitare di mascherare regressioni silenziose su build_evidence_maps/build_clients_without_online_agent.",
-    "DeviceInfoCard.js riga 372: la fallback chain 'st.effective_status || (st.reachable===true?...)' è ridondante ora che il backend mappa sempre status.reachable allo stato effettivo — può essere semplificata in `eff = st.effective_status` per evitare doppia logica client/server.",
-    "Lieve incoerenza display_name lato UI: per il device 192.168.1.3 la lista mostra 'PERSIST_TEST_RENAME' mentre l'header della scheda mostra 'Vendor-Details-Test'. Non bloccante per questo task ma utile da unificare (display_name.py)."
-  ],
-  "updated_files": [
-    "/app/backend/tests/test_liveness_unification_iter87.py (new)"
-  ],
-  "success_rate": { "backend": "100% (4/4 nuovi + 24/24 regressione)", "frontend": "100% (entrambi i flussi UI verdi)" },
-  "test_credentials": "Admin info@86bit.it / Ariel17051986@!@86 (login OK via /api/auth/login).",
-  "seed_data_creation": "Nessuna: il device 10.99.99.222 (TEST-SNMP-ONLY-HP, client_id da3d6e40-b3e5-4d46-9787-dde328a3aa36) era già presente nel DB.",
+  "critical_code_review_comments": [],
+  "updated_files": [],
+  "success_rate": {"backend": "N/A (skipped)", "frontend": "100%"},
+  "test_credentials": "info@86bit.it (admin)",
+  "seed_data_creation": "None",
   "retest_needed": false,
   "main_agent_can_self_test": true,
-  "context_for_next_testing_agent": "Backend pytest /app/backend/tests/test_liveness_unification_iter87.py copre: (a) lista /api/devices?client_id=... → status==online per 10.99.99.222; (b) /api/devices/by-ip/10.99.99.222/info-card → status.effective_status='online', icmp_reachable=False, snmp_reachable=True, snmp_fresh=True, live_reason='snmp', live_reason_label contiene 'SNMP' e 'ICMP' bloccato, status.reachable backward-compat = True; (c) coerenza list↔card; (d) device ICMP-ok 192.168.1.3 → effective_status='online', live_reason='ping'. Frontend Playwright verificato: badge data-testid='device-status-badge' mostra 'ONLINE (SNMP)' per il device HP e 'ONLINE' (senza '(SNMP)') per il device ICMP-ok; sezione 'Stato Live' (data-testid='info-section-status') mostra correttamente Stato effettivo/Motivo/ICMP/SNMP.",
-  "rca of the issue": "Pre-fix: 3 implementazioni divergenti di liveness — devices.py (lista) aveva una closure locale _effective_reachable, overview.py un'altra logica e device_info_card.py mostrava poll.reachable GREZZO. Risultato: lo switch HP 10.10.41.222 (ICMP bloccato dal firewall ma SNMP fresco) appariva ONLINE nella lista ma OFFLINE nella Scheda Dispositivo. Fix unificante: liveness_resolver._snmp_fresh() + effective_reachable() ora includono la freschezza SNMP (<10 min) come liveness valida (pattern Zabbix 'Available via SNMP'); compute_status() emette evidence='snmp' che la UI traduce in 'ONLINE (SNMP)' + tooltip 'Risponde a SNMP (ICMP bloccato dal firewall)'. device_info_card.build_info_card() ora usa lo stesso resolver e popola status.{effective_status,icmp_reachable,snmp_reachable,snmp_fresh,live_reason,live_reason_label}. agent_ws._bridge_snmp_poll() non sovrascrive più il campo conteso 'reachable', scrive solo snmp_reachable/snmp_last_check_at. Validato sia su DB live (device seedato) sia su mock unit-test."
+  "context_for_next_testing_agent": "Checkbox selection (grouped + table + select-all + bulk actions) is fully functional in preview build. No regression detected from the endpoint/infrastructure categorization split. Console clean during checkbox clicks."
 }

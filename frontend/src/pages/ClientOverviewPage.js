@@ -207,6 +207,15 @@ export default function ClientOverviewPage() {
   // gruppi multicast catturati dallo Scanner via ARP table. Includerli inflava
   // il numero (es. 75 in card vs 67 visibili nel raggruppamento Infrastruttura).
   const realDevices = devices.filter(d => macroOf(d) !== "_skip");
+  // v2026-06 CATEGORIZZAZIONE: separazione Endpoints (PC consumer/mobile/IoT)
+  // dall'Infrastruttura di rete. Un PC/laptop offline NON deve influenzare
+  // le statistiche "Dispositivi" (infrastruttura). Sezione dedicata "Endpoints".
+  const ENDPOINT_MACROS = ["workstation", "mobile", "iot"];
+  const endpointList = realDevices.filter(d => ENDPOINT_MACROS.includes(macroOf(d)));
+  const infraDevices = realDevices.filter(d => !ENDPOINT_MACROS.includes(macroOf(d)));
+  const infraOnline = infraDevices.filter(d => d.status === "online").length;
+  const infraOffline = infraDevices.length - infraOnline;
+  const endpointOnline = endpointList.filter(d => d.status === "online").length;
   // Tab "Stampanti" = unione di /api/printers (con telemetria toner) + managed_devices con
   // device_type=printer. Match per IP — se entrambi presenti i toner della /api/printers
   // hanno priorità (più specifici).
@@ -400,8 +409,9 @@ export default function ClientOverviewPage() {
       </div>
 
       {/* Quick Stats */}
-      <div className="grid grid-cols-2 md:grid-cols-6 gap-2 mb-4">
-        <StatBox label="Dispositivi" value={`${onlineDevices}/${realDevicesCount}`} color={offlineDevices > 0 ? "#FF9500" : "#34C759"} sub={offlineDevices > 0 ? `${offlineDevices} offline` : "Tutti online"} />
+      <div className="grid grid-cols-2 md:grid-cols-7 gap-2 mb-4">
+        <StatBox label="Dispositivi" value={`${infraOnline}/${infraDevices.length}`} color={infraOffline > 0 ? "#FF9500" : "#34C759"} sub={infraOffline > 0 ? `${infraOffline} offline` : "Infrastruttura OK"} />
+        <StatBox label="Endpoints" value={endpointList.length > 0 ? `${endpointOnline}/${endpointList.length}` : "—"} color={endpointList.length === 0 ? "#555" : "#3B82F6"} sub={endpointList.length > 0 ? "PC / Mobile / IoT" : "nessuno"} />
         <StatBox label="WAN" value={wanTargets.length > 0 ? (wanTargets.every(t => t.result?.status === "online") ? "OK" : "ALERT") : "N/C"} color={wanTargets.every(t => t.result?.status === "online") ? "#34C759" : wanTargets.length > 0 ? "#FF3B30" : "#555"} sub={wanTargets[0]?.result?.ping?.latency_ms ? `${wanTargets[0].result.ping.latency_ms}ms` : ""} />
         <StatBox label="Alert" value={alerts.length} color={criticalAlerts > 0 ? "#FF3B30" : alerts.length > 0 ? "#FF9500" : "#34C759"} sub={criticalAlerts > 0 ? `${criticalAlerts} critici` : "Nessun critico"} />
         <StatBox label="Connettore" value={connector ? "ONLINE" : "OFFLINE"} color={connector ? "#34C759" : "#FF3B30"} sub={connector?.connector_hostname || ""} />
@@ -502,6 +512,8 @@ function OverviewTab({ devices, wanTargets, alerts, connector, printers, backups
       {iloHealth && iloHealth.length > 0 && <IloHealthPanel iloHealth={iloHealth} />}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      {/* Left column: Infrastruttura + Endpoints */}
+      <div className="space-y-4">
       {/* Network Map */}
       <div className="noc-panel p-4">
         <h3 className="text-[9px] font-bold uppercase tracking-[0.15em] text-indigo-400 mb-3">Infrastruttura di Rete</h3>
@@ -547,10 +559,7 @@ function OverviewTab({ devices, wanTargets, alerts, connector, printers, backups
           {/* Printers */}
           {printersList.length > 0 && <DeviceGroup label="Stampanti" icon={Printer} devices={printersList} color="#EC4899" />}
           {/* v3.8.20: nuove macroaree per i device dello Scanner */}
-          {voipList.length > 0 && <DeviceGroup label="Telefoni VoIP" icon={Phone} devices={voipList} color="#22C55E" />}
-          {workstationList.length > 0 && <DeviceGroup label="Workstation / PC" icon={Desktop} devices={workstationList} color="#3B82F6" />}
-          {mobileList.length > 0 && <DeviceGroup label="Smartphone / Mobile (MAC randomizzato)" icon={DeviceMobile} devices={mobileList} color="#A855F7" />}
-          {iotList.length > 0 && <DeviceGroup label="IoT / Embedded" icon={Cpu} devices={iotList} color="#F59E0B" />}
+          {voipList.length > 0 && <DeviceGroup label="Telefoni VoIP" icon={Phone} devices={voipList} color="#22C55E" clientId={clientId} />}
           {/* Others / Generic */}
           {others.length > 0 && <DeviceGroup label="Altri Dispositivi" icon={HardDrives} devices={others} color="#64748B" />}
           {/* Skipped multicast/broadcast (nascosti dalla vista principale) */}
@@ -563,6 +572,24 @@ function OverviewTab({ devices, wanTargets, alerts, connector, printers, backups
             </details>
           )}
         </div>
+      </div>
+
+      {/* Endpoints (PC consumer / Mobile / IoT) — separati dall'infrastruttura */}
+      {(workstationList.length > 0 || mobileList.length > 0 || iotList.length > 0) && (
+        <div className="noc-panel p-4" data-testid="endpoints-panel">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-[9px] font-bold uppercase tracking-[0.15em] text-blue-400">Endpoints — PC / Mobile / IoT</h3>
+            <span className="text-[9px] text-[var(--text-muted)]" title="Gli endpoint (PC/laptop/smartphone) non influenzano lo stato di salute dell'infrastruttura.">
+              {workstationList.length + mobileList.length + iotList.length} dispositivi · esclusi dalla salute infrastruttura
+            </span>
+          </div>
+          <div className="space-y-2">
+            {workstationList.length > 0 && <DeviceGroup label="Workstation / PC" icon={Desktop} devices={workstationList} color="#3B82F6" clientId={clientId} />}
+            {mobileList.length > 0 && <DeviceGroup label="Smartphone / Mobile (MAC randomizzato)" icon={DeviceMobile} devices={mobileList} color="#A855F7" clientId={clientId} />}
+            {iotList.length > 0 && <DeviceGroup label="IoT / Embedded" icon={Cpu} devices={iotList} color="#F59E0B" clientId={clientId} />}
+          </div>
+        </div>
+      )}
       </div>
 
       {/* Right column: Alerts + Status */}
@@ -1881,7 +1908,24 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
       setBulkSaving(false);
     }
   };
-  // v3.8.30: ordinamento tabella dispositivi (default per nome asc) + persist v3.8.31
+  const bulkSetSilence = async (silenced) => {
+    const ips = Array.from(selectedIps);
+    if (!ips.length) return;
+    setBulkSaving(true);
+    try {
+      const { data } = await axios.post(`${API}/devices/bulk-silence`, {
+        ips, silenced, client_id: clientId,
+      });
+      toast.success(data.message || `${data.modified} dispositivi aggiornati`);
+      clearSelection();
+      onRefresh?.();
+    } catch (err) {
+      const detail = err.response?.data?.detail || err.message || "Errore sconosciuto";
+      toast.error(`Azione multipla fallita: ${detail}`);
+    } finally {
+      setBulkSaving(false);
+    }
+  };
   // v3.8.40: usa visibleDevices (filtrati) per escludere multicast quando richiesto
   const { sorted: sortedDevices, sortKey, sortDir, requestSort } = useSortableTable(
     visibleDevices, "name", "asc",
@@ -2524,6 +2568,23 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
             data-testid="bulk-unmark-vital-btn"
           >
             Rimuovi dai vitali
+          </button>
+          <div className="h-4 w-px bg-yellow-500/30 mx-1" />
+          <button
+            onClick={() => bulkSetSilence(true)}
+            disabled={bulkSaving}
+            className="text-[11px] font-semibold px-3 py-1 rounded-md bg-[var(--bg-card)] border border-[var(--bg-border)] text-[var(--text-muted)] hover:text-amber-300 hover:border-amber-500/40 transition-colors disabled:opacity-50 flex items-center gap-1"
+            data-testid="bulk-silence-btn"
+          >
+            <BellSlash size={11} weight="bold" /> Silenzia alert
+          </button>
+          <button
+            onClick={() => bulkSetSilence(false)}
+            disabled={bulkSaving}
+            className="text-[11px] font-semibold px-3 py-1 rounded-md bg-[var(--bg-card)] border border-[var(--bg-border)] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors disabled:opacity-50 flex items-center gap-1"
+            data-testid="bulk-unsilence-btn"
+          >
+            <Bell size={11} weight="bold" /> Riattiva alert
           </button>
           <button
             onClick={clearSelection}

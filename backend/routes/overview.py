@@ -4,7 +4,7 @@ from database import db
 from deps import get_current_user
 from datetime import datetime, timezone, timedelta
 from display_name import best_display_name
-from device_type_resolver import best_device_type
+from device_type_resolver import best_device_type, is_endpoint_type
 from liveness_resolver import (
     build_evidence_maps, compute_status, build_clients_without_online_agent,
 )
@@ -267,34 +267,55 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
                 "device_name": a.get("device_name", ""), "created_at": a.get("created_at", ""),
             })
 
+    def _empty_counts():
+        return {"total": 0, "online": 0, "offline": 0, "stale": 0, "unknown": 0, "vital_total": 0, "vital_online": 0}
+
+    # v2026-06 CATEGORIZZAZIONE ENDPOINT vs INFRASTRUTTURA:
+    # I PC consumer (workstation/mobile/iot/endpoint) NON devono influenzare
+    # le statistiche e la salute dell'infrastruttura. Vengono contati in un
+    # blocco separato `endpoints`. Il conteggio VITALI resta trasversale (un PC
+    # marcato vitale conta comunque nei vitali del cliente).
     devices_by_client = {}
+    endpoints_by_client = {}
     devices_detail_by_client = {}
+    endpoints_detail_by_client = {}
     for d in devices:
         cid = d.get("client_id")
-        if cid not in devices_by_client:
-            devices_by_client[cid] = {"total": 0, "online": 0, "offline": 0, "stale": 0, "unknown": 0, "vital_total": 0, "vital_online": 0}
-            devices_detail_by_client[cid] = []
-        devices_by_client[cid]["total"] += 1
         status = d.get("status")
-        if status == "online":
-            devices_by_client[cid]["online"] += 1
-        elif status == "offline":
-            devices_by_client[cid]["offline"] += 1
-        elif status == "stale":
-            devices_by_client[cid]["stale"] += 1
+        is_ep = is_endpoint_type(d.get("device_type"))
+        if is_ep:
+            bucket = endpoints_by_client
+            detail_bucket = endpoints_detail_by_client
         else:
-            devices_by_client[cid]["unknown"] += 1
-        # Conteggio VITALI: is_vital dal merge, fallback lookup managed_devices
-        # (per i device legacy della collection `devices` che non lo portano).
+            bucket = devices_by_client
+            detail_bucket = devices_detail_by_client
+        if cid not in bucket:
+            bucket[cid] = _empty_counts()
+            detail_bucket[cid] = []
+        bucket[cid]["total"] += 1
+        if status == "online":
+            bucket[cid]["online"] += 1
+        elif status == "offline":
+            bucket[cid]["offline"] += 1
+        elif status == "stale":
+            bucket[cid]["stale"] += 1
+        else:
+            bucket[cid]["unknown"] += 1
+        # Conteggio VITALI trasversale: is_vital dal merge, fallback lookup
+        # managed_devices. I vitali vengono sempre aggregati nel blocco `devices`
+        # (infrastruttura) cosi' il badge "N/M VITALI" della card resta coerente
+        # anche se un vitale e' un PC/endpoint.
         _iv = d.get("is_vital")
         if _iv is None:
             _mv = managed_by_key.get((cid, d.get("ip_address")))
             _iv = _mv.get("is_vital") if _mv else None
         if _iv is True:
+            if cid not in devices_by_client:
+                devices_by_client[cid] = _empty_counts()
             devices_by_client[cid]["vital_total"] += 1
             if status == "online":
                 devices_by_client[cid]["vital_online"] += 1
-        devices_detail_by_client[cid].append({
+        detail_bucket[cid].append({
             "name": d.get("name", "?"), "ip": d.get("ip_address", ""), "status": status or "unknown",
             "type": d.get("device_type", ""),
         })
@@ -430,7 +451,8 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
     for c in clients:
         cid = c.get("id")
         alerts_info = alerts_by_client.get(cid, {"critical": 0, "high": 0, "medium": 0, "low": 0, "total": 0})
-        devices_info = devices_by_client.get(cid, {"total": 0, "online": 0, "offline": 0, "stale": 0, "unknown": 0, "vital_total": 0, "vital_online": 0})
+        devices_info = devices_by_client.get(cid, _empty_counts())
+        endpoints_info = endpoints_by_client.get(cid, _empty_counts())
         backup_info = backup_by_client.get(cid, {"ok": 0, "warning": 0, "error": 0, "total": 0, "stale": 0})
         printer_info = printer_by_client.get(cid, {"total": 0, "low_toner": 0, "ok": 0})
         wan_tgts = wan_targets_by_client.get(cid, [])
@@ -545,12 +567,14 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
             },
             "backup": backup_info,
             "printers": printer_info,
+            "endpoints": endpoints_info,
             "connector_online": connector_online,
             # v3.8.41: lista scanner per cliente con info su staleness (per banner watchdog UI)
             "scanner_health": scanner_health_by_client.get(cid, []),
             "detail": {
                 "wan_targets": wan_detail,
                 "devices_list": devices_detail_by_client.get(cid, []),
+                "endpoints_list": endpoints_detail_by_client.get(cid, []),
                 "recent_alerts": alerts_detail_by_client.get(cid, []),
             },
         })
@@ -574,5 +598,7 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
             "critical_alerts": total_critical,
             "total_devices": sum(d["total"] for d in devices_by_client.values()),
             "devices_online": sum(d["online"] for d in devices_by_client.values()),
+            "total_endpoints": sum(d["total"] for d in endpoints_by_client.values()),
+            "endpoints_online": sum(d["online"] for d in endpoints_by_client.values()),
         },
     }

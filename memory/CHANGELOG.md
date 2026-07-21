@@ -1,3 +1,140 @@
+# 2026-07-21 — Azione multipla "Silenzia / Riattiva alert" (bulk)
+
+## Richiesta utente
+Estendere la selezione multipla dispositivi (oltre a Vitali) con un'azione per
+silenziare/riattivare gli alert in blocco, utile in manutenzione programmata.
+
+## Implementato
+BACKEND
+- `device_info_card.py`: nuovo `POST /api/devices/bulk-silence`
+  body {ips:[], silenced:bool, client_id, reason?}. Mirror di bulk-vital +
+  semantica identica al toggle singolo (connector.update_device_silence):
+  setta alerts_silenced / _updated_at / _reason / _by su managed_devices
+  (update_many, no upsert) e invalida la silence-cache per ogni IP. I device
+  VITALI ignorano comunque il silence (override in alert_filter).
+  Verificato via curl: silence + unsilence → matched=2, modified=2.
+
+FRONTEND
+- `ClientOverviewPage.js`: aggiunti bottoni "🔕 Silenzia alert"
+  (data-testid=bulk-silence-btn) e "🔔 Riattiva alert"
+  (data-testid=bulk-unsilence-btn) nella toolbar di selezione multipla +
+  funzione `bulkSetSilence()`. Verificato via screenshot: toast + reset
+  selezione al click.
+
+## Note
+- Come bulk-vital, opera solo su device presenti in managed_devices (no upsert):
+  device non ancora persistiti mostrano "0 silenziati".
+# 2026-07-21 — Categorizzazione automatica Endpoint (PC/Mobile/IoT) vs Infrastruttura
+
+## Richiesta utente (P1 upcoming)
+I PC consumer (PC/Laptop/smartphone/IoT) NON devono influenzare le statistiche
+e la salute dell'"infrastruttura", ma avere una sezione "Endpoints" separata.
+
+## Implementato
+BACKEND
+- `device_type_resolver.py`: nuovo set `ENDPOINT_TYPES` = {endpoint,
+  endpoint-private, workstation, mobile, iot} + helper `is_endpoint_type()`.
+- `overview.py` (`GET /api/overview/clients`): il conteggio device e' ora
+  splittato in due blocchi per cliente: `devices` (infrastruttura) e nuovo
+  `endpoints` (PC/mobile/IoT). I VITALI restano trasversali (un PC vitale conta
+  comunque nei vitali). La SALUTE del cliente usa SOLO `devices` infra
+  (endpoints offline non fanno diventare rosso il cliente). `global` ora espone
+  anche `total_endpoints` / `endpoints_online`. detail.endpoints_list aggiunto.
+  Verificato via curl: infra=6, endpoints=24 su 86BIT_Office.
+
+FRONTEND
+- `utils/deviceCategory.js`: `macroOf` ora mappa il device_type canonico
+  `"endpoint"` -> macro "workstation" (prima cadeva in "other"→infra, causando
+  disallineamento FE/BE). Allineamento completo FE/BE.
+- `ClientOverviewPage.js`: nuova StatBox "Endpoints", StatBox "Dispositivi" ora
+  conta SOLO infrastruttura; pannello dedicato "ENDPOINTS — PC / MOBILE / IOT"
+  (data-testid=endpoints-panel) con nota "esclusi dalla salute infrastruttura".
+  Workstation/Mobile/IoT rimossi dal pannello "Infrastruttura di Rete".
+- `ClientsPage.js`: nuova pill "Endpoint" (icona Desktop) nella card cliente.
+- `DashboardPage.js`: KPI "Dispositivi" -> "Infrastruttura", sub mostra anche
+  il numero di endpoint.
+
+## Testing
+Self-test: curl su /api/overview/clients (split corretto) + screenshot su
+Overview (6/6 infra, 0/24 endpoint, pannello Endpoints), Gestione Clienti
+(pill 0/24 ENDPOINT), Dashboard. Nessun errore di compilazione frontend.
+
+---
+
+# 2026-07-01 — Dispositivi VITALI: selezione multipla + contatore card basato sui vitali
+
+## Richiesta utente
+Poter selezionare in modo MULTIPLO quali dispositivi sono "vitali" e avere gli
+alert focalizzati su questi. Il contatore "DISP." nella card cliente non deve
+mostrare 40/49 quando 39 non sono vitali.
+
+## Implementato
+BACKEND
+- `POST /api/devices/bulk-vital` (device_info_card.py): marca/rimuove is_vital in
+  blocco su piu' IP {ips:[], is_vital:bool, client_id}. Invalida silence-cache +
+  audit log. Testato: matched/modified corretti.
+- `overview.py`: aggiunti contatori `vital_total` e `vital_online` per cliente
+  (proiezione is_vital + conteggio con fallback lookup managed_devices per i
+  device legacy). Endpoint `/api/overview/clients` verificato: ritorna i conteggi.
+
+FRONTEND
+- ClientOverviewPage (tab Dispositivi): checkbox di selezione su OGNI device in
+  ENTRAMBE le viste (Raggruppata + Tabella) + "seleziona tutti i visibili" in
+  tabella. Toolbar bulk che appare alla selezione: "Marca come VITALI",
+  "Rimuovi dai vitali", "Deseleziona tutto". Dopo l'azione: refresh automatico.
+- ClientsPage: contatore "DISP." ora mostra i VITALI quando presenti — badge
+  principale "vitali_online/vitali_totali" + secondario "N tot" (es. "0/2 · 30
+  tot VITALI"). Se nessun vitale e' marcato, fallback al totale con avviso.
+- Alert invariati: solo i device VITALI generano alert (com'era, confermato).
+
+## Validazione
+- Parse Python OK; endpoint bulk e overview testati via curl; screenshot UI:
+  checkbox + toolbar bulk visibili in vista Raggruppata, card mostra "0/2 · 30 tot".
+- Dati di test preview ripristinati a non-vitale dopo il test.
+
+# 2026-06-25 — Setup GUI dedicato + fix errore 1392 (file corrotto) installer
+
+## Richiesta utente
+«Dobbiamo avere un setup GUI come era prima dedicato per installazione… deve
+installare sempre l'ultima versione.» Screenshot: console installer
+(nocinstall.exe) fallisce con errore Windows **1392 ERROR_FILE_CORRUPT**
+all'avvio di 86NocAgent.
+
+## Causa root del 1392
+I binari Windows `noc-agent/build/bin/windows-amd64/*.exe` sono COMMITTATI in
+git (build stantia v4.13, 13 mag) e presenti anche in PROD. L'endpoint
+`/api/agent/binary/windows-amd64/{name}` serviva QUESTI file vecchi, mentre il
+manifest dichiarava v4.25.2. Risultato: installazioni di un binario vecchio/
+incoerente → 1392 all'avvio servizio. Inoltre lo SHA256 del manifest era
+calcolato dal binario locale stantio (≠ binario servito dalla release) →
+verifica d'integrità di fatto disabilitata.
+
+## Fix (4 punti)
+1. **`download_binary` (agent_ws.py)**: per `windows-amd64` reindirizza SEMPRE
+   (302) al proxy `/api/agent-builds/{latest}/{name}` → console-installer, script
+   CLI e wizard installano TUTTI l'ultima release. Stop ai binari locali stantii.
+2. **`install_manifest`**: SHA256 ora preso dal `SHA256SUMS.txt` della release
+   risolta (`_release_sha256_map`), coerente coi binari serviti. Verificato:
+   manifest sha == release sha (5d2f5576… per nocagent.exe v4.25.2).
+3. **Wizard GUI (`installer_gui.ps1.template`)**: nuova `Verify-DownloadedBinary`
+   chiamata dopo ogni download/copia — controlla header PE "MZ", dimensione
+   minima (>500KB) e SHA256 (se presente nel manifest). Un download corrotto
+   ora si ferma con messaggio chiaro PRIMA di registrare il servizio (no 1392).
+4. **Console installer Go (`cmd/installer/main.go`)**: stesso check PE+size come
+   rete di sicurezza dopo lo SHA.
+
+## UI (`ClientsPage.js`)
+- **Wizard GUI** reso pulsante PRIMARIO evidenziato: "Setup GUI v{latest}"
+  (emerald, → `wizard-bundle.zip`). Installa sempre l'ultima versione dal manifest.
+- "Setup .exe" console DECLASSATO a "Setup .exe (CLI)" (stile muted, fallback AV).
+
+## Validazione container
+- python syntax OK; Go cross-compile windows/amd64 OK; braces PS bilanciate (399/399).
+- Live: binary endpoint → 302 a v4.25.2; sha scaricato == manifest == SHA256SUMS;
+  header MZ ok; wizard-bundle/exe-bundle HTTP 200; nessun errore backend.
+- NB: la GUI PowerShell gira solo su Windows (PROD): l'utente deve testare il
+  download "Setup GUI" su un client reale dopo Save to GitHub + deploy PROD.
+
 # 2026-06-24 — HOTFIX P0 deploy PROD: vault_mismatch in `hornetsecurity_vmbackup_poller`
 
 ## Sintomo
@@ -2110,7 +2247,7 @@ noc-agent/cmd/nocui-v5/
 ## 📦 Distribuzione
 
 - **Bundle**: `/app/deploy_patches/v5.0.0/ArgusDesktop.exe` (3.7 MB)
-- **Preview live** (no install): https://network-monitor-pro.preview.emergentagent.com/argus-desktop-preview/
+- **Preview live** (no install): https://noc-alert-hub-1.preview.emergentagent.com/argus-desktop-preview/
 - **README deploy**: `/app/deploy_patches/v5.0.0/README.md` (PowerShell one-liner per SOCIALSRV)
 
 ## ⚠️ Note
