@@ -1,0 +1,30 @@
+{
+  "summary": "Regression testing on device selection checkboxes in ARGUS Center (client 86BIT_Office, tab Dispositivi). Tested checkbox behavior in grouped view, table view, select-all, bulk mark/unmark VITAL, and clear-selection. All flows work correctly with ZERO JS errors and ZERO ReferenceError (no 'Star is not defined'). No black-screen or modal-opening regression when clicking checkboxes.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "detailed_results": {
+    "grouped_view_single_click": "PASS - Clicking select-device-192.168.1.254 shows toolbar '1 selezionati', no modal opens, 0 JS errors",
+    "grouped_view_multi_select": "PASS - Second checkbox (10.100.61.100) increments to '2 selezionati'",
+    "grouped_view_deselect": "PASS - Re-clicking first checkbox decrements to '1 selezionati'",
+    "isolation_from_row_click": "PASS - Checkbox click does NOT open device detail modal (stopPropagation works)",
+    "table_view_row_checkbox": "PASS - select-device-row-* toggles selection; toolbar reflects count",
+    "select_all_devices": "PASS - Header checkbox selects all 30 devices ('30 selezionati'); re-click deselects all (toolbar hidden)",
+    "bulk_mark_vital": "PASS - Toast '1 dispositivi marcati VITALI' shown; VITALI counter went from 0 to 1",
+    "bulk_clear_selection": "PASS - bulk-clear-selection-btn hides toolbar",
+    "console_errors": "PASS - 0 pageerrors, 0 ReferenceError, 0 'Star is not defined' during all interactions (only unrelated WebSocket warning)"
+  },
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": [],
+  "updated_files": [],
+  "success_rate": {"backend": "N/A (skipped)", "frontend": "100%"},
+  "test_credentials": "info@86bit.it (admin)",
+  "seed_data_creation": "None",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Checkbox selection (grouped + table + select-all + bulk actions) is fully functional in preview build. No regression detected from the endpoint/infrastructure categorization split. Console clean during checkbox clicks."
+}
