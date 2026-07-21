@@ -1,33 +1,25 @@
 {
-  "summary": "Iter 88 — Validate 3 Nagios-clone features: (#1) Scheduled Downtime (settings + maintenance CRUD + info-card.in_maintenance), (#2) Soft/Hard states (settings/monitoring + per-device max_check_attempts override + info-card state_type/degraded/failed_attempts), (#3) Parent-child dependencies (parent_ip/parent_status/unreachable_dependency + POST /parent). Backend pytest 10/10 PASS. Frontend Playwright 4/4 PASS (badges + Stato Live editor inputs). Regressione liveness (192.168.1.3) verde.",
-  "backend_issues": { "critical": [], "minor": [] },
+  "summary": "Verified Clienti page and client detail navigation in preview. NO ReferenceError (no 'Cloud is not defined'). Login OK, /clients renders 86BIT_Office with Endpoint pill 0/24, click opens ClientOverviewPage with endpoints-panel and StatBoxes Dispositivi/Endpoints. Zero console/pageerrors captured.",
+  "backend_issues": {"critical": [], "minor": []},
   "frontend_issues": {
     "ui_bugs": [],
     "integration_issues": [],
-    "design_issues": [
-      {"screen": "DeviceInfoCard NAGTEST-FiglioUnreach", "issues": ["device-parent-input mostra valore VUOTO mentre il parent_ip salvato è 10.66.0.1 (la riga 'Padre (dipendenza)' è comunque presente e funzionante). Sarebbe più chiaro precompilare l'input con il parent_ip corrente invece del solo placeholder 'IP switch/gateway'."]}
-    ]
+    "design_issues": []
   },
-  "test_report_links": [
-    "/app/backend/tests/test_nagios_features_iter88.py",
-    "/app/test_reports/pytest/iter88_results.xml"
-  ],
+  "test_report_links": [],
   "action_items": [
-    "[NICE-TO-HAVE] DeviceInfoCard.js: precompilare device-parent-input con st.parent_ip corrente (oggi è vuoto, solo placeholder) — non bloccante.",
-    "[SEED-NOTE] I device NAGTEST (10.66.0.10/0.20/0.1/0.50) NON erano presenti nel DB all'arrivo del testing agent: li ho seedati io in managed_devices con i campi corretti (ip, ip_address, mac_address univoco, state_type, consecutive_ping_failures, degraded, parent_ip) e ho creato la maintenance_window 'nagtest-maint-active' (now-1h → now+2h) per 10.66.0.10. Se serve riprodurre i test, lo script seed è documentato in 'seed_data_creation'."
+    "Il problema in PRODUZIONE (argus.86bit.it) e' quasi certamente dovuto ad un BUNDLE OBSOLETO. Rebuild + deploy del frontend risolvera' l'errore 'Cloud is not defined at ClientsPage.js:229'. Nessun problema nel codice attuale.",
+    "Optional: bump asset hash / cache-bust per forzare invalidazione bundle nei browser degli utenti in prod."
   ],
   "critical_code_review_comments": [
-    "device_info_card.py: build_info_card legge `failed_attempts` dal campo `consecutive_ping_failures` ma la naming è opaca — un commento sui field-name mongo (es. consecutive_ping_failures, degraded, state_type, max_check_attempts) eviterebbe confusione futura. Inoltre attualmente `state_type` viene esposto anche se il device è 'online' (es. residuo soft state). Considerare di forzare state_type='hard' quando effective_status=='online' E degraded==False, per evitare incoerenze visive (badge soft mentre il device è ONLINE).",
-    "device_info_card.py:560 `unreachable_dependency = True` se p_status=='offline' AND effective_status!='online'. Va bene, ma se il backend live polling segna il figlio come 'stale' (caso citato dal main agent) il flag funziona correttamente (verificato sul seed)."
+    "ClientsPage.js linea 9 importa Desktop correttamente; nessun riferimento a 'Cloud' nel codice attuale (grep verificato). L'errore in prod e' da build stantia."
   ],
-  "updated_files": [
-    "/app/backend/tests/test_nagios_features_iter88.py (new — 10 tests, all green)"
-  ],
-  "success_rate": { "backend": "100% (10/10)", "frontend": "100% (4/4)" },
-  "test_credentials": "Admin info@86bit.it / Ariel17051986@!@86",
-  "seed_data_creation": "Seedati in DB: managed_devices {10.66.0.10 NAGTEST-Maintenance online; 10.66.0.20 NAGTEST-SoftState offline state_type=soft consecutive_ping_failures=2 degraded=true; 10.66.0.1 NAGTEST-SwitchPadre offline state_type=hard failed=5; 10.66.0.50 NAGTEST-FiglioUnreach offline parent_ip=10.66.0.1} con client_id da3d6e40-b3e5-4d46-9787-dde328a3aa36; maintenance_windows{id=nagtest-maint-active, device_ip=10.66.0.10, finestra attiva now-1h→now+2h}.",
+  "updated_files": [],
+  "success_rate": {"backend": "n/a", "frontend": "100%"},
+  "test_credentials": "info@86bit.it / Ariel17051986@!@86 (funzionanti)",
+  "seed_data_creation": "none",
   "retest_needed": false,
-  "main_agent_can_self_test": true,
-  "context_for_next_testing_agent": "I device NAGTEST sono ora in DB (vedi seed_data_creation). Backend test pytest in /app/backend/tests/test_nagios_features_iter88.py copre: GET/POST /api/settings/monitoring, CRUD /api/maintenance/{client_id}, GET /api/devices/by-ip/{ip}/info-card per i 3 scenari + regressione 192.168.1.3, POST /monitoring-config (override + revert), POST /parent (set + revert). Frontend Playwright verifica i 4 data-testid (device-maintenance-badge, device-soft-state-badge='IN VERIFICA 2/5', device-status-badge='IRRAGGIUNGIBILE' e ='ONLINE') + device-mca-input/device-mca-save + device-parent-input/device-parent-save. NOTA: per la SoftState UI il backend reads `consecutive_ping_failures` (NOT `failed_attempts`) e `degraded` da managed_devices; assicurarsi che il poll loop scriva su queste due chiavi.",
-  "rca of the issue": "Nessun bug critico. Singola minor UX: device-parent-input non precompilato con parent_ip corrente (sostituisce solo placeholder). Inizialmente il seed devices mancava (DB pulito sui 10.66.0.*), risolto seedando localmente; il main agent dovrebbe pubblicare uno script di seed o un endpoint dedicato per garantire riproducibilità in preview."
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Preview build code is clean. Any 'Cloud is not defined' error is a stale production bundle issue, not a code issue.",
+  "rca of the issue": "Errore 'Uncaught ReferenceError: Cloud is not defined at ClientsPage.js:229' visto solo su argus.86bit.it (prod). Nel codice attuale ClientsPage.js NON usa l'icona 'Cloud'; usa 'Desktop' importato correttamente da @phosphor-icons/react (riga 9). Verificato via grep e via runtime (nessun pageerror durante caricamento /clients e navigazione al cliente 86BIT_Office). Mitigation: rebuild del frontend e deploy in produzione + invalidare cache CDN/browser."
 }
