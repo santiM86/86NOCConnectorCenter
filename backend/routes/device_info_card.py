@@ -953,3 +953,81 @@ async def set_devices_vital_bulk(
         ),
     }
 
+
+@router.post("/devices/bulk-silence")
+async def set_devices_silence_bulk(
+    payload: dict,
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+):
+    """Silenzia/riattiva in blocco gli alert di piu' device.
+
+    Body: {"ips": [str, ...], "silenced": bool, "client_id": str, "reason"?: str}
+
+    Semantica identica al toggle singolo (connector.update_device_silence):
+    quando `silenced=True` nessun nuovo alert viene emesso per il device
+    (gating in alert_filter.should_emit_alert). I device marcati VITALI
+    ignorano comunque il silence (override in alert_filter). Gli alert gia'
+    esistenti NON vengono toccati.
+    """
+    from alert_filter import invalidate_silence_cache
+
+    ips = payload.get("ips")
+    if not isinstance(ips, list) or not ips:
+        raise HTTPException(status_code=400, detail="ips (lista non vuota) e' obbligatorio")
+    if "silenced" not in (payload or {}):
+        raise HTTPException(status_code=400, detail="silenced (bool) e' obbligatorio")
+    client_id = (payload.get("client_id") or "").strip()
+    if not client_id:
+        raise HTTPException(status_code=400, detail="client_id e' obbligatorio per l'azione multipla")
+    silenced = bool(payload.get("silenced"))
+    reason = (payload.get("reason") or "").strip()[:200]
+    ip_list = list({str(i).strip() for i in ips if str(i).strip()})
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    user_email = current_user.get("email")
+
+    res = await db.managed_devices.update_many(
+        {"client_id": client_id, "ip": {"$in": ip_list}},
+        {"$set": {
+            "alerts_silenced": silenced,
+            "alerts_silenced_updated_at": now_iso,
+            "alerts_silenced_reason": reason if silenced else "",
+            "alerts_silenced_by": user_email if silenced else "",
+        }},
+    )
+
+    for ip in ip_list:
+        invalidate_silence_cache(client_id=client_id, device_ip=ip)
+
+    try:
+        await audit_logger.log(
+            user_email=user_email,
+            action=AuditAction.UPDATE_DEVICE if hasattr(AuditAction, "UPDATE_DEVICE") else AuditAction.OTHER,
+            resource_type="device",
+            resource_id=None,
+            metadata={
+                "action": "set_silence_bulk",
+                "client_id": client_id,
+                "ips": ip_list,
+                "alerts_silenced": silenced,
+                "matched": res.matched_count,
+                "modified": res.modified_count,
+                "reason": reason,
+            },
+            request=request,
+        )
+    except Exception:
+        pass
+
+    return {
+        "ok": True,
+        "client_id": client_id,
+        "alerts_silenced": silenced,
+        "requested": len(ip_list),
+        "matched": res.matched_count,
+        "modified": res.modified_count,
+        "message": (
+            f"{res.modified_count} dispositivi {'silenziati' if silenced else 'riattivati'}"
+        ),
+    }

@@ -1,3 +1,29 @@
+# 2026-07-21 — Azione multipla "Silenzia / Riattiva alert" (bulk)
+
+## Richiesta utente
+Estendere la selezione multipla dispositivi (oltre a Vitali) con un'azione per
+silenziare/riattivare gli alert in blocco, utile in manutenzione programmata.
+
+## Implementato
+BACKEND
+- `device_info_card.py`: nuovo `POST /api/devices/bulk-silence`
+  body {ips:[], silenced:bool, client_id, reason?}. Mirror di bulk-vital +
+  semantica identica al toggle singolo (connector.update_device_silence):
+  setta alerts_silenced / _updated_at / _reason / _by su managed_devices
+  (update_many, no upsert) e invalida la silence-cache per ogni IP. I device
+  VITALI ignorano comunque il silence (override in alert_filter).
+  Verificato via curl: silence + unsilence → matched=2, modified=2.
+
+FRONTEND
+- `ClientOverviewPage.js`: aggiunti bottoni "🔕 Silenzia alert"
+  (data-testid=bulk-silence-btn) e "🔔 Riattiva alert"
+  (data-testid=bulk-unsilence-btn) nella toolbar di selezione multipla +
+  funzione `bulkSetSilence()`. Verificato via screenshot: toast + reset
+  selezione al click.
+
+## Note
+- Come bulk-vital, opera solo su device presenti in managed_devices (no upsert):
+  device non ancora persistiti mostrano "0 silenziati".
 # 2026-07-21 — Categorizzazione automatica Endpoint (PC/Mobile/IoT) vs Infrastruttura
 
 ## Richiesta utente (P1 upcoming)

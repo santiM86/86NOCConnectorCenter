@@ -2165,7 +2165,24 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
       setBulkSaving(false);
     }
   };
-  // v3.8.30: ordinamento tabella dispositivi (default per nome asc) + persist v3.8.31
+  const bulkSetSilence = async (silenced) => {
+    const ips = Array.from(selectedIps);
+    if (!ips.length) return;
+    setBulkSaving(true);
+    try {
+      const { data } = await axios.post(`${API}/devices/bulk-silence`, {
+        ips, silenced, client_id: clientId,
+      });
+      toast.success(data.message || `${data.modified} dispositivi aggiornati`);
+      clearSelection();
+      onRefresh?.();
+    } catch (err) {
+      const detail = err.response?.data?.detail || err.message || "Errore sconosciuto";
+      toast.error(`Azione multipla fallita: ${detail}`);
+    } finally {
+      setBulkSaving(false);
+    }
+  };
   // v3.8.40: usa visibleDevices (filtrati) per escludere multicast quando richiesto
   const { sorted: sortedDevices, sortKey, sortDir, requestSort } = useSortableTable(
     visibleDevices, "name", "asc",
@@ -2837,6 +2854,23 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
             data-testid="bulk-unmark-vital-btn"
           >
             Rimuovi dai vitali
+          </button>
+          <div className="h-4 w-px bg-yellow-500/30 mx-1" />
+          <button
+            onClick={() => bulkSetSilence(true)}
+            disabled={bulkSaving}
+            className="text-[11px] font-semibold px-3 py-1 rounded-md bg-[var(--bg-card)] border border-[var(--bg-border)] text-[var(--text-muted)] hover:text-amber-300 hover:border-amber-500/40 transition-colors disabled:opacity-50 flex items-center gap-1"
+            data-testid="bulk-silence-btn"
+          >
+            <BellSlash size={11} weight="bold" /> Silenzia alert
+          </button>
+          <button
+            onClick={() => bulkSetSilence(false)}
+            disabled={bulkSaving}
+            className="text-[11px] font-semibold px-3 py-1 rounded-md bg-[var(--bg-card)] border border-[var(--bg-border)] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors disabled:opacity-50 flex items-center gap-1"
+            data-testid="bulk-unsilence-btn"
+          >
+            <Bell size={11} weight="bold" /> Riattiva alert
           </button>
           <button
             onClick={clearSelection}
