@@ -1,3 +1,54 @@
+# 2026-07-22 — Correlation Engine (evidence fusion, alert precisi anti falsi-positivi)
+
+## Richiesta utente
+«Per notifiche davvero reali e precise Argus deve INCROCIARE i dati: se un
+server è offline da Datto ma firewall+internet sono ok e il ping lo raggiunge
+→ è un problema Datto; se ping FAIL e anche Datto lo vede offline → 100% server
+down. Fai delle mesh così, consigliami tu la migliore per tipo di dispositivo.»
+Approvato: matrice proposta, iLO power probe on-demand, soppressione topologica,
+rilascio di tutti i tipi.
+
+## Implementazione
+### NUOVO `backend/correlation_engine.py`
+- `build_context(db)`: raccoglie una volta per ciclo evidence L2 (FDB/ARP via
+  liveness_resolver), connector-live set, WAN per cliente (`wan_probe_results`),
+  mappe Datto (by_ip/by_mac/by_name), mappa child_ip→switch_ip.
+- `gather_signals(md, pd, ctx)`: vettore segnali {ping, l2_alive, datto+minuti,
+  connector_live, fw_up/rt_up, snmp}.
+- Verdetti per famiglia con confidenza + reasoning:
+  - **server**: Ping OK+Datto OFF → datto_agent_issue (low 85, "server operativo");
+    Ping FAIL+Datto OFF → iLO Off=server_powered_off(100), iLO On=os_hung(92),
+    no-L2=server_down(95), L2-vivo=unresponsive_l2_present(70);
+    Ping FAIL+Datto ONLINE → monitoring_blind(50) o icmp_filtered se L2;
+    connector giù+no Datto → connector_blind (nessun alert, evita falsi).
+  - **firewall**: fw down+maggioranza sito giù → site_isolated(97); fw up+internet
+    giù → isp_down(95); fw down solo mgmt → firewall_mgmt_down(60).
+  - **switch**: down+figli tutti giù → switch_down(95, sopprime figli); mgmt-only(55).
+- `resolve_ilo_power(...)`: Redfish PowerState On/Off, chiamato SOLO quando server
+  down + Datto offline + credenziali iLO presenti.
+
+### `backend/alert_engine.py` — `run_vital_watchdog` riscritto (correlation-based)
+- Target = managed_devices vitali OR server/firewall/switch/nas.
+- 2 pass: verdetto preliminare → rifinitura firewall/switch + **soppressione
+  topologica** (sito isolato o switch down → 1 solo alert, figli soppressi).
+- Fire quando confidenza ≥90 (immediato) o offline ≥ vital_warn_minutes;
+  escalation di severità se il verdetto peggiora; alert INFORMATIVI dedup per
+  casi "up ma anomalo" (agent Datto KO). Auto-recovery + resolve automatico.
+- Telegram gate: solo severità high/critical (no rumore su low/medium).
+- Datto watchdog: salta i server già coperti da un managed_device (no doppioni).
+
+### Frontend `AlertEngineSettingsPage.jsx`
+- Aggiunto pannello "Correlazione multi-sorgente" con la matrice dei verdetti.
+
+## Test (self, E2E + unit) — tutti PASS
+- 12 branch verdetto (unit) corretti.
+- E2E: SERVER DOWN(critical 95%), AGENT DATTO KO(low, "server operativo"),
+  SITO ISOLATO(1 alert critical, figli soppressi), recovery+auto-resolve.
+- Dati di test seminati e ripuliti; nessun residuo.
+
+---
+
+
 # 2026-07-22 — Alert Engine proattivo (dispositivi vitali offline + Datto RMM)
 
 ## Richiesta utente

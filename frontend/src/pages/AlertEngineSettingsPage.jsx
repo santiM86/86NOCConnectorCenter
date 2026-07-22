@@ -261,6 +261,29 @@ export default function AlertEngineSettingsPage() {
         </Section>
       )}
 
+      {/* Come funziona la correlazione */}
+      <Section icon={ShieldCheck} color="#10B981" title="Correlazione multi-sorgente (anti falsi-positivi)"
+        desc="Argus incrocia più segnali prima di allertare: ping, Datto, evidenza L2 (switch/ARP), WAN e iLO.">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[10px]">
+          {[
+            ["Ping FAIL + Datto OFFLINE + iLO Off", "SERVER SPENTO · 100%", "#EF4444"],
+            ["Ping FAIL + Datto OFFLINE + iLO On", "OS BLOCCATO · 92%", "#EF4444"],
+            ["Ping FAIL + Datto OFFLINE (no L2)", "SERVER DOWN · 95%", "#EF4444"],
+            ["Ping OK + Datto OFFLINE", "AGENT DATTO KO (server su) · 85%", "#3B82F6"],
+            ["Ping FAIL + Datto ONLINE", "Monitoraggio cieco · 50%", "#F59E0B"],
+            ["Firewall down + sito giù", "SITO ISOLATO (1 alert) · 97%", "#EF4444"],
+            ["Firewall su + Internet giù", "LINEA ISP DOWN · 95%", "#EF4444"],
+            ["Switch down + figli giù", "SWITCH DOWN (figli soppressi) · 95%", "#EF4444"],
+          ].map(([cond, verdict, col]) => (
+            <div key={cond} className="flex items-center justify-between gap-2 px-2 py-1.5 rounded border border-[var(--bg-border)]">
+              <span className="text-[var(--text-muted)] font-mono">{cond}</span>
+              <span className="font-semibold shrink-0" style={{ color: col }}>{verdict}</span>
+            </div>
+          ))}
+        </div>
+        <p className="text-[9px] text-[var(--text-muted)]">Ogni alert riporta il ragionamento e la % di confidenza. La correlazione è sempre attiva quando il motore è acceso.</p>
+      </Section>
+
       <div className="flex items-center gap-2 text-[10px] text-[var(--text-muted)] px-1">
         <ShieldCheck size={12} className="text-emerald-400" />
         I dispositivi vitali non possono essere silenziati: generano sempre alert. Le soglie possono essere sovrascritte per singolo cliente.

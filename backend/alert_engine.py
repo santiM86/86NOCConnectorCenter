@@ -36,6 +36,8 @@ logger = logging.getLogger("alert_engine")
 
 CHECK_INTERVAL_SECONDS = 60
 
+SEVERITY_RANK_LOCAL = {"none": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
+
 DEFAULT_CONFIG: Dict[str, Any] = {
     "enabled": True,
     # Dispositivi vitali offline
@@ -117,8 +119,9 @@ async def _dispatch_notification(db, cfg: Dict[str, Any], alert_doc: Dict[str, A
             await wp.notify_new_alert(db, alert_doc)
         except Exception as e:  # noqa: BLE001
             logger.debug("push dispatch failed: %s", e)
-    # Telegram
-    if "telegram" in channels and cfg.get("telegram_enabled"):
+    # Telegram — solo per alert rilevanti (high/critical) per evitare rumore
+    if "telegram" in channels and cfg.get("telegram_enabled") and \
+       (alert_doc.get("severity") in ("high", "critical")):
         try:
             from telegram_notifier import send_alert_telegram
             await send_alert_telegram(
@@ -175,130 +178,204 @@ async def _best_poll_record(records: list) -> Optional[dict]:
 
 
 async def run_vital_watchdog(db, cfg_global: Dict[str, Any]) -> int:
+    """Correlation-based watchdog: incrocia PING+DATTO+L2+WAN+iLO per dedurre
+    la causa reale ed evitare falsi positivi. Con soppressione topologica
+    (sito isolato / switch down -> un solo alert, figli soppressi)."""
+    import correlation_engine as ce
     now = datetime.now(timezone.utc)
-    vitals = await db.managed_devices.find(
-        {"is_vital": True},
+
+    families = list(ce.SERVER_TYPES | ce.FIREWALL_TYPES | ce.SWITCH_TYPES)
+    targets = await db.managed_devices.find(
+        {"$or": [{"is_vital": True}, {"device_type": {"$in": families}}]},
         {"_id": 0, "client_id": 1, "ip": 1, "name": 1, "device_name": 1,
-         "device_type": 1, "mac": 1, "source": 1},
-    ).to_list(5000)
-    if not vitals:
+         "device_type": 1, "mac": 1, "source": 1, "is_vital": 1},
+    ).to_list(10000)
+    if not targets:
         return 0
 
-    # Mappe evidence + connector-down (una volta per ciclo, tutti i clienti)
-    ip_ev, mac_ev = await lr.build_evidence_maps(db, client_id=None)
-    offline_clients = await lr.build_clients_without_online_agent(db)
+    ctx = await ce.build_context(db)
 
-    # Poll records per gli IP vitali
-    vital_ips = [v.get("ip") for v in vitals if v.get("ip")]
+    # poll records best-per-ip
+    ips = [t.get("ip") for t in targets if t.get("ip")]
     poll_by_ip: dict = {}
-    if vital_ips:
-        recs = await db.device_poll_status.find(
-            {"device_ip": {"$in": vital_ips}}, {"_id": 0},
-        ).to_list(20000)
+    if ips:
         grouped: dict = {}
-        for r in recs:
+        async for r in db.device_poll_status.find({"device_ip": {"$in": ips}}, {"_id": 0}):
             grouped.setdefault(r.get("device_ip"), []).append(r)
         for ip, lst in grouped.items():
             poll_by_ip[ip] = await _best_poll_record(lst)
 
-    # Nomi clienti
     clients = await db.clients.find({}, {"_id": 0, "id": 1, "name": 1}).to_list(2000)
     client_names = {c.get("id"): c.get("name") for c in clients}
 
-    actions = 0
-    for v in vitals:
-        cid = v.get("client_id")
-        ip = v.get("ip")
+    # PASS 1 — segnali + verdetto preliminare
+    items = []  # (md, family, signals, verdict)
+    down_count_by_client: dict = {}
+    for md in targets:
+        cid = md.get("client_id"); ip = md.get("ip")
         if not cid or not ip:
             continue
-        pd = poll_by_ip.get(ip)
-        status, _ev = lr.compute_status(pd, v, ip_ev, mac_ev, offline_clients)
-        is_down = status == "offline"  # "stale"/"pending"/"online" NON allertano
-
-        state = await db.vital_offline_state.find_one({"client_id": cid, "ip": ip})
-        cfg = await _resolve_client_config(db, cfg_global, cid)
-        dev_name = v.get("name") or v.get("device_name") or ip
-        cname = client_names.get(cid) or (cid[:8] if cid else "")
-        dev_type = v.get("device_type") or "device"
-
-        if is_down:
-            if not state:
-                await db.vital_offline_state.insert_one({
-                    "client_id": cid, "ip": ip, "device_name": dev_name,
-                    "first_offline_at": now.isoformat(), "level": 0, "alert_id": None,
-                })
-                state = {"first_offline_at": now.isoformat(), "level": 0, "alert_id": None}
-            first_off = _parse_dt(state.get("first_offline_at")) or now
-            elapsed_min = (now - first_off).total_seconds() / 60.0
-            level = int(state.get("level") or 0)
-            warn_min = float(cfg.get("vital_warn_minutes", 3))
-            crit_min = float(cfg.get("vital_crit_minutes", 10))
-
-            if level < 1 and elapsed_min >= warn_min:
-                alert = _mk_alert(
-                    cid, cname, dev_name, ip, dev_type, "high", "vital_device_offline",
-                    f"DISPOSITIVO VITALE OFFLINE: {dev_name}",
-                    (f"Il dispositivo vitale '{dev_name}' ({ip}) del cliente {cname} "
-                     f"e' OFFLINE da {int(elapsed_min)} minuti. Verifica immediata consigliata."),
-                )
-                await insert_alert_if_emit(db, alert)
-                await _dispatch_notification(db, cfg, alert)
-                await db.vital_offline_state.update_one(
-                    {"client_id": cid, "ip": ip},
-                    {"$set": {"level": 1, "alert_id": alert["id"], "warned_at": now.isoformat()}},
-                )
-                actions += 1
-                logger.warning("[vital] OFFLINE warn: %s (%s) client=%s", dev_name, ip, cname)
-
-            elif level < 2 and elapsed_min >= crit_min:
-                # Escala l'alert esistente a critical + re-notifica
-                aid = state.get("alert_id")
-                if aid:
-                    await db.alerts.update_one(
-                        {"id": aid},
-                        {"$set": {"severity": "critical",
-                                  "message": (f"ESCALATION: il dispositivo vitale '{dev_name}' ({ip}) "
-                                              f"del cliente {cname} e' OFFLINE da {int(elapsed_min)} minuti.")}},
-                    )
-                    alert = await db.alerts.find_one({"id": aid}, {"_id": 0})
-                else:
-                    alert = _mk_alert(
-                        cid, cname, dev_name, ip, dev_type, "critical", "vital_device_offline",
-                        f"DISPOSITIVO VITALE OFFLINE (CRITICO): {dev_name}",
-                        (f"Il dispositivo vitale '{dev_name}' ({ip}) del cliente {cname} "
-                         f"e' OFFLINE da {int(elapsed_min)} minuti."),
-                    )
-                    await insert_alert_if_emit(db, alert)
-                if alert:
-                    await _dispatch_notification(db, cfg, alert)
-                await db.vital_offline_state.update_one(
-                    {"client_id": cid, "ip": ip},
-                    {"$set": {"level": 2, "escalated_at": now.isoformat(),
-                              "alert_id": (alert or {}).get("id")}},
-                )
-                actions += 1
-                logger.warning("[vital] OFFLINE CRIT: %s (%s) client=%s", dev_name, ip, cname)
+        fam = ce.device_family(md)
+        s = ce.gather_signals(md, poll_by_ip.get(ip), ctx)
+        if fam == "server":
+            v = ce.verdict_server(s, None)
+            # iLO probe SOLO se down + Datto offline + credenziali iLO presenti
+            if not v["up"] and s.get("datto") == "offline":
+                try:
+                    from security import security_manager
+                    from deps import redfish_poller
+                    ilo = await ce.resolve_ilo_power(db, security_manager, redfish_poller, ip)
+                    if ilo:
+                        v = ce.verdict_server(s, ilo)
+                except Exception:
+                    pass
+        elif fam == "firewall":
+            v = ce.verdict_firewall(s, majority_down=False)  # rifinito in pass 2
+        elif fam == "switch":
+            v = ce.verdict_switch(s, children_all_down=False, has_children=False)
         else:
-            # Tornato online / stale-uncertain: risolvi eventuale stato
+            v = ce.verdict_generic(s)
+        if not v["up"] and v["alertable"]:
+            down_count_by_client[cid] = down_count_by_client.get(cid, 0) + 1
+        items.append([md, fam, s, v])
+
+    total_by_client: dict = {}
+    for md, *_ in items:
+        total_by_client[md["client_id"]] = total_by_client.get(md["client_id"], 0) + 1
+
+    # PASS 2 — rifinitura firewall/switch + soppressione topologica
+    isolated_clients = set()
+    down_switch_ips = set()
+    for it in items:
+        md, fam, s, v = it
+        cid = md["client_id"]
+        if fam == "firewall" and not v["up"]:
+            down = down_count_by_client.get(cid, 0)
+            total = max(total_by_client.get(cid, 1), 1)
+            majority = down >= max(2, int(total * 0.5))
+            it[3] = ce.verdict_firewall(s, majority_down=majority)
+            if it[3]["root_cause"] == "site_isolated":
+                isolated_clients.add(cid)
+        elif fam == "switch" and not v["up"]:
+            sw_ip = md.get("ip")
+            children = [x for x in items
+                        if ctx["child_to_switch"].get(x[0].get("ip")) == sw_ip]
+            has_children = len(children) > 0
+            children_all_down = has_children and all(not c[3]["up"] for c in children)
+            it[3] = ce.verdict_switch(s, children_all_down=children_all_down, has_children=has_children)
+            if it[3]["root_cause"] == "switch_down":
+                down_switch_ips.add(sw_ip)
+
+    def _is_suppressed(md, fam):
+        cid = md["client_id"]; ip = md.get("ip")
+        if cid in isolated_clients and fam != "firewall":
+            return True
+        parent_sw = ctx["child_to_switch"].get(ip)
+        if parent_sw and parent_sw in down_switch_ips and md.get("device_type", "").lower() not in ce.SWITCH_TYPES:
+            return True
+        return False
+
+    warn_min = float(cfg_global.get("vital_warn_minutes", 3))
+    actions = 0
+
+    for md, fam, s, v in items:
+        cid = md["client_id"]; ip = md.get("ip")
+        dev_name = md.get("name") or md.get("device_name") or ip
+        cname = client_names.get(cid) or (cid[:8] if cid else "")
+        dev_type = md.get("device_type") or fam
+        cfg = await _resolve_client_config(db, cfg_global, cid)
+        state = await db.vital_offline_state.find_one({"client_id": cid, "ip": ip})
+
+        # UP → risolvi eventuale stato "down" + recovery
+        if v["up"]:
             if state:
                 aid = state.get("alert_id")
                 if aid:
-                    await db.alerts.update_one(
-                        {"id": aid},
-                        {"$set": {"status": "resolved", "resolved_at": now.isoformat()}},
-                    )
-                if state.get("level", 0) >= 1 and cfg.get("auto_recovery") and status == "online":
-                    rec = _mk_alert(
-                        cid, cname, dev_name, ip, dev_type, "low", "vital_device_recovery",
-                        f"Dispositivo vitale ONLINE (ripristinato): {dev_name}",
-                        f"Il dispositivo vitale '{dev_name}' ({ip}) del cliente {cname} e' tornato ONLINE.",
-                    )
+                    await db.alerts.update_one({"id": aid},
+                        {"$set": {"status": "resolved", "resolved_at": now.isoformat()}})
+                if state.get("level", 0) >= 1 and cfg.get("auto_recovery"):
+                    rec = _mk_alert(cid, cname, dev_name, ip, dev_type, "low",
+                        "device_recovery", f"ONLINE (ripristinato): {dev_name}",
+                        f"'{dev_name}' ({ip}) del cliente {cname} e' tornato raggiungibile.")
                     await insert_alert_if_emit(db, rec)
                     await _dispatch_notification(db, cfg, rec)
                     actions += 1
-                    logger.info("[vital] RECOVERY: %s (%s) client=%s", dev_name, ip, cname)
-                if status == "online":
-                    await db.vital_offline_state.delete_one({"client_id": cid, "ip": ip})
+                await db.vital_offline_state.delete_one({"client_id": cid, "ip": ip})
+
+            # Alert INFORMATIVO (up ma anomalo, es. agent Datto KO): dedup, no escalation
+            info_src = f"corr_{v['root_cause']}"
+            existing_info = await db.alerts.find_one(
+                {"client_id": cid, "device_ip": ip, "source_type": info_src, "status": "active"})
+            if v["alertable"] and not _is_suppressed(md, fam):
+                if not existing_info:
+                    alert = _mk_alert(cid, cname, dev_name, ip, dev_type, v["severity"], info_src,
+                        f"Info: {dev_name} — {v['root_cause'].replace('_',' ').upper()}",
+                        f"Cliente {cname}: {v['reasoning']} (confidenza {v['confidence']}%)")
+                    await insert_alert_if_emit(db, alert)
+                    await _dispatch_notification(db, cfg, alert)
+                    actions += 1
+            else:
+                # non piu' anomalo → risolvi eventuali info corr_* attivi del device
+                await db.alerts.update_many(
+                    {"client_id": cid, "device_ip": ip,
+                     "source_type": {"$regex": "^corr_"}, "status": "active"},
+                    {"$set": {"status": "resolved", "resolved_at": now.isoformat()}})
+            continue
+
+        if not v["alertable"]:
+            continue
+
+        # Soppressione topologica: non creare alert figli
+        if _is_suppressed(md, fam):
+            continue
+
+        # DOWN alertable — gestione stato + gate temporale/confidenza
+        if not state:
+            await db.vital_offline_state.insert_one({
+                "client_id": cid, "ip": ip, "device_name": dev_name,
+                "first_offline_at": now.isoformat(), "level": 0,
+                "alert_id": None, "severity": None, "root_cause": v["root_cause"]})
+            state = {"first_offline_at": now.isoformat(), "level": 0,
+                     "alert_id": None, "severity": None}
+        first_off = _parse_dt(state.get("first_offline_at")) or now
+        elapsed_min = (now - first_off).total_seconds() / 60.0
+        should_fire = v["confidence"] >= 90 or elapsed_min >= warn_min
+        if not should_fire:
+            continue
+
+        sev = v["severity"]
+        prev_sev = state.get("severity")
+        reasoning = f"{v['reasoning']} (confidenza {v['confidence']}%)"
+        source_type = f"corr_{v['root_cause']}"
+        title_map = {
+            "critical": f"CRITICO: {dev_name}",
+            "high": f"ALERT: {dev_name}",
+            "medium": f"Attenzione: {dev_name}",
+            "low": f"Info: {dev_name}",
+        }
+        title = f"{title_map.get(sev, dev_name)} — {v['root_cause'].replace('_',' ').upper()}"
+
+        if state.get("level", 0) == 0:
+            alert = _mk_alert(cid, cname, dev_name, ip, dev_type, sev, source_type, title,
+                              f"Cliente {cname}: {reasoning}")
+            await insert_alert_if_emit(db, alert)
+            await _dispatch_notification(db, cfg, alert)
+            await db.vital_offline_state.update_one({"client_id": cid, "ip": ip},
+                {"$set": {"level": 1, "alert_id": alert["id"], "severity": sev,
+                          "root_cause": v["root_cause"]}})
+            actions += 1
+            logger.warning("[corr] %s %s (%s) client=%s conf=%s", sev, v["root_cause"], ip, cname, v["confidence"])
+        elif prev_sev and SEVERITY_RANK_LOCAL.get(sev, 0) > SEVERITY_RANK_LOCAL.get(prev_sev, 0):
+            aid = state.get("alert_id")
+            if aid:
+                await db.alerts.update_one({"id": aid},
+                    {"$set": {"severity": sev, "title": title, "message": f"ESCALATION — {reasoning}"}})
+                alert = await db.alerts.find_one({"id": aid}, {"_id": 0})
+                if alert:
+                    await _dispatch_notification(db, cfg, alert)
+            await db.vital_offline_state.update_one({"client_id": cid, "ip": ip},
+                {"$set": {"severity": sev, "root_cause": v["root_cause"]}})
+            actions += 1
     return actions
 
 
@@ -365,7 +442,7 @@ async def run_datto_watchdog(db, cfg_global: Dict[str, Any]) -> int:
     servers = await db.datto_devices.find(
         {"$or": [{"device_type": {"$regex": "server", "$options": "i"}},
                  {"is_server": True}]},
-        {"_id": 0, "client_id": 1, "uid": 1, "name": 1, "ip": 1,
+        {"_id": 0, "client_id": 1, "uid": 1, "name": 1, "ip": 1, "ip_list": 1,
          "online": 1, "datto_last_seen": 1, "device_type": 1},
     ).to_list(20000)
 
@@ -376,6 +453,14 @@ async def run_datto_watchdog(db, cfg_global: Dict[str, Any]) -> int:
             continue
         if dev.get("online") is None:
             continue  # sync non ha ancora popolato lo stato online
+        # Se il server Datto e' anche un managed_device -> lo gestisce il
+        # correlation watchdog (con incrocio ping/L2/iLO). Evita doppioni.
+        dev_ips = [dev.get("ip")] + (dev.get("ip_list") or [])
+        dev_ips = [x for x in dev_ips if x]
+        if dev_ips and await db.managed_devices.count_documents(
+            {"client_id": cid, "ip": {"$in": dev_ips}}
+        ):
+            continue
         cfg = await _resolve_client_config(db, cfg_global, cid)
         cname = client_names.get(cid) or (cid[:8] if cid else "")
         name = dev.get("name") or uid
