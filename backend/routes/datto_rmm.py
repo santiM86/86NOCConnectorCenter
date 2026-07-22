@@ -31,6 +31,7 @@ from __future__ import annotations
 import logging
 import asyncio
 import json
+import re
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -164,11 +165,44 @@ async def put_datto_config(
     audit_url = (payload.audit_url or DEFAULT_AUDIT_URL).strip()
     if not base_url.startswith("http") or not audit_url.startswith("http"):
         raise HTTPException(status_code=400, detail="Gli URL devono iniziare con http(s)")
+
+    # v2026-06-29: Hardening validation per evitare gli errori di compilazione
+    # ricorrenti del form (USER ID con email, BASE URL con query string).
+    user_id_clean = payload.user_id.strip()
+    if "@" in user_id_clean:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "USER ID non valido: hai inserito un'email. Il portal richiede l'ObjectId Mongo "
+                "(24 caratteri esadecimali, es. 5ec7affa4cdcd40b443d5c38). "
+                "Chiedi al provider del portal.86bit.it l'userId del tuo account."
+            ),
+        )
+    # Tipicamente ObjectId = 24 hex chars; tolleriamo anche eventuali altri formati
+    # custom del portal ma rifiutiamo email/url ovviamente sbagliati.
+    if not re.fullmatch(r"[A-Za-z0-9_.\-]+", user_id_clean):
+        raise HTTPException(
+            status_code=400,
+            detail="USER ID contiene caratteri non validi (ammessi: alfanumerici, '_', '.', '-').",
+        )
+
+    # BASE URL non deve contenere query string: i parametri (api_key, userId,
+    # page, max) sono aggiunti dal backend al momento del fetch.
+    if "?" in base_url or "&" in base_url:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "BASE URL non valida: non includere parametri ?api_key=... o &userId=... — "
+                "il backend li aggiunge automaticamente. "
+                f"Usa solo l'endpoint, es: {DEFAULT_BASE_URL}"
+            ),
+        )
+
     doc = {
         "id": "global",
         "api_key_enc": encrypted,
         "api_key_preview": _mask_key(payload.api_key),
-        "user_id": payload.user_id.strip(),
+        "user_id": user_id_clean,
         "base_url": base_url,
         "audit_url": audit_url,
         "updated_at": now,
@@ -688,6 +722,30 @@ async def _match_with_center(client_id: str, datto_devices: list[dict]) -> int:
         {"_id": 0, "mac": 1, "ip": 1, "switch_ip": 1, "port": 1},
     ).to_list(100000)
 
+    # v2026-06-29: diagnostica chiara su 0 match.
+    # Logga il "perchè" per facilitare il debug invece di silently mancare:
+    #   - 0 endpoint nel center → connector LAN scanner non attivo / no FDB
+    #   - 0 MAC nel center → switch ritornano solo IP senza MAC
+    #   - 0 MAC in Datto → audit endpoint non ha estratto NIC info
+    if not eps:
+        logger.warning(
+            "[datto-match] client=%s: 0 discovered_endpoints nel center. "
+            "Il connector LAN scanner del cliente non sta scoprendo device. "
+            "Verifica che il connector sia ONLINE e che gli switch siano in scan list.",
+            client_id,
+        )
+    else:
+        eps_with_mac = sum(1 for e in eps if e.get("mac"))
+        eps_with_ip = sum(1 for e in eps if e.get("ip"))
+        datto_macs = len(mac_to_dev)
+        datto_ips = len(ip_to_dev)
+        logger.info(
+            "[datto-match] client=%s: eps=%d (mac=%d, ip=%d) "
+            "datto=%d (mac=%d, ip=%d)",
+            client_id, len(eps), eps_with_mac, eps_with_ip,
+            len(datto_devices), datto_macs, datto_ips,
+        )
+
     # Match set per evitare doppie scritture
     ops: list = []
     matched_uids: set = set()
@@ -1091,6 +1149,107 @@ async def datto_client_debug(client_id: str,
         )
     else:
         out["diagnosis"] = "✅ Allineato"
+
+    return out
+
+
+@router.get("/admin/datto/match-debug/{client_id}")
+async def datto_match_debug(client_id: str,
+                             current_user: dict = Depends(get_current_user)):
+    """Diagnosi MATCH per il caso "N device persisted ma 0 match con discovered_endpoints".
+
+    Spiega ESATTAMENTE perche' i device Datto non trovano corrispondenza con
+    le entry FDB degli switch del cliente. Le cause possibili:
+      A. Il connector LAN scanner del cliente non e' attivo / non vede device
+         → discovered_endpoints e' vuoto per questo client_id
+      B. Lo scanner vede solo IP (senza MAC) ma i device Datto hanno solo MAC
+         (audit endpoint) e nessun IP → no match possibile
+      C. I device Datto non hanno MAC scoperto dall'audit (audit endpoint
+         fallisce o nics list vuota nella response) → mac_list vuota → no match
+      D. MAC formattati diversamente (rare, _norm_mac normalizza tutto)
+      E. Subnet diverse: lo switch vede MAC su VLAN diversi → IP differente
+    """
+    require_admin(current_user)
+
+    persisted = await db.datto_devices.find(
+        {"client_id": client_id},
+        {"_id": 0, "uid": 1, "name": 1, "mac": 1, "ip": 1,
+         "mac_list": 1, "ip_list": 1},
+    ).to_list(10000)
+
+    eps = await db.discovered_endpoints.find(
+        {"client_id": client_id},
+        {"_id": 0, "mac": 1, "ip": 1, "switch_ip": 1, "port": 1},
+    ).to_list(100000)
+
+    # Conta MAC/IP coverage da entrambe le parti
+    datto_macs = [d.get("mac", "") for d in persisted if d.get("mac")]
+    datto_ips = [d.get("ip", "") for d in persisted if d.get("ip")]
+    datto_no_mac = [d.get("name") for d in persisted if not d.get("mac")]
+    eps_macs = {(e.get("mac") or "").upper() for e in eps if e.get("mac")}
+    eps_ips = {e.get("ip", "") for e in eps if e.get("ip")}
+
+    # Calcola intersezioni teoriche
+    datto_macs_set = {m.upper() for m in datto_macs}
+    intersect_mac = datto_macs_set & eps_macs
+    intersect_ip = set(datto_ips) & eps_ips
+
+    out: dict[str, Any] = {
+        "client_id": client_id,
+        "datto_devices_persisted": len(persisted),
+        "datto_devices_with_mac": len(datto_macs),
+        "datto_devices_without_mac": len(datto_no_mac),
+        "datto_devices_with_ip": len(datto_ips),
+        "discovered_endpoints_total": len(eps),
+        "discovered_endpoints_with_mac": len(eps_macs),
+        "discovered_endpoints_with_ip": len(eps_ips),
+        "intersection_mac": len(intersect_mac),
+        "intersection_ip": len(intersect_ip),
+        "sample_datto_no_mac": datto_no_mac[:5],
+        "sample_datto_with_mac": [
+            {"name": d.get("name"), "mac": d.get("mac"), "ip": d.get("ip")}
+            for d in persisted if d.get("mac")
+        ][:5],
+        "sample_eps_with_mac": [
+            {"mac": e.get("mac"), "ip": e.get("ip"), "switch_ip": e.get("switch_ip"), "port": e.get("port")}
+            for e in eps if e.get("mac")
+        ][:5],
+    }
+
+    # Diagnosi
+    if not persisted:
+        out["diagnosis"] = "🔴 Nessun device Datto persistito. Vedi /admin/datto/client-debug/{client_id} per cause."
+    elif not eps:
+        out["diagnosis"] = (
+            f"🔴 (A) Il client '{client_id}' ha 0 discovered_endpoints. "
+            f"Il connector LAN scanner non sta scoprendo MAC/IP dagli switch del cliente. "
+            f"Verifica: (1) connector ONLINE in Argus, (2) switch del cliente nella scan list "
+            f"con credenziali SNMP valide, (3) il connector ha lanciato almeno 1 scan."
+        )
+    elif len(datto_macs) == 0:
+        out["diagnosis"] = (
+            f"🔴 (C) {len(persisted)} device Datto persistiti ma NESSUNO ha MAC. "
+            f"L'audit endpoint del portal non sta ritornando NIC info. "
+            f"Verifica audit_url corretta e che il portal supporti getDeviceAuditDataFromUid."
+        )
+    elif len(eps_macs) == 0:
+        out["diagnosis"] = (
+            f"🔴 (B) Switch ritornano solo IP, nessun MAC nelle FDB. "
+            f"Senza MAC nelle discovered_endpoints il match Datto puo' avvenire solo per IP, "
+            f"ma {len(intersect_ip)} su {len(datto_ips)} Datto-IP coincidono."
+        )
+    elif len(intersect_mac) == 0 and len(intersect_ip) == 0:
+        out["diagnosis"] = (
+            f"🟠 (E) {len(datto_macs)} MAC lato Datto e {len(eps_macs)} MAC lato switch "
+            f"ma ZERO intersezioni. Probabilmente i device Datto vivono su una VLAN diversa "
+            f"da quella scoperta dagli switch (Datto vede VPN/Wifi, scanner vede LAN cablata) "
+            f"OPPURE il connector LAN scanner del cliente non e' nella stessa rete dei device."
+        )
+    else:
+        out["diagnosis"] = (
+            f"✅ {len(intersect_mac)} MAC + {len(intersect_ip)} IP in intersezione. "
+            f"Esegui POST /api/admin/datto/sync-client/{client_id} per ri-applicare il match."
+        )
 
     return out
 
