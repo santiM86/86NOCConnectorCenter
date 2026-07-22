@@ -8,7 +8,7 @@ import {
   Lightning, WifiHigh, WifiSlash, PlugsConnected, CaretDown,
   CheckCircle, Warning, ArrowClockwise, Bell, BellSlash, ChartLine, Monitor, Cpu,
   Plus, Trash, Lock, MagnifyingGlass, Info, PencilSimple, NetworkSlash,
-  Phone, DeviceMobile, Desktop, Network,
+  Phone, DeviceMobile, Desktop, Network, Star,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
