@@ -1,3 +1,26 @@
+# 2026-07-22 — Tab "Dispositivi Vitali" (filtro default vitali)
+
+## Richiesta utente
+Rinominare la tab "Dispositivi" in "DISPOSITIVI VITALI" e mostrare di default
+SOLO i dispositivi marcati come vitali (impostati dalla Panoramica), invece di
+tutti i device rilevati in rete.
+
+## Implementazione (frontend, `ClientOverviewPage.js`)
+- Tab rinominata: `Dispositivi Vitali (${vitalDevices.length})` con icona Star;
+  count = device con `is_vital === true`.
+- `DevicesTab`: il filtro criticality (già esistente: Tutti/Vitali/Best-effort)
+  ora ha default "vital" (nuova chiave storage `client-devices-vital-filter-v2`).
+  L'utente può comunque tornare a "Tutti" dal toggle.
+- Nessuna modifica backend. La marcatura vitale resta via `VitalToggleButton`
+  (stella) sia in Panoramica sia nella tab, endpoint `POST /api/devices/by-ip/{ip}/vital`.
+
+## Verifica (screenshot)
+- Cliente 86BIT_Office: tab "Dispositivi Vitali (1)", filtro su "Vitali",
+  mostra solo il device vitale. Zero errori runtime.
+
+---
+
+
 # 2026-07-22 — Switch-level suppression via FDB SNMP (completamento correlazione)
 
 ## Cosa
