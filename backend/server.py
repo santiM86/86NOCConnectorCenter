@@ -324,6 +324,7 @@ from routes.server_intelligence import router as server_intel_router
 from routes.push import router as push_router
 from routes.oncall import router as oncall_router
 from routes.escalation import router as escalation_router
+from routes.alert_engine import router as alert_engine_router
 from routes.app_version import router as app_version_router
 from routes.overview import router as overview_router
 from routes.remediation import router as remediation_router
@@ -398,6 +399,7 @@ app.include_router(server_intel_router)
 app.include_router(push_router)
 app.include_router(oncall_router)
 app.include_router(escalation_router)
+app.include_router(alert_engine_router)
 app.include_router(app_version_router)
 app.include_router(overview_router)
 app.include_router(remediation_router)
@@ -874,6 +876,16 @@ async def startup_event():
         logger.info("Escalation scheduler started")
     except Exception as e:
         logger.error(f"Failed to start escalation scheduler: {e}")
+
+    # === Alert Engine proattivo: dispositivi vitali offline + Datto RMM ===
+    try:
+        from alert_engine import AlertEngine
+        global alert_engine_instance
+        alert_engine_instance = AlertEngine(db)
+        alert_engine_instance.start()
+        logger.info("Alert Engine started (vital devices + Datto watchdogs)")
+    except Exception as e:
+        logger.error(f"Failed to start Alert Engine: {e}")
 
     # === Connectivity correlation scheduler (LAN/WiFi inference per device) ===
     # v3.8.23: chiama periodicamente correlate_connectivity per ogni cliente,

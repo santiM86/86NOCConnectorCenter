@@ -1628,3 +1628,24 @@ async def delete_mac_binding(
         raise HTTPException(status_code=404, detail="Binding non trovato")
     return {"status": "ok", "deleted": r.deleted_count}
 
+
+
+@router.post("/topology/resolve-switch-links")
+async def resolve_switch_links(current_user: dict = Depends(get_current_user)):
+    """Ricalcola dalla FDB SNMP (mac_connections + LLDP) la mappa device->switch
+    di accesso e la persiste su managed_devices/discovered_endpoints (switch_ip).
+    Abilita la soppressione topologica switch-level dell'Alert Engine."""
+    if current_user.get("role") not in ("admin",):
+        raise HTTPException(status_code=403, detail="Solo admin")
+    import correlation_engine as ce
+    mapping = await ce.build_child_to_switch(db)
+    await ce.persist_switch_links(db, mapping)
+    return {"ok": True, "devices_mapped": len(mapping)}
+
+
+@router.get("/topology/switch-links")
+async def get_switch_links(current_user: dict = Depends(get_current_user)):
+    """Anteprima (senza persistere) della mappa device->switch calcolata dalla FDB."""
+    import correlation_engine as ce
+    mapping = await ce.build_child_to_switch(db)
+    return {"count": len(mapping), "links": mapping}

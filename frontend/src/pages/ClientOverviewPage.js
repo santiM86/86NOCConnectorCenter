@@ -207,6 +207,7 @@ export default function ClientOverviewPage() {
   // gruppi multicast catturati dallo Scanner via ARP table. Includerli inflava
   // il numero (es. 75 in card vs 67 visibili nel raggruppamento Infrastruttura).
   const realDevices = devices.filter(d => macroOf(d) !== "_skip");
+  const vitalDevices = realDevices.filter(d => d.is_vital === true);
   // v2026-06 CATEGORIZZAZIONE: separazione Endpoints (PC consumer/mobile/IoT)
   // dall'Infrastruttura di rete. Un PC/laptop offline NON deve influenzare
   // le statistiche "Dispositivi" (infrastruttura). Sezione dedicata "Endpoints".
@@ -249,7 +250,7 @@ export default function ClientOverviewPage() {
 
   const tabs = [
     { id: "overview", label: "Panoramica", icon: Monitor },
-    { id: "devices", label: `Dispositivi (${realDevices.length})`, icon: HardDrives },
+    { id: "devices", label: `Dispositivi Vitali (${vitalDevices.length})`, icon: Star },
     { id: "servers", label: `Server (${iloHealth.length})`, icon: Cpu },
     { id: "wan", label: `WAN (${wanTargets.length})`, icon: Globe },
     { id: "alerts", label: `Alert (${alerts.length})`, icon: Bell },
@@ -1859,6 +1860,17 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
   // di default per coerenza con card "DISPOSITIVI" e Infrastruttura. L'utente
   // puo' attivare il toggle per mostrarli a fini di debug/visibilita' completa.
   const [showMulticast, setShowMulticast] = useState(false);
+  // v2026-07: tab "Dispositivi Vitali" — mostra di default SOLO i device
+  // marcati come vitali (impostati dalla Panoramica). L'utente puo' comunque
+  // passare a "Tutti" dal toggle. Nuova chiave storage per forzare il default.
+  const [vitalFilter, setVitalFilter] = useState(() => {
+    try { return localStorage.getItem("client-devices-vital-filter-v2") || "vital"; }
+    catch { return "vital"; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem("client-devices-vital-filter-v2", vitalFilter); }
+    catch { /* ignore */ }
+  }, [vitalFilter]);
   // v2026-02-13: vista raggruppata per categoria (clone struttura Panoramica)
   // default "grouped" come richiesto dall'utente ("voglio struttura identica clone")
   const [viewMode, setViewMode] = useState(() => {

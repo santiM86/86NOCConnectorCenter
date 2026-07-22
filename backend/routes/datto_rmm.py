@@ -598,6 +598,16 @@ async def _refresh_sites_cache() -> dict:
                     ip_list.insert(0, ip_primary)
                 mac_primary = mac_list[0] if mac_list else ""
                 ip_out = ip_list[0] if ip_list else ""
+                # Stato online + lastSeen + tipo device dalla list Datto,
+                # persistiti top-level per l'Alert Engine (watchdog server offline).
+                dtype = (dev.get("deviceType") or dev.get("category") or "").strip()
+                online_raw = dev.get("online")
+                if online_raw is None:
+                    online_raw = dev.get("isOnline")
+                last_seen_raw = (
+                    dev.get("lastSeen") or dev.get("lastAuditDate")
+                    or dev.get("lastSeenDate") or dev.get("lastSeenDateEpoch")
+                )
                 # Raw payload completo (lista+audit) cifrato opaco
                 raw_blob = {
                     "list": dev,
@@ -613,6 +623,10 @@ async def _refresh_sites_cache() -> dict:
                     "ip": ip_out,            # primario per matching
                     "mac_list": mac_list,    # per match con altre NIC
                     "ip_list": ip_list,
+                    "device_type": dtype,
+                    "is_server": ("server" in dtype.lower() or "esxi" in dtype.lower()),
+                    "online": (bool(online_raw) if online_raw is not None else None),
+                    "datto_last_seen": last_seen_raw,
                     "raw_enc": _encrypt_blob(raw_blob),
                     "fetched_at": now,
                 }
