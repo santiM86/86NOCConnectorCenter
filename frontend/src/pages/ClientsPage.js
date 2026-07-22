@@ -6,7 +6,7 @@ import { toast } from "sonner";
 import {
   Plus, Trash, Buildings, EnvelopeSimple, Key, Copy, ArrowsClockwise,
   Globe, CaretRight, HardDrives, PlugsConnected, Bell, ShieldCheck,
-  WifiHigh, WifiSlash, DownloadSimple, Desktop,
+  WifiHigh, WifiSlash, DownloadSimple, Desktop, Cloud
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
