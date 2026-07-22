@@ -262,7 +262,7 @@ func loadAgentInfo() AgentInfo {
 	// Ultimo fallback (dev/test).
 	logf("loadAgentInfo: no config file found, using DEV fallback")
 	return AgentInfo{
-		BackendURL: "https://noc-alert-hub-1.preview.emergentagent.com",
+		BackendURL: "https://noc-monitor-4.preview.emergentagent.com",
 		ClientID:   "unknown",
 		Token:      "",
 		Role:       "master",

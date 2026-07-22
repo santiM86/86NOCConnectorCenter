@@ -12,7 +12,7 @@ import pytest
 BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "").rstrip("/")
 if not BASE_URL:
     # backend/.env doesn't carry the FE url, fall back to the well-known value
-    BASE_URL = "https://noc-alert-hub-1.preview.emergentagent.com"
+    BASE_URL = "https://noc-monitor-4.preview.emergentagent.com"
 
 ADMIN_EMAIL = "info@86bit.it"
 ADMIN_PASSWORD = "Ariel17051986@!@86"
