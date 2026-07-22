@@ -1,3 +1,66 @@
+# 2026-07-22 — Alert Engine proattivo (dispositivi vitali offline + Datto RMM)
+
+## Richiesta utente
+«Migliorare DRASTICAMENTE gli avvisi quando un dispositivo vitale è offline,
+oppure quando Datto RMM perde la connessione a un server per troppo tempo.
+Essere sempre proattivi sul cliente.» Scelte: canali Push browser + Telegram;
+soglie a discrezione dello sviluppatore; config globale con override per
+cliente; auto-recovery SÌ.
+
+## Cosa è stato implementato
+### NUOVO `backend/alert_engine.py` (~440 righe)
+- `AlertEngine` (loop asyncio, tick 60s) con 2 watchdog:
+  1. **VitalDeviceWatchdog** — scan `managed_devices.is_vital=True`, usa
+     `liveness_resolver.compute_status` (stessa verità della UI: evidence
+     FDB/ARP, debounce anti-flap, blackout connector = "stale" → NON allerta).
+     Stato in `vital_offline_state`. Warning (high) dopo `vital_warn_minutes`
+     (default 3), escalation a CRITICAL dopo `vital_crit_minutes` (default 10),
+     auto-resolve + recovery notice alla ripresa.
+  2. **DattoWatchdog** — (a) server Datto offline > `datto_server_offline_hours`
+     (default 1h) → high, > `datto_server_crit_hours` (2h) → critical; (b) sync
+     Datto fermo > `datto_sync_stale_minutes` (30) → alert per client link.
+     Stato in `datto_offline_state`. Recovery automatico.
+- Config: `alert_engine_config` (`_id="global"` + override `_id="client:<id>"`).
+- Notifiche multi-canale: Web Push (`webpush.notify_new_alert`) + Telegram.
+- Tutti gli alert passano da `insert_alert_if_emit` (vitali sempre emessi).
+
+### NUOVO `backend/telegram_notifier.py`
+- Invio via httpx (nessuna dipendenza extra), `send_alert_telegram`,
+  `send_telegram_text` (HTML), `detect_chats` (getUpdates → chat_id auto).
+- Token/chat_id da `alert_engine_config` o env `TELEGRAM_BOT_TOKEN`.
+
+### NUOVO `backend/routes/alert_engine.py` — endpoint `/api/alert-engine/*`
+- GET/PUT `/config` (token SEMPRE mascherato; update ignora token vuoto/mascherato)
+- GET/PUT `/config/{client_id}` (override per cliente)
+- GET `/status` · POST `/run-now` (admin)
+- POST `/telegram/test` · GET `/telegram/detect-chats` (400 chiaro se token assente)
+
+### `backend/routes/datto_rmm.py`
+- `_process` ora persiste top-level: `device_type`, `is_server`, `online`,
+  `datto_last_seen` (per il watchdog Datto senza decrypt del raw).
+
+### `backend/server.py`
+- Registrato `alert_engine_router` + avvio `AlertEngine` allo startup.
+
+### NUOVO `frontend/src/pages/AlertEngineSettingsPage.jsx` + route `/settings/alert-engine`
+- UI config: toggle motore, soglie vitali, soglie Datto, canali (Push/Telegram),
+  auto-recovery, config Telegram (token, chat_id, Rileva chat, Invia test),
+  card stato + "Esegui scansione ora". Link in SettingsPage.
+
+## Test (iteration_89.json) — 100% PASS
+- 13/13 pytest backend + 1 E2E seeded (warn→crit→recovery) + full UI flow.
+- Token mai in chiaro; 400 (non 500) quando Telegram assente; admin-guard OK.
+- Zero issue critiche/minori.
+
+## Da completare dall'utente
+- Inserire il **Telegram Bot Token** (da @BotFather) nella UI
+  `Impostazioni → Alert Engine proattivo → Configurazione Telegram`, poi
+  "Rileva chat" e "Invia test". Fino ad allora, solo Push browser è attivo.
+- NOTA: l'invio REALE Telegram non è stato testato (token non ancora fornito).
+
+---
+
+
 # 2026-07-21 — Azione multipla "Silenzia / Riattiva alert" (bulk)
 
 ## Richiesta utente
