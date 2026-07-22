@@ -123,6 +123,15 @@ export default function AlertEngineSettingsPage() {
     finally { setBusy(""); }
   };
 
+  const resolveSwitchLinks = async () => {
+    setBusy("switch");
+    try {
+      const r = await axios.post(`${API}/api/topology/resolve-switch-links`, {}, { headers });
+      toast.success(`Link switch ricalcolati dalla FDB: ${r.data.devices_mapped} device mappati.`);
+    } catch (e) { toast.error(e.response?.data?.detail || "Errore"); }
+    finally { setBusy(""); }
+  };
+
   if (loading || !cfg) {
     return <div className="p-8 text-sm text-[var(--text-muted)]">Caricamento…</div>;
   }
@@ -282,6 +291,13 @@ export default function AlertEngineSettingsPage() {
           ))}
         </div>
         <p className="text-[9px] text-[var(--text-muted)]">Ogni alert riporta il ragionamento e la % di confidenza. La correlazione è sempre attiva quando il motore è acceso.</p>
+        <div className="flex items-center gap-2 flex-wrap pt-1">
+          <Button variant="outline" size="sm" onClick={resolveSwitchLinks} disabled={busy === "switch"}
+            className="h-8 gap-1 text-xs border-emerald-500/30 text-emerald-300" data-testid="resolve-switch-btn">
+            <ArrowsClockwise size={12} /> {busy === "switch" ? "Ricalcolo…" : "Ricalcola link switch (FDB)"}
+          </Button>
+          <span className="text-[9px] text-[var(--text-muted)]">Popola switch_ip dai dati SNMP FDB → abilita la soppressione switch-level (auto ogni 10 min).</span>
+        </div>
       </Section>
 
       <div className="flex items-center gap-2 text-[10px] text-[var(--text-muted)] px-1">

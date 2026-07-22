@@ -97,18 +97,84 @@ async def build_context(db) -> Dict[str, Any]:
         if d.get("name"):
             b["by_name"].setdefault(_norm_name(d.get("name")), d)
 
-    # switch_ip map: child_ip -> switch_ip (da discovered_endpoints)
-    child_to_switch: Dict[str, str] = {}
-    async for de in db.discovered_endpoints.find(
-        {"switch_ip": {"$nin": [None, ""]}}, {"_id": 0, "ip": 1, "switch_ip": 1},
-    ):
-        if de.get("ip") and de.get("switch_ip"):
-            child_to_switch.setdefault(de["ip"], de["switch_ip"])
+    # child_ip -> switch_ip (dalla FDB SNMP in mac_connections, con filtro uplink)
+    child_to_switch = await build_child_to_switch(db)
 
     return {
         "ip_ev": ip_ev, "mac_ev": mac_ev, "offline_clients": offline_clients,
         "wan": wan, "datto": datto, "child_to_switch": child_to_switch,
     }
+
+
+async def build_child_to_switch(db) -> Dict[str, str]:
+    """Mappa device_ip -> switch_ip di accesso, ricavata dalla FDB SNMP
+    (mac_connections: from_ip=switch, from_port=porta, to_ip=device).
+
+    Esclude:
+      - archi switch->switch (uplink);
+      - device visti su porte uplink (identificate via LLDP verso altri switch);
+    e in caso di ambiguita' preferisce la porta di ACCESSO (meno MAC appresi).
+    """
+    # Insieme degli IP che sono switch
+    switch_ips = set()
+    async for m in db.managed_devices.find(
+        {"device_type": {"$in": list(SWITCH_TYPES)}}, {"_id": 0, "ip": 1}
+    ):
+        if m.get("ip"):
+            switch_ips.add(m["ip"])
+    async for sp in db.switch_ports.find({}, {"_id": 0, "local_ip": 1}):
+        if sp.get("local_ip"):
+            switch_ips.add(sp["local_ip"])
+    async for ln in db.lldp_neighbors.find({}, {"_id": 0, "local_ip": 1}):
+        if ln.get("local_ip"):
+            switch_ips.add(ln["local_ip"])
+
+    # Porte uplink: (switch_ip, port) il cui neighbor LLDP e' un altro switch
+    uplink_ports = set()
+    async for ln in db.lldp_neighbors.find(
+        {}, {"_id": 0, "local_ip": 1, "local_port_id": 1, "local_port_desc": 1, "remote_ip": 1}
+    ):
+        port = ln.get("local_port_id") or ln.get("local_port_desc")
+        if ln.get("local_ip") and port and (ln.get("remote_ip") in switch_ips or not ln.get("remote_ip")):
+            uplink_ports.add((ln["local_ip"], str(port)))
+
+    # Conteggio MAC per (switch, porta) — le porte uplink/trunk hanno molti MAC
+    port_mac_count: Dict[tuple, int] = {}
+    edges = []
+    async for mc in db.mac_connections.find(
+        {"source": {"$in": ["mac_table", "fdb", "arp"]}},
+        {"_id": 0, "from_ip": 1, "from_port": 1, "to_ip": 1, "updated_at": 1},
+    ):
+        sw = mc.get("from_ip"); dev = mc.get("to_ip"); port = str(mc.get("from_port") or "")
+        if not sw or not dev or sw not in switch_ips or dev in switch_ips:
+            continue
+        port_mac_count[(sw, port)] = port_mac_count.get((sw, port), 0) + 1
+        edges.append((dev, sw, port, mc.get("updated_at", "")))
+
+    best: Dict[str, tuple] = {}  # dev -> (switch, port, score_tuple)
+    for dev, sw, port, ts in edges:
+        is_access = (sw, port) not in uplink_ports
+        maccount = port_mac_count.get((sw, port), 1)
+        score = (1 if is_access else 0, -maccount, ts)
+        cur = best.get(dev)
+        if cur is None or score > cur[2]:
+            best[dev] = (sw, port, score)
+    return {dev: v[0] for dev, v in best.items()}
+
+
+async def persist_switch_links(db, mapping: Optional[Dict[str, str]] = None) -> int:
+    """Scrive switch_ip sui managed_devices e discovered_endpoints (per UI/topology).
+    Ritorna il numero di device aggiornati."""
+    if mapping is None:
+        mapping = await build_child_to_switch(db)
+    n = 0
+    for dev_ip, sw_ip in mapping.items():
+        r1 = await db.managed_devices.update_many(
+            {"ip": dev_ip}, {"$set": {"switch_ip": sw_ip}})
+        await db.discovered_endpoints.update_many(
+            {"ip": dev_ip}, {"$set": {"switch_ip": sw_ip}})
+        n += r1.modified_count
+    return len(mapping)
 
 
 def _datto_lookup(ctx: dict, md: dict) -> Optional[dict]:

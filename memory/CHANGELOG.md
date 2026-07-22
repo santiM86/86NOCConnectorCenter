@@ -1,3 +1,31 @@
+# 2026-07-22 — Switch-level suppression via FDB SNMP (completamento correlazione)
+
+## Cosa
+Abilitata la soppressione topologica **switch-level** in PROD popolando la mappa
+device→switch di accesso dalla FDB SNMP.
+
+## Implementazione
+- `correlation_engine.build_child_to_switch(db)`: ricava device_ip→switch_ip da
+  `mac_connections` (from_ip=switch, from_port=porta, to_ip=device, source=mac_table),
+  ESCLUDE archi switch→switch e device visti su porte uplink (rilevate via
+  `lldp_neighbors` verso altri switch); in caso di ambiguità preferisce la porta
+  di ACCESSO (meno MAC appresi, più recente).
+- `build_context` ora usa questa mappa a runtime → suppression sempre fresca.
+- `persist_switch_links(db)`: scrive `switch_ip` su `managed_devices` e
+  `discovered_endpoints` (per UI/topology). Auto ogni ~10 min nell'AlertEngine.
+- Endpoint `POST /api/topology/resolve-switch-links` (admin) e
+  `GET /api/topology/switch-links` (preview). Pulsante "Ricalcola link switch (FDB)"
+  nella pagina Alert Engine.
+
+## Test E2E (PASS)
+- FDB con 3 archi (access + uplink + core): server mappato correttamente allo
+  switch di ACCESSO, uplink e core esclusi.
+- SW-ACCESS down + figlio down → 1 solo alert `corr_switch_down` (critical),
+  server figlio SOPPRESSO, SW-CORE (up) nessun alert. Dati puliti.
+
+---
+
+
 # 2026-07-22 — Correlation Engine (evidence fusion, alert precisi anti falsi-positivi)
 
 ## Richiesta utente

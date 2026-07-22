@@ -551,12 +551,22 @@ class AlertEngine:
         self._task: Optional[asyncio.Task] = None
         self._stop = asyncio.Event()
         self.last_run: Dict[str, Any] = {}
+        self._last_switch_persist: float = 0.0
 
     async def run_once(self) -> Dict[str, Any]:
         cfg = await get_config(self.db)
         if not cfg.get("enabled"):
             self.last_run = {"skipped": True, "at": datetime.now(timezone.utc).isoformat()}
             return self.last_run
+        # Persistenza mappa switch_ip (FDB SNMP) ogni ~10 min per UI/topology
+        import time as _t
+        if _t.time() - self._last_switch_persist > 600:
+            try:
+                import correlation_engine as ce
+                await ce.persist_switch_links(self.db)
+            except Exception as e:  # noqa: BLE001
+                logger.debug("switch link persist skip: %s", e)
+            self._last_switch_persist = _t.time()
         vital = 0
         datto = 0
         try:
