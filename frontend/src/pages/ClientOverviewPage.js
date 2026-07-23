@@ -14,7 +14,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer
 } from "recharts";
@@ -75,6 +74,7 @@ export default function ClientOverviewPage() {
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState("overview");
 
+  const STATUS_COLOR = { online: "#34C759", offline: "#FF3B30", active: "#FFCC00", degraded: "#FF9500", unknown: "#555" };
   const fetchAll = useCallback(async () => {
     try {
       const [clientRes, devRes, wanRes, alertRes] = await Promise.allSettled([
@@ -646,32 +646,32 @@ function OverviewTab({ devices, wanTargets, alerts, connector, printers, backups
             </div>
           )}
           {/* Firewalls */}
-          {firewalls.length > 0 && <DeviceGroup label="Firewall" icon={ShieldCheck} devices={firewalls} color="#FF3B30" clientId={clientId} />}
+          {firewalls.length > 0 && <DeviceGroup label="Firewall" icon={ShieldCheck} devices={firewalls} color="#FF3B30" />}
           {/* Switches */}
-          {switches.length > 0 && <DeviceGroup label="Switch" icon={HardDrives} devices={switches} color="#6366F1" clientId={clientId} />}
+          {switches.length > 0 && <DeviceGroup label="Switch" icon={HardDrives} devices={switches} color="#6366F1" />}
           {/* Servers / iLO */}
-          {servers.length > 0 && <DeviceGroup label="Server / iLO" icon={Monitor} devices={servers} color="#06B6D4" clientId={clientId} />}
+          {servers.length > 0 && <DeviceGroup label="Server / iLO" icon={Monitor} devices={servers} color="#06B6D4" />}
           {/* NAS / Storage */}
-          {nasList.length > 0 && <DeviceGroup label="NAS / Storage" icon={Database} devices={nasList} color="#14B8A6" clientId={clientId} />}
+          {nasList.length > 0 && <DeviceGroup label="NAS / Storage" icon={Database} devices={nasList} color="#14B8A6" />}
           {/* UPS */}
-          {upsList.length > 0 && <DeviceGroup label="UPS" icon={Lightning} devices={upsList} color="#EAB308" clientId={clientId} />}
+          {upsList.length > 0 && <DeviceGroup label="UPS" icon={Lightning} devices={upsList} color="#EAB308" />}
           {/* Access Point */}
-          {apList.length > 0 && <DeviceGroup label="Access Point / WiFi" icon={WifiHigh} devices={apList} color="#8B5CF6" clientId={clientId} />}
+          {apList.length > 0 && <DeviceGroup label="Access Point / WiFi" icon={WifiHigh} devices={apList} color="#8B5CF6" />}
           {/* TVCC */}
-          {tvccList.length > 0 && <DeviceGroup label="TVCC / Videosorveglianza" icon={Monitor} devices={tvccList} color="#F97316" clientId={clientId} />}
+          {tvccList.length > 0 && <DeviceGroup label="TVCC / Videosorveglianza" icon={Monitor} devices={tvccList} color="#F97316" />}
           {/* Printers */}
-          {printersList.length > 0 && <DeviceGroup label="Stampanti" icon={Printer} devices={printersList} color="#EC4899" clientId={clientId} />}
+          {printersList.length > 0 && <DeviceGroup label="Stampanti" icon={Printer} devices={printersList} color="#EC4899" />}
           {/* v3.8.20: nuove macroaree per i device dello Scanner */}
           {voipList.length > 0 && <DeviceGroup label="Telefoni VoIP" icon={Phone} devices={voipList} color="#22C55E" clientId={clientId} />}
           {/* Others / Generic */}
-          {others.length > 0 && <DeviceGroup label="Altri Dispositivi" icon={HardDrives} devices={others} color="#64748B" clientId={clientId} />}
+          {others.length > 0 && <DeviceGroup label="Altri Dispositivi" icon={HardDrives} devices={others} color="#64748B" />}
           {/* Skipped multicast/broadcast (nascosti dalla vista principale) */}
           {skipList.length > 0 && (
             <details className="opacity-60 hover:opacity-100 transition-opacity">
               <summary className="cursor-pointer text-[9px] uppercase tracking-[0.15em] text-[var(--text-muted)] py-2 select-none">
                 ▸ Multicast / broadcast nascosti ({skipList.length})
               </summary>
-              <DeviceGroup label="Multicast / Broadcast (non gestiti)" icon={NetworkSlash} devices={skipList} color="#6B7280" clientId={clientId} />
+              <DeviceGroup label="Multicast / Broadcast (non gestiti)" icon={NetworkSlash} devices={skipList} color="#6B7280" />
             </details>
           )}
         </div>
@@ -791,7 +791,6 @@ function IloHealthPanel({ iloHealth }) {
 function ServersTab({ iloHealth, clientId, clientName, onRefresh }) {
   const [filter, setFilter] = useState("all"); // all | issues | ok | needs_setup
   const [polling, setPolling] = useState(false);
-  const [bulkCredsOpen, setBulkCredsOpen] = useState(false);
   const healthColor = (h) => ({ ok: "#34C759", warning: "#FFCC00", critical: "#FF3B30" }[(h || "").toLowerCase()] || "#64748B");
 
   // v2026-02-14: separazione tra server con dati Redfish live e server che
@@ -874,14 +873,6 @@ function ServersTab({ iloHealth, clientId, clientName, onRefresh }) {
         </div>
       </div>
 
-      {/* v4.18.x Server Intelligence Hub: Health Score + Lifecycle Forecast */}
-      {configuredServers.length > 0 && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3" data-testid="server-intelligence-grid">
-          <HealthScoreWidget clientId={clientId} />
-          <LifecyclePanel clientId={clientId} />
-        </div>
-      )}
-
       {/* Toolbar */}
       <div className="flex items-center justify-between flex-wrap gap-2 px-1">
         <div className="flex items-center gap-1 text-xs flex-wrap">
@@ -948,33 +939,15 @@ function ServersTab({ iloHealth, clientId, clientName, onRefresh }) {
       {/* Pending servers (need iLO setup) */}
       {pendingServers.length > 0 && (
         <div className="noc-panel p-4 border-yellow-500/30" data-testid="pending-ilo-servers">
-          <div className="flex items-center justify-between gap-2 mb-3 flex-wrap">
-            <div className="flex items-center gap-2">
-              <Lock size={14} weight="bold" className="text-yellow-400" />
-              <h3 className="text-[10px] font-bold uppercase tracking-[0.15em] text-yellow-400">
-                Server senza credenziali iLO ({pendingServers.length})
-              </h3>
-            </div>
-            {/* v4.18.x: Probe Vendor + Bulk Credentials per accelerare il setup */}
-            <div className="flex items-center gap-2 flex-wrap">
-              <ProbeVendorButton
-                servers={pendingServers.map(p => ({ ip: p.device_ip, name: p.device_name }))}
-                onComplete={() => onRefresh?.()}
-              />
-              <Button
-                onClick={() => setBulkCredsOpen(true)}
-                className="bg-indigo-600 hover:bg-indigo-700 text-white h-8 text-xs gap-1"
-                data-testid="open-bulk-creds-btn"
-                title="Applica le stesse credenziali iLO/Redfish a piu' server in un click"
-              >
-                <Key size={13} weight="bold" />
-                Bulk Credentials
-              </Button>
-            </div>
+          <div className="flex items-center gap-2 mb-3">
+            <Lock size={14} weight="bold" className="text-yellow-400" />
+            <h3 className="text-[10px] font-bold uppercase tracking-[0.15em] text-yellow-400">
+              Server senza credenziali iLO ({pendingServers.length})
+            </h3>
           </div>
           <p className="text-[11px] text-[var(--text-muted)] mb-3">
             Questi server sono stati rilevati ma non hanno credenziali iLO/Redfish configurate.
-            Usa <b>Probe Vendor</b> per identificare il marchio, poi <b>Bulk Credentials</b> per applicare cred a piu' server insieme.
+            Aggiungile dalla tab <b>Credenziali</b> per vedere CPU, RAM, dischi e sensori hardware.
           </p>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
             {pendingServers.map((s) => (
@@ -995,37 +968,11 @@ function ServersTab({ iloHealth, clientId, clientName, onRefresh }) {
                 {s.server_model && (
                   <p className="text-[10px] text-[var(--text-muted)] mt-1 truncate">{s.server_model}</p>
                 )}
-                <div className="mt-2 flex items-center gap-1.5">
-                  <TryDefaultCredsButton
-                    server={{ ip: s.device_ip, vendor_guess: s.vendor_guess || s.server_vendor }}
-                    onSuccess={() => onRefresh?.()}
-                  />
-                </div>
               </div>
             ))}
           </div>
         </div>
       )}
-
-      {/* v4.18.x Hyper-V & vCenter intelligence panels */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3" data-testid="server-hypervisor-grid">
-        <HyperVPanel clientId={clientId} />
-        <VCenterPanel clientId={clientId} />
-      </div>
-
-      {/* Bulk Credentials dialog */}
-      <BulkCredentialsDialog
-        servers={pendingServers.map(p => ({
-          ip: p.device_ip,
-          name: p.device_name,
-          hostname: p.device_name,
-          vendor_guess: p.vendor_guess || p.server_vendor,
-        }))}
-        clientId={clientId}
-        open={bulkCredsOpen}
-        onOpenChange={setBulkCredsOpen}
-        onSaved={() => onRefresh?.()}
-      />
     </div>
   );
 }
@@ -1101,8 +1048,6 @@ function IloServerCard({ s, healthColor }) {
             <span className="text-[9px] px-2 py-1 rounded font-bold uppercase" style={{ color: hc, background: `${hc}18` }}>
               {s.health_status || "?"}
             </span>
-            {/* v4.18.x: accesso rapido a IML/SEL events del server */}
-            <IloEventsButton deviceIp={s.device_ip} />
             <button
               onClick={() => setExpanded(!expanded)}
               className="text-[9px] px-2 py-1 rounded border border-[var(--bg-border)] text-[var(--text-muted)] hover:text-cyan-400 hover:border-cyan-500/30 transition-colors"
@@ -1602,182 +1547,6 @@ function MiniMetric({ label, value, sub, color }) {
    - vital=null (stella outline neutra) → backward compat (non scelto)
    Endpoint backend: POST /api/devices/by-ip/{ip}/vital body
    {is_vital: bool, client_id: str, reason?: str}
-==================================================================== */
-function VitalToggleButton({ device, clientId, currentVital }) {
-  const [saving, setSaving] = useState(false);
-  const ip = device.ip_address || device.ip;
-  const isVital = currentVital === true;
-  const isNonVital = currentVital === false;
-
-  const toggle = async (e) => {
-    e?.stopPropagation?.();
-    const target = !isVital; // toggle: null/false → true ; true → false
-    setSaving(true);
-    try {
-      const token = localStorage.getItem("noc_token");
-      const API = process.env.REACT_APP_BACKEND_URL;
-      await axios.post(
-        `${API}/api/devices/by-ip/${encodeURIComponent(ip)}/vital`,
-        { is_vital: target, client_id: clientId },
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
-      toast.success(target
-        ? `Device VITALE — alert sempre attivi`
-        : `Device best-effort — alert silenziati di default`
-      );
-      window.dispatchEvent(new CustomEvent("argus:device-vital-changed", {
-        detail: { ip, is_vital: target, client_id: clientId }
-      }));
-    } catch (err) {
-      const detail = err.response?.data?.detail || err.message || "Errore sconosciuto";
-      toast.error(`Toggle vital fallito: ${detail}`);
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  // Tooltip dinamico
-  const title = isVital
-    ? "VITALE: alert sempre attivi. Clicca per declassare a best-effort."
-    : isNonVital
-      ? "Best-effort: alert silenziati di default. Clicca per marcare come VITALE."
-      : "Marca come VITALE (alert sempre attivi).";
-
-  return (
-    <button
-      onClick={toggle}
-      disabled={saving}
-      className={`p-1 rounded transition-colors flex-shrink-0 ${
-        isVital
-          ? "text-yellow-400 hover:bg-yellow-500/15"
-          : isNonVital
-            ? "text-[var(--text-muted)] opacity-40 hover:opacity-100 hover:bg-slate-500/15"
-            : "text-[var(--text-muted)] hover:text-yellow-400 hover:bg-yellow-500/10"
-      }`}
-      title={title}
-      data-testid={`vital-toggle-${ip}`}
-    >
-      <Star size={11} weight={isVital ? "fill" : "bold"} />
-    </button>
-  );
-}
-
-/* ==================== INLINE RENAME BUTTON ====================
-   v2026-02-28: pencil-icon inline che apre un Popover per rinominare
-   velocemente un device senza dover aprire la scheda completa.
-   Usa l'endpoint locked /api/devices/by-ip/{ip}/rename che setta
-   name_user_locked=True → SNMP/discovery/connector NON sovrascrivono mai
-   il nome scelto dall'utente.
-==================================================================== */
-function InlineRenameButton({ device, clientId, currentName }) {
-  const [open, setOpen] = useState(false);
-  const [value, setValue] = useState("");
-  const [saving, setSaving] = useState(false);
-  const ip = device.ip_address || device.ip;
-
-  useEffect(() => {
-    if (open) {
-      setValue((currentName && currentName !== ip) ? currentName : (device.name || ""));
-    }
-  }, [open, currentName, ip, device.name]);
-
-  const save = async (e) => {
-    e?.preventDefault?.();
-    const trimmed = (value || "").trim();
-    if (!trimmed) {
-      toast.error("Il nome non puo' essere vuoto");
-      return;
-    }
-    if (trimmed === currentName) {
-      setOpen(false);
-      return;
-    }
-    setSaving(true);
-    try {
-      const token = localStorage.getItem("noc_token");
-      const API = process.env.REACT_APP_BACKEND_URL;
-      await axios.post(
-        `${API}/api/devices/by-ip/${encodeURIComponent(ip)}/rename`,
-        { name: trimmed, client_id: clientId },
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
-      toast.success(`Nome aggiornato: ${trimmed}`);
-      // notifica al resto della pagina (stesso event handler di DeviceInfoCard)
-      window.dispatchEvent(new CustomEvent("argus:device-renamed", {
-        detail: { ip, name: trimmed, client_id: clientId }
-      }));
-      setOpen(false);
-    } catch (err) {
-      const detail = err.response?.data?.detail || err.message || "Errore sconosciuto";
-      toast.error(`Rename fallito: ${detail}`);
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <button
-          onClick={(e) => { e.stopPropagation(); setOpen(true); }}
-          className="p-1 rounded hover:bg-cyan-500/15 hover:text-cyan-300 text-[var(--text-muted)] transition-colors flex-shrink-0"
-          title="Rinomina dispositivo (verra' bloccato contro overwrite automatico)"
-          data-testid={`inline-rename-btn-${ip}`}
-        >
-          <PencilSimple size={11} weight="bold" />
-        </button>
-      </PopoverTrigger>
-      <PopoverContent
-        className="w-72 p-3 bg-[var(--bg-card)] border-[var(--bg-border)]"
-        onClick={(e) => e.stopPropagation()}
-        align="end"
-      >
-        <form onSubmit={save} className="space-y-2">
-          <div>
-            <label className="text-[10px] uppercase tracking-wider text-[var(--text-muted)] font-semibold">
-              Nuovo nome
-            </label>
-            <p className="text-[9px] text-[var(--text-muted)] mt-0.5 mb-1.5 font-mono">{ip}</p>
-            <Input
-              autoFocus
-              value={value}
-              onChange={(e) => setValue(e.target.value)}
-              placeholder="es. Switch01-Sede-Roma"
-              maxLength={200}
-              data-testid={`inline-rename-input-${ip}`}
-              className="h-8 text-xs"
-            />
-            <p className="text-[9px] text-[var(--text-muted)] mt-1">
-              Il nome verra' protetto contro overwrite da SNMP/discovery/Datto.
-            </p>
-          </div>
-          <div className="flex items-center justify-end gap-2 pt-1">
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={() => setOpen(false)}
-              className="h-7 text-[11px]"
-              data-testid={`inline-rename-cancel-${ip}`}
-            >
-              Annulla
-            </Button>
-            <Button
-              type="submit"
-              size="sm"
-              disabled={saving}
-              className="h-7 text-[11px] bg-cyan-600 hover:bg-cyan-700"
-              data-testid={`inline-rename-save-${ip}`}
-            >
-              {saving ? "Salvo..." : "Salva"}
-            </Button>
-          </div>
-        </form>
-      </PopoverContent>
-    </Popover>
-  );
-}
-
 /* ==================== DEVICE GROUP ==================== */
 function DeviceGroup({ label, icon: Icon, devices, color, onInfoClick, renderActions, macroKey, onDeviceDrop, clientId: clientIdProp, selectedIps, onToggleSelect }) {
   // v2026-02-28 SAFETY: fallback su useParams (vedi commento in OverviewTab)
@@ -1892,15 +1661,7 @@ function DeviceGroup({ label, icon: Icon, devices, color, onInfoClick, renderAct
               {d.source === "connector-scanner" && <span className="text-[7px] px-1 rounded bg-sky-500/10 text-sky-400">S</span>}
               {renderActions && (
                 <div className="flex items-center gap-0.5 ml-1 pl-1.5 border-l border-[var(--bg-border)]" onClick={(e) => e.stopPropagation()}>
-                  {clientId && <VitalToggleButton device={d} clientId={clientId} currentVital={d.is_vital} />}
-                  {clientId && <InlineRenameButton device={d} clientId={clientId} currentName={name} />}
                   {renderActions(d)}
-                </div>
-              )}
-              {!renderActions && clientId && (
-                <div className="flex items-center gap-0.5 pl-1" onClick={(e) => e.stopPropagation()}>
-                  <VitalToggleButton device={d} clientId={clientId} currentVital={d.is_vital} />
-                  <InlineRenameButton device={d} clientId={clientId} currentName={name} />
                 </div>
               )}
             </div>
@@ -2233,17 +1994,8 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
   const clearSelection = () => setSelectedIps(new Set());
   const webConsole = useWebConsoleTabs();
   const _isMcast = (d) => /^(22[4-9]|23\d|255)\./.test(d?.ip_address || "");
-  const baseFiltered = showMulticast ? devices : devices.filter(d => !_isMcast(d));
-  // v2026-02-28: counters per i toggle (calcolati prima del filtro vital)
-  const vitalCount = baseFiltered.filter(d => d.is_vital === true).length;
-  const nonVitalCount = baseFiltered.filter(d => d.is_vital === false).length;
-  const undecidedCount = baseFiltered.filter(d => d.is_vital !== true && d.is_vital !== false).length;
-  // Applica filtro vital
-  const visibleDevices =
-    vitalFilter === "vital"     ? baseFiltered.filter(d => d.is_vital === true)
-  : vitalFilter === "non_vital" ? baseFiltered.filter(d => d.is_vital === false)
-  : baseFiltered;
-  const hiddenCount = devices.length - baseFiltered.length;
+  const visibleDevices = showMulticast ? devices : devices.filter(d => !_isMcast(d));
+  const hiddenCount = devices.length - visibleDevices.length;
 
   // v2026-06: azione multipla vitali. Le checkbox operano sui device visibili.
   const visibleIps = visibleDevices.map(d => d.ip_address).filter(Boolean);
@@ -2776,35 +2528,6 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
           )} — i dispositivi manuali vengono interrogati dal connector entro pochi cicli di polling
         </p>
         <div className="flex items-center gap-2 flex-wrap">
-          {/* v2026-02-28: filtro per criticality tier */}
-          <div className="inline-flex rounded-md border border-[var(--bg-border)] overflow-hidden" data-testid="devices-vital-filter">
-            <button
-              onClick={() => setVitalFilter("all")}
-              className={`text-[10px] px-2.5 py-1 transition-colors ${vitalFilter === "all" ? "bg-slate-600 text-white" : "bg-transparent text-[var(--text-muted)] hover:text-[var(--text-primary)]"}`}
-              data-testid="vital-filter-all-btn"
-              title="Tutti i dispositivi (default)"
-            >
-              Tutti ({baseFiltered.length})
-            </button>
-            <button
-              onClick={() => setVitalFilter("vital")}
-              className={`text-[10px] px-2.5 py-1 transition-colors ${vitalFilter === "vital" ? "bg-yellow-500 text-black" : "bg-transparent text-yellow-400 hover:bg-yellow-500/10"}`}
-              data-testid="vital-filter-vital-btn"
-              title="Solo VITALI — mission-critical, alert sempre attivi"
-            >
-              <Star size={10} weight={vitalFilter === "vital" ? "fill" : "bold"} className="inline mr-0.5" />
-              Vitali ({vitalCount})
-            </button>
-            <button
-              onClick={() => setVitalFilter("non_vital")}
-              className={`text-[10px] px-2.5 py-1 transition-colors ${vitalFilter === "non_vital" ? "bg-slate-700 text-slate-300" : "bg-transparent text-[var(--text-muted)] hover:text-[var(--text-primary)]"}`}
-              data-testid="vital-filter-non-vital-btn"
-              title="Solo best-effort — alert silenziati di default"
-            >
-              Best-effort ({nonVitalCount})
-              {undecidedCount > 0 && <span className="ml-1 opacity-50">+{undecidedCount} n/d</span>}
-            </button>
-          </div>
           {/* v2026-02-13: toggle vista raggruppata/tabella */}
           <div className="inline-flex rounded-md border border-[var(--bg-border)] overflow-hidden" data-testid="devices-view-toggle">
             <button
