@@ -499,14 +499,30 @@ function TriageWizard({ open, onClose, devices, clientId, onDone }) {
   const undecided = devices.filter(d => macroOf(d) !== "_skip" && d.is_vital !== true && d.is_vital !== false);
   const [selected, setSelected] = useState(() => new Set());
   const [saving, setSaving] = useState(false);
+  const [search, setSearch] = useState("");
+  const [renamed, setRenamed] = useState({});
+  const [editingIp, setEditingIp] = useState(null);
+  const [editValue, setEditValue] = useState("");
   useEffect(() => {
     if (open) {
       const sugg = undecided.filter(d => TRIAGE_INFRA_MACROS.includes(macroOf(d))).map(d => d.ip_address).filter(Boolean);
       setSelected(new Set(sugg));
+      setSearch(""); setRenamed({}); setEditingIp(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
   const toggle = (ip) => setSelected(prev => { const n = new Set(prev); n.has(ip) ? n.delete(ip) : n.add(ip); return n; });
+  const nameOf = (d) => renamed[d.ip_address] || d.name || d.ip_address;
+  const saveRename = async (ip) => {
+    const name = (editValue || "").trim();
+    setEditingIp(null);
+    if (!name || name === (renamed[ip] || "")) return;
+    try {
+      await axios.post(`${API}/devices/by-ip/${encodeURIComponent(ip)}/rename`, { name, client_id: clientId });
+      setRenamed(prev => ({ ...prev, [ip]: name }));
+      toast.success(`Rinominato in "${name}"`);
+    } catch (e) { toast.error(e.response?.data?.detail || "Errore rinomina"); }
+  };
   const apply = async (isVital) => {
     const ips = Array.from(selected);
     if (!ips.length) { toast.error("Seleziona almeno un dispositivo"); return; }
@@ -522,22 +538,44 @@ function TriageWizard({ open, onClose, devices, clientId, onDone }) {
     } catch (e) { toast.error(e.response?.data?.detail || "Errore aggiornamento"); }
     finally { setSaving(false); }
   };
-  const suggested = undecided.filter(d => TRIAGE_INFRA_MACROS.includes(macroOf(d)));
-  const rest = undecided.filter(d => !TRIAGE_INFRA_MACROS.includes(macroOf(d)));
+  const q = search.trim().toLowerCase();
+  const match = (d) => !q || (d.ip_address || "").toLowerCase().includes(q) || nameOf(d).toLowerCase().includes(q);
+  const suggested = undecided.filter(d => TRIAGE_INFRA_MACROS.includes(macroOf(d)) && match(d));
+  const rest = undecided.filter(d => !TRIAGE_INFRA_MACROS.includes(macroOf(d)) && match(d));
   const Row = ({ d }) => {
     const ip = d.ip_address;
     const on = selected.has(ip);
+    const editing = editingIp === ip;
     return (
-      <button onClick={() => toggle(ip)}
-        className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md border text-left text-[11px] transition-colors ${on ? "bg-indigo-500/15 border-indigo-500/50" : "border-[var(--bg-border)] hover:border-[var(--text-muted)]"}`}
+      <div
+        className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md border text-[11px] transition-colors ${on ? "bg-indigo-500/15 border-indigo-500/50" : "border-[var(--bg-border)] hover:border-[var(--text-muted)]"}`}
         data-testid={`triage-row-${ip}`}>
-        <span className={`w-3.5 h-3.5 rounded-sm border flex items-center justify-center shrink-0 ${on ? "bg-indigo-500 border-indigo-500" : "border-[var(--text-muted)]"}`}>
-          {on && <Check size={10} weight="bold" className="text-white" />}
-        </span>
-        <span className="font-semibold text-[var(--text-primary)] truncate">{d.name || ip}</span>
-        <span className="font-mono text-[9px] text-[var(--text-muted)]">{ip}</span>
-        <span className="ml-auto text-[8px] uppercase px-1.5 py-0.5 rounded bg-[var(--bg-panel)] text-[var(--text-muted)] shrink-0">{macroOf(d)}</span>
-      </button>
+        <button onClick={() => toggle(ip)} className="flex items-center gap-2 flex-1 min-w-0 text-left" data-testid={`triage-toggle-${ip}`}>
+          <span className={`w-3.5 h-3.5 rounded-sm border flex items-center justify-center shrink-0 ${on ? "bg-indigo-500 border-indigo-500" : "border-[var(--text-muted)]"}`}>
+            {on && <Check size={10} weight="bold" className="text-white" />}
+          </span>
+          {!editing && <span className="font-semibold text-[var(--text-primary)] truncate">{nameOf(d)}</span>}
+          {!editing && <span className="font-mono text-[9px] text-[var(--text-muted)]">{ip}</span>}
+        </button>
+        {editing ? (
+          <div className="flex items-center gap-1 flex-1" onClick={(e) => e.stopPropagation()}>
+            <Input autoFocus value={editValue} onChange={(e) => setEditValue(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") saveRename(ip); if (e.key === "Escape") setEditingIp(null); }}
+              className="h-6 text-[11px] px-2 bg-[var(--bg-panel)]" data-testid={`triage-rename-input-${ip}`} />
+            <Button size="sm" className="h-6 px-2 bg-emerald-600 hover:bg-emerald-700" onClick={() => saveRename(ip)} data-testid={`triage-rename-save-${ip}`}>
+              <Check size={11} weight="bold" />
+            </Button>
+          </div>
+        ) : (
+          <>
+            <button onClick={(e) => { e.stopPropagation(); setEditingIp(ip); setEditValue(nameOf(d)); }}
+              className="p-1 rounded hover:bg-[var(--bg-panel)] text-[var(--text-muted)] hover:text-[var(--text-primary)] shrink-0" title="Rinomina" data-testid={`triage-rename-btn-${ip}`}>
+              <PencilSimple size={12} />
+            </button>
+            <span className="text-[8px] uppercase px-1.5 py-0.5 rounded bg-[var(--bg-panel)] text-[var(--text-muted)] shrink-0">{macroOf(d)}</span>
+          </>
+        )}
+      </div>
     );
   };
   return (
@@ -546,9 +584,14 @@ function TriageWizard({ open, onClose, devices, clientId, onDone }) {
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2"><Star size={18} weight="fill" className="text-yellow-400" /> Classifica dispositivi rilevati</DialogTitle>
           <DialogDescription>
-            Aggancia come <b>Vitali</b> i dispositivi essenziali da monitorare sempre. I suggeriti (infrastruttura) sono già selezionati.
+            Aggancia come <b>Vitali</b> i dispositivi essenziali. Cerca per IP/nome e rinomina (matita) per maggiore chiarezza.
           </DialogDescription>
         </DialogHeader>
+        <div className="relative">
+          <MagnifyingGlass size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--text-muted)]" />
+          <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Cerca per IP o nome…"
+            className="h-9 pl-8 text-sm bg-[var(--bg-panel)]" data-testid="triage-search" />
+        </div>
         <div className="overflow-y-auto flex-1 space-y-3 pr-1">
           {suggested.length > 0 && (
             <div>
@@ -562,7 +605,11 @@ function TriageWizard({ open, onClose, devices, clientId, onDone }) {
               <div className="space-y-1">{rest.map(d => <Row key={d.ip_address} d={d} />)}</div>
             </div>
           )}
-          {undecided.length === 0 && <p className="text-center text-xs text-[var(--text-muted)] py-8">Nessun dispositivo da classificare 🎉</p>}
+          {suggested.length + rest.length === 0 && (
+            <p className="text-center text-xs text-[var(--text-muted)] py-8">
+              {undecided.length === 0 ? "Nessun dispositivo da classificare 🎉" : "Nessun risultato per la ricerca."}
+            </p>
+          )}
         </div>
         <DialogFooter className="gap-2">
           <span className="text-[10px] text-[var(--text-muted)] mr-auto self-center">{selected.size} selezionati</span>
@@ -1711,7 +1758,7 @@ function EmptyMacroDropTarget({ macroKey, label, color, icon: Icon, onDeviceDrop
   );
 }
 
-function DevicesGroupedView({ devices, skipList, onInfoClick, renderActions, onDeviceMove, clientId, selectedIps, onToggleSelect }) {
+function DevicesGroupedView({ devices, skipList, onInfoClick, renderActions, onDeviceMove, clientId, selectedIps, onToggleSelect, emptyMessage }) {
   // Partizionamento via macroOf (utils/deviceCategory)
   const buckets = {
     firewall: [], switch: [], router: [], server: [], nas: [], ups: [], ap: [],
@@ -1744,8 +1791,8 @@ function DevicesGroupedView({ devices, skipList, onInfoClick, renderActions, onD
   const totalShown = devices.length;
   if (totalShown === 0) {
     return (
-      <div className="noc-panel p-8 text-center text-[var(--text-muted)] text-xs">
-        Nessun dispositivo — clicca "Aggiungi Dispositivo" per iniziare
+      <div className="noc-panel p-8 text-center text-[var(--text-muted)] text-xs" data-testid="devices-grouped-empty">
+        {emptyMessage || 'Nessun dispositivo — clicca "Aggiungi Dispositivo" per iniziare'}
       </div>
     );
   }
@@ -2752,6 +2799,13 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
       {viewMode === "grouped" ? (
         <DevicesGroupedView
           devices={visibleDevices}
+          emptyMessage={
+            vitalFilter === "vital"
+              ? "⭐ Nessun dispositivo vitale ancora. Vai in Panoramica → Triage (oppure usa il filtro «Tutti») per agganciare i dispositivi essenziali."
+              : vitalFilter === "non_vital"
+              ? "Nessun dispositivo best-effort. Usa il filtro «Tutti» per vedere l'intero inventario."
+              : undefined
+          }
           skipList={showMulticast ? [] : devices.filter(d => _isMcast(d))}
           onInfoClick={(d) => setInfoTarget(d)}
           clientId={clientId}
