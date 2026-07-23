@@ -1,0 +1,25 @@
+{
+  "summary": "Iteration 90 — Triage flow (PANORAMICA → wizard → bulk-vital) + new-device watchdog tested end-to-end. Backend: 8/8 pytest cases PASS (bulk-vital validation + persistence, alert-engine config exposes new_device_detection/new_device_window_hours, run-now creates 'new_devices_detected' medium alert for a client with undecided recent devices, and RESOLVES it after classification). Frontend: triage-banner renders with correct count (27 su 86BIT_Office), triage-open-btn opens triage-wizard, 27 triage-row-<ip> rendered, 3 infra devices PRE-SELEZIONATI (TestSwitch, Zyxel USG Test firewall + switch-test), sezioni 'Suggeriti come Vitali · Infrastruttura' e 'Altri rilevati' presenti, triage-vital-btn + triage-monitor-btn presenti e cliccabili. Tab 'Dispositivi Vitali (1)' rinominata correttamente, vital-health-header presente con conteggio online/offline, filtro default 'Vitali' attivo (bg giallo). Regressione OK: Panoramica/Server/WAN/Alert/Stampanti tab si aprono senza errori; Esporta CSV e Aggiungi Dispositivo (via label) presenti. Nessuna modifica ai dati reali del cliente 86BIT_Office.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_triage_iter90.py",
+    "/app/test_reports/pytest/iteration_90_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "ClientOverviewPage.js is 4609 lines — should be split (OverviewTab, DevicesTab, TriageWizard into separate files) for maintainability.",
+    "TriageWizard preselects infra macros; consider showing macro icon + hostname more prominently for very long lists (>50 devices) — current design is fine for 27.",
+    "run_new_device_watchdog uses ISO string comparison on created_at ({'$gte': since}) — works when created_at is stored as ISO string but would silently skip devices with datetime objects; add a note or normalize on write."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_triage_iter90.py (new)"
+  ],
+  "success_rate": {"backend": "100% (8/8)", "frontend": "100% (all data-testids + flows verified)"},
+  "test_credentials": "info@86bit.it / Ariel17051986@!@86 (from /app/memory/test_credentials.md)",
+  "seed_data_creation": "Backend tests seed a temp client 'test-triage-iter90-<uuid>' with 4 managed_devices (3 infra + 1 printer, is_vital=null, created_at=now) and CLEAN UP on module teardown (managed_devices, clients, alerts for that id). Frontend test on real client 86BIT_Office: NO write actions performed — wizard was opened, inspected, then closed via Escape. No is_vital state altered on real data.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "New watchdog: alert_engine.run_new_device_watchdog wired into run_once. Alert source_type='new_devices_detected', severity='medium'. Config keys added: new_device_detection (bool, default True), new_device_window_hours (float, default 24). Frontend testids to reuse: triage-banner, triage-open-btn, triage-wizard, triage-row-<ip>, triage-vital-btn, triage-monitor-btn, tab-devices (label 'Dispositivi Vitali (N)'), vital-health-header, devices-vital-filter, vital-filter-{all,vital,best}-btn. Route: /client/:clientId (singular). Login response uses key 'token' (not access_token).",
+  "rca of the issue": "N/A — no issue found."
+}

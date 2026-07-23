@@ -48,6 +48,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "datto_server_offline_hours": 1,     # server Datto offline > 1h -> high
     "datto_server_crit_hours": 2,        # > 2h -> critical
     "datto_sync_stale_minutes": 30,      # sync fermo > 30min -> alert engine giu'
+    # Rilevamento nuovi dispositivi da classificare
+    "new_device_detection": True,
+    "new_device_window_hours": 24,
     # Canali
     "channels": ["push", "telegram"],
     "notify_roles": ["admin", "operator"],
@@ -542,6 +545,70 @@ async def run_datto_watchdog(db, cfg_global: Dict[str, Any]) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Watchdog 3 — Nuovi dispositivi rilevati da classificare
+# ---------------------------------------------------------------------------
+
+async def run_new_device_watchdog(db, cfg_global: Dict[str, Any]) -> int:
+    if not cfg_global.get("new_device_detection", True):
+        return 0
+    now = datetime.now(timezone.utc)
+    window_h = float(cfg_global.get("new_device_window_hours", 24))
+    since = (now - timedelta(hours=window_h)).isoformat()
+    actions = 0
+
+    clients = await db.clients.find({}, {"_id": 0, "id": 1, "name": 1}).to_list(2000)
+    client_names = {c.get("id"): c.get("name") for c in clients}
+
+    # Device "da classificare" = is_vital non deciso (null/mancante), scoperti di recente
+    pipeline = [
+        {"$match": {
+            "$and": [
+                {"$or": [{"is_vital": None}, {"is_vital": {"$exists": False}}]},
+                {"created_at": {"$gte": since}},
+            ]
+        }},
+        {"$group": {"_id": "$client_id", "n": {"$sum": 1},
+                    "names": {"$push": "$name"}}},
+    ]
+    grouped = {g["_id"]: g async for g in db.managed_devices.aggregate(pipeline)}
+
+    # Clienti con almeno un alert attivo new_devices ma ora 0 → risolvi
+    active = db.alerts.find({"source_type": "new_devices_detected", "status": "active"},
+                            {"_id": 0, "id": 1, "client_id": 1})
+    active_by_client = {a["client_id"]: a async for a in active}
+
+    for cid, g in grouped.items():
+        if not cid:
+            continue
+        cfg = await _resolve_client_config(db, cfg_global, cid)
+        cname = client_names.get(cid) or (cid[:8] if cid else "")
+        n = g["n"]
+        sample = ", ".join([x for x in (g.get("names") or []) if x][:5])
+        existing = active_by_client.get(cid)
+        msg = (f"Rilevati {n} nuovi dispositivi da classificare sul cliente {cname}"
+               + (f": {sample}{'…' if n > 5 else ''}." if sample else ".")
+               + " Vai in Panoramica → Classifica ora per agganciare quelli vitali.")
+        if not existing:
+            alert = _mk_alert(cid, cname, "Discovery", "", "discovery", "medium",
+                              "new_devices_detected", f"🆕 {n} nuovi dispositivi su {cname}", msg)
+            await insert_alert_if_emit(db, alert)
+            await _dispatch_notification(db, cfg, alert)
+            actions += 1
+            logger.info("[new-device] %s nuovi su client=%s", n, cname)
+        else:
+            await db.alerts.update_one({"id": existing["id"]}, {"$set": {"message": msg}})
+
+    # Risolvi gli alert dei clienti che non hanno più device da classificare
+    for cid, a in active_by_client.items():
+        if cid not in grouped:
+            await db.alerts.update_one({"id": a["id"]},
+                {"$set": {"status": "resolved", "resolved_at": now.isoformat()}})
+            actions += 1
+    return actions
+
+
+
+# ---------------------------------------------------------------------------
 # Scheduler
 # ---------------------------------------------------------------------------
 
@@ -577,6 +644,10 @@ class AlertEngine:
             datto = await run_datto_watchdog(self.db, cfg)
         except Exception as e:  # noqa: BLE001
             logger.warning("datto watchdog error: %s", e, exc_info=True)
+        try:
+            await run_new_device_watchdog(self.db, cfg)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("new-device watchdog error: %s", e, exc_info=True)
         self.last_run = {
             "at": datetime.now(timezone.utc).isoformat(),
             "vital_actions": vital,

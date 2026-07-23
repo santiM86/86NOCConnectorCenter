@@ -8,7 +8,7 @@ import {
   Lightning, WifiHigh, WifiSlash, PlugsConnected, CaretDown,
   CheckCircle, Warning, ArrowClockwise, Bell, BellSlash, ChartLine, Monitor, Cpu,
   Plus, Trash, Lock, MagnifyingGlass, Info, PencilSimple, NetworkSlash,
-  Phone, DeviceMobile, Desktop, Network, Key, Star,
+  Phone, DeviceMobile, Desktop, Network, Key, Star, Check,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -476,7 +476,7 @@ export default function ClientOverviewPage() {
 
       {/* Tab Content */}
       <div className="min-h-[400px]">
-        {activeTab === "overview" && <OverviewTab devices={devices} wanTargets={wanTargets} alerts={alerts} connector={connector} printers={printers} backups={backups} firewalls={firewalls} switches={switches} servers={servers} upsList={upsList} nasList={nasList} apList={apList} tvccList={tvccList} printersList={printersList} voipList={voipList} workstationList={workstationList} mobileList={mobileList} iotList={iotList} skipList={skipList} others={others} iloHealth={iloHealth} clientId={clientId} />}
+        {activeTab === "overview" && <OverviewTab devices={devices} wanTargets={wanTargets} alerts={alerts} connector={connector} printers={printers} backups={backups} firewalls={firewalls} switches={switches} servers={servers} upsList={upsList} nasList={nasList} apList={apList} tvccList={tvccList} printersList={printersList} voipList={voipList} workstationList={workstationList} mobileList={mobileList} iotList={iotList} skipList={skipList} others={others} iloHealth={iloHealth} clientId={clientId} onRefresh={fetchAll} />}
         {activeTab === "devices" && <DevicesTab devices={devices} clientId={clientId} onRefresh={fetchAll} onOptimisticUpdate={optimisticUpdateDevice} />}
         {activeTab === "servers" && <ServersTab iloHealth={iloHealth} clientId={clientId} clientName={client.name} onRefresh={fetchAll} />}
         {activeTab === "wan" && <WanClientTab targets={wanTargets} clientId={clientId} clientName={client.name} onRefresh={fetchAll} />}
@@ -493,15 +493,117 @@ export default function ClientOverviewPage() {
 }
 
 /* ==================== OVERVIEW TAB ==================== */
-function OverviewTab({ devices, wanTargets, alerts, connector, printers, backups, firewalls, switches, servers, upsList, nasList, apList, tvccList, printersList, voipList = [], workstationList = [], mobileList = [], iotList = [], skipList = [], others, iloHealth, clientId: clientIdProp }) {
+const TRIAGE_INFRA_MACROS = ["firewall", "switch", "router", "server", "nas", "ups", "ap", "tvcc"];
+
+function TriageWizard({ open, onClose, devices, clientId, onDone }) {
+  const undecided = devices.filter(d => macroOf(d) !== "_skip" && d.is_vital !== true && d.is_vital !== false);
+  const [selected, setSelected] = useState(() => new Set());
+  const [saving, setSaving] = useState(false);
+  useEffect(() => {
+    if (open) {
+      const sugg = undecided.filter(d => TRIAGE_INFRA_MACROS.includes(macroOf(d))).map(d => d.ip_address).filter(Boolean);
+      setSelected(new Set(sugg));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+  const toggle = (ip) => setSelected(prev => { const n = new Set(prev); n.has(ip) ? n.delete(ip) : n.add(ip); return n; });
+  const apply = async (isVital) => {
+    const ips = Array.from(selected);
+    if (!ips.length) { toast.error("Seleziona almeno un dispositivo"); return; }
+    setSaving(true);
+    try {
+      await axios.post(`${API}/devices/bulk-vital`, { ips, is_vital: isVital, client_id: clientId, reason: "triage" });
+      toast.success(`${ips.length} dispositivi ${isVital ? "agganciati come VITALI ⭐" : "segnati come Monitorati"}`);
+      onDone && onDone();
+      onClose();
+    } catch (e) { toast.error(e.response?.data?.detail || "Errore aggiornamento"); }
+    finally { setSaving(false); }
+  };
+  const suggested = undecided.filter(d => TRIAGE_INFRA_MACROS.includes(macroOf(d)));
+  const rest = undecided.filter(d => !TRIAGE_INFRA_MACROS.includes(macroOf(d)));
+  const Row = ({ d }) => {
+    const ip = d.ip_address;
+    const on = selected.has(ip);
+    return (
+      <button onClick={() => toggle(ip)}
+        className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md border text-left text-[11px] transition-colors ${on ? "bg-indigo-500/15 border-indigo-500/50" : "border-[var(--bg-border)] hover:border-[var(--text-muted)]"}`}
+        data-testid={`triage-row-${ip}`}>
+        <span className={`w-3.5 h-3.5 rounded-sm border flex items-center justify-center shrink-0 ${on ? "bg-indigo-500 border-indigo-500" : "border-[var(--text-muted)]"}`}>
+          {on && <Check size={10} weight="bold" className="text-white" />}
+        </span>
+        <span className="font-semibold text-[var(--text-primary)] truncate">{d.name || ip}</span>
+        <span className="font-mono text-[9px] text-[var(--text-muted)]">{ip}</span>
+        <span className="ml-auto text-[8px] uppercase px-1.5 py-0.5 rounded bg-[var(--bg-panel)] text-[var(--text-muted)] shrink-0">{macroOf(d)}</span>
+      </button>
+    );
+  };
+  return (
+    <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
+      <DialogContent className="max-w-2xl max-h-[85vh] overflow-hidden flex flex-col" data-testid="triage-wizard">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2"><Star size={18} weight="fill" className="text-yellow-400" /> Classifica dispositivi rilevati</DialogTitle>
+          <DialogDescription>
+            Aggancia come <b>Vitali</b> i dispositivi essenziali da monitorare sempre. I suggeriti (infrastruttura) sono già selezionati.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="overflow-y-auto flex-1 space-y-3 pr-1">
+          {suggested.length > 0 && (
+            <div>
+              <p className="text-[9px] font-bold uppercase tracking-widest text-yellow-400 mb-1.5">⭐ Suggeriti come Vitali · Infrastruttura ({suggested.length})</p>
+              <div className="space-y-1">{suggested.map(d => <Row key={d.ip_address} d={d} />)}</div>
+            </div>
+          )}
+          {rest.length > 0 && (
+            <div>
+              <p className="text-[9px] font-bold uppercase tracking-widest text-[var(--text-muted)] mb-1.5">Altri rilevati ({rest.length})</p>
+              <div className="space-y-1">{rest.map(d => <Row key={d.ip_address} d={d} />)}</div>
+            </div>
+          )}
+          {undecided.length === 0 && <p className="text-center text-xs text-[var(--text-muted)] py-8">Nessun dispositivo da classificare 🎉</p>}
+        </div>
+        <DialogFooter className="gap-2">
+          <span className="text-[10px] text-[var(--text-muted)] mr-auto self-center">{selected.size} selezionati</span>
+          <Button variant="outline" size="sm" disabled={saving} onClick={() => apply(false)} data-testid="triage-monitor-btn">Segna come Monitorati</Button>
+          <Button size="sm" disabled={saving} onClick={() => apply(true)} className="bg-yellow-500 hover:bg-yellow-600 text-black font-semibold" data-testid="triage-vital-btn">
+            <Star size={13} weight="fill" className="mr-1" /> Aggancia come Vitali
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function OverviewTab({ devices, wanTargets, alerts, connector, printers, backups, firewalls, switches, servers, upsList, nasList, apList, tvccList, printersList, voipList = [], workstationList = [], mobileList = [], iotList = [], skipList = [], others, iloHealth, clientId: clientIdProp, onRefresh }) {
   // v2026-02-28 SAFETY: fallback su useParams se il prop non viene passato.
   // Evita ReferenceError "clientId is not defined" in caso di build parziali
   // dove un commit pre-fix dimentica di passare il prop ma usa la variabile
   // nei figli (es. <DeviceGroup clientId={clientId} />).
   const { clientId: clientIdParam } = useParams();
   const clientId = clientIdProp || clientIdParam;
+  const [triageOpen, setTriageOpen] = useState(false);
+  const undecidedDevices = devices.filter(d => macroOf(d) !== "_skip" && d.is_vital !== true && d.is_vital !== false);
+  const vitalCountOv = devices.filter(d => d.is_vital === true).length;
   return (
     <div className="space-y-4">
+      <TriageWizard open={triageOpen} onClose={() => setTriageOpen(false)} devices={devices} clientId={clientId} onDone={onRefresh} />
+      {/* Triage hub: dispositivi rilevati da classificare */}
+      {undecidedDevices.length > 0 && (
+        <div className="flex items-center gap-3 px-4 py-2.5 rounded-lg border border-yellow-500/40 bg-yellow-500/10" data-testid="triage-banner">
+          <Star size={18} weight="bold" className="text-yellow-400 shrink-0" />
+          <div className="flex-1 min-w-0">
+            <p className="text-xs font-semibold text-[var(--text-primary)]">
+              🆕 {undecidedDevices.length} dispositivi rilevati da classificare
+            </p>
+            <p className="text-[10px] text-[var(--text-muted)]">
+              Aggancia i dispositivi essenziali come Vitali per monitorarli attivamente. {vitalCountOv} già vitali.
+            </p>
+          </div>
+          <Button size="sm" onClick={() => setTriageOpen(true)}
+            className="h-8 bg-yellow-500 hover:bg-yellow-600 text-black font-semibold shrink-0" data-testid="triage-open-btn">
+            Classifica ora
+          </Button>
+        </div>
+      )}
       {/* v2026-02-28: Bridge Health Widget — diagnostica live degli agent SNMP/ping */}
       {clientId && (
         <SafeBoundary label="Bridge Health">
@@ -2639,6 +2741,34 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
 
   return (
     <div className="space-y-3">
+      {(() => {
+        const vit = devices.filter(d => d.is_vital === true && !_isMcast(d));
+        if (vit.length === 0) return null;
+        const online = vit.filter(d => d.status === "online").length;
+        const offline = vit.length - online;
+        const withSwitch = vit.filter(d => d.switch_ip).length;
+        return (
+          <div className="flex items-center gap-4 px-4 py-2.5 rounded-lg border border-[var(--bg-border)] bg-[var(--bg-panel)]" data-testid="vital-health-header">
+            <div className="flex items-center gap-1.5">
+              <Star size={16} weight="fill" className="text-yellow-400" />
+              <span className="text-xs font-bold text-[var(--text-primary)]">Salute Vitali</span>
+            </div>
+            <div className="flex items-center gap-1.5" title="Vitali online">
+              <span className="w-2 h-2 rounded-full bg-emerald-400" />
+              <span className="text-sm font-bold text-emerald-400">{online}</span>
+              <span className="text-[10px] text-[var(--text-muted)]">online</span>
+            </div>
+            <div className="flex items-center gap-1.5" title="Vitali offline">
+              <span className={`w-2 h-2 rounded-full ${offline > 0 ? "bg-red-500 animate-pulse" : "bg-[var(--text-muted)]"}`} />
+              <span className={`text-sm font-bold ${offline > 0 ? "text-red-500" : "text-[var(--text-muted)]"}`}>{offline}</span>
+              <span className="text-[10px] text-[var(--text-muted)]">offline</span>
+            </div>
+            <span className="text-[10px] text-[var(--text-muted)] ml-auto">
+              {online}/{vit.length} vitali attivi{withSwitch > 0 ? ` · ${withSwitch} con dipendenza switch` : ""}
+            </span>
+          </div>
+        );
+      })()}
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <p className="text-[10px] text-[var(--text-muted)]">
           {visibleDevices.length} dispositivi {hiddenCount > 0 && (
