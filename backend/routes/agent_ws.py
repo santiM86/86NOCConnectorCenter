@@ -1583,6 +1583,67 @@ async def force_ping_now(client_id: str, current_user: dict = Depends(get_curren
     }
 
 
+class PollNowRequest(BaseModel):
+    ips: List[str] = Field(default_factory=list)
+
+
+@router.post("/clients/{client_id}/devices/poll-now")
+async def poll_now(client_id: str, req: PollNowRequest,
+                   current_user: dict = Depends(get_current_user)) -> Dict[str, Any]:
+    """v2026-07: ping/poll IMMEDIATO di IP specifici (es. appena promossi a
+    Vitali) sull'agent v4 master LIVE, con PERSISTENZA in device_poll_status,
+    cosi' il cockpit mostra lo stato reale entro pochi secondi invece di
+    aspettare il ciclo di poll. Se non c'e' un master live ritorna ok=false
+    (200) senza errore, cosi' il frontend puo' ignorarlo silenziosamente."""
+    ips = [ip for ip in dict.fromkeys(req.ips or []) if ip]
+    if not ips:
+        return {"ok": False, "polled": 0, "reason": "no_ips"}
+    three_min_ago = (datetime.now(timezone.utc) - timedelta(minutes=3)).isoformat()
+    master = await db.managed_agents.find_one(
+        {"client_id": client_id, "role": "master",
+         "$or": [{"last_heartbeat_at": {"$gte": three_min_ago}},
+                 {"last_seen_at": {"$gte": three_min_ago}}]},
+        {"_id": 0, "agent_id": 1},
+    )
+    if not master:
+        return {"ok": False, "polled": 0, "reason": "no_master_live"}
+    agent_id = master["agent_id"]
+    conn = REGISTRY.get(agent_id)
+    if conn is None:
+        return {"ok": False, "polled": 0, "reason": "master_not_connected"}
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    sem = asyncio.Semaphore(10)
+    results: List[Dict[str, Any]] = []
+
+    async def _probe(ip):
+        async with sem:
+            try:
+                reply = await conn.send_command("force_ping_poll", {"ip": ip}, timeout=8.0)
+                reachable = bool(reply.get("reachable") or reply.get("Reachable"))
+                method = reply.get("method") or reply.get("Method") or "icmp"
+                update = {
+                    "reachable": reachable, "ping_reachable": reachable,
+                    "method": method, "last_ping_at": now_iso, "source": "agent_v4",
+                }
+                if reachable:
+                    update["consecutive_failures"] = 0
+                await db.device_poll_status.update_one(
+                    {"client_id": client_id, "device_ip": ip, "agent_id": agent_id},
+                    {"$set": update,
+                     "$setOnInsert": {"client_id": client_id, "device_ip": ip, "agent_id": agent_id}},
+                    upsert=True)
+                results.append({"ip": ip, "reachable": reachable, "method": method})
+            except Exception as e:  # noqa: BLE001
+                results.append({"ip": ip, "reachable": False, "error": str(e)[:80]})
+
+    await asyncio.gather(*[_probe(ip) for ip in ips])
+    return {"ok": True, "polled": len(results),
+            "reachable": sum(1 for r in results if r.get("reachable")),
+            "results": results}
+
+
+
 class CommandRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=64)
     args: Optional[Dict[str, Any]] = None
