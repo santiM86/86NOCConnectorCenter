@@ -514,6 +514,9 @@ function TriageWizard({ open, onClose, devices, clientId, onDone }) {
     try {
       await axios.post(`${API}/devices/bulk-vital`, { ips, is_vital: isVital, client_id: clientId, reason: "triage" });
       toast.success(`${ips.length} dispositivi ${isVital ? "agganciati come VITALI ⭐" : "segnati come Monitorati"}`);
+      if (isVital) {
+        axios.post(`${API}/clients/${clientId}/devices/poll-now`, { ips }).catch(() => {});
+      }
       onDone && onDone();
       onClose();
     } catch (e) { toast.error(e.response?.data?.detail || "Errore aggiornamento"); }
@@ -2262,6 +2265,13 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
       });
       toast.success(data.message || `${data.modified} dispositivi aggiornati`);
       clearSelection();
+      // v2026-07: appena promossi a Vitali, forza un ping immediato per vedere
+      // subito lo stato reale nel cockpit (best-effort, ignora se non c'e' master).
+      if (isVital) {
+        axios.post(`${API}/clients/${clientId}/devices/poll-now`, { ips })
+          .then((r) => { if (r.data?.ok) setTimeout(() => onRefresh?.(), 1200); })
+          .catch(() => {});
+      }
       onRefresh?.();
     } catch (err) {
       const detail = err.response?.data?.detail || err.message || "Errore sconosciuto";

@@ -1,3 +1,29 @@
+# 2026-07-23 — Ping immediato alla promozione a Vitale
+
+## Cosa
+Quando promuovi uno o più dispositivi a Vitali (dalla toolbar del tab o dal
+Triage Wizard), parte subito un ping/poll immediato così il cockpit mostra lo
+stato reale in pochi secondi invece di attendere il ciclo di poll.
+
+## Implementazione
+- **Backend** `agent_ws.py`: nuovo `POST /clients/{client_id}/devices/poll-now`
+  {ips:[...]} → invia `force_ping_poll` per ogni IP al master v4 LIVE e PERSISTE
+  il risultato in `device_poll_status` (reachable/ping_reachable/method/
+  last_ping_at, source="agent_v4"). Se non c'è master live ritorna 200
+  {ok:false, reason:"no_master_live"} (nessun errore, il frontend lo ignora).
+- **Frontend** `ClientOverviewPage.js`: `bulkSetVital(true)` e il Triage Wizard
+  chiamano poll-now (best-effort) dopo la marcatura; refresh ritardato ~1.2s per
+  mostrare lo stato aggiornato.
+
+## Verifica
+- Endpoint risponde 200 gracefully senza master (testato su 86BIT_Office preview).
+- Frontend compila senza errori.
+- NOTA: il path con master LIVE + persistenza non è testabile in preview (serve
+  un agent v4 reale connesso); la logica riusa il pattern esistente force_ping_now.
+
+---
+
+
 # 2026-07-23 — BUGFIX: marcatura vitale non persisteva per i device scanner
 
 ## Sintomo (utente)
