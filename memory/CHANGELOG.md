@@ -1,3 +1,40 @@
+# 2026-07-23 — Ridisegno gestione dispositivi: Panoramica=Triage, Vitali=Cockpit
+
+## Modello concordato con l'utente
+Due piani distinti: **Panoramica** = sorgente di TUTTI i dispositivi rilevati
+(triage), da cui si "agganciano" i vitali; **Dispositivi Vitali** = cockpit dei
+soli vitali. NIENTE stato "ignored" (scartato dall'utente). 3 stati impliciti via
+`is_vital` tri-state: null=da classificare, false=monitorato, true=vitale
+(nessun nuovo campo/migrazione necessari).
+
+## Implementazione (in blocco)
+### Frontend `ClientOverviewPage.js`
+- **TriageWizard** (nuovo modal): elenca i device non classificati, sezione
+  "Suggeriti come Vitali · Infrastruttura" (firewall/switch/router/server/nas/
+  ups/ap/tvcc) PRE-SELEZIONATA, + "Altri rilevati". Bottoni "Aggancia come Vitali"
+  (bulk is_vital=true) e "Segna come Monitorati" (bulk is_vital=false) via
+  `POST /api/devices/bulk-vital`.
+- **Panoramica**: banner giallo "🆕 N dispositivi rilevati da classificare" +
+  "Classifica ora" → apre il wizard; refresh automatico dopo l'azione.
+- **Dispositivi Vitali cockpit**: header salute (vitali online/offline, badge
+  rosso lampeggiante se offline, conteggio dipendenze switch).
+
+### Backend `alert_engine.py`
+- **run_new_device_watchdog**: per cliente, conta i managed_devices con is_vital
+  non deciso e `created_at` entro `new_device_window_hours` (default 24) → alert
+  medium `new_devices_detected` (dedup per cliente, messaggio aggiornato col
+  conteggio), auto-resolve quando tutti classificati. Notifica Push/Telegram.
+- Config: `new_device_detection`, `new_device_window_hours`.
+
+## Test (iteration_90.json) — 100% PASS
+- Backend 8/8: bulk-vital validazione+persistenza, config espone i nuovi campi,
+  run-now crea e risolve `new_devices_detected`.
+- Frontend: banner, wizard (suggeriti preselezionati), aggancia/monitora, tab
+  "Dispositivi Vitali" con header salute e filtro default vital. Zero issue.
+
+---
+
+
 # 2026-07-22 — Tab "Dispositivi Vitali" (filtro default vitali)
 
 ## Richiesta utente
