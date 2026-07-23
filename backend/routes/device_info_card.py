@@ -917,6 +917,39 @@ async def set_devices_vital_bulk(
         }},
     )
 
+    # v2026-07 FIX: i device visti solo da scanner/connector (device_poll_status)
+    # non hanno ancora una riga in managed_devices → update_many non li tocca e
+    # la marcatura "vitale" non persisteva ("selezionati ma non succede nulla").
+    # Qui li PROMUOVIAMO (upsert) creando la riga managed_devices, cosi' appaiono
+    # subito nel tab Dispositivi Vitali.
+    import uuid as _uuid
+    promoted = 0
+    if is_vital:
+        existing_ips = set(await db.managed_devices.distinct(
+            "ip", {"client_id": client_id, "ip": {"$in": ip_list}}))
+        for ip in [x for x in ip_list if x not in existing_ips]:
+            src = await db.device_poll_status.find_one(
+                {"client_id": client_id, "device_ip": ip},
+                {"_id": 0, "device_name": 1, "device_class": 1, "mac": 1}) or {}
+            if not src:
+                src = await db.discovered_endpoints.find_one(
+                    {"client_id": client_id, "ip": ip}, {"_id": 0}) or {}
+            name = src.get("device_name") or src.get("hostname") or src.get("name") or ip
+            dtype = src.get("device_class") or src.get("device_type") or "generic"
+            r = await db.managed_devices.update_one(
+                {"client_id": client_id, "ip": ip},
+                {"$set": {
+                    "is_vital": True, "is_vital_set_by": user_email,
+                    "is_vital_set_at": now_iso, "is_vital_reason": reason or "promoted-vital"},
+                 "$setOnInsert": {
+                    "id": str(_uuid.uuid4()), "client_id": client_id, "ip": ip,
+                    "name": name, "device_name": name, "device_type": dtype,
+                    "mac": src.get("mac") or "", "source": "promoted-scan",
+                    "created_at": now_iso}},
+                upsert=True)
+            if r.upserted_id is not None:
+                promoted += 1
+
     # Invalida la cache silence per ogni IP toccato
     for ip in ip_list:
         invalidate_silence_cache(client_id=client_id, device_ip=ip)
@@ -947,9 +980,11 @@ async def set_devices_vital_bulk(
         "is_vital": is_vital,
         "requested": len(ip_list),
         "matched": res.matched_count,
-        "modified": res.modified_count,
+        "modified": res.modified_count + promoted,
+        "promoted": promoted,
         "message": (
-            f"{res.modified_count} dispositivi {'marcati VITALI' if is_vital else 'rimossi dai vitali'}"
+            f"{res.modified_count + promoted} dispositivi {'marcati VITALI' if is_vital else 'rimossi dai vitali'}"
+            + (f" ({promoted} promossi dallo scanner)" if promoted else "")
         ),
     }
 
