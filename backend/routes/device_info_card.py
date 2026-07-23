@@ -1111,6 +1111,62 @@ async def set_devices_vital_bulk(
     }
 
 
+@router.post("/clients/{client_id}/devices/reset-vital")
+async def reset_devices_vital(
+    client_id: str,
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+):
+    """Azzera TUTTI i flag `is_vital` dei device di un cliente → il tab
+    'Dispositivi Vitali' riparte da zero. Rimuove anche lo stato di tracking
+    offline dei vitali (vital_offline_state) per quel cliente."""
+    from alert_filter import invalidate_silence_cache
+
+    client_id = (client_id or "").strip()
+    if not client_id:
+        raise HTTPException(status_code=400, detail="client_id e' obbligatorio")
+    user_email = current_user.get("email")
+
+    # IP toccati (per invalidare la cache silence)
+    touched_ips = await db.managed_devices.distinct(
+        "ip", {"client_id": client_id, "is_vital": {"$exists": True}})
+
+    res = await db.managed_devices.update_many(
+        {"client_id": client_id, "is_vital": {"$exists": True}},
+        {"$unset": {
+            "is_vital": "", "is_vital_reason": "",
+            "is_vital_set_by": "", "is_vital_set_at": "",
+        }},
+    )
+    state_cleared = await db.vital_offline_state.delete_many({"client_id": client_id})
+
+    for ip in touched_ips:
+        if ip:
+            invalidate_silence_cache(client_id=client_id, device_ip=ip)
+
+    try:
+        await audit_logger.log(
+            user_email=user_email,
+            action=AuditAction.UPDATE_DEVICE if hasattr(AuditAction, "UPDATE_DEVICE") else AuditAction.OTHER,
+            resource_type="device",
+            resource_id=None,
+            metadata={"action": "reset_vital", "client_id": client_id,
+                      "cleared": res.modified_count},
+            request=request,
+        )
+    except Exception:
+        pass
+
+    return {
+        "ok": True,
+        "client_id": client_id,
+        "cleared": res.modified_count,
+        "tracking_cleared": state_cleared.deleted_count,
+        "message": f"{res.modified_count} dispositivi azzerati: il tab Dispositivi Vitali riparte da zero.",
+    }
+
+
+
 @router.post("/devices/bulk-silence")
 async def set_devices_silence_bulk(
     payload: dict,

@@ -513,6 +513,33 @@ def _extract_nics(audit_data: dict) -> list[dict]:
     return result
 
 
+def _extract_serial(audit_data: Any, list_dev: Any = None) -> str:
+    """Estrae il serial number da audit Datto (bios/systemInfo) o dalla list.
+    Non sensibile: usato solo come identificatore forte per il match."""
+    for src in (audit_data, list_dev):
+        if not isinstance(src, dict):
+            continue
+        for key in ("serialNumber", "serial_number", "serial", "biosSerial"):
+            v = src.get(key)
+            if v and str(v).strip() and str(v).strip().lower() not in (
+                "none", "null", "system serial number", "to be filled by o.e.m.",
+                "default string", "0", "n/a",
+            ):
+                return str(v).strip()
+        for sub in ("systemInfo", "bios", "system"):
+            nested = src.get(sub)
+            if isinstance(nested, dict):
+                r = _extract_serial(nested)
+                if r:
+                    return r
+    return ""
+
+
+def _host_short(s: Any) -> str:
+    n = (str(s or "").strip().lower())
+    return n.split(".")[0] if n else ""
+
+
 # ---------------------------------------------------------------------------
 # Core: refresh cache + enrichment MAC via audit + match 100%
 # ---------------------------------------------------------------------------
@@ -598,6 +625,12 @@ async def _refresh_sites_cache() -> dict:
                     ip_list.insert(0, ip_primary)
                 mac_primary = mac_list[0] if mac_list else ""
                 ip_out = ip_list[0] if ip_list else ""
+                # Identificatori aggiuntivi per il match multi-fonte (non sensibili)
+                serial = _extract_serial(audit_raw, dev)
+                raw_hostname = (dev.get("hostname") or "").strip()
+                fqdn = raw_hostname if "." in raw_hostname else ""
+                hostname_short = _host_short(raw_hostname or name)
+                ext_ip = _norm_ip(dev.get("extIpAddress"))
                 # Stato online + lastSeen + tipo device dalla list Datto,
                 # persistiti top-level per l'Alert Engine (watchdog server offline).
                 dtype = (dev.get("deviceType") or dev.get("category") or "").strip()
@@ -623,6 +656,10 @@ async def _refresh_sites_cache() -> dict:
                     "ip": ip_out,            # primario per matching
                     "mac_list": mac_list,    # per match con altre NIC
                     "ip_list": ip_list,
+                    "serial": serial,             # identificatore forte per match
+                    "fqdn": fqdn,                 # FQDN se disponibile
+                    "hostname_short": hostname_short,  # hostname senza dominio
+                    "ext_ip": ext_ip,             # IP pubblico (diagnostica)
                     "device_type": dtype,
                     "is_server": ("server" in dtype.lower() or "esxi" in dtype.lower()),
                     "online": (bool(online_raw) if online_raw is not None else None),
@@ -690,190 +727,154 @@ async def _refresh_sites_cache() -> dict:
 
 
 async def _match_with_center(client_id: str, datto_devices: list[dict]) -> int:
-    """Match 100%: per ogni device Datto prova (in ordine):
-       1. MAC primary (o qualsiasi della mac_list) vs discovered_endpoints.mac
-       2. IP primary (o qualsiasi della ip_list) vs discovered_endpoints.ip
-       3. IP vs managed_devices.ip_address
-    Solo i device matchati scrivono `datto_name` in `discovered_endpoints`
-    (nessun altro campo Datto viene mai salvato in chiaro).
+    """Match avanzato multi-fonte (affidabilita' 100%).
+
+    Fonde TUTTI gli identificatori che riceviamo — serial, MAC (tutte le NIC),
+    IP (tutti), hostname/FQDN — e usa lo SCANNER (discovered_endpoints) come
+    "ponte": se un managed_device non ha MAC ma lo scanner ha visto quell'IP,
+    eredita il MAC/hostname dallo scanner per agganciare Datto.
+
+    Ladder di confidenza: serial(100) > MAC(98) > IP(92) > hostname(82).
+    Scrive sul managed_device il LINK PERSISTENTE `datto_uid` + confidenza +
+    metodo, cosi' la correlazione degli alert legge un match certo e coerente.
     """
     if not datto_devices:
         return 0
 
-    # Index MAC e IP Datto -> device
-    mac_to_dev: dict[str, dict] = {}
-    ip_to_dev: dict[str, dict] = {}
-    for d in datto_devices:
-        for m in d.get("mac_list") or []:
-            if m:
-                mac_to_dev.setdefault(m, d)
-        for ip in d.get("ip_list") or []:
-            if ip:
-                ip_to_dev.setdefault(ip, d)
-
-    if not mac_to_dev and not ip_to_dev:
-        return 0
-
     from pymongo import UpdateOne
-
-    # Carica candidati dal center (client-scoped)
-    eps = await db.discovered_endpoints.find(
-        {"client_id": client_id},
-        {"_id": 0, "mac": 1, "ip": 1, "switch_ip": 1, "port": 1},
-    ).to_list(100000)
-
-    # v2026-06-29: diagnostica chiara su 0 match.
-    # Logga il "perchè" per facilitare il debug invece di silently mancare:
-    #   - 0 endpoint nel center → connector LAN scanner non attivo / no FDB
-    #   - 0 MAC nel center → switch ritornano solo IP senza MAC
-    #   - 0 MAC in Datto → audit endpoint non ha estratto NIC info
-    if not eps:
-        logger.warning(
-            "[datto-match] client=%s: 0 discovered_endpoints nel center. "
-            "Il connector LAN scanner del cliente non sta scoprendo device. "
-            "Verifica che il connector sia ONLINE e che gli switch siano in scan list.",
-            client_id,
-        )
-    else:
-        eps_with_mac = sum(1 for e in eps if e.get("mac"))
-        eps_with_ip = sum(1 for e in eps if e.get("ip"))
-        datto_macs = len(mac_to_dev)
-        datto_ips = len(ip_to_dev)
-        logger.info(
-            "[datto-match] client=%s: eps=%d (mac=%d, ip=%d) "
-            "datto=%d (mac=%d, ip=%d)",
-            client_id, len(eps), eps_with_mac, eps_with_ip,
-            len(datto_devices), datto_macs, datto_ips,
-        )
-
-    # Match set per evitare doppie scritture
-    ops: list = []
-    matched_uids: set = set()
-    matched_eps: set = set()
     now = datetime.now(timezone.utc).isoformat()
 
-    # Pass 1: match su MAC
-    for ep in eps:
-        ep_mac = (ep.get("mac") or "").upper()
-        if ep_mac and ep_mac in mac_to_dev:
-            d = mac_to_dev[ep_mac]
-            uid = d.get("uid")
-            if not uid:
-                continue
-            matched_uids.add(uid)
-            key = (ep.get("switch_ip"), ep.get("port"), ep.get("mac"))
-            if key in matched_eps:
-                continue
-            matched_eps.add(key)
-            ops.append(UpdateOne(
-                {"client_id": client_id, "switch_ip": ep.get("switch_ip"),
-                 "port": ep.get("port"), "mac": ep.get("mac")},
-                {"$set": {
-                    "datto_name": d.get("name"),
-                    "datto_match": "mac",
-                    "datto_matched_at": now,
-                }},
-            ))
+    # --- Indici Datto multi-identificatore ---
+    by_mac: dict[str, dict] = {}
+    by_ip: dict[str, dict] = {}
+    by_serial: dict[str, dict] = {}
+    by_host: dict[str, dict] = {}
+    for d in datto_devices:
+        if not d.get("uid"):
+            continue
+        for m in list(d.get("mac_list") or []) + [d.get("mac")]:
+            nm = _norm_mac(m)
+            if nm:
+                by_mac.setdefault(nm, d)
+        for ip in list(d.get("ip_list") or []) + [d.get("ip")]:
+            if ip:
+                by_ip.setdefault(ip, d)
+        if d.get("serial"):
+            by_serial.setdefault(str(d["serial"]).strip().upper(), d)
+        for h in (d.get("name"), d.get("fqdn"), d.get("hostname_short")):
+            hs = _host_short(h)
+            if hs:
+                by_host.setdefault(hs, d)
 
-    # Pass 2: match su IP (per device senza MAC in FDB)
+    # --- Candidati dal Center: scanner endpoints (ponte L2) + managed devices ---
+    eps = await db.discovered_endpoints.find(
+        {"client_id": client_id},
+        {"_id": 0, "mac": 1, "ip": 1, "switch_ip": 1, "port": 1, "hostname_scanner": 1},
+    ).to_list(100000)
+    ep_by_ip: dict[str, list] = {}
     for ep in eps:
-        ep_ip = ep.get("ip") or ""
-        if ep_ip and ep_ip in ip_to_dev:
-            d = ip_to_dev[ep_ip]
-            uid = d.get("uid")
-            if not uid or uid in matched_uids:
-                continue  # gia' matchato via MAC o uid mancante
-            key = (ep.get("switch_ip"), ep.get("port"), ep.get("mac"))
-            if key in matched_eps:
-                continue
-            matched_eps.add(key)
-            matched_uids.add(uid)
-            ops.append(UpdateOne(
-                {"client_id": client_id, "switch_ip": ep.get("switch_ip"),
-                 "port": ep.get("port"), "mac": ep.get("mac")},
-                {"$set": {
-                    "datto_name": d.get("name"),
-                    "datto_match": "ip",
-                    "datto_matched_at": now,
-                }},
-            ))
+        if ep.get("ip"):
+            ep_by_ip.setdefault(ep["ip"], []).append(ep)
 
-    # Pass 3: match su managed_devices (via IP e/o MAC management).
-    # I managed_devices sono i device "ufficiali" del Center (switch, firewall, UPS,
-    # NAS, server) con IP e spesso MAC di management. Se Datto li conosce li
-    # arricchiamo con datto_name cosi che UI/Report abbiano il nome allineato.
     managed = await db.managed_devices.find(
         {"client_id": client_id},
-        {"_id": 0, "id": 1, "name": 1, "hostname": 1, "ip_address": 1, "mac_address": 1},
+        {"_id": 0, "id": 1, "name": 1, "device_name": 1, "hostname": 1,
+         "ip_address": 1, "ip": 1, "mac_address": 1, "mac": 1, "serial": 1},
     ).to_list(10000)
+
     md_ops: list = []
+    ep_ops: list = []
+    matched_uids: set = set()
     matched_md_ids: set = set()
+    matched_eps: set = set()
+
+    # --- Match managed_devices con identita' arricchita dallo scanner ---
     for md in managed:
         md_id = md.get("id")
         if not md_id:
             continue
-        ip = md.get("ip_address") or ""
-        mac = (md.get("mac_address") or "").upper()
+        ip = md.get("ip_address") or md.get("ip") or ""
+        serial = str(md.get("serial") or "").strip().upper()
+        macs = set(filter(None, [_norm_mac(md.get("mac_address") or md.get("mac"))]))
+        hosts = set(filter(None, [
+            _host_short(md.get("hostname")), _host_short(md.get("name")),
+            _host_short(md.get("device_name")),
+        ]))
+        # Ponte scanner: eredita MAC/hostname visti su quello stesso IP
+        for ep in ep_by_ip.get(ip, []):
+            em = _norm_mac(ep.get("mac"))
+            if em:
+                macs.add(em)
+            hs = _host_short(ep.get("hostname_scanner"))
+            if hs:
+                hosts.add(hs)
+
         d = None
-        mt = None
-        if mac and mac in mac_to_dev:
-            d, mt = mac_to_dev[mac], "mac"
-        elif ip and ip in ip_to_dev:
-            d, mt = ip_to_dev[ip], "ip"
+        method = None
+        conf = 0
+        if serial and serial in by_serial:
+            d, method, conf = by_serial[serial], "serial", 100
+        if not d:
+            for m in macs:
+                if m in by_mac:
+                    d, method, conf = by_mac[m], "mac", 98
+                    break
+        if not d and ip and ip in by_ip:
+            d, method, conf = by_ip[ip], "ip", 92
+        if not d:
+            for h in hosts:
+                if h in by_host:
+                    d, method, conf = by_host[h], "hostname", 82
+                    break
+
         if d and d.get("uid"):
             matched_uids.add(d["uid"])
             matched_md_ids.add(md_id)
             md_ops.append(UpdateOne(
                 {"id": md_id},
                 {"$set": {
+                    "datto_uid": d["uid"],
                     "datto_name": d.get("name"),
-                    "datto_match": mt,
+                    "datto_match": method,
+                    "datto_match_confidence": conf,
                     "datto_matched_at": now,
                 }},
             ))
 
-    # v2026-03-01 Pass 4: fallback HOSTNAME match.
-    # Quando il connector LAN scanner non ha SNMP attivo, discovered_endpoints
-    # puo' essere quasi vuoto → match MAC/IP fallisce. Tuttavia molti device
-    # Datto hanno `name` (hostname computer) che spesso coincide con
-    # `hostname` o `name` in managed_devices. Tentiamo questo match come
-    # ultimo livello, normalizzando: lowercase, trim whitespace.
-    def _norm_name(s: str) -> str:
-        return (s or "").strip().lower()
-
-    name_to_dev: dict[str, dict] = {}
-    for d in datto_devices:
-        n = _norm_name(d.get("name"))
-        if n and n not in name_to_dev:
-            name_to_dev[n] = d
-
-    if name_to_dev:
-        for md in managed:
-            md_id = md.get("id")
-            if not md_id or md_id in matched_md_ids:
-                continue  # gia' matchato via MAC/IP o id mancante
-            for cand_field in ("hostname", "name"):
-                cand = _norm_name(md.get(cand_field))
-                if cand and cand in name_to_dev:
-                    d = name_to_dev[cand]
-                    if not d.get("uid") or d["uid"] in matched_uids:
-                        continue
-                    matched_uids.add(d["uid"])
-                    matched_md_ids.add(md_id)
-                    md_ops.append(UpdateOne(
-                        {"id": md_id},
-                        {"$set": {
-                            "datto_name": d.get("name"),
-                            "datto_match": "hostname",
-                            "datto_matched_at": now,
-                        }},
-                    ))
-                    break
+    # --- Enrichment scanner endpoints (datto_name) per la UI/topology ---
+    for ep in eps:
+        ep_mac = _norm_mac(ep.get("mac"))
+        ep_ip = ep.get("ip") or ""
+        d = (ep_mac and by_mac.get(ep_mac)) or (ep_ip and by_ip.get(ep_ip)) or None
+        if not d or not d.get("uid"):
+            continue
+        key = (ep.get("switch_ip"), ep.get("port"), ep.get("mac"))
+        if key in matched_eps:
+            continue
+        matched_eps.add(key)
+        matched_uids.add(d["uid"])
+        ep_ops.append(UpdateOne(
+            {"client_id": client_id, "switch_ip": ep.get("switch_ip"),
+             "port": ep.get("port"), "mac": ep.get("mac")},
+            {"$set": {"datto_name": d.get("name"),
+                      "datto_match": "mac" if ep_mac and ep_mac in by_mac else "ip",
+                      "datto_matched_at": now}},
+        ))
 
     if md_ops:
         await db.managed_devices.bulk_write(md_ops, ordered=False)
+    if ep_ops:
+        await db.discovered_endpoints.bulk_write(ep_ops, ordered=False)
 
-    # Scrivi stato matched sui datto_devices (senza mai mettere in chiaro dati sensibili)
+    # Pulisci link Datto ORFANI: managed devices che prima erano agganciati ma
+    # ora non matchano piu' nessun device Datto (evita link stantii/errati).
+    await db.managed_devices.update_many(
+        {"client_id": client_id, "datto_uid": {"$exists": True},
+         "id": {"$nin": list(matched_md_ids)}},
+        {"$unset": {"datto_uid": "", "datto_match": "", "datto_match_confidence": ""}},
+    )
+
+    # Stato matched sui datto_devices
     if matched_uids:
         await db.datto_devices.update_many(
             {"client_id": client_id, "uid": {"$in": list(matched_uids)}},
@@ -883,9 +884,6 @@ async def _match_with_center(client_id: str, datto_devices: list[dict]) -> int:
         {"client_id": client_id, "uid": {"$nin": list(matched_uids)}},
         {"$set": {"matched": False}},
     )
-
-    if ops:
-        await db.discovered_endpoints.bulk_write(ops, ordered=False)
 
     return len(matched_uids)
 

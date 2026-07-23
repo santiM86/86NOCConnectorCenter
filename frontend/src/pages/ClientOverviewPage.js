@@ -2079,6 +2079,22 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
       setBulkSaving(false);
     }
   };
+  const resetAllVital = async () => {
+    if (!clientId) return;
+    if (!window.confirm("Azzerare TUTTI i dispositivi vitali di questo cliente? Il tab 'Dispositivi Vitali' ripartirà da zero. I dispositivi torneranno da classificare (l'azione non cancella i device).")) return;
+    setBulkSaving(true);
+    try {
+      const { data } = await axios.post(`${API}/clients/${clientId}/devices/reset-vital`, {});
+      toast.success(data.message || `${data.cleared} dispositivi azzerati`);
+      clearSelection();
+      onRefresh?.();
+    } catch (err) {
+      const detail = err.response?.data?.detail || err.message || "Errore sconosciuto";
+      toast.error(`Azzeramento vitali fallito: ${detail}`);
+    } finally {
+      setBulkSaving(false);
+    }
+  };
   const bulkSetSilence = async (silenced) => {
     const ips = Array.from(selectedIps);
     if (!ips.length) return;
@@ -2585,6 +2601,46 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
           )} — i dispositivi manuali vengono interrogati dal connector entro pochi cicli di polling
         </p>
         <div className="flex items-center gap-2 flex-wrap">
+          {/* v2026-02-28: filtro per criticality tier */}
+          <div className="inline-flex rounded-md border border-[var(--bg-border)] overflow-hidden" data-testid="devices-vital-filter">
+            <button
+              onClick={() => setVitalFilter("all")}
+              className={`text-[10px] px-2.5 py-1 transition-colors ${vitalFilter === "all" ? "bg-slate-600 text-white" : "bg-transparent text-[var(--text-muted)] hover:text-[var(--text-primary)]"}`}
+              data-testid="vital-filter-all-btn"
+              title="Tutti i dispositivi (default)"
+            >
+              Tutti ({baseFiltered.length})
+            </button>
+            <button
+              onClick={() => setVitalFilter("vital")}
+              className={`text-[10px] px-2.5 py-1 transition-colors ${vitalFilter === "vital" ? "bg-yellow-500 text-black" : "bg-transparent text-yellow-400 hover:bg-yellow-500/10"}`}
+              data-testid="vital-filter-vital-btn"
+              title="Solo VITALI — mission-critical, alert sempre attivi"
+            >
+              <Star size={10} weight={vitalFilter === "vital" ? "fill" : "bold"} className="inline mr-0.5" />
+              Vitali ({vitalCount})
+            </button>
+            <button
+              onClick={() => setVitalFilter("non_vital")}
+              className={`text-[10px] px-2.5 py-1 transition-colors ${vitalFilter === "non_vital" ? "bg-slate-700 text-slate-300" : "bg-transparent text-[var(--text-muted)] hover:text-[var(--text-primary)]"}`}
+              data-testid="vital-filter-non-vital-btn"
+              title="Solo best-effort — alert silenziati di default"
+            >
+              Best-effort ({nonVitalCount})
+              {undecidedCount > 0 && <span className="ml-1 opacity-50">+{undecidedCount} n/d</span>}
+            </button>
+          </div>
+          {vitalCount > 0 && (
+            <button
+              onClick={resetAllVital}
+              disabled={bulkSaving}
+              className="text-[10px] px-2.5 py-1 rounded-md border border-red-500/40 text-red-300 hover:bg-red-500/10 transition-colors disabled:opacity-50"
+              data-testid="reset-all-vital-btn"
+              title="Azzera tutti i dispositivi vitali di questo cliente (riparti da zero)"
+            >
+              Azzera vitali
+            </button>
+          )}
           {/* v2026-02-13: toggle vista raggruppata/tabella */}
           <div className="inline-flex rounded-md border border-[var(--bg-border)] overflow-hidden" data-testid="devices-view-toggle">
             <button

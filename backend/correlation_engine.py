@@ -33,9 +33,31 @@ SERVER_TYPES = {"server", "ilo", "hpe-ilo", "nas", "server_oob"}
 FIREWALL_TYPES = {"firewall", "router", "gateway"}
 SWITCH_TYPES = {"switch", "switch_l3"}
 
+# Source-health gating: soglie oltre cui una sorgente diventa INAFFIDABILE
+# (i suoi segnali vengono SCARTATI dalla fusione per non generare falsi alert).
+DATTO_BLACKOUT_RATIO_DEFAULT = 0.6      # >=60% device Datto offline insieme -> blackout
+DATTO_SYNC_STALE_MINUTES_DEFAULT = 30   # sync fermo oltre N min -> Datto inaffidabile
+
 
 def _norm_name(s: Any) -> str:
     return (str(s or "").strip().lower())
+
+
+def _host_short(s: Any) -> str:
+    """Hostname corto normalizzato: lowercase, senza dominio (FQDN -> host)."""
+    n = _norm_name(s)
+    return n.split(".")[0] if n else ""
+
+
+def _norm_mac(m: Any) -> str:
+    if not m:
+        return ""
+    s = str(m).upper().replace("-", ":").replace(".", ":").strip()
+    if ":" not in s and len(s) == 12:
+        s = ":".join(s[i:i + 2] for i in range(0, 12, 2))
+    if s in ("00:00:00:00:00:00", "FF:FF:FF:FF:FF:FF") or len(s) != 17:
+        return ""
+    return s
 
 
 def _parse_dt(v: Any) -> Optional[datetime]:
@@ -55,8 +77,11 @@ def _parse_dt(v: Any) -> Optional[datetime]:
         return None
 
 
-async def build_context(db) -> Dict[str, Any]:
-    """Raccoglie i segnali comuni una volta per ciclo (tutti i clienti)."""
+async def build_context(db, cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Raccoglie i segnali comuni una volta per ciclo (tutti i clienti) e
+    valuta l'AFFIDABILITA' di ogni sorgente (source-health gating)."""
+    cfg = cfg or {}
+    now = datetime.now(timezone.utc)
     ip_ev, mac_ev = await lr.build_evidence_maps(db, client_id=None)
     offline_clients = await lr.build_clients_without_online_agent(db)
 
@@ -77,32 +102,89 @@ async def build_context(db) -> Dict[str, Any]:
         key = "rt_up" if r.get("device_type") == "router" else "fw_up"
         w[key] = bool(reachable) if w.get(key) is None else (w[key] or bool(reachable))
 
-    # Datto per cliente: mappe by_ip / by_mac / by_name
+    # Datto per cliente: mappe by_ip / by_mac / by_name / by_uid / by_serial / by_host
     datto: Dict[str, Dict[str, dict]] = {}
     async for d in db.datto_devices.find(
-        {}, {"_id": 0, "client_id": 1, "name": 1, "ip": 1, "mac": 1,
+        {}, {"_id": 0, "client_id": 1, "uid": 1, "name": 1, "ip": 1, "mac": 1,
              "ip_list": 1, "mac_list": 1, "online": 1, "datto_last_seen": 1,
-             "device_type": 1, "is_server": 1},
+             "device_type": 1, "is_server": 1, "serial": 1, "fqdn": 1,
+             "hostname_short": 1},
     ):
         cid = d.get("client_id")
         if not cid:
             continue
-        b = datto.setdefault(cid, {"by_ip": {}, "by_mac": {}, "by_name": {}})
+        b = datto.setdefault(cid, {"by_ip": {}, "by_mac": {}, "by_name": {},
+                                   "by_uid": {}, "by_serial": {}, "by_host": {}})
+        if d.get("uid"):
+            b["by_uid"].setdefault(d["uid"], d)
         for ip in ([d.get("ip")] + (d.get("ip_list") or [])):
             if ip:
                 b["by_ip"].setdefault(ip, d)
         for mac in ([d.get("mac")] + (d.get("mac_list") or [])):
-            if mac:
-                b["by_mac"].setdefault(mac.lower().replace("-", ":"), d)
-        if d.get("name"):
-            b["by_name"].setdefault(_norm_name(d.get("name")), d)
+            nm = _norm_mac(mac)
+            if nm:
+                b["by_mac"].setdefault(nm, d)
+        for h in (d.get("name"), d.get("fqdn"), d.get("hostname_short")):
+            if h:
+                b["by_name"].setdefault(_norm_name(h), d)
+                hs = _host_short(h)
+                if hs:
+                    b["by_host"].setdefault(hs, d)
+        if d.get("serial"):
+            b["by_serial"].setdefault(str(d["serial"]).strip().upper(), d)
 
     # child_ip -> switch_ip (dalla FDB SNMP in mac_connections, con filtro uplink)
     child_to_switch = await build_child_to_switch(db)
 
+    # --- Source health: sync Datto fresco? ---
+    stale_min = float(cfg.get("datto_sync_stale_minutes", DATTO_SYNC_STALE_MINUTES_DEFAULT))
+    datto_sync_fresh: Dict[str, bool] = {}
+    async for link in db.datto_client_links.find({}, {"_id": 0, "client_id": 1, "last_sync_at": 1}):
+        cid = link.get("client_id")
+        if not cid:
+            continue
+        ls = _parse_dt(link.get("last_sync_at"))
+        datto_sync_fresh[cid] = bool(ls and (now - ls).total_seconds() / 60.0 <= stale_min)
+
+    # --- Source health: blackout Datto (offline di massa) + affidabilita' finale ---
+    blackout_ratio = float(cfg.get("datto_blackout_ratio", DATTO_BLACKOUT_RATIO_DEFAULT))
+    source_health: Dict[str, Dict[str, Any]] = {}
+    all_cids = set(wan) | set(datto) | set(datto_sync_fresh) | set(offline_clients)
+    for cid in all_cids:
+        connector_reliable = cid not in offline_clients
+        w = wan.get(cid) or {}
+        internet_up = w.get("rt_up") if w.get("rt_up") is not None else w.get("fw_up")
+        datto_reliable = True
+        datto_reason = "ok"
+        b = datto.get(cid)
+        if not b:
+            datto_reliable = False
+            datto_reason = "no_datto"
+        elif cid in datto_sync_fresh and not datto_sync_fresh[cid]:
+            datto_reliable = False
+            datto_reason = "sync_stale"
+        else:
+            devs = list(b["by_uid"].values())
+            known = [d for d in devs if d.get("online") is not None]
+            if known:
+                offline = sum(1 for d in known if not d.get("online"))
+                ratio = offline / len(known)
+                # Blackout di massa: molto probabilmente internet/portale Datto
+                # giu', NON tutti i server spenti insieme -> scarta Datto.
+                if ratio >= blackout_ratio:
+                    datto_reliable = False
+                    datto_reason = f"mass_offline_{int(ratio*100)}pct"
+        source_health[cid] = {
+            "connector_reliable": connector_reliable,
+            "datto_reliable": datto_reliable,
+            "datto_reason": datto_reason,
+            "internet_up": internet_up,
+        }
+
     return {
         "ip_ev": ip_ev, "mac_ev": mac_ev, "offline_clients": offline_clients,
         "wan": wan, "datto": datto, "child_to_switch": child_to_switch,
+        "source_health": source_health,
     }
 
 
@@ -182,13 +264,20 @@ def _datto_lookup(ctx: dict, md: dict) -> Optional[dict]:
     b = (ctx.get("datto") or {}).get(cid)
     if not b:
         return None
-    ip = md.get("ip")
-    mac = (md.get("mac") or "").lower().replace("-", ":")
-    name = _norm_name(md.get("name") or md.get("device_name"))
+    # 0) link persistito (match certo calcolato al sync) -> massima affidabilita'
+    uid = md.get("datto_uid")
+    if uid and b.get("by_uid", {}).get(uid):
+        return b["by_uid"][uid]
+    ip = md.get("ip") or md.get("ip_address")
+    mac = _norm_mac(md.get("mac") or md.get("mac_address"))
+    serial = str(md.get("serial") or "").strip().upper()
+    name = md.get("name") or md.get("device_name") or md.get("hostname")
     return (
-        (ip and b["by_ip"].get(ip))
-        or (mac and b["by_mac"].get(mac))
-        or (name and b["by_name"].get(name))
+        (mac and b["by_mac"].get(mac))
+        or (ip and b["by_ip"].get(ip))
+        or (serial and b.get("by_serial", {}).get(serial))
+        or (name and b["by_name"].get(_norm_name(name)))
+        or (name and b.get("by_host", {}).get(_host_short(name)))
         or None
     )
 
@@ -196,16 +285,23 @@ def _datto_lookup(ctx: dict, md: dict) -> Optional[dict]:
 def gather_signals(md: dict, pd: Optional[dict], ctx: dict) -> Dict[str, Any]:
     cid = md.get("client_id")
     ip = md.get("ip") or ""
-    mac = (md.get("mac") or "").lower().replace("-", ":")
+    mac = _norm_mac(md.get("mac") or md.get("mac_address"))
 
     ping = lr.effective_reachable(pd) if pd else None
     l2_alive = bool((ip and ctx["ip_ev"].get(ip)) or (mac and ctx["mac_ev"].get(mac)))
     connector_live = cid not in ctx["offline_clients"]
 
+    # Source health del cliente (default: tutto affidabile se sconosciuto)
+    sh = (ctx.get("source_health") or {}).get(cid) or {}
+    datto_reliable = sh.get("datto_reliable", True)
+
     dd = _datto_lookup(ctx, md)
     datto_state = None
     datto_minutes = None
-    if dd is not None and dd.get("online") is not None:
+    # Datto contribuisce SOLO se la sorgente e' affidabile in questo momento.
+    # Se il portale/internet e' giu' (blackout/sync stale) il segnale Datto
+    # viene SCARTATO: mai usare "Datto offline" come prova di device down.
+    if dd is not None and dd.get("online") is not None and datto_reliable:
         datto_state = "online" if dd.get("online") else "offline"
         if datto_state == "offline":
             ls = _parse_dt(dd.get("datto_last_seen"))
@@ -219,6 +315,8 @@ def gather_signals(md: dict, pd: Optional[dict], ctx: dict) -> Dict[str, Any]:
         "l2_alive": l2_alive,
         "datto": datto_state,
         "datto_minutes": datto_minutes,
+        "datto_reliable": datto_reliable,
+        "datto_matched": dd is not None,
         "connector_live": connector_live,
         "fw_up": w.get("fw_up"),
         "rt_up": w.get("rt_up"),

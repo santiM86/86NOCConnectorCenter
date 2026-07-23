@@ -76,6 +76,74 @@ async def run_now(current_user: dict = Depends(get_current_user)):
     return {"ok": True, "result": result}
 
 
+@router.get("/match-coverage")
+async def match_coverage(current_user: dict = Depends(get_current_user)):
+    """Trasparenza affidabilita': per ogni cliente mostra quanti device Datto
+    sono agganciati (matched) vs ciechi, i match a bassa confidenza da rivedere,
+    e lo stato di affidabilita' delle sorgenti (source-health)."""
+    import correlation_engine as ce
+    cfg = await ae.get_config(db)
+    ctx = await ce.build_context(db, cfg)
+    health = ctx.get("source_health") or {}
+
+    clients = await db.clients.find({}, {"_id": 0, "id": 1, "name": 1}).to_list(2000)
+    names = {c.get("id"): c.get("name") for c in clients}
+
+    # Aggregati Datto per cliente
+    datto_by_client: dict = {}
+    async for d in db.datto_devices.find(
+        {}, {"_id": 0, "client_id": 1, "matched": 1, "online": 1, "is_server": 1}
+    ):
+        cid = d.get("client_id")
+        if not cid:
+            continue
+        a = datto_by_client.setdefault(cid, {"total": 0, "matched": 0, "unmatched": 0,
+                                             "servers": 0, "servers_matched": 0})
+        a["total"] += 1
+        if d.get("matched"):
+            a["matched"] += 1
+        else:
+            a["unmatched"] += 1
+        if d.get("is_server"):
+            a["servers"] += 1
+            if d.get("matched"):
+                a["servers_matched"] += 1
+
+    # Match a bassa confidenza (solo hostname/ip) per cliente
+    lowconf_by_client: dict = {}
+    async for md in db.managed_devices.find(
+        {"datto_uid": {"$exists": True}},
+        {"_id": 0, "client_id": 1, "datto_match_confidence": 1}
+    ):
+        if (md.get("datto_match_confidence") or 100) < 90:
+            cid = md.get("client_id")
+            lowconf_by_client[cid] = lowconf_by_client.get(cid, 0) + 1
+
+    out = []
+    for cid in set(datto_by_client) | set(health):
+        a = datto_by_client.get(cid, {"total": 0, "matched": 0, "unmatched": 0,
+                                      "servers": 0, "servers_matched": 0})
+        sh = health.get(cid, {})
+        total = a["total"]
+        out.append({
+            "client_id": cid,
+            "client_name": names.get(cid) or (cid[:8] if cid else ""),
+            "datto_total": total,
+            "datto_matched": a["matched"],
+            "datto_unmatched": a["unmatched"],
+            "match_rate": round(a["matched"] / total * 100, 1) if total else None,
+            "servers_total": a["servers"],
+            "servers_matched": a["servers_matched"],
+            "low_confidence_matches": lowconf_by_client.get(cid, 0),
+            "connector_reliable": sh.get("connector_reliable"),
+            "datto_reliable": sh.get("datto_reliable"),
+            "datto_reason": sh.get("datto_reason"),
+            "internet_up": sh.get("internet_up"),
+        })
+    out.sort(key=lambda x: (x["match_rate"] if x["match_rate"] is not None else 101))
+    return {"clients": out}
+
+
 @router.post("/telegram/test")
 async def telegram_test(body: dict = None, current_user: dict = Depends(get_current_user)):
     require_admin(current_user)
