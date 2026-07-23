@@ -455,6 +455,11 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
                 "datto_name": md.get("datto_name") or "",
                 "datto_match": md.get("datto_match") or "",
                 "datto_matched_at": md.get("datto_matched_at") or "",
+                # v2026-07-23 FIX: created_at MANCANTE qui faceva fallire la
+                # validazione DeviceResponse (campo obbligatorio) → il device
+                # cadeva nel fallback `except` che NON copiava is_vital → i
+                # dispositivi marcati vitali non comparivano mai nel tab Vitali.
+                "created_at": md.get("created_at") or pd.get("created_at") or now_iso,
             })
 
     # v3.8.36 FIX bug status fasullo: i device source=connector-scanner venivano
@@ -646,7 +651,12 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
         d["has_credentials"] = d["id"] in cred_device_ids
         try:
             result.append(DeviceResponse(**d))
-        except Exception:
+        except Exception as _dr_err:
+            import logging as _lg
+            _lg.getLogger(__name__).warning(
+                "get_devices: DeviceResponse validation fallita per ip=%s id=%s: %s",
+                d.get("ip_address"), d.get("id"), str(_dr_err)[:200],
+            )
             result.append({
                 "id": d["id"], "client_id": d.get("client_id", ""), "client_name": d.get("client_name", ""),
                 "name": d.get("name", "?"), "device_type": d.get("device_type", ""), "ip_address": d.get("ip_address", ""),
@@ -669,6 +679,10 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
                 "family": d.get("family"),
                 "alerts_silenced": d.get("alerts_silenced", False),
                 "alerts_silenced_reason": d.get("alerts_silenced_reason", ""),
+                # v2026-07-23 FIX: preserva is_vital anche nel path degradato
+                # (altrimenti i device marcati vitali sparivano dal tab Vitali).
+                "is_vital": d.get("is_vital"),
+                "is_vital_set_at": d.get("is_vital_set_at", ""),
             })
     return result
 

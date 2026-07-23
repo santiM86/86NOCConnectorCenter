@@ -1,0 +1,27 @@
+{
+  "summary": "Verified root-cause fix for 'Dispositivi Vitali' bug on client 86BIT_Office (da3d6e40-b3e5-4d46-9787-dde328a3aa36). connector-master devices (source='connector-master', id prefix 'poll_') were previously dropped by DeviceResponse validation (missing created_at) causing is_vital to be lost. Post-fix: GET /api/devices now returns 'created_at' on connector-loop devices and preserves is_vital. End-to-end UI + API confirmed working.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [],
+  "verification_details": {
+    "api_bulk_vital": "POST /api/devices/bulk-vital {ips:['192.168.1.254','10.100.61.100'],is_vital:true,client_id:...} -> matched=2, modified=2. GET /api/devices then returned is_vital=true for BOTH devices including connector-master 'poll_192_168_1_254' (Zyxel USG Test firewall). Previously this returned is_vital=null — bug is FIXED.",
+    "api_reset_vital": "POST /api/clients/{cid}/devices/reset-vital -> cleared=2, tracking_cleared=0. GET /api/devices confirms 0 devices with is_vital==true afterwards.",
+    "ui_flow": "Logged in as info@86bit.it, navigated to /client/da3d6e40-b3e5-4d46-9787-dde328a3aa36. 'Dispositivi Vitali' tab counter correctly showed (2) after marking. Switched filter to 'Vitali' -> both Zyxel USG Test (192.168.1.254, connector-master, badge '2 poll') and switch-test (10.100.61.100) were rendered in the Vitali list (not empty). Screenshot at /tmp/vital_after.png confirms both devices visible.",
+    "cross_check": "API count(is_vital==true)=2 == tab counter '(2)'. Consistent.",
+    "connector_master_verified": "192.168.1.254 (id=poll_192_168_1_254, source=connector-master) marked vital and successfully appears in Vitali tab and GET /api/devices with is_vital=true and created_at present.",
+    "final_state": "Client left at 0 vital (reset via API POST /api/clients/{cid}/devices/reset-vital). GET /api/devices vital_true=0."
+  },
+  "critical_code_review_comments": [
+    "Reset confirm dialog button text/selector not standardized — my playwright fallback selectors (OK/Conferma/Sì/Azzera) did not trigger the confirm in UI test; API endpoint works fine. Consider adding data-testid='confirm-reset-vital-btn' on the confirmation modal button for reliable e2e testing.",
+    "device_info_card.py has duplicate error message 'ips (lista non vuota) e obbligatorio' at lines 896 and 1068 — consider a shared validator."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "test_credentials": "info@86bit.it / Ariel17051986@!@86",
+  "seed_data_creation": "None. Marked 2 devices vital during test, then reset. Final state: 0 vital as required.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Bug fix confirmed. connector-master devices (id prefix 'poll_') now correctly carry is_vital across GET /api/devices. Only 1 connector-master device in this preview DB (192.168.1.254 Zyxel USG Test firewall). Bulk-vital endpoint uses {ips: [...], is_vital: bool, client_id: str} not device_ids. Reset endpoint is POST /api/clients/{client_id}/devices/reset-vital.",
+  "rca_of_the_issue": "ROOT CAUSE: In routes/devices.py get_devices connector-merge loop, device dicts constructed for connector-master sources were missing the 'created_at' field which is REQUIRED by DeviceResponse Pydantic model (models.py line 105). This caused DeviceResponse(**d) to raise ValidationError. The except fallback then rebuilt the response without preserving is_vital / is_vital_set_at fields, so connector-master devices that had been marked vital via bulk-vital appeared as is_vital=null in GET /api/devices, hence the frontend counter devices.filter(d=>d.is_vital===true).length stayed at 0. FIX: (1) Added created_at to the connector-loop dict (~line 462); (2) except fallback now preserves is_vital and is_vital_set_at and logs the ValidationError. VERIFIED: 192.168.1.254 (poll_192_168_1_254) now returns with created_at set and is_vital=true after bulk-mark, and renders in the Vitali tab."
+}
