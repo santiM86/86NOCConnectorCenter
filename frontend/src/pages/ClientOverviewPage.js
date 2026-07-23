@@ -2327,6 +2327,22 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
       setBulkSaving(false);
     }
   };
+  const resetAllVital = async () => {
+    if (!clientId) return;
+    if (!window.confirm("Azzerare TUTTI i dispositivi vitali di questo cliente? Il tab 'Dispositivi Vitali' ripartirà da zero. I dispositivi torneranno da classificare (l'azione non cancella i device).")) return;
+    setBulkSaving(true);
+    try {
+      const { data } = await axios.post(`${API}/clients/${clientId}/devices/reset-vital`, {});
+      toast.success(data.message || `${data.cleared} dispositivi azzerati`);
+      clearSelection();
+      onRefresh?.();
+    } catch (err) {
+      const detail = err.response?.data?.detail || err.message || "Errore sconosciuto";
+      toast.error(`Azzeramento vitali fallito: ${detail}`);
+    } finally {
+      setBulkSaving(false);
+    }
+  };
   const bulkSetSilence = async (silenced) => {
     const ips = Array.from(selectedIps);
     if (!ips.length) return;
@@ -2862,6 +2878,17 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
               {undecidedCount > 0 && <span className="ml-1 opacity-50">+{undecidedCount} n/d</span>}
             </button>
           </div>
+          {vitalCount > 0 && (
+            <button
+              onClick={resetAllVital}
+              disabled={bulkSaving}
+              className="text-[10px] px-2.5 py-1 rounded-md border border-red-500/40 text-red-300 hover:bg-red-500/10 transition-colors disabled:opacity-50"
+              data-testid="reset-all-vital-btn"
+              title="Azzera tutti i dispositivi vitali di questo cliente (riparti da zero)"
+            >
+              Azzera vitali
+            </button>
+          )}
           {/* v2026-02-13: toggle vista raggruppata/tabella */}
           <div className="inline-flex rounded-md border border-[var(--bg-border)] overflow-hidden" data-testid="devices-view-toggle">
             <button
