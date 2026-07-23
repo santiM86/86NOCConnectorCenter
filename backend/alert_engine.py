@@ -51,6 +51,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     # Rilevamento nuovi dispositivi da classificare
     "new_device_detection": True,
     "new_device_window_hours": 24,
+    "auto_promote_infra": False,
     # Canali
     "channels": ["push", "telegram"],
     "notify_roles": ["admin", "operator"],
@@ -559,48 +560,81 @@ async def run_new_device_watchdog(db, cfg_global: Dict[str, Any]) -> int:
     clients = await db.clients.find({}, {"_id": 0, "id": 1, "name": 1}).to_list(2000)
     client_names = {c.get("id"): c.get("name") for c in clients}
 
-    # Device "da classificare" = is_vital non deciso (null/mancante), scoperti di recente
-    pipeline = [
-        {"$match": {
-            "$and": [
-                {"$or": [{"is_vital": None}, {"is_vital": {"$exists": False}}]},
-                {"created_at": {"$gte": since}},
-            ]
-        }},
-        {"$group": {"_id": "$client_id", "n": {"$sum": 1},
-                    "names": {"$push": "$name"}}},
-    ]
-    grouped = {g["_id"]: g async for g in db.managed_devices.aggregate(pipeline)}
+    INFRA_KW = ("server", "firewall", "router", "switch", "nas", "ups", "ilo", "storage", "gateway")
 
-    # Clienti con almeno un alert attivo new_devices ma ora 0 → risolvi
+    docs = await db.managed_devices.find(
+        {"$and": [
+            {"$or": [{"is_vital": None}, {"is_vital": {"$exists": False}}]},
+            {"created_at": {"$gte": since}},
+        ]},
+        {"_id": 0, "client_id": 1, "ip": 1, "name": 1, "device_type": 1},
+    ).to_list(20000)
+    by_client: dict = {}
+    for d in docs:
+        by_client.setdefault(d.get("client_id"), []).append(d)
+
     active = db.alerts.find({"source_type": "new_devices_detected", "status": "active"},
                             {"_id": 0, "id": 1, "client_id": 1})
     active_by_client = {a["client_id"]: a async for a in active}
 
-    for cid, g in grouped.items():
+    for cid, lst in by_client.items():
         if not cid:
             continue
         cfg = await _resolve_client_config(db, cfg_global, cid)
         cname = client_names.get(cid) or (cid[:8] if cid else "")
-        n = g["n"]
-        sample = ", ".join([x for x in (g.get("names") or []) if x][:5])
+
+        # AUTO-PROMOTE: l'infrastruttura scoperta diventa vitale automaticamente
+        if cfg.get("auto_promote_infra"):
+            promoted = []
+            for d in list(lst):
+                dt = (d.get("device_type") or "").lower()
+                if d.get("ip") and any(k in dt for k in INFRA_KW):
+                    await db.managed_devices.update_many(
+                        {"client_id": cid, "ip": d["ip"]},
+                        {"$set": {"is_vital": True, "is_vital_reason": "auto-promote infra",
+                                  "is_vital_set_by": "alert-engine", "is_vital_set_at": now.isoformat()}})
+                    promoted.append(d.get("name") or d.get("ip"))
+                    lst.remove(d)
+            if promoted:
+                try:
+                    from alert_filter import invalidate_silence_cache
+                    invalidate_silence_cache(client_id=cid)
+                except Exception:
+                    pass
+                al = _mk_alert(cid, cname, "Discovery", "", "discovery", "low", "auto_promoted_vital",
+                    f"⭐ {len(promoted)} dispositivi promossi a Vitali su {cname}",
+                    f"Auto-promozione infrastruttura: {', '.join(promoted[:6])}"
+                    f"{'…' if len(promoted) > 6 else ''} ora monitorati come Vitali.")
+                await insert_alert_if_emit(db, al)
+                await _dispatch_notification(db, cfg, al)
+                actions += 1
+                logger.info("[auto-promote] %s infra->vital client=%s", len(promoted), cname)
+
+        # Restanti device non classificati → alert di triage
+        n = len(lst)
         existing = active_by_client.get(cid)
-        msg = (f"Rilevati {n} nuovi dispositivi da classificare sul cliente {cname}"
-               + (f": {sample}{'…' if n > 5 else ''}." if sample else ".")
-               + " Vai in Panoramica → Classifica ora per agganciare quelli vitali.")
-        if not existing:
-            alert = _mk_alert(cid, cname, "Discovery", "", "discovery", "medium",
-                              "new_devices_detected", f"🆕 {n} nuovi dispositivi su {cname}", msg)
-            await insert_alert_if_emit(db, alert)
-            await _dispatch_notification(db, cfg, alert)
+        if n > 0:
+            sample = ", ".join([(d.get("name") or d.get("ip")) for d in lst if (d.get("name") or d.get("ip"))][:5])
+            msg = (f"Rilevati {n} nuovi dispositivi da classificare sul cliente {cname}"
+                   + (f": {sample}{'…' if n > 5 else ''}." if sample else ".")
+                   + " Vai in Panoramica → Classifica ora per agganciare quelli vitali.")
+            if not existing:
+                alert = _mk_alert(cid, cname, "Discovery", "", "discovery", "medium",
+                                  "new_devices_detected", f"🆕 {n} nuovi dispositivi su {cname}", msg)
+                await insert_alert_if_emit(db, alert)
+                await _dispatch_notification(db, cfg, alert)
+                actions += 1
+                logger.info("[new-device] %s nuovi su client=%s", n, cname)
+            else:
+                await db.alerts.update_one({"id": existing["id"]}, {"$set": {"message": msg}})
+        elif existing:
+            await db.alerts.update_one({"id": existing["id"]},
+                {"$set": {"status": "resolved", "resolved_at": now.isoformat()}})
             actions += 1
-            logger.info("[new-device] %s nuovi su client=%s", n, cname)
-        else:
-            await db.alerts.update_one({"id": existing["id"]}, {"$set": {"message": msg}})
 
     # Risolvi gli alert dei clienti che non hanno più device da classificare
     for cid, a in active_by_client.items():
-        if cid not in grouped:
+        if cid not in by_client:
             await db.alerts.update_one({"id": a["id"]},
                 {"$set": {"status": "resolved", "resolved_at": now.isoformat()}})
             actions += 1

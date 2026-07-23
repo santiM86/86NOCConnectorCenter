@@ -1,3 +1,32 @@
+# 2026-07-23 — Auto-promote infrastruttura + guard "no_data" (miglioria provisioning)
+
+## Cosa
+- **Regole auto-promote**: nuova opzione `auto_promote_infra` (globale + override
+  per cliente). Quando abilitata, ogni nuovo device infrastrutturale scoperto
+  (firewall/switch/router/server/nas/ups/ilo/storage/gateway, match su
+  device_type) viene automaticamente marcato `is_vital=true`
+  (reason "auto-promote infra", invalidazione cache silence). Genera un alert
+  informativo `auto_promoted_vital` (low). I device non-infra restano "da
+  classificare" e alimentano il triage.
+- **UI**: nuova sezione "Rilevamento & Provisioning" nella pagina Alert Engine
+  con toggle "Avvisa sui nuovi dispositivi", "Finestra (ore)" e
+  "Auto-promuovi infrastruttura a Vitale ⭐".
+
+## Fix correttezza (importante)
+- **Guard `no_data`** nel correlation engine: un device MAI pollato (ping=None,
+  nessun L2, nessun segnale Datto/WAN) non è più giudicato "down" → verdetto
+  `no_data` non-alertable. Evita falsi `server_down`/`site_isolated` sui
+  dispositivi appena scoperti (verificato: auto-promote di FW/SW/SRV nuovi non
+  genera più falsi alert critici).
+
+## Test E2E (self) — PASS
+- auto_promote: 3 infra (fw/switch/server) → vitali; workstation resta da
+  classificare (alert `new_devices_detected`); alert `auto_promoted_vital`
+  creato; NESSUN falso `corr_site_isolated`. Dati di test ripuliti.
+
+---
+
+
 # 2026-07-23 — Ridisegno gestione dispositivi: Panoramica=Triage, Vitali=Cockpit
 
 ## Modello concordato con l'utente
