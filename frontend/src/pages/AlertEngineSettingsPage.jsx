@@ -203,6 +203,27 @@ export default function AlertEngineSettingsPage() {
         </div>
       </Section>
 
+      {/* Rilevamento & Provisioning */}
+      <Section icon={Pulse} color="#8B5CF6" title="Rilevamento & Provisioning"
+        desc="Gestione dei nuovi dispositivi scoperti in rete.">
+        <div className="flex items-center gap-3 flex-wrap">
+          <div className="flex items-center gap-2">
+            <Switch checked={!!cfg.new_device_detection} onCheckedChange={(v) => set("new_device_detection", v)} data-testid="newdev-switch" />
+            <span className="text-xs text-[var(--text-primary)]">Avvisa sui nuovi dispositivi da classificare</span>
+          </div>
+          <div className="w-40">
+            <NumField label="Finestra (ore)" hint="Considera 'nuovi' i device scoperti entro N ore." value={cfg.new_device_window_hours} onChange={(v) => set("new_device_window_hours", v)} testid="newdev-window" />
+          </div>
+        </div>
+        <div className="flex items-center gap-2 pt-1 border-t border-[var(--bg-border)]">
+          <Switch checked={!!cfg.auto_promote_infra} onCheckedChange={(v) => set("auto_promote_infra", v)} data-testid="autopromote-switch" />
+          <div>
+            <span className="text-xs text-[var(--text-primary)]">Auto-promuovi infrastruttura a Vitale ⭐</span>
+            <p className="text-[9px] text-[var(--text-muted)]">Ogni nuovo firewall/switch/server/NAS/UPS scoperto viene agganciato automaticamente come Vitale.</p>
+          </div>
+        </div>
+      </Section>
+
       {/* Channels */}
       <Section icon={Broadcast} color="#6366F1" title="Canali di notifica" desc="Come vuoi ricevere gli avvisi.">
         <div className="flex items-center gap-3 flex-wrap">

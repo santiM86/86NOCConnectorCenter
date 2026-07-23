@@ -235,6 +235,9 @@ def _V(up, alertable, severity, confidence, root_cause, reasoning) -> Dict[str, 
 
 def verdict_server(s: dict, ilo_power: Optional[str]) -> Dict[str, Any]:
     dm = f" da {int(s['datto_minutes'])}min" if s.get("datto_minutes") else ""
+    # 0) Nessun dato di monitoraggio (device mai pollato) → non giudicabile
+    if s.get("ping") is None and not s.get("l2_alive") and s.get("datto") is None:
+        return _V(False, False, "none", 0, "no_data", "Nessun dato di monitoraggio ancora disponibile.")
     # 1) Ping raggiungibile = server sicuramente UP a livello IP
     if s.get("ping") is True:
         if s.get("datto") == "offline":
@@ -282,6 +285,9 @@ def verdict_server(s: dict, ilo_power: Optional[str]) -> Dict[str, Any]:
 def verdict_firewall(s: dict, majority_down: bool) -> Dict[str, Any]:
     fw_up = s.get("fw_up")
     rt_up = s.get("rt_up")
+    # Nessun dato (mai pollato, nessun probe WAN, nessun L2) → non giudicabile
+    if s.get("ping") is None and not s.get("l2_alive") and fw_up is None and rt_up is None:
+        return _V(False, False, "none", 0, "no_data", "Nessun dato di monitoraggio ancora disponibile.")
     internet_up = rt_up if rt_up is not None else fw_up
     reachable = s.get("ping") is True or s.get("l2_alive") or fw_up is True
 
@@ -300,6 +306,8 @@ def verdict_firewall(s: dict, majority_down: bool) -> Dict[str, Any]:
 
 
 def verdict_switch(s: dict, children_all_down: bool, has_children: bool) -> Dict[str, Any]:
+    if s.get("ping") is None and not s.get("l2_alive"):
+        return _V(False, False, "none", 0, "no_data", "Nessun dato di monitoraggio ancora disponibile.")
     reachable = s.get("ping") is True or s.get("l2_alive")
     if reachable:
         return _V(True, False, "none", 100, "healthy", "Switch raggiungibile.")
@@ -316,6 +324,8 @@ def verdict_switch(s: dict, children_all_down: bool, has_children: bool) -> Dict
 
 
 def verdict_generic(s: dict) -> Dict[str, Any]:
+    if s.get("ping") is None and not s.get("l2_alive") and s.get("datto") is None:
+        return _V(False, False, "none", 0, "no_data", "Nessun dato di monitoraggio ancora disponibile.")
     if s.get("ping") is True or s.get("l2_alive"):
         return _V(True, False, "none", 100, "healthy", "Dispositivo raggiungibile.")
     if not s.get("connector_live"):
