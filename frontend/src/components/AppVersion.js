@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef, createContext, useContext } from "react";
 import { API } from "@/App";
 import axios from "axios";
+import buildInfo from "@/buildInfo.json";
 import { ArrowClockwise } from "@phosphor-icons/react";
 
 const LS_HASH_KEY = "argus_app_hash";
@@ -68,26 +69,34 @@ export function VersionProvider({ children }) {
   }, []);
 
   return (
-    <VersionContext.Provider value={{ version, updateAvailable, applyUpdate }}>
+    <VersionContext.Provider value={{ version, updateAvailable, applyUpdate, buildCommit: buildInfo.commit, buildAt: buildInfo.builtAt }}>
       {children}
     </VersionContext.Provider>
   );
 }
 
 export function useAppVersion() {
-  return useContext(VersionContext) || { version: null, updateAvailable: false, applyUpdate: () => {} };
+  return useContext(VersionContext) || { version: null, updateAvailable: false, applyUpdate: () => {}, buildCommit: buildInfo.commit, buildAt: buildInfo.builtAt };
+}
+
+function _fmtBuild(iso) {
+  try {
+    const d = new Date(iso);
+    return d.toLocaleString("it-IT", { day: "2-digit", month: "2-digit", year: "2-digit", hour: "2-digit", minute: "2-digit" });
+  } catch {
+    return iso || "";
+  }
 }
 
 export function VersionBadge() {
-  const { version } = useAppVersion();
-  if (!version) return null;
+  const { version, buildCommit, buildAt } = useAppVersion();
   return (
     <span
       className="text-[10px] font-mono text-[var(--text-muted)] opacity-60 select-none"
       data-testid="app-version-badge"
-      title={`ARGUS Center v${version}`}
+      title={`Frontend build: ${buildCommit} (${_fmtBuild(buildAt)})${version ? `\nBackend: v${version}` : ""}`}
     >
-      V.{version}
+      {version ? `V.${version}` : "V.—"} · <span data-testid="frontend-build-commit">{buildCommit}</span>
     </span>
   );
 }

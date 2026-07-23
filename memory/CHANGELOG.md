@@ -1,3 +1,29 @@
+# 2026-07-23 — Badge versione build frontend (rileva bundle stantio in prod)
+
+## Richiesta utente
+Un badge di versione build (commit/hash) visibile in UI per capire al volo se la
+produzione gira un bundle FRONTEND vecchio rispetto al preview.
+
+## Problema del sistema esistente
+`/api/app-version` calcolava solo un hash dei file .py del BACKEND → non rilevava
+un bundle frontend stantio (il vero problema dei deploy in prod).
+
+## Implementato
+- `frontend/scripts/genBuildInfo.js`: genera `src/buildInfo.json` = {commit, builtAt}
+  dal git al build (resiliente, non fa mai fallire start/build).
+- `package.json`: hook `prebuild` + `prestart` → il commit viene "baked" nel bundle
+  a ogni `yarn build`/`yarn start`.
+- `components/AppVersion.js`: `VersionBadge` ora mostra `V.{backendVer} · {frontendCommit}`
+  con tooltip `Frontend build: <commit> (<data>) / Backend: v<ver>`.
+  Se la prod non ricompila il frontend, il commit resta vecchio → segnale immediato.
+
+## Test
+- Verificato in preview: badge = "V.2.0.6035 · 7bc7436", tooltip con data build + backend.
+  Frontend compila senza errori.
+
+---
+
+
 # 2026-07-23 — Reset vitali self-service + diagnosi "schermata nera" (build stantia)
 
 ## Contesto
