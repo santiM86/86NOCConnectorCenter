@@ -2044,8 +2044,15 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
   const clearSelection = () => setSelectedIps(new Set());
   const webConsole = useWebConsoleTabs();
   const _isMcast = (d) => /^(22[4-9]|23\d|255)\./.test(d?.ip_address || "");
-  const visibleDevices = showMulticast ? devices : devices.filter(d => !_isMcast(d));
-  const hiddenCount = devices.length - visibleDevices.length;
+  const baseFiltered = showMulticast ? devices : devices.filter(d => !_isMcast(d));
+  const vitalCount = baseFiltered.filter(d => d.is_vital === true).length;
+  const nonVitalCount = baseFiltered.filter(d => d.is_vital === false).length;
+  const undecidedCount = baseFiltered.filter(d => d.is_vital !== true && d.is_vital !== false).length;
+  const visibleDevices = 
+    vitalFilter === "vital"     ? baseFiltered.filter(d => d.is_vital === true)
+  : vitalFilter === "non_vital" ? baseFiltered.filter(d => d.is_vital === false)
+  : baseFiltered;
+  const hiddenCount = devices.length - baseFiltered.length;
 
   // v2026-06: azione multipla vitali. Le checkbox operano sui device visibili.
   const visibleIps = visibleDevices.map(d => d.ip_address).filter(Boolean);
