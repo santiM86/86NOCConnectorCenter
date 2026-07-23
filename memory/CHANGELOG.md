@@ -1,3 +1,27 @@
+# 2026-07-23 — Triage Wizard: ricerca per IP/nome + rinomina inline
+
+## Richiesta utente
+Poter cercare il dispositivo per IP e rinominarlo subito nel wizard di
+classificazione, per maggiore comprensione.
+
+## Implementazione (`ClientOverviewPage.js`, TriageWizard)
+- **Ricerca**: campo con lente (data-testid `triage-search`) che filtra i device
+  non classificati per IP o nome in tempo reale (sezioni Suggeriti + Altri).
+- **Rinomina inline**: ogni riga ha un'icona matita (`triage-rename-btn-<ip>`) →
+  apre un input inline (`triage-rename-input-<ip>`, Invio=salva, Esc=annulla,
+  bottone ✓ `triage-rename-save-<ip>`). Salva via `POST /devices/by-ip/{ip}/rename`
+  con `client_id`, e mostra subito il nuovo nome (override locale) senza attendere
+  il refresh. Il nome rinominato viene poi ereditato dalla promozione a vitale
+  (enrichment da device_poll_status/discovered).
+
+## Verifica (screenshot) — OK
+- Ricerca "192.168" filtra correttamente; suggeriti infra preselezionati
+  (TestSwitch, Zyxel USG Test); matita di rinomina presente su ogni riga.
+  Zero errori runtime.
+
+---
+
+
 # 2026-07-23 — Ping immediato alla promozione a Vitale
 
 ## Cosa
