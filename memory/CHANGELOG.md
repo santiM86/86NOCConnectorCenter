@@ -1,3 +1,56 @@
+# 2026-07-23 — Badge versione build frontend (rileva bundle stantio in prod)
+
+## Richiesta utente
+Un badge di versione build (commit/hash) visibile in UI per capire al volo se la
+produzione gira un bundle FRONTEND vecchio rispetto al preview.
+
+## Problema del sistema esistente
+`/api/app-version` calcolava solo un hash dei file .py del BACKEND → non rilevava
+un bundle frontend stantio (il vero problema dei deploy in prod).
+
+## Implementato
+- `frontend/scripts/genBuildInfo.js`: genera `src/buildInfo.json` = {commit, builtAt}
+  dal git al build (resiliente, non fa mai fallire start/build).
+- `package.json`: hook `prebuild` + `prestart` → il commit viene "baked" nel bundle
+  a ogni `yarn build`/`yarn start`.
+- `components/AppVersion.js`: `VersionBadge` ora mostra `V.{backendVer} · {frontendCommit}`
+  con tooltip `Frontend build: <commit> (<data>) / Backend: v<ver>`.
+  Se la prod non ricompila il frontend, il commit resta vecchio → segnale immediato.
+
+## Test
+- Verificato in preview: badge = "V.2.0.6035 · 7bc7436", tooltip con data build + backend.
+  Frontend compila senza errori.
+
+---
+
+
+# 2026-07-23 — Reset vitali self-service + diagnosi "schermata nera" (build stantia)
+
+## Contesto
+- Utente ha chiesto di "azzerare i dispositivi vitali per ripartire da zero" e poi
+  ha segnalato una SCHERMATA NERA con `Uncaught ReferenceError: baseFiltered is not defined`
+  su `argus.86bit.it` (PRODUZIONE, build v.2.0.6xxx).
+
+## Diagnosi
+- Il codice ATTUALE ha `baseFiltered` correttamente scoped dentro `DevicesTab`
+  (ClientOverviewPage.js ~2286). In preview la pagina carica senza errori.
+- **L'errore è un artefatto della build vecchia in produzione** (problema ricorrente
+  di deploy). Fix: redeploy dell'ultima build. NON è un bug del codice.
+- Verificato dal testing agent (iteration_91.json): 0 ReferenceError, 0 pageerror,
+  filtro vitali di default + empty-state + flusso reset OK. success_rate frontend 100%.
+
+## Implementato
+- **Endpoint** `POST /api/clients/{client_id}/devices/reset-vital` (device_info_card.py):
+  azzera tutti gli `is_vital` del cliente + svuota `vital_offline_state`. I device non
+  vengono cancellati (tornano "da classificare").
+- **Pulsante "Azzera vitali"** (`data-testid=reset-all-vital-btn`) nel tab Dispositivi
+  Vitali: visibile solo se `vitalCount>0`, con conferma.
+- Empty-state contestuale al filtro (⭐ "Nessun dispositivo vitale ancora…").
+- Preview DB azzerato: 0 device vitali.
+
+---
+
+
 # 2026-07-23 — Fusione multi-fonte + Source-Health Gating (alerting affidabile al 100%)
 
 ## Richiesta utente
