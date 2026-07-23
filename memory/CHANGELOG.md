@@ -1,3 +1,36 @@
+# 2026-07-23 — FIX bug "dispositivi vitali sempre a zero"
+
+## Sintomo (utente)
+"Selezioni i dispositivi vitali ma nel tab non arrivano.. sempre a zero."
+Marcando come vitali dei device, il tab 'Dispositivi Vitali' restava a (0).
+
+## Root cause (routes/devices.py get_devices)
+I device provenienti dal *connector-merge loop* (quelli con record
+`device_poll_status`, id `poll_<ip>`, source `connector-master`) venivano
+costruiti SENZA il campo `created_at`, che è OBBLIGATORIO nel model
+`DeviceResponse` (models.py:105 area). Quindi `DeviceResponse(**d)` sollevava
+ValidationError → il device cadeva nel blocco `except` di fallback che NON
+copiava `is_vital` → l'API restituiva `is_vital=null` anche per i device
+appena marcati vitali. Il counter frontend `devices.filter(d=>d.is_vital===true)`
+restava a 0. (I device managed-only funzionavano perché il loro loop includeva
+già `created_at`.)
+
+## Fix
+1. Aggiunto `created_at` al dict del connector-loop (~riga 462).
+2. Il fallback `except` ora preserva `is_vital` + `is_vital_set_at` e LOGGA
+   l'errore di validazione (prima silenziato → per questo il bug era nascosto).
+
+## Test — testing agent iteration_92.json (100% backend+frontend, 0 issue)
+- Marcato vitale il firewall connector-master 192.168.1.254 → ora appare nel tab
+  Vitali e in GET /api/devices con `is_vital=true` (prima null). Counter allineato.
+- Regressione 'Azzera vitali' OK. Cliente lasciato a 0 vitali.
+
+## Follow-up minori (non bloccanti)
+- Il reset usa window.confirm nativo: valutare un modal con data-testid per e2e.
+
+---
+
+
 # 2026-07-23 — Badge versione build frontend (rileva bundle stantio in prod)
 
 ## Richiesta utente
