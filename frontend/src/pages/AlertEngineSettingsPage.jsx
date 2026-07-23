@@ -51,6 +51,7 @@ export default function AlertEngineSettingsPage() {
   const [tgToken, setTgToken] = useState("");
   const [detected, setDetected] = useState(null);
   const [busy, setBusy] = useState("");
+  const [coverage, setCoverage] = useState(null);
 
   const reload = useCallback(async () => {
     try {
@@ -65,6 +66,10 @@ export default function AlertEngineSettingsPage() {
     } finally {
       setLoading(false);
     }
+    try {
+      const cov = await axios.get(`${API}/api/alert-engine/match-coverage`, { headers });
+      setCoverage(cov.data?.clients || []);
+    } catch { /* opzionale */ }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -201,6 +206,57 @@ export default function AlertEngineSettingsPage() {
           <NumField label="Critico (ore)" hint="Escalation a CRITICO oltre N ore." value={cfg.datto_server_crit_hours} onChange={(v) => set("datto_server_crit_hours", v)} testid="datto-crit-h" />
           <NumField label="Sync fermo (minuti)" hint="Alert se il sync Datto non si aggiorna da N minuti." value={cfg.datto_sync_stale_minutes} onChange={(v) => set("datto_sync_stale_minutes", v)} testid="datto-sync-stale" />
         </div>
+      </Section>
+
+      {/* Fusione multi-fonte & affidabilità sorgenti */}
+      <Section icon={ShieldCheck} color="#22D3EE" title="Fusione multi-fonte & affidabilità"
+        desc="Incrocia TUTTE le sorgenti (Ping · L2/ARP · SNMP · Datto · WAN esterno · iLO). Quando una sorgente diventa inaffidabile (es. internet giù), viene scartata per non generare falsi allarmi.">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <NumField
+            label="Blackout Datto (% offline)"
+            hint="Se ≥ questa % di device Datto va offline insieme, il segnale Datto viene SCARTATO (probabile internet/portale giù, non device spenti)."
+            value={cfg.datto_blackout_ratio != null ? Math.round(cfg.datto_blackout_ratio * 100) : ""}
+            onChange={(v) => set("datto_blackout_ratio", v === "" ? "" : Number(v) / 100)}
+            testid="datto-blackout-ratio" />
+          <NumField
+            label="Sito giù (% irraggiungibili)"
+            hint="Se ≥ questa % dei device del sito è irraggiungibile, emette UN SOLO alert aggregato (sito isolato / assenza corrente) e sopprime i figli."
+            value={cfg.site_down_ratio != null ? Math.round(cfg.site_down_ratio * 100) : ""}
+            onChange={(v) => set("site_down_ratio", v === "" ? "" : Number(v) / 100)}
+            testid="site-down-ratio" />
+        </div>
+
+        {coverage && coverage.length > 0 && (
+          <div className="pt-2 border-t border-[var(--bg-border)]" data-testid="match-coverage-panel">
+            <p className="text-[10px] uppercase tracking-wider text-[var(--text-muted)] mb-2">Copertura match Datto & stato sorgenti per cliente</p>
+            <div className="space-y-1.5 max-h-72 overflow-auto pr-1">
+              {coverage.filter(c => c.datto_total > 0 || c.connector_reliable === false).map((c) => (
+                <div key={c.client_id} className="flex items-center justify-between gap-2 px-3 py-2 rounded-lg bg-[var(--bg-panel)] border border-[var(--bg-border)] text-[11px]"
+                  data-testid={`coverage-row-${c.client_id}`}>
+                  <div className="min-w-0 flex-1 truncate font-medium text-[var(--text-primary)]">{c.client_name}</div>
+                  {c.datto_total > 0 && (
+                    <div className="flex items-center gap-1.5" title="Device Datto agganciati / totali">
+                      <span className={`font-mono font-bold ${c.match_rate === 100 ? "text-emerald-400" : c.match_rate >= 80 ? "text-amber-400" : "text-red-400"}`}>
+                        {c.datto_matched}/{c.datto_total}
+                      </span>
+                      <span className="text-[var(--text-muted)]">match</span>
+                      {c.datto_unmatched > 0 && <span className="text-red-400/80" title="Device Datto NON agganciati (ciechi)">· {c.datto_unmatched} ciechi</span>}
+                      {c.low_confidence_matches > 0 && <span className="text-amber-400/80" title="Match a bassa confidenza (solo hostname/IP)">· {c.low_confidence_matches} deboli</span>}
+                    </div>
+                  )}
+                  <div className="flex items-center gap-1">
+                    <span className={`px-1.5 py-0.5 rounded text-[9px] font-semibold ${c.connector_reliable ? "bg-emerald-500/15 text-emerald-400" : "bg-red-500/15 text-red-400"}`} title="Connettore on-site">
+                      {c.connector_reliable ? "conn OK" : "conn KO"}
+                    </span>
+                    <span className={`px-1.5 py-0.5 rounded text-[9px] font-semibold ${c.datto_reliable ? "bg-emerald-500/15 text-emerald-400" : "bg-slate-500/20 text-slate-400"}`} title={`Affidabilità Datto: ${c.datto_reason || ""}`}>
+                      {c.datto_reliable ? "datto ✓" : `datto ✕ ${c.datto_reason === "sync_stale" ? "(sync)" : c.datto_reason === "no_datto" ? "" : c.datto_reason?.startsWith("mass") ? "(blackout)" : ""}`}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </Section>
 
       {/* Rilevamento & Provisioning */}

@@ -1,3 +1,49 @@
+# 2026-07-23 — Fusione multi-fonte + Source-Health Gating (alerting affidabile al 100%)
+
+## Richiesta utente
+"Match avanzati con TUTTE le informazioni che riceviamo dalle diverse fonti per
+gestire gli alert con affidabilità 100%". Vincolo esplicito: **NON** costruire
+tutto attorno a Datto RMM (se salta internet/corrente Datto sparisce). Senza AI.
+
+## Cosa è stato implementato
+### Backend
+- **`correlation_engine.build_context(db, cfg)`**: ora costruisce indici Datto estesi
+  (`by_uid`, `by_serial`, `by_host`) e calcola il **source-health per cliente**:
+  `connector_reliable`, `datto_reliable` (+`datto_reason`), `internet_up`.
+  - Datto marcato INAFFIDABILE se sync stale o **blackout di massa** (≥`datto_blackout_ratio`, default 60%, di device offline insieme).
+- **`gather_signals`**: scarta il segnale Datto quando `datto_reliable=False`
+  (mai usare "Datto offline" come prova di device down durante internet/portale giù).
+- **`_datto_lookup` avanzato**: link persistito `datto_uid` (fast-path) → MAC → IP → serial → hostname corto/FQDN.
+- **`alert_engine.run_vital_watchdog`**: rilevamento **cause globali** prima dei verdetti per-device:
+  - `site_power_down` (connettore giù + WAN esterno giù → outage/corrente),
+  - `site_down` (connettore vivo + ≥`site_down_ratio` 80% irraggiungibili → isolamento interno).
+  Emette 1 solo alert aggregato, figli soppressi (anchor mai soppresso).
+- **`datto_rmm._match_with_center` riscritto**: matcher multi-fonte a confidenza
+  (serial 100 > MAC 98 > IP 92 > hostname 82) con **ponte via scanner**
+  (`discovered_endpoints.hostname_scanner`/mac) per agganciare device senza MAC.
+  Persiste `datto_uid`+`datto_match`+`datto_match_confidence` su `managed_devices`,
+  pulisce link orfani. Sync Datto arricchito con `serial`/`fqdn`/`hostname_short`/`ext_ip`.
+- **Endpoint** `GET /api/alert-engine/match-coverage`: copertura match + source-health per cliente.
+- Nuove config: `datto_blackout_ratio` (0.6), `site_down_ratio` (0.8).
+
+### Frontend
+- `AlertEngineSettingsPage.jsx`: sezione **"Fusione multi-fonte & affidabilità"**
+  con soglie (% blackout Datto / % sito giù) e pannello copertura match per cliente
+  (match rate, device ciechi, match deboli, badge conn/datto reliability).
+
+## Test
+- `tests/test_multisource_fusion.py` (4 test, PASS): gating Datto, verdict, match hostname/serial, uid link.
+- Matcher e2e verificato (serial/mac/ip/hostname + bridge scanner) su DB temporaneo.
+- Endpoint `run-now` e `match-coverage` verificati via curl; UI smoke test OK.
+- `test_triage_iter90.py` PASS (nessuna regressione config).
+
+## Note
+- La decisione degli alert resta 100% DETERMINISTICA (no AI). L'AI resta un possibile
+  strato futuro solo per spiegazione/remediation, mai come gatekeeper.
+
+---
+
+
 # 2026-07-23 — Triage Wizard: ricerca per IP/nome + rinomina inline
 
 ## Richiesta utente

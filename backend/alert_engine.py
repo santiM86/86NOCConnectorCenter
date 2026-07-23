@@ -48,6 +48,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "datto_server_offline_hours": 1,     # server Datto offline > 1h -> high
     "datto_server_crit_hours": 2,        # > 2h -> critical
     "datto_sync_stale_minutes": 30,      # sync fermo > 30min -> alert engine giu'
+    # Source-health gating (fusione multi-fonte)
+    "datto_blackout_ratio": 0.6,         # >=60% device Datto offline insieme -> Datto inaffidabile
+    "site_down_ratio": 0.8,              # >=80% device del sito irraggiungibili -> SITO GIU'/corrente
     # Rilevamento nuovi dispositivi da classificare
     "new_device_detection": True,
     "new_device_window_hours": 24,
@@ -191,13 +194,14 @@ async def run_vital_watchdog(db, cfg_global: Dict[str, Any]) -> int:
     families = list(ce.SERVER_TYPES | ce.FIREWALL_TYPES | ce.SWITCH_TYPES)
     targets = await db.managed_devices.find(
         {"$or": [{"is_vital": True}, {"device_type": {"$in": families}}]},
-        {"_id": 0, "client_id": 1, "ip": 1, "name": 1, "device_name": 1,
-         "device_type": 1, "mac": 1, "source": 1, "is_vital": 1},
+        {"_id": 0, "client_id": 1, "ip": 1, "ip_address": 1, "name": 1, "device_name": 1,
+         "device_type": 1, "mac": 1, "mac_address": 1, "hostname": 1, "serial": 1,
+         "datto_uid": 1, "source": 1, "is_vital": 1},
     ).to_list(10000)
     if not targets:
         return 0
 
-    ctx = await ce.build_context(db)
+    ctx = await ce.build_context(db, cfg_global)
 
     # poll records best-per-ip
     ips = [t.get("ip") for t in targets if t.get("ip")]
@@ -215,8 +219,9 @@ async def run_vital_watchdog(db, cfg_global: Dict[str, Any]) -> int:
     # PASS 1 — segnali + verdetto preliminare
     items = []  # (md, family, signals, verdict)
     down_count_by_client: dict = {}
+    unreachable_by_client: dict = {}  # ping fail AND no L2 -> irraggiungibile "vero"
     for md in targets:
-        cid = md.get("client_id"); ip = md.get("ip")
+        cid = md.get("client_id"); ip = md.get("ip") or md.get("ip_address")
         if not cid or not ip:
             continue
         fam = ce.device_family(md)
@@ -241,15 +246,38 @@ async def run_vital_watchdog(db, cfg_global: Dict[str, Any]) -> int:
             v = ce.verdict_generic(s)
         if not v["up"] and v["alertable"]:
             down_count_by_client[cid] = down_count_by_client.get(cid, 0) + 1
+        if s.get("ping") is not True and not s.get("l2_alive"):
+            unreachable_by_client[cid] = unreachable_by_client.get(cid, 0) + 1
         items.append([md, fam, s, v])
 
     total_by_client: dict = {}
     for md, *_ in items:
         total_by_client[md["client_id"]] = total_by_client.get(md["client_id"], 0) + 1
 
-    # PASS 2 — rifinitura firewall/switch + soppressione topologica
+    site_down_ratio = float(cfg_global.get("site_down_ratio", 0.8))
+
+    # PASS 2 — rifinitura firewall/switch + soppressione topologica + cause globali
     isolated_clients = set()
     down_switch_ips = set()
+    # Rilevamento SITO GIU'/assenza corrente basato su segnali AFFIDABILI:
+    #  - "site_power_down": connettore on-site NON raggiunge piu' il cloud E il
+    #    probe WAN ESTERNO (cloud-side, sempre fresco) vede l'internet del
+    #    cliente GIU' → outage totale (mancanza corrente o WAN a monte giu').
+    #  - "site_down": connettore ancora vivo ma la quasi totalita' dei device
+    #    e' irraggiungibile → isolamento di rete interno.
+    site_outage_clients: dict = {}  # cid -> kind
+    for cid, total in total_by_client.items():
+        if total < 3:
+            continue
+        sh = (ctx.get("source_health") or {}).get(cid) or {}
+        connector_up = sh.get("connector_reliable", True)
+        internet_up = sh.get("internet_up")
+        ratio = unreachable_by_client.get(cid, 0) / max(total, 1)
+        if (not connector_up) and internet_up is False:
+            site_outage_clients[cid] = "site_power_down"
+        elif connector_up and ratio >= site_down_ratio:
+            site_outage_clients[cid] = "site_down"
+
     for it in items:
         md, fam, s, v = it
         cid = md["client_id"]
@@ -261,17 +289,51 @@ async def run_vital_watchdog(db, cfg_global: Dict[str, Any]) -> int:
             if it[3]["root_cause"] == "site_isolated":
                 isolated_clients.add(cid)
         elif fam == "switch" and not v["up"]:
-            sw_ip = md.get("ip")
+            sw_ip = md.get("ip") or md.get("ip_address")
             children = [x for x in items
-                        if ctx["child_to_switch"].get(x[0].get("ip")) == sw_ip]
+                        if ctx["child_to_switch"].get(x[0].get("ip") or x[0].get("ip_address")) == sw_ip]
             has_children = len(children) > 0
             children_all_down = has_children and all(not c[3]["up"] for c in children)
             it[3] = ce.verdict_switch(s, children_all_down=children_all_down, has_children=has_children)
             if it[3]["root_cause"] == "switch_down":
                 down_switch_ips.add(sw_ip)
 
+    # Applica la causa globale di outage: promuove il verdetto piu' rappresentativo
+    # (firewall se presente, altrimenti il primo device down) e sopprime i figli.
+    for cid, kind in site_outage_clients.items():
+        isolated_clients.add(cid)
+        anchor = None
+        for it in items:
+            if it[0]["client_id"] != cid or it[3]["up"]:
+                continue
+            if it[1] == "firewall":
+                anchor = it
+                break
+            if anchor is None:
+                anchor = it
+        if anchor is None:
+            continue
+        if kind == "site_power_down":
+            anchor[3] = ce._V(False, True, "critical", 96, "site_power_down",
+                "Firewall/gateway, connettore on-site e la quasi totalita' dei device "
+                "irraggiungibili contemporaneamente → SITO TOTALMENTE GIU' "
+                "(possibile MANCANZA DI CORRENTE o guasto WAN a monte).")
+        else:
+            anchor[3] = ce._V(False, True, "critical", 95, "site_isolated",
+                "La quasi totalita' dei device del sito e' irraggiungibile → SITO ISOLATO "
+                "(guasto di rete/uplink). Un solo alert aggregato, dispositivi figli soppressi.")
+
+    site_anchor_md_ids = set()
+    for cid in site_outage_clients:
+        for it in items:
+            if it[0]["client_id"] == cid and it[3].get("root_cause") in ("site_power_down", "site_isolated"):
+                site_anchor_md_ids.add(id(it[0]))
+
     def _is_suppressed(md, fam):
-        cid = md["client_id"]; ip = md.get("ip")
+        cid = md["client_id"]; ip = md.get("ip") or md.get("ip_address")
+        # L'anchor dell'outage di sito NON va mai soppresso (e' l'unico alert emesso)
+        if id(md) in site_anchor_md_ids:
+            return False
         if cid in isolated_clients and fam != "firewall":
             return True
         parent_sw = ctx["child_to_switch"].get(ip)
