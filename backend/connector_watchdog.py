@@ -152,8 +152,9 @@ class ConnectorWatchdog:
                                 "resolved_at": now.isoformat(),
                             }}
                         )
-                        # Create a low-severity recovery notice
-                        await insert_alert_if_emit(self.db, {
+                        # Recovery = evento POSITIVO: salvato come 'resolved'
+                        # (storico), mai come alert attivo (no rumore appeso).
+                        await self.db.alerts.insert_one({
                             "id": str(uuid.uuid4()),
                             "client_id": client_id,
                             "device_id": "",
@@ -164,11 +165,11 @@ class ConnectorWatchdog:
                             "source_type": "connector_recovery",
                             "title": f"Connettore ONLINE (ripristinato): {hostname}",
                             "message": f"Il connettore '{hostname}' del cliente {client_name} ha ripreso a inviare heartbeat.",
-                            "status": "active",
+                            "status": "resolved",
                             "raw_data": "",
                             "acknowledged_by": None,
                             "acknowledged_at": None,
-                            "resolved_at": None,
+                            "resolved_at": now.isoformat(),
                             "created_at": now.isoformat(),
                         })
                         await self.db.connector_status.update_one(

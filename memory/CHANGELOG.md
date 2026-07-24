@@ -1,3 +1,144 @@
+# 2026-07-24 — Auto-risoluzione alert su CONFERMA POSITIVA (no AI, no TTL)
+
+## Richiesta utente
+Sistema di auto-risoluzione: gli alert devono chiudersi da soli, ma **SOLO** con
+conferma positiva (device di nuovo online/acceso, sync ripristinato, connettore
+tornato) — MAI a tempo/assenza dati. Chiesto se serve AI.
+
+## Raccomandazione (data): NIENTE AI nella decisione
+Coerente con l'alerting: la chiusura di un alert e' binaria e basata su evidenze
+→ deve essere deterministica (rischio di chiudere un alert reale con un LLM;
+paradosso disponibilita' cloud; costo). AI solo come riassunto cosmetico opzionale.
+
+## Stato pre-esistente (gia' presente)
+Il motore risolveva gia' l'alert originale su ripristino positivo:
+- vital device tornato raggiungibile → alert resolved (run_vital_watchdog, via vital_offline_state.alert_id)
+- datto_sync_stale → resolved quando sync fresco
+- datto server offline → resolved quando online
+- connector offline → resolved quando heartbeat torna (connector_watchdog)
+
+## Fix implementato (rumore notifiche di ripristino)
+Le notifiche di RIPRISTINO (positive) venivano create come alert ATTIVI e mai
+chiuse → si accumulavano. Introdotto helper `_emit_recovery_notice(db,cfg,rec)`
+(alert_engine.py ~170): notifica Telegram/WebPush + salva come `status='resolved'`,
+mai active. Applicato a: `datto_sync_recovery`, `device_recovery`,
+`datto_server_recovery` (alert_engine) e `connector_recovery` (connector_watchdog,
+inline insert status=resolved). Puliti i recovery-noise attivi residui.
+
+## Nessun reaper a TTL
+Confermato: nessuna chiusura per timeout. Un alert resta ATTIVO finche' non arriva
+il segnale positivo (device up / sync fresh / server online / heartbeat back).
+
+## Test — testing agent iteration_94.json (backend 100%, 14/14, 0 issue)
+- Suite `tests/test_positive_recovery_iter94.py` (8) + `test_datto_recovery_alerts.py` (6).
+- 0 alert *_recovery attivi; transizioni stale→fresh e offline→online risolvono
+  l'alert originale + recovery come resolved; run-now NON chiude i 2 alert legittimi.
+
+---
+
+
+# 2026-07-24 — Alert non veritieri: fix rumore "sync ripristinato"
+
+## Segnalazione utente
+"Controlla che tutti questi alert che stanno arrivando ora siano veritieri."
+
+## Analisi (9 alert attivi)
+- **6× "DATTO RMM: sync ripristinato"** (source_type=datto_sync_recovery, low) →
+  NON veritieri: sono notifiche di RIPRISTINO (evento positivo) persistite come
+  alert ATTIVI e mai risolte → duplicati accumulati.
+- **1× "TEST_Alert"** (manual) → dato di test residuo.
+- **1× "5 nuovi dispositivi"** (new_devices_detected) → info discovery legittima.
+- **1× "CONNETTORE OFFLINE"** (connector_watchdog, critical) → veritiero
+  (connettore effettivamente offline).
+
+## Root cause (alert_engine.run_datto_watchdog)
+Il branch di recovery (~riga 497) inseriva la notifica "sync ripristinato" come
+alert ATTIVO via insert_alert_if_emit, senza mai risolverla → a ogni ciclo con
+auto_recovery si accumulava un nuovo alert attivo.
+
+## Fix
+- Il recovery viene ora **notificato** (Telegram/WebPush) ma salvato con
+  `status='resolved'` + `resolved_at` (voce di storico/timeline), **mai active**.
+- Puliti i 6 recovery attivi + il TEST_Alert (impostati resolved).
+
+## Test — testing agent iteration_93.json (backend 100%, 0 issue)
+- Suite regressione `tests/test_datto_recovery_alerts.py`: nessun recovery attivo
+  via API; transizione stale→ripristino salva recovery come resolved (0 active);
+  stale reale (>30min) crea ancora alert ATTIVO (regressione OK); vital_only pulito.
+- Alert attivi residui: 2 legittimi (connettore offline + nuovi dispositivi).
+
+---
+
+
+# 2026-07-24 — Panoramica VITAL-ONLY (situazione + alert solo dispositivi vitali)
+
+## Richiesta utente
+La Panoramica deve mostrare "sempre e solo situazione e alert per dispositivi vitali".
+
+## Implementato
+### Backend
+- `routes/overview.py` (GET /overview/clients):
+  - Aggiunti `vital_offline`/`vital_stale` ai conteggi device.
+  - **Salute cliente (dot)** ora calcolata sui VITALI: critical se `vital_offline>0`
+    (oltre a connettore giù / WAN giù); warning se `vital_stale>0`/backup.
+  - **KPI globali** `total_devices`/`devices_online` = somma VITALI (non più tutti).
+  - **Alert** scopati ai vitali: costruito insieme nomi/IP vitali per-cliente;
+    contati solo alert su device vitali (+ alert livello sito senza device).
+- `routes/alerts.py` (GET /alerts): nuovo parametro `vital_only=true` → filtra
+  la lista agli alert su dispositivi vitali (+ alert sito-level senza device).
+### Frontend
+- `DashboardPage.js`:
+  - KPI "Infrastruttura" → **"Dispositivi Vitali"** (conteggio vitali online).
+  - Card cliente: riga "Dispositivi N/M" → **"Vitali vital_online/vital_total"**
+    con colore su vital_offline/stale.
+  - Fetch alert con `&vital_only=true` (tabella + live stream vital-scoped).
+
+## Test (self-test curl + screenshot)
+- GET /overview/clients: total_devices=3 (vitali), card 86BIT_Office vital 1/3.
+- GET /alerts?vital_only=true: 9 → 1 alert (esclusi Datto sync, Discovery,
+  connettore-offline; mantenuti quelli su device vitali).
+- Screenshot dashboard: KPI "DISPOSITIVI VITALI 3·1 online", card "VITALI 1/3",
+  tabella ALERT ATTIVI con 1 sola riga vitale.
+
+---
+
+
+# 2026-07-24 — Dettaglio stampante cliccabile (caratteristiche tecniche complete)
+
+## Richiesta utente
+Poter cliccare una stampante nel tab Stampanti e aprire tutte le caratteristiche
+tecniche: Nome, Serial, Stato colori, Numero di copie.
+
+## Implementato (ClientOverviewPage.js)
+- Le card stampante nel tab Stampanti ora sono **cliccabili** → aprono
+  `PrinterDetailModal` (shadcn Dialog).
+- Il modal fa fetch di `GET /api/printers/{clientId}/{device_ip}` e mostra:
+  - **Anagrafica**: Nome, Serial Number, Modello, IP, Stato, Ultimo rilevamento.
+  - **Contatori copie**: totali, a colori, B/N (calcolato), fronte/retro (duplex),
+    scansioni, fax.
+  - **Stato colori (toner/inchiostro)**: barre colorate per supply con livello % /
+    OK, colore reale del toner.
+  - **Messaggi stampante** (alert_messages) se presenti.
+- Fallback: per stampanti senza telemetria SNMP, mostra i dati base + invito a
+  configurare SNMP Printer-MIB (RFC 3805).
+
+## Fix collaterale (bug pre-esistente nel merge)
+`mergedPrinters` chiudeva tutte le stampanti sotto chiave `undefined` perché
+leggeva `p.ip_address || p.ip` mentre il backend restituisce `device_ip`.
+Corretto a `p.ip_address || p.ip || p.device_ip` → ora il tab conta e mostra
+tutte le stampanti (prima ne appariva 1 sola). Merge arricchito con
+serial/model/contatori.
+
+## Test
+- Verificato via screenshot (self-test) con 4 stampanti demo (seed-demo, poi
+  ripulite): click → modal con serial CNBJR9H12M, 28.750 copie totali, 15.200
+  colori, toner Black 80%/Cyan 30%/Magenta 10%/Yellow 70%, msg "Magenta toner low".
+- data-testid: printer-card-{ip}, printer-detail-modal, printer-detail-field-*,
+  printer-detail-supplies, printer-detail-close-btn.
+
+---
+
+
 # 2026-07-23 — FIX bug "dispositivi vitali sempre a zero"
 
 ## Sintomo (utente)

@@ -230,15 +230,26 @@ export default function ClientOverviewPage() {
       from_managed: true,
     }));
     printers.forEach(p => {
-      const ip = p.ip_address || p.ip;
+      const ip = p.ip_address || p.ip || p.device_ip;
+      if (!ip) return;
       const prev = byIp.get(ip) || {};
       byIp.set(ip, {
         ...prev,
-        name: prev.name || p.name,
+        name: prev.name || p.name || p.device_name,
         ip_address: ip,
         status: p.status || prev.status,
         toner_levels: p.toner_levels,
         page_count: p.page_count,
+        // Campi tecnici estesi per il dettaglio (SNMP Printer-MIB)
+        serial: p.serial || prev.serial,
+        model: p.model || prev.model,
+        color_page_count: p.color_page_count,
+        duplex_count: p.duplex_count,
+        scan_count: p.scan_count,
+        fax_count: p.fax_count,
+        printer_status: p.printer_status,
+        supplies: p.supplies,
+        last_poll: p.last_poll,
         alerts_silenced: prev.alerts_silenced ?? p.alerts_silenced,
         has_telemetry: true,
       });
@@ -481,7 +492,7 @@ export default function ClientOverviewPage() {
         {activeTab === "servers" && <ServersTab iloHealth={iloHealth} clientId={clientId} clientName={client.name} onRefresh={fetchAll} />}
         {activeTab === "wan" && <WanClientTab targets={wanTargets} clientId={clientId} clientName={client.name} onRefresh={fetchAll} />}
         {activeTab === "alerts" && <AlertsTab alerts={alerts} navigate={navigate} clientId={clientId} clientName={client.name} onRefresh={fetchAll} />}
-        {activeTab === "printers" && <PrintersTab printers={mergedPrinters} />}
+        {activeTab === "printers" && <PrintersTab printers={mergedPrinters} clientId={clientId} />}
         {activeTab === "backup" && <BackupTab backups={backups} clientId={clientId} />}
         {activeTab === "credentials" && <VaultPage scopedClientId={clientId} scopedClientName={client.name} />}
         {activeTab === "discovery" && <DiscoveryPage scopedClientId={clientId} scopedClientName={client.name} />}
@@ -3744,14 +3755,23 @@ function AlertsTab({ alerts, navigate, clientId, clientName, onRefresh }) {
 }
 
 /* ==================== PRINTERS TAB ==================== */
-function PrintersTab({ printers }) {
+function PrintersTab({ printers, clientId }) {
+  const [selected, setSelected] = useState(null);
   if (printers.length === 0) return <div className="text-center py-8 text-[var(--text-muted)] text-xs">Nessuna stampante monitorata</div>;
   return (
+    <>
     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
       {printers.map((p, i) => {
         const sc = p.status === "online" || p.status === "active" ? "#34C759" : p.status === "warning" ? "#FF9500" : p.status === "offline" || p.status === "down" ? "#FF3B30" : "#9E9E9E";
         return (
-          <div key={i} className={`noc-panel p-3 ${p.alerts_silenced ? "opacity-75" : ""}`} data-testid={`printer-card-${p.ip_address}`}>
+          <button
+            key={i}
+            type="button"
+            onClick={() => setSelected(p)}
+            className={`noc-panel p-3 text-left w-full transition-all hover:border-orange-500/50 hover:shadow-lg hover:shadow-orange-500/5 cursor-pointer ${p.alerts_silenced ? "opacity-75" : ""}`}
+            data-testid={`printer-card-${p.ip_address}`}
+            title="Clicca per le caratteristiche tecniche complete"
+          >
             <div className="flex items-center justify-between gap-2 mb-2">
               <div className="flex items-center gap-2 min-w-0 flex-1">
                 <Printer size={14} className="text-orange-400 shrink-0" />
@@ -3763,6 +3783,7 @@ function PrintersTab({ printers }) {
             </div>
             <div className="text-[9px] text-[var(--text-muted)] font-mono mb-2 flex items-center gap-1.5">
               {p.ip_address}
+              {p.serial && <span className="text-[var(--text-muted)]">· S/N {p.serial}</span>}
               {p.alerts_silenced && (
                 <span className="inline-flex items-center gap-0.5 text-[8px] px-1 py-px rounded bg-amber-500/15 text-amber-300 border border-amber-500/40 normal-case font-sans font-semibold">
                   ALERT OFF
@@ -3782,13 +3803,147 @@ function PrintersTab({ printers }) {
                 Nessuna telemetria toner — {p.has_telemetry === false || !p.has_telemetry ? "configura SNMP Printer-MIB" : "in attesa..."}
               </p>
             )}
-            {p.page_count !== undefined && p.page_count !== null && (
-              <p className="text-[9px] text-[var(--text-muted)] mt-1.5 font-mono">Pagine: {p.page_count.toLocaleString()}</p>
+            {p.page_count !== undefined && p.page_count !== null && p.page_count > 0 && (
+              <p className="text-[9px] text-[var(--text-muted)] mt-1.5 font-mono">Copie totali: {p.page_count.toLocaleString()}</p>
             )}
-          </div>
+            <p className="text-[8px] text-orange-400/70 mt-2 uppercase tracking-wider">Dettagli →</p>
+          </button>
         );
       })}
     </div>
+    <PrinterDetailModal printer={selected} clientId={clientId} onClose={() => setSelected(null)} />
+    </>
+  );
+}
+
+function PrinterDetailModal({ printer, clientId, onClose }) {
+  const [detail, setDetail] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState(false);
+
+  useEffect(() => {
+    if (!printer) { setDetail(null); setErr(false); return; }
+    let alive = true;
+    (async () => {
+      setLoading(true); setErr(false);
+      try {
+        const { data } = await axios.get(`${API}/printers/${clientId}/${printer.ip_address}`);
+        if (alive) setDetail(data.printer || null);
+      } catch {
+        if (alive) setErr(true);
+      } finally {
+        if (alive) setLoading(false);
+      }
+    })();
+    return () => { alive = false; };
+  }, [printer, clientId]);
+
+  const p = detail || printer || {};
+  const supplies = (detail?.supplies && detail.supplies.length > 0)
+    ? detail.supplies
+    : (printer?.toner_levels && typeof printer.toner_levels === "object"
+        ? Object.entries(printer.toner_levels).map(([k, v]) => ({ name: k, color_name: k, level_pct: v }))
+        : []);
+
+  const Row = ({ label, value, testid }) => (
+    <div className="flex items-center justify-between gap-3 py-1.5 border-b border-[var(--bg-border)] last:border-0">
+      <span className="text-[10px] uppercase tracking-wider text-[var(--text-muted)]">{label}</span>
+      <span className="text-xs font-mono font-semibold text-[var(--text-primary)] text-right" data-testid={testid}>{value ?? "—"}</span>
+    </div>
+  );
+  const fmt = (n) => (n === undefined || n === null || n === "") ? null : Number(n).toLocaleString();
+
+  return (
+    <Dialog open={!!printer} onOpenChange={(v) => !v && onClose()}>
+      <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto" data-testid="printer-detail-modal">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Printer size={18} className="text-orange-400" />
+            <span className="truncate" data-testid="printer-detail-name">{p.name || p.device_name || printer?.name || printer?.ip_address}</span>
+          </DialogTitle>
+          <DialogDescription className="font-mono text-[11px]">{printer?.ip_address}</DialogDescription>
+        </DialogHeader>
+
+        {loading && <div className="py-6 text-center text-xs text-[var(--text-muted)]">Caricamento caratteristiche…</div>}
+
+        {!loading && (
+          <div className="space-y-4">
+            {/* Anagrafica */}
+            <div>
+              <p className="text-[9px] font-bold uppercase tracking-[0.15em] text-orange-400 mb-1">Anagrafica</p>
+              <Row label="Nome" value={p.name || p.device_name || printer?.name} testid="printer-detail-field-name" />
+              <Row label="Serial Number" value={p.serial || printer?.serial} testid="printer-detail-field-serial" />
+              <Row label="Modello" value={p.model || printer?.model} testid="printer-detail-field-model" />
+              <Row label="Indirizzo IP" value={printer?.ip_address} />
+              <Row label="Stato" value={(p.printer_status || printer?.status || "—")} testid="printer-detail-field-status" />
+              {p.last_poll && <Row label="Ultimo rilevamento" value={new Date(p.last_poll).toLocaleString("it-IT")} />}
+            </div>
+
+            {/* Contatori copie */}
+            <div>
+              <p className="text-[9px] font-bold uppercase tracking-[0.15em] text-orange-400 mb-1">Contatori copie</p>
+              <Row label="Copie totali" value={fmt(p.page_count ?? printer?.page_count)} testid="printer-detail-field-pagecount" />
+              <Row label="Copie a colori" value={fmt(p.color_page_count)} testid="printer-detail-field-colorcount" />
+              {(() => {
+                const tot = Number(p.page_count ?? 0), col = Number(p.color_page_count ?? 0);
+                const bw = tot && col >= 0 ? tot - col : null;
+                return <Row label="Copie B/N" value={fmt(bw)} testid="printer-detail-field-bwcount" />;
+              })()}
+              <Row label="Fronte/retro (duplex)" value={fmt(p.duplex_count)} />
+              <Row label="Scansioni" value={fmt(p.scan_count)} />
+              <Row label="Fax" value={fmt(p.fax_count)} />
+            </div>
+
+            {/* Stato colori / toner */}
+            <div>
+              <p className="text-[9px] font-bold uppercase tracking-[0.15em] text-orange-400 mb-1">Stato colori (toner/inchiostro)</p>
+              {supplies.length > 0 ? (
+                <div className="space-y-2 mt-1" data-testid="printer-detail-supplies">
+                  {supplies.map((s, idx) => {
+                    const lvl = s.level_pct;
+                    const label = s.color_name || s.name || `Supply ${idx + 1}`;
+                    const barColor = s.color_hex && s.color_name !== "unknown" ? s.color_hex
+                      : (lvl == null ? "#9E9E9E" : lvl < 15 ? "#FF3B30" : lvl < 30 ? "#FF9500" : "#34C759");
+                    return (
+                      <div key={idx} className="flex items-center gap-2 text-[11px]">
+                        <span className="w-20 capitalize truncate text-[var(--text-secondary)]" title={s.name}>{label}</span>
+                        <div className="flex-1 h-2 rounded-full bg-[var(--bg-card)] overflow-hidden">
+                          <div className="h-full rounded-full transition-all" style={{ width: `${lvl == null ? 100 : lvl}%`, backgroundColor: barColor, opacity: lvl == null ? 0.4 : 1 }}></div>
+                        </div>
+                        <span className="font-mono font-bold w-12 text-right" style={{ color: lvl == null ? "#9E9E9E" : lvl < 15 ? "#FF3B30" : "#34C759" }}>
+                          {lvl == null ? (s.level_text || "OK") : `${lvl}%`}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <p className="text-[10px] text-[var(--text-muted)] italic mt-1">
+                  Nessuna telemetria colori disponibile. Abilita SNMP Printer-MIB (RFC 3805) sul connector per leggere livelli toner, seriale e contatori.
+                </p>
+              )}
+            </div>
+
+            {detail?.alert_messages?.length > 0 && (
+              <div>
+                <p className="text-[9px] font-bold uppercase tracking-[0.15em] text-red-400 mb-1">Messaggi stampante</p>
+                {detail.alert_messages.map((m, i) => <p key={i} className="text-[11px] text-red-300">• {m}</p>)}
+              </div>
+            )}
+
+            {err && !detail && (
+              <p className="text-[10px] text-[var(--text-muted)] italic">
+                Telemetria SNMP non ancora disponibile per questa stampante — mostrati i dati base rilevati dallo scanner di rete.
+              </p>
+            )}
+          </div>
+        )}
+
+        <DialogFooter>
+          <button onClick={onClose} className="text-xs px-4 py-2 rounded-md bg-[var(--bg-card)] border border-[var(--bg-border)] text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]" data-testid="printer-detail-close-btn">Chiudi</button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
