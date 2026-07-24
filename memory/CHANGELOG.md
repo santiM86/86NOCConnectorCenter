@@ -1,3 +1,36 @@
+# 2026-07-24 — Alert non veritieri: fix rumore "sync ripristinato"
+
+## Segnalazione utente
+"Controlla che tutti questi alert che stanno arrivando ora siano veritieri."
+
+## Analisi (9 alert attivi)
+- **6× "DATTO RMM: sync ripristinato"** (source_type=datto_sync_recovery, low) →
+  NON veritieri: sono notifiche di RIPRISTINO (evento positivo) persistite come
+  alert ATTIVI e mai risolte → duplicati accumulati.
+- **1× "TEST_Alert"** (manual) → dato di test residuo.
+- **1× "5 nuovi dispositivi"** (new_devices_detected) → info discovery legittima.
+- **1× "CONNETTORE OFFLINE"** (connector_watchdog, critical) → veritiero
+  (connettore effettivamente offline).
+
+## Root cause (alert_engine.run_datto_watchdog)
+Il branch di recovery (~riga 497) inseriva la notifica "sync ripristinato" come
+alert ATTIVO via insert_alert_if_emit, senza mai risolverla → a ogni ciclo con
+auto_recovery si accumulava un nuovo alert attivo.
+
+## Fix
+- Il recovery viene ora **notificato** (Telegram/WebPush) ma salvato con
+  `status='resolved'` + `resolved_at` (voce di storico/timeline), **mai active**.
+- Puliti i 6 recovery attivi + il TEST_Alert (impostati resolved).
+
+## Test — testing agent iteration_93.json (backend 100%, 0 issue)
+- Suite regressione `tests/test_datto_recovery_alerts.py`: nessun recovery attivo
+  via API; transizione stale→ripristino salva recovery come resolved (0 active);
+  stale reale (>30min) crea ancora alert ATTIVO (regressione OK); vital_only pulito.
+- Alert attivi residui: 2 legittimi (connettore offline + nuovi dispositivi).
+
+---
+
+
 # 2026-07-24 — Panoramica VITAL-ONLY (situazione + alert solo dispositivi vitali)
 
 ## Richiesta utente
