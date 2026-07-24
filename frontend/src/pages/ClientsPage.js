@@ -295,20 +295,11 @@ export default function ClientsPage() {
                           titleText={dv.total > 0 ? `${dv.online}/${dv.total} online. Nessun dispositivo marcato VITALE: seleziona i vitali dalla tab Dispositivi.` : "Nessun dispositivo"} />
                       );
                     })()}
-                    {/* Endpoints (PC/Mobile/IoT) — separati, non influenzano salute infra */}
-                    {(ov.endpoints?.total || 0) > 0 && (
-                      <StatusPill icon={Desktop}
-                        value={`${ov.endpoints.online || 0}/${ov.endpoints.total}`}
-                        color="#3B82F6"
-                        label="Endpoint"
-                        titleText={`${ov.endpoints.online || 0}/${ov.endpoints.total} endpoint online (PC/Mobile/IoT). Non influenzano lo stato dell'infrastruttura.`} />
-                    )}
+                    {/* Endpoints/Alert badge rimossi su richiesta utente (2026-07-23) */}
                     {/* WAN */}
                     <StatusPill icon={Globe} value={ov.wan?.status === "ok" ? "OK" : ov.wan?.status === "not_configured" ? "N/C" : (ov.wan?.status || "—").toUpperCase()} color={ov.wan?.status === "ok" ? "#34C759" : ov.wan?.status === "not_configured" ? "#555" : "#FF3B30"} label="WAN" />
                     {/* Connector */}
                     <StatusPill icon={PlugsConnected} value={ov.connector_online === true ? "ON" : ov.connector_online === false ? "OFF" : "—"} color={ov.connector_online ? "#34C759" : ov.connector_online === false ? "#FF3B30" : "#555"} label="Conn." />
-                    {/* Alerts */}
-                    <StatusPill icon={Bell} value={ov.alerts?.total || 0} color={ov.alerts?.critical > 0 ? "#FF3B30" : ov.alerts?.total > 0 ? "#FF9500" : "#34C759"} label="Alert" />
                   </div>
 
                   {/* Connector Info — pointer-events-auto + z-10 per stare sopra il Link overlay */}
