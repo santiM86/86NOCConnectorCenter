@@ -1,3 +1,39 @@
+# 2026-07-24 — Dettaglio stampante cliccabile (caratteristiche tecniche complete)
+
+## Richiesta utente
+Poter cliccare una stampante nel tab Stampanti e aprire tutte le caratteristiche
+tecniche: Nome, Serial, Stato colori, Numero di copie.
+
+## Implementato (ClientOverviewPage.js)
+- Le card stampante nel tab Stampanti ora sono **cliccabili** → aprono
+  `PrinterDetailModal` (shadcn Dialog).
+- Il modal fa fetch di `GET /api/printers/{clientId}/{device_ip}` e mostra:
+  - **Anagrafica**: Nome, Serial Number, Modello, IP, Stato, Ultimo rilevamento.
+  - **Contatori copie**: totali, a colori, B/N (calcolato), fronte/retro (duplex),
+    scansioni, fax.
+  - **Stato colori (toner/inchiostro)**: barre colorate per supply con livello % /
+    OK, colore reale del toner.
+  - **Messaggi stampante** (alert_messages) se presenti.
+- Fallback: per stampanti senza telemetria SNMP, mostra i dati base + invito a
+  configurare SNMP Printer-MIB (RFC 3805).
+
+## Fix collaterale (bug pre-esistente nel merge)
+`mergedPrinters` chiudeva tutte le stampanti sotto chiave `undefined` perché
+leggeva `p.ip_address || p.ip` mentre il backend restituisce `device_ip`.
+Corretto a `p.ip_address || p.ip || p.device_ip` → ora il tab conta e mostra
+tutte le stampanti (prima ne appariva 1 sola). Merge arricchito con
+serial/model/contatori.
+
+## Test
+- Verificato via screenshot (self-test) con 4 stampanti demo (seed-demo, poi
+  ripulite): click → modal con serial CNBJR9H12M, 28.750 copie totali, 15.200
+  colori, toner Black 80%/Cyan 30%/Magenta 10%/Yellow 70%, msg "Magenta toner low".
+- data-testid: printer-card-{ip}, printer-detail-modal, printer-detail-field-*,
+  printer-detail-supplies, printer-detail-close-btn.
+
+---
+
+
 # 2026-07-23 — FIX bug "dispositivi vitali sempre a zero"
 
 ## Sintomo (utente)
