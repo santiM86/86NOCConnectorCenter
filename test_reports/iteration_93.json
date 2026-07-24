@@ -1,0 +1,22 @@
+{
+  "summary": "Backend-only verification of Datto RMM sync recovery fix in alert_engine.run_datto_watchdog. All 6 pytest cases pass. Confirmed: (a) no active datto_sync_recovery alerts remain in DB, (b) no TEST_ leftovers, (c) vital_only view is clean, (d) simulated stale->recover transition on a TEMP client correctly resolves the datto_sync_stale alert AND persists any newly-created recovery alert with status='resolved' (0 active), (e) genuine stale (>30min) still creates ACTIVE datto_sync_stale alert (regression OK), (f) current production active alerts = 2 legitimate ones only: 'CONNETTORE OFFLINE: NOC-MASTER-86BIT' (connector_watchdog) and '5 nuovi dispositivi su 86BIT_Office' (new_devices_detected). Temp test data cleaned up.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_datto_recovery_alerts.py",
+    "/app/test_reports/pytest/datto_recovery_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "alert_engine.run_datto_watchdog recovery branch (lines 497-511) correctly bypasses insert_alert_if_emit for recovery events and sets status='resolved'+resolved_at before insert — good root-cause fix that prevents duplicate 'sync ripristinato' accumulation.",
+    "Minor: recovery alert insertion uses db.alerts.insert_one directly (bypasses dedup logic in insert_alert_if_emit). Acceptable since recovery is a historical timeline event, but consider a small helper insert_alert_history() for consistency."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100%", "frontend": "n/a"},
+  "test_credentials": "info@86bit.it / Ariel17051986@!@86 (from /app/memory/test_credentials.md)",
+  "seed_data_creation": "Created and cleaned up 2 TEMP clients (prefix TEST_) with datto_client_links + alerts for simulating stale->recover transition and genuine stale scenarios. All temp data deleted in test teardown.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Fix verified end-to-end. Regression suite at /app/backend/tests/test_datto_recovery_alerts.py covers: no-active-recovery API check, vital_only cleanliness, stale->recover transition (recovery stored resolved), and genuine stale still produces active alert.",
+  "rca of the issue": "Original bug: run_datto_watchdog inserted 'DATTO RMM: sync ripristinato' recovery notifications as ACTIVE alerts on every engine cycle where auto_recovery=true and a stale alert existed, without deduplication for source_type='datto_sync_recovery', leading to 6 duplicate active recovery alerts. Fix: recovery record now marked status='resolved' + resolved_at before db.alerts.insert_one, keeping it as historical timeline only, never as an active alert. Verified via TEMP-client simulation calling POST /api/alert-engine/run-now."
+}

@@ -500,8 +500,14 @@ async def run_datto_watchdog(db, cfg_global: Dict[str, Any]) -> int:
                     f"DATTO RMM: sync ripristinato per {cname}",
                     f"Il sync Datto RMM del cliente {cname} ha ripreso ad aggiornarsi.",
                 )
-                await insert_alert_if_emit(db, rec)
+                # Il ripristino e' un evento POSITIVO: va notificato ma NON deve
+                # restare come alert ATTIVO (altrimenti si accumulano duplicati
+                # "sync ripristinato" non veritieri). Lo salviamo gia' risolto,
+                # come voce di storico/timeline.
+                rec["status"] = "resolved"
+                rec["resolved_at"] = now.isoformat()
                 await _dispatch_notification(db, cfg, rec)
+                await db.alerts.insert_one(dict(rec))
             actions += 1
 
     # --- B) Server Datto offline oltre soglia ---
