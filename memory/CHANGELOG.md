@@ -1,3 +1,42 @@
+# 2026-07-24 — Auto-risoluzione alert su CONFERMA POSITIVA (no AI, no TTL)
+
+## Richiesta utente
+Sistema di auto-risoluzione: gli alert devono chiudersi da soli, ma **SOLO** con
+conferma positiva (device di nuovo online/acceso, sync ripristinato, connettore
+tornato) — MAI a tempo/assenza dati. Chiesto se serve AI.
+
+## Raccomandazione (data): NIENTE AI nella decisione
+Coerente con l'alerting: la chiusura di un alert e' binaria e basata su evidenze
+→ deve essere deterministica (rischio di chiudere un alert reale con un LLM;
+paradosso disponibilita' cloud; costo). AI solo come riassunto cosmetico opzionale.
+
+## Stato pre-esistente (gia' presente)
+Il motore risolveva gia' l'alert originale su ripristino positivo:
+- vital device tornato raggiungibile → alert resolved (run_vital_watchdog, via vital_offline_state.alert_id)
+- datto_sync_stale → resolved quando sync fresco
+- datto server offline → resolved quando online
+- connector offline → resolved quando heartbeat torna (connector_watchdog)
+
+## Fix implementato (rumore notifiche di ripristino)
+Le notifiche di RIPRISTINO (positive) venivano create come alert ATTIVI e mai
+chiuse → si accumulavano. Introdotto helper `_emit_recovery_notice(db,cfg,rec)`
+(alert_engine.py ~170): notifica Telegram/WebPush + salva come `status='resolved'`,
+mai active. Applicato a: `datto_sync_recovery`, `device_recovery`,
+`datto_server_recovery` (alert_engine) e `connector_recovery` (connector_watchdog,
+inline insert status=resolved). Puliti i recovery-noise attivi residui.
+
+## Nessun reaper a TTL
+Confermato: nessuna chiusura per timeout. Un alert resta ATTIVO finche' non arriva
+il segnale positivo (device up / sync fresh / server online / heartbeat back).
+
+## Test — testing agent iteration_94.json (backend 100%, 14/14, 0 issue)
+- Suite `tests/test_positive_recovery_iter94.py` (8) + `test_datto_recovery_alerts.py` (6).
+- 0 alert *_recovery attivi; transizioni stale→fresh e offline→online risolvono
+  l'alert originale + recovery come resolved; run-now NON chiude i 2 alert legittimi.
+
+---
+
+
 # 2026-07-24 — Alert non veritieri: fix rumore "sync ripristinato"
 
 ## Segnalazione utente
