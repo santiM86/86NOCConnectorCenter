@@ -1,3 +1,35 @@
+# 2026-07-24 — [P0] Alert 100%: gating linea-internet + blackout sui server SOLO-Datto
+
+## Richiesta utente
+"Se un dispositivo Datto risulta offline MA la linea internet e' online, e se altri
+dispositivi della rete risultano online (Datto + altri controlli), allora il problema
+e' sicuro al 100% sul dispositivo offline."
+
+## Analisi
+- Watchdog dispositivi VITALI/managed (`run_vital_watchdog` + `correlation_engine`):
+  regola GIA' implementata — Datto contribuisce solo se `datto_reliable` (gating
+  anti-blackout >=60% offline) + soppressione topologica "site_power_down"/"site_isolated"
+  quando internet giu' + connettore cieco.
+- Watchdog server SOLO-Datto (`run_datto_watchdog` parte B): BUCO — emetteva
+  "SERVER DATTO OFFLINE" solo su `online:false` + soglia oraria, SENZA verificare
+  linea internet ne' blackout di massa.
+
+## Fix (alert_engine.py::run_datto_watchdog)
+- Costruito `source_health` via `correlation_engine.build_context` a inizio watchdog.
+- Nel blocco `if not online:` aggiunto gating: si emette l'alert SOLO se
+  `internet_up is not False` (linea non provata giu') E `datto_reliable is not False`
+  (nessun blackout di massa = altri device del sito online). Se non ci sono prove
+  (internet_up=None) NON si blocca, per non perdere alert su clienti senza sonda WAN.
+
+## Verifica
+- run_datto_watchdog eseguito su dati reali: OK, actions=0, nessuna eccezione.
+- source_health cliente linkato da3d6e40: internet_up=True, datto_reliable=True -> un
+  server solo-Datto offline verrebbe correttamente allertato (linea up, no blackout).
+- Backend live sano dopo hot-reload.
+
+---
+
+
 # 2026-07-24 — [P0] Fix regressione sync Datto RMM: 27/28 device scartati (deviceType dict)
 
 ## Segnalazione utente

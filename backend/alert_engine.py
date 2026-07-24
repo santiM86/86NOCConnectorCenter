@@ -477,6 +477,19 @@ async def run_datto_watchdog(db, cfg_global: Dict[str, Any]) -> int:
     clients = await db.clients.find({}, {"_id": 0, "id": 1, "name": 1}).to_list(2000)
     client_names = {c.get("id"): c.get("name") for c in clients}
 
+    # Source-health per cliente (internet_up + datto_reliable/blackout di massa).
+    # Serve al gating "100%" sui server SOLO-Datto (parte B): un server e'
+    # colpevole con certezza SOLO se la linea internet del sito e' UP e non c'e'
+    # un blackout di massa (= altri device del sito ancora online). Cosi' un
+    # outage di linea/sito non genera falsi "server offline" sul singolo device.
+    try:
+        import correlation_engine as ce
+        _ctx = await ce.build_context(db, cfg_global)
+        source_health = _ctx.get("source_health") or {}
+    except Exception as e:  # noqa: BLE001
+        logger.debug("datto watchdog: build_context fallito, gating disattivato: %s", e)
+        source_health = {}
+
     # --- A) Sync stale per client link ---
     links = await db.datto_client_links.find({}, {"_id": 0}).to_list(2000)
     for link in links:
@@ -549,6 +562,24 @@ async def run_datto_watchdog(db, cfg_global: Dict[str, Any]) -> int:
         online = bool(dev.get("online"))
 
         if not online:
+            # --- GATING 100% (evidence fusion sui server SOLO-Datto) ---
+            # Emetti l'alert "server offline" SOLO con prove positive che sia
+            # un problema del SINGOLO device e non della linea/sito:
+            #  (a) linea internet del sito NON provata giu' (altrimenti e' un
+            #      problema ISP/sito -> lo gestisce il watchdog firewall/vitali);
+            #  (b) sorgente Datto affidabile (no blackout di massa: se >=60% dei
+            #      device Datto sono offline insieme, gli "altri device" NON sono
+            #      online -> problema di rete/portale, segnale non attendibile).
+            # Nota: se non abbiamo prove (internet_up=None) NON blocchiamo, per
+            # non perdere alert sui clienti privi di sonda WAN.
+            sh = source_health.get(cid) or {}
+            if sh.get("internet_up") is False:
+                logger.info("[datto] gating: %s offline ma linea internet GIU' client=%s -> sospeso (problema linea/sito)", name, cname)
+                continue
+            if sh.get("datto_reliable") is False:
+                logger.info("[datto] gating: %s offline ma Datto inaffidabile (%s) client=%s -> sospeso (blackout/altri device offline)", name, sh.get("datto_reason"), cname)
+                continue
+
             last_seen = _parse_dt(dev.get("datto_last_seen"))
             ref = last_seen or (_parse_dt((state or {}).get("first_offline_at")) if state else None) or now
             if not state:
