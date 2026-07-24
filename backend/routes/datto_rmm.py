@@ -506,6 +506,20 @@ def _host_short(s: Any) -> str:
     return n.split(".")[0] if n else ""
 
 
+def _device_type_str(dt: Any) -> str:
+    """Normalizza il campo `deviceType` di Datto RMM in stringa.
+
+    Datto ritorna un OGGETTO {"category": "...", "type": "..."} (non stringa).
+    Concatena category+type; gestisce anche il caso stringa/None senza sollevare.
+    """
+    if dt is None:
+        return ""
+    if isinstance(dt, dict):
+        parts = [str(dt.get("category") or "").strip(), str(dt.get("type") or "").strip()]
+        return " ".join(p for p in parts if p).strip()
+    return str(dt).strip()
+
+
 # ---------------------------------------------------------------------------
 # Core: refresh cache + enrichment MAC via audit + match 100%
 # ---------------------------------------------------------------------------
@@ -599,7 +613,9 @@ async def _refresh_sites_cache() -> dict:
                 ext_ip = _norm_ip(dev.get("extIpAddress"))
                 # Stato online + lastSeen + tipo device dalla list Datto,
                 # persistiti top-level per l'Alert Engine (watchdog server offline).
-                dtype = (dev.get("deviceType") or dev.get("category") or "").strip()
+                # Datto RMM ritorna `deviceType` come OGGETTO {category, type}
+                # (non stringa). _device_type_str gestisce dict/str/None.
+                dtype = _device_type_str(dev.get("deviceType") or dev.get("category"))
                 online_raw = dev.get("online")
                 if online_raw is None:
                     online_raw = dev.get("isOnline")
@@ -641,15 +657,19 @@ async def _refresh_sites_cache() -> dict:
             results = await asyncio.gather(*tasks, return_exceptions=True)
             persisted = []
             errors = 0
+            err_samples: list[str] = []
             for r in results:
                 if isinstance(r, dict):
                     persisted.append(r)
                 elif isinstance(r, BaseException):
                     errors += 1
+                    if len(err_samples) < 3:
+                        import traceback as _tb
+                        err_samples.append("".join(_tb.format_exception(type(r), r, r.__traceback__))[-800:])
             if errors:
                 logger.warning(
-                    "datto_sync client=%s: %d/%d device skippati per errore audit/parsing",
-                    cid, errors, len(results),
+                    "datto_sync client=%s: %d/%d device skippati per errore audit/parsing; samples=%s",
+                    cid, errors, len(results), err_samples,
                 )
 
             # Replace datto_devices per questo client. Isolato in try/except:

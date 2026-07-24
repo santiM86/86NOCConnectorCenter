@@ -1,3 +1,31 @@
+# 2026-07-24 — [P0] Fix regressione sync Datto RMM: 27/28 device scartati (deviceType dict)
+
+## Segnalazione utente
+"Controllo che DattoRMM funzioni correttamente, faccia sync e match corretti al 100%".
+
+## Root cause (verificata dai log)
+In `_refresh_sites_cache._process` (routes/datto_rmm.py, riga 602):
+`(dev.get("deviceType") or ...).strip()` sollevava `AttributeError: 'dict' object has
+no attribute 'strip'` perche' Datto RMM ritorna `deviceType` come OGGETTO
+`{"category": "...", "type": "..."}`, non stringa. Con `asyncio.gather(return_exceptions=True)`
+l'eccezione veniva inghiottita e loggata solo come conteggio: 27/28 device scartati a
+OGNI sync (auto e manuale). Persisted=1, matched_endpoints=1.
+
+## Fix
+- Aggiunto helper `_device_type_str()` che normalizza `deviceType` dict/str/None in stringa
+  (concatena category+type) senza sollevare.
+- Aggiunto logging con traceback (`err_samples`) sui device scartati per diagnosi futura.
+
+## Verifica end-to-end (curl + DB)
+- sync-now: persisted 1->28, matched_endpoints 1->24
+- diagnostics: healthy=true
+- DB: device_type popolato (es. "Server Main System Chassis"), is_server=9,
+  25 managed_devices con datto_uid, ladder match: MAC=22, IP=2, hostname=1
+- Nessun nuovo warning "device skippati" dopo il fix.
+
+---
+
+
 # 2026-07-24 — Fix falso-ROSSO su server (Datto come evidenza per lo status)
 
 ## Segnalazione utente (produzione)
