@@ -66,7 +66,7 @@ export default function DashboardPage() {
       setOverview(overviewRes.data);
     } catch (e) { console.error("overview error:", e); }
     try {
-      const alertsRes = await axios.get(`${API}/alerts?limit=20&status=active`);
+      const alertsRes = await axios.get(`${API}/alerts?limit=20&status=active&vital_only=true`);
       const alerts = alertsRes.data || [];
       setRecentAlerts(alerts);
       setLiveStream(alerts.slice(0, 30).map(a => ({
@@ -170,7 +170,7 @@ export default function DashboardPage() {
         <KpiCard label="Clienti" value={g.total_clients || 0} sub={`${g.clients_ok || 0} OK`} color="#34C759" testId="kpi-clients" />
         <KpiCard label="Problemi" value={(g.clients_warning || 0) + (g.clients_critical || 0)} sub={`${g.clients_critical || 0} critici`} color={g.clients_critical > 0 ? "#FF3B30" : "#FF9500"} testId="kpi-problems" />
         <KpiCard label="Alert Attivi" value={g.total_alerts || 0} sub={`${g.critical_alerts || 0} critici`} color={g.critical_alerts > 0 ? "#FF3B30" : "#34C759"} testId="kpi-alerts" />
-        <KpiCard label="Infrastruttura" value={g.total_devices || 0} sub={`${g.devices_online || 0} online · ${g.total_endpoints || 0} endpoint`} color="#6366F1" testId="kpi-devices" />
+        <KpiCard label="Dispositivi Vitali" value={g.total_devices || 0} sub={`${g.devices_online || 0} online`} color="#6366F1" testId="kpi-devices" />
         <div className="noc-panel p-3 lg:col-span-2">
           <div className="flex items-center gap-2">
             <MagnifyingGlass size={14} className="text-[var(--text-muted)]" />
@@ -296,19 +296,19 @@ function ClientCard({ client: c, navigate }) {
         <SvcLine icon={Globe} label="WAN" value={wanLabel} color={wanColor} sub={c.wan?.latency_ms ? `${c.wan.latency_ms}ms` : null} />
         <SvcLine
           icon={HardDrives}
-          label="Dispositivi"
-          value={c.devices?.total > 0 ? `${c.devices.online}/${c.devices.total}` : "—"}
+          label="Vitali"
+          value={c.devices?.vital_total > 0 ? `${c.devices.vital_online}/${c.devices.vital_total}` : "—"}
           color={
-            c.devices?.offline > 0 ? "#FF3B30"
-            : c.devices?.stale > 0 ? "#FF9500"
-            : c.devices?.unknown > 0 ? "#FFCC00"
-            : "#34C759"
+            c.devices?.vital_offline > 0 ? "#FF3B30"
+            : c.devices?.vital_stale > 0 ? "#FF9500"
+            : c.devices?.vital_total > 0 ? "#34C759"
+            : "#555"
           }
           sub={
-            c.devices?.offline > 0 ? `${c.devices.offline} off`
-            : c.devices?.stale > 0 ? `${c.devices.stale} stale`
-            : c.devices?.unknown > 0 ? `${c.devices.unknown} non classif.`
-            : null
+            c.devices?.vital_offline > 0 ? `${c.devices.vital_offline} off`
+            : c.devices?.vital_stale > 0 ? `${c.devices.vital_stale} stale`
+            : c.devices?.vital_total > 0 ? "tutti OK"
+            : "nessun vitale"
           }
         />
         <SvcLine icon={PlugsConnected} label="Connettore" value={c.connector_online === true ? "ON" : c.connector_online === false ? "OFF" : "—"} color={c.connector_online ? "#34C759" : c.connector_online === false ? "#FF3B30" : "#555"} />

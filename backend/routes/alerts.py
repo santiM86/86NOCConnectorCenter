@@ -101,6 +101,7 @@ async def create_alert(alert: AlertCreate, current_user: dict = Depends(get_curr
 async def get_alerts(
     status: Optional[str] = None, severity: Optional[str] = None,
     client_id: Optional[str] = None, device_type: Optional[str] = None,
+    vital_only: bool = False,
     limit: int = 100, current_user: dict = Depends(get_current_user)
 ):
     query = {}
@@ -108,6 +109,24 @@ async def get_alerts(
     if severity: query["severity"] = severity
     if client_id: query["client_id"] = client_id
     alerts = await db.alerts.find(query, {"_id": 0}).sort("created_at", -1).to_list(limit)
+
+    # VITAL-ONLY (Panoramica): mostra solo alert relativi a dispositivi VITALI.
+    # Insieme per-cliente di nomi/IP dei device marcati is_vital.
+    vital_names: dict = {}
+    vital_ips: dict = {}
+    if vital_only:
+        vq = {"is_vital": True}
+        if client_id:
+            vq["client_id"] = client_id
+        async for m in db.managed_devices.find(vq, {"_id": 0, "client_id": 1, "ip": 1, "name": 1}):
+            cid = m.get("client_id")
+            if not cid:
+                continue
+            if m.get("name"):
+                vital_names.setdefault(cid, set()).add(str(m["name"]).strip().lower())
+            if m.get("ip"):
+                vital_ips.setdefault(cid, set()).add(m["ip"])
+
     device_ids = list(set(a.get("device_id", "") for a in alerts if a.get("device_id")))
     client_ids = list(set(a.get("client_id", "") for a in alerts if a.get("client_id")))
     devices = await db.devices.find({"id": {"$in": device_ids}}, {"_id": 0}).to_list(1000)
@@ -125,6 +144,16 @@ async def get_alerts(
         a["device_name"] = a.get("device_name") or device.get("name", "") or a.get("device_ip", "")
         a["device_type"] = eff_device_type
         a["ip_address"] = device.get("ip_address", "") or a.get("device_ip", "")
+        if vital_only:
+            cid = a.get("client_id")
+            dn = (a.get("device_name") or "").strip().lower()
+            dip = a.get("ip_address") or a.get("device_ip") or ""
+            # Alert a livello sito/cliente (senza device) mantenuti (es. WAN down);
+            # alert su un device specifico solo se quel device e' VITALE.
+            if dn or dip:
+                is_v = (dn and dn in vital_names.get(cid, set())) or (dip and dip in vital_ips.get(cid, set()))
+                if not is_v:
+                    continue
         try:
             result.append(AlertResponse(**a))
         except Exception as e:

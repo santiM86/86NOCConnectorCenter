@@ -1,3 +1,36 @@
+# 2026-07-24 — Panoramica VITAL-ONLY (situazione + alert solo dispositivi vitali)
+
+## Richiesta utente
+La Panoramica deve mostrare "sempre e solo situazione e alert per dispositivi vitali".
+
+## Implementato
+### Backend
+- `routes/overview.py` (GET /overview/clients):
+  - Aggiunti `vital_offline`/`vital_stale` ai conteggi device.
+  - **Salute cliente (dot)** ora calcolata sui VITALI: critical se `vital_offline>0`
+    (oltre a connettore giù / WAN giù); warning se `vital_stale>0`/backup.
+  - **KPI globali** `total_devices`/`devices_online` = somma VITALI (non più tutti).
+  - **Alert** scopati ai vitali: costruito insieme nomi/IP vitali per-cliente;
+    contati solo alert su device vitali (+ alert livello sito senza device).
+- `routes/alerts.py` (GET /alerts): nuovo parametro `vital_only=true` → filtra
+  la lista agli alert su dispositivi vitali (+ alert sito-level senza device).
+### Frontend
+- `DashboardPage.js`:
+  - KPI "Infrastruttura" → **"Dispositivi Vitali"** (conteggio vitali online).
+  - Card cliente: riga "Dispositivi N/M" → **"Vitali vital_online/vital_total"**
+    con colore su vital_offline/stale.
+  - Fetch alert con `&vital_only=true` (tabella + live stream vital-scoped).
+
+## Test (self-test curl + screenshot)
+- GET /overview/clients: total_devices=3 (vitali), card 86BIT_Office vital 1/3.
+- GET /alerts?vital_only=true: 9 → 1 alert (esclusi Datto sync, Discovery,
+  connettore-offline; mantenuti quelli su device vitali).
+- Screenshot dashboard: KPI "DISPOSITIVI VITALI 3·1 online", card "VITALI 1/3",
+  tabella ALERT ATTIVI con 1 sola riga vitale.
+
+---
+
+
 # 2026-07-24 — Dettaglio stampante cliccabile (caratteristiche tecniche complete)
 
 ## Richiesta utente

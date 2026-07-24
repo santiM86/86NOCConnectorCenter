@@ -101,6 +101,30 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
             "is_vital": md.get("is_vital"),
         })
 
+    # === VITAL-ONLY SCOPING (richiesto utente 2026-07-24) ===
+    # La Panoramica deve mostrare SEMPRE E SOLO situazione + alert dei dispositivi
+    # VITALI. Costruiamo qui l'insieme (per cliente) di nomi e IP vitali per:
+    #  - scopare gli alert (per device_name)
+    #  - calcolare salute/conteggi solo sui vitali (piu' sotto).
+    vital_names_by_client: dict[str, set] = {}
+    vital_ips_by_client: dict[str, set] = {}
+    for d in devices:
+        cid = d.get("client_id")
+        if not cid:
+            continue
+        iv = d.get("is_vital")
+        if iv is None:
+            _mv = managed_by_key.get((cid, d.get("ip_address")))
+            iv = _mv.get("is_vital") if _mv else None
+        if iv is True:
+            nm = (d.get("name") or "").strip().lower()
+            if nm:
+                vital_names_by_client.setdefault(cid, set()).add(nm)
+            ipx = d.get("ip_address")
+            if ipx:
+                vital_ips_by_client.setdefault(cid, set()).add(ipx)
+
+
     # Backup status (legacy)
     backup_data = await db.backup_status.find({}, {"_id": 0, "client_id": 1, "status": 1, "last_success": 1}).to_list(5000)
 
@@ -252,6 +276,14 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
     # viene aggiunto dinamicamente al dict.
     for a in active_alerts:
         cid = a.get("client_id")
+        # VITAL-ONLY: conta solo gli alert che riguardano un dispositivo VITALE.
+        # Gli alert senza device_name (livello sito/cliente, es. WAN/connettore)
+        # vengono mantenuti perche' impattano comunque i vitali.
+        adev = (a.get("device_name") or "").strip().lower()
+        if adev:
+            vset = vital_names_by_client.get(cid) or set()
+            if adev not in vset:
+                continue
         if cid not in alerts_by_client:
             alerts_by_client[cid] = {"critical": 0, "high": 0, "medium": 0, "low": 0, "total": 0}
             alerts_detail_by_client[cid] = []
@@ -268,7 +300,8 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
             })
 
     def _empty_counts():
-        return {"total": 0, "online": 0, "offline": 0, "stale": 0, "unknown": 0, "vital_total": 0, "vital_online": 0}
+        return {"total": 0, "online": 0, "offline": 0, "stale": 0, "unknown": 0,
+                "vital_total": 0, "vital_online": 0, "vital_offline": 0, "vital_stale": 0}
 
     # v2026-06 CATEGORIZZAZIONE ENDPOINT vs INFRASTRUTTURA:
     # I PC consumer (workstation/mobile/iot/endpoint) NON devono influenzare
@@ -315,6 +348,10 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
             devices_by_client[cid]["vital_total"] += 1
             if status == "online":
                 devices_by_client[cid]["vital_online"] += 1
+            elif status == "offline":
+                devices_by_client[cid]["vital_offline"] += 1
+            elif status == "stale":
+                devices_by_client[cid]["vital_stale"] += 1
         detail_bucket[cid].append({
             "name": d.get("name", "?"), "ip": d.get("ip_address", ""), "status": status or "unknown",
             "type": d.get("device_type", ""),
@@ -504,13 +541,11 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
             else:
                 wan_status = "pending"
 
-        # Overall health score
-        # Policy 2026-04-27 (richiesto utente):
-        # Il dot di salute riflette lo stato dei *sistemi*, non degli alert storici.
-        # Se devices/connector/wan sono tutti OK -> verde, anche con alert in coda.
-        # Gli alert hanno il loro pill dedicato con conteggio rosso nella UI.
-        devices_offline = devices_info.get("offline", 0) if isinstance(devices_info, dict) else 0
-        devices_stale = devices_info.get("stale", 0) if isinstance(devices_info, dict) else 0
+        # Overall health score — VITAL-ONLY (richiesto utente 2026-07-24):
+        # la salute del cliente riflette SOLO i dispositivi vitali (+ connettore/WAN
+        # che comunque impattano i vitali). I device non-vitali non alterano il dot.
+        devices_offline = devices_info.get("vital_offline", 0) if isinstance(devices_info, dict) else 0
+        devices_stale = devices_info.get("vital_stale", 0) if isinstance(devices_info, dict) else 0
         backup_errors = backup_info.get("error", 0) if isinstance(backup_info, dict) else 0
         backup_warnings = backup_info.get("warning", 0) if isinstance(backup_info, dict) else 0
         backup_stale = backup_info.get("stale", 0) if isinstance(backup_info, dict) else 0
@@ -596,8 +631,8 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
             "clients_critical": sum(1 for r in result if r["health"] == "critical"),
             "total_alerts": total_alerts,
             "critical_alerts": total_critical,
-            "total_devices": sum(d["total"] for d in devices_by_client.values()),
-            "devices_online": sum(d["online"] for d in devices_by_client.values()),
+            "total_devices": sum(d["vital_total"] for d in devices_by_client.values()),
+            "devices_online": sum(d["vital_online"] for d in devices_by_client.values()),
             "total_endpoints": sum(d["total"] for d in endpoints_by_client.values()),
             "endpoints_online": sum(d["online"] for d in endpoints_by_client.values()),
         },
