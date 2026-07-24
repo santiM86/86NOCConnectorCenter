@@ -6,7 +6,7 @@ import { toast } from "sonner";
 import {
   Plus, Trash, Buildings, EnvelopeSimple, Key, Copy, ArrowsClockwise,
   Globe, CaretRight, HardDrives, PlugsConnected, Bell, ShieldCheck,
-  WifiHigh, WifiSlash, DownloadSimple, Desktop,
+  WifiHigh, WifiSlash, DownloadSimple, Desktop, Cloud
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -143,6 +143,47 @@ export default function ClientsPage() {
     }
   };
 
+  // v2026-06-29: Sync Datto sites → managed_clients. Prima fa dry-run per
+  // mostrare anteprima (chiede conferma), poi se confermato applica.
+  // Non distruttivo: aggiorna solo i campi datto_* sui clienti esistenti.
+  const [dattoSyncing, setDattoSyncing] = useState(false);
+  const handleSyncDatto = async () => {
+    if (dattoSyncing) return;
+    setDattoSyncing(true);
+    try {
+      const dr = await axios.post(`${API}/portal86-datto/sync-to-clients?dry_run=true`);
+      const s = dr.data?.summary || {};
+      const confirmMsg =
+        `Sync Datto (anteprima):\n\n` +
+        `  • Da creare : ${s.to_create || 0}\n` +
+        `  • Da aggiornare : ${s.to_update || 0}\n` +
+        `  • Invariati : ${s.no_change || 0}\n` +
+        `  • Filtrati (sistema/vuoti) : ${s.filtered || 0}\n\n` +
+        `Procedere con l'applicazione?`;
+      if (!window.confirm(confirmMsg)) {
+        toast.info("Sync Datto annullata");
+        return;
+      }
+      const ap = await axios.post(`${API}/portal86-datto/sync-to-clients?dry_run=false`);
+      const r = ap.data?.summary || {};
+      toast.success(
+        `Sync Datto OK — creati ${r.to_create || 0}, aggiornati ${r.to_update || 0}, invariati ${r.no_change || 0}`
+      );
+      fetchClients();
+    } catch (e) {
+      const msg = e.response?.data?.detail || e.message;
+      if (String(msg).includes("non configurato")) {
+        toast.error("Sync Datto: configurazione mancante. Apri Impostazioni → Integrazioni Portal 86bit.");
+      } else if (String(msg).includes("vault_mismatch")) {
+        toast.error("Sync Datto: chiave vault ruotata. Re-salva la API key in Impostazioni.");
+      } else {
+        toast.error(`Sync Datto fallita: ${msg}`);
+      }
+    } finally {
+      setDattoSyncing(false);
+    }
+  };
+
   // Build overview map by client id
   const overviewMap = {};
   (overview.clients || []).forEach(c => { overviewMap[c.id] = c; });
@@ -176,7 +217,19 @@ export default function ClientsPage() {
             </div>
           )}
         </div>
-        <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+        <div className="flex items-center gap-2">
+          <Button
+            onClick={handleSyncDatto}
+            disabled={dattoSyncing}
+            variant="outline"
+            className="rounded-lg gap-1.5 text-xs h-8 border-[var(--bg-border)] text-[var(--text-primary)] hover:bg-indigo-600/10"
+            data-testid="sync-datto-btn"
+            title="Sincronizza i siti Datto dal portal 86bit. Mostra anteprima prima di applicare."
+          >
+            <Cloud size={14} className={dattoSyncing ? "animate-pulse" : ""} />
+            {dattoSyncing ? "Sync in corso..." : "Sync Datto"}
+          </Button>
+          <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
           <DialogTrigger asChild>
             <Button className="rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white gap-1.5 text-xs h-8" data-testid="add-client-btn">
               <Plus size={14} /> Nuovo Cliente
@@ -207,6 +260,7 @@ export default function ClientsPage() {
             </form>
           </DialogContent>
         </Dialog>
+        </div>
       </div>
 
       {/* Client List */}
@@ -392,16 +446,13 @@ export default function ClientsPage() {
                                   chiede master/scanner durante la GUI Windows nativa.
                               - "Setup Master" / "Setup Scanner": ROLE baked-in →
                                   installer silenzioso per quel ruolo specifico. */}
-                          {/* Alternativa CLI (console): SFX con nocinstall.exe.
-                              Declassato — il metodo consigliato e' il Wizard GUI
-                              qui sopra. Tenuto come fallback per AV enterprise. */}
                           <a
                             href={`${API}/agent/install/setup.zip?token=${encodeURIComponent(client.api_key)}&client_id=${encodeURIComponent(client.id)}&label=${encodeURIComponent(client.name)}${hasRealLatest ? `&version=v${latestVer}` : ""}`}
-                            onClick={(e) => { e.stopPropagation(); toast.success(`Setup .exe (CLI) per "${client.name}" — alternativa alla GUI. Estrai ZIP, click destro su setup.exe → Esegui come amministratore.`); }}
+                            onClick={(e) => { e.stopPropagation(); toast.success(`Setup .exe per "${client.name}" — estrai ZIP, click destro su setup.exe → Esegui come amministratore. La GUI ti fara' scegliere master/scanner.`); }}
                             data-testid={`download-setup-exe-${client.id}`}
-                            className="text-[9px] px-2 py-1 rounded-md bg-[var(--bg-card)] border border-[var(--bg-border)] text-[var(--text-muted)] hover:text-cyan-300 hover:border-cyan-500/30 transition-colors flex items-center gap-1 no-underline"
-                            title={`Alternativa CLI (console) per ${client.name}. Usa il Wizard GUI come metodo principale.`}>
-                            <DownloadSimple size={10} /> Setup .exe (CLI)
+                            className="text-[9px] px-2 py-1 rounded-md bg-[var(--bg-card)] border border-cyan-500/30 text-cyan-300 hover:border-cyan-400 hover:text-cyan-200 transition-colors flex items-center gap-1 no-underline"
+                            title={`Scarica Setup .exe GUI per ${client.name}. Doppio click su setup.exe: la GUI chiedera' Master o Scanner.`}>
+                            <DownloadSimple size={10} /> Setup .exe
                           </a>
                           <a
                             href={`${API}/agent/install/setup.zip?token=${encodeURIComponent(client.api_key)}&client_id=${encodeURIComponent(client.id)}&role=master&label=${encodeURIComponent(client.name)}${hasRealLatest ? `&version=v${latestVer}` : ""}`}
