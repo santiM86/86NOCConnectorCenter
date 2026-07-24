@@ -165,7 +165,7 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
                 continue
             cid = dd.get("client_id")
             if dd.get("uid"):
-                datto_online_by_uid[dd["uid"]] = True
+                datto_online_by_uid[(cid, dd["uid"])] = True
             for _ip in ([dd.get("ip")] + (dd.get("ip_list") or [])):
                 if _ip:
                     datto_online_by_ip[(cid, _ip)] = True
@@ -179,7 +179,7 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
     def _datto_online(md_doc, ip_val):
         cid = (md_doc or {}).get("client_id")
         uid = (md_doc or {}).get("datto_uid")
-        if uid and datto_online_by_uid.get(uid):
+        if uid and datto_online_by_uid.get((cid, uid)):
             return True
         if ip_val and datto_online_by_ip.get((cid, ip_val)):
             return True

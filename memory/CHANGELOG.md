@@ -1,3 +1,37 @@
+# 2026-07-24 — Fix falso-ROSSO su server (Datto come evidenza per lo status)
+
+## Segnalazione utente (produzione)
+Server SRVDC/SRVPALMOGAL/SRVGESTGAL/SRVDATIGAL/SRVTERMGAL (192.168.16.x, Hyper-V)
+mostrati ROSSI (offline) ma in realta' ONLINE. "Spiegami i controlli che fai."
+
+## I controlli che determinano il pallino (GET /api/devices)
+In ordine, un device e' ONLINE se:
+1. **L2 forte**: presente nella FDB dello switch via SNMP (mac_table_switch).
+2. **Scanner LAN**: visto da ARP/scanner del connettore < 5 min.
+3. **Ping ICMP/TCP**: `effective_reachable` (con debounce) risponde.
+4. **L2 debole** (ARP/mDNS) MA solo se concorde col ping.
+Altrimenti → OFFLINE (rosso).
+
+## Root cause del falso-rosso
+I server Windows/Hyper-V spesso **bloccano ICMP** e, se sono VM su vSwitch
+isolato, **non compaiono in ARP/FDB/SNMP** → nessuna delle 4 evidenze scatta →
+falso OFFLINE. Il segnale che li vede vivi (agent **Datto RMM online**) NON era
+usato per il pallino (solo dal motore di alerting).
+
+## Fix (routes/devices.py)
+Aggiunto **Datto come evidenza positiva** per lo status: se l'agent Datto riporta
+il device ONLINE con heartbeat fresco (< 30 min), il device viene promosso a
+ONLINE (evidence "datto"), sia nel connector-loop sia nel managed-loop. Lookup per
+datto_uid / IP / MAC. Chiavi **client-scoped** (multi-tenant safe).
+Guardia anti-falso-verde: Datto offline o heartbeat stantio (>30min) NON promuove.
+
+## Test — testing agent iteration_95.json (backend 100%, 7/7, 0 issue)
+- tests/test_datto_evidence.py: promozione via uid/IP/MAC; negativi (offline,
+  stale, no-evidence) restano offline; ping/L2 reali invariati (no falso-verde).
+
+---
+
+
 # 2026-07-24 — Auto-risoluzione alert su CONFERMA POSITIVA (no AI, no TTL)
 
 ## Richiesta utente
