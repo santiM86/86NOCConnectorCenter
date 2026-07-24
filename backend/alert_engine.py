@@ -168,6 +168,21 @@ def _mk_alert(client_id: str, client_name: str, device_name: str, device_ip: str
     }
 
 
+async def _emit_recovery_notice(db, cfg, rec: Dict[str, Any]) -> None:
+    """Una notifica di RIPRISTINO (device/server/connettore/sync tornato OK) e'
+    un evento POSITIVO: va NOTIFICATA (Telegram/WebPush) ma salvata come
+    'resolved' (voce di storico/timeline), MAI come alert attivo. Evita che si
+    accumulino falsi alert "ripristinato" che restano appesi come attivi."""
+    rec["status"] = "resolved"
+    rec["resolved_at"] = datetime.now(timezone.utc).isoformat()
+    try:
+        await _dispatch_notification(db, cfg, rec)
+    except Exception:
+        pass
+    await db.alerts.insert_one(dict(rec))
+
+
+
 # ---------------------------------------------------------------------------
 # Watchdog 1 — dispositivi vitali offline
 # ---------------------------------------------------------------------------
@@ -363,8 +378,7 @@ async def run_vital_watchdog(db, cfg_global: Dict[str, Any]) -> int:
                     rec = _mk_alert(cid, cname, dev_name, ip, dev_type, "low",
                         "device_recovery", f"ONLINE (ripristinato): {dev_name}",
                         f"'{dev_name}' ({ip}) del cliente {cname} e' tornato raggiungibile.")
-                    await insert_alert_if_emit(db, rec)
-                    await _dispatch_notification(db, cfg, rec)
+                    await _emit_recovery_notice(db, cfg, rec)
                     actions += 1
                 await db.vital_offline_state.delete_one({"client_id": cid, "ip": ip})
 
@@ -500,14 +514,9 @@ async def run_datto_watchdog(db, cfg_global: Dict[str, Any]) -> int:
                     f"DATTO RMM: sync ripristinato per {cname}",
                     f"Il sync Datto RMM del cliente {cname} ha ripreso ad aggiornarsi.",
                 )
-                # Il ripristino e' un evento POSITIVO: va notificato ma NON deve
-                # restare come alert ATTIVO (altrimenti si accumulano duplicati
-                # "sync ripristinato" non veritieri). Lo salviamo gia' risolto,
-                # come voce di storico/timeline.
-                rec["status"] = "resolved"
-                rec["resolved_at"] = now.isoformat()
-                await _dispatch_notification(db, cfg, rec)
-                await db.alerts.insert_one(dict(rec))
+                # Il ripristino e' un evento POSITIVO: notificato ma salvato come
+                # 'resolved' (storico), mai come alert attivo (no duplicati).
+                await _emit_recovery_notice(db, cfg, rec)
             actions += 1
 
     # --- B) Server Datto offline oltre soglia ---
@@ -606,8 +615,7 @@ async def run_datto_watchdog(db, cfg_global: Dict[str, Any]) -> int:
                         "datto_server_recovery", f"Server Datto ONLINE (ripristinato): {name}",
                         f"Il server '{name}' del cliente {cname} e' tornato online su Datto RMM.",
                     )
-                    await insert_alert_if_emit(db, rec)
-                    await _dispatch_notification(db, cfg, rec)
+                    await _emit_recovery_notice(db, cfg, rec)
                     actions += 1
                 await db.datto_offline_state.delete_one({"client_id": cid, "uid": uid})
     return actions

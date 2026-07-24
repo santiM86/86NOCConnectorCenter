@@ -1,0 +1,29 @@
+{
+  "summary": "Backend-only verification of full POSITIVE-RECOVERY auto-resolution system across all 4 recovery source_types (datto_sync_recovery, device_recovery, datto_server_recovery, connector_recovery). 14/14 tests pass (8 new in iter94 + 6 regression from iter93). Confirmed: (a) 0 active alerts of any *_recovery source_type; (b) datto_sync stale->fresh transition on TEMP client resolves original datto_sync_stale alert AND persists any recovery record as status='resolved'; (c) datto_server offline->online transition (TEMP client with datto_devices+datto_offline_state) resolves datto_server_offline alert AND persists any datto_server_recovery record as 'resolved', datto_offline_state cleaned; (d) _emit_recovery_notice helper writes status='resolved'+resolved_at for every source_type routed through it (device_recovery, datto_server_recovery, datto_sync_recovery); (e) connector_watchdog inline block for connector_recovery explicitly sets status='resolved' (static-source assertion, never 'active'); (f) POST /api/alert-engine/run-now returns ok:true and does NOT auto-close the 2 legitimate active alerts (connector_watchdog + new_devices_detected); (g) vital_only view stays clean. All TEMP data (2 clients + 1 datto_devices + 1 datto_offline_state + linked alerts) cleaned up in fixture teardown.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_positive_recovery_iter94.py",
+    "/app/backend/tests/test_datto_recovery_alerts.py",
+    "/app/test_reports/pytest/iter94_positive_recovery.xml",
+    "/app/test_reports/pytest/iter94_combined.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "alert_engine._emit_recovery_notice (lines 171-182) is a clean, single point of truth for positive-recovery notices — sets status='resolved'+resolved_at BEFORE db.alerts.insert_one, dispatches notification, never inserts as active. Good root-cause fix that generalizes iter93 pattern to all recovery types.",
+    "vital watchdog (line ~377) and datto server watchdog (line ~612) both now route through _emit_recovery_notice — consistent behavior across sources.",
+    "connector_watchdog.py duplicates the same 'insert-as-resolved' pattern inline (lines 155-174) instead of importing the shared _emit_recovery_notice helper. Minor DRY violation — consider centralizing so any future recovery source_type gets the same treatment automatically.",
+    "Original 'down' alerts are correctly resolved via db.alerts.update_one({id:state.alert_id}, {status:resolved}) BEFORE the recovery record is emitted — order is correct and idempotent.",
+    "No TTL/timeout reaper detected in alert_engine — closure only happens on POSITIVE confirmation (device up, sync fresh, server online, heartbeat back). Matches the strict requirement."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_positive_recovery_iter94.py"
+  ],
+  "success_rate": {"backend": "100% (14/14)", "frontend": "n/a"},
+  "test_credentials": "info@86bit.it / Ariel17051986@!@86 (from /app/memory/test_credentials.md)",
+  "seed_data_creation": "TEMP clients (prefix TEST_) with datto_client_links / datto_devices / datto_offline_state / alerts used to simulate stale->fresh and offline->online transitions. All temp docs cleaned in fixture teardown; final /api/alerts?status=active count = 2 (unchanged legitimate ones).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Full recovery test suite at /app/backend/tests/test_positive_recovery_iter94.py covers 8 cases: (1) no active recovery of any type, (2) no active source_type ending in _recovery, (3) vital_only clean, (4) datto_sync_recovery via run-now, (5) datto_server_recovery via run-now, (6) _emit_recovery_notice helper unit test for 3 source_types, (7) connector_recovery static-source pattern check, (8) run-now regression preserving legitimate active alerts. Combine with test_datto_recovery_alerts.py (6 cases) for full 14-case regression.",
+  "rca of the issue": "Not a bug fix cycle — this is verification of the generalized positive-recovery system extending iter93. Iter93 fixed datto_sync_recovery; iter94 verifies the pattern was correctly applied to device_recovery, datto_server_recovery (shared _emit_recovery_notice helper) and connector_recovery (inline in connector_watchdog.py). Verified via TEMP-client simulation calling POST /api/alert-engine/run-now and direct helper invocation. No false-closure (TTL reaper) observed; alerts remain active until POSITIVE recovery signal (device up / sync fresh / server online / heartbeat back)."
+}
