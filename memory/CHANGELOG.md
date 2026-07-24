@@ -1,3 +1,97 @@
+# 2026-07-24 — [P0] Alert 100%: gating linea-internet + blackout sui server SOLO-Datto
+
+## Richiesta utente
+"Se un dispositivo Datto risulta offline MA la linea internet e' online, e se altri
+dispositivi della rete risultano online (Datto + altri controlli), allora il problema
+e' sicuro al 100% sul dispositivo offline."
+
+## Analisi
+- Watchdog dispositivi VITALI/managed (`run_vital_watchdog` + `correlation_engine`):
+  regola GIA' implementata — Datto contribuisce solo se `datto_reliable` (gating
+  anti-blackout >=60% offline) + soppressione topologica "site_power_down"/"site_isolated"
+  quando internet giu' + connettore cieco.
+- Watchdog server SOLO-Datto (`run_datto_watchdog` parte B): BUCO — emetteva
+  "SERVER DATTO OFFLINE" solo su `online:false` + soglia oraria, SENZA verificare
+  linea internet ne' blackout di massa.
+
+## Fix (alert_engine.py::run_datto_watchdog)
+- Costruito `source_health` via `correlation_engine.build_context` a inizio watchdog.
+- Nel blocco `if not online:` aggiunto gating: si emette l'alert SOLO se
+  `internet_up is not False` (linea non provata giu') E `datto_reliable is not False`
+  (nessun blackout di massa = altri device del sito online). Se non ci sono prove
+  (internet_up=None) NON si blocca, per non perdere alert su clienti senza sonda WAN.
+
+## Verifica
+- run_datto_watchdog eseguito su dati reali: OK, actions=0, nessuna eccezione.
+- source_health cliente linkato da3d6e40: internet_up=True, datto_reliable=True -> un
+  server solo-Datto offline verrebbe correttamente allertato (linea up, no blackout).
+- Backend live sano dopo hot-reload.
+
+---
+
+
+# 2026-07-24 — [P0] Fix regressione sync Datto RMM: 27/28 device scartati (deviceType dict)
+
+## Segnalazione utente
+"Controllo che DattoRMM funzioni correttamente, faccia sync e match corretti al 100%".
+
+## Root cause (verificata dai log)
+In `_refresh_sites_cache._process` (routes/datto_rmm.py, riga 602):
+`(dev.get("deviceType") or ...).strip()` sollevava `AttributeError: 'dict' object has
+no attribute 'strip'` perche' Datto RMM ritorna `deviceType` come OGGETTO
+`{"category": "...", "type": "..."}`, non stringa. Con `asyncio.gather(return_exceptions=True)`
+l'eccezione veniva inghiottita e loggata solo come conteggio: 27/28 device scartati a
+OGNI sync (auto e manuale). Persisted=1, matched_endpoints=1.
+
+## Fix
+- Aggiunto helper `_device_type_str()` che normalizza `deviceType` dict/str/None in stringa
+  (concatena category+type) senza sollevare.
+- Aggiunto logging con traceback (`err_samples`) sui device scartati per diagnosi futura.
+
+## Verifica end-to-end (curl + DB)
+- sync-now: persisted 1->28, matched_endpoints 1->24
+- diagnostics: healthy=true
+- DB: device_type popolato (es. "Server Main System Chassis"), is_server=9,
+  25 managed_devices con datto_uid, ladder match: MAC=22, IP=2, hostname=1
+- Nessun nuovo warning "device skippati" dopo il fix.
+
+---
+
+
+# 2026-07-24 — Fix falso-ROSSO su server (Datto come evidenza per lo status)
+
+## Segnalazione utente (produzione)
+Server SRVDC/SRVPALMOGAL/SRVGESTGAL/SRVDATIGAL/SRVTERMGAL (192.168.16.x, Hyper-V)
+mostrati ROSSI (offline) ma in realta' ONLINE. "Spiegami i controlli che fai."
+
+## I controlli che determinano il pallino (GET /api/devices)
+In ordine, un device e' ONLINE se:
+1. **L2 forte**: presente nella FDB dello switch via SNMP (mac_table_switch).
+2. **Scanner LAN**: visto da ARP/scanner del connettore < 5 min.
+3. **Ping ICMP/TCP**: `effective_reachable` (con debounce) risponde.
+4. **L2 debole** (ARP/mDNS) MA solo se concorde col ping.
+Altrimenti → OFFLINE (rosso).
+
+## Root cause del falso-rosso
+I server Windows/Hyper-V spesso **bloccano ICMP** e, se sono VM su vSwitch
+isolato, **non compaiono in ARP/FDB/SNMP** → nessuna delle 4 evidenze scatta →
+falso OFFLINE. Il segnale che li vede vivi (agent **Datto RMM online**) NON era
+usato per il pallino (solo dal motore di alerting).
+
+## Fix (routes/devices.py)
+Aggiunto **Datto come evidenza positiva** per lo status: se l'agent Datto riporta
+il device ONLINE con heartbeat fresco (< 30 min), il device viene promosso a
+ONLINE (evidence "datto"), sia nel connector-loop sia nel managed-loop. Lookup per
+datto_uid / IP / MAC. Chiavi **client-scoped** (multi-tenant safe).
+Guardia anti-falso-verde: Datto offline o heartbeat stantio (>30min) NON promuove.
+
+## Test — testing agent iteration_95.json (backend 100%, 7/7, 0 issue)
+- tests/test_datto_evidence.py: promozione via uid/IP/MAC; negativi (offline,
+  stale, no-evidence) restano offline; ping/L2 reali invariati (no falso-verde).
+
+---
+
+
 # 2026-07-24 — Auto-risoluzione alert su CONFERMA POSITIVA (no AI, no TTL)
 
 ## Richiesta utente

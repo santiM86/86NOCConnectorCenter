@@ -137,6 +137,59 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
         if md_ip:
             managed_by_ip[md_ip] = md
 
+    # v2026-07-24 DATTO-AS-EVIDENCE (fix falso-rosso su server ICMP-bloccati):
+    # i server Windows/Hyper-V spesso bloccano ICMP e possono NON comparire in
+    # ARP/FDB/SNMP (VM su vSwitch isolato) → risultavano OFFLINE (rosso) pur
+    # essendo online. Se l'agent Datto RMM riporta il device ONLINE (heartbeat
+    # fresco), lo usiamo come evidenza positiva per lo status del pallino,
+    # esattamente come fa il motore di alerting (evidence fusion).
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+    _dnow = _dt.now(_tz.utc)
+    datto_online_by_uid: dict = {}
+    datto_online_by_ip: dict = {}
+    datto_online_by_mac: dict = {}
+    try:
+        async for dd in db.datto_devices.find(
+            {"online": True},
+            {"_id": 0, "client_id": 1, "uid": 1, "ip": 1, "ip_list": 1,
+             "mac": 1, "mac_list": 1, "datto_last_seen": 1},
+        ):
+            ls = dd.get("datto_last_seen")
+            fresh = True
+            if ls:
+                try:
+                    lsd = _dt.fromisoformat(str(ls).replace("Z", "+00:00"))
+                    fresh = (_dnow - lsd) < _td(minutes=30)
+                except Exception:
+                    fresh = True
+            if not fresh:
+                continue
+            cid = dd.get("client_id")
+            if dd.get("uid"):
+                datto_online_by_uid[(cid, dd["uid"])] = True
+            for _ip in ([dd.get("ip")] + (dd.get("ip_list") or [])):
+                if _ip:
+                    datto_online_by_ip[(cid, _ip)] = True
+            for _m in ([dd.get("mac")] + (dd.get("mac_list") or [])):
+                _mn = (_m or "").lower().replace("-", ":")
+                if _mn:
+                    datto_online_by_mac[(cid, _mn)] = True
+    except Exception:
+        pass
+
+    def _datto_online(md_doc, ip_val):
+        cid = (md_doc or {}).get("client_id")
+        uid = (md_doc or {}).get("datto_uid")
+        if uid and datto_online_by_uid.get((cid, uid)):
+            return True
+        if ip_val and datto_online_by_ip.get((cid, ip_val)):
+            return True
+        _mn = ((md_doc or {}).get("mac") or "").lower().replace("-", ":")
+        if _mn and datto_online_by_mac.get((cid, _mn)):
+            return True
+        return False
+
+
     # v3.8.22 SCANNER LIVE-SEEN: cross-check con discovered_endpoints.
     # Lo Scanner aggiorna SEMPRE discovered_endpoints (lan-scan ARP/mDNS) anche
     # per device aggiunti manualmente (source=manual / connector-master). Usiamo
@@ -345,6 +398,11 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
                 md_status = "online"
             elif _effective_reachable(pd):
                 live_evidence2 = (pd.get("method") or pd.get("ping_method") or "ping").strip()
+            # v2026-07-24: Datto agent online (heartbeat fresco) come evidenza
+            # positiva → niente falso-rosso su server ICMP-bloccati/non in FDB.
+            if md_status == "offline" and _datto_online(md, ip):
+                md_status = "online"
+                live_evidence2 = "datto"
             # display name: priorità centralizzata su best_display_name():
             # sys_name (SNMP) → hostname (NBNS) → mdns_name → name → fingerbank.
             # Vedi nota nel branch managed_devices sotto.
@@ -531,6 +589,12 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
             md_status = _scanner_status_from_last_seen(md.get("last_seen_at"))
         else:
             md_status = "pending"
+        # v2026-07-24: Datto agent online (heartbeat fresco) come evidenza
+        # positiva → elimina il falso-rosso sui server Windows/Hyper-V che
+        # bloccano ICMP e non compaiono in ARP/FDB/SNMP.
+        if md_status in ("offline", "pending") and _datto_online(md, md_ip):
+            md_status = "online"
+            live_evidence3 = "datto"
         # display name: priorità centralizzata su best_display_name():
         # sys_name (SNMP) → hostname (NBNS) → mdns_name → name → fingerbank.
         # Questo evita la UI con righe "10.10.1.55  10.10.1.55  snmp:public"
