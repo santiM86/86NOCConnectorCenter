@@ -693,3 +693,17 @@ html { overscroll-behavior-y: contain; }
 .mdash-rstatus { flex-shrink:0;font-size:11px;font-weight:800;letter-spacing:.3px;font-variant-numeric:tabular-nums; }
 .mdash-open-full { width:100%;margin-top:14px;padding:11px;border-radius:10px;background:rgba(0,122,255,.12);border:1px solid rgba(0,122,255,.28);color:#3B9EFF;font-size:13px;font-weight:800;cursor:pointer;transition:background .15s; }
 .mdash-open-full:active { background:rgba(0,122,255,.22); }
+/* Pull-to-refresh */
+.mdash-ptr { display:flex;align-items:center;justify-content:center;gap:8px;overflow:hidden;color:var(--text-muted);transition:height .12s ease-out; }
+.mdash-ptr-txt { font-size:11px;font-weight:700;letter-spacing:.3px; }
+
+/* Pulsante notifiche nel banner */
+.mdash-bell { flex-shrink:0;width:38px;height:38px;border-radius:10px;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,.06);border:1px solid var(--bg-border);color:currentColor;cursor:pointer;transition:background .15s,transform .1s; }
+.mdash-bell:active { transform:scale(.92); }
+.mdash-bell.on { color:#34C759;background:rgba(52,199,89,.14);border-color:rgba(52,199,89,.3); }
+.mdash-bell.off { color:#8E8E93; }
+.mdash-bell:disabled { opacity:.6; }
+
+/* Strip feedback notifiche */
+.mdash-notif-msg { margin:10px 12px 0;padding:10px 12px;border-radius:10px;background:rgba(0,122,255,.12);border:1px solid rgba(0,122,255,.28);color:#3B9EFF;font-size:12px;font-weight:700;text-align:center;animation:mdashReveal .2s ease-out; }
+

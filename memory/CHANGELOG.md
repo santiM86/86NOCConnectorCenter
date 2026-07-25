@@ -1,3 +1,37 @@
+# 2026-07-25 — Mobile: pull-to-refresh + controllo notifiche push visibile
+
+## Richiesta utente
+"Aggiungi il pull-to-refresh nativo e le notifiche push (c'e' gia' PwaProvider)
+cosi' un tecnico riceve sul telefono l'alert critico anche con l'app chiusa."
+
+## Stato pre-esistente (verificato)
+Infrastruttura push GIA' completa: VAPID configurato (backend/.env), routes/push.py
+(vapid-public-key/subscribe/unsubscribe/status/test), sw.js con handler push +
+notificationclick, alert_engine -> webpush.notify_new_alert. `notify_new_alert`
+invia i critical+high all'on-call (o admin+operator), con requireInteraction per i
+critici -> arrivano con app chiusa via Service Worker. SW registrato in index.js.
+
+## Implementazione (frontend)
+- `PwaProvider.js`: registrazione SW resa robusta (fallback `serviceWorker.ready`)
+  e `subscribeToPush` con fallback su `ready` (evita no-op se swRegistration nullo).
+- `MobileDashboard.js`:
+  - PULL-TO-REFRESH nativo: touch handlers (start/move/end) attivi solo con
+    scroller in cima, resistenza 0.5x, cap 90px, soglia 64px; indicatore con
+    spinner rotante + "Rilascia per aggiornare".
+  - Pulsante NOTIFICHE (campanella) sempre visibile nel banner: stato granted
+    (verde, tap=invia test push), default (tap=richiede permesso+iscrive),
+    denied (mostra come sbloccare). Feedback inline `mdash-notif-msg`.
+- `index.css`: stili `.mdash-ptr`, `.mdash-bell`, `.mdash-notif-msg`.
+
+## Verifica
+- Frontend compila. Screenshot mobile: campanella presente e funzionante
+  (in headless permesso=denied -> feedback "Notifiche bloccate…" corretto).
+- Endpoint: /api/push/vapid-public-key (key len 87), /api/push/status
+  {configured:true}. PTR reso (nascosto a riposo). Refresh manuale OK.
+
+---
+
+
 # 2026-07-25 — Redesign completo layout MOBILE per tecnici sul campo
 
 ## Richiesta utente

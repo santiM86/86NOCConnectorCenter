@@ -1,10 +1,12 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import axios from "axios";
 import { API } from "@/App";
 import { useNavigate } from "react-router-dom";
+import { usePwa } from "@/components/PwaProvider";
 import {
   Warning, CheckCircle, ArrowClockwise,
   CaretDown, Globe, PlugsConnected, Plugs, ShieldCheck, Funnel,
+  BellRinging, BellSlash, Bell,
 } from "@phosphor-icons/react";
 
 /**
@@ -53,6 +55,42 @@ export default function MobileDashboard() {
   const [updatedAt, setUpdatedAt] = useState(null);
   const [onlyProblems, setOnlyProblems] = useState(false);
   const navigate = useNavigate();
+  const pwa = usePwa();
+
+  // --- Notifiche push (tecnico riceve alert critici anche ad app chiusa) ---
+  const [notifMsg, setNotifMsg] = useState("");
+  const [notifBusy, setNotifBusy] = useState(false);
+  const notifPerm = pwa?.notificationPermission || "default";
+
+  const flash = useCallback((m) => {
+    setNotifMsg(m);
+    setTimeout(() => setNotifMsg(""), 3200);
+  }, []);
+
+  const handleNotif = useCallback(async () => {
+    if (!pwa) return;
+    if (notifBusy) return;
+    if (notifPerm === "denied") {
+      flash("Notifiche bloccate. Abilitale dalle impostazioni del browser/telefono.");
+      return;
+    }
+    setNotifBusy(true);
+    try {
+      if (notifPerm !== "granted") {
+        const perm = await pwa.requestNotificationPermission();
+        if (perm !== "granted") { flash("Permesso notifiche negato."); return; }
+      }
+      const sub = await pwa.subscribeToPush();
+      if (notifPerm === "granted") {
+        const r = await pwa.sendTestPush();
+        flash(r?.success ? "Notifica di test inviata ✓" : "Impossibile inviare il test.");
+      } else {
+        flash(sub ? "Notifiche attivate ✓ Riceverai gli alert critici." : "Attivazione non riuscita.");
+      }
+    } finally {
+      setNotifBusy(false);
+    }
+  }, [pwa, notifPerm, notifBusy, flash]);
 
   const fetchData = useCallback(async () => {
     try {
@@ -67,6 +105,45 @@ export default function MobileDashboard() {
     const i = setInterval(fetchData, 15000);
     return () => clearInterval(i);
   }, [fetchData]);
+
+  // --- Pull-to-refresh nativo ---
+  const [pull, setPull] = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
+  const startY = useRef(0);
+  const pulling = useRef(false);
+  const THRESHOLD = 64;
+
+  const scroller = () => document.querySelector(".main-content") || document.scrollingElement;
+
+  const onTouchStart = (e) => {
+    const sc = scroller();
+    if (sc && sc.scrollTop <= 0 && !refreshing) {
+      startY.current = e.touches[0].clientY;
+      pulling.current = true;
+    } else {
+      pulling.current = false;
+    }
+  };
+  const onTouchMove = (e) => {
+    if (!pulling.current || refreshing) return;
+    const dy = e.touches[0].clientY - startY.current;
+    if (dy > 0) {
+      setPull(Math.min(dy * 0.5, 90)); // resistenza + cap
+    } else {
+      setPull(0);
+    }
+  };
+  const onTouchEnd = async () => {
+    if (!pulling.current) return;
+    pulling.current = false;
+    if (pull >= THRESHOLD) {
+      setRefreshing(true);
+      setPull(THRESHOLD);
+      await fetchData();
+      setRefreshing(false);
+    }
+    setPull(0);
+  };
 
   const g = data?.global;
   const clients = useMemo(() => {
@@ -91,7 +168,23 @@ export default function MobileDashboard() {
       : { cls: "ok", txt: "Tutti i clienti operativi" };
 
   return (
-    <div className="mdash" data-testid="mobile-dashboard">
+    <div
+      className="mdash"
+      data-testid="mobile-dashboard"
+      onTouchStart={onTouchStart}
+      onTouchMove={onTouchMove}
+      onTouchEnd={onTouchEnd}
+    >
+      {/* Pull-to-refresh indicator */}
+      <div className="mdash-ptr" style={{ height: pull }} data-testid="mobile-ptr">
+        <ArrowClockwise
+          size={20}
+          className={refreshing ? "animate-spin" : ""}
+          style={{ opacity: Math.min(pull / THRESHOLD, 1), transform: `rotate(${pull * 3}deg)` }}
+        />
+        {pull >= THRESHOLD && !refreshing && <span className="mdash-ptr-txt">Rilascia per aggiornare</span>}
+      </div>
+
       {/* Banner stato globale */}
       <div className={`mdash-banner mdash-banner-${banner.cls}`} data-testid="mobile-global-status">
         <div className="mdash-banner-icon">
@@ -104,10 +197,28 @@ export default function MobileDashboard() {
             {updatedAt && <> · agg. {updatedAt.toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" })}</>}
           </span>
         </div>
+        <button
+          onClick={handleNotif}
+          className={`mdash-bell ${notifPerm === "granted" ? "on" : notifPerm === "denied" ? "off" : ""}`}
+          data-testid="mobile-notif-btn"
+          aria-label="Notifiche push"
+          disabled={notifBusy}
+        >
+          {notifBusy ? <ArrowClockwise size={18} className="animate-spin" />
+            : notifPerm === "granted" ? <BellRinging size={18} weight="fill" />
+            : notifPerm === "denied" ? <BellSlash size={18} />
+            : <Bell size={18} />}
+        </button>
         <button onClick={fetchData} className="mdash-refresh" data-testid="mobile-refresh" aria-label="Aggiorna">
           <ArrowClockwise size={18} />
         </button>
       </div>
+
+      {/* Feedback notifiche */}
+      {notifMsg && (
+        <div className="mdash-notif-msg" data-testid="mobile-notif-msg">{notifMsg}</div>
+      )}
+
 
       {/* Riepilogo semafori */}
       <div className="mdash-summary" data-testid="mobile-summary">
