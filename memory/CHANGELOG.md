@@ -1,3 +1,30 @@
+# 2026-07-25 — Fix banner "Aggiorna connector": mostra solo se azionabile
+
+## Segnalazione utente
+"Controlla il banner sopra (v4.25.4 disponibile, 2 connectors su versione
+precedente): serve ancora e compare al momento giusto? Secondo me no."
+
+## Root cause
+`AgentUpgradeBanner` si mostrava quando `outdated_count > 0`, SENZA considerare
+se i connector obsoleti fossero online. Verificato via /api/agents/upgrade-status:
+live_agents=0, tutti gli obsoleti offline (vecchi agent dev/test mai piu'
+connessi) -> il pulsante "Aggiorna ora" era disabilitato -> banner = CTA non
+azionabile (rumore, "momento sbagliato").
+
+## Fix (AgentUpgradeBanner.js)
+- Il banner ora compare SOLO se `liveOutdated > 0` (almeno un connector obsoleto
+  ONLINE, quindi realmente aggiornabile). Se tutti offline -> nascosto.
+- Testo semplificato al conteggio azionabile: "{N} connector online su versione
+  precedente". Pulsante sempre attivo (perche' reso solo quando c'e' del live).
+
+## Verifica
+- Screenshot desktop: banner ASSENTE (0 connector online obsoleti) -> header
+  Panoramica pulito. In prod con connector online obsoleti si mostrera' con
+  pulsante abilitato.
+
+---
+
+
 # 2026-07-25 — Mobile: pull-to-refresh + controllo notifiche push visibile
 
 ## Richiesta utente

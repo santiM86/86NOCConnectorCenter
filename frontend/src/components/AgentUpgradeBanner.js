@@ -84,7 +84,11 @@ export default function AgentUpgradeBanner() {
   if ((data.outdated_count || 0) === 0) return null;
 
   const liveOutdated = (data.outdated || []).filter((a) => a.live).length;
-  const total = data.outdated_count;
+  // Mostra il banner SOLO quando l'aggiornamento e' realmente eseguibile, cioe'
+  // quando esiste almeno un connector obsoleto ONLINE. Se tutti gli obsoleti
+  // sono offline (es. vecchi agent dev/test mai piu' connessi) il banner
+  // sarebbe un CTA non azionabile -> lo nascondiamo.
+  if (liveOutdated === 0) return null;
 
   return (
     <div
@@ -95,8 +99,7 @@ export default function AgentUpgradeBanner() {
       <span className="text-amber-200">
         <span className="font-semibold">{data.latest}</span> disponibile.
         <span className="ml-1.5 text-amber-300/80">
-          {total} {total === 1 ? "connector" : "connectors"} su versione precedente
-          {liveOutdated > 0 && total !== liveOutdated && ` (${liveOutdated} online)`}
+          {liveOutdated} {liveOutdated === 1 ? "connector online" : "connectors online"} su versione precedente
         </span>
       </span>
       <button
