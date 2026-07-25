@@ -153,6 +153,13 @@ func showVersionDialog(app *App) {
 		ver := app.agent.Version
 		if ver == "" {
 			ver = "?"
+		} else {
+			// Normalizza il prefisso "v": app.agent.Version puo' arrivare
+			// con o senza "v" iniziale (es. "v4.25.4" oppure "4.25.4"). Il
+			// display la ri-antepone ("v"+ver): senza questa normalizzazione
+			// si otteneva "vv4.25.4" (bug segnalato sullo scanner). Rimuove
+			// UNA sola "v"/"V" iniziale.
+			ver = strings.TrimPrefix(strings.TrimPrefix(ver, "v"), "V")
 		}
 		buildDate := app.agent.BuildDate
 		if buildDate == "" {
