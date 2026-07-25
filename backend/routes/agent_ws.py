@@ -3079,37 +3079,27 @@ def _cache_path(version: str, filename: str) -> str:
     return _os.path.join(_AGENT_BUILDS_CACHE_DIR, safe_ver, safe_name)
 
 
-@router.get("/agent-builds/{version}/{filename}")
-async def agent_builds_asset(version: str, filename: str, token: Optional[str] = None):
-    """Streama un asset di release dal Center (proxy verso GitHub).
+async def ensure_release_asset_cached(version: str, filename: str):
+    """Scarica (se non in cache) l'asset {filename} della release {version}
+    dal GitHub Release e lo cachea su disco. Ritorna (cache_path, asset_meta).
 
-    L'agent autentica con ?token=<agent_token>. Il Center scarica da GitHub
-    usando AGENT_GITHUB_TOKEN (PAT server-side). I file vengono cachati su
-    disco in AGENT_BUILDS_CACHE_DIR (default /tmp/agent-builds-cache).
-
-    Hit di cache → file servito direttamente (zero overhead).
-    Miss → download da GitHub, salva su disco, serve.
+    SORGENTE UNICA DI VERITA' condivisa da: proxy agent-builds, OTA
+    self-update e ArgusSetup.zip. Solleva HTTPException se release/asset non
+    esiste o il download fallisce.
     """
-    await _token_or_403(token)
-    # Risolvi version
     meta = await _fetch_release_meta(version)
     real_ver = meta["version"]
-    # Trova l'asset corrispondente
     asset = next((a for a in meta["assets"] if a["name"] == filename), None)
     if not asset:
         raise HTTPException(status_code=404, detail=f"asset {filename} non trovato in release {real_ver}")
-
     cache_path = _cache_path(real_ver, filename)
     _os.makedirs(_os.path.dirname(cache_path), exist_ok=True)
-
     if not _os.path.exists(cache_path) or (
         asset.get("size") and _os.path.getsize(cache_path) != asset["size"]
     ):
-        # Cache miss: scarica dal GitHub. Preferiamo browser_download_url
-        # (CDN pubblico, no auth, no rate-limit api) per asset di release
-        # PUBBLICHE; usiamo asset API URL solo se browser_download non e'
-        # disponibile (es. repo privato). Questo evita di avere bisogno
-        # di AGENT_GITHUB_TOKEN per il download dei binari.
+        # Cache miss: scarica da GitHub. Preferiamo browser_download_url (CDN
+        # pubblico, no auth/rate-limit) per release PUBBLICHE; asset API URL
+        # solo se browser_download non disponibile (repo privato).
         gh_token = (_os.environ.get("AGENT_GITHUB_TOKEN") or "").strip()
         prefer_browser = bool(asset.get("browser_download_url"))
         if prefer_browser:
@@ -3117,10 +3107,7 @@ async def agent_builds_asset(version: str, filename: str, token: Optional[str] =
             headers = {"User-Agent": "86NocCenter-buildproxy"}
         else:
             download_url = asset["download_url"]
-            headers = {
-                "User-Agent": "86NocCenter-buildproxy",
-                "Accept": "application/octet-stream",
-            }
+            headers = {"User-Agent": "86NocCenter-buildproxy", "Accept": "application/octet-stream"}
             if gh_token:
                 headers["Authorization"] = f"Bearer {gh_token}"
         try:
@@ -3139,10 +3126,22 @@ async def agent_builds_asset(version: str, filename: str, token: Optional[str] =
                 _os.replace(tmp_path, cache_path)
             await loop.run_in_executor(None, _dl)
         except Exception as e:  # noqa: BLE001
-            logger.error("agent-builds proxy download fail ver=%s name=%s err=%s",
+            logger.error("ensure_release_asset_cached fail ver=%s name=%s err=%s",
                          real_ver, filename, e)
             raise HTTPException(status_code=502, detail=f"download asset GitHub fallito: {e}")
+    return cache_path, asset
 
+
+@router.get("/agent-builds/{version}/{filename}")
+async def agent_builds_asset(version: str, filename: str, token: Optional[str] = None):
+    """Streama un asset di release dal Center (proxy verso GitHub).
+
+    L'agent autentica con ?token=<agent_token>. I file vengono cachati su
+    disco in AGENT_BUILDS_CACHE_DIR. Hit cache → servito diretto; miss →
+    download da GitHub via `ensure_release_asset_cached`.
+    """
+    await _token_or_403(token)
+    cache_path, asset = await ensure_release_asset_cached(version, filename)
     return FileResponse(
         path=cache_path,
         filename=filename,
@@ -4160,33 +4159,57 @@ async def update_manifest(token: Optional[str] = None,
     if not platform or platform not in _ALLOWED_PLATFORMS:
         raise HTTPException(status_code=400, detail="platform required")
     bin_name = "nocagent.exe" if platform.startswith("windows") else "nocagent"
-    path = (_AGENT_BUILD_DIR / platform / bin_name).resolve()
-    try:
-        path.relative_to(_AGENT_BUILD_DIR)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail="invalid path") from e
-    if not path.is_file():
-        raise HTTPException(status_code=404, detail="binary not built")
-    digest = _hashlib_ota.sha256(path.read_bytes()).digest()
+    public_http = _os.environ.get("AGENT_PUBLIC_HTTP_URL", "https://argus.86bit.it")
+    os_part, arch_part = platform.split("-", 1)
+
+    # UNIFICAZIONE sorgente versione (2026-07): l'OTA usa la STESSA sorgente
+    # dell'install manifest = GitHub releases/latest (proxy agent-builds).
+    # Firmiamo il binario EFFETTIVAMENTE servito dall'url (byte-identico),
+    # eliminando il vecchio bug in cui si firmava il binario LOCALE
+    # (_AGENT_BUILD_DIR) ma l'url scaricava quello GitHub -> hash/firma non
+    # combaciavano -> l'OTA falliva SEMPRE (l'agent non si auto-aggiornava).
+    latest_ver = await _resolve_latest_agent_version_safe()
+    version = None
+    url = None
+    digest = None
+    if latest_ver and latest_ver != "latest":
+        try:
+            cache_path, _asset = await ensure_release_asset_cached(latest_ver, bin_name)
+            digest = _hashlib_ota.sha256(_pathlib.Path(cache_path).read_bytes()).digest()
+            version = latest_ver
+            url = f"{public_http}/api/agent-builds/{latest_ver}/{bin_name}?token={token}"
+        except HTTPException as e:
+            logger.warning("OTA manifest: fetch GitHub %s/%s fallito (%s), fallback binario locale",
+                           latest_ver, bin_name, getattr(e, "detail", e))
+
+    if digest is None:
+        # Fallback retrocompat/offline: binario locale in _AGENT_BUILD_DIR,
+        # url via /api/agent/binary (che a sua volta redirige a GitHub latest
+        # quando disponibile). Best-effort come prima dell'unificazione.
+        path = (_AGENT_BUILD_DIR / platform / bin_name).resolve()
+        try:
+            path.relative_to(_AGENT_BUILD_DIR)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail="invalid path") from e
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail="binary not built")
+        digest = _hashlib_ota.sha256(path.read_bytes()).digest()
+        version_path = path.with_suffix(".version")
+        if version_path.is_file():
+            version = version_path.read_text().strip()
+        else:
+            st = path.stat()
+            version = f"build-{int(st.st_mtime)}"
+        url = f"{public_http}/api/agent/binary/{platform}/{bin_name}?token={token}"
+
     keys = await _get_signing_keys()
     sk = _ed25519.Ed25519PrivateKey.from_private_bytes(keys["priv"])
     sig = sk.sign(digest)
-    public_http = _os.environ.get("AGENT_PUBLIC_HTTP_URL", "https://argus.86bit.it")
-    os_part, arch_part = platform.split("-", 1)
-    # Inject the build version by reading it from the binary string table
-    # would require parsing PE/ELF; cheaper: keep a sidecar version.txt next
-    # to the binary on every build. Fallback to mtime-based pseudo-version.
-    version_path = path.with_suffix(".version")
-    if version_path.is_file():
-        version = version_path.read_text().strip()
-    else:
-        st = path.stat()
-        version = f"build-{int(st.st_mtime)}"
     return {
         "version": version,
         "os": os_part,
         "arch": arch_part,
-        "url": f"{public_http}/api/agent/binary/{platform}/{bin_name}?token={token}",
+        "url": url,
         "sha256": digest.hex(),
         "signature": sig.hex(),
     }

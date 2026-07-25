@@ -33,7 +33,8 @@ _VER_RE = re.compile(r"^v?[0-9.]+$")
 
 
 def _resolve_version(requested: str) -> str:
-    """Risolve 'latest' alla versione più alta presente nel mirror.
+    """Risolve 'latest' alla versione più alta presente nel mirror LOCALE.
+    Usato SOLO come fallback quando GitHub non è raggiungibile.
     Per le richieste esplicite (v4.25.2) verifica solo l'esistenza."""
     if not os.path.isdir(_BASE_DIR):
         raise HTTPException(404, "no builds cached on this server")
@@ -50,6 +51,49 @@ def _resolve_version(requested: str) -> str:
     return requested
 
 
+async def _resolve_setup_bin(version_req: str):
+    """Risolve versione + path di `nocinstall.exe` per il pacchetto ArgusSetup.
+
+    UNIFICAZIONE (2026-07): la sorgente di verità è **GitHub releases/latest**
+    (identica al manifest di installazione e all'OTA), così ArgusSetup imbarca
+    SEMPRE l'installer dell'ultima release. Ordine:
+      1. Risolvi la latest GitHub (o la versione esplicita richiesta).
+      2. Se presente nel mirror locale → usa quello (zero download).
+      3. Altrimenti scarica `nocinstall.exe` dalla release GitHub (cache condivisa).
+      4. Fallback totale (GitHub down): mirror locale legacy.
+    Ritorna (version, bin_path).
+    """
+    from routes import agent_ws as _aws  # lazy import per evitare cicli
+
+    ver = None
+    try:
+        if version_req == "latest":
+            ver = await _aws._resolve_latest_agent_version_safe()
+        else:
+            ver = version_req if version_req.startswith("v") else f"v{version_req}"
+        if ver == "latest":
+            ver = None
+    except Exception:
+        ver = None
+
+    if ver:
+        local = os.path.join(_BASE_DIR, ver, "nocinstall.exe")
+        if os.path.isfile(local):
+            return ver, local
+        try:
+            cache_path, _asset = await _aws.ensure_release_asset_cached(ver, "nocinstall.exe")
+            return ver, cache_path
+        except Exception:
+            pass  # cade sul fallback mirror locale
+
+    # Fallback legacy: mirror locale
+    lver = _resolve_version(version_req)
+    bin_path = os.path.join(_BASE_DIR, lver, "nocinstall.exe")
+    if not os.path.isfile(bin_path):
+        raise HTTPException(503, f"nocinstall.exe not cached for {lver}")
+    return lver, bin_path
+
+
 @router.get("/setup.zip")
 async def download_setup_zip(
     token: str = Query(..., description="Client install token (server-side issued)"),
@@ -62,8 +106,7 @@ async def download_setup_zip(
 ) -> StreamingResponse:
     if not _TOKEN_RE.match(token):
         raise HTTPException(400, "invalid token format")
-    ver = _resolve_version(version)
-    bin_path = os.path.join(_BASE_DIR, ver, "nocinstall.exe")
+    ver, bin_path = await _resolve_setup_bin(version)
     if not os.path.isfile(bin_path):
         raise HTTPException(503, f"nocinstall.exe not cached for {ver}")
 
