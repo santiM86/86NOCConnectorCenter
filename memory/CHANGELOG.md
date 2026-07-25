@@ -1,3 +1,33 @@
+# 2026-07-25 — Fix cosmetico "vv4.25.4" (doppia v) nel dialog UI scanner
+
+## Segnalazione utente (screenshot)
+Stesso setup wizard: installando MASTER la versione è corretta ("v4.25.4"),
+installando SCANNER il dialog "ARGUS Connector · Informazioni" mostra
+"Versione: vv4.25.4" (doppia v). La riga "Aggiornamento: v4.25.4 — già allineato"
+conferma che la versione REALE è 4.25.4 → bug puramente COSMETICO.
+
+## Root cause
+`noc-agent/cmd/nocui/update_actions_windows.go`:
+- riga 153: `ver := app.agent.Version` (arriva già come "v4.25.4", con la v)
+- riga 278: `fieldRow("Versione", "v"+ver, ...)` → ri-antepone "v" → "vv4.25.4"
+La convenzione storica era BuildVersion senza "v" (es. "4.6.0"); ora
+app.agent.Version arriva con la "v" e il display la raddoppia.
+Il master mostra il dialog MsgBox legacy (path diverso) → non raddoppiava.
+
+## Fix
+Normalizzato `ver` subito dopo la lettura: rimossa UNA sola "v"/"V" iniziale
+(`strings.TrimPrefix`), così il successivo `"v"+ver` produce sempre esattamente
+una "v". Sistema sia il display (278) sia il fallback MsgBox (350).
+
+## Limiti / deploy
+- NON testabile in questo ambiente: è un binario Go Windows e non c'è toolchain Go.
+- È COSMETICO: monitoraggio e funzionalità non impattati (agent = v4.25.4).
+- Per arrivare in produzione serve BUILDARE e PUBBLICARE una nuova release agent
+  su GitHub, poi aggiornare i connector (Aggiorna ora / OTA).
+
+---
+
+
 # 2026-07-25 — [P0] Unificazione sorgente versione Agent (fix master≠scanner + OTA rotto)
 
 ## Contesto (segnalazione utente)
