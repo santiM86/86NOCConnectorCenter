@@ -312,9 +312,16 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
     endpoints_by_client = {}
     devices_detail_by_client = {}
     endpoints_detail_by_client = {}
+    vital_detail_by_client = {}  # SOLO dispositivi vitali (per vista mobile tecnici)
     for d in devices:
         cid = d.get("client_id")
         status = d.get("status")
+        # Normalizza status legacy (db.devices usa "active"/"inactive") verso lo
+        # schema unificato online/offline cosi' conteggi e liste sono coerenti.
+        if status == "active":
+            status = "online"
+        elif status == "inactive":
+            status = "offline"
         is_ep = is_endpoint_type(d.get("device_type"))
         if is_ep:
             bucket = endpoints_by_client
@@ -352,6 +359,10 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
                 devices_by_client[cid]["vital_offline"] += 1
             elif status == "stale":
                 devices_by_client[cid]["vital_stale"] += 1
+            vital_detail_by_client.setdefault(cid, []).append({
+                "name": d.get("name", "?"), "ip": d.get("ip_address", ""),
+                "status": status or "unknown", "type": d.get("device_type", ""),
+            })
         detail_bucket[cid].append({
             "name": d.get("name", "?"), "ip": d.get("ip_address", ""), "status": status or "unknown",
             "type": d.get("device_type", ""),
@@ -610,6 +621,10 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
                 "wan_targets": wan_detail,
                 "devices_list": devices_detail_by_client.get(cid, []),
                 "endpoints_list": endpoints_detail_by_client.get(cid, []),
+                "vital_list": sorted(
+                    vital_detail_by_client.get(cid, []),
+                    key=lambda x: {"offline": 0, "stale": 1, "unknown": 2, "online": 3}.get(x.get("status"), 4),
+                ),
                 "recent_alerts": alerts_detail_by_client.get(cid, []),
             },
         })

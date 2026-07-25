@@ -1,225 +1,367 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import axios from "axios";
 import { API } from "@/App";
 import { useNavigate } from "react-router-dom";
+import { usePwa } from "@/components/PwaProvider";
 import {
-  WifiHigh, WifiSlash, Warning, CheckCircle, ShieldCheck,
-  Bell, ArrowClockwise, CaretRight, Printer, Globe,
+  Warning, CheckCircle, ArrowClockwise,
+  CaretDown, Globe, PlugsConnected, Plugs, ShieldCheck, Funnel,
+  BellRinging, BellSlash, Bell,
 } from "@phosphor-icons/react";
 
 /**
- * MobileDashboard - Vista mobile essenziale per tecnici in movimento.
- * Mostra per ogni cliente: health, dispositivi ON/OFF, alert, WAN status.
- * Un tap sul cliente apre i dettagli.
+ * MobileDashboard — vista telefono per tecnici sul campo.
+ * Mostra SOLO l'essenziale, scoping VITAL-ONLY (fonte /api/overview/clients):
+ *   - stato salute cliente (semaforo) + connettore
+ *   - stato linea WAN/Internet
+ *   - dispositivi VITALI su/giù (offline in cima)
+ *   - alert attivi (all'espansione)
+ * Clienti ordinati problemi-first dal backend. Tap = espandi in linea.
  */
+
+const HEALTH = {
+  critical: { color: "#FF3B30", label: "CRITICO" },
+  warning: { color: "#FFCC00", label: "DA CONTROLLARE" },
+  attention: { color: "#FF9500", label: "ATTENZIONE" },
+  ok: { color: "#34C759", label: "OK" },
+};
+
+const WAN_DOWN = new Set(["isp_down", "router_down", "firewall_down", "offline"]);
+const WAN_WARN = new Set(["degraded", "firewall_degraded", "router_degraded", "pending"]);
+
+function wanView(status) {
+  if (!status || status === "not_configured") return null;
+  if (WAN_DOWN.has(status)) return { cls: "red", label: "WAN GIÙ" };
+  if (WAN_WARN.has(status)) return { cls: "amber", label: "WAN !" };
+  return { cls: "green", label: "WAN OK" };
+}
+
+const SEV_COLOR = { critical: "#FF3B30", high: "#FF9500", medium: "#FFCC00", low: "#8E8E93" };
+const STATUS_COLOR = {
+  online: "#34C759", active: "#34C759", offline: "#FF3B30", inactive: "#FF3B30",
+  stale: "#FFCC00", pending: "#FFCC00", unknown: "#636366",
+};
+const STATUS_LABEL = {
+  online: "online", active: "online", offline: "OFFLINE", inactive: "OFFLINE",
+  stale: "incerto", pending: "in attesa", unknown: "n/d",
+};
+const statusColor = (s) => STATUS_COLOR[s] || "#34C759";
+const statusLabel = (s) => STATUS_LABEL[s] || "online";
+const isDownStatus = (s) => s === "offline" || s === "inactive";
+
 export default function MobileDashboard() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [updatedAt, setUpdatedAt] = useState(null);
+  const [onlyProblems, setOnlyProblems] = useState(false);
   const navigate = useNavigate();
+  const pwa = usePwa();
 
-  const fetch = useCallback(async () => {
+  // --- Notifiche push (tecnico riceve alert critici anche ad app chiusa) ---
+  const [notifMsg, setNotifMsg] = useState("");
+  const [notifBusy, setNotifBusy] = useState(false);
+  const notifPerm = pwa?.notificationPermission || "default";
+
+  const flash = useCallback((m) => {
+    setNotifMsg(m);
+    setTimeout(() => setNotifMsg(""), 3200);
+  }, []);
+
+  const handleNotif = useCallback(async () => {
+    if (!pwa) return;
+    if (notifBusy) return;
+    if (notifPerm === "denied") {
+      flash("Notifiche bloccate. Abilitale dalle impostazioni del browser/telefono.");
+      return;
+    }
+    setNotifBusy(true);
     try {
-      const r = await axios.get(`${API}/tv/dashboard`);
+      if (notifPerm !== "granted") {
+        const perm = await pwa.requestNotificationPermission();
+        if (perm !== "granted") { flash("Permesso notifiche negato."); return; }
+      }
+      const sub = await pwa.subscribeToPush();
+      if (notifPerm === "granted") {
+        const r = await pwa.sendTestPush();
+        flash(r?.success ? "Notifica di test inviata ✓" : "Impossibile inviare il test.");
+      } else {
+        flash(sub ? "Notifiche attivate ✓ Riceverai gli alert critici." : "Attivazione non riuscita.");
+      }
+    } finally {
+      setNotifBusy(false);
+    }
+  }, [pwa, notifPerm, notifBusy, flash]);
+
+  const fetchData = useCallback(async () => {
+    try {
+      const r = await axios.get(`${API}/overview/clients`);
       setData(r.data);
-    } catch {} finally { setLoading(false); }
+      setUpdatedAt(new Date());
+    } catch { /* keep previous data */ } finally { setLoading(false); }
   }, []);
 
   useEffect(() => {
-    fetch();
-    const i = setInterval(fetch, 15000);
+    fetchData();
+    const i = setInterval(fetchData, 15000);
     return () => clearInterval(i);
-  }, [fetch]);
+  }, [fetchData]);
 
-  if (loading) return (
-    <div className="flex items-center justify-center h-[60vh] text-[var(--text-muted)] text-sm">
-      <ArrowClockwise size={16} className="animate-spin mr-2" /> Caricamento...
-    </div>
-  );
+  // --- Pull-to-refresh nativo ---
+  const [pull, setPull] = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
+  const startY = useRef(0);
+  const pulling = useRef(false);
+  const THRESHOLD = 64;
 
+  const scroller = () => document.querySelector(".main-content") || document.scrollingElement;
+
+  const onTouchStart = (e) => {
+    const sc = scroller();
+    if (sc && sc.scrollTop <= 0 && !refreshing) {
+      startY.current = e.touches[0].clientY;
+      pulling.current = true;
+    } else {
+      pulling.current = false;
+    }
+  };
+  const onTouchMove = (e) => {
+    if (!pulling.current || refreshing) return;
+    const dy = e.touches[0].clientY - startY.current;
+    if (dy > 0) {
+      setPull(Math.min(dy * 0.5, 90)); // resistenza + cap
+    } else {
+      setPull(0);
+    }
+  };
+  const onTouchEnd = async () => {
+    if (!pulling.current) return;
+    pulling.current = false;
+    if (pull >= THRESHOLD) {
+      setRefreshing(true);
+      setPull(THRESHOLD);
+      await fetchData();
+      setRefreshing(false);
+    }
+    setPull(0);
+  };
+
+  const g = data?.global;
+  const clients = useMemo(() => {
+    const list = data?.clients || [];
+    return onlyProblems ? list.filter((c) => c.health === "critical" || c.health === "warning") : list;
+  }, [data, onlyProblems]);
+
+  if (loading) {
+    return (
+      <div className="mdash-loading" data-testid="mobile-dashboard-loading">
+        <ArrowClockwise size={18} className="animate-spin" /> Caricamento…
+      </div>
+    );
+  }
   if (!data) return null;
 
-  const g = data.global_stats;
-  const hasProblems = g.total_offline > 0 || g.critical_alerts > 0;
+  const hasProblems = (g?.clients_critical || 0) > 0 || (g?.clients_warning || 0) > 0;
+  const banner = (g?.clients_critical || 0) > 0
+    ? { cls: "bad", txt: `${g.clients_critical} client${g.clients_critical > 1 ? "i" : "e"} in stato critico` }
+    : (g?.clients_warning || 0) > 0
+      ? { cls: "warn", txt: `${g.clients_warning} client${g.clients_warning > 1 ? "i" : "e"} da controllare` }
+      : { cls: "ok", txt: "Tutti i clienti operativi" };
 
   return (
-    <div className="mobile-dash" data-testid="mobile-dashboard">
-      {/* Global status bar */}
-      <div className={`mobile-status ${hasProblems ? "mobile-status-bad" : "mobile-status-ok"}`} data-testid="mobile-global-status">
-        <div className="mobile-status-icon">
-          {hasProblems ? <Warning size={18} weight="bold" /> : <CheckCircle size={18} weight="bold" />}
+    <div
+      className="mdash"
+      data-testid="mobile-dashboard"
+      onTouchStart={onTouchStart}
+      onTouchMove={onTouchMove}
+      onTouchEnd={onTouchEnd}
+    >
+      {/* Pull-to-refresh indicator */}
+      <div className="mdash-ptr" style={{ height: pull }} data-testid="mobile-ptr">
+        <ArrowClockwise
+          size={20}
+          className={refreshing ? "animate-spin" : ""}
+          style={{ opacity: Math.min(pull / THRESHOLD, 1), transform: `rotate(${pull * 3}deg)` }}
+        />
+        {pull >= THRESHOLD && !refreshing && <span className="mdash-ptr-txt">Rilascia per aggiornare</span>}
+      </div>
+
+      {/* Banner stato globale */}
+      <div className={`mdash-banner mdash-banner-${banner.cls}`} data-testid="mobile-global-status">
+        <div className="mdash-banner-icon">
+          {hasProblems ? <Warning size={20} weight="fill" /> : <CheckCircle size={20} weight="fill" />}
         </div>
-        <div className="mobile-status-text">
-          {hasProblems ? "ATTENZIONE" : "TUTTO OPERATIVO"}
+        <div className="mdash-banner-body">
+          <span className="mdash-banner-title">{banner.txt}</span>
+          <span className="mdash-banner-sub">
+            {g?.devices_online}/{g?.total_devices} vitali online
+            {updatedAt && <> · agg. {updatedAt.toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" })}</>}
+          </span>
         </div>
-        <button onClick={fetch} className="mobile-refresh-btn" data-testid="mobile-refresh">
-          <ArrowClockwise size={14} />
+        <button
+          onClick={handleNotif}
+          className={`mdash-bell ${notifPerm === "granted" ? "on" : notifPerm === "denied" ? "off" : ""}`}
+          data-testid="mobile-notif-btn"
+          aria-label="Notifiche push"
+          disabled={notifBusy}
+        >
+          {notifBusy ? <ArrowClockwise size={18} className="animate-spin" />
+            : notifPerm === "granted" ? <BellRinging size={18} weight="fill" />
+            : notifPerm === "denied" ? <BellSlash size={18} />
+            : <Bell size={18} />}
+        </button>
+        <button onClick={fetchData} className="mdash-refresh" data-testid="mobile-refresh" aria-label="Aggiorna">
+          <ArrowClockwise size={18} />
         </button>
       </div>
 
-      {/* Quick stats */}
-      <div className="mobile-quick-stats" data-testid="mobile-quick-stats">
-        <div className="mobile-qs">
-          <span className="mobile-qs-v">{g.total_devices}</span>
-          <span className="mobile-qs-l">Dispositivi</span>
-        </div>
-        <div className="mobile-qs">
-          <span className="mobile-qs-v" style={{ color: "#34C759" }}>{g.total_online}</span>
-          <span className="mobile-qs-l">Online</span>
-        </div>
-        <div className="mobile-qs">
-          <span className="mobile-qs-v" style={{ color: g.total_offline > 0 ? "#FF3B30" : "#333" }}>{g.total_offline}</span>
-          <span className="mobile-qs-l">Offline</span>
-        </div>
-        <div className="mobile-qs">
-          <span className="mobile-qs-v" style={{ color: g.total_alerts > 0 ? "#FFCC00" : "#333" }}>{g.total_alerts}</span>
-          <span className="mobile-qs-l">Alert</span>
-        </div>
+      {/* Feedback notifiche */}
+      {notifMsg && (
+        <div className="mdash-notif-msg" data-testid="mobile-notif-msg">{notifMsg}</div>
+      )}
+
+
+      {/* Riepilogo semafori */}
+      <div className="mdash-summary" data-testid="mobile-summary">
+        <SummaryPill value={g?.clients_critical || 0} label="Critici" color="#FF3B30" active />
+        <SummaryPill value={g?.clients_warning || 0} label="Warning" color="#FFCC00" />
+        <SummaryPill value={g?.clients_ok || 0} label="OK" color="#34C759" />
+        <button
+          className={`mdash-filter ${onlyProblems ? "on" : ""}`}
+          onClick={() => setOnlyProblems((v) => !v)}
+          data-testid="mobile-filter-problems"
+        >
+          <Funnel size={14} weight={onlyProblems ? "fill" : "regular"} />
+          <span>Solo problemi</span>
+        </button>
       </div>
 
-      {/* Client cards */}
-      <div className="mobile-clients" data-testid="mobile-clients-list">
-        {data.clients.map(c => (
-          <MobileClientCard key={c.id} client={c} navigate={navigate} />
+      {/* Lista clienti */}
+      <div className="mdash-list" data-testid="mobile-clients-list">
+        {clients.length === 0 && (
+          <div className="mdash-empty" data-testid="mobile-empty">
+            <ShieldCheck size={30} weight="duotone" />
+            <span>{onlyProblems ? "Nessun problema in corso 🎉" : "Nessun cliente"}</span>
+          </div>
+        )}
+        {clients.map((c) => (
+          <ClientCard key={c.id} c={c} navigate={navigate} />
         ))}
       </div>
-
-      {/* Offline devices (if any) */}
-      {data.offline_devices.length > 0 && (
-        <div className="mobile-offline-section" data-testid="mobile-offline-section">
-          <div className="mobile-section-header">
-            <WifiSlash size={14} className="text-red-400" />
-            <span>Dispositivi Offline ({data.offline_devices.length})</span>
-          </div>
-          {data.offline_devices.map((d, i) => (
-            <div key={i} className="mobile-offline-row" data-testid={`mobile-offline-${d.ip}`}>
-              <span className="mobile-off-dot" />
-              <div className="mobile-off-info">
-                <span className="mobile-off-name">{d.name}</span>
-                <span className="mobile-off-detail">{d.ip} — {d.client_name}</span>
-              </div>
-              {d.down_since && <span className="mobile-off-since">{d.down_since}</span>}
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Low toner */}
-      {data.low_toner.length > 0 && (
-        <div className="mobile-toner-section" data-testid="mobile-toner-section">
-          <div className="mobile-section-header">
-            <Printer size={14} className="text-amber-400" />
-            <span>Consumabili Bassi ({data.low_toner.length})</span>
-          </div>
-          {data.low_toner.map((t, i) => (
-            <div key={i} className="mobile-toner-row">
-              <div className="mobile-toner-bar-bg">
-                <div className="mobile-toner-bar" style={{ width: `${t.level_pct}%`, background: t.level_pct <= 5 ? "#FF3B30" : t.color_hex || "#FFCC00" }} />
-              </div>
-              <span className="mobile-toner-pct" style={{ color: t.level_pct <= 5 ? "#FF3B30" : "#FFCC00" }}>{t.level_pct}%</span>
-              <span className="mobile-toner-name">{t.supply_name}</span>
-            </div>
-          ))}
-        </div>
-      )}
     </div>
   );
 }
 
-function MobileClientCard({ client, navigate }) {
-  const c = client;
-  const hp = c.health_pct;
-  const hColor = hp >= 90 ? "#34C759" : hp >= 70 ? "#FFCC00" : hp >= 50 ? "#FF9500" : "#FF3B30";
-  const hasIssue = c.offline > 0 || c.critical_alerts > 0;
-  const wan = c.wan_targets || [];
-  const wanOk = c.wan_diagnosis === "ok" || c.wan_diagnosis === "not_configured";
+function SummaryPill({ value, label, color, active }) {
+  const dim = value === 0 && !active;
+  return (
+    <div className="mdash-sum" style={{ opacity: dim ? 0.45 : 1 }}>
+      <span className="mdash-sum-v" style={{ color: value > 0 ? color : "var(--text-secondary)" }}>{value}</span>
+      <span className="mdash-sum-l">{label}</span>
+    </div>
+  );
+}
+
+function ClientCard({ c, navigate }) {
+  const [open, setOpen] = useState(false);
+  const h = HEALTH[c.health] || HEALTH.ok;
+  const isBad = c.health === "critical" || c.health === "warning";
+  const dev = c.devices || {};
+  const vTotal = dev.vital_total || 0;
+  const vOnline = dev.vital_online || 0;
+  const vOffline = dev.vital_offline || 0;
+  const conn = c.connector_online;
+  const wan = wanView(c.wan?.status);
+  const alerts = c.alerts || {};
+  const alertBadge = (alerts.critical || 0) + (alerts.high || 0);
+  const vitalList = c.detail?.vital_list || [];
+  const wanTargets = c.detail?.wan_targets || [];
+  const recentAlerts = c.detail?.recent_alerts || [];
 
   return (
-    <div
-      className={`mobile-client ${hasIssue ? "mobile-client-bad" : ""}`}
-      onClick={() => navigate("/network-status")}
-      data-testid={`mobile-client-${c.id}`}
-    >
-      {/* Top row: name + health */}
-      <div className="mobile-client-top">
-        <div className="mobile-client-left">
-          <span className="mobile-client-name">{c.name}</span>
-          <div className="mobile-client-tags">
-            <span className={`mobile-tag ${c.connector_online ? "mobile-tag-green" : "mobile-tag-red"}`}>
-              {c.connector_online ? "CONN" : "NO CONN"}
+    <div className={`mdash-card ${isBad ? "bad" : ""}`} data-testid={`mobile-client-${c.id}`}>
+      <button className="mdash-card-head" onClick={() => setOpen((v) => !v)} data-testid={`mobile-client-toggle-${c.id}`}>
+        <span className={`mdash-dot ${c.health === "critical" ? "pulse" : ""}`} style={{ background: h.color }} />
+        <div className="mdash-card-info">
+          <span className="mdash-card-name">{c.name}</span>
+          <div className="mdash-badges">
+            {conn === true && <span className="mdash-badge green"><PlugsConnected size={10} weight="bold" />CONN</span>}
+            {conn === false && <span className="mdash-badge red"><Plugs size={10} weight="bold" />NO CONN</span>}
+            {wan && <span className={`mdash-badge ${wan.cls}`}><Globe size={10} weight="bold" />{wan.label}</span>}
+            <span className={`mdash-badge ${vOffline > 0 ? "red" : "green"}`}>
+              {vOnline}/{vTotal} vitali
             </span>
-            {wan.length > 0 && (
-              <span className={`mobile-tag ${wanOk ? "mobile-tag-green" : "mobile-tag-red"}`}>
-                <Globe size={9} className="inline mr-0.5" />WAN {wanOk ? "OK" : "!"}
-              </span>
-            )}
           </div>
         </div>
-        <div className="mobile-client-health" style={{ color: hColor }}>
-          <svg viewBox="0 0 36 36" width="44" height="44">
-            <circle cx="18" cy="18" r="15.9" fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth="3" />
-            <circle cx="18" cy="18" r="15.9" fill="none" stroke={hColor} strokeWidth="3"
-              strokeDasharray={`${hp}, 100`} strokeLinecap="round"
-              style={{ transform: "rotate(-90deg)", transformOrigin: "50% 50%" }} />
-          </svg>
-          <span className="mobile-health-val">{hp}%</span>
-        </div>
-      </div>
+        {alertBadge > 0 && (
+          <span className="mdash-alert-badge" data-testid={`mobile-client-alerts-${c.id}`}>{alertBadge}</span>
+        )}
+        <CaretDown size={16} className={`mdash-chevron ${open ? "open" : ""}`} />
+      </button>
 
-      {/* Metrics */}
-      <div className="mobile-client-metrics">
-        <div className="mobile-cm">
-          <WifiHigh size={12} style={{ color: "#34C759" }} />
-          <span className="mobile-cm-v" style={{ color: "#34C759" }}>{c.online}</span>
-          <span className="mobile-cm-l">on</span>
-        </div>
-        <div className="mobile-cm">
-          <WifiSlash size={12} style={{ color: c.offline > 0 ? "#FF3B30" : "#333" }} />
-          <span className="mobile-cm-v" style={{ color: c.offline > 0 ? "#FF3B30" : "#333" }}>{c.offline}</span>
-          <span className="mobile-cm-l">off</span>
-        </div>
-        <div className="mobile-cm">
-          <Bell size={12} style={{ color: c.alert_count > 0 ? "#FFCC00" : "#333" }} />
-          <span className="mobile-cm-v" style={{ color: c.alert_count > 0 ? "#FFCC00" : "#333" }}>{c.alert_count}</span>
-          <span className="mobile-cm-l">alert</span>
-        </div>
-        <div className="mobile-cm">
-          <Printer size={12} style={{ color: c.printer_count > 0 ? "#AF52DE" : "#333" }} />
-          <span className="mobile-cm-v" style={{ color: c.printer_count > 0 ? "#AF52DE" : "#333" }}>{c.printer_count}</span>
-          <span className="mobile-cm-l">stamp</span>
-        </div>
-        <CaretRight size={14} className="text-[#333] ml-auto" />
-      </div>
-
-      {/* Offline devices inline */}
-      {c.problem_devices && c.problem_devices.length > 0 && (
-        <div className="mobile-client-problems">
-          {c.problem_devices.slice(0, 3).map((d, i) => (
-            <div key={i} className="mobile-prob-row">
-              <span className="mobile-prob-dot" />
-              <span className="mobile-prob-name">{d.name}</span>
-              <span className="mobile-prob-ip">{d.ip}</span>
+      {open && (
+        <div className="mdash-card-body" data-testid={`mobile-client-detail-${c.id}`}>
+          {/* Dispositivi vitali */}
+          <div className="mdash-section-title">Dispositivi vitali ({vTotal})</div>
+          {vitalList.length === 0 && <div className="mdash-none">Nessun dispositivo vitale configurato</div>}
+          {vitalList.map((d, i) => (
+            <div key={i} className="mdash-row" data-testid={`mobile-vital-${c.id}-${i}`}>
+              <span className={`mdash-rdot ${isDownStatus(d.status) ? "pulse" : ""}`} style={{ background: statusColor(d.status) }} />
+              <div className="mdash-rinfo">
+                <span className="mdash-rname">{d.name}</span>
+                <span className="mdash-rip">{d.ip}</span>
+              </div>
+              <span className="mdash-rstatus" style={{ color: statusColor(d.status) }}>
+                {statusLabel(d.status)}
+              </span>
             </div>
           ))}
-          {c.problem_devices.length > 3 && (
-            <span className="mobile-prob-more">+{c.problem_devices.length - 3} altri offline</span>
+
+          {/* WAN */}
+          {wanTargets.length > 0 && (
+            <>
+              <div className="mdash-section-title">Linea Internet / WAN</div>
+              {wanTargets.map((w, i) => {
+                const down = WAN_DOWN.has(w.status) || w.status === "offline";
+                const warn = WAN_WARN.has(w.status);
+                const color = down ? "#FF3B30" : warn ? "#FFCC00" : "#34C759";
+                return (
+                  <div key={i} className="mdash-row" data-testid={`mobile-wan-${c.id}-${i}`}>
+                    <span className={`mdash-rdot ${down ? "pulse" : ""}`} style={{ background: color }} />
+                    <div className="mdash-rinfo">
+                      <span className="mdash-rname">{w.label || w.device_type || "WAN"}</span>
+                      {w.ip && <span className="mdash-rip">{w.ip}</span>}
+                    </div>
+                    {w.latency_ms != null
+                      ? <span className="mdash-rstatus" style={{ color: w.latency_ms > 100 ? "#FFCC00" : "#34C759" }}>{w.latency_ms}ms</span>
+                      : <span className="mdash-rstatus" style={{ color }}>{down ? "GIÙ" : warn ? "!" : "OK"}</span>}
+                  </div>
+                );
+              })}
+            </>
           )}
-        </div>
-      )}
 
-      {/* WAN targets inline */}
-      {wan.length > 0 && (
-        <div className="mobile-client-wan">
-          {wan.map((w, i) => (
-            <div key={i} className="mobile-wan-row">
-              <span className={`mobile-wan-dot mobile-wan-dot-${w.status}`} />
-              <span className="mobile-wan-label">{w.label}</span>
-              {w.latency_ms != null && (
-                <span className="mobile-wan-lat" style={{ color: w.latency_ms > 100 ? "#FF3B30" : "#34C759" }}>
-                  {w.latency_ms}ms
-                </span>
-              )}
-            </div>
-          ))}
+          {/* Alert attivi */}
+          {recentAlerts.length > 0 && (
+            <>
+              <div className="mdash-section-title">Alert attivi ({alerts.total || recentAlerts.length})</div>
+              {recentAlerts.map((a, i) => (
+                <div key={i} className="mdash-row" data-testid={`mobile-alert-${c.id}-${i}`}>
+                  <span className="mdash-rdot" style={{ background: SEV_COLOR[a.severity] || SEV_COLOR.low }} />
+                  <div className="mdash-rinfo">
+                    <span className="mdash-rname">{a.title || "Alert"}</span>
+                    {a.device_name && <span className="mdash-rip">{a.device_name}</span>}
+                  </div>
+                  <span className="mdash-rstatus" style={{ color: SEV_COLOR[a.severity] || SEV_COLOR.low }}>
+                    {(a.severity || "").toUpperCase()}
+                  </span>
+                </div>
+              ))}
+            </>
+          )}
+
+          <button className="mdash-open-full" onClick={() => navigate("/network-status")} data-testid={`mobile-client-full-${c.id}`}>
+            Apri dettaglio completo
+          </button>
         </div>
       )}
     </div>

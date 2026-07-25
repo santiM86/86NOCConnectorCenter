@@ -1,3 +1,107 @@
+# 2026-07-25 — Fix banner "Aggiorna connector": mostra solo se azionabile
+
+## Segnalazione utente
+"Controlla il banner sopra (v4.25.4 disponibile, 2 connectors su versione
+precedente): serve ancora e compare al momento giusto? Secondo me no."
+
+## Root cause
+`AgentUpgradeBanner` si mostrava quando `outdated_count > 0`, SENZA considerare
+se i connector obsoleti fossero online. Verificato via /api/agents/upgrade-status:
+live_agents=0, tutti gli obsoleti offline (vecchi agent dev/test mai piu'
+connessi) -> il pulsante "Aggiorna ora" era disabilitato -> banner = CTA non
+azionabile (rumore, "momento sbagliato").
+
+## Fix (AgentUpgradeBanner.js)
+- Il banner ora compare SOLO se `liveOutdated > 0` (almeno un connector obsoleto
+  ONLINE, quindi realmente aggiornabile). Se tutti offline -> nascosto.
+- Testo semplificato al conteggio azionabile: "{N} connector online su versione
+  precedente". Pulsante sempre attivo (perche' reso solo quando c'e' del live).
+
+## Verifica
+- Screenshot desktop: banner ASSENTE (0 connector online obsoleti) -> header
+  Panoramica pulito. In prod con connector online obsoleti si mostrera' con
+  pulsante abilitato.
+
+---
+
+
+# 2026-07-25 — Mobile: pull-to-refresh + controllo notifiche push visibile
+
+## Richiesta utente
+"Aggiungi il pull-to-refresh nativo e le notifiche push (c'e' gia' PwaProvider)
+cosi' un tecnico riceve sul telefono l'alert critico anche con l'app chiusa."
+
+## Stato pre-esistente (verificato)
+Infrastruttura push GIA' completa: VAPID configurato (backend/.env), routes/push.py
+(vapid-public-key/subscribe/unsubscribe/status/test), sw.js con handler push +
+notificationclick, alert_engine -> webpush.notify_new_alert. `notify_new_alert`
+invia i critical+high all'on-call (o admin+operator), con requireInteraction per i
+critici -> arrivano con app chiusa via Service Worker. SW registrato in index.js.
+
+## Implementazione (frontend)
+- `PwaProvider.js`: registrazione SW resa robusta (fallback `serviceWorker.ready`)
+  e `subscribeToPush` con fallback su `ready` (evita no-op se swRegistration nullo).
+- `MobileDashboard.js`:
+  - PULL-TO-REFRESH nativo: touch handlers (start/move/end) attivi solo con
+    scroller in cima, resistenza 0.5x, cap 90px, soglia 64px; indicatore con
+    spinner rotante + "Rilascia per aggiornare".
+  - Pulsante NOTIFICHE (campanella) sempre visibile nel banner: stato granted
+    (verde, tap=invia test push), default (tap=richiede permesso+iscrive),
+    denied (mostra come sbloccare). Feedback inline `mdash-notif-msg`.
+- `index.css`: stili `.mdash-ptr`, `.mdash-bell`, `.mdash-notif-msg`.
+
+## Verifica
+- Frontend compila. Screenshot mobile: campanella presente e funzionante
+  (in headless permesso=denied -> feedback "Notifiche bloccate…" corretto).
+- Endpoint: /api/push/vapid-public-key (key len 87), /api/push/status
+  {configured:true}. PTR reso (nascosto a riposo). Refresh manuale OK.
+
+---
+
+
+# 2026-07-25 — Redesign completo layout MOBILE per tecnici sul campo
+
+## Richiesta utente
+"I tecnici useranno molto ARGUS dal telefono. Serve un'interfaccia semplice,
+precisa, intuitiva dove vedere lo stato di salute dei clienti con i dispositivi
+vitali. Rivedi completamente il layout telefono e mostra solo l'essenziale."
+
+## Scelte utente (ask_human)
+- Salute + liste basate SOLO sui dispositivi VITALI.
+- Essenziale per cliente: salute+connettore, elenco vitali su/giù, stato WAN.
+- Tap = espansione inline (vitali + WAN + alert).
+- Ordinamento problemi-first.
+- Nav mobile semplificata (consigliata dall'agente): Home / Alert / Menu.
+
+## Implementazione
+- Frontend `components/MobileDashboard.js`: RISCRITTO. Ora consuma
+  `/api/overview/clients` (gia' VITAL-ONLY + sort problemi-first) invece di
+  `/tv/dashboard` (che contava TUTTI i device, non vitali). Nuova UI:
+  - Banner stato globale sticky (N clienti critici / da controllare / operativi)
+    + "X/Y vitali online" + orario aggiornamento + refresh (auto 15s).
+  - Riepilogo semafori (Critici/Warning/OK) + toggle "Solo problemi".
+  - Card cliente espandibili: dot salute, badge CONN/NO CONN, WAN OK/!/GIÙ,
+    "X/Y vitali", badge alert critici+high. Espansione inline con: lista
+    dispositivi VITALI (offline in cima), linea WAN, alert attivi, e bottone
+    "Apri dettaglio completo".
+- CSS `index.css`: nuovo set di classi `.mdash-*` (mobile-first, tap target
+  grandi, animazioni entrata/pulse).
+- `components/Layout.js`: bottom nav ridotta a Home / Alert / Menu.
+- Backend `routes/overview.py`:
+  - Aggiunto `detail.vital_list` (solo dispositivi vitali, offline-first).
+  - Normalizzati status legacy `active`->`online` / `inactive`->`offline`
+    (prima finivano in "unknown": badge "1/3" incoerente con la lista).
+
+## Verifica
+- curl `/api/overview/clients`: vital_list presente; dopo normalizzazione
+  vital_online 1->3 su 3 (coerente).
+- Screenshot mobile (390x844): banner, semafori, card collassata (badge NO CONN
+  rosso, WAN OK, 3/3 vitali) ed espansa (vitali online, WAN 0.3ms/12.3ms,
+  bottone dettaglio). Nav Home/Alert/Menu OK.
+
+---
+
+
 # 2026-07-24 — [P0] Alert 100%: gating linea-internet + blackout sui server SOLO-Datto
 
 ## Richiesta utente

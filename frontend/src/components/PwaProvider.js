@@ -63,6 +63,11 @@ export function PwaProvider({ children }) {
       navigator.serviceWorker.getRegistration().then((reg) => {
         if (reg) setSwRegistration(reg);
       });
+      // Fallback affidabile: assicura swRegistration anche se getRegistration
+      // risolve prima che il SW sia pronto (evita subscribeToPush no-op).
+      navigator.serviceWorker.ready
+        .then((reg) => setSwRegistration((prev) => prev || reg))
+        .catch(() => {});
     }
   }, []);
 
@@ -86,17 +91,21 @@ export function PwaProvider({ children }) {
   }, []);
 
   const subscribeToPush = useCallback(async () => {
-    if (!swRegistration) return null;
+    let reg = swRegistration;
+    if (!reg && "serviceWorker" in navigator) {
+      try { reg = await navigator.serviceWorker.ready; setSwRegistration(reg); } catch { return null; }
+    }
+    if (!reg) return null;
     try {
       // Re-use existing subscription if present
-      let sub = await swRegistration.pushManager.getSubscription();
+      let sub = await reg.pushManager.getSubscription();
       if (!sub) {
         // Fetch VAPID public key from backend
         const keyRes = await axios.get(`${API}/push/vapid-public-key`);
         const vapidKey = keyRes.data?.public_key;
         if (!vapidKey) return null;
 
-        sub = await swRegistration.pushManager.subscribe({
+        sub = await reg.pushManager.subscribe({
           userVisibleOnly: true,
           applicationServerKey: urlBase64ToUint8Array(vapidKey),
         });
