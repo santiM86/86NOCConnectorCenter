@@ -124,8 +124,6 @@ const navConfig = [
 const mobileNavItems = [
   { path: "/", icon: House, label: "Home" },
   { path: "/alerts", icon: Bell, label: "Alert", hasBadge: true },
-  { path: "/network-status", icon: WifiHigh, label: "Rete" },
-  { path: "/clients", icon: Buildings, label: "Clienti" },
   { path: "more", icon: DotsThreeOutline, label: "Menu" },
 ];
 

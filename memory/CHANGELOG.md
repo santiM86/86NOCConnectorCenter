@@ -1,3 +1,46 @@
+# 2026-07-25 — Redesign completo layout MOBILE per tecnici sul campo
+
+## Richiesta utente
+"I tecnici useranno molto ARGUS dal telefono. Serve un'interfaccia semplice,
+precisa, intuitiva dove vedere lo stato di salute dei clienti con i dispositivi
+vitali. Rivedi completamente il layout telefono e mostra solo l'essenziale."
+
+## Scelte utente (ask_human)
+- Salute + liste basate SOLO sui dispositivi VITALI.
+- Essenziale per cliente: salute+connettore, elenco vitali su/giù, stato WAN.
+- Tap = espansione inline (vitali + WAN + alert).
+- Ordinamento problemi-first.
+- Nav mobile semplificata (consigliata dall'agente): Home / Alert / Menu.
+
+## Implementazione
+- Frontend `components/MobileDashboard.js`: RISCRITTO. Ora consuma
+  `/api/overview/clients` (gia' VITAL-ONLY + sort problemi-first) invece di
+  `/tv/dashboard` (che contava TUTTI i device, non vitali). Nuova UI:
+  - Banner stato globale sticky (N clienti critici / da controllare / operativi)
+    + "X/Y vitali online" + orario aggiornamento + refresh (auto 15s).
+  - Riepilogo semafori (Critici/Warning/OK) + toggle "Solo problemi".
+  - Card cliente espandibili: dot salute, badge CONN/NO CONN, WAN OK/!/GIÙ,
+    "X/Y vitali", badge alert critici+high. Espansione inline con: lista
+    dispositivi VITALI (offline in cima), linea WAN, alert attivi, e bottone
+    "Apri dettaglio completo".
+- CSS `index.css`: nuovo set di classi `.mdash-*` (mobile-first, tap target
+  grandi, animazioni entrata/pulse).
+- `components/Layout.js`: bottom nav ridotta a Home / Alert / Menu.
+- Backend `routes/overview.py`:
+  - Aggiunto `detail.vital_list` (solo dispositivi vitali, offline-first).
+  - Normalizzati status legacy `active`->`online` / `inactive`->`offline`
+    (prima finivano in "unknown": badge "1/3" incoerente con la lista).
+
+## Verifica
+- curl `/api/overview/clients`: vital_list presente; dopo normalizzazione
+  vital_online 1->3 su 3 (coerente).
+- Screenshot mobile (390x844): banner, semafori, card collassata (badge NO CONN
+  rosso, WAN OK, 3/3 vitali) ed espansa (vitali online, WAN 0.3ms/12.3ms,
+  bottone dettaglio). Nav Home/Alert/Menu OK.
+
+---
+
+
 # 2026-07-24 — [P0] Alert 100%: gating linea-internet + blackout sui server SOLO-Datto
 
 ## Richiesta utente
