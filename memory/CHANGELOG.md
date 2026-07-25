@@ -1,3 +1,42 @@
+# 2026-07-25 — [P0] Unificazione sorgente versione Agent (fix master≠scanner + OTA rotto)
+
+## Contesto (segnalazione utente)
+"In fase di installazione perché NON scarica l'ultima versione? Master e scanner
+risultano su versioni diverse." (Poi entrambi a v4.25.4 dopo 'Aggiorna ora'.)
+Richiesta: unificare le sorgenti così master e scanner siano SEMPRE allineati.
+
+## Root cause: 3 sorgenti "latest" scollegate
+1. Install manifest (nocinstall→agent-builds) = GitHub releases/latest ✓
+2. ArgusSetup.zip (install_setup.py) = mirror LOCALE static/release-bin/ (fermo a v4.25.2)
+3. OTA self-update (/api/agent/update/manifest) = binario LOCALE _AGENT_BUILD_DIR
+   BUG GRAVE: firmava lo sha del binario LOCALE ma l'url scaricava quello GitHub
+   -> hash/firma non combaciavano -> l'OTA falliva SEMPRE (l'agent non si
+   auto-aggiornava; serviva sempre il pulsante 'Aggiorna ora').
+
+## Fix — tutto converge su GitHub releases/latest (sorgente unica)
+- agent_ws.py: estratto helper condiviso `ensure_release_asset_cached(version,
+  filename)` (download+cache GitHub). `agent_builds_asset` ora lo usa.
+- agent_ws.py `/api/agent/update/manifest` (OTA): risolve GitHub latest, scarica
+  il binario via helper, FIRMA il binario EFFETTIVAMENTE servito (byte-identico
+  all'url agent-builds), version=tag GitHub. Fallback binario locale se GitHub
+  irraggiungibile. => OTA ora verifica la firma correttamente.
+- install_setup.py: nuovo `_resolve_setup_bin` risolve GitHub latest e auto-scarica
+  `nocinstall.exe` dalla release se non nel mirror locale. Fallback mirror legacy.
+
+## Verifica (curl, URL esterno)
+- OTA manifest: version=v4.25.4, url=/api/agent-builds/v4.25.4/nocagent.exe,
+  signature 64B. sha256 firmato == sha256 del binario servito -> MATCH ✓
+- ArgusSetup.zip?version=latest: LEGGIMI "Versione binario: v4.25.4",
+  setup.exe 5.8MB (scaricato da GitHub; mirror locale era a v4.25.2).
+
+## Note deploy
+Effetto in PROD solo dopo redeploy backend su argus.86bit.it. L'OTA automatico
+richiede che agent.yaml abbia update.enabled + manifest_url + public_key corretti;
+il path 'Aggiorna ora' continua a funzionare come prima.
+
+---
+
+
 # 2026-07-25 — Fix banner "Aggiorna connector": mostra solo se azionabile
 
 ## Segnalazione utente
