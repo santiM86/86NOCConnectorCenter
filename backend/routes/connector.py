@@ -2023,6 +2023,46 @@ async def _check_device_thresholds(client_id: str, dev: dict, prev_status: Optio
                 except (ValueError, TypeError):
                     pass
 
+        # --- Access Point: SATURAZIONE RF (numero client Wi-Fi connessi)
+        # OID per vendor (riportati dal poller sotto vendor_metrics):
+        #   TP-Link Omada/EAP -> tpDot11ClientNum
+        #   Aruba Instant On  -> dot11AssociatedStationCount
+        #   UniFi             -> unifiApClients
+        # Soglie dal profilo: clients_warn (default 50), clients_crit (default 80).
+        wifi_clients = None
+        for ck in ("tpDot11ClientNum", "dot11AssociatedStationCount",
+                   "unifiApClients", "wifiClients", "clientCount"):
+            cv = vendor_metrics.get(ck)
+            if cv is None:
+                continue
+            if isinstance(cv, dict):
+                # tabella per-radio → somma i client di tutte le radio
+                nums = [float(x) for x in cv.values() if isinstance(x, (int, float))]
+                cv = sum(nums) if nums else None
+            if cv is not None:
+                try:
+                    wifi_clients = int(float(cv))
+                    break
+                except (ValueError, TypeError):
+                    continue
+        if wifi_clients is not None:
+            clients_warn = profile_thresholds.get("clients_warn", 50)
+            clients_crit = profile_thresholds.get("clients_crit", 80)
+            if wifi_clients >= clients_crit:
+                alerts_to_create.append({
+                    "severity": "critical",
+                    "title": f"Saturazione RF ({wifi_clients} client): {device_name}",
+                    "message": f"Access Point {device_name} ({device_ip}) ha {wifi_clients} client Wi-Fi connessi — soglia critica {clients_crit}. Rischio degrado latenza e perdita pacchetti: valutare un secondo AP o bilanciamento banda.",
+                    "source_type": "vendor_rf_saturation",
+                })
+            elif wifi_clients >= clients_warn:
+                alerts_to_create.append({
+                    "severity": "high",
+                    "title": f"Saturazione RF ({wifi_clients} client): {device_name}",
+                    "message": f"Access Point {device_name} ({device_ip}) ha {wifi_clients} client Wi-Fi connessi — soglia warning {clients_warn}. Banda RF sotto pressione.",
+                    "source_type": "vendor_rf_saturation",
+                })
+
         # --- Generic UPS (RFC 1628): RIELLO/XANTO, CyberPower, Eaton, Socomec
         #     Riusa upsBatteryStatus, upsOutputSource, upsEstimatedChargeRemaining (già evaluated sopra)
         # --- UPS Runtime residuo

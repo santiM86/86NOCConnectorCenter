@@ -1,3 +1,129 @@
+# 2026-06 — Pulizia lista Clienti + Alert "Saturazione RF" per Access Point
+
+## Richieste utente
+1. Rimuovere dalla lista Clienti i pulsanti di installazione connector (badge
+   versione, "Setup GUI", "Setup .exe", "M", "S") — non più necessari, il
+   connector si installa solo dalla sezione dedicata.
+2. Aggiungere al poller la lettura del numero di client Wi-Fi e un alert
+   automatico di "saturazione RF" (>50 warning, >80 critical).
+
+## Implementazione
+- `frontend/src/pages/ClientsPage.js`: rimossa l'intera IIFE `client.api_key &&
+  (() => {...})()` che renderizzava badge versione + install (Setup GUI / .exe /
+  M / S). Mantenuti API Key / Rigenera / URL. Verificato via screenshot + testid
+  count = 0 per download-installer/setup-exe/master/scanner/installed-version.
+- `backend/routes/connector.py` → `_check_device_thresholds` (sezione
+  vendor_metrics): nuovo blocco "Saturazione RF". Legge il conteggio client dai
+  OID vendor riportati dal poller — `tpDot11ClientNum` (TP-Link), 
+  `dot11AssociatedStationCount` (Aruba), `unifiApClients` (UniFi), con fallback
+  `wifiClients`/`clientCount`. Gestisce anche tabelle per-radio (somma).
+  Soglie dal profilo: `clients_warn` (50) → severità high, `clients_crit` (80) →
+  critical. source_type `vendor_rf_saturation` (dedup + webpush come gli altri).
+
+## Testing
+- RF saturation end-to-end su DB reale: 85→critical, 60→high, 30→nessun alert,
+  tabella Aruba per-radio 45+40=85→critical. ALL PASS (alert di test ripuliti).
+- Frontend: compilazione pulita; screenshot pagina Clienti conferma pulsanti install rimossi, layout intatto.
+- NB: i profili AP devono essere applicati ai device e il poller Go deve riportare
+  gli OID client sotto vendor_metrics (come già fa per UniFi/Synology/Fortinet).
+
+---
+
+
+# 2026-06 — Profili vendor Access Point: TP-Link Omada/EAP + Aruba Instant On
+
+## Richiesta utente
+- Aggiungere 2 profili vendor per Access Point wireless con porte console web,
+  OID SNMP di auto-discovery e soglie di allarme (CPU/RAM/client/uplink/ping).
+
+## Implementazione (`device_profiles/__init__.py`)
+- `tplink_omada_ap` (family `access-point`): OID enterprise .1.3.6.1.4.1.11863
+  (tpSysCpuUsage/tpSysMemoryUsage/tpDot11ClientNum), web console Omada HTTPS 8043
+  (alt 443/80/8088, adoption 29810-29814), SNMP 161. Soglie CPU 80/95, RAM 85/92,
+  client 50/80, uplink-down critical, latenza 100ms / loss 2%.
+- `aruba_instant_on` (family `access-point`): OID generico Aruba/HPE .1.3.6.1.4.1.14823
+  (dot11AssociatedStationCount + ifIn/OutOctets porta POE), cloud portal.arubainstanton.com
+  HTTPS 443 (+ local status page), SNMP 161 (da abilitare dal portale Cloud). Stesse soglie.
+- Fingerprint: prefix sysObjectID + regex sysDescr (omada/eap/oc200, instant on/aruba ap).
+  Il classifier device_classifier.py già mappa questi a device_type canonico `access-point`.
+- `SEED_VERSION` 3 → 4.
+
+## Note
+- I profili sono letti direttamente dalla lista Python `PROFILES` (list_profiles,
+  fingerprint, apply-profile, dropdown vendor) → attivi subito senza re-seed.
+- Applicando il profilo, `device_type` = family = `access-point` (canonico, categoria AP).
+
+## Testing
+- `pytest tests/test_device_profiles.py tests/test_device_type_resolver.py` → 54 passed
+  (aggiornati 2 test con conteggio profili hardcoded/obsoleto → ora derivato da len(PROFILES)).
+- Endpoint live verificati via curl: `/list/vendors` mostra entrambi i profili access-point;
+  dettaglio `tplink_omada_ap` con porta 8043, OID e soglie corrette.
+
+---
+
+
+# 2026-06 — Notifica push dedicata per "VM critica spenta inaspettatamente"
+
+## Richiesta utente
+- Notifica push mirata sulla console mobile dei tecnici SOLO per gli eventi
+  `vm_unexpected_shutdown`, così la reperibilità viene avvisata in modo
+  inconfondibile quando una VM che deve restare accesa cade davvero.
+
+## Implementazione
+- `webpush.py` → `build_alert_payload`: special-case per `source_type ==
+  "corr_vm_unexpected_shutdown"`:
+  - Titolo dedicato "🖥️🚨 VM CRITICA SPENTA" + body con VM · cliente.
+  - `severity` forzata a `critical` → il service worker (`sw.js`) imposta
+    `requireInteraction=true` (la notifica resta a schermo finché non chiusa)
+    e la critica bypassa le Quiet Hours (`quiet_exclude_critical`).
+  - `tag` per-device (`vmdown-{ip}`): un nuovo evento sulla stessa VM rimpiazza
+    il precedente invece di impilarsi.
+  - Deep-link alla scheda cliente (`/client/{client_id}`) invece della lista alert.
+- Il routing esisteva già: l'alert critico passa da `_dispatch_notification` →
+  `webpush.notify_new_alert` → on-call rotation (o fallback admin+operator).
+
+## Testing
+- Unit test `build_alert_payload`: caso VM (titolo/tag/url/severity) + caso generico
+  (invariato) PASS. La consegna reale richiede VAPID configurato + subscription attive in prod.
+
+---
+
+
+# 2026-06 — Alert opzionale "VM critica spenta inaspettatamente" (Hyper-V)
+
+## Richiesta utente
+- Alert opzionale, configurabile per-device, quando una VM critica passa a
+  Off/Saved/Paused in modo inatteso. Zero falsi positivi sulle VM spente di
+  proposito (default OFF = comportamento storico). Scelte utente: trigger su
+  Off+Saved+Paused, severità Critical, toggle in DeviceEditModal (solo VM Hyper-V).
+
+## Implementazione
+- `models.py` (DeviceResponse): nuovo campo `hyperv_alert_on_off: bool = False`.
+- `correlation_engine.py`:
+  - `gather_signals`: espone `s["vm_alert_on_off"] = bool(md.hyperv_alert_on_off)`.
+  - `verdict_server` + `verdict_generic`: branch Off/Saved/Paused ora, se il flag
+    è attivo, ritorna alert CRITICO `vm_unexpected_shutdown` (confidence 95);
+    altrimenti mantiene `vm_powered_off` (nessun alert). Deterministico.
+- `alert_engine.py`: query `targets` ora include anche `{hyperv_alert_on_off: True}`
+  + campo nel projection (così le VM flaggate sono sempre valutate anche se non is_vital).
+- `routes/device_info_card.py`: nuovo endpoint `POST /devices/by-ip/{ip}/vm-alert`
+  body `{enabled, client_id?}` (mirror di set_device_vital: update + cache invalidation + audit).
+- `routes/devices.py`: `hyperv_alert_on_off` esposto in TUTTI e 3 i path di risposta
+  /api/devices (loop manuale + merge connector + secondo builder). Aggiunto anche
+  enrichment hyperv_state/host nel loop manuale (prima assente).
+- `components/DeviceEditModal.js`: toggle "Allerta se questa VM si spegne" (box rosso),
+  visibile solo se `device.hyperv_state` presente; mostra lo stato HV corrente; salva via nuovo endpoint.
+
+## Testing
+- Backend: 7 unit test verdict (flag ON/OFF × Off/Saved/Paused/Running, server+generic) PASS;
+  test_multisource_fusion.py PASS; endpoint 400/404/round-trip True↔False verificati via curl.
+- Frontend: compilazione pulita; screenshot del modale conferma il toggle renderizzato
+  con "Stato Hyper-V attuale: Off" per una VM Hyper-V.
+- Effetto reale sull'host dipende dal redeploy in produzione + snapshot Hyper-V freschi (<15min).
+
+---
+
+
 # 2026-06 — Unificazione cartella Menu Start "86BIT Argus Center"
 
 ## Richiesta utente

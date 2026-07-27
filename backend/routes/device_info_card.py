@@ -998,6 +998,93 @@ async def set_device_vital(
     }
 
 
+@router.post("/devices/by-ip/{device_ip}/vm-alert")
+async def set_device_vm_alert(
+    device_ip: str,
+    payload: dict,
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+):
+    """Toggle dell'alert opzionale "VM spenta inaspettatamente".
+
+    Body: {"enabled": bool, "client_id"?: str}
+
+    Quando ENABLED, se la VM risulta Off/Saved/Paused sull'host Hyper-V
+    (spegnimento inatteso di una VM che deve restare sempre accesa) viene
+    generato un alert CRITICO. Default False = comportamento storico (VM
+    spenta = nessun alert, zero falsi positivi).
+    """
+    from alert_filter import invalidate_silence_cache
+
+    if "enabled" not in (payload or {}):
+        raise HTTPException(status_code=400, detail="enabled (bool) e' obbligatorio")
+    enabled = bool(payload.get("enabled"))
+    explicit_client_id = (payload.get("client_id") or "").strip() or None
+
+    md_query = {"ip": device_ip}
+    if explicit_client_id:
+        md_query["client_id"] = explicit_client_id
+
+    if not explicit_client_id:
+        cnt = await db.managed_devices.count_documents({"ip": device_ip})
+        if cnt > 1:
+            raise HTTPException(
+                status_code=409,
+                detail=f"IP {device_ip} appartiene a {cnt} client diversi. Includi client_id nel body per disambiguare.",
+            )
+
+    md = await db.managed_devices.find_one(
+        md_query, {"_id": 0, "id": 1, "client_id": 1, "name": 1, "hyperv_alert_on_off": 1}
+    )
+    if not md:
+        raise HTTPException(status_code=404, detail=f"Device {device_ip} non trovato in managed_devices")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    user_email = current_user.get("email")
+
+    await db.managed_devices.update_one(
+        md_query,
+        {"$set": {
+            "hyperv_alert_on_off": enabled,
+            "hyperv_alert_on_off_set_by": user_email,
+            "hyperv_alert_on_off_set_at": now_iso,
+        }},
+    )
+
+    invalidate_silence_cache(client_id=md.get("client_id"), device_ip=device_ip)
+
+    try:
+        await audit_logger.log(
+            user_email=user_email,
+            action=AuditAction.UPDATE_DEVICE if hasattr(AuditAction, "UPDATE_DEVICE") else AuditAction.OTHER,
+            resource_type="device",
+            resource_id=md.get("id"),
+            metadata={
+                "action": "set_vm_alert_on_off",
+                "device_ip": device_ip,
+                "enabled": enabled,
+                "previous_value": md.get("hyperv_alert_on_off"),
+                "client_id": md.get("client_id"),
+                "device_name": md.get("name"),
+            },
+            request=request,
+        )
+    except Exception:
+        pass
+
+    return {
+        "ok": True,
+        "device_ip": device_ip,
+        "hyperv_alert_on_off": enabled,
+        "previous_value": md.get("hyperv_alert_on_off"),
+        "message": (
+            f"Alert 'VM spenta inaspettatamente' {'ATTIVATO' if enabled else 'DISATTIVATO'}: "
+            f"{md.get('name') or device_ip}"
+        ),
+    }
+
+
+
 @router.post("/devices/bulk-vital")
 async def set_devices_vital_bulk(
     payload: dict,

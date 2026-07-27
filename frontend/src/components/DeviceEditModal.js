@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { API } from "@/App";
 import axios from "axios";
 import { toast } from "sonner";
-import { PencilSimple, ShieldCheck, WifiHigh, Lightning, BellSlash } from "@phosphor-icons/react";
+import { PencilSimple, ShieldCheck, WifiHigh, Lightning, BellSlash, Power } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -34,6 +34,9 @@ export function DeviceEditModal({ clientId, device, open, onClose, onSaved }) {
   const [refreshing, setRefreshing] = useState(false);
   const [alertsSilenced, setAlertsSilenced] = useState(!!device?.alerts_silenced);
   const [silenceReason, setSilenceReason] = useState(device?.alerts_silenced_reason || "");
+  // Alert opzionale "VM spenta inaspettatamente" (solo VM Hyper-V)
+  const [vmAlertOnOff, setVmAlertOnOff] = useState(!!device?.hyperv_alert_on_off);
+  const isHyperVvm = !!device?.hyperv_state;
 
   // Re-seed dello stato locale quando la prop `device` cambia.
   // Necessario perche` ClientOverviewPage refetch /api/devices dopo un Salva e
@@ -46,7 +49,8 @@ export function DeviceEditModal({ clientId, device, open, onClose, onSaved }) {
     setCommunity(device?.snmp_community || device?.community || "public");
     setAlertsSilenced(!!device?.alerts_silenced);
     setSilenceReason(device?.alerts_silenced_reason || "");
-  }, [device?.id, device?.alerts_silenced, device?.alerts_silenced_reason, device?.monitor_type, device?.snmp_version, device?.snmp_community]);
+    setVmAlertOnOff(!!device?.hyperv_alert_on_off);
+  }, [device?.id, device?.alerts_silenced, device?.alerts_silenced_reason, device?.monitor_type, device?.snmp_version, device?.snmp_community, device?.hyperv_alert_on_off]);
 
   const save = async () => {
     if (!device?.id && !device?.device_id) {
@@ -132,6 +136,19 @@ export function DeviceEditModal({ clientId, device, open, onClose, onSaved }) {
       }
     }
 
+    // 4) Alert "VM spenta inaspettatamente" (solo VM Hyper-V, sempre tentato)
+    const wasVmAlert = !!device?.hyperv_alert_on_off;
+    if (isHyperVvm && vmAlertOnOff !== wasVmAlert) {
+      try {
+        await axios.post(
+          `${API}/devices/by-ip/${encodeURIComponent(device?.ip_address || device?.ip)}/vm-alert`,
+          { enabled: vmAlertOnOff, client_id: clientId }
+        );
+      } catch (e) {
+        errors.push(`Alert VM spenta: ${e.response?.data?.detail || e.message}`);
+      }
+    }
+
     setSaving(false);
 
     if (errors.length > 0) {
@@ -152,6 +169,7 @@ export function DeviceEditModal({ clientId, device, open, onClose, onSaved }) {
         ...device,
         alerts_silenced: alertsSilenced,
         alerts_silenced_reason: silenceReason,
+        hyperv_alert_on_off: isHyperVvm ? vmAlertOnOff : device?.hyperv_alert_on_off,
         monitor_type: monitorDirty ? monitorType : device?.monitor_type,
         snmp_version: snmpFieldsDirty ? snmpVersion : device?.snmp_version,
         snmp_community: snmpFieldsDirty && snmpVersion !== "v3" ? community : device?.snmp_community,
@@ -365,6 +383,33 @@ export function DeviceEditModal({ clientId, device, open, onClose, onSaved }) {
               </div>
             )}
           </div>
+
+          {/* Alert opzionale "VM spenta inaspettatamente" — solo VM Hyper-V */}
+          {isHyperVvm && (
+            <div className={`rounded p-2.5 border transition-colors ${vmAlertOnOff ? "bg-rose-500/10 border-rose-500/40" : "bg-[var(--bg-card)] border-[var(--bg-border)]"}`}>
+              <label className="flex items-start gap-2 cursor-pointer" data-testid="vm-alert-toggle-label">
+                <input
+                  type="checkbox"
+                  checked={vmAlertOnOff}
+                  onChange={(e) => setVmAlertOnOff(e.target.checked)}
+                  className="mt-0.5 cursor-pointer"
+                  data-testid="vm-alert-toggle"
+                />
+                <span className="flex-1">
+                  <span className="flex items-center gap-1.5 text-[11px] font-semibold text-rose-300">
+                    <Power size={13} weight="fill" />
+                    Allerta se questa VM si spegne (deve restare sempre accesa)
+                  </span>
+                  <span className="block text-[9px] text-[var(--text-muted)] mt-0.5 leading-relaxed">
+                    Stato Hyper-V attuale: <strong className="text-[var(--text-primary)]">{device?.hyperv_state || "n/d"}</strong>.
+                    Se attivo e la VM risulta <strong>Off / Saved / Paused</strong> sull'host (spegnimento inatteso),
+                    verra` generato un alert <strong>CRITICO</strong>. Se disattivo, una VM spenta e` considerata
+                    spegnimento pianificato (nessun alert).
+                  </span>
+                </span>
+              </label>
+            </div>
+          )}
         </div>
 
         <div className="flex flex-wrap gap-2 justify-end mt-4">
