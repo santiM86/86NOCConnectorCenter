@@ -130,6 +130,9 @@ class DeviceResponse(BaseModel):
     datto_name: Optional[str] = ""        # nome ufficiale RMM matchato
     datto_match: Optional[str] = ""       # "mac" | "ip" | ""
     datto_matched_at: Optional[str] = ""
+    # v2026-07-25: Hyper-V power state della VM (fonte host WMI, autorevole)
+    hyperv_state: Optional[str] = ""      # "Running" | "Off" | "Saved" | "Paused" | ""
+    hyperv_host: Optional[str] = ""       # hostname dell'host Hyper-V
     created_at: str
 
 class AlertCreate(BaseModel):

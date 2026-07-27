@@ -40,7 +40,7 @@ import SafeBoundary from "@/components/SafeBoundary";
 import { useSortableTable, SortableTh } from "@/utils/tableSort";
 import { macroOf, macroLabel, MACRO_DEFS, pickDeviceName } from "@/utils/deviceCategory";
 
-const STATUS_COLOR = { online: "#34C759", offline: "#FF3B30", active: "#FFCC00", degraded: "#FF9500", unknown: "#555" };
+const STATUS_COLOR = { online: "#34C759", offline: "#FF3B30", active: "#FFCC00", degraded: "#FF9500", off: "#8E8E93", unknown: "#555" };
 // v2026-02-28 SAFETY: getter difensivo. Se per qualche motivo STATUS_COLOR
 // non e' in scope (commit intermedio rotto / minifier overzelo), getStatusColor
 // ritorna comunque un fallback grigio invece di lanciare ReferenceError.
@@ -1714,9 +1714,18 @@ function DeviceGroup({ label, icon: Icon, devices, color, onInfoClick, renderAct
                   DATTO: {d.datto_name}
                 </span>
               )}
+              {d.hyperv_state && (
+                <span
+                  className={`inline-flex items-center gap-0.5 text-[8px] px-1 py-0.5 rounded font-bold border ${d.hyperv_state === "Running" ? "bg-indigo-500/20 text-indigo-200 border-indigo-500/40" : "bg-slate-500/20 text-slate-300 border-slate-500/40"}`}
+                  title={`Hyper-V${d.hyperv_host ? ` (host ${d.hyperv_host})` : ""}: la VM risulta ${d.hyperv_state} a livello hypervisor`}
+                  data-testid={`grouped-hyperv-badge-${d.ip_address}`}
+                >
+                  HV: {d.hyperv_state === "Running" ? "ON" : d.hyperv_state === "Off" ? "OFF" : d.hyperv_state.toUpperCase()}
+                </span>
+              )}
               {d.vendor && <span className="text-[8px] px-1 rounded bg-[var(--bg-card)] text-[var(--text-muted)] truncate max-w-[120px]" title={d.vendor}>{d.vendor}</span>}
               {d.snmp_community && <span className="text-[8px] px-1 rounded bg-[var(--bg-card)] text-[var(--text-muted)]">{d.snmp_version || "snmp"}: {d.snmp_community}</span>}
-              <span className="ml-auto font-bold text-[8px] uppercase" style={{ color: sc }}>{d.status}</span>
+              <span className="ml-auto font-bold text-[8px] uppercase" style={{ color: sc }}>{d.status === "off" ? "spento" : d.status}</span>
               {d.source === "connector" && <span className="text-[7px] px-1 rounded bg-indigo-500/10 text-indigo-400">M</span>}
               {d.source === "connector-master" && <span className="text-[7px] px-1 rounded bg-indigo-500/10 text-indigo-400">M</span>}
               {d.source === "connector-scanner" && <span className="text-[7px] px-1 rounded bg-sky-500/10 text-sky-400">S</span>}
@@ -2587,8 +2596,9 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
       {(() => {
         const vit = devices.filter(d => d.is_vital === true && !_isMcast(d));
         if (vit.length === 0) return null;
-        const online = vit.filter(d => d.status === "online").length;
-        const offline = vit.length - online;
+        const online = vit.filter(d => d.status === "online" || d.status === "active").length;
+        const off = vit.filter(d => d.status === "off").length;
+        const offline = vit.length - online - off;
         const withSwitch = vit.filter(d => d.switch_ip).length;
         return (
           <div className="flex items-center gap-4 px-4 py-2.5 rounded-lg border border-[var(--bg-border)] bg-[var(--bg-panel)]" data-testid="vital-health-header">
@@ -2606,6 +2616,13 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
               <span className={`text-sm font-bold ${offline > 0 ? "text-red-500" : "text-[var(--text-muted)]"}`}>{offline}</span>
               <span className="text-[10px] text-[var(--text-muted)]">offline</span>
             </div>
+            {off > 0 && (
+              <div className="flex items-center gap-1.5" title="VM Hyper-V spente (stato dall'host) — nessun alert di down">
+                <span className="w-2 h-2 rounded-full bg-slate-400" />
+                <span className="text-sm font-bold text-slate-300">{off}</span>
+                <span className="text-[10px] text-[var(--text-muted)]">spente</span>
+              </div>
+            )}
             <span className="text-[10px] text-[var(--text-muted)] ml-auto">
               {online}/{vit.length} vitali attivi{withSwitch > 0 ? ` · ${withSwitch} con dipendenza switch` : ""}
             </span>
@@ -2994,6 +3011,15 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
                           DATTO: {d.datto_name}
                         </span>
                       )}
+                      {d.hyperv_state && (
+                        <span
+                          className={`inline-flex items-center gap-0.5 text-[9px] px-1 py-px rounded font-bold border ${d.hyperv_state === "Running" ? "bg-indigo-500/20 text-indigo-200 border-indigo-500/40" : "bg-slate-500/20 text-slate-300 border-slate-500/40"}`}
+                          title={`Hyper-V${d.hyperv_host ? ` (host ${d.hyperv_host})` : ""}: VM ${d.hyperv_state}`}
+                          data-testid={`table-hyperv-badge-${d.ip_address}`}
+                        >
+                          HYPER-V: {d.hyperv_state === "Running" ? "ON" : d.hyperv_state === "Off" ? "OFF" : d.hyperv_state.toUpperCase()}
+                        </span>
+                      )}
                       {d.alerts_silenced && (
                         <span
                           className="inline-flex items-center gap-0.5 text-[9px] px-1 py-px rounded bg-amber-500/15 text-amber-300 border border-amber-500/40"
@@ -3029,8 +3055,13 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
                   <td>
                     <span className="inline-flex items-center gap-1 text-[10px] font-bold" style={{ color: sc }}>
                       {d.status === "online" || d.status === "active" ? <WifiHigh size={12} /> : <WifiSlash size={12} />}
-                      {d.status?.toUpperCase()}
+                      {d.status === "off" ? "SPENTO" : d.status?.toUpperCase()}
                     </span>
+                    {d.status === "off" && (
+                      <div className="text-[9px] mt-0.5 text-slate-400" title={`VM spenta a livello hypervisor${d.hyperv_host ? ` (host ${d.hyperv_host})` : ""} — nessun alert di down`}>
+                        via Hyper-V
+                      </div>
+                    )}
                     {d.ping_ms && <span className="ml-1 text-[9px] text-[var(--text-muted)]">{d.ping_ms}ms</span>}
                     {/* v3.8.37: badge "down da Xh" per device offline.
                         Priorita': unreachable_since (Master poll) > last_seen_at > last_poll */}
@@ -3060,6 +3091,10 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
                       return <span className="text-[8px] text-[var(--text-muted)]" data-testid={`live-evidence-${d.ip_address}`}>—</span>;
                     }
                     const m = String(ev).toLowerCase();
+                    if (m.includes("hyperv")) {
+                      const off = m.includes("off");
+                      return <span title={off ? "VM SPENTA sull'host Hyper-V (stato autorevole dall'hypervisor)" : "VM Running sull'host Hyper-V: accensione confermata dall'hypervisor anche se ICMP e' bloccato"} className={`inline-flex items-center gap-1 text-[8px] px-1.5 py-0.5 rounded font-bold border ${off ? "bg-slate-500/10 text-slate-300 border-slate-500/30" : "bg-indigo-500/10 text-indigo-300 border-indigo-500/30"}`} data-testid={`live-evidence-${d.ip_address}`}>🖥️ HYPER-V</span>;
+                    }
                     if (m.includes("mac_table") || m.includes("snmp")) {
                       return <span title="Visto nella MAC table dello switch SNMP (L2). Device fisicamente collegato anche se ICMP bloccato." className="inline-flex items-center gap-1 text-[8px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-300 border border-emerald-500/30 font-bold" data-testid={`live-evidence-${d.ip_address}`}>🔌 FDB</span>;
                     }
@@ -3461,6 +3496,8 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
               <DeviceInfoCard
                 key={infoTarget.ip_address}
                 deviceIp={infoTarget.ip_address}
+                hypervState={infoTarget.hyperv_state || ""}
+                hypervHost={infoTarget.hyperv_host || ""}
                 onClose={() => { setInfoTarget(null); setInfoCardName(null); }}
                 onCardLoaded={(c) => {
                   // v2026-02-14: titolo Dialog si allinea sempre al nome

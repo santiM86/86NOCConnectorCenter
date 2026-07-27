@@ -1020,6 +1020,37 @@ async def startup_event():
     except Exception as e:
         logger.error(f"Failed to start Datto RMM scheduler: {e}")
 
+    # === Hyper-V VM power-state poll scheduler (v2026-07-25) ===
+    # Mantiene freschi gli snapshot Hyper-V (stato Running/Off delle VM) usati
+    # come evidenza di accensione nel motore di stato/alerting.
+    try:
+        from apscheduler.schedulers.asyncio import AsyncIOScheduler as _HvSched
+        from apscheduler.triggers.interval import IntervalTrigger as _HvTrig
+        from routes.server_intelligence import run_hyperv_poll_all as _hv_tick
+
+        async def _hv_tick_safe():
+            try:
+                result = await _hv_tick()
+                if result.get("sent"):
+                    logger.info(f"[hyperv-poll] {result}")
+            except Exception as ex:
+                logger.warning(f"[hyperv-poll] failed: {ex}")
+
+        global hyperv_scheduler
+        hyperv_scheduler = _HvSched()
+        hyperv_scheduler.add_job(
+            _hv_tick_safe,
+            trigger=_HvTrig(minutes=5),
+            id="hyperv_power_poll",
+            next_run_time=datetime.now(timezone.utc) + timedelta(minutes=1),
+            max_instances=1,
+            coalesce=True,
+        )
+        hyperv_scheduler.start()
+        logger.info("Hyper-V power-state poll scheduler started (tick: 5m)")
+    except Exception as e:
+        logger.error(f"Failed to start Hyper-V poll scheduler: {e}")
+
     # ----- Embedded WireGuard runtime (POC, opt-in via env WG_EMBEDDED_ENABLED) -----
     if os.environ.get("WG_EMBEDDED_ENABLED", "").lower() in ("1", "true", "yes"):
         try:

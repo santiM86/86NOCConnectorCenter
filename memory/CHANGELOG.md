@@ -1,3 +1,108 @@
+# 2026-06 — Unificazione cartella Menu Start "86BIT Argus Center"
+
+## Richiesta utente
+- Unificare il nome della cartella nel Menu Start a "86BIT Argus Center" e far sì
+  che ANCHE l'installer console/OTA (`install-noc-agent.ps1`) crei la cartella,
+  non solo il Setup GUI. Lasciare la modale install invariata.
+
+## Fix applicato
+- `installer_gui.ps1.template`: unificati tutti i path Start Menu a
+  `86BIT Argus Center` (prima erano incoerenti: "86BIT Argus" per Agent Status,
+  "86BIT Argus Connector" per Disinstalla/uninstall/testo finale). Ora un'unica
+  cartella con 2 shortcut: `Agent Status.lnk` + `Disinstalla.lnk`.
+  - Cleanup cartelle legacy ("86BIT Argus" / "86BIT Argus Connector") a inizio blocco.
+  - `uninstall.ps1` generato ora rimuove la cartella Center + entrambe le legacy.
+  - Testo finale wizard: "Menu Start -> 86BIT Argus Center (Agent Status / Disinstalla)".
+- `install-noc-agent.ps1`: aggiunto blocco 9.5 `WScript.Shell` (best-effort,
+  try/catch non bloccante) che crea la cartella `86BIT Argus Center` con gli
+  stessi 2 shortcut + refresh icon cache (ie4uinit).
+- Note: nomi-prodotto "86BIT Argus Connector" mantenuti come DisplayName registry,
+  tooltip tray e descrizioni shortcut (corretto: è il nome prodotto, non la cartella).
+
+## Testing
+- Go/PowerShell NON disponibili in preview: validazione solo sintattica/grep
+  (bilanciamento graffe, coerenza path). Le nuove installazioni creeranno la
+  cartella corretta SOLO dopo redeploy lato utente + nuovo build agent.
+
+---
+
+
+# 2026-07-25 — Dropdown testo nero + conferma rimozione "Installa connector"
+
+## Richieste utente (screenshot pagina Agent v4)
+1. "Mostra i caratteri in nero" nelle tendine (es. dropdown Cliente illeggibile).
+2. "Rimuovi tutta questa parte che non serve più. Connector installiamo sempre
+   e solo dalla Sezione dedicata al connector."
+
+## Analisi
+- La modale generica "Installa nuovo connector" (con dropdown Cliente/Ruolo/
+  Versione) NON esiste piu' nel codice attuale: gia' rimossa in una sessione
+  precedente. La pagina Agent v4 (AgentsPage.js) ha solo "Aggiorna" + tabella +
+  bulk-update; per installare rimanda a Gestione Clienti (Setup GUI / Setup .exe
+  / M / S per-cliente, ClientsPage.js). Lo screenshot mostra la PRODUZIONE su
+  build vecchia (problema ricorrente di deploy lato utente). Verificato via
+  grep (nessun residuo scanner/latest/Installa nuovo) e screenshot.
+
+## Fix applicato
+- index.css: regola globale `select option, select optgroup { color:#111827;
+  background:#fff }` → opzioni delle tendine native con testo NERO leggibile su
+  qualunque tema. Tocca solo la lista aperta, non il valore selezionato del
+  controllo chiuso (verificato: select "Tutti i clienti" resta leggibile).
+
+## Note
+- La modale "Installa connector" sparira' dalla PROD dopo il redeploy del
+  frontend (nel preview e' gia' assente). Installazione unica via Gestione Clienti.
+- Effetto della fix CSS in PROD dopo rebuild+redeploy del frontend.
+
+---
+
+
+# 2026-07-25 — [FEATURE] Monitoraggio power-state VM Hyper-V (opzione B)
+
+## Richiesta utente
+Per le VM Hyper-V: monitorare se sono accese o spente come ulteriore
+informazione, con integrazione nel motore di stato (Off → "spento" invece di
+offline; Running → evidenza di accensione).
+
+## Cosa esisteva
+Agent Go raccoglie stato VM (Running/Off/Saved/Paused) via WMI Get-VM su comando
+WS `hyperv_collect` → salvato in `hyperv_snapshots`. C'era solo trigger MANUALE
+(`/api/hyperv/poll-now/{client_id}`), nessuno scheduler, nessun uso nel motore.
+
+## Implementazione (opzione B, tutto GitHub-latest single source)
+1. **Raccolta periodica** (server.py): nuovo scheduler `hyperv_power_poll` ogni
+   5min → `run_hyperv_poll_all` invia `hyperv_collect` a tutti gli agent Windows
+   v4 LIVE → snapshot sempre freschi (<15min = "live evidence").
+2. **Motore di STATO** (routes/devices.py): match VM→device per hostname corto
+   (scoping per cliente, solo snapshot freschi). Se device offline/pending:
+   Running → `online` (live_evidence=hyperv); Off/Saved/Paused → status `off`.
+   Esposti campi `hyperv_state` + `hyperv_host` (models.py DeviceResponse).
+3. **Motore di ALERTING** (correlation_engine.py): `build_context` costruisce
+   mappa hyperv per cliente; `gather_signals` aggiunge `hyperv_state`;
+   `verdict_server` (come iLO per il fisico):
+   - Off/Saved/Paused → up=False, NON alertable, cause=vm_powered_off (no falso down)
+   - Running + L2/Datto → up=True, no alert, cause=icmp_filtered_hyperv
+   - Running senza rete → up=False, alert medium, cause=os_unresponsive_hyperv
+4. **Frontend**: badge Hyper-V (ON/OFF) nella vista raggruppata, tabella flat e
+   scheda dispositivo (DeviceInfoCard "Dati raccolti da"); stato "SPENTO" grigio;
+   header Salute Vitali con conteggio "spente" separato da "offline".
+
+## Verifica
+- API /api/devices: transizioni Off→"off", Saved→"off", Running→"online" [OK]
+- verdict_server matrix: Off→vm_powered_off(no alert), Running+L2→no alert,
+  Running solo→medium verify, non-VM invariati (critical) [OK]
+- Screenshot: badge HV:OFF + stato SPENTO + "Salute Vitali 3 online, 0 offline,
+  1 spente" [OK]. Scheduler avviato (tick 5m), nessun errore.
+
+## Limiti / note
+- Overview endpoint (top summary "DISPOSITIVI n offline") NON ancora aggiornato
+  per Hyper-V: conta gli "off" come offline nel totale generale (follow-up P2).
+  La Salute Vitali per-cliente e' invece corretta.
+- Effetto in PROD dopo redeploy backend. L'agent v4 supporta gia' hyperv_collect.
+
+---
+
+
 # 2026-07-25 — Fix cosmetico "vv4.25.4" (doppia v) nel dialog UI scanner
 
 ## Segnalazione utente (screenshot)

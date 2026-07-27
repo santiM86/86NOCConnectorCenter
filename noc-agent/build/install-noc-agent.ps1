@@ -1129,6 +1129,63 @@ Write-Host "=========================================================" -Foregrou
 Write-Host " Installazione 86NocAgent $Version COMPLETATA" -ForegroundColor Green
 Write-Host "=========================================================" -ForegroundColor Green
 Write-Host ""
+# ------------------------------------------------------------------- #
+# 9.5  Cartella Menu Start "86BIT Argus Center" (Agent Status + Disinstalla)
+# ------------------------------------------------------------------- #
+# Crea nel Menu Start una cartella coerente con l'installer GUI cosi' che
+# QUALSIASI metodo di installazione (console/OTA o setup GUI) produca la
+# stessa esperienza per il cliente: una voce per aprire lo stato agent e
+# una per disinstallare. Best-effort: errori non bloccano l'installazione.
+Write-Step "Creazione cartella Menu Start (86BIT Argus Center)"
+try {
+    # Cleanup cartelle legacy con nomi non unificati (versioni precedenti)
+    foreach ($legacy in @(
+        (Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\86BIT Argus Connector"),
+        (Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\86BIT Argus")
+    )) {
+        if (Test-Path $legacy) { try { Remove-Item -Path $legacy -Recurse -Force -ErrorAction SilentlyContinue } catch {} }
+    }
+    $startMenu = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\86BIT Argus Center"
+    New-Item -ItemType Directory -Force -Path $startMenu | Out-Null
+    $wsh = New-Object -ComObject WScript.Shell
+    $iconFile = Join-Path $InstallDir "argus.ico"
+    # Shortcut "Agent Status": preferisci ArgusDesktop.exe, fallback a nocagent-ui.exe
+    $uiExeSm = Join-Path $InstallDir "ArgusDesktop.exe"
+    if (-not (Test-Path $uiExeSm)) { $uiExeSm = Join-Path $InstallDir "nocagent-ui.exe" }
+    if (Test-Path $uiExeSm) {
+        $iconLoc = if (Test-Path $iconFile) { $iconFile } else { "$uiExeSm,0" }
+        $lnkStatus = $wsh.CreateShortcut((Join-Path $startMenu "Agent Status.lnk"))
+        $lnkStatus.TargetPath = $uiExeSm
+        $lnkStatus.WorkingDirectory = $InstallDir
+        $lnkStatus.IconLocation = $iconLoc
+        $lnkStatus.Description = "Stato Agent Argus - Apre mini-finestra (gestione completa nel NOC Center)"
+        $lnkStatus.Save()
+        Write-Ok "shortcut '86BIT Argus Center\Agent Status' creato"
+    } else {
+        Write-Warn2 "Nessun binario UI trovato in $InstallDir - shortcut Agent Status saltato"
+    }
+    # Shortcut "Disinstalla": punta a uninstall.ps1 (se presente in InstallDir)
+    $uninstScript = Join-Path $InstallDir "uninstall.ps1"
+    if (Test-Path $uninstScript) {
+        $iconLocUn = if (Test-Path $iconFile) { $iconFile } elseif (Test-Path $uiExeSm) { "$uiExeSm,0" } else { "powershell.exe,0" }
+        $unLnk = $wsh.CreateShortcut((Join-Path $startMenu "Disinstalla.lnk"))
+        $unLnk.TargetPath = "powershell.exe"
+        $unLnk.Arguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$uninstScript`""
+        $unLnk.WorkingDirectory = $InstallDir
+        $unLnk.IconLocation = $iconLocUn
+        $unLnk.Description = "Disinstalla 86BIT Argus Connector"
+        $unLnk.Save()
+        Write-Ok "shortcut '86BIT Argus Center\Disinstalla' creato"
+    } else {
+        Write-Warn2 "uninstall.ps1 non presente in $InstallDir - shortcut Disinstalla saltato"
+    }
+    # Refresh icon cache cosi' gli shortcut mostrano subito l'icona corretta
+    try { Start-Process -WindowStyle Hidden -FilePath "ie4uinit.exe" -ArgumentList "-show" -ErrorAction SilentlyContinue } catch {}
+} catch {
+    Write-Warn2 "Creazione cartella Menu Start fallita (non bloccante): $($_.Exception.Message)"
+}
+
+
 
 # ------------------------------------------------------------------- #
 # 10. Rilancia la UI desktop come UTENTE LOGGATO
