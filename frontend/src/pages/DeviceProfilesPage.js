@@ -20,6 +20,8 @@ const FAMILY_META = {
   nas:         { icon: Cube,  color: "#10b981", label: "NAS" },
   ups:         { icon: Cube,  color: "#a855f7", label: "UPS" },
   unifi:       { icon: Cube,  color: "#06b6d4", label: "UniFi" },
+  "access-point": { icon: Cube, color: "#22d3ee", label: "Access Point" },
+  printer:     { icon: Cube,  color: "#e879f9", label: "Stampante" },
   server_oob:  { icon: Cpu,   color: "#ef4444", label: "Server OOB" },
   generic:     { icon: Cube,  color: "#64748b", label: "Generico" },
 };

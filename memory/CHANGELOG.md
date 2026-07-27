@@ -1,3 +1,30 @@
+# 2026-06 — Fix: profili Access Point non visibili nel dropdown "Configura profilo"
+
+## Problema (segnalato via screenshot)
+- I due nuovi profili AP (TP-Link Omada/EAP + Aruba Instant On) non comparivano
+  nel dropdown di applicazione profilo, pur essendo presenti nel backend.
+
+## Causa
+- Frontend: whitelist `familyOrder` in `ClientOverviewPage.js` (modale
+  "Configura profilo") NON includeva la famiglia `"access-point"` → i profili
+  venivano filtrati via (stesso identico bug che in passato nascondeva le
+  stampanti). Il backend li esponeva correttamente.
+
+## Fix
+- `ClientOverviewPage.js`: aggiunto `"access-point"` a `familyOrder` (dopo
+  "firewall") e a `familyLabels` → nuovo optgroup "Access Point".
+- `DeviceProfilesPage.js`: aggiunto meta `access-point` (+ `printer`, prima
+  mancante) a `FAMILY_META` per label/icona corretti.
+
+## Testing
+- Screenshot dropdown: optgroup "Access Point" presente con entrambi i profili
+  ("TP-Link — Omada/EAP", "Aruba (HPE) — Instant On"). Verificato via Playwright
+  (optgroups + options letti dal DOM).
+- NB: in produzione (argus.86bit.it) il fix è visibile solo dopo il redeploy.
+
+---
+
+
 # 2026-06 — Pulizia lista Clienti + Alert "Saturazione RF" per Access Point
 
 ## Richieste utente
