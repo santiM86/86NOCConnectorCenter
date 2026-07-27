@@ -1,3 +1,30 @@
+# 2026-06 — Notifica push dedicata per "VM critica spenta inaspettatamente"
+
+## Richiesta utente
+- Notifica push mirata sulla console mobile dei tecnici SOLO per gli eventi
+  `vm_unexpected_shutdown`, così la reperibilità viene avvisata in modo
+  inconfondibile quando una VM che deve restare accesa cade davvero.
+
+## Implementazione
+- `webpush.py` → `build_alert_payload`: special-case per `source_type ==
+  "corr_vm_unexpected_shutdown"`:
+  - Titolo dedicato "🖥️🚨 VM CRITICA SPENTA" + body con VM · cliente.
+  - `severity` forzata a `critical` → il service worker (`sw.js`) imposta
+    `requireInteraction=true` (la notifica resta a schermo finché non chiusa)
+    e la critica bypassa le Quiet Hours (`quiet_exclude_critical`).
+  - `tag` per-device (`vmdown-{ip}`): un nuovo evento sulla stessa VM rimpiazza
+    il precedente invece di impilarsi.
+  - Deep-link alla scheda cliente (`/client/{client_id}`) invece della lista alert.
+- Il routing esisteva già: l'alert critico passa da `_dispatch_notification` →
+  `webpush.notify_new_alert` → on-call rotation (o fallback admin+operator).
+
+## Testing
+- Unit test `build_alert_payload`: caso VM (titolo/tag/url/severity) + caso generico
+  (invariato) PASS. La consegna reale richiede VAPID configurato + subscription attive in prod.
+
+---
+
+
 # 2026-06 — Alert opzionale "VM critica spenta inaspettatamente" (Hyper-V)
 
 ## Richiesta utente

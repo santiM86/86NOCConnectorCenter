@@ -232,6 +232,35 @@ async def send_to_roles(db, roles: List[str], payload: Dict[str, Any], log_conte
 def build_alert_payload(alert: Dict[str, Any]) -> Dict[str, Any]:
     """Build web push payload from alert doc."""
     severity = (alert.get("severity") or "medium").lower()
+    source_type = alert.get("source_type") or ""
+
+    # Evento speciale: spegnimento INATTESO di una VM critica (Hyper-V).
+    # Notifica push dedicata e inconfondibile per chi è di reperibilità:
+    #  - titolo/emoji distintivi, severity forzata a critical (→ il service
+    #    worker imposta requireInteraction=true e la notifica resta a schermo);
+    #  - tag per-device: un nuovo evento sulla stessa VM RIMPIAZZA il precedente
+    #    invece di impilarsi;
+    #  - deep-link alla scheda del cliente (contesto VM), non alla lista alert.
+    if source_type == "corr_vm_unexpected_shutdown":
+        device_name = alert.get("device_name") or alert.get("device_ip") or "VM"
+        client_name = alert.get("client_name") or ""
+        body = device_name + (f" · {client_name}" if client_name else "") + \
+            " — VM critica spenta in modo inatteso"
+        cid = alert.get("client_id")
+        return {
+            "title": "🖥️🚨 VM CRITICA SPENTA",
+            "body": body,
+            "icon": "/icon-192.png",
+            "tag": f"vmdown-{alert.get('device_ip') or alert.get('id','')}",
+            "severity": "critical",
+            "data": {
+                "alert_id": alert.get("id"),
+                "url": f"/client/{cid}" if cid else "/alerts",
+                "client_id": cid,
+                "kind": "vm_unexpected_shutdown",
+            },
+        }
+
     title_prefix = {
         "critical": "🚨 CRITICO",
         "high": "⚠️ ALTO",
