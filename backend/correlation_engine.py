@@ -181,10 +181,31 @@ async def build_context(db, cfg: Optional[Dict[str, Any]] = None) -> Dict[str, A
             "internet_up": internet_up,
         }
 
+    # --- Hyper-V: stato accensione VM dall'host (fonte autorevole) ---
+    # hyperv[cid][short_vm_name] = "Running"|"Off"|"Saved"|"Paused" (solo snapshot
+    # freschi <15min). Analogo a iLO per il fisico: dice se la VM e' accesa a
+    # livello di hypervisor, indipendente da rete/ICMP/firewall.
+    hv_fresh_min = float(cfg.get("hyperv_fresh_minutes", 15))
+    hyperv: Dict[str, Dict[str, str]] = {}
+    async for snap in db.hyperv_snapshots.find(
+        {}, {"_id": 0, "client_id": 1, "vms": 1, "collected_at": 1},
+    ):
+        cid = snap.get("client_id")
+        if not cid:
+            continue
+        ca = _parse_dt(snap.get("collected_at"))
+        if not (ca and (now - ca).total_seconds() / 60.0 <= hv_fresh_min):
+            continue
+        b = hyperv.setdefault(cid, {})
+        for vm in (snap.get("vms") or []):
+            nm = _host_short(vm.get("name"))
+            if nm:
+                b[nm] = (vm.get("state") or "").strip()
+
     return {
         "ip_ev": ip_ev, "mac_ev": mac_ev, "offline_clients": offline_clients,
         "wan": wan, "datto": datto, "child_to_switch": child_to_switch,
-        "source_health": source_health,
+        "source_health": source_health, "hyperv": hyperv,
     }
 
 
@@ -309,6 +330,16 @@ def gather_signals(md: dict, pd: Optional[dict], ctx: dict) -> Dict[str, Any]:
                 datto_minutes = (datetime.now(timezone.utc) - ls).total_seconds() / 60.0
 
     w = (ctx.get("wan") or {}).get(cid) or {}
+
+    # Hyper-V: stato accensione VM dall'host (match per hostname corto).
+    hv = (ctx.get("hyperv") or {}).get(cid) or {}
+    hyperv_state = None
+    for _k in (md.get("hostname"), md.get("name"), md.get("device_name")):
+        ks = _host_short(_k)
+        if ks and ks in hv:
+            hyperv_state = hv[ks]
+            break
+
     return {
         "ping": ping,
         "ping_method": (pd or {}).get("method") or (pd or {}).get("ping_method"),
@@ -317,6 +348,7 @@ def gather_signals(md: dict, pd: Optional[dict], ctx: dict) -> Dict[str, Any]:
         "datto_minutes": datto_minutes,
         "datto_reliable": datto_reliable,
         "datto_matched": dd is not None,
+        "hyperv_state": hyperv_state,
         "connector_live": connector_live,
         "fw_up": w.get("fw_up"),
         "rt_up": w.get("rt_up"),
@@ -333,8 +365,9 @@ def _V(up, alertable, severity, confidence, root_cause, reasoning) -> Dict[str, 
 
 def verdict_server(s: dict, ilo_power: Optional[str]) -> Dict[str, Any]:
     dm = f" da {int(s['datto_minutes'])}min" if s.get("datto_minutes") else ""
+    hv = s.get("hyperv_state")
     # 0) Nessun dato di monitoraggio (device mai pollato) → non giudicabile
-    if s.get("ping") is None and not s.get("l2_alive") and s.get("datto") is None:
+    if s.get("ping") is None and not s.get("l2_alive") and s.get("datto") is None and not hv:
         return _V(False, False, "none", 0, "no_data", "Nessun dato di monitoraggio ancora disponibile.")
     # 1) Ping raggiungibile = server sicuramente UP a livello IP
     if s.get("ping") is True:
@@ -343,6 +376,23 @@ def verdict_server(s: dict, ilo_power: Optional[str]) -> Dict[str, Any]:
                       f"Ping OK ma Datto OFFLINE{dm} → il server e' OPERATIVO, "
                       f"problema all'agent Datto (non e' un down).")
         return _V(True, False, "none", 100, "healthy", "Server raggiungibile via ping.")
+
+    # 1.5) HYPER-V host = fonte autorevole (come iLO per il fisico).
+    #  - Off/Saved/Paused → VM SPENTA di proposito: NESSUN alert di down.
+    #  - Running → evidenza forte di accensione: se c'e' anche L2/Datto online
+    #    → operativa (ICMP filtrato); altrimenti VM accesa ma SO non risponde
+    #    (verifica), MAI un "down" critico.
+    if hv in ("Off", "Saved", "Paused"):
+        return _V(False, False, "none", 100, "vm_powered_off",
+                  f"VM Hyper-V in stato {hv} (dall'host) → spenta di proposito, nessun down.")
+    if hv == "Running":
+        if s.get("l2_alive") or s.get("datto") == "online":
+            return _V(True, False, "none", 80, "icmp_filtered_hyperv",
+                      "Ping FAIL ma la VM risulta Running sull'host Hyper-V + evidenza rete → "
+                      "ICMP filtrato, VM operativa (nessun alert).")
+        return _V(False, True, "medium", 55, "os_unresponsive_hyperv",
+                  "VM Running sull'host Hyper-V ma nessuna risposta di rete → VM accesa, "
+                  "SO forse non risponde. Verifica.")
 
     # 2) Ping non raggiungibile — connettore cieco e Datto non conferma → incerto
     if not s.get("connector_live") and s.get("datto") != "offline":

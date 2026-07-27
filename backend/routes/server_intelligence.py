@@ -379,6 +379,44 @@ async def trigger_hyperv_poll(client_id: str, current_user: dict = Depends(get_c
     return {"ok": True, "sent_to": sent, "agents": [a["hostname"] for a in agents]}
 
 
+async def run_hyperv_poll_all(fresh_window_min: int = 5) -> dict:
+    """Scheduler: invia 'hyperv_collect' a TUTTI gli agent Windows v4 LIVE.
+
+    Mantiene freschi gli snapshot Hyper-V (hyperv_snapshots) usati come evidenza
+    di accensione VM nel motore di stato/alerting. Best-effort, non solleva.
+    """
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=fresh_window_min)).isoformat()
+    agents = await db.managed_agents.find(
+        {
+            "$or": [
+                {"last_heartbeat_at": {"$gte": cutoff}},
+                {"last_seen_at": {"$gte": cutoff}},
+            ],
+            "platform": {"$regex": "windows", "$options": "i"},
+        },
+        {"_id": 0, "agent_id": 1, "client_id": 1, "hostname": 1},
+    ).to_list(500)
+    if not agents:
+        return {"live_windows_agents": 0, "sent": 0}
+    try:
+        from routes.agent_ws import REGISTRY
+    except ImportError:
+        return {"error": "agent_ws non disponibile"}
+    sent = 0
+    for ag in agents:
+        conn = REGISTRY.get(ag["agent_id"])
+        if not conn:
+            continue
+        cmd_id = uuid.uuid4().hex
+        asyncio.create_task(conn.send_command(
+            "hyperv_collect",
+            {"command_id": cmd_id, "client_id": ag.get("client_id")},
+            timeout=60.0,
+        ))
+        sent += 1
+    return {"live_windows_agents": len(agents), "sent": sent}
+
+
 @router.post("/hyperv/snapshot")
 async def submit_hyperv_snapshot(payload: dict, request: Request):
     """Endpoint callback agent: salva snapshot Hyper-V raccolto via WMI.

@@ -188,6 +188,55 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
             return True
         return False
 
+    # v2026-07-25: HYPER-V POWER STATE (fonte autorevole dall'host).
+    # L'host Hyper-V riporta per ogni VM lo stato Running/Off/Saved/Paused via
+    # agent WMI (hyperv_snapshots). E' la fonte piu' affidabile per sapere se
+    # una VM e' accesa o spenta, indipendente da ICMP/firewall/rete:
+    #   - Running  -> evidenza positiva di accensione (come Datto online)
+    #   - Off/Saved/Paused -> VM SPENTA di proposito -> stato "off" (non offline)
+    # Match VM->device per hostname corto (nome VM == hostname device), scoping
+    # per cliente. Solo snapshot freschi (<15min) contano come "live evidence".
+    def _short(s):
+        return (str(s or "").strip().lower().split(".")[0])
+
+    hyperv_state_by_key: dict = {}  # (cid, short_name) -> {"state":..., "host":...}
+    try:
+        async for snap in db.hyperv_snapshots.find(
+            {}, {"_id": 0, "client_id": 1, "hostname": 1, "vms": 1, "collected_at": 1},
+        ):
+            ca = snap.get("collected_at")
+            fresh = True
+            if ca:
+                try:
+                    cad = _dt.fromisoformat(str(ca).replace("Z", "+00:00"))
+                    fresh = (_dnow - cad) < _td(minutes=15)
+                except Exception:
+                    fresh = True
+            if not fresh:
+                continue
+            cid = snap.get("client_id")
+            for vm in (snap.get("vms") or []):
+                nm = _short(vm.get("name"))
+                if nm:
+                    hyperv_state_by_key[(cid, nm)] = {
+                        "state": (vm.get("state") or "").strip(),
+                        "host": snap.get("hostname") or "",
+                    }
+    except Exception:
+        pass
+
+    def _hyperv_state(md_doc):
+        """Ritorna (state, host) della VM Hyper-V matchata, o (None, None)."""
+        cid = (md_doc or {}).get("client_id")
+        for key in (md_doc.get("hostname"), md_doc.get("name"), md_doc.get("device_name")):
+            k = _short(key)
+            if k and (cid, k) in hyperv_state_by_key:
+                e = hyperv_state_by_key[(cid, k)]
+                return e.get("state"), e.get("host")
+        return None, None
+
+    _HV_OFF = {"Off", "Saved", "Paused"}
+
 
     # v3.8.22 SCANNER LIVE-SEEN: cross-check con discovered_endpoints.
     # Lo Scanner aggiorna SEMPRE discovered_endpoints (lan-scan ARP/mDNS) anche
@@ -441,6 +490,14 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
             if md_status == "offline" and _datto_online(md, ip):
                 md_status = "online"
                 live_evidence2 = "datto"
+            # v2026-07-25: Hyper-V host = fonte autorevole di accensione VM.
+            _hv_state, _hv_host = _hyperv_state(md)
+            if md_status in ("offline", "pending") and _hv_state == "Running":
+                md_status = "online"
+                live_evidence2 = "hyperv"
+            elif md_status in ("offline", "pending") and _hv_state in _HV_OFF:
+                md_status = "off"
+                live_evidence2 = "hyperv_off"
             # display name: priorità centralizzata su best_display_name():
             # sys_name (SNMP) → hostname (NBNS) → mdns_name → name → fingerbank.
             # Vedi nota nel branch managed_devices sotto.
@@ -513,6 +570,9 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
                 "datto_name": md.get("datto_name") or "",
                 "datto_match": md.get("datto_match") or "",
                 "datto_matched_at": md.get("datto_matched_at") or "",
+                # v2026-07-25 Hyper-V power state (host WMI) — badge scheda device
+                "hyperv_state": _hv_state or "",
+                "hyperv_host": _hv_host or "",
                 # v2026-07-23 FIX: created_at MANCANTE qui faceva fallire la
                 # validazione DeviceResponse (campo obbligatorio) → il device
                 # cadeva nel fallback `except` che NON copiava is_vital → i
@@ -633,6 +693,14 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
         if md_status in ("offline", "pending") and _datto_online(md, md_ip):
             md_status = "online"
             live_evidence3 = "datto"
+        # v2026-07-25: Hyper-V host = fonte autorevole di accensione VM.
+        hv_state, hv_host = _hyperv_state(md)
+        if md_status in ("offline", "pending") and hv_state == "Running":
+            md_status = "online"
+            live_evidence3 = "hyperv"
+        elif md_status in ("offline", "pending") and hv_state in _HV_OFF:
+            md_status = "off"
+            live_evidence3 = "hyperv_off"
         # display name: priorità centralizzata su best_display_name():
         # sys_name (SNMP) → hostname (NBNS) → mdns_name → name → fingerbank.
         # Questo evita la UI con righe "10.10.1.55  10.10.1.55  snmp:public"
@@ -700,6 +768,9 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
             "datto_name": md.get("datto_name") or "",
             "datto_match": md.get("datto_match") or "",  # "mac" | "ip" | ""
             "datto_matched_at": md.get("datto_matched_at") or "",
+            # v2026-07-25 Hyper-V power state (host WMI) — badge scheda device
+            "hyperv_state": hv_state or "",
+            "hyperv_host": hv_host or "",
             "created_at": md.get("created_at") or md.get("auto_added_at") or now_iso,
         })
 

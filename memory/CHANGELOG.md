@@ -1,3 +1,49 @@
+# 2026-07-25 — [FEATURE] Monitoraggio power-state VM Hyper-V (opzione B)
+
+## Richiesta utente
+Per le VM Hyper-V: monitorare se sono accese o spente come ulteriore
+informazione, con integrazione nel motore di stato (Off → "spento" invece di
+offline; Running → evidenza di accensione).
+
+## Cosa esisteva
+Agent Go raccoglie stato VM (Running/Off/Saved/Paused) via WMI Get-VM su comando
+WS `hyperv_collect` → salvato in `hyperv_snapshots`. C'era solo trigger MANUALE
+(`/api/hyperv/poll-now/{client_id}`), nessuno scheduler, nessun uso nel motore.
+
+## Implementazione (opzione B, tutto GitHub-latest single source)
+1. **Raccolta periodica** (server.py): nuovo scheduler `hyperv_power_poll` ogni
+   5min → `run_hyperv_poll_all` invia `hyperv_collect` a tutti gli agent Windows
+   v4 LIVE → snapshot sempre freschi (<15min = "live evidence").
+2. **Motore di STATO** (routes/devices.py): match VM→device per hostname corto
+   (scoping per cliente, solo snapshot freschi). Se device offline/pending:
+   Running → `online` (live_evidence=hyperv); Off/Saved/Paused → status `off`.
+   Esposti campi `hyperv_state` + `hyperv_host` (models.py DeviceResponse).
+3. **Motore di ALERTING** (correlation_engine.py): `build_context` costruisce
+   mappa hyperv per cliente; `gather_signals` aggiunge `hyperv_state`;
+   `verdict_server` (come iLO per il fisico):
+   - Off/Saved/Paused → up=False, NON alertable, cause=vm_powered_off (no falso down)
+   - Running + L2/Datto → up=True, no alert, cause=icmp_filtered_hyperv
+   - Running senza rete → up=False, alert medium, cause=os_unresponsive_hyperv
+4. **Frontend**: badge Hyper-V (ON/OFF) nella vista raggruppata, tabella flat e
+   scheda dispositivo (DeviceInfoCard "Dati raccolti da"); stato "SPENTO" grigio;
+   header Salute Vitali con conteggio "spente" separato da "offline".
+
+## Verifica
+- API /api/devices: transizioni Off→"off", Saved→"off", Running→"online" [OK]
+- verdict_server matrix: Off→vm_powered_off(no alert), Running+L2→no alert,
+  Running solo→medium verify, non-VM invariati (critical) [OK]
+- Screenshot: badge HV:OFF + stato SPENTO + "Salute Vitali 3 online, 0 offline,
+  1 spente" [OK]. Scheduler avviato (tick 5m), nessun errore.
+
+## Limiti / note
+- Overview endpoint (top summary "DISPOSITIVI n offline") NON ancora aggiornato
+  per Hyper-V: conta gli "off" come offline nel totale generale (follow-up P2).
+  La Salute Vitali per-cliente e' invece corretta.
+- Effetto in PROD dopo redeploy backend. L'agent v4 supporta gia' hyperv_collect.
+
+---
+
+
 # 2026-07-25 — Fix cosmetico "vv4.25.4" (doppia v) nel dialog UI scanner
 
 ## Segnalazione utente (screenshot)
