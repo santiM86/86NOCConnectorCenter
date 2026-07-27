@@ -1,3 +1,33 @@
+# 2026-07-25 — Dropdown testo nero + conferma rimozione "Installa connector"
+
+## Richieste utente (screenshot pagina Agent v4)
+1. "Mostra i caratteri in nero" nelle tendine (es. dropdown Cliente illeggibile).
+2. "Rimuovi tutta questa parte che non serve più. Connector installiamo sempre
+   e solo dalla Sezione dedicata al connector."
+
+## Analisi
+- La modale generica "Installa nuovo connector" (con dropdown Cliente/Ruolo/
+  Versione) NON esiste piu' nel codice attuale: gia' rimossa in una sessione
+  precedente. La pagina Agent v4 (AgentsPage.js) ha solo "Aggiorna" + tabella +
+  bulk-update; per installare rimanda a Gestione Clienti (Setup GUI / Setup .exe
+  / M / S per-cliente, ClientsPage.js). Lo screenshot mostra la PRODUZIONE su
+  build vecchia (problema ricorrente di deploy lato utente). Verificato via
+  grep (nessun residuo scanner/latest/Installa nuovo) e screenshot.
+
+## Fix applicato
+- index.css: regola globale `select option, select optgroup { color:#111827;
+  background:#fff }` → opzioni delle tendine native con testo NERO leggibile su
+  qualunque tema. Tocca solo la lista aperta, non il valore selezionato del
+  controllo chiuso (verificato: select "Tutti i clienti" resta leggibile).
+
+## Note
+- La modale "Installa connector" sparira' dalla PROD dopo il redeploy del
+  frontend (nel preview e' gia' assente). Installazione unica via Gestione Clienti.
+- Effetto della fix CSS in PROD dopo rebuild+redeploy del frontend.
+
+---
+
+
 # 2026-07-25 — [FEATURE] Monitoraggio power-state VM Hyper-V (opzione B)
 
 ## Richiesta utente

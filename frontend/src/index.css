@@ -707,3 +707,15 @@ html { overscroll-behavior-y: contain; }
 /* Strip feedback notifiche */
 .mdash-notif-msg { margin:10px 12px 0;padding:10px 12px;border-radius:10px;background:rgba(0,122,255,.12);border:1px solid rgba(0,122,255,.28);color:#3B9EFF;font-size:12px;font-weight:700;text-align:center;animation:mdashReveal .2s ease-out; }
 
+
+/* Dropdown native <select>: opzioni con testo NERO su sfondo bianco.
+   Su tema scuro il menu a tendina nativo del browser ereditava un testo
+   chiaro su sfondo chiaro -> illeggibile (es. tendina Cliente). Forziamo
+   contrasto leggibile SOLO sulle opzioni (la tendina aperta), senza toccare
+   il colore del valore selezionato mostrato nel controllo chiuso. */
+select option,
+select optgroup {
+  color: #111827 !important;
+  background-color: #ffffff !important;
+}
+
