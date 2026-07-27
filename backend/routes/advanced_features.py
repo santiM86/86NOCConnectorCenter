@@ -5,6 +5,7 @@ from datetime import datetime, timezone, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Request
 from database import db
 from deps import get_current_user, validate_api_key
+from alert_filter import invalidate_maintenance_cache
 
 logger = logging.getLogger("advanced_features")
 router = APIRouter(prefix="/api", tags=["advanced"])
@@ -81,6 +82,7 @@ async def create_maintenance_window(client_id: str, request: Request, current_us
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.maintenance_windows.insert_one({**window, "_id": window["id"]})
+    invalidate_maintenance_cache(client_id)
     return window
 
 
@@ -97,6 +99,7 @@ async def update_maintenance_window(client_id: str, window_id: str, request: Req
     )
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Finestra non trovata")
+    invalidate_maintenance_cache(client_id)
     return {"status": "ok"}
 
 
@@ -106,6 +109,7 @@ async def delete_maintenance_window(client_id: str, window_id: str, current_user
     result = await db.maintenance_windows.delete_one({"id": window_id, "client_id": client_id})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Finestra non trovata")
+    invalidate_maintenance_cache(client_id)
     return {"status": "ok"}
 
 
