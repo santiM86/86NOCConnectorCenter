@@ -1,3 +1,32 @@
+# 2026-06 — Unificazione cartella Menu Start "86BIT Argus Center"
+
+## Richiesta utente
+- Unificare il nome della cartella nel Menu Start a "86BIT Argus Center" e far sì
+  che ANCHE l'installer console/OTA (`install-noc-agent.ps1`) crei la cartella,
+  non solo il Setup GUI. Lasciare la modale install invariata.
+
+## Fix applicato
+- `installer_gui.ps1.template`: unificati tutti i path Start Menu a
+  `86BIT Argus Center` (prima erano incoerenti: "86BIT Argus" per Agent Status,
+  "86BIT Argus Connector" per Disinstalla/uninstall/testo finale). Ora un'unica
+  cartella con 2 shortcut: `Agent Status.lnk` + `Disinstalla.lnk`.
+  - Cleanup cartelle legacy ("86BIT Argus" / "86BIT Argus Connector") a inizio blocco.
+  - `uninstall.ps1` generato ora rimuove la cartella Center + entrambe le legacy.
+  - Testo finale wizard: "Menu Start -> 86BIT Argus Center (Agent Status / Disinstalla)".
+- `install-noc-agent.ps1`: aggiunto blocco 9.5 `WScript.Shell` (best-effort,
+  try/catch non bloccante) che crea la cartella `86BIT Argus Center` con gli
+  stessi 2 shortcut + refresh icon cache (ie4uinit).
+- Note: nomi-prodotto "86BIT Argus Connector" mantenuti come DisplayName registry,
+  tooltip tray e descrizioni shortcut (corretto: è il nome prodotto, non la cartella).
+
+## Testing
+- Go/PowerShell NON disponibili in preview: validazione solo sintattica/grep
+  (bilanciamento graffe, coerenza path). Le nuove installazioni creeranno la
+  cartella corretta SOLO dopo redeploy lato utente + nuovo build agent.
+
+---
+
+
 # 2026-07-25 — Dropdown testo nero + conferma rimozione "Installa connector"
 
 ## Richieste utente (screenshot pagina Agent v4)

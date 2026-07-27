@@ -967,7 +967,7 @@ if ($confirm -ne [System.Windows.Forms.DialogResult]::Yes) { exit 0 }
 
 $installDir = 'C:\Program Files\86NocAgent'
 $dataDir    = 'C:\ProgramData\86NocAgent'
-$startMenu  = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\86BIT Argus Connector'
+$startMenu  = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\86BIT Argus Center'
 $logFile    = Join-Path $env:TEMP '86NocAgent-uninstall.log'
 "$(Get-Date -Format o) - uninstall start" | Out-File -FilePath $logFile -Append
 
@@ -999,10 +999,17 @@ Remove-ItemProperty -Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run' 
 Step 'remove scheduled task 86BIT Argus Tray'
 Unregister-ScheduledTask -TaskName '86BIT Argus Tray' -Confirm:$false -ErrorAction SilentlyContinue
 
-# 4) Rimuovi shortcut Start Menu
+# 4) Rimuovi shortcut Start Menu (cartella corrente + legacy non unificate)
 Step 'remove start menu folder'
-if (Test-Path $startMenu) {
-    Remove-Item -Path $startMenu -Recurse -Force -ErrorAction SilentlyContinue
+$startMenuAll = @(
+    $startMenu,
+    (Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\86BIT Argus Connector'),
+    (Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\86BIT Argus')
+)
+foreach ($sm in ($startMenuAll | Select-Object -Unique)) {
+    if (Test-Path $sm) {
+        Remove-Item -Path $sm -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }
 
 # 5) Rimuovi entry Programmi e funzionalita'
@@ -1879,19 +1886,21 @@ function Run-Install {
             #   2) Voce "Disinstalla" (lifeline IT)
             #   3) Niente tray icon nativa per ora (sarebbe un binario
             #      dedicato - feature successiva).
-            # Cleanup di eventuali shortcut legacy "Connector.lnk" creati
-            # da versioni precedenti del wizard.
-            $startMenuLegacy1 = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\86BIT Argus Connector\Connector.lnk"
-            $startMenuLegacy2 = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\86BIT Argus Center\Connector.lnk"
-            foreach ($lp in @($startMenuLegacy1, $startMenuLegacy2)) {
-                if (Test-Path $lp) {
-                    try { Remove-Item -Path $lp -Force -ErrorAction SilentlyContinue } catch {}
+            # Cleanup di eventuali cartelle legacy con nomi non unificati
+            # ("86BIT Argus" / "86BIT Argus Connector") create da versioni
+            # precedenti del wizard, per evitare cartelle orfane nel Menu Start.
+            foreach ($lm in @(
+                (Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\86BIT Argus Connector"),
+                (Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\86BIT Argus")
+            )) {
+                if (Test-Path $lm) {
+                    try { Remove-Item -Path $lm -Recurse -Force -ErrorAction SilentlyContinue } catch {}
                 }
             }
             # Creazione voce "Agent Status" - preferisce ArgusDesktop
             # (Wails moderno, no freeze), fallback a nocagent-ui.exe legacy
             # solo se Wails non e' presente / WebView2 non installato.
-            $startMenu = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\86BIT Argus"
+            $startMenu = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\86BIT Argus Center"
             New-Item -ItemType Directory -Force -Path $startMenu | Out-Null
             $wsh = New-Object -ComObject WScript.Shell
             $argusDesktop = Join-Path $InstallDir "ArgusDesktop.exe"
@@ -1905,7 +1914,7 @@ function Run-Install {
             $lnkStatus.IconLocation = $iconLoc
             $lnkStatus.Description = "Stato Agent Argus - Apre mini-finestra (gestione completa nel NOC Center)"
             $lnkStatus.Save()
-            Append-Log "      shortcut '86BIT Argus\Agent Status' creato (Datto-style)" $ColorMuted
+            Append-Log "      shortcut '86BIT Argus Center\Agent Status' creato (Datto-style)" $ColorMuted
         } catch {
             Append-Log "      WARN: shortcut Agent Status non creato: $($_.Exception.Message)" $ColorError
         }
@@ -2011,8 +2020,9 @@ function Run-Install {
             Append-Log "      WARN: registry Uninstall non scritto: $($_.Exception.Message)" $ColorError
         }
         try {
-            # Aggiunge anche shortcut 'Disinstalla' nel menu Start
-            $startMenu = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\86BIT Argus Connector"
+            # Aggiunge anche shortcut 'Disinstalla' nel menu Start (stessa
+            # cartella unificata "86BIT Argus Center" della voce Agent Status).
+            $startMenu = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\86BIT Argus Center"
             if (-not (Test-Path $startMenu)) {
                 New-Item -ItemType Directory -Force -Path $startMenu | Out-Null
             }
@@ -2075,7 +2085,7 @@ function Show-Done {
         $contentPanel.Controls.Add($box)
 
         $items = @(
-            "Menu Start -> 86BIT Argus Connector -> Connector",
+            "Menu Start -> 86BIT Argus Center (Agent Status / Disinstalla)",
             "Tray icon visibile vicino all'orologio (zona notifica)",
             "Apri il NOC Center -> Agents per verificare 'live: true'",
             "Per disinstallare: Pannello di controllo -> Programmi"
