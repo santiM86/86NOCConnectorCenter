@@ -349,6 +349,7 @@ def gather_signals(md: dict, pd: Optional[dict], ctx: dict) -> Dict[str, Any]:
         "datto_reliable": datto_reliable,
         "datto_matched": dd is not None,
         "hyperv_state": hyperv_state,
+        "vm_alert_on_off": bool(md.get("hyperv_alert_on_off")),
         "connector_live": connector_live,
         "fw_up": w.get("fw_up"),
         "rt_up": w.get("rt_up"),
@@ -383,6 +384,14 @@ def verdict_server(s: dict, ilo_power: Optional[str]) -> Dict[str, Any]:
     #    → operativa (ICMP filtrato); altrimenti VM accesa ma SO non risponde
     #    (verifica), MAI un "down" critico.
     if hv in ("Off", "Saved", "Paused"):
+        # Alert opzionale per-VM: se l'admin ha marcato questa VM come "deve
+        # restare sempre accesa" (hyperv_alert_on_off), uno stato non-Running
+        # rilevato dall'host Hyper-V = spegnimento INATTESO → alert critico.
+        # Le VM NON flaggate mantengono il comportamento storico (nessun alert).
+        if s.get("vm_alert_on_off"):
+            return _V(False, True, "critical", 95, "vm_unexpected_shutdown",
+                      f"VM critica in stato {hv} sull'host Hyper-V ma configurata per restare "
+                      f"SEMPRE accesa → spegnimento INATTESO (alert richiesto dall'admin).")
         return _V(False, False, "none", 100, "vm_powered_off",
                   f"VM Hyper-V in stato {hv} (dall'host) → spenta di proposito, nessun down.")
     if hv == "Running":
@@ -476,8 +485,16 @@ def verdict_generic(s: dict) -> Dict[str, Any]:
         return _V(False, False, "none", 0, "no_data", "Nessun dato di monitoraggio ancora disponibile.")
     if s.get("ping") is True or s.get("l2_alive"):
         return _V(True, False, "none", 100, "healthy", "Dispositivo raggiungibile.")
-    if not s.get("connector_live"):
-        return _V(False, False, "none", 30, "connector_blind", "Stato incerto (connettore giu').")
+    # Hyper-V VM: stato host autorevole (come in verdict_server). Off/Saved/
+    # Paused = spenta; alert SOLO se l'admin l'ha marcata "sempre accesa".
+    hv = s.get("hyperv_state")
+    if hv in ("Off", "Saved", "Paused"):
+        if s.get("vm_alert_on_off"):
+            return _V(False, True, "critical", 95, "vm_unexpected_shutdown",
+                      f"VM critica in stato {hv} sull'host Hyper-V ma configurata per restare "
+                      f"SEMPRE accesa → spegnimento INATTESO (alert richiesto dall'admin).")
+        return _V(False, False, "none", 100, "vm_powered_off",
+                  f"VM Hyper-V in stato {hv} (dall'host) → spenta di proposito, nessun down.")
     if s.get("l2_alive"):
         return _V(False, True, "medium", 55, "icmp_filtered_l2", "Ping FAIL ma vivo a L2.")
     return _V(False, True, "high", 80, "unreachable", "Dispositivo irraggiungibile.")

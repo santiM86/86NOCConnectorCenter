@@ -122,6 +122,10 @@ class DeviceResponse(BaseModel):
     # v2026-07-25: Hyper-V power state della VM (fonte host WMI, autorevole)
     hyperv_state: Optional[str] = ""      # "Running" | "Off" | "Saved" | "Paused" | ""
     hyperv_host: Optional[str] = ""       # hostname dell'host Hyper-V
+    # v2026-06: alert opzionale per-VM quando una VM che deve restare sempre
+    # accesa risulta Off/Saved/Paused (spegnimento inatteso). Default False =
+    # comportamento attuale (VM spenta = nessun alert, zero falsi positivi).
+    hyperv_alert_on_off: Optional[bool] = False
     created_at: str
 
 class AlertCreate(BaseModel):

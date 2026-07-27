@@ -1,3 +1,38 @@
+# 2026-06 — Alert opzionale "VM critica spenta inaspettatamente" (Hyper-V)
+
+## Richiesta utente
+- Alert opzionale, configurabile per-device, quando una VM critica passa a
+  Off/Saved/Paused in modo inatteso. Zero falsi positivi sulle VM spente di
+  proposito (default OFF = comportamento storico). Scelte utente: trigger su
+  Off+Saved+Paused, severità Critical, toggle in DeviceEditModal (solo VM Hyper-V).
+
+## Implementazione
+- `models.py` (DeviceResponse): nuovo campo `hyperv_alert_on_off: bool = False`.
+- `correlation_engine.py`:
+  - `gather_signals`: espone `s["vm_alert_on_off"] = bool(md.hyperv_alert_on_off)`.
+  - `verdict_server` + `verdict_generic`: branch Off/Saved/Paused ora, se il flag
+    è attivo, ritorna alert CRITICO `vm_unexpected_shutdown` (confidence 95);
+    altrimenti mantiene `vm_powered_off` (nessun alert). Deterministico.
+- `alert_engine.py`: query `targets` ora include anche `{hyperv_alert_on_off: True}`
+  + campo nel projection (così le VM flaggate sono sempre valutate anche se non is_vital).
+- `routes/device_info_card.py`: nuovo endpoint `POST /devices/by-ip/{ip}/vm-alert`
+  body `{enabled, client_id?}` (mirror di set_device_vital: update + cache invalidation + audit).
+- `routes/devices.py`: `hyperv_alert_on_off` esposto in TUTTI e 3 i path di risposta
+  /api/devices (loop manuale + merge connector + secondo builder). Aggiunto anche
+  enrichment hyperv_state/host nel loop manuale (prima assente).
+- `components/DeviceEditModal.js`: toggle "Allerta se questa VM si spegne" (box rosso),
+  visibile solo se `device.hyperv_state` presente; mostra lo stato HV corrente; salva via nuovo endpoint.
+
+## Testing
+- Backend: 7 unit test verdict (flag ON/OFF × Off/Saved/Paused/Running, server+generic) PASS;
+  test_multisource_fusion.py PASS; endpoint 400/404/round-trip True↔False verificati via curl.
+- Frontend: compilazione pulita; screenshot del modale conferma il toggle renderizzato
+  con "Stato Hyper-V attuale: Off" per una VM Hyper-V.
+- Effetto reale sull'host dipende dal redeploy in produzione + snapshot Hyper-V freschi (<15min).
+
+---
+
+
 # 2026-06 — Unificazione cartella Menu Start "86BIT Argus Center"
 
 ## Richiesta utente

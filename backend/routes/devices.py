@@ -404,6 +404,11 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
         elif "is_vital" in d:
             d["is_vital"] = bool(d.get("is_vital"))
         # else: NOT setting is_vital → frontend distingue "non scelto" vs False
+        # v2026-06: Hyper-V power state + alert opzionale "VM spenta" (managed_devices wins)
+        _mhv_state, _mhv_host = _hyperv_state(md)
+        d["hyperv_state"] = _mhv_state or d.get("hyperv_state") or ""
+        d["hyperv_host"] = _mhv_host or d.get("hyperv_host") or ""
+        d["hyperv_alert_on_off"] = bool(md.get("hyperv_alert_on_off", d.get("hyperv_alert_on_off", False)))
         # v3.8.22 LIVE-SEEN: se lo Scanner ha visto questo IP nelle ultime 15min,
         # forza "online" anche se Master/manual lo davano per offline.
         # v4.16.x EXTEND: anche se il MAC e' nella MAC table SNMP recente di
@@ -573,6 +578,7 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
                 # v2026-07-25 Hyper-V power state (host WMI) — badge scheda device
                 "hyperv_state": _hv_state or "",
                 "hyperv_host": _hv_host or "",
+                "hyperv_alert_on_off": bool(md.get("hyperv_alert_on_off")),
                 # v2026-07-23 FIX: created_at MANCANTE qui faceva fallire la
                 # validazione DeviceResponse (campo obbligatorio) → il device
                 # cadeva nel fallback `except` che NON copiava is_vital → i
@@ -771,6 +777,7 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
             # v2026-07-25 Hyper-V power state (host WMI) — badge scheda device
             "hyperv_state": hv_state or "",
             "hyperv_host": hv_host or "",
+            "hyperv_alert_on_off": bool(md.get("hyperv_alert_on_off")),
             "created_at": md.get("created_at") or md.get("auto_added_at") or now_iso,
         })
 

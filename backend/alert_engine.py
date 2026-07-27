@@ -208,10 +208,10 @@ async def run_vital_watchdog(db, cfg_global: Dict[str, Any]) -> int:
 
     families = list(ce.SERVER_TYPES | ce.FIREWALL_TYPES | ce.SWITCH_TYPES)
     targets = await db.managed_devices.find(
-        {"$or": [{"is_vital": True}, {"device_type": {"$in": families}}]},
+        {"$or": [{"is_vital": True}, {"device_type": {"$in": families}}, {"hyperv_alert_on_off": True}]},
         {"_id": 0, "client_id": 1, "ip": 1, "ip_address": 1, "name": 1, "device_name": 1,
          "device_type": 1, "mac": 1, "mac_address": 1, "hostname": 1, "serial": 1,
-         "datto_uid": 1, "source": 1, "is_vital": 1},
+         "datto_uid": 1, "source": 1, "is_vital": 1, "hyperv_alert_on_off": 1},
     ).to_list(10000)
     if not targets:
         return 0
