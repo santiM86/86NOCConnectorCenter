@@ -26,7 +26,8 @@ TEST_CLIENT_ID = "da3d6e40-b3e5-4d46-9787-dde328a3aa36"
 # Expected profile keys (10 seed profiles)
 EXPECTED_PROFILE_KEYS = [
     "hp_procurve", "synology_dsm", "qnap_qts", "fortinet_fortigate",
-    "unifi", "zyxel_usg", "apc_ups", "cisco_catalyst", "dell_idrac", "generic_snmp"
+    "unifi", "zyxel_usg", "apc_ups", "cisco_catalyst", "dell_idrac", "generic_snmp",
+    "tplink_omada_ap", "aruba_instant_on"
 ]
 
 
@@ -70,8 +71,10 @@ class TestDeviceProfilesList:
         response = requests.get(f"{BASE_URL}/api/device-profiles")
         assert response.status_code in [401, 403], f"Expected 401/403, got {response.status_code}"
 
-    def test_list_profiles_returns_10_profiles(self, admin_headers):
-        """Returns exactly 10 seed profiles"""
+    def test_list_profiles_returns_all_seed_profiles(self, admin_headers):
+        """Returns all seed profiles (count derived from PROFILES, not hardcoded)"""
+        from device_profiles import PROFILES
+        expected = len(PROFILES)
         response = requests.get(f"{BASE_URL}/api/device-profiles", headers=admin_headers)
         assert response.status_code == 200, f"Failed: {response.text}"
         data = response.json()
@@ -79,8 +82,8 @@ class TestDeviceProfilesList:
         assert "seed_version" in data, "Missing seed_version"
         assert "count" in data, "Missing count"
         assert "profiles" in data, "Missing profiles array"
-        assert data["count"] == 10, f"Expected 10 profiles, got {data['count']}"
-        assert len(data["profiles"]) == 10, f"Expected 10 profiles in array"
+        assert data["count"] == expected, f"Expected {expected} profiles, got {data['count']}"
+        assert len(data["profiles"]) == expected, f"Expected {expected} profiles in array"
 
     def test_list_profiles_has_all_expected_keys(self, admin_headers):
         """All 10 expected profile keys are present"""
@@ -331,14 +334,16 @@ class TestApplyProfile:
 class TestVendorsList:
     """Tests for GET /api/device-profiles/list/vendors"""
 
-    def test_list_vendors_returns_10_items(self, admin_headers):
-        """Returns 10 vendor items for dropdown"""
+    def test_list_vendors_returns_all_items(self, admin_headers):
+        """Returns one vendor item per seed profile (count derived, not hardcoded)"""
+        from device_profiles import PROFILES
+        expected = len(PROFILES)
         response = requests.get(f"{BASE_URL}/api/device-profiles/list/vendors", headers=admin_headers)
         assert response.status_code == 200, f"Failed: {response.text}"
         data = response.json()
         
         assert "items" in data, "Missing items array"
-        assert len(data["items"]) == 10, f"Expected 10 items, got {len(data['items'])}"
+        assert len(data["items"]) == expected, f"Expected {expected} items, got {len(data['items'])}"
 
     def test_vendor_item_structure(self, admin_headers):
         """Each vendor item has key, vendor, family, label"""

@@ -1,3 +1,35 @@
+# 2026-06 — Profili vendor Access Point: TP-Link Omada/EAP + Aruba Instant On
+
+## Richiesta utente
+- Aggiungere 2 profili vendor per Access Point wireless con porte console web,
+  OID SNMP di auto-discovery e soglie di allarme (CPU/RAM/client/uplink/ping).
+
+## Implementazione (`device_profiles/__init__.py`)
+- `tplink_omada_ap` (family `access-point`): OID enterprise .1.3.6.1.4.1.11863
+  (tpSysCpuUsage/tpSysMemoryUsage/tpDot11ClientNum), web console Omada HTTPS 8043
+  (alt 443/80/8088, adoption 29810-29814), SNMP 161. Soglie CPU 80/95, RAM 85/92,
+  client 50/80, uplink-down critical, latenza 100ms / loss 2%.
+- `aruba_instant_on` (family `access-point`): OID generico Aruba/HPE .1.3.6.1.4.1.14823
+  (dot11AssociatedStationCount + ifIn/OutOctets porta POE), cloud portal.arubainstanton.com
+  HTTPS 443 (+ local status page), SNMP 161 (da abilitare dal portale Cloud). Stesse soglie.
+- Fingerprint: prefix sysObjectID + regex sysDescr (omada/eap/oc200, instant on/aruba ap).
+  Il classifier device_classifier.py già mappa questi a device_type canonico `access-point`.
+- `SEED_VERSION` 3 → 4.
+
+## Note
+- I profili sono letti direttamente dalla lista Python `PROFILES` (list_profiles,
+  fingerprint, apply-profile, dropdown vendor) → attivi subito senza re-seed.
+- Applicando il profilo, `device_type` = family = `access-point` (canonico, categoria AP).
+
+## Testing
+- `pytest tests/test_device_profiles.py tests/test_device_type_resolver.py` → 54 passed
+  (aggiornati 2 test con conteggio profili hardcoded/obsoleto → ora derivato da len(PROFILES)).
+- Endpoint live verificati via curl: `/list/vendors` mostra entrambi i profili access-point;
+  dettaglio `tplink_omada_ap` con porta 8043, OID e soglie corrette.
+
+---
+
+
 # 2026-06 — Notifica push dedicata per "VM critica spenta inaspettatamente"
 
 ## Richiesta utente

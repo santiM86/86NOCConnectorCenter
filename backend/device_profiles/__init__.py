@@ -22,7 +22,7 @@ from typing import Any
 
 # ruff: noqa: E501 — long strings are intentional in OID tables
 
-SEED_VERSION = 3  # v2026-02-28: aggiunti 6 profili stampanti multi-vendor (HP/Epson/Kyocera/Xerox/Brother/Canon) — RFC 3805 Printer-MIB
+SEED_VERSION = 4  # v2026-06: aggiunti 2 profili Access Point wireless (TP-Link Omada/EAP + Aruba Instant On)
 
 # Common standard OIDs (usable as fallback for any SNMP device)
 COMMON_OIDS = {
@@ -494,6 +494,75 @@ PROFILES: list[dict[str, Any]] = [
             "clients": "/api/s/{site}/stat/sta",
             "health":  "/api/s/{site}/stat/health",
         },
+    },
+
+    # ---------------- TP-Link Omada / EAP (Access Point) ----------------
+    {
+        "key": "tplink_omada_ap",
+        "vendor": "TP-Link",
+        "family": "access-point",
+        "label": "TP-Link Omada / EAP (Access Point)",
+        "description": "Access Point TP-Link Omada (gestiti da OC200/OC300/software controller) e EAP standalone. Enterprise OID .1.3.6.1.4.1.11863. Telemetria via MIB-II + estensioni TP-Link (CPU/RAM/client Wi-Fi). Web Console Omada Controller su HTTPS 8043; AP standalone su 80/443. Porte di adoption/management 29810-29814. SNMP UDP 161.",
+        "fingerprint": {
+            "sysobjectid_prefixes": ["1.3.6.1.4.1.11863."],
+            "sysdescr_patterns": [r"tp-?link", r"omada", r"\beap\d", r"oc200", r"oc300"],
+        },
+        "snmp": {"port": 161, "version": "v2c", "community_suggestion": "public", "timeout_seconds": 5, "retries": 2},
+        "web_console": {
+            "port": 8043, "scheme": "https", "path": "/", "alt_ports": [443, 80, 8088],
+            "notes": "Omada Controller (OC200/OC300/software) HTTPS 8043. AP standalone: HTTP 80 / HTTPS 443. Adoption/management: TCP 29810-29814.",
+        },
+        "oids": {
+            **COMMON_OIDS,
+            # TP-Link enterprise extensions (.1.3.6.1.4.1.11863)
+            "tpSysCpuUsage":     "1.3.6.1.4.1.11863.6.4.1.1.1",     # CPU usage %
+            "tpSysMemoryUsage":  "1.3.6.1.4.1.11863.6.4.1.1.2",     # RAM usage %
+            "tpDot11ClientNum":  "1.3.6.1.4.1.11863.6.7.1.2.1.1",   # client wireless connessi
+        },
+        "thresholds": {
+            "cpu_warn_pct": 80, "cpu_crit_pct": 95,
+            "mem_warn_pct": 85, "mem_crit_pct": 92,
+            "clients_warn": 50, "clients_crit": 80,
+            "uplink_down_crit": True,
+            "latency_warn_ms": 100, "packet_loss_warn_pct": 2,
+        },
+        "polling_interval_seconds": 60,
+        "capabilities": ["snmp_basic", "cpu_memory", "client_count", "interface_status", "omada_controller_ready"],
+    },
+
+    # ---------------- Aruba Instant On (Access Point) ----------------
+    {
+        "key": "aruba_instant_on",
+        "vendor": "Aruba (HPE)",
+        "family": "access-point",
+        "label": "Aruba Instant On (AP11/12/15/22/25)",
+        "description": "Access Point Aruba Instant On (AP11/12/15/17/22/25). Gestione nativa via Portal Cloud (portal.arubainstanton.com) o mobile app; tabella SNMP volutamente snella (metriche dettagliate nel Cloud/API). Enterprise OID generico Aruba/HPE .1.3.6.1.4.1.14823. NB: l'SNMP va abilitato dal portale Cloud (Gestione Dispositivo -> Opzioni). SNMP UDP 161.",
+        "fingerprint": {
+            "sysobjectid_prefixes": ["1.3.6.1.4.1.14823."],
+            "sysdescr_patterns": [r"instant\s*on", r"instanton", r"aruba\s*ap1[0-9]", r"aruba\s*ap2[0-9]", r"\baruba\b.*instant"],
+        },
+        "snmp": {"port": 161, "version": "v2c", "community_suggestion": "public", "timeout_seconds": 5, "retries": 2},
+        "web_console": {
+            "port": 443, "scheme": "https", "path": "/",
+            "notes": "Gestione via Cloud: https://portal.arubainstanton.com (TCP 443). Local Status Page sull'IP dell'AP: HTTPS 443 (solo stato base/diagnostica).",
+        },
+        "oids": {
+            **COMMON_OIDS,
+            # ifTable POE uplink (index 1 = porta LAN/POE)
+            "ifInOctetsPoe":               "1.3.6.1.2.1.2.2.1.10.1",   # byte ricevuti porta POE
+            "ifOutOctetsPoe":              "1.3.6.1.2.1.2.2.1.16.1",   # byte inviati porta POE
+            # Aruba/HPE enterprise (.1.3.6.1.4.1.14823) — conteggio client associati
+            "dot11AssociatedStationCount": "1.3.6.1.4.1.14823.2.2.1.5.2.1",
+        },
+        "thresholds": {
+            "cpu_warn_pct": 80, "cpu_crit_pct": 95,
+            "mem_warn_pct": 85, "mem_crit_pct": 92,
+            "clients_warn": 50, "clients_crit": 80,
+            "uplink_down_crit": True,
+            "latency_warn_ms": 100, "packet_loss_warn_pct": 2,
+        },
+        "polling_interval_seconds": 90,
+        "capabilities": ["snmp_basic", "client_count", "interface_traffic", "cloud_managed"],
     },
 
     # ---------------- Zyxel (USG / ATP / Nebula) ----------------
