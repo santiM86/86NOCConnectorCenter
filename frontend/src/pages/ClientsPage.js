@@ -344,84 +344,10 @@ export default function ClientsPage() {
                       title={`URL: ${nocUrl}`}>
                       <Globe size={10} /> URL
                     </button>
-                    {client.api_key && (() => {
-                      const installedVer = agentVersionByClient[client.id] || "";
-                      const latestVer = latestAgentVersion || "";
-                      const hasRealLatest = latestVer && latestVer.toLowerCase() !== "latest";
-                      const isOutdated = installedVer && hasRealLatest && isNewerSemver(latestVer, installedVer);
-                      const btnLabel = hasRealLatest
-                        ? `Setup GUI v${latestVer}`
-                        : (latestVer ? "Setup GUI (latest)" : "Setup GUI");
-                      const tooltip = hasRealLatest
-                        ? `Scarica il wizard grafico 86NocAgent v${latestVer} pre-configurato per ${client.name} (installa SEMPRE l'ultima versione)` +
-                          (installedVer ? ` (attualmente installato: v${installedVer})` : "")
-                        : `Scarica il wizard grafico 86NocAgent (ultima release) pre-configurato per ${client.name}`;
-                      return (
-                        <>
-                          {installedVer && (
-                            <span
-                              className="text-[9px] px-2 py-1 rounded-md border flex items-center gap-1"
-                              style={{
-                                borderColor: isOutdated ? "rgba(245,158,11,0.4)" : "rgba(34,197,94,0.3)",
-                                color: isOutdated ? "#F59E0B" : "#22C55E",
-                                background: "var(--bg-card)",
-                              }}
-                              title={isOutdated
-                                ? `Connector installato (v${installedVer}) e' piu' vecchio della release piu' recente (v${latestVer}). Riscarica l'Installer.`
-                                : `Connector installato: v${installedVer}.`}
-                              data-testid={`installed-version-${client.id}`}>
-                              v{installedVer}{isOutdated ? ` → v${latestVer}` : ""}
-                            </span>
-                          )}
-                          <a
-                            href={`${API}/agent/install/wizard-bundle.zip?token=${encodeURIComponent(client.api_key)}`}
-                            onClick={(e) => { e.stopPropagation(); toast.success(`Wizard GUI 86NocAgent${hasRealLatest ? ` v${latestVer}` : ""} per "${client.name}" — estrai lo ZIP e tasto destro su Installa-86NocAgent.bat → Esegui come amministratore. Si apre il wizard grafico.`); }}
-                            data-testid={`download-installer-${client.id}`}
-                            className={`text-[10px] font-semibold px-2.5 py-1 rounded-md border transition-colors flex items-center gap-1 no-underline ${
-                              isOutdated
-                                ? "bg-amber-500/15 border-amber-500/50 text-amber-300 hover:bg-amber-500/25"
-                                : "bg-emerald-500/15 border-emerald-500/50 text-emerald-300 hover:bg-emerald-500/25"
-                            }`}
-                            title={tooltip}>
-                            <DownloadSimple size={11} weight="bold" /> {btnLabel}
-                          </a>
-                          {/* v2026-06-24: Setup .exe GUI personalizzato (no PowerShell).
-                              Genera uno ZIP con setup.exe + sidecar nocinstall.cfg
-                              pre-compilato col token del cliente. 3 varianti:
-                              - "Setup .exe" (default): ROLE NON baked-in → installer
-                                  chiede master/scanner durante la GUI Windows nativa.
-                              - "Setup Master" / "Setup Scanner": ROLE baked-in →
-                                  installer silenzioso per quel ruolo specifico. */}
-                          {/* Alternativa CLI (console): SFX con nocinstall.exe.
-                              Declassato — il metodo consigliato e' il Wizard GUI
-                              qui sopra. Tenuto come fallback per AV enterprise. */}
-                          <a
-                            href={`${API}/agent/install/setup.zip?token=${encodeURIComponent(client.api_key)}&client_id=${encodeURIComponent(client.id)}&label=${encodeURIComponent(client.name)}${hasRealLatest ? `&version=v${latestVer}` : ""}`}
-                            onClick={(e) => { e.stopPropagation(); toast.success(`Setup .exe (CLI) per "${client.name}" — alternativa alla GUI. Estrai ZIP, click destro su setup.exe → Esegui come amministratore.`); }}
-                            data-testid={`download-setup-exe-${client.id}`}
-                            className="text-[9px] px-2 py-1 rounded-md bg-[var(--bg-card)] border border-[var(--bg-border)] text-[var(--text-muted)] hover:text-cyan-300 hover:border-cyan-500/30 transition-colors flex items-center gap-1 no-underline"
-                            title={`Alternativa CLI (console) per ${client.name}. Usa il Wizard GUI come metodo principale.`}>
-                            <DownloadSimple size={10} /> Setup .exe (CLI)
-                          </a>
-                          <a
-                            href={`${API}/agent/install/setup.zip?token=${encodeURIComponent(client.api_key)}&client_id=${encodeURIComponent(client.id)}&role=master&label=${encodeURIComponent(client.name)}${hasRealLatest ? `&version=v${latestVer}` : ""}`}
-                            onClick={(e) => { e.stopPropagation(); toast.success(`Setup MASTER per "${client.name}" — installer silenzioso, ruolo gia' baked-in.`); }}
-                            data-testid={`download-setup-master-${client.id}`}
-                            className="text-[9px] px-1.5 py-1 rounded-md bg-[var(--bg-card)] border border-cyan-500/20 text-cyan-400/70 hover:border-cyan-400 hover:text-cyan-300 transition-colors no-underline"
-                            title={`Setup .exe per ${client.name} con ruolo MASTER pre-baked (no prompt GUI).`}>
-                            M
-                          </a>
-                          <a
-                            href={`${API}/agent/install/setup.zip?token=${encodeURIComponent(client.api_key)}&client_id=${encodeURIComponent(client.id)}&role=scanner&label=${encodeURIComponent(client.name)}${hasRealLatest ? `&version=v${latestVer}` : ""}`}
-                            onClick={(e) => { e.stopPropagation(); toast.success(`Setup SCANNER per "${client.name}" — installer silenzioso, ruolo gia' baked-in.`); }}
-                            data-testid={`download-setup-scanner-${client.id}`}
-                            className="text-[9px] px-1.5 py-1 rounded-md bg-[var(--bg-card)] border border-cyan-500/20 text-cyan-400/70 hover:border-cyan-400 hover:text-cyan-300 transition-colors no-underline"
-                            title={`Setup .exe per ${client.name} con ruolo SCANNER pre-baked (no prompt GUI).`}>
-                            S
-                          </a>
-                        </>
-                      );
-                    })()}
+                    {/* v2026-06: rimossi badge versione + pulsanti install
+                        (Setup GUI / Setup .exe / M / S). L'installazione del
+                        connector avviene esclusivamente dalla sezione dedicata
+                        al Connector, non piu' dalla lista Clienti. */}
                     <button onClick={(e) => { e.stopPropagation(); }}
                       className="hidden">
                     </button>

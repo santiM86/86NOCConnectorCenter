@@ -1,3 +1,35 @@
+# 2026-06 — Pulizia lista Clienti + Alert "Saturazione RF" per Access Point
+
+## Richieste utente
+1. Rimuovere dalla lista Clienti i pulsanti di installazione connector (badge
+   versione, "Setup GUI", "Setup .exe", "M", "S") — non più necessari, il
+   connector si installa solo dalla sezione dedicata.
+2. Aggiungere al poller la lettura del numero di client Wi-Fi e un alert
+   automatico di "saturazione RF" (>50 warning, >80 critical).
+
+## Implementazione
+- `frontend/src/pages/ClientsPage.js`: rimossa l'intera IIFE `client.api_key &&
+  (() => {...})()` che renderizzava badge versione + install (Setup GUI / .exe /
+  M / S). Mantenuti API Key / Rigenera / URL. Verificato via screenshot + testid
+  count = 0 per download-installer/setup-exe/master/scanner/installed-version.
+- `backend/routes/connector.py` → `_check_device_thresholds` (sezione
+  vendor_metrics): nuovo blocco "Saturazione RF". Legge il conteggio client dai
+  OID vendor riportati dal poller — `tpDot11ClientNum` (TP-Link), 
+  `dot11AssociatedStationCount` (Aruba), `unifiApClients` (UniFi), con fallback
+  `wifiClients`/`clientCount`. Gestisce anche tabelle per-radio (somma).
+  Soglie dal profilo: `clients_warn` (50) → severità high, `clients_crit` (80) →
+  critical. source_type `vendor_rf_saturation` (dedup + webpush come gli altri).
+
+## Testing
+- RF saturation end-to-end su DB reale: 85→critical, 60→high, 30→nessun alert,
+  tabella Aruba per-radio 45+40=85→critical. ALL PASS (alert di test ripuliti).
+- Frontend: compilazione pulita; screenshot pagina Clienti conferma pulsanti install rimossi, layout intatto.
+- NB: i profili AP devono essere applicati ai device e il poller Go deve riportare
+  gli OID client sotto vendor_metrics (come già fa per UniFi/Synology/Fortinet).
+
+---
+
+
 # 2026-06 — Profili vendor Access Point: TP-Link Omada/EAP + Aruba Instant On
 
 ## Richiesta utente
