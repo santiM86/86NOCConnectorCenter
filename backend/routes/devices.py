@@ -2190,6 +2190,10 @@ async def get_client_ilo_health(client_id: str, current_user: dict = Depends(get
         {"client_id": client_id}, {"_id": 0, "ip": 1, "name": 1, "device_type": 1, "vendor": 1, "model": 1, "virtualization": 1}
     ).to_list(500)
     name_map = {m["ip"]: m.get("name") for m in managed}
+    # v2026-06: IP marcati come VM dall'admin → esclusi dalla lista iLO
+    # (sia dai device redfish/poll-only, sez.1, sia dai managed, sez.4).
+    _VM_TYPES = {"hyperv", "vmware", "vm_generic"}
+    vm_ips = {m.get("ip") for m in managed if (m.get("virtualization") or "") in _VM_TYPES}
 
     # 3) Credenziali iLO esistenti per questo client (per flag ilo_configured)
     ilo_creds = await db.device_credentials.find(
@@ -2203,6 +2207,8 @@ async def get_client_ilo_health(client_id: str, current_user: dict = Depends(get
     for d in docs:
         ip = d.get("device_ip")
         seen_ips.add(ip)
+        if ip in vm_ips:
+            continue  # VM (impostata dall'admin): esclusa dalla lista iLO
         rf = d.get("redfish", {}) or {}
         hw = d.get("hardware", {}) or {}
         cred = ilo_creds_map.get(ip)
