@@ -1723,6 +1723,15 @@ function DeviceGroup({ label, icon: Icon, devices, color, onInfoClick, renderAct
                   HV: {d.hyperv_state === "Running" ? "ON" : d.hyperv_state === "Off" ? "OFF" : d.hyperv_state.toUpperCase()}
                 </span>
               )}
+              {["hyperv", "vmware", "vm_generic"].includes(d.virtualization) && (
+                <span
+                  className="inline-flex items-center gap-0.5 text-[8px] px-1 py-0.5 rounded font-bold border bg-cyan-500/20 text-cyan-200 border-cyan-500/40"
+                  title={`Macchina virtuale (${d.virtualization === "hyperv" ? "Hyper-V" : d.virtualization === "vmware" ? "VMware" : "generica"})${d.hyperv_vm_name ? ` · VM: ${d.hyperv_vm_name}` : ""}${d.hyperv_host_hint ? ` · host ${d.hyperv_host_hint}` : ""} — impostata dall'admin, esclusa da iLO`}
+                  data-testid={`grouped-vm-badge-${d.ip_address}`}
+                >
+                  {d.virtualization === "hyperv" ? "VM·HV" : d.virtualization === "vmware" ? "VM·ESX" : "VM"}
+                </span>
+              )}
               {d.vendor && <span className="text-[8px] px-1 rounded bg-[var(--bg-card)] text-[var(--text-muted)] truncate max-w-[120px]" title={d.vendor}>{d.vendor}</span>}
               {d.snmp_community && <span className="text-[8px] px-1 rounded bg-[var(--bg-card)] text-[var(--text-muted)]">{d.snmp_version || "snmp"}: {d.snmp_community}</span>}
               <span className="ml-auto font-bold text-[8px] uppercase" style={{ color: sc }}>{d.status === "off" ? "spento" : d.status}</span>
@@ -3018,6 +3027,15 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
                           data-testid={`table-hyperv-badge-${d.ip_address}`}
                         >
                           HYPER-V: {d.hyperv_state === "Running" ? "ON" : d.hyperv_state === "Off" ? "OFF" : d.hyperv_state.toUpperCase()}
+                        </span>
+                      )}
+                      {["hyperv", "vmware", "vm_generic"].includes(d.virtualization) && (
+                        <span
+                          className="inline-flex items-center gap-0.5 text-[9px] px-1 py-px rounded font-bold border bg-cyan-500/20 text-cyan-200 border-cyan-500/40"
+                          title={`Macchina virtuale (${d.virtualization === "hyperv" ? "Hyper-V" : d.virtualization === "vmware" ? "VMware" : "generica"})${d.hyperv_vm_name ? ` · VM: ${d.hyperv_vm_name}` : ""}${d.hyperv_host_hint ? ` · host ${d.hyperv_host_hint}` : ""} — impostata dall'admin, esclusa da iLO`}
+                          data-testid={`table-vm-badge-${d.ip_address}`}
+                        >
+                          {d.virtualization === "hyperv" ? "VM·HV" : d.virtualization === "vmware" ? "VM·ESX" : "VM"}
                         </span>
                       )}
                       {d.alerts_silenced && (

@@ -1,3 +1,35 @@
+# 2026-06 — FIX: impostazioni "Tipo macchina" / VM non salvate sui server iLO
+
+## Bug (segnalato)
+- Impostando "Tipo macchina" (o l'allerta VM) su un server iLO, il salvataggio
+  non persisteva.
+
+## Causa (root cause)
+- I server iLO/redfish sono spesso device **poll-only**: esistono solo in
+  `device_poll_status`, **senza documento in `managed_devices`**. Gli endpoint
+  `POST /devices/by-ip/{ip}/virtualization` e `.../vm-alert` cercavano il doc
+  managed e, non trovandolo, restituivano **404** → il save nel modale falliva
+  (l'errore bloccava anche le altre impostazioni). Riprodotto in preview su un
+  device poll-only (10.100.61.34) → HTTP 404.
+
+## Fix
+- Entrambi gli endpoint ora fanno **upsert**: se il device non è in
+  `managed_devices`, creano un doc minimale (`id`, `client_id`, `ip`, `name`,
+  `source: poll`) con l'impostazione, così persiste ed è leggibile da
+  ilo-health e gather_signals. Richiedono `client_id` in questo caso (il
+  frontend lo invia sempre).
+- `get_client_ilo_health`: le VM (virtualization hyperv/vmware/vm_generic) ora
+  sono escluse dalla lista iLO **anche nella sezione device redfish/poll-only**
+  (sez.1), non solo dai managed (sez.4), via set `vm_ips`.
+
+## Testing
+- Poll-only 10.100.61.34: `virtualization=hyperv` → 200, doc creato via upsert,
+  esposto in /api/devices (round-trip modale OK), escluso da ilo-health. PASS.
+- `vm-alert` su poll-only → 200 (upsert). PASS. Dati di test ripuliti.
+
+---
+
+
 # 2026-06 — Selettore "Tipo macchina" per-device (Fisico / VM) + link Hyper-V manuale
 
 ## Richiesta utente
@@ -26,6 +58,7 @@
   device diverso (senza override → nessun match). PASS.
 - `get_client_ilo_health` su DB reale: server fisico incluso, VM Hyper-V esclusa. PASS.
 - Screenshot modale: selettore + campi Hyper-V + nota esclusione iLO + toggle allerta VM. OK.
+- Badge "VM·HV" (cyan): screenshot conferma badge sulla riga device (viste raggruppata + tabella). OK.
 
 ---
 

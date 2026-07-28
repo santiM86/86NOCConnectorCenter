@@ -1043,21 +1043,41 @@ async def set_device_virtualization(
     md = await db.managed_devices.find_one(
         md_query, {"_id": 0, "id": 1, "client_id": 1, "name": 1, "virtualization": 1}
     )
-    if not md:
-        raise HTTPException(status_code=404, detail=f"Device {device_ip} non trovato in managed_devices")
-
     now_iso = datetime.now(timezone.utc).isoformat()
     user_email = current_user.get("email")
 
+    if not md:
+        # Device poll-only (es. server iLO/redfish presenti solo in
+        # device_poll_status) senza doc in managed_devices → creiamo un doc
+        # minimale via upsert, cosi' l'impostazione persiste ed e' leggibile
+        # da ilo-health (esclusione) e gather_signals (aggancio Hyper-V).
+        if not explicit_client_id:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Device {device_ip} non e' in managed_devices: includi client_id nel body per poterlo classificare.",
+            )
+        from uuid import uuid4
+        md = {"id": str(uuid4()), "client_id": explicit_client_id, "name": device_ip, "virtualization": ""}
+
     await db.managed_devices.update_one(
         md_query,
-        {"$set": {
-            "virtualization": virt,
-            "hyperv_vm_name": vm_name,
-            "hyperv_host_hint": host_hint,
-            "virtualization_set_by": user_email,
-            "virtualization_set_at": now_iso,
-        }},
+        {
+            "$set": {
+                "virtualization": virt,
+                "hyperv_vm_name": vm_name,
+                "hyperv_host_hint": host_hint,
+                "virtualization_set_by": user_email,
+                "virtualization_set_at": now_iso,
+            },
+            "$setOnInsert": {
+                "id": md["id"],
+                "name": md.get("name") or device_ip,
+                "created_at": now_iso,
+                "source": "poll",
+                "device_type": "",
+            },
+        },
+        upsert=True,
     )
 
     invalidate_silence_cache(client_id=md.get("client_id"), device_ip=device_ip)
@@ -1137,19 +1157,37 @@ async def set_device_vm_alert(
     md = await db.managed_devices.find_one(
         md_query, {"_id": 0, "id": 1, "client_id": 1, "name": 1, "hyperv_alert_on_off": 1}
     )
-    if not md:
-        raise HTTPException(status_code=404, detail=f"Device {device_ip} non trovato in managed_devices")
-
     now_iso = datetime.now(timezone.utc).isoformat()
     user_email = current_user.get("email")
 
+    if not md:
+        # Device poll-only (iLO/redfish in device_poll_status) senza doc in
+        # managed_devices → upsert di un doc minimale, cosi' l'impostazione persiste.
+        if not explicit_client_id:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Device {device_ip} non e' in managed_devices: includi client_id nel body.",
+            )
+        from uuid import uuid4
+        md = {"id": str(uuid4()), "client_id": explicit_client_id, "name": device_ip}
+
     await db.managed_devices.update_one(
         md_query,
-        {"$set": {
-            "hyperv_alert_on_off": enabled,
-            "hyperv_alert_on_off_set_by": user_email,
-            "hyperv_alert_on_off_set_at": now_iso,
-        }},
+        {
+            "$set": {
+                "hyperv_alert_on_off": enabled,
+                "hyperv_alert_on_off_set_by": user_email,
+                "hyperv_alert_on_off_set_at": now_iso,
+            },
+            "$setOnInsert": {
+                "id": md["id"],
+                "name": md.get("name") or device_ip,
+                "created_at": now_iso,
+                "source": "poll",
+                "device_type": "",
+            },
+        },
+        upsert=True,
     )
 
     invalidate_silence_cache(client_id=md.get("client_id"), device_ip=device_ip)
