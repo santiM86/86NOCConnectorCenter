@@ -26,6 +26,7 @@
   device diverso (senza override → nessun match). PASS.
 - `get_client_ilo_health` su DB reale: server fisico incluso, VM Hyper-V esclusa. PASS.
 - Screenshot modale: selettore + campi Hyper-V + nota esclusione iLO + toggle allerta VM. OK.
+- Badge "VM·HV" (cyan): screenshot conferma badge sulla riga device (viste raggruppata + tabella). OK.
 
 ---
 
