@@ -876,6 +876,107 @@ async def set_device_vital(
     }
 
 
+@router.post("/devices/by-ip/{device_ip}/virtualization")
+async def set_device_virtualization(
+    device_ip: str,
+    payload: dict,
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+):
+    """Imposta il "tipo macchina" del device (fisico / VM).
+
+    Body: {
+      "virtualization": "physical"|"hyperv"|"vmware"|"vm_generic"|"",
+      "hyperv_vm_name"?: str,   # override nome VM per aggancio snapshot Hyper-V
+      "hyperv_host_hint"?: str, # host Hyper-V (opzionale, informativo)
+      "client_id"?: str
+    }
+
+    Le VM sono escluse dalla lista "server senza credenziali iLO". Per le VM
+    Hyper-V, hyperv_vm_name permette l'aggancio allo snapshot anche se il nome
+    VM (Get-VM) non coincide col nome/hostname del device.
+    """
+    from alert_filter import invalidate_silence_cache
+
+    valid = {"", "physical", "hyperv", "vmware", "vm_generic"}
+    virt = (payload or {}).get("virtualization")
+    if virt is None or virt not in valid:
+        raise HTTPException(status_code=400, detail=f"virtualization deve essere uno di {sorted(valid)}")
+    vm_name = (payload.get("hyperv_vm_name") or "").strip()
+    host_hint = (payload.get("hyperv_host_hint") or "").strip()
+    explicit_client_id = (payload.get("client_id") or "").strip() or None
+
+    md_query = {"ip": device_ip}
+    if explicit_client_id:
+        md_query["client_id"] = explicit_client_id
+
+    if not explicit_client_id:
+        cnt = await db.managed_devices.count_documents({"ip": device_ip})
+        if cnt > 1:
+            raise HTTPException(
+                status_code=409,
+                detail=f"IP {device_ip} appartiene a {cnt} client diversi. Includi client_id nel body per disambiguare.",
+            )
+
+    md = await db.managed_devices.find_one(
+        md_query, {"_id": 0, "id": 1, "client_id": 1, "name": 1, "virtualization": 1}
+    )
+    if not md:
+        raise HTTPException(status_code=404, detail=f"Device {device_ip} non trovato in managed_devices")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    user_email = current_user.get("email")
+
+    await db.managed_devices.update_one(
+        md_query,
+        {"$set": {
+            "virtualization": virt,
+            "hyperv_vm_name": vm_name,
+            "hyperv_host_hint": host_hint,
+            "virtualization_set_by": user_email,
+            "virtualization_set_at": now_iso,
+        }},
+    )
+
+    invalidate_silence_cache(client_id=md.get("client_id"), device_ip=device_ip)
+
+    try:
+        await audit_logger.log(
+            user_email=user_email,
+            action=AuditAction.UPDATE_DEVICE if hasattr(AuditAction, "UPDATE_DEVICE") else AuditAction.OTHER,
+            resource_type="device",
+            resource_id=md.get("id"),
+            metadata={
+                "action": "set_virtualization",
+                "device_ip": device_ip,
+                "virtualization": virt,
+                "hyperv_vm_name": vm_name,
+                "previous_value": md.get("virtualization"),
+                "client_id": md.get("client_id"),
+                "device_name": md.get("name"),
+            },
+            request=request,
+        )
+    except Exception:
+        pass
+
+    is_vm = virt in ("hyperv", "vmware", "vm_generic")
+    return {
+        "ok": True,
+        "device_ip": device_ip,
+        "virtualization": virt,
+        "hyperv_vm_name": vm_name,
+        "hyperv_host_hint": host_hint,
+        "is_vm": is_vm,
+        "message": (
+            f"Tipo macchina impostato: {virt or 'non impostato'}"
+            + (f" (VM: {vm_name})" if vm_name else "")
+            + (" — esclusa dalla lista iLO." if is_vm else ".")
+        ),
+    }
+
+
+
 @router.post("/devices/by-ip/{device_ip}/vm-alert")
 async def set_device_vm_alert(
     device_ip: str,

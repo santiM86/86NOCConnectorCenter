@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { API } from "@/App";
 import axios from "axios";
 import { toast } from "sonner";
-import { PencilSimple, ShieldCheck, WifiHigh, Lightning, BellSlash, Power } from "@phosphor-icons/react";
+import { PencilSimple, ShieldCheck, WifiHigh, Lightning, BellSlash, Power, Cpu } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -36,7 +36,14 @@ export function DeviceEditModal({ clientId, device, open, onClose, onSaved }) {
   const [silenceReason, setSilenceReason] = useState(device?.alerts_silenced_reason || "");
   // Alert opzionale "VM spenta inaspettatamente" (solo VM Hyper-V)
   const [vmAlertOnOff, setVmAlertOnOff] = useState(!!device?.hyperv_alert_on_off);
-  const isHyperVvm = !!device?.hyperv_state;
+  // Tipo macchina (fisico / VM) — impostabile dall'admin
+  const [virtualization, setVirtualization] = useState(device?.virtualization || "");
+  const [hypervVmName, setHypervVmName] = useState(device?.hyperv_vm_name || "");
+  const [hypervHostHint, setHypervHostHint] = useState(device?.hyperv_host_hint || "");
+  const isVM = ["hyperv", "vmware", "vm_generic"].includes(virtualization);
+  // Toggle "allerta VM spenta" utile se è una VM Hyper-V (snapshot già presente
+  // OPPURE marcata manualmente come Hyper-V dall'admin)
+  const isHyperVvm = !!device?.hyperv_state || virtualization === "hyperv";
 
   // Re-seed dello stato locale quando la prop `device` cambia.
   // Necessario perche` ClientOverviewPage refetch /api/devices dopo un Salva e
@@ -50,7 +57,10 @@ export function DeviceEditModal({ clientId, device, open, onClose, onSaved }) {
     setAlertsSilenced(!!device?.alerts_silenced);
     setSilenceReason(device?.alerts_silenced_reason || "");
     setVmAlertOnOff(!!device?.hyperv_alert_on_off);
-  }, [device?.id, device?.alerts_silenced, device?.alerts_silenced_reason, device?.monitor_type, device?.snmp_version, device?.snmp_community, device?.hyperv_alert_on_off]);
+    setVirtualization(device?.virtualization || "");
+    setHypervVmName(device?.hyperv_vm_name || "");
+    setHypervHostHint(device?.hyperv_host_hint || "");
+  }, [device?.id, device?.alerts_silenced, device?.alerts_silenced_reason, device?.monitor_type, device?.snmp_version, device?.snmp_community, device?.hyperv_alert_on_off, device?.virtualization, device?.hyperv_vm_name, device?.hyperv_host_hint]);
 
   const save = async () => {
     if (!device?.id && !device?.device_id) {
@@ -149,6 +159,26 @@ export function DeviceEditModal({ clientId, device, open, onClose, onSaved }) {
       }
     }
 
+    // 5) Tipo macchina (virtualization) — persistito se cambiato
+    const virtDirty = virtualization !== (device?.virtualization || "")
+      || hypervVmName !== (device?.hyperv_vm_name || "")
+      || hypervHostHint !== (device?.hyperv_host_hint || "");
+    if (virtDirty) {
+      try {
+        await axios.post(
+          `${API}/devices/by-ip/${encodeURIComponent(device?.ip_address || device?.ip)}/virtualization`,
+          {
+            virtualization,
+            hyperv_vm_name: virtualization === "hyperv" ? hypervVmName : "",
+            hyperv_host_hint: virtualization === "hyperv" ? hypervHostHint : "",
+            client_id: clientId,
+          }
+        );
+      } catch (e) {
+        errors.push(`Tipo macchina: ${e.response?.data?.detail || e.message}`);
+      }
+    }
+
     setSaving(false);
 
     if (errors.length > 0) {
@@ -170,6 +200,9 @@ export function DeviceEditModal({ clientId, device, open, onClose, onSaved }) {
         alerts_silenced: alertsSilenced,
         alerts_silenced_reason: silenceReason,
         hyperv_alert_on_off: isHyperVvm ? vmAlertOnOff : device?.hyperv_alert_on_off,
+        virtualization,
+        hyperv_vm_name: virtualization === "hyperv" ? hypervVmName : "",
+        hyperv_host_hint: virtualization === "hyperv" ? hypervHostHint : "",
         monitor_type: monitorDirty ? monitorType : device?.monitor_type,
         snmp_version: snmpFieldsDirty ? snmpVersion : device?.snmp_version,
         snmp_community: snmpFieldsDirty && snmpVersion !== "v3" ? community : device?.snmp_community,
@@ -380,6 +413,58 @@ export function DeviceEditModal({ clientId, device, open, onClose, onSaved }) {
                   maxLength={200}
                   data-testid="silence-reason"
                 />
+              </div>
+            )}
+          </div>
+
+          {/* Tipo macchina (fisico / VM) — impostabile dall'admin */}
+          <div className="rounded p-2.5 border bg-[var(--bg-card)] border-[var(--bg-border)] space-y-2" data-testid="virtualization-block">
+            <label className="flex items-center gap-1.5 text-[11px] font-semibold text-cyan-300">
+              <Cpu size={13} weight="bold" />
+              Tipo macchina
+            </label>
+            <select
+              value={virtualization}
+              onChange={(e) => setVirtualization(e.target.value)}
+              className="w-full bg-[var(--bg-panel)] border border-[var(--bg-border)] rounded px-2 py-1.5 text-[12px] text-white focus:border-cyan-500 outline-none"
+              data-testid="virtualization-select"
+            >
+              <option value="">— non impostato (fisico) —</option>
+              <option value="physical">Server fisico</option>
+              <option value="hyperv">VM Hyper-V</option>
+              <option value="vmware">VM VMware</option>
+              <option value="vm_generic">VM (generica)</option>
+            </select>
+            <span className="block text-[9px] text-[var(--text-muted)] leading-relaxed">
+              Le VM sono <strong>escluse dalla lista "server senza credenziali iLO"</strong> (niente richiesta iLO inutile).
+            </span>
+            {virtualization === "hyperv" && (
+              <div className="space-y-2 pt-1 border-t border-white/5">
+                <div>
+                  <label className="block text-[9px] uppercase tracking-wider text-[var(--text-muted)] mb-1">Nome VM su Hyper-V (Get-VM)</label>
+                  <input
+                    type="text"
+                    value={hypervVmName}
+                    onChange={(e) => setHypervVmName(e.target.value)}
+                    placeholder={device?.name || "es. SRVDC"}
+                    className="w-full bg-[var(--bg-panel)] border border-[var(--bg-border)] rounded px-2 py-1.5 text-[12px] text-white focus:border-cyan-500 outline-none"
+                    data-testid="hyperv-vm-name-input"
+                  />
+                  <span className="block text-[9px] text-[var(--text-muted)] mt-0.5">
+                    Compila solo se il nome VM sull'host <strong>NON coincide</strong> col nome del device. Serve per agganciare lo stato power-state.
+                  </span>
+                </div>
+                <div>
+                  <label className="block text-[9px] uppercase tracking-wider text-[var(--text-muted)] mb-1">Host Hyper-V (opzionale)</label>
+                  <input
+                    type="text"
+                    value={hypervHostHint}
+                    onChange={(e) => setHypervHostHint(e.target.value)}
+                    placeholder="es. GALVANSRV"
+                    className="w-full bg-[var(--bg-panel)] border border-[var(--bg-border)] rounded px-2 py-1.5 text-[12px] text-white focus:border-cyan-500 outline-none"
+                    data-testid="hyperv-host-hint-input"
+                  />
+                </div>
               </div>
             )}
           </div>

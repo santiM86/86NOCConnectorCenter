@@ -228,7 +228,7 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
     def _hyperv_state(md_doc):
         """Ritorna (state, host) della VM Hyper-V matchata, o (None, None)."""
         cid = (md_doc or {}).get("client_id")
-        for key in (md_doc.get("hostname"), md_doc.get("name"), md_doc.get("device_name")):
+        for key in (md_doc.get("hyperv_vm_name"), md_doc.get("hostname"), md_doc.get("name"), md_doc.get("device_name")):
             k = _short(key)
             if k and (cid, k) in hyperv_state_by_key:
                 e = hyperv_state_by_key[(cid, k)]
@@ -409,6 +409,9 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
         d["hyperv_state"] = _mhv_state or d.get("hyperv_state") or ""
         d["hyperv_host"] = _mhv_host or d.get("hyperv_host") or ""
         d["hyperv_alert_on_off"] = bool(md.get("hyperv_alert_on_off", d.get("hyperv_alert_on_off", False)))
+        d["virtualization"] = md.get("virtualization") or d.get("virtualization") or ""
+        d["hyperv_vm_name"] = md.get("hyperv_vm_name") or d.get("hyperv_vm_name") or ""
+        d["hyperv_host_hint"] = md.get("hyperv_host_hint") or d.get("hyperv_host_hint") or ""
         # v3.8.22 LIVE-SEEN: se lo Scanner ha visto questo IP nelle ultime 15min,
         # forza "online" anche se Master/manual lo davano per offline.
         # v4.16.x EXTEND: anche se il MAC e' nella MAC table SNMP recente di
@@ -579,6 +582,9 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
                 "hyperv_state": _hv_state or "",
                 "hyperv_host": _hv_host or "",
                 "hyperv_alert_on_off": bool(md.get("hyperv_alert_on_off")),
+                "virtualization": md.get("virtualization") or "",
+                "hyperv_vm_name": md.get("hyperv_vm_name") or "",
+                "hyperv_host_hint": md.get("hyperv_host_hint") or "",
                 # v2026-07-23 FIX: created_at MANCANTE qui faceva fallire la
                 # validazione DeviceResponse (campo obbligatorio) → il device
                 # cadeva nel fallback `except` che NON copiava is_vital → i
@@ -778,6 +784,9 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
             "hyperv_state": hv_state or "",
             "hyperv_host": hv_host or "",
             "hyperv_alert_on_off": bool(md.get("hyperv_alert_on_off")),
+            "virtualization": md.get("virtualization") or "",
+            "hyperv_vm_name": md.get("hyperv_vm_name") or "",
+            "hyperv_host_hint": md.get("hyperv_host_hint") or "",
             "created_at": md.get("created_at") or md.get("auto_added_at") or now_iso,
         })
 
@@ -2178,7 +2187,7 @@ async def get_client_ilo_health(client_id: str, current_user: dict = Depends(get
     ).to_list(100)
     # 2) Lista nomi dai managed_devices per arricchimento
     managed = await db.managed_devices.find(
-        {"client_id": client_id}, {"_id": 0, "ip": 1, "name": 1, "device_type": 1, "vendor": 1, "model": 1}
+        {"client_id": client_id}, {"_id": 0, "ip": 1, "name": 1, "device_type": 1, "vendor": 1, "model": 1, "virtualization": 1}
     ).to_list(500)
     name_map = {m["ip"]: m.get("name") for m in managed}
 
@@ -2237,6 +2246,11 @@ async def get_client_ilo_health(client_id: str, current_user: dict = Depends(get
             continue
         dtype = (m.get("device_type") or "").lower()
         if dtype not in SERVER_LIKE_TYPES:
+            continue
+        # v2026-06: le VM (impostate dall'admin) NON sono server iLO fisici →
+        # escluse dalla lista "server senza credenziali iLO" per non chiedere
+        # credenziali iLO inutili. Il loro stato vive nel pannello Hyper-V.
+        if (m.get("virtualization") or "") in ("hyperv", "vmware", "vm_generic"):
             continue
         cred = ilo_creds_map.get(ip)
         result.append({
