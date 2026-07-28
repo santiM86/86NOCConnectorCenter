@@ -1,0 +1,31 @@
+{
+  "summary": "Backend-only re-test del fix isolamento multi-tenant sui 3 endpoint by-ip della Scheda Dispositivo (info-card, vendor-details, metrics). Nuovo test suite /app/backend/tests/test_byip_multitenant_iter97.py: 12/12 PASSATI. Seed diretto in Mongo di 3 client fittizi (TEST_CID_X/Y/Z) con IP condiviso 192.168.99.99 in device_poll_status + managed_devices + metric_history (cpu X=10, Y=90) + device_metrics_history legacy (cpu_usage X=20, Y=80, memory 25/85), piu un IP esclusivo 192.168.99.95 del solo client X per la regressione. Verificato: vendor-details ritorna SOLO name/profile_key/cpu/vendor_metrics/status del client richiesto (nessun fgSysCpuUsage/tag dell'altro tenant) e 404 senza leak per client che non possiede l'IP; metrics filtra ENTRAMBE le collection (serie X sempre in range 10-20, serie Y 80-90, memory X max=25, count=0 per client senza dati); info-card resta corretto (404 per client Z, nessun _id, auth 401/403). Regressione base OK: i 3 endpoint rispondono 200 col client_id corretto per device esclusivo e anche senza client_id (retrocompat). Rieseguiti anche i test iter96/96b: ora 12/12 PASS (prima falliva 96b per il leak). Anche la minor di iter96 su arp_cache risulta fixata (_q inietta client_id, device_info_card.py:449). Tutti i dati di test rimossi e verificati a 0 documenti.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/devices/by-ip/{ip}/vendor-details e /metrics", "issue": "client_id resta opzionale: senza il parametro il match e' ancora solo per IP (retrocompat). Tutti i call-site frontend lo passano (DeviceInfoCard.js:788, VendorDetailsPanel.js:301, DeviceMetricsPage.js:79) ma un client API esterno o una futura regressione FE potrebbe riaprire il leak. Consigliato rendere client_id obbligatorio o rispondere 409 quando l'IP esiste in piu' client."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_byip_multitenant_iter97.py",
+    "/app/backend/tests/test_info_card_multitenant_iter96.py",
+    "/app/backend/tests/test_info_card_multitenant_iter96b_other_endpoints.py",
+    "/app/test_reports/pytest/iteration_97_byip.xml"
+  ],
+  "action_items": [
+    "Opzionale (hardening): rendere client_id obbligatorio (o 409 su IP ambiguo) su vendor-details e metrics, come gia' discusso per info-card."
+  ],
+  "critical_code_review_comments": [
+    "Il pattern di filtro client_id e' ora duplicato in 3 moduli (device_info_card._q, devices.py _ps_q/_md_q, metric_history _mh_q/_lh_q): estrarre un helper condiviso scoped_query(field, ip, client_id) per prevenire regressioni su nuovi endpoint by-ip.",
+    "device_info_card.py resta >1300 righe: valutare split in aggregator / parser sys_descr / device flags."
+  ],
+  "updated_files": ["/app/backend/tests/test_byip_multitenant_iter97.py"],
+  "success_rate": {"backend": "100% (12/12 nuovi + 12/12 regressione iter96)", "frontend": "non testato (richiesto backend only)"},
+  "seed_data_creation": "Seed temporaneo Mongo: clients TEST_CID_X/Y/Z, device_poll_status + managed_devices su 192.168.99.99 e 192.168.99.95, metric_history (cpu) e device_metrics_history (cpu_usage/memory_usage/ping_avg). Tutto eliminato a fine sessione con assert count_documents==0.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "info@86bit.it / Ariel17051986@!@86 (POST /api/auth/login -> access_token)",
+  "context_for_next_testing_agent": "Il fix multi-tenant sui 3 endpoint by-ip (info-card, vendor-details, metrics) e' VERIFICATO. Suite riutilizzabile: tests/test_byip_multitenant_iter97.py (self-seeding e self-cleaning, session fixture). Se in futuro si aggiungono altri endpoint by-ip, replicare gli assert di isolamento presenti qui. Frontend non testato in questa iterazione.",
+  "rca_of_the_issue": "Le query per IP privati condivisi (192.168.x.x) collidevano tra tenant perche' device_poll_status/managed_devices/metric_history/device_metrics_history erano interrogate solo per IP. Il fix aggiunge il query param client_id e lo inietta in tutte le find/find_one: ora ogni endpoint e' client-scoped e ritorna 404 (vendor-details/info-card) o serie vuota (metrics) quando il client non possiede l'IP."
+}

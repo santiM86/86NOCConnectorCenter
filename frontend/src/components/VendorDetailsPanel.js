@@ -291,14 +291,14 @@ function GenericPanel({ vm }) {
 
 // =======================  MAIN  =======================
 
-export function VendorDetailsPanel({ deviceIp }) {
+export function VendorDetailsPanel({ deviceIp, clientId = null }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
   const load = () => {
     setLoading(true);
-    axios.get(`${API}/devices/by-ip/${encodeURIComponent(deviceIp)}/vendor-details`)
+    axios.get(`${API}/devices/by-ip/${encodeURIComponent(deviceIp)}/vendor-details${clientId ? `?client_id=${encodeURIComponent(clientId)}` : ""}`)
       .then((r) => { setData(r.data); setError(null); })
       .catch((e) => setError(e?.response?.data?.detail || e.message))
       .finally(() => setLoading(false));
@@ -309,7 +309,7 @@ export function VendorDetailsPanel({ deviceIp }) {
     const interval = setInterval(load, 30000); // refresh every 30s
     return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [deviceIp]);
+  }, [deviceIp, clientId]);
 
   if (loading && !data) return <div className="p-6 text-center text-white/50 text-xs" data-testid="vendor-details-loading">Caricamento telemetria vendor...</div>;
   if (error) return <div className="p-6 text-red-400 text-sm" data-testid="vendor-details-error">Errore: {error}</div>;

@@ -3514,6 +3514,7 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
               <DeviceInfoCard
                 key={infoTarget.ip_address}
                 deviceIp={infoTarget.ip_address}
+                clientId={clientId}
                 hypervState={infoTarget.hyperv_state || ""}
                 hypervHost={infoTarget.hyperv_host || ""}
                 onClose={() => { setInfoTarget(null); setInfoCardName(null); }}

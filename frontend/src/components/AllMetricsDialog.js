@@ -77,7 +77,7 @@ function safeStringify(obj) {
   }
 }
 
-export default function AllMetricsDialog({ deviceIp, deviceLabel = null, onClose }) {
+export default function AllMetricsDialog({ deviceIp, deviceLabel = null, clientId = null, onClose }) {
   const [card, setCard] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -90,11 +90,11 @@ export default function AllMetricsDialog({ deviceIp, deviceLabel = null, onClose
     if (!deviceIp) return;
     setLoading(true);
     setError(null);
-    axios.get(`${API}/api/devices/by-ip/${encodeURIComponent(deviceIp)}/info-card`)
+    axios.get(`${API}/api/devices/by-ip/${encodeURIComponent(deviceIp)}/info-card${clientId ? `?client_id=${encodeURIComponent(clientId)}` : ""}`)
       .then(r => setCard(r.data))
       .catch(e => setError(e?.response?.data?.detail || e.message))
       .finally(() => setLoading(false));
-  }, [deviceIp]);
+  }, [deviceIp, clientId]);
 
   const vm = card?.vendor_metrics_full || {};
   const raw = card?.raw_data || {};

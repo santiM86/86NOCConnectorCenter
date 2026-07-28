@@ -286,18 +286,28 @@ def _safe_iso(value) -> Optional[str]:
     return str(value)
 
 
-async def build_info_card(device_ip: str) -> Dict[str, Any]:
-    """Aggrega info da tutte le sorgenti disponibili per device_ip."""
+async def build_info_card(device_ip: str, client_id: Optional[str] = None) -> Dict[str, Any]:
+    """Aggrega info da tutte le sorgenti disponibili per device_ip.
+
+    v2026-06 FIX multi-tenant: se client_id e' fornito, OGNI query e' filtrata
+    per client_id. Senza questo filtro, IP privati comuni (es. 192.168.1.x)
+    condivisi tra piu' clienti causavano un leak cross-tenant (find_one per solo
+    IP restituiva il device di un altro cliente).
+    """
+    def _q(base: dict) -> dict:
+        if client_id:
+            return {**base, "client_id": client_id}
+        return base
     # 1) Live poll from connector
-    poll = await db.device_poll_status.find_one({"device_ip": device_ip}, {"_id": 0}) or {}
+    poll = await db.device_poll_status.find_one(_q({"device_ip": device_ip}), {"_id": 0}) or {}
     # 2) Manual/managed device (user-configured SNMP+WebConsole)
-    managed = await db.managed_devices.find_one({"ip": device_ip}, {"_id": 0}) or {}
+    managed = await db.managed_devices.find_one(_q({"ip": device_ip}), {"_id": 0}) or {}
     # 3) CMDB asset (business-level inventory)
-    cmdb = await db.cmdb_assets.find_one({"ip_address": device_ip}, {"_id": 0}) or {}
+    cmdb = await db.cmdb_assets.find_one(_q({"ip_address": device_ip}), {"_id": 0}) or {}
     # 4) Lifecycle record (warranty/EOL)
-    lifecycle = await db.lifecycle_records.find_one({"device_ip": device_ip}, {"_id": 0}) or {}
+    lifecycle = await db.lifecycle_records.find_one(_q({"device_ip": device_ip}), {"_id": 0}) or {}
     # 5) Redfish iLO deep data
-    ilo = await db.ilo_status.find_one({"device_ip": device_ip}, {"_id": 0}) or {}
+    ilo = await db.ilo_status.find_one(_q({"device_ip": device_ip}), {"_id": 0}) or {}
     # 6) Firmware compliance
     fw_compliance = poll.get("firmware_compliance") or {}
     # 7) Parse sys_descr as fallback
@@ -320,8 +330,9 @@ async def build_info_card(device_ip: str) -> Dict[str, Any]:
     # Switch-style vendor metrics extracted/sanitized once
     sw_metrics = _extract_switch_metrics(vm)
 
-    # 10) Client info
-    client_id = _first_not_none(poll.get("client_id"), managed.get("client_id"), cmdb.get("client_id"))
+    # 10) Client info — preferisci il client_id passato (scope multi-tenant),
+    # fallback ai valori delle sorgenti.
+    client_id = client_id or _first_not_none(poll.get("client_id"), managed.get("client_id"), cmdb.get("client_id"))
     client = await db.clients.find_one({"id": client_id}, {"_id": 0}) if client_id else None
 
     sources = []
@@ -442,7 +453,7 @@ async def build_info_card(device_ip: str) -> Dict[str, Any]:
     if primary_mac:
         mac_source = "self-snmp"
     else:
-        arp_doc = await db.arp_cache.find_one({"ip": device_ip}, {"_id": 0}, sort=[("last_seen", -1)])
+        arp_doc = await db.arp_cache.find_one(_q({"ip": device_ip}), {"_id": 0}, sort=[("last_seen", -1)])
         if arp_doc and arp_doc.get("mac"):
             primary_mac = arp_doc["mac"]
             mac_source = "arp-cache"
@@ -696,19 +707,24 @@ async def build_info_card(device_ip: str) -> Dict[str, Any]:
 
 
 @router.get("/devices/by-ip/{device_ip}/info-card")
-async def get_info_card(device_ip: str, current_user: dict = Depends(get_current_user)):
+async def get_info_card(device_ip: str, client_id: Optional[str] = None, current_user: dict = Depends(get_current_user)):
     """Scheda anagrafica unificata del dispositivo (modello/serial/firmware/lifecycle/location).
     Aggrega device_poll_status + managed_devices + cmdb_assets + lifecycle_records + ilo_status.
+
+    v2026-06 FIX multi-tenant: client_id (query param) filtra ogni sorgente per
+    evitare leak cross-tenant su IP privati condivisi tra clienti (es. 192.168.1.x).
     """
-    # Check that device exists somewhere
+    def _q(base: dict) -> dict:
+        return {**base, "client_id": client_id} if client_id else base
+    # Check that device exists somewhere (nello scope del client se fornito)
     exists = (
-        await db.device_poll_status.count_documents({"device_ip": device_ip}) > 0
-        or await db.managed_devices.count_documents({"ip": device_ip}) > 0
-        or await db.cmdb_assets.count_documents({"ip_address": device_ip}) > 0
+        await db.device_poll_status.count_documents(_q({"device_ip": device_ip})) > 0
+        or await db.managed_devices.count_documents(_q({"ip": device_ip})) > 0
+        or await db.cmdb_assets.count_documents(_q({"ip_address": device_ip})) > 0
     )
     if not exists:
         raise HTTPException(status_code=404, detail="Device not found in any source")
-    return await build_info_card(device_ip)
+    return await build_info_card(device_ip, client_id=client_id)
 
 
 @router.post("/devices/info-card/parse-sys-descr")

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="2" skipped="0" tests="2" time="0.500" timestamp="2026-07-28T16:21:55.219801+00:00" hostname="agent-env-f838a385-c5fa-47be-b41c-d46466af6620"><testcase classname="tests.test_info_card_multitenant_iter96b_other_endpoints.TestOtherByIpEndpointsScope" name="test_vendor_details_accepts_and_honors_client_id" time="0.309"><failure message="AssertionError: leak: TEST_DEV_X2&#10;assert 'TEST_DEV_X2' == 'TEST_DEV_Y2'&#10;  &#10;  - TEST_DEV_Y2&#10;  ?          ^&#10;  + TEST_DEV_X2&#10;  ?          ^">E   AssertionError: leak: TEST_DEV_X2
+    assert 'TEST_DEV_X2' == 'TEST_DEV_Y2'
+      
+      - TEST_DEV_Y2
+      ?          ^
+      + TEST_DEV_X2
+      ?          ^</failure></testcase><testcase classname="tests.test_info_card_multitenant_iter96b_other_endpoints.TestOtherByIpEndpointsScope" name="test_metrics_history_honors_client_id" time="0.067"><failure message="AssertionError: leak cross-tenant nelle metriche (max): [90.0]&#10;assert 90.0 not in [90.0]">E   AssertionError: leak cross-tenant nelle metriche (max): [90.0]
+    assert 90.0 not in [90.0]</failure></testcase></testsuite></testsuites>
