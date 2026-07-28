@@ -137,6 +137,14 @@ class DeviceResponse(BaseModel):
     # accesa risulta Off/Saved/Paused (spegnimento inatteso). Default False =
     # comportamento attuale (VM spenta = nessun alert, zero falsi positivi).
     hyperv_alert_on_off: Optional[bool] = False
+    # v2026-06: tipo macchina impostabile dall'admin. "" = non impostato
+    # (trattato come fisico). Valori VM: "hyperv" | "vmware" | "vm_generic".
+    # Le VM sono escluse dalla lista "server senza credenziali iLO".
+    virtualization: Optional[str] = ""
+    # Override manuale per l'aggancio allo snapshot Hyper-V quando il nome
+    # della VM (Get-VM) NON coincide col nome/hostname del device.
+    hyperv_vm_name: Optional[str] = ""
+    hyperv_host_hint: Optional[str] = ""
     created_at: str
 
 class AlertCreate(BaseModel):

@@ -332,9 +332,12 @@ def gather_signals(md: dict, pd: Optional[dict], ctx: dict) -> Dict[str, Any]:
     w = (ctx.get("wan") or {}).get(cid) or {}
 
     # Hyper-V: stato accensione VM dall'host (match per hostname corto).
+    # v2026-06: se l'admin ha impostato un nome VM manuale (hyperv_vm_name),
+    # quello ha priorita' — risolve il caso in cui il nome VM in Get-VM non
+    # coincide col nome/hostname del device.
     hv = (ctx.get("hyperv") or {}).get(cid) or {}
     hyperv_state = None
-    for _k in (md.get("hostname"), md.get("name"), md.get("device_name")):
+    for _k in (md.get("hyperv_vm_name"), md.get("hostname"), md.get("name"), md.get("device_name")):
         ks = _host_short(_k)
         if ks and ks in hv:
             hyperv_state = hv[ks]

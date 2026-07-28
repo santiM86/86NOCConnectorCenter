@@ -1,3 +1,35 @@
+# 2026-06 — Selettore "Tipo macchina" per-device (Fisico / VM) + link Hyper-V manuale
+
+## Richiesta utente
+- Un tasto/selettore per impostare manualmente se una macchina è una VM, così
+  non chiede credenziali iLO inutili e si aggancia lo stato Hyper-V anche quando
+  il nome VM non coincide col nome del device. (scelte consigliate: 1a + 2a)
+
+## Implementazione
+- `models.py` (DeviceResponse): nuovi campi `virtualization`
+  ("physical"|"hyperv"|"vmware"|"vm_generic"|""), `hyperv_vm_name`, `hyperv_host_hint`.
+- `routes/device_info_card.py`: nuovo endpoint `POST /devices/by-ip/{ip}/virtualization`
+  (validazione + update + cache invalidation + audit).
+- `correlation_engine.gather_signals` + `routes/devices._hyperv_state`: l'aggancio
+  allo snapshot Hyper-V usa `hyperv_vm_name` come PRIMA chiave (override manuale),
+  poi hostname/name/device_name → risolve il caso "nome VM ≠ nome device" (SRVDC).
+- `routes/devices.get_client_ilo_health`: le VM (virtualization hyperv/vmware/vm_generic)
+  sono ESCLUSE dalla lista "server senza credenziali iLO".
+- `routes/devices` /api/devices (3 path): espone virtualization/hyperv_vm_name/hyperv_host_hint.
+- `components/DeviceEditModal.js`: selettore "Tipo macchina" + (se Hyper-V) campi
+  "Nome VM su Hyper-V" e "Host Hyper-V"; salvataggio via nuovo endpoint + optimistic update.
+  `isHyperVvm` ora true anche se marcata manualmente hyperv (mostra il toggle allerta VM).
+
+## Testing
+- Endpoint: 400 su valore invalido; set hyperv+vm_name+host → esposto in /api/devices.
+- Unit: `gather_signals` con `hyperv_vm_name` override → match snapshot anche con nome
+  device diverso (senza override → nessun match). PASS.
+- `get_client_ilo_health` su DB reale: server fisico incluso, VM Hyper-V esclusa. PASS.
+- Screenshot modale: selettore + campi Hyper-V + nota esclusione iLO + toggle allerta VM. OK.
+
+---
+
+
 # 2026-06 — Fix: profili Access Point non visibili nel dropdown "Configura profilo"
 
 ## Problema (segnalato via screenshot)
