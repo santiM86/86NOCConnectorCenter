@@ -1,3 +1,45 @@
+# 2026-06 — FIX CRITICO: leak cross-tenant nella Scheda Dispositivo (multi-tenant)
+
+## Bug (segnalato — GRAVE)
+- Dentro un cliente (es. "Arma Creativo"), aprendo la Scheda Dispositivo di un IP
+  privato comune (192.168.1.x) veniva mostrato il device/nome di un ALTRO cliente
+  (es. GualdiGroup). Data leak di isolamento multi-tenant.
+
+## Root cause
+- Gli endpoint "by-ip" della scheda facevano `find_one` SOLO per IP, senza
+  `client_id`. IP privati condivisi tra tenant → restituito il device del cliente
+  sbagliato. Endpoint colpiti: `/info-card`, `/vendor-details`, `/metrics`
+  (+ fallback `arp_cache`).
+
+## Fix (backend)
+- `device_info_card.build_info_card(device_ip, client_id)` + `get_info_card`:
+  helper `_q` inietta client_id in TUTTE le query (device_poll_status,
+  managed_devices, cmdb_assets, lifecycle_records, ilo_status, arp_cache) e nell'exists-check.
+- `devices.device_vendor_details(device_ip, client_id=None)`: filtra
+  device_poll_status + managed_devices per client_id.
+- `metric_history.get_metrics_history(..., client_id=None)`: filtra
+  metric_history + device_metrics_history (legacy) per client_id.
+
+## Fix (frontend) — passano SEMPRE client_id
+- `DeviceInfoCard` (prop `clientId`, querystring), `AllMetricsDialog`,
+  `SynologyDetailSection`, `VendorDetailsPanel`, `DeviceMetricsPage` (client_id=selectedClient),
+  `DeviceDetailPanel`. `ClientOverviewPage` passa `clientId` alla card.
+- La lista dispositivi (`/devices?client_id=`) era già client-scoped (nessun fix necessario).
+
+## Testing (testing_agent)
+- iteration_97: 12/12 PASS nuovi + 12/12 regressione. Stesso IP su 2 client →
+  ogni endpoint ritorna SOLO i dati del client richiesto; 404/serie vuota per
+  client che non possiede l'IP. Suite: tests/test_byip_multitenant_iter97.py.
+
+## Hardening consigliato (NON ancora implementato)
+- Rendere client_id obbligatorio (o 409 su IP ambiguo) sugli endpoint by-ip:
+  oggi è opzionale per retrocompat; tutti i call-site FE lo passano, ma un client
+  API esterno o una regressione FE futura potrebbe riaprire il leak.
+- Estrarre helper condiviso `scoped_query(field, ip, client_id)` (pattern duplicato in 3 moduli).
+
+---
+
+
 # 2026-06 — FIX: impostazioni "Tipo macchina" / VM non salvate sui server iLO
 
 ## Bug (segnalato)
