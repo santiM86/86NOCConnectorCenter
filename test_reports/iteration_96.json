@@ -1,0 +1,40 @@
+{
+  "summary": "Backend-only test del fix multi-tenant su GET /api/devices/by-ip/{ip}/info-card. Seed diretto in Mongo di 3 client fittizi (TEST_CID_X/Y/Z) con lo STESSO device_ip 192.168.99.99 in device_poll_status + managed_devices. 10/10 test PASSATI: la card ritorna sempre e solo il device del client_id richiesto (client.name, hostname, device_type, vendor, reachable tutti coerenti), 404 corretto per client che non possiede l'IP, retrocompat senza client_id OK, auth richiesta, nessun _id in risposta, e GET /api/devices?client_id e' correttamente client-scoped. Dati di test rimossi (verificato a DB). ATTENZIONE: due ALTRI endpoint by-ip usati dalla stessa scheda dispositivo sono ANCORA vulnerabili allo stesso leak cross-tenant (vendor-details e metrics history) — riprodotto con test dedicato.",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "GET /api/devices/by-ip/{ip}/vendor-details", "issue": "LEAK CROSS-TENANT: query solo per IP (device_poll_status.find_one({'device_ip': ip}) e managed_devices.find_one({'ip': ip}), routes/devices.py:858-859), nessun parametro/filtro client_id. Con lo stesso IP su due client ritorna sempre il device del PRIMO client trovato (riprodotto: chiamata con client_id=TEST_CID_Y2 ha restituito name=TEST_DEV_X2, incl. vendor_metrics e cpu del cliente sbagliato). Usato dal pannello Synology dischi/RAID in DeviceInfoCard.js:788 (che non passa clientId).", "priority": "CRITICAL"},
+      {"endpoint": "GET /api/devices/by-ip/{ip}/metrics", "issue": "LEAK/MIX CROSS-TENANT: metric_history e device_metrics_history sono interrogate solo per device_ip (routes/metric_history.py:141 e :152) senza client_id, benche' i doc lo contengano. Riprodotto: con due serie cpu sullo stesso IP (client X val=10, client Y val=90) la risposta ha aggregato entrambe (max=90, avg=50) → grafici storici mostrano metriche di un altro cliente. L'endpoint non accetta nemmeno client_id come query param.", "priority": "CRITICAL"}
+    ],
+    "minor": [
+      {"endpoint": "GET /api/devices/by-ip/{ip}/info-card", "issue": "Nel fallback MAC, arp_cache.find_one({'ip': device_ip}) (device_info_card.py:449) NON e' filtrato per client_id: il MAC/arp_source_ip mostrato puo' provenire dalla rete di un altro tenant quando l'IP e' condiviso."},
+      {"endpoint": "GET /api/devices/by-ip/{ip}/info-card", "issue": "Senza client_id l'endpoint resta scope-agnostico (retrocompat). Consigliato rendere client_id obbligatorio o restituire 409 quando l'IP esiste in piu' client, come gia' fatto per rename/vital."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_info_card_multitenant_iter96.py",
+    "/app/backend/tests/test_info_card_multitenant_iter96b_other_endpoints.py",
+    "/app/test_reports/pytest/iteration_96_infocard.xml",
+    "/app/test_reports/pytest/iteration_96_other_byip.xml"
+  ],
+  "action_items": [
+    "Aggiungere client_id (query param opzionale) e filtrarlo in GET /devices/by-ip/{ip}/vendor-details; passare clientId dal pannello Synology in DeviceInfoCard.js:788.",
+    "Aggiungere client_id in GET /devices/by-ip/{ip}/metrics e filtrare metric_history + device_metrics_history; passare clientId dai grafici storici del frontend.",
+    "Filtrare arp_cache per client_id nel fallback MAC di build_info_card."
+  ],
+  "critical_code_review_comments": [
+    "Il fix e' stato applicato solo a build_info_card/get_info_card: la stessa classe di bug (match by-IP senza client_id) sopravvive in devices.py:853 vendor-details e metric_history.py:86 metrics. Serve un helper condiviso (es. scoped_device_query(collection_field, ip, client_id)) per evitare regressioni future.",
+    "device_info_card.py e' 1367 righe (>700): valutare split (info-card aggregator / parser sys_descr / device flags endpoints)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_info_card_multitenant_iter96.py",
+    "/app/backend/tests/test_info_card_multitenant_iter96b_other_endpoints.py"
+  ],
+  "success_rate": {"backend": "83% (10/12 test; i 2 fail sono leak su endpoint by-ip non ancora fixati)", "frontend": "non testato (richiesto backend only)"},
+  "seed_data_creation": "Seed temporaneo in Mongo: clients TEST_CID_X/Y/Z/X2/Y2, device_poll_status + managed_devices su 192.168.99.99 / .98 / .97, metric_history cpu. TUTTO ELIMINATO a fine test (verificato con count_documents=0).",
+  "should_call_test_agent_after_fix": true,
+  "should_main_agent_self_test": false,
+  "test_credentials": "info@86bit.it / Ariel17051986@!@86 (login POST /api/auth/login → access_token)",
+  "context_for_next_testing_agent": "Il fix info-card multi-tenant e' VERIFICATO e stabile (test_info_card_multitenant_iter96.py, 10/10). Riesegui test_info_card_multitenant_iter96b_other_endpoints.py dopo il fix di vendor-details e metrics: attualmente entrambi FALLISCONO per leak cross-tenant. I test creano/ripuliscono da soli i dati (session fixture).",
+  "rca_of_the_issue": "Le query per IP privati (192.168.x.x) collidono tra tenant. build_info_card ora inietta client_id in ogni find_one via helper _q e l'exists-check dell'endpoint fa lo stesso, quindi lo scope e' corretto. Gli endpoint vendor-details e metrics non sono stati aggiornati e continuano a fare match solo su device_ip, quindi mostrano/mischiano dati di un altro cliente nella stessa scheda dispositivo."
+}

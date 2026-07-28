@@ -93,7 +93,7 @@ function safe(value, fallback = "—") {
   return String(value);
 }
 
-export default function DeviceInfoCard({ deviceIp, onClose = null, compact = false, onCardLoaded = null, hypervState = "", hypervHost = "" }) {
+export default function DeviceInfoCard({ deviceIp, clientId = null, onClose = null, compact = false, onCardLoaded = null, hypervState = "", hypervHost = "" }) {
   const navigate = useNavigate();
   const [card, setCard] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -109,7 +109,7 @@ export default function DeviceInfoCard({ deviceIp, onClose = null, compact = fal
     setLoading(true);
     setError(null);
     axios
-      .get(`${API}/api/devices/by-ip/${deviceIp}/info-card`, { headers: { Authorization: `Bearer ${token}` } })
+      .get(`${API}/api/devices/by-ip/${deviceIp}/info-card${clientId ? `?client_id=${encodeURIComponent(clientId)}` : ""}`, { headers: { Authorization: `Bearer ${token}` } })
       .then((r) => {
         setCard(r.data);
         // v2026-02-14: notifica al parent il display name corretto per
@@ -767,6 +767,7 @@ export default function DeviceInfoCard({ deviceIp, onClose = null, compact = fal
         >
           <AllMetricsDialog
             deviceIp={deviceIp}
+            clientId={clientId}
             deviceLabel={card.identity?.hostname || card.device_ip}
             onClose={() => setShowAllMetrics(false)}
           />
