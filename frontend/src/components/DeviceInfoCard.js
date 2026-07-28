@@ -738,13 +738,13 @@ export default function DeviceInfoCard({ deviceIp, clientId = null, onClose = nu
           Fortinet HA/FWsessions, Comware CPU/Temp, APC, MikroTik, Cisco, QNAP, Zyxel).
           Il componente fa self-fetch e si auto-renderizza in base al profilo. */}
       <ErrorBoundary label="pannello vendor (telemetria)">
-        <VendorDetailsPanel deviceIp={deviceIp} />
+        <VendorDetailsPanel deviceIp={deviceIp} clientId={clientId} />
       </ErrorBoundary>
 
       {/* Synology disks & RAID section (when vendor_metrics has them) */}
       {card.identity?.vendor?.toLowerCase().includes("synology") && card.vendor_metrics_summary?.count > 0 && (
         <ErrorBoundary label="dettaglio Synology DSM">
-          <SynologyDetailSection deviceIp={card.device_ip} />
+          <SynologyDetailSection deviceIp={card.device_ip} clientId={clientId} />
         </ErrorBoundary>
       )}
 
@@ -778,19 +778,19 @@ export default function DeviceInfoCard({ deviceIp, clientId = null, onClose = nu
 }
 
 /** Synology disks + RAID live panel (lazy loaded via vendor-details endpoint) */
-function SynologyDetailSection({ deviceIp }) {
+function SynologyDetailSection({ deviceIp, clientId = null }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const token = localStorage.getItem("noc_token");
 
   useEffect(() => {
     setLoading(true);
-    axios.get(`${API}/api/devices/by-ip/${deviceIp}/vendor-details`, { headers: { Authorization: `Bearer ${token}` } })
+    axios.get(`${API}/api/devices/by-ip/${deviceIp}/vendor-details${clientId ? `?client_id=${encodeURIComponent(clientId)}` : ""}`, { headers: { Authorization: `Bearer ${token}` } })
       .then((r) => setData(r.data))
       .catch(() => setData(null))
       .finally(() => setLoading(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [deviceIp]);
+  }, [deviceIp, clientId]);
 
   if (loading) return null;
   if (!data) return null;

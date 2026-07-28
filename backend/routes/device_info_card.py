@@ -446,7 +446,7 @@ async def build_info_card(device_ip: str, client_id: Optional[str] = None) -> Di
     if primary_mac:
         mac_source = "self-snmp"
     else:
-        arp_doc = await db.arp_cache.find_one({"ip": device_ip}, {"_id": 0}, sort=[("last_seen", -1)])
+        arp_doc = await db.arp_cache.find_one(_q({"ip": device_ip}), {"_id": 0}, sort=[("last_seen", -1)])
         if arp_doc and arp_doc.get("mac"):
             primary_mac = arp_doc["mac"]
             mac_source = "arp-cache"

@@ -76,12 +76,12 @@ export default function DeviceMetricsPage({ embeddedIp = null, embeddedClientId 
   const fetchData = useCallback(() => {
     if (!selectedIp) return;
     setLoading(true);
-    axios.get(`${API}/api/devices/by-ip/${selectedIp}/metrics?metric=${metric}&period=${period}`, { headers })
+    axios.get(`${API}/api/devices/by-ip/${selectedIp}/metrics?metric=${metric}&period=${period}${selectedClient ? `&client_id=${encodeURIComponent(selectedClient)}` : ""}`, { headers })
       .then(r => setData(r.data))
       .catch(() => toast.error("Errore caricamento metriche"))
       .finally(() => setLoading(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedIp, metric, period]);
+  }, [selectedIp, metric, period, selectedClient]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
   useEffect(() => {

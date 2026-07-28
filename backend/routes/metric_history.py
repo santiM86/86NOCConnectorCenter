@@ -88,6 +88,7 @@ async def get_metrics_history(
     device_ip: str,
     metric: str = "cpu",
     period: str = "24h",
+    client_id: Optional[str] = None,
     current_user: dict = Depends(get_current_user),
 ):
     """Returns aggregated time-series for a metric.
@@ -95,6 +96,9 @@ async def get_metrics_history(
     Aggrega da DUE collection:
       - metric_history (nuova, 30gg TTL, granulare per-metric)
       - device_metrics_history (legacy, 24h, un doc per poll con cpu_usage/memory_usage/temperature/ping_avg/active_sessions/vpn_throughput)
+
+    v2026-06 FIX multi-tenant: client_id (query param) filtra le serie storiche
+    per evitare di mischiare metriche di clienti diversi con lo stesso IP privato.
     """
     delta_map = {"1h": (1, 60), "6h": (6, 300), "24h": (24, 900), "7d": (168, 3600), "30d": (720, 14400)}
     if period not in delta_map:
@@ -138,8 +142,11 @@ async def get_metrics_history(
             b["max"] = v
 
     # Source 1: new metric_history
+    _mh_q = {"device_ip": device_ip, "metric": metric, "ts": {"$gte": cutoff}}
+    if client_id:
+        _mh_q["client_id"] = client_id
     async for d in db.metric_history.find(
-        {"device_ip": device_ip, "metric": metric, "ts": {"$gte": cutoff}},
+        _mh_q,
         {"_id": 0, "ts": 1, "value": 1},
     ):
         _accumulate(d.get("ts"), d.get("value"))
@@ -148,8 +155,11 @@ async def get_metrics_history(
     legacy_field = legacy_field_map.get(metric)
     if legacy_field:
         cutoff_iso = cutoff.isoformat()
+        _lh_q = {"device_ip": device_ip, "timestamp": {"$gte": cutoff_iso}}
+        if client_id:
+            _lh_q["client_id"] = client_id
         async for d in db.device_metrics_history.find(
-            {"device_ip": device_ip, "timestamp": {"$gte": cutoff_iso}},
+            _lh_q,
             {"_id": 0, "timestamp": 1, legacy_field: 1},
         ):
             val = d.get(legacy_field)

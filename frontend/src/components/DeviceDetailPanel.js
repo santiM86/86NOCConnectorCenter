@@ -194,7 +194,7 @@ export function DeviceDetailPanel({ clientId, deviceIp, deviceData, onClose, onD
       {/* Content */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
         {hasIp && !isEndpoint && (
-          <VendorDetailsPanel deviceIp={deviceIp} />
+          <VendorDetailsPanel deviceIp={deviceIp} clientId={clientId} />
         )}
         {loading && !isEndpoint ? (
           <div className="flex items-center justify-center py-8">

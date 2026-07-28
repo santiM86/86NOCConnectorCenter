@@ -851,12 +851,20 @@ async def get_device(device_id: str, current_user: dict = Depends(get_current_us
 
 
 @router.get("/devices/by-ip/{device_ip}/vendor-details")
-async def device_vendor_details(device_ip: str, current_user: dict = Depends(get_current_user)):
+async def device_vendor_details(device_ip: str, client_id: Optional[str] = None, current_user: dict = Depends(get_current_user)):
     """Returns full vendor-specific telemetry (vendor_metrics + profile info) for a device.
     Used by the vendor-specific detail pages in the frontend.
+
+    v2026-06 FIX multi-tenant: client_id (query param) filtra le sorgenti per
+    evitare leak cross-tenant su IP privati condivisi tra clienti.
     """
-    ps = await db.device_poll_status.find_one({"device_ip": device_ip}, {"_id": 0})
-    md = await db.managed_devices.find_one({"ip": device_ip}, {"_id": 0})
+    _ps_q = {"device_ip": device_ip}
+    _md_q = {"ip": device_ip}
+    if client_id:
+        _ps_q["client_id"] = client_id
+        _md_q["client_id"] = client_id
+    ps = await db.device_poll_status.find_one(_ps_q, {"_id": 0})
+    md = await db.managed_devices.find_one(_md_q, {"_id": 0})
     if not ps and not md:
         raise HTTPException(status_code=404, detail="Device non trovato")
 
