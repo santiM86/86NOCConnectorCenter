@@ -145,6 +145,9 @@ class DeviceResponse(BaseModel):
     # della VM (Get-VM) NON coincide col nome/hostname del device.
     hyperv_vm_name: Optional[str] = ""
     hyperv_host_hint: Optional[str] = ""
+    # True se `virtualization` e' stato impostato automaticamente dall'aggancio
+    # Hyper-V (match nome VM riportato dall'host), non manualmente dall'admin.
+    virtualization_auto_matched: Optional[bool] = False
     created_at: str
 
 class AlertCreate(BaseModel):

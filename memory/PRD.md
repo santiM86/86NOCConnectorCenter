@@ -54,6 +54,86 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-07-29 ✅ Auto-aggancio VM Hyper-V (rilevamento autonomo Tipo Macchina)
+
+### Richiesta utente
+«se rilevi in autonomia che è una virtual in hyperv puoi agganciare tu in
+autonomia» → non richiedere l'impostazione manuale del Tipo Macchina.
+
+### Come funziona
+L'host Hyper-V e' la fonte autorevole: ad ogni snapshot ricevuto
+(`POST /api/servers/hyperv/snapshot`) il backend riconcilia le VM riportate
+con i `managed_devices` del cliente. Se il nome VM (short-name) coincide con
+hostname/nome/device_name di un device, imposta automaticamente
+`virtualization="hyperv"` + `hyperv_vm_name` = nome VM reale.
+
+### File
+- `backend/routes/server_intelligence.py`: nuovo helper
+  `_auto_attach_hyperv_vms(client_id, vms)` chiamato dentro
+  `submit_hyperv_snapshot`. Marca `virtualization_auto_matched=True`,
+  `virtualization_set_by="auto:hyperv-host"`.
+- `backend/routes/device_info_card.py::set_device_virtualization`: la scelta
+  manuale imposta `virtualization_user_locked=bool(virt)` → l'auto-aggancio
+  NON sovrascrive mai una scelta manuale (anche "physical"). Azzerare a ""
+  sblocca e riabilita l'auto-detect.
+- `backend/models.py` + `devices.py`: nuovo campo response
+  `virtualization_auto_matched`.
+- `frontend/DeviceEditModal.js`: badge "auto-rilevato" nel blocco Tipo Macchina.
+
+### Regole di sicurezza / validazione (test in container)
+- Device con nome = VM Running -> auto `hyperv` + vm_name OK
+- Device `physical` con `virtualization_user_locked=True` -> NON sovrascritto OK
+- Device senza match VM -> invariato OK
+- Idempotente (re-run -> 0 modifiche) OK
+
+### Limite noto
+Il match e' per NOME (gli snapshot non contengono l'IP guest). Se il nome VM
+sull'host differisce dall'hostname del device, l'admin puo' comunque impostare
+manualmente `hyperv_vm_name`. Enhancement futuro: raccolta IP guest via agent
+per match anche per IP (richiede rebuild agent Go).
+
+### Steps utente PROD
+Save to GitHub -> deploy backend. Al prossimo poll Hyper-V (tick 5m, o
+"Poll Hyper-V ora") i device-VM vengono agganciati automaticamente.
+
+---
+
+
+## 2026-07-29 ✅ FIX P0 — Salvataggio impostazioni device intermittente (ip vs ip_address)
+
+### Root cause (confermata con reproduction)
+Gli endpoint by-ip di `device_info_card.py` (virtualization, vm-alert,
+vital, rename) cercavano/aggiornavano `managed_devices` con query rigida
+`{"ip": device_ip}`. Alcuni documenti legacy salvano l'IP SOLO in
+`ip_address`. La `update_one(..., upsert=True)` non trovava il doc →
+creava un DUPLICATO fantasma; la UI continuava a leggere il doc
+originale vuoto → "salva ma me lo richiede ogni volta" (intermittente:
+funzionava solo per i device con `ip` valorizzato).
+
+### Fix (`backend/routes/device_info_card.py`)
+- Nuovo helper `_ip_match(ip)` → `{"$or":[{"ip":ip},{"ip_address":ip}]}`.
+- Tutti gli endpoint by-ip: lookup via `_ip_match` (+client_id), poi
+  update tramite chiave STABILE `{"id": md["id"]}` → mai piu' duplicati.
+- Ogni scrittura normalizza `ip=device_ip` sul doc (self-heal).
+- GET info-card + check exists usano `_ip_match`.
+- NUOVO `POST /api/devices/normalize-ip-fields` (admin): one-shot
+  idempotente, copia `ip_address`→`ip` sui doc legacy.
+
+### Validazione (curl reproduction in container)
+- Inserito doc con SOLO `ip_address` → POST virtualization=hyperv →
+  aggiornato lo STESSO doc (1 solo doc, no duplicati), `ip` normalizzato.
+- normalize-ip-fields → `normalized: 1`.
+- vm-alert su doc legacy → OK, nessun duplicato.
+
+### Steps utente PROD
+1. **Save to GitHub** → deploy backend (nessun rebuild agent Go).
+2. (Opzionale, consigliato) chiamare una volta
+   `POST /api/devices/normalize-ip-fields` con token admin per ripulire
+   i vecchi documenti. Il fix codice funziona comunque anche senza.
+
+---
+
+
 ## 2026-06-24 🔥 HOTFIX P0 — vmbackup_polling_tick crashava ogni minuto in PROD
 
 Dopo il deploy PROD (git pull + restart) l'utente ha mostrato i log con
