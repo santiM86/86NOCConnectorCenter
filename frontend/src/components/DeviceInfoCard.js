@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import {
   Desktop, Cpu, HardDrives, Thermometer, Info, MapPin, Package, Shield, Barcode,
   Calendar, Globe, ArrowsClockwise, Warning, CheckCircle, CircleNotch,
-  ChartLineUp, NetworkSlash, PencilSimple, FloppyDisk, X as XIcon, Pulse,
+  ChartLineUp, NetworkSlash, PencilSimple, FloppyDisk, X as XIcon, Pulse, Key,
 } from "@phosphor-icons/react";
 import AllMetricsDialog from "@/components/AllMetricsDialog";
 import ConnectivityDialog from "@/components/ConnectivityDialog";
@@ -183,6 +183,38 @@ export default function DeviceInfoCard({ deviceIp, clientId = null, onClose = nu
       }
     } finally {
       setSnmpPolling(false);
+    }
+  };
+
+  // v2026-07-29: test one-click della community SNMP configurata.
+  const [commTesting, setCommTesting] = useState(false);
+  const testCommunity = async () => {
+    const cid = clientId || card?.client?.id || card?.client_id || card?.identity?.client_id;
+    if (!cid) {
+      toast.error("client_id non disponibile in scheda");
+      return;
+    }
+    setCommTesting(true);
+    try {
+      const r = await axios.post(
+        `${API}/api/admin/snmp-community-test/${cid}/${deviceIp}`, {},
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+      const d = r.data || {};
+      const line2 = d.hint ? `\n\n💡 ${d.hint}` : "";
+      const agentLine = d.agent ? `\n\nAgent: ${d.agent.hostname || d.agent.agent_id?.slice(0,8)} (${d.agent.in_subnet ? "in subnet ✓" : "fuori subnet ✗"})` : "";
+      if (d.verdict === "ok") {
+        toast.success(`✅ ${d.message}`, { duration: 7000 });
+      } else if (d.verdict === "no_agent") {
+        toast.error(d.message, { duration: 8000 });
+      } else {
+        window.alert(`${d.message}\n\nCommunity provata: "${d.community_used}" (${d.snmp_version})${agentLine}${line2}`);
+      }
+      setTimeout(fetchCard, 1200);
+    } catch (e) {
+      toast.error(`Test community fallito: ${e.response?.data?.detail || e.message}`);
+    } finally {
+      setCommTesting(false);
     }
   };
 
@@ -479,6 +511,16 @@ export default function DeviceInfoCard({ deviceIp, clientId = null, onClose = nu
               data-testid="device-info-card-snmp-repoll">
               <ArrowsClockwise size={13} weight="duotone" className={snmpPolling ? "animate-spin" : ""} />
               <span className="hidden sm:inline">{snmpPolling ? "Polling…" : "Re-poll SNMP"}</span>
+            </button>
+            {/* v2026-07-29: Test community SNMP one-click */}
+            <button
+              onClick={testCommunity}
+              disabled={commTesting}
+              title="Testa la community SNMP configurata direttamente dall'agent (OK / nessuna risposta)"
+              className="px-2.5 py-1.5 text-[11px] rounded-md border border-amber-500/40 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20 hover:border-amber-400 flex items-center gap-1.5 transition-colors disabled:opacity-50"
+              data-testid="device-info-card-community-test">
+              <Key size={13} weight="duotone" className={commTesting ? "animate-pulse" : ""} />
+              <span className="hidden sm:inline">{commTesting ? "Test…" : "Test community"}</span>
             </button>
             {onClose && (
               <button onClick={onClose} className="px-3 py-1 text-xs rounded-md border border-[var(--bg-border)] hover:bg-white/5" data-testid="device-info-card-close">

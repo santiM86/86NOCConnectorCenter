@@ -54,6 +54,52 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-07-29 ✅ Diagnosi SNMP switch HPE + Test community one-click
+
+### Problema utente
+Switch HPE 5130 configurato correttamente (community `ARGUS` RO, ViewDefault,
+nessuna ACL, v2c) ma ARGUS mostra "SNMP: Nessuna risposta" e nessuna metrica;
+il banner diceva ingannevolmente "il connector sta comunicando via SNMP".
+
+### Diagnosi (root cause, version-independent)
+`sysDescr` vuoto + zero metriche = l'SNMP NON riceve alcuna risposta (non è un
+problema di profilo hpe_comware). Cause, in ordine: (1) **community diversa
+lato ARGUS** — default `public`, deve essere impostata a `ARGUS` (case-sensitive)
+in Modifica dispositivo → SNMP; (2) nessun agent online copre la subnet del
+device; (3) UDP/161 o ACL/vista MIB sul device. La community di polling è
+`managed_devices.community` (fallback `public`).
+
+### Fix banner (DeviceInfoCard.js)
+Sdoppiato il banner fuorviante in due, basati sul segnale reale `hasSysDescr`:
+- ROSSO "SNMP non risponde (nessun dato letto)" quando sysDescr vuoto →
+  punta a community/agent/rete.
+- AZZURRO "SNMP risponde, ma metriche limitate" quando sysDescr letto ma OID
+  vendor assenti → profilo o vista MIB ristretta.
+
+### NUOVO: Test community one-click
+- Backend `POST /api/admin/snmp-community-test/{client_id}/{device_ip}`
+  (`snmp_diagnostics.py`): esegue GET SNMP live via agent con la community
+  configurata → verdetto netto `ok` / `no_response` / `no_agent`, indica se
+  l'agent usato è nella subnet del device + hint contestuale (community errata
+  vs ACL vs agent fuori subnet).
+- Frontend: pulsante ambra "Test community" (data-testid
+  `device-info-card-community-test`) accanto a "Re-poll SNMP" nella card.
+- BUGFIX: la projection ritornava `{}` (falsy) per device senza campi community
+  → falso "Device non trovato"; corretto con `if md is None`.
+
+### Validazione
+curl endpoint OK: device trovato, verdetto strutturato; in preview "no_agent"
+(nessun agent WS connesso) — atteso. I path ok/no_response richiedono agent live
+(riusa `force_snmp_poll`, codice già in produzione).
+
+### ⚠️ Mismatch preview/PROD
+Il pannello "STATO LIVE" ricco dello screenshot utente NON è in questo fork →
+la sua `argus.86bit.it` gira codice diverso. Le migliorie (banner + test
+community) si vedono solo dopo Save to GitHub + redeploy.
+
+---
+
+
 ## 2026-07-29 ✅ Connettività "Spark" — potenziamento stile PingPlotter Pro
 
 ### Richiesta utente
