@@ -3190,7 +3190,7 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
               showWebConsole={canOpenWebConsole(d)}
               webPort={defaultWebPort(d)}
               onInfo={() => setInfoTarget(d)}
-              onSwitchPorts={() => navigate(`/switch-ports/${encodeURIComponent(d.ip_address)}`)}
+              onSwitchPorts={() => navigate(`/switch-ports/${encodeURIComponent(d.ip_address)}?clientId=${clientId}`)}
               onTrend={() => navigate(`/device-metrics?ip=${d.ip_address}`)}
               onConnectivity={() => setConnTarget(d)}
               onTestSnmp={() => handleTestSNMP(d)}
@@ -3489,7 +3489,7 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
                           : "Porte switch (tiles UP/DOWN + neighbor LLDP + flap history)";
                         return (
                           <button
-                            onClick={() => navigate(`/switch-ports/${encodeURIComponent(d.ip_address)}`)}
+                            onClick={() => navigate(`/switch-ports/${encodeURIComponent(d.ip_address)}?clientId=${clientId}`)}
                             className="p-1 rounded hover:bg-indigo-500/10 text-indigo-400 transition-colors"
                             title={tip}
                             data-testid={`device-switch-ports-${d.ip_address}`}

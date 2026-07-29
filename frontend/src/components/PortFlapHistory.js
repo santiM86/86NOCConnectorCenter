@@ -15,7 +15,7 @@ const KIND_COLOR = {
   speed_change: "#a78bfa",   // violet = speed autoneg change
 };
 
-export default function PortFlapHistory({ deviceIp, idx, hours = 24, width = 180, height = 26 }) {
+export default function PortFlapHistory({ deviceIp, idx, hours = 24, width = 180, height = 26, clientId = "" }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -23,7 +23,7 @@ export default function PortFlapHistory({ deviceIp, idx, hours = 24, width = 180
     let cancelled = false;
     (async () => {
       try {
-        const r = await axios.get(`${API}/devices/${encodeURIComponent(deviceIp)}/switch-ports/${idx}/flaps?hours=${hours}`);
+        const r = await axios.get(`${API}/devices/${encodeURIComponent(deviceIp)}/switch-ports/${idx}/flaps?hours=${hours}${clientId ? `&client_id=${encodeURIComponent(clientId)}` : ""}`);
         if (!cancelled) setData(r.data);
       } catch {
         if (!cancelled) setData({ events: [], total: 0, by_kind: {} });
@@ -32,7 +32,7 @@ export default function PortFlapHistory({ deviceIp, idx, hours = 24, width = 180
       }
     })();
     return () => { cancelled = true; };
-  }, [deviceIp, idx, hours]);
+  }, [deviceIp, idx, hours, clientId]);
 
   if (loading) {
     return (

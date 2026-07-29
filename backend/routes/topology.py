@@ -1,5 +1,6 @@
 """Network topology inference engine and routes."""
 from fastapi import APIRouter, Depends, HTTPException
+from typing import Optional
 import re
 import ipaddress
 from collections import defaultdict
@@ -36,7 +37,8 @@ def _port_number_from_name(name: str) -> str:
 
 
 @router.get("/devices/{device_ip}/switch-ports")
-async def get_switch_ports(device_ip: str, current_user: dict = Depends(get_current_user)):
+async def get_switch_ports(device_ip: str, client_id: Optional[str] = None,
+                           current_user: dict = Depends(get_current_user)):
     """Ritorna le porte dello switch con status arricchito da LLDP neighbor + MAC table.
 
     Matching in cascata (priorita' decrescente):
@@ -46,16 +48,39 @@ async def get_switch_ports(device_ip: str, current_user: dict = Depends(get_curr
     """
     from .oui_lookup import lookup_oui, classify_device
 
-    ports = await db.switch_ports.find({"local_ip": device_ip}, {"_id": 0}).sort("idx", 1).to_list(2000)
-    neighbors = await db.lldp_neighbors.find({"local_ip": device_ip}, {"_id": 0}).to_list(500)
+    # v2026-07-29 MULTI-TENANT ISOLATION: gli IP privati (10.x/192.168.x)
+    # collidono tra clienti diversi. Senza scope per client_id si mescolavano
+    # porte/LLDP/endpoint/MAC di tenant differenti (data-leak cross-tenant).
+    # client_id viene passato dal frontend; se assente lo deduciamo dal
+    # proprietario dello switch in managed_devices. Se l'IP appartiene a piu'
+    # clienti, e' OBBLIGATORIO esplicitarlo.
+    owner_ids = [c for c in await db.managed_devices.distinct("client_id", {"ip": device_ip}) if c]
+    if not client_id:
+        if len(owner_ids) == 1:
+            client_id = owner_ids[0]
+        elif len(owner_ids) > 1:
+            raise HTTPException(
+                status_code=400,
+                detail=f"IP {device_ip} presente su {len(owner_ids)} clienti diversi: client_id obbligatorio.",
+            )
+    # Nessuno scope risolvibile → ritorna vuoto (mai dati di altri tenant).
+    if not client_id:
+        return {
+            "device_ip": device_ip, "device_name": "", "device_type": "", "client_id": "",
+            "ports": [], "totals": {"total": 0, "up": 0, "down": 0, "admin_down": 0,
+                                    "with_neighbor": 0, "poe_active": 0, "rx_bps": 0,
+                                    "tx_bps": 0, "by_role": {}},
+            "updated_at": None,
+        }
+
+    ports = await db.switch_ports.find({"local_ip": device_ip, "client_id": client_id}, {"_id": 0}).sort("idx", 1).to_list(2000)
+    neighbors = await db.lldp_neighbors.find({"local_ip": device_ip, "client_id": client_id}, {"_id": 0}).to_list(500)
 
     # MAC-based enrichment: prendi endpoint FDB raccolti e i managed devices
-    endpoints = await db.discovered_endpoints.find({"switch_ip": device_ip}, {"_id": 0}).to_list(5000)
+    endpoints = await db.discovered_endpoints.find({"switch_ip": device_ip, "client_id": client_id}, {"_id": 0}).to_list(5000)
 
-    # Managed devices: costruisci MAC -> device map
-    # NB: discovered_endpoints.ip e' gia' risolto lato connector per i MAC managed,
-    # ma teniamo anche un fallback via device_poll_status/managed_devices
-    md_all = await db.managed_devices.find({}, {"_id": 0, "ip": 1, "device_type": 1, "device_name": 1, "vendor": 1}).to_list(2000)
+    # Managed devices SOLO del client corrente: MAC -> device map (no cross-tenant)
+    md_all = await db.managed_devices.find({"client_id": client_id}, {"_id": 0, "ip": 1, "device_type": 1, "device_name": 1, "vendor": 1, "client_id": 1}).to_list(2000)
     md_by_ip = {d["ip"]: d for d in md_all if d.get("ip")}
 
     # v3.6.15: MAC Cross-Correlation per trunk switch-to-switch.
@@ -65,11 +90,8 @@ async def get_switch_ports(device_ip: str, current_user: dict = Depends(get_curr
     local_ifmacs: set[str] = set()
     remote_port_cache: dict[str, str] = {}  # remote_ip -> port remota computata
     try:
-        # v3.6.17 PERF: scope la query a un singolo client_id se conosciuto, e prendi
-        # solo l'ultimo doc (era to_list(20)). Su scale evita full scan di network_discovery.
-        local_md = next((d for d in md_all if d.get("ip") == device_ip), None)
-        scope_client_id = (local_md or {}).get("client_id") if local_md else None
-        nd_query = {"client_id": scope_client_id} if scope_client_id else {}
+        # client_id gia' risolto e scoped a livello di endpoint.
+        nd_query = {"client_id": client_id}
         nd_doc = await db.network_discovery.find_one(
             nd_query, {"_id": 0, "device_macs": 1, "client_id": 1},
             sort=[("updated_at", -1)],
@@ -97,7 +119,7 @@ async def get_switch_ports(device_ip: str, current_user: dict = Depends(get_curr
             from collections import Counter
             for rip in candidate_remote_ips:
                 items = await db.discovered_endpoints.find(
-                    {"switch_ip": rip, "mac": {"$in": list(local_ifmacs)}},
+                    {"switch_ip": rip, "client_id": client_id, "mac": {"$in": list(local_ifmacs)}},
                     {"_id": 0, "port": 1, "mac": 1},
                 ).to_list(100)
                 if not items:
@@ -454,7 +476,7 @@ async def get_switch_ports(device_ip: str, current_user: dict = Depends(get_curr
     # v3.6.16: include client_id + device_name per features come Manual MAC Binding nella UI
     # v3.8.34: include device_type per adattare titolo/messaggi UI (firewall/nas/switch)
     md_local = await db.managed_devices.find_one(
-        {"ip": device_ip},
+        {"ip": device_ip, "client_id": client_id},
         {"_id": 0, "client_id": 1, "device_name": 1, "name": 1, "device_type": 1}
     ) or {}
     # v3.8.35: aggregato per ruolo (WAN/LAN/DMZ/MGMT/other) per la sezione
@@ -496,14 +518,27 @@ async def get_port_flap_history(
     device_ip: str,
     idx: int,
     hours: int = 24,
+    client_id: Optional[str] = None,
     current_user: dict = Depends(get_current_user),
 ):
     """Ritorna gli eventi flap (UP/DOWN/ADMIN/SPEED change) per una porta, ultime N ore."""
     from datetime import datetime, timezone, timedelta
     hours = max(1, min(hours, 720))  # 1h..30gg
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+
+    # MULTI-TENANT: scope obbligatorio per client_id (IP privati collidono).
+    owner_ids = [c for c in await db.managed_devices.distinct("client_id", {"ip": device_ip}) if c]
+    if not client_id:
+        if len(owner_ids) == 1:
+            client_id = owner_ids[0]
+        elif len(owner_ids) > 1:
+            raise HTTPException(status_code=400, detail=f"IP {device_ip} presente su piu' clienti: client_id obbligatorio.")
+    if not client_id:
+        return {"device_ip": device_ip, "idx": idx, "hours": hours, "events": [], "total": 0,
+                "by_kind": {"oper_change": 0, "admin_change": 0, "speed_change": 0}}
+
     events = await db.port_flap_events.find(
-        {"local_ip": device_ip, "idx": idx, "ts": {"$gte": cutoff}},
+        {"local_ip": device_ip, "client_id": client_id, "idx": idx, "ts": {"$gte": cutoff}},
         {"_id": 0}
     ).sort("ts", 1).to_list(500)
     # Breakdown per tipo

@@ -9,7 +9,7 @@
  * - Responsive nativo (mobile + desktop)
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useParams, useNavigate, Link } from "react-router-dom";
+import { useParams, useNavigate, Link, useSearchParams } from "react-router-dom";
 import axios from "axios";
 import { API } from "@/App";
 import { toast } from "sonner";
@@ -115,7 +115,7 @@ function PortTile({ p, onClick, active }) {
   );
 }
 
-function PortDetailPanel({ p, onClose, onOpenCable, deviceIp }) {
+function PortDetailPanel({ p, onClose, onOpenCable, deviceIp, clientId }) {
   if (!p) return null;
   const isUp = p.oper === 1 && p.admin === 1;
   const isPoe = p.poe_status === 3;
@@ -152,7 +152,7 @@ function PortDetailPanel({ p, onClose, onOpenCable, deviceIp }) {
       {deviceIp && (
         <div className="flex items-center justify-between gap-2 border-b border-[var(--bg-border)] pb-2">
           <span className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider font-semibold">Storia flap 24h</span>
-          <PortFlapHistory deviceIp={deviceIp} idx={p.idx} hours={24} />
+          <PortFlapHistory deviceIp={deviceIp} idx={p.idx} hours={24} clientId={clientId} />
         </div>
       )}
 
@@ -277,6 +277,8 @@ function PortDetailPanel({ p, onClose, onOpenCable, deviceIp }) {
 // ----- Page -----
 export default function SwitchPortsPage() {
   const { deviceIp } = useParams();
+  const [searchParams] = useSearchParams();
+  const clientId = searchParams.get("clientId") || "";
   const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState(null);
@@ -303,7 +305,9 @@ export default function SwitchPortsPage() {
   const reload = useCallback(async () => {
     setLoading(true);
     try {
-      const r = await axios.get(`${API}/devices/${encodeURIComponent(deviceIp)}/switch-ports`);
+      const r = await axios.get(`${API}/devices/${encodeURIComponent(deviceIp)}/switch-ports`, {
+        params: clientId ? { client_id: clientId } : {},
+      });
       setData(r.data);
       // Aggiorna selected con dati freschi
       if (selected) {
@@ -315,7 +319,7 @@ export default function SwitchPortsPage() {
     } finally {
       setLoading(false);
     }
-  }, [deviceIp]);  // eslint-disable-line react-hooks/exhaustive-deps
+  }, [deviceIp, clientId]);  // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { reload(); }, [reload]);
   // Auto-refresh ogni 30s per traffico live
@@ -599,7 +603,7 @@ export default function SwitchPortsPage() {
       </div>
 
       {/* Pannello dettaglio porta selezionata */}
-      {selected && <PortDetailPanel p={selected} onClose={() => setSelected(null)} onOpenCable={() => setCableView(selected)} deviceIp={data.device_ip} />}
+      {selected && <PortDetailPanel p={selected} onClose={() => setSelected(null)} onOpenCable={() => setCableView(selected)} deviceIp={data.device_ip} clientId={clientId || data.client_id} />}
 
       {/* Modale Vista Cavo */}
       {cableView && (
