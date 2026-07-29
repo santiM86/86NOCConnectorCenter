@@ -1,3 +1,26 @@
+# 2026-07-29 — UX: Selettore tenant per IP condivisi (fix "client_id obbligatorio")
+
+## Contesto (segnalazione utente)
+Aprendo la pagina Porte Switch di un IP presente su piu' clienti SENZA clientId
+nell'URL, compariva solo un toast criptico "IP X presente su 2 clienti diversi:
+client_id obbligatorio" + box vuoto. Comportamento corretto (isolamento multi-tenant)
+ma UX confusa.
+
+## Implementazione
+- Backend `topology.py`: nuovo endpoint `GET /api/devices/{ip}/owners` → lista
+  {client_id, client_name, device_name, device_type} dei clienti che possiedono l'IP.
+- Frontend `SwitchPortsPage.js`: se la chiamata switch-ports torna 400 e non c'e'
+  clientId, la pagina interroga /owners e mostra un **selettore tenant** ("Questo IP
+  appartiene a piu' clienti") con una card per cliente; il click naviga alla pagina
+  con il clientId corretto. Niente piu' dead-end.
+
+## Validazione (screenshot)
+- IP sintetico su 2 clienti → picker mostrato con entrambe le card (nome cliente +
+  nome/tipo switch), navigazione con clientId corretto ✅. Dati sintetici rimossi.
+
+---
+
+
 # 2026-07-29 — ENHANCEMENT: "Correggi ora" → poll immediato (hot-push config all'agent)
 
 ## Richiesta utente

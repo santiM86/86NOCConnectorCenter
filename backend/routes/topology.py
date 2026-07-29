@@ -721,6 +721,27 @@ async def set_device_type_switch(device_ip: str, client_id: Optional[str] = None
             )}
 
 
+@router.get("/devices/{device_ip}/owners")
+async def device_owners(device_ip: str, current_user: dict = Depends(get_current_user)):
+    """Ritorna i clienti che possiedono un device con questo IP. Serve al frontend
+    per far scegliere il tenant quando un IP privato collide fra piu' clienti."""
+    cids = [c for c in await db.managed_devices.distinct("client_id", {"ip": device_ip}) if c]
+    owners = []
+    for cid in cids:
+        cl = await db.clients.find_one({"id": cid}, {"_id": 0, "name": 1})
+        md = await db.managed_devices.find_one(
+            {"ip": device_ip, "client_id": cid},
+            {"_id": 0, "name": 1, "device_name": 1, "device_type": 1})
+        owners.append({
+            "client_id": cid,
+            "client_name": (cl or {}).get("name") or cid,
+            "device_name": (md or {}).get("device_name") or (md or {}).get("name") or "",
+            "device_type": (md or {}).get("device_type") or "",
+        })
+    owners.sort(key=lambda o: o["client_name"].lower())
+    return {"device_ip": device_ip, "count": len(owners), "owners": owners}
+
+
 
 @router.get("/devices/{device_ip}/switch-ports/{idx}/flaps")
 async def get_port_flap_history(
