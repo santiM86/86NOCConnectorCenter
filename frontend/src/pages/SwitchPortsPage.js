@@ -301,6 +301,53 @@ function PortDetailPanel({ p, onClose, onOpenCable, deviceIp, clientId }) {
   );
 }
 
+// ----- Diagnose dialog -----
+function DiagnoseDialog({ diag, loading, onClose }) {
+  if (!loading && !diag) return null;
+  const stColor = (s) => s === "ok" ? "text-emerald-300 border-emerald-500/40 bg-emerald-500/10"
+    : s === "warn" ? "text-amber-300 border-amber-500/40 bg-amber-500/10"
+    : "text-rose-300 border-rose-500/40 bg-rose-500/10";
+  const stIcon = (s) => s === "ok" ? "✓" : s === "warn" ? "!" : "✕";
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose} data-testid="switch-ports-diagnose-dialog">
+      <div className="noc-panel max-w-2xl w-full max-h-[85vh] overflow-y-auto p-4 space-y-3" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between">
+          <h3 className="text-base font-bold">Diagnosi porte switch</h3>
+          <button onClick={onClose} className="text-[var(--text-muted)] hover:text-[var(--text-primary)] text-xs" data-testid="diagnose-close">Chiudi ✕</button>
+        </div>
+        {loading && (
+          <div className="flex items-center gap-2 text-cyan-300 text-sm py-6 justify-center">
+            <ArrowsClockwise size={18} className="animate-spin" /> Analisi in corso…
+          </div>
+        )}
+        {diag && (
+          <>
+            <div className="space-y-2">
+              {(diag.checks || []).map((c, i) => (
+                <div key={i} className={`rounded-md border p-2.5 ${stColor(c.status)}`} data-testid={`diagnose-check-${i}`}>
+                  <div className="flex items-start gap-2">
+                    <span className="font-bold">{stIcon(c.status)}</span>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-[12px] font-semibold">{c.step}</div>
+                      <div className="text-[11px] opacity-90">{c.detail}</div>
+                      {c.fix && <div className="text-[10px] mt-1 text-[var(--text-secondary)]">→ {c.fix}</div>}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+            {diag.recommendation && (
+              <div className="rounded-md border border-cyan-500/40 bg-cyan-500/10 p-2.5 text-[12px] text-cyan-100">
+                <span className="font-bold">Raccomandazione: </span>{diag.recommendation}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ----- Page -----
 export default function SwitchPortsPage() {
   const { deviceIp } = useParams();
@@ -319,6 +366,25 @@ export default function SwitchPortsPage() {
   const [sortDir, setSortDir] = useState("asc");   // asc|desc
   // Flag "solo accese" della tabella completa
   const [tableOnlyUp, setTableOnlyUp] = useState(false);
+  // Diagnosi "perche' non arrivano le porte"
+  const [diag, setDiag] = useState(null);
+  const [diagLoading, setDiagLoading] = useState(false);
+
+  const runDiagnose = useCallback(async () => {
+    setDiagLoading(true);
+    setDiag(null);
+    try {
+      const r = await axios.get(`${API}/devices/${encodeURIComponent(deviceIp)}/switch-ports/diagnose`, {
+        params: clientId ? { client_id: clientId } : {},
+      });
+      setDiag(r.data);
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Errore diagnosi");
+      setDiag(null);
+    } finally {
+      setDiagLoading(false);
+    }
+  }, [deviceIp, clientId]);
 
   const toggleSort = (col) => {
     if (sortBy === col) {
@@ -444,7 +510,10 @@ export default function SwitchPortsPage() {
         <div className="flex items-center gap-3 mb-4">
           <button onClick={() => navigate(-1)} className="text-[var(--text-muted)] hover:text-[var(--text-primary)] text-lg">←</button>
           <h1 className="text-base md:text-lg font-bold">Dettagli switch · <span className="font-mono text-cyan-300">{deviceIp}</span></h1>
-          <Button onClick={reload} variant="outline" size="sm" className="ml-auto" data-testid="switch-ports-reload">
+          <Button onClick={runDiagnose} variant="outline" size="sm" className="ml-auto text-[11px] gap-1 border-amber-500/40 text-amber-300" data-testid="switch-ports-diagnose-empty">
+            🩺 Diagnosi
+          </Button>
+          <Button onClick={reload} variant="outline" size="sm" data-testid="switch-ports-reload">
             <ArrowsClockwise size={12} className="mr-1" /> Refresh
           </Button>
         </div>
@@ -466,7 +535,13 @@ export default function SwitchPortsPage() {
               <li>Il device è <strong>offline</strong> o non raggiungibile via SNMP</li>
             </ul>
           </div>
+          <div className="pl-10">
+            <Button onClick={runDiagnose} size="sm" className="text-[11px] gap-1 bg-amber-500 hover:bg-amber-400 text-black" data-testid="switch-ports-diagnose-cta">
+              🩺 Diagnostica automatica — scopri perché
+            </Button>
+          </div>
         </div>
+        <DiagnoseDialog diag={diag} loading={diagLoading} onClose={() => { setDiag(null); setDiagLoading(false); }} />
       </div>
     );
   }
@@ -500,6 +575,7 @@ export default function SwitchPortsPage() {
             {(t.loop_suspect > 0) && <span className="text-rose-300 font-semibold flex items-center gap-0.5"><Warning size={10} weight="fill" /> {t.loop_suspect} loop</span>}
           </p>
         </div>
+        <Button size="sm" variant="outline" onClick={runDiagnose} className="h-7 gap-1 text-[11px] border-amber-500/40 text-amber-300" data-testid="switch-ports-diagnose">🩺 Diagnosi</Button>
         <Button size="sm" variant="outline" onClick={reload} className="h-7 gap-1 text-[11px]" data-testid="switch-ports-refresh"><ArrowsClockwise size={12} /> Refresh</Button>
       </div>
 
@@ -816,6 +892,8 @@ export default function SwitchPortsPage() {
           </table>
         </div>
       </details>
+
+      <DiagnoseDialog diag={diag} loading={diagLoading} onClose={() => { setDiag(null); setDiagLoading(false); }} />
     </div>
   );
 }

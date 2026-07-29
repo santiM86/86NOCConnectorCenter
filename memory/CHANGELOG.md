@@ -1,3 +1,35 @@
+# 2026-07-29 — FEATURE: Diagnostica one-click "Perché non arrivano le porte switch"
+
+## Contesto (domanda utente)
+"Non capisco perché non arrivano le porte, e su un altro switch identico di un altro
+cliente con la stessa config arrivano." → serve capire cosa differisce lato ARGUS.
+
+## Root cause tipica individuata
+La raccolta pesante delle porte (ifTable/LLDP/PoE) viene fatta dall'agent SOLO per i
+device classificati come switch/router/firewall (in `agent_ws._build_poller_config`
+il target riceve `profile = device_type`; se non e' switch-like l'agent fa solo il
+poll base e non manda la ifTable). Altre cause: community mancante/errata (case),
+connector offline, o dati porte salvati sotto un client_id diverso (connector su
+cliente sbagliato).
+
+## Implementazione
+- Nuovo endpoint `GET /api/devices/{ip}/switch-ports/diagnose?client_id=` in
+  `topology.py`: 8 check con status ok/warn/error + fix + recommendation:
+  1) device registrato (o presente su altro cliente),
+  2) abilitazione, 3) device_type switch-like (causa piu' comune),
+  4) community SNMP + eligibility, 5) porte presenti (rileva mismatch client_id),
+  6) LLDP/FDB, 7) ultimo poll (device_class/reachable), 8) connector online.
+  Scoped multi-tenant via `tenant_scope.resolve_device_client_id`.
+- Frontend `SwitchPortsPage.js`: pulsante "🩺 Diagnosi" (header + stato vuoto) e
+  `DiagnoseDialog` con check colorati e raccomandazione.
+
+## Validazione (curl + screenshot)
+- Diagnose su device endpoint reale: check 3 (tipo) e 4 (community) ERROR, reco
+  "Imposta device_type='switch'". Dialog UI renderizzato correttamente ✅
+
+---
+
+
 # 2026-07-29 — FEATURE: Rilevamento Loop di Rete su Switch (Fase A, solo backend)
 
 ## Richiesta utente

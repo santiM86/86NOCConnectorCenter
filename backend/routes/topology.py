@@ -528,6 +528,151 @@ async def get_switch_ports(device_ip: str, client_id: Optional[str] = None,
     }
 
 
+@router.get("/devices/{device_ip}/switch-ports/diagnose")
+async def diagnose_switch_ports(device_ip: str, client_id: Optional[str] = None,
+                                current_user: dict = Depends(get_current_user)):
+    """Spiega passo-passo perche' non arrivano le porte di uno switch.
+
+    Check: device registrato? tipo switch? community SNMP impostata? snmp_eligible?
+    dati porte/LLDP/FDB presenti (anche sotto altro client_id)? connector online?
+    """
+    from .tenant_scope import resolve_device_client_id
+    cid = await resolve_device_client_id(device_ip, client_id)
+
+    checks: list = []
+    recommendation = None
+
+    def add(step, status, detail, fix=None):
+        checks.append({"step": step, "status": status, "detail": detail, "fix": fix})
+
+    # 1. Device registrato per questo cliente?
+    md = None
+    if cid:
+        md = await db.managed_devices.find_one(
+            {"ip": device_ip, "client_id": cid},
+            {"_id": 0, "device_type": 1, "community": 1, "snmp_community": 1,
+             "snmp_version": 1, "snmp_port": 1, "monitor_type": 1, "name": 1,
+             "device_name": 1, "disabled": 1, "enabled": 1},
+        )
+    if not md:
+        # Esiste sotto un ALTRO client_id? (possibile registrazione sul cliente sbagliato)
+        other = [c for c in await db.managed_devices.distinct("client_id", {"ip": device_ip}) if c and c != cid]
+        if other:
+            add("1. Registrazione device", "error",
+                f"Il device {device_ip} NON e' registrato sul cliente selezionato ma esiste su {len(other)} altro/i cliente/i.",
+                fix="Apri la pagina Porte Switch dal cliente corretto, oppure registra il device su questo cliente.")
+        else:
+            add("1. Registrazione device", "error",
+                f"Il device {device_ip} non e' in managed_devices per questo cliente.",
+                fix="Aggiungi il device in Gestione Clienti → Devices con device_type=switch.")
+        return {"device_ip": device_ip, "client_id": cid or "", "checks": checks,
+                "recommendation": "Registra/seleziona il device sul cliente corretto."}
+
+    dev_name = md.get("device_name") or md.get("name") or device_ip
+    add("1. Registrazione device", "ok", f"Device presente: {dev_name} (client={cid})")
+
+    # 2. Abilitato?
+    if md.get("disabled") is True or md.get("enabled") is False:
+        add("2. Stato abilitazione", "error", "Il device e' DISABILITATO: l'agent non lo interroga.",
+            fix="Riabilita il device nelle impostazioni.")
+        recommendation = "Riabilita il device."
+    else:
+        add("2. Stato abilitazione", "ok", "Device abilitato al polling.")
+
+    # 3. Tipo device = switch/router/firewall? (gating raccolta porte)
+    dev_type = (md.get("device_type") or "").lower()
+    port_capable = dev_type in ("switch", "router", "firewall", "gateway", "nas")
+    if port_capable:
+        add("3. Tipo device", "ok", f"device_type='{dev_type}': l'agent raccoglie ifTable/LLDP/PoE.")
+    else:
+        add("3. Tipo device", "error",
+            f"device_type='{dev_type or '(vuoto)'}': NON e' classificato come switch. "
+            f"L'agent fa solo il poll base e NON raccoglie le porte. "
+            f"E' la causa piu' probabile quando 'su un altro switch identico funziona'.",
+            fix="Imposta device_type='switch' nelle impostazioni del device (come sull'altro cliente che funziona).")
+        recommendation = recommendation or f"Imposta device_type='switch' su {device_ip}."
+
+    # 4. Community SNMP + eligibility
+    community = md.get("community") or md.get("snmp_community")
+    monitor_type = (md.get("monitor_type") or "").lower()
+    snmp_eligible = bool(community) or monitor_type == "snmp" or dev_type in (
+        "switch", "firewall", "router", "ap", "printer", "ups", "network")
+    if community:
+        add("4. Community SNMP", "ok",
+            f"Community impostata (v={md.get('snmp_version') or 'v2c'}, porta={md.get('snmp_port') or 161}). "
+            f"Ricorda: e' CASE-SENSITIVE — usa il Test SNMP per validarla.")
+    elif snmp_eligible:
+        add("4. Community SNMP", "warn",
+            "Nessuna community impostata sul device: l'agent usera' 'public'. Se lo switch "
+            "usa una community custom, il poll fallira'.",
+            fix="Imposta la community SNMP esatta nelle impostazioni del device.")
+    else:
+        add("4. Community SNMP", "error",
+            "Device non eleggibile per SNMP (no community, no monitor_type=snmp, tipo non di rete).",
+            fix="Imposta la community SNMP e device_type=switch.")
+
+    # 5. Dati porte gia' presenti? (anche sotto altro client_id = mismatch)
+    n_ports_here = await db.switch_ports.count_documents({"local_ip": device_ip, "client_id": cid})
+    other_cids = [c for c in await db.switch_ports.distinct("client_id", {"local_ip": device_ip}) if c and c != cid]
+    if n_ports_here > 0:
+        add("5. Dati porte", "ok", f"{n_ports_here} porte gia' memorizzate per questo cliente.")
+    elif other_cids:
+        add("5. Dati porte", "error",
+            f"Porte presenti ma sotto un ALTRO client_id ({len(other_cids)}): il connector che le "
+            f"raccoglie e' autenticato come cliente diverso da quello del device.",
+            fix="Verifica che il connector/agent appartenga allo stesso cliente del device.")
+        recommendation = recommendation or "Allinea il client_id del connector a quello del device."
+    else:
+        add("5. Dati porte", "warn", "Nessuna porta memorizzata (ne' per questo ne' per altri clienti): "
+            "l'agent non ha ancora inviato la ifTable.")
+
+    # 6. LLDP + FDB
+    n_lldp = await db.lldp_neighbors.count_documents({"local_ip": device_ip, "client_id": cid})
+    n_fdb = await db.discovered_endpoints.count_documents({"switch_ip": device_ip, "client_id": cid})
+    add("6. LLDP / MAC table", "ok" if (n_lldp or n_fdb) else "warn",
+        f"LLDP neighbor={n_lldp}, endpoint FDB={n_fdb}.")
+
+    # 7. Ultimo poll SNMP
+    ps = await db.device_poll_status.find_one(
+        {"device_ip": device_ip, "client_id": cid},
+        {"_id": 0, "last_poll_at": 1, "last_success_at": 1, "device_class": 1, "profile_key": 1, "reachable": 1})
+    if ps:
+        add("7. Ultimo poll", "ok" if ps.get("reachable") else "warn",
+            f"class={ps.get('device_class') or '?'}, profile={ps.get('profile_key') or '?'}, "
+            f"reachable={ps.get('reachable')}, ultimo successo={ps.get('last_success_at') or ps.get('last_poll_at') or 'mai'}.")
+    else:
+        add("7. Ultimo poll", "warn", "Nessuno stato di poll registrato per questo device.")
+
+    # 8. Connector online?
+    conns = await db.connector_status.find(
+        {"client_id": cid}, {"_id": 0, "hostname": 1, "online": 1, "last_heartbeat_at": 1}).to_list(50)
+    online = [c for c in conns if c.get("online")]
+    if online:
+        add("8. Connector", "ok", f"{len(online)}/{len(conns)} connector online: " +
+            ", ".join(c.get("hostname", "?") for c in online[:5]))
+    elif conns:
+        add("8. Connector", "error", f"{len(conns)} connector registrati ma NESSUNO online.",
+            fix="Riavvia/verifica il servizio Agent sul cliente.")
+        recommendation = recommendation or "Nessun connector online: avvia l'Agent."
+    else:
+        add("8. Connector", "error", "Nessun connector registrato per questo cliente.",
+            fix="Installa/collega l'Agent al cliente.")
+        recommendation = recommendation or "Installa l'Agent per questo cliente."
+
+    if not recommendation:
+        if not port_capable:
+            recommendation = f"Imposta device_type='switch' su {device_ip}."
+        elif n_ports_here == 0:
+            recommendation = ("Config lato ARGUS OK: verifica la community con il Test SNMP e attendi "
+                              "1 ciclo di poll (2-5 min).")
+        else:
+            recommendation = "Tutto ok: le porte dovrebbero essere visibili."
+
+    return {"device_ip": device_ip, "device_name": dev_name, "device_type": dev_type,
+            "client_id": cid or "", "checks": checks, "recommendation": recommendation}
+
+
+
 @router.get("/devices/{device_ip}/switch-ports/{idx}/flaps")
 async def get_port_flap_history(
     device_ip: str,
