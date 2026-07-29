@@ -1,0 +1,44 @@
+{
+  "summary": "Iteration 98 — testata la nuova feature 'Connettività / Spark' (Fase 1) end-to-end. BACKEND: 15/15 pytest passati su GET /api/devices/by-ip/{ip}/connectivity-report (24h seedato: samples=1437, uptime 98.82%, latency avg 14.0 / min 1.0 / max 26.1 / p95 20.8 / jitter 4.0, loss avg 1.7 max 100, disconnections=2 come atteso, mttr_min=8.5, 2 down_windows, severity=warn, thresholds 30/100/2/10, series popolata) + tutti i period 1h/6h/24h/7d/30d (bucket diversi: 57/72/96/25/7), period invalido -> fallback 24h, IP senza storico (9.9.9.9) -> 200 con samples=0, isolamento multi-tenant con client_id errato -> samples=0, auth richiesta su entrambi gli endpoint. POST connectivity-test -> 404 pulito 'Nessun agent v4 LIVE per questo cliente' (atteso in preview, nessun 500) e 400 senza client_id / body vuoto. FRONTEND: login admin OK, /client/<id> -> tab 'Dispositivi Vitali' (data-testid tab-devices) -> grouped-device-connectivity-192.168.1.3 apre connectivity-dialog con banner severità, tutte le 8 stat card, 2 grafici recharts (latenza + packet loss con reference line 30/100), lista Interruzioni (2). Tutti e 5 i pulsanti periodo aggiornano il report senza errori. 'Esegui test ora' mostra correttamente il toast 'Test fallito: Nessun agent v4 LIVE per questo cliente', l'app non crasha, il dialog resta utilizzabile (periodo cambiato con successo dopo il test). Percorso DeviceInfoCard -> device-info-card-connectivity-btn apre lo stesso dialog con grafici popolati.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/devices/by-ip/{ip}/connectivity-report", "issue": "down_windows.start/end sono ISO NAIVE (es. '2026-07-28T20:59:59.621000', senza offset) perché arrivano direttamente da Mongo, mentre series[].ts è tz-aware ('...+00:00'). Il frontend fa new Date(w.start): per un utente it-IT (UTC+2) le Interruzioni verranno mostrate 2h prima rispetto ai grafici. Fix: .replace(tzinfo=timezone.utc).isoformat() (o epoch ms) sui ts letti da Mongo."},
+      {"endpoint": "GET /api/devices/by-ip/{ip}/connectivity-report", "issue": "client_id è opzionale e non viene derivato/validato dall'utente: un utente autenticato non-admin può omettere client_id e ottenere lo storico ping aggregato di TUTTI i tenant per un IP privato comune (es. 192.168.1.1). Suggerito: forzare client_id dallo scope dell'utente per i ruoli non-admin."},
+      {"endpoint": "POST /api/devices/by-ip/{ip}/connectivity-test", "issue": "Il loop esegue count ping sequenziali con timeout 6s + sleep 0.15s ciascuno: con count=12 (valore usato dal frontend) la richiesta può durare ~74s, oltre il timeout tipico del middleware/ingress. Suggerito budget totale (es. asyncio.wait_for globale ~20s) e/o riduzione del timeout per pacchetto."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "ConnectivityDialog (titolo)", "issue": "Per lo stesso IP 192.168.1.3 il titolo è 'PERSIST_TEST_RENAME' se aperto dalla riga Dispositivi e 'Vendor-Details-Test' se aperto dalla DeviceInfoCard: le due sorgenti usano funzioni di naming diverse. Cosmetico ma confonde.", "selector": "[data-testid=\"connectivity-dialog\"]", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "ConnectivityDialog", "issues": ["Con period=7d/30d i bucket sono pochissimi (25 e 7 punti su storico 24h) e il grafico appare quasi piatto/vuoto sulla parte destra: nessun hint UI che lo storico copre solo 24h.", "Le etichette Interruzioni mostrano l'ora senza indicazione del fuso (vedi bug tz lato backend)."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_connectivity_spark_iter98.py",
+    "/app/test_reports/pytest/iteration_98_connectivity.xml"
+  ],
+  "action_items": [
+    "Rendere tz-aware i timestamp di down_windows (start/end) nel connectivity-report per evitare lo sfasamento orario in UI it-IT",
+    "Forzare/validare client_id dallo scope utente nel connectivity-report per i ruoli non-admin (isolamento multi-tenant)",
+    "Aggiungere un budget di tempo totale al connectivity-test (count=12 x timeout 6s = fino a ~74s)",
+    "Uniformare la funzione di naming del device passata a ConnectivityDialog fra ClientOverviewPage e DeviceInfoCard"
+  ],
+  "critical_code_review_comments": [
+    "connectivity_report itera l'intero cursore in Python: con polling a 1 min e period=30d sono ~43k doc per device (piu' se piu' device/tenant). Valutare una $group aggregation lato Mongo per i bucket.",
+    "ensure_index() ingoia tutte le eccezioni: se la creazione dell'indice TTL/composito fallisce non c'e' log e le query diventano collscan silenziosi.",
+    "/app/frontend/src/pages/ClientOverviewPage.js e' ~4933 righe: da splittare (linea guida <700).",
+    "connectivity-report non ha limite sul range dei doc esaminati: nessun cap su samples oltre al cap di 60000 sulle latenze; un tenant con molti campioni puo' rendere l'endpoint lento."
+  ],
+  "updated_files": ["/app/backend/tests/test_connectivity_spark_iter98.py"],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "seed_data_creation": "Nessun dato creato dal test agent; usato lo storico ping pre-seedato (24h, 2 finestre di down) per 192.168.1.3 / client da3d6e40-b3e5-4d46-9787-dde328a3aa36.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "info@86bit.it / Ariel17051986@!@86 (da /app/memory/test_credentials.md) — valide. Nota: un tentativo di login su 3 non ha navigato al primo submit (retry necessario), possibile flakiness del login form (~33% in 3 run).",
+  "context_for_next_testing_agent": "Il tab 'Dispositivi' si chiama 'Dispositivi Vitali' e ha data-testid='tab-devices' (i tab sono <button>, NON role=tab: get_by_role('tab') non funziona). 192.168.1.3 e' vitale e visibile nella vista grouped di default. connectivity-test ritorna 404 in preview (nessun agent v4 LIVE) — comportamento corretto. Test regressione: /app/backend/tests/test_connectivity_spark_iter98.py.",
+  "rca_of_the_issue": "Sfasamento orario Interruzioni: motor restituisce datetime NAIVE per i campi BSON date, quindi down_windows usa ts.isoformat() senza offset; series usa invece datetime.fromtimestamp(..., tz=utc) ed e' corretto. In un browser con TZ != UTC le due sezioni del dialog mostrano orari diversi per lo stesso evento."
+}

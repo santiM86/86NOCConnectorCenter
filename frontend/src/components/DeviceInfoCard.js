@@ -5,9 +5,10 @@ import { toast } from "sonner";
 import {
   Desktop, Cpu, HardDrives, Thermometer, Info, MapPin, Package, Shield, Barcode,
   Calendar, Globe, ArrowsClockwise, Warning, CheckCircle, CircleNotch,
-  ChartLineUp, NetworkSlash, PencilSimple, FloppyDisk, X as XIcon,
+  ChartLineUp, NetworkSlash, PencilSimple, FloppyDisk, X as XIcon, Pulse,
 } from "@phosphor-icons/react";
 import AllMetricsDialog from "@/components/AllMetricsDialog";
+import ConnectivityDialog from "@/components/ConnectivityDialog";
 import { VendorDetailsPanel } from "@/components/VendorDetailsPanel";
 import ErrorBoundary from "@/components/ErrorBoundary";
 
@@ -99,6 +100,7 @@ export default function DeviceInfoCard({ deviceIp, clientId = null, onClose = nu
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [showAllMetrics, setShowAllMetrics] = useState(false);
+  const [showConnectivity, setShowConnectivity] = useState(false);
   // v2026-02-14: rename inline manuale del device (propaga ovunque)
   const [editingName, setEditingName] = useState(false);
   const [newName, setNewName] = useState("");
@@ -457,6 +459,14 @@ export default function DeviceInfoCard({ deviceIp, clientId = null, onClose = nu
                 <span className="px-1 py-0 text-[9px] rounded bg-cyan-400/20 font-mono">{card.vendor_metrics_summary.count}</span>
               )}
             </button>
+            <button
+              onClick={() => setShowConnectivity(true)}
+              title="Connettività: ping, latenza, packet loss, disconnessioni nel tempo"
+              className="px-2.5 py-1.5 text-[11px] rounded-md border border-cyan-500/40 bg-cyan-500/10 text-cyan-300 hover:bg-cyan-500/20 hover:border-cyan-400 flex items-center gap-1.5 transition-colors"
+              data-testid="device-info-card-connectivity-btn">
+              <Pulse size={13} weight="bold" />
+              <span className="hidden sm:inline">Connettività</span>
+            </button>
             <button onClick={fetchCard} title="Aggiorna" className="p-2 rounded-md hover:bg-white/5 text-[var(--text-secondary)]" data-testid="device-info-card-refresh">
               <ArrowsClockwise size={14} />
             </button>
@@ -772,6 +782,16 @@ export default function DeviceInfoCard({ deviceIp, clientId = null, onClose = nu
             onClose={() => setShowAllMetrics(false)}
           />
         </ErrorBoundary>
+      )}
+      {/* Connettività (Spark) */}
+      {showConnectivity && (
+        <ConnectivityDialog
+          deviceIp={deviceIp}
+          clientId={clientId}
+          deviceName={card.identity?.hostname || card.device_ip}
+          open={showConnectivity}
+          onClose={() => setShowConnectivity(false)}
+        />
       )}
     </div>
   );
