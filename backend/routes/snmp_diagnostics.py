@@ -40,6 +40,38 @@ def _age_seconds(ts: Any) -> float | None:
         return None
 
 
+def _agent_candidate_ips(agent_doc: dict) -> List[str]:
+    """Tutti gli IP noti dell'agent: last_ip, agent_ip e la lista `ips`
+    (esclude gli APIPA 169.254.x che non sono rotte reali)."""
+    out: List[str] = []
+    for k in ("last_ip", "agent_ip"):
+        v = agent_doc.get(k)
+        if v and not str(v).startswith("169.254."):
+            out.append(str(v))
+    for v in (agent_doc.get("ips") or []):
+        if v and not str(v).startswith("169.254.") and str(v) not in out:
+            out.append(str(v))
+    return out
+
+
+def _agent_covers_device(agent_doc: dict, device_ip: str):
+    """(in_subnet, matched_ip, subnet) usando TUTTI gli IP noti dell'agent.
+
+    Fix 2026-07-29: prima si leggeva solo `agent_ip` (spesso vuoto) → falsi
+    'fuori subnet'. Ora si prova last_ip/agent_ip/ips: se una qualsiasi
+    interfaccia dell'agent e' nella /24 del device, l'agent LO COPRE.
+    """
+    ips = _agent_candidate_ips(agent_doc)
+    for ip in ips:
+        subnet = _agent_subnet_from_ip(ip)
+        if subnet and _ip_in_subnet(device_ip, subnet):
+            return True, ip, subnet
+    if ips:
+        return False, ips[0], _agent_subnet_from_ip(ips[0])
+    return False, None, None
+
+
+
 @router.get("/snmp-diagnosis/{client_id}/{device_ip}")
 async def snmp_diagnosis(client_id: str, device_ip: str,
                          current_user: dict = Depends(get_current_user)):
@@ -72,7 +104,7 @@ async def snmp_diagnosis(client_id: str, device_ip: str,
     agents_db = await db.managed_agents.find(
         {"client_id": client_id},
         {"_id": 0, "agent_id": 1, "hostname": 1, "role": 1, "agent_ip": 1,
-         "last_heartbeat_at": 1, "last_seen_at": 1, "connected": 1}
+         "last_ip": 1, "ips": 1, "last_heartbeat_at": 1, "last_seen_at": 1, "connected": 1}
     ).to_list(50)
 
     online_agent_ids = {c.agent_id for c in REGISTRY.list()
@@ -84,13 +116,13 @@ async def snmp_diagnosis(client_id: str, device_ip: str,
     master_agent = None
 
     for a in agents_db:
-        agent_ip = a.get("agent_ip")
-        subnet = _agent_subnet_from_ip(agent_ip) if agent_ip else None
+        # v2026-07-29 FIX: usa TUTTI gli IP noti dell'agent (last_ip/agent_ip/ips).
+        # Prima si leggeva solo agent_ip (vuoto) → falsi "fuori subnet".
+        in_subnet, agent_ip, subnet = _agent_covers_device(a, device_ip)
         role = (a.get("role") or "master").lower()
         is_online = a.get("agent_id") in online_agent_ids
         if subnet:
             other_subnets.append(subnet)
-        in_subnet = _ip_in_subnet(device_ip, subnet) if subnet else False
         info = {
             "agent_id": a.get("agent_id"),
             "hostname": a.get("hostname"),
@@ -300,16 +332,17 @@ async def snmp_community_test(client_id: str, device_ip: str,
     async def _agent_meta(agent_id: str):
         ag = await db.managed_agents.find_one(
             {"agent_id": agent_id},
-            {"_id": 0, "hostname": 1, "role": 1, "agent_ip": 1}
+            {"_id": 0, "hostname": 1, "role": 1, "agent_ip": 1, "last_ip": 1, "ips": 1}
         ) or {}
-        subnet = _agent_subnet_from_ip(ag.get("agent_ip")) if ag.get("agent_ip") else None
+        # FIX: usa TUTTI gli IP noti (last_ip/agent_ip/ips) come il controllo reale.
+        in_subnet, ip, subnet = _agent_covers_device(ag, device_ip)
         return {
             "agent_id": agent_id,
             "hostname": ag.get("hostname"),
             "role": (ag.get("role") or "master").lower(),
-            "agent_ip": ag.get("agent_ip"),
+            "agent_ip": ip,
             "subnet": subnet,
-            "in_subnet": _ip_in_subnet(device_ip, subnet) if subnet else False,
+            "in_subnet": in_subnet,
         }
 
     metas = [await _agent_meta(c.agent_id) for c in candidates]
@@ -375,21 +408,35 @@ async def snmp_community_test(client_id: str, device_ip: str,
 
 
 def _community_hint(reachable: bool, agent_meta: dict, community: str, device_ip: str) -> str:
-    """Suggerimento contestuale per il caso 'no_response'."""
-    if not agent_meta.get("in_subnet"):
-        return (
-            f"L'agent usato ({agent_meta.get('hostname') or agent_meta.get('agent_id','?')[:8]}) "
-            f"NON è nella subnet del device (agent_ip={agent_meta.get('agent_ip') or '?'}). "
-            f"Se lo switch limita l'SNMP per subnet o l'agent non ha rotta L3, non risponde: "
-            f"installa/promuovi un agent nella rete del device."
-        )
-    return (
-        f"L'agent è nella subnet corretta ma non arriva risposta con community "
-        f"'{community}'. Cause, in ordine: (1) community ERRATA — deve essere identica "
-        f"e case-sensitive a quella sullo switch; (2) ACL/vista SNMP sul device che "
-        f"escludono l'IP dell'agent; (3) UDP/161 bloccato. Verifica dal connector: "
-        f"snmpwalk -v2c -c {community} {device_ip} .1.3.6.1.2.1.1"
+    """Suggerimento per il caso 'no_response'.
+
+    Poiche' l'agent ha comunque ESEGUITO la probe SNMP (abbiamo una reply, non
+    un errore di rete), e i device solitamente rispondono al ping/ARP, la causa
+    dominante e' la community (case-sensitive!) o una ACL/vista MIB sul device.
+    NON suggeriamo di installare un agent a meno che l'agent_ip sia noto ED
+    effettivamente fuori subnet.
+    """
+    lead = (
+        f"⚠️ La community provata è \"{community}\" ed è CASE-SENSITIVE: deve "
+        f"combaciare ESATTAMENTE (maiuscole/minuscole comprese) con quella "
+        f"configurata sullo switch. Es. \"ARGUS\" ≠ \"Argus\" ≠ \"argus\". "
+        f"Controlla in Modifica dispositivo → SNMP → Community."
     )
+    parts = [lead]
+    parts.append(
+        "Se la community è identica: verifica sullo switch che la community sia "
+        "associata a una VISTA che includa MIB-2 (1.3.6.1.2.1) e il ramo "
+        "enterprise, e che non ci sia una ACL SNMP che escluda l'IP dell'agent."
+    )
+    parts.append(f"Test manuale dal connector: snmpwalk -v2c -c {community} {device_ip} .1.3.6.1.2.1.1")
+    agent_ip = agent_meta.get("agent_ip")
+    if agent_ip and not agent_meta.get("in_subnet"):
+        parts.append(
+            f"Nota: l'agent {agent_meta.get('hostname') or ''} (IP {agent_ip}) risulta "
+            f"in una subnet diversa dal device: se lo switch filtra l'SNMP per subnet "
+            f"potrebbe essere anche questo."
+        )
+    return "  •  ".join(parts)
 
 
 

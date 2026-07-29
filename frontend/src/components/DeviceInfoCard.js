@@ -775,10 +775,10 @@ export default function DeviceInfoCard({ deviceIp, clientId = null, onClose = nu
               Il device risponde al <strong>ping</strong>, ma alle interrogazioni <strong>SNMP</strong> ({net.snmp_version || "v2c"} su porta {net.snmp_port || 161}) <strong>non arriva alcuna risposta</strong> (nemmeno <code className="font-mono bg-black/30 px-1 rounded">sysDescr</code>). Quindi non è un problema di profilo: è a monte. Cause tipiche, in ordine:
             </p>
             <ul className="text-xs text-red-100/80 mt-1 ml-4 list-disc space-y-0.5">
-              <li><strong>Community diversa</strong>: la community impostata qui su ARGUS deve essere <strong>identica</strong> (case-sensitive!) a quella sul device. Apri <em>Modifica dispositivo → SNMP → Community</em> e verifica che sia esattamente quella configurata sullo switch (es. <code className="font-mono bg-black/30 px-1 rounded">ARGUS</code>, non <code className="font-mono bg-black/30 px-1 rounded">public</code>).</li>
-              <li><strong>Nessun agent copre questa subnet</strong> (o è offline): l'SNMP viene fatto dall'agent nella stessa rete del device. Usa il pulsante <strong>Re-poll SNMP</strong> qui sopra: se fallisce, mostra la diagnosi automatica (agent online/subnet).</li>
-              <li><strong>UDP/161 bloccato</strong> tra agent e device, oppure ACL/vista SNMP sul device che escludono l'IP dell'agent.</li>
-              <li>Verifica dal connector: <code className="font-mono bg-black/30 px-1 rounded">snmpwalk -v2c -c &lt;community&gt; {net.ip || "IP"} .1.3.6.1.2.1.1</code> — se va in timeout, il problema è community/rete, non ARGUS.</li>
+              <li><strong>Community diversa (causa n°1)</strong>: la community è <strong>case-sensitive</strong>. Deve combaciare <strong>esattamente</strong> (maiuscole/minuscole comprese) con quella sullo switch — <code className="font-mono bg-black/30 px-1 rounded">ARGUS</code> ≠ <code className="font-mono bg-black/30 px-1 rounded">Argus</code> ≠ <code className="font-mono bg-black/30 px-1 rounded">argus</code>. Apri <em>Modifica dispositivo → SNMP → Community</em> e correggila. Usa il pulsante <strong>Test community</strong> per vedere quale viene provata.</li>
+              <li><strong>ACL / vista MIB sul device</strong>: la community deve essere associata a una vista che include MIB-2 (<code className="font-mono bg-black/30 px-1 rounded">1.3.6.1.2.1</code>) e nessuna ACL SNMP deve escludere l'IP dell'agent.</li>
+              <li><strong>Solo se il device non risponde nemmeno al ping</strong>: verifica che un agent online sia nella stessa rete (UDP/161 non bloccato). Se il ping passa, il problema è quasi sempre la community qui sopra.</li>
+              <li>Verifica dal connector: <code className="font-mono bg-black/30 px-1 rounded">snmpwalk -v2c -c &lt;community&gt; {net.ip || "IP"} .1.3.6.1.2.1.1</code> — se va in timeout, è community/ACL, non ARGUS.</li>
             </ul>
           </div>
         </div>
