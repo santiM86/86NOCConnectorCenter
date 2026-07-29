@@ -54,6 +54,63 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-07-29 ✅ Connettività per-device "Spark" (storico ping + report + test) — Fase 1
+
+### Richiesta utente
+Per ogni dispositivo una zona di diagnostica connettività (ping) con report
+completo, grafici e statistiche per capire disconnessioni, perdite pacchetti,
+latenza, ecc. Scelte: entry point in ENTRAMBI (riga Dispositivi + scheda
+DeviceInfoCard), solo Fase 1 (no rebuild agent Go), retention 30gg, soglie
+latenza WARN>30/CRIT>100 ms, loss WARN>2%/CRIT>10%.
+
+### Cosa fa
+Prima i dati ping venivano sovrascritti ogni ciclo (nessuno storico). Ora ogni
+PingPollResult viene appeso a una time-series per-device.
+
+### Backend — NUOVO `routes/connectivity.py`
+- Collection `device_ping_history` (TTL 30gg, 1 doc/ciclo: reachable, latency_ms, loss_pct).
+- Ingest: `record_ping()` chiamato da `agent_ws._bridge_ping_poll`.
+- `GET /api/devices/by-ip/{ip}/connectivity-report?period=&client_id=`
+  → uptime %, latenza avg/min/max/p95/jitter, loss avg/max, n. disconnessioni,
+  MTTR, finestre di down, severity, serie a bucket per i grafici.
+  period: 1h/6h/24h/7d/30d. `client_id` OBBLIGATORIO (isolamento multi-tenant).
+- `POST /api/devices/by-ip/{ip}/connectivity-test` → raffica di N ping via
+  agent v4 master LIVE (comando WS `force_ping_poll` esistente), stat immediate
+  + per-pacchetto. Budget globale ~20s, timeout 3s/pacchetto. 404 pulito se
+  nessun agent live.
+- `server.py`: router + `ensure_connectivity_idx()` (TTL) registrati.
+
+### Frontend — NUOVO `components/ConnectivityDialog.js`
+Dialog con: banner severità, 8 stat card, grafico latenza (recharts, reference
+line 30/100ms), grafico packet loss, lista interruzioni, selettore periodo,
+pulsante "Esegui test ora" (mostra stat + griglia pacchetti verde/rosso).
+Entry point: icona Pulse in `DeviceActionsBar` (riga Dispositivi,
+data-testid `grouped-device-connectivity-<ip>`) + pulsante in `DeviceInfoCard`
+(`device-info-card-connectivity-btn`).
+
+### Testing (iteration_98)
+15/15 pytest backend PASS + flussi frontend PASS. Fix minori applicati dopo il
+report: (1) `down_windows` timestamp resi tz-aware (allineati alla serie, no
+sfasamento 2h in UI it-IT), (2) `client_id` reso obbligatorio (evita
+aggregazione cross-tenant su IP privati comuni), (3) test on-demand con budget
+globale 20s + timeout 3s/pacchetto (evita richieste >70s oltre timeout ingress).
+
+### Note
+- In PREVIEW non ci sono agent v4 live → il test on-demand ritorna 404 (atteso).
+  Pre-seedato 24h di storico DEMO sul device 192.168.1.3 (86BIT_Office) per
+  vedere i grafici popolati; in PROD lo storico si popola da solo col polling.
+
+### Fase 2 (futura, opzionale, richiede rebuild agent Go)
+Raffica ping estesa con dettaglio per-pacchetto reale + traceroute/MTR
+per-device per individuare DOVE cade la rete.
+
+### Steps utente PROD
+Save to GitHub → deploy backend + frontend. Lo storico inizia a popolarsi al
+prossimo ciclo di polling; il report diventa significativo dopo qualche ora.
+
+---
+
+
 ## 2026-07-29 ✅ Auto-aggancio VM Hyper-V (rilevamento autonomo Tipo Macchina)
 
 ### Richiesta utente

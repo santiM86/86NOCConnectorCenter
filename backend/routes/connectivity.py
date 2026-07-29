@@ -87,6 +87,18 @@ def _severity(uptime_pct, avg_lat, avg_loss) -> str:
     return "ok"
 
 
+def _iso_utc(dt) -> str:
+    """ISO string tz-aware (UTC). I datetime letti da Mongo sono naive → li
+    forziamo a UTC per coerenza con series[].ts (evita sfasamento orario UI)."""
+    if dt is None:
+        return None
+    if hasattr(dt, "tzinfo"):
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.isoformat()
+    return str(dt)
+
+
 @router.get("/devices/by-ip/{device_ip}/connectivity-report")
 async def connectivity_report(
     device_ip: str,
@@ -99,14 +111,20 @@ async def connectivity_report(
     period: 1h | 6h | 24h | 7d | 30d
     client_id: scope multi-tenant (evita mix di IP privati fra clienti).
     """
+    # v2026-07-29 MULTI-TENANT: client_id OBBLIGATORIO. IP privati (192.168.x,
+    # 10.x) collidono tra clienti diversi: senza scope si aggregherebbe lo
+    # storico ping di piu' tenant → leak cross-tenant. Il frontend lo passa
+    # sempre.
+    client_id = (client_id or "").strip()
+    if not client_id:
+        raise HTTPException(status_code=400, detail="client_id e' obbligatorio")
+
     if period not in _PERIOD_MAP:
         period = "24h"
     hours, bucket_sec = _PERIOD_MAP[period]
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
 
-    q = {"device_ip": device_ip, "ts": {"$gte": cutoff}}
-    if client_id:
-        q["client_id"] = client_id
+    q = {"device_ip": device_ip, "client_id": client_id, "ts": {"$gte": cutoff}}
 
     # Streaming: statistiche + buckets + eventi di down, senza tenere tutto in RAM.
     total = 0
@@ -152,8 +170,8 @@ async def connectivity_report(
             except Exception:
                 dur = None
             down_windows.append({
-                "start": down_start.isoformat() if hasattr(down_start, "isoformat") else str(down_start),
-                "end": ts.isoformat() if hasattr(ts, "isoformat") else str(ts),
+                "start": _iso_utc(down_start),
+                "end": _iso_utc(ts),
                 "duration_min": round(dur, 1) if dur is not None else None,
             })
             down_start = None
@@ -177,7 +195,7 @@ async def connectivity_report(
     # Finestra di down ancora aperta a fine periodo
     if down_start is not None:
         down_windows.append({
-            "start": down_start.isoformat() if hasattr(down_start, "isoformat") else str(down_start),
+            "start": _iso_utc(down_start),
             "end": None,
             "duration_min": None,
             "ongoing": True,
@@ -280,9 +298,18 @@ async def connectivity_test(
     packets = []
     latencies = []
     reachable_count = 0
+    # Budget globale ~20s per stare sotto il timeout ingress/proxy anche nel
+    # caso peggiore (device che non risponde). Se scade, ritorniamo i pacchetti
+    # gia' raccolti.
+    import time as _time
+    deadline = _time.monotonic() + 20.0
+    sent = 0
     for i in range(count):
+        if _time.monotonic() >= deadline:
+            break
+        sent += 1
         try:
-            reply = await conn.send_command("force_ping_poll", {"ip": device_ip}, timeout=6.0)
+            reply = await conn.send_command("force_ping_poll", {"ip": device_ip}, timeout=3.0)
             reachable = bool(reply.get("reachable") or reply.get("Reachable"))
             lat = reply.get("latency_ms") or reply.get("Latency")
             if lat is None:
@@ -308,11 +335,11 @@ async def connectivity_test(
                         "method": method, "error": err})
         # salva nello storico
         await record_ping(client_id, device_ip, reachable, lat, loss)
-        await asyncio.sleep(0.15)
+        await asyncio.sleep(0.1)
 
-    loss_pct = round((count - reachable_count) / count * 100, 1)
+    loss_pct = round((sent - reachable_count) / sent * 100, 1) if sent else 100.0
     stats = {
-        "sent": count,
+        "sent": sent,
         "received": reachable_count,
         "loss_pct": loss_pct,
         "min_ms": round(min(latencies), 1) if latencies else None,
