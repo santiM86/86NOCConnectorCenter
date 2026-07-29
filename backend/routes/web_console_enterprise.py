@@ -93,9 +93,12 @@ async def get_recent_sessions(limit: int = 10, current_user: dict = Depends(get_
         if key in seen:
             continue
         seen.add(key)
-        # Lookup device name for better UX
+        # Lookup device name for better UX (scoped per tenant)
+        _mdq = {"ip": r.get("device_ip")}
+        if r.get("client_id"):
+            _mdq["client_id"] = r.get("client_id")
         md = await db.managed_devices.find_one(
-            {"ip": r.get("device_ip")}, {"_id": 0, "name": 1, "device_type": 1}
+            _mdq, {"_id": 0, "name": 1, "device_type": 1}
         )
         r["device_name"] = (md or {}).get("name")
         r["device_type"] = (md or {}).get("device_type")
@@ -117,8 +120,11 @@ async def list_favorites(current_user: dict = Depends(get_current_user)):
     ).sort("pinned_at", -1)
     items = []
     async for r in cursor:
+        _mdq = {"ip": r.get("device_ip")}
+        if r.get("client_id"):
+            _mdq["client_id"] = r.get("client_id")
         md = await db.managed_devices.find_one(
-            {"ip": r.get("device_ip")}, {"_id": 0, "name": 1, "device_type": 1, "web_console_port": 1, "client_id": 1}
+            _mdq, {"_id": 0, "name": 1, "device_type": 1, "web_console_port": 1, "client_id": 1}
         )
         if not md:
             continue  # Device rimosso
@@ -175,8 +181,11 @@ async def list_live_sessions(current_user: dict = Depends(get_current_user)):
     ).sort("created_at", -1).limit(50)
     items = []
     async for r in cursor:
+        _mdq = {"ip": r.get("device_ip")}
+        if r.get("client_id"):
+            _mdq["client_id"] = r.get("client_id")
         md = await db.managed_devices.find_one(
-            {"ip": r.get("device_ip")}, {"_id": 0, "name": 1, "device_type": 1}
+            _mdq, {"_id": 0, "name": 1, "device_type": 1}
         )
         r["device_name"] = (md or {}).get("name")
         r["device_type"] = (md or {}).get("device_type")

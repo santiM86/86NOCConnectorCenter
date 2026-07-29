@@ -517,7 +517,7 @@ async def redfish_raw_probe(device_ip: str, path: str = "/redfish/v1/Chassis/1/T
 
 
 @router.get("/redfish/diagnose/{device_ip}")
-async def redfish_diagnose(device_ip: str, current_user: dict = Depends(get_current_user)):
+async def redfish_diagnose(device_ip: str, client_id: str = None, current_user: dict = Depends(get_current_user)):
     """Spiega passo-passo perche' un iLO non e' pollato live. Check:
     1. Device esiste in managed_devices / device_poll_status?
     2. Credenziale iLO nel Vault?
@@ -540,9 +540,16 @@ async def redfish_diagnose(device_ip: str, current_user: dict = Depends(get_curr
     def add(step: str, status: str, detail: str, fix: str = None):
         diagnosis["checks"].append({"step": step, "status": status, "detail": detail, "fix": fix})
 
-    # 1. Device registration
-    md = await db.managed_devices.find_one({"ip": device_ip}, {"_id": 0})
-    ps = await db.device_poll_status.find_one({"device_ip": device_ip}, {"_id": 0})
+    # 1. Device registration (cross-tenant scoped)
+    from .tenant_scope import resolve_device_client_id
+    cid = await resolve_device_client_id(device_ip, client_id)
+    md_q = {"ip": device_ip}
+    ps_q = {"device_ip": device_ip}
+    if cid:
+        md_q["client_id"] = cid
+        ps_q["client_id"] = cid
+    md = await db.managed_devices.find_one(md_q, {"_id": 0})
+    ps = await db.device_poll_status.find_one(ps_q, {"_id": 0})
     if md:
         add("1. Device registration", "ok", f"Device in managed_devices (type={md.get('device_type','?')}, client={md.get('client_id')})")
     elif ps:

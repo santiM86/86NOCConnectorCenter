@@ -1,3 +1,29 @@
+# 2026-07-29 — CHIUSURA AUDIT ISOLAMENTO CROSS-TENANT (Issue P0) — VALIDATO
+
+## Contesto
+Ripresa del task interrotto: messa in sicurezza cross-tenant di tutti gli endpoint by-IP.
+Backend già RUNNING senza errori di sintassi (edit precedenti caricati OK).
+
+## Audit residuo + fix in questa sessione
+- Helper `tenant_scope.resolve_device_client_id` confermato: se un IP appartiene a >1
+  cliente → HTTP 400 (client_id obbligatorio); se a 1 solo cliente → auto-resolve.
+- `redfish_routes.redfish_diagnose`: aggiunto param `client_id` + scope su
+  managed_devices/device_poll_status (prima query solo per `ip`).
+- `web_console_enterprise` (recent-sessions, favorites, live-sessions): i lookup di
+  arricchimento nome device ora includono `client_id` del record (prima solo `ip`).
+- `arp_cache.by-ip` e `firmware_catalog` verificati: già scoped correttamente.
+- `server_intelligence`: i `{"ip": ...}` residui sono dict di OUTPUT, non query (OK).
+
+## Validazione (smoke test curl, preview)
+- connectivity-report CON client_id → 200 ; SENZA → 400 (anti-leak) ✅
+- redfish/diagnose auto-resolve tenant corretto → 200 ✅
+- cmdb/assets, arp-cache/by-ip, web-console/favorites, live-sessions → 200 ✅
+- Frontend (login ARGUS Center) carica correttamente ✅
+- Nota: attualmente 0 IP condivisi tra clienti nel DB (rischio teorico, protezione attiva).
+
+---
+
+
 # 2026-06 — FIX CRITICO: leak cross-tenant nella Scheda Dispositivo (multi-tenant)
 
 ## Bug (segnalato — GRAVE)
