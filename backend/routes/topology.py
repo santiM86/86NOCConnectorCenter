@@ -492,6 +492,20 @@ async def get_switch_ports(device_ip: str, client_id: Optional[str] = None,
             b["down"] += 1
         b["rx_bps"] += int(o.get("rx_bps") or 0)
         b["tx_bps"] += int(o.get("tx_bps") or 0)
+
+    # Loop detection (Fase A): MAC duplicati + broadcast storm dai dati gia' raccolti.
+    from .loop_detection import compute_loop_suspects
+    loop_map = compute_loop_suspects(ports, endpoints)
+    loop_count = 0
+    for o in out:
+        li = loop_map.get(o.get("idx"))
+        if li:
+            o["loop_suspect"] = True
+            o["loop_reasons"] = li["reasons"]
+            o["loop_partners"] = li["partner_labels"]
+            loop_count += 1
+        else:
+            o["loop_suspect"] = False
     return {
         "device_ip": device_ip,
         "device_name": md_local.get("device_name") or md_local.get("name") or "",
@@ -508,6 +522,7 @@ async def get_switch_ports(device_ip: str, client_id: Optional[str] = None,
             "rx_bps": total_rx_bps,
             "tx_bps": total_tx_bps,
             "by_role": by_role,
+            "loop_suspect": loop_count,
         },
         "updated_at": first_updated,
     }

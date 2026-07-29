@@ -15,7 +15,7 @@ import { API } from "@/App";
 import { toast } from "sonner";
 import {
   ArrowsClockwise, Lightning, WifiHigh, Stack, Cloud, Desktop,
-  Prohibit, Plugs, ArrowDown, ArrowUp, Cpu, CaretUp, CaretDown,
+  Prohibit, Plugs, ArrowDown, ArrowUp, Cpu, CaretUp, CaretDown, Warning,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import PortCableView from "@/components/PortCableView";
@@ -100,7 +100,7 @@ function PortTile({ p, onClick, active }) {
     <button
       onClick={onClick}
       data-testid={`switch-port-tile-${p.idx}`}
-      title={`Porta ${p.idx} · ${p.name} · ${p.oper_status}/${p.admin_status}${p.neighbor?.remote_sys_name ? "\n→ " + p.neighbor.remote_sys_name : ""}`}
+      title={`Porta ${p.idx} · ${p.name} · ${p.oper_status}/${p.admin_status}${p.loop_suspect ? "\n⚠ POSSIBILE LOOP" : ""}${p.neighbor?.remote_sys_name ? "\n→ " + p.neighbor.remote_sys_name : ""}`}
       className={`relative flex flex-col items-center group`}
     >
       {/* Numero porta sopra (chip nero) - label fisica invece di ifIndex SNMP */}
@@ -108,8 +108,17 @@ function PortTile({ p, onClick, active }) {
         {portLabel(p.name, p.idx)}
       </span>
       {/* Tile */}
-      <div className={`flex items-center justify-center w-11 h-11 sm:w-12 sm:h-12 rounded-md border transition-all ${bg} ${active ? "ring-2 ring-cyan-300 scale-110" : "group-hover:scale-105"}`}>
+      <div className={`relative flex items-center justify-center w-11 h-11 sm:w-12 sm:h-12 rounded-md border transition-all ${bg} ${p.loop_suspect ? "ring-2 ring-rose-400 animate-pulse" : ""} ${active ? "ring-2 ring-cyan-300 scale-110" : "group-hover:scale-105"}`}>
         <PortIcon p={p} />
+        {p.loop_suspect && (
+          <span
+            className="absolute -top-1.5 -right-1.5 bg-rose-500 text-white rounded-full p-0.5 shadow-md shadow-rose-500/40"
+            data-testid={`switch-port-loop-badge-${p.idx}`}
+            title="Possibile loop di rete"
+          >
+            <Warning size={11} weight="fill" />
+          </span>
+        )}
       </div>
     </button>
   );
@@ -174,6 +183,24 @@ function PortDetailPanel({ p, onClose, onOpenCable, deviceIp, clientId }) {
         )}
         {p.alias && <span className="text-[10px] text-[var(--text-muted)] italic">{p.alias}</span>}
       </div>
+
+      {/* Avviso LOOP */}
+      {p.loop_suspect && (
+        <div className="rounded-md border border-rose-500/50 bg-rose-500/10 p-2.5 space-y-1" data-testid={`switch-port-loop-warning-${p.idx}`}>
+          <div className="flex items-center gap-1.5 text-rose-300 font-bold text-[12px]">
+            <Warning size={14} weight="fill" /> Possibile loop di rete
+          </div>
+          <ul className="list-disc pl-5 text-[10px] text-rose-100/90 space-y-0.5">
+            {(p.loop_reasons || []).map((r, i) => <li key={i}>{r}</li>)}
+          </ul>
+          {p.loop_partners && p.loop_partners.length > 0 && (
+            <div className="text-[10px] text-rose-200/80">
+              MAC condivisi con le porte: <span className="font-mono">{p.loop_partners.join(", ")}</span>
+            </div>
+          )}
+          <div className="text-[9px] text-[var(--text-muted)]">Verifica il cablaggio e lo stato Spanning-Tree su queste porte.</div>
+        </div>
+      )}
 
       {/* Traffico live */}
       {isUp && (
@@ -357,6 +384,7 @@ export default function SwitchPortsPage() {
       if (filter === "admin_down") return p.admin === 2;
       if (filter === "with_neighbor") return !!p.neighbor;
       if (filter === "poe") return p.poe_status === 3;
+      if (filter === "loop") return !!p.loop_suspect;
       return true;
     });
   }, [data, filter, roleFilter]);
@@ -469,6 +497,7 @@ export default function SwitchPortsPage() {
             <span className="text-neutral-400">{t.admin_down} admin-down</span>
             {(t.poe_active > 0) && <span className="text-amber-300 flex items-center gap-0.5"><Lightning size={10} weight="fill" /> {t.poe_active} PoE</span>}
             {(t.with_neighbor > 0) && <span className="text-cyan-300">{t.with_neighbor} con neighbor</span>}
+            {(t.loop_suspect > 0) && <span className="text-rose-300 font-semibold flex items-center gap-0.5"><Warning size={10} weight="fill" /> {t.loop_suspect} loop</span>}
           </p>
         </div>
         <Button size="sm" variant="outline" onClick={reload} className="h-7 gap-1 text-[11px]" data-testid="switch-ports-refresh"><ArrowsClockwise size={12} /> Refresh</Button>
@@ -557,11 +586,13 @@ export default function SwitchPortsPage() {
           { id: "admin_down", label: `Admin-down ${t.admin_down || 0}`, color: "neutral" },
           { id: "poe", label: `PoE ${t.poe_active || 0}`, color: "amber" },
           { id: "with_neighbor", label: `LLDP ${t.with_neighbor || 0}`, color: "cyan" },
+          ...(t.loop_suspect > 0 ? [{ id: "loop", label: `⚠ Loop ${t.loop_suspect}`, color: "rose" }] : []),
         ].map(f => {
           const active = filter === f.id;
           const cls = f.color === "emerald" ? (active ? "bg-emerald-500/20 border-emerald-400 text-emerald-300" : "border-emerald-500/30 text-emerald-300/70")
             : f.color === "red" ? (active ? "bg-red-500/20 border-red-400 text-red-300" : "border-red-500/30 text-red-300/70")
             : f.color === "amber" ? (active ? "bg-amber-500/20 border-amber-400 text-amber-300" : "border-amber-500/30 text-amber-300/70")
+            : f.color === "rose" ? (active ? "bg-rose-500/25 border-rose-400 text-rose-200" : "border-rose-500/40 text-rose-300/80 animate-pulse")
             : f.color === "neutral" ? (active ? "bg-neutral-500/30 border-neutral-400 text-neutral-200" : "border-neutral-500/30 text-[var(--text-muted)]")
             : (active ? "bg-cyan-500/20 border-cyan-400 text-cyan-300" : "border-cyan-500/30 text-cyan-300/70");
           return (
@@ -682,6 +713,11 @@ export default function SwitchPortsPage() {
                         <span className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">UP</span>
                       ) : (
                         <span className="text-[9px] px-1.5 py-0.5 rounded bg-red-500/20 text-red-300 border border-red-500/30">DOWN</span>
+                      )}
+                      {p.loop_suspect && (
+                        <span className="ml-1 text-[9px] px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-300 border border-rose-500/40 inline-flex items-center gap-0.5" title={(p.loop_reasons || []).join(" · ")} data-testid={`switch-port-row-loop-${p.idx}`}>
+                          <Warning size={9} weight="fill" /> LOOP
+                        </span>
                       )}
                     </td>
                     <td className="font-mono text-[10px]">{fmtSpeed(p.speed_mbps)}</td>

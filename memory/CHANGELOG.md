@@ -1,3 +1,41 @@
+# 2026-07-29 — FEATURE: Rilevamento Loop di Rete su Switch (Fase A, solo backend)
+
+## Richiesta utente
+"Siete in grado di rilevare se in uno switch c'è collegato un cavo in se stesso / loop?"
+Scelta: opzione A — MAC-flapping + storm detection, backend-only, nessun redeploy agent.
+
+## Implementazione
+- Nuovo modulo `backend/routes/loop_detection.py`:
+  - `compute_loop_suspects(ports, endpoints)` (pura): rileva
+    (1) stesso MAC appreso su ≥2 porte (soglia ≥3 MAC condivisi = loop), 
+    (2) broadcast storm = porta UP con pps simmetrico ≥15000.
+    Ritorna per-porta reasons/partners/dup_mac_count/storm.
+  - `evaluate_and_alert(db, client_id, local_ip, ports)`: all'ingest crea/aggiorna
+    un alert (severity=high, source_type=network, id=`loop-{cid}-{ip}`) e lo
+    RISOLVE automaticamente quando il loop scompare.
+- `topology.get_switch_ports`: ora arricchisce ogni porta con
+  `loop_suspect`/`loop_reasons`/`loop_partners` e `totals.loop_suspect`.
+- `connector.connector_switch_ports_report` (ingest `/sp`): chiama
+  `evaluate_and_alert` per ogni switch → alert generati server-side ad ogni poll,
+  indipendenti dalla page-view. Wrappato in try/except (mai rompe l'ingest).
+- Frontend `SwitchPortsPage.js`: badge rosso ⚠ sui tile sospetti (ring pulsante),
+  chip "⚠ Loop N" nell'header + filtro dedicato, box di avviso nel pannello
+  dettaglio (motivi + porte partner), chip "LOOP" nella tabella.
+
+## Validazione (curl + DB sintetico + screenshot)
+- Porte 3&7 (5 MAC condivisi) → loop_suspect con partner reciproci ✅
+- Porta 5 (30k/30k pps) → storm ✅ ; porta 1 normale → nessun flag ✅
+- totals.loop_suspect=3 ✅ ; alert creato (active) e poi auto-resolved al clear ✅
+- UI: badge/chip/filtro/tabella renderizzati correttamente ✅
+- Dati di test rimossi dal DB.
+
+## Backlog (Fase B, se richiesta dall'utente)
+- STP Port State (dot1dStpPortState/MSTP) via SNMP-walk nell'agent Go per rilevare
+  anche i loop gia' bloccati dallo spanning-tree. Richiede update + redeploy agent.
+
+---
+
+
 # 2026-07-29 — CHIUSURA AUDIT ISOLAMENTO CROSS-TENANT (Issue P0) — VALIDATO
 
 ## Contesto
