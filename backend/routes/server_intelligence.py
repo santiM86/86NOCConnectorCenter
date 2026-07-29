@@ -442,7 +442,85 @@ async def submit_hyperv_snapshot(payload: dict, request: Request):
         upsert=True,
     )
     logger.info(f"hyperv_snapshot from agent={doc.get('agent_id','?')[:8]} host={doc.get('hostname')} vms={len(doc.get('vms', []))}")
+
+    # v2026-07-29: AUTO-AGGANCIO Hyper-V. L'host e' la fonte autorevole: se
+    # riporta una VM il cui nome coincide con hostname/nome di un device
+    # gestito, marchiamo automaticamente quel device come VM Hyper-V (senza
+    # richiedere all'admin di impostare manualmente il "Tipo Macchina").
+    try:
+        attached = await _auto_attach_hyperv_vms(doc.get("client_id"), doc.get("vms") or [])
+        if attached:
+            logger.info(f"hyperv auto-attach: {attached} device marcati come VM Hyper-V (client={doc.get('client_id')})")
+    except Exception as _e:
+        logger.warning(f"hyperv auto-attach fallito: {_e}")
+
     return {"ok": True}
+
+
+def _hv_short(s) -> str:
+    return str(s or "").strip().lower().split(".")[0]
+
+
+async def _auto_attach_hyperv_vms(client_id: str, vms: list) -> int:
+    """Marca automaticamente come VM Hyper-V i managed_devices il cui
+    hostname/nome coincide con una VM riportata dall'host Hyper-V.
+
+    Regole di sicurezza:
+      - NON tocca i device con `virtualization_user_locked=True` (scelta manuale
+        dell'admin, es. "physical", ha sempre la precedenza).
+      - Auto-imposta `virtualization="hyperv"` + `hyperv_vm_name` (nome VM reale)
+        e marca `virtualization_auto_matched=True` per trasparenza/audit.
+      - Idempotente: se il device e' gia' hyperv con lo stesso vm_name, skip.
+    """
+    if not client_id or not vms:
+        return 0
+
+    # short_name -> nome VM originale (l'host e' autorevole sul nome esatto)
+    vm_by_short: dict = {}
+    for vm in vms:
+        nm = (vm.get("name") or "").strip()
+        if not nm:
+            continue
+        vm_by_short.setdefault(_hv_short(nm), nm)
+    if not vm_by_short:
+        return 0
+
+    from datetime import datetime as _dt, timezone as _tz
+    now_iso = _dt.now(_tz.utc).isoformat()
+    attached = 0
+
+    cursor = db.managed_devices.find(
+        {"client_id": client_id, "virtualization_user_locked": {"$ne": True}},
+        {"_id": 0, "id": 1, "hostname": 1, "name": 1, "device_name": 1,
+         "hyperv_vm_name": 1, "virtualization": 1},
+    )
+    async for md in cursor:
+        matched_vm = None
+        for cand in (md.get("hyperv_vm_name"), md.get("hostname"),
+                     md.get("name"), md.get("device_name")):
+            k = _hv_short(cand)
+            if k and k in vm_by_short:
+                matched_vm = vm_by_short[k]
+                break
+        if not matched_vm:
+            continue
+        # Skip se gia' allineato
+        if (md.get("virtualization") == "hyperv"
+                and md.get("hyperv_vm_name") == matched_vm):
+            continue
+        await db.managed_devices.update_one(
+            {"id": md["id"]},
+            {"$set": {
+                "virtualization": "hyperv",
+                "hyperv_vm_name": matched_vm,
+                "virtualization_auto_matched": True,
+                "virtualization_set_by": "auto:hyperv-host",
+                "virtualization_set_at": now_iso,
+            }},
+        )
+        attached += 1
+
+    return attached
 
 
 # ============================================================================

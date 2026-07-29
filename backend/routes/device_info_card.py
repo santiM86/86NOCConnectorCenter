@@ -961,6 +961,11 @@ async def set_device_virtualization(
         "virtualization_set_by": user_email,
         "virtualization_set_at": now_iso,
         "ip": device_ip,  # normalizza il campo chiave (docs legacy con solo ip_address)
+        # Lock manuale: se l'admin imposta un valore (anche "physical"),
+        # l'auto-aggancio Hyper-V non deve piu' sovrascriverlo. Se invece
+        # azzera (""), sblocchiamo per consentire il rilevamento automatico.
+        "virtualization_user_locked": bool(virt),
+        "virtualization_auto_matched": False,
     }
 
     if md:

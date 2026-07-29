@@ -422,6 +422,15 @@ export function DeviceEditModal({ clientId, device, open, onClose, onSaved }) {
             <label className="flex items-center gap-1.5 text-[11px] font-semibold text-cyan-300">
               <Cpu size={13} weight="bold" />
               Tipo macchina
+              {device?.virtualization_auto_matched && (
+                <span
+                  className="ml-auto text-[9px] font-semibold px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30"
+                  title="Rilevato automaticamente: l'host Hyper-V riporta questa VM. Cambia il valore per bloccare la scelta manuale."
+                  data-testid="virtualization-auto-badge"
+                >
+                  ⚡ auto-rilevato
+                </span>
+              )}
             </label>
             <select
               value={virtualization}

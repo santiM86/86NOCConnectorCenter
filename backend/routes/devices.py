@@ -412,6 +412,7 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
         d["virtualization"] = md.get("virtualization") or d.get("virtualization") or ""
         d["hyperv_vm_name"] = md.get("hyperv_vm_name") or d.get("hyperv_vm_name") or ""
         d["hyperv_host_hint"] = md.get("hyperv_host_hint") or d.get("hyperv_host_hint") or ""
+        d["virtualization_auto_matched"] = bool(md.get("virtualization_auto_matched"))
         # v3.8.22 LIVE-SEEN: se lo Scanner ha visto questo IP nelle ultime 15min,
         # forza "online" anche se Master/manual lo davano per offline.
         # v4.16.x EXTEND: anche se il MAC e' nella MAC table SNMP recente di
@@ -585,6 +586,7 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
                 "virtualization": md.get("virtualization") or "",
                 "hyperv_vm_name": md.get("hyperv_vm_name") or "",
                 "hyperv_host_hint": md.get("hyperv_host_hint") or "",
+                "virtualization_auto_matched": bool(md.get("virtualization_auto_matched")),
                 # v2026-07-23 FIX: created_at MANCANTE qui faceva fallire la
                 # validazione DeviceResponse (campo obbligatorio) → il device
                 # cadeva nel fallback `except` che NON copiava is_vital → i
@@ -787,6 +789,7 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
             "virtualization": md.get("virtualization") or "",
             "hyperv_vm_name": md.get("hyperv_vm_name") or "",
             "hyperv_host_hint": md.get("hyperv_host_hint") or "",
+            "virtualization_auto_matched": bool(md.get("virtualization_auto_matched")),
             "created_at": md.get("created_at") or md.get("auto_added_at") or now_iso,
         })
 
