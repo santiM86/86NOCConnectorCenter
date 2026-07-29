@@ -715,29 +715,47 @@ export default function DeviceInfoCard({ deviceIp, clientId = null, onClose = nu
         </div>
       )}
 
-      {/* Warning B: SNMP configurato ma nessun dato dettagliato raccolto.
-          v2026-06-23: skip questo banner se il device è dichiarato unreachable
-          (`st.reachable === false`). Prima il messaggio "il connector sta
-          comunicando via SNMP" era ingannevole su device offline: il connector
-          NON sta comunicando, sta solo "tentando". Il banner deve mostrarsi
-          solo quando SNMP rispondeva ma le metriche dettagliate mancano (cosa
-          tipica di profilo SNMP errato o community con vista ristretta). */}
-      {isSnmpMonitored && st.reachable !== false && !hasEntityMib && !hasVendorMetrics && hw.cpu_usage == null && hw.memory_usage == null && hw.temperature == null && !fw.current && (
+      {/* Warning B: SNMP eleggibile ma nessun dato dettagliato raccolto.
+          v2026-07-29: distinguo DUE casi molto diversi, prima confusi in un
+          unico messaggio ingannevole ("il connector sta comunicando via SNMP"):
+            1) hasSysDescr === false → l'SNMP NON risponde affatto (nessun
+               sysDescr letto). Causa quasi sempre: community errata
+               (case-sensitive!) o agent che non copre la subnet. NON dire che
+               "sta comunicando", perche' non lo sta facendo.
+            2) hasSysDescr === true → l'SNMP risponde (sysDescr OK) ma mancano
+               le metriche vendor. Causa: profilo errato o vista MIB ristretta. */}
+      {isSnmpMonitored && st.reachable !== false && !hasEntityMib && !hasVendorMetrics && hw.cpu_usage == null && hw.memory_usage == null && hw.temperature == null && !fw.current && !hasSysDescr && (
+        <div className="rounded-lg border border-red-500/40 bg-red-500/10 p-3 flex items-start gap-3" data-testid="warning-snmp-no-response">
+          <Warning size={18} className="text-red-400 flex-shrink-0 mt-0.5" weight="fill" />
+          <div className="flex-1">
+            <h4 className="text-sm font-semibold text-red-200">SNMP non risponde (nessun dato letto)</h4>
+            <p className="text-xs text-red-100/80 mt-0.5">
+              Il device risponde al <strong>ping</strong>, ma alle interrogazioni <strong>SNMP</strong> ({net.snmp_version || "v2c"} su porta {net.snmp_port || 161}) <strong>non arriva alcuna risposta</strong> (nemmeno <code className="font-mono bg-black/30 px-1 rounded">sysDescr</code>). Quindi non è un problema di profilo: è a monte. Cause tipiche, in ordine:
+            </p>
+            <ul className="text-xs text-red-100/80 mt-1 ml-4 list-disc space-y-0.5">
+              <li><strong>Community diversa</strong>: la community impostata qui su ARGUS deve essere <strong>identica</strong> (case-sensitive!) a quella sul device. Apri <em>Modifica dispositivo → SNMP → Community</em> e verifica che sia esattamente quella configurata sullo switch (es. <code className="font-mono bg-black/30 px-1 rounded">ARGUS</code>, non <code className="font-mono bg-black/30 px-1 rounded">public</code>).</li>
+              <li><strong>Nessun agent copre questa subnet</strong> (o è offline): l'SNMP viene fatto dall'agent nella stessa rete del device. Usa il pulsante <strong>Re-poll SNMP</strong> qui sopra: se fallisce, mostra la diagnosi automatica (agent online/subnet).</li>
+              <li><strong>UDP/161 bloccato</strong> tra agent e device, oppure ACL/vista SNMP sul device che escludono l'IP dell'agent.</li>
+              <li>Verifica dal connector: <code className="font-mono bg-black/30 px-1 rounded">snmpwalk -v2c -c &lt;community&gt; {net.ip || "IP"} .1.3.6.1.2.1.1</code> — se va in timeout, il problema è community/rete, non ARGUS.</li>
+            </ul>
+          </div>
+        </div>
+      )}
+      {isSnmpMonitored && st.reachable !== false && !hasEntityMib && !hasVendorMetrics && hw.cpu_usage == null && hw.memory_usage == null && hw.temperature == null && !fw.current && hasSysDescr && (
         <div className="rounded-lg border border-sky-500/40 bg-sky-500/10 p-3 flex items-start gap-3" data-testid="warning-snmp-no-data">
           <Info size={18} className="text-sky-400 flex-shrink-0 mt-0.5" weight="duotone" />
           <div className="flex-1">
-            <h4 className="text-sm font-semibold text-sky-200">SNMP configurato ma dati limitati</h4>
+            <h4 className="text-sm font-semibold text-sky-200">SNMP risponde, ma metriche dettagliate limitate</h4>
             <p className="text-xs text-sky-100/80 mt-0.5">
-              Il connector sta comunicando via SNMP con questo dispositivo ({net.snmp_version || "v2c"} su porta {net.snmp_port || 161}),
-              ma <strong>non ha ancora raccolto metriche dettagliate</strong> (firmware, HDD, CPU, RAM, temperatura).
+              L'SNMP risponde ({net.snmp_version || "v2c"} su porta {net.snmp_port || 161}, <code className="font-mono bg-black/30 px-1 rounded">sysDescr</code> letto correttamente),
+              ma <strong>non sono ancora arrivate le metriche vendor</strong> (firmware, HDD, CPU, RAM, temperatura).
             </p>
             <p className="text-xs text-sky-100/70 mt-1">
               Cosa verificare (in ordine):
             </p>
             <ul className="text-xs text-sky-100/70 mt-0.5 ml-4 list-disc space-y-0.5">
-              <li>La <strong>community SNMP</strong> del device risponde in read-only con vista completa — prova da un terminale sul connector: <code className="font-mono bg-black/30 px-1 rounded">snmpwalk -v2c -c &lt;community&gt; {net.ip || "IP"} .1.3.6.1.2.1.1</code></li>
               <li>Il <strong>profilo vendor</strong> è associato al dispositivo: clicca <em>Configura profilo</em> nella tabella Dispositivi e scegli il profilo corretto (Synology DSM, HPE Comware, APC UPS, generic UPS, ecc.)</li>
-              <li>Sul <strong>device vendor</strong> l'SNMP è abilitato ed espone le MIB avanzate (es. Synology: Pannello di Controllo → Terminal &amp; SNMP → Abilita SNMPv2c)</li>
+              <li>La <strong>vista MIB</strong> della community deve includere anche il ramo enterprise (es. HPE/H3C <code className="font-mono bg-black/30 px-1 rounded">1.3.6.1.4.1.25506</code>): con una vista ristretta il sysDescr passa ma le OID di CPU/temp no.</li>
               <li>Attendi 1-2 cicli di poll (~60-120s) dopo aver associato il profilo — il ciclo vendor-specific parte solo se il profilo matcha.</li>
             </ul>
           </div>
