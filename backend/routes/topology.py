@@ -1,5 +1,6 @@
 """Network topology inference engine and routes."""
 from fastapi import APIRouter, Depends, HTTPException
+from typing import Optional
 import re
 import ipaddress
 from collections import defaultdict
@@ -36,7 +37,8 @@ def _port_number_from_name(name: str) -> str:
 
 
 @router.get("/devices/{device_ip}/switch-ports")
-async def get_switch_ports(device_ip: str, current_user: dict = Depends(get_current_user)):
+async def get_switch_ports(device_ip: str, client_id: Optional[str] = None,
+                           current_user: dict = Depends(get_current_user)):
     """Ritorna le porte dello switch con status arricchito da LLDP neighbor + MAC table.
 
     Matching in cascata (priorita' decrescente):
@@ -46,16 +48,39 @@ async def get_switch_ports(device_ip: str, current_user: dict = Depends(get_curr
     """
     from .oui_lookup import lookup_oui, classify_device
 
-    ports = await db.switch_ports.find({"local_ip": device_ip}, {"_id": 0}).sort("idx", 1).to_list(2000)
-    neighbors = await db.lldp_neighbors.find({"local_ip": device_ip}, {"_id": 0}).to_list(500)
+    # v2026-07-29 MULTI-TENANT ISOLATION: gli IP privati (10.x/192.168.x)
+    # collidono tra clienti diversi. Senza scope per client_id si mescolavano
+    # porte/LLDP/endpoint/MAC di tenant differenti (data-leak cross-tenant).
+    # client_id viene passato dal frontend; se assente lo deduciamo dal
+    # proprietario dello switch in managed_devices. Se l'IP appartiene a piu'
+    # clienti, e' OBBLIGATORIO esplicitarlo.
+    owner_ids = [c for c in await db.managed_devices.distinct("client_id", {"ip": device_ip}) if c]
+    if not client_id:
+        if len(owner_ids) == 1:
+            client_id = owner_ids[0]
+        elif len(owner_ids) > 1:
+            raise HTTPException(
+                status_code=400,
+                detail=f"IP {device_ip} presente su {len(owner_ids)} clienti diversi: client_id obbligatorio.",
+            )
+    # Nessuno scope risolvibile → ritorna vuoto (mai dati di altri tenant).
+    if not client_id:
+        return {
+            "device_ip": device_ip, "device_name": "", "device_type": "", "client_id": "",
+            "ports": [], "totals": {"total": 0, "up": 0, "down": 0, "admin_down": 0,
+                                    "with_neighbor": 0, "poe_active": 0, "rx_bps": 0,
+                                    "tx_bps": 0, "by_role": {}},
+            "updated_at": None,
+        }
+
+    ports = await db.switch_ports.find({"local_ip": device_ip, "client_id": client_id}, {"_id": 0}).sort("idx", 1).to_list(2000)
+    neighbors = await db.lldp_neighbors.find({"local_ip": device_ip, "client_id": client_id}, {"_id": 0}).to_list(500)
 
     # MAC-based enrichment: prendi endpoint FDB raccolti e i managed devices
-    endpoints = await db.discovered_endpoints.find({"switch_ip": device_ip}, {"_id": 0}).to_list(5000)
+    endpoints = await db.discovered_endpoints.find({"switch_ip": device_ip, "client_id": client_id}, {"_id": 0}).to_list(5000)
 
-    # Managed devices: costruisci MAC -> device map
-    # NB: discovered_endpoints.ip e' gia' risolto lato connector per i MAC managed,
-    # ma teniamo anche un fallback via device_poll_status/managed_devices
-    md_all = await db.managed_devices.find({}, {"_id": 0, "ip": 1, "device_type": 1, "device_name": 1, "vendor": 1}).to_list(2000)
+    # Managed devices SOLO del client corrente: MAC -> device map (no cross-tenant)
+    md_all = await db.managed_devices.find({"client_id": client_id}, {"_id": 0, "ip": 1, "device_type": 1, "device_name": 1, "vendor": 1, "client_id": 1}).to_list(2000)
     md_by_ip = {d["ip"]: d for d in md_all if d.get("ip")}
 
     # v3.6.15: MAC Cross-Correlation per trunk switch-to-switch.
@@ -65,11 +90,8 @@ async def get_switch_ports(device_ip: str, current_user: dict = Depends(get_curr
     local_ifmacs: set[str] = set()
     remote_port_cache: dict[str, str] = {}  # remote_ip -> port remota computata
     try:
-        # v3.6.17 PERF: scope la query a un singolo client_id se conosciuto, e prendi
-        # solo l'ultimo doc (era to_list(20)). Su scale evita full scan di network_discovery.
-        local_md = next((d for d in md_all if d.get("ip") == device_ip), None)
-        scope_client_id = (local_md or {}).get("client_id") if local_md else None
-        nd_query = {"client_id": scope_client_id} if scope_client_id else {}
+        # client_id gia' risolto e scoped a livello di endpoint.
+        nd_query = {"client_id": client_id}
         nd_doc = await db.network_discovery.find_one(
             nd_query, {"_id": 0, "device_macs": 1, "client_id": 1},
             sort=[("updated_at", -1)],
@@ -97,7 +119,7 @@ async def get_switch_ports(device_ip: str, current_user: dict = Depends(get_curr
             from collections import Counter
             for rip in candidate_remote_ips:
                 items = await db.discovered_endpoints.find(
-                    {"switch_ip": rip, "mac": {"$in": list(local_ifmacs)}},
+                    {"switch_ip": rip, "client_id": client_id, "mac": {"$in": list(local_ifmacs)}},
                     {"_id": 0, "port": 1, "mac": 1},
                 ).to_list(100)
                 if not items:
@@ -454,7 +476,7 @@ async def get_switch_ports(device_ip: str, current_user: dict = Depends(get_curr
     # v3.6.16: include client_id + device_name per features come Manual MAC Binding nella UI
     # v3.8.34: include device_type per adattare titolo/messaggi UI (firewall/nas/switch)
     md_local = await db.managed_devices.find_one(
-        {"ip": device_ip},
+        {"ip": device_ip, "client_id": client_id},
         {"_id": 0, "client_id": 1, "device_name": 1, "name": 1, "device_type": 1}
     ) or {}
     # v3.8.35: aggregato per ruolo (WAN/LAN/DMZ/MGMT/other) per la sezione
@@ -470,6 +492,20 @@ async def get_switch_ports(device_ip: str, current_user: dict = Depends(get_curr
             b["down"] += 1
         b["rx_bps"] += int(o.get("rx_bps") or 0)
         b["tx_bps"] += int(o.get("tx_bps") or 0)
+
+    # Loop detection (Fase A): MAC duplicati + broadcast storm dai dati gia' raccolti.
+    from .loop_detection import compute_loop_suspects
+    loop_map = compute_loop_suspects(ports, endpoints)
+    loop_count = 0
+    for o in out:
+        li = loop_map.get(o.get("idx"))
+        if li:
+            o["loop_suspect"] = True
+            o["loop_reasons"] = li["reasons"]
+            o["loop_partners"] = li["partner_labels"]
+            loop_count += 1
+        else:
+            o["loop_suspect"] = False
     return {
         "device_ip": device_ip,
         "device_name": md_local.get("device_name") or md_local.get("name") or "",
@@ -486,9 +522,204 @@ async def get_switch_ports(device_ip: str, current_user: dict = Depends(get_curr
             "rx_bps": total_rx_bps,
             "tx_bps": total_tx_bps,
             "by_role": by_role,
+            "loop_suspect": loop_count,
         },
         "updated_at": first_updated,
     }
+
+
+@router.get("/devices/{device_ip}/switch-ports/diagnose")
+async def diagnose_switch_ports(device_ip: str, client_id: Optional[str] = None,
+                                current_user: dict = Depends(get_current_user)):
+    """Spiega passo-passo perche' non arrivano le porte di uno switch.
+
+    Check: device registrato? tipo switch? community SNMP impostata? snmp_eligible?
+    dati porte/LLDP/FDB presenti (anche sotto altro client_id)? connector online?
+    """
+    from .tenant_scope import resolve_device_client_id
+    cid = await resolve_device_client_id(device_ip, client_id)
+
+    checks: list = []
+    recommendation = None
+
+    def add(step, status, detail, fix=None, action=None):
+        checks.append({"step": step, "status": status, "detail": detail, "fix": fix, "action": action})
+
+    # 1. Device registrato per questo cliente?
+    md = None
+    if cid:
+        md = await db.managed_devices.find_one(
+            {"ip": device_ip, "client_id": cid},
+            {"_id": 0, "device_type": 1, "community": 1, "snmp_community": 1,
+             "snmp_version": 1, "snmp_port": 1, "monitor_type": 1, "name": 1,
+             "device_name": 1, "disabled": 1, "enabled": 1},
+        )
+    if not md:
+        # Esiste sotto un ALTRO client_id? (possibile registrazione sul cliente sbagliato)
+        other = [c for c in await db.managed_devices.distinct("client_id", {"ip": device_ip}) if c and c != cid]
+        if other:
+            add("1. Registrazione device", "error",
+                f"Il device {device_ip} NON e' registrato sul cliente selezionato ma esiste su {len(other)} altro/i cliente/i.",
+                fix="Apri la pagina Porte Switch dal cliente corretto, oppure registra il device su questo cliente.")
+        else:
+            add("1. Registrazione device", "error",
+                f"Il device {device_ip} non e' in managed_devices per questo cliente.",
+                fix="Aggiungi il device in Gestione Clienti → Devices con device_type=switch.")
+        return {"device_ip": device_ip, "client_id": cid or "", "checks": checks,
+                "recommendation": "Registra/seleziona il device sul cliente corretto."}
+
+    dev_name = md.get("device_name") or md.get("name") or device_ip
+    add("1. Registrazione device", "ok", f"Device presente: {dev_name} (client={cid})")
+
+    # 2. Abilitato?
+    if md.get("disabled") is True or md.get("enabled") is False:
+        add("2. Stato abilitazione", "error", "Il device e' DISABILITATO: l'agent non lo interroga.",
+            fix="Riabilita il device nelle impostazioni.")
+        recommendation = "Riabilita il device."
+    else:
+        add("2. Stato abilitazione", "ok", "Device abilitato al polling.")
+
+    # 3. Tipo device = switch/router/firewall? (gating raccolta porte)
+    dev_type = (md.get("device_type") or "").lower()
+    port_capable = dev_type in ("switch", "router", "firewall", "gateway", "nas")
+    if port_capable:
+        add("3. Tipo device", "ok", f"device_type='{dev_type}': l'agent raccoglie ifTable/LLDP/PoE.")
+    else:
+        add("3. Tipo device", "error",
+            f"device_type='{dev_type or '(vuoto)'}': NON e' classificato come switch. "
+            f"L'agent fa solo il poll base e NON raccoglie le porte. "
+            f"E' la causa piu' probabile quando 'su un altro switch identico funziona'.",
+            fix="Imposta device_type='switch' nelle impostazioni del device (come sull'altro cliente che funziona).",
+            action="set_device_type_switch")
+        recommendation = recommendation or f"Imposta device_type='switch' su {device_ip}."
+
+    # 4. Community SNMP + eligibility
+    community = md.get("community") or md.get("snmp_community")
+    monitor_type = (md.get("monitor_type") or "").lower()
+    snmp_eligible = bool(community) or monitor_type == "snmp" or dev_type in (
+        "switch", "firewall", "router", "ap", "printer", "ups", "network")
+    if community:
+        add("4. Community SNMP", "ok",
+            f"Community impostata (v={md.get('snmp_version') or 'v2c'}, porta={md.get('snmp_port') or 161}). "
+            f"Ricorda: e' CASE-SENSITIVE — usa il Test SNMP per validarla.")
+    elif snmp_eligible:
+        add("4. Community SNMP", "warn",
+            "Nessuna community impostata sul device: l'agent usera' 'public'. Se lo switch "
+            "usa una community custom, il poll fallira'.",
+            fix="Imposta la community SNMP esatta nelle impostazioni del device.")
+    else:
+        add("4. Community SNMP", "error",
+            "Device non eleggibile per SNMP (no community, no monitor_type=snmp, tipo non di rete).",
+            fix="Imposta la community SNMP e device_type=switch.")
+
+    # 5. Dati porte gia' presenti? (anche sotto altro client_id = mismatch)
+    n_ports_here = await db.switch_ports.count_documents({"local_ip": device_ip, "client_id": cid})
+    other_cids = [c for c in await db.switch_ports.distinct("client_id", {"local_ip": device_ip}) if c and c != cid]
+    if n_ports_here > 0:
+        add("5. Dati porte", "ok", f"{n_ports_here} porte gia' memorizzate per questo cliente.")
+    elif other_cids:
+        add("5. Dati porte", "error",
+            f"Porte presenti ma sotto un ALTRO client_id ({len(other_cids)}): il connector che le "
+            f"raccoglie e' autenticato come cliente diverso da quello del device.",
+            fix="Verifica che il connector/agent appartenga allo stesso cliente del device.")
+        recommendation = recommendation or "Allinea il client_id del connector a quello del device."
+    else:
+        add("5. Dati porte", "warn", "Nessuna porta memorizzata (ne' per questo ne' per altri clienti): "
+            "l'agent non ha ancora inviato la ifTable.")
+
+    # 6. LLDP + FDB
+    n_lldp = await db.lldp_neighbors.count_documents({"local_ip": device_ip, "client_id": cid})
+    n_fdb = await db.discovered_endpoints.count_documents({"switch_ip": device_ip, "client_id": cid})
+    add("6. LLDP / MAC table", "ok" if (n_lldp or n_fdb) else "warn",
+        f"LLDP neighbor={n_lldp}, endpoint FDB={n_fdb}.")
+
+    # 7. Ultimo poll SNMP
+    ps = await db.device_poll_status.find_one(
+        {"device_ip": device_ip, "client_id": cid},
+        {"_id": 0, "last_poll_at": 1, "last_success_at": 1, "device_class": 1, "profile_key": 1, "reachable": 1})
+    if ps:
+        add("7. Ultimo poll", "ok" if ps.get("reachable") else "warn",
+            f"class={ps.get('device_class') or '?'}, profile={ps.get('profile_key') or '?'}, "
+            f"reachable={ps.get('reachable')}, ultimo successo={ps.get('last_success_at') or ps.get('last_poll_at') or 'mai'}.")
+    else:
+        add("7. Ultimo poll", "warn", "Nessuno stato di poll registrato per questo device.")
+
+    # 8. Connector online?
+    conns = await db.connector_status.find(
+        {"client_id": cid}, {"_id": 0, "hostname": 1, "online": 1, "last_heartbeat_at": 1}).to_list(50)
+    online = [c for c in conns if c.get("online")]
+    if online:
+        add("8. Connector", "ok", f"{len(online)}/{len(conns)} connector online: " +
+            ", ".join(c.get("hostname", "?") for c in online[:5]))
+    elif conns:
+        add("8. Connector", "error", f"{len(conns)} connector registrati ma NESSUNO online.",
+            fix="Riavvia/verifica il servizio Agent sul cliente.")
+        recommendation = recommendation or "Nessun connector online: avvia l'Agent."
+    else:
+        add("8. Connector", "error", "Nessun connector registrato per questo cliente.",
+            fix="Installa/collega l'Agent al cliente.")
+        recommendation = recommendation or "Installa l'Agent per questo cliente."
+
+    if not recommendation:
+        if not port_capable:
+            recommendation = f"Imposta device_type='switch' su {device_ip}."
+        elif n_ports_here == 0:
+            recommendation = ("Config lato ARGUS OK: verifica la community con il Test SNMP e attendi "
+                              "1 ciclo di poll (2-5 min).")
+        else:
+            recommendation = "Tutto ok: le porte dovrebbero essere visibili."
+
+    return {"device_ip": device_ip, "device_name": dev_name, "device_type": dev_type,
+            "client_id": cid or "", "checks": checks, "recommendation": recommendation}
+
+
+@router.post("/devices/{device_ip}/switch-ports/set-type-switch")
+async def set_device_type_switch(device_ip: str, client_id: Optional[str] = None,
+                                 current_user: dict = Depends(get_current_user)):
+    """Correzione one-click: imposta device_type='switch' sul device (ip+client_id),
+    cosi' l'agent iniziera' a raccogliere ifTable/LLDP/PoE al prossimo poll."""
+    if current_user.get("role") not in ("admin", "superadmin", "operator"):
+        raise HTTPException(status_code=403, detail="Solo admin/operator")
+
+    from .tenant_scope import resolve_device_client_id
+    cid = await resolve_device_client_id(device_ip, client_id)
+    if not cid:
+        raise HTTPException(status_code=404, detail="Device non trovato per questo cliente")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    res = await db.managed_devices.update_one(
+        {"ip": device_ip, "client_id": cid},
+        {"$set": {"device_type": "switch", "updated_at": now_iso}},
+    )
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Device non trovato per questo cliente")
+    # Cascade best-effort sulla collection `devices` (impostazioni UI) se presente
+    try:
+        await db.devices.update_many(
+            {"ip_address": device_ip, "client_id": cid},
+            {"$set": {"device_type": "switch", "updated_at": now_iso}},
+        )
+    except Exception:
+        pass
+
+    # Hot-push della config aggiornata agli agent LIVE: cosi' vedono subito
+    # profile=switch e raccolgono ifTable/LLDP/PoE al prossimo ciclo SNMP (~60s),
+    # senza aspettare il refresh periodico della config.
+    agents_notified = 0
+    try:
+        from .agent_ws import push_config_to_client
+        agents_notified = await push_config_to_client(cid)
+    except Exception:
+        pass
+
+    return {"status": "ok", "device_ip": device_ip, "client_id": cid,
+            "device_type": "switch", "agents_notified": agents_notified,
+            "message": (
+                f"Config inviata a {agents_notified} agent live: le porte compariranno entro ~1 minuto."
+                if agents_notified else
+                "Tipo impostato. Le porte compariranno al prossimo ciclo di poll dell'agent (2-5 min)."
+            )}
+
 
 
 @router.get("/devices/{device_ip}/switch-ports/{idx}/flaps")
@@ -496,14 +727,27 @@ async def get_port_flap_history(
     device_ip: str,
     idx: int,
     hours: int = 24,
+    client_id: Optional[str] = None,
     current_user: dict = Depends(get_current_user),
 ):
     """Ritorna gli eventi flap (UP/DOWN/ADMIN/SPEED change) per una porta, ultime N ore."""
     from datetime import datetime, timezone, timedelta
     hours = max(1, min(hours, 720))  # 1h..30gg
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+
+    # MULTI-TENANT: scope obbligatorio per client_id (IP privati collidono).
+    owner_ids = [c for c in await db.managed_devices.distinct("client_id", {"ip": device_ip}) if c]
+    if not client_id:
+        if len(owner_ids) == 1:
+            client_id = owner_ids[0]
+        elif len(owner_ids) > 1:
+            raise HTTPException(status_code=400, detail=f"IP {device_ip} presente su piu' clienti: client_id obbligatorio.")
+    if not client_id:
+        return {"device_ip": device_ip, "idx": idx, "hours": hours, "events": [], "total": 0,
+                "by_kind": {"oper_change": 0, "admin_change": 0, "speed_change": 0}}
+
     events = await db.port_flap_events.find(
-        {"local_ip": device_ip, "idx": idx, "ts": {"$gte": cutoff}},
+        {"local_ip": device_ip, "client_id": client_id, "idx": idx, "ts": {"$gte": cutoff}},
         {"_id": 0}
     ).sort("ts", 1).to_list(500)
     # Breakdown per tipo

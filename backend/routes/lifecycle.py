@@ -118,8 +118,23 @@ async def list_records(client_id: Optional[str] = None, risk_band: Optional[str]
 
 
 @router.get("/records/{device_ip}")
-async def get_record(device_ip: str, current_user: dict = Depends(get_current_user)):
-    doc = await db.lifecycle_records.find_one({"device_ip": device_ip}, {"_id": 0})
+async def get_record(device_ip: str, client_id: str = None, current_user: dict = Depends(get_current_user)):
+    # MULTI-TENANT: lifecycle_records e' keyed per device_ip; scope per client_id
+    # (con backfill lazy dei doc legacy senza client_id) per evitare che clienti
+    # con stesso IP vedano/modifichino lo stesso record.
+    from .tenant_scope import resolve_device_client_id
+    cid = await resolve_device_client_id(device_ip, client_id)
+    if not cid:
+        return {"record": None}
+    doc = await db.lifecycle_records.find_one({"device_ip": device_ip, "client_id": cid}, {"_id": 0})
+    if not doc:
+        legacy = await db.lifecycle_records.find_one(
+            {"device_ip": device_ip, "client_id": {"$exists": False}}, {"_id": 0})
+        if legacy:
+            await db.lifecycle_records.update_one(
+                {"device_ip": device_ip, "client_id": {"$exists": False}}, {"$set": {"client_id": cid}})
+            legacy["client_id"] = cid
+            doc = legacy
     if not doc:
         return {"record": None}
     return {"record": _enrich_record(doc)}
@@ -132,22 +147,31 @@ async def upsert_record(rec: LifecycleRecord, current_user: dict = Depends(get_c
     now = datetime.now(timezone.utc).isoformat()
     data = rec.model_dump()
     device_ip = data.pop("device_ip")  # in filter + $setOnInsert only
+    from .tenant_scope import resolve_device_client_id
+    cid = await resolve_device_client_id(device_ip, data.get("client_id"))
+    if not cid:
+        raise HTTPException(status_code=400, detail="client_id obbligatorio (device non gestito o IP su piu' clienti)")
+    data["client_id"] = cid
     data["updated_at"] = now
     data["updated_by"] = current_user.get("email")
     await db.lifecycle_records.update_one(
-        {"device_ip": device_ip},
+        {"device_ip": device_ip, "client_id": cid},
         {"$set": data, "$setOnInsert": {"id": str(uuid.uuid4()), "created_at": now, "device_ip": device_ip}},
         upsert=True
     )
-    audit.info(f"[AUDIT] lifecycle_upsert | user={current_user.get('email')} | device={device_ip}")
+    audit.info(f"[AUDIT] lifecycle_upsert | user={current_user.get('email')} | device={device_ip} | client={cid}")
     return {"ok": True, "device_ip": device_ip}
 
 
 @router.delete("/records/{device_ip}")
-async def delete_record(device_ip: str, current_user: dict = Depends(get_current_user)):
+async def delete_record(device_ip: str, client_id: str = None, current_user: dict = Depends(get_current_user)):
     if current_user.get("role") not in ("admin", "superadmin"):
         raise HTTPException(status_code=403, detail="Admin only")
-    res = await db.lifecycle_records.delete_one({"device_ip": device_ip})
+    from .tenant_scope import resolve_device_client_id
+    cid = await resolve_device_client_id(device_ip, client_id)
+    if not cid:
+        raise HTTPException(status_code=400, detail="client_id obbligatorio")
+    res = await db.lifecycle_records.delete_one({"device_ip": device_ip, "client_id": cid})
     return {"deleted": res.deleted_count > 0}
 
 

@@ -3921,6 +3921,13 @@ async def connector_switch_ports_report(request: Request):
 
         stored_per_switch.append({"local_ip": local_ip, "ports_count": len(ports)})
 
+        # Loop detection (Fase A): valuta MAC duplicati + storm e crea/risolve alert.
+        try:
+            from .loop_detection import evaluate_and_alert
+            await evaluate_and_alert(db, client_id, local_ip, ports)
+        except Exception:
+            pass
+
     logger.info(f"Switch ports updated for {client_id}: {len(switches)} switch, {total_stored} porte totali, {total_flaps} eventi flap")
     return {"status": "ok", "switches_stored": len(switches), "total_ports": total_stored, "flap_events": total_flaps, "per_switch": stored_per_switch}
 

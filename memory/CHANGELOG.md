@@ -1,3 +1,148 @@
+# 2026-07-29 — ENHANCEMENT: "Correggi ora" → poll immediato (hot-push config all'agent)
+
+## Richiesta utente
+Dopo il "Correggi ora" (device_type=switch), forzare un poll immediato invece di
+aspettare 2-5 min, così le porte compaiono quasi subito.
+
+## Implementazione
+- `topology.set_device_type_switch`: dopo l'update chiama
+  `agent_ws.push_config_to_client(cid)` → hot-push della poller_config aggiornata a
+  TUTTI gli agent live del cliente. L'agent vede subito `profile=switch` e raccoglie
+  ifTable/LLDP/PoE al ciclo SNMP successivo (~60s). Risposta arricchita con
+  `agents_notified` + `message` dinamico (~1 min se agent live, altrimenti 2-5 min).
+- Frontend: il toast mostra il `message` del backend; dopo il fix ri-esegue diagnose
+  e `reload()` delle porte.
+- Nota: non esiste un comando agent per la raccolta ports on-demand immediata
+  (richiederebbe modifica dell'agent Go); l'hot-push della config è la via piu' rapida
+  senza redeploy agent.
+
+## Validazione
+- POST set-type-switch → `agents_notified` + message corretti (0 in preview, fallback
+  2-5 min). Backend compila e riparte. Device di test ripristinato a 'endpoint'.
+
+---
+
+
+# 2026-07-29 — FEATURE: "Correggi ora" nella Diagnosi porte (one-click device_type=switch)
+
+## Richiesta utente
+Aggiungere un pulsante nella Diagnosi che, quando rileva device_type non switch,
+imposti direttamente device_type=switch senza andare nelle impostazioni.
+
+## Implementazione
+- Backend `topology.py`:
+  - Il check "3. Tipo device" della diagnose ora include `action="set_device_type_switch"`.
+  - Nuovo endpoint `POST /api/devices/{ip}/switch-ports/set-type-switch?client_id=`
+    (admin/operator, scoped via tenant_scope): setta `device_type='switch'` su
+    `managed_devices` (ip+client_id) + cascade best-effort su `devices`.
+- Frontend `SwitchPortsPage.js`: `DiagnoseDialog` mostra il pulsante
+  "⚡ Correggi ora — imposta come Switch" per i check con `action`; al click chiama
+  l'endpoint, mostra toast e ri-esegue la diagnosi aggiornata.
+
+## Validazione (curl + screenshot)
+- diagnose (before): check 3 = error + action ; POST set-type-switch → device_type=switch ;
+  diagnose (after): check 3 = OK ✅. Pulsante renderizzato in UI ✅.
+- Device di test 10.10.1.10 ripristinato a 'endpoint' dopo il test.
+
+---
+
+
+# 2026-07-29 — FEATURE: Diagnostica one-click "Perché non arrivano le porte switch"
+
+## Contesto (domanda utente)
+"Non capisco perché non arrivano le porte, e su un altro switch identico di un altro
+cliente con la stessa config arrivano." → serve capire cosa differisce lato ARGUS.
+
+## Root cause tipica individuata
+La raccolta pesante delle porte (ifTable/LLDP/PoE) viene fatta dall'agent SOLO per i
+device classificati come switch/router/firewall (in `agent_ws._build_poller_config`
+il target riceve `profile = device_type`; se non e' switch-like l'agent fa solo il
+poll base e non manda la ifTable). Altre cause: community mancante/errata (case),
+connector offline, o dati porte salvati sotto un client_id diverso (connector su
+cliente sbagliato).
+
+## Implementazione
+- Nuovo endpoint `GET /api/devices/{ip}/switch-ports/diagnose?client_id=` in
+  `topology.py`: 8 check con status ok/warn/error + fix + recommendation:
+  1) device registrato (o presente su altro cliente),
+  2) abilitazione, 3) device_type switch-like (causa piu' comune),
+  4) community SNMP + eligibility, 5) porte presenti (rileva mismatch client_id),
+  6) LLDP/FDB, 7) ultimo poll (device_class/reachable), 8) connector online.
+  Scoped multi-tenant via `tenant_scope.resolve_device_client_id`.
+- Frontend `SwitchPortsPage.js`: pulsante "🩺 Diagnosi" (header + stato vuoto) e
+  `DiagnoseDialog` con check colorati e raccomandazione.
+
+## Validazione (curl + screenshot)
+- Diagnose su device endpoint reale: check 3 (tipo) e 4 (community) ERROR, reco
+  "Imposta device_type='switch'". Dialog UI renderizzato correttamente ✅
+
+---
+
+
+# 2026-07-29 — FEATURE: Rilevamento Loop di Rete su Switch (Fase A, solo backend)
+
+## Richiesta utente
+"Siete in grado di rilevare se in uno switch c'è collegato un cavo in se stesso / loop?"
+Scelta: opzione A — MAC-flapping + storm detection, backend-only, nessun redeploy agent.
+
+## Implementazione
+- Nuovo modulo `backend/routes/loop_detection.py`:
+  - `compute_loop_suspects(ports, endpoints)` (pura): rileva
+    (1) stesso MAC appreso su ≥2 porte (soglia ≥3 MAC condivisi = loop), 
+    (2) broadcast storm = porta UP con pps simmetrico ≥15000.
+    Ritorna per-porta reasons/partners/dup_mac_count/storm.
+  - `evaluate_and_alert(db, client_id, local_ip, ports)`: all'ingest crea/aggiorna
+    un alert (severity=high, source_type=network, id=`loop-{cid}-{ip}`) e lo
+    RISOLVE automaticamente quando il loop scompare.
+- `topology.get_switch_ports`: ora arricchisce ogni porta con
+  `loop_suspect`/`loop_reasons`/`loop_partners` e `totals.loop_suspect`.
+- `connector.connector_switch_ports_report` (ingest `/sp`): chiama
+  `evaluate_and_alert` per ogni switch → alert generati server-side ad ogni poll,
+  indipendenti dalla page-view. Wrappato in try/except (mai rompe l'ingest).
+- Frontend `SwitchPortsPage.js`: badge rosso ⚠ sui tile sospetti (ring pulsante),
+  chip "⚠ Loop N" nell'header + filtro dedicato, box di avviso nel pannello
+  dettaglio (motivi + porte partner), chip "LOOP" nella tabella.
+
+## Validazione (curl + DB sintetico + screenshot)
+- Porte 3&7 (5 MAC condivisi) → loop_suspect con partner reciproci ✅
+- Porta 5 (30k/30k pps) → storm ✅ ; porta 1 normale → nessun flag ✅
+- totals.loop_suspect=3 ✅ ; alert creato (active) e poi auto-resolved al clear ✅
+- UI: badge/chip/filtro/tabella renderizzati correttamente ✅
+- Dati di test rimossi dal DB.
+
+## Backlog (Fase B, se richiesta dall'utente)
+- STP Port State (dot1dStpPortState/MSTP) via SNMP-walk nell'agent Go per rilevare
+  anche i loop gia' bloccati dallo spanning-tree. Richiede update + redeploy agent.
+
+---
+
+
+# 2026-07-29 — CHIUSURA AUDIT ISOLAMENTO CROSS-TENANT (Issue P0) — VALIDATO
+
+## Contesto
+Ripresa del task interrotto: messa in sicurezza cross-tenant di tutti gli endpoint by-IP.
+Backend già RUNNING senza errori di sintassi (edit precedenti caricati OK).
+
+## Audit residuo + fix in questa sessione
+- Helper `tenant_scope.resolve_device_client_id` confermato: se un IP appartiene a >1
+  cliente → HTTP 400 (client_id obbligatorio); se a 1 solo cliente → auto-resolve.
+- `redfish_routes.redfish_diagnose`: aggiunto param `client_id` + scope su
+  managed_devices/device_poll_status (prima query solo per `ip`).
+- `web_console_enterprise` (recent-sessions, favorites, live-sessions): i lookup di
+  arricchimento nome device ora includono `client_id` del record (prima solo `ip`).
+- `arp_cache.by-ip` e `firmware_catalog` verificati: già scoped correttamente.
+- `server_intelligence`: i `{"ip": ...}` residui sono dict di OUTPUT, non query (OK).
+
+## Validazione (smoke test curl, preview)
+- connectivity-report CON client_id → 200 ; SENZA → 400 (anti-leak) ✅
+- redfish/diagnose auto-resolve tenant corretto → 200 ✅
+- cmdb/assets, arp-cache/by-ip, web-console/favorites, live-sessions → 200 ✅
+- Frontend (login ARGUS Center) carica correttamente ✅
+- Nota: attualmente 0 IP condivisi tra clienti nel DB (rischio teorico, protezione attiva).
+
+---
+
+
 # 2026-06 — FIX CRITICO: leak cross-tenant nella Scheda Dispositivo (multi-tenant)
 
 ## Bug (segnalato — GRAVE)

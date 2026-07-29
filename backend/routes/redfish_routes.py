@@ -517,7 +517,7 @@ async def redfish_raw_probe(device_ip: str, path: str = "/redfish/v1/Chassis/1/T
 
 
 @router.get("/redfish/diagnose/{device_ip}")
-async def redfish_diagnose(device_ip: str, current_user: dict = Depends(get_current_user)):
+async def redfish_diagnose(device_ip: str, client_id: str = None, current_user: dict = Depends(get_current_user)):
     """Spiega passo-passo perche' un iLO non e' pollato live. Check:
     1. Device esiste in managed_devices / device_poll_status?
     2. Credenziale iLO nel Vault?
@@ -540,9 +540,16 @@ async def redfish_diagnose(device_ip: str, current_user: dict = Depends(get_curr
     def add(step: str, status: str, detail: str, fix: str = None):
         diagnosis["checks"].append({"step": step, "status": status, "detail": detail, "fix": fix})
 
-    # 1. Device registration
-    md = await db.managed_devices.find_one({"ip": device_ip}, {"_id": 0})
-    ps = await db.device_poll_status.find_one({"device_ip": device_ip}, {"_id": 0})
+    # 1. Device registration (cross-tenant scoped)
+    from .tenant_scope import resolve_device_client_id
+    cid = await resolve_device_client_id(device_ip, client_id)
+    md_q = {"ip": device_ip}
+    ps_q = {"device_ip": device_ip}
+    if cid:
+        md_q["client_id"] = cid
+        ps_q["client_id"] = cid
+    md = await db.managed_devices.find_one(md_q, {"_id": 0})
+    ps = await db.device_poll_status.find_one(ps_q, {"_id": 0})
     if md:
         add("1. Device registration", "ok", f"Device in managed_devices (type={md.get('device_type','?')}, client={md.get('client_id')})")
     elif ps:
@@ -664,14 +671,23 @@ async def redfish_diagnose(device_ip: str, current_user: dict = Depends(get_curr
 # ==================== POWER CONTROL & WAKE-ON-LAN ====================
 
 @router.post("/devices/{device_ip}/power-action")
-async def device_power_action(device_ip: str, request: Request, current_user: dict = Depends(get_current_user)):
+async def device_power_action(device_ip: str, request: Request, client_id: str = None, current_user: dict = Depends(get_current_user)):
     if current_user.get("role") not in ["admin"]:
         raise HTTPException(status_code=403, detail="Solo admin")
     body = await request.json()
     action = body.get("action")
     if not action:
         raise HTTPException(status_code=400, detail="Campo 'action' obbligatorio")
-    cred = await db.device_credentials.find_one({"device_ip": device_ip, "credential_type": "ilo"}, {"_id": 0})
+    # MULTI-TENANT: seleziona la credenziale iLO SOLO del cliente corretto,
+    # altrimenti si rischia un'azione hardware sul server di un altro tenant
+    # con IP uguale.
+    from .tenant_scope import resolve_device_client_id
+    cid = client_id or body.get("client_id")
+    cid = await resolve_device_client_id(device_ip, cid)
+    cred_q = {"device_ip": device_ip, "credential_type": "ilo"}
+    if cid:
+        cred_q["client_id"] = cid
+    cred = await db.device_credentials.find_one(cred_q, {"_id": 0})
     if not cred:
         raise HTTPException(status_code=404, detail="Nessuna credenziale iLO trovata per questo dispositivo")
     external_url = cred.get("external_url")
@@ -692,10 +708,15 @@ async def device_power_action(device_ip: str, request: Request, current_user: di
 
 
 @router.get("/devices/{device_ip}/power-state")
-async def device_power_state(device_ip: str, current_user: dict = Depends(get_current_user)):
+async def device_power_state(device_ip: str, client_id: str = None, current_user: dict = Depends(get_current_user)):
     if current_user.get("role") not in ["admin"]:
         raise HTTPException(status_code=403, detail="Solo admin")
-    cred = await db.device_credentials.find_one({"device_ip": device_ip, "credential_type": "ilo"}, {"_id": 0})
+    from .tenant_scope import resolve_device_client_id
+    cid = await resolve_device_client_id(device_ip, client_id)
+    cred_q = {"device_ip": device_ip, "credential_type": "ilo"}
+    if cid:
+        cred_q["client_id"] = cid
+    cred = await db.device_credentials.find_one(cred_q, {"_id": 0})
     if not cred:
         raise HTTPException(status_code=404, detail="Nessuna credenziale iLO")
     external_url = cred.get("external_url")

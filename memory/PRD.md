@@ -54,6 +54,42 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-07-29 🔒 FIX cross-tenant: pagina "Porte switch" isolata per client_id
+
+### Problema
+`GET /api/devices/{ip}/switch-ports` e `.../flaps` cercavano SOLO per IP
+(`local_ip`/`switch_ip`), senza `client_id`. Con IP privati che collidono tra
+clienti (es. 10.10.10.105), porte/LLDP/MAC/endpoint/flap di tenant diversi
+potevano mescolarsi → data-leak cross-tenant (stessa classe del P0 già fixato
+sulle card).
+
+### Fix (`topology.py`)
+- `get_switch_ports` e `get_port_flap_history` ora accettano `client_id`.
+  Se non passato lo deducono dal proprietario dello switch in managed_devices;
+  se l'IP appartiene a >1 cliente → **400 (client_id obbligatorio)**; se a 0
+  → ritorna vuoto (MAI dati di altri tenant).
+- Scoping per `client_id` su TUTTE le query: switch_ports, lldp_neighbors,
+  discovered_endpoints (principale + cross-correlazione), managed_devices
+  (MAC→device map), network_discovery, port_flap_events.
+
+### Frontend
+- `SwitchPortsPage`: legge `clientId` da query param URL, lo passa alla API e a
+  `PortFlapHistory`. `ClientOverviewPage`: entrambe le navigazioni verso
+  `/switch-ports/{ip}` ora includono `?clientId=${clientId}`.
+
+### Test isolamento (curl)
+Due clienti (CLIENTE_A/B) con STESSO IP switch: `?client_id=CLIENTE_A` → solo
+porte A; `CLIENTE_B` → solo porte B; senza client_id (2 owner) → 400. Nessun
+mescolamento. ✓ Frontend compila.
+
+### Nota
+Le porte restano 0 finché l'SNMP non risponde (vedi fix community case-sensitive
+sopra): l'isolamento garantisce solo che, quando i dati arriveranno, restino
+confinati al singolo cliente.
+
+---
+
+
 ## 2026-07-29 🐞 FIX diagnosi SNMP: falso "fuori subnet" + community case mismatch
 
 ### Evidenza utente (switch HPE 10.10.10.105, cliente Arma Creativo)

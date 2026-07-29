@@ -51,10 +51,23 @@ async def list_assets(client_id: Optional[str] = None, lifecycle: Optional[str] 
 
 
 @router.get("/assets/{device_ip}")
-async def get_asset(device_ip: str, current_user: dict = Depends(get_current_user)):
-    doc = await db.cmdb_assets.find_one({"device_ip": device_ip}, {"_id": 0})
-    # Arricchisci con managed_device
-    md = await db.managed_devices.find_one({"ip": device_ip}, {"_id": 0})
+async def get_asset(device_ip: str, client_id: str = None, current_user: dict = Depends(get_current_user)):
+    # MULTI-TENANT: scope per client_id (con backfill lazy dei legacy senza client_id).
+    from .tenant_scope import resolve_device_client_id
+    cid = await resolve_device_client_id(device_ip, client_id)
+    doc = None
+    md = None
+    if cid:
+        doc = await db.cmdb_assets.find_one({"device_ip": device_ip, "client_id": cid}, {"_id": 0})
+        if not doc:
+            legacy = await db.cmdb_assets.find_one(
+                {"device_ip": device_ip, "client_id": {"$exists": False}}, {"_id": 0})
+            if legacy:
+                await db.cmdb_assets.update_one(
+                    {"device_ip": device_ip, "client_id": {"$exists": False}}, {"$set": {"client_id": cid}})
+                legacy["client_id"] = cid
+                doc = legacy
+        md = await db.managed_devices.find_one({"ip": device_ip, "client_id": cid}, {"_id": 0})
     return {"asset": doc, "managed_device": md}
 
 
@@ -64,36 +77,48 @@ async def upsert_asset(asset: CMDBAsset, current_user: dict = Depends(get_curren
         raise HTTPException(status_code=403, detail="Permission denied")
     now = datetime.now(timezone.utc)
     data = asset.model_dump()
+    from .tenant_scope import resolve_device_client_id
+    cid = await resolve_device_client_id(asset.device_ip, data.get("client_id"))
+    if not cid:
+        raise HTTPException(status_code=400, detail="client_id obbligatorio (device non gestito o IP su piu' clienti)")
+    data["client_id"] = cid
     data["updated_at"] = now
     data["updated_by"] = current_user.get("email")
     await db.cmdb_assets.update_one(
-        {"device_ip": asset.device_ip},
+        {"device_ip": asset.device_ip, "client_id": cid},
         {"$set": data, "$setOnInsert": {"id": str(uuid.uuid4()), "created_at": now}},
         upsert=True
     )
-    audit.info(f"[AUDIT] cmdb_upsert | user={current_user.get('email')} | device={asset.device_ip}")
+    audit.info(f"[AUDIT] cmdb_upsert | user={current_user.get('email')} | device={asset.device_ip} | client={cid}")
     return {"ok": True, "device_ip": asset.device_ip}
 
 
 @router.delete("/assets/{device_ip}")
-async def delete_asset(device_ip: str, current_user: dict = Depends(get_current_user)):
+async def delete_asset(device_ip: str, client_id: str = None, current_user: dict = Depends(get_current_user)):
     if current_user.get("role") not in ("admin", "superadmin"):
         raise HTTPException(status_code=403, detail="Admin only")
-    res = await db.cmdb_assets.delete_one({"device_ip": device_ip})
-    audit.info(f"[AUDIT] cmdb_delete | user={current_user.get('email')} | device={device_ip}")
+    from .tenant_scope import resolve_device_client_id
+    cid = await resolve_device_client_id(device_ip, client_id)
+    if not cid:
+        raise HTTPException(status_code=400, detail="client_id obbligatorio")
+    res = await db.cmdb_assets.delete_one({"device_ip": device_ip, "client_id": cid})
+    audit.info(f"[AUDIT] cmdb_delete | user={current_user.get('email')} | device={device_ip} | client={cid}")
     return {"deleted": res.deleted_count > 0}
 
 
 @router.get("/autofill/{device_ip}")
-async def autofill_from_telemetry(device_ip: str, current_user: dict = Depends(get_current_user)):
+async def autofill_from_telemetry(device_ip: str, client_id: str = None, current_user: dict = Depends(get_current_user)):
     """Pre-compila i campi CMDB pescando da iLO telemetry / device_poll_status / ilo_status.
     Utile per "Nuovo asset" con import automatico dei dati gia' conosciuti.
     """
-    # Sources in priority order
-    snap = await db.ilo_telemetry.find_one({"device_ip": device_ip}, {"_id": 0}, sort=[("timestamp", -1)])
-    dps = await db.device_poll_status.find_one({"device_ip": device_ip}, {"_id": 0})
-    stat = await db.ilo_status.find_one({"device_ip": device_ip}, {"_id": 0})
-    cred = await db.device_credentials.find_one({"device_ip": device_ip}, {"_id": 0})
+    from .tenant_scope import resolve_device_client_id
+    _cid = await resolve_device_client_id(device_ip, client_id)
+    scope = {"client_id": _cid} if _cid else {}
+    # Sources in priority order (scoped per client)
+    snap = await db.ilo_telemetry.find_one({"device_ip": device_ip, **scope}, {"_id": 0}, sort=[("timestamp", -1)])
+    dps = await db.device_poll_status.find_one({"device_ip": device_ip, **scope}, {"_id": 0})
+    stat = await db.ilo_status.find_one({"device_ip": device_ip, **scope}, {"_id": 0})
+    cred = await db.device_credentials.find_one({"device_ip": device_ip, **scope}, {"_id": 0})
 
     sources = [snap or {}, (dps or {}).get("redfish") or {}, stat or {}]
 

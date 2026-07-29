@@ -223,23 +223,26 @@ async def import_csv(file: UploadFile = File(...), current_user: dict = Depends(
 # ======================== CHECK ========================
 
 @router.get("/check/{device_ip}")
-async def check_device(device_ip: str, current_user: dict = Depends(get_current_user)):
+async def check_device(device_ip: str, client_id: str = None, current_user: dict = Depends(get_current_user)):
     """Confronta versioni firmware correnti con catalogo per un device specifico."""
+    from .tenant_scope import resolve_device_client_id
+    cid = await resolve_device_client_id(device_ip, client_id)
+    scope = {"client_id": cid} if cid else {}
     # Source 1: device_poll_status.redfish (autorevole, salvato da redfish poller)
-    dps = await db.device_poll_status.find_one({"device_ip": device_ip}, {"_id": 0})
+    dps = await db.device_poll_status.find_one({"device_ip": device_ip, **scope}, {"_id": 0})
     rf = (dps or {}).get("redfish") or {}
     model = rf.get("server_model")
     ilo_fw = rf.get("ilo_firmware")
     bios_fw = rf.get("bios_version")
     # Fallback: ilo_status (legacy)
     if not model:
-        stat = await db.ilo_status.find_one({"device_ip": device_ip}, {"_id": 0}) or {}
+        stat = await db.ilo_status.find_one({"device_ip": device_ip, **scope}, {"_id": 0}) or {}
         model = stat.get("server_model") or model
         ilo_fw = stat.get("ilo_firmware") or ilo_fw
         bios_fw = stat.get("bios_version") or bios_fw
     # Fallback: managed_devices
     if not model:
-        md = await db.managed_devices.find_one({"ip": device_ip}, {"_id": 0})
+        md = await db.managed_devices.find_one({"ip": device_ip, **scope}, {"_id": 0})
         if md:
             model = md.get("model") or md.get("device_model")
     if not model:
@@ -259,7 +262,7 @@ async def compliance_overview(current_user: dict = Depends(get_current_user)):
     stats = {"compliant": 0, "outdated": 0, "critical": 0, "unknown": 0}
     for ip in ips[:200]:
         try:
-            r = await check_device(ip, current_user)
+            r = await check_device(ip, client_id=None, current_user=current_user)
             if r.get("error"):
                 stats["unknown"] += 1
                 continue
