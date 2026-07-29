@@ -130,6 +130,7 @@ async def connectivity_report(
     total = 0
     up_count = 0
     latencies = []          # per p95/jitter (cap prudente)
+    cur_lat = None          # latenza dell'ultimo campione online (PingPlotter "Cur")
     loss_sum = 0.0
     loss_cnt = 0
     loss_max = None
@@ -153,8 +154,10 @@ async def connectivity_report(
 
         if up:
             up_count += 1
-            if lat is not None and len(latencies) < 60000:
-                latencies.append(float(lat))
+            if lat is not None:
+                cur_lat = float(lat)
+                if len(latencies) < 60000:
+                    latencies.append(float(lat))
         if loss is not None:
             loss_sum += float(loss)
             loss_cnt += 1
@@ -216,6 +219,36 @@ async def connectivity_report(
     resolved = [w["duration_min"] for w in down_windows if w.get("duration_min") is not None]
     mttr_min = round(statistics.fmean(resolved), 1) if resolved else None
 
+    # PingPlotter-style: distribuzione latenza per fascia (verde/giallo/rosso)
+    dist = {"good": 0, "warn": 0, "crit": 0}
+    for v in latencies:
+        if v < LAT_WARN_MS:
+            dist["good"] += 1
+        elif v < LAT_CRIT_MS:
+            dist["warn"] += 1
+        else:
+            dist["crit"] += 1
+    ld = len(latencies)
+    distribution = {
+        "good_pct": round(dist["good"] / ld * 100, 1) if ld else None,
+        "warn_pct": round(dist["warn"] / ld * 100, 1) if ld else None,
+        "crit_pct": round(dist["crit"] / ld * 100, 1) if ld else None,
+    }
+
+    # KPI disconnessioni: downtime totale + interruzione piu' lunga.
+    # Include la finestra ancora aperta (ongoing) stimata fino ad ora.
+    now_dt = datetime.now(timezone.utc)
+    downtime_durations = list(resolved)
+    for w in down_windows:
+        if w.get("ongoing") and w.get("start"):
+            try:
+                st = datetime.fromisoformat(w["start"])
+                downtime_durations.append((now_dt - st).total_seconds() / 60.0)
+            except Exception:
+                pass
+    total_downtime_min = round(sum(downtime_durations), 1) if downtime_durations else 0.0
+    longest_outage_min = round(max(downtime_durations), 1) if downtime_durations else 0.0
+
     series = []
     for bkey in sorted(buckets.keys()):
         b = buckets[bkey]
@@ -235,11 +268,17 @@ async def connectivity_report(
         "samples_up": up_count,
         "uptime_pct": uptime_pct,
         "currently_down": currently_down if total else None,
-        "latency": {"avg": avg_lat, "min": min_lat, "max": max_lat, "p95": p95_lat, "jitter": jitter},
+        "latency": {
+            "cur": round(cur_lat, 1) if cur_lat is not None else None,
+            "avg": avg_lat, "min": min_lat, "max": max_lat, "p95": p95_lat, "jitter": jitter,
+        },
+        "latency_distribution": distribution,
         "loss": {"avg": avg_loss, "max": round(loss_max, 2) if loss_max is not None else None},
         "disconnections": disconnections,
         "mttr_min": mttr_min,
-        "down_windows": down_windows[-20:],
+        "total_downtime_min": total_downtime_min,
+        "longest_outage_min": longest_outage_min,
+        "down_windows": down_windows[-50:],
         "severity": _severity(uptime_pct, avg_lat, avg_loss),
         "thresholds": {
             "latency_warn_ms": LAT_WARN_MS, "latency_crit_ms": LAT_CRIT_MS,

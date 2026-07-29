@@ -9,8 +9,8 @@ import {
   CheckCircle, Lightning, ChartLineUp, ArrowDown,
 } from "@phosphor-icons/react";
 import {
-  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip as RTooltip,
-  ResponsiveContainer, ReferenceLine,
+  Area, XAxis, YAxis, CartesianGrid, Tooltip as RTooltip,
+  ResponsiveContainer, ComposedChart, Bar, ReferenceArea,
 } from "recharts";
 
 const PERIODS = [
@@ -99,13 +99,25 @@ export default function ConnectivityDialog({ deviceIp, clientId, deviceName, ope
   const chartData = (report?.series || []).map(p => ({
     t: p.ts,
     latency: p.latency_avg,
-    loss: p.loss_avg,
+    // packet loss come barra: durante un'interruzione i bucket vanno a ~100%
+    loss: p.loss_avg != null ? p.loss_avg : (p.up_ratio != null ? Math.round((1 - p.up_ratio) * 100) : null),
     up: p.up_ratio != null ? Math.round(p.up_ratio * 100) : null,
   }));
+  // Tetto asse latenza per le fasce colorate (verde/giallo/rosso)
+  const latMax = Math.max(120, ...(chartData.map(d => d.latency || 0)));
+  const dist = report?.latency_distribution || {};
+  const fmtDur = (m) => {
+    if (m == null) return "—";
+    if (m < 1) return `${Math.round(m * 60)}s`;
+    if (m < 60) return `${m} min`;
+    const h = Math.floor(m / 60), mm = Math.round(m % 60);
+    return `${h}h ${mm}m`;
+  };
+
 
   return (
     <Dialog open={open} onOpenChange={(v) => !v && onClose?.()}>
-      <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto bg-[var(--bg-panel)] border-[var(--bg-border)]" data-testid="connectivity-dialog">
+      <DialogContent className="max-w-5xl max-h-[90vh] overflow-y-auto bg-[var(--bg-panel)] border-[var(--bg-border)]" data-testid="connectivity-dialog">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-white">
             <Pulse size={18} weight="bold" className="text-cyan-400" />
@@ -190,77 +202,91 @@ export default function ConnectivityDialog({ deviceIp, clientId, deviceName, ope
               )}
             </div>
 
-            {/* Statistiche */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-              <Stat icon={WifiHigh} label="Uptime" value={report.uptime_pct} unit="%" testid="connectivity-stat-uptime"
-                tone={report.uptime_pct >= 99.5 ? "text-emerald-300" : report.uptime_pct >= 95 ? "text-amber-300" : "text-red-300"} />
-              <Stat icon={Timer} label="Latenza media" value={report.latency.avg} unit="ms" testid="connectivity-stat-latency"
+            {/* Riga KPI stile PingPlotter: Cur / Avg / Min / Max / PL% */}
+            <div className="grid grid-cols-3 sm:grid-cols-6 gap-2" data-testid="connectivity-kpi-row">
+              <Stat icon={Pulse} label="Cur" value={report.latency.cur} unit="ms" testid="connectivity-stat-cur"
+                tone={report.latency.cur == null ? "text-white" : report.latency.cur < 30 ? "text-emerald-300" : report.latency.cur < 100 ? "text-amber-300" : "text-red-300"} />
+              <Stat icon={Timer} label="Avg" value={report.latency.avg} unit="ms" testid="connectivity-stat-latency"
                 tone={report.latency.avg == null ? "text-white" : report.latency.avg < 30 ? "text-emerald-300" : report.latency.avg < 100 ? "text-amber-300" : "text-red-300"} />
-              <Stat icon={ChartLineUp} label="Latenza p95" value={report.latency.p95} unit="ms" testid="connectivity-stat-p95" />
-              <Stat icon={ArrowsClockwise} label="Jitter" value={report.latency.jitter} unit="ms" testid="connectivity-stat-jitter" />
-              <Stat icon={ArrowDown} label="Packet loss" value={report.loss.avg} unit="%" testid="connectivity-stat-loss"
+              <Stat label="Min" value={report.latency.min} unit="ms" testid="connectivity-stat-min" />
+              <Stat label="Max" value={report.latency.max} unit="ms" testid="connectivity-stat-max"
+                tone={report.latency.max == null ? "text-white" : report.latency.max < 100 ? "text-white" : "text-red-300"} />
+              <Stat icon={ChartLineUp} label="p95" value={report.latency.p95} unit="ms" testid="connectivity-stat-p95" />
+              <Stat icon={ArrowDown} label="PL%" value={report.loss.avg} unit="%" testid="connectivity-stat-loss"
                 tone={report.loss.avg == null ? "text-white" : report.loss.avg < 2 ? "text-emerald-300" : report.loss.avg < 10 ? "text-amber-300" : "text-red-300"} />
-              <Stat icon={WifiSlash} label="Disconnessioni" value={report.disconnections} testid="connectivity-stat-disconnections"
-                tone={report.disconnections > 0 ? "text-red-300" : "text-emerald-300"} />
-              <Stat icon={Timer} label="MTTR" value={report.mttr_min} unit="min" testid="connectivity-stat-mttr" />
-              <Stat icon={Pulse} label="Campioni" value={report.samples} testid="connectivity-stat-samples" />
             </div>
 
-            {/* Grafico latenza */}
-            <div>
-              <div className="text-[11px] font-semibold text-[var(--text-muted)] mb-1 flex items-center gap-1.5">
-                <Timer size={12} /> Latenza (ms)
+            {/* Barra distribuzione latenza (verde/giallo/rosso) — stile PingPlotter */}
+            {dist.good_pct != null && (
+              <div data-testid="connectivity-latency-distribution">
+                <div className="text-[10px] text-[var(--text-muted)] mb-1 flex justify-between">
+                  <span>Distribuzione latenza</span>
+                  <span className="font-mono">
+                    <span className="text-emerald-300">{dist.good_pct}%</span> · <span className="text-amber-300">{dist.warn_pct}%</span> · <span className="text-red-300">{dist.crit_pct}%</span>
+                  </span>
+                </div>
+                <div className="flex h-2.5 rounded overflow-hidden bg-[var(--bg-card)]">
+                  <div style={{ width: `${dist.good_pct}%` }} className="bg-emerald-500" title={`< ${report.thresholds.latency_warn_ms}ms: ${dist.good_pct}%`} />
+                  <div style={{ width: `${dist.warn_pct}%` }} className="bg-amber-400" title={`${report.thresholds.latency_warn_ms}-${report.thresholds.latency_crit_ms}ms: ${dist.warn_pct}%`} />
+                  <div style={{ width: `${dist.crit_pct}%` }} className="bg-red-500" title={`> ${report.thresholds.latency_crit_ms}ms: ${dist.crit_pct}%`} />
+                </div>
               </div>
-              <div className="h-40 w-full">
+            )}
+
+            {/* Grafico "firma" PingPlotter: latenza + fasce colorate + barre packet loss */}
+            <div>
+              <div className="text-[11px] font-semibold text-[var(--text-muted)] mb-1 flex items-center justify-between">
+                <span className="flex items-center gap-1.5"><Timer size={12} /> Latenza (ms) & Packet loss</span>
+                <span className="flex items-center gap-2 text-[9px] font-normal">
+                  <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-cyan-400" />latenza</span>
+                  <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-red-500" />loss %</span>
+                </span>
+              </div>
+              <div className="h-56 w-full">
                 <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={chartData} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+                  <ComposedChart data={chartData} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
                     <defs>
                       <linearGradient id="conn-lat" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor="#22D3EE" stopOpacity={0.5} />
+                        <stop offset="0%" stopColor="#22D3EE" stopOpacity={0.35} />
                         <stop offset="100%" stopColor="#22D3EE" stopOpacity={0} />
                       </linearGradient>
                     </defs>
+                    {/* Fasce colorate di sfondo (asse latenza) */}
+                    <ReferenceArea yAxisId="lat" y1={0} y2={report.thresholds.latency_warn_ms} fill="#34C759" fillOpacity={0.07} strokeOpacity={0} />
+                    <ReferenceArea yAxisId="lat" y1={report.thresholds.latency_warn_ms} y2={report.thresholds.latency_crit_ms} fill="#FFCC00" fillOpacity={0.07} strokeOpacity={0} />
+                    <ReferenceArea yAxisId="lat" y1={report.thresholds.latency_crit_ms} y2={latMax} fill="#FF3B30" fillOpacity={0.08} strokeOpacity={0} />
                     <XAxis dataKey="t" tickFormatter={(t) => fmtTime(t, period)} stroke="#666" fontSize={9} minTickGap={40} />
-                    <YAxis stroke="#666" fontSize={9} width={32} />
+                    <YAxis yAxisId="lat" stroke="#666" fontSize={9} width={34} domain={[0, latMax]} />
+                    <YAxis yAxisId="loss" orientation="right" stroke="#FF3B30" fontSize={9} width={30} domain={[0, 100]} />
                     <CartesianGrid stroke="#1f2937" strokeDasharray="3 3" />
                     <RTooltip
                       contentStyle={{ background: "#0a0d14", border: "1px solid #1f2937", borderRadius: 6, fontSize: 10 }}
                       labelFormatter={(v) => new Date(v).toLocaleString("it-IT")}
-                      formatter={(val) => [`${val} ms`, "Latenza"]}
+                      formatter={(val, name) => name === "loss" ? [`${val}%`, "Packet loss"] : [`${val} ms`, "Latenza"]}
                     />
-                    <ReferenceLine y={30} stroke="#FFCC00" strokeDasharray="4 4" />
-                    <ReferenceLine y={100} stroke="#FF3B30" strokeDasharray="4 4" />
-                    <Area type="monotone" dataKey="latency" stroke="#22D3EE" fill="url(#conn-lat)" strokeWidth={1.6} isAnimationActive={false} connectNulls />
-                  </AreaChart>
+                    <Bar yAxisId="loss" dataKey="loss" fill="#FF3B30" fillOpacity={0.55} isAnimationActive={false} maxBarSize={14} />
+                    <Area yAxisId="lat" type="monotone" dataKey="latency" stroke="#22D3EE" fill="url(#conn-lat)" strokeWidth={1.6} isAnimationActive={false} connectNulls dot={false} />
+                  </ComposedChart>
                 </ResponsiveContainer>
               </div>
             </div>
 
-            {/* Grafico packet loss */}
-            <div>
-              <div className="text-[11px] font-semibold text-[var(--text-muted)] mb-1 flex items-center gap-1.5">
-                <ArrowDown size={12} /> Packet loss (%)
+            {/* KPI disconnessioni — cuore del monitoraggio */}
+            <div className="rounded-lg border border-[var(--bg-border)] bg-[var(--bg-card)] p-3" data-testid="connectivity-outage-kpi">
+              <div className="text-[11px] font-semibold text-[var(--text-muted)] mb-2 flex items-center gap-1.5">
+                <WifiSlash size={12} /> Disconnessioni & disponibilità
               </div>
-              <div className="h-28 w-full">
-                <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={chartData} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
-                    <defs>
-                      <linearGradient id="conn-loss" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor="#FF3B30" stopOpacity={0.5} />
-                        <stop offset="100%" stopColor="#FF3B30" stopOpacity={0} />
-                      </linearGradient>
-                    </defs>
-                    <XAxis dataKey="t" tickFormatter={(t) => fmtTime(t, period)} stroke="#666" fontSize={9} minTickGap={40} />
-                    <YAxis stroke="#666" fontSize={9} width={32} domain={[0, 100]} />
-                    <CartesianGrid stroke="#1f2937" strokeDasharray="3 3" />
-                    <RTooltip
-                      contentStyle={{ background: "#0a0d14", border: "1px solid #1f2937", borderRadius: 6, fontSize: 10 }}
-                      labelFormatter={(v) => new Date(v).toLocaleString("it-IT")}
-                      formatter={(val) => [`${val}%`, "Loss"]}
-                    />
-                    <Area type="monotone" dataKey="loss" stroke="#FF3B30" fill="url(#conn-loss)" strokeWidth={1.4} isAnimationActive={false} connectNulls />
-                  </AreaChart>
-                </ResponsiveContainer>
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-center">
+                <div><div className="text-[9px] text-[var(--text-muted)] uppercase">Disponibilità</div>
+                  <div className={`font-bold text-base ${report.uptime_pct >= 99.5 ? "text-emerald-300" : report.uptime_pct >= 95 ? "text-amber-300" : "text-red-300"}`}>{report.uptime_pct ?? "—"}<span className="text-[10px]">%</span></div></div>
+                <div><div className="text-[9px] text-[var(--text-muted)] uppercase">Interruzioni</div>
+                  <div className={`font-bold text-base ${report.disconnections > 0 ? "text-red-300" : "text-emerald-300"}`} data-testid="connectivity-stat-disconnections">{report.disconnections}</div></div>
+                <div><div className="text-[9px] text-[var(--text-muted)] uppercase">Downtime tot.</div>
+                  <div className="font-bold text-base text-white" data-testid="connectivity-stat-downtime">{fmtDur(report.total_downtime_min)}</div></div>
+                <div><div className="text-[9px] text-[var(--text-muted)] uppercase">Più lunga</div>
+                  <div className="font-bold text-base text-white" data-testid="connectivity-stat-longest">{fmtDur(report.longest_outage_min)}</div></div>
+                <div><div className="text-[9px] text-[var(--text-muted)] uppercase">MTTR</div>
+                  <div className="font-bold text-base text-white" data-testid="connectivity-stat-mttr">{fmtDur(report.mttr_min)}</div></div>
               </div>
             </div>
 
