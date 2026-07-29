@@ -1,3 +1,35 @@
+# 2026-07-29 — FIX ROOT CAUSE + rollback selettore cross-tenant
+
+## Feedback utente (fermo)
+"Un dispositivo NON deve/può appartenere a più tenant, non si devono MAI mischiare."
+Obiezione al selettore che mostrava 2 clienti sulla stessa schermata.
+
+## Chiarimento
+Non c'era mixing di DATI (le query porte/metriche sono sempre {ip+client_id}). Il
+selettore mostrava solo 2 card di clienti diversi sulla stessa pagina → violava il
+principio di separazione visiva. RIMOSSO.
+
+## Root cause del problema originale
+`DeviceInfoCard.js:471` costruiva il link "/switch-ports/{ip}" SENZA client_id →
+aprendo le Porte Switch dalla Scheda Dispositivo si perdeva il contesto cliente e,
+per IP privati condivisi, scattava il 400 "client_id obbligatorio".
+
+## Fix
+- `DeviceInfoCard.js`: il bottone Porte switch ora passa SEMPRE il client_id
+  (`clientId prop || card.client.id || ...`).
+- `SwitchPortsPage.js`: rimosso il selettore che elencava i tenant; al posto, se manca
+  clientId su IP condiviso, mostra un messaggio NEUTRO ("Apri dalla Panoramica del
+  cliente") SENZA mostrare nomi/dati di altri clienti.
+- `topology.py`: rimosso l'endpoint `GET /devices/{ip}/owners` (aggregava clienti).
+
+## Validazione (screenshot)
+- info-card espone `client.id` → link corretto ✅
+- Schermata neutra: nessun nome tenant mostrato (NO_TENANT_NAMES_SHOWN=True) ✅
+- Dati sintetici rimossi.
+
+---
+
+
 # 2026-07-29 — UX: Selettore tenant per IP condivisi (fix "client_id obbligatorio")
 
 ## Contesto (segnalazione utente)

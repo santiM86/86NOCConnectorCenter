@@ -382,8 +382,8 @@ export default function SwitchPortsPage() {
   const [diag, setDiag] = useState(null);
   const [diagLoading, setDiagLoading] = useState(false);
   const [diagActionLoading, setDiagActionLoading] = useState(false);
-  // Selettore tenant quando l'IP collide fra piu' clienti (no clientId in URL)
-  const [owners, setOwners] = useState([]);
+  // IP condiviso fra clienti diversi + nessun clientId in URL: NON mostriamo dati
+  // di altri tenant, chiediamo solo di aprire dal cliente corretto.
   const [needClientPick, setNeedClientPick] = useState(false);
 
   const runDiagnose = useCallback(async () => {
@@ -442,16 +442,11 @@ export default function SwitchPortsPage() {
         if (fresh) setSelected(fresh);
       }
     } catch (e) {
-      // IP presente su piu' clienti senza clientId → mostra il selettore tenant
+      // IP presente su piu' clienti senza clientId: NON mostriamo mai dati di altri
+      // tenant. Chiediamo semplicemente di aprire la pagina dal cliente corretto.
       if (e?.response?.status === 400 && !clientId) {
-        try {
-          const ow = await axios.get(`${API}/devices/${encodeURIComponent(deviceIp)}/owners`);
-          if ((ow.data?.owners || []).length > 0) {
-            setOwners(ow.data.owners);
-            setNeedClientPick(true);
-            return;
-          }
-        } catch { /* noop */ }
+        setNeedClientPick(true);
+        return;
       }
       toast.error(e?.response?.data?.detail || "Errore caricamento");
     } finally {
@@ -532,7 +527,8 @@ export default function SwitchPortsPage() {
       : <CaretDown size={9} className="inline ml-0.5 text-cyan-300" />;
   };
 
-  // Selettore tenant: IP presente su piu' clienti e nessun clientId in URL
+  // IP condiviso da piu' clienti e nessun clientId in URL: messaggio neutro,
+  // NESSUN dato/nome di altri tenant viene mostrato.
   if (needClientPick) {
     return (
       <div className="p-6 md:p-10 max-w-2xl mx-auto" data-testid="switch-ports-client-picker">
@@ -540,29 +536,20 @@ export default function SwitchPortsPage() {
           <button onClick={() => navigate(-1)} className="text-[var(--text-muted)] hover:text-[var(--text-primary)] text-lg">←</button>
           <h1 className="text-base md:text-lg font-bold">Dettagli switch · <span className="font-mono text-cyan-300">{deviceIp}</span></h1>
         </div>
-        <div className="p-6 rounded-lg border border-cyan-500/40 bg-cyan-500/10 space-y-4">
-          <div>
-            <div className="text-sm font-bold text-cyan-100">Questo IP appartiene a più clienti</div>
-            <div className="text-[11px] text-[var(--text-muted)] mt-1">
-              L'indirizzo <code className="font-mono">{deviceIp}</code> è un IP privato usato da <strong>{owners.length}</strong> clienti diversi.
-              Per motivi di isolamento multi-tenant, seleziona di quale cliente vuoi vedere lo switch.
-            </div>
+        <div className="p-6 rounded-lg border border-amber-500/40 bg-amber-500/10 space-y-3">
+          <div className="text-sm font-bold text-amber-100">Apri questa pagina dal cliente corretto</div>
+          <div className="text-[12px] text-[var(--text-secondary)] leading-relaxed">
+            L'IP privato <code className="font-mono text-amber-200">{deviceIp}</code> è usato — su reti separate — da più clienti.
+            Per garantire l'isolamento multi-tenant, ARGUS non apre questa pagina senza sapere di quale cliente si tratta
+            e <strong>non mostra mai dispositivi di clienti diversi insieme</strong>.
           </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-            {owners.map((o) => (
-              <button
-                key={o.client_id}
-                onClick={() => navigate(`/switch-ports/${encodeURIComponent(deviceIp)}?clientId=${encodeURIComponent(o.client_id)}`)}
-                className="text-left p-3 rounded-lg border border-cyan-500/30 bg-[var(--bg-card)] hover:border-cyan-400 hover:bg-cyan-500/10 transition-all"
-                data-testid={`client-pick-${o.client_id}`}
-              >
-                <div className="font-semibold text-cyan-200 text-[13px]">{o.client_name}</div>
-                <div className="text-[10px] text-[var(--text-muted)] mt-0.5">
-                  {o.device_name || "(senza nome)"}{o.device_type ? ` · ${o.device_type}` : ""}
-                </div>
-              </button>
-            ))}
+          <div className="text-[12px] text-[var(--text-secondary)]">
+            Torna nella <strong>Panoramica del cliente</strong> e clicca sullo switch da lì: la pagina si aprirà
+            già filtrata sul cliente giusto.
           </div>
+          <Button onClick={() => navigate("/")} size="sm" variant="outline" className="text-[11px]" data-testid="switch-ports-go-clients">
+            Vai alla Dashboard
+          </Button>
         </div>
       </div>
     );
