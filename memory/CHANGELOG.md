@@ -1,3 +1,28 @@
+# 2026-07-29 — ENHANCEMENT: "Correggi ora" → poll immediato (hot-push config all'agent)
+
+## Richiesta utente
+Dopo il "Correggi ora" (device_type=switch), forzare un poll immediato invece di
+aspettare 2-5 min, così le porte compaiono quasi subito.
+
+## Implementazione
+- `topology.set_device_type_switch`: dopo l'update chiama
+  `agent_ws.push_config_to_client(cid)` → hot-push della poller_config aggiornata a
+  TUTTI gli agent live del cliente. L'agent vede subito `profile=switch` e raccoglie
+  ifTable/LLDP/PoE al ciclo SNMP successivo (~60s). Risposta arricchita con
+  `agents_notified` + `message` dinamico (~1 min se agent live, altrimenti 2-5 min).
+- Frontend: il toast mostra il `message` del backend; dopo il fix ri-esegue diagnose
+  e `reload()` delle porte.
+- Nota: non esiste un comando agent per la raccolta ports on-demand immediata
+  (richiederebbe modifica dell'agent Go); l'hot-push della config è la via piu' rapida
+  senza redeploy agent.
+
+## Validazione
+- POST set-type-switch → `agents_notified` + message corretti (0 in preview, fallback
+  2-5 min). Backend compila e riparte. Device di test ripristinato a 'endpoint'.
+
+---
+
+
 # 2026-07-29 — FEATURE: "Correggi ora" nella Diagnosi porte (one-click device_type=switch)
 
 ## Richiesta utente

@@ -403,11 +403,12 @@ export default function SwitchPortsPage() {
     if (action !== "set_device_type_switch") return;
     setDiagActionLoading(true);
     try {
-      await axios.post(`${API}/devices/${encodeURIComponent(deviceIp)}/switch-ports/set-type-switch`, null, {
+      const r = await axios.post(`${API}/devices/${encodeURIComponent(deviceIp)}/switch-ports/set-type-switch`, null, {
         params: clientId ? { client_id: clientId } : {},
       });
-      toast.success("Impostato device_type=switch. L'agent raccoglierà le porte al prossimo poll (2-5 min).");
+      toast.success(r?.data?.message || "Impostato device_type=switch.");
       await runDiagnose();  // ricarica la diagnosi aggiornata
+      reload();             // ricarica le porte (compariranno appena l'agent le invia)
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Errore aggiornamento");
     } finally {

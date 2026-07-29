@@ -701,7 +701,24 @@ async def set_device_type_switch(device_ip: str, client_id: Optional[str] = None
         )
     except Exception:
         pass
-    return {"status": "ok", "device_ip": device_ip, "client_id": cid, "device_type": "switch"}
+
+    # Hot-push della config aggiornata agli agent LIVE: cosi' vedono subito
+    # profile=switch e raccolgono ifTable/LLDP/PoE al prossimo ciclo SNMP (~60s),
+    # senza aspettare il refresh periodico della config.
+    agents_notified = 0
+    try:
+        from .agent_ws import push_config_to_client
+        agents_notified = await push_config_to_client(cid)
+    except Exception:
+        pass
+
+    return {"status": "ok", "device_ip": device_ip, "client_id": cid,
+            "device_type": "switch", "agents_notified": agents_notified,
+            "message": (
+                f"Config inviata a {agents_notified} agent live: le porte compariranno entro ~1 minuto."
+                if agents_notified else
+                "Tipo impostato. Le porte compariranno al prossimo ciclo di poll dell'agent (2-5 min)."
+            )}
 
 
 
