@@ -54,6 +54,36 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-07-29 ✅ Connettività "Spark" — potenziamento stile PingPlotter Pro
+
+### Richiesta utente
+Prendere spunto da PingPlotter Pro e integrarne funzioni di monitoraggio, KPI e
+tempi di disconnessione per i dispositivi.
+
+### Aggiunte (su `connectivity.py` + `ConnectivityDialog.js`)
+- Report backend arricchito: `latency.cur` (ultimo campione = "Cur" PingPlotter),
+  `latency_distribution{good_pct,warn_pct,crit_pct}` (fasce verde/giallo/rosso),
+  `total_downtime_min`, `longest_outage_min`.
+- UI riga KPI stile PingPlotter: **Cur / Avg / Min / Max / p95 / PL%**.
+- **Barra distribuzione latenza** (segmenti verde/giallo/rosso con %).
+- **Grafico "firma" PingPlotter** (recharts ComposedChart): area latenza (cyan)
+  + **fasce colorate di sfondo** (verde <30 / giallo 30-100 / rosso >100 ms via
+  ReferenceArea) + **barre rosse di packet loss** (asse dx) che durante
+  un'interruzione formano il blocco rosso.
+- **Pannello KPI disconnessioni**: disponibilità %, n° interruzioni, downtime
+  totale, interruzione più lunga, MTTR + timeline finestre di down con orari.
+
+### Testing (iteration_99, frontend PASS)
+KPI popolati (Cur 15.3 / Avg 20.4 / Max 249 / p95 67.4 / PL% 1.76), barra
+distribuzione 90.2/7.3/2.5%, ComposedChart con area+97 barre loss+3 bande,
+pannello outage (2 interruzioni, 17min downtime, 13min longest, 8.5 MTTR),
+tutti i periodi 1h→30d coerenti, test on-demand 404 gestito senza crash, stesso
+dialog dalla scheda DeviceInfoCard. Rifiniture: aggiunta DialogDescription
+(a11y) + placeholder coerente "—" quando 0 interruzioni.
+
+---
+
+
 ## 2026-07-29 ✅ Connettività per-device "Spark" (storico ping + report + test) — Fase 1
 
 ### Richiesta utente

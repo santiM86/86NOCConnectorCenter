@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import axios from "axios";
 import { API } from "@/App";
 import { toast } from "sonner";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import {
   Pulse, WifiHigh, WifiSlash, Timer, ArrowsClockwise, Warning,
@@ -124,6 +124,9 @@ export default function ConnectivityDialog({ deviceIp, clientId, deviceName, ope
             Connettività — {deviceName || deviceIp}
             <span className="text-[11px] font-mono text-[var(--text-muted)]">{deviceIp}</span>
           </DialogTitle>
+          <DialogDescription className="text-[11px] text-[var(--text-muted)]">
+            Monitoraggio connettività: latenza, packet loss e tempi di disconnessione nel tempo.
+          </DialogDescription>
         </DialogHeader>
 
         {/* Toolbar periodo + test */}
@@ -282,9 +285,9 @@ export default function ConnectivityDialog({ deviceIp, clientId, deviceName, ope
                 <div><div className="text-[9px] text-[var(--text-muted)] uppercase">Interruzioni</div>
                   <div className={`font-bold text-base ${report.disconnections > 0 ? "text-red-300" : "text-emerald-300"}`} data-testid="connectivity-stat-disconnections">{report.disconnections}</div></div>
                 <div><div className="text-[9px] text-[var(--text-muted)] uppercase">Downtime tot.</div>
-                  <div className="font-bold text-base text-white" data-testid="connectivity-stat-downtime">{fmtDur(report.total_downtime_min)}</div></div>
+                  <div className="font-bold text-base text-white" data-testid="connectivity-stat-downtime">{report.disconnections > 0 ? fmtDur(report.total_downtime_min) : "—"}</div></div>
                 <div><div className="text-[9px] text-[var(--text-muted)] uppercase">Più lunga</div>
-                  <div className="font-bold text-base text-white" data-testid="connectivity-stat-longest">{fmtDur(report.longest_outage_min)}</div></div>
+                  <div className="font-bold text-base text-white" data-testid="connectivity-stat-longest">{report.disconnections > 0 ? fmtDur(report.longest_outage_min) : "—"}</div></div>
                 <div><div className="text-[9px] text-[var(--text-muted)] uppercase">MTTR</div>
                   <div className="font-bold text-base text-white" data-testid="connectivity-stat-mttr">{fmtDur(report.mttr_min)}</div></div>
               </div>
