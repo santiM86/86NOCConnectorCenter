@@ -302,12 +302,13 @@ function PortDetailPanel({ p, onClose, onOpenCable, deviceIp, clientId }) {
 }
 
 // ----- Diagnose dialog -----
-function DiagnoseDialog({ diag, loading, onClose }) {
+function DiagnoseDialog({ diag, loading, onClose, onAction, actionLoading }) {
   if (!loading && !diag) return null;
   const stColor = (s) => s === "ok" ? "text-emerald-300 border-emerald-500/40 bg-emerald-500/10"
     : s === "warn" ? "text-amber-300 border-amber-500/40 bg-amber-500/10"
     : "text-rose-300 border-rose-500/40 bg-rose-500/10";
   const stIcon = (s) => s === "ok" ? "✓" : s === "warn" ? "!" : "✕";
+  const actionLabel = (a) => a === "set_device_type_switch" ? "⚡ Correggi ora — imposta come Switch" : "Correggi";
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose} data-testid="switch-ports-diagnose-dialog">
       <div className="noc-panel max-w-2xl w-full max-h-[85vh] overflow-y-auto p-4 space-y-3" onClick={(e) => e.stopPropagation()}>
@@ -331,6 +332,17 @@ function DiagnoseDialog({ diag, loading, onClose }) {
                       <div className="text-[12px] font-semibold">{c.step}</div>
                       <div className="text-[11px] opacity-90">{c.detail}</div>
                       {c.fix && <div className="text-[10px] mt-1 text-[var(--text-secondary)]">→ {c.fix}</div>}
+                      {c.action && onAction && (
+                        <button
+                          onClick={() => onAction(c.action)}
+                          disabled={actionLoading}
+                          className="mt-2 text-[11px] font-semibold px-2.5 py-1 rounded bg-cyan-500 hover:bg-cyan-400 text-black disabled:opacity-50 flex items-center gap-1"
+                          data-testid={`diagnose-action-${c.action}`}
+                        >
+                          {actionLoading && <ArrowsClockwise size={11} className="animate-spin" />}
+                          {actionLabel(c.action)}
+                        </button>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -369,6 +381,7 @@ export default function SwitchPortsPage() {
   // Diagnosi "perche' non arrivano le porte"
   const [diag, setDiag] = useState(null);
   const [diagLoading, setDiagLoading] = useState(false);
+  const [diagActionLoading, setDiagActionLoading] = useState(false);
 
   const runDiagnose = useCallback(async () => {
     setDiagLoading(true);
@@ -385,6 +398,22 @@ export default function SwitchPortsPage() {
       setDiagLoading(false);
     }
   }, [deviceIp, clientId]);
+
+  const handleDiagAction = useCallback(async (action) => {
+    if (action !== "set_device_type_switch") return;
+    setDiagActionLoading(true);
+    try {
+      await axios.post(`${API}/devices/${encodeURIComponent(deviceIp)}/switch-ports/set-type-switch`, null, {
+        params: clientId ? { client_id: clientId } : {},
+      });
+      toast.success("Impostato device_type=switch. L'agent raccoglierà le porte al prossimo poll (2-5 min).");
+      await runDiagnose();  // ricarica la diagnosi aggiornata
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Errore aggiornamento");
+    } finally {
+      setDiagActionLoading(false);
+    }
+  }, [deviceIp, clientId, runDiagnose]);
 
   const toggleSort = (col) => {
     if (sortBy === col) {
@@ -541,7 +570,7 @@ export default function SwitchPortsPage() {
             </Button>
           </div>
         </div>
-        <DiagnoseDialog diag={diag} loading={diagLoading} onClose={() => { setDiag(null); setDiagLoading(false); }} />
+        <DiagnoseDialog diag={diag} loading={diagLoading} onAction={handleDiagAction} actionLoading={diagActionLoading} onClose={() => { setDiag(null); setDiagLoading(false); }} />
       </div>
     );
   }
@@ -893,7 +922,7 @@ export default function SwitchPortsPage() {
         </div>
       </details>
 
-      <DiagnoseDialog diag={diag} loading={diagLoading} onClose={() => { setDiag(null); setDiagLoading(false); }} />
+      <DiagnoseDialog diag={diag} loading={diagLoading} onAction={handleDiagAction} actionLoading={diagActionLoading} onClose={() => { setDiag(null); setDiagLoading(false); }} />
     </div>
   );
 }

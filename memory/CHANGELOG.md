@@ -1,3 +1,27 @@
+# 2026-07-29 — FEATURE: "Correggi ora" nella Diagnosi porte (one-click device_type=switch)
+
+## Richiesta utente
+Aggiungere un pulsante nella Diagnosi che, quando rileva device_type non switch,
+imposti direttamente device_type=switch senza andare nelle impostazioni.
+
+## Implementazione
+- Backend `topology.py`:
+  - Il check "3. Tipo device" della diagnose ora include `action="set_device_type_switch"`.
+  - Nuovo endpoint `POST /api/devices/{ip}/switch-ports/set-type-switch?client_id=`
+    (admin/operator, scoped via tenant_scope): setta `device_type='switch'` su
+    `managed_devices` (ip+client_id) + cascade best-effort su `devices`.
+- Frontend `SwitchPortsPage.js`: `DiagnoseDialog` mostra il pulsante
+  "⚡ Correggi ora — imposta come Switch" per i check con `action`; al click chiama
+  l'endpoint, mostra toast e ri-esegue la diagnosi aggiornata.
+
+## Validazione (curl + screenshot)
+- diagnose (before): check 3 = error + action ; POST set-type-switch → device_type=switch ;
+  diagnose (after): check 3 = OK ✅. Pulsante renderizzato in UI ✅.
+- Device di test 10.10.1.10 ripristinato a 'endpoint' dopo il test.
+
+---
+
+
 # 2026-07-29 — FEATURE: Diagnostica one-click "Perché non arrivano le porte switch"
 
 ## Contesto (domanda utente)

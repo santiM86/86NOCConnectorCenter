@@ -542,8 +542,8 @@ async def diagnose_switch_ports(device_ip: str, client_id: Optional[str] = None,
     checks: list = []
     recommendation = None
 
-    def add(step, status, detail, fix=None):
-        checks.append({"step": step, "status": status, "detail": detail, "fix": fix})
+    def add(step, status, detail, fix=None, action=None):
+        checks.append({"step": step, "status": status, "detail": detail, "fix": fix, "action": action})
 
     # 1. Device registrato per questo cliente?
     md = None
@@ -589,7 +589,8 @@ async def diagnose_switch_ports(device_ip: str, client_id: Optional[str] = None,
             f"device_type='{dev_type or '(vuoto)'}': NON e' classificato come switch. "
             f"L'agent fa solo il poll base e NON raccoglie le porte. "
             f"E' la causa piu' probabile quando 'su un altro switch identico funziona'.",
-            fix="Imposta device_type='switch' nelle impostazioni del device (come sull'altro cliente che funziona).")
+            fix="Imposta device_type='switch' nelle impostazioni del device (come sull'altro cliente che funziona).",
+            action="set_device_type_switch")
         recommendation = recommendation or f"Imposta device_type='switch' su {device_ip}."
 
     # 4. Community SNMP + eligibility
@@ -670,6 +671,37 @@ async def diagnose_switch_ports(device_ip: str, client_id: Optional[str] = None,
 
     return {"device_ip": device_ip, "device_name": dev_name, "device_type": dev_type,
             "client_id": cid or "", "checks": checks, "recommendation": recommendation}
+
+
+@router.post("/devices/{device_ip}/switch-ports/set-type-switch")
+async def set_device_type_switch(device_ip: str, client_id: Optional[str] = None,
+                                 current_user: dict = Depends(get_current_user)):
+    """Correzione one-click: imposta device_type='switch' sul device (ip+client_id),
+    cosi' l'agent iniziera' a raccogliere ifTable/LLDP/PoE al prossimo poll."""
+    if current_user.get("role") not in ("admin", "superadmin", "operator"):
+        raise HTTPException(status_code=403, detail="Solo admin/operator")
+
+    from .tenant_scope import resolve_device_client_id
+    cid = await resolve_device_client_id(device_ip, client_id)
+    if not cid:
+        raise HTTPException(status_code=404, detail="Device non trovato per questo cliente")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    res = await db.managed_devices.update_one(
+        {"ip": device_ip, "client_id": cid},
+        {"$set": {"device_type": "switch", "updated_at": now_iso}},
+    )
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Device non trovato per questo cliente")
+    # Cascade best-effort sulla collection `devices` (impostazioni UI) se presente
+    try:
+        await db.devices.update_many(
+            {"ip_address": device_ip, "client_id": cid},
+            {"$set": {"device_type": "switch", "updated_at": now_iso}},
+        )
+    except Exception:
+        pass
+    return {"status": "ok", "device_ip": device_ip, "client_id": cid, "device_type": "switch"}
 
 
 
