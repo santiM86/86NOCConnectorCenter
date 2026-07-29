@@ -54,6 +54,46 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-07-29 🐞 FIX diagnosi SNMP: falso "fuori subnet" + community case mismatch
+
+### Evidenza utente (switch HPE 10.10.10.105, cliente Arma Creativo)
+Il Test community diceva "Agent CREATIVOSRV2 FUORI subnet (agent_ip=?)" e
+suggeriva di installare un agent — MA lo Scanner LAN prova che CREATIVOSRV2 è
+proprio nella rete 10.10.10.0/24 (scansiona 10.10.10.1/24, trova lo switch a
+1-2ms). Messaggio quindi FALSO.
+
+### Root cause del falso "fuori subnet"
+`snmp_diagnostics.py` (diagnosi + community-test) leggeva `managed_agents.agent_ip`
+(vuoto). L'IP reale dell'agent è nella lista **`ips`** (es. PC001 →
+`['10.10.1.103', '169.254...']`); `last_ip` spesso vuoto. → subnet non calcolata
+→ falso "fuori subnet"/"nessun agent copre la subnet".
+
+### Fix
+- Nuovo helper `_agent_covers_device(agent_doc, device_ip)` che prova TUTTI gli
+  IP noti (last_ip, agent_ip, `ips`), escludendo gli APIPA 169.254.x. Usato sia
+  in `/snmp-diagnosis` che in `/snmp-community-test`. Test unit: CREATIVOSRV2
+  (ips 10.10.10.x) → in-subnet=True; PC001 (10.10.1.x) → False. ✓
+- `_community_hint` riscritto: mette in PRIMO PIANO la **case-sensitivity**
+  della community ("ARGUS" ≠ "Argus" ≠ "argus"), poi ACL/vista MIB; suggerisce
+  l'agent/subnet solo se `agent_ip` noto ED effettivamente fuori subnet.
+- Banner rosso DeviceInfoCard: community case-sensitive come causa n°1;
+  ipotesi agent/subnet solo "se non risponde nemmeno al ping".
+
+### Causa reale del "Nessuna risposta" (confermata dall'evidenza)
+Il Test ha provato community **"Argus"** ma sullo switch l'utente aveva
+configurato **"ARGUS"** (screenshot). SNMP è case-sensitive → mismatch → switch
+muto. Fix utente: allineare la community (identica, stesso case) in Modifica
+dispositivo → SNMP, v2c. Poi Test community → deve dare OK.
+
+### Nota (potenziale hardening futuro)
+Il dispatcher reale `_get_client_agents_subnets` (agent_ws) usa solo `last_ip`:
+se vuoto in prod, l'agent riceverebbe 0 target SNMP. In questo caso l'SNMP viene
+comunque tentato (ULTIMO CHECK SNMP recente) → last_ip ok in prod o fallback
+master-orfano. Da valutare estensione a `ips` se emergono casi di 0-target.
+
+---
+
+
 ## 2026-07-29 ✅ Diagnosi SNMP switch HPE + Test community one-click
 
 ### Problema utente
