@@ -54,6 +54,41 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-07-29 ✅ FIX P0 — Salvataggio impostazioni device intermittente (ip vs ip_address)
+
+### Root cause (confermata con reproduction)
+Gli endpoint by-ip di `device_info_card.py` (virtualization, vm-alert,
+vital, rename) cercavano/aggiornavano `managed_devices` con query rigida
+`{"ip": device_ip}`. Alcuni documenti legacy salvano l'IP SOLO in
+`ip_address`. La `update_one(..., upsert=True)` non trovava il doc →
+creava un DUPLICATO fantasma; la UI continuava a leggere il doc
+originale vuoto → "salva ma me lo richiede ogni volta" (intermittente:
+funzionava solo per i device con `ip` valorizzato).
+
+### Fix (`backend/routes/device_info_card.py`)
+- Nuovo helper `_ip_match(ip)` → `{"$or":[{"ip":ip},{"ip_address":ip}]}`.
+- Tutti gli endpoint by-ip: lookup via `_ip_match` (+client_id), poi
+  update tramite chiave STABILE `{"id": md["id"]}` → mai piu' duplicati.
+- Ogni scrittura normalizza `ip=device_ip` sul doc (self-heal).
+- GET info-card + check exists usano `_ip_match`.
+- NUOVO `POST /api/devices/normalize-ip-fields` (admin): one-shot
+  idempotente, copia `ip_address`→`ip` sui doc legacy.
+
+### Validazione (curl reproduction in container)
+- Inserito doc con SOLO `ip_address` → POST virtualization=hyperv →
+  aggiornato lo STESSO doc (1 solo doc, no duplicati), `ip` normalizzato.
+- normalize-ip-fields → `normalized: 1`.
+- vm-alert su doc legacy → OK, nessun duplicato.
+
+### Steps utente PROD
+1. **Save to GitHub** → deploy backend (nessun rebuild agent Go).
+2. (Opzionale, consigliato) chiamare una volta
+   `POST /api/devices/normalize-ip-fields` con token admin per ripulire
+   i vecchi documenti. Il fix codice funziona comunque anche senza.
+
+---
+
+
 ## 2026-06-24 🔥 HOTFIX P0 — vmbackup_polling_tick crashava ogni minuto in PROD
 
 Dopo il deploy PROD (git pull + restart) l'utente ha mostrato i log con

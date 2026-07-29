@@ -27,6 +27,19 @@ from display_name import best_display_name
 router = APIRouter(prefix="/api", tags=["device-info-card"])
 
 
+def _ip_match(device_ip: str) -> dict:
+    """Match managed_devices sia sul campo canonico `ip` che sull'alias legacy
+    `ip_address`.
+
+    Alcuni documenti storici salvano l'IP SOLO in `ip_address` (mai in `ip`).
+    Senza questo OR le update by-ip con `{"ip": device_ip}` non trovavano il
+    doc e la upsert creava un DUPLICATO → l'impostazione (es. `virtualization`)
+    veniva scritta su un doc fantasma e la UI continuava a leggere il vecchio
+    documento vuoto ("salva ma me lo richiede ogni volta").
+    """
+    return {"$or": [{"ip": device_ip}, {"ip_address": device_ip}]}
+
+
 # ==================== HELPER: vendor_metrics extraction & sanitization ====================
 # Bug noti dei polling SNMP: 0xFFFF=65535 viene usato come "no value" sentinel da molti vendor.
 # Inoltre alcuni walk OID restituiscono indici parassiti (84-96) che non sono PSU/Fan veri.
@@ -294,7 +307,7 @@ async def build_info_card(device_ip: str, client_id: Optional[str] = None) -> Di
     # 1) Live poll from connector
     poll = await db.device_poll_status.find_one(_q({"device_ip": device_ip}), {"_id": 0}) or {}
     # 2) Manual/managed device (user-configured SNMP+WebConsole)
-    managed = await db.managed_devices.find_one(_q({"ip": device_ip}), {"_id": 0}) or {}
+    managed = await db.managed_devices.find_one(_q(_ip_match(device_ip)), {"_id": 0}) or {}
     # 3) CMDB asset (business-level inventory)
     cmdb = await db.cmdb_assets.find_one(_q({"ip_address": device_ip}), {"_id": 0}) or {}
     # 4) Lifecycle record (warranty/EOL)
@@ -597,7 +610,7 @@ async def get_info_card(device_ip: str, client_id: Optional[str] = None, current
     # Check that device exists somewhere (nello scope del client se fornito)
     exists = (
         await db.device_poll_status.count_documents(_q({"device_ip": device_ip})) > 0
-        or await db.managed_devices.count_documents(_q({"ip": device_ip})) > 0
+        or await db.managed_devices.count_documents(_q(_ip_match(device_ip))) > 0
         or await db.cmdb_assets.count_documents(_q({"ip_address": device_ip})) > 0
     )
     if not exists:
@@ -658,15 +671,15 @@ async def rename_device_by_ip(
 
     # Verifica che il device esista almeno in una collezione
     exists_in = []
-    md_query = {"ip": device_ip}
+    md_query = _ip_match(device_ip)
     if explicit_client_id:
-        md_query["client_id"] = explicit_client_id
+        md_query = {**md_query, "client_id": explicit_client_id}
     md = await db.managed_devices.find_one(md_query, {"_id": 0, "id": 1, "name": 1, "client_id": 1})
 
     # Se piu' device matchano (multi-tenant), seleziona quello del client_id
     # esplicito; altrimenti se ne esiste piu' di uno → errore.
     if not explicit_client_id:
-        cnt = await db.managed_devices.count_documents({"ip": device_ip})
+        cnt = await db.managed_devices.count_documents(_ip_match(device_ip))
         if cnt > 1:
             raise HTTPException(
                 status_code=409,
@@ -712,8 +725,8 @@ async def rename_device_by_ip(
         old_name = md.get("name")
         client_id = md.get("client_id")
         await db.managed_devices.update_one(
-            {"ip": device_ip, "client_id": client_id},
-            {"$set": lock_fields},
+            {"id": md["id"]},
+            {"$set": {**lock_fields, "ip": device_ip}},
         )
     else:
         # Crea entry ghost in managed_devices cosi' il lock sia rispettato
@@ -827,12 +840,12 @@ async def set_device_vital(
     explicit_client_id = (payload.get("client_id") or "").strip() or None
     reason = (payload.get("reason") or "").strip()[:200]
 
-    md_query = {"ip": device_ip}
+    md_query = _ip_match(device_ip)
     if explicit_client_id:
-        md_query["client_id"] = explicit_client_id
+        md_query = {**md_query, "client_id": explicit_client_id}
 
     if not explicit_client_id:
-        cnt = await db.managed_devices.count_documents({"ip": device_ip})
+        cnt = await db.managed_devices.count_documents(_ip_match(device_ip))
         if cnt > 1:
             raise HTTPException(
                 status_code=409,
@@ -847,12 +860,13 @@ async def set_device_vital(
     user_email = current_user.get("email")
 
     await db.managed_devices.update_one(
-        md_query,
+        {"id": md["id"]},
         {"$set": {
             "is_vital": is_vital,
             "is_vital_set_by": user_email,
             "is_vital_set_at": now_iso,
             "is_vital_reason": reason or None,
+            "ip": device_ip,  # normalizza il campo chiave (docs legacy con solo ip_address)
         }},
     )
 
@@ -922,12 +936,12 @@ async def set_device_virtualization(
     host_hint = (payload.get("hyperv_host_hint") or "").strip()
     explicit_client_id = (payload.get("client_id") or "").strip() or None
 
-    md_query = {"ip": device_ip}
+    md_query = _ip_match(device_ip)
     if explicit_client_id:
-        md_query["client_id"] = explicit_client_id
+        md_query = {**md_query, "client_id": explicit_client_id}
 
     if not explicit_client_id:
-        cnt = await db.managed_devices.count_documents({"ip": device_ip})
+        cnt = await db.managed_devices.count_documents(_ip_match(device_ip))
         if cnt > 1:
             raise HTTPException(
                 status_code=409,
@@ -940,7 +954,20 @@ async def set_device_virtualization(
     now_iso = datetime.now(timezone.utc).isoformat()
     user_email = current_user.get("email")
 
-    if not md:
+    set_fields = {
+        "virtualization": virt,
+        "hyperv_vm_name": vm_name,
+        "hyperv_host_hint": host_hint,
+        "virtualization_set_by": user_email,
+        "virtualization_set_at": now_iso,
+        "ip": device_ip,  # normalizza il campo chiave (docs legacy con solo ip_address)
+    }
+
+    if md:
+        # Aggiorna il documento esistente tramite la chiave STABILE `id`.
+        # Evita definitivamente i duplicati causati dal mismatch ip/ip_address.
+        await db.managed_devices.update_one({"id": md["id"]}, {"$set": set_fields})
+    else:
         # Device poll-only (es. server iLO/redfish presenti solo in
         # device_poll_status) senza doc in managed_devices → creiamo un doc
         # minimale via upsert, cosi' l'impostazione persiste ed e' leggibile
@@ -952,27 +979,20 @@ async def set_device_virtualization(
             )
         from uuid import uuid4
         md = {"id": str(uuid4()), "client_id": explicit_client_id, "name": device_ip, "virtualization": ""}
-
-    await db.managed_devices.update_one(
-        md_query,
-        {
-            "$set": {
-                "virtualization": virt,
-                "hyperv_vm_name": vm_name,
-                "hyperv_host_hint": host_hint,
-                "virtualization_set_by": user_email,
-                "virtualization_set_at": now_iso,
+        await db.managed_devices.update_one(
+            {"ip": device_ip, "client_id": explicit_client_id},
+            {
+                "$set": set_fields,
+                "$setOnInsert": {
+                    "id": md["id"],
+                    "name": device_ip,
+                    "created_at": now_iso,
+                    "source": "poll",
+                    "device_type": "",
+                },
             },
-            "$setOnInsert": {
-                "id": md["id"],
-                "name": md.get("name") or device_ip,
-                "created_at": now_iso,
-                "source": "poll",
-                "device_type": "",
-            },
-        },
-        upsert=True,
-    )
+            upsert=True,
+        )
 
     invalidate_silence_cache(client_id=md.get("client_id"), device_ip=device_ip)
 
@@ -1036,12 +1056,12 @@ async def set_device_vm_alert(
     enabled = bool(payload.get("enabled"))
     explicit_client_id = (payload.get("client_id") or "").strip() or None
 
-    md_query = {"ip": device_ip}
+    md_query = _ip_match(device_ip)
     if explicit_client_id:
-        md_query["client_id"] = explicit_client_id
+        md_query = {**md_query, "client_id": explicit_client_id}
 
     if not explicit_client_id:
-        cnt = await db.managed_devices.count_documents({"ip": device_ip})
+        cnt = await db.managed_devices.count_documents(_ip_match(device_ip))
         if cnt > 1:
             raise HTTPException(
                 status_code=409,
@@ -1054,7 +1074,17 @@ async def set_device_vm_alert(
     now_iso = datetime.now(timezone.utc).isoformat()
     user_email = current_user.get("email")
 
-    if not md:
+    set_fields = {
+        "hyperv_alert_on_off": enabled,
+        "hyperv_alert_on_off_set_by": user_email,
+        "hyperv_alert_on_off_set_at": now_iso,
+        "ip": device_ip,  # normalizza il campo chiave (docs legacy con solo ip_address)
+    }
+
+    if md:
+        # Aggiorna via chiave STABILE `id` (niente duplicati da mismatch ip/ip_address)
+        await db.managed_devices.update_one({"id": md["id"]}, {"$set": set_fields})
+    else:
         # Device poll-only (iLO/redfish in device_poll_status) senza doc in
         # managed_devices → upsert di un doc minimale, cosi' l'impostazione persiste.
         if not explicit_client_id:
@@ -1064,25 +1094,20 @@ async def set_device_vm_alert(
             )
         from uuid import uuid4
         md = {"id": str(uuid4()), "client_id": explicit_client_id, "name": device_ip}
-
-    await db.managed_devices.update_one(
-        md_query,
-        {
-            "$set": {
-                "hyperv_alert_on_off": enabled,
-                "hyperv_alert_on_off_set_by": user_email,
-                "hyperv_alert_on_off_set_at": now_iso,
+        await db.managed_devices.update_one(
+            {"ip": device_ip, "client_id": explicit_client_id},
+            {
+                "$set": set_fields,
+                "$setOnInsert": {
+                    "id": md["id"],
+                    "name": device_ip,
+                    "created_at": now_iso,
+                    "source": "poll",
+                    "device_type": "",
+                },
             },
-            "$setOnInsert": {
-                "id": md["id"],
-                "name": md.get("name") or device_ip,
-                "created_at": now_iso,
-                "source": "poll",
-                "device_type": "",
-            },
-        },
-        upsert=True,
-    )
+            upsert=True,
+        )
 
     invalidate_silence_cache(client_id=md.get("client_id"), device_ip=device_ip)
 
@@ -1115,6 +1140,48 @@ async def set_device_vm_alert(
             f"{md.get('name') or device_ip}"
         ),
     }
+
+
+@router.post("/devices/normalize-ip-fields")
+async def normalize_managed_device_ip_fields(
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+):
+    """One-shot idempotente: allinea i documenti legacy di `managed_devices`
+    che hanno l'IP salvato SOLO in `ip_address` copiandolo nel campo canonico
+    `ip`.
+
+    Questo elimina alla radice l'incoerenza `ip` vs `ip_address` che causava
+    il salvataggio intermittente delle impostazioni device (Tipo Macchina,
+    alert VM, ecc.). Sicuro da rilanciare piu' volte.
+    """
+    if current_user.get("role") not in ("admin", "superadmin"):
+        raise HTTPException(status_code=403, detail="Solo admin")
+
+    fixed = 0
+    cursor = db.managed_devices.find(
+        {
+            "$or": [{"ip": {"$in": [None, ""]}}, {"ip": {"$exists": False}}],
+            "ip_address": {"$nin": [None, ""]},
+        },
+        {"_id": 1, "ip_address": 1},
+    )
+    async for doc in cursor:
+        await db.managed_devices.update_one(
+            {"_id": doc["_id"]}, {"$set": {"ip": doc["ip_address"]}}
+        )
+        fixed += 1
+
+    return {
+        "ok": True,
+        "normalized": fixed,
+        "message": (
+            f"{fixed} documenti allineati (ip_address → ip)."
+            if fixed
+            else "Nessun documento da normalizzare: DB gia' coerente."
+        ),
+    }
+
 
 
 
