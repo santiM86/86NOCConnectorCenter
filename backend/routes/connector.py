@@ -35,6 +35,46 @@ router = APIRouter(prefix="/api", tags=["connector"])
 C = CONNECTOR_PATH  # e.g. "c7x9"
 
 
+# ==================== TENANT WRITE GUARD (anti cross-tenant) ====================
+def enforce_connector_tenant(body: Any, client_id: str) -> None:
+    """Guard di scrittura multi-tenant.
+
+    Un connector e' autenticato come UN solo cliente: puo' registrare/aggiornare
+    device SOLO sotto il proprio `client_id`. Se il payload (o un elemento delle
+    sue liste annidate) prova a specificare un client_id DIVERSO, la richiesta
+    viene rifiutata con 403. Impedisce che un agent bacato/compromesso faccia
+    finire un dispositivo sul tenant sbagliato (data-mixing a livello di scrittura).
+    """
+    if not isinstance(body, dict):
+        return
+    top = body.get("client_id")
+    if top and str(top) != str(client_id):
+        logger.warning(
+            "[TENANT-GUARD] connector client_id=%s ha tentato write su client_id=%s (top-level) → 403",
+            client_id, top,
+        )
+        raise HTTPException(
+            status_code=403,
+            detail="Cross-tenant write vietato: il connector non puo' registrare device su un altro cliente.",
+        )
+    for key in ("results", "endpoints", "switches", "devices", "items", "mac_tables", "device_macs"):
+        arr = body.get(key)
+        if isinstance(arr, list):
+            for it in arr:
+                if isinstance(it, dict):
+                    icid = it.get("client_id")
+                    if icid and str(icid) != str(client_id):
+                        logger.warning(
+                            "[TENANT-GUARD] connector client_id=%s ha tentato write su client_id=%s (in %s) → 403",
+                            client_id, icid, key,
+                        )
+                        raise HTTPException(
+                            status_code=403,
+                            detail=f"Cross-tenant write vietato: client_id diverso in '{key}'.",
+                        )
+
+
+
 # ==================== AUTO-DETECT WEB UI ====================
 
 # Porte che di sicuro ospitano una management UI, ordine di preferenza
@@ -859,6 +899,7 @@ async def connector_web_ui_detected(request: Request):
     client_id = client_data["id"]
     body = await request.json()
     check_nosql_injection(body)
+    enforce_connector_tenant(body, client_id)
     device_ip = sanitize_string(str(body.get("device_ip", "")).strip(), 64)
     port = int(body.get("port") or 0)
     scheme = sanitize_string(str(body.get("scheme", "http")).strip().lower(), 8)
@@ -932,6 +973,7 @@ async def connector_printer_probe(request: Request):
     results = body.get("results") or []
     if not isinstance(results, list):
         raise HTTPException(status_code=400, detail="results must be a list")
+    enforce_connector_tenant(body, client_id)
 
     from pymongo import UpdateOne
     now = datetime.now(timezone.utc).isoformat()
@@ -3826,6 +3868,7 @@ async def connector_switch_ports_report(request: Request):
     client_id = client_data["id"]
     switches = body.get("switches", []) or []
     now_iso = datetime.now(timezone.utc).isoformat()
+    enforce_connector_tenant(body, client_id)
 
     # Wipe and reinsert per-switch to stay idempotent and handle port changes
     # v3.6.9+: flap detection - confronta stato precedente con nuovo per tracciare UP/DOWN events
@@ -3940,6 +3983,7 @@ async def connector_network_discovery(request: Request):
     body = await request.json()
     check_nosql_injection(body)
     client_id = client_data["id"]
+    enforce_connector_tenant(body, client_id)
     now_iso = datetime.now(timezone.utc).isoformat()
 
     mac_tables = body.get("mac_tables", [])

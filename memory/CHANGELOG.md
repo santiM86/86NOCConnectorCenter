@@ -1,3 +1,30 @@
+# 2026-07-29 — SECURITY: Tenant Write Guard (anti cross-tenant a livello di scrittura)
+
+## Richiesta utente
+Impedire a un connector di registrare/importare un dispositivo sotto un client_id
+diverso dal proprio (garanzia a livello di SCRITTURA, non solo di visualizzazione).
+
+## Stato preesistente
+Tutti i write dei connector usavano gia' `client_id = client_data["id"]` (identita'
+autenticata via HMAC/API-key), mai un client_id dal body. `LanScanReport` non espone
+client_id (immune per design). Nessun leak reale, ma mancava una rete di sicurezza.
+
+## Implementazione
+- Nuovo helper `enforce_connector_tenant(body, client_id)` in `connector.py`:
+  se il payload (o un elemento di liste annidate: results/endpoints/switches/devices/
+  items/mac_tables/device_macs) specifica un `client_id` DIVERSO da quello del
+  connector autenticato → HTTP 403 + log `[TENANT-GUARD]`.
+- Applicato agli endpoint di ingestion raw-body: `web-ui-detected`, `printer-probe`,
+  `switch-ports`, `network-discovery`.
+- Gli endpoint Pydantic (lan-scan) restano immuni perche' il modello non ha client_id.
+
+## Validazione
+- Unit test logica: no client_id → pass; match → pass; top-level foreign → 403;
+  nested foreign → 403 ✅. Backend compila e riparte pulito.
+
+---
+
+
 # 2026-07-29 — FIX ROOT CAUSE + rollback selettore cross-tenant
 
 ## Feedback utente (fermo)
