@@ -664,14 +664,23 @@ async def redfish_diagnose(device_ip: str, current_user: dict = Depends(get_curr
 # ==================== POWER CONTROL & WAKE-ON-LAN ====================
 
 @router.post("/devices/{device_ip}/power-action")
-async def device_power_action(device_ip: str, request: Request, current_user: dict = Depends(get_current_user)):
+async def device_power_action(device_ip: str, request: Request, client_id: str = None, current_user: dict = Depends(get_current_user)):
     if current_user.get("role") not in ["admin"]:
         raise HTTPException(status_code=403, detail="Solo admin")
     body = await request.json()
     action = body.get("action")
     if not action:
         raise HTTPException(status_code=400, detail="Campo 'action' obbligatorio")
-    cred = await db.device_credentials.find_one({"device_ip": device_ip, "credential_type": "ilo"}, {"_id": 0})
+    # MULTI-TENANT: seleziona la credenziale iLO SOLO del cliente corretto,
+    # altrimenti si rischia un'azione hardware sul server di un altro tenant
+    # con IP uguale.
+    from .tenant_scope import resolve_device_client_id
+    cid = client_id or body.get("client_id")
+    cid = await resolve_device_client_id(device_ip, cid)
+    cred_q = {"device_ip": device_ip, "credential_type": "ilo"}
+    if cid:
+        cred_q["client_id"] = cid
+    cred = await db.device_credentials.find_one(cred_q, {"_id": 0})
     if not cred:
         raise HTTPException(status_code=404, detail="Nessuna credenziale iLO trovata per questo dispositivo")
     external_url = cred.get("external_url")
@@ -692,10 +701,15 @@ async def device_power_action(device_ip: str, request: Request, current_user: di
 
 
 @router.get("/devices/{device_ip}/power-state")
-async def device_power_state(device_ip: str, current_user: dict = Depends(get_current_user)):
+async def device_power_state(device_ip: str, client_id: str = None, current_user: dict = Depends(get_current_user)):
     if current_user.get("role") not in ["admin"]:
         raise HTTPException(status_code=403, detail="Solo admin")
-    cred = await db.device_credentials.find_one({"device_ip": device_ip, "credential_type": "ilo"}, {"_id": 0})
+    from .tenant_scope import resolve_device_client_id
+    cid = await resolve_device_client_id(device_ip, client_id)
+    cred_q = {"device_ip": device_ip, "credential_type": "ilo"}
+    if cid:
+        cred_q["client_id"] = cid
+    cred = await db.device_credentials.find_one(cred_q, {"_id": 0})
     if not cred:
         raise HTTPException(status_code=404, detail="Nessuna credenziale iLO")
     external_url = cred.get("external_url")

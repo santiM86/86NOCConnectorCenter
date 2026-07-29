@@ -188,17 +188,19 @@ async def list_live_sessions(current_user: dict = Depends(get_current_user)):
 
 # ====================== AUDIT PER DEVICE ======================
 @router.get("/web-console/history/device/{device_ip}")
-async def device_console_history(device_ip: str, limit: int = 50,
+async def device_console_history(device_ip: str, limit: int = 50, client_id: str = None,
                                   current_user: dict = Depends(get_current_user)):
     """Chi ha aperto la Web Console di questo device, quando, per quanto, e se registrato."""
     role = current_user.get("role", "")
     if role == "viewer":
         raise HTTPException(status_code=403, detail="Insufficient permissions")
     limit = max(1, min(limit, 200))
-    cursor = db.web_console_history.find(
-        {"device_ip": device_ip},
-        {"_id": 0}
-    ).sort("started_at", -1).limit(limit)
+    from .tenant_scope import resolve_device_client_id
+    cid = await resolve_device_client_id(device_ip, client_id)
+    hq = {"device_ip": device_ip}
+    if cid:
+        hq["client_id"] = cid
+    cursor = db.web_console_history.find(hq, {"_id": 0}).sort("started_at", -1).limit(limit)
     items = []
     async for r in cursor:
         started = r.get("started_at")

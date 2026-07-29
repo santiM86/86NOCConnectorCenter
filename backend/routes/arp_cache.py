@@ -117,9 +117,14 @@ async def list_arp_cache(
 
 
 @router.get("/arp-cache/by-ip/{ip}")
-async def lookup_mac_by_ip(ip: str, current_user: dict = Depends(get_current_user)):
-    """Lookup MAC for an IP across all ARP sources."""
-    doc = await db.arp_cache.find_one({"ip": ip}, {"_id": 0}, sort=[("last_seen", -1)])
+async def lookup_mac_by_ip(ip: str, client_id: str = None, current_user: dict = Depends(get_current_user)):
+    """Lookup MAC for an IP across all ARP sources (scoped per client)."""
+    from .tenant_scope import resolve_device_client_id
+    cid = await resolve_device_client_id(ip, client_id)
+    q = {"ip": ip}
+    if cid:
+        q["client_id"] = cid
+    doc = await db.arp_cache.find_one(q, {"_id": 0}, sort=[("last_seen", -1)])
     if not doc:
         return {"ip": ip, "mac": None, "source_device_ip": None}
     if isinstance(doc.get("last_seen"), datetime):

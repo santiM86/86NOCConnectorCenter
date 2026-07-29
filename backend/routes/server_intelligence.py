@@ -258,12 +258,18 @@ async def bulk_credentials(payload: BulkCredPayload, current_user: dict = Depend
 # ============================================================================
 
 @router.get("/ilo-events/{device_ip}")
-async def get_ilo_events(device_ip: str, limit: int = 50, current_user: dict = Depends(get_current_user)):
+async def get_ilo_events(device_ip: str, limit: int = 50, client_id: str = None, current_user: dict = Depends(get_current_user)):
     """Recupera IML (HP) / SEL (Dell/Lenovo) events dal log service Redfish.
     Mostra eventi hardware (PSU failed, fan replaced, memory error, BIOS update, ecc.)
     """
     require_admin(current_user)
-    cred = await db.vault_credentials.find_one({"device_ip": device_ip}, {"_id": 0})
+    # MULTI-TENANT: usa le credenziali del cliente corretto (IP collidono tra tenant).
+    from .tenant_scope import resolve_device_client_id
+    cid = await resolve_device_client_id(device_ip, client_id)
+    cred_q = {"device_ip": device_ip}
+    if cid:
+        cred_q["client_id"] = cid
+    cred = await db.vault_credentials.find_one(cred_q, {"_id": 0})
     if not cred:
         raise HTTPException(status_code=404, detail="Credenziali iLO non trovate per questo server")
 

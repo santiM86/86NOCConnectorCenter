@@ -250,10 +250,15 @@ async def patch_compliance(client_id: Optional[str] = None, current_user: dict =
 # =========================================================
 
 @router.get("/predictive/{device_ip}")
-async def predictive_analysis(device_ip: str, current_user: dict = Depends(get_current_user)):
+async def predictive_analysis(device_ip: str, client_id: str = None, current_user: dict = Depends(get_current_user)):
     """Analizza trend ilo_telemetry ultime 24h e ritorna risk score predittivo."""
+    from .tenant_scope import resolve_device_client_id
+    cid = await resolve_device_client_id(device_ip, client_id)
     since = datetime.now(timezone.utc) - timedelta(hours=24)
-    cursor = db.ilo_telemetry.find({"device_ip": device_ip, "timestamp": {"$gte": since}}, {"_id": 0}).sort("timestamp", 1)
+    q = {"device_ip": device_ip, "timestamp": {"$gte": since}}
+    if cid:
+        q["client_id"] = cid
+    cursor = db.ilo_telemetry.find(q, {"_id": 0}).sort("timestamp", 1)
     samples = [d async for d in cursor]
     if len(samples) < 5:
         return {"device_ip": device_ip, "enough_data": False, "samples": len(samples), "message": "Insufficient data (needs 5+ snapshots)"}
