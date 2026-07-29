@@ -1,0 +1,31 @@
+{
+  "summary": "Iteration 99 — frontend-only validation of the new PingPlotter-style Connettività dialog (per review request). Login admin OK, /client/da3d6e40-b3e5-4d46-9787-dde328a3aa36 -> tab-devices -> grouped-device-connectivity-192.168.1.3 opens connectivity-dialog. VERIFIED PASS: (1) connectivity-kpi-row with all 6 cards populated (Cur 15.3ms, Avg 20.4ms, Min 3.9ms, Max 249ms, p95 67.4ms, PL% 1.76%) and correct color tone; (2) connectivity-latency-distribution renders 3 segments with real inline widths (90.2% emerald / 7.3% amber / 2.5% red) + percentages in header; (3) ComposedChart renders inside dialog: 1 recharts-area-area (cyan latency), 97 recharts-bar-rectangle (red packet-loss bars), 3 recharts-reference-area background bands (green/yellow/red), dual Y axes, no page errors; (4) connectivity-outage-kpi: Disponibilità 98.82%, connectivity-stat-disconnections=2 (as expected), downtime 17 min, longest 13 min, MTTR 8.5 min; (5) connectivity-down-windows lists exactly 2 outage windows with start->end times and duration (29/07 06:10:33->06:23:33 13 min; 28/07 23:39:33->23:43:33 4 min); (6) all 5 period buttons (1h/6h/24h/7d/30d) trigger a fresh GET /api/devices/by-ip/192.168.1.3/connectivity-report?period=... and the KPIs/distribution/outage panel/chart bucket count all change coherently (1h: 0 interruzioni, uptime 100%, 55 bars; 6h: 1 interruzione, 72 bars; 24h: 2, 97 bars; 7d: 25 bars; 30d: 7 bars) with no crash; (7) 'Esegui test ora' -> backend 404 -> error toast 'Test fallito: Nessun agent v4 LIVE per questo cliente' appears ~1s, dialog stays open and fully usable (period change after test still works); (8) DeviceInfoCard path (grouped-device-info-192.168.1.3 -> device-info-card-connectivity-btn) opens the same dialog with kpi-row, distribution, outage-kpi, down-windows and populated chart.",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "ConnectivityDialog title", "issue": "Device name shown in the dialog title is inconsistent for the SAME ip 192.168.1.3: 'Vendor-Details-Test' when opened from the grouped device row in one session and 'PERSIST_TEST_RENAME' when opened from DeviceInfoCard / after reload. The review request expected 'Auto-192.168.1.3'. Cosmetic but confusing (likely leftover test devices sharing the IP or different name-resolution helper per caller).", "selector": "[data-testid=\"connectivity-dialog\"] h2", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "ConnectivityDialog", "issues": ["Recharts console warning on mount: 'The width(-1) and height(-1) of chart should be greater than 0' — ResponsiveContainer measures the chart before the dialog animation finishes; chart renders correctly afterwards, but the warning is emitted on every open (add minHeight/minWidth or render the chart after open animation).", "Radix a11y warning: 'Missing Description or aria-describedby={undefined} for DialogContent' — add a DialogDescription to connectivity-dialog.", "1h period shows MTTR '—' while Downtime tot./Più lunga show '0s'; inconsistent placeholder for the no-outage case (cosmetic)."]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_connectivity_spark_iter98.py"],
+  "action_items": [
+    "Optional: unify the device-name helper passed to ConnectivityDialog (ClientOverviewPage vs DeviceInfoCard) so the title is identical from both entry points",
+    "Optional polish: add DialogDescription to connectivity-dialog and avoid the recharts width(-1)/height(-1) mount warning",
+    "Optional: show '—' consistently (or 0s) for MTTR when disconnections = 0"
+  ],
+  "critical_code_review_comments": [
+    "ConnectivityDialog.js reads report.latency.* / report.thresholds.* without optional chaining inside the rendered branch; it is safe today because the branch is guarded by `report.samples === 0`, but a backend response missing `thresholds` would throw a render error — prefer report.thresholds?.latency_warn_ms with fallbacks.",
+    "latMax = Math.max(120, ...chartData.map(...)) spreads the whole series into Math.max; for 30d/7d series this is fine, but use reduce to stay safe with very large arrays."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "not tested (per request)", "frontend": "100% of requested scenarios passed"},
+  "seed_data_creation": "none (used existing 24h demo history for 192.168.1.3)",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "info@86bit.it / Ariel17051986@!@86 (admin)",
+  "context_for_next_testing_agent": "All PingPlotter-style elements render correctly. Selectors confirmed working: tab-devices (button, not role=tab), grouped-device-connectivity-192.168.1.3, grouped-device-info-192.168.1.3, device-info-card-connectivity-btn, connectivity-kpi-row, connectivity-stat-{cur,latency,min,max,p95,loss}, connectivity-latency-distribution, connectivity-outage-kpi, connectivity-stat-{disconnections,downtime,longest,mttr}, connectivity-down-windows, connectivity-period-{1h,6h,24h,7d,30d}, connectivity-run-test-btn. Toast is sonner ([data-sonner-toast]) and auto-dismisses in ~4s — poll within 1-3s. connectivity-test 404 (no live agent) is expected.",
+  "rca_of_the_issue": "No functional defect found. The only real inconsistency is the device display name resolution differing between the two dialog entry points for IP 192.168.1.3 (multiple device records/renamed test devices share the IP)."
+}

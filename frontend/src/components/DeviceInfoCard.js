@@ -5,9 +5,10 @@ import { toast } from "sonner";
 import {
   Desktop, Cpu, HardDrives, Thermometer, Info, MapPin, Package, Shield, Barcode,
   Calendar, Globe, ArrowsClockwise, Warning, CheckCircle, CircleNotch,
-  ChartLineUp, NetworkSlash, PencilSimple, FloppyDisk, X as XIcon, Wrench,
+  ChartLineUp, NetworkSlash, PencilSimple, FloppyDisk, X as XIcon, Pulse, Key,
 } from "@phosphor-icons/react";
 import AllMetricsDialog from "@/components/AllMetricsDialog";
+import ConnectivityDialog from "@/components/ConnectivityDialog";
 import { VendorDetailsPanel } from "@/components/VendorDetailsPanel";
 import ErrorBoundary from "@/components/ErrorBoundary";
 
@@ -99,6 +100,7 @@ export default function DeviceInfoCard({ deviceIp, clientId = null, onClose = nu
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [showAllMetrics, setShowAllMetrics] = useState(false);
+  const [showConnectivity, setShowConnectivity] = useState(false);
   // v2026-02-14: rename inline manuale del device (propaga ovunque)
   const [editingName, setEditingName] = useState(false);
   const [newName, setNewName] = useState("");
@@ -222,6 +224,38 @@ export default function DeviceInfoCard({ deviceIp, clientId = null, onClose = nu
       }
     } finally {
       setSnmpPolling(false);
+    }
+  };
+
+  // v2026-07-29: test one-click della community SNMP configurata.
+  const [commTesting, setCommTesting] = useState(false);
+  const testCommunity = async () => {
+    const cid = clientId || card?.client?.id || card?.client_id || card?.identity?.client_id;
+    if (!cid) {
+      toast.error("client_id non disponibile in scheda");
+      return;
+    }
+    setCommTesting(true);
+    try {
+      const r = await axios.post(
+        `${API}/api/admin/snmp-community-test/${cid}/${deviceIp}`, {},
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+      const d = r.data || {};
+      const line2 = d.hint ? `\n\n💡 ${d.hint}` : "";
+      const agentLine = d.agent ? `\n\nAgent: ${d.agent.hostname || d.agent.agent_id?.slice(0,8)} (${d.agent.in_subnet ? "in subnet ✓" : "fuori subnet ✗"})` : "";
+      if (d.verdict === "ok") {
+        toast.success(`✅ ${d.message}`, { duration: 7000 });
+      } else if (d.verdict === "no_agent") {
+        toast.error(d.message, { duration: 8000 });
+      } else {
+        window.alert(`${d.message}\n\nCommunity provata: "${d.community_used}" (${d.snmp_version})${agentLine}${line2}`);
+      }
+      setTimeout(fetchCard, 1200);
+    } catch (e) {
+      toast.error(`Test community fallito: ${e.response?.data?.detail || e.message}`);
+    } finally {
+      setCommTesting(false);
     }
   };
 
@@ -556,14 +590,15 @@ export default function DeviceInfoCard({ deviceIp, clientId = null, onClose = nu
                 <span className="px-1 py-0 text-[9px] rounded bg-cyan-400/20 font-mono">{card.vendor_metrics_summary.count}</span>
               )}
             </button>
-            <span
-              className="hidden md:inline-flex items-center gap-1 px-2 py-1 text-[10px] rounded-md border border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
-              title="La scheda si aggiorna automaticamente ogni 30 secondi"
-              data-testid="device-info-card-live-indicator">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-              LIVE{lastUpdated ? ` · ${new Date(lastUpdated).toLocaleTimeString("it-IT")}` : ""}
-            </span>
-            <button onClick={() => fetchCard()} title="Aggiorna ora" className="p-2 rounded-md hover:bg-white/5 text-[var(--text-secondary)]" data-testid="device-info-card-refresh">
+            <button
+              onClick={() => setShowConnectivity(true)}
+              title="Connettività: ping, latenza, packet loss, disconnessioni nel tempo"
+              className="px-2.5 py-1.5 text-[11px] rounded-md border border-cyan-500/40 bg-cyan-500/10 text-cyan-300 hover:bg-cyan-500/20 hover:border-cyan-400 flex items-center gap-1.5 transition-colors"
+              data-testid="device-info-card-connectivity-btn">
+              <Pulse size={13} weight="bold" />
+              <span className="hidden sm:inline">Connettività</span>
+            </button>
+            <button onClick={fetchCard} title="Aggiorna" className="p-2 rounded-md hover:bg-white/5 text-[var(--text-secondary)]" data-testid="device-info-card-refresh">
               <ArrowsClockwise size={14} />
             </button>
             {/* v2026-06-02: Re-poll SNMP + auto-diagnosi se fallisce */}
@@ -575,6 +610,16 @@ export default function DeviceInfoCard({ deviceIp, clientId = null, onClose = nu
               data-testid="device-info-card-snmp-repoll">
               <ArrowsClockwise size={13} weight="duotone" className={snmpPolling ? "animate-spin" : ""} />
               <span className="hidden sm:inline">{snmpPolling ? "Polling…" : "Re-poll SNMP"}</span>
+            </button>
+            {/* v2026-07-29: Test community SNMP one-click */}
+            <button
+              onClick={testCommunity}
+              disabled={commTesting}
+              title="Testa la community SNMP configurata direttamente dall'agent (OK / nessuna risposta)"
+              className="px-2.5 py-1.5 text-[11px] rounded-md border border-amber-500/40 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20 hover:border-amber-400 flex items-center gap-1.5 transition-colors disabled:opacity-50"
+              data-testid="device-info-card-community-test">
+              <Key size={13} weight="duotone" className={commTesting ? "animate-pulse" : ""} />
+              <span className="hidden sm:inline">{commTesting ? "Test…" : "Test community"}</span>
             </button>
             {onClose && (
               <button onClick={onClose} className="px-3 py-1 text-xs rounded-md border border-[var(--bg-border)] hover:bg-white/5" data-testid="device-info-card-close">
@@ -859,29 +904,47 @@ export default function DeviceInfoCard({ deviceIp, clientId = null, onClose = nu
         </div>
       )}
 
-      {/* Warning B: SNMP configurato ma nessun dato dettagliato raccolto.
-          v2026-06-23: skip questo banner se il device è dichiarato unreachable
-          (`st.reachable === false`). Prima il messaggio "il connector sta
-          comunicando via SNMP" era ingannevole su device offline: il connector
-          NON sta comunicando, sta solo "tentando". Il banner deve mostrarsi
-          solo quando SNMP rispondeva ma le metriche dettagliate mancano (cosa
-          tipica di profilo SNMP errato o community con vista ristretta). */}
-      {isSnmpMonitored && st.reachable !== false && !hasEntityMib && !hasVendorMetrics && hw.cpu_usage == null && hw.memory_usage == null && hw.temperature == null && !fw.current && (
+      {/* Warning B: SNMP eleggibile ma nessun dato dettagliato raccolto.
+          v2026-07-29: distinguo DUE casi molto diversi, prima confusi in un
+          unico messaggio ingannevole ("il connector sta comunicando via SNMP"):
+            1) hasSysDescr === false → l'SNMP NON risponde affatto (nessun
+               sysDescr letto). Causa quasi sempre: community errata
+               (case-sensitive!) o agent che non copre la subnet. NON dire che
+               "sta comunicando", perche' non lo sta facendo.
+            2) hasSysDescr === true → l'SNMP risponde (sysDescr OK) ma mancano
+               le metriche vendor. Causa: profilo errato o vista MIB ristretta. */}
+      {isSnmpMonitored && st.reachable !== false && !hasEntityMib && !hasVendorMetrics && hw.cpu_usage == null && hw.memory_usage == null && hw.temperature == null && !fw.current && !hasSysDescr && (
+        <div className="rounded-lg border border-red-500/40 bg-red-500/10 p-3 flex items-start gap-3" data-testid="warning-snmp-no-response">
+          <Warning size={18} className="text-red-400 flex-shrink-0 mt-0.5" weight="fill" />
+          <div className="flex-1">
+            <h4 className="text-sm font-semibold text-red-200">SNMP non risponde (nessun dato letto)</h4>
+            <p className="text-xs text-red-100/80 mt-0.5">
+              Il device risponde al <strong>ping</strong>, ma alle interrogazioni <strong>SNMP</strong> ({net.snmp_version || "v2c"} su porta {net.snmp_port || 161}) <strong>non arriva alcuna risposta</strong> (nemmeno <code className="font-mono bg-black/30 px-1 rounded">sysDescr</code>). Quindi non è un problema di profilo: è a monte. Cause tipiche, in ordine:
+            </p>
+            <ul className="text-xs text-red-100/80 mt-1 ml-4 list-disc space-y-0.5">
+              <li><strong>Community diversa</strong>: la community impostata qui su ARGUS deve essere <strong>identica</strong> (case-sensitive!) a quella sul device. Apri <em>Modifica dispositivo → SNMP → Community</em> e verifica che sia esattamente quella configurata sullo switch (es. <code className="font-mono bg-black/30 px-1 rounded">ARGUS</code>, non <code className="font-mono bg-black/30 px-1 rounded">public</code>).</li>
+              <li><strong>Nessun agent copre questa subnet</strong> (o è offline): l'SNMP viene fatto dall'agent nella stessa rete del device. Usa il pulsante <strong>Re-poll SNMP</strong> qui sopra: se fallisce, mostra la diagnosi automatica (agent online/subnet).</li>
+              <li><strong>UDP/161 bloccato</strong> tra agent e device, oppure ACL/vista SNMP sul device che escludono l'IP dell'agent.</li>
+              <li>Verifica dal connector: <code className="font-mono bg-black/30 px-1 rounded">snmpwalk -v2c -c &lt;community&gt; {net.ip || "IP"} .1.3.6.1.2.1.1</code> — se va in timeout, il problema è community/rete, non ARGUS.</li>
+            </ul>
+          </div>
+        </div>
+      )}
+      {isSnmpMonitored && st.reachable !== false && !hasEntityMib && !hasVendorMetrics && hw.cpu_usage == null && hw.memory_usage == null && hw.temperature == null && !fw.current && hasSysDescr && (
         <div className="rounded-lg border border-sky-500/40 bg-sky-500/10 p-3 flex items-start gap-3" data-testid="warning-snmp-no-data">
           <Info size={18} className="text-sky-400 flex-shrink-0 mt-0.5" weight="duotone" />
           <div className="flex-1">
-            <h4 className="text-sm font-semibold text-sky-200">SNMP configurato ma dati limitati</h4>
+            <h4 className="text-sm font-semibold text-sky-200">SNMP risponde, ma metriche dettagliate limitate</h4>
             <p className="text-xs text-sky-100/80 mt-0.5">
-              Il connector sta comunicando via SNMP con questo dispositivo ({net.snmp_version || "v2c"} su porta {net.snmp_port || 161}),
-              ma <strong>non ha ancora raccolto metriche dettagliate</strong> (firmware, HDD, CPU, RAM, temperatura).
+              L'SNMP risponde ({net.snmp_version || "v2c"} su porta {net.snmp_port || 161}, <code className="font-mono bg-black/30 px-1 rounded">sysDescr</code> letto correttamente),
+              ma <strong>non sono ancora arrivate le metriche vendor</strong> (firmware, HDD, CPU, RAM, temperatura).
             </p>
             <p className="text-xs text-sky-100/70 mt-1">
               Cosa verificare (in ordine):
             </p>
             <ul className="text-xs text-sky-100/70 mt-0.5 ml-4 list-disc space-y-0.5">
-              <li>La <strong>community SNMP</strong> del device risponde in read-only con vista completa — prova da un terminale sul connector: <code className="font-mono bg-black/30 px-1 rounded">snmpwalk -v2c -c &lt;community&gt; {net.ip || "IP"} .1.3.6.1.2.1.1</code></li>
               <li>Il <strong>profilo vendor</strong> è associato al dispositivo: clicca <em>Configura profilo</em> nella tabella Dispositivi e scegli il profilo corretto (Synology DSM, HPE Comware, APC UPS, generic UPS, ecc.)</li>
-              <li>Sul <strong>device vendor</strong> l'SNMP è abilitato ed espone le MIB avanzate (es. Synology: Pannello di Controllo → Terminal &amp; SNMP → Abilita SNMPv2c)</li>
+              <li>La <strong>vista MIB</strong> della community deve includere anche il ramo enterprise (es. HPE/H3C <code className="font-mono bg-black/30 px-1 rounded">1.3.6.1.4.1.25506</code>): con una vista ristretta il sysDescr passa ma le OID di CPU/temp no.</li>
               <li>Attendi 1-2 cicli di poll (~60-120s) dopo aver associato il profilo — il ciclo vendor-specific parte solo se il profilo matcha.</li>
             </ul>
           </div>
@@ -926,6 +989,16 @@ export default function DeviceInfoCard({ deviceIp, clientId = null, onClose = nu
             onClose={() => setShowAllMetrics(false)}
           />
         </ErrorBoundary>
+      )}
+      {/* Connettività (Spark) */}
+      {showConnectivity && (
+        <ConnectivityDialog
+          deviceIp={deviceIp}
+          clientId={clientId}
+          deviceName={card.identity?.hostname || card.device_ip}
+          open={showConnectivity}
+          onClose={() => setShowConnectivity(false)}
+        />
       )}
     </div>
   );

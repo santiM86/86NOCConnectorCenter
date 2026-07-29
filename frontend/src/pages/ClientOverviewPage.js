@@ -8,7 +8,7 @@ import {
   Lightning, WifiHigh, WifiSlash, PlugsConnected, CaretDown,
   CheckCircle, Warning, ArrowClockwise, Bell, BellSlash, ChartLine, Monitor, Cpu,
   Plus, Trash, Lock, MagnifyingGlass, Info, PencilSimple, NetworkSlash,
-  Phone, DeviceMobile, Desktop, Network, Key, Star, Check,
+  Phone, DeviceMobile, Desktop, Network, Key, Star, Check, Pulse,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -26,6 +26,7 @@ import { useWebConsoleTabs } from "@/components/WebConsoleTabs";
 import ILoLiveMetrics from "@/components/ILoLiveMetrics";
 import HealthBadge from "@/components/HealthBadge";
 import { DeviceEditModal } from "@/components/DeviceEditModal";
+import ConnectivityDialog from "@/components/ConnectivityDialog";
 import DiscoveryPage from "./DiscoveryPage";
 import VulnerabilityPage from "./VulnerabilityPage";
 import LanScannerPage from "./LanScannerPage";
@@ -1909,7 +1910,7 @@ function DevicesGroupedView({ devices, skipList, onInfoClick, renderActions, onD
    v2026-02-13: aggiunto per ripristinare i comandi rimossi nella vista
    raggruppata.
 */
-function DeviceActionsBar({ d, testingId, onWebConsole, showWebConsole, webPort, onInfo, onSwitchPorts, onTrend, onTestSnmp, onEdit, onProfile, onDelete }) {
+function DeviceActionsBar({ d, testingId, onWebConsole, showWebConsole, webPort, onInfo, onSwitchPorts, onTrend, onConnectivity, onTestSnmp, onEdit, onProfile, onDelete }) {
   const dt = (d.device_type || "").toLowerCase();
   const modelL = (d.model || d.sys_descr || "").toLowerCase();
   const nameL = (d.name || "").toLowerCase();
@@ -1984,6 +1985,14 @@ function DeviceActionsBar({ d, testingId, onWebConsole, showWebConsole, webPort,
         <ChartLine size={11} />
       </button>
       <button
+        onClick={onConnectivity}
+        className="p-1 rounded hover:bg-cyan-500/10 text-cyan-300 transition-colors"
+        title="Connettività (ping, perdite, disconnessioni)"
+        data-testid={`grouped-device-connectivity-${d.ip_address}`}
+      >
+        <Pulse size={11} weight="bold" />
+      </button>
+      <button
         onClick={onTestSnmp}
         disabled={testingId === d.id}
         className="p-1 rounded hover:bg-emerald-500/10 text-emerald-400 transition-colors disabled:opacity-30 disabled:cursor-wait"
@@ -2036,6 +2045,7 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
     setInfoCardName(null);
   }, [infoTarget?.ip_address]);
   const [editTarget, setEditTarget] = useState(null);
+  const [connTarget, setConnTarget] = useState(null);
   const [saving, setSaving] = useState(false);
   // v3.8.40: nasconde multicast/broadcast (224.x, 239.x, 255.x) dalla tabella
   // di default per coerenza con card "DISPOSITIVI" e Infrastruttura. L'utente
@@ -2941,6 +2951,7 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
               onInfo={() => setInfoTarget(d)}
               onSwitchPorts={() => navigate(`/switch-ports/${encodeURIComponent(d.ip_address)}`)}
               onTrend={() => navigate(`/device-metrics?ip=${d.ip_address}`)}
+              onConnectivity={() => setConnTarget(d)}
               onTestSnmp={() => handleTestSNMP(d)}
               onEdit={() => setEditTarget(d)}
               onProfile={() => setProfileTarget(d)}
@@ -3529,6 +3540,17 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
             </ErrorBoundary>
           </DialogContent>
         </Dialog>
+      )}
+
+      {/* Connettività (Spark) — storico ping + report + test on-demand */}
+      {connTarget && (
+        <ConnectivityDialog
+          deviceIp={connTarget.ip_address}
+          clientId={clientId}
+          deviceName={pickDeviceName(connTarget, connTarget.ip_address)}
+          open={!!connTarget}
+          onClose={() => setConnTarget(null)}
+        />
       )}
     </div>
   );

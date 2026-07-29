@@ -261,6 +261,138 @@ async def snmp_poll_now(client_id: str, device_ip: str,
     }
 
 
+@router.post("/snmp-community-test/{client_id}/{device_ip}")
+async def snmp_community_test(client_id: str, device_ip: str,
+                             current_user: dict = Depends(get_current_user)):
+    """Test ONE-CLICK della community SNMP configurata per il device.
+
+    Esegue un GET SNMP live (sysDescr) via l'agent del cliente usando la
+    community ATTUALMENTE configurata su ARGUS e restituisce un verdetto netto:
+      - ok          → lo switch risponde (community CORRETTA)
+      - no_response → nessuna risposta (community errata case-sensitive, oppure
+                      ACL/vista SNMP sul device o UDP/161 bloccato)
+      - no_agent    → nessun agent online per questo cliente
+    Indica anche se l'agent usato e' nella subnet del device (per distinguere
+    problema di community da problema di routing/copertura agent).
+    """
+    if current_user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin only")
+
+    md = await db.managed_devices.find_one(
+        {"client_id": client_id, "ip": device_ip},
+        {"_id": 0, "community": 1, "snmp_community": 1, "snmp_version": 1}
+    )
+    if md is None:
+        raise HTTPException(status_code=404, detail="Device non trovato")
+    community = md.get("community") or md.get("snmp_community") or "public"
+    version = md.get("snmp_version") or "v2c"
+
+    candidates = [c for c in REGISTRY.list() if c.client_id == client_id]
+    if not candidates:
+        return {
+            "verdict": "no_agent",
+            "community_used": community,
+            "snmp_version": version,
+            "message": "🔴 Nessun agent online per questo cliente: impossibile testare l'SNMP. Verifica che il connector sia connesso.",
+        }
+
+    # Scelta agent: preferenza a chi ha il device nella propria subnet, poi master, poi primo.
+    async def _agent_meta(agent_id: str):
+        ag = await db.managed_agents.find_one(
+            {"agent_id": agent_id},
+            {"_id": 0, "hostname": 1, "role": 1, "agent_ip": 1}
+        ) or {}
+        subnet = _agent_subnet_from_ip(ag.get("agent_ip")) if ag.get("agent_ip") else None
+        return {
+            "agent_id": agent_id,
+            "hostname": ag.get("hostname"),
+            "role": (ag.get("role") or "master").lower(),
+            "agent_ip": ag.get("agent_ip"),
+            "subnet": subnet,
+            "in_subnet": _ip_in_subnet(device_ip, subnet) if subnet else False,
+        }
+
+    metas = [await _agent_meta(c.agent_id) for c in candidates]
+    conn_by_id = {c.agent_id: c for c in candidates}
+
+    chosen_meta = next((m for m in metas if m["in_subnet"]), None)
+    if not chosen_meta:
+        chosen_meta = next((m for m in metas if m["role"] == "master"), None)
+    if not chosen_meta:
+        chosen_meta = metas[0]
+    chosen = conn_by_id[chosen_meta["agent_id"]]
+
+    ping_ok = None
+    pd = await db.device_poll_status.find_one(
+        {"client_id": client_id, "device_ip": device_ip},
+        {"_id": 0, "reachable": 1}
+    )
+    if pd is not None:
+        ping_ok = bool(pd.get("reachable"))
+
+    try:
+        reply = await chosen.send_command(
+            "force_snmp_poll",
+            {"ip": device_ip, "community": community},
+            timeout=15.0,
+        )
+    except asyncio.TimeoutError:
+        return {
+            "verdict": "no_response",
+            "community_used": community, "snmp_version": version,
+            "agent": chosen_meta, "ping_ok": ping_ok,
+            "message": "🔴 Timeout: l'agent non ha ricevuto risposta SNMP entro 15s.",
+            "hint": _community_hint(False, chosen_meta, community, device_ip),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore invio comando: {e!r}")
+
+    reachable = bool(reply.get("reachable"))
+    sys_descr = reply.get("sys_descr")
+    sys_name = reply.get("sys_name")
+    lat_ns = reply.get("latency_ns")
+    latency_ms = round(lat_ns / 1e6, 1) if lat_ns else None
+    ok = reachable and bool(sys_descr)
+
+    return {
+        "verdict": "ok" if ok else "no_response",
+        "community_used": community,
+        "snmp_version": version,
+        "agent": chosen_meta,
+        "ping_ok": ping_ok,
+        "reachable": reachable,
+        "sys_descr": sys_descr,
+        "sys_name": sys_name,
+        "latency_ms": latency_ms,
+        "error": reply.get("error"),
+        "message": (
+            f"✅ Community CORRETTA: lo switch risponde all'SNMP ({version}). sysName={sys_name or '—'}"
+            if ok else
+            "🔴 Nessuna risposta SNMP con la community attuale."
+        ),
+        "hint": None if ok else _community_hint(reachable, chosen_meta, community, device_ip),
+    }
+
+
+def _community_hint(reachable: bool, agent_meta: dict, community: str, device_ip: str) -> str:
+    """Suggerimento contestuale per il caso 'no_response'."""
+    if not agent_meta.get("in_subnet"):
+        return (
+            f"L'agent usato ({agent_meta.get('hostname') or agent_meta.get('agent_id','?')[:8]}) "
+            f"NON è nella subnet del device (agent_ip={agent_meta.get('agent_ip') or '?'}). "
+            f"Se lo switch limita l'SNMP per subnet o l'agent non ha rotta L3, non risponde: "
+            f"installa/promuovi un agent nella rete del device."
+        )
+    return (
+        f"L'agent è nella subnet corretta ma non arriva risposta con community "
+        f"'{community}'. Cause, in ordine: (1) community ERRATA — deve essere identica "
+        f"e case-sensitive a quella sullo switch; (2) ACL/vista SNMP sul device che "
+        f"escludono l'IP dell'agent; (3) UDP/161 bloccato. Verifica dal connector: "
+        f"snmpwalk -v2c -c {community} {device_ip} .1.3.6.1.2.1.1"
+    )
+
+
+
 @router.get("/agent-registry/{client_id}")
 async def agent_registry(client_id: str,
                          current_user: dict = Depends(get_current_user)):

@@ -54,6 +54,139 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-07-29 ✅ Diagnosi SNMP switch HPE + Test community one-click
+
+### Problema utente
+Switch HPE 5130 configurato correttamente (community `ARGUS` RO, ViewDefault,
+nessuna ACL, v2c) ma ARGUS mostra "SNMP: Nessuna risposta" e nessuna metrica;
+il banner diceva ingannevolmente "il connector sta comunicando via SNMP".
+
+### Diagnosi (root cause, version-independent)
+`sysDescr` vuoto + zero metriche = l'SNMP NON riceve alcuna risposta (non è un
+problema di profilo hpe_comware). Cause, in ordine: (1) **community diversa
+lato ARGUS** — default `public`, deve essere impostata a `ARGUS` (case-sensitive)
+in Modifica dispositivo → SNMP; (2) nessun agent online copre la subnet del
+device; (3) UDP/161 o ACL/vista MIB sul device. La community di polling è
+`managed_devices.community` (fallback `public`).
+
+### Fix banner (DeviceInfoCard.js)
+Sdoppiato il banner fuorviante in due, basati sul segnale reale `hasSysDescr`:
+- ROSSO "SNMP non risponde (nessun dato letto)" quando sysDescr vuoto →
+  punta a community/agent/rete.
+- AZZURRO "SNMP risponde, ma metriche limitate" quando sysDescr letto ma OID
+  vendor assenti → profilo o vista MIB ristretta.
+
+### NUOVO: Test community one-click
+- Backend `POST /api/admin/snmp-community-test/{client_id}/{device_ip}`
+  (`snmp_diagnostics.py`): esegue GET SNMP live via agent con la community
+  configurata → verdetto netto `ok` / `no_response` / `no_agent`, indica se
+  l'agent usato è nella subnet del device + hint contestuale (community errata
+  vs ACL vs agent fuori subnet).
+- Frontend: pulsante ambra "Test community" (data-testid
+  `device-info-card-community-test`) accanto a "Re-poll SNMP" nella card.
+- BUGFIX: la projection ritornava `{}` (falsy) per device senza campi community
+  → falso "Device non trovato"; corretto con `if md is None`.
+
+### Validazione
+curl endpoint OK: device trovato, verdetto strutturato; in preview "no_agent"
+(nessun agent WS connesso) — atteso. I path ok/no_response richiedono agent live
+(riusa `force_snmp_poll`, codice già in produzione).
+
+### ⚠️ Mismatch preview/PROD
+Il pannello "STATO LIVE" ricco dello screenshot utente NON è in questo fork →
+la sua `argus.86bit.it` gira codice diverso. Le migliorie (banner + test
+community) si vedono solo dopo Save to GitHub + redeploy.
+
+---
+
+
+## 2026-07-29 ✅ Connettività "Spark" — potenziamento stile PingPlotter Pro
+
+### Richiesta utente
+Prendere spunto da PingPlotter Pro e integrarne funzioni di monitoraggio, KPI e
+tempi di disconnessione per i dispositivi.
+
+### Aggiunte (su `connectivity.py` + `ConnectivityDialog.js`)
+- Report backend arricchito: `latency.cur` (ultimo campione = "Cur" PingPlotter),
+  `latency_distribution{good_pct,warn_pct,crit_pct}` (fasce verde/giallo/rosso),
+  `total_downtime_min`, `longest_outage_min`.
+- UI riga KPI stile PingPlotter: **Cur / Avg / Min / Max / p95 / PL%**.
+- **Barra distribuzione latenza** (segmenti verde/giallo/rosso con %).
+- **Grafico "firma" PingPlotter** (recharts ComposedChart): area latenza (cyan)
+  + **fasce colorate di sfondo** (verde <30 / giallo 30-100 / rosso >100 ms via
+  ReferenceArea) + **barre rosse di packet loss** (asse dx) che durante
+  un'interruzione formano il blocco rosso.
+- **Pannello KPI disconnessioni**: disponibilità %, n° interruzioni, downtime
+  totale, interruzione più lunga, MTTR + timeline finestre di down con orari.
+
+### Testing (iteration_99, frontend PASS)
+KPI popolati (Cur 15.3 / Avg 20.4 / Max 249 / p95 67.4 / PL% 1.76), barra
+distribuzione 90.2/7.3/2.5%, ComposedChart con area+97 barre loss+3 bande,
+pannello outage (2 interruzioni, 17min downtime, 13min longest, 8.5 MTTR),
+tutti i periodi 1h→30d coerenti, test on-demand 404 gestito senza crash, stesso
+dialog dalla scheda DeviceInfoCard. Rifiniture: aggiunta DialogDescription
+(a11y) + placeholder coerente "—" quando 0 interruzioni.
+
+---
+
+
+## 2026-07-29 ✅ Connettività per-device "Spark" (storico ping + report + test) — Fase 1
+
+### Richiesta utente
+Per ogni dispositivo una zona di diagnostica connettività (ping) con report
+completo, grafici e statistiche per capire disconnessioni, perdite pacchetti,
+latenza, ecc. Scelte: entry point in ENTRAMBI (riga Dispositivi + scheda
+DeviceInfoCard), solo Fase 1 (no rebuild agent Go), retention 30gg, soglie
+latenza WARN>30/CRIT>100 ms, loss WARN>2%/CRIT>10%.
+
+### Cosa fa
+Prima i dati ping venivano sovrascritti ogni ciclo (nessuno storico). Ora ogni
+PingPollResult viene appeso a una time-series per-device.
+
+### Backend — NUOVO `routes/connectivity.py`
+- Collection `device_ping_history` (TTL 30gg, 1 doc/ciclo: reachable, latency_ms, loss_pct).
+- Ingest: `record_ping()` chiamato da `agent_ws._bridge_ping_poll`.
+- `GET /api/devices/by-ip/{ip}/connectivity-report?period=&client_id=`
+  → uptime %, latenza avg/min/max/p95/jitter, loss avg/max, n. disconnessioni,
+  MTTR, finestre di down, severity, serie a bucket per i grafici.
+  period: 1h/6h/24h/7d/30d. `client_id` OBBLIGATORIO (isolamento multi-tenant).
+- `POST /api/devices/by-ip/{ip}/connectivity-test` → raffica di N ping via
+  agent v4 master LIVE (comando WS `force_ping_poll` esistente), stat immediate
+  + per-pacchetto. Budget globale ~20s, timeout 3s/pacchetto. 404 pulito se
+  nessun agent live.
+- `server.py`: router + `ensure_connectivity_idx()` (TTL) registrati.
+
+### Frontend — NUOVO `components/ConnectivityDialog.js`
+Dialog con: banner severità, 8 stat card, grafico latenza (recharts, reference
+line 30/100ms), grafico packet loss, lista interruzioni, selettore periodo,
+pulsante "Esegui test ora" (mostra stat + griglia pacchetti verde/rosso).
+Entry point: icona Pulse in `DeviceActionsBar` (riga Dispositivi,
+data-testid `grouped-device-connectivity-<ip>`) + pulsante in `DeviceInfoCard`
+(`device-info-card-connectivity-btn`).
+
+### Testing (iteration_98)
+15/15 pytest backend PASS + flussi frontend PASS. Fix minori applicati dopo il
+report: (1) `down_windows` timestamp resi tz-aware (allineati alla serie, no
+sfasamento 2h in UI it-IT), (2) `client_id` reso obbligatorio (evita
+aggregazione cross-tenant su IP privati comuni), (3) test on-demand con budget
+globale 20s + timeout 3s/pacchetto (evita richieste >70s oltre timeout ingress).
+
+### Note
+- In PREVIEW non ci sono agent v4 live → il test on-demand ritorna 404 (atteso).
+  Pre-seedato 24h di storico DEMO sul device 192.168.1.3 (86BIT_Office) per
+  vedere i grafici popolati; in PROD lo storico si popola da solo col polling.
+
+### Fase 2 (futura, opzionale, richiede rebuild agent Go)
+Raffica ping estesa con dettaglio per-pacchetto reale + traceroute/MTR
+per-device per individuare DOVE cade la rete.
+
+### Steps utente PROD
+Save to GitHub → deploy backend + frontend. Lo storico inizia a popolarsi al
+prossimo ciclo di polling; il report diventa significativo dopo qualche ora.
+
+---
+
+
 ## 2026-07-29 ✅ Auto-aggancio VM Hyper-V (rilevamento autonomo Tipo Macchina)
 
 ### Richiesta utente

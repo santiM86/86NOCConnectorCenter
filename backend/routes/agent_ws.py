@@ -560,11 +560,18 @@ async def _bridge_ping_poll(conn: _Connection, r: Dict[str, Any]) -> None:
     except Exception as e:
         logger.warning("ping_poll: device_poll_status upsert failed ip=%s err=%s", target, e)
 
-    # v2026-06-23 SOFT/HARD STATE (stile Nagios): la soglia di fallimenti
-    # consecutivi prima di confermare OFFLINE (HARD) ora e' CONFIGURABILE.
-    # Default globale in db.settings.max_check_attempts (cache 60s), override
-    # per-device su managed_devices.max_check_attempts. Sotto soglia il device
-    # e' in stato SOFT (degraded) e NON genera alert → niente falsi allarmi.
+    # v2026-07-29 CONNETTIVITA' (Spark): append 1 punto allo storico ping
+    # time-series per il report di connettivita' per-device. Best-effort.
+    try:
+        from routes.connectivity import record_ping
+        await record_ping(conn.client_id, target, reachable, latency_ms, loss_pct)
+    except Exception:
+        pass
+
+    # Reconcile managed_devices.status with the 5-failure threshold.
+    # v4.15.x ANTI-FLAP: alzata da 3 a 5 per ridurre falsi offline su
+    # reti con packet loss occasionale (WiFi, link congestionati).
+    # 5 cycle a 60s = 5 minuti di fail consecutivi reali.
     try:
         cursor = db.managed_devices.find(
             {"client_id": conn.client_id, "ip": target},
