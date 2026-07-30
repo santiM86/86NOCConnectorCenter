@@ -567,7 +567,10 @@ export default function DeviceInfoCard({ deviceIp, clientId = null, onClose = nu
                     // Workaround Radix Dialog portal: chiudi PRIMA (animazione close ~150ms),
                     // poi naviga. Se navighi subito, il portal overlay rimane "appiccicato"
                     // sopra la nuova pagina perche' la Dialog non ha tempo di cleanup.
-                    const url = `/switch-ports/${encodeURIComponent(id.ip)}`;
+                    // MULTI-TENANT: passa SEMPRE il client_id, altrimenti un IP privato
+                    // condiviso fra clienti diversi non e' risolvibile.
+                    const cid = clientId || card?.client?.id || card?.client_id || card?.identity?.client_id;
+                    const url = `/switch-ports/${encodeURIComponent(id.ip)}${cid ? `?clientId=${encodeURIComponent(cid)}` : ""}`;
                     if (onClose) onClose();
                     setTimeout(() => navigate(url), 80);
                   }}

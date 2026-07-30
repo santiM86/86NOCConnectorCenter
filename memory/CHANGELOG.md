@@ -1,3 +1,85 @@
+# 2026-07-29 — SECURITY: Tenant Write Guard (anti cross-tenant a livello di scrittura)
+
+## Richiesta utente
+Impedire a un connector di registrare/importare un dispositivo sotto un client_id
+diverso dal proprio (garanzia a livello di SCRITTURA, non solo di visualizzazione).
+
+## Stato preesistente
+Tutti i write dei connector usavano gia' `client_id = client_data["id"]` (identita'
+autenticata via HMAC/API-key), mai un client_id dal body. `LanScanReport` non espone
+client_id (immune per design). Nessun leak reale, ma mancava una rete di sicurezza.
+
+## Implementazione
+- Nuovo helper `enforce_connector_tenant(body, client_id)` in `connector.py`:
+  se il payload (o un elemento di liste annidate: results/endpoints/switches/devices/
+  items/mac_tables/device_macs) specifica un `client_id` DIVERSO da quello del
+  connector autenticato → HTTP 403 + log `[TENANT-GUARD]`.
+- Applicato agli endpoint di ingestion raw-body: `web-ui-detected`, `printer-probe`,
+  `switch-ports`, `network-discovery`.
+- Gli endpoint Pydantic (lan-scan) restano immuni perche' il modello non ha client_id.
+
+## Validazione
+- Unit test logica: no client_id → pass; match → pass; top-level foreign → 403;
+  nested foreign → 403 ✅. Backend compila e riparte pulito.
+
+---
+
+
+# 2026-07-29 — FIX ROOT CAUSE + rollback selettore cross-tenant
+
+## Feedback utente (fermo)
+"Un dispositivo NON deve/può appartenere a più tenant, non si devono MAI mischiare."
+Obiezione al selettore che mostrava 2 clienti sulla stessa schermata.
+
+## Chiarimento
+Non c'era mixing di DATI (le query porte/metriche sono sempre {ip+client_id}). Il
+selettore mostrava solo 2 card di clienti diversi sulla stessa pagina → violava il
+principio di separazione visiva. RIMOSSO.
+
+## Root cause del problema originale
+`DeviceInfoCard.js:471` costruiva il link "/switch-ports/{ip}" SENZA client_id →
+aprendo le Porte Switch dalla Scheda Dispositivo si perdeva il contesto cliente e,
+per IP privati condivisi, scattava il 400 "client_id obbligatorio".
+
+## Fix
+- `DeviceInfoCard.js`: il bottone Porte switch ora passa SEMPRE il client_id
+  (`clientId prop || card.client.id || ...`).
+- `SwitchPortsPage.js`: rimosso il selettore che elencava i tenant; al posto, se manca
+  clientId su IP condiviso, mostra un messaggio NEUTRO ("Apri dalla Panoramica del
+  cliente") SENZA mostrare nomi/dati di altri clienti.
+- `topology.py`: rimosso l'endpoint `GET /devices/{ip}/owners` (aggregava clienti).
+
+## Validazione (screenshot)
+- info-card espone `client.id` → link corretto ✅
+- Schermata neutra: nessun nome tenant mostrato (NO_TENANT_NAMES_SHOWN=True) ✅
+- Dati sintetici rimossi.
+
+---
+
+
+# 2026-07-29 — UX: Selettore tenant per IP condivisi (fix "client_id obbligatorio")
+
+## Contesto (segnalazione utente)
+Aprendo la pagina Porte Switch di un IP presente su piu' clienti SENZA clientId
+nell'URL, compariva solo un toast criptico "IP X presente su 2 clienti diversi:
+client_id obbligatorio" + box vuoto. Comportamento corretto (isolamento multi-tenant)
+ma UX confusa.
+
+## Implementazione
+- Backend `topology.py`: nuovo endpoint `GET /api/devices/{ip}/owners` → lista
+  {client_id, client_name, device_name, device_type} dei clienti che possiedono l'IP.
+- Frontend `SwitchPortsPage.js`: se la chiamata switch-ports torna 400 e non c'e'
+  clientId, la pagina interroga /owners e mostra un **selettore tenant** ("Questo IP
+  appartiene a piu' clienti") con una card per cliente; il click naviga alla pagina
+  con il clientId corretto. Niente piu' dead-end.
+
+## Validazione (screenshot)
+- IP sintetico su 2 clienti → picker mostrato con entrambe le card (nome cliente +
+  nome/tipo switch), navigazione con clientId corretto ✅. Dati sintetici rimossi.
+
+---
+
+
 # 2026-07-29 — ENHANCEMENT: "Correggi ora" → poll immediato (hot-push config all'agent)
 
 ## Richiesta utente

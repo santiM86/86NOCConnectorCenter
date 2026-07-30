@@ -382,6 +382,9 @@ export default function SwitchPortsPage() {
   const [diag, setDiag] = useState(null);
   const [diagLoading, setDiagLoading] = useState(false);
   const [diagActionLoading, setDiagActionLoading] = useState(false);
+  // IP condiviso fra clienti diversi + nessun clientId in URL: NON mostriamo dati
+  // di altri tenant, chiediamo solo di aprire dal cliente corretto.
+  const [needClientPick, setNeedClientPick] = useState(false);
 
   const runDiagnose = useCallback(async () => {
     setDiagLoading(true);
@@ -432,12 +435,19 @@ export default function SwitchPortsPage() {
         params: clientId ? { client_id: clientId } : {},
       });
       setData(r.data);
+      setNeedClientPick(false);
       // Aggiorna selected con dati freschi
       if (selected) {
         const fresh = (r.data?.ports || []).find(x => x.idx === selected.idx);
         if (fresh) setSelected(fresh);
       }
     } catch (e) {
+      // IP presente su piu' clienti senza clientId: NON mostriamo mai dati di altri
+      // tenant. Chiediamo semplicemente di aprire la pagina dal cliente corretto.
+      if (e?.response?.status === 400 && !clientId) {
+        setNeedClientPick(true);
+        return;
+      }
       toast.error(e?.response?.data?.detail || "Errore caricamento");
     } finally {
       setLoading(false);
@@ -516,6 +526,35 @@ export default function SwitchPortsPage() {
       ? <CaretUp size={9} className="inline ml-0.5 text-cyan-300" />
       : <CaretDown size={9} className="inline ml-0.5 text-cyan-300" />;
   };
+
+  // IP condiviso da piu' clienti e nessun clientId in URL: messaggio neutro,
+  // NESSUN dato/nome di altri tenant viene mostrato.
+  if (needClientPick) {
+    return (
+      <div className="p-6 md:p-10 max-w-2xl mx-auto" data-testid="switch-ports-client-picker">
+        <div className="flex items-center gap-3 mb-4">
+          <button onClick={() => navigate(-1)} className="text-[var(--text-muted)] hover:text-[var(--text-primary)] text-lg">←</button>
+          <h1 className="text-base md:text-lg font-bold">Dettagli switch · <span className="font-mono text-cyan-300">{deviceIp}</span></h1>
+        </div>
+        <div className="p-6 rounded-lg border border-amber-500/40 bg-amber-500/10 space-y-3">
+          <div className="text-sm font-bold text-amber-100">Apri questa pagina dal cliente corretto</div>
+          <div className="text-[12px] text-[var(--text-secondary)] leading-relaxed">
+            L'IP privato <code className="font-mono text-amber-200">{deviceIp}</code> è usato — su reti separate — da più clienti.
+            Per garantire l'isolamento multi-tenant, ARGUS non apre questa pagina senza sapere di quale cliente si tratta
+            e <strong>non mostra mai dispositivi di clienti diversi insieme</strong>.
+          </div>
+          <div className="text-[12px] text-[var(--text-secondary)]">
+            Torna nella <strong>Panoramica del cliente</strong> e clicca sullo switch da lì: la pagina si aprirà
+            già filtrata sul cliente giusto.
+          </div>
+          <Button onClick={() => navigate("/")} size="sm" variant="outline" className="text-[11px]" data-testid="switch-ports-go-clients">
+            Vai alla Dashboard
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
 
   if (loading && !data) {
     return (
