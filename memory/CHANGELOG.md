@@ -1,3 +1,29 @@
+# 2026-07-29 — DEVOPS: Rilascio agent "a un numero" (file VERSION → auto-release)
+
+## Richiesta utente
+Rendere il rilascio dell'agent automatico: cambiare solo un numero, niente build/tag manuali.
+
+## Implementazione
+- `noc-agent/VERSION` (NUOVO): contiene la versione (attuale `4.26.0`).
+- `.github/workflows/auto-release-agent.yml` (NUOVO): on push a main quando cambia
+  `noc-agent/VERSION`, legge la versione, salta se il tag/release esiste già
+  (idempotente), e avvia via `gh workflow run` la pipeline esistente
+  `release-agent.yml` (workflow_dispatch con `tag=vX.Y.Z`). Nota: usa workflow_dispatch
+  perche' un tag pushato col GITHUB_TOKEN non triggererebbe altri workflow.
+- `noc-agent/Makefile`: `VERSION ?=` ora legge da `./VERSION` (build locali coerenti).
+
+## Effetto
+- L'utente cambia SOLO il numero in `noc-agent/VERSION` e committa → build+release
+  partono da sole. Il primo "Save to Github" con VERSION=4.26.0 rilascia gia' v4.26.0.
+- La pipeline compila `nocagent.exe` includendo il nuovo modulo `snmpports` (cmd/agent).
+
+## Validazione
+- File VERSION letto correttamente; Makefile inietta `main.Version=4.26.0+<commit>`;
+  entrambi i workflow YAML validati (yaml.safe_load) ✅.
+
+---
+
+
 # 2026-07-29 — FEATURE: Raccolta Porte Switch nativa nell'agent v4 Go (ifTable)
 
 ## Contesto

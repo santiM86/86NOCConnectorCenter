@@ -1,4 +1,4 @@
-VERSION ?= 4.0.0-dev
+VERSION ?= $(shell tr -d ' \t\r\n' < $(CURDIR)/VERSION 2>/dev/null || echo 4.0.0-dev)
 COMMIT  := $(shell git -C $(CURDIR) rev-parse --short HEAD 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.Version=$(VERSION)+$(COMMIT)
 

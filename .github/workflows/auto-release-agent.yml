@@ -1,0 +1,75 @@
+name: Auto-release agent on VERSION bump
+
+# ============================================================================
+# Rilascio "a un numero": basta modificare il file `noc-agent/VERSION` (es.
+# 4.26.0 -> 4.27.0) e fare push su main. Questo workflow:
+#   1. legge la versione dal file,
+#   2. salta se quella release/tag esiste già (idempotente),
+#   3. avvia la pipeline esistente `release-agent.yml` (build + GitHub Release)
+#      via workflow_dispatch, passando il tag vX.Y.Z.
+#
+# Nessuna operazione manuale: cambi il numero, committi, e la release parte.
+# ============================================================================
+
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'noc-agent/VERSION'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  trigger-release:
+    name: Read VERSION and launch release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Read VERSION file
+        id: v
+        run: |
+          set -euo pipefail
+          if [ ! -f noc-agent/VERSION ]; then
+            echo "::error::noc-agent/VERSION mancante"; exit 1
+          fi
+          VER="$(tr -d ' \t\r\n' < noc-agent/VERSION)"
+          VER="${VER#v}"
+          if [ -z "$VER" ]; then
+            echo "::error::noc-agent/VERSION vuoto"; exit 1
+          fi
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VER"    >> "$GITHUB_OUTPUT"
+          echo "Versione richiesta: v$VER"
+
+      - name: Skip if tag/release already exists
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.v.outputs.tag }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Release $TAG già presente → skip."
+          elif git ls-remote --tags origin "refs/tags/$TAG" | grep -q .; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Tag $TAG già presente → skip."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "Nessun tag/release $TAG: procedo."
+          fi
+
+      - name: Trigger release-agent pipeline
+        if: steps.check.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh workflow run release-agent.yml --ref "${{ github.ref_name }}" \
+            -f tag="${{ steps.v.outputs.tag }}"
+          echo "Pipeline di release avviata per ${{ steps.v.outputs.tag }}."
