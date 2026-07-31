@@ -1,3 +1,31 @@
+# 2026-07-29 — DEVOPS: Auto-set "latest override" sul Center a fine release
+
+## Richiesta utente
+Dopo una release, il Center deve impostare da solo la versione latest (niente Settings a mano).
+
+## Implementazione
+- Backend `agent_ws.py`: nuovo endpoint `POST /api/agent/release-hook` protetto da
+  header `X-Release-Secret` (confronto costante con env `AGENT_RELEASE_HOOK_SECRET`;
+  se la env manca l'endpoint e' disattivo → 503). Body `{"version":"v4.26.0"}`:
+  scrive `system_settings.agent_latest_version_override`, invalida la cache in memoria
+  e ri-risolve la latest. Validazione semver.
+- `.github/workflows/release-agent.yml`: nuovo step finale "Notify Center" che, se i
+  secret `CENTER_URL` e `AGENT_RELEASE_HOOK_SECRET` sono configurati, POSTa la versione
+  all'endpoint; altrimenti si salta senza far fallire la release (guard nello script).
+
+## Setup a carico utente (una tantum)
+1. Backend PROD `.env`: `AGENT_RELEASE_HOOK_SECRET=<random>`.
+2. GitHub repo → Settings → Secrets: `CENTER_URL=https://argus.86bit.it` +
+   `AGENT_RELEASE_HOOK_SECRET=<stesso valore>`.
+Da lì ogni release imposta l'override in automatico.
+
+## Validazione
+- Endpoint testato via stub: secret errato → 403; corretto → 200 + override scritto e
+  risolto (`v4.26.0`). `.env` non modificata; override di test rimosso ✅. YAML valido.
+
+---
+
+
 # 2026-07-29 — DEVOPS: Rilascio agent "a un numero" (file VERSION → auto-release)
 
 ## Richiesta utente

@@ -3338,6 +3338,50 @@ async def set_agent_latest_override(
     }
 
 
+@router.post("/agent/release-hook")
+async def agent_release_hook(request: Request) -> Dict[str, Any]:
+    """Webhook chiamato dalla pipeline CI a fine release per impostare AUTOMATICAMENTE
+    l'override della versione latest (l'utente non deve toccare le Settings).
+
+    Sicurezza: header ``X-Release-Secret`` confrontato in modo costante con la env
+    ``AGENT_RELEASE_HOOK_SECRET``. Se la env non e' configurata l'endpoint e' disattivo.
+    Body JSON: ``{"version": "v4.26.0"}``.
+    """
+    import hmac as _hmac
+    secret = _os.environ.get("AGENT_RELEASE_HOOK_SECRET", "")
+    if not secret:
+        raise HTTPException(status_code=503, detail="release-hook disabilitato (AGENT_RELEASE_HOOK_SECRET non configurata)")
+    provided = request.headers.get("X-Release-Secret", "")
+    if not provided or not _hmac.compare_digest(provided, secret):
+        raise HTTPException(status_code=403, detail="secret non valido")
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    v = str((body or {}).get("version") or "").strip()
+    if not v:
+        raise HTTPException(status_code=400, detail="version mancante")
+    if not v.startswith("v"):
+        v = f"v{v}"
+    import re as _re
+    if not _re.match(r"^v\d+\.\d+\.\d+(-[a-zA-Z0-9._-]+)?(\+[a-zA-Z0-9._-]+)?$", v):
+        raise HTTPException(status_code=400, detail=f"Formato versione non valido: '{v}'")
+
+    now_iso = _now().isoformat()
+    await db.system_settings.update_one(
+        {"_id": "agent_latest_version_override"},
+        {"$set": {"value": v, "updated_at": now_iso, "updated_by": "ci-release-hook"}},
+        upsert=True,
+    )
+    _AGENT_LATEST_CACHE["version"] = None
+    _AGENT_LATEST_CACHE["expires_at"] = None
+    resolved = await _resolve_latest_agent_version_safe()
+    logger.info("release-hook: override versione latest impostato a %s (resolved=%s)", v, resolved)
+    return {"ok": True, "db_override": v, "resolved": resolved, "updated_at": now_iso}
+
+
+
 @router.get("/agent/latest-version")
 async def agent_latest_version() -> Dict[str, str]:
     """Espone la versione corrente del Connector Go Agent v4 disponibile per
