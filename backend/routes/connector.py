@@ -3844,6 +3844,90 @@ async def connector_lldp_report(request: Request):
     return {"status": "ok", "neighbors_stored": len(neighbors)}
 
 
+async def store_switch_ports(client_id: str, switches: list) -> dict:
+    """Persist switch port tables. Condiviso tra l'endpoint REST del connector
+    legacy e il bridge WebSocket dell'agent v4. Idempotente per-switch, con flap
+    detection e valutazione alert loop. Ritorna i totali."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    total_stored = 0
+    total_flaps = 0
+    stored_per_switch: list = []
+    for sw in switches:
+        local_ip = sanitize_string(sw.get("local_ip", ""), 64)
+        if not local_ip:
+            continue
+        ports = sw.get("ports", []) or []
+        prev_ports = await db.switch_ports.find(
+            {"client_id": client_id, "local_ip": local_ip},
+            {"_id": 0, "idx": 1, "oper": 1, "admin": 1, "speed_mbps": 1}
+        ).to_list(2000)
+        prev_by_idx = {int(p.get("idx", 0)): p for p in prev_ports if p.get("idx") is not None}
+        flap_events = []
+        await db.switch_ports.delete_many({"client_id": client_id, "local_ip": local_ip})
+        if ports:
+            docs = []
+            for p in ports:
+                try:
+                    idx_v = int(p.get("idx", 0))
+                except Exception:
+                    continue
+                new_oper = int(p.get("oper", 0)) if p.get("oper") is not None else 0
+                new_admin = int(p.get("admin", 0)) if p.get("admin") is not None else 0
+                new_speed = int(p.get("speed_mbps", 0) or 0)
+                prev = prev_by_idx.get(idx_v)
+                if prev:
+                    prev_oper = int(prev.get("oper", 0) or 0)
+                    prev_admin = int(prev.get("admin", 0) or 0)
+                    prev_speed = int(prev.get("speed_mbps", 0) or 0)
+                    events = []
+                    if prev_oper != new_oper:
+                        events.append({"kind": "oper_change", "from": prev_oper, "to": new_oper})
+                    if prev_admin != new_admin:
+                        events.append({"kind": "admin_change", "from": prev_admin, "to": new_admin})
+                    if prev_speed > 0 and new_speed > 0 and prev_speed != new_speed:
+                        events.append({"kind": "speed_change", "from": prev_speed, "to": new_speed})
+                    for ev in events:
+                        flap_events.append({
+                            "client_id": client_id, "local_ip": local_ip, "idx": idx_v,
+                            "port_name": sanitize_string(str(p.get("name") or f"port{idx_v}"), 128),
+                            "ts": now_iso, **ev,
+                        })
+                docs.append({
+                    "client_id": client_id, "local_ip": local_ip, "idx": idx_v,
+                    "name": sanitize_string(str(p.get("name") or f"port{idx_v}"), 128),
+                    "descr": sanitize_string(str(p.get("descr") or ""), 128),
+                    "alias": sanitize_string(str(p.get("alias") or ""), 128),
+                    "oper": new_oper, "admin": new_admin, "speed_mbps": new_speed,
+                    "last_change_s": int(p.get("last_change_s", 0) or 0),
+                    "in_octets": str(p.get("in_octets") or "0"),
+                    "out_octets": str(p.get("out_octets") or "0"),
+                    "rx_bps": int(p.get("rx_bps", 0) or 0), "tx_bps": int(p.get("tx_bps", 0) or 0),
+                    "rx_pps": int(p.get("rx_pps", 0) or 0), "tx_pps": int(p.get("tx_pps", 0) or 0),
+                    "poe_admin": int(p.get("poe_admin", 0) or 0),
+                    "poe_status": int(p.get("poe_status", 0) or 0),
+                    "poe_class": int(p.get("poe_class", 0) or 0),
+                    "updated_at": now_iso,
+                })
+            if docs:
+                await db.switch_ports.insert_many(docs)
+                total_stored += len(docs)
+        if flap_events:
+            await db.port_flap_events.insert_many(flap_events)
+            total_flaps += len(flap_events)
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+            await db.port_flap_events.delete_many({
+                "client_id": client_id, "local_ip": local_ip, "ts": {"$lt": cutoff}
+            })
+        stored_per_switch.append({"local_ip": local_ip, "ports_count": len(ports)})
+        try:
+            from .loop_detection import evaluate_and_alert
+            await evaluate_and_alert(db, client_id, local_ip, ports)
+        except Exception:
+            pass
+    return {"total_ports": total_stored, "flap_events": total_flaps, "per_switch": stored_per_switch}
+
+
+
 @router.post(f"/{C}/sp")
 @router.post("/connector/switch-ports")
 async def connector_switch_ports_report(request: Request):
@@ -3866,113 +3950,11 @@ async def connector_switch_ports_report(request: Request):
     body = await request.json()
     check_nosql_injection(body)
     client_id = client_data["id"]
-    switches = body.get("switches", []) or []
-    now_iso = datetime.now(timezone.utc).isoformat()
     enforce_connector_tenant(body, client_id)
-
-    # Wipe and reinsert per-switch to stay idempotent and handle port changes
-    # v3.6.9+: flap detection - confronta stato precedente con nuovo per tracciare UP/DOWN events
-    total_stored = 0
-    total_flaps = 0
-    stored_per_switch: list[dict] = []
-    for sw in switches:
-        local_ip = sanitize_string(sw.get("local_ip", ""), 64)
-        if not local_ip:
-            continue
-        ports = sw.get("ports", []) or []
-
-        # Leggi stato precedente delle porte per flap detection
-        prev_ports = await db.switch_ports.find(
-            {"client_id": client_id, "local_ip": local_ip},
-            {"_id": 0, "idx": 1, "oper": 1, "admin": 1, "speed_mbps": 1}
-        ).to_list(2000)
-        prev_by_idx = {int(p.get("idx", 0)): p for p in prev_ports if p.get("idx") is not None}
-
-        flap_events = []  # buffer per bulk insert
-
-        await db.switch_ports.delete_many({"client_id": client_id, "local_ip": local_ip})
-        if ports:
-            docs = []
-            for p in ports:
-                try:
-                    idx_v = int(p.get("idx", 0))
-                except Exception:
-                    continue
-                new_oper = int(p.get("oper", 0)) if p.get("oper") is not None else 0
-                new_admin = int(p.get("admin", 0)) if p.get("admin") is not None else 0
-                new_speed = int(p.get("speed_mbps", 0) or 0)
-
-                # Flap detection
-                prev = prev_by_idx.get(idx_v)
-                if prev:
-                    prev_oper = int(prev.get("oper", 0) or 0)
-                    prev_admin = int(prev.get("admin", 0) or 0)
-                    prev_speed = int(prev.get("speed_mbps", 0) or 0)
-                    events = []
-                    if prev_oper != new_oper:
-                        events.append({"kind": "oper_change", "from": prev_oper, "to": new_oper})
-                    if prev_admin != new_admin:
-                        events.append({"kind": "admin_change", "from": prev_admin, "to": new_admin})
-                    # Speed change solo se entrambi > 0 (evita rumore da 0->N al primo link-up)
-                    if prev_speed > 0 and new_speed > 0 and prev_speed != new_speed:
-                        events.append({"kind": "speed_change", "from": prev_speed, "to": new_speed})
-                    for ev in events:
-                        flap_events.append({
-                            "client_id": client_id,
-                            "local_ip": local_ip,
-                            "idx": idx_v,
-                            "port_name": sanitize_string(str(p.get("name") or f"port{idx_v}"), 128),
-                            "ts": now_iso,
-                            **ev,
-                        })
-
-                docs.append({
-                    "client_id": client_id,
-                    "local_ip": local_ip,
-                    "idx": idx_v,
-                    "name": sanitize_string(str(p.get("name") or f"port{idx_v}"), 128),
-                    "descr": sanitize_string(str(p.get("descr") or ""), 128),
-                    "alias": sanitize_string(str(p.get("alias") or ""), 128),
-                    "oper": new_oper,
-                    "admin": new_admin,
-                    "speed_mbps": new_speed,
-                    "last_change_s": int(p.get("last_change_s", 0) or 0),
-                    "in_octets": str(p.get("in_octets") or "0"),
-                    "out_octets": str(p.get("out_octets") or "0"),
-                    "rx_bps": int(p.get("rx_bps", 0) or 0),
-                    "tx_bps": int(p.get("tx_bps", 0) or 0),
-                    "rx_pps": int(p.get("rx_pps", 0) or 0),
-                    "tx_pps": int(p.get("tx_pps", 0) or 0),
-                    "poe_admin": int(p.get("poe_admin", 0) or 0),
-                    "poe_status": int(p.get("poe_status", 0) or 0),
-                    "poe_class": int(p.get("poe_class", 0) or 0),
-                    "updated_at": now_iso,
-                })
-            if docs:
-                await db.switch_ports.insert_many(docs)
-                total_stored += len(docs)
-
-        # Insert flap events (se presenti)
-        if flap_events:
-            await db.port_flap_events.insert_many(flap_events)
-            total_flaps += len(flap_events)
-            # Retention: elimina eventi > 30 giorni per evitare crescita indefinita
-            cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
-            await db.port_flap_events.delete_many({
-                "client_id": client_id, "local_ip": local_ip, "ts": {"$lt": cutoff}
-            })
-
-        stored_per_switch.append({"local_ip": local_ip, "ports_count": len(ports)})
-
-        # Loop detection (Fase A): valuta MAC duplicati + storm e crea/risolve alert.
-        try:
-            from .loop_detection import evaluate_and_alert
-            await evaluate_and_alert(db, client_id, local_ip, ports)
-        except Exception:
-            pass
-
-    logger.info(f"Switch ports updated for {client_id}: {len(switches)} switch, {total_stored} porte totali, {total_flaps} eventi flap")
-    return {"status": "ok", "switches_stored": len(switches), "total_ports": total_stored, "flap_events": total_flaps, "per_switch": stored_per_switch}
+    switches = body.get("switches", []) or []
+    result = await store_switch_ports(client_id, switches)
+    logger.info(f"Switch ports updated for {client_id}: {len(switches)} switch, {result['total_ports']} porte totali, {result['flap_events']} eventi flap")
+    return {"status": "ok", "switches_stored": len(switches), "total_ports": result["total_ports"], "flap_events": result["flap_events"], "per_switch": result["per_switch"]}
 
 
 @router.post(f"/{C}/nd")
