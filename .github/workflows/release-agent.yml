@@ -240,3 +240,30 @@ jobs:
             dist/SHA256SUMS.txt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Notifica il Center: imposta AUTOMATICAMENTE l'override della versione latest,
+      # così non serve toccare le Settings. Richiede due secret di repo:
+      #   - CENTER_URL                  (es. https://argus.86bit.it)
+      #   - AGENT_RELEASE_HOOK_SECRET   (stesso valore della env sul backend)
+      # Se non configurati, lo step si salta da solo (non fallisce la release).
+      - name: Notify Center (set latest override)
+        env:
+          CENTER_URL: ${{ secrets.CENTER_URL }}
+          HOOK_SECRET: ${{ secrets.AGENT_RELEASE_HOOK_SECRET }}
+          VER: v${{ needs.build-windows.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CENTER_URL:-}" ] || [ -z "${HOOK_SECRET:-}" ]; then
+            echo "CENTER_URL / AGENT_RELEASE_HOOK_SECRET non configurati → skip."
+            exit 0
+          fi
+          echo "Notifico il Center: latest = $VER"
+          code=$(curl -sS -o /tmp/hook.out -w "%{http_code}" \
+            -X POST "${CENTER_URL%/}/api/agent/release-hook" \
+            -H "Content-Type: application/json" \
+            -H "X-Release-Secret: ${HOOK_SECRET}" \
+            -d "{\"version\":\"${VER}\"}") || true
+          echo "HTTP $code"; cat /tmp/hook.out 2>/dev/null || true
+          if [ "$code" != "200" ]; then
+            echo "::warning::Center non aggiornato (HTTP $code). Imposta l'override a mano nelle Settings."
+          fi
