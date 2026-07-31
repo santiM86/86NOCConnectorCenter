@@ -34,7 +34,7 @@ import (
 )
 
 // Version is injected at build time via -ldflags.
-var Version = "4.25.2"
+var Version = "4.26.0"
 
 // ServiceName is the OS service identifier (Windows SCM, systemd, launchd).
 const ServiceName = "86NocAgent"
@@ -110,6 +110,7 @@ func runAgent(ctx context.Context, cfg config.Config, log *logging.Logger) {
 	hr.Register("poller", 2*cfg.SNMP.Interval)
 	hr.Register("ping", 2*cfg.Ping.Interval)
 	hr.Register("sysmetrics", 3*cfg.SysMetrics.Interval)
+	hr.Register("snmpports", 12*cfg.SNMP.Interval)
 	hr.Register("watchdog", 3*cfg.Heartbeat)
 
 	hostname, _ := os.Hostname()
@@ -172,6 +173,12 @@ func runAgent(ctx context.Context, cfg config.Config, log *logging.Logger) {
 		client.PushEvent(proto.EventSysMetrics, r)
 		hr.Tick("sysmetrics")
 	})
+
+	// Switch-ports collector: walks ifTable/ifXTable of switch-profile targets.
+	// Replaces the legacy PowerShell connector for the "Porte Switch" page.
+	portsP := poller.NewPorts(cfg.SNMP, log, func(r proto.SwitchPortsReport) {
+		client.PushEvent(proto.EventSwitchPorts, r)
+	}, func() { hr.Tick("snmpports") })
 
 	sources := []discovery.Source{}
 	if cfg.Discovery.ARP {
@@ -478,6 +485,7 @@ func runAgent(ctx context.Context, cfg config.Config, log *logging.Logger) {
 			})
 		}
 		snmp.ApplyConfig(newCfg)
+		portsP.ApplyConfig(newCfg)
 
 		// Ping config hot-swap. The backend pushes the full list of
 		// managed_devices for this tenant (not only SNMP-enabled
@@ -531,6 +539,7 @@ func runAgent(ctx context.Context, cfg config.Config, log *logging.Logger) {
 	go logShipper(ctx, client, log)
 	go disc.Run(ctx)
 	go snmp.Run(ctx)
+	go portsP.Run(ctx)
 	go pingP.Run(ctx)
 	go sysm.Run(ctx)
 	go upd.Run(ctx)

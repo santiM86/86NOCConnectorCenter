@@ -1,3 +1,45 @@
+# 2026-07-29 — FEATURE: Raccolta Porte Switch nativa nell'agent v4 Go (ifTable)
+
+## Contesto
+Tutti i clienti usano agent v4 Go (legacy PowerShell dismesso). L'agent v4 NON
+raccoglieva la tabella porte (ifTable/LLDP) → pagina "Porte Switch" sempre vuota.
+Le porte arrivavano solo dal connector legacy. Scelte utente: trasporto = WebSocket
+(consigliato), ambito = solo porte (ifTable/ifXTable + contatori per rx/tx bps/pps).
+
+## Implementazione — Agent Go (/app/noc-agent)
+- `pkg/proto/messages.go`: nuovo evento `EventSwitchPorts="switch_ports"` + struct
+  `SwitchPortsReport/SwitchInfo/SwitchPortInfo`.
+- `internal/poller/snmpports.go` (NUOVO): modulo `PortsPoller` che, per ogni target
+  con Profile switch-like (switch/router/firewall/gateway), fa BULKWALK di
+  ifName/ifDescr/ifAlias/ifOper/ifAdmin/ifSpeed/ifHighSpeed/ifLastChange +
+  ifHC{In,Out}Octets e ifHC{In,Out}UcastPkts. Calcola rx/tx bps e pps dai delta tra
+  cicli (guardia contro wrap). Interval clamp 60s-10m (default 120s). Health-tick
+  ogni ciclo (no "stuck" sui clienti senza switch).
+- `cmd/agent/main.go`: istanzia `portsP`, registra health "snmpports", hot-swap
+  config (`portsP.ApplyConfig`), avvia `go portsP.Run(ctx)`. Version → 4.26.0.
+
+## Implementazione — Backend
+- `connector.py`: estratta `store_switch_ports(client_id, switches)` (logica storage
+  + flap detection + alert loop), riusata dall'endpoint REST legacy (refactor) e dal
+  bridge WS. Il guard `enforce_connector_tenant` resta attivo.
+- `agent_ws.py`: nuovo `_bridge_switch_ports(conn, data)` + dispatch `kind=="switch_ports"`
+  → chiama `store_switch_ports(conn.client_id, switches)` (client_id AUTENTICATO).
+
+## Validazione
+- Backend: `store_switch_ports` testato end-to-end (persistenza porte, refactor
+  endpoint intatto) ✅. Compila e riparte pulito ✅.
+- Agent Go: codice scritto e API verificate contro gosnmp v1.38.0
+  (BulkWalkAll/ToBigInt/MaxOids/Conn.Close), module path, config fields, logging.
+  ⚠️ NON compilato qui (nessun toolchain Go in questo ambiente).
+
+## Dipendenza deploy (a carico utente)
+Il nuovo agent (v4.26.0) va COMPILATO e PUBBLICATO dalla pipeline/GitHub Releases
+dell'utente; gli agent lo prendono con "Forza re-deploy". Poi, sui device con
+device_type=switch, le porte compaiono al ciclo successivo (~2 min).
+
+---
+
+
 # 2026-07-29 — FIX diagnosi porte: check Connector (v4) + segnale pipeline
 
 ## Problema (screenshot utente)

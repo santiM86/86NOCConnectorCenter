@@ -448,6 +448,8 @@ async def _on_event(conn: _Connection, evt: Dict[str, Any]) -> None:
             await _bridge_ping_poll(conn, data)
         elif kind == "sys_metrics" and isinstance(data, dict):
             await _bridge_sys_metrics(conn, data)
+        elif kind == "switch_ports" and isinstance(data, dict):
+            await _bridge_switch_ports(conn, data)
         elif kind in ("lan_scan_result", "lan_scan_progress", "lan_scan_done") and isinstance(data, dict):
             # Lazy import per evitare cicli (lan_scanner.py importa
             # questo modulo per REGISTRY).
@@ -824,6 +826,30 @@ async def _bridge_snmp_poll(conn: _Connection, r: Dict[str, Any]) -> None:
         )
     except Exception:
         pass
+
+
+async def _bridge_switch_ports(conn: _Connection, data: Dict[str, Any]) -> None:
+    """Bridge agent.event kind=switch_ports → Mongo `switch_ports`.
+
+    L'agent v4 Go invia la tabella interfacce (ifTable/ifXTable) degli switch che
+    ha in target con profilo switch. Riusa la stessa logica di storage
+    dell'endpoint REST legacy `/connector/switch-ports` (flap detection + alert
+    loop), scritta sotto il client_id AUTENTICATO dell'agent (isolamento tenant).
+    """
+    client_id = conn.client_id
+    if not client_id:
+        return
+    switches = data.get("switches", []) or []
+    if not switches:
+        return
+    from routes.connector import store_switch_ports
+    result = await store_switch_ports(client_id, switches)
+    logger.info(
+        "agent v4 switch_ports agent=%s client=%s switches=%d ports=%d flaps=%d",
+        conn.agent_id, client_id, len(switches),
+        result.get("total_ports", 0), result.get("flap_events", 0),
+    )
+
 
 
 async def _bridge_sys_metrics(conn: _Connection, r: Dict[str, Any]) -> None:
