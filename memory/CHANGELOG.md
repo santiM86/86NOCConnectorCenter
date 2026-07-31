@@ -1,3 +1,35 @@
+# 2026-07-29 — FIX diagnosi porte: check Connector (v4) + segnale pipeline
+
+## Problema (screenshot utente)
+Diagnosi: check 1-4 verdi (device=switch, community ok), check 7 verde (poll ok,
+reachable=True), MA check 8 ROSSO "1 connector registrati ma NESSUNO online" mentre
+l'utente conferma che il connector e' acceso. Contraddizione → check 8 sbagliato.
+
+## Root cause del check 8
+Esistono DUE sistemi: legacy v3 in `connector_status` (campo `online`) e agent v4 Go
+in `managed_agents` (online = heartbeat <120-180s). Il mio check 8 guardava solo i
+legacy e leggeva il booleano `online` statico → falso negativo per gli agent v4.
+Inoltre `agent_ws.py` (v4) NON gestisce affatto switch_ports/ifTable/LLDP: le porte
+arrivano SOLO dagli endpoint REST legacy `/connector/switch-ports` e
+`/connector/network-discovery`.
+
+## Fix (topology.diagnose)
+- Check 8 ora considera SIA connector_status SIA managed_agents (v4) e calcola online
+  dall'heartbeat recente (<180s); mostra nome+versione agent.
+- Check 5 arricchito con segnale decisivo: quante porte esistono per QUALSIASI switch
+  del cliente. Se 0 su tutti → la raccolta ifTable non funziona a livello di agent
+  (probabile agent v4 senza modulo topology, o connector legacy non attivo). Se >0 →
+  problema specifico del device.
+- Raccomandazione finale differenziata per "agent online ma porte non ancora arrivate".
+
+## Validazione
+- Diagnose gira senza errori con la nuova logica (curl). In preview: check 8 warn
+  (nessun agent live), check 5 error (nessuna porta per il cliente). Da riverificare
+  su produzione con agent live.
+
+---
+
+
 # 2026-07-29 — SECURITY: Tenant Write Guard (anti cross-tenant a livello di scrittura)
 
 ## Richiesta utente

@@ -615,17 +615,30 @@ async def diagnose_switch_ports(device_ip: str, client_id: Optional[str] = None,
     # 5. Dati porte gia' presenti? (anche sotto altro client_id = mismatch)
     n_ports_here = await db.switch_ports.count_documents({"local_ip": device_ip, "client_id": cid})
     other_cids = [c for c in await db.switch_ports.distinct("client_id", {"local_ip": device_ip}) if c and c != cid]
+    # Segnale decisivo: la pipeline switch-ports ha MAI funzionato per questo cliente?
+    n_ports_client = await db.switch_ports.count_documents({"client_id": cid})
+    n_switches_client = len(await db.switch_ports.distinct("local_ip", {"client_id": cid}))
     if n_ports_here > 0:
-        add("5. Dati porte", "ok", f"{n_ports_here} porte gia' memorizzate per questo cliente.")
+        add("5. Dati porte", "ok", f"{n_ports_here} porte gia' memorizzate per questo device.")
     elif other_cids:
         add("5. Dati porte", "error",
             f"Porte presenti ma sotto un ALTRO client_id ({len(other_cids)}): il connector che le "
             f"raccoglie e' autenticato come cliente diverso da quello del device.",
             fix="Verifica che il connector/agent appartenga allo stesso cliente del device.")
         recommendation = recommendation or "Allinea il client_id del connector a quello del device."
+    elif n_ports_client > 0:
+        add("5. Dati porte", "warn",
+            f"Questo device non ha ancora porte, MA la pipeline funziona: il cliente ha gia' "
+            f"{n_ports_client} porte su {n_switches_client} altri switch. Problema specifico di "
+            f"questo device (SNMP/community/attesa poll), non dell'agent.")
     else:
-        add("5. Dati porte", "warn", "Nessuna porta memorizzata (ne' per questo ne' per altri clienti): "
-            "l'agent non ha ancora inviato la ifTable.")
+        add("5. Dati porte", "error",
+            "Nessuna porta switch memorizzata per NESSUN device di questo cliente: la raccolta "
+            "porte (ifTable) non sta funzionando a livello di agent.",
+            fix="L'agent installato probabilmente NON raccoglie le porte switch (versione v4 senza "
+                "modulo topology, o connector legacy non attivo). Serve un connector che invii la ifTable.")
+        recommendation = recommendation or ("Nessuno switch di questo cliente ha porte: l'agent non "
+                                            "raccoglie la ifTable. Verifica versione/tipo di agent.")
 
     # 6. LLDP + FDB
     n_lldp = await db.lldp_neighbors.count_documents({"local_ip": device_ip, "client_id": cid})
@@ -644,28 +657,65 @@ async def diagnose_switch_ports(device_ip: str, client_id: Optional[str] = None,
     else:
         add("7. Ultimo poll", "warn", "Nessuno stato di poll registrato per questo device.")
 
-    # 8. Connector online?
-    conns = await db.connector_status.find(
-        {"client_id": cid}, {"_id": 0, "hostname": 1, "online": 1, "last_heartbeat_at": 1}).to_list(50)
-    online = [c for c in conns if c.get("online")]
-    if online:
-        add("8. Connector", "ok", f"{len(online)}/{len(conns)} connector online: " +
-            ", ".join(c.get("hostname", "?") for c in online[:5]))
-    elif conns:
-        add("8. Connector", "error", f"{len(conns)} connector registrati ma NESSUNO online.",
-            fix="Riavvia/verifica il servizio Agent sul cliente.")
-        recommendation = recommendation or "Nessun connector online: avvia l'Agent."
+    # 8. Connector online? (considera SIA i legacy v3 in connector_status SIA
+    #    gli agent v4 Go in managed_agents; online = heartbeat recente <180s)
+    now_dt = datetime.now(timezone.utc)
+
+    def _hb_online(ts):
+        if not ts:
+            return False
+        try:
+            t = datetime.fromisoformat(ts.replace("Z", "+00:00")) if isinstance(ts, str) else ts
+            return (now_dt - t).total_seconds() < 180
+        except Exception:
+            return False
+
+    legacy = await db.connector_status.find(
+        {"client_id": cid},
+        {"_id": 0, "hostname": 1, "online": 1, "last_heartbeat_at": 1, "last_seen": 1}).to_list(50)
+    v4 = await db.managed_agents.find(
+        {"client_id": cid},
+        {"_id": 0, "hostname": 1, "agent_version": 1, "last_heartbeat_at": 1,
+         "last_hello_at": 1, "connected_at": 1}).to_list(50)
+
+    online_names: list = []
+    total_agents = 0
+    for c in legacy:
+        total_agents += 1
+        if c.get("online") or _hb_online(c.get("last_heartbeat_at") or c.get("last_seen")):
+            online_names.append(c.get("hostname") or "connector")
+    for a in v4:
+        total_agents += 1
+        ts = a.get("last_heartbeat_at") or a.get("last_hello_at") or a.get("connected_at")
+        if _hb_online(ts):
+            nm = a.get("hostname") or "v4-agent"
+            online_names.append(nm + (f" v{a.get('agent_version')}" if a.get("agent_version") else ""))
+
+    agent_online = bool(online_names)
+    if agent_online:
+        add("8. Connector / Agent", "ok",
+            f"{len(online_names)}/{total_agents} agent online: " + ", ".join(online_names[:5]))
+    elif total_agents:
+        add("8. Connector / Agent", "warn",
+            f"{total_agents} agent registrati ma nessun heartbeat recente (<3 min). "
+            f"Se l'agent risulta acceso, potrebbe aver perso la connessione col Center.",
+            fix="Verifica la connettivita' (WebSocket/HTTPS) dell'agent verso il Center.")
     else:
-        add("8. Connector", "error", "Nessun connector registrato per questo cliente.",
+        add("8. Connector / Agent", "error", "Nessun agent registrato per questo cliente.",
             fix="Installa/collega l'Agent al cliente.")
         recommendation = recommendation or "Installa l'Agent per questo cliente."
 
     if not recommendation:
         if not port_capable:
             recommendation = f"Imposta device_type='switch' su {device_ip}."
+        elif n_ports_here == 0 and agent_online:
+            recommendation = (
+                "L'agent e' ONLINE e il device e' uno switch, ma non ha ancora inviato la tabella "
+                "porte (ifTable/LLDP). Clicca 'Correggi ora' per ri-spingere la config all'agent; "
+                "se dopo ~2 min le porte non compaiono, l'agent potrebbe essere una versione senza "
+                "raccolta porte switch e va aggiornato.")
         elif n_ports_here == 0:
-            recommendation = ("Config lato ARGUS OK: verifica la community con il Test SNMP e attendi "
-                              "1 ciclo di poll (2-5 min).")
+            recommendation = "Config lato ARGUS OK: attendi 1 ciclo di poll (2-5 min) con l'agent online."
         else:
             recommendation = "Tutto ok: le porte dovrebbero essere visibili."
 
