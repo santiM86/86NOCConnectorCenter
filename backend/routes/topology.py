@@ -612,33 +612,40 @@ async def diagnose_switch_ports(device_ip: str, client_id: Optional[str] = None,
             "Device non eleggibile per SNMP (no community, no monitor_type=snmp, tipo non di rete).",
             fix="Imposta la community SNMP e device_type=switch.")
 
-    # 5. Dati porte gia' presenti? (anche sotto altro client_id = mismatch)
+    # 5. Dati porte per QUESTO cliente (scoped al tenant, mai cross-tenant).
+    #    NB: gli IP privati (10.x/192.168.x) collidono legittimamente tra clienti:
+    #    lo stesso IP su un altro cliente e' un ALTRO switch fisico, non un mismatch.
+    #    Percio' NON trattiamo piu' l'overlap come errore: era fuorviante e faceva
+    #    pensare a un data-leak inesistente. La causa vera va cercata nel tenant.
     n_ports_here = await db.switch_ports.count_documents({"local_ip": device_ip, "client_id": cid})
-    other_cids = [c for c in await db.switch_ports.distinct("client_id", {"local_ip": device_ip}) if c and c != cid]
-    # Segnale decisivo: la pipeline switch-ports ha MAI funzionato per questo cliente?
     n_ports_client = await db.switch_ports.count_documents({"client_id": cid})
     n_switches_client = len(await db.switch_ports.distinct("local_ip", {"client_id": cid}))
+    other_cids = [c for c in await db.switch_ports.distinct("client_id", {"local_ip": device_ip}) if c and c != cid]
     if n_ports_here > 0:
         add("5. Dati porte", "ok", f"{n_ports_here} porte gia' memorizzate per questo device.")
-    elif other_cids:
-        add("5. Dati porte", "error",
-            f"Porte presenti ma sotto un ALTRO client_id ({len(other_cids)}): il connector che le "
-            f"raccoglie e' autenticato come cliente diverso da quello del device.",
-            fix="Verifica che il connector/agent appartenga allo stesso cliente del device.")
-        recommendation = recommendation or "Allinea il client_id del connector a quello del device."
     elif n_ports_client > 0:
         add("5. Dati porte", "warn",
-            f"Questo device non ha ancora porte, MA la pipeline funziona: il cliente ha gia' "
-            f"{n_ports_client} porte su {n_switches_client} altri switch. Problema specifico di "
-            f"questo device (SNMP/community/attesa poll), non dell'agent.")
+            f"Questo device non ha ancora porte, MA la pipeline funziona per il cliente: "
+            f"ci sono gia' {n_ports_client} porte su {n_switches_client} altri switch. "
+            f"Problema specifico di questo device (community SNMP errata o attesa del prossimo poll), "
+            f"NON dell'agent.",
+            fix="Verifica la community SNMP del device e attendi il prossimo ciclo di poll.")
     else:
         add("5. Dati porte", "error",
-            "Nessuna porta switch memorizzata per NESSUN device di questo cliente: la raccolta "
-            "porte (ifTable) non sta funzionando a livello di agent.",
-            fix="L'agent installato probabilmente NON raccoglie le porte switch (versione v4 senza "
-                "modulo topology, o connector legacy non attivo). Serve un connector che invii la ifTable.")
-        recommendation = recommendation or ("Nessuno switch di questo cliente ha porte: l'agent non "
-                                            "raccoglie la ifTable. Verifica versione/tipo di agent.")
+            "Nessuna porta switch memorizzata per NESSUN device di questo cliente: l'agent di questo "
+            "cliente non sta raccogliendo la ifTable degli switch.",
+            fix="L'agent v4 raccoglie le porte switch solo dalla versione v4.26.0 (modulo SNMP nativo "
+                "'snmpports.go'). Aggiorna gli agent di questo cliente a v4.26.0, oppure usa un connector "
+                "che invii la ifTable.",
+            action="agent_needs_update")
+        recommendation = recommendation or ("Gli agent di questo cliente non raccolgono la ifTable: "
+                                            "aggiornali a v4.26.0 (modulo porte SNMP nativo).")
+    # 5b. Nota informativa: overlap di IP privati tra clienti (NON e' un data-leak).
+    if other_cids:
+        add("5b. Nota multi-tenant", "ok",
+            f"L'IP {device_ip} esiste anche su {len(other_cids)} altro/i cliente/i: e' un normale "
+            f"overlap di IP privati (switch fisici diversi su reti diverse). I dati restano ISOLATI "
+            f"per cliente — non c'e' alcun mescolamento ne' data-leak.")
 
     # 6. LLDP + FDB
     n_lldp = await db.lldp_neighbors.count_documents({"local_ip": device_ip, "client_id": cid})
