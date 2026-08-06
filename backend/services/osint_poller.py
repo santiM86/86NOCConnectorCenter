@@ -96,8 +96,11 @@ async def osint_exposure_tick() -> None:
 
             # Alert per-tenant se ci sono CVE attivamente sfruttate esposte
             if kev_hits and client_id:
-                cve_list = ", ".join(sorted(k.get("cve_id") for k in kev_hits)[:6])
+                cve_list = ", ".join(sorted(k.get("cve_id") for k in kev_hits if k.get("cve_id"))[:6])
                 await _emit_exposure_alert(client_id, ip, t.get("label") or ip, kev_hits, cve_list)
+            elif client_id:
+                # Esposizione rientrata: risolvi eventuali alert OSINT attivi per questo IP
+                await _resolve_exposure_alert(client_id, ip)
 
         if processed:
             logger.info(f"[osint-exposure] scanned {processed} public IP(s)")
@@ -146,3 +149,15 @@ async def _emit_exposure_alert(client_id: str, ip: str, label: str,
     }
     await insert_alert_if_emit(db, alert_doc)
     logger.info(f"[osint-exposure] alert generato client={client_id} ip={ip} kev={len(kev_hits)}")
+
+
+async def _resolve_exposure_alert(client_id: str, ip: str) -> None:
+    """Risolve gli alert OSINT-exposure attivi quando l'IP non espone più CVE KEV."""
+    now = datetime.now(timezone.utc).isoformat()
+    res = await db.alerts.update_many(
+        {"client_id": client_id, "device_ip": ip, "source_type": "osint", "status": "active"},
+        {"$set": {"status": "resolved", "resolved_at": now,
+                  "resolution_note": "Esposizione CVE KEV non più rilevata (OSINT auto-resolve)."}},
+    )
+    if res.modified_count:
+        logger.info(f"[osint-exposure] auto-resolved {res.modified_count} alert client={client_id} ip={ip}")

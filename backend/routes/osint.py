@@ -22,8 +22,8 @@ class KeyRequest(BaseModel):
 
 @router.get("/status")
 async def status(current_user: dict = Depends(get_current_user)):
-    """Stato generale: feed, conteggi IOC/KEV/exposure, chiavi configurate."""
-    require_admin(current_user)
+    """Stato generale: feed, conteggi IOC/KEV/exposure, chiavi configurate.
+    Sola lettura: accessibile a qualsiasi utente autenticato (admin/operator/viewer)."""
     return await osint.get_status()
 
 
