@@ -4936,3 +4936,15 @@ enrichment IP negli alert esistenti con badge reputazione.
 - Catena completa: L1 (reperibile on-call / fallback ruoli) -> L2 (responsabile/manager).
 - Test: alert C2 con c2_escalated_at 20min fa -> run-c2-l2-now -> escalated=1 (roles admin),
   2ª esecuzione=0 (idempotente), flag c2_escalated_l2 verificato. UI OK. PASS.
+
+## 2026-08-06 — Fix diagnostica porte switch (falso allarme "mixing" tra clienti)
+- routes/topology.py diagnose_switch_ports step 5: RIMOSSO il check fuorviante che trattava
+  lo stesso IP privato presente su altri client_id come "mismatch/connector sul cliente sbagliato".
+  Con IP privati (10.x/192.168.x) l'overlap tra clienti è NORMALE (switch fisici diversi) e i dati
+  sono già isolati per client_id (storage + query scoped, guardia in resolve_device_client_id).
+- Nuova logica step 5 (tenant-scoped): ok se ci sono porte per il device; warn se il cliente ha
+  porte su altri switch (problema specifico del device); error se NESSUNO switch del cliente ha porte
+  -> causa reale: l'agent v4 raccoglie la ifTable solo da v4.26.0 (snmpports.go). Azione: aggiornare agent.
+- Aggiunto step "5b. Nota multi-tenant" che chiarisce esplicitamente che l'overlap di IP privati NON
+  è un data-leak. Rimossa la raccomandazione errata "Allinea il client_id del connector".
+- Confermato: nessuna fuga cross-tenant reale nel path switch-ports.
