@@ -4923,3 +4923,16 @@ enrichment IP negli alert esistenti con badge reputazione.
 - UI OnCallPage: nuova card "Escalation C2 / OSINT" (toggle, attesa, fallback, avvisa reperibile, esegui ora).
 - Test: inserito alert C2 vecchio 20min -> run-c2-now -> escalated=1 (fallback ruoli), 2ª esecuzione=0
   (idempotente), flag c2_escalated verificato. UI renderizzata. PASS.
+
+## 2026-08-06 — Escalation C2 Livello 2 (catena reperibilità)
+- escalation.py: `_run_c2_l2_once` (nel watchdog). Se un alert C2 già escalato al reperibile
+  (c2_escalated_at) resta attivo e non-ACK per altri `c2_l2_wait_minutes` (default 10),
+  escala al RESPONSABILE: utente specifico `c2_l2_user_id` se impostato, altrimenti ruoli
+  `c2_l2_roles` (default admin). Idempotente via `c2_escalated_l2`.
+- Config estesa: c2_l2_enabled, c2_l2_wait_minutes, c2_l2_user_id, c2_l2_roles.
+- Route: campi L2 in PUT /api/escalation/config + POST /api/escalation/run-c2-l2-now.
+- UI OnCallPage: sotto-blocco "Livello 2 — avvisa il responsabile" (toggle, attesa L2, selettore
+  responsabile da elenco utenti o ruolo admin).
+- Catena completa: L1 (reperibile on-call / fallback ruoli) -> L2 (responsabile/manager).
+- Test: alert C2 con c2_escalated_at 20min fa -> run-c2-l2-now -> escalated=1 (roles admin),
+  2ª esecuzione=0 (idempotente), flag c2_escalated_l2 verificato. UI OK. PASS.

@@ -27,6 +27,11 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "c2_wait_minutes": 10,
     "c2_notify_oncall": True,
     "c2_fallback_roles": ["admin", "operator"],
+    # --- Livello 2: se il reperibile non risponde, avvisa un responsabile/manager ---
+    "c2_l2_enabled": True,
+    "c2_l2_wait_minutes": 10,
+    "c2_l2_user_id": "",
+    "c2_l2_roles": ["admin"],
 }
 
 CHECK_INTERVAL_SECONDS = 60
@@ -231,6 +236,90 @@ async def _run_c2_once(db) -> int:
     return escalated
 
 
+async def _run_c2_l2_once(db) -> int:
+    """LIVELLO 2 della catena di escalation C2: se dopo il primo avviso al reperibile
+    (`c2_escalated_at`) l'alert C2 resta attivo e non preso in carico per altri
+    `c2_l2_wait_minutes`, avvisa un responsabile/manager (utente specifico se
+    configurato, altrimenti i ruoli manager di default). Idempotente via `c2_escalated_l2`."""
+    cfg = await get_config(db)
+    if not cfg.get("c2_l2_enabled", True):
+        return 0
+
+    wait_minutes = max(1, int(cfg.get("c2_l2_wait_minutes", 10)))
+    mgr_uid = (cfg.get("c2_l2_user_id") or "").strip()
+    mgr_roles = cfg.get("c2_l2_roles") or ["admin"]
+
+    now = datetime.now(timezone.utc)
+    cutoff = (now - timedelta(minutes=wait_minutes)).isoformat()
+
+    candidates = await db.alerts.find(
+        {
+            "status": "active",
+            "source_type": "osint_c2",
+            "c2_escalated": True,
+            "c2_escalated_l2": {"$ne": True},
+            "c2_escalated_at": {"$lte": cutoff},
+            "$or": [
+                {"acknowledged_by": None},
+                {"acknowledged_by": {"$exists": False}},
+                {"acknowledged_by": ""},
+            ],
+        },
+        {"_id": 0},
+    ).limit(100).to_list(length=100)
+
+    if not candidates:
+        return 0
+
+    try:
+        import webpush as wp
+    except Exception as e:
+        logger.warning(f"[escalation-c2-l2] webpush unavailable: {e}")
+        return 0
+
+    escalated = 0
+    for alert in candidates:
+        result = await db.alerts.update_one(
+            {"id": alert["id"], "c2_escalated_l2": {"$ne": True}},
+            {"$set": {
+                "c2_escalated_l2": True,
+                "c2_escalated_l2_at": now.isoformat(),
+                "c2_escalated_l2_to": (mgr_uid or ",".join(mgr_roles)),
+            }},
+        )
+        if result.modified_count == 0:
+            continue
+
+        payload = wp.build_alert_payload(alert)
+        payload["title"] = f"🚨🚨 C2 ESCALATION L2 · {payload.get('title', '')}"
+        payload["body"] = (
+            f"Il reperibile NON ha preso in carico l'alert C2 entro {wait_minutes} min dal primo avviso. "
+            f"Escalation al responsabile. {payload.get('body', '')}"
+        )
+        payload["tag"] = f"c2-escalation-l2-{alert.get('id', '')}"
+        payload["severity"] = "critical"
+
+        try:
+            if mgr_uid:
+                await wp.send_to_user(
+                    db, mgr_uid, payload,
+                    log_context={"alert_id": alert.get("id"), "type": "escalation"},
+                )
+                target = f"manager {mgr_uid}"
+            else:
+                await wp.send_to_roles(
+                    db, mgr_roles, payload,
+                    log_context={"alert_id": alert.get("id"), "type": "escalation"},
+                )
+                target = f"roles {mgr_roles}"
+            escalated += 1
+            logger.info(f"[escalation-c2-l2] Alert {alert.get('id')} escalated (L2) to {target}")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[escalation-c2-l2] send failed for {alert.get('id')}: {e}")
+
+    return escalated
+
+
 class EscalationScheduler:
     """Background loop invoked from server startup."""
 
@@ -247,6 +336,7 @@ class EscalationScheduler:
             try:
                 await _run_once(self.db)
                 await _run_c2_once(self.db)
+                await _run_c2_l2_once(self.db)
             except Exception as exc:  # noqa: BLE001
                 logger.warning(f"[escalation] loop error: {exc}")
             try:

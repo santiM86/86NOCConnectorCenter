@@ -25,7 +25,7 @@ export default function OnCallPage() {
   const [cfg, setCfg] = useState({ rotation_enabled: false, timezone: "Europe/Rome", slots: [] });
   const [users, setUsers] = useState([]);
   const [current, setCurrent] = useState({ rotation_enabled: false, active_slots: [], now: "" });
-  const [escCfg, setEscCfg] = useState({ enabled: false, wait_minutes: 5, severities: ["critical"], escalate_to_roles: ["admin"], c2_enabled: true, c2_wait_minutes: 10, c2_notify_oncall: true, c2_fallback_roles: ["admin", "operator"] });
+  const [escCfg, setEscCfg] = useState({ enabled: false, wait_minutes: 5, severities: ["critical"], escalate_to_roles: ["admin"], c2_enabled: true, c2_wait_minutes: 10, c2_notify_oncall: true, c2_fallback_roles: ["admin", "operator"], c2_l2_enabled: true, c2_l2_wait_minutes: 10, c2_l2_user_id: "", c2_l2_roles: ["admin"] });
   const [escBusy, setEscBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -419,6 +419,51 @@ export default function OnCallPage() {
                 onCheckedChange={(v) => saveEsc({ ...escCfg, c2_notify_oncall: v })}
                 data-testid="c2-notify-oncall-toggle"
               />
+            </div>
+
+            {/* Livello 2: responsabile/manager */}
+            <div className="pt-3 mt-1 border-t border-red-500/20 space-y-3" data-testid="c2-l2-block">
+              <div className="flex items-center justify-between">
+                <Label className="text-red-300 text-[11px] font-semibold flex items-center gap-1.5">
+                  <ArrowUp size={11} weight="bold" /> Livello 2 — avvisa il responsabile
+                </Label>
+                <Switch
+                  checked={escCfg.c2_l2_enabled}
+                  disabled={escBusy || !isAdmin}
+                  onCheckedChange={(v) => saveEsc({ ...escCfg, c2_l2_enabled: v })}
+                  data-testid="c2-l2-toggle"
+                />
+              </div>
+              <p className="text-[9px] text-[var(--text-muted)]">
+                Se il reperibile NON prende in carico l'alert C2 entro questi minuti dal primo avviso,
+                la minaccia viene escalata a un responsabile.
+              </p>
+              <div className={`grid grid-cols-2 gap-3 ${escCfg.c2_l2_enabled ? "" : "opacity-50 pointer-events-none"}`}>
+                <div className="space-y-1.5">
+                  <Label className="text-[var(--text-muted)] text-[10px] uppercase tracking-widest">Attesa L2 (minuti)</Label>
+                  <Input type="number" min={1} max={1440} value={escCfg.c2_l2_wait_minutes}
+                    disabled={!isAdmin}
+                    onChange={(e) => setEscCfg(c => ({ ...c, c2_l2_wait_minutes: parseInt(e.target.value || "10", 10) }))}
+                    onBlur={() => saveEsc()}
+                    className="bg-[var(--bg-card)] border-[var(--bg-border)] text-[var(--text-primary)] rounded-md text-xs h-8"
+                    data-testid="c2-l2-wait-input" />
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-[var(--text-muted)] text-[10px] uppercase tracking-widest">Responsabile</Label>
+                  <Select value={escCfg.c2_l2_user_id ? escCfg.c2_l2_user_id : "__roles__"}
+                    onValueChange={(v) => saveEsc({ ...escCfg, c2_l2_user_id: v === "__roles__" ? "" : v })}
+                    disabled={!isAdmin}>
+                    <SelectTrigger className="bg-[var(--bg-card)] border-[var(--bg-border)] text-[var(--text-primary)] text-xs h-8"
+                      data-testid="c2-l2-user-select">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent className="bg-[var(--bg-panel)] border-[var(--bg-border)]">
+                      <SelectItem value="__roles__" className="text-xs">Tutti gli admin (ruolo)</SelectItem>
+                      {users.map(u => <SelectItem key={u.id} value={u.id} className="text-xs">{u.name} · {u.role}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
             </div>
           </div>
         </div>

@@ -25,6 +25,11 @@ class EscalationConfig(BaseModel):
     c2_wait_minutes: int = Field(10, ge=1, le=1440)
     c2_notify_oncall: bool = True
     c2_fallback_roles: List[str] = ["admin", "operator"]
+    # Livello 2 (responsabile/manager)
+    c2_l2_enabled: bool = True
+    c2_l2_wait_minutes: int = Field(10, ge=1, le=1440)
+    c2_l2_user_id: str = ""
+    c2_l2_roles: List[str] = ["admin"]
 
 
 @router.get("/config")
@@ -48,6 +53,9 @@ async def update_config(
     for r in cfg.c2_fallback_roles:
         if r not in allowed_roles:
             raise HTTPException(400, f"Ruolo di fallback C2 non valido: {r}")
+    for r in cfg.c2_l2_roles:
+        if r not in allowed_roles:
+            raise HTTPException(400, f"Ruolo manager L2 non valido: {r}")
 
     payload = cfg.model_dump()
     await escalation_service.save_config(db, payload)
@@ -67,4 +75,12 @@ async def run_c2_now(current_user: dict = Depends(get_current_user)):
     """Admin-only: esegue subito la regola di escalation dedicata agli alert C2."""
     _require_admin(current_user)
     count = await escalation_service._run_c2_once(db)
+    return {"success": True, "escalated": count}
+
+
+@router.post("/run-c2-l2-now")
+async def run_c2_l2_now(current_user: dict = Depends(get_current_user)):
+    """Admin-only: esegue subito l'escalation C2 di livello 2 (responsabile)."""
+    _require_admin(current_user)
+    count = await escalation_service._run_c2_l2_once(db)
     return {"success": True, "escalated": count}
