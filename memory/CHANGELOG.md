@@ -4887,3 +4887,16 @@ Test: iteration_100.json — backend 23/23 PASS, frontend 100% flussi OSINT.
 FASE 2 (backlog): correlazione C2 automatica su syslog/firewall (parser IP dst),
 azione opzionale di blocco IP su firewall via agent con conferma umana,
 enrichment IP negli alert esistenti con badge reputazione.
+
+## 2026-08-06 — OSINT Fase 2: Correlazione C2 automatica (Syslog/Firewall)
+- Nuovo motore che estrae gli IP dai `syslog_events` (log firewall, campo message/raw) e li
+  confronta con gli IOC (`threat_intel`: match esatto + CIDR con cache in-memory 5m).
+- Se un dispositivo cliente comunica con un IP malevolo noto -> alert CRITICO per-tenant
+  (source_type=osint_c2), con dedup su (client_id, bad_ip) e re-update se già attivo.
+- Scheduler `osint_c2_tick` ogni 2 min (cursore incrementale su ts in osint_feed_runs source=c2_scan).
+- Nuovi endpoint: POST /api/osint/c2-scan (admin, trigger manuale), GET /api/osint/c2-matches.
+- Nuove funzioni service: osint_service.extract_ips / match_ips_against_iocs / _get_cidr_nets.
+- UI OsintPage: sezione "Correlazione C2 (Syslog/Firewall)" con tabella match + pulsante
+  "Scansiona ora" + KPI "Alert C2 attivi".
+- Test end-to-end (inject syslog con IP IOC 50.16.16.211 -> scan -> alert critico -> UI): PASS.
+  NB: nessun dato syslog reale ancora presente in prod (il motore fa fuoco quando arrivano i log firewall).

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from database import db
 from alert_filter import insert_alert_if_emit
@@ -161,3 +161,146 @@ async def _resolve_exposure_alert(client_id: str, ip: str) -> None:
     )
     if res.modified_count:
         logger.info(f"[osint-exposure] auto-resolved {res.modified_count} alert client={client_id} ip={ip}")
+
+
+
+# ==================== C2 CORRELATION (syslog/firewall -> IOC) ====================
+
+C2_LOOKBACK_MIN = 15        # finestra alla prima esecuzione / fallback
+C2_MAX_EVENTS = 5000        # cap eventi per tick
+
+
+async def osint_c2_tick() -> dict:
+    """Scansiona i syslog_events recenti, estrae gli IP dai messaggi firewall e
+    li confronta con gli IOC. Se un dispositivo cliente ha comunicato con un IP
+    malevolo noto (C2/blocklist), genera un alert CRITICO per-tenant.
+
+    Ritorna un riepilogo (utile anche per il trigger manuale via API)."""
+    try:
+        now = datetime.now(timezone.utc)
+        # Determina la finestra: dall'ultimo scan (osint_feed_runs source=c2_scan)
+        run = await db.osint_feed_runs.find_one({"source": "c2_scan"}, {"_id": 0, "cursor_ts": 1})
+        since = None
+        if run and run.get("cursor_ts"):
+            try:
+                since = datetime.fromisoformat(str(run["cursor_ts"]).replace("Z", "+00:00"))
+            except Exception:
+                since = None
+        if since is None:
+            since = now - timedelta(minutes=C2_LOOKBACK_MIN)
+
+        query = {"ts": {"$gt": since}}
+        events = await db.syslog_events.find(
+            query, {"_id": 0, "client_id": 1, "device_ip": 1, "message": 1, "raw": 1, "ts": 1, "host": 1}
+        ).sort("ts", 1).to_list(C2_MAX_EVENTS)
+
+        scanned = len(events)
+        matches_found = 0
+        alerts = 0
+        max_ts = since
+
+        # Aggrega per (client_id, matched_ip) per evitare flood
+        agg: dict[tuple, dict] = {}
+        for ev in events:
+            ts = ev.get("ts")
+            if isinstance(ts, datetime):
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                if ts > max_ts:
+                    max_ts = ts
+            text = f"{ev.get('message', '')} {ev.get('raw', '')}"
+            ips = osint.extract_ips(text)
+            if not ips:
+                continue
+            mm = await osint.match_ips_against_iocs(ips)
+            if not mm:
+                continue
+            cid = ev.get("client_id")
+            fw_ip = ev.get("device_ip") or "unknown"
+            for bad_ip, hits in mm.items():
+                matches_found += 1
+                key = (cid, bad_ip)
+                entry = agg.setdefault(key, {
+                    "client_id": cid, "bad_ip": bad_ip, "hits": hits,
+                    "firewalls": set(), "sample": str(ev.get("message", ""))[:200],
+                    "host": ev.get("host"),
+                })
+                entry["firewalls"].add(fw_ip)
+
+        for (cid, bad_ip), entry in agg.items():
+            if not cid:
+                continue
+            created = await _emit_c2_alert(entry)
+            if created:
+                alerts += 1
+
+        # Persisti cursore
+        await db.osint_feed_runs.update_one(
+            {"source": "c2_scan"},
+            {"$set": {
+                "source": "c2_scan", "status": "success",
+                "count": matches_found, "error": None,
+                "finished_at": now.isoformat(),
+                "cursor_ts": max_ts.isoformat(),
+            }},
+            upsert=True,
+        )
+        if scanned or matches_found:
+            logger.info(f"[osint-c2] scanned={scanned} matches={matches_found} alerts={alerts}")
+        return {"scanned": scanned, "matches": matches_found, "alerts": alerts,
+                "window_since": since.isoformat()}
+    except Exception as e:
+        logger.exception(f"[osint-c2] tick failed: {e}")
+        return {"error": str(e)[:200]}
+
+
+async def _emit_c2_alert(entry: dict) -> bool:
+    """Crea (con dedup) un alert CRITICO di comunicazione con IP malevolo noto."""
+    cid = entry["client_id"]
+    bad_ip = entry["bad_ip"]
+    hits = entry.get("hits", [])
+    firewalls = sorted(entry.get("firewalls", set()))
+    fw_repr = ", ".join(firewalls[:5]) or "n/d"
+    sources = sorted({h.get("source") for h in hits if h.get("source")})
+    threats = sorted({h.get("threat") for h in hits if h.get("threat")})
+    src_repr = ", ".join(sources) or "feed OSINT"
+    threat_repr = f" · tipo: {', '.join(threats)}" if threats else ""
+
+    title = f"OSINT: comunicazione con IP malevolo noto {bad_ip}"
+    now_iso = datetime.now(timezone.utc).isoformat()
+    msg = (f"Un dispositivo del cliente ha comunicato con l'IP {bad_ip}, presente in "
+           f"blocklist/IOC ({src_repr}){threat_repr}. Rilevato su firewall/host: {fw_repr}. "
+           f"Verificare immediatamente il dispositivo interessato. Fonte: correlazione OSINT su syslog.")
+
+    existing = await db.alerts.find_one(
+        {"client_id": cid, "source_type": "osint_c2", "raw_data": bad_ip, "status": "active"},
+        {"_id": 0, "id": 1},
+    )
+    if existing:
+        await db.alerts.update_one(
+            {"id": existing["id"]},
+            {"$set": {"message": msg, "last_seen_at": now_iso}},
+        )
+        return False
+
+    alert_doc = {
+        "id": str(uuid.uuid4()),
+        "client_id": cid,
+        "device_id": None,
+        "device_ip": firewalls[0] if firewalls else None,
+        "device_name": entry.get("host") or (firewalls[0] if firewalls else bad_ip),
+        "device_type": "firewall",
+        "severity": "critical",
+        "source_type": "osint_c2",
+        "title": title,
+        "message": msg,
+        "raw_data": bad_ip,
+        "status": "active",
+        "acknowledged_by": None,
+        "acknowledged_at": None,
+        "resolved_at": None,
+        "created_at": now_iso,
+    }
+    await insert_alert_if_emit(db, alert_doc)
+    logger.info(f"[osint-c2] ALERT client={cid} bad_ip={bad_ip} sources={src_repr}")
+    return True

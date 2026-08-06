@@ -492,6 +492,79 @@ async def _kev_hits(cve_ids: list[str]) -> list[dict]:
     return hits
 
 
+# ==================== C2 CORRELATION (syslog/firewall IP -> IOC) ====================
+
+import re as _re
+
+_IPV4_RE = _re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])")
+
+# Cache in-memory delle reti CIDR ostili (refresh periodico) per match veloce.
+_CIDR_CACHE: dict = {"nets": [], "at": None}
+_CIDR_TTL_S = 300
+
+
+def extract_ips(text: str) -> list[str]:
+    """Estrae IPv4 validi e PUBBLICI da un testo (es. riga di log firewall)."""
+    out = []
+    seen = set()
+    for m in _IPV4_RE.findall(text or ""):
+        if m in seen:
+            continue
+        seen.add(m)
+        try:
+            octets = m.split(".")
+            if all(0 <= int(o) <= 255 for o in octets) and _is_public_ip(m):
+                out.append(m)
+        except ValueError:
+            continue
+    return out
+
+
+async def _get_cidr_nets() -> list[tuple]:
+    """Ritorna [(network, source, threat)] delle CIDR ostili, con cache TTL."""
+    now = datetime.now(timezone.utc)
+    if _CIDR_CACHE["at"] and (now - _CIDR_CACHE["at"]).total_seconds() < _CIDR_TTL_S:
+        return _CIDR_CACHE["nets"]
+    nets = []
+    async for d in db.threat_intel.find({"kind": "cidr"}, {"_id": 0, "indicator": 1, "source": 1, "threat": 1}):
+        try:
+            nets.append((ipaddress.ip_network(d["indicator"], strict=False), d["source"], d.get("threat")))
+        except ValueError:
+            continue
+    _CIDR_CACHE["nets"] = nets
+    _CIDR_CACHE["at"] = now
+    return nets
+
+
+async def match_ips_against_iocs(ips: list[str]) -> dict[str, list[dict]]:
+    """Match di una lista di IP contro gli IOC (indicatori esatti + CIDR).
+    Ritorna {ip: [ {source, indicator, threat, kind}, ... ]} solo per gli IP con match."""
+    result: dict[str, list[dict]] = {}
+    uniq = [ip for ip in set(ips) if _is_public_ip(ip)]
+    if not uniq:
+        return result
+    # 1) match esatto (indexed)
+    async for d in db.threat_intel.find(
+        {"indicator": {"$in": uniq}, "kind": {"$ne": "cidr"}}, {"_id": 0}
+    ):
+        result.setdefault(d["indicator"], []).append(
+            {"source": d["source"], "indicator": d["indicator"],
+             "threat": d.get("threat"), "kind": d.get("kind")})
+    # 2) match CIDR
+    nets = await _get_cidr_nets()
+    if nets:
+        for ip in uniq:
+            try:
+                ip_obj = ipaddress.ip_address(ip)
+            except ValueError:
+                continue
+            for net, source, threat in nets:
+                if ip_obj in net:
+                    result.setdefault(ip, []).append(
+                        {"source": source, "indicator": str(net), "threat": threat, "kind": "cidr"})
+    return result
+
+
 # ==================== STATUS ====================
 
 async def get_status() -> dict:

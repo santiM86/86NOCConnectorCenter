@@ -1010,7 +1010,7 @@ async def startup_event():
     try:
         from apscheduler.schedulers.asyncio import AsyncIOScheduler as _OsSched
         from apscheduler.triggers.interval import IntervalTrigger as _OsTrig
-        from services.osint_poller import osint_feeds_tick, osint_exposure_tick
+        from services.osint_poller import osint_feeds_tick, osint_exposure_tick, osint_c2_tick
         global osint_scheduler
         osint_scheduler = _OsSched()
         osint_scheduler.add_job(
@@ -1023,8 +1023,13 @@ async def startup_event():
             next_run_time=datetime.now(timezone.utc) + timedelta(minutes=2),
             max_instances=1, coalesce=True,
         )
+        osint_scheduler.add_job(
+            osint_c2_tick, trigger=_OsTrig(minutes=2), id="osint_c2_tick",
+            next_run_time=datetime.now(timezone.utc) + timedelta(seconds=90),
+            max_instances=1, coalesce=True,
+        )
         osint_scheduler.start()
-        logger.info("OSINT schedulers started (feeds: 5m, exposure: 30m)")
+        logger.info("OSINT schedulers started (feeds: 5m, exposure: 30m, c2: 2m)")
     except Exception as e:
         logger.error(f"Failed to start OSINT scheduler: {e}")
 

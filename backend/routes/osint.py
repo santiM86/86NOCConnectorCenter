@@ -92,7 +92,37 @@ async def exposure(
     if client_id:
         query["client_id"] = client_id
     items = await db.osint_exposure.find(query, {"_id": 0}).sort("kev_count", -1).to_list(1000)
-    # arricchisci con nome cliente
+    client_ids = list({i.get("client_id") for i in items if i.get("client_id")})
+    clients = await db.clients.find({"id": {"$in": client_ids}}, {"_id": 0, "id": 1, "name": 1}).to_list(1000)
+    cmap = {c["id"]: c["name"] for c in clients}
+    for i in items:
+        i["client_name"] = cmap.get(i.get("client_id"), "")
+    return {"total": len(items), "items": items}
+
+
+@router.post("/c2-scan")
+async def c2_scan(current_user: dict = Depends(get_current_user)):
+    """Esegue subito la correlazione C2 sui syslog recenti (trigger manuale, admin)."""
+    require_admin(current_user)
+    from services.osint_poller import osint_c2_tick
+    summary = await osint_c2_tick()
+    return {"ok": True, "summary": summary}
+
+
+@router.get("/c2-matches")
+async def c2_matches(
+    client_id: Optional[str] = None,
+    status_filter: Optional[str] = "active",
+    limit: int = 100,
+    current_user: dict = Depends(get_current_user),
+):
+    """Alert di comunicazione con IP malevoli noti (source_type=osint_c2)."""
+    query: dict = {"source_type": "osint_c2"}
+    if client_id:
+        query["client_id"] = client_id
+    if status_filter and status_filter != "all":
+        query["status"] = status_filter
+    items = await db.alerts.find(query, {"_id": 0}).sort("created_at", -1).to_list(min(limit, 500))
     client_ids = list({i.get("client_id") for i in items if i.get("client_id")})
     clients = await db.clients.find({"id": {"$in": client_ids}}, {"_id": 0, "id": 1, "name": 1}).to_list(1000)
     cmap = {c["id"]: c["name"] for c in clients}

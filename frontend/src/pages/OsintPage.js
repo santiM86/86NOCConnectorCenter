@@ -46,6 +46,8 @@ export default function OsintPage() {
   const [lookingUp, setLookingUp] = useState(false);
 
   const [exposure, setExposure] = useState([]);
+  const [c2, setC2] = useState([]);
+  const [scanningC2, setScanningC2] = useState(false);
   const [kev, setKev] = useState([]);
   const [kevQuery, setKevQuery] = useState("");
 
@@ -77,7 +79,16 @@ export default function OsintPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => { reloadStatus(); reloadExposure(); reloadKev(); }, [reloadStatus, reloadExposure, reloadKev]);
+  const reloadC2 = useCallback(async () => {
+    try {
+      const r = await axios.get(`${API}/api/osint/c2-matches`, { headers, params: { status_filter: "all", limit: 100 } });
+      setC2(r.data.items || []);
+    } catch { /* ignore */ }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => { reloadStatus(); reloadExposure(); reloadKev(); reloadC2(); },
+    [reloadStatus, reloadExposure, reloadKev, reloadC2]);
 
   const refreshFeeds = async () => {
     setRefreshing(true);
@@ -116,6 +127,20 @@ export default function OsintPage() {
       toast.success("Chiave rimossa");
       await reloadStatus();
     } catch { toast.error("Errore"); }
+  };
+
+  const scanC2 = async () => {
+    setScanningC2(true);
+    try {
+      const r = await axios.post(`${API}/api/osint/c2-scan`, {}, { headers });
+      const s = r.data.summary || {};
+      toast.success(`Scansione C2: ${s.scanned ?? 0} eventi, ${s.matches ?? 0} match, ${s.alerts ?? 0} nuovi alert`);
+      await reloadC2();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Errore scansione C2");
+    } finally {
+      setScanningC2(false);
+    }
   };
 
   const doLookup = async () => {
@@ -157,11 +182,12 @@ export default function OsintPage() {
       </div>
 
       {/* KPI cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6">
         <KpiCard icon={Bug} color="text-red-400" label="IOC totali" value={status?.ioc_total} testid="osint-kpi-ioc" />
         <KpiCard icon={Virus} color="text-fuchsia-400" label="CVE KEV" value={status?.kev_total} testid="osint-kpi-kev" />
         <KpiCard icon={Globe} color="text-cyan-400" label="IP pubblici scansionati" value={status?.exposure_total} testid="osint-kpi-exposure" />
         <KpiCard icon={Warning} color="text-amber-400" label="Esposizioni KEV" value={status?.exposure_with_kev} testid="osint-kpi-exposure-kev" />
+        <KpiCard icon={Bug} color="text-red-400" label="Alert C2 attivi" value={c2.filter((a) => a.status === "active").length} testid="osint-kpi-c2" />
       </div>
 
       {/* Feed status */}
@@ -285,6 +311,60 @@ export default function OsintPage() {
                       ) : <span className="text-emerald-400">0</span>}
                     </td>
                     <td className="px-3 py-2 text-[10px] text-[var(--text-muted)]">{fmtTime(e.last_scan)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Section>
+
+      {/* C2 correlation */}
+      <Section title="Correlazione C2 (Syslog / Firewall)" icon={Bug}>
+        <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+          <p className="text-[11px] text-[var(--text-muted)] max-w-2xl">
+            Confronta automaticamente gli IP presenti nei log firewall/syslog dei clienti con gli IOC
+            (Feodo, Spamhaus, FireHOL, ThreatFox). Se un dispositivo comunica con un IP malevolo noto
+            viene generato un alert <span className="text-red-300 font-semibold">critico</span> per quel
+            cliente. Scansione automatica ogni 2 minuti.
+          </p>
+          <Button onClick={scanC2} disabled={scanningC2} size="sm"
+            className="gap-1 bg-red-600 hover:bg-red-700" data-testid="osint-c2-scan-btn">
+            <ArrowsClockwise size={14} className={scanningC2 ? "animate-spin" : ""} />
+            {scanningC2 ? "Scansione…" : "Scansiona ora"}
+          </Button>
+        </div>
+        {c2.length === 0 ? (
+          <p className="text-[11px] text-[var(--text-muted)]" data-testid="osint-c2-empty">
+            Nessuna comunicazione con IP malevoli rilevata. Verranno mostrate qui le corrispondenze
+            trovate nei syslog dei firewall dei clienti.
+          </p>
+        ) : (
+          <div className="overflow-x-auto rounded-lg border border-[var(--bg-border)]">
+            <table className="w-full text-xs" data-testid="osint-c2-table">
+              <thead className="bg-[var(--bg-card)] text-[var(--text-muted)]">
+                <tr>
+                  <th className="text-left px-3 py-2">Stato</th>
+                  <th className="text-left px-3 py-2">Cliente</th>
+                  <th className="text-left px-3 py-2">IP malevolo</th>
+                  <th className="text-left px-3 py-2">Dettaglio</th>
+                  <th className="text-left px-3 py-2">Rilevato</th>
+                </tr>
+              </thead>
+              <tbody>
+                {c2.map((a) => (
+                  <tr key={a.id} className="border-t border-[var(--bg-border)]"
+                    data-testid={`osint-c2-row-${a.raw_data}`}>
+                    <td className="px-3 py-2">
+                      <span className={`text-[10px] px-2 py-0.5 rounded font-mono ${
+                        a.status === "active" ? "bg-red-500/15 text-red-300" : "bg-slate-500/15 text-slate-300"}`}>
+                        {a.status === "active" ? "ATTIVO" : (a.status || "").toUpperCase()}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2">{a.client_name || "—"}</td>
+                    <td className="px-3 py-2 font-mono text-red-300">{a.raw_data}</td>
+                    <td className="px-3 py-2 text-[10px] max-w-[420px] truncate">{a.message}</td>
+                    <td className="px-3 py-2 text-[10px] text-[var(--text-muted)]">{fmtTime(a.created_at)}</td>
                   </tr>
                 ))}
               </tbody>
