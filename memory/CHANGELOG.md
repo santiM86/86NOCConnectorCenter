@@ -4900,3 +4900,39 @@ enrichment IP negli alert esistenti con badge reputazione.
   "Scansiona ora" + KPI "Alert C2 attivi".
 - Test end-to-end (inject syslog con IP IOC 50.16.16.211 -> scan -> alert critico -> UI): PASS.
   NB: nessun dato syslog reale ancora presente in prod (il motore fa fuoco quando arrivano i log firewall).
+
+## 2026-08-06 — Alert C2 nel feed principale + push immediata
+- osint_poller._emit_c2_alert ora, alla creazione di un alert C2:
+  1) broadcast WebSocket ({type:new_alert}) -> il feed alert si aggiorna in tempo reale;
+  2) webpush.notify_new_alert -> web push browser reale agli operatori con subscription;
+  3) notification_service.send_notification (EMAIL+PUSH, priorità CRITICAL).
+- AlertsPage: badge "C2 / OSINT" (rosso) nel titolo per source_type=osint_c2 e "OSINT" (ambra)
+  per source_type=osint; colonna Fonte mostra label friendly.
+- Test: alert C2 visibile in GET /api/alerts e nel feed UI con badge, pipeline notifiche partita.
+  NB: canale PUSH di notification_service è MOCK in questo ambiente (log [MOCK PUSH]); il web-push
+  browser (webpush.py) è reale e consegna alle subscription attive.
+
+## 2026-08-06 — Escalation dedicata agli alert C2
+- escalation.py: nuova regola `_run_c2_once` (girata nel watchdog ogni 60s) che escala gli alert
+  source_type=osint_c2 non ACKed entro `c2_wait_minutes` (default 10). Notifica DIRETTAMENTE il
+  reperibile on-call (oncall.get_on_call_user_ids -> webpush.send_to_user); se nessun reperibile
+  attivo, fallback ai ruoli (default admin+operator). Idempotente via flag `c2_escalated`.
+- L'escalation generica ora ESCLUDE gli alert C2 (source_type != osint_c2) per evitare doppioni.
+- escalation_config esteso: c2_enabled, c2_wait_minutes, c2_notify_oncall, c2_fallback_roles.
+- Route: PUT /api/escalation/config (nuovi campi) + POST /api/escalation/run-c2-now (trigger manuale).
+- UI OnCallPage: nuova card "Escalation C2 / OSINT" (toggle, attesa, fallback, avvisa reperibile, esegui ora).
+- Test: inserito alert C2 vecchio 20min -> run-c2-now -> escalated=1 (fallback ruoli), 2ª esecuzione=0
+  (idempotente), flag c2_escalated verificato. UI renderizzata. PASS.
+
+## 2026-08-06 — Escalation C2 Livello 2 (catena reperibilità)
+- escalation.py: `_run_c2_l2_once` (nel watchdog). Se un alert C2 già escalato al reperibile
+  (c2_escalated_at) resta attivo e non-ACK per altri `c2_l2_wait_minutes` (default 10),
+  escala al RESPONSABILE: utente specifico `c2_l2_user_id` se impostato, altrimenti ruoli
+  `c2_l2_roles` (default admin). Idempotente via `c2_escalated_l2`.
+- Config estesa: c2_l2_enabled, c2_l2_wait_minutes, c2_l2_user_id, c2_l2_roles.
+- Route: campi L2 in PUT /api/escalation/config + POST /api/escalation/run-c2-l2-now.
+- UI OnCallPage: sotto-blocco "Livello 2 — avvisa il responsabile" (toggle, attesa L2, selettore
+  responsabile da elenco utenti o ruolo admin).
+- Catena completa: L1 (reperibile on-call / fallback ruoli) -> L2 (responsabile/manager).
+- Test: alert C2 con c2_escalated_at 20min fa -> run-c2-l2-now -> escalated=1 (roles admin),
+  2ª esecuzione=0 (idempotente), flag c2_escalated_l2 verificato. UI OK. PASS.

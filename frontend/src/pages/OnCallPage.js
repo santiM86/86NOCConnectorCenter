@@ -25,7 +25,7 @@ export default function OnCallPage() {
   const [cfg, setCfg] = useState({ rotation_enabled: false, timezone: "Europe/Rome", slots: [] });
   const [users, setUsers] = useState([]);
   const [current, setCurrent] = useState({ rotation_enabled: false, active_slots: [], now: "" });
-  const [escCfg, setEscCfg] = useState({ enabled: false, wait_minutes: 5, severities: ["critical"], escalate_to_roles: ["admin"] });
+  const [escCfg, setEscCfg] = useState({ enabled: false, wait_minutes: 5, severities: ["critical"], escalate_to_roles: ["admin"], c2_enabled: true, c2_wait_minutes: 10, c2_notify_oncall: true, c2_fallback_roles: ["admin", "operator"], c2_l2_enabled: true, c2_l2_wait_minutes: 10, c2_l2_user_id: "", c2_l2_roles: ["admin"] });
   const [escBusy, setEscBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -75,6 +75,20 @@ export default function OnCallPage() {
       const r = await axios.post(`${API}/escalation/run-now`);
       if (r.data?.success) {
         toast.success(`Escalation eseguita: ${r.data.escalated} alert`);
+      }
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Errore esecuzione");
+    } finally {
+      setEscBusy(false);
+    }
+  };
+
+  const triggerC2Escalation = async () => {
+    setEscBusy(true);
+    try {
+      const r = await axios.post(`${API}/escalation/run-c2-now`);
+      if (r.data?.success) {
+        toast.success(`Escalation C2 eseguita: ${r.data.escalated} alert`);
       }
     } catch (e) {
       toast.error(e.response?.data?.detail || "Errore esecuzione");
@@ -338,6 +352,120 @@ export default function OnCallPage() {
           <p className="text-[9px] text-[var(--text-muted)] pt-1 border-t border-[var(--bg-border)]">
             Severity monitorate: <span className="font-mono">{escCfg.severities?.join(", ") || "critical"}</span>
           </p>
+        </div>
+      </div>
+
+      {/* Escalation dedicata C2 / OSINT */}
+      <div className="noc-panel p-4 mt-4 border border-red-500/25" data-testid="c2-escalation-card">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-red-300 text-[10px] font-medium uppercase tracking-widest flex items-center gap-1.5">
+            <ArrowUp size={13} weight="bold" /> Escalation C2 / OSINT (IP malevoli)
+          </h3>
+          {isAdmin && escCfg.c2_enabled && (
+            <Button size="sm" variant="outline" disabled={escBusy}
+              onClick={triggerC2Escalation}
+              className="rounded-md text-xs h-7 border-red-500/40 text-red-300 hover:bg-red-500/10 gap-1"
+              data-testid="trigger-c2-escalation-btn">
+              <ArrowClockwise size={12} /> Esegui ora
+            </Button>
+          )}
+        </div>
+        <p className="text-[var(--text-muted)] text-[10px] mb-3">
+          Regola prioritaria: se un alert <b className="text-red-300">C2 / OSINT</b> (un dispositivo ha
+          contattato un IP malevolo noto) non viene preso in carico entro la finestra, viene avvisato
+          <b> direttamente il reperibile</b> con una push critica. Una minaccia di questo tipo non resta mai senza risposta.
+        </p>
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <Label className="text-[var(--text-primary)] text-xs font-medium">Abilita escalation C2</Label>
+            <Switch
+              checked={escCfg.c2_enabled}
+              disabled={escBusy || !isAdmin}
+              onCheckedChange={(v) => saveEsc({ ...escCfg, c2_enabled: v })}
+              data-testid="c2-escalation-toggle"
+            />
+          </div>
+          <div className={`space-y-3 ${escCfg.c2_enabled ? "" : "opacity-50 pointer-events-none"}`}>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label className="text-[var(--text-muted)] text-[10px] uppercase tracking-widest">Attesa C2 (minuti)</Label>
+                <Input type="number" min={1} max={1440} value={escCfg.c2_wait_minutes}
+                  disabled={!isAdmin}
+                  onChange={(e) => setEscCfg(c => ({ ...c, c2_wait_minutes: parseInt(e.target.value || "10", 10) }))}
+                  onBlur={() => saveEsc()}
+                  className="bg-[var(--bg-card)] border-[var(--bg-border)] text-[var(--text-primary)] rounded-md text-xs h-8"
+                  data-testid="c2-escalation-wait-input" />
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-[var(--text-muted)] text-[10px] uppercase tracking-widest">Fallback (no reperibile)</Label>
+                <Select value={escCfg.c2_fallback_roles?.[0] || "admin"}
+                  onValueChange={(v) => saveEsc({ ...escCfg, c2_fallback_roles: [v, v === "admin" ? "operator" : "admin"] })}
+                  disabled={!isAdmin}>
+                  <SelectTrigger className="bg-[var(--bg-card)] border-[var(--bg-border)] text-[var(--text-primary)] text-xs h-8">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent className="bg-[var(--bg-panel)] border-[var(--bg-border)]">
+                    <SelectItem value="admin" className="text-xs">Admin + Operator</SelectItem>
+                    <SelectItem value="operator" className="text-xs">Operator + Admin</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div className="flex items-center justify-between">
+              <Label className="text-[var(--text-primary)] text-xs font-medium">Avvisa il reperibile on-call</Label>
+              <Switch
+                checked={escCfg.c2_notify_oncall}
+                disabled={escBusy || !isAdmin}
+                onCheckedChange={(v) => saveEsc({ ...escCfg, c2_notify_oncall: v })}
+                data-testid="c2-notify-oncall-toggle"
+              />
+            </div>
+
+            {/* Livello 2: responsabile/manager */}
+            <div className="pt-3 mt-1 border-t border-red-500/20 space-y-3" data-testid="c2-l2-block">
+              <div className="flex items-center justify-between">
+                <Label className="text-red-300 text-[11px] font-semibold flex items-center gap-1.5">
+                  <ArrowUp size={11} weight="bold" /> Livello 2 — avvisa il responsabile
+                </Label>
+                <Switch
+                  checked={escCfg.c2_l2_enabled}
+                  disabled={escBusy || !isAdmin}
+                  onCheckedChange={(v) => saveEsc({ ...escCfg, c2_l2_enabled: v })}
+                  data-testid="c2-l2-toggle"
+                />
+              </div>
+              <p className="text-[9px] text-[var(--text-muted)]">
+                Se il reperibile NON prende in carico l'alert C2 entro questi minuti dal primo avviso,
+                la minaccia viene escalata a un responsabile.
+              </p>
+              <div className={`grid grid-cols-2 gap-3 ${escCfg.c2_l2_enabled ? "" : "opacity-50 pointer-events-none"}`}>
+                <div className="space-y-1.5">
+                  <Label className="text-[var(--text-muted)] text-[10px] uppercase tracking-widest">Attesa L2 (minuti)</Label>
+                  <Input type="number" min={1} max={1440} value={escCfg.c2_l2_wait_minutes}
+                    disabled={!isAdmin}
+                    onChange={(e) => setEscCfg(c => ({ ...c, c2_l2_wait_minutes: parseInt(e.target.value || "10", 10) }))}
+                    onBlur={() => saveEsc()}
+                    className="bg-[var(--bg-card)] border-[var(--bg-border)] text-[var(--text-primary)] rounded-md text-xs h-8"
+                    data-testid="c2-l2-wait-input" />
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-[var(--text-muted)] text-[10px] uppercase tracking-widest">Responsabile</Label>
+                  <Select value={escCfg.c2_l2_user_id ? escCfg.c2_l2_user_id : "__roles__"}
+                    onValueChange={(v) => saveEsc({ ...escCfg, c2_l2_user_id: v === "__roles__" ? "" : v })}
+                    disabled={!isAdmin}>
+                    <SelectTrigger className="bg-[var(--bg-card)] border-[var(--bg-border)] text-[var(--text-primary)] text-xs h-8"
+                      data-testid="c2-l2-user-select">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent className="bg-[var(--bg-panel)] border-[var(--bg-border)]">
+                      <SelectItem value="__roles__" className="text-xs">Tutti gli admin (ruolo)</SelectItem>
+                      {users.map(u => <SelectItem key={u.id} value={u.id} className="text-xs">{u.name} · {u.role}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
