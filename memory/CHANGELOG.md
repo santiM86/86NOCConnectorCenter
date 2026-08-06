@@ -4911,3 +4911,15 @@ enrichment IP negli alert esistenti con badge reputazione.
 - Test: alert C2 visibile in GET /api/alerts e nel feed UI con badge, pipeline notifiche partita.
   NB: canale PUSH di notification_service è MOCK in questo ambiente (log [MOCK PUSH]); il web-push
   browser (webpush.py) è reale e consegna alle subscription attive.
+
+## 2026-08-06 — Escalation dedicata agli alert C2
+- escalation.py: nuova regola `_run_c2_once` (girata nel watchdog ogni 60s) che escala gli alert
+  source_type=osint_c2 non ACKed entro `c2_wait_minutes` (default 10). Notifica DIRETTAMENTE il
+  reperibile on-call (oncall.get_on_call_user_ids -> webpush.send_to_user); se nessun reperibile
+  attivo, fallback ai ruoli (default admin+operator). Idempotente via flag `c2_escalated`.
+- L'escalation generica ora ESCLUDE gli alert C2 (source_type != osint_c2) per evitare doppioni.
+- escalation_config esteso: c2_enabled, c2_wait_minutes, c2_notify_oncall, c2_fallback_roles.
+- Route: PUT /api/escalation/config (nuovi campi) + POST /api/escalation/run-c2-now (trigger manuale).
+- UI OnCallPage: nuova card "Escalation C2 / OSINT" (toggle, attesa, fallback, avvisa reperibile, esegui ora).
+- Test: inserito alert C2 vecchio 20min -> run-c2-now -> escalated=1 (fallback ruoli), 2ª esecuzione=0
+  (idempotente), flag c2_escalated verificato. UI renderizzata. PASS.

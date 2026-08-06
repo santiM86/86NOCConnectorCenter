@@ -20,6 +20,11 @@ class EscalationConfig(BaseModel):
     wait_minutes: int = Field(5, ge=1, le=1440)
     severities: List[str] = ["critical"]
     escalate_to_roles: List[str] = ["admin"]
+    # Regola dedicata C2 / OSINT
+    c2_enabled: bool = True
+    c2_wait_minutes: int = Field(10, ge=1, le=1440)
+    c2_notify_oncall: bool = True
+    c2_fallback_roles: List[str] = ["admin", "operator"]
 
 
 @router.get("/config")
@@ -40,6 +45,9 @@ async def update_config(
     for r in cfg.escalate_to_roles:
         if r not in allowed_roles:
             raise HTTPException(400, f"Ruolo non valido: {r}")
+    for r in cfg.c2_fallback_roles:
+        if r not in allowed_roles:
+            raise HTTPException(400, f"Ruolo di fallback C2 non valido: {r}")
 
     payload = cfg.model_dump()
     await escalation_service.save_config(db, payload)
@@ -51,4 +59,12 @@ async def run_now(current_user: dict = Depends(get_current_user)):
     """Admin-only: esegue subito un ciclo di escalation e ritorna quanti alert sono stati escalati."""
     _require_admin(current_user)
     count = await escalation_service._run_once(db)
+    return {"success": True, "escalated": count}
+
+
+@router.post("/run-c2-now")
+async def run_c2_now(current_user: dict = Depends(get_current_user)):
+    """Admin-only: esegue subito la regola di escalation dedicata agli alert C2."""
+    _require_admin(current_user)
+    count = await escalation_service._run_c2_once(db)
     return {"success": True, "escalated": count}
