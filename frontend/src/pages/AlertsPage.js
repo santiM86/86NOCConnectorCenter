@@ -203,11 +203,23 @@ export default function AlertsPage() {
                   <tr key={alert.id} className="cursor-pointer" onClick={() => navigate(`/alerts/${alert.id}`)} data-testid={`alert-row-${alert.id}`}>
                     <td><span className={`severity-badge severity-${alert.severity}`}>{alert.severity}</span></td>
                     <td><span className={`text-[10px] uppercase tracking-wider status-${alert.status}`}>{alert.status}</span></td>
-                    <td className="text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors">{alert.title}</td>
+                    <td className="text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors">
+                      {alert.source_type === "osint_c2" && (
+                        <span className="text-[9px] font-bold uppercase mr-1.5 px-1.5 py-0.5 rounded bg-red-500/20 text-red-300 border border-red-500/40" data-testid={`alert-badge-c2-${alert.id}`}>C2 / OSINT</span>
+                      )}
+                      {alert.source_type === "osint" && (
+                        <span className="text-[9px] font-bold uppercase mr-1.5 px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40" data-testid={`alert-badge-osint-${alert.id}`}>OSINT</span>
+                      )}
+                      {alert.title}
+                    </td>
                     <td className="font-mono text-[var(--text-muted)] text-xs">{alert.device_name}</td>
                     <td className="text-[var(--text-secondary)] text-xs">{alert.client_name}</td>
                     <td className="font-mono text-[var(--medium)] text-xs">{alert.ip_address}</td>
-                    <td className="text-[10px] uppercase text-[var(--text-muted)]">{alert.source_type}</td>
+                    <td className="text-[10px] uppercase text-[var(--text-muted)]">
+                      {alert.source_type === "osint_c2" ? "C2 / OSINT"
+                        : alert.source_type === "osint" ? "OSINT"
+                        : alert.source_type}
+                    </td>
                     <td className="font-mono text-[var(--text-muted)] text-[10px]">
                       {new Date(alert.created_at).toLocaleString("it-IT",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}
                     </td>

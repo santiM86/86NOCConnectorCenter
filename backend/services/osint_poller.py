@@ -303,4 +303,41 @@ async def _emit_c2_alert(entry: dict) -> bool:
     }
     await insert_alert_if_emit(db, alert_doc)
     logger.info(f"[osint-c2] ALERT client={cid} bad_ip={bad_ip} sources={src_repr}")
+    await _notify_c2_alert(alert_doc)
     return True
+
+
+async def _notify_c2_alert(alert_doc: dict) -> None:
+    """Broadcast WS live + notifica push immediata per un nuovo alert C2."""
+    # 1) WebSocket broadcast -> il feed alert si aggiorna in tempo reale
+    try:
+        from deps import manager
+        client = await db.clients.find_one({"id": alert_doc.get("client_id")}, {"_id": 0, "name": 1})
+        payload = dict(alert_doc)
+        payload["client_name"] = client["name"] if client else ""
+        payload["device_name"] = alert_doc.get("device_name") or ""
+        payload["ip_address"] = alert_doc.get("device_ip") or ""
+        await manager.broadcast({"type": "new_alert", "alert": payload})
+    except Exception as e:
+        logger.warning(f"[osint-c2] WS broadcast failed: {e}")
+    # 2) Web push immediata
+    try:
+        import webpush as _wp
+        await _wp.notify_new_alert(db, alert_doc)
+    except Exception as e:
+        logger.warning(f"[osint-c2] webpush failed: {e}")
+    # 3) Notifica multi-canale (email + push) priorità critica
+    try:
+        from deps import notification_service
+        from notifications import NotificationChannel, NotificationPriority
+        await notification_service.send_notification(
+            channels=[NotificationChannel.EMAIL, NotificationChannel.PUSH],
+            title=alert_doc["title"],
+            message=alert_doc["message"],
+            priority=NotificationPriority.CRITICAL,
+            alert_id=alert_doc["id"],
+            data={"source": "osint_c2", "bad_ip": alert_doc.get("raw_data"),
+                  "client_id": alert_doc.get("client_id")},
+        )
+    except Exception as e:
+        logger.warning(f"[osint-c2] notification_service failed: {e}")

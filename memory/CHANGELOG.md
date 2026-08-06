@@ -4900,3 +4900,14 @@ enrichment IP negli alert esistenti con badge reputazione.
   "Scansiona ora" + KPI "Alert C2 attivi".
 - Test end-to-end (inject syslog con IP IOC 50.16.16.211 -> scan -> alert critico -> UI): PASS.
   NB: nessun dato syslog reale ancora presente in prod (il motore fa fuoco quando arrivano i log firewall).
+
+## 2026-08-06 — Alert C2 nel feed principale + push immediata
+- osint_poller._emit_c2_alert ora, alla creazione di un alert C2:
+  1) broadcast WebSocket ({type:new_alert}) -> il feed alert si aggiorna in tempo reale;
+  2) webpush.notify_new_alert -> web push browser reale agli operatori con subscription;
+  3) notification_service.send_notification (EMAIL+PUSH, priorità CRITICAL).
+- AlertsPage: badge "C2 / OSINT" (rosso) nel titolo per source_type=osint_c2 e "OSINT" (ambra)
+  per source_type=osint; colonna Fonte mostra label friendly.
+- Test: alert C2 visibile in GET /api/alerts e nel feed UI con badge, pipeline notifiche partita.
+  NB: canale PUSH di notification_service è MOCK in questo ambiente (log [MOCK PUSH]); il web-push
+  browser (webpush.py) è reale e consegna alle subscription attive.
