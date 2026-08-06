@@ -364,6 +364,8 @@ from routes.admin_integrations import router as admin_integrations_router
 app.include_router(admin_integrations_router)
 from routes.arp_cache import router as arp_cache_router, ensure_arp_idx
 app.include_router(arp_cache_router)
+from routes.osint import router as osint_router
+app.include_router(osint_router)  # OSINT / Threat Intelligence
 
 # Include enterprise routes
 from enterprise_routes import create_enterprise_router
@@ -993,6 +995,38 @@ async def startup_event():
             logger.error(f"WG embedded runtime startup error: {e}")
     else:
         logger.info("WG embedded runtime disabled (set WG_EMBEDDED_ENABLED=true to opt-in)")
+
+    # === OSINT / Threat Intelligence schedulers ===
+    try:
+        await db.threat_intel.create_index([("source", 1), ("indicator", 1)], unique=True)
+        await db.threat_intel.create_index([("indicator", 1)])
+        await db.threat_intel.create_index([("kind", 1)])
+        await db.cisa_kev.create_index([("cve_id", 1)], unique=True)
+        await db.osint_ip_cache.create_index([("ip", 1), ("provider", 1)], unique=True)
+        await db.osint_exposure.create_index([("target_id", 1)], unique=True)
+        await db.osint_exposure.create_index([("client_id", 1)])
+    except Exception as e:
+        logger.warning(f"OSINT index creation warning: {e}")
+    try:
+        from apscheduler.schedulers.asyncio import AsyncIOScheduler as _OsSched
+        from apscheduler.triggers.interval import IntervalTrigger as _OsTrig
+        from services.osint_poller import osint_feeds_tick, osint_exposure_tick
+        global osint_scheduler
+        osint_scheduler = _OsSched()
+        osint_scheduler.add_job(
+            osint_feeds_tick, trigger=_OsTrig(minutes=5), id="osint_feeds_tick",
+            next_run_time=datetime.now(timezone.utc) + timedelta(seconds=20),
+            max_instances=1, coalesce=True,
+        )
+        osint_scheduler.add_job(
+            osint_exposure_tick, trigger=_OsTrig(minutes=30), id="osint_exposure_tick",
+            next_run_time=datetime.now(timezone.utc) + timedelta(minutes=2),
+            max_instances=1, coalesce=True,
+        )
+        osint_scheduler.start()
+        logger.info("OSINT schedulers started (feeds: 5m, exposure: 30m)")
+    except Exception as e:
+        logger.error(f"Failed to start OSINT scheduler: {e}")
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
