@@ -4864,3 +4864,39 @@ fingerprint veniva saltato perché il matcher richiedeva `prev_status is None`.
 
 ## 📅 Storia precedente
 Vedi PRD.md per Web Console V4, Device Profiles 13-vendor, Runbook Auto-Match, Dynamic Port Whitelist.
+
+## 2026-08-06 — Modulo OSINT / Threat Intelligence (v1)
+Integrate fonti OSINT nel motore di alert/monitoraggio (feed GLOBALI, match/alert PER-TENANT).
+Comportamento: enrichment + alert automatici (NO blocco firewall automatico).
+
+Nuovi file:
+- `backend/services/osint_service.py` — key mgmt cifrate (abusech/abuseipdb/greynoise/nvd),
+  fetch feed, IOC store `threat_intel`, CISA KEV `cisa_kev`, lookup IP con SSRF-guard, KEV cross-ref.
+- `backend/services/osint_poller.py` — scheduler: `osint_feeds_tick` (5m), `osint_exposure_tick`
+  (30m, Shodan InternetDB su `wan_targets` public_ip -> alert per-tenant se CVE KEV esposte,
+  con auto-resolve al rientro).
+- `backend/routes/osint.py` — `/api/osint/{status,refresh,keys/{provider},lookup/{ip},kev,exposure}`.
+- `frontend/src/pages/OsintPage.js` — dashboard feed, lookup IP, exposure, catalogo KEV, config chiavi.
+  Nav: Sicurezza > "OSINT Threat Intel" (/osint).
+
+Feed KEYLESS attivi: Feodo, Spamhaus DROP, FireHOL Level1, CISA KEV, Shodan InternetDB.
+Feed con key (opzionali): abuse.ch ThreatFox, AbuseIPDB, GreyNoise, NVD.
+Collections: threat_intel, cisa_kev, osint_ip_cache, osint_exposure, osint_feed_runs.
+Test: iteration_100.json — backend 23/23 PASS, frontend 100% flussi OSINT.
+
+FASE 2 (backlog): correlazione C2 automatica su syslog/firewall (parser IP dst),
+azione opzionale di blocco IP su firewall via agent con conferma umana,
+enrichment IP negli alert esistenti con badge reputazione.
+
+## 2026-08-06 — OSINT Fase 2: Correlazione C2 automatica (Syslog/Firewall)
+- Nuovo motore che estrae gli IP dai `syslog_events` (log firewall, campo message/raw) e li
+  confronta con gli IOC (`threat_intel`: match esatto + CIDR con cache in-memory 5m).
+- Se un dispositivo cliente comunica con un IP malevolo noto -> alert CRITICO per-tenant
+  (source_type=osint_c2), con dedup su (client_id, bad_ip) e re-update se già attivo.
+- Scheduler `osint_c2_tick` ogni 2 min (cursore incrementale su ts in osint_feed_runs source=c2_scan).
+- Nuovi endpoint: POST /api/osint/c2-scan (admin, trigger manuale), GET /api/osint/c2-matches.
+- Nuove funzioni service: osint_service.extract_ips / match_ips_against_iocs / _get_cidr_nets.
+- UI OsintPage: sezione "Correlazione C2 (Syslog/Firewall)" con tabella match + pulsante
+  "Scansiona ora" + KPI "Alert C2 attivi".
+- Test end-to-end (inject syslog con IP IOC 50.16.16.211 -> scan -> alert critico -> UI): PASS.
+  NB: nessun dato syslog reale ancora presente in prod (il motore fa fuoco quando arrivano i log firewall).

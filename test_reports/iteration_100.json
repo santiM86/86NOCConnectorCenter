@@ -1,0 +1,42 @@
+{
+  "summary": "Full validation of the new OSINT Threat Intel module (backend + frontend). Created /app/backend/tests/test_osint_iter100.py with 23 pytest cases covering /api/osint status, refresh, kev (list/search/limit), lookup (SSRF guard + public IP), exposure (list + client_id filter isolation), keys (PUT/DELETE/masking/invalid provider/short key), auth enforcement, and an /api/alerts regression check — 23/23 PASS. Frontend: logged in as admin, navigated via sidebar (Sicurezza > OSINT Threat Intel), verified feed grid (5 feeds: Feodo OK 1, ThreatFox IDLE, Spamhaus 1681, FireHOL 4604, KEV 1661), IP lookup 8.8.8.8 renders result card with InternetDB ports 53/443 and 'Non configurato' for keyed providers, private IP 192.168.1.1 shows Italian error toast and no result card, KEV search filters correctly via Enter (50->29 Fortinet rows) and via 'Cerca' button (cisco), exposure table shows 2 rows with client_name 86BIT_Office, 4 provider key rows render, saving greynoise key flips status to 'ATTIVA ••••••••2345' and delete returns it to 'NON CONFIGURATA', refresh button re-runs feeds. No console errors, no 5xx in backend logs.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/osint/status, POST /api/osint/refresh", "issue": "Both require admin (require_admin) but the sidebar entry /osint is exposed to role 'operator' too (Layout.js roles: [admin, operator]). An operator opening the page gets 403 -> toast 'Errore caricamento stato OSINT' and an empty dashboard. Either restrict nav to admin only or relax /status to authenticated users (keep /refresh + keys admin-only)."},
+      {"endpoint": "GET /api/osint/lookup/{ip}", "issue": "Any authenticated user (incl. viewer) can trigger outbound lookups to Shodan/AbuseIPDB/GreyNoise — no rate limiting; potential quota abuse. Consider limiting to admin/operator."},
+      {"endpoint": "GET /api/osint/lookup/{ip}", "issue": "Perf: _local_ioc_match streams every kind='cidr' doc (~6.2k) from Mongo on each lookup and does per-doc ip_network parsing. Fine now, will degrade as feeds grow; consider caching the parsed network list in memory."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_osint_iter100.py",
+    "/app/test_reports/pytest/osint_iter100.xml"
+  ],
+  "action_items": [
+    "Align OSINT authorization: /osint nav is visible to 'operator' but /api/osint/status & /refresh are admin-only -> operator sees a broken page. Pick one policy.",
+    "Optional: consider auto-resolving OSINT exposure alerts in osint_poller when kev_hits become empty on a later scan (currently the active alert is only updated, never closed).",
+    "Optional: restrict /api/osint/lookup to admin/operator and/or add basic rate limiting to protect free-tier provider quotas."
+  ],
+  "critical_code_review_comments": [
+    "osint_poller._emit_exposure_alert never clears/resolves an existing active alert when the exposure is remediated (kev_hits empty) — alerts will stay active forever.",
+    "osint_poller imports private helpers of osint_service (_internetdb, _is_public_ip, _kev_hits); promote them to public API for maintainability.",
+    "sorted(k.get('cve_id') for k in kev_hits) would raise TypeError if any KEV doc lacked cve_id; guard with a filter.",
+    "Feodo feed legitimately returns only 1 IOC upstream today (verified against abuse.ch), so 'Feodo 1 record' is NOT a parsing bug — no action needed."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_osint_iter100.py",
+    "/app/frontend/src/pages/OsintPage.js (added data-testid=\"osint-kev-search-btn\" to the KEV 'Cerca' button — testability only)"
+  ],
+  "success_rate": {"backend": "100% (23/23)", "frontend": "100% of tested OSINT flows"},
+  "seed_data_creation": "None persistent. Temporarily stored and then deleted a fake greynoise API key (testkey12345) in db.settings via API; final state = not configured.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "admin info@86bit.it / Ariel17051986@!@86",
+  "context_for_next_testing_agent": "OSINT module is functionally green. Regression suite: pytest /app/backend/tests/test_osint_iter100.py (needs live egress for abuse.ch/spamhaus/firehol/cisa/internetdb). Exposure documents use field 'public_ip' (not 'ip'). KEV search is explicit (Enter key or the 'Cerca' button, now data-testid osint-kev-search-btn) — typing alone does not filter, by design. ThreatFox stays IDLE and abuseipdb/greynoise lookup fields stay null without real keys (expected). Not tested: operator/viewer role access to /osint (no non-admin user created) and the osint_exposure_tick alert generation path (no monitored IP currently exposes a KEV CVE).",
+  "rca_of_the_issue": "Only defect class found is an authorization/nav mismatch: Layout.js grants the /osint menu item to 'operator', while routes/osint.py calls require_admin() on /status and /refresh, so a non-admin operator loads the page and immediately gets 403 with an empty dashboard."
+}
