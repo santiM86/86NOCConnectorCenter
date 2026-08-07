@@ -27,6 +27,7 @@ import FingerbankSettingsPage from "@/pages/FingerbankSettingsPage";
 import EncryptionPage from "@/pages/EncryptionPage";
 import AuditPage from "@/pages/AuditPage";
 import TwoFactorPage from "@/pages/TwoFactorPage";
+import TwoFactorSetupPage from "@/pages/TwoFactorSetupPage";
 import EnterprisePage from "@/pages/EnterprisePage";
 import AgentsPage from "@/pages/AgentsPage";
 import ServerMetricsPage from "@/pages/ServerMetricsPage";
@@ -116,6 +117,9 @@ const AuthProvider = ({ children }) => {
     
     if (requires_2fa) {
       return { requires_2fa: true };
+    }
+    if (response.data.requires_2fa_setup) {
+      return { requires_2fa_setup: true };
     }
     
     setUser(userData);
@@ -282,6 +286,7 @@ function App() {
             <Route path="/portal" element={<ClientPortalPage />} />
             <Route path="/customer-portal" element={<CustomerPortalPage />} />
             <Route path="/2fa" element={<TwoFactorPage />} />
+            <Route path="/2fa-setup" element={<TwoFactorSetupPage />} />
           </Routes>
           <PwaInstallBanner />
           <NotificationPermissionBanner />

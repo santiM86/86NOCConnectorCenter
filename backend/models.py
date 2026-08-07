@@ -13,7 +13,7 @@ class UserLogin(BaseModel):
     password: str
 
 class TwoFactorSetup(BaseModel):
-    password: str
+    password: Optional[str] = None
 
 class TwoFactorVerify(BaseModel):
     code: str

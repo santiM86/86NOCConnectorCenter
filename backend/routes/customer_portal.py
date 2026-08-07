@@ -8,6 +8,7 @@ from datetime import datetime, timezone, timedelta
 import uuid
 import hashlib
 import os
+import secrets
 import jwt
 import logging
 
@@ -17,7 +18,16 @@ from deps import get_current_user
 router = APIRouter(prefix="/api/customer", tags=["customer_portal"])
 audit = logging.getLogger("audit")
 
-JWT_SECRET = os.environ.get("SECRET_KEY", "change-me-customer")
+# Fail-safe: se SECRET_KEY manca o è il default noto, usa una chiave casuale
+# effimera (mai firmare token con una chiave hardcoded/nota → forgeable token).
+_DEFAULT_CUSTOMER_SECRET = "change-me-customer"
+JWT_SECRET = os.environ.get("SECRET_KEY") or ""
+if not JWT_SECRET or JWT_SECRET == _DEFAULT_CUSTOMER_SECRET:
+    logging.getLogger("customer_portal").critical(
+        "SECRET_KEY debole o mancante: uso una chiave casuale effimera per il "
+        "portale clienti. Imposta un SECRET_KEY forte nel .env di produzione!"
+    )
+    JWT_SECRET = secrets.token_hex(32)
 JWT_ALGO = "HS256"
 JWT_EXPIRE_HOURS = 12
 
