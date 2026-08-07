@@ -5008,3 +5008,22 @@ enrichment IP negli alert esistenti con badge reputazione.
   last_ip+agent_ip+ips. APIPA 169.254.x esclusi.
 - TEST: backend/tests/test_multihomed_dispatch.py (3 test, PASS) — riproduce il bug e valida il fix.
 - DEPLOY: richiede aggiornamento del backend in PRODUZIONE (argus.86bit.it) + re-push config all'agent.
+
+## 2026-06 — Feature v4.27.0: raccolta LLDP + FDB (topologia + "Connesso a")
+- CONTESTO: l'agent v4.26.0 raccoglieva SOLO ifTable (porte). LLDP/FDB erano fuori scope,
+  quindi mappa dei link e colonna "Connesso a" restavano vuote con l'agent Go.
+- AGENT (Go): nuovo internal/poller/snmptopo.go (package poller). Walk:
+  - LLDP-MIB: lldpLocPortTable (id/desc porta locale), lldpRemTable (chassis/port/sysName/sysDesc),
+    lldpRemManAddrTable (IP remoto, parsing indice IPv4). Indici multi-componente via walkSuffix/suffixAfter.
+  - Bridge-MIB FDB: dot1qTpFdbPort (VLAN-aware) con fallback dot1dTpFdbPort; risoluzione bridge-port->ifIndex
+    via dot1dBasePortIfIndex; MAC da 6 octet OID. Nuovo proto SwitchTopoReport/LLDPNeighbor/FDBEntry + evento WS "switch_topo".
+    main.go: NewTopo + health "snmptopo" + ApplyConfig(welcome) + go topoP.Run. Intervallo lento (floor 120s, default 300s).
+- BACKEND: agent_ws._bridge_switch_topo -> connector.store_switch_topo: salva lldp_neighbors (per local_ip) e
+  discovered_endpoints (FDB, per switch_ip, source=agent_fdb) con risoluzione best-effort MAC->IP (network_discovery + endpoint ARP + managed).
+  Per-switch delete+insert (multi-agent safe), isolato per tenant. Dedup MAC@ifIndex.
+- RELEASE: v4.27.0 pubblicata su GitHub (id 366706838, 9 asset, latest). Build Go arm64 host -> windows/amd64,
+  ArgusDesktop.exe riusata dalla v4.26.0. Upload via REST API con PAT utente.
+- TEST: build agent OK; store_switch_topo testato su DB preview (neighbors=1, endpoints=2, dedup+idempotenza OK).
+- DEPLOY: richiede deploy backend in produzione (contiene ANCHE il fix multi-homed) + rollout agent a v4.27.0.
+  Sullo switch: LLDP gia' abilitato (15 neighbours visti); view SNMP community deve includere LLDP-MIB (1.0.8802.1.1.2)
+  e Bridge-MIB (1.3.6.1.2.1.17) — ViewDefault li include.
