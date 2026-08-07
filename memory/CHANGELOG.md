@@ -5027,3 +5027,18 @@ enrichment IP negli alert esistenti con badge reputazione.
 - DEPLOY: richiede deploy backend in produzione (contiene ANCHE il fix multi-homed) + rollout agent a v4.27.0.
   Sullo switch: LLDP gia' abilitato (15 neighbours visti); view SNMP community deve includere LLDP-MIB (1.0.8802.1.1.2)
   e Bridge-MIB (1.3.6.1.2.1.17) — ViewDefault li include.
+
+## 2026-06 — v4.28.0: installer headless server + no ArgusDesktop + nomi Datto su porte
+- ArgusDesktop rimosso: NON piu' scaricato/installato (era Wails->richiedeva WebView2, prompt sui server).
+  UI legacy nocagent-ui.exe resta solo su workstation. Fix in build/install-noc-agent.ps1:
+  * $optional non include piu' ArgusDesktop.exe; delete sempre di ArgusDesktop.exe residuo.
+  * Autostart tray: rimosso fallback ad ArgusDesktop; su Windows Server (ProductType!=1) modalita' HEADLESS
+    (no tray task, no shortcut "Agent Status"), con cleanup di task/shortcut preesistenti.
+  * Shortcut "Agent Status" punta solo a nocagent-ui.exe; saltato sui server.
+- FIX nomi "Connesso a": store_switch_topo (connector.py) ora ri-applica il match Datto RMM sugli endpoint FDB
+  del bridge v4 (mac_list/ip_list -> datto_name + datto_match; set datto_devices.matched). Prima i nomi Datto
+  non arrivavano sulle porte switch. Fingerbank gia' funzionante (enrichment on-demand in topology.py).
+- RELEASE v4.28.0 (id 366719189): stessi binari agent della 4.27.0 (LLDP+FDB) + install-noc-agent.ps1 headless.
+  8 asset (senza ArgusDesktop.exe). latest=v4.28.0.
+- TEST: store_switch_topo datto re-match PASS (MAC->datto_name applicato, unmatched invariato).
+- DEPLOY: deploy backend in produzione (attiva nomi Datto su porte) + rilanciare installer sul server per headless.
