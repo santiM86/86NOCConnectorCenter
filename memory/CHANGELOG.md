@@ -4992,3 +4992,19 @@ enrichment IP negli alert esistenti con badge reputazione.
 - VERIFICA: GitHub latest -> v4.26.0; download diretto 200; proxy FastAPI /api/agent-builds/latest/manifest.json
   -> source github_api (non più synthetic); /api/agent-builds/v4.26.0/nocagent.exe -> 200, PE valido. 502 RISOLTO.
 - NOTA: v4.26.0 include il modulo SNMP nativo porte switch (internal/poller/snmpports.go, registrato in cmd/agent/main.go).
+
+## 2026-06 — FIX dispatch agent multi-homed (porte switch non raccolte)
+- SINTOMO: switch HPE 5130 (10.10.10.105, cliente Arma Creativo) senza porte, pur essendo
+  raggiungibile (ping+TCP443 OK) e con SNMP funzionante (stat switch: community accettata,
+  view completa, MIB objects retrieved in crescita). Un altro switch dello stesso cliente aveva 56 porte.
+- ROOT CAUSE: backend/routes/agent_ws.py `_build_poller_config` calcolava UNA sola /24 dall'IP
+  "primario" dell'agent (`_primary_ip_from_hello`). Su agent MULTI-HOMED (es. VPN 10.211.x elencata
+  prima della LAN 10.10.10.x) veniva scelta la subnet sbagliata → lo switch della LAN NON era
+  assegnato a CREATIVOSRV2 → il ports-poller non ne faceva mai il walk ifTable. La diagnosi/"Test
+  community" diceva invece "in subnet ✓" perché `_agent_covers_device` usa TUTTI gli IP (mismatch).
+- FIX: `_build_poller_config` ora accetta `agent_ips` e considera TUTTE le subnet delle interfacce
+  dell'agent (nuovo helper `_subnets_from_ips`). `_get_client_agents_subnets` ritorna `subnets` (lista).
+  Aggiornati i 3 call site (welcome on-connect, push_config_to_client, agents_diagnostics) per passare
+  last_ip+agent_ip+ips. APIPA 169.254.x esclusi.
+- TEST: backend/tests/test_multihomed_dispatch.py (3 test, PASS) — riproduce il bug e valida il fix.
+- DEPLOY: richiede aggiornamento del backend in PRODUZIONE (argus.86bit.it) + re-push config all'agent.

@@ -329,6 +329,7 @@ async def agent_ws(ws: WebSocket) -> None:
             client_id,
             agent_role=role_val,
             agent_ip=_primary_ip,
+            agent_ips=hello.get("ips") or [],
         ),
     }
     conn.seq += 1
@@ -1060,6 +1061,23 @@ def _ip_in_subnet(ip: str, cidr: Optional[str]) -> bool:
         return False
 
 
+def _subnets_from_ips(ips: Optional[List[str]], mask: int = 24) -> List[str]:
+    """Tutte le /24 uniche dalle interfacce dell'agent (skip APIPA/None).
+
+    Un agent multi-homed (es. VPN 10.x + LAN 10.x) copre PIU' subnet: dobbiamo
+    considerarle tutte per assegnare i target di polling, non solo quella
+    dell'IP "primario" (che l'euristica poteva scegliere sbagliato).
+    """
+    out: List[str] = []
+    for ip in ips or []:
+        if not ip or str(ip).startswith("169.254."):
+            continue
+        s = _agent_subnet_from_ip(str(ip), mask)
+        if s and s not in out:
+            out.append(s)
+    return out
+
+
 async def _get_client_agents_subnets(client_id: str) -> List[Dict[str, Any]]:
     """Ritorna la lista degli agent LIVE del cliente con la loro subnet
     dedotta dall'`last_ip`. Usato per subnet-aware target dispatching.
@@ -1074,9 +1092,19 @@ async def _get_client_agents_subnets(client_id: str) -> List[Dict[str, Any]]:
              {"last_heartbeat_at": {"$gte": three_min_ago_iso}},
              {"last_seen_at": {"$gte": three_min_ago_iso}},
          ]},
-        {"_id": 0, "agent_id": 1, "hostname": 1, "role": 1, "last_ip": 1},
+        {"_id": 0, "agent_id": 1, "hostname": 1, "role": 1, "last_ip": 1,
+         "agent_ip": 1, "ips": 1},
     ):
-        a["subnet"] = _agent_subnet_from_ip(a.get("last_ip"))
+        _ips: List[str] = []
+        for _k in ("last_ip", "agent_ip"):
+            _v = a.get(_k)
+            if _v:
+                _ips.append(str(_v))
+        for _v in (a.get("ips") or []):
+            if _v:
+                _ips.append(str(_v))
+        a["subnets"] = _subnets_from_ips(_ips)
+        a["subnet"] = a["subnets"][0] if a["subnets"] else _agent_subnet_from_ip(a.get("last_ip"))
         agents.append(a)
     return agents
 
@@ -1085,6 +1113,7 @@ async def _build_poller_config(
     client_id: str,
     agent_role: str = "master",
     agent_ip: Optional[str] = None,
+    agent_ips: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """Build poller config for one tenant — SUBNET-AWARE dispatching.
 
@@ -1102,7 +1131,18 @@ async def _build_poller_config(
     """
     snmp_targets: List[Dict[str, Any]] = []
     ping_targets: List[Dict[str, Any]] = []
-    agent_subnet = _agent_subnet_from_ip(agent_ip)
+    # v2026-06 FIX multi-homed: usa TUTTE le interfacce dell'agent, non solo
+    # l'IP "primario". Un agent con VPN 10.x + LAN 10.x poteva ricevere la
+    # subnet sbagliata → gli switch della LAN non venivano mai assegnati →
+    # ports/ifTable mai raccolti (pur essendo raggiungibili). Ora raccogliamo
+    # i target di OGNI subnet su cui l'agent ha un'interfaccia.
+    all_ips: List[str] = []
+    for _ip in (agent_ips or []):
+        if _ip and not str(_ip).startswith("169.254.") and str(_ip) not in all_ips:
+            all_ips.append(str(_ip))
+    if agent_ip and not str(agent_ip).startswith("169.254.") and agent_ip not in all_ips:
+        all_ips.append(agent_ip)
+    agent_subnets = _subnets_from_ips(all_ips)
     is_master = (agent_role or "master").lower() == "master"
 
     # Per i target "orfani" (fuori da qualsiasi subnet di agent vivo) il
@@ -1113,9 +1153,9 @@ async def _build_poller_config(
         try:
             peers = await _get_client_agents_subnets(client_id)
             for p in peers:
-                ps = p.get("subnet")
-                if ps and ps != agent_subnet:
-                    other_subnets.append(ps)
+                for ps in (p.get("subnets") or []):
+                    if ps and ps not in agent_subnets and ps not in other_subnets:
+                        other_subnets.append(ps)
         except Exception:
             pass
 
@@ -1151,10 +1191,11 @@ async def _build_poller_config(
             if not ip:
                 continue
 
-            # SUBNET MATCH: assegna il target SOLO se l'IP rientra nella
-            # subnet di questo agent. Eccezione: il master prende anche
-            # i target "orfani" (fuori da qualsiasi subnet conosciuta).
-            in_my_subnet = _ip_in_subnet(ip, agent_subnet)
+            # SUBNET MATCH: assegna il target SOLO se l'IP rientra in UNA
+            # delle subnet di questo agent (multi-homed aware). Eccezione:
+            # il master prende anche i target "orfani" (fuori da qualsiasi
+            # subnet conosciuta).
+            in_my_subnet = any(_ip_in_subnet(ip, s) for s in agent_subnets)
             if not in_my_subnet:
                 if not is_master:
                     # Lo scanner ignora tutto cio' che non e' nella sua subnet
@@ -1216,8 +1257,8 @@ async def _build_poller_config(
     # but no SNMP polls". If subnet-aware dispatching mismatches subnet, the
     # agent receives empty targets → no polls → devices appear stale.
     logger.info(
-        "agent_ws: poller_config built client_id=%s role=%s agent_ip=%s subnet=%s snmp_targets=%d ping_targets=%d",
-        client_id, agent_role, agent_ip, agent_subnet, len(snmp_targets), len(ping_targets),
+        "agent_ws: poller_config built client_id=%s role=%s agent_ip=%s subnets=%s snmp_targets=%d ping_targets=%d",
+        client_id, agent_role, agent_ip, ",".join(agent_subnets) or "-", len(snmp_targets), len(ping_targets),
     )
 
     return {
@@ -1266,17 +1307,30 @@ async def push_config_to_client(client_id: str) -> int:
         info = info_by_agent.get(c.agent_id)
         if info is None:
             ag = await db.managed_agents.find_one(
-                {"agent_id": c.agent_id}, {"_id": 0, "role": 1, "last_ip": 1},
+                {"agent_id": c.agent_id},
+                {"_id": 0, "role": 1, "last_ip": 1, "agent_ip": 1, "ips": 1},
             )
+            _all_ips: List[str] = []
+            for _k in ("last_ip", "agent_ip"):
+                _v = (ag or {}).get(_k)
+                if _v:
+                    _all_ips.append(str(_v))
+            for _v in ((ag or {}).get("ips") or []):
+                if _v and str(_v) not in _all_ips:
+                    _all_ips.append(str(_v))
+            if c.last_ip and c.last_ip not in _all_ips:
+                _all_ips.append(c.last_ip)
             info = {
                 "role": (ag or {}).get("role") or "master",
                 "last_ip": (ag or {}).get("last_ip") or c.last_ip,
+                "ips": _all_ips,
             }
             info_by_agent[c.agent_id] = info
         cfg = await _build_poller_config(
             client_id,
             agent_role=info["role"],
             agent_ip=info["last_ip"],
+            agent_ips=info["ips"],
         )
         payload = {
             "accepted_at": _now().isoformat(),
@@ -1382,10 +1436,21 @@ async def agents_diagnostics(
         stat = BRIDGE_STATS.get(aid, {}) if aid else {}
         # Calcola targets in welcome che riceverebbe ora
         try:
+            _diag_ips: List[str] = []
+            for _k in ("last_ip", "agent_ip"):
+                _v = d.get(_k)
+                if _v:
+                    _diag_ips.append(str(_v))
+            for _v in (d.get("ips") or []):
+                if _v and str(_v) not in _diag_ips:
+                    _diag_ips.append(str(_v))
+            if live_conn and live_conn.last_ip and live_conn.last_ip not in _diag_ips:
+                _diag_ips.append(live_conn.last_ip)
             cfg = await _build_poller_config(
                 d.get("client_id") or "",
                 agent_role=d.get("role") or "master",
                 agent_ip=(live_conn.last_ip if live_conn else d.get("last_ip")),
+                agent_ips=_diag_ips,
             )
             snmp_n = len(cfg.get("snmp", {}).get("targets") or [])
             ping_n = len(cfg.get("ping", {}).get("targets") or [])
