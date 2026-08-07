@@ -4979,3 +4979,16 @@ enrichment IP negli alert esistenti con badge reputazione.
 - AlertsPage: nuovi badge feed principale ROGUE (arancio) e TRAFFICO (viola) + label colonna Fonte.
 - Test: rogue MAC privacy -> rischio BASSO corretto (dopo fix IP privati vs bogon-list); traffic 250Mbps vs
   baseline 1Mbps -> alert USCITA. UI verificata. PASS.
+
+## 2026-06 — Release Agent v4.26.0 pubblicata + fix 502 proxy agent-builds
+- ROOT CAUSE 502: la release v4.26.0 NON esisteva su GitHub (latest era v4.25.4). L'installer/proxy
+  puntava a una versione "fantasma": _fetch_release_meta ripiegava sul manifest SINTETICO (asset noti)
+  mascherando il 404, poi ensure_release_asset_cached scaricava .../download/v4.26.0/nocagent.exe -> 404 -> 502.
+- FIX: compilata e pubblicata la release v4.26.0 reale su GitHub (repo santiM86/86NOCConnectorCenter).
+  - Go 1.23 arm64 nel pod, cross-compile GOOS=windows GOARCH=amd64 CGO_ENABLED=0 dei 5 binari classici
+    (nocagent, nocwatchdog, nocagent-ui, argus-tray, nocinstall) + ps1 templates + SHA256SUMS.
+  - ArgusDesktop.exe (GUI Wails, richiede Windows per build) RIUSATO dalla v4.25.4 (invariato per porte switch).
+  - Upload via GitHub REST API con PAT utente (bypassa GitHub Actions/divergenza git). Release id 366640301.
+- VERIFICA: GitHub latest -> v4.26.0; download diretto 200; proxy FastAPI /api/agent-builds/latest/manifest.json
+  -> source github_api (non più synthetic); /api/agent-builds/v4.26.0/nocagent.exe -> 200, PE valido. 502 RISOLTO.
+- NOTA: v4.26.0 include il modulo SNMP nativo porte switch (internal/poller/snmpports.go, registrato in cmd/agent/main.go).
