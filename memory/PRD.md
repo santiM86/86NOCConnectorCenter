@@ -54,6 +54,51 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-08-07 ✅ Logo + Nome brand white-label per cliente (copertina + footer PDF)
+
+### Richiesta utente
+Caricare un logo per ogni cliente white-label + nome brand editabile (es.
+"ArgusCenter"), così la copertina e il footer del report PDF portano il marchio
+del rivenditore. Gestione nella pagina "Report PDF"; logo in copertina + footer.
+
+### Backend (`backend/routes/reports.py`)
+- Nuova collection `client_branding`: `{client_id, brand_name, logo_b64,
+  logo_mime, updated_at, updated_by}`.
+- Endpoint (tutti `require_admin`):
+  - `GET /api/reports/branding/{client_id}` → brand_name, has_logo,
+    logo_data_url (data URL), default_brand.
+  - `PUT /api/reports/branding/{client_id}` (JSON {brand_name}) → salva nome.
+  - `POST /api/reports/branding/{client_id}/logo` (multipart) → valida
+    PNG/JPG/WEBP + max 1MB, salva base64.
+  - `DELETE /api/reports/branding/{client_id}/logo` → rimuove logo.
+- `generate_client_report`: carica branding; se logo presente lo incorpora
+  come Image grande centrata in copertina e come immagine piccola nel footer
+  di ogni pagina (`_make_footer` esteso con logo_reader/logo_ratio via
+  `ImageReader`). Brand name: `client_branding.brand_name` → fallback
+  `clients.brand_name`/`white_label_name` → `DEFAULT_BRAND` ("86BIT NOC").
+
+### Frontend (`ReportsPage.js`)
+Nuovo pannello "Personalizzazione Brand" (data-testid `branding-panel`):
+select cliente → input nome brand (`brand-name-input` + `save-brand-name-btn`),
+upload/anteprima/rimozione logo (`brand-logo-input`, `brand-logo-preview`,
+`remove-brand-logo-btn`). Validazione size client-side + toast.
+
+### Testing
+- Backend (curl main agent): brand salvato, logo PNG embedded in tutte le 7
+  pagine, mime errato → 400, no-auth → 403, delete → ok.
+- Frontend (iteration_102): 12/12 check PASS — pannello, salva nome+persistenza,
+  upload+anteprima, generazione PDF con brand/logo, rimozione, fallback default.
+  PDF verificato con PyPDF2 (brand in header/footer + image XObject logo).
+
+### Note (non bloccanti)
+- Default brand globale resta "86BIT NOC" (per-cliente editabile); "ArgusCenter"
+  usato solo come esempio/placeholder concettuale.
+- Il pannello branding è sempre montato (mostra solo hint finché non si
+  seleziona un cliente).
+
+---
+
+
 ## 2026-08-07 ✅ Report PDF multi-pagina per cliente (deliverable MSP)
 
 ### Richiesta utente
