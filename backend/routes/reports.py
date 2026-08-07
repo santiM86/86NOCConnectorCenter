@@ -8,9 +8,10 @@ Struttura del report:
   5. SLA per dispositivo + ultimi alert + modifiche rete
 """
 import io
+import base64
 import logging
 from datetime import datetime, timezone, timedelta
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Body
 from fastapi.responses import StreamingResponse
 from database import db
 from deps import get_current_user, require_admin
@@ -23,9 +24,20 @@ from reportlab.lib.units import mm, cm
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.platypus import (
     SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
-    HRFlowable, KeepTogether, PageBreak
+    HRFlowable, KeepTogether, PageBreak, Image
 )
+from reportlab.lib.utils import ImageReader
 from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT
+
+DEFAULT_BRAND = "86BIT NOC"
+ALLOWED_LOGO_MIME = {"image/png", "image/jpeg", "image/jpg", "image/webp"}
+MAX_LOGO_BYTES = 1024 * 1024  # 1 MB
+
+
+async def _get_branding(client_id: str) -> dict:
+    """Ritorna il branding white-label del cliente (brand_name + logo)."""
+    doc = await db.client_branding.find_one({"client_id": client_id}, {"_id": 0})
+    return doc or {}
 
 logger = logging.getLogger("reports")
 router = APIRouter(prefix="/api/reports", tags=["reports"])
@@ -149,12 +161,23 @@ def _fmt_speed(mbps):
     return f"{m}M"
 
 
-def _make_footer(brand_name, generated_str):
+def _make_footer(brand_name, generated_str, logo_reader=None, logo_ratio=1.0):
     def _on_page(canvas, doc):
         canvas.saveState()
+        text_x = 2 * cm
+        # Logo piccolo a sinistra nel footer (se presente)
+        if logo_reader is not None:
+            lh = 0.55 * cm
+            lw = lh * logo_ratio
+            try:
+                canvas.drawImage(logo_reader, 2 * cm, 0.95 * cm, width=lw, height=lh,
+                                 preserveAspectRatio=True, mask="auto")
+                text_x = 2 * cm + lw + 0.3 * cm
+            except Exception:
+                pass
         canvas.setFont("Helvetica", 7)
         canvas.setFillColor(BRAND_GRAY)
-        canvas.drawString(2 * cm, 1.2 * cm,
+        canvas.drawString(text_x, 1.2 * cm,
                           f"{brand_name} — Report di Rete · Generato {generated_str} UTC")
         canvas.drawRightString(19 * cm, 1.2 * cm, f"Pagina {doc.page}")
         canvas.setStrokeColor(colors.HexColor("#e4e4e7"))
@@ -176,12 +199,26 @@ async def generate_client_report(
         raise HTTPException(status_code=404, detail="Cliente non trovato")
 
     client_name = client.get("name", client_id)
-    # White-label: usa il brand configurato per il cliente/tenant se presente
+    # White-label: brand + logo configurati per il cliente (collection client_branding)
+    branding = await _get_branding(client_id)
     brand_name = (
-        client.get("brand_name")
+        branding.get("brand_name")
+        or client.get("brand_name")
         or client.get("white_label_name")
-        or "86BIT NOC"
+        or DEFAULT_BRAND
     )
+    # Prepara il logo (se caricato) come ImageReader per copertina + footer
+    logo_reader = None
+    logo_ratio = 1.0  # width / height
+    if branding.get("logo_b64"):
+        try:
+            logo_bytes = base64.b64decode(branding["logo_b64"])
+            logo_reader = ImageReader(io.BytesIO(logo_bytes))
+            _lw, _lh = logo_reader.getSize()
+            if _lh:
+                logo_ratio = _lw / _lh
+        except Exception:
+            logo_reader = None
     now = datetime.now(timezone.utc)
     cutoff = (now - timedelta(days=days)).isoformat()
 
@@ -270,7 +307,22 @@ async def generate_client_report(
     story = []
 
     # ===== PAGINA 1 — COPERTINA =====
-    story.append(Spacer(1, 55 * mm))
+    if logo_reader is not None:
+        story.append(Spacer(1, 32 * mm))
+        max_w, max_h = 6 * cm, 3 * cm
+        lw, lh = max_w, max_w / logo_ratio if logo_ratio else max_h
+        if lh > max_h:
+            lh = max_h
+            lw = max_h * logo_ratio
+        try:
+            img = Image(io.BytesIO(base64.b64decode(branding["logo_b64"])), width=lw, height=lh)
+            img.hAlign = "CENTER"
+            story.append(img)
+            story.append(Spacer(1, 10 * mm))
+        except Exception:
+            story.append(Spacer(1, 23 * mm))
+    else:
+        story.append(Spacer(1, 55 * mm))
     story.append(Paragraph(brand_name, styles["CoverBrand"]))
     story.append(HRFlowable(width="40%", thickness=2, color=BRAND_INDIGO,
                             spaceBefore=6, spaceAfter=18, hAlign="CENTER"))
@@ -502,7 +554,8 @@ async def generate_client_report(
             col_widths=[3 * cm, 2 * cm, 7 * cm, 4 * cm],
         ))
 
-    on_page = _make_footer(brand_name, now.strftime('%d/%m/%Y %H:%M'))
+    on_page = _make_footer(brand_name, now.strftime('%d/%m/%Y %H:%M'),
+                           logo_reader=logo_reader, logo_ratio=logo_ratio)
     doc.build(story, onFirstPage=on_page, onLaterPages=on_page)
     buf.seek(0)
 
@@ -532,3 +585,98 @@ async def list_available_reports(current_user: dict = Depends(get_current_user))
             "device_count": dev_count,
         })
     return result
+
+
+# ==================== BRANDING WHITE-LABEL ====================
+
+@router.get("/branding/{client_id}")
+async def get_client_branding(client_id: str, current_user: dict = Depends(get_current_user)):
+    """Ritorna il branding del cliente (nome brand + logo come data URL)."""
+    require_admin(current_user)
+    client = await db.clients.find_one({"id": client_id}, {"_id": 0, "name": 1})
+    if not client:
+        raise HTTPException(status_code=404, detail="Cliente non trovato")
+    b = await _get_branding(client_id)
+    logo_data_url = None
+    if b.get("logo_b64"):
+        mime = b.get("logo_mime", "image/png")
+        logo_data_url = f"data:{mime};base64,{b['logo_b64']}"
+    return {
+        "client_id": client_id,
+        "brand_name": b.get("brand_name", ""),
+        "default_brand": DEFAULT_BRAND,
+        "has_logo": bool(b.get("logo_b64")),
+        "logo_data_url": logo_data_url,
+        "updated_at": b.get("updated_at"),
+    }
+
+
+@router.put("/branding/{client_id}")
+async def set_client_brand_name(
+    client_id: str,
+    payload: dict = Body(...),
+    current_user: dict = Depends(get_current_user),
+):
+    """Imposta il nome brand white-label del cliente."""
+    require_admin(current_user)
+    client = await db.clients.find_one({"id": client_id}, {"_id": 0, "name": 1})
+    if not client:
+        raise HTTPException(status_code=404, detail="Cliente non trovato")
+    brand_name = (payload.get("brand_name") or "").strip()[:80]
+    await db.client_branding.update_one(
+        {"client_id": client_id},
+        {"$set": {
+            "client_id": client_id,
+            "brand_name": brand_name,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "updated_by": current_user.get("email", ""),
+        }},
+        upsert=True,
+    )
+    return {"status": "ok", "brand_name": brand_name}
+
+
+@router.post("/branding/{client_id}/logo")
+async def upload_client_logo(
+    client_id: str,
+    file: UploadFile = File(...),
+    current_user: dict = Depends(get_current_user),
+):
+    """Carica il logo white-label del cliente (PNG/JPG/WEBP, max 1MB)."""
+    require_admin(current_user)
+    client = await db.clients.find_one({"id": client_id}, {"_id": 0, "name": 1})
+    if not client:
+        raise HTTPException(status_code=404, detail="Cliente non trovato")
+    mime = (file.content_type or "").lower()
+    if mime not in ALLOWED_LOGO_MIME:
+        raise HTTPException(status_code=400, detail="Formato non supportato. Usa PNG, JPG o WEBP.")
+    content = await file.read()
+    if len(content) > MAX_LOGO_BYTES:
+        raise HTTPException(status_code=400, detail="Logo troppo grande (max 1 MB).")
+    if not content:
+        raise HTTPException(status_code=400, detail="File vuoto.")
+    logo_b64 = base64.b64encode(content).decode("ascii")
+    await db.client_branding.update_one(
+        {"client_id": client_id},
+        {"$set": {
+            "client_id": client_id,
+            "logo_b64": logo_b64,
+            "logo_mime": "image/jpeg" if mime == "image/jpg" else mime,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "updated_by": current_user.get("email", ""),
+        }},
+        upsert=True,
+    )
+    return {"status": "ok", "size_bytes": len(content), "mime": mime}
+
+
+@router.delete("/branding/{client_id}/logo")
+async def delete_client_logo(client_id: str, current_user: dict = Depends(get_current_user)):
+    """Rimuove il logo white-label del cliente."""
+    require_admin(current_user)
+    await db.client_branding.update_one(
+        {"client_id": client_id},
+        {"$unset": {"logo_b64": "", "logo_mime": ""},
+         "$set": {"updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    return {"status": "ok"}

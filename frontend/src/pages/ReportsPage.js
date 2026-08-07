@@ -4,9 +4,10 @@ import { API } from "@/App";
 import { toast } from "sonner";
 import {
   FileText, Download, Calendar, Buildings, HardDrives,
-  ArrowRight, Spinner, FilePdf, CheckCircle
+  ArrowRight, Spinner, FilePdf, CheckCircle, Palette, UploadSimple, Trash
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 export default function ReportsPage() {
@@ -15,9 +16,72 @@ export default function ReportsPage() {
   const [period, setPeriod] = useState("30");
   const [generating, setGenerating] = useState(false);
 
+  // Branding white-label state
+  const [branding, setBranding] = useState(null);
+  const [brandName, setBrandName] = useState("");
+  const [savingBrand, setSavingBrand] = useState(false);
+  const [uploadingLogo, setUploadingLogo] = useState(false);
+
   useEffect(() => {
     axios.get(`${API}/reports/list`).then(r => setClients(r.data)).catch(() => {});
   }, []);
+
+  const loadBranding = async (cid) => {
+    if (!cid) { setBranding(null); setBrandName(""); return; }
+    try {
+      const r = await axios.get(`${API}/reports/branding/${cid}`);
+      setBranding(r.data);
+      setBrandName(r.data.brand_name || "");
+    } catch {
+      setBranding(null); setBrandName("");
+    }
+  };
+
+  useEffect(() => { loadBranding(selectedClient); /* eslint-disable-next-line */ }, [selectedClient]);
+
+  const saveBrandName = async () => {
+    if (!selectedClient) { toast.error("Seleziona un cliente"); return; }
+    setSavingBrand(true);
+    try {
+      await axios.put(`${API}/reports/branding/${selectedClient}`, { brand_name: brandName });
+      toast.success("Nome brand salvato");
+      loadBranding(selectedClient);
+    } catch {
+      toast.error("Errore nel salvataggio del nome brand");
+    } finally {
+      setSavingBrand(false);
+    }
+  };
+
+  const uploadLogo = async (e) => {
+    const f = e.target.files?.[0];
+    e.target.value = "";
+    if (!f || !selectedClient) { if (!selectedClient) toast.error("Seleziona un cliente"); return; }
+    if (f.size > 1024 * 1024) { toast.error("Logo troppo grande (max 1 MB)"); return; }
+    setUploadingLogo(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", f);
+      await axios.post(`${API}/reports/branding/${selectedClient}/logo`, fd);
+      toast.success("Logo caricato");
+      loadBranding(selectedClient);
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Errore nel caricamento del logo");
+    } finally {
+      setUploadingLogo(false);
+    }
+  };
+
+  const removeLogo = async () => {
+    if (!selectedClient) return;
+    try {
+      await axios.delete(`${API}/reports/branding/${selectedClient}/logo`);
+      toast.success("Logo rimosso");
+      loadBranding(selectedClient);
+    } catch {
+      toast.error("Errore nella rimozione del logo");
+    }
+  };
 
   const generateReport = async () => {
     if (!selectedClient) { toast.error("Seleziona un cliente"); return; }
@@ -126,6 +190,81 @@ export default function ReportsPage() {
             ))}
           </div>
         </div>
+      </div>
+
+      {/* Personalizzazione brand white-label */}
+      <div className="noc-panel p-5 space-y-4" data-testid="branding-panel">
+        <div className="flex items-center gap-2">
+          <Palette size={20} className="text-indigo-400" weight="fill" />
+          <h2 className="text-sm font-bold text-[var(--text-primary)]">Personalizzazione Brand (White-label)</h2>
+        </div>
+        <p className="text-[var(--text-muted)] text-xs -mt-1">
+          {selectedClient
+            ? "Il logo e il nome brand appariranno nella copertina e nel footer del report PDF di questo cliente."
+            : "Seleziona un cliente qui sopra per personalizzarne logo e nome brand."}
+        </p>
+
+        {selectedClient ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+            {/* Nome brand */}
+            <div className="space-y-1.5">
+              <label className="text-[10px] uppercase tracking-wider text-[var(--text-muted)] font-medium">Nome brand</label>
+              <div className="flex gap-2">
+                <Input
+                  value={brandName}
+                  onChange={(e) => setBrandName(e.target.value)}
+                  placeholder={branding?.default_brand || "ArgusCenter"}
+                  maxLength={80}
+                  className="bg-[var(--bg-deep)] border-[var(--border-subtle)] text-[var(--text-primary)] h-9 text-sm"
+                  data-testid="brand-name-input"
+                />
+                <Button
+                  onClick={saveBrandName}
+                  disabled={savingBrand}
+                  className="h-9 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-medium shrink-0"
+                  data-testid="save-brand-name-btn"
+                >
+                  {savingBrand ? <Spinner size={14} className="animate-spin" /> : "Salva"}
+                </Button>
+              </div>
+              <p className="text-[10px] text-[var(--text-muted)]">
+                Lascia vuoto per usare il brand di default ({branding?.default_brand || "86BIT NOC"}).
+              </p>
+            </div>
+
+            {/* Logo */}
+            <div className="space-y-1.5">
+              <label className="text-[10px] uppercase tracking-wider text-[var(--text-muted)] font-medium">Logo (PNG/JPG/WEBP, max 1MB)</label>
+              <div className="flex items-center gap-3">
+                <div className="w-24 h-14 rounded-md border border-[var(--border-subtle)] bg-white/5 flex items-center justify-center overflow-hidden shrink-0">
+                  {branding?.logo_data_url ? (
+                    <img src={branding.logo_data_url} alt="logo" className="max-w-full max-h-full object-contain" data-testid="brand-logo-preview" />
+                  ) : (
+                    <span className="text-[9px] text-[var(--text-muted)]">Nessun logo</span>
+                  )}
+                </div>
+                <div className="flex flex-col gap-2">
+                  <label className="cursor-pointer">
+                    <input type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={uploadLogo} data-testid="brand-logo-input" />
+                    <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-indigo-500/40 bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-300 text-xs font-medium transition-colors">
+                      {uploadingLogo ? <Spinner size={14} className="animate-spin" /> : <UploadSimple size={14} />}
+                      {branding?.has_logo ? "Sostituisci logo" : "Carica logo"}
+                    </span>
+                  </label>
+                  {branding?.has_logo && (
+                    <button
+                      onClick={removeLogo}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-red-500/40 bg-red-500/10 hover:bg-red-500/20 text-red-300 text-xs font-medium transition-colors"
+                      data-testid="remove-brand-logo-btn"
+                    >
+                      <Trash size={14} /> Rimuovi
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : null}
       </div>
 
       {clients.length > 0 && (
