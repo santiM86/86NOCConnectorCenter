@@ -100,8 +100,14 @@ const AuthProvider = ({ children }) => {
       const response = await axios.get(`${API}/auth/me`);
       setUser(response.data);
     } catch (error) {
-      console.error("Auth error:", error);
-      logout();
+      // 403 = token ristretto 2FA-pending (verifica o enrollment): NON fare
+      // logout, altrimenti si cancella il token necessario a completare il 2FA.
+      if (error.response?.status === 403) {
+        setUser(null);
+      } else {
+        console.error("Auth error:", error);
+        logout();
+      }
     } finally {
       setLoading(false);
     }

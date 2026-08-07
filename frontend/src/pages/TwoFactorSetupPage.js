@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth, API } from "@/App";
 import axios from "axios";
@@ -8,6 +8,8 @@ import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import { ShieldCheck, Lock, Copy } from "@phosphor-icons/react";
 
+const authHeader = () => ({ headers: { Authorization: `Bearer ${localStorage.getItem("noc_token")}` } });
+
 export default function TwoFactorSetupPage() {
   const [qr, setQr] = useState("");
   const [secret, setSecret] = useState("");
@@ -16,11 +18,14 @@ export default function TwoFactorSetupPage() {
   const [initializing, setInitializing] = useState(true);
   const { logout } = useAuth();
   const navigate = useNavigate();
+  const initDone = useRef(false);
 
   useEffect(() => {
+    if (initDone.current) return;
+    initDone.current = true;
     const init = async () => {
       try {
-        const res = await axios.post(`${API}/auth/setup-2fa`, {});
+        const res = await axios.post(`${API}/auth/setup-2fa`, {}, authHeader());
         setQr(res.data.qr_code);
         setSecret(res.data.secret);
       } catch (error) {
@@ -39,7 +44,7 @@ export default function TwoFactorSetupPage() {
     e.preventDefault();
     setLoading(true);
     try {
-      const res = await axios.post(`${API}/auth/confirm-2fa`, { code });
+      const res = await axios.post(`${API}/auth/confirm-2fa`, { code }, authHeader());
       if (res.data.token) {
         localStorage.setItem("noc_token", res.data.token);
         if (res.data.refresh_token) localStorage.setItem("noc_refresh_token", res.data.refresh_token);

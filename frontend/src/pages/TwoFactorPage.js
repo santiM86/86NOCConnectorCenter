@@ -20,7 +20,9 @@ export default function TwoFactorPage() {
     setLoading(true);
 
     try {
-      const response = await axios.post(`${API}/auth/verify-2fa`, { code });
+      const response = await axios.post(`${API}/auth/verify-2fa`, { code }, {
+        headers: { Authorization: `Bearer ${localStorage.getItem("noc_token")}` }
+      });
       
       // Update token with the new one that doesn't require 2FA
       localStorage.setItem("noc_token", response.data.token);
