@@ -111,6 +111,7 @@ func runAgent(ctx context.Context, cfg config.Config, log *logging.Logger) {
 	hr.Register("ping", 2*cfg.Ping.Interval)
 	hr.Register("sysmetrics", 3*cfg.SysMetrics.Interval)
 	hr.Register("snmpports", 12*cfg.SNMP.Interval)
+	hr.Register("snmptopo", 40*cfg.SNMP.Interval)
 	hr.Register("watchdog", 3*cfg.Heartbeat)
 
 	hostname, _ := os.Hostname()
@@ -179,6 +180,10 @@ func runAgent(ctx context.Context, cfg config.Config, log *logging.Logger) {
 	portsP := poller.NewPorts(cfg.SNMP, log, func(r proto.SwitchPortsReport) {
 		client.PushEvent(proto.EventSwitchPorts, r)
 	}, func() { hr.Tick("snmpports") })
+
+	topoP := poller.NewTopo(cfg.SNMP, log, func(r proto.SwitchTopoReport) {
+		client.PushEvent(proto.EventSwitchTopo, r)
+	}, func() { hr.Tick("snmptopo") })
 
 	sources := []discovery.Source{}
 	if cfg.Discovery.ARP {
@@ -486,6 +491,7 @@ func runAgent(ctx context.Context, cfg config.Config, log *logging.Logger) {
 		}
 		snmp.ApplyConfig(newCfg)
 		portsP.ApplyConfig(newCfg)
+		topoP.ApplyConfig(newCfg)
 
 		// Ping config hot-swap. The backend pushes the full list of
 		// managed_devices for this tenant (not only SNMP-enabled
@@ -540,6 +546,7 @@ func runAgent(ctx context.Context, cfg config.Config, log *logging.Logger) {
 	go disc.Run(ctx)
 	go snmp.Run(ctx)
 	go portsP.Run(ctx)
+	go topoP.Run(ctx)
 	go pingP.Run(ctx)
 	go sysm.Run(ctx)
 	go upd.Run(ctx)

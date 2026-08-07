@@ -138,6 +138,7 @@ const (
         EventCrashRecovered = "crash_recovered" // agent recovered after a panic
         EventSysMetrics     = "sys_metrics"     // SysMetricsResult (CPU/RAM/Disk host)
         EventSwitchPorts    = "switch_ports"    // SwitchPortsReport (ifTable/ifXTable per switch)
+        EventSwitchTopo     = "switch_topo"     // SwitchTopoReport (LLDP neighbors + bridge FDB)
 )
 
 // DiscoveredEndpoint is one endpoint observed on the LAN by any discovery
@@ -245,6 +246,44 @@ type SwitchPortInfo struct {
         RxPps       int64  `json:"rx_pps"`
         TxPps       int64  `json:"tx_pps"`
 }
+
+// SwitchTopoReport carries LLDP neighbors and the bridge forwarding
+// database (MAC address table) of one or more switches. Consumed by the
+// backend _bridge_switch_topo handler which stores neighbors into
+// `lldp_neighbors` and FDB entries into `discovered_endpoints`.
+type SwitchTopoReport struct {
+        Switches []SwitchTopoInfo `json:"switches"`
+}
+
+// SwitchTopoInfo is one switch with its LLDP neighbors and FDB entries.
+type SwitchTopoInfo struct {
+        LocalIP   string         `json:"local_ip"`
+        Neighbors []LLDPNeighbor `json:"neighbors,omitempty"`
+        FDB       []FDBEntry     `json:"fdb,omitempty"`
+}
+
+// LLDPNeighbor is one remote device seen via LLDP on a local port.
+type LLDPNeighbor struct {
+        LocalPortID     string `json:"local_port_id,omitempty"`
+        LocalPortDesc   string `json:"local_port_desc,omitempty"`
+        RemoteIP        string `json:"remote_ip,omitempty"`
+        RemoteSysName   string `json:"remote_sys_name,omitempty"`
+        RemotePortID    string `json:"remote_port_id,omitempty"`
+        RemotePortDesc  string `json:"remote_port_desc,omitempty"`
+        RemoteSysDesc   string `json:"remote_sys_desc,omitempty"`
+        RemoteChassisID string `json:"remote_chassis_id,omitempty"`
+        RemoteSysCap    int    `json:"remote_sys_cap,omitempty"`
+}
+
+// FDBEntry is one MAC address learned on a switch port (bridge FDB).
+// Port is the resolved ifIndex (matches SwitchPortInfo.Idx) so the backend
+// can join it to the port table.
+type FDBEntry struct {
+        MAC  string `json:"mac"`
+        Port int    `json:"port"`
+        VLAN int    `json:"vlan,omitempty"`
+}
+
 
 
 // AgentLog is a structured log line shipped to the backend.

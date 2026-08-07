@@ -3927,6 +3927,114 @@ async def store_switch_ports(client_id: str, switches: list) -> dict:
     return {"total_ports": total_stored, "flap_events": total_flaps, "per_switch": stored_per_switch}
 
 
+async def store_switch_topo(client_id: str, switches: list) -> dict:
+    """Persist LLDP neighbors + bridge FDB collected by the v4 Go agent.
+
+    Shared by the WebSocket bridge (agent v4 >= 4.27.0). Idempotent per-switch
+    (delete + insert by local_ip / switch_ip) so multiple agents of the same
+    tenant do not clobber each other. FDB entries are enriched with a MAC->IP
+    map (best effort) so the topology page can render "Connesso a".
+    """
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    # --- best-effort MAC -> IP resolution (managed + last discovery) ---
+    mac_to_ip: dict = {}
+    managed_ips: set = set()
+    try:
+        md = await db.managed_devices.find(
+            {"client_id": client_id}, {"_id": 0, "ip": 1}
+        ).to_list(5000)
+        managed_ips = {d.get("ip") for d in md if d.get("ip")}
+        nd = await db.network_discovery.find_one(
+            {"client_id": client_id}, {"_id": 0, "device_macs": 1},
+            sort=[("updated_at", -1)],
+        )
+        for dm in ((nd or {}).get("device_macs") or []):
+            dip = dm.get("ip", "")
+            for m in (dm.get("macs") or []):
+                if m and dip:
+                    mac_to_ip.setdefault(str(m).upper(), dip)
+        # existing endpoints with a resolved ip (e.g. ARP scanner)
+        async for e in db.discovered_endpoints.find(
+            {"client_id": client_id, "ip": {"$ne": ""}}, {"_id": 0, "mac": 1, "ip": 1}
+        ):
+            if e.get("mac") and e.get("ip"):
+                mac_to_ip.setdefault(str(e["mac"]).upper(), e["ip"])
+    except Exception:
+        pass
+
+    total_neighbors = 0
+    total_endpoints = 0
+    for sw in switches:
+        local_ip = sanitize_string(sw.get("local_ip", ""), 64)
+        if not local_ip:
+            continue
+
+        # ---- LLDP neighbors (replace this switch's set) ----
+        neighbors = sw.get("neighbors", []) or []
+        await db.lldp_neighbors.delete_many({"client_id": client_id, "local_ip": local_ip})
+        if neighbors:
+            ndocs = []
+            for n in neighbors:
+                ndocs.append({
+                    "client_id": client_id,
+                    "local_ip": local_ip,
+                    "local_port_id": sanitize_string(str(n.get("local_port_id", "")), 128),
+                    "local_port_desc": sanitize_string(str(n.get("local_port_desc", "")), 256),
+                    "remote_ip": sanitize_string(str(n.get("remote_ip", "")), 64),
+                    "remote_sys_name": sanitize_string(str(n.get("remote_sys_name", "")), 256),
+                    "remote_port_id": sanitize_string(str(n.get("remote_port_id", "")), 128),
+                    "remote_port_desc": sanitize_string(str(n.get("remote_port_desc", "")), 256),
+                    "remote_sys_desc": sanitize_string(str(n.get("remote_sys_desc", "")), 512),
+                    "remote_chassis_id": sanitize_string(str(n.get("remote_chassis_id", "")), 128),
+                    "remote_sys_cap": int(n.get("remote_sys_cap", 0) or 0),
+                    "updated_at": now_iso,
+                })
+            if ndocs:
+                await db.lldp_neighbors.insert_many(ndocs)
+                total_neighbors += len(ndocs)
+
+        # ---- FDB / MAC table -> discovered_endpoints (replace this switch's set) ----
+        fdb = sw.get("fdb", []) or []
+        # Only replace endpoints attributed to THIS switch (FDB source), never
+        # the ARP/scanner endpoints (which carry switch_ip="").
+        await db.discovered_endpoints.delete_many({"client_id": client_id, "switch_ip": local_ip})
+        if fdb:
+            edocs = []
+            seen = set()
+            for f in fdb:
+                mac = str(f.get("mac", "")).upper().strip()
+                if not mac:
+                    continue
+                try:
+                    port = int(f.get("port", 0))
+                except Exception:
+                    continue
+                key = (mac, port)
+                if key in seen:
+                    continue
+                seen.add(key)
+                ep_ip = mac_to_ip.get(mac, "")
+                edocs.append({
+                    "client_id": client_id,
+                    "switch_ip": local_ip,
+                    "port": port,
+                    "mac": mac,
+                    "ip": ep_ip,
+                    "vlan": int(f.get("vlan", 0) or 0),
+                    "hostname": "",
+                    "is_managed": ep_ip in managed_ips if ep_ip else False,
+                    "source": "agent_fdb",
+                    "updated_at": now_iso,
+                })
+            if edocs:
+                await db.discovered_endpoints.insert_many(edocs)
+                total_endpoints += len(edocs)
+
+    return {"neighbors": total_neighbors, "endpoints": total_endpoints}
+
+
+
 
 @router.post(f"/{C}/sp")
 @router.post("/connector/switch-ports")

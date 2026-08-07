@@ -451,6 +451,8 @@ async def _on_event(conn: _Connection, evt: Dict[str, Any]) -> None:
             await _bridge_sys_metrics(conn, data)
         elif kind == "switch_ports" and isinstance(data, dict):
             await _bridge_switch_ports(conn, data)
+        elif kind == "switch_topo" and isinstance(data, dict):
+            await _bridge_switch_topo(conn, data)
         elif kind in ("lan_scan_result", "lan_scan_progress", "lan_scan_done") and isinstance(data, dict):
             # Lazy import per evitare cicli (lan_scanner.py importa
             # questo modulo per REGISTRY).
@@ -849,6 +851,29 @@ async def _bridge_switch_ports(conn: _Connection, data: Dict[str, Any]) -> None:
         "agent v4 switch_ports agent=%s client=%s switches=%d ports=%d flaps=%d",
         conn.agent_id, client_id, len(switches),
         result.get("total_ports", 0), result.get("flap_events", 0),
+    )
+
+
+async def _bridge_switch_topo(conn: _Connection, data: Dict[str, Any]) -> None:
+    """Bridge agent.event kind=switch_topo → Mongo `lldp_neighbors` + `discovered_endpoints`.
+
+    L'agent v4 Go (>= v4.27.0) invia i vicini LLDP e la MAC-table (FDB) degli
+    switch. Salviamo sotto il client_id AUTENTICATO dell'agent (isolamento
+    tenant), per-switch (delete+insert del solo local_ip) per essere sicuri con
+    piu' agent dello stesso cliente.
+    """
+    client_id = conn.client_id
+    if not client_id:
+        return
+    switches = data.get("switches", []) or []
+    if not switches:
+        return
+    from routes.connector import store_switch_topo
+    result = await store_switch_topo(client_id, switches)
+    logger.info(
+        "agent v4 switch_topo agent=%s client=%s switches=%d lldp=%d fdb=%d",
+        conn.agent_id, client_id, len(switches),
+        result.get("neighbors", 0), result.get("endpoints", 0),
     )
 
 
