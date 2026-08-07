@@ -54,6 +54,48 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-08-07 🔧 Ripristino icona System Tray su Windows Server (regressione v4.28)
+
+### Problema utente
+Con v4.29.0 l'agent si installa correttamente sul server ma NON appare piu'
+l'icona nel system tray (accanto all'orologio) per capire che e' avviato.
+
+### Root cause
+La modalita' "headless" introdotta in v4.28 (`install-noc-agent.ps1`) aveva
+CONFLATO due cose diverse: (1) rimuovere il popup WebView2 (`ArgusDesktop.exe`,
+Wails) — corretto — e (2) saltare del tutto la registrazione della tray su
+Windows Server (`if ($script:IsServer) { Unregister tray... }`). Ma
+`argus-tray.exe` e' una **systray Win32 nativa senza finestra/WebView2**, quindi
+non c'era motivo di toglierla sul server.
+
+### Fix (`noc-agent/build/install-noc-agent.ps1`)
+- Rimossa la guardia `if ($script:IsServer)` che saltava/deregistrava la tray:
+  ora lo Scheduled Task "86BIT Argus Tray" (At Logon, gruppo INTERACTIVE) viene
+  registrato e avviato su TUTTI i sistemi (workstation E server).
+- Mantenuta SEMPRE la rimozione di `ArgusDesktop.exe` (WebView2 deprecato).
+- Conservata la detection `$script:IsServer` (serve ancora alla sezione shortcut
+  Start Menu piu' avanti), ma non piu' usata per saltare la tray.
+- `argus-tray.exe` e' gia' incluso nelle release (workflow release-agent.yml) ed
+  e' scaricato come asset opzionale a ogni install → gia' presente in InstallDir
+  sul server: mancava solo la registrazione del task.
+
+### Distribuzione (nessun nuovo binario/PAT)
+1. "Save to GitHub" → push su `main` (il fix e' solo nello script PS).
+2. Dal NOC Center: "Aggiorna Connector" sul server (l'update remoto scarica
+   `install-noc-agent.ps1` da `raw.githubusercontent.com/.../main/...` e lo
+   rilancia), oppure ri-eseguire l'installer sul server.
+3. L'icona ricompare accanto all'orologio nella sessione RDP/interattiva
+   corrente e a ogni logon.
+
+### Testing
+Script Windows-only: NON eseguibile/testabile in questo ambiente Linux.
+Verificato tramite code review (root cause isolata, blocco try/catch e if/else
+bilanciati, corpo dell'else invariato rispetto alla versione funzionante
+pre-v4.28). pwsh non disponibile per un parse automatico.
+
+---
+
+
 ## 2026-08-07 🔒 Security hardening auth: 2FA obbligatorio admin + fix P0/P1
 
 ### Contesto
