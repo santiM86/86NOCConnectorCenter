@@ -525,7 +525,7 @@ async def connector_lan_scan(request: Request, report: LanScanReport):
             update["vlan_id"] = report.vlan_id
         await db.discovered_endpoints.update_one(
             {"client_id": client_id, "mac": mac_norm},
-            {"$set": update},
+            {"$set": update, "$setOnInsert": {"first_seen_at": now_iso}},
             upsert=True,
         )
         stored += 1

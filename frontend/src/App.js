@@ -44,6 +44,7 @@ import PublicDashboard from "@/pages/PublicDashboard";
 import TvDashboardPage from "@/pages/TvDashboardPage";
 import VulnerabilityPage from "@/pages/VulnerabilityPage";
 import OsintPage from "@/pages/OsintPage";
+import RogueDevicesPage from "@/pages/RogueDevicesPage";
 import TrendPage from "@/pages/TrendPage";
 import DeviceMetricsPage from "@/pages/DeviceMetricsPage";
 import SyslogPage from "@/pages/SyslogPage";
@@ -253,6 +254,7 @@ function App() {
               <Route path="clients/:clientId/printer-discovery" element={<PrinterDiscoveryPage />} />
               <Route path="vulnerability" element={<VulnerabilityPage />} />
               <Route path="osint" element={<OsintPage />} />
+              <Route path="rogue-devices" element={<RogueDevicesPage />} />
               <Route path="trends" element={<TrendPage />} />
               <Route path="device-metrics" element={<DeviceMetricsPage />} />
               <Route path="syslog" element={<SyslogPage />} />
