@@ -4948,3 +4948,34 @@ enrichment IP negli alert esistenti con badge reputazione.
 - Aggiunto step "5b. Nota multi-tenant" che chiarisce esplicitamente che l'overlap di IP privati NON
   è un data-leak. Rimossa la raccomandazione errata "Allinea il client_id del connector".
 - Confermato: nessuna fuga cross-tenant reale nel path switch-ports.
+
+## 2026-08-07 — Rogue / New Device Detection (NDR-lite, ispirato a LECS)
+- services/rogue_detection.py: rileva MAC/endpoint mai visti sulla rete di un cliente
+  (baseline PER-CLIENTE in rogue_state: l'inventario preesistente NON allarma; solo i nuovi
+  arrivi con first_seen_at > baseline). Allow-list per-cliente (rogue_allowlist).
+  Alert source_type=rogue_device + WS broadcast + webpush. Severità configurabile (default warning).
+- Risposta SUGGERITA a conferma umana (nessuna azione automatica finta):
+  * Autorizza -> allow-list + risolve alert.
+  * Isola (guida) -> passi di remediation (switch/porta se noti). auto_executable=False:
+    l'agent NON ha ancora comando SNMP-SET per lo shutdown porta (niente mock).
+- routes/security_rogue.py: /api/security/rogue/{status,config,alerts,scan,authorize,allowlist,remediation}.
+- Scheduler rogue_scan_tick ogni 3 min. Aggiunto first_seen_at all'upsert scanner in connector.py.
+- Frontend: RogueDevicesPage.js (KPI, tabella rilevati con Autorizza/Isola, allow-list, toggle, scan).
+  Nav Sicurezza > "Dispositivi Rogue" (/rogue-devices).
+- Test end-to-end: baseline -> inject nuovo endpoint -> scan (1 alert) -> remediation (switch/porta reali)
+  -> authorize (resolve+allowlist) -> re-scan 0. UI verificata. PASS.
+- Backlog fase 2 (dal confronto LECS): anomalie traffico su contatori SNMP; dashboard conformità NIS2/DORA;
+  export SOC/SIEM (syslog/CEF/webhook); quarantena porta live quando l'agent supporterà SNMP-SET.
+
+## 2026-08-07 — Rogue enrichment (fingerprint+reputazione) + Anomalie Traffico
+- rogue_detection.enrich_endpoint: OUI/vendor (lookup_oui) + Fingerbank (se configurato) + tipo MAC
+  (randomizzato/privacy vs vendor globale) + reputazione IP (IOC/AbuseIPDB SOLO per IP pubblici;
+  gli IP privati LAN NON vengono confrontati con blocklist internet) -> verdetto rischio basso/medio/alto.
+  Il rischio 'alto' alza la severità dell'alert. Campi salvati sull'alert e mostrati in UI (colonna Rischio + fingerprint).
+- services/traffic_anomaly.py: baseline EWMA per porta (port_traffic_baseline) sui contatori SNMP
+  rx_bps/tx_bps di switch_ports. Dopo warmup, se corrente > baseline*spike_factor e > floor_mbps ->
+  alert source_type=traffic_anomaly (direzione tx=exfil / rx). Dedup per porta. Scheduler ogni 5 min.
+  routes/security_traffic.py: /api/security/traffic/{status,config,scan,alerts}.
+- AlertsPage: nuovi badge feed principale ROGUE (arancio) e TRAFFICO (viola) + label colonna Fonte.
+- Test: rogue MAC privacy -> rischio BASSO corretto (dopo fix IP privati vs bogon-list); traffic 250Mbps vs
+  baseline 1Mbps -> alert USCITA. UI verificata. PASS.

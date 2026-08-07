@@ -103,6 +103,7 @@ const navConfig = [
     items: [
       { path: "/correlation", icon: Lightning, label: "SOC AI", roles: ["admin", "operator"] },
       { path: "/osint", icon: ShieldWarning, label: "OSINT Threat Intel", roles: ["admin", "operator"] },
+      { path: "/rogue-devices", icon: WifiHigh, label: "Dispositivi Rogue", roles: ["admin", "operator"] },
       { path: "/security-dashboard", icon: ShieldCheck, label: "Security Dashboard", roles: ["admin"] },
       { path: "/vault", icon: Lock, label: "Vault Credenziali", roles: ["admin"] },
       { path: "/enterprise", icon: Shield, label: "Audit & Compliance", roles: ["admin"] },

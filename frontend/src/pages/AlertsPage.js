@@ -210,6 +210,12 @@ export default function AlertsPage() {
                       {alert.source_type === "osint" && (
                         <span className="text-[9px] font-bold uppercase mr-1.5 px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40" data-testid={`alert-badge-osint-${alert.id}`}>OSINT</span>
                       )}
+                      {alert.source_type === "rogue_device" && (
+                        <span className="text-[9px] font-bold uppercase mr-1.5 px-1.5 py-0.5 rounded bg-orange-500/20 text-orange-300 border border-orange-500/40" data-testid={`alert-badge-rogue-${alert.id}`}>ROGUE</span>
+                      )}
+                      {alert.source_type === "traffic_anomaly" && (
+                        <span className="text-[9px] font-bold uppercase mr-1.5 px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-300 border border-purple-500/40" data-testid={`alert-badge-traffic-${alert.id}`}>TRAFFICO</span>
+                      )}
                       {alert.title}
                     </td>
                     <td className="font-mono text-[var(--text-muted)] text-xs">{alert.device_name}</td>
@@ -218,6 +224,8 @@ export default function AlertsPage() {
                     <td className="text-[10px] uppercase text-[var(--text-muted)]">
                       {alert.source_type === "osint_c2" ? "C2 / OSINT"
                         : alert.source_type === "osint" ? "OSINT"
+                        : alert.source_type === "rogue_device" ? "Rogue Device"
+                        : alert.source_type === "traffic_anomaly" ? "Anomalia Traffico"
                         : alert.source_type}
                     </td>
                     <td className="font-mono text-[var(--text-muted)] text-[10px]">
