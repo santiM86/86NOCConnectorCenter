@@ -13,7 +13,7 @@ from datetime import datetime, timezone, timedelta
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from database import db
-from deps import get_current_user
+from deps import get_current_user, require_admin
 from display_name import best_display_name
 from device_type_resolver import best_device_type
 
@@ -170,6 +170,7 @@ async def generate_client_report(
     current_user: dict = Depends(get_current_user)
 ):
     """Genera un report PDF multi-pagina per un cliente."""
+    require_admin(current_user)
     client = await db.clients.find_one({"id": client_id}, {"_id": 0})
     if not client:
         raise HTTPException(status_code=404, detail="Cliente non trovato")
@@ -517,6 +518,7 @@ async def generate_client_report(
 @router.get("/list")
 async def list_available_reports(current_user: dict = Depends(get_current_user)):
     """Elenca i clienti disponibili per la generazione del report."""
+    require_admin(current_user)
     clients = await db.clients.find({}, {"_id": 0}).to_list(100)
     result = []
     for c in clients:

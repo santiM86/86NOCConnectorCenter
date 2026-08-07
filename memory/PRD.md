@@ -54,6 +54,61 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-08-07 ✅ Report PDF multi-pagina per cliente (deliverable MSP)
+
+### Richiesta utente
+Trasformare l'export report in un PDF MULTI-PAGINA professionale, allegabile
+ai contratti. Scelte utente: mappa di rete come TABELLA adiacenze LLDP (no
+immagine headless), struttura di default, brand white-label se presente
+altrimenti "86BIT NOC", pulsante anche nella Panoramica cliente.
+
+### Implementazione (`backend/routes/reports.py`, ReportLab)
+Riscritto `GET /api/reports/generate/{client_id}?days=` con struttura a pagine:
+1. **Copertina** — brand, nome cliente, periodo/data, box KPI (Dispositivi /
+   Online / Offline / SLA).
+2. **Riepilogo Esecutivo** — tabella metriche (device, switch, porte tot/attive,
+   PoE attive+Watt totali, adiacenze LLDP, alert/critici, modifiche rete).
+3. **Inventario Dispositivi** — raggruppato per device_type canonico (via
+   `best_device_type` + `best_display_name`), etichette IT, tabella Nome/IP/
+   Vendor/Modello/Stato per gruppo.
+4. **Porte Switch e Consumo PoE** — per ogni switch: header con riepilogo
+   (porte, attive, PoE attive, Watt), tabella Porta/Descrizione/Stato/Velocità/
+   PoE (Watt+classe da `switch_ports.poe_status==3`).
+5. **Adiacenze di Rete (LLDP)** — tabella da `lldp_neighbors` (locale↔remoto,
+   porte). Sostituisce il rendering immagine mappa (scelta utente).
+6. **SLA per dispositivo + Ultimi Alert + Modifiche Rete** (da metrics_history/
+   alerts/network_changes).
+Footer con brand + "Pagina N" su ogni pagina. Nomefile sanificato.
+`GET /api/reports/list` ora conta da `managed_devices` (fallback poll_status).
+White-label: legge `clients.brand_name`/`white_label_name` (fallback 86BIT NOC).
+
+### Frontend
+- `ClientOverviewPage.js`: pulsante header **"Report PDF"**
+  (data-testid `download-client-report-btn`) → `downloadReport()` scarica il
+  blob PDF (days=30) con toast.
+- `ReportsPage.js`: aggiornata la lista "Il report include" alle nuove sezioni.
+
+### Sicurezza
+`require_admin(current_user)` applicato a ENTRAMBI gli endpoint report (prima
+solo `get_current_user` → rischio cross-tenant). No-auth/non-admin → 403.
+
+### Testing (iteration_101) — PASS
+Backend 8/8 pytest (list, generate, auth 401/403, 404 client inesistente,
+header PDF, 7 pagine, presenza di tutte le sezioni IT estratte dal testo).
+Frontend 100%: Reports page (select+genera+download+toast) e pulsante
+Panoramica cliente (download+toast). Verificato via curl post-fix: admin 200,
+no-auth 403. In preview le sezioni porte/LLDP/SLA mostrano messaggi graceful
+(nessun dato SNMP) — atteso.
+
+### Note / backlog minori (non bloccanti)
+- `reports.py` ~530 righe (data-fetch + rendering nello stesso handler):
+  eventuale split in builder di sezioni.
+- `ReportsPage.js`: catch vuoto sulla fetch lista clienti (no empty-state UI).
+- Enhancement futuro: rendering immagine mappa via Playwright headless.
+
+---
+
+
 ## 2026-07-29 🔒 FIX cross-tenant: pagina "Porte switch" isolata per client_id
 
 ### Problema
