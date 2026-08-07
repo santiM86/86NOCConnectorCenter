@@ -116,8 +116,8 @@ export default function ReportsPage() {
         <div className="border border-dashed border-[var(--border-subtle)] rounded-lg p-4 mt-2">
           <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider font-medium mb-2">Il report include:</p>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-            {["Riepilogo Esecutivo", "SLA per Dispositivo", "Lista Dispositivi", "Ultimi Alert",
-              "Modifiche Rete", "Ping Medio", "Stato Complessivo", "Grafici Trend"
+            {["Copertina Cliente", "Riepilogo Esecutivo", "Inventario per Tipo", "Porte Switch + PoE",
+              "Adiacenze LLDP", "SLA per Dispositivo", "Ultimi Alert", "Modifiche Rete"
             ].map(item => (
               <div key={item} className="flex items-center gap-1.5 text-xs text-[var(--text-secondary)]">
                 <CheckCircle size={12} className="text-emerald-400" weight="fill" />
