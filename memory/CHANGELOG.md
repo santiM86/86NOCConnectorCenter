@@ -5056,3 +5056,15 @@ enrichment IP negli alert esistenti con badge reputazione.
 - TEST: build_lldp_edges (ip+name+mac match, no-match escluso) PASS; store enrich (hostname/ip/vendor) PASS;
   e2e GET topology su client reale senza errori.
 - DEPLOY: solo deploy backend in produzione (l'agent v4.27.0/v4.28.0 invia gia' LLDP+FDB). Nessuna nuova release agent.
+
+## 2026-06 — v4.29.0: raccolta PoE per porta + Export PDF mappa
+- POE (agent): snmpports.go ora legge POWER-ETHERNET-MIB (RFC 3621): pethPsePortAdminEnable (.3),
+  pethPsePortDetectionStatus (.6, 3=deliveringPower), pethPsePortPowerClassifications (.10).
+  Mapping PoE-port->ifIndex best-effort via numero finale del nome interfaccia (trailingInt).
+  Watt nominali da classe (poeWattFromClass). Nuovi campi proto SwitchPortInfo: poe_admin/status/class/watt.
+  NOTA: mapping da validare sul campo (nessun device PoE in dev). Backend store_switch_ports salva poe_watt;
+  backend/frontend gia' supportavano poe_admin/status/class (badge "PoE attivo", filtro PoE).
+- EXPORT PDF mappa (frontend NetworkMap.js): pulsante "PDF" accanto a "PNG". Dependency-free: render toPng +
+  finestra di stampa A4 landscape con header (cliente + data) -> "Salva come PDF". Nessuna nuova dipendenza.
+- RELEASE v4.29.0 (id 366743406, latest): binari agent con PoE + LLDP/FDB (4.27) + installer headless (4.28).
+- DEPLOY: backend (LLDP/FDB+Datto+poe_watt) + frontend (PDF) + agent v4.29.0 (PoE). Verificare PoE sul 5130.
