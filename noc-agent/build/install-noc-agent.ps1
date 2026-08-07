@@ -776,6 +776,24 @@ foreach ($f in $optional) {
     }
 }
 
+# v2026-06-23 LAYOUT UNIFORME — rimuovi GUI legacy da installazioni precedenti
+# (ArgusDesktop.exe Wails + nocagent-ui.exe walk). Da ora la UNICA GUI ammessa
+# e' argus-tray.exe, identica su tutti i connector. I processi sono gia' stati
+# killati nello step di stop servizi; qui eliminiamo i file residui.
+Write-Step "Cleanup GUI legacy (layout uniforme)"
+foreach ($leg in $legacyToRemove) {
+    $legPath = Join-Path $InstallDir $leg
+    if (Test-Path $legPath) {
+        try {
+            Remove-Item -Path $legPath -Force -ErrorAction Stop
+            Write-Ok "Rimosso componente legacy: $leg"
+        } catch {
+            Write-Warn2 "Impossibile rimuovere $leg (in uso?): $($_.Exception.Message)"
+        }
+    }
+}
+
+
 # ------------------------------------------------------------------- #
 # 6. Scrivi agent.yaml (preserva snmp_targets se gia' presente)
 # ------------------------------------------------------------------- #
