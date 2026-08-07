@@ -1,0 +1,51 @@
+{
+  "summary": "Iteration 103 — Auth security hardening (2FA obbligatorio admin + fix portale clienti). BACKEND: 9/9 pytest PASS (tutti i 7 punti richiesti verificati, incl. token forgiato con vecchia chiave 'change-me-customer' -> 401). FRONTEND E2E: ENTRAMBI i flussi 2FA sono BLOCCATI (P0). Il token ristretto (enroll_2fa o requires_2fa) viene salvato in localStorage e AuthProvider lancia subito fetchUser() -> GET /api/auth/me risponde 403 -> il catch chiama logout() che cancella noc_token e l'header Authorization di axios. Di conseguenza POST /api/auth/confirm-2fa e POST /api/auth/verify-2fa partono SENZA Authorization e ricevono 403 {'detail':'Not authenticated'} con toast 'Not authenticated'. L'admin non riesce quindi ne' a completare l'enrollment 2FA ne' a fare login con 2FA gia' attivo dalla UI: lockout totale dell'unico account admin. Regressione app verificata OK iniettando un token pieno valido: dashboard carica senza alcun 401/403/500.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {
+        "flow": "Enrollment 2FA admin (/2fa-setup)",
+        "issue": "P0 BLOCCANTE: POST /api/auth/confirm-2fa inviata senza header Authorization -> 403 'Not authenticated', toast di errore, nessuna attivazione 2FA, resta su /2fa-setup. Causa: AuthProvider.fetchUser() su token enroll -> /auth/me 403 -> logout() cancella noc_token + axios.defaults.headers.Authorization.",
+        "affected_selectors": ["[data-testid=\"confirm-2fa-setup-btn\"]", "[data-testid=\"2fa-setup-code-input\"]"]
+      },
+      {
+        "flow": "Login con 2FA attivo (/2fa)",
+        "issue": "P0 BLOCCANTE: identica causa — POST /api/auth/verify-2fa parte senza Authorization -> 403 'Not authenticated'. localStorage.noc_token risulta null appena arrivati su /2fa. Login impossibile dalla UI.",
+        "affected_selectors": ["[data-testid=\"verify-2fa-btn\"]", "[data-testid=\"2fa-code-input\"]"]
+      },
+      {
+        "flow": "/2fa-setup init",
+        "issue": "MINORE: POST /api/auth/setup-2fa viene chiamata 2 volte (doppio mount effect / StrictMode). Ogni chiamata rigenera e sovrascrive totp_secret_pending: se la risposta della 1a chiamata arriva dopo la 2a, il QR/secret mostrato non corrisponde al pending salvato e il codice risultera' sempre invalido (race non deterministica).",
+        "affected_selectors": ["[data-testid=\"2fa-qr\"]", "[data-testid=\"2fa-copy-secret\"]"]
+      }
+    ],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_auth_hardening_iter103.py",
+    "/app/test_reports/pytest/iteration_103_auth.xml"
+  ],
+  "action_items": [
+    "FIX P0: in AuthProvider (App.js) NON chiamare fetchUser()/logout() quando il JWT ha requires_2fa o enroll_2fa (decodificare il payload o gestire lo stato 'pending' separatamente); oppure non fare logout() su 403 di /auth/me. Consigliato inoltre passare il token esplicitamente negli header delle chiamate setup-2fa/confirm-2fa/verify-2fa (leggendolo da localStorage) invece di affidarsi ad axios.defaults.",
+    "FIX P0: evitare che logout() venga invocato durante il flusso 2FA (cancella noc_token e header) — e' la causa diretta del 403 'Not authenticated'.",
+    "FIX MINORE: rendere idempotente l'init di /2fa-setup (guard con useRef o riuso del pending esistente) per non rigenerare totp_secret_pending a ogni mount.",
+    "Dopo il fix, ri-testare i due flussi E2E: l'account admin e' stato riportato allo stato pulito 'enroll richiesto' (two_factor_enabled=false, totp_secret/totp_secret_pending rimossi)."
+  ],
+  "critical_code_review_comments": [
+    "App.js: il gestore di errore di fetchUser() fa logout() indiscriminatamente su qualsiasi errore, incluso il 403 legittimo dei token 2FA-pending → distrugge la sessione parziale necessaria a completare il 2FA.",
+    "TwoFactorPage.js / TwoFactorSetupPage.js dipendono da axios.defaults.headers per l'auth: fragile, il token va passato esplicitamente.",
+    "auth.py/deps.py: implementazione backend corretta (nessun refresh_token pre-2FA, enroll token limitato ai soli endpoint 2FA, JWT_SECRET fail-safe, customer portal secret fail-safe)."
+  ],
+  "updated_files": ["/app/backend/tests/test_auth_hardening_iter103.py"],
+  "success_rate": {"backend": "100% (9/9)", "frontend": "0% sui flussi 2FA (2/2 flussi bloccati); dashboard/regressione OK con token pieno"},
+  "seed_data_creation": "Nessun nuovo utente. Durante i test il 2FA dell'admin e' stato attivato (secret temporaneo) e poi RIPRISTINATO: two_factor_enabled=false, totp_secret/totp_secret_pending rimossi, refresh_tokens dell'admin revocati.",
+  "should_call_test_agent_after_fix": true,
+  "should_main_agent_self_test": false,
+  "test_credentials": "info@86bit.it / Ariel17051986@!@86 (stato: enroll 2FA richiesto)",
+  "context_for_next_testing_agent": "Backend auth hardening interamente coperto da /app/backend/tests/test_auth_hardening_iter103.py (le fixture riportano l'admin allo stato enroll-required a fine modulo). Attenzione al rate limit login (10/5min per IP): non superare ~8 login per run. Per il frontend E2E: calcolare il TOTP con hmac/hashlib stdlib (pyotp non disponibile nell'env dello script Playwright), compilare la password prima dell'email, e verificare con page.expect_response che confirm-2fa/verify-2fa portino l'header Authorization. Per testare la dashboard senza passare dal 2FA si puo' iniettare un token pieno in localStorage (noc_token/noc_refresh_token) ottenuto via API login+verify-2fa.",
+  "rca_of_the_issue": "AuthProvider (App.js:89-127): dopo il login il token ristretto viene messo in state/localStorage; l'useEffect su [token] chiama fetchUser() → GET /api/auth/me che (per design del nuovo hardening) risponde 403 '2FA verification required' / '2FA setup required'; il catch esegue logout() che rimuove noc_token, noc_refresh_token e `delete axios.defaults.headers.common['Authorization']`. Le pagine TwoFactorPage/TwoFactorSetupPage si affidano proprio a quell'header, quindi confirm-2fa e verify-2fa arrivano al backend senza credenziali → HTTPBearer risponde 403 'Not authenticated'. Riproduzione: login admin dalla UI → /2fa-setup → localStorage.getItem('noc_token') === null → click 'Attiva 2FA' → 403. Mitigazione: escludere i token 2FA-pending da fetchUser/logout e passare il token esplicitamente nelle chiamate 2FA."
+}

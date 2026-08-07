@@ -1,0 +1,25 @@
+{
+  "summary": "Frontend-only RETEST of the two previously P0-blocked 2FA flows (ARGUS NOC, UI IT) after the App.js/2FA-pages fixes. Both flows now PASS end-to-end via public preview URL. (1) ENROLLMENT: login admin info@86bit.it -> app redirects to /2fa-setup, QR ('2fa-qr') and copyable secret ('2fa-copy-secret' = WEQEYNF53JJTASIMEIRNPXKTKVUN3RYG) rendered; TOTP computed with stdlib hmac/hashlib was accepted on the FIRST attempt; POST /api/auth/confirm-2fa fired WITH Authorization header and returned 200; app landed on the authenticated dashboard (/) with GET /api/auth/me 200, no 403 'Not authenticated'. (2) LOGIN WITH 2FA ACTIVE: fresh login -> redirect to /2fa, code entered in '2fa-code-input', POST /api/auth/verify-2fa sent WITH Authorization and returned 200, dashboard loaded. (3) IDEMPOTENCY: exactly 1 POST /api/auth/setup-2fa on /2fa-setup mount (useRef guard works) and the displayed secret matched the one validated server-side. The intermediate 403 on GET /api/auth/me (restricted 2FA-pending token) no longer triggers logout - token is preserved as intended. Admin account restored to clean 'enroll required' state at the end (two_factor_enabled=false, totp_secret/totp_secret_pending unset). Backend not re-tested (already 9/9 in iteration_103).",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "2FA setup / 2FA verify", "issues": ["Success toasts ('2FA attivato con successo' / 'Verifica completata') are effectively invisible: both pages call window.location.reload() immediately after navigate(), destroying the toast before the user can read it. Cosmetic only - navigation and auth succeed. Consider dropping the reload or delaying it ~1.2s."]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_auth_hardening_iter103.py"],
+  "action_items": ["Optional (cosmetic): avoid window.location.reload() right after navigate() in TwoFactorSetupPage.js / TwoFactorPage.js so the success toast is visible."],
+  "critical_code_review_comments": [
+    "TwoFactorSetupPage/TwoFactorPage read the token directly from localStorage instead of the AuthProvider context - works, but duplicates auth logic; consider a shared authHeader() helper exported from App.js.",
+    "Expected 403 on GET /api/auth/me with a 2FA-pending token pollutes the browser console with a red network error; a dedicated non-403 signal (e.g. 200 + {requires_2fa:true}) would be cleaner."
+  ],
+  "updated_files": [],
+  "success_rate": { "backend": "not retested (9/9 in iteration_103)", "frontend": "100% (3/3 scenarios: enrollment, login+verify, setup-2fa idempotency)" },
+  "seed_data_creation": "None. Used existing admin info@86bit.it; 2FA enrolled during the test then reverted to 'enroll required' state in db.users.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "info@86bit.it / Ariel17051986@!@86 (admin, 2FA enroll required again after reset)",
+  "context_for_next_testing_agent": "2FA E2E is green. Admin is back in 'enroll required' state, so ANY future login as admin must go through /2fa-setup first (setup-2fa -> confirm-2fa with a stdlib-computed TOTP). Login rate limit is 10/5min per IP: only 2 logins were consumed in this run. Use data-testid selectors on the login page ('login-email-input', 'login-password-input', 'login-submit-btn') - generic input[type=password]/button[type=submit] selectors failed to trigger submit in the first attempt. Both 2FA pages navigate then window.location.reload(), so wait ~6-7s after confirm/verify before asserting dashboard content.",
+  "rca_of_the_issue": "Previous P0 (iteration_103) root cause - AuthProvider.fetchUser() called logout() on the expected 403 from GET /api/auth/me with the restricted 2FA-pending token, wiping noc_token so confirm-2fa/verify-2fa were sent unauthenticated. Fix verified: 403 no longer logs out, and both 2FA pages attach the Authorization header explicitly; TwoFactorSetupPage uses a useRef guard so setup-2fa runs once (no secret rotation between QR render and code validation)."
+}

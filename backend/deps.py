@@ -25,8 +25,16 @@ from security_hardening import SecurityHardening
 
 logger = logging.getLogger(__name__)
 
-# JWT Config
-JWT_SECRET = os.environ.get('JWT_SECRET', 'noc-alert-command-center-secret-key-2024')
+# JWT Config — fail-safe: se il secret manca o è il default noto, usa una
+# chiave casuale effimera (mai una chiave nota/hardcoded in produzione).
+_DEFAULT_JWT_SECRET = 'noc-alert-command-center-secret-key-2024'
+JWT_SECRET = os.environ.get('JWT_SECRET') or ''
+if not JWT_SECRET or JWT_SECRET == _DEFAULT_JWT_SECRET:
+    logger.critical(
+        "JWT_SECRET debole o mancante nel .env: uso una chiave casuale effimera. "
+        "Imposta un JWT_SECRET forte (32+ byte casuali) nel .env di produzione!"
+    )
+    JWT_SECRET = secrets.token_hex(32)
 JWT_ALGORITHM = "HS256"
 
 # Rate Limiter
@@ -121,11 +129,13 @@ def is_newer_version(published: str, current: str) -> bool:
 
 # ==================== AUTH HELPERS ====================
 
-def create_token(user_id: str, email: str, requires_2fa: bool = False) -> str:
+def create_token(user_id: str, email: str, requires_2fa: bool = False,
+                 enroll_2fa: bool = False) -> str:
     payload = {
         "user_id": user_id,
         "email": email,
         "requires_2fa": requires_2fa,
+        "enroll_2fa": enroll_2fa,
         "exp": datetime.now(timezone.utc).timestamp() + 86400
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
@@ -138,11 +148,35 @@ async def get_current_user(
         payload = jwt.decode(credentials.credentials, JWT_SECRET, algorithms=[JWT_ALGORITHM])
         if payload.get("requires_2fa"):
             raise HTTPException(status_code=403, detail="2FA verification required")
+        if payload.get("enroll_2fa"):
+            # Token ristretto: l'admin DEVE configurare il 2FA prima di procedere.
+            raise HTTPException(status_code=403, detail="2FA setup required")
         user = await db.users.find_one({"id": payload["user_id"]}, {"_id": 0, "password_hash": 0, "totp_secret": 0})
         if not user:
             raise HTTPException(status_code=401, detail="User not found")
         user["_request_ip"] = request.client.host if request.client else "unknown"
         user["_user_agent"] = request.headers.get("user-agent", "unknown")
+        return user
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+async def get_user_allow_pending(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+):
+    """Come get_current_user ma ACCETTA token con requires_2fa/enroll_2fa.
+    Usato SOLO dagli endpoint 2FA (verifica/setup/conferma) così un token
+    ristretto può completare il flusso 2FA ma nient'altro."""
+    try:
+        payload = jwt.decode(credentials.credentials, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        user = await db.users.find_one({"id": payload["user_id"]}, {"_id": 0, "password_hash": 0})
+        if not user:
+            raise HTTPException(status_code=401, detail="User not found")
+        user["_request_ip"] = request.client.host if request.client else "unknown"
+        user["_token_enroll_2fa"] = bool(payload.get("enroll_2fa"))
+        user["_token_requires_2fa"] = bool(payload.get("requires_2fa"))
         return user
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token expired")

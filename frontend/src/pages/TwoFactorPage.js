@@ -20,10 +20,13 @@ export default function TwoFactorPage() {
     setLoading(true);
 
     try {
-      const response = await axios.post(`${API}/auth/verify-2fa`, { code });
+      const response = await axios.post(`${API}/auth/verify-2fa`, { code }, {
+        headers: { Authorization: `Bearer ${localStorage.getItem("noc_token")}` }
+      });
       
       // Update token with the new one that doesn't require 2FA
       localStorage.setItem("noc_token", response.data.token);
+      if (response.data.refresh_token) localStorage.setItem("noc_refresh_token", response.data.refresh_token);
       axios.defaults.headers.common["Authorization"] = `Bearer ${response.data.token}`;
       
       toast.success("Verifica completata");
@@ -91,7 +94,7 @@ export default function TwoFactorPage() {
                 className="bg-zinc-900 border-zinc-800 text-zinc-100 placeholder:text-zinc-600 rounded-sm h-14 text-center text-3xl tracking-[0.5em] font-mono focus:border-zinc-600 focus:ring-1 focus:ring-zinc-600"
               />
               <p className="text-zinc-600 text-xs text-center">
-                Apri Google Authenticator o Authy per ottenere il codice
+                Apri Microsoft Authenticator (o Google Authenticator) per ottenere il codice
               </p>
             </div>
 

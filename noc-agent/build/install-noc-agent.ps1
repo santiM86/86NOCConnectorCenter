@@ -1032,14 +1032,18 @@ Start-Sleep -Seconds 10
 # fino al prossimo logon utente. Vedi installer_gui.ps1.template
 # [10/11] per la stessa logica nell'installer GUI.
 Write-Step "Autostart Argus Tray (At Logon)"
-# Server detection: su Windows Server NON installiamo alcuna UI desktop.
-# ArgusDesktop (Wails) richiede WebView2 e NON deve mai esistere/aprirsi lato
-# server. Rimuoviamo sempre eventuali residui (binario ArgusDesktop, task tray,
-# shortcut UI) per honorare la modalita' headless.
+# Server detection (usata piu' avanti per gli shortcut Start Menu). NON viene
+# piu' usata per saltare la tray: la tray va installata anche sui server.
 $script:IsServer = $false
 try {
     if ((Get-CimInstance Win32_OperatingSystem).ProductType -ne 1) { $script:IsServer = $true }  # 2=DC, 3=Server
 } catch {}
+# ArgusDesktop (Wails/WebView2) e' DEPRECATO e non deve MAI aprirsi (specie su
+# server): lo rimuoviamo sempre. La tray icon (argus-tray.exe) e' invece una
+# systray Win32 nativa SENZA finestra/WebView2 -> la installiamo su TUTTI i
+# sistemi (workstation E server) cosi' l'admin vede accanto all'orologio che il
+# connector e' avviato. Ripristino v4.30: la modalita' headless v4.28 aveva
+# erroneamente rimosso anche la tray sul server insieme al popup WebView2.
 # ArgusDesktop.exe e' deprecato: eliminalo sempre se presente.
 try {
     $adExe = Join-Path $InstallDir "ArgusDesktop.exe"
@@ -1052,12 +1056,7 @@ try {
 $taskName  = "86BIT Argus Tray"
 $trayExe   = Join-Path $InstallDir "argus-tray.exe"
 $trayArg   = ""
-if ($script:IsServer) {
-    # Headless: nessuna tray icon sul server + cleanup di un eventuale task
-    # residuo creato da versioni precedenti.
-    try { Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue } catch {}
-    Write-Ok "Server rilevato: modalita' headless, nessuna UI desktop (tray/ArgusDesktop)"
-} elseif (-not (Test-Path $trayExe)) {
+if (-not (Test-Path $trayExe)) {
     Write-Warn2 "argus-tray.exe assente, autostart tray saltato"
 } else {
     # Cleanup registry-based autostart legacy (pre-v4.13.5)

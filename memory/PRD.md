@@ -54,6 +54,110 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-08-07 🔧 Ripristino icona System Tray su Windows Server (regressione v4.28)
+
+### Problema utente
+Con v4.29.0 l'agent si installa correttamente sul server ma NON appare piu'
+l'icona nel system tray (accanto all'orologio) per capire che e' avviato.
+
+### Root cause
+La modalita' "headless" introdotta in v4.28 (`install-noc-agent.ps1`) aveva
+CONFLATO due cose diverse: (1) rimuovere il popup WebView2 (`ArgusDesktop.exe`,
+Wails) — corretto — e (2) saltare del tutto la registrazione della tray su
+Windows Server (`if ($script:IsServer) { Unregister tray... }`). Ma
+`argus-tray.exe` e' una **systray Win32 nativa senza finestra/WebView2**, quindi
+non c'era motivo di toglierla sul server.
+
+### Fix (`noc-agent/build/install-noc-agent.ps1`)
+- Rimossa la guardia `if ($script:IsServer)` che saltava/deregistrava la tray:
+  ora lo Scheduled Task "86BIT Argus Tray" (At Logon, gruppo INTERACTIVE) viene
+  registrato e avviato su TUTTI i sistemi (workstation E server).
+- Mantenuta SEMPRE la rimozione di `ArgusDesktop.exe` (WebView2 deprecato).
+- Conservata la detection `$script:IsServer` (serve ancora alla sezione shortcut
+  Start Menu piu' avanti), ma non piu' usata per saltare la tray.
+- `argus-tray.exe` e' gia' incluso nelle release (workflow release-agent.yml) ed
+  e' scaricato come asset opzionale a ogni install → gia' presente in InstallDir
+  sul server: mancava solo la registrazione del task.
+
+### Distribuzione (nessun nuovo binario/PAT)
+1. "Save to GitHub" → push su `main` (il fix e' solo nello script PS).
+2. Dal NOC Center: "Aggiorna Connector" sul server (l'update remoto scarica
+   `install-noc-agent.ps1` da `raw.githubusercontent.com/.../main/...` e lo
+   rilancia), oppure ri-eseguire l'installer sul server.
+3. L'icona ricompare accanto all'orologio nella sessione RDP/interattiva
+   corrente e a ogni logon.
+
+### Testing
+Script Windows-only: NON eseguibile/testabile in questo ambiente Linux.
+Verificato tramite code review (root cause isolata, blocco try/catch e if/else
+bilanciati, corpo dell'else invariato rispetto alla versione funzionante
+pre-v4.28). pwsh non disponibile per un parse automatico.
+
+---
+
+
+## 2026-08-07 🔒 Security hardening auth: 2FA obbligatorio admin + fix P0/P1
+
+### Contesto
+L'utente (in PRODUZIONE con dati reali) ha chiesto conferma sulla sicurezza
+(brute force/manomissioni) e di attivare 2FA + passkey. Audit di sicurezza
+eseguito → base solida (Argon2id, lockout+ban IP, vault AES-GCM, header/CSP,
+anti-NoSQLi) MA 2 falle confermate exploitabili. Scelta utente: 2FA
+obbligatorio per admin, compatibile Microsoft Authenticator (TOTP → il 2FA
+esistente lo copre; passkey FIDO2 rimandati).
+
+### Fix applicati
+- **[P0] Portale clienti forgeable** (`customer_portal.py`): firmava i token con
+  `SECRET_KEY` di default hardcoded `"change-me-customer"` (env mancante) →
+  chiunque poteva forgiare un token per QUALSIASI `client_id`. FIX: fail-safe —
+  se `SECRET_KEY` manca o è il default, usa una chiave casuale effimera
+  (`secrets.token_hex`); aggiunta `SECRET_KEY` forte nel `.env`. Token forgiati
+  con la vecchia chiave → **401**.
+- **[P1] Bypass 2FA via refresh** (`auth.py`): il login rilasciava un
+  refresh_token anche con 2FA pendente e `/auth/refresh` emetteva token pieno
+  senza `requires_2fa`. FIX: NESSUN refresh_token rilasciato prima del
+  superamento 2FA; refresh emesso solo da `verify-2fa`/`confirm-2fa`.
+- **JWT_SECRET fail-safe** (`deps.py`): se manca o è il default noto
+  `"noc-...-2024"` → chiave casuale effimera + log critico. `.env` aggiornato con
+  JWT_SECRET forte.
+- **2FA OBBLIGATORIO admin**: nuovo claim JWT `enroll_2fa`. Al login un admin
+  senza 2FA riceve un token ristretto (no refresh) che passa SOLO da
+  setup/confirm-2fa (`get_current_user` blocca `enroll_2fa`/`requires_2fa`; nuova
+  dep `get_user_allow_pending` per i soli endpoint 2FA). `setup-2fa` non richiede
+  password nel flusso enroll; `confirm-2fa` attiva il 2FA e rilascia sessione
+  piena. TOTP compatibile Microsoft/Google Authenticator.
+
+### Frontend
+- `App.js`: `login()` gestisce `requires_2fa_setup`; route `/2fa-setup`;
+  `fetchUser()` NON fa logout su 403 (mantiene il token 2FA-pending).
+- Nuova pagina `TwoFactorSetupPage.js` (QR + secret + istruzioni Microsoft
+  Authenticator, useRef anti doppio-mount, header Authorization esplicito).
+- `TwoFactorPage.js`/`LoginPage.js` aggiornati (refresh token + routing enroll).
+
+### Testing
+- Backend: **9/9 pytest PASS** (iter 103, `test_auth_hardening_iter103.py`):
+  enroll forzato, no-refresh pre-2FA, verify/confirm rilasciano refresh, token
+  portale forgiato → 401.
+- Frontend E2E: **3/3 PASS** (iter 104): enrollment 2FA, login+verify, idempotenza
+  setup-2fa. Admin riportato a stato "enroll richiesto".
+
+### ⚠️ AZIONI PRODUZIONE OBBLIGATORIE (utente)
+1. Nel `.env` di PROD impostare **JWT_SECRET** e **SECRET_KEY** forti (32+ byte
+   casuali). Senza, il codice usa chiavi effimere → logout di tutti a ogni
+   restart. (Comando: `python -c "import secrets;print(secrets.token_hex(32))"`).
+2. Dopo il deploy, **ogni admin dovrà configurare il 2FA** con Microsoft
+   Authenticator al primo login (schermata bloccante).
+
+### Non fatto (Fase 2 proposta)
+- Hashing forte + rate limit sul login del portale clienti (oggi SHA-256 salt
+  fisso, no throttle).
+- API key obbligatoria su `ingestion.py` (oggi accetta `client_id` dal body).
+- Rimozione fallback secret residui (console_rmt/web_console_*).
+- Passkey/WebAuthn FIDO2 (fase futura).
+
+---
+
+
 ## 2026-08-07 ✅ Logo + Nome brand white-label per cliente (copertina + footer PDF)
 
 ### Richiesta utente

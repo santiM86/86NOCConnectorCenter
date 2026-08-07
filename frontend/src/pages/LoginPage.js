@@ -33,6 +33,7 @@ export default function LoginPage() {
     try {
       const result = await login(email, password);
       if (result?.requires_2fa) { toast.info("Verifica 2FA richiesta"); navigate("/2fa", { state: { from: location.state?.from } }); return; }
+      if (result?.requires_2fa_setup) { toast.info("Configurazione 2FA obbligatoria per amministratori"); navigate("/2fa-setup", { state: { from: location.state?.from } }); return; }
       toast.success("Login effettuato");
       navigate(from, { replace: true });
     } catch (error) {

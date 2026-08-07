@@ -13,7 +13,7 @@ from security_hardening import SecurityHardening
 from deps import (
     security, limiter, audit_logger, security_hardening,
     JWT_SECRET, JWT_ALGORITHM,
-    create_token, get_current_user,
+    create_token, get_current_user, get_user_allow_pending,
     create_refresh_token, store_refresh_token, check_nosql_injection,
 )
 import uuid
@@ -159,10 +159,13 @@ async def login(request: Request, credentials: UserLogin):
         await db.users.update_one({"id": user["id"]}, {"$set": {"password_hash": new_hash}})
 
     requires_2fa = user.get("two_factor_enabled", False)
+    # 2FA OBBLIGATORIO per gli admin: se un admin non ha ancora configurato il
+    # 2FA, riceve un token ristretto (enroll_2fa) che consente SOLO il setup.
+    needs_2fa_setup = (user.get("role") == "admin") and not requires_2fa
 
     # Rilevamento IP sospetto
     new_ip = await _check_suspicious_ip(user, client_ip)
-    login_details = {"requires_2fa": requires_2fa}
+    login_details = {"requires_2fa": requires_2fa, "needs_2fa_setup": needs_2fa_setup}
     if new_ip and user.get("known_ips"):
         login_details["new_ip_detected"] = True
 
@@ -172,12 +175,33 @@ async def login(request: Request, credentials: UserLogin):
         details=login_details,
     )
 
-    token = create_token(user["id"], user["email"], requires_2fa=requires_2fa)
+    # SICUREZZA: NON rilasciare un refresh token finché il 2FA non è superato
+    # (né per 2FA pendente né per enrollment admin) → niente bypass via refresh.
+    if requires_2fa:
+        token = create_token(user["id"], user["email"], requires_2fa=True)
+        return {
+            "token": token, "refresh_token": None, "requires_2fa": True,
+            "user": {
+                "id": user["id"], "email": user["email"], "name": user["name"],
+                "role": user["role"], "two_factor_enabled": True,
+            }
+        }
+    if needs_2fa_setup:
+        token = create_token(user["id"], user["email"], enroll_2fa=True)
+        return {
+            "token": token, "refresh_token": None, "requires_2fa_setup": True,
+            "user": {
+                "id": user["id"], "email": user["email"], "name": user["name"],
+                "role": user["role"], "two_factor_enabled": False,
+            }
+        }
+
+    token = create_token(user["id"], user["email"], requires_2fa=False)
     refresh_token = create_refresh_token(user["id"])
     await store_refresh_token(user["id"], refresh_token, client_ip)
 
     return {
-        "token": token, "refresh_token": refresh_token, "requires_2fa": requires_2fa,
+        "token": token, "refresh_token": refresh_token, "requires_2fa": False,
         "user": {
             "id": user["id"], "email": user["email"], "name": user["name"],
             "role": user["role"], "two_factor_enabled": user.get("two_factor_enabled", False)
@@ -201,7 +225,11 @@ async def verify_2fa(request: Request, verify: TwoFactorVerify, credentials: HTT
                 ip_address=request.client.host if request.client else None
             )
             token = create_token(user["id"], user["email"], requires_2fa=False)
-            return {"token": token, "verified": True}
+            # 2FA superato → ora è sicuro rilasciare un refresh token
+            refresh_token = create_refresh_token(user["id"])
+            await store_refresh_token(user["id"], refresh_token,
+                                      request.client.host if request.client else "unknown")
+            return {"token": token, "refresh_token": refresh_token, "verified": True}
         else:
             await audit_logger.log(
                 AuditAction.TWO_FA_FAILED, user_id=user["id"], user_email=user["email"],
@@ -254,10 +282,13 @@ async def logout(request: Request, current_user: dict = Depends(get_current_user
 
 
 @router.post("/auth/setup-2fa")
-async def setup_2fa(setup: TwoFactorSetup, current_user: dict = Depends(get_current_user)):
+async def setup_2fa(setup: TwoFactorSetup, current_user: dict = Depends(get_user_allow_pending)):
     user = await db.users.find_one({"id": current_user["id"]}, {"_id": 0})
-    if not security_manager.verify_password(setup.password, user["password_hash"]):
-        raise HTTPException(status_code=401, detail="Invalid password")
+    # Nel flusso di enrollment OBBLIGATORIO (admin appena loggato con password)
+    # il token enroll_2fa autorizza il setup senza re-inserire la password.
+    if not current_user.get("_token_enroll_2fa"):
+        if not setup.password or not security_manager.verify_password(setup.password, user["password_hash"]):
+            raise HTTPException(status_code=401, detail="Invalid password")
     secret = security_manager.generate_totp_secret()
     totp_uri = security_manager.get_totp_uri(secret, user["email"])
     qr_code = security_manager.generate_qr_code(totp_uri)
@@ -266,7 +297,7 @@ async def setup_2fa(setup: TwoFactorSetup, current_user: dict = Depends(get_curr
 
 
 @router.post("/auth/confirm-2fa")
-async def confirm_2fa(verify: TwoFactorVerify, current_user: dict = Depends(get_current_user)):
+async def confirm_2fa(request: Request, verify: TwoFactorVerify, current_user: dict = Depends(get_user_allow_pending)):
     user = await db.users.find_one({"id": current_user["id"]}, {"_id": 0})
     pending_secret = user.get("totp_secret_pending")
     if not pending_secret:
@@ -277,7 +308,20 @@ async def confirm_2fa(verify: TwoFactorVerify, current_user: dict = Depends(get_
             {"$set": {"totp_secret": pending_secret, "two_factor_enabled": True}, "$unset": {"totp_secret_pending": ""}}
         )
         await audit_logger.log(AuditAction.TWO_FA_ENABLED, user_id=user["id"], user_email=user["email"], ip_address=current_user.get("_request_ip"))
-        return {"enabled": True, "message": "2FA enabled successfully"}
+        # 2FA appena attivato e verificato → rilascia una sessione completa
+        # (token pieno + refresh) così l'enrollment si conclude col login.
+        token = create_token(user["id"], user["email"], requires_2fa=False)
+        refresh_token = create_refresh_token(user["id"])
+        await store_refresh_token(user["id"], refresh_token,
+                                  request.client.host if request.client else "unknown")
+        return {
+            "enabled": True, "message": "2FA enabled successfully",
+            "token": token, "refresh_token": refresh_token,
+            "user": {
+                "id": user["id"], "email": user["email"], "name": user["name"],
+                "role": user["role"], "two_factor_enabled": True,
+            }
+        }
     else:
         raise HTTPException(status_code=401, detail="Invalid verification code")
 
