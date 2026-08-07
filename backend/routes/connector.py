@@ -3906,6 +3906,7 @@ async def store_switch_ports(client_id: str, switches: list) -> dict:
                     "poe_admin": int(p.get("poe_admin", 0) or 0),
                     "poe_status": int(p.get("poe_status", 0) or 0),
                     "poe_class": int(p.get("poe_class", 0) or 0),
+                    "poe_watt": float(p.get("poe_watt", 0) or 0),
                     "updated_at": now_iso,
                 })
             if docs:
@@ -3937,34 +3938,48 @@ async def store_switch_topo(client_id: str, switches: list) -> dict:
     """
     now_iso = datetime.now(timezone.utc).isoformat()
 
-    # --- best-effort MAC -> IP resolution (managed + last discovery) ---
+    # --- best-effort MAC -> IP + IP -> hostname resolution ---
     mac_to_ip: dict = {}
+    ip_to_hostname: dict = {}
     managed_ips: set = set()
     try:
+        from routes.oui_lookup import lookup_oui as _oui
+    except Exception:
+        _oui = lambda m: ""  # noqa: E731
+    try:
         md = await db.managed_devices.find(
-            {"client_id": client_id}, {"_id": 0, "ip": 1}
+            {"client_id": client_id}, {"_id": 0, "ip": 1, "device_name": 1}
         ).to_list(5000)
         managed_ips = {d.get("ip") for d in md if d.get("ip")}
+        for d in md:
+            if d.get("ip") and d.get("device_name"):
+                ip_to_hostname.setdefault(d["ip"], d["device_name"])
         nd = await db.network_discovery.find_one(
             {"client_id": client_id}, {"_id": 0, "device_macs": 1},
             sort=[("updated_at", -1)],
         )
         for dm in ((nd or {}).get("device_macs") or []):
             dip = dm.get("ip", "")
+            host = dm.get("hostname") or dm.get("ptr") or dm.get("name") or ""
+            if dip and host:
+                ip_to_hostname.setdefault(dip, host)
             for m in (dm.get("macs") or []):
                 if m and dip:
                     mac_to_ip.setdefault(str(m).upper(), dip)
         # existing endpoints with a resolved ip (e.g. ARP scanner)
         async for e in db.discovered_endpoints.find(
-            {"client_id": client_id, "ip": {"$ne": ""}}, {"_id": 0, "mac": 1, "ip": 1}
+            {"client_id": client_id, "ip": {"$ne": ""}}, {"_id": 0, "mac": 1, "ip": 1, "hostname": 1}
         ):
             if e.get("mac") and e.get("ip"):
                 mac_to_ip.setdefault(str(e["mac"]).upper(), e["ip"])
+            if e.get("ip") and e.get("hostname"):
+                ip_to_hostname.setdefault(e["ip"], e["hostname"])
     except Exception:
         pass
 
     total_neighbors = 0
     total_endpoints = 0
+    inserted_eps: list = []
     for sw in switches:
         local_ip = sanitize_string(sw.get("local_ip", ""), 64)
         if not local_ip:
@@ -4022,7 +4037,8 @@ async def store_switch_topo(client_id: str, switches: list) -> dict:
                     "mac": mac,
                     "ip": ep_ip,
                     "vlan": int(f.get("vlan", 0) or 0),
-                    "hostname": "",
+                    "hostname": ip_to_hostname.get(ep_ip, "") if ep_ip else "",
+                    "vendor": _oui(mac) or "",
                     "is_managed": ep_ip in managed_ips if ep_ip else False,
                     "source": "agent_fdb",
                     "updated_at": now_iso,
@@ -4030,6 +4046,55 @@ async def store_switch_topo(client_id: str, switches: list) -> dict:
             if edocs:
                 await db.discovered_endpoints.insert_many(edocs)
                 total_endpoints += len(edocs)
+                inserted_eps.extend(edocs)
+
+    # Re-apply Datto RMM matching on the freshly inserted FDB endpoints so the
+    # "Connesso a" column shows Datto device names (same logic as the legacy
+    # CAM report path). Without this the v4 agent FDB shows only IP+MAC.
+    if inserted_eps:
+        try:
+            from pymongo import UpdateOne
+            datto_devs = await db.datto_devices.find(
+                {"client_id": client_id},
+                {"_id": 0, "uid": 1, "name": 1, "mac_list": 1, "ip_list": 1},
+            ).to_list(20000)
+            if datto_devs:
+                mac_to_dev: dict = {}
+                ip_to_dev: dict = {}
+                for d in datto_devs:
+                    for m in d.get("mac_list") or []:
+                        if m:
+                            mac_to_dev.setdefault(m.upper(), d)
+                    for ip in d.get("ip_list") or []:
+                        if ip:
+                            ip_to_dev.setdefault(ip, d)
+                ops_dm = []
+                matched_uids: set = set()
+                for ep in inserted_eps:
+                    ep_mac = (ep.get("mac") or "").upper()
+                    ep_ip = ep.get("ip") or ""
+                    d = mac_to_dev.get(ep_mac) if ep_mac else None
+                    mt = "mac" if d else None
+                    if not d and ep_ip:
+                        d = ip_to_dev.get(ep_ip)
+                        mt = "ip" if d else None
+                    if d:
+                        matched_uids.add(d["uid"])
+                        ops_dm.append(UpdateOne(
+                            {"client_id": client_id, "switch_ip": ep["switch_ip"],
+                             "port": ep["port"], "mac": ep["mac"]},
+                            {"$set": {"datto_name": d["name"], "datto_match": mt,
+                                      "datto_matched_at": now_iso}},
+                        ))
+                if ops_dm:
+                    await db.discovered_endpoints.bulk_write(ops_dm, ordered=False)
+                if matched_uids:
+                    await db.datto_devices.update_many(
+                        {"client_id": client_id, "uid": {"$in": list(matched_uids)}},
+                        {"$set": {"matched": True, "matched_at": now_iso}},
+                    )
+        except Exception as _e_dm:
+            logger.warning(f"datto re-match after switch_topo failed: {type(_e_dm).__name__}: {_e_dm}")
 
     return {"neighbors": total_neighbors, "endpoints": total_endpoints}
 

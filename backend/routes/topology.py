@@ -215,11 +215,16 @@ async def get_switch_ports(device_ip: str, client_id: Optional[str] = None,
             # v3.6.15: se il peer e' un altro switch managed, risolvi anche la porta remota via FDB cross-correlation
             remote_port = remote_port_cache.get(ip, "")
             is_switch_trunk = bool(remote_port)
+            # Nome leggibile: device_name > hostname (PTR/discovery) > vendor OUI > IP.
+            _ven = e.get("vendor") or lookup_oui(e.get("mac", "") or "")
+            _disp = (md.get("device_name") or e.get("hostname")
+                     or (f"{_ven}" if _ven else "") or ip or "Device managed")
             return {
-                "remote_sys_name": md.get("device_name") or ip or "Device managed",
+                "remote_sys_name": _disp,
                 "remote_ip": ip,
                 "remote_device_type": md.get("device_type") or "",
-                "remote_device_name": md.get("device_name") or "",
+                "remote_device_name": (md.get("device_name") or e.get("hostname")
+                                       or (f"{_ven}" if _ven else "")),
                 "remote_port_id": remote_port,
                 "remote_port_desc": (f"port {remote_port}" if remote_port else ""),
                 "remote_chassis_id": e.get("mac", ""),
@@ -227,12 +232,13 @@ async def get_switch_ports(device_ip: str, client_id: Optional[str] = None,
                 "remote_sys_desc": ("Trunk switch-to-switch (FDB correlation)" if is_switch_trunk else ""),
                 "match_source": ("mac_fdb_trunk" if is_switch_trunk else "mac_managed"),
             }, cand
-        # Nessun managed: prova OUI del primo MAC
+        # Nessun managed: hostname (se noto) > vendor OUI > sconosciuto
         if unmanaged:
             e = unmanaged[0]
             mac = e.get("mac", "")
-            vendor = lookup_oui(mac)
-            label = f"{vendor} device" if vendor else "Dispositivo sconosciuto"
+            host = e.get("hostname") or ""
+            vendor = e.get("vendor") or lookup_oui(mac)
+            label = host or (f"{vendor} device" if vendor else "Dispositivo sconosciuto")
             return {
                 "remote_sys_name": label,
                 "remote_ip": e.get("ip") or "",
@@ -242,7 +248,7 @@ async def get_switch_ports(device_ip: str, client_id: Optional[str] = None,
                 "remote_port_desc": "",
                 "remote_chassis_id": mac,
                 "remote_sys_cap": 0,
-                "remote_sys_desc": f"MAC: {mac}" + (f" ({vendor})" if vendor else ""),
+                "remote_sys_desc": (f"{host} · " if host else "") + f"MAC: {mac}" + (f" ({vendor})" if vendor else ""),
                 "match_source": "mac_oui" if vendor else "mac_unknown",
                 "mac_count": len(cand),
             }, cand
@@ -1300,18 +1306,43 @@ def calculate_health_score(devices):
     }
 
 
-def build_lldp_edges(lldp_neighbors, device_ips):
-    """Build edges from LLDP neighbor data (real physical connections)."""
+def _norm_mac(m: str) -> str:
+    """Normalizza un MAC a soli hex minuscoli (per confronti)."""
+    return "".join(ch for ch in (m or "").lower() if ch in "0123456789abcdef")
+
+
+def build_lldp_edges(lldp_neighbors, device_ips, name_to_ip=None, mac_to_ip=None):
+    """Build edges from LLDP neighbor data (real physical connections).
+
+    Un vicino LLDP viene collegato a un nodo noto se il suo mgmt IP e' noto,
+    OPPURE (fallback) se il suo sys_name combacia con hostname/device_name di un
+    device, OPPURE se il suo chassis-id (MAC) combacia con un MAC noto. Questo
+    fa comparire i link switch<->switch anche quando lo switch remoto non
+    espone un mgmt IP via LLDP.
+    """
     edges = []
     seen = set()
     ip_set = set(device_ips)
+    name_to_ip = name_to_ip or {}
+    mac_to_ip = mac_to_ip or {}
 
     for neighbor in lldp_neighbors:
         local_ip = neighbor.get("local_ip", "")
         remote_ip = neighbor.get("remote_ip", "")
 
+        # 1) match diretto per IP
         target = remote_ip if remote_ip in ip_set else None
+        # 2) fallback per sys_name -> hostname/device_name di un nodo noto
         if not target:
+            rn = (neighbor.get("remote_sys_name") or "").strip().lower()
+            if rn and rn in name_to_ip:
+                target = name_to_ip[rn]
+        # 3) fallback per chassis-id (MAC) -> IP nodo noto
+        if not target:
+            rc = _norm_mac(neighbor.get("remote_chassis_id") or "")
+            if rc and rc in mac_to_ip:
+                target = mac_to_ip[rc]
+        if not target or target == local_ip:
             continue
 
         key = tuple(sorted([local_ip, target]))
@@ -1470,9 +1501,31 @@ async def get_network_topology(client_id: str, current_user: dict = Depends(get_
     
     device_ips = [d.get("device_ip", "") for d in devices]
     discovered_edges = []
-    
+
     if lldp_neighbors:
-        lldp_edges = build_lldp_edges(lldp_neighbors, device_ips)
+        # Resolver per matchare vicini LLDP anche per nome/chassis-MAC, non solo IP.
+        name_to_ip = {}
+        mac_to_ip = {}
+        for d in devices:
+            dip = d.get("device_ip", "")
+            for key in (d.get("hostname"), d.get("sys_name")):
+                if key and dip:
+                    name_to_ip.setdefault(str(key).strip().lower(), dip)
+        # arricchisci con managed_devices (device_name) + MAC dai device_macs
+        try:
+            md_docs = await db.managed_devices.find(
+                {"client_id": client_id}, {"_id": 0, "ip": 1, "device_name": 1}
+            ).to_list(2000)
+            for m in md_docs:
+                if m.get("device_name") and m.get("ip"):
+                    name_to_ip.setdefault(str(m["device_name"]).strip().lower(), m["ip"])
+        except Exception:
+            pass
+        for ip, mac in device_macs_map.items():
+            nm = _norm_mac(mac)
+            if nm and ip:
+                mac_to_ip.setdefault(nm, ip)
+        lldp_edges = build_lldp_edges(lldp_neighbors, device_ips, name_to_ip, mac_to_ip)
         discovered_edges.extend(lldp_edges)
     
     # Also check MAC-based connections

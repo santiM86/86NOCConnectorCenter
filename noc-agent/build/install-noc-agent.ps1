@@ -596,14 +596,11 @@ if ($Source -eq "center") {
 } else {
     foreach ($a in $rel.assets) { $assetUrls[$a.name] = $a.browser_download_url }
 }
-$required = @("nocagent.exe","nocwatchdog.exe","argus-tray.exe")
-# v2026-06-23 LAYOUT UNIFORME: ogni connector ha lo STESSO identico set di
-# componenti → servizio + watchdog + UNICA systray nativa (argus-tray.exe).
-# Le vecchie GUI (nocagent-ui.exe legacy walk, ArgusDesktop.exe Wails) NON
-# vengono piu' installate e vengono RIMOSSE se presenti da installazioni
-# precedenti (vedi cleanup sotto). Niente piu' mix full/minimal.
-$optional = @()
-$legacyToRemove = @("ArgusDesktop.exe","nocagent-ui.exe")
+$required = @("nocagent.exe","nocwatchdog.exe","nocagent-ui.exe")
+# argus-tray.exe (systray Datto-style) e' opzionale (solo workstation).
+# ArgusDesktop.exe (Wails) e' DEPRECATO: richiede WebView2 e non va piu'
+# installato (ne' scaricato). La UI legacy nocagent-ui.exe resta il fallback.
+$optional = @("argus-tray.exe")
 foreach ($f in $required) {
     if (-not $assetUrls.ContainsKey($f)) {
         Write-Fail "Asset mancante nella release ${Version}: $f"
@@ -1035,13 +1032,33 @@ Start-Sleep -Seconds 10
 # fino al prossimo logon utente. Vedi installer_gui.ps1.template
 # [10/11] per la stessa logica nell'installer GUI.
 Write-Step "Autostart Argus Tray (At Logon)"
-$trayExe   = Join-Path $InstallDir "argus-tray.exe"
+# Server detection: su Windows Server NON installiamo alcuna UI desktop.
+# ArgusDesktop (Wails) richiede WebView2 e NON deve mai esistere/aprirsi lato
+# server. Rimuoviamo sempre eventuali residui (binario ArgusDesktop, task tray,
+# shortcut UI) per honorare la modalita' headless.
+$script:IsServer = $false
+try {
+    if ((Get-CimInstance Win32_OperatingSystem).ProductType -ne 1) { $script:IsServer = $true }  # 2=DC, 3=Server
+} catch {}
+# ArgusDesktop.exe e' deprecato: eliminalo sempre se presente.
+try {
+    $adExe = Join-Path $InstallDir "ArgusDesktop.exe"
+    if (Test-Path $adExe) {
+        Get-Process -Name 'ArgusDesktop' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+        Remove-Item $adExe -Force -ErrorAction SilentlyContinue
+    }
+} catch {}
+
 $taskName  = "86BIT Argus Tray"
+$trayExe   = Join-Path $InstallDir "argus-tray.exe"
 $trayArg   = ""
-# v2026-06-23 LAYOUT UNIFORME: UNICA tray (argus-tray.exe), nessun fallback ad
-# ArgusDesktop. argus-tray.exe e' ora un asset REQUIRED quindi e' sempre presente.
-if (-not (Test-Path $trayExe)) {
-    Write-Warn2 "argus-tray.exe assente, autostart UI saltato"
+if ($script:IsServer) {
+    # Headless: nessuna tray icon sul server + cleanup di un eventuale task
+    # residuo creato da versioni precedenti.
+    try { Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue } catch {}
+    Write-Ok "Server rilevato: modalita' headless, nessuna UI desktop (tray/ArgusDesktop)"
+} elseif (-not (Test-Path $trayExe)) {
+    Write-Warn2 "argus-tray.exe assente, autostart tray saltato"
 } else {
     # Cleanup registry-based autostart legacy (pre-v4.13.5)
     Remove-ItemProperty -Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run' -Name '86BITArgusTray'      -Force -ErrorAction SilentlyContinue
@@ -1149,10 +1166,14 @@ try {
     New-Item -ItemType Directory -Force -Path $startMenu | Out-Null
     $wsh = New-Object -ComObject WScript.Shell
     $iconFile = Join-Path $InstallDir "argus.ico"
-    # Shortcut "Agent Status": preferisci ArgusDesktop.exe, fallback a nocagent-ui.exe
-    $uiExeSm = Join-Path $InstallDir "ArgusDesktop.exe"
-    if (-not (Test-Path $uiExeSm)) { $uiExeSm = Join-Path $InstallDir "nocagent-ui.exe" }
-    if (Test-Path $uiExeSm) {
+    # Shortcut "Agent Status": usa SOLO nocagent-ui.exe (no ArgusDesktop/WebView2).
+    # Sui server headless NON creiamo alcuno shortcut UI e ripuliamo eventuali
+    # residui di versioni precedenti.
+    $uiExeSm = Join-Path $InstallDir "nocagent-ui.exe"
+    if ($script:IsServer) {
+        try { Remove-Item (Join-Path $startMenu "Agent Status.lnk") -Force -ErrorAction SilentlyContinue } catch {}
+        Write-Ok "Server headless: shortcut 'Agent Status' non creato"
+    } elseif (Test-Path $uiExeSm) {
         $iconLoc = if (Test-Path $iconFile) { $iconFile } else { "$uiExeSm,0" }
         $lnkStatus = $wsh.CreateShortcut((Join-Path $startMenu "Agent Status.lnk"))
         $lnkStatus.TargetPath = $uiExeSm

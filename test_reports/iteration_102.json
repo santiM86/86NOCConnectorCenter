@@ -1,0 +1,31 @@
+{
+  "summary": "Frontend-only E2E testing of the new white-label branding feature on the 'Report PDF' page (ARGUS NOC). Logged in via UI as admin (info@86bit.it), selected client 86BIT_Office, and validated the full branding flow: branding panel visibility, brand name save + persistence after reload, PNG logo upload + preview, PDF generation with brand/logo embedded, logo removal, and empty-brand fallback to default. All 12 checks passed. Downloaded PDF was verified with PyPDF2: 7 pages, header/footer text 'ArgusCenter QA - Report di Rete', 'Pagina N', and 1 embedded image XObject (logo, reused across pages).",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "Report PDF - Personalizzazione Brand",
+        "issues": [
+          "Non-blocking: the 'branding-panel' container is always rendered even with no client selected (shows only the hint text). Matches spec intent but the requirement wording implied the whole panel appears only after selection.",
+          "Non-blocking: spec mentioned default brand example 'ArgusCenter', while backend returns default_brand='86BIT NOC' (used in placeholder and helper text). Confirm which default is intended."
+        ]
+      }
+    ]
+  },
+  "test_report_links": ["/app/test_reports/iteration_102.json"],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "ReportsPage.js uploadLogo(): file size validated client-side (1MB) and error toast uses err.response.data.detail - good. No further issues.",
+    "Consider disabling 'generate-report-btn' text/state feedback also for branding requests (savingBrand only disables Salva) - cosmetic only."
+  ],
+  "updated_files": [],
+  "success_rate": { "backend": "not tested (skipped per request)", "frontend": "100%" },
+  "seed_data_creation": "Set brand_name='ArgusCenter QA' then cleared to empty (default) for client da3d6e40-b3e5-4d46-9787-dde328a3aa36 (86BIT_Office); test logo uploaded and then deleted. No residual test data.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": false,
+  "test_credentials": "Admin info@86bit.it / Ariel17051986@!@86 (from /app/memory/test_credentials.md) - works via UI login",
+  "context_for_next_testing_agent": "Login automation note still valid: fill PASSWORD first, then EMAIL, else email value is cleared. Sonner toasts: poll [data-sonner-toast] immediately after the action AND make sure no stale toast is on screen first (wait for count()==0), otherwise you capture the previous toast and get a false negative (this happened once with 'Logo rimosso'). PDF download works via page.expect_download; verify content with PyPDF2 (pypdf not installed). Test PNG generator snippet saved at /tmp/test_logo.png. Only one client exists in preview: 86BIT_Office (da3d6e40-b3e5-4d46-9787-dde328a3aa36).",
+  "rca_of_the_issue": "Initial 'Logo rimosso' toast FAIL was a test artifact, not a product bug: previous toasts ('Logo caricato', 'Report PDF generato con successo') were still on screen and the polling loop returned early. Re-ran in isolation after toasts cleared -> 'Logo rimosso' toast shown, preview and Rimuovi button correctly disappear."
+}

@@ -5027,3 +5027,44 @@ enrichment IP negli alert esistenti con badge reputazione.
 - DEPLOY: richiede deploy backend in produzione (contiene ANCHE il fix multi-homed) + rollout agent a v4.27.0.
   Sullo switch: LLDP gia' abilitato (15 neighbours visti); view SNMP community deve includere LLDP-MIB (1.0.8802.1.1.2)
   e Bridge-MIB (1.3.6.1.2.1.17) — ViewDefault li include.
+
+## 2026-06 — v4.28.0: installer headless server + no ArgusDesktop + nomi Datto su porte
+- ArgusDesktop rimosso: NON piu' scaricato/installato (era Wails->richiedeva WebView2, prompt sui server).
+  UI legacy nocagent-ui.exe resta solo su workstation. Fix in build/install-noc-agent.ps1:
+  * $optional non include piu' ArgusDesktop.exe; delete sempre di ArgusDesktop.exe residuo.
+  * Autostart tray: rimosso fallback ad ArgusDesktop; su Windows Server (ProductType!=1) modalita' HEADLESS
+    (no tray task, no shortcut "Agent Status"), con cleanup di task/shortcut preesistenti.
+  * Shortcut "Agent Status" punta solo a nocagent-ui.exe; saltato sui server.
+- FIX nomi "Connesso a": store_switch_topo (connector.py) ora ri-applica il match Datto RMM sugli endpoint FDB
+  del bridge v4 (mac_list/ip_list -> datto_name + datto_match; set datto_devices.matched). Prima i nomi Datto
+  non arrivavano sulle porte switch. Fingerbank gia' funzionante (enrichment on-demand in topology.py).
+- RELEASE v4.28.0 (id 366719189): stessi binari agent della 4.27.0 (LLDP+FDB) + install-noc-agent.ps1 headless.
+  8 asset (senza ArgusDesktop.exe). latest=v4.28.0.
+- TEST: store_switch_topo datto re-match PASS (MAC->datto_name applicato, unmatched invariato).
+- DEPLOY: deploy backend in produzione (attiva nomi Datto su porte) + rilanciare installer sul server per headless.
+
+## 2026-06 — Mappa LLDP switch↔switch + nomi FDB ricchi (backend-only)
+- FEATURE Mappa LLDP: build_lldp_edges (topology.py) ora risolve il vicino remoto non solo per remote_ip,
+  ma anche per remote_sys_name (->hostname/device_name) e remote_chassis_id (MAC->IP). Il call site di
+  GET /api/network/topology costruisce name_to_ip (device_poll_status hostname/sys_name + managed_devices.device_name)
+  e mac_to_ip (network_discovery device_macs). Cosi' i link switch<->switch compaiono sulla mappa esistente
+  (NetworkMap.js li disegna gia' in ciano). Helper _norm_mac aggiunto. Nessuna modifica frontend.
+- FEATURE Nomi FDB ricchi: store_switch_topo (connector.py) arricchisce ogni endpoint FDB con vendor (OUI lookup)
+  e hostname (network_discovery hostname/ptr/name + managed device_name + endpoint ARP). _build_mac_neighbor
+  (topology.py) ora mostra: device_name > hostname > vendor OUI > IP (managed) e hostname > "vendor device" >
+  sconosciuto (unmanaged), evitando l'IP nudo. Query endpoints usa gia' projection completa.
+- TEST: build_lldp_edges (ip+name+mac match, no-match escluso) PASS; store enrich (hostname/ip/vendor) PASS;
+  e2e GET topology su client reale senza errori.
+- DEPLOY: solo deploy backend in produzione (l'agent v4.27.0/v4.28.0 invia gia' LLDP+FDB). Nessuna nuova release agent.
+
+## 2026-06 — v4.29.0: raccolta PoE per porta + Export PDF mappa
+- POE (agent): snmpports.go ora legge POWER-ETHERNET-MIB (RFC 3621): pethPsePortAdminEnable (.3),
+  pethPsePortDetectionStatus (.6, 3=deliveringPower), pethPsePortPowerClassifications (.10).
+  Mapping PoE-port->ifIndex best-effort via numero finale del nome interfaccia (trailingInt).
+  Watt nominali da classe (poeWattFromClass). Nuovi campi proto SwitchPortInfo: poe_admin/status/class/watt.
+  NOTA: mapping da validare sul campo (nessun device PoE in dev). Backend store_switch_ports salva poe_watt;
+  backend/frontend gia' supportavano poe_admin/status/class (badge "PoE attivo", filtro PoE).
+- EXPORT PDF mappa (frontend NetworkMap.js): pulsante "PDF" accanto a "PNG". Dependency-free: render toPng +
+  finestra di stampa A4 landscape con header (cliente + data) -> "Salva come PDF". Nessuna nuova dipendenza.
+- RELEASE v4.29.0 (id 366743406, latest): binari agent con PoE + LLDP/FDB (4.27) + installer headless (4.28).
+- DEPLOY: backend (LLDP/FDB+Datto+poe_watt) + frontend (PDF) + agent v4.29.0 (PoE). Verificare PoE sul 5130.

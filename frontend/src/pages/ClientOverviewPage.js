@@ -9,6 +9,7 @@ import {
   CheckCircle, Warning, ArrowClockwise, Bell, BellSlash, ChartLine, Monitor, Cpu,
   Plus, Trash, Lock, MagnifyingGlass, Info, PencilSimple, NetworkSlash,
   Phone, DeviceMobile, Desktop, Network, Key, Star, Check, Pulse,
+  FilePdf, Spinner,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -74,6 +75,30 @@ export default function ClientOverviewPage() {
   const [coverage, setCoverage] = useState(null);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState("overview");
+  const [reportGenerating, setReportGenerating] = useState(false);
+
+  const downloadReport = useCallback(async () => {
+    setReportGenerating(true);
+    try {
+      const response = await axios.get(
+        `${API}/reports/generate/${clientId}?days=30`,
+        { responseType: "blob" }
+      );
+      const url = window.URL.createObjectURL(new Blob([response.data], { type: "application/pdf" }));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `Report_${(client?.name || clientId)}_${new Date().toISOString().slice(0, 10)}.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+      toast.success("Report PDF generato con successo");
+    } catch {
+      toast.error("Errore nella generazione del report PDF");
+    } finally {
+      setReportGenerating(false);
+    }
+  }, [clientId, client]);
 
   const STATUS_COLOR = { online: "#34C759", offline: "#FF3B30", active: "#FFCC00", degraded: "#FF9500", unknown: "#555" };
   const fetchAll = useCallback(async () => {
@@ -416,6 +441,18 @@ export default function ClientOverviewPage() {
             <HealthBadge subsystems={hwHealth.subsystems} size="sm" testId="client-hw-badge" />
           </div>
         )}
+        <button
+          onClick={downloadReport}
+          disabled={reportGenerating}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-indigo-500/40 bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-300 text-xs font-medium transition-colors disabled:opacity-50"
+          title="Scarica Report PDF multi-pagina del cliente"
+          data-testid="download-client-report-btn"
+        >
+          {reportGenerating
+            ? <Spinner size={14} className="animate-spin" />
+            : <FilePdf size={14} weight="fill" />}
+          <span className="hidden sm:inline">{reportGenerating ? "Genero..." : "Report PDF"}</span>
+        </button>
         <button onClick={fetchAll} className="p-1.5 rounded-md hover:bg-[var(--bg-hover)] text-[var(--text-muted)]" title="Aggiorna">
           <ArrowClockwise size={16} />
         </button>
