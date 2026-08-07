@@ -3906,6 +3906,7 @@ async def store_switch_ports(client_id: str, switches: list) -> dict:
                     "poe_admin": int(p.get("poe_admin", 0) or 0),
                     "poe_status": int(p.get("poe_status", 0) or 0),
                     "poe_class": int(p.get("poe_class", 0) or 0),
+                    "poe_watt": float(p.get("poe_watt", 0) or 0),
                     "updated_at": now_iso,
                 })
             if docs:

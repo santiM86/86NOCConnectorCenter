@@ -245,6 +245,12 @@ type SwitchPortInfo struct {
         TxBps       int64  `json:"tx_bps"`
         RxPps       int64  `json:"rx_pps"`
         TxPps       int64  `json:"tx_pps"`
+        // PoE (POWER-ETHERNET-MIB RFC 3621). PoeStatus==3 => deliveringPower.
+        // PoeClass 0..4; PoeWatt is the nominal budget derived from the class.
+        PoeAdmin  int     `json:"poe_admin,omitempty"`
+        PoeStatus int     `json:"poe_status,omitempty"`
+        PoeClass  int     `json:"poe_class,omitempty"`
+        PoeWatt   float64 `json:"poe_watt,omitempty"`
 }
 
 // SwitchTopoReport carries LLDP neighbors and the bridge forwarding

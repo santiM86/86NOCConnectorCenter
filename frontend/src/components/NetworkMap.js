@@ -536,6 +536,47 @@ function NetworkMapInner({ clientGroups, onDeviceSelect }) {
     }
   };
 
+  // Export as PDF (dependency-free): render PNG, embed in a print window and
+  // let the browser "print to PDF". Landscape A4, image fit-to-page.
+  const exportPdf = async () => {
+    const el = containerRef.current?.querySelector(".react-flow");
+    if (!el) return;
+    setExporting(true);
+    try {
+      const dataUrl = await toPng(el, {
+        backgroundColor: "#0a0a0f",
+        quality: 0.95,
+        pixelRatio: 2,
+      });
+      const name = activeTopo?.client_name || "rete";
+      const date = new Date().toLocaleString("it-IT");
+      const w = window.open("", "_blank");
+      if (!w) {
+        toast.error("Popup bloccato: consenti i popup per esportare in PDF");
+        return;
+      }
+      w.document.write(`<!doctype html><html><head><meta charset="utf-8">
+        <title>topologia-${name}</title>
+        <style>
+          @page { size: A4 landscape; margin: 10mm; }
+          html,body { margin:0; padding:0; background:#0a0a0f; }
+          .hdr { font-family: Arial, sans-serif; color:#111; padding:6px 4px; font-size:12px; }
+          .hdr b { font-size:14px; }
+          img { width:100%; height:auto; display:block; }
+          @media print { .hdr { color:#111; } }
+        </style></head><body onload="window.focus();window.print();">
+        <div class="hdr"><b>Topologia di rete — ${name}</b><br/>Generata il ${date} · 86BIT Argus NOC</div>
+        <img src="${dataUrl}" />
+        </body></html>`);
+      w.document.close();
+      toast.success("Apertura anteprima PDF (usa 'Salva come PDF')");
+    } catch (err) {
+      toast.error("Errore nell'export PDF: " + err.message);
+    } finally {
+      setExporting(false);
+    }
+  };
+
   // Manual refresh
   const manualRefresh = () => {
     fetchTopologies(true);
@@ -691,6 +732,15 @@ function NetworkMapInner({ clientGroups, onDeviceSelect }) {
             data-testid="export-png-btn"
           >
             <Export size={13} /> {exporting ? "Esporto..." : "PNG"}
+          </button>
+          <button
+            onClick={exportPdf}
+            disabled={exporting}
+            className="h-7 px-2.5 rounded-md text-[10px] font-medium text-[var(--text-muted)] hover:bg-[var(--bg-hover)] border border-[var(--bg-border)] flex items-center gap-1.5 transition-all"
+            title="Esporta mappa come PDF"
+            data-testid="export-pdf-btn"
+          >
+            <Export size={13} /> {exporting ? "Esporto..." : "PDF"}
           </button>
           <div className="w-px h-5 bg-[var(--border-subtle)] mx-1" />
           <button
