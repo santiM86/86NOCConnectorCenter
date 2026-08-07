@@ -368,6 +368,8 @@ from routes.osint import router as osint_router
 app.include_router(osint_router)  # OSINT / Threat Intelligence
 from routes.security_rogue import router as rogue_router
 app.include_router(rogue_router)  # Rogue / New Device Detection
+from routes.security_traffic import router as traffic_router
+app.include_router(traffic_router)  # Traffic Anomaly Detection
 
 # Include enterprise routes
 from enterprise_routes import create_enterprise_router
@@ -1009,6 +1011,7 @@ async def startup_event():
         await db.osint_exposure.create_index([("client_id", 1)])
         await db.rogue_allowlist.create_index([("client_id", 1), ("mac", 1)], unique=True)
         await db.rogue_state.create_index([("client_id", 1)], unique=True)
+        await db.port_traffic_baseline.create_index([("client_id", 1), ("local_ip", 1), ("idx", 1)], unique=True)
     except Exception as e:
         logger.warning(f"OSINT index creation warning: {e}")
     try:
@@ -1038,8 +1041,14 @@ async def startup_event():
             next_run_time=datetime.now(timezone.utc) + timedelta(seconds=150),
             max_instances=1, coalesce=True,
         )
+        from services.traffic_anomaly import scan_all as traffic_scan_all
+        osint_scheduler.add_job(
+            traffic_scan_all, trigger=_OsTrig(minutes=5), id="traffic_anomaly_tick",
+            next_run_time=datetime.now(timezone.utc) + timedelta(seconds=200),
+            max_instances=1, coalesce=True,
+        )
         osint_scheduler.start()
-        logger.info("OSINT schedulers started (feeds: 5m, exposure: 30m, c2: 2m, rogue: 3m)")
+        logger.info("OSINT schedulers started (feeds: 5m, exposure: 30m, c2: 2m, rogue: 3m, traffic: 5m)")
     except Exception as e:
         logger.error(f"Failed to start OSINT scheduler: {e}")
 

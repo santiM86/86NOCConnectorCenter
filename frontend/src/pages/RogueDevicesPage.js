@@ -136,7 +136,8 @@ export default function RogueDevicesPage() {
               <thead className="bg-[var(--bg-card)] text-[var(--text-muted)]">
                 <tr>
                   <th className="text-left px-3 py-2">Cliente</th>
-                  <th className="text-left px-3 py-2">MAC</th>
+                  <th className="text-left px-3 py-2">Dispositivo</th>
+                  <th className="text-left px-3 py-2">Rischio</th>
                   <th className="text-left px-3 py-2">Dettaglio</th>
                   <th className="text-left px-3 py-2">Rilevato</th>
                   <th className="text-left px-3 py-2">Azioni</th>
@@ -146,8 +147,16 @@ export default function RogueDevicesPage() {
                 {alerts.map((a) => (
                   <tr key={a.id} className="border-t border-[var(--bg-border)]" data-testid={`rogue-row-${a.raw_data}`}>
                     <td className="px-3 py-2">{a.client_name || "—"}</td>
-                    <td className="px-3 py-2 font-mono text-orange-300">{a.raw_data}</td>
-                    <td className="px-3 py-2 text-[10px] max-w-[380px] truncate">{a.message}</td>
+                    <td className="px-3 py-2">
+                      <div className="font-mono text-orange-300">{a.raw_data}</div>
+                      <div className="text-[10px] text-[var(--text-muted)]">
+                        {(a.rogue_vendor || "vendor sconosciuto")}
+                        {a.rogue_device_class ? ` · ${a.rogue_device_class}` : ""}
+                        {a.rogue_mac_type ? ` · ${a.rogue_mac_type}` : ""}
+                      </div>
+                    </td>
+                    <td className="px-3 py-2"><RiskBadge risk={a.rogue_risk} rep={a.rogue_ip_reputation} /></td>
+                    <td className="px-3 py-2 text-[10px] max-w-[320px] truncate" title={a.message}>{a.message}</td>
                     <td className="px-3 py-2 text-[10px] text-[var(--text-muted)]">{fmt(a.created_at)}</td>
                     <td className="px-3 py-2">
                       <div className="flex gap-1">
@@ -237,6 +246,25 @@ function Kpi({ icon: Icon, color, label, value, testid }) {
       <Icon size={18} className={color} weight="duotone" />
       <p className="text-2xl font-bold mt-1">{value ?? "—"}</p>
       <p className="text-[10px] text-[var(--text-muted)]">{label}</p>
+    </div>
+  );
+}
+
+function RiskBadge({ risk, rep }) {
+  const map = {
+    alto: "bg-red-500/15 text-red-300 border-red-500/40",
+    medio: "bg-amber-500/15 text-amber-300 border-amber-500/40",
+    basso: "bg-emerald-500/15 text-emerald-300 border-emerald-500/40",
+  };
+  const cls = map[risk] || "bg-slate-500/15 text-slate-300 border-slate-500/40";
+  return (
+    <div className="flex flex-col gap-0.5">
+      <span className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded border w-fit ${cls}`}>
+        {risk || "n/d"}
+      </span>
+      {rep && rep !== "nessuna" && (
+        <span className="text-[9px] text-[var(--text-muted)]">{rep}</span>
+      )}
     </div>
   );
 }

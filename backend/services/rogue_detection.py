@@ -166,6 +166,86 @@ async def scan_all() -> dict:
     return {"clients": len(client_ids), "new": total_new, "alerts": total_alerts}
 
 
+def _is_randomized_mac(mac: str) -> bool:
+    """True se il MAC è locally-administered/randomizzato (privacy: iPhone/Android moderni).
+    Bit 1 (0x02) del primo byte = 1 → MAC non globale (tipico di dispositivi personali)."""
+    mac = _norm_mac(mac)
+    try:
+        first = int(mac.split(":")[0], 16)
+        return bool(first & 0x02)
+    except Exception:
+        return False
+
+
+async def enrich_endpoint(ep: dict, mac: str) -> dict:
+    """Arricchisce un dispositivo rogue con fingerprint (OUI/vendor) e reputazione,
+    e calcola un verdetto di rischio 'a colpo d'occhio'."""
+    from routes.oui_lookup import lookup_oui
+    from services import osint_service as osint
+
+    vendor = ep.get("vendor_scanner") or lookup_oui(mac) or ""
+    randomized = _is_randomized_mac(mac)
+    ip = ep.get("ip") or ""
+
+    # Fingerbank (device type/OS) se configurato — best-effort, non blocca
+    device_class = ""
+    try:
+        from services import fingerbank_service as fb_svc
+        if await fb_svc.is_configured():
+            fb = await fb_svc.interrogate(mac=mac)
+            if isinstance(fb, dict):
+                device_class = fb.get("device_name") or fb.get("device_type") or ""
+    except Exception:
+        pass
+
+    # Reputazione IP: ha senso SOLO per IP pubblici. Gli IP privati (LAN) non
+    # vanno mai confrontati con blocklist internet (alcune includono i bogon 10/8).
+    ip_public = osint._is_public_ip(ip) if ip else False
+    ioc_matches = []
+    abuse_conf = None
+    if ip and ip_public:
+        try:
+            ioc_matches = await osint._local_ioc_match(ip)
+        except Exception:
+            ioc_matches = []
+        try:
+            full = await osint.lookup_ip(ip)
+            ab = full.get("abuseipdb") or {}
+            if isinstance(ab, dict):
+                abuse_conf = ab.get("abuse_confidence")
+        except Exception:
+            pass
+
+    # Verdetto di rischio
+    reasons = []
+    risk = "medio"
+    if ioc_matches:
+        risk = "alto"; reasons.append("IP presente in blocklist/IOC")
+    elif isinstance(abuse_conf, int) and abuse_conf >= 50:
+        risk = "alto"; reasons.append(f"AbuseIPDB {abuse_conf}%")
+    elif randomized and vendor:
+        risk = "basso"; reasons.append("MAC privacy + vendor noto (probabile smartphone/dispositivo personale)")
+    elif randomized:
+        risk = "basso"; reasons.append("MAC randomizzato (tipico di dispositivi personali/guest)")
+    elif vendor:
+        risk = "medio"; reasons.append(f"Vendor riconosciuto ({vendor})")
+    else:
+        risk = "alto"; reasons.append("Vendor sconosciuto e MAC non randomizzato (dispositivo non identificato)")
+
+    return {
+        "vendor": vendor,
+        "device_class": device_class,
+        "mac_type": "randomizzato/privacy" if randomized else "vendor globale",
+        "ip_public": ip_public,
+        "ip_reputation": ("privata (LAN) — reputazione non applicabile" if (ip and not ip_public)
+                          else ("nessuna" if not ioc_matches and not abuse_conf else "sospetta")),
+        "ioc_matches": [m.get("source") for m in ioc_matches],
+        "abuse_confidence": abuse_conf,
+        "risk": risk,
+        "risk_reasons": reasons,
+    }
+
+
 async def _emit_rogue_alert(client_id: str, ep: dict, mac: str) -> bool:
     """Crea (con dedup) un alert di dispositivo rogue e notifica live."""
     existing = await db.alerts.find_one(
@@ -175,7 +255,12 @@ async def _emit_rogue_alert(client_id: str, ep: dict, mac: str) -> bool:
     cfg = await get_config()
     severity = cfg.get("severity", "warning")
 
-    vendor = ep.get("vendor_scanner") or ""
+    enr = await enrich_endpoint(ep, mac)
+    # Il rischio alza la severità in automatico
+    if enr["risk"] == "alto":
+        severity = "high"
+
+    vendor = enr.get("vendor") or ""
     name = ep.get("hostname_scanner") or ep.get("sys_name_scanner") or ""
     ip = ep.get("ip") or ""
     where = ""
@@ -189,6 +274,7 @@ async def _emit_rogue_alert(client_id: str, ep: dict, mac: str) -> bool:
            f"MAC {mac}{(' · ' + vendor) if vendor else ''}"
            f"{(' · ' + name) if name else ''}{(' · IP ' + ip) if ip else ''}"
            f"{(' · subnet ' + subnet) if subnet else ''}{where}. "
+           f"Rischio: {enr['risk'].upper()} ({'; '.join(enr['risk_reasons'])}). "
            f"Verifica se è autorizzato; in caso contrario isola la porta.")
 
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -218,6 +304,13 @@ async def _emit_rogue_alert(client_id: str, ep: dict, mac: str) -> bool:
         "rogue_port": ep.get("port"),
         "rogue_port_name": ep.get("port_name"),
         "rogue_vendor": vendor,
+        "rogue_device_class": enr.get("device_class"),
+        "rogue_mac_type": enr.get("mac_type"),
+        "rogue_risk": enr.get("risk"),
+        "rogue_risk_reasons": enr.get("risk_reasons"),
+        "rogue_ip_reputation": enr.get("ip_reputation"),
+        "rogue_ioc_matches": enr.get("ioc_matches"),
+        "rogue_abuse_confidence": enr.get("abuse_confidence"),
     }
     await insert_alert_if_emit(db, alert_doc)
     await _notify(alert_doc)

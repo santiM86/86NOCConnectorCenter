@@ -4966,3 +4966,16 @@ enrichment IP negli alert esistenti con badge reputazione.
   -> authorize (resolve+allowlist) -> re-scan 0. UI verificata. PASS.
 - Backlog fase 2 (dal confronto LECS): anomalie traffico su contatori SNMP; dashboard conformità NIS2/DORA;
   export SOC/SIEM (syslog/CEF/webhook); quarantena porta live quando l'agent supporterà SNMP-SET.
+
+## 2026-08-07 — Rogue enrichment (fingerprint+reputazione) + Anomalie Traffico
+- rogue_detection.enrich_endpoint: OUI/vendor (lookup_oui) + Fingerbank (se configurato) + tipo MAC
+  (randomizzato/privacy vs vendor globale) + reputazione IP (IOC/AbuseIPDB SOLO per IP pubblici;
+  gli IP privati LAN NON vengono confrontati con blocklist internet) -> verdetto rischio basso/medio/alto.
+  Il rischio 'alto' alza la severità dell'alert. Campi salvati sull'alert e mostrati in UI (colonna Rischio + fingerprint).
+- services/traffic_anomaly.py: baseline EWMA per porta (port_traffic_baseline) sui contatori SNMP
+  rx_bps/tx_bps di switch_ports. Dopo warmup, se corrente > baseline*spike_factor e > floor_mbps ->
+  alert source_type=traffic_anomaly (direzione tx=exfil / rx). Dedup per porta. Scheduler ogni 5 min.
+  routes/security_traffic.py: /api/security/traffic/{status,config,scan,alerts}.
+- AlertsPage: nuovi badge feed principale ROGUE (arancio) e TRAFFICO (viola) + label colonna Fonte.
+- Test: rogue MAC privacy -> rischio BASSO corretto (dopo fix IP privati vs bogon-list); traffic 250Mbps vs
+  baseline 1Mbps -> alert USCITA. UI verificata. PASS.
