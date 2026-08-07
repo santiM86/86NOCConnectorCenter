@@ -3937,29 +3937,42 @@ async def store_switch_topo(client_id: str, switches: list) -> dict:
     """
     now_iso = datetime.now(timezone.utc).isoformat()
 
-    # --- best-effort MAC -> IP resolution (managed + last discovery) ---
+    # --- best-effort MAC -> IP + IP -> hostname resolution ---
     mac_to_ip: dict = {}
+    ip_to_hostname: dict = {}
     managed_ips: set = set()
     try:
+        from routes.oui_lookup import lookup_oui as _oui
+    except Exception:
+        _oui = lambda m: ""  # noqa: E731
+    try:
         md = await db.managed_devices.find(
-            {"client_id": client_id}, {"_id": 0, "ip": 1}
+            {"client_id": client_id}, {"_id": 0, "ip": 1, "device_name": 1}
         ).to_list(5000)
         managed_ips = {d.get("ip") for d in md if d.get("ip")}
+        for d in md:
+            if d.get("ip") and d.get("device_name"):
+                ip_to_hostname.setdefault(d["ip"], d["device_name"])
         nd = await db.network_discovery.find_one(
             {"client_id": client_id}, {"_id": 0, "device_macs": 1},
             sort=[("updated_at", -1)],
         )
         for dm in ((nd or {}).get("device_macs") or []):
             dip = dm.get("ip", "")
+            host = dm.get("hostname") or dm.get("ptr") or dm.get("name") or ""
+            if dip and host:
+                ip_to_hostname.setdefault(dip, host)
             for m in (dm.get("macs") or []):
                 if m and dip:
                     mac_to_ip.setdefault(str(m).upper(), dip)
         # existing endpoints with a resolved ip (e.g. ARP scanner)
         async for e in db.discovered_endpoints.find(
-            {"client_id": client_id, "ip": {"$ne": ""}}, {"_id": 0, "mac": 1, "ip": 1}
+            {"client_id": client_id, "ip": {"$ne": ""}}, {"_id": 0, "mac": 1, "ip": 1, "hostname": 1}
         ):
             if e.get("mac") and e.get("ip"):
                 mac_to_ip.setdefault(str(e["mac"]).upper(), e["ip"])
+            if e.get("ip") and e.get("hostname"):
+                ip_to_hostname.setdefault(e["ip"], e["hostname"])
     except Exception:
         pass
 
@@ -4023,7 +4036,8 @@ async def store_switch_topo(client_id: str, switches: list) -> dict:
                     "mac": mac,
                     "ip": ep_ip,
                     "vlan": int(f.get("vlan", 0) or 0),
-                    "hostname": "",
+                    "hostname": ip_to_hostname.get(ep_ip, "") if ep_ip else "",
+                    "vendor": _oui(mac) or "",
                     "is_managed": ep_ip in managed_ips if ep_ip else False,
                     "source": "agent_fdb",
                     "updated_at": now_iso,

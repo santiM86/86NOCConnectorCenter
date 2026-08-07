@@ -5042,3 +5042,17 @@ enrichment IP negli alert esistenti con badge reputazione.
   8 asset (senza ArgusDesktop.exe). latest=v4.28.0.
 - TEST: store_switch_topo datto re-match PASS (MAC->datto_name applicato, unmatched invariato).
 - DEPLOY: deploy backend in produzione (attiva nomi Datto su porte) + rilanciare installer sul server per headless.
+
+## 2026-06 — Mappa LLDP switch↔switch + nomi FDB ricchi (backend-only)
+- FEATURE Mappa LLDP: build_lldp_edges (topology.py) ora risolve il vicino remoto non solo per remote_ip,
+  ma anche per remote_sys_name (->hostname/device_name) e remote_chassis_id (MAC->IP). Il call site di
+  GET /api/network/topology costruisce name_to_ip (device_poll_status hostname/sys_name + managed_devices.device_name)
+  e mac_to_ip (network_discovery device_macs). Cosi' i link switch<->switch compaiono sulla mappa esistente
+  (NetworkMap.js li disegna gia' in ciano). Helper _norm_mac aggiunto. Nessuna modifica frontend.
+- FEATURE Nomi FDB ricchi: store_switch_topo (connector.py) arricchisce ogni endpoint FDB con vendor (OUI lookup)
+  e hostname (network_discovery hostname/ptr/name + managed device_name + endpoint ARP). _build_mac_neighbor
+  (topology.py) ora mostra: device_name > hostname > vendor OUI > IP (managed) e hostname > "vendor device" >
+  sconosciuto (unmanaged), evitando l'IP nudo. Query endpoints usa gia' projection completa.
+- TEST: build_lldp_edges (ip+name+mac match, no-match escluso) PASS; store enrich (hostname/ip/vendor) PASS;
+  e2e GET topology su client reale senza errori.
+- DEPLOY: solo deploy backend in produzione (l'agent v4.27.0/v4.28.0 invia gia' LLDP+FDB). Nessuna nuova release agent.
