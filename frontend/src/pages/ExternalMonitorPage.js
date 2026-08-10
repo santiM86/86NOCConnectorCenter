@@ -51,12 +51,14 @@ export default function ExternalMonitorPage() {
   const [clients, setClients] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
-  const [form, setForm] = useState({ client_id: "", label: "", device_type: "firewall", public_ip: "", gateway_ip: "", check_ports: "443", check_ping: false });
+  const [form, setForm] = useState({ client_id: "", label: "", device_type: "firewall", public_ip: "", gateway_ip: "", check_ports: "443", check_ping: false, backup_enabled: false, backup_label: "", backup_public_ip: "", backup_gateway_ip: "" });
   const [testResult, setTestResult] = useState(null);
   const [testing, setTesting] = useState(false);
+  const [backupTestResult, setBackupTestResult] = useState(null);
+  const [testingBackup, setTestingBackup] = useState(false);
   // v3.8.29: edit target dialog
   const [editTarget, setEditTarget] = useState(null);  // null oppure target da modificare
-  const [editForm, setEditForm] = useState({ client_id: "", label: "", device_type: "firewall", public_ip: "", gateway_ip: "", check_ports: "443", check_ping: false });
+  const [editForm, setEditForm] = useState({ client_id: "", label: "", device_type: "firewall", public_ip: "", gateway_ip: "", check_ports: "443", check_ping: false, backup_enabled: false, backup_label: "", backup_public_ip: "", backup_gateway_ip: "" });
   const [savingEdit, setSavingEdit] = useState(false);
 
   const fetchAll = useCallback(async () => {
@@ -77,10 +79,10 @@ export default function ExternalMonitorPage() {
   const addTarget = async () => {
     try {
       const ports = form.check_ports.split(",").map(p => parseInt(p.trim())).filter(p => !isNaN(p) && p > 0);
-      await axios.post(`${API}/external-monitor/targets`, { ...form, check_ports: ports, check_ping: form.check_ping, gateway_ip: form.gateway_ip || null });
+      await axios.post(`${API}/external-monitor/targets`, { ...form, check_ports: ports, check_ping: form.check_ping, gateway_ip: form.gateway_ip || null, backup_public_ip: form.backup_public_ip || null, backup_gateway_ip: form.backup_gateway_ip || null, backup_label: form.backup_label || null, backup_enabled: !!(form.backup_public_ip && form.backup_enabled) });
       toast.success("Target aggiunto");
       setShowAdd(false);
-      setForm({ client_id: "", label: "", device_type: "firewall", public_ip: "", gateway_ip: "", check_ports: "443", check_ping: false });
+      setForm({ client_id: "", label: "", device_type: "firewall", public_ip: "", gateway_ip: "", check_ports: "443", check_ping: false, backup_enabled: false, backup_label: "", backup_public_ip: "", backup_gateway_ip: "" });
       fetchAll();
     } catch (e) { toast.error(e.response?.data?.detail || "Errore"); }
   };
@@ -105,6 +107,10 @@ export default function ExternalMonitorPage() {
       gateway_ip: t.gateway_ip || "",
       check_ports: (t.check_ports || []).filter(p => typeof p === "number").join(", "),
       check_ping: !!t.check_ping,
+      backup_enabled: !!t.backup_enabled,
+      backup_label: t.backup_label || "",
+      backup_public_ip: t.backup_public_ip || "",
+      backup_gateway_ip: t.backup_gateway_ip || "",
     });
   };
 
@@ -124,6 +130,10 @@ export default function ExternalMonitorPage() {
         gateway_ip: editForm.gateway_ip || null,
         check_ports: ports,
         check_ping: editForm.check_ping,
+        backup_public_ip: editForm.backup_public_ip || null,
+        backup_gateway_ip: editForm.backup_gateway_ip || null,
+        backup_label: editForm.backup_label || null,
+        backup_enabled: !!(editForm.backup_public_ip && editForm.backup_enabled),
       };
       await axios.put(`${API}/external-monitor/targets/${editTarget.id}`, payload);
       toast.success("Target aggiornato");
@@ -170,6 +180,24 @@ export default function ExternalMonitorPage() {
     } catch (e) {
       toast.error(e.response?.data?.detail || "Errore test connessione");
     } finally { setTesting(false); }
+  };
+
+  const testBackupConnection = async () => {
+    if (!form.backup_public_ip) { toast.error("Inserisci l'IP pubblico della linea di backup"); return; }
+    setTestingBackup(true);
+    setBackupTestResult(null);
+    try {
+      // Linea di backup: solo raggiungibilita' (ping + gateway), niente porte TCP
+      const res = await axios.post(`${API}/external-monitor/test-connection`, {
+        public_ip: form.backup_public_ip,
+        gateway_ip: form.backup_gateway_ip || null,
+        check_ports: [],
+        check_ping: true,
+      });
+      setBackupTestResult(res.data);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Errore test backup");
+    } finally { setTestingBackup(false); }
   };
 
   const resultMap = {};
@@ -272,6 +300,53 @@ export default function ExternalMonitorPage() {
               </Button>
               <Button size="sm" className="h-7 text-xs flex-1" onClick={addTarget} disabled={!form.client_id || !form.public_ip || !form.label} data-testid="save-target-btn">Salva</Button>
             </div>
+          </div>
+
+          {/* ===== LINEA DI BACKUP (opzionale) ===== */}
+          <div className="rounded-md border border-amber-500/25 bg-amber-500/[0.04] p-3 space-y-2" data-testid="backup-line-section">
+            <label className="flex items-center gap-2 cursor-pointer select-none" data-testid="backup-enabled-toggle"
+              onClick={() => setForm(p => ({ ...p, backup_enabled: !p.backup_enabled }))}>
+              <div
+                className={`w-9 h-5 rounded-full transition-colors flex items-center px-0.5 cursor-pointer ${form.backup_enabled ? "bg-amber-500" : "bg-[var(--bg-border)]"}`}
+              >
+                <div className={`w-4 h-4 rounded-full bg-white shadow transition-transform ${form.backup_enabled ? "translate-x-4" : "translate-x-0"}`} />
+              </div>
+              <span className="text-[11px] font-bold uppercase tracking-wider text-amber-400">Linea di backup (2ª WAN)</span>
+              <span className="text-[9px] text-[var(--text-muted)] normal-case font-normal">— rileva failover e doppio-down</span>
+            </label>
+            {form.backup_enabled && (
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 pt-1">
+                <div className="space-y-1">
+                  <Label className="text-[9px] uppercase tracking-widest text-[var(--text-muted)]">Label backup</Label>
+                  <Input value={form.backup_label} onChange={e => setForm(p => ({ ...p, backup_label: e.target.value }))} placeholder="FWA / 4G / 2ª linea" className="h-7 text-xs bg-[var(--bg-card)] border-[var(--bg-border)] text-[var(--text-primary)]" data-testid="backup-label-input" />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-[9px] uppercase tracking-widest text-[var(--text-muted)]">IP Pubblico backup</Label>
+                  <Input value={form.backup_public_ip} onChange={e => setForm(p => ({ ...p, backup_public_ip: e.target.value }))} placeholder="x.x.x.x" className="h-7 text-xs font-mono bg-[var(--bg-card)] border-[var(--bg-border)] text-[var(--text-primary)]" data-testid="backup-ip-input" />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-[9px] uppercase tracking-widest text-[var(--text-muted)]">Gateway ISP backup</Label>
+                  <Input value={form.backup_gateway_ip} onChange={e => setForm(p => ({ ...p, backup_gateway_ip: e.target.value }))} placeholder="next-hop 2ª linea (opz.)" className="h-7 text-xs font-mono bg-[var(--bg-card)] border-[var(--bg-border)] text-[var(--text-primary)]" data-testid="backup-gateway-input" />
+                </div>
+                <div className="flex items-end">
+                  <Button size="sm" variant="outline" className="h-7 text-xs w-full gap-1 border-amber-500/40 text-amber-400 hover:bg-amber-500/10" onClick={testBackupConnection} disabled={!form.backup_public_ip || testingBackup} data-testid="test-backup-btn">
+                    {testingBackup ? <ArrowClockwise size={12} className="animate-spin" /> : <Lightning size={12} />}
+                    {testingBackup ? "Testing..." : "Test backup"}
+                  </Button>
+                </div>
+              </div>
+            )}
+            {form.backup_enabled && backupTestResult && (
+              <div className={`rounded-md p-2 border text-xs ${backupTestResult.ping?.reachable ? "bg-emerald-500/10 border-emerald-500/30" : "bg-red-500/10 border-red-500/30"}`} data-testid="backup-test-result">
+                <div className="flex items-center gap-2">
+                  {backupTestResult.ping?.reachable ? <CheckCircle size={14} weight="bold" className="text-emerald-400" /> : <Warning size={14} weight="bold" className="text-red-400" />}
+                  <span className={`font-semibold ${backupTestResult.ping?.reachable ? "text-emerald-400" : "text-red-400"}`}>
+                    Linea backup {backupTestResult.ping?.reachable ? "RAGGIUNGIBILE" : "NON raggiungibile"}
+                  </span>
+                  <span className="text-[var(--text-muted)] ml-auto font-mono">{backupTestResult.ip}{backupTestResult.ping?.latency_ms != null ? ` · ${backupTestResult.ping.latency_ms}ms` : ""}</span>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Test result */}
@@ -504,6 +579,34 @@ export default function ExternalMonitorPage() {
                 <span className="text-[10px] text-[var(--text-secondary)] whitespace-nowrap">Abilita Ping ICMP</span>
               </label>
             </div>
+            {/* ===== Linea di backup ===== */}
+            <div className="col-span-2 rounded-md border border-amber-500/25 bg-amber-500/[0.04] p-3 space-y-2">
+              <label className="flex items-center gap-2 cursor-pointer select-none" data-testid="edit-backup-enabled-toggle"
+                onClick={() => setEditForm(p => ({ ...p, backup_enabled: !p.backup_enabled }))}>
+                <div
+                  className={`w-9 h-5 rounded-full transition-colors flex items-center px-0.5 cursor-pointer ${editForm.backup_enabled ? "bg-amber-500" : "bg-[var(--bg-border)]"}`}
+                >
+                  <div className={`w-4 h-4 rounded-full bg-white shadow transition-transform ${editForm.backup_enabled ? "translate-x-4" : "translate-x-0"}`} />
+                </div>
+                <span className="text-[11px] font-bold uppercase tracking-wider text-amber-400">Linea di backup (2ª WAN)</span>
+              </label>
+              {editForm.backup_enabled && (
+                <div className="grid grid-cols-3 gap-2 pt-1">
+                  <div className="space-y-1">
+                    <Label className="text-[9px] uppercase tracking-widest text-[var(--text-muted)]">Label backup</Label>
+                    <Input value={editForm.backup_label} onChange={e => setEditForm(p => ({ ...p, backup_label: e.target.value }))} placeholder="4G / 2ª linea" className="h-8 text-xs bg-[var(--bg-card)] border-[var(--bg-border)] text-[var(--text-primary)]" data-testid="edit-backup-label-input" />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-[9px] uppercase tracking-widest text-[var(--text-muted)]">IP Pubblico backup</Label>
+                    <Input value={editForm.backup_public_ip} onChange={e => setEditForm(p => ({ ...p, backup_public_ip: e.target.value }))} placeholder="x.x.x.x" className="h-8 text-xs font-mono bg-[var(--bg-card)] border-[var(--bg-border)] text-[var(--text-primary)]" data-testid="edit-backup-ip-input" />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-[9px] uppercase tracking-widest text-[var(--text-muted)]">Gateway ISP backup</Label>
+                    <Input value={editForm.backup_gateway_ip} onChange={e => setEditForm(p => ({ ...p, backup_gateway_ip: e.target.value }))} placeholder="next-hop (opz.)" className="h-8 text-xs font-mono bg-[var(--bg-card)] border-[var(--bg-border)] text-[var(--text-primary)]" data-testid="edit-backup-gateway-input" />
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
           <DialogFooter className="gap-2">
             <Button variant="ghost" size="sm" className="h-8 text-xs" onClick={() => setEditTarget(null)} disabled={savingEdit} data-testid="edit-target-cancel-btn">Annulla</Button>
@@ -550,8 +653,23 @@ function DeviceCard({ target: t, result: r, onDelete, onEdit }) {
           <div className="flex items-center gap-2">
             <span className="text-xs font-bold text-[var(--text-primary)] truncate">{t.label}</span>
             <span className="text-[8px] px-1.5 py-0.5 rounded font-bold uppercase" style={{ color: st.color, background: `${st.color}15` }}>{st.label}</span>
+            {r?.line_state === "failover" && (
+              <span className="text-[8px] px-1.5 py-0.5 rounded font-bold uppercase bg-amber-500/15 text-amber-400" data-testid={`line-failover-${t.id}`}>FAILOVER</span>
+            )}
+            {r?.line_state === "isolated" && (
+              <span className="text-[8px] px-1.5 py-0.5 rounded font-bold uppercase bg-red-500/15 text-red-400" data-testid={`line-isolated-${t.id}`}>ISOLATO</span>
+            )}
           </div>
-          <span className="text-[10px] text-[var(--text-muted)] font-mono">{t.public_ip}</span>
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] text-[var(--text-muted)] font-mono">{t.public_ip}</span>
+            {r?.backup && (
+              <span className="text-[9px] font-mono flex items-center gap-1" title="Linea di backup" data-testid={`backup-badge-${t.id}`}>
+                <span className={`w-1.5 h-1.5 rounded-full ${r.backup.status === "online" ? "bg-emerald-400" : "bg-red-400"}`}></span>
+                <span className="text-amber-400/80">{r.backup.label || "Backup"}</span>
+                <span className="text-[var(--text-muted)]">{r.backup.public_ip}</span>
+              </span>
+            )}
+          </div>
         </div>
 
         {/* Quick metrics */}
@@ -582,9 +700,23 @@ function DeviceCard({ target: t, result: r, onDelete, onEdit }) {
         </div>
       </div>
 
+      {/* Placeholder finché non arriva il primo probe */}
+      {expanded && !r && (
+        <div className="px-3 pb-3 pt-2 border-t border-[var(--bg-border)]/30 text-[10px] text-[var(--text-muted)] flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+          <ArrowClockwise size={11} className="animate-spin opacity-60" /> In attesa del primo probe…
+        </div>
+      )}
       {/* Expanded metrics panel */}
       {expanded && r && (
         <div className="px-3 pb-3 pt-0 border-t border-[var(--bg-border)]/30 mt-0" onClick={(e) => e.stopPropagation()}>
+          {(r.line_state === "failover" || r.line_state === "isolated") && (
+            <div className={`mt-2 rounded-md p-2 border text-[10px] font-semibold flex items-center gap-2 ${r.line_state === "failover" ? "bg-amber-500/10 border-amber-500/30 text-amber-400" : "bg-red-500/10 border-red-500/30 text-red-400"}`} data-testid={`line-banner-${t.id}`}>
+              <Warning size={13} weight="bold" />
+              {r.line_state === "failover"
+                ? `FAILOVER attivo — linea primaria giù, cliente online via backup (${r.backup?.public_ip || "?"})`
+                : `CLIENTE ISOLATO — entrambe le linee giù (primaria ${t.public_ip} + backup ${r.backup?.public_ip || "?"})`}
+            </div>
+          )}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-2">
             {/* Ping ICMP */}
             <MetricBox label="Ping ICMP" value={r.ping?.reachable ? "OK" : "FAIL"} sub={latency != null ? `${latency}ms` : null}
@@ -603,6 +735,24 @@ function DeviceCard({ target: t, result: r, onDelete, onEdit }) {
               <MetricBox label="Gateway ISP" value="N/C" sub="Non configurato" color="#555" />
             )}
           </div>
+
+          {/* Linea di backup */}
+          {r.backup && (
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-2">
+              <MetricBox label="Linea backup" value={r.backup.status === "online" ? "ONLINE" : "OFFLINE"}
+                sub={`${r.backup.label || "2ª WAN"} · ${r.backup.public_ip}`} color={r.backup.status === "online" ? "#34C759" : "#FF3B30"} />
+              <MetricBox label="Ping backup" value={r.backup.ping?.reachable ? "OK" : "FAIL"}
+                sub={r.backup.ping?.latency_ms != null ? `${r.backup.ping.latency_ms}ms` : null}
+                color={r.backup.ping?.reachable ? "#34C759" : "#FF3B30"} />
+              {r.backup.gateway_ping ? (
+                <MetricBox label="Gateway backup" value={r.backup.gateway_ping.reachable ? "ONLINE" : "DOWN"}
+                  sub={`${r.backup.gateway_ip || "?"} ${r.backup.gateway_ping.latency_ms != null ? `${r.backup.gateway_ping.latency_ms}ms` : ""}`}
+                  color={r.backup.gateway_ping.reachable ? "#34C759" : "#FF3B30"} />
+              ) : (
+                <MetricBox label="Gateway backup" value="N/C" sub="Non configurato" color="#555" />
+              )}
+            </div>
+          )}
 
           {/* TCP Ports detail */}
           {r.ports?.length > 0 && (

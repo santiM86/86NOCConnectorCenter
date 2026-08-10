@@ -54,6 +54,55 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-08-07 🌐 Linea di BACKUP (2ª WAN) per cliente nel monitoraggio esterno
+
+### Richiesta utente
+Poter inserire per ogni cliente anche la linea di backup, per tenere sotto
+controllo linea primaria + backup e rilevare failover / doppio-down.
+
+### Scelte utente
+Campi backup nella stessa scheda del target · backup testato SOLO in
+raggiungibilita' (ICMP + gateway, niente TCP) · alert WARNING su failover +
+CRITICAL se entrambe giu' · pulsante "Test backup" separato.
+
+### Backend (`external_monitor.py`)
+- `WanTarget`/`WanTargetUpdate`: aggiunti `backup_label`, `backup_public_ip`,
+  `backup_gateway_ip`, `backup_enabled`.
+- `probe_target`: se backup abilitato, pinga IP backup + gateway backup e
+  popola `result["backup"]` (label, public_ip, status, ping, gateway_ping).
+  Calcola `result["line_state"]`: `ok` (primaria su) / `failover` (primaria giu',
+  backup su) / `isolated` (entrambe giu') / `no_backup`.
+- Probe loop: su transizione di `line_state` genera alert
+  `source_type="external_monitor_line"` — HIGH "FAILOVER attivo", CRITICAL
+  "CLIENTE ISOLATO"; auto-resolve al ritorno "ok".
+
+### Frontend (`ExternalMonitorPage.js`)
+- Form aggiungi + dialog modifica: sezione "Linea di backup (2ª WAN)" con toggle
+  e campi label/IP/gateway + pulsante "Test backup" (ping-only, riusa
+  /test-connection con check_ports:[]).
+- DeviceCard: badge backup nella riga (verde/rosso), pill FAILOVER/ISOLATO,
+  banner diagnostico e MetricBox backup (stato/ping/gateway) nel pannello
+  espanso. Placeholder "In attesa del primo probe…" quando manca il risultato.
+
+### Testing
+- Backend (API, main agent): create con campi backup OK; dopo probe
+  `line_state="ok"` e oggetto `backup` popolato (status/ping/latency) verificati.
+- Frontend E2E (iteration_105): **7/7 scenari PASS** (sezione backup, test
+  backup 8.8.8.8 RAGGIUNGIBILE, create dual-WAN, badge+MetricBox, edit
+  pre-compilato, delete). Cleanup + reset 2FA admin eseguiti.
+- Post-test fix (UI): spostato onClick dei toggle backup sul `<label>` (prima
+  solo sul pallino), aggiunto placeholder card, ripulita label MetricBox.
+
+### Note / backlog
+- `probe-now` e' fire-and-forget e no-op se un ciclo e' gia' in corso: i
+  risultati di un target NUOVO compaiono dopo ~60-90s (tick scheduler).
+- Failover/isolated non riprodotti in test (entrambi gli IP raggiungibili):
+  la logica e' deterministica; per test usare IP primario non instradabile.
+- ExternalMonitorPage.js ~790 righe: valutare estrarre `<BackupLineFields>`.
+
+---
+
+
 ## 2026-08-07 🔧 Tray icon inclusa nel "comando token" di installazione (CLI one-liner)
 
 ### Scoperta importante

@@ -1,0 +1,39 @@
+{
+  "summary": "Frontend-only E2E test of the new 'LINEA DI BACKUP (2a WAN)' feature on the External/WAN Monitor page (route /wan-monitor) via the public preview URL, logged in as admin info@86bit.it (2FA enrollment completed with a stdlib-computed TOTP, then admin restored to 'enroll required'). VERIFIED OK: (1) page loads with header 'Monitoraggio WAN Esterno' + subtitle \"Connettivita' internet clienti — Ping + TCP dall'esterno\"; (2) 'Aggiungi Target' form shows the 'backup-line-section' with 'backup-enabled-toggle'; (3) after enabling the toggle the fields 'backup-label-input', 'backup-ip-input', 'backup-gateway-input' and the 'test-backup-btn' appear; (4) Test backup on 8.8.8.8 returns 'backup-test-result' = 'Linea backup RAGGIUNGIBILE 8.8.8.8 . 0.5ms' (green); (5) full target creation (client 86BIT_Office, label 'TEST QA Dual', primary 1.1.1.1, backup 'Backup QA' 8.8.8.8) saves and appears in the client card; (6) after the probe cycle the row shows 'backup-badge-<id>' ('Backup QA 8.8.8.8', green dot) and the expanded card shows the backup MetricBoxes 'BACKUP: BACKUP QA / ONLINE / 8.8.8.8', 'PING BACKUP OK 0.2ms', 'GATEWAY BACKUP N/C', with line_state=ok -> NO failover/isolated badge and NO 'line-banner' (correct); (7) edit dialog contains 'edit-backup-enabled-toggle' with 'edit-backup-label-input'=Backup QA, 'edit-backup-ip-input'=8.8.8.8, 'edit-backup-gateway-input'='' pre-filled; saving a modified backup label ('Backup QA v2') persists and is re-read on reopen; (8) delete removes the target from the list. Cleanup done: all 'TEST *' targets + their probe results/history deleted, admin 2FA reset to enroll-required.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/external-monitor/probe-now", "issue": "Fire-and-forget: results for a newly created target only became visible ~90s after the call (measured by polling GET /api/external-monitor/status every 10s). run_probe_cycle() returns immediately if _probe_running is True, so probe-now can be a silent no-op and the user has to wait for the next 60s scheduler tick. Consider returning a queued/skipped flag."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "ExternalMonitorPage - backup/ping toggles", "issue": "The onClick handler is attached only to the inner knob <div>, not to the wrapping <label> that carries the data-testid. Clicking the label (which has cursor-pointer and the text 'LINEA DI BACKUP (2a WAN)') does NOT toggle - a normal Playwright click on [data-testid=\"backup-enabled-toggle\"] failed and only '[data-testid=\"backup-enabled-toggle\"] > div' works. Same pattern for 'check-ping-toggle', 'edit-check-ping-toggle' and 'edit-backup-enabled-toggle'. Fix: move onClick to the <label> (or use a real checkbox/Switch).", "selector": "[data-testid=\"backup-enabled-toggle\"]", "priority": "MEDIUM"},
+      {"component": "probeNow() feedback", "issue": "Toast says 'Probe avviato, risultati tra pochi secondi' and refetch happens after only 5s, but real results appeared after ~90s; a freshly created target therefore stays with status '---' and an EMPTY expanded panel (the expanded block requires `r`), which looks broken to the user. Suggest polling/backoff or an explicit 'in attesa del primo probe' placeholder inside the expanded card.", "selector": "[data-testid=\"probe-now-btn\"]", "priority": "MEDIUM"},
+      {"component": "LoginPage", "issue": "Flaky (1 occurrence out of 4 logins): the email input value was cleared after fill (native validation 'Please fill out this field' on submit) - looks like a re-render resetting the controlled state shortly after mount. Workaround in test: wait ~2.5s after the input appears and re-verify input_value().", "selector": "[data-testid=\"login-email-input\"]", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "WAN Monitor - expanded device card", "issues": ["MetricBox labels are 7px with 0.15em tracking and --text-muted colour: almost unreadable on the dark card (applies to the new 'Backup: ...', 'Ping backup', 'Gateway backup' boxes too) - suggest 8-9px and a brighter muted tone.", "The backup box label reads 'BACKUP: BACKUP QA' (redundant when the user already named the line 'Backup QA'); consider 'Linea backup - <label>' or just the label."]}
+    ]
+  },
+  "test_report_links": [],
+  "action_items": [
+    "Move the toggle onClick from the inner knob div to the wrapping <label> for backup-enabled-toggle / edit-backup-enabled-toggle / check-ping-toggle (label click currently does nothing).",
+    "Improve probe feedback: probe-now results appear only after ~60-90s; adjust the toast wording and add a polling refetch, plus a placeholder in the expanded card when no probe result exists yet.",
+    "Optional: investigate the one-off login email field reset (controlled input re-render)."
+  ],
+  "critical_code_review_comments": [
+    "ExternalMonitorPage.js is 790 lines with the add-form and edit-dialog backup blocks duplicated (~same 4 inputs + toggle): extract a <BackupLineFields> component to keep DRY.",
+    "DeviceCard expanded panel renders nothing when `r` is undefined (`{expanded && r && ...}`): a target with no probe result yet silently expands to an empty area.",
+    "run_probe_cycle() silently returns when another cycle is running; probe-now should surface that (e.g. 202 + 'already running') so the UI can inform the user."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "not tested (frontend-only request)", "frontend": "100% of the 7 requested backup-line scenarios pass (with the toggle selector caveat above)"},
+  "seed_data_creation": "Temporary targets 'TEST QA Dual' and 'TEST QA Dual API' on client 86BIT_Office (1.1.1.1 + backup 8.8.8.8) - both deleted at the end together with their wan_probe_results/history.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "info@86bit.it / Ariel17051986@!@86 - admin restored to 'enroll 2FA required' (two_factor_enabled=false, totp_secret unset).",
+  "context_for_next_testing_agent": "Backup-line feature is functionally green end-to-end on /wan-monitor. To exercise it again: login -> /2fa-setup (read secret from '2fa-copy-secret', compute TOTP with stdlib hmac/hashlib) -> then read db.users.totp_secret if you need to re-login in a new browser session (login rate limit ~10/5min per IP; a 429/blocked login leaves you on /login). Toggles must be clicked as '[data-testid=\"...-toggle\"] > div'. Probe results for a NEW target take ~60-90s to appear, so wait/poll GET /api/external-monitor/status instead of relying on probe-now + 5s. Failover/isolated states (WARNING/CRITICAL alerts) were NOT reproducible in this run because both primary and backup IPs were reachable - to test them use an unroutable primary (e.g. 10.255.255.1) with a reachable backup.",
+  "rca_of_the_issue": "Toggle bug: in ExternalMonitorPage.js the data-testid is on the <label> while onClick lives on the nested knob <div>, so clicks on the label text/area are not handled. Empty card after creation: /api/external-monitor/status has no wan_probe_results doc until the async 60s probe cycle stores one (probe-now is fire-and-forget and no-ops when a cycle is already running), and DeviceCard requires `r` to render the expanded metrics."
+}
