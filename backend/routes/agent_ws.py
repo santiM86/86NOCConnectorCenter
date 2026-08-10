@@ -758,6 +758,7 @@ async def _bridge_snmp_poll(conn: _Connection, r: Dict[str, Any]) -> None:
     # grazie al campo `extra_oids` ricevuto nel poller_config. Prima
     # questi OID venivano IGNORATI dal bridge e la UI mostrava sempre 0%
     # per CPU/mem anche se il device era SNMP-attivo.
+    _vm_built: dict = {}
     if isinstance(r.get("oids"), dict) and r["oids"]:
         snmp_set["metrics"] = r["oids"]
         snmp_set["metrics_count"] = len(r["oids"])
@@ -788,6 +789,7 @@ async def _bridge_snmp_poll(conn: _Connection, r: Dict[str, Any]) -> None:
         if vm:
             snmp_set["vendor_metrics"] = vm
             snmp_set["vendor_metrics_updated_at"] = now_iso
+            _vm_built = vm
     try:
         await db.device_poll_status.update_one(
             {"client_id": conn.client_id, "device_ip": target},
@@ -855,6 +857,22 @@ async def _bridge_snmp_poll(conn: _Connection, r: Dict[str, Any]) -> None:
         )
     except Exception:
         pass
+
+    # v2026-08 Alert proattivi hardware: valuta CPU/RAM/Temp/Ventole/PSU contro
+    # le soglie del profilo device ed emette/risolve alert. Solo se reachable e
+    # ci sono vendor_metrics fresche. Best-effort: non deve mai rompere il poll.
+    if reachable and _vm_built:
+        try:
+            from hardware_alerts import evaluate_hardware_alerts
+            await evaluate_hardware_alerts(
+                db,
+                client_id=conn.client_id,
+                device_ip=target,
+                vendor_metrics=_vm_built,
+                sys_name=r.get("sys_name"),
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.debug("hardware_alerts eval failed ip=%s err=%s", target, e)
 
 
 async def _bridge_switch_ports(conn: _Connection, data: Dict[str, Any]) -> None:

@@ -54,6 +54,62 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-08-10 🚨 Alert Proattivi Hardware SNMP (CPU/RAM/Temp/Ventole/PSU)
+
+### Richiesta utente
+Trasformare la raccolta SNMP passiva (vendor_metrics) in monitoraggio
+proattivo: notificare automaticamente degradi termici, saturazione
+CPU/RAM e guasti fisici di ventole/alimentatori sfruttando le soglie
+gia' definite nei profili device.
+
+### Scelte utente
+Ambito completo (CPU/RAM/Temp/Fan/PSU) + scelte consigliate dall'agente:
+dedup + auto-risoluzione, notifiche via dispatcher esistente, e per
+Fan/PSU approccio CONSERVATIVO (alert solo su stato di guasto certo).
+
+### Implementazione (backend-only, nessuna modifica Agent Go)
+- NUOVO modulo `backend/hardware_alerts.py` — `evaluate_hardware_alerts()`:
+  - Classifica le chiavi `vendor_metrics` (CPU/MEM/TEMP percent, FAN/PSU
+    state) via euristica sui nomi OID; per percentuali prende il max sui
+    dict per-indice.
+  - Confronta con `profile["thresholds"]`: `cpu_warn_pct`/`cpu_crit_pct`,
+    `mem_*`, `temp_warn_c`/`temp_crit_c` (+ fallback inlet/cpu temp per iLO).
+    WARNING -> severity "high", CRITICAL -> "critical".
+  - Fan/PSU: fault se stato NON in `FAN_PSU_HEALTHY_STATES[profile_key]`.
+    Enum verificati via web: H3C/hpe_comware notSupported(1)/normal(2) sani,
+    fanError(41)/psuError(51) guasto; Cisco normal(1)/notPresent(5) sani.
+    Profili senza enum mappato NON generano alert fan/psu (zero falsi positivi).
+  - Dedup: 1 solo alert ATTIVO per (client_id, device_ip, metrica) via campo
+    `dedup_key` in `db.alerts`. Escalation = update severity/msg sullo stesso
+    alert. Rientro sotto soglia = AUTO-RISOLUZIONE (status "resolved" + nota).
+  - Notifiche via `alert_engine._dispatch_notification` (Telegram/WebPush) e
+    `alert_filter.insert_alert_if_emit` (rispetta silenziamento device).
+- `backend/routes/agent_ws.py::_bridge_snmp_poll`: dopo la costruzione di
+  `vendor_metrics` (variabile `_vm_built`), se `reachable` chiama
+  `evaluate_hardware_alerts` (best-effort try/except, non blocca il poll).
+- profile_key risolto internamente (managed_devices -> device_poll_status).
+
+### Frontend
+Nessuna modifica: gli alert usano lo schema standard `_mk_alert`
+(source_type="hardware_snmp") quindi appaiono nella UI Alert esistente.
+
+### Testing
+- `backend/tests/test_hardware_alerts.py` (main agent, con MongoDB reale):
+  5/5 STEP PASS — emissione cpu(crit)/mem(warn)/temp(crit)/fan(fault) +
+  psu no-alert; dedup (1 solo attivo); escalation crit->warn stesso alert;
+  auto-risoluzione al rientro; profilo generic_snmp non alerta fan/psu.
+- Backend running OK dopo le modifiche (hot reload, syntax+import verificati).
+
+### Note / non runtime-testato sul campo
+La valutazione scatta ad ogni SNMP poll reale (~60s) da agent v4.30+ LIVE:
+in preview non ci sono agent/switch SNMP, quindi il flusso end-to-end reale
+va verificato in PROD (logica deterministica validata con payload mock).
+Per PROD serve deploy backend (Save to GitHub + redeploy).
+
+---
+
+
+
 ## 2026-08-07 🩺 Fix metriche salute switch HPE Comware (CPU/RAM/Temp/Ventole/PSU vuote)
 
 ### Problema utente
