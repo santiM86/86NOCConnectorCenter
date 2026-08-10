@@ -53,6 +53,26 @@ FAN_PSU_HEALTHY_STATES: dict[str, set[int]] = {
     "cisco_catalyst": {1, 5},
 }
 
+# Valori sentinella SNMP "non disponibile" (0xFFFF, 0xFFFFFFFF, ecc.) che
+# alcuni vendor (H3C in primis) ritornano per sensori/entita' assenti. Vanno
+# ignorati ovunque per non generare falsi alert (es. temperatura 65535).
+SENTINELS = {65535, 65536, 2147483647, 4294967295, -1}
+
+
+def _pct_ok(n: float) -> bool:
+    return 0 <= n <= 100
+
+
+def _temp_ok(n: float) -> bool:
+    return -40 < n <= 150
+
+
+def _state_plausible(n: Optional[float]) -> bool:
+    """True se `n` e' un codice di stato enum plausibile (non sentinella, non 0
+    'entita' non applicabile', non valore enorme). Le tabelle entPhysicalIndex
+    H3C ritornano righe anche per porte/slot che non sono ventole/PSU reali."""
+    return n is not None and 0 < n < 1000 and int(n) not in SENTINELS
+
 
 def _to_float(v: Any) -> Optional[float]:
     if v is None:
@@ -179,13 +199,19 @@ async def _emit_or_update(db, cfg, *, client_id: str, client_name: str,
         logger.debug("hardware alert emit failed key=%s err=%s", dedup_key, e)
 
 
-def _eval_percent(vm: dict, kind: str, warn: Optional[float], crit: Optional[float]):
-    """Ritorna (severity|None, value|None) per metriche percentuali (cpu/mem)."""
+def _eval_percent(vm: dict, kind: str, warn: Optional[float], crit: Optional[float],
+                  ok=None):
+    """Ritorna (severity|None, value|None) per metriche numeriche (cpu/mem/temp).
+    `ok` = validatore di range opzionale per scartare valori implausibili/sentinella."""
     peak: Optional[float] = None
     for key, val in vm.items():
         if _classify(key) != kind:
             continue
         for v in _values(val):
+            if int(v) in SENTINELS:
+                continue
+            if ok is not None and not ok(v):
+                continue
             if peak is None or v > peak:
                 peak = v
     if peak is None:
@@ -260,7 +286,7 @@ async def evaluate_hardware_alerts(db, *, client_id: str, device_ip: str,
         cpu_cycles = 1
     sev, val = _eval_percent(vendor_metrics, "cpu",
                              _threshold(thresholds, "cpu_warn_pct"),
-                             _threshold(thresholds, "cpu_crit_pct"))
+                             _threshold(thresholds, "cpu_crit_pct"), ok=_pct_ok)
     dk = f"{client_id}:{device_ip}:cpu"
     if sev:
         streak = await _bump_streak(db, dk)
@@ -285,7 +311,7 @@ async def evaluate_hardware_alerts(db, *, client_id: str, device_ip: str,
     # ---- RAM % ----
     sev, val = _eval_percent(vendor_metrics, "mem",
                              _threshold(thresholds, "mem_warn_pct"),
-                             _threshold(thresholds, "mem_crit_pct"))
+                             _threshold(thresholds, "mem_crit_pct"), ok=_pct_ok)
     dk = f"{client_id}:{device_ip}:mem"
     if sev:
         lbl = "critica" if sev == "critical" else "elevata"
@@ -304,6 +330,7 @@ async def evaluate_hardware_alerts(db, *, client_id: str, device_ip: str,
         vendor_metrics, "temp",
         _threshold(thresholds, "temp_warn_c", "inlet_temp_warn_c", "cpu_temp_warn_c"),
         _threshold(thresholds, "temp_crit_c", "inlet_temp_crit_c", "cpu_temp_crit_c"),
+        ok=_temp_ok,
     )
     dk = f"{client_id}:{device_ip}:temp"
     if sev:
@@ -329,11 +356,11 @@ async def evaluate_hardware_alerts(db, *, client_id: str, device_ip: str,
                 if isinstance(mv, dict):
                     for idx, v in mv.items():
                         f = _to_float(v)
-                        if f is not None and int(f) not in healthy:
+                        if _state_plausible(f) and int(f) not in healthy:
                             faulty.append(f"#{idx}={int(f)}")
                 else:
                     f = _to_float(mv)
-                    if f is not None and int(f) not in healthy:
+                    if _state_plausible(f) and int(f) not in healthy:
                         faulty.append(f"={int(f)}")
             dk = f"{client_id}:{device_ip}:{kind}_fault"
             if faulty:
