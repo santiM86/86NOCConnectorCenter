@@ -22,12 +22,19 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+from pymongo import ReturnDocument
+
 from alert_engine import _dispatch_notification, _mk_alert, get_config
 from alert_filter import insert_alert_if_emit
 
 logger = logging.getLogger("hardware_alerts")
 
 SOURCE_TYPE = "hardware_snmp"
+
+# Debounce CPU: numero di cicli di polling consecutivi sopra soglia richiesti
+# prima di emettere l'alert (ignora picchi momentanei innocui). Override
+# opzionale via alert_engine_config.hw_cpu_breach_cycles.
+CPU_BREACH_CYCLES_DEFAULT = 3
 
 # ---------------------------------------------------------------------------
 # Regole stato Fan/PSU per profilo (conservative: alert SOLO su guasto certo).
@@ -104,6 +111,22 @@ def _threshold(thresholds: dict, *keys: str) -> Optional[float]:
             if f is not None:
                 return f
     return None
+
+
+async def _bump_streak(db, dedup_key: str) -> int:
+    """Incrementa e ritorna il contatore di breach consecutivi per la metrica."""
+    doc = await db.hardware_alert_state.find_one_and_update(
+        {"dedup_key": dedup_key},
+        {"$inc": {"streak": 1}},
+        upsert=True,
+        return_document=ReturnDocument.AFTER,
+    )
+    return int((doc or {}).get("streak", 1))
+
+
+async def _reset_streak(db, dedup_key: str) -> None:
+    await db.hardware_alert_state.update_one(
+        {"dedup_key": dedup_key}, {"$set": {"streak": 0}}, upsert=True)
 
 
 async def _resolve_alert(db, cfg, dedup_key: str, recovery_msg: str) -> None:
@@ -231,21 +254,32 @@ async def evaluate_hardware_alerts(db, *, client_id: str, device_ip: str,
         pass
     device_name = device_name or device_ip
 
-    # ---- CPU % ----
+    # ---- CPU % (con debounce: solo dopo N cicli consecutivi sopra soglia) ----
+    cpu_cycles = int(cfg.get("hw_cpu_breach_cycles") or CPU_BREACH_CYCLES_DEFAULT)
+    if cpu_cycles < 1:
+        cpu_cycles = 1
     sev, val = _eval_percent(vendor_metrics, "cpu",
                              _threshold(thresholds, "cpu_warn_pct"),
                              _threshold(thresholds, "cpu_crit_pct"))
     dk = f"{client_id}:{device_ip}:cpu"
     if sev:
-        lbl = "critica" if sev == "critical" else "elevata"
-        await _emit_or_update(
-            db, cfg, client_id=client_id, client_name=client_name,
-            device_name=device_name, device_ip=device_ip, device_type=device_type,
-            dedup_key=dk, severity=sev,
-            title=f"CPU {lbl} su {device_name}",
-            message=f"Utilizzo CPU al {val:.0f}% (soglia {sev.upper()} superata) su {device_name} ({device_ip}).",
-        )
+        streak = await _bump_streak(db, dk)
+        # Se un alert e' gia' attivo (breach confermato) aggiorna sempre;
+        # altrimenti emetti solo dopo `cpu_cycles` breach consecutivi.
+        already = await db.alerts.find_one({"dedup_key": dk, "status": "active"}, {"_id": 0, "id": 1})
+        if already or streak >= cpu_cycles:
+            lbl = "critica" if sev == "critical" else "elevata"
+            await _emit_or_update(
+                db, cfg, client_id=client_id, client_name=client_name,
+                device_name=device_name, device_ip=device_ip, device_type=device_type,
+                dedup_key=dk, severity=sev,
+                title=f"CPU {lbl} su {device_name}",
+                message=(f"Utilizzo CPU al {val:.0f}% (soglia {sev.upper()} superata) "
+                         f"per {streak} cicli consecutivi su {device_name} ({device_ip})."),
+            )
+        # else: breach in corso ma non ancora confermato -> nessun alert (picco)
     elif val is not None:
+        await _reset_streak(db, dk)
         await _resolve_alert(db, cfg, dk, f"CPU rientrata al {val:.0f}% su {device_name} ({device_ip}).")
 
     # ---- RAM % ----

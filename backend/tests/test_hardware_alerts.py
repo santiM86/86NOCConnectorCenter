@@ -32,19 +32,29 @@ async def main():
             "h3cFanState": {"1": "2", "2": "41"},   # 41 = fanError -> guasto
             "h3cPowerState": {"1": "2"},            # normal
         }
+        # 1° ciclo: mem/temp/fan immediati; CPU NON ancora (debounce 3 cicli)
+        await evaluate_hardware_alerts(db, client_id=cid, device_ip=ip, vendor_metrics=vm)
+        assert await _active(cid, ip, "cpu") is None, "CPU non deve alertare al 1° ciclo (debounce)"
+        assert await _active(cid, ip, "mem"), "MEM deve alertare subito"
+        assert await _active(cid, ip, "temp"), "TEMP deve alertare subito"
+        assert await _active(cid, ip, "fan_fault"), "FAN deve alertare subito"
+        assert await _active(cid, ip, "psu_fault") is None, "PSU non deve alertare"
+        print("STEP1a OK: 1° ciclo -> mem/temp/fan attivi, cpu pending, psu no")
+
+        # 2° e 3° ciclo: CPU supera il debounce -> alert critical
+        await evaluate_hardware_alerts(db, client_id=cid, device_ip=ip, vendor_metrics=vm)
+        assert await _active(cid, ip, "cpu") is None, "CPU ancora pending al 2° ciclo"
         await evaluate_hardware_alerts(db, client_id=cid, device_ip=ip, vendor_metrics=vm)
         cpu = await _active(cid, ip, "cpu")
         mem = await _active(cid, ip, "mem")
         temp = await _active(cid, ip, "temp")
         fan = await _active(cid, ip, "fan_fault")
-        psu = await _active(cid, ip, "psu_fault")
-        assert cpu and cpu["severity"] == "critical", f"CPU crit atteso, got {cpu}"
+        assert cpu and cpu["severity"] == "critical", f"CPU crit atteso al 3° ciclo, got {cpu}"
         assert mem and mem["severity"] == "high", f"MEM warn atteso, got {mem}"
         assert temp and temp["severity"] == "critical", f"TEMP crit atteso, got {temp}"
         assert fan and fan["severity"] == "critical", f"FAN fault atteso, got {fan}"
-        assert psu is None, f"PSU non deve alertare, got {psu}"
         assert cpu["source_type"] == SOURCE_TYPE
-        print("STEP1 OK: cpu/mem/temp/fan emessi, psu no")
+        print("STEP1b OK: CPU emessa dopo 3 cicli consecutivi (debounce)")
 
         # 2) dedup: rieseguo stesso payload -> nessun nuovo alert attivo (1 solo per metrica)
         await evaluate_hardware_alerts(db, client_id=cid, device_ip=ip, vendor_metrics=vm)
@@ -94,6 +104,7 @@ async def main():
     finally:
         await db.managed_devices.delete_many({"client_id": cid})
         await db.alerts.delete_many({"dedup_key": {"$regex": f"^{cid}:"}})
+        await db.hardware_alert_state.delete_many({"dedup_key": {"$regex": f"^{cid}:"}})
 
 
 if __name__ == "__main__":

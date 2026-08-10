@@ -100,6 +100,15 @@ Nessuna modifica: gli alert usano lo schema standard `_mk_alert`
   auto-risoluzione al rientro; profilo generic_snmp non alerta fan/psu.
 - Backend running OK dopo le modifiche (hot reload, syntax+import verificati).
 
+### Debounce CPU (2026-08-10, richiesta utente)
+Gli alert CPU scattano SOLO dopo N cicli di polling consecutivi sopra soglia
+(default 3, ~3 min a poll da 60s) per ignorare i picchi momentanei innocui.
+Contatore per-metrica in collection `hardware_alert_state` (`streak`); reset e
+auto-risoluzione al rientro sotto soglia. Override opzionale via
+`alert_engine_config.hw_cpu_breach_cycles`. Temperatura/Fan/PSU restano
+immediati (un guasto/degrado termico va notificato subito). Test aggiornato
+(STEP1a/1b): 6/6 STEP PASS.
+
 ### Note / non runtime-testato sul campo
 La valutazione scatta ad ogni SNMP poll reale (~60s) da agent v4.30+ LIVE:
 in preview non ci sono agent/switch SNMP, quindi il flusso end-to-end reale
