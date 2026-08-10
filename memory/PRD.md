@@ -54,6 +54,44 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-08-10 🐞 FIX #2 — Temperatura 65535 e PSU/Fan fantasma (sentinelle SNMP)
+
+### Sintomo (2° screenshot utente, stesso switch HPE 5130)
+Dopo il fix #1 CPU/Memoria mostravano valori corretti (8% / 35%) ma
+**Temperatura = 65535 °C** (in rosso) e la lista Hardware mostrava **PSU 1..27
+tutti N/D**.
+
+### Root cause
+- 65535 (0xFFFF) e' la **sentinella SNMP "valore non disponibile"** che H3C
+  ritorna quando un sensore/entita' non e' presente. Veniva mostrata come temp
+  reale (finita).
+- La tabella `hh3cEntityExtStateTable` (powerState/fanState) e' indicizzata per
+  `entPhysicalIndex` e ritorna righe per MOLTE entita' (porte, slot, chassis),
+  non solo PSU/ventole reali -> decine di indici con valore 0/65535 = "N/D".
+
+### Fix
+- **Frontend (`VendorDetailsPanel.js`)**: set `SENTINELS` (65535, 0xFFFFFFFF,
+  ecc.) + validatori di range `pctOk` (0..100) e `tempOk` (-40..150). `maxValid`
+  scarta sentinelle/valori implausibili -> temp 65535 diventa "—". PSU/Fan:
+  `stateOk` mostra solo codici enum plausibili (0<n<1000, no sentinelle); le
+  entita' fantasma spariscono (se nessuna valida -> messaggio).
+- **Backend (`hardware_alerts.py`)**: stessi `SENTINELS` + `_pct_ok`/`_temp_ok`
+  passati a `_eval_percent`, e `_state_plausible` nel loop fan/psu. Evita falsi
+  alert (temp 65535 CRITICAL, guasti PSU fantasma) — importante ora che sono
+  emersi i dati reali.
+
+### Testing
+- `tests/test_hardware_alerts.py`: aggiunto STEP6 (sentinelle) -> **7/7 PASS**.
+- Logica JS verificata con node: temp 65535 -> null("—"), temp reale mantenuta,
+  27 PSU 65535 -> lista vuota, PSU misti -> solo plausibili. Frontend compila.
+
+### Deploy
+Attivi in preview; per PROD Save to GitHub + redeploy (frontend + backend).
+
+---
+
+
+
 ## 2026-08-10 🐞 FIX "-Infinity %" e PSU/Fan "N/D" nel pannello switch (HPE Comware)
 
 ### Sintomo (screenshot utente, switch HPE 5130 10.10.10.105)

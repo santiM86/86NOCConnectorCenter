@@ -100,6 +100,25 @@ async def main():
         assert await _active(cid, ip2, "fan_fault") is None, "generic non deve alertare fan"
         print("STEP5 OK: profilo senza enum fan non alerta ventole")
 
+        # 6) sentinelle SNMP (65535/0) NON devono generare alert
+        ip3 = "10.99.99.97"
+        await db.managed_devices.insert_one({
+            "id": str(uuid.uuid4()), "client_id": cid, "ip": ip3,
+            "hostname": "SW-SENT", "device_type": "switch", "profile_key": "hpe_comware",
+        })
+        vm_sent = {
+            "h3cEntityExtCpuUsage": {"1": "8"},        # valido -> ma sotto soglia
+            "h3cEntityExtMemUsage": {"1": "35"},
+            "h3cEntityExtTemperature": {"1": "65535"},  # sentinella -> NO alert temp
+            "h3cFanState": {"1": "65535", "2": "0"},    # entita' fantasma -> NO fault
+            "h3cPowerState": {str(i): "65535" for i in range(1, 28)},  # 27 PSU fantasma
+        }
+        await evaluate_hardware_alerts(db, client_id=cid, device_ip=ip3, vendor_metrics=vm_sent)
+        assert await _active(cid, ip3, "temp") is None, "temp 65535 non deve alertare"
+        assert await _active(cid, ip3, "fan_fault") is None, "fan sentinella non deve alertare"
+        assert await _active(cid, ip3, "psu_fault") is None, "psu 65535 non deve alertare"
+        print("STEP6 OK: sentinelle 65535/0 ignorate (no falsi alert temp/fan/psu)")
+
         print("\nALL HARDWARE ALERT TESTS PASSED")
     finally:
         await db.managed_devices.delete_many({"client_id": cid})

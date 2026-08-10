@@ -218,24 +218,30 @@ function SwitchPanel({ vm, thresholds, profileKey }) {
     const n = typeof v === "number" ? v : parseFloat(String(v ?? "").replace(",", "."));
     return Number.isFinite(n) ? n : null;
   };
-  const maxNum = (metric) => {
+  // 65535 (0xFFFF) e 0xFFFFFFFF sono sentinelle SNMP "valore non disponibile"
+  // (H3C le ritorna per sensori/entita' assenti). Le scartiamo ovunque.
+  const SENTINELS = new Set([65535, 65536, 2147483647, 4294967295, -1]);
+  // Max sui valori plausibili di una metrica (dict o scalare), applicando un
+  // validatore di range specifico (percentuale / temperatura). null se nessuno.
+  const maxValid = (metric, ok) => {
     if (metric === null || metric === undefined) return null;
-    if (typeof metric === "object") {
-      const nums = Object.values(metric).map(num).filter((v) => v !== null);
-      return nums.length ? Math.max(...nums) : null;
-    }
-    return num(metric);
+    const list = typeof metric === "object" ? Object.values(metric) : [metric];
+    const nums = list.map(num).filter((n) => n !== null && !SENTINELS.has(n) && ok(n));
+    return nums.length ? Math.max(...nums) : null;
   };
-  const cpu = maxNum(cpuMetric);
-  const mem = maxNum(memMetric);
-  const temp = maxNum(tempMetric);
-  // Mostra solo le voci ventola/PSU con uno stato valido (>0). Le righe con
-  // valore vuoto/0 (bay non popolato o entita' non applicabile) sono nascoste
-  // per non affollare il pannello di "N/D".
+  const pctOk = (n) => n >= 0 && n <= 100;
+  const tempOk = (n) => n > -40 && n <= 150;   // range plausibile switch/server
+  const cpu = maxValid(cpuMetric, pctOk);
+  const mem = maxValid(memMetric, pctOk);
+  const temp = maxValid(tempMetric, tempOk);
+  // Ventole/PSU: mostra solo voci con codice di stato enum PLAUSIBILE. La
+  // tabella entPhysicalIndex H3C ritorna righe per molte entita' (porte, slot)
+  // con 0 o sentinella 65535 -> non sono PSU/ventole reali, vanno nascoste.
+  const stateOk = (n) => n !== null && n > 0 && n < 1000 && !SENTINELS.has(n);
   const validStates = (states) =>
     Object.entries(states)
       .map(([idx, st]) => [idx, num(st)])
-      .filter(([, n]) => n !== null && n > 0);
+      .filter(([, n]) => stateOk(n));
   const psuValid = validStates(psuStates);
   const fanValid = validStates(fanStates);
 
