@@ -54,6 +54,204 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-08-10 🚨 Alert Proattivi Hardware SNMP (CPU/RAM/Temp/Ventole/PSU)
+
+### Richiesta utente
+Trasformare la raccolta SNMP passiva (vendor_metrics) in monitoraggio
+proattivo: notificare automaticamente degradi termici, saturazione
+CPU/RAM e guasti fisici di ventole/alimentatori sfruttando le soglie
+gia' definite nei profili device.
+
+### Scelte utente
+Ambito completo (CPU/RAM/Temp/Fan/PSU) + scelte consigliate dall'agente:
+dedup + auto-risoluzione, notifiche via dispatcher esistente, e per
+Fan/PSU approccio CONSERVATIVO (alert solo su stato di guasto certo).
+
+### Implementazione (backend-only, nessuna modifica Agent Go)
+- NUOVO modulo `backend/hardware_alerts.py` — `evaluate_hardware_alerts()`:
+  - Classifica le chiavi `vendor_metrics` (CPU/MEM/TEMP percent, FAN/PSU
+    state) via euristica sui nomi OID; per percentuali prende il max sui
+    dict per-indice.
+  - Confronta con `profile["thresholds"]`: `cpu_warn_pct`/`cpu_crit_pct`,
+    `mem_*`, `temp_warn_c`/`temp_crit_c` (+ fallback inlet/cpu temp per iLO).
+    WARNING -> severity "high", CRITICAL -> "critical".
+  - Fan/PSU: fault se stato NON in `FAN_PSU_HEALTHY_STATES[profile_key]`.
+    Enum verificati via web: H3C/hpe_comware notSupported(1)/normal(2) sani,
+    fanError(41)/psuError(51) guasto; Cisco normal(1)/notPresent(5) sani.
+    Profili senza enum mappato NON generano alert fan/psu (zero falsi positivi).
+  - Dedup: 1 solo alert ATTIVO per (client_id, device_ip, metrica) via campo
+    `dedup_key` in `db.alerts`. Escalation = update severity/msg sullo stesso
+    alert. Rientro sotto soglia = AUTO-RISOLUZIONE (status "resolved" + nota).
+  - Notifiche via `alert_engine._dispatch_notification` (Telegram/WebPush) e
+    `alert_filter.insert_alert_if_emit` (rispetta silenziamento device).
+- `backend/routes/agent_ws.py::_bridge_snmp_poll`: dopo la costruzione di
+  `vendor_metrics` (variabile `_vm_built`), se `reachable` chiama
+  `evaluate_hardware_alerts` (best-effort try/except, non blocca il poll).
+- profile_key risolto internamente (managed_devices -> device_poll_status).
+
+### Frontend
+Nessuna modifica: gli alert usano lo schema standard `_mk_alert`
+(source_type="hardware_snmp") quindi appaiono nella UI Alert esistente.
+
+### Testing
+- `backend/tests/test_hardware_alerts.py` (main agent, con MongoDB reale):
+  5/5 STEP PASS — emissione cpu(crit)/mem(warn)/temp(crit)/fan(fault) +
+  psu no-alert; dedup (1 solo attivo); escalation crit->warn stesso alert;
+  auto-risoluzione al rientro; profilo generic_snmp non alerta fan/psu.
+- Backend running OK dopo le modifiche (hot reload, syntax+import verificati).
+
+### Debounce CPU (2026-08-10, richiesta utente)
+Gli alert CPU scattano SOLO dopo N cicli di polling consecutivi sopra soglia
+(default 3, ~3 min a poll da 60s) per ignorare i picchi momentanei innocui.
+Contatore per-metrica in collection `hardware_alert_state` (`streak`); reset e
+auto-risoluzione al rientro sotto soglia. Override opzionale via
+`alert_engine_config.hw_cpu_breach_cycles`. Temperatura/Fan/PSU restano
+immediati (un guasto/degrado termico va notificato subito). Test aggiornato
+(STEP1a/1b): 6/6 STEP PASS.
+
+### Note / non runtime-testato sul campo
+La valutazione scatta ad ogni SNMP poll reale (~60s) da agent v4.30+ LIVE:
+in preview non ci sono agent/switch SNMP, quindi il flusso end-to-end reale
+va verificato in PROD (logica deterministica validata con payload mock).
+Per PROD serve deploy backend (Save to GitHub + redeploy).
+
+---
+
+
+
+## 2026-08-07 🩺 Fix metriche salute switch HPE Comware (CPU/RAM/Temp/Ventole/PSU vuote)
+
+### Problema utente
+Nel dettaglio dello switch HPE 5130 (profilo `hpe_comware`) Performance
+(CPU/Memoria/Temperatura) e Hardware erano vuoti ("—" e "Hardware detail non
+disponibile per hpe_comware").
+
+### Root cause (confermata dal codice)
+Gli OID di salute H3C (`hh3cEntityExtStateTable`: CpuUsage .6 / MemUsage .8 /
+Temperature .12 / FanState .16 / PowerState .18) sono **colonne di TABELLA**
+indicizzate per entPhysicalIndex. Il backend li invia all'agent come
+`extra_oids`, ma l'agent Go (`snmp.go`) faceva SOLO un `Get()` sulla base-colonna
+→ risposta `NoSuchInstance` → scartato. Nessun WALK delle tabelle vendor. In
+più i risultati finivano in `device_poll_status.metrics`, mai in `vendor_metrics`
+(che e' cio' che legge la UI). Gli scalari (`.0`) funzionavano, le tabelle no.
+
+### Fix
+- **Agent (`noc-agent/internal/poller/snmp.go`)**: dopo il GET batch, per ogni
+  `extra_oid` non risolto esegue un `BulkWalkAll` (l'agent gia' walka per porte/
+  LLDP) ed emette i valori per-indice come chiavi `name.<index>`. Import
+  `strings` aggiunto. **Compilato OK** (windows/amd64, go vet pulito) in questo
+  ambiente (Go arm64 installato in /usr/local/go).
+- **Backend (`agent_ws.py` bridge SNMP)**: dai risultati costruisce
+  `vendor_metrics` raggruppando le chiavi `name.<index>` in dict per-indice
+  (scalari restano valori singoli; OID grezzi numerici ignorati) e lo salva su
+  `device_poll_status.vendor_metrics`. Logica verificata con input simulato.
+- **Frontend**: NESSUNA modifica — `VendorDetailsPanel/SwitchPanel` gia' legge
+  `vm.h3cEntityExtCpuUsage/MemUsage/Temperature` (max sui dict) e
+  `h3cFanState/h3cPowerState` (entries); il messaggio "Hardware non disponibile"
+  e' data-driven (sparisce quando arrivano i dati).
+
+### Stato / deploy
+- ✅ **Release agent v4.30.0 PUBBLICATA** su GitHub (santiM86/86NOCConnectorCenter,
+  id 367883057) — è "latest", asset: nocagent/nocwatchdog/nocagent-ui/argus-tray/
+  nocinstall .exe + install-noc-agent.ps1 + installer_gui.ps1.template +
+  SHA256SUMS. Backend agent-builds proxy la serve (verificato HTTP 200).
+- Backend (vendor_metrics bridge): live in preview; per PROD serve deploy.
+- ⚠️ Servono ENTRAMBI in prod: agent v4.30.0 (walk) + backend aggiornato
+  (raggruppa i risultati in vendor_metrics). Solo l'uno o solo l'altro → UI
+  ancora vuota.
+
+### Non runtime-testato
+Il WALK reale sullo switch HPE non e' riproducibile in questo ambiente (nessun
+device SNMP): validati compilazione agent + logica backend. Verifica finale sul
+campo dopo il deploy dell'agent v4.30.0.
+
+---
+
+
+## 2026-08-07 🌐 Linea di BACKUP (2ª WAN) per cliente nel monitoraggio esterno
+
+### Richiesta utente
+Poter inserire per ogni cliente anche la linea di backup, per tenere sotto
+controllo linea primaria + backup e rilevare failover / doppio-down.
+
+### Scelte utente
+Campi backup nella stessa scheda del target · backup testato SOLO in
+raggiungibilita' (ICMP + gateway, niente TCP) · alert WARNING su failover +
+CRITICAL se entrambe giu' · pulsante "Test backup" separato.
+
+### Backend (`external_monitor.py`)
+- `WanTarget`/`WanTargetUpdate`: aggiunti `backup_label`, `backup_public_ip`,
+  `backup_gateway_ip`, `backup_enabled`.
+- `probe_target`: se backup abilitato, pinga IP backup + gateway backup e
+  popola `result["backup"]` (label, public_ip, status, ping, gateway_ping).
+  Calcola `result["line_state"]`: `ok` (primaria su) / `failover` (primaria giu',
+  backup su) / `isolated` (entrambe giu') / `no_backup`.
+- Probe loop: su transizione di `line_state` genera alert
+  `source_type="external_monitor_line"` — HIGH "FAILOVER attivo", CRITICAL
+  "CLIENTE ISOLATO"; auto-resolve al ritorno "ok".
+
+### Frontend (`ExternalMonitorPage.js`)
+- Form aggiungi + dialog modifica: sezione "Linea di backup (2ª WAN)" con toggle
+  e campi label/IP/gateway + pulsante "Test backup" (ping-only, riusa
+  /test-connection con check_ports:[]).
+- DeviceCard: badge backup nella riga (verde/rosso), pill FAILOVER/ISOLATO,
+  banner diagnostico e MetricBox backup (stato/ping/gateway) nel pannello
+  espanso. Placeholder "In attesa del primo probe…" quando manca il risultato.
+
+### Testing
+- Backend (API, main agent): create con campi backup OK; dopo probe
+  `line_state="ok"` e oggetto `backup` popolato (status/ping/latency) verificati.
+- Frontend E2E (iteration_105): **7/7 scenari PASS** (sezione backup, test
+  backup 8.8.8.8 RAGGIUNGIBILE, create dual-WAN, badge+MetricBox, edit
+  pre-compilato, delete). Cleanup + reset 2FA admin eseguiti.
+- Post-test fix (UI): spostato onClick dei toggle backup sul `<label>` (prima
+  solo sul pallino), aggiunto placeholder card, ripulita label MetricBox.
+
+### Note / backlog
+- `probe-now` e' fire-and-forget e no-op se un ciclo e' gia' in corso: i
+  risultati di un target NUOVO compaiono dopo ~60-90s (tick scheduler).
+- Failover/isolated non riprodotti in test (entrambi gli IP raggiungibili):
+  la logica e' deterministica; per test usare IP primario non instradabile.
+- ExternalMonitorPage.js ~790 righe: valutare estrarre `<BackupLineFields>`.
+
+---
+
+
+## 2026-08-07 🔧 Tray icon inclusa nel "comando token" di installazione (CLI one-liner)
+
+### Scoperta importante
+Il comando one-liner con token (`iwr .../api/agent/install/windows.ps1?token=XXX | iex`)
+NON usa `install-noc-agent.ps1` ma un template piu' semplice
+(`noc-agent/build/install.ps1.template`) che scaricava SOLO `nocagent.exe` +
+`nocwatchdog.exe` e registrava i servizi — **mai** `argus-tray.exe` ne' il task
+tray. Ecco perche' sui server installati con questo comando l'icona non e' MAI
+comparsa (indipendentemente dal fix su install-noc-agent.ps1).
+
+### Fix (richiesto dall'utente: "inseriscilo nel comando token")
+- `install.ps1.template` (step 8, best-effort/non-bloccante): scarica
+  `argus-tray.exe`, scrive `agent-ui.json` (UTF8 no-BOM, per tooltip + "Apri NOC
+  Center"), rimuove `ArgusDesktop.exe` se presente, registra e AVVIA lo
+  Scheduled Task "86BIT Argus Tray" (At Logon, gruppo INTERACTIVE).
+- `agent_ws.py`: aggiunto `argus-tray.exe` a `_ALLOWED_BINARIES["windows-amd64"]`
+  cosi' `/api/agent/binary/windows-amd64/argus-tray.exe?token=` funziona
+  (302 → proxy agent-builds → release GitHub).
+
+### Testing (backend, preview)
+- Comando token renderizzato ora contiene lo step tray (grep OK).
+- `/api/agent/binary/windows-amd64/argus-tray.exe?token=` → 302 (come nocagent.exe).
+- `/api/agent-builds/v4.29.0/argus-tray.exe?token=` → 200, 4.042.752 byte (asset
+  reale della release). End-to-end OK.
+- Blocco PowerShell non runtime-testabile (Windows-only): mirror del codice
+  gia' funzionante in installer_gui.ps1.template.
+
+### Deploy
+Modifiche backend + template: attive SUBITO in preview. Per il Center di
+PRODUZIONE (argus.86bit.it) serve deploy (Save to GitHub + redeploy prod) cosi'
+il comando token servito da prod include lo step tray.
+
+---
+
+
 ## 2026-08-07 🔧 Ripristino icona System Tray su Windows Server (regressione v4.28)
 
 ### Problema utente

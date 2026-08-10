@@ -32,6 +32,12 @@ class WanTarget(BaseModel):
     check_ports: list = [443]  # TCP ports to check
     check_ping: bool = False  # ICMP Echo (ping) check
     enabled: bool = True
+    # Linea di BACKUP (opzionale) — monitorata solo in raggiungibilita' (ICMP +
+    # gateway ISP), niente TCP. Serve a rilevare failover e doppio-down.
+    backup_label: Optional[str] = None
+    backup_public_ip: Optional[str] = None
+    backup_gateway_ip: Optional[str] = None
+    backup_enabled: bool = False
 
 
 class WanTargetUpdate(BaseModel):
@@ -45,6 +51,10 @@ class WanTargetUpdate(BaseModel):
     check_ports: Optional[list] = None
     check_ping: Optional[bool] = None
     enabled: Optional[bool] = None
+    backup_label: Optional[str] = None
+    backup_public_ip: Optional[str] = None
+    backup_gateway_ip: Optional[str] = None
+    backup_enabled: Optional[bool] = None
 
 
 class TestConnectionRequest(BaseModel):
@@ -330,6 +340,43 @@ async def probe_target(target: dict) -> dict:
     if gateway_ip:
         result["gateway_ip"] = gateway_ip
         result["gateway_ping"] = gateway_ping
+
+    # ---- Linea di BACKUP (opzionale): solo raggiungibilita' ICMP + gateway ----
+    backup_ip = (target.get("backup_public_ip") or "").strip()
+    backup_enabled = target.get("backup_enabled", False)
+    if backup_ip and backup_enabled:
+        b_gateway = (target.get("backup_gateway_ip") or "").strip() or None
+        b_tasks = [ping_host(backup_ip)]
+        if b_gateway:
+            b_tasks.append(ping_host(b_gateway))
+        b_res = await asyncio.gather(*b_tasks, return_exceptions=True)
+        b_ping = b_res[0] if isinstance(b_res[0], dict) else {"reachable": False, "latency_ms": None, "packet_loss_pct": 100}
+        b_gw_ping = None
+        if b_gateway and len(b_res) > 1:
+            b_gw_ping = b_res[1] if isinstance(b_res[1], dict) else {"reachable": False, "latency_ms": None, "packet_loss_pct": 100}
+        backup_status = "online" if b_ping.get("reachable") else "offline"
+        result["backup"] = {
+            "label": target.get("backup_label") or "Backup",
+            "public_ip": backup_ip,
+            "status": backup_status,
+            "ping": b_ping,
+            "gateway_ip": b_gateway,
+            "gateway_ping": b_gw_ping,
+        }
+
+    # ---- Stato combinato linea primaria/backup (per failover detection) ----
+    primary_reachable = ping_result.get("reachable") or any_port_open or (status in ("online", "degraded", "filtered"))
+    if backup_ip and backup_enabled:
+        backup_reachable = bool(result.get("backup", {}).get("ping", {}).get("reachable"))
+        if primary_reachable:
+            result["line_state"] = "ok"
+        elif backup_reachable:
+            result["line_state"] = "failover"
+        else:
+            result["line_state"] = "isolated"
+    else:
+        result["line_state"] = "no_backup"
+
     return result
 
 
@@ -449,8 +496,9 @@ async def run_probe_cycle():
             client_results[cid].append(r)
 
             # Get previous status
-            prev = await db.wan_probe_results.find_one({"target_id": tid}, {"_id": 0, "status": 1})
+            prev = await db.wan_probe_results.find_one({"target_id": tid}, {"_id": 0, "status": 1, "line_state": 1})
             prev_status = prev["status"] if prev else None
+            prev_line_state = prev.get("line_state") if prev else None
 
             # Store current result
             await db.wan_probe_results.update_one(
@@ -507,6 +555,55 @@ async def run_probe_cycle():
                         {"device_id": tid, "source_type": "external_monitor", "status": "active"},
                         {"$set": {"status": "resolved", "resolved_at": now_iso}},
                     )
+
+            # ---- Alert FAILOVER / cliente ISOLATO (linea backup) ----
+            line_state = r.get("line_state", "no_backup")
+            if line_state in ("failover", "isolated") and line_state != prev_line_state:
+                backup = r.get("backup", {}) or {}
+                if line_state == "failover":
+                    _line_alert = {
+                        "id": str(uuid.uuid4()),
+                        "client_id": cid,
+                        "device_id": f"{tid}:line",
+                        "severity": "high",
+                        "source_type": "external_monitor_line",
+                        "title": f"WAN {r['label']}: FAILOVER attivo",
+                        "message": (
+                            f"Linea PRIMARIA giu' ({r['public_ip']}). "
+                            f"Backup OPERATIVO ({backup.get('public_ip','?')}). "
+                            f"Il cliente e' online tramite linea di backup."
+                        ),
+                        "status": "active",
+                        "created_at": now_iso,
+                    }
+                else:  # isolated
+                    _line_alert = {
+                        "id": str(uuid.uuid4()),
+                        "client_id": cid,
+                        "device_id": f"{tid}:line",
+                        "severity": "critical",
+                        "source_type": "external_monitor_line",
+                        "title": f"WAN {r['label']}: CLIENTE ISOLATO",
+                        "message": (
+                            f"ENTRAMBE le linee giu' — primaria ({r['public_ip']}) "
+                            f"e backup ({backup.get('public_ip','?')}) non raggiungibili. "
+                            f"Cliente completamente offline."
+                        ),
+                        "status": "active",
+                        "created_at": now_iso,
+                    }
+                await insert_alert_if_emit(db, _line_alert)
+                try:
+                    import webpush as _wp
+                    await _wp.notify_new_alert(db, _line_alert)
+                except Exception:
+                    pass
+            elif line_state == "ok" and prev_line_state in ("failover", "isolated"):
+                # Linea primaria ripristinata → risolvi gli alert di linea
+                await db.alerts.update_many(
+                    {"device_id": f"{tid}:line", "source_type": "external_monitor_line", "status": "active"},
+                    {"$set": {"status": "resolved", "resolved_at": now_iso}},
+                )
 
         # Store per-client diagnosis
         for cid, res_list in client_results.items():

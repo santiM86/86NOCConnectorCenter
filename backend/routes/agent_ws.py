@@ -710,10 +710,38 @@ async def _bridge_snmp_poll(conn: _Connection, r: Dict[str, Any]) -> None:
     # grazie al campo `extra_oids` ricevuto nel poller_config. Prima
     # questi OID venivano IGNORATI dal bridge e la UI mostrava sempre 0%
     # per CPU/mem anche se il device era SNMP-attivo.
+    _vm_built: dict = {}
     if isinstance(r.get("oids"), dict) and r["oids"]:
         snmp_set["metrics"] = r["oids"]
         snmp_set["metrics_count"] = len(r["oids"])
         snmp_set["metrics_updated_at"] = now_iso
+        # v4.30: costruisci vendor_metrics per la UI. L'agent ora fa il WALK
+        # degli OID a tabella (H3C/HPE Comware CPU/mem/temp/ventole/PSU) ed
+        # emette chiavi "name.<index>": le raggruppiamo in dict per-indice; le
+        # chiavi semplici (scalari) restano valori singoli. La chiave grezza
+        # numerica (OID non risolto) viene ignorata.
+        vm: dict = {}
+        for _k, _val in r["oids"].items():
+            if not _k or _k[0].isdigit() or _k.startswith("."):
+                continue
+            if "." in _k:
+                _base, _idx = _k.split(".", 1)
+                if not _base or _base[0].isdigit():
+                    continue
+                _d = vm.get(_base)
+                if not isinstance(_d, dict):
+                    _d = {}
+                    vm[_base] = _d
+                _d[_idx] = _val
+        for _k, _val in r["oids"].items():
+            if not _k or _k[0].isdigit() or _k.startswith(".") or "." in _k:
+                continue
+            if _k not in vm:
+                vm[_k] = _val
+        if vm:
+            snmp_set["vendor_metrics"] = vm
+            snmp_set["vendor_metrics_updated_at"] = now_iso
+            _vm_built = vm
     try:
         await db.device_poll_status.update_one(
             {"client_id": conn.client_id, "device_ip": target},
@@ -769,6 +797,22 @@ async def _bridge_snmp_poll(conn: _Connection, r: Dict[str, Any]) -> None:
         )
     except Exception as e:
         logger.warning("snmp_poll: managed_devices update failed ip=%s err=%s", target, e)
+
+    # v2026-08 Alert proattivi hardware: valuta CPU/RAM/Temp/Ventole/PSU contro
+    # le soglie del profilo device ed emette/risolve alert. Solo se reachable e
+    # ci sono vendor_metrics fresche. Best-effort: non deve mai rompere il poll.
+    if reachable and _vm_built:
+        try:
+            from hardware_alerts import evaluate_hardware_alerts
+            await evaluate_hardware_alerts(
+                db,
+                client_id=conn.client_id,
+                device_ip=target,
+                vendor_metrics=_vm_built,
+                sys_name=r.get("sys_name"),
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.debug("hardware_alerts eval failed ip=%s err=%s", target, e)
 
 
 async def _bridge_switch_ports(conn: _Connection, data: Dict[str, Any]) -> None:
@@ -2550,7 +2594,7 @@ _AGENT_ICO_PATH = _pathlib.Path(_os.environ.get(
 
 _ALLOWED_PLATFORMS = {"linux-amd64", "linux-arm64", "windows-amd64", "darwin-arm64"}
 _ALLOWED_BINARIES = {
-    "windows-amd64": {"nocagent.exe", "nocwatchdog.exe", "nocagent-ui.exe", "nocinstall.exe"},
+    "windows-amd64": {"nocagent.exe", "nocwatchdog.exe", "nocagent-ui.exe", "nocinstall.exe", "argus-tray.exe"},
     "linux-amd64": {"nocagent", "nocwatchdog"},
     "linux-arm64": {"nocagent", "nocwatchdog"},
     "darwin-arm64": {"nocagent", "nocwatchdog"},

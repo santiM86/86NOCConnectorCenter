@@ -13,6 +13,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -276,6 +277,36 @@ func (p *Poller) pollTarget(ctx context.Context, t config.SNMPTarget) proto.SNMP
 							label = v.Name
 						}
 						res.OIDs[label] = asString(v)
+					}
+				}
+				// v4.30: WALK fallback per OID a TABELLA (es. H3C hh3cEntityExt*:
+				// CPU/mem/temperatura/ventole/PSU). Il GET sulla base-colonna
+				// risponde NoSuchInstance; per ogni OID non risolto dal GET
+				// proviamo un BulkWalk ed emettiamo i valori per-indice come
+				// "name.<index>". Il backend li raggruppa in vendor_metrics.
+				for wName, wOID := range t.ExtraOIDs {
+					if wOID == "" {
+						continue
+					}
+					if _, ok := res.OIDs[wName]; ok {
+						continue // gia' risolto via GET (scalare)
+					}
+					pdus, werr := gExtra.BulkWalkAll(wOID)
+					if werr != nil || len(pdus) == 0 {
+						continue
+					}
+					base := strings.TrimPrefix(wOID, ".")
+					for _, v := range pdus {
+						if v.Type == gosnmp.NoSuchObject || v.Type == gosnmp.NoSuchInstance || v.Type == gosnmp.EndOfMibView {
+							continue
+						}
+						vn := strings.TrimPrefix(v.Name, ".")
+						idx := strings.TrimPrefix(strings.TrimPrefix(vn, base), ".")
+						if idx == "" || idx == "0" {
+							res.OIDs[wName] = asString(v)
+						} else {
+							res.OIDs[wName+"."+idx] = asString(v)
+						}
 					}
 				}
 				_ = gExtra.Conn.Close()

@@ -108,6 +108,49 @@ Write-Host ">> starting services"
 Start-Service -Name $AgentName
 Start-Service -Name $WatchdogName
 
+# 8. Argus Tray icon (systray Win32 nativa, NIENTE WebView2) - best effort.
+#    Scarica argus-tray.exe, scrive agent-ui.json (tooltip + "Apri NOC Center")
+#    e registra uno Scheduled Task "At Logon" cosi' l'icona compare accanto
+#    all'orologio nella sessione utente (workstation E server via RDP/console).
+try {
+    $trayBin = Join-Path $InstallDir "argus-tray.exe"
+    $trayUrl = "$BackendUrl/api/agent/binary/$Platform/argus-tray.exe?token=$Token"
+    Write-Host ">> downloading argus-tray.exe"
+    Invoke-WebRequest -UseBasicParsing -Uri $trayUrl -OutFile $trayBin
+
+    # agent-ui.json: letto dalla tray per tooltip (versione/cliente) e menu.
+    # UTF8 SENZA BOM: la tray fa json.Unmarshal e il BOM lo mandava a vuoto.
+    $uiObj = [ordered]@{
+        backend_url = $BackendUrl
+        client_id   = $clientId
+        install_dir = $InstallDir
+        config_path = $cfgPath
+        version     = "$($manifest.version)"
+    }
+    $uiJson = $uiObj | ConvertTo-Json -Compress
+    [System.IO.File]::WriteAllText((Join-Path $DataDir "agent-ui.json"), $uiJson, (New-Object System.Text.UTF8Encoding($false)))
+
+    # ArgusDesktop.exe (Wails/WebView2) e' DEPRECATO: rimuovilo se presente.
+    $adExe = Join-Path $InstallDir "ArgusDesktop.exe"
+    if (Test-Path $adExe) {
+        Get-Process -Name 'ArgusDesktop' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+        Remove-Item $adExe -Force -ErrorAction SilentlyContinue
+    }
+
+    # Scheduled Task "At Logon" (gruppo INTERACTIVE) -> la systray gira nella
+    # sessione desktop dell'utente loggato. Start immediato per la sessione attuale.
+    $taskName  = "86BIT Argus Tray"
+    $action    = New-ScheduledTaskAction -Execute $trayBin
+    $trigger   = New-ScheduledTaskTrigger -AtLogOn
+    $principal = New-ScheduledTaskPrincipal -GroupId 'INTERACTIVE' -RunLevel Limited
+    $settings  = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 5 -RestartInterval ([TimeSpan]::FromMinutes(1))
+    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
+    Start-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+    Write-Host "   tray icon registrata e avviata (accanto all'orologio)" -ForegroundColor Green
+} catch {
+    Write-Host "   WARN: setup tray icon fallito (non bloccante): $($_.Exception.Message)" -ForegroundColor Yellow
+}
+
 Start-Sleep -Seconds 3
 $ag = Get-Service -Name $AgentName
 $wd = Get-Service -Name $WatchdogName
