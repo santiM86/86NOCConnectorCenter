@@ -54,6 +54,55 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-08-07 🩺 Fix metriche salute switch HPE Comware (CPU/RAM/Temp/Ventole/PSU vuote)
+
+### Problema utente
+Nel dettaglio dello switch HPE 5130 (profilo `hpe_comware`) Performance
+(CPU/Memoria/Temperatura) e Hardware erano vuoti ("—" e "Hardware detail non
+disponibile per hpe_comware").
+
+### Root cause (confermata dal codice)
+Gli OID di salute H3C (`hh3cEntityExtStateTable`: CpuUsage .6 / MemUsage .8 /
+Temperature .12 / FanState .16 / PowerState .18) sono **colonne di TABELLA**
+indicizzate per entPhysicalIndex. Il backend li invia all'agent come
+`extra_oids`, ma l'agent Go (`snmp.go`) faceva SOLO un `Get()` sulla base-colonna
+→ risposta `NoSuchInstance` → scartato. Nessun WALK delle tabelle vendor. In
+più i risultati finivano in `device_poll_status.metrics`, mai in `vendor_metrics`
+(che e' cio' che legge la UI). Gli scalari (`.0`) funzionavano, le tabelle no.
+
+### Fix
+- **Agent (`noc-agent/internal/poller/snmp.go`)**: dopo il GET batch, per ogni
+  `extra_oid` non risolto esegue un `BulkWalkAll` (l'agent gia' walka per porte/
+  LLDP) ed emette i valori per-indice come chiavi `name.<index>`. Import
+  `strings` aggiunto. **Compilato OK** (windows/amd64, go vet pulito) in questo
+  ambiente (Go arm64 installato in /usr/local/go).
+- **Backend (`agent_ws.py` bridge SNMP)**: dai risultati costruisce
+  `vendor_metrics` raggruppando le chiavi `name.<index>` in dict per-indice
+  (scalari restano valori singoli; OID grezzi numerici ignorati) e lo salva su
+  `device_poll_status.vendor_metrics`. Logica verificata con input simulato.
+- **Frontend**: NESSUNA modifica — `VendorDetailsPanel/SwitchPanel` gia' legge
+  `vm.h3cEntityExtCpuUsage/MemUsage/Temperature` (max sui dict) e
+  `h3cFanState/h3cPowerState` (entries); il messaggio "Hardware non disponibile"
+  e' data-driven (sparisce quando arrivano i dati).
+
+### Stato / deploy
+- ✅ **Release agent v4.30.0 PUBBLICATA** su GitHub (santiM86/86NOCConnectorCenter,
+  id 367883057) — è "latest", asset: nocagent/nocwatchdog/nocagent-ui/argus-tray/
+  nocinstall .exe + install-noc-agent.ps1 + installer_gui.ps1.template +
+  SHA256SUMS. Backend agent-builds proxy la serve (verificato HTTP 200).
+- Backend (vendor_metrics bridge): live in preview; per PROD serve deploy.
+- ⚠️ Servono ENTRAMBI in prod: agent v4.30.0 (walk) + backend aggiornato
+  (raggruppa i risultati in vendor_metrics). Solo l'uno o solo l'altro → UI
+  ancora vuota.
+
+### Non runtime-testato
+Il WALK reale sullo switch HPE non e' riproducibile in questo ambiente (nessun
+device SNMP): validati compilazione agent + logica backend. Verifica finale sul
+campo dopo il deploy dell'agent v4.30.0.
+
+---
+
+
 ## 2026-08-07 🌐 Linea di BACKUP (2ª WAN) per cliente nel monitoraggio esterno
 
 ### Richiesta utente

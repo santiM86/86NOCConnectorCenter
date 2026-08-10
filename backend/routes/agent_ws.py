@@ -762,6 +762,32 @@ async def _bridge_snmp_poll(conn: _Connection, r: Dict[str, Any]) -> None:
         snmp_set["metrics"] = r["oids"]
         snmp_set["metrics_count"] = len(r["oids"])
         snmp_set["metrics_updated_at"] = now_iso
+        # v4.30: costruisci vendor_metrics per la UI. L'agent ora fa il WALK
+        # degli OID a tabella (H3C/HPE Comware CPU/mem/temp/ventole/PSU) ed
+        # emette chiavi "name.<index>": le raggruppiamo in dict per-indice; le
+        # chiavi semplici (scalari) restano valori singoli. La chiave grezza
+        # numerica (OID non risolto) viene ignorata.
+        vm: dict = {}
+        for _k, _val in r["oids"].items():
+            if not _k or _k[0].isdigit() or _k.startswith("."):
+                continue
+            if "." in _k:
+                _base, _idx = _k.split(".", 1)
+                if not _base or _base[0].isdigit():
+                    continue
+                _d = vm.get(_base)
+                if not isinstance(_d, dict):
+                    _d = {}
+                    vm[_base] = _d
+                _d[_idx] = _val
+        for _k, _val in r["oids"].items():
+            if not _k or _k[0].isdigit() or _k.startswith(".") or "." in _k:
+                continue
+            if _k not in vm:
+                vm[_k] = _val
+        if vm:
+            snmp_set["vendor_metrics"] = vm
+            snmp_set["vendor_metrics_updated_at"] = now_iso
     try:
         await db.device_poll_status.update_one(
             {"client_id": conn.client_id, "device_ip": target},
