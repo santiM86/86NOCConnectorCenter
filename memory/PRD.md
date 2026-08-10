@@ -54,6 +54,41 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-08-07 🔧 Tray icon inclusa nel "comando token" di installazione (CLI one-liner)
+
+### Scoperta importante
+Il comando one-liner con token (`iwr .../api/agent/install/windows.ps1?token=XXX | iex`)
+NON usa `install-noc-agent.ps1` ma un template piu' semplice
+(`noc-agent/build/install.ps1.template`) che scaricava SOLO `nocagent.exe` +
+`nocwatchdog.exe` e registrava i servizi — **mai** `argus-tray.exe` ne' il task
+tray. Ecco perche' sui server installati con questo comando l'icona non e' MAI
+comparsa (indipendentemente dal fix su install-noc-agent.ps1).
+
+### Fix (richiesto dall'utente: "inseriscilo nel comando token")
+- `install.ps1.template` (step 8, best-effort/non-bloccante): scarica
+  `argus-tray.exe`, scrive `agent-ui.json` (UTF8 no-BOM, per tooltip + "Apri NOC
+  Center"), rimuove `ArgusDesktop.exe` se presente, registra e AVVIA lo
+  Scheduled Task "86BIT Argus Tray" (At Logon, gruppo INTERACTIVE).
+- `agent_ws.py`: aggiunto `argus-tray.exe` a `_ALLOWED_BINARIES["windows-amd64"]`
+  cosi' `/api/agent/binary/windows-amd64/argus-tray.exe?token=` funziona
+  (302 → proxy agent-builds → release GitHub).
+
+### Testing (backend, preview)
+- Comando token renderizzato ora contiene lo step tray (grep OK).
+- `/api/agent/binary/windows-amd64/argus-tray.exe?token=` → 302 (come nocagent.exe).
+- `/api/agent-builds/v4.29.0/argus-tray.exe?token=` → 200, 4.042.752 byte (asset
+  reale della release). End-to-end OK.
+- Blocco PowerShell non runtime-testabile (Windows-only): mirror del codice
+  gia' funzionante in installer_gui.ps1.template.
+
+### Deploy
+Modifiche backend + template: attive SUBITO in preview. Per il Center di
+PRODUZIONE (argus.86bit.it) serve deploy (Save to GitHub + redeploy prod) cosi'
+il comando token servito da prod include lo step tray.
+
+---
+
+
 ## 2026-08-07 🔧 Ripristino icona System Tray su Windows Server (regressione v4.28)
 
 ### Problema utente
