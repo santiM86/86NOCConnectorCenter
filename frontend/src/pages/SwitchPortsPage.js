@@ -68,6 +68,24 @@ function portLabel(name, idx) {
   return String(idx ?? "");
 }
 
+// Interfacce LOGICHE/virtuali (non porte fisiche): NULL0, InLoopBack0/LoopBack,
+// Vlan-interface, Register-Tunnel/Tunnel. Lo switch le espone via ifTable SNMP
+// insieme alle porte reali; le raggruppiamo in una sezione separata.
+function isLogicalIface(name) {
+  const n = (name || "").toLowerCase().trim();
+  if (!n) return false;
+  return (
+    n.startsWith("null") ||
+    n.includes("loopback") ||
+    n.includes("vlan-interface") ||
+    n.startsWith("vlanif") ||
+    n.startsWith("vlan-int") ||
+    n.includes("register-tunnel") ||
+    n.startsWith("tunnel")
+  );
+}
+
+
 // ----- port icon -----
 function PortIcon({ p, size = 22 }) {
   const t = p.port_type;
@@ -520,6 +538,13 @@ export default function SwitchPortsPage() {
     });
   }, [ports, sortBy, sortDir, tableOnlyUp]);
 
+  // Solo porte FISICHE per la matrice a tile (le logiche vanno in fondo alla tabella)
+  const physicalTiles = useMemo(() => ports.filter((p) => !isLogicalIface(p.name)), [ports]);
+  // Partizione della tabella completa: prima le fisiche, poi le logiche
+  const physRows = useMemo(() => tablePorts.filter((p) => !isLogicalIface(p.name)), [tablePorts]);
+  const logicalRows = useMemo(() => tablePorts.filter((p) => isLogicalIface(p.name)), [tablePorts]);
+
+
   const SortIcon = ({ col }) => {
     if (sortBy !== col) return <CaretUp size={9} className="opacity-30 inline ml-0.5" />;
     return sortDir === "asc"
@@ -752,11 +777,11 @@ export default function SwitchPortsPage() {
       <div className="noc-panel p-3 md:p-4">
         {/* Group in row of 8 (typical switch layout) */}
         <div className="flex flex-wrap gap-1.5 sm:gap-2">
-          {ports.map(p => (
+          {physicalTiles.map(p => (
             <PortTile key={p.idx} p={p} active={selected?.idx === p.idx} onClick={() => setSelected(p)} />
           ))}
         </div>
-        {ports.length === 0 && <div className="text-center text-[11px] text-[var(--text-muted)] py-3">Nessuna porta con questo filtro</div>}
+        {physicalTiles.length === 0 && <div className="text-center text-[11px] text-[var(--text-muted)] py-3">Nessuna porta con questo filtro</div>}
         {/* Legenda */}
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-[var(--text-muted)] mt-3 pt-3 border-t border-[var(--bg-border)]">
           <span className="flex items-center gap-1"><Lightning size={11} weight="fill" className="text-emerald-400" /> PoE attivo</span>
@@ -796,7 +821,7 @@ export default function SwitchPortsPage() {
       {/* Tabella riepilogo (collassabile su mobile) */}
       <details className="noc-panel" open>
         <summary className="cursor-pointer px-3 py-2 text-[12px] font-semibold border-b border-[var(--bg-border)] hover:bg-[var(--bg-hover)] flex items-center gap-3">
-          <span>Tabella completa ({tablePorts.length}{tableOnlyUp ? `/${ports.length}` : ""})</span>
+          <span>Tabella completa ({physRows.length} fisiche{logicalRows.length ? ` · ${logicalRows.length} logiche` : ""}{tableOnlyUp ? `/${ports.length}` : ""})</span>
           <label
             className="ml-auto flex items-center gap-1.5 text-[10px] font-normal text-[var(--text-secondary)] cursor-pointer"
             onClick={(e) => e.stopPropagation()}
@@ -842,7 +867,16 @@ export default function SwitchPortsPage() {
               </tr>
             </thead>
             <tbody>
-              {tablePorts.map(p => {
+              {[...physRows, ...(logicalRows.length ? ["__logical_sep__", ...logicalRows] : [])].map(p => {
+                if (p === "__logical_sep__") {
+                  return (
+                    <tr key="logical-sep" data-testid="switch-ports-logical-sep">
+                      <td colSpan={8} className="bg-[var(--bg-hover)] text-[10px] font-semibold text-[var(--text-secondary)] py-1.5 px-2 uppercase tracking-wide">
+                        Interfacce logiche · {logicalRows.length} <span className="normal-case font-normal text-[var(--text-muted)]">(non porte fisiche: NULL0, LoopBack, Vlan-interface, Tunnel)</span>
+                      </td>
+                    </tr>
+                  );
+                }
                 const isUp = p.oper === 1 && p.admin === 1;
                 const isPoe = p.poe_status === 3;
                 return (

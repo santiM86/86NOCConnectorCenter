@@ -54,6 +54,42 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-08-10 🧹 Interfacce logiche separate nell'elenco porte switch
+
+### Richiesta utente
+NULL0 e InLoopBack0 comparivano tra le porte fisiche dello switch (screenshot).
+Scelta utente (opzione b): tenerle ma in una **sezione separata "Interfacce
+logiche"** a fondo tabella; anche Vlan-interface trattata come logica.
+
+### Cosa sono (spiegato all'utente)
+Interfacce virtuali Comware esposte via ifTable SNMP: NULL0 (black-hole
+routing), InLoopBack0/LoopBack (loopback interno stack), Vlan-interface (SVI),
+Register-Tunnel/Tunnel. Normali e innocue, non porte fisiche.
+
+### Implementazione (`frontend/src/pages/SwitchPortsPage.js`)
+- Helper `isLogicalIface(name)`: match NULL*, *loopback*, vlan-interface/vlanif,
+  register-tunnel, tunnel*. LAG (Bridge-Aggregation) e MEth (mgmt) restano
+  FISICHE (utili).
+- `physicalTiles` (matrice a tile mostra solo fisiche), `physRows`/`logicalRows`
+  (partizione della "Tabella completa").
+- Tabella: prima le fisiche, poi una riga separatore "Interfacce logiche · N
+  (non porte fisiche...)", poi le logiche. Contatore header aggiornato
+  ("X fisiche · Y logiche").
+
+### Testing
+Classificazione verificata con node sui nomi reali dello screenshot
+(NULL0/InLoopBack0/Vlan-interface/Tunnel/LoopBack -> logiche; GigabitEthernet/
+Ten-GigabitEthernet/Bridge-Aggregation/MEth -> fisiche). JSX compila (solo
+warning preesistente exhaustive-deps L438). Screenshot E2E non eseguito (pagina
+dietro login+2FA obbligatorio); cambiamento di sola presentazione.
+
+### Deploy
+Preview attivo; per PROD Save to GitHub + redeploy frontend.
+
+---
+
+
+
 ## 2026-08-10 🐞 FIX #2 — Temperatura 65535 e PSU/Fan fantasma (sentinelle SNMP)
 
 ### Sintomo (2° screenshot utente, stesso switch HPE 5130)
