@@ -212,49 +212,64 @@ function SwitchPanel({ vm, thresholds, profileKey }) {
   const tempMetric = vm.h3cEntityExtTemperature;
   const fanStates = vm.h3cFanState || vm.fanStatus || {};
   const psuStates = vm.h3cPowerState || vm.psuStatus || {};
-  const cpu = typeof cpuMetric === "object" ? Math.max(...Object.values(cpuMetric).filter(v => typeof v === "number")) : cpuMetric;
-  const mem = typeof memMetric === "object" ? Math.max(...Object.values(memMetric).filter(v => typeof v === "number")) : memMetric;
-  const temp = typeof tempMetric === "object" ? Math.max(...Object.values(tempMetric).filter(v => typeof v === "number")) : tempMetric;
+  // I valori SNMP possono arrivare come numeri O come stringhe ("45"): parse
+  // robusto -> numero finito oppure null (mai NaN/-Infinity).
+  const num = (v) => {
+    const n = typeof v === "number" ? v : parseFloat(String(v ?? "").replace(",", "."));
+    return Number.isFinite(n) ? n : null;
+  };
+  const maxNum = (metric) => {
+    if (metric === null || metric === undefined) return null;
+    if (typeof metric === "object") {
+      const nums = Object.values(metric).map(num).filter((v) => v !== null);
+      return nums.length ? Math.max(...nums) : null;
+    }
+    return num(metric);
+  };
+  const cpu = maxNum(cpuMetric);
+  const mem = maxNum(memMetric);
+  const temp = maxNum(tempMetric);
+  // Mostra solo le voci ventola/PSU con uno stato valido (>0). Le righe con
+  // valore vuoto/0 (bay non popolato o entita' non applicabile) sono nascoste
+  // per non affollare il pannello di "N/D".
+  const validStates = (states) =>
+    Object.entries(states)
+      .map(([idx, st]) => [idx, num(st)])
+      .filter(([, n]) => n !== null && n > 0);
+  const psuValid = validStates(psuStates);
+  const fanValid = validStates(fanStates);
 
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
       <Card title="Performance" icon={Activity} testid="vendor-switch-perf">
-        <Metric label="CPU" value={cpu ? Math.round(cpu) : null} unit="%"
+        <Metric label="CPU" value={cpu !== null ? Math.round(cpu) : null} unit="%"
           colorClass={severityColor(cpu, thresholds?.cpu_warn_pct || 70, thresholds?.cpu_crit_pct || 90)} />
-        <Metric label="Memoria" value={mem ? Math.round(mem) : null} unit="%"
+        <Metric label="Memoria" value={mem !== null ? Math.round(mem) : null} unit="%"
           colorClass={severityColor(mem, thresholds?.mem_warn_pct || 80, thresholds?.mem_crit_pct || 95)} />
-        <Metric label="Temperatura" value={temp ? Math.round(temp) : null} unit="°C"
+        <Metric label="Temperatura" value={temp !== null ? Math.round(temp) : null} unit="°C"
           colorClass={severityColor(temp, thresholds?.temp_warn_c || 55, thresholds?.temp_crit_c || 70)} />
       </Card>
 
       <Card title="Hardware" icon={Plugs} testid="vendor-switch-hardware">
         <div className="space-y-2 text-[11px]">
-          {Object.entries(psuStates).map(([idx, st]) => {
-            const n = Number(st);
-            const isValid = Number.isFinite(n) && n > 0;
-            return (
-              <div key={`psu${idx}`} className="flex items-center justify-between">
-                <span className="text-white/60">PSU {idx}</span>
-                <span className={`font-mono ${!isValid ? "text-neutral-400" : n <= 2 ? "text-emerald-400" : "text-red-400"}`}>
-                  {!isValid ? "N/D" : n <= 2 ? "OK" : `FAULT (codice ${n})`}
-                </span>
-              </div>
-            );
-          })}
-          {Object.entries(fanStates).map(([idx, st]) => {
-            const n = Number(st);
-            const isValid = Number.isFinite(n) && n > 0;
-            return (
-              <div key={`fan${idx}`} className="flex items-center justify-between">
-                <span className="text-white/60">Fan {idx}</span>
-                <span className={`font-mono ${!isValid ? "text-neutral-400" : n <= 2 ? "text-emerald-400" : "text-red-400"}`}>
-                  {!isValid ? "N/D" : n <= 2 ? "OK" : `FAULT (codice ${n})`}
-                </span>
-              </div>
-            );
-          })}
-          {Object.keys(psuStates).length === 0 && Object.keys(fanStates).length === 0 && (
-            <p className="text-white/30 italic">Hardware detail non disponibile per {profileKey || "profilo sconosciuto"}.</p>
+          {psuValid.map(([idx, n]) => (
+            <div key={`psu${idx}`} className="flex items-center justify-between">
+              <span className="text-white/60">PSU {idx}</span>
+              <span className={`font-mono ${n <= 2 ? "text-emerald-400" : "text-red-400"}`}>
+                {n <= 2 ? "OK" : `FAULT (codice ${n})`}
+              </span>
+            </div>
+          ))}
+          {fanValid.map(([idx, n]) => (
+            <div key={`fan${idx}`} className="flex items-center justify-between">
+              <span className="text-white/60">Fan {idx}</span>
+              <span className={`font-mono ${n <= 2 ? "text-emerald-400" : "text-red-400"}`}>
+                {n <= 2 ? "OK" : `FAULT (codice ${n})`}
+              </span>
+            </div>
+          ))}
+          {psuValid.length === 0 && fanValid.length === 0 && (
+            <p className="text-white/30 italic">Nessuno stato ventole/alimentatori valido riportato via SNMP per {profileKey || "questo profilo"}.</p>
           )}
         </div>
       </Card>

@@ -54,6 +54,49 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-08-10 🐞 FIX "-Infinity %" e PSU/Fan "N/D" nel pannello switch (HPE Comware)
+
+### Sintomo (screenshot utente, switch HPE 5130 10.10.10.105)
+Pannello Performance mostrava CPU/Memoria/Temperatura = **"-Infinity %/°C"**;
+pannello Hardware elencava PSU 1..24 e Fan 1/2/12 tutti **"N/D"**.
+
+### Root cause
+`frontend/src/components/VendorDetailsPanel.js::SwitchPanel` calcolava
+`Math.max(...Object.values(metric).filter(v => typeof v === "number"))`. I
+valori SNMP delle tabelle H3C arrivano come **stringhe** ("45"), quindi il
+filtro `typeof === "number"` li scartava tutti -> `Math.max()` su array vuoto
+= **-Infinity** (poi mostrato perche' `cpu ? ...` considera -Infinity truthy).
+Per PSU/Fan le voci con valore vuoto/0 (bay non popolati / entita' non
+applicabili del walk entPhysicalIndex) risultavano `N/D`, affollando il
+pannello con decine di righe inutili.
+
+### Fix
+- **Frontend (`VendorDetailsPanel.js`)**: parsing robusto `num()` (accetta
+  numeri E stringhe numeriche, ritorna null se non finito) + `maxNum()` che
+  ritorna `null` (-> "—") quando non ci sono valori validi, invece di
+  -Infinity. Guardie `cpu !== null` sui `Metric`. PSU/Fan: mostra SOLO le voci
+  con stato valido (>0) via `validStates()`; se nessuna valida, messaggio
+  "Nessuno stato ventole/alimentatori valido riportato via SNMP".
+- **Backend (`agent_ws.py::_bridge_snmp_poll`)**: helper `_coerce_num()` che
+  converte i valori numerici-stringa di `vendor_metrics` in int/float alla
+  fonte (stringhe non numeriche come modello/sysDescr restano invariate), cosi'
+  UI, report e "Tutte le metriche" trattano i valori come numeri.
+
+### Testing
+- Logica JS verificata con node su casi reali: dict di stringhe -> max
+  corretto; dict vuoto -> null ("—", non piu' -Infinity); scalare stringa ->
+  numero; PSU vuoti -> lista vuota (messaggio); PSU misti -> solo validi.
+- Frontend compila OK; backend syntax OK. (Nessun switch SNMP reale in
+  preview: fix di rendering/parsing deterministico.)
+
+### Deploy
+Fix Frontend + Backend: attivi in preview. Per argus.86bit.it PROD serve
+Save to GitHub + redeploy (frontend + backend). Nessun rebuild Agent Go.
+
+---
+
+
+
 ## 2026-08-10 🚨 Alert Proattivi Hardware SNMP (CPU/RAM/Temp/Ventole/PSU)
 
 ### Richiesta utente
