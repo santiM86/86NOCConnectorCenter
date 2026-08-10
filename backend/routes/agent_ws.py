@@ -769,6 +769,26 @@ async def _bridge_snmp_poll(conn: _Connection, r: Dict[str, Any]) -> None:
         # chiavi semplici (scalari) restano valori singoli. La chiave grezza
         # numerica (OID non risolto) viene ignorata.
         vm: dict = {}
+
+        def _coerce_num(_v):
+            # I valori SNMP a volte arrivano come stringhe numeriche ("45"):
+            # convertili in int/float cosi' la UI/report/alert li trattano come
+            # numeri. Le stringhe non numeriche (es. sysDescr, modello) restano
+            # invariate.
+            if isinstance(_v, bool) or isinstance(_v, (int, float)):
+                return _v
+            if isinstance(_v, str):
+                _s = _v.strip()
+                if _s:
+                    try:
+                        return int(_s)
+                    except ValueError:
+                        try:
+                            return float(_s.replace(",", "."))
+                        except ValueError:
+                            return _v
+            return _v
+
         for _k, _val in r["oids"].items():
             if not _k or _k[0].isdigit() or _k.startswith("."):
                 continue
@@ -780,12 +800,12 @@ async def _bridge_snmp_poll(conn: _Connection, r: Dict[str, Any]) -> None:
                 if not isinstance(_d, dict):
                     _d = {}
                     vm[_base] = _d
-                _d[_idx] = _val
+                _d[_idx] = _coerce_num(_val)
         for _k, _val in r["oids"].items():
             if not _k or _k[0].isdigit() or _k.startswith(".") or "." in _k:
                 continue
             if _k not in vm:
-                vm[_k] = _val
+                vm[_k] = _coerce_num(_val)
         if vm:
             snmp_set["vendor_metrics"] = vm
             snmp_set["vendor_metrics_updated_at"] = now_iso
