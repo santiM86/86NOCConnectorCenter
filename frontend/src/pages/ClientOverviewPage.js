@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import axios from "axios";
 import { API } from "@/App";
@@ -4137,7 +4137,10 @@ function VMBackupPanel({ clientId }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState([]);
   const [polling, setPolling] = useState(false);
-  const [view, setView] = useState("all"); // all | problems | stale
+  const [view, setView] = useState("all"); // all | problems | stale  (filtro tabella "elenco completo")
+  const [mode, setMode] = useState("dashboard"); // dashboard | list
+  const [q, setQ] = useState("");
+  const [groupBy, setGroupBy] = useState("host"); // host | customer
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -4200,7 +4203,31 @@ function VMBackupPanel({ clientId }) {
     if (vals.includes("success")) return "success";
     return "unknown";
   };
-  const _filteredItems = (status.items || []).filter(it => {
+  // Dedup: lo stesso VM logico (host+nome) puo' comparire piu' volte (poll storici
+  // con vm_id diversi) -> tieni solo lo snapshot piu' recente. Rende coerenti hero,
+  // roll-up, "richiede attenzione" ed elenco.
+  const allItems = useMemo(() => {
+    const src = status.items || [];
+    const m = new Map();
+    for (const it of src) {
+      const k = `${(it.host_name || "").toLowerCase()}|${(it.vm_name || "").toLowerCase()}|${(it.customer_name || "").toLowerCase()}`;
+      const tt = it.onsite_time ? Date.parse(it.onsite_time) : 0;
+      const prev = m.get(k);
+      if (!prev || tt >= prev.__t) m.set(k, { ...it, __t: tt });
+    }
+    return Array.from(m.values());
+  }, [status.items]);
+
+  const counts = useMemo(() => {
+    let failed = 0, warning = 0, stale = 0, success = 0;
+    for (const it of allItems) {
+      const r = it.alert_reason;
+      if (r === "failed") failed++; else if (r === "warning") warning++; else if (r === "stale") stale++; else success++;
+    }
+    return { total: allItems.length, failed, warning, stale, success };
+  }, [allItems]);
+
+  const _filteredItems = allItems.filter(it => {
     if (view === "problems" && it.alert_reason !== "failed" && it.alert_reason !== "warning") return false;
     if (view === "stale" && it.alert_reason !== "stale") return false;
     return true;
@@ -4221,6 +4248,40 @@ function VMBackupPanel({ clientId }) {
     }
   );
 
+  // ── Aggregazioni enterprise (roll-up + exceptions-first) ──────────────
+  const SEV = { failed: 3, warning: 2, stale: 1 };
+  const problemItems = useMemo(() => {
+    return allItems
+      .filter((x) => x.alert_reason === "failed" || x.alert_reason === "warning" || x.alert_reason === "stale")
+      .sort((a, b) =>
+        (SEV[b.alert_reason] - SEV[a.alert_reason]) ||
+        ((a.onsite_time ? Date.parse(a.onsite_time) : 0) - (b.onsite_time ? Date.parse(b.onsite_time) : 0))
+      );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allItems]);
+
+  const groups = useMemo(() => {
+    const key = groupBy === "customer" ? "customer_name" : "host_name";
+    const m = new Map();
+    for (const it of allItems) {
+      const k = it[key] || "—";
+      let g = m.get(k);
+      if (!g) { g = { key: k, type: it.host_type || "", customer: it.customer_name || "", total: 0, success: 0, warning: 0, failed: 0, stale: 0, last: 0 }; m.set(k, g); }
+      g.total += 1;
+      const r = it.alert_reason;
+      if (r === "failed") g.failed += 1;
+      else if (r === "warning") g.warning += 1;
+      else if (r === "stale") g.stale += 1;
+      else g.success += 1;
+      const t = it.onsite_time ? Date.parse(it.onsite_time) : 0;
+      if (t > g.last) g.last = t;
+    }
+    return Array.from(m.values()).sort((a, b) =>
+      ((b.failed + b.warning + b.stale) - (a.failed + a.warning + a.stale)) || (b.total - a.total)
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allItems, groupBy]);
+
   if (loading) return <div className="noc-panel p-5 text-[11px] text-[var(--text-muted)] text-center">Caricamento…</div>;
 
   // Config non presente (no-admin è separato)
@@ -4236,11 +4297,9 @@ function VMBackupPanel({ clientId }) {
     );
   }
 
-  const t = status.totals || {};
-  const items = _filteredItems;
-
   return (
     <div className="space-y-3">
+      {/* header + editing sotto (usano `t` non più necessario) */}
       <div className="noc-panel p-3 flex items-center gap-3 flex-wrap">
         <div className="flex-1 min-w-[260px]">
           <p className="text-[10px] uppercase tracking-widest text-[var(--text-muted)]">Hornetsecurity VM Backup (Altaro)</p>
@@ -4316,86 +4375,226 @@ function VMBackupPanel({ clientId }) {
         </div>
       )}
 
-      {((mapping.filters?.length || 0) > 0 || (mapping.customers?.length || 0) > 0) && (
+      {((mapping.filters?.length || 0) > 0 || (mapping.customers?.length || 0) > 0) && (() => {
+        const total = counts.total;
+        const nFailed = counts.failed, nWarning = counts.warning, nStale = counts.stale;
+        const nSuccess = counts.success;
+        const rate = total > 0 ? (nSuccess / total) * 100 : 0;
+        const rateColor = rate >= 99 ? "#34C759" : rate >= 95 ? "#FFB400" : "#FF3B30";
+        const problemsCount = nFailed + nWarning + nStale;
+        const ql = q.trim().toLowerCase();
+        const tableRows = sortedVms.filter((vm) => !ql ||
+          `${vm.vm_name || ""} ${vm.host_name || ""} ${vm.customer_name || ""}`.toLowerCase().includes(ql));
+        return (
         <>
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
-            <StatBox label="VM totali" value={t.vms_total || 0} color="#06B6D4" />
-            <StatBox label="Success" value={t.by_status?.success || 0} color="#34C759" />
-            <StatBox label="Failed" value={t.failed || 0} color="#FF3B30" />
-            <StatBox label="Warning" value={t.warning || 0} color="#FFB400" />
-            <StatBox label="Stale > 48h" value={t.stale || 0} color="#FF9500" />
+          {/* ── HERO SALUTE ─────────────────────────────────────────── */}
+          <div className="noc-panel p-4 grid gap-5 md:grid-cols-[220px_1fr] items-center" data-testid="vmbackup-health-hero">
+            <div className="flex items-center gap-4">
+              <div className="relative w-[92px] h-[92px] flex-shrink-0">
+                <svg viewBox="0 0 36 36" className="w-full h-full -rotate-90">
+                  <circle cx="18" cy="18" r="15.9" fill="none" stroke="var(--bg-border)" strokeWidth="3.2" />
+                  <circle cx="18" cy="18" r="15.9" fill="none" stroke={rateColor} strokeWidth="3.2" strokeLinecap="round"
+                    strokeDasharray={`${(rate / 100) * 99.9} 99.9`} style={{ transition: "stroke-dasharray .6s ease" }} />
+                </svg>
+                <div className="absolute inset-0 flex flex-col items-center justify-center">
+                  <span className="text-xl font-black font-mono leading-none" style={{ color: rateColor }}>{rate.toFixed(1)}%</span>
+                  <span className="text-[7px] uppercase tracking-widest text-[var(--text-muted)] mt-0.5">success</span>
+                </div>
+              </div>
+              <div>
+                <p className="text-[9px] uppercase tracking-widest text-[var(--text-muted)]">VM protette</p>
+                <p className="text-2xl font-black font-mono text-[var(--text-primary)] leading-none">{total.toLocaleString("it-IT")}</p>
+                <p className={`text-[10px] mt-1 font-semibold ${problemsCount > 0 ? "text-amber-300" : "text-emerald-300"}`}>
+                  {problemsCount > 0 ? `${problemsCount.toLocaleString("it-IT")} da verificare` : "Tutte protette ✓"}
+                </p>
+              </div>
+            </div>
+            <div className="min-w-0">
+              <VmHealthBar success={nSuccess} warning={nWarning} failed={nFailed} stale={nStale} total={total} height={14} />
+              <div className="flex flex-wrap gap-x-4 gap-y-1.5 mt-2.5">
+                {[
+                  { k: "success", label: "Success", v: nSuccess, c: "#34C759" },
+                  { k: "failed", label: "Failed", v: nFailed, c: "#FF3B30" },
+                  { k: "warning", label: "Warning", v: nWarning, c: "#FFB400" },
+                  { k: "stale", label: "Stale >48h", v: nStale, c: "#FF9500" },
+                ].map((s) => (
+                  <button key={s.k}
+                    onClick={() => { setMode("list"); setView(s.k === "success" ? "all" : s.k === "stale" ? "stale" : "problems"); }}
+                    className="flex items-center gap-1.5 group" data-testid={`vmbackup-legend-${s.k}`}>
+                    <span className="w-2.5 h-2.5 rounded-sm" style={{ background: s.c }} />
+                    <span className="text-[11px] font-bold font-mono" style={{ color: s.c }}>{s.v.toLocaleString("it-IT")}</span>
+                    <span className="text-[10px] text-[var(--text-muted)] group-hover:text-[var(--text-secondary)]">{s.label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
 
-          <div className="flex items-center gap-1.5 flex-wrap text-[11px]">
-            <span className="text-[10px] uppercase tracking-widest text-[var(--text-muted)]">Vista:</span>
-            {[
-              { id: "all", label: `Tutte (${t.vms_total || 0})`, color: "cyan" },
-              { id: "problems", label: `Solo problemi (${(t.failed || 0) + (t.warning || 0)})`, color: "red" },
-              { id: "stale", label: `Solo stale (${t.stale || 0})`, color: "orange" },
-            ].map(v => {
-              const active = view === v.id;
-              const cls = v.color === "red"
-                ? (active ? "bg-red-500/20 border-red-400 text-red-300" : "border-red-500/30 text-red-300/70 hover:bg-red-500/10")
-                : v.color === "orange"
-                ? (active ? "bg-orange-500/20 border-orange-400 text-orange-300" : "border-orange-500/30 text-orange-300/70 hover:bg-orange-500/10")
-                : (active ? "bg-cyan-500/20 border-cyan-400 text-cyan-300" : "border-cyan-500/30 text-cyan-300/70 hover:bg-cyan-500/10");
-              return (
-                <button key={v.id} onClick={() => setView(v.id)} className={`px-3 py-1 rounded-md border text-[11px] font-semibold transition ${cls}`} data-testid={`vmbackup-view-${v.id}`}>
-                  {v.label}
-                </button>
-              );
-            })}
+          {/* ── SWITCH VISTA ────────────────────────────────────────── */}
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {[{ id: "dashboard", label: "Panoramica" }, { id: "list", label: "Elenco completo" }].map((m) => (
+              <button key={m.id} onClick={() => setMode(m.id)}
+                className={`px-3 py-1 rounded-md border text-[11px] font-semibold transition ${mode === m.id ? "bg-violet-500/20 border-violet-400 text-violet-200" : "border-[var(--bg-border)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)]"}`}
+                data-testid={`vmbackup-mode-${m.id}`}>
+                {m.label}
+              </button>
+            ))}
+            <div className="flex-1" />
+            {mode === "list" && (
+              <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Cerca VM / host / customer…"
+                className="h-7 px-2.5 text-[11px] rounded-md bg-[var(--bg-card)] border border-[var(--bg-border)] text-[var(--text-primary)] w-[240px] focus:outline-none focus:border-violet-400"
+                data-testid="vmbackup-search" />
+            )}
           </div>
 
-          {items.length === 0 ? (
-            <div className="noc-panel p-5 text-center text-[11px] text-[var(--text-muted)]">Nessuna VM da mostrare con il filtro corrente.</div>
-          ) : (
-            <div className="noc-panel overflow-x-auto">
-              {/* v3.8.30: layout compatto stile Total Protection — meno colonne (rimosse Hypervisor*, Onsite/Offsite/2°Offsite separate; status aggregato in una sola colonna Stato; size in monospace come "Note") */}
-              <table className="noc-table w-full text-[11px]" data-testid="vmbackup-table">
-                <thead>
-                  <tr>
-                    <SortableTh field="vm" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>VM</SortableTh>
-                    <SortableTh field="host" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Host</SortableTh>
-                    <SortableTh field="customer" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Customer</SortableTh>
-                    <SortableTh field="hypervisor" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Tipo</SortableTh>
-                    <SortableTh field="stato" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Stato</SortableTh>
-                    <SortableTh field="last_backup" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Ultimo backup</SortableTh>
-                    <SortableTh field="size" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Dim.</SortableTh>
-                  </tr>
-                </thead>
-                <tbody>
-                  {sortedVms.slice(0, 1000).map(vm => {
-                    const agg = _vmAggStatus(vm);
-                    const sc = agg === "success" ? "#34C759"
-                      : agg === "failed" ? "#FF3B30"
-                      : agg === "warning" ? "#FFB400"
-                      : agg === "stale" ? "#FF9500" : "#8E8E93";
-                    // Mostra dettaglio destinazioni nel tooltip dello stato
-                    const tip = [
-                      vm.onsite_status_raw || vm.onsite_status ? `Onsite: ${vm.onsite_status_raw || vm.onsite_status}` : null,
-                      vm.offsite_status_raw || vm.offsite_status ? `Offsite: ${vm.offsite_status_raw || vm.offsite_status}` : null,
-                      vm.second_offsite_status_raw || vm.second_offsite_status ? `2° Offsite: ${vm.second_offsite_status_raw || vm.second_offsite_status}` : null,
-                    ].filter(Boolean).join("\n");
+          {mode === "dashboard" ? (
+            <div className="grid gap-3 lg:grid-cols-2">
+              {/* RICHIEDE ATTENZIONE (exceptions-first) */}
+              <div className="noc-panel p-0 overflow-hidden flex flex-col" data-testid="vmbackup-attention-panel">
+                <div className="flex items-center justify-between px-3 py-2 border-b border-[var(--bg-border)] bg-[var(--bg-card)]">
+                  <p className="text-[11px] font-bold uppercase tracking-wider text-[var(--text-primary)] flex items-center gap-1.5">
+                    <Warning size={13} weight="fill" className={problemsCount > 0 ? "text-amber-400" : "text-emerald-400"} />
+                    Richiede attenzione
+                  </p>
+                  <span className="text-[10px] font-mono font-bold" style={{ color: problemsCount > 0 ? "#FFB400" : "#34C759" }}>{problemsCount}</span>
+                </div>
+                {problemItems.length === 0 ? (
+                  <div className="p-6 text-center flex-1 flex flex-col items-center justify-center">
+                    <CheckCircle size={26} weight="fill" className="text-emerald-400 mb-1.5" />
+                    <p className="text-[11px] text-[var(--text-secondary)] font-semibold">Tutti i backup sono a posto</p>
+                    <p className="text-[9px] text-[var(--text-muted)] mt-0.5">Nessuna VM con errori, warning o backup obsoleti.</p>
+                  </div>
+                ) : (
+                  <div className="max-h-[420px] overflow-auto divide-y divide-[var(--bg-border)]">
+                    {problemItems.slice(0, 80).map((vm) => {
+                      const c = vm.alert_reason === "failed" ? "#FF3B30" : vm.alert_reason === "warning" ? "#FFB400" : "#FF9500";
+                      return (
+                        <div key={`${vm.customer_name}-${vm.vm_id}`} className="flex items-center gap-2.5 px-3 py-1.5 hover:bg-[var(--bg-hover)]" style={{ borderLeft: `3px solid ${c}` }} data-testid={`vmbackup-attention-row-${vm.vm_id}`}>
+                          <div className="min-w-0 flex-1">
+                            <p className="text-[11px] font-semibold text-[var(--text-primary)] truncate">{vm.vm_name}</p>
+                            <p className="text-[9px] text-[var(--text-muted)] font-mono truncate">{vm.host_name || "—"} · {vm.customer_name}</p>
+                          </div>
+                          <VmSevBadge reason={vm.alert_reason} />
+                          <span className="text-[9px] text-[var(--text-muted)] font-mono w-[74px] text-right flex-shrink-0">
+                            {vm.onsite_time ? new Date(vm.onsite_time).toLocaleString("it-IT", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "mai"}
+                          </span>
+                        </div>
+                      );
+                    })}
+                    {problemItems.length > 80 && (
+                      <button onClick={() => { setMode("list"); setView("problems"); }} className="w-full text-center py-2 text-[10px] text-violet-300 hover:bg-[var(--bg-hover)]">
+                        Vedi tutti i {problemItems.length} problemi →
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* ROLL-UP PER HOST / CUSTOMER */}
+              <div className="noc-panel p-0 overflow-hidden flex flex-col" data-testid="vmbackup-rollup-panel">
+                <div className="flex items-center justify-between px-3 py-2 border-b border-[var(--bg-border)] bg-[var(--bg-card)]">
+                  <p className="text-[11px] font-bold uppercase tracking-wider text-[var(--text-primary)]">Riepilogo per {groupBy === "host" ? "host" : "customer"}</p>
+                  <div className="flex gap-1">
+                    {[{ id: "host", label: "Host" }, { id: "customer", label: "Customer" }].map((g) => (
+                      <button key={g.id} onClick={() => setGroupBy(g.id)}
+                        className={`px-2 py-0.5 rounded text-[10px] font-semibold transition ${groupBy === g.id ? "bg-violet-500/20 text-violet-200 border border-violet-400/50" : "text-[var(--text-muted)] hover:bg-[var(--bg-hover)] border border-transparent"}`}
+                        data-testid={`vmbackup-groupby-${g.id}`}>
+                        {g.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="max-h-[420px] overflow-auto divide-y divide-[var(--bg-border)]">
+                  {groups.slice(0, 60).map((g) => {
+                    const probs = g.failed + g.warning + g.stale;
                     return (
-                      <tr key={`${vm.customer_name}-${vm.vm_id}`} data-testid={`vmbackup-row-${vm.vm_id}`}>
-                        <td className="font-semibold">{vm.vm_name}</td>
-                        <td className="text-[10px] text-[var(--text-muted)] font-mono">{vm.host_name || "—"}</td>
-                        <td className="text-[10px]">{vm.customer_name}</td>
-                        <td><span className="text-[9px] px-1 py-0.5 rounded border border-[var(--bg-border)]">{vm.host_type || "—"}</span></td>
-                        <td title={tip || ""}><span className="text-[10px] font-bold uppercase" style={{ color: sc }}>{agg}</span></td>
-                        <td className="text-[10px] text-[var(--text-muted)]">{vm.onsite_time ? new Date(vm.onsite_time).toLocaleString("it-IT", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "—"}</td>
-                        <td className="text-[10px] text-[var(--text-muted)] font-mono">{_fmtBytes(vm.onsite_size_bytes)}</td>
-                      </tr>
+                      <div key={g.key} className="px-3 py-2 hover:bg-[var(--bg-hover)]" data-testid={`vmbackup-group-${g.key}`}>
+                        <div className="flex items-center gap-2 mb-1">
+                          <p className="text-[11px] font-semibold text-[var(--text-primary)] truncate flex-1" title={g.key}>{g.key}</p>
+                          {g.type ? <span className="text-[8px] px-1 py-0.5 rounded border border-[var(--bg-border)] text-[var(--text-muted)] flex-shrink-0">{g.type}</span> : null}
+                          <span className="text-[10px] font-mono text-[var(--text-muted)] flex-shrink-0">{g.total} VM</span>
+                          {probs > 0
+                            ? <span className="text-[9px] font-bold font-mono flex-shrink-0" style={{ color: g.failed ? "#FF3B30" : g.warning ? "#FFB400" : "#FF9500" }}>⚠ {probs}</span>
+                            : <CheckCircle size={12} weight="fill" className="text-emerald-400 flex-shrink-0" />}
+                        </div>
+                        <VmHealthBar success={g.success} warning={g.warning} failed={g.failed} stale={g.stale} total={g.total} height={6} />
+                      </div>
                     );
                   })}
-                </tbody>
-              </table>
-              {items.length > 1000 && <p className="text-[9px] text-[var(--text-muted)] text-center py-2">…limitato a 1000 record visualizzati</p>}
+                  {groups.length > 60 && <p className="text-[9px] text-[var(--text-muted)] text-center py-2">…{groups.length - 60} altri gruppi (usa Elenco completo)</p>}
+                </div>
+              </div>
             </div>
+          ) : (
+            <>
+              <div className="flex items-center gap-1.5 flex-wrap text-[11px]">
+                <span className="text-[10px] uppercase tracking-widest text-[var(--text-muted)]">Filtro:</span>
+                {[
+                  { id: "all", label: `Tutte (${total})`, color: "cyan" },
+                  { id: "problems", label: `Problemi (${nFailed + nWarning})`, color: "red" },
+                  { id: "stale", label: `Stale (${nStale})`, color: "orange" },
+                ].map(v => {
+                  const active = view === v.id;
+                  const cls = v.color === "red"
+                    ? (active ? "bg-red-500/20 border-red-400 text-red-300" : "border-red-500/30 text-red-300/70 hover:bg-red-500/10")
+                    : v.color === "orange"
+                    ? (active ? "bg-orange-500/20 border-orange-400 text-orange-300" : "border-orange-500/30 text-orange-300/70 hover:bg-orange-500/10")
+                    : (active ? "bg-cyan-500/20 border-cyan-400 text-cyan-300" : "border-cyan-500/30 text-cyan-300/70 hover:bg-cyan-500/10");
+                  return (
+                    <button key={v.id} onClick={() => setView(v.id)} className={`px-3 py-1 rounded-md border text-[11px] font-semibold transition ${cls}`} data-testid={`vmbackup-view-${v.id}`}>
+                      {v.label}
+                    </button>
+                  );
+                })}
+                <span className="text-[10px] text-[var(--text-muted)] ml-auto">{tableRows.length.toLocaleString("it-IT")} risultati</span>
+              </div>
+
+              {tableRows.length === 0 ? (
+                <div className="noc-panel p-5 text-center text-[11px] text-[var(--text-muted)]">Nessuna VM da mostrare con questo filtro.</div>
+              ) : (
+                <div className="noc-panel overflow-x-auto">
+                  <table className="noc-table w-full text-[11px]" data-testid="vmbackup-table">
+                    <thead>
+                      <tr>
+                        <SortableTh field="vm" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>VM</SortableTh>
+                        <SortableTh field="host" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Host</SortableTh>
+                        <SortableTh field="customer" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Customer</SortableTh>
+                        <SortableTh field="hypervisor" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Tipo</SortableTh>
+                        <SortableTh field="stato" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Stato</SortableTh>
+                        <SortableTh field="last_backup" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Ultimo backup</SortableTh>
+                        <SortableTh field="size" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Dim.</SortableTh>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {tableRows.slice(0, 1000).map(vm => {
+                        const agg = _vmAggStatus(vm);
+                        const tip = [
+                          vm.onsite_status_raw || vm.onsite_status ? `Onsite: ${vm.onsite_status_raw || vm.onsite_status}` : null,
+                          vm.offsite_status_raw || vm.offsite_status ? `Offsite: ${vm.offsite_status_raw || vm.offsite_status}` : null,
+                          vm.second_offsite_status_raw || vm.second_offsite_status ? `2° Offsite: ${vm.second_offsite_status_raw || vm.second_offsite_status}` : null,
+                        ].filter(Boolean).join("\n");
+                        return (
+                          <tr key={`${vm.customer_name}-${vm.vm_id}`} data-testid={`vmbackup-row-${vm.vm_id}`}>
+                            <td className="font-semibold">{vm.vm_name}</td>
+                            <td className="text-[10px] text-[var(--text-muted)] font-mono">{vm.host_name || "—"}</td>
+                            <td className="text-[10px]">{vm.customer_name}</td>
+                            <td><span className="text-[9px] px-1 py-0.5 rounded border border-[var(--bg-border)]">{vm.host_type || "—"}</span></td>
+                            <td title={tip || ""}><VmSevBadge reason={agg} /></td>
+                            <td className="text-[10px] text-[var(--text-muted)]">{vm.onsite_time ? new Date(vm.onsite_time).toLocaleString("it-IT", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "—"}</td>
+                            <td className="text-[10px] text-[var(--text-muted)] font-mono">{_fmtBytes(vm.onsite_size_bytes)}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                  {tableRows.length > 1000 && <p className="text-[9px] text-[var(--text-muted)] text-center py-2">…limitato a 1000 record visualizzati (affina con la ricerca)</p>}
+                </div>
+              )}
+            </>
           )}
         </>
-      )}
+        );
+      })()}
     </div>
   );
 }
@@ -4740,6 +4939,37 @@ function StatBox({ label, value, color, sub }) {
       {sub && <p className="text-[9px] text-[var(--text-muted)] mt-0.5">{sub}</p>}
     </div>
   );
+}
+
+/* Barra di salute segmentata (success/warning/failed/stale) */
+function VmHealthBar({ success = 0, warning = 0, failed = 0, stale = 0, total = 0, height = 10 }) {
+  const sum = success + warning + failed + stale;
+  const t = Math.max(total || 0, sum) || 1; // denominatore mai inferiore alla somma dei segmenti
+  const segs = [
+    { v: failed, c: "#FF3B30" },
+    { v: warning, c: "#FFB400" },
+    { v: stale, c: "#FF9500" },
+    { v: success, c: "#34C759" },
+  ].filter((s) => s.v > 0);
+  return (
+    <div className="w-full rounded-full overflow-hidden flex bg-[var(--bg-border)]" style={{ height }} data-testid="vm-health-bar">
+      {segs.map((s, i) => (
+        <div key={i} style={{ width: `${(s.v / t) * 100}%`, background: s.c, transition: "width .5s ease" }} title={`${s.v}`} />
+      ))}
+    </div>
+  );
+}
+
+/* Badge di stato/severità VM */
+function VmSevBadge({ reason }) {
+  const map = {
+    failed: { c: "#FF3B30", bg: "bg-red-500/15", bd: "border-red-500/40", t: "text-red-300", l: "FAILED" },
+    warning: { c: "#FFB400", bg: "bg-amber-500/15", bd: "border-amber-500/40", t: "text-amber-300", l: "WARNING" },
+    stale: { c: "#FF9500", bg: "bg-orange-500/15", bd: "border-orange-500/40", t: "text-orange-300", l: "STALE" },
+    success: { c: "#34C759", bg: "bg-emerald-500/15", bd: "border-emerald-500/40", t: "text-emerald-300", l: "SUCCESS" },
+  };
+  const m = map[reason] || { bg: "bg-[var(--bg-hover)]", bd: "border-[var(--bg-border)]", t: "text-[var(--text-muted)]", l: (reason || "—").toUpperCase() };
+  return <span className={`inline-block text-[9px] font-bold px-1.5 py-0.5 rounded border ${m.bg} ${m.bd} ${m.t}`}>{m.l}</span>;
 }
 
 /* ==================== METRIC BOX ==================== */

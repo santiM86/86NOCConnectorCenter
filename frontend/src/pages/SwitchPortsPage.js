@@ -137,6 +137,15 @@ function PortTile({ p, onClick, active }) {
             <Warning size={11} weight="fill" />
           </span>
         )}
+        {p.is_switch_uplink && !p.loop_suspect && (
+          <span
+            className="absolute -top-1.5 -right-1.5 bg-indigo-500 text-white rounded-full p-0.5 shadow-md shadow-indigo-500/50"
+            data-testid={`switch-port-uplink-badge-${p.idx}`}
+            title={`Uplink verso switch ${p.uplink_to?.peer_name || ""} (porta ${p.uplink_to?.remote_port || "?"})`}
+          >
+            <Stack size={11} weight="fill" />
+          </span>
+        )}
       </div>
     </button>
   );
@@ -237,6 +246,25 @@ function PortDetailPanel({ p, onClose, onOpenCable, deviceIp, clientId }) {
               <div className="text-[9px] text-[var(--text-muted)]">{fmtPps(p.tx_pps)}</div>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Uplink verso altro switch (preciso, da cascata LLDP+FDB) */}
+      {p.uplink_to && (
+        <div className="rounded-md border border-indigo-500/40 bg-indigo-500/10 p-2 text-[11px]" data-testid={`port-uplink-detail-${p.idx}`}>
+          <div className="flex items-center gap-1.5 text-indigo-300 font-bold uppercase text-[9px] tracking-wider mb-1">
+            <Stack size={12} weight="fill" /> Uplink verso switch
+          </div>
+          <p className="text-[var(--text-primary)]">
+            <b>{p.uplink_to.peer_name}</b> <span className="font-mono text-[var(--text-muted)]">({p.uplink_to.peer_ip})</span>
+          </p>
+          <p className="text-[var(--text-secondary)] mt-0.5">
+            Porta locale <b className="font-mono">{p.name}</b> ↔ porta remota <b className="font-mono">{p.uplink_to.remote_port || "?"}</b>
+            {p.uplink_to.vlan != null ? <> · VLAN {p.uplink_to.vlan}</> : null}
+          </p>
+          <span className={`inline-block mt-1 text-[9px] font-bold px-1.5 py-0.5 rounded ${p.uplink_to.verified ? "bg-emerald-500/20 text-emerald-300" : "bg-amber-500/20 text-amber-300"}`}>
+            {p.uplink_to.verified ? "✓ VERIFICATO (LLDP+FDB)" : "~ PROBABILE (solo LLDP)"}
+          </span>
         </div>
       )}
 

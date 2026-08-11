@@ -69,7 +69,29 @@ async def main():
             fdb_docs.append({**base, "switch_ip": s["ip"], "mac": f"aabbcc0{i}00{j:02d}", "vlan": 1, "source": "agent_fdb"})
     await db.discovered_endpoints.insert_many(fdb_docs)
 
-    print(f"Seed cascata OK: FW->{SW[0]['name']}->{SW[1]['name']}->{SW[2]['name']} | {len(lldp_docs)} LLDP, {len(fdb_docs)} FDB")
+    # switch_ports (SNMP ifTable) per ogni switch della cascata, con le porte
+    # di UPLINK (verso FW / altro switch) accese -> l'enrichment le marca
+    # is_switch_uplink/uplink_to (feature 2: dettaglio uplink preciso).
+    await db.switch_ports.delete_many({**base, "local_ip": {"$in": [s["ip"] for s in SW]}})
+    uplink_ports = {  # switch_ip -> set porte di uplink (accese)
+        SW[0]["ip"]: {"Gi1/0/1", "Gi1/0/24"},   # SWITCH01: -> FW e -> SWITCH03
+        SW[1]["ip"]: {"Gi1/0/1", "Gi1/0/24"},   # SWITCH03: -> SWITCH01 e -> SWITCH02
+        SW[2]["ip"]: {"Gi1/0/1"},               # SWITCH02: -> SWITCH03
+    }
+    sp_docs = []
+    for s in SW:
+        ups = uplink_ports.get(s["ip"], set())
+        for idx in range(1, 25):
+            name = f"Gi1/0/{idx}"
+            is_up = name in ups
+            # accendo le porte di uplink + alcune di accesso (2..5)
+            oper = 1 if (is_up or 2 <= idx <= 5) else 2
+            sp_docs.append({**base, "local_ip": s["ip"], "idx": idx, "name": name,
+                            "oper": oper, "admin": 1, "speed_mbps": 1000,
+                            "last_change_s": 3600 + idx, "updated_at": now})
+    await db.switch_ports.insert_many(sp_docs)
+
+    print(f"Seed cascata OK: FW->{SW[0]['name']}->{SW[1]['name']}->{SW[2]['name']} | {len(lldp_docs)} LLDP, {len(fdb_docs)} FDB, {len(sp_docs)} porte")
 
 
 if __name__ == "__main__":

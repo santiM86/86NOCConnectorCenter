@@ -328,6 +328,67 @@ function autoLayoutNodes(nodes, topoLayers, width) {
   });
 }
 
+/* ─── Layout gerarchico della CASCATA di switch ───
+   Gateway in alto, switch impilati uno sotto l'altro nell'ordine 1°→2°→3°
+   (colonna sinistra, a scaletta per livello) e per ogni switch i device
+   collegati disposti a ventaglio alla sua destra. */
+function cascadeLayoutNodes(flowNodes, cascade, edges, width) {
+  if (!cascade?.length) return flowNodes;
+  const rowGap = 150, leftX = 70, devStartX = 400, devGapX = 175, devRowGap = 92, perRow = 4;
+  const byId = {};
+  flowNodes.forEach((n) => { byId[n.id] = n; });
+  const switchIps = new Set(cascade.map((c) => c.ip));
+  const gwIps = new Set();
+  cascade.forEach((c) => { if (c.uplink?.is_gateway && c.uplink.to_ip) gwIps.add(c.uplink.to_ip); });
+
+  // endpoint (device) di ciascuno switch, dai link switch->device
+  const epBySwitch = {};
+  const assigned = new Set();
+  (edges || []).forEach((e) => {
+    const a = e.from, b = e.to;
+    let sw = null, other = null;
+    if (switchIps.has(a) && !switchIps.has(b)) { sw = a; other = b; }
+    else if (switchIps.has(b) && !switchIps.has(a)) { sw = b; other = a; }
+    if (sw && other && !gwIps.has(other) && !assigned.has(other)) {
+      (epBySwitch[sw] = epBySwitch[sw] || []).push(other);
+      assigned.add(other);
+    }
+  });
+
+  const used = new Set();
+  // gateway in cima
+  let gx = leftX;
+  gwIps.forEach((ip) => { if (byId[ip]) { byId[ip].position = { x: gx, y: 0 }; used.add(ip); gx += devGapX; } });
+
+  // switch impilati verticalmente per rank + device a destra
+  let yCursor = gwIps.size ? rowGap : 50;
+  [...cascade].sort((a, b) => a.rank - b.rank).forEach((c) => {
+    const sy = yCursor;
+    if (byId[c.ip]) { byId[c.ip].position = { x: leftX + (c.level || 0) * 46, y: sy }; used.add(c.ip); }
+    const eps = epBySwitch[c.ip] || [];
+    const rows = Math.max(1, Math.ceil(eps.length / perRow));
+    eps.forEach((ep, j) => {
+      if (!byId[ep]) return;
+      const col = j % perRow, row = Math.floor(j / perRow);
+      byId[ep].position = { x: devStartX + col * devGapX, y: sy - ((rows - 1) * devRowGap) / 2 + row * devRowGap };
+      used.add(ep);
+    });
+    yCursor += Math.max(rowGap, rows * devRowGap + 55);
+  });
+
+  // nodi non collegati: impilati in basso
+  let lx = leftX, ly = yCursor + 20;
+  flowNodes.forEach((n) => {
+    if (!used.has(n.id)) {
+      n.position = { x: lx, y: ly };
+      lx += devGapX;
+      if (lx > (width - 200)) { lx = leftX; ly += devRowGap; }
+    }
+  });
+  return flowNodes;
+}
+
+
 /* ─── Main Inner Component (needs ReactFlowProvider) ─── */
 function NetworkMapInner({ clientGroups, onDeviceSelect }) {
   const [topologies, setTopologies] = useState({});
@@ -422,7 +483,10 @@ function NetworkMapInner({ clientGroups, onDeviceSelect }) {
     let flowNodes = topoToFlowNodes(topo.nodes, hasCustom);
     const flowEdges = topoToFlowEdges(topo.edges);
 
-    if (!hasCustom && topo.layers?.length) {
+    if (!hasCustom && topo.switch_cascade?.length) {
+      const w = containerRef.current?.getBoundingClientRect().width || 1100;
+      flowNodes = cascadeLayoutNodes(flowNodes, topo.switch_cascade, topo.edges, w);
+    } else if (!hasCustom && topo.layers?.length) {
       const w = containerRef.current?.getBoundingClientRect().width || 900;
       flowNodes = autoLayoutNodes(flowNodes, topo.layers, w);
     }
@@ -910,6 +974,7 @@ function NetworkMapInner({ clientGroups, onDeviceSelect }) {
             <Background color="var(--bg-border)" gap={30} size={1} />
             <Controls
               showInteractive={false}
+              position="top-left"
               className="!bg-[var(--bg-panel)] !border-[var(--bg-border)] !rounded-lg !shadow-lg [&>button]:!bg-[var(--bg-card)] [&>button]:!border-[var(--bg-border)] [&>button]:!fill-[var(--text-muted)] [&>button:hover]:!bg-[var(--bg-hover)]"
             />
             <MiniMap

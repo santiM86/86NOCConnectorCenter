@@ -40,9 +40,9 @@ async def main():
             {"socket": "Proc 2", "model": "Intel(R) Xeon(R) Gold 6230 CPU @ 2.10GHz", "cores": 20, "threads": 40, "speed_mhz": 2100, "health": "OK", "state": "Enabled"},
         ],
         "memory_dimms": [
-            {"name": f"PROC 1 DIMM {i}", "size_gb": 32, "speed_mhz": 2933, "type": "DDR4", "health": "OK"} for i in range(1, 5)
+            {"name": f"PROC 1 DIMM {i}", "size_gb": 32, "speed_mhz": 2933, "type": "DDR4", "rank": 2, "manufacturer": "Samsung", "part_number": "M393A4K40CB2-CVF", "health": "OK"} for i in range(1, 5)
         ] + [
-            {"name": f"PROC 2 DIMM {i}", "size_gb": 32, "speed_mhz": 2933, "type": "DDR4", "health": "OK"} for i in range(1, 5)
+            {"name": f"PROC 2 DIMM {i}", "size_gb": 32, "speed_mhz": 2933, "type": "DDR4", "rank": 2, "manufacturer": "Samsung", "part_number": "M393A4K40CB2-CVF", "health": "OK"} for i in range(1, 5)
         ],
         "network_adapters": [
             {"name": "Ethernet 1 (LOM)", "mac": "48:DF:37:1A:2B:01", "speed_mbps": 1000, "status": "OK", "state": "Enabled", "link_status": "LinkUp", "ipv4": "10.100.41.25", "vlan": 41, "fqdn": None},
@@ -51,12 +51,17 @@ async def main():
         ],
         "storage_controllers": [
             {"name": "HPE Smart Array P408i-a SR Gen10", "firmware": "3.53", "status": "OK", "health": "ok",
-             "logical_drives": [{"name": "LogicalDrive 1", "capacity_gb": 3600, "raid": "RAID5", "status": "OK"}],
+             "logical_drives": [
+                {"name": "LogicalDrive 1 (OS)", "capacity_gb": 2400, "raid": "RAID5", "status": "OK"},
+                {"name": "LogicalDrive 2 (DATA)", "capacity_gb": 480, "raid": "RAID1", "status": "OK"},
+             ],
              "drives": [
-                {"slot": 1, "model": "EG001200JWJNQ", "serial": "S4H0A", "capacity_gb": 1200, "media_type": "HDD", "interface_type": "SAS", "health": "ok", "state": "Enabled", "failure_predicted": False, "rotation_rpm": 10000, "hours_used": 21440, "temp_celsius": 34},
-                {"slot": 2, "model": "EG001200JWJNQ", "serial": "S4H0B", "capacity_gb": 1200, "media_type": "HDD", "interface_type": "SAS", "health": "ok", "state": "Enabled", "failure_predicted": False, "rotation_rpm": 10000, "hours_used": 21440, "temp_celsius": 35},
-                {"slot": 3, "model": "EG001200JWJNQ", "serial": "S4H0C", "capacity_gb": 1200, "media_type": "HDD", "interface_type": "SAS", "health": "warning", "state": "Enabled", "failure_predicted": True, "rotation_rpm": 10000, "hours_used": 42100, "temp_celsius": 41},
-                {"slot": 4, "model": "VO000480JWZJT", "serial": "S4H0D", "capacity_gb": 480, "media_type": "SSD", "interface_type": "SATA", "health": "ok", "state": "Enabled", "failure_predicted": False, "rotation_rpm": None, "hours_used": 15000, "temp_celsius": 28},
+                {"slot": 1, "model": "EG001200JWJNQ", "serial": "S4H0A", "capacity_gb": 1200, "media_type": "HDD", "interface_type": "SAS", "health": "ok", "state": "Enabled", "failure_predicted": False, "rotation_rpm": 10000, "hours_used": 21440, "temp_celsius": 34, "wear_percent": None},
+                {"slot": 2, "model": "EG001200JWJNQ", "serial": "S4H0B", "capacity_gb": 1200, "media_type": "HDD", "interface_type": "SAS", "health": "ok", "state": "Enabled", "failure_predicted": False, "rotation_rpm": 10000, "hours_used": 21440, "temp_celsius": 35, "wear_percent": None},
+                {"slot": 3, "model": "EG001200JWJNQ", "serial": "S4H0C", "capacity_gb": 1200, "media_type": "HDD", "interface_type": "SAS", "health": "warning", "state": "Enabled", "failure_predicted": True, "rotation_rpm": 10000, "hours_used": 42100, "temp_celsius": 41, "wear_percent": None},
+                {"slot": 4, "model": "VO000480JWZJT", "serial": "S4H0D", "capacity_gb": 480, "media_type": "SSD", "interface_type": "SATA", "health": "ok", "state": "Enabled", "failure_predicted": False, "rotation_rpm": None, "hours_used": 15000, "temp_celsius": 28, "wear_percent": 12},
+                {"slot": 5, "model": "VO000480JWZJT", "serial": "S4H0E", "capacity_gb": 480, "media_type": "SSD", "interface_type": "SATA", "health": "ok", "state": "Enabled", "failure_predicted": False, "rotation_rpm": None, "hours_used": 15000, "temp_celsius": 29, "wear_percent": 74},
+                {"slot": 6, "model": "VO000480JWZJT", "serial": "S4H0F", "capacity_gb": 480, "media_type": "SSD", "interface_type": "SATA", "health": "ok", "state": "Enabled", "failure_predicted": False, "rotation_rpm": None, "hours_used": 15000, "temp_celsius": 30, "wear_percent": 93},
              ]},
         ],
     }

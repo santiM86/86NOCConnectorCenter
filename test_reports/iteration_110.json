@@ -1,0 +1,22 @@
+{
+  "summary": "Focused frontend retest (2 items) after main-agent fixes. Login admin+TOTP 2FA via UI: PASS. FEATURE 2 (uplink detail on Switch Ports) = PASS: /switch-ports/10.10.41.221?clientId=da3d6e40... renders header '24 porte · 6 up · 18 down · 0 admin-down · 2 con neighbor' and exactly 24 tiles (switch-port-tile-1..24). Uplink badges switch-port-uplink-badge-1 and switch-port-uplink-badge-24 both present & visible. Click tile 24 -> port-uplink-detail-24 shows 'UPLINK VERSO SWITCH' / 'SWITCH03 (10.10.41.222)' / 'Porta locale Gi1/0/24 <-> porta remota Gi1/0/1 · VLAN 1' / green '✓ VERIFICATO (LLDP+FDB)'. Click tile 1 -> port-uplink-detail-1 shows 'FORTIGATE-FW (10.10.41.1)' / 'Porta locale Gi1/0/1 <-> porta remota wan1' / amber '~ PROBABILE (solo LLDP)'. Screenshots taken for both. MAP CONTROLS Z-INDEX FIX = PASS: /network-status?view=map&client=... React Flow Controls now rendered top-left (bbox x=276 y=488 w=26 h=78, above the canvas, legend moved to bottom-left); normal (non-forced) Playwright click on .react-flow__controls-fitview succeeded immediately (no 30s interception timeout) and .react-flow__controls-zoomin also clickable. No JS page errors; only a pre-existing 403 on one resource during login page load and the usual WS warning.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Network map (86BIT_Office)", "issues": ["Still open from iteration_109 (cosmetic, not part of this retest): default fitView zoom is very small so node/edge labels are hard to read; cascade panel rank chips show '1'/'2'/'3' without the '°' used on node badges."]}
+    ]
+  },
+  "test_report_links": ["/app/test_reports/iteration_110.json"],
+  "action_items": [],
+  "critical_code_review_comments": ["NetworkMap.js remains >1000 lines - consider splitting (carry-over, non blocking)."],
+  "updated_files": [],
+  "success_rate": {"backend": "not tested (frontend-only request)", "frontend": "2/2 retested items PASS (100%)"},
+  "seed_data_creation": "none (used main-agent seeded 72 switch_ports docs)",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": false,
+  "test_credentials": "admin info@86bit.it / Ariel17051986@!@86 + TOTP secret NMHDJNO53WLTOSREUXWERE6FDH5TAKC3 (working)",
+  "context_for_next_testing_agent": "Login recipe unchanged: /login -> input[0]=email, input[1]=password -> button:has-text('ccedi') -> /2fa -> fill single visible input with TOTP (stdlib HMAC ok) -> click button containing 'Verifi'. Deep links then work. Switch ports for client da3d6e40 are now seeded (SWITCH01 .221, SWITCH03 .222, SWITCH02 .228, 24 ports each); tiles use data-testid switch-port-tile-<idx>, uplink badge switch-port-uplink-badge-<idx>, detail panel port-uplink-detail-<idx>. React Flow Controls are now top-left and clickable without force.",
+  "rca_of_the_issue": "Both previously reported problems resolved: (1) switch_ports seed data now present so the uplink enrichment (is_switch_uplink/uplink_to) is rendered; (2) <Controls position='top-left'> removes the stacking-context overlap with the bottom-left legend Panel, restoring pointer events."
+}

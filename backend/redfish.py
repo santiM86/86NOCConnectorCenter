@@ -23,6 +23,51 @@ logger = logging.getLogger("redfish")
 FAILOVER_THRESHOLD_SECONDS = 120  # 2 minutes without heartbeat = connector offline
 
 
+def _parse_redfish_drive(dr: dict) -> dict:
+    """Normalizza un disco fisico da Redfish (HPE SmartStorage top-level o DMTF/Oem)."""
+    cap_gb = dr.get("CapacityGB") or (round(dr.get("CapacityBytes", 0) / (1024**3), 1) if dr.get("CapacityBytes") else None) or (round(dr.get("CapacityMiB", 0) / 1024, 1) if dr.get("CapacityMiB") else None)
+    _oem = dr.get("Oem", {}) or {}
+    _hpe = _oem.get("Hpe", {}) or _oem.get("Hp", {}) or {}
+    hours = dr.get("PowerOnHours")
+    if hours is None:
+        hours = _hpe.get("PowerOnHours")
+    temp = dr.get("CurrentTemperatureCelsius")
+    if temp is None:
+        temp = _hpe.get("CurrentTemperatureCelsius")
+    if temp is None:
+        temp = dr.get("Temperature")
+    wear = dr.get("SSDEnduranceUtilizationPercentage")
+    if wear is None:
+        wear = _hpe.get("SSDEnduranceUtilizationPercentage")
+    if wear is None:
+        life = dr.get("PredictedMediaLifeLeftPercent")
+        if life is not None:
+            wear = round(100 - life, 1)
+    rpm = dr.get("RotationSpeedRPM") or dr.get("RotationalSpeedRpm") or _hpe.get("RotationalSpeedRpm")
+    slot = (dr.get("Location")
+            or dr.get("PhysicalLocation", {}).get("PartLocation", {}).get("LocationOrdinalValue")
+            or _hpe.get("Location") or dr.get("Id"))
+    fail = dr.get("FailurePredicted")
+    if fail is None and _hpe.get("DriveStatus"):
+        fail = _hpe.get("DriveStatus", {}).get("Health") not in (None, "OK")
+    return {
+        "slot": slot,
+        "model": (dr.get("Model") or "").strip() or dr.get("Name"),
+        "serial": dr.get("SerialNumber"),
+        "capacity_gb": cap_gb,
+        "media_type": dr.get("MediaType"),
+        "interface_type": dr.get("InterfaceType") or dr.get("Protocol"),
+        "health": (dr.get("Status", {}).get("Health") or "ok").lower(),
+        "state": dr.get("Status", {}).get("State"),
+        "failure_predicted": bool(fail),
+        "rotation_rpm": rpm,
+        "hours_used": hours,
+        "temp_celsius": temp,
+        "wear_percent": wear,
+    }
+
+
+
 class RedfishPoller:
     """
     Direct Redfish poller for HPE iLO devices.
@@ -508,19 +553,35 @@ class RedfishPoller:
                 else:
                     logger.warning(f"Redfish {device_ip}: Manager info not found")
 
-                # 5. Memory DIMMs
+                # 5. Memory DIMMs — raccogli TUTTI i banchi popolati (CapacityMiB>0),
+                #    non solo quelli con State "Enabled" (alcuni iLO riportano stati diversi).
                 mem_col = await self._get(client, f"{base_url}/redfish/v1/Systems/1/Memory/", auth)
                 if mem_col and mem_col.get("Members"):
-                    for ref in mem_col["Members"][:32]:
+                    _mem_total = 0.0
+                    for ref in mem_col["Members"][:64]:
                         dimm = await self._get(client, f"{base_url}{ref['@odata.id']}", auth)
-                        if dimm and dimm.get("Status", {}).get("State") == "Enabled":
-                            result["memory_dimms"].append({
-                                "name": dimm.get("DeviceLocator", "DIMM"),
-                                "size_gb": round(dimm.get("CapacityMiB", 0) / 1024, 1),
-                                "speed_mhz": dimm.get("OperatingSpeedMhz"),
-                                "type": dimm.get("MemoryDeviceType"),
-                                "status": dimm.get("Status", {}).get("Health", "OK"),
-                            })
+                        if not dimm:
+                            continue
+                        cap_mib = dimm.get("CapacityMiB") or 0
+                        state = (dimm.get("Status", {}) or {}).get("State")
+                        # popolato = capacita' > 0 (slot vuoti = 0 / Absent)
+                        if not cap_mib or cap_mib <= 0 or state == "Absent":
+                            continue
+                        size_gb = round(cap_mib / 1024, 1)
+                        _mem_total += size_gb
+                        result["memory_dimms"].append({
+                            "name": dimm.get("DeviceLocator") or dimm.get("Name") or "DIMM",
+                            "size_gb": size_gb,
+                            "speed_mhz": dimm.get("OperatingSpeedMhz") or dimm.get("AllowedSpeedsMHz", [None])[0],
+                            "type": dimm.get("MemoryDeviceType") or dimm.get("MemoryType"),
+                            "rank": dimm.get("RankCount"),
+                            "manufacturer": (dimm.get("Manufacturer") or "").strip() or None,
+                            "part_number": (dimm.get("PartNumber") or "").strip() or None,
+                            "status": (dimm.get("Status", {}) or {}).get("Health", "OK"),
+                        })
+                    # fallback: se MemorySummary mancava, usa la somma dei DIMM
+                    if not result.get("total_memory_gb") and _mem_total > 0:
+                        result["total_memory_gb"] = round(_mem_total)
 
                 # 6. Network Adapters — due fonti:
                 #    a) /Systems/1/EthernetInterfaces/ (livello OS, mostra IP/MAC ma spesso non LinkStatus su ML350)
@@ -673,30 +734,41 @@ class RedfishPoller:
                             if did and did not in seen_ids:
                                 seen_ids.add(did)
                                 unique_refs.append(dref)
-                        for drref in unique_refs[:32]:
+                        for drref in unique_refs[:64]:
                             dr = await self._get(client, f"{base_url}{drref['@odata.id']}", auth)
                             if not dr:
                                 continue
-                            cap_gb = dr.get("CapacityGB") or (round(dr.get("CapacityBytes", 0) / (1024**3), 1) if dr.get("CapacityBytes") else None) or (round(dr.get("CapacityMiB", 0) / 1024, 1) if dr.get("CapacityMiB") else None)
-                            ctrl_info["drives"].append({
-                                "slot": dr.get("Location") or dr.get("PhysicalLocation", {}).get("PartLocation", {}).get("LocationOrdinalValue") or dr.get("Id"),
-                                "model": dr.get("Model"),
-                                "serial": dr.get("SerialNumber"),
-                                "capacity_gb": cap_gb,
-                                "media_type": dr.get("MediaType"),
-                                "interface_type": dr.get("InterfaceType") or dr.get("Protocol"),
-                                "health": (dr.get("Status", {}).get("Health") or "ok").lower(),
-                                "state": dr.get("Status", {}).get("State"),
-                                "failure_predicted": dr.get("FailurePredicted", False),
-                                "rotation_rpm": dr.get("RotationSpeedRPM"),
-                                "hours_used": dr.get("PowerOnHours") or (dr.get("Oem", {}).get("Hpe", {}) or {}).get("PowerOnHours"),
-                                "temp_celsius": (dr.get("Oem", {}).get("Hpe", {}) or {}).get("CurrentTemperatureCelsius") or dr.get("Temperature"),
-                            })
+                            ctrl_info["drives"].append(_parse_redfish_drive(dr))
                         # Only append if we actually got at least 1 drive or logical_drive
                         # (avoid empty controller shells that happen on timeouts mid-request)
                         if ctrl_info["drives"] or ctrl_info["logical_drives"] or ctrl_info["name"] != "Controller":
                             result["storage_controllers"].append(ctrl_info)
                             storage_found_any = True
+
+                # HPE: dischi presenti ma non assegnati ad alcun array (spare/unconfigured)
+                try:
+                    for unc_uri in [
+                        f"{base_url}/redfish/v1/Systems/1/SmartStorage/UnconfiguredDrives/",
+                        f"{base_url}/redfish/v1/Systems/1/SmartStorage/HostBusAdapters/",
+                    ]:
+                        unc = await self._get(client, unc_uri, auth)
+                        if not (unc and unc.get("Members")):
+                            continue
+                        seen_slots = {d.get("slot") for c in result["storage_controllers"] for d in c.get("drives", [])}
+                        spare = {"name": "Dischi non assegnati / spare", "firmware": None,
+                                 "status": "OK", "health": "ok", "logical_drives": [], "drives": []}
+                        for uref in unc["Members"][:32]:
+                            dr = await self._get(client, f"{base_url}{uref['@odata.id']}", auth)
+                            if not dr:
+                                continue
+                            pd = _parse_redfish_drive(dr)
+                            if pd["slot"] not in seen_slots:
+                                spare["drives"].append(pd)
+                        if spare["drives"]:
+                            result["storage_controllers"].append(spare)
+                        break
+                except Exception as _ue:
+                    logger.debug(f"unconfigured drives fetch failed {device_ip}: {_ue}")
 
         except httpx.TimeoutException:
             logger.warning(f"Timeout polling {device_ip}")

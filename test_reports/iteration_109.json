@@ -1,0 +1,41 @@
+{
+  "summary": "Frontend-only validation of the 3 requested visual improvements on client da3d6e40 (86BIT_Office). Login via UI (info@86bit.it + TOTP 2FA) OK. FEATURE 1 (cascade map layout) = PASS: /network-status?view=map&client=... renders network-map-canvas, switch-cascade-panel present with 3 rows in order (1 SWITCH01 10.10.41.221 'Gateway', 2 SWITCH03 10.10.41.222 '↑ SWITCH01 · Gi1/0/1↔Gi1/0/24 · VLAN 1 ✓ VERIF.', 3 SWITCH02 10.10.41.228 '↑ SWITCH03 ... ✓ VERIF.'), node badges cascade-badge-10.10.41.221='1°', .222='2°', .228='3°'. Measured node bounding boxes: FORTIGATE firewall at top (y=500), switches staircased vertically and shifted right (965/575, 988/649, 1011/724), connected device fanned to the right (x=1130). ZERO node overlaps (pairwise bbox check). No crash / no page error. FEATURE 2 (uplink detail on switch ports) = NOT VERIFIABLE - DATA ABSENT IN PREVIEW: GET /api/devices/{ip}/switch-ports?client_id=... returns 200 with ports:[] for all cascade IPs (10.10.41.11 / .221 / .222 / .228); Mongo switch_ports collection only contains 24 docs for client_id 'TEST' + 1 empty doc, no port data for this client. Page degrades gracefully ('0 porte', 'Nessuna porta con questo filtro', Diagnosi CTA) - no crash. So switch-port-uplink-badge-<idx> / port-uplink-detail-<idx> could NOT be exercised (not a code bug per request note). FEATURE 3 (iLO logical volumes/RAID) = PASS: ClientOverviewPage -> tab iLO -> ZITASRV-ILO (10.100.41.25) expanded; section header 'STORAGE (CONTROLLER, RAID E DISCHI)' with count '1 ctrl · 6 dischi'; ilo-ctrl-10.100.41.25-0 = 'HPE Smart Array P408i-a SR Gen10' FW 3.53 OK; ilo-logical-table-10.100.41.25-0 has exactly 2 rows (LogicalDrive 1 (OS) RAID5 2.4 TB OK, LogicalDrive 2 (DATA) RAID1 480 GB OK); ilo-drive-table-10.100.41.25-0 has exactly 6 rows (3x1.2TB SAS HDD incl. #3 '⚠ Predetto'/WARNING, 3x480GB SATA SSD with wear 12/74/93%). No 'undefined', no error elements, no console/page exception.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/devices/{ip}/switch-ports?client_id=da3d6e40-...", "issue": "Returns 200 with 0 ports for every cascade switch (10.10.41.11/.221/.222/.228). switch_ports collection has data only for client_id 'TEST'. Feature 2 (is_switch_uplink / uplink_to) cannot be validated in preview - seed missing SNMP ifTable data for the cascade switches."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "NetworkMap React Flow Controls", "issue": "The React Flow control buttons (Fit View / zoom in / zoom out, bottom-left) are NOT clickable: the legend Panel ('COLLEGAMENTO' box, NetworkMap.js line ~988/1011 bottom-left panel) overlays them and intercepts pointer events (Playwright normal click times out after 30s with 'subtree intercepts pointer events'). Users cannot re-fit or zoom the map with the controls.", "selector": ".react-flow__controls-fitview", "priority": "MEDIUM"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Network map (86BIT_Office cascade)", "issues": [
+        "Requirement 'gateway/firewall in alto' only partially met: FORTIGATE-FW is correctly on top of the chain, but the INTERNET/WAN node and the second firewall (Zyxel USG Test) plus the iLO node are placed in a row BELOW the last switch (y=809 vs switch3 y=724), so the internet/edge nodes visually sit at the bottom of the topology.",
+        "Rank chip inside switch-cascade-panel shows '1'/'2'/'3' without the ordinal degree sign while the node badges show '1°/2°/3°' (cosmetic inconsistency, still open from iteration_108).",
+        "Default fitView zoom is very small (nodes ~55px at x~965-1140 in a 1920px canvas): edge/port labels are barely legible without zooming - and zoom controls are blocked by the legend (see ui_bugs)."
+      ]},
+      {"screen": "SwitchPortsPage (no data)", "issues": ["With 0 ports the page shows the full tabs/filters/legend chrome plus 'Nessuna porta con questo filtro'; the dedicated switch-ports-empty state (with Connector/ifTable explanation) is NOT rendered, so the reason for the emptiness is less obvious."]}
+    ]
+  },
+  "test_report_links": ["/app/test_reports/iteration_109.json"],
+  "action_items": [
+    "Fix z-index/pointer-events so the React Flow Controls (fitview/zoom) are clickable - the bottom-left legend panel overlaps them (offset the legend or move controls to bottom-right / add pointer-events-none on the legend wrapper).",
+    "Optional (feature 1 polish): place INTERNET/WAN + other gateways above the switch chain instead of the bottom row, and add '°' to the cascade panel rank chips.",
+    "Feature 2: seed switch_ports (SNMP ifTable) rows for 10.10.41.221/.222/.228 of client da3d6e40 so the uplink badge + port-uplink-detail panel can actually be validated end-to-end."
+  ],
+  "critical_code_review_comments": [
+    "NetworkMap.js is >1020 lines (DeviceNode, cascadeLayoutNodes, legend/cascade panels) - split into modules.",
+    "SwitchPortsPage: the ports===0 branch renders the full page chrome instead of the dedicated switch-ports-empty component, making the 'no SNMP data' condition ambiguous to the user."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "not tested (frontend-only request)", "frontend": "2/3 features PASS, 1 blocked by missing seed data (feature 2)"},
+  "seed_data_creation": "none (used existing seeded iLO + cascade demo data)",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "admin info@86bit.it / Ariel17051986@!@86 + TOTP secret NMHDJNO53WLTOSREUXWERE6FDH5TAKC3 (works, 2FA mandatory)",
+  "context_for_next_testing_agent": "Login recipe: /login -> fill input[0]=email, input[1]=password -> click button:has-text('ccedi') -> on /2fa fill the single visible input with pyotp/stdlib-HMAC TOTP -> click verify. Deep links work afterwards: /network-status?view=map&client=<id>, /client/<id> (then click the iLO tab, ZITASRV panel auto-expanded), /switch-ports/<ip>?clientId=<id>. Use page.evaluate over '.react-flow__node' bounding boxes to assert cascade staircase + overlap. React Flow control buttons are currently blocked by the legend panel - do not rely on fitview clicks; zoom via mouse wheel instead.",
+  "rca_of_the_issue": "Feature 2 not validated because backend GET /api/devices/{ip}/switch-ports returns ports:[] - the switch_ports collection has no documents for client da3d6e40 (only leftovers with client_id 'TEST'), so is_switch_uplink/uplink_to enrichment has nothing to annotate. Map control unclickability RCA: both the legend Panel and the React Flow <Controls> are anchored bottom-left in the same stacking context; the legend div (NetworkMap.js ~line 1011) covers the control column and intercepts pointer events."
+}

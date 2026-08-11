@@ -54,6 +54,228 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-08-11 🎯 FIX REALE errore WSH + Menu Start vuoto — installer AGENT GO (token)
+
+### Chiarimento utente (fondamentale)
+"Facciamo SEMPRE installazione da TOKEN" → si usa l'**agent Go**
+(`install-noc-agent.ps1`, `C:\Program Files\86NocAgent`, `argus-tray.exe` +
+scheduled task "86BIT Argus Tray"), NON il connector legacy PowerShell
+`86NocConnector`. Quindi il fix precedente (self-heal in update_check.ps1 del
+connector legacy) è OFF-TARGET per la loro flotta (resta come rete di sicurezza
+per eventuali macchine ancora legacy, non dannoso).
+
+### Cause reali sui server installati da token
+1. **Popup WSH** "Impossibile trovare ...\86NocConnector\src\tray_launcher.vbs":
+   RESIDUO di una vecchia installazione del connector legacy. Resta lo shortcut
+   di Startup (All Users) `ARGUS Connector Tray.lnk` che lancia wscript.exe sul
+   `.vbs` ormai inesistente. `install-noc-agent.ps1` NON lo rimuoveva.
+2. **Menu Start vuoto sui server**: su server headless l'installer NON crea
+   "Agent Status" e crea "Disinstalla" solo se `uninstall.ps1` è presente in
+   InstallDir — ma l'installer da token NON scriveva mai `uninstall.ps1` →
+   cartella "86BIT Argus Center" vuota.
+
+### Fix (`noc-agent/build/install-noc-agent.ps1`)
+- **9.4 Pulizia residui legacy 86NocConnector**: rimuove lo shortcut Startup
+  `ARGUS Connector Tray.lnk`, la cartella Menu Start legacy `86BIT ArgusCenter`
+  (senza spazio), il task `\86BIT\ArgusConnectorUpdater`, il servizio
+  `86NocConnectorService` e la Run key → l'errore WSH sparisce.
+- **9.45 Scrittura `uninstall.ps1`** in InstallDir (stesso dell'installer GUI) +
+  registrazione in "Programmi e funzionalità" (HKLM Uninstall\86BITArgusAgent).
+- **9.5 shortcut "Apri NOC Center"** (file `.url` → web console) SEMPRE creato,
+  così anche i server headless hanno una voce ARGUS visibile nel Menu Start; ora
+  compare anche "Disinstalla" (uninstall.ps1 esiste).
+
+### Validazione
+- Solo statica (script Windows-only, no pwsh in ambiente Linux): here-string
+  bilanciati (@'/'@, @"/"@), try/catch bilanciati, `uninstall.ps1` embedded
+  completo (109 righe, 14/14 graffe, stop servizi + rimozione task + rimozione
+  shortcut legacy). NON runtime-testabile qui.
+
+### Deploy (IMPORTANTE)
+`install-noc-agent.ps1` è servito da GitHub Release (proxy Center). Per applicare:
+1. Save to GitHub → pubblicare una NUOVA release agent (CI) con lo script
+   aggiornato; il comando token della console la servirà.
+2. Sui server colpiti: **ri-eseguire il comando token** (idempotente) → rimuove
+   il residuo legacy (stop errore WSH), scrive uninstall.ps1, aggiunge
+   "Apri NOC Center" + "Disinstalla" al Menu Start. La tray Go resta invariata.
+3. Sollievo immediato manuale (1 server): eliminare
+   `C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp\ARGUS Connector Tray.lnk`.
+Nota: gli update OTA (solo binari) NON rieseguono questa logica → serve il
+ri-lancio del token installer sui server già installati.
+
+---
+
+
+## 2026-08-11 🩺 SELF-HEAL tray + Menu Start (errore WSH tray_launcher.vbs mancante)
+
+### Problema utente (server Windows in produzione)
+Cliccando l'icona tray → errore WSH "Impossibile trovare il file di script
+'C:\Program Files\86NocConnector\src\tray_launcher.vbs'" e nel Menu Start non
+compare nulla di ARGUS. Il connector legacy PowerShell (`86NocConnector`) ha lo
+shortcut Startup che lancia `wscript.exe ...\src\tray_launcher.vbs`, ma il .vbs è
+SPARITO dal server (probabile quarantena antivirus dei .vbs/WSH, o update parziale).
+
+### Causa e perché non si auto-riparava
+`update_check.ps1` ripristina i file (STEP 6) e i collegamenti (STEP 9.5) SOLO
+durante un aggiornamento. Se il server è già all'ultima versione, nessun update
+scatta → il .vbs mancante non torna mai e lo shortcut resta rotto.
+
+### Fix (`noc-connector/prg/src/update_check.ps1`, v3.8.29)
+Aggiunto blocco **SELF-HEAL** che gira ad OGNI tick dell'updater (Task Scheduler,
+~5 min, come SYSTEM), PRIMA della lettura config, indipendente dalla disponibilità
+di un nuovo pacchetto:
+1. Se `src\tray_launcher.vbs` manca → lo **rigenera** da contenuto embedded.
+2. Se manca il principale del Menu Start → **ricrea** la cartella
+   `Programs\86BIT ArgusCenter` + shortcut (Avvia/Diagnostica/Disinstalla/Apri Log).
+3. **Crea/ripara** lo shortcut di Startup `ARGUS Connector Tray.lnk`
+   (wscript.exe + tray_launcher.vbs).
+Bump `version.json` → 3.8.29 + ZIP ricostruito/pubblicato
+(`build_connector_zip.py`, 28 file, tray_launcher.vbs incluso, attivo in DB).
+
+### Deploy / verifica
+- Validazione statica: ZIP contiene `prg/src/tray_launcher.vbs` +
+  `update_check.ps1` con il blocco SELF-HEAL; version 3.8.29 active in DB.
+- ⚠️ NON runtime-testabile qui (script Windows-only, no pwsh in ambiente Linux):
+  logica specchiata dalla creazione shortcut già collaudata in `installer_gui.ps1`.
+- Per la PRODUZIONE (argus.86bit.it): Save to GitHub + redeploy Center + rebuild/
+  publish connector ZIP v3.8.29. I server, vedendo v3.8.29, faranno l'update
+  (che di per sé ripristina il .vbs + shortcut) e da lì in poi il self-heal
+  mantiene tutto riparato ad ogni tick. Nessun reinstall manuale.
+- Consiglio all'utente: se ricorre, whitelistare `C:\Program Files\86NocConnector`
+  nell'antivirus (i .vbs/WSH sono spesso messi in quarantena).
+
+---
+
+
+## 2026-08-11 🎨 Redesign ENTERPRISE pannello VM Backup (Hornetsecurity/Altaro)
+
+### Richiesta utente
+La sezione Backup > "VM Backup (Altaro)" mostrava un tabellone infinito di ~5000
+righe VM identiche (illeggibile). Richiesto un layout enterprise, velocissimo da
+comprendere ("dobbiamo essere i migliori").
+
+### Nuovo design (`ClientOverviewPage.js::VMBackupPanel`, solo frontend)
+- **HERO SALUTE**: anello con success-rate % (colore verde/ambra/rosso per soglia)
+  + "VM protette" (totale) + "N da verificare" + barra segmentata
+  (success/warning/failed/stale) con legenda cliccabile (porta all'elenco filtrato).
+- **Vista "Panoramica" (default)**: exceptions-first —
+  - pannello "Richiede attenzione": SOLO le VM problematiche (failed→warning→stale)
+    ordinate per severità, con badge stato;
+  - pannello "Riepilogo per host/customer": roll-up con barra di salute per gruppo
+    + toggle Host/Customer.
+- **Vista "Elenco completo"**: ricerca testuale + filtri (Tutte/Problemi/Stale) +
+  tabella ordinabile (cap 1000, hint ad affinare la ricerca).
+- **De-duplicazione**: `allItems` (useMemo) collassa lo stesso VM logico
+  (host|nome|customer) allo snapshot più recente; TUTTE le metriche (hero, roll-up,
+  exceptions, elenco) sono ricalcolate da `alert_reason` → success = total − failed
+  − warning − stale (mutuamente esclusivi). Helper `VmHealthBar` (denominatore
+  clampato, mai >100%) e `VmSevBadge`.
+
+### Bug risolto in sviluppo
+Hero incoerente (rate 72.5% vs reale, barra >100%) perché usava
+`totals.by_status.success` che sovraconta VM anche failed/stale. Fix: conteggi
+client-side dal set de-duplicato.
+
+### Nota dati preview vs produzione
+La duplicazione massiva in preview (stesso VM salvato con `vm_id` diversi) è un
+artefatto di poll di test ripetuti. In PRODUZIONE l'upsert è per
+`(customer_name, host_name, vm_id)` con `vm_id` STABILE → nessun duplicato, la
+dedup frontend è un no-op di sicurezza. Perciò l'incoerenza tra la KPI card
+header ("N KO") e il pannello (numeri de-dup) è visibile SOLO in preview e non
+richiede fix backend. In preview il client 86BIT_Office è mappato a `loghilton.com`
+per demo.
+
+### Testing
+- iteration_111: layout OK (tutti i testid, hero, panoramica, roll-up, elenco,
+  ricerca, deep-link legenda) — trovato 1 bug HIGH (hero gonfiato).
+- iteration_112 (retest dopo fix): **100%** — hero coerente (total=4, 50%, 1
+  failed, 1 stale), barra = 100%, exceptions senza duplicati, roll-up host/customer,
+  elenco+ricerca coerenti. Nessun crash.
+
+---
+
+
+## 2026-08-11 ✅ 3 migliorie visive: cascata gerarchica mappa + uplink porte + volumi logici iLO
+
+### Richiesta utente (3 punti)
+1. Layout GERARCHICO della cascata switch sulla mappa live: gateway/firewall in
+   alto, switch in ordine 1°→2°→3° impilati a scaletta verticale, device a
+   ventaglio a destra di ogni switch.
+2. Dettaglio PRECISO dell'uplink (switch peer + porta remota + VLAN + verificato)
+   nella pagina "Porte switch".
+3. Volumi logici/RAID accanto ai dischi fisici nel pannello iLO, raggruppati per
+   controller storage.
+
+### Implementazione (frontend + backend Python, nessun rebuild agent Go)
+- **`NetworkMap.js`**: nuova `cascadeLayoutNodes(flowNodes, cascade, edges, width)`
+  usata quando `topo.switch_cascade` è presente (prima di `autoLayoutNodes`):
+  gateway in cima, switch impilati per rank (offset x per livello), endpoint a
+  ventaglio a destra, non collegati impilati in basso. Verificato: nessun overlap
+  tra nodi. **Fix z-index**: `<Controls position="top-left">` per non essere più
+  coperti dalla legenda `Panel` bottom-left (i controlli fit/zoom ora cliccabili).
+- **`SwitchPortsPage.js`**: badge uplink sulle tile (`switch-port-uplink-badge-<idx>`)
+  e sezione dettaglio (`port-uplink-detail-<idx>`) con peer/porta remota/VLAN e
+  badge VERIFICATO(LLDP+FDB)/PROBABILE.
+- **`topology.py::get_switch_ports`**: incrocia `compute_switch_cascade` per marcare
+  le porte come `is_switch_uplink` + `uplink_to {peer_ip, peer_name, remote_port,
+  verified, vlan}`.
+- **`IloServerPanel.js`**: sezione Storage riscritta — itera `s.storage_controllers`
+  mostrando per ogni controller i **Volumi logici / RAID** (`ilo-logical-table-<ip>-<ci>`)
+  + i dischi fisici (`ilo-drive-table-<ip>-<ci>`). Backend `redfish.py` già parsa
+  `logical_drives` (HPE LogicalDrives + DMTF Volumes).
+
+### Testing (E2E frontend, login+2FA reale)
+- iteration_109: Feature 1 (mappa cascata, staircase, 0 overlap) PASS; Feature 3
+  (iLO 2 volumi logici RAID5/RAID1 + 6 dischi) PASS; Feature 2 bloccata da dati
+  porte assenti in preview.
+- iteration_110 (retest dopo fix): Feature 2 PASS (SWITCH01 Gi1/0/1→FORTIGATE-FW
+  "~PROBABILE", Gi1/0/24→SWITCH03 "✓VERIFICATO" VLAN1) + fix controlli mappa
+  cliccabili PASS. 2/2 PASS 100%.
+
+### Dati DEMO preview
+- `seed_ilo_demo.py` arricchito con 2 volumi logici (RAID5 OS + RAID1 DATA).
+- `seed_switch_cascade.py` ora seeda anche 72 `switch_ports` (24/switch) con le
+  porte di uplink accese, così Feature 2 è esercitabile in preview. In PROD i dati
+  arrivano da SNMP/LLDP/FDB reali. Per PROD: Save to GitHub + redeploy.
+
+### Backlog cosmetico (non bloccante)
+- Zoom di default della mappa piccolo (etichette poco leggibili senza zoom).
+- Chip rank nel pannello "Catena switch": rendere più visibile il "°".
+
+---
+
+
+## 2026-08-11 🧩 iLO inventario COMPLETO (tutte le RAM e tutti i dischi)
+
+### Problema (server reale ML350/ML110 Gen10 in produzione)
+Nella tab iLO mancavano DIMM e dischi, e le colonne Ore/Temp erano vuote.
+
+### Cause e fix in `redfish.py` (parsing Redfish, solo backend — l'agent Go NON parsa Redfish)
+- **DIMM**: il filtro `Status.State == "Enabled"` scartava banchi popolati con stati
+  diversi. Ora si includono TUTTI i DIMM popolati (`CapacityMiB > 0`, esclusi "Absent"),
+  con `rank`, `manufacturer`, `part_number`, e fallback `total_memory_gb` = somma DIMM.
+  Cap alzato a 64 banchi.
+- **Dischi**: per HPE SmartStorage i campi `CurrentTemperatureCelsius`,
+  `RotationalSpeedRpm`, `SSDEnduranceUtilizationPercentage`, `PowerOnHours` sono a
+  livello TOP (non sotto Oem) → prima Temp/RPM/Usura restavano vuoti. Estratto helper
+  `_parse_redfish_drive` con fallback HPE-top / DMTF-Oem, wear da
+  `PredictedMediaLifeLeftPercent`. Aggiunta raccolta **dischi non assegnati/spare**
+  (HPE `UnconfiguredDrives`/`HostBusAdapters`). Cap 64 dischi/controller.
+- Esposti tutti i campi in `devices.py::get_client_ilo_health` (già passa memory_dimms/
+  storage_controllers).
+
+### Frontend `IloServerPanel.js`
+- Sezione memoria: header "Memoria — N GB · N DIMM" + colonna Part Number/rank.
+- Tabella dischi: nuove colonne RPM e Usura (% con soglie colore), oltre a Ore/Temp/Predict.
+
+### Verifica
+Screenshot tab iLO (seed arricchito 8×32GB + 6 dischi HDD/SSD): 8 DIMM 256GB con Part
+Number, 6 dischi con RPM/Ore/Temp/Usura (12%/74%/93%), predict-fail evidenziato. OK.
+
+### ⚠️ Deploy
+I fix sono lato backend Python → attivi in PROD dopo Save to GitHub + redeploy e al
+prossimo poll Redfish (o forzando "Correggi"/poll-now). Nessun rebuild agent Go.
+
 ## 2026-08-11 🔴 Anomalia cascata sulla MAPPA + pulsante "Accetta nuova topologia"
 
 ### 1) Evidenziazione anomalie sulla mappa
