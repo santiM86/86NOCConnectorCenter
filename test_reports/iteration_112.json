@@ -1,0 +1,25 @@
+{
+  "summary": "Focused frontend retest of the HIGH bug from iteration_111 (VMBackupPanel hero inconsistency) on /client/da3d6e40-b3e5-4d46-9787-dde328a3aa36 > Backup > VM Backup (Altaro). Login 2FA OK. BUG CONFIRMED FIXED: hero now shows total=4, success=2 => 50.0% (rate == success/total), legend 2+1+0+1 = 4 == 'VM protette', '2 da verificare' == failed+warning+stale = 2, hero health-bar segments measured 25+25+50 = 100.00% (no overflow). Panoramica: attention panel lists exactly the 2 problem VMs (SRVDATI FAILED, SRVDC STALE) with severity badges, no more 80 duplicate rows; roll-up per Host (LOGHILTONSRV 2 VM w/ 2 problems, LOGHILTONSRV2 2 VM) and Customer toggle (loghilton.com 4 VM) work, group bars measured 100.00% each. Elenco completo: table shows 4 de-duplicated rows, counters coherent (Tutte 4 / Problemi 1 / Stale 1, 'N risultati' matches), search filters correctly (no-match -> 0 rows, clear -> 4). No crash, no React/JS errors (only an unrelated 403 on one resource + WS warning).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Client header KPI cards / Backup tab label", "issues": ["The top KPI card still reads 'BACKUP 1374 KO — VM 1374' (raw backend totals, non de-duplicated) while the VM Backup panel now correctly shows 4 VM / 1 failed; the two views contradict each other. Backup tab label also shows 'Backup (0)'. Consider deriving the KPI/badge from the same de-duplicated/mutually-exclusive counters."]}
+    ]
+  },
+  "test_report_links": [],
+  "action_items": ["Align the client header 'BACKUP n KO / VM n' KPI card (and 'Backup (0)' tab counter) with the de-duplicated VM counters used by VMBackupPanel — currently 1374 KO vs 1 failed."],
+  "critical_code_review_comments": [
+    "Dedup + counts implementation (ClientOverviewPage.js:4449-4468) is correct: key host|vm|customer, most recent onsite_time wins, counts derived from mutually exclusive alert_reason; VmHealthBar (5185-5201) uses max(total, sum) so segments can never exceed 100%.",
+    "ClientOverviewPage.js is still 5225 lines — should be split into feature modules (VMBackupPanel alone is ~800 lines)."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "not tested", "frontend": "100% on the focused scope"},
+  "seed_data_creation": "none",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "info@86bit.it / Ariel17051986@!@86 + TOTP NMHDJNO53WLTOSREUXWERE6FDH5TAKC3",
+  "context_for_next_testing_agent": "Login recipe: controlled inputs -> use click()+type(delay=30) then Enter; on /2fa wait ~31s if a TOTP code was already consumed in the same window, then type code + Enter. Navigate directly to /client/<id>, click [data-testid=tab-backup] (never get_by_text('Backup')), then [data-testid=backup-subtab-vm], wait ~14s. Post-dedup verified values for loghilton.com: total 4, success 2 (50.0%), failed 1, warning 0, stale 1; list filters Tutte 4 / Problemi 1 / Stale 1. Only open item: header KPI card still shows raw 1374 KO.",
+  "rca_of_the_issue": "Previous bug root cause was the hero using backend totals.by_status.success which double-counted failed/stale VMs on a duplicated preview dataset. Fix (frontend dedup by host|vm|customer keeping latest snapshot + counters recomputed from alert_reason + VmHealthBar denominator clamped) is verified working end-to-end."
+}

@@ -54,6 +54,54 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-08-11 🎨 Redesign ENTERPRISE pannello VM Backup (Hornetsecurity/Altaro)
+
+### Richiesta utente
+La sezione Backup > "VM Backup (Altaro)" mostrava un tabellone infinito di ~5000
+righe VM identiche (illeggibile). Richiesto un layout enterprise, velocissimo da
+comprendere ("dobbiamo essere i migliori").
+
+### Nuovo design (`ClientOverviewPage.js::VMBackupPanel`, solo frontend)
+- **HERO SALUTE**: anello con success-rate % (colore verde/ambra/rosso per soglia)
+  + "VM protette" (totale) + "N da verificare" + barra segmentata
+  (success/warning/failed/stale) con legenda cliccabile (porta all'elenco filtrato).
+- **Vista "Panoramica" (default)**: exceptions-first —
+  - pannello "Richiede attenzione": SOLO le VM problematiche (failed→warning→stale)
+    ordinate per severità, con badge stato;
+  - pannello "Riepilogo per host/customer": roll-up con barra di salute per gruppo
+    + toggle Host/Customer.
+- **Vista "Elenco completo"**: ricerca testuale + filtri (Tutte/Problemi/Stale) +
+  tabella ordinabile (cap 1000, hint ad affinare la ricerca).
+- **De-duplicazione**: `allItems` (useMemo) collassa lo stesso VM logico
+  (host|nome|customer) allo snapshot più recente; TUTTE le metriche (hero, roll-up,
+  exceptions, elenco) sono ricalcolate da `alert_reason` → success = total − failed
+  − warning − stale (mutuamente esclusivi). Helper `VmHealthBar` (denominatore
+  clampato, mai >100%) e `VmSevBadge`.
+
+### Bug risolto in sviluppo
+Hero incoerente (rate 72.5% vs reale, barra >100%) perché usava
+`totals.by_status.success` che sovraconta VM anche failed/stale. Fix: conteggi
+client-side dal set de-duplicato.
+
+### Nota dati preview vs produzione
+La duplicazione massiva in preview (stesso VM salvato con `vm_id` diversi) è un
+artefatto di poll di test ripetuti. In PRODUZIONE l'upsert è per
+`(customer_name, host_name, vm_id)` con `vm_id` STABILE → nessun duplicato, la
+dedup frontend è un no-op di sicurezza. Perciò l'incoerenza tra la KPI card
+header ("N KO") e il pannello (numeri de-dup) è visibile SOLO in preview e non
+richiede fix backend. In preview il client 86BIT_Office è mappato a `loghilton.com`
+per demo.
+
+### Testing
+- iteration_111: layout OK (tutti i testid, hero, panoramica, roll-up, elenco,
+  ricerca, deep-link legenda) — trovato 1 bug HIGH (hero gonfiato).
+- iteration_112 (retest dopo fix): **100%** — hero coerente (total=4, 50%, 1
+  failed, 1 stale), barra = 100%, exceptions senza duplicati, roll-up host/customer,
+  elenco+ricerca coerenti. Nessun crash.
+
+---
+
+
 ## 2026-08-11 ✅ 3 migliorie visive: cascata gerarchica mappa + uplink porte + volumi logici iLO
 
 ### Richiesta utente (3 punti)

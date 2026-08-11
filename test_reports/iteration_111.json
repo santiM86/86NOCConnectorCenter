@@ -1,0 +1,31 @@
+{
+  "summary": "Frontend-only test of the redesigned VMBackupPanel (Backup > VM Backup (Altaro)) on client da3d6e40-b3e5-4d46-9787-dde328a3aa36 (customer loghilton.com, 5000 VM). Login 2FA OK. All new testids exist and work: hero, health bar, 4 clickable legends, Panoramica (attention panel 80 rows exceptions-first + rollup with host/customer toggle), Elenco completo (search, 3 filters, table 1000-row cap), legend->list deep-link. No crash, no white page, no React errors. ONE HIGH data-consistency bug found in the HERO KPIs.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "VMBackupPanel hero (VmHealthBar + success ring)", "issue": "Segments sum to 131.96% (measured widths: failed 27.48% + stale 31.96% + success 72.52%) so the green segment overflows the bar and the ring shows 72.5% instead of the real ~40.6%. Root cause: nSuccess = t.by_status?.success (3626) is used as-is, but the backend by_status counts stale/failed VMs as 'success' too => 3626+1374+1598 = 6598 > 5000 total. The '2972 da verificare' line and the roll-up (client-side, mutually exclusive) contradict the hero. Fix: derive nSuccess = max(0, total - failed - warning - stale) (or clamp/normalize in VmHealthBar) instead of trusting by_status.success.", "selector": "[data-testid=\"vmbackup-health-hero\"] / [data-testid=\"vm-health-bar\"]", "priority": "HIGH"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "VM Backup - Panoramica", "issues": ["Attention list shows 80 identical rows (same VM name/host/time) because of the seeded dataset - consider collapsing duplicates per host+VM name to keep the exceptions list actually scannable", "Hero ring color (rateColor) is green/amber/red based on the inflated rate, so with the correct 40% it should be red - re-verify colors after fixing the success computation"]}
+    ]
+  },
+  "test_report_links": [],
+  "action_items": [
+    "Fix hero success computation/health bar normalization (do not use by_status.success blindly; segments must never exceed 100%)",
+    "Optional: de-duplicate/aggregate identical VM rows in the 'Richiede attenzione' panel"
+  ],
+  "critical_code_review_comments": [
+    "ClientOverviewPage.js:4598 - `t.by_status?.success ?? (total-failed-warning-stale)`: the primary branch is inconsistent with the fallback and produces >100% totals; prefer the computed value or clamp.",
+    "VmHealthBar (line ~5163) does not clamp/normalize segment percentages, so inconsistent totals silently render an overflowing bar.",
+    "ClientOverviewPage.js is 5202 lines - should be split into feature modules."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "not tested", "frontend": "92%"},
+  "seed_data_creation": "none",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "info@86bit.it / Ariel17051986@!@86 + TOTP NMHDJNO53WLTOSREUXWERE6FDH5TAKC3",
+  "context_for_next_testing_agent": "Login recipe: on /login the inputs are controlled - page.fill can be silently reset, use click()+type(delay=30). After /2fa wait ~30s for a fresh TOTP window if a code was already consumed. Tab must be clicked via [data-testid=\"tab-backup\"] (get_by_text('Backup') matches the KPI card). Then [data-testid=\"backup-subtab-vm\"], panel needs ~10-14s to load 5000 items. Verified counts: total 5000, failed 1374, stale 1598, warning 0, by_status.success 3626 (inflated). Search works (SRVDATI=3162, LOGHILTONSRV2=2694, no-match=0); filters: Tutte 5000 / Problemi 1374 / Stale 1598; legend-failed correctly switches to list+problems.",
+  "rca_of_the_issue": "Backend totals.by_status.success double-counts VMs that are also failed/stale; the frontend hero uses it directly, so success-rate ring (72.5% vs real ~40.6%) and the segmented bar (131.96% total width) are wrong while the roll-up panel (computed client-side from alert_reason) is correct."
+}
