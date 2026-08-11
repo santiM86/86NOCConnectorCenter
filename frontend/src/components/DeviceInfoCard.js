@@ -585,6 +585,16 @@ export default function DeviceInfoCard({ deviceIp, clientId = null, onClose = nu
                 via ARP cache da {id.mac_arp_source_ip || "vicino"}
               </div>
             )}
+            {id.mac_primary && id.mac_source === "arp-scan" && (
+              <div className="py-1 text-[10px] text-[var(--text-secondary)] italic">
+                via scan ARP dell'agent{id.mac_arp_source_ip ? ` (${id.mac_arp_source_ip})` : ""}
+              </div>
+            )}
+            {id.mac_primary && id.mac_source === "net-scan" && (
+              <div className="py-1 text-[10px] text-[var(--text-secondary)] italic">
+                via scan di rete del cliente
+              </div>
+            )}
             <Field label="MAC totali" value={id.mac_count || null} />
             <Field label="Vendor" value={id.vendor} highlight />
             <Field label="Modello" value={id.model} highlight />

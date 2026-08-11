@@ -464,6 +464,32 @@ async def build_info_card(device_ip: str, client_id: Optional[str] = None) -> Di
             primary_mac = arp_doc["mac"]
             mac_source = "arp-cache"
             arp_source_ip = arp_doc.get("source_device_ip")
+    # Fallback: MAC scoperto dall'agent v4 (scan ARP/mDNS) e salvato in
+    # discovered_endpoints con chiave (client_id, ip). Copre gli switch/host L3
+    # raggiungibili in SNMP il cui MAC non e' esposto via SNMP ma e' visibile
+    # nella tabella ARP dell'agent del segmento (caso HPE Comware su IP proprio).
+    if not primary_mac:
+        ep = await db.discovered_endpoints.find_one(
+            _q({"ip": device_ip, "mac": {"$exists": True, "$nin": [None, ""]}}),
+            {"_id": 0, "mac": 1, "last_seen_subnet": 1, "last_seen_via": 1},
+            sort=[("last_seen_at", -1)],
+        )
+        if ep and ep.get("mac"):
+            primary_mac = ep["mac"]
+            mac_source = "arp-scan"
+            arp_source_ip = ep.get("last_seen_subnet") or ep.get("last_seen_via")
+    # Fallback finale: mappa IP->MAC dello scan di rete del cliente
+    if not primary_mac:
+        nd = await db.network_discovery.find_one(
+            _q({}), {"_id": 0, "device_macs": 1}, sort=[("scanned_at", -1)])
+        for dm in (nd or {}).get("device_macs", []) or []:
+            if isinstance(dm, dict) and dm.get("ip") == device_ip:
+                _m = dm.get("macs") or dm.get("mac")
+                _m = _m[0] if isinstance(_m, list) and _m else _m
+                if _m:
+                    primary_mac = _m
+                    mac_source = "net-scan"
+                break
 
     device_type = _first_not_none(
         poll.get("device_class"),

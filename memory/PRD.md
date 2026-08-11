@@ -54,6 +54,45 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-08-10 🔎 MAC "non disponibile" sulla scheda device — fallback ARP scan
+
+### Domanda utente
+Switch HPE Comware 10.100.100.4 (AQUATTRO): la scheda mostrava "MAC non
+disponibile" pur essendo ONLINE, SNMP fresco e "visto nella tabella ARP".
+
+### Root cause
+`device_info_card.py::build_info_card` cercava il MAC solo in: SNMP
+(`poll.primary_mac`/`device_macs`) e `arp_cache`. Per gli agent v4 Go il MAC
+scoperto via ARP/mDNS finisce in `discovered_endpoints` (chiave client_id+ip),
+che la card NON consultava -> MAC assente anche quando l'agent lo conosceva.
+Nota: uno switch raggiunto sul PROPRIO IP L3 spesso non espone il MAC via SNMP
+(serve dot1dBaseBridgeAddress, non nel profilo), quindi l'unica fonte era ARP.
+
+### Fix (`routes/device_info_card.py` + `DeviceInfoCard.js`)
+Aggiunti 2 fallback dopo arp_cache:
+- `discovered_endpoints` (client_id+ip, mac non vuoto, piu' recente) ->
+  `mac_source="arp-scan"`.
+- `network_discovery.device_macs` (mappa IP->MAC dello scan) ->
+  `mac_source="net-scan"`.
+Frontend: nota origine per arp-scan ("via scan ARP dell'agent") e net-scan.
+
+### Testing
+- Verificato in preview con `build_info_card`: device con MAC in
+  discovered_endpoints e senza primary_mac SNMP -> ora ritorna
+  `mac_primary=00:04:f2:... source=arp-scan`. Frontend compila, backend OK.
+
+### Limite / enhancement futuro
+Se l'agent NON e' sul segmento L2 dello switch, l'ARP non ha il MAC: in quel
+caso servirebbe leggerlo via SNMP `dot1dBaseBridgeAddress` (1.3.6.1.2.1.17.1.1.0)
+aggiungendolo al profilo + parsing OctetString->MAC. Proposto all'utente.
+
+### Deploy
+Preview attivo; per PROD Save to GitHub + redeploy (frontend + backend).
+
+---
+
+
+
 ## 2026-08-10 🐞 FIX pulsante "Correggi" diagnosi porte switch (era no-op)
 
 ### Sintomo (domanda utente)
