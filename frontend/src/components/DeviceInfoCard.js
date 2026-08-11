@@ -712,15 +712,17 @@ export default function DeviceInfoCard({ deviceIp, clientId = null, onClose = nu
                 <div key={i} className="py-1 border-b border-white/5 last:border-0" data-testid={`physical-link-${i}`}>
                   <div className="flex items-center gap-2 text-[12px]">
                     <span className="font-semibold text-teal-200">{l.neighbor_name}</span>
-                    {l.direct
-                      ? <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">LINK DIRETTO</span>
-                      : <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40" title={`${l.macs_on_port} MAC sulla porta: probabile uplink/trunk`}>VIA TRUNK</span>}
+                    {l.verified
+                      ? <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-cyan-500/20 text-cyan-300 border border-cyan-500/50" title="LLDP e MAC-table concordano: collegamento confermato al 100%">✓ VERIFICATO (LLDP+FDB)</span>
+                      : l.direct
+                        ? <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">LINK DIRETTO</span>
+                        : <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40" title={`${l.macs_on_port} MAC sulla porta: probabile uplink/trunk`}>VIA TRUNK</span>}
                   </div>
                   <div className="text-[11px] text-[var(--text-secondary)] font-mono">
                     porta {l.port_name || `#${l.port}`}
                     {l.vlan ? ` · VLAN ${l.vlan}` : ""}
                     {` · ${l.neighbor_ip}`}
-                    {!l.direct ? ` · ${l.macs_on_port} MAC` : ""}
+                    {!l.direct && !l.verified ? ` · ${l.macs_on_port} MAC` : ""}
                   </div>
                 </div>
               ))}

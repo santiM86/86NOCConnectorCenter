@@ -54,6 +54,39 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-08-10 ✅ Doppia evidenza LLDP+FDB: link fisici "VERIFICATI"
+
+### Richiesta utente
+Incrociare l'LLDP (gia' raccolto in `lldp_neighbors`) con i link FDB per
+confermare i collegamenti diretti: quando LLDP e MAC-table concordano, il link
+e' certo al 100% -> marcarlo "verificato".
+
+### Implementazione (`device_info_card.py::find_physical_uplinks` + card)
+- Per ogni link FDB (switch vicino S ha il MAC del device M sulla porta P), si
+  controlla se S ha un vicino LLDP con `remote_chassis_id` == M (confronto su
+  hex a 12 char, robusto a formati hex:/0x/dashed/colon). Se si -> `verified=true`
+  + si espongono `lldp_local_port`/`lldp_remote_port`.
+- Ordinamento: prima i VERIFICATI, poi per pochi-MAC (link piu' probabile).
+- **`DeviceInfoCard.js`**: badge **"✓ VERIFICATO (LLDP+FDB)"** (ciano) con
+  priorita' su LINK DIRETTO / VIA TRUNK.
+
+### Bug risolto in sviluppo
+`_hex12` lasciava passare la 'e' di "hex:" (carattere esadecimale) -> 13 char ->
+nessun match LLDP. Fix: strip prefisso hex:/0x prima del regex.
+
+### Testing
+- Preview con dati sintetici: SW con LLDP+FDB concordi -> VERIFICATO e primo in
+  lista; SW con solo FDB -> non verificato. PASS. Backend syntax OK, frontend
+  compila.
+
+### Deploy
+Preview attivo; per PROD Save to GitHub + redeploy. La verifica LLDP scatta solo
+tra device LLDP-capable (switch/AP); per gli endpoint puri resta il dato FDB.
+
+---
+
+
+
 ## 2026-08-10 🗺️ Topologia fisica: incrocio MAC device ↔ FDB switch vicini
 
 ### Richiesta utente

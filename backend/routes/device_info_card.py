@@ -310,6 +310,17 @@ async def find_physical_uplinks(client_id: Optional[str], device_ip: str,
          "switch_ip": {"$nin": ["", None, device_ip]}}
     entries = await db.discovered_endpoints.find(
         q, {"_id": 0, "switch_ip": 1, "port": 1, "vlan": 1}).to_list(50)
+
+    def _hex12(v):
+        s = str(v or "").strip()
+        if s.lower().startswith("hex:"):
+            s = s[4:]
+        if s.lower().startswith("0x"):
+            s = s[2:]
+        h = re.sub(r"[^0-9a-fA-F]", "", s).lower()
+        return h if len(h) == 12 else ""
+
+    mac_hex = _hex12(mac)
     results = []
     seen = set()
     for e in entries:
@@ -324,6 +335,21 @@ async def find_physical_uplinks(client_id: Optional[str], device_ip: str,
             {**base, "local_ip": sw, "idx": port}, {"_id": 0, "name": 1})
         nb = await db.managed_devices.find_one(
             {**base, "ip": sw}, {"_id": 0, "hostname": 1, "name": 1, "device_name": 1})
+        # Doppia evidenza LLDP: lo switch vicino (sw) ha un vicino LLDP il cui
+        # chassis-id coincide col MAC del device? Allora il link e' confermato
+        # (LLDP + MAC-table concordano) -> verified=100%.
+        verified = False
+        lldp_local_port = None
+        lldp_remote_port = None
+        async for ld in db.lldp_neighbors.find(
+            {**base, "local_ip": sw},
+            {"_id": 0, "remote_chassis_id": 1, "local_port_id": 1,
+             "local_port_desc": 1, "remote_port_id": 1, "remote_sys_name": 1}):
+            if mac_hex and _hex12(ld.get("remote_chassis_id")) == mac_hex:
+                verified = True
+                lldp_local_port = ld.get("local_port_desc") or ld.get("local_port_id")
+                lldp_remote_port = ld.get("remote_port_id")
+                break
         results.append({
             "neighbor_ip": sw,
             "neighbor_name": (nb or {}).get("hostname") or (nb or {}).get("name")
@@ -333,8 +359,12 @@ async def find_physical_uplinks(client_id: Optional[str], device_ip: str,
             "vlan": e.get("vlan") or None,
             "macs_on_port": macs_on_port,
             "direct": macs_on_port <= 2,
+            "verified": verified,
+            "lldp_local_port": lldp_local_port,
+            "lldp_remote_port": lldp_remote_port,
         })
-    results.sort(key=lambda r: r["macs_on_port"])
+    # Ordina: prima i VERIFICATI, poi per pochi MAC (link piu' probabile)
+    results.sort(key=lambda r: (not r["verified"], r["macs_on_port"]))
     return results
 
 
