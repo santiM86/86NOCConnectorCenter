@@ -54,6 +54,24 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-08-10 🔧 Wait-FileUnlocked anche nell'updater standalone (Aggiorna Connector)
+
+Esteso il fix "file in uso" a `noc-agent/build/install-noc-agent.ps1` (usato
+dall'aggiornamento remoto "Aggiorna Connector"):
+- Kill list ampliata a `nocagent,nocwatchdog,nocagent-ui,ArgusDesktop,argus-tray`
+  (prima uccideva solo le UI; ora anche agent/watchdog se il servizio e' appeso).
+- Aggiunta funzione `Wait-FileUnlocked` (stessa del template token).
+- Chiamata prima di ogni download: loop asset richiesti -> se ancora bloccato
+  `Write-Fail` + `exit 4`; loop asset opzionali -> kill+wait best-effort.
+- Verifica: 3 occorrenze Wait-FileUnlocked (def + 2 usi). pwsh non disponibile
+  (script Windows-only): review manuale, pattern identico al template gia'
+  render-verificato. Lo script e' servito dalla Release GitHub -> attivo dopo
+  Save to GitHub + nuova release.
+
+---
+
+
+
 ## 2026-08-10 🔧 Installer token: kill processi + attesa sblocco file (fix "file in uso")
 
 ### Problema utente
