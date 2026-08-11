@@ -54,6 +54,51 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-08-10 ✅ VERIFICA "Apri Mappa" filtrato per cliente (E2E PASS 6/6)
+
+### Esito
+Testing agent frontend (iteration_106): tutti e 6 i comportamenti PASS al 100%.
+Login+2FA -> dashboard -> "Apri Mappa" (card espansa) -> /network-status?view=map&
+client=<id> apre in vista MAPPA filtrata sul solo cliente; banner filtro +
+"Mostra tutti i clienti" + toggle Lista/Mappa OK. Deep-link diretto OK.
+
+### Rifiniture applicate
+- `ClientStatusPage.js`: alzato il contrasto del pulsante "Mostra tutti i
+  clienti" (era bg-white/5 low-contrast -> ora teal, coerente col banner).
+- `test_credentials.md`: annotato il `totp_secret` admin corrente
+  (NMHDJNO53WLTOSREUXWERE6FDH5TAKC3) per i test futuri.
+
+### Backlog minori emersi (LOW, non bloccanti)
+- "Apri Mappa" visibile solo nella card espansa (discoverability).
+- Card header senza data-testid (testability).
+- viewMode inizializzato solo al mount da searchParams (ok oggi; sincronizzare
+  con URL se in futuro si aggiungono link che cambiano solo ?view=).
+
+## 2026-08-10 🎯 "Apri Mappa" filtra sul singolo cliente (?client=<id>)
+
+### Richiesta utente
+Far sì che "Apri Mappa" apra la topologia già filtrata sul cliente della card.
+
+### Implementazione
+- **`ClientStatusPage.js`**: legge `?client=<id>` (`useSearchParams`) e filtra
+  `clientGroups` su quel cliente (vale sia mappa che lista). Banner "Vista
+  filtrata sul cliente: X" con pulsante "Mostra tutti i clienti" (naviga
+  preservando la vista corrente, via `useNavigate`).
+- **`DashboardPage.js`**: il pulsante "Apri Mappa" ora naviga a
+  `/network-status?view=map&client=<id>` -> apre direttamente la mappa del solo
+  cliente della card.
+
+### Testing
+- Frontend compila (JSX OK; unico warning exhaustive-deps preesistente).
+  Screenshot autenticato non possibile (login preview bloccato da IP allowlist).
+
+### Deploy
+Preview attivo; per PROD Save to GitHub + redeploy frontend.
+
+---
+
+
+
 ## 2026-08-10 🗺️ Pulsante "Apri Mappa" nelle card dashboard desktop
 
 ### Richiesta utente

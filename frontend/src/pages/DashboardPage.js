@@ -409,7 +409,7 @@ function ClientCard({ client: c, navigate }) {
 
           {/* Quick actions */}
           <div className="flex gap-2 pt-1">
-            <button onClick={() => navigate("/network-status?view=map")} className="text-[9px] px-2 py-1 rounded-md bg-teal-500/10 text-teal-300 border border-teal-500/20 hover:bg-teal-500/20 transition-colors font-bold" data-testid={`open-map-${c.id}`}>Apri Mappa</button>
+            <button onClick={() => navigate(`/network-status?view=map&client=${c.id}`)} className="text-[9px] px-2 py-1 rounded-md bg-teal-500/10 text-teal-300 border border-teal-500/20 hover:bg-teal-500/20 transition-colors font-bold" data-testid={`open-map-${c.id}`}>Apri Mappa</button>
             <button onClick={() => navigate("/wan-monitor")} className="text-[9px] px-2 py-1 rounded-md bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 hover:bg-indigo-500/20 transition-colors">Monitor WAN</button>
             <button onClick={() => navigate("/devices")} className="text-[9px] px-2 py-1 rounded-md bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 hover:bg-cyan-500/20 transition-colors">Dispositivi</button>
             <button onClick={() => navigate("/alerts")} className="text-[9px] px-2 py-1 rounded-md bg-amber-500/10 text-amber-400 border border-amber-500/20 hover:bg-amber-500/20 transition-colors">Alert</button>

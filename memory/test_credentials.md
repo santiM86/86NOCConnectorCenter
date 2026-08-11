@@ -5,6 +5,11 @@
 - Password: `Ariel17051986@!@86`
 - Role: `admin`
 
+## ⚠️ 2FA ATTIVO — secret corrente (2026-08-10)
+- `totp_secret` admin attualmente in `db.users`: `NMHDJNO53WLTOSREUXWERE6FDH5TAKC3`
+- Login: `/login` -> `/2fa` -> `POST /api/auth/verify-2fa {code}` con `pyotp.TOTP('NMHDJNO53WLTOSREUXWERE6FDH5TAKC3').now()`.
+- Per riportare allo stato "enroll richiesto": unset `totp_secret` + `two_factor_enabled=false`.
+
 ## ⚠️ 2FA OBBLIGATORIO PER ADMIN (dal 2026-08-07)
 Gli utenti con ruolo `admin` che NON hanno il 2FA attivo ricevono al login un
 token ristretto (`requires_2fa_setup: true`, nessun refresh_token) e DEVONO
