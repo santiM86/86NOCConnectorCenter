@@ -54,6 +54,23 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-08-11 🔖 Bump agent v4.30.0 → v4.30.1 (per rollout fix WSH/Menu Start)
+
+- La release GitHub "latest" attuale = **v4.30.0** (il Center la risolve via
+  `releases/latest` su `santiM86/86NOCConnectorCenter`; nessun override env/DB in
+  preview). Il fallback nel codice era stantìo (VERSION + main.go = 4.26.0).
+- Per far accendere il bulk **"Aggiorna tutti"** (fire solo se installato < latest)
+  e distribuire il fix `install-noc-agent.ps1` a tutta la flotta senza giro fisico:
+  bump a **v4.30.1** → `noc-agent/VERSION` e `cmd/agent/main.go var Version`.
+- Deploy: Save to GitHub + `git tag v4.30.1 && git push --tags` (o workflow_dispatch)
+  → CI pubblica release v4.30.1 con `install-noc-agent.ps1` aggiornato + binari.
+  Poi in console "Aggiorna tutti" → update remoto rieseguе lo script (da main) su
+  ogni agent → pulizia residui legacy (WSH) + Menu Start ripristinato. Per un
+  pilota: comando `update` sul singolo agent (funziona anche a parità di versione).
+
+---
+
+
 ## 2026-08-11 🎯 FIX REALE errore WSH + Menu Start vuoto — installer AGENT GO (token)
 
 ### Chiarimento utente (fondamentale)
