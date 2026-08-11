@@ -176,6 +176,111 @@ try {
     Write-UpdateLog "Self-harden fallito (non critico): $($_.Exception.Message)" "DEBUG"
 }
 
+# ==================== SELF-HEAL TRAY LAUNCHER + SHORTCUTS (v3.8.29) ====================
+# Gira ad OGNI tick (anche quando NON c'e' un update disponibile). Ripara le
+# installazioni dove `src\tray_launcher.vbs` e' sparito (quarantena antivirus,
+# update parziale, cancellazione accidentale) o dove i collegamenti Menu Start /
+# Startup sono mancanti -> risolve l'errore WSH "Impossibile trovare il file di
+# script ...\src\tray_launcher.vbs" e il fatto che nel Menu Start non compaia
+# nulla di ARGUS. Non dipende dall'esistenza di un nuovo pacchetto: rigenera i
+# file da un contenuto embedded, cosi' i server gia' all'ultima versione guariscono.
+try {
+    $srcDirHeal = Join-Path $InstallDir "src"
+    if (-not (Test-Path $srcDirHeal)) { New-Item -ItemType Directory -Path $srcDirHeal -Force -ErrorAction SilentlyContinue | Out-Null }
+    $trayVbsHeal = Join-Path $srcDirHeal "tray_launcher.vbs"
+
+    if (-not (Test-Path $trayVbsHeal)) {
+        Write-UpdateLog "SELF-HEAL: tray_launcher.vbs MANCANTE -> rigenero da contenuto embedded" "WARN"
+        $vbsContent = @'
+' =============================================================================
+' tray_launcher.vbs - ARGUS Connector Tray App Launcher (hidden)
+' Rigenerato automaticamente da update_check.ps1 (self-heal).
+' Avvia tray_app.ps1 completamente nascosto (nessuna finestra PowerShell).
+' =============================================================================
+Option Explicit
+Dim objFS, objShell, scriptDir, psScript, cmd
+Set objFS = CreateObject("Scripting.FileSystemObject")
+Set objShell = CreateObject("WScript.Shell")
+scriptDir = objFS.GetParentFolderName(WScript.ScriptFullName)
+psScript = objFS.BuildPath(scriptDir, "tray_app.ps1")
+If Not objFS.FileExists(psScript) Then
+    WScript.Quit 1
+End If
+cmd = "powershell.exe -NoProfile -NoLogo -NonInteractive " & _
+      "-ExecutionPolicy Bypass -WindowStyle Hidden " & _
+      "-File """ & psScript & """"
+objShell.Run cmd, 0, False
+'@
+        try {
+            Set-Content -Path $trayVbsHeal -Value $vbsContent -Encoding ASCII -Force
+            Write-UpdateLog "SELF-HEAL: tray_launcher.vbs ricreato in $trayVbsHeal"
+        } catch {
+            Write-UpdateLog "SELF-HEAL: impossibile ricreare tray_launcher.vbs: $($_.Exception.Message)" "ERROR"
+        }
+    }
+
+    if (Test-Path $trayVbsHeal) {
+        $wscriptExe = Join-Path $env:SystemRoot "System32\wscript.exe"
+        $iconPathHeal = Join-Path $srcDirHeal "86bit_logo.ico"
+        $iconLocHeal = if (Test-Path $iconPathHeal) { "$iconPathHeal,0" } else { "$env:SystemRoot\System32\shell32.dll,13" }
+        $shellHeal = New-Object -ComObject WScript.Shell
+        $mkShortcut = {
+            param($lnk, $target, $argStr, $desc, $icon, $ws)
+            try {
+                $sc = $shellHeal.CreateShortcut($lnk)
+                $sc.TargetPath = $target
+                if ($argStr) { $sc.Arguments = $argStr }
+                if (Test-Path $InstallDir) { $sc.WorkingDirectory = $InstallDir }
+                $sc.Description = $desc
+                if ($icon) { $sc.IconLocation = $icon }
+                if ($ws) { $sc.WindowStyle = $ws }
+                $sc.Save()
+                return $true
+            } catch { return $false }
+        }
+
+        # --- Menu Start (All Users): ricrea la cartella + shortcut se il principale manca ---
+        $startMenuDirHeal = Join-Path ([Environment]::GetFolderPath("CommonStartMenu")) "Programs\86BIT ArgusCenter"
+        $mainLnkHeal = Join-Path $startMenuDirHeal "ARGUS Center Connector.lnk"
+        if (-not (Test-Path $mainLnkHeal)) {
+            if (-not (Test-Path $startMenuDirHeal)) { New-Item -ItemType Directory -Path $startMenuDirHeal -Force -ErrorAction SilentlyContinue | Out-Null }
+            & $mkShortcut $mainLnkHeal $wscriptExe "`"$trayVbsHeal`"" "Avvia ARGUS Center Connector" $iconLocHeal 7 | Out-Null
+            $diagScriptHeal = Join-Path $InstallDir "diagnostica_connessione.ps1"
+            if (Test-Path $diagScriptHeal) {
+                & $mkShortcut (Join-Path $startMenuDirHeal "Diagnostica Connessione.lnk") "powershell.exe" "-ExecutionPolicy Bypass -File `"$diagScriptHeal`"" "Diagnostica connessione ARGUS Center" $iconLocHeal 1 | Out-Null
+            }
+            $uninstallBatHeal = Join-Path $InstallDir "uninstall.bat"
+            if (Test-Path $uninstallBatHeal) {
+                & $mkShortcut (Join-Path $startMenuDirHeal "Disinstalla ARGUS Connector.lnk") $uninstallBatHeal $null "Disinstalla ARGUS Center Connector" "$env:SystemRoot\System32\shell32.dll,271" 1 | Out-Null
+            }
+            $logDirHeal = Join-Path $env:ProgramData "86NocConnector\logs"
+            if (-not (Test-Path $logDirHeal)) { New-Item -ItemType Directory -Path $logDirHeal -Force -ErrorAction SilentlyContinue | Out-Null }
+            & $mkShortcut (Join-Path $startMenuDirHeal "Apri Cartella Log.lnk") "explorer.exe" $logDirHeal "Apri la cartella dei log del connettore" "$env:SystemRoot\System32\shell32.dll,3" 1 | Out-Null
+            Write-UpdateLog "SELF-HEAL: collegamenti Menu Start ricreati in $startMenuDirHeal"
+        }
+
+        # --- Startup (auto-avvio tray al logon): crea/ripara se manca o punta altrove ---
+        $startupDirHeal = [Environment]::GetFolderPath("CommonStartup")
+        $startupLnkHeal = Join-Path $startupDirHeal "ARGUS Connector Tray.lnk"
+        $needStartup = $true
+        if (Test-Path $startupLnkHeal) {
+            try {
+                $scCheck = $shellHeal.CreateShortcut($startupLnkHeal)
+                if ($scCheck.TargetPath -ieq $wscriptExe -and $scCheck.Arguments -like "*tray_launcher.vbs*") { $needStartup = $false }
+            } catch {}
+        }
+        if ($needStartup) {
+            & $mkShortcut $startupLnkHeal $wscriptExe "`"$trayVbsHeal`"" "ARGUS Connector - Tray system monitor (avvio silenzioso)" $iconLocHeal 7 | Out-Null
+            Write-UpdateLog "SELF-HEAL: shortcut Startup (auto-avvio tray al logon) creato/riparato"
+        }
+
+        try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($shellHeal) | Out-Null } catch {}
+    }
+} catch {
+    Write-UpdateLog "SELF-HEAL fallito (non critico): $($_.Exception.Message)" "WARN"
+}
+
+
 # ==================== READ CONFIG ====================
 # Config.json e' salvato dall'installer in ProgramData (NON in InstallDir), perche'
 # il servizio gira come SYSTEM e ProgramData e' la posizione standard Windows

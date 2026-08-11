@@ -54,6 +54,47 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-08-11 🩺 SELF-HEAL tray + Menu Start (errore WSH tray_launcher.vbs mancante)
+
+### Problema utente (server Windows in produzione)
+Cliccando l'icona tray → errore WSH "Impossibile trovare il file di script
+'C:\Program Files\86NocConnector\src\tray_launcher.vbs'" e nel Menu Start non
+compare nulla di ARGUS. Il connector legacy PowerShell (`86NocConnector`) ha lo
+shortcut Startup che lancia `wscript.exe ...\src\tray_launcher.vbs`, ma il .vbs è
+SPARITO dal server (probabile quarantena antivirus dei .vbs/WSH, o update parziale).
+
+### Causa e perché non si auto-riparava
+`update_check.ps1` ripristina i file (STEP 6) e i collegamenti (STEP 9.5) SOLO
+durante un aggiornamento. Se il server è già all'ultima versione, nessun update
+scatta → il .vbs mancante non torna mai e lo shortcut resta rotto.
+
+### Fix (`noc-connector/prg/src/update_check.ps1`, v3.8.29)
+Aggiunto blocco **SELF-HEAL** che gira ad OGNI tick dell'updater (Task Scheduler,
+~5 min, come SYSTEM), PRIMA della lettura config, indipendente dalla disponibilità
+di un nuovo pacchetto:
+1. Se `src\tray_launcher.vbs` manca → lo **rigenera** da contenuto embedded.
+2. Se manca il principale del Menu Start → **ricrea** la cartella
+   `Programs\86BIT ArgusCenter` + shortcut (Avvia/Diagnostica/Disinstalla/Apri Log).
+3. **Crea/ripara** lo shortcut di Startup `ARGUS Connector Tray.lnk`
+   (wscript.exe + tray_launcher.vbs).
+Bump `version.json` → 3.8.29 + ZIP ricostruito/pubblicato
+(`build_connector_zip.py`, 28 file, tray_launcher.vbs incluso, attivo in DB).
+
+### Deploy / verifica
+- Validazione statica: ZIP contiene `prg/src/tray_launcher.vbs` +
+  `update_check.ps1` con il blocco SELF-HEAL; version 3.8.29 active in DB.
+- ⚠️ NON runtime-testabile qui (script Windows-only, no pwsh in ambiente Linux):
+  logica specchiata dalla creazione shortcut già collaudata in `installer_gui.ps1`.
+- Per la PRODUZIONE (argus.86bit.it): Save to GitHub + redeploy Center + rebuild/
+  publish connector ZIP v3.8.29. I server, vedendo v3.8.29, faranno l'update
+  (che di per sé ripristina il .vbs + shortcut) e da lì in poi il self-heal
+  mantiene tutto riparato ad ogni tick. Nessun reinstall manuale.
+- Consiglio all'utente: se ricorre, whitelistare `C:\Program Files\86NocConnector`
+  nell'antivirus (i .vbs/WSH sono spesso messi in quarantena).
+
+---
+
+
 ## 2026-08-11 🎨 Redesign ENTERPRISE pannello VM Backup (Hornetsecurity/Altaro)
 
 ### Richiesta utente
