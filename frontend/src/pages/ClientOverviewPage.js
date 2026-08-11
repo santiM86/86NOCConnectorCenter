@@ -26,7 +26,6 @@ import { canOpenWebConsole, defaultWebPort } from "@/components/WebConsole";
 import { useWebConsoleTabs } from "@/components/WebConsoleTabs";
 import ILoLiveMetrics from "@/components/ILoLiveMetrics";
 import IloServerPanel from "@/components/IloServerPanel";
-import HealthBadge from "@/components/HealthBadge";
 import { DeviceEditModal } from "@/components/DeviceEditModal";
 import ConnectivityDialog from "@/components/ConnectivityDialog";
 import DiscoveryPage from "./DiscoveryPage";
@@ -67,7 +66,6 @@ export default function ClientOverviewPage() {
   const [backupSummary, setBackupSummary] = useState({ m365: null, vm: null });
   const [connector, setConnector] = useState(null);
   const [iloHealth, setIloHealth] = useState([]);
-  const [hwHealth, setHwHealth] = useState(null);
   // v3.8.41 watchdog: stato lan-scan per banner "Scanner inattivo"
   const [scanHealth, setScanHealth] = useState({ connectors: [], any_stale: false });
   // v4.15.x: diagnosi auto delle cause di offline (rileva v3 zombie, master morto, ecc.)
@@ -164,10 +162,6 @@ export default function ClientOverviewPage() {
     try {
       const iloRes = await axios.get(`${API}/clients/${clientId}/ilo-health`);
       setIloHealth(iloRes.data || []);
-    } catch {}
-    try {
-      const hwRes = await axios.get(`${API}/tv/clients/${clientId}/hardware-health`);
-      setHwHealth(hwRes.data || null);
     } catch {}
     setLoading(false);
   }, [clientId]);
@@ -432,18 +426,6 @@ export default function ClientOverviewPage() {
           <h1 className="font-heading text-xl font-bold text-[var(--text-primary)] tracking-tight">{client.name}</h1>
           <p className="text-[var(--text-muted)] text-xs mt-0.5">Monitoraggio completo rete cliente</p>
         </div>
-        {hwHealth?.subsystems && hwHealth.ilo_server_count > 0 && (
-          <div
-            className="hidden md:flex flex-col items-end gap-1 px-3 py-1.5 rounded-md border border-[var(--bg-border)] bg-[var(--bg-panel)]/40"
-            data-testid="client-hw-health-badge"
-            title={`Health aggregata di ${hwHealth.ilo_server_count} server iLO`}
-          >
-            <span className="text-[8px] font-bold uppercase tracking-[0.15em] text-cyan-400/60">
-              Hardware iLO · {hwHealth.ilo_server_count}
-            </span>
-            <HealthBadge subsystems={hwHealth.subsystems} size="sm" testId="client-hw-badge" />
-          </div>
-        )}
         <button
           onClick={downloadReport}
           disabled={reportGenerating}
@@ -714,8 +696,7 @@ function OverviewTab({ devices, wanTargets, alerts, connector, printers, backups
         </SafeBoundary>
       )}
 
-      {/* iLO Hardware Health Panel (only shown when we have iLO data) */}
-      {iloHealth && iloHealth.length > 0 && <IloHealthPanel iloHealth={iloHealth} />}
+      {/* iLO Hardware Health Panel spostato nella tab dedicata "iLO" */}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
       {/* Left column: Infrastruttura + Endpoints */}
@@ -859,27 +840,6 @@ function OverviewTab({ devices, wanTargets, alerts, connector, printers, backups
 }
 
 /* ==================== ILO HEALTH PANEL ==================== */
-function IloHealthPanel({ iloHealth }) {
-  const healthColor = (h) => ({ ok: "#34C759", warning: "#FFCC00", critical: "#FF3B30" }[(h || "").toLowerCase()] || "#64748B");
-  // v2026-02-14: nel pannello Panoramica mostriamo SOLO i server con dati
-  // Redfish live (BIOS/iLO/serial popolati). I server senza credenziali
-  // sono visibili nella tab dedicata "Server" (sezione gialla "da configurare"),
-  // ma qui rovinerebbero la vista mostrando 10 card vuote con "N/D" ovunque.
-  const real = (iloHealth || []).filter(s => s.has_redfish_data || s.server_model || s.bios_version);
-  if (real.length === 0) return null;
-  return (
-    <div className="noc-panel p-4" data-testid="ilo-health-panel">
-      <div className="flex items-center gap-2 mb-3">
-        <Monitor size={14} weight="bold" className="text-cyan-400" />
-        <h3 className="text-[10px] font-bold uppercase tracking-[0.15em] text-cyan-400">Hardware iLO (Redfish) — {real.length} server</h3>
-      </div>
-      <div className="space-y-3">
-        {real.map((s, idx) => <IloServerCard key={idx} s={s} healthColor={healthColor} />)}
-      </div>
-    </div>
-  );
-}
-
 /* ==================== ILO TAB (dedicata, vista premium) ====================
    v2026-08-11: tab dedicata "iLO" che mostra SOLO i server fisici con dati
    Redfish live, ognuno con la vista premium IloServerPanel (stato power +
@@ -945,22 +905,13 @@ function IloTab({ iloHealth, clientId, onRefresh }) {
    e azioni rapide (poll-now, espandi tutti).
 */
 function ServersTab({ iloHealth, clientId, clientName, onRefresh }) {
-  const [filter, setFilter] = useState("all"); // all | issues | ok | needs_setup
   const [polling, setPolling] = useState(false);
-  const healthColor = (h) => ({ ok: "#34C759", warning: "#FFCC00", critical: "#FF3B30" }[(h || "").toLowerCase()] || "#64748B");
+  const [bulkCredsOpen, setBulkCredsOpen] = useState(false);
 
   // v2026-02-14: separazione tra server con dati Redfish live e server che
   // richiedono ancora la configurazione delle credenziali iLO.
   const configuredServers = (iloHealth || []).filter(s => s.has_redfish_data);
   const pendingServers = (iloHealth || []).filter(s => s.needs_ilo_setup || (!s.has_redfish_data && !s.ilo_configured));
-
-  const filtered = configuredServers.filter((s) => {
-    if (filter === "all") return true;
-    const h = (s.health_status || "").toLowerCase();
-    if (filter === "issues") return h === "warning" || h === "critical";
-    if (filter === "ok") return h === "ok";
-    return true;
-  });
 
   // KPI aggregati top-bar (solo server configurati)
   const totalRamGb = configuredServers.reduce((sum, s) => sum + (Number(s.total_memory_gb) || 0), 0);
@@ -1031,27 +982,10 @@ function ServersTab({ iloHealth, clientId, clientName, onRefresh }) {
 
       {/* Toolbar */}
       <div className="flex items-center justify-between flex-wrap gap-2 px-1">
-        <div className="flex items-center gap-1 text-xs flex-wrap">
-          <span className="text-[var(--text-muted)] mr-2">Filtra:</span>
-          {[
-            { id: "all", label: `Tutti (${configuredServers.length})` },
-            { id: "issues", label: `Solo problemi (${warnServers + critServers})` },
-            { id: "ok", label: `Solo OK (${okServers})` },
-          ].map(f => (
-            <button
-              key={f.id}
-              onClick={() => setFilter(f.id)}
-              className={`h-7 px-2.5 rounded border text-xs transition-colors ${
-                filter === f.id
-                  ? "bg-cyan-500/15 border-cyan-500/50 text-cyan-300"
-                  : "border-[var(--bg-border)] text-[var(--text-muted)] hover:text-[var(--text-primary)]"
-              }`}
-              data-testid={`servers-filter-${f.id}-btn`}
-            >
-              {f.label}
-            </button>
-          ))}
-        </div>
+        <span className="text-[11px] text-[var(--text-muted)]">
+          Gestione server, setup credenziali iLO e virtualizzazione. I dettagli hardware live
+          (sensori, dischi, alimentazione) sono nella tab <b className="text-cyan-300">iLO</b>.
+        </span>
         <div className="flex items-center gap-2">
           <Button
             size="sm"
@@ -1077,20 +1011,7 @@ function ServersTab({ iloHealth, clientId, clientName, onRefresh }) {
         </div>
       </div>
 
-      {/* Server cards (riusa IloServerCard) */}
-      {configuredServers.length > 0 && (
-        filtered.length === 0 ? (
-          <div className="noc-panel p-6 text-center text-xs text-[var(--text-muted)]">
-            Nessun server corrisponde al filtro selezionato.
-          </div>
-        ) : (
-          <div className="space-y-3">
-            {filtered.map((s, idx) => (
-              <IloServerCard key={s.device_ip || idx} s={s} healthColor={healthColor} />
-            ))}
-          </div>
-        )
-      )}
+      {/* Le card hardware live sono state spostate nella tab dedicata "iLO" */}
 
       {/* Pending servers (need iLO setup) */}
       {pendingServers.length > 0 && (
@@ -3837,6 +3758,21 @@ function AlertsTab({ alerts, navigate, clientId, clientName, onRefresh }) {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [clearScope, setClearScope] = useState("active");
   const [clearing, setClearing] = useState(false);
+  const [accepting, setAccepting] = useState(null);
+
+  const acceptUplink = async (e, alertId) => {
+    e.stopPropagation();
+    setAccepting(alertId);
+    try {
+      const res = await axios.post(`${API}/network/switch-cascade/accept-uplink`, { alert_id: alertId });
+      toast.success(res.data?.message || "Nuova topologia accettata");
+      onRefresh?.();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Errore accettazione topologia");
+    } finally {
+      setAccepting(null);
+    }
+  };
   const doClear = async () => {
     setClearing(true);
     try {
@@ -3877,18 +3813,33 @@ function AlertsTab({ alerts, navigate, clientId, clientName, onRefresh }) {
           <SortableTh field="title" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Titolo</SortableTh>
           <SortableTh field="device_name" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Dispositivo</SortableTh>
           <SortableTh field="created_at" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Data</SortableTh>
+          <th className="text-left">Azioni</th>
         </tr></thead>
         <tbody>
           {sorted.length === 0 ? (
-            <tr><td colSpan={4} className="text-center text-emerald-400 py-8 text-xs">Nessun alert attivo</td></tr>
+            <tr><td colSpan={5} className="text-center text-emerald-400 py-8 text-xs">Nessun alert attivo</td></tr>
           ) : sorted.map(a => {
             const sc = a.severity === "critical" ? "#FF3B30" : a.severity === "high" ? "#FF9500" : "#FFCC00";
+            const isPortChange = a.source_type === "switch_cascade" && (a.title || "").toLowerCase().includes("cambiato porta") && a.status !== "resolved";
             return (
               <tr key={a.id} className="cursor-pointer hover:bg-[var(--bg-hover)]" onClick={() => navigate(`/alerts/${a.id}`)}>
                 <td><span className="text-[8px] px-1.5 py-0.5 rounded font-bold uppercase" style={{ color: sc, background: `${sc}15` }}>{a.severity?.substring(0, 4)}</span></td>
                 <td className="text-[var(--text-primary)] text-xs">{a.title}</td>
                 <td className="text-[var(--text-muted)] text-xs">{a.device_name}</td>
                 <td className="font-mono text-[var(--text-muted)] text-[10px]">{a.created_at ? new Date(a.created_at).toLocaleString("it-IT") : ""}</td>
+                <td onClick={(e) => e.stopPropagation()}>
+                  {isPortChange && (
+                    <button
+                      onClick={(e) => acceptUplink(e, a.id)}
+                      disabled={accepting === a.id}
+                      className="text-[9px] font-semibold px-2 py-1 rounded-md bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/25 transition-colors disabled:opacity-50 whitespace-nowrap"
+                      data-testid={`accept-uplink-${a.id}`}
+                      title="Accetta il ricablaggio: aggiorna la topologia di riferimento e risolvi l'alert"
+                    >
+                      {accepting === a.id ? "..." : "✓ Accetta nuova topologia"}
+                    </button>
+                  )}
+                </td>
               </tr>
             );
           })}

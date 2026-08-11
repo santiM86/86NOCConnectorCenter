@@ -1450,6 +1450,79 @@ def build_mac_edges(mac_connections, device_ips, port_speeds_data):
     return edges
 
 
+def _apply_cascade(nodes: list, edges: list, cascade: dict) -> None:
+    """Arricchisce i nodi switch con cascade_rank/level e aggiunge (in-place) i
+    link switch<->switch dalla cascata (verified=solido, solo-LLDP=tratteggiato).
+    Rimuove inoltre gli edge inferiti fuorvianti verso switch che hanno gia' un
+    uplink di cascata (evita la "stella" che contraddice la daisy-chain)."""
+    if not cascade:
+        return
+    rows = cascade.get("cascade", [])
+    rank_by_ip = {c["ip"]: c for c in rows}
+    for n in nodes:
+        nid = n.get("id") or n.get("ip")
+        c = rank_by_ip.get(nid)
+        if c:
+            n["cascade_rank"] = c["rank"]
+            n["cascade_level"] = c["level"]
+
+    def _key(e):
+        return tuple(sorted([e.get("from"), e.get("to")]))
+
+    existing = {}
+    for e in edges:
+        existing[_key(e)] = e
+
+    for e in cascade.get("edges", []):
+        a, b = e.get("a"), e.get("b")
+        if not a or not b:
+            continue
+        key = tuple(sorted([a, b]))
+        ex = existing.get(key)
+        if ex is not None:
+            # annota l'edge esistente come cascata (copia porte/verified/vlan)
+            ex["cascade"] = True
+            ex["verified"] = bool(e.get("verified"))
+            ex["type"] = "lldp"
+            if e.get("vlan") is not None:
+                ex["vlan"] = e.get("vlan")
+            ex["a_port"] = e.get("a_port")
+            ex["b_port"] = e.get("b_port")
+            continue
+        new_edge = {
+            "from": a, "to": b, "type": "lldp", "cascade": True,
+            "verified": bool(e.get("verified")), "vlan": e.get("vlan"),
+            "label": (f"VLAN {e['vlan']}" if e.get("vlan") is not None else ""),
+            "a_port": e.get("a_port"), "b_port": e.get("b_port"),
+        }
+        edges.append(new_edge)
+        existing[key] = new_edge
+
+    # Nascondi edge inferiti infra<->infra che contraddicono la cascata:
+    # per ogni switch in cascata, l'unico link infra ammesso e' verso il suo
+    # vero parent (uplink.to_ip). Ogni altro link infra->switch viene scartato.
+    infra_types = {"switch", "router", "firewall", "l3_switch", "core_switch",
+                   "access_switch", "gateway"}
+    infra_ips = {(n.get("id") or n.get("ip")) for n in nodes
+                 if (n.get("type") or "") in infra_types}
+    allowed_parent = {c["ip"]: (c["uplink"].get("to_ip") if c.get("uplink") else None)
+                      for c in rows}
+    filtered = []
+    for e in edges:
+        if e.get("cascade"):
+            filtered.append(e)
+            continue
+        a, b = e.get("from"), e.get("to")
+        drop = False
+        for sw, other in ((a, b), (b, a)):
+            if sw in allowed_parent and other in infra_ips and other != allowed_parent[sw]:
+                drop = True
+                break
+        if not drop:
+            filtered.append(e)
+    edges[:] = filtered
+
+
 @router.get("/network/topology/{client_id}")
 async def get_network_topology(client_id: str, current_user: dict = Depends(get_current_user)):
     """Get network topology for a client. Returns saved layout if available, otherwise inferred."""
@@ -1472,6 +1545,15 @@ async def get_network_topology(client_id: str, current_user: dict = Depends(get_
     saved_layout = await db.topology_layouts.find_one(
         {"client_id": client_id}, {"_id": 0}
     )
+
+    # Cascata switch (ordine 1°,2°,3° + link switch<->switch) — best-effort
+    cascade = None
+    try:
+        from .topology_diagram import compute_switch_cascade
+        cascade = await compute_switch_cascade(client_id)
+    except Exception as _ce:
+        import logging as _lg
+        _lg.getLogger(__name__).warning("switch cascade compute failed: %s", _ce)
     
     # Get client name
     client = await db.clients.find_one({"id": client_id}, {"_id": 0, "name": 1})
@@ -1497,15 +1579,20 @@ async def get_network_topology(client_id: str, current_user: dict = Depends(get_
                 "http_status": live.get("http_status", sn.get("http_status")),
             })
         
+        saved_edges = saved_layout.get("edges", [])
+        _apply_cascade(enriched_nodes, saved_edges, cascade)
+        _sc = (cascade or {}).get("cascade", [])
+        await _apply_cascade_anomalies(client_id, saved_edges, _sc)
         return {
             "nodes": enriched_nodes,
-            "edges": saved_layout.get("edges", []),
+            "edges": saved_edges,
             "layers": saved_layout.get("layers", []),
             "health": health,
             "client_id": client_id,
             "client_name": client_name,
             "has_custom_layout": True,
             "lldp_count": len(lldp_neighbors),
+            "switch_cascade": _sc,
         }
     
     # No saved layout — return inferred topology, enriched with LLDP/MAC if available
@@ -1681,7 +1768,11 @@ async def get_network_topology(client_id: str, current_user: dict = Depends(get_
     topology["lldp_count"] = len(lldp_neighbors)
     topology["mac_connections_count"] = len(mac_connections)
     topology["discovered_endpoints_count"] = len(endpoints) if endpoints else 0
-    
+
+    _apply_cascade(topology["nodes"], topology["edges"], cascade)
+    topology["switch_cascade"] = (cascade or {}).get("cascade", [])
+    await _apply_cascade_anomalies(client_id, topology["edges"], topology["switch_cascade"])
+
     return topology
 
 
@@ -2030,3 +2121,129 @@ async def get_switch_links(current_user: dict = Depends(get_current_user)):
     import correlation_engine as ce
     mapping = await ce.build_child_to_switch(db)
     return {"count": len(mapping), "links": mapping}
+
+
+@router.get("/network/switch-cascade/{client_id}")
+async def get_switch_cascade(client_id: str, current_user: dict = Depends(get_current_user)):
+    """Ordine della cascata di switch (1°, 2°, 3°...) + link switch<->switch.
+
+    Il 1° e' lo switch collegato al firewall/gateway (piu' vicino a Internet),
+    poi si scende lungo la catena. Ogni switch riporta l'uplink verso il parent
+    con porte locali/remote, stato VERIFICATO (LLDP+FDB) o PROBABILE (solo LLDP)
+    e VLAN nativa del link.
+    """
+    from .topology_diagram import compute_switch_cascade
+    return await compute_switch_cascade(client_id)
+
+
+
+def _parse_cascade_dedup(dedup_key: str):
+    """cascade:{client_id}:{a}|{b}:{kind} -> (a, b, kind) oppure None."""
+    parts = (dedup_key or "").split(":")
+    if len(parts) != 4 or parts[0] != "cascade":
+        return None
+    ab = parts[2].split("|")
+    if len(ab) != 2:
+        return None
+    return ab[0], ab[1], parts[3]
+
+
+async def _apply_cascade_anomalies(client_id: str, edges: list, switch_cascade: list):
+    """Marca in rosso gli uplink con anomalia attiva (portchange/missing) e
+    aggiunge un edge fantasma per i link scomparsi, cosi' si vedono sulla mappa."""
+    try:
+        active = await db.alerts.find(
+            {"client_id": client_id, "source_type": "switch_cascade", "status": "active"},
+            {"_id": 0, "dedup_key": 1},
+        ).to_list(200)
+    except Exception:
+        return
+    anom = {}
+    for a in active:
+        p = _parse_cascade_dedup(a.get("dedup_key", ""))
+        if p:
+            anom[f"{p[0]}|{p[1]}"] = {"a": p[0], "b": p[1], "kind": p[2]}
+    if not anom:
+        return
+
+    def _key(e):
+        return "|".join(sorted([str(e.get("from")), str(e.get("to"))]))
+
+    present = {_key(e): e for e in edges}
+    for k, info in anom.items():
+        canon = "|".join(sorted([info["a"], info["b"]]))
+        e = present.get(canon)
+        if e is not None:
+            e["anomaly"] = info["kind"]
+            e["cascade"] = True
+        elif info["kind"] == "missing":
+            # edge fantasma rosso: mostra dove c'era l'uplink ora scomparso
+            edges.append({
+                "from": info["a"], "to": info["b"], "type": "lldp",
+                "cascade": True, "anomaly": "missing", "verified": False,
+                "label": "UPLINK SCOMPARSO",
+            })
+    # marca anche le righe della cascata per il pannello
+    for row in (switch_cascade or []):
+        up = row.get("uplink") or {}
+        to_ip = up.get("to_ip")
+        if not to_ip:
+            continue
+        canon = "|".join(sorted([row.get("ip", ""), to_ip]))
+        if canon in {"|".join(sorted([v["a"], v["b"]])) for v in anom.values()}:
+            for v in anom.values():
+                if "|".join(sorted([v["a"], v["b"]])) == canon:
+                    row["anomaly"] = v["kind"]
+
+
+@router.post("/network/switch-cascade/accept-uplink")
+async def accept_uplink_change(payload: dict, current_user: dict = Depends(get_current_user)):
+    """Accetta un ricablaggio: aggiorna la baseline della cascata con le porte
+    correnti del link e risolve l'alert "uplink cambiato porta". Body: {alert_id}."""
+    if current_user.get("role") not in ("admin",):
+        raise HTTPException(status_code=403, detail="Solo admin")
+    alert_id = payload.get("alert_id")
+    if not alert_id:
+        raise HTTPException(status_code=400, detail="alert_id obbligatorio")
+    alert = await db.alerts.find_one({"id": alert_id}, {"_id": 0})
+    if not alert or alert.get("source_type") != "switch_cascade":
+        raise HTTPException(status_code=404, detail="Alert cascata non trovato")
+    parsed = _parse_cascade_dedup(alert.get("dedup_key", ""))
+    if not parsed:
+        raise HTTPException(status_code=400, detail="Alert non riconosciuto")
+    a, b, kind = parsed
+    client_id = alert.get("client_id")
+    key = f"{a}|{b}"
+
+    # porte correnti dal grafo
+    from .topology_diagram import compute_switch_cascade
+    casc = await compute_switch_cascade(client_id)
+    cur = None
+    for e in casc.get("edges", []):
+        if f"{e.get('a')}|{e.get('b')}" == key:
+            cur = e
+            break
+    if cur is None:
+        raise HTTPException(status_code=409, detail="Il link non e' attualmente rilevato: impossibile accettarlo")
+
+    doc = await db.switch_cascade_baseline.find_one({"client_id": client_id}, {"_id": 0}) or {}
+    links = doc.get("links", {}) or {}
+    entry = links.get(key, {"a": a, "b": b})
+    entry["a_port"] = cur.get("a_port") or ""
+    entry["b_port"] = cur.get("b_port") or ""
+    entry["verified"] = bool(cur.get("verified"))
+    entry["miss_count"] = 0
+    links[key] = entry
+    await db.switch_cascade_baseline.update_one(
+        {"client_id": client_id},
+        {"$set": {"client_id": client_id, "links": links,
+                  "updated_at": datetime.now(timezone.utc).isoformat()}},
+        upsert=True,
+    )
+    await db.alerts.update_one(
+        {"id": alert_id},
+        {"$set": {"status": "resolved",
+                  "resolved_at": datetime.now(timezone.utc).isoformat(),
+                  "message": f"{alert.get('message','')} — Nuova topologia accettata da {current_user.get('email','admin')}."}},
+    )
+    return {"success": True, "message": "Nuova topologia accettata: baseline aggiornata e alert risolto."}

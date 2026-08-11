@@ -906,6 +906,12 @@ async def _bridge_switch_topo(conn: _Connection, data: Dict[str, Any]) -> None:
         conn.agent_id, client_id, len(switches),
         result.get("neighbors", 0), result.get("endpoints", 0),
     )
+    # Anomalia cascata: uplink switch<->switch sparito o cambiato di porta
+    try:
+        from cascade_alerts import evaluate_cascade_alerts
+        await evaluate_cascade_alerts(db, client_id)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("cascade alerts eval failed client=%s err=%s", client_id, e)
 
 
 

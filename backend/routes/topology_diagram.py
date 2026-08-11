@@ -141,6 +141,130 @@ async def build_topology_graph(client_id: Optional[str]) -> dict:
     return {"switches": list(switches.values()), "edges": list(edges.values())}
 
 
+async def compute_switch_cascade(client_id: Optional[str]) -> dict:
+    """Ordina gli switch in cascata (1°, 2°, 3°...) partendo da quello collegato
+    al firewall/gateway (il piu' vicino a Internet) e scendendo lungo la catena.
+
+    Usa build_topology_graph (LLDP + verifica FDB + VLAN del link) per i link
+    switch<->switch, poi calcola:
+      - il "root" = switch adiacente (LLDP) al gateway; fallback = grado piu' alto
+      - il livello BFS di ogni switch (0 = root)
+      - il rank sequenziale 1..N (ordine di visita BFS: livello, poi nome/ip)
+      - l'uplink di ogni switch (verso il parent piu' vicino al gateway) con
+        porte locali/remote, stato verificato (LLDP+FDB) e VLAN nativa del link.
+    """
+    graph = await build_topology_graph(client_id)
+    switches = {s["ip"]: s for s in graph.get("switches", [])}
+    edges = graph.get("edges", [])
+
+    # Gateway del cliente (firewall/router) per ancorare la cascata a Internet
+    base = {"client_id": client_id} if client_id else {}
+    gw_docs = await db.managed_devices.find(
+        {**base, "device_type": {"$in": ["firewall", "router", "gateway"]}},
+        {"_id": 0, "ip": 1, "name": 1, "device_name": 1, "hostname": 1, "device_type": 1},
+    ).to_list(50)
+    gateways = [{
+        "ip": g.get("ip"),
+        "name": g.get("hostname") or g.get("name") or g.get("device_name") or g.get("ip"),
+        "type": g.get("device_type"),
+    } for g in gw_docs if g.get("ip")]
+    gw_ips = {g["ip"] for g in gateways}
+
+    # Adiacenza SOLO tra switch (esclude i gateway, che non sono "in cascata")
+    sw_ips = [ip for ip in switches if ip not in gw_ips]
+    adj = defaultdict(list)  # ip -> [(neighbor_ip, edge)]
+    for e in edges:
+        a, b = e.get("a"), e.get("b")
+        if a in switches and b in switches:
+            adj[a].append((b, e))
+            adj[b].append((a, e))
+
+    # Root: switch che vede un gateway via LLDP (remote_ip == gw). Se piu' d'uno,
+    # quello con piu' link (grado). Fallback: switch con grado piu' alto.
+    roots: list = []
+    if gw_ips:
+        async for ld in db.lldp_neighbors.find(
+            base, {"_id": 0, "local_ip": 1, "remote_ip": 1}):
+            li, ri = ld.get("local_ip"), ld.get("remote_ip")
+            if li in switches and li not in gw_ips and ri in gw_ips:
+                if li not in roots:
+                    roots.append(li)
+    if not roots and sw_ips:
+        roots = [max(sw_ips, key=lambda x: len(adj[x]))]
+
+    # BFS multi-root: livello 0 = root(s). Ordine deterministico.
+    level: dict = {}
+    parent: dict = {}
+    q = deque()
+    for r in sorted(roots, key=lambda x: (-len(adj[x]), switches[x]["name"].lower(), x)):
+        if r not in level:
+            level[r] = 0
+            q.append(r)
+    # Eventuali switch isolati (nessun link): aggiungili come root aggiuntivi
+    for ip in sorted(sw_ips, key=lambda x: (switches[x]["name"].lower(), x)):
+        if ip not in level and not adj[ip]:
+            level[ip] = 0
+            q.append(ip)
+    while q:
+        n = q.popleft()
+        for nb, e in sorted(adj[n], key=lambda t: (switches[t[0]]["name"].lower(), t[0])):
+            if nb not in level:
+                level[nb] = level[n] + 1
+                parent[nb] = (n, e)
+                q.append(nb)
+    # Switch rimasti fuori (componenti separate senza gateway): assegna a livello 0
+    for ip in sw_ips:
+        if ip not in level:
+            level[ip] = 0
+
+    # Rank sequenziale: ordina per (livello, nome, ip)
+    ordered = sorted(sw_ips, key=lambda x: (level.get(x, 0), switches[x]["name"].lower(), x))
+    cascade = []
+    for rank, ip in enumerate(ordered, start=1):
+        s = switches[ip]
+        up = None
+        p = parent.get(ip)
+        if p:
+            pip, e = p
+            # orienta le porte: a_port appartiene a e["a"]
+            if e["a"] == ip:
+                local_port, remote_port = e.get("a_port"), e.get("b_port")
+            else:
+                local_port, remote_port = e.get("b_port"), e.get("a_port")
+            up = {
+                "to_ip": pip,
+                "to_name": switches[pip]["name"],
+                "local_port": local_port or "",
+                "remote_port": remote_port or "",
+                "verified": bool(e.get("verified")),
+                "vlan": e.get("vlan"),
+            }
+        elif gw_ips and level.get(ip) == 0 and ip in roots:
+            # root collegato al gateway
+            gw = gateways[0]
+            up = {"to_ip": gw["ip"], "to_name": gw["name"], "local_port": "",
+                  "remote_port": "", "verified": False, "vlan": None, "is_gateway": True}
+        cascade.append({
+            "rank": rank,
+            "ip": ip,
+            "name": s["name"],
+            "type": s.get("type") or "switch",
+            "level": level.get(ip, 0),
+            "endpoints": s.get("endpoints", 0),
+            "uplink": up,
+        })
+
+    return {
+        "client_id": client_id,
+        "gateways": gateways,
+        "switch_count": len(sw_ips),
+        "cascade": cascade,
+        "edges": edges,
+        "is_chain": all(len(adj[ip]) <= 2 for ip in sw_ips) if sw_ips else True,
+    }
+
+
+
 def _layers(switch_ips: list, edges: list) -> list:
     """BFS layering dal nodo con grado piu' alto. Ritorna lista di liste (layer)."""
     adj = defaultdict(set)

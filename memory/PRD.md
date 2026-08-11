@@ -54,6 +54,96 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-08-11 🔴 Anomalia cascata sulla MAPPA + pulsante "Accetta nuova topologia"
+
+### 1) Evidenziazione anomalie sulla mappa
+`topology.py`: nuovo helper `_apply_cascade_anomalies` (chiamato in get_network_topology
+in entrambi i rami) che legge gli alert cascata ATTIVI (`switch_cascade`) e marca:
+- edge `anomaly="portchange"` (uplink cambiato porta) → rosso solido;
+- edge fantasma `anomaly="missing"` (uplink scomparso) → rosso tratteggiato "UPLINK SCOMPARSO"
+  (aggiunto anche se il link non è più presente, per mostrare dov'era).
+Anche le righe di `switch_cascade` ricevono `anomaly` per il pannello.
+`NetworkMap.js`: edge con `anomaly` in ROSSO (#ef4444, spesso, animato, label ⚠), e tag
+rosso "⚠ scomparso / porta cambiata" nelle righe del pannello Catena switch.
+
+### 2) Pulsante "Accetta nuova topologia"
+`topology.py`: `POST /api/network/switch-cascade/accept-uplink` (admin) body {alert_id}:
+aggiorna la baseline del link con le porte CORRENTI e risolve l'alert → il ricablaggio
+voluto non ri-allerta. `ClientOverviewPage.js::AlertsTab`: colonna "Azioni" con bottone
+"✓ Accetta nuova topologia" sugli alert "Uplink cambiato porta" (data-testid=accept-uplink-<id>).
+
+Testato end-to-end (backend + screenshot): edge rosso + tag pannello su cambio porta,
+bottone Accetta in AlertsTab, accept→baseline aggiornata+alert risolto+no ri-alert.
+Nessun rebuild agent Go.
+
+## 2026-08-11 🧹 Tab Server ripulita + 🚨 Anomalia Cascata switch
+
+### 1) Tab "Server" — rimosse le card iLO dettagliate (solo nella tab iLO)
+`ClientOverviewPage.js::ServersTab`: tolte le `IloServerCard` + il filtro salute
+(all/issues/ok). Restano KPI, Health Score, Lifecycle, setup credenziali iLO
+(Probe Vendor / Bulk Credentials / Try Default), Hyper-V & vCenter, pulsanti
+Polla/Aggiorna, con un rimando "I dettagli hardware live sono nella tab iLO".
+Verificato via screenshot (servers-tab OK, nessuna ilo-panel, nessun crash).
+
+### 2) Anomalia Cascata (`cascade_alerts.py`)
+Nuovo motore che rileva sugli uplink switch↔switch:
+- **Uplink SCOMPARSO** (cavo scollegato/switch spento/loop) — solo per link
+  precedentemente VERIFICATI (LLDP+FDB), con **debounce 2 cicli** anti-flap LLDP.
+- **Uplink CAMBIATO PORTA** (ricablaggio) — confronto con la porta ATTESA in baseline.
+Baseline persistente per cliente in `switch_cascade_baseline` (non driftano le porte
+attese → auto-resolve quando il link riappare o la porta torna corretta).
+Alert via motore esistente (`_mk_alert`+`insert_alert_if_emit`+notifiche), dedup_key,
+1 alert attivo per (client, link, tipo), severity "high", source_type "switch_cascade".
+Hook: valutato dopo ogni ingestion `switch_topo` in `agent_ws.py` (LLDP/FDB freschi).
+Testato: baseline→0 alert, cambio porta→alert, sparizione→alert dopo 2 cicli,
+ripristino→auto-resolve (0 attivi). Nessun rebuild agent Go.
+
+## 2026-08-11 🧹 iLO rimosso da Panoramica + header (solo nella tab dedicata "iLO")
+
+Su richiesta utente, le info iLO non appaiono più nella Panoramica né nel widget
+header "Hardware iLO — N": ora sono SOLO nella tab dedicata "iLO".
+- `ClientOverviewPage.js`: rimosso `<IloHealthPanel>` da OverviewTab, rimosso il badge
+  header (client-hw-health-badge) + funzione IloHealthPanel + import HealthBadge +
+  state/fetch `hwHealth` (endpoint hardware-health non più chiamato dalla Panoramica).
+- Verificato via screenshot: pannello e widget assenti, tab "iLO (1)" attiva.
+- Nota aperta: la tab "Server" mostra ancora la card iLO (in attesa conferma utente se
+  rimuoverla anche lì).
+
+## 2026-08-11 🔗 Cascata switch (ordine 1°/2°/3° + link switch↔switch) sulla mappa
+
+### Richiesta utente
+Per gli switch a cascata (daisy-chain): mostrarli in ordine (1°, 2°, 3°...) e quali
+sono collegati tra loro. Scelte: link+badge sulla mappa live E pannello lista; 1° =
+switch collegato al firewall/gateway; verificato(LLDP+FDB)=solido, probabile(solo
+LLDP)=tratteggiato.
+
+### Implementazione (backend Python + frontend, NESSUN rebuild agent Go)
+- **`topology_diagram.py::compute_switch_cascade`**: riusa build_topology_graph
+  (LLDP + verifica FDB + VLAN del link), ancora la cascata al gateway
+  (firewall/router in managed_devices), BFS multi-root → rank 1..N + livello +
+  uplink per switch (porte locali/remote, verified, vlan, is_gateway).
+- **`topology.py`**: nuovo `GET /api/network/switch-cascade/{client_id}`.
+  `get_network_topology` ora inietta `switch_cascade`, `cascade_rank` sui nodi e gli
+  edge switch↔switch (`_apply_cascade`), copiando porte/verified/vlan sugli edge
+  esistenti e RIMUOVENDO gli edge inferiti infra↔infra che contraddicono la cascata
+  (elimina la "stella" verso altri firewall).
+- **`NetworkMap.js`**: badge d'ordine "N°" sopra ogni switch (data-testid=cascade-badge-<ip>),
+  edge cascata stilizzati (verificato=solido indigo, probabile=tratteggiato viola) con
+  etichetta porte+VLAN, pannello "Catena switch (cascata)" top-right
+  (data-testid=switch-cascade-panel, righe cascade-row-<ip>), voci legenda.
+
+### Testing
+- Backend: verificato via chiamata diretta → 1° SWITCH01→FW, 2° SWITCH03→SWITCH01
+  (Gi1/0/24↔Gi1/0/1 VLAN1 VERIF), 3° SWITCH02→SWITCH03 (VERIF); edge con porte+vlan;
+  nessun edge inferito fuorviante residuo.
+- Frontend E2E (iteration_108): 6/7 → difetto etichette porte FIXATO; screenshot di
+  conferma OK (badge, pannello, etichette con porte/VLAN, legenda, star rimossa).
+
+### ⚠️ Dati DEMO in preview
+- Scenario cascata seedato: `backend/seed_switch_cascade.py` (FW FORTIGATE 10.10.41.1 +
+  SWITCH01/03/02 + LLDP + FDB) sul client 86BIT_Office. In PROD la cascata si calcola
+  automaticamente dai dati LLDP+FDB reali già raccolti. Per PROD: Save to GitHub + redeploy.
+
 ## 2026-08-11 ✅ VERIFICA disinstallazione remota agent dalla console (8/8 PASS)
 
 ### Richiesta utente

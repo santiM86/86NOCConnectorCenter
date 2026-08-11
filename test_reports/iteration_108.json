@@ -1,0 +1,39 @@
+{
+  "summary": "Frontend-only E2E test of the switch daisy-chain (cascata) feature on the network map. Logged in via UI as admin info@86bit.it (/login -> /2fa TOTP with stdlib HMAC), navigated to /network-status?view=map. VERIFIED OK: (1) network-map-canvas renders (React Flow, fitView, 86BIT_Office is the first/active client tab with 8 devices); (2) all 3 switches + FORTIGATE-FW visible on the map (SWITCH01 10.10.41.221, SWITCH03 10.10.41.222, SWITCH02 10.10.41.228, FORTIGATE-FW 10.10.41.1); (3) order badges correct: cascade-badge-10.10.41.221='1°', cascade-badge-10.10.41.222='2°', cascade-badge-10.10.41.228='3°'; (4) panel data-testid=switch-cascade-panel present top-right with title 'CATENA SWITCH (CASCATA)' and rows in order 1 SWITCH01 (10.10.41.221 · 4 MAC, '↑ Gateway'), 2 SWITCH03 (10.10.41.222 · 6 MAC, '↑ SWITCH01 · Gi1/0/1↔Gi1/0/24 · VLAN 1 ✓ VERIF.'), 3 SWITCH02 (10.10.41.228 · 6 MAC, '↑ SWITCH03 · Gi1/0/1↔Gi1/0/24 · VLAN 1 ✓ VERIF.') - cascade-row-<ip> testids all present; (5) map edges: SWITCH01↔SWITCH03 and SWITCH03↔SWITCH02 solid indigo rgb(99,102,241) width 3, FORTIGATE-FW↔SWITCH01 dashed (stroke-dasharray 6,4) violet rgb(167,139,250) = probabile; (6) legend bottom-left contains both 'Cascata verificata (LLDP+FDB)' and 'Cascata probabile (solo LLDP)'. No error elements, no JS exceptions (only a 403 on an unrelated resource during login page load). ONE DEFECT FOUND: cascade edge labels on the map lose the port names (show '✓  VLAN 1' and '~' instead of 'Gi1/0/24↔Gi1/0/1 VLAN 1').",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/network/topology/{client_id}", "issue": "Cascade edges that already existed as LLDP edges are only annotated with cascade/verified/vlan in _apply_cascade (topology.py:1473-1482); a_port/b_port are NOT copied (they exist only on the newly-appended branch, line 1491). The port info is present as local_port/remote_port. This is what breaks the map edge label."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "NetworkMap topoToFlowEdges (cascade label)", "issue": "Cascade edge labels drop the port names: rendered labels are '✓  VLAN 1' (double space, no ports) for SWITCH01↔SWITCH03 / SWITCH03↔SWITCH02 and just '~' for FORTIGATE-FW↔SWITCH01. Root cause: line 261 reads e.a_port/e.b_port, but the API returns local_port/remote_port for these edges, and the code then OVERWRITES the original informative label ('Gi1/0/24 <-> Gi1/0/1', 'wan1 <-> Gi1/0/1'). Requirement 'link tra switch con etichetta porte/VLAN' only partially met.", "selector": ".react-flow__edge[data-id='e-10.10.41.221-10.10.41.222-1']", "priority": "MEDIUM"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Network map (86BIT_Office)", "issues": [
+        "The rank chip inside switch-cascade-panel shows '1'/'2'/'3' without the ordinal '°' while the node badges show '1°/2°/3°' - inconsistent with the requested '1° SWITCH01' formatting (cosmetic).",
+        "Legacy inferred edges from the OTHER firewall 'Zyxel USG Test' (192.168.1.254) to all three switches ('1G', grey) are drawn simultaneously with the cascade chain, producing a star that visually contradicts the daisy-chain and crossing the cascade labels (labels overlap the SWITCH01/SWITCH03 node bodies at default fitView zoom). Consider suppressing inferred access edges for switches that already have a verified cascade uplink."
+      ]}
+    ]
+  },
+  "test_report_links": [],
+  "action_items": [
+    "Fix cascade edge label: in NetworkMap.topoToFlowEdges use (e.a_port || e.local_port) / (e.b_port || e.remote_port), or copy a_port/b_port in backend _apply_cascade for the already-existing-edge branch; also keep the original label as fallback instead of replacing it with '~'.",
+    "Optional: add '°' to the rank chip in switch-cascade-panel for consistency with node badges.",
+    "Optional: hide inferred 1G edges from 192.168.1.254 to switches that have a verified cascade uplink, to avoid the misleading star overlay."
+  ],
+  "critical_code_review_comments": [
+    "_apply_cascade has two divergent edge-shapes (existing edge: local_port/remote_port; new edge: a_port/b_port) - normalise to one contract to avoid this class of bug.",
+    "NetworkMap.js is ~1027 lines; DeviceNode / topoToFlow* / legend+cascade panels could be split into separate modules."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "not tested (frontend-only request)", "frontend": "86% (6/7 requested behaviours fully OK; edge port labels partially failing)"},
+  "seed_data_creation": "none (used existing seeded cascade demo: 3 switch + FORTIGATE-FW + LLDP + FDB)",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "admin info@86bit.it / Ariel17051986@!@86, 2FA secret NMHDJNO53WLTOSREUXWERE6FDH5TAKC3 (works)",
+  "context_for_next_testing_agent": "Login recipe still valid: goto /login, wait 3s, click+type into the 2 inputs, click button containing 'ccedi', then on /2fa type the 6-digit TOTP into the single visible input and click the 'verifi/accedi' button. Then deep-link /network-status?view=map and wait ~8s: 86BIT_Office is already the active client tab, no tab click needed. Read edge styles/labels via page.evaluate over '.react-flow__edge' (data-id + path style) - reliable way to assert solid vs dashed.",
+  "rca_of_the_issue": "Backend _apply_cascade annotates pre-existing LLDP edges without copying port fields into a_port/b_port (ports remain in local_port/remote_port). The frontend cascade branch builds the label solely from e.a_port/e.b_port and overwrites the original label, so ports disappear from the on-map edge labels while the cascade panel (which uses switch_cascade[].uplink.local_port/remote_port) shows them correctly."
+}
