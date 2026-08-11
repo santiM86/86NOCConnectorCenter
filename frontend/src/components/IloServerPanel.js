@@ -250,15 +250,16 @@ export default function IloServerPanel({ s, clientId, defaultOpen = false }) {
         </InvSection>
 
         {/* DIMM */}
-        <InvSection icon={Warning} title="Memoria (DIMM)" count={dimms.length} hideIcon>
+        <InvSection icon={Warning} title={`Memoria — ${s.total_memory_gb != null ? s.total_memory_gb + " GB" : "?"}`} count={`${dimms.length} DIMM`} hideIcon>
           {dimms.length > 0 ? (
             <InvTable
-              headers={["Banco / Slot", "Capacità", "Velocità", "Tipo", "Stato"]}
+              headers={["Banco / Slot", "Capacità", "Velocità", "Tipo", "Part Number", "Stato"]}
               rows={dimms.map((d) => [
                 d.name || "?",
                 d.size_gb ? `${d.size_gb} GB` : (d.capacity_mb ? `${Math.round(d.capacity_mb / 1024)} GB` : "?"),
                 d.speed_mhz ? `${d.speed_mhz} MHz` : "—",
-                d.type || "—",
+                `${d.type || "—"}${d.rank ? ` · ${d.rank}R` : ""}`,
+                <span key="pn" className="font-mono text-[10px]" title={d.manufacturer || ""}>{d.part_number || "—"}</span>,
                 <HealthTag key="h" h={d.health || d.status} />,
               ])}
               testid={`ilo-dimm-table-${ip}`}
@@ -270,17 +271,20 @@ export default function IloServerPanel({ s, clientId, defaultOpen = false }) {
         <InvSection icon={HardDrives} title="Dischi fisici" count={drives.length}>
           {drives.length > 0 ? (
             <InvTable
-              headers={["Slot", "Modello", "Capacità", "Tipo", "Ore", "Temp", "Wear/Predict", "Stato"]}
+              headers={["Slot", "Modello", "Capacità", "Tipo", "RPM", "Ore", "Temp", "Usura/Predict", "Stato"]}
               rows={drives.map((d) => [
-                d.slot != null ? `#${d.slot}` : "—",
+                d.slot != null ? `${String(d.slot).match(/^\d+$/) ? "#" : ""}${d.slot}` : "—",
                 <span key="m" title={d.serial ? `S/N ${d.serial}` : ""}>{d.model || d.name || "?"}</span>,
                 d.capacity_gb ? `${d.capacity_gb >= 1000 ? (d.capacity_gb / 1000).toFixed(1) + " TB" : d.capacity_gb + " GB"}` : "—",
                 `${d.media_type || "?"}${d.interface_type ? " · " + d.interface_type : ""}`,
+                (d.rotation_rpm ? `${d.rotation_rpm >= 1000 ? Math.round(d.rotation_rpm / 1000) + "K" : d.rotation_rpm}` : (d.media_type === "SSD" ? "SSD" : "—")),
                 d.hours_used != null ? `${d.hours_used}h` : "—",
                 d.temp_celsius != null ? `${d.temp_celsius}°C` : "—",
                 d.failure_predicted
                   ? <span key="w" className="text-rose-400 font-bold text-[10px]">⚠ Predetto</span>
-                  : <span key="w" className="text-emerald-400/70 text-[10px]">OK</span>,
+                  : (d.wear_percent != null
+                      ? <span key="w" className={`text-[10px] font-semibold ${d.wear_percent >= 90 ? "text-rose-400" : d.wear_percent >= 70 ? "text-amber-400" : "text-emerald-400/70"}`}>{d.wear_percent}%</span>
+                      : <span key="w" className="text-emerald-400/70 text-[10px]">OK</span>),
                 <HealthTag key="h" h={d.health} />,
               ])}
               testid={`ilo-drive-table-${ip}`}

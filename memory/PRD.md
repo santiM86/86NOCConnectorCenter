@@ -54,6 +54,37 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-08-11 🧩 iLO inventario COMPLETO (tutte le RAM e tutti i dischi)
+
+### Problema (server reale ML350/ML110 Gen10 in produzione)
+Nella tab iLO mancavano DIMM e dischi, e le colonne Ore/Temp erano vuote.
+
+### Cause e fix in `redfish.py` (parsing Redfish, solo backend — l'agent Go NON parsa Redfish)
+- **DIMM**: il filtro `Status.State == "Enabled"` scartava banchi popolati con stati
+  diversi. Ora si includono TUTTI i DIMM popolati (`CapacityMiB > 0`, esclusi "Absent"),
+  con `rank`, `manufacturer`, `part_number`, e fallback `total_memory_gb` = somma DIMM.
+  Cap alzato a 64 banchi.
+- **Dischi**: per HPE SmartStorage i campi `CurrentTemperatureCelsius`,
+  `RotationalSpeedRpm`, `SSDEnduranceUtilizationPercentage`, `PowerOnHours` sono a
+  livello TOP (non sotto Oem) → prima Temp/RPM/Usura restavano vuoti. Estratto helper
+  `_parse_redfish_drive` con fallback HPE-top / DMTF-Oem, wear da
+  `PredictedMediaLifeLeftPercent`. Aggiunta raccolta **dischi non assegnati/spare**
+  (HPE `UnconfiguredDrives`/`HostBusAdapters`). Cap 64 dischi/controller.
+- Esposti tutti i campi in `devices.py::get_client_ilo_health` (già passa memory_dimms/
+  storage_controllers).
+
+### Frontend `IloServerPanel.js`
+- Sezione memoria: header "Memoria — N GB · N DIMM" + colonna Part Number/rank.
+- Tabella dischi: nuove colonne RPM e Usura (% con soglie colore), oltre a Ore/Temp/Predict.
+
+### Verifica
+Screenshot tab iLO (seed arricchito 8×32GB + 6 dischi HDD/SSD): 8 DIMM 256GB con Part
+Number, 6 dischi con RPM/Ore/Temp/Usura (12%/74%/93%), predict-fail evidenziato. OK.
+
+### ⚠️ Deploy
+I fix sono lato backend Python → attivi in PROD dopo Save to GitHub + redeploy e al
+prossimo poll Redfish (o forzando "Correggi"/poll-now). Nessun rebuild agent Go.
+
 ## 2026-08-11 🔴 Anomalia cascata sulla MAPPA + pulsante "Accetta nuova topologia"
 
 ### 1) Evidenziazione anomalie sulla mappa
