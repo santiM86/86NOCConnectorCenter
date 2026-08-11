@@ -662,6 +662,32 @@ function Wait-FileUnlocked {
     return $false
 }
 
+# Se un upgrade fallisce DOPO lo stop dei servizi ma PRIMA di completare il
+# download/copia dei binari, la macchina resterebbe SENZA agent attivo (e' quello
+# che e' successo puntando a una versione senza release: 502 sul download). Questo
+# helper riporta i servizi a RUNNING usando i binari gia' presenti (un 502/errore
+# di rete NON li sovrascrive, restano integri), cosi' un upgrade fallito non lascia
+# mai l'host scoperto: al massimo resta sulla versione precedente.
+function Invoke-AbortRecovery {
+    param([string]$Reason = "")
+    try {
+        if ($Reason) { Write-Warn2 "Recovery upgrade fallito: $Reason" }
+        $agentBin = Join-Path $InstallDir "nocagent.exe"
+        $binOk = (Test-Path $agentBin) -and ((Get-Item $agentBin).Length -gt 1MB)
+        if (-not $binOk) {
+            Write-Warn2 "Recovery: nocagent.exe assente/incompleto -> impossibile riavviare. Ripeti l'installazione con una VERSIONE VALIDA (release esistente con binari)."
+            return
+        }
+        foreach ($svc in @("86NocWatchdog","86NocAgent")) {
+            $s = Get-Service -Name $svc -ErrorAction SilentlyContinue
+            if ($s -and $s.Status -ne "Running") {
+                try { Start-Service -Name $svc -ErrorAction Stop; Write-Ok "Recovery: servizio $svc riavviato (versione precedente ripristinata)" } catch { Write-Warn2 "Recovery: impossibile riavviare $svc : $($_.Exception.Message)" }
+            }
+        }
+    } catch {}
+}
+
+
 # ------------------------------------------------------------------- #
 # 4. Pulizia stato vecchio (preservando il log per la diagnosi)
 # ------------------------------------------------------------------- #
@@ -761,6 +787,7 @@ foreach ($f in $required) {
         }
         if (-not (Wait-FileUnlocked -Path $dst -TimeoutSec 20)) {
             Write-Fail "$f e' in uso da un altro processo e non puo' essere sostituito. Chiudi i processi 86Noc o riavvia il server, poi riprova."
+            Invoke-AbortRecovery -Reason "$f bloccato da un altro processo"
             exit 4
         }
         Invoke-WebRequest -Uri $url -OutFile $dst -Headers $dlHeaders -TimeoutSec 180 -UseBasicParsing
@@ -768,6 +795,7 @@ foreach ($f in $required) {
         Write-Ok "$f scaricato: $([math]::Round($sz/1MB,2)) MB"
     } catch {
         Write-Fail "Download $f fallito: $($_.Exception.Message)"
+        Invoke-AbortRecovery -Reason "download $f fallito ($($_.Exception.Message))"
         exit 4
     }
 }
