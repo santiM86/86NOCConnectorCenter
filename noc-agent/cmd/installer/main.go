@@ -366,7 +366,7 @@ func downloadFile(c cliCfg, name, dst, expectedSHA string) error {
 		return err
 	}
 	hasher := sha256.New()
-	_, err := io.Copy(io.MultiWriter(f, hasher), resp.Body)
+	_, err = io.Copy(io.MultiWriter(f, hasher), resp.Body)
 	f.Close()
 	if err != nil {
 		os.Remove(tmp)
