@@ -326,7 +326,11 @@ function DiagnoseDialog({ diag, loading, onClose, onAction, actionLoading }) {
     : s === "warn" ? "text-amber-300 border-amber-500/40 bg-amber-500/10"
     : "text-rose-300 border-rose-500/40 bg-rose-500/10";
   const stIcon = (s) => s === "ok" ? "✓" : s === "warn" ? "!" : "✕";
-  const actionLabel = (a) => a === "set_device_type_switch" ? "⚡ Correggi ora — imposta come Switch" : "Correggi";
+  const actionLabel = (a) =>
+    a === "set_device_type_switch" ? "⚡ Correggi ora — imposta come Switch"
+    : a === "force_snmp_repoll" ? "🔄 Forza re-poll SNMP ora"
+    : a === "agent_needs_update" ? "⬆️ Aggiorna agent obsoleti"
+    : "Correggi";
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose} data-testid="switch-ports-diagnose-dialog">
       <div className="noc-panel max-w-2xl w-full max-h-[85vh] overflow-y-auto p-4 space-y-3" onClick={(e) => e.stopPropagation()}>
@@ -421,19 +425,52 @@ export default function SwitchPortsPage() {
   }, [deviceIp, clientId]);
 
   const handleDiagAction = useCallback(async (action) => {
-    if (action !== "set_device_type_switch") return;
-    setDiagActionLoading(true);
-    try {
-      const r = await axios.post(`${API}/devices/${encodeURIComponent(deviceIp)}/switch-ports/set-type-switch`, null, {
-        params: clientId ? { client_id: clientId } : {},
-      });
-      toast.success(r?.data?.message || "Impostato device_type=switch.");
-      await runDiagnose();  // ricarica la diagnosi aggiornata
-      reload();             // ricarica le porte (compariranno appena l'agent le invia)
-    } catch (e) {
-      toast.error(e?.response?.data?.detail || "Errore aggiornamento");
-    } finally {
-      setDiagActionLoading(false);
+    if (action === "set_device_type_switch") {
+      setDiagActionLoading(true);
+      try {
+        const r = await axios.post(`${API}/devices/${encodeURIComponent(deviceIp)}/switch-ports/set-type-switch`, null, {
+          params: clientId ? { client_id: clientId } : {},
+        });
+        toast.success(r?.data?.message || "Impostato device_type=switch.");
+        await runDiagnose();
+        reload();
+      } catch (e) {
+        toast.error(e?.response?.data?.detail || "Errore aggiornamento");
+      } finally {
+        setDiagActionLoading(false);
+      }
+      return;
+    }
+    if (action === "force_snmp_repoll") {
+      if (!clientId) { toast.error("Apri la pagina dal cliente corretto per il re-poll."); return; }
+      setDiagActionLoading(true);
+      try {
+        const r = await axios.post(`${API}/admin/snmp-poll-now/${clientId}/${encodeURIComponent(deviceIp)}`, {});
+        const reply = r?.data?.reply || {};
+        const sysName = reply.sys_name || reply.sysName || "—";
+        toast.success(`Re-poll SNMP eseguito da ${r?.data?.executed_by_agent || "agent"} (sysName=${sysName}). Le porte compaiono entro ~1 ciclo di poll.`, { duration: 8000 });
+        await runDiagnose();
+        setTimeout(reload, 1500);
+      } catch (e) {
+        toast.error(e?.response?.data?.detail || "Re-poll SNMP fallito (SNMP non raggiungibile o agent offline).", { duration: 8000 });
+      } finally {
+        setDiagActionLoading(false);
+      }
+      return;
+    }
+    if (action === "agent_needs_update") {
+      setDiagActionLoading(true);
+      try {
+        const r = await axios.post(`${API}/agents/bulk-update`, { only_outdated: true });
+        const n = (r?.data?.sent || []).length;
+        toast.success(n > 0 ? `Comando update inviato a ${n} agent obsoleti.` : "Nessun agent obsoleto: sono gia' tutti aggiornati.", { duration: 7000 });
+        await runDiagnose();
+      } catch (e) {
+        toast.error(e?.response?.data?.detail || "Errore invio comando update agli agent");
+      } finally {
+        setDiagActionLoading(false);
+      }
+      return;
     }
   }, [deviceIp, clientId, runDiagnose]);
 

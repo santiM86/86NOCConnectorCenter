@@ -637,15 +637,42 @@ async def diagnose_switch_ports(device_ip: str, client_id: Optional[str] = None,
             f"NON dell'agent.",
             fix="Verifica la community SNMP del device e attendi il prossimo ciclo di poll.")
     else:
-        add("5. Dati porte", "error",
-            "Nessuna porta switch memorizzata per NESSUN device di questo cliente: l'agent di questo "
-            "cliente non sta raccogliendo la ifTable degli switch.",
-            fix="L'agent v4 raccoglie le porte switch solo dalla versione v4.26.0 (modulo SNMP nativo "
-                "'snmpports.go'). Aggiorna gli agent di questo cliente a v4.26.0, oppure usa un connector "
-                "che invii la ifTable.",
-            action="agent_needs_update")
-        recommendation = recommendation or ("Gli agent di questo cliente non raccolgono la ifTable: "
-                                            "aggiornali a v4.26.0 (modulo porte SNMP nativo).")
+        # Distinguo la CAUSA: se gli agent del cliente sono gia' >= v4.26.0
+        # hanno il modulo ifTable ('snmpports.go'), quindi il problema NON e' la
+        # versione ma il poll/raggiungibilita' SNMP verso questo switch (vedi
+        # step 7). Suggerire "aggiorna a v4.26.0" quando gli agent sono gia' a
+        # v4.30 e' fuorviante e il pulsante non faceva nulla di utile.
+        def _ge_426(v):
+            try:
+                nums = [int(x) for x in re.sub(r"[^0-9.]", "", (v or "").lstrip("vV")).split(".")[:3] if x != ""]
+                while len(nums) < 3:
+                    nums.append(0)
+                return tuple(nums[:3]) >= (4, 26, 0)
+            except Exception:
+                return False
+        _agent_vers = await db.managed_agents.find(
+            {"client_id": cid}, {"_id": 0, "agent_version": 1}).to_list(50)
+        _has_capable = any(_ge_426(a.get("agent_version")) for a in _agent_vers)
+        if _has_capable:
+            add("5. Dati porte", "error",
+                "Nessuna porta memorizzata, ma gli agent di questo cliente sono gia' aggiornati "
+                "(>= v4.26.0, modulo ifTable presente). La causa NON e' la versione dell'agent ma "
+                "lo SNMP verso questo switch: non risponde o non e' ancora stato pollato (vedi step 7).",
+                fix="Forza un re-poll SNMP via l'agent online. Se fallisce, verifica community/ACL SNMP "
+                    "e raggiungibilita' dello switch dalla subnet dell'agent.",
+                action="force_snmp_repoll")
+            recommendation = recommendation or ("Forza un re-poll SNMP di questo switch: gli agent sono "
+                                                "gia' aggiornati, il problema e' la raccolta SNMP.")
+        else:
+            add("5. Dati porte", "error",
+                "Nessuna porta switch memorizzata per NESSUN device di questo cliente: l'agent di questo "
+                "cliente non sta raccogliendo la ifTable degli switch.",
+                fix="L'agent v4 raccoglie le porte switch solo dalla versione v4.26.0 (modulo SNMP nativo "
+                    "'snmpports.go'). Aggiorna gli agent di questo cliente a v4.26.0, oppure usa un connector "
+                    "che invii la ifTable.",
+                action="agent_needs_update")
+            recommendation = recommendation or ("Gli agent di questo cliente non raccolgono la ifTable: "
+                                                "aggiornali a v4.26.0 (modulo porte SNMP nativo).")
     # 5b. Nota informativa: overlap di IP privati tra clienti (NON e' un data-leak).
     if other_cids:
         add("5b. Nota multi-tenant", "ok",

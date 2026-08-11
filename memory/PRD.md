@@ -54,6 +54,46 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-08-10 🐞 FIX pulsante "Correggi" diagnosi porte switch (era no-op)
+
+### Sintomo (domanda utente)
+Nel dialog "Diagnosi porte switch" (SwitchPortsPage), step 5 "Dati porte" con
+esito error, il pulsante "Correggi" non faceva nulla.
+
+### Root cause
+`SwitchPortsPage.js::handleDiagAction` gestiva SOLO `action ===
+'set_device_type_switch'` e faceva `return` immediato per ogni altra azione.
+Lo step 5 restituisce pero' `action='agent_needs_update'` -> pulsante NO-OP.
+Inoltre la diagnosi era fuorviante: consigliava "aggiorna a v4.26.0" anche
+quando gli agent del cliente erano gia' v4.30.0 (caso reale utente), mentre la
+vera causa era lo SNMP non raggiungibile (step 7 reachable=False).
+
+### Fix
+- **Backend (`topology.py` step 5)**: se gli agent del cliente sono gia'
+  >= v4.26.0 (modulo ifTable presente, check `_ge_426`), l'esito ora punta alla
+  causa reale (SNMP poll/reachability) con azione `force_snmp_repoll`; se
+  davvero obsoleti resta `agent_needs_update`.
+- **Frontend (`handleDiagAction` + `actionLabel`)**: gestite TUTTE le azioni:
+  - `set_device_type_switch` (esistente)
+  - `force_snmp_repoll` -> POST `/api/admin/snmp-poll-now/{client}/{ip}` (re-poll
+    SNMP via agent online) + re-diagnose + reload. Label "🔄 Forza re-poll SNMP ora".
+  - `agent_needs_update` -> POST `/api/agents/bulk-update {only_outdated:true}`.
+    Label "⬆️ Aggiorna agent obsoleti".
+
+### Testing
+- `_ge_426` verificato (v4.30/4.26 -> capable; v4.25/v3.9/vuoto -> obsoleto).
+- Risposte endpoint confermate: bulk-update -> `sent`; snmp-poll-now ->
+  `executed_by_agent`/`reply`. Frontend compila, backend syntax OK.
+- E2E UI non eseguito (pagina dietro login+2FA obbligatorio); azioni cablate a
+  endpoint gia' esistenti e usati altrove (DeviceInfoCard/AgentsPage).
+
+### Deploy
+Preview attivo; per PROD Save to GitHub + redeploy (frontend + backend).
+
+---
+
+
+
 ## 2026-08-10 🔧 Wait-FileUnlocked anche nell'updater standalone (Aggiorna Connector)
 
 Esteso il fix "file in uso" a `noc-agent/build/install-noc-agent.ps1` (usato
