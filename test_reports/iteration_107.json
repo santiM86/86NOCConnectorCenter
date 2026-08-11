@@ -1,0 +1,28 @@
+{
+  "summary": "Frontend-only E2E test of the enhanced iLO/Redfish section for client 86BIT_Office on the preview URL. Logged in as admin info@86bit.it via UI (/login -> /2fa -> TOTP with stdlib HMAC). ALL 9 requested behaviours VERIFIED OK: (1) Panoramica panel data-testid=ilo-health-panel shows 'Hardware iLO (Redfish) - 1 server' with card ZITASRV-ILO (10.100.41.25, ProLiant ML350 Gen10, S/N MXQ0438J7M) and the new chips '⏻ Acceso', 'FinishedPost', '2× CPU'; (2) new tab labelled exactly 'iLO (1)' present in the client tab bar, click opens data-testid=ilo-tab; (3) ilo-panel-10.100.41.25 renders header ilo-panel-name-* = 'ZITASRV-ILO' with power chip 'ACCESO' + POST chip 'OS ATTIVO', UID button (ilo-uid-toggle-*, label 'UID OFF'), Power menu (ilo-power-menu-*) and refresh (ilo-refresh-power-*); (4) Power menu opens ilo-power-options-* with 4 actions (Spegnimento ordinato / Riavvio forzato / Spegnimento forzato / Premi pulsante power) and closes on toggle/outside click; (5) health matrix ilo-subsystems-* visible (SYS/TMP/FAN/PSU/MEM/STO/CPU/NIC); (6) BOTH charts always visible and POPULATED: ilo-chart-power-* (1 recharts area path, 09:19->14:59) and ilo-chart-temp-* (2 areas: max + inlet) - no 'In attesa di telemetria' placeholder; (7) range selector 1h/6h/24h (ilo-range-60/360/1440-*) each becomes active and charts keep data; (8) inventory exact: 2 CPU cards (ilo-cpu-*-0/1 = 'Proc 1/Proc 2 Intel(R) Xeon(R) Gold 6230 CPU @ 2.10GHz 20C/40T 2.1 GHz'), 8 DIMM rows all 32 GB / 2933 MHz / DDR4 / OK, 4 drive rows with #3 EG001200JWJNQ showing '⚠ Predetto' + WARNING and temps/hours populated, 3 NIC rows with VLAN column showing 'VLAN 41' (10.100.41.25, 1 Gbps LINK UP) and 'VLAN 61' (10.100.61.34, 10 Gbps LINK UP); firmware badges BIOS U41 v3.66, iLO 5 v3.19, iLO Advanced, UUID; (9) IML/SEL log section is auto-open (defaultOpen with single server) and shows the graceful message 'Nessun evento hardware disponibile (o LogService non esposto dalla iLO)' after a handled 404 - collapse/expand toggle works, no crash. Real hardware actions correctly degrade: UID LED click -> HTTP 404 handled with toast 'Nessuna credenziale iLO trovata per questo dispositivo'; refresh-power 404 silently ignored; panel stays mounted in all cases. No error elements on page.",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Client iLO tab", "issues": ["Cosmetic only: React console warning 'In HTML, <span> cannot be a child of <option> ... hydration error' fires on the client page (comes from a native <select><option> containing a span elsewhere in ClientOverviewPage, not from IloServerPanel) - worth cleaning up.", "refresh-power (ilo-refresh-power-*) failures are swallowed silently (catch noop): the user gets no feedback when the power-state read fails (404). Consider a toast."]}
+    ]
+  },
+  "test_report_links": [],
+  "action_items": [
+    "Optional: fix the <span> inside <option> React hydration warning on the client page.",
+    "Optional: surface an error toast when ilo-refresh-power fails instead of silent noop."
+  ],
+  "critical_code_review_comments": [
+    "IloServerPanel polls /redfish/metrics every 30s per server; with many iLO servers in the tab this becomes N requests/30s - consider a single aggregated endpoint if server count grows.",
+    "ClientOverviewPage.js is ~5045 lines - well over the 700-line guideline; IloTab/IloServerCard/ServersTab should be extracted into separate modules."
+  ],
+  "updated_files": [],
+  "success_rate": { "backend": "not tested (frontend-only request)", "frontend": "100% (9/9 requested behaviours)" },
+  "seed_data_creation": "none (used existing seeded demo server ZITASRV-ILO 10.100.41.25 with 37 ilo_telemetry snapshots)",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "admin info@86bit.it / Ariel17051986@!@86 with 2FA secret NMHDJNO53WLTOSREUXWERE6FDH5TAKC3 (works)",
+  "context_for_next_testing_agent": "Playwright notes for this app: (a) after load wait ~3s then click+type into login inputs (fill() gets swallowed); (b) 2FA page has ONE visible input - type the whole 6-digit code, then click the button whose text contains 'verifi'/'accedi'; (c) deep-link /client/<id> works directly after login; (d) NEVER use page.mouse.click(10, y) to close a dropdown - x=10 hits the left sidebar links and navigates away (it silently broke my first run); toggle the trigger again instead; (e) sonner toasts auto-dismiss in ~4s - poll every 400ms right after the action; (f) iLO endpoints /api/devices/<ip>/uid-led, /power-state and /api/servers/ilo-events/<ip> return 404 in preview (no real iLO credentials in Vault) - EXPECTED and handled.",
+  "rca_of_the_issue": "N/A - no defects found in the feature under test. The 404s on uid-led/power-state/ilo-events are expected in preview (no real iLO credentials) and are handled gracefully by the UI."
+}

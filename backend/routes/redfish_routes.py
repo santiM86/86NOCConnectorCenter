@@ -730,6 +730,38 @@ async def device_power_state(device_ip: str, client_id: str = None, current_user
     return await redfish_poller.get_power_state(external_url.rstrip("/"), username, password)
 
 
+@router.post("/devices/{device_ip}/uid-led")
+async def device_uid_led(device_ip: str, request: Request, client_id: str = None, current_user: dict = Depends(get_current_user)):
+    """Accende/spegne/lampeggia il UID LED (IndicatorLED) del server iLO.
+    Body: {"state": "Lit" | "Off" | "Blinking"}.
+    """
+    if current_user.get("role") not in ["admin"]:
+        raise HTTPException(status_code=403, detail="Solo admin")
+    body = await request.json()
+    state = body.get("state")
+    if not state:
+        raise HTTPException(status_code=400, detail="Campo 'state' obbligatorio (Lit/Off/Blinking)")
+    from .tenant_scope import resolve_device_client_id
+    cid = client_id or body.get("client_id")
+    cid = await resolve_device_client_id(device_ip, cid)
+    cred_q = {"device_ip": device_ip, "credential_type": "ilo"}
+    if cid:
+        cred_q["client_id"] = cid
+    cred = await db.device_credentials.find_one(cred_q, {"_id": 0})
+    if not cred:
+        raise HTTPException(status_code=404, detail="Nessuna credenziale iLO trovata per questo dispositivo")
+    external_url = cred.get("external_url")
+    if not external_url:
+        raise HTTPException(status_code=400, detail="URL esterna iLO non configurata")
+    try:
+        username = security_manager.decrypt_credential(cred["username_enc"])
+        password = security_manager.decrypt_credential(cred["password_enc"])
+    except Exception:
+        raise HTTPException(status_code=500, detail="Errore decifratura credenziali")
+    result = await redfish_poller.set_indicator_led(external_url.rstrip("/"), username, password, state)
+    return result
+
+
 @router.post("/devices/{device_ip}/wake-on-lan")
 async def device_wake_on_lan(device_ip: str, request: Request, current_user: dict = Depends(get_current_user)):
     if current_user.get("role") not in ["admin"]:
