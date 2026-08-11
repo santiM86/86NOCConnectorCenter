@@ -236,6 +236,7 @@ function topoToFlowEdges(topoEdges) {
     const isMac = e.source === "mac_table";
     const isHighSpeed = is10G || e.type === "trunk";
     const isCascade = e.cascade === true;
+    const anomaly = e.anomaly; // "portchange" | "missing" | undefined
 
     // Determine stroke width: 10G edges are very prominent
     let strokeWidth = 1.5;
@@ -250,9 +251,11 @@ function topoToFlowEdges(topoEdges) {
     else if (isLldp) color = "#22d3ee";
     else if (isMac) color = "#818cf8";
     if (isCascade) color = e.verified ? "#6366f1" : "#a78bfa";
+    if (anomaly) color = "#ef4444"; // rosso: uplink scomparso o cambiato porta
 
     // Cascade non verificato (solo LLDP) = tratteggiato "probabile"
-    const dashed = isCascade && !e.verified;
+    const dashed = (isCascade && !e.verified) || anomaly === "missing";
+    if (anomaly) strokeWidth = 4;
 
     // Label: show speed info when available
     let label = e.label || "";
@@ -265,6 +268,8 @@ function topoToFlowEdges(topoEdges) {
       const composed = `${e.verified ? "✓" : "~"} ${ports}${vlanTxt}`.trim();
       label = composed.length > 2 ? composed : (label || composed);
     }
+    if (anomaly === "missing") label = "⚠ UPLINK SCOMPARSO";
+    else if (anomaly === "portchange") label = `⚠ PORTA CAMBIATA ${(e.a_port || e.b_port) ? `(${e.a_port || "?"}↔${e.b_port || "?"})` : ""}`.trim();
 
     // Label style: bigger for important edges
     const fontSize = is10G ? 12 : (isLldp || isMac || isCascade) ? 11 : 10;
@@ -280,16 +285,16 @@ function topoToFlowEdges(topoEdges) {
       markerEnd: { type: MarkerType.ArrowClosed, color, width: 14, height: 14 },
       data: { edgeType: e.type || "custom", source: e.source || "inferred", cascade: isCascade, verified: !!e.verified },
       labelStyle: {
-        fill: is10G ? "#f97316" : isCascade ? (e.verified ? "#818cf8" : "#a78bfa") : "var(--text-muted)",
-        fontSize,
+        fill: anomaly ? "#ef4444" : is10G ? "#f97316" : isCascade ? (e.verified ? "#818cf8" : "#a78bfa") : "var(--text-muted)",
+        fontSize: anomaly ? 12 : fontSize,
         fontFamily: "monospace",
-        fontWeight: is10G || isCascade ? 700 : 400,
+        fontWeight: is10G || isCascade || anomaly ? 700 : 400,
       },
       labelBgStyle: {
-        fill: is10G ? "rgba(249,115,22,0.12)" : isCascade ? "rgba(99,102,241,0.12)" : "var(--bg-panel)",
-        fillOpacity: 0.9,
-        stroke: is10G ? "#f9731640" : isCascade ? "#6366f140" : "transparent",
-        strokeWidth: is10G || isCascade ? 1 : 0,
+        fill: anomaly ? "rgba(239,68,68,0.15)" : is10G ? "rgba(249,115,22,0.12)" : isCascade ? "rgba(99,102,241,0.12)" : "var(--bg-panel)",
+        fillOpacity: 0.92,
+        stroke: anomaly ? "#ef444466" : is10G ? "#f9731640" : isCascade ? "#6366f140" : "transparent",
+        strokeWidth: is10G || isCascade || anomaly ? 1 : 0,
       },
       labelBgPadding: [6, 4],
       labelBgBorderRadius: 4,
@@ -962,7 +967,14 @@ function NetworkMapInner({ clientGroups, onDeviceSelect }) {
                           {c.rank}°
                         </span>
                         <div className="min-w-0 flex-1">
-                          <p className="text-[11px] font-semibold text-[var(--text-primary)] truncate" title={`${c.name} (${c.ip})`}>{c.name}</p>
+                          <p className="text-[11px] font-semibold text-[var(--text-primary)] truncate" title={`${c.name} (${c.ip})`}>
+                            {c.name}
+                            {c.anomaly && (
+                              <span className="ml-1.5 text-[8px] font-bold uppercase px-1 py-0.5 rounded bg-red-500/20 text-red-400" data-testid={`cascade-anomaly-${c.ip}`}>
+                                {c.anomaly === "missing" ? "⚠ scomparso" : "⚠ porta cambiata"}
+                              </span>
+                            )}
+                          </p>
                           <p className="text-[9px] font-mono text-[var(--text-muted)]">{c.ip}{c.endpoints ? ` · ${c.endpoints} MAC` : ""}</p>
                           {c.uplink && (
                             <p className="text-[8px] text-[var(--text-secondary)] mt-0.5 leading-tight">

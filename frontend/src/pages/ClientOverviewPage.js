@@ -3998,6 +3998,21 @@ function AlertsTab({ alerts, navigate, clientId, clientName, onRefresh }) {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [clearScope, setClearScope] = useState("active");
   const [clearing, setClearing] = useState(false);
+  const [accepting, setAccepting] = useState(null);
+
+  const acceptUplink = async (e, alertId) => {
+    e.stopPropagation();
+    setAccepting(alertId);
+    try {
+      const res = await axios.post(`${API}/network/switch-cascade/accept-uplink`, { alert_id: alertId });
+      toast.success(res.data?.message || "Nuova topologia accettata");
+      onRefresh?.();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Errore accettazione topologia");
+    } finally {
+      setAccepting(null);
+    }
+  };
   const doClear = async () => {
     setClearing(true);
     try {
@@ -4038,18 +4053,33 @@ function AlertsTab({ alerts, navigate, clientId, clientName, onRefresh }) {
           <SortableTh field="title" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Titolo</SortableTh>
           <SortableTh field="device_name" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Dispositivo</SortableTh>
           <SortableTh field="created_at" sortKey={sortKey} sortDir={sortDir} onSort={requestSort}>Data</SortableTh>
+          <th className="text-left">Azioni</th>
         </tr></thead>
         <tbody>
           {sorted.length === 0 ? (
-            <tr><td colSpan={4} className="text-center text-emerald-400 py-8 text-xs">Nessun alert attivo</td></tr>
+            <tr><td colSpan={5} className="text-center text-emerald-400 py-8 text-xs">Nessun alert attivo</td></tr>
           ) : sorted.map(a => {
             const sc = a.severity === "critical" ? "#FF3B30" : a.severity === "high" ? "#FF9500" : "#FFCC00";
+            const isPortChange = a.source_type === "switch_cascade" && (a.title || "").toLowerCase().includes("cambiato porta") && a.status !== "resolved";
             return (
               <tr key={a.id} className="cursor-pointer hover:bg-[var(--bg-hover)]" onClick={() => navigate(`/alerts/${a.id}`)}>
                 <td><span className="text-[8px] px-1.5 py-0.5 rounded font-bold uppercase" style={{ color: sc, background: `${sc}15` }}>{a.severity?.substring(0, 4)}</span></td>
                 <td className="text-[var(--text-primary)] text-xs">{a.title}</td>
                 <td className="text-[var(--text-muted)] text-xs">{a.device_name}</td>
                 <td className="font-mono text-[var(--text-muted)] text-[10px]">{a.created_at ? new Date(a.created_at).toLocaleString("it-IT") : ""}</td>
+                <td onClick={(e) => e.stopPropagation()}>
+                  {isPortChange && (
+                    <button
+                      onClick={(e) => acceptUplink(e, a.id)}
+                      disabled={accepting === a.id}
+                      className="text-[9px] font-semibold px-2 py-1 rounded-md bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/25 transition-colors disabled:opacity-50 whitespace-nowrap"
+                      data-testid={`accept-uplink-${a.id}`}
+                      title="Accetta il ricablaggio: aggiorna la topologia di riferimento e risolvi l'alert"
+                    >
+                      {accepting === a.id ? "..." : "✓ Accetta nuova topologia"}
+                    </button>
+                  )}
+                </td>
               </tr>
             );
           })}

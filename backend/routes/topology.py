@@ -1581,6 +1581,8 @@ async def get_network_topology(client_id: str, current_user: dict = Depends(get_
         
         saved_edges = saved_layout.get("edges", [])
         _apply_cascade(enriched_nodes, saved_edges, cascade)
+        _sc = (cascade or {}).get("cascade", [])
+        await _apply_cascade_anomalies(client_id, saved_edges, _sc)
         return {
             "nodes": enriched_nodes,
             "edges": saved_edges,
@@ -1590,7 +1592,7 @@ async def get_network_topology(client_id: str, current_user: dict = Depends(get_
             "client_name": client_name,
             "has_custom_layout": True,
             "lldp_count": len(lldp_neighbors),
-            "switch_cascade": (cascade or {}).get("cascade", []),
+            "switch_cascade": _sc,
         }
     
     # No saved layout — return inferred topology, enriched with LLDP/MAC if available
@@ -1769,6 +1771,7 @@ async def get_network_topology(client_id: str, current_user: dict = Depends(get_
 
     _apply_cascade(topology["nodes"], topology["edges"], cascade)
     topology["switch_cascade"] = (cascade or {}).get("cascade", [])
+    await _apply_cascade_anomalies(client_id, topology["edges"], topology["switch_cascade"])
 
     return topology
 
@@ -2131,3 +2134,116 @@ async def get_switch_cascade(client_id: str, current_user: dict = Depends(get_cu
     """
     from .topology_diagram import compute_switch_cascade
     return await compute_switch_cascade(client_id)
+
+
+
+def _parse_cascade_dedup(dedup_key: str):
+    """cascade:{client_id}:{a}|{b}:{kind} -> (a, b, kind) oppure None."""
+    parts = (dedup_key or "").split(":")
+    if len(parts) != 4 or parts[0] != "cascade":
+        return None
+    ab = parts[2].split("|")
+    if len(ab) != 2:
+        return None
+    return ab[0], ab[1], parts[3]
+
+
+async def _apply_cascade_anomalies(client_id: str, edges: list, switch_cascade: list):
+    """Marca in rosso gli uplink con anomalia attiva (portchange/missing) e
+    aggiunge un edge fantasma per i link scomparsi, cosi' si vedono sulla mappa."""
+    try:
+        active = await db.alerts.find(
+            {"client_id": client_id, "source_type": "switch_cascade", "status": "active"},
+            {"_id": 0, "dedup_key": 1},
+        ).to_list(200)
+    except Exception:
+        return
+    anom = {}
+    for a in active:
+        p = _parse_cascade_dedup(a.get("dedup_key", ""))
+        if p:
+            anom[f"{p[0]}|{p[1]}"] = {"a": p[0], "b": p[1], "kind": p[2]}
+    if not anom:
+        return
+
+    def _key(e):
+        return "|".join(sorted([str(e.get("from")), str(e.get("to"))]))
+
+    present = {_key(e): e for e in edges}
+    for k, info in anom.items():
+        canon = "|".join(sorted([info["a"], info["b"]]))
+        e = present.get(canon)
+        if e is not None:
+            e["anomaly"] = info["kind"]
+            e["cascade"] = True
+        elif info["kind"] == "missing":
+            # edge fantasma rosso: mostra dove c'era l'uplink ora scomparso
+            edges.append({
+                "from": info["a"], "to": info["b"], "type": "lldp",
+                "cascade": True, "anomaly": "missing", "verified": False,
+                "label": "UPLINK SCOMPARSO",
+            })
+    # marca anche le righe della cascata per il pannello
+    for row in (switch_cascade or []):
+        up = row.get("uplink") or {}
+        to_ip = up.get("to_ip")
+        if not to_ip:
+            continue
+        canon = "|".join(sorted([row.get("ip", ""), to_ip]))
+        if canon in {"|".join(sorted([v["a"], v["b"]])) for v in anom.values()}:
+            for v in anom.values():
+                if "|".join(sorted([v["a"], v["b"]])) == canon:
+                    row["anomaly"] = v["kind"]
+
+
+@router.post("/network/switch-cascade/accept-uplink")
+async def accept_uplink_change(payload: dict, current_user: dict = Depends(get_current_user)):
+    """Accetta un ricablaggio: aggiorna la baseline della cascata con le porte
+    correnti del link e risolve l'alert "uplink cambiato porta". Body: {alert_id}."""
+    if current_user.get("role") not in ("admin",):
+        raise HTTPException(status_code=403, detail="Solo admin")
+    alert_id = payload.get("alert_id")
+    if not alert_id:
+        raise HTTPException(status_code=400, detail="alert_id obbligatorio")
+    alert = await db.alerts.find_one({"id": alert_id}, {"_id": 0})
+    if not alert or alert.get("source_type") != "switch_cascade":
+        raise HTTPException(status_code=404, detail="Alert cascata non trovato")
+    parsed = _parse_cascade_dedup(alert.get("dedup_key", ""))
+    if not parsed:
+        raise HTTPException(status_code=400, detail="Alert non riconosciuto")
+    a, b, kind = parsed
+    client_id = alert.get("client_id")
+    key = f"{a}|{b}"
+
+    # porte correnti dal grafo
+    from .topology_diagram import compute_switch_cascade
+    casc = await compute_switch_cascade(client_id)
+    cur = None
+    for e in casc.get("edges", []):
+        if f"{e.get('a')}|{e.get('b')}" == key:
+            cur = e
+            break
+    if cur is None:
+        raise HTTPException(status_code=409, detail="Il link non e' attualmente rilevato: impossibile accettarlo")
+
+    doc = await db.switch_cascade_baseline.find_one({"client_id": client_id}, {"_id": 0}) or {}
+    links = doc.get("links", {}) or {}
+    entry = links.get(key, {"a": a, "b": b})
+    entry["a_port"] = cur.get("a_port") or ""
+    entry["b_port"] = cur.get("b_port") or ""
+    entry["verified"] = bool(cur.get("verified"))
+    entry["miss_count"] = 0
+    links[key] = entry
+    await db.switch_cascade_baseline.update_one(
+        {"client_id": client_id},
+        {"$set": {"client_id": client_id, "links": links,
+                  "updated_at": datetime.now(timezone.utc).isoformat()}},
+        upsert=True,
+    )
+    await db.alerts.update_one(
+        {"id": alert_id},
+        {"$set": {"status": "resolved",
+                  "resolved_at": datetime.now(timezone.utc).isoformat(),
+                  "message": f"{alert.get('message','')} — Nuova topologia accettata da {current_user.get('email','admin')}."}},
+    )
+    return {"success": True, "message": "Nuova topologia accettata: baseline aggiornata e alert risolto."}

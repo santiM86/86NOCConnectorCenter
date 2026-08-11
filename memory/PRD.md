@@ -54,6 +54,28 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-08-11 🔴 Anomalia cascata sulla MAPPA + pulsante "Accetta nuova topologia"
+
+### 1) Evidenziazione anomalie sulla mappa
+`topology.py`: nuovo helper `_apply_cascade_anomalies` (chiamato in get_network_topology
+in entrambi i rami) che legge gli alert cascata ATTIVI (`switch_cascade`) e marca:
+- edge `anomaly="portchange"` (uplink cambiato porta) → rosso solido;
+- edge fantasma `anomaly="missing"` (uplink scomparso) → rosso tratteggiato "UPLINK SCOMPARSO"
+  (aggiunto anche se il link non è più presente, per mostrare dov'era).
+Anche le righe di `switch_cascade` ricevono `anomaly` per il pannello.
+`NetworkMap.js`: edge con `anomaly` in ROSSO (#ef4444, spesso, animato, label ⚠), e tag
+rosso "⚠ scomparso / porta cambiata" nelle righe del pannello Catena switch.
+
+### 2) Pulsante "Accetta nuova topologia"
+`topology.py`: `POST /api/network/switch-cascade/accept-uplink` (admin) body {alert_id}:
+aggiorna la baseline del link con le porte CORRENTI e risolve l'alert → il ricablaggio
+voluto non ri-allerta. `ClientOverviewPage.js::AlertsTab`: colonna "Azioni" con bottone
+"✓ Accetta nuova topologia" sugli alert "Uplink cambiato porta" (data-testid=accept-uplink-<id>).
+
+Testato end-to-end (backend + screenshot): edge rosso + tag pannello su cambio porta,
+bottone Accetta in AlertsTab, accept→baseline aggiornata+alert risolto+no ri-alert.
+Nessun rebuild agent Go.
+
 ## 2026-08-11 🧹 Tab Server ripulita + 🚨 Anomalia Cascata switch
 
 ### 1) Tab "Server" — rimosse le card iLO dettagliate (solo nella tab iLO)
