@@ -50,14 +50,40 @@ $manifest = Invoke-RestMethod -UseBasicParsing -Uri $manifestUrl
 $clientId = $manifest.client_id
 Write-Host "   Client : $clientId"
 
-# 2. Stop existing services (idempotent reinstall)
+# 2. Stop + rimuovi servizi esistenti (reinstall idempotente) e TERMINA i
+#    processi che tengono aperti i .exe (causa dell'errore "file in uso" agli
+#    aggiornamenti quando l'agent e' appeso/in crash). Watchdog PRIMA, poi agent.
 foreach ($s in @($WatchdogName, $AgentName)) {
     if (Get-Service -Name $s -ErrorAction SilentlyContinue) {
         Write-Host ">> stopping existing $s ..."
         Stop-Service -Name $s -Force -ErrorAction SilentlyContinue
         sc.exe delete $s | Out-Null
-        Start-Sleep -Seconds 1
     }
+}
+# Ferma la Scheduled Task della tray (tiene aperto argus-tray.exe)
+schtasks.exe /End /TN "86BIT Argus Tray" 2>$null | Out-Null
+# Termina eventuali processi residui che bloccano i binari (hang/crash)
+Get-Process -Name 'nocagent','nocwatchdog','nocagent-ui','argus-tray','ArgusDesktop' -ErrorAction SilentlyContinue |
+    Stop-Process -Force -ErrorAction SilentlyContinue
+Start-Sleep -Seconds 2
+
+# Helper: attende che un file NON sia piu' bloccato (l'handle a volte resta 1-2s
+# dopo il kill del processo), fino a $TimeoutSec. Se scade, prova a rimuovere/
+# rinominare il vecchio binario cosi' il download puo' comunque sostituirlo.
+function Wait-FileUnlocked {
+    param([string]$Path, [int]$TimeoutSec = 20)
+    if (-not (Test-Path $Path)) { return $true }
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    while ((Get-Date) -lt $deadline) {
+        try {
+            $fs = [System.IO.File]::Open($Path, 'Open', 'ReadWrite', 'None')
+            $fs.Close(); $fs.Dispose()
+            return $true
+        } catch { Start-Sleep -Milliseconds 500 }
+    }
+    try { Remove-Item -Force $Path -ErrorAction Stop; return $true } catch {}
+    try { Rename-Item -Path $Path -NewName ($Path + ".old-" + (Get-Random)) -Force -ErrorAction Stop; return $true } catch {}
+    return $false
 }
 
 # 3. Create directories
@@ -68,6 +94,12 @@ New-Item -ItemType Directory -Force -Path $DataDir    | Out-Null
 foreach ($bin in @("nocagent.exe", "nocwatchdog.exe")) {
     $dst = Join-Path $InstallDir $bin
     $url = "$BackendUrl/api/agent/binary/$Platform/$bin`?token=$Token"
+    # Assicura che il file non sia piu' bloccato prima di sovrascriverlo
+    if (-not (Wait-FileUnlocked -Path $dst -TimeoutSec 20)) {
+        Write-Host "ERRORE: $bin e' ancora in uso da un altro processo e non puo' essere sostituito." -ForegroundColor Red
+        Write-Host "        Chiudi i processi 86Noc (nocagent/nocwatchdog) o riavvia il server, poi rilancia il comando." -ForegroundColor Red
+        exit 3
+    }
     Write-Host ">> downloading $bin"
     Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $dst
     $expected = $null
@@ -115,6 +147,9 @@ Start-Service -Name $WatchdogName
 try {
     $trayBin = Join-Path $InstallDir "argus-tray.exe"
     $trayUrl = "$BackendUrl/api/agent/binary/$Platform/argus-tray.exe?token=$Token"
+    # Assicura che la tray non sia in esecuzione/bloccata prima di sostituirla
+    Get-Process -Name 'argus-tray' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    Wait-FileUnlocked -Path $trayBin -TimeoutSec 10 | Out-Null
     Write-Host ">> downloading argus-tray.exe"
     Invoke-WebRequest -UseBasicParsing -Uri $trayUrl -OutFile $trayBin
 

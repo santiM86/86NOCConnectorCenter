@@ -68,6 +68,24 @@ function portLabel(name, idx) {
   return String(idx ?? "");
 }
 
+// Interfacce LOGICHE/virtuali (non porte fisiche): NULL0, InLoopBack0/LoopBack,
+// Vlan-interface, Register-Tunnel/Tunnel. Lo switch le espone via ifTable SNMP
+// insieme alle porte reali; le raggruppiamo in una sezione separata.
+function isLogicalIface(name) {
+  const n = (name || "").toLowerCase().trim();
+  if (!n) return false;
+  return (
+    n.startsWith("null") ||
+    n.includes("loopback") ||
+    n.includes("vlan-interface") ||
+    n.startsWith("vlanif") ||
+    n.startsWith("vlan-int") ||
+    n.includes("register-tunnel") ||
+    n.startsWith("tunnel")
+  );
+}
+
+
 // ----- port icon -----
 function PortIcon({ p, size = 22 }) {
   const t = p.port_type;
@@ -308,7 +326,11 @@ function DiagnoseDialog({ diag, loading, onClose, onAction, actionLoading }) {
     : s === "warn" ? "text-amber-300 border-amber-500/40 bg-amber-500/10"
     : "text-rose-300 border-rose-500/40 bg-rose-500/10";
   const stIcon = (s) => s === "ok" ? "✓" : s === "warn" ? "!" : "✕";
-  const actionLabel = (a) => a === "set_device_type_switch" ? "⚡ Correggi ora — imposta come Switch" : "Correggi";
+  const actionLabel = (a) =>
+    a === "set_device_type_switch" ? "⚡ Correggi ora — imposta come Switch"
+    : a === "force_snmp_repoll" ? "🔄 Forza re-poll SNMP ora"
+    : a === "agent_needs_update" ? "⬆️ Aggiorna agent obsoleti"
+    : "Correggi";
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose} data-testid="switch-ports-diagnose-dialog">
       <div className="noc-panel max-w-2xl w-full max-h-[85vh] overflow-y-auto p-4 space-y-3" onClick={(e) => e.stopPropagation()}>
@@ -403,19 +425,52 @@ export default function SwitchPortsPage() {
   }, [deviceIp, clientId]);
 
   const handleDiagAction = useCallback(async (action) => {
-    if (action !== "set_device_type_switch") return;
-    setDiagActionLoading(true);
-    try {
-      const r = await axios.post(`${API}/devices/${encodeURIComponent(deviceIp)}/switch-ports/set-type-switch`, null, {
-        params: clientId ? { client_id: clientId } : {},
-      });
-      toast.success(r?.data?.message || "Impostato device_type=switch.");
-      await runDiagnose();  // ricarica la diagnosi aggiornata
-      reload();             // ricarica le porte (compariranno appena l'agent le invia)
-    } catch (e) {
-      toast.error(e?.response?.data?.detail || "Errore aggiornamento");
-    } finally {
-      setDiagActionLoading(false);
+    if (action === "set_device_type_switch") {
+      setDiagActionLoading(true);
+      try {
+        const r = await axios.post(`${API}/devices/${encodeURIComponent(deviceIp)}/switch-ports/set-type-switch`, null, {
+          params: clientId ? { client_id: clientId } : {},
+        });
+        toast.success(r?.data?.message || "Impostato device_type=switch.");
+        await runDiagnose();
+        reload();
+      } catch (e) {
+        toast.error(e?.response?.data?.detail || "Errore aggiornamento");
+      } finally {
+        setDiagActionLoading(false);
+      }
+      return;
+    }
+    if (action === "force_snmp_repoll") {
+      if (!clientId) { toast.error("Apri la pagina dal cliente corretto per il re-poll."); return; }
+      setDiagActionLoading(true);
+      try {
+        const r = await axios.post(`${API}/admin/snmp-poll-now/${clientId}/${encodeURIComponent(deviceIp)}`, {});
+        const reply = r?.data?.reply || {};
+        const sysName = reply.sys_name || reply.sysName || "—";
+        toast.success(`Re-poll SNMP eseguito da ${r?.data?.executed_by_agent || "agent"} (sysName=${sysName}). Le porte compaiono entro ~1 ciclo di poll.`, { duration: 8000 });
+        await runDiagnose();
+        setTimeout(reload, 1500);
+      } catch (e) {
+        toast.error(e?.response?.data?.detail || "Re-poll SNMP fallito (SNMP non raggiungibile o agent offline).", { duration: 8000 });
+      } finally {
+        setDiagActionLoading(false);
+      }
+      return;
+    }
+    if (action === "agent_needs_update") {
+      setDiagActionLoading(true);
+      try {
+        const r = await axios.post(`${API}/agents/bulk-update`, { only_outdated: true });
+        const n = (r?.data?.sent || []).length;
+        toast.success(n > 0 ? `Comando update inviato a ${n} agent obsoleti.` : "Nessun agent obsoleto: sono gia' tutti aggiornati.", { duration: 7000 });
+        await runDiagnose();
+      } catch (e) {
+        toast.error(e?.response?.data?.detail || "Errore invio comando update agli agent");
+      } finally {
+        setDiagActionLoading(false);
+      }
+      return;
     }
   }, [deviceIp, clientId, runDiagnose]);
 
@@ -519,6 +574,13 @@ export default function SwitchPortsPage() {
       return 0;
     });
   }, [ports, sortBy, sortDir, tableOnlyUp]);
+
+  // Solo porte FISICHE per la matrice a tile (le logiche vanno in fondo alla tabella)
+  const physicalTiles = useMemo(() => ports.filter((p) => !isLogicalIface(p.name)), [ports]);
+  // Partizione della tabella completa: prima le fisiche, poi le logiche
+  const physRows = useMemo(() => tablePorts.filter((p) => !isLogicalIface(p.name)), [tablePorts]);
+  const logicalRows = useMemo(() => tablePorts.filter((p) => isLogicalIface(p.name)), [tablePorts]);
+
 
   const SortIcon = ({ col }) => {
     if (sortBy !== col) return <CaretUp size={9} className="opacity-30 inline ml-0.5" />;
@@ -752,11 +814,11 @@ export default function SwitchPortsPage() {
       <div className="noc-panel p-3 md:p-4">
         {/* Group in row of 8 (typical switch layout) */}
         <div className="flex flex-wrap gap-1.5 sm:gap-2">
-          {ports.map(p => (
+          {physicalTiles.map(p => (
             <PortTile key={p.idx} p={p} active={selected?.idx === p.idx} onClick={() => setSelected(p)} />
           ))}
         </div>
-        {ports.length === 0 && <div className="text-center text-[11px] text-[var(--text-muted)] py-3">Nessuna porta con questo filtro</div>}
+        {physicalTiles.length === 0 && <div className="text-center text-[11px] text-[var(--text-muted)] py-3">Nessuna porta con questo filtro</div>}
         {/* Legenda */}
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-[var(--text-muted)] mt-3 pt-3 border-t border-[var(--bg-border)]">
           <span className="flex items-center gap-1"><Lightning size={11} weight="fill" className="text-emerald-400" /> PoE attivo</span>
@@ -796,7 +858,7 @@ export default function SwitchPortsPage() {
       {/* Tabella riepilogo (collassabile su mobile) */}
       <details className="noc-panel" open>
         <summary className="cursor-pointer px-3 py-2 text-[12px] font-semibold border-b border-[var(--bg-border)] hover:bg-[var(--bg-hover)] flex items-center gap-3">
-          <span>Tabella completa ({tablePorts.length}{tableOnlyUp ? `/${ports.length}` : ""})</span>
+          <span>Tabella completa ({physRows.length} fisiche{logicalRows.length ? ` · ${logicalRows.length} logiche` : ""}{tableOnlyUp ? `/${ports.length}` : ""})</span>
           <label
             className="ml-auto flex items-center gap-1.5 text-[10px] font-normal text-[var(--text-secondary)] cursor-pointer"
             onClick={(e) => e.stopPropagation()}
@@ -842,7 +904,16 @@ export default function SwitchPortsPage() {
               </tr>
             </thead>
             <tbody>
-              {tablePorts.map(p => {
+              {[...physRows, ...(logicalRows.length ? ["__logical_sep__", ...logicalRows] : [])].map(p => {
+                if (p === "__logical_sep__") {
+                  return (
+                    <tr key="logical-sep" data-testid="switch-ports-logical-sep">
+                      <td colSpan={8} className="bg-[var(--bg-hover)] text-[10px] font-semibold text-[var(--text-secondary)] py-1.5 px-2 uppercase tracking-wide">
+                        Interfacce logiche · {logicalRows.length} <span className="normal-case font-normal text-[var(--text-muted)]">(non porte fisiche: NULL0, LoopBack, Vlan-interface, Tunnel)</span>
+                      </td>
+                    </tr>
+                  );
+                }
                 const isUp = p.oper === 1 && p.admin === 1;
                 const isPoe = p.poe_status === 3;
                 return (

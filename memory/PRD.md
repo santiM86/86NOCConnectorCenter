@@ -54,6 +54,138 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-08-10 🐞 FIX pulsante "Correggi" diagnosi porte switch (era no-op)
+
+### Sintomo (domanda utente)
+Nel dialog "Diagnosi porte switch" (SwitchPortsPage), step 5 "Dati porte" con
+esito error, il pulsante "Correggi" non faceva nulla.
+
+### Root cause
+`SwitchPortsPage.js::handleDiagAction` gestiva SOLO `action ===
+'set_device_type_switch'` e faceva `return` immediato per ogni altra azione.
+Lo step 5 restituisce pero' `action='agent_needs_update'` -> pulsante NO-OP.
+Inoltre la diagnosi era fuorviante: consigliava "aggiorna a v4.26.0" anche
+quando gli agent del cliente erano gia' v4.30.0 (caso reale utente), mentre la
+vera causa era lo SNMP non raggiungibile (step 7 reachable=False).
+
+### Fix
+- **Backend (`topology.py` step 5)**: se gli agent del cliente sono gia'
+  >= v4.26.0 (modulo ifTable presente, check `_ge_426`), l'esito ora punta alla
+  causa reale (SNMP poll/reachability) con azione `force_snmp_repoll`; se
+  davvero obsoleti resta `agent_needs_update`.
+- **Frontend (`handleDiagAction` + `actionLabel`)**: gestite TUTTE le azioni:
+  - `set_device_type_switch` (esistente)
+  - `force_snmp_repoll` -> POST `/api/admin/snmp-poll-now/{client}/{ip}` (re-poll
+    SNMP via agent online) + re-diagnose + reload. Label "🔄 Forza re-poll SNMP ora".
+  - `agent_needs_update` -> POST `/api/agents/bulk-update {only_outdated:true}`.
+    Label "⬆️ Aggiorna agent obsoleti".
+
+### Testing
+- `_ge_426` verificato (v4.30/4.26 -> capable; v4.25/v3.9/vuoto -> obsoleto).
+- Risposte endpoint confermate: bulk-update -> `sent`; snmp-poll-now ->
+  `executed_by_agent`/`reply`. Frontend compila, backend syntax OK.
+- E2E UI non eseguito (pagina dietro login+2FA obbligatorio); azioni cablate a
+  endpoint gia' esistenti e usati altrove (DeviceInfoCard/AgentsPage).
+
+### Deploy
+Preview attivo; per PROD Save to GitHub + redeploy (frontend + backend).
+
+---
+
+
+
+## 2026-08-10 🔧 Wait-FileUnlocked anche nell'updater standalone (Aggiorna Connector)
+
+Esteso il fix "file in uso" a `noc-agent/build/install-noc-agent.ps1` (usato
+dall'aggiornamento remoto "Aggiorna Connector"):
+- Kill list ampliata a `nocagent,nocwatchdog,nocagent-ui,ArgusDesktop,argus-tray`
+  (prima uccideva solo le UI; ora anche agent/watchdog se il servizio e' appeso).
+- Aggiunta funzione `Wait-FileUnlocked` (stessa del template token).
+- Chiamata prima di ogni download: loop asset richiesti -> se ancora bloccato
+  `Write-Fail` + `exit 4`; loop asset opzionali -> kill+wait best-effort.
+- Verifica: 3 occorrenze Wait-FileUnlocked (def + 2 usi). pwsh non disponibile
+  (script Windows-only): review manuale, pattern identico al template gia'
+  render-verificato. Lo script e' servito dalla Release GitHub -> attivo dopo
+  Save to GitHub + nuova release.
+
+---
+
+
+
+## 2026-08-10 🔧 Installer token: kill processi + attesa sblocco file (fix "file in uso")
+
+### Problema utente
+Rilanciando il comando token di installazione su un server con agent gia'
+presente: `Download nocagent.exe fallito: il processo non puo' accedere al file
+'C:\Program Files\86NocAgent\nocagent.exe' perche' e' in uso da un altro
+processo`. Il template fermava i servizi ma NON uccideva i processi appesi
+(hang/crash) ne' attendeva il rilascio dell'handle prima del download.
+
+### Fix (`noc-agent/build/install.ps1.template`)
+- Step 2 potenziato: dopo Stop-Service/sc.exe delete (watchdog PRIMA, poi
+  agent), aggiunto `schtasks /End "86BIT Argus Tray"` + `Stop-Process` su
+  nocagent/nocwatchdog/nocagent-ui/argus-tray/ArgusDesktop + `Start-Sleep 2`.
+- Nuova funzione `Wait-FileUnlocked($Path,$TimeoutSec)`: prova ad aprire il
+  file in `ReadWrite/None` (esclusivo) con retry ~0.5s fino al timeout; se
+  scade, rimuove o rinomina il vecchio binario cosi' il download puo'
+  comunque sostituirlo.
+- Step 4: prima di ogni `Invoke-WebRequest` chiama `Wait-FileUnlocked` (20s);
+  se ancora bloccato -> messaggio chiaro + `exit 3` (niente errore criptico).
+- Step 8 (tray): kill argus-tray + `Wait-FileUnlocked` prima del download.
+
+### Testing
+- Render backend `GET /api/agent/install/windows.ps1?token=...` -> HTTP 200,
+  contiene `Wait-FileUnlocked` (def + 2 usi), 0 placeholder non sostituiti,
+  righe kill/schtasks presenti. pwsh non disponibile in ambiente: validazione
+  via review + render (script Windows-only).
+
+### Deploy
+Il template e' servito dal backend: attivo SUBITO in preview. Per il Center di
+PRODUZIONE serve Save to GitHub + redeploy cosi' il comando token servito da
+argus.86bit.it include il pre-cleanup. Nota: `install-noc-agent.ps1`
+(standalone) gia' uccide i processi; valutare in futuro di aggiungere anche
+li' Wait-FileUnlocked.
+
+---
+
+
+
+## 2026-08-10 🧹 Interfacce logiche separate nell'elenco porte switch
+
+### Richiesta utente
+NULL0 e InLoopBack0 comparivano tra le porte fisiche dello switch (screenshot).
+Scelta utente (opzione b): tenerle ma in una **sezione separata "Interfacce
+logiche"** a fondo tabella; anche Vlan-interface trattata come logica.
+
+### Cosa sono (spiegato all'utente)
+Interfacce virtuali Comware esposte via ifTable SNMP: NULL0 (black-hole
+routing), InLoopBack0/LoopBack (loopback interno stack), Vlan-interface (SVI),
+Register-Tunnel/Tunnel. Normali e innocue, non porte fisiche.
+
+### Implementazione (`frontend/src/pages/SwitchPortsPage.js`)
+- Helper `isLogicalIface(name)`: match NULL*, *loopback*, vlan-interface/vlanif,
+  register-tunnel, tunnel*. LAG (Bridge-Aggregation) e MEth (mgmt) restano
+  FISICHE (utili).
+- `physicalTiles` (matrice a tile mostra solo fisiche), `physRows`/`logicalRows`
+  (partizione della "Tabella completa").
+- Tabella: prima le fisiche, poi una riga separatore "Interfacce logiche · N
+  (non porte fisiche...)", poi le logiche. Contatore header aggiornato
+  ("X fisiche · Y logiche").
+
+### Testing
+Classificazione verificata con node sui nomi reali dello screenshot
+(NULL0/InLoopBack0/Vlan-interface/Tunnel/LoopBack -> logiche; GigabitEthernet/
+Ten-GigabitEthernet/Bridge-Aggregation/MEth -> fisiche). JSX compila (solo
+warning preesistente exhaustive-deps L438). Screenshot E2E non eseguito (pagina
+dietro login+2FA obbligatorio); cambiamento di sola presentazione.
+
+### Deploy
+Preview attivo; per PROD Save to GitHub + redeploy frontend.
+
+---
+
+
+
 ## 2026-08-10 🐞 FIX #2 — Temperatura 65535 e PSU/Fan fantasma (sentinelle SNMP)
 
 ### Sintomo (2° screenshot utente, stesso switch HPE 5130)

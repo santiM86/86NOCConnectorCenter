@@ -628,12 +628,13 @@ foreach ($svc in @("86NocAgent","86NocWatchdog")) {
 }
 Start-Sleep -Seconds 2
 
-# Kill UI processes (tray icon + ArgusDesktop) che bloccano la sovrascrittura
-# del nocagent-ui.exe / ArgusDesktop.exe nella cartella InstallDir.
-# Comunemente girano nella system tray dell'utente loggato e non vengono
-# fermati dal Stop-Service.
-$uiProcs = @("nocagent-ui","ArgusDesktop","argus-tray")
-foreach ($p in $uiProcs) {
+# Kill dei processi che possono bloccare la sovrascrittura dei binari in
+# InstallDir. Oltre alle UI (tray/ArgusDesktop) includiamo ANCHE nocagent e
+# nocwatchdog: se lo Stop-Service ha fallito (servizio appeso) i processi
+# restano vivi e tengono aperto nocagent.exe -> errore "file in uso" al
+# download. Girano nella system tray/servizio e non li ferma sempre lo Stop-Service.
+$killProcs = @("nocagent","nocwatchdog","nocagent-ui","ArgusDesktop","argus-tray")
+foreach ($p in $killProcs) {
     $procs = Get-Process -Name $p -ErrorAction SilentlyContinue
     if ($procs) {
         $procs | Stop-Process -Force -ErrorAction SilentlyContinue
@@ -641,6 +642,25 @@ foreach ($p in $uiProcs) {
     }
 }
 Start-Sleep -Seconds 2
+
+# Helper: attende che un file NON sia piu' bloccato (l'handle a volte resta 1-2s
+# dopo il kill del processo), fino a $TimeoutSec. Se scade, prova a rimuovere/
+# rinominare il vecchio binario cosi' il download puo' comunque sostituirlo.
+function Wait-FileUnlocked {
+    param([string]$Path, [int]$TimeoutSec = 20)
+    if (-not (Test-Path $Path)) { return $true }
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    while ((Get-Date) -lt $deadline) {
+        try {
+            $fs = [System.IO.File]::Open($Path, 'Open', 'ReadWrite', 'None')
+            $fs.Close(); $fs.Dispose()
+            return $true
+        } catch { Start-Sleep -Milliseconds 500 }
+    }
+    try { Remove-Item -Force $Path -ErrorAction Stop; return $true } catch {}
+    try { Rename-Item -Path $Path -NewName ($Path + ".old-" + (Get-Random)) -Force -ErrorAction Stop; return $true } catch {}
+    return $false
+}
 
 # ------------------------------------------------------------------- #
 # 4. Pulizia stato vecchio (preservando il log per la diagnosi)
@@ -739,6 +759,10 @@ foreach ($f in $required) {
             $apiAsset = ($rel.assets | Where-Object { $_.name -eq $f }).url
             if ($apiAsset) { $url = $apiAsset }
         }
+        if (-not (Wait-FileUnlocked -Path $dst -TimeoutSec 20)) {
+            Write-Fail "$f e' in uso da un altro processo e non puo' essere sostituito. Chiudi i processi 86Noc o riavvia il server, poi riprova."
+            exit 4
+        }
         Invoke-WebRequest -Uri $url -OutFile $dst -Headers $dlHeaders -TimeoutSec 180 -UseBasicParsing
         $sz = (Get-Item $dst).Length
         Write-Ok "$f scaricato: $([math]::Round($sz/1MB,2)) MB"
@@ -747,7 +771,6 @@ foreach ($f in $required) {
         exit 4
     }
 }
-
 # Optional asset: ArgusDesktop.exe (nuova UI Wails). Scaricato solo se la
 # release lo include - release pre-v4.8 non lo hanno, e va bene cosi'.
 foreach ($f in $optional) {
@@ -768,6 +791,8 @@ foreach ($f in $optional) {
             $apiAsset = ($rel.assets | Where-Object { $_.name -eq $f }).url
             if ($apiAsset) { $url = $apiAsset }
         }
+        Get-Process -Name ($f -replace '\.exe$','') -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+        Wait-FileUnlocked -Path $dst -TimeoutSec 10 | Out-Null
         Invoke-WebRequest -Uri $url -OutFile $dst -Headers $dlHeaders -TimeoutSec 180 -UseBasicParsing
         $sz = (Get-Item $dst).Length
         Write-Ok "$f scaricato: $([math]::Round($sz/1MB,2)) MB"
