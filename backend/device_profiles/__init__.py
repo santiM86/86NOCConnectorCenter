@@ -201,6 +201,9 @@ PROFILES: list[dict[str, Any]] = [
             "h3cEntityExtTemperature":"1.3.6.1.4.1.25506.2.6.1.1.1.1.12",
             "h3cFanState":            "1.3.6.1.4.1.25506.2.6.1.1.1.1.16",
             "h3cPowerState":          "1.3.6.1.4.1.25506.2.6.1.1.1.1.18",
+            # MAC base dello switch (BRIDGE-MIB) — permette di leggere il MAC
+            # anche quando l'agent NON e' sul segmento L2 (nessuna voce ARP).
+            "dot1dBaseBridgeAddress": "1.3.6.1.2.1.17.1.1.0",
         },
         "thresholds": {"cpu_warn_pct": 70, "cpu_crit_pct": 90, "mem_warn_pct": 80, "mem_crit_pct": 95, "temp_warn_c": 55, "temp_crit_c": 70},
         "polling_interval_seconds": 60,

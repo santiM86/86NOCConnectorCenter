@@ -54,6 +54,47 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-08-10 🔌 MAC dello switch via SNMP (dot1dBaseBridgeAddress) + fix agent OctetString
+
+### Richiesta utente
+Leggere sempre il MAC dello switch via SNMP (anche senza ARP sul segmento),
+aggiungendo `dot1dBaseBridgeAddress` al profilo Comware.
+
+### Scoperta / vincolo
+L'agent Go (`snmp.go::asString`) convertiva gli OctetString con `string(bytes)`:
+per un MAC (6 byte binari) produce UTF-8 non valido -> illeggibile a valle
+(JSON -> U+FFFD). Quindi il solo OID non bastava: serviva anche far
+hex-encodare i binari nell'agent.
+
+### Implementazione
+- **Agent Go (`internal/poller/snmp.go`)**: `asString` ora, se l'OctetString
+  contiene byte non stampabili, restituisce `"hex:aa:bb:cc:dd:ee:ff"` (nuova
+  `isPrintableASCII`). Migliora TUTTI i valori binari (MAC/PhysAddress), non
+  solo il MAC. RICHIEDE REBUILD + NUOVA RELEASE agent.
+- **Profilo (`device_profiles/__init__.py` hpe_comware)**: aggiunto
+  `dot1dBaseBridgeAddress = 1.3.6.1.2.1.17.1.1.0`.
+- **Bridge (`agent_ws.py`)**: nuovo `_parse_snmp_mac()` (gestisce hex:/0x/hex
+  puro/separatori, scarta 00..00 e ff..ff); in `_bridge_snmp_poll` legge
+  `dot1dBaseBridgeAddress`/`ifPhysAddress` e salva `device_poll_status.primary_mac`
+  -> la scheda lo mostra con source "self-snmp".
+
+### Testing
+- `_parse_snmp_mac` verificato su tutti i formati (hex:/0x/puro/colon -> MAC
+  normalizzato; zeri/broadcast/garbage -> None). Backend syntax OK, servizio
+  risponde 200. Agent Go: tab consistenti, sintassi valida (Go non disponibile
+  in ambiente per build).
+
+### Deploy / dipendenza
+- Backend: attivo dopo redeploy. NESSUN dato errato con agent vecchio (v4.30):
+  il MAC binario -> `_parse_snmp_mac` ritorna None (no regressione).
+- Il MAC via SNMP compare SOLO con l'agent NUOVO (asString hex): serve
+  Save to GitHub + trigger RELEASE agent (CI/CD tag) + auto-update agent.
+  Chiedere all'utente PAT/conferma per la release.
+
+---
+
+
+
 ## 2026-08-10 🔎 MAC "non disponibile" sulla scheda device — fallback ARP scan
 
 ### Domanda utente
