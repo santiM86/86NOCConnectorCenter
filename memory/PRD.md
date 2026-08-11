@@ -54,6 +54,44 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-08-10 🔧 Installer token: kill processi + attesa sblocco file (fix "file in uso")
+
+### Problema utente
+Rilanciando il comando token di installazione su un server con agent gia'
+presente: `Download nocagent.exe fallito: il processo non puo' accedere al file
+'C:\Program Files\86NocAgent\nocagent.exe' perche' e' in uso da un altro
+processo`. Il template fermava i servizi ma NON uccideva i processi appesi
+(hang/crash) ne' attendeva il rilascio dell'handle prima del download.
+
+### Fix (`noc-agent/build/install.ps1.template`)
+- Step 2 potenziato: dopo Stop-Service/sc.exe delete (watchdog PRIMA, poi
+  agent), aggiunto `schtasks /End "86BIT Argus Tray"` + `Stop-Process` su
+  nocagent/nocwatchdog/nocagent-ui/argus-tray/ArgusDesktop + `Start-Sleep 2`.
+- Nuova funzione `Wait-FileUnlocked($Path,$TimeoutSec)`: prova ad aprire il
+  file in `ReadWrite/None` (esclusivo) con retry ~0.5s fino al timeout; se
+  scade, rimuove o rinomina il vecchio binario cosi' il download puo'
+  comunque sostituirlo.
+- Step 4: prima di ogni `Invoke-WebRequest` chiama `Wait-FileUnlocked` (20s);
+  se ancora bloccato -> messaggio chiaro + `exit 3` (niente errore criptico).
+- Step 8 (tray): kill argus-tray + `Wait-FileUnlocked` prima del download.
+
+### Testing
+- Render backend `GET /api/agent/install/windows.ps1?token=...` -> HTTP 200,
+  contiene `Wait-FileUnlocked` (def + 2 usi), 0 placeholder non sostituiti,
+  righe kill/schtasks presenti. pwsh non disponibile in ambiente: validazione
+  via review + render (script Windows-only).
+
+### Deploy
+Il template e' servito dal backend: attivo SUBITO in preview. Per il Center di
+PRODUZIONE serve Save to GitHub + redeploy cosi' il comando token servito da
+argus.86bit.it include il pre-cleanup. Nota: `install-noc-agent.ps1`
+(standalone) gia' uccide i processi; valutare in futuro di aggiungere anche
+li' Wait-FileUnlocked.
+
+---
+
+
+
 ## 2026-08-10 🧹 Interfacce logiche separate nell'elenco porte switch
 
 ### Richiesta utente
