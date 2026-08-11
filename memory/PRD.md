@@ -54,6 +54,36 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-08-11 ✅ VERIFICA disinstallazione remota agent dalla console (8/8 PASS)
+
+### Richiesta utente
+Controllare che la rimozione/disinstallazione di Argus dai server clienti dalla
+console funzioni perfettamente.
+
+### Esito: FUNZIONA (nessun difetto)
+Flusso verificato end-to-end:
+- **Console** (`AgentsPage.js`): modale 2 modalità (solo Center / rimozione completa)
+  + progress bar → `DELETE /api/agents/{id}?uninstall_remote=true&purge_data=true`.
+- **Backend** (`agent_ws.py::delete_agent`): se agent LIVE invia WS nativo `uninstall`;
+  fallback su `update` versione magica `__uninstall__` per agent legacy (v4.10.x).
+  Traccia `uninstall_status=in_progress`.
+- **Agent Go**: ENTRAMBI i percorsi hanno FALLBACK INLINE (`uninstall_remote_windows.go`
+  righe 64-74 + `install-noc-agent.ps1` righe 464-475) che ferma+elimina servizi
+  86NocAgent/86NocWatchdog, killa UI, rimuove binari + ProgramData ANCHE senza
+  uninstall.ps1 → funziona con qualsiasi metodo di installazione.
+- **Watcher** (`list_agents`): offline >30s → completed + cleanup DB (6 collection) +
+  audit; live >90s → failed; timeout 3 min gestito.
+
+### Fix harness test
+`tests/test_agent_uninstall_tracking.py`: il fixture `admin_token` non completava il
+2FA (obbligatorio dal 2026-08-07) → 403. Aggiunto verify-2fa con TOTP → **8/8 PASS**.
+
+### Limite minore (utente ha scelto di NON risolvere — opzione B)
+Sui server installati via COMANDO TOKEN, `uninstall.ps1` non viene scritto in
+InstallDir: la disinstallazione DALLA CONSOLE funziona lo stesso (fallback inline),
+ma manca la voce "Disinstalla" LOCALE in Programmi e funzionalità / menu Start.
+Solo `installer_gui.ps1.template` scrive uninstall.ps1. Non risolto per scelta utente.
+
 ## 2026-08-11 🔧 Sezione iLO/Redfish POTENZIATA (Panoramica + tab dedicata "iLO")
 
 ### Richiesta utente
