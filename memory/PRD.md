@@ -54,6 +54,47 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-08-10 🗺️ Diagramma di rete auto-generato (PNG + nel PDF white-label)
+
+### Richiesta utente
+Generare automaticamente un diagramma di rete esportabile (PNG/PDF nel report
+white-label) che mostri il cablaggio fisico switch/device, usando i link
+verificati LLDP+FDB. Deliverable per il cliente a fine assessment.
+
+### Implementazione (solo PIL + ReportLab, no graphviz/matplotlib)
+- **`routes/topology_diagram.py`**:
+  - `build_topology_graph(client_id)`: backbone switch<->switch da
+    `lldp_neighbors` (risolve il remoto per remote_ip / chassis-id==primary_mac
+    / sys_name==hostname), conteggio endpoint per switch dalla FDB, e flag
+    `verified` quando la FDB corrobora l'LLDP (MAC base di uno nella FDB
+    dell'altro).
+  - `render_topology_png(graph, brand, logo, client_name)`: layout gerarchico
+    a livelli (BFS dal nodo con grado maggiore) disegnato con PIL. Verde solido
+    = VERIFICATO, grigio tratteggiato = LLDP-only. Header white-label + logo,
+    box switch con IP + "N endpoint", etichette porte, legenda. Font FreeSans.
+- **`routes/reports.py`**:
+  - Nuova sezione "Diagramma Fisico di Rete" nel PDF (dopo adiacenze LLDP):
+    embed del PNG via ReportLab Image, best-effort (try/except non rompe il report).
+  - Endpoint standalone `GET /api/reports/topology/{client_id}/diagram.png`
+    (admin) con branding, per download diretto.
+- **`ReportsPage.js`**: pulsante "Diagramma Rete (PNG)" accanto a "Genera PDF".
+
+### Testing
+- End-to-end preview con topologia sintetica (CORE + 2 access): grafo corretto,
+  link CORE<->ACCESS-1 VERIFICATO via FDB, CORE<->ACCESS-2 LLDP-only; PNG 25KB
+  reso e ispezionato visivamente (layout pulito, legenda, branding). Endpoint
+  registrato (403 senza auth). Frontend compila, backend senza errori import.
+- PDF completo con la sezione non testato E2E (2FA admin); la generazione del
+  diagramma e' isolata in try/except e validata a parte.
+
+### Deploy
+Preview attivo; per PROD Save to GitHub + redeploy. Qualita' topologia dipende
+da LLDP/FDB inviati dagli agent + MAC base noto (release agent OctetString).
+
+---
+
+
+
 ## 2026-08-10 ✅ Doppia evidenza LLDP+FDB: link fisici "VERIFICATI"
 
 ### Richiesta utente

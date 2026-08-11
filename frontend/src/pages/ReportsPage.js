@@ -15,6 +15,7 @@ export default function ReportsPage() {
   const [selectedClient, setSelectedClient] = useState("");
   const [period, setPeriod] = useState("30");
   const [generating, setGenerating] = useState(false);
+  const [diagramLoading, setDiagramLoading] = useState(false);
 
   // Branding white-label state
   const [branding, setBranding] = useState(null);
@@ -108,6 +109,33 @@ export default function ReportsPage() {
     }
   };
 
+  const downloadDiagram = async () => {
+    if (!selectedClient) { toast.error("Seleziona un cliente"); return; }
+    setDiagramLoading(true);
+    try {
+      const response = await axios.get(
+        `${API}/reports/topology/${selectedClient}/diagram.png`,
+        { responseType: "blob" }
+      );
+      const url = window.URL.createObjectURL(new Blob([response.data], { type: "image/png" }));
+      const link = document.createElement("a");
+      link.href = url;
+      const clientName = clients.find(c => c.client_id === selectedClient)?.client_name || "topologia";
+      link.download = `Topologia_${clientName}_${new Date().toISOString().slice(0, 10)}.png`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+      toast.success("Diagramma di rete scaricato");
+    } catch (e) {
+      toast.error(e?.response?.status === 404
+        ? "Nessuna topologia disponibile (servono switch con LLDP/FDB)"
+        : "Errore nella generazione del diagramma");
+    } finally {
+      setDiagramLoading(false);
+    }
+  };
+
   return (
     <div className="p-4 md:p-5 space-y-4 animate-fade-in" data-testid="reports-page">
       <div>
@@ -172,6 +200,23 @@ export default function ReportsPage() {
                 <><Spinner size={14} className="animate-spin mr-2" /> Generazione...</>
               ) : (
                 <><Download size={14} className="mr-2" /> Genera PDF</>
+              )}
+            </Button>
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-[10px] uppercase tracking-wider text-[var(--text-muted)] font-medium">&nbsp;</label>
+            <Button
+              onClick={downloadDiagram}
+              disabled={diagramLoading || !selectedClient}
+              variant="outline"
+              className="w-full h-9 border-teal-500/50 text-teal-300 hover:bg-teal-500/10 text-xs font-medium"
+              data-testid="download-diagram-btn"
+            >
+              {diagramLoading ? (
+                <><Spinner size={14} className="animate-spin mr-2" /> Diagramma...</>
+              ) : (
+                <><Download size={14} className="mr-2" /> Diagramma Rete (PNG)</>
               )}
             </Button>
           </div>
