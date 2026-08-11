@@ -88,6 +88,18 @@ function DeviceNode({ data }) {
         </div>
       )}
 
+      {/* Cascade order badge (1°, 2°, 3°...) sopra gli switch in cascata */}
+      {data.cascadeRank != null && (
+        <div
+          className="absolute -top-3 left-1/2 -translate-x-1/2 z-20 px-2 h-[18px] rounded-full flex items-center justify-center text-[10px] font-black text-white shadow-lg"
+          style={{ background: "linear-gradient(135deg,#6366f1,#818cf8)", boxShadow: "0 0 10px rgba(99,102,241,0.7)", border: "1px solid rgba(255,255,255,0.25)" }}
+          title={`Posizione in cascata: ${data.cascadeRank}° (livello ${data.cascadeLevel})`}
+          data-testid={`cascade-badge-${data.nodeId}`}
+        >
+          {data.cascadeRank}°
+        </div>
+      )}
+
       {/* Node Card */}
       <div
         className={`rounded-xl border-2 px-3 py-2.5 text-center cursor-pointer active:cursor-grabbing transition-all duration-200 hover:scale-105 ${
@@ -210,6 +222,8 @@ function topoToFlowNodes(topoNodes, hasCustomLayout) {
         vlan: n.vlan,
         hostname: n.hostname,
         subtitle: n.subtitle,
+        cascadeRank: n.cascade_rank,
+        cascadeLevel: n.cascade_level,
       },
     };
   });
@@ -221,47 +235,61 @@ function topoToFlowEdges(topoEdges) {
     const isLldp = e.source === "lldp" || e.type === "lldp";
     const isMac = e.source === "mac_table";
     const isHighSpeed = is10G || e.type === "trunk";
+    const isCascade = e.cascade === true;
 
     // Determine stroke width: 10G edges are very prominent
     let strokeWidth = 1.5;
     if (e.type === "wan") strokeWidth = 2.5;
     else if (is10G) strokeWidth = 3;
     else if (e.type === "trunk" || isLldp) strokeWidth = 2;
+    if (isCascade) strokeWidth = 3;
 
     // Determine color: 10G gets bright orange, LLDP gets cyan
     let color = EDGE_COLORS[e.type] || EDGE_COLORS.custom;
     if (is10G) color = "#f97316"; // bright orange for 10G
     else if (isLldp) color = "#22d3ee";
     else if (isMac) color = "#818cf8";
+    if (isCascade) color = e.verified ? "#6366f1" : "#a78bfa";
+
+    // Cascade non verificato (solo LLDP) = tratteggiato "probabile"
+    const dashed = isCascade && !e.verified;
 
     // Label: show speed info when available
     let label = e.label || "";
     if (!label && e.type === "access") label = "1G";
+    if (isCascade) {
+      const lp = e.a_port || e.local_port;
+      const rp = e.b_port || e.remote_port;
+      const ports = (lp || rp) ? `${lp || "?"}↔${rp || "?"}` : "";
+      const vlanTxt = e.vlan != null ? ` VLAN ${e.vlan}` : "";
+      const composed = `${e.verified ? "✓" : "~"} ${ports}${vlanTxt}`.trim();
+      label = composed.length > 2 ? composed : (label || composed);
+    }
 
     // Label style: bigger for important edges
-    const fontSize = is10G ? 12 : (isLldp || isMac) ? 11 : 10;
+    const fontSize = is10G ? 12 : (isLldp || isMac || isCascade) ? 11 : 10;
 
     return {
       id: e.id || `e-${e.from}-${e.to}-${i}`,
       source: e.from,
       target: e.to,
       type: "default",
-      animated: e.type === "wan" || isHighSpeed || isLldp,
+      animated: e.type === "wan" || isHighSpeed || isLldp || isCascade,
       label,
-      style: { stroke: color, strokeWidth },
+      style: { stroke: color, strokeWidth, ...(dashed ? { strokeDasharray: "6 4" } : {}) },
       markerEnd: { type: MarkerType.ArrowClosed, color, width: 14, height: 14 },
-      data: { edgeType: e.type || "custom", source: e.source || "inferred" },
+      data: { edgeType: e.type || "custom", source: e.source || "inferred", cascade: isCascade, verified: !!e.verified },
       labelStyle: {
-        fill: is10G ? "#f97316" : "var(--text-muted)",
+        fill: is10G ? "#f97316" : isCascade ? (e.verified ? "#818cf8" : "#a78bfa") : "var(--text-muted)",
         fontSize,
         fontFamily: "monospace",
-        fontWeight: is10G ? 700 : 400,
+        fontWeight: is10G || isCascade ? 700 : 400,
       },
       labelBgStyle: {
-        fill: is10G ? "rgba(249,115,22,0.12)" : "var(--bg-panel)",
+        fill: is10G ? "rgba(249,115,22,0.12)" : isCascade ? "rgba(99,102,241,0.12)" : "var(--bg-panel)",
         fillOpacity: 0.9,
-        stroke: is10G ? "#f9731640" : "transparent",
-        strokeWidth: is10G ? 1 : 0,
+        stroke: is10G ? "#f9731640" : isCascade ? "#6366f140" : "transparent",
+        strokeWidth: is10G || isCascade ? 1 : 0,
       },
       labelBgPadding: [6, 4],
       labelBgBorderRadius: 4,
@@ -906,8 +934,53 @@ function NetworkMapInner({ clientGroups, onDeviceSelect }) {
                     <span className="text-[9px] text-[var(--text-secondary)]">{item.label}</span>
                   </div>
                 ))}
+                <div className="pt-1 mt-1 border-t border-[var(--bg-border)] space-y-1">
+                  <div className="flex items-center gap-2">
+                    <div className="w-4 h-0.5 rounded" style={{ backgroundColor: "#6366f1" }} />
+                    <span className="text-[9px] text-[var(--text-secondary)]">Cascata verificata (LLDP+FDB)</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="w-4 h-0 border-t-2 border-dashed" style={{ borderColor: "#a78bfa" }} />
+                    <span className="text-[9px] text-[var(--text-secondary)]">Cascata probabile (solo LLDP)</span>
+                  </div>
+                </div>
               </div>
             </Panel>
+            {/* Catena switch (cascata) */}
+            {activeTopo?.switch_cascade?.length > 0 && (
+              <Panel position="top-right" className="!m-2">
+                <div className="bg-[var(--bg-panel)] border border-indigo-500/30 rounded-lg p-2.5 w-[260px] max-h-[300px] overflow-auto shadow-xl" data-testid="switch-cascade-panel">
+                  <p className="text-[9px] font-bold uppercase tracking-widest text-indigo-400 mb-2 flex items-center gap-1.5">
+                    <svg width="12" height="12" viewBox="0 0 24 24"><path d="M4 8h16M4 16h16M8 4v16M16 4v16" fill="none" stroke="#818cf8" strokeWidth="2" strokeLinecap="round" /></svg>
+                    Catena switch (cascata)
+                  </p>
+                  <div className="space-y-1.5">
+                    {activeTopo.switch_cascade.map((c) => (
+                      <div key={c.ip} className="flex items-start gap-2" data-testid={`cascade-row-${c.ip}`}>
+                        <span className="flex-shrink-0 w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-black text-white mt-0.5"
+                          style={{ background: "linear-gradient(135deg,#6366f1,#818cf8)" }}>
+                          {c.rank}°
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <p className="text-[11px] font-semibold text-[var(--text-primary)] truncate" title={`${c.name} (${c.ip})`}>{c.name}</p>
+                          <p className="text-[9px] font-mono text-[var(--text-muted)]">{c.ip}{c.endpoints ? ` · ${c.endpoints} MAC` : ""}</p>
+                          {c.uplink && (
+                            <p className="text-[8px] text-[var(--text-secondary)] mt-0.5 leading-tight">
+                              ↑ {c.uplink.is_gateway ? "Gateway" : c.uplink.to_name}
+                              {c.uplink.local_port ? ` · ${c.uplink.local_port}↔${c.uplink.remote_port || "?"}` : ""}
+                              {c.uplink.vlan != null ? ` · VLAN ${c.uplink.vlan}` : ""}
+                              <span className={`ml-1 font-bold ${c.uplink.verified ? "text-indigo-400" : "text-purple-300"}`}>
+                                {c.uplink.is_gateway ? "" : c.uplink.verified ? "✓ VERIF." : "~ prob."}
+                              </span>
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </Panel>
+            )}
             {/* Connect mode indicator */}
             {connectMode && (
               <Panel position="top-center" className="!m-2">

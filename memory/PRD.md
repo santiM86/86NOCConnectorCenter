@@ -54,6 +54,41 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-08-11 🔗 Cascata switch (ordine 1°/2°/3° + link switch↔switch) sulla mappa
+
+### Richiesta utente
+Per gli switch a cascata (daisy-chain): mostrarli in ordine (1°, 2°, 3°...) e quali
+sono collegati tra loro. Scelte: link+badge sulla mappa live E pannello lista; 1° =
+switch collegato al firewall/gateway; verificato(LLDP+FDB)=solido, probabile(solo
+LLDP)=tratteggiato.
+
+### Implementazione (backend Python + frontend, NESSUN rebuild agent Go)
+- **`topology_diagram.py::compute_switch_cascade`**: riusa build_topology_graph
+  (LLDP + verifica FDB + VLAN del link), ancora la cascata al gateway
+  (firewall/router in managed_devices), BFS multi-root → rank 1..N + livello +
+  uplink per switch (porte locali/remote, verified, vlan, is_gateway).
+- **`topology.py`**: nuovo `GET /api/network/switch-cascade/{client_id}`.
+  `get_network_topology` ora inietta `switch_cascade`, `cascade_rank` sui nodi e gli
+  edge switch↔switch (`_apply_cascade`), copiando porte/verified/vlan sugli edge
+  esistenti e RIMUOVENDO gli edge inferiti infra↔infra che contraddicono la cascata
+  (elimina la "stella" verso altri firewall).
+- **`NetworkMap.js`**: badge d'ordine "N°" sopra ogni switch (data-testid=cascade-badge-<ip>),
+  edge cascata stilizzati (verificato=solido indigo, probabile=tratteggiato viola) con
+  etichetta porte+VLAN, pannello "Catena switch (cascata)" top-right
+  (data-testid=switch-cascade-panel, righe cascade-row-<ip>), voci legenda.
+
+### Testing
+- Backend: verificato via chiamata diretta → 1° SWITCH01→FW, 2° SWITCH03→SWITCH01
+  (Gi1/0/24↔Gi1/0/1 VLAN1 VERIF), 3° SWITCH02→SWITCH03 (VERIF); edge con porte+vlan;
+  nessun edge inferito fuorviante residuo.
+- Frontend E2E (iteration_108): 6/7 → difetto etichette porte FIXATO; screenshot di
+  conferma OK (badge, pannello, etichette con porte/VLAN, legenda, star rimossa).
+
+### ⚠️ Dati DEMO in preview
+- Scenario cascata seedato: `backend/seed_switch_cascade.py` (FW FORTIGATE 10.10.41.1 +
+  SWITCH01/03/02 + LLDP + FDB) sul client 86BIT_Office. In PROD la cascata si calcola
+  automaticamente dai dati LLDP+FDB reali già raccolti. Per PROD: Save to GitHub + redeploy.
+
 ## 2026-08-11 ✅ VERIFICA disinstallazione remota agent dalla console (8/8 PASS)
 
 ### Richiesta utente
