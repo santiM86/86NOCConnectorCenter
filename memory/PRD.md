@@ -54,6 +54,17 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-08-11 🧹 iLO rimosso da Panoramica + header (solo nella tab dedicata "iLO")
+
+Su richiesta utente, le info iLO non appaiono più nella Panoramica né nel widget
+header "Hardware iLO — N": ora sono SOLO nella tab dedicata "iLO".
+- `ClientOverviewPage.js`: rimosso `<IloHealthPanel>` da OverviewTab, rimosso il badge
+  header (client-hw-health-badge) + funzione IloHealthPanel + import HealthBadge +
+  state/fetch `hwHealth` (endpoint hardware-health non più chiamato dalla Panoramica).
+- Verificato via screenshot: pannello e widget assenti, tab "iLO (1)" attiva.
+- Nota aperta: la tab "Server" mostra ancora la card iLO (in attesa conferma utente se
+  rimuoverla anche lì).
+
 ## 2026-08-11 🔗 Cascata switch (ordine 1°/2°/3° + link switch↔switch) sulla mappa
 
 ### Richiesta utente

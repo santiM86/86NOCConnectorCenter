@@ -27,7 +27,6 @@ import { canOpenWebConsole, defaultWebPort } from "@/components/WebConsole";
 import { useWebConsoleTabs } from "@/components/WebConsoleTabs";
 import ILoLiveMetrics from "@/components/ILoLiveMetrics";
 import IloServerPanel from "@/components/IloServerPanel";
-import HealthBadge from "@/components/HealthBadge";
 import { DeviceEditModal } from "@/components/DeviceEditModal";
 import ConnectivityDialog from "@/components/ConnectivityDialog";
 import DiscoveryPage from "./DiscoveryPage";
@@ -68,7 +67,6 @@ export default function ClientOverviewPage() {
   const [backupSummary, setBackupSummary] = useState({ m365: null, vm: null });
   const [connector, setConnector] = useState(null);
   const [iloHealth, setIloHealth] = useState([]);
-  const [hwHealth, setHwHealth] = useState(null);
   // v3.8.41 watchdog: stato lan-scan per banner "Scanner inattivo"
   const [scanHealth, setScanHealth] = useState({ connectors: [], any_stale: false });
   // v4.15.x: diagnosi auto delle cause di offline (rileva v3 zombie, master morto, ecc.)
@@ -164,10 +162,6 @@ export default function ClientOverviewPage() {
     try {
       const iloRes = await axios.get(`${API}/clients/${clientId}/ilo-health`);
       setIloHealth(iloRes.data || []);
-    } catch {}
-    try {
-      const hwRes = await axios.get(`${API}/tv/clients/${clientId}/hardware-health`);
-      setHwHealth(hwRes.data || null);
     } catch {}
     setLoading(false);
   }, [clientId]);
@@ -432,18 +426,6 @@ export default function ClientOverviewPage() {
           <h1 className="font-heading text-xl font-bold text-[var(--text-primary)] tracking-tight">{client.name}</h1>
           <p className="text-[var(--text-muted)] text-xs mt-0.5">Monitoraggio completo rete cliente</p>
         </div>
-        {hwHealth?.subsystems && hwHealth.ilo_server_count > 0 && (
-          <div
-            className="hidden md:flex flex-col items-end gap-1 px-3 py-1.5 rounded-md border border-[var(--bg-border)] bg-[var(--bg-panel)]/40"
-            data-testid="client-hw-health-badge"
-            title={`Health aggregata di ${hwHealth.ilo_server_count} server iLO`}
-          >
-            <span className="text-[8px] font-bold uppercase tracking-[0.15em] text-cyan-400/60">
-              Hardware iLO · {hwHealth.ilo_server_count}
-            </span>
-            <HealthBadge subsystems={hwHealth.subsystems} size="sm" testId="client-hw-badge" />
-          </div>
-        )}
         <button
           onClick={downloadReport}
           disabled={reportGenerating}
@@ -714,8 +696,7 @@ function OverviewTab({ devices, wanTargets, alerts, connector, printers, backups
         </SafeBoundary>
       )}
 
-      {/* iLO Hardware Health Panel (only shown when we have iLO data) */}
-      {iloHealth && iloHealth.length > 0 && <IloHealthPanel iloHealth={iloHealth} />}
+      {/* iLO Hardware Health Panel spostato nella tab dedicata "iLO" */}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
       {/* Left column: Infrastruttura + Endpoints */}
@@ -859,27 +840,6 @@ function OverviewTab({ devices, wanTargets, alerts, connector, printers, backups
 }
 
 /* ==================== ILO HEALTH PANEL ==================== */
-function IloHealthPanel({ iloHealth }) {
-  const healthColor = (h) => ({ ok: "#34C759", warning: "#FFCC00", critical: "#FF3B30" }[(h || "").toLowerCase()] || "#64748B");
-  // v2026-02-14: nel pannello Panoramica mostriamo SOLO i server con dati
-  // Redfish live (BIOS/iLO/serial popolati). I server senza credenziali
-  // sono visibili nella tab dedicata "Server" (sezione gialla "da configurare"),
-  // ma qui rovinerebbero la vista mostrando 10 card vuote con "N/D" ovunque.
-  const real = (iloHealth || []).filter(s => s.has_redfish_data || s.server_model || s.bios_version);
-  if (real.length === 0) return null;
-  return (
-    <div className="noc-panel p-4" data-testid="ilo-health-panel">
-      <div className="flex items-center gap-2 mb-3">
-        <Monitor size={14} weight="bold" className="text-cyan-400" />
-        <h3 className="text-[10px] font-bold uppercase tracking-[0.15em] text-cyan-400">Hardware iLO (Redfish) — {real.length} server</h3>
-      </div>
-      <div className="space-y-3">
-        {real.map((s, idx) => <IloServerCard key={idx} s={s} healthColor={healthColor} />)}
-      </div>
-    </div>
-  );
-}
-
 /* ==================== ILO TAB (dedicata, vista premium) ====================
    v2026-08-11: tab dedicata "iLO" che mostra SOLO i server fisici con dati
    Redfish live, ognuno con la vista premium IloServerPanel (stato power +
