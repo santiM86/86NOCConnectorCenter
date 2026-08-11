@@ -292,6 +292,53 @@ def _safe_iso(value) -> Optional[str]:
     return str(value)
 
 
+async def find_physical_uplinks(client_id: Optional[str], device_ip: str,
+                                device_mac: Optional[str]) -> list:
+    """Incrocia il MAC del device con la MAC-table (FDB) degli ALTRI switch per
+    ricostruire il collegamento fisico: se il MAC di questo device compare sulla
+    porta X di un altro switch, quel device e' (direttamente o via chain)
+    raggiungibile da quella porta. Euristica: una porta con pochi MAC (<=2) e'
+    quasi certamente un link punto-punto diretto; molti MAC = trunk/uplink verso
+    il resto della rete. Ritorna la lista ordinata (link piu' probabile prima)."""
+    if not device_mac:
+        return []
+    mac = device_mac.upper().replace("-", ":").strip()
+    if len(mac.replace(":", "")) != 12:
+        return []
+    base = {"client_id": client_id} if client_id else {}
+    q = {**base, "mac": mac, "source": "agent_fdb",
+         "switch_ip": {"$nin": ["", None, device_ip]}}
+    entries = await db.discovered_endpoints.find(
+        q, {"_id": 0, "switch_ip": 1, "port": 1, "vlan": 1}).to_list(50)
+    results = []
+    seen = set()
+    for e in entries:
+        sw = e.get("switch_ip")
+        port = e.get("port")
+        if not sw or not port or (sw, port) in seen:
+            continue
+        seen.add((sw, port))
+        macs_on_port = await db.discovered_endpoints.count_documents(
+            {**base, "switch_ip": sw, "port": port, "source": "agent_fdb"})
+        sp = await db.switch_ports.find_one(
+            {**base, "local_ip": sw, "idx": port}, {"_id": 0, "name": 1})
+        nb = await db.managed_devices.find_one(
+            {**base, "ip": sw}, {"_id": 0, "hostname": 1, "name": 1, "device_name": 1})
+        results.append({
+            "neighbor_ip": sw,
+            "neighbor_name": (nb or {}).get("hostname") or (nb or {}).get("name")
+                             or (nb or {}).get("device_name") or sw,
+            "port": port,
+            "port_name": (sp or {}).get("name"),
+            "vlan": e.get("vlan") or None,
+            "macs_on_port": macs_on_port,
+            "direct": macs_on_port <= 2,
+        })
+    results.sort(key=lambda r: r["macs_on_port"])
+    return results
+
+
+
 async def build_info_card(device_ip: str, client_id: Optional[str] = None) -> Dict[str, Any]:
     """Aggrega info da tutte le sorgenti disponibili per device_ip.
 
@@ -498,6 +545,9 @@ async def build_info_card(device_ip: str, client_id: Optional[str] = None) -> Di
         (profile_doc or {}).get("family"),
     )
 
+    # Topologia fisica: incrocia il MAC del device con la FDB degli altri switch
+    physical_links = await find_physical_uplinks(client_id, device_ip, primary_mac)
+
     # Uptime calculation
     uptime_days = None
     sys_uptime = poll.get("sys_uptime")
@@ -509,6 +559,7 @@ async def build_info_card(device_ip: str, client_id: Optional[str] = None) -> Di
 
     return {
         "device_ip": device_ip,
+        "physical_links": physical_links,
         "client": {
             "id": client_id,
             "name": (client or {}).get("name") if client else None,

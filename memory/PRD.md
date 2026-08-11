@@ -54,6 +54,42 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-08-10 🗺️ Topologia fisica: incrocio MAC device ↔ FDB switch vicini
+
+### Richiesta utente
+Una volta noto il MAC dello switch/device via SNMP, incrociarlo con la MAC-table
+(FDB) degli altri switch per capire da quale porta e' collegato (mappatura
+topologia fisica automatica).
+
+### Implementazione (backend-only + card)
+- **`device_info_card.py::find_physical_uplinks(client_id, device_ip, mac)`**:
+  cerca in `discovered_endpoints` (source `agent_fdb`) le voci con lo stesso MAC
+  su switch DIVERSI dal device; per ogni match risolve nome porta (join
+  `switch_ports` local_ip+idx==port) e nome vicino (`managed_devices`). Conta i
+  MAC sulla porta del vicino: <=2 = LINK DIRETTO (punto-punto), altrimenti
+  VIA TRUNK/uplink. Ordina per pochi-MAC prima (link piu' probabile).
+- Aggiunto `physical_links` alla risposta di `build_info_card`.
+- **`DeviceInfoCard.js`**: nuova Section "Topologia fisica" che elenca
+  vicino + porta + VLAN + badge LINK DIRETTO / VIA TRUNK.
+
+### Sinergia col MAC via SNMP
+Ora che il MAC dello switch si legge via SNMP (dot1dBaseBridgeAddress), il suo
+uplink si ricostruisce anche quando non c'e' ARP: il base-MAC compare sulla
+porta del neighbor che lo serve.
+
+### Testing
+- Test preview con FDB sintetica: porta 52 (1 MAC) -> CORE-SW-01
+  Ten-Gi1/0/52 DIRETTO; porta 1 (6 MAC) -> DIST-SW-02 VIA TRUNK; diretto
+  ordinato per primo. PASS. Backend syntax OK, frontend compila.
+
+### Deploy
+Preview attivo; per PROD Save to GitHub + redeploy. La qualita' del dato
+dipende dagli agent che inviano la FDB (>= v4.27.0) + dal MAC noto del device.
+
+---
+
+
+
 ## 2026-08-10 🔌 MAC dello switch via SNMP (dot1dBaseBridgeAddress) + fix agent OctetString
 
 ### Richiesta utente
