@@ -1153,6 +1153,184 @@ Write-Host " Installazione 86NocAgent $Version COMPLETATA" -ForegroundColor Gree
 Write-Host "=========================================================" -ForegroundColor Green
 Write-Host ""
 # ------------------------------------------------------------------- #
+# 9.4  Pulizia residui LEGACY 86NocConnector (vecchio connector PowerShell)
+# ------------------------------------------------------------------- #
+# I server migrati all'agent Go possono avere ancora artefatti del vecchio
+# connector PowerShell "86NocConnector". In particolare lo shortcut di Startup
+# "ARGUS Connector Tray.lnk" che lancia wscript.exe su un tray_launcher.vbs
+# ormai ASSENTE -> popup Windows Script Host "Impossibile trovare il file di
+# script ...\86NocConnector\src\tray_launcher.vbs" ad ogni logon. Rimuoviamo i
+# residui cosi' l'errore sparisce e resta solo l'agent Go + la sua tray.
+Write-Step "Pulizia residui legacy 86NocConnector"
+try {
+    $legacyStartup = Join-Path ([Environment]::GetFolderPath("CommonStartup")) "ARGUS Connector Tray.lnk"
+    if (Test-Path $legacyStartup) {
+        Remove-Item $legacyStartup -Force -ErrorAction SilentlyContinue
+        Write-Ok "Rimosso shortcut Startup legacy (causa dell'errore WSH tray_launcher.vbs)"
+    }
+    # Cartella Menu Start del connector legacy (nome SENZA spazio: '86BIT ArgusCenter')
+    $legacySm = Join-Path ([Environment]::GetFolderPath("CommonStartMenu")) "Programs\86BIT ArgusCenter"
+    if (Test-Path $legacySm) {
+        Remove-Item $legacySm -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Ok "Rimossa cartella Menu Start legacy '86BIT ArgusCenter'"
+    }
+    # Task Scheduler dell'updater legacy (altrimenti potrebbe ricreare lo shortcut)
+    & schtasks.exe /Delete /TN "\86BIT\ArgusConnectorUpdater" /F 2>$null | Out-Null
+    # Servizio del connector legacy (se ancora presente): lo fermiamo e rimuoviamo
+    $legacySvc = Get-Service -Name "86NocConnectorService" -ErrorAction SilentlyContinue
+    if ($legacySvc) {
+        Stop-Service -Name "86NocConnectorService" -Force -ErrorAction SilentlyContinue
+        & cmd.exe /c "sc.exe delete `"86NocConnectorService`"" 2>$null | Out-Null
+        Write-Ok "Servizio legacy 86NocConnectorService rimosso"
+    }
+    Remove-ItemProperty -Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run' -Name '86NocConnector' -Force -ErrorAction SilentlyContinue
+} catch {
+    Write-Warn2 "Pulizia legacy (non bloccante): $($_.Exception.Message)"
+}
+
+# ------------------------------------------------------------------- #
+# 9.45 Scrittura uninstall.ps1 in InstallDir (+ Programmi e funzionalita')
+# ------------------------------------------------------------------- #
+# L'installazione da TOKEN/console non scriveva uninstall.ps1 in InstallDir:
+# di conseguenza lo shortcut "Disinstalla" nel Menu Start veniva SALTATO (su
+# server headless, dove non si crea nemmeno "Agent Status", la cartella Menu
+# Start restava VUOTA). Scriviamo qui lo stesso uninstall.ps1 dell'installer GUI.
+Write-Step "Scrittura uninstall.ps1 + registrazione Programmi e funzionalita'"
+try {
+    $uninstallBody = @'
+# 86BIT Argus Connector - disinstallazione completa.
+# Rimuove servizi, binari, config, autostart, shortcut, registry entry.
+$ErrorActionPreference = 'SilentlyContinue'
+
+# Hide console
+try {
+    $sig = @"
+[DllImport("user32.dll")] public static extern bool ShowWindow(System.IntPtr hWnd, int nCmdShow);
+[DllImport("kernel32.dll")] public static extern System.IntPtr GetConsoleWindow();
+"@
+    $w = Add-Type -MemberDefinition $sig -Name 'UninstHider' -Namespace 'NocAgent' -PassThru
+    $h = $w::GetConsoleWindow()
+    if ($h -ne [System.IntPtr]::Zero) { [void]$w::ShowWindow($h, 0) }
+} catch { }
+
+Add-Type -AssemblyName System.Windows.Forms
+
+# Auto-elevation
+$identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+$principal = New-Object System.Security.Principal.WindowsPrincipal($identity)
+if (-not $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = 'powershell.exe'
+    $psi.Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$($MyInvocation.MyCommand.Path)`""
+    $psi.Verb = 'runas'
+    $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+    $psi.UseShellExecute = $true
+    try { [System.Diagnostics.Process]::Start($psi) | Out-Null } catch { }
+    exit 0
+}
+
+$confirm = [System.Windows.Forms.MessageBox]::Show(
+    "Procedere con la disinstallazione completa di 86BIT Argus Connector?`n`nVerranno rimossi servizi, binari, configurazione e log.",
+    '86BIT Argus - Disinstallazione',
+    [System.Windows.Forms.MessageBoxButtons]::YesNo,
+    [System.Windows.Forms.MessageBoxIcon]::Question)
+if ($confirm -ne [System.Windows.Forms.DialogResult]::Yes) { exit 0 }
+
+$installDir = 'C:\Program Files\86NocAgent'
+$dataDir    = 'C:\ProgramData\86NocAgent'
+$startMenu  = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\86BIT Argus Center'
+$logFile    = Join-Path $env:TEMP '86NocAgent-uninstall.log'
+"$(Get-Date -Format o) - uninstall start" | Out-File -FilePath $logFile -Append
+
+function Step($msg) { "$(Get-Date -Format o) - $msg" | Out-File -FilePath $logFile -Append }
+
+# 1) Stop + delete servizi
+Step 'stop services'
+foreach ($s in @('86NocWatchdog','86NocAgent')) {
+    Stop-Service -Name $s -Force -ErrorAction SilentlyContinue
+}
+Start-Sleep -Seconds 1
+foreach ($s in @('86NocWatchdog','86NocAgent')) {
+    & cmd.exe /c "sc.exe delete `"$s`"" | Out-File -FilePath $logFile -Append
+}
+
+# 2) Kill processi Connector UI / tray
+Step 'kill connector UI processes'
+Get-Process -Name 'nocagent-ui','argus-tray','ArgusDesktop' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+
+# 3) Rimuovi autostart HKLM Run + Scheduled Task
+Step 'remove HKLM Run autostart'
+Remove-ItemProperty -Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run' -Name '86BITArgusTray' -Force -ErrorAction SilentlyContinue
+Step 'remove scheduled task 86BIT Argus Tray'
+Unregister-ScheduledTask -TaskName '86BIT Argus Tray' -Confirm:$false -ErrorAction SilentlyContinue
+
+# 4) Rimuovi shortcut Start Menu (cartella corrente + legacy non unificate)
+Step 'remove start menu folder'
+$startMenuAll = @(
+    $startMenu,
+    (Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\86BIT Argus Connector'),
+    (Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\86BIT ArgusCenter'),
+    (Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\86BIT Argus')
+)
+foreach ($sm in ($startMenuAll | Select-Object -Unique)) {
+    if (Test-Path $sm) {
+        Remove-Item -Path $sm -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+# Shortcut Startup legacy del vecchio connector PowerShell
+Remove-Item -Path (Join-Path ([Environment]::GetFolderPath('CommonStartup')) 'ARGUS Connector Tray.lnk') -Force -ErrorAction SilentlyContinue
+
+# 5) Rimuovi entry Programmi e funzionalita'
+Step 'remove Add/Remove Programs registry'
+Remove-Item -Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\86BITArgusAgent' -Recurse -Force -ErrorAction SilentlyContinue
+
+# 6) Rimuovi cartelle binari e dati (async: uninstall.ps1 e' DENTRO installDir)
+Step 'remove binaries directory'
+$cleanupCmd = @"
+Start-Sleep -Seconds 2
+Remove-Item -Path '$installDir' -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -Path '$dataDir' -Recurse -Force -ErrorAction SilentlyContinue
+"@
+$cleanupPath = Join-Path $env:TEMP '86noc-finalcleanup.ps1'
+Set-Content -Path $cleanupPath -Value $cleanupCmd -Encoding UTF8
+Start-Process -FilePath 'powershell.exe' -ArgumentList @(
+    '-NoProfile','-WindowStyle','Hidden','-ExecutionPolicy','Bypass','-File',$cleanupPath
+) -WindowStyle Hidden
+
+if ([System.Environment]::UserInteractive) {
+    Add-Type -AssemblyName System.Windows.Forms -ErrorAction SilentlyContinue
+    [System.Windows.Forms.MessageBox]::Show(
+        "Disinstallazione completata.`n`nServizi, binari, configurazione, autostart e voci di registro sono stati rimossi.`n`nLog: $logFile",
+        '86BIT Argus - Disinstallazione completata',
+        [System.Windows.Forms.MessageBoxButtons]::OK,
+        [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
+} else {
+    Step 'completed (non-interactive, no MessageBox)'
+}
+'@
+    Set-Content -Path (Join-Path $InstallDir "uninstall.ps1") -Value $uninstallBody -Encoding UTF8
+    Write-Ok "uninstall.ps1 scritto in $InstallDir"
+    try {
+        $uninstKey = "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\86BITArgusAgent"
+        if (-not (Test-Path $uninstKey)) { New-Item -Path $uninstKey -Force | Out-Null }
+        $uninstCmd = "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$InstallDir\uninstall.ps1`""
+        New-ItemProperty -Path $uninstKey -Name "DisplayName"     -Value "86BIT Argus Connector" -PropertyType String -Force | Out-Null
+        New-ItemProperty -Path $uninstKey -Name "UninstallString" -Value $uninstCmd -PropertyType String -Force | Out-Null
+        New-ItemProperty -Path $uninstKey -Name "DisplayVersion"  -Value "$Version" -PropertyType String -Force | Out-Null
+        New-ItemProperty -Path $uninstKey -Name "Publisher"       -Value "86BIT" -PropertyType String -Force | Out-Null
+        New-ItemProperty -Path $uninstKey -Name "InstallLocation" -Value "$InstallDir" -PropertyType String -Force | Out-Null
+        New-ItemProperty -Path $uninstKey -Name "NoModify"        -Value 1 -PropertyType DWord -Force | Out-Null
+        New-ItemProperty -Path $uninstKey -Name "NoRepair"        -Value 1 -PropertyType DWord -Force | Out-Null
+        Write-Ok "Registrato in Programmi e funzionalita'"
+    } catch {
+        Write-Warn2 "Registrazione ARP fallita (non bloccante): $($_.Exception.Message)"
+    }
+} catch {
+    Write-Warn2 "uninstall.ps1 non scritto (non bloccante): $($_.Exception.Message)"
+}
+
+
+# ------------------------------------------------------------------- #
 # 9.5  Cartella Menu Start "86BIT Argus Center" (Agent Status + Disinstalla)
 # ------------------------------------------------------------------- #
 # Crea nel Menu Start una cartella coerente con l'installer GUI cosi' che
@@ -1206,6 +1384,21 @@ try {
     } else {
         Write-Warn2 "uninstall.ps1 non presente in $InstallDir - shortcut Disinstalla saltato"
     }
+    # Shortcut "Apri NOC Center": collegamento internet al web console. Garantisce
+    # SEMPRE una voce ARGUS visibile nel Menu Start, anche sui server headless dove
+    # non si crea "Agent Status". Usa il browser di default (file .url).
+    try {
+        $consoleUrl = $backendHttp
+        if ($consoleUrl -and $consoleUrl -match '^https?://') {
+            $urlPath = Join-Path $startMenu "Apri NOC Center.url"
+            $urlBody = "[InternetShortcut]`r`nURL=$consoleUrl`r`nIconIndex=0"
+            Set-Content -Path $urlPath -Value $urlBody -Encoding ASCII -Force
+            Write-Ok "shortcut '86BIT Argus Center\Apri NOC Center' -> $consoleUrl"
+        }
+    } catch {
+        Write-Warn2 "shortcut 'Apri NOC Center' non creato (non bloccante): $($_.Exception.Message)"
+    }
+
     # Refresh icon cache cosi' gli shortcut mostrano subito l'icona corretta
     try { Start-Process -WindowStyle Hidden -FilePath "ie4uinit.exe" -ArgumentList "-show" -ErrorAction SilentlyContinue } catch {}
 } catch {

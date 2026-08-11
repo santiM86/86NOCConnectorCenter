@@ -54,6 +54,58 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-08-11 🎯 FIX REALE errore WSH + Menu Start vuoto — installer AGENT GO (token)
+
+### Chiarimento utente (fondamentale)
+"Facciamo SEMPRE installazione da TOKEN" → si usa l'**agent Go**
+(`install-noc-agent.ps1`, `C:\Program Files\86NocAgent`, `argus-tray.exe` +
+scheduled task "86BIT Argus Tray"), NON il connector legacy PowerShell
+`86NocConnector`. Quindi il fix precedente (self-heal in update_check.ps1 del
+connector legacy) è OFF-TARGET per la loro flotta (resta come rete di sicurezza
+per eventuali macchine ancora legacy, non dannoso).
+
+### Cause reali sui server installati da token
+1. **Popup WSH** "Impossibile trovare ...\86NocConnector\src\tray_launcher.vbs":
+   RESIDUO di una vecchia installazione del connector legacy. Resta lo shortcut
+   di Startup (All Users) `ARGUS Connector Tray.lnk` che lancia wscript.exe sul
+   `.vbs` ormai inesistente. `install-noc-agent.ps1` NON lo rimuoveva.
+2. **Menu Start vuoto sui server**: su server headless l'installer NON crea
+   "Agent Status" e crea "Disinstalla" solo se `uninstall.ps1` è presente in
+   InstallDir — ma l'installer da token NON scriveva mai `uninstall.ps1` →
+   cartella "86BIT Argus Center" vuota.
+
+### Fix (`noc-agent/build/install-noc-agent.ps1`)
+- **9.4 Pulizia residui legacy 86NocConnector**: rimuove lo shortcut Startup
+  `ARGUS Connector Tray.lnk`, la cartella Menu Start legacy `86BIT ArgusCenter`
+  (senza spazio), il task `\86BIT\ArgusConnectorUpdater`, il servizio
+  `86NocConnectorService` e la Run key → l'errore WSH sparisce.
+- **9.45 Scrittura `uninstall.ps1`** in InstallDir (stesso dell'installer GUI) +
+  registrazione in "Programmi e funzionalità" (HKLM Uninstall\86BITArgusAgent).
+- **9.5 shortcut "Apri NOC Center"** (file `.url` → web console) SEMPRE creato,
+  così anche i server headless hanno una voce ARGUS visibile nel Menu Start; ora
+  compare anche "Disinstalla" (uninstall.ps1 esiste).
+
+### Validazione
+- Solo statica (script Windows-only, no pwsh in ambiente Linux): here-string
+  bilanciati (@'/'@, @"/"@), try/catch bilanciati, `uninstall.ps1` embedded
+  completo (109 righe, 14/14 graffe, stop servizi + rimozione task + rimozione
+  shortcut legacy). NON runtime-testabile qui.
+
+### Deploy (IMPORTANTE)
+`install-noc-agent.ps1` è servito da GitHub Release (proxy Center). Per applicare:
+1. Save to GitHub → pubblicare una NUOVA release agent (CI) con lo script
+   aggiornato; il comando token della console la servirà.
+2. Sui server colpiti: **ri-eseguire il comando token** (idempotente) → rimuove
+   il residuo legacy (stop errore WSH), scrive uninstall.ps1, aggiunge
+   "Apri NOC Center" + "Disinstalla" al Menu Start. La tray Go resta invariata.
+3. Sollievo immediato manuale (1 server): eliminare
+   `C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp\ARGUS Connector Tray.lnk`.
+Nota: gli update OTA (solo binari) NON rieseguono questa logica → serve il
+ri-lancio del token installer sui server già installati.
+
+---
+
+
 ## 2026-08-11 🩺 SELF-HEAL tray + Menu Start (errore WSH tray_launcher.vbs mancante)
 
 ### Problema utente (server Windows in produzione)
