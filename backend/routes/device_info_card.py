@@ -299,6 +299,83 @@ def _safe_iso(value) -> Optional[str]:
     return str(value)
 
 
+async def find_physical_uplinks(client_id: Optional[str], device_ip: str,
+                                device_mac: Optional[str]) -> list:
+    """Incrocia il MAC del device con la MAC-table (FDB) degli ALTRI switch per
+    ricostruire il collegamento fisico: se il MAC di questo device compare sulla
+    porta X di un altro switch, quel device e' (direttamente o via chain)
+    raggiungibile da quella porta. Euristica: una porta con pochi MAC (<=2) e'
+    quasi certamente un link punto-punto diretto; molti MAC = trunk/uplink verso
+    il resto della rete. Ritorna la lista ordinata (link piu' probabile prima)."""
+    if not device_mac:
+        return []
+    mac = device_mac.upper().replace("-", ":").strip()
+    if len(mac.replace(":", "")) != 12:
+        return []
+    base = {"client_id": client_id} if client_id else {}
+    q = {**base, "mac": mac, "source": "agent_fdb",
+         "switch_ip": {"$nin": ["", None, device_ip]}}
+    entries = await db.discovered_endpoints.find(
+        q, {"_id": 0, "switch_ip": 1, "port": 1, "vlan": 1}).to_list(50)
+
+    def _hex12(v):
+        s = str(v or "").strip()
+        if s.lower().startswith("hex:"):
+            s = s[4:]
+        if s.lower().startswith("0x"):
+            s = s[2:]
+        h = re.sub(r"[^0-9a-fA-F]", "", s).lower()
+        return h if len(h) == 12 else ""
+
+    mac_hex = _hex12(mac)
+    results = []
+    seen = set()
+    for e in entries:
+        sw = e.get("switch_ip")
+        port = e.get("port")
+        if not sw or not port or (sw, port) in seen:
+            continue
+        seen.add((sw, port))
+        macs_on_port = await db.discovered_endpoints.count_documents(
+            {**base, "switch_ip": sw, "port": port, "source": "agent_fdb"})
+        sp = await db.switch_ports.find_one(
+            {**base, "local_ip": sw, "idx": port}, {"_id": 0, "name": 1})
+        nb = await db.managed_devices.find_one(
+            {**base, "ip": sw}, {"_id": 0, "hostname": 1, "name": 1, "device_name": 1})
+        # Doppia evidenza LLDP: lo switch vicino (sw) ha un vicino LLDP il cui
+        # chassis-id coincide col MAC del device? Allora il link e' confermato
+        # (LLDP + MAC-table concordano) -> verified=100%.
+        verified = False
+        lldp_local_port = None
+        lldp_remote_port = None
+        async for ld in db.lldp_neighbors.find(
+            {**base, "local_ip": sw},
+            {"_id": 0, "remote_chassis_id": 1, "local_port_id": 1,
+             "local_port_desc": 1, "remote_port_id": 1, "remote_sys_name": 1}):
+            if mac_hex and _hex12(ld.get("remote_chassis_id")) == mac_hex:
+                verified = True
+                lldp_local_port = ld.get("local_port_desc") or ld.get("local_port_id")
+                lldp_remote_port = ld.get("remote_port_id")
+                break
+        results.append({
+            "neighbor_ip": sw,
+            "neighbor_name": (nb or {}).get("hostname") or (nb or {}).get("name")
+                             or (nb or {}).get("device_name") or sw,
+            "port": port,
+            "port_name": (sp or {}).get("name"),
+            "vlan": e.get("vlan") or None,
+            "macs_on_port": macs_on_port,
+            "direct": macs_on_port <= 2,
+            "verified": verified,
+            "lldp_local_port": lldp_local_port,
+            "lldp_remote_port": lldp_remote_port,
+        })
+    # Ordina: prima i VERIFICATI, poi per pochi MAC (link piu' probabile)
+    results.sort(key=lambda r: (not r["verified"], r["macs_on_port"]))
+    return results
+
+
+
 async def build_info_card(device_ip: str, client_id: Optional[str] = None) -> Dict[str, Any]:
     """Aggrega info da tutte le sorgenti disponibili per device_ip.
 
@@ -471,6 +548,32 @@ async def build_info_card(device_ip: str, client_id: Optional[str] = None) -> Di
             primary_mac = arp_doc["mac"]
             mac_source = "arp-cache"
             arp_source_ip = arp_doc.get("source_device_ip")
+    # Fallback: MAC scoperto dall'agent v4 (scan ARP/mDNS) e salvato in
+    # discovered_endpoints con chiave (client_id, ip). Copre gli switch/host L3
+    # raggiungibili in SNMP il cui MAC non e' esposto via SNMP ma e' visibile
+    # nella tabella ARP dell'agent del segmento (caso HPE Comware su IP proprio).
+    if not primary_mac:
+        ep = await db.discovered_endpoints.find_one(
+            _q({"ip": device_ip, "mac": {"$exists": True, "$nin": [None, ""]}}),
+            {"_id": 0, "mac": 1, "last_seen_subnet": 1, "last_seen_via": 1},
+            sort=[("last_seen_at", -1)],
+        )
+        if ep and ep.get("mac"):
+            primary_mac = ep["mac"]
+            mac_source = "arp-scan"
+            arp_source_ip = ep.get("last_seen_subnet") or ep.get("last_seen_via")
+    # Fallback finale: mappa IP->MAC dello scan di rete del cliente
+    if not primary_mac:
+        nd = await db.network_discovery.find_one(
+            _q({}), {"_id": 0, "device_macs": 1}, sort=[("scanned_at", -1)])
+        for dm in (nd or {}).get("device_macs", []) or []:
+            if isinstance(dm, dict) and dm.get("ip") == device_ip:
+                _m = dm.get("macs") or dm.get("mac")
+                _m = _m[0] if isinstance(_m, list) and _m else _m
+                if _m:
+                    primary_mac = _m
+                    mac_source = "net-scan"
+                break
 
     device_type = _first_not_none(
         poll.get("device_class"),
@@ -478,6 +581,9 @@ async def build_info_card(device_ip: str, client_id: Optional[str] = None) -> Di
         cmdb.get("device_type"),
         (profile_doc or {}).get("family"),
     )
+
+    # Topologia fisica: incrocia il MAC del device con la FDB degli altri switch
+    physical_links = await find_physical_uplinks(client_id, device_ip, primary_mac)
 
     # Uptime calculation
     uptime_days = None
@@ -588,6 +694,7 @@ async def build_info_card(device_ip: str, client_id: Optional[str] = None) -> Di
 
     return {
         "device_ip": device_ip,
+        "physical_links": physical_links,
         "client": {
             "id": client_id,
             "name": (client or {}).get("name") if client else None,

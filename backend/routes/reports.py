@@ -29,6 +29,8 @@ from reportlab.platypus import (
 from reportlab.lib.utils import ImageReader
 from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT
 
+from routes.topology_diagram import build_topology_graph, render_topology_png
+
 DEFAULT_BRAND = "86BIT NOC"
 ALLOWED_LOGO_MIME = {"image/png", "image/jpeg", "image/jpg", "image/webp"}
 MAX_LOGO_BYTES = 1024 * 1024  # 1 MB
@@ -503,6 +505,40 @@ async def generate_client_report(
             "attivo e SNMP accessibile per popolare la topologia.",
             styles["BodyText2"]))
 
+    # ===== SEZIONE — DIAGRAMMA DI RETE (auto-generato da LLDP + FDB) =====
+    try:
+        _graph = await build_topology_graph(client_id)
+        if _graph.get("switches"):
+            _logo_bytes = None
+            if branding.get("logo_b64"):
+                try:
+                    _logo_bytes = base64.b64decode(branding["logo_b64"])
+                except Exception:
+                    _logo_bytes = None
+            _png = render_topology_png(_graph, brand_name=brand_name,
+                                       logo_bytes=_logo_bytes, client_name=client_name)
+            _reader = ImageReader(io.BytesIO(_png))
+            _pw, _ph = _reader.getSize()
+            _max_w = 26 * cm  # landscape-ish, si adatta alla pagina A4
+            _draw_w = min(_max_w, _pw)
+            _draw_h = _draw_w * (_ph / _pw) if _pw else _draw_w
+            _max_h = 16 * cm
+            if _draw_h > _max_h:
+                _draw_h = _max_h
+                _draw_w = _draw_h * (_pw / _ph) if _ph else _draw_h
+            story.append(PageBreak())
+            story.append(Paragraph("Diagramma Fisico di Rete", styles["SectionHeader"]))
+            _nv = sum(1 for e in _graph.get("edges", []) if e.get("verified"))
+            story.append(Paragraph(
+                f"Backbone ricostruito automaticamente da {len(_graph['switches'])} apparati e "
+                f"{len(_graph.get('edges', []))} collegamenti LLDP ({_nv} verificati anche via MAC-table).",
+                styles["BodyText2"]))
+            story.append(Spacer(1, 4 * mm))
+            story.append(Image(io.BytesIO(_png), width=_draw_w, height=_draw_h))
+    except Exception as _e:
+        story.append(Paragraph(
+            f"Diagramma di rete non disponibile ({str(_e)[:80]}).", styles["BodyText2"]))
+
     # ===== SEZIONE — SLA / ALERT / MODIFICHE =====
     story.append(PageBreak())
     story.append(Paragraph("SLA per Dispositivo", styles["SectionHeader"]))
@@ -585,6 +621,35 @@ async def list_available_reports(current_user: dict = Depends(get_current_user))
             "device_count": dev_count,
         })
     return result
+
+
+@router.get("/topology/{client_id}/diagram.png")
+async def topology_diagram_png(client_id: str, current_user: dict = Depends(get_current_user)):
+    """Diagramma fisico di rete (PNG) auto-generato da LLDP + MAC-table, con
+    branding white-label del cliente. Deliverable scaricabile a fine assessment."""
+    require_admin(current_user)
+    client = await db.clients.find_one({"id": client_id}, {"_id": 0})
+    if not client:
+        raise HTTPException(status_code=404, detail="Cliente non trovato")
+    branding = await _get_branding(client_id)
+    brand_name = (branding.get("brand_name") or client.get("brand_name")
+                  or client.get("white_label_name") or DEFAULT_BRAND)
+    logo_bytes = None
+    if branding.get("logo_b64"):
+        try:
+            logo_bytes = base64.b64decode(branding["logo_b64"])
+        except Exception:
+            logo_bytes = None
+    graph = await build_topology_graph(client_id)
+    if not graph.get("switches"):
+        raise HTTPException(status_code=404, detail="Nessun apparato di rete con topologia disponibile per questo cliente")
+    png = render_topology_png(graph, brand_name=brand_name, logo_bytes=logo_bytes,
+                              client_name=client.get("name"))
+    safe = "".join(ch for ch in (client.get("name") or client_id) if ch.isalnum() or ch in (" ", "-", "_")).strip().replace(" ", "_")
+    return StreamingResponse(
+        io.BytesIO(png), media_type="image/png",
+        headers={"Content-Disposition": f'inline; filename="Topologia_{safe}.png"'})
+
 
 
 # ==================== BRANDING WHITE-LABEL ====================

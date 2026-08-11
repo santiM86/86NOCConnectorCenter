@@ -54,6 +54,302 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-08-10 ✅ VERIFICA "Apri Mappa" filtrato per cliente (E2E PASS 6/6)
+
+### Esito
+Testing agent frontend (iteration_106): tutti e 6 i comportamenti PASS al 100%.
+Login+2FA -> dashboard -> "Apri Mappa" (card espansa) -> /network-status?view=map&
+client=<id> apre in vista MAPPA filtrata sul solo cliente; banner filtro +
+"Mostra tutti i clienti" + toggle Lista/Mappa OK. Deep-link diretto OK.
+
+### Rifiniture applicate
+- `ClientStatusPage.js`: alzato il contrasto del pulsante "Mostra tutti i
+  clienti" (era bg-white/5 low-contrast -> ora teal, coerente col banner).
+- `test_credentials.md`: annotato il `totp_secret` admin corrente
+  (NMHDJNO53WLTOSREUXWERE6FDH5TAKC3) per i test futuri.
+
+### Backlog minori emersi (LOW, non bloccanti)
+- "Apri Mappa" visibile solo nella card espansa (discoverability).
+- Card header senza data-testid (testability).
+- viewMode inizializzato solo al mount da searchParams (ok oggi; sincronizzare
+  con URL se in futuro si aggiungono link che cambiano solo ?view=).
+
+## 2026-08-10 🎯 "Apri Mappa" filtra sul singolo cliente (?client=<id>)
+
+### Richiesta utente
+Far sì che "Apri Mappa" apra la topologia già filtrata sul cliente della card.
+
+### Implementazione
+- **`ClientStatusPage.js`**: legge `?client=<id>` (`useSearchParams`) e filtra
+  `clientGroups` su quel cliente (vale sia mappa che lista). Banner "Vista
+  filtrata sul cliente: X" con pulsante "Mostra tutti i clienti" (naviga
+  preservando la vista corrente, via `useNavigate`).
+- **`DashboardPage.js`**: il pulsante "Apri Mappa" ora naviga a
+  `/network-status?view=map&client=<id>` -> apre direttamente la mappa del solo
+  cliente della card.
+
+### Testing
+- Frontend compila (JSX OK; unico warning exhaustive-deps preesistente).
+  Screenshot autenticato non possibile (login preview bloccato da IP allowlist).
+
+### Deploy
+Preview attivo; per PROD Save to GitHub + redeploy frontend.
+
+---
+
+
+
+## 2026-08-10 🗺️ Pulsante "Apri Mappa" nelle card dashboard desktop
+
+### Richiesta utente
+Accesso immediato alla topologia dalla dashboard desktop (come su mobile),
+senza passare dal menu.
+
+### Implementazione
+- **`DashboardPage.js`** (ClientCard footer): nuovo pulsante "Apri Mappa"
+  (`data-testid=open-map-{id}`) che naviga a `/network-status?view=map`,
+  accanto a Monitor WAN / Dispositivi / Alert. Rispecchia il comportamento del
+  pulsante mobile (`MobileDashboard.js` -> /network-status), ma aprendo
+  direttamente la vista Mappa.
+- **`ClientStatusPage.js`**: legge `?view=map` (via `useSearchParams`) e
+  inizializza `viewMode` di conseguenza, cosi' il link atterra direttamente
+  sulla mappa (prima partiva sempre in "Lista").
+
+### Testing
+- Frontend compila (JSX OK Dashboard + ClientStatus; unico warning
+  exhaustive-deps preesistente, non correlato). Screenshot autenticato non
+  possibile (login preview bloccato da IP allowlist).
+
+### Deploy
+Preview attivo; per PROD Save to GitHub + redeploy frontend.
+
+---
+
+
+
+## 2026-08-10 🎨 Diagramma di rete: colorazione per VLAN nativa + legenda
+
+### Richiesta utente
+Colorare i link del diagramma per VLAN nativa + legenda colori VLAN, per
+trasformarlo in mappa delle segregazioni di rete (utile in audit sicurezza).
+
+### Implementazione (`routes/topology_diagram.py`)
+- `build_topology_graph`: durante la verifica FDB ricava anche la **VLAN
+  nativa** del link (dalla voce FDB che conferma l'adiacenza) -> `edge["vlan"]`.
+- `render_topology_png`: palette deterministica per VLAN; link colorato per
+  VLAN (fallback verde/grigio se VLAN sconosciuta), etichetta "VLAN N" a meta'
+  link, e **legenda VLAN** (swatch colore) + legenda stile (solido=verificato,
+  tratteggiato=solo LLDP). Canvas/legenda ad altezza dinamica per molte VLAN.
+
+### Testing
+- Preview con VLAN 10 (dati) e VLAN 20 (voip): link colorati correttamente
+  (giallo/blu), etichette VLAN e legenda presenti. PNG ispezionato
+  visivamente. PASS. Nessuna modifica a report.py/frontend (stesso PNG).
+
+### Risolto: vista Mappa mancante su desktop
+Causa: la rotta `/network-status` (pagina "Stato Rete" con toggle Lista/Mappa +
+NetworkMap e pulsanti PNG/PDF/Modifica/Auto) era raggiungibile SOLO dal pulsante
+nella dashboard mobile (`MobileDashboard.js:362`); la **sidebar desktop non
+aveva alcuna voce** verso quella rotta -> su desktop la funzione risultava
+"assente" (in realta' solo non navigabile). Fix: aggiunta voce
+"Stato Rete (Mappa)" (icona Globe) nel gruppo Panoramica di `Layout.js`
+(desktop + mobile sidebar). Compila OK. Screenshot autenticato non possibile
+(login preview bloccato da IP allowlist, error 1010, dall'ambiente).
+
+---
+
+
+
+## 2026-08-10 🗺️ Diagramma di rete auto-generato (PNG + nel PDF white-label)
+
+### Richiesta utente
+Generare automaticamente un diagramma di rete esportabile (PNG/PDF nel report
+white-label) che mostri il cablaggio fisico switch/device, usando i link
+verificati LLDP+FDB. Deliverable per il cliente a fine assessment.
+
+### Implementazione (solo PIL + ReportLab, no graphviz/matplotlib)
+- **`routes/topology_diagram.py`**:
+  - `build_topology_graph(client_id)`: backbone switch<->switch da
+    `lldp_neighbors` (risolve il remoto per remote_ip / chassis-id==primary_mac
+    / sys_name==hostname), conteggio endpoint per switch dalla FDB, e flag
+    `verified` quando la FDB corrobora l'LLDP (MAC base di uno nella FDB
+    dell'altro).
+  - `render_topology_png(graph, brand, logo, client_name)`: layout gerarchico
+    a livelli (BFS dal nodo con grado maggiore) disegnato con PIL. Verde solido
+    = VERIFICATO, grigio tratteggiato = LLDP-only. Header white-label + logo,
+    box switch con IP + "N endpoint", etichette porte, legenda. Font FreeSans.
+- **`routes/reports.py`**:
+  - Nuova sezione "Diagramma Fisico di Rete" nel PDF (dopo adiacenze LLDP):
+    embed del PNG via ReportLab Image, best-effort (try/except non rompe il report).
+  - Endpoint standalone `GET /api/reports/topology/{client_id}/diagram.png`
+    (admin) con branding, per download diretto.
+- **`ReportsPage.js`**: pulsante "Diagramma Rete (PNG)" accanto a "Genera PDF".
+
+### Testing
+- End-to-end preview con topologia sintetica (CORE + 2 access): grafo corretto,
+  link CORE<->ACCESS-1 VERIFICATO via FDB, CORE<->ACCESS-2 LLDP-only; PNG 25KB
+  reso e ispezionato visivamente (layout pulito, legenda, branding). Endpoint
+  registrato (403 senza auth). Frontend compila, backend senza errori import.
+- PDF completo con la sezione non testato E2E (2FA admin); la generazione del
+  diagramma e' isolata in try/except e validata a parte.
+
+### Deploy
+Preview attivo; per PROD Save to GitHub + redeploy. Qualita' topologia dipende
+da LLDP/FDB inviati dagli agent + MAC base noto (release agent OctetString).
+
+---
+
+
+
+## 2026-08-10 ✅ Doppia evidenza LLDP+FDB: link fisici "VERIFICATI"
+
+### Richiesta utente
+Incrociare l'LLDP (gia' raccolto in `lldp_neighbors`) con i link FDB per
+confermare i collegamenti diretti: quando LLDP e MAC-table concordano, il link
+e' certo al 100% -> marcarlo "verificato".
+
+### Implementazione (`device_info_card.py::find_physical_uplinks` + card)
+- Per ogni link FDB (switch vicino S ha il MAC del device M sulla porta P), si
+  controlla se S ha un vicino LLDP con `remote_chassis_id` == M (confronto su
+  hex a 12 char, robusto a formati hex:/0x/dashed/colon). Se si -> `verified=true`
+  + si espongono `lldp_local_port`/`lldp_remote_port`.
+- Ordinamento: prima i VERIFICATI, poi per pochi-MAC (link piu' probabile).
+- **`DeviceInfoCard.js`**: badge **"✓ VERIFICATO (LLDP+FDB)"** (ciano) con
+  priorita' su LINK DIRETTO / VIA TRUNK.
+
+### Bug risolto in sviluppo
+`_hex12` lasciava passare la 'e' di "hex:" (carattere esadecimale) -> 13 char ->
+nessun match LLDP. Fix: strip prefisso hex:/0x prima del regex.
+
+### Testing
+- Preview con dati sintetici: SW con LLDP+FDB concordi -> VERIFICATO e primo in
+  lista; SW con solo FDB -> non verificato. PASS. Backend syntax OK, frontend
+  compila.
+
+### Deploy
+Preview attivo; per PROD Save to GitHub + redeploy. La verifica LLDP scatta solo
+tra device LLDP-capable (switch/AP); per gli endpoint puri resta il dato FDB.
+
+---
+
+
+
+## 2026-08-10 🗺️ Topologia fisica: incrocio MAC device ↔ FDB switch vicini
+
+### Richiesta utente
+Una volta noto il MAC dello switch/device via SNMP, incrociarlo con la MAC-table
+(FDB) degli altri switch per capire da quale porta e' collegato (mappatura
+topologia fisica automatica).
+
+### Implementazione (backend-only + card)
+- **`device_info_card.py::find_physical_uplinks(client_id, device_ip, mac)`**:
+  cerca in `discovered_endpoints` (source `agent_fdb`) le voci con lo stesso MAC
+  su switch DIVERSI dal device; per ogni match risolve nome porta (join
+  `switch_ports` local_ip+idx==port) e nome vicino (`managed_devices`). Conta i
+  MAC sulla porta del vicino: <=2 = LINK DIRETTO (punto-punto), altrimenti
+  VIA TRUNK/uplink. Ordina per pochi-MAC prima (link piu' probabile).
+- Aggiunto `physical_links` alla risposta di `build_info_card`.
+- **`DeviceInfoCard.js`**: nuova Section "Topologia fisica" che elenca
+  vicino + porta + VLAN + badge LINK DIRETTO / VIA TRUNK.
+
+### Sinergia col MAC via SNMP
+Ora che il MAC dello switch si legge via SNMP (dot1dBaseBridgeAddress), il suo
+uplink si ricostruisce anche quando non c'e' ARP: il base-MAC compare sulla
+porta del neighbor che lo serve.
+
+### Testing
+- Test preview con FDB sintetica: porta 52 (1 MAC) -> CORE-SW-01
+  Ten-Gi1/0/52 DIRETTO; porta 1 (6 MAC) -> DIST-SW-02 VIA TRUNK; diretto
+  ordinato per primo. PASS. Backend syntax OK, frontend compila.
+
+### Deploy
+Preview attivo; per PROD Save to GitHub + redeploy. La qualita' del dato
+dipende dagli agent che inviano la FDB (>= v4.27.0) + dal MAC noto del device.
+
+---
+
+
+
+## 2026-08-10 🔌 MAC dello switch via SNMP (dot1dBaseBridgeAddress) + fix agent OctetString
+
+### Richiesta utente
+Leggere sempre il MAC dello switch via SNMP (anche senza ARP sul segmento),
+aggiungendo `dot1dBaseBridgeAddress` al profilo Comware.
+
+### Scoperta / vincolo
+L'agent Go (`snmp.go::asString`) convertiva gli OctetString con `string(bytes)`:
+per un MAC (6 byte binari) produce UTF-8 non valido -> illeggibile a valle
+(JSON -> U+FFFD). Quindi il solo OID non bastava: serviva anche far
+hex-encodare i binari nell'agent.
+
+### Implementazione
+- **Agent Go (`internal/poller/snmp.go`)**: `asString` ora, se l'OctetString
+  contiene byte non stampabili, restituisce `"hex:aa:bb:cc:dd:ee:ff"` (nuova
+  `isPrintableASCII`). Migliora TUTTI i valori binari (MAC/PhysAddress), non
+  solo il MAC. RICHIEDE REBUILD + NUOVA RELEASE agent.
+- **Profilo (`device_profiles/__init__.py` hpe_comware)**: aggiunto
+  `dot1dBaseBridgeAddress = 1.3.6.1.2.1.17.1.1.0`.
+- **Bridge (`agent_ws.py`)**: nuovo `_parse_snmp_mac()` (gestisce hex:/0x/hex
+  puro/separatori, scarta 00..00 e ff..ff); in `_bridge_snmp_poll` legge
+  `dot1dBaseBridgeAddress`/`ifPhysAddress` e salva `device_poll_status.primary_mac`
+  -> la scheda lo mostra con source "self-snmp".
+
+### Testing
+- `_parse_snmp_mac` verificato su tutti i formati (hex:/0x/puro/colon -> MAC
+  normalizzato; zeri/broadcast/garbage -> None). Backend syntax OK, servizio
+  risponde 200. Agent Go: tab consistenti, sintassi valida (Go non disponibile
+  in ambiente per build).
+
+### Deploy / dipendenza
+- Backend: attivo dopo redeploy. NESSUN dato errato con agent vecchio (v4.30):
+  il MAC binario -> `_parse_snmp_mac` ritorna None (no regressione).
+- Il MAC via SNMP compare SOLO con l'agent NUOVO (asString hex): serve
+  Save to GitHub + trigger RELEASE agent (CI/CD tag) + auto-update agent.
+  Chiedere all'utente PAT/conferma per la release.
+
+---
+
+
+
+## 2026-08-10 🔎 MAC "non disponibile" sulla scheda device — fallback ARP scan
+
+### Domanda utente
+Switch HPE Comware 10.100.100.4 (AQUATTRO): la scheda mostrava "MAC non
+disponibile" pur essendo ONLINE, SNMP fresco e "visto nella tabella ARP".
+
+### Root cause
+`device_info_card.py::build_info_card` cercava il MAC solo in: SNMP
+(`poll.primary_mac`/`device_macs`) e `arp_cache`. Per gli agent v4 Go il MAC
+scoperto via ARP/mDNS finisce in `discovered_endpoints` (chiave client_id+ip),
+che la card NON consultava -> MAC assente anche quando l'agent lo conosceva.
+Nota: uno switch raggiunto sul PROPRIO IP L3 spesso non espone il MAC via SNMP
+(serve dot1dBaseBridgeAddress, non nel profilo), quindi l'unica fonte era ARP.
+
+### Fix (`routes/device_info_card.py` + `DeviceInfoCard.js`)
+Aggiunti 2 fallback dopo arp_cache:
+- `discovered_endpoints` (client_id+ip, mac non vuoto, piu' recente) ->
+  `mac_source="arp-scan"`.
+- `network_discovery.device_macs` (mappa IP->MAC dello scan) ->
+  `mac_source="net-scan"`.
+Frontend: nota origine per arp-scan ("via scan ARP dell'agent") e net-scan.
+
+### Testing
+- Verificato in preview con `build_info_card`: device con MAC in
+  discovered_endpoints e senza primary_mac SNMP -> ora ritorna
+  `mac_primary=00:04:f2:... source=arp-scan`. Frontend compila, backend OK.
+
+### Limite / enhancement futuro
+Se l'agent NON e' sul segmento L2 dello switch, l'ARP non ha il MAC: in quel
+caso servirebbe leggerlo via SNMP `dot1dBaseBridgeAddress` (1.3.6.1.2.1.17.1.1.0)
+aggiungendolo al profilo + parsing OctetString->MAC. Proposto all'utente.
+
+### Deploy
+Preview attivo; per PROD Save to GitHub + redeploy (frontend + backend).
+
+---
+
+
+
 ## 2026-08-10 🐞 FIX pulsante "Correggi" diagnosi porte switch (era no-op)
 
 ### Sintomo (domanda utente)

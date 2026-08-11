@@ -331,10 +331,36 @@ func asString(v gosnmp.SnmpPDU) string {
 	case string:
 		return x
 	case []byte:
+		// OctetString: se contiene byte NON stampabili (es. MAC /
+		// PhysAddress, 6 byte binari) restituiamo una stringa hex
+		// "hex:aa:bb:cc:dd:ee:ff" invece dei byte grezzi, che diventerebbero
+		// UTF-8 non valido e illeggibili a valle (JSON li rimpiazza con U+FFFD).
+		if !isPrintableASCII(x) {
+			parts := make([]string, len(x))
+			for i, b := range x {
+				parts[i] = fmt.Sprintf("%02x", b)
+			}
+			return "hex:" + strings.Join(parts, ":")
+		}
 		return string(x)
 	default:
 		return fmt.Sprintf("%v", v.Value)
 	}
+}
+
+// isPrintableASCII: true se tutti i byte sono ASCII stampabili (o whitespace
+// comune). Serve a distinguere sysDescr/sysName testuali dagli OctetString
+// binari come i MAC address.
+func isPrintableASCII(b []byte) bool {
+	for _, c := range b {
+		if c == 0x09 || c == 0x0a || c == 0x0d {
+			continue
+		}
+		if c < 0x20 || c > 0x7e {
+			return false
+		}
+	}
+	return true
 }
 
 func portU16(s string) uint16 {

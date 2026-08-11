@@ -338,6 +338,7 @@ export default function DeviceInfoCard({ deviceIp, clientId = null, onClose = nu
   const st = card.status || {};
   const hw = card.hardware || {};
   const net = card.network || {};
+  const links = card.physical_links || [];
   const lc = card.lifecycle;
   const loc = card.location || {};
   const fwComp = fw.compliance;
@@ -684,6 +685,16 @@ export default function DeviceInfoCard({ deviceIp, clientId = null, onClose = nu
                 via ARP cache da {id.mac_arp_source_ip || "vicino"}
               </div>
             )}
+            {id.mac_primary && id.mac_source === "arp-scan" && (
+              <div className="py-1 text-[10px] text-[var(--text-secondary)] italic">
+                via scan ARP dell'agent{id.mac_arp_source_ip ? ` (${id.mac_arp_source_ip})` : ""}
+              </div>
+            )}
+            {id.mac_primary && id.mac_source === "net-scan" && (
+              <div className="py-1 text-[10px] text-[var(--text-secondary)] italic">
+                via scan di rete del cliente
+              </div>
+            )}
             <Field label="MAC totali" value={id.mac_count || null} />
             <Field label="Vendor" value={id.vendor} highlight />
             <Field label="Modello" value={id.model} highlight />
@@ -839,6 +850,31 @@ export default function DeviceInfoCard({ deviceIp, clientId = null, onClose = nu
             <Field label="SNMP version" value={net.snmp_version} />
             <Field label="SNMP port" value={net.snmp_port} />
           </Section>
+
+          {/* Topologia fisica: da quale porta di un altro switch e' collegato
+              (incrocio MAC del device con la MAC-table/FDB dei vicini). */}
+          {links.length > 0 && (
+            <Section title="Topologia fisica" icon={Globe} testid="info-section-physical-links" color="text-teal-300">
+              {links.map((l, i) => (
+                <div key={i} className="py-1 border-b border-white/5 last:border-0" data-testid={`physical-link-${i}`}>
+                  <div className="flex items-center gap-2 text-[12px]">
+                    <span className="font-semibold text-teal-200">{l.neighbor_name}</span>
+                    {l.verified
+                      ? <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-cyan-500/20 text-cyan-300 border border-cyan-500/50" title="LLDP e MAC-table concordano: collegamento confermato al 100%">✓ VERIFICATO (LLDP+FDB)</span>
+                      : l.direct
+                        ? <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">LINK DIRETTO</span>
+                        : <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40" title={`${l.macs_on_port} MAC sulla porta: probabile uplink/trunk`}>VIA TRUNK</span>}
+                  </div>
+                  <div className="text-[11px] text-[var(--text-secondary)] font-mono">
+                    porta {l.port_name || `#${l.port}`}
+                    {l.vlan ? ` · VLAN ${l.vlan}` : ""}
+                    {` · ${l.neighbor_ip}`}
+                    {!l.direct && !l.verified ? ` · ${l.macs_on_port} MAC` : ""}
+                  </div>
+                </div>
+              ))}
+            </Section>
+          )}
 
           {/* Lifecycle */}
           {lc && (

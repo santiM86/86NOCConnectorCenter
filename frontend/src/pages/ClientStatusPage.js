@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { useSearchParams, useNavigate } from "react-router-dom";
 import axios from "axios";
 import { API } from "@/App";
 import {
@@ -37,7 +38,10 @@ export default function ClientStatusPage() {
   const discoveryPollRef = useRef(null);
   const [webConsole, setWebConsole] = useState(null);
   const webConsolePollRef = useRef(null);
-  const [viewMode, setViewMode] = useState("list");
+  const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
+  const clientFilter = searchParams.get("client");
+  const [viewMode, setViewMode] = useState(searchParams.get("view") === "map" ? "map" : "list");
 
   useEffect(() => {
     fetchAll();
@@ -283,8 +287,15 @@ export default function ClientStatusPage() {
       if (!groups[cid]) groups[cid] = { clientId: cid, clientName: cid, devices: [], connectorOnline: false };
       groups[cid].devices.push(d);
     });
-    return Object.values(groups).filter(g => g.devices.length > 0).sort((a, b) => a.clientName.localeCompare(b.clientName));
+    return Object.values(groups)
+      .filter(g => g.devices.length > 0)
+      .filter(g => !clientFilter || g.clientId === clientFilter)
+      .sort((a, b) => a.clientName.localeCompare(b.clientName));
   })();
+
+  const filteredClientName = clientFilter
+    ? (clients.find(c => c.id === clientFilter)?.name || clientGroups[0]?.clientName || clientFilter)
+    : null;
 
   const totalDevices = devices.length;
   const reachable = devices.filter(d => d.reachable).length;
@@ -360,6 +371,20 @@ export default function ClientStatusPage() {
           </Button>
         </div>
       </div>
+
+      {/* Banner filtro cliente (da "Apri Mappa" della dashboard) */}
+      {clientFilter && (
+        <div className="flex items-center justify-between px-3 py-2 rounded-lg bg-teal-500/10 border border-teal-500/30" data-testid="client-filter-banner">
+          <span className="text-xs text-teal-200">
+            Vista filtrata sul cliente: <span className="font-bold">{filteredClientName}</span>
+          </span>
+          <button onClick={() => navigate(`/network-status?view=${viewMode}`)}
+            className="text-[10px] px-2 py-1 rounded-md bg-teal-500/20 text-teal-200 border border-teal-500/40 hover:bg-teal-500/30 transition-colors font-medium"
+            data-testid="clear-client-filter">
+            Mostra tutti i clienti
+          </button>
+        </div>
+      )}
 
       {/* Add Device Form */}
       {showAddDevice && (

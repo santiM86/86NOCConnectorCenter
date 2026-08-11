@@ -662,6 +662,26 @@ async def _bridge_ping_poll(conn: _Connection, r: Dict[str, Any]) -> None:
         logger.warning("ping_poll: managed_devices reconcile failed ip=%s err=%s", target, e)
 
 
+def _parse_snmp_mac(raw: Any) -> Optional[str]:
+    """Normalizza un MAC letto via SNMP (BRIDGE-MIB dot1dBaseBridgeAddress /
+    ifPhysAddress) in 'aa:bb:cc:dd:ee:ff'. L'agent v4.31+ codifica gli
+    OctetString binari come 'hex:aa:bb:...'; gestiamo anche 0x.., esadecimale
+    puro (12 char) e formato gia' con separatori. Ritorna None se non valido."""
+    if not raw or not isinstance(raw, str):
+        return None
+    s = raw.strip()
+    if s.lower().startswith("hex:"):
+        s = s[4:]
+    if s.lower().startswith("0x"):
+        s = s[2:]
+    hexs = re.sub(r"[^0-9a-fA-F]", "", s)
+    if len(hexs) != 12:
+        return None
+    if hexs.lower() == "000000000000" or hexs.lower() == "ffffffffffff":
+        return None
+    return ":".join(hexs[i:i + 2] for i in range(0, 12, 2)).lower()
+
+
 async def _bridge_snmp_poll(conn: _Connection, r: Dict[str, Any]) -> None:
     """Bridge SNMPPollResult into device_poll_status AND into managed_devices.
 
@@ -715,6 +735,13 @@ async def _bridge_snmp_poll(conn: _Connection, r: Dict[str, Any]) -> None:
         snmp_set["metrics"] = r["oids"]
         snmp_set["metrics_count"] = len(r["oids"])
         snmp_set["metrics_updated_at"] = now_iso
+        # MAC base dello switch via SNMP (BRIDGE-MIB dot1dBaseBridgeAddress o
+        # ifPhysAddress). Utile quando l'agent NON e' sul segmento L2 e l'ARP
+        # non conosce il MAC. Salvato come primary_mac (source self-snmp).
+        _snmp_mac = _parse_snmp_mac(
+            r["oids"].get("dot1dBaseBridgeAddress") or r["oids"].get("ifPhysAddress"))
+        if _snmp_mac:
+            snmp_set["primary_mac"] = _snmp_mac
         # v4.30: costruisci vendor_metrics per la UI. L'agent ora fa il WALK
         # degli OID a tabella (H3C/HPE Comware CPU/mem/temp/ventole/PSU) ed
         # emette chiavi "name.<index>": le raggruppiamo in dict per-indice; le

@@ -1,0 +1,54 @@
+{
+  "summary": "Frontend-only E2E test of the 'Apri Mappa' (dashboard card -> /network-status?view=map&client=<id>) feature on the public preview URL. Logged in as admin info@86bit.it with the mandatory 2FA flow via UI (login -> /2fa-setup, secret read from data-testid=2fa-copy-secret, TOTP computed with stdlib hmac/hashlib -> confirm; subsequent logins via /2fa + verify-2fa using db totp_secret). ALL 6 requested behaviours VERIFIED OK: (1) login+2FA reaches dashboard-page; (2) card 86BIT_Office exposes data-testid=open-map-da3d6e40-... with text 'Apri Mappa' (only inside the EXPANDED card panel - see minor issue); (3) click navigates to /network-status?view=map&client=da3d6e40-b3e5-4d46-9787-dde328a3aa36, page opens with MAP toggle active (indigo) and LIST inactive, NetworkMap renders only the 86BIT_Office group (Internet/WAN -> Zyxel USG Test 192.168.1.254 -> Vendor-Details-Test 192.168.1.3); the other groups '86bit-office' and 'test-client' (and device 10.100.61.34) are NOT rendered; (4) data-testid=client-filter-banner visible with text 'Vista filtrata sul cliente: 86BIT_Office'; (5) data-testid=clear-client-filter navigates to /network-status?view=map, banner disappears, map view stays active and all 3 client tabs (86BIT_Office, 86bit-office, test-client) reappear; (6) Lista/Mappa toggle works while filtered: LIST shows only client-group-da3d6e40-... with its 2 devices, switching back to Mappa keeps the filter. Deep-link /network-status?view=map&client=<id> loaded directly also opens in map view with the banner.",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "DashboardPage / ClientCard",
+        "issue": "'Apri Mappa' is rendered ONLY inside the expanded card panel (Quick actions, DashboardPage.js:412). The spec says 'ogni card cliente mostra un pulsante Apri Mappa' - on the collapsed card only 'Apri' (open-client) is visible, so the feature is not discoverable without expanding. Consider surfacing it in the always-visible header or documenting the expand step.",
+        "selector": "[data-testid=\"open-map-<client_id>\"]",
+        "priority": "LOW"
+      },
+      {
+        "component": "DashboardPage / ClientCard header",
+        "issue": "The card expand/collapse header div (DashboardPage.js:274-292) has no data-testid; tests must click the inner <h3> (clicking the card container does nothing). Add data-testid=\"client-card-header-<id>\" or \"expand-client-<id>\".",
+        "selector": "[data-testid=\"client-card-<id>\"] h3",
+        "priority": "LOW"
+      },
+      {
+        "component": "ClientStatusPage - client filter banner",
+        "issue": "With an unknown/stale client id (?client=nonexistent-xyz) the banner prints the raw id ('Vista filtrata sul cliente: nonexistent-xyz') and the page shows 'Nessun dispositivo monitorato'. Graceful, but a friendlier fallback (e.g. 'Cliente non trovato' or auto-clearing the filter) would be better.",
+        "selector": "[data-testid=\"client-filter-banner\"]",
+        "priority": "LOW"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "/network-status - client filter banner",
+        "issues": [
+          "'Mostra tutti i clienti' button (bg-white/5 + text-[var(--text-muted)]) is very low contrast against the teal banner and looks disabled; use a teal/brighter foreground.",
+          "In filtered map view the client tab badge shows '3' while the group header/list report 2 devices (badge appears to count the synthetic Internet/WAN node) - slightly confusing count."
+        ]
+      }
+    ]
+  },
+  "test_report_links": [],
+  "action_items": [
+    "OPTIONAL: expose 'Apri Mappa' on the collapsed client card (currently only in the expanded panel)",
+    "OPTIONAL: add data-testid to the client card expand header for testability",
+    "OPTIONAL: improve contrast of the 'Mostra tutti i clienti' button and the unknown-client banner fallback"
+  ],
+  "critical_code_review_comments": [
+    "ClientStatusPage.js: viewMode is initialised from searchParams only at mount (useState(searchParams.get('view')...)). It works today because clear-client-filter navigates within the same mounted component, but any external navigation that only changes ?view= (e.g. a future link) will NOT update the view. Consider syncing viewMode with searchParams in a useEffect or driving it from the URL.",
+    "ClientStatusPage.js is ~940 lines (page + inline detail component) - split into smaller modules per the file-size guideline."
+  ],
+  "updated_files": [],
+  "success_rate": { "backend": "not tested (frontend-only request)", "frontend": "100% (6/6 requested behaviours pass)" },
+  "seed_data_creation": "None. Existing data used (client 86BIT_Office da3d6e40-b3e5-4d46-9787-dde328a3aa36 with 2 devices, plus orphan groups 86bit-office/test-client).",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "info@86bit.it / Ariel17051986@!@86 - 2FA is now ENROLLED, totp_secret = NMHDJNO53WLTOSREUXWERE6FDH5TAKC3 (db.users). Login flow: /login -> /2fa -> verify-2fa with TOTP of that secret. Reset to enroll-required by unsetting totp_secret + two_factor_enabled.",
+  "context_for_next_testing_agent": "Playwright notes: (a) page.fill() on the login inputs can be swallowed right after load - wait ~3s then click+type with delay, and assert input_value before submitting; (b) admin 2FA is enrolled, use secret NMHDJNO53WLTOSREUXWERE6FDH5TAKC3 with stdlib TOTP; (c) to expand a dashboard client card click '[data-testid=\"client-card-<id>\"] h3' (container click does nothing, header has no testid); (d) a 403 on /api/auth/me is logged on the login/2FA screens - benign (no full token yet); (e) login rate limit ~10/5min per IP.",
+  "rca_of_the_issue": "No defect found in the 'Apri Mappa' filtered-map flow; all navigation, filtering, banner and toggle behaviours behave as specified."
+}
