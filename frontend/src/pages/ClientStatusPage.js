@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { useSearchParams } from "react-router-dom";
 import axios from "axios";
 import { API } from "@/App";
 import {
@@ -37,7 +38,8 @@ export default function ClientStatusPage() {
   const discoveryPollRef = useRef(null);
   const [webConsole, setWebConsole] = useState(null);
   const webConsolePollRef = useRef(null);
-  const [viewMode, setViewMode] = useState("list");
+  const [searchParams] = useSearchParams();
+  const [viewMode, setViewMode] = useState(searchParams.get("view") === "map" ? "map" : "list");
 
   useEffect(() => {
     fetchAll();

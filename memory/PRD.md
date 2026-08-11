@@ -54,6 +54,34 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-08-10 🗺️ Pulsante "Apri Mappa" nelle card dashboard desktop
+
+### Richiesta utente
+Accesso immediato alla topologia dalla dashboard desktop (come su mobile),
+senza passare dal menu.
+
+### Implementazione
+- **`DashboardPage.js`** (ClientCard footer): nuovo pulsante "Apri Mappa"
+  (`data-testid=open-map-{id}`) che naviga a `/network-status?view=map`,
+  accanto a Monitor WAN / Dispositivi / Alert. Rispecchia il comportamento del
+  pulsante mobile (`MobileDashboard.js` -> /network-status), ma aprendo
+  direttamente la vista Mappa.
+- **`ClientStatusPage.js`**: legge `?view=map` (via `useSearchParams`) e
+  inizializza `viewMode` di conseguenza, cosi' il link atterra direttamente
+  sulla mappa (prima partiva sempre in "Lista").
+
+### Testing
+- Frontend compila (JSX OK Dashboard + ClientStatus; unico warning
+  exhaustive-deps preesistente, non correlato). Screenshot autenticato non
+  possibile (login preview bloccato da IP allowlist).
+
+### Deploy
+Preview attivo; per PROD Save to GitHub + redeploy frontend.
+
+---
+
+
+
 ## 2026-08-10 🎨 Diagramma di rete: colorazione per VLAN nativa + legenda
 
 ### Richiesta utente
