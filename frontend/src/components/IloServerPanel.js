@@ -268,28 +268,64 @@ export default function IloServerPanel({ s, clientId, defaultOpen = false }) {
         </InvSection>
 
         {/* Dischi */}
-        <InvSection icon={HardDrives} title="Dischi fisici" count={drives.length}>
-          {drives.length > 0 ? (
-            <InvTable
-              headers={["Slot", "Modello", "Capacità", "Tipo", "RPM", "Ore", "Temp", "Usura/Predict", "Stato"]}
-              rows={drives.map((d) => [
-                d.slot != null ? `${String(d.slot).match(/^\d+$/) ? "#" : ""}${d.slot}` : "—",
-                <span key="m" title={d.serial ? `S/N ${d.serial}` : ""}>{d.model || d.name || "?"}</span>,
-                d.capacity_gb ? `${d.capacity_gb >= 1000 ? (d.capacity_gb / 1000).toFixed(1) + " TB" : d.capacity_gb + " GB"}` : "—",
-                `${d.media_type || "?"}${d.interface_type ? " · " + d.interface_type : ""}`,
-                (d.rotation_rpm ? `${d.rotation_rpm >= 1000 ? Math.round(d.rotation_rpm / 1000) + "K" : d.rotation_rpm}` : (d.media_type === "SSD" ? "SSD" : "—")),
-                d.hours_used != null ? `${d.hours_used}h` : "—",
-                d.temp_celsius != null ? `${d.temp_celsius}°C` : "—",
-                d.failure_predicted
-                  ? <span key="w" className="text-rose-400 font-bold text-[10px]">⚠ Predetto</span>
-                  : (d.wear_percent != null
-                      ? <span key="w" className={`text-[10px] font-semibold ${d.wear_percent >= 90 ? "text-rose-400" : d.wear_percent >= 70 ? "text-amber-400" : "text-emerald-400/70"}`}>{d.wear_percent}%</span>
-                      : <span key="w" className="text-emerald-400/70 text-[10px]">OK</span>),
-                <HealthTag key="h" h={d.health} />,
-              ])}
-              testid={`ilo-drive-table-${ip}`}
-            />
-          ) : <EmptyRow text="Nessun disco riportato (controller o timeout Storage)" />}
+        {/* Storage: per controller -> volumi logici (RAID) + dischi fisici */}
+        <InvSection icon={HardDrives} title="Storage (controller, RAID e dischi)" count={`${(s.storage_controllers || []).length} ctrl · ${drives.length} dischi`}>
+          {(s.storage_controllers || []).length > 0 ? (
+            <div className="space-y-3">
+              {(s.storage_controllers || []).map((c, ci) => (
+                <div key={ci} className="rounded-md border border-[var(--bg-border)] overflow-hidden" data-testid={`ilo-ctrl-${ip}-${ci}`}>
+                  <div className="flex items-center justify-between px-2.5 py-1.5 bg-[var(--bg-card)] border-b border-[var(--bg-border)]">
+                    <span className="text-[11px] font-bold text-[var(--text-primary)]">{c.name || `Controller ${ci + 1}`}</span>
+                    <span className="flex items-center gap-2 text-[9px] text-[var(--text-muted)]">
+                      {c.firmware ? <span className="font-mono">FW {c.firmware}</span> : null}
+                      <HealthTag h={c.health || c.status} />
+                    </span>
+                  </div>
+                  {/* Volumi logici / RAID */}
+                  {(c.logical_drives || []).length > 0 && (
+                    <div className="px-2 pt-2">
+                      <p className="text-[9px] uppercase tracking-wider text-cyan-400/80 mb-1">Volumi logici / RAID</p>
+                      <InvTable
+                        headers={["Volume", "RAID", "Capacità", "Stato"]}
+                        rows={(c.logical_drives || []).map((v) => [
+                          v.name || "LUN",
+                          <span key="r" className="font-bold text-indigo-300">{v.raid || "—"}</span>,
+                          v.capacity_gb ? `${v.capacity_gb >= 1000 ? (v.capacity_gb / 1000).toFixed(1) + " TB" : v.capacity_gb + " GB"}` : "—",
+                          <HealthTag key="h" h={v.status} />,
+                        ])}
+                        testid={`ilo-logical-table-${ip}-${ci}`}
+                      />
+                    </div>
+                  )}
+                  {/* Dischi fisici del controller */}
+                  <div className="px-2 pt-2 pb-2">
+                    <p className="text-[9px] uppercase tracking-wider text-[var(--text-muted)] mb-1">Dischi fisici ({(c.drives || []).length})</p>
+                    {(c.drives || []).length > 0 ? (
+                      <InvTable
+                        headers={["Slot", "Modello", "Capacità", "Tipo", "RPM", "Ore", "Temp", "Usura/Predict", "Stato"]}
+                        rows={(c.drives || []).map((d) => [
+                          d.slot != null ? `${String(d.slot).match(/^\d+$/) ? "#" : ""}${d.slot}` : "—",
+                          <span key="m" title={d.serial ? `S/N ${d.serial}` : ""}>{d.model || d.name || "?"}</span>,
+                          d.capacity_gb ? `${d.capacity_gb >= 1000 ? (d.capacity_gb / 1000).toFixed(1) + " TB" : d.capacity_gb + " GB"}` : "—",
+                          `${d.media_type || "?"}${d.interface_type ? " · " + d.interface_type : ""}`,
+                          (d.rotation_rpm ? `${d.rotation_rpm >= 1000 ? Math.round(d.rotation_rpm / 1000) + "K" : d.rotation_rpm}` : (d.media_type === "SSD" ? "SSD" : "—")),
+                          d.hours_used != null ? `${d.hours_used}h` : "—",
+                          d.temp_celsius != null ? `${d.temp_celsius}°C` : "—",
+                          d.failure_predicted
+                            ? <span key="w" className="text-rose-400 font-bold text-[10px]">⚠ Predetto</span>
+                            : (d.wear_percent != null
+                                ? <span key="w" className={`text-[10px] font-semibold ${d.wear_percent >= 90 ? "text-rose-400" : d.wear_percent >= 70 ? "text-amber-400" : "text-emerald-400/70"}`}>{d.wear_percent}%</span>
+                                : <span key="w" className="text-emerald-400/70 text-[10px]">OK</span>),
+                          <HealthTag key="h" h={d.health} />,
+                        ])}
+                        testid={`ilo-drive-table-${ip}-${ci}`}
+                      />
+                    ) : <EmptyRow text="Nessun disco su questo controller" />}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : <EmptyRow text="Nessun controller storage riportato (o timeout Storage)" />}
         </InvSection>
 
         {/* NIC */}

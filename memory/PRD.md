@@ -54,6 +54,56 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-08-11 ✅ 3 migliorie visive: cascata gerarchica mappa + uplink porte + volumi logici iLO
+
+### Richiesta utente (3 punti)
+1. Layout GERARCHICO della cascata switch sulla mappa live: gateway/firewall in
+   alto, switch in ordine 1°→2°→3° impilati a scaletta verticale, device a
+   ventaglio a destra di ogni switch.
+2. Dettaglio PRECISO dell'uplink (switch peer + porta remota + VLAN + verificato)
+   nella pagina "Porte switch".
+3. Volumi logici/RAID accanto ai dischi fisici nel pannello iLO, raggruppati per
+   controller storage.
+
+### Implementazione (frontend + backend Python, nessun rebuild agent Go)
+- **`NetworkMap.js`**: nuova `cascadeLayoutNodes(flowNodes, cascade, edges, width)`
+  usata quando `topo.switch_cascade` è presente (prima di `autoLayoutNodes`):
+  gateway in cima, switch impilati per rank (offset x per livello), endpoint a
+  ventaglio a destra, non collegati impilati in basso. Verificato: nessun overlap
+  tra nodi. **Fix z-index**: `<Controls position="top-left">` per non essere più
+  coperti dalla legenda `Panel` bottom-left (i controlli fit/zoom ora cliccabili).
+- **`SwitchPortsPage.js`**: badge uplink sulle tile (`switch-port-uplink-badge-<idx>`)
+  e sezione dettaglio (`port-uplink-detail-<idx>`) con peer/porta remota/VLAN e
+  badge VERIFICATO(LLDP+FDB)/PROBABILE.
+- **`topology.py::get_switch_ports`**: incrocia `compute_switch_cascade` per marcare
+  le porte come `is_switch_uplink` + `uplink_to {peer_ip, peer_name, remote_port,
+  verified, vlan}`.
+- **`IloServerPanel.js`**: sezione Storage riscritta — itera `s.storage_controllers`
+  mostrando per ogni controller i **Volumi logici / RAID** (`ilo-logical-table-<ip>-<ci>`)
+  + i dischi fisici (`ilo-drive-table-<ip>-<ci>`). Backend `redfish.py` già parsa
+  `logical_drives` (HPE LogicalDrives + DMTF Volumes).
+
+### Testing (E2E frontend, login+2FA reale)
+- iteration_109: Feature 1 (mappa cascata, staircase, 0 overlap) PASS; Feature 3
+  (iLO 2 volumi logici RAID5/RAID1 + 6 dischi) PASS; Feature 2 bloccata da dati
+  porte assenti in preview.
+- iteration_110 (retest dopo fix): Feature 2 PASS (SWITCH01 Gi1/0/1→FORTIGATE-FW
+  "~PROBABILE", Gi1/0/24→SWITCH03 "✓VERIFICATO" VLAN1) + fix controlli mappa
+  cliccabili PASS. 2/2 PASS 100%.
+
+### Dati DEMO preview
+- `seed_ilo_demo.py` arricchito con 2 volumi logici (RAID5 OS + RAID1 DATA).
+- `seed_switch_cascade.py` ora seeda anche 72 `switch_ports` (24/switch) con le
+  porte di uplink accese, così Feature 2 è esercitabile in preview. In PROD i dati
+  arrivano da SNMP/LLDP/FDB reali. Per PROD: Save to GitHub + redeploy.
+
+### Backlog cosmetico (non bloccante)
+- Zoom di default della mappa piccolo (etichette poco leggibili senza zoom).
+- Chip rank nel pannello "Catena switch": rendere più visibile il "°".
+
+---
+
+
 ## 2026-08-11 🧩 iLO inventario COMPLETO (tutte le RAM e tutti i dischi)
 
 ### Problema (server reale ML350/ML110 Gen10 in produzione)

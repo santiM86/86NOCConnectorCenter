@@ -512,6 +512,42 @@ async def get_switch_ports(device_ip: str, client_id: Optional[str] = None,
             loop_count += 1
         else:
             o["loop_suspect"] = False
+
+    # v2026-08-11: incrocio con la CASCATA per marcare con precisione le porte
+    # collegate ad altri switch (uplink) + porta remota, verificato e VLAN.
+    try:
+        from .topology_diagram import compute_switch_cascade
+        casc = await compute_switch_cascade(md_local.get("client_id") or client_id)
+        uplinks = {}  # nome_porta_locale normalizzato -> peer info
+        name_by_ip = {c["ip"]: c["name"] for c in casc.get("cascade", [])}
+        for g in casc.get("gateways", []):
+            name_by_ip.setdefault(g["ip"], g["name"])
+        for e in casc.get("edges", []):
+            if e.get("a") == device_ip:
+                lp, peer, rp = e.get("a_port"), e.get("b"), e.get("b_port")
+            elif e.get("b") == device_ip:
+                lp, peer, rp = e.get("b_port"), e.get("a"), e.get("a_port")
+            else:
+                continue
+            if lp:
+                uplinks[str(lp).strip().lower()] = {
+                    "peer_ip": peer, "peer_name": name_by_ip.get(peer, peer),
+                    "remote_port": rp or "", "verified": bool(e.get("verified")),
+                    "vlan": e.get("vlan"),
+                }
+        if uplinks:
+            for o in out:
+                nm = str(o.get("name") or "").strip().lower()
+                al = str(o.get("alias") or "").strip().lower()
+                up = uplinks.get(nm) or uplinks.get(al)
+                if up:
+                    o["is_switch_uplink"] = True
+                    o["uplink_to"] = up
+                    if o.get("oper") == 1:
+                        o["port_type"] = "switch"
+    except Exception as _ce:
+        pass
+
     return {
         "device_ip": device_ip,
         "device_name": md_local.get("device_name") or md_local.get("name") or "",

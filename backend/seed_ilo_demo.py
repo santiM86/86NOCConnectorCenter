@@ -51,7 +51,10 @@ async def main():
         ],
         "storage_controllers": [
             {"name": "HPE Smart Array P408i-a SR Gen10", "firmware": "3.53", "status": "OK", "health": "ok",
-             "logical_drives": [{"name": "LogicalDrive 1", "capacity_gb": 3600, "raid": "RAID5", "status": "OK"}],
+             "logical_drives": [
+                {"name": "LogicalDrive 1 (OS)", "capacity_gb": 2400, "raid": "RAID5", "status": "OK"},
+                {"name": "LogicalDrive 2 (DATA)", "capacity_gb": 480, "raid": "RAID1", "status": "OK"},
+             ],
              "drives": [
                 {"slot": 1, "model": "EG001200JWJNQ", "serial": "S4H0A", "capacity_gb": 1200, "media_type": "HDD", "interface_type": "SAS", "health": "ok", "state": "Enabled", "failure_predicted": False, "rotation_rpm": 10000, "hours_used": 21440, "temp_celsius": 34, "wear_percent": None},
                 {"slot": 2, "model": "EG001200JWJNQ", "serial": "S4H0B", "capacity_gb": 1200, "media_type": "HDD", "interface_type": "SAS", "health": "ok", "state": "Enabled", "failure_predicted": False, "rotation_rpm": 10000, "hours_used": 21440, "temp_celsius": 35, "wear_percent": None},
