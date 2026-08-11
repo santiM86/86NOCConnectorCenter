@@ -54,6 +54,28 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-08-11 🧹 Tab Server ripulita + 🚨 Anomalia Cascata switch
+
+### 1) Tab "Server" — rimosse le card iLO dettagliate (solo nella tab iLO)
+`ClientOverviewPage.js::ServersTab`: tolte le `IloServerCard` + il filtro salute
+(all/issues/ok). Restano KPI, Health Score, Lifecycle, setup credenziali iLO
+(Probe Vendor / Bulk Credentials / Try Default), Hyper-V & vCenter, pulsanti
+Polla/Aggiorna, con un rimando "I dettagli hardware live sono nella tab iLO".
+Verificato via screenshot (servers-tab OK, nessuna ilo-panel, nessun crash).
+
+### 2) Anomalia Cascata (`cascade_alerts.py`)
+Nuovo motore che rileva sugli uplink switch↔switch:
+- **Uplink SCOMPARSO** (cavo scollegato/switch spento/loop) — solo per link
+  precedentemente VERIFICATI (LLDP+FDB), con **debounce 2 cicli** anti-flap LLDP.
+- **Uplink CAMBIATO PORTA** (ricablaggio) — confronto con la porta ATTESA in baseline.
+Baseline persistente per cliente in `switch_cascade_baseline` (non driftano le porte
+attese → auto-resolve quando il link riappare o la porta torna corretta).
+Alert via motore esistente (`_mk_alert`+`insert_alert_if_emit`+notifiche), dedup_key,
+1 alert attivo per (client, link, tipo), severity "high", source_type "switch_cascade".
+Hook: valutato dopo ogni ingestion `switch_topo` in `agent_ws.py` (LLDP/FDB freschi).
+Testato: baseline→0 alert, cambio porta→alert, sparizione→alert dopo 2 cicli,
+ripristino→auto-resolve (0 attivi). Nessun rebuild agent Go.
+
 ## 2026-08-11 🧹 iLO rimosso da Panoramica + header (solo nella tab dedicata "iLO")
 
 Su richiesta utente, le info iLO non appaiono più nella Panoramica né nel widget

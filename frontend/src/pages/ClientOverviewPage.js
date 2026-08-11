@@ -905,23 +905,13 @@ function IloTab({ iloHealth, clientId, onRefresh }) {
    e azioni rapide (poll-now, espandi tutti).
 */
 function ServersTab({ iloHealth, clientId, clientName, onRefresh }) {
-  const [filter, setFilter] = useState("all"); // all | issues | ok | needs_setup
   const [polling, setPolling] = useState(false);
   const [bulkCredsOpen, setBulkCredsOpen] = useState(false);
-  const healthColor = (h) => ({ ok: "#34C759", warning: "#FFCC00", critical: "#FF3B30" }[(h || "").toLowerCase()] || "#64748B");
 
   // v2026-02-14: separazione tra server con dati Redfish live e server che
   // richiedono ancora la configurazione delle credenziali iLO.
   const configuredServers = (iloHealth || []).filter(s => s.has_redfish_data);
   const pendingServers = (iloHealth || []).filter(s => s.needs_ilo_setup || (!s.has_redfish_data && !s.ilo_configured));
-
-  const filtered = configuredServers.filter((s) => {
-    if (filter === "all") return true;
-    const h = (s.health_status || "").toLowerCase();
-    if (filter === "issues") return h === "warning" || h === "critical";
-    if (filter === "ok") return h === "ok";
-    return true;
-  });
 
   // KPI aggregati top-bar (solo server configurati)
   const totalRamGb = configuredServers.reduce((sum, s) => sum + (Number(s.total_memory_gb) || 0), 0);
@@ -1000,27 +990,10 @@ function ServersTab({ iloHealth, clientId, clientName, onRefresh }) {
 
       {/* Toolbar */}
       <div className="flex items-center justify-between flex-wrap gap-2 px-1">
-        <div className="flex items-center gap-1 text-xs flex-wrap">
-          <span className="text-[var(--text-muted)] mr-2">Filtra:</span>
-          {[
-            { id: "all", label: `Tutti (${configuredServers.length})` },
-            { id: "issues", label: `Solo problemi (${warnServers + critServers})` },
-            { id: "ok", label: `Solo OK (${okServers})` },
-          ].map(f => (
-            <button
-              key={f.id}
-              onClick={() => setFilter(f.id)}
-              className={`h-7 px-2.5 rounded border text-xs transition-colors ${
-                filter === f.id
-                  ? "bg-cyan-500/15 border-cyan-500/50 text-cyan-300"
-                  : "border-[var(--bg-border)] text-[var(--text-muted)] hover:text-[var(--text-primary)]"
-              }`}
-              data-testid={`servers-filter-${f.id}-btn`}
-            >
-              {f.label}
-            </button>
-          ))}
-        </div>
+        <span className="text-[11px] text-[var(--text-muted)]">
+          Gestione server, setup credenziali iLO e virtualizzazione. I dettagli hardware live
+          (sensori, dischi, alimentazione) sono nella tab <b className="text-cyan-300">iLO</b>.
+        </span>
         <div className="flex items-center gap-2">
           <Button
             size="sm"
@@ -1046,20 +1019,7 @@ function ServersTab({ iloHealth, clientId, clientName, onRefresh }) {
         </div>
       </div>
 
-      {/* Server cards (riusa IloServerCard) */}
-      {configuredServers.length > 0 && (
-        filtered.length === 0 ? (
-          <div className="noc-panel p-6 text-center text-xs text-[var(--text-muted)]">
-            Nessun server corrisponde al filtro selezionato.
-          </div>
-        ) : (
-          <div className="space-y-3">
-            {filtered.map((s, idx) => (
-              <IloServerCard key={s.device_ip || idx} s={s} healthColor={healthColor} />
-            ))}
-          </div>
-        )
-      )}
+      {/* Le card hardware live sono state spostate nella tab dedicata "iLO" */}
 
       {/* Pending servers (need iLO setup) */}
       {pendingServers.length > 0 && (
