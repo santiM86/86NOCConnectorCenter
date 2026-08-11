@@ -25,6 +25,7 @@ import ErrorBoundary from "@/components/ErrorBoundary";
 import { canOpenWebConsole, defaultWebPort } from "@/components/WebConsole";
 import { useWebConsoleTabs } from "@/components/WebConsoleTabs";
 import ILoLiveMetrics from "@/components/ILoLiveMetrics";
+import IloServerPanel from "@/components/IloServerPanel";
 import HealthBadge from "@/components/HealthBadge";
 import { DeviceEditModal } from "@/components/DeviceEditModal";
 import ConnectivityDialog from "@/components/ConnectivityDialog";
@@ -285,10 +286,12 @@ export default function ClientOverviewPage() {
   const knownTypes = new Set(["firewall", "zyxel-usg", "switch", "server", "ilo", "ups", "nas", "storage", "ap", "access-point", "tvcc", "camera", "nvr", "dvr", "printer", "endpoint-private"]);
   const others = devices.filter(d => macroOf(d) === "other");
 
+  const iloRealServers = iloHealth.filter(s => s.has_redfish_data || s.server_model || s.bios_version);
   const tabs = [
     { id: "overview", label: "Panoramica", icon: Monitor },
     { id: "devices", label: `Dispositivi Vitali (${vitalDevices.length})`, icon: Star },
     { id: "servers", label: `Server (${iloHealth.length})`, icon: Cpu },
+    ...(iloRealServers.length > 0 ? [{ id: "ilo", label: `iLO (${iloRealServers.length})`, icon: HardDrives }] : []),
     { id: "wan", label: `WAN (${wanTargets.length})`, icon: Globe },
     { id: "alerts", label: `Alert (${alerts.length})`, icon: Bell },
     { id: "printers", label: `Stampanti (${mergedPrinters.length})`, icon: Printer },
@@ -528,6 +531,7 @@ export default function ClientOverviewPage() {
         {activeTab === "overview" && <OverviewTab devices={devices} wanTargets={wanTargets} alerts={alerts} connector={connector} printers={printers} backups={backups} firewalls={firewalls} switches={switches} servers={servers} upsList={upsList} nasList={nasList} apList={apList} tvccList={tvccList} printersList={printersList} voipList={voipList} workstationList={workstationList} mobileList={mobileList} iotList={iotList} skipList={skipList} others={others} iloHealth={iloHealth} clientId={clientId} onRefresh={fetchAll} />}
         {activeTab === "devices" && <DevicesTab devices={devices} clientId={clientId} onRefresh={fetchAll} onOptimisticUpdate={optimisticUpdateDevice} />}
         {activeTab === "servers" && <ServersTab iloHealth={iloHealth} clientId={clientId} clientName={client.name} onRefresh={fetchAll} />}
+        {activeTab === "ilo" && <IloTab iloHealth={iloHealth} clientId={clientId} onRefresh={fetchAll} />}
         {activeTab === "wan" && <WanClientTab targets={wanTargets} clientId={clientId} clientName={client.name} onRefresh={fetchAll} />}
         {activeTab === "alerts" && <AlertsTab alerts={alerts} navigate={navigate} clientId={clientId} clientName={client.name} onRefresh={fetchAll} />}
         {activeTab === "printers" && <PrintersTab printers={mergedPrinters} clientId={clientId} />}
@@ -876,6 +880,59 @@ function IloHealthPanel({ iloHealth }) {
   );
 }
 
+/* ==================== ILO TAB (dedicata, vista premium) ====================
+   v2026-08-11: tab dedicata "iLO" che mostra SOLO i server fisici con dati
+   Redfish live, ognuno con la vista premium IloServerPanel (stato power +
+   azioni, UID LED, POST state, grafici storici, health matrix, inventario
+   CPU/DIMM/Dischi/NIC e log IML/SEL inline).
+*/
+function IloTab({ iloHealth, clientId, onRefresh }) {
+  const [polling, setPolling] = useState(false);
+  const servers = (iloHealth || []).filter(s => s.has_redfish_data || s.server_model || s.bios_version);
+
+  const pollNow = async () => {
+    setPolling(true);
+    try {
+      await axios.post(`${API}/redfish/poll-now`, {});
+      toast.success("Polling iLO avviato — risultati tra 10-30s");
+      setTimeout(() => onRefresh?.(), 12000);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Errore avvio polling iLO");
+    } finally {
+      setPolling(false);
+    }
+  };
+
+  if (servers.length === 0) {
+    return (
+      <div className="noc-panel p-8 text-center" data-testid="ilo-tab-empty">
+        <HardDrives size={36} className="mx-auto mb-3 opacity-30 text-[var(--text-muted)]" />
+        <p className="text-sm text-[var(--text-primary)] font-semibold mb-1">Nessun server iLO con dati live</p>
+        <p className="text-xs text-[var(--text-muted)] max-w-md mx-auto">
+          I server con credenziali iLO/Redfish configurate compaiono qui con la telemetria completa.
+          Configura le credenziali dalla tab <b>Server</b>.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4" data-testid="ilo-tab">
+      <div className="flex items-center justify-between px-1">
+        <p className="text-[11px] text-[var(--text-muted)]">{servers.length} server iLO con telemetria live · aggiornamento automatico ogni 30s</p>
+        <Button size="sm" variant="outline" className="h-7 text-xs gap-1 border-cyan-500/30 text-cyan-300 hover:bg-cyan-500/10"
+          onClick={pollNow} disabled={polling} data-testid="ilo-tab-poll-btn">
+          {polling ? <ArrowClockwise size={12} className="animate-spin" /> : <Lightning size={12} weight="bold" />}
+          {polling ? "Polling..." : "Polla iLO ora"}
+        </Button>
+      </div>
+      {servers.map((s, idx) => (
+        <IloServerPanel key={s.device_ip || idx} s={s} clientId={clientId} defaultOpen={servers.length === 1} />
+      ))}
+    </div>
+  );
+}
+
 /* ==================== SERVERS TAB (dedicated full view) ====================
    v2026-02-14: tab dedicata "Server" che mostra TUTTI i dati Redfish/iLO
    per i server del cliente:
@@ -1142,6 +1199,24 @@ function IloServerCard({ s, healthColor }) {
             <p className="text-[10px] text-[var(--text-muted)] font-mono">
               {s.device_ip} — {s.server_model || "?"} {s.serial_number ? `· S/N ${s.serial_number}` : ""}
             </p>
+            <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+              {s.power_state && (
+                <span className={`text-[8px] font-bold uppercase px-1.5 py-0.5 rounded ${(s.power_state || "").toLowerCase() === "on" ? "bg-emerald-500/15 text-emerald-400" : "bg-slate-500/20 text-slate-400"}`} title={`Power: ${s.power_state}`}>
+                  {(s.power_state || "").toLowerCase() === "on" ? "⏻ Acceso" : "⏻ Spento"}
+                </span>
+              )}
+              {(s.indicator_led === "Lit" || s.indicator_led === "Blinking") && (
+                <span className="text-[8px] font-bold uppercase px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-300" title="UID LED acceso">UID ON</span>
+              )}
+              {s.post_state && (
+                <span className="text-[8px] font-bold uppercase px-1.5 py-0.5 rounded bg-cyan-500/10 text-cyan-400/80" title={`POST state: ${s.post_state}`}>{s.post_state}</span>
+              )}
+              {(s.processor_summary?.count || (s.processors || []).length) > 0 && (
+                <span className="text-[8px] uppercase px-1.5 py-0.5 rounded bg-white/5 text-[var(--text-muted)]" title={s.processor_summary?.model || ""}>
+                  {(s.processor_summary?.count || s.processors.length)}× CPU
+                </span>
+              )}
+            </div>
           </div>
           <div className="flex items-center gap-2">
             <span className="text-[9px] px-2 py-1 rounded font-bold uppercase" style={{ color: hc, background: `${hc}18` }}>

@@ -54,6 +54,79 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-08-11 ✅ VERIFICA disinstallazione remota agent dalla console (8/8 PASS)
+
+### Richiesta utente
+Controllare che la rimozione/disinstallazione di Argus dai server clienti dalla
+console funzioni perfettamente.
+
+### Esito: FUNZIONA (nessun difetto)
+Flusso verificato end-to-end:
+- **Console** (`AgentsPage.js`): modale 2 modalità (solo Center / rimozione completa)
+  + progress bar → `DELETE /api/agents/{id}?uninstall_remote=true&purge_data=true`.
+- **Backend** (`agent_ws.py::delete_agent`): se agent LIVE invia WS nativo `uninstall`;
+  fallback su `update` versione magica `__uninstall__` per agent legacy (v4.10.x).
+  Traccia `uninstall_status=in_progress`.
+- **Agent Go**: ENTRAMBI i percorsi hanno FALLBACK INLINE (`uninstall_remote_windows.go`
+  righe 64-74 + `install-noc-agent.ps1` righe 464-475) che ferma+elimina servizi
+  86NocAgent/86NocWatchdog, killa UI, rimuove binari + ProgramData ANCHE senza
+  uninstall.ps1 → funziona con qualsiasi metodo di installazione.
+- **Watcher** (`list_agents`): offline >30s → completed + cleanup DB (6 collection) +
+  audit; live >90s → failed; timeout 3 min gestito.
+
+### Fix harness test
+`tests/test_agent_uninstall_tracking.py`: il fixture `admin_token` non completava il
+2FA (obbligatorio dal 2026-08-07) → 403. Aggiunto verify-2fa con TOTP → **8/8 PASS**.
+
+### Limite minore (utente ha scelto di NON risolvere — opzione B)
+Sui server installati via COMANDO TOKEN, `uninstall.ps1` non viene scritto in
+InstallDir: la disinstallazione DALLA CONSOLE funziona lo stesso (fallback inline),
+ma manca la voce "Disinstalla" LOCALE in Programmi e funzionalità / menu Start.
+Solo `installer_gui.ps1.template` scrive uninstall.ps1. Non risolto per scelta utente.
+
+## 2026-08-11 🔧 Sezione iLO/Redfish POTENZIATA (Panoramica + tab dedicata "iLO")
+
+### Richiesta utente
+Quando arrivano i dati dalla iLO, mostrarli in modo più ricco e preciso: pannello
+Panoramica arricchito + nuova tab dedicata "iLO". Dati richiesti: stato power On/Off
++ azioni power + UID LED, POST state, health sottosistemi, grafici storici sempre
+visibili, inventario preciso (CPU model/core/GHz, DIMM banco/slot, dischi RAID/wear/
+temp/ore, NIC con IP/VLAN), log eventi hardware IML/SEL.
+
+### Implementazione
+- **Backend `redfish.py` (`_poll_device`, modalità REDFISH DIRECT — no rebuild agent Go):**
+  ora raccoglie e persiste in `device_poll_status.redfish`: `power_state` (On/Off),
+  `indicator_led` (UID), `post_state` (HPE Oem PostState / DMTF BootProgress),
+  `processors[]` (socket/model/cores/threads/MaxSpeedMHz/health) da
+  `/Systems/1/Processors/`, `processor_summary` (count/model/cores), e `vlan` sulle NIC.
+  Nuovo metodo poller `set_indicator_led` (PATCH IndicatorLED Lit/Off/Blinking).
+- **Backend `redfish_routes.py`:** nuovo `POST /api/devices/{ip}/uid-led` (admin, multi-tenant
+  scoped). `power-state` ora ritorna anche `indicator_led`. Power actions + `/redfish/metrics`
+  (serie storiche) + `/servers/ilo-events` già esistenti riusati.
+- **Backend `devices.py` (`get_client_ilo_health`):** espone i nuovi campi in entrambi i path.
+- **Frontend NUOVO `components/IloServerPanel.js`:** vista premium per server — header con
+  stato power + chip POST + menu azioni power (On/GracefulShutdown/ForceRestart/ForceOff/
+  PushPowerButton, con conferma su azioni distruttive) + toggle UID LED; health matrix
+  sottosistemi; DUE grafici storici sempre visibili (Potenza W + Temperatura max/inlet, con
+  selettore 1h/6h/24h, refresh 30s); inventario preciso CPU/DIMM/Dischi(RAID/wear/temp/ore)/
+  NIC(IP/VLAN/link); log IML/SEL inline.
+- **Frontend `ClientOverviewPage.js`:** nuova tab "iLO (N)" (solo se esistono server con dati
+  Redfish) che renderizza `IloTab` → lista `IloServerPanel`. La card iLO in Panoramica
+  (`IloServerCard`) ora mostra chip: ⏻ Acceso/Spento, UID ON, POST state, "N× CPU".
+
+### Testing
+- Backend: endpoint registrati (uid-led/power-state → 403 senza auth), `ilo-health` ritorna
+  tutti i nuovi campi (verificato). 
+- Frontend E2E (iteration_107): **9/9 PASS al 100%** con server DEMO seed ZITASRV-ILO. Tab iLO,
+  grafici popolati, azioni power menu, UID, inventario CPU/DIMM/Dischi(predict-fail)/NIC(VLAN
+  41/61), chip Panoramica, log IML/SEL con degrado gestito. Aggiunto toast su refresh power.
+
+### ⚠️ Note deploy / dati
+- ZITASRV-ILO (10.100.41.25) in PREVIEW è **DATO DEMO seedato** (`backend/seed_ilo_demo.py`)
+  per validare la UI: in preview non c'è iLO reale. In PROD i dati arrivano dal poller reale.
+- Le azioni Power/UID richiedono credenziali iLO nel Vault (in preview danno 404 gestito).
+- Per PROD: Save to GitHub + redeploy backend+frontend. Nessun rebuild agent Go.
+
 ## 2026-08-10 ✅ VERIFICA "Apri Mappa" filtrato per cliente (E2E PASS 6/6)
 
 ### Esito

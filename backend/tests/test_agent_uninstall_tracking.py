@@ -66,7 +66,21 @@ def admin_token():
                       json={"email": ADMIN_EMAIL, "password": ADMIN_PASS},
                       timeout=15)
     assert r.status_code == 200, f"login failed {r.status_code}: {r.text}"
-    return r.json().get("token") or r.json().get("access_token")
+    body = r.json()
+    token = body.get("token") or body.get("access_token")
+    # 2FA obbligatorio per admin (dal 2026-08-07): completa il verify con TOTP.
+    if body.get("requires_2fa") or body.get("requires_2fa_setup"):
+        import pyotp
+        cli = MongoClient(MONGO_URL)
+        secret = cli[DB_NAME].users.find_one({"email": ADMIN_EMAIL}, {"totp_secret": 1}).get("totp_secret")
+        cli.close()
+        assert secret, "totp_secret mancante per l'admin di test"
+        code = pyotp.TOTP(secret).now()
+        r2 = requests.post(f"{API}/auth/verify-2fa", json={"code": code},
+                           headers={"Authorization": f"Bearer {token}"}, timeout=15)
+        assert r2.status_code == 200, f"verify-2fa failed {r2.status_code}: {r2.text}"
+        token = r2.json().get("token") or r2.json().get("access_token")
+    return token
 
 
 @pytest.fixture(scope="module")

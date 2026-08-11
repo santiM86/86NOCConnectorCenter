@@ -307,6 +307,11 @@ class RedfishPoller:
             "temperatures": [],
             "fans": [],
             "power_supplies": [],
+            "power_state": None,
+            "indicator_led": None,
+            "post_state": None,
+            "processors": [],
+            "processor_summary": None,
         }
 
         try:
@@ -325,6 +330,43 @@ class RedfishPoller:
                         result["total_memory_gb"] = sys_data["MemorySummary"].get("TotalSystemMemoryGiB")
                     health = sys_data.get("Status", {}).get("Health", "Unknown")
                     result["health_status"] = health.lower() if health else "unknown"
+                    # Power state (On/Off) + UID indicator LED
+                    result["power_state"] = sys_data.get("PowerState")
+                    result["indicator_led"] = sys_data.get("IndicatorLED")
+                    # POST / boot state: HPE Oem PostState, fallback DMTF BootProgress
+                    _oem = sys_data.get("Oem", {}) or {}
+                    _hpe_sys = _oem.get("Hpe") or _oem.get("Hp") or {}
+                    result["post_state"] = _hpe_sys.get("PostState") or (sys_data.get("BootProgress", {}) or {}).get("LastState")
+                    # Processor summary (count/model) — quick overview even senza walk collezione
+                    _psum = sys_data.get("ProcessorSummary", {}) or {}
+                    result["processor_summary"] = {
+                        "count": _psum.get("Count"),
+                        "model": (_psum.get("Model") or "").strip() or None,
+                        "cores": _psum.get("CoreCount"),
+                        "health": (_psum.get("Status", {}) or {}).get("Health"),
+                    }
+
+                # 1b. Processors detail (modello / core / GHz per socket)
+                try:
+                    proc_col = await self._get(client, f"{base_url}/redfish/v1/Systems/1/Processors/", auth)
+                    if proc_col and proc_col.get("Members"):
+                        for pref in proc_col["Members"][:8]:
+                            p = await self._get(client, f"{base_url}{pref['@odata.id']}", auth)
+                            if not p:
+                                continue
+                            if (p.get("ProcessorType") or "CPU") != "CPU":
+                                continue
+                            result["processors"].append({
+                                "socket": p.get("Socket") or p.get("Id"),
+                                "model": (p.get("Model") or "").strip(),
+                                "cores": p.get("TotalCores"),
+                                "threads": p.get("TotalThreads"),
+                                "speed_mhz": p.get("MaxSpeedMHz"),
+                                "health": (p.get("Status", {}) or {}).get("Health"),
+                                "state": (p.get("Status", {}) or {}).get("State"),
+                            })
+                except Exception as _pe:
+                    logger.debug(f"processors fetch failed for {device_ip}: {_pe}")
 
                 # 2. Power (try multiple URIs as HP/HPE changes them across iLO versions)
                 power_data = None
@@ -546,6 +588,7 @@ class RedfishPoller:
                                 "state": state,
                                 "link_status": link_status or "unknown",
                                 "ipv4": (nic.get("IPv4Addresses", [{}])[0].get("Address") if nic.get("IPv4Addresses") else None),
+                                "vlan": ((nic.get("VLAN", {}) or {}).get("VLANId") if nic.get("VLAN") else None),
                                 "fqdn": nic.get("FQDN"),
                             })
 
@@ -717,6 +760,11 @@ class RedfishPoller:
                     "memory_dimms": result["memory_dimms"],
                     "network_adapters": result["network_adapters"],
                     "storage_controllers": result["storage_controllers"],
+                    "power_state": result["power_state"],
+                    "indicator_led": result["indicator_led"],
+                    "post_state": result["post_state"],
+                    "processors": result["processors"],
+                    "processor_summary": result["processor_summary"],
                 },
                 "hardware": {
                     "health_status": result["health_status"],
@@ -1404,6 +1452,7 @@ class RedfishPoller:
                         "power_state": data.get("PowerState", "Unknown"),
                         "health": data.get("Status", {}).get("Health", "Unknown"),
                         "model": data.get("Model"),
+                        "indicator_led": data.get("IndicatorLED"),
                     }
                 elif r.status_code == 401:
                     return {"success": False, "error": "Credenziali non valide"}
@@ -1413,5 +1462,33 @@ class RedfishPoller:
             return {"success": False, "error": "Timeout"}
         except httpx.ConnectError:
             return {"success": False, "error": "Connessione rifiutata"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def set_indicator_led(self, url: str, username: str, password: str, state: str) -> dict:
+        """Accende/spegne il UID LED (IndicatorLED) del server via iLO Redfish.
+        Stati Redfish validi: Lit (acceso), Off (spento), Blinking (lampeggiante).
+        """
+        valid = ["Lit", "Off", "Blinking"]
+        if state not in valid:
+            return {"success": False, "error": f"Stato non valido. Validi: {valid}"}
+        try:
+            async with httpx.AsyncClient(verify=False, timeout=15.0) as client:
+                r = await client.patch(
+                    f"{url}/redfish/v1/Systems/1/",
+                    auth=(username, password),
+                    json={"IndicatorLED": state},
+                    headers={"Content-Type": "application/json"},
+                )
+                if r.status_code in (200, 204):
+                    return {"success": True, "indicator_led": state}
+                elif r.status_code == 401:
+                    return {"success": False, "error": "Credenziali non valide"}
+                else:
+                    return {"success": False, "error": f"HTTP {r.status_code}"}
+        except httpx.TimeoutException:
+            return {"success": False, "error": "Timeout connessione iLO"}
+        except httpx.ConnectError:
+            return {"success": False, "error": "Connessione rifiutata - iLO non raggiungibile"}
         except Exception as e:
             return {"success": False, "error": str(e)}
