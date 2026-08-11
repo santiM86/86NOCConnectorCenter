@@ -61,17 +61,25 @@ async def build_topology_graph(client_id: Optional[str]) -> dict:
     if not switches:
         return {"switches": [], "edges": []}
 
-    # MAC base + FDB macs per switch
+    # MAC base + FDB (mac->vlan) per switch
     fdb_macs: dict = {}
+    fdb_mac_vlan: dict = {}
     for ip in list(switches):
         ps = await db.device_poll_status.find_one(
             {**base, "device_ip": ip}, {"_id": 0, "primary_mac": 1})
         if ps and ps.get("primary_mac"):
             switches[ip]["mac"] = _hex12(ps["primary_mac"])
-        macs = await db.discovered_endpoints.distinct(
-            "mac", {**base, "switch_ip": ip, "source": "agent_fdb"})
-        fdb_macs[ip] = {_hex12(m) for m in macs if _hex12(m)}
-        switches[ip]["endpoints"] = len(macs)
+        docs = await db.discovered_endpoints.find(
+            {**base, "switch_ip": ip, "source": "agent_fdb"},
+            {"_id": 0, "mac": 1, "vlan": 1}).to_list(5000)
+        mv: dict = {}
+        for dd in docs:
+            h = _hex12(dd.get("mac"))
+            if h:
+                mv[h] = dd.get("vlan")
+        fdb_mac_vlan[ip] = mv
+        fdb_macs[ip] = set(mv.keys())
+        switches[ip]["endpoints"] = len(mv)
 
     mac_to_switch = {s["mac"]: ip for ip, s in switches.items() if s["mac"]}
     host_to_switch = {s["name"].lower(): ip for ip, s in switches.items() if s.get("name")}
@@ -111,12 +119,24 @@ async def build_topology_graph(client_id: Optional[str]) -> dict:
             e["b_port"] = e["b_port"] or ap
         edges[key] = e
 
-    # Verifica FDB: il MAC di uno dei due compare nella FDB dell'altro?
+    # Verifica FDB + VLAN nativa del link: il MAC di uno dei due compare nella
+    # FDB dell'altro? Se si, il link e' verificato e ne ricaviamo la VLAN.
     for key, e in edges.items():
         a, b = key
         ma, mb = switches[a]["mac"], switches[b]["mac"]
-        e["verified"] = bool((mb and mb in fdb_macs.get(a, set())) or
-                             (ma and ma in fdb_macs.get(b, set())))
+        vlan = None
+        verified = False
+        if mb and mb in fdb_mac_vlan.get(a, {}):
+            verified = True
+            vlan = fdb_mac_vlan[a].get(mb)
+        elif ma and ma in fdb_mac_vlan.get(b, {}):
+            verified = True
+            vlan = fdb_mac_vlan[b].get(ma)
+        e["verified"] = verified
+        try:
+            e["vlan"] = int(vlan) if vlan is not None and str(vlan).strip() != "" else None
+        except (ValueError, TypeError):
+            e["vlan"] = None
 
     return {"switches": list(switches.values()), "edges": list(edges.values())}
 
@@ -170,7 +190,19 @@ def render_topology_png(graph: dict, brand_name: Optional[str] = None,
     max_per_row = max((len(l) for l in layers), default=1)
     content_w = max_per_row * BW + (max_per_row - 1) * HGAP
     W = max(900, content_w + 2 * MARGIN)
-    H = HEADER + len(layers) * (BH + VGAP) - VGAP + LEGEND + MARGIN
+
+    # Palette VLAN: colore deterministico per ogni VLAN nativa presente
+    VLAN_PALETTE = [
+        (56, 189, 248), (250, 204, 21), (244, 114, 182), (52, 211, 153),
+        (167, 139, 250), (251, 146, 60), (34, 197, 94), (248, 113, 113),
+        (45, 212, 191), (129, 140, 248), (232, 121, 249), (163, 230, 53),
+    ]
+    vlans_present = sorted({e.get("vlan") for e in edges if e.get("vlan") is not None})
+    vlan_color = {v: VLAN_PALETTE[i % len(VLAN_PALETTE)] for i, v in enumerate(vlans_present)}
+    # Altezza legenda: cresce se ci sono molte VLAN (righe da ~6 swatch)
+    legend_rows = 1 + (len(vlans_present) + 5) // 6 if vlans_present else 1
+    LEGEND_H = 30 + legend_rows * 22
+    H = HEADER + len(layers) * (BH + VGAP) - VGAP + LEGEND_H + MARGIN
 
     img = Image.new("RGB", (W, H), (15, 23, 42))  # slate-900
     d = ImageDraw.Draw(img)
@@ -224,20 +256,31 @@ def render_topology_png(graph: dict, brand_name: Optional[str] = None,
             d.line([(x0 + (x1 - x0) * t0, y0 + (y1 - y0) * t0),
                     (x0 + (x1 - x0) * t1, y0 + (y1 - y0) * t1)], fill=fill, width=width)
 
-    # edges
+    # edges — colore per VLAN nativa (verde/grigio se VLAN sconosciuta),
+    # stile SOLIDO = verificato (LLDP+FDB), TRATTEGGIATO = solo LLDP.
     for e in edges:
         if e["a"] not in pos or e["b"] not in pos:
             continue
         ca, cb = center(e["a"]), center(e["b"])
+        vlan = e.get("vlan")
+        col = vlan_color.get(vlan) if vlan is not None else (
+            (34, 197, 94) if e.get("verified") else (148, 163, 184))
         if e.get("verified"):
-            d.line([ca, cb], fill=(34, 197, 94), width=4)       # verde solido
+            d.line([ca, cb], fill=col, width=4)
         else:
-            _dashed(ca, cb, (148, 163, 184), 2)                  # grigio tratteggiato
+            _dashed(ca, cb, col, 2)
+        # etichetta VLAN a meta' link
+        if vlan is not None:
+            mx, my = (ca[0] + cb[0]) // 2, (ca[1] + cb[1]) // 2
+            lbl = f"VLAN {vlan}"
+            tw = d.textlength(lbl, font=f_port)
+            d.rectangle([mx - tw / 2 - 3, my - 8, mx + tw / 2 + 3, my + 8], fill=(15, 23, 42))
+            d.text((mx - tw / 2, my - 6), lbl, font=f_port, fill=col)
         # etichette porte vicino ai box
-        for cc, ip_side, port in ((ca, e["a"], e.get("a_port")), (cb, e["b"], e.get("b_port"))):
+        for cc, port in ((ca, e.get("a_port")), (cb, e.get("b_port"))):
             if not port:
                 continue
-            ox = ca if cc is cb else cb
+            ox = cb if cc is ca else ca
             tx = cc[0] + (ox[0] - cc[0]) * 0.18
             ty = cc[1] + (ox[1] - cc[1]) * 0.18
             d.text((tx - 20, ty - 6), str(port)[:14], font=f_port, fill=(203, 213, 225))
@@ -255,12 +298,26 @@ def render_topology_png(graph: dict, brand_name: Optional[str] = None,
                    font=f_small, fill=(94, 234, 212))
 
     # legenda
-    ly = H - LEGEND + 8
-    d.line([(MARGIN, ly - 8), (W - MARGIN, ly - 8)], fill=(51, 65, 85), width=1)
-    d.line([(MARGIN, ly + 10), (MARGIN + 40, ly + 10)], fill=(34, 197, 94), width=4)
-    d.text((MARGIN + 50, ly + 3), "Link VERIFICATO (LLDP + MAC-table concordano)", font=f_small, fill=(203, 213, 225))
-    _dashed((MARGIN + 430, ly + 10), (MARGIN + 470, ly + 10), (148, 163, 184), 2)
-    d.text((MARGIN + 480, ly + 3), "Adiacenza LLDP (non ancora confermata da FDB)", font=f_small, fill=(203, 213, 225))
+    ly = H - LEGEND_H + 8
+    d.line([(MARGIN, ly - 6), (W - MARGIN, ly - 6)], fill=(51, 65, 85), width=1)
+    d.line([(MARGIN, ly + 10), (MARGIN + 36, ly + 10)], fill=(34, 197, 94), width=4)
+    d.text((MARGIN + 44, ly + 3), "Verificato (LLDP+FDB)", font=f_small, fill=(203, 213, 225))
+    _dashed((MARGIN + 260, ly + 10), (MARGIN + 296, ly + 10), (148, 163, 184), 2)
+    d.text((MARGIN + 304, ly + 3), "Solo adiacenza LLDP", font=f_small, fill=(203, 213, 225))
+    # swatch VLAN
+    if vlans_present:
+        d.text((MARGIN, ly + 30), "VLAN native:", font=f_small, fill=(148, 163, 184))
+        vx = MARGIN + 90
+        vy = ly + 30
+        for i, v in enumerate(vlans_present):
+            if vx > W - MARGIN - 90:
+                vx = MARGIN + 90
+                vy += 22
+            c = vlan_color[v]
+            d.rectangle([vx, vy + 1, vx + 16, vy + 13], fill=c)
+            lab = f"VLAN {v}"
+            d.text((vx + 22, vy), lab, font=f_small, fill=(203, 213, 225))
+            vx += 26 + int(d.textlength(lab, font=f_small)) + 22
 
     out = io.BytesIO()
     img.save(out, format="PNG")

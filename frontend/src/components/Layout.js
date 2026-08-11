@@ -66,6 +66,7 @@ const navConfig = [
     items: [
       { path: "/", icon: ChartLineUp, label: "Dashboard", roles: ["admin", "operator", "viewer"] },
       { path: "/alerts", icon: Bell, label: "Alert", hasBadge: true, roles: ["admin", "operator", "viewer"] },
+      { path: "/network-status", icon: Globe, label: "Stato Rete (Mappa)", roles: ["admin", "operator", "viewer"] },
     ],
   },
   {

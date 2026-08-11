@@ -54,6 +54,39 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-08-10 🎨 Diagramma di rete: colorazione per VLAN nativa + legenda
+
+### Richiesta utente
+Colorare i link del diagramma per VLAN nativa + legenda colori VLAN, per
+trasformarlo in mappa delle segregazioni di rete (utile in audit sicurezza).
+
+### Implementazione (`routes/topology_diagram.py`)
+- `build_topology_graph`: durante la verifica FDB ricava anche la **VLAN
+  nativa** del link (dalla voce FDB che conferma l'adiacenza) -> `edge["vlan"]`.
+- `render_topology_png`: palette deterministica per VLAN; link colorato per
+  VLAN (fallback verde/grigio se VLAN sconosciuta), etichetta "VLAN N" a meta'
+  link, e **legenda VLAN** (swatch colore) + legenda stile (solido=verificato,
+  tratteggiato=solo LLDP). Canvas/legenda ad altezza dinamica per molte VLAN.
+
+### Testing
+- Preview con VLAN 10 (dati) e VLAN 20 (voip): link colorati correttamente
+  (giallo/blu), etichette VLAN e legenda presenti. PNG ispezionato
+  visivamente. PASS. Nessuna modifica a report.py/frontend (stesso PNG).
+
+### Risolto: vista Mappa mancante su desktop
+Causa: la rotta `/network-status` (pagina "Stato Rete" con toggle Lista/Mappa +
+NetworkMap e pulsanti PNG/PDF/Modifica/Auto) era raggiungibile SOLO dal pulsante
+nella dashboard mobile (`MobileDashboard.js:362`); la **sidebar desktop non
+aveva alcuna voce** verso quella rotta -> su desktop la funzione risultava
+"assente" (in realta' solo non navigabile). Fix: aggiunta voce
+"Stato Rete (Mappa)" (icona Globe) nel gruppo Panoramica di `Layout.js`
+(desktop + mobile sidebar). Compila OK. Screenshot autenticato non possibile
+(login preview bloccato da IP allowlist, error 1010, dall'ambiente).
+
+---
+
+
+
 ## 2026-08-10 🗺️ Diagramma di rete auto-generato (PNG + nel PDF white-label)
 
 ### Richiesta utente
