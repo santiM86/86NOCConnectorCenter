@@ -520,8 +520,10 @@ async def get_switch_ports(device_ip: str, client_id: Optional[str] = None,
         casc = await compute_switch_cascade(md_local.get("client_id") or client_id)
         uplinks = {}  # nome_porta_locale normalizzato -> peer info
         name_by_ip = {c["ip"]: c["name"] for c in casc.get("cascade", [])}
+        gateway_ips = set()
         for g in casc.get("gateways", []):
             name_by_ip.setdefault(g["ip"], g["name"])
+            gateway_ips.add(g["ip"])
         for e in casc.get("edges", []):
             if e.get("a") == device_ip:
                 lp, peer, rp = e.get("a_port"), e.get("b"), e.get("b_port")
@@ -534,6 +536,7 @@ async def get_switch_ports(device_ip: str, client_id: Optional[str] = None,
                     "peer_ip": peer, "peer_name": name_by_ip.get(peer, peer),
                     "remote_port": rp or "", "verified": bool(e.get("verified")),
                     "vlan": e.get("vlan"),
+                    "peer_kind": "gateway" if peer in gateway_ips else "switch",
                 }
         if uplinks:
             for o in out:

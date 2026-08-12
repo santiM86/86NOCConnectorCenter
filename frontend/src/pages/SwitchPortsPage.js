@@ -15,7 +15,7 @@ import { API } from "@/App";
 import { toast } from "sonner";
 import {
   ArrowsClockwise, Lightning, WifiHigh, Stack, Cloud, Desktop,
-  Prohibit, Plugs, ArrowDown, ArrowUp, Cpu, CaretUp, CaretDown, Warning,
+  Prohibit, Plugs, ArrowDown, ArrowUp, ArrowRight, Cpu, CaretUp, CaretDown, Warning,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import PortCableView from "@/components/PortCableView";
@@ -572,6 +572,7 @@ export default function SwitchPortsPage() {
       if (filter === "down") return p.oper !== 1 && p.admin === 1;
       if (filter === "admin_down") return p.admin === 2;
       if (filter === "with_neighbor") return !!p.neighbor;
+      if (filter === "switch_uplink") return !!p.is_switch_uplink;
       if (filter === "poe") return p.poe_status === 3;
       if (filter === "loop") return !!p.loop_suspect;
       return true;
@@ -821,12 +822,14 @@ export default function SwitchPortsPage() {
           { id: "admin_down", label: `Admin-down ${t.admin_down || 0}`, color: "neutral" },
           { id: "poe", label: `PoE ${t.poe_active || 0}`, color: "amber" },
           { id: "with_neighbor", label: `LLDP ${t.with_neighbor || 0}`, color: "cyan" },
+          ...((data?.ports || []).some(p => p.is_switch_uplink) ? [{ id: "switch_uplink", label: `Uplink ${(data?.ports || []).filter(p => p.is_switch_uplink).length}`, color: "violet" }] : []),
           ...(t.loop_suspect > 0 ? [{ id: "loop", label: `⚠ Loop ${t.loop_suspect}`, color: "rose" }] : []),
         ].map(f => {
           const active = filter === f.id;
           const cls = f.color === "emerald" ? (active ? "bg-emerald-500/20 border-emerald-400 text-emerald-300" : "border-emerald-500/30 text-emerald-300/70")
             : f.color === "red" ? (active ? "bg-red-500/20 border-red-400 text-red-300" : "border-red-500/30 text-red-300/70")
             : f.color === "amber" ? (active ? "bg-amber-500/20 border-amber-400 text-amber-300" : "border-amber-500/30 text-amber-300/70")
+            : f.color === "violet" ? (active ? "bg-violet-500/20 border-violet-400 text-violet-200" : "border-violet-500/40 text-violet-300/80")
             : f.color === "rose" ? (active ? "bg-rose-500/25 border-rose-400 text-rose-200" : "border-rose-500/40 text-rose-300/80 animate-pulse")
             : f.color === "neutral" ? (active ? "bg-neutral-500/30 border-neutral-400 text-neutral-200" : "border-neutral-500/30 text-[var(--text-muted)]")
             : (active ? "bg-cyan-500/20 border-cyan-400 text-cyan-300" : "border-cyan-500/30 text-cyan-300/70");
@@ -837,6 +840,65 @@ export default function SwitchPortsPage() {
           );
         })}
       </div>
+
+      {/* Riepilogo UPLINK verso altri switch (collegamenti switch-to-switch) */}
+      {(() => {
+        const uplinks = (data?.ports || []).filter(p => p.is_switch_uplink);
+        if (uplinks.length === 0) return null;
+        return (
+          <div className="noc-panel p-3 md:p-4 border border-indigo-500/40" data-testid="switch-uplinks-summary">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="bg-indigo-500 text-white rounded-full p-1 shadow-md shadow-indigo-500/40"><Stack size={13} weight="fill" /></span>
+              <h3 className="text-[12px] font-bold uppercase tracking-wider text-[var(--text-primary)]">Porte di uplink (verso switch / gateway)</h3>
+              <span className="text-[11px] font-mono text-indigo-300">{uplinks.length}</span>
+            </div>
+            <div className="grid gap-1.5 sm:grid-cols-2 lg:grid-cols-3">
+              {uplinks
+                .slice()
+                .sort((a, b) => {
+                  const ka = a.uplink_to?.peer_kind === "gateway" ? 1 : 0;
+                  const kb = b.uplink_to?.peer_kind === "gateway" ? 1 : 0;
+                  return ka - kb || (a.idx || 0) - (b.idx || 0);
+                })
+                .map(p => {
+                  const isGw = p.uplink_to?.peer_kind === "gateway";
+                  return (
+                  <button
+                    key={p.idx}
+                    onClick={() => setSelected(p)}
+                    className={`text-left rounded-lg border transition p-2 ${isGw ? "border-amber-500/30 bg-amber-500/5 hover:bg-amber-500/10" : "border-indigo-500/30 bg-indigo-500/5 hover:bg-indigo-500/10"}`}
+                    data-testid={`switch-uplink-summary-row-${p.idx}`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[11px] font-bold text-[var(--text-primary)] font-mono">Porta {p.idx} · {p.name}</span>
+                      <span className={`text-[8px] font-bold px-1 py-0.5 rounded ${isGw ? "bg-amber-500/20 text-amber-300" : "bg-indigo-500/20 text-indigo-200"}`}>
+                        {isGw ? "GATEWAY/ROUTER" : "SWITCH"}
+                      </span>
+                    </div>
+                    <div className="text-[10px] text-[var(--text-secondary)] mt-1 flex items-center gap-1">
+                      <ArrowRight size={11} weight="bold" className={`flex-shrink-0 ${isGw ? "text-amber-300" : "text-indigo-300"}`} />
+                      <span className="truncate">
+                        <b className={isGw ? "text-amber-200" : "text-indigo-200"}>{p.uplink_to?.peer_name || p.neighbor?.remote_sys_name || (isGw ? "gateway" : "switch")}</b>
+                        {p.uplink_to?.peer_ip && <span className="font-mono text-[var(--text-muted)]"> ({p.uplink_to.peer_ip})</span>}
+                      </span>
+                    </div>
+                    {(p.uplink_to?.remote_port || p.uplink_to?.vlan != null) && (
+                      <div className="text-[9px] text-[var(--text-muted)] mt-0.5 font-mono">
+                        {p.uplink_to?.remote_port && <>→ porta remota <b>{p.uplink_to.remote_port}</b></>}
+                        {p.uplink_to?.vlan != null && <> · VLAN {p.uplink_to.vlan}</>}
+                      </div>
+                    )}
+                    <span className={`inline-block mt-1 text-[8px] font-bold px-1 py-0.5 rounded ${p.uplink_to?.verified ? "bg-emerald-500/20 text-emerald-300" : "bg-amber-500/20 text-amber-300"}`}>
+                      {p.uplink_to?.verified ? "✓ VERIFICATO" : "~ PROBABILE"}
+                    </span>
+                  </button>
+                );})}
+            </div>
+            <p className="text-[9px] text-[var(--text-muted)] mt-2">Porte verso altri <b className="text-indigo-300">switch</b> (indaco) e verso il <b className="text-amber-300">gateway/router</b> (ambra). Dedotte da LLDP + tabella MAC/FDB. Clicca per il dettaglio.</p>
+          </div>
+        );
+      })()}
+
 
       {/* Matrice porte Nebula-style */}
       <div className="noc-panel p-3 md:p-4">

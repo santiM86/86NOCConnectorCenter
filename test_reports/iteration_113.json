@@ -1,0 +1,22 @@
+{
+  "summary": "Frontend-only test of the new switch-to-switch uplink UI on SwitchPortsPage (/switch-ports/10.10.41.221?clientId=da3d6e40-...). Admin login with 2FA (TOTP) succeeded. Uplink summary panel and 'Switch uplink' filter chip both work as specified. No crash, no white page, no functional console errors.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "SwitchPortsPage - uplink summary", "issues": ["Panel titled 'Porte collegate ad altri switch' also lists Porta 1 -> FORTIGATE-FW (a firewall, remote port wan1), so the heading is semantically inaccurate; consider 'Porte di uplink (switch/router)' or excluding non-switch peers. Same applies to the 'Switch uplink 2' filter chip count.", "Minor: rows for non-switch peers show no VLAN, leaving slight card-height inconsistency (cosmetic only)."]}
+    ]
+  },
+  "test_report_links": [],
+  "action_items": ["(Optional/cosmetic) Reword 'Porte collegate ad altri switch' / 'Switch uplink' or filter out non-switch peers (FORTIGATE-FW) so the label matches the content."],
+  "critical_code_review_comments": ["SwitchPortsPage.js is ~1123 lines - consider splitting (port tile, detail panel, uplink summary) into components for maintainability."],
+  "updated_files": [],
+  "success_rate": {"backend": "not tested", "frontend": "100%"},
+  "seed_data_creation": "none (used existing seed_switch_cascade.py preview data)",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "info@86bit.it / Ariel17051986@!@86 + TOTP NMHDJNO53WLTOSREUXWERE6FDH5TAKC3 (worked)",
+  "context_for_next_testing_agent": "Verified: data-testid=switch-uplinks-summary renders with 2 rows: 'Porta 1 · Gi1/0/1 | ~ PROBABILE | FORTIGATE-FW (10.10.41.1) | -> porta remota wan1' and 'Porta 24 · Gi1/0/24 | VERIFICATO | SWITCH03 (10.10.41.222) | -> porta remota Gi1/0/1 · VLAN 1'. Clicking a row selects the port and renders port-uplink-detail-<idx>. Chip data-testid=port-filter-switch_uplink labelled 'Switch uplink 2' filters the port matrix from 24 tiles to exactly the 2 uplink tiles (both with uplink badge). Only console error is a pre-login 403 on /api/auth/me (benign).",
+  "rca_of_the_issue": "N/A - no defects found; the only remark is a labeling/semantic mismatch since uplink detection includes non-switch LLDP peers (firewall)."
+}
