@@ -47,12 +47,20 @@ function Card({ title, icon: Icon, children, testid }) {
 }
 
 function Metric({ label, value, unit, colorClass = "text-white", small = false }) {
+  // Difesa: alcuni OID SNMP possono tornare come oggetto/array (es. { "1": val })
+  // invece di scalare -> renderizzarli direttamente causava React error #31.
+  let safe = value;
+  if (safe !== null && safe !== undefined && typeof safe === "object") {
+    const vals = Array.isArray(safe) ? safe : Object.values(safe);
+    safe = vals.map((x) => (x !== null && typeof x === "object" ? JSON.stringify(x) : x)).join(", ") || "—";
+  }
+  const empty = safe === null || safe === undefined || safe === "";
   return (
     <div className="flex items-center justify-between py-1">
       <span className="text-[11px] text-white/60">{label}</span>
       <span className={`${small ? "text-xs" : "text-sm"} font-mono ${colorClass}`}>
-        {value === null || value === undefined ? "—" : value}
-        {unit && value !== null && value !== undefined && <span className="text-white/40 text-[10px] ml-1">{unit}</span>}
+        {empty ? "—" : safe}
+        {unit && !empty && <span className="text-white/40 text-[10px] ml-1">{unit}</span>}
       </span>
     </div>
   );
@@ -100,7 +108,7 @@ function SynologyPanel({ vm, thresholds }) {
                 <span className="text-white/60">Disk {idx}</span>
                 <div className="flex items-center gap-3">
                   {st !== undefined && <span className={`font-mono ${stColor}`}>{synologyDiskStatus(st)}</span>}
-                  {t !== undefined && <span className={`font-mono ${tempColor}`}>{t}°C</span>}
+                  {t !== undefined && <span className={`font-mono ${tempColor}`}>{typeof t === "object" ? JSON.stringify(t) : t}°C</span>}
                 </div>
               </div>
             );
