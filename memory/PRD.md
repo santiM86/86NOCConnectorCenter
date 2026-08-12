@@ -1,5 +1,13 @@
 ## ⚠️ REGOLE PERMANENTI — leggere PRIMA di toccare qualsiasi file
 
+
+0. **RELEASE AGENT SU GITHUB** → seguire SEMPRE `/app/memory/github_release_workflow.md`
+   (procedura permanente richiesta esplicitamente dall'utente il 2026-08-11: bump
+   `noc-agent/VERSION` → Save to GitHub → dispatch `release-agent.yml` via API →
+   monitorare/correggere build → verificare release con 9 asset). NON reinventare
+   questo flusso ogni sessione. Il token GitHub lo dà l'utente al bisogno e NON va
+   mai salvato nel codice.
+
 Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 1. **NON installare e NON aggiungere mai** `emergentintegrations` alle
