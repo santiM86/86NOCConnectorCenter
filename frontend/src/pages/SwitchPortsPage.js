@@ -721,8 +721,12 @@ export default function SwitchPortsPage() {
               : dt === "nas" ? "Interfacce NAS"
               : dt.includes("router") ? "Dettagli router"
               : "Dettagli switch";
+            const nm = (data.device_name || "").trim();
             return (
-              <h1 className="text-base md:text-lg font-bold truncate">{lbl} · <span className="font-mono text-cyan-300">{data.device_ip}</span></h1>
+              <h1 className="text-base md:text-lg font-bold truncate">
+                {lbl} · <span className="text-cyan-300">{nm || data.device_ip}</span>
+                {nm && <span className="ml-2 font-mono text-[11px] font-normal text-[var(--text-muted)]">{data.device_ip}</span>}
+              </h1>
             );
           })()}
           <p className="text-[10px] text-[var(--text-muted)] flex flex-wrap gap-x-2 gap-y-0.5">
