@@ -465,9 +465,24 @@ async def get_vm_status(client_id: str, current_user: dict = Depends(get_current
             "failed": 0, "warning": 0, "stale": 0,
         }}
     customers = sorted({f["customer"] for f in filters})
-    items = await db.vmbackup_jobs.find(
-        _build_vm_mongo_filter(filters), {"_id": 0},
-    ).sort("vm_name", 1).limit(5000).to_list(5000)
+    # I dati Altaro possono contenere MOLTI documenti per la stessa VM logica
+    # (uno per poll/snapshot): senza dedup, il limite di 5000 record ordinati per
+    # nome si riempie di duplicati delle prime VM e TAGLIA via le altre (es. host
+    # con 4 VM ma 7000+ documenti -> se ne vedevano solo 2). De-duplichiamo lato
+    # DB tenendo l'ultimo snapshot per (customer, host, vm_name).
+    pipeline = [
+        {"$match": _build_vm_mongo_filter(filters)},
+        {"$sort": {"onsite_time": -1}},
+        {"$group": {
+            "_id": {"c": "$customer_name", "h": "$host_name", "v": "$vm_name"},
+            "doc": {"$first": "$$ROOT"},
+        }},
+        {"$replaceRoot": {"newRoot": "$doc"}},
+        {"$project": {"_id": 0}},
+        {"$sort": {"vm_name": 1}},
+        {"$limit": 5000},
+    ]
+    items = await db.vmbackup_jobs.aggregate(pipeline, allowDiskUse=True).to_list(5000)
     by_host: dict[str, int] = {}
     by_status: dict[str, int] = {}
     failed = warning = stale = 0
