@@ -62,6 +62,26 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-08-11 🔗 FIX uplink switch-to-switch non rilevati (peer con IP/chassis diversi)
+
+**Bug**: cliente con 3 switch HPE non mostrava gli uplink switch↔switch. Causa: in
+`topology_diagram.py::build_topology_graph` il vicino LLDP era riconosciuto come
+switch gestito solo via `remote_ip`, `remote_chassis_id`==`primary_mac`, o
+`sysName`. Sugli HPE il peer si annuncia con **mgmt-IP di altra subnet**
+(192.168.x ≠ 10.10.41.x) e **chassis-id ≠ primary_mac** → nessun match → edge
+non creato → nessun uplink.
+**Fix**: aggiunto indice `chassis_to_switch` costruito da
+`lldp_neighbors.local_chassis_id` (il chassis che OGNI switch annuncia); usato per
+matchare il `remote_chassis_id` del vicino. Verificato testing_agent iteration_114
+(CHASW-B→CHASW-A/CHASW-C VERIFICATI VLAN10). Seed riproduzione:
+`backend/seed_cascade_chassis.py`.
+⚠️ Dipendenza produzione: richiede che l'agent popoli `local_chassis_id` in
+`lldp_neighbors`. Se quel campo è vuoto in prod, il match non scatta → da
+verificare dopo il deploy (Save to GitHub + redeploy Center).
+
+---
+
+
 ## 2026-08-11 🔖 Bump agent v4.30.0 → v4.30.1 (per rollout fix WSH/Menu Start)
 
 - La release GitHub "latest" attuale = **v4.30.0** (il Center la risolve via

@@ -84,6 +84,17 @@ async def build_topology_graph(client_id: Optional[str]) -> dict:
     mac_to_switch = {s["mac"]: ip for ip, s in switches.items() if s["mac"]}
     host_to_switch = {s["name"].lower(): ip for ip, s in switches.items() if s.get("name")}
 
+    # Indice per chassis-id ANNUNCIATO da ogni switch (LLDP local_chassis_id):
+    # e' l'ID che i vicini riportano come remote_chassis_id. Fondamentale quando il
+    # peer si annuncia con un mgmt-IP di un'altra subnet e con chassis != primary_mac.
+    chassis_to_switch: dict = {}
+    async for ld in db.lldp_neighbors.find(
+        base, {"_id": 0, "local_ip": 1, "local_chassis_id": 1}):
+        li = ld.get("local_ip")
+        lc = _hex12(ld.get("local_chassis_id"))
+        if li in switches and lc:
+            chassis_to_switch.setdefault(lc, li)
+
     # Edges backbone da LLDP
     edges: dict = {}
     async for ld in db.lldp_neighbors.find(
@@ -100,6 +111,8 @@ async def build_topology_graph(client_id: Optional[str]) -> dict:
             rc = _hex12(ld.get("remote_chassis_id"))
             if rc and rc in mac_to_switch:
                 b = mac_to_switch[rc]
+            elif rc and rc in chassis_to_switch:
+                b = chassis_to_switch[rc]
         if not b:
             rn = (ld.get("remote_sys_name") or "").strip().lower()
             if rn and rn in host_to_switch:
