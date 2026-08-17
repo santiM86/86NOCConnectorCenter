@@ -121,7 +121,7 @@ func (p *TopoPoller) runOnce(ctx context.Context, cfg config.SNMPConfig) {
 		if t.IP == "" || !switchProfiles[strings.ToLower(t.Profile)] {
 			continue
 		}
-		info := p.walkOne(ctx, cfg, t)
+		info := p.walkOneBounded(ctx, cfg, t)
 		if info == nil || (len(info.Neighbors) == 0 && len(info.FDB) == 0) {
 			continue
 		}
@@ -134,6 +134,36 @@ func (p *TopoPoller) runOnce(ctx context.Context, cfg config.SNMPConfig) {
 		p.on(proto.SwitchTopoReport{Switches: switches})
 	}
 	p.log.Info("switch topology collected", "switches", strconv.Itoa(len(switches)))
+}
+
+// walkOneBounded esegue walkOne con un BUDGET per-switch + recover dai panic.
+// v4.30.2 FIX: prima runOnce era sequenziale ed emetteva il report SOLO alla
+// fine; un singolo switch lento/con tabelle FDB enormi (o che si bloccava sul
+// BulkWalk) fermava l'INTERO ciclo topologia -> LLDP/FDB "congelati" su tutta la
+// flotta e i collegamenti switch-to-switch non si aggiornavano piu'. Ora lo
+// switch lento viene abbandonato e gli altri vengono comunque raccolti.
+func (p *TopoPoller) walkOneBounded(ctx context.Context, cfg config.SNMPConfig, t config.SNMPTarget) *proto.SwitchTopoInfo {
+	budget := 15 * time.Second
+	type res struct{ info *proto.SwitchTopoInfo }
+	ch := make(chan res, 1)
+	go func() {
+		defer func() {
+			if rec := recover(); rec != nil {
+				p.log.Warn("topo walk panic recovered", "ip", t.IP, "err", fmt.Sprintf("%v", rec))
+				ch <- res{nil}
+			}
+		}()
+		ch <- res{p.walkOne(ctx, cfg, t)}
+	}()
+	select {
+	case out := <-ch:
+		return out.info
+	case <-time.After(budget):
+		p.log.Warn("topo walk budget exceeded, switch skipped", "ip", t.IP, "budget", budget.String())
+		return nil
+	case <-ctx.Done():
+		return nil
+	}
 }
 
 func (p *TopoPoller) walkOne(ctx context.Context, cfg config.SNMPConfig, t config.SNMPTarget) *proto.SwitchTopoInfo {

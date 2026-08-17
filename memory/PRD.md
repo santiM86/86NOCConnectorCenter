@@ -162,6 +162,47 @@ su un device deve aggiornare "ULTIMO CHECK SNMP"; la stessa fix sblocca anche
 l'UPS Xanto (gli OID verranno letti quando il poll SNMP riprende).
 Feature ancora in sospeso (attendono risposte utente): Preset Salvati, Nome VM in Bulk.
 
+### 2026-08-17 (agg.5) 🔗 Stesso stallo anche nel TopoPoller (LLDP/FDB) → hardened in v4.30.2
+Indagando "i collegamenti tra switch si aggiornano?" ho trovato che
+`internal/poller/snmptopo.go::runOnce` è SEQUENZIALE ed emette il report SOLO
+alla fine: un singolo switch lento/con FDB enorme (o bloccato sul BulkWalk)
+fermava l'INTERO ciclo topologia → LLDP/FDB "congelati" su tutta la flotta e i
+link switch-to-switch non si aggiornavano più (stessa famiglia del bug SNMP).
+Fix v4.30.2: `walkOneBounded()` — budget 15s per-switch (goroutine+select) +
+recover dai panic → lo switch lento viene abbandonato, gli altri sono raccolti.
+Compilata OK (go1.23) + `go vet` pulito. La logica Center "Match Uplink Esteso"
+(LLDP + fallback MAC/FDB) era già corretta e testata: una volta che gli agent
+consegnano LLDP/FDB freschi (post v4.30.2), i link switch — inclusi i 3 HPE senza
+chassis-id — verranno mostrati correttamente.
+
+### 2026-08-17 (agg.6) 🔧 v4.30.3 — FIX pulsanti "Avvia/Ferma/Riavvia servizi" (elevazione UAC)
+**Sintomo**: server con "X Servizi fermi" nel tray e i pulsanti servizi che non
+fanno nulla → nessun polling. **Causa**: la tray (`cmd/nocui`) gira come Scheduled
+Task `-RunLevel Limited` (NON elevata, riga 1107 di `install-noc-agent.ps1`), ma
+`startServices/stopServices/restartServices` usavano `sc.exe start/stop` diretto →
+"Accesso negato" ingoiato da `runSC` → servizi restavano fermi. **Fix v4.30.3**:
+le 3 funzioni ora usano `runElevated` (ShellExecuteW verb "runas" → prompt UAC),
+stesso meccanismo già usato (e funzionante) da "Aggiorna ora". Aggiunto `svcAction`
+con feedback msgbox se l'UAC viene annullato + refresh stato dopo 5s. "Aggiorna
+ora" era GIÀ corretto (elevato). Compilato GOOS=windows OK.
+⚠️ Nota: la v4.30.2 era già deployata (screenshot) con i servizi FERMI: per questo
+non arrivavano dati. Serve v4.30.3 (o riavvio manuale servizi come admin) per
+sbloccare. In sospeso (da confermare con utente): rimozione finestra locale
+"Gestisci Dispositivi" (vestigiale in modalità headless).
+
+### 2026-08-17 (agg.7) 🪟 v4.30.3 — SOLO-TRAY (rimossa finestra "Gestisci Dispositivi")
+Su richiesta utente ("deve rimanere solo la tray vicino all'orologio", decisione
+presa molte versioni fa e regredita): in `cmd/nocui/main.go` rimossi l'apertura su
+doppio-click e la voce di menu "Gestisci Dispositivi..."; `showConsoleWindow()` reso
+no-op (apre il NOC Center nel browser) così anche gli entry point residui (IPC /
+`-show` / shortcut legacy) non mostrano più la finestra locale. Resta solo l'icona
+tray con i controlli (Apri NOC Center, Avvia/Ferma/Riavvia servizi, Aggiorna,
+Info versione, Esci). Compilato GOOS=windows OK. CI usa solo `go build` (no vet):
+l'unreachable code residuo non blocca la release.
+Nota: pagina web `/agents` verificata OK in preview E in build di produzione
+(`yarn build` completa senza errori) → l'eventuale "schermo nero" è un problema di
+runtime/deploy di produzione, NON del codice frontend.
+
 
 ## 2026-08-11 🔗 FIX uplink switch-to-switch non rilevati (peer con IP/chassis diversi)
 
