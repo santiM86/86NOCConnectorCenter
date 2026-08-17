@@ -5302,7 +5302,7 @@ function BulkSettingsModal({ open, count, onClose, onApply }) {
   const build = () => {
     const apply = {};
     if (enVm) apply.vm_alert = vmAlert;
-    if (enVirt) apply.virtualization = virt;
+    if (enVirt) apply.virtualization = virt === "__unset__" ? "" : virt;
     if (enHost) apply.hyperv_host_hint = hostHint.trim();
     if (enSilence) { apply.silenced = silenced; apply.silence_reason = silenceReason; }
     if (enMon) apply.monitor_type = monitorType;
@@ -5316,7 +5316,7 @@ function BulkSettingsModal({ open, count, onClose, onApply }) {
     if (!p) return;
     const a = p.apply || {};
     setEnVm("vm_alert" in a); setVmAlert(a.vm_alert !== false);
-    setEnVirt("virtualization" in a); if ("virtualization" in a) setVirt(a.virtualization || "");
+    setEnVirt("virtualization" in a); if ("virtualization" in a) setVirt(a.virtualization || "__unset__");
     setEnHost("hyperv_host_hint" in a); setHostHint(a.hyperv_host_hint || "");
     setEnSilence("silenced" in a); setSilenced(a.silenced !== false); setSilenceReason(a.silence_reason || "");
     setEnMon("monitor_type" in a); if ("monitor_type" in a) setMonitorType(a.monitor_type);
@@ -5396,7 +5396,7 @@ function BulkSettingsModal({ open, count, onClose, onApply }) {
             <Select value={virt} onValueChange={setVirt}>
               <SelectTrigger className="bg-[var(--bg-card)] border-[var(--bg-border)] h-8 text-xs" data-testid="bulk-virt-select"><SelectValue /></SelectTrigger>
               <SelectContent className="bg-[var(--bg-panel)] border-[var(--bg-border)]">
-                <SelectItem value="">— non impostato (fisico) —</SelectItem>
+                <SelectItem value="__unset__">— non impostato (fisico) —</SelectItem>
                 <SelectItem value="physical">Server fisico</SelectItem>
                 <SelectItem value="hyperv">VM Hyper-V</SelectItem>
                 <SelectItem value="vmware">VM VMware</SelectItem>

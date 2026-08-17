@@ -235,6 +235,18 @@ da `ClientsPage.js` al posto del vecchio modal). 5 step, tutti SALTABILI tranne 
 Stepper con spunte, testid `new-client-wizard` + `wizard-*`. Testato E2E (crea → salta
 → agent con key+comando) + cleanup. Solo-frontend (usa endpoint esistenti).
 
+### 2026-08-17 (agg.10) 🎁 Wizard: preset sui device Datto + schermata Riepilogo
+- **Preset in onboarding**: nello step Datto, se "importa device" è attivo, un dropdown
+  carica i preset globali (`GET /device-setting-presets`); dopo `datto/seed-managed`
+  il wizard recupera gli IP del cliente (`GET /devices`) e applica il preset via
+  `POST /devices/bulk-apply-settings`. Valore sentinella `__none__` (Radix non
+  ammette SelectItem value=""; corretta anche la stessa latente nel BulkSettingsModal
+  → `__unset__` per "non impostato").
+- **Step 6 Riepilogo**: mostra lo stato di ogni integrazione (Datto/Backup/WAN/Agent)
+  con ✓/saltato + link "Completa ora" (torna allo step) / "Rivedi". `done{}` tracciato
+  nelle save. Testid `wizard-step-summary`, `wizard-to-summary`, `wizard-finish`.
+- Testato E2E: preset visibile, riepilogo con stati e link. Dati di test rimossi.
+
 
 ## 2026-08-11 🔗 FIX uplink switch-to-switch non rilevati (peer con IP/chassis diversi)
 

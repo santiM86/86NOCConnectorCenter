@@ -11,7 +11,7 @@ import {
 } from "@/components/ui/select";
 import { Check, Copy, ArrowRight, SkipForward } from "@phosphor-icons/react";
 
-const STEPS = ["Cliente", "Datto RMM", "Backup", "Monitor WAN", "Agent"];
+const STEPS = ["Cliente", "Datto RMM", "Backup", "Monitor WAN", "Agent", "Riepilogo"];
 
 export const NewClientWizard = ({ open, onClose, onCreated }) => {
   const [step, setStep] = useState(1);
@@ -23,20 +23,25 @@ export const NewClientWizard = ({ open, onClose, onCreated }) => {
   const [sites, setSites] = useState([]);
   const [siteId, setSiteId] = useState("");
   const [seedDevices, setSeedDevices] = useState(true);
+  const [presets, setPresets] = useState([]);
+  const [presetId, setPresetId] = useState("");
   // Step 3 Hornet
   const [tenants, setTenants] = useState([]);
   const [selTenants, setSelTenants] = useState(new Set());
   // Step 4 WAN
   const [wan, setWan] = useState({ label: "Firewall", device_type: "firewall", public_ip: "" });
+  // Riepilogo: cosa è stato agganciato
+  const [done, setDone] = useState({ datto: null, preset: null, hornet: 0, wan: null });
 
   useEffect(() => {
     if (open) {
       setStep(1); setSaving(false);
       setForm({ name: "", description: "", contact_email: "" });
       setClient(null);
-      setSites([]); setSiteId(""); setSeedDevices(true);
+      setSites([]); setSiteId(""); setSeedDevices(true); setPresetId("");
       setTenants([]); setSelTenants(new Set());
       setWan({ label: "Firewall", device_type: "firewall", public_ip: "" });
+      setDone({ datto: null, preset: null, hornet: 0, wan: null });
     }
   }, [open]);
 
@@ -45,6 +50,7 @@ export const NewClientWizard = ({ open, onClose, onCreated }) => {
     if (!client) return;
     if (step === 2 && sites.length === 0) {
       axios.get(`${API}/datto/sites`).then(r => setSites(r.data?.items || [])).catch(() => {});
+      axios.get(`${API}/device-setting-presets`).then(r => setPresets(r.data?.presets || [])).catch(() => {});
     }
     if (step === 3 && tenants.length === 0) {
       axios.get(`${API}/admin/hornetsecurity/tenants`).then(r => setTenants(r.data?.tenants || r.data || [])).catch(() => {});
@@ -75,11 +81,29 @@ export const NewClientWizard = ({ open, onClose, onCreated }) => {
     if (!siteId) { setStep(3); return; }
     setSaving(true);
     try {
+      const site = sites.find(s => s.site_id === siteId);
       await axios.put(`${API}/clients/${client.id}/datto/link`, { site_id: siteId });
+      let presetApplied = null;
       if (seedDevices) {
         try { await axios.post(`${API}/clients/${client.id}/datto/seed-managed`, {}); } catch { /* opzionale */ }
+        // Applica il preset ai device appena importati (onboarding one-shot)
+        if (presetId && presetId !== "__none__") {
+          try {
+            const p = presets.find(x => x.id === presetId);
+            const dev = await axios.get(`${API}/devices`, { params: { client_id: client.id } });
+            const list = dev.data?.devices || dev.data || [];
+            const ips = list.map(d => d.ip_address || d.ip).filter(Boolean);
+            if (p && ips.length) {
+              await axios.post(`${API}/devices/bulk-apply-settings`, {
+                client_id: client.id, ips, apply: p.apply || {}, vm_only: !!p.vm_only,
+              });
+              presetApplied = p.name;
+            }
+          } catch { toast.error("Preset non applicato (device non ancora pronti)"); }
+        }
       }
       toast.success("Sito Datto collegato");
+      setDone(d => ({ ...d, datto: site?.site_name || siteId, preset: presetApplied }));
       setStep(3);
     } catch (e) {
       toast.error(`Link Datto fallito: ${e.response?.data?.detail || e.message}`);
@@ -92,6 +116,7 @@ export const NewClientWizard = ({ open, onClose, onCreated }) => {
     try {
       await axios.put(`${API}/clients/${client.id}/backup/hornetsecurity/mapping`, { tenants: Array.from(selTenants) });
       toast.success("Backup mappato al cliente");
+      setDone(d => ({ ...d, hornet: selTenants.size }));
       setStep(4);
     } catch (e) {
       toast.error(`Mapping backup fallito: ${e.response?.data?.detail || e.message}`);
@@ -108,6 +133,7 @@ export const NewClientWizard = ({ open, onClose, onCreated }) => {
         check_ports: [443],
       });
       toast.success("Target WAN aggiunto");
+      setDone(d => ({ ...d, wan: wan.public_ip.trim() }));
       setStep(5);
     } catch (e) {
       toast.error(`Aggiunta WAN fallita: ${e.response?.data?.detail || e.message}`);
@@ -173,6 +199,17 @@ export const NewClientWizard = ({ open, onClose, onCreated }) => {
                 <input type="checkbox" checked={seedDevices} onChange={e => setSeedDevices(e.target.checked)} data-testid="wizard-datto-seed" />
                 Importa subito i dispositivi dal sito Datto
               </label>
+              {seedDevices && (
+                <Field label="Applica un preset ai device importati (opzionale)">
+                  <Select value={presetId} onValueChange={setPresetId}>
+                    <SelectTrigger className={inputCls} data-testid="wizard-datto-preset"><SelectValue placeholder={presets.length ? "Nessun preset" : "Nessun preset salvato"} /></SelectTrigger>
+                    <SelectContent className="bg-[var(--bg-panel)] border-[var(--bg-border)]">
+                      <SelectItem value="__none__" className="text-xs">— nessuno —</SelectItem>
+                      {presets.map(p => <SelectItem key={p.id} value={p.id} className="text-xs">{p.name}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </Field>
+              )}
               <p className="text-[10px] text-[var(--text-muted)]">Datto è configurato una sola volta a livello globale; qui colleghi il sito a questo cliente.</p>
             </div>
           )}
@@ -233,6 +270,17 @@ export const NewClientWizard = ({ open, onClose, onCreated }) => {
               <p className="text-[10px] text-[var(--text-muted)]">Esegui sul server del cliente come amministratore per installare l'agent.</p>
             </div>
           )}
+
+          {step === 6 && client && (
+            <div className="space-y-2" data-testid="wizard-step-summary">
+              <p className="text-[11px] text-[var(--text-muted)]">Riepilogo onboarding di <b className="text-[var(--text-primary)]">{client.name}</b>. Completa gli step saltati quando vuoi.</p>
+              <SummaryRow label="Datto RMM" ok={!!done.datto} okText={done.datto} onComplete={() => setStep(2)} />
+              {done.preset && <div className="text-[10px] text-emerald-400 pl-6">↳ preset applicato: {done.preset}</div>}
+              <SummaryRow label="Backup (Hornetsecurity/Altaro)" ok={done.hornet > 0} okText={done.hornet ? `${done.hornet} tenant` : ""} onComplete={() => setStep(3)} />
+              <SummaryRow label="Monitor WAN" ok={!!done.wan} okText={done.wan} onComplete={() => setStep(4)} />
+              <SummaryRow label="Agent" ok={true} okText="chiave & comando pronti" onComplete={() => setStep(5)} completeLabel="Rivedi" />
+            </div>
+          )}
         </div>
 
         {/* Footer navigazione */}
@@ -265,7 +313,10 @@ export const NewClientWizard = ({ open, onClose, onCreated }) => {
               </>
             )}
             {step === 5 && (
-              <Button size="sm" onClick={onClose} className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs gap-1" data-testid="wizard-finish"><Check size={12} /> Completa</Button>
+              <Button size="sm" onClick={() => setStep(6)} className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs gap-1" data-testid="wizard-to-summary">Vai al riepilogo <ArrowRight size={12} /></Button>
+            )}
+            {step === 6 && (
+              <Button size="sm" onClick={onClose} className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs gap-1" data-testid="wizard-finish"><Check size={12} /> Fine</Button>
             )}
           </div>
         </div>
@@ -279,5 +330,18 @@ const Field = ({ label, children }) => (
   <div className="space-y-1.5">
     <Label className="text-[var(--text-muted)] text-[10px] uppercase tracking-widest">{label}</Label>
     {children}
+  </div>
+);
+const SummaryRow = ({ label, ok, okText, onComplete, completeLabel = "Completa" }) => (
+  <div className="flex items-center justify-between rounded p-2 border bg-[var(--bg-card)] border-[var(--bg-border)]" data-testid={`summary-${label}`}>
+    <div className="flex items-center gap-2">
+      <span className={`inline-flex items-center justify-center w-4 h-4 rounded-full text-[9px] ${ok ? "bg-emerald-500/20 text-emerald-400" : "bg-[var(--bg-panel)] text-[var(--text-muted)] border border-[var(--bg-border)]"}`}>
+        {ok ? <Check size={10} /> : "—"}
+      </span>
+      <span className="text-[11px] text-[var(--text-primary)]">{label}</span>
+      {ok && okText && <span className="text-[10px] text-[var(--text-muted)]">· {okText}</span>}
+      {!ok && <span className="text-[10px] text-amber-400/80">saltato</span>}
+    </div>
+    <button type="button" onClick={onComplete} className="text-[10px] text-indigo-400 hover:text-indigo-300 underline">{ok ? completeLabel : "Completa ora"}</button>
   </div>
 );
