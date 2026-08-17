@@ -64,6 +64,44 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+## 2026-08-17 🔴 BLACKOUT sito (Gualdi) — display OFFLINE + alert "SITO GIU'" (fix reale)
+
+**Incident reale**: cliente Gualdi, mancanza corrente (tutto spento), ma ARGUS
+mostrava "tutto online tranne WAN offline". **Root cause CERTA**: il fix blackout
+precedente (`agent_down` in `liveness_resolver.compute_status` + override in
+`devices.py`) era stato scritto ma **MAI committato** (`git status` = `M`, `git log -S`
+= 0 commit) → **mai deployato** su `argus.86bit.it`. In prod girava il codice vecchio
+che, con l'agent morto, usava l'evidenza ARP/scanner ancora "fresca" (~15 min) per
+dire ONLINE. Unico segnale indipendente = sonda WAN del Center (infatti offline).
+
+**Fix (scelta utente = opzione a: OFFLINE rosso + alert)**:
+- `liveness_resolver.py`: nuovi `build_wan_down_clients(db)` (WAN giu' dalla sonda
+  Center = nessun target raggiungibile) e `build_blackout_clients(db)` =
+  `offline_clients ∩ wan_down` (agent giu' + WAN giu' → BLACKOUT CONFERMATO da 2
+  fonti indipendenti). `compute_status(...)` ora accetta `blackout_clients`:
+    - agent giu' + WAN giu' → **"offline"** (rosso, evidence `site_blackout`)
+    - solo agent giu' (WAN su, es. riavvio PC-connector) → **"stale"** (incerto,
+      evita il falso positivo opposto).
+- `overview.py` + `devices.py`: calcolano e passano `blackout_clients`; l'override
+  di `devices.py` degrada a offline/stale coerentemente (resta ONLINE solo se
+  confermato indipendentemente da Datto RMM).
+- `alert_engine.py`: nuovo **watchdog 4 `run_site_blackout_watchdog`** (in run_once)
+  che emette 1 alert CRITICO "SITO GIU' / possibile BLACKOUT" per cliente in
+  blackout, INDIPENDENTE dal n° device (a differenza del corr_site_power_down che
+  richiede ≥3). Dedup contro corr_site_power_down/corr_site_isolated attivi (quelli
+  sono piu' ricchi). Stato in `site_blackout_state`, auto-recovery alla ripresa.
+
+**Testing**: script diretto (3 scenari) PASS — blackout→offline+alert; solo-agent→
+stale+recovery alert; tutto su→online. Backend syntax OK, alert engine gira senza
+errori.
+
+⚠️ **DEPLOY OBBLIGATORIO**: modifiche solo backend Python → attive in preview ma
+in PROD SOLO dopo **Save to GitHub + redeploy del Center** (`noc-backend.service`).
+Senza il deploy l'incident si ripete (come oggi). Nessun rebuild agent Go.
+
+---
+
+
 ## 2026-08-17 🌐 IP pubblico (WAN) del cliente auto-rilevato in pagina Connettori
 
 **Richiesta utente**: mostrare l'IP pubblico del cliente nella tabella Agent

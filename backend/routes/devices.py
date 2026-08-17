@@ -842,12 +842,16 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
     # basata su ARP/scanner/poll dell'agent e' inaffidabile (dati stantii): un
     # device NON puo' essere "online" solo perche' l'agent morente l'aveva visto
     # poco prima. Manteniamo "online" SOLO se confermato indipendentemente da
-    # Datto RMM (agente sul device stesso, indipendente dal connector del sito);
-    # altrimenti degradiamo a "stale" (stato incerto: agent offline / possibile
-    # blackout). Cosi' non mostriamo piu' "tutto online" durante un blackout.
+    # Datto RMM (agente sul device stesso, indipendente dal connector del sito).
+    # Altrimenti:
+    #   - blackout confermato (agent giu' + WAN giu' dalla sonda Center) -> OFFLINE
+    #   - solo agent giu' (WAN ancora su) -> "stale" (stato incerto).
     try:
-        from liveness_resolver import build_clients_without_online_agent
+        from liveness_resolver import (
+            build_clients_without_online_agent, build_blackout_clients,
+        )
         offline_clients = await build_clients_without_online_agent(db)
+        blackout_clients = await build_blackout_clients(db, offline_clients)
         if offline_clients:
             for r in result:
                 cid = r.get("client_id")
@@ -856,8 +860,12 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
                 ipv = r.get("ip") or r.get("ip_address")
                 datto_ok = bool(ipv and datto_online_by_ip.get((cid, ipv)))
                 if not datto_ok:
-                    r["status"] = "stale"
-                    r["status_reason"] = "agent_offline"
+                    if cid in blackout_clients:
+                        r["status"] = "offline"
+                        r["status_reason"] = "site_blackout"
+                    else:
+                        r["status"] = "stale"
+                        r["status_reason"] = "agent_offline"
     except Exception:  # noqa: BLE001 — l'override e' best-effort, non deve rompere la lista
         pass
     return result

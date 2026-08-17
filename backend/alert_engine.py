@@ -750,6 +750,95 @@ async def run_new_device_watchdog(db, cfg_global: Dict[str, Any]) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Watchdog 4 — SITO GIU' / blackout (agent offline + WAN offline)
+# ---------------------------------------------------------------------------
+
+async def run_site_blackout_watchdog(db, cfg_global: Dict[str, Any]) -> int:
+    """Emette UN alert critico per cliente quando l'agent on-site e' offline E
+    la sonda WAN esterna del Center vede l'internet GIU' (blackout confermato da
+    due sorgenti indipendenti). Non dipende dal numero di device (a differenza
+    del correlation watchdog), cosi' scatta anche sui clienti piccoli.
+
+    Dedup: se il correlation watchdog ha gia' emesso un alert di sito
+    (corr_site_power_down / corr_site_isolated) attivo per il cliente, NON
+    duplichiamo (quello e' piu' ricco). Auto-recovery alla ripresa.
+    """
+    now = datetime.now(timezone.utc)
+    actions = 0
+    blackout = await lr.build_blackout_clients(db)
+
+    clients = await db.clients.find({}, {"_id": 0, "id": 1, "name": 1}).to_list(2000)
+    client_names = {c.get("id"): c.get("name") for c in clients}
+
+    # 1) Emissione per i clienti attualmente in blackout
+    for cid in blackout:
+        cname = client_names.get(cid) or (cid[:8] if cid else "")
+        cfg = await _resolve_client_config(db, cfg_global, cid)
+        # Dedup contro l'alert correlation di sito (piu' ricco) gia' attivo
+        corr_active = await db.alerts.find_one({
+            "client_id": cid, "status": "active",
+            "source_type": {"$in": ["corr_site_power_down", "corr_site_isolated"]},
+        })
+        state = await db.site_blackout_state.find_one({"client_id": cid})
+        if corr_active:
+            # Se avevamo un nostro alert autonomo, chiudilo: subentra il corr
+            if state and state.get("alert_id"):
+                await db.alerts.update_one({"id": state["alert_id"]},
+                    {"$set": {"status": "resolved", "resolved_at": now.isoformat()}})
+                await db.site_blackout_state.delete_one({"client_id": cid})
+            continue
+        if state and state.get("alert_id"):
+            # gia' emesso -> aggiorna solo il timestamp visto
+            await db.site_blackout_state.update_one({"client_id": cid},
+                {"$set": {"last_seen_at": now.isoformat()}})
+            continue
+        alert = _mk_alert(
+            cid, cname, "Sito", "", "site", "critical", "site_blackout",
+            f"SITO GIU' / possibile BLACKOUT: {cname}",
+            (f"Il sito del cliente {cname} risulta TOTALMENTE GIU': l'agent on-site "
+             f"non risponde piu' (nessun heartbeat) E la sonda WAN esterna del Center "
+             f"vede l'internet del cliente irraggiungibile. Due sorgenti indipendenti "
+             f"concordi -> probabile MANCANZA DI CORRENTE o guasto WAN a monte. "
+             f"Tutti i dispositivi del sito sono da considerarsi offline."),
+        )
+        await insert_alert_if_emit(db, alert)
+        await _dispatch_notification(db, cfg, alert)
+        await db.site_blackout_state.update_one(
+            {"client_id": cid},
+            {"$set": {"client_id": cid, "alert_id": alert["id"],
+                      "first_at": now.isoformat(), "last_seen_at": now.isoformat()}},
+            upsert=True,
+        )
+        actions += 1
+        logger.warning("[site-blackout] SITO GIU' client=%s", cname)
+
+    # 2) Recovery: clienti che avevano un alert blackout ma NON sono piu' in blackout
+    async for state in db.site_blackout_state.find({}):
+        cid = state.get("client_id")
+        if not cid or cid in blackout:
+            continue
+        cname = client_names.get(cid) or (cid[:8] if cid else "")
+        cfg = await _resolve_client_config(db, cfg_global, cid)
+        aid = state.get("alert_id")
+        if aid:
+            await db.alerts.update_one({"id": aid},
+                {"$set": {"status": "resolved", "resolved_at": now.isoformat()}})
+        if cfg.get("auto_recovery"):
+            rec = _mk_alert(
+                cid, cname, "Sito", "", "site", "low", "site_blackout_recovery",
+                f"Sito RIPRISTINATO: {cname}",
+                f"Il sito del cliente {cname} e' tornato raggiungibile "
+                f"(agent on-site + WAN operativi). Blackout rientrato.",
+            )
+            await _emit_recovery_notice(db, cfg, rec)
+        await db.site_blackout_state.delete_one({"client_id": cid})
+        actions += 1
+        logger.info("[site-blackout] recovery client=%s", cname)
+
+    return actions
+
+
+# ---------------------------------------------------------------------------
 # Scheduler
 # ---------------------------------------------------------------------------
 
@@ -785,6 +874,10 @@ class AlertEngine:
             datto = await run_datto_watchdog(self.db, cfg)
         except Exception as e:  # noqa: BLE001
             logger.warning("datto watchdog error: %s", e, exc_info=True)
+        try:
+            await run_site_blackout_watchdog(self.db, cfg)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("site-blackout watchdog error: %s", e, exc_info=True)
         try:
             await run_new_device_watchdog(self.db, cfg)
         except Exception as e:  # noqa: BLE001

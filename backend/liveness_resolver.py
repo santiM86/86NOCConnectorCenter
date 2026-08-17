@@ -73,6 +73,52 @@ async def build_clients_without_online_agent(db) -> set:
     return clients_with_any - clients_with_online
 
 
+async def build_wan_down_clients(db) -> set:
+    """
+    Ritorna l'insieme dei client_id la cui WAN e' GIU' secondo la sonda
+    ESTERNA del Center (external monitor / wan_probe_results): nessun target
+    del cliente e' raggiungibile.
+
+    Questa e' l'UNICA sorgente di liveness INDIPENDENTE dall'agent on-site:
+    gira dal Center, quindi resta valida anche durante un blackout totale del
+    sito (quando l'agent muore). Serve a confermare un vero outage.
+    """
+    per_client: dict = {}  # cid -> True se ALMENO un target raggiungibile
+    try:
+        async for r in db.wan_probe_results.find(
+            {}, {"_id": 0, "client_id": 1, "status": 1, "ping": 1, "ports": 1},
+        ):
+            cid = r.get("client_id")
+            if not cid:
+                continue
+            reachable = (
+                (r.get("ping") or {}).get("reachable")
+                or r.get("status") in ("online", "filtered", "degraded")
+                or any(p.get("open") for p in (r.get("ports") or []))
+            )
+            cur = per_client.get(cid)
+            per_client[cid] = bool(reachable) if cur is None else (cur or bool(reachable))
+    except Exception:
+        return set()
+    # WAN giu' = il cliente HA risultati sonda ma nessuno raggiungibile
+    return {cid for cid, up in per_client.items() if up is False}
+
+
+async def build_blackout_clients(db, offline_clients: Optional[set] = None) -> set:
+    """
+    Ritorna i client_id in BLACKOUT CONFERMATO: l'agent on-site e' offline
+    (nessun heartbeat) E la sonda WAN esterna del Center vede l'internet del
+    cliente GIU'. Due sorgenti indipendenti concordi -> il sito e' davvero giu'
+    (mancanza corrente / guasto WAN a monte), non un semplice riavvio agent.
+
+    In questo caso i device vanno mostrati OFFLINE (non solo "stale"), perche'
+    abbiamo la prova indipendente (WAN) che sono irraggiungibili.
+    """
+    if offline_clients is None:
+        offline_clients = await build_clients_without_online_agent(db)
+    wan_down = await build_wan_down_clients(db)
+    return set(offline_clients) & wan_down
+
 
 def effective_reachable(pd: Optional[Mapping[str, Any]]) -> bool:
     """
@@ -184,6 +230,7 @@ def compute_status(
     ip_evidence: Optional[Mapping[str, str]] = None,
     mac_evidence: Optional[Mapping[str, str]] = None,
     offline_clients: Optional[set] = None,
+    blackout_clients: Optional[set] = None,
 ) -> tuple:
     """
     Calcolo unificato dello status di un device.
@@ -220,6 +267,7 @@ def compute_status(
     ip_evidence = ip_evidence or {}
     mac_evidence = mac_evidence or {}
     offline_clients = offline_clients or set()
+    blackout_clients = blackout_clients or set()
 
     ip = md.get("ip") or md.get("ip_address") or pd.get("device_ip") or ""
     mac = (md.get("mac") or "").lower().replace("-", ":")
@@ -229,10 +277,16 @@ def compute_status(
     # di liveness (scanner LAN, ARP agent_v4, FDB switch) e i poll provengono
     # DALL'AGENT STESSO -> sono dati stantii inaffidabili. Non possiamo dire
     # "online" (era il bug: blackout sito ma device mostrati online per ~15 min
-    # finche' l'evidenza non scadeva). Marchiamo "stale/agent_offline": stato
-    # incerto, mai un falso "online". L'unico segnale indipendente e' la sonda
-    # WAN del Center (external monitor), che infatti vedeva correttamente offline.
+    # finche' l'evidenza non scadeva).
+    #   - agent giu' MA WAN ancora su (es. riavvio del PC-connector) -> "stale"
+    #     (stato incerto: non e' certo che i device siano in fault).
+    #   - agent giu' E WAN giu' (sonda Center indipendente) -> BLACKOUT confermato
+    #     -> "offline" (rosso): abbiamo la prova indipendente che il sito e' giu'.
     agent_down = bool(cid) and cid in offline_clients
+    site_blackout = bool(cid) and cid in blackout_clients
+
+    def _down():
+        return ("offline", "site_blackout") if site_blackout else ("stale", "agent_offline")
 
     # 1. Evidence override (solo se l'agent e' vivo: l'evidence viene dall'agent)
     ip_ev = ip_evidence.get(ip) if ip else None
@@ -246,15 +300,15 @@ def compute_status(
         if effective_reachable(pd) and not agent_down:
             label = (pd.get("method") or pd.get("ping_method") or "ping")
             return "online", str(label).strip() if label else "ping"
-        # agent giu' → stato incerto (non certo che sia in fault, ma NON online)
+        # agent giu' → stato incerto (stale) o blackout confermato (offline)
         if agent_down:
-            return "stale", "agent_offline"
+            return _down()
         return "offline", None
 
     # 3. Scanner-source senza poll: deriva da last_seen_at (ma non se agent giu')
     if md.get("source") == "connector-scanner":
         if agent_down:
-            return "stale", "agent_offline"
+            return _down()
         last_seen = md.get("last_seen_at")
         if last_seen:
             try:
@@ -268,7 +322,7 @@ def compute_status(
             except Exception:
                 pass
 
-    # 4. Agent giu' e nessun poll → incerto; altrimenti mai polleato → pending
+    # 4. Agent giu' e nessun poll → incerto/blackout; altrimenti mai polleato → pending
     if agent_down:
-        return "stale", "agent_offline"
+        return _down()
     return "pending", None
