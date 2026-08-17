@@ -1801,6 +1801,28 @@ async def list_agents(client_id: Optional[str] = None,
     return {"agents": docs, "live_count": len(live_ids)}
 
 
+@router.get("/agents/public-ip-history")
+async def agent_public_ip_history(client_id: Optional[str] = None,
+                                  agent_id: Optional[str] = None,
+                                  limit: int = 100,
+                                  current_user: dict = Depends(get_current_user)) -> Dict[str, Any]:
+    """Cronologia dei cambi di IP pubblico (failover linea / nuovo IP ISP).
+
+    Filtrabile per client_id o agent_id. Ordine: piu' recente prima.
+    """
+    require_admin(current_user)
+    q: Dict[str, Any] = {}
+    if agent_id:
+        q["agent_id"] = agent_id
+    if client_id:
+        q["client_id"] = client_id
+    limit = min(max(int(limit or 100), 1), 500)
+    changes = await db.agent_public_ip_changes.find(q, {"_id": 0}).sort(
+        "changed_at", -1).to_list(length=limit)
+    return {"changes": changes, "count": len(changes)}
+
+
+
 # --------------------------------------------------------------------------- #
 #  POST /api/agent/scan-report
 #

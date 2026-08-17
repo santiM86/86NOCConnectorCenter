@@ -97,6 +97,29 @@ l'IP mostrato è quello dell'uscita CGNAT dell'ISP.
   (`isRecentChange`), con tooltip "cambiato Ng fa · precedente: X".
 - Testato: patch DB + screenshot E2E (badge + nuovo IP renderizzati). Dati puliti.
 
+### 2026-08-17 (agg.2) 🛰️ Sonda TCP · Match Uplink Esteso · Auto-target WAN · Cronologia IP
+- **Match Uplink Esteso** (`topology_diagram.py::build_topology_graph`): fallback
+  "via MAC/FDB" quando il peer LLDP non e' identificabile (no remote_ip / chassis-id /
+  sysName e no local_chassis_id, tipico HPE). Le adiacenze LLDP irrisolte vengono
+  collegate per RECIPROCITA' FDB (A ha imparato il base-MAC di B e viceversa). Il
+  vincolo "esiste un'adiacenza LLDP irrisolta su A" evita i falsi positivi transitivi
+  (catena A-B-C non crea A-C). Edge marcato `match:"fdb"`, verificato + VLAN dalla FDB.
+  Seed di riproduzione: `seed_cascade_fdb.py`. Testato: B-A e B-C creati, no A-C.
+- **Sonda TCP** (`external_monitor.py POST /api/external-monitor/tcp-probe`): probe
+  SOLO TCP (K8s blocca ICMP raw) dal Center verso l'IP pubblico (default 443, N
+  connect concorrenti, timeout 3s). Ritorna reachable/RTT medio/loss% e `overall`
+  (ok/degraded/down). open|closed(RST)=WAN raggiungibile; timeout/errore=perdita.
+  UI: pulsante "Sonda" + chip risultato nella colonna IP Pubblico di AgentsPage.
+- **Auto-target WAN** (`GET /api/external-monitor/detected-public-ip/{client_id}`):
+  ritorna l'IP pubblico piu' recente rilevato dagli agent del cliente. ExternalMonitorPage
+  pre-compila il campo "IP Pubblico" al select del cliente + hint "WAN rilevata dagli
+  agent · usa".
+- **Cronologia IP** (`GET /api/agents/public-ip-history?agent_id=&client_id=`): elenca
+  i record `agent_public_ip_changes`. UI: badge "IP cambiato" cliccabile → modal
+  timeline (data-testid `ip-history-modal`/`ip-history-list`).
+- Testato E2E (screenshot): Sonda (RTT chip + toast), badge→cronologia (timeline),
+  auto-target (prefill 1.1.1.1 + hint). Backend curl OK. Dati di test rimossi.
+
 
 ## 2026-08-11 🔗 FIX uplink switch-to-switch non rilevati (peer con IP/chassis diversi)
 

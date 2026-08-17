@@ -5,7 +5,7 @@ import { Link } from "react-router-dom";
 import { toast } from "sonner";
 import {
   PlugsConnected, ArrowClockwise, ArrowCircleUp, MagnifyingGlass, Buildings,
-  Cpu, Clock, WifiHigh, WifiSlash, Warning, Stethoscope, Trash, X, Globe,
+  Cpu, Clock, WifiHigh, WifiSlash, Warning, Stethoscope, Trash, X, Globe, Pulse as PulseIcon,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 
@@ -31,6 +31,46 @@ export default function AgentsPage() {
   const [loading, setLoading] = useState(true);
   const [busyIds, setBusyIds] = useState(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
+  // Sonda TCP "vista da fuori" verso l'IP pubblico + cronologia cambi IP.
+  const [probing, setProbing] = useState({});        // agent_id -> bool
+  const [probeResult, setProbeResult] = useState({}); // agent_id -> result
+  const [ipHistory, setIpHistory] = useState(null);   // {agent, changes} | null
+  const [ipHistoryLoading, setIpHistoryLoading] = useState(false);
+
+  const runTcpProbe = async (a) => {
+    if (!a.public_ip) return;
+    setProbing((p) => ({ ...p, [a.agent_id]: true }));
+    try {
+      const res = await axios.post(`${API}/external-monitor/tcp-probe`, {
+        public_ip: a.public_ip, port: 443, count: 4,
+      });
+      const r = res.data || {};
+      setProbeResult((p) => ({ ...p, [a.agent_id]: r }));
+      const msg = r.overall === "ok" ? `WAN raggiungibile · RTT ${r.avg_rtt_ms}ms · loss ${r.packet_loss_pct}%`
+        : r.overall === "degraded" ? `WAN instabile · loss ${r.packet_loss_pct}% · RTT ${r.avg_rtt_ms}ms`
+        : `WAN NON raggiungibile (loss ${r.packet_loss_pct}%)`;
+      if (r.overall === "ok") toast.success(`${a.public_ip}: ${msg}`);
+      else if (r.overall === "degraded") toast.warning(`${a.public_ip}: ${msg}`);
+      else toast.error(`${a.public_ip}: ${msg}`);
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Errore sonda TCP");
+    } finally {
+      setProbing((p) => ({ ...p, [a.agent_id]: false }));
+    }
+  };
+
+  const openIpHistory = async (a) => {
+    setIpHistory({ agent: a, changes: [] });
+    setIpHistoryLoading(true);
+    try {
+      const res = await axios.get(`${API}/agents/public-ip-history`, { params: { agent_id: a.agent_id, limit: 100 } });
+      setIpHistory({ agent: a, changes: res.data?.changes || [] });
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Errore cronologia IP");
+    } finally {
+      setIpHistoryLoading(false);
+    }
+  };
   // v4.15.x: vista albero raggruppata per cliente (default ON). Persistita
   // in localStorage cosi' la preferenza resta sui reload.
   const [groupByClient, setGroupByClient] = useState(() => {
@@ -602,11 +642,36 @@ export default function AgentsPage() {
                                 <Globe size={10} />{a.public_ip}
                               </span>
                               {a.public_ip_changed_at && isRecentChange(a.public_ip_changed_at) && (
-                                <span
+                                <button
+                                  type="button"
+                                  onClick={() => openIpHistory(a)}
                                   data-testid={`agent-public-ip-changed-${a.agent_id}`}
-                                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400 border border-amber-500/25 cursor-help"
-                                  title={`IP pubblico cambiato ${fmtRel(a.public_ip_changed_at)}${a.public_ip_prev ? ` · precedente: ${a.public_ip_prev}` : ""}`}>
+                                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400 border border-amber-500/25 hover:bg-amber-500/25 transition-colors"
+                                  title={`IP pubblico cambiato ${fmtRel(a.public_ip_changed_at)}${a.public_ip_prev ? ` · precedente: ${a.public_ip_prev}` : ""} · clic per la cronologia`}>
                                   <Warning size={10} />IP cambiato
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => runTcpProbe(a)}
+                                disabled={probing[a.agent_id]}
+                                data-testid={`agent-tcp-probe-${a.agent_id}`}
+                                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-[var(--bg-border)] text-[var(--text-muted)] hover:text-sky-400 hover:border-sky-500/30 transition-colors disabled:opacity-50"
+                                title="Sonda TCP dal Center verso l'IP pubblico (porta 443): verifica se la WAN del cliente risponde da fuori">
+                                <PulseIcon size={10} className={probing[a.agent_id] ? "animate-pulse" : ""} />
+                                {probing[a.agent_id] ? "..." : "Sonda"}
+                              </button>
+                              {probeResult[a.agent_id] && (
+                                <span
+                                  data-testid={`agent-tcp-result-${a.agent_id}`}
+                                  className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border ${
+                                    probeResult[a.agent_id].overall === "ok" ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
+                                    : probeResult[a.agent_id].overall === "degraded" ? "bg-amber-500/10 text-amber-400 border-amber-500/20"
+                                    : "bg-red-500/10 text-red-400 border-red-500/20"}`}
+                                  title={`Sonda ${fmtRel(probeResult[a.agent_id].probed_at)} · loss ${probeResult[a.agent_id].packet_loss_pct}% · ${probeResult[a.agent_id].reached}/${probeResult[a.agent_id].count} risposte`}>
+                                  {probeResult[a.agent_id].overall === "ok" ? `RTT ${probeResult[a.agent_id].avg_rtt_ms}ms`
+                                    : probeResult[a.agent_id].overall === "degraded" ? `loss ${probeResult[a.agent_id].packet_loss_pct}%`
+                                    : "WAN giù"}
                                 </span>
                               )}
                             </span>
@@ -843,6 +908,55 @@ export default function AgentsPage() {
           onRefresh={() => fetchAgentLog(agentLogTarget)}
           onClose={() => { setAgentLogTarget(null); setAgentLogData(null); }}
         />
+      )}
+      {ipHistory && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
+          onClick={() => setIpHistory(null)} data-testid="ip-history-modal">
+          <div className="bg-[var(--bg-card)] border border-[var(--bg-border)] rounded-lg w-full max-w-lg max-h-[80vh] overflow-hidden flex flex-col"
+            onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between p-4 border-b border-[var(--bg-border)]">
+              <div>
+                <div className="text-sm font-semibold text-[var(--text-primary)] flex items-center gap-2">
+                  <Globe size={14} className="text-sky-400" /> Cronologia IP pubblico
+                </div>
+                <div className="text-[11px] text-[var(--text-muted)] mt-0.5">
+                  {ipHistory.agent.hostname || ipHistory.agent.agent_id?.slice(0, 12)} · {clients[ipHistory.agent.client_id] || ipHistory.agent.client_id?.slice(0, 8)}
+                </div>
+              </div>
+              <button type="button" onClick={() => setIpHistory(null)} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]" data-testid="ip-history-close">
+                <X size={16} />
+              </button>
+            </div>
+            <div className="p-4 overflow-y-auto">
+              {ipHistory.agent.public_ip && (
+                <div className="mb-3 text-[11px] text-[var(--text-muted)]">
+                  IP attuale: <span className="font-mono text-sky-400">{ipHistory.agent.public_ip}</span>
+                </div>
+              )}
+              {ipHistoryLoading ? (
+                <div className="text-xs text-[var(--text-muted)] py-6 text-center">Caricamento…</div>
+              ) : (ipHistory.changes || []).length === 0 ? (
+                <div className="text-xs text-[var(--text-muted)] py-6 text-center" data-testid="ip-history-empty">
+                  Nessun cambio IP registrato per questo agent.
+                </div>
+              ) : (
+                <ol className="relative border-l border-[var(--bg-border)] ml-2 space-y-4" data-testid="ip-history-list">
+                  {ipHistory.changes.map((c, i) => (
+                    <li key={i} className="ml-4">
+                      <div className="absolute w-2 h-2 bg-amber-400 rounded-full -left-1 mt-1.5" />
+                      <div className="text-[11px] text-[var(--text-muted)]">{fmtRel(c.changed_at)} · {new Date(c.changed_at).toLocaleString("it-IT")}</div>
+                      <div className="text-xs font-mono mt-0.5">
+                        <span className="text-red-400 line-through">{c.previous_ip || "—"}</span>
+                        <span className="text-[var(--text-muted)] mx-1">→</span>
+                        <span className="text-emerald-400">{c.public_ip}</span>
+                      </div>
+                    </li>
+                  ))}
+                </ol>
+              )}
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

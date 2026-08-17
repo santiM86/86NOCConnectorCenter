@@ -97,6 +97,7 @@ async def build_topology_graph(client_id: Optional[str]) -> dict:
 
     # Edges backbone da LLDP
     edges: dict = {}
+    unresolved: dict = defaultdict(list)  # local_ip -> [adiacenze LLDP non risolte]
     async for ld in db.lldp_neighbors.find(
         base, {"_id": 0, "local_ip": 1, "local_port_id": 1, "local_port_desc": 1,
                "remote_ip": 1, "remote_sys_name": 1, "remote_chassis_id": 1,
@@ -117,11 +118,16 @@ async def build_topology_graph(client_id: Optional[str]) -> dict:
             rn = (ld.get("remote_sys_name") or "").strip().lower()
             if rn and rn in host_to_switch:
                 b = host_to_switch[rn]
-        if not b or b == a:
-            continue
-        key = tuple(sorted([a, b]))
         ap = ld.get("local_port_desc") or ld.get("local_port_id") or ""
         rp = ld.get("remote_port_desc") or ld.get("remote_port_id") or ""
+        if b == a:
+            continue
+        if not b:
+            # Adiacenza fisica reale (LLDP) ma peer non identificabile: la teniamo
+            # da parte per il fallback "Match Uplink Esteso" via MAC/FDB.
+            unresolved[a].append({"local_port": ap, "remote_port": rp})
+            continue
+        key = tuple(sorted([a, b]))
         e = edges.get(key) or {"a": key[0], "b": key[1], "a_port": "", "b_port": "",
                                "verified": False}
         if a == key[0]:
@@ -131,6 +137,40 @@ async def build_topology_graph(client_id: Optional[str]) -> dict:
             e["a_port"] = e["a_port"] or rp
             e["b_port"] = e["b_port"] or ap
         edges[key] = e
+
+    # Fallback "Match Uplink Esteso": collega switch via MAC/FDB quando l'identita'
+    # del vicino LLDP non e' risolvibile (no remote_ip / chassis-id / sysName match) —
+    # tipico degli HPE che NON annunciano local_chassis_id ne' espongono il base-MAC
+    # in modo utile. Criterio: RECIPROCITA' FDB (A ha imparato il base-MAC di B e
+    # viceversa => link diretto). Il vincolo "esiste un'adiacenza LLDP irrisolta su A"
+    # evita i falsi positivi transitivi: in una catena A-B-C, A non ha un'adiacenza
+    # LLDP fisica verso C, quindi A-C non viene mai creato anche se A e C si "vedono"
+    # transitivamente nella FDB attraverso il trunk verso B.
+    if unresolved:
+        def _mutual(x: str, y: str) -> bool:
+            mx, my = switches[x]["mac"], switches[y]["mac"]
+            return bool(mx and my and my in fdb_macs.get(x, set())
+                        and mx in fdb_macs.get(y, set()))
+        for a, items in unresolved.items():
+            already = {(key[1] if key[0] == a else key[0]) for key in edges if a in key}
+            cands = [b for b in switches
+                     if b != a and b not in already and _mutual(a, b)]
+            # preferisci il candidato con meno MAC in FDB (link piu' "diretto"/edge)
+            cands.sort(key=lambda x: (len(fdb_macs.get(x, set())), switches[x]["name"].lower(), x))
+            for it in items:
+                if not cands:
+                    break
+                b = cands.pop(0)
+                key = tuple(sorted([a, b]))
+                if key in edges:
+                    continue
+                e = {"a": key[0], "b": key[1], "a_port": "", "b_port": "",
+                     "verified": False, "match": "fdb"}
+                if a == key[0]:
+                    e["a_port"], e["b_port"] = it["local_port"], it["remote_port"]
+                else:
+                    e["a_port"], e["b_port"] = it["remote_port"], it["local_port"]
+                edges[key] = e
 
     # Verifica FDB + VLAN nativa del link: il MAC di uno dei due compare nella
     # FDB dell'altro? Se si, il link e' verificato e ne ricaviamo la VLAN.
