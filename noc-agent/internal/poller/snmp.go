@@ -138,6 +138,13 @@ func (p *Poller) runOnce(ctx context.Context) []proto.SNMPPollResult {
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
+			// v4.30.2: recover da eventuali panic (parsing gosnmp) cosi'
+			// un singolo target malformato non abbatte il poller SNMP.
+			defer func() {
+				if r := recover(); r != nil {
+					p.log.Warn("snmp target panic recovered", "ip", t.IP, "err", fmt.Sprintf("%v", r))
+				}
+			}()
 			// v2026-06-02: pollTarget riceve l'intero SNMPTarget
 			// (con ExtraOIDs del profilo). Senza ExtraOIDs ricade
 			// nei 4 OID base (compat con PollOne/force_snmp_poll).
@@ -150,11 +157,36 @@ func (p *Poller) runOnce(ctx context.Context) []proto.SNMPPollResult {
 			}
 		}()
 	}
-	wg.Wait()
+
+	// v4.30.2 FIX CRITICO: non bloccare all'infinito su wg.Wait(). Prima, se
+	// UN solo target rispondeva lentamente al BulkWalk (tabelle grandi / device
+	// lento), la sua goroutine bloccava wg.Wait() e quindi l'INTERO loop SNMP
+	// si fermava: tutta la flotta restava "congelata" all'ultima data letta.
+	// Ora attendiamo al massimo un budget di ciclo (= interval, cap 60s): i
+	// target lenti vengono abbandonati (i loro GET/WALK hanno comunque timeout
+	// propri) e il ciclo successivo riparte regolarmente.
+	cycleBudget := cfg.Interval
+	if cycleBudget <= 0 || cycleBudget > 60*time.Second {
+		cycleBudget = 60 * time.Second
+	}
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-ctx.Done():
+	case <-time.After(cycleBudget):
+		p.log.Warn("snmp cycle exceeded budget, proceeding without slow targets",
+			"budget", cycleBudget.String(), "targets", fmt.Sprintf("%d", len(cfg.Targets)))
+	}
+
 	p.mu.Lock()
 	p.lastPollAt = time.Now().UTC()
 	p.mu.Unlock()
-	return results
+	mu.Lock()
+	out := make([]proto.SNMPPollResult, len(results))
+	copy(out, results)
+	mu.Unlock()
+	return out
 }
 
 func (p *Poller) poll(ctx context.Context, ip, community string) proto.SNMPPollResult {
@@ -284,12 +316,29 @@ func (p *Poller) pollTarget(ctx context.Context, t config.SNMPTarget) proto.SNMP
 				// risponde NoSuchInstance; per ogni OID non risolto dal GET
 				// proviamo un BulkWalk ed emettiamo i valori per-indice come
 				// "name.<index>". Il backend li raggruppa in vendor_metrics.
+				//
+				// v4.30.2 HARDENING: (1) budget complessivo sui WALK di questo
+				// target — i BulkWalk sequenziali potevano sommare tempi
+				// illimitati su device lenti e stallare il ciclo; (2) salta gli
+				// OID SCALARI (terminanti in .0): non sono tabelle, quindi un
+				// WALK e' inutile e rischia di "camminare" nel MIB adiacente
+				// restituendo valori errati; (3) MaxRepetitions limitato.
+				const walkBudget = 12 * time.Second
+				walkDeadline := time.Now().Add(walkBudget)
+				gExtra.MaxRepetitions = 10
 				for wName, wOID := range t.ExtraOIDs {
 					if wOID == "" {
 						continue
 					}
 					if _, ok := res.OIDs[wName]; ok {
 						continue // gia' risolto via GET (scalare)
+					}
+					if strings.HasSuffix(wOID, ".0") {
+						continue // scalare non supportato dal device: WALK inutile
+					}
+					if time.Now().After(walkDeadline) {
+						p.log.Warn("snmp walk budget exceeded, remaining table OIDs skipped", "ip", ip)
+						break
 					}
 					pdus, werr := gExtra.BulkWalkAll(wOID)
 					if werr != nil || len(pdus) == 0 {

@@ -137,6 +137,31 @@ l'IP mostrato è quello dell'uscita CGNAT dell'ISP.
   con checkbox-per-parametro (default "Allerta VM spenta" ON). Applica a TUTTI i
   selezionati senza distinzione di tipo. Testato E2E: 3 device aggiornati.
 
+### 2026-08-17 (agg.4) 🔴 ROOT CAUSE SNMP "flotta congelata" (v4.30.1) + fix agent v4.30.2
+**Sintomo utente**: tutti i device con "ULTIMO CHECK SNMP" fermo all'11-12/08
+(valori CPU/mem/temp congelati) mentre "ULTIMO POLL" resta fresco (17/08); UPS
+Xanto tutto "—".
+**Meccanismo**: "ULTIMO POLL" = liveness ICMP/ARP (aggiornato ogni ciclo);
+"ULTIMO CHECK SNMP" = `device_poll_status.vendor_metrics_updated_at`, scritto in
+`agent_ws.py::_bridge_snmp_poll` SOLO se il poll SNMP torna OID non vuoti.
+**Root cause (agent Go `internal/poller/snmp.go`)**: la v4.30 ha introdotto un
+`BulkWalkAll` PER OGNI ExtraOID non risolto, senza deadline complessiva. Su un
+device lento / con tabelle grandi (o il nuovo UPS), la goroutine del target
+bloccava `wg.Wait()` in `runOnce()` → l'INTERO loop SNMP si fermava e `lastPollAt`
+non avanzava più: tutta la flotta "congelata" all'ultima data letta.
+**Fix v4.30.2** (compilato OK con go1.23, `go vet` pulito):
+  1. `runOnce`: `wg.Wait()` con BUDGET di ciclo (= interval, cap 60s) via
+     select/timeout → i target lenti vengono abbandonati, il ciclo riparte.
+  2. WALK: budget 12s per target + skip degli OID scalari (`.0`, non tabellari) +
+     `MaxRepetitions=10`.
+  3. Recover dai panic per-target (un target malformato non abbatte il poller).
+  Bump `noc-agent/VERSION` + `cmd/agent/main.go` var Version → **4.30.2**.
+⚠️ **DA FARE**: Save to GitHub → CI builds v4.30.2 → deploy agli agent dei clienti.
+NON verificabile in preview (nessun agent reale). Dopo il deploy, "Re-poll SNMP"
+su un device deve aggiornare "ULTIMO CHECK SNMP"; la stessa fix sblocca anche
+l'UPS Xanto (gli OID verranno letti quando il poll SNMP riprende).
+Feature ancora in sospeso (attendono risposte utente): Preset Salvati, Nome VM in Bulk.
+
 
 ## 2026-08-11 🔗 FIX uplink switch-to-switch non rilevati (peer con IP/chassis diversi)
 
