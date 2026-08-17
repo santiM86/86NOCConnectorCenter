@@ -5,7 +5,7 @@ import { Link } from "react-router-dom";
 import { toast } from "sonner";
 import {
   PlugsConnected, ArrowClockwise, ArrowCircleUp, MagnifyingGlass, Buildings,
-  Cpu, Clock, WifiHigh, WifiSlash, Warning, Stethoscope, Trash, X,
+  Cpu, Clock, WifiHigh, WifiSlash, Warning, Stethoscope, Trash, X, Globe,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 
@@ -130,7 +130,8 @@ export default function AgentsPage() {
         (a.agent_id || "").toLowerCase().includes(s) ||
         (a.os || "").toLowerCase().includes(s) ||
         (clients[a.client_id] || "").toLowerCase().includes(s) ||
-        (a.ips || []).join(" ").toLowerCase().includes(s)
+        (a.ips || []).join(" ").toLowerCase().includes(s) ||
+        (a.public_ip || "").toLowerCase().includes(s)
       );
     });
   }, [dedupedAgents, search, clientFilter, clients]);
@@ -484,6 +485,7 @@ export default function AgentsPage() {
                   <th className="text-left p-2.5">Versione</th>
                   <th className="text-left p-2.5">OS</th>
                   <th className="text-left p-2.5">IP</th>
+                  <th className="text-left p-2.5">IP Pubblico</th>
                   <th className="text-left p-2.5">Ultimo Heartbeat</th>
                   <th className="text-left p-2.5">Moduli</th>
                   <th className="p-2.5 text-right">Azioni</th>
@@ -524,7 +526,7 @@ export default function AgentsPage() {
                         <tr key={`group-${a.client_id || "none"}`}
                           className="bg-[var(--bg-card)]/40 border-t border-[var(--bg-border)]"
                           data-testid={`agents-group-header-${a.client_id || "none"}`}>
-                          <td colSpan={9} className="p-1.5 px-2.5">
+                          <td colSpan={10} className="p-1.5 px-2.5">
                             <button
                               type="button"
                               onClick={() => toggleClientCollapse(a.client_id)}
@@ -592,6 +594,13 @@ export default function AgentsPage() {
                       </td>
                       <td className="p-2.5 font-mono text-[10px] text-[var(--text-muted)]" title={(a.ips || []).join(", ")}>
                         {(a.ips || []).filter(ip => !ip.startsWith("169.254"))[0] || "—"}
+                      </td>
+                      <td className="p-2.5 font-mono text-[10px]" data-testid={`agent-public-ip-${a.agent_id}`} title={a.public_ip ? `IP pubblico WAN rilevato dalla connessione agent${a.public_ip_seen_at ? ` · ${fmtRel(a.public_ip_seen_at)}` : ""}` : "IP pubblico non ancora rilevato (agent mai connesso da questa build)"}>
+                        {a.public_ip
+                          ? <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-sky-500/10 text-sky-400 border border-sky-500/20">
+                              <Globe size={10} />{a.public_ip}
+                            </span>
+                          : <span className="text-[var(--text-muted)]">—</span>}
                       </td>
                       <td className="p-2.5 text-[10px] text-[var(--text-muted)]">
                         <Clock size={10} className="inline mr-1" />

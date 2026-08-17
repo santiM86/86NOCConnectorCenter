@@ -303,6 +303,11 @@ async def agent_ws(ws: WebSocket) -> None:
     _primary_ip = _primary_ip_from_hello(hello)
     if _primary_ip:
         set_fields["last_ip"] = _primary_ip
+    # IP pubblico (WAN) del cliente = IP sorgente della connessione WS (dietro NAT)
+    _public_ip = _public_ip_from_ws(ws)
+    if _public_ip:
+        set_fields["public_ip"] = _public_ip
+        set_fields["public_ip_seen_at"] = now.isoformat()
     set_fields.update(update_complete_patch)
     await db.managed_agents.update_one(
         {"agent_id": agent_id},
@@ -1101,6 +1106,45 @@ async def sys_metrics_overview(
                 max_disk_pct = dk["used_pct"]
         d["disk_max_pct"] = round(max_disk_pct, 1)
     return {"count": len(docs), "agents": docs}
+
+
+def _public_ip_from_ws(ws: WebSocket) -> Optional[str]:
+    """Ricava l'IP pubblico (WAN) del cliente dalla connessione WebSocket.
+
+    L'agent gira dentro la LAN del cliente ed esce in NAT verso il Center:
+    l'IP sorgente della connessione (dopo l'ingress K8s) e' quindi l'IP
+    pubblico della linea internet del cliente. Leggiamo X-Forwarded-For
+    (primo IP pubblico della catena), fallback X-Real-IP, fallback peer.
+    """
+    import ipaddress as _ipaddr
+
+    def _is_public(s: str) -> bool:
+        try:
+            obj = _ipaddr.ip_address(s)
+        except ValueError:
+            return False
+        return not (obj.is_private or obj.is_loopback or obj.is_reserved
+                    or obj.is_link_local or obj.is_multicast or obj.is_unspecified)
+
+    candidates: List[str] = []
+    xff = ws.headers.get("x-forwarded-for") or ""
+    for part in xff.split(","):
+        p = part.strip()
+        if p:
+            candidates.append(p)
+    xri = (ws.headers.get("x-real-ip") or "").strip()
+    if xri:
+        candidates.append(xri)
+    try:
+        if ws.client and ws.client.host:
+            candidates.append(ws.client.host)
+    except Exception:  # noqa: BLE001
+        pass
+    for c in candidates:
+        if _is_public(c):
+            return c
+    return None
+
 
 
 def _primary_ip_from_hello(hello: Dict[str, Any]) -> Optional[str]:

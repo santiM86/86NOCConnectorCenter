@@ -62,6 +62,32 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+---
+
+## 2026-08-17 🌐 IP pubblico (WAN) del cliente auto-rilevato in pagina Connettori
+
+**Richiesta utente**: mostrare l'IP pubblico del cliente nella tabella Agent
+(`/agents`) per rilevarlo subito (utile anche come sorgente per la futura Sonda TCP).
+
+**Implementazione** (backend + frontend, nessun rebuild agent Go):
+- `agent_ws.py`: nuovo helper `_public_ip_from_ws(ws)` che legge l'IP sorgente
+  della connessione WebSocket dell'agent (X-Forwarded-For → X-Real-IP → peer) e
+  tiene solo il primo IP PUBBLICO. Salvato in `managed_agents.public_ip` +
+  `public_ip_seen_at` nell'handshake `agent.hello`. Razionale: l'agent esce in
+  NAT dalla LAN del cliente, quindi l'IP visto dall'ingress È la WAN del cliente.
+- `list_agents` ritorna già i doc completi → `public_ip` esposto automaticamente.
+- `AgentsPage.js`: nuova colonna "IP Pubblico" (chip azzurro + icona Globe,
+  `data-testid=agent-public-ip-<id>`), incluso nella ricerca e colSpan header.
+
+**Testing**: verificato via curl (endpoint `/api/agents` ritorna `public_ip`) e
+screenshot E2E (login+2FA → colonna renderizzata con valore). Dati di test puliti.
+
+⚠️ **Preview vs PROD**: in preview NON ci sono agent reali connessi → colonna "—".
+In PROD il campo si popola al primo reconnect degli agent DOPO il deploy di questa
+build backend (Save to GitHub + redeploy Center). Se un cliente è dietro CGNAT,
+l'IP mostrato è quello dell'uscita CGNAT dell'ISP.
+
+
 ## 2026-08-11 🔗 FIX uplink switch-to-switch non rilevati (peer con IP/chassis diversi)
 
 **Bug**: cliente con 3 switch HPE non mostrava gli uplink switch↔switch. Causa: in
