@@ -162,6 +162,19 @@ su un device deve aggiornare "ULTIMO CHECK SNMP"; la stessa fix sblocca anche
 l'UPS Xanto (gli OID verranno letti quando il poll SNMP riprende).
 Feature ancora in sospeso (attendono risposte utente): Preset Salvati, Nome VM in Bulk.
 
+### 2026-08-17 (agg.5) 🔗 Stesso stallo anche nel TopoPoller (LLDP/FDB) → hardened in v4.30.2
+Indagando "i collegamenti tra switch si aggiornano?" ho trovato che
+`internal/poller/snmptopo.go::runOnce` è SEQUENZIALE ed emette il report SOLO
+alla fine: un singolo switch lento/con FDB enorme (o bloccato sul BulkWalk)
+fermava l'INTERO ciclo topologia → LLDP/FDB "congelati" su tutta la flotta e i
+link switch-to-switch non si aggiornavano più (stessa famiglia del bug SNMP).
+Fix v4.30.2: `walkOneBounded()` — budget 15s per-switch (goroutine+select) +
+recover dai panic → lo switch lento viene abbandonato, gli altri sono raccolti.
+Compilata OK (go1.23) + `go vet` pulito. La logica Center "Match Uplink Esteso"
+(LLDP + fallback MAC/FDB) era già corretta e testata: una volta che gli agent
+consegnano LLDP/FDB freschi (post v4.30.2), i link switch — inclusi i 3 HPE senza
+chassis-id — verranno mostrati correttamente.
+
 
 ## 2026-08-11 🔗 FIX uplink switch-to-switch non rilevati (peer con IP/chassis diversi)
 
