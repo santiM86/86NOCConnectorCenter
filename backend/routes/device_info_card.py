@@ -1376,6 +1376,121 @@ async def set_device_vm_alert(
     }
 
 
+@router.post("/devices/bulk-apply-settings")
+async def bulk_apply_device_settings(
+    payload: dict,
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+):
+    """Applica in blocco i parametri del pannello "Modifica Dispositivo" a piu'
+    dispositivi selezionati (azione multipla nella tab Dispositivi Vitali).
+
+    Body: {
+      "client_id": str,
+      "ips": [str, ...],
+      "apply": {  # SOLO i campi presenti vengono scritti
+         "virtualization"?: "physical"|"hyperv"|"vmware"|"vm_generic"|"",
+         "vm_alert"?: bool,          # hyperv_alert_on_off
+         "silenced"?: bool, "silence_reason"?: str,
+         "monitor_type"?: "ping"|"snmp"|"http"|"snmp+http",
+         "snmp_version"?: "v1"|"v2c"|"v3",
+         "community"?: str
+      }
+    }
+    Applica a TUTTI gli IP selezionati senza distinzione di tipo device.
+    """
+    from alert_filter import invalidate_silence_cache
+
+    client_id = (payload or {}).get("client_id")
+    ips = payload.get("ips") or []
+    apply = payload.get("apply") or {}
+    if not client_id or not isinstance(ips, list) or not ips:
+        raise HTTPException(status_code=400, detail="client_id e ips[] sono obbligatori")
+    if not isinstance(apply, dict) or not apply:
+        raise HTTPException(status_code=400, detail="apply{} vuoto: nessun parametro da applicare")
+
+    set_fields: Dict[str, Any] = {}
+    applied: List[str] = []
+
+    if "virtualization" in apply:
+        valid = {"", "physical", "hyperv", "vmware", "vm_generic"}
+        virt = apply.get("virtualization")
+        if virt not in valid:
+            raise HTTPException(status_code=400, detail=f"virtualization deve essere uno di {sorted(valid)}")
+        set_fields["virtualization"] = virt
+        set_fields["virtualization_user_locked"] = bool(virt)
+        set_fields["virtualization_auto_matched"] = False
+        applied.append("tipo macchina")
+        if "hyperv_vm_name" in apply:
+            set_fields["hyperv_vm_name"] = (apply.get("hyperv_vm_name") or "").strip()
+        if "hyperv_host_hint" in apply:
+            set_fields["hyperv_host_hint"] = (apply.get("hyperv_host_hint") or "").strip()
+
+    if "vm_alert" in apply:
+        set_fields["hyperv_alert_on_off"] = bool(apply.get("vm_alert"))
+        applied.append("alert VM spenta")
+
+    if "silenced" in apply:
+        set_fields["alerts_silenced"] = bool(apply.get("silenced"))
+        set_fields["alerts_silenced_reason"] = (apply.get("silence_reason") or "").strip()
+        applied.append("silenzia alert")
+
+    if "monitor_type" in apply:
+        mt = apply.get("monitor_type")
+        if mt not in ("ping", "snmp", "http", "snmp+http"):
+            raise HTTPException(status_code=400, detail="monitor_type non valido")
+        set_fields["monitor_type"] = mt
+        applied.append("metodo monitoraggio")
+
+    if "snmp_version" in apply:
+        if apply.get("snmp_version") not in ("v1", "v2c", "v3"):
+            raise HTTPException(status_code=400, detail="snmp_version non valido")
+        set_fields["snmp_version"] = apply.get("snmp_version")
+        applied.append("versione SNMP")
+
+    if "community" in apply:
+        set_fields["snmp_community"] = apply.get("community") or ""
+        set_fields["community"] = apply.get("community") or ""
+        applied.append("community SNMP")
+
+    if not set_fields:
+        raise HTTPException(status_code=400, detail="Nessun campo valido da applicare")
+
+    set_fields["bulk_settings_set_by"] = current_user.get("email")
+    set_fields["bulk_settings_set_at"] = datetime.now(timezone.utc).isoformat()
+
+    q = {"client_id": client_id, "$or": [{"ip": {"$in": ips}}, {"ip_address": {"$in": ips}}]}
+    res = await db.managed_devices.update_many(q, {"$set": set_fields})
+
+    try:
+        for ip in ips:
+            invalidate_silence_cache(client_id=client_id, device_ip=ip)
+    except Exception:
+        pass
+
+    try:
+        await audit_logger.log(
+            user_email=current_user.get("email"),
+            action=AuditAction.UPDATE_DEVICE if hasattr(AuditAction, "UPDATE_DEVICE") else AuditAction.OTHER,
+            resource_type="device",
+            resource_id=None,
+            metadata={"action": "bulk_apply_settings", "client_id": client_id,
+                      "ips_count": len(ips), "applied": applied, "fields": list(set_fields.keys())},
+            request=request,
+        )
+    except Exception:
+        pass
+
+    return {
+        "ok": True,
+        "matched": res.matched_count,
+        "modified": res.modified_count,
+        "applied": applied,
+        "message": f"{res.modified_count} dispositivi aggiornati ({', '.join(applied) or 'nessun parametro'})",
+    }
+
+
+
 @router.post("/devices/normalize-ip-fields")
 async def normalize_managed_device_ip_fields(
     request: Request,

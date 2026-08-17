@@ -727,6 +727,122 @@ async def get_client_status(client_id: str, current_user: dict = Depends(get_cur
     return {"results": results, "diagnosis": diagnosis}
 
 
+class TcpProbeRequest(BaseModel):
+    public_ip: Optional[str] = None
+    client_id: Optional[str] = None
+    port: int = 443
+    count: int = 4
+
+
+async def _resolve_detected_public_ip(client_id: str) -> Optional[dict]:
+    """IP pubblico piu' recente rilevato dagli agent del cliente (WS source IP)."""
+    doc = await db.managed_agents.find_one(
+        {"client_id": client_id, "public_ip": {"$nin": [None, ""]}},
+        {"_id": 0, "public_ip": 1, "public_ip_seen_at": 1, "hostname": 1},
+        sort=[("public_ip_seen_at", -1)],
+    )
+    return doc or None
+
+
+@router.get("/detected-public-ip/{client_id}")
+async def detected_public_ip(client_id: str, current_user: dict = Depends(get_current_user)):
+    """IP pubblico WAN auto-rilevato per un cliente (dalla connessione degli agent).
+
+    Usato per pre-compilare il target nel Monitor WAN senza digitarlo a mano.
+    """
+    doc = await _resolve_detected_public_ip(client_id)
+    if not doc:
+        return {"public_ip": None}
+    return {
+        "public_ip": doc.get("public_ip"),
+        "seen_at": doc.get("public_ip_seen_at"),
+        "hostname": doc.get("hostname"),
+    }
+
+
+@router.post("/tcp-probe")
+async def tcp_probe(req: TcpProbeRequest, current_user: dict = Depends(get_current_user)):
+    """Sonda TCP "vista da fuori" verso l'IP pubblico del cliente.
+
+    K8s blocca i socket raw ICMP/UDP: usiamo SOLO connessioni TCP
+    (asyncio.open_connection) verso una porta (default 443), ripetute N volte,
+    per misurare raggiungibilita', RTT medio e perdita. Un RST (porta chiusa) o
+    un SYN/ACK (porta aperta) provano comunque che la WAN e' RAGGIUNGIBILE;
+    timeout/unreachable = probabile linea giu' o packet loss.
+    """
+    require_admin(current_user)
+    ip = (req.public_ip or "").strip()
+    resolved_from = "manual"
+    if not ip and req.client_id:
+        doc = await _resolve_detected_public_ip(req.client_id)
+        if doc:
+            ip = (doc.get("public_ip") or "").strip()
+            resolved_from = "auto-detected"
+    if not ip:
+        raise HTTPException(status_code=400, detail="Nessun IP pubblico (fornirlo o rilevarlo da un agent)")
+    import ipaddress as _ip
+    try:
+        obj = _ip.ip_address(ip)
+        if obj.is_private or obj.is_loopback or obj.is_reserved or obj.is_link_local:
+            raise HTTPException(status_code=400, detail="L'IP non e' pubblico")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="IP non valido")
+
+    port = int(req.port or 443)
+    count = min(max(int(req.count or 4), 1), 8)
+
+    async def _connect_once() -> tuple:
+        """(reachable, rtt_ms|None, status) con un singolo TCP connect breve.
+
+        open  = SYN/ACK (porta aperta)   -> WAN raggiungibile
+        closed= RST (ConnectionRefused)  -> WAN raggiungibile (host su, porta chiusa)
+        filtered/down = timeout / errore rete -> perdita
+        """
+        t0 = time.monotonic()
+        try:
+            fut = asyncio.open_connection(ip, port)
+            _, writer = await asyncio.wait_for(fut, timeout=3)
+            rtt = round((time.monotonic() - t0) * 1000, 1)
+            try:
+                writer.close()
+            except Exception:
+                pass
+            return True, rtt, "open"
+        except asyncio.TimeoutError:
+            return False, None, "filtered"
+        except ConnectionRefusedError:
+            return True, round((time.monotonic() - t0) * 1000, 1), "closed"
+        except OSError:
+            return False, None, "down"
+
+    results = await asyncio.gather(*[_connect_once() for _ in range(count)])
+    rtts = [r[1] for r in results if r[0] and r[1] is not None]
+    reached = sum(1 for r in results if r[0])
+    statuses = [r[2] for r in results]
+    loss = round((count - reached) / count * 100, 1)
+    avg = round(sum(rtts) / len(rtts), 1) if rtts else None
+    if reached == 0:
+        overall = "down"       # nessuna risposta TCP: WAN/ISP probabilmente giu'
+    elif loss > 0:
+        overall = "degraded"   # risposte parziali: packet loss / linea instabile
+    else:
+        overall = "ok"
+    return {
+        "public_ip": ip,
+        "port": port,
+        "count": count,
+        "resolved_from": resolved_from,
+        "reachable": reached > 0,
+        "reached": reached,
+        "packet_loss_pct": loss,
+        "avg_rtt_ms": avg,
+        "overall": overall,
+        "statuses": statuses,
+        "probed_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+
 @router.post("/probe-now")
 async def probe_now(current_user: dict = Depends(get_current_user)):
     """Forza un ciclo di probe immediato."""

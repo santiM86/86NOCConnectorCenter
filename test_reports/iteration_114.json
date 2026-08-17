@@ -1,0 +1,16 @@
+{
+  "summary": "Frontend-only verification of the switch-to-switch uplink cascade fix (local_chassis_id matching). Admin login with 2FA TOTP OK. CHASW-B (/switch-ports/10.10.41.220?clientId=da3d6e40-...) now renders data-testid=switch-uplinks-summary with exactly 2 SWITCH rows: 'Porta 25 · Ten-GigabitEthernet1/0/25 -> CHASW-A (10.10.41.221), porta remota Ten-GigabitEthernet1/0/50 · VLAN 10, ✓ VERIFICATO' and 'Porta 26 · Ten-GigabitEthernet1/0/26 -> CHASW-C (10.10.41.222), porta remota Ten-GigabitEthernet1/0/25 · VLAN 10, ✓ VERIFICATO'. Filter chip data-testid=port-filter-switch_uplink shows 'Uplink 2'; clicking it filters the matrix to exactly ports 25 and 26 (table becomes 'Tabella completa (2 fisiche)' with HPE peers 192.168.101.4 / 192.168.88.9 in 'Connesso a'). Counterproof on CHASW-C (10.10.41.222): panel shows 1 SWITCH uplink Porta 25 -> CHASW-B (10.10.41.220) porta remota Ten-GigabitEthernet1/0/26, ✓ VERIFICATO, chip 'Uplink 1'. No crash, no white page, no functional console error (only a pre-login 403 on /api/auth/me, benign).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": [],
+  "updated_files": [],
+  "success_rate": {"backend": "not tested (skipped per request)", "frontend": "100%"},
+  "seed_data_creation": "none (used existing seed_cascade_chassis.py data)",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": false,
+  "test_credentials": "info@86bit.it / Ariel17051986@!@86 + TOTP NMHDJNO53WLTOSREUXWERE6FDH5TAKC3",
+  "context_for_next_testing_agent": "Uplink panel port tiles do not use data-testid=port-tile-*; verify tile filtering via the 'Tabella completa (N fisiche)' heading or screenshot instead. Cascade fix verified end-to-end on CHASW-B/CHASW-C.",
+  "rca_of_the_issue": "Fixed as described: build_topology_graph now indexes lldp_neighbors.local_chassis_id so HPE peers announcing a foreign mgmt-IP and a chassis-id != primary_mac are matched; uplinks are now created and surfaced in the UI with VERIFIED badges."
+}

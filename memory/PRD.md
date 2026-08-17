@@ -62,6 +62,127 @@ Direttiva esplicita dell'utente (ribadita 2026-05-09 nella conversazione):
 
 ---
 
+---
+
+## 2026-08-17 🌐 IP pubblico (WAN) del cliente auto-rilevato in pagina Connettori
+
+**Richiesta utente**: mostrare l'IP pubblico del cliente nella tabella Agent
+(`/agents`) per rilevarlo subito (utile anche come sorgente per la futura Sonda TCP).
+
+**Implementazione** (backend + frontend, nessun rebuild agent Go):
+- `agent_ws.py`: nuovo helper `_public_ip_from_ws(ws)` che legge l'IP sorgente
+  della connessione WebSocket dell'agent (X-Forwarded-For → X-Real-IP → peer) e
+  tiene solo il primo IP PUBBLICO. Salvato in `managed_agents.public_ip` +
+  `public_ip_seen_at` nell'handshake `agent.hello`. Razionale: l'agent esce in
+  NAT dalla LAN del cliente, quindi l'IP visto dall'ingress È la WAN del cliente.
+- `list_agents` ritorna già i doc completi → `public_ip` esposto automaticamente.
+- `AgentsPage.js`: nuova colonna "IP Pubblico" (chip azzurro + icona Globe,
+  `data-testid=agent-public-ip-<id>`), incluso nella ricerca e colSpan header.
+
+**Testing**: verificato via curl (endpoint `/api/agents` ritorna `public_ip`) e
+screenshot E2E (login+2FA → colonna renderizzata con valore). Dati di test puliti.
+
+⚠️ **Preview vs PROD**: in preview NON ci sono agent reali connessi → colonna "—".
+In PROD il campo si popola al primo reconnect degli agent DOPO il deploy di questa
+build backend (Save to GitHub + redeploy Center). Se un cliente è dietro CGNAT,
+l'IP mostrato è quello dell'uscita CGNAT dell'ISP.
+
+### 2026-08-17 (agg.) 🔔 Storico/badge cambio IP pubblico
+- `agent_ws.py`: all'handshake, se il `public_ip` rilevato differisce dal
+  precedente salvato, imposta `public_ip_prev` + `public_ip_changed_at` e appende
+  un record in `agent_public_ip_changes` (agent_id, client_id, hostname,
+  previous_ip, public_ip, changed_at) → storico failover linea / nuovo IP ISP.
+- `AgentsPage.js`: badge ambra "IP cambiato" (`data-testid=agent-public-ip-changed-<id>`)
+  accanto all'IP, mostrato SOLO se il cambio è avvenuto negli ultimi 14 giorni
+  (`isRecentChange`), con tooltip "cambiato Ng fa · precedente: X".
+- Testato: patch DB + screenshot E2E (badge + nuovo IP renderizzati). Dati puliti.
+
+### 2026-08-17 (agg.2) 🛰️ Sonda TCP · Match Uplink Esteso · Auto-target WAN · Cronologia IP
+- **Match Uplink Esteso** (`topology_diagram.py::build_topology_graph`): fallback
+  "via MAC/FDB" quando il peer LLDP non e' identificabile (no remote_ip / chassis-id /
+  sysName e no local_chassis_id, tipico HPE). Le adiacenze LLDP irrisolte vengono
+  collegate per RECIPROCITA' FDB (A ha imparato il base-MAC di B e viceversa). Il
+  vincolo "esiste un'adiacenza LLDP irrisolta su A" evita i falsi positivi transitivi
+  (catena A-B-C non crea A-C). Edge marcato `match:"fdb"`, verificato + VLAN dalla FDB.
+  Seed di riproduzione: `seed_cascade_fdb.py`. Testato: B-A e B-C creati, no A-C.
+- **Sonda TCP** (`external_monitor.py POST /api/external-monitor/tcp-probe`): probe
+  SOLO TCP (K8s blocca ICMP raw) dal Center verso l'IP pubblico (default 443, N
+  connect concorrenti, timeout 3s). Ritorna reachable/RTT medio/loss% e `overall`
+  (ok/degraded/down). open|closed(RST)=WAN raggiungibile; timeout/errore=perdita.
+  UI: pulsante "Sonda" + chip risultato nella colonna IP Pubblico di AgentsPage.
+- **Auto-target WAN** (`GET /api/external-monitor/detected-public-ip/{client_id}`):
+  ritorna l'IP pubblico piu' recente rilevato dagli agent del cliente. ExternalMonitorPage
+  pre-compila il campo "IP Pubblico" al select del cliente + hint "WAN rilevata dagli
+  agent · usa".
+- **Cronologia IP** (`GET /api/agents/public-ip-history?agent_id=&client_id=`): elenca
+  i record `agent_public_ip_changes`. UI: badge "IP cambiato" cliccabile → modal
+  timeline (data-testid `ip-history-modal`/`ip-history-list`).
+- Testato E2E (screenshot): Sonda (RTT chip + toast), badge→cronologia (timeline),
+  auto-target (prefill 1.1.1.1 + hint). Backend curl OK. Dati di test rimossi.
+
+### 2026-08-17 (agg.3) 🐞 FIX "Applica ora" non salvava + ⚙️ Bulk impostazioni device
+- **BUG FIX (`DeviceEditModal.js`)**: il pulsante **"Applica ora"** chiamava solo
+  `request-refresh` SENZA salvare → i parametri VM/SNMP/silence appena impostati
+  andavano persi (l'utente segnalava "non vengono memorizzati"). Refactor: estratto
+  `persistChanges()` + `buildOptimistic()`; ora SIA "Salva" SIA "Applica ora"
+  persistono; "Applica ora" salva PRIMA, poi forza il refresh del connector.
+  Verificato E2E: set VM Hyper-V+nome+host+alert → "Applica ora" → riapri = valori
+  mantenuti. (Il backend `POST /devices/by-ip/{ip}/virtualization|vm-alert` era gia'
+  corretto e persisteva.)
+- **Bulk impostazioni** (`POST /api/devices/bulk-apply-settings` in device_info_card.py):
+  applica in blocco a piu' device (per client_id+ips) SOLO i campi passati in `apply{}`:
+  virtualization, vm_alert, silenced+reason, monitor_type, snmp_version, community.
+  UI: nella tab "Dispositivi Vitali", selezionando righe compare il pulsante
+  "Applica impostazioni" (`bulk-apply-settings-btn`) → modal `BulkSettingsModal`
+  con checkbox-per-parametro (default "Allerta VM spenta" ON). Applica a TUTTI i
+  selezionati senza distinzione di tipo. Testato E2E: 3 device aggiornati.
+
+### 2026-08-17 (agg.4) 🔴 ROOT CAUSE SNMP "flotta congelata" (v4.30.1) + fix agent v4.30.2
+**Sintomo utente**: tutti i device con "ULTIMO CHECK SNMP" fermo all'11-12/08
+(valori CPU/mem/temp congelati) mentre "ULTIMO POLL" resta fresco (17/08); UPS
+Xanto tutto "—".
+**Meccanismo**: "ULTIMO POLL" = liveness ICMP/ARP (aggiornato ogni ciclo);
+"ULTIMO CHECK SNMP" = `device_poll_status.vendor_metrics_updated_at`, scritto in
+`agent_ws.py::_bridge_snmp_poll` SOLO se il poll SNMP torna OID non vuoti.
+**Root cause (agent Go `internal/poller/snmp.go`)**: la v4.30 ha introdotto un
+`BulkWalkAll` PER OGNI ExtraOID non risolto, senza deadline complessiva. Su un
+device lento / con tabelle grandi (o il nuovo UPS), la goroutine del target
+bloccava `wg.Wait()` in `runOnce()` → l'INTERO loop SNMP si fermava e `lastPollAt`
+non avanzava più: tutta la flotta "congelata" all'ultima data letta.
+**Fix v4.30.2** (compilato OK con go1.23, `go vet` pulito):
+  1. `runOnce`: `wg.Wait()` con BUDGET di ciclo (= interval, cap 60s) via
+     select/timeout → i target lenti vengono abbandonati, il ciclo riparte.
+  2. WALK: budget 12s per target + skip degli OID scalari (`.0`, non tabellari) +
+     `MaxRepetitions=10`.
+  3. Recover dai panic per-target (un target malformato non abbatte il poller).
+  Bump `noc-agent/VERSION` + `cmd/agent/main.go` var Version → **4.30.2**.
+⚠️ **DA FARE**: Save to GitHub → CI builds v4.30.2 → deploy agli agent dei clienti.
+NON verificabile in preview (nessun agent reale). Dopo il deploy, "Re-poll SNMP"
+su un device deve aggiornare "ULTIMO CHECK SNMP"; la stessa fix sblocca anche
+l'UPS Xanto (gli OID verranno letti quando il poll SNMP riprende).
+Feature ancora in sospeso (attendono risposte utente): Preset Salvati, Nome VM in Bulk.
+
+
+## 2026-08-11 🔗 FIX uplink switch-to-switch non rilevati (peer con IP/chassis diversi)
+
+**Bug**: cliente con 3 switch HPE non mostrava gli uplink switch↔switch. Causa: in
+`topology_diagram.py::build_topology_graph` il vicino LLDP era riconosciuto come
+switch gestito solo via `remote_ip`, `remote_chassis_id`==`primary_mac`, o
+`sysName`. Sugli HPE il peer si annuncia con **mgmt-IP di altra subnet**
+(192.168.x ≠ 10.10.41.x) e **chassis-id ≠ primary_mac** → nessun match → edge
+non creato → nessun uplink.
+**Fix**: aggiunto indice `chassis_to_switch` costruito da
+`lldp_neighbors.local_chassis_id` (il chassis che OGNI switch annuncia); usato per
+matchare il `remote_chassis_id` del vicino. Verificato testing_agent iteration_114
+(CHASW-B→CHASW-A/CHASW-C VERIFICATI VLAN10). Seed riproduzione:
+`backend/seed_cascade_chassis.py`.
+⚠️ Dipendenza produzione: richiede che l'agent popoli `local_chassis_id` in
+`lldp_neighbors`. Se quel campo è vuoto in prod, il match non scatta → da
+verificare dopo il deploy (Save to GitHub + redeploy Center).
+
+---
+
+
 ## 2026-08-11 🔖 Bump agent v4.30.0 → v4.30.1 (per rollout fix WSH/Menu Start)
 
 - La release GitHub "latest" attuale = **v4.30.0** (il Center la risolve via

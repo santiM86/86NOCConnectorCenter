@@ -2108,6 +2108,7 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
   // v2026-06: selezione multipla per marcare/rimuovere VITALI in blocco.
   const [selectedIps, setSelectedIps] = useState(() => new Set());
   const [bulkSaving, setBulkSaving] = useState(false);
+  const [bulkSettingsOpen, setBulkSettingsOpen] = useState(false);
   const toggleSelect = (ip) => setSelectedIps(prev => {
     const n = new Set(prev);
     if (n.has(ip)) n.delete(ip); else n.add(ip);
@@ -2928,6 +2929,16 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
           >
             <Bell size={11} weight="bold" /> Riattiva alert
           </button>
+          <div className="h-4 w-px bg-yellow-500/30 mx-1" />
+          <button
+            onClick={() => setBulkSettingsOpen(true)}
+            disabled={bulkSaving}
+            className="text-[11px] font-bold px-3 py-1 rounded-md bg-cyan-500/15 border border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/25 transition-colors disabled:opacity-50 flex items-center gap-1"
+            data-testid="bulk-apply-settings-btn"
+            title="Pre-imposta in blocco i parametri (tipo macchina, alert VM spenta, SNMP, silenzio) sui dispositivi selezionati"
+          >
+            <Cpu size={11} weight="bold" /> Applica impostazioni
+          </button>
           <button
             onClick={clearSelection}
             disabled={bulkSaving}
@@ -3534,6 +3545,30 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
           }}
         />
       )}
+
+      <BulkSettingsModal
+        open={bulkSettingsOpen}
+        count={selectedIps.size}
+        onClose={() => setBulkSettingsOpen(false)}
+        onApply={async (applyObj) => {
+          const ips = Array.from(selectedIps);
+          if (!ips.length) return;
+          setBulkSaving(true);
+          try {
+            const { data } = await axios.post(`${API}/devices/bulk-apply-settings`, {
+              client_id: clientId, ips, apply: applyObj,
+            });
+            toast.success(data.message || `${data.modified} dispositivi aggiornati`);
+            setBulkSettingsOpen(false);
+            clearSelection();
+            onRefresh?.();
+          } catch (err) {
+            toast.error(`Applica impostazioni fallita: ${err.response?.data?.detail || err.message}`);
+          } finally {
+            setBulkSaving(false);
+          }
+        }}
+      />
 
       {/* Device Info Card Modal */}
       {infoTarget && (
@@ -4982,3 +5017,135 @@ function MetricBox({ label, value, sub, color }) {
     </div>
   );
 }
+
+// Azione multipla: pre-imposta i parametri del pannello device su piu' device
+// selezionati. Ogni parametro ha una checkbox "applica": vengono inviati SOLO
+// i parametri spuntati. Default: applica "Allerta VM spenta" ON (il piu' utile).
+function BulkSettingsModal({ open, count, onClose, onApply }) {
+  const [enVm, setEnVm] = useState(true);
+  const [vmAlert, setVmAlert] = useState(true);
+  const [enVirt, setEnVirt] = useState(false);
+  const [virt, setVirt] = useState("hyperv");
+  const [enSilence, setEnSilence] = useState(false);
+  const [silenced, setSilenced] = useState(true);
+  const [silenceReason, setSilenceReason] = useState("");
+  const [enMon, setEnMon] = useState(false);
+  const [monitorType, setMonitorType] = useState("snmp");
+  const [enSnmp, setEnSnmp] = useState(false);
+  const [snmpVersion, setSnmpVersion] = useState("v2c");
+  const [community, setCommunity] = useState("public");
+
+  useEffect(() => {
+    if (open) {
+      setEnVm(true); setVmAlert(true);
+      setEnVirt(false); setVirt("hyperv");
+      setEnSilence(false); setSilenced(true); setSilenceReason("");
+      setEnMon(false); setMonitorType("snmp");
+      setEnSnmp(false); setSnmpVersion("v2c"); setCommunity("public");
+    }
+  }, [open]);
+
+  const build = () => {
+    const apply = {};
+    if (enVm) apply.vm_alert = vmAlert;
+    if (enVirt) apply.virtualization = virt;
+    if (enSilence) { apply.silenced = silenced; apply.silence_reason = silenceReason; }
+    if (enMon) apply.monitor_type = monitorType;
+    if (enSnmp) { apply.snmp_version = snmpVersion; if (snmpVersion !== "v3") apply.community = community; }
+    return apply;
+  };
+  const nothingSelected = !enVm && !enVirt && !enSilence && !enMon && !enSnmp;
+
+  const Row = ({ checked, onCheck, label, children }) => (
+    <div className="rounded p-2.5 border bg-[var(--bg-card)] border-[var(--bg-border)]">
+      <label className="flex items-center gap-2 cursor-pointer">
+        <input type="checkbox" checked={checked} onChange={(e) => onCheck(e.target.checked)} className="cursor-pointer" />
+        <span className="text-[11px] font-semibold text-[var(--text-primary)]">{label}</span>
+      </label>
+      {checked && <div className="mt-2 pl-5 space-y-2">{children}</div>}
+    </div>
+  );
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="bg-[var(--bg-panel)] border-[var(--bg-border)] max-w-md" data-testid="bulk-settings-modal">
+        <DialogHeader>
+          <DialogTitle className="text-sm text-[var(--text-primary)] flex items-center gap-2">
+            <Cpu size={16} className="text-cyan-400" /> Applica impostazioni a {count} dispositivi
+          </DialogTitle>
+          <DialogDescription className="text-[11px] text-[var(--text-muted)]">
+            Spunta SOLO i parametri da applicare in blocco. Gli altri restano invariati su ogni device.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-2 mt-1 max-h-[55vh] overflow-y-auto pr-1">
+          <Row checked={enVm} onCheck={setEnVm} label="⚡ Allerta se la VM si spegne">
+            <label className="flex items-center gap-2 cursor-pointer text-[11px] text-[var(--text-secondary)]">
+              <input type="checkbox" checked={vmAlert} onChange={(e) => setVmAlert(e.target.checked)} data-testid="bulk-vmalert-value" />
+              {vmAlert ? "Attiva (alert CRITICO se la VM risulta spenta)" : "Disattiva"}
+            </label>
+          </Row>
+
+          <Row checked={enVirt} onCheck={setEnVirt} label="🖥️ Tipo macchina">
+            <Select value={virt} onValueChange={setVirt}>
+              <SelectTrigger className="bg-[var(--bg-card)] border-[var(--bg-border)] h-8 text-xs" data-testid="bulk-virt-select"><SelectValue /></SelectTrigger>
+              <SelectContent className="bg-[var(--bg-panel)] border-[var(--bg-border)]">
+                <SelectItem value="">— non impostato (fisico) —</SelectItem>
+                <SelectItem value="physical">Server fisico</SelectItem>
+                <SelectItem value="hyperv">VM Hyper-V</SelectItem>
+                <SelectItem value="vmware">VM VMware</SelectItem>
+                <SelectItem value="vm_generic">VM (generica)</SelectItem>
+              </SelectContent>
+            </Select>
+            <span className="block text-[9px] text-[var(--text-muted)]">Applicato a tutti i selezionati senza distinzione.</span>
+          </Row>
+
+          <Row checked={enSilence} onCheck={setEnSilence} label="🔕 Silenzia alert">
+            <label className="flex items-center gap-2 cursor-pointer text-[11px] text-[var(--text-secondary)]">
+              <input type="checkbox" checked={silenced} onChange={(e) => setSilenced(e.target.checked)} data-testid="bulk-silence-value" />
+              {silenced ? "Silenzia" : "Riattiva"}
+            </label>
+            {silenced && (
+              <Input value={silenceReason} onChange={(e) => setSilenceReason(e.target.value)} placeholder="Motivo (opzionale)" className="bg-[var(--bg-card)] border-[var(--bg-border)] h-7 text-xs" maxLength={200} />
+            )}
+          </Row>
+
+          <Row checked={enMon} onCheck={setEnMon} label="📡 Metodo di monitoraggio">
+            <Select value={monitorType} onValueChange={setMonitorType}>
+              <SelectTrigger className="bg-[var(--bg-card)] border-[var(--bg-border)] h-8 text-xs" data-testid="bulk-monitor-select"><SelectValue /></SelectTrigger>
+              <SelectContent className="bg-[var(--bg-panel)] border-[var(--bg-border)]">
+                <SelectItem value="ping">Ping</SelectItem>
+                <SelectItem value="snmp">SNMP</SelectItem>
+                <SelectItem value="http">HTTP</SelectItem>
+                <SelectItem value="snmp+http">SNMP + HTTP (ibrido)</SelectItem>
+              </SelectContent>
+            </Select>
+          </Row>
+
+          <Row checked={enSnmp} onCheck={setEnSnmp} label="🔐 SNMP (versione + community)">
+            <Select value={snmpVersion} onValueChange={setSnmpVersion}>
+              <SelectTrigger className="bg-[var(--bg-card)] border-[var(--bg-border)] h-8 text-xs" data-testid="bulk-snmpver-select"><SelectValue /></SelectTrigger>
+              <SelectContent className="bg-[var(--bg-panel)] border-[var(--bg-border)]">
+                <SelectItem value="v1">v1</SelectItem>
+                <SelectItem value="v2c">v2c (Community)</SelectItem>
+                <SelectItem value="v3">v3</SelectItem>
+              </SelectContent>
+            </Select>
+            {snmpVersion !== "v3" && (
+              <Input value={community} onChange={(e) => setCommunity(e.target.value)} placeholder="community" className="bg-[var(--bg-card)] border-[var(--bg-border)] h-7 text-xs font-mono" data-testid="bulk-community-input" />
+            )}
+            {snmpVersion === "v3" && <span className="block text-[9px] text-[var(--text-muted)]">Le credenziali v3 vanno impostate per singolo device.</span>}
+          </Row>
+        </div>
+
+        <DialogFooter className="mt-2">
+          <Button variant="ghost" onClick={onClose} className="h-8 text-xs text-[var(--text-muted)]" data-testid="bulk-settings-cancel">Annulla</Button>
+          <Button onClick={() => onApply(build())} disabled={nothingSelected} className="h-8 text-xs bg-cyan-500 hover:bg-cyan-600 text-white" data-testid="bulk-settings-apply">
+            Applica a {count} dispositivi
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+

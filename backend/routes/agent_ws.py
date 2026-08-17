@@ -218,7 +218,7 @@ async def agent_ws(ws: WebSocket) -> None:
     try:
         existing = await db.managed_agents.find_one(
             {"agent_id": agent_id},
-            {"_id": 0, "update_status": 1, "update_target_version": 1, "update_started_version": 1},
+            {"_id": 0, "update_status": 1, "update_target_version": 1, "update_started_version": 1, "public_ip": 1},
         )
         if existing and existing.get("update_status") == "in_progress":
             target_n = _normalize_ver(existing.get("update_target_version"))
@@ -266,6 +266,28 @@ async def agent_ws(ws: WebSocket) -> None:
     _primary_ip = _primary_ip_from_hello(hello)
     if _primary_ip:
         set_fields["last_ip"] = _primary_ip
+    # IP pubblico (WAN) del cliente = IP sorgente della connessione WS (dietro NAT)
+    _public_ip = _public_ip_from_ws(ws)
+    if _public_ip:
+        set_fields["public_ip"] = _public_ip
+        set_fields["public_ip_seen_at"] = now.isoformat()
+        # Rileva il CAMBIO di IP pubblico (failover linea / nuovo IP ISP): se il
+        # precedente era valorizzato e diverso, registra prev + timestamp + storico.
+        _prev_pub = (existing or {}).get("public_ip") if isinstance(existing, dict) else None
+        if _prev_pub and _prev_pub != _public_ip:
+            set_fields["public_ip_prev"] = _prev_pub
+            set_fields["public_ip_changed_at"] = now.isoformat()
+            try:
+                await db.agent_public_ip_changes.insert_one({
+                    "agent_id": agent_id,
+                    "client_id": client_id,
+                    "hostname": hello.get("hostname"),
+                    "previous_ip": _prev_pub,
+                    "public_ip": _public_ip,
+                    "changed_at": now.isoformat(),
+                })
+            except Exception:  # noqa: BLE001
+                pass
     set_fields.update(update_complete_patch)
     await db.managed_agents.update_one(
         {"agent_id": agent_id},
@@ -1043,6 +1065,45 @@ async def sys_metrics_overview(
     return {"count": len(docs), "agents": docs}
 
 
+def _public_ip_from_ws(ws: WebSocket) -> Optional[str]:
+    """Ricava l'IP pubblico (WAN) del cliente dalla connessione WebSocket.
+
+    L'agent gira dentro la LAN del cliente ed esce in NAT verso il Center:
+    l'IP sorgente della connessione (dopo l'ingress K8s) e' quindi l'IP
+    pubblico della linea internet del cliente. Leggiamo X-Forwarded-For
+    (primo IP pubblico della catena), fallback X-Real-IP, fallback peer.
+    """
+    import ipaddress as _ipaddr
+
+    def _is_public(s: str) -> bool:
+        try:
+            obj = _ipaddr.ip_address(s)
+        except ValueError:
+            return False
+        return not (obj.is_private or obj.is_loopback or obj.is_reserved
+                    or obj.is_link_local or obj.is_multicast or obj.is_unspecified)
+
+    candidates: List[str] = []
+    xff = ws.headers.get("x-forwarded-for") or ""
+    for part in xff.split(","):
+        p = part.strip()
+        if p:
+            candidates.append(p)
+    xri = (ws.headers.get("x-real-ip") or "").strip()
+    if xri:
+        candidates.append(xri)
+    try:
+        if ws.client and ws.client.host:
+            candidates.append(ws.client.host)
+    except Exception:  # noqa: BLE001
+        pass
+    for c in candidates:
+        if _is_public(c):
+            return c
+    return None
+
+
+
 def _primary_ip_from_hello(hello: Dict[str, Any]) -> Optional[str]:
     """Estrae l'IP IPv4 "primario" dell'agent dalla lista ips dell'hello.
 
@@ -1678,6 +1739,28 @@ async def list_agents(client_id: Optional[str] = None,
             logger.warning("uninstall finalize failed agent_id=%s err=%s", it["agent_id"], e)
 
     return {"agents": docs, "live_count": len(live_ids)}
+
+
+@router.get("/agents/public-ip-history")
+async def agent_public_ip_history(client_id: Optional[str] = None,
+                                  agent_id: Optional[str] = None,
+                                  limit: int = 100,
+                                  current_user: dict = Depends(get_current_user)) -> Dict[str, Any]:
+    """Cronologia dei cambi di IP pubblico (failover linea / nuovo IP ISP).
+
+    Filtrabile per client_id o agent_id. Ordine: piu' recente prima.
+    """
+    require_admin(current_user)
+    q: Dict[str, Any] = {}
+    if agent_id:
+        q["agent_id"] = agent_id
+    if client_id:
+        q["client_id"] = client_id
+    limit = min(max(int(limit or 100), 1), 500)
+    changes = await db.agent_public_ip_changes.find(q, {"_id": 0}).sort(
+        "changed_at", -1).to_list(length=limit)
+    return {"changes": changes, "count": len(changes)}
+
 
 
 # --------------------------------------------------------------------------- #

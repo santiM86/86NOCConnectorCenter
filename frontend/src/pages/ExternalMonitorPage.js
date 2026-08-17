@@ -60,6 +60,23 @@ export default function ExternalMonitorPage() {
   const [editTarget, setEditTarget] = useState(null);  // null oppure target da modificare
   const [editForm, setEditForm] = useState({ client_id: "", label: "", device_type: "firewall", public_ip: "", gateway_ip: "", check_ports: "443", check_ping: false, backup_enabled: false, backup_label: "", backup_public_ip: "", backup_gateway_ip: "" });
   const [savingEdit, setSavingEdit] = useState(false);
+  // Auto-target: IP pubblico WAN auto-rilevato dagli agent del cliente selezionato.
+  const [detectedIp, setDetectedIp] = useState(null); // {public_ip, seen_at, hostname} | null
+
+  const onClientChange = async (cid) => {
+    setForm(p => ({ ...p, client_id: cid }));
+    setDetectedIp(null);
+    if (!cid) return;
+    try {
+      const res = await axios.get(`${API}/external-monitor/detected-public-ip/${cid}`);
+      const ip = res.data?.public_ip;
+      if (ip) {
+        setDetectedIp(res.data);
+        // pre-compila SOLO se l'utente non ha gia' digitato un IP
+        setForm(p => (p.public_ip ? p : { ...p, public_ip: ip }));
+      }
+    } catch {}
+  };
 
   const fetchAll = useCallback(async () => {
     try {
@@ -245,7 +262,7 @@ export default function ExternalMonitorPage() {
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             <div className="space-y-1">
               <Label className="text-[9px] uppercase tracking-widest text-[var(--text-muted)]">Cliente *</Label>
-              <Select value={form.client_id} onValueChange={v => setForm(p => ({ ...p, client_id: v }))}>
+              <Select value={form.client_id} onValueChange={onClientChange}>
                 <SelectTrigger className="h-7 text-xs bg-[var(--bg-card)] border-[var(--bg-border)] text-[var(--text-primary)]" data-testid="target-client-select">
                   <SelectValue placeholder="Seleziona..." />
                 </SelectTrigger>
@@ -273,6 +290,16 @@ export default function ExternalMonitorPage() {
             <div className="space-y-1">
               <Label className="text-[9px] uppercase tracking-widest text-[var(--text-muted)]">IP Pubblico *</Label>
               <Input value={form.public_ip} onChange={e => setForm(p => ({ ...p, public_ip: e.target.value }))} placeholder="85.42.xxx.xxx" className="h-7 text-xs bg-[var(--bg-card)] border-[var(--bg-border)] text-[var(--text-primary)]" data-testid="target-ip-input" />
+              {detectedIp?.public_ip && (
+                <div className="text-[10px] text-sky-400 flex items-center gap-1 flex-wrap" data-testid="detected-ip-hint">
+                  <span>WAN rilevata dagli agent: <span className="font-mono">{detectedIp.public_ip}</span></span>
+                  {form.public_ip !== detectedIp.public_ip && (
+                    <button type="button" className="underline hover:text-sky-300"
+                      onClick={() => setForm(p => ({ ...p, public_ip: detectedIp.public_ip }))}
+                      data-testid="use-detected-ip-btn">usa</button>
+                  )}
+                </div>
+              )}
             </div>
             <div className="space-y-1">
               <Label className="text-[9px] uppercase tracking-widest text-[var(--text-muted)]">Gateway ISP</Label>
