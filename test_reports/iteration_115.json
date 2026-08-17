@@ -1,0 +1,29 @@
+{
+  "summary": "Frontend-only verification on PREVIEW (https://noc-monitor-4.preview.emergentagent.com) of the reported bug 'Uncaught ReferenceError: showInstall is not defined at AgentsPage.js:436' on route /agents. Logged in as admin (info@86bit.it) with 2FA TOTP via Playwright, reached /agents both by direct URL and by sidebar navigation. The page renders correctly (header 'Agent v4 (Connector Go)', KPI cards, bulk-update banner, table with 8 agent rows). ZERO pageerror events and NO 'showInstall' reference in any console/page error. Also exercised refresh button, search filter and clear filter — all functional. Bug is NOT reproducible on current preview code; source grep confirms no 'showInstall' identifier anywhere in /app/frontend/src.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "/agents table", "issues": ["Column 'IP PUBBLICO' renders for all rows but every agent shows '—' (no public_ip persisted yet, all 8 agents OFFLINE), therefore data-testid agent-tcp-probe-<id> is never rendered and the TCP probe control could not be exercised end-to-end. Not a code defect, just missing data."]}
+    ]
+  },
+  "test_report_links": [],
+  "action_items": [
+    "No fix needed for /agents ReferenceError — preview bundle is clean. The production instance (argus.86bit.it) is still serving the OLD bundle: redeploy/rebuild production and instruct the user to hard-reload (new hashed bundle) to clear the stale showInstall chunk.",
+    "OPTIONAL (minor): React dev hydration warning in console: 'In HTML, <span> cannot be a child of <option>' triggered inside a route under ProtectedRoute (not AgentsPage — its <option> children are plain text). Track down the offending <select><option><span> markup elsewhere.",
+    "OPTIONAL: one 403 resource response observed during the login phase only (before token issuance); no 4xx/5xx after authentication on /agents."
+  ],
+  "critical_code_review_comments": [
+    "AgentsPage.js is 1460 lines — above the 700-line guideline; consider splitting (table rows, modals, IP-history modal) into sub-components.",
+    "TCP probe path (agent-tcp-probe-<id>) is untestable in this environment since no agent has public_ip; consider seeding a public_ip value for QA."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "not tested (frontend-only request)", "frontend": "100%"},
+  "seed_data_creation": "none",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "info@86bit.it / Ariel17051986@!@86 + TOTP secret NMHDJNO53WLTOSREUXWERE6FDH5TAKC3 (worked; login form needs typing with delay — page.fill immediately after load gets cleared by re-render, use click+type after ~3s wait)",
+  "context_for_next_testing_agent": "Preview login flow: /login -> data-testid login-email-input/login-password-input/login-submit-btn -> 2fa-code-input + verify-2fa-btn (pyotp available in the automation env). /agents renders 8 agent rows (all OFFLINE, 29 ghosts hidden), version v4.30.3, 8 outdated. Verified selectors: agents-page, agents-refresh, agents-search, agents-filter-clear, agent-row-<id>, agent-public-ip-<id>. agent-tcp-probe-<id> absent because public_ip is empty for all agents.",
+  "rca_of_the_issue": "The user's black screen on /agents comes from a stale production JS bundle (argus.86bit.it) still containing the removed showInstall reference. Current source in /app has no 'showInstall' occurrence (grep = 0 matches) and the preview build renders /agents with no JS errors. Resolution = redeploy production + cache-busted reload."
+}
