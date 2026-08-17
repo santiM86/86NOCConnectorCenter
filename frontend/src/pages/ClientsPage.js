@@ -3,6 +3,7 @@ import { useNavigate, Link } from "react-router-dom";
 import axios from "axios";
 import { API } from "@/App";
 import { toast } from "sonner";
+import { NewClientWizard } from "@/components/NewClientWizard";
 import {
   Plus, Trash, Buildings, EnvelopeSimple, Key, Copy, ArrowsClockwise,
   Globe, CaretRight, HardDrives, PlugsConnected, Bell, ShieldCheck,
@@ -176,37 +177,14 @@ export default function ClientsPage() {
             </div>
           )}
         </div>
-        <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-          <DialogTrigger asChild>
-            <Button className="rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white gap-1.5 text-xs h-8" data-testid="add-client-btn">
-              <Plus size={14} /> Nuovo Cliente
-            </Button>
-          </DialogTrigger>
-          <DialogContent className="bg-[var(--bg-panel)] border-[var(--bg-border)] rounded-lg">
-            <DialogHeader><DialogTitle className="font-heading text-[var(--text-primary)] text-sm">Nuovo Cliente</DialogTitle></DialogHeader>
-            <form onSubmit={handleCreate} className="space-y-3 mt-3">
-              <div className="space-y-1.5">
-                <Label className="text-[var(--text-muted)] text-[10px] uppercase tracking-widest">Nome *</Label>
-                <Input value={newClient.name} onChange={e => setNewClient(c => ({...c, name: e.target.value}))} placeholder="Acme Corp" required
-                  className="bg-[var(--bg-card)] border-[var(--bg-border)] text-[var(--text-primary)] rounded-md text-xs h-8" data-testid="client-name-input" />
-              </div>
-              <div className="space-y-1.5">
-                <Label className="text-[var(--text-muted)] text-[10px] uppercase tracking-widest">Descrizione</Label>
-                <Input value={newClient.description} onChange={e => setNewClient(c => ({...c, description: e.target.value}))} placeholder="Cliente enterprise"
-                  className="bg-[var(--bg-card)] border-[var(--bg-border)] text-[var(--text-primary)] rounded-md text-xs h-8" data-testid="client-description-input" />
-              </div>
-              <div className="space-y-1.5">
-                <Label className="text-[var(--text-muted)] text-[10px] uppercase tracking-widest">Email</Label>
-                <Input type="email" value={newClient.contact_email} onChange={e => setNewClient(c => ({...c, contact_email: e.target.value}))} placeholder="it@acme.com"
-                  className="bg-[var(--bg-card)] border-[var(--bg-border)] text-[var(--text-primary)] rounded-md text-xs h-8" data-testid="client-email-input" />
-              </div>
-              <div className="flex justify-end gap-2 pt-2">
-                <Button type="button" variant="ghost" size="sm" onClick={() => setDialogOpen(false)} className="rounded-md text-xs">Annulla</Button>
-                <Button type="submit" size="sm" className="rounded-md bg-indigo-600 hover:bg-indigo-700 text-white text-xs" data-testid="save-client-btn">Salva</Button>
-              </div>
-            </form>
-          </DialogContent>
-        </Dialog>
+        <Button onClick={() => setDialogOpen(true)} className="rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white gap-1.5 text-xs h-8" data-testid="add-client-btn">
+          <Plus size={14} /> Nuovo Cliente
+        </Button>
+        <NewClientWizard
+          open={dialogOpen}
+          onClose={() => setDialogOpen(false)}
+          onCreated={() => fetchClients()}
+        />
       </div>
 
       {/* Client List */}

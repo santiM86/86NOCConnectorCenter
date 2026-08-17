@@ -218,6 +218,23 @@ imposta l'HOST Hyper-V — il NOME VM resta per-device perché univoco):
 - Testato: curl (preset create/list/delete OK; bulk host modified=2; vm_only
   matched=0 sui non-VM = corretto) + screenshot E2E del modal. Dati di test rimossi.
 
+### 2026-08-17 (agg.9) 🧙 Wizard "Nuovo Cliente" multi-step (onboarding integrazioni)
+Richiesta: alla creazione cliente, agganciare tutto in un unico flusso senza saltare
+tra schermate. Nuovo componente `frontend/src/components/NewClientWizard.js` (usato
+da `ClientsPage.js` al posto del vecchio modal). 5 step, tutti SALTABILI tranne il 1°:
+1. **Cliente** → `POST /api/clients` (ritorna id + api_key).
+2. **Datto RMM** → `GET /api/datto/sites`, `PUT /clients/{id}/datto/link` (+ opz.
+   `POST /clients/{id}/datto/seed-managed` per importare i device).
+3. **Backup (Hornetsecurity/Altaro)** → `GET /admin/hornetsecurity/tenants`,
+   `PUT /clients/{id}/backup/hornetsecurity/mapping` (mapping a tenant esistenti,
+   multi-select a chip).
+4. **Monitor WAN** → `POST /external-monitor/targets` (IP pubblico pre-compilato da
+   `GET /external-monitor/detected-public-ip/{id}` se un agent è online).
+5. **Agent** → mostra API key + one-liner PowerShell d'installazione (Token/ClientId/
+   BackendUrl da window.origin→wss) con pulsanti copia.
+Stepper con spunte, testid `new-client-wizard` + `wizard-*`. Testato E2E (crea → salta
+→ agent con key+comando) + cleanup. Solo-frontend (usa endpoint esistenti).
+
 
 ## 2026-08-11 🔗 FIX uplink switch-to-switch non rilevati (peer con IP/chassis diversi)
 
