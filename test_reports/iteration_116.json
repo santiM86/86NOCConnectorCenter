@@ -1,0 +1,38 @@
+{
+  "summary": "Backend-only test su PREVIEW (https://noc-monitor-4.preview.emergentagent.com) degli endpoint Hornetsecurity Backup globali dopo il fix di resilienza. Login admin 2-step (login + verify-2fa TOTP) OK. 7/7 test passati. NESSUN HTTP 500: POST /api/admin/hornetsecurity/test -> 200 (ok=true, http_status=200, workloads_detected=4467, tenants_detected=42, diagnostics presente); POST /api/admin/hornetsecurity/poll -> 200 con summary {workloads_total:4467, failed:8, success:1444, in_progress:36, not_applicable:2082, excluded:897, workloads_persist_errors:0, tenants_seen:42}; seconda chiamata poll -> 429 con detail 'Rate limit Hornetsecurity: aspetta ancora 288s' (comportamento corretto, non 500); GET /api/admin/hornetsecurity/tenants -> 200 con {tenants:[44], mappings:[0]}, nessun _id Mongo esposto; poll senza token -> 403. Log backend: nessuna eccezione hornetsecurity, scheduler tick OK ('[hornetsecurity-global-poll] tenants=42 workloads=4467 failed=8').",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/admin/hornetsecurity/test", "issue": "Diagnostica clienti mancanti: la risposta upstream contiene UNA sola chiave top-level ('statistics') con 4467 elementi e NESSUN campo di paginazione/totale. Quindi i 42 tenant sono tutto ciò che l'API Hornetsecurity restituisce per quel report/SID: il problema 'mancano molti clienti' NON è lato nostro codice ma è il report upstream (probabilmente serve un report/SID aggiuntivo o un altro endpoint per gli altri clienti). Da verificare con il cliente/portale Hornetsecurity."},
+      {"endpoint": "POST /api/admin/hornetsecurity/poll", "issue": "tenants_with_storage=0 in ogni poll: _parse_storage_per_tenant non estrae nulla dal payload attuale (report contiene solo 'statistics'), quindi backup_storage_history non viene mai popolato e eventuali grafici storage restano vuoti."},
+      {"endpoint": "GET /api/admin/hornetsecurity/tenants", "issue": "Restituisce 44 tenant mentre il poll corrente vede 42: 2 tenant sono residui storici in backup_job_status (nessuna pulizia/flag stale dei workload non più presenti nel report). Considerare marcatura stale via captured_at."},
+      {"endpoint": "GET /api/admin/hornetsecurity/tenants", "issue": "mappings=[] (nessun mapping tenant->cliente configurato in preview): i dati backup non sono quindi visibili nelle pagine per-cliente. Non un bug, ma limita la copertura di test end-to-end."},
+      {"endpoint": "POST /api/admin/hornetsecurity/test|poll", "issue": "Con config assente gli endpoint rispondono 404 ('Config globale non configurata'), non 400 come indicato nella review request. Solo discrepanza di documentazione/atteso, comportamento accettabile."},
+      {"endpoint": "GET /api/clients/{id}/ilo-health, POST /api/connector/network-discovery", "issue": "Presenti 500 Internal Server Error in backend.out.log (7 occorrenze, non-hornetsecurity, richieste precedenti a questa sessione). Fuori scope ma da investigare."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_hornetsecurity_poll_500_iter116.py",
+    "/app/test_reports/pytest/hornet_iter116.xml"
+  ],
+  "action_items": [
+    "Nessun fix richiesto per il bug segnalato: il 500 su /poll e /test NON è più riproducibile (ora 200/429 con body coerente).",
+    "Investigare la causa reale dei 'clienti mancanti': l'API Hornetsecurity restituisce solo 42 tenant in 'statistics' senza paginazione — verificare se esistono più SID/report da interrogare e supportare multi-report nella config globale.",
+    "Valutare gestione storage (_parse_storage_per_tenant sempre vuoto) e cleanup/stale-marking dei workload non più presenti nel report (44 vs 42 tenant)."
+  ],
+  "critical_code_review_comments": [
+    "Il try/except per-workload in _persist_poll_results_global è corretto e ora esposto via 'workloads_persist_errors' (=0 in preview): buona osservabilità.",
+    "In poll_hornetsecurity_global la chiamata _fetch_backup_report è fuori dal try/except, ma la funzione cattura internamente Timeout/RequestError e ritorna (0, msg) → nessun rischio di 500; altre eccezioni httpx inattese (es. httpx.InvalidURL / UnsupportedProtocol) NON sono catturate: avvolgere anche quella chiamata in try/except per garantire 502.",
+    "hornetsecurity_backup.py è ~1544 righe: superiore alla linea guida di 700; considerare split (config admin, poll/persist, per-client routes).",
+    "L'aggregate su backup_job_status usa to_list(500): con 4467 workload il numero di tenant è sotto soglia, ma il limite hardcoded è fragile se i tenant crescono."
+  ],
+  "updated_files": ["/app/backend/tests/test_hornetsecurity_poll_500_iter116.py"],
+  "success_rate": {"backend": "100% (7/7)", "frontend": "not tested (backend-only request)"},
+  "seed_data_creation": "nessuna (usata config globale reale già presente); il poll ha aggiornato backup_job_status con dati reali dell'API",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "info@86bit.it / Ariel17051986@!@86 + TOTP NMHDJNO53WLTOSREUXWERE6FDH5TAKC3 (login -> verify-2fa, funzionante)",
+  "context_for_next_testing_agent": "Test file riusabile: /app/backend/tests/test_hornetsecurity_poll_500_iter116.py (fixture admin_token con login+verify-2fa). ATTENZIONE: /api/admin/hornetsecurity/poll ha rate limit 5 min → la seconda esecuzione ravvicinata dei test restituirà 429 (il test lo accetta). API reale Hornetsecurity RAGGIUNGIBILE in preview (200, 4467 workloads, 42 tenant).",
+  "rca_of_the_issue": "Il 500 originale derivava da un'eccezione non gestita in _persist_poll_results_global che interrompeva il loop sui workload (tenant successivi non salvati). Con il fix (try/except per-workload + try/except negli handler -> 502 con detail) l'endpoint ora ritorna 200 con workloads_persist_errors=0 e 42 tenant. Il residuo 'mancano clienti' è a monte: il report Hornetsecurity interrogato contiene solo 42 tenant e nessun campo di paginazione."
+}
