@@ -7,6 +7,7 @@ from display_name import best_display_name
 from device_type_resolver import best_device_type, is_endpoint_type
 from liveness_resolver import (
     build_evidence_maps, compute_status, build_clients_without_online_agent,
+    build_blackout_clients,
 )
 
 router = APIRouter(prefix="/api", tags=["overview"])
@@ -52,6 +53,10 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
     # Mitiga il bug Galvan dove ZITACSRV offline → 36 device "offline" cascade
     # → card cliente tutta rossa anche se i device probabilmente sono OK.
     offline_clients = await build_clients_without_online_agent(db)
+    # v2026-blackout: sottoinsieme di offline_clients con ANCHE la WAN giu'
+    # (sonda Center indipendente). Per questi il device diventa OFFLINE (rosso),
+    # non solo "stale": abbiamo la prova indipendente del blackout del sito.
+    blackout_clients = await build_blackout_clients(db, offline_clients)
     poll_by_key = {(p.get("client_id"), p.get("device_ip")): p for p in poll_devices}
 
     # Merge poll_devices and managed_devices into the unified list (skip duplicates)
@@ -69,7 +74,7 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
         dev_type = best_device_type(md, pd, name_hint=display_name)
         # Status centralizzato: identico a /api/devices
         # (evidence override -> debounce -> cascade-stale -> scanner-source -> pending)
-        status, _evidence = compute_status(pd, md, ip_evidence, mac_evidence, offline_clients)
+        status, _evidence = compute_status(pd, md, ip_evidence, mac_evidence, offline_clients, blackout_clients)
         devices.append({
             "client_id": cid,
             "name": display_name,
@@ -91,7 +96,7 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
         # Status centralizzato: stessa logica del branch polled
         # (gestisce scanner-source + evidence FDB/ARP cross-VLAN + cascade-stale).
         pd = poll_by_key.get(key)
-        md_status, _ev = compute_status(pd, md, ip_evidence, mac_evidence, offline_clients)
+        md_status, _ev = compute_status(pd, md, ip_evidence, mac_evidence, offline_clients, blackout_clients)
         devices.append({
             "client_id": cid,
             "name": best_display_name(md, pd, ip),

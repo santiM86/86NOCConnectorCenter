@@ -1,0 +1,35 @@
+{
+  "summary": "Testato via REST il fix BLACKOUT (agent offline -> device 'stale'/agent_offline) su GET /api/devices con setup DB controllato (client blackout con heartbeat 30min, client live con heartbeat fresco, device reachable per entrambi, poll source=agent_v4). RISULTATO: il gating NON funziona sull'endpoint /api/devices — il device del cliente con agent OFFLINE viene ancora restituito status='online' (bug grave riprodotto). Il caso di controllo (agent vivo -> 'online') passa. Root cause individuata via logging temporaneo (poi rimosso): l'override finale itera su `result` che contiene oggetti Pydantic DeviceResponse (non dict) -> `r.get('client_id')` solleva AttributeError, catturato dal `except Exception: pass` -> override silenziosamente saltato. Il resolver liveness_resolver.build_clients_without_online_agent() e' invece corretto (verificato direttamente su DB: client blackout presente nel set offline, client live no).",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "GET /api/devices?client_id=<CID>", "issue": "FALSO ONLINE durante blackout: il gating agent_offline (devices.py righe 848-862) non si applica perche' `result` contiene istanze Pydantic `DeviceResponse` (append a riga 807) e non dict; `r.get('client_id')` -> AttributeError: 'DeviceResponse' object has no attribute 'get', swallowato da `except Exception: pass`. Solo gli item del path degradato (dict, riga 814) verrebbero corretti. Device con agent offline resta status='online'.", "priority": "CRITICAL"},
+      {"endpoint": "GET /api/devices (modello DeviceResponse)", "issue": "`models.py: class DeviceResponse` (extra='ignore') NON ha il campo `status_reason`: anche dopo aver risolto il problema dict/model, `status_reason='agent_offline'` verrebbe scartato dalla serializzazione. Aggiungere `status_reason: Optional[str] = None` (e valutare anche il campo per il path degradato).", "priority": "HIGH"}
+    ],
+    "minor": [
+      {"endpoint": "GET /api/devices", "issue": "`except Exception: pass` sull'override blackout nasconde errori: usare logging.exception (best-effort ma osservabile), altrimenti bug come questo restano invisibili in produzione."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_blackout_agent_offline_iter117.py",
+    "/app/test_reports/pytest/iter117_blackout.xml"
+  ],
+  "action_items": [
+    "In routes/devices.py override blackout: normalizzare gli item (gestire sia dict sia DeviceResponse, es. applicare l'override sui dict `devices` PRIMA della costruzione di DeviceResponse, oppure usare getattr/setattr / model_dump).",
+    "Aggiungere `status_reason: Optional[str] = None` a `DeviceResponse` in /app/backend/models.py (extra='ignore' scarta i campi non dichiarati).",
+    "Sostituire `except Exception: pass` con logging.exception nell'override per non nascondere regressioni.",
+    "Dopo il fix rieseguire: pytest /app/backend/tests/test_blackout_agent_offline_iter117.py (4 test: blackout->stale, live->online, no _id leak, Datto-confirmed->online)."
+  ],
+  "critical_code_review_comments": [
+    "Il gating anti-blackout deve stare nel punto di calcolo dello status (dove si costruisce il dict device / compute_status), non come post-processing su una lista di modelli Pydantic: il post-processing e' fragile e infatti si e' rotto.",
+    "Test suggerito lato unit: assert che l'endpoint restituisca dict/DeviceResponse coerenti (tipo unico) per evitare rami misti nella stessa lista."
+  ],
+  "updated_files": ["/app/backend/tests/test_blackout_agent_offline_iter117.py"],
+  "success_rate": {"backend": "75% (3/4 test; il test chiave del bug FALLISCE)", "frontend": "non testato (backend only)"},
+  "seed_data_creation": "Creati e POI RIMOSSI: clients/managed_agents/managed_devices/device_poll_status/datto_devices con client_id TEST_CID_BLACKOUT_117 (ip 10.77.0.5) e TEST_CID_LIVE_117 (ip 10.88.0.5). Verificato count=0 al termine.",
+  "should_call_test_agent_after_fix": true,
+  "should_main_agent_self_test": false,
+  "test_credentials": "admin info@86bit.it + 2FA TOTP (NMHDJNO53WLTOSREUXWERE6FDH5TAKC3) — login e verify-2fa OK",
+  "context_for_next_testing_agent": "Il test file /app/backend/tests/test_blackout_agent_offline_iter117.py fa seeding/cleanup autonomo su MongoDB e login 2FA. Riesegui direttamente dopo il fix. Nota: il client LIVE deve avere managed_agents role='master' e device_poll_status source='agent_v4', altrimenti la 'zombie v3 protection' filtra i poll record e il device diventa pending.",
+  "rca_of_the_issue": "devices.py get_devices costruisce `result` con `DeviceResponse(**d)` (Pydantic) nel path normale e con dict solo nel fallback di validazione. L'override anti-blackout aggiunto in coda usa API da dict (r.get/r[...]), quindi al primo item Pydantic solleva AttributeError, intercettato dal try/except best-effort che fa `pass`: l'intero override viene saltato per tutta la lista -> device di clienti con agent offline restano 'online' (bug originale non risolto sull'endpoint REST). Riproduzione: seed client con managed_agents.last_heartbeat_at = now-30min + device_poll_status reachable=true recente -> GET /api/devices?client_id=... restituisce status='online' invece di 'stale'."
+}

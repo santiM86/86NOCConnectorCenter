@@ -506,8 +506,10 @@ async def _persist_poll_results_global(report: dict) -> dict:
     counts = {"failed": 0, "success": 0, "in_progress": 0,
               "not_applicable": 0, "excluded": 0, "other": 0}
     tenants_seen: set[str] = set()
+    persist_errors = 0
 
     for w in workloads:
+      try:
         tenants_seen.add(w["tenant"])
         sub_group = _extract_sub_group(w)
         await db.backup_job_status.update_one(
@@ -585,13 +587,20 @@ async def _persist_poll_results_global(report: dict) -> dict:
                 )
             except Exception as e:
                 logger.warning(f"[hornetsecurity] auto-resolve failed for {w['workload_id']}: {e}")
+      except Exception as e:  # noqa: BLE001 — un workload malformato non deve abortire l'intero poll (perdita tenant)
+        persist_errors += 1
+        logger.warning(f"[hornetsecurity] skip workload {w.get('workload_id')}: {e}")
+        continue
 
     for tenant_name, bytes_used in storage.items():
-        await db.backup_storage_history.insert_one({
-            "tenant": tenant_name,
-            "size_bytes": int(bytes_used),
-            "recorded_at": now_iso,
-        })
+        try:
+            await db.backup_storage_history.insert_one({
+                "tenant": tenant_name,
+                "size_bytes": int(bytes_used),
+                "recorded_at": now_iso,
+            })
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[hornetsecurity] storage insert failed for {tenant_name}: {e}")
 
     return {
         "workloads_total": len(workloads),
@@ -600,6 +609,7 @@ async def _persist_poll_results_global(report: dict) -> dict:
         "workloads_in_progress": counts["in_progress"],
         "workloads_not_applicable": counts["not_applicable"],
         "workloads_excluded": counts["excluded"],
+        "workloads_persist_errors": persist_errors,
         "tenants_seen": len(tenants_seen),
         "tenants_with_storage": len(storage),
     }
@@ -1051,22 +1061,41 @@ async def test_hornetsecurity_global(current_user: dict = Depends(get_current_us
     if not cfg:
         raise HTTPException(status_code=404, detail="Config globale non configurata")
     api_key = security_manager.decrypt_credential(cfg["api_key_enc"])
-    code, body = await _fetch_backup_report(cfg["api_url"], api_key)
-    ok = code == 200 and isinstance(body, dict)
-    workloads = _parse_workloads(body) if ok else []
-    tenants = sorted({w["tenant"] for w in workloads if w["tenant"]})
-    by_status: dict[str, int] = {}
-    for w in workloads:
-        by_status[w["status"]] = by_status.get(w["status"], 0) + 1
-    return {
-        "ok": ok,
-        "http_status": code,
-        "workloads_detected": len(workloads),
-        "tenants_detected": len(tenants),
-        "tenants": tenants,
-        "by_status": by_status,
-        "raw_response_excerpt": (str(body)[:500] if not ok else None),
-    }
+    try:
+        code, body = await _fetch_backup_report(cfg["api_url"], api_key)
+        ok = code == 200 and isinstance(body, dict)
+        workloads = _parse_workloads(body) if ok else []
+        tenants = sorted({w["tenant"] for w in workloads if w["tenant"]})
+        by_status: dict[str, int] = {}
+        for w in workloads:
+            by_status[w["status"]] = by_status.get(w["status"], 0) + 1
+        # Diagnostica "clienti mancanti": esponi le chiavi top-level della risposta
+        # e ogni campo che sembri paginazione/totale, per capire se l'API sta
+        # troncando i tenant restituiti.
+        diag: dict[str, Any] = {}
+        if isinstance(body, dict):
+            diag["response_keys"] = list(body.keys())[:30]
+            stats = body.get("statistics")
+            diag["statistics_count"] = len(stats) if isinstance(stats, list) else None
+            for k in ("pagination", "total", "totalCount", "total_count", "count",
+                      "page", "pageCount", "page_count", "next", "links", "meta"):
+                if k in body:
+                    diag[k] = body[k] if not isinstance(body[k], (list, dict)) else str(body[k])[:300]
+        return {
+            "ok": ok,
+            "http_status": code,
+            "workloads_detected": len(workloads),
+            "tenants_detected": len(tenants),
+            "tenants": tenants,
+            "by_status": by_status,
+            "diagnostics": diag,
+            "raw_response_excerpt": (str(body)[:500] if not ok else None),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        logger.exception("HORNETSECURITY_GLOBAL_TEST failed")
+        raise HTTPException(status_code=502, detail=f"Errore test Hornetsecurity: {str(e)[:200]}")
 
 
 @router.post("/admin/hornetsecurity/poll")
@@ -1110,7 +1139,17 @@ async def poll_hornetsecurity_global(current_user: dict = Depends(get_current_us
             detail=f"API Hornetsecurity HTTP {code}: {str(body)[:200]}",
         )
 
-    summary = await _persist_poll_results_global(body)
+    summary = None
+    try:
+        summary = await _persist_poll_results_global(body)
+    except Exception as e:  # noqa: BLE001
+        logger.exception("HORNETSECURITY_GLOBAL_POLL persist failed")
+        await db.hornetsecurity_global_config.update_one(
+            {"_id": GLOBAL_CONFIG_ID},
+            {"$set": {"last_polled_at": now_iso, "last_poll_status": "failed",
+                      "last_poll_error": f"persist: {str(e)[:300]}"}},
+        )
+        raise HTTPException(status_code=502, detail=f"Errore elaborazione report Hornetsecurity: {str(e)[:200]}")
     await db.hornetsecurity_global_config.update_one(
         {"_id": GLOBAL_CONFIG_ID},
         {"$set": {
