@@ -255,7 +255,7 @@ async def agent_ws(ws: WebSocket) -> None:
     try:
         existing = await db.managed_agents.find_one(
             {"agent_id": agent_id},
-            {"_id": 0, "update_status": 1, "update_target_version": 1, "update_started_version": 1},
+            {"_id": 0, "update_status": 1, "update_target_version": 1, "update_started_version": 1, "public_ip": 1},
         )
         if existing and existing.get("update_status") == "in_progress":
             target_n = _normalize_ver(existing.get("update_target_version"))
@@ -308,6 +308,23 @@ async def agent_ws(ws: WebSocket) -> None:
     if _public_ip:
         set_fields["public_ip"] = _public_ip
         set_fields["public_ip_seen_at"] = now.isoformat()
+        # Rileva il CAMBIO di IP pubblico (failover linea / nuovo IP ISP): se il
+        # precedente era valorizzato e diverso, registra prev + timestamp + storico.
+        _prev_pub = (existing or {}).get("public_ip") if isinstance(existing, dict) else None
+        if _prev_pub and _prev_pub != _public_ip:
+            set_fields["public_ip_prev"] = _prev_pub
+            set_fields["public_ip_changed_at"] = now.isoformat()
+            try:
+                await db.agent_public_ip_changes.insert_one({
+                    "agent_id": agent_id,
+                    "client_id": client_id,
+                    "hostname": hello.get("hostname"),
+                    "previous_ip": _prev_pub,
+                    "public_ip": _public_ip,
+                    "changed_at": now.isoformat(),
+                })
+            except Exception:  # noqa: BLE001
+                pass
     set_fields.update(update_complete_patch)
     await db.managed_agents.update_one(
         {"agent_id": agent_id},

@@ -87,6 +87,16 @@ In PROD il campo si popola al primo reconnect degli agent DOPO il deploy di ques
 build backend (Save to GitHub + redeploy Center). Se un cliente è dietro CGNAT,
 l'IP mostrato è quello dell'uscita CGNAT dell'ISP.
 
+### 2026-08-17 (agg.) 🔔 Storico/badge cambio IP pubblico
+- `agent_ws.py`: all'handshake, se il `public_ip` rilevato differisce dal
+  precedente salvato, imposta `public_ip_prev` + `public_ip_changed_at` e appende
+  un record in `agent_public_ip_changes` (agent_id, client_id, hostname,
+  previous_ip, public_ip, changed_at) → storico failover linea / nuovo IP ISP.
+- `AgentsPage.js`: badge ambra "IP cambiato" (`data-testid=agent-public-ip-changed-<id>`)
+  accanto all'IP, mostrato SOLO se il cambio è avvenuto negli ultimi 14 giorni
+  (`isRecentChange`), con tooltip "cambiato Ng fa · precedente: X".
+- Testato: patch DB + screenshot E2E (badge + nuovo IP renderizzati). Dati puliti.
+
 
 ## 2026-08-11 🔗 FIX uplink switch-to-switch non rilevati (peer con IP/chassis diversi)
 

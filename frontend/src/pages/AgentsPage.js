@@ -597,8 +597,18 @@ export default function AgentsPage() {
                       </td>
                       <td className="p-2.5 font-mono text-[10px]" data-testid={`agent-public-ip-${a.agent_id}`} title={a.public_ip ? `IP pubblico WAN rilevato dalla connessione agent${a.public_ip_seen_at ? ` · ${fmtRel(a.public_ip_seen_at)}` : ""}` : "IP pubblico non ancora rilevato (agent mai connesso da questa build)"}>
                         {a.public_ip
-                          ? <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-sky-500/10 text-sky-400 border border-sky-500/20">
-                              <Globe size={10} />{a.public_ip}
+                          ? <span className="inline-flex flex-wrap items-center gap-1">
+                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-sky-500/10 text-sky-400 border border-sky-500/20">
+                                <Globe size={10} />{a.public_ip}
+                              </span>
+                              {a.public_ip_changed_at && isRecentChange(a.public_ip_changed_at) && (
+                                <span
+                                  data-testid={`agent-public-ip-changed-${a.agent_id}`}
+                                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400 border border-amber-500/25 cursor-help"
+                                  title={`IP pubblico cambiato ${fmtRel(a.public_ip_changed_at)}${a.public_ip_prev ? ` · precedente: ${a.public_ip_prev}` : ""}`}>
+                                  <Warning size={10} />IP cambiato
+                                </span>
+                              )}
                             </span>
                           : <span className="text-[var(--text-muted)]">—</span>}
                       </td>
@@ -1322,4 +1332,15 @@ function fmtRel(iso) {
     if (ms < 86400000) return `${Math.floor(ms / 3600000)}h fa`;
     return `${Math.floor(ms / 86400000)}g fa`;
   } catch { return "—"; }
+}
+
+
+// Badge "IP cambiato" mostrato solo se il cambio e' recente (ultimi 14 giorni),
+// cosi' non resta appeso per sempre dopo un failover di linea gia' assorbito.
+function isRecentChange(iso, days = 14) {
+  if (!iso) return false;
+  try {
+    const ms = Date.now() - new Date(iso).getTime();
+    return ms >= 0 && ms <= days * 86400000;
+  } catch { return false; }
 }
