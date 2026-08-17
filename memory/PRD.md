@@ -120,6 +120,23 @@ l'IP mostrato è quello dell'uscita CGNAT dell'ISP.
 - Testato E2E (screenshot): Sonda (RTT chip + toast), badge→cronologia (timeline),
   auto-target (prefill 1.1.1.1 + hint). Backend curl OK. Dati di test rimossi.
 
+### 2026-08-17 (agg.3) 🐞 FIX "Applica ora" non salvava + ⚙️ Bulk impostazioni device
+- **BUG FIX (`DeviceEditModal.js`)**: il pulsante **"Applica ora"** chiamava solo
+  `request-refresh` SENZA salvare → i parametri VM/SNMP/silence appena impostati
+  andavano persi (l'utente segnalava "non vengono memorizzati"). Refactor: estratto
+  `persistChanges()` + `buildOptimistic()`; ora SIA "Salva" SIA "Applica ora"
+  persistono; "Applica ora" salva PRIMA, poi forza il refresh del connector.
+  Verificato E2E: set VM Hyper-V+nome+host+alert → "Applica ora" → riapri = valori
+  mantenuti. (Il backend `POST /devices/by-ip/{ip}/virtualization|vm-alert` era gia'
+  corretto e persisteva.)
+- **Bulk impostazioni** (`POST /api/devices/bulk-apply-settings` in device_info_card.py):
+  applica in blocco a piu' device (per client_id+ips) SOLO i campi passati in `apply{}`:
+  virtualization, vm_alert, silenced+reason, monitor_type, snmp_version, community.
+  UI: nella tab "Dispositivi Vitali", selezionando righe compare il pulsante
+  "Applica impostazioni" (`bulk-apply-settings-btn`) → modal `BulkSettingsModal`
+  con checkbox-per-parametro (default "Allerta VM spenta" ON). Applica a TUTTI i
+  selezionati senza distinzione di tipo. Testato E2E: 3 device aggiornati.
+
 
 ## 2026-08-11 🔗 FIX uplink switch-to-switch non rilevati (peer con IP/chassis diversi)
 

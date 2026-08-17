@@ -62,14 +62,25 @@ export function DeviceEditModal({ clientId, device, open, onClose, onSaved }) {
     setHypervHostHint(device?.hyperv_host_hint || "");
   }, [device?.id, device?.alerts_silenced, device?.alerts_silenced_reason, device?.monitor_type, device?.snmp_version, device?.snmp_community, device?.hyperv_alert_on_off, device?.virtualization, device?.hyperv_vm_name, device?.hyperv_host_hint]);
 
-  const save = async () => {
-    if (!device?.id && !device?.device_id) {
-      toast.error("ID dispositivo mancante");
-      return;
-    }
+  const buildOptimistic = () => ({
+    ...device,
+    alerts_silenced: alertsSilenced,
+    alerts_silenced_reason: silenceReason,
+    hyperv_alert_on_off: isHyperVvm ? vmAlertOnOff : device?.hyperv_alert_on_off,
+    virtualization,
+    hyperv_vm_name: virtualization === "hyperv" ? hypervVmName : "",
+    hyperv_host_hint: virtualization === "hyperv" ? hypervHostHint : "",
+    monitor_type: monitorType,
+    snmp_version: snmpVersion,
+    snmp_community: snmpVersion !== "v3" ? community : device?.snmp_community,
+  });
+
+  // Esegue TUTTE le PUT/POST di persistenza (senza toast/onSaved). Ritorna gli
+  // errori raccolti + se il silence e' stato scritto. Usata sia da "Salva" sia
+  // da "Applica ora" (che PRIMA salva, POI forza il refresh del connector).
+  const persistChanges = async () => {
     const deviceId = device.id || device.device_id;
-    setSaving(true);
-    // Eseguo le 3 PUT in modo INDIPENDENTE: il fallimento di una non deve
+    // Eseguo le PUT in modo INDIPENDENTE: il fallimento di una non deve
     // impedire le altre. Il silence in particolare e` la modifica piu` semplice e
     // l'utente si aspetta che funzioni anche se monitor-type/snmp falliscono.
     const errors = [];
@@ -179,6 +190,16 @@ export function DeviceEditModal({ clientId, device, open, onClose, onSaved }) {
       }
     }
 
+    return { errors, silencePersisted };
+  };
+
+  const save = async () => {
+    if (!device?.id && !device?.device_id) {
+      toast.error("ID dispositivo mancante");
+      return;
+    }
+    setSaving(true);
+    const { errors, silencePersisted } = await persistChanges();
     setSaving(false);
 
     if (errors.length > 0) {
@@ -192,30 +213,30 @@ export function DeviceEditModal({ clientId, device, open, onClose, onSaved }) {
     } else {
       toast.success("Dispositivo aggiornato. Clicca 'Applica ora' per forzare il connector a ri-leggere immediatamente.");
     }
-    // Push optimistic update verso il parent: il parent puo` aggiornare la riga
-    // immediatamente senza aspettare il refetch async (evita ritardi UI 1-4s).
-    if (onSaved) {
-      onSaved({
-        ...device,
-        alerts_silenced: alertsSilenced,
-        alerts_silenced_reason: silenceReason,
-        hyperv_alert_on_off: isHyperVvm ? vmAlertOnOff : device?.hyperv_alert_on_off,
-        virtualization,
-        hyperv_vm_name: virtualization === "hyperv" ? hypervVmName : "",
-        hyperv_host_hint: virtualization === "hyperv" ? hypervHostHint : "",
-        monitor_type: monitorDirty ? monitorType : device?.monitor_type,
-        snmp_version: snmpFieldsDirty ? snmpVersion : device?.snmp_version,
-        snmp_community: snmpFieldsDirty && snmpVersion !== "v3" ? community : device?.snmp_community,
-      });
-    }
+    // Push optimistic update verso il parent (aggiorna la riga senza attendere
+    // il refetch async) + chiude il modal.
+    if (onSaved) onSaved(buildOptimistic());
   };
 
   const applyNow = async () => {
+    if (!device?.id && !device?.device_id) {
+      toast.error("ID dispositivo mancante");
+      return;
+    }
     setRefreshing(true);
     try {
+      // FIX: prima "Applica ora" NON salvava (chiamava solo request-refresh) e
+      // i parametri VM/SNMP/silence appena impostati andavano PERSI. Ora salva
+      // PRIMA le modifiche pendenti, POI forza il refresh del connector.
+      const { errors } = await persistChanges();
+      if (errors.length > 0) {
+        toast.error(`Errori durante il salvataggio: ${errors.join(" | ")}`);
+        setRefreshing(false);
+        return;
+      }
       const res = await axios.post(`${API}/connector/${clientId}/request-refresh`);
-      toast.success(res.data?.message || "Richiesta inviata al connector");
-      onClose();
+      toast.success(res.data?.message || "Modifiche salvate — richiesta di refresh inviata al connector");
+      if (onSaved) onSaved(buildOptimistic()); else onClose();
     } catch (e) {
       toast.error(e.response?.data?.detail || "Errore nella richiesta refresh");
     } finally {
