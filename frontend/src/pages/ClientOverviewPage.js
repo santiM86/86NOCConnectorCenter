@@ -3790,13 +3790,13 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
         open={bulkSettingsOpen}
         count={selectedIps.size}
         onClose={() => setBulkSettingsOpen(false)}
-        onApply={async (applyObj) => {
+        onApply={async (applyObj, vmOnly) => {
           const ips = Array.from(selectedIps);
           if (!ips.length) return;
           setBulkSaving(true);
           try {
             const { data } = await axios.post(`${API}/devices/bulk-apply-settings`, {
-              client_id: clientId, ips, apply: applyObj,
+              client_id: clientId, ips, apply: applyObj, vm_only: !!vmOnly,
             });
             toast.success(data.message || `${data.modified} dispositivi aggiornati`);
             setBulkSettingsOpen(false);
@@ -5266,6 +5266,8 @@ function BulkSettingsModal({ open, count, onClose, onApply }) {
   const [vmAlert, setVmAlert] = useState(true);
   const [enVirt, setEnVirt] = useState(false);
   const [virt, setVirt] = useState("hyperv");
+  const [enHost, setEnHost] = useState(false);
+  const [hostHint, setHostHint] = useState("");
   const [enSilence, setEnSilence] = useState(false);
   const [silenced, setSilenced] = useState(true);
   const [silenceReason, setSilenceReason] = useState("");
@@ -5274,14 +5276,26 @@ function BulkSettingsModal({ open, count, onClose, onApply }) {
   const [enSnmp, setEnSnmp] = useState(false);
   const [snmpVersion, setSnmpVersion] = useState("v2c");
   const [community, setCommunity] = useState("public");
+  const [vmOnly, setVmOnly] = useState(false);
+  const [presets, setPresets] = useState([]);
+  const [presetName, setPresetName] = useState("");
+
+  const loadPresets = () => {
+    axios.get(`${API}/device-setting-presets`)
+      .then((r) => setPresets(r.data?.presets || []))
+      .catch(() => {});
+  };
 
   useEffect(() => {
     if (open) {
       setEnVm(true); setVmAlert(true);
       setEnVirt(false); setVirt("hyperv");
+      setEnHost(false); setHostHint("");
       setEnSilence(false); setSilenced(true); setSilenceReason("");
       setEnMon(false); setMonitorType("snmp");
       setEnSnmp(false); setSnmpVersion("v2c"); setCommunity("public");
+      setVmOnly(false); setPresetName("");
+      loadPresets();
     }
   }, [open]);
 
@@ -5289,12 +5303,52 @@ function BulkSettingsModal({ open, count, onClose, onApply }) {
     const apply = {};
     if (enVm) apply.vm_alert = vmAlert;
     if (enVirt) apply.virtualization = virt;
+    if (enHost) apply.hyperv_host_hint = hostHint.trim();
     if (enSilence) { apply.silenced = silenced; apply.silence_reason = silenceReason; }
     if (enMon) apply.monitor_type = monitorType;
     if (enSnmp) { apply.snmp_version = snmpVersion; if (snmpVersion !== "v3") apply.community = community; }
     return apply;
   };
-  const nothingSelected = !enVm && !enVirt && !enSilence && !enMon && !enSnmp;
+  const nothingSelected = !enVm && !enVirt && !enHost && !enSilence && !enMon && !enSnmp;
+
+  // Carica un preset salvato nei controlli del modal.
+  const applyPreset = (p) => {
+    if (!p) return;
+    const a = p.apply || {};
+    setEnVm("vm_alert" in a); setVmAlert(a.vm_alert !== false);
+    setEnVirt("virtualization" in a); if ("virtualization" in a) setVirt(a.virtualization || "");
+    setEnHost("hyperv_host_hint" in a); setHostHint(a.hyperv_host_hint || "");
+    setEnSilence("silenced" in a); setSilenced(a.silenced !== false); setSilenceReason(a.silence_reason || "");
+    setEnMon("monitor_type" in a); if ("monitor_type" in a) setMonitorType(a.monitor_type);
+    setEnSnmp("snmp_version" in a); if ("snmp_version" in a) setSnmpVersion(a.snmp_version); if ("community" in a) setCommunity(a.community || "public");
+    setVmOnly(!!p.vm_only);
+    toast.success(`Preset "${p.name}" caricato`);
+  };
+
+  const savePreset = async () => {
+    const name = presetName.trim();
+    if (!name) { toast.error("Dai un nome al preset"); return; }
+    const apply = build();
+    if (!Object.keys(apply).length) { toast.error("Seleziona almeno un parametro"); return; }
+    try {
+      await axios.post(`${API}/device-setting-presets`, { name, apply, vm_only: vmOnly });
+      toast.success(`Preset "${name}" salvato`);
+      setPresetName("");
+      loadPresets();
+    } catch (e) {
+      toast.error(`Salvataggio preset fallito: ${e.response?.data?.detail || e.message}`);
+    }
+  };
+
+  const deletePreset = async (p) => {
+    try {
+      await axios.delete(`${API}/device-setting-presets/${p.id}`);
+      toast.success(`Preset "${p.name}" eliminato`);
+      loadPresets();
+    } catch (e) {
+      toast.error(`Eliminazione fallita: ${e.response?.data?.detail || e.message}`);
+    }
+  };
 
   const Row = ({ checked, onCheck, label, children }) => (
     <div className="rounded p-2.5 border bg-[var(--bg-card)] border-[var(--bg-border)]">
@@ -5318,7 +5372,19 @@ function BulkSettingsModal({ open, count, onClose, onApply }) {
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-2 mt-1 max-h-[55vh] overflow-y-auto pr-1">
+        {/* Preset salvati (globali) */}
+        <div className="rounded p-2 border border-cyan-500/25 bg-cyan-500/5 flex items-center gap-2 flex-wrap" data-testid="bulk-presets-bar">
+          <span className="text-[10px] uppercase tracking-widest text-cyan-400 font-semibold">Preset</span>
+          {presets.length === 0 && <span className="text-[10px] text-[var(--text-muted)]">nessuno salvato</span>}
+          {presets.map((p) => (
+            <span key={p.id} className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-[var(--bg-card)] border border-[var(--bg-border)] text-[10px]">
+              <button type="button" className="text-cyan-300 hover:text-cyan-200" onClick={() => applyPreset(p)} data-testid={`bulk-preset-${p.id}`} title="Carica questo preset">{p.name}</button>
+              <button type="button" className="text-red-400/70 hover:text-red-400" onClick={() => deletePreset(p)} title="Elimina preset">×</button>
+            </span>
+          ))}
+        </div>
+
+        <div className="space-y-2 mt-1 max-h-[45vh] overflow-y-auto pr-1">
           <Row checked={enVm} onCheck={setEnVm} label="⚡ Allerta se la VM si spegne">
             <label className="flex items-center gap-2 cursor-pointer text-[11px] text-[var(--text-secondary)]">
               <input type="checkbox" checked={vmAlert} onChange={(e) => setVmAlert(e.target.checked)} data-testid="bulk-vmalert-value" />
@@ -5337,7 +5403,11 @@ function BulkSettingsModal({ open, count, onClose, onApply }) {
                 <SelectItem value="vm_generic">VM (generica)</SelectItem>
               </SelectContent>
             </Select>
-            <span className="block text-[9px] text-[var(--text-muted)]">Applicato a tutti i selezionati senza distinzione.</span>
+          </Row>
+
+          <Row checked={enHost} onCheck={setEnHost} label="🏠 Host Hyper-V">
+            <Input value={hostHint} onChange={(e) => setHostHint(e.target.value)} placeholder="es. GALVANSRV" className="bg-[var(--bg-card)] border-[var(--bg-border)] h-7 text-xs" data-testid="bulk-hosthint-input" />
+            <span className="block text-[9px] text-[var(--text-muted)]">L'host su cui girano le VM (uguale per più VM). Il NOME VM è unico e va impostato per singolo device.</span>
           </Row>
 
           <Row checked={enSilence} onCheck={setEnSilence} label="🔕 Silenzia alert">
@@ -5376,11 +5446,22 @@ function BulkSettingsModal({ open, count, onClose, onApply }) {
             )}
             {snmpVersion === "v3" && <span className="block text-[9px] text-[var(--text-muted)]">Le credenziali v3 vanno impostate per singolo device.</span>}
           </Row>
+
+          <label className="flex items-center gap-2 cursor-pointer text-[11px] text-[var(--text-secondary)] px-1 pt-1" data-testid="bulk-vmonly-row">
+            <input type="checkbox" checked={vmOnly} onChange={(e) => setVmOnly(e.target.checked)} data-testid="bulk-vmonly-value" />
+            Applica SOLO ai dispositivi già classificati come VM (salta switch, stampanti, host fisici)
+          </label>
+
+          {/* Salva come preset */}
+          <div className="flex items-center gap-2 pt-1">
+            <Input value={presetName} onChange={(e) => setPresetName(e.target.value)} placeholder="Nome preset (es. VM critica H-V)" className="bg-[var(--bg-card)] border-[var(--bg-border)] h-7 text-xs" data-testid="bulk-preset-name-input" />
+            <Button variant="outline" onClick={savePreset} className="h-7 text-[11px] whitespace-nowrap" data-testid="bulk-preset-save-btn">Salva preset</Button>
+          </div>
         </div>
 
         <DialogFooter className="mt-2">
           <Button variant="ghost" onClick={onClose} className="h-8 text-xs text-[var(--text-muted)]" data-testid="bulk-settings-cancel">Annulla</Button>
-          <Button onClick={() => onApply(build())} disabled={nothingSelected} className="h-8 text-xs bg-cyan-500 hover:bg-cyan-600 text-white" data-testid="bulk-settings-apply">
+          <Button onClick={() => onApply(build(), vmOnly)} disabled={nothingSelected} className="h-8 text-xs bg-cyan-500 hover:bg-cyan-600 text-white" data-testid="bulk-settings-apply">
             Applica a {count} dispositivi
           </Button>
         </DialogFooter>

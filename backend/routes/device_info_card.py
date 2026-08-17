@@ -1331,6 +1331,15 @@ async def bulk_apply_device_settings(
         set_fields["community"] = apply.get("community") or ""
         applied.append("community SNMP")
 
+    # v4.30.3: Host/Nome VM applicabili anche SENZA cambiare il tipo macchina.
+    # (Il "vm_only" a valle limita comunque l'update ai soli device gia' VM.)
+    if "hyperv_host_hint" in apply and "hyperv_host_hint" not in set_fields:
+        set_fields["hyperv_host_hint"] = (apply.get("hyperv_host_hint") or "").strip()
+        applied.append("host Hyper-V")
+    if "hyperv_vm_name" in apply and "hyperv_vm_name" not in set_fields:
+        set_fields["hyperv_vm_name"] = (apply.get("hyperv_vm_name") or "").strip()
+        applied.append("nome VM")
+
     if not set_fields:
         raise HTTPException(status_code=400, detail="Nessun campo valido da applicare")
 
@@ -1338,6 +1347,10 @@ async def bulk_apply_device_settings(
     set_fields["bulk_settings_set_at"] = datetime.now(timezone.utc).isoformat()
 
     q = {"client_id": client_id, "$or": [{"ip": {"$in": ips}}, {"ip_address": {"$in": ips}}]}
+    # v4.30.3: se vm_only, applica SOLO ai dispositivi gia' classificati come VM
+    # (salta switch/stampanti/host fisici) — utile per host/nome VM e alert VM.
+    if bool(payload.get("vm_only")):
+        q["virtualization"] = {"$in": ["hyperv", "vmware", "vm_generic"]}
     res = await db.managed_devices.update_many(q, {"$set": set_fields})
 
     try:
@@ -1367,6 +1380,48 @@ async def bulk_apply_device_settings(
         "message": f"{res.modified_count} dispositivi aggiornati ({', '.join(applied) or 'nessun parametro'})",
     }
 
+
+# ==================== Preset impostazioni device (GLOBALI) ====================
+# Profili riutilizzabili (es. "VM critica H-V", "Switch SNMP v2c") applicabili con
+# un click dal modal "Applica impostazioni". Globali = validi per tutti i clienti.
+
+@router.get("/device-setting-presets")
+async def list_device_setting_presets(current_user: dict = Depends(get_current_user)):
+    docs = await db.device_setting_presets.find({}, {"_id": 0}).sort("name", 1).to_list(length=200)
+    return {"presets": docs}
+
+
+@router.post("/device-setting-presets")
+async def create_device_setting_preset(payload: dict, current_user: dict = Depends(get_current_user)):
+    import uuid as _uuid
+    name = (payload.get("name") or "").strip()
+    apply = payload.get("apply") or {}
+    if not name:
+        raise HTTPException(status_code=400, detail="Nome preset obbligatorio")
+    if not isinstance(apply, dict) or not apply:
+        raise HTTPException(status_code=400, detail="Nessun parametro da salvare nel preset")
+    doc = {
+        "id": str(_uuid.uuid4()),
+        "name": name,
+        "apply": apply,
+        "vm_only": bool(payload.get("vm_only")),
+        "created_by": current_user.get("email"),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    # upsert per nome (evita duplicati): sovrascrive se esiste gia' lo stesso nome
+    existing = await db.device_setting_presets.find_one({"name": name}, {"_id": 0, "id": 1})
+    if existing:
+        doc["id"] = existing["id"]
+        await db.device_setting_presets.update_one({"id": doc["id"]}, {"$set": doc})
+    else:
+        await db.device_setting_presets.insert_one(dict(doc))
+    return {"ok": True, "preset": doc}
+
+
+@router.delete("/device-setting-presets/{preset_id}")
+async def delete_device_setting_preset(preset_id: str, current_user: dict = Depends(get_current_user)):
+    res = await db.device_setting_presets.delete_one({"id": preset_id})
+    return {"ok": True, "deleted": res.deleted_count}
 
 
 @router.post("/devices/normalize-ip-fields")

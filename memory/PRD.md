@@ -203,6 +203,21 @@ Nota: pagina web `/agents` verificata OK in preview E in build di produzione
 (`yarn build` completa senza errori) → l'eventuale "schermo nero" è un problema di
 runtime/deploy di produzione, NON del codice frontend.
 
+### 2026-08-17 (agg.8) 💾 Preset Salvati (globali) + Host/Nome VM in Bulk
+Feature richieste, ora completate (default scelti: preset GLOBALI; in bulk si
+imposta l'HOST Hyper-V — il NOME VM resta per-device perché univoco):
+- **Preset globali** (`device_info_card.py`): `GET/POST/DELETE /api/device-setting-presets`
+  (collection `device_setting_presets`: id, name, apply{}, vm_only, created_by).
+  Upsert per nome. UI: barra "PRESET" nel `BulkSettingsModal` (chip cliccabili per
+  caricare + × per eliminare) e campo "Nome preset" + "Salva preset".
+- **Bulk esteso** (`bulk-apply-settings`): `hyperv_host_hint`/`hyperv_vm_name`
+  applicabili anche senza cambiare il tipo macchina; nuovo flag **`vm_only`** →
+  l'update colpisce SOLO i device già VM (hyperv/vmware/vm_generic), saltando
+  switch/stampanti/fisici. UI: riga "🏠 Host Hyper-V" + checkbox "Applica SOLO ai
+  dispositivi già VM".
+- Testato: curl (preset create/list/delete OK; bulk host modified=2; vm_only
+  matched=0 sui non-VM = corretto) + screenshot E2E del modal. Dati di test rimossi.
+
 
 ## 2026-08-11 🔗 FIX uplink switch-to-switch non rilevati (peer con IP/chassis diversi)
 
