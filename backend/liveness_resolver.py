@@ -30,6 +30,27 @@ DEBOUNCE_MIN_FAILURES = 3      # 3 cicli consecutivi falliti
 DEBOUNCE_GRACE_SECONDS = 300   # 5 minuti senza nessun successo
 EVIDENCE_WINDOW_MINUTES = 15   # quanto considerare "recente" un discovered_endpoint
 AGENT_HEARTBEAT_STALE_SECONDS = 180  # 3 min, allineato a agent_ws.py
+SNMP_FRESHNESS_SECONDS = 600   # SNMP poll < 10 min = device raggiungibile via SNMP
+
+
+def _snmp_fresh(pd: Optional[Mapping[str, Any]]) -> bool:
+    """True se il device ha risposto a SNMP di recente (< SNMP_FRESHNESS_SECONDS).
+
+    Pattern Zabbix "SNMP availability": uno switch HP / server Windows che
+    blocca ICMP ma risponde a SNMP E' raggiungibile, indipendentemente dal
+    ping. Il campo `snmp_reachable` + `snmp_last_check_at` sono scritti dal
+    bridge SNMP (agent_ws._bridge_snmp_poll) su device_poll_status.
+    """
+    if not pd or not pd.get("snmp_reachable"):
+        return False
+    snmp_at = pd.get("snmp_last_check_at") or pd.get("last_poll_at")
+    if not snmp_at:
+        return False
+    try:
+        snmp_dt = datetime.fromisoformat(str(snmp_at).replace("Z", "+00:00"))
+        return (datetime.now(timezone.utc) - snmp_dt).total_seconds() < SNMP_FRESHNESS_SECONDS
+    except Exception:
+        return False
 
 
 async def build_clients_without_online_agent(db) -> set:
@@ -139,6 +160,10 @@ def effective_reachable(pd: Optional[Mapping[str, Any]]) -> bool:
         return False
     if pd.get("reachable"):
         return True
+    # v2026-06-23 SNMP-only liveness centralizzato: se ICMP fallisce ma SNMP
+    # e' fresco, il device E' raggiungibile (switch HP, server Windows, ecc.).
+    if _snmp_fresh(pd):
+        return True
     # reachable=False: debounce
     try:
         consec = int(pd.get("consecutive_failures") or 0)
@@ -222,6 +247,20 @@ async def build_evidence_maps(
     except Exception:
         pass
     return ip_evidence, mac_evidence
+
+
+def _poll_fresh(pd: Optional[Mapping[str, Any]], minutes: int = 15) -> bool:
+    """True se l'ultimo poll attivo (ICMP/SNMP) e' recente (< minutes)."""
+    if not pd:
+        return False
+    at = pd.get("last_poll_at") or pd.get("last_poll") or pd.get("last_ping_at")
+    if not at:
+        return False
+    try:
+        dt = datetime.fromisoformat(str(at).replace("Z", "+00:00"))
+        return (datetime.now(timezone.utc) - dt).total_seconds() < minutes * 60
+    except Exception:
+        return False
 
 
 def compute_status(

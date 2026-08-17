@@ -11,6 +11,7 @@ from audit import AuditAction
 from deps import get_current_user, audit_logger, redfish_poller
 from display_name import best_display_name
 from device_type_resolver import best_device_type
+from liveness_resolver import effective_reachable as _effective_reachable
 
 router = APIRouter(prefix="/api", tags=["devices"])
 
@@ -255,53 +256,14 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
     DEBOUNCE_MIN_FAILURES = 3      # 3 cicli consecutivi falliti
     DEBOUNCE_GRACE_SECONDS = 300   # 5 minuti senza nessun successo
     SNMP_FRESHNESS_SECONDS = 600   # SNMP poll < 10 min = device raggiungibile
-    def _effective_reachable(pd_doc):
-        """True = mostra online, False = mostra offline.
-        pd_doc e' il record di device_poll_status (puo' essere None o {}).
-
-        v2026-06-12 fix critico "device sempre offline ma SNMP fresco":
-        prima questa funzione guardava SOLO `reachable` (che e' il flag
-        del ping ICMP). Su switch HP Comware, server Windows con firewall
-        ICMP bloccato, ecc., il ping fallisce sempre ma SNMP funziona
-        perfettamente -> la UI mostrava OFFLINE nonostante il connector
-        passasse dati freschi. Ora consideriamo ONLINE anche un device
-        che ha snmp_reachable=True con poll recente, indipendentemente
-        dal ping. Lo stesso pattern di Zabbix: SNMP-only checks rendono
-        l'host "Available SNMP", senza richiedere ICMP.
-        """
-        if not pd_doc:
-            return False
-        if pd_doc.get("reachable"):
-            return True
-        # v2026-06-12: SNMP-only liveness — se il poll SNMP e' fresco e
-        # reachable=True, il device E' raggiungibile anche se ping fallisce.
-        if pd_doc.get("snmp_reachable"):
-            snmp_at = pd_doc.get("snmp_last_check_at") or pd_doc.get("last_poll_at")
-            if snmp_at:
-                try:
-                    snmp_dt = datetime.fromisoformat(str(snmp_at).replace("Z", "+00:00"))
-                    if (datetime.now(timezone.utc) - snmp_dt).total_seconds() < SNMP_FRESHNESS_SECONDS:
-                        return True
-                except Exception:
-                    pass
-        # reachable=false: applichiamo debounce
-        consec = int(pd_doc.get("consecutive_failures") or 0)
-        last_ok = pd_doc.get("last_reachable_at")
-        # Se non abbiamo ancora un successo registrato, comportamento legacy
-        # (probabilmente device appena aggiunto o counter non ancora popolato):
-        # se non c'e' last_reachable_at, ci fidiamo del flag reachable=false.
-        if not last_ok:
-            # Backward-compat: campi nuovi assenti → comportamento attuale (offline)
-            return False
-        try:
-            last_ok_dt = datetime.fromisoformat(last_ok.replace("Z", "+00:00"))
-            secs_since = (datetime.now(timezone.utc) - last_ok_dt).total_seconds()
-        except Exception:
-            secs_since = 1e9
-        # offline solo se ENTRAMBE le condizioni sono superate
-        if consec >= DEBOUNCE_MIN_FAILURES and secs_since >= DEBOUNCE_GRACE_SECONDS:
-            return False
-        return True
+    # v2026-06-23: liveness centralizzato (PRD #5). _effective_reachable e'
+    # ora liveness_resolver.effective_reachable (importato in cima al file),
+    # che include la logica SNMP-only liveness (reachable ICMP OR snmp_reachable
+    # fresco). Prima qui c'era una COPIA locale divergente che leggeva
+    # `snmp_reachable` da device_poll_status (dove non veniva mai scritto) →
+    # il fix non scattava mai. Ora il bridge SNMP scrive snmp_reachable in
+    # device_poll_status e tutte le viste (lista, panoramica, scheda) usano
+    # la stessa identica funzione.
 
     # v4.16.x EVIDENCE TRACKING: per ogni IP / MAC visto recentemente,
     # tieni traccia di COME e' stato visto (via SNMP FDB switch, via scanner
