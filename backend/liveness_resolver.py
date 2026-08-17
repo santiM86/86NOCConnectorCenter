@@ -225,27 +225,36 @@ def compute_status(
     mac = (md.get("mac") or "").lower().replace("-", ":")
     cid = md.get("client_id") or pd.get("client_id") or ""
 
-    # 1. Evidence override
+    # FIX BLACKOUT (Gualdi): se l'agent del cliente e' OFFLINE, TUTTE le evidenze
+    # di liveness (scanner LAN, ARP agent_v4, FDB switch) e i poll provengono
+    # DALL'AGENT STESSO -> sono dati stantii inaffidabili. Non possiamo dire
+    # "online" (era il bug: blackout sito ma device mostrati online per ~15 min
+    # finche' l'evidenza non scadeva). Marchiamo "stale/agent_offline": stato
+    # incerto, mai un falso "online". L'unico segnale indipendente e' la sonda
+    # WAN del Center (external monitor), che infatti vedeva correttamente offline.
+    agent_down = bool(cid) and cid in offline_clients
+
+    # 1. Evidence override (solo se l'agent e' vivo: l'evidence viene dall'agent)
     ip_ev = ip_evidence.get(ip) if ip else None
     mac_ev = mac_evidence.get(mac) if mac else None
     evidence = ip_ev or mac_ev
-    if evidence:
+    if evidence and not agent_down:
         return "online", evidence
 
     # 2. Poll-based
     if pd:
-        if effective_reachable(pd):
+        if effective_reachable(pd) and not agent_down:
             label = (pd.get("method") or pd.get("ping_method") or "ping")
             return "online", str(label).strip() if label else "ping"
-        # debounce dice offline → ma se il connector del cliente e' giu',
-        # non possiamo dire con certezza che il device sia in fault →
-        # marca "stale" (stato incerto)
-        if cid and cid in offline_clients:
+        # agent giu' → stato incerto (non certo che sia in fault, ma NON online)
+        if agent_down:
             return "stale", "agent_offline"
         return "offline", None
 
-    # 3. Scanner-source senza poll: deriva da last_seen_at
+    # 3. Scanner-source senza poll: deriva da last_seen_at (ma non se agent giu')
     if md.get("source") == "connector-scanner":
+        if agent_down:
+            return "stale", "agent_offline"
         last_seen = md.get("last_seen_at")
         if last_seen:
             try:
@@ -259,5 +268,7 @@ def compute_status(
             except Exception:
                 pass
 
-    # 4. Mai polleato
+    # 4. Agent giu' e nessun poll → incerto; altrimenti mai polleato → pending
+    if agent_down:
+        return "stale", "agent_offline"
     return "pending", None
