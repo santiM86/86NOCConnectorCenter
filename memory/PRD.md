@@ -203,6 +203,50 @@ Nota: pagina web `/agents` verificata OK in preview E in build di produzione
 (`yarn build` completa senza errori) → l'eventuale "schermo nero" è un problema di
 runtime/deploy di produzione, NON del codice frontend.
 
+### 2026-08-17 (agg.8) 💾 Preset Salvati (globali) + Host/Nome VM in Bulk
+Feature richieste, ora completate (default scelti: preset GLOBALI; in bulk si
+imposta l'HOST Hyper-V — il NOME VM resta per-device perché univoco):
+- **Preset globali** (`device_info_card.py`): `GET/POST/DELETE /api/device-setting-presets`
+  (collection `device_setting_presets`: id, name, apply{}, vm_only, created_by).
+  Upsert per nome. UI: barra "PRESET" nel `BulkSettingsModal` (chip cliccabili per
+  caricare + × per eliminare) e campo "Nome preset" + "Salva preset".
+- **Bulk esteso** (`bulk-apply-settings`): `hyperv_host_hint`/`hyperv_vm_name`
+  applicabili anche senza cambiare il tipo macchina; nuovo flag **`vm_only`** →
+  l'update colpisce SOLO i device già VM (hyperv/vmware/vm_generic), saltando
+  switch/stampanti/fisici. UI: riga "🏠 Host Hyper-V" + checkbox "Applica SOLO ai
+  dispositivi già VM".
+- Testato: curl (preset create/list/delete OK; bulk host modified=2; vm_only
+  matched=0 sui non-VM = corretto) + screenshot E2E del modal. Dati di test rimossi.
+
+### 2026-08-17 (agg.9) 🧙 Wizard "Nuovo Cliente" multi-step (onboarding integrazioni)
+Richiesta: alla creazione cliente, agganciare tutto in un unico flusso senza saltare
+tra schermate. Nuovo componente `frontend/src/components/NewClientWizard.js` (usato
+da `ClientsPage.js` al posto del vecchio modal). 5 step, tutti SALTABILI tranne il 1°:
+1. **Cliente** → `POST /api/clients` (ritorna id + api_key).
+2. **Datto RMM** → `GET /api/datto/sites`, `PUT /clients/{id}/datto/link` (+ opz.
+   `POST /clients/{id}/datto/seed-managed` per importare i device).
+3. **Backup (Hornetsecurity/Altaro)** → `GET /admin/hornetsecurity/tenants`,
+   `PUT /clients/{id}/backup/hornetsecurity/mapping` (mapping a tenant esistenti,
+   multi-select a chip).
+4. **Monitor WAN** → `POST /external-monitor/targets` (IP pubblico pre-compilato da
+   `GET /external-monitor/detected-public-ip/{id}` se un agent è online).
+5. **Agent** → mostra API key + one-liner PowerShell d'installazione (Token/ClientId/
+   BackendUrl da window.origin→wss) con pulsanti copia.
+Stepper con spunte, testid `new-client-wizard` + `wizard-*`. Testato E2E (crea → salta
+→ agent con key+comando) + cleanup. Solo-frontend (usa endpoint esistenti).
+
+### 2026-08-17 (agg.10) 🎁 Wizard: preset sui device Datto + schermata Riepilogo
+- **Preset in onboarding**: nello step Datto, se "importa device" è attivo, un dropdown
+  carica i preset globali (`GET /device-setting-presets`); dopo `datto/seed-managed`
+  il wizard recupera gli IP del cliente (`GET /devices`) e applica il preset via
+  `POST /devices/bulk-apply-settings`. Valore sentinella `__none__` (Radix non
+  ammette SelectItem value=""; corretta anche la stessa latente nel BulkSettingsModal
+  → `__unset__` per "non impostato").
+- **Step 6 Riepilogo**: mostra lo stato di ogni integrazione (Datto/Backup/WAN/Agent)
+  con ✓/saltato + link "Completa ora" (torna allo step) / "Rivedi". `done{}` tracciato
+  nelle save. Testid `wizard-step-summary`, `wizard-to-summary`, `wizard-finish`.
+- Testato E2E: preset visibile, riepilogo con stati e link. Dati di test rimossi.
+
 
 ## 2026-08-11 🔗 FIX uplink switch-to-switch non rilevati (peer con IP/chassis diversi)
 
