@@ -499,18 +499,57 @@ func runSC(args ...string) error {
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	return cmd.Run()
 }
-func startServices() {
-	runSC("start", "86NocAgent")
-	runSC("start", "86NocWatchdog")
+
+// v4.30.2 FIX: la tray gira come utente INTERATTIVO NON elevato (Scheduled Task
+// RunLevel Limited), quindi `sc.exe start/stop` falliva con "Accesso negato" e
+// l'errore veniva ignorato -> i pulsanti "Avvia/Ferma/Riavvia servizi" sembravano
+// non fare nulla e i servizi restavano fermi ("X Servizi fermi"). Ora usiamo lo
+// stesso meccanismo di "Aggiorna ora": un PowerShell ELEVATO via UAC. Un solo
+// prompt per operazione (il restart fa stop+start in un'unica chiamata).
+func serviceCtlElevated(psInner string) error {
+	return runElevated("powershell.exe", []string{
+		"-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
+		"-Command", psInner,
+	})
 }
-func stopServices() {
-	runSC("stop", "86NocWatchdog")
-	runSC("stop", "86NocAgent")
+func startServices() error {
+	return serviceCtlElevated(
+		"Start-Service -Name '86NocAgent' -ErrorAction SilentlyContinue; " +
+			"Start-Service -Name '86NocWatchdog' -ErrorAction SilentlyContinue")
 }
-func restartServices() {
-	stopServices()
-	time.Sleep(800 * time.Millisecond)
-	startServices()
+func stopServices() error {
+	return serviceCtlElevated(
+		"Stop-Service -Name '86NocWatchdog' -Force -ErrorAction SilentlyContinue; " +
+			"Stop-Service -Name '86NocAgent' -Force -ErrorAction SilentlyContinue")
+}
+func restartServices() error {
+	return serviceCtlElevated(
+		"Stop-Service -Name '86NocWatchdog' -Force -ErrorAction SilentlyContinue; " +
+			"Stop-Service -Name '86NocAgent' -Force -ErrorAction SilentlyContinue; " +
+			"Start-Sleep -Seconds 2; " +
+			"Start-Service -Name '86NocAgent' -ErrorAction SilentlyContinue; " +
+			"Start-Service -Name '86NocWatchdog' -ErrorAction SilentlyContinue")
+}
+
+// svcAction esegue un'azione servizi (elevata via UAC), mostra un errore se il
+// prompt UAC viene annullato/negato, poi aggiorna lo stato nel menu. ShellExecuteW
+// NON attende la fine del processo elevato, quindi diamo tempo alle operazioni
+// (stop+start impiegano ~4-5s) prima di rileggere lo stato.
+func svcAction(app *App, label string, fn func() error) {
+	if err := fn(); err != nil {
+		uiSync(app, func() {
+			if app != nil && app.mw != nil {
+				walk.MsgBox(app.mw, label+" servizi non riuscito",
+					"Impossibile completare l'operazione ("+strings.ToLower(label)+" servizi).\n\n"+
+						"Serve conferma del prompt UAC (privilegi di amministratore): se l'hai annullato, riprova e clicca Sì.\n\n"+
+						"Dettaglio: "+err.Error(),
+					walk.MsgBoxIconError)
+			}
+		})
+		return
+	}
+	time.Sleep(5 * time.Second)
+	refreshStatus(app)
 }
 
 func serviceStatus(name string) string {
@@ -670,6 +709,17 @@ func (m *targetTableModel) publishReset() { m.PublishRowsReset() }
 // --- Console window ---------------------------------------------------------
 
 func showConsoleWindow() {
+	// v4.30.3: modalita' SOLO-TRAY. La finestra locale "Gestisci Dispositivi"
+	// e' stata disattivata (decisione di prodotto: sui server deve restare solo
+	// l'icona tray; i device si gestiscono dal NOC Center). Qualsiasi entry point
+	// residuo (IPC / -show / shortcut legacy) diventa un no-op.
+	logf("showConsoleWindow: disabilitato (modalita' solo-tray) — apro il NOC Center")
+	if theApp != nil && theApp.agent.BackendURL != "" {
+		_ = exec.Command("rundll32", "url.dll,FileProtocolHandler", theApp.agent.BackendURL).Start()
+	}
+	return
+
+	//nolint:govet // codice legacy conservato ma non raggiungibile
 	defer func() {
 		if r := recover(); r != nil {
 			logf("PANIC in showConsoleWindow: %v", r)
@@ -1102,12 +1152,10 @@ func setupTray(app *App) error {
 	ni.SetVisible(true)
 	app.tray = ni
 
-	// Doppio-click sull'icona → apre Gestisci Dispositivi
-	ni.MouseDown().Attach(func(x, y int, b walk.MouseButton) {
-		if b == walk.LeftButton {
-			showConsoleWindow()
-		}
-	})
+	// v4.30.3: modalita' SOLO-TRAY. La finestra locale "Gestisci Dispositivi"
+	// (vestigiale in headless, i device si gestiscono dal NOC Center) e' stata
+	// rimossa: niente apertura su doppio-click ne' voce di menu. Deve restare
+	// solo l'icona vicino all'orologio.
 
 	add := func(text string, fn func()) *walk.Action {
 		a := walk.NewAction()
@@ -1121,7 +1169,6 @@ func setupTray(app *App) error {
 	add("Apri NOC Center", func() {
 		exec.Command("rundll32", "url.dll,FileProtocolHandler", app.agent.BackendURL).Start()
 	})
-	add("Gestisci Dispositivi...", func() { showConsoleWindow() })
 	ni.ContextMenu().Actions().Add(walk.NewSeparatorAction())
 
 	app.statusItem = add("Stato: ...", nil)
@@ -1129,9 +1176,9 @@ func setupTray(app *App) error {
 	app.healthItem = add("Canale: ...", nil)
 	app.healthItem.SetEnabled(false)
 	ni.ContextMenu().Actions().Add(walk.NewSeparatorAction())
-	app.startItem = add("Avvia servizi", func() { go func() { startServices(); refreshStatus(app) }() })
-	app.stopItem = add("Ferma servizi", func() { go func() { stopServices(); refreshStatus(app) }() })
-	app.restartItem = add("Riavvia servizi", func() { go func() { restartServices(); refreshStatus(app) }() })
+	app.startItem = add("Avvia servizi", func() { go svcAction(app, "Avvio", startServices) })
+	app.stopItem = add("Ferma servizi", func() { go svcAction(app, "Arresto", stopServices) })
+	app.restartItem = add("Riavvia servizi", func() { go svcAction(app, "Riavvio", restartServices) })
 	ni.ContextMenu().Actions().Add(walk.NewSeparatorAction())
 	// NOTA: "Apri cartella log" rimosso intenzionalmente. I log
 	// ora si leggono SOLO dal Center (route /agents -> 📋 pulsante).
