@@ -259,6 +259,7 @@ from routes.connector_settings import router as connector_settings_router
 from routes.hornetsecurity_backup import router as hornetsecurity_backup_router
 from routes.hornetsecurity_vmbackup import router as hornetsecurity_vmbackup_router
 from routes.datto_rmm import router as datto_rmm_router
+from routes.zyxel_nebula import router as zyxel_nebula_router
 from routes.security_admin import router as security_admin_router
 from routes.agent_ws import router as agent_ws_router  # 86NocAgent v4 WS+control plane
 from routes.github_deploy import router as github_deploy_router  # Auto-deploy webhook
@@ -333,6 +334,7 @@ app.include_router(connector_settings_router)
 app.include_router(hornetsecurity_backup_router)
 app.include_router(hornetsecurity_vmbackup_router)
 app.include_router(datto_rmm_router)
+app.include_router(zyxel_nebula_router)
 app.include_router(security_admin_router)
 from routes.security_admin import audit_router as audit_dashboard_router
 app.include_router(audit_dashboard_router)
@@ -947,6 +949,27 @@ async def startup_event():
         logger.info("Datto RMM auto-sync scheduler started (tick: 6h)")
     except Exception as e:
         logger.error(f"Failed to start Datto RMM scheduler: {e}")
+
+    # === Zyxel Nebula (NCC OpenAPI) auto-sync scheduler ===
+    try:
+        from apscheduler.schedulers.asyncio import AsyncIOScheduler as _ZySched
+        from apscheduler.triggers.interval import IntervalTrigger as _ZyTrig
+        from routes.zyxel_nebula import nebula_sync_tick as _zyxel_tick
+
+        global zyxel_scheduler
+        zyxel_scheduler = _ZySched()
+        zyxel_scheduler.add_job(
+            _zyxel_tick,
+            trigger=_ZyTrig(minutes=5),
+            id="zyxel_nebula_auto_sync",
+            next_run_time=datetime.now(timezone.utc) + timedelta(seconds=60),
+            max_instances=1,
+            coalesce=True,
+        )
+        zyxel_scheduler.start()
+        logger.info("Zyxel Nebula auto-sync scheduler started (tick: 5min)")
+    except Exception as e:
+        logger.error(f"Failed to start Zyxel Nebula scheduler: {e}")
 
     # === Hyper-V VM power-state poll scheduler (v2026-07-25) ===
     # Mantiene freschi gli snapshot Hyper-V (stato Running/Off delle VM) usati

@@ -1,6 +1,37 @@
 ## ⚠️ REGOLE PERMANENTI — leggere PRIMA di toccare qualsiasi file
 
 
+## 2026-06 ☁️ Integrazione Zyxel Nebula (NCC OpenAPI) — monitoraggio cloud
+**Richiesta**: monitorare via cloud i dispositivi Zyxel (firewall USG FLEX serie H, switch, AP)
+di tutti i clienti tramite Nebula Control Center, senza SNMP locale. Scelte utente: import
+completo org→siti→device + metriche live (CPU/mem/sessioni/traffico) + mapping ai clienti
+Argus; Nebula come FONTE UNICA per i device Zyxel. Requisito: Nebula Professional Pack.
+**Implementazione (backend + frontend)**:
+- `routes/zyxel_nebula.py`: client HTTP async (header `X-ZyxelNebula-API-Key`, retry/backoff
+  su 429/5xx, cattura `X-ZyxelNebula-API-RequestId`). Chiave API cifrata AES in `zyxel_settings`.
+  Endpoint: config CRUD (`/api/admin/zyxel/config`), test (`/admin/zyxel/test`), browse
+  (`/zyxel/organizations`, `.../sites`, `.../devices`), mapping cliente→org
+  (`/clients/{id}/zyxel/link` GET/PUT/DELETE), flotta (`/zyxel/links`, `/zyxel/devices`,
+  `/clients/{id}/zyxel/devices`), `/zyxel/sync-now`. Endpoint globali/admin/browse gate
+  `require_admin`; endpoint client-scoped `get_current_user`.
+  `sync_client_devices()`: online-status per sito, firmware-status per org, gw system-status
+  (CPU/mem/sessioni) + traffic-usage (gestito il refuso API `uplinkRxUage`) per firewall/switch.
+  Metriche in `zyxel_metrics` con TTL 30gg (campo `ts`).
+- `server.py`: router + scheduler APScheduler `nebula_sync_tick` ogni 5min.
+- `backend/.env`: `ZYXEL_BASE_URL=https://api.nebula.zyxel.com/v1/nebula`.
+- Frontend `pages/ZyxelNebulaSettingsPage.js` (+ rotta `/settings/zyxel` + voce in SettingsPage):
+  config chiave, test connessione, mapping clienti↔org (dropdown), flotta Zyxel con
+  stato/CPU/mem/sessioni/firmware, "Sincronizza ora".
+**Testing (iteration_118.json)**: backend 15/15, frontend 9/9 GREEN contro il cloud reale.
+Verificato: 41 org (33 PRO), FLEX 700H ONLINE CPU~4% mem 38% ~1400 sessioni fw 1.39(ABZI.0).
+Suite regressione: `backend/tests/test_zyxel_nebula_iter118.py` (crea/elimina client temporaneo).
+⚠️ Attivo in PROD dopo Save to GitHub + redeploy. Chiave OpenAPI reale già salvata cifrata in DB.
+Backlog non-bloccante: tenant-scoping fine sugli endpoint client-scoped; sync-now in background
+(202) quando i clienti mappati crescono; grafici storici da `zyxel_metrics`; alerting proattivo
+sulle soglie Nebula.
+
+
+
 ## 2026-06 🔥 Profilo SNMP Zyxel USG FLEX serie H (uOS) — 100H/200H/...
 **Richiesta**: collegare i firewall Zyxel USG FLEX serie H (uOS, es. FLEX 100H v1.39)
 ad Argus con metriche CPU/mem/sessioni corrette. Il profilo esistente `zyxel_usg` e'
