@@ -8,7 +8,10 @@ import { Label } from "@/components/ui/label";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
-import { ArrowLeft, Route as RouteIcon, Play, Radio, MapPin } from "lucide-react";
+import { ArrowLeft, Route as RouteIcon, Play, Radio, MapPin, KeyRound, Copy, Download } from "lucide-react";
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle,
+} from "@/components/ui/dialog";
 
 const API = process.env.REACT_APP_BACKEND_URL;
 
@@ -33,6 +36,11 @@ export default function NetworkPathDiagnosisPage() {
   const [port, setPort] = useState("443");
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState(null);
+  const [clientList, setClientList] = useState([]);
+  const [probeClient, setProbeClient] = useState("");
+  const [probeLabel, setProbeLabel] = useState("sonda-trace-86bit");
+  const [genToken, setGenToken] = useState(null);
+  const [genBusy, setGenBusy] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -44,8 +52,13 @@ export default function NetworkPathDiagnosisPage() {
         const live = (Array.isArray(ag.data) ? ag.data : ag.data.agents || []).filter((a) => a.live);
         setAgents(live);
         const cmap = {};
-        (Array.isArray(cl.data) ? cl.data : cl.data.clients || []).forEach((c) => { cmap[c.id] = c.name; });
+        const list = (Array.isArray(cl.data) ? cl.data : cl.data.clients || []);
+        list.forEach((c) => { cmap[c.id] = c.name; });
         setClients(cmap);
+        setClientList(list);
+        // default: cliente "86bit" (la tua sede) se esiste, altrimenti il primo
+        const own = list.find((c) => /86\s*bit/i.test(c.name || "")) || list[0];
+        if (own) setProbeClient(own.id);
         if (live.length) setProbe(live[0].agent_id);
       } catch (e) {
         toast.error(`Caricamento agent fallito: ${e.response?.data?.detail || e.message}`);
@@ -76,11 +89,64 @@ export default function NetworkPathDiagnosisPage() {
     } finally { setRunning(false); }
   };
 
+  const genProbeToken = async () => {
+    if (!probeClient) { toast.error("Seleziona il cliente/sede per la sonda"); return; }
+    setGenBusy(true);
+    try {
+      const { data } = await axios.post(
+        `${API}/api/agents/register`,
+        { client_id: probeClient, label: probeLabel || "sonda-trace" },
+        { headers },
+      );
+      setGenToken(data);
+      toast.success("Token agent-sonda creato");
+    } catch (e) {
+      toast.error(`Creazione token fallita: ${e.response?.data?.detail || e.message}`);
+    } finally { setGenBusy(false); }
+  };
+
+  const copyText = (txt) => {
+    navigator.clipboard?.writeText(txt);
+    toast.success("Copiato negli appunti");
+  };
+
   return (
     <div className="p-4 md:p-6 max-w-4xl mx-auto space-y-4" data-testid="path-trace-page">
       <Button variant="ghost" size="sm" onClick={() => navigate("/settings")} className="mb-1 text-xs">
         <ArrowLeft size={14} className="mr-1" /> Indietro
       </Button>
+
+      {/* Crea agent-sonda */}
+      <div className="rounded-xl border border-[var(--bg-border)] bg-[var(--bg-card)] p-4 md:p-5" data-testid="probe-enroll-card">
+        <div className="flex items-center gap-2 mb-2">
+          <KeyRound size={16} className="text-amber-400" />
+          <h3 className="text-sm font-bold">Agent-sonda (installa nella tua sede/NOC)</h3>
+        </div>
+        <p className="text-[11px] text-[var(--text-secondary)] mb-3">
+          Genera un token per installare l'agent-SONDA da cui partono i traceroute. Da installare
+          UNA volta su una macchina della tua sede (non serve toccare gli agent dei clienti).
+        </p>
+        <div className="flex flex-col md:flex-row gap-3 md:items-end">
+          <div className="flex-1">
+            <Label className="text-[10px] uppercase tracking-wider">Sede / cliente della sonda</Label>
+            <Select value={probeClient} onValueChange={setProbeClient}>
+              <SelectTrigger className="mt-1 h-9 text-xs" data-testid="probe-client-select"><SelectValue placeholder="Seleziona…" /></SelectTrigger>
+              <SelectContent>
+                {clientList.map((c) => (
+                  <SelectItem key={c.id} value={c.id} className="text-xs">{c.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="flex-1">
+            <Label className="text-[10px] uppercase tracking-wider">Etichetta</Label>
+            <Input value={probeLabel} onChange={(e) => setProbeLabel(e.target.value)} className="mt-1 h-9 text-xs" data-testid="probe-label-input" />
+          </div>
+          <Button onClick={genProbeToken} disabled={genBusy} size="sm" className="h-9" data-testid="probe-create-token-btn">
+            <KeyRound size={14} className="mr-1" /> {genBusy ? "Creo…" : "Crea token agent-sonda"}
+          </Button>
+        </div>
+      </div>
 
       <div className="rounded-xl border border-[var(--bg-border)] bg-[var(--bg-card)] p-4 md:p-5">
         <div className="flex items-center gap-2 mb-2">
@@ -180,6 +246,50 @@ export default function NetworkPathDiagnosisPage() {
           </p>
         </div>
       )}
+
+      <Dialog open={!!genToken} onOpenChange={(o) => !o && setGenToken(null)}>
+        <DialogContent className="max-w-2xl" data-testid="probe-token-dialog">
+          <DialogHeader>
+            <DialogTitle className="text-sm flex items-center gap-2">
+              <KeyRound size={16} className="text-amber-400" /> Token agent-sonda creato
+            </DialogTitle>
+          </DialogHeader>
+          {genToken && (
+            <div className="space-y-3 text-xs">
+              <div className="rounded-lg bg-amber-500/10 border border-amber-500/30 p-2 text-amber-200 text-[11px]">
+                ⚠️ Copia il token ora: identifica la sonda ed è mostrato solo qui. Installa su UNA
+                macchina della tua sede (Windows o Linux con <b>mtr</b>/<b>traceroute</b>).
+              </div>
+              <div>
+                <Label className="text-[10px] uppercase tracking-wider">Token</Label>
+                <div className="flex items-center gap-2 mt-1">
+                  <code className="flex-1 bg-black/30 rounded px-2 py-1.5 font-mono break-all" data-testid="probe-token-value">{genToken.token}</code>
+                  <Button size="sm" variant="outline" className="h-8" onClick={() => copyText(genToken.token)}><Copy size={13} /></Button>
+                </div>
+              </div>
+              <div>
+                <Label className="text-[10px] uppercase tracking-wider">WS URL (backend)</Label>
+                <div className="flex items-center gap-2 mt-1">
+                  <code className="flex-1 bg-black/30 rounded px-2 py-1.5 font-mono break-all" data-testid="probe-backend-url">{genToken.backend_url}</code>
+                  <Button size="sm" variant="outline" className="h-8" onClick={() => copyText(genToken.backend_url)}><Copy size={13} /></Button>
+                </div>
+              </div>
+              <div className="rounded-lg bg-black/20 border border-[var(--bg-border)] p-2.5">
+                <p className="text-[11px] font-semibold text-[var(--text-primary)] mb-1 flex items-center gap-1"><Download size={12} /> Come installare la sonda</p>
+                <p className="text-[11px] text-[var(--text-secondary)] leading-relaxed">
+                  Installa l'agent con il tuo <b>installer standard</b> (<span className="font-mono">install-noc-agent.ps1</span> su Windows,
+                  oppure il pacchetto Linux) usando <b>questo token</b> e il <b>WS URL</b> qui sopra, esattamente come per gli agent dei clienti.
+                  <br />⚠️ Sulla macchina-sonda Linux installa prima <span className="font-mono">mtr</span> o <span className="font-mono">traceroute</span>;
+                  su Windows è già presente <span className="font-mono">tracert</span>. Serve una build dell'agent che includa il comando <span className="font-mono">net_trace</span>.
+                </p>
+              </div>
+              <p className="text-[10px] text-[var(--text-secondary)]">
+                Dopo l'installazione la sonda apparirà tra gli agent connessi e potrai selezionarla qui sopra per lanciare i trace.
+              </p>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
