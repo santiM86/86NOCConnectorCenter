@@ -1,138 +1,133 @@
-<analysis>**original_problem_statement**: 
+<analysis>**original_problem_statement:** 
 Siamo una società IT e abbiamo bisogno di creare un raccoglitore di alert (NOC) per tutti i dispositivi nelle reti dei clienti (switch, firewall, ecc.). Console live su PC e cellulare.
-PRODUCT REQUIREMENTS: 
+PRODUCT REQUIREMENTS:
 - Monitoraggio reti, stampanti (SNMP), processi di backup.
 - Auto-discovery dispositivi (ARP, mDNS, SNMP, LLDP-MED, OUI lookup, PTR).
 - Sistema scalabile Multi-tenant e White-label per rivendita SaaS.
-- Architettura enterprise-grade: Agent in Go (Golang) nativo, WebSockets persistenti per comandi real-time e streaming.
-- Network Scanner nativo nel connector (streaming live, scan parallelo).
-- Architettura in stile Datto RMM Headless controllata via NOC Center Web.
-- Profili SNMP stampanti Multi-vendor, Gestione Vitali, Rename manuale dispositivi.
+- Architettura enterprise-grade: Agent in Go nativo, WebSockets persistenti per comandi real-time.
+- Motore di Alerting Proattivo con Correlazione (Evidence Fusion).
+- Wizard di Triage e Auto-Provisioning per la gestione del ciclo di vita dei dispositivi.
+- OSINT Threat Intelligence (C2 correlation, CVE, Reputazione IP).
+- Rogue/New Device Detection (NAC-lite) e anomalie traffico porte.
 
-**User's preferred language**: **Italian** (INSTRUCT NEXT AGENT: IL TUO OUTPUT DEVE ESSERE SEMPRE E SOLO IN ITALIANO. RISPONDI ESCLUSIVAMENTE IN ITALIANO. NON UTILIZZARE L'INGLESE CON L'UTENTE, a meno che non rispondi direttamente alla sua ultima frase in inglese, ma mantieni l'italiano come lingua principale).
+**User's preferred language**: Italian
+INSTRUCT NEXT AGENT: L'UTENTE COMUNICA IN ITALIANO. IL TUO OUTPUT DEVE ESSERE SEMPRE E SOLO IN ITALIANO. NON UTILIZZARE MAI L'INGLESE CON L'UTENTE. (All your responses to the user must be in Italian).
 
 **what currently exists?** 
-Un sistema NOC full-stack maturo con un Agent nativo in Go. In questa sessione sono state implementate nuove feature avanzate (Categorizzazione automatica Endpoint vs Infrastruttura, e Azioni bulk Silenzia/Riattiva Alert). Il codice in ambiente Emergent (Preview) funziona perfettamente ed è stato verificato dal testing agent (zero errori JS). Tuttavia, l'utente è rimasto bloccato nel suo ambiente di PRODUZIONE custom: sta riscontrando una schermata nera causata dal caricamento di un vecchio bundle React () a causa di problemi con i merge dei branch Git e l'uso del tasto Save to GitHub (l'utente non riesce a fare il merge su ). L'utente ha infine riconosciuto che il problema è limitato al suo ambiente di deploy e non allo sviluppo su Emergent.
+A highly advanced, full-stack NOC/NDR system (FastAPI, React, Go Agent, MongoDB). It includes a topology mapper, Hornetsecurity VM backup integration, Go agent architecture, and a sophisticated liveness/alerting correlation engine. Recent updates include a comprehensive Site Down/Blackout correlation logic and an upgraded immediate SNMP re-polling mechanism.
 
-**Last working item**:
-    - Last item agent was working: Supporto all'utente per risolvere il problema di deploy in PROD (schermata nera e branch  mancante nel menu a tendina). Il codice frontend e backend per le nuove feature è completato e testato.
-    - Status: BLOCKED / USER VERIFICATION PENDING
-    - Agent Testing Done: Y
-    - Which testing method agent to use? testing_agent / screenshot tool / manual testing by curl
-    - User Testing Done: N (L'utente non è riuscito a pushare in modo corretto su PROD, ma ha confermato che su Emergent funziona tutto).
+**Last working item**: 
+    - Last item agent was working: Explaining the architectural difference between the current backend-only Re-poll SNMP fix and a potential future Go Agent update (v4.30.4) for pure per-device targeted polling.
+    - Status: USER VERIFICATION PENDING
+    - Agent Testing Done: Y (for the implemented code)
+    - Which testing method agent to use? NA (Testing already done via backend scripts/logs; pending user response on how they want to proceed).
+    - User Testing Done: N
 
-**All Pending/In progress Issue list**:  
-  - Issue 1: Disallineamento branch Git e schermata nera in PROD (Priority: P0)
-     - Attempted fixes: L'agente ha spiegato il workflow di PR su GitHub, ha chiamato il support_agent, e ha confermato che l'errore  non esiste più nella codebase attuale.
-     - Next debug checklist: Poiché l'utente ha scritto No brother they are not part of the development because if I go on emergent servers these problems are not there, accetta questa sua consapevolezza. Chiedigli gentilmente se vuole procedere con il prossimo task di sviluppo (visto che l'ambiente dev è perfetto) o se vuole che creiamo uno script bash che forzi l'aggiornamento del suo branch  da terminale. **NON modificare il codice React per fixare l'errore !** La codebase è già corretta.
-     - Why fix this issue and what will be achieved with the fix? L'utente non può testare in PROD se non risolve il suo workflow Git.
-     - Status: BLOCKED
-     - Is recurring issue? Y (Altamente ricorrente).
-     - Should Test frontend/backend/both after fix? NA (Testing already passed on dev).
-     - Blocked on other issue: User's custom git deployment.
-
-  - Issue 2: Integrazione Timbrature EssentialTime FTP (Priority: P1)
-     - Attempted fixes: Attesa vecchi sorgenti dall'utente in sessioni passate.
-     - Next debug checklist: Chiedere all'utente se vuole procedere a fornire i tracciati/file legacy per l'integrazione FTP.
-     - Why fix this issue and what will be achieved with the fix? Automatizza il sync presenze HR.
-     - Status: BLOCKED
+**All Pending/In progress Issue list**: 
+  - Issue 1: Hornetsecurity - Support for multiple report URLs (Missing Clients) - Priority P1
+     - Attempted fixes: Agent previously fixed a 500 error, but the specific Hornet URL provided natively only contains 42 tenants.
+     - Next debug checklist: Modify  and the frontend settings page to accept an array of report URLs/SIDs instead of a single one, and aggregate the results during polling.
+     - Why fix this issue and what will be achieved with the fix? Ensures complete visibility for all Hornetsecurity clients.
+     - Status: NOT STARTED
+     - Is recurring issue? N
+     - Should Test frontend/backend/both after fix? Both
+     - Blocked on other issue: None
+  - Issue 2: Clean up stale Hornetsecurity tenants from DB - Priority P2
+     - Attempted fixes: Identified in previous session.
+     - Next debug checklist: Implement a cleanup mechanism in the DB for tenants that no longer appear in any Hornetsecurity report.
+     - Status: NOT STARTED
      - Is recurring issue? N
      - Should Test frontend/backend/both after fix? Backend
-     - Blocked on other issue: Attesa input utente.
 
-**In progress Task List**:
-  - Task 1: UI Frontend per Server Intelligence Hub (Fasi 1-4) (Priority: P2)
-     - Where to resume: 
-     - What will be achieved with this? Dashboard avanzata per iLO/Redfish/Hyper-V.
-     - Status: NOT STARTED
-     - Should Test frontend/backend/both after fix? Frontend
-     - Blocked on something: Posticipato.
+**In progress Task List**: 
+   *(None - all started tasks were completed)*
 
 **Upcoming and Future Tasks**
     Upcoming Tasks:
-    - P1: Refactoring dei Poller (es: creazione di un  in Python) in modo che Hornetsecurity, Datto e integrazioni future usufruiscano di una gestione centralizzata.
-    - P2: Split dei file monolitici:  e .
-    - P2: Implementazione DHCP Fingerprinting nello Scanner Go per migliorare l'affidabilità di Fingerbank.
+    - P1: Refactoring dei Poller (creazione di un  in Python).
+    - P1: Split dei file monolitici:  e .
+    - P2: Go Agent v4.30.4 Update - Implement pure per-device SNMP polling (currently the re-poll triggers a cycle for all SNMP devices of a client).
+    - P2: Implementazione DHCP Fingerprinting nello Scanner Go.
     
     Future Tasks:
-    - Creare installer auto-estraente (SFX) per combinare .exe e .cfg in un file singolo One-Click.
+    - Creare installer auto-estraente (SFX) per Agent.
+    - Sostituzione futura del 2FA con Passkey (WebAuthn/FIDO2).
 
 **Completed work in this session**
-- Categorizzazione automatica Endpoint vs Infrastruttura: separazione logica in backend (, , ) e creazione pannello UI dedicato in  (DONE)
-- Selezione Multipla Silenzia / Riattiva alert (Bulk Silence): aggiunto endpoint  e aggiornata la toolbar di selezione nel frontend con bottoni dedicati (DONE)
+- **Blackout/Site Down Logic (DONE)**: Edited , , , , and . If all agents are offline AND the external WAN probe is down, devices are marked explicitly as OFFLINE (red) and a proactive Site Down alert is generated.
+- **Frontend Bug Diagnosis (DONE)**: Investigated a black screen on the Agents page (). Proved to the user that the code in the repository is correct, but their production server was serving an outdated React build.
+- **SNMP Missing Metrics Diagnosis (DONE)**: Guided the user to fix a missing CPU/Mem/Temp issue on an HPE Comware 5130 switch. Proved the issue was an SNMP View restriction ( on Comware missing the H3C enterprise MIB). User successfully created an  view ().
+- **Instant SNMP Re-poll (DONE)**: Modified . The Re-poll SNMP button now triggers a full cycle ( without OID restrictions) so extended metrics (CPU/Mem/Temp) update immediately in the UI without waiting for the 60s background loop.
 
 **Earlier issues found/mentioned but not fixed**
-   - Issue 1: Badge trasparenza UI Web Console VPN (VPN Diretta vs Proxy Connector).
-     - Debug checklist: Aggiungere indicatore UI nel terminale web per indicare il routing usato.
-     - Why to solve this issue and what will be achieved with this? Chiarisce all'utente quale percorso network sta usando la connessione.
+   - Issue 1: Badge trasparenza UI Web Console VPN.
+     - Debug checklist: Aggiungere indicatore visivo nel terminale web (frontend).
+     - Why to solve this issue and what will be achieved with this? Chiarisce se si usa VPN Diretta vs Proxy Connector.
      - Should Test frontend/backend/both after fix: Frontend
      - Is recurring issue? N
 
 **Known issue recurrence from previous fork**
-  - **PROD Deployment Block (CRITICAL):** L'utente ha un workflow custom su PROD che tira sempre dal branch  e si dimentica di compilare il frontend (yarn run v1.22.22
-info Visit https://yarnpkg.com/en/docs/cli/run for documentation about this command.). Dato che i salvataggi in GitHub di Emergent avvengono spesso su branch temporanei, l'utente finisce in loop ricaricando bundle vecchi. In questa sessione si è incagliato per la 11esima volta. Ha però compreso che il problema non è la piattaforma Emergent (if I go on emergent servers these problems are not there).
-  - Recurrence count: ~11+ volte.
-  - Status: BLOCKED
+  - Issue recurrence in previous fork: **User Deployment Confusion**. The user repeatedly reports severe bugs in their production environment () that are *already fixed* in the codebase. This session proved it twice: (1) The blackout fix from the previous session was never deployed, causing a false positive today. (2) The frontend was never rebuilt, causing a black screen on the Agents page.
+  - Recurrence count: 5+
+  - Status: RESOLVED (Code side) / RECURRING (User process side). 
+  - Note: The next agent MUST constantly remind the user that changes made here only affect the  environment. The user must click **Save to GitHub** and properly pull/rebuild their production server (both backend restarts and yarn run v1.22.22
+info Visit https://yarnpkg.com/en/docs/cli/run for documentation about this command. for the frontend) for changes to take effect.
 
 **Code Architecture**
 
 
 **Key Technical Concepts**
-Go Agent v4.x, WebSocket, APScheduler Python, React (Phosphor Icons), Bash Deployment Scripts, Datto API integration.
+FastAPI, React, Go Agent. Complex MongoDB aggregations. Liveness state resolution based on correlated sources (Agent vs WAN probe). SNMP polling (v2c/v3), MIB Views, and OID tree walking.
 
 **key DB schema**
-  - : , , 
-  - 
+  - No schema changes in this session.
 
 **changes in tech stack**
-  - Nessuno.
+  - None
 
 **All files of reference** 
-- 
-- 
-- 
-- 
-- 
-- 
-- 
+  -  (Added )
+  -  (Updated to handle explicit  state during blackout)
+  -  &  (Consume new blackout logic)
+  -  (Added )
+  -  (Updated  to do a full cycle)
+  -  (Updated with latest session achievements)
 
 **Areas that need refactoring**: 
--  e  sono estremamente grossi (>4000 righe).
-- Refactoring dei poller Python.
+- : Still extremely large (>4500 lines).
+- : Remains monolithic (>5400 lines).
 
 **key api endpoints**
-- 
-- 
+-  (Modified to do full SNMP walk)
 
 **Critical Info for New Agent** 
-- **L'utente ha confermato che il problema è il suo deploy e non il codice:** No brother they are not part of the development because if I go on emergent servers these problems are not there. Accogli questa affermazione, rassicuralo che il codice sviluppato è salvo e intatto, e chiedi su quale nuova feature vuole concentrarsi.
-- **NON TOCCARE IL CODICE REACT PER FIXARE .** Quel bug NON esiste nel codice attuale presente in . È un fantasma del vecchio bundle dell'utente.
-- Se l'utente vuole comunque sbloccare il suo server, proponi di fornirgli uno script oneliner che forzi il branch corrente sul suo server ignorando i conflitti, altrimenti prosegui con le prossime implementazioni P1.
-- Mantenere la lingua italiana, anche se l'ultimo messaggio dell'utente era in inglese.
+- **Language:** Only reply to the user in Italian.
+- **Production vs Preview:** You must distinguish between the preview DB/server (where you operate) and the user's production server. Do not trust DB records in preview to reflect the user's live production state (e.g., agent versions in preview DB might differ from production).
+- **SNMP Profiling:** The  profile is correct. If the user complains about missing metrics on switches, it is almost always a restrictive SNMP View configured on the switch itself (e.g.,  vs a full  view).
 
 **documents and test reports created in this job** 
-- 
-- 
-- 
+  -  (Created, used for testing, then removed).
+  -  (Updated).
 
 **Last 10 User Messages and any pending HUMAN messages** 
-1. Utente: Si procedi (allo sviluppo del silence bulk).
-2. Agente: Implementa e testa il feature. Suggerisce prossima miglioria.
-3. Utente: se clicco su cliente schermata nera
-4. Agente: Testa, conferma assenza errori in dev, chiede screenshot e console logs.
-5. Utente: [invia immagine schermo nero ].
-6. Agente: Spiega che è colpa del vecchio build React e indica comandi per PROD.
-7. Utente: guarda (manda altra immagine).
-8. Agente: Legge lo script di auto-deploy dell'utente e spiega che tira sempre da . Propone di unire le PR.
-9. Utente: nulla non funziona ancora schermata nera
-10. Agente: Consulta il Support Agent, fornisce workflow GitHub esatto per fare il merge su .
-11. Utente: non cè main
-12. Agente: Consulta Support Agent, offre passi manuali per PR o di forzare l'upgrade a Emergent Deploy.
-13. Utente: No brother they are not part of the development because if I go on emergent servers these problems are not there (Pending response).
+1. (User) Reported that during a total power outage, devices showed as online.
+2. (Agent) Implemented Site Down correlation (WAN down + Agents down = explicit Offline red + Alert).
+3. (User) Reported the Agents page was entirely black after an update.
+4. (Agent) Proved the production frontend was serving an old React build containing a deleted  variable. Advised user to rebuild frontend.
+5. (User) Switched focus to a switch missing CPU/Mem metrics.
+6. (Agent) Investigated and suspected old agent versions.
+7. (User) Corrected agent with an image showing updated v4.30.2 agents.
+8. (Agent) Realized preview DB data misled the investigation. Diagnosed switch SNMP view restriction via user screenshots. Guided user to create  view on the switch.
+9. (User) Confirmed it worked on another switch automatically. Asked to ensure fresh data always arrives.
+10. (User) Approved upgrading the Re-poll SNMP button.
+11. (Agent) Implemented the backend fix.
+12. (User) Asked what the difference is between the current fix and a potential Go Agent v4.30.4 update.
+13. (Agent) Explains the difference (current fix polls all SNMP devices for the client, v4.30.4 would target just the single device). Recommended testing the current fix first.
+
+*Pending Human Message*: User needs to confirm if they want to proceed with deploying the current codebase to production, or if they want to build the v4.30.4 Go Agent update now.
 
 **Project Health Check:**
-- Broken: Workflow Git manuale dell'utente su proprio server PROD.
-- Mocked: Nessuno.
+Healthy. (User deployment hygiene is broken, code is healthy).
 
 **3rd Party Integrations** 
 - Datto RMM (Requires User Key)
@@ -140,13 +135,13 @@ Go Agent v4.x, WebSocket, APScheduler Python, React (Phosphor Icons), Bash Deplo
 - Fingerbank API (Requires User Key)
 
 **Testing status**
-  - Testing agent used after significant changes: YES (iteration 87 for bulk actions, iteration 88 for regression on Client routing).
-  - Troubleshoot agent used after agent stuck in loop: NO.
-  - Test files created: , .
-  - Known regressions: Nessuna (Tutti i test su codice locale passati al 100%).
+  - Testing agent used after significant changes: NO (Tested via custom python script  and bash commands/logs).
+  - Troubleshoot agent used after agent stuck in loop: NO
+  - Test files created: None persisting.
+  - Known regressions: None.
 
 **Credentials to test flow:**
-Admin Login:  (Password in ).
+Check .
 
 **What agent forgot to execute**
-Nessuna omissione a livello di feature o codice. Dato che l'utente ha riconosciuto che i problemi di deploy esulano dall'ambiente di sviluppo (not part of the development), l'agente successivo può procedere chiedendo quale task di sviluppo affrontarare ora (es. Refactoring Poller o EssentialTime FTP), lasciando da parte la questione DevOps a meno che l'utente non richieda esplicitamente ulteriore assistenza sistemistica.</analysis>
+The agent did not start the  multiple URL issue from the previous handoff because the user immediately interrupted with a P0 critical incident (the blackout false-positive). The Hornetsecurity task remains pending.</analysis>

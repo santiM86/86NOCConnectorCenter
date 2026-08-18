@@ -1,6 +1,30 @@
 ## ⚠️ REGOLE PERMANENTI — leggere PRIMA di toccare qualsiasi file
 
 
+## 2026-06 🔥 Profilo SNMP Zyxel USG FLEX serie H (uOS) — 100H/200H/...
+**Richiesta**: collegare i firewall Zyxel USG FLEX serie H (uOS, es. FLEX 100H v1.39)
+ad Argus con metriche CPU/mem/sessioni corrette. Il profilo esistente `zyxel_usg` e'
+tarato sullo ZLD e gli OID uOS DIFFERISCONO.
+**Implementazione (solo backend, nessun rebuild agent Go)**:
+- `device_profiles/__init__.py`: nuovo profilo `zyxel_usg_flex_h` DEFINITO PRIMA di
+  `zyxel_usg` (a parita' di score fingerprint vince il primo in lista → un modello "H"
+  sceglie questo, mentre uno ZLD ricade su zyxel_usg che matcha anche 'zld'/'usg N').
+  OID uOS: CPU `1.3.6.1.4.1.890.1.15.3.2.21` (nome `cpuUtil` → letto da card + hardware_alerts),
+  sessioni `...890.1.15.3.1.19.0` (`zyFlexHSessions`), mem diretta `...890.1.15.3.2.5.0`
+  (`memUtil`, puo' essere vuota su v1.39p0) + calcolo UCD-SNMP (memTotalReal/AvailReal/
+  Buffer/Cached su 1.3.6.1.4.1.2021.4.*). SEED_VERSION 4→5.
+- `routes/device_info_card.py`: helper `_scalar_num` + `_ucd_mem_pct`; `_extract_switch_metrics`
+  ora fa fallback memoria via UCD quando `memUtil` e' vuota; `firewall_sessions` legge
+  `zyFlexHSessions`/`zyActiveSessions` dal vendor_metrics se manca poll.firewall.active_sessions.
+**Testing**: fingerprint 100H→zyxel_usg_flex_h (API autenticata 200, confidence high),
+ZLD 200→zyxel_usg (nessuna regressione), estrazione metriche (cpu 37%, mem UCD 40%,
+sessioni 12450) OK. NESSUN dato reale in preview → validazione live in PROD contro il 100H.
+⚠️ Attivo in PROD dopo Save to GitHub + redeploy backend. Lato firewall: abilitare SNMP
+(disabilitato di default; da v1.37p1 servono Community 1 E 2), consentire UDP 161 verso l'agent.
+Se in prod CPU/sessioni risultano vuote, tarare gli OID sulla versione uOS esatta.
+
+
+
 ## 2026-08-18 🔄 "Re-poll SNMP" istantaneo COMPLETO (CPU/mem/temp on-demand)
 **Problema**: il bottone "Re-poll SNMP" (endpoint `POST /api/admin/snmp-poll-now/{client_id}/{device_ip}`)
 inviava `force_snmp_poll {ip,community}` → agent `PollOne` → legge SOLO i 4 OID base
@@ -7352,14 +7376,14 @@ CHANGELOG.md per dettagli. 14/14 backend + 3/3 frontend test PASS.
 **Test**: lint Python OK (i 4 warning pre-esistenti sono di altre sezioni). Test end-to-end richiede device target reale con HTTP.sys server (non riproducibile nel preview container).
 
 ### 2026-02-10 (sera tardi): Custom Tarball URL field nel dialog Self-Update
-**Razionale**: lo script di self-update scarica il tarball backend da `https://<center-host>/downloads/argus-backend-latest.tar.gz`, ma se quella build frontend non e` aggiornata (chicken-and-egg) il file e` vecchio o 404. Aggiunto un input opzionale "URL pacchetto custom" nel dialog per puntare a una build remota raggiungibile (es. `https://noc-monitor-4.preview.emergentagent.com/downloads/argus-backend-latest.tar.gz` quando si vuole bypassare la build locale).
+**Razionale**: lo script di self-update scarica il tarball backend da `https://<center-host>/downloads/argus-backend-latest.tar.gz`, ma se quella build frontend non e` aggiornata (chicken-and-egg) il file e` vecchio o 404. Aggiunto un input opzionale "URL pacchetto custom" nel dialog per puntare a una build remota raggiungibile (es. `https://noc-alert-hub-2.preview.emergentagent.com/downloads/argus-backend-latest.tar.gz` quando si vuole bypassare la build locale).
 
 **File toccati**:
 - `/app/frontend/src/pages/WireGuardPage.js` `triggerUpdate(enableWireguard, customUrl)` ora accetta secondo arg opzionale → invia `package_url` al POST `/api/admin/system/self-update`. Dialog ha sezione `<details>` "Opzioni avanzate" con input mono-spaced + hint che mostra il default URL.
 - Backend `system_admin.py` gia` gestiva `package_url` opzionale (nessuna modifica necessaria).
 
 **Note operative**: per il PRIMO update post-fix l'utente puo` o:
-1. SSH al prod, `curl -o /home/arslan/86NOCConnectorCenter/frontend/build/downloads/argus-backend-latest.tar.gz https://noc-monitor-4.preview.emergentagent.com/downloads/argus-backend-latest.tar.gz`, poi click "Riprova" sull'UI.
+1. SSH al prod, `curl -o /home/arslan/86NOCConnectorCenter/frontend/build/downloads/argus-backend-latest.tar.gz https://noc-alert-hub-2.preview.emergentagent.com/downloads/argus-backend-latest.tar.gz`, poi click "Riprova" sull'UI.
 2. Aspettare che la nuova frontend sia deployata, poi usare il campo "URL pacchetto custom" direttamente.
 
 ### 2026-02-10 (notte): Per-device alert silencing + auto-classifier stampanti

@@ -25,7 +25,7 @@ import requests
 
 BASE_URL = os.environ.get(
     "REACT_APP_BACKEND_URL",
-    "https://noc-monitor-4.preview.emergentagent.com",
+    "https://noc-alert-hub-2.preview.emergentagent.com",
 ).rstrip("/")
 API = f"{BASE_URL}/api"
 

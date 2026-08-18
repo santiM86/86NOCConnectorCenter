@@ -1,7 +1,7 @@
 # Argus Desktop v5.0.0 — Riscrittura totale del Connector GUI
 
 > **Prova subito senza installare niente**: apri 
-> https://noc-monitor-4.preview.emergentagent.com/argus-desktop-preview/
+> https://noc-alert-hub-2.preview.emergentagent.com/argus-desktop-preview/
 > nel browser → vedi la UI esattamente come apparirà sul tuo PC.
 > (I dati visualizzati sono mock di sviluppo, ma il design è quello reale.)
 
@@ -108,7 +108,7 @@ PowerShell come Admin:
 Get-Process nocagent-ui -ErrorAction SilentlyContinue | Stop-Process -Force
 
 # Download del nuovo eseguibile (3.7 MB)
-Invoke-WebRequest "https://noc-monitor-4.preview.emergentagent.com/downloads/v4.2.0/ArgusDesktop.exe" -OutFile "C:\Program Files\86NocAgent\ArgusDesktop.exe" -UseBasicParsing
+Invoke-WebRequest "https://noc-alert-hub-2.preview.emergentagent.com/downloads/v4.2.0/ArgusDesktop.exe" -OutFile "C:\Program Files\86NocAgent\ArgusDesktop.exe" -UseBasicParsing
 
 # Backup della vecchia
 if (Test-Path "C:\Program Files\86NocAgent\nocagent-ui.exe") {
