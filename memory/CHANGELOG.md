@@ -5068,3 +5068,9 @@ enrichment IP negli alert esistenti con badge reputazione.
   finestra di stampa A4 landscape con header (cliente + data) -> "Salva come PDF". Nessuna nuova dipendenza.
 - RELEASE v4.29.0 (id 366743406, latest): binari agent con PoE + LLDP/FDB (4.27) + installer headless (4.28).
 - DEPLOY: backend (LLDP/FDB+Datto+poe_watt) + frontend (PDF) + agent v4.29.0 (PoE). Verificare PoE sul 5130.
+
+## 2026-06 Pulsante "Crea token agent-sonda" (Diagnosi Percorso)
+- Nella pagina /tools/path-trace: card "Agent-sonda" con selettore cliente/sede (default cliente che matcha "86bit"), etichetta, e pulsante "Crea token agent-sonda" -> POST /api/agents/register (agent_tokens).
+- Dialog mostra token + WS URL (AGENT_PUBLIC_WS_URL) copiabili + istruzioni: usare installer standard install-noc-agent.ps1 con token+URL; Linux richiede mtr/traceroute; serve build agent con comando net_trace.
+- Testid: probe-enroll-card, probe-client-select, probe-label-input, probe-create-token-btn, probe-token-dialog, probe-token-value, probe-backend-url.
+- Testato: register 200 (token 43 char per 86BIT_Office) + UI dialog verificato via screenshot.
