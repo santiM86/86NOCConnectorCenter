@@ -11,8 +11,14 @@ import {
 } from "@/components/ui/select";
 import {
   ArrowLeft, Cloud, RefreshCw, Trash2, PlugZap, Cpu, MemoryStick,
-  Activity, Server, ShieldCheck, CheckCircle2, AlertCircle, Link2,
+  Activity, Server, ShieldCheck, CheckCircle2, AlertCircle, Link2, LineChart as LineChartIcon,
 } from "lucide-react";
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
+} from "recharts";
 
 const API = process.env.REACT_APP_BACKEND_URL;
 
@@ -56,6 +62,9 @@ export default function ZyxelNebulaSettingsPage() {
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [chartDev, setChartDev] = useState(null);
+  const [chartData, setChartData] = useState([]);
+  const [chartLoading, setChartLoading] = useState(false);
 
   const reload = useCallback(async () => {
     try {
@@ -154,6 +163,24 @@ export default function ZyxelNebulaSettingsPage() {
   };
 
   const linkByClient = Object.fromEntries(links.map((l) => [l.client_id, l]));
+
+  const openChart = async (d) => {
+    setChartDev(d);
+    setChartLoading(true);
+    setChartData([]);
+    try {
+      const { data } = await axios.get(
+        `${API}/api/clients/${d.client_id}/zyxel/devices/${d.dev_id}/metrics?hours=24`,
+        { headers },
+      );
+      setChartData((data.metrics || []).map((m) => ({
+        t: new Date(m.observed_at).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" }),
+        cpu: m.cpu, mem: m.mem, sessions: m.sessions,
+      })));
+    } catch (e) {
+      toast.error(`Storico non disponibile: ${e.response?.data?.detail || e.message}`);
+    } finally { setChartLoading(false); }
+  };
 
   if (loading) return <div className="p-6 text-[var(--text-secondary)]">Caricamento…</div>;
 
@@ -282,6 +309,7 @@ export default function ZyxelNebulaSettingsPage() {
                     <th className="text-left py-2 px-2">Mem</th>
                     <th className="text-left py-2 px-2">Sessioni</th>
                     <th className="text-left py-2 px-2">Firmware</th>
+                    <th className="text-left py-2 px-2">Storico</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -301,10 +329,21 @@ export default function ZyxelNebulaSettingsPage() {
                           </span>
                         ) : <span className="text-[var(--text-secondary)]">—</span>}
                       </td>
+                      <td className="py-2 px-2">
+                        {d.device_type === "firewall" ? (
+                          <button
+                            onClick={() => openChart(d)}
+                            className="inline-flex items-center gap-1 text-[11px] text-cyan-300 hover:text-cyan-200"
+                            data-testid={`zyxel-chart-btn-${d.dev_id}`}
+                          >
+                            <LineChartIcon size={13} /> grafico
+                          </button>
+                        ) : <span className="text-[var(--text-secondary)]">—</span>}
+                      </td>
                     </tr>
                   ))}
                   {devices.length === 0 && (
-                    <tr><td colSpan={8} className="py-6 text-center text-[var(--text-secondary)]">
+                    <tr><td colSpan={9} className="py-6 text-center text-[var(--text-secondary)]">
                       Nessun device sincronizzato. Mappa un cliente a un'organizzazione qui sopra.
                     </td></tr>
                   )}
@@ -314,6 +353,52 @@ export default function ZyxelNebulaSettingsPage() {
           </div>
         </>
       )}
+
+      <Dialog open={!!chartDev} onOpenChange={(o) => !o && setChartDev(null)}>
+        <DialogContent className="max-w-3xl" data-testid="zyxel-chart-dialog">
+          <DialogHeader>
+            <DialogTitle className="text-sm">
+              Storico 24h · {chartDev?.model || chartDev?.name} <span className="text-[var(--text-secondary)]">({chartDev?.client_name})</span>
+            </DialogTitle>
+          </DialogHeader>
+          {chartLoading ? (
+            <div className="h-72 flex items-center justify-center text-[var(--text-secondary)] text-sm">Caricamento…</div>
+          ) : chartData.length === 0 ? (
+            <div className="h-72 flex items-center justify-center text-[var(--text-secondary)] text-sm">
+              Nessun dato storico ancora. Le metriche vengono raccolte ad ogni sync (ogni 5 min).
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <div>
+                <p className="text-[11px] text-[var(--text-secondary)] mb-1">CPU % / Memoria %</p>
+                <ResponsiveContainer width="100%" height={180}>
+                  <LineChart data={chartData} margin={{ top: 4, right: 8, left: -20, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.08)" />
+                    <XAxis dataKey="t" tick={{ fontSize: 10, fill: "#94a3b8" }} minTickGap={30} />
+                    <YAxis domain={[0, 100]} tick={{ fontSize: 10, fill: "#94a3b8" }} />
+                    <Tooltip contentStyle={{ background: "#0f172a", border: "1px solid #1e293b", fontSize: 12 }} />
+                    <Legend wrapperStyle={{ fontSize: 11 }} />
+                    <Line type="monotone" dataKey="cpu" name="CPU %" stroke="#22d3ee" dot={false} strokeWidth={2} />
+                    <Line type="monotone" dataKey="mem" name="Mem %" stroke="#a78bfa" dot={false} strokeWidth={2} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+              <div>
+                <p className="text-[11px] text-[var(--text-secondary)] mb-1">Sessioni attive</p>
+                <ResponsiveContainer width="100%" height={140}>
+                  <LineChart data={chartData} margin={{ top: 4, right: 8, left: -10, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.08)" />
+                    <XAxis dataKey="t" tick={{ fontSize: 10, fill: "#94a3b8" }} minTickGap={30} />
+                    <YAxis tick={{ fontSize: 10, fill: "#94a3b8" }} />
+                    <Tooltip contentStyle={{ background: "#0f172a", border: "1px solid #1e293b", fontSize: 12 }} />
+                    <Line type="monotone" dataKey="sessions" name="Sessioni" stroke="#34d399" dot={false} strokeWidth={2} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

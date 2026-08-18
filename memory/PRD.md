@@ -1,6 +1,31 @@
 ## ⚠️ REGOLE PERMANENTI — leggere PRIMA di toccare qualsiasi file
 
 
+## 2026-06 ✨ Banner SITE DOWN + Alert Nebula + Storico metriche Zyxel
+Tre feature (refactor liveness rinviato a backlog su scelta utente).
+**1. Banner SITE DOWN globale** (`components/SiteDownBanner.js`, montato in `Layout.js` in cima
+a main-content sopra AgentUpgradeBanner):
+- Barra rossa fissa/animata su TUTTE le pagine quando ≥1 sede è in blackout confermato.
+- Mostra nome sede + timer "giù da X min/h" + rotazione se più sedi + click → `/client/{id}`.
+- Endpoint `GET /api/overview/site-down` (overview.py): usa `build_blackout_clients` (verità live),
+  `down_since` da `site_blackout_state.first_at` o dall'alert corr attivo. Polling frontend 20s.
+**2. Alert Nebula push+Telegram** (`routes/zyxel_nebula.py` in `sync_client_devices`):
+- Su transizione ONLINE→OFFLINE di un device Zyxel: alert `critical` (source `zyxel_offline`) +
+  recovery `low` al ritorno online. Soglie firewall (CPU 70/90, Mem 80/95, Sessioni 50k/100k):
+  alert `high`/`critical` al superamento + recovery al rientro. Dedup via `alert_state` sul doc
+  device (no spam). Riusa il pipeline `alert_engine._mk_alert/_dispatch_notification` (push+Telegram).
+**3. Storico metriche Zyxel** (`pages/ZyxelNebulaSettingsPage.js` + `GET
+/api/clients/{cid}/zyxel/devices/{dev_id}/metrics?hours=24`): pulsante "grafico" per firewall →
+Dialog con LineChart recharts CPU%/Mem% + Sessioni (dati da `zyxel_metrics`, TTL 30gg).
+**Testing**: banner verificato via screenshot (blackout simulato → barra "giù da 12 min");
+grafico verificato via screenshot (FLEX 700H, CPU 4%/Mem 38%/Sessioni ~1300); alert verificati
+via test backend (`_threshold_level` + `_emit_zyxel_alert` inserisce alert critical); endpoint
+site-down/metrics via curl. Tutti i dati di test QA ripuliti.
+NOTA: la consegna push richiede subscription web-push attive; Telegram richiede token/chat_id
+configurati (canali già presenti nell'app). ⚠️ Attivo in PROD dopo Save to GitHub + redeploy.
+
+
+
 ## 2026-06 🚨 FIX P0 — Blackout/Site-Down: rilevazione lenta + discrepanza pagine
 **Bug utente (GualdiGroup, ricorrente 5+)**: durante un blackout reale (agent giù + WAN
 giù al 100%) i device apparivano ONLINE/verde, ClientOverviewPage e ClientsPage mostravano

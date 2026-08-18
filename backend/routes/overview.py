@@ -657,3 +657,47 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
             "endpoints_online": sum(d["online"] for d in endpoints_by_client.values()),
         },
     }
+
+
+
+@router.get("/overview/site-down")
+async def get_sites_down(current_user: dict = Depends(get_current_user)):
+    """Sedi attualmente in BLACKOUT confermato (agent giu' + WAN giu'), con il
+    timestamp di inizio ('down_since') per il timer "giu' da X min" del banner
+    globale SITE DOWN. Verita' LIVE: usa build_blackout_clients, non solo lo
+    stato persistito del watchdog."""
+    offline_clients = await build_clients_without_online_agent(db)
+    blackout_clients = await build_blackout_clients(db, offline_clients) if offline_clients else set()
+    if not blackout_clients:
+        return {"sites": [], "count": 0}
+
+    clients = await db.clients.find(
+        {"id": {"$in": list(blackout_clients)}}, {"_id": 0, "id": 1, "name": 1}
+    ).to_list(1000)
+    name_by_id = {c["id"]: c.get("name", "") for c in clients}
+
+    # down_since: preferisci lo stato del watchdog (first_at), poi l'alert di
+    # correlazione attivo, infine 'adesso' (fallback → timer parte da 0).
+    states = await db.site_blackout_state.find(
+        {"client_id": {"$in": list(blackout_clients)}}, {"_id": 0, "client_id": 1, "first_at": 1}
+    ).to_list(1000)
+    first_by_id = {s["client_id"]: s.get("first_at") for s in states}
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    sites = []
+    for cid in blackout_clients:
+        down_since = first_by_id.get(cid)
+        if not down_since:
+            corr = await db.alerts.find_one(
+                {"client_id": cid, "status": "active",
+                 "source_type": {"$in": ["site_blackout", "corr_site_power_down", "corr_site_isolated"]}},
+                {"_id": 0, "created_at": 1}, sort=[("created_at", 1)],
+            )
+            down_since = (corr or {}).get("created_at") or now_iso
+        sites.append({
+            "client_id": cid,
+            "client_name": name_by_id.get(cid) or (cid[:8] if cid else "?"),
+            "down_since": down_since,
+        })
+    sites.sort(key=lambda s: s["down_since"])
+    return {"sites": sites, "count": len(sites)}

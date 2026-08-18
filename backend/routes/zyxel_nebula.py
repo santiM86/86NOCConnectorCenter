@@ -19,7 +19,7 @@ import os
 import asyncio
 import random
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any, Optional
 
 import httpx
@@ -143,6 +143,51 @@ def _dev_type(nebula_type: str) -> str:
     if t.startswith("AP"):
         return "ap"
     return "network"
+
+
+# Soglie di alerting per i firewall Zyxel (allineate al profilo zyxel_usg_flex_h).
+ZYXEL_THRESHOLDS = {
+    "cpu": (70, 90),          # (warn, crit) %
+    "mem": (80, 95),          # (warn, crit) %
+    "sessions": (50000, 100000),
+}
+_METRIC_LABEL = {"cpu": "CPU", "mem": "Memoria", "sessions": "Sessioni"}
+_METRIC_UNIT = {"cpu": "%", "mem": "%", "sessions": ""}
+
+
+def _threshold_level(metric: str, value) -> Optional[str]:
+    if value is None:
+        return None
+    warn, crit = ZYXEL_THRESHOLDS[metric]
+    v = float(value)
+    if v >= crit:
+        return "crit"
+    if v >= warn:
+        return "warn"
+    return None
+
+
+async def _emit_zyxel_alert(dev_doc: dict, severity: str, source_type: str,
+                            title: str, message: str, recovery: bool = False) -> None:
+    """Emette un alert Zyxel Nebula sui canali configurati (push + Telegram).
+    Riusa il pipeline standard dell'Alert Engine (_mk_alert/_dispatch_notification)."""
+    try:
+        import alert_engine as _ae
+        from alert_filter import insert_alert_if_emit
+        cfg = await _ae.get_config(db)
+        alert = _ae._mk_alert(
+            dev_doc.get("client_id", ""), dev_doc.get("client_name", ""),
+            dev_doc.get("name") or dev_doc.get("model") or "Zyxel", "",
+            dev_doc.get("device_type", "firewall"), severity, source_type, title, message,
+        )
+        alert["raw_data"] = f"nebula:{dev_doc.get('dev_id','')} mac={dev_doc.get('mac','')} model={dev_doc.get('model','')}"
+        if recovery:
+            await _ae._emit_recovery_notice(db, cfg, alert)
+        else:
+            await insert_alert_if_emit(db, alert)
+            await _ae._dispatch_notification(db, cfg, alert)
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"zyxel alert dispatch failed: {e}")
 
 
 # ==================== Config CRUD ====================
@@ -313,6 +358,19 @@ async def list_client_zyxel_devices(client_id: str, current_user: dict = Depends
     return {"devices": devs, "count": len(devs)}
 
 
+@router.get("/clients/{client_id}/zyxel/devices/{dev_id}/metrics")
+async def get_device_metrics(client_id: str, dev_id: str, hours: int = 24,
+                             current_user: dict = Depends(get_current_user)):
+    """Serie storica CPU/memoria/sessioni di un firewall Zyxel (da zyxel_metrics)."""
+    hours = max(1, min(hours, 720))
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    docs = await db.zyxel_metrics.find(
+        {"client_id": client_id, "dev_id": dev_id, "observed_at": {"$gte": cutoff}},
+        {"_id": 0, "observed_at": 1, "cpu": 1, "mem": 1, "sessions": 1},
+    ).sort("observed_at", 1).to_list(10000)
+    return {"metrics": docs, "count": len(docs)}
+
+
 @router.get("/zyxel/links")
 async def list_all_links(current_user: dict = Depends(get_current_user)):
     """Tutti i mapping cliente→org + conteggio device sincronizzati."""
@@ -425,6 +483,64 @@ async def sync_client_devices(client_id: str) -> dict:
                         } for t in traffic]
                 except ZyxelError as e:
                     logger.debug(f"traffic-usage dev={dev_id}: {e}")
+
+            # ===== ALERTING (push + Telegram) con dedup su stato precedente =====
+            prev = await db.zyxel_devices.find_one(
+                {"client_id": client_id, "dev_id": dev_id},
+                {"_id": 0, "online_status": 1, "alert_state": 1},
+            )
+            alert_state = dict((prev or {}).get("alert_state") or {})
+            now_status = online_map.get(dev_id)
+            label = d.get("name") or d.get("model") or "Zyxel"
+
+            # 1) Offline / recovery
+            if now_status and now_status != "ONLINE":
+                if not alert_state.get("offline"):
+                    await _emit_zyxel_alert(
+                        doc, "critical", "zyxel_offline",
+                        f"Zyxel OFFLINE: {label} ({client_name})",
+                        f"Il dispositivo Zyxel {label} (modello {d.get('model')}, sito "
+                        f"{site_name.get(sid) or sid}) risulta OFFLINE su Nebula.",
+                    )
+                    alert_state["offline"] = True
+                    # in offline azzeriamo gli stati soglia (il device e' giu')
+                    for _m in ("cpu", "mem", "sessions"):
+                        alert_state.pop(_m, None)
+            elif now_status == "ONLINE":
+                if alert_state.get("offline"):
+                    await _emit_zyxel_alert(
+                        doc, "low", "zyxel_offline_recovery",
+                        f"Zyxel RIPRISTINATO: {label} ({client_name})",
+                        f"Il dispositivo Zyxel {label} e' tornato ONLINE su Nebula.",
+                        recovery=True,
+                    )
+                    alert_state["offline"] = False
+                # 2) Soglie CPU/Memoria/Sessioni (solo se online, solo firewall con metriche)
+                for metric in ("cpu", "mem", "sessions"):
+                    val = doc.get({"cpu": "cpu_usage", "mem": "mem_usage", "sessions": "sessions"}[metric])
+                    level = _threshold_level(metric, val)
+                    prev_level = alert_state.get(metric)
+                    if level and level != prev_level:
+                        sev = "critical" if level == "crit" else "high"
+                        warn, crit = ZYXEL_THRESHOLDS[metric]
+                        soglia = crit if level == "crit" else warn
+                        await _emit_zyxel_alert(
+                            doc, sev, f"zyxel_{metric}",
+                            f"Zyxel {_METRIC_LABEL[metric]} {'CRITICA' if level=='crit' else 'ALTA'}: {label}",
+                            f"{label} ({client_name}) — {_METRIC_LABEL[metric]} a "
+                            f"{val}{_METRIC_UNIT[metric]} (soglia {soglia}{_METRIC_UNIT[metric]}).",
+                        )
+                        alert_state[metric] = level
+                    elif not level and prev_level:
+                        await _emit_zyxel_alert(
+                            doc, "low", f"zyxel_{metric}_recovery",
+                            f"Zyxel {_METRIC_LABEL[metric]} rientrata: {label}",
+                            f"{label} ({client_name}) — {_METRIC_LABEL[metric]} rientrata "
+                            f"nella norma ({val}{_METRIC_UNIT[metric]}).",
+                            recovery=True,
+                        )
+                        alert_state.pop(metric, None)
+            doc["alert_state"] = alert_state
 
             await db.zyxel_devices.update_one(
                 {"client_id": client_id, "dev_id": dev_id},
