@@ -1,6 +1,42 @@
 ## ⚠️ REGOLE PERMANENTI — leggere PRIMA di toccare qualsiasi file
 
 
+## 2026-06 🚨 FIX P0 — Blackout/Site-Down: rilevazione lenta + discrepanza pagine
+**Bug utente (GualdiGroup, ricorrente 5+)**: durante un blackout reale (agent giù + WAN
+giù al 100%) i device apparivano ONLINE/verde, ClientOverviewPage e ClientsPage mostravano
+stati DIVERSI, e comunque compariva "stale" (giallo) invece di "offline" (rosso). Troppo lento.
+**Root cause (RCA troubleshoot + testing agent)**:
+1. `liveness_resolver.build_wan_down_clients`: (a) NESSUN filtro di freschezza su
+   `wan_probe_results` → un vecchio doc "online" (target rimosso/probe ferma) bloccava per
+   sempre il blackout; (b) logica OR tra target → bastava UN target/doc stantio "reachable"
+   per tenere il cliente "su". → blackout mai confermato → device "stale" non "offline".
+2. `routes/devices.py get_devices`: l'override liveness girava sugli oggetti Pydantic
+   `DeviceResponse` con API da dict (`r.get`) dentro `try/except: pass` → `AttributeError`
+   inghiottito → **override MAI applicato** → `/api/devices` restava "online"/"pending" mentre
+   `/api/overview/clients` (compute_status) mostrava offline → DISCREPANZA tra le pagine.
+**Fix implementati**:
+- `liveness_resolver.py`: `build_wan_down_clients` riscritta (freschezza `WAN_PROBE_FRESHNESS_SECONDS`=180s
+  su `checked_at` + logica ALL-targets: WAN giù = ha risultati freschi e NESSUNO raggiungibile).
+  `AGENT_HEARTBEAT_STALE_SECONDS` 180→90 (l'agent batte ogni 15s → 6 beat = sicuro e più veloce).
+- `routes/devices.py`: override liveness spostato sui DICT PRIMA di costruire DeviceResponse
+  (single source of truth), esteso a status `online/pending/unknown`, con eccezione Datto RMM
+  (device confermato online dall'agent sul device stesso resta online). `except` ora logga.
+- `models.py`: aggiunto `status_reason` a DeviceResponse (`site_blackout`|`agent_offline`).
+- `routes/external_monitor.py`: probe WAN 60→30s + trigger EVENT-DRIVEN: alla transizione
+  di un target → offline chiama subito `alert_engine.run_site_blackout_watchdog` (rilevazione
+  quasi-live ~30s invece di attendere il tick da 60s dell'Alert Engine).
+**Testing**: 29/29 pytest verdi (`tests/test_blackout_wan_freshness_iter119.py`,
+`test_blackout_agent_offline_iter117.py`, `test_blackout_devices_consistency_iter120.py`) +
+verifica live: `/api/devices`=offline/site_blackout e `/api/overview/clients` offline=1
+concordano; i conteggi flat di `/api/devices` = somma bucket overview `devices`+`endpoints`.
+Report: iteration_119.json (RCA), iteration_120.json (conferma, 0 critical).
+⚠️ **PROD**: effettivo su `argus.86bit.it` SOLO dopo Save to GitHub + redeploy backend.
+Backlog (radice strutturale, non-bloccante): far usare a `get_devices` direttamente
+`compute_status`+`build_evidence_maps` (oggi duplica ~800 righe di logica status); gate liveness
+anche su `GET /api/devices/{device_id}` (legacy `db.devices`, oggi non usato dalle schede UI).
+
+
+
 ## 2026-06 ☁️ Integrazione Zyxel Nebula (NCC OpenAPI) — monitoraggio cloud
 **Richiesta**: monitorare via cloud i dispositivi Zyxel (firewall USG FLEX serie H, switch, AP)
 di tutti i clienti tramite Nebula Control Center, senza SNMP locale. Scelte utente: import

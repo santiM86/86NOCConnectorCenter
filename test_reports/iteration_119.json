@@ -1,0 +1,48 @@
+{
+  "summary": "Verifica indipendente del fix BLACKOUT DETECTION (iter119). Creato /app/backend/tests/test_blackout_wan_freshness_iter119.py (16 test: 10 unit su liveness_resolver con motor + 5 REST + 1 alerting). Risultato: 14/16 PASS. La logica in liveness_resolver.py e' CORRETTA (freschezza 180s, ALL-targets, soglia heartbeat 90s, blackout=offline/site_blackout, agent-down+WAN-up=stale/agent_offline, regressione online OK) e GET /api/overview/clients riflette correttamente il blackout. MA GET /api/devices?client_id=X NON applica piu' nessun override: il device in blackout resta 'online' (verde) -> la DISCREPANZA tra pagine segnalata dall'utente E' ANCORA PRESENTE. Anche il test di regressione preesistente iter117 (che prima passava) ora FALLISCE.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "GET /api/devices?client_id=X",
+        "issue": "Override blackout/stale MAI applicato: in routes/devices.py:856-868 il loop fa r.get('client_id') ma gli elementi di `result` sono istanze Pydantic DeviceResponse (creato a riga 807), non dict -> AttributeError('DeviceResponse' object has no attribute 'get') alla prima iterazione, inghiottito dal `except Exception: pass` (riga 869-870). Effetto: device in blackout restano 'online' (verde) mentre /api/overview/clients li mostra offline/stale => esattamente la discrepanza fra ClientOverviewPage e ClientsPage riportata dall'utente. Ripro: seed client agent-stale + wan_probe_results fresco offline -> /api/devices status='online', overview offline=1.",
+        "priority": "CRITICAL"
+      },
+      {
+        "endpoint": "GET /api/devices (models.DeviceResponse)",
+        "issue": "DeviceResponse NON ha il campo 'status_reason' (model_config extra='ignore'): anche correggendo l'accesso dict->attributo, il motivo ('site_blackout'/'agent_offline') non arriverebbe mai al frontend. Serve aggiungere status_reason: Optional[str] al modello (o restituire dict).",
+        "priority": "HIGH"
+      },
+      {
+        "endpoint": "routes/devices.py get_devices()",
+        "issue": "Il gating blackout in /api/devices e' un post-processing duplicato invece di usare compute_status(pd, md, ip_evidence, mac_evidence, offline_clients, blackout_clients) come overview.py: viola il principio 'single source of truth' del modulo e ha causato di nuovo la divergenza (bug ricorrente 5+ volte). Inoltre l'`except Exception: pass` silenzioso maschera i difetti: loggare almeno a warning.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_blackout_wan_freshness_iter119.py",
+    "/app/backend/tests/test_blackout_agent_offline_iter117.py",
+    "/app/test_reports/pytest/iter119_blackout_wan.xml"
+  ],
+  "action_items": [
+    "routes/devices.py: sostituire il post-processing con compute_status(...) su dict PRIMA della costruzione di DeviceResponse, oppure iterare su dict/model in modo type-safe (getattr/setattr) — attualmente l'override e' morto e i device restano ONLINE durante il blackout.",
+    "models.py: aggiungere il campo status_reason (Optional[str]) a DeviceResponse cosi' 'site_blackout'/'agent_offline' arrivano alla UI.",
+    "Sostituire 'except Exception: pass' con logging.warning(exc_info=True) attorno al gating liveness in devices.py (il difetto e' rimasto invisibile).",
+    "Dopo il fix rieseguire: pytest tests/test_blackout_wan_freshness_iter119.py tests/test_blackout_agent_offline_iter117.py"
+  ],
+  "critical_code_review_comments": [
+    "devices.py riga 856: r.get() su oggetti Pydantic -> AttributeError silenziato; il gating blackout non ha alcun effetto sull'endpoint principale usato dalla pagina device.",
+    "Duplicazione logica (devices.py post-processing vs overview.py compute_status) = causa strutturale del bug ricorrente: unificare su liveness_resolver.compute_status.",
+    "liveness_resolver.build_wan_down_clients: implementazione corretta e verificata (freschezza + AND su tutti i target, ports.open e status filtered/degraded contano come reachable)."
+  ],
+  "updated_files": ["/app/backend/tests/test_blackout_wan_freshness_iter119.py"],
+  "success_rate": {"backend": "87% (14/16)", "frontend": "non testato (richiesta backend-only)"},
+  "seed_data_creation": "Seed temporaneo su DB reale con client_id TEST_QA_BLACKOUT_119 / TEST_QA_MIXED_119 / TEST_QA_OLDONLY_119 / TEST_QA_LIVE_119 (clients, managed_agents, managed_devices, device_poll_status, discovered_endpoints, wan_probe_results, alerts, site_blackout_state). RIMOSSO al teardown (verificato: 0 documenti residui). Nessun dato reale (86BIT_Office, GualdiGroup) toccato. NB: wan_probe_results ha indice UNIQUE su target_id -> i seed devono includere target_id distinti.",
+  "should_call_test_agent_after_fix": true,
+  "should_main_agent_self_test": false,
+  "test_credentials": "info@86bit.it / Ariel17051986@!@86 + TOTP NMHDJNO53WLTOSREUXWERE6FDH5TAKC3 (login + verify-2fa: funzionanti)",
+  "context_for_next_testing_agent": "PASS confermati: costanti (heartbeat 90s, WAN freshness 180s); build_clients_without_online_agent; build_wan_down_clients (vecchio doc 'online' ignorato, ALL-targets, porta aperta = reachable); build_blackout_clients (intersezione, no blackout se agent vivo); compute_status -> ('offline','site_blackout') anche con evidence ARP fresca, ('stale','agent_offline') con WAN su, 'online' in condizioni normali; recovery WAN online -> stale; GET /api/overview/clients coerente (offline=1/online=0 per il blackout, stale per agent-down); alert 'site_blackout' critical emesso dall'alert engine entro 2 cicli (~60-140s); wan_probe schedulato ogni 30s (log task_coordinator). FAIL: GET /api/devices?client_id -> 'online' sia per blackout sia per agent-down (override morto, RCA sopra). Rieseguire lo stesso file dopo il fix.",
+  "rca_of_the_issue": "In get_devices() la lista `result` contiene oggetti Pydantic DeviceResponse; il blocco di override blackout usa API da dict (r.get/r['status']) dentro un try/except generico che fa `pass`. Alla prima iterazione viene lanciato AttributeError e l'intero override viene saltato senza log, quindi i device di un cliente in blackout restano ONLINE nell'endpoint /api/devices mentre /api/overview/clients (che usa compute_status) li marca offline/stale: da qui la discrepanza fra le due pagine e i 'device verdi' durante il blackout reale. Fix: calcolare lo status con compute_status(offline_clients, blackout_clients) prima della serializzazione + aggiungere status_reason a DeviceResponse."
+}

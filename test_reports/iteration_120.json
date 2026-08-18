@@ -1,0 +1,50 @@
+{
+  "summary": "RE-VERIFICA indipendente del fix P0 blackout (iter120). Rieseguiti i due file pytest richiesti: tests/test_blackout_wan_freshness_iter119.py + tests/test_blackout_agent_offline_iter117.py => 20/20 PASS (nell'iter119 falliva la parte REST). Il bug CRITICAL dell'iter119 (override liveness morto in get_devices per AttributeError su oggetti Pydantic) e' RISOLTO: l'override ora gira sui dict prima della serializzazione, DeviceResponse espone status_reason. Aggiunto un nuovo file di test complementare (8 test) su casi non coperti: lista globale /api/devices senza client_id, device scanner-source/mai-polleati, boundary freschezza WAN, coerenza dei conteggi devices-vs-overview => 7/8 PASS. Totale 28/29. Unico problema residuo (MINOR, nessun falso verde): i device SENZA record device_poll_status restano 'pending' in /api/devices mentre /api/overview/clients li conta 'offline' -> piccola discrepanza residua tra pagine.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "GET /api/devices?client_id=X",
+        "issue": "DIVERGENZA RESIDUA con /api/overview/clients per i device SENZA device_poll_status. routes/devices.py:829 applica l'override solo se d.get('status') == 'online', quindi un device 'pending' (mai polleato, o scanner-source senza poll) di un cliente in BLACKOUT resta 'pending' (grigio) e senza status_reason, mentre overview.py/compute_status lo classifica 'offline' (verificato: /api/devices=['pending','pending'] vs overview endpoints={offline:2}). Non e' un falso verde (P0 ok) ma resta una discrepanza visibile tra ClientsPage e ClientOverviewPage. Fix: estendere l'override a status in ('online','pending','unknown') -> offline/site_blackout se blackout, stale/agent_offline altrimenti."
+      },
+      {
+        "endpoint": "GET /api/devices (evidence override)",
+        "issue": "Anche su cliente SANO c'e' divergenza pre-esistente: un device senza poll ma con discovered_endpoints fresco (scanner LAN) e' 'online' in overview (evidence override) e 'pending' in /api/devices (verificato con seed su TEST_QA120_OK: /api/devices=pending, overview endpoints online=1). /api/devices non usa build_evidence_maps/compute_status ma un calcolo proprio -> radice strutturale del bug ricorrente."
+      },
+      {
+        "endpoint": "GET /api/devices/{device_id}",
+        "issue": "routes/devices.py:884-893 legge la collection legacy db.devices e ritorna DeviceResponse senza alcun override liveness ne' status_reason: se la UI usa questo endpoint per la scheda device mostrerebbe uno stato non gated. Da verificare/uniformare."
+      },
+      {
+        "endpoint": "db.clients (dato di test residuo)",
+        "issue": "Trovato 1 documento residuo in db.clients con id '__QA_LIVE_CONSISTENCY__' (lasciato dalla verifica live del main agent, non dai miei test). Da rimuovere per non inquinare la Panoramica reale."
+      }
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_blackout_wan_freshness_iter119.py",
+    "/app/backend/tests/test_blackout_agent_offline_iter117.py",
+    "/app/backend/tests/test_blackout_devices_consistency_iter120.py",
+    "/app/test_reports/pytest/iter120_all.xml"
+  ],
+  "action_items": [
+    "Estendere l'override liveness in get_devices ai device con status 'pending'/'unknown' (oggi solo 'online') per eliminare la discrepanza residua devices-vs-overview durante il blackout.",
+    "(Consigliato) far usare a get_devices direttamente liveness_resolver.compute_status + build_evidence_maps invece del calcolo locale: e' la causa strutturale delle 5+ ricorrenze del bug.",
+    "Uniformare GET /api/devices/{device_id} (nessun gating liveness, nessun status_reason).",
+    "Cancellare il client residuo '__QA_LIVE_CONSISTENCY__' da db.clients."
+  ],
+  "critical_code_review_comments": [
+    "CONFERMATO risolto: override su dict prima di DeviceResponse (devices.py:826-839) + status_reason in models.py:67; l'except ora logga invece di 'pass' silenzioso.",
+    "devices.py e' 2353 righe: get_devices() contiene ~800 righe di logica di status duplicata rispetto a liveness_resolver/overview -> splittare e delegare al resolver.",
+    "L'eccezione Datto RMM (datto_online_by_ip) funziona correttamente: device confermato online da RMM resta online durante il blackout (test iter117 PASS)."
+  ],
+  "updated_files": ["/app/backend/tests/test_blackout_devices_consistency_iter120.py"],
+  "success_rate": {"backend": "97% (28/29)", "frontend": "non testato (richiesta backend-only)"},
+  "seed_data_creation": "Seed temporaneo su DB reale: TEST_QA120_BO / TEST_QA120_OLDWAN / TEST_QA120_OK (clients, managed_agents, managed_devices, device_poll_status, discovered_endpoints, wan_probe_results con target_id distinti). Teardown verificato: 0 documenti TEST_ residui. Nessun dato reale (86BIT_Office, GualdiGroup) modificato.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "info@86bit.it / Ariel17051986@!@86 + TOTP NMHDJNO53WLTOSREUXWERE6FDH5TAKC3 (login + verify-2fa funzionanti)",
+  "context_for_next_testing_agent": "Fix P0 blackout VERIFICATO OK: GET /api/devices?client_id ora ritorna status='offline'/status_reason='site_blackout' per blackout confermato (agent >90s stale + wan_probe fresco offline), 'stale'/'agent_offline' con WAN su, 'online' in condizioni normali; la lista globale /api/devices (senza client_id) e' coerente con quella per-client; i conteggi online/offline/stale di /api/overview/clients coincidono con /api/devices per i device polleati; alert 'site_blackout' critical emesso entro ~2 cicli; nessun leak di _id. UNICO FAIL noto e voluto: test_never_polled_devices_consistent_with_overview (device pending vs overview offline). Rieseguire: pytest tests/test_blackout_devices_consistency_iter120.py tests/test_blackout_wan_freshness_iter119.py tests/test_blackout_agent_offline_iter117.py -p no:randomly.",
+  "rca_of_the_issue": "Il difetto critico dell'iter119 (override liveness applicato su oggetti Pydantic con API da dict dentro try/except: pass -> AttributeError silenziato) e' stato corretto spostando l'override sui dict prima della costruzione di DeviceResponse e aggiungendo status_reason al modello: entrambe le verifiche REST ora passano. La discrepanza residua ha la stessa radice strutturale (logica di status duplicata in devices.py invece di compute_status): l'override e' condizionato a status=='online', quindi i device 'pending' non vengono degradati come fa compute_status."
+}

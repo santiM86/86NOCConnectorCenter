@@ -485,6 +485,7 @@ async def run_probe_cycle():
         # Store results and check for status changes
         now_iso = datetime.now(timezone.utc).isoformat()
         client_results = {}
+        wan_just_down_clients = set()  # clienti con un target appena passato a offline
 
         for r in results:
             if isinstance(r, Exception):
@@ -532,6 +533,9 @@ async def run_probe_cycle():
             if prev_status and prev_status != r["status"]:
                 severity = "critical" if r["status"] == "offline" else "high" if r["status"] == "degraded" else "low"
                 if r["status"] == "offline" or r["status"] == "degraded":
+                    if r["status"] == "offline" and prev_status in ("online", "degraded", "filtered"):
+                        # transizione WAN → offline: candidato blackout (verifica agent dopo)
+                        wan_just_down_clients.add(cid)
                     _ext_alert = {
                         "id": str(uuid.uuid4()),
                         "client_id": cid,
@@ -614,6 +618,19 @@ async def run_probe_cycle():
                 upsert=True,
             )
 
+        # v2026-06 SPEED: rilevazione blackout QUASI-LIVE. Se in questo ciclo la
+        # WAN di un cliente e' appena passata a offline, non aspettiamo il tick da
+        # 60s dell'Alert Engine: eseguiamo subito il watchdog blackout (che conferma
+        # in modo indipendente agent-giu' + WAN-giu' e fa dedup/auto-recovery da solo).
+        if wan_just_down_clients:
+            try:
+                import alert_engine as _ae
+                cfg = await _ae.get_config(db)
+                await _ae.run_site_blackout_watchdog(db, cfg)
+                logger.info("[wan-probe] blackout watchdog triggered (event-driven) for %d client(s)", len(wan_just_down_clients))
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"event-driven blackout watchdog skipped: {e}")
+
     except Exception as e:
         logger.error(f"Probe cycle error: {e}")
     finally:
@@ -621,10 +638,10 @@ async def run_probe_cycle():
 
 
 async def start_probe_scheduler():
-    """Avvia il ciclo di probe ogni 60 secondi con lock distribuito."""
+    """Avvia il ciclo di probe ogni 30 secondi con lock distribuito."""
     from middleware.task_coordinator import coordinator
-    coordinator.schedule("wan_probe", run_probe_cycle, 60)
-    logger.info("External WAN probe scheduler registered (interval: 60s)")
+    coordinator.schedule("wan_probe", run_probe_cycle, 30)
+    logger.info("External WAN probe scheduler registered (interval: 30s)")
 
 
 # ==================== API ENDPOINTS ====================

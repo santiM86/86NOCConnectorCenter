@@ -799,6 +799,48 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
     device_ids = [d["id"] for d in devices if not d["id"].startswith("poll_")]
     creds = await db.device_credentials.find({"device_id": {"$in": device_ids}}, {"_id": 0, "device_id": 1}).to_list(1000)
     cred_device_ids = {c["device_id"] for c in creds}
+
+    # === LIVENESS OVERRIDE — SINGLE SOURCE OF TRUTH (fix discrepanza pagine) ===
+    # Applichiamo la stessa logica di overview.py PRIMA di serializzare, sui DICT.
+    # BUG STORICO RICORRENTE (Gualdi): l'override girava DOPO, sugli oggetti Pydantic
+    # DeviceResponse, usando API da dict (r.get / r["status"]=) dentro un
+    # try/except: pass -> AttributeError inghiottito -> override MAI applicato ->
+    # /api/devices mostrava device ONLINE durante il blackout mentre
+    # /api/overview/clients li mostrava offline/stale => discrepanza tra
+    # ClientOverviewPage e ClientsPage segnalata dall'utente.
+    # Regola: se l'agent del cliente e' OFFLINE la liveness ARP/scan/poll e' stantia:
+    #   - blackout confermato (agent giu' + WAN giu' dalla sonda Center) -> "offline" (site_blackout)
+    #   - solo agent giu' (WAN ancora su) -> "stale" (agent_offline)
+    #   - eccezione: device confermato ONLINE indipendentemente da Datto RMM -> resta online
+    try:
+        from liveness_resolver import (
+            build_clients_without_online_agent, build_blackout_clients,
+        )
+        offline_clients = await build_clients_without_online_agent(db)
+        blackout_clients = await build_blackout_clients(db, offline_clients) if offline_clients else set()
+    except Exception as _lv_err:  # noqa: BLE001
+        import logging as _lg
+        _lg.getLogger(__name__).warning("get_devices: liveness override non disponibile: %s", _lv_err)
+        offline_clients, blackout_clients = set(), set()
+
+    if offline_clients:
+        for d in devices:
+            cid = d.get("client_id")
+            # Estendiamo il gating anche a 'pending'/'unknown' (device scanner-source o
+            # mai polleati): durante un blackout devono degradare come fa compute_status
+            # in overview.py, altrimenti restano grigi in /api/devices -> discrepanza pagine.
+            if not cid or cid not in offline_clients or d.get("status") not in ("online", "pending", "unknown"):
+                continue
+            ipv = d.get("ip_address") or d.get("ip")
+            if ipv and datto_online_by_ip.get((cid, ipv)):
+                continue  # ONLINE confermato dall'agent Datto sul device stesso
+            if cid in blackout_clients:
+                d["status"] = "offline"
+                d["status_reason"] = "site_blackout"
+            else:
+                d["status"] = "stale"
+                d["status_reason"] = "agent_offline"
+
     result = []
     for d in devices:
         d["client_name"] = client_map.get(d["client_id"], "")
@@ -815,6 +857,7 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
                 "id": d["id"], "client_id": d.get("client_id", ""), "client_name": d.get("client_name", ""),
                 "name": d.get("name", "?"), "device_type": d.get("device_type", ""), "ip_address": d.get("ip_address", ""),
                 "hostname": d.get("hostname", ""), "location": d.get("location", ""), "status": d.get("status", "unknown"),
+                "status_reason": d.get("status_reason"),
                 "redfish_enabled": d.get("redfish_enabled", False), "has_credentials": d.get("has_credentials", False),
                 "source": d.get("source", "manual"), "sys_descr": d.get("sys_descr", ""),
                 "cpu_usage": d.get("cpu_usage"), "memory_usage": d.get("memory_usage"),
@@ -838,36 +881,6 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
                 "is_vital": d.get("is_vital"),
                 "is_vital_set_at": d.get("is_vital_set_at", ""),
             })
-    # FIX BLACKOUT (Gualdi): se l'agent del cliente e' OFFLINE, la liveness
-    # basata su ARP/scanner/poll dell'agent e' inaffidabile (dati stantii): un
-    # device NON puo' essere "online" solo perche' l'agent morente l'aveva visto
-    # poco prima. Manteniamo "online" SOLO se confermato indipendentemente da
-    # Datto RMM (agente sul device stesso, indipendente dal connector del sito).
-    # Altrimenti:
-    #   - blackout confermato (agent giu' + WAN giu' dalla sonda Center) -> OFFLINE
-    #   - solo agent giu' (WAN ancora su) -> "stale" (stato incerto).
-    try:
-        from liveness_resolver import (
-            build_clients_without_online_agent, build_blackout_clients,
-        )
-        offline_clients = await build_clients_without_online_agent(db)
-        blackout_clients = await build_blackout_clients(db, offline_clients)
-        if offline_clients:
-            for r in result:
-                cid = r.get("client_id")
-                if not cid or cid not in offline_clients or r.get("status") != "online":
-                    continue
-                ipv = r.get("ip") or r.get("ip_address")
-                datto_ok = bool(ipv and datto_online_by_ip.get((cid, ipv)))
-                if not datto_ok:
-                    if cid in blackout_clients:
-                        r["status"] = "offline"
-                        r["status_reason"] = "site_blackout"
-                    else:
-                        r["status"] = "stale"
-                        r["status_reason"] = "agent_offline"
-    except Exception:  # noqa: BLE001 — l'override e' best-effort, non deve rompere la lista
-        pass
     return result
 
 
